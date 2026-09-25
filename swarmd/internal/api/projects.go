@@ -1,21 +1,71 @@
 package api
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
 const ProjectsPath = "/v3/projects"
+
+// inspectTaskGitState probes a workspace/worktree path for dirty status and unintegrated commits.
+func inspectTaskGitState(workspacePath, branch string) (unintegratedCommits int, diffSummary string, isDirty bool) {
+	workspacePath = strings.TrimSpace(workspacePath)
+	if workspacePath == "" {
+		return 0, "", false
+	}
+	if fi, err := os.Stat(workspacePath); err != nil || !fi.IsDir() {
+		return 0, "", false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	cmdDirty := exec.CommandContext(ctx, "git", "-C", workspacePath, "status", "--porcelain")
+	if out, err := cmdDirty.Output(); err == nil {
+		isDirty = len(bytes.TrimSpace(out)) > 0
+	}
+
+	cmdLog := exec.CommandContext(ctx, "git", "-C", workspacePath, "rev-list", "--count", "origin/dev..HEAD")
+	if out, err := cmdLog.Output(); err == nil {
+		var count int
+		if _, err := fmt.Sscanf(string(bytes.TrimSpace(out)), "%d", &count); err == nil {
+			unintegratedCommits = count
+		}
+	} else {
+		cmdLogDev := exec.CommandContext(ctx, "git", "-C", workspacePath, "rev-list", "--count", "dev..HEAD")
+		if out, err := cmdLogDev.Output(); err == nil {
+			var count int
+			if _, err := fmt.Sscanf(string(bytes.TrimSpace(out)), "%d", &count); err == nil {
+				unintegratedCommits = count
+			}
+		}
+	}
+
+	cmdDiff := exec.CommandContext(ctx, "git", "-C", workspacePath, "diff", "--shortstat", "origin/dev...HEAD")
+	if out, err := cmdDiff.Output(); err == nil && len(bytes.TrimSpace(out)) > 0 {
+		diffSummary = string(bytes.TrimSpace(out))
+	} else {
+		cmdDiffDev := exec.CommandContext(ctx, "git", "-C", workspacePath, "diff", "--shortstat", "dev...HEAD")
+		if out, err := cmdDiffDev.Output(); err == nil && len(bytes.TrimSpace(out)) > 0 {
+			diffSummary = string(bytes.TrimSpace(out))
+		}
+	}
+
+	return unintegratedCommits, diffSummary, isDirty
+}
 
 // SynthesizeProjectContext reads AGENTS.md and README.md from the provided workspace paths
 // and synthesizes an authoritative project.md document.
@@ -325,6 +375,30 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			if tasks == nil {
 				tasks = []pebblestore.ProjectTaskRecord{}
 			}
+			for i := range tasks {
+				ws := tasks[i].WorkspacePath
+				if ws == "" && tasks[i].SessionID != "" {
+					if sess, found, _ := db.GetSession(tasks[i].SessionID); found {
+						ws = sess.WorkspacePath
+						tasks[i].WorkspacePath = ws
+					}
+				}
+				if ws != "" {
+					unintegrated, diff, dirty := inspectTaskGitState(ws, tasks[i].WorktreeBranch)
+					if unintegrated > 0 || diff != "" || dirty {
+						tasks[i].UnintegratedCommits = unintegrated
+						tasks[i].DiffSummary = diff
+						tasks[i].IsDirty = dirty
+						if tasks[i].ActionNeeded == "" && unintegrated > 0 {
+							branchName := tasks[i].WorktreeBranch
+							if branchName == "" {
+								branchName = "worktree"
+							}
+							tasks[i].ActionNeeded = fmt.Sprintf("Action Needed: %d unintegrated commit(s) on %s ready to integrate.", unintegrated, branchName)
+						}
+					}
+				}
+			}
 			writeJSON(w, http.StatusOK, map[string]any{
 				"tasks": tasks,
 				"count": len(tasks),
@@ -342,17 +416,25 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			var req struct {
-				Title             string                               `json:"title"`
-				Description       string                               `json:"description,omitempty"`
-				Status            string                               `json:"status,omitempty"`
-				Agent             string                               `json:"agent,omitempty"`
-				WorkerName        string                               `json:"worker_name,omitempty"`
-				PipelineStages    []string                             `json:"pipeline_stages,omitempty"`
-				CurrentStageIndex int                                  `json:"current_stage_index,omitempty"`
-				Deliverables      []pebblestore.ProjectTaskDeliverable `json:"deliverables,omitempty"`
-				DeploySession     bool                                 `json:"deploy_session,omitempty"`
-				Prompt            string                               `json:"prompt,omitempty"`
-				WorkspacePath     string                               `json:"workspace_path,omitempty"`
+				Title               string                               `json:"title"`
+				Description         string                               `json:"description,omitempty"`
+				Status              string                               `json:"status,omitempty"`
+				Agent               string                               `json:"agent,omitempty"`
+				WorkerName          string                               `json:"worker_name,omitempty"`
+				OutcomeType         string                               `json:"outcome_type,omitempty"`
+				WorkspacePath       string                               `json:"workspace_path,omitempty"`
+				WorktreeBranch      string                               `json:"worktree_branch,omitempty"`
+				UnintegratedCommits int                                  `json:"unintegrated_commits,omitempty"`
+				DiffSummary         string                               `json:"diff_summary,omitempty"`
+				IsDirty             bool                                 `json:"is_dirty,omitempty"`
+				ActionNeeded        string                               `json:"action_needed,omitempty"`
+				WhatDidDo           []string                             `json:"what_did_do,omitempty"`
+				WhatNotDone         []string                             `json:"what_not_done,omitempty"`
+				PipelineStages      []string                             `json:"pipeline_stages,omitempty"`
+				CurrentStageIndex   int                                  `json:"current_stage_index,omitempty"`
+				Deliverables        []pebblestore.ProjectTaskDeliverable `json:"deliverables,omitempty"`
+				DeploySession       bool                                 `json:"deploy_session,omitempty"`
+				Prompt              string                               `json:"prompt,omitempty"`
 			}
 			if err := json.Unmarshal(body, &req); err != nil {
 				writeError(w, http.StatusBadRequest, errors.New("invalid JSON payload"))
@@ -379,15 +461,24 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			}
 
 			task := pebblestore.ProjectTaskRecord{
-				ProjectID:         projectID,
-				Title:             strings.TrimSpace(req.Title),
-				Description:       strings.TrimSpace(req.Description),
-				Status:            taskStatus,
-				Agent:             agentName,
-				WorkerName:        strings.TrimSpace(req.WorkerName),
-				PipelineStages:    req.PipelineStages,
-				CurrentStageIndex: req.CurrentStageIndex,
-				Deliverables:      req.Deliverables,
+				ProjectID:           projectID,
+				Title:               strings.TrimSpace(req.Title),
+				Description:         strings.TrimSpace(req.Description),
+				Status:              taskStatus,
+				Agent:               agentName,
+				WorkerName:          strings.TrimSpace(req.WorkerName),
+				OutcomeType:         strings.TrimSpace(req.OutcomeType),
+				WorkspacePath:       strings.TrimSpace(req.WorkspacePath),
+				WorktreeBranch:      strings.TrimSpace(req.WorktreeBranch),
+				UnintegratedCommits: req.UnintegratedCommits,
+				DiffSummary:         strings.TrimSpace(req.DiffSummary),
+				IsDirty:             req.IsDirty,
+				ActionNeeded:        strings.TrimSpace(req.ActionNeeded),
+				WhatDidDo:           req.WhatDidDo,
+				WhatNotDone:         req.WhatNotDone,
+				PipelineStages:      req.PipelineStages,
+				CurrentStageIndex:   req.CurrentStageIndex,
+				Deliverables:        req.Deliverables,
 			}
 
 			// Deploy session if requested or prompt provided
@@ -475,6 +566,17 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusNotFound, errors.New("project task not found"))
 				return
 			}
+			if task.WorkspacePath != "" {
+				unintegrated, diff, dirty := inspectTaskGitState(task.WorkspacePath, task.WorktreeBranch)
+				if unintegrated > 0 || diff != "" || dirty {
+					task.UnintegratedCommits = unintegrated
+					task.DiffSummary = diff
+					task.IsDirty = dirty
+					if task.ActionNeeded == "" && unintegrated > 0 {
+						task.ActionNeeded = fmt.Sprintf("Action Needed: %d unintegrated commit(s) on %s ready to integrate.", unintegrated, task.WorktreeBranch)
+					}
+				}
+			}
 			writeJSON(w, http.StatusOK, map[string]any{
 				"task": task,
 			})
@@ -533,6 +635,45 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 						}
 					}
 				}
+				if v, ok := patch["outcome_type"].(string); ok {
+					t.OutcomeType = strings.TrimSpace(v)
+				}
+				if v, ok := patch["workspace_path"].(string); ok {
+					t.WorkspacePath = strings.TrimSpace(v)
+				}
+				if v, ok := patch["worktree_branch"].(string); ok {
+					t.WorktreeBranch = strings.TrimSpace(v)
+				}
+				if v, ok := patch["unintegrated_commits"].(float64); ok {
+					t.UnintegratedCommits = int(v)
+				}
+				if v, ok := patch["diff_summary"].(string); ok {
+					t.DiffSummary = strings.TrimSpace(v)
+				}
+				if v, ok := patch["is_dirty"].(bool); ok {
+					t.IsDirty = v
+				}
+				if v, ok := patch["action_needed"].(string); ok {
+					t.ActionNeeded = strings.TrimSpace(v)
+				}
+				if arr, ok := patch["what_did_do"].([]any); ok {
+					var items []string
+					for _, item := range arr {
+						if s, ok := item.(string); ok && strings.TrimSpace(s) != "" {
+							items = append(items, strings.TrimSpace(s))
+						}
+					}
+					t.WhatDidDo = items
+				}
+				if arr, ok := patch["what_not_done"].([]any); ok {
+					var items []string
+					for _, item := range arr {
+						if s, ok := item.(string); ok && strings.TrimSpace(s) != "" {
+							items = append(items, strings.TrimSpace(s))
+						}
+					}
+					t.WhatNotDone = items
+				}
 				return nil
 			})
 			if err != nil {
@@ -566,6 +707,34 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		}
 
 		writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
+		return
+	}
+
+	// 6. Integrate task commits: POST /v3/projects/{id}/tasks/{taskId}/integrate
+	if len(segments) == 4 && segments[1] == "tasks" && segments[3] == "integrate" {
+		taskID := segments[2]
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
+			return
+		}
+		if !s.requireScopeAny(w, r, "projects:write", "sessions:write") {
+			return
+		}
+		updated, err := db.UpdateProjectTask(p.AccountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
+			t.Status = "completed"
+			t.UnintegratedCommits = 0
+			t.ActionNeeded = "No Action Required: Integrated into dev"
+			t.WhatDidDo = append(t.WhatDidDo, "Integrated commits into dev branch")
+			return nil
+		})
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status": "integrated",
+			"task":   updated,
+		})
 		return
 	}
 

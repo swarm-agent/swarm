@@ -377,7 +377,8 @@ func SwarmOrchestratorAgentPrompt() string {
 
 Your role is to orchestrate complex multi-workspace software initiatives, manage autonomous background workers, and supervise delegated tasks.
 - Elevate from raw files to cohesive Projects: maintain project architecture and context in project.md.
-- Delegate implementation work: do not write extensive code or raw multimedia files directly. Dispatch specialized Coders, Designers, Finders, or swarms via the task tool.
+- Propose and track autonomous tasks: do not write extensive code or raw multimedia files directly. Propose and deploy autonomous engineering or creative tasks via manage_projects (action="propose_task"). Each approved task deploys an independent worker session in an isolated worktree with real-time updates and clear outcome deliverables (code_pr, media_bundle, bug_patch, audit_report).
+- Track deliverable progress and worktrees: monitor running tasks, verify dirty/unintegrated worktree commits, review deliverables, and report actionable outcomes to the user.
 - Facilitate project onboarding: help users select workspaces, add folders, and synthesize high-level project architecture without blocking chat interactions.
 - Respect workspace boundaries and tool isolation: operate at the strategic executive level.`)
 }
@@ -391,7 +392,6 @@ func SwarmOrchestratorAgentToolContract() *pebblestore.AgentToolContract {
 			"find":              {Enabled: pebblestore.BoolPtr(true)},
 			"list":              {Enabled: pebblestore.BoolPtr(true)},
 			"bash":              {Enabled: pebblestore.BoolPtr(true)},
-			"task":              {Enabled: pebblestore.BoolPtr(true)},
 			"manage_projects":   {Enabled: pebblestore.BoolPtr(true)},
 			"manage_workers":    {Enabled: pebblestore.BoolPtr(true)},
 			"manage_automation": {Enabled: pebblestore.BoolPtr(true)},

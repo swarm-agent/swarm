@@ -145,12 +145,15 @@ export interface DeployedWorker {
   assignedTaskIds: string[]
 }
 
+export type TaskOutcomeType = 'code_pr' | 'media_bundle' | 'bug_patch' | 'audit_report'
+
 export interface RunningTask {
   id: string
   title: string
   subtitle?: string
   agentType: 'coder' | 'finder' | 'designer' | 'swarm' | 'video'
   status: 'running' | 'completed' | 'needs_review' | 'blocked' | 'queued'
+  outcomeType?: TaskOutcomeType
   workspaceTarget: string
   elapsed: string
   workerId?: string
@@ -166,6 +169,16 @@ export interface RunningTask {
   deliverables?: MediaDeliverable[]
   sessionId?: string
   createdAt?: number
+
+  // Worktree & Outcome Tracking Fields
+  workspacePath?: string
+  worktreeBranch?: string
+  unintegratedCommits?: number
+  diffSummary?: string
+  isDirty?: boolean
+  actionNeeded?: string
+  whatDidDo?: string[]
+  whatNotDone?: string[]
 }
 
 export interface VideoProgressCard {

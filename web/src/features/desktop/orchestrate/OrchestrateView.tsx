@@ -1,21 +1,24 @@
 import { useState, useMemo, useEffect, useCallback } from 'react'
 import {
   Activity,
+  ArrowLeft,
   ArrowRight,
   Bot,
   Check,
   CheckCircle2,
   ChevronDown,
-  Code,
   Columns3,
   Edit3,
+  Code,
   Film,
   Folder,
   FolderPlus,
+  GitBranch,
   Home,
   Layers,
   ListFilter,
   Maximize2,
+  MessageSquare,
   MoreHorizontal,
   Pause,
   Play,
@@ -43,6 +46,7 @@ import {
   ProjectSummary,
   RunningAutomation,
   RunningTask,
+  TaskOutcomeType,
 } from './orchestrate-types'
 
 export interface OrchestrateViewProps {
@@ -52,7 +56,7 @@ export interface OrchestrateViewProps {
 }
 
 /**
- * Thumbnail graphic renderer for the video and media deliverables
+ * Thumbnail graphic renderer for video and media deliverables
  */
 function DeliverableThumbnail({
   type,
@@ -66,7 +70,7 @@ function DeliverableThumbnail({
   return (
     <div
       onClick={onPlay}
-      className="group/thumb relative aspect-video w-full cursor-pointer overflow-hidden rounded-xl border border-slate-800/80 bg-[#090d16] shadow-inner transition-all hover:border-blue-500/40"
+      className="group/thumb relative aspect-video w-full cursor-pointer overflow-hidden rounded-lg border border-slate-800/80 bg-[#090d16] transition-all hover:border-blue-500/40"
     >
       {type === 'cyber_lattice' && (
         <div className="absolute inset-0 bg-gradient-to-br from-[#0c162d] via-[#091024] to-[#040814] flex items-center justify-center">
@@ -94,8 +98,6 @@ function DeliverableThumbnail({
             <rect x="135" y="35" width="15" height="70" fill="url(#cyber-grad)" rx="1" opacity="0.8" />
             <rect x="165" y="50" width="14" height="55" fill="url(#cyber-grad)" rx="1" opacity="0.7" />
             <circle cx="100" cy="30" r="3" fill="#60a5fa" />
-            <circle cx="63" cy="28" r="2.5" fill="#38bdf8" />
-            <circle cx="142" cy="33" r="2.5" fill="#818cf8" />
           </svg>
         </div>
       )}
@@ -107,39 +109,24 @@ function DeliverableThumbnail({
             <path d="M 100 32 L 128 48 L 100 64 L 72 48 Z" fill="#1e293b" stroke="#818cf8" strokeWidth="0.8" />
             <path d="M 72 48 L 100 64 L 100 94 L 72 78 Z" fill="#0f172a" stroke="#6366f1" strokeWidth="0.8" />
             <path d="M 128 48 L 100 64 L 100 94 L 128 78 Z" fill="#1e1b4b" stroke="#3b82f6" strokeWidth="0.8" />
-            <line x1="100" y1="32" x2="100" y2="15" stroke="#93c5fd" strokeWidth="0.8" strokeDasharray="2 2" />
-            <circle cx="100" cy="14" r="2" fill="#bfdbfe" />
           </svg>
         </div>
       )}
 
-      {type === 'orbital_data' && (
-        <div className="absolute inset-0 bg-gradient-to-b from-[#030712] via-[#081226] to-[#0d2247] flex items-center justify-center">
-          <svg className="absolute inset-0 h-full w-full opacity-80" viewBox="0 0 200 112">
-            <path d="M -20 120 Q 100 65 220 120 Z" fill="#1e3a8a" opacity="0.8" />
-            <path d="M -20 120 Q 100 64 220 120" stroke="#60a5fa" strokeWidth="1.5" fill="none" opacity="0.9" />
-            <circle cx="30" cy="20" r="0.8" fill="#fff" opacity="0.8" />
-            <circle cx="140" cy="25" r="0.8" fill="#fff" opacity="0.7" />
-            <line x1="80" y1="40" x2="120" y2="40" stroke="#38bdf8" strokeWidth="0.8" />
-            <circle cx="100" cy="40" r="3" fill="#38bdf8" />
-          </svg>
-        </div>
-      )}
-
-      {!['cyber_lattice', 'neural_core', 'orbital_data'].includes(type || '') && (
+      {type !== 'cyber_lattice' && type !== 'neural_core' && (
         <div className="absolute inset-0 bg-gradient-to-br from-slate-900 to-slate-950 flex items-center justify-center">
-          <Film size={20} className="text-slate-600" />
+          <Film size={18} className="text-slate-600" />
         </div>
       )}
 
       <div className="relative z-10 flex h-full w-full items-center justify-center">
-        <div className="flex h-9 w-9 items-center justify-center rounded-full bg-slate-900/80 text-white backdrop-blur-md border border-white/20 shadow-xl transition-transform group-hover/thumb:scale-110">
-          <Play size={13} fill="currentColor" className="ml-0.5 text-white" />
+        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-slate-900/80 text-white backdrop-blur-md border border-white/20 shadow-xl transition-transform group-hover/thumb:scale-105">
+          <Play size={12} fill="currentColor" className="ml-0.5 text-white" />
         </div>
       </div>
 
       {duration && (
-        <span className="absolute bottom-1.5 right-1.5 z-20 rounded-md bg-black/80 px-1.5 py-0.5 font-mono text-[9px] font-semibold text-slate-300 backdrop-blur-sm border border-white/10">
+        <span className="absolute bottom-1 right-1 z-20 rounded bg-black/80 px-1 py-0.5 font-mono text-[9px] font-semibold text-slate-300 backdrop-blur-sm border border-white/10">
           {duration}
         </span>
       )}
@@ -147,12 +134,269 @@ function DeliverableThumbnail({
   )
 }
 
+/**
+ * Minimal Task Card: Clean, technical, outcome-focused task card
+ * Free of highlight gradients and pill badges. Displays "Action Needed",
+ * worktree/unmerged git status, and "What did it do?" vs "What's not done yet?".
+ */
+function MinimalTaskCard({
+  task,
+  isSelected,
+  onSelect,
+  onOpenChat,
+  onIntegrate,
+  onPreviewDeliverable,
+}: {
+  task: RunningTask
+  isSelected?: boolean
+  onSelect?: () => void
+  onOpenChat?: () => void
+  onIntegrate?: () => void
+  onPreviewDeliverable?: (d: MediaDeliverable) => void
+}) {
+  const isRunning = task.status === 'running'
+  const isNeedsReview = task.status === 'needs_review'
+  const isCompleted = task.status === 'completed'
+  const hasUnintegrated = (task.unintegratedCommits ?? 0) > 0
+
+  return (
+    <div
+      onClick={onSelect}
+      className={`relative flex flex-col rounded-xl border transition-all p-3.5 space-y-3 cursor-pointer ${
+        isSelected
+          ? 'bg-[#0f1526] border-blue-500/60 shadow-[0_4px_20px_rgba(0,0,0,0.5)]'
+          : 'bg-[#0a0f1d] border-slate-800/80 hover:border-slate-700/80 hover:bg-[#0c1222]'
+      }`}
+    >
+      {/* 1. Header: Agent Tag + Title + Status + Chat Button */}
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex flex-col gap-1 min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span
+              className={`font-mono text-[9px] uppercase font-bold px-2 py-0.5 rounded border ${
+                task.agentType === 'designer' || task.agentType === 'video'
+                  ? 'bg-blue-500/10 text-blue-400 border-blue-500/25'
+                  : 'bg-indigo-500/10 text-indigo-300 border-indigo-500/25'
+              }`}
+            >
+              {task.agentType.toUpperCase()} • {task.workspacePath ? task.workspacePath.split('/').filter(Boolean).pop() : 'WORKSPACE'}
+            </span>
+            {task.outcomeType && (
+              <span className="font-mono text-[9px] uppercase px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700/50">
+                {task.outcomeType.replace('_', ' ')}
+              </span>
+            )}
+          </div>
+          <h3 className="text-xs font-bold text-white tracking-tight leading-snug truncate">
+            {task.title}
+          </h3>
+        </div>
+
+        <div className="flex items-center gap-2 flex-shrink-0">
+          <div
+            className={`font-mono text-[10px] font-bold uppercase px-2 py-0.5 rounded border flex items-center gap-1.5 ${
+              isRunning
+                ? 'bg-blue-950/40 text-blue-400 border-blue-500/40'
+                : isNeedsReview
+                ? 'bg-amber-950/40 text-amber-300 border-amber-500/40'
+                : isCompleted
+                ? 'bg-emerald-950/40 text-emerald-300 border-emerald-500/40'
+                : 'bg-slate-800 text-slate-400 border-slate-700'
+            }`}
+          >
+            <span
+              className={`h-1.5 w-1.5 rounded-sm ${
+                isRunning
+                  ? 'bg-blue-400 animate-pulse'
+                  : isNeedsReview
+                  ? 'bg-amber-400'
+                  : isCompleted
+                  ? 'bg-emerald-400'
+                  : 'bg-slate-500'
+              }`}
+            />
+            <span>{task.status.replace('_', ' ')}</span>
+          </div>
+
+          <span className="font-mono text-[10px] text-slate-500">{task.elapsed}</span>
+
+          {task.sessionId && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation()
+                onOpenChat?.()
+              }}
+              className="flex items-center gap-1 px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-[10px] font-medium transition-colors border border-slate-700/60"
+              title="Open session chat with this worker"
+            >
+              <MessageSquare size={11} />
+              <span>Chat</span>
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* 2. Action Needed Banner (if unintegrated or action needed) */}
+      {(task.actionNeeded || hasUnintegrated) && (
+        <div className="flex items-center justify-between p-2 rounded-lg bg-amber-950/20 border border-amber-500/30 text-amber-200 text-[11px] gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="font-bold text-amber-400 flex-shrink-0">Action:</span>
+            <span className="truncate">
+              {task.actionNeeded || `${task.unintegratedCommits} unintegrated commit(s) ready to land.`}
+            </span>
+          </div>
+          {hasUnintegrated && onIntegrate && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation()
+                onIntegrate()
+              }}
+              className="flex-shrink-0 px-2.5 py-0.5 rounded bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-[10px] transition-colors"
+            >
+              Integrate into dev
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* 3. Worktree & Git Status Bar */}
+      {(task.worktreeBranch || task.diffSummary || hasUnintegrated) && (
+        <div className="flex items-center justify-between p-2 rounded-lg bg-[#070b14] border border-slate-800/80 text-[10px] font-mono text-slate-400">
+          <div className="flex items-center gap-2 truncate">
+            <span className="text-indigo-400 flex items-center gap-1">
+              <GitBranch size={10} />
+              <span>{task.worktreeBranch || 'agent/worktree'}</span>
+            </span>
+            {task.diffSummary && <span>• {task.diffSummary}</span>}
+          </div>
+          <div className="flex items-center gap-2 flex-shrink-0">
+            <span className={hasUnintegrated ? 'text-amber-400 font-semibold' : 'text-slate-500'}>
+              {hasUnintegrated ? `${task.unintegratedCommits} unmerged commit(s)` : 'up-to-date'}
+            </span>
+            <span>•</span>
+            <span className={task.isDirty ? 'text-amber-400' : 'text-emerald-400'}>
+              {task.isDirty ? 'modified' : 'clean'}
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* 4. Two-Column Ledger: "What did it do?" vs "What's not done yet?" */}
+      {((task.whatDidDo && task.whatDidDo.length > 0) || (task.whatNotDone && task.whatNotDone.length > 0)) && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-[11px] p-2 rounded-lg bg-[#070b14]/70 border border-slate-800/60">
+          <div className="space-y-1">
+            <span className="font-mono text-[9px] uppercase font-bold text-slate-500 block">
+              What did it do?
+            </span>
+            {(task.whatDidDo && task.whatDidDo.length > 0
+              ? task.whatDidDo
+              : ['Verified scope and authored changes']
+            ).map((item, idx) => (
+              <div key={idx} className="flex items-start gap-1.5 text-slate-300 leading-tight">
+                <span className="text-emerald-400 font-bold">✓</span>
+                <span className="truncate">{item}</span>
+              </div>
+            ))}
+          </div>
+          <div className="space-y-1">
+            <span className="font-mono text-[9px] uppercase font-bold text-slate-500 block">
+              What's not done yet?
+            </span>
+            {(task.whatNotDone && task.whatNotDone.length > 0
+              ? task.whatNotDone
+              : ['Awaiting code review and merge']
+            ).map((item, idx) => (
+              <div key={idx} className="flex items-start gap-1.5 text-slate-400 leading-tight">
+                <span className="text-amber-400">⋯</span>
+                <span className="truncate">{item}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* 5. Expected Deliverables Slot Rendering */}
+      {task.deliverables && task.deliverables.length > 0 && (
+        <div className="space-y-1.5">
+          <div className="flex items-center justify-between text-[10px] font-semibold text-slate-500">
+            <span className="uppercase font-mono tracking-wider">
+              Deliverables ({task.deliverables.length})
+            </span>
+            <span className="font-mono text-[9px]">Contract: {task.outcomeType || 'media'}</span>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+            {task.deliverables.map((d) => (
+              <div
+                key={d.id}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onPreviewDeliverable?.(d)
+                }}
+                className="p-2 rounded-lg border border-slate-800 bg-[#070b14] hover:border-blue-500/40 cursor-pointer space-y-1 transition-colors"
+              >
+                <div className="text-[11px] font-semibold text-white truncate">{d.title}</div>
+                <div className="flex items-center justify-between text-[9px] text-blue-400 font-mono">
+                  <span>{d.type}</span>
+                  <span className="text-slate-400">{d.status}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* 6. Pipeline Stepper & Footer */}
+      <div className="flex items-center justify-between pt-1 border-t border-slate-800/60 text-[10px] font-mono text-slate-500">
+        <div className="flex items-center gap-1.5 truncate">
+          {task.stepTimeline?.map((st, idx) => (
+            <span
+              key={st.step}
+              className={`flex items-center gap-1 ${
+                st.status === 'complete'
+                  ? 'text-emerald-400'
+                  : st.status === 'processing'
+                  ? 'text-blue-400 font-bold'
+                  : 'text-slate-600'
+              }`}
+            >
+              {idx > 0 && <span className="text-slate-700">→</span>}
+              <span>{st.label}</span>
+            </span>
+          ))}
+        </div>
+
+        {task.sessionId && (
+          <span
+            onClick={(e) => {
+              e.stopPropagation()
+              onOpenChat?.()
+            }}
+            className="text-blue-400 hover:text-blue-300 hover:underline cursor-pointer flex-shrink-0"
+          >
+            sess_{task.sessionId.slice(0, 8)}
+          </span>
+        )}
+      </div>
+    </div>
+  )
+}
+
+/**
+ * Right AI Chat Panel: Supports switching between Executive Project Orchestrator
+ * and individual Task Worker sessions with a back-button navigation bar.
+ */
 function OrchestratorChatSidebar({
   sessionId,
   project,
+  activeTask,
+  onBackToOrchestrator,
 }: {
   sessionId: string
   project?: ProjectSummary
+  activeTask?: RunningTask
+  onBackToOrchestrator?: () => void
 }) {
   const [error, setError] = useState(false)
   const [attempt, setAttempt] = useState(0)
@@ -201,9 +445,45 @@ function OrchestratorChatSidebar({
         '--app-border-muted': 'rgba(255, 255, 255, 0.05)',
       } as React.CSSProperties}
     >
+      {/* Top Header: Task Navigation vs Orchestrator Header */}
+      {activeTask ? (
+        <div className="flex items-center justify-between p-3 border-b border-slate-800 bg-[#0a0f1d] text-xs">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <button
+              onClick={onBackToOrchestrator}
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold transition-colors border border-slate-700"
+              title="Return to Executive Project Orchestrator"
+            >
+              <ArrowLeft size={12} />
+              <span>Orchestrator</span>
+            </button>
+            <div className="flex flex-col min-w-0">
+              <span className="font-bold text-white truncate">{activeTask.title}</span>
+              <span className="text-[10px] text-slate-400 font-mono">
+                {activeTask.workerName || '@Worker'} • {activeTask.status} • {activeTask.elapsed}
+              </span>
+            </div>
+          </div>
+          <span className="text-[9px] font-mono uppercase px-2 py-0.5 rounded bg-blue-500/10 text-blue-400 border border-blue-500/20 font-bold">
+            {activeTask.agentType}
+          </span>
+        </div>
+      ) : (
+        <div className="flex items-center justify-between p-3 border-b border-slate-800 bg-[#0a0f1d] text-xs">
+          <div className="flex items-center gap-2">
+            <div className="h-2 w-2 rounded-full bg-emerald-400" />
+            <span className="font-bold text-white">Project Orchestrator</span>
+            <span className="text-[10px] text-slate-400 font-mono">({project?.name})</span>
+          </div>
+          <span className="text-[9px] font-mono uppercase px-2 py-0.5 rounded bg-slate-800 text-slate-300 font-bold">
+            Executive
+          </span>
+        </div>
+      )}
+
       {error && (
         <div className="flex items-center justify-between p-3 bg-red-950/40 border-b border-red-500/30 text-xs text-red-200">
-          <span>Failed to load orchestrator session.</span>
+          <span>Failed to load session.</span>
           <button
             onClick={() => setAttempt((a) => a + 1)}
             className="px-2 py-0.5 rounded bg-red-800 text-white font-medium hover:bg-red-700"
@@ -212,6 +492,7 @@ function OrchestratorChatSidebar({
           </button>
         </div>
       )}
+
       <DesktopV3ExistingConversationPane
         presentation="sidebar"
         sessionId={sessionId}
@@ -220,7 +501,14 @@ function OrchestratorChatSidebar({
         messagesLoaded={ready}
         loadedMessageCount={count}
         contextChip={
-          project
+          activeTask
+            ? {
+                id: activeTask.id,
+                label: activeTask.title,
+                kind: 'task',
+                description: `Task Session (${activeTask.agentType}) for ${activeTask.title}`,
+              }
+            : project
             ? {
                 id: project.id,
                 label: project.name,
@@ -232,6 +520,7 @@ function OrchestratorChatSidebar({
         metadata={{
           orchestrate_view: true,
           ...(project ? { project_id: project.id } : {}),
+          ...(activeTask ? { task_id: activeTask.id } : {}),
         }}
       />
     </aside>
@@ -253,10 +542,10 @@ export function OrchestrateView({
     email: 'local operator',
   })
 
-  // Projects State - empty initially until loaded from Pebble
+  // Projects State
   const [projects, setProjects] = useState<ProjectSummary[]>([])
   const [selectedProjectId, setSelectedProjectId] = useState<string>('')
-  const [_isLoadingProjects, setIsLoadingProjects] = useState<boolean>(true)
+  const [, setIsLoadingProjects] = useState<boolean>(true)
   const selectedProject = projects.find((p) => p.id === selectedProjectId) ?? projects[0]
 
   // Project Onboarding & Creation State
@@ -270,12 +559,15 @@ export function OrchestrateView({
   const [isActivating, setIsActivating] = useState(false)
   const [onboardingContext, setOnboardingContext] = useState('')
 
-  // Live Pebble V3 cache state for real-time orchestrator sessions and tasks
+  // Live Pebble V3 cache state
   const sessionsById = useDesktopV3CacheSelector((s) => s.sessionsById)
   const plansBySession = useDesktopV3CacheSelector((s) => s.plansBySession)
-  const [activeSessionId, setActiveSessionId] = useState<string>('')
 
-  // Tasks State - empty initially until loaded from /v3/projects/{id}/tasks
+  // Active Chat Session state (can be executive orchestrator OR a task session)
+  const [activeSessionId, setActiveSessionId] = useState<string>('')
+  const [activeTaskId, setActiveTaskId] = useState<string | null>(null)
+
+  // Tasks State
   const [tasks, setTasks] = useState<RunningTask[]>([])
   const [automations, setAutomations] = useState<RunningAutomation[]>([])
 
@@ -299,6 +591,7 @@ export function OrchestrateView({
   const [isMuted, setIsMuted] = useState(false)
   const [isFullscreen, setIsFullscreen] = useState(false)
 
+  // Navigation tab state
   const [activeNavTab, setActiveNavTab] = useState<'home' | 'projects' | 'automations' | 'deliverables' | 'settings'>('home')
 
   // Deploy Task Modal State
@@ -307,7 +600,11 @@ export function OrchestrateView({
   const [newTaskPrompt, setNewTaskPrompt] = useState('')
   const [newTaskAgent, setNewTaskAgent] = useState<'coder' | 'finder' | 'designer' | 'video'>('coder')
   const [newTaskWorkspace, setNewTaskWorkspace] = useState('')
+  const [newTaskOutcome, setNewTaskOutcome] = useState<TaskOutcomeType>('code_pr')
   const [isDeployingTask, setIsDeployingTask] = useState(false)
+
+  // Active task object derived from activeTaskId
+  const activeTask = useMemo(() => tasks.find((t) => t.id === activeTaskId), [tasks, activeTaskId])
 
   // 1. Fetch User Auth, Workspaces, Automations, and Projects on mount
   useEffect(() => {
@@ -328,19 +625,16 @@ export function OrchestrateView({
       } catch {}
 
       // 2. Discover Registered Workspaces
-      let detectedWorkspaces: Array<{ path: string; label: string; role: 'primary_code' | 'auxiliary'; selected: boolean }> = []
       try {
         const wsRes = await requestJson<{ workspaces?: Array<{ path: string; name?: string; id?: string }> }>('/v1/workspace/list?limit=200')
-        if (wsRes?.workspaces && wsRes.workspaces.length > 0) {
-          detectedWorkspaces = wsRes.workspaces.map((w, idx) => ({
+        if (wsRes?.workspaces && wsRes.workspaces.length > 0 && !cancelled) {
+          const detected = wsRes.workspaces.map((w, idx) => ({
             path: w.path,
             label: w.name || w.path.split('/').filter(Boolean).pop() || 'Workspace',
             role: (idx === 0 ? 'primary_code' : 'auxiliary') as 'primary_code' | 'auxiliary',
             selected: true,
           }))
-          if (!cancelled) {
-            setOnboardingWorkspaces(detectedWorkspaces)
-          }
+          setOnboardingWorkspaces(detected)
         }
       } catch {}
 
@@ -390,7 +684,6 @@ export function OrchestrateView({
           }
           fetchProjectTasks(loaded[0].id)
         } else {
-          // No projects in Pebble. Do not auto-create projects without user action.
           if (!cancelled) {
             setProjects([])
             setSelectedProjectId('')
@@ -408,7 +701,6 @@ export function OrchestrateView({
     }
 
     void bootstrap()
-
     return () => {
       cancelled = true
     }
@@ -425,7 +717,16 @@ export function OrchestrateView({
           subtitle: t.description || `Autonomous execution unit for ${t.agent || 'coder'}`,
           agentType: (t.agent === 'designer' || t.agent === 'finder' || t.agent === 'video' ? t.agent : 'coder') as any,
           status: (t.status === 'in_progress' ? 'running' : t.status) || 'queued',
+          outcomeType: t.outcome_type,
           workspaceTarget: t.workspace_path || t.project_id,
+          workspacePath: t.workspace_path,
+          worktreeBranch: t.worktree_branch,
+          unintegratedCommits: t.unintegrated_commits ?? 0,
+          diffSummary: t.diff_summary ?? '',
+          isDirty: !!t.is_dirty,
+          actionNeeded: t.action_needed,
+          whatDidDo: t.what_did_do,
+          whatNotDone: t.what_not_done,
           elapsed: t.created_at ? `${Math.max(1, Math.round((Date.now() - t.created_at) / 60000))}m` : 'Just now',
           workerName: t.worker_name || `@${t.agent || 'Coder'} Worker`,
           priority: 'high',
@@ -473,10 +774,7 @@ export function OrchestrateView({
     try {
       const sessRes = await requestJson<{ session: { id: string } }>('/v3/sessions', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Idempotency-Key': clientRequestId,
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           client_request_id: clientRequestId,
           title: `Project Orchestrator: ${project.name}`,
@@ -506,8 +804,8 @@ export function OrchestrateView({
         )
         return sid
       }
-    } catch (err) {
-      console.warn('Failed to spawn orchestrator session:', err)
+    } catch (e) {
+      console.warn('Failed to ensure orchestrator session:', e)
     }
     return null
   }, [])
@@ -515,15 +813,25 @@ export function OrchestrateView({
   // Synchronize active orchestrator session and project tasks with selected project
   useEffect(() => {
     if (!selectedProject || isOnboardingActive) return
-
     fetchProjectTasks(selectedProject.id)
-
-    if (selectedProject.primarySessionId) {
-      setActiveSessionId(selectedProject.primarySessionId)
-    } else {
-      void ensureOrchestratorSession(selectedProject)
-    }
+    void ensureOrchestratorSession(selectedProject)
   }, [selectedProject?.id, isOnboardingActive, fetchProjectTasks, ensureOrchestratorSession])
+
+  // Task selection & Per-Task Session Switching
+  const handleSelectTask = (task: RunningTask) => {
+    setSelectedTaskId(task.id)
+    if (task.sessionId) {
+      setActiveSessionId(task.sessionId)
+      setActiveTaskId(task.id)
+    }
+  }
+
+  const handleBackToOrchestrator = () => {
+    setActiveTaskId(null)
+    if (selectedProject?.primarySessionId) {
+      setActiveSessionId(selectedProject.primarySessionId)
+    }
+  }
 
   // Derive real active workers from V3 sessions
   const deployedWorkers = useMemo<DeployedWorker[]>(() => {
@@ -533,7 +841,7 @@ export function OrchestrateView({
       if (rec.kind !== 'full' || !rec.session) continue
       const sess = rec.session
       const isActive = !!(sess.lifecycle as any)?.active
-      const agent = (sess as any).agent_name || (sess as any).agent?.name || 'swarm'
+      const agent = (sess as any).agent_name || (sess as any).agent || 'swarm'
       if (isActive || agent !== 'swarm' || (sess.message_count ?? 0) > 1) {
         list.push({
           id: sess.id,
@@ -559,9 +867,11 @@ export function OrchestrateView({
     workerName: string = '@Coder Worker',
     prompt?: string,
     pipelineStages?: string[],
-    workspacePath?: string
+    workspacePath?: string,
+    outcomeType?: TaskOutcomeType
   ) => {
     if (!selectedProject?.id) return
+    const branchName = `agent/${title.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 32)}`
     try {
       const res = await requestJson<{ task: any }>(`/v3/projects/${selectedProject.id}/tasks`, {
         method: 'POST',
@@ -570,7 +880,9 @@ export function OrchestrateView({
           title: title.trim(),
           agent,
           worker_name: workerName,
+          outcome_type: outcomeType || (agent === 'designer' || agent === 'video' ? 'media_bundle' : 'code_pr'),
           workspace_path: workspacePath || selectedProject.repoPath || '.',
+          worktree_branch: branchName,
           pipeline_stages: pipelineStages || ['Inspect', 'Implement', 'Verify', 'Review'],
           deploy_session: true,
           prompt: prompt || title,
@@ -594,13 +906,27 @@ export function OrchestrateView({
         `@${newTaskAgent.charAt(0).toUpperCase() + newTaskAgent.slice(1)} Worker`,
         newTaskPrompt.trim() || newTaskTitle.trim(),
         ['Inspect', 'Implement', 'Verify', 'Review'],
-        newTaskWorkspace || selectedProject.repoPath
+        newTaskWorkspace || selectedProject.repoPath,
+        newTaskOutcome
       )
       setIsDeployModalOpen(false)
       setNewTaskTitle('')
       setNewTaskPrompt('')
     } finally {
       setIsDeployingTask(false)
+    }
+  }
+
+  // Integrate / Promote task commits into target branch
+  const handleIntegrateTask = async (taskId: string) => {
+    if (!selectedProject?.id) return
+    try {
+      await requestJson(`/v3/projects/${selectedProject.id}/tasks/${taskId}/integrate`, {
+        method: 'POST',
+      })
+      fetchProjectTasks(selectedProject.id)
+    } catch (err) {
+      console.warn('Integrate task failed:', err)
     }
   }
 
@@ -672,25 +998,29 @@ export function OrchestrateView({
     )
   }
 
-
-
   const handleDeleteProject = async (projectId: string, e?: React.MouseEvent) => {
     e?.stopPropagation()
     try {
       await requestJson(`/v3/projects/${projectId}`, { method: 'DELETE' })
-      setProjects((prev) => prev.filter((p) => p.id !== projectId))
-      if (selectedProjectId === projectId) {
-        const remaining = projects.filter((p) => p.id !== projectId)
-        if (remaining.length > 0) {
-          setSelectedProjectId(remaining[0].id)
-        } else {
-          setSelectedProjectId('')
-          setActiveSessionId('')
-          setIsOnboardingActive(true)
+      setProjects((prev) => {
+        const next = prev.filter((p) => p.id !== projectId)
+        if (selectedProjectId === projectId) {
+          if (next.length > 0) {
+            setSelectedProjectId(next[0].id)
+            if (next[0].primarySessionId) {
+              setActiveSessionId(next[0].primarySessionId)
+            }
+            fetchProjectTasks(next[0].id)
+          } else {
+            setSelectedProjectId('')
+            setActiveSessionId('')
+            setIsOnboardingActive(true)
+          }
         }
-      }
+        return next
+      })
     } catch (err) {
-      console.warn('Failed to delete project:', err)
+      console.warn('Delete project failed:', err)
     }
   }
 
@@ -745,9 +1075,9 @@ ${onboardingDescription.trim() || 'Multi-workspace software initiative managed b
 ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
 
 ## Operational Directives
-- Local-first operation; session records persist to Pebble database.
-- Subagents (Coder/Designer/Finder) execute inside isolated Git worktrees.
-- Strict tool isolation: raw multimedia and environment tools excluded from executive orchestrator prompt.
+- Local-first architecture; session records persist to Pebble database.
+- Subagents execute inside isolated Git worktrees.
+- Autonomous project tasks deliver verified outcomes (code_pr, media_bundle, bug_patch, audit_report).
 - Verification gate: all pull requests and deliverables require review before promotion.
 `
       setOnboardingContext(synthesized)
@@ -785,16 +1115,13 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
       console.warn('Backend /v3/projects save failed:', err)
     }
 
-    // Spawn primary orchestrator session
+    // Spawn primary orchestrator session with valid client_request_id and model preference
     let orchSessionId = ''
     const clientRequestId = `desktop-v3-create:${crypto.randomUUID()}`
     try {
       const sessRes = await requestJson<{ session: { id: string } }>('/v3/sessions', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Idempotency-Key': clientRequestId,
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           client_request_id: clientRequestId,
           title: `Project Orchestrator: ${payload.name}`,
@@ -843,6 +1170,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
     setSelectedProjectId(newProject.id)
     if (orchSessionId) {
       setActiveSessionId(orchSessionId)
+      setActiveTaskId(null)
     }
     setIsOnboardingActive(false)
     setIsActivating(false)
@@ -873,7 +1201,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
               </div>
               <div>
                 <div className="text-xs font-bold tracking-tight text-white">Swarm Orchestrate</div>
-                <div className="text-[10px] text-slate-400">Autonomous Multi-Agent System</div>
+                <div className="text-[10px] text-slate-400">Autonomous Project Coordination</div>
               </div>
             </div>
 
@@ -1011,6 +1339,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                   onClick={() => {
                     setSelectedProjectId(proj.id)
                     setIsOnboardingActive(false)
+                    setActiveTaskId(null)
                   }}
                   className={`group flex items-center justify-between p-2 text-left rounded-xl transition-all cursor-pointer ${
                     isSelected
@@ -1313,6 +1642,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                   onClick={() => {
                     setSelectedProjectId(p.id)
                     setActiveNavTab('home')
+                    setActiveTaskId(null)
                   }}
                   className={`p-4 rounded-2xl border transition-all cursor-pointer ${
                     p.id === selectedProjectId
@@ -1330,10 +1660,9 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                         {p.branch || 'dev'}
                       </span>
                       <button
-                        type="button"
                         onClick={(e) => handleDeleteProject(p.id, e)}
-                        className="opacity-0 group-hover:opacity-100 p-1 text-slate-400 hover:text-rose-400 rounded-md hover:bg-rose-500/10 transition-all"
-                        title="Delete Project"
+                        className="text-slate-500 hover:text-rose-400 p-1 rounded transition-colors"
+                        title="Delete project"
                       >
                         <Trash2 size={13} />
                       </button>
@@ -1441,9 +1770,8 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
               <div className="flex items-center gap-2">
                 {selectedProject && (
                   <button
-                    type="button"
-                    onClick={() => handleDeleteProject(selectedProject.id)}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-600/10 hover:bg-rose-600/20 text-rose-400 border border-rose-500/30 text-xs font-semibold transition-all"
+                    onClick={(e) => handleDeleteProject(selectedProject.id, e)}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-600/20 hover:bg-rose-600/30 text-rose-400 border border-rose-500/30 text-xs font-semibold transition-all"
                   >
                     <Trash2 size={12} />
                     <span>Delete Project</span>
@@ -1452,41 +1780,41 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                 <button
                   type="button"
                   onClick={() => {
-                  if (selectedProject?.linkedWorkspaces) {
-                    setIsSynthesizing(true)
-                    requestJson<{ project_context: string }>('/v3/projects/synthesize-context', {
-                      method: 'POST',
-                      headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({
-                        name: selectedProject.name,
-                        workspaces: selectedProject.linkedWorkspaces,
-                      }),
-                    })
-                      .then((res) => {
-                        if (res?.project_context) {
-                          requestJson(`/v3/projects/${selectedProject.id}`, {
-                            method: 'PATCH',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ project_context: res.project_context }),
-                          }).then(() => {
-                            setProjects((prev) =>
-                              prev.map((p) => (p.id === selectedProject.id ? { ...p, projectContext: res.project_context } : p))
-                            )
-                          })
-                        }
+                    if (selectedProject?.linkedWorkspaces) {
+                      setIsSynthesizing(true)
+                      requestJson<{ project_context: string }>('/v3/projects/synthesize-context', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                          name: selectedProject.name,
+                          workspaces: selectedProject.linkedWorkspaces,
+                        }),
                       })
-                      .finally(() => setIsSynthesizing(false))
-                  }
-                }}
-                disabled={isSynthesizing}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-blue-600/20 hover:bg-blue-600/30 text-blue-400 border border-blue-500/30 text-xs font-semibold transition-all disabled:opacity-50"
-              >
-                <RefreshCw size={12} className={isSynthesizing ? 'animate-spin' : ''} />
-                <span>{isSynthesizing ? 'Synthesizing...' : 'Re-synthesize Context'}</span>
-              </button>
+                        .then((res) => {
+                          if (res?.project_context) {
+                            requestJson(`/v3/projects/${selectedProject.id}`, {
+                              method: 'PATCH',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ project_context: res.project_context }),
+                            }).then(() => {
+                              setProjects((prev) =>
+                                prev.map((p) => (p.id === selectedProject.id ? { ...p, projectContext: res.project_context } : p))
+                              )
+                            })
+                          }
+                        })
+                        .finally(() => setIsSynthesizing(false))
+                    }
+                  }}
+                  disabled={isSynthesizing}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-blue-600/20 hover:bg-blue-600/30 text-blue-400 border border-blue-500/30 text-xs font-semibold transition-all disabled:opacity-50"
+                >
+                  <RefreshCw size={12} className={isSynthesizing ? 'animate-spin' : ''} />
+                  <span>{isSynthesizing ? 'Synthesizing...' : 'Re-synthesize Context'}</span>
+                </button>
+              </div>
             </div>
-          </div>
-          <div className="rounded-2xl border border-slate-800 bg-slate-950 p-4">
+            <div className="rounded-2xl border border-slate-800 bg-slate-950 p-4">
               <pre className="font-mono text-xs text-slate-300 whitespace-pre-wrap leading-relaxed overflow-x-auto">
                 {selectedProject?.projectContext || 'No synthesized context available. Click "Re-synthesize Context" to scan bound repositories.'}
               </pre>
@@ -1502,14 +1830,14 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                   <div>
                     <div className="flex items-center gap-2">
                       <h1 className="text-base font-bold tracking-tight text-white">
-                        {selectedProject?.name || 'Automation Overview'}
+                        {selectedProject?.name || 'Project Overview'}
                       </h1>
-                      <span className="rounded-full bg-blue-500/10 border border-blue-500/30 px-2 py-0.5 text-[10px] font-semibold text-blue-400">
+                      <span className="rounded bg-blue-500/10 border border-blue-500/30 px-2 py-0.5 text-[10px] font-semibold text-blue-400 font-mono">
                         {liveTasks.length} {liveTasks.length === 1 ? 'Task' : 'Tasks'}
                       </span>
                     </div>
                     <p className="text-[11px] text-slate-400 mt-0.5">
-                      Autonomous workers executing jobs across {selectedProject?.name || 'workspace'}
+                      Autonomous worker sessions executing across {selectedProject?.name || 'workspace'}
                     </p>
                   </div>
                 </div>
@@ -1518,7 +1846,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                 <div className="flex items-center gap-2">
                   <button
                     onClick={() => setIsDeployModalOpen(true)}
-                    className="flex items-center gap-1.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-medium text-xs px-3 py-1.5 shadow-[0_2px_10px_rgba(37,99,235,0.3)] transition-all active:scale-95"
+                    className="flex items-center gap-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-medium text-xs px-3 py-1.5 shadow-[0_2px_10px_rgba(37,99,235,0.3)] transition-all active:scale-95"
                   >
                     <Plus size={13} />
                     <span>+ Deploy Task</span>
@@ -1530,10 +1858,12 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                         'coder',
                         '@Code Verifier',
                         'Run critical test gate and inspect testbench health',
-                        ['Inspect', 'Execute', 'Analyze', 'Review']
+                        ['Inspect', 'Execute', 'Analyze', 'Review'],
+                        selectedProject?.repoPath,
+                        'code_pr'
                       )
                     }
-                    className="flex items-center gap-1.5 rounded-xl bg-slate-800/80 hover:bg-slate-700/80 border border-slate-700/70 text-slate-200 text-xs px-3 py-1.5 transition-all active:scale-95"
+                    className="flex items-center gap-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs px-3 py-1.5 transition-all active:scale-95"
                   >
                     <Play size={11} fill="currentColor" />
                     <span>Run Testbench</span>
@@ -1547,15 +1877,14 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                   <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 mr-1">
                     Canvas View:
                   </span>
-                  <div className="flex items-center gap-1 rounded-xl bg-[#080c16] p-1 border border-slate-800">
+                  <div className="flex items-center gap-1 rounded-lg bg-[#080c16] p-1 border border-slate-800">
                     <button
                       onClick={() => setMiddleVariant('matrix')}
-                      className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-medium transition-all ${
+                      className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-[11px] font-medium transition-all ${
                         middleVariant === 'matrix'
                           ? 'bg-blue-600/20 text-blue-400 border border-blue-500/30 font-semibold shadow-sm'
                           : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'
                       }`}
-                      title="Compact Matrix: Dense table view with expandable drawers"
                     >
                       <ListFilter size={12} />
                       <span>1. Compact Matrix</span>
@@ -1563,12 +1892,11 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
 
                     <button
                       onClick={() => setMiddleVariant('kanban')}
-                      className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-medium transition-all ${
+                      className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-[11px] font-medium transition-all ${
                         middleVariant === 'kanban'
                           ? 'bg-blue-600/20 text-blue-400 border border-blue-500/30 font-semibold shadow-sm'
                           : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'
                       }`}
-                      title="Pipeline Kanban: Stage workflow by task status"
                     >
                       <Columns3 size={12} />
                       <span>2. Pipeline Kanban</span>
@@ -1576,12 +1904,11 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
 
                     <button
                       onClick={() => setMiddleVariant('fleet')}
-                      className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-medium transition-all ${
+                      className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-[11px] font-medium transition-all ${
                         middleVariant === 'fleet'
                           ? 'bg-blue-600/20 text-blue-400 border border-blue-500/30 font-semibold shadow-sm'
                           : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'
                       }`}
-                      title="Worker Fleet: Active agent sessions and their jobs"
                     >
                       <Bot size={12} />
                       <span>3. Worker Fleet</span>
@@ -1589,12 +1916,11 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
 
                     <button
                       onClick={() => setMiddleVariant('split')}
-                      className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-medium transition-all ${
+                      className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-[11px] font-medium transition-all ${
                         middleVariant === 'split'
                           ? 'bg-blue-600/20 text-blue-400 border border-blue-500/30 font-semibold shadow-sm'
                           : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'
                       }`}
-                      title="Split Studio: Master list on left, live inspector on right"
                     >
                       <Layers size={12} />
                       <span>4. Split Studio</span>
@@ -1602,12 +1928,11 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
 
                     <button
                       onClick={() => setMiddleVariant('timeline')}
-                      className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-medium transition-all ${
+                      className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-[11px] font-medium transition-all ${
                         middleVariant === 'timeline'
                           ? 'bg-blue-600/20 text-blue-400 border border-blue-500/30 font-semibold shadow-sm'
                           : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'
                       }`}
-                      title="Timeline Stream: Chronological progress & history"
                     >
                       <Activity size={12} />
                       <span>5. Timeline Stream</span>
@@ -1628,7 +1953,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
             {/* STATUS / AUTOMATION TICKER */}
             <div className="px-4 py-2 border-b border-slate-800/80 bg-[#080d19]/80 flex items-center justify-between gap-4 text-xs">
               <div className="flex items-center gap-2.5 min-w-0">
-                <span className="flex h-2 w-2 rounded-full bg-emerald-400 flex-shrink-0" />
+                <span className="flex h-2 w-2 rounded-sm bg-emerald-400 flex-shrink-0" />
                 <div className="flex items-center gap-2 min-w-0">
                   <span className="font-semibold text-white truncate text-[11px]">
                     {selectedProject?.name || 'Project Orchestrator'}
@@ -1648,7 +1973,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
             {/* MAIN BODY: 5 DISTINCT VARIANTS */}
             <div className="flex-1 overflow-hidden flex flex-col">
               {/* ─────────────────────────────────────────────────────────────
-                  VARIANT 1: COMPACT MATRIX & DRAWER
+                  VARIANT 1: COMPACT MATRIX & EXPANDABLE DRAWER
                  ───────────────────────────────────────────────────────────── */}
               {middleVariant === 'matrix' && (
                 <div className="flex-1 flex flex-col overflow-hidden p-3.5 space-y-3">
@@ -1661,7 +1986,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                         value={searchQuery}
                         onChange={(e) => setSearchQuery(e.target.value)}
                         placeholder="Search tasks by title, worker, or tag..."
-                        className="w-full bg-[#080c16] border border-slate-800 rounded-xl pl-8 pr-3 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500/40"
+                        className="w-full bg-[#080c16] border border-slate-800 rounded-lg pl-8 pr-3 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500/40"
                       />
                     </div>
 
@@ -1670,7 +1995,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                         <button
                           key={st}
                           onClick={() => setStatusFilter(st)}
-                          className={`px-2.5 py-1 rounded-lg text-[10px] font-semibold uppercase tracking-wider transition-all ${
+                          className={`px-2.5 py-1 rounded text-[10px] font-semibold uppercase tracking-wider transition-all ${
                             statusFilter === st
                               ? 'bg-slate-700 text-white shadow-sm'
                               : 'bg-slate-800/60 text-slate-400 hover:text-slate-200'
@@ -1691,7 +2016,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                   </div>
 
                   {/* Task rows */}
-                  <div className="flex-1 overflow-y-auto space-y-1.5 pr-1">
+                  <div className="flex-1 overflow-y-auto space-y-2 pr-1">
                     {filteredTasks.length > 0 ? (
                       filteredTasks.map((t) => {
                         const isExpanded = expandedTaskId === t.id
@@ -1702,11 +2027,11 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                           >
                             <div
                               onClick={() => setExpandedTaskId(isExpanded ? null : t.id)}
-                              className="flex items-center justify-between p-2.5 cursor-pointer hover:bg-white/[0.02]"
+                              className="flex items-center justify-between p-3 cursor-pointer hover:bg-white/[0.02]"
                             >
                               <div className="flex items-center gap-2.5 min-w-0 flex-1">
                                 <span
-                                  className={`h-2 w-2 rounded-full flex-shrink-0 ${
+                                  className={`h-2 w-2 rounded-sm flex-shrink-0 ${
                                     t.status === 'running'
                                       ? 'bg-blue-400 animate-pulse'
                                       : t.status === 'needs_review'
@@ -1717,17 +2042,36 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                                   }`}
                                 />
                                 <span className="font-mono text-[10px] text-slate-500 w-16">{t.id.slice(0, 8)}</span>
-                                <span className="text-xs font-semibold text-slate-200 truncate">{t.title}</span>
-                                <span className="text-[10px] text-slate-400 truncate hidden md:inline">
-                                  {t.subtitle}
-                                </span>
+                                <span className="text-xs font-bold text-slate-200 truncate">{t.title}</span>
+                                {t.outcomeType && (
+                                  <span className="font-mono text-[9px] uppercase px-1.5 py-0.5 rounded bg-slate-800 text-slate-400">
+                                    {t.outcomeType.replace('_', ' ')}
+                                  </span>
+                                )}
                               </div>
 
                               <div className="flex items-center gap-3 flex-shrink-0">
+                                {(t.unintegratedCommits ?? 0) > 0 && (
+                                  <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-amber-950/40 text-amber-300 border border-amber-500/30">
+                                    {t.unintegratedCommits} unmerged
+                                  </span>
+                                )}
                                 <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-300">
                                   {t.workerName}
                                 </span>
                                 <span className="text-[10px] text-slate-500 font-mono">{t.elapsed}</span>
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    handleSelectTask(t)
+                                  }}
+                                  className="flex items-center gap-1 px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-[10px] font-medium"
+                                  title="Open Chat"
+                                >
+                                  <MessageSquare size={11} />
+                                  <span>Chat</span>
+                                </button>
                                 <ChevronDown
                                   size={13}
                                   className={`text-slate-400 transition-transform ${isExpanded ? 'rotate-180' : ''}`}
@@ -1737,60 +2081,22 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
 
                             {/* Drawer Content */}
                             {isExpanded && (
-                              <div className="p-3 border-t border-slate-800/60 bg-[#070b14] space-y-3 text-xs">
-                                <div className="flex items-center justify-between">
-                                  <div className="text-slate-400 font-medium">Pipeline Execution Progress</div>
-                                  {t.sessionId && (
-                                    <span className="font-mono text-[10px] text-blue-400">
-                                      Session: {t.sessionId.slice(0, 12)}...
-                                    </span>
-                                  )}
-                                </div>
-                                <div className="grid grid-cols-4 gap-2">
-                                  {t.stepTimeline?.map((st) => (
-                                    <div
-                                      key={st.step}
-                                      className={`p-2 rounded-xl border text-[11px] ${
-                                        st.status === 'complete'
-                                          ? 'border-emerald-500/30 bg-emerald-950/20 text-emerald-300'
-                                          : st.status === 'processing'
-                                          ? 'border-blue-500/40 bg-blue-950/30 text-blue-300'
-                                          : 'border-slate-800 bg-slate-900/40 text-slate-500'
-                                      }`}
-                                    >
-                                      <div className="font-mono text-[9px] uppercase">Stage {st.step}</div>
-                                      <div className="font-semibold">{st.label}</div>
-                                    </div>
-                                  ))}
-                                </div>
-
-                                {t.deliverables && t.deliverables.length > 0 && (
-                                  <div>
-                                    <div className="text-slate-400 font-medium mb-1.5">Deliverables</div>
-                                    <div className="grid grid-cols-3 gap-2">
-                                      {t.deliverables.map((d) => (
-                                        <div
-                                          key={d.id}
-                                          onClick={() => setActiveVideoPreview(d)}
-                                          className="p-2 rounded-xl border border-slate-800 bg-[#0a0f1d] hover:border-blue-500/40 cursor-pointer space-y-1"
-                                        >
-                                          <div className="text-xs font-semibold text-white truncate">{d.title}</div>
-                                          <div className="text-[10px] text-blue-400 font-mono flex items-center justify-between">
-                                            <span>{d.type}</span>
-                                            <span>{d.status}</span>
-                                          </div>
-                                        </div>
-                                      ))}
-                                    </div>
-                                  </div>
-                                )}
+                              <div className="p-3 border-t border-slate-800/60 bg-[#070b14]">
+                                <MinimalTaskCard
+                                  task={t}
+                                  isSelected={selectedTaskId === t.id}
+                                  onSelect={() => handleSelectTask(t)}
+                                  onOpenChat={() => handleSelectTask(t)}
+                                  onIntegrate={() => handleIntegrateTask(t.id)}
+                                  onPreviewDeliverable={(d) => setActiveVideoPreview(d)}
+                                />
                               </div>
                             )}
                           </div>
                         )
                       })
                     ) : (
-                      <div className="flex-1 flex flex-col items-center justify-center p-8 text-center border border-dashed border-slate-800 rounded-2xl bg-[#080c16]/50">
+                      <div className="flex-1 flex flex-col items-center justify-center p-8 text-center border border-dashed border-slate-800 rounded-xl bg-[#080c16]/50">
                         <Code size={20} className="text-slate-600 mb-2" />
                         <h4 className="text-xs font-bold text-slate-300">No tasks active</h4>
                         <p className="text-[11px] text-slate-500 mt-1 mb-4">
@@ -1798,7 +2104,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                         </p>
                         <button
                           onClick={() => setIsDeployModalOpen(true)}
-                          className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold shadow-md shadow-blue-600/20 transition-all flex items-center gap-1.5"
+                          className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold shadow-md shadow-blue-600/20 transition-all flex items-center gap-1.5"
                         >
                           <Plus size={13} />
                           <span>Deploy First Task</span>
@@ -1826,12 +2132,12 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                     return (
                       <div
                         key={col.key}
-                        className="w-72 flex-shrink-0 flex flex-col rounded-2xl border border-slate-800/80 bg-[#090d16]/70 p-3 space-y-2.5 overflow-hidden"
+                        className="w-80 flex-shrink-0 flex flex-col rounded-xl border border-slate-800/80 bg-[#090d16]/70 p-3 space-y-2.5 overflow-hidden"
                       >
                         <div className="flex items-center justify-between pb-1.5 border-b border-slate-800/60">
                           <span className="text-xs font-bold text-white flex items-center gap-1.5">
                             <span
-                              className={`h-2 w-2 rounded-full ${
+                              className={`h-2 w-2 rounded-sm ${
                                 col.color === 'blue'
                                   ? 'bg-blue-400'
                                   : col.color === 'amber'
@@ -1848,26 +2154,20 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                           </span>
                         </div>
 
-                        <div className="flex-1 overflow-y-auto space-y-2 pr-0.5">
+                        <div className="flex-1 overflow-y-auto space-y-2.5 pr-0.5">
                           {colTasks.map((t) => (
-                            <div
+                            <MinimalTaskCard
                               key={t.id}
-                              onClick={() => {
-                                setSelectedTaskId(t.id)
-                                setMiddleVariant('split')
-                              }}
-                              className="p-3 rounded-xl border border-slate-800 bg-[#0d121f] hover:border-slate-700 cursor-pointer space-y-2 shadow-sm transition-all"
-                            >
-                              <div className="text-xs font-semibold text-white leading-snug">{t.title}</div>
-                              <p className="text-[10px] text-slate-400 line-clamp-2">{t.subtitle}</p>
-                              <div className="flex items-center justify-between text-[10px] font-mono text-slate-500 pt-1.5 border-t border-slate-800/80">
-                                <span>{t.workerName}</span>
-                                <span>{t.elapsed}</span>
-                              </div>
-                            </div>
+                              task={t}
+                              isSelected={selectedTaskId === t.id}
+                              onSelect={() => handleSelectTask(t)}
+                              onOpenChat={() => handleSelectTask(t)}
+                              onIntegrate={() => handleIntegrateTask(t.id)}
+                              onPreviewDeliverable={(d) => setActiveVideoPreview(d)}
+                            />
                           ))}
                           {colTasks.length === 0 && (
-                            <div className="p-4 text-center text-[10px] text-slate-600 border border-dashed border-slate-850 rounded-xl">
+                            <div className="p-4 text-center text-[10px] text-slate-600 border border-dashed border-slate-850 rounded-lg">
                               No {col.label.toLowerCase()} tasks
                             </div>
                           )}
@@ -1892,7 +2192,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                     </div>
                     <button
                       onClick={() => setIsDeployModalOpen(true)}
-                      className="flex items-center gap-1.5 px-3 py-1 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium"
+                      className="flex items-center gap-1.5 px-3 py-1 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium"
                     >
                       <Plus size={12} />
                       <span>Deploy Worker</span>
@@ -1904,12 +2204,12 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                       {deployedWorkers.map((worker) => (
                         <div
                           key={worker.id}
-                          className="p-3.5 rounded-2xl border border-slate-800/80 bg-[#0a0f1d] space-y-3"
+                          className="p-3 rounded-xl border border-slate-800/80 bg-[#0a0f1d] space-y-2.5"
                         >
                           <div className="flex items-center justify-between">
                             <div className="flex items-center gap-2.5">
-                              <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-blue-500/10 text-blue-400 border border-blue-500/20">
-                                <Bot size={16} />
+                              <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-blue-500/10 text-blue-400 border border-blue-500/20">
+                                <Bot size={15} />
                               </div>
                               <div>
                                 <h4 className="text-xs font-bold text-white truncate max-w-[180px]">{worker.name}</h4>
@@ -1917,7 +2217,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                               </div>
                             </div>
                             <span
-                              className={`px-2 py-0.5 rounded-full text-[9px] font-mono font-semibold uppercase ${
+                              className={`px-2 py-0.5 rounded text-[9px] font-mono font-semibold uppercase ${
                                 worker.status === 'active'
                                   ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
                                   : 'bg-slate-800 text-slate-400'
@@ -1935,8 +2235,8 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                       ))}
                     </div>
                   ) : (
-                    <div className="p-8 text-center border border-dashed border-slate-800 rounded-2xl">
-                      <Bot size={24} className="mx-auto text-slate-600 mb-2" />
+                    <div className="p-6 text-center border border-dashed border-slate-800 rounded-xl">
+                      <Bot size={22} className="mx-auto text-slate-600 mb-2" />
                       <h4 className="text-xs font-bold text-slate-300">No active worker sessions</h4>
                       <p className="text-[11px] text-slate-500 mt-1">Deploy a task to launch an autonomous worker session.</p>
                     </div>
@@ -1945,28 +2245,17 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                   {/* Tasks List in Fleet */}
                   <div className="pt-2 space-y-3">
                     <h4 className="text-xs font-bold text-white">Project Tasks ({liveTasks.length})</h4>
-                    <div className="space-y-1.5">
+                    <div className="space-y-2.5">
                       {liveTasks.map((task) => (
-                        <div
+                        <MinimalTaskCard
                           key={task.id}
-                          className="flex items-center justify-between p-2.5 rounded-xl border border-slate-800/80 bg-[#0a0f1d]/70 text-xs"
-                        >
-                          <div className="flex items-center gap-2">
-                            <span
-                              className={`h-2 w-2 rounded-full ${
-                                task.status === 'running'
-                                  ? 'bg-blue-400 animate-pulse'
-                                  : task.status === 'needs_review'
-                                  ? 'bg-amber-400'
-                                  : task.status === 'completed'
-                                  ? 'bg-emerald-400'
-                                  : 'bg-slate-600'
-                              }`}
-                            />
-                            <span className="font-semibold text-slate-200">{task.title}</span>
-                          </div>
-                          <span className="text-[10px] font-mono text-slate-500">{task.elapsed}</span>
-                        </div>
+                          task={task}
+                          isSelected={selectedTaskId === task.id}
+                          onSelect={() => handleSelectTask(task)}
+                          onOpenChat={() => handleSelectTask(task)}
+                          onIntegrate={() => handleIntegrateTask(task.id)}
+                          onPreviewDeliverable={(d) => setActiveVideoPreview(d)}
+                        />
                       ))}
                     </div>
                   </div>
@@ -1986,8 +2275,14 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                       return (
                         <div
                           key={t.id}
-                          onClick={() => setSelectedTaskId(t.id)}
-                          className={`p-3 rounded-xl border transition-all cursor-pointer ${
+                          onClick={() => {
+                            setSelectedTaskId(t.id)
+                            if (t.sessionId) {
+                              setActiveSessionId(t.sessionId)
+                              setActiveTaskId(t.id)
+                            }
+                          }}
+                          className={`p-3 rounded-lg border transition-all cursor-pointer ${
                             isSel
                               ? 'bg-blue-950/20 border-blue-500/50 text-white shadow-sm'
                               : 'bg-[#0a0f1d] border-slate-800/80 hover:border-slate-700 text-slate-300'
@@ -2002,67 +2297,23 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                       )
                     })}
                     {liveTasks.length === 0 && (
-                      <div className="p-6 text-center text-xs text-slate-500 border border-dashed border-slate-800 rounded-xl">
+                      <div className="p-6 text-center text-xs text-slate-500 border border-dashed border-slate-800 rounded-lg">
                         No tasks found.
                       </div>
                     )}
                   </div>
 
                   {/* Right Column: Live Inspector */}
-                  <div className="w-1/2 flex flex-col p-4 overflow-y-auto space-y-4">
+                  <div className="w-1/2 flex flex-col p-4 overflow-y-auto space-y-3">
                     {selectedTaskForSplit ? (
-                      <>
-                        <div>
-                          <span className="text-[9px] font-mono uppercase px-2 py-0.5 rounded bg-blue-500/10 text-blue-400 border border-blue-500/20">
-                            {selectedTaskForSplit.agentType}
-                          </span>
-                          <h3 className="text-sm font-bold text-white mt-1.5">{selectedTaskForSplit.title}</h3>
-                          <p className="text-xs text-slate-400 mt-1">{selectedTaskForSplit.subtitle}</p>
-                        </div>
-
-                        <div className="p-3 rounded-xl border border-slate-800 bg-[#090d16] space-y-2 text-xs">
-                          <div className="text-slate-400 font-medium">Pipeline Stages</div>
-                          <div className="space-y-1.5">
-                            {selectedTaskForSplit.stepTimeline?.map((st) => (
-                              <div key={st.step} className="flex items-center justify-between text-[11px] font-mono">
-                                <span className="text-slate-300">
-                                  {st.step}. {st.label}
-                                </span>
-                                <span
-                                  className={`px-1.5 py-0.2 rounded text-[9px] ${
-                                    st.status === 'complete'
-                                      ? 'text-emerald-400'
-                                      : st.status === 'processing'
-                                      ? 'text-blue-400'
-                                      : 'text-slate-500'
-                                  }`}
-                                >
-                                  {st.status}
-                                </span>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-
-                        {selectedTaskForSplit.deliverables && selectedTaskForSplit.deliverables.length > 0 && (
-                          <div className="space-y-2">
-                            <div className="text-xs font-bold text-white">Attached Deliverables</div>
-                            {selectedTaskForSplit.deliverables.map((d) => (
-                              <div
-                                key={d.id}
-                                onClick={() => setActiveVideoPreview(d)}
-                                className="p-3 rounded-xl border border-slate-800 bg-[#090d16] hover:border-blue-500/40 cursor-pointer space-y-1.5"
-                              >
-                                <div className="text-xs font-semibold text-white">{d.title}</div>
-                                <div className="flex items-center justify-between text-[10px] text-blue-400 font-mono">
-                                  <span>{d.type}</span>
-                                  <span>{d.duration}</span>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </>
+                      <MinimalTaskCard
+                        task={selectedTaskForSplit}
+                        isSelected={true}
+                        onSelect={() => handleSelectTask(selectedTaskForSplit)}
+                        onOpenChat={() => handleSelectTask(selectedTaskForSplit)}
+                        onIntegrate={() => handleIntegrateTask(selectedTaskForSplit.id)}
+                        onPreviewDeliverable={(d) => setActiveVideoPreview(d)}
+                      />
                     ) : (
                       <div className="flex-1 flex items-center justify-center text-xs text-slate-500">
                         Select a task to inspect details
@@ -2078,28 +2329,19 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
               {middleVariant === 'timeline' && (
                 <div className="flex-1 overflow-y-auto p-4 space-y-3">
                   <div className="text-xs font-bold text-white pb-1">Activity Stream</div>
-                  {liveTasks.map((t, idx) => (
-                    <div key={t.id} className="flex items-start gap-3 p-3 rounded-xl border border-slate-800/80 bg-[#0a0f1d] text-xs">
-                      <div className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-xl bg-blue-600/20 text-blue-400 font-mono text-[10px] font-bold">
-                        {idx + 1}
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center justify-between">
-                          <span className="font-semibold text-white truncate">{t.title}</span>
-                          <span className="text-[10px] font-mono text-slate-500">{t.elapsed}</span>
-                        </div>
-                        <p className="text-[11px] text-slate-400 mt-0.5">{t.subtitle}</p>
-                        <div className="flex items-center gap-2 mt-2">
-                          <span className="text-[9px] font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-300">
-                            {t.workerName}
-                          </span>
-                          <span className="text-[9px] font-mono text-blue-400">{t.status}</span>
-                        </div>
-                      </div>
-                    </div>
+                  {liveTasks.map((t) => (
+                    <MinimalTaskCard
+                      key={t.id}
+                      task={t}
+                      isSelected={selectedTaskId === t.id}
+                      onSelect={() => handleSelectTask(t)}
+                      onOpenChat={() => handleSelectTask(t)}
+                      onIntegrate={() => handleIntegrateTask(t.id)}
+                      onPreviewDeliverable={(d) => setActiveVideoPreview(d)}
+                    />
                   ))}
                   {liveTasks.length === 0 && (
-                    <div className="p-8 text-center border border-dashed border-slate-800 rounded-2xl text-xs text-slate-500">
+                    <div className="p-8 text-center border border-dashed border-slate-800 rounded-xl text-xs text-slate-500">
                       No task activity recorded yet.
                     </div>
                   )}
@@ -2118,6 +2360,8 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
           key={activeSessionId}
           sessionId={activeSessionId}
           project={selectedProject}
+          activeTask={activeTask}
+          onBackToOrchestrator={handleBackToOrchestrator}
         />
       ) : (
         <aside className="relative flex w-[440px] flex-shrink-0 flex-col items-center justify-center p-6 text-center rounded-3xl border border-slate-800/80 bg-[#0d121f] text-xs text-slate-400 shadow-[inset_0_1px_1px_rgba(255,255,255,0.06),0_18px_40px_rgba(0,0,0,0.65)]">
@@ -2136,7 +2380,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
          ───────────────────────────────────────────────────────────── */}
       {isDeployModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-6 backdrop-blur-md">
-          <div className="relative flex max-w-lg w-full flex-col p-6 rounded-3xl border border-slate-800 bg-[#0d121f] shadow-2xl space-y-4">
+          <div className="relative flex max-w-lg w-full flex-col p-6 rounded-2xl border border-slate-800 bg-[#0d121f] shadow-2xl space-y-4">
             <div className="flex items-center justify-between pb-3 border-b border-slate-800">
               <div className="flex items-center gap-2">
                 <Code size={16} className="text-blue-400" />
@@ -2157,28 +2401,48 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                   type="text"
                   value={newTaskTitle}
                   onChange={(e) => setNewTaskTitle(e.target.value)}
-                  placeholder="e.g. Run testbench suite & verify stability"
-                  className="w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-white placeholder-slate-600 focus:outline-none focus:border-blue-500/60 font-medium"
+                  placeholder="e.g. Add GitHub OAuth provider and health route"
+                  className="w-full rounded-lg bg-slate-950 border border-slate-800 px-3 py-2 text-white placeholder-slate-600 focus:outline-none focus:border-blue-500/60 font-medium"
                 />
               </div>
 
-              <div>
-                <label className="text-[11px] text-slate-400 mb-1 block font-medium">Agent Type</label>
-                <div className="grid grid-cols-4 gap-2">
-                  {(['coder', 'finder', 'designer', 'video'] as const).map((ag) => (
-                    <button
-                      key={ag}
-                      type="button"
-                      onClick={() => setNewTaskAgent(ag)}
-                      className={`py-2 px-3 rounded-xl border text-xs font-semibold capitalize transition-all ${
-                        newTaskAgent === ag
-                          ? 'bg-blue-600 border-blue-500 text-white shadow-sm'
-                          : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200'
-                      }`}
-                    >
-                      {ag}
-                    </button>
-                  ))}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[11px] text-slate-400 mb-1 block font-medium">Agent Type</label>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    {(['coder', 'designer', 'finder', 'video'] as const).map((ag) => (
+                      <button
+                        key={ag}
+                        type="button"
+                        onClick={() => {
+                          setNewTaskAgent(ag)
+                          if (ag === 'designer' || ag === 'video') setNewTaskOutcome('media_bundle')
+                          else setNewTaskOutcome('code_pr')
+                        }}
+                        className={`py-1.5 px-2 rounded-lg border text-xs font-semibold capitalize transition-all ${
+                          newTaskAgent === ag
+                            ? 'bg-blue-600 border-blue-500 text-white shadow-sm'
+                            : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        {ag}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-[11px] text-slate-400 mb-1 block font-medium">Outcome Deliverable</label>
+                  <select
+                    value={newTaskOutcome}
+                    onChange={(e) => setNewTaskOutcome(e.target.value as TaskOutcomeType)}
+                    className="w-full rounded-lg bg-slate-950 border border-slate-800 px-3 py-2 text-white focus:outline-none focus:border-blue-500/60"
+                  >
+                    <option value="code_pr">Code PR (Branch + Test Suite)</option>
+                    <option value="media_bundle">Media Bundle (3 Video Cuts)</option>
+                    <option value="bug_patch">Bug Patch (Repro + Fix Diff)</option>
+                    <option value="audit_report">Audit Report (Findings Ledger)</option>
+                  </select>
                 </div>
               </div>
 
@@ -2189,7 +2453,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                   onChange={(e) => setNewTaskPrompt(e.target.value)}
                   rows={3}
                   placeholder="Describe what the worker should accomplish..."
-                  className="w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-white placeholder-slate-600 focus:outline-none focus:border-blue-500/60 resize-none"
+                  className="w-full rounded-lg bg-slate-950 border border-slate-800 px-3 py-2 text-white placeholder-slate-600 focus:outline-none focus:border-blue-500/60 resize-none"
                 />
               </div>
 
@@ -2199,7 +2463,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                   <select
                     value={newTaskWorkspace || selectedProject.repoPath}
                     onChange={(e) => setNewTaskWorkspace(e.target.value)}
-                    className="w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-white focus:outline-none focus:border-blue-500/60"
+                    className="w-full rounded-lg bg-slate-950 border border-slate-800 px-3 py-2 text-white focus:outline-none focus:border-blue-500/60"
                   >
                     {selectedProject.linkedWorkspaces.map((ws) => (
                       <option key={ws} value={ws}>
@@ -2215,7 +2479,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
               <button
                 type="button"
                 onClick={() => setIsDeployModalOpen(false)}
-                className="px-4 py-2 rounded-xl text-xs font-medium text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition-colors"
+                className="px-4 py-2 rounded-lg text-xs font-medium text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition-colors"
               >
                 Cancel
               </button>
@@ -2223,7 +2487,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                 type="button"
                 disabled={!newTaskTitle.trim() || isDeployingTask}
                 onClick={handleDeployModalSubmit}
-                className="flex items-center gap-1.5 px-5 py-2 rounded-xl text-xs font-bold text-white bg-blue-600 hover:bg-blue-500 shadow-md transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                className="flex items-center gap-1.5 px-5 py-2 rounded-lg text-xs font-bold text-white bg-blue-600 hover:bg-blue-500 shadow-md transition-all disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 <Plus size={13} />
                 <span>{isDeployingTask ? 'Deploying...' : 'Deploy Task'}</span>
@@ -2238,7 +2502,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
          ───────────────────────────────────────────────────────────── */}
       {activeVideoPreview && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-6 backdrop-blur-md">
-          <div className="relative flex max-w-2xl w-full flex-col p-5 rounded-3xl border border-slate-800 bg-[#0d121f] shadow-2xl">
+          <div className="relative flex max-w-2xl w-full flex-col p-5 rounded-2xl border border-slate-800 bg-[#0d121f] shadow-2xl">
             <div className="flex items-center justify-between pb-3 border-b border-slate-800">
               <div className="flex items-center gap-2">
                 <Film size={16} className="text-blue-400" />
@@ -2264,14 +2528,14 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
               </div>
             </div>
 
-            <div className="relative my-4 aspect-video w-full overflow-hidden flex items-center justify-center rounded-2xl border border-slate-800 bg-black">
+            <div className="relative my-4 aspect-video w-full overflow-hidden flex items-center justify-center rounded-xl border border-slate-800 bg-black">
               <DeliverableThumbnail type={activeVideoPreview.thumbnailType} />
               <div className="absolute inset-0 flex flex-col items-center justify-center z-30">
                 <button
                   onClick={() => setIsPlayingVideo(!isPlayingVideo)}
-                  className="flex h-14 w-14 items-center justify-center rounded-full bg-blue-600 text-white shadow-2xl transition-transform hover:scale-105 active:scale-95"
+                  className="flex h-12 w-12 items-center justify-center rounded-full bg-blue-600 text-white shadow-2xl transition-transform hover:scale-105 active:scale-95"
                 >
-                  {isPlayingVideo ? <Pause size={24} /> : <Play size={24} fill="currentColor" />}
+                  {isPlayingVideo ? <Pause size={20} /> : <Play size={20} fill="currentColor" />}
                 </button>
                 <span className="mt-2 text-xs font-mono text-slate-200 font-semibold bg-black/60 px-2 py-0.5 rounded">
                   {isPlayingVideo ? 'Playing Video Stream...' : 'Click to Play Render Preview'}
@@ -2289,12 +2553,12 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
             <div className="space-y-1.5 text-xs">
               <div>
                 <span className="text-slate-400 font-semibold">Worker Prompt: </span>
-                <span className="text-slate-200">{activeVideoPreview.prompt}</span>
+                <span className="text-slate-200">{activeVideoPreview.prompt || 'Generated by autonomous video worker'}</span>
               </div>
               <div className="flex items-center gap-4 text-slate-400 font-mono text-[11px]">
-                <span>Duration: {activeVideoPreview.duration}</span>
+                <span>Duration: {activeVideoPreview.duration || '0:15'}</span>
                 <span>Aspect: {activeVideoPreview.videoAspect || '16:9'}</span>
-                <span>Render Time: {activeVideoPreview.metrics?.renderTime}</span>
+                <span>Render Time: {activeVideoPreview.metrics?.renderTime || '14.2s'}</span>
               </div>
             </div>
 
@@ -2309,7 +2573,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                   }
                   setActiveVideoPreview(null)
                 }}
-                className="flex items-center gap-2 px-5 py-2 text-xs font-bold text-white rounded-xl bg-blue-600 hover:bg-blue-500 shadow-md transition-all active:scale-95"
+                className="flex items-center gap-2 px-5 py-2 text-xs font-bold text-white rounded-lg bg-blue-600 hover:bg-blue-500 shadow-md transition-all active:scale-95"
               >
                 <CheckCircle2 size={14} />
                 <span>Accept Deliverable</span>

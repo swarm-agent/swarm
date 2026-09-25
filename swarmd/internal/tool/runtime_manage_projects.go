@@ -28,13 +28,13 @@ func manageProjectsDefinition() Definition {
 	return Definition{
 		Type:        "function",
 		Name:        "manage_projects",
-		Description: "Inspect and manage Projects aggregating workspaces, context (project.md), and ongoing tasks. Supported actions: list, get, create, update, delete, synthesize_context, create_task, list_tasks, update_task.",
+		Description: "Inspect and manage Projects aggregating workspaces, context (project.md), and ongoing tasks. Supported actions: list, get, create, update, delete, synthesize_context, propose_task, create_task, list_tasks, update_task.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"action": map[string]any{
 					"type":        "string",
-					"description": "Action: list|get|create|update|delete|synthesize_context",
+					"description": "Action: list|get|create|update|delete|synthesize_context|propose_task|create_task|list_tasks|update_task",
 				},
 				"id": map[string]any{
 					"type":        "string",
@@ -254,17 +254,17 @@ func (r *Runtime) executeManageProjects(scope WorkspaceScope, args map[string]an
 
 		response["synthesized_context"] = sb.String()
 
-	case "create_task":
+	case "propose_task", "create_task":
 		projectID := strings.TrimSpace(asString(args["project_id"]))
 		if projectID == "" {
 			projectID = strings.TrimSpace(asString(args["id"]))
 		}
 		if projectID == "" {
-			return "", errors.New("manage_projects create_task requires project_id")
+			return "", errors.New("manage_projects propose_task requires project_id")
 		}
 		title := strings.TrimSpace(asString(args["title"]))
 		if title == "" {
-			return "", errors.New("manage_projects create_task requires title")
+			return "", errors.New("manage_projects propose_task requires title")
 		}
 		agentName := strings.TrimSpace(asString(args["agent"]))
 		if agentName == "" {
@@ -285,6 +285,24 @@ func (r *Runtime) executeManageProjects(scope WorkspaceScope, args map[string]an
 			}
 		}
 
+		var whatDid []string
+		if rawDid, ok := args["what_did_do"].([]any); ok {
+			for _, item := range rawDid {
+				if s := strings.TrimSpace(asString(item)); s != "" {
+					whatDid = append(whatDid, s)
+				}
+			}
+		}
+
+		var whatNot []string
+		if rawNot, ok := args["what_not_done"].([]any); ok {
+			for _, item := range rawNot {
+				if s := strings.TrimSpace(asString(item)); s != "" {
+					whatNot = append(whatNot, s)
+				}
+			}
+		}
+
 		task := pebblestore.ProjectTaskRecord{
 			ProjectID:      projectID,
 			Title:          title,
@@ -292,6 +310,13 @@ func (r *Runtime) executeManageProjects(scope WorkspaceScope, args map[string]an
 			Status:         status,
 			Agent:          agentName,
 			WorkerName:     workerName,
+			OutcomeType:    strings.TrimSpace(asString(args["outcome_type"])),
+			WorkspacePath:  strings.TrimSpace(asString(args["workspace_path"])),
+			WorktreeBranch: strings.TrimSpace(asString(args["worktree_branch"])),
+			ActionNeeded:   strings.TrimSpace(asString(args["action_needed"])),
+			WhatDidDo:      whatDid,
+			WhatNotDone:    whatNot,
+			DiffSummary:    strings.TrimSpace(asString(args["diff_summary"])),
 			PipelineStages: stages,
 		}
 		if err := r.projects.PutProjectTask(accountScopeID, &task); err != nil {
@@ -299,6 +324,18 @@ func (r *Runtime) executeManageProjects(scope WorkspaceScope, args map[string]an
 		}
 		response["task"] = task
 		response["task_id"] = task.ID
+		response["proposal"] = map[string]any{
+			"task_id":         task.ID,
+			"project_id":      projectID,
+			"title":           task.Title,
+			"agent":           task.Agent,
+			"outcome_type":    task.OutcomeType,
+			"workspace_path":  task.WorkspacePath,
+			"worktree_branch": task.WorktreeBranch,
+			"pipeline_stages": task.PipelineStages,
+			"action_needed":   task.ActionNeeded,
+			"status":          task.Status,
+		}
 
 	case "list_tasks":
 		projectID := strings.TrimSpace(asString(args["project_id"]))

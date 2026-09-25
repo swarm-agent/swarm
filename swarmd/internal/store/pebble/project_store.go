@@ -198,20 +198,29 @@ type ProjectTaskDeliverable struct {
 
 // ProjectTaskRecord represents an autonomous task unit in a project.
 type ProjectTaskRecord struct {
-	ID                string                   `json:"id"`
-	ProjectID         string                   `json:"project_id"`
-	AccountID         string                   `json:"account_id"`
-	Title             string                   `json:"title"`
-	Description       string                   `json:"description,omitempty"`
-	Status            string                   `json:"status"` // "queued" | "in_progress" | "needs_review" | "completed" | "failed"
-	SessionID         string                   `json:"session_id,omitempty"`
-	Agent             string                   `json:"agent,omitempty"`
-	WorkerName        string                   `json:"worker_name,omitempty"`
-	PipelineStages    []string                 `json:"pipeline_stages,omitempty"`
-	CurrentStageIndex int                      `json:"current_stage_index"`
-	Deliverables      []ProjectTaskDeliverable `json:"deliverables,omitempty"`
-	CreatedAt         int64                    `json:"created_at"`
-	UpdatedAt         int64                    `json:"updated_at"`
+	ID                  string                   `json:"id"`
+	ProjectID           string                   `json:"project_id"`
+	AccountID           string                   `json:"account_id"`
+	Title               string                   `json:"title"`
+	Description         string                   `json:"description,omitempty"`
+	Status              string                   `json:"status"` // "queued" | "in_progress" | "needs_review" | "completed" | "failed"
+	SessionID           string                   `json:"session_id,omitempty"`
+	Agent               string                   `json:"agent,omitempty"`
+	WorkerName          string                   `json:"worker_name,omitempty"`
+	OutcomeType         string                   `json:"outcome_type,omitempty"` // "code_pr" | "media_bundle" | "bug_patch" | "audit_report"
+	WorkspacePath       string                   `json:"workspace_path,omitempty"`
+	WorktreeBranch      string                   `json:"worktree_branch,omitempty"`
+	UnintegratedCommits int                      `json:"unintegrated_commits,omitempty"`
+	DiffSummary         string                   `json:"diff_summary,omitempty"`
+	IsDirty             bool                     `json:"is_dirty,omitempty"`
+	ActionNeeded        string                   `json:"action_needed,omitempty"`
+	WhatDidDo           []string                 `json:"what_did_do,omitempty"`
+	WhatNotDone         []string                 `json:"what_not_done,omitempty"`
+	PipelineStages      []string                 `json:"pipeline_stages,omitempty"`
+	CurrentStageIndex   int                      `json:"current_stage_index"`
+	Deliverables        []ProjectTaskDeliverable `json:"deliverables,omitempty"`
+	CreatedAt           int64                    `json:"created_at"`
+	UpdatedAt           int64                    `json:"updated_at"`
 }
 
 func (t *ProjectTaskRecord) Validate() error {
@@ -225,6 +234,17 @@ func (t *ProjectTaskRecord) Validate() error {
 	}
 	if t.Status == "" {
 		t.Status = "queued"
+	}
+	if t.OutcomeType == "" {
+		if t.Agent == "designer" || t.Agent == "video" {
+			t.OutcomeType = "media_bundle"
+		} else if strings.Contains(strings.ToLower(t.Title), "fix") || strings.Contains(strings.ToLower(t.Title), "bug") {
+			t.OutcomeType = "bug_patch"
+		} else if strings.Contains(strings.ToLower(t.Title), "audit") || strings.Contains(strings.ToLower(t.Title), "inspect") {
+			t.OutcomeType = "audit_report"
+		} else {
+			t.OutcomeType = "code_pr"
+		}
 	}
 	return nil
 }
