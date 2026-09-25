@@ -353,6 +353,7 @@ export interface DesktopNotificationWire {
   run_id?: unknown
   runId?: unknown
   category?: unknown
+  kind?: unknown
   severity?: unknown
   title?: unknown
   body?: unknown
@@ -376,6 +377,8 @@ export interface DesktopNotificationWire {
   originLabel?: unknown
   action_url?: unknown
   actionURL?: unknown
+  payload?: unknown
+  actions?: unknown
   read_at?: unknown
   readAt?: unknown
   acked_at?: unknown

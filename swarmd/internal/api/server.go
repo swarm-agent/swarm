@@ -260,6 +260,7 @@ type notificationService interface {
 	ClearNotifications(swarmID string) (notification.ClearResult, error)
 	UpdateNotification(input notification.UpdateInput) (pebblestore.NotificationRecord, bool, error)
 	UpsertSystemNotification(record pebblestore.NotificationRecord) (pebblestore.NotificationRecord, bool, error)
+	SubmitInboxNotification(input notification.InboxNotificationInput) (pebblestore.NotificationRecord, error)
 }
 
 type worktreeService interface {

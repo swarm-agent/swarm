@@ -215,6 +215,14 @@ export interface DesktopNotificationRecord {
   swarmChildName?: string | null
 }
 
+export interface DesktopNotificationAction {
+  id: string
+  label: string
+  actionType?: string | null
+  endpoint?: string | null
+  variant?: string | null
+}
+
 export interface DesktopNotificationCenterRecord {
   id: string
   accountScopeID: string | null
@@ -223,6 +231,7 @@ export interface DesktopNotificationCenterRecord {
   sessionId: string | null
   runId: string | null
   category: string
+  kind?: string | null
   severity: 'info' | 'warning' | 'error' | string
   title: string
   body: string
@@ -237,6 +246,8 @@ export interface DesktopNotificationCenterRecord {
   workspaceName: string | null
   originLabel: string | null
   actionURL: string | null
+  payload?: Record<string, unknown> | null
+  actions?: DesktopNotificationAction[] | null
   readAt: number | null
   ackedAt: number | null
   mutedAt: number | null

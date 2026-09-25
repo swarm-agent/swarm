@@ -34,7 +34,7 @@ import type {
   SessionSnapshot,
   MessageMutationConflictResponse,
 } from './desktop-v3-cache-types'
-import type { DesktopNotificationCenterRecord, DesktopNotificationSummary, DesktopPermissionRecord } from '../types/realtime'
+import type { DesktopNotificationAction, DesktopNotificationCenterRecord, DesktopNotificationSummary, DesktopPermissionRecord } from '../types/realtime'
 import type { SessionV3RealtimeLivePatchWire } from '../session-v3/types'
 import { desktopPermissionIdentity, normalizeDesktopPermission, normalizeDesktopPendingPermissions, normalizeDesktopPermissionSummary, normalizeDesktopPermissionSummaries, safeString } from '../permissions/services/desktop-permission-normalization'
 import { normalizeDesktopSessionPlan } from '../chat/services/session-plan-record'
@@ -1533,6 +1533,7 @@ function normalizeDesktopNotification(raw: DesktopNotificationWire | undefined):
     sessionId: nullableString(raw.sessionId ?? raw.session_id),
     runId: nullableString(raw.runId ?? raw.run_id),
     category: stringField(raw.category) || 'system',
+    kind: nullableString(raw.kind),
     severity: stringField(raw.severity) || 'info',
     title: stringField(raw.title) || 'Notification',
     body: stringField(raw.body) || '',
@@ -1547,6 +1548,24 @@ function normalizeDesktopNotification(raw: DesktopNotificationWire | undefined):
     workspaceName: nullableString(raw.workspaceName ?? raw.workspace_name),
     originLabel: nullableString(raw.originLabel ?? raw.origin_label),
     actionURL: nullableString(raw.actionURL ?? raw.action_url),
+    payload: raw.payload && typeof raw.payload === 'object' && !Array.isArray(raw.payload) ? (raw.payload as Record<string, unknown>) : null,
+    actions: Array.isArray(raw.actions)
+      ? (raw.actions as unknown[]).reduce<DesktopNotificationAction[]>((acc, a) => {
+          if (!a || typeof a !== 'object') return acc
+          const obj = a as Record<string, unknown>
+          const id = stringField(obj.id)
+          const label = stringField(obj.label)
+          if (!id || !label) return acc
+          acc.push({
+            id,
+            label,
+            actionType: nullableString(obj.actionType ?? obj.action_type),
+            endpoint: nullableString(obj.endpoint),
+            variant: nullableString(obj.variant),
+          })
+          return acc
+        }, [])
+      : null,
     readAt: nullableNumber(raw.readAt ?? raw.read_at),
     ackedAt: nullableNumber(raw.ackedAt ?? raw.acked_at),
     mutedAt: nullableNumber(raw.mutedAt ?? raw.muted_at),

@@ -1188,6 +1188,7 @@ The dated entries below are historical observations at their cited stages. Matri
 
 | Revision | Source | Date | Change | Evidence |
 | --- | --- | --- | --- | --- |
+| 81 | working tree based on dev | 2026-09-24 | Unified AI Notification Inbox across Backend, SDK, and Web UI | Inspected notification store, service, API routes, SDK, and Desktop UI. Added kind, payload, actions to NotificationRecord, implemented POST /v1/notifications/inbox with scoped token auth, added SwarmNotificationsNamespace to SDK, and added AI Inbox tab to Desktop modal with media preview and action buttons. Unit tests in Go, SDK, and Web pass. |
 | 80 | working tree based on `d6945037` | 2026-09-19 | Populate audio artifact variant presentation metadata and enable Desktop soundbar selection | Inspected `managedArtifactVariant`, `normalizeDesktopV3ArtifactCatalogEntry`, and `ChatAudioSoundBar`. Added top-level presentation metadata (`label`, `description`, `kind`, `previewable`) to managed variant payloads and catalog normalization fallback. Wired `onArtifactSelections` and clip-level select buttons to `ChatAudioSoundBar` and `ManageArtifactCard`. Focused Go audio tool unit tests and static/render specs pass. |
 | 79 | working tree based on `8ab4af86` | 2026-09-05 | Remove the direct HTML creator's three-region rejection without changing native authoring authority | Inspected create dispatch, optional Part parsing, semantic-region derivation, author publication flow, and real test assertions. Variable automatic/explicit counts preserve manifest IDs, labels, order, selectors and original HTML; invalid media/missing regions/unresolved selection still fail before turn allocation. Three focused create tests passed (including twelve variable-count subcases). Test-file reinventory recorded; no independent critical-tier promotion claimed. After an operator rebuild, live direct HTML creation published six automatic Parts with a ready native revision and inspected preview. Overflowing and hidden-Part layouts remained rejected; no capture gate was weakened. |
 | 78 | working tree based on `da473dc3` | 2026-09-05 | Correct and narrow FFF content filtering | Re-read registered search/find schemas, runtime response merging, coordinator scope, native helper and both bindings; inspected pinned upstream GrepConfig, constraints and multi-pattern implementation. Live exact-file/include misses reproduced with a fresh helper. Explicit globs and separate literal patterns fix those misses without AI-mode heuristics; content misses no longer run filename fallback. Native scoped/worker tests and runtime/coordinator/root tests passed three consecutive focused runs; both bindings passed three focused tests once. A repository exact-file probe returned the expected symbol scanning one file rather than the pre-fix 2,116; exact include also scanned one file, with one resident cold start across three requests. Unsupported whitespace filter tokens and newline/NUL patterns error explicitly. No installed-helper replacement, restart, commit, integration, broad suite, or independent test-tier promotion claimed. |
@@ -2896,5 +2897,27 @@ no scratch/logs or private identifiers were added to tracked documentation.
   - `bash scripts/run-critical-tests.sh fast` PASS.
   - Frontend typecheck and build (`npm run build`) passed with zero errors.
 
+
+### Unified AI Notification Inbox across Backend, SDK, and Desktop UI (2026-09-24)
+
+- **Backend & Storage (`swarmd/internal/store/pebble/notification_store.go`, `swarmd/internal/notification/service.go`):**
+  - Extended `pebblestore.NotificationRecord` with `Kind` (`system`, `ai_request`, `ai_deliverable`), `Payload` (`map[string]any`), and `Actions` (`[]NotificationAction` with `ID`, `Label`, `ActionType`, `Endpoint`, `Variant`).
+  - Added `NotificationCategoryDeliverable` and `NotificationCategoryInbox` category constants.
+  - Implemented `SubmitInboxNotification` and `SubmitInboxNotificationForAccount` on `notification.Service`, generating unique IDs, updating account summaries, and broadcasting real-time SSE frames (`notification.created`).
+- **Inbound Notification Ingress Endpoint (`swarmd/internal/api/notifications.go`, `server_routes.go`):**
+  - Added `POST /v1/notifications/inbox` (and `/v1/alerts/inbox`) with scoped bearer token authentication (`notifications:write`, `notifications:*`, `automations:write`, `deliverables:write`).
+  - Allows autonomous cloud workers (Cloud Run / GCE VMs) to submit rich deliverable cards and pairing requests safely without bash or filesystem permissions.
+- **TypeScript SDK (`packages/sdk`):**
+  - Added `SwarmNotificationsNamespace` with `submit`, `list`, `summary`, `update`, and `clear` methods.
+  - Added `client.notifications` and convenient `client.inbox` alias on `SwarmClient`.
+  - Added comprehensive unit test in `packages/sdk/src/__tests__/notifications.spec.ts`.
+- **Desktop Web UI (`web/src/features/desktop/notifications/`):**
+  - Updated `DesktopNotificationsModal` with a clean tab switcher: **AI Inbox** (for deliverables & pairing requests) and **Activity** (for system & permission logs).
+  - Implemented rich card previews: embedded HTML5 video player for `.mp4`/`.webm` S3 media, image previews, and drafted tweet/post content drawers.
+  - Added executable action buttons (`[Approve & Publish]`, `[Request Changes]`, etc.) that execute linked endpoints and resolve notification status.
+- **Verification & Tests:**
+  - Added Go unit tests: `TestSubmitInboxNotification` in `swarmd/internal/notification/inbox_notification_test.go` and `TestHandleNotificationInbox` in `swarmd/internal/api/inbox_notification_api_test.go`.
+  - Added SDK tests: `packages/sdk/src/__tests__/notifications.spec.ts` (all 30 tests pass).
+  - Added Web tests: `web/src/features/desktop/notifications/notifications-inbox.spec.ts` (all pass) and verified clean TypeScript compilation (`tsc --noEmit`).
 
 

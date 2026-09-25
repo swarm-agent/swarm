@@ -61,6 +61,24 @@ type PermissionUpsertInput struct {
 	MutedAt         int64
 }
 
+type InboxNotificationInput struct {
+	ID             string                           `json:"id,omitempty"`
+	AccountScopeID string                           `json:"account_scope_id,omitempty"`
+	SwarmID        string                           `json:"swarm_id,omitempty"`
+	OriginSwarmID  string                           `json:"origin_swarm_id,omitempty"`
+	SessionID      string                           `json:"session_id,omitempty"`
+	RunID          string                           `json:"run_id,omitempty"`
+	Category       string                           `json:"category,omitempty"`
+	Kind           string                           `json:"kind,omitempty"`
+	Severity       string                           `json:"severity,omitempty"`
+	Title          string                           `json:"title"`
+	Body           string                           `json:"body"`
+	Status         string                           `json:"status,omitempty"`
+	ActionURL      string                           `json:"action_url,omitempty"`
+	Payload        map[string]any                   `json:"payload,omitempty"`
+	Actions        []pebblestore.NotificationAction `json:"actions,omitempty"`
+}
+
 type UpdateInput struct {
 	AccountScopeID string
 	SwarmID        string
@@ -387,6 +405,122 @@ func (s *Service) UpsertSystemNotificationForAccount(accountScopeID string, reco
 	return record, true, nil
 }
 
+func (s *Service) SubmitInboxNotification(input InboxNotificationInput) (pebblestore.NotificationRecord, error) {
+	return s.SubmitInboxNotificationForAccount(input.AccountScopeID, input)
+}
+
+func (s *Service) SubmitInboxNotificationForAccount(accountScopeID string, input InboxNotificationInput) (pebblestore.NotificationRecord, error) {
+	if s == nil || s.store == nil {
+		return pebblestore.NotificationRecord{}, errors.New("notification service is not configured")
+	}
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	swarmID := strings.TrimSpace(input.SwarmID)
+	if swarmID == "" {
+		swarmID = s.LocalSwarmID()
+	}
+	if swarmID == "" {
+		return pebblestore.NotificationRecord{}, errors.New("swarm id is required")
+	}
+	title := strings.TrimSpace(input.Title)
+	if title == "" {
+		return pebblestore.NotificationRecord{}, errors.New("notification title is required")
+	}
+	now := time.Now().UnixMilli()
+	notificationID := strings.TrimSpace(input.ID)
+	if notificationID == "" {
+		notificationID = fmt.Sprintf("inbox_%d_%d", now, s.counter.Add(1))
+	}
+
+	category := strings.TrimSpace(strings.ToLower(input.Category))
+	if category == "" {
+		category = pebblestore.NotificationCategoryInbox
+	}
+	kind := strings.TrimSpace(strings.ToLower(input.Kind))
+	if kind == "" {
+		kind = pebblestore.NotificationKindAIDeliverable
+	}
+	severity := strings.TrimSpace(strings.ToLower(input.Severity))
+	if severity == "" {
+		severity = pebblestore.NotificationSeverityInfo
+	}
+	status := strings.TrimSpace(strings.ToLower(input.Status))
+	if status == "" {
+		status = pebblestore.NotificationStatusActive
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var previous *pebblestore.NotificationRecord
+	existing, found, err := s.store.GetNotificationForAccount(accountScopeID, swarmID, notificationID)
+	if err != nil {
+		return pebblestore.NotificationRecord{}, err
+	}
+	if found {
+		previous = &existing
+	}
+
+	record := pebblestore.NotificationRecord{
+		ID:             notificationID,
+		AccountScopeID: accountScopeID,
+		SwarmID:        swarmID,
+		OriginSwarmID:  strings.TrimSpace(input.OriginSwarmID),
+		SessionID:      strings.TrimSpace(input.SessionID),
+		RunID:          strings.TrimSpace(input.RunID),
+		Category:       category,
+		Kind:           kind,
+		Severity:       severity,
+		Title:          title,
+		Body:           strings.TrimSpace(input.Body),
+		Status:         status,
+		ActionURL:      strings.TrimSpace(input.ActionURL),
+		Payload:        input.Payload,
+		Actions:        input.Actions,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	if record.OriginSwarmID == "" {
+		record.OriginSwarmID = swarmID
+	}
+	if previous != nil {
+		record.CreatedAt = previous.CreatedAt
+		if record.ReadAt <= 0 {
+			record.ReadAt = previous.ReadAt
+		}
+		if record.AckedAt <= 0 {
+			record.AckedAt = previous.AckedAt
+		}
+		if record.MutedAt <= 0 {
+			record.MutedAt = previous.MutedAt
+		}
+	}
+
+	if err := s.store.PutNotification(record, previous); err != nil {
+		return pebblestore.NotificationRecord{}, err
+	}
+	summary, err := s.refreshSummaryForAccountLocked(accountScopeID, swarmID, record.UpdatedAt)
+	if err != nil {
+		return pebblestore.NotificationRecord{}, err
+	}
+	eventType := EventNotificationCreated
+	if previous != nil {
+		eventType = EventNotificationUpdated
+	}
+	_, _ = s.emitLocked("swarm:notifications", eventType, record.ID, map[string]any{"notification": record, "summary": summary})
+	s.publishRealtimeLocked(RealtimeEvent{
+		EventType:      eventType,
+		AccountScopeID: accountScopeID,
+		SwarmID:        swarmID,
+		Notification:   &record,
+		Summary:        &summary,
+		RecordedAt:     record.UpdatedAt,
+	})
+	if eventType == EventNotificationCreated {
+		s.dispatchWebPushLocked(record)
+	}
+	return record, nil
+}
+
 func (s *Service) ClearNotifications(swarmID string) (ClearResult, error) {
 	return s.ClearNotificationsForAccount("", swarmID)
 }
@@ -684,6 +818,7 @@ func notificationRecordsEqual(a, b pebblestore.NotificationRecord) bool {
 		a.SessionID == b.SessionID &&
 		a.RunID == b.RunID &&
 		a.Category == b.Category &&
+		a.Kind == b.Kind &&
 		a.Severity == b.Severity &&
 		a.Title == b.Title &&
 		a.Body == b.Body &&

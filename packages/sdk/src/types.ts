@@ -386,3 +386,84 @@ export interface SystemHealth {
   version?: string;
   uptime_seconds?: number;
 }
+
+export type NotificationKind = 'system' | 'ai_request' | 'ai_deliverable' | string;
+export type NotificationSeverity = 'info' | 'warning' | 'error' | string;
+export type NotificationStatus = 'active' | 'resolved' | string;
+
+export interface NotificationAction {
+  id: string;
+  label: string;
+  action_type?: string;
+  endpoint?: string;
+  variant?: 'primary' | 'secondary' | 'danger' | string;
+}
+
+export interface NotificationRecord {
+  id: string;
+  swarm_id: string;
+  origin_swarm_id?: string;
+  session_id?: string;
+  run_id?: string;
+  category: string;
+  kind?: NotificationKind;
+  severity: NotificationSeverity;
+  title: string;
+  body: string;
+  status: NotificationStatus;
+  source_event_type?: string;
+  permission_id?: string;
+  tool_name?: string;
+  requirement?: string;
+  session_title?: string;
+  session_label?: string;
+  workspace_path?: string;
+  workspace_name?: string;
+  origin_label?: string;
+  action_url?: string;
+  payload?: Record<string, unknown>;
+  actions?: NotificationAction[];
+  read_at?: number;
+  acked_at?: number;
+  muted_at?: number;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface NotificationSummary {
+  swarm_id: string;
+  total_count: number;
+  unread_count: number;
+  active_count: number;
+  updated_at: number;
+}
+
+export interface SubmitNotificationParams {
+  id?: string;
+  swarm_id?: string;
+  origin_swarm_id?: string;
+  session_id?: string;
+  run_id?: string;
+  category?: string;
+  kind?: NotificationKind;
+  severity?: NotificationSeverity;
+  title: string;
+  body?: string;
+  status?: NotificationStatus;
+  action_url?: string;
+  payload?: Record<string, unknown>;
+  actions?: NotificationAction[];
+}
+
+export interface NotificationListFilter {
+  limit?: number;
+  swarm_id?: string;
+}
+
+export interface UpdateNotificationParams {
+  read?: boolean;
+  acked?: boolean;
+  muted?: boolean;
+  status?: string;
+  swarm_id?: string;
+}

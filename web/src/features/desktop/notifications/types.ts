@@ -1,8 +1,17 @@
 import type {
   DesktopConnectionState,
+  DesktopNotificationAction,
   DesktopNotificationCenterRecord,
   DesktopNotificationSummary,
 } from '../types/realtime'
+
+export interface DurableNotificationAction {
+  id: string
+  label: string
+  action_type?: string
+  endpoint?: string
+  variant?: string
+}
 
 export interface DurableNotificationRecord {
   id: string
@@ -11,6 +20,7 @@ export interface DurableNotificationRecord {
   session_id?: string
   run_id?: string
   category: string
+  kind?: string
   severity: 'info' | 'warning' | 'error' | string
   title: string
   body: string
@@ -25,6 +35,8 @@ export interface DurableNotificationRecord {
   workspace_name?: string
   origin_label?: string
   action_url?: string
+  payload?: Record<string, unknown>
+  actions?: DurableNotificationAction[]
   read_at?: number
   acked_at?: number
   muted_at?: number
@@ -66,6 +78,7 @@ export interface NotificationClearResponse {
 
 export type {
   DesktopConnectionState,
+  DesktopNotificationAction,
   DesktopNotificationCenterRecord,
   DesktopNotificationSummary,
 }

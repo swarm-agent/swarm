@@ -34,6 +34,22 @@ func (r *updateNotificationRecorder) UpsertSystemNotification(record pebblestore
 	return record, true, nil
 }
 
+func (r *updateNotificationRecorder) SubmitInboxNotification(input notification.InboxNotificationInput) (pebblestore.NotificationRecord, error) {
+	record := pebblestore.NotificationRecord{
+		ID:       input.ID,
+		Title:    input.Title,
+		Body:     input.Body,
+		Category: input.Category,
+		Kind:     input.Kind,
+		Severity: input.Severity,
+		Status:   input.Status,
+		Payload:  input.Payload,
+		Actions:  input.Actions,
+	}
+	r.records = append(r.records, record)
+	return record, nil
+}
+
 func TestEmitUpdateNotificationSkipsCompletedInfoNotifications(t *testing.T) {
 	notifications := &updateNotificationRecorder{}
 	server := &Server{notifications: notifications}
