@@ -162,8 +162,8 @@ export function OrchestrateView({
   const [selectedProjectId, setSelectedProjectId] = useState<string>(projects[0].id)
   const selectedProject = projects.find((p) => p.id === selectedProjectId) ?? projects[0]
 
-  // Middle canvas layout variant state (5 distinct variants)
-  const [middleVariant, setMiddleVariant] = useState<MiddleCanvasVariant>('matrix')
+  // Middle canvas layout variant state (5 distinct variants - Selected Canonical Default: Variant 3 Worker Fleet)
+  const [middleVariant, setMiddleVariant] = useState<MiddleCanvasVariant>('fleet')
 
   // Search & Filters for 100+ tasks
   const [searchQuery, setSearchQuery] = useState('')
@@ -1006,22 +1006,216 @@ export function OrchestrateView({
                 ))}
               </div>
 
-              {/* Worker-Partitioned Tasks */}
-              <div className="pt-2">
-                <h4 className="text-xs font-bold text-white mb-2">Worker Task Assignment Queues</h4>
-                <div className="space-y-2">
-                  {tasks.slice(0, 8).map((task) => (
-                    <div
-                      key={task.id}
-                      className="p-2.5 rounded-xl border border-slate-800 bg-[#090d17] flex items-center justify-between text-xs"
-                    >
-                      <div className="flex items-center gap-3">
-                        <span className="font-mono text-[10px] text-slate-400">#{task.id}</span>
-                        <span className="font-semibold text-white truncate max-w-sm">{task.title}</span>
+              {/* Worker-Partitioned Tasks with Search, Filters & Expandable Drawers (100+ Task Scalability) */}
+              <div className="pt-2 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h4 className="text-xs font-bold text-white">Worker Task Assignment Queues</h4>
+                    <p className="text-[10px] text-slate-400">
+                      Real-time jobs dispatched and owned across your autonomous workers
+                    </p>
+                  </div>
+                  <span className="rounded-full bg-blue-500/10 border border-blue-500/30 px-2 py-0.5 text-[9px] font-semibold text-blue-400">
+                    Selected Canonical View • Variant 3
+                  </span>
+                </div>
+
+                {/* Filter bar inside Worker Fleet View */}
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex-1 relative">
+                    <Search size={13} className="absolute left-3 top-2.5 text-slate-500" />
+                    <input
+                      type="text"
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      placeholder="Search tasks across workers..."
+                      className="w-full bg-[#080c16] border border-slate-800 rounded-xl pl-8 pr-3 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500/40"
+                    />
+                  </div>
+
+                  <div className="flex items-center gap-1.5">
+                    {(['all', 'running', 'needs_review', 'queued', 'completed'] as const).map((st) => (
+                      <button
+                        key={st}
+                        onClick={() => setStatusFilter(st)}
+                        className={`px-2.5 py-1 rounded-lg text-[10px] font-semibold uppercase tracking-wider transition-all ${
+                          statusFilter === st
+                            ? 'bg-slate-700 text-white shadow-sm'
+                            : 'bg-slate-800/60 text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        {st === 'all'
+                          ? `All (${tasks.length})`
+                          : st === 'running'
+                          ? `Running (${runningCount})`
+                          : st === 'needs_review'
+                          ? `Review (${reviewCount})`
+                          : st === 'queued'
+                          ? `Queued (${queuedCount})`
+                          : `Done (${completedCount})`}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Task Rows with Expandable Drawers */}
+                <div className="space-y-1.5">
+                  {filteredTasks.map((task) => {
+                    const isExpanded = expandedTaskId === task.id
+                    return (
+                      <div
+                        key={task.id}
+                        className="rounded-xl border border-slate-800/80 bg-[#0a0f1d]/70 hover:border-slate-700/80 transition-all overflow-hidden"
+                      >
+                        {/* Header Row */}
+                        <div
+                          onClick={() => setExpandedTaskId(isExpanded ? null : task.id)}
+                          className="flex items-center justify-between p-2.5 cursor-pointer hover:bg-white/[0.02]"
+                        >
+                          <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                            <span
+                              className={`h-2 w-2 rounded-full flex-shrink-0 ${
+                                task.status === 'running'
+                                  ? 'bg-blue-400 animate-pulse'
+                                  : task.status === 'needs_review'
+                                  ? 'bg-amber-400'
+                                  : task.status === 'completed'
+                                  ? 'bg-emerald-400'
+                                  : 'bg-slate-600'
+                              }`}
+                            />
+                            <div className="flex h-5 w-5 items-center justify-center rounded-md bg-slate-800 text-slate-400 flex-shrink-0">
+                              {task.agentType === 'coder' ? (
+                                <Code size={11} />
+                              ) : task.agentType === 'designer' ? (
+                                <Film size={11} />
+                              ) : (
+                                <Bot size={11} />
+                              )}
+                            </div>
+                            <span className="font-semibold text-xs text-white truncate max-w-sm">
+                              {task.title}
+                            </span>
+                            {task.workerName && (
+                              <span className="rounded bg-slate-800/80 px-1.5 py-0.5 text-[9px] font-mono text-slate-400 truncate">
+                                @{task.workerName}
+                              </span>
+                            )}
+                          </div>
+
+                          <div className="flex items-center gap-3">
+                            {task.stepTimeline && (
+                              <div className="flex items-center gap-1 font-mono text-[9px]">
+                                {task.stepTimeline.map((step) => (
+                                  <span
+                                    key={step.step}
+                                    className={`px-1 rounded ${
+                                      step.status === 'complete'
+                                        ? 'text-emerald-400 bg-emerald-500/10'
+                                        : step.status === 'processing'
+                                        ? 'text-blue-400 bg-blue-500/20 font-bold'
+                                        : 'text-slate-600'
+                                    }`}
+                                  >
+                                    {step.label}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+
+                            {task.deliverables && task.deliverables.length > 0 && (
+                              <span className="flex items-center gap-1 rounded bg-blue-500/15 border border-blue-500/30 px-1.5 py-0.5 text-[9px] font-semibold text-blue-300">
+                                <Film size={9} />
+                                {task.deliverables.length} clips
+                              </span>
+                            )}
+
+                            <span className="text-[10px] font-mono text-slate-500 min-w-[45px] text-right">
+                              {task.elapsed}
+                            </span>
+
+                            <span className="text-slate-500">
+                              {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Expandable Drawer with Deliverables & Diffs */}
+                        {isExpanded && (
+                          <div className="border-t border-slate-800/80 bg-[#070b15] p-3 space-y-3">
+                            {task.deliverables && (
+                              <div>
+                                <div className="text-[11px] font-bold text-slate-300 mb-2 flex items-center justify-between">
+                                  <span>Attached Video Deliverables ({task.deliverables.length})</span>
+                                  <span className="text-[10px] text-slate-500 font-mono">
+                                    Click thumbnail to play full preview
+                                  </span>
+                                </div>
+                                <div className="grid grid-cols-3 gap-2.5">
+                                  {task.deliverables.map((item) => (
+                                    <div
+                                      key={item.id}
+                                      className="p-2 rounded-xl bg-[#0a0f1d] border border-slate-800"
+                                    >
+                                      <DeliverableThumbnail
+                                        type={item.thumbnailType}
+                                        duration={item.duration}
+                                        onPlay={() => setActiveVideoPreview(item)}
+                                      />
+                                      <div className="mt-2 text-xs font-bold text-white truncate">
+                                        {item.title}
+                                      </div>
+                                      <div className="mt-1 flex items-center justify-between pt-1 border-t border-slate-800/80">
+                                        <button
+                                          onClick={(e) => handleAcceptDeliverable(task.id, item.id, e)}
+                                          className="text-[10px] font-semibold text-emerald-400 hover:underline"
+                                        >
+                                          Accept
+                                        </button>
+                                        <button
+                                          onClick={() => setActiveVideoPreview(item)}
+                                          className="text-[10px] text-slate-400 hover:text-white"
+                                        >
+                                          Inspect
+                                        </button>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+
+                            {task.diffLines && (
+                              <div>
+                                <div className="text-[11px] font-bold text-slate-300 mb-1.5">
+                                  Code Changes Diff
+                                </div>
+                                <div className="p-2.5 rounded-xl bg-[#05070e] border border-slate-800 font-mono text-[10px] space-y-0.5">
+                                  {task.diffLines.map((line, idx) => (
+                                    <div
+                                      key={idx}
+                                      className={`flex items-center gap-2 ${
+                                        line.type === 'del'
+                                          ? 'text-red-400'
+                                          : line.type === 'add'
+                                          ? 'text-emerald-400'
+                                          : 'text-slate-400'
+                                      }`}
+                                    >
+                                      <span className="w-4 text-slate-600 select-none">
+                                        {line.lineNum}
+                                      </span>
+                                      <span>{line.text}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        )}
                       </div>
-                      <span className="text-[10px] font-mono text-slate-400">@{task.workerName}</span>
-                    </div>
-                  ))}
+                    )
+                  })}
                 </div>
               </div>
             </div>

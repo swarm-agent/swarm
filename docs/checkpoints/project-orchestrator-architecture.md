@@ -192,3 +192,24 @@ Stored under Pebble key prefix `project:v3:`:
    - Subagents complete video generation.
    - Daemon resumes Orchestrator ➔ Orchestrator verifies videos and renders 3 video cards with `Download` and `View` actions in the Deliverables area.
    - User accepts deliverables ➔ Task moves to completed, and underlying sessions are archived automatically.
+
+
+---
+
+## 6. Canonical Canvas Architecture: Variant 3 (Autonomous Worker Fleet)
+
+Based on review of the 5 distinct middle canvas variants (Matrix, Kanban, Fleet, Split Studio, Timeline), **Variant 3: Autonomous Worker Fleet** has been selected as the canonical design for the Swarm Project Orchestrator.
+
+### Why Variant 3 Fits the Project Mental Model
+1. **Coworker & Fleet Autonomy**:
+   - The user does not want to micromanage tasks individually. A Project deploys **Autonomous Workers** (`Worker V2`), each assigned a role (e.g. `@Video Swarm Dispatcher`, `@Code Verifier`, `@Testbench Runner`).
+   - Workers carry their own triggers (`on-demand trigger`, `cron hourly`, `interval 30m`), execution budgets, and active job counters.
+2. **Worker-Partitioned Task Queues**:
+   - Tasks are naturally grouped and owned by the worker that generated or is executing them.
+   - Users can see at a glance what each worker is working on (`active jobs`, `current job`).
+3. **100+ Task Scalability with Expandable Drawers**:
+   - Fast instant search across 100+ tasks by name, worker handle (`@Video Swarm`), or category tag.
+   - Status segmented filters (`All (100)`, `Running (6)`, `Needs Review (8)`, `Queued (72)`, `Completed (14)`).
+   - Each task has an expandable drawer (`expandedTaskId`) revealing attached deliverables (16:9 thumbnails, play overlay to launch video inspector, "Accept Deliverable" action) and code diffs with line numbers.
+4. **Noiseless Micro-Automation Ticker**:
+   - Sits above the worker fleet as a slim status bar showing overall project health, active session progress, 4-stage pipeline stepper, and media attachments without vertical clutter.
