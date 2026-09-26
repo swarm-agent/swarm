@@ -68,11 +68,18 @@ func TestAutomationV2ScheduledCheckpointExecution(t *testing.T) {
 		t.Fatal(err)
 	}
 	ss := store.NewSessionStore(db)
+	projID := "proj_test_exec"
+	_ = ss.PutProject("account", &store.ProjectRecord{
+		ID:         projID,
+		AccountID:  "account",
+		Name:       "Test Project",
+		Workspaces: []store.ProjectWorkspaceRef{{WorkspaceID: w.WorkspaceID, Path: repo, Role: "primary_code"}},
+	})
 	if err = ss.CompleteRepositoryHistoryMaintenance(ctx); err != nil {
 		t.Fatal(err)
 	}
 	yes := true
-	if err = ss.CreateSession(store.SessionSnapshot{ID: "author", AccountScopeID: "account", UserID: "owner", Mode: "auto", WorkspacePath: repo, WorkspaceGrants: []store.WorkspaceGrant{{Kind: store.WorkspaceGrantPrimary, WorkspaceID: w.WorkspaceID, Path: repo, Available: &yes}}}); err != nil {
+	if err = ss.CreateSession(store.SessionSnapshot{ID: "author", AccountScopeID: "account", UserID: "owner", Mode: "auto", WorkspacePath: repo, Metadata: map[string]any{"project_id": projID, "role": "project_orchestrator"}, WorkspaceGrants: []store.WorkspaceGrant{{Kind: store.WorkspaceGrantPrimary, WorkspaceID: w.WorkspaceID, Path: repo, Available: &yes}}}); err != nil {
 		t.Fatal(err)
 	}
 	events, err := store.NewEventLog(db)
@@ -84,7 +91,7 @@ func TestAutomationV2ScheduledCheckpointExecution(t *testing.T) {
 	permissions := permission.NewService(store.NewPermissionStore(db), events, nil)
 	permissions.SetBypassPermissions(true)
 	authoring := NewService(service, nil, nil, tool.NewRuntime(1), permissions, nil, nil, events)
-	profile := agent.SwarmAgentProfileForContext(store.AgentProfile{})
+	profile := agent.SwarmOrchestratorAgentProfileForContext(store.AgentProfile{})
 	_, policy, disabled, err := authoring.compileResolvedAgentToolContract("account", profile)
 	if err != nil {
 		t.Fatal(err)
@@ -929,12 +936,24 @@ func TestAutomationV2MultiWorkspaceScoping(t *testing.T) {
 		t.Fatal(err)
 	}
 	yes := true
+	projID := "proj_multi_ws"
+	_ = ss.PutProject("account", &store.ProjectRecord{
+		ID:        projID,
+		AccountID: "account",
+		Name:      "Multi WS Project",
+		Workspaces: []store.ProjectWorkspaceRef{
+			{WorkspaceID: wPrimary.WorkspaceID, Path: primaryRepo, Role: "primary_code"},
+			{WorkspaceID: wSecondary.WorkspaceID, Path: secondaryRepo, Role: "auxiliary"},
+		},
+	})
+
 	if err = ss.CreateSession(store.SessionSnapshot{
 		ID:             "author",
 		AccountScopeID: "account",
 		UserID:         "owner",
 		Mode:           "auto",
 		WorkspacePath:  primaryRepo,
+		Metadata:       map[string]any{"project_id": projID, "role": "project_orchestrator"},
 		WorkspaceGrants: []store.WorkspaceGrant{{
 			Kind:        store.WorkspaceGrantPrimary,
 			WorkspaceID: wPrimary.WorkspaceID,

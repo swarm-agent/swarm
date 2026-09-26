@@ -17,6 +17,7 @@ import (
 // are deliberately absent from this independently versioned contract.
 type AutomationV2Settings struct {
 	SchemaVersion    int                    `json:"schema_version"`
+	ProjectID        string                 `json:"project_id,omitempty"`
 	WorkspaceID      string                 `json:"workspace_id,omitempty"`
 	WorkspaceIDs     []string               `json:"workspace_ids,omitempty"`
 	Schedule         AutomationV2Schedule   `json:"schedule"`
@@ -55,6 +56,7 @@ type AutomationV2Proposal struct {
 	AutomationV2Review
 	AccountID      string              `json:"account_id"`
 	UserID         string              `json:"user_id"`
+	ProjectID      string              `json:"project_id,omitempty"`
 	WorkspaceID    string              `json:"workspace_id"`
 	WorkspaceIDs   []string            `json:"workspace_ids,omitempty"`
 	SessionID      string              `json:"session_id"`
@@ -486,7 +488,8 @@ func validateAutomationV2Integrity(p AutomationV2Proposal, account, user, worksp
 // ProposeAutomationV2 stores the reviewed canonical document, but no automation,
 // authorization, active plan, or run. Revisions compare the complete prior review.
 func (s *SessionStore) ProposeAutomationV2(account, user, workspace, id string, doc SessionPlanDocument, expected AutomationV2Review, validate func(*SessionPlanDocument) error) (AutomationV2Proposal, error) {
-	if _, err := s.automationV2Owner(account, user, workspace, id); err != nil {
+	session, err := s.automationV2Owner(account, user, workspace, id)
+	if err != nil {
 		return AutomationV2Proposal{}, err
 	}
 	if doc.AutomationV2 == nil && doc.WorkerV2 != nil {
@@ -512,10 +515,6 @@ func (s *SessionStore) ProposeAutomationV2(account, user, workspace, id string, 
 		if err != nil {
 			return AutomationV2Proposal{}, err
 		}
-	}
-	digest, err := AutomationV2DocumentDigest(doc)
-	if err != nil {
-		return AutomationV2Proposal{}, err
 	}
 	baseGeneration := uint64(0)
 	if expected != (AutomationV2Review{}) {
@@ -550,7 +549,27 @@ func (s *SessionStore) ProposeAutomationV2(account, user, workspace, id string, 
 			deduped = append(deduped, wid)
 		}
 	}
-	p := AutomationV2Proposal{BaseGeneration: baseGeneration, AutomationV2Review: AutomationV2Review{proposalID, expected.Revision + 1, digest}, AccountID: account, UserID: user, WorkspaceID: workspace, WorkspaceIDs: deduped, SessionID: id, Document: doc, CreatedAt: time.Now().UnixMilli()}
+	projectID := ""
+	if doc.WorkerV2 != nil && strings.TrimSpace(doc.WorkerV2.ProjectID) != "" {
+		projectID = strings.TrimSpace(doc.WorkerV2.ProjectID)
+	} else if doc.AutomationV2 != nil && strings.TrimSpace(doc.AutomationV2.ProjectID) != "" {
+		projectID = strings.TrimSpace(doc.AutomationV2.ProjectID)
+	} else if session.Metadata != nil {
+		if pid, ok := session.Metadata["project_id"].(string); ok {
+			projectID = strings.TrimSpace(pid)
+		}
+	}
+	if doc.WorkerV2 != nil && projectID != "" {
+		doc.WorkerV2.ProjectID = projectID
+	}
+	if doc.AutomationV2 != nil && projectID != "" {
+		doc.AutomationV2.ProjectID = projectID
+	}
+	digest, err := AutomationV2DocumentDigest(doc)
+	if err != nil {
+		return AutomationV2Proposal{}, err
+	}
+	p := AutomationV2Proposal{BaseGeneration: baseGeneration, AutomationV2Review: AutomationV2Review{proposalID, expected.Revision + 1, digest}, AccountID: account, UserID: user, ProjectID: projectID, WorkspaceID: workspace, WorkspaceIDs: deduped, SessionID: id, Document: doc, CreatedAt: time.Now().UnixMilli()}
 	m := &automationV2Mutation{proposal: p, expected: expected, validate: validate}
 	_, err = s.ApplyV3SessionMutation(V3SessionMutationInput{SessionID: id, AccountScopeID: account, UserID: user, Kind: V3SessionMutationUpdateMetadata, EventType: "session.automation_v2.proposed", ClientRequestID: fmt.Sprintf("av2:proposal:%s:%d", proposalID, p.Revision), PayloadHash: digest, automationV2: m})
 	if err != nil {
@@ -797,6 +816,28 @@ func (s *SessionStore) setAutomationV2InBatch(batch *pebble.Batch, in V3SessionM
 		}
 		if err := batch.Set([]byte(automationV2Key("accepted", p.AccountID, p.SessionID)), b, nil); err != nil {
 			return err
+		}
+	}
+	if m.accept && m.record.ProjectID != "" {
+		if rawProj, closer, err := s.store.db.Get([]byte(KeyProject(p.AccountID, m.record.ProjectID))); err == nil && closer != nil {
+			var proj ProjectRecord
+			if jsonErr := json.Unmarshal(rawProj, &proj); jsonErr == nil {
+				foundAuto := false
+				for _, aid := range proj.AutomationIDs {
+					if aid == m.record.AutomationID {
+						foundAuto = true
+						break
+					}
+				}
+				if !foundAuto {
+					proj.AutomationIDs = append(proj.AutomationIDs, m.record.AutomationID)
+					proj.UpdatedAt = m.record.AcceptedAt
+					if projBytes, mErr := json.Marshal(&proj); mErr == nil {
+						_ = batch.Set([]byte(KeyProject(p.AccountID, proj.ID)), projBytes, nil)
+					}
+				}
+			}
+			_ = closer.Close()
 		}
 	}
 	if m.accept {

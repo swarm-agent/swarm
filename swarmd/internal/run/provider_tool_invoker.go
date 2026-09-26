@@ -672,8 +672,11 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 		return tool.Result{CallID: call.CallID, Name: call.Name, Error: "Worker proposals require manage_workers action=propose; session-plan tools cannot author workers"}, 0, nil
 	}
 	if workerProposalCall(call) {
-		if permissionSessionID != config.sessionID || !strings.EqualFold(config.agentProfile.Name, "swarm") {
-			return tool.Result{CallID: call.CallID, Name: call.Name, Error: "Worker proposal authoring requires the primary Swarm conversation and its trusted principal"}, 0, nil
+		isOrchestrator := strings.EqualFold(config.agentProfile.Name, agentruntime.SwarmOrchestratorAgentID) ||
+			strings.EqualFold(config.agentProfile.Name, "orchestrator") ||
+			strings.EqualFold(config.agentProfile.Name, "system-orchestrator")
+		if permissionSessionID != config.sessionID || !isOrchestrator {
+			return tool.Result{CallID: call.CallID, Name: call.Name, Error: "Worker proposal authoring is exclusive to Swarm Orchestrator in Swarm mode"}, 0, nil
 		}
 		current, _, err := s.automationV2ToolSession(config.sessionID)
 		if err != nil {

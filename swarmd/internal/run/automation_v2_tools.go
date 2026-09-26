@@ -127,7 +127,7 @@ func (s *Service) executeWorkerProposalTool(id string, call tool.Call) (string, 
 		return "", errors.New("manage_workers action=propose required")
 	}
 	for key := range args {
-		if key != "document" && key != "action" && key != "worker_review" && key != "workspace_id" && key != "workspace_ids" {
+		if key != "document" && key != "action" && key != "worker_review" && key != "workspace_id" && key != "workspace_ids" && key != "project_id" {
 			return "", fmt.Errorf("worker proposal does not accept %s; submit complete instructions and worker_review only for an exact pending edit", key)
 		}
 	}
@@ -151,6 +151,61 @@ func (s *Service) executeWorkerProposalTool(id string, call tool.Call) (string, 
 	current, defaultWorkspace, err := s.automationV2ToolSession(id)
 	if err != nil {
 		return "", err
+	}
+	projectID := mapString(args, "project_id")
+	if projectID == "" && doc.WorkerV2 != nil {
+		projectID = strings.TrimSpace(doc.WorkerV2.ProjectID)
+	}
+	if projectID == "" && current.Metadata != nil {
+		projectID = mapString(current.Metadata, "project_id")
+	}
+	if projectID == "" {
+		return "", errors.New("workers must be deployed in a project with scoped project context; deploy from Swarm Orchestrate mode or provide project_id")
+	}
+	if s.sessions != nil && s.sessions.Store() != nil {
+		proj, found, err := s.sessions.Store().GetProject(current.AccountScopeID, projectID)
+		if err != nil {
+			return "", err
+		}
+		if !found || proj == nil {
+			return "", fmt.Errorf("project %q not found", projectID)
+		}
+		validWS := make(map[string]bool)
+		for _, ws := range proj.Workspaces {
+			if strings.TrimSpace(ws.WorkspaceID) != "" {
+				validWS[strings.TrimSpace(ws.WorkspaceID)] = true
+			}
+		}
+		if len(doc.WorkerV2.WorkspaceIDs) > 0 {
+			for _, wid := range doc.WorkerV2.WorkspaceIDs {
+				if len(validWS) > 0 && !validWS[wid] {
+					return "", fmt.Errorf("workspace %q is not part of project %q", wid, projectID)
+				}
+			}
+			if doc.WorkerV2.WorkspaceID == "" {
+				doc.WorkerV2.WorkspaceID = doc.WorkerV2.WorkspaceIDs[0]
+			}
+		} else if doc.WorkerV2.WorkspaceID != "" {
+			if len(validWS) > 0 && !validWS[doc.WorkerV2.WorkspaceID] {
+				return "", fmt.Errorf("workspace %q is not part of project %q", doc.WorkerV2.WorkspaceID, projectID)
+			}
+			doc.WorkerV2.WorkspaceIDs = []string{doc.WorkerV2.WorkspaceID}
+		} else if len(proj.Workspaces) > 0 {
+			for _, ws := range proj.Workspaces {
+				if strings.TrimSpace(ws.WorkspaceID) != "" {
+					doc.WorkerV2.WorkspaceIDs = append(doc.WorkerV2.WorkspaceIDs, strings.TrimSpace(ws.WorkspaceID))
+				}
+			}
+			if len(doc.WorkerV2.WorkspaceIDs) > 0 {
+				doc.WorkerV2.WorkspaceID = doc.WorkerV2.WorkspaceIDs[0]
+			}
+		}
+		doc.WorkerV2.ProjectID = projectID
+		if doc.AutomationV2 != nil {
+			doc.AutomationV2.ProjectID = projectID
+			doc.AutomationV2.WorkspaceID = doc.WorkerV2.WorkspaceID
+			doc.AutomationV2.WorkspaceIDs = doc.WorkerV2.WorkspaceIDs
+		}
 	}
 	targetWorkspace := defaultWorkspace
 	if doc.WorkerV2 != nil && strings.TrimSpace(doc.WorkerV2.WorkspaceID) != "" {
@@ -178,6 +233,9 @@ func automationV2ToolOutput(p store.AutomationV2Proposal) (string, error) {
 		"status":            "pending_review",
 		"review_kind":       "worker_v2",
 		"title":             "Worker plan",
+		"project_id":        p.ProjectID,
+		"workspace_id":      p.WorkspaceID,
+		"workspace_ids":     p.WorkspaceIDs,
 		"created":           false,
 		"enabled":           false,
 		"next_action":       "await_worker_acceptance",

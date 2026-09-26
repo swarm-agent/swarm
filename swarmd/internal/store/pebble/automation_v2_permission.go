@@ -29,7 +29,8 @@ func (s *SessionStore) setAutomationV2PermissionInBatch(batch *pebble.Batch, m *
 	payload, err := json.Marshal(map[string]any{
 		"path_id": "permission.automation-v2-plan.v2", "review_kind": "worker_v2", "action": "propose",
 		"title": "Worker review", "document": p.Document, "proposal_revision": p.Revision,
-		"worker_review": p.AutomationV2Review, "scope": map[string]string{"account_id": p.AccountID, "workspace_id": p.WorkspaceID},
+		"project_id": p.ProjectID, "workspace_id": p.WorkspaceID, "workspace_ids": p.WorkspaceIDs,
+		"worker_review": p.AutomationV2Review, "scope": map[string]string{"account_id": p.AccountID, "workspace_id": p.WorkspaceID, "project_id": p.ProjectID},
 		"acceptance_consequence": consequence,
 		"acceptance":             map[string]any{"method": "POST", "path": "/v3/automations/v2/accept", "body": map[string]any{"action": "accept_automation", "workspace_id": p.WorkspaceID, "session_id": p.SessionID, "review": p.AutomationV2Review}},
 	})

@@ -3,6 +3,9 @@ import type { DesktopPermissionRecord } from '../types/realtime'
 
 export interface AutomationV2Settings {
   schema_version: 2
+  project_id?: string
+  workspace_id?: string
+  workspace_ids?: string[]
   schedule: { kind: 'interval' | 'cron' | 'trigger'; interval_seconds?: number; cron?: string; timezone?: string }
   expiration: { kind: 'indefinite' | 'at'; expires_at?: number }
   missed: 'skip' | 'coalesce'
@@ -26,7 +29,7 @@ export interface AutomationV2Document extends Record<string, unknown> {
 }
 export interface AutomationV2Review { proposal_id: string; revision: number; digest: string }
 export interface AutomationV2Proposal extends AutomationV2Review {
-  account_id: string; workspace_id: string; workspace_ids?: string[]; session_id: string; document: AutomationV2Document; base_generation?: number
+  account_id: string; workspace_id: string; workspace_ids?: string[]; project_id?: string; session_id: string; document: AutomationV2Document; base_generation?: number
 }
 export interface AutomationV2Record extends AutomationV2Proposal {
   automation_id: string; generation: number; enabled: boolean; cancelled: boolean; accepted_at: number
@@ -111,7 +114,9 @@ export function automationV2PermissionProposal(permission: DesktopPermissionReco
     if (!Array.isArray(doc.checkpoints)) doc.checkpoints = []
     if (!doc.automation_v2) doc.automation_v2 = settings
     if (!doc.worker_v2) doc.worker_v2 = settings
-    return { ...review, workspace_id: workspaceId, account_id: accountId, session_id: sessionId, document: doc }
+    const projectId = payload.project_id || payload.document?.worker_v2?.project_id || payload.document?.automation_v2?.project_id || (permission as any).projectId || (permission as any).project_id
+    const workspaceIds = payload.workspace_ids || payload.document?.worker_v2?.workspace_ids || payload.document?.automation_v2?.workspace_ids || (workspaceId ? [workspaceId] : [])
+    return { ...review, workspace_id: workspaceId, workspace_ids: workspaceIds, project_id: projectId, account_id: accountId, session_id: sessionId, document: doc }
   } catch { return null }
 }
 export function validateAutomationV2(settings: AutomationV2Settings, now = Date.now()): void {

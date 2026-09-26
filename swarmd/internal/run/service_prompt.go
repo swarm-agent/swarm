@@ -31,6 +31,10 @@ func masterHarnessPrompt(workspacePath string) string {
 }
 
 func masterHarnessPromptWithScope(scope tool.WorkspaceScope) string {
+	return masterHarnessPromptWithScopeAndAgent(scope, true)
+}
+
+func masterHarnessPromptWithScopeAndAgent(scope tool.WorkspaceScope, isOrchestrator bool) string {
 	workspacePath := strings.TrimSpace(scope.PrimaryPath)
 	if workspacePath == "" {
 		workspacePath = "."
@@ -61,12 +65,16 @@ func masterHarnessPromptWithScope(scope tool.WorkspaceScope) string {
 		}
 		workspaceScopeLines = append(workspaceScopeLines, "- linked_root: "+root)
 	}
+	workerStrategy := "- Worker V2 & Triggers: for any worker task (creating, scheduling, trigger-type workers, token minting, triggering, or lifecycle), call manage_workers action='help' first to get full syntax, trigger schedules, and token minting workflows. Propose workers via manage_workers action='propose' with a complete worker_v2 document in Plan or Auto (for on-demand triggers, set schedule: {\"kind\":\"trigger\"}). Worker proposals create a dedicated review card, not a session-plan approval or run; only explicit user Accept worker activates it. Stop authoring and let the user click Accept worker; never self-approve. Upon acceptance, Swarm automatically mints a scoped deploy token (scopes: ['automations:trigger']) tied directly to that worker_id and securely writes it as SWARM_TRIGGER_TOKEN to ~/.config/swarm/secrets.env (mode 0600). The user only clicks Accept worker; the AI must test the trigger itself afterwards (via POST /v3/automations/v2/trigger or SDK client.automations.trigger with Bearer token) and verify end-to-end execution and Agent Mailbox delivery before continuous automated use on the machine. Triggered runs execute in an isolated worktree and automatically deliver to the Agent Mailbox (/v3/deliverables)."
+	if !isOrchestrator {
+		workerStrategy = "- Background Workers & Automations: Worker and automation deployment is exclusively handled by Swarm Orchestrator in Swarm mode (@orchestrator). Chat sessions cannot deploy or manage workers; direct the user to Swarm Orchestrate mode or switch to @orchestrator."
+	}
 	return strings.TrimSpace(strings.Join([]string{
 		"Master harness prompt (applies to every agent run):",
 		"- This prompt is global and mandatory; agent profile prompts are additive and must not override it.",
 		"You are Swarm's coding assistant running in a local workspace. Use tools when needed to inspect files or execute commands.",
 		"Execution strategy:",
-		"- Worker V2 & Triggers: for any worker task (creating, scheduling, trigger-type workers, token minting, triggering, or lifecycle), call manage_workers action='help' first to get full syntax, trigger schedules, and token minting workflows. Propose workers via manage_workers action='propose' with a complete worker_v2 document in Plan or Auto (for on-demand triggers, set schedule: {\"kind\":\"trigger\"}). Worker proposals create a dedicated review card, not a session-plan approval or run; only explicit user Accept worker activates it. Stop authoring and let the user click Accept worker; never self-approve. Upon acceptance, Swarm automatically mints a scoped deploy token (scopes: ['automations:trigger']) tied directly to that worker_id and securely writes it as SWARM_TRIGGER_TOKEN to ~/.config/swarm/secrets.env (mode 0600). The user only clicks Accept worker; the AI must test the trigger itself afterwards (via POST /v3/automations/v2/trigger or SDK client.automations.trigger with Bearer token) and verify end-to-end execution and Agent Mailbox delivery before continuous automated use on the machine. Triggered runs execute in an isolated worktree and automatically deliver to the Agent Mailbox (/v3/deliverables).",
+		workerStrategy,
 		"- Start discovery with search (FFF content/symbol lookup), find (FFF file/directory/path discovery), and list before broad file reads. Batch multiple independent calls in one step. Scope tight: prefer search content_mode=literal for exact strings; use regex only for real pattern syntax and fuzzy for approximate content matches. Follow truncation/page_offset signals.",
 		"- Internet retrieval: run websearch first (metadata-first, fast); use webfetch only for selected URLs needing deeper content. Sequence calls only when dependent.",
 		"- Source edits: use edit for exact replacements and write for intentional file creation/replacement; do not create temporary patch scripts such as patch_*.py. Use shell/Python mutation scripts only when explicitly requested.",
@@ -371,7 +379,10 @@ func executionCapacityInstructions(snap executioncapacity.Snapshot) string {
 
 func (s *Service) composeInstructionsForScopeWithDiscoveryRoots(scope tool.WorkspaceScope, discoveryRoots []string, agentProfile pebblestore.AgentProfile, userInstructions string) string {
 	blocks := make([]string, 0, 7)
-	blocks = append(blocks, masterHarnessPromptWithScope(scope))
+	isOrchestrator := strings.EqualFold(strings.TrimSpace(agentProfile.Name), agentruntime.SwarmOrchestratorAgentID) ||
+		strings.EqualFold(strings.TrimSpace(agentProfile.Name), "orchestrator") ||
+		strings.EqualFold(strings.TrimSpace(agentProfile.Name), "system-orchestrator")
+	blocks = append(blocks, masterHarnessPromptWithScopeAndAgent(scope, isOrchestrator))
 	if s.permissions != nil {
 		if policy, err := s.permissions.CurrentPolicyForAccount(scope.Principal.AccountScopeID); err == nil {
 			blocks = append(blocks, subagentPolicyInstructions(policy.Subagents))
@@ -429,10 +440,6 @@ func (s *Service) composeInstructionsForScopeWithDiscoveryRoots(scope tool.Works
 		}
 		blocks = append(blocks, strings.TrimSpace(strings.Join(lines, "\n")))
 	}
-
-	isOrchestrator := strings.EqualFold(strings.TrimSpace(agentProfile.Name), agentruntime.SwarmOrchestratorAgentID) ||
-		strings.EqualFold(strings.TrimSpace(agentProfile.Name), "orchestrator") ||
-		strings.EqualFold(strings.TrimSpace(agentProfile.Name), "system-orchestrator")
 
 	if isOrchestrator {
 		if projectBlock := s.projectContextPromptBlock(scope); projectBlock != "" {

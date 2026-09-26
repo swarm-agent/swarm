@@ -16,6 +16,7 @@ import {
   FileText,
   Film,
   Folder,
+  FolderTree,
   FolderGit2,
   FolderPlus,
   GitBranch,
@@ -52,6 +53,7 @@ import { useDesktopV3CacheSelector, getDesktopV3CacheSnapshot } from '../state/d
 import { selectPendingWorkerSidebarReviews } from '../state/desktop-automation-v2-state'
 import { desktopAutomationV2 } from '../runtime/desktop-automation-v2'
 import { decidePendingWorkerReview } from '../tools/automations/pending-worker-sidebar-reviews'
+import type { AutomationV2Proposal } from '../state/desktop-automation-v2-api'
 import { DesktopV3ExistingConversationPane } from '../chat/components/desktop-v3-existing-conversation-pane'
 import {
   isDesktopV3SessionTailReady,
@@ -1938,6 +1940,49 @@ export function OrchestrateView({
   )
   const [reviewBusyId, setReviewBusyId] = useState<string | null>(null)
   const [reviewError, setReviewError] = useState<{ id: string; message: string } | null>(null)
+  const [editingScopePermissionId, setEditingScopePermissionId] = useState<string | null>(null)
+  const [editedWorkspaceIds, setEditedWorkspaceIds] = useState<string[]>([])
+  const [savingScope, setSavingScope] = useState(false)
+
+  const handleUpdateWorkerWorkspaceScope = async (permissionId: string, proposal: AutomationV2Proposal, newWorkspaceIds: string[]) => {
+    if (savingScope || newWorkspaceIds.length === 0) return
+    setSavingScope(true)
+    setReviewError(null)
+    try {
+      const primaryWs = newWorkspaceIds[0] || proposal.workspace_id
+      const currentDoc = proposal.document
+      const baseSettings = ((currentDoc as any)?.worker_v2 || currentDoc.automation_v2 || {}) as Record<string, unknown>
+      const updatedDoc = {
+        ...currentDoc,
+        worker_v2: {
+          ...baseSettings,
+          workspace_id: primaryWs,
+          workspace_ids: newWorkspaceIds,
+        },
+        automation_v2: {
+          ...baseSettings,
+          workspace_id: primaryWs,
+          workspace_ids: newWorkspaceIds,
+        },
+      }
+      await desktopAutomationV2.mutate({
+        action: 'propose_automation',
+        workspace_id: proposal.workspace_id,
+        session_id: proposal.session_id,
+        document: updatedDoc as any,
+        review: {
+          proposal_id: proposal.proposal_id,
+          revision: proposal.revision,
+          digest: proposal.digest,
+        },
+      })
+      setEditingScopePermissionId(null)
+    } catch (cause) {
+      setReviewError({ id: permissionId, message: cause instanceof Error ? cause.message : 'Failed to update workspace scope.' })
+    } finally {
+      setSavingScope(false)
+    }
+  }
 
   const handleDecideReview = async (id: string, revision: number, digest: string, action: 'accept_automation' | 'decline_automation') => {
     if (reviewBusyId) return
@@ -3940,6 +3985,174 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                           </div>
                         </div>
                       </div>
+
+                      {/* SCOPED PROJECT WORKSPACES & WORKSPACE SCOPE REVIEW */}
+                      {(() => {
+                        const projectWorkspaces = selectedProject?.workspaces || []
+                        const scopedWsIds = proposal.workspace_ids && proposal.workspace_ids.length > 0
+                          ? proposal.workspace_ids
+                          : (proposal.workspace_id ? [proposal.workspace_id] : [])
+                        const isEditingScope = editingScopePermissionId === permission.id
+
+                        return (
+                          <div className="rounded-xl border border-slate-800 bg-slate-900/70 p-3.5 space-y-3">
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-2">
+                                <FolderTree size={14} className="text-blue-400" />
+                                <span className="text-xs font-bold text-slate-200">
+                                  Scoped Project Workspaces ({scopedWsIds.length} of {Math.max(projectWorkspaces.length, scopedWsIds.length)} Active)
+                                </span>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (isEditingScope) {
+                                    setEditingScopePermissionId(null)
+                                  } else {
+                                    setEditingScopePermissionId(permission.id)
+                                    setEditedWorkspaceIds(scopedWsIds)
+                                  }
+                                }}
+                                className="px-2.5 py-1 rounded-lg border border-slate-700 bg-slate-800 hover:bg-slate-700 text-[11px] font-semibold text-slate-300 hover:text-white transition-all flex items-center gap-1.5"
+                              >
+                                <Edit3 size={11} />
+                                <span>{isEditingScope ? 'Cancel Scoping' : 'Suggest Changes / Edit Workspaces'}</span>
+                              </button>
+                            </div>
+
+                            <p className="text-[11px] text-slate-400 leading-relaxed">
+                              The orchestrator scoped this worker to specific directories within project{' '}
+                              <strong className="text-slate-200">{selectedProject?.name || 'current project'}</strong>.
+                              Not all workspaces are required. You can customize the included workspaces below before registering.
+                            </p>
+
+                            {isEditingScope ? (
+                              <div className="space-y-2.5 pt-1">
+                                <div className="space-y-1.5">
+                                  {projectWorkspaces.length > 0 ? (
+                                    projectWorkspaces.map((ws) => {
+                                      const wsId = ws.workspace_id || ws.path
+                                      const isChecked = editedWorkspaceIds.includes(wsId)
+                                      return (
+                                        <label
+                                          key={wsId}
+                                          className={`flex items-center justify-between p-2.5 rounded-xl border text-xs cursor-pointer transition-all ${
+                                            isChecked
+                                              ? 'border-blue-500/50 bg-blue-500/10 text-white'
+                                              : 'border-slate-800 bg-slate-950/60 text-slate-400 hover:border-slate-700'
+                                          }`}
+                                        >
+                                          <div className="flex items-center gap-2.5">
+                                            <input
+                                              type="checkbox"
+                                              checked={isChecked}
+                                              onChange={(e) => {
+                                                if (e.target.checked) {
+                                                  setEditedWorkspaceIds((prev) => [...prev, wsId])
+                                                } else {
+                                                  setEditedWorkspaceIds((prev) => prev.filter((id) => id !== wsId))
+                                                }
+                                              }}
+                                              className="rounded border-slate-700 bg-slate-900 text-blue-600 focus:ring-0"
+                                            />
+                                            <span className="font-mono text-xs">{ws.path}</span>
+                                            {ws.role && (
+                                              <span className="px-1.5 py-0.5 rounded text-[10px] uppercase font-mono bg-slate-800 text-slate-400">
+                                                {ws.role}
+                                              </span>
+                                            )}
+                                          </div>
+                                          <span className="text-[10px] font-semibold">
+                                            {isChecked ? (
+                                              <span className="text-emerald-400">Included</span>
+                                            ) : (
+                                              <span className="text-slate-500">Excluded</span>
+                                            )}
+                                          </span>
+                                        </label>
+                                      )
+                                    })
+                                  ) : (
+                                    <div className="text-xs text-slate-500">No additional project workspaces discovered.</div>
+                                  )}
+                                </div>
+                                <div className="flex items-center justify-end gap-2 pt-1">
+                                  <button
+                                    type="button"
+                                    disabled={savingScope || editedWorkspaceIds.length === 0}
+                                    onClick={() => handleUpdateWorkerWorkspaceScope(permission.id, proposal, editedWorkspaceIds)}
+                                    className="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold transition-all disabled:opacity-50 flex items-center gap-1.5"
+                                  >
+                                    {savingScope ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}
+                                    <span>Apply Workspace Scope</span>
+                                  </button>
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="flex flex-wrap gap-2 pt-1">
+                                {projectWorkspaces.length > 0 ? (
+                                  projectWorkspaces.map((ws) => {
+                                    const wsId = ws.workspace_id || ws.path
+                                    const isIncluded = scopedWsIds.includes(wsId) || (!proposal.workspace_ids && ws.workspace_id === proposal.workspace_id)
+                                    return (
+                                      <div
+                                        key={wsId}
+                                        className={`flex items-center gap-2 px-2.5 py-1.5 rounded-xl border text-xs font-mono transition-all ${
+                                          isIncluded
+                                            ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300'
+                                            : 'border-slate-800 bg-slate-900/40 text-slate-500 line-through opacity-60'
+                                        }`}
+                                        title={ws.path}
+                                      >
+                                        <Folder size={12} className={isIncluded ? 'text-emerald-400' : 'text-slate-600'} />
+                                        <span className="truncate max-w-[220px]">{ws.label || ws.path.split('/').pop() || ws.path}</span>
+                                        <span className={`text-[10px] px-1.5 py-0.5 rounded font-sans font-semibold ${
+                                          isIncluded ? 'bg-emerald-500/20 text-emerald-300' : 'bg-slate-800 text-slate-500'
+                                        }`}>
+                                          {isIncluded ? 'Scoped' : 'Excluded'}
+                                        </span>
+                                      </div>
+                                    )
+                                  })
+                                ) : (
+                                  <div className="flex items-center gap-2 px-2.5 py-1.5 rounded-xl border border-emerald-500/40 bg-emerald-500/10 text-emerald-300 text-xs font-mono">
+                                    <Folder size={12} className="text-emerald-400" />
+                                    <span>{proposal.workspace_id}</span>
+                                    <span className="text-[10px] px-1.5 py-0.5 rounded font-sans font-semibold bg-emerald-500/20 text-emerald-300">
+                                      Scoped
+                                    </span>
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        )
+                      })()}
+
+                      {/* PLANNED PIPELINE TASKS / LONG TERM TASK CONTRACT */}
+                      {doc?.checkpoints && doc.checkpoints.length > 0 && (
+                        <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-3 text-xs space-y-2">
+                          <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 block">
+                            📌 Pre-Configured Worker Pipeline ({doc.checkpoints.length} Step{doc.checkpoints.length === 1 ? '' : 's'})
+                          </span>
+                          <div className="space-y-1.5">
+                            {doc.checkpoints.map((cp, idx) => (
+                              <div key={cp.id || idx} className="rounded-lg border border-slate-800/80 bg-slate-950/60 p-2 text-xs">
+                                <div className="font-semibold text-slate-200">
+                                  {idx + 1}. {cp.title}
+                                </div>
+                                {cp.tasks && cp.tasks.length > 0 && (
+                                  <ul className="mt-1 space-y-0.5 text-[11px] text-slate-400 list-disc list-inside">
+                                    {cp.tasks.map((task, tIdx) => (
+                                      <li key={tIdx}>{task}</li>
+                                    ))}
+                                  </ul>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
 
                       <div className="rounded-xl border border-slate-800/80 bg-[#070b14] p-3 text-xs space-y-1.5">
                         <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 block">

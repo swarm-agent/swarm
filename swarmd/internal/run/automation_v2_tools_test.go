@@ -47,8 +47,15 @@ func TestAutomationV2ProviderDispatch(t *testing.T) {
 				t.Fatal(err)
 			}
 			ss := store.NewSessionStore(db)
+			projID := "proj_test_1"
+			_ = ss.PutProject("account", &store.ProjectRecord{
+				ID:         projID,
+				AccountID:  "account",
+				Name:       "Test Project",
+				Workspaces: []store.ProjectWorkspaceRef{{WorkspaceID: w.WorkspaceID, Path: w.Path, Role: "primary_code"}},
+			})
 			yes := true
-			if err = ss.CreateSession(store.SessionSnapshot{ID: "author", AccountScopeID: "account", UserID: "owner", Mode: mode, WorkspacePath: w.Path, WorkspaceGrants: []store.WorkspaceGrant{{Kind: store.WorkspaceGrantPrimary, WorkspaceID: w.WorkspaceID, Path: w.Path, Available: &yes}}}); err != nil {
+			if err = ss.CreateSession(store.SessionSnapshot{ID: "author", AccountScopeID: "account", UserID: "owner", Mode: mode, WorkspacePath: w.Path, Metadata: map[string]any{"project_id": projID, "role": "project_orchestrator"}, WorkspaceGrants: []store.WorkspaceGrant{{Kind: store.WorkspaceGrantPrimary, WorkspaceID: w.WorkspaceID, Path: w.Path, Available: &yes}}}); err != nil {
 				t.Fatal(err)
 			}
 			events, err := store.NewEventLog(db)
@@ -60,7 +67,7 @@ func TestAutomationV2ProviderDispatch(t *testing.T) {
 			permissions := permission.NewService(ps, events, nil)
 			permissions.SetBypassPermissions(true)
 			svc := NewService(sessions, nil, nil, tool.NewRuntime(1), permissions, nil, nil, events)
-			profile := agent.SwarmAgentProfileForContext(store.AgentProfile{})
+			profile := agent.SwarmOrchestratorAgentProfileForContext(store.AgentProfile{})
 			_, policy, disabled, err := svc.compileResolvedAgentToolContract("account", profile)
 			if err != nil {
 				t.Fatal(err)
@@ -474,5 +481,186 @@ func TestAutomationV2ManageWorkersHelpAndProjectWorkspaceResolution(t *testing.T
 	}
 	if !strings.Contains(reviewOut, "not_created") {
 		t.Fatalf("unexpected review output: %s", reviewOut)
+	}
+}
+
+func TestProjectScopedWorkerProposalAndChatRejection(t *testing.T) {
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ids := store.NewIdentityStore(db)
+	if _, err = ids.PutUser(store.UserRecord{ID: "owner", Username: "owner"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = ids.PutAccountScope(store.AccountScopeRecord{ID: "account", Type: store.AccountScopeTypePersonal, CreatedByUserID: "owner"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = ids.PutAccountUser(store.AccountUserRecord{ID: "member", AccountScopeID: "account", UserID: "owner", Status: "active"}); err != nil {
+		t.Fatal(err)
+	}
+	wsStore := store.NewWorkspaceStore(db)
+	wA, err := wsStore.AddForAccount("account", t.TempDir(), "Workspace A")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wB, err := wsStore.AddForAccount("account", t.TempDir(), "Workspace B")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ss := store.NewSessionStore(db)
+	events, err := store.NewEventLog(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessions := session.NewService(ss, events)
+	ps := store.NewPermissionStore(db)
+	permissions := permission.NewService(ps, events, nil)
+	permissions.SetBypassPermissions(true)
+	svc := NewService(sessions, nil, nil, tool.NewRuntime(1), permissions, nil, nil, events)
+
+	projID := "proj_scoped_123"
+	if err := ss.PutProject("account", &store.ProjectRecord{
+		ID:        projID,
+		AccountID: "account",
+		Name:      "Scoped Project",
+		Workspaces: []store.ProjectWorkspaceRef{
+			{WorkspaceID: wA.WorkspaceID, Path: wA.Path, Role: "primary_code"},
+			{WorkspaceID: wB.WorkspaceID, Path: wB.Path, Role: "auxiliary"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	avail := true
+	orchSession := store.SessionSnapshot{
+		ID:             "orch-session",
+		AccountScopeID: "account",
+		UserID:         "owner",
+		Mode:           "auto",
+		WorkspacePath:  wA.Path,
+		WorkspaceGrants: []store.WorkspaceGrant{
+			{Kind: store.WorkspaceGrantPrimary, Path: wA.Path, WorkspaceID: wA.WorkspaceID, Available: &avail},
+		},
+		Metadata: map[string]any{
+			"project_id": projID,
+			"role":       "project_orchestrator",
+		},
+	}
+	if err := ss.CreateSession(orchSession); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Propose worker from orchestrator session: auto-suggests project workspaces
+	doc := map[string]any{
+		"title": "Health Auditor",
+		"info":  map[string]any{"goal": "Check project health"},
+		"worker_v2": map[string]any{
+			"schema_version": 2,
+			"schedule":       map[string]any{"kind": "trigger"},
+		},
+	}
+	rawDoc, _ := json.Marshal(doc)
+	call := tool.Call{
+		Name:      "manage_workers",
+		Arguments: fmt.Sprintf(`{"action":"propose","document":%s}`, string(rawDoc)),
+	}
+	out, err := svc.executeWorkerProposalTool("orch-session", call)
+	if err != nil {
+		t.Fatalf("orchestrator proposal failed: %v", err)
+	}
+	var propResult map[string]any
+	if err := json.Unmarshal([]byte(out), &propResult); err != nil {
+		t.Fatal(err)
+	}
+	if propResult["project_id"] != projID {
+		t.Fatalf("expected project_id %q, got %v", projID, propResult["project_id"])
+	}
+	wsIDs, _ := propResult["workspace_ids"].([]any)
+	if len(wsIDs) != 2 {
+		t.Fatalf("expected 2 suggested workspace_ids, got %v", wsIDs)
+	}
+
+	// 2. Reject proposal with workspace not belonging to the project
+	badDoc := map[string]any{
+		"title": "Health Auditor",
+		"info":  map[string]any{"goal": "Check project health"},
+		"worker_v2": map[string]any{
+			"schema_version": 2,
+			"workspace_ids":  []string{"ws-unrelated"},
+			"schedule":       map[string]any{"kind": "trigger"},
+		},
+	}
+	rawBad, _ := json.Marshal(badDoc)
+	badCall := tool.Call{
+		Name:      "manage_workers",
+		Arguments: fmt.Sprintf(`{"action":"propose","document":%s}`, string(rawBad)),
+	}
+	if _, err := svc.executeWorkerProposalTool("orch-session", badCall); err == nil || !strings.Contains(err.Error(), "not part of project") {
+		t.Fatalf("expected 'not part of project' error, got %v", err)
+	}
+
+	// 3. Reject proposal without a project
+	noProjSession := store.SessionSnapshot{
+		ID:             "no-proj-session",
+		AccountScopeID: "account",
+		UserID:         "owner",
+		Mode:           "auto",
+		WorkspacePath:  "/path/a",
+		WorkspaceGrants: []store.WorkspaceGrant{
+			{Kind: store.WorkspaceGrantPrimary, Path: "/path/a", WorkspaceID: "ws-a", Available: &avail},
+		},
+	}
+	_ = ss.CreateSession(noProjSession)
+	if _, err := svc.executeWorkerProposalTool("no-proj-session", call); err == nil || !strings.Contains(err.Error(), "workers must be deployed in a project") {
+		t.Fatalf("expected project requirement error, got %v", err)
+	}
+
+	// 4. Invariant: Chat sessions invoking workerProposalCall are rejected
+	chatProfile := agent.SwarmAgentProfileForContext(store.AgentProfile{})
+	invoker := svc.newProviderToolInvoker(providerToolInvokerConfig{
+		sessionID:            "orch-session",
+		principal:            identity.Principal{Type: identity.PrincipalTypeUser, UserID: "owner", AccountScopeID: "account"},
+		sessionMode:          "auto",
+		runID:                "chat-run",
+		providerManagedV3:    true,
+		applySessionMutation: sessions.ApplySessionMutation,
+		agentProfile:         chatProfile,
+		terminalPlanState:    &terminalPlanToolState{},
+	})
+	chatResult, err := invoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{
+		Name:      "manage_workers",
+		CallID:    "call-chat",
+		Arguments: fmt.Sprintf(`{"action":"propose","document":%s}`, string(rawDoc)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(chatResult.Error, "exclusive to Swarm Orchestrator") {
+		t.Fatalf("expected chat session rejection, got: %s", chatResult.Error)
+	}
+
+	// 5. Accept proposal and verify ProjectRecord.AutomationIDs registration
+	reviewRaw, _ := json.Marshal(propResult["worker_review"])
+	var review store.AutomationV2Review
+	_ = json.Unmarshal(reviewRaw, &review)
+	accepted, err := sessions.AcceptAutomationV2("account", "owner", wA.WorkspaceID, "orch-session", review)
+	if err != nil {
+		t.Fatalf("accept failed: %v", err)
+	}
+	projAfter, found, err := ss.GetProject("account", projID)
+	if err != nil || !found || projAfter == nil {
+		t.Fatalf("failed to retrieve project: %v", err)
+	}
+	registered := false
+	for _, aid := range projAfter.AutomationIDs {
+		if aid == accepted.AutomationID {
+			registered = true
+			break
+		}
+	}
+	if !registered {
+		t.Fatalf("accepted worker %q not registered in ProjectRecord.AutomationIDs: %v", accepted.AutomationID, projAfter.AutomationIDs)
 	}
 }

@@ -47,3 +47,21 @@ test('Router redirects legacy workers routes to orchestrate', () => {
   // Invariant 2: /$workspaceSlug/workers redirects to /$workspaceSlug/orchestrate
   assert.ok(source.includes("to: '/$workspaceSlug/orchestrate'"), 'Router must redirect /$workspaceSlug/workers to /$workspaceSlug/orchestrate')
 })
+
+test('OrchestrateView renders Scoped Project Workspaces for pending worker proposals with suggest changes capability', () => {
+  const orchestrateSourcePath = path.join(__dirname, 'OrchestrateView.tsx')
+  const source = fs.readFileSync(orchestrateSourcePath, 'utf8')
+
+  // Invariant 1: Pending worker proposals display Scoped Project Workspaces
+  assert.ok(source.includes('Scoped Project Workspaces'), 'Must render Scoped Project Workspaces section')
+
+  // Invariant 2: Displays Suggest Changes / Edit Workspaces button
+  assert.ok(source.includes('Suggest Changes / Edit Workspaces'), 'Must provide Suggest Changes / Edit Workspaces button')
+
+  // Invariant 3: Interactive workspace selection allows updating workspace scope via mutation
+  assert.ok(source.includes('handleUpdateWorkerWorkspaceScope'), 'Must implement handleUpdateWorkerWorkspaceScope handler')
+  assert.ok(source.includes('Apply Workspace Scope'), 'Must provide Apply Workspace Scope button')
+
+  // Invariant 4: Displays pre-configured worker pipeline checkpoints if present
+  assert.ok(source.includes('Pre-Configured Worker Pipeline'), 'Must display planned pipeline checkpoints')
+})

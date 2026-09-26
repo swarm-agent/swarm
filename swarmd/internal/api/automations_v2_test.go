@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"swarm/packages/swarmd/internal/automation"
 	"swarm/packages/swarmd/internal/identity"
@@ -1137,4 +1138,231 @@ func TestAutomationV2StableWorkerDoesNotMintTokenAndAllowsPostAcceptanceMint(t *
 	if err != nil || savedToken != tokResp.Token {
 		t.Fatalf("expected saved token %q, got %q (err: %v)", tokResp.Token, savedToken, err)
 	}
+}
+
+func TestAutomationV2ProjectWorkerDeploymentAndWorkspaceScoping(t *testing.T) {
+	start := time.Now()
+	dir := t.TempDir()
+	db, err := store.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ss := store.NewSessionStore(db)
+	events, err := store.NewEventLog(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionsService := sessionruntime.NewService(ss, events)
+	authStore := store.NewClientAuthStore(db)
+	sec := security.NewService(authStore, events)
+
+	s := &Server{
+		sessions: sessionsService,
+		security: sec,
+	}
+	h := s.apiMux()
+
+	call := func(method, path string, body string, token string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, AutomationsV2Path+path, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		p := identity.Principal{
+			Type:           "user",
+			UserID:         "owner",
+			AccountScopeID: "account",
+		}
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		ctx := context.WithValue(req.Context(), productPrincipalRequestContextKey, p)
+		req = req.WithContext(ctx)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+		return w
+	}
+
+	// Setup user & workspaces
+	ids := store.NewIdentityStore(db)
+	_, _ = ids.PutUser(store.UserRecord{ID: "owner", Username: "owner"})
+	_, _ = ids.PutAccountScope(store.AccountScopeRecord{ID: "account", Type: store.AccountScopeTypePersonal, CreatedByUserID: "owner"})
+	_, _ = ids.PutAccountUser(store.AccountUserRecord{ID: "member", AccountScopeID: "account", UserID: "owner", Status: "active"})
+
+	wsStore := store.NewWorkspaceStore(db)
+	wMain, _ := wsStore.AddForAccount("account", t.TempDir(), "Main")
+	wSec, _ := wsStore.AddForAccount("account", t.TempDir(), "Secondary")
+	wDocs, _ := wsStore.AddForAccount("account", t.TempDir(), "Docs")
+
+	// Create project with all 3 workspaces
+	projID := "proj_worker_test"
+	if err := ss.PutProject("account", &store.ProjectRecord{
+		ID:        projID,
+		AccountID: "account",
+		Name:      "Alpha Project",
+		Workspaces: []store.ProjectWorkspaceRef{
+			{WorkspaceID: wMain.WorkspaceID, Path: wMain.Path, Role: "primary_code"},
+			{WorkspaceID: wSec.WorkspaceID, Path: wSec.Path, Role: "auxiliary"},
+			{WorkspaceID: wDocs.WorkspaceID, Path: wDocs.Path, Role: "docs"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	avail := true
+	sessionID := "orch-sess-1"
+	if err := ss.CreateSession(store.SessionSnapshot{
+		ID:             sessionID,
+		AccountScopeID: "account",
+		UserID:         "owner",
+		Mode:           "auto",
+		WorkspacePath:  wMain.Path,
+		WorkspaceGrants: []store.WorkspaceGrant{
+			{Kind: store.WorkspaceGrantPrimary, Path: wMain.Path, WorkspaceID: wMain.WorkspaceID, Available: &avail},
+		},
+		Metadata: map[string]any{
+			"project_id": projID,
+			"role":       "project_orchestrator",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Initial proposal: Orchestrator suggests worker
+	doc := store.SessionPlanDocument{
+		Title: "Project Code & Doc Auditor",
+		Info:  store.SessionPlanInfo{Goal: "Continuously audit primary and auxiliary code"},
+		WorkerV2: &store.AutomationV2Settings{
+			SchemaVersion: 2,
+			Schedule:      store.AutomationV2Schedule{Kind: "trigger"},
+		},
+	}
+	propReq := automationV2Request{
+		WorkspaceID: wMain.WorkspaceID,
+		SessionID:   sessionID,
+		Document:    &doc,
+	}
+	rawProp, _ := json.Marshal(propReq)
+	w := call(http.MethodPost, "/proposal", string(rawProp), "")
+	if w.Code != 200 {
+		t.Fatalf("proposal failed: code=%d body=%s", w.Code, w.Body.String())
+	}
+	var propResp struct {
+		OK       bool                       `json:"ok"`
+		Proposal store.AutomationV2Proposal `json:"proposal"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &propResp); err != nil {
+		t.Fatal(err)
+	}
+	if propResp.Proposal.ProjectID != projID {
+		t.Fatalf("expected proposal project_id %q, got %q", projID, propResp.Proposal.ProjectID)
+	}
+	if propResp.Proposal.Revision != 1 {
+		t.Fatalf("expected revision 1, got %d", propResp.Proposal.Revision)
+	}
+	t.Logf("Trial Step 1: Initial Proposal created in %v (rev %d, project %s)", time.Since(start), propResp.Proposal.Revision, propResp.Proposal.ProjectID)
+
+	// 2. User reviews and suggests changes: scope to only wMain and wSec (excluding wDocs)
+	scopedDoc := doc
+	scopedDoc.WorkerV2.WorkspaceID = wMain.WorkspaceID
+	scopedDoc.WorkerV2.WorkspaceIDs = []string{wMain.WorkspaceID, wSec.WorkspaceID}
+	reviseReq := automationV2Request{
+		WorkspaceID: wMain.WorkspaceID,
+		SessionID:   sessionID,
+		Review:      propResp.Proposal.AutomationV2Review,
+		Document:    &scopedDoc,
+	}
+	rawRevise, _ := json.Marshal(reviseReq)
+	w = call(http.MethodPost, "/proposal", string(rawRevise), "")
+	if w.Code != 200 {
+		t.Fatalf("revise proposal failed: code=%d body=%s", w.Code, w.Body.String())
+	}
+	var reviseResp struct {
+		OK       bool                       `json:"ok"`
+		Proposal store.AutomationV2Proposal `json:"proposal"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &reviseResp); err != nil {
+		t.Fatal(err)
+	}
+	if reviseResp.Proposal.Revision != 2 {
+		t.Fatalf("expected revision 2 after suggesting changes, got %d", reviseResp.Proposal.Revision)
+	}
+	if len(reviseResp.Proposal.WorkspaceIDs) != 2 {
+		t.Fatalf("expected 2 scoped workspaces, got %v", reviseResp.Proposal.WorkspaceIDs)
+	}
+	t.Logf("Trial Step 2: Revised Proposal (Suggested Workspace Changes) created in %v (rev %d, workspaces: %v)", time.Since(start), reviseResp.Proposal.Revision, reviseResp.Proposal.WorkspaceIDs)
+
+	// 3. User accepts the revised worker proposal
+	acceptReq := automationV2Request{
+		Action:      "accept_automation",
+		WorkspaceID: wMain.WorkspaceID,
+		SessionID:   sessionID,
+		Review:      reviseResp.Proposal.AutomationV2Review,
+	}
+	rawAccept, _ := json.Marshal(acceptReq)
+	w = call(http.MethodPost, "/accept", string(rawAccept), "")
+	if w.Code != 200 {
+		t.Fatalf("accept failed: code=%d body=%s", w.Code, w.Body.String())
+	}
+	var acceptResp struct {
+		OK     bool                     `json:"ok"`
+		Record store.AutomationV2Record `json:"record"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &acceptResp); err != nil {
+		t.Fatal(err)
+	}
+	if !acceptResp.Record.Enabled || acceptResp.Record.AutomationID == "" {
+		t.Fatalf("worker record not properly enabled: %+v", acceptResp.Record)
+	}
+	if acceptResp.Record.ProjectID != projID {
+		t.Fatalf("expected record project_id %q, got %q", projID, acceptResp.Record.ProjectID)
+	}
+	t.Logf("Trial Step 3: Worker %s Accepted & Registered in %v", acceptResp.Record.AutomationID, time.Since(start))
+
+	// 4. Verify ProjectRecord.AutomationIDs was automatically updated
+	projAfter, found, err := ss.GetProject("account", projID)
+	if err != nil || !found || projAfter == nil {
+		t.Fatalf("project lookup failed: %v", err)
+	}
+	registeredInProject := false
+	for _, aid := range projAfter.AutomationIDs {
+		if aid == acceptResp.Record.AutomationID {
+			registeredInProject = true
+			break
+		}
+	}
+	if !registeredInProject {
+		t.Fatalf("worker %s not registered in project automations list: %v", acceptResp.Record.AutomationID, projAfter.AutomationIDs)
+	}
+	t.Logf("Trial Step 4: ProjectRecord.AutomationIDs verified with registered worker %s", acceptResp.Record.AutomationID)
+
+	// 5. Verify Minted SWARM_TRIGGER_TOKEN and trigger execution
+	mintedToken, err := security.GetLocalSecret("SWARM_TRIGGER_TOKEN")
+	if err != nil || !strings.HasPrefix(mintedToken, "swk_") {
+		t.Fatalf("expected valid minted token starting with swk_, got %q (err: %v)", mintedToken, err)
+	}
+	t.Logf("Trial Step 5: Verified Minted SWARM_TRIGGER_TOKEN (prefix: swk_...)")
+
+	// 6. Test Trigger invocation via POST /v3/automations/v2/trigger
+	triggerReq := map[string]any{
+		"workspace_id": wMain.WorkspaceID,
+		"worker_id":    acceptResp.Record.AutomationID,
+		"prompt":       "Execute live audit on scoped repositories",
+	}
+	rawTrigger, _ := json.Marshal(triggerReq)
+	triggerStart := time.Now()
+	w = call(http.MethodPost, "/trigger", string(rawTrigger), mintedToken)
+	if w.Code != 200 {
+		t.Fatalf("trigger failed: code=%d body=%s", w.Code, w.Body.String())
+	}
+	var trigResp struct {
+		OK         bool                         `json:"ok"`
+		Occurrence store.AutomationV2Occurrence `json:"occurrence"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &trigResp); err != nil {
+		t.Fatal(err)
+	}
+	if !trigResp.OK || trigResp.Occurrence.Record.AutomationID != acceptResp.Record.AutomationID {
+		t.Fatalf("trigger occurrence mismatch: %+v", trigResp)
+	}
+	t.Logf("Trial Step 6: Live Trigger Invoked Successfully in %v (occurrence_id: %s)", time.Since(triggerStart), trigResp.Occurrence.ID)
+	t.Logf("TOTAL TIME TRIAL DURATION: %v (budget: 120s) - TRIAL RESULT: PASS", time.Since(start))
 }
