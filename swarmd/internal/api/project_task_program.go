@@ -816,3 +816,44 @@ func (s *Server) redeployTaskProgramJob(p identity.Principal, projectID, taskID,
 	}
 	return nil
 }
+
+// DeployProjectTask deploys a project task execution or standalone Task Program for the given project and task ID.
+func (s *Server) DeployProjectTask(accountScopeID, projectID, taskID string) error {
+	p := identity.Principal{AccountScopeID: accountScopeID}
+	db := s.sessions.Store()
+	if db == nil {
+		return errors.New("database not available")
+	}
+	proj, found, err := db.GetProject(accountScopeID, projectID)
+	if err != nil {
+		return err
+	}
+	if !found || proj == nil {
+		return fmt.Errorf("project %q not found", projectID)
+	}
+	task, found, err := db.GetProjectTask(accountScopeID, projectID, taskID)
+	if err != nil {
+		return err
+	}
+	if !found || task == nil {
+		return fmt.Errorf("task %q not found", taskID)
+	}
+	task.Status = "in_progress"
+	task.ActionNeeded = ""
+	if task.TaskProgram != nil || task.TaskProgramID != "" {
+		if err := s.deployProjectTaskProgram(p, proj, task); err != nil {
+			return err
+		}
+	} else if task.Agent == "image" || task.Agent == "video" {
+		if err := s.deployProjectTaskExecution(p, proj, task, "in_progress", ""); err != nil {
+			return err
+		}
+	} else {
+		if task.SessionID == "" {
+			if err := s.deployProjectTaskExecution(p, proj, task, "in_progress", task.Title); err != nil {
+				return err
+			}
+		}
+	}
+	return db.PutProjectTask(accountScopeID, task)
+}

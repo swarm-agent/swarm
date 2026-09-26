@@ -49,6 +49,7 @@ import {
   X,
   Zap,
 } from 'lucide-react'
+import { formatContextWindow } from '../chat/services/model-options'
 import { requestJson } from '../../../app/api'
 import { useDesktopV3CacheSelector } from '../state/desktop-v3-cache-store'
 import { DesktopV3ExistingConversationPane } from '../chat/components/desktop-v3-existing-conversation-pane'
@@ -1597,14 +1598,18 @@ function OrchestratorChatSidebar({
   project,
   activeTask,
   onBackToOrchestrator,
+  onOrchestratorSessionReset,
 }: {
   sessionId: string
   project?: ProjectSummary
   activeTask?: RunningTask
   onBackToOrchestrator?: () => void
+  onOrchestratorSessionReset?: (newSessionId: string) => void
 }) {
   const [error, setError] = useState(false)
   const [attempt, setAttempt] = useState(0)
+  const [clearingContext, setClearingContext] = useState(false)
+  const [clearSuccess, setClearSuccess] = useState(false)
 
   const messages = useDesktopV3CacheSelector(
     useCallback((state) => selectRenderedSessionMessages(state, sessionId), [sessionId]),
@@ -1625,6 +1630,83 @@ function OrchestratorChatSidebar({
   const hydrating = useDesktopV3CacheSelector(
     useCallback((state) => (state.hydrateInFlightBySession[sessionId] ?? 0) > 0, [sessionId])
   )
+
+  const sessionUsage = useDesktopV3CacheSelector(
+    useCallback(
+      (state) => {
+        const usage = state.usageBySession[sessionId] ?? state.sessionViewsById[sessionId]?.usage_summary
+        return usage && typeof usage === 'object' ? (usage as Record<string, unknown>) : null
+      },
+      [sessionId]
+    )
+  )
+
+  const contextStats = useMemo(() => {
+    if (!sessionUsage) {
+      return { totalTokens: 0, contextWindow: 0, percent: 0, label: '0 tokens used' }
+    }
+    const total = Number(sessionUsage.total_tokens ?? sessionUsage.totalTokens ?? 0)
+    const windowSize = Number(sessionUsage.context_window ?? sessionUsage.contextWindow ?? 0)
+    const percent = windowSize > 0 && total > 0 ? Math.min(100, Math.round((total / windowSize) * 100)) : 0
+    let label = `${total.toLocaleString()} tokens used`
+    if (windowSize > 0) {
+      label = `${total.toLocaleString()} / ${formatContextWindow(windowSize)} ctx (${percent}%)`
+    }
+    return { totalTokens: total, contextWindow: windowSize, percent, label }
+  }, [sessionUsage])
+
+  const handleClearContext = async () => {
+    if (!project?.id || clearingContext) return
+    setClearingContext(true)
+    setClearSuccess(false)
+    try {
+      const res = await requestJson<{ ok: boolean; session_id: string }>(
+        `/v3/projects/${project.id}/orchestrator:clear-context`,
+        { method: 'POST' }
+      )
+      if (res?.session_id) {
+        onOrchestratorSessionReset?.(res.session_id)
+        setClearSuccess(true)
+        setTimeout(() => setClearSuccess(false), 2500)
+      } else {
+        const clientRequestId = `desktop-v3-create:${crypto.randomUUID()}`
+        const sessRes = await requestJson<{ session: { id: string } }>('/v3/sessions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            client_request_id: clientRequestId,
+            title: `Project Orchestrator: ${project.name}`,
+            workspace_path: project.repoPath || '.',
+            agent_name: 'system-orchestrator',
+            preference: {
+              provider: 'google',
+              model: 'gemini-3.8-flash',
+              thinking: 'low',
+            },
+            metadata: {
+              project_id: project.id,
+              role: 'project_orchestrator',
+            },
+          }),
+        })
+        if (sessRes?.session?.id) {
+          const sid = sessRes.session.id
+          await requestJson(`/v3/projects/${project.id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ primary_session_id: sid }),
+          }).catch(() => {})
+          onOrchestratorSessionReset?.(sid)
+          setClearSuccess(true)
+          setTimeout(() => setClearSuccess(false), 2500)
+        }
+      }
+    } catch (e) {
+      console.warn('Failed to clear orchestrator context:', e)
+    } finally {
+      setClearingContext(false)
+    }
+  }
 
   useEffect(() => {
     let active = true
@@ -1674,15 +1756,46 @@ function OrchestratorChatSidebar({
           </span>
         </div>
       ) : (
-        <div className="flex items-center justify-between p-3 border-b border-slate-800 bg-[#0a0f1d] text-xs">
-          <div className="flex items-center gap-2">
-            <div className="h-2 w-2 rounded-full bg-emerald-400" />
-            <span className="font-bold text-white">Project Orchestrator</span>
-            <span className="text-[10px] text-slate-400 font-mono">({project?.name})</span>
+        <div className="flex flex-col border-b border-slate-800 bg-[#0a0f1d] text-xs">
+          <div className="flex items-center justify-between p-3 pb-2">
+            <div className="flex items-center gap-2">
+              <div className="h-2 w-2 rounded-full bg-emerald-400" />
+              <span className="font-bold text-white">Project Orchestrator</span>
+              <span className="text-[10px] text-slate-400 font-mono">({project?.name})</span>
+            </div>
+            <span className="text-[9px] font-mono uppercase px-2 py-0.5 rounded bg-slate-800 text-slate-300 font-bold">
+              Executive
+            </span>
           </div>
-          <span className="text-[9px] font-mono uppercase px-2 py-0.5 rounded bg-slate-800 text-slate-300 font-bold">
-            Executive
-          </span>
+          {/* Orchestrator Context Status & Clear Context Action */}
+          <div className="flex items-center justify-between px-3 py-1.5 bg-[#080d19]/90 border-t border-slate-800/60 text-[11px]">
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="text-slate-400 text-[10px] uppercase font-semibold tracking-wider">Context:</span>
+              <span className="font-mono text-slate-200 text-[11px] truncate" data-testid="orchestrator-context-label">
+                {contextStats.label}
+              </span>
+              {contextStats.percent > 0 && (
+                <div className="w-12 h-1.5 rounded-full bg-slate-800 overflow-hidden flex-shrink-0">
+                  <div
+                    className={`h-full rounded-full transition-all duration-300 ${
+                      contextStats.percent > 80 ? 'bg-amber-400' : 'bg-blue-400'
+                    }`}
+                    style={{ width: `${contextStats.percent}%` }}
+                  />
+                </div>
+              )}
+            </div>
+            <button
+              onClick={handleClearContext}
+              disabled={clearingContext}
+              title="Clear orchestrator conversation context and start fresh"
+              data-testid="clear-orchestrator-context-btn"
+              className="flex items-center gap-1.5 px-2 py-0.5 rounded bg-slate-800 hover:bg-red-950/70 hover:text-red-200 hover:border-red-500/50 text-slate-300 transition-colors border border-slate-700/80 font-medium text-[10px] flex-shrink-0 disabled:opacity-50"
+            >
+              <RotateCcw size={10} className={clearingContext ? 'animate-spin text-amber-400' : 'text-slate-400'} />
+              <span>{clearingContext ? 'Clearing...' : clearSuccess ? 'Cleared!' : 'Clear Context'}</span>
+            </button>
+          </div>
         </div>
       )}
 
@@ -2139,6 +2252,16 @@ export function OrchestrateView({
       setActiveSessionId(selectedProject.primarySessionId)
     }
   }
+
+  const handleOrchestratorSessionReset = useCallback((newSessionId: string) => {
+    setActiveSessionId(newSessionId)
+    if (selectedProject) {
+      setProjects((prev) =>
+        prev.map((p) => (p.id === selectedProject.id ? { ...p, primarySessionId: newSessionId } : p))
+      )
+    }
+    void selectAndHydrateDesktopV3Session(newSessionId)
+  }, [selectedProject?.id])
 
   // Media handling: file uploads, pasted docs, tagging, and studio library integration
   const handleFileUpload = async (files: FileList | null) => {
@@ -4433,6 +4556,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
           project={selectedProject}
           activeTask={activeTask}
           onBackToOrchestrator={handleBackToOrchestrator}
+          onOrchestratorSessionReset={handleOrchestratorSessionReset}
         />
       ) : (
         <aside className="relative flex w-[440px] flex-shrink-0 flex-col items-center justify-center p-6 text-center rounded-3xl border border-slate-800/80 bg-[#0d121f] text-xs text-slate-400 shadow-[inset_0_1px_1px_rgba(255,255,255,0.06),0_18px_40px_rgba(0,0,0,0.65)]">

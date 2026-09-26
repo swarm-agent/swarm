@@ -655,6 +655,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	memoryDone := make(chan struct{})
 	runSvc.SetMemoryStore(memorySvc.Store)
 	apiServer := api.NewServer(authSvc, agentSvc, modelSvc, runSvc, sessionSvc, workspaceSvc, discoverySvc, securitySvc, providers, permissionSvc, notificationSvc, events, hub)
+	toolRuntime.SetProjectTaskDeployer(apiServer.DeployProjectTask)
 	// Automation mutations always commit through canonical V3 authority before
 	// waking realtime. Wake failures cannot turn a committed execution into retry.
 	apiServer.ConfigureAutomationRealtime(store)

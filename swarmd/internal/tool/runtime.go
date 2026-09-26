@@ -207,6 +207,7 @@ type Runtime struct {
 	workspaceSettings     manageWorkspaceSettingsStore
 	providerRegistry      *provider.Registry
 	projects              manageProjectStore
+	projectTaskDeployer   ProjectTaskDeployer
 }
 
 type manageSessionController interface {

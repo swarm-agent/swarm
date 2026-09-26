@@ -298,6 +298,51 @@ func TestProjectsAPIEndpoints(t *testing.T) {
 		t.Fatalf("expected 200 on task delete, got %d: %s", w.Code, w.Body.String())
 	}
 
+	// 9b. Clear orchestrator context: POST /v3/projects/{id}/orchestrator:clear-context
+	origSessionID := "test_orig_orchestrator_sess"
+	now := time.Now().UnixMilli()
+	_ = ss.CreateSession(store.SessionSnapshot{
+		ID:             origSessionID,
+		UserID:         "owner",
+		AccountScopeID: "account",
+		Title:          "Project Orchestrator: Test",
+		WorkspacePath:  t.TempDir(),
+		Mode:           "auto",
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	})
+	_ = ss.PutProject("account", &store.ProjectRecord{
+		ID:               projID,
+		AccountID:        "account",
+		Name:             "Updated Platform",
+		PrimarySessionID: origSessionID,
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	})
+
+	w = call(http.MethodPost, "/"+projID+"/orchestrator:clear-context", "", []string{"sessions:write", "projects:write"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 on clear orchestrator context, got %d: %s", w.Code, w.Body.String())
+	}
+	var clearResp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &clearResp); err != nil {
+		t.Fatal(err)
+	}
+	if clearResp["ok"] != true {
+		t.Fatalf("expected ok=true, got %v", clearResp["ok"])
+	}
+	newSessID, _ := clearResp["session_id"].(string)
+	if newSessID == "" || newSessID == origSessionID {
+		t.Fatalf("expected fresh session_id, got %q (orig: %q)", newSessID, origSessionID)
+	}
+	if prevSessID, _ := clearResp["previous_session_id"].(string); prevSessID != origSessionID {
+		t.Fatalf("expected previous_session_id %q, got %q", origSessionID, prevSessID)
+	}
+	pRec, pFound, pErr := ss.GetProject("account", projID)
+	if pErr != nil || !pFound || pRec.PrimarySessionID != newSessID {
+		t.Fatalf("expected project primary_session_id updated to %q, got %+v", newSessID, pRec)
+	}
+
 	// 10. DELETE /v3/projects/{id}
 	w = call(http.MethodDelete, "/"+projID, "", []string{"sessions:write"})
 	if w.Code != http.StatusOK {

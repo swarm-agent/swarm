@@ -28,17 +28,25 @@ func manageProjectsDefinition() Definition {
 	return Definition{
 		Type:        "function",
 		Name:        "manage_projects",
-		Description: "Inspect and manage Projects aggregating workspaces, context (project.md), and ongoing tasks. Supported actions: list, get, create, update, delete, synthesize_context, propose_task, approve_task, refine_task, create_task, list_tasks, update_task.",
+		Description: "Inspect and manage Projects aggregating workspaces, context (project.md), and ongoing tasks. Supported actions: list, get, create, update, delete, synthesize_context, propose_task, approve_task, deploy_task, refine_task, create_task, list_tasks, update_task.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"action": map[string]any{
 					"type":        "string",
-					"description": "Action: list|get|create|update|delete|synthesize_context|propose_task|approve_task|refine_task|create_task|list_tasks|update_task",
+					"description": "Action: list|get|create|update|delete|synthesize_context|propose_task|approve_task|deploy_task|refine_task|create_task|list_tasks|update_task",
 				},
 				"id": map[string]any{
 					"type":        "string",
 					"description": "Project ID for get, update, delete",
+				},
+				"project_id": map[string]any{
+					"type":        "string",
+					"description": "Project ID for task operations (propose_task, approve_task, deploy_task, refine_task, list_tasks, update_task)",
+				},
+				"task_id": map[string]any{
+					"type":        "string",
+					"description": "Task ID for approve_task, deploy_task, refine_task, update_task",
 				},
 				"name": map[string]any{
 					"type":        "string",
@@ -46,7 +54,44 @@ func manageProjectsDefinition() Definition {
 				},
 				"description": map[string]any{
 					"type":        "string",
-					"description": "Optional project description",
+					"description": "Optional project description or task description",
+				},
+				"title": map[string]any{
+					"type":        "string",
+					"description": "Task title for propose_task or create_task",
+				},
+				"prompt": map[string]any{
+					"type":        "string",
+					"description": "User request or mission prompt for task planning and routing",
+				},
+				"agent": map[string]any{
+					"type":        "string",
+					"description": "Optional agent assignment override (coder, finder, designer, image, video, swarm)",
+				},
+				"worker_name": map[string]any{
+					"type":        "string",
+					"description": "Optional cosmetic worker name override (e.g. '@Auth Coder')",
+				},
+				"status": map[string]any{
+					"type":        "string",
+					"description": "Optional task status (pending_approval, in_progress, completed, etc.)",
+				},
+				"auto_approve": map[string]any{
+					"type":        "boolean",
+					"description": "Set true to automatically approve and deploy the task immediately upon creation",
+				},
+				"task_program": map[string]any{
+					"type":        "object",
+					"description": "Optional Task Program for staged parallel multi-agent cohort execution inside this project task: {id, stages: [{id, depends_on, dependency_evidence}], jobs: [{id, stage_id, agent_type, title, meta_prompt, deliverable, owned_scope, acceptance_criteria, dependency_evidence}]}",
+				},
+				"pipeline_stages": map[string]any{
+					"type":        "array",
+					"description": "Array of stage name strings for the task",
+					"items":       map[string]any{"type": "string"},
+				},
+				"workspace_path": map[string]any{
+					"type":        "string",
+					"description": "Workspace root path for the task",
 				},
 				"workspaces": map[string]any{
 					"type":        "array",
@@ -57,6 +102,14 @@ func manageProjectsDefinition() Definition {
 					"type":        "string",
 					"description": "Synthesized project.md markdown text",
 				},
+				"feedback": map[string]any{
+					"type":        "string",
+					"description": "User or operator feedback for refine_task",
+				},
+				"error_summary": map[string]any{
+					"type":        "string",
+					"description": "Error summary for refine_task",
+				},
 			},
 			"required":             []string{"action"},
 			"additionalProperties": true,
@@ -64,11 +117,20 @@ func manageProjectsDefinition() Definition {
 	}
 }
 
+type ProjectTaskDeployer func(accountScopeID, projectID, taskID string) error
+
 func (r *Runtime) SetManageProjectStore(store manageProjectStore) {
 	if r == nil {
 		return
 	}
 	r.projects = store
+}
+
+func (r *Runtime) SetProjectTaskDeployer(deployer ProjectTaskDeployer) {
+	if r == nil {
+		return
+	}
+	r.projectTaskDeployer = deployer
 }
 
 func (r *Runtime) executeManageProjects(scope WorkspaceScope, args map[string]any) (string, error) {
@@ -343,6 +405,20 @@ func (r *Runtime) executeManageProjects(scope WorkspaceScope, args map[string]an
 			}
 		}
 
+		var taskProg *pebblestore.TaskProgramDefinition
+		if rawProg, ok := args["task_program"]; ok && rawProg != nil {
+			progBytes, err := json.Marshal(rawProg)
+			if err == nil {
+				var tp pebblestore.TaskProgramDefinition
+				if err := json.Unmarshal(progBytes, &tp); err == nil && len(tp.Stages) > 0 && len(tp.Jobs) > 0 {
+					taskProg = &tp
+				}
+			}
+		}
+		if autoApprove, ok := args["auto_approve"].(bool); ok && autoApprove {
+			status = "in_progress"
+		}
+
 		actionNeeded := strings.TrimSpace(asString(args["action_needed"]))
 		if actionNeeded == "" && status == "pending_approval" {
 			actionNeeded = "Review plan and click Approve"
@@ -371,9 +447,16 @@ func (r *Runtime) executeManageProjects(scope WorkspaceScope, args map[string]an
 			Tier:               routed.Tier,
 			RouterAlert:        routed.RouterAlert,
 			Revision:           1,
+			TaskProgram:        taskProg,
+		}
+		if taskProg != nil && taskProg.ID != "" {
+			task.TaskProgramID = taskProg.ID
 		}
 		if err := r.projects.PutProjectTask(accountScopeID, &task); err != nil {
 			return "", err
+		}
+		if r.projectTaskDeployer != nil && task.Status == "in_progress" {
+			_ = r.projectTaskDeployer(accountScopeID, projectID, task.ID)
 		}
 		if found && proj != nil {
 			_, _ = r.projects.UpdateProject(accountScopeID, projectID, func(p *pebblestore.ProjectRecord) error {
@@ -388,7 +471,7 @@ func (r *Runtime) executeManageProjects(scope WorkspaceScope, args map[string]an
 		}
 		response["task"] = task
 		response["task_id"] = task.ID
-		response["proposal"] = map[string]any{
+		proposal := map[string]any{
 			"task_id":             task.ID,
 			"project_id":          projectID,
 			"title":               task.Title,
@@ -403,6 +486,11 @@ func (r *Runtime) executeManageProjects(scope WorkspaceScope, args map[string]an
 			"action_needed":       task.ActionNeeded,
 			"status":              task.Status,
 		}
+		if task.TaskProgram != nil {
+			proposal["task_program"] = task.TaskProgram
+			proposal["task_program_id"] = task.TaskProgramID
+		}
+		response["proposal"] = proposal
 
 	case "list_tasks":
 		projectID := strings.TrimSpace(asString(args["project_id"]))
@@ -448,6 +536,18 @@ func (r *Runtime) executeManageProjects(scope WorkspaceScope, args map[string]an
 			if stage, ok := args["current_stage_index"].(float64); ok {
 				t.CurrentStageIndex = int(stage)
 			}
+			if rawProg, ok := args["task_program"]; ok && rawProg != nil {
+				progBytes, err := json.Marshal(rawProg)
+				if err == nil {
+					var tp pebblestore.TaskProgramDefinition
+					if err := json.Unmarshal(progBytes, &tp); err == nil && len(tp.Stages) > 0 && len(tp.Jobs) > 0 {
+						t.TaskProgram = &tp
+						if tp.ID != "" {
+							t.TaskProgramID = tp.ID
+						}
+					}
+				}
+			}
 			return nil
 		})
 		if err != nil {
@@ -474,6 +574,33 @@ func (r *Runtime) executeManageProjects(scope WorkspaceScope, args map[string]an
 		})
 		if err != nil {
 			return "", err
+		}
+		if r.projectTaskDeployer != nil {
+			_ = r.projectTaskDeployer(accountScopeID, projectID, taskID)
+		}
+		response["task"] = updated
+
+	case "deploy_task":
+		projectID := strings.TrimSpace(asString(args["project_id"]))
+		if projectID == "" {
+			projectID = strings.TrimSpace(asString(args["id"]))
+		}
+		taskID := strings.TrimSpace(asString(args["task_id"]))
+		if projectID == "" || taskID == "" {
+			return "", errors.New("manage_projects deploy_task requires project_id and task_id")
+		}
+		updated, err := r.projects.UpdateProjectTask(accountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
+			t.Status = "in_progress"
+			t.ActionNeeded = ""
+			return nil
+		})
+		if err != nil {
+			return "", err
+		}
+		if r.projectTaskDeployer != nil {
+			if err := r.projectTaskDeployer(accountScopeID, projectID, taskID); err != nil {
+				return "", fmt.Errorf("deploy project task: %w", err)
+			}
 		}
 		response["task"] = updated
 

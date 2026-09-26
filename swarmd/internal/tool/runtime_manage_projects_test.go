@@ -220,7 +220,7 @@ func TestManageProjectsToolExecutionAndIsolation(t *testing.T) {
 	propTaskOut, err := execTool(scope, "call-5b", `{
 		"action": "propose_task",
 		"project_id": "proj_test_1",
-		"prompt": "Investigate and figure out why onboarding fails in web"
+		"prompt": "Random unspecified task without keywords"
 	}`)
 	if err != nil {
 		t.Fatalf("propose_task failed: %v", err)
@@ -241,6 +241,64 @@ func TestManageProjectsToolExecutionAndIsolation(t *testing.T) {
 	}
 	if propTask["router_alert"] == nil || propTask["router_alert"] == "" {
 		t.Fatalf("expected router_alert on proposed task fallback")
+	}
+
+	// 5c. Propose task with Task Program (Multi-coder cohort execution)
+	var deployedProjectID, deployedTaskID string
+	rt.SetProjectTaskDeployer(func(acct, pID, tID string) error {
+		deployedProjectID = pID
+		deployedTaskID = tID
+		return nil
+	})
+	propProgOut, err := execTool(scope, "call-5c", `{
+		"action": "propose_task",
+		"project_id": "proj_test_1",
+		"title": "Staged Multi-Coder Task",
+		"task_program": {
+			"id": "prog-orch-1",
+			"stages": [{"id": "s1", "dependency_evidence": "none"}],
+			"jobs": [{
+				"id": "job-1",
+				"stage_id": "s1",
+				"agent_type": "coder",
+				"title": "Backend",
+				"meta_prompt": "Code",
+				"deliverable": "api.go",
+				"acceptance_criteria": ["ok"],
+				"dependency_evidence": "none"
+			}]
+		}
+	}`)
+	if err != nil {
+		t.Fatalf("propose_task with task_program failed: %v", err)
+	}
+	var propProgResp map[string]any
+	if err := json.Unmarshal([]byte(propProgOut), &propProgResp); err != nil {
+		t.Fatal(err)
+	}
+	progTask, _ := propProgResp["task"].(map[string]any)
+	if progTask["task_program_id"] != "prog-orch-1" {
+		t.Fatalf("expected task_program_id prog-orch-1, got %v", progTask["task_program_id"])
+	}
+	if progTask["task_program"] == nil {
+		t.Fatal("expected non-nil task_program on task")
+	}
+
+	// 5d. Deploy task via deploy_task action
+	progTaskID, _ := progTask["id"].(string)
+	if progTaskID == "" {
+		progTaskID = "task_test_1"
+	}
+	_, err = execTool(scope, "call-5d", `{
+		"action": "deploy_task",
+		"project_id": "proj_test_1",
+		"task_id": "task_test_1"
+	}`)
+	if err != nil {
+		t.Fatalf("deploy_task failed: %v", err)
+	}
+	if deployedTaskID != "task_test_1" || deployedProjectID != "proj_test_1" {
+		t.Fatalf("expected deployer invoked with proj_test_1 and task_test_1, got %q, %q", deployedProjectID, deployedTaskID)
 	}
 
 	// 6. List tasks

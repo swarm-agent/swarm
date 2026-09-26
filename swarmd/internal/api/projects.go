@@ -1056,6 +1056,89 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 3.4 Clear orchestrator context: POST /v3/projects/{id}/orchestrator:clear-context or /v3/projects/{id}/clear-context
+	if (len(segments) == 2 && (segments[1] == "orchestrator:clear-context" || segments[1] == "clear-context" || segments[1] == "orchestrator-clear-context")) || (len(segments) == 3 && segments[1] == "orchestrator" && segments[2] == "clear-context") {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
+			return
+		}
+		if !s.requireScopeAny(w, r, "projects:write", "sessions:write") {
+			return
+		}
+		proj, found, err := db.GetProject(p.AccountScopeID, projectID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		if !found || proj == nil {
+			writeError(w, http.StatusNotFound, errors.New("project not found"))
+			return
+		}
+
+		oldSessionID := strings.TrimSpace(proj.PrimarySessionID)
+		if oldSessionID != "" {
+			_, _ = s.sessions.ArchiveSessionWithEvent(oldSessionID)
+		}
+
+		repoPath := ""
+		if len(proj.Workspaces) > 0 {
+			repoPath = proj.Workspaces[0].Path
+		}
+		if repoPath == "" {
+			repoPath = "."
+		}
+
+		newSessionID := sessionruntime.NewSessionID()
+		now := time.Now().UnixMilli()
+		createKey := fmt.Sprintf("project-orchestrator:reset:%s:%d", newSessionID, now)
+		sessionSnapshot := pebblestore.SessionSnapshot{
+			ID:             newSessionID,
+			UserID:         p.UserID,
+			AccountScopeID: p.AccountScopeID,
+			Title:          fmt.Sprintf("Project Orchestrator: %s", proj.Name),
+			WorkspacePath:  repoPath,
+			WorkspaceName:  proj.Name,
+			Mode:           sessionruntime.ModeAuto,
+			Metadata: map[string]any{
+				"agent_name": "system-orchestrator",
+				"project_id": proj.ID,
+				"role":       "project_orchestrator",
+			},
+			CreatedAt: now,
+			UpdatedAt: now,
+		}
+		_, createErr := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+			SessionID:       newSessionID,
+			UserID:          p.UserID,
+			AccountScopeID:  p.AccountScopeID,
+			ClientRequestID: createKey,
+			IdempotencyKey:  createKey,
+			PayloadHash:     createKey,
+			RequestHash:     createKey,
+			Kind:            sessionruntime.SessionMutationCreateSession,
+			Session:         &sessionSnapshot,
+			NowUnixMs:       now,
+		})
+		if createErr != nil {
+			writeError(w, http.StatusInternalServerError, fmt.Errorf("create orchestrator session: %w", createErr))
+			return
+		}
+
+		proj.PrimarySessionID = newSessionID
+		if err := db.PutProject(p.AccountScopeID, proj); err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":                  true,
+			"session_id":          newSessionID,
+			"previous_session_id": oldSessionID,
+			"project":             proj,
+		})
+		return
+	}
+
 	// 3.5 Media sub-resource: /v3/projects/{id}/media and /v3/projects/{id}/media/{media_id}
 	if len(segments) >= 2 && segments[1] == "media" {
 		proj, found, err := db.GetProject(p.AccountScopeID, projectID)

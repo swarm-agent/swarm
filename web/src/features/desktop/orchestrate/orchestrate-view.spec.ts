@@ -87,3 +87,25 @@ test('OrchestrateView renders Compact Multi-Coder View for Task Programs with in
   assert.ok(source.includes('Redeploy'), 'Tile must render Redeploy button on conflict')
 })
 
+test('OrchestrateView displays orchestrator context used and provides clear context controls', () => {
+  // Written test purpose:
+  // - Product requirement/invariant: OrchestratorChatSidebar must state current context used
+  //   (tokens / context window / percentage) and provide an immediate Clear Context button
+  //   allowing operators to reset the orchestrator session context at any time.
+  // - Regression prevented: Prevents regressions where operators cannot monitor context
+  //   consumption of the executive orchestrator or get stuck with high-context degradation.
+  const sourcePath = path.join(__dirname, 'OrchestrateView.tsx')
+  const source = fs.readFileSync(sourcePath, 'utf8')
+
+  // Context tokens display
+  assert.ok(source.includes('contextStats'), 'OrchestratorChatSidebar must compute context stats from session usage')
+  assert.ok(source.includes('data-testid="orchestrator-context-label"'), 'Must render orchestrator context label testid')
+  assert.ok(source.includes('tokens used'), 'Must display formatted tokens used label')
+
+  // Clear context action & endpoint
+  assert.ok(source.includes('data-testid="clear-orchestrator-context-btn"'), 'Must render Clear Context button testid')
+  assert.ok(source.includes('/orchestrator:clear-context'), 'Must invoke /v3/projects/{id}/orchestrator:clear-context endpoint')
+  assert.ok(source.includes('handleOrchestratorSessionReset'), 'OrchestrateView must handle orchestrator session reset')
+  assert.ok(source.includes('onOrchestratorSessionReset'), 'OrchestratorChatSidebar must accept onOrchestratorSessionReset prop')
+})
+
