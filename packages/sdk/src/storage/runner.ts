@@ -195,8 +195,7 @@ export class WorkerActorRunner {
     const candidateTokens = Math.floor(promptTokens * 1.5) + 350;
     const totalTokens = promptTokens + candidateTokens + thinkingTokens;
 
-    // Simulate work duration
-    await new Promise((r) => setTimeout(r, 50));
+    // Duration and token computation
     const durationMs = Date.now() - startTime;
     const costUsd = calculateTokenCostUSD(model, promptTokens, candidateTokens, thinkingTokens);
 
@@ -217,7 +216,7 @@ export class WorkerActorRunner {
     const deliverableTitle = targetTask ? `Deliverable: ${targetTask.title}` : `Scheduled Content: ${spec.name}`;
     const deliverableSummary = `Autonomous cloud worker output for task ${targetTask?.id || 'cron-routine'}. Tokens: ${totalTokens} ($${costUsd.toFixed(4)})`;
 
-    const draftText = `🚀 Technical update from ${spec.name}!\n\nEngineered autonomous cloud worker lifecycle with zero open ports, scale-to-zero GCP Cloud Run Jobs, and durable S3/GCS state storage.\n\n#Swarm #AI #CloudEngineers`;
+    const draftText = `Output from ${spec.name} for task ${targetTask?.id || 'scheduled-routine'}:\n\n${prompt.substring(0, 500)}`;
 
     const deliverable = await this.hub.publishDeliverable({
       sessionId,

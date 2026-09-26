@@ -3014,7 +3014,25 @@ no scratch/logs or private identifiers were added to tracked documentation.
 - **Verification & Tests:**
   - `swarmd/internal/api/twitter_publish_test.go`: verified tweet text extraction across payload shapes, RFC 3986 percent encoding compliance, and OAuth 1.0a signature calculation.
 
-### Cloud Worker Actor Lifecycle, Durable S3/GCS Telemetry & Project Acceptance (2026-09-27)
+### Swarm Orchestrate Mode as Exclusive Home for Automations & Workers (2026-09-27)
+
+- **Sidebar Delisting & Chat vs Swarm Mode Switch (`web/src/features/desktop/layout/desktop-app-page.tsx`, `web/src/app/router.tsx`):**
+  - Delisted the old standalone `Workers` sidebar button from the primary navigation rail.
+  - Introduced a prominent, segmented `[Chat] [Swarm]` mode toggle at the top of the sidebar, providing intuitive 1-click switching between standard chat sessions and Swarm Orchestrate mode with live pending proposal badging.
+  - Redirected legacy worker routes (`/workers`, `/$workspaceSlug/workers`, `/$workspaceSlug/automations`) directly into `/$workspaceSlug/orchestrate`.
+  - Re-routed sidebar automation indicators (`onOpenAutomations`) to open Swarm Orchestrate mode directly.
+- **Top of Project Running Automations & Workers Hub (`web/src/features/desktop/orchestrate/OrchestrateView.tsx`):**
+  - Added the `Active Project Automations` section directly at the top of the project view in Orchestrate mode, showing real-time running routines, trigger vs cron modes, execution counts, and status pills.
+  - Provided interactive 1-click navigation from running automation cards straight to the Workers Hub.
+  - Refined the Workers Hub as the central landing page for reviewing proposals and managing the registered workers fleet.
+- **System Agent Tool Contract Isolation (`swarmd/internal/agent/system_agent_registry.go`, `automation_test.go`):**
+  - Disabled `manage_workers` and `manage_automation` in `SwarmAgentToolContract()` and `PlanSidechatAgentToolContract()` to ensure regular chat sessions do not hallucinate worker proposals.
+  - Kept worker tools exclusively enabled on `SwarmOrchestratorAgentToolContract()` so only the Orchestrator facilitates background automations.
+- **Verification & Tests:**
+  - `web/src/features/desktop/orchestrate/orchestrate-workers-dogfood.spec.ts`: verified top-of-project running automations ticker, Chat vs Swarm toggle, old sidebar delisting, and route redirects.
+  - `swarmd/internal/agent/automation_test.go`: verified Orchestrator worker capability grant and regular session worker tool disablement.
+  - `packages/sdk`: all 44 unit tests pass cleanly.
+
 
 - **Worker Actor Single-File Specification (`packages/sdk/src/storage/types.ts`, `hub.ts`, `runner.ts`, `deploy/worker-cloud-deployer.ts`):**
   - Defined single authoritative `worker.json` specification (`WorkerActorSpec`) managing worker identity, status (`pending_approval`, `active`, `paused`, `disabled`), cloud target, schedule, brain (instructions, model, memory, secret mappings), and task queues.

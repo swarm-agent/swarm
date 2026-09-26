@@ -70,9 +70,9 @@ import {
 } from './sidebar-session-lineage'
 import { createBlockerTransitionTracker } from '../runtime/blocker-transitions'
 import { AutomationProgressView } from '../tools/automations/automation-progress'
-import { AutomationSidebarCompactCard, AutomationSidebarExpandedContainer, AutomationV2SidebarMetadata, AutomationV2SidebarSummaryIndicator, selectAutomationSummaryCounts } from '../tools/automations/automation-v2-sidebar-metadata'
+import { AutomationSidebarCompactCard, AutomationSidebarExpandedContainer, AutomationV2SidebarMetadata, selectAutomationSummaryCounts } from '../tools/automations/automation-v2-sidebar-metadata'
 import { selectPendingWorkerSidebarReviews } from '../state/desktop-automation-v2-state'
-import { PendingWorkerSidebarReviews } from '../tools/automations/pending-worker-sidebar-reviews'
+// Delisted from sidebar; workers and automations managed exclusively in Swarm Orchestrate mode
 import { desktopAutomationV2 } from '../runtime/desktop-automation-v2'
 import { dispatchDesktopV3Cache, getDesktopV3CacheSnapshot, useDesktopV3CacheSelector } from '../state/desktop-v3-cache-store'
 import { isDesktopV3SessionTailReady, selectDesktopSidebarRows, selectDesktopVideoStudioRows, selectNotificationSummary, selectOrderedNotifications, selectRenderedSessionMessages } from '../state/desktop-v3-cache-selectors'
@@ -2699,7 +2699,7 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
                       onClick={input.onOpenAutomations}
                       className="font-medium text-[var(--app-primary)] hover:underline cursor-pointer"
                     >
-                      Open workers →
+                      Open Swarm →
                     </button>
                   ) : null}
                 </div>
@@ -5668,127 +5668,137 @@ export function DesktopAppPage() {
             </div>
 
             <div className="border-b border-[var(--app-border)] bg-[var(--app-surface)] px-[9px] py-2">
-              <div className="grid gap-0.5 text-[11px] text-[var(--app-text-subtle)]">
-                  <div className="grid gap-0.5 pt-1">
-                    <button
-                      type="button"
-                      className="grid min-h-[28px] w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 text-left font-inherit text-[11px] text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text-muted)] disabled:cursor-not-allowed disabled:opacity-50"
-                      onClick={() => {
-                        if (defaultNewChatWorkspacePath) {
-                          handleStartNewSessionInWorkspace(defaultNewChatWorkspacePath, defaultNewChatWorkspaceLabel)
-                        }
-                        setMobileSidebarOpen(false)
-                      }}
-                      disabled={!defaultNewChatWorkspacePath}
-                      aria-label={`New chat in ${defaultNewChatWorkspaceLabel}`}
-                      title={`New chat in ${defaultNewChatWorkspaceLabel}`}
-                    >
-                      <MessageSquare size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
-                      <span className="min-w-0 truncate">New Chat</span>
-                    </button>
-                    <Link
-                      to="/"
-                      className="grid min-h-[28px] w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 text-left font-inherit text-[11px] text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text-muted)]"
-                      onClick={() => setMobileSidebarOpen(false)}
-                      aria-label="Open workspaces"
-                      title="Workspaces"
-                    >
-                      <Folder size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
-                      <span className="min-w-0 truncate">Workspaces</span>
-                    </Link>
-                    <button
-                      type="button"
-                      className="grid min-h-[28px] w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 text-left font-inherit text-[11px] text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text-muted)] disabled:cursor-not-allowed disabled:opacity-50"
-                      onClick={() => {
-                        if (!topWorkspaceSlug) return
-                        setMobileSidebarOpen(false)
-                        void navigate({ to: '/$workspaceSlug/studio', params: { workspaceSlug: topWorkspaceSlug } })
-                      }}
-                      disabled={!topWorkspaceSlug}
-                      aria-label="Open Studio"
-                      title="Studio"
-                    >
-                      <Film size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
-                      <span className="min-w-0 truncate">Studio</span>
-                    </button>
-                    <button
-                      type="button"
-                      className="grid min-h-[28px] w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 text-left font-inherit text-[11px] text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text-muted)] disabled:cursor-not-allowed disabled:opacity-50"
-                      onClick={() => {
-                        if (!topWorkspaceSlug) return
-                        setMobileSidebarOpen(false)
-                        void navigate({
-                          to: '/$workspaceSlug/studio',
-                          params: { workspaceSlug: topWorkspaceSlug },
-                          search: { view: 'media' },
-                        })
-                      }}
-                      disabled={!topWorkspaceSlug}
-                      aria-label="Open Media"
-                      title="Media"
-                      data-testid="sidebar-media-btn"
-                    >
-                      <ImageIcon size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
-                      <span className="min-w-0 truncate">Media</span>
-                    </button>
-                    <button
-                      type="button"
-                      className="grid min-h-[28px] w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 text-left font-inherit text-[11px] text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text-muted)]"
-                      onClick={() => {
-                        setMobileSidebarOpen(false)
-                        if (topWorkspaceSlug) {
-                          void navigate({ to: '/$workspaceSlug/orchestrate', params: { workspaceSlug: topWorkspaceSlug } })
-                        } else {
-                          void navigate({ to: '/orchestrate' })
-                        }
-                      }}
-                      aria-label="Open Orchestrate Mode"
-                      aria-current={isOrchestrateRoute ? 'page' : undefined}
-                      title="Orchestrate Mode"
-                      data-testid="sidebar-orchestrate-btn"
-                    >
-                      <Cpu size={13} strokeWidth={1.8} className="text-cyan-400" />
-                      <span className="flex min-w-0 items-center justify-between gap-1.5">
-                        <span className="min-w-0 truncate font-semibold text-[var(--app-text)]">Orchestrate</span>
-                        <span className="rounded bg-cyan-950 px-1 text-[9px] font-bold text-cyan-400 border border-cyan-800">NEW</span>
+              <div className="grid gap-1 text-[11px] text-[var(--app-text-subtle)]">
+                {/* Chat vs Swarm (Orchestrate) Mode Switch */}
+                <div className="grid grid-cols-2 gap-1 p-0.5 mb-1 rounded-lg bg-[var(--app-surface-subtle)] border border-[var(--app-border)]/60">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMobileSidebarOpen(false)
+                      if (topWorkspaceSlug) {
+                        void navigate({ to: '/$workspaceSlug', params: { workspaceSlug: topWorkspaceSlug } })
+                      } else {
+                        void navigate({ to: '/' })
+                      }
+                    }}
+                    className={cn(
+                      'flex items-center justify-center gap-1.5 py-1 px-2 rounded-md text-[11px] font-semibold transition-all',
+                      !isOrchestrateRoute
+                        ? 'bg-[var(--app-surface-raised)] text-[var(--app-text)] shadow-sm border border-[var(--app-border)]'
+                        : 'text-[var(--app-text-subtle)] hover:text-[var(--app-text)]'
+                    )}
+                    aria-label="Switch to Chat Mode"
+                  >
+                    <MessageSquare size={12} strokeWidth={2} />
+                    <span>Chat</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMobileSidebarOpen(false)
+                      if (topWorkspaceSlug) {
+                        void navigate({ to: '/$workspaceSlug/orchestrate', params: { workspaceSlug: topWorkspaceSlug } })
+                      } else {
+                        void navigate({ to: '/orchestrate' })
+                      }
+                    }}
+                    className={cn(
+                      'flex items-center justify-center gap-1.5 py-1 px-2 rounded-md text-[11px] font-semibold transition-all',
+                      isOrchestrateRoute
+                        ? 'bg-cyan-950/80 text-cyan-300 border border-cyan-800 shadow-sm'
+                        : 'text-[var(--app-text-subtle)] hover:text-cyan-400'
+                    )}
+                    aria-label="Switch to Swarm Orchestrate Mode"
+                  >
+                    <Cpu size={12} strokeWidth={2} className="text-cyan-400" />
+                    <span>Swarm</span>
+                    {pendingWorkerCount > 0 ? (
+                      <span className="rounded-full bg-amber-500/20 text-amber-300 px-1 text-[9px] font-bold">
+                        {pendingWorkerCount}
                       </span>
-                    </button>
-                    <button
-                      type="button"
-                      className="grid min-h-[28px] w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 text-left font-inherit text-[11px] text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text-muted)] disabled:cursor-not-allowed disabled:opacity-50"
-                      onClick={() => {
-                        setMobileSidebarOpen(false)
-                        void navigate({ to: '/workers', search: {} })
-                      }}
-                      aria-label="Open Workers"
-                      aria-current={isWorkersRoute ? 'page' : undefined}
-                      title="Workers"
-                    >
-                      <RefreshCcw size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
-                      <span className="flex min-w-0 items-center justify-between gap-1.5">
-                        <span className="min-w-0 truncate">Workers</span>
-                        {pendingWorkerCount > 0 ? <span className="rounded-full bg-[var(--app-warning-bg)] px-1.5 text-[var(--app-warning)]" aria-label={`${pendingWorkerCount} worker reviews pending`}>{pendingWorkerCount}</span> : null}
-                        <AutomationV2SidebarSummaryIndicator workspaceId={topWorkspaceId} workspaceSlug={topWorkspaceSlug} />
-                      </span>
-                    </button>
-                    {pendingWorkerCount > 0 ? <PendingWorkerSidebarReviews onOpenChat={handleSelectSession} /> : null}
-                    <button
-                      type="button"
-                      className="grid min-h-[28px] w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 text-left font-inherit text-[11px] text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text-muted)] disabled:cursor-not-allowed disabled:opacity-50"
-                      onClick={() => {
-                        if (!topWorkspaceSlug) return
-                        setMobileSidebarOpen(false)
-                        void navigate({ to: '/$workspaceSlug/environments', params: { workspaceSlug: topWorkspaceSlug }, search: {} })
-                      }}
-                      disabled={!topWorkspaceSlug}
-                      aria-label="Open Environments"
-                      title="Environments"
-                      data-testid="sidebar-environments-btn"
-                    >
-                      <Server size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
-                      <span className="min-w-0 truncate">Environments</span>
-                    </button>
-                    <button
+                    ) : null}
+                  </button>
+                </div>
+
+                <div className="grid gap-0.5 pt-0.5">
+                  <button
+                    type="button"
+                    className="grid min-h-[28px] w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 text-left font-inherit text-[11px] text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text-muted)] disabled:cursor-not-allowed disabled:opacity-50"
+                    onClick={() => {
+                      if (defaultNewChatWorkspacePath) {
+                        handleStartNewSessionInWorkspace(defaultNewChatWorkspacePath, defaultNewChatWorkspaceLabel)
+                      }
+                      setMobileSidebarOpen(false)
+                    }}
+                    disabled={!defaultNewChatWorkspacePath}
+                    aria-label={`New chat in ${defaultNewChatWorkspaceLabel}`}
+                    title={`New chat in ${defaultNewChatWorkspaceLabel}`}
+                  >
+                    <Plus size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
+                    <span className="min-w-0 truncate">New Chat</span>
+                  </button>
+                  <Link
+                    to="/"
+                    className="grid min-h-[28px] w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 text-left font-inherit text-[11px] text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text-muted)]"
+                    onClick={() => setMobileSidebarOpen(false)}
+                    aria-label="Open workspaces"
+                    title="Workspaces"
+                  >
+                    <Folder size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
+                    <span className="min-w-0 truncate">Workspaces</span>
+                  </Link>
+                  <button
+                    type="button"
+                    className="grid min-h-[28px] w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 text-left font-inherit text-[11px] text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text-muted)] disabled:cursor-not-allowed disabled:opacity-50"
+                    onClick={() => {
+                      if (!topWorkspaceSlug) return
+                      setMobileSidebarOpen(false)
+                      void navigate({ to: '/$workspaceSlug/studio', params: { workspaceSlug: topWorkspaceSlug } })
+                    }}
+                    disabled={!topWorkspaceSlug}
+                    aria-label="Open Studio"
+                    title="Studio"
+                  >
+                    <Film size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
+                    <span className="min-w-0 truncate">Studio</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="grid min-h-[28px] w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 text-left font-inherit text-[11px] text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text-muted)] disabled:cursor-not-allowed disabled:opacity-50"
+                    onClick={() => {
+                      if (!topWorkspaceSlug) return
+                      setMobileSidebarOpen(false)
+                      void navigate({
+                        to: '/$workspaceSlug/studio',
+                        params: { workspaceSlug: topWorkspaceSlug },
+                        search: { view: 'media' },
+                      })
+                    }}
+                    disabled={!topWorkspaceSlug}
+                    aria-label="Open Media"
+                    title="Media"
+                    data-testid="sidebar-media-btn"
+                  >
+                    <ImageIcon size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
+                    <span className="min-w-0 truncate">Media</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="grid min-h-[28px] w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 text-left font-inherit text-[11px] text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text-muted)] disabled:cursor-not-allowed disabled:opacity-50"
+                    onClick={() => {
+                      if (!topWorkspaceSlug) return
+                      setMobileSidebarOpen(false)
+                      void navigate({ to: '/$workspaceSlug/environments', params: { workspaceSlug: topWorkspaceSlug }, search: {} })
+                    }}
+                    disabled={!topWorkspaceSlug}
+                    aria-label="Open Environments"
+                    title="Environments"
+                    data-testid="sidebar-environments-btn"
+                  >
+                    <Server size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
+                    <span className="min-w-0 truncate">Environments</span>
+                  </button>
+                  <button
                       type="button"
                       className="grid min-h-[28px] w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 text-left font-inherit text-[11px] text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text-muted)] disabled:cursor-not-allowed disabled:opacity-50"
                       onClick={() => {
@@ -6003,7 +6013,7 @@ export function DesktopAppPage() {
                     onOpenGit: () => openMainWorktreeGitPanel(topWorkspacePath, topWorkspaceLabel),
                     onOpenAutomations: topWorkspaceSlug ? () => {
                       setMobileSidebarOpen(false)
-                      void navigate({ to: '/$workspaceSlug/workers', params: { workspaceSlug: topWorkspaceSlug }, search: {} })
+                      void navigate({ to: '/$workspaceSlug/orchestrate', params: { workspaceSlug: topWorkspaceSlug }, search: {} })
                     } : undefined,
                     onToggleReviewCleanup: () => setNeedsReviewCleanupOpen((open) => !open),
                     onToggleGroupCollapsed: handleToggleSidebarGroupCollapsed,

@@ -4013,6 +4013,52 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
 
               {automations.length > 0 || cloudWorkers.length > 0 ? (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {automations.map((a) => {
+                    const isTrigger = a.kind === 'trigger'
+                    return (
+                      <div
+                        key={a.id}
+                        className="rounded-2xl border border-slate-800 bg-slate-900/40 p-4 hover:border-slate-700/80 transition-all space-y-3"
+                      >
+                        <div className="flex items-start justify-between">
+                          <div className="flex items-center gap-2.5">
+                            <div className="h-8 w-8 rounded-xl bg-blue-600/15 text-blue-400 flex items-center justify-center border border-blue-500/20 font-bold text-xs">
+                              🤖
+                            </div>
+                            <div>
+                              <h3 className="text-xs font-bold text-white">{a.name}</h3>
+                              <span className="text-[10px] text-slate-400 font-mono">ID: {a.id}</span>
+                            </div>
+                          </div>
+                          <span className="rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 text-[10px] font-semibold">
+                            ● {a.status}
+                          </span>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-2 text-[11px]">
+                          <div className="rounded-lg bg-slate-950/60 p-2 border border-slate-800/60">
+                            <span className="text-[10px] text-slate-500 block">Schedule</span>
+                            <span className="text-slate-300 font-mono text-[10px]">{a.kind}</span>
+                          </div>
+                          <div className="rounded-lg bg-slate-950/60 p-2 border border-slate-800/60">
+                            <span className="text-[10px] text-slate-500 block">Trigger Mode</span>
+                            <span className="text-blue-400 font-semibold">
+                              {isTrigger ? 'On-Demand API' : 'Background Run'}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center justify-between pt-1 border-t border-slate-800/60 text-[10px]">
+                          <span className="text-slate-500">
+                            {a.lastRun ? `Last run: ${new Date(a.lastRun).toLocaleTimeString()}` : 'Never executed'}
+                          </span>
+                          <span className="text-slate-400 font-mono">
+                            {a.totalRuns !== undefined ? `${a.totalRuns} total runs` : `Target: ${a.id.slice(0, 14)}...`}
+                          </span>
+                        </div>
+                      </div>
+                    )
+                  })}
                   {cloudWorkers.map((cw) => {
                     const isPending = cw.status === 'pending_approval'
                     const spendFormatted = cw.total_spend_usd !== undefined ? `$${cw.total_spend_usd.toFixed(4)}` : '$0.0000'
@@ -4090,50 +4136,6 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                             </button>
                           </div>
                         )}
-                      </div>
-                    )
-                  })}
-                  {automations.map((a) => {
-                    const isTrigger = a.kind === 'trigger'
-                    return (
-                      <div
-                        key={a.id}
-                        className="rounded-2xl border border-slate-800 bg-slate-900/40 p-4 hover:border-slate-700/80 transition-all space-y-3"
-                      >
-                        <div className="flex items-start justify-between">
-                          <div className="flex items-center gap-2.5">
-                            <div className="h-8 w-8 rounded-xl bg-blue-600/15 text-blue-400 flex items-center justify-center border border-blue-500/20 font-bold text-xs">
-                              🤖
-                            </div>
-                            <div>
-                              <h3 className="text-xs font-bold text-white">{a.name}</h3>
-                              <span className="text-[10px] text-slate-400 font-mono">ID: {a.id}</span>
-                            </div>
-                          </div>
-                          <span className="rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 text-[10px] font-semibold">
-                            ● {a.status}
-                          </span>
-                        </div>
-
-                        <div className="grid grid-cols-2 gap-2 text-[11px]">
-                          <div className="rounded-lg bg-slate-950/60 p-2 border border-slate-800/60">
-                            <span className="text-[10px] text-slate-500 block">Schedule</span>
-                            <span className="text-slate-300 font-mono text-[10px]">{a.kind}</span>
-                          </div>
-                          <div className="rounded-lg bg-slate-950/60 p-2 border border-slate-800/60">
-                            <span className="text-[10px] text-slate-500 block">Trigger Mode</span>
-                            <span className="text-blue-400 font-semibold">
-                              {isTrigger ? 'On-Demand API' : 'Background Run'}
-                            </span>
-                          </div>
-                        </div>
-
-                        <div className="flex items-center justify-between pt-1 border-t border-slate-800/60 text-[10px]">
-                          <span className="text-slate-500">
-                            {a.lastRun ? `Last run: ${new Date(a.lastRun).toLocaleTimeString()}` : 'Never executed'}
-                          </span>
-                          <span className="text-slate-400 font-mono">Target: {a.id.slice(0, 14)}...</span>
-                        </div>
                       </div>
                     )
                   })}
@@ -4428,7 +4430,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
             </div>
 
             {/* PROJECT-TOP PENDING WORKER BANNER (SURFACES PROPOSALS FOR ASSIGNED PROJECT) */}
-            {(pendingReviews.length > 0 || cloudWorkers.some((w) => w.status === 'pending_approval')) && (
+            {pendingReviews.length > 0 && (
               <div className="mx-3.5 mt-3 mb-1 rounded-2xl border border-amber-500/40 bg-gradient-to-r from-amber-500/15 via-slate-900/95 to-amber-500/10 p-4 shadow-xl flex items-center justify-between gap-4">
                 <div className="flex items-center gap-3.5 min-w-0">
                   <div className="h-10 w-10 rounded-xl bg-amber-500/20 text-amber-400 flex items-center justify-center border border-amber-500/40 shrink-0 font-bold text-lg shadow-sm">
@@ -4442,20 +4444,10 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                       <span className="rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30 px-2 py-0.5 text-[10px] font-semibold animate-pulse">
                         Awaiting Acceptance
                       </span>
-                      {cloudWorkers.some((w) => w.status === 'pending_approval') && (
-                        <span className="rounded-full bg-blue-500/20 text-blue-300 border border-blue-500/30 px-2 py-0.5 text-[10px] font-mono">
-                          GCP Cloud Run Job
-                        </span>
-                      )}
                     </div>
                     <p className="text-xs text-slate-300 truncate mt-0.5">
-                      {pendingReviews[0]?.proposal.document?.title ||
-                        cloudWorkers.find((w) => w.status === 'pending_approval')?.name ||
-                        'Autonomous Cloud Worker'}{' '}
-                      •{' '}
-                      {pendingReviews[0]?.proposal.document?.info?.goal ||
-                        cloudWorkers.find((w) => w.status === 'pending_approval')?.description ||
-                        'Scheduled & one-off task execution in GCP with durable S3/GCS state storage.'}
+                      {pendingReviews[0]?.proposal.document?.title || 'Autonomous Worker'} •{' '}
+                      {pendingReviews[0]?.proposal.document?.info?.goal || 'Scheduled & on-demand task execution with Swarm engine.'}
                     </p>
                   </div>
                 </div>
@@ -4466,56 +4458,110 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                   >
                     View Details
                   </button>
-                  {pendingReviews.length > 0 ? (
-                    <>
-                      <button
-                        onClick={() =>
-                          handleDecideReview(
-                            pendingReviews[0].permission.id,
-                            pendingReviews[0].proposal.revision,
-                            pendingReviews[0].proposal.digest,
-                            'accept_automation'
-                          )
-                        }
-                        disabled={reviewBusyId === pendingReviews[0].permission.id}
-                        className="px-4 py-1.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-bold shadow-lg shadow-emerald-900/30 transition-all flex items-center gap-1.5"
-                      >
-                        <CheckCircle2 size={13} />
-                        <span>
-                          {reviewBusyId === pendingReviews[0].permission.id ? 'Deploying...' : 'Accept & Register Worker'}
-                        </span>
-                      </button>
-                      <button
-                        onClick={() =>
-                          handleDecideReview(
-                            pendingReviews[0].permission.id,
-                            pendingReviews[0].proposal.revision,
-                            pendingReviews[0].proposal.digest,
-                            'decline_automation'
-                          )
-                        }
-                        disabled={reviewBusyId === pendingReviews[0].permission.id}
-                        className="px-3 py-1.5 rounded-xl border border-rose-500/30 bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 text-xs font-medium transition-all"
-                      >
-                        Decline
-                      </button>
-                    </>
-                  ) : (
-                    cloudWorkers.find((w) => w.status === 'pending_approval') && (
-                      <button
-                        onClick={() => {
-                          const w = cloudWorkers.find((cw) => cw.status === 'pending_approval')
-                          if (w) handleActivateCloudWorker(w.worker_id)
-                        }}
-                        disabled={!!activatingWorkerId}
-                        className="px-4 py-1.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-bold shadow-lg shadow-emerald-900/30 transition-all flex items-center gap-1.5"
-                      >
-                        <CheckCircle2 size={13} />
-                        <span>{activatingWorkerId ? 'Activating...' : 'Accept & Activate Cloud Worker'}</span>
-                      </button>
-                    )
-                  )}
+                  <button
+                    onClick={() =>
+                      handleDecideReview(
+                        pendingReviews[0].permission.id,
+                        pendingReviews[0].proposal.revision,
+                        pendingReviews[0].proposal.digest,
+                        'accept_automation'
+                      )
+                    }
+                    disabled={reviewBusyId === pendingReviews[0].permission.id}
+                    className="px-4 py-1.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-bold shadow-lg shadow-emerald-900/30 transition-all flex items-center gap-1.5"
+                  >
+                    <CheckCircle2 size={13} />
+                    <span>
+                      {reviewBusyId === pendingReviews[0].permission.id ? 'Registering...' : 'Accept & Register Worker'}
+                    </span>
+                  </button>
+                  <button
+                    onClick={() =>
+                      handleDecideReview(
+                        pendingReviews[0].permission.id,
+                        pendingReviews[0].proposal.revision,
+                        pendingReviews[0].proposal.digest,
+                        'decline_automation'
+                      )
+                    }
+                    disabled={reviewBusyId === pendingReviews[0].permission.id}
+                    className="px-3 py-1.5 rounded-xl border border-rose-500/30 bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 text-xs font-medium transition-all"
+                  >
+                    Decline
+                  </button>
                 </div>
+              </div>
+            )}
+
+            {/* ACTIVE RUNNING AUTOMATIONS TICKER / CARDS AT TOP OF PROJECT */}
+            {automations.length > 0 ? (
+              <div className="mx-3.5 mt-2 mb-1.5 p-3 rounded-2xl border border-slate-800/90 bg-slate-900/60 shadow-lg">
+                <div className="flex items-center justify-between pb-2 mb-2 border-b border-slate-800/60">
+                  <div className="flex items-center gap-2">
+                    <div className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
+                    <span className="text-xs font-bold text-white tracking-tight">Active Project Automations ({automations.length})</span>
+                    <span className="text-[10px] text-slate-400">Autonomous workers running for {selectedProject?.name || 'this project'}</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setActiveNavTab('workers')}
+                    className="flex items-center gap-1 text-[11px] font-medium text-blue-400 hover:text-blue-300 transition-colors"
+                  >
+                    <span>Manage Fleet in Workers Hub</span>
+                    <ArrowRight size={12} />
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+                  {automations.map((a) => {
+                    const isTrigger = a.kind === 'trigger'
+                    return (
+                      <div
+                        key={a.id}
+                        onClick={() => setActiveNavTab('workers')}
+                        className="group cursor-pointer rounded-xl border border-slate-800 bg-[#090e1a]/80 p-2.5 hover:border-blue-500/50 hover:bg-slate-800/60 transition-all flex items-start justify-between gap-2 shadow-sm"
+                        title="Click to view in Workers Hub"
+                      >
+                        <div className="flex items-start gap-2 min-w-0">
+                          <div className="h-7 w-7 rounded-lg bg-blue-600/15 text-blue-400 border border-blue-500/25 flex items-center justify-center shrink-0 text-xs">
+                            🤖
+                          </div>
+                          <div className="min-w-0">
+                            <h4 className="text-xs font-semibold text-white truncate group-hover:text-blue-300 transition-colors">
+                              {a.name}
+                            </h4>
+                            <p className="text-[10px] text-slate-400 truncate mt-0.5">
+                              {isTrigger ? '⚡ On-Demand Trigger' : `🕒 ${a.nextRun || a.kind}`}
+                            </p>
+                          </div>
+                        </div>
+                        <div className="flex flex-col items-end shrink-0 gap-1">
+                          <span className="rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-1.5 py-0.2 text-[9px] font-semibold">
+                            ● {a.status}
+                          </span>
+                          <span className="text-[9px] font-mono text-slate-500">
+                            {a.totalRuns !== undefined ? `${a.totalRuns} run${a.totalRuns === 1 ? '' : 's'}` : ''}
+                          </span>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            ) : (
+              <div className="mx-3.5 mt-2 mb-1 px-3.5 py-2 rounded-xl border border-dashed border-slate-800 bg-slate-900/30 flex items-center justify-between gap-3 text-xs">
+                <div className="flex items-center gap-2 text-slate-400">
+                  <Bot size={14} className="text-slate-500" />
+                  <span className="text-[11px]">No background automations running for this project yet.</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setActiveNavTab('workers')}
+                  className="text-[11px] font-semibold text-blue-400 hover:text-blue-300 flex items-center gap-1"
+                >
+                  <span>Explore Workers Hub</span>
+                  <ArrowRight size={11} />
+                </button>
               </div>
             )}
 

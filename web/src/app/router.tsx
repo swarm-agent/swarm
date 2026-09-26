@@ -285,6 +285,13 @@ const workspaceWorkersRoute = createRoute({
   path: '/$workspaceSlug/workers',
   parseParams: validateWorkspaceParams,
   validateSearch: validateWorkspaceSessionSearch,
+  beforeLoad: ({ params }) => {
+    throw redirect({
+      to: '/$workspaceSlug/orchestrate',
+      params: { workspaceSlug: params.workspaceSlug },
+      replace: true,
+    })
+  },
   component: AutomationToolPage,
 })
 
@@ -324,6 +331,12 @@ const globalWorkersRoute = createRoute({
   getParentRoute: () => conversationRoute,
   path: '/workers',
   validateSearch: validateWorkspaceSessionSearch,
+  beforeLoad: () => {
+    throw redirect({
+      to: '/orchestrate',
+      replace: true,
+    })
+  },
   component: AutomationToolPage,
 })
 
