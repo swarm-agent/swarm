@@ -1630,6 +1630,31 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			if task.TaskProgram == nil && routed.TaskProgram != nil {
 				task.TaskProgram = routed.TaskProgram
 			}
+			if task.TaskProgram != nil {
+				if task.TaskProgram.ID == "" {
+					task.TaskProgram.ID = fmt.Sprintf("prog-%d", time.Now().UnixMilli())
+				}
+				if task.TaskProgramID == "" {
+					task.TaskProgramID = task.TaskProgram.ID
+				}
+				if len(task.TaskProgram.Stages) == 0 && len(task.TaskProgram.Jobs) > 0 {
+					stageSet := make(map[string]bool)
+					for i := range task.TaskProgram.Jobs {
+						stID := strings.TrimSpace(task.TaskProgram.Jobs[i].StageID)
+						if stID == "" {
+							stID = "stage-1"
+							task.TaskProgram.Jobs[i].StageID = stID
+						}
+						if !stageSet[stID] {
+							stageSet[stID] = true
+							task.TaskProgram.Stages = append(task.TaskProgram.Stages, pebblestore.TaskProgramStageSpec{
+								ID:                 stID,
+								DependencyEvidence: "Synthesized stage for cohort jobs",
+							})
+						}
+					}
+				}
+			}
 			if task.Agent == "coder" || task.OutcomeType == "code_pr" || task.OutcomeType == "bug_patch" {
 				task.AspectRatio = ""
 				task.VariantCount = 0
