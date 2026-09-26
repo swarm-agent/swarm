@@ -375,8 +375,8 @@ function MinimalTaskCard({
   const taskProgramStatus = task.taskProgramStatus || (task as any).task_program_status
   const taskProgramDef = task.taskProgram || (task as any).task_program || taskProgramStatus?.definition
   const isTaskProgram = Boolean(
-    (taskProgramDef?.jobs && taskProgramDef.jobs.length > 1) ||
-    (taskProgramStatus?.jobs && taskProgramStatus.jobs.length > 1)
+    (taskProgramDef?.jobs && taskProgramDef.jobs.length > 0) ||
+    (taskProgramStatus?.jobs && taskProgramStatus.jobs.length > 0)
   )
 
   const programJobs = useMemo(() => {
@@ -2110,6 +2110,12 @@ export function OrchestrateView({
             author: t.worker_name || 'Orchestrator',
           })),
           attachedMedia: t.attached_media,
+          taskProgram: t.task_program || t.taskProgram,
+          task_program: t.task_program || t.taskProgram,
+          taskProgramId: t.task_program_id || t.taskProgramId,
+          task_program_id: t.task_program_id || t.taskProgramId,
+          taskProgramStatus: t.task_program_status || t.taskProgramStatus,
+          task_program_status: t.task_program_status || t.taskProgramStatus,
           subtasks: [
             { id: '1', title: 'Verify task scope', completed: true },
             { id: '2', title: 'Execute implementation', completed: t.status === 'completed' || t.status === 'needs_review' },

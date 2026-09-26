@@ -112,6 +112,13 @@ func (j *TaskProgramJobSpec) UnmarshalJSON(data []byte) error {
 		Label        string   `json:"label"`
 		Description  string   `json:"description"`
 		Scope        []string `json:"scope"`
+		Prompt       string   `json:"prompt"`
+		Notes        string   `json:"notes"`
+		Context      string   `json:"context"`
+		Tasks        []string `json:"tasks"`
+		Subtasks     []any    `json:"subtasks"`
+		Order        int      `json:"order"`
+		Status       string   `json:"status"`
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
@@ -128,7 +135,7 @@ func (j *TaskProgramJobSpec) UnmarshalJSON(data []byte) error {
 	}
 	decoded.AgentType = strings.ToLower(agentType)
 	if decoded.MetaPrompt == "" {
-		decoded.MetaPrompt = strings.TrimSpace(decoded.Role)
+		decoded.MetaPrompt = strings.TrimSpace(firstNonEmptyString(decoded.Prompt, decoded.Role, decoded.Description))
 	}
 	if decoded.Title == "" {
 		decoded.Title = strings.TrimSpace(firstNonEmptyString(decoded.Name, decoded.Label))

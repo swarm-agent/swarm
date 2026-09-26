@@ -113,7 +113,19 @@ func readyJobIndexesForStage(record *pebblestore.TaskProgramRecord, stageID stri
 
 // deployProjectTaskProgram initializes and deploys a TaskProgram on a project task standalone.
 func (s *Server) deployProjectTaskProgram(p identity.Principal, proj *pebblestore.ProjectRecord, task *pebblestore.ProjectTaskRecord) error {
-	if task == nil || task.TaskProgram == nil {
+	if task == nil {
+		return errors.New("task is required")
+	}
+	db := s.sessions.Store()
+	if db == nil {
+		return errors.New("session store not available")
+	}
+	if task.TaskProgram == nil && task.TaskProgramID != "" && task.SessionID != "" {
+		if existing, ok, _ := db.GetTaskProgram(task.SessionID, task.TaskProgramID); ok {
+			task.TaskProgram = &existing.Definition
+		}
+	}
+	if task.TaskProgram == nil {
 		return errors.New("task program is required")
 	}
 	if len(task.TaskProgram.Stages) == 0 {
@@ -121,11 +133,6 @@ func (s *Server) deployProjectTaskProgram(p identity.Principal, proj *pebblestor
 	}
 	if len(task.TaskProgram.Jobs) == 0 {
 		return errors.New("task program requires at least one job")
-	}
-
-	db := s.sessions.Store()
-	if db == nil {
-		return errors.New("session store not available")
 	}
 
 	// 1. Ensure coordinator session exists
@@ -844,6 +851,7 @@ func (s *Server) DeployProjectTask(accountScopeID, projectID, taskID string) err
 		if err := s.deployProjectTaskProgram(p, proj, task); err != nil {
 			return err
 		}
+		return nil
 	} else if task.Agent == "image" || task.Agent == "video" {
 		if err := s.deployProjectTaskExecution(p, proj, task, "in_progress", ""); err != nil {
 			return err

@@ -72,6 +72,9 @@ test('OrchestrateView renders Compact Multi-Coder View for Task Programs with in
 
   // Task program detection & compact view
   assert.ok(source.includes('isTaskProgram'), 'MinimalTaskCard must detect task program multi-agent tasks')
+  assert.ok(source.includes('jobs.length > 0'), 'Task program must support single-job task programs')
+  assert.ok(source.includes('taskProgram: t.task_program || t.taskProgram'), 'fetchProjectTasks must map taskProgram')
+  assert.ok(source.includes('taskProgramStatus: t.task_program_status || t.taskProgramStatus'), 'fetchProjectTasks must map taskProgramStatus')
   assert.ok(source.includes('Parallel Multi-Agent Cohort'), 'MinimalTaskCard must display parallel cohort stage header')
   assert.ok(source.includes('Coders Finished'), 'MinimalTaskCard must display finished coders count')
 

@@ -397,3 +397,73 @@ func TestOrchestratorToolIsolationContract(t *testing.T) {
 		}
 	}
 }
+
+func TestManageProjects_SingleTaskProgramCohortDeployment(t *testing.T) {
+	// Written test purpose:
+	// - Product requirement/invariant: An orchestrator can delegate a Task Program in a single task,
+	//   supporting JSON string payloads, auto-synthesizing missing stages from jobs, auto-generating IDs,
+	//   and auto-approving/deploying the task program cohort immediately.
+	// - Regression prevented: Prevents regressions where single-task Task Programs fail to deploy or
+	//   silently drop task_program definitions.
+	scope := WorkspaceScope{
+		Principal: identity.Principal{
+			Type:           "user",
+			AccountScopeID: "account",
+		},
+	}
+	db := newMockProjectStore()
+	rt := &Runtime{}
+	rt.SetManageProjectStore(db)
+
+	var deployedTaskID, deployedProjectID string
+	rt.SetProjectTaskDeployer(func(acct, pID, tID string) error {
+		deployedProjectID = pID
+		deployedTaskID = tID
+		return nil
+	})
+
+	_ = db.PutProject("account", &pebblestore.ProjectRecord{
+		ID:        "proj_single_tp",
+		AccountID: "account",
+		Name:      "Single TP Project",
+	})
+
+	ctx := context.Background()
+	execTool := func(s WorkspaceScope, callID, argsJSON string) (string, error) {
+		return rt.ExecuteForWorkspaceScopeWithRuntime(ctx, s, Call{
+			CallID:    callID,
+			Name:      "manage_projects",
+			Arguments: argsJSON,
+		})
+	}
+
+	// 1. Propose task with auto_approve: true and JSON string task_program lacking explicit stages
+	toolOut, err := execTool(scope, "call-single-tp", `{
+		"action": "propose_task",
+		"project_id": "proj_single_tp",
+		"title": "Autonomous Single Task Program",
+		"auto_approve": true,
+		"task_program": "{\"jobs\": [{\"id\": \"single-coder-1\", \"title\": \"Implement core\", \"prompt\": \"Write code\", \"agent\": \"coder\", \"deliverable\": \"main.go\"}]}"
+	}`)
+	if err != nil {
+		t.Fatalf("propose_task with string task_program failed: %v", err)
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal([]byte(toolOut), &resp); err != nil {
+		t.Fatal(err)
+	}
+	task, _ := resp["task"].(map[string]any)
+	if task["status"] != "in_progress" {
+		t.Fatalf("expected task status in_progress, got %v", task["status"])
+	}
+	if task["task_program_id"] == "" {
+		t.Fatal("expected auto-generated task_program_id")
+	}
+	if task["task_program"] == nil {
+		t.Fatal("expected parsed task_program")
+	}
+	if deployedTaskID == "" || deployedProjectID != "proj_single_tp" {
+		t.Fatalf("expected deployer invoked immediately on auto_approve, got %q, %q", deployedProjectID, deployedTaskID)
+	}
+}

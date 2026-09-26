@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
@@ -407,12 +408,10 @@ func (r *Runtime) executeManageProjects(scope WorkspaceScope, args map[string]an
 
 		var taskProg *pebblestore.TaskProgramDefinition
 		if rawProg, ok := args["task_program"]; ok && rawProg != nil {
-			progBytes, err := json.Marshal(rawProg)
-			if err == nil {
-				var tp pebblestore.TaskProgramDefinition
-				if err := json.Unmarshal(progBytes, &tp); err == nil && len(tp.Stages) > 0 && len(tp.Jobs) > 0 {
-					taskProg = &tp
-				}
+			var err error
+			taskProg, err = parseTaskProgram(rawProg)
+			if err != nil {
+				return "", err
 			}
 		}
 		if autoApprove, ok := args["auto_approve"].(bool); ok && autoApprove {
@@ -456,7 +455,9 @@ func (r *Runtime) executeManageProjects(scope WorkspaceScope, args map[string]an
 			return "", err
 		}
 		if r.projectTaskDeployer != nil && task.Status == "in_progress" {
-			_ = r.projectTaskDeployer(accountScopeID, projectID, task.ID)
+			if err := r.projectTaskDeployer(accountScopeID, projectID, task.ID); err != nil {
+				return "", fmt.Errorf("deploy task: %w", err)
+			}
 		}
 		if found && proj != nil {
 			_, _ = r.projects.UpdateProject(accountScopeID, projectID, func(p *pebblestore.ProjectRecord) error {
@@ -537,15 +538,13 @@ func (r *Runtime) executeManageProjects(scope WorkspaceScope, args map[string]an
 				t.CurrentStageIndex = int(stage)
 			}
 			if rawProg, ok := args["task_program"]; ok && rawProg != nil {
-				progBytes, err := json.Marshal(rawProg)
-				if err == nil {
-					var tp pebblestore.TaskProgramDefinition
-					if err := json.Unmarshal(progBytes, &tp); err == nil && len(tp.Stages) > 0 && len(tp.Jobs) > 0 {
-						t.TaskProgram = &tp
-						if tp.ID != "" {
-							t.TaskProgramID = tp.ID
-						}
-					}
+				parsed, err := parseTaskProgram(rawProg)
+				if err != nil {
+					return err
+				}
+				t.TaskProgram = parsed
+				if parsed.ID != "" {
+					t.TaskProgramID = parsed.ID
 				}
 			}
 			return nil
@@ -576,7 +575,9 @@ func (r *Runtime) executeManageProjects(scope WorkspaceScope, args map[string]an
 			return "", err
 		}
 		if r.projectTaskDeployer != nil {
-			_ = r.projectTaskDeployer(accountScopeID, projectID, taskID)
+			if err := r.projectTaskDeployer(accountScopeID, projectID, taskID); err != nil {
+				return "", fmt.Errorf("deploy task: %w", err)
+			}
 		}
 		response["task"] = updated
 
@@ -678,4 +679,49 @@ func (r *Runtime) executeManageProjects(scope WorkspaceScope, args map[string]an
 		return "", err
 	}
 	return string(raw), nil
+}
+
+func parseTaskProgram(rawProg any) (*pebblestore.TaskProgramDefinition, error) {
+	if rawProg == nil {
+		return nil, nil
+	}
+	var progBytes []byte
+	if s, isStr := rawProg.(string); isStr {
+		progBytes = []byte(s)
+	} else {
+		var err error
+		progBytes, err = json.Marshal(rawProg)
+		if err != nil {
+			return nil, fmt.Errorf("marshal task_program: %w", err)
+		}
+	}
+	var tp pebblestore.TaskProgramDefinition
+	if err := json.Unmarshal(progBytes, &tp); err != nil {
+		return nil, fmt.Errorf("invalid task_program definition: %w", err)
+	}
+	// Synthesize default stage if jobs are provided without explicit stages
+	if len(tp.Stages) == 0 && len(tp.Jobs) > 0 {
+		stageSet := make(map[string]bool)
+		for i := range tp.Jobs {
+			stID := strings.TrimSpace(tp.Jobs[i].StageID)
+			if stID == "" {
+				stID = "stage-1"
+				tp.Jobs[i].StageID = stID
+			}
+			if !stageSet[stID] {
+				stageSet[stID] = true
+				tp.Stages = append(tp.Stages, pebblestore.TaskProgramStageSpec{
+					ID:                 stID,
+					DependencyEvidence: "Synthesized stage for cohort jobs",
+				})
+			}
+		}
+	}
+	if len(tp.Stages) == 0 || len(tp.Jobs) == 0 {
+		return nil, errors.New("task_program requires at least one stage and job")
+	}
+	if tp.ID == "" {
+		tp.ID = fmt.Sprintf("prog-%d", time.Now().UnixMilli())
+	}
+	return &tp, nil
 }

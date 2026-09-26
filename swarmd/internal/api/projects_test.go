@@ -1251,6 +1251,113 @@ func TestProjectTaskProgram_StandaloneExecutionAndRedeploy(t *testing.T) {
 	}
 }
 
+func TestProjectTaskProgram_SingleTaskLifecycleAndHydration(t *testing.T) {
+	// Written test purpose:
+	// - Product requirement/invariant: A single task with an attached single-job Task Program must deploy
+	//   standalone through DeployProjectTask, maintain in_progress status while running, transition to
+	//   needs_review upon completion, and hydrate TaskProgramStatus for task queries.
+	// - Regression prevented: Prevents regressions where single-task Task Programs fail to deploy or
+	//   fail to sync live TaskProgram status in task listings.
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.Open failed: %v", err)
+	}
+	defer db.Close()
+
+	ss := store.NewSessionStore(db)
+	s := &Server{
+		sessions: sessionruntime.NewService(ss, nil),
+	}
+
+	accountID := "acct_single_tp"
+	projID := "proj_single_tp_1"
+	taskID := "task_single_tp_1"
+
+	proj := &store.ProjectRecord{
+		ID:        projID,
+		AccountID: accountID,
+		Name:      "Single TP Test",
+	}
+	if err := ss.PutProject(accountID, proj); err != nil {
+		t.Fatal(err)
+	}
+
+	taskProg := &store.TaskProgramDefinition{
+		ID: "prog_single_1",
+		Stages: []store.TaskProgramStageSpec{
+			{ID: "stage_core", DependencyEvidence: "Initial stage"},
+		},
+		Jobs: []store.TaskProgramJobSpec{
+			{
+				ID:                 "job_core",
+				StageID:            "stage_core",
+				AgentType:          "coder",
+				Title:              "Core Backend Implementation",
+				MetaPrompt:         "Implement core logic",
+				Deliverable:        "core.go",
+				AcceptanceCriteria: []string{"test passes"},
+				DependencyEvidence: "None",
+			},
+		},
+	}
+
+	task := &store.ProjectTaskRecord{
+		ID:          taskID,
+		ProjectID:   projID,
+		AccountID:   accountID,
+		Title:       "Core Feature Delegation",
+		Status:      "pending_approval",
+		TaskProgram: taskProg,
+	}
+	if err := ss.PutProjectTask(accountID, task); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Deploy via DeployProjectTask
+	if err := s.DeployProjectTask(accountID, projID, taskID); err != nil {
+		t.Fatalf("DeployProjectTask failed: %v", err)
+	}
+
+	deployedTask, found, err := ss.GetProjectTask(accountID, projID, taskID)
+	if err != nil || !found {
+		t.Fatalf("failed retrieving deployed task: %v", err)
+	}
+	if deployedTask.Status != "in_progress" {
+		t.Fatalf("expected status in_progress, got %s", deployedTask.Status)
+	}
+	if deployedTask.TaskProgramID != "prog_single_1" {
+		t.Fatalf("expected task program id prog_single_1, got %s", deployedTask.TaskProgramID)
+	}
+
+	// 2. syncTaskSessionState while running
+	syncTaskSessionState(deployedTask, ss)
+	if deployedTask.Status != "in_progress" {
+		t.Fatalf("expected status in_progress while program running, got %s", deployedTask.Status)
+	}
+
+	// 3. Complete the program in store and test syncTaskSessionState
+	completedState := store.TaskProgramStateCompleted
+	_, _, err = ss.TransitionTaskProgram(deployedTask.SessionID, deployedTask.TaskProgramID, store.TaskProgramTransition{
+		ExpectedRevision: 1,
+		MutationID:       "test_complete",
+		State:            &completedState,
+	})
+	if err != nil {
+		t.Fatalf("TransitionTaskProgram failed: %v", err)
+	}
+
+	syncTaskSessionState(deployedTask, ss)
+	if deployedTask.Status != "needs_review" {
+		t.Fatalf("expected status needs_review after program completion, got %s", deployedTask.Status)
+	}
+	if deployedTask.TaskProgramStatus == nil {
+		t.Fatal("expected non-nil TaskProgramStatus on task")
+	}
+	if deployedTask.TaskProgramStatus.State != store.TaskProgramStateCompleted {
+		t.Fatalf("expected TaskProgramStatus state completed, got %s", deployedTask.TaskProgramStatus.State)
+	}
+}
+
 func TestProjectOrchestrator_ClearContext_ResolvesPlanModelAndValidProfile(t *testing.T) {
 	// Purpose:
 	// - Product invariant: /v3/projects/{id}/orchestrator:clear-context must provision a replacement

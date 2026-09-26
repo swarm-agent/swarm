@@ -275,16 +275,11 @@ func inspectTaskGitState(task pebblestore.ProjectTaskRecord, db *pebblestore.Ses
 // in_progress tasks to needs_review when the agent finishes execution, ensuring tasks
 // never just flip to complete without review/integration, and allowing reopening.
 func syncTaskSessionState(task *pebblestore.ProjectTaskRecord, db *pebblestore.SessionStore) {
-	if task == nil || task.SessionID == "" || db == nil {
+	if task == nil || db == nil {
 		return
 	}
 	// Do not override tasks awaiting user approval, planning, or queued
 	if task.Status == "pending_approval" || task.Status == "planning" || task.Status == "queued" {
-		return
-	}
-
-	sess, found, err := db.GetSession(task.SessionID)
-	if err != nil || !found {
 		return
 	}
 
@@ -296,6 +291,52 @@ func syncTaskSessionState(task *pebblestore.ProjectTaskRecord, db *pebblestore.S
 
 	// 2. If task was explicitly marked completed and not reopened, preserve completed
 	if task.Status == "completed" {
+		return
+	}
+
+	// 2b. If task has a Task Program, sync status from TaskProgramRecord
+	if task.TaskProgramID != "" || task.TaskProgram != nil {
+		progID := task.TaskProgramID
+		if progID == "" && task.TaskProgram != nil {
+			progID = task.TaskProgram.ID
+		}
+		if progID != "" && task.SessionID != "" {
+			if prog, ok, _ := db.GetTaskProgram(task.SessionID, progID); ok {
+				task.TaskProgramStatus = &prog
+				switch prog.State {
+				case pebblestore.TaskProgramStateRunning:
+					task.Status = "in_progress"
+					return
+				case pebblestore.TaskProgramStateCompleted:
+					if !task.IsIntegrated {
+						task.Status = "needs_review"
+						if task.ActionNeeded == "" || strings.HasPrefix(task.ActionNeeded, "Action Needed: 0") {
+							task.ActionNeeded = "Action Needed: All task program jobs finished and integrated. Ready to integrate into dev/main."
+						}
+					} else {
+						task.Status = "completed"
+					}
+					return
+				case pebblestore.TaskProgramStateBlocked:
+					task.Status = "needs_review"
+					if prog.Blocker != nil && prog.Blocker.Message != "" {
+						task.ActionNeeded = prog.Blocker.Message
+						task.LastError = prog.Blocker.Message
+					}
+					return
+				case pebblestore.TaskProgramStateFailed:
+					task.Status = "failed"
+					return
+				}
+			}
+		}
+	}
+
+	if task.SessionID == "" {
+		return
+	}
+	sess, found, err := db.GetSession(task.SessionID)
+	if err != nil || !found {
 		return
 	}
 
@@ -1611,6 +1652,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			if task.TaskProgram != nil && (taskStatus == "in_progress" || req.AutoApprove) {
 				task.Status = "in_progress"
 				_ = s.deployProjectTaskProgram(p, proj, &task)
+				hydrateTaskProgramStatus(&task, db)
 			} else {
 				_ = s.deployProjectTaskExecution(p, proj, &task, taskStatus, prompt)
 			}
@@ -2042,6 +2084,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			if updated.TaskProgram != nil || updated.TaskProgramID != "" {
 				// Autonomous Task Program execution!
 				_ = s.deployProjectTaskProgram(p, proj, updated)
+				hydrateTaskProgramStatus(updated, db)
 			} else if updated.Agent == "image" || updated.Agent == "video" {
 				// Direct media execution!
 				_ = s.deployProjectTaskExecution(p, proj, updated, "in_progress", "")
