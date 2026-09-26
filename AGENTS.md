@@ -170,6 +170,7 @@ Prefer maintained scripts over one-off replacements:
 - `./scripts/update-model-snapshot.sh [--check]` — canonical model snapshot fetch/verification/install workflow.
 - `./scripts/ssh-fast-test.sh <ssh-alias>` — explicit remote development rebuild/restart workflow for a host service; never use it for the isolated live candidate testbench.
 - `./scripts/session-dump-via-api.sh <session-url>` — canonical same-machine development session dump through the authenticated Desktop API passthrough. Do not inspect the local Pebble database directly.
+- `./scripts/check-atlas-sync.sh` — canonical atlas synchronization check for documentation and architecture tracking.
 - `./scripts/check-precommit.sh`, `./scripts/check-launch-readiness.sh`, and release verification scripts — public/release gates.
 
 ### Local Candidate Testbench & Operator Scripts (`~/work`)
