@@ -2944,20 +2944,27 @@ no scratch/logs or private identifiers were added to tracked documentation.
   - Built `storagehub.Service` for managing configured storage buckets, registering remote worker state footprints, and indexing deliverables.
   - Exposed REST endpoints on `swarmd`:
     - `GET /v1/storage/buckets`, `POST /v1/storage/buckets`, `GET /v1/storage/buckets/{id}`, `DELETE /v1/storage/buckets/{id}`, `POST /v1/storage/buckets/{id}/scan`
+    - `POST /v1/storage/buckets/{id}/accept-canonical`, `POST /v1/storage/buckets/{id}/reject`
+    - `GET /v1/storage/canonical`, `GET /v1/storage/proposals`, `POST /v1/storage/proposals`
     - `GET /v1/storage/workers`, `POST /v1/storage/workers`, `GET /v1/storage/workers/{id}`
     - `GET /v1/storage/deliverables`, `POST /v1/storage/deliverables`, `GET /v1/storage/deliverables/{id}`
   - Automatically routes newly discovered or submitted deliverables into the AI Notification Inbox via `SubmitInboxNotificationForAccount`.
-- **Desktop Storage UX (`web/src/features/desktop/storage/`, `web/src/features/desktop/notifications/`):**
-  - Implemented `DesktopStorageBucketsModal` component supporting connection, configuration, testing, credential management, and on-demand scanning of S3/GCS buckets.
-  - Added warning banner in Desktop AI Notification Inbox when no cloud storage bucket is hooked up, prompting the operator with a direct "Connect Bucket" action.
-  - Added active bucket status bar in AI Inbox displaying connected bucket name, provider tag, and one-click "Scan for Deliverables" trigger.
-- **Autonomous Social Media Campaign Worker & Storage Client in @swarm/sdk (`packages/sdk/src/storage/`, `packages/sdk/examples/social-media-worker.ts`):**
-  - Implemented SDK `SwarmStorageNamespace` on `SwarmClient.storage` for managing buckets, workers, and deliverables.
+  - Added pending connection proposals mechanism: AI workers send cloud connection requests (`POST /v1/storage/proposals`) with scoped credentials which generate actionable `ai_request` notifications routing users to the Desktop Cloud section.
+  - Implemented canonical connection designation (`SetCanonicalBucket`), maintaining exactly one active primary Swarm cloud connection across buckets.
+- **Desktop Cloud Section & Storage UX (`web/src/features/desktop/settings/cloud/`, `web/src/features/desktop/storage/`, `web/src/features/desktop/notifications/`):**
+  - Implemented dedicated `CloudSettingsPage` under `/settings?tab=cloud` managing canonical cloud storage connections, active status indicators, and bucket management.
+  - Added direct Cloud navigation icon in Desktop collapsed sidebar and full sidebar menu alongside Settings.
+  - Rendered prominent "Pending AI Worker Connection Requests" card in Cloud settings allowing operators to review worker-proposed buckets and accept them as canonical with 1 click.
+  - Updated AI Notification Inbox routing so clicking "Configure in Cloud" or "Review in Cloud" immediately navigates to `/settings?tab=cloud`.
+  - Maintained `DesktopStorageBucketsModal` component supporting connection, configuration, testing, credential management, and on-demand scanning of S3/GCS buckets.
+- **Autonomous Worker Storage Client & Proposal API in @swarm/sdk (`packages/sdk/src/storage/`, `packages/sdk/src/client.ts`):**
+  - Added `proposeConnection`, `listProposals`, `setCanonicalBucket`, `getCanonicalBucket`, and `rejectProposal` to `SwarmStorageNamespace`.
+  - Added convenient `client.cloud` alias for `client.storage`.
   - Implemented client-side storage hub (`WorkerStorageHub`) with S3 and In-Memory drivers for writing agent session state, traces, and signed deliverable manifests.
   - Authored runnable campaign worker example `social-media-worker.ts` that executes social media marketing campaigns, tracks progress percentages, and publishes deliverables with verified SHA-256 cryptographic digests.
 - **Verification & Tests:**
-  - Go unit tests: `swarmd/internal/storagehub/driver_s3_test.go`, `swarmd/internal/storagehub/service_test.go`, and `swarmd/internal/api/storagehub_api_test.go` all pass.
-  - SDK unit tests: `packages/sdk/src/__tests__/storage.spec.ts` and `packages/sdk/src/__tests__/social-media-worker.spec.ts` pass 100%.
-  - Web UI: Clean TypeScript type checking (`npx tsc --noEmit`) and inbox unit tests pass.
+  - Go unit tests: `swarmd/internal/storagehub/driver_s3_test.go`, `swarmd/internal/storagehub/service_test.go` (including `TestStorageHubService_CanonicalAndProposals`), and `swarmd/internal/api/storagehub_api_test.go` all pass 100%.
+  - SDK unit tests: `packages/sdk/src/__tests__/storage.spec.ts` (covering proposals, canonical retrieval, and accept-canonical) and `packages/sdk/src/__tests__/social-media-worker.spec.ts` pass 100% (35 passing tests).
+  - Web UI: Clean TypeScript type checking (`npx tsc --noEmit`) and settings tab unit tests pass.
 
 

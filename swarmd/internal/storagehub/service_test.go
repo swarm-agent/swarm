@@ -210,3 +210,71 @@ func TestStorageHubService_Lifecycle(t *testing.T) {
 		t.Errorf("expected driver manifest status 'accepted', got %v", updatedM["status"])
 	}
 }
+
+func TestStorageHubService_CanonicalAndProposals(t *testing.T) {
+	st, cleanup := openTestPebble(t)
+	defer cleanup()
+
+	notifMock := &mockNotificationSubmitter{}
+	svc := NewService(st, notifMock)
+	ctx := context.Background()
+	accountID := "acct_test_canonical"
+
+	// 1. Propose bucket from AI worker
+	prop, err := svc.ProposeBucket(ctx, pebblestore.StorageBucketRecord{
+		AccountScopeID: accountID,
+		Name:           "Social Cloud Hub",
+		Provider:       "gcs",
+		BucketName:     "swarm-social-storage-20260926",
+		ProposedBy:     "worker-social-bot",
+		ProposalReason: "Shared storage for campaign deliverables",
+	})
+	if err != nil {
+		t.Fatalf("ProposeBucket failed: %v", err)
+	}
+	if prop.Status != "pending_approval" {
+		t.Fatalf("expected status pending_approval, got %s", prop.Status)
+	}
+	if prop.Canonical {
+		t.Fatalf("expected proposal not to be canonical initially")
+	}
+
+	// Verify notification was submitted to inbox
+	if len(notifMock.submitted) != 1 {
+		t.Fatalf("expected 1 notification submitted, got %d", len(notifMock.submitted))
+	}
+	notif := notifMock.submitted[0]
+	if notif.Kind != pebblestore.NotificationKindAIRequest {
+		t.Fatalf("expected kind ai_request, got %s", notif.Kind)
+	}
+	if len(notif.Actions) < 2 {
+		t.Fatalf("expected at least 2 actions on notification, got %d", len(notif.Actions))
+	}
+
+	// 2. Query canonical before accepting -> should not find it
+	canonical, ok, err := svc.GetCanonicalBucket(accountID)
+	if err != nil {
+		t.Fatalf("GetCanonicalBucket: %v", err)
+	}
+	if ok || canonical != nil {
+		t.Fatalf("expected no canonical bucket before acceptance")
+	}
+
+	// 3. Accept as canonical
+	accepted, err := svc.SetCanonicalBucket(accountID, prop.ID)
+	if err != nil {
+		t.Fatalf("SetCanonicalBucket failed: %v", err)
+	}
+	if !accepted.Canonical || accepted.Status != "active" {
+		t.Fatalf("expected accepted bucket to be canonical and active, got canonical=%v status=%s", accepted.Canonical, accepted.Status)
+	}
+
+	// 4. Query canonical now
+	canonical, ok, err = svc.GetCanonicalBucket(accountID)
+	if err != nil || !ok || canonical == nil {
+		t.Fatalf("GetCanonicalBucket after accept failed: %v, ok=%v", err, ok)
+	}
+	if canonical.ID != prop.ID {
+		t.Fatalf("canonical bucket ID mismatch: %s vs %s", canonical.ID, prop.ID)
+	}
+}

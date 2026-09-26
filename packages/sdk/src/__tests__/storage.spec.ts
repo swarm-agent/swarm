@@ -167,6 +167,21 @@ test('SwarmStorageNamespace: API client methods', async () => {
     if (pathname === '/v1/storage/deliverables/deliv_1/import' && method === 'POST') {
       return new Response(JSON.stringify({ deliverable: { deliverable_id: 'deliv_1', status: 'accepted' }, target_dir: '/workspace' }), { status: 200 });
     }
+    if (pathname === '/v1/storage/proposals' && method === 'POST') {
+      return new Response(JSON.stringify({ proposal: { id: 'bkt_prop_1', status: 'pending_approval', ...body } }), { status: 201 });
+    }
+    if (pathname === '/v1/storage/proposals' && method === 'GET') {
+      return new Response(JSON.stringify({ proposals: [{ id: 'bkt_prop_1', status: 'pending_approval', bucket_name: 'prop-bucket' }], count: 1 }), { status: 200 });
+    }
+    if (pathname === '/v1/storage/buckets/bkt_prop_1/accept-canonical' && method === 'POST') {
+      return new Response(JSON.stringify({ bucket: { id: 'bkt_prop_1', canonical: true, status: 'active' } }), { status: 200 });
+    }
+    if (pathname === '/v1/storage/canonical' && method === 'GET') {
+      return new Response(JSON.stringify({ bucket: { id: 'bkt_prop_1', canonical: true, status: 'active' }, configured: true }), { status: 200 });
+    }
+    if (pathname === '/v1/storage/buckets/bkt_prop_1/reject' && method === 'POST') {
+      return new Response(JSON.stringify({ rejected: true }), { status: 200 });
+    }
 
     return new Response('Not Found', { status: 404 });
   };
@@ -209,6 +224,36 @@ test('SwarmStorageNamespace: API client methods', async () => {
     // 6. Delete Bucket
     const deleted = await client.storage.deleteBucket('bkt_1');
     assert.equal(deleted, true);
+
+    // 7. Propose Cloud Connection via AI worker
+    const prop = await client.cloud.proposeConnection({
+      provider: 'gcs',
+      bucket_name: 'prop-bucket',
+      proposed_by: 'social-worker',
+      proposal_reason: 'Campaign assets',
+    });
+    assert.equal(prop.id, 'bkt_prop_1');
+    assert.equal(prop.status, 'pending_approval');
+
+    // 8. List Proposals
+    const proposals = await client.storage.listProposals();
+    assert.equal(proposals.length, 1);
+    assert.equal(proposals[0].id, 'bkt_prop_1');
+
+    // 9. Accept as Canonical
+    const accepted = await client.storage.setCanonicalBucket('bkt_prop_1');
+    assert.equal(accepted.canonical, true);
+    assert.equal(accepted.status, 'active');
+
+    // 10. Query Canonical
+    const canonical = await client.cloud.getCanonicalBucket();
+    assert.ok(canonical);
+    assert.equal(canonical?.id, 'bkt_prop_1');
+    assert.equal(canonical?.canonical, true);
+
+    // 11. Reject Proposal
+    const rejected = await client.storage.rejectProposal('bkt_prop_1');
+    assert.equal(rejected, true);
   } finally {
     globalThis.fetch = originalFetch;
   }

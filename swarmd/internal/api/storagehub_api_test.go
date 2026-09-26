@@ -40,6 +40,8 @@ func TestStorageHubAPI_Endpoints(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/storage/buckets", server.handleStorageBuckets)
 	mux.HandleFunc("/v1/storage/buckets/", server.handleStorageBuckets)
+	mux.HandleFunc("/v1/storage/canonical", server.handleStorageCanonical)
+	mux.HandleFunc("/v1/storage/proposals", server.handleStorageProposals)
 	mux.HandleFunc("/v1/storage/workers", server.handleStorageWorkers)
 	mux.HandleFunc("/v1/storage/workers/", server.handleStorageWorkers)
 	mux.HandleFunc("/v1/storage/deliverables", server.handleStorageDeliverables)
@@ -248,6 +250,82 @@ func TestStorageHubAPI_Endpoints(t *testing.T) {
 		mux.ServeHTTP(w, req)
 		if w.Code != http.StatusOK {
 			t.Fatalf("expected 200 on delete, got %d", w.Code)
+		}
+	}
+
+	// 9. POST /v1/storage/proposals -> AI worker proposes connection
+	var proposedID string
+	{
+		propBody, _ := json.Marshal(map[string]any{
+			"provider":        "gcs",
+			"bucket_name":     "swarm-campaign-storage",
+			"name":            "Campaign Bucket",
+			"proposed_by":     "ai-media-agent",
+			"proposal_reason": "Store generated campaign assets",
+		})
+		req := authReq(httptest.NewRequest(http.MethodPost, "/v1/storage/proposals", bytes.NewReader(propBody)))
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("expected 201 on proposal, got %d: %s", w.Code, w.Body.String())
+		}
+		var res map[string]any
+		_ = json.Unmarshal(w.Body.Bytes(), &res)
+		proposal := res["proposal"].(map[string]any)
+		proposedID = proposal["id"].(string)
+		if proposal["status"] != "pending_approval" {
+			t.Fatalf("expected pending_approval status, got %v", proposal["status"])
+		}
+	}
+
+	// 10. GET /v1/storage/proposals -> lists proposals
+	{
+		req := authReq(httptest.NewRequest(http.MethodGet, "/v1/storage/proposals", nil))
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 on get proposals, got %d", w.Code)
+		}
+		var res map[string]any
+		_ = json.Unmarshal(w.Body.Bytes(), &res)
+		proposals := res["proposals"].([]any)
+		if len(proposals) != 1 {
+			t.Fatalf("expected 1 proposal, got %d", len(proposals))
+		}
+	}
+
+	// 11. POST /v1/storage/buckets/{id}/accept-canonical -> user accepts proposal as canonical
+	{
+		req := authReq(httptest.NewRequest(http.MethodPost, "/v1/storage/buckets/"+proposedID+"/accept-canonical", nil))
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 on accept-canonical, got %d: %s", w.Code, w.Body.String())
+		}
+		var res map[string]any
+		_ = json.Unmarshal(w.Body.Bytes(), &res)
+		bkt := res["bucket"].(map[string]any)
+		if bkt["canonical"] != true || bkt["status"] != "active" {
+			t.Fatalf("expected canonical=true, status=active, got %v, %v", bkt["canonical"], bkt["status"])
+		}
+	}
+
+	// 12. GET /v1/storage/canonical -> retrieves current canonical connection
+	{
+		req := authReq(httptest.NewRequest(http.MethodGet, "/v1/storage/canonical", nil))
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 on get canonical, got %d", w.Code)
+		}
+		var res map[string]any
+		_ = json.Unmarshal(w.Body.Bytes(), &res)
+		if res["configured"] != true {
+			t.Fatalf("expected configured=true")
+		}
+		bkt := res["bucket"].(map[string]any)
+		if bkt["id"] != proposedID {
+			t.Fatalf("expected canonical id %s, got %v", proposedID, bkt["id"])
 		}
 	}
 }

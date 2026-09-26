@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useNavigate } from '@tanstack/react-router'
 import {
   AlertTriangle,
   Bell,
@@ -227,6 +228,7 @@ export function DesktopNotificationsModal({
   onMute: (record: DesktopNotificationCenterRecord) => Promise<void>
   onClearAll: () => Promise<void>
 }) {
+  const navigate = useNavigate()
   const [activeTab, setActiveTab] = useState<'inbox' | 'activity'>('inbox')
   const [clearing, setClearing] = useState(false)
   const [expandedCardId, setExpandedCardId] = useState<string | null>(null)
@@ -326,6 +328,17 @@ export function DesktopNotificationsModal({
     const executionKey = `${record.id}:${action.id}`
     setExecutingActionId(executionKey)
     try {
+      if (
+        action.actionType === 'route' ||
+        action.id === 'review_cloud' ||
+        action.endpoint?.startsWith('/settings') ||
+        record.payload?.target_tab === 'cloud'
+      ) {
+        onOpenChange(false)
+        void navigate({ to: '/settings', search: { tab: 'cloud' } })
+        return
+      }
+
       if (action.endpoint) {
         if (!isSafeNotificationActionEndpoint(action.endpoint)) {
           console.warn('[notifications] rejected unsafe action endpoint:', action.endpoint)
@@ -434,10 +447,13 @@ export function DesktopNotificationsModal({
                   <Button
                     variant="secondary"
                     size="sm"
-                    onClick={() => setStorageModalOpen(true)}
+                    onClick={() => {
+                      onOpenChange(false)
+                      void navigate({ to: '/settings', search: { tab: 'cloud' } })
+                    }}
                     className="shrink-0 font-medium"
                   >
-                    Connect Bucket
+                    Configure in Cloud
                   </Button>
                 </div>
               ) : buckets.length > 0 ? (
@@ -460,8 +476,15 @@ export function DesktopNotificationsModal({
                       <RefreshCw size={12} className={cn('mr-1', scanningBuckets && 'animate-spin')} />
                       {scanningBuckets ? 'Scanning…' : 'Scan for Deliverables'}
                     </Button>
-                    <Button variant="ghost" size="sm" onClick={() => setStorageModalOpen(true)}>
-                      Manage Buckets
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => {
+                        onOpenChange(false)
+                        void navigate({ to: '/settings', search: { tab: 'cloud' } })
+                      }}
+                    >
+                      Cloud Settings
                     </Button>
                   </div>
                 </div>

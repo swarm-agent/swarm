@@ -48,3 +48,41 @@ export async function listStorageWorkers(): Promise<StorageDiscoveredWorker[]> {
     return []
   }
 }
+
+export async function getCanonicalStorageBucket(): Promise<StorageBucket | null> {
+  try {
+    const res = await requestJson<{ bucket: StorageBucket | null; configured: boolean }>(
+      '/v1/storage/canonical'
+    )
+    return res.bucket
+  } catch (err) {
+    console.warn('[storage] failed to get canonical bucket', err)
+    return null
+  }
+}
+
+export async function setCanonicalStorageBucket(id: string): Promise<StorageBucket> {
+  const res = await requestJson<{ bucket: StorageBucket }>(
+    `/v1/storage/buckets/${encodeURIComponent(id)}/accept-canonical`,
+    { method: 'POST' }
+  )
+  return res.bucket
+}
+
+export async function listStorageProposals(): Promise<StorageBucket[]> {
+  try {
+    const res = await requestJson<{ proposals: StorageBucket[]; count: number }>(
+      '/v1/storage/proposals'
+    )
+    return res.proposals || []
+  } catch (err) {
+    console.warn('[storage] failed to list proposals', err)
+    return []
+  }
+}
+
+export async function rejectStorageProposal(id: string): Promise<void> {
+  await requestJson(`/v1/storage/buckets/${encodeURIComponent(id)}/reject`, {
+    method: 'POST',
+  })
+}

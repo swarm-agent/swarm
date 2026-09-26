@@ -172,6 +172,8 @@ func (s *Server) registerRuntimeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/notifications/inbox", s.handleNotifications)
 	mux.HandleFunc("/v1/storage/buckets", s.handleStorageBuckets)
 	mux.HandleFunc("/v1/storage/buckets/", s.handleStorageBuckets)
+	mux.HandleFunc("/v1/storage/canonical", s.handleStorageCanonical)
+	mux.HandleFunc("/v1/storage/proposals", s.handleStorageProposals)
 	mux.HandleFunc("/v1/storage/workers", s.handleStorageWorkers)
 	mux.HandleFunc("/v1/storage/workers/", s.handleStorageWorkers)
 	mux.HandleFunc("/v1/storage/deliverables", s.handleStorageDeliverables)

@@ -12,6 +12,10 @@ type StorageBucketRecord struct {
 	AccessKeyID     string `json:"access_key_id,omitempty"`
 	SecretAccessKey string `json:"secret_access_key,omitempty"`
 	Enabled         bool   `json:"enabled"`
+	Canonical       bool   `json:"canonical"`
+	Status          string `json:"status"` // "active", "pending_approval", "rejected"
+	ProposedBy      string `json:"proposed_by,omitempty"`
+	ProposalReason  string `json:"proposal_reason,omitempty"`
 	CreatedAt       int64  `json:"created_at"`
 	UpdatedAt       int64  `json:"updated_at"`
 }

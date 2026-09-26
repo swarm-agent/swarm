@@ -139,14 +139,195 @@ func (s *Service) RegisterBucket(ctx context.Context, bucket pebblestore.Storage
 	if bucket.Provider == "" {
 		bucket.Provider = "s3"
 	}
+	if bucket.Status == "" {
+		bucket.Status = "active"
+	}
 	bucket.Enabled = true
+	bucket.CreatedAt = s.now().UnixMilli()
+	bucket.UpdatedAt = bucket.CreatedAt
+
+	existing, _ := s.store.ListStorageBuckets(bucket.AccountScopeID)
+	hasCanonical := false
+	for _, b := range existing {
+		if b.Canonical && b.Status == "active" {
+			hasCanonical = true
+			break
+		}
+	}
+	if bucket.Canonical || (!hasCanonical && bucket.Status == "active") {
+		bucket.Canonical = true
+		for _, b := range existing {
+			if b.ID != bucket.ID && b.Canonical {
+				b.Canonical = false
+				b.UpdatedAt = s.now().UnixMilli()
+				_ = s.store.PutStorageBucket(b)
+			}
+		}
+	}
+
+	if err := s.store.PutStorageBucket(bucket); err != nil {
+		return nil, err
+	}
+	return &bucket, nil
+}
+
+func (s *Service) ProposeBucket(ctx context.Context, bucket pebblestore.StorageBucketRecord) (*pebblestore.StorageBucketRecord, error) {
+	if s == nil || s.store == nil {
+		return nil, errors.New("storage hub store unconfigured")
+	}
+	bucket.AccountScopeID = strings.TrimSpace(bucket.AccountScopeID)
+	if bucket.AccountScopeID == "" {
+		return nil, errors.New("account_scope_id is required")
+	}
+	bucket.Name = strings.TrimSpace(bucket.Name)
+	if bucket.Name == "" {
+		bucket.Name = strings.TrimSpace(bucket.BucketName)
+	}
+	if bucket.Name == "" {
+		return nil, errors.New("bucket name is required")
+	}
+	if bucket.ID == "" {
+		raw := make([]byte, 8)
+		_, _ = rand.Read(raw)
+		bucket.ID = "bkt_" + hex.EncodeToString(raw)
+	}
+	if bucket.Provider == "" {
+		bucket.Provider = "s3"
+	}
+	bucket.Status = "pending_approval"
+	bucket.Canonical = false
+	bucket.Enabled = false
 	bucket.CreatedAt = s.now().UnixMilli()
 	bucket.UpdatedAt = bucket.CreatedAt
 
 	if err := s.store.PutStorageBucket(bucket); err != nil {
 		return nil, err
 	}
+
+	if s.notifications != nil {
+		sender := strings.TrimSpace(bucket.ProposedBy)
+		if sender == "" {
+			sender = "AI Worker"
+		}
+		title := fmt.Sprintf("Cloud Connection Proposed: %s (%s)", strings.ToUpper(bucket.Provider), bucket.BucketName)
+		body := fmt.Sprintf("%s requested to connect %s bucket '%s' as your canonical Swarm cloud connection. Review and accept in Cloud settings.", sender, strings.ToUpper(bucket.Provider), bucket.BucketName)
+		if bucket.ProposalReason != "" {
+			body += fmt.Sprintf(" Reason: %s", bucket.ProposalReason)
+		}
+
+		actions := []pebblestore.NotificationAction{
+			{
+				ID:         "accept_canonical",
+				Label:      "Accept as Canonical",
+				ActionType: "post",
+				Endpoint:   fmt.Sprintf("/v1/storage/buckets/%s/accept-canonical", bucket.ID),
+				Variant:    "primary",
+			},
+			{
+				ID:         "review_cloud",
+				Label:      "Review in Cloud",
+				ActionType: "route",
+				Endpoint:   "/settings?tab=cloud",
+			},
+		}
+
+		payload := map[string]any{
+			"bucket_id":       bucket.ID,
+			"bucket_name":     bucket.BucketName,
+			"provider":        bucket.Provider,
+			"endpoint":        bucket.Endpoint,
+			"region":          bucket.Region,
+			"proposed_by":     bucket.ProposedBy,
+			"proposal_reason": bucket.ProposalReason,
+			"target_tab":      "cloud",
+		}
+
+		_, _ = s.notifications.SubmitInboxNotificationForAccount(bucket.AccountScopeID, notification.InboxNotificationInput{
+			AccountScopeID: bucket.AccountScopeID,
+			Title:          title,
+			Body:           body,
+			Category:       pebblestore.NotificationCategoryInbox,
+			Kind:           pebblestore.NotificationKindAIRequest,
+			WorkerID:       bucket.ProposedBy,
+			OriginLabel:    fmt.Sprintf("Cloud Proposal: %s", sender),
+			Verified:       true,
+			Payload:        payload,
+			Actions:        actions,
+		})
+	}
+
 	return &bucket, nil
+}
+
+func (s *Service) SetCanonicalBucket(accountScopeID, bucketID string) (*pebblestore.StorageBucketRecord, error) {
+	if s == nil || s.store == nil {
+		return nil, errors.New("storage hub store unconfigured")
+	}
+	buckets, err := s.store.ListStorageBuckets(accountScopeID)
+	if err != nil {
+		return nil, err
+	}
+	var target *pebblestore.StorageBucketRecord
+	for _, b := range buckets {
+		if b.ID == bucketID {
+			bCopy := b
+			bCopy.Canonical = true
+			bCopy.Status = "active"
+			bCopy.Enabled = true
+			bCopy.UpdatedAt = s.now().UnixMilli()
+			if err := s.store.PutStorageBucket(bCopy); err != nil {
+				return nil, err
+			}
+			target = &bCopy
+		} else if b.Canonical {
+			bCopy := b
+			bCopy.Canonical = false
+			bCopy.UpdatedAt = s.now().UnixMilli()
+			_ = s.store.PutStorageBucket(bCopy)
+		}
+	}
+	if target == nil {
+		return nil, errors.New("bucket not found")
+	}
+	return target, nil
+}
+
+func (s *Service) GetCanonicalBucket(accountScopeID string) (*pebblestore.StorageBucketRecord, bool, error) {
+	if s == nil || s.store == nil {
+		return nil, false, errors.New("storage hub store unconfigured")
+	}
+	buckets, err := s.store.ListStorageBuckets(accountScopeID)
+	if err != nil {
+		return nil, false, err
+	}
+	for _, b := range buckets {
+		if b.Canonical && b.Status == "active" {
+			return &b, true, nil
+		}
+	}
+	for _, b := range buckets {
+		if b.Status == "active" {
+			return &b, true, nil
+		}
+	}
+	return nil, false, nil
+}
+
+func (s *Service) RejectProposal(accountScopeID, bucketID string) error {
+	if s == nil || s.store == nil {
+		return errors.New("storage hub store unconfigured")
+	}
+	bucket, ok, err := s.GetBucket(accountScopeID, bucketID)
+	if err != nil {
+		return err
+	}
+	if !ok || bucket == nil {
+		return errors.New("bucket not found")
+	}
+	if bucket.Status != "pending_approval" {
+		return errors.New("can only reject pending proposals")
+	}
+	return s.DeleteBucket(accountScopeID, bucketID)
 }
 
 func (s *Service) GetBucket(accountScopeID, bucketID string) (*pebblestore.StorageBucketRecord, bool, error) {

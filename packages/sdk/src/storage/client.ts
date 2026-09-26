@@ -12,6 +12,10 @@ export interface StorageBucketRecord {
   access_key_id?: string;
   secret_access_key?: string;
   enabled: boolean;
+  canonical?: boolean;
+  status?: 'active' | 'pending_approval' | 'rejected' | string;
+  proposed_by?: string;
+  proposal_reason?: string;
   created_at?: number;
   updated_at?: number;
 }
@@ -67,6 +71,20 @@ export interface StorageDiscoveredDeliverableRecord {
   created_at?: number;
   updated_at?: number;
   imported_at?: number;
+}
+
+export interface CloudConnectionProposal {
+  provider: 's3' | 'gcs' | 'r2' | 'minio' | 'local' | string;
+  bucket_name: string;
+  name?: string;
+  endpoint?: string;
+  region?: string;
+  prefix?: string;
+  access_key_id?: string;
+  secret_access_key?: string;
+  proposed_by?: string;
+  proposal_reason?: string;
+  make_canonical?: boolean;
 }
 
 export interface ScanSummary {
@@ -175,5 +193,62 @@ export class SwarmStorageNamespace {
       body: { target_workspace_path: targetWorkspacePath },
     });
     return { deliverable: res.data.deliverable, targetDir: res.data.target_dir };
+  }
+
+  /**
+   * Retrieves the current canonical Swarm cloud storage bucket.
+   */
+  async getCanonicalBucket(): Promise<StorageBucketRecord | null> {
+    const res = await this.transport.request<{
+      bucket: StorageBucketRecord | null;
+      configured: boolean;
+    }>('/v1/storage/canonical', { method: 'GET' });
+    return res.data.bucket;
+  }
+
+  /**
+   * Accepts and designates a storage bucket as the canonical Swarm cloud connection.
+   */
+  async setCanonicalBucket(id: string): Promise<StorageBucketRecord> {
+    const res = await this.transport.request<{ bucket: StorageBucketRecord }>(
+      `/v1/storage/buckets/${id}/accept-canonical`,
+      { method: 'POST' }
+    );
+    return res.data.bucket;
+  }
+
+  /**
+   * Proposes a new cloud storage connection from an AI worker/agent for user approval.
+   */
+  async proposeConnection(
+    proposal: CloudConnectionProposal
+  ): Promise<StorageBucketRecord> {
+    const res = await this.transport.request<{ proposal: StorageBucketRecord }>(
+      '/v1/storage/proposals',
+      { method: 'POST', body: proposal }
+    );
+    return res.data.proposal;
+  }
+
+  /**
+   * Lists all pending cloud storage connection proposals awaiting user approval.
+   */
+  async listProposals(): Promise<StorageBucketRecord[]> {
+    const res = await this.transport.request<{
+      proposals: StorageBucketRecord[];
+      count: number;
+    }>('/v1/storage/proposals', { method: 'GET' });
+    return res.data.proposals;
+  }
+
+  /**
+   * Rejects/dismisses a pending connection proposal.
+   */
+  async rejectProposal(id: string): Promise<boolean> {
+    const res = await this.transport.request<{ rejected: boolean }>(
+      `/v1/storage/buckets/${id}/reject`,
+      { method: 'POST' }
+    );
+    return res.data.rejected;
   }
 }

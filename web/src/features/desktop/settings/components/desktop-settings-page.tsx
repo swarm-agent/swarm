@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useMatchRoute, useNavigate, useSearch } from '@tanstack/react-router'
-import { Bell, Film, GitBranch, Home, Keyboard, Key, Network, Palette, Shield, SlidersHorizontal, UserRound, Zap, type LucideIcon } from 'lucide-react'
+import { Bell, Cloud, Film, GitBranch, Home, Keyboard, Key, Network, Palette, Shield, SlidersHorizontal, UserRound, Zap, type LucideIcon } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { MemoryModal } from '../../memory/memory-page'
 import { Select } from '../../../../components/ui/select'
@@ -16,12 +16,14 @@ import { VaultSettingsPage } from '../vault/components/vault-settings-page'
 import { WorktreeSettingsPage } from '../worktrees/components/worktree-settings-page'
 import { TailscaleSettingsPage } from '../tailscale/components/tailscale-settings-page'
 import { ActionsSettingsPage } from '../actions/components/actions-settings-page'
+import { CloudSettingsPage } from '../cloud/components/cloud-settings-page'
 import { cn } from '../../../../lib/cn'
 import { normalizeSettingsTabID, type SettingsTabID } from '../types/settings-tabs'
 
 const settingsTabs: Array<{ id: SettingsTabID; label: string; icon: LucideIcon }> = [
   { id: 'account', label: 'Account', icon: UserRound },
   { id: 'auth', label: 'Auth', icon: Key },
+  { id: 'cloud', label: 'Cloud & Storage', icon: Cloud },
   { id: 'actions', label: 'Actions', icon: Zap },
   { id: 'behavior', label: 'Behavior', icon: SlidersHorizontal },
   { id: 'media', label: 'Media', icon: Film },
@@ -169,6 +171,7 @@ export function DesktopSettingsPage({ initialMemoryOpen = false }: { initialMemo
           <div className="w-full max-w-4xl">
             {activeTab === 'account' ? <AccountSettingsPage /> : null}
             {activeTab === 'auth' ? <AuthSettingsPage /> : null}
+            {activeTab === 'cloud' ? <CloudSettingsPage /> : null}
             {activeTab === 'actions' ? <ActionsSettingsPage workspaceSlug={routeWorkspaceSlug} /> : null}
             {activeTab === 'behavior' ? <BehaviorSettingsPage /> : null}
             {activeTab === 'media' ? <MediaSettingsPage workspaceSlug={routeWorkspaceSlug} /> : null}

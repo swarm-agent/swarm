@@ -4,7 +4,7 @@ import { createPortal } from 'react-dom'
 import { observePageActivity, withPageRequest } from '../../../app/page-lifecycle'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate, useSearch, Link, Outlet } from '@tanstack/react-router'
-import { Archive, Bell, Bot, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Coins, Cpu, Download, Film, Folder, GitBranch, GitCommitHorizontal, GitMerge, Image as ImageIcon, Keyboard, ListChecks, ListTodo, LoaderCircle, Menu, MessageSquare, Mic, MoreVertical, NotepadText, Pencil, Pin, Plus, RefreshCcw, Save, Search, Server, Settings, Trash2, X, XCircle } from 'lucide-react'
+import { Archive, Bell, Bot, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Cloud, Coins, Cpu, Download, Film, Folder, GitBranch, GitCommitHorizontal, GitMerge, Image as ImageIcon, Keyboard, ListChecks, ListTodo, LoaderCircle, Menu, MessageSquare, Mic, MoreVertical, NotepadText, Pencil, Pin, Plus, RefreshCcw, Save, Search, Server, Settings, Trash2, X, XCircle } from 'lucide-react'
 import { Button } from '../../../components/ui/button'
 import { Card } from '../../../components/ui/card'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../components/ui/dialog'
@@ -5542,6 +5542,9 @@ export function DesktopAppPage() {
           {!updateDevMode && updateAvailable ? <span aria-hidden="true" className="absolute right-2 top-2 h-2.5 w-2.5 rounded-full bg-[var(--app-primary)] shadow-[0_0_10px_var(--app-primary)]" /> : null}
         </Button>
       ) : null}
+      <Button variant="ghost" className="h-12 w-12 min-w-12 p-0" onClick={() => handleOpenSettingsTab('cloud')} aria-label="Open Cloud storage settings" title="Cloud & Storage">
+        <Cloud size={24} className="shrink-0" />
+      </Button>
       <Button variant="ghost" className="mt-auto h-12 w-12 min-w-12 p-0" onClick={() => handleOpenSettingsTab('account')} aria-label="Open settings" title="Settings">
         <Settings size={24} className="shrink-0" />
       </Button>
@@ -5810,6 +5813,16 @@ export function DesktopAppPage() {
                     >
                       <Search size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
                       <span className="min-w-0 truncate">Search Chats</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="grid min-h-[28px] w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 text-left font-inherit text-[11px] text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text-muted)]"
+                      onClick={() => handleOpenSettingsTab('cloud')}
+                      aria-label="Open Cloud & Storage settings"
+                      title="Cloud & Storage"
+                    >
+                      <Cloud size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
+                      <span className="min-w-0 truncate">Cloud</span>
                     </button>
                     {routeWorkspaceSlug ? (
                       <Link

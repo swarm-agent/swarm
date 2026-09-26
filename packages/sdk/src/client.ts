@@ -30,6 +30,8 @@ export class SwarmClient {
   /** Convenient alias for notifications namespace: inbox */
   readonly inbox: SwarmNotificationsNamespace;
   readonly storage: SwarmStorageNamespace;
+  /** Convenient alias for cloud storage connections: cloud */
+  readonly cloud: SwarmStorageNamespace;
 
   constructor(config: SwarmClientConfig = {}) {
     const env: Record<string, string | undefined> =
@@ -69,6 +71,7 @@ export class SwarmClient {
     this.notifications = new SwarmNotificationsNamespace(this.transport);
     this.inbox = this.notifications;
     this.storage = new SwarmStorageNamespace(this.transport);
+    this.cloud = this.storage;
   }
 
   /**

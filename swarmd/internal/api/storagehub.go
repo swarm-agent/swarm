@@ -55,6 +55,41 @@ func (s *Server) handleStorageBuckets(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
+		if strings.HasSuffix(path, "/accept-canonical") || strings.HasSuffix(path, "/canonical") {
+			bucketID := strings.TrimSuffix(path, "/accept-canonical")
+			bucketID = strings.TrimSuffix(bucketID, "/canonical")
+			bucketID = strings.TrimSpace(bucketID)
+			if bucketID == "" {
+				writeError(w, http.StatusBadRequest, errors.New("bucket id required"))
+				return
+			}
+			canonical, err := s.storageHub.SetCanonicalBucket(accountScopeID, bucketID)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{
+				"bucket": canonical,
+			})
+			return
+		}
+		if strings.HasSuffix(path, "/reject") {
+			bucketID := strings.TrimSuffix(path, "/reject")
+			bucketID = strings.TrimSpace(bucketID)
+			if bucketID == "" {
+				writeError(w, http.StatusBadRequest, errors.New("bucket id required"))
+				return
+			}
+			if err := s.storageHub.RejectProposal(accountScopeID, bucketID); err != nil {
+				writeError(w, http.StatusInternalServerError, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{
+				"rejected": true,
+				"id":       bucketID,
+			})
+			return
+		}
 
 		var input pebblestore.StorageBucketRecord
 		if err := decodeJSONLimited(w, r, &input, 512*1024); err != nil {
@@ -249,4 +284,79 @@ func (s *Server) handleStorageDeliverables(w http.ResponseWriter, r *http.Reques
 	}
 
 	methodNotAllowed(w)
+}
+
+func (s *Server) handleStorageCanonical(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	accountScopeID, ok := s.notificationAccountScopeID(w, r)
+	if !ok {
+		return
+	}
+	if s.storageHub == nil {
+		writeError(w, http.StatusServiceUnavailable, errors.New("storage hub is unconfigured"))
+		return
+	}
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	canonical, configured, err := s.storageHub.GetCanonicalBucket(accountScopeID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"bucket":     canonical,
+		"configured": configured,
+	})
+}
+
+func (s *Server) handleStorageProposals(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	accountScopeID, ok := s.notificationAccountScopeID(w, r)
+	if !ok {
+		return
+	}
+	if s.storageHub == nil {
+		writeError(w, http.StatusServiceUnavailable, errors.New("storage hub is unconfigured"))
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		buckets, err := s.storageHub.ListBuckets(accountScopeID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		var proposals []pebblestore.StorageBucketRecord
+		for _, b := range buckets {
+			if b.Status == "pending_approval" {
+				proposals = append(proposals, b)
+			}
+		}
+		if proposals == nil {
+			proposals = []pebblestore.StorageBucketRecord{}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"proposals": proposals,
+			"count":     len(proposals),
+		})
+	case http.MethodPost:
+		var input pebblestore.StorageBucketRecord
+		if err := decodeJSONLimited(w, r, &input, 512*1024); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		input.AccountScopeID = accountScopeID
+		proposed, err := s.storageHub.ProposeBucket(r.Context(), input)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusCreated, map[string]any{
+			"proposal": proposed,
+		})
+	default:
+		methodNotAllowed(w)
+	}
 }

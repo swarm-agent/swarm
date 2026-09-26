@@ -10,6 +10,10 @@ export interface StorageBucket {
   access_key_id?: string
   secret_access_key?: string
   enabled: boolean
+  canonical?: boolean
+  status?: 'active' | 'pending_approval' | 'rejected'
+  proposed_by?: string
+  proposal_reason?: string
   created_at: number
   updated_at: number
 }
@@ -40,5 +44,6 @@ export interface StorageScanSummary {
   scanned_at: number
   workers_found: number
   sessions_found: number
-  deliverables_found: number
+  deliverables_found?: number
+  deliverables_new?: number
 }
