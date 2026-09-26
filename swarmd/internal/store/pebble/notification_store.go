@@ -43,6 +43,8 @@ type NotificationRecord struct {
 	OriginSwarmID   string               `json:"origin_swarm_id,omitempty"`
 	SessionID       string               `json:"session_id,omitempty"`
 	RunID           string               `json:"run_id,omitempty"`
+	WorkerID        string               `json:"worker_id,omitempty"`
+	Verified        bool                 `json:"verified,omitempty"`
 	Category        string               `json:"category"`
 	Kind            string               `json:"kind,omitempty"`
 	Severity        string               `json:"severity"`

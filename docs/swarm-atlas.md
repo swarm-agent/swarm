@@ -2920,4 +2920,44 @@ no scratch/logs or private identifiers were added to tracked documentation.
   - Added SDK tests: `packages/sdk/src/__tests__/notifications.spec.ts` (all 30 tests pass).
   - Added Web tests: `web/src/features/desktop/notifications/notifications-inbox.spec.ts` (all pass) and verified clean TypeScript compilation (`tsc --noEmit`).
 
+### Security Hardening and Integrity Verification for AI Notification Inbox (2026-09-24)
+
+- **Backend Ingress & Storage Protection (`swarmd/internal/api/notifications.go`, `swarmd/internal/notification/service.go`, `swarmd/internal/store/pebble/notification_store.go`):**
+  - Enforced 512 KB request body limit (`decodeJSONLimited`) on `POST /v1/notifications/inbox` to prevent denial-of-service / memory exhaustion.
+  - Implemented token-bound origin stamping: authenticated scoped deploy tokens automatically stamp `WorkerID`, `OriginLabel`, and `Verified = true` directly onto records, preventing worker origin spoofing.
+  - Prevented notification collision / hijacking: enforced `inbox_` ID prefix and blocked overwriting existing notifications if category is non-inbox or if owned by another worker.
+  - Added strict action endpoint validation: rejected absolute URLs (preventing SSRF to local GCP lease broker `http://localhost:8765` or external webhooks) and restricted action endpoints strictly to whitelisted paths (`/v3/deliverables/`, `/v1/notifications/`, `/v1/alerts/`, `/v3/automations/v2/`, `/v3/sessions/`). Blocked destructive endpoints (`/v1/environments/.../destroy`, `/v1/keys/rotate`, `/v3/auth/tokens/.../revoke`, etc.).
+  - Added stored XSS defenses: validated `action_url` and `payload.media_url` against `javascript:`, `data:`, and `vbscript:` URI schemes.
+- **Desktop Web UI Hardening (`web/src/features/desktop/notifications/`):**
+  - Added frontend defense-in-depth endpoint validator `isSafeNotificationActionEndpoint` preventing confused deputy execution via `action.endpoint`.
+  - Added URL scheme validators `isSafeActionURL` and `isSafeMediaURL` neutralizing stored XSS in `actionURL` links and media embeds.
+  - Added visual origin authentication and integrity indicators: `Verified` origin badge for token-authenticated notifications, and SHA-256 content digest badge for cryptographic deliverable integrity.
+- **Verification & Tests:**
+  - `swarmd/internal/notification/inbox_notification_test.go`: added `TestInboxNotificationSecurityHardening` verifying rejection of SSRF endpoints, stored XSS payloads, unsafe media URLs, and worker hijack attempts.
+  - `swarmd/internal/api/inbox_notification_api_test.go`: updated with scoped token origin stamping verification and >512KB payload rejection tests.
+  - `web/src/features/desktop/notifications/notifications-inbox.spec.ts`: added test suites verifying endpoint safelisting, URL sanitation, and XSS rejection.
+
+### Cloud Storage Hub Driver, Desktop Storage UX & Social Media Worker (2026-09-24)
+
+- **Go S3/GCS SigV4 Driver and Storage Hub Service (`swarmd/internal/storagehub/`, `swarmd/internal/api/storagehub.go`, `swarmd/internal/store/pebble/storage_hub_store.go`):**
+  - Implemented `S3Driver` with AWS SigV4 signing (`driver_s3.go`) supporting standard AWS S3, Cloudflare R2, MinIO, and GCP Cloud Storage (via `storage.googleapis.com` XML HMAC credentials).
+  - Built `storagehub.Service` for managing configured storage buckets, registering remote worker state footprints, and indexing deliverables.
+  - Exposed REST endpoints on `swarmd`:
+    - `GET /v1/storage/buckets`, `POST /v1/storage/buckets`, `GET /v1/storage/buckets/{id}`, `DELETE /v1/storage/buckets/{id}`, `POST /v1/storage/buckets/{id}/scan`
+    - `GET /v1/storage/workers`, `POST /v1/storage/workers`, `GET /v1/storage/workers/{id}`
+    - `GET /v1/storage/deliverables`, `POST /v1/storage/deliverables`, `GET /v1/storage/deliverables/{id}`
+  - Automatically routes newly discovered or submitted deliverables into the AI Notification Inbox via `SubmitInboxNotificationForAccount`.
+- **Desktop Storage UX (`web/src/features/desktop/storage/`, `web/src/features/desktop/notifications/`):**
+  - Implemented `DesktopStorageBucketsModal` component supporting connection, configuration, testing, credential management, and on-demand scanning of S3/GCS buckets.
+  - Added warning banner in Desktop AI Notification Inbox when no cloud storage bucket is hooked up, prompting the operator with a direct "Connect Bucket" action.
+  - Added active bucket status bar in AI Inbox displaying connected bucket name, provider tag, and one-click "Scan for Deliverables" trigger.
+- **Autonomous Social Media Campaign Worker & Storage Client in @swarm/sdk (`packages/sdk/src/storage/`, `packages/sdk/examples/social-media-worker.ts`):**
+  - Implemented SDK `SwarmStorageNamespace` on `SwarmClient.storage` for managing buckets, workers, and deliverables.
+  - Implemented client-side storage hub (`WorkerStorageHub`) with S3 and In-Memory drivers for writing agent session state, traces, and signed deliverable manifests.
+  - Authored runnable campaign worker example `social-media-worker.ts` that executes social media marketing campaigns, tracks progress percentages, and publishes deliverables with verified SHA-256 cryptographic digests.
+- **Verification & Tests:**
+  - Go unit tests: `swarmd/internal/storagehub/driver_s3_test.go`, `swarmd/internal/storagehub/service_test.go`, and `swarmd/internal/api/storagehub_api_test.go` all pass.
+  - SDK unit tests: `packages/sdk/src/__tests__/storage.spec.ts` and `packages/sdk/src/__tests__/social-media-worker.spec.ts` pass 100%.
+  - Web UI: Clean TypeScript type checking (`npx tsc --noEmit`) and inbox unit tests pass.
+
 

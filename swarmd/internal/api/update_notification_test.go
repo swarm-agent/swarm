@@ -50,6 +50,11 @@ func (r *updateNotificationRecorder) SubmitInboxNotification(input notification.
 	return record, nil
 }
 
+func (r *updateNotificationRecorder) SubmitInboxNotificationForAccount(accountScopeID string, input notification.InboxNotificationInput) (pebblestore.NotificationRecord, error) {
+	input.AccountScopeID = accountScopeID
+	return r.SubmitInboxNotification(input)
+}
+
 func TestEmitUpdateNotificationSkipsCompletedInfoNotifications(t *testing.T) {
 	notifications := &updateNotificationRecorder{}
 	server := &Server{notifications: notifications}

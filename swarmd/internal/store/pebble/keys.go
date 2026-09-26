@@ -20,6 +20,9 @@ const (
 	KeyDeliverableWorkerPrefix                     = "deliverable/index_worker/"
 	KeyProjectAccountPrefix                        = "project/by_account/"
 	KeyProjectTaskAccountPrefix                    = "project_task/by_account/"
+	KeyStorageBucketAccountPrefix                  = "storage_hub/bucket_by_account/"
+	KeyStorageWorkerAccountPrefix                  = "storage_hub/worker_by_account/"
+	KeyStorageDeliverableAccountPrefix             = "storage_hub/deliverable_by_account/"
 	KeyAuthVaultMeta                               = "auth/vault/meta" // legacy singleton key; retained for explicit migration only.
 	KeyAuthVaultMetaAccountPrefix                  = "auth/vault/meta_by_account/"
 	KeyAuthCredentialPrefix                        = "auth/credential/"
@@ -1861,4 +1864,28 @@ func reverseMillis(value int64) int64 {
 func keyPart(value string) string {
 	clean := strings.ToLower(strings.TrimSpace(value))
 	return url.PathEscape(clean)
+}
+
+func KeyStorageBucket(accountScopeID, bucketID string) string {
+	return fmt.Sprintf("%s%s/%s", KeyStorageBucketAccountPrefix, keyPart(accountScopeID), keyPart(bucketID))
+}
+
+func KeyStorageBucketPrefix(accountScopeID string) string {
+	return fmt.Sprintf("%s%s/", KeyStorageBucketAccountPrefix, keyPart(accountScopeID))
+}
+
+func KeyStorageWorker(accountScopeID, workerID string) string {
+	return fmt.Sprintf("%s%s/%s", KeyStorageWorkerAccountPrefix, keyPart(accountScopeID), keyPart(workerID))
+}
+
+func KeyStorageWorkerPrefix(accountScopeID string) string {
+	return fmt.Sprintf("%s%s/", KeyStorageWorkerAccountPrefix, keyPart(accountScopeID))
+}
+
+func KeyStorageDeliverable(accountScopeID, deliverableID string) string {
+	return fmt.Sprintf("%s%s/%s", KeyStorageDeliverableAccountPrefix, keyPart(accountScopeID), keyPart(deliverableID))
+}
+
+func KeyStorageDeliverablePrefix(accountScopeID string) string {
+	return fmt.Sprintf("%s%s/", KeyStorageDeliverableAccountPrefix, keyPart(accountScopeID))
 }

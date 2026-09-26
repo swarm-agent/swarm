@@ -375,6 +375,9 @@ export interface DesktopNotificationWire {
   workspaceName?: unknown
   origin_label?: unknown
   originLabel?: unknown
+  worker_id?: unknown
+  workerId?: unknown
+  verified?: unknown
   action_url?: unknown
   actionURL?: unknown
   payload?: unknown

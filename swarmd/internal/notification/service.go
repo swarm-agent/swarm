@@ -75,6 +75,9 @@ type InboxNotificationInput struct {
 	Body           string                           `json:"body"`
 	Status         string                           `json:"status,omitempty"`
 	ActionURL      string                           `json:"action_url,omitempty"`
+	WorkerID       string                           `json:"worker_id,omitempty"`
+	OriginLabel    string                           `json:"origin_label,omitempty"`
+	Verified       bool                             `json:"verified,omitempty"`
 	Payload        map[string]any                   `json:"payload,omitempty"`
 	Actions        []pebblestore.NotificationAction `json:"actions,omitempty"`
 }
@@ -425,31 +428,114 @@ func (s *Service) SubmitInboxNotificationForAccount(accountScopeID string, input
 	if title == "" {
 		return pebblestore.NotificationRecord{}, errors.New("notification title is required")
 	}
-	now := time.Now().UnixMilli()
-	notificationID := strings.TrimSpace(input.ID)
-	if notificationID == "" {
-		notificationID = fmt.Sprintf("inbox_%d_%d", now, s.counter.Add(1))
+	if len(title) > 256 {
+		title = title[:256]
+	}
+	body := strings.TrimSpace(input.Body)
+	if len(body) > 8192 {
+		body = body[:8192]
 	}
 
 	category := strings.TrimSpace(strings.ToLower(input.Category))
 	if category == "" {
 		category = pebblestore.NotificationCategoryInbox
+	} else if category != pebblestore.NotificationCategoryInbox {
+		return pebblestore.NotificationRecord{}, fmt.Errorf("invalid inbox category %q: only %q is permitted", category, pebblestore.NotificationCategoryInbox)
 	}
+
 	kind := strings.TrimSpace(strings.ToLower(input.Kind))
 	if kind == "" {
 		kind = pebblestore.NotificationKindAIDeliverable
 	}
+	switch kind {
+	case pebblestore.NotificationKindAIDeliverable, pebblestore.NotificationKindAIRequest, pebblestore.NotificationKindSystem:
+		// allowed
+	default:
+		return pebblestore.NotificationRecord{}, fmt.Errorf("invalid notification kind %q: must be ai_deliverable, ai_request, or system", kind)
+	}
+
 	severity := strings.TrimSpace(strings.ToLower(input.Severity))
 	if severity == "" {
 		severity = pebblestore.NotificationSeverityInfo
 	}
+	switch severity {
+	case pebblestore.NotificationSeverityInfo, pebblestore.NotificationSeverityWarning, pebblestore.NotificationSeverityError:
+		// allowed
+	default:
+		severity = pebblestore.NotificationSeverityInfo
+	}
+
 	status := strings.TrimSpace(strings.ToLower(input.Status))
 	if status == "" {
 		status = pebblestore.NotificationStatusActive
 	}
 
+	actionURL := strings.TrimSpace(input.ActionURL)
+	if actionURL != "" {
+		if !isSafeNotificationActionURL(actionURL) {
+			return pebblestore.NotificationRecord{}, errors.New("invalid action_url: must be a safe http/https URL or relative path")
+		}
+	}
+
+	payload := input.Payload
+	if payload != nil {
+		if mediaRaw, exists := payload["media_url"]; exists {
+			if mediaStr, ok := mediaRaw.(string); ok && strings.TrimSpace(mediaStr) != "" {
+				if !isSafeNotificationMediaURL(mediaStr) {
+					return pebblestore.NotificationRecord{}, errors.New("invalid payload.media_url: unsafe scheme or format")
+				}
+			}
+		}
+	}
+
+	actions := make([]pebblestore.NotificationAction, 0, len(input.Actions))
+	for _, act := range input.Actions {
+		actID := strings.TrimSpace(act.ID)
+		actLabel := strings.TrimSpace(act.Label)
+		if actID == "" || actLabel == "" {
+			continue
+		}
+		endpoint := strings.TrimSpace(act.Endpoint)
+		if endpoint != "" {
+			if !isAllowedNotificationActionEndpoint(endpoint) {
+				return pebblestore.NotificationRecord{}, fmt.Errorf("action %q has disallowed endpoint %q: only relative paths to /v3/deliverables/, /v1/notifications/, /v1/alerts/, /v3/automations/v2/, or /v3/sessions/ are permitted", actID, endpoint)
+			}
+		}
+		actions = append(actions, pebblestore.NotificationAction{
+			ID:         actID,
+			Label:      actLabel,
+			ActionType: strings.TrimSpace(act.ActionType),
+			Endpoint:   endpoint,
+			Variant:    strings.TrimSpace(act.Variant),
+		})
+	}
+
+	now := time.Now().UnixMilli()
+	rawID := strings.TrimSpace(input.ID)
+	var notificationID string
+	if rawID == "" {
+		notificationID = fmt.Sprintf("inbox_%d_%d", now, s.counter.Add(1))
+	} else {
+		if !strings.HasPrefix(rawID, "inbox_") {
+			notificationID = "inbox_" + rawID
+		} else {
+			notificationID = rawID
+		}
+		if len(notificationID) > 128 {
+			return pebblestore.NotificationRecord{}, errors.New("notification id exceeds 128 characters")
+		}
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	if rawID != "" && rawID != notificationID {
+		if rawExisting, rawFound, _ := s.store.GetNotificationForAccount(accountScopeID, swarmID, rawID); rawFound {
+			if rawExisting.Category != pebblestore.NotificationCategoryInbox {
+				return pebblestore.NotificationRecord{}, fmt.Errorf("cannot overwrite notification %q: existing record has non-inbox category %q", rawID, rawExisting.Category)
+			}
+		}
+	}
 
 	var previous *pebblestore.NotificationRecord
 	existing, found, err := s.store.GetNotificationForAccount(accountScopeID, swarmID, notificationID)
@@ -457,6 +543,12 @@ func (s *Service) SubmitInboxNotificationForAccount(accountScopeID string, input
 		return pebblestore.NotificationRecord{}, err
 	}
 	if found {
+		if existing.Category != pebblestore.NotificationCategoryInbox {
+			return pebblestore.NotificationRecord{}, fmt.Errorf("cannot overwrite notification %q: existing record has non-inbox category %q", notificationID, existing.Category)
+		}
+		if existing.WorkerID != "" && input.WorkerID != "" && existing.WorkerID != input.WorkerID {
+			return pebblestore.NotificationRecord{}, fmt.Errorf("cannot overwrite notification %q owned by worker %q", notificationID, existing.WorkerID)
+		}
 		previous = &existing
 	}
 
@@ -467,17 +559,24 @@ func (s *Service) SubmitInboxNotificationForAccount(accountScopeID string, input
 		OriginSwarmID:  strings.TrimSpace(input.OriginSwarmID),
 		SessionID:      strings.TrimSpace(input.SessionID),
 		RunID:          strings.TrimSpace(input.RunID),
+		WorkerID:       strings.TrimSpace(input.WorkerID),
+		Verified:       input.Verified,
 		Category:       category,
 		Kind:           kind,
 		Severity:       severity,
 		Title:          title,
-		Body:           strings.TrimSpace(input.Body),
+		Body:           body,
 		Status:         status,
-		ActionURL:      strings.TrimSpace(input.ActionURL),
-		Payload:        input.Payload,
-		Actions:        input.Actions,
+		ActionURL:      actionURL,
+		Payload:        payload,
+		Actions:        actions,
 		CreatedAt:      now,
 		UpdatedAt:      now,
+	}
+	if input.OriginLabel != "" {
+		record.OriginLabel = strings.TrimSpace(input.OriginLabel)
+	} else if record.WorkerID != "" {
+		record.OriginLabel = "Worker: " + record.WorkerID
 	}
 	if record.OriginSwarmID == "" {
 		record.OriginSwarmID = swarmID
@@ -856,4 +955,65 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func isSafeNotificationActionURL(url string) bool {
+	url = strings.TrimSpace(url)
+	if url == "" {
+		return true
+	}
+	if strings.HasPrefix(url, "/") && !strings.HasPrefix(url, "//") {
+		return true
+	}
+	lower := strings.ToLower(url)
+	if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") {
+		return true
+	}
+	return false
+}
+
+func isSafeNotificationMediaURL(url string) bool {
+	url = strings.TrimSpace(url)
+	if url == "" {
+		return true
+	}
+	lower := strings.ToLower(url)
+	if strings.HasPrefix(lower, "javascript:") || strings.HasPrefix(lower, "data:") || strings.HasPrefix(lower, "vbscript:") {
+		return false
+	}
+	if strings.HasPrefix(url, "/") && !strings.HasPrefix(url, "//") {
+		return true
+	}
+	if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") || strings.HasPrefix(lower, "s3://") || strings.HasPrefix(lower, "gs://") {
+		return true
+	}
+	return false
+}
+
+func isAllowedNotificationActionEndpoint(endpoint string) bool {
+	endpoint = strings.TrimSpace(endpoint)
+	if !strings.HasPrefix(endpoint, "/") || strings.HasPrefix(endpoint, "//") || strings.Contains(endpoint, "://") {
+		return false
+	}
+	if strings.Contains(endpoint, "..") || strings.Contains(endpoint, "\\") {
+		return false
+	}
+	basePath := endpoint
+	if idx := strings.Index(basePath, "?"); idx != -1 {
+		basePath = basePath[:idx]
+	}
+	allowedPrefixes := []string{
+		"/v3/deliverables/",
+		"/v1/notifications/",
+		"/v1/alerts/",
+		"/v3/automations/v2/",
+		"/v3/sessions/",
+		"/v1/storage/",
+	}
+	for _, prefix := range allowedPrefixes {
+		if strings.HasPrefix(basePath, prefix) {
+			return true
+		}
+	}
+	return false
 }

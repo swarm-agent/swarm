@@ -1,5 +1,6 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
+  AlertTriangle,
   Bell,
   BellOff,
   Bot,
@@ -7,8 +8,10 @@ import {
   ChevronDown,
   ChevronUp,
   Clock3,
+  Cloud,
   ExternalLink,
   Loader2,
+  RefreshCw,
   Sparkles,
   Trash2,
 } from 'lucide-react'
@@ -18,6 +21,9 @@ import { Button } from '../../../../components/ui/button'
 import { Card } from '../../../../components/ui/card'
 import { cn } from '../../../../lib/cn'
 import { requestJson } from '../../../../app/api'
+import { DesktopStorageBucketsModal } from '../../storage/components/desktop-storage-buckets-modal'
+import { listStorageBuckets, scanStorageBucket } from '../../storage/api'
+import type { StorageBucket } from '../../storage/types'
 import type {
   DesktopConnectionState,
   DesktopNotificationAction,
@@ -124,7 +130,63 @@ function isInboxNotification(record: DesktopNotificationCenterRecord): boolean {
   )
 }
 
+export function isSafeNotificationActionEndpoint(endpoint: string | null | undefined): boolean {
+  if (!endpoint || typeof endpoint !== 'string') return false
+  const trimmed = endpoint.trim()
+  if (!trimmed.startsWith('/') || trimmed.startsWith('//') || trimmed.includes('://')) {
+    return false
+  }
+  if (trimmed.includes('..') || trimmed.includes('\\')) {
+    return false
+  }
+  const [basePath] = trimmed.split('?')
+  const allowedPrefixes = [
+    '/v3/deliverables/',
+    '/v1/notifications/',
+    '/v1/alerts/',
+    '/v3/automations/v2/',
+    '/v3/sessions/',
+    '/v1/storage/',
+  ]
+  return allowedPrefixes.some((prefix) => basePath.startsWith(prefix))
+}
+
+export function isSafeActionURL(url: string | null | undefined): boolean {
+  if (!url || typeof url !== 'string') return false
+  const trimmed = url.trim()
+  if (trimmed.startsWith('/') && !trimmed.startsWith('//')) {
+    return true
+  }
+  try {
+    const parsed = new URL(trimmed)
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:'
+  } catch {
+    return false
+  }
+}
+
+export function isSafeMediaURL(url: string | null | undefined): boolean {
+  if (!url || typeof url !== 'string') return false
+  const trimmed = url.trim()
+  const lower = trimmed.toLowerCase()
+  if (lower.startsWith('javascript:') || lower.startsWith('data:') || lower.startsWith('vbscript:')) {
+    return false
+  }
+  if (trimmed.startsWith('/') && !trimmed.startsWith('//')) {
+    return true
+  }
+  try {
+    const parsed = new URL(trimmed)
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:' || parsed.protocol === 'blob:'
+  } catch {
+    return false
+  }
+}
+
 function NotificationMediaPreview({ url }: { url: string }) {
+  if (!isSafeMediaURL(url)) {
+    return null
+  }
   const isVideo = url.endsWith('.mp4') || url.endsWith('.webm') || url.includes('video')
   if (isVideo) {
     return (
@@ -169,6 +231,44 @@ export function DesktopNotificationsModal({
   const [clearing, setClearing] = useState(false)
   const [expandedCardId, setExpandedCardId] = useState<string | null>(null)
   const [executingActionId, setExecutingActionId] = useState<string | null>(null)
+  const [storageModalOpen, setStorageModalOpen] = useState(false)
+  const [buckets, setBuckets] = useState<StorageBucket[]>([])
+  const [loadingBuckets, setLoadingBuckets] = useState(false)
+  const [scanningBuckets, setScanningBuckets] = useState(false)
+
+  const loadBuckets = async () => {
+    setLoadingBuckets(true)
+    try {
+      const list = await listStorageBuckets()
+      setBuckets(list)
+    } finally {
+      setLoadingBuckets(false)
+    }
+  }
+
+  useEffect(() => {
+    if (open) {
+      void loadBuckets()
+    }
+  }, [open])
+
+  const handleScanAllBuckets = async () => {
+    if (scanningBuckets || buckets.length === 0) return
+    setScanningBuckets(true)
+    try {
+      for (const b of buckets) {
+        if (b.enabled) {
+          try {
+            await scanStorageBucket(b.id)
+          } catch (err) {
+            console.warn('[storage] scan error for bucket', b.id, err)
+          }
+        }
+      }
+    } finally {
+      setScanningBuckets(false)
+    }
+  }
 
   const inboxNotifications = useMemo(
     () => notifications.filter(isInboxNotification),
@@ -227,6 +327,10 @@ export function DesktopNotificationsModal({
     setExecutingActionId(executionKey)
     try {
       if (action.endpoint) {
+        if (!isSafeNotificationActionEndpoint(action.endpoint)) {
+          console.warn('[notifications] rejected unsafe action endpoint:', action.endpoint)
+          return
+        }
         await requestJson(action.endpoint, { method: 'POST' })
       }
       await onAcknowledge(record)
@@ -313,6 +417,58 @@ export function DesktopNotificationsModal({
         </div>
 
         <div className="flex min-h-0 flex-1 flex-col px-6 pb-6 pt-4">
+          {/* Storage Bucket Hooked Warning or Status Banner for AI Inbox */}
+          {activeTab === 'inbox' && (
+            <>
+              {!loadingBuckets && buckets.length === 0 ? (
+                <div className="mb-3 flex items-center justify-between rounded-2xl border border-amber-500/30 bg-amber-500/10 p-3.5 text-xs text-amber-200">
+                  <div className="flex items-center gap-2.5">
+                    <AlertTriangle size={18} className="shrink-0 text-amber-400" />
+                    <div>
+                      <div className="font-semibold text-amber-100">No Cloud Storage Bucket Connected</div>
+                      <div className="text-[11px] text-amber-300/80">
+                        Remote workers writing deliverables to S3/GCP cannot be discovered until a bucket is hooked up.
+                      </div>
+                    </div>
+                  </div>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => setStorageModalOpen(true)}
+                    className="shrink-0 font-medium"
+                  >
+                    Connect Bucket
+                  </Button>
+                </div>
+              ) : buckets.length > 0 ? (
+                <div className="mb-3 flex items-center justify-between rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-muted)] px-3 py-2 text-xs text-[var(--app-text-muted)]">
+                  <div className="flex items-center gap-2">
+                    <Cloud size={14} className="text-[var(--app-primary)]" />
+                    <span>
+                      Cloud Storage Hub:{' '}
+                      <span className="font-medium text-[var(--app-text)]">{buckets[0].name}</span>{' '}
+                      ({buckets[0].provider.toUpperCase()})
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={handleScanAllBuckets}
+                      disabled={scanningBuckets}
+                    >
+                      <RefreshCw size={12} className={cn('mr-1', scanningBuckets && 'animate-spin')} />
+                      {scanningBuckets ? 'Scanning…' : 'Scan for Deliverables'}
+                    </Button>
+                    <Button variant="ghost" size="sm" onClick={() => setStorageModalOpen(true)}>
+                      Manage Buckets
+                    </Button>
+                  </div>
+                </div>
+              ) : null}
+            </>
+          )}
+
           <div className="min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
             {loading ? (
               <Card className="p-4 text-sm text-[var(--app-text-muted)]">Loading notifications…</Card>
@@ -347,6 +503,11 @@ export function DesktopNotificationsModal({
                     ? payload.posts
                     : null
                 const actions = record.actions || []
+                const mediaSha256 = typeof payload.media_sha256 === 'string'
+                  ? payload.media_sha256
+                  : typeof payload.sha256 === 'string'
+                    ? payload.sha256
+                    : null
 
                 return (
                   <Card
@@ -371,6 +532,11 @@ export function DesktopNotificationsModal({
                           {isInbox ? (
                             <Badge tone={record.kind === 'ai_request' ? 'live' : 'warning'}>
                               {record.kind === 'ai_request' ? 'Pairing Request' : 'AI Deliverable'}
+                            </Badge>
+                          ) : null}
+                          {record.verified ? (
+                            <Badge tone="live" title="Origin authenticated via scoped credentials">
+                              Verified
                             </Badge>
                           ) : null}
                           <Badge tone={statusTone(record)}>{statusLabel(record)}</Badge>
@@ -434,6 +600,11 @@ export function DesktopNotificationsModal({
                       <span>Category: {record.category}</span>
                       {meta.map((item) => <span key={item}>{item}</span>)}
                       {record.sessionId ? <span title={record.sessionId}>Session: {shortID(record.sessionId)}</span> : null}
+                      {mediaSha256 ? (
+                        <span className="font-mono text-xs text-[var(--app-text-subtle)]" title={`Content Hash: ${mediaSha256}`}>
+                          SHA256: {mediaSha256.slice(0, 8)}…
+                        </span>
+                      ) : null}
                     </div>
 
                     {/* Actionable Buttons Bar */}
@@ -457,7 +628,7 @@ export function DesktopNotificationsModal({
                           )
                         })}
 
-                        {record.actionURL ? (
+                        {record.actionURL && isSafeActionURL(record.actionURL) ? (
                           <a
                             className="inline-flex min-h-9 min-w-[140px] items-center justify-center gap-2 rounded-xl border border-[var(--app-primary)] px-3 text-sm font-medium text-[var(--app-primary)] transition hover:bg-[color-mix(in_oklab,var(--app-primary)_10%,transparent)] hover:text-[var(--app-primary-hover)]"
                             href={record.actionURL}
@@ -497,6 +668,11 @@ export function DesktopNotificationsModal({
           </div>
         </div>
       </DialogPanel>
+      <DesktopStorageBucketsModal
+        open={storageModalOpen}
+        onOpenChange={setStorageModalOpen}
+        onBucketsUpdated={loadBuckets}
+      />
     </Dialog>
   )
 }

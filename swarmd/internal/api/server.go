@@ -46,6 +46,7 @@ import (
 	runruntime "swarm/packages/swarmd/internal/run"
 	"swarm/packages/swarmd/internal/security"
 	sessionruntime "swarm/packages/swarmd/internal/session"
+	"swarm/packages/swarmd/internal/storagehub"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/stream"
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
@@ -120,6 +121,7 @@ type Server struct {
 	codexAccount                codexAccountClient
 	perm                        permissionService
 	notifications               notificationService
+	storageHub                  *storagehub.Service
 	webPush                     *webpush.Service
 	hub                         *stream.Hub
 	events                      *pebblestore.EventLog
@@ -261,6 +263,7 @@ type notificationService interface {
 	UpdateNotification(input notification.UpdateInput) (pebblestore.NotificationRecord, bool, error)
 	UpsertSystemNotification(record pebblestore.NotificationRecord) (pebblestore.NotificationRecord, bool, error)
 	SubmitInboxNotification(input notification.InboxNotificationInput) (pebblestore.NotificationRecord, error)
+	SubmitInboxNotificationForAccount(accountScopeID string, input notification.InboxNotificationInput) (pebblestore.NotificationRecord, error)
 }
 
 type worktreeService interface {
@@ -343,6 +346,9 @@ func NewServer(authSvc *auth.Service, agentSvc *agentruntime.Service, modelSvc *
 	}
 	if notificationSvc, ok := notificationSvc.(*notification.Service); ok {
 		notificationSvc.SetRealtimePublisher(server.publishNotificationV3Realtime)
+	}
+	if sessionSvc != nil && sessionSvc.Store() != nil && sessionSvc.Store().Underlying() != nil && notificationSvc != nil {
+		server.storageHub = storagehub.NewService(sessionSvc.Store().Underlying(), notificationSvc)
 	}
 	if server.workspace != nil {
 		server.workspace.SetCatalogPublisher(func(record pebblestore.V3RealtimeOutboxRecord) {

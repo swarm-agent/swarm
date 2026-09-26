@@ -245,6 +245,8 @@ export interface DesktopNotificationCenterRecord {
   workspacePath: string | null
   workspaceName: string | null
   originLabel: string | null
+  workerId?: string | null
+  verified?: boolean | null
   actionURL: string | null
   payload?: Record<string, unknown> | null
   actions?: DesktopNotificationAction[] | null

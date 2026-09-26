@@ -79,7 +79,7 @@ func TestHandleNotificationInbox(t *testing.T) {
 	}
 
 	var resp struct {
-		OK           bool                         `json:"ok"`
+		OK           bool                           `json:"ok"`
 		Notification pebblestore.NotificationRecord `json:"notification"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
@@ -96,5 +96,51 @@ func TestHandleNotificationInbox(t *testing.T) {
 	}
 	if resp.Notification.Actions[0].ID != "approve" {
 		t.Fatalf("expected action ID approve, got %q", resp.Notification.Actions[0].ID)
+	}
+
+	// 3. With scoped token auth -> Origin stamped and verified
+	scopedToken := &pebblestore.ScopedTokenRecord{
+		ID:             "tok_123",
+		Name:           "Automation Token",
+		Scopes:         []string{"notifications:write"},
+		AccountScopeID: "acct-1",
+		WorkerID:       "worker-bot-42",
+		WorkerName:     "Content Engine",
+	}
+	reqScoped := httptest.NewRequest(http.MethodPost, "/v1/notifications/inbox", bytes.NewReader(body))
+	reqScoped.Header.Set("Content-Type", "application/json")
+	reqScoped = reqScoped.WithContext(ctx)
+	reqScoped = requestWithScopedToken(reqScoped, scopedToken)
+	wScoped := httptest.NewRecorder()
+	mux.ServeHTTP(wScoped, reqScoped)
+	if wScoped.Code != http.StatusCreated {
+		t.Fatalf("expected status 201 for scoped token, got %d: %s", wScoped.Code, wScoped.Body.String())
+	}
+	var respScoped struct {
+		OK           bool                           `json:"ok"`
+		Notification pebblestore.NotificationRecord `json:"notification"`
+	}
+	if err := json.Unmarshal(wScoped.Body.Bytes(), &respScoped); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if !respScoped.Notification.Verified {
+		t.Fatal("expected scoped token submission to be verified")
+	}
+	if respScoped.Notification.WorkerID != "worker-bot-42" {
+		t.Fatalf("expected worker ID worker-bot-42, got %q", respScoped.Notification.WorkerID)
+	}
+	if respScoped.Notification.OriginLabel != "Content Engine" {
+		t.Fatalf("expected origin label Content Engine, got %q", respScoped.Notification.OriginLabel)
+	}
+
+	// 4. Exceeding body limit (> 512 KB) -> 400 Bad Request
+	largeBody := make([]byte, 600*1024)
+	reqLarge := httptest.NewRequest(http.MethodPost, "/v1/notifications/inbox", bytes.NewReader(largeBody))
+	reqLarge.Header.Set("Content-Type", "application/json")
+	reqLarge = reqLarge.WithContext(ctx)
+	wLarge := httptest.NewRecorder()
+	mux.ServeHTTP(wLarge, reqLarge)
+	if wLarge.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400 for payload > 512KB, got %d", wLarge.Code)
 	}
 }

@@ -420,6 +420,8 @@ export interface NotificationRecord {
   workspace_path?: string;
   workspace_name?: string;
   origin_label?: string;
+  worker_id?: string;
+  verified?: boolean;
   action_url?: string;
   payload?: Record<string, unknown>;
   actions?: NotificationAction[];
@@ -451,6 +453,8 @@ export interface SubmitNotificationParams {
   body?: string;
   status?: NotificationStatus;
   action_url?: string;
+  worker_id?: string;
+  origin_label?: string;
   payload?: Record<string, unknown>;
   actions?: NotificationAction[];
 }

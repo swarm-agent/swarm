@@ -34,6 +34,8 @@ export interface DurableNotificationRecord {
   workspace_path?: string
   workspace_name?: string
   origin_label?: string
+  worker_id?: string
+  verified?: boolean
   action_url?: string
   payload?: Record<string, unknown>
   actions?: DurableNotificationAction[]

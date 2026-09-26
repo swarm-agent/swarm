@@ -92,6 +92,10 @@ func (s scopedNotificationService) SubmitInboxNotification(input notification.In
 	return s.scoped.SubmitInboxNotificationForAccount(s.accountScopeID, input)
 }
 
+func (s scopedNotificationService) SubmitInboxNotificationForAccount(accountScopeID string, input notification.InboxNotificationInput) (pebblestore.NotificationRecord, error) {
+	return s.scoped.SubmitInboxNotificationForAccount(accountScopeID, input)
+}
+
 func (s *Server) notificationAccountScopeID(w http.ResponseWriter, r *http.Request) (string, bool) {
 	principal, ok := PrincipalFromRequest(r)
 	if !ok || !principal.Valid() || strings.TrimSpace(principal.AccountScopeID) == "" {
@@ -169,7 +173,7 @@ func (s *Server) handleNotificationInbox(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	var input notification.InboxNotificationInput
-	if err := decodeJSON(r, &input); err != nil {
+	if err := decodeJSONLimited(w, r, &input, 512*1024); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
@@ -177,9 +181,27 @@ func (s *Server) handleNotificationInbox(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, errors.New("notification title is required"))
 		return
 	}
+
+	// Token-bound origin stamping to prevent spoofing
+	if scopedRec, ok := ScopedTokenFromRequest(r); ok && scopedRec != nil {
+		input.Verified = true
+		if scopedRec.WorkerID != "" {
+			input.WorkerID = scopedRec.WorkerID
+			if scopedRec.WorkerName != "" {
+				input.OriginLabel = scopedRec.WorkerName
+			} else {
+				input.OriginLabel = "Worker: " + scopedRec.WorkerID
+			}
+		} else if scopedRec.Name != "" {
+			input.OriginLabel = scopedRec.Name
+		}
+	} else if principal, ok := PrincipalFromRequest(r); ok && principal.Valid() {
+		input.Verified = true
+	}
+
 	record, err := notificationServiceForAccount(s.notifications, accountScopeID).SubmitInboxNotification(input)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
+		writeError(w, http.StatusBadRequest, err)
 		return
 	}
 	summary, _ := notificationServiceForAccount(s.notifications, accountScopeID).Summary(record.SwarmID)
@@ -280,7 +302,11 @@ func (s *Server) enrichNotificationRecord(record pebblestore.NotificationRecord)
 		record.SessionLabel = notificationSessionLabel(record.SessionTitle, record.WorkspaceName, sessionID)
 	}
 	if record.OriginLabel == "" {
-		record.OriginLabel = notificationOriginLabel(record, session.Metadata)
+		if record.WorkerID != "" {
+			record.OriginLabel = "Worker: " + record.WorkerID
+		} else {
+			record.OriginLabel = notificationOriginLabel(record, session.Metadata)
+		}
 	}
 	if record.ActionURL == "" && record.WorkspacePath != "" && sessionID != "" {
 		record.ActionURL = notification.NotificationActionURL(record.WorkspaceName, record.WorkspacePath, sessionID)

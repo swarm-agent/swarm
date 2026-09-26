@@ -444,6 +444,13 @@ func NewSessionStore(store *Store) *SessionStore {
 	return &SessionStore{store: store}
 }
 
+func (s *SessionStore) Underlying() *Store {
+	if s == nil {
+		return nil
+	}
+	return s.store
+}
+
 func (s *SessionStore) CreateSession(session SessionSnapshot) error {
 	session = normalizeSessionOwnership(session)
 	if err := validateCanonicalSessionID(session.ID); err != nil {

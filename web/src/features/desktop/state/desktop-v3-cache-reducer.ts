@@ -1547,6 +1547,8 @@ function normalizeDesktopNotification(raw: DesktopNotificationWire | undefined):
     workspacePath: nullableString(raw.workspacePath ?? raw.workspace_path),
     workspaceName: nullableString(raw.workspaceName ?? raw.workspace_name),
     originLabel: nullableString(raw.originLabel ?? raw.origin_label),
+    workerId: nullableString(raw.workerId ?? raw.worker_id),
+    verified: typeof raw.verified === 'boolean' ? raw.verified : Boolean(raw.verified),
     actionURL: nullableString(raw.actionURL ?? raw.action_url),
     payload: raw.payload && typeof raw.payload === 'object' && !Array.isArray(raw.payload) ? (raw.payload as Record<string, unknown>) : null,
     actions: Array.isArray(raw.actions)

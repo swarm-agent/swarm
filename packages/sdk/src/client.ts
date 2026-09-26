@@ -5,6 +5,7 @@ import { SwarmDeployNamespace } from './deploy/index.js';
 import { SwarmNotificationsNamespace } from './notifications.js';
 import { SwarmSessionsNamespace } from './sessions.js';
 import { SwarmSystemNamespace } from './system.js';
+import { SwarmStorageNamespace } from './storage/index.js';
 import { SwarmTransport } from './transport.js';
 import type { ResolvedSwarmClientConfig, SwarmClientConfig } from './types.js';
 import { SwarmWorkspacesNamespace } from './workspaces.js';
@@ -28,6 +29,7 @@ export class SwarmClient {
   readonly notifications: SwarmNotificationsNamespace;
   /** Convenient alias for notifications namespace: inbox */
   readonly inbox: SwarmNotificationsNamespace;
+  readonly storage: SwarmStorageNamespace;
 
   constructor(config: SwarmClientConfig = {}) {
     const env: Record<string, string | undefined> =
@@ -66,6 +68,7 @@ export class SwarmClient {
     this.deploy = new SwarmDeployNamespace(this.transport);
     this.notifications = new SwarmNotificationsNamespace(this.transport);
     this.inbox = this.notifications;
+    this.storage = new SwarmStorageNamespace(this.transport);
   }
 
   /**

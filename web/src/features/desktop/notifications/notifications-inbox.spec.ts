@@ -2,6 +2,11 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createEmptyDesktopV3CacheState, desktopV3CacheReducer } from '../state/desktop-v3-cache-reducer'
 import type { DesktopNotificationWire } from '../state/desktop-v3-cache-types'
+import {
+  isSafeActionURL,
+  isSafeMediaURL,
+  isSafeNotificationActionEndpoint,
+} from './components/desktop-notifications-modal'
 
 test('normalizes inbox notification with kind, payload and actions', () => {
   const wireNotification: DesktopNotificationWire = {
@@ -54,4 +59,47 @@ test('normalizes inbox notification with kind, payload and actions', () => {
   assert.equal(stored.actions?.[0].id, 'approve')
   assert.equal(stored.actions?.[0].endpoint, '/v3/deliverables/del_1/approve')
   assert.equal(stored.actions?.[1].id, 'reject')
+})
+
+test('validates safe and unsafe notification action endpoints', () => {
+  // Safe endpoints
+  assert.equal(isSafeNotificationActionEndpoint('/v3/deliverables/del_1/approve'), true)
+  assert.equal(isSafeNotificationActionEndpoint('/v3/deliverables/del_1/dismiss'), true)
+  assert.equal(isSafeNotificationActionEndpoint('/v1/notifications/notif_1/ack'), true)
+  assert.equal(isSafeNotificationActionEndpoint('/v3/automations/v2/trigger'), true)
+  assert.equal(isSafeNotificationActionEndpoint('/v3/sessions/sess_123'), true)
+
+  // Unsafe SSRF / Confused Deputy endpoints
+  assert.equal(isSafeNotificationActionEndpoint('http://localhost:8765/v1/activate'), false)
+  assert.equal(isSafeNotificationActionEndpoint('https://evil.com/hook'), false)
+  assert.equal(isSafeNotificationActionEndpoint('//evil.com/hook'), false)
+  assert.equal(isSafeNotificationActionEndpoint('/v1/environments/env-1/destroy'), false)
+  assert.equal(isSafeNotificationActionEndpoint('/v1/keys/rotate'), false)
+  assert.equal(isSafeNotificationActionEndpoint('/v3/auth/tokens/tok_1/revoke'), false)
+  assert.equal(isSafeNotificationActionEndpoint('/v1/permissions/reset'), false)
+  assert.equal(isSafeNotificationActionEndpoint('/v3/deliverables/../../etc/passwd'), false)
+  assert.equal(isSafeNotificationActionEndpoint(''), false)
+  assert.equal(isSafeNotificationActionEndpoint(null as any), false)
+})
+
+test('validates safe action and media URLs against XSS', () => {
+  // Safe URLs
+  assert.equal(isSafeActionURL('/workspace/session-1'), true)
+  assert.equal(isSafeActionURL('https://swarmagent.dev'), true)
+  assert.equal(isSafeActionURL('http://example.com/item'), true)
+
+  // Unsafe URLs
+  assert.equal(isSafeActionURL('javascript:alert(1)'), false)
+  assert.equal(isSafeActionURL('javascript:void(0)'), false)
+  assert.equal(isSafeActionURL('data:text/html,<script>alert(1)</script>'), false)
+  assert.equal(isSafeActionURL('//malicious.com'), false)
+  assert.equal(isSafeActionURL(''), false)
+  assert.equal(isSafeActionURL(null as any), false)
+
+  // Media URLs
+  assert.equal(isSafeMediaURL('https://cdn.example.com/video.mp4'), true)
+  assert.equal(isSafeMediaURL('/media/video.mp4'), true)
+  assert.equal(isSafeMediaURL('blob:http://localhost:5555/uuid'), true)
+  assert.equal(isSafeMediaURL('javascript:alert(1)'), false)
+  assert.equal(isSafeMediaURL('data:text/html,...'), false)
 })
