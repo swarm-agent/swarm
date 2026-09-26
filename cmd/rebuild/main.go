@@ -22,15 +22,16 @@ func run(args []string) error {
 	lane := launcher.DefaultLane("main")
 	includeWeb := false
 	restartSystemd := false
+	explicitWeb := false
 	for _, arg := range args {
 		switch arg {
 		case "", "f", "full", "frontend":
 			if arg != "" {
 				includeWeb = true
+				explicitWeb = true
 			}
 		case "s", "systemd":
 			restartSystemd = true
-			includeWeb = true
 		case "main", "dev":
 			lane = arg
 		default:
@@ -41,7 +42,13 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := launcher.ForceBuildToolBinaries(root, map[string]bool{"rebuild": true}); err != nil {
+	if !explicitWeb {
+		needsRebuild, err := launcher.DevFrontendAssetsNeedRebuild(profile)
+		if err == nil && needsRebuild {
+			includeWeb = true
+		}
+	}
+	if err := launcher.BuildToolBinaries(root, map[string]bool{"rebuild": true}); err != nil {
 		return err
 	}
 	return launcher.Rebuild(profile, includeWeb, restartSystemd)

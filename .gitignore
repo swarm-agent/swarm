@@ -35,6 +35,7 @@ coverage.out
 # Web build/runtime outputs
 /web/node_modules/
 /web/dist/
+/web/.cache/
 /web/*.tsbuildinfo
 /web/test-results/
 /web/playwright-report/

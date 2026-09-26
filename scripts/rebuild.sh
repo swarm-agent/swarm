@@ -50,5 +50,13 @@ source "${SCRIPT_DIR}/lib-lane.sh"
 lane="$(swarm_lane_default)"
 swarm_lane_export_profile "${lane}" "${ROOT_DIR}"
 
-bash "${ROOT_DIR}/scripts/build-tools.sh"
-exec "${SWARM_TOOL_BIN_DIR}/rebuild" "${SWARM_LANE}" "$@"
+rebuild_bin="${SWARM_TOOL_BIN_DIR}/rebuild"
+if [[ ! -x "${rebuild_bin}" || \
+      "${ROOT_DIR}/cmd/rebuild/main.go" -nt "${rebuild_bin}" || \
+      "${ROOT_DIR}/go.mod" -nt "${rebuild_bin}" || \
+      "${ROOT_DIR}/go.sum" -nt "${rebuild_bin}" || \
+      "${ROOT_DIR}/internal/launcher/launcher.go" -nt "${rebuild_bin}" ]]; then
+  bash "${ROOT_DIR}/scripts/build-tools.sh"
+fi
+
+exec "${rebuild_bin}" "${SWARM_LANE}" "$@"

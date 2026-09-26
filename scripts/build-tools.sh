@@ -37,11 +37,37 @@ build_tool() {
   if [[ "${SKIP_REBUILD}" == "1" && "${name}" == "rebuild" ]]; then
     return
   fi
-  local args=(build -trimpath)
-  if [[ -n "${invoked_name}" ]]; then
-    args+=( -ldflags "-X main.defaultInvokedName=${invoked_name}" )
+  local target="${OUT_DIR}/${name}"
+  if [[ "${FORCE_BUILD_TOOLS:-0}" != "1" && -f "${target}" ]]; then
+    local needs_build=false
+    local deps=(
+      "${ROOT_DIR}/go.mod"
+      "${ROOT_DIR}/go.sum"
+      "${ROOT_DIR}/internal/launcher/launcher.go"
+      "${ROOT_DIR}/pkg/startupconfig/config.go"
+    )
+    case "${name}" in
+      swarm|swarmdev) deps+=( "${ROOT_DIR}/cmd/swarm/main.go" ) ;;
+      rebuild)        deps+=( "${ROOT_DIR}/cmd/rebuild/main.go" ) ;;
+      swarmsetup)     deps+=( "${ROOT_DIR}/cmd/swarmsetup/main.go" ) ;;
+    esac
+    for dep in "${deps[@]}"; do
+      if [[ -f "${dep}" && "${dep}" -nt "${target}" ]]; then
+        needs_build=true
+        break
+      fi
+    done
+    if [[ "${needs_build}" == false ]]; then
+      return
+    fi
   fi
-  args+=( -o "${OUT_DIR}/${name}" "${pkg}" )
+  local args=(build -trimpath)
+  local ldflags=( "-w" )
+  if [[ -n "${invoked_name}" ]]; then
+    ldflags+=( "-X main.defaultInvokedName=${invoked_name}" )
+  fi
+  args+=( -ldflags "${ldflags[*]}" )
+  args+=( -o "${target}" "${pkg}" )
   GOCACHE="${GOCACHE_DIR}" \
   GOMODCACHE="${GOMODCACHE_DIR}" \
   GOPATH="${GOPATH_DIR}" \

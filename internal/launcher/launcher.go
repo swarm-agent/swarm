@@ -21,6 +21,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -674,17 +675,103 @@ func BuildSwarmdBinaries(profile Profile) error {
 		return err
 	}
 	swarmdRoot := filepath.Join(profile.Root, "swarmd")
-	if err := runGoBuild(profile.Root, swarmdRoot, goBin, filepath.Join(profile.BinDir, "swarmd"), "./cmd/swarmd"); err != nil {
-		return err
-	}
-	if err := runGoBuild(profile.Root, swarmdRoot, goBin, filepath.Join(profile.BinDir, "swarmctl"), "./cmd/swarmctl"); err != nil {
-		return err
-	}
-	if err := runGoBuild(profile.Root, swarmdRoot, goBin, filepath.Join(profile.BinDir, "swarm-fff-search"), "./cmd/swarm-fff-search"); err != nil {
+	pkgs := []string{"./cmd/swarmd", "./cmd/swarmctl", "./cmd/swarm-fff-search"}
+	if err := runGoBuildBatch(profile.Root, swarmdRoot, goBin, profile.BinDir, pkgs); err != nil {
 		return err
 	}
 	if err := copyFile(filepath.Join(swarmdRoot, "internal", "fff", "lib", fffLibraryPlatformDir(), "libfff_c.so"), filepath.Join(profile.LibDir, "libfff_c.so")); err != nil {
 		return err
+	}
+	return nil
+}
+
+func defaultLdflags(extraArgs ...string) []string {
+	if os.Getenv("SWARM_KEEP_DWARF") == "1" {
+		if len(extraArgs) > 0 {
+			return []string{"-ldflags", strings.Join(extraArgs, " ")}
+		}
+		return nil
+	}
+	hasW := false
+	for _, arg := range extraArgs {
+		if arg == "-w" || strings.Contains(arg, "-w") {
+			hasW = true
+			break
+		}
+	}
+	var flags []string
+	if !hasW {
+		flags = append(flags, "-w")
+	}
+	flags = append(flags, extraArgs...)
+	return []string{"-ldflags", strings.Join(flags, " ")}
+}
+
+func runGoBuildBatch(projectRoot, workDir, goBin, destDir string, pkgs []string, extraArgs ...string) error {
+	cacheRoot := filepath.Join(projectRoot, ".cache", "go")
+	goCache := envOrDefault("GOCACHE_DIR", filepath.Join(cacheRoot, "build"))
+	goModCache := envOrDefault("GOMODCACHE_DIR", filepath.Join(cacheRoot, "mod"))
+	goPath := envOrDefault("GOPATH_DIR", filepath.Join(cacheRoot, "path"))
+	if err := os.MkdirAll(destDir, 0o755); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(goCache, 0o755); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(goModCache, 0o755); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(goPath, 0o755); err != nil {
+		return err
+	}
+	stagingDir, err := os.MkdirTemp(destDir, ".tmp-build-batch-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(stagingDir)
+
+	args := []string{"build", "-trimpath"}
+	if ld := defaultLdflags(extraArgs...); len(ld) > 0 {
+		args = append(args, ld...)
+	}
+	args = append(args, "-o", stagingDir+string(filepath.Separator))
+	args = append(args, pkgs...)
+
+	cmd := exec.Command(goBin, args...)
+	cmd.Dir = workDir
+	cmd.Env = append(os.Environ(),
+		"CGO_ENABLED=1",
+		"GOCACHE="+goCache,
+		"GOMODCACHE="+goModCache,
+		"GOPATH="+goPath,
+		"GO_BIN="+goBin,
+		"GOTOOLCHAIN="+envValueOrDefault("GOTOOLCHAIN", "auto"),
+		"PATH="+prependPathEntry(os.Getenv("PATH"), filepath.Dir(goBin)),
+	)
+	if goRoot := ResolveGoRoot(goBin); goRoot != "" {
+		cmd.Env = append(cmd.Env, "GOROOT="+goRoot)
+	}
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		trimmed := strings.TrimSpace(string(output))
+		if trimmed == "" {
+			return fmt.Errorf("go build batch %v: %w", pkgs, err)
+		}
+		return fmt.Errorf("go build batch %v: %w (%s)", pkgs, err, trimmed)
+	}
+
+	for _, pkg := range pkgs {
+		binName := filepath.Base(pkg)
+		src := filepath.Join(stagingDir, binName)
+		dst := filepath.Join(destDir, binName)
+		if err := os.Chmod(src, 0o755); err != nil {
+			return fmt.Errorf("chmod built binary %s: %w", dst, err)
+		}
+		if err := os.Rename(src, dst); err != nil {
+			if copyErr := copyFile(src, dst); copyErr != nil {
+				return fmt.Errorf("install built binary %s: %w", dst, copyErr)
+			}
+		}
 	}
 	return nil
 }
@@ -725,8 +812,8 @@ func runGoBuildWithArgs(projectRoot, workDir, goBin, outPath, pkg string, extraA
 	}
 	defer os.Remove(tmpPath)
 	args := []string{"build", "-trimpath"}
-	if len(extraArgs) > 0 {
-		args = append(args, "-ldflags", strings.Join(extraArgs, " "))
+	if ld := defaultLdflags(extraArgs...); len(ld) > 0 {
+		args = append(args, ld...)
 	}
 	args = append(args, "-o", tmpPath, pkg)
 	cmd := exec.Command(goBin, args...)
@@ -1922,21 +2009,41 @@ func Rebuild(profile Profile, includeWeb, restartSystemd bool) error {
 			}
 		}
 	}
-	if err := BuildSwarmdBinaries(profile); err != nil {
-		return err
+	var g sync.WaitGroup
+	var errOnce sync.Once
+	var firstErr error
+	recordErr := func(err error) {
+		if err != nil {
+			errOnce.Do(func() {
+				firstErr = err
+			})
+		}
 	}
-	if err := BuildToolBinaries(profile.Root, map[string]bool{
-		"rebuild": true,
-	}); err != nil {
-		return err
-	}
-	if err := BuildSwarmTUI(profile); err != nil {
-		return err
+
+	buildTasks := []func() error{
+		func() error { return BuildSwarmdBinaries(profile) },
+		func() error {
+			return BuildToolBinaries(profile.Root, map[string]bool{"rebuild": true})
+		},
+		func() error { return BuildSwarmTUI(profile) },
 	}
 	if includeWeb {
-		if err := BuildAndInstallWebAssets(profile); err != nil {
-			return err
-		}
+		buildTasks = append(buildTasks, func() error {
+			return BuildAndInstallWebAssets(profile)
+		})
+	}
+
+	g.Add(len(buildTasks))
+	for _, task := range buildTasks {
+		fn := task
+		go func() {
+			defer g.Done()
+			recordErr(fn())
+		}()
+	}
+	g.Wait()
+	if firstErr != nil {
+		return firstErr
 	}
 	if _, err := InstallLaunchers(profile.Root); err != nil {
 		return err

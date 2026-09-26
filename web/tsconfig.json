@@ -9,6 +9,8 @@
     "allowImportingTsExtensions": false,
     "resolveJsonModule": true,
     "isolatedModules": true,
+    "incremental": true,
+    "tsBuildInfoFile": ".cache/tsbuildinfo",
     "noEmit": true,
     "jsx": "react-jsx",
     "strict": true,
