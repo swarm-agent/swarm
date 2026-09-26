@@ -77,6 +77,7 @@ import type {
 import {
   getDesktopSessionStopTarget,
   resolveDesktopChatRouteFromSession,
+  sessionMetadataString,
   type DesktopChatRoute,
 } from "../services/chat-routing";
 import {
@@ -1586,12 +1587,24 @@ export function buildDesktopV3ConversationRenderItems(
 export function resolveDesktopV3StopRunRequest(input: {
   route: DesktopChatRoute | null | undefined;
   runId: string | null | undefined;
+  session?: DesktopSessionRecord | null;
+  targetSwarmId?: string | null;
 }): { runId: string; targetSwarmId: string } {
   const runId = input.runId?.trim() ?? "";
   if (!runId) {
     throw new Error("Desktop V3 stop requires run_id");
   }
   const target = getDesktopSessionStopTarget(input.route);
+  if (target.sessionApi === "v3" && target.targetSwarmId) {
+    return { runId, targetSwarmId: target.targetSwarmId };
+  }
+  const fallbackSwarmId =
+    input.targetSwarmId?.trim() ||
+    sessionMetadataString(input.session?.metadata, "swarm_v3_runtime_swarm_id") ||
+    sessionMetadataString(input.session?.metadata, "swarm_v3_authority_host_swarm_id");
+  if (fallbackSwarmId) {
+    return { runId, targetSwarmId: fallbackSwarmId };
+  }
   if (target.sessionApi !== "v3") {
     throw new Error(target.unsupportedReason);
   }
@@ -2207,11 +2220,11 @@ export function DesktopV3ExistingConversationPane({
   const route = useMemo(
     () =>
       resolveDesktopChatRouteFromSession(
-        session ?? null,
+        session ?? cacheSession ?? null,
         routeOptions,
         routeOptions[0] ?? null,
       ),
-    [routeOptions, session],
+    [routeOptions, session, cacheSession],
   );
   const compacting = compactStartedAt !== null;
   const canSubmitWithoutDraft = Boolean(
@@ -3074,9 +3087,11 @@ export function DesktopV3ExistingConversationPane({
   async function handleStop() {
     if (!normalizedSessionId || !currentRun?.runId) return;
     try {
+      const activeSession = session ?? cacheSession ?? null;
       const stopRequest = resolveDesktopV3StopRunRequest({
         route,
         runId: currentRun.runId,
+        session: activeSession,
       });
       await stopSessionV3Run(normalizedSessionId, stopRequest);
     } catch (error) {

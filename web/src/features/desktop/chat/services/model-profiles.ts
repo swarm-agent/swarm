@@ -102,10 +102,20 @@ function selectionFromMetadata(value: unknown): ModelProfileSelectionRecord | nu
 
 /** Reads the immutable Action/optional Plan session snapshot, not the favorite CRUD wire. */
 export function modelProfileFromMetadata(metadata: unknown, mode: 'plan' | 'auto' = 'auto'): ModelProfileInput | null {
-  const snapshot = record(record(metadata).model_profile)
-  const selected = mode === 'plan' ? selectionFromMetadata(snapshot.plan) : selectionFromMetadata(snapshot.action)
+  const metaRec = record(metadata)
+  const snapshot = record(metaRec.model_profile)
+  const agentName = String(metaRec.agent_name ?? '').trim()
+  const isOrchestrator = agentName === 'system-orchestrator'
+  const usePlan = mode === 'plan' || isOrchestrator
+  let selected = usePlan && snapshot.plan ? selectionFromMetadata(snapshot.plan) : null
+  if (!selected) {
+    selected = selectionFromMetadata(snapshot.action)
+  }
+  if (!selected && snapshot.plan) {
+    selected = selectionFromMetadata(snapshot.plan)
+  }
   if (!selected) return null
-  const name = String(mode === 'plan' ? snapshot.plan_favorite_name : snapshot.action_favorite_name).trim()
+  const name = String(usePlan && snapshot.plan ? (snapshot.plan_favorite_name || snapshot.action_favorite_name) : snapshot.action_favorite_name).trim()
   return { name, ...selected }
 }
 

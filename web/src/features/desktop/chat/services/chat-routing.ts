@@ -146,12 +146,12 @@ export function resolveDesktopChatRouteById(
   return fallback ?? routeOptions[0] ?? null
 }
 
-function sessionMetadataString(metadata: Record<string, unknown> | null | undefined, key: string): string {
+export function sessionMetadataString(metadata: Record<string, unknown> | null | undefined, key: string): string {
   const value = metadata?.[key]
   return typeof value === 'string' ? value.trim() : ''
 }
 
-function inferV3TargetRelationship(metadata: Record<string, unknown> | null | undefined): string {
+export function inferV3TargetRelationship(metadata: Record<string, unknown> | null | undefined): string {
   const executionClass = sessionMetadataString(metadata, 'swarm_v3_execution_class').toLowerCase()
   if (executionClass === 'primary') {
     return 'self'
@@ -161,14 +161,13 @@ function inferV3TargetRelationship(metadata: Record<string, unknown> | null | un
 
 export function desktopChatRouteFromSessionMetadata(session: DesktopSessionRecord | null | undefined): DesktopChatRoute | null {
   const metadata = session?.metadata
-  const v3MetadataSwarmId = sessionMetadataString(metadata, 'swarm_v3_runtime_swarm_id')
+  const v3MetadataSwarmId = sessionMetadataString(metadata, 'swarm_v3_runtime_swarm_id') || sessionMetadataString(metadata, 'swarm_v3_authority_host_swarm_id')
   if (v3MetadataSwarmId) {
     const workspaceBindingId = sessionMetadataString(metadata, 'swarm_v3_workspace_binding_id')
     const workspaceName = sessionMetadataString(metadata, 'swarm_v3_source_workspace_name') || session?.workspaceName?.trim() || ''
-    if (!workspaceBindingId) {
-      return null
-    }
-    const id = desktopChatRouteID(v3MetadataSwarmId, workspaceName, workspaceBindingId)
+    const id = workspaceBindingId
+      ? desktopChatRouteID(v3MetadataSwarmId, workspaceName, workspaceBindingId)
+      : `swarm:${v3MetadataSwarmId}`
     if (!id) {
       return null
     }
@@ -178,13 +177,13 @@ export function desktopChatRouteFromSessionMetadata(session: DesktopSessionRecor
       label,
       swarmId: v3MetadataSwarmId,
       targetKind: sessionMetadataString(metadata, 'swarm_v3_runtime_kind') || 'host',
-      targetRelationship: inferV3TargetRelationship(metadata),
+      targetRelationship: inferV3TargetRelationship(metadata) || 'self',
       hostSwarmId: sessionMetadataString(metadata, 'swarm_v3_authority_host_swarm_id') || v3MetadataSwarmId,
       hostSwarmName: '',
       hostWorkspacePath: sessionMetadataString(metadata, 'swarm_v3_source_workspace_path') || session?.workspacePath?.trim() || '',
       hostWorkspaceName: workspaceName,
       runtimeWorkspacePath: session?.runtimeWorkspacePath?.trim() || sessionMetadataString(metadata, 'swarm_v3_runtime_workspace_path'),
-      workspaceBindingId,
+      workspaceBindingId: workspaceBindingId || '',
       workspaceName,
       targetSwarmName: label,
     }

@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	agentruntime "swarm/packages/swarmd/internal/agent"
+	"swarm/packages/swarmd/internal/agentmodelsettings"
 	"swarm/packages/swarmd/internal/identity"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	store "swarm/packages/swarmd/internal/store/pebble"
@@ -341,6 +343,16 @@ func TestProjectsAPIEndpoints(t *testing.T) {
 	pRec, pFound, pErr := ss.GetProject("account", projID)
 	if pErr != nil || !pFound || pRec.PrimarySessionID != newSessID {
 		t.Fatalf("expected project primary_session_id updated to %q, got %+v", newSessID, pRec)
+	}
+	newSess, newFound, newErr := ss.GetSession(newSessID)
+	if newErr != nil || !newFound {
+		t.Fatalf("expected new orchestrator session in store, got found=%v, err=%v", newFound, newErr)
+	}
+	if newSess.Metadata["agent_profile"] == nil {
+		t.Fatal("expected new orchestrator session to contain stored agent_profile in metadata")
+	}
+	if newSess.Metadata["agent_name"] != "system-orchestrator" {
+		t.Fatalf("expected agent_name system-orchestrator, got %v", newSess.Metadata["agent_name"])
 	}
 
 	// 10. DELETE /v3/projects/{id}
@@ -1236,5 +1248,150 @@ func TestProjectTaskProgram_StandaloneExecutionAndRedeploy(t *testing.T) {
 	}
 	if len(navbarJob.GenerationHistory) != 1 {
 		t.Fatalf("expected 1 generation history entry, got %d", len(navbarJob.GenerationHistory))
+	}
+}
+
+func TestProjectOrchestrator_ClearContext_ResolvesPlanModelAndValidProfile(t *testing.T) {
+	// Purpose:
+	// - Product invariant: /v3/projects/{id}/orchestrator:clear-context must provision a replacement
+	//   session carrying the configured Swarm plan agent model (settings.Swarm.Plan), complete
+	//   server metadata with stored agent_profile and swarm_v3_runtime_swarm_id, so execution does not
+	//   fail with 'v3 session is missing stored agent profile' and stop triggers resolve target_swarm_id.
+	// - Regression prevented: Prevents regressions where clearing context wipes the agent profile,
+	//   causing immediate run failure, or ignores account plan model configuration.
+
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	ss := store.NewSessionStore(db)
+	el, err := store.NewEventLog(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	principal := identity.Principal{Type: "user", UserID: "owner", AccountScopeID: "account-test"}
+	settingsStore := store.NewAgentModelSettingsStore(db)
+	compactAssignment := store.AgentModelAssignment{Provider: "google", Model: "gemini-3.8-flash", Thinking: "low"}
+	_, err = settingsStore.PutForAccount(store.AgentModelSettingsRecord{
+		AccountScopeID: principal.AccountScopeID,
+		Swarm: store.SwarmAgentModelAssignments{
+			Action: store.AgentModelAssignment{Provider: "google", Model: "gemini-3.8-flash", Thinking: "low"},
+			Plan:   store.AgentModelAssignment{Provider: "anthropic", Model: "claude-3-7-sonnet", Thinking: "high"},
+		},
+		SystemAgents: store.SystemAgentModelAssignments{
+			Compact:  compactAssignment,
+			Finder:   compactAssignment,
+			Coder:    compactAssignment,
+			Designer: compactAssignment,
+			Router:   compactAssignment,
+		},
+	})
+	if err != nil {
+		t.Fatalf("put initial swarm settings: %v", err)
+	}
+	settingsSvc := agentmodelsettings.NewService(settingsStore)
+
+	swarmStore := store.NewSwarmStore(db)
+	_, _ = swarmStore.PutLocalNode(store.SwarmLocalNodeRecord{
+		SwarmID: "swarm-local-node-123",
+		Role:    "host",
+	})
+
+	agentsSvc := agentruntime.NewService(nil, nil)
+
+	s := &Server{
+		sessions:           sessionruntime.NewService(ss, el),
+		agentModelSettings: settingsSvc,
+		agents:             agentsSvc,
+		swarmStore:         swarmStore,
+	}
+	h := s.apiMux()
+
+	projID := "proj_orch_test_1"
+	now := time.Now().UnixMilli()
+	origSessionID := "sess_orch_orig"
+	_ = ss.CreateSession(store.SessionSnapshot{
+		ID:             origSessionID,
+		UserID:         principal.UserID,
+		AccountScopeID: principal.AccountScopeID,
+		Title:          "Project Orchestrator: Swarm Platform",
+		WorkspacePath:  t.TempDir(),
+		Mode:           "auto",
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	})
+	_ = ss.PutProject(principal.AccountScopeID, &store.ProjectRecord{
+		ID:               projID,
+		AccountID:        principal.AccountScopeID,
+		Name:             "Swarm Platform",
+		PrimarySessionID: origSessionID,
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	})
+
+	req := httptest.NewRequest(http.MethodPost, ProjectsPath+"/"+projID+"/orchestrator:clear-context", nil)
+	pCtx := context.WithValue(req.Context(), productPrincipalRequestContextKey, principal)
+	tokenRec := &store.ScopedTokenRecord{
+		AccountScopeID: principal.AccountScopeID,
+		UserID:         principal.UserID,
+		Scopes:         []string{"sessions:write", "projects:write"},
+	}
+	pCtx = context.WithValue(pCtx, productScopedTokenRequestContextKey, tokenRec)
+	req = req.WithContext(pCtx)
+
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 on clear-context, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	newSessionID, _ := resp["session_id"].(string)
+	if newSessionID == "" || newSessionID == origSessionID {
+		t.Fatalf("expected new session ID, got %q", newSessionID)
+	}
+
+	// Fetch new session from store and verify invariants
+	newSess, ok, err := ss.GetSession(newSessionID)
+	if err != nil || !ok {
+		t.Fatalf("new orchestrator session not found in store: ok=%v, err=%v", ok, err)
+	}
+
+	// 1. Must contain stored agent profile to prevent 'v3 session is missing stored agent profile'
+	profileRaw, hasProfile := newSess.Metadata["agent_profile"]
+	if !hasProfile || profileRaw == nil {
+		t.Fatal("new orchestrator session metadata missing stored agent_profile")
+	}
+
+	// 2. Must resolve Plan model (claude-3-7-sonnet) rather than Action or hardcoded fallback
+	if newSess.Preference.Model != "claude-3-7-sonnet" {
+		t.Fatalf("expected session preference model claude-3-7-sonnet, got %q", newSess.Preference.Model)
+	}
+	if newSess.Preference.Provider != "anthropic" {
+		t.Fatalf("expected session preference provider anthropic, got %q", newSess.Preference.Provider)
+	}
+
+	// 3. Must populate swarm_v3_runtime_swarm_id for stop trigger resolution
+	swarmID, _ := newSess.Metadata["swarm_v3_runtime_swarm_id"].(string)
+	if swarmID != "swarm-local-node-123" {
+		t.Fatalf("expected swarm_v3_runtime_swarm_id swarm-local-node-123, got %q", swarmID)
+	}
+
+	// 4. Verify resolveSessionV3EffectivePreference resolves the Plan model
+	storedProfile, err := sessionV3AgentProfileFromMetadata(newSess.Metadata)
+	if err != nil {
+		t.Fatalf("sessionV3AgentProfileFromMetadata failed: %v", err)
+	}
+	effectivePref, err := resolveSessionV3EffectivePreference(newSess, storedProfile)
+	if err != nil {
+		t.Fatalf("resolveSessionV3EffectivePreference failed: %v", err)
+	}
+	if effectivePref.Model != "claude-3-7-sonnet" {
+		t.Fatalf("expected effective model claude-3-7-sonnet, got %q", effectivePref.Model)
 	}
 }

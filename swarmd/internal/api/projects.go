@@ -1091,21 +1091,132 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		newSessionID := sessionruntime.NewSessionID()
 		now := time.Now().UnixMilli()
 		createKey := fmt.Sprintf("project-orchestrator:reset:%s:%d", newSessionID, now)
+
+		// 1. Resolve canonical Swarm plan agent model preference
+		var planPref pebblestore.ModelPreference
+		if s.agentModelSettings != nil && p.AccountScopeID != "" {
+			if settings, err := s.agentModelSettings.GetForAccount(p.AccountScopeID); err == nil {
+				planAssignment := settings.Swarm.Plan
+				if strings.TrimSpace(planAssignment.Model) == "" {
+					planAssignment = settings.Swarm.Action
+				}
+				planPref = pebblestore.ModelPreference{
+					Provider:    strings.TrimSpace(planAssignment.Provider),
+					Model:       strings.TrimSpace(planAssignment.Model),
+					Thinking:    strings.TrimSpace(planAssignment.Thinking),
+					ServiceTier: strings.TrimSpace(planAssignment.ServiceTier),
+					ContextMode: strings.TrimSpace(planAssignment.ContextMode),
+				}
+			}
+		}
+		if planPref.Provider == "" || planPref.Model == "" {
+			if s.model != nil {
+				if def, err := s.model.ResolvePreference(pebblestore.ModelPreference{}); err == nil {
+					planPref = def.Preference
+				}
+			}
+		}
+		if planPref.Provider == "" || planPref.Model == "" {
+			planPref = pebblestore.ModelPreference{
+				Provider: "google",
+				Model:    "gemini-3.8-flash",
+				Thinking: "low",
+			}
+		}
+
+		// 2. Resolve primary Swarm ID and binding
+		var primarySwarmID string
+		if localNode, localOK, lErr := s.swarmLocalNode(); lErr == nil && localOK {
+			primarySwarmID = strings.TrimSpace(localNode.SwarmID)
+		}
+		binding, bErr := s.resolveSessionsV3PrimaryBinding(p, sessionsV3CreateRequest{
+			WorkspacePath: repoPath,
+		})
+		if bErr != nil {
+			binding = sessionsV3PrimaryBinding{
+				RuntimeSwarmID:       primarySwarmID,
+				SourceWorkspacePath:  repoPath,
+				SourceWorkspaceName:  proj.Name,
+				RuntimeWorkspacePath: repoPath,
+			}
+		}
+		if binding.RuntimeSwarmID == "" {
+			binding.RuntimeSwarmID = primarySwarmID
+		}
+
+		// 3. Resolve system-orchestrator agent profile with plan model
+		baseOrchProfile := agentruntime.SwarmOrchestratorAgentProfileForContext(pebblestore.AgentProfile{
+			Provider:        planPref.Provider,
+			Model:           planPref.Model,
+			Thinking:        planPref.Thinking,
+			AutoServiceTier: planPref.ServiceTier,
+			ContextMode:     planPref.ContextMode,
+		})
+		baseOrchProfile.Provider = planPref.Provider
+		baseOrchProfile.Model = planPref.Model
+		baseOrchProfile.Thinking = planPref.Thinking
+		baseOrchProfile.AutoServiceTier = planPref.ServiceTier
+		baseOrchProfile.ContextMode = planPref.ContextMode
+
+		resolvedAgent := sessionsV3ResolvedAgentIdentity{
+			Name:                baseOrchProfile.Name,
+			ResolvedName:        baseOrchProfile.Name,
+			Mode:                baseOrchProfile.Mode,
+			RuntimeMode:         baseOrchProfile.RuntimeMode,
+			ExitPlanModeEnabled: baseOrchProfile.ExitPlanModeEnabled != nil && *baseOrchProfile.ExitPlanModeEnabled,
+			Profile:             baseOrchProfile,
+		}
+		if compiledAgent, cErr := s.resolveSessionsV3PrimaryCreateAgent(p, agentruntime.SwarmOrchestratorAgentID); cErr == nil {
+			resolvedAgent = compiledAgent
+			resolvedAgent.Profile.Provider = planPref.Provider
+			resolvedAgent.Profile.Model = planPref.Model
+			resolvedAgent.Profile.Thinking = planPref.Thinking
+			resolvedAgent.Profile.AutoServiceTier = planPref.ServiceTier
+			resolvedAgent.Profile.ContextMode = planPref.ContextMode
+		}
+
+		// 4. Resolve account default model profile snapshot
+		var modelProfileSnapshot *pebblestore.SessionModelProfileSnapshot
+		if snap, err := s.sessionModelProfileSnapshotFromAccountDefault(r.Context(), now); err == nil {
+			modelProfileSnapshot = snap
+		}
+
+		// 5. Build full canonical server metadata
+		baseMeta := map[string]any{
+			"project_id": proj.ID,
+			"role":       "project_orchestrator",
+		}
+		serverMeta := sessionsV3CreateServerMetadata(baseMeta, resolvedAgent, binding)
+		metadata := sessionsV3ModelProfileMetadata(serverMeta, modelProfileSnapshot)
+		metadata["agent_profile"] = cloneSessionsV3AgentProfile(resolvedAgent.Profile)
+		if binding.RuntimeSwarmID != "" {
+			metadata["swarm_v3_runtime_swarm_id"] = binding.RuntimeSwarmID
+			metadata["swarm_v3_authority_host_swarm_id"] = binding.RuntimeSwarmID
+		}
+
+		avail := true
+		grants := []pebblestore.WorkspaceGrant{
+			{Kind: pebblestore.WorkspaceGrantPrimary, Path: repoPath, Name: proj.Name, Available: &avail},
+		}
+
 		sessionSnapshot := pebblestore.SessionSnapshot{
-			ID:             newSessionID,
-			UserID:         p.UserID,
-			AccountScopeID: p.AccountScopeID,
-			Title:          fmt.Sprintf("Project Orchestrator: %s", proj.Name),
-			WorkspacePath:  repoPath,
-			WorkspaceName:  proj.Name,
-			Mode:           sessionruntime.ModeAuto,
-			Metadata: map[string]any{
-				"agent_name": "system-orchestrator",
-				"project_id": proj.ID,
-				"role":       "project_orchestrator",
-			},
-			CreatedAt: now,
-			UpdatedAt: now,
+			ID:              newSessionID,
+			UserID:          p.UserID,
+			AccountScopeID:  p.AccountScopeID,
+			Title:           fmt.Sprintf("Project Orchestrator: %s", proj.Name),
+			WorkspacePath:   repoPath,
+			WorkspaceName:   proj.Name,
+			WorkspaceGrants: grants,
+			WorkspaceUsage:  pebblestore.WorkspaceUsageFromGrants(grants),
+			Mode:            sessionruntime.ModeAuto,
+			Preference:      planPref,
+			ModelProfile:    modelProfileSnapshot,
+			Metadata:        metadata,
+			CreatedAt:       now,
+			UpdatedAt:       now,
+		}
+		if profilePref, ok := sessionsV3ProfilePreference(sessionSnapshot); ok {
+			sessionSnapshot.Preference = normalizeSessionsV3ModelPreference(profilePref)
 		}
 		_, createErr := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
 			SessionID:       newSessionID,

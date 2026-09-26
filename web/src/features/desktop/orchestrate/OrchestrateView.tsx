@@ -1631,6 +1631,16 @@ function OrchestratorChatSidebar({
     useCallback((state) => (state.hydrateInFlightBySession[sessionId] ?? 0) > 0, [sessionId])
   )
 
+  const currentSession = useDesktopV3CacheSelector(
+    useCallback(
+      (state) => {
+        const record = state.sessionsById[sessionId]
+        return record?.kind === 'full' ? record.session : null
+      },
+      [sessionId]
+    )
+  )
+
   const sessionUsage = useDesktopV3CacheSelector(
     useCallback(
       (state) => {
@@ -1678,11 +1688,6 @@ function OrchestratorChatSidebar({
             title: `Project Orchestrator: ${project.name}`,
             workspace_path: project.repoPath || '.',
             agent_name: 'system-orchestrator',
-            preference: {
-              provider: 'google',
-              model: 'gemini-3.8-flash',
-              thinking: 'low',
-            },
             metadata: {
               project_id: project.id,
               role: 'project_orchestrator',
@@ -1814,6 +1819,7 @@ function OrchestratorChatSidebar({
       <DesktopV3ExistingConversationPane
         presentation="sidebar"
         sessionId={sessionId}
+        session={currentSession}
         initialHydrateStatus={error ? 'error' : hydrating ? 'loading' : ready ? 'ready' : 'loading'}
         renderedMessages={messages}
         messagesLoaded={ready}
@@ -2200,11 +2206,6 @@ export function OrchestrateView({
           title: `Project Orchestrator: ${project.name}`,
           workspace_path: project.repoPath || '.',
           agent_name: 'system-orchestrator',
-          preference: {
-            provider: 'google',
-            model: 'gemini-3.8-flash',
-            thinking: 'low',
-          },
           metadata: {
             project_id: project.id,
             role: 'project_orchestrator',
@@ -3066,11 +3067,6 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
           title: `Project Orchestrator: ${payload.name}`,
           workspace_path: selectedWs[0]?.path || '.',
           agent_name: 'system-orchestrator',
-          preference: {
-            provider: 'google',
-            model: 'gemini-3.8-flash',
-            thinking: 'low',
-          },
           metadata: {
             project_id: newId,
             role: 'project_orchestrator',

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/agentmodelsettings"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/modelprofile"
@@ -184,8 +185,11 @@ func sessionsV3ProfilePreference(session pebblestore.SessionSnapshot) (pebblesto
 		return pebblestore.ModelPreference{}, false
 	}
 	selection := &profile.Action
-	if strings.EqualFold(strings.TrimSpace(session.Mode), sessionruntime.ModePlan) {
-		selection = profile.Plan
+	agentName := sessionsV3MetadataString(session.Metadata, "agent_name")
+	if strings.EqualFold(strings.TrimSpace(session.Mode), sessionruntime.ModePlan) || strings.EqualFold(strings.TrimSpace(agentName), agentruntime.SwarmOrchestratorAgentID) {
+		if profile.Plan != nil && strings.TrimSpace(profile.Plan.Model) != "" {
+			selection = profile.Plan
+		}
 	}
 	if selection == nil || strings.TrimSpace(selection.Provider) == "" || strings.TrimSpace(selection.Model) == "" {
 		return pebblestore.ModelPreference{}, false

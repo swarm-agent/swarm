@@ -132,6 +132,19 @@ test('Desktop V3 stop resolves required target_swarm_id from the selected primar
   })
 })
 
+test('Desktop V3 stop resolves target_swarm_id from session metadata when route is absent', () => {
+  const session = {
+    id: 'session-orch',
+    metadata: {
+      swarm_v3_runtime_swarm_id: 'primary-swarm-id',
+    },
+  } as any
+  assert.deepEqual(resolveDesktopV3StopRunRequest({ route: null, runId: ' run-1 ', session }), {
+    runId: 'run-1',
+    targetSwarmId: 'primary-swarm-id',
+  })
+})
+
 test('Desktop V3 stop rejects unsupported routes instead of calling another stop path', () => {
   assert.throws(
     () => resolveDesktopV3StopRunRequest({
