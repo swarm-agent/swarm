@@ -121,4 +121,64 @@ func TestRouteAndPlanProjectTask(t *testing.T) {
 			t.Fatalf("expected complex tier, got %q", planRes.Tier)
 		}
 	})
+
+	t.Run("fallback routes image fine-tuning and iterations with attached media", func(t *testing.T) {
+		// Fine-tuning edit ("change this to...") with attached image routes to image agent directly
+		editRes := RouteAndPlanProjectTaskWithOptions(TaskPlanOptions{
+			Prompt: "Change lighting to sunset and make the eyes glowing cyan",
+			AttachedMedia: []ProjectTaskMediaRef{
+				{ID: "img_1", Title: "cyber_hero.png", Kind: "image", MediaType: "image/png"},
+			},
+		})
+		if editRes.Agent != "image" {
+			t.Fatalf("expected image agent for image fine-tune, got %q", editRes.Agent)
+		}
+		if editRes.OutcomeType != "media_bundle" {
+			t.Fatalf("expected media_bundle, got %q", editRes.OutcomeType)
+		}
+
+		// Image keyframe to video story routes to video agent
+		imgToVidRes := RouteAndPlanProjectTaskWithOptions(TaskPlanOptions{
+			Prompt: "Transform this image keyframe into a cinematic 3-scene video story",
+			AttachedMedia: []ProjectTaskMediaRef{
+				{ID: "img_1", Title: "concept.png", Kind: "image", MediaType: "image/png"},
+			},
+		})
+		if imgToVidRes.Agent != "video" {
+			t.Fatalf("expected video agent for image-to-video, got %q", imgToVidRes.Agent)
+		}
+		if imgToVidRes.OutcomeType != "video_story" {
+			t.Fatalf("expected video_story, got %q", imgToVidRes.OutcomeType)
+		}
+	})
+
+	t.Run("fallback routes video iteration and continuation with attached video", func(t *testing.T) {
+		// Video continuation ("next scene") with attached video
+		nextSceneRes := RouteAndPlanProjectTaskWithOptions(TaskPlanOptions{
+			Prompt: "Continue this video with next scene showing high-speed flight across the city",
+			AttachedMedia: []ProjectTaskMediaRef{
+				{ID: "vid_1", Title: "orbital_teaser.mp4", Kind: "video", MediaType: "video/mp4"},
+			},
+		})
+		if nextSceneRes.Agent != "video" {
+			t.Fatalf("expected video agent for next scene continuation, got %q", nextSceneRes.Agent)
+		}
+		if nextSceneRes.OutcomeType != "video_story" {
+			t.Fatalf("expected video_story, got %q", nextSceneRes.OutcomeType)
+		}
+
+		// Video variation / fine-tune with attached video
+		vidVarRes := RouteAndPlanProjectTaskWithOptions(TaskPlanOptions{
+			Prompt: "Create alternative video take with darker mood and cyber synthwave soundtrack",
+			AttachedMedia: []ProjectTaskMediaRef{
+				{ID: "vid_1", Title: "orbital_teaser.mp4", Kind: "video", MediaType: "video/mp4"},
+			},
+		})
+		if vidVarRes.Agent != "video" {
+			t.Fatalf("expected video agent for video variation, got %q", vidVarRes.Agent)
+		}
+		if vidVarRes.OutcomeType != "video_story" {
+			t.Fatalf("expected video_story, got %q", vidVarRes.OutcomeType)
+		}
+	})
 }

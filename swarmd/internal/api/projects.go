@@ -169,14 +169,18 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 		return errors.New("task is required")
 	}
 
-	// 1. Direct Media Generation: image and generative video tasks do NOT spin up chat agent sessions.
+	// 1. Direct Media Generation: image, generative video, and designer swarm tasks do NOT spin up chat agent sessions.
 	// They directly generate media deliverables and transition to needs_review.
-	if task.Agent == "image" || task.Agent == "video" {
+	isDirectMedia := task.Agent == "image" || task.Agent == "video" || (task.Agent == "designer" && (task.Tier == "swarm" || len(task.Deliverables) > 1 || task.OutcomeType == "media_bundle"))
+	if isDirectMedia {
 		task.SessionID = ""
 		if taskStatus == "in_progress" {
 			now := time.Now().UnixMilli()
-			if task.Agent == "image" {
+			if task.Agent == "image" || task.Agent == "designer" {
 				count := task.VariantCount
+				if count <= 0 {
+					count = len(task.Deliverables)
+				}
 				if count <= 0 {
 					count = 1
 				}
@@ -191,12 +195,12 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 						Title:       fmt.Sprintf("%s (Variant %d, %s)", task.Title, i, ar),
 						Kind:        "image",
 						Status:      "generating",
-						Description: fmt.Sprintf("Autonomous image deliverable for %s in aspect ratio %s", task.Title, ar),
+						Description: fmt.Sprintf("Autonomous deliverable for %s in aspect ratio %s", task.Title, ar),
 					})
 				}
 				task.Deliverables = delivs
 				task.Status = "in_progress"
-				task.ActionNeeded = fmt.Sprintf("Generating %d image variant(s)...", count)
+				task.ActionNeeded = fmt.Sprintf("Generating %d deliverable variant(s)...", count)
 				task.WhatDidDo = []string{"Approved mission", "Generating media assets"}
 			} else if task.Agent == "video" {
 				ar := task.AspectRatio
@@ -330,13 +334,13 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 		projName = proj.Name
 	}
 	sessionSnapshot := pebblestore.SessionSnapshot{
-		ID:              sessionID,
-		UserID:          p.UserID,
-		AccountScopeID:  p.AccountScopeID,
-		WorkspacePath:   wsPath,
-		WorkspaceName:   filepath.Base(wsPath),
-		Title:           fmt.Sprintf("[%s] %s", projName, task.Title),
-		Mode:            mode,
+		ID:             sessionID,
+		UserID:         p.UserID,
+		AccountScopeID: p.AccountScopeID,
+		WorkspacePath:  wsPath,
+		WorkspaceName:  filepath.Base(wsPath),
+		Title:          fmt.Sprintf("[%s] %s", projName, task.Title),
+		Mode:           mode,
 		Preference: pebblestore.ModelPreference{
 			Provider: "google",
 			Model:    "gemini-3.8-flash",
@@ -659,6 +663,105 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 3.5 Media sub-resource: /v3/projects/{id}/media and /v3/projects/{id}/media/{media_id}
+	if len(segments) >= 2 && segments[1] == "media" {
+		proj, found, err := db.GetProject(p.AccountScopeID, projectID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		if !found || proj == nil {
+			writeError(w, http.StatusNotFound, errors.New("project not found"))
+			return
+		}
+
+		if len(segments) == 2 {
+			if r.Method == http.MethodGet {
+				if !s.requireScopeAny(w, r, "projects:read", "sessions:read") {
+					return
+				}
+				list := proj.UploadedMedia
+				if list == nil {
+					list = []pebblestore.ProjectTaskMediaRef{}
+				}
+				writeJSON(w, http.StatusOK, map[string]any{
+					"media": list,
+					"count": len(list),
+				})
+				return
+			}
+			if r.Method == http.MethodPost {
+				if !s.requireScopeAny(w, r, "projects:write", "sessions:write") {
+					return
+				}
+				body, err := io.ReadAll(io.LimitReader(r.Body, 10*1024*1024))
+				if err != nil {
+					writeError(w, http.StatusBadRequest, errors.New("cannot read request body"))
+					return
+				}
+				var item pebblestore.ProjectTaskMediaRef
+				if err := json.Unmarshal(body, &item); err != nil {
+					writeError(w, http.StatusBadRequest, errors.New("invalid JSON payload"))
+					return
+				}
+				if strings.TrimSpace(item.ID) == "" {
+					item.ID = fmt.Sprintf("med_%d", time.Now().UnixNano())
+				}
+				if item.CreatedAt == 0 {
+					item.CreatedAt = time.Now().UnixMilli()
+				}
+				var updatedList []pebblestore.ProjectTaskMediaRef
+				_, err = db.UpdateProject(p.AccountScopeID, projectID, func(p *pebblestore.ProjectRecord) error {
+					p.UploadedMedia = append(p.UploadedMedia, item)
+					updatedList = p.UploadedMedia
+					return nil
+				})
+				if err != nil {
+					writeError(w, http.StatusInternalServerError, err)
+					return
+				}
+				writeJSON(w, http.StatusCreated, map[string]any{
+					"media":          item,
+					"uploaded_media": updatedList,
+				})
+				return
+			}
+			writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
+			return
+		}
+
+		if len(segments) == 3 {
+			mediaID := segments[2]
+			if r.Method == http.MethodDelete {
+				if !s.requireScopeAny(w, r, "projects:write", "sessions:write") {
+					return
+				}
+				var updatedList []pebblestore.ProjectTaskMediaRef
+				_, err = db.UpdateProject(p.AccountScopeID, projectID, func(p *pebblestore.ProjectRecord) error {
+					for _, m := range p.UploadedMedia {
+						if m.ID != mediaID {
+							updatedList = append(updatedList, m)
+						}
+					}
+					p.UploadedMedia = updatedList
+					return nil
+				})
+				if err != nil {
+					writeError(w, http.StatusInternalServerError, err)
+					return
+				}
+				writeJSON(w, http.StatusOK, map[string]any{
+					"removed":        true,
+					"media_id":       mediaID,
+					"uploaded_media": updatedList,
+				})
+				return
+			}
+			writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
+			return
+		}
+	}
+
 	// 4. Project Tasks collection: /v3/projects/{id}/tasks
 	if len(segments) == 2 && segments[1] == "tasks" {
 		if r.Method == http.MethodGet {
@@ -746,6 +849,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				ScenesCount         int                                  `json:"scenes_count,omitempty"`
 				Soundtrack          string                               `json:"soundtrack,omitempty"`
 				AutoApprove         bool                                 `json:"auto_approve,omitempty"`
+				AttachedMedia       []pebblestore.ProjectTaskMediaRef    `json:"attached_media,omitempty"`
 			}
 			if err := json.Unmarshal(body, &req); err != nil {
 				writeError(w, http.StatusBadRequest, errors.New("invalid JSON payload"))
@@ -786,6 +890,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				ScenesCount:        req.ScenesCount,
 				Soundtrack:         req.Soundtrack,
 				AutoApprove:        req.AutoApprove,
+				AttachedMedia:      req.AttachedMedia,
 				Project:            proj,
 			})
 
@@ -883,6 +988,10 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				Soundtrack:          routed.Soundtrack,
 				AutoApprove:         req.AutoApprove,
 				RouterAlert:         routed.RouterAlert,
+				AttachedMedia:       req.AttachedMedia,
+			}
+			if len(task.AttachedMedia) == 0 && len(routed.AttachedMedia) > 0 {
+				task.AttachedMedia = routed.AttachedMedia
 			}
 
 			// Deploy execution: direct media generation or V3 session with compiled profile and RunIntent

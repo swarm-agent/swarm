@@ -6,13 +6,11 @@ import {
   ArrowRight,
   Bot,
   Check,
-  CheckCircle2,
   ChevronDown,
   ChevronUp,
   Code,
   Columns3,
   Edit3,
-  Download,
   Eye,
   FileText,
   Film,
@@ -25,17 +23,19 @@ import {
   Layers,
   ListFilter,
   Loader2,
-  Maximize2,
   MessageSquare,
   MoreHorizontal,
-  Pause,
+  Music,
+  Paperclip,
   Play,
   Plus,
   RefreshCw,
   Search,
   Settings,
   Sparkles,
+  Tag,
   Trash2,
+  Upload,
   Volume2,
   X,
   Zap,
@@ -45,6 +45,7 @@ import { useDesktopV3CacheSelector } from '../state/desktop-v3-cache-store'
 import { DesktopV3ExistingConversationPane } from '../chat/components/desktop-v3-existing-conversation-pane'
 import { isDesktopV3SessionTailReady, selectRenderedSessionMessages } from '../state/desktop-v3-cache-selectors'
 import { selectAndHydrateDesktopV3Session } from '../state/desktop-v3-session-hydrator'
+import { HistoricalMediaLibrary, MediaViewerModal, type MediaLibraryItem } from '../tools/media-library'
 import { ORCHESTRATE_THEME_IDS, ORCHESTRATE_THEMES } from './orchestrate-themes'
 import {
   DeployedWorker,
@@ -52,6 +53,7 @@ import {
   MiddleCanvasVariant,
   OrchestrateThemeId,
   ProjectSummary,
+  ProjectTaskMediaRef,
   RunningAutomation,
   RunningTask,
 } from './orchestrate-types'
@@ -60,6 +62,100 @@ export interface OrchestrateViewProps {
   workspaceSlug?: string
   onNavigateHome?: () => void
   initialThemeId?: OrchestrateThemeId
+}
+
+/**
+ * Adapter to convert a MediaDeliverable into a studio-grade MediaLibraryItem
+ */
+function deliverableToMediaItem(
+  d: MediaDeliverable,
+  parentTask?: RunningTask,
+  project?: ProjectSummary | null,
+): MediaLibraryItem {
+  const isVideo = d.type === 'video' || (d.previewUrl && !d.previewUrl.startsWith('data:image'))
+  const isImage = d.type === 'image' || (d.previewUrl && d.previewUrl.startsWith('data:image'))
+  const kind: 'image' | 'video' | 'audio' | 'animation' = isVideo ? 'video' : isImage ? 'image' : d.type === 'audio' ? 'audio' : 'image'
+  const createdDate = new Date(d.createdAt || Date.now())
+  const formattedDate = createdDate.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })
+  const formattedTime = createdDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  const dayKey = createdDate.toISOString().slice(0, 10)
+
+  return {
+    id: d.id,
+    title: d.title,
+    filename: `${d.title.replace(/[^a-zA-Z0-9_-]/g, '_')}.${kind === 'image' ? 'png' : 'mp4'}`,
+    mediaType: kind === 'image' ? 'image/png' : 'video/mp4',
+    kind,
+    createdAt: createdDate.getTime(),
+    formattedDate,
+    formattedTime,
+    dayKey,
+    dayLabel: formattedDate,
+    sessionId: parentTask?.sessionId || project?.primarySessionId || '',
+    sessionTitle: parentTask?.title || project?.name || 'Orchestrate Studio',
+    workspacePath: parentTask?.workspacePath || project?.repoPath || '',
+    workspaceName: project?.name || 'Project Canvas',
+    iterationGroupId: parentTask?.id,
+    iterationGroupTitle: parentTask?.title,
+    dimensions: d.videoAspect || '1:1',
+    directUrl: d.previewUrl || d.mediaUrl || '',
+    artifact: {
+      artifactId: d.id,
+      sessionId: parentTask?.sessionId || '',
+      label: d.title,
+      filename: d.title,
+      kind,
+      mediaType: kind === 'image' ? 'image/png' : 'video/mp4',
+      description: d.prompt || d.title,
+      createdAt: createdDate.getTime(),
+      updatedAt: createdDate.getTime(),
+    } as any,
+  }
+}
+
+/**
+ * Adapter to convert a ProjectTaskMediaRef into a MediaLibraryItem
+ */
+function uploadedToMediaItem(
+  m: ProjectTaskMediaRef,
+  project?: ProjectSummary | null,
+): MediaLibraryItem {
+  const isVideo = m.kind === 'video' || (m.mediaType && m.mediaType.startsWith('video/'))
+  const isAudio = m.kind === 'audio' || (m.mediaType && m.mediaType.startsWith('audio/'))
+  const kind: 'image' | 'video' | 'audio' | 'animation' = isVideo ? 'video' : isAudio ? 'audio' : 'image'
+  const createdDate = new Date(m.createdAt || Date.now())
+  const formattedDate = createdDate.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })
+  const formattedTime = createdDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  const dayKey = createdDate.toISOString().slice(0, 10)
+
+  return {
+    id: m.id,
+    title: m.title || m.filename || 'Uploaded Media',
+    filename: m.filename || m.title || `${m.id}.${kind === 'image' ? 'png' : 'mp4'}`,
+    mediaType: m.mediaType || (kind === 'image' ? 'image/png' : 'video/mp4'),
+    kind,
+    createdAt: createdDate.getTime(),
+    formattedDate,
+    formattedTime,
+    dayKey,
+    dayLabel: formattedDate,
+    sessionId: project?.primarySessionId || '',
+    sessionTitle: project?.name || 'Uploaded Media',
+    workspacePath: project?.repoPath || '',
+    workspaceName: project?.name || 'Project Shelf',
+    directUrl: m.url || '',
+    artifact: {
+      artifactId: m.id,
+      sessionId: project?.primarySessionId || '',
+      label: m.title || m.filename,
+      filename: m.filename || m.title,
+      kind,
+      mediaType: m.mediaType || 'image/png',
+      description: m.data ? m.data.slice(0, 200) : m.title,
+      createdAt: createdDate.getTime(),
+      updatedAt: createdDate.getTime(),
+    } as any,
+  }
 }
 
 /**
@@ -1070,11 +1166,18 @@ export function OrchestrateView({
   // Split Studio selected task state
   const [selectedTaskId, setSelectedTaskId] = useState<string>('')
 
-  // Video preview modal
-  const [activeVideoPreview, setActiveVideoPreview] = useState<MediaDeliverable | null>(null)
-  const [isPlayingVideo, setIsPlayingVideo] = useState(false)
-  const [isMuted, setIsMuted] = useState(false)
-  const [isFullscreen, setIsFullscreen] = useState(false)
+  // Studio Media Center & Media Viewer Modal state
+  const [activeMediaViewerItem, setActiveMediaViewerItem] = useState<MediaLibraryItem | null>(null)
+  const [showFullMediaCenter, setShowFullMediaCenter] = useState<boolean>(false)
+
+  // Uploaded & Tagged Media State
+  const [uploadedMedia, setUploadedMedia] = useState<ProjectTaskMediaRef[]>([])
+  const [taggedMedia, setTaggedMedia] = useState<ProjectTaskMediaRef[]>([])
+  const [isUploadingMedia, setIsUploadingMedia] = useState<boolean>(false)
+  const [isUploadedMediaExpanded, setIsUploadedMediaExpanded] = useState<boolean>(true)
+  const [isPasteDocOpen, setIsPasteDocOpen] = useState<boolean>(false)
+  const [pastedDocTitle, setPastedDocTitle] = useState<string>('')
+  const [pastedDocContent, setPastedDocContent] = useState<string>('')
 
   // Navigation tab state
   const [activeNavTab, setActiveNavTab] = useState<'home' | 'projects' | 'automations' | 'deliverables' | 'settings'>('home')
@@ -1254,6 +1357,7 @@ export function OrchestrateView({
             createdAt: 'Just now',
             author: t.worker_name || 'Orchestrator',
           })),
+          attachedMedia: t.attached_media,
           subtasks: [
             { id: '1', title: 'Verify task scope', completed: true },
             { id: '2', title: 'Execute implementation', completed: t.status === 'completed' || t.status === 'needs_review' },
@@ -1269,6 +1373,18 @@ export function OrchestrateView({
       })
   }, [selectedTaskId])
 
+  // Fetch project uploaded media from Pebble
+  const fetchProjectMedia = useCallback((projectId: string) => {
+    if (!projectId) return
+    requestJson<{ media?: ProjectTaskMediaRef[] }>(`/v3/projects/${projectId}/media`)
+      .then((res) => {
+        if (res?.media) {
+          setUploadedMedia(res.media)
+        }
+      })
+      .catch(() => {})
+  }, [])
+
   // Real-time polling for in-progress tasks or generating media deliverables
   useEffect(() => {
     if (!selectedProjectId) return
@@ -1279,6 +1395,7 @@ export function OrchestrateView({
 
     const interval = setInterval(() => {
       fetchProjectTasks(selectedProjectId)
+      fetchProjectMedia(selectedProjectId)
     }, 1500)
 
     return () => clearInterval(interval)
@@ -1353,6 +1470,299 @@ export function OrchestrateView({
     }
   }
 
+  // Media handling: file uploads, pasted docs, tagging, and studio library integration
+  const handleFileUpload = async (files: FileList | null) => {
+    if (!files || !selectedProject?.id) return
+    setIsUploadingMedia(true)
+    try {
+      for (const file of Array.from(files)) {
+        const isImage = file.type.startsWith('image/')
+        const isVideo = file.type.startsWith('video/')
+        const isAudio = file.type.startsWith('audio/')
+        const kind = isImage ? 'image' : isVideo ? 'video' : isAudio ? 'audio' : 'doc'
+
+        let dataUrl = ''
+        let textData = ''
+        if (kind === 'doc' || file.type.includes('text') || file.name.endsWith('.md') || file.name.endsWith('.txt')) {
+          textData = await file.text()
+        } else {
+          dataUrl = await new Promise<string>((resolve) => {
+            const reader = new FileReader()
+            reader.onload = () => resolve(reader.result as string)
+            reader.readAsDataURL(file)
+          })
+        }
+
+        const newMedia: ProjectTaskMediaRef = {
+          id: `med_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+          title: file.name,
+          filename: file.name,
+          kind,
+          mediaType: file.type || (kind === 'doc' ? 'text/plain' : 'application/octet-stream'),
+          url: dataUrl,
+          data: textData,
+          sizeBytes: file.size,
+          createdAt: Date.now(),
+        }
+
+        const res = await requestJson<{ media: ProjectTaskMediaRef; uploaded_media: ProjectTaskMediaRef[] }>(
+          `/v3/projects/${selectedProject.id}/media`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(newMedia),
+          }
+        )
+
+        const savedMedia = res?.media || newMedia
+        setUploadedMedia((prev) => [...prev, savedMedia])
+        setTaggedMedia((prev) => [...prev, savedMedia])
+      }
+    } catch (err) {
+      console.warn('Failed to upload media:', err)
+    } finally {
+      setIsUploadingMedia(false)
+    }
+  }
+
+  const handleDeleteUploadedMedia = async (mediaId: string) => {
+    if (!selectedProject?.id) return
+    try {
+      await requestJson(`/v3/projects/${selectedProject.id}/media/${mediaId}`, {
+        method: 'DELETE',
+      })
+      setUploadedMedia((prev) => prev.filter((m) => m.id !== mediaId))
+      setTaggedMedia((prev) => prev.filter((m) => m.id !== mediaId))
+    } catch (err) {
+      console.warn('Failed to delete uploaded media:', err)
+    }
+  }
+
+  const handleAddPastedDoc = async () => {
+    if (!selectedProject?.id || !pastedDocContent.trim()) return
+    const docTitle = pastedDocTitle.trim() || 'Pasted Document'
+    const newMedia: ProjectTaskMediaRef = {
+      id: `med_doc_${Date.now()}`,
+      title: docTitle,
+      filename: `${docTitle.replace(/[^a-zA-Z0-9_-]/g, '_')}.md`,
+      kind: 'doc',
+      mediaType: 'text/markdown',
+      data: pastedDocContent.trim(),
+      sizeBytes: new Blob([pastedDocContent]).size,
+      createdAt: Date.now(),
+    }
+    try {
+      const res = await requestJson<{ media: ProjectTaskMediaRef; uploaded_media: ProjectTaskMediaRef[] }>(
+        `/v3/projects/${selectedProject.id}/media`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(newMedia),
+        }
+      )
+      const savedMedia = res?.media || newMedia
+      setUploadedMedia((prev) => [...prev, savedMedia])
+      setTaggedMedia((prev) => [...prev, savedMedia])
+      setIsPasteDocOpen(false)
+      setPastedDocTitle('')
+      setPastedDocContent('')
+    } catch (err) {
+      console.warn('Failed to save pasted document:', err)
+    }
+  }
+
+  const toggleTagDeliverable = (d: MediaDeliverable) => {
+    setTaggedMedia((prev) => {
+      const exists = prev.some((t) => t.id === d.id)
+      if (exists) {
+        return prev.filter((t) => t.id !== d.id)
+      }
+      return [
+        ...prev,
+        {
+          id: d.id,
+          title: d.title,
+          url: d.previewUrl || d.mediaUrl,
+          kind: (d.type === 'video' ? 'video' : 'image') as any,
+          mediaType: d.type === 'video' ? 'video/mp4' : 'image/png',
+          filename: d.title,
+          createdAt: Date.now(),
+        },
+      ]
+    })
+  }
+
+  const toggleTagMediaRef = (m: ProjectTaskMediaRef) => {
+    setTaggedMedia((prev) => {
+      const exists = prev.some((t) => t.id === m.id)
+      if (exists) {
+        return prev.filter((t) => t.id !== m.id)
+      }
+      return [...prev, m]
+    })
+  }
+
+  const allMediaLibraryItems = useMemo<MediaLibraryItem[]>(() => {
+    const items: MediaLibraryItem[] = []
+    const seenIds = new Set<string>()
+
+    for (const task of tasks) {
+      for (const d of task.deliverables || []) {
+        if ((d.mediaUrl || d.previewUrl || d.status === 'ready' || d.status === 'accepted') && !seenIds.has(d.id)) {
+          seenIds.add(d.id)
+          items.push(deliverableToMediaItem(d, task, selectedProject))
+        }
+      }
+    }
+
+    for (const m of uploadedMedia) {
+      if (!seenIds.has(m.id) && m.kind !== 'doc') {
+        seenIds.add(m.id)
+        items.push(uploadedToMediaItem(m, selectedProject))
+      }
+    }
+
+    return items
+  }, [tasks, uploadedMedia, selectedProject])
+
+  const handleOpenDeliverableInMediaCenter = (d: MediaDeliverable, parentTask?: RunningTask) => {
+    const item = deliverableToMediaItem(d, parentTask, selectedProject)
+    setActiveMediaViewerItem(item)
+  }
+
+  const handleOpenUploadedInMediaCenter = (m: ProjectTaskMediaRef) => {
+    const item = uploadedToMediaItem(m, selectedProject)
+    setActiveMediaViewerItem(item)
+  }
+
+  // Quick Route Media: Fine-Tune, Iterations, Video Story, or Continuation
+  const handleQuickRouteMedia = async (options: {
+    item: MediaLibraryItem | ProjectTaskMediaRef | MediaDeliverable
+    action: 'fine_tune' | 'iterate' | 'to_video' | 'next_scene'
+    deltaPrompt?: string
+    variantCount?: number
+    scenesCount?: number
+    soundtrack?: string
+    autoDeploy?: boolean
+  }) => {
+    if (!selectedProject?.id) return
+    const { item, action, deltaPrompt, variantCount, scenesCount, soundtrack, autoDeploy = true } = options
+
+    const rawKind = (item as any).kind || (item as any).type || 'image'
+    const isVideo = rawKind === 'video' || (item as any).mediaType?.startsWith('video/')
+    const itemTitle = item.title || (item as any).filename || 'Media Item'
+    const directUrl = (item as any).directUrl || (item as any).url || (item as any).previewUrl || (item as any).mediaUrl || ''
+    const mediaType = (item as any).mediaType || (isVideo ? 'video/mp4' : 'image/png')
+
+    const mediaRef: ProjectTaskMediaRef = {
+      id: item.id,
+      title: itemTitle,
+      filename: (item as any).filename || itemTitle,
+      kind: isVideo ? 'video' : 'image',
+      mediaType,
+      url: directUrl,
+      createdAt: Date.now(),
+    }
+
+    // Determine target intent
+    let targetIntent: 'image' | 'video' | 'code' | 'audit' = 'image'
+    if (action === 'to_video' || action === 'next_scene' || isVideo) {
+      targetIntent = 'video'
+    } else {
+      targetIntent = 'image'
+    }
+
+    // Compose high-context prompt tailored to the intent & action
+    let composedPrompt = ''
+    if (action === 'fine_tune') {
+      if (isVideo) {
+        composedPrompt = deltaPrompt
+          ? `Change this video: ${deltaPrompt}`
+          : `Fine-tune and modify this video with stylistic adjustments`
+      } else {
+        composedPrompt = deltaPrompt
+          ? `Change this image: ${deltaPrompt}`
+          : `Fine-tune and modify this image with refined lighting and details`
+      }
+    } else if (action === 'iterate') {
+      if (isVideo) {
+        composedPrompt = deltaPrompt
+          ? `Create alternative video takes: ${deltaPrompt}`
+          : `Generate alternative video variations and scenes based on this video`
+      } else {
+        const count = variantCount || 5
+        composedPrompt = deltaPrompt
+          ? `Create ${count} variations of this image: ${deltaPrompt}`
+          : `Generate ${count} creative iterations of this image in diverse styles`
+      }
+    } else if (action === 'to_video') {
+      composedPrompt = deltaPrompt
+        ? `Create a cinematic video story based on this image keyframe: ${deltaPrompt}`
+        : `Transform this image into a multi-scene cinematic video story with synchronized soundtrack`
+    } else if (action === 'next_scene') {
+      composedPrompt = deltaPrompt
+        ? `Continue this video with next scene: ${deltaPrompt}`
+        : `Continue this video story with the next sequence and matching cinematic soundtrack`
+    }
+
+    if (autoDeploy) {
+      // 1-Click Fast Autonomous Execution: route and deploy immediately!
+      setIsDeployingTask(true)
+      setActiveMediaViewerItem(null)
+      setShowFullMediaCenter(false)
+
+      try {
+        const finalVariantCount = targetIntent === 'image' ? (action === 'fine_tune' ? 1 : (variantCount || 5)) : undefined
+        const finalScenesCount = targetIntent === 'video' ? (scenesCount || 2) : undefined
+        const finalSoundtrack = targetIntent === 'video' ? (soundtrack || 'Ambient Electronic Beats') : undefined
+
+        const res = await requestJson<{ task: any }>(`/v3/projects/${selectedProject.id}/tasks`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            prompt: composedPrompt,
+            workspace_path: selectedProject.repoPath || '.',
+            intent: targetIntent,
+            aspect_ratio: targetIntent === 'image' ? imageAspectRatio : '16:9',
+            variant_count: finalVariantCount,
+            scenes_count: finalScenesCount,
+            soundtrack: finalSoundtrack,
+            auto_approve: true,
+            deploy_session: true,
+            attached_media: [mediaRef],
+          }),
+        })
+
+        if (res?.task) {
+          fetchProjectTasks(selectedProject.id)
+          if (res.task.session_id) {
+            setActiveSessionId(res.task.session_id)
+            setActiveTaskId(res.task.id)
+          }
+        }
+      } finally {
+        setIsDeployingTask(false)
+      }
+    } else {
+      // Open in planner for review
+      setActiveMediaViewerItem(null)
+      setShowFullMediaCenter(false)
+      setTaskIntent(targetIntent)
+      setTaggedMedia([mediaRef])
+      setNewTaskPrompt(composedPrompt)
+      if (targetIntent === 'image' && variantCount) {
+        setImageVariants(variantCount)
+      }
+      if (targetIntent === 'video' && scenesCount) {
+        setVideoScenes(scenesCount)
+      }
+      if (targetIntent === 'video' && soundtrack) {
+        setVideoSoundtrack(soundtrack)
+      }
+      setIsDeployModalOpen(true)
+    }
+  }
+
   // Derive real active workers from V3 sessions
   const deployedWorkers = useMemo<DeployedWorker[]>(() => {
     const list: DeployedWorker[] = []
@@ -1399,6 +1809,7 @@ export function OrchestrateView({
           soundtrack: taskIntent === 'video' ? videoSoundtrack : undefined,
           auto_approve: autoApproveTask,
           deploy_session: true,
+          attached_media: taggedMedia,
         }),
       })
       if (res?.task) {
@@ -1410,6 +1821,7 @@ export function OrchestrateView({
       }
       setIsDeployModalOpen(false)
       setNewTaskPrompt('')
+      setTaggedMedia([])
     } finally {
       setIsDeployingTask(false)
     }
@@ -1843,6 +2255,20 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
             <span>Deliverables ({liveTasks.flatMap((t) => t.deliverables || []).length})</span>
           </button>
           <button
+            onClick={() => setShowFullMediaCenter(true)}
+            className="w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs font-medium text-slate-400 hover:text-slate-200 hover:bg-white/[0.04] transition-all"
+          >
+            <div className="flex items-center gap-2.5">
+              <Film size={15} className="text-blue-400" />
+              <span>Media Studio & Library</span>
+            </div>
+            {allMediaLibraryItems.length > 0 && (
+              <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-blue-950/60 border border-blue-500/30 text-blue-300">
+                {allMediaLibraryItems.length}
+              </span>
+            )}
+          </button>
+          <button
             onClick={() => setActiveNavTab('settings')}
             className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium transition-all ${
               activeNavTab === 'settings'
@@ -1946,6 +2372,123 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
               </div>
             )}
           </div>
+        </div>
+
+        {/* Uploaded Media & Documents Shelf */}
+        <div className="p-3 border-b border-slate-800/80">
+          <div className="flex items-center justify-between pb-1.5">
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => setIsUploadedMediaExpanded(!isUploadedMediaExpanded)}
+                className="text-slate-400 hover:text-slate-200"
+                title={isUploadedMediaExpanded ? 'Collapse shelf' : 'Expand shelf'}
+              >
+                {isUploadedMediaExpanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+              </button>
+              <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                Uploaded Media ({uploadedMedia.length})
+              </span>
+            </div>
+            <div className="flex items-center gap-1">
+              <label
+                className="flex h-5 items-center gap-1 px-1.5 rounded-lg bg-blue-600/20 border border-blue-500/30 text-blue-400 hover:bg-blue-600/30 text-[10px] font-semibold cursor-pointer transition"
+                title="Upload image, video, audio, or document"
+              >
+                <Upload size={10} />
+                <span>Upload</span>
+                <input
+                  type="file"
+                  multiple
+                  className="hidden"
+                  onChange={(e) => void handleFileUpload(e.target.files)}
+                />
+              </label>
+              <button
+                type="button"
+                onClick={() => setIsPasteDocOpen(true)}
+                className="flex h-5 items-center gap-1 px-1.5 rounded-lg bg-slate-800 border border-slate-700/60 text-slate-300 hover:text-white text-[10px] font-semibold transition"
+                title="Paste Markdown / Text Document"
+              >
+                <FileText size={10} />
+                <span>Paste</span>
+              </button>
+            </div>
+          </div>
+
+          {isUploadedMediaExpanded && (uploadedMedia.length > 0 ? (
+            <div className="max-h-36 overflow-y-auto space-y-1.5 pt-1">
+              {uploadedMedia.map((m) => {
+                const isTagged = taggedMedia.some((t) => t.id === m.id)
+                return (
+                  <div
+                    key={m.id}
+                    className="flex items-center justify-between p-1.5 rounded-lg bg-slate-900/60 border border-slate-800/80 hover:border-slate-700 text-xs transition"
+                  >
+                    <div
+                      onClick={() => handleOpenUploadedInMediaCenter(m)}
+                      className="flex items-center gap-2 min-w-0 flex-1 cursor-pointer hover:opacity-80"
+                      title="Click to view & edit in studio"
+                    >
+                      {m.kind === 'image' && <ImageIcon size={13} className="text-blue-400 shrink-0" />}
+                      {m.kind === 'video' && <Film size={13} className="text-purple-400 shrink-0" />}
+                      {m.kind === 'audio' && <Music size={13} className="text-amber-400 shrink-0" />}
+                      {m.kind === 'doc' && <FileText size={13} className="text-emerald-400 shrink-0" />}
+                      <span className="truncate text-[11px] text-slate-300 font-medium" title={m.title || m.filename}>
+                        {m.title || m.filename}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1 shrink-0">
+                      {(m.kind === 'image' || m.kind === 'video') && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => void handleQuickRouteMedia({ item: m, action: 'fine_tune', autoDeploy: true })}
+                            className="px-1.5 py-0.5 rounded text-[9px] font-mono text-amber-300 hover:text-white bg-slate-800 hover:bg-slate-700 transition"
+                            title={m.kind === 'video' ? 'Fine-tune / modify video' : 'Fine-tune image ("change this to...")'}
+                          >
+                            Edit
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void handleQuickRouteMedia({ item: m, action: 'iterate', variantCount: 5, autoDeploy: true })}
+                            className="px-1.5 py-0.5 rounded text-[9px] font-mono text-emerald-300 hover:text-white bg-slate-800 hover:bg-slate-700 transition"
+                            title="Iterate variations"
+                          >
+                            Iterate
+                          </button>
+                        </>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => toggleTagMediaRef(m)}
+                        className={`px-1.5 py-0.5 rounded text-[9px] font-mono font-bold transition ${
+                          isTagged
+                            ? 'bg-blue-600 text-white'
+                            : 'bg-slate-800 text-slate-400 hover:text-white'
+                        }`}
+                        title={isTagged ? 'Tagged for Task' : 'Tag for Task'}
+                      >
+                        {isTagged ? 'Tagged' : 'Tag'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void handleDeleteUploadedMedia(m.id)}
+                        className="p-1 text-slate-500 hover:text-rose-400 rounded transition"
+                        title="Remove uploaded media"
+                      >
+                        <Trash2 size={11} />
+                      </button>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          ) : (
+            <p className="text-[10px] text-slate-500 pt-1">
+              No files uploaded. Upload images/videos or paste docs to tag for tasks.
+            </p>
+          ))}
         </div>
 
         {/* Theme Picker */}
@@ -2291,6 +2834,14 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                 <h2 className="text-base font-bold text-white">Project Deliverables</h2>
                 <p className="text-xs text-slate-400 mt-0.5">Media assets, reports, and code deliverables produced by autonomous workers</p>
               </div>
+              <button
+                type="button"
+                onClick={() => setShowFullMediaCenter(true)}
+                className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold shadow-md transition"
+              >
+                <Film size={14} />
+                <span>Open Media Studio</span>
+              </button>
             </div>
             {liveTasks.flatMap((t) => t.deliverables || []).length > 0 ? (
               <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
@@ -2299,7 +2850,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                     key={d.id}
                     onClick={() => {
                       if (d.status === 'ready' || d.status === 'accepted') {
-                        setActiveVideoPreview(d)
+                        handleOpenDeliverableInMediaCenter(d)
                       }
                     }}
                     className={`rounded-2xl border p-3 space-y-2 transition-all ${
@@ -2317,7 +2868,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                       status={d.status}
                       onPlay={() => {
                         if (d.status === 'ready' || d.status === 'accepted') {
-                          setActiveVideoPreview(d)
+                          handleOpenDeliverableInMediaCenter(d)
                         }
                       }}
                     />
@@ -2334,6 +2885,71 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                         {d.status}
                       </span>
                     </div>
+                    {(d.status === 'ready' || d.status === 'accepted') && (
+                      <div className="flex items-center justify-between pt-1 border-t border-slate-800/60">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            toggleTagDeliverable(d)
+                          }}
+                          className={`flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold transition ${
+                            taggedMedia.some((t) => t.id === d.id)
+                              ? 'bg-blue-600 text-white shadow-sm'
+                              : 'bg-slate-800 text-slate-300 hover:text-white hover:bg-slate-700'
+                          }`}
+                          title={taggedMedia.some((t) => t.id === d.id) ? 'Tagged for Task' : 'Tag for Task'}
+                        >
+                          <Tag size={10} className={taggedMedia.some((t) => t.id === d.id) ? 'fill-current' : ''} />
+                          <span>{taggedMedia.some((t) => t.id === d.id) ? 'Tagged' : 'Tag'}</span>
+                        </button>
+                        <div className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              void handleQuickRouteMedia({
+                                item: d,
+                                action: 'fine_tune',
+                                autoDeploy: true,
+                              })
+                            }}
+                            className="flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-[10px] text-amber-300 hover:text-white transition font-medium"
+                            title="Fine-tune / modify this media"
+                          >
+                            <Edit3 size={10} />
+                            <span>Edit</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              void handleQuickRouteMedia({
+                                item: d,
+                                action: 'iterate',
+                                variantCount: 5,
+                                autoDeploy: true,
+                              })
+                            }}
+                            className="flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-[10px] text-emerald-300 hover:text-white transition font-medium"
+                            title="Quick 5 swarm iterations"
+                          >
+                            <Sparkles size={10} />
+                            <span>Iterate</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              handleOpenDeliverableInMediaCenter(d)
+                            }}
+                            className="text-[10px] text-blue-400 hover:text-blue-300 font-medium ml-1"
+                          >
+                            Studio →
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -2674,7 +3290,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                                   onIntegrate={() => handleIntegrateTask(t.id)}
                                   onDelete={() => handleDeleteTask(t.id)}
                                   onRefine={(fb, err) => handleRefineTask(t.id, fb, err)}
-                                  onPreviewDeliverable={(d) => setActiveVideoPreview(d)}
+                                  onPreviewDeliverable={(d) => handleOpenDeliverableInMediaCenter(d)}
                                 />
                               </div>
                             )}
@@ -2756,7 +3372,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                               onIntegrate={() => handleIntegrateTask(t.id)}
                               onDelete={() => handleDeleteTask(t.id)}
                               onRefine={(fb, err) => handleRefineTask(t.id, fb, err)}
-                              onPreviewDeliverable={(d) => setActiveVideoPreview(d)}
+                              onPreviewDeliverable={(d) => handleOpenDeliverableInMediaCenter(d)}
                             />
                           ))}
                           {colTasks.length === 0 && (
@@ -2850,7 +3466,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                           onIntegrate={() => handleIntegrateTask(task.id)}
                           onDelete={() => handleDeleteTask(task.id)}
                           onRefine={(fb, err) => handleRefineTask(task.id, fb, err)}
-                          onPreviewDeliverable={(d) => setActiveVideoPreview(d)}
+                          onPreviewDeliverable={(d) => handleOpenDeliverableInMediaCenter(d)}
                         />
                       ))}
                     </div>
@@ -2905,7 +3521,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                         onIntegrate={() => handleIntegrateTask(selectedTaskForSplit.id)}
                         onDelete={() => handleDeleteTask(selectedTaskForSplit.id)}
                         onRefine={(fb, err) => handleRefineTask(selectedTaskForSplit.id, fb, err)}
-                        onPreviewDeliverable={(d) => setActiveVideoPreview(d)}
+                        onPreviewDeliverable={(d) => handleOpenDeliverableInMediaCenter(d)}
                       />
                     ) : (
                       <div className="flex-1 flex items-center justify-center text-xs text-slate-500">
@@ -2933,7 +3549,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                       onIntegrate={() => handleIntegrateTask(t.id)}
                       onDelete={() => handleDeleteTask(t.id)}
                       onRefine={(fb, err) => handleRefineTask(t.id, fb, err)}
-                      onPreviewDeliverable={(d) => setActiveVideoPreview(d)}
+                      onPreviewDeliverable={(d) => handleOpenDeliverableInMediaCenter(d)}
                     />
                   ))}
                   {liveTasks.length === 0 && (
@@ -3043,6 +3659,40 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
               </button>
             </div>
 
+            {/* Tagged / Attached Media Bar */}
+            {taggedMedia.length > 0 && (
+              <div className="flex flex-wrap items-center gap-1.5 p-2 rounded-xl bg-blue-950/40 border border-blue-500/30">
+                <div className="flex items-center gap-1 text-[11px] font-bold text-blue-400 mr-1">
+                  <Tag size={12} className="fill-current" />
+                  <span>Attached Media ({taggedMedia.length}):</span>
+                </div>
+                {taggedMedia.map((m) => (
+                  <div key={m.id} className="flex items-center gap-1.5 px-2 py-0.5 rounded-lg bg-blue-900/60 border border-blue-400/40 text-blue-200 text-[11px]">
+                    {m.kind === 'image' && <ImageIcon size={11} />}
+                    {m.kind === 'video' && <Film size={11} />}
+                    {m.kind === 'audio' && <Music size={11} />}
+                    {m.kind === 'doc' && <FileText size={11} />}
+                    <span className="truncate max-w-[120px]">{m.title || m.filename}</span>
+                    <button
+                      type="button"
+                      onClick={() => toggleTagMediaRef(m)}
+                      className="text-blue-300 hover:text-white"
+                      title="Remove attachment"
+                    >
+                      <X size={10} />
+                    </button>
+                  </div>
+                ))}
+                <button
+                  type="button"
+                  onClick={() => setTaggedMedia([])}
+                  className="text-[10px] text-blue-400/80 hover:text-blue-200 underline ml-auto"
+                >
+                  Clear all
+                </button>
+              </div>
+            )}
+
             {/* Form inputs */}
             <div className="space-y-3 text-xs">
               <div>
@@ -3068,6 +3718,35 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                   }
                   className="w-full rounded-lg bg-slate-950 border border-slate-800 p-3 text-white placeholder-slate-600 focus:outline-none focus:border-blue-500/60 resize-none text-xs leading-relaxed font-sans"
                 />
+                <div className="mt-1.5 flex items-center justify-between text-[11px]">
+                  <div className="flex items-center gap-1.5 text-slate-400">
+                    <Paperclip size={12} className="text-blue-400" />
+                    <span>Attach media from project shelf or upload:</span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <label className="flex items-center gap-1 px-2 py-0.5 rounded bg-blue-600/20 text-blue-300 hover:bg-blue-600/30 border border-blue-500/30 cursor-pointer font-semibold transition">
+                      <Upload size={10} />
+                      <span>{isUploadingMedia ? 'Uploading...' : 'Upload'}</span>
+                      <input type="file" multiple className="hidden" onChange={(e) => void handleFileUpload(e.target.files)} />
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => setIsPasteDocOpen(true)}
+                      className="flex items-center gap-1 px-2 py-0.5 rounded bg-slate-800 text-slate-300 hover:text-white border border-slate-700 font-semibold transition"
+                    >
+                      <FileText size={10} />
+                      <span>Paste Doc</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowFullMediaCenter(true)}
+                      className="flex items-center gap-1 px-2 py-0.5 rounded bg-slate-800 text-slate-300 hover:text-white border border-slate-700 font-semibold transition"
+                    >
+                      <Film size={10} />
+                      <span>Browse Media</span>
+                    </button>
+                  </div>
+                </div>
               </div>
 
               {/* Visual Selectors for Image Intent */}
@@ -3094,8 +3773,8 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                   </div>
                   <div>
                     <label className="block text-[10px] text-slate-400 font-mono uppercase font-bold mb-1.5">Variants Count</label>
-                    <div className="grid grid-cols-4 gap-1 font-mono text-[10px]">
-                      {[1, 2, 3, 4].map((v) => (
+                    <div className="grid grid-cols-6 gap-1 font-mono text-[10px]">
+                      {[1, 2, 4, 5, 10, 25].map((v) => (
                         <button
                           key={v}
                           type="button"
@@ -3106,7 +3785,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                               : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white'
                           }`}
                         >
-                          {v}
+                          {v}{v >= 5 ? 'x' : ''}
                         </button>
                       ))}
                     </div>
@@ -3248,126 +3927,233 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
       )}
 
       {/* ─────────────────────────────────────────────────────────────
-          MODAL: MEDIA DELIVERABLE PREVIEW DIALOG (IMAGES & VIDEO)
+          MODAL: PASTE DOCUMENT / TEXT SPEC (ATTACH FOR TASKS)
          ───────────────────────────────────────────────────────────── */}
-      {activeVideoPreview && (
+      {isPasteDocOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-6 backdrop-blur-md">
-          <div className="relative flex max-w-2xl w-full flex-col p-5 rounded-2xl border border-slate-800 bg-[#0d121f] shadow-2xl">
+          <div className="relative flex max-w-lg w-full flex-col p-6 rounded-2xl border border-slate-800 bg-[#0d121f] shadow-2xl space-y-4">
             <div className="flex items-center justify-between pb-3 border-b border-slate-800">
               <div className="flex items-center gap-2">
-                {activeVideoPreview.type === 'image' || activeVideoPreview.previewUrl?.startsWith('data:image') ? (
-                  <ImageIcon size={16} className="text-blue-400" />
-                ) : (
-                  <Film size={16} className="text-blue-400" />
-                )}
-                <h3 className="text-sm font-bold text-white">{activeVideoPreview.title}</h3>
+                <FileText size={16} className="text-emerald-400" />
+                <h3 className="text-sm font-bold text-white">Paste Document / Markdown Spec</h3>
               </div>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => setIsFullscreen(!isFullscreen)}
-                  className="rounded-full p-1 text-slate-400 hover:bg-slate-800 hover:text-white transition-colors"
-                  title="Toggle Fullscreen"
-                >
-                  <Maximize2 size={14} />
-                </button>
-                <button
-                  onClick={() => {
-                    setActiveVideoPreview(null)
-                    setIsPlayingVideo(false)
-                  }}
-                  className="rounded-full p-1 text-slate-400 hover:bg-slate-800 hover:text-white transition-colors"
-                >
-                  <X size={16} />
-                </button>
-              </div>
-            </div>
-
-            {activeVideoPreview.type === 'image' || (activeVideoPreview.previewUrl && activeVideoPreview.previewUrl.startsWith('data:image')) ? (
-              <div className="relative my-4 max-h-[65vh] w-full overflow-hidden flex items-center justify-center rounded-xl border border-slate-800 bg-black/80 p-2">
-                <img
-                  src={activeVideoPreview.previewUrl || activeVideoPreview.mediaUrl}
-                  alt={activeVideoPreview.title}
-                  className="max-h-[60vh] max-w-full object-contain rounded-lg shadow-2xl"
-                />
-              </div>
-            ) : (
-              <div className="relative my-4 aspect-video w-full overflow-hidden flex items-center justify-center rounded-xl border border-slate-800 bg-black">
-                <DeliverableThumbnail
-                  type={activeVideoPreview.thumbnailType}
-                  previewUrl={activeVideoPreview.previewUrl || activeVideoPreview.mediaUrl}
-                />
-                <div className="absolute inset-0 flex flex-col items-center justify-center z-30">
-                  <button
-                    onClick={() => setIsPlayingVideo(!isPlayingVideo)}
-                    className="flex h-12 w-12 items-center justify-center rounded-full bg-blue-600 text-white shadow-2xl transition-transform hover:scale-105 active:scale-95"
-                  >
-                    {isPlayingVideo ? <Pause size={20} /> : <Play size={20} fill="currentColor" />}
-                  </button>
-                  <span className="mt-2 text-xs font-mono text-slate-200 font-semibold bg-black/60 px-2 py-0.5 rounded">
-                    {isPlayingVideo ? 'Playing Video Stream...' : 'Click to Play Render Preview'}
-                  </span>
-                </div>
-                <button
-                  onClick={() => setIsMuted(!isMuted)}
-                  className="absolute bottom-2 left-2 z-40 rounded-full bg-black/70 p-1.5 text-slate-300 hover:text-white"
-                  title={isMuted ? 'Unmute' : 'Mute'}
-                >
-                  <Volume2 size={13} className={isMuted ? 'opacity-40' : ''} />
-                </button>
-              </div>
-            )}
-
-            <div className="space-y-1.5 text-xs">
-              <div>
-                <span className="text-slate-400 font-semibold">Prompt: </span>
-                <span className="text-slate-200">{activeVideoPreview.prompt || 'Generated by autonomous media engine'}</span>
-              </div>
-              <div className="flex items-center gap-4 text-slate-400 font-mono text-[11px]">
-                {activeVideoPreview.duration && <span>Duration: {activeVideoPreview.duration}</span>}
-                <span>Aspect: {activeVideoPreview.videoAspect || '16:9'}</span>
-                <span>Type: {activeVideoPreview.type.toUpperCase()}</span>
-                <span>Status: <strong className="text-emerald-400 font-semibold">{activeVideoPreview.status.toUpperCase()}</strong></span>
-              </div>
-            </div>
-
-            <div className="mt-4 flex items-center justify-end gap-2 border-t border-slate-800 pt-3">
-              {(activeVideoPreview.previewUrl || activeVideoPreview.mediaUrl) && (
-                <a
-                  href={activeVideoPreview.previewUrl || activeVideoPreview.mediaUrl}
-                  download={`${activeVideoPreview.title.replace(/[^a-zA-Z0-9_-]/g, '_')}.${activeVideoPreview.type === 'image' || activeVideoPreview.previewUrl?.startsWith('data:image') ? 'png' : 'mp4'}`}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold border border-slate-700 transition-colors"
-                >
-                  <Download size={13} />
-                  <span>Download Media</span>
-                </a>
-              )}
               <button
-                onClick={() => {
-                  const parentTask = tasks.find((t) =>
-                    t.deliverables?.some((d) => d.id === activeVideoPreview.id)
-                  )
-                  if (parentTask) {
-                    setTasks((prev) =>
-                      prev.map((task) =>
-                        task.id === parentTask.id
-                          ? {
-                              ...task,
-                              deliverables: task.deliverables?.map((d) =>
-                                d.id === activeVideoPreview.id ? { ...d, status: 'accepted' as const } : d
-                              ),
-                            }
-                          : task
-                      )
-                    )
-                  }
-                  setActiveVideoPreview(null)
-                }}
-                className="flex items-center gap-2 px-5 py-2 text-xs font-bold text-white rounded-lg bg-emerald-600 hover:bg-emerald-500 shadow-md transition-all active:scale-95"
+                onClick={() => setIsPasteDocOpen(false)}
+                className="rounded-full p-1 text-slate-400 hover:bg-slate-800 hover:text-white transition"
               >
-                <CheckCircle2 size={14} />
-                <span>Accept Deliverable</span>
+                <X size={16} />
               </button>
             </div>
+            <div className="space-y-3 text-xs">
+              <div>
+                <label className="block text-[11px] text-slate-400 font-medium mb-1">Document Title / Filename</label>
+                <input
+                  type="text"
+                  value={pastedDocTitle}
+                  onChange={(e) => setPastedDocTitle(e.target.value)}
+                  placeholder="e.g. system_architecture.md or bug_report.txt"
+                  className="w-full rounded-lg bg-slate-950 border border-slate-800 p-2.5 text-white placeholder-slate-600 focus:outline-none focus:border-blue-500 font-mono text-xs"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] text-slate-400 font-medium mb-1">Document Content</label>
+                <textarea
+                  value={pastedDocContent}
+                  onChange={(e) => setPastedDocContent(e.target.value)}
+                  rows={8}
+                  placeholder="Paste Markdown spec, architecture guidelines, or text here..."
+                  className="w-full rounded-lg bg-slate-950 border border-slate-800 p-3 text-white placeholder-slate-600 focus:outline-none focus:border-blue-500 font-mono text-xs leading-relaxed resize-none"
+                />
+              </div>
+            </div>
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-800">
+              <button
+                type="button"
+                onClick={() => setIsPasteDocOpen(false)}
+                className="px-3 py-1.5 rounded-lg text-slate-400 hover:text-white text-xs"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleAddPastedDoc()}
+                disabled={!pastedDocContent.trim()}
+                className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition disabled:opacity-50"
+              >
+                <Check size={14} />
+                <span>Save & Tag Document</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ─────────────────────────────────────────────────────────────
+          STUDIO MEDIA VIEWER MODAL (PAN/ZOOM, METADATA, TAGGING, SWARM ITERATIONS)
+         ───────────────────────────────────────────────────────────── */}
+      {activeMediaViewerItem && (
+        <MediaViewerModal
+          item={activeMediaViewerItem}
+          items={allMediaLibraryItems}
+          onClose={() => setActiveMediaViewerItem(null)}
+          onSelect={(item) => setActiveMediaViewerItem(item)}
+          onOpenSession={(sessionId) => {
+            setActiveSessionId(sessionId)
+            setActiveMediaViewerItem(null)
+          }}
+          isTagged={taggedMedia.some((t) => t.id === activeMediaViewerItem.id)}
+          onToggleTag={(item) => {
+            const isTagged = taggedMedia.some((t) => t.id === item.id)
+            if (isTagged) {
+              setTaggedMedia((prev) => prev.filter((t) => t.id !== item.id))
+            } else {
+              setTaggedMedia((prev) => [
+                ...prev,
+                {
+                  id: item.id,
+                  title: item.title,
+                  filename: item.filename,
+                  kind: item.kind as any,
+                  mediaType: item.mediaType,
+                  url: item.directUrl,
+                  createdAt: item.createdAt,
+                },
+              ])
+            }
+          }}
+          onFineTune={(item, editPrompt, autoDeploy) => {
+            void handleQuickRouteMedia({
+              item,
+              action: 'fine_tune',
+              deltaPrompt: editPrompt,
+              autoDeploy,
+            })
+          }}
+          onIterate={(item, variantCount, stylePrompt, autoDeploy) => {
+            void handleQuickRouteMedia({
+              item,
+              action: 'iterate',
+              variantCount,
+              deltaPrompt: stylePrompt,
+              autoDeploy,
+            })
+          }}
+          onGenerateVideo={(item, prompt, autoDeploy) => {
+            void handleQuickRouteMedia({
+              item,
+              action: 'to_video',
+              deltaPrompt: prompt,
+              autoDeploy,
+            })
+          }}
+          onContinueVideo={(item, prompt, autoDeploy) => {
+            void handleQuickRouteMedia({
+              item,
+              action: 'next_scene',
+              deltaPrompt: prompt,
+              autoDeploy,
+            })
+          }}
+          onIterateSwarm={(item) => {
+            void handleQuickRouteMedia({
+              item,
+              action: 'iterate',
+              variantCount: 5,
+              autoDeploy: false,
+            })
+          }}
+        />
+      )}
+
+      {/* ─────────────────────────────────────────────────────────────
+          FULL HISTORICAL MEDIA LIBRARY / STUDIO CENTER MODAL
+         ───────────────────────────────────────────────────────────── */}
+      {showFullMediaCenter && (
+        <div className="fixed inset-0 z-50 flex flex-col bg-black/95 backdrop-blur-md">
+          <div className="flex h-14 items-center justify-between border-b border-slate-800 bg-[#0d121f] px-5">
+            <div className="flex items-center gap-3">
+              <div className="flex size-8 items-center justify-center rounded-xl bg-blue-600/20 text-blue-400 border border-blue-500/30">
+                <Film size={16} />
+              </div>
+              <div>
+                <h3 className="text-sm font-bold text-white">Media Studio & Historical Library</h3>
+                <p className="text-[11px] text-slate-400">Browse, inspect metadata, pan/zoom, and tag assets for autonomous tasks</p>
+              </div>
+            </div>
+            <button
+              onClick={() => setShowFullMediaCenter(false)}
+              className="p-2 rounded-xl bg-slate-800 text-slate-400 hover:text-white hover:bg-slate-700 transition"
+              title="Close Media Center"
+            >
+              <X size={16} />
+            </button>
+          </div>
+          <div className="flex-1 min-h-0">
+            <HistoricalMediaLibrary
+              onClose={() => setShowFullMediaCenter(false)}
+              onTagMedia={(item) => {
+                setTaggedMedia((prev) => {
+                  if (prev.some((t) => t.id === item.id)) {
+                    return prev.filter((t) => t.id !== item.id)
+                  }
+                  return [
+                    ...prev,
+                    {
+                      id: item.id,
+                      title: item.title,
+                      filename: item.filename,
+                      kind: item.kind as any,
+                      mediaType: item.mediaType,
+                      url: item.directUrl,
+                      createdAt: item.createdAt,
+                    },
+                  ]
+                })
+              }}
+              taggedMediaIds={new Set(taggedMedia.map((t) => t.id))}
+              onFineTune={(item, editPrompt, autoDeploy) => {
+                void handleQuickRouteMedia({
+                  item,
+                  action: 'fine_tune',
+                  deltaPrompt: editPrompt,
+                  autoDeploy,
+                })
+              }}
+              onIterate={(item, variantCount, stylePrompt, autoDeploy) => {
+                void handleQuickRouteMedia({
+                  item,
+                  action: 'iterate',
+                  variantCount,
+                  deltaPrompt: stylePrompt,
+                  autoDeploy,
+                })
+              }}
+              onGenerateVideo={(item, prompt, autoDeploy) => {
+                void handleQuickRouteMedia({
+                  item,
+                  action: 'to_video',
+                  deltaPrompt: prompt,
+                  autoDeploy,
+                })
+              }}
+              onContinueVideo={(item, prompt, autoDeploy) => {
+                void handleQuickRouteMedia({
+                  item,
+                  action: 'next_scene',
+                  deltaPrompt: prompt,
+                  autoDeploy,
+                })
+              }}
+              onIterateSwarm={(item) => {
+                void handleQuickRouteMedia({
+                  item,
+                  action: 'iterate',
+                  variantCount: 5,
+                  autoDeploy: false,
+                })
+              }}
+              extraItems={allMediaLibraryItems}
+            />
           </div>
         </div>
       )}

@@ -67,6 +67,18 @@ export interface OrchestrateTheme {
   customVars: Record<string, string>
 }
 
+export interface ProjectTaskMediaRef {
+  id: string
+  title?: string
+  url?: string
+  mediaType?: string
+  kind?: 'image' | 'video' | 'audio' | 'doc'
+  filename?: string
+  data?: string
+  sizeBytes?: number
+  createdAt?: number
+}
+
 export interface ProjectSummary {
   id: string
   name: string
@@ -81,6 +93,7 @@ export interface ProjectSummary {
   runningTasksCount: number
   projectContext?: string
   primarySessionId?: string
+  uploadedMedia?: ProjectTaskMediaRef[]
 }
 
 export interface RunningAutomation {
@@ -205,6 +218,7 @@ export interface RunningTask {
   autoApprove?: boolean
   routerAlert?: string
   router_alert?: string
+  attachedMedia?: ProjectTaskMediaRef[]
 }
 
 export interface VideoProgressCard {

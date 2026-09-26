@@ -224,3 +224,83 @@ func TestProjectTaskStoreCRUD(t *testing.T) {
 		t.Fatalf("expected 1 task after delete, got %d", len(tasksAfterDelete))
 	}
 }
+
+func TestProjectStore_UploadedMedia_CRUD(t *testing.T) {
+	// Purpose:
+	// - Invariant: Uploaded media on ProjectRecord and AttachedMedia on ProjectTaskRecord
+	//   must persist durably across Pebble reads/updates.
+	// - Boundary/authority: PutProject, GetProject, UpdateProject, PutProjectTask in project_store.go.
+	path := t.TempDir()
+	db, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer db.Close()
+
+	store := NewSessionStore(db)
+	accountID := "acct_media_test"
+
+	proj := &ProjectRecord{
+		Name: "Media Studio Project",
+		UploadedMedia: []ProjectTaskMediaRef{
+			{
+				ID:        "med_1",
+				Title:     "concept_art.png",
+				Kind:      "image",
+				MediaType: "image/png",
+				URL:       "data:image/png;base64,abc",
+				SizeBytes: 1024,
+			},
+		},
+	}
+	if err := store.PutProject(accountID, proj); err != nil {
+		t.Fatalf("failed to put project: %v", err)
+	}
+
+	fetched, found, err := store.GetProject(accountID, proj.ID)
+	if err != nil || !found {
+		t.Fatalf("failed to get project: %v", err)
+	}
+	if len(fetched.UploadedMedia) != 1 || fetched.UploadedMedia[0].Title != "concept_art.png" {
+		t.Fatalf("expected 1 uploaded media item, got %v", fetched.UploadedMedia)
+	}
+
+	// Update project: add second uploaded item
+	updated, err := store.UpdateProject(accountID, proj.ID, func(p *ProjectRecord) error {
+		p.UploadedMedia = append(p.UploadedMedia, ProjectTaskMediaRef{
+			ID:        "med_2",
+			Title:     "spec.md",
+			Kind:      "doc",
+			MediaType: "text/markdown",
+			Data:      "# Requirements",
+		})
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("failed to update project: %v", err)
+	}
+	if len(updated.UploadedMedia) != 2 {
+		t.Fatalf("expected 2 uploaded media items, got %d", len(updated.UploadedMedia))
+	}
+
+	// Verify task with AttachedMedia
+	task := &ProjectTaskRecord{
+		ProjectID: proj.ID,
+		Title:     "Swarm Iteration Task",
+		Status:    "in_progress",
+		Agent:     "designer",
+		AttachedMedia: []ProjectTaskMediaRef{
+			updated.UploadedMedia[0],
+		},
+	}
+	if err := store.PutProjectTask(accountID, task); err != nil {
+		t.Fatalf("failed to put task: %v", err)
+	}
+	fetchedTask, foundTask, err := store.GetProjectTask(accountID, proj.ID, task.ID)
+	if err != nil || !foundTask {
+		t.Fatalf("failed to get task: %v", err)
+	}
+	if len(fetchedTask.AttachedMedia) != 1 || fetchedTask.AttachedMedia[0].ID != "med_1" {
+		t.Fatalf("expected 1 attached media on task, got %v", fetchedTask.AttachedMedia)
+	}
+}

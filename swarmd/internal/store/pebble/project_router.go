@@ -26,6 +26,7 @@ type TaskRouteResult struct {
 	Scenes             []ProjectTaskScene       `json:"scenes,omitempty"`
 	Soundtrack         string                   `json:"soundtrack,omitempty"`
 	RouterAlert        string                   `json:"router_alert,omitempty"`
+	AttachedMedia      []ProjectTaskMediaRef    `json:"attached_media,omitempty"`
 }
 
 // TaskPlanOptions encapsulates all inputs for task routing and compilation.
@@ -38,9 +39,10 @@ type TaskPlanOptions struct {
 	LastError          string
 	Intent             string // "code", "image", "video", "audit"
 	AspectRatio        string // "16:9", "1:1", "9:16", "4:3"
-	VariantCount       int    // 1, 2, 4
+	VariantCount       int    // 1, 2, 4, 5..25
 	ScenesCount        int    // 2, 3, 4
 	Soundtrack         string // soundtrack prompt or mood
+	AttachedMedia      []ProjectTaskMediaRef
 }
 
 func appendIfMissing(slice []string, val string) []string {
@@ -107,6 +109,24 @@ func RouteAndPlanProjectTaskWithOptions(opts TaskPlanOptions) TaskRouteResult {
 	intent := strings.ToLower(strings.TrimSpace(opts.Intent))
 	promptLower := strings.ToLower(prompt)
 
+	hasAttachedDoc := false
+	hasAttachedImage := false
+	hasAttachedVideo := false
+	for _, m := range opts.AttachedMedia {
+		k := strings.ToLower(m.Kind)
+		mt := strings.ToLower(m.MediaType)
+		fn := strings.ToLower(m.Filename)
+		if k == "doc" || strings.HasPrefix(mt, "text/") || strings.Contains(mt, "pdf") || strings.Contains(mt, "markdown") || strings.HasSuffix(fn, ".md") || strings.HasSuffix(fn, ".txt") || strings.HasSuffix(fn, ".pdf") || m.Data != "" {
+			hasAttachedDoc = true
+		}
+		if k == "image" || strings.HasPrefix(mt, "image/") {
+			hasAttachedImage = true
+		}
+		if k == "video" || strings.HasPrefix(mt, "video/") || strings.HasSuffix(fn, ".mp4") || strings.HasSuffix(fn, ".webm") || strings.HasSuffix(fn, ".mov") {
+			hasAttachedVideo = true
+		}
+	}
+
 	agent := "swarm"
 	tier := "direct"
 	outcomeType := "general"
@@ -122,6 +142,32 @@ func RouteAndPlanProjectTaskWithOptions(opts TaskPlanOptions) TaskRouteResult {
 		strings.Contains(promptLower, "redesign") || strings.Contains(promptLower, "system architecture")
 
 	switch {
+	case hasAttachedDoc && (intent == "audit" || intent == "" || strings.Contains(promptLower, "read") || strings.Contains(promptLower, "review") || strings.Contains(promptLower, "analyze") || strings.Contains(promptLower, "question") || strings.Contains(promptLower, "explain")):
+		agent = "finder"
+		tier = "discovery"
+		outcomeType = "audit_report"
+	case hasAttachedVideo && (intent == "video" || intent == "" || strings.Contains(promptLower, "next scene") || strings.Contains(promptLower, "continue") || strings.Contains(promptLower, "scene") || strings.Contains(promptLower, "iteration") || strings.Contains(promptLower, "variation") || strings.Contains(promptLower, "remix") || strings.Contains(promptLower, "change") || strings.Contains(promptLower, "fine-tune") || strings.Contains(promptLower, "modify") || strings.Contains(promptLower, "video")):
+		agent = "video"
+		tier = "direct"
+		outcomeType = "video_story"
+	case hasAttachedImage && (intent == "video" || strings.Contains(promptLower, "video") || strings.Contains(promptLower, "animate") || strings.Contains(promptLower, "story") || strings.Contains(promptLower, "trailer")):
+		agent = "video"
+		tier = "direct"
+		outcomeType = "video_story"
+	case hasAttachedImage && (strings.Contains(promptLower, "change") || strings.Contains(promptLower, "fine-tune") || strings.Contains(promptLower, "modify") || strings.Contains(promptLower, "edit") || strings.Contains(promptLower, "tweak") || strings.Contains(promptLower, "replace")):
+		agent = "image"
+		tier = "direct"
+		outcomeType = "media_bundle"
+	case hasAttachedImage && (strings.Contains(promptLower, "iteration") || strings.Contains(promptLower, "variation") || strings.Contains(promptLower, "remix") || strings.Contains(promptLower, "swarm")):
+		if opts.VariantCount >= 5 || strings.Contains(promptLower, "swarm") {
+			agent = "designer"
+			tier = "swarm"
+			outcomeType = "media_bundle"
+		} else {
+			agent = "image"
+			tier = "direct"
+			outcomeType = "media_bundle"
+		}
 	case intent == "image" || (intent == "" && (strings.Contains(promptLower, "image") || strings.Contains(promptLower, "photo") || strings.Contains(promptLower, "logo") || strings.Contains(promptLower, "graphic") || strings.Contains(promptLower, "illustration"))):
 		agent = "image"
 		tier = "direct"
@@ -229,9 +275,22 @@ func RouteAndPlanProjectTaskWithOptions(opts TaskPlanOptions) TaskRouteResult {
 			{ID: "deliv_vid", Title: fmt.Sprintf("Video Story (%s)", aspectRatio), Kind: "video", Status: "pending"},
 		}
 	case "designer":
-		stages = []string{"HTML & Animation Design", "Artifact Compilation"}
-		deliverables = []ProjectTaskDeliverable{
-			{ID: "deliv_design", Title: "Interactive HTML / Motion UI Artifact", Kind: "artifact", Status: "pending"},
+		if variantCount > 1 || tier == "swarm" || outcomeType == "media_bundle" {
+			stages = []string{"Visual Swarm Formulation", "Media Generation Pipeline"}
+			for i := 1; i <= variantCount; i++ {
+				deliverables = append(deliverables, ProjectTaskDeliverable{
+					ID:          fmt.Sprintf("deliv_swarm_slot_%d", i),
+					Title:       fmt.Sprintf("%s (Variant %d, %s)", title, i, aspectRatio),
+					Kind:        "image",
+					Status:      "pending",
+					Description: fmt.Sprintf("Autonomous deliverable for %s in aspect ratio %s", title, aspectRatio),
+				})
+			}
+		} else {
+			stages = []string{"HTML & Animation Design", "Artifact Compilation"}
+			deliverables = []ProjectTaskDeliverable{
+				{ID: "deliv_design", Title: "Interactive HTML / Motion UI Artifact", Kind: "artifact", Status: "pending"},
+			}
 		}
 	case "finder":
 		stages = []string{"Codebase Investigation", "Audit Report Synthesis"}
@@ -363,5 +422,6 @@ func RouteAndPlanProjectTaskWithOptions(opts TaskPlanOptions) TaskRouteResult {
 		Scenes:             scenes,
 		Soundtrack:         soundtrack,
 		RouterAlert:        routerAlert,
+		AttachedMedia:      opts.AttachedMedia,
 	}
 }

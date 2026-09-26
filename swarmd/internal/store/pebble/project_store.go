@@ -20,6 +20,19 @@ type ProjectWorkspaceRef struct {
 	Label       string `json:"label,omitempty"`
 }
 
+// ProjectTaskMediaRef represents an attached or tagged media reference for a task.
+type ProjectTaskMediaRef struct {
+	ID        string `json:"id"`
+	Title     string `json:"title,omitempty"`
+	URL       string `json:"url,omitempty"`
+	MediaType string `json:"media_type,omitempty"` // e.g. "image/png", "video/mp4", "text/plain"
+	Kind      string `json:"kind,omitempty"`       // "image" | "video" | "audio" | "doc"
+	Filename  string `json:"filename,omitempty"`
+	Data      string `json:"data,omitempty"` // Optional inline text content (e.g. for pasted doc)
+	SizeBytes int64  `json:"size_bytes,omitempty"`
+	CreatedAt int64  `json:"created_at,omitempty"`
+}
+
 // ProjectRecord represents a top-level Project aggregating workspaces, context, and tasks.
 type ProjectRecord struct {
 	ID               string                `json:"id"`
@@ -31,6 +44,7 @@ type ProjectRecord struct {
 	ActiveTaskIDs    []string              `json:"active_task_ids,omitempty"`
 	AutomationIDs    []string              `json:"automation_ids,omitempty"`
 	PrimarySessionID string                `json:"primary_session_id,omitempty"`
+	UploadedMedia    []ProjectTaskMediaRef `json:"uploaded_media,omitempty"`
 	CreatedAt        int64                 `json:"created_at"`
 	UpdatedAt        int64                 `json:"updated_at"`
 }
@@ -243,6 +257,7 @@ type ProjectTaskRecord struct {
 	Soundtrack          string                   `json:"soundtrack,omitempty"`
 	AutoApprove         bool                     `json:"auto_approve,omitempty"`
 	RouterAlert         string                   `json:"router_alert,omitempty"`
+	AttachedMedia       []ProjectTaskMediaRef    `json:"attached_media,omitempty"`
 	CreatedAt           int64                    `json:"created_at"`
 	UpdatedAt           int64                    `json:"updated_at"`
 }

@@ -183,3 +183,101 @@ func TestService_BuildAgentSeedPrompt(t *testing.T) {
 		t.Errorf("missing execution plan in seed prompt")
 	}
 }
+
+func TestService_RouteTask_AttachedDoc_RoutesToFinder(t *testing.T) {
+	// Invariant: Router should not have vision or parse files itself; it simply attaches
+	// the doc reference and routes questions about documents to finder for investigation.
+	svc := NewService()
+	res := svc.RouteTask(context.Background(), TaskRouteOptions{
+		Prompt: "can you read this pasted design spec and tell me the requirements?",
+		AttachedMedia: []pebblestore.ProjectTaskMediaRef{
+			{
+				ID:        "med_doc_1",
+				Title:     "architecture_spec.md",
+				Kind:      "doc",
+				MediaType: "text/markdown",
+				Data:      "# Architecture Spec\n\nMust support 25 swarm variants in real-time.",
+			},
+		},
+	})
+	if res.Agent != "finder" {
+		t.Fatalf("expected agent 'finder' for attached doc inquiry, got %q", res.Agent)
+	}
+	if res.Tier != "discovery" {
+		t.Fatalf("expected tier 'discovery' for attached doc inquiry, got %q", res.Tier)
+	}
+	if res.OutcomeType != "audit_report" {
+		t.Fatalf("expected outcome 'audit_report', got %q", res.OutcomeType)
+	}
+	if len(res.AttachedMedia) != 1 {
+		t.Fatalf("expected 1 attached media preserved, got %d", len(res.AttachedMedia))
+	}
+
+	task := &pebblestore.ProjectTaskRecord{
+		Title:         res.Title,
+		Agent:         res.Agent,
+		OutcomeType:   res.OutcomeType,
+		AttachedMedia: res.AttachedMedia,
+	}
+	seedPrompt := svc.BuildAgentSeedPrompt(task, nil)
+	if !strings.Contains(seedPrompt, "architecture_spec.md") {
+		t.Errorf("seed prompt missing attached media doc title")
+	}
+	if !strings.Contains(seedPrompt, "Must support 25 swarm variants") {
+		t.Errorf("seed prompt missing attached media doc content")
+	}
+}
+
+func TestService_RouteTask_AttachedImage_SwarmIterations(t *testing.T) {
+	// Invariant: Attached image with request for 5 iterations routes to designer swarm
+	// with 5 deliverable slots and preserves attached media reference.
+	svc := NewService()
+	res := svc.RouteTask(context.Background(), TaskRouteOptions{
+		Prompt:       "make me 5 iterations of this image in cyber lattice style",
+		VariantCount: 5,
+		AspectRatio:  "1:1",
+		AttachedMedia: []pebblestore.ProjectTaskMediaRef{
+			{
+				ID:        "med_img_1",
+				Title:     "cyber_lattice_core.png",
+				Kind:      "image",
+				MediaType: "image/png",
+				URL:       "data:image/png;base64,sample",
+			},
+		},
+	})
+	if res.Agent != "designer" {
+		t.Fatalf("expected agent 'designer' for 5-variant swarm iterations, got %q", res.Agent)
+	}
+	if res.Tier != "swarm" {
+		t.Fatalf("expected tier 'swarm' for 5-variant iterations, got %q", res.Tier)
+	}
+	if len(res.Deliverables) != 5 {
+		t.Fatalf("expected 5 deliverable slots, got %d", len(res.Deliverables))
+	}
+	if len(res.AttachedMedia) != 1 {
+		t.Fatalf("expected attached media preserved, got %d", len(res.AttachedMedia))
+	}
+}
+
+func TestService_RouteTask_25Variants_SwarmScaling(t *testing.T) {
+	// Invariant: High iteration counts (e.g. 25 variants) scale without crashing
+	// or truncating, allocating 25 deliverable slots for non-blocking execution.
+	svc := NewService()
+	res := svc.RouteTask(context.Background(), TaskRouteOptions{
+		Prompt:       "generate 25 variants for project logo",
+		VariantCount: 25,
+		AspectRatio:  "1:1",
+	})
+	if res.VariantCount != 25 {
+		t.Fatalf("expected VariantCount 25, got %d", res.VariantCount)
+	}
+	if len(res.Deliverables) != 25 {
+		t.Fatalf("expected 25 deliverable slots, got %d", len(res.Deliverables))
+	}
+	for i, d := range res.Deliverables {
+		if d.Status != "pending" {
+			t.Errorf("deliverable slot %d expected status 'pending', got %q", i, d.Status)
+		}
+	}
+}

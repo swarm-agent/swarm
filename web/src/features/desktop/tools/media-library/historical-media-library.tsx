@@ -40,6 +40,14 @@ interface HistoricalMediaLibraryProps {
   workspaceSlug?: string
   onOpenSession?: (sessionId: string) => void
   onClose?: () => void
+  onTagMedia?: (item: MediaLibraryItem) => void
+  taggedMediaIds?: Set<string>
+  onIterateSwarm?: (item: MediaLibraryItem) => void
+  onFineTune?: (item: MediaLibraryItem, editPrompt: string, autoDeploy: boolean) => void
+  onIterate?: (item: MediaLibraryItem, variantCount: number, stylePrompt: string, autoDeploy: boolean) => void
+  onGenerateVideo?: (item: MediaLibraryItem, prompt: string, autoDeploy: boolean) => void
+  onContinueVideo?: (item: MediaLibraryItem, prompt: string, autoDeploy: boolean) => void
+  extraItems?: readonly MediaLibraryItem[]
 }
 
 export function HistoricalMediaLibrary({
@@ -47,6 +55,15 @@ export function HistoricalMediaLibrary({
   initialQuery = '',
   workspaceSlug: _workspaceSlug,
   onOpenSession,
+  onClose: _onClose,
+  onTagMedia,
+  taggedMediaIds,
+  onIterateSwarm,
+  onFineTune,
+  onIterate,
+  onGenerateVideo,
+  onContinueVideo,
+  extraItems,
 }: HistoricalMediaLibraryProps) {
   const [items, setItems] = useState<MediaLibraryItem[]>([])
   const [loading, setLoading] = useState(true)
@@ -74,7 +91,13 @@ export function HistoricalMediaLibrary({
     try {
       const result = await fetchDesktopV3ArtifactCatalogResult()
       const normalized = normalizeMediaCatalogEntries(result.artifacts)
-      setItems(normalized)
+      let combined = normalized
+      if (extraItems && extraItems.length > 0) {
+        const seen = new Set(normalized.map((i) => i.id))
+        const extras = extraItems.filter((i) => !seen.has(i.id))
+        combined = [...extras, ...normalized]
+      }
+      setItems(combined)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load media artifacts')
     } finally {
@@ -487,6 +510,13 @@ export function HistoricalMediaLibrary({
         onClose={() => setActiveItem(null)}
         onSelect={(item) => setActiveItem(item)}
         onOpenSession={onOpenSession}
+        isTagged={activeItem ? taggedMediaIds?.has(activeItem.id) : false}
+        onToggleTag={onTagMedia}
+        onIterateSwarm={onIterateSwarm}
+        onFineTune={onFineTune}
+        onIterate={onIterate}
+        onGenerateVideo={onGenerateVideo}
+        onContinueVideo={onContinueVideo}
       />
     </div>
   )

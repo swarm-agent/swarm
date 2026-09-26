@@ -408,4 +408,210 @@ func TestDirectMediaTaskLifecycle(t *testing.T) {
 			t.Fatalf("expected deliverable %d to have valid image data URL, got %q", i+1, mediaURL)
 		}
 	}
+
+	// 10. POST /v3/projects/{id}/media (Upload media to project)
+	mediaUploadBody := `{
+		"title": "architecture_diagram.png",
+		"media_type": "image/png",
+		"kind": "image",
+		"url": "data:image/png;base64,mockupload",
+		"size_bytes": 2048
+	}`
+	w = call(http.MethodPost, "/"+projID+"/media", mediaUploadBody, []string{"sessions:write"})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201 for media upload, got %d: %s", w.Code, w.Body.String())
+	}
+	var mediaResp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &mediaResp); err != nil {
+		t.Fatal(err)
+	}
+	createdMedia := mediaResp["media"].(map[string]any)
+	mediaID := createdMedia["id"].(string)
+	if mediaID == "" {
+		t.Fatal("expected media ID to be generated")
+	}
+
+	// 11. GET /v3/projects/{id}/media
+	w = call(http.MethodGet, "/"+projID+"/media", "", []string{"sessions:read"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for media list, got %d: %s", w.Code, w.Body.String())
+	}
+	var mediaListResp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &mediaListResp); err != nil {
+		t.Fatal(err)
+	}
+	if mediaListResp["count"].(float64) != 1 {
+		t.Fatalf("expected 1 uploaded media, got %v", mediaListResp["count"])
+	}
+
+	// 12. POST /v3/projects/{id}/tasks with attached_media
+	taskWithAttachedMedia := `{
+		"title": "Iterate on architecture diagram",
+		"prompt": "make 2 iterations of this diagram",
+		"variant_count": 2,
+		"attached_media": [
+			{
+				"id": "` + mediaID + `",
+				"title": "architecture_diagram.png",
+				"kind": "image",
+				"media_type": "image/png",
+				"url": "data:image/png;base64,mockupload"
+			}
+		]
+	}`
+	w = call(http.MethodPost, "/"+projID+"/tasks", taskWithAttachedMedia, []string{"sessions:write"})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201 for task with attached media, got %d: %s", w.Code, w.Body.String())
+	}
+	var attachedTaskResp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &attachedTaskResp); err != nil {
+		t.Fatal(err)
+	}
+	attachedTaskObj := attachedTaskResp["task"].(map[string]any)
+	attachedMediaSlice := attachedTaskObj["attached_media"].([]any)
+	if len(attachedMediaSlice) != 1 {
+		t.Fatalf("expected 1 attached media on created task, got %d", len(attachedMediaSlice))
+	}
+
+	// 13. DELETE /v3/projects/{id}/media/{media_id} (Remove uploaded media)
+	w = call(http.MethodDelete, "/"+projID+"/media/"+mediaID, "", []string{"sessions:write"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for media delete, got %d: %s", w.Code, w.Body.String())
+	}
+	var deleteMediaResp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &deleteMediaResp); err != nil {
+		t.Fatal(err)
+	}
+	if deleteMediaResp["removed"] != true {
+		t.Fatalf("expected removed=true, got %v", deleteMediaResp["removed"])
+	}
+	remainingMedia := deleteMediaResp["uploaded_media"].([]any)
+	if len(remainingMedia) != 0 {
+		t.Fatalf("expected 0 media remaining after delete, got %d", len(remainingMedia))
+	}
+
+	// 14. Fine-tuning image task execution via quick route payload with auto_approve
+	fineTuneTaskBody := `{
+		"title": "Fine-tune avatar image",
+		"prompt": "Change lighting to warm sunset and make accents neon gold",
+		"intent": "image",
+		"auto_approve": true,
+		"variant_count": 1,
+		"attached_media": [
+			{
+				"id": "avatar_orig",
+				"title": "cyber_avatar.png",
+				"kind": "image",
+				"media_type": "image/png",
+				"url": "data:image/png;base64,mockavatar"
+			}
+		]
+	}`
+	w = call(http.MethodPost, "/"+projID+"/tasks", fineTuneTaskBody, []string{"sessions:write"})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201 for fine-tune task, got %d: %s", w.Code, w.Body.String())
+	}
+	var fineTuneResp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &fineTuneResp); err != nil {
+		t.Fatal(err)
+	}
+	fineTuneTaskObj := fineTuneResp["task"].(map[string]any)
+	fineTuneTaskID := fineTuneTaskObj["id"].(string)
+
+	// Wait briefly for asynchronous execution
+	var completedFineTune map[string]any
+	for wait := 0; wait < 20; wait++ {
+		time.Sleep(100 * time.Millisecond)
+		w = call(http.MethodGet, "/"+projID+"/tasks/"+fineTuneTaskID, "", []string{"sessions:read"})
+		if w.Code == http.StatusOK {
+			var resp map[string]any
+			if err := json.Unmarshal(w.Body.Bytes(), &resp); err == nil {
+				taskObj := resp["task"].(map[string]any)
+				if taskObj["status"] == "needs_review" {
+					completedFineTune = taskObj
+					break
+				}
+			}
+		}
+	}
+	if completedFineTune == nil {
+		t.Fatal("expected fine-tune task to complete with status needs_review")
+	}
+	fineTuneDelivs := completedFineTune["deliverables"].([]any)
+	if len(fineTuneDelivs) != 1 {
+		t.Fatalf("expected 1 fine-tuned deliverable, got %d", len(fineTuneDelivs))
+	}
+	ftDeliv := fineTuneDelivs[0].(map[string]any)
+	if ftDeliv["status"] != "ready" {
+		t.Fatalf("expected fine-tune deliverable ready, got %v", ftDeliv["status"])
+	}
+	ftWhatDidDo := completedFineTune["what_did_do"].([]any)
+	hasBaseRef := false
+	for _, step := range ftWhatDidDo {
+		if strings.Contains(step.(string), "cyber_avatar.png") {
+			hasBaseRef = true
+			break
+		}
+	}
+	if !hasBaseRef {
+		t.Fatalf("expected what_did_do to reference base image cyber_avatar.png, got: %v", ftWhatDidDo)
+	}
+
+	// 15. Video continuation task execution via quick route payload with auto_approve
+	videoContinuationBody := `{
+		"title": "Continue flight scene",
+		"prompt": "Continue this video with next scene transitioning into orbital sunrise",
+		"intent": "video",
+		"auto_approve": true,
+		"soundtrack": "Cosmic Synth Horizon",
+		"attached_media": [
+			{
+				"id": "vid_scene_1",
+				"title": "takeoff_scene.mp4",
+				"kind": "video",
+				"media_type": "video/mp4",
+				"url": "data:video/mp4;base64,mockvid"
+			}
+		]
+	}`
+	w = call(http.MethodPost, "/"+projID+"/tasks", videoContinuationBody, []string{"sessions:write"})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201 for video continuation task, got %d: %s", w.Code, w.Body.String())
+	}
+	var vidContResp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &vidContResp); err != nil {
+		t.Fatal(err)
+	}
+	vidContTaskObj := vidContResp["task"].(map[string]any)
+	vidContTaskID := vidContTaskObj["id"].(string)
+
+	var completedVidCont map[string]any
+	for wait := 0; wait < 30; wait++ {
+		time.Sleep(100 * time.Millisecond)
+		w = call(http.MethodGet, "/"+projID+"/tasks/"+vidContTaskID, "", []string{"sessions:read"})
+		if w.Code == http.StatusOK {
+			var resp map[string]any
+			if err := json.Unmarshal(w.Body.Bytes(), &resp); err == nil {
+				taskObj := resp["task"].(map[string]any)
+				if taskObj["status"] == "needs_review" {
+					completedVidCont = taskObj
+					break
+				}
+			}
+		}
+	}
+	if completedVidCont == nil {
+		t.Fatal("expected video continuation task to complete with status needs_review")
+	}
+	vidDelivs := completedVidCont["deliverables"].([]any)
+	if len(vidDelivs) != 1 {
+		t.Fatalf("expected 1 video deliverable, got %d", len(vidDelivs))
+	}
+	vd := vidDelivs[0].(map[string]any)
+	if vd["status"] != "ready" || vd["kind"] != "video" {
+		t.Fatalf("expected ready video deliverable, got status=%v kind=%v", vd["status"], vd["kind"])
+	}
+	if !strings.Contains(vd["title"].(string), "Continued from") && !strings.Contains(vd["title"].(string), "Scene 2") {
+		t.Fatalf("expected deliverable title to denote continuation, got %q", vd["title"])
+	}
 }

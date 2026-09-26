@@ -15,17 +15,18 @@ type LLMInvoker func(ctx context.Context, instructions string, input string) (st
 
 // TaskRouteOptions encapsulates user request, explicit intent, aspect ratios, and project context.
 type TaskRouteOptions struct {
-	Prompt             string                     `json:"prompt"`
-	RequestedWorkspace string                     `json:"requested_workspace,omitempty"`
-	Intent             string                     `json:"intent,omitempty"` // "code", "image", "video", "audit"
-	AspectRatio        string                     `json:"aspect_ratio,omitempty"`
-	VariantCount       int                        `json:"variant_count,omitempty"`
-	ScenesCount        int                        `json:"scenes_count,omitempty"`
-	Soundtrack         string                     `json:"soundtrack,omitempty"`
-	AutoApprove        bool                       `json:"auto_approve,omitempty"`
-	Feedback           string                     `json:"feedback,omitempty"`
-	LastError          string                     `json:"last_error,omitempty"`
-	Project            *pebblestore.ProjectRecord `json:"project,omitempty"`
+	Prompt             string                            `json:"prompt"`
+	RequestedWorkspace string                            `json:"requested_workspace,omitempty"`
+	Intent             string                            `json:"intent,omitempty"` // "code", "image", "video", "audit"
+	AspectRatio        string                            `json:"aspect_ratio,omitempty"`
+	VariantCount       int                               `json:"variant_count,omitempty"`
+	ScenesCount        int                               `json:"scenes_count,omitempty"`
+	Soundtrack         string                            `json:"soundtrack,omitempty"`
+	AutoApprove        bool                              `json:"auto_approve,omitempty"`
+	Feedback           string                            `json:"feedback,omitempty"`
+	LastError          string                            `json:"last_error,omitempty"`
+	AttachedMedia      []pebblestore.ProjectTaskMediaRef `json:"attached_media,omitempty"`
+	Project            *pebblestore.ProjectRecord        `json:"project,omitempty"`
 }
 
 // Service provides real AI task routing, scene compilation, and context pool formulation.
@@ -66,6 +67,7 @@ func (s *Service) RouteTask(ctx context.Context, opts TaskRouteOptions) pebblest
 		VariantCount:       opts.VariantCount,
 		ScenesCount:        opts.ScenesCount,
 		Soundtrack:         opts.Soundtrack,
+		AttachedMedia:      opts.AttachedMedia,
 	}
 
 	var routerErr error
@@ -91,7 +93,22 @@ func (s *Service) RefineTask(ctx context.Context, opts TaskRouteOptions) pebbles
 }
 
 func (s *Service) invokeAIRouter(ctx context.Context, opts TaskRouteOptions, planOpts pebblestore.TaskPlanOptions) (pebblestore.TaskRouteResult, error) {
-	instructions := strings.TrimSpace(`You are the Swarm AI Task Router. Your role is to analyze user requests, project guidelines (PROJECT.md), and project workspaces to produce an authoritative, high-context execution plan and routing contract.
+	instructions := strings.TrimSpace(`You are the Swarm AI Task Router. Your role is to analyze user requests, attached media references, project guidelines (PROJECT.md), and project workspaces to produce an authoritative, high-context execution plan and routing contract.
+
+CRITICAL INSTRUCTIONS:
+- You are a routing coordinator, NOT a vision/image processing agent. Do NOT attempt image clipping, pixel viewing, or computer vision operations. You only inspect metadata (filename, title, kind, media_type, doc text snippet) and forward the media references to downstream specialist agents or generative engines.
+- If attached_media contains a document (pasted text, markdown, doc, pdf) and the user asks a question, analysis, or inquiry:
+  Route to agent="finder" (or agent="swarm"), tier="discovery" (or tier="direct"), outcome_type="audit_report". The finder will read and inspect the attached document.
+- If attached_media contains video(s) and the user asks for iterations, fine-tuning, changes, or next scenes:
+  Route to agent="video", tier="direct", outcome_type="video_story". Downstream video engine will extend, remix, or iterate the video sequence based on the source video.
+- If attached_media contains image(s) and the user asks for fine-tuning or targeted edits ("change this to y", "modify...", "replace..."):
+  Route to agent="image", tier="direct", outcome_type="media_bundle", variant_count=1 (or user count).
+- If attached_media contains image(s) and the user asks for iterations, variations, or video:
+  * For 1-4 variants: tier="direct", agent="image", outcome_type="media_bundle".
+  * For 5-25 variants or explicit swarm generation: tier="swarm", agent="designer", outcome_type="media_bundle", variant_count=N.
+  * For video stories based on the images: tier="direct", agent="video", outcome_type="video_story".
+- If large iteration counts (e.g. 10 to 25 prompts or variants) are requested:
+  Route to agent="designer", tier="swarm", outcome_type="media_bundle". Do not attempt to output 25 individual scene storyboards or prompts in one turn; downstream deployed non-blocking workers will generate the variants in parallel.
 
 Rules:
 1. Intent Classification & Agent Routing:
@@ -108,7 +125,7 @@ Rules:
 {
   "title": "string",
   "agent": "coder|plan|finder|designer|swarm|image|video",
-  "tier": "direct|discovery|complex",
+  "tier": "direct|discovery|complex|swarm",
   "outcome_type": "code_pr|bug_patch|audit_report|media_bundle|video_story|plan_spec",
   "hero_workspace": "string",
   "workspaces_involved": ["string"],
@@ -117,9 +134,29 @@ Rules:
   "stages": ["string"],
   "plan_summary": "string",
   "full_plan_markdown": "string",
+  "variant_count": 1,
   "scenes": [{"scene_number": 1, "title": "string", "duration_sec": 4, "prompt": "string", "visual_notes": "string"}],
   "soundtrack": "string"
 }`)
+
+	var attachedSummary []map[string]any
+	for _, m := range opts.AttachedMedia {
+		item := map[string]any{
+			"id":         m.ID,
+			"title":      m.Title,
+			"filename":   m.Filename,
+			"kind":       m.Kind,
+			"media_type": m.MediaType,
+		}
+		if m.Data != "" {
+			snip := m.Data
+			if len(snip) > 2000 {
+				snip = snip[:2000] + "..."
+			}
+			item["data_snippet"] = snip
+		}
+		attachedSummary = append(attachedSummary, item)
+	}
 
 	inputPayload := map[string]any{
 		"prompt":              opts.Prompt,
@@ -131,6 +168,7 @@ Rules:
 		"soundtrack":          opts.Soundtrack,
 		"feedback":            opts.Feedback,
 		"last_error":          opts.LastError,
+		"attached_media":      attachedSummary,
 		"project_workspaces":  planOpts.Workspaces,
 		"project_guidelines":  planOpts.ProjectContext,
 	}
@@ -241,8 +279,20 @@ Rules:
 			{ID: "deliv_vid", Title: fmt.Sprintf("Video Story (%s)", aspectRatio), Kind: "video", Status: "pending"},
 		}
 	case "designer":
-		deliverables = []pebblestore.ProjectTaskDeliverable{
-			{ID: "deliv_design", Title: "Interactive HTML / Motion UI Artifact", Kind: "artifact", Status: "pending"},
+		if variantCount > 1 || output.Tier == "swarm" || output.OutcomeType == "media_bundle" {
+			for i := 1; i <= variantCount; i++ {
+				deliverables = append(deliverables, pebblestore.ProjectTaskDeliverable{
+					ID:          fmt.Sprintf("deliv_swarm_slot_%d", i),
+					Title:       fmt.Sprintf("%s (Variant %d, %s)", output.Title, i, aspectRatio),
+					Kind:        "image",
+					Status:      "pending",
+					Description: fmt.Sprintf("Autonomous deliverable for %s in aspect ratio %s", output.Title, aspectRatio),
+				})
+			}
+		} else {
+			deliverables = []pebblestore.ProjectTaskDeliverable{
+				{ID: "deliv_design", Title: "Interactive HTML / Motion UI Artifact", Kind: "artifact", Status: "pending"},
+			}
 		}
 	case "finder":
 		deliverables = []pebblestore.ProjectTaskDeliverable{
@@ -275,6 +325,7 @@ Rules:
 		VariantCount:       variantCount,
 		Scenes:             output.Scenes,
 		Soundtrack:         output.Soundtrack,
+		AttachedMedia:      opts.AttachedMedia,
 	}, nil
 }
 
@@ -316,6 +367,19 @@ func (s *Service) BuildAgentSeedPrompt(task *pebblestore.ProjectTaskRecord, proj
 		sb.WriteString("\n### Project Guidelines & Architecture (PROJECT.md)\n")
 		sb.WriteString(strings.TrimSpace(project.ProjectContext))
 		sb.WriteString("\n")
+	}
+
+	if len(task.AttachedMedia) > 0 {
+		sb.WriteString("\n## Attached / Tagged Media Context\n")
+		for _, m := range task.AttachedMedia {
+			sb.WriteString(fmt.Sprintf("- **%s** (kind: `%s`, type: `%s`)\n", m.Title, m.Kind, m.MediaType))
+			if m.URL != "" {
+				sb.WriteString(fmt.Sprintf("  - URL: `%s`\n", m.URL))
+			}
+			if m.Data != "" {
+				sb.WriteString(fmt.Sprintf("  - Attached Content:\n```\n%s\n```\n", m.Data))
+			}
+		}
 	}
 
 	sb.WriteString("\n## Outcome Contract\n")

@@ -391,7 +391,7 @@ All listed routes are registered by the eight `register*Routes` methods called b
 | `/v3/automations/v2`, `/v3/automations/v2/{proposal,review,accept,decline,control,progress,token}` | `server_routes.go` → `handleAutomationsV2` → session `ProposeAutomationV2` / `AcceptAutomationV2` / `DeclineAutomationV2` → private V2 participant in `ApplyV3SessionMutation`; AI primary Plan/Auto consumers through `run/automation_v2_tools.go`; Desktop V2 review/card, modal, canonical cache/runtime and Automation workspace via `desktop-automation-v2-api.ts`, `desktop-automation-v2.ts`, `automation-v2-plan-review.tsx`, `automation-v2-workspace.tsx` | authenticated user/account + active membership + live workspace catalog + available primary grant; complete canonical executable document, exact review CAS/digest; atomic accepted snapshot/authorization/session binding and `session.automation_v2.accepted` / `session.automation_v2.declined` outbox; on worker acceptance, automatically mints scoped deploy token (`automations:trigger`) tied to worker ID only for trigger workers (`schedule.kind == "trigger"`), persists to `~/.config/swarm/secrets.env` (0600) as `SWARM_TRIGGER_TOKEN`, and returns confirmation message; stable/harness workers (cron, interval) do not auto-mint tokens on acceptance; on-demand token minting and off-site deploy secrets are supported via `POST /v3/automations/v2/token` and Desktop UI; **V2 backend current; Desktop integration current**; supports `archived_mode` (`exclude` default, `include`, `only`) on discovery, clean tombstone/archived session handling without `ErrAutomationV2Conflict`, and `archived: true` / `archived_at` on records; controls use exact generation and explicit user action; progress requires display timezone and returns bounded forecast/observed receipts | `automations_v2_test.go`, session/store `automation_v2_test.go`: real-store zero-to-one, trigger worker acceptance token minting and secrets.env persistence (`TestAutomationV2TriggerWorkerAcceptanceMintsToken`), stable worker acceptance without token minting and post-acceptance token minting (`TestAutomationV2StableWorkerDoesNotMintTokenAndAllowsPostAcceptanceMint`), edited settings, finite/indefinite expiry, stale/foreign/runtime-agent rejection, decline/deny proposal deletion and permission denial, concurrent/restart replay and injected rollback, archived/deleted session lifecycle and `archived_mode` discovery; focused execution, not live/provider proof |
 | `/v3/automations`, `/v3/automations/approve`, `/v3/automations/revoke` | `api/automations.go:handleAutomations`; existing Desktop V1 clients remain replacement targets | **V1 read compatibility only**; authenticated mutations return 410, records preserved; daemon no longer installs V1 tool/approval/execution/context or starts its scheduler | `automations_test.go` now asserts retired mutation/event/approval paths create nothing and preserve legacy definitions; historical V1 tests below are not current execution evidence |
 | `/v3/artifacts` | session artifact handler; Desktop artifact gallery/tools | principal/session lineage; **current** | `sessions_v3_artifacts_test.go`, artifact contract tests |
-| `/v3/projects`, `/v3/projects/{id}`, `/v3/projects/synthesize-context`, `/v3/projects/{id}/tasks`, `/v3/projects/{id}/tasks/{taskId}`, `/v3/projects/{id}/tasks/{taskId}/approve`, `/v3/projects/{id}/tasks/{taskId}/integrate`, `/v3/projects/{id}/tasks/{taskId}/refine` | `handleProjects` in `api/projects.go` -> `SessionStore` project and project task CRUD (`PutProject`, `GetProject`, `ListProjects`, `UpdateProject`, `DeleteProject`, `PutProjectTask`, `GetProjectTask`, `ListProjectTasks`, `UpdateProjectTask`, `DeleteProjectTask`); Desktop Orchestrate mode (`OrchestrateView.tsx`) | authenticated user, scopes `projects:read`/`projects:write` (fallback `sessions:*`); **current** | `api/projects_test.go`, `store/pebble/project_store_test.go` |
+| `/v3/projects`, `/v3/projects/{id}`, `/v3/projects/{id}/media`, `/v3/projects/{id}/media/{media_id}`, `/v3/projects/synthesize-context`, `/v3/projects/{id}/tasks`, `/v3/projects/{id}/tasks/{taskId}`, `/v3/projects/{id}/tasks/{taskId}/approve`, `/v3/projects/{id}/tasks/{taskId}/integrate`, `/v3/projects/{id}/tasks/{taskId}/refine` | `handleProjects` in `api/projects.go` -> `SessionStore` project, media, and project task CRUD (`PutProject`, `GetProject`, `ListProjects`, `UpdateProject`, `DeleteProject`, `PutProjectTask`, `GetProjectTask`, `ListProjectTasks`, `UpdateProjectTask`, `DeleteProjectTask`); Desktop Orchestrate mode (`OrchestrateView.tsx`), studio Media Center (`HistoricalMediaLibrary`, `MediaViewerModal`) | authenticated user, scopes `projects:read`/`projects:write` (fallback `sessions:*`); **current** | `api/projects_test.go`, `store/pebble/project_store_test.go` |
 | `/v3/sessions:workset`, `/v3/tui/sessions:workset`, `/v3/tui/sessions*` | legacy workset/TUI handlers | **compatibility; explicit removal gates** | `sessions_v3_sync_contract_test.go`, `sessions_v3_workset_test.go`, `sessions_v3_tui_test.go` |
 | `/v1/sessions`, `/v1/sessions/` | legacy handlers | **compatibility; not V3 rendering authority** | legacy API tests; V3 contract guards |
 
@@ -2793,7 +2793,52 @@ no scratch/logs or private identifiers were added to tracked documentation.
   - `tsc -b` and full production Vite build (`npm run build`) succeeded in 805ms with 0 errors.
   - `run-critical-tests.sh fast` passes all 80 tests.
 
-### 2026-09-25 — Project Task Routing, Direct Media Generation, and V3 Session Execution
+### 2026-09-26 — Image & Video Iteration, Fine-Tuning ("Change this to Y"), Video Continuation & Media Quick-Routing
+
+- **Image & Video Quick-Routing UX (`web/src/features/desktop/tools/media-library/media-viewer-modal.tsx`, `historical-media-library.tsx`, `web/src/features/desktop/orchestrate/OrchestrateView.tsx`):**
+  - Added interactive Quick-Route panel in `MediaViewerModal` for Fine-Tuning ("Change this to..."), Swarm Iterations, Keyframe-to-Video story, and Next Scene video continuation.
+  - Included Quick Preset suggestion chips for rapid prompt formulation (lighting changes, cyberpunk neon, darker mood, alternative camera takes, synthwave soundtrack, scene continuity).
+  - Provided dual execution paths: "Route & Run Now" (1-click autonomous deployment with `auto_approve: true` without repeated manual confirmation) and "In Planner" (prefilling deploy modal for custom inspection).
+  - Added direct "Edit" (fine-tune) and "Iterate" quick buttons to Deliverables cards and Uploaded Media shelf items, enabling instant iterative creation directly from project view.
+- **Backend Image Fine-Tuning & Swarm Iteration (`swarmd/internal/api/projects_media.go`, `swarmd/internal/store/pebble/project_router.go`, `swarmd/internal/taskrouter/service.go`):**
+  - Updated router to detect image fine-tuning / targeted edits ("change this to...", "modify", "edit", "replace", "fine-tune") and route to `image` agent at `direct` tier with variant count 1 (or user count).
+  - Enhanced `executeDirectMediaTask` for images to detect base image references from `AttachedMedia`, recording fine-tuning steps in `WhatDidDo` and `ActionNeeded`.
+  - Added dynamic SVG styling based on prompt keywords (sunset/amber, cyberpunk/neon, matrix/emerald, dark obsidian/monochrome) and multi-variant rotation across swarm batches.
+- **Backend Video Continuation & Iteration Continuity (`swarmd/internal/api/projects_media.go`, `swarmd/internal/store/pebble/project_router.go`):**
+  - Updated router to detect attached video media with continuation ("next scene", "continue") or variation prompts, routing to `video` agent at `direct` tier (`video_story`).
+  - Updated `executeDirectMediaTask` for videos to inspect `AttachedMedia` for source video or keyframe image, updating deliverable titles ("Continued from...", "Iteration of...", "Keyframe from..."), storyboard ribbon badges, and execution timeline steps.
+- **Validation:**
+  - `TestRouteAndPlanProjectTask` passes all 7 cases in `pebble`, including `fallback_routes_image_fine-tuning_and_iterations_with_attached_media` and `fallback_routes_video_iteration_and_continuation_with_attached_video`.
+  - `TestProjectsAPIEndpoints` passes in `api` (15 REST endpoints/actions tested end-to-end with real store and background media generation).
+  - `orchestrate-media-integration.spec.ts` passes all 6 tests in frontend.
+  - Full TypeScript build (`npm run build`) succeeded in 1.08s with 0 errors.
+
+### 2026-09-25 — Studio Media Center Integration, Uploaded Media Shelf, Non-Vision Router Forwarding & Swarm Scaling
+
+- **Studio Media Center & Media Viewer Modal Integration (`web/src/features/desktop/orchestrate/OrchestrateView.tsx`, `web/src/features/desktop/tools/media-library/`):**
+  - Eliminated the tiny media preview pop-up and its redundant "Accept Deliverable" action button.
+  - Clicking any generated deliverable or project asset opens the studio-grade `MediaViewerModal` with pan/zoom (50% to 300%), audio/video playback, details/metadata drawer, keyboard navigation, and direct "Tag for Task" / "Swarm Iterations (5x)" actions.
+  - Embedded full `HistoricalMediaLibrary` accessible from the sidebar and deliverables tab with multi-select capabilities and catalog filtering.
+- **Uploaded Media Shelf & Document Attachment (`swarmd/internal/store/pebble/project_store.go`, `swarmd/internal/api/projects.go`, `web/src/features/desktop/orchestrate/`):**
+  - Added `UploadedMedia []ProjectTaskMediaRef` to `ProjectRecord` with REST endpoints (`GET /v3/projects/{id}/media`, `POST /v3/projects/{id}/media`, `DELETE /v3/projects/{id}/media/{media_id}`).
+  - Rendered a persistent Uploaded Media shelf in the Left Sidebar and deploy dialog, supporting file uploads, text/spec pasting ("Paste Doc"), one-click tag toggling, and instant deletion.
+- **Non-Vision Router Attachment Forwarding (`swarmd/internal/taskrouter/service.go`, `swarmd/internal/store/pebble/project_router.go`):**
+  - Configured AI Task Router strictly as a routing coordinator without computer vision clipping or image analysis: Router inspects metadata (kind, title, MIME, doc text snippet) and attaches/forwards media references downstream.
+  - Attached documents with inquiries/questions route to `finder` (discovery tier, `audit_report`), injecting document contents into the seed prompt.
+  - Attached images with iteration/variation requests route to `image` (direct tier) or `designer` (swarm tier), preserving media references for generation.
+- **High-Count Swarm Scaling via Deployed Tasks (`swarmd/internal/api/projects_media.go`):**
+  - Supported scaling up to 25 variants (`[1, 2, 4, 5, 10, 25]` selector) without truncating or overloading the single-turn LLM router.
+  - High-count swarm batches execute with bounded concurrency (worker pool of 4 goroutines) updating deliverable slots asynchronously in Pebble.
+- **Validation:**
+  - `TestService_RouteTask_AttachedDoc_RoutesToFinder` passes in `taskrouter`.
+  - `TestService_RouteTask_AttachedImage_SwarmIterations` passes in `taskrouter`.
+  - `TestService_RouteTask_25Variants_SwarmScaling` passes in `taskrouter`.
+  - `TestProjectStore_UploadedMedia_CRUD` passes in `pebble`.
+  - `TestProjectsAPIEndpoints` passes all 13 REST actions in `api`.
+  - `orchestrate-media-integration.spec.ts` passes all 4 frontend invariants.
+  - `npm run test:critical` passes all 80 tests in web.
+  - `bash scripts/run-critical-tests.sh fast` PASS.
+
 
 - **Direct Media Generation & Single Variant Default (`swarmd/internal/store/pebble/project_router.go`, `swarmd/internal/taskrouter/service.go`, `swarmd/internal/api/projects.go`, `web/src/features/desktop/orchestrate/OrchestrateView.tsx`):**
   - Generative images and multi-part video stories route directly to media generation pipelines without spawning unnecessary AI chat sessions.
