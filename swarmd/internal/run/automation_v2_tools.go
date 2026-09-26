@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"swarm/packages/swarmd/internal/identity"
 	store "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
 )
@@ -62,13 +63,56 @@ func (s *Service) automationV2ToolSession(id string) (store.SessionSnapshot, str
 		return current, "", errors.New("automation proposal requires a primary conversation; Plan sidechat uses edit_pending_plan")
 	}
 	for _, g := range current.WorkspaceGrants {
-		if g.Kind == store.WorkspaceGrantPrimary && g.Available != nil && *g.Available {
-			return current, g.WorkspaceID, nil
+		if g.Kind == store.WorkspaceGrantPrimary && g.Available != nil && *g.Available && strings.TrimSpace(g.WorkspaceID) != "" {
+			return current, strings.TrimSpace(g.WorkspaceID), nil
 		}
 	}
 	for _, g := range current.WorkspaceGrants {
-		if g.Available != nil && *g.Available {
-			return current, g.WorkspaceID, nil
+		if g.Available != nil && *g.Available && strings.TrimSpace(g.WorkspaceID) != "" {
+			return current, strings.TrimSpace(g.WorkspaceID), nil
+		}
+	}
+	if current.Metadata != nil {
+		if wsID := mapString(current.Metadata, "swarm_v3_source_workspace_id"); wsID != "" {
+			return current, wsID, nil
+		}
+		if wsID := mapString(current.Metadata, "automation_review_workspace_id"); wsID != "" {
+			return current, wsID, nil
+		}
+		if wsID := mapString(current.Metadata, store.SessionPurposeWorkspaceMetadataKey); wsID != "" {
+			return current, wsID, nil
+		}
+	}
+	principal := identity.Principal{UserID: current.UserID, AccountScopeID: current.AccountScopeID}
+	if current.Metadata != nil && s.sessions != nil {
+		if pid := mapString(current.Metadata, "project_id"); pid != "" {
+			if db := s.sessions.Store(); db != nil {
+				if proj, found, err := db.GetProject(current.AccountScopeID, pid); err == nil && found && proj != nil {
+					for _, ws := range proj.Workspaces {
+						if strings.TrimSpace(ws.WorkspaceID) != "" {
+							return current, strings.TrimSpace(ws.WorkspaceID), nil
+						}
+					}
+					if len(proj.Workspaces) > 0 && s.workspace != nil && strings.TrimSpace(proj.Workspaces[0].Path) != "" {
+						if scope, err := s.workspace.ScopeForPathForPrincipal(principal, proj.Workspaces[0].Path); err == nil && strings.TrimSpace(scope.WorkspaceID) != "" {
+							return current, strings.TrimSpace(scope.WorkspaceID), nil
+						}
+					}
+				}
+			}
+		}
+	}
+	if s.workspace != nil && strings.TrimSpace(current.WorkspacePath) != "" && strings.TrimSpace(current.WorkspacePath) != "." {
+		if scope, err := s.workspace.ScopeForPathForPrincipal(principal, current.WorkspacePath); err == nil && strings.TrimSpace(scope.WorkspaceID) != "" {
+			return current, strings.TrimSpace(scope.WorkspaceID), nil
+		}
+	}
+	if s.workspace != nil {
+		if binding, ok, err := s.workspace.CurrentBindingForPrincipal(principal); err == nil && ok && strings.TrimSpace(binding.WorkspaceID) != "" {
+			return current, strings.TrimSpace(binding.WorkspaceID), nil
+		}
+		if entries, err := s.workspace.ListKnownForPrincipal(principal, 1); err == nil && len(entries) > 0 && strings.TrimSpace(entries[0].WorkspaceID) != "" {
+			return current, strings.TrimSpace(entries[0].WorkspaceID), nil
 		}
 	}
 	return current, "", nil
@@ -157,6 +201,10 @@ func (s *Service) executeManageAutomationV2Tool(id, arguments string) (string, e
 		if k != "action" && k != "cursor" && k != "limit" && k != "timezone" && k != "workspace_id" {
 			return "", errors.New("V2 reads accept only action, cursor, limit, timezone and workspace_id; submit edits through the canonical plan review")
 		}
+	}
+	if mapString(args, "action") == "help" {
+		raw, err := json.Marshal(map[string]any{"action": "help", "status": "ok", "instructions": tool.WorkerV2AuthoringInstructions})
+		return string(raw), err
 	}
 	readID := id
 	if child, found, err := s.sessions.GetSession(id); err != nil {

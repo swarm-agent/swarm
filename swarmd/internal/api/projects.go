@@ -742,8 +742,25 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 	task.WorktreeName = strings.TrimPrefix(task.WorktreeName, "worktree/")
 
 	avail := true
+	taskWsID := ""
+	if proj != nil {
+		for _, pw := range proj.Workspaces {
+			if pw.Path == wsPath && strings.TrimSpace(pw.WorkspaceID) != "" {
+				taskWsID = strings.TrimSpace(pw.WorkspaceID)
+				break
+			}
+		}
+		if taskWsID == "" && len(proj.Workspaces) > 0 && strings.TrimSpace(proj.Workspaces[0].WorkspaceID) != "" {
+			taskWsID = strings.TrimSpace(proj.Workspaces[0].WorkspaceID)
+		}
+	}
+	if taskWsID == "" && s.workspace != nil && wsPath != "" && wsPath != "." {
+		if sc, scErr := s.workspace.ScopeForPathForPrincipal(p, wsPath); scErr == nil && strings.TrimSpace(sc.WorkspaceID) != "" {
+			taskWsID = strings.TrimSpace(sc.WorkspaceID)
+		}
+	}
 	grants := []pebblestore.WorkspaceGrant{
-		{Kind: pebblestore.WorkspaceGrantPrimary, Path: wsPath, Name: filepath.Base(wsPath), Available: &avail},
+		{Kind: pebblestore.WorkspaceGrantPrimary, WorkspaceID: taskWsID, Path: wsPath, Name: filepath.Base(wsPath), Available: &avail},
 	}
 	projName := "Project"
 	if proj != nil && proj.Name != "" {
@@ -1235,9 +1252,39 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			metadata["swarm_v3_authority_host_swarm_id"] = binding.RuntimeSwarmID
 		}
 
+		primaryWsID := ""
+		if len(proj.Workspaces) > 0 && strings.TrimSpace(proj.Workspaces[0].WorkspaceID) != "" {
+			primaryWsID = strings.TrimSpace(proj.Workspaces[0].WorkspaceID)
+		}
+		if primaryWsID == "" && strings.TrimSpace(binding.SourceWorkspaceID) != "" {
+			primaryWsID = strings.TrimSpace(binding.SourceWorkspaceID)
+		}
+		if primaryWsID == "" && s.workspace != nil && repoPath != "" && repoPath != "." {
+			if sc, scErr := s.workspace.ScopeForPathForPrincipal(p, repoPath); scErr == nil && strings.TrimSpace(sc.WorkspaceID) != "" {
+				primaryWsID = strings.TrimSpace(sc.WorkspaceID)
+			}
+		}
+
 		avail := true
 		grants := []pebblestore.WorkspaceGrant{
-			{Kind: pebblestore.WorkspaceGrantPrimary, Path: repoPath, Name: proj.Name, Available: &avail},
+			{Kind: pebblestore.WorkspaceGrantPrimary, WorkspaceID: primaryWsID, Path: repoPath, Name: proj.Name, Available: &avail},
+		}
+		for _, w := range proj.Workspaces {
+			wPath := strings.TrimSpace(w.Path)
+			wID := strings.TrimSpace(w.WorkspaceID)
+			if (wPath == "" && wID == "") || wPath == repoPath || (primaryWsID != "" && wID == primaryWsID) {
+				continue
+			}
+			grants = append(grants, pebblestore.WorkspaceGrant{
+				Kind:        pebblestore.WorkspaceGrantAdditional,
+				WorkspaceID: wID,
+				Path:        wPath,
+				Name:        w.Label,
+				Available:   &avail,
+			})
+		}
+		if primaryWsID != "" {
+			metadata["swarm_v3_source_workspace_id"] = primaryWsID
 		}
 
 		sessionSnapshot := pebblestore.SessionSnapshot{

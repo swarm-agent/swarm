@@ -15,6 +15,9 @@ var errAutomationPolicy = errors.New("automation execution policy denied")
 // checkpoint edits and recovered runs cannot replace or remove it.
 func (s *Service) automationPolicy(sessionID string) (*store.AutomationAuthorizationPolicy, error) {
 	if s == nil || s.sessions == nil {
+		if !strings.HasPrefix(sessionID, "automation-") && !strings.HasPrefix(sessionID, "av2-execution-") {
+			return nil, nil
+		}
 		return nil, errAutomationPolicy
 	}
 	currentSession, exists, err := s.sessions.GetSession(sessionID)
@@ -76,7 +79,7 @@ func (s *Service) automationPolicy(sessionID string) (*store.AutomationAuthoriza
 	if !found || current.AccountScopeID != pinned.AccountScopeID || current.WorkspacePath != pinned.WorkspacePath || current.WorktreeRootPath != pinned.WorktreeRootPath || !current.WorktreeEnabled {
 		return nil, errAutomationPolicy
 	}
-	if !reflect.DeepEqual(current.WorkspaceGrants, pinned.WorkspaceGrants) {
+	if !reflect.DeepEqual(store.NormalizeSessionWorkspaceGrants(current), store.NormalizeSessionWorkspaceGrants(*pinned)) {
 		return nil, errAutomationPolicy
 	}
 	for _, key := range []string{"swarm_v3_runtime_kind", "swarm_v3_runtime_swarm_id", "swarm_v3_authority_host_swarm_id", "swarm_v3_runtime_workspace_path"} {

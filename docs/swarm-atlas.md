@@ -3025,9 +3025,12 @@ no scratch/logs or private identifiers were added to tracked documentation.
   - Added the `Active Project Automations` section directly at the top of the project view in Orchestrate mode, showing real-time running routines, trigger vs cron modes, execution counts, and status pills.
   - Provided interactive 1-click navigation from running automation cards straight to the Workers Hub.
   - Refined the Workers Hub as the central landing page for reviewing proposals and managing the registered workers fleet.
-- **System Agent Tool Contract Isolation (`swarmd/internal/agent/system_agent_registry.go`, `automation_test.go`):**
-  - Disabled `manage_workers` and `manage_automation` in `SwarmAgentToolContract()` and `PlanSidechatAgentToolContract()` to ensure regular chat sessions do not hallucinate worker proposals.
-  - Kept worker tools exclusively enabled on `SwarmOrchestratorAgentToolContract()` so only the Orchestrator facilitates background automations.
+- **System Agent Tool Contract & Workspace Resolution Repairs (`swarmd/internal/run/automation_v2_tools.go`, `swarmd/internal/api/projects.go`, `web/src/features/desktop/orchestrate/OrchestrateView.tsx`):**
+  - Confirmed worker tools (`manage_workers`, `manage_automation`) remain strictly restricted to `SwarmOrchestratorAgentToolContract()`, keeping regular chat sessions focused on conversation and code.
+  - Repaired `executeManageAutomationV2Tool` so `action="help"` immediately returns authoring instructions without requiring a workspace.
+  - Enhanced `automationV2ToolSession` fallback resolution: inspects primary/additional grants with non-empty `WorkspaceID`, project metadata (`project_id`) against Pebble store, `s.workspace.ScopeForPathForPrincipal`, and account default binding/workspaces, eliminating `target workspace required` failures for project orchestrators.
+  - Populated `WorkspaceID` on `WorkspaceGrants` in `swarmd/internal/api/projects.go` when initializing orchestrator and task sessions.
+  - Linked workspace IDs in `OrchestrateView.tsx` project onboarding and orchestrator session creation payloads.
 - **Verification & Tests:**
   - `web/src/features/desktop/orchestrate/orchestrate-workers-dogfood.spec.ts`: verified top-of-project running automations ticker, Chat vs Swarm toggle, old sidebar delisting, and route redirects.
   - `swarmd/internal/agent/automation_test.go`: verified Orchestrator worker capability grant and regular session worker tool disablement.

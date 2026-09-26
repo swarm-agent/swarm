@@ -88,6 +88,8 @@ export interface ProjectSummary {
   branch: string
   gitStatus: 'clean' | 'dirty' | 'diverged'
   linkedWorkspaces: string[]
+  primaryWorkspaceId?: string
+  workspaces?: Array<{ workspace_id?: string; path: string; role?: string; label?: string }>
   activeWorkersCount: number
   pendingDeliverablesCount: number
   runningTasksCount: number

@@ -22,12 +22,19 @@ func TestAutomationPolicyDispatchRecovery(t *testing.T) {
 	}
 	defer db.Close()
 	repository := store.NewSessionStore(db)
+	if err := repository.CompleteRepositoryHistoryMaintenance(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	service := sessions.NewService(repository, nil)
 	id := "automation-policy-test"
 	policy, _ := json.Marshal(store.AutomationAuthorizationPolicy{AllowedTools: []string{"read"}})
-	snapshot := store.SessionSnapshot{ID: id, UserID: "user", AccountScopeID: "account", WorkspacePath: t.TempDir(), WorktreeEnabled: true, Metadata: map[string]any{"automation_execution_policy": string(policy)}}
+	snapshot := store.SessionSnapshot{ID: id, UserID: "user", AccountScopeID: "account", WorkspacePath: t.TempDir(), WorktreeEnabled: true, WorktreeBranch: "agent/test", Metadata: map[string]any{"automation_execution_policy": string(policy)}}
 	snapshot.WorktreeRootPath = snapshot.WorkspacePath
-	_, err = repository.ApplyV3SessionMutation(store.V3SessionMutationInput{SessionID: id, UserID: "user", AccountScopeID: "account", ClientRequestID: "create", IdempotencyKey: "create", PayloadHash: "create", RequestHash: "create", Kind: store.V3SessionMutationCreateSession, Session: &snapshot, NowUnixMs: 1000})
+	_, err = repository.ApplyV3SessionMutation(store.V3SessionMutationInput{
+		SessionID: id, UserID: "user", AccountScopeID: "account", ClientRequestID: "create", IdempotencyKey: "create", PayloadHash: "create", RequestHash: "create",
+		Kind: store.V3SessionMutationCreateSession, Session: &snapshot, NowUnixMs: 1000,
+		WorktreeAdmission: &store.WorktreeAdmissionEvidence{Kind: "allocated", Path: snapshot.WorktreeRootPath, SourcePath: snapshot.WorkspacePath, OwnerSessionID: snapshot.ID, Branch: snapshot.WorktreeBranch},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -384,3 +384,95 @@ func TestWorkerV2ProviderDispatch(t *testing.T) {
 		t.Fatalf("missing worker_review in output: %s", workersRes.Output)
 	}
 }
+
+// Purpose: verify that manage_workers and manage_automation action="help" do not
+// require a target workspace, and that project orchestrator sessions resolve
+// target workspaces even when WorkspaceGrants have empty WorkspaceID.
+func TestAutomationV2ManageWorkersHelpAndProjectWorkspaceResolution(t *testing.T) {
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ss := store.NewSessionStore(db)
+	sessions := session.NewService(ss, nil)
+	svc := &Service{sessions: sessions}
+
+	// 1. Session without any workspace grants
+	noWsSession := store.SessionSnapshot{
+		ID:             "no-ws-session",
+		AccountScopeID: "account",
+		UserID:         "owner",
+		Mode:           "auto",
+	}
+	if err := ss.CreateSession(noWsSession); err != nil {
+		t.Fatal(err)
+	}
+
+	// action=help on manage_workers must succeed without workspace
+	helpWorkers, err := svc.executeManageAutomationV2Tool("no-ws-session", `{"action":"help"}`)
+	if err != nil {
+		t.Fatalf("manage_workers action=help failed without workspace: %v", err)
+	}
+	if !strings.Contains(helpWorkers, "instructions") {
+		t.Fatalf("manage_workers action=help expected instructions, got %s", helpWorkers)
+	}
+
+	// action=help on manage_automation must succeed without workspace
+	helpAuto, err := svc.executeManageAutomationV2Tool("no-ws-session", `{"action":"help"}`)
+	if err != nil {
+		t.Fatalf("manage_automation action=help failed without workspace: %v", err)
+	}
+	if !strings.Contains(helpAuto, "instructions") {
+		t.Fatalf("manage_automation action=help expected instructions, got %s", helpAuto)
+	}
+
+	// 2. Project Orchestrator session where grant has empty WorkspaceID but project has workspace
+	projID := "proj_test_123"
+	if err := ss.PutProject("account", &store.ProjectRecord{
+		ID:        projID,
+		AccountID: "account",
+		Name:      "Test Project",
+		Workspaces: []store.ProjectWorkspaceRef{
+			{WorkspaceID: "ws-project-abc", Path: "/workspace/path", Role: "primary_code"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	avail := true
+	orchSession := store.SessionSnapshot{
+		ID:             "orch-session",
+		AccountScopeID: "account",
+		UserID:         "owner",
+		Mode:           "auto",
+		WorkspacePath:  "/workspace/path",
+		WorkspaceGrants: []store.WorkspaceGrant{
+			{Kind: store.WorkspaceGrantPrimary, Path: "/workspace/path", WorkspaceID: "", Available: &avail},
+		},
+		Metadata: map[string]any{
+			"project_id": projID,
+			"role":       "project_orchestrator",
+		},
+	}
+	if err := ss.CreateSession(orchSession); err != nil {
+		t.Fatal(err)
+	}
+
+	_, resolvedWs, err := svc.automationV2ToolSession("orch-session")
+	if err != nil {
+		t.Fatalf("automationV2ToolSession failed for orchestrator: %v", err)
+	}
+	if resolvedWs != "ws-project-abc" {
+		t.Fatalf("expected resolved workspace %q, got %q", "ws-project-abc", resolvedWs)
+	}
+
+	// Review/context should not fail with "target workspace required"
+	reviewOut, err := svc.executeManageAutomationV2Tool("orch-session", `{"action":"review"}`)
+	if err != nil {
+		t.Fatalf("manage_workers review failed on orchestrator session: %v", err)
+	}
+	if !strings.Contains(reviewOut, "not_created") {
+		t.Fatalf("unexpected review output: %s", reviewOut)
+	}
+}

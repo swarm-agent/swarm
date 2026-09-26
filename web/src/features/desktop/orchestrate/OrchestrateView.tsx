@@ -1878,7 +1878,7 @@ export function OrchestrateView({
   const [isOnboardingActive, setIsOnboardingActive] = useState<boolean>(false)
   const [onboardingName, setOnboardingName] = useState('Swarm Platform')
   const [onboardingDescription, setOnboardingDescription] = useState('Core daemon, desktop client, and multi-workspace initiative')
-  const [onboardingWorkspaces, setOnboardingWorkspaces] = useState<Array<{ path: string; label: string; role: 'primary_code' | 'auxiliary'; selected: boolean }>>([])
+  const [onboardingWorkspaces, setOnboardingWorkspaces] = useState<Array<{ id?: string; path: string; label: string; role: 'primary_code' | 'auxiliary'; selected: boolean }>>([])
   const [customFolderPath, setCustomFolderPath] = useState('')
   const [isEditingContext, setIsEditingContext] = useState(false)
   const [isSynthesizing, setIsSynthesizing] = useState(false)
@@ -2030,6 +2030,7 @@ export function OrchestrateView({
         const wsRes = await requestJson<{ workspaces?: Array<{ path: string; name?: string; id?: string }> }>('/v1/workspace/list?limit=200')
         if (wsRes?.workspaces && wsRes.workspaces.length > 0 && !cancelled) {
           const detected = wsRes.workspaces.map((w, idx) => ({
+            id: w.id || '',
             path: w.path,
             label: w.name || w.path.split('/').filter(Boolean).pop() || 'Workspace',
             role: (idx === 0 ? ('primary_code' as const) : ('auxiliary' as const)),
@@ -2069,6 +2070,8 @@ export function OrchestrateView({
             slug: p.name.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
             description: p.description || '',
             repoPath: p.workspaces?.[0]?.path || '.',
+            primaryWorkspaceId: p.workspaces?.[0]?.workspace_id,
+            workspaces: p.workspaces,
             branch: 'dev',
             gitStatus: 'clean',
             linkedWorkspaces: p.workspaces?.map((w: any) => w.path) || [],
@@ -2274,6 +2277,7 @@ export function OrchestrateView({
         body: JSON.stringify({
           client_request_id: clientRequestId,
           title: `Project Orchestrator: ${project.name}`,
+          workspace_id: project.primaryWorkspaceId || project.workspaces?.[0]?.workspace_id || undefined,
           workspace_path: project.repoPath || '.',
           agent_name: 'system-orchestrator',
           metadata: {
@@ -3099,6 +3103,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
   const handleCreateAndActivateProject = async () => {
     setIsActivating(true)
     const selectedWs = onboardingWorkspaces.filter((w) => w.selected).map((w) => ({
+      workspace_id: w.id || '',
       path: w.path,
       role: w.role,
       label: w.label,
@@ -3135,6 +3140,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
         body: JSON.stringify({
           client_request_id: clientRequestId,
           title: `Project Orchestrator: ${payload.name}`,
+          workspace_id: selectedWs[0]?.workspace_id || undefined,
           workspace_path: selectedWs[0]?.path || '.',
           agent_name: 'system-orchestrator',
           metadata: {
