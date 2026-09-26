@@ -498,7 +498,7 @@ func (s *Service) SubmitInboxNotificationForAccount(accountScopeID string, input
 		endpoint := strings.TrimSpace(act.Endpoint)
 		if endpoint != "" {
 			if !isAllowedNotificationActionEndpoint(endpoint) {
-				return pebblestore.NotificationRecord{}, fmt.Errorf("action %q has disallowed endpoint %q: only relative paths to /v3/deliverables/, /v1/notifications/, /v1/alerts/, /v3/automations/v2/, or /v3/sessions/ are permitted", actID, endpoint)
+				return pebblestore.NotificationRecord{}, fmt.Errorf("action %q has disallowed endpoint %q: only relative paths to /v3/deliverables/, /v1/notifications/, /v1/alerts/, /v3/automations/v2/, /v3/sessions/, /v1/storage/, or /settings are permitted", actID, endpoint)
 			}
 		}
 		actions = append(actions, pebblestore.NotificationAction{
@@ -1009,6 +1009,7 @@ func isAllowedNotificationActionEndpoint(endpoint string) bool {
 		"/v3/automations/v2/",
 		"/v3/sessions/",
 		"/v1/storage/",
+		"/settings",
 	}
 	for _, prefix := range allowedPrefixes {
 		if strings.HasPrefix(basePath, prefix) {

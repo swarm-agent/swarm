@@ -148,6 +148,7 @@ export function isSafeNotificationActionEndpoint(endpoint: string | null | undef
     '/v3/automations/v2/',
     '/v3/sessions/',
     '/v1/storage/',
+    '/settings',
   ]
   return allowedPrefixes.some((prefix) => basePath.startsWith(prefix))
 }

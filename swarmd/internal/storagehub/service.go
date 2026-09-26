@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -242,7 +243,7 @@ func (s *Service) ProposeBucket(ctx context.Context, bucket pebblestore.StorageB
 			"target_tab":      "cloud",
 		}
 
-		_, _ = s.notifications.SubmitInboxNotificationForAccount(bucket.AccountScopeID, notification.InboxNotificationInput{
+		if _, err := s.notifications.SubmitInboxNotificationForAccount(bucket.AccountScopeID, notification.InboxNotificationInput{
 			AccountScopeID: bucket.AccountScopeID,
 			Title:          title,
 			Body:           body,
@@ -253,7 +254,9 @@ func (s *Service) ProposeBucket(ctx context.Context, bucket pebblestore.StorageB
 			Verified:       true,
 			Payload:        payload,
 			Actions:        actions,
-		})
+		}); err != nil {
+			log.Printf("storagehub: failed to submit cloud proposal notification: %v", err)
+		}
 	}
 
 	return &bucket, nil

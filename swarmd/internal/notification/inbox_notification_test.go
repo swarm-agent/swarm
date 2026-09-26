@@ -170,6 +170,16 @@ func TestInboxNotificationSecurityHardening(t *testing.T) {
 				Label:    "Trigger",
 				Endpoint: "/v3/automations/v2/trigger",
 			},
+			{
+				ID:       "review_cloud",
+				Label:    "Review in Cloud",
+				Endpoint: "/settings?tab=cloud",
+			},
+			{
+				ID:       "accept_canonical",
+				Label:    "Accept as Canonical",
+				Endpoint: "/v1/storage/buckets/bkt_123/accept-canonical",
+			},
 		},
 	})
 	if err != nil {
