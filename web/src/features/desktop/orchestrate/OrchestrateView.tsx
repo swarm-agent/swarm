@@ -65,6 +65,8 @@ import {
 } from '../realtime/v3-realtime-controller'
 import { HistoricalMediaLibrary, MediaViewerModal, type MediaLibraryItem } from '../tools/media-library'
 import { ORCHESTRATE_THEMES } from './orchestrate-themes'
+import { listStorageWorkers, activateStorageWorker } from '../storage/api'
+import type { StorageDiscoveredWorker } from '../storage/types'
 import {
   DeployedWorker,
   MediaDeliverable,
@@ -1947,6 +1949,36 @@ export function OrchestrateView({
       setReviewError({ id, message: cause instanceof Error ? cause.message : 'Worker decision failed.' })
     } finally {
       setReviewBusyId(null)
+    }
+  }
+
+  const [cloudWorkers, setCloudWorkers] = useState<StorageDiscoveredWorker[]>([])
+  const [activatingWorkerId, setActivatingWorkerId] = useState<string | null>(null)
+
+  const fetchCloudWorkers = useCallback(async () => {
+    try {
+      const workers = await listStorageWorkers()
+      setCloudWorkers(workers)
+    } catch {
+      // ignore
+    }
+  }, [])
+
+  useEffect(() => {
+    fetchCloudWorkers()
+    const interval = setInterval(fetchCloudWorkers, 8000)
+    return () => clearInterval(interval)
+  }, [fetchCloudWorkers])
+
+  const handleActivateCloudWorker = async (workerId: string) => {
+    setActivatingWorkerId(workerId)
+    try {
+      await activateStorageWorker(workerId)
+      await fetchCloudWorkers()
+    } catch (err) {
+      console.error('Failed to activate cloud worker', err)
+    } finally {
+      setActivatingWorkerId(null)
     }
   }
 
@@ -3976,11 +4008,91 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
             {/* ACTIVE REGISTERED WORKERS SECTION */}
             <div className="space-y-3">
               <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
-                Registered Workers Fleet ({automations.length})
+                Registered Workers Fleet ({automations.length + cloudWorkers.length})
               </span>
 
-              {automations.length > 0 ? (
+              {automations.length > 0 || cloudWorkers.length > 0 ? (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {cloudWorkers.map((cw) => {
+                    const isPending = cw.status === 'pending_approval'
+                    const spendFormatted = cw.total_spend_usd !== undefined ? `$${cw.total_spend_usd.toFixed(4)}` : '$0.0000'
+                    const tokensFormatted = cw.total_tokens ? `${(cw.total_tokens / 1000).toFixed(1)}k` : '0k'
+
+                    return (
+                      <div
+                        key={cw.worker_id}
+                        className={`rounded-2xl border p-4 transition-all space-y-3 ${
+                          isPending
+                            ? 'border-amber-500/40 bg-gradient-to-b from-amber-500/[0.08] to-slate-900/60'
+                            : 'border-slate-800 bg-slate-900/40 hover:border-slate-700/80'
+                        }`}
+                      >
+                        <div className="flex items-start justify-between">
+                          <div className="flex items-center gap-2.5">
+                            <div
+                              className={`h-8 w-8 rounded-xl flex items-center justify-center border font-bold text-xs ${
+                                isPending
+                                  ? 'bg-amber-500/20 text-amber-400 border-amber-500/30'
+                                  : 'bg-blue-600/15 text-blue-400 border-blue-500/20'
+                              }`}
+                            >
+                              ☁️
+                            </div>
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <h3 className="text-xs font-bold text-white">{cw.name}</h3>
+                                <span className="rounded bg-blue-900/40 text-blue-300 border border-blue-500/30 px-1.5 py-0.2 text-[9px] font-mono">
+                                  GCP Cloud Run
+                                </span>
+                              </div>
+                              <span className="text-[10px] text-slate-400 font-mono">ID: {cw.worker_id}</span>
+                            </div>
+                          </div>
+                          <span
+                            className={`rounded-full px-2 py-0.5 text-[10px] font-semibold border ${
+                              isPending
+                                ? 'bg-amber-500/20 text-amber-300 border-amber-500/30 animate-pulse'
+                                : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
+                            }`}
+                          >
+                            ● {cw.status || 'active'}
+                          </span>
+                        </div>
+
+                        {/* Granular Telemetry Strip */}
+                        <div className="grid grid-cols-3 gap-2 text-[11px]">
+                          <div className="rounded-lg bg-slate-950/60 p-2 border border-slate-800/60">
+                            <span className="text-[10px] text-slate-500 block">Total Spend</span>
+                            <span className="text-emerald-400 font-mono font-semibold text-[11px]">{spendFormatted}</span>
+                          </div>
+                          <div className="rounded-lg bg-slate-950/60 p-2 border border-slate-800/60">
+                            <span className="text-[10px] text-slate-500 block">Total Tokens</span>
+                            <span className="text-purple-400 font-mono font-semibold text-[11px]">{tokensFormatted}</span>
+                          </div>
+                          <div className="rounded-lg bg-slate-950/60 p-2 border border-slate-800/60">
+                            <span className="text-[10px] text-slate-500 block">Jobs Executed</span>
+                            <span className="text-blue-400 font-mono font-semibold text-[11px]">{cw.total_jobs_count || 0}</span>
+                          </div>
+                        </div>
+
+                        {/* Action Bar for Cloud Worker */}
+                        {isPending && (
+                          <div className="flex items-center justify-between pt-2 border-t border-slate-800/60">
+                            <span className="text-[10px] text-amber-300 font-medium">Awaiting operator acceptance</span>
+                            <button
+                              type="button"
+                              disabled={activatingWorkerId === cw.worker_id}
+                              onClick={() => handleActivateCloudWorker(cw.worker_id)}
+                              className="px-3 py-1 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-bold shadow-md transition-all flex items-center gap-1.5"
+                            >
+                              <CheckCircle2 size={12} />
+                              <span>{activatingWorkerId === cw.worker_id ? 'Activating...' : 'Activate Worker'}</span>
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })}
                   {automations.map((a) => {
                     const isTrigger = a.kind === 'trigger'
                     return (
@@ -4314,6 +4426,98 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                 <span className="text-emerald-400">Pebble DB Synced</span>
               </div>
             </div>
+
+            {/* PROJECT-TOP PENDING WORKER BANNER (SURFACES PROPOSALS FOR ASSIGNED PROJECT) */}
+            {(pendingReviews.length > 0 || cloudWorkers.some((w) => w.status === 'pending_approval')) && (
+              <div className="mx-3.5 mt-3 mb-1 rounded-2xl border border-amber-500/40 bg-gradient-to-r from-amber-500/15 via-slate-900/95 to-amber-500/10 p-4 shadow-xl flex items-center justify-between gap-4">
+                <div className="flex items-center gap-3.5 min-w-0">
+                  <div className="h-10 w-10 rounded-xl bg-amber-500/20 text-amber-400 flex items-center justify-center border border-amber-500/40 shrink-0 font-bold text-lg shadow-sm">
+                    🤖
+                  </div>
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-bold text-white uppercase tracking-wider">
+                        Pending Worker Proposal for {selectedProject?.name || 'Project'}
+                      </span>
+                      <span className="rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30 px-2 py-0.5 text-[10px] font-semibold animate-pulse">
+                        Awaiting Acceptance
+                      </span>
+                      {cloudWorkers.some((w) => w.status === 'pending_approval') && (
+                        <span className="rounded-full bg-blue-500/20 text-blue-300 border border-blue-500/30 px-2 py-0.5 text-[10px] font-mono">
+                          GCP Cloud Run Job
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-xs text-slate-300 truncate mt-0.5">
+                      {pendingReviews[0]?.proposal.document?.title ||
+                        cloudWorkers.find((w) => w.status === 'pending_approval')?.name ||
+                        'Autonomous Cloud Worker'}{' '}
+                      •{' '}
+                      {pendingReviews[0]?.proposal.document?.info?.goal ||
+                        cloudWorkers.find((w) => w.status === 'pending_approval')?.description ||
+                        'Scheduled & one-off task execution in GCP with durable S3/GCS state storage.'}
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    onClick={() => setActiveNavTab('workers')}
+                    className="px-3 py-1.5 rounded-xl border border-slate-700 bg-slate-800/80 text-xs font-medium text-slate-300 hover:text-white hover:bg-slate-700 transition-all"
+                  >
+                    View Details
+                  </button>
+                  {pendingReviews.length > 0 ? (
+                    <>
+                      <button
+                        onClick={() =>
+                          handleDecideReview(
+                            pendingReviews[0].permission.id,
+                            pendingReviews[0].proposal.revision,
+                            pendingReviews[0].proposal.digest,
+                            'accept_automation'
+                          )
+                        }
+                        disabled={reviewBusyId === pendingReviews[0].permission.id}
+                        className="px-4 py-1.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-bold shadow-lg shadow-emerald-900/30 transition-all flex items-center gap-1.5"
+                      >
+                        <CheckCircle2 size={13} />
+                        <span>
+                          {reviewBusyId === pendingReviews[0].permission.id ? 'Deploying...' : 'Accept & Register Worker'}
+                        </span>
+                      </button>
+                      <button
+                        onClick={() =>
+                          handleDecideReview(
+                            pendingReviews[0].permission.id,
+                            pendingReviews[0].proposal.revision,
+                            pendingReviews[0].proposal.digest,
+                            'decline_automation'
+                          )
+                        }
+                        disabled={reviewBusyId === pendingReviews[0].permission.id}
+                        className="px-3 py-1.5 rounded-xl border border-rose-500/30 bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 text-xs font-medium transition-all"
+                      >
+                        Decline
+                      </button>
+                    </>
+                  ) : (
+                    cloudWorkers.find((w) => w.status === 'pending_approval') && (
+                      <button
+                        onClick={() => {
+                          const w = cloudWorkers.find((cw) => cw.status === 'pending_approval')
+                          if (w) handleActivateCloudWorker(w.worker_id)
+                        }}
+                        disabled={!!activatingWorkerId}
+                        className="px-4 py-1.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-bold shadow-lg shadow-emerald-900/30 transition-all flex items-center gap-1.5"
+                      >
+                        <CheckCircle2 size={13} />
+                        <span>{activatingWorkerId ? 'Activating...' : 'Accept & Activate Cloud Worker'}</span>
+                      </button>
+                    )
+                  )}
+                </div>
+              </div>
+            )}
 
             {/* MAIN BODY: 5 DISTINCT VARIANTS */}
             <div className="flex-1 overflow-hidden flex flex-col">

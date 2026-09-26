@@ -7,6 +7,9 @@ import type {
   DeliverableManifest,
   PublishDeliverableOptions,
   DeliverableFileRef,
+  WorkerActorSpec,
+  WorkerActorTask,
+  WorkerJobExecutionLog,
 } from './types.js';
 
 export class WorkerStorageHub {
@@ -281,5 +284,164 @@ export class WorkerStorageHub {
     }
 
     return manifests.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // WORKER ACTOR SPECIFICATION (SINGLE FILE: worker.json) & JOB LOGS
+  // ─────────────────────────────────────────────────────────────────────────
+
+  async getWorkerActor(): Promise<WorkerActorSpec | null> {
+    const key = this.key(`workers/${this.workerId}/worker.json`);
+    const raw = await this.driver.readString(key);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  }
+
+  async saveWorkerActor(spec: WorkerActorSpec): Promise<void> {
+    const key = this.key(`workers/${this.workerId}/worker.json`);
+    const payload: WorkerActorSpec = {
+      ...spec,
+      id: this.workerId,
+      updatedAt: new Date().toISOString(),
+    };
+    await this.driver.write(key, JSON.stringify(payload, null, 2), 'application/json');
+  }
+
+  async updateWorkerActor(updates: Partial<WorkerActorSpec>): Promise<WorkerActorSpec> {
+    const existing = await this.getWorkerActor();
+    const now = new Date().toISOString();
+    const merged: WorkerActorSpec = {
+      id: this.workerId,
+      name: updates.name || existing?.name || this.workerId,
+      description: updates.description ?? existing?.description,
+      version: updates.version || existing?.version || '1.0.0',
+      status: updates.status || existing?.status || 'pending_approval',
+      cloud: updates.cloud || existing?.cloud,
+      schedule: updates.schedule || existing?.schedule,
+      brain: updates.brain || existing?.brain || {
+        model: 'gemini-3.8-flash',
+        instructions: 'Autonomous Swarm Cloud Worker',
+      },
+      tasks: updates.tasks || existing?.tasks || [],
+      createdAt: existing?.createdAt || now,
+      updatedAt: now,
+    };
+    await this.saveWorkerActor(merged);
+    return merged;
+  }
+
+  async addTask(task: Omit<WorkerActorTask, 'id' | 'createdAt' | 'status'> & { id?: string }): Promise<WorkerActorTask> {
+    const spec = (await this.getWorkerActor()) || {
+      id: this.workerId,
+      name: this.workerId,
+      version: '1.0.0',
+      status: 'pending_approval',
+      brain: { model: 'gemini-3.8-flash', instructions: '' },
+      tasks: [],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    const taskId = task.id || `task_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const newTask: WorkerActorTask = {
+      ...task,
+      id: taskId,
+      status: 'pending',
+      createdAt: new Date().toISOString(),
+    };
+
+    const currentTasks = spec.tasks || [];
+    spec.tasks = [...currentTasks, newTask];
+    await this.saveWorkerActor(spec);
+    return newTask;
+  }
+
+  async updateTask(taskId: string, updates: Partial<WorkerActorTask>): Promise<WorkerActorTask> {
+    const spec = await this.getWorkerActor();
+    if (!spec) {
+      throw new Error(`Worker actor not found: ${this.workerId}`);
+    }
+
+    const tasks = spec.tasks || [];
+    const index = tasks.findIndex((t) => t.id === taskId);
+    if (index === -1) {
+      throw new Error(`Task ${taskId} not found on worker ${this.workerId}`);
+    }
+
+    const current = tasks[index];
+    const updated: WorkerActorTask = {
+      ...current,
+      ...updates,
+      id: taskId,
+    };
+    tasks[index] = updated;
+    spec.tasks = tasks;
+    await this.saveWorkerActor(spec);
+    return updated;
+  }
+
+  async logJobExecution(log: WorkerJobExecutionLog): Promise<void> {
+    const jobKey = this.key(`workers/${this.workerId}/jobs/${log.jobId}/execution.json`);
+    await this.driver.write(jobKey, JSON.stringify(log, null, 2), 'application/json');
+
+    // Also append to session trace if sessionId is present
+    if (log.taskId) {
+      await this.appendTrace(log.taskId, `[${log.type}] ${log.status}: ${log.durationMs}ms - $${log.telemetry.cost_usd.toFixed(6)}`, {
+        tokens: log.telemetry,
+        error: log.error,
+      });
+    }
+
+    // Update worker task if associated with a taskId
+    if (log.taskId) {
+      try {
+        await this.updateTask(log.taskId, {
+          status: log.status === 'success' ? 'completed' : 'failed',
+          completedAt: log.completedAt,
+          deliverableId: log.deliverableId,
+          error: log.error,
+          telemetry: {
+            model: log.telemetry.model,
+            thinking_level: log.telemetry.thinking_level,
+            prompt_tokens: log.telemetry.prompt_tokens,
+            candidate_tokens: log.telemetry.candidate_tokens,
+            thinking_tokens: log.telemetry.thinking_tokens,
+            total_tokens: log.telemetry.total_tokens,
+            compute_duration_ms: log.durationMs,
+            cost_usd: log.telemetry.cost_usd,
+          },
+        });
+      } catch {
+        // Task might not have been pre-registered in worker.json
+      }
+    }
+  }
+
+  async getJobExecutionLog(jobId: string): Promise<WorkerJobExecutionLog | null> {
+    const jobKey = this.key(`workers/${this.workerId}/jobs/${jobId}/execution.json`);
+    const raw = await this.driver.readString(jobKey);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  }
+
+  async listJobExecutionLogs(): Promise<WorkerJobExecutionLog[]> {
+    const prefix = this.key(`workers/${this.workerId}/jobs/`);
+    const keys = await this.driver.list(prefix);
+    const logs: WorkerJobExecutionLog[] = [];
+
+    for (const k of keys) {
+      if (k.endsWith('/execution.json')) {
+        const raw = await this.driver.readString(k);
+        if (raw) {
+          try {
+            logs.push(JSON.parse(raw));
+          } catch {
+            // ignore
+          }
+        }
+      }
+    }
+
+    return logs.sort((a, b) => b.startedAt.localeCompare(a.startedAt));
   }
 }

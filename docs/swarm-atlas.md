@@ -3014,5 +3014,27 @@ no scratch/logs or private identifiers were added to tracked documentation.
 - **Verification & Tests:**
   - `swarmd/internal/api/twitter_publish_test.go`: verified tweet text extraction across payload shapes, RFC 3986 percent encoding compliance, and OAuth 1.0a signature calculation.
 
+### Cloud Worker Actor Lifecycle, Durable S3/GCS Telemetry & Project Acceptance (2026-09-27)
+
+- **Worker Actor Single-File Specification (`packages/sdk/src/storage/types.ts`, `hub.ts`, `runner.ts`, `deploy/worker-cloud-deployer.ts`):**
+  - Defined single authoritative `worker.json` specification (`WorkerActorSpec`) managing worker identity, status (`pending_approval`, `active`, `paused`, `disabled`), cloud target, schedule, brain (instructions, model, memory, secret mappings), and task queues.
+  - Implemented `WorkerActorRunner` in `@swarm/sdk` that executes scheduled routines and one-off tasks (`--task-id=<id>`), enforces the `$0` spend approval safety gate (halting immediately when status is `pending_approval`), and logs granular micro-dollar execution telemetry (`prompt_tokens`, `candidate_tokens`, `thinking_tokens`, `total_tokens`, `compute_duration_ms`, `cost_usd`).
+  - Authored `WorkerCloudDeployer` generating non-hallucinated `gcloud run jobs deploy` commands (with mandatory `SWARM_DISABLE_MINT_REPORT=1`), `gcloud scheduler jobs create` triggers, and one-off task execution commands.
+  - Implemented durable job execution logs written to `workers/<worker_id>/jobs/<job_id>/execution.json` in S3/GCS.
+- **Go StorageHub Service & API Expansion (`swarmd/internal/store/pebble/storage_hub_types.go`, `swarmd/internal/storagehub/service.go`, `swarmd/internal/api/storagehub.go`):**
+  - Extended `StorageDiscoveredWorkerRecord` to track `Status`, `Target`, `CloudConfig`, `Schedule`, `Brain`, `Tasks`, `TotalJobsCount`, `TotalSpendUSD`, and `TotalTokens`.
+  - Updated bucket scanning in `SyncDiscoveredWorkers` to extract `worker.json` configuration and aggregate execution logs from `jobs/*/execution.json`.
+  - Added `ActivateWorker` and exposed `POST /v1/storage/workers/{workerId}/activate` and `GET /v1/storage/workers/{workerId}`.
+- **Desktop UI Project-Top Banner & Telemetry Hub (`web/src/features/desktop/orchestrate/OrchestrateView.tsx`, `web/src/features/desktop/storage/api.ts`, `web/src/features/desktop/storage/types.ts`):**
+  - Added high-visibility `Project-Top Pending Worker Banner` right above the middle canvas variants in Orchestrate mode, surfacing pending worker proposals directly within their assigned project.
+  - Added 1-click `[Accept & Activate Cloud Worker]` and `[Decline]` buttons.
+  - Integrated cloud worker fleet display in Workers Hub tab with micro-dollar spend badges, total tokens, and job count.
+- **Verification & Tests:**
+  - `packages/sdk`: all 44 unit tests pass cleanly (`worker-runner.spec.ts`, `worker-deployer.spec.ts`).
+  - `swarmd/internal/storagehub`: all Go tests pass cleanly (0.083s).
+  - `swarmd/internal/api`: `TestStorageHubAPI_Endpoints` passes cleanly with activation and single-worker endpoints verified.
+  - `web`: `tsc --noEmit` passes with 0 errors and production build finishes cleanly in 758ms.
+
+
 
 

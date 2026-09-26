@@ -428,10 +428,15 @@ func (s *Service) ScanBucket(ctx context.Context, accountScopeID, bucketID strin
 			data, err := driver.Get(ctx, k)
 			if err == nil {
 				var wManifest struct {
-					Name        string   `json:"name"`
-					Description string   `json:"description"`
-					Version     string   `json:"version"`
-					Tags        []string `json:"tags"`
+					Name        string           `json:"name"`
+					Description string           `json:"description"`
+					Version     string           `json:"version"`
+					Tags        []string         `json:"tags"`
+					Status      string           `json:"status"`
+					Cloud       map[string]any   `json:"cloud"`
+					Schedule    map[string]any   `json:"schedule"`
+					Brain       map[string]any   `json:"brain"`
+					Tasks       []map[string]any `json:"tasks"`
 				}
 				if json.Unmarshal(data, &wManifest) == nil {
 					if wManifest.Name != "" {
@@ -440,6 +445,44 @@ func (s *Service) ScanBucket(ctx context.Context, accountScopeID, bucketID strin
 					rec.Description = wManifest.Description
 					rec.Version = wManifest.Version
 					rec.Tags = wManifest.Tags
+					if wManifest.Status != "" {
+						rec.Status = wManifest.Status
+					} else if rec.Status == "" {
+						rec.Status = "pending_approval"
+					}
+					if wManifest.Cloud != nil {
+						rec.CloudConfig = wManifest.Cloud
+						rec.Target = "cloud"
+					}
+					if wManifest.Schedule != nil {
+						rec.Schedule = wManifest.Schedule
+					}
+					if wManifest.Brain != nil {
+						rec.Brain = wManifest.Brain
+					}
+					if wManifest.Tasks != nil {
+						rec.Tasks = wManifest.Tasks
+					}
+				}
+			}
+		}
+
+		// Check for job execution logs: workers/<worker_id>/jobs/<job_id>/execution.json
+		if len(parts) >= 3 && parts[1] == "jobs" {
+			if len(parts) == 4 && parts[3] == "execution.json" {
+				rec.TotalJobsCount++
+				data, err := driver.Get(ctx, k)
+				if err == nil {
+					var jLog struct {
+						Telemetry struct {
+							TotalTokens int64   `json:"total_tokens"`
+							CostUSD     float64 `json:"cost_usd"`
+						} `json:"telemetry"`
+					}
+					if json.Unmarshal(data, &jLog) == nil {
+						rec.TotalTokens += jLog.Telemetry.TotalTokens
+						rec.TotalSpendUSD += jLog.Telemetry.CostUSD
+					}
 				}
 			}
 		}
@@ -647,6 +690,70 @@ func (s *Service) ImportWorker(ctx context.Context, accountScopeID, workerID str
 	if err := s.store.PutStorageDiscoveredWorker(rec); err != nil {
 		return nil, err
 	}
+	return &rec, nil
+}
+
+func (s *Service) GetDiscoveredWorker(accountScopeID, workerID string) (*pebblestore.StorageDiscoveredWorkerRecord, bool, error) {
+	if s == nil || s.store == nil {
+		return nil, false, errors.New("storage hub store unconfigured")
+	}
+	rec, ok, err := s.store.GetStorageDiscoveredWorker(accountScopeID, workerID)
+	if err != nil || !ok {
+		return nil, ok, err
+	}
+	return &rec, true, nil
+}
+
+func (s *Service) ActivateWorker(ctx context.Context, accountScopeID, workerID string) (*pebblestore.StorageDiscoveredWorkerRecord, error) {
+	if s == nil || s.store == nil {
+		return nil, errors.New("storage hub store unconfigured")
+	}
+
+	rec, ok, err := s.store.GetStorageDiscoveredWorker(accountScopeID, workerID)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, errors.New("discovered worker not found")
+	}
+
+	bucket, ok, err := s.store.GetStorageBucket(accountScopeID, rec.BucketID)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, errors.New("storage bucket not found")
+	}
+
+	driver, err := s.getDriver(bucket)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get storage driver: %w", err)
+	}
+
+	prefix := bucket.Prefix
+	if prefix != "" && !strings.HasSuffix(prefix, "/") {
+		prefix += "/"
+	}
+	workerKey := prefix + fmt.Sprintf("workers/%s/worker.json", workerID)
+
+	data, err := driver.Get(ctx, workerKey)
+	if err == nil && len(data) > 0 {
+		var workerMap map[string]any
+		if json.Unmarshal(data, &workerMap) == nil {
+			workerMap["status"] = "active"
+			workerMap["updatedAt"] = s.now().UTC().Format(time.RFC3339)
+			if updatedBytes, err := json.MarshalIndent(workerMap, "", "  "); err == nil {
+				_ = driver.Put(ctx, workerKey, updatedBytes, "application/json")
+			}
+		}
+	}
+
+	rec.Status = "active"
+	rec.UpdatedAt = s.now().UnixMilli()
+	if err := s.store.PutStorageDiscoveredWorker(rec); err != nil {
+		return nil, err
+	}
+
 	return &rec, nil
 }
 

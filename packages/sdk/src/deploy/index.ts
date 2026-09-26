@@ -27,6 +27,7 @@ export * from './manifest.js';
 export * from './dockerfile.js';
 export * from './providers/gcp-cloud-run.js';
 export * from './providers/gcp-compute.js';
+export * from './worker-cloud-deployer.js';
 
 export class SwarmDeployNamespace {
   private readonly providers = new Map<string, CloudDeployProvider>();

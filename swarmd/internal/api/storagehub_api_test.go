@@ -192,6 +192,40 @@ func TestStorageHubAPI_Endpoints(t *testing.T) {
 		}
 	}
 
+	// 5b. POST /v1/storage/workers/cloud-coder/activate -> activates pending worker
+	{
+		req := authReq(httptest.NewRequest(http.MethodPost, "/v1/storage/workers/cloud-coder/activate", nil))
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+		var resp struct {
+			Worker pebblestore.StorageDiscoveredWorkerRecord `json:"worker"`
+		}
+		_ = json.Unmarshal(w.Body.Bytes(), &resp)
+		if resp.Worker.Status != "active" {
+			t.Fatalf("expected worker status = active, got %s", resp.Worker.Status)
+		}
+	}
+
+	// 5c. GET /v1/storage/workers/cloud-coder -> fetches single worker details
+	{
+		req := authReq(httptest.NewRequest(http.MethodGet, "/v1/storage/workers/cloud-coder", nil))
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+		var resp struct {
+			Worker pebblestore.StorageDiscoveredWorkerRecord `json:"worker"`
+		}
+		_ = json.Unmarshal(w.Body.Bytes(), &resp)
+		if resp.Worker.WorkerID != "cloud-coder" {
+			t.Fatalf("expected workerID cloud-coder, got %s", resp.Worker.WorkerID)
+		}
+	}
+
 	// 6. GET /v1/storage/deliverables -> discovered deliverables
 	{
 		req := authReq(httptest.NewRequest(http.MethodGet, "/v1/storage/deliverables", nil))

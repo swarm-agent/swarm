@@ -193,6 +193,25 @@ func (s *Server) handleStorageWorkers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Route: /v1/storage/workers/{workerId}/activate
+	if strings.HasSuffix(path, "/activate") && r.Method == http.MethodPost {
+		workerID := strings.TrimSuffix(path, "/activate")
+		workerID = strings.TrimSpace(workerID)
+		if workerID == "" {
+			writeError(w, http.StatusBadRequest, errors.New("worker id required"))
+			return
+		}
+		activated, err := s.storageHub.ActivateWorker(r.Context(), accountScopeID, workerID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"worker": activated,
+		})
+		return
+	}
+
 	// Route: /v1/storage/workers/{workerId}/import
 	if strings.HasSuffix(path, "/import") && r.Method == http.MethodPost {
 		workerID := strings.TrimSuffix(path, "/import")
@@ -208,6 +227,24 @@ func (s *Server) handleStorageWorkers(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"worker": imported,
+		})
+		return
+	}
+
+	// Route: /v1/storage/workers/{workerId} (GET single worker with granular tasks/spend)
+	if path != "" && !strings.Contains(path, "/") && r.Method == http.MethodGet {
+		workerID := strings.TrimSpace(path)
+		rec, ok, err := s.storageHub.GetDiscoveredWorker(accountScopeID, workerID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		if !ok {
+			writeError(w, http.StatusNotFound, errors.New("worker not found"))
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"worker": rec,
 		})
 		return
 	}

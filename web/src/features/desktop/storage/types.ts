@@ -26,6 +26,15 @@ export interface StorageDiscoveredWorker {
   description?: string
   version?: string
   tags?: string[]
+  status?: 'pending_approval' | 'active' | 'paused' | 'disabled' | string
+  target?: 'cloud' | 'local'
+  cloud_config?: Record<string, any>
+  schedule?: Record<string, any>
+  brain?: Record<string, any>
+  tasks?: Array<Record<string, any>>
+  total_jobs_count?: number
+  total_spend_usd?: number
+  total_tokens?: number
   has_base_context: boolean
   sessions_count: number
   last_session_id?: string

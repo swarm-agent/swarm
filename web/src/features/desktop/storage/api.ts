@@ -49,6 +49,14 @@ export async function listStorageWorkers(): Promise<StorageDiscoveredWorker[]> {
   }
 }
 
+export async function activateStorageWorker(id: string): Promise<StorageDiscoveredWorker> {
+  const res = await requestJson<{ worker: StorageDiscoveredWorker }>(
+    `/v1/storage/workers/${encodeURIComponent(id)}/activate`,
+    { method: 'POST' }
+  )
+  return res.worker
+}
+
 export async function getCanonicalStorageBucket(): Promise<StorageBucket | null> {
   try {
     const res = await requestJson<{ bucket: StorageBucket | null; configured: boolean }>(

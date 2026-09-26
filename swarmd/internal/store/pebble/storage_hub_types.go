@@ -21,25 +21,34 @@ type StorageBucketRecord struct {
 }
 
 type StorageDiscoveredWorkerRecord struct {
-	WorkerID       string         `json:"worker_id"`
-	BucketID       string         `json:"bucket_id"`
-	AccountScopeID string         `json:"account_scope_id"`
-	Name           string         `json:"name"`
-	Description    string         `json:"description,omitempty"`
-	Version        string         `json:"version,omitempty"`
-	Tags           []string       `json:"tags,omitempty"`
-	HasBaseContext bool           `json:"has_base_context"`
-	BaseContext    map[string]any `json:"base_context,omitempty"`
-	SessionsCount  int            `json:"sessions_count"`
-	LastSessionID  string         `json:"last_session_id,omitempty"`
-	LastStatus     string         `json:"last_status,omitempty"`
-	LastStep       string         `json:"last_step,omitempty"`
-	LastProgress   int            `json:"last_progress,omitempty"`
-	LastActivityAt int64          `json:"last_activity_at"`
-	Imported       bool           `json:"imported"`
-	ImportedAt     int64          `json:"imported_at,omitempty"`
-	DiscoveredAt   int64          `json:"discovered_at"`
-	UpdatedAt      int64          `json:"updated_at"`
+	WorkerID       string           `json:"worker_id"`
+	BucketID       string           `json:"bucket_id"`
+	AccountScopeID string           `json:"account_scope_id"`
+	Name           string           `json:"name"`
+	Description    string           `json:"description,omitempty"`
+	Version        string           `json:"version,omitempty"`
+	Tags           []string         `json:"tags,omitempty"`
+	Status         string           `json:"status,omitempty"` // "pending_approval", "active", "paused", "disabled"
+	Target         string           `json:"target,omitempty"` // "cloud", "local"
+	CloudConfig    map[string]any   `json:"cloud_config,omitempty"`
+	Schedule       map[string]any   `json:"schedule,omitempty"`
+	Brain          map[string]any   `json:"brain,omitempty"`
+	Tasks          []map[string]any `json:"tasks,omitempty"`
+	TotalJobsCount int              `json:"total_jobs_count,omitempty"`
+	TotalSpendUSD  float64          `json:"total_spend_usd,omitempty"`
+	TotalTokens    int64            `json:"total_tokens,omitempty"`
+	HasBaseContext bool             `json:"has_base_context"`
+	BaseContext    map[string]any   `json:"base_context,omitempty"`
+	SessionsCount  int              `json:"sessions_count"`
+	LastSessionID  string           `json:"last_session_id,omitempty"`
+	LastStatus     string           `json:"last_status,omitempty"`
+	LastStep       string           `json:"last_step,omitempty"`
+	LastProgress   int              `json:"last_progress,omitempty"`
+	LastActivityAt int64            `json:"last_activity_at"`
+	Imported       bool             `json:"imported"`
+	ImportedAt     int64            `json:"imported_at,omitempty"`
+	DiscoveredAt   int64            `json:"discovered_at"`
+	UpdatedAt      int64            `json:"updated_at"`
 }
 
 type StorageDeliverableFileRef struct {
