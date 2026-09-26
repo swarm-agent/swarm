@@ -53,6 +53,7 @@ import type {
   LiveRunOverlay,
   MessageSnapshot,
   PendingUserMessage,
+  SessionSnapshot,
 } from "../../state/desktop-v3-cache-types";
 import {
   dispatchDesktopV3Cache,
@@ -450,7 +451,7 @@ type DesktopV3InputSettingsSnapshot = {
 function buildDesktopV3ExistingSettingsSnapshot(input: {
   sessionId: string;
   metadata?: Record<string, unknown>;
-  session?: DesktopSessionRecord | null;
+  session?: DesktopSessionRecord | SessionSnapshot | null;
   cacheSession?: { mode?: string; metadata?: Record<string, unknown> } | null;
   cachedPreference: SessionPreferenceRecord;
   agentModelPolicy?: unknown;
@@ -1587,7 +1588,7 @@ export function buildDesktopV3ConversationRenderItems(
 export function resolveDesktopV3StopRunRequest(input: {
   route: DesktopChatRoute | null | undefined;
   runId: string | null | undefined;
-  session?: DesktopSessionRecord | null;
+  session?: DesktopSessionRecord | SessionSnapshot | null;
   targetSwarmId?: string | null;
 }): { runId: string; targetSwarmId: string } {
   const runId = input.runId?.trim() ?? "";
@@ -1627,7 +1628,7 @@ export interface DesktopV3ExistingConversationPaneProps {
   renderedMessages: RenderedSessionMessages;
   messagesLoaded: boolean;
   metadata?: Record<string, unknown>;
-  session?: DesktopSessionRecord | null;
+  session?: DesktopSessionRecord | SessionSnapshot | null;
   loadedMessageCount?: number;
   routeOptions?: DesktopChatRoute[];
   onOpenChats?: () => void;
@@ -1890,10 +1891,36 @@ export function DesktopV3ExistingConversationPane({
   });
   const sessionMetadata =
     cacheSession?.metadata ?? session?.metadata ?? metadata;
+  const sessionWorkspaceName =
+    session && "workspaceName" in session
+      ? session.workspaceName
+      : session && "workspace_name" in session
+        ? session.workspace_name
+        : undefined;
+  const sessionWorkspacePath =
+    session && "workspacePath" in session
+      ? session.workspacePath
+      : session && "workspace_path" in session
+        ? session.workspace_path
+        : undefined;
+  const sessionWorktreeBranch =
+    session && "worktreeBranch" in session
+      ? session.worktreeBranch
+      : session && "worktree_branch" in session
+        ? session.worktree_branch
+        : undefined;
+  const sessionGitBranch =
+    session && "gitBranch" in session ? session.gitBranch : undefined;
+  const sessionMessageCount =
+    session && "messageCount" in session
+      ? session.messageCount
+      : session && "message_count" in session
+        ? session.message_count
+        : undefined;
   const headerBranchLabel =
-    session?.worktreeBranch?.trim() ||
+    sessionWorktreeBranch?.trim() ||
     cacheSession?.worktree_branch?.trim() ||
-    session?.gitBranch?.trim() ||
+    sessionGitBranch?.trim() ||
     metadataString(sessionMetadata, "swarm_v3_branch_label") ||
     metadataString(sessionMetadata, "git_branch") ||
     metadataString(sessionMetadata, "branch");
@@ -2315,7 +2342,7 @@ export function DesktopV3ExistingConversationPane({
   const loadedCommittedCount =
     loadedMessageCount ?? renderedMessages.committed.length;
   const totalMessageCount = Math.max(
-    session?.messageCount ??
+    sessionMessageCount ??
       cacheSession?.message_count ??
       loadedCommittedCount,
     loadedCommittedCount,
@@ -3200,7 +3227,7 @@ export function DesktopV3ExistingConversationPane({
       const title = session?.title || cacheSession?.title || 'Conversation';
       const markdown = formatConversationMarkdown({
         title,
-        workspaceName: session?.workspaceName || cacheSession?.workspace_name,
+        workspaceName: sessionWorkspaceName || cacheSession?.workspace_name,
         sessionId: normalizedSessionId,
         exportedAt: new Date(),
       }, complete);
@@ -3219,7 +3246,7 @@ export function DesktopV3ExistingConversationPane({
     } finally {
       if (mountedRef.current) setTranscriptAction(null);
     }
-  }, [cacheSession?.title, cacheSession?.workspace_name, hasPartialHistory, normalizedSessionId, renderedMessages.committed, session?.title, session?.workspaceName, transcriptAction]);
+  }, [cacheSession?.title, cacheSession?.workspace_name, hasPartialHistory, normalizedSessionId, renderedMessages.committed, session?.title, sessionWorkspaceName, transcriptAction]);
   const headerSessionActions = useMemo(() => sessionActions ? {
     ...sessionActions,
     pendingAction: transcriptAction ?? sessionActions.pendingAction,
@@ -3309,7 +3336,7 @@ export function DesktopV3ExistingConversationPane({
         sessionId={normalizedSessionId}
         title={session?.title || cacheSession?.title || (startPresentation ? "New chat" : "Conversation")}
         workspaceName={
-          session?.workspaceName || cacheSession?.workspace_name || startPresentation?.workspaceName || "Workspace"
+          sessionWorkspaceName || cacheSession?.workspace_name || startPresentation?.workspaceName || "Workspace"
         }
         branchName={headerBranchLabel}
         modelLabel={canonicalHeaderModelLabel}
@@ -3616,7 +3643,7 @@ export function DesktopV3ExistingConversationPane({
           ) : (
             composerOverride ?? <DesktopV3ExistingConversationComposer
             key={normalizedSessionId}
-            workspacePath={session?.workspacePath?.trim() || cacheSession?.workspace_path?.trim() || metadataString(sessionMetadata, "workspace_path")}
+            workspacePath={sessionWorkspacePath?.trim() || cacheSession?.workspace_path?.trim() || metadataString(sessionMetadata, "workspace_path")}
             sessionId={normalizedSessionId}
             initialDraft={storedOperation?.request.content ?? ""}
             initialArtifactSelections={storedOperation?.request.artifact_selections ?? []}

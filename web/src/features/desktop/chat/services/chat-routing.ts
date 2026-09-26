@@ -1,4 +1,5 @@
 import type { DesktopSessionRecord } from '../../types/realtime'
+import type { SessionSnapshot } from '../../state/desktop-v3-cache-types'
 import type { WorkspaceOverviewTopologyRoute } from '../../../workspaces/launcher/types/workspace-overview'
 
 export interface DesktopChatRoute {
@@ -159,18 +160,36 @@ export function inferV3TargetRelationship(metadata: Record<string, unknown> | nu
   return ''
 }
 
-export function desktopChatRouteFromSessionMetadata(session: DesktopSessionRecord | null | undefined): DesktopChatRoute | null {
+export type DesktopSessionLike = DesktopSessionRecord | SessionSnapshot
+
+export function desktopChatRouteFromSessionMetadata(session: DesktopSessionLike | null | undefined): DesktopChatRoute | null {
   const metadata = session?.metadata
   const v3MetadataSwarmId = sessionMetadataString(metadata, 'swarm_v3_runtime_swarm_id') || sessionMetadataString(metadata, 'swarm_v3_authority_host_swarm_id')
   if (v3MetadataSwarmId) {
     const workspaceBindingId = sessionMetadataString(metadata, 'swarm_v3_workspace_binding_id')
-    const workspaceName = sessionMetadataString(metadata, 'swarm_v3_source_workspace_name') || session?.workspaceName?.trim() || ''
+    const rawWorkspaceName =
+      session && 'workspaceName' in session
+        ? session.workspaceName
+        : session && 'workspace_name' in session
+          ? session.workspace_name
+          : ''
+    const workspaceName = sessionMetadataString(metadata, 'swarm_v3_source_workspace_name') || rawWorkspaceName?.trim() || ''
     const id = workspaceBindingId
       ? desktopChatRouteID(v3MetadataSwarmId, workspaceName, workspaceBindingId)
       : `swarm:${v3MetadataSwarmId}`
     if (!id) {
       return null
     }
+    const rawWorkspacePath =
+      session && 'workspacePath' in session
+        ? session.workspacePath
+        : session && 'workspace_path' in session
+          ? session.workspace_path
+          : ''
+    const rawRuntimeWorkspacePath =
+      session && 'runtimeWorkspacePath' in session
+        ? session.runtimeWorkspacePath
+        : undefined
     const label = v3MetadataSwarmId
     return {
       id,
@@ -180,9 +199,9 @@ export function desktopChatRouteFromSessionMetadata(session: DesktopSessionRecor
       targetRelationship: inferV3TargetRelationship(metadata) || 'self',
       hostSwarmId: sessionMetadataString(metadata, 'swarm_v3_authority_host_swarm_id') || v3MetadataSwarmId,
       hostSwarmName: '',
-      hostWorkspacePath: sessionMetadataString(metadata, 'swarm_v3_source_workspace_path') || session?.workspacePath?.trim() || '',
+      hostWorkspacePath: sessionMetadataString(metadata, 'swarm_v3_source_workspace_path') || rawWorkspacePath?.trim() || '',
       hostWorkspaceName: workspaceName,
-      runtimeWorkspacePath: session?.runtimeWorkspacePath?.trim() || sessionMetadataString(metadata, 'swarm_v3_runtime_workspace_path'),
+      runtimeWorkspacePath: rawRuntimeWorkspacePath?.trim() || sessionMetadataString(metadata, 'swarm_v3_runtime_workspace_path'),
       workspaceBindingId: workspaceBindingId || '',
       workspaceName,
       targetSwarmName: label,
@@ -193,7 +212,7 @@ export function desktopChatRouteFromSessionMetadata(session: DesktopSessionRecor
 }
 
 export function resolveDesktopChatRouteFromSession(
-  session: DesktopSessionRecord | null | undefined,
+  session: DesktopSessionLike | null | undefined,
   routeOptions: DesktopChatRoute[],
   fallback?: DesktopChatRoute | null,
 ): DesktopChatRoute | null {
