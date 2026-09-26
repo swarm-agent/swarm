@@ -539,6 +539,12 @@ export function DesktopNotificationsModal({
                   : typeof payload.sha256 === 'string'
                     ? payload.sha256
                     : null
+                const telemetry = (payload.telemetry && typeof payload.telemetry === 'object') ? (payload.telemetry as Record<string, any>) : null
+                const costUsd = typeof telemetry?.cost_usd === 'number' ? telemetry.cost_usd : undefined
+                const thinkingTokens = typeof telemetry?.thinking_tokens === 'number' ? telemetry.thinking_tokens : undefined
+                const totalTokens = typeof telemetry?.total_tokens === 'number' ? telemetry.total_tokens : undefined
+                const computeDurationMs = typeof telemetry?.compute_duration_ms === 'number' ? telemetry.compute_duration_ms : undefined
+                const modelName = typeof telemetry?.model === 'string' ? telemetry.model : undefined
 
                 return (
                   <Card
@@ -585,6 +591,37 @@ export function DesktopNotificationsModal({
                         {formatRelativeTime(record.updatedAt || record.createdAt) || 'just now'}
                       </div>
                     </div>
+
+                    {/* Granular Cost & Telemetry Badges */}
+                    {telemetry ? (
+                      <div className="flex flex-wrap items-center gap-2 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-2 text-xs">
+                        {costUsd !== undefined ? (
+                          <span className="flex items-center gap-1 font-semibold text-emerald-400">
+                            💳 {costUsd < 0.01 ? `$${costUsd.toFixed(4)}` : `$${costUsd.toFixed(2)}`}
+                          </span>
+                        ) : null}
+                        {thinkingTokens ? (
+                          <span className="flex items-center gap-1 font-medium text-[var(--app-primary)]">
+                            🧠 {thinkingTokens.toLocaleString()} Thinking
+                          </span>
+                        ) : null}
+                        {totalTokens ? (
+                          <span className="text-[var(--app-text-muted)]">
+                            📊 {totalTokens.toLocaleString()} Tokens
+                          </span>
+                        ) : null}
+                        {computeDurationMs ? (
+                          <span className="text-[var(--app-text-subtle)]">
+                            ⏱ {(computeDurationMs / 1000).toFixed(1)}s Compute
+                          </span>
+                        ) : null}
+                        {modelName ? (
+                          <span className="rounded bg-[var(--app-surface)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--app-text-subtle)]">
+                            {modelName}
+                          </span>
+                        ) : null}
+                      </div>
+                    ) : null}
 
                     {/* Rich Deliverable Media Preview */}
                     {mediaUrl ? <NotificationMediaPreview url={mediaUrl} /> : null}

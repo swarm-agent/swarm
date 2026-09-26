@@ -1,4 +1,5 @@
 import type { SwarmTransport } from '../transport.js';
+import type { DeliverableTelemetry, DeliverableReview } from './types.js';
 
 export interface StorageBucketRecord {
   id: string;
@@ -51,7 +52,7 @@ export interface StorageDiscoveredDeliverableRecord {
   title: string;
   summary?: string;
   kind?: string;
-  status: 'pending_review' | 'accepted' | 'rejected' | string;
+  status: 'pending_review' | 'accepted' | 'approved' | 'rejected' | string;
   sha256?: string;
   files?: Array<{
     name: string;
@@ -68,6 +69,8 @@ export interface StorageDiscoveredDeliverableRecord {
     variant?: string;
   }>;
   payload?: Record<string, any>;
+  telemetry?: DeliverableTelemetry;
+  review?: DeliverableReview;
   created_at?: number;
   updated_at?: number;
   imported_at?: number;
@@ -239,6 +242,41 @@ export class SwarmStorageNamespace {
       count: number;
     }>('/v1/storage/proposals', { method: 'GET' });
     return res.data.proposals;
+  }
+
+  /**
+   * Accepts and approves a discovered deliverable, updating its durable state in S3/GCS
+   * and optionally triggering cloud or local execution.
+   */
+  async acceptDeliverable(
+    id: string,
+    options?: { target?: 'cloud' | 'local'; note?: string }
+  ): Promise<{ deliverable: StorageDiscoveredDeliverableRecord; status: string }> {
+    const res = await this.transport.request<{
+      deliverable: StorageDiscoveredDeliverableRecord;
+      status: string;
+    }>(`/v1/storage/deliverables/${id}/accept`, {
+      method: 'POST',
+      body: options ?? { target: 'cloud' },
+    });
+    return res.data;
+  }
+
+  /**
+   * Rejects/dismisses a discovered deliverable.
+   */
+  async rejectDeliverable(
+    id: string,
+    note?: string
+  ): Promise<{ deliverable: StorageDiscoveredDeliverableRecord; status: string }> {
+    const res = await this.transport.request<{
+      deliverable: StorageDiscoveredDeliverableRecord;
+      status: string;
+    }>(`/v1/storage/deliverables/${id}/reject`, {
+      method: 'POST',
+      body: { note },
+    });
+    return res.data;
   }
 
   /**

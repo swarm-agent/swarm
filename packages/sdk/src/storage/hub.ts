@@ -221,6 +221,7 @@ export class WorkerStorageHub {
       summary: options.summary,
       kind: options.kind || 'ai_deliverable',
       status: 'pending_review',
+      telemetry: options.telemetry,
       files: fileRefs,
       actions: options.actions || [],
       payload: options.payload,

@@ -47,3 +47,56 @@ export interface StorageScanSummary {
   deliverables_found?: number
   deliverables_new?: number
 }
+
+export interface DeliverableTelemetry {
+  model?: string
+  thinking_level?: string
+  prompt_tokens?: number
+  candidate_tokens?: number
+  thinking_tokens?: number
+  total_tokens?: number
+  compute_duration_ms?: number
+  cost_usd?: number
+}
+
+export interface DeliverableReview {
+  decision: 'approved' | 'rejected' | 'published' | 'dismissed'
+  target?: 'cloud' | 'local'
+  reviewed_by?: string
+  reviewed_at?: number
+  note?: string
+  tx_id?: string
+}
+
+export interface StorageDiscoveredDeliverable {
+  deliverable_id: string
+  worker_id: string
+  session_id: string
+  bucket_id: string
+  account_scope_id?: string
+  title: string
+  summary?: string
+  kind?: string
+  status: 'pending_review' | 'accepted' | 'approved' | 'rejected' | 'published' | string
+  sha256?: string
+  files?: Array<{
+    name: string
+    path: string
+    size_bytes: number
+    sha256: string
+    content_type?: string
+  }>
+  actions?: Array<{
+    id: string
+    label: string
+    action_type?: string
+    endpoint: string
+    variant?: string
+  }>
+  payload?: Record<string, any>
+  telemetry?: DeliverableTelemetry
+  review?: DeliverableReview
+  created_at: number
+  updated_at: number
+  imported_at?: number
+}

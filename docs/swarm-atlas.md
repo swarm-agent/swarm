@@ -2968,4 +2968,32 @@ no scratch/logs or private identifiers were added to tracked documentation.
   - SDK unit tests: `packages/sdk/src/__tests__/storage.spec.ts` (covering proposals, canonical retrieval, and accept-canonical) and `packages/sdk/src/__tests__/social-media-worker.spec.ts` pass 100% (35 passing tests).
   - Web UI: Clean TypeScript type checking (`npx tsc --noEmit`) and settings tab unit tests pass.
 
+### Cloud Worker Analytics, GCS Deliverable Acceptance Write-Back & Spend Badging (2026-09-26)
+
+- **Deliverable Telemetry and GCS Manifest Acceptance Write-Back (`swarmd/internal/storagehub/`, `swarmd/internal/api/storagehub.go`, `swarmd/internal/store/pebble/storage_hub_types.go`):**
+  - Added `DeliverableTelemetry` schema to `storage_hub_types.go` and `packages/sdk/src/storage/types.ts` capturing model name, thinking level, prompt tokens, candidate tokens, thinking tokens, total tokens, compute duration (ms), and cost in USD.
+  - Added `DeliverableReview` struct capturing approval decision, target (`cloud` vs `local`), reviewer identity, timestamp, and optional execution notes.
+  - Extended `StorageDiscoveredDeliverableRecord` and `StorageDeliverableManifest` to persist and serialize granular telemetry and review state.
+  - Implemented `AcceptDeliverable` and `RejectDeliverable` in `storagehub.Service`: updates local Pebble store record and writes updated status, operator signature, and review target back to the durable GCS `manifest.json` in the cloud bucket.
+  - Exposed REST endpoints on `swarmd`:
+    - `POST /v1/storage/deliverables/{id}/accept` (body: `{"target":"cloud"|"local","note":"..."}`)
+    - `POST /v1/storage/deliverables/{id}/reject` (body: `{"note":"..."}`)
+  - Updated bucket deliverable scanner in `service.go` to extract telemetry and automatically construct dual action buttons on generated AI deliverable notifications:
+    - Primary: `Approve for Cloud Dispatch` (`POST /v1/storage/deliverables/{id}/accept`)
+    - Secondary: `Import to Worktree` (`POST /v1/storage/deliverables/{id}/import`)
+- **Desktop UI Spend Badging & Telemetry Display (`web/src/features/desktop/notifications/components/desktop-notifications-modal.tsx`, `web/src/features/desktop/storage/types.ts`):**
+  - Updated `StorageDiscoveredDeliverable` TypeScript interfaces with `DeliverableTelemetry` and `DeliverableReview`.
+  - Added granular telemetry badges directly to AI Deliverable cards in the Notifications modal:
+    - Micro-dollar run cost (e.g. `💳 $0.0030`)
+    - Thinking tokens counter (e.g. `🧠 2,640 Thinking`)
+    - Total tokens count (e.g. `📊 7,340 Tokens`)
+    - Ephemeral compute runtime (e.g. `⏱ 5.8s Compute`)
+    - Target model tag (e.g. `gemini-3.8-flash`)
+  - Updated endpoint safelist validation in `notifications-inbox.spec.ts` ensuring deliverable accept/reject endpoints are trusted for 1-click execution.
+- **Verification & Tests:**
+  - `swarmd/internal/storagehub/service_test.go`: added lifecycle tests verifying dual action endpoint generation, `AcceptDeliverable` execution, and manifest write-back to cloud storage.
+  - `swarmd/internal/api/storagehub_api_test.go`: verified `POST /v1/storage/deliverables/{id}/accept` endpoint returns 200 with approved status.
+  - `packages/sdk`: all 35 unit tests pass cleanly with updated telemetry and review types.
+  - `web`: built production client bundle with `npm run build` in 1.09s; unit tests pass cleanly.
+
 

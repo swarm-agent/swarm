@@ -56,8 +56,30 @@ export interface DeliverableFileRef {
 export type DeliverableReviewStatus =
   | 'pending_review'
   | 'accepted'
+  | 'approved'
   | 'rejected'
+  | 'published'
   | 'dismissed';
+
+export interface DeliverableTelemetry {
+  model?: string;
+  thinking_level?: string;
+  prompt_tokens?: number;
+  candidate_tokens?: number;
+  thinking_tokens?: number;
+  total_tokens?: number;
+  compute_duration_ms?: number;
+  cost_usd?: number;
+}
+
+export interface DeliverableReview {
+  decision: 'approved' | 'rejected' | 'published' | 'dismissed';
+  target?: 'cloud' | 'local';
+  reviewedBy?: string;
+  reviewedAt?: string | number;
+  note?: string;
+  txId?: string;
+}
 
 export interface DeliverableManifest {
   id: string;
@@ -70,6 +92,8 @@ export interface DeliverableManifest {
   files: DeliverableFileRef[];
   actions?: NotificationAction[];
   payload?: Record<string, any>;
+  telemetry?: DeliverableTelemetry;
+  review?: DeliverableReview;
   sha256?: string;
   createdAt: string;
   updatedAt: string;
@@ -81,6 +105,7 @@ export interface PublishDeliverableOptions {
   title: string;
   summary?: string;
   kind?: string;
+  telemetry?: DeliverableTelemetry;
   files?: Array<{
     name: string;
     content: string | Uint8Array;

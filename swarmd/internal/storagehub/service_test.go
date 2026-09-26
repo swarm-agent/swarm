@@ -170,11 +170,47 @@ func TestStorageHubService_Lifecycle(t *testing.T) {
 	if notif.WorkerID != "bench-worker-1" {
 		t.Errorf("unexpected worker ID: %s", notif.WorkerID)
 	}
-	if len(notif.Actions) == 0 || notif.Actions[0].Endpoint != "/v1/storage/deliverables/deliv-001/import" {
-		t.Errorf("unexpected action endpoint: %+v", notif.Actions)
+	if len(notif.Actions) == 0 {
+		t.Fatalf("expected actions on notification")
+	}
+	hasAccept := false
+	hasImport := false
+	for _, act := range notif.Actions {
+		if act.Endpoint == "/v1/storage/deliverables/deliv-001/accept" {
+			hasAccept = true
+		}
+		if act.Endpoint == "/v1/storage/deliverables/deliv-001/import" {
+			hasImport = true
+		}
+	}
+	if !hasAccept || !hasImport {
+		t.Errorf("expected both accept and import action endpoints, got %+v", notif.Actions)
 	}
 
-	// 5. Import Deliverable to target directory
+	// 5. Test AcceptDeliverable (approving for cloud/local dispatch)
+	accepted, err := svc.AcceptDeliverable(ctx, accountID, "deliv-001", "cloud", "operator approved")
+	if err != nil {
+		t.Fatalf("AcceptDeliverable: %v", err)
+	}
+	if accepted.Status != "approved" {
+		t.Errorf("expected status 'approved', got %s", accepted.Status)
+	}
+	if accepted.Review == nil || accepted.Review.Target != "cloud" {
+		t.Errorf("expected review target 'cloud', got %+v", accepted.Review)
+	}
+
+	// Check manifest in driver was updated to approved
+	approvedManifestBytes, err := driver.Get(ctx, "deliverables/bench-worker-1/deliv-001/manifest.json")
+	if err != nil {
+		t.Fatalf("read approved manifest: %v", err)
+	}
+	var approvedM map[string]any
+	_ = json.Unmarshal(approvedManifestBytes, &approvedM)
+	if approvedM["status"] != "approved" {
+		t.Errorf("expected driver manifest status 'approved', got %v", approvedM["status"])
+	}
+
+	// 6. Import Deliverable to target directory
 	targetDir, err := os.MkdirTemp("", "swarm-deliverable-dest-*")
 	if err != nil {
 		t.Fatalf("target dir: %v", err)

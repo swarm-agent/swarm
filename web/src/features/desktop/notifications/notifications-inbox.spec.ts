@@ -70,6 +70,8 @@ test('validates safe and unsafe notification action endpoints', () => {
   assert.equal(isSafeNotificationActionEndpoint('/v3/sessions/sess_123'), true)
   assert.equal(isSafeNotificationActionEndpoint('/settings?tab=cloud'), true)
   assert.equal(isSafeNotificationActionEndpoint('/v1/storage/buckets/bkt_123/accept-canonical'), true)
+  assert.equal(isSafeNotificationActionEndpoint('/v1/storage/deliverables/deliv_123/accept'), true)
+  assert.equal(isSafeNotificationActionEndpoint('/v1/storage/deliverables/deliv_123/reject'), true)
 
   // Unsafe SSRF / Confused Deputy endpoints
   assert.equal(isSafeNotificationActionEndpoint('http://localhost:8765/v1/activate'), false)

@@ -283,6 +283,59 @@ func (s *Server) handleStorageDeliverables(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	// Route: /v1/storage/deliverables/{id}/accept
+	if strings.HasSuffix(path, "/accept") && r.Method == http.MethodPost {
+		deliverableID := strings.TrimSuffix(path, "/accept")
+		deliverableID = strings.TrimSpace(deliverableID)
+		if deliverableID == "" {
+			writeError(w, http.StatusBadRequest, errors.New("deliverable id required"))
+			return
+		}
+
+		var req struct {
+			Target string `json:"target"`
+			Note   string `json:"note"`
+		}
+		_ = decodeJSONLimited(w, r, &req, 64*1024)
+
+		accepted, err := s.storageHub.AcceptDeliverable(r.Context(), accountScopeID, deliverableID, req.Target, req.Note)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"deliverable": accepted,
+			"status":      "approved",
+		})
+		return
+	}
+
+	// Route: /v1/storage/deliverables/{id}/reject
+	if strings.HasSuffix(path, "/reject") && r.Method == http.MethodPost {
+		deliverableID := strings.TrimSuffix(path, "/reject")
+		deliverableID = strings.TrimSpace(deliverableID)
+		if deliverableID == "" {
+			writeError(w, http.StatusBadRequest, errors.New("deliverable id required"))
+			return
+		}
+
+		var req struct {
+			Note string `json:"note"`
+		}
+		_ = decodeJSONLimited(w, r, &req, 64*1024)
+
+		rejected, err := s.storageHub.RejectDeliverable(r.Context(), accountScopeID, deliverableID, req.Note)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"deliverable": rejected,
+			"status":      "rejected",
+		})
+		return
+	}
+
 	methodNotAllowed(w)
 }
 

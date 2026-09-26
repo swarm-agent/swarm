@@ -505,6 +505,8 @@ func (s *Service) ScanBucket(ctx context.Context, accountScopeID, bucketID strin
 				Files     []pebblestore.StorageDeliverableFileRef `json:"files"`
 				Actions   []pebblestore.NotificationAction        `json:"actions"`
 				Payload   map[string]any                          `json:"payload"`
+				Telemetry *pebblestore.DeliverableTelemetry       `json:"telemetry"`
+				Review    *pebblestore.DeliverableReview          `json:"review"`
 				CreatedAt string                                  `json:"created_at"`
 			}
 			if err := json.Unmarshal(data, &dManifest); err != nil {
@@ -532,6 +534,8 @@ func (s *Service) ScanBucket(ctx context.Context, accountScopeID, bucketID strin
 					Files:          dManifest.Files,
 					Actions:        dManifest.Actions,
 					Payload:        dManifest.Payload,
+					Telemetry:      dManifest.Telemetry,
+					Review:         dManifest.Review,
 					CreatedAt:      s.now().UnixMilli(),
 					UpdatedAt:      s.now().UnixMilli(),
 				}
@@ -552,15 +556,29 @@ func (s *Service) ScanBucket(ctx context.Context, accountScopeID, bucketID strin
 					if dManifest.SHA256 != "" {
 						payload["media_sha256"] = dManifest.SHA256
 					}
+					if dManifest.Telemetry != nil {
+						payload["telemetry"] = dManifest.Telemetry
+					}
+					if dManifest.Review != nil {
+						payload["review"] = dManifest.Review
+					}
 
 					importEndpoint := fmt.Sprintf("/v1/storage/deliverables/%s/import", dManifest.ID)
+					acceptEndpoint := fmt.Sprintf("/v1/storage/deliverables/%s/accept", dManifest.ID)
 					actions := []pebblestore.NotificationAction{
+						{
+							ID:         "approve_cloud_dispatch",
+							Label:      "Approve for Cloud Dispatch",
+							ActionType: "post",
+							Endpoint:   acceptEndpoint,
+							Variant:    "primary",
+						},
 						{
 							ID:         "import_to_worktree",
 							Label:      "Import to Worktree",
 							ActionType: "post",
 							Endpoint:   importEndpoint,
-							Variant:    "primary",
+							Variant:    "secondary",
 						},
 					}
 
@@ -578,9 +596,21 @@ func (s *Service) ScanBucket(ctx context.Context, accountScopeID, bucketID strin
 					})
 				}
 			} else {
-				// Update status if changed in manifest
+				// Update status and telemetry if changed in manifest
+				updated := false
 				if dManifest.Status != "" && dManifest.Status != existingDeliv.Status {
 					existingDeliv.Status = dManifest.Status
+					updated = true
+				}
+				if dManifest.Telemetry != nil && existingDeliv.Telemetry == nil {
+					existingDeliv.Telemetry = dManifest.Telemetry
+					updated = true
+				}
+				if dManifest.Review != nil && existingDeliv.Review == nil {
+					existingDeliv.Review = dManifest.Review
+					updated = true
+				}
+				if updated {
 					existingDeliv.UpdatedAt = s.now().UnixMilli()
 					_ = s.store.PutStorageDiscoveredDeliverable(existingDeliv)
 				}
@@ -695,6 +725,142 @@ func (s *Service) ImportDeliverable(ctx context.Context, accountScopeID, deliver
 		if json.Unmarshal(manifestBytes, &m) == nil {
 			m["status"] = "accepted"
 			m["updated_at"] = s.now().Format(time.RFC3339)
+			if updatedBytes, err := json.MarshalIndent(m, "", "  "); err == nil {
+				_ = driver.Put(ctx, manifestKey, updatedBytes, "application/json")
+			}
+		}
+	}
+
+	return &rec, nil
+}
+
+func (s *Service) AcceptDeliverable(ctx context.Context, accountScopeID, deliverableID string, target string, note string) (*pebblestore.StorageDiscoveredDeliverableRecord, error) {
+	if s == nil || s.store == nil {
+		return nil, errors.New("storage hub store unconfigured")
+	}
+	rec, ok, err := s.store.GetStorageDiscoveredDeliverable(accountScopeID, deliverableID)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, errors.New("discovered deliverable not found")
+	}
+
+	bucket, ok, err := s.GetBucket(accountScopeID, rec.BucketID)
+	if err != nil || !ok || bucket == nil {
+		return nil, errors.New("deliverable source bucket not found")
+	}
+
+	driver, err := s.getDriver(*bucket)
+	if err != nil {
+		return nil, err
+	}
+
+	if target == "" {
+		target = "cloud"
+	}
+
+	nowMs := s.now().UnixMilli()
+	nowISO := s.now().Format(time.RFC3339)
+
+	rec.Status = "approved"
+	rec.Review = &pebblestore.DeliverableReview{
+		Decision:   "approved",
+		Target:     target,
+		ReviewedBy: accountScopeID,
+		ReviewedAt: nowMs,
+		Note:       note,
+	}
+	rec.UpdatedAt = nowMs
+	_ = s.store.PutStorageDiscoveredDeliverable(rec)
+
+	// Update manifest in bucket if possible
+	manifestKey := fmt.Sprintf("deliverables/%s/%s/manifest.json", rec.WorkerID, rec.DeliverableID)
+	if bucket.Prefix != "" {
+		p := bucket.Prefix
+		if !strings.HasSuffix(p, "/") {
+			p += "/"
+		}
+		manifestKey = p + manifestKey
+	}
+	manifestBytes, err := driver.Get(ctx, manifestKey)
+	if err == nil {
+		var m map[string]any
+		if json.Unmarshal(manifestBytes, &m) == nil {
+			m["status"] = "approved"
+			m["updated_at"] = nowISO
+			m["review"] = map[string]any{
+				"decision":    "approved",
+				"target":      target,
+				"reviewed_by": accountScopeID,
+				"reviewed_at": nowMs,
+				"note":        note,
+			}
+			if updatedBytes, err := json.MarshalIndent(m, "", "  "); err == nil {
+				_ = driver.Put(ctx, manifestKey, updatedBytes, "application/json")
+			}
+		}
+	}
+
+	return &rec, nil
+}
+
+func (s *Service) RejectDeliverable(ctx context.Context, accountScopeID, deliverableID string, note string) (*pebblestore.StorageDiscoveredDeliverableRecord, error) {
+	if s == nil || s.store == nil {
+		return nil, errors.New("storage hub store unconfigured")
+	}
+	rec, ok, err := s.store.GetStorageDiscoveredDeliverable(accountScopeID, deliverableID)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, errors.New("discovered deliverable not found")
+	}
+
+	bucket, ok, err := s.GetBucket(accountScopeID, rec.BucketID)
+	if err != nil || !ok || bucket == nil {
+		return nil, errors.New("deliverable source bucket not found")
+	}
+
+	driver, err := s.getDriver(*bucket)
+	if err != nil {
+		return nil, err
+	}
+
+	nowMs := s.now().UnixMilli()
+	nowISO := s.now().Format(time.RFC3339)
+
+	rec.Status = "rejected"
+	rec.Review = &pebblestore.DeliverableReview{
+		Decision:   "rejected",
+		ReviewedBy: accountScopeID,
+		ReviewedAt: nowMs,
+		Note:       note,
+	}
+	rec.UpdatedAt = nowMs
+	_ = s.store.PutStorageDiscoveredDeliverable(rec)
+
+	// Update manifest in bucket if possible
+	manifestKey := fmt.Sprintf("deliverables/%s/%s/manifest.json", rec.WorkerID, rec.DeliverableID)
+	if bucket.Prefix != "" {
+		p := bucket.Prefix
+		if !strings.HasSuffix(p, "/") {
+			p += "/"
+		}
+		manifestKey = p + manifestKey
+	}
+	manifestBytes, err := driver.Get(ctx, manifestKey)
+	if err == nil {
+		var m map[string]any
+		if json.Unmarshal(manifestBytes, &m) == nil {
+			m["status"] = "rejected"
+			m["updated_at"] = nowISO
+			m["review"] = map[string]any{
+				"decision":    "rejected",
+				"reviewed_by": accountScopeID,
+				"reviewed_at": nowMs,
+				"note":        note,
+			}
 			if updatedBytes, err := json.MarshalIndent(m, "", "  "); err == nil {
 				_ = driver.Put(ctx, manifestKey, updatedBytes, "application/json")
 			}

@@ -50,6 +50,26 @@ type StorageDeliverableFileRef struct {
 	ContentType string `json:"content_type,omitempty"`
 }
 
+type DeliverableTelemetry struct {
+	Model             string  `json:"model,omitempty"`
+	ThinkingLevel     string  `json:"thinking_level,omitempty"`
+	PromptTokens      int64   `json:"prompt_tokens,omitempty"`
+	CandidateTokens   int64   `json:"candidate_tokens,omitempty"`
+	ThinkingTokens    int64   `json:"thinking_tokens,omitempty"`
+	TotalTokens       int64   `json:"total_tokens,omitempty"`
+	ComputeDurationMs int64   `json:"compute_duration_ms,omitempty"`
+	CostUSD           float64 `json:"cost_usd,omitempty"`
+}
+
+type DeliverableReview struct {
+	Decision   string `json:"decision"`         // "approved", "rejected", "published", "dismissed"
+	Target     string `json:"target,omitempty"` // "cloud", "local"
+	ReviewedBy string `json:"reviewed_by,omitempty"`
+	ReviewedAt int64  `json:"reviewed_at,omitempty"`
+	Note       string `json:"note,omitempty"`
+	TxID       string `json:"tx_id,omitempty"`
+}
+
 type StorageDiscoveredDeliverableRecord struct {
 	DeliverableID  string                      `json:"deliverable_id"`
 	WorkerID       string                      `json:"worker_id"`
@@ -59,11 +79,13 @@ type StorageDiscoveredDeliverableRecord struct {
 	Title          string                      `json:"title"`
 	Summary        string                      `json:"summary,omitempty"`
 	Kind           string                      `json:"kind,omitempty"`
-	Status         string                      `json:"status"` // "pending_review", "accepted", "rejected"
+	Status         string                      `json:"status"` // "pending_review", "accepted", "approved", "rejected"
 	SHA256         string                      `json:"sha256,omitempty"`
 	Files          []StorageDeliverableFileRef `json:"files,omitempty"`
 	Actions        []NotificationAction        `json:"actions,omitempty"`
 	Payload        map[string]any              `json:"payload,omitempty"`
+	Telemetry      *DeliverableTelemetry       `json:"telemetry,omitempty"`
+	Review         *DeliverableReview          `json:"review,omitempty"`
 	CreatedAt      int64                       `json:"created_at"`
 	UpdatedAt      int64                       `json:"updated_at"`
 	ImportedAt     int64                       `json:"imported_at,omitempty"`

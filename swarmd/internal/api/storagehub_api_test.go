@@ -210,6 +210,29 @@ func TestStorageHubAPI_Endpoints(t *testing.T) {
 		}
 	}
 
+	// 6b. POST /v1/storage/deliverables/deliv-999/accept -> approves deliverable
+	{
+		acceptBody, _ := json.Marshal(map[string]any{
+			"target": "cloud",
+			"note":   "cloud trigger approved",
+		})
+		req := authReq(httptest.NewRequest(http.MethodPost, "/v1/storage/deliverables/deliv-999/accept", bytes.NewReader(acceptBody)))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 on accept, got %d: %s", w.Code, w.Body.String())
+		}
+		var resp struct {
+			Deliverable pebblestore.StorageDiscoveredDeliverableRecord `json:"deliverable"`
+			Status      string                                         `json:"status"`
+		}
+		_ = json.Unmarshal(w.Body.Bytes(), &resp)
+		if resp.Status != "approved" || resp.Deliverable.Status != "approved" {
+			t.Fatalf("expected approved status, got resp=%s deliv=%s", resp.Status, resp.Deliverable.Status)
+		}
+	}
+
 	// 7. POST /v1/storage/deliverables/deliv-999/import -> downloads files and accepts deliverable
 	{
 		destDir := t.TempDir()
