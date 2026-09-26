@@ -419,7 +419,7 @@ export function AutomationV2PlanReview({
         {settings.expiration.kind === 'at' && (
           <label className="block space-y-1 text-xs text-[var(--app-text-muted)]">
             <span>Expiration Date & Time (UTC)</span>
-            <input aria-label="Expiration (UTC)" className={field} type="datetime-local" step="0.001" value={settings.expiration.expires_at ? new Date(settings.expiration.expires_at).toISOString().slice(0, -1) : ''} onChange={e => update({ expiration: { kind: 'at', expires_at: e.target.value ? Date.parse(e.target.value + 'Z') : undefined } })} />
+            <input aria-label="Expiration (UTC)" className={field} type="datetime-local" step="0.001" value={settings.expiration.expires_at && !isNaN(new Date(settings.expiration.expires_at).getTime()) ? new Date(settings.expiration.expires_at).toISOString().slice(0, -1) : ''} onChange={e => update({ expiration: { kind: 'at', expires_at: e.target.value ? Date.parse(e.target.value + 'Z') : undefined } })} />
           </label>
         )}
       </fieldset>

@@ -92,3 +92,15 @@ test('OrchestrateView handles quick media routing for fine-tuning and iterations
   assert.ok(source.includes('auto_approve: true'), 'Must support auto_approve for 1-click execution')
   assert.ok(source.includes('handleOpenUploadedInMediaCenter'), 'Must support opening uploaded media in studio modal')
 })
+
+test('OrchestrateView safely formats media deliverables with parseSafeDate and safeIsoDayKey without RangeError', () => {
+  // Invariant: Media deliverable date handling must safely parse relative strings like "Just now",
+  // invalid date strings, and numeric timestamps without throwing RangeError: Invalid time value on toISOString.
+  const sourcePath = path.join(__dirname, 'OrchestrateView.tsx')
+  const source = fs.readFileSync(sourcePath, 'utf8')
+
+  assert.ok(source.includes('parseSafeDate'), 'Must implement parseSafeDate helper')
+  assert.ok(source.includes('safeIsoDayKey'), 'Must implement safeIsoDayKey helper')
+  assert.ok(!source.includes("'/v3/automations/v2?action=list'"), 'Must not send invalid ?action=list query to automations endpoint')
+  assert.ok(source.includes("'/v3/automations/v2'"), 'Must query /v3/automations/v2 cleanly')
+})

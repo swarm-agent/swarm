@@ -121,7 +121,7 @@ export interface MediaDeliverable {
   videoAspect?: '16:9' | '9:16' | '1:1'
   duration?: string
   status: 'ready' | 'generating' | 'pending' | 'accepted' | 'rejected'
-  createdAt: string
+  createdAt: string | number
   author: string
   prompt?: string
   metrics?: { views?: string; tokens?: string; renderTime?: string }

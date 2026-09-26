@@ -65,6 +65,36 @@ export interface OrchestrateViewProps {
 }
 
 /**
+ * Helper to safely parse any date/time representation into a valid Date object.
+ * Prevents "RangeError: Invalid time value" on Date.prototype.toISOString() or toLocaleDateString().
+ */
+function parseSafeDate(val: unknown): Date {
+  if (val instanceof Date && !isNaN(val.getTime())) {
+    return val
+  }
+  if (typeof val === 'number' && !isNaN(val) && isFinite(val) && val > 0) {
+    const d = new Date(val)
+    if (!isNaN(d.getTime())) return d
+  }
+  if (typeof val === 'string' && val.trim().length > 0) {
+    const parsed = Date.parse(val)
+    if (!isNaN(parsed)) {
+      return new Date(parsed)
+    }
+  }
+  return new Date()
+}
+
+function safeIsoDayKey(date: Date): string {
+  try {
+    return date.toISOString().slice(0, 10)
+  } catch {
+    const now = new Date()
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+  }
+}
+
+/**
  * Adapter to convert a MediaDeliverable into a studio-grade MediaLibraryItem
  */
 function deliverableToMediaItem(
@@ -75,10 +105,11 @@ function deliverableToMediaItem(
   const isVideo = d.type === 'video' || (d.previewUrl && !d.previewUrl.startsWith('data:image'))
   const isImage = d.type === 'image' || (d.previewUrl && d.previewUrl.startsWith('data:image'))
   const kind: 'image' | 'video' | 'audio' | 'animation' = isVideo ? 'video' : isImage ? 'image' : d.type === 'audio' ? 'audio' : 'image'
-  const createdDate = new Date(d.createdAt || Date.now())
-  const formattedDate = createdDate.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })
+  const createdDate = parseSafeDate(d.createdAt)
+  const isJustNow = typeof d.createdAt === 'string' && d.createdAt.toLowerCase().includes('just now')
+  const formattedDate = isJustNow ? 'Just now' : createdDate.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })
   const formattedTime = createdDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-  const dayKey = createdDate.toISOString().slice(0, 10)
+  const dayKey = safeIsoDayKey(createdDate)
 
   return {
     id: d.id,
@@ -123,10 +154,10 @@ function uploadedToMediaItem(
   const isVideo = m.kind === 'video' || (m.mediaType && m.mediaType.startsWith('video/'))
   const isAudio = m.kind === 'audio' || (m.mediaType && m.mediaType.startsWith('audio/'))
   const kind: 'image' | 'video' | 'audio' | 'animation' = isVideo ? 'video' : isAudio ? 'audio' : 'image'
-  const createdDate = new Date(m.createdAt || Date.now())
+  const createdDate = parseSafeDate(m.createdAt)
   const formattedDate = createdDate.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })
   const formattedTime = createdDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-  const dayKey = createdDate.toISOString().slice(0, 10)
+  const dayKey = safeIsoDayKey(createdDate)
 
   return {
     id: m.id,
@@ -1231,7 +1262,7 @@ export function OrchestrateView({
 
       // 3. Automations
       try {
-        const autoRes = await requestJson<{ records?: any[] }>('/v3/automations/v2?action=list')
+        const autoRes = await requestJson<{ records?: any[] }>('/v3/automations/v2')
         if (autoRes?.records && !cancelled) {
           const mapped: RunningAutomation[] = autoRes.records.map((r: any) => ({
             id: r.id || 'automation',
@@ -1239,7 +1270,7 @@ export function OrchestrateView({
             kind: (r.worker_v2?.kind || r.schedule?.kind || 'trigger') as any,
             status: (r.status || (r.paused ? 'idle' : 'running')) as any,
             nextRun: r.schedule?.cron || r.schedule?.interval || 'On demand',
-            lastRun: r.last_run_at ? new Date(r.last_run_at).toLocaleTimeString() : 'Never',
+            lastRun: r.last_run_at && !isNaN(new Date(r.last_run_at).getTime()) ? new Date(r.last_run_at).toLocaleTimeString() : 'Never',
             outputSummary: r.description || r.worker_v2?.definition?.goal || 'Automated background task',
             totalRuns: r.run_count || 0,
           }))
@@ -1354,7 +1385,7 @@ export function OrchestrateView({
             thumbnailType: (d.thumbnail || 'cyber_lattice') as any,
             videoAspect: t.aspect_ratio || '16:9',
             prompt: t.subtitle || t.title,
-            createdAt: 'Just now',
+            createdAt: d.created_at ? (isNaN(new Date(d.created_at).getTime()) ? new Date().toISOString() : new Date(d.created_at).toISOString()) : (d.createdAt || new Date().toISOString()),
             author: t.worker_name || 'Orchestrator',
           })),
           attachedMedia: t.attached_media,
@@ -1844,7 +1875,7 @@ export function OrchestrateView({
                     title: `${t.title} (Variant ${i + 1})`,
                     type: (t.agentType === 'video' ? 'video' : 'image') as any,
                     status: 'generating' as const,
-                    createdAt: 'Just now',
+                    createdAt: new Date().toISOString(),
                     author: t.workerName || 'Orchestrator',
                   }))
               ).map((d) => ({ ...d, status: 'generating' as const })),

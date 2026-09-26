@@ -102,8 +102,30 @@ func (s *Server) handleAutomationsV2(w http.ResponseWriter, r *http.Request) {
 		}
 		q := r.URL.Query()
 		for key, values := range q {
-			if len(values) != 1 || (key != "workspace_id" && key != "session_id" && key != "automation_id" && key != "worker_id" && key != "limit" && key != "cursor" && key != "timezone" && key != "archived_mode") {
+			if len(values) != 1 || (key != "workspace_id" && key != "session_id" && key != "automation_id" && key != "worker_id" && key != "limit" && key != "cursor" && key != "timezone" && key != "archived_mode" && key != "action") {
 				automationV2Error(w, errors.New("invalid query"))
+				return
+			}
+		}
+		if q.Has("action") {
+			act := q.Get("action")
+			if r.URL.Path == AutomationsV2Path {
+				if act != "list" && act != "" {
+					automationV2Error(w, errors.New("invalid action for automations list"))
+					return
+				}
+			} else if r.URL.Path == AutomationsV2Path+"/progress" {
+				if act != "progress" && act != "" {
+					automationV2Error(w, errors.New("invalid action for automations progress"))
+					return
+				}
+			} else if r.URL.Path == AutomationsV2Path+"/review" {
+				if act != "review" && act != "" {
+					automationV2Error(w, errors.New("invalid action for automations review"))
+					return
+				}
+			} else {
+				automationV2Error(w, errors.New("invalid query action"))
 				return
 			}
 		}

@@ -216,6 +216,15 @@ func TestAutomationV2RegisteredReviewAcceptance(t *testing.T) {
 			if wAllWS.Code != 200 || !strings.Contains(wAllWS.Body.String(), first.AutomationID) {
 				t.Fatal("discovery with workspace_id=all failed", wAllWS.Code, wAllWS.Body.String())
 			}
+			// Verify action=list query param is accepted on GET /v3/automations/v2
+			wActionList := call(http.MethodGet, "?action=list&workspace_id="+workspaceID+"&limit=1", "", "owner", false)
+			if wActionList.Code != 200 || !strings.Contains(wActionList.Body.String(), first.AutomationID) {
+				t.Fatal("discovery with action=list failed", wActionList.Code, wActionList.Body.String())
+			}
+			wActionInvalid := call(http.MethodGet, "?action=invalid&workspace_id="+workspaceID, "", "owner", false)
+			if wActionInvalid.Code != 400 {
+				t.Fatal("expected 400 for invalid action query, got", wActionInvalid.Code)
+			}
 			// Requirement: registered management routes are user-only CAS changes;
 			// rejected principals/generations must leave the active policy intact.
 			control := automationV2Request{Action: "pause", WorkspaceID: workspaceID, SessionID: "conversation", Generation: first.Generation}
@@ -472,6 +481,15 @@ func TestAutomationV2RegisteredReviewDecline(t *testing.T) {
 	// Verify proposal exists
 	if _, found, err := ss.GetAutomationV2Proposal("account", "owner", workspaceID, "conversation"); err != nil || !found {
 		t.Fatal("proposal missing", found, err)
+	}
+	// Verify action=review query parameter is accepted on GET /review
+	wReview := call(http.MethodGet, "/review?action=review&workspace_id="+workspaceID+"&session_id=conversation", "", "owner", false)
+	if wReview.Code != 200 {
+		t.Fatalf("expected 200 for /review?action=review, got %d", wReview.Code)
+	}
+	wReviewInvalid := call(http.MethodGet, "/review?action=invalid&workspace_id="+workspaceID+"&session_id=conversation", "", "owner", false)
+	if wReviewInvalid.Code != 400 {
+		t.Fatalf("expected 400 for /review?action=invalid, got %d", wReviewInvalid.Code)
 	}
 	ps := store.NewPermissionStore(db)
 	perm, found, err := ps.GetPermission("conversation", store.AutomationV2PermissionID(proposal.Proposal.ProposalID))
