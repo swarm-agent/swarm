@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -726,5 +727,227 @@ func TestProjectCoderTask_PendingApproval_NoGitPollution(t *testing.T) {
 	}
 	if first["is_dirty"] == true {
 		t.Fatalf("expected is_dirty=false in list, got true")
+	}
+}
+
+func TestProjectCoderTask_ZeroCommitsNotIntegrated(t *testing.T) {
+	// Purpose:
+	// - Invariant: A coder task with a clean worktree that has not created any commits
+	//   must NOT be marked is_integrated=true, even if the session has messages.
+	// - Boundary/authority: inspectTaskGitState in projects.go.
+	// - Threat/regression: False-positive integration claims mislead users that work was integrated when no commits exist.
+
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	ss := store.NewSessionStore(db)
+	el, err := store.NewEventLog(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = &Server{sessions: sessionruntime.NewService(ss, el)}
+
+	dir := t.TempDir()
+	cmdInit := exec.Command("git", "init", "-b", "dev", dir)
+	if err := cmdInit.Run(); err != nil {
+		t.Fatal(err)
+	}
+	_ = exec.Command("git", "-C", dir, "config", "user.email", "test@test.com").Run()
+	_ = exec.Command("git", "-C", dir, "config", "user.name", "test").Run()
+	_ = exec.Command("git", "-C", dir, "commit", "--allow-empty", "-m", "init").Run()
+	outHead, err := exec.Command("git", "-C", dir, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseCommit := strings.TrimSpace(string(outHead))
+
+	wtDir := t.TempDir()
+	cmdWt := exec.Command("git", "-C", dir, "worktree", "add", "-b", "agent/test-task", wtDir, "dev")
+	if err := cmdWt.Run(); err != nil {
+		t.Fatal(err)
+	}
+
+	task := store.ProjectTaskRecord{
+		ID:             "task_zero_commits",
+		ProjectID:      "proj_1",
+		Status:         "completed",
+		Agent:          "coder",
+		WorkspacePath:  wtDir,
+		WorktreeBranch: "agent/test-task",
+		BaseBranch:     "dev",
+		BaseCommit:     baseCommit,
+	}
+
+	gitState := inspectTaskGitState(task, ss)
+	if gitState.isIntegrated {
+		t.Fatalf("expected isIntegrated=false for worktree with zero commits, got true")
+	}
+	if gitState.unintegratedCommits != 0 {
+		t.Fatalf("expected 0 unintegratedCommits, got %d", gitState.unintegratedCommits)
+	}
+	if gitState.actionNeeded != "" {
+		t.Fatalf("expected empty actionNeeded for 0 commits clean worktree, got %q", gitState.actionNeeded)
+	}
+}
+
+func TestProjectTask_IntegrateRejectsEmptyCommits(t *testing.T) {
+	// Purpose:
+	// - Invariant: POST /v3/projects/{id}/tasks/{taskId}/integrate must reject tasks
+	//   that have 0 unintegrated commits with 400 Bad Request, never faking integration.
+	// - Boundary/authority: Server.handleProjects in projects.go.
+	// - Threat/regression: Calling integrate on an empty task mutates database strings to claim integration occurred.
+
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	ss := store.NewSessionStore(db)
+	el, err := store.NewEventLog(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{sessions: sessionruntime.NewService(ss, el)}
+	h := s.apiMux()
+
+	call := func(method, path, body string, scopes []string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, ProjectsPath+path, strings.NewReader(body))
+		p := identity.Principal{Type: "user", UserID: "owner", AccountScopeID: "account"}
+		ctx := context.WithValue(r.Context(), productPrincipalRequestContextKey, p)
+		if len(scopes) > 0 {
+			tokenRec := &store.ScopedTokenRecord{
+				AccountScopeID: "account",
+				UserID:         "owner",
+				Scopes:         scopes,
+			}
+			ctx = context.WithValue(ctx, productScopedTokenRequestContextKey, tokenRec)
+		}
+		r = r.WithContext(ctx)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w
+	}
+
+	dir := t.TempDir()
+	cmdInit := exec.Command("git", "init", "-b", "dev", dir)
+	_ = cmdInit.Run()
+	_ = exec.Command("git", "-C", dir, "config", "user.email", "test@test.com").Run()
+	_ = exec.Command("git", "-C", dir, "config", "user.name", "test").Run()
+	_ = exec.Command("git", "-C", dir, "commit", "--allow-empty", "-m", "init").Run()
+	outHead, _ := exec.Command("git", "-C", dir, "rev-parse", "HEAD").Output()
+	baseCommit := strings.TrimSpace(string(outHead))
+
+	wtDir := t.TempDir()
+	_ = exec.Command("git", "-C", dir, "worktree", "add", "-b", "agent/test-task-2", wtDir, "dev").Run()
+
+	proj := &store.ProjectRecord{
+		ID:   "proj_int_test",
+		Name: "Test Integrate",
+	}
+	_ = ss.PutProject("account", proj)
+
+	task := &store.ProjectTaskRecord{
+		ID:             "task_no_commits",
+		ProjectID:      proj.ID,
+		Title:          "No Commits Task",
+		Status:         "completed",
+		Agent:          "coder",
+		WorkspacePath:  wtDir,
+		WorktreeBranch: "agent/test-task-2",
+		BaseBranch:     "dev",
+		BaseCommit:     baseCommit,
+	}
+	_ = ss.PutProjectTask("account", task)
+
+	// POST integrate should fail with 400 Bad Request
+	w := call(http.MethodPost, "/"+proj.ID+"/tasks/"+task.ID+"/integrate", "", []string{"projects:write", "sessions:write"})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 Bad Request when integrating task with 0 commits, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "no commits to integrate") {
+		t.Fatalf("expected error message to mention no commits to integrate, got %s", w.Body.String())
+	}
+
+	// Verify task in DB was NOT modified to claim it was integrated
+	fetched, found, _ := ss.GetProjectTask("account", proj.ID, task.ID)
+	if !found {
+		t.Fatal("task not found")
+	}
+	if fetched.IsIntegrated {
+		t.Fatal("expected task.IsIntegrated to remain false")
+	}
+	if strings.Contains(fetched.ActionNeeded, "Integrated into") {
+		t.Fatalf("expected actionNeeded not to claim integrated, got %q", fetched.ActionNeeded)
+	}
+}
+
+func TestProjectCoderTask_FallbackAlertPopulatedWhenUnconfigured(t *testing.T) {
+	// Purpose:
+	// - Invariant: When system-agent model resolution fails or is unconfigured,
+	//   the task MUST fall back to default Swarm model and MUST populate RouterAlert
+	//   warning the user on the task card.
+	// - Boundary/authority: deployProjectTaskExecution in projects.go.
+	// - Threat/regression: Silent model fallbacks without warning user on task card.
+
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	ss := store.NewSessionStore(db)
+	el, err := store.NewEventLog(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{sessions: sessionruntime.NewService(ss, el)}
+	h := s.apiMux()
+
+	call := func(method, path, body string, scopes []string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, ProjectsPath+path, strings.NewReader(body))
+		p := identity.Principal{Type: "user", UserID: "owner", AccountScopeID: "account"}
+		ctx := context.WithValue(r.Context(), productPrincipalRequestContextKey, p)
+		tokenRec := &store.ScopedTokenRecord{
+			AccountScopeID: "account",
+			UserID:         "owner",
+			Scopes:         scopes,
+		}
+		ctx = context.WithValue(ctx, productScopedTokenRequestContextKey, tokenRec)
+		r = r.WithContext(ctx)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w
+	}
+
+	proj := &store.ProjectRecord{
+		ID:   "proj_alert_test",
+		Name: "Test Alert",
+	}
+	_ = ss.PutProject("account", proj)
+
+	taskBody := `{
+		"title": "Fix memory leak in buffer pool",
+		"prompt": "Fix buffer pool leak",
+		"intent": "code"
+	}`
+	w := call(http.MethodPost, "/"+proj.ID+"/tasks", taskBody, []string{"projects:write", "sessions:write"})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	taskObj := resp["task"].(map[string]any)
+	alert, _ := taskObj["router_alert"].(string)
+	if alert == "" {
+		t.Fatal("expected router_alert to be populated when model resolution falls back")
+	}
+	if !strings.Contains(alert, "fell back to Swarm default") {
+		t.Fatalf("expected router_alert to mention fell back to Swarm default, got %q", alert)
 	}
 }

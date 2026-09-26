@@ -181,4 +181,34 @@ func TestRouteAndPlanProjectTask(t *testing.T) {
 			t.Fatalf("expected video_story, got %q", vidVarRes.OutcomeType)
 		}
 	})
+
+	t.Run("attached doc routes edit/fix mutations to coder and audit to finder", func(t *testing.T) {
+		docMedia := []ProjectTaskMediaRef{
+			{ID: "doc_1", Title: "AGENTS.md", Kind: "document", MediaType: "text/markdown"},
+		}
+
+		// Edit request with attached doc must route to Coder, NOT Finder
+		editRes := RouteAndPlanProjectTaskWithOptions(TaskPlanOptions{
+			Prompt:        "Edit AGENTS.md in swarm-go workspace",
+			AttachedMedia: docMedia,
+		})
+		if editRes.Agent != "coder" {
+			t.Fatalf("expected coder agent for editing attached doc, got %q", editRes.Agent)
+		}
+		if editRes.OutcomeType != "code_pr" {
+			t.Fatalf("expected code_pr outcome for editing doc, got %q", editRes.OutcomeType)
+		}
+
+		// Audit / review request with attached doc routes to Finder
+		auditRes := RouteAndPlanProjectTaskWithOptions(TaskPlanOptions{
+			Prompt:        "Read and audit AGENTS.md requirements",
+			AttachedMedia: docMedia,
+		})
+		if auditRes.Agent != "finder" {
+			t.Fatalf("expected finder agent for auditing doc, got %q", auditRes.Agent)
+		}
+		if auditRes.OutcomeType != "audit_report" {
+			t.Fatalf("expected audit_report outcome for auditing doc, got %q", auditRes.OutcomeType)
+		}
+	})
 }

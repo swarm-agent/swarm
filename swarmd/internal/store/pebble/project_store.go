@@ -236,6 +236,7 @@ type ProjectTaskRecord struct {
 	WorktreeBranch      string                   `json:"worktree_branch,omitempty"`
 	WorktreeName        string                   `json:"worktree_name,omitempty"`
 	BaseBranch          string                   `json:"base_branch,omitempty"`
+	BaseCommit          string                   `json:"base_commit,omitempty"`
 	UnintegratedCommits int                      `json:"unintegrated_commits,omitempty"`
 	BehindCommits       int                      `json:"behind_commits,omitempty"`
 	IsIntegrated        bool                     `json:"is_integrated,omitempty"`

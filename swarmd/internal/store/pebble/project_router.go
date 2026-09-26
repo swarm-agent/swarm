@@ -141,8 +141,26 @@ func RouteAndPlanProjectTaskWithOptions(opts TaskPlanOptions) TaskRouteResult {
 		strings.Contains(promptLower, "pipeline") || strings.Contains(promptLower, "platform") ||
 		strings.Contains(promptLower, "redesign") || strings.Contains(promptLower, "system architecture")
 
+	isMutation := strings.Contains(promptLower, "edit") || strings.Contains(promptLower, "update") ||
+		strings.Contains(promptLower, "fix") || strings.Contains(promptLower, "modify") ||
+		strings.Contains(promptLower, "change") || strings.Contains(promptLower, "write") ||
+		strings.Contains(promptLower, "add") || strings.Contains(promptLower, "implement") ||
+		strings.Contains(promptLower, "patch") || strings.Contains(promptLower, "refactor") ||
+		strings.Contains(promptLower, "create") || strings.Contains(promptLower, "delete") ||
+		strings.Contains(promptLower, "remove")
+
 	switch {
-	case hasAttachedDoc && (intent == "audit" || intent == "" || strings.Contains(promptLower, "read") || strings.Contains(promptLower, "review") || strings.Contains(promptLower, "analyze") || strings.Contains(promptLower, "question") || strings.Contains(promptLower, "explain")):
+	case hasAttachedDoc && (intent == "code" || isMutation):
+		if isComplexCode {
+			agent = "plan"
+			tier = "complex"
+			outcomeType = "plan_spec"
+		} else {
+			agent = "coder"
+			tier = "direct"
+			outcomeType = "code_pr"
+		}
+	case hasAttachedDoc && (intent == "audit" || strings.Contains(promptLower, "read") || strings.Contains(promptLower, "review") || strings.Contains(promptLower, "analyze") || strings.Contains(promptLower, "question") || strings.Contains(promptLower, "explain") || (intent == "" && !isMutation)):
 		agent = "finder"
 		tier = "discovery"
 		outcomeType = "audit_report"

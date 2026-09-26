@@ -15,10 +15,13 @@ import (
 	"strings"
 	"time"
 
+	agentruntime "swarm/packages/swarmd/internal/agent"
+	"swarm/packages/swarmd/internal/agentmodel"
 	"swarm/packages/swarmd/internal/identity"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	taskrouter "swarm/packages/swarmd/internal/taskrouter"
+	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
 
 const ProjectsPath = "/v3/projects"
@@ -27,6 +30,7 @@ type taskGitState struct {
 	worktreeBranch      string
 	worktreeName        string
 	baseBranch          string
+	baseCommit          string
 	unintegratedCommits int
 	behindCommits       int
 	isIntegrated        bool
@@ -98,11 +102,16 @@ func inspectTaskGitState(task pebblestore.ProjectTaskRecord, db *pebblestore.Ses
 		}
 	}
 
-	// 5. Inspect current HEAD branch in targetPath
+	// 5. Inspect current HEAD branch and commit in targetPath
 	cmdHead := exec.CommandContext(ctx, "git", "-C", targetPath, "rev-parse", "--abbrev-ref", "HEAD")
 	headBranch := ""
 	if out, err := cmdHead.Output(); err == nil {
 		headBranch = strings.TrimSpace(string(out))
+	}
+	cmdHeadCommit := exec.CommandContext(ctx, "git", "-C", targetPath, "rev-parse", "HEAD")
+	headCommit := ""
+	if out, err := cmdHeadCommit.Output(); err == nil {
+		headCommit = strings.TrimSpace(string(out))
 	}
 
 	isTaskWorktree := (sess != nil && sess.WorktreeEnabled && sess.WorktreeRootPath == targetPath) ||
@@ -125,7 +134,33 @@ func inspectTaskGitState(task pebblestore.ProjectTaskRecord, db *pebblestore.Ses
 		res.isDirty = res.dirtyCount > 0
 	}
 
-	// 7. Ahead / behind relative to baseBranch
+	// 7. Resolve base commit of worktree (fork commit)
+	baseCommit := strings.TrimSpace(res.baseCommit)
+	if baseCommit == "" && sess != nil && sess.Metadata != nil {
+		if bc, ok := sess.Metadata["base_commit"].(string); ok {
+			baseCommit = strings.TrimSpace(bc)
+		}
+	}
+	if baseCommit == "" {
+		// Check reflog to find where the branch was created
+		cmdReflog := exec.CommandContext(ctx, "git", "-C", targetPath, "log", "-g", "--format=%H", "--reverse", fmt.Sprintf("refs/heads/%s", res.worktreeBranch))
+		if out, err := cmdReflog.Output(); err == nil {
+			fields := strings.Fields(strings.TrimSpace(string(out)))
+			if len(fields) > 0 {
+				baseCommit = fields[0]
+			}
+		}
+	}
+	if baseCommit == "" {
+		// Fallback to merge-base between baseBranch and HEAD
+		cmdMb := exec.CommandContext(ctx, "git", "-C", targetPath, "merge-base", res.baseBranch, "HEAD")
+		if out, err := cmdMb.Output(); err == nil && len(bytes.TrimSpace(out)) > 0 {
+			baseCommit = strings.TrimSpace(string(out))
+		}
+	}
+	res.baseCommit = baseCommit
+
+	// 8. Ahead / behind relative to baseBranch
 	cmdRevList := exec.CommandContext(ctx, "git", "-C", targetPath, "rev-list", "--left-right", "--count", res.baseBranch+"...HEAD")
 	if out, err := cmdRevList.Output(); err == nil {
 		fields := strings.Fields(strings.TrimSpace(string(out)))
@@ -144,7 +179,7 @@ func inspectTaskGitState(task pebblestore.ProjectTaskRecord, db *pebblestore.Ses
 		}
 	}
 
-	// 8. Diff summary
+	// 9. Diff summary
 	if res.unintegratedCommits > 0 || res.isDirty {
 		cmdDiff := exec.CommandContext(ctx, "git", "-C", targetPath, "diff", "--shortstat", res.baseBranch+"...HEAD")
 		if out, err := cmdDiff.Output(); err == nil && len(bytes.TrimSpace(out)) > 0 {
@@ -152,12 +187,43 @@ func inspectTaskGitState(task pebblestore.ProjectTaskRecord, db *pebblestore.Ses
 		}
 	}
 
-	// 9. Integration check
-	if (task.Status == "completed" || (sess != nil && sess.MessageCount > 2)) && res.unintegratedCommits == 0 && !res.isDirty {
-		res.isIntegrated = true
+	// 10. True Git Integration Check:
+	// A worktree branch is ONLY integrated if:
+	// a) It is clean (not dirty), AND
+	// b) It actually made commits beyond its fork base commit (HEAD != baseCommit), AND
+	// c) All those commits are ancestors of baseBranch (merge-base --is-ancestor HEAD baseBranch == 0),
+	//    meaning unintegratedCommits == 0.
+	// If the branch NEVER made any commits (HEAD == baseCommit), it is NOT integrated.
+	hasBranchCommits := false
+	if headCommit != "" && baseCommit != "" && headCommit != baseCommit {
+		hasBranchCommits = true
+	} else if headCommit != "" {
+		// Double check via reflog if commits were made on the branch
+		cmdRefLogCommits := exec.CommandContext(ctx, "git", "-C", targetPath, "log", "-g", "--format=%gs", fmt.Sprintf("refs/heads/%s", res.worktreeBranch))
+		if out, err := cmdRefLogCommits.Output(); err == nil {
+			for _, line := range strings.Split(string(out), "\n") {
+				if strings.HasPrefix(strings.TrimSpace(line), "commit") {
+					hasBranchCommits = true
+					break
+				}
+			}
+		}
 	}
 
-	// 10. Sync Warning check (behind or out of sync)
+	if !res.isDirty && hasBranchCommits && res.unintegratedCommits == 0 && headCommit != "" {
+		// Verify ancestry: is HEAD an ancestor of baseBranch?
+		cmdAncestor := exec.CommandContext(ctx, "git", "-C", targetPath, "merge-base", "--is-ancestor", headCommit, res.baseBranch)
+		if cmdAncestor.Run() == nil {
+			res.isIntegrated = true
+		} else {
+			cmdAncestorOrigin := exec.CommandContext(ctx, "git", "-C", targetPath, "merge-base", "--is-ancestor", headCommit, "origin/"+res.baseBranch)
+			if cmdAncestorOrigin.Run() == nil {
+				res.isIntegrated = true
+			}
+		}
+	}
+
+	// 11. Sync Warning check (behind or out of sync)
 	if res.behindCommits > 0 {
 		res.syncWarning = fmt.Sprintf("Worktree is behind %s by %d commit(s) — rebase may be needed.", res.baseBranch, res.behindCommits)
 	}
@@ -191,11 +257,15 @@ func inspectTaskGitState(task pebblestore.ProjectTaskRecord, db *pebblestore.Ses
 		}
 	}
 
-	// 11. Action Needed
+	// 12. Action Needed
 	if res.unintegratedCommits > 0 {
 		res.actionNeeded = fmt.Sprintf("Action Needed: %d unintegrated commit(s) on %s ready to integrate.", res.unintegratedCommits, res.worktreeBranch)
 	} else if res.isDirty {
 		res.actionNeeded = fmt.Sprintf("Action Needed: %d modified file(s) waiting to be committed.", res.dirtyCount)
+	} else if res.isIntegrated {
+		res.actionNeeded = fmt.Sprintf("No Action Required: Integrated into %s", res.baseBranch)
+	} else {
+		res.actionNeeded = ""
 	}
 
 	return res
@@ -384,7 +454,7 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 	}
 
 	mode := sessionruntime.ModeAuto
-	targetAgent := task.Agent
+	targetAgent := strings.TrimSpace(task.Agent)
 	if targetAgent == "plan" {
 		mode = sessionruntime.ModePlan
 		targetAgent = "swarm"
@@ -393,25 +463,111 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 		targetAgent = "swarm"
 	}
 
-	var agentProfile pebblestore.AgentProfile
-	var profileFound bool
-	if s.agents != nil {
-		if p.AccountScopeID != "" {
-			agentProfile, profileFound, _ = s.agents.GetProfileForAccount(p.AccountScopeID, targetAgent)
-		}
-		if !profileFound {
-			agentProfile, profileFound, _ = s.agents.GetProfile(targetAgent)
-		}
-		if !profileFound && targetAgent != "swarm" {
-			if p.AccountScopeID != "" {
-				agentProfile, profileFound, _ = s.agents.GetProfileForAccount(p.AccountScopeID, "swarm")
+	// Resolve canonical default Swarm preference for fallback or primary Swarm task
+	var defaultSwarmPref pebblestore.ModelPreference
+	if s.agentModelSettings != nil && p.AccountScopeID != "" {
+		if settings, err := s.agentModelSettings.GetForAccount(p.AccountScopeID); err == nil {
+			swarmAssignment := settings.Swarm.Action
+			if mode == sessionruntime.ModePlan && strings.TrimSpace(settings.Swarm.Plan.Model) != "" {
+				swarmAssignment = settings.Swarm.Plan
 			}
-			if !profileFound {
-				agentProfile, profileFound, _ = s.agents.GetProfile("swarm")
+			defaultSwarmPref = pebblestore.ModelPreference{
+				Provider:    strings.TrimSpace(swarmAssignment.Provider),
+				Model:       strings.TrimSpace(swarmAssignment.Model),
+				Thinking:    strings.TrimSpace(swarmAssignment.Thinking),
+				ServiceTier: strings.TrimSpace(swarmAssignment.ServiceTier),
+				ContextMode: strings.TrimSpace(swarmAssignment.ContextMode),
 			}
 		}
 	}
-	if !profileFound {
+	if defaultSwarmPref.Provider == "" || defaultSwarmPref.Model == "" {
+		if s.model != nil {
+			if def, err := s.model.ResolvePreference(pebblestore.ModelPreference{}); err == nil {
+				defaultSwarmPref = def.Preference
+			}
+		}
+	}
+	if defaultSwarmPref.Provider == "" || defaultSwarmPref.Model == "" {
+		defaultSwarmPref = pebblestore.ModelPreference{
+			Provider: "google",
+			Model:    "gemini-3.8-flash",
+			Thinking: "low",
+		}
+	}
+
+	var resolvedPref pebblestore.ModelPreference
+	var agentProfile pebblestore.AgentProfile
+	var fallbackAlert string
+
+	if canonicalID, isCanonical := agentruntime.CanonicalSystemAgentID(targetAgent); isCanonical && canonicalID != agentruntime.SwarmAgentID {
+		// System subagent (coder, finder, designer, compact, etc.)
+		// Must use canonical account-scoped agent-model settings service (agentmodel.ResolveSystemAgent)
+		resolvedModel, profile, err := agentmodel.ResolveSystemAgent(s.model, s.agents, s.agentModelSettings, p.AccountScopeID, canonicalID, "")
+		if err == nil && resolvedModel.Preference.Model != "" {
+			resolvedPref = resolvedModel.Preference
+			agentProfile = profile
+		} else {
+			// Resolution failed or not configured!
+			// Must fall back to Swarm default AND warn in the task card!
+			resolvedPref = defaultSwarmPref
+			fallbackAlert = fmt.Sprintf("Configured model for agent %q could not be resolved (%v); fell back to Swarm default (%s/%s).", targetAgent, err, defaultSwarmPref.Provider, defaultSwarmPref.Model)
+			if s.agents != nil {
+				agentProfile, _ = s.agents.ResolveSystemAgent(canonicalID, pebblestore.AgentProfile{
+					Provider:        defaultSwarmPref.Provider,
+					Model:           defaultSwarmPref.Model,
+					Thinking:        defaultSwarmPref.Thinking,
+					AutoServiceTier: defaultSwarmPref.ServiceTier,
+					ContextMode:     defaultSwarmPref.ContextMode,
+				})
+			}
+		}
+	} else if strings.EqualFold(targetAgent, "swarm") {
+		// Swarm primary agent
+		resolvedPref = defaultSwarmPref
+		if s.agents != nil {
+			agentProfile, _ = s.agents.ResolveSystemAgent(agentruntime.SwarmAgentID, pebblestore.AgentProfile{
+				Provider:        defaultSwarmPref.Provider,
+				Model:           defaultSwarmPref.Model,
+				Thinking:        defaultSwarmPref.Thinking,
+				AutoServiceTier: defaultSwarmPref.ServiceTier,
+				ContextMode:     defaultSwarmPref.ContextMode,
+			})
+		}
+	} else {
+		// Custom / saved agent profile
+		var profileFound bool
+		if s.agents != nil {
+			if p.AccountScopeID != "" {
+				agentProfile, profileFound, _ = s.agents.GetProfileForAccount(p.AccountScopeID, targetAgent)
+			}
+			if !profileFound {
+				agentProfile, profileFound, _ = s.agents.GetProfile(targetAgent)
+			}
+		}
+		if profileFound && agentProfile.Model != "" {
+			resolvedPref = pebblestore.ModelPreference{
+				Provider:    agentProfile.Provider,
+				Model:       agentProfile.Model,
+				Thinking:    agentProfile.Thinking,
+				ServiceTier: agentProfile.AutoServiceTier,
+				ContextMode: agentProfile.ContextMode,
+			}
+		} else {
+			resolvedPref = defaultSwarmPref
+			fallbackAlert = fmt.Sprintf("Custom agent profile %q not found or has no model; fell back to Swarm default (%s/%s).", targetAgent, defaultSwarmPref.Provider, defaultSwarmPref.Model)
+			if !profileFound && s.agents != nil {
+				agentProfile, _ = s.agents.ResolveSystemAgent(agentruntime.SwarmAgentID, pebblestore.AgentProfile{
+					Provider:        defaultSwarmPref.Provider,
+					Model:           defaultSwarmPref.Model,
+					Thinking:        defaultSwarmPref.Thinking,
+					AutoServiceTier: defaultSwarmPref.ServiceTier,
+					ContextMode:     defaultSwarmPref.ContextMode,
+				})
+			}
+		}
+	}
+
+	if agentProfile.Name == "" {
 		trueVal := true
 		agentProfile = pebblestore.AgentProfile{
 			Name:                targetAgent,
@@ -419,12 +575,21 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 			RuntimeMode:         pebblestore.AgentRuntimeModePlanAuto,
 			DefaultSessionMode:  "auto",
 			ExitPlanModeEnabled: &trueVal,
-			Provider:            "google",
-			Model:               "gemini-3.8-flash",
-			Thinking:            "low",
+			Provider:            resolvedPref.Provider,
+			Model:               resolvedPref.Model,
+			Thinking:            resolvedPref.Thinking,
 			Enabled:             true,
 			ToolContract:        &pebblestore.AgentToolContract{Preset: "full"},
 		}
+	}
+
+	if fallbackAlert != "" {
+		if task.RouterAlert == "" {
+			task.RouterAlert = fallbackAlert
+		} else if !strings.Contains(task.RouterAlert, fallbackAlert) {
+			task.RouterAlert = task.RouterAlert + " | " + fallbackAlert
+		}
+		task.WhatDidDo = append(task.WhatDidDo, fallbackAlert)
 	}
 
 	now := time.Now().UnixMilli()
@@ -474,18 +639,14 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 		projName = proj.Name
 	}
 	sessionSnapshot := pebblestore.SessionSnapshot{
-		ID:             sessionID,
-		UserID:         p.UserID,
-		AccountScopeID: p.AccountScopeID,
-		WorkspacePath:  wsPath,
-		WorkspaceName:  filepath.Base(wsPath),
-		Title:          fmt.Sprintf("[%s] %s", projName, task.Title),
-		Mode:           mode,
-		Preference: pebblestore.ModelPreference{
-			Provider: "google",
-			Model:    "gemini-3.8-flash",
-			Thinking: "low",
-		},
+		ID:              sessionID,
+		UserID:          p.UserID,
+		AccountScopeID:  p.AccountScopeID,
+		WorkspacePath:   wsPath,
+		WorkspaceName:   filepath.Base(wsPath),
+		Title:           fmt.Sprintf("[%s] %s", projName, task.Title),
+		Mode:            mode,
+		Preference:      resolvedPref,
 		Metadata:        metadata,
 		WorkspaceGrants: grants,
 		WorkspaceUsage:  pebblestore.WorkspaceUsageFromGrants(grants),
@@ -502,7 +663,11 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 			task.WorkspacePath = alloc.WorkspacePath
 			task.WorktreeBranch = alloc.BranchName
 			task.BaseBranch = alloc.BaseBranch
+			task.BaseCommit = alloc.BaseCommit
 			task.WorktreeName = strings.TrimPrefix(alloc.BranchName, "agent/")
+			metadata["base_commit"] = alloc.BaseCommit
+			metadata["swarm_v3_source_workspace_path"] = alloc.RepoRoot
+			sessionSnapshot.Metadata = metadata
 			available := true
 			sessionSnapshot.WorkspaceGrants = append(sessionSnapshot.WorkspaceGrants, pebblestore.WorkspaceGrant{
 				Kind: pebblestore.WorkspaceGrantWorktree, Path: alloc.WorkspacePath, Available: &available,
@@ -1409,11 +1574,129 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		if !s.requireScopeAny(w, r, "projects:write", "sessions:write") {
 			return
 		}
+		task, found, err := db.GetProjectTask(p.AccountScopeID, projectID, taskID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		if !found || task == nil {
+			writeError(w, http.StatusNotFound, errors.New("task not found"))
+			return
+		}
+
+		// Inspect git state first
+		gitState := inspectTaskGitState(*task, db)
+		if gitState.isDirty {
+			writeError(w, http.StatusConflict, fmt.Errorf("cannot integrate: worktree has %d uncommitted modification(s); commit or discard them before integrating", gitState.dirtyCount))
+			return
+		}
+		if gitState.unintegratedCommits == 0 {
+			if gitState.isIntegrated {
+				writeJSON(w, http.StatusOK, map[string]any{
+					"status":  "already_integrated",
+					"message": fmt.Sprintf("Changes from %s are already integrated into %s", gitState.worktreeBranch, gitState.baseBranch),
+					"task":    task,
+				})
+				return
+			}
+			writeError(w, http.StatusBadRequest, errors.New("cannot integrate: worktree has no commits to integrate"))
+			return
+		}
+
+		// Resolve worktree target path
+		targetPath := strings.TrimSpace(task.WorkspacePath)
+		var sess *pebblestore.SessionSnapshot
+		if task.SessionID != "" {
+			if sSnap, sFound, _ := db.GetSession(task.SessionID); sFound {
+				sess = &sSnap
+				if sess.WorktreeEnabled && strings.TrimSpace(sess.WorktreeRootPath) != "" {
+					targetPath = strings.TrimSpace(sess.WorktreeRootPath)
+				}
+			}
+		}
+		parentWs := ""
+		if sess != nil && sess.Metadata != nil {
+			if src, ok := sess.Metadata["swarm_v3_source_workspace_path"].(string); ok && src != "" {
+				parentWs = src
+			}
+		}
+		if parentWs == "" {
+			proj, _, _ := db.GetProject(p.AccountScopeID, projectID)
+			if proj != nil && len(proj.Workspaces) > 0 {
+				parentWs = proj.Workspaces[0].Path
+			}
+		}
+		if parentWs == "" {
+			parentWs = task.WorkspacePath
+		}
+
+		worktreeSvc := &worktreeruntime.Service{}
+		parentState, err := worktreeSvc.InspectTaskWorkspace(parentWs)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("inspect parent repository %q: %w", parentWs, err))
+			return
+		}
+		if !parentState.Clean {
+			writeError(w, http.StatusConflict, fmt.Errorf("parent repository %q is dirty (%s); commit or stash changes before integrating", parentWs, parentState.BranchName))
+			return
+		}
+
+		childState, err := worktreeSvc.InspectTaskWorkspace(targetPath)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("inspect worktree %q: %w", targetPath, err))
+			return
+		}
+		if !childState.Clean {
+			writeError(w, http.StatusConflict, fmt.Errorf("worktree %q is dirty; commit changes before integrating", targetPath))
+			return
+		}
+
+		baseCommit := gitState.baseCommit
+		if baseCommit == "" {
+			baseCommit = task.BaseCommit
+		}
+		if baseCommit == "" {
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			cmdMb := exec.CommandContext(ctx, "git", "-C", targetPath, "merge-base", parentState.HeadCommit, childState.HeadCommit)
+			if out, mbErr := cmdMb.Output(); mbErr == nil && len(bytes.TrimSpace(out)) > 0 {
+				baseCommit = strings.TrimSpace(string(out))
+			}
+		}
+		if baseCommit == "" || baseCommit == childState.HeadCommit {
+			writeError(w, http.StatusBadRequest, errors.New("cannot integrate: worktree has no commits beyond its base commit"))
+			return
+		}
+
+		plan, err := worktreeSvc.PrepareTaskIntegration(parentWs, parentState.BranchName, parentState.HeadCommit, []worktreeruntime.TaskIntegrationChild{
+			{
+				SessionID:  task.SessionID,
+				BaseCommit: baseCommit,
+				HeadCommit: childState.HeadCommit,
+			},
+		})
+		if err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("prepare integration failed: %w", err))
+			return
+		}
+
+		result, err := worktreeSvc.ApplyTaskIntegration(parentWs, plan)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, fmt.Errorf("apply integration failed: %w", err))
+			return
+		}
+
+		headDisplay := result.ResultingParentHead
+		if len(headDisplay) > 8 {
+			headDisplay = headDisplay[:8]
+		}
+
 		updated, err := db.UpdateProjectTask(p.AccountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
 			t.Status = "completed"
+			t.IsIntegrated = true
 			t.UnintegratedCommits = 0
-			t.ActionNeeded = "No Action Required: Integrated into dev"
-			t.WhatDidDo = append(t.WhatDidDo, "Integrated commits into dev branch")
+			t.ActionNeeded = fmt.Sprintf("No Action Required: Integrated into %s", parentState.BranchName)
+			t.WhatDidDo = append(t.WhatDidDo, fmt.Sprintf("Integrated commits into %s (HEAD: %s)", parentState.BranchName, headDisplay))
 			return nil
 		})
 		if err != nil {
@@ -1423,6 +1706,11 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status": "integrated",
 			"task":   updated,
+			"integration": map[string]any{
+				"target_branch":         parentState.BranchName,
+				"previous_target_head":  parentState.HeadCommit,
+				"resulting_target_head": result.ResultingParentHead,
+			},
 		})
 		return
 	}
