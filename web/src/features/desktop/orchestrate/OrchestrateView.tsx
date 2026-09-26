@@ -6,9 +6,11 @@ import {
   ArrowRight,
   Bot,
   Check,
+  CheckCircle2,
   ChevronDown,
   ChevronUp,
   Code,
+  Code2,
   Columns3,
   Edit3,
   Eye,
@@ -18,6 +20,7 @@ import {
   FolderGit2,
   FolderPlus,
   GitBranch,
+  GitPullRequest,
   Home,
   Image as ImageIcon,
   Layers,
@@ -26,6 +29,7 @@ import {
   MessageSquare,
   MoreHorizontal,
   Music,
+  Palette,
   Paperclip,
   Play,
   Plus,
@@ -383,6 +387,34 @@ function MinimalTaskCard({
                 {task.outcomeType.replace('_', ' ')}
               </span>
             )}
+            {/* Show worktree name right away */}
+            <span
+              className="font-mono text-[9px] px-1.5 py-0.5 rounded bg-indigo-950/70 text-indigo-300 border border-indigo-500/30 flex items-center gap-1 font-semibold"
+              title={`Worktree: ${task.worktreeBranch || (task.worktreeName ? `agent/${task.worktreeName}` : 'agent/worktree')}`}
+            >
+              <GitBranch size={9} />
+              <span>{task.worktreeBranch || (task.worktreeName ? `agent/${task.worktreeName}` : 'agent/worktree')}</span>
+            </span>
+            {/* Show integration status right away */}
+            {task.isIntegrated ? (
+              <span className="font-mono text-[9px] px-1.5 py-0.5 rounded bg-emerald-950/80 text-emerald-300 border border-emerald-500/40 flex items-center gap-1 font-semibold">
+                <CheckCircle2 size={9} />
+                <span>Integrated</span>
+              </span>
+            ) : hasUnintegrated ? (
+              <span className="font-mono text-[9px] px-1.5 py-0.5 rounded bg-amber-950/80 text-amber-300 border border-amber-500/40 flex items-center gap-1 font-semibold">
+                <span>Not Integrated ({task.unintegratedCommits})</span>
+              </span>
+            ) : task.isDirty ? (
+              <span className="font-mono text-[9px] px-1.5 py-0.5 rounded bg-amber-950/50 text-amber-300 border border-amber-500/30 flex items-center gap-1 font-semibold">
+                <span>Changes Pending Commit</span>
+              </span>
+            ) : task.syncWarning || (task.behindCommits && task.behindCommits > 0) ? (
+              <span className="font-mono text-[9px] px-1.5 py-0.5 rounded bg-rose-950/80 text-rose-300 border border-rose-500/40 flex items-center gap-1 font-semibold">
+                <AlertTriangle size={9} />
+                <span>Out of Sync</span>
+              </span>
+            ) : null}
             {(task.routerAlert || (task as any).router_alert) && (
               <span className="font-mono text-[9px] uppercase px-1.5 py-0.5 rounded bg-amber-950/80 text-amber-300 border border-amber-500/50 flex items-center gap-1 font-bold">
                 <AlertTriangle size={9} />
@@ -544,8 +576,12 @@ function MinimalTaskCard({
                 </span>
               )}
             </div>
-            <span className="text-[10px] font-mono text-slate-400">
-              Branch: <span className="text-indigo-300 font-semibold">{task.worktreeBranch || 'agent/worktree'}</span>
+            <span className="text-[10px] font-mono text-slate-400 flex items-center gap-1.5">
+              <span>Worktree:</span>
+              <span className="text-indigo-300 font-semibold flex items-center gap-1">
+                <GitBranch size={10} />
+                <span>{task.worktreeBranch || (task.worktreeName ? `agent/${task.worktreeName}` : 'agent/worktree')}</span>
+              </span>
             </span>
           </div>
 
@@ -596,8 +632,8 @@ function MinimalTaskCard({
             </div>
           )}
 
-          {/* Image Spec */}
-          {task.aspectRatio && (!task.scenes || task.scenes.length === 0) && (
+          {/* Image Spec - ONLY for image/media tasks */}
+          {(task.agentType === 'image' || task.outcomeType === 'media_bundle') && task.aspectRatio && (!task.scenes || task.scenes.length === 0) && (
             <div className="flex items-center gap-2 p-2 rounded bg-slate-900/80 border border-slate-800 text-[10px] font-mono text-slate-300">
               <ImageIcon size={11} className="text-blue-400" />
               <span>Aspect Ratio: <strong className="text-white">{task.aspectRatio}</strong></span>
@@ -607,6 +643,18 @@ function MinimalTaskCard({
                   <span>Iterations: <strong className="text-white">{task.variantCount} {task.variantCount === 1 ? 'variant' : 'variants'}</strong></span>
                 </>
               ) : null}
+            </div>
+          )}
+
+          {/* Code PR Spec - for code tasks */}
+          {(task.agentType === 'coder' || task.outcomeType === 'code_pr' || task.outcomeType === 'bug_patch') && (
+            <div className="flex items-center gap-2 p-2 rounded bg-slate-900/80 border border-slate-800 text-[10px] font-mono text-slate-300 flex-wrap">
+              <Code2 size={11} className="text-indigo-400 flex-shrink-0" />
+              <span>Target Worktree: <strong className="text-indigo-300 font-semibold">{task.worktreeBranch || (task.worktreeName ? `agent/${task.worktreeName}` : 'agent/worktree')}</strong></span>
+              <span>•</span>
+              <span className="text-emerald-400 font-semibold">Verified Local Tests</span>
+              <span>•</span>
+              <span className="text-slate-400">Target Integration: <strong className="text-white">{task.baseBranch || 'main'}</strong></span>
             </div>
           )}
 
@@ -806,16 +854,30 @@ function MinimalTaskCard({
         </div>
       )}
 
-      {/* 3. Action Needed Banner (if unintegrated commits or action needed) */}
-      {!isPendingApproval && (task.actionNeeded || hasUnintegrated) && (
-        <div className="flex items-center justify-between p-2 rounded-lg bg-amber-950/20 border border-amber-500/30 text-amber-200 text-[11px] gap-2">
+      {/* 3. Out of Sync Warning Banner */}
+      {!isPendingApproval && (task.syncWarning || (task.behindCommits && task.behindCommits > 0)) && (
+        <div className="flex items-center justify-between p-2 rounded-lg bg-rose-950/30 border border-rose-500/50 text-rose-200 text-[11px] gap-2">
           <div className="flex items-center gap-2 min-w-0">
-            <span className="font-bold text-amber-400 flex-shrink-0">Action:</span>
+            <AlertTriangle size={12} className="text-rose-400 flex-shrink-0" />
+            <span className="font-bold text-rose-400 flex-shrink-0">Out of Sync Warning:</span>
             <span className="truncate">
-              {task.actionNeeded || `${task.unintegratedCommits} unintegrated commit(s) ready to land.`}
+              {task.syncWarning || `${task.baseBranch || 'main'} branch could be out of sync (${task.behindCommits} commits behind). Rebase or synchronization recommended.`}
             </span>
           </div>
-          {hasUnintegrated && onIntegrate && (
+        </div>
+      )}
+
+      {/* 4. Action Needed / Not Integrated Banner (if unintegrated commits ready to land) */}
+      {!isPendingApproval && hasUnintegrated && (
+        <div className="flex items-center justify-between p-2 rounded-lg bg-amber-950/25 border border-amber-500/40 text-amber-200 text-[11px] gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <GitPullRequest size={12} className="text-amber-400 flex-shrink-0" />
+            <span className="font-bold text-amber-400 flex-shrink-0">Not Integrated:</span>
+            <span className="truncate">
+              {task.unintegratedCommits} commit(s) on {task.worktreeBranch || 'worktree'} ready to integrate into {task.baseBranch || 'main'}.
+            </span>
+          </div>
+          {onIntegrate && (
             <button
               type="button"
               onClick={(e) => {
@@ -824,30 +886,55 @@ function MinimalTaskCard({
               }}
               className="flex-shrink-0 px-2.5 py-0.5 rounded bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-[10px] transition-colors"
             >
-              Integrate into dev
+              Integrate into {task.baseBranch || 'main'}
             </button>
           )}
         </div>
       )}
 
-      {/* 4. Worktree & Git Status Bar */}
-      {(task.worktreeBranch || task.diffSummary || hasUnintegrated) && (
+      {/* 5. Already Integrated Banner */}
+      {!isPendingApproval && task.isIntegrated && (
+        <div className="flex items-center justify-between p-2 rounded-lg bg-emerald-950/20 border border-emerald-500/30 text-emerald-200 text-[11px] gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <CheckCircle2 size={12} className="text-emerald-400 flex-shrink-0" />
+            <span className="font-bold text-emerald-400 flex-shrink-0">Integrated:</span>
+            <span className="truncate">
+              Changes on {task.worktreeBranch || 'worktree'} have been successfully integrated into {task.baseBranch || 'main'}.
+            </span>
+          </div>
+          <span className="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-mono text-[9px] font-bold border border-emerald-500/30">
+            Up-to-date
+          </span>
+        </div>
+      )}
+
+      {/* 6. Worktree & Git Changes Bar (ONLY show when there are changes waiting to be committed or unintegrated commits) */}
+      {!isPendingApproval && (task.isDirty || hasUnintegrated) && (
         <div className="flex items-center justify-between p-2 rounded-lg bg-[#070b14] border border-slate-800/80 text-[10px] font-mono text-slate-400">
           <div className="flex items-center gap-2 truncate">
             <span className="text-indigo-400 flex items-center gap-1">
               <GitBranch size={10} />
-              <span>{task.worktreeBranch || 'agent/worktree'}</span>
+              <span>{task.worktreeBranch || (task.worktreeName ? `agent/${task.worktreeName}` : 'agent/worktree')}</span>
             </span>
             {task.diffSummary && <span>• {task.diffSummary}</span>}
           </div>
           <div className="flex items-center gap-2 flex-shrink-0">
-            <span className={hasUnintegrated ? 'text-amber-400 font-semibold' : 'text-slate-500'}>
-              {hasUnintegrated ? `${task.unintegratedCommits} unmerged commit(s)` : 'up-to-date'}
-            </span>
-            <span>•</span>
-            <span className={task.isDirty ? 'text-amber-400' : 'text-emerald-400'}>
-              {task.isDirty ? 'modified' : 'clean'}
-            </span>
+            {task.isDirty ? (
+              <span className="text-amber-400 flex items-center gap-1 font-semibold">
+                <span>●</span>
+                <span>{task.dirtyCount ? `${task.dirtyCount} dirty file(s) waiting to commit` : 'Changes waiting to commit'}</span>
+              </span>
+            ) : (
+              <span className="text-emerald-400">clean</span>
+            )}
+            {hasUnintegrated && (
+              <>
+                <span>•</span>
+                <span className="text-amber-400 font-semibold">
+                  Not integrated ({task.unintegratedCommits} commit(s))
+                </span>
+              </>
+            )}
           </div>
         </div>
       )}
@@ -921,9 +1008,21 @@ function MinimalTaskCard({
                   </div>
                 ) : d.status === 'pending' ? (
                   <div className="flex flex-col items-center justify-center p-3 text-center space-y-1 min-h-[90px]">
-                    {d.type === 'video' ? <Film size={16} className="text-slate-500" /> : <ImageIcon size={16} className="text-slate-500" />}
+                    {d.type === 'video' ? (
+                      <Film size={16} className="text-indigo-400" />
+                    ) : d.type === 'pr' || d.type === 'code' ? (
+                      <GitPullRequest size={16} className="text-emerald-400" />
+                    ) : d.type === 'report' ? (
+                      <FileText size={16} className="text-amber-400" />
+                    ) : d.type === 'artifact' ? (
+                      <Palette size={16} className="text-purple-400" />
+                    ) : (
+                      <ImageIcon size={16} className="text-slate-500" />
+                    )}
                     <span className="text-[11px] font-mono font-semibold text-slate-300 truncate w-full px-1">{d.title}</span>
-                    <span className="text-[9px] font-mono text-slate-500">Pending Acceptance</span>
+                    <span className="text-[9px] font-mono text-slate-500">
+                      {d.type === 'pr' || d.type === 'code' ? 'Pending Acceptance • Code PR' : 'Pending Acceptance'}
+                    </span>
                   </div>
                 ) : (
                   <div className="space-y-1.5">
@@ -1343,9 +1442,15 @@ export function OrchestrateView({
           workspaceTarget: t.workspace_path || t.project_id,
           workspacePath: t.workspace_path,
           worktreeBranch: t.worktree_branch,
+          worktreeName: t.worktree_name || (t.worktree_branch ? t.worktree_branch.replace(/^agent\//, '').replace(/^worktree\//, '') : undefined),
+          baseBranch: t.base_branch || 'main',
           unintegratedCommits: t.unintegrated_commits ?? 0,
+          behindCommits: t.behind_commits ?? 0,
+          isIntegrated: !!t.is_integrated,
           diffSummary: t.diff_summary ?? '',
           isDirty: !!t.is_dirty,
+          dirtyCount: t.dirty_count ?? 0,
+          syncWarning: t.sync_warning,
           actionNeeded: t.action_needed,
           whatDidDo: t.what_did_do,
           whatNotDone: t.what_not_done,
@@ -1754,7 +1859,7 @@ export function OrchestrateView({
             prompt: composedPrompt,
             workspace_path: selectedProject.repoPath || '.',
             intent: targetIntent,
-            aspect_ratio: targetIntent === 'image' ? imageAspectRatio : '16:9',
+            aspect_ratio: targetIntent === 'image' ? imageAspectRatio : targetIntent === 'video' ? '16:9' : undefined,
             variant_count: finalVariantCount,
             scenes_count: finalScenesCount,
             soundtrack: finalSoundtrack,

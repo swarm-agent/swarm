@@ -206,10 +206,24 @@ func RouteAndPlanProjectTaskWithOptions(opts TaskPlanOptions) TaskRouteResult {
 		outcomeType = "general"
 	}
 
-	aspectRatio := opts.AspectRatio
-	variantCount := opts.VariantCount
-	if variantCount <= 0 {
-		variantCount = 1
+	isVisualMedia := agent == "image" || agent == "video" ||
+		(agent == "designer" && (tier == "swarm" || outcomeType == "media_bundle" || opts.VariantCount > 1))
+
+	var aspectRatio string
+	var variantCount int
+	if isVisualMedia {
+		variantCount = opts.VariantCount
+		if variantCount <= 0 {
+			variantCount = 1
+		}
+		aspectRatio = strings.TrimSpace(opts.AspectRatio)
+		if aspectRatio == "" {
+			if agent == "image" {
+				aspectRatio = "1:1"
+			} else {
+				aspectRatio = "16:9"
+			}
+		}
 	}
 	var scenes []ProjectTaskScene
 	soundtrack := opts.Soundtrack
@@ -300,7 +314,7 @@ func RouteAndPlanProjectTaskWithOptions(opts TaskPlanOptions) TaskRouteResult {
 	case "coder":
 		stages = []string{"Code Implementation", "Verification & Pull Request"}
 		deliverables = []ProjectTaskDeliverable{
-			{ID: "deliv_code", Title: "Code Changes & Verified Tests", Kind: "pr", Status: "pending"},
+			{ID: "deliv_code", Title: "Code PR & Verified Tests", Kind: "pr", Status: "pending", Description: "Pull request with tested code modifications"},
 		}
 	case "plan":
 		stages = []string{"Plan & Architecture Formulation", "Plan Review & Checkpoint Execution"}
@@ -314,28 +328,7 @@ func RouteAndPlanProjectTaskWithOptions(opts TaskPlanOptions) TaskRouteResult {
 		}
 	}
 
-	var slugParts []string
-	words := strings.Fields(strings.ToLower(prompt))
-	for _, w := range words {
-		var filtered strings.Builder
-		for _, r := range w {
-			if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
-				filtered.WriteRune(r)
-			}
-		}
-		f := filtered.String()
-		if len(f) > 2 && f != "the" && f != "and" && f != "for" && f != "with" && f != "make" && f != "please" {
-			slugParts = append(slugParts, f)
-			if len(slugParts) >= 4 {
-				break
-			}
-		}
-	}
-	slug := strings.Join(slugParts, "-")
-	if slug == "" {
-		slug = fmt.Sprintf("task-%d", time.Now().Unix()%10000)
-	}
-	branch := fmt.Sprintf("agent/%s", slug)
+	branch, _ := MakeWorktreeBranch(title, prompt)
 	mission := fmt.Sprintf("Autonomous %s mission: %s. Target: %s.", agent, prompt, branch)
 
 	var heroLabel string
@@ -424,4 +417,34 @@ func RouteAndPlanProjectTaskWithOptions(opts TaskPlanOptions) TaskRouteResult {
 		RouterAlert:        routerAlert,
 		AttachedMedia:      opts.AttachedMedia,
 	}
+}
+
+// MakeWorktreeBranch derives a clean, isolated worktree branch and slug name from a title or prompt.
+func MakeWorktreeBranch(title, prompt string) (string, string) {
+	text := strings.TrimSpace(title)
+	if text == "" {
+		text = strings.TrimSpace(prompt)
+	}
+	var slugParts []string
+	words := strings.Fields(strings.ToLower(text))
+	for _, w := range words {
+		var filtered strings.Builder
+		for _, r := range w {
+			if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+				filtered.WriteRune(r)
+			}
+		}
+		f := filtered.String()
+		if len(f) > 1 && f != "the" && f != "and" && f != "for" && f != "with" && f != "make" && f != "please" && f != "into" && f != "from" && f != "this" && f != "that" {
+			slugParts = append(slugParts, f)
+			if len(slugParts) >= 4 {
+				break
+			}
+		}
+	}
+	slug := strings.Join(slugParts, "-")
+	if slug == "" {
+		slug = fmt.Sprintf("task-%d", time.Now().Unix()%10000)
+	}
+	return fmt.Sprintf("agent/%s", slug), slug
 }

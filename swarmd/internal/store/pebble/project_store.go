@@ -234,9 +234,15 @@ type ProjectTaskRecord struct {
 	OutcomeType         string                   `json:"outcome_type,omitempty"` // "code_pr" | "media_bundle" | "bug_patch" | "audit_report" | "video_story"
 	WorkspacePath       string                   `json:"workspace_path,omitempty"`
 	WorktreeBranch      string                   `json:"worktree_branch,omitempty"`
+	WorktreeName        string                   `json:"worktree_name,omitempty"`
+	BaseBranch          string                   `json:"base_branch,omitempty"`
 	UnintegratedCommits int                      `json:"unintegrated_commits,omitempty"`
+	BehindCommits       int                      `json:"behind_commits,omitempty"`
+	IsIntegrated        bool                     `json:"is_integrated,omitempty"`
 	DiffSummary         string                   `json:"diff_summary,omitempty"`
 	IsDirty             bool                     `json:"is_dirty,omitempty"`
+	DirtyCount          int                      `json:"dirty_count,omitempty"`
+	SyncWarning         string                   `json:"sync_warning,omitempty"`
 	ActionNeeded        string                   `json:"action_needed,omitempty"`
 	WhatDidDo           []string                 `json:"what_did_do,omitempty"`
 	WhatNotDone         []string                 `json:"what_not_done,omitempty"`

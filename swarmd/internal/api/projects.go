@@ -23,50 +23,182 @@ import (
 
 const ProjectsPath = "/v3/projects"
 
+type taskGitState struct {
+	worktreeBranch      string
+	worktreeName        string
+	baseBranch          string
+	unintegratedCommits int
+	behindCommits       int
+	isIntegrated        bool
+	diffSummary         string
+	isDirty             bool
+	dirtyCount          int
+	actionNeeded        string
+	syncWarning         string
+}
+
 // inspectTaskGitState probes a workspace/worktree path for dirty status and unintegrated commits.
-func inspectTaskGitState(workspacePath, branch string) (unintegratedCommits int, diffSummary string, isDirty bool) {
-	workspacePath = strings.TrimSpace(workspacePath)
-	if workspacePath == "" {
-		return 0, "", false
+func inspectTaskGitState(task pebblestore.ProjectTaskRecord, db *pebblestore.SessionStore) taskGitState {
+	res := taskGitState{
+		worktreeBranch: task.WorktreeBranch,
+		worktreeName:   task.WorktreeName,
+		baseBranch:     task.BaseBranch,
 	}
-	if fi, err := os.Stat(workspacePath); err != nil || !fi.IsDir() {
-		return 0, "", false
+	if res.worktreeBranch == "" || res.worktreeBranch == "main" || res.worktreeBranch == "dev" || res.worktreeBranch == "master" {
+		res.worktreeBranch, res.worktreeName = pebblestore.MakeWorktreeBranch(task.Title, task.Description)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	if res.worktreeName == "" {
+		res.worktreeName = strings.TrimPrefix(res.worktreeBranch, "agent/")
+		res.worktreeName = strings.TrimPrefix(res.worktreeName, "worktree/")
+	}
+	if res.baseBranch == "" {
+		res.baseBranch = "main"
+	}
+
+	// 1. Don't show or inspect git state for pending approval, planning, or queued tasks
+	if task.Status == "pending_approval" || task.Status == "planning" || task.Status == "queued" {
+		return res
+	}
+	// 2. Media tasks don't have git tracking
+	if task.Agent == "image" || task.Agent == "video" {
+		return res
+	}
+
+	// 3. Resolve session and target path
+	var sess *pebblestore.SessionSnapshot
+	if task.SessionID != "" && db != nil {
+		if s, found, _ := db.GetSession(task.SessionID); found {
+			sess = &s
+		}
+	}
+
+	targetPath := strings.TrimSpace(task.WorkspacePath)
+	if sess != nil && sess.WorktreeEnabled && strings.TrimSpace(sess.WorktreeRootPath) != "" {
+		targetPath = strings.TrimSpace(sess.WorktreeRootPath)
+	}
+	if targetPath == "" {
+		return res
+	}
+	if fi, err := os.Stat(targetPath); err != nil || !fi.IsDir() {
+		return res
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	cmdDirty := exec.CommandContext(ctx, "git", "-C", workspacePath, "status", "--porcelain")
-	if out, err := cmdDirty.Output(); err == nil {
-		isDirty = len(bytes.TrimSpace(out)) > 0
+	// 4. Resolve base branch
+	if sess != nil && strings.TrimSpace(sess.WorktreeBaseBranch) != "" {
+		res.baseBranch = strings.TrimSpace(sess.WorktreeBaseBranch)
+	} else {
+		// Test if dev exists
+		if err := exec.CommandContext(ctx, "git", "-C", targetPath, "rev-parse", "--verify", "dev").Run(); err == nil {
+			res.baseBranch = "dev"
+		} else if err := exec.CommandContext(ctx, "git", "-C", targetPath, "rev-parse", "--verify", "origin/dev").Run(); err == nil {
+			res.baseBranch = "dev"
+		}
 	}
 
-	cmdLog := exec.CommandContext(ctx, "git", "-C", workspacePath, "rev-list", "--count", "origin/dev..HEAD")
-	if out, err := cmdLog.Output(); err == nil {
-		var count int
-		if _, err := fmt.Sscanf(string(bytes.TrimSpace(out)), "%d", &count); err == nil {
-			unintegratedCommits = count
+	// 5. Inspect current HEAD branch in targetPath
+	cmdHead := exec.CommandContext(ctx, "git", "-C", targetPath, "rev-parse", "--abbrev-ref", "HEAD")
+	headBranch := ""
+	if out, err := cmdHead.Output(); err == nil {
+		headBranch = strings.TrimSpace(string(out))
+	}
+
+	isTaskWorktree := (sess != nil && sess.WorktreeEnabled && sess.WorktreeRootPath == targetPath) ||
+		(headBranch != "" && headBranch != "main" && headBranch != "dev" && headBranch != "master" && (headBranch == res.worktreeBranch || strings.HasPrefix(headBranch, "agent/")))
+
+	if !isTaskWorktree {
+		// targetPath is the main repo or non-worktree checkout — do NOT attribute its dirty status or diff to this task!
+		return res
+	}
+
+	// 6. Dirty status
+	cmdDirty := exec.CommandContext(ctx, "git", "-C", targetPath, "status", "--porcelain")
+	if out, err := cmdDirty.Output(); err == nil {
+		lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+		for _, l := range lines {
+			if strings.TrimSpace(l) != "" {
+				res.dirtyCount++
+			}
+		}
+		res.isDirty = res.dirtyCount > 0
+	}
+
+	// 7. Ahead / behind relative to baseBranch
+	cmdRevList := exec.CommandContext(ctx, "git", "-C", targetPath, "rev-list", "--left-right", "--count", res.baseBranch+"...HEAD")
+	if out, err := cmdRevList.Output(); err == nil {
+		fields := strings.Fields(strings.TrimSpace(string(out)))
+		if len(fields) >= 2 {
+			fmt.Sscanf(fields[0], "%d", &res.behindCommits)
+			fmt.Sscanf(fields[1], "%d", &res.unintegratedCommits)
 		}
 	} else {
-		cmdLogDev := exec.CommandContext(ctx, "git", "-C", workspacePath, "rev-list", "--count", "dev..HEAD")
-		if out, err := cmdLogDev.Output(); err == nil {
-			var count int
-			if _, err := fmt.Sscanf(string(bytes.TrimSpace(out)), "%d", &count); err == nil {
-				unintegratedCommits = count
+		cmdRevOrigin := exec.CommandContext(ctx, "git", "-C", targetPath, "rev-list", "--left-right", "--count", "origin/"+res.baseBranch+"...HEAD")
+		if out, err := cmdRevOrigin.Output(); err == nil {
+			fields := strings.Fields(strings.TrimSpace(string(out)))
+			if len(fields) >= 2 {
+				fmt.Sscanf(fields[0], "%d", &res.behindCommits)
+				fmt.Sscanf(fields[1], "%d", &res.unintegratedCommits)
 			}
 		}
 	}
 
-	cmdDiff := exec.CommandContext(ctx, "git", "-C", workspacePath, "diff", "--shortstat", "origin/dev...HEAD")
-	if out, err := cmdDiff.Output(); err == nil && len(bytes.TrimSpace(out)) > 0 {
-		diffSummary = string(bytes.TrimSpace(out))
-	} else {
-		cmdDiffDev := exec.CommandContext(ctx, "git", "-C", workspacePath, "diff", "--shortstat", "dev...HEAD")
-		if out, err := cmdDiffDev.Output(); err == nil && len(bytes.TrimSpace(out)) > 0 {
-			diffSummary = string(bytes.TrimSpace(out))
+	// 8. Diff summary
+	if res.unintegratedCommits > 0 || res.isDirty {
+		cmdDiff := exec.CommandContext(ctx, "git", "-C", targetPath, "diff", "--shortstat", res.baseBranch+"...HEAD")
+		if out, err := cmdDiff.Output(); err == nil && len(bytes.TrimSpace(out)) > 0 {
+			res.diffSummary = string(bytes.TrimSpace(out))
 		}
 	}
 
-	return unintegratedCommits, diffSummary, isDirty
+	// 9. Integration check
+	if (task.Status == "completed" || (sess != nil && sess.MessageCount > 2)) && res.unintegratedCommits == 0 && !res.isDirty {
+		res.isIntegrated = true
+	}
+
+	// 10. Sync Warning check (behind or out of sync)
+	if res.behindCommits > 0 {
+		res.syncWarning = fmt.Sprintf("Worktree is behind %s by %d commit(s) — rebase may be needed.", res.baseBranch, res.behindCommits)
+	}
+
+	// Also check if base branch in root workspace is behind upstream remote
+	parentWs := task.WorkspacePath
+	if sess != nil && sess.Metadata != nil {
+		if src, ok := sess.Metadata["swarm_v3_source_workspace_path"].(string); ok && src != "" {
+			parentWs = src
+		}
+	}
+	if parentWs != "" && parentWs != targetPath {
+		cmdBranchStatus := exec.CommandContext(ctx, "git", "-C", parentWs, "status", "--porcelain=v2", "--branch")
+		if out, err := cmdBranchStatus.Output(); err == nil {
+			outStr := string(out)
+			for _, line := range strings.Split(outStr, "\n") {
+				if strings.HasPrefix(line, "# branch.ab ") {
+					var ahead, behind int
+					if _, scanErr := fmt.Sscanf(line, "# branch.ab +%d -%d", &ahead, &behind); scanErr == nil {
+						if behind > 0 {
+							if res.syncWarning != "" {
+								res.syncWarning = fmt.Sprintf("%s branch could be out of sync (behind upstream by %d commit(s)), and worktree is behind %s by %d commit(s).", res.baseBranch, behind, res.baseBranch, res.behindCommits)
+							} else {
+								res.syncWarning = fmt.Sprintf("%s branch could be out of sync (behind upstream remote by %d commit(s)).", res.baseBranch, behind)
+							}
+						}
+					}
+					break
+				}
+			}
+		}
+	}
+
+	// 11. Action Needed
+	if res.unintegratedCommits > 0 {
+		res.actionNeeded = fmt.Sprintf("Action Needed: %d unintegrated commit(s) on %s ready to integrate.", res.unintegratedCommits, res.worktreeBranch)
+	} else if res.isDirty {
+		res.actionNeeded = fmt.Sprintf("Action Needed: %d modified file(s) waiting to be committed.", res.dirtyCount)
+	}
+
+	return res
 }
 
 // TaskRouteResult represents the synthesized plan, tier, and workspace scope for a task.
@@ -325,6 +457,14 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 		metadata["default_session_mode"] = "plan"
 	}
 
+	worktreeBranch := strings.TrimSpace(task.WorktreeBranch)
+	if worktreeBranch == "" || worktreeBranch == "main" || worktreeBranch == "dev" || worktreeBranch == "master" {
+		worktreeBranch, _ = pebblestore.MakeWorktreeBranch(task.Title, prompt)
+	}
+	task.WorktreeBranch = worktreeBranch
+	task.WorktreeName = strings.TrimPrefix(worktreeBranch, "agent/")
+	task.WorktreeName = strings.TrimPrefix(task.WorktreeName, "worktree/")
+
 	avail := true
 	grants := []pebblestore.WorkspaceGrant{
 		{Kind: pebblestore.WorkspaceGrantPrimary, Path: wsPath, Name: filepath.Base(wsPath), Available: &avail},
@@ -351,6 +491,24 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 		WorkspaceUsage:  pebblestore.WorkspaceUsageFromGrants(grants),
 		CreatedAt:       now,
 		UpdatedAt:       now,
+	}
+
+	if s.worktrees != nil && (targetAgent == "coder" || task.OutcomeType == "code_pr" || task.OutcomeType == "bug_patch") {
+		if alloc, err := s.worktrees.AllocateDetachedWorkspaceRequestedForPrincipal(p, wsPath, sessionID, "", worktreeBranch); err == nil && alloc.WorkspacePath != "" {
+			sessionSnapshot.WorktreeEnabled = true
+			sessionSnapshot.WorktreeRootPath = strings.TrimSpace(alloc.WorkspacePath)
+			sessionSnapshot.WorktreeBaseBranch = strings.TrimSpace(alloc.BaseBranch)
+			sessionSnapshot.WorktreeBranch = strings.TrimSpace(alloc.BranchName)
+			task.WorkspacePath = alloc.WorkspacePath
+			task.WorktreeBranch = alloc.BranchName
+			task.BaseBranch = alloc.BaseBranch
+			task.WorktreeName = strings.TrimPrefix(alloc.BranchName, "agent/")
+			available := true
+			sessionSnapshot.WorkspaceGrants = append(sessionSnapshot.WorkspaceGrants, pebblestore.WorkspaceGrant{
+				Kind: pebblestore.WorkspaceGrantWorktree, Path: alloc.WorkspacePath, Available: &available,
+			})
+			sessionSnapshot.WorkspaceUsage = pebblestore.WorkspaceUsageFromGrants(sessionSnapshot.WorkspaceGrants)
+		}
 	}
 
 	createKey := fmt.Sprintf("project-task:create:%s:%d", sessionID, now)
@@ -777,27 +935,19 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				tasks = []pebblestore.ProjectTaskRecord{}
 			}
 			for i := range tasks {
-				ws := tasks[i].WorkspacePath
-				if ws == "" && tasks[i].SessionID != "" {
-					if sess, found, _ := db.GetSession(tasks[i].SessionID); found {
-						ws = sess.WorkspacePath
-						tasks[i].WorkspacePath = ws
-					}
-				}
-				if ws != "" && tasks[i].Agent != "image" && tasks[i].Agent != "video" {
-					unintegrated, diff, dirty := inspectTaskGitState(ws, tasks[i].WorktreeBranch)
-					if unintegrated > 0 || diff != "" || dirty {
-						tasks[i].UnintegratedCommits = unintegrated
-						tasks[i].DiffSummary = diff
-						tasks[i].IsDirty = dirty
-						if tasks[i].ActionNeeded == "" && unintegrated > 0 {
-							branchName := tasks[i].WorktreeBranch
-							if branchName == "" {
-								branchName = "worktree"
-							}
-							tasks[i].ActionNeeded = fmt.Sprintf("Action Needed: %d unintegrated commit(s) on %s ready to integrate.", unintegrated, branchName)
-						}
-					}
+				gitState := inspectTaskGitState(tasks[i], db)
+				tasks[i].WorktreeBranch = gitState.worktreeBranch
+				tasks[i].WorktreeName = gitState.worktreeName
+				tasks[i].BaseBranch = gitState.baseBranch
+				tasks[i].UnintegratedCommits = gitState.unintegratedCommits
+				tasks[i].BehindCommits = gitState.behindCommits
+				tasks[i].IsIntegrated = gitState.isIntegrated
+				tasks[i].DiffSummary = gitState.diffSummary
+				tasks[i].IsDirty = gitState.isDirty
+				tasks[i].DirtyCount = gitState.dirtyCount
+				tasks[i].SyncWarning = gitState.syncWarning
+				if gitState.actionNeeded != "" {
+					tasks[i].ActionNeeded = gitState.actionNeeded
 				}
 			}
 			writeJSON(w, http.StatusOK, map[string]any{
@@ -907,9 +1057,14 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				outcomeType = routed.OutcomeType
 			}
 			worktreeBranch := strings.TrimSpace(req.WorktreeBranch)
-			if worktreeBranch == "" {
+			if worktreeBranch == "" || worktreeBranch == "main" || worktreeBranch == "dev" || worktreeBranch == "master" {
 				worktreeBranch = routed.Branch
 			}
+			if worktreeBranch == "" || worktreeBranch == "main" || worktreeBranch == "dev" || worktreeBranch == "master" {
+				worktreeBranch, _ = pebblestore.MakeWorktreeBranch(title, prompt)
+			}
+			worktreeName := strings.TrimPrefix(worktreeBranch, "agent/")
+			worktreeName = strings.TrimPrefix(worktreeName, "worktree/")
 			description := strings.TrimSpace(req.Description)
 			if description == "" {
 				description = routed.Mission
@@ -966,6 +1121,8 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				OutcomeType:         outcomeType,
 				WorkspacePath:       strings.TrimSpace(req.WorkspacePath),
 				WorktreeBranch:      worktreeBranch,
+				WorktreeName:        worktreeName,
+				BaseBranch:          "dev",
 				UnintegratedCommits: req.UnintegratedCommits,
 				DiffSummary:         strings.TrimSpace(req.DiffSummary),
 				IsDirty:             req.IsDirty,
@@ -989,6 +1146,20 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				AutoApprove:         req.AutoApprove,
 				RouterAlert:         routed.RouterAlert,
 				AttachedMedia:       req.AttachedMedia,
+			}
+			if task.Agent == "coder" || task.OutcomeType == "code_pr" || task.OutcomeType == "bug_patch" {
+				task.AspectRatio = ""
+				task.VariantCount = 0
+			}
+			if task.Status == "pending_approval" || task.Status == "planning" || task.Status == "queued" {
+				task.UnintegratedCommits = 0
+				task.BehindCommits = 0
+				task.DiffSummary = ""
+				task.IsDirty = false
+				task.DirtyCount = 0
+				task.IsIntegrated = false
+				task.SyncWarning = ""
+				task.ActionNeeded = ""
 			}
 			if len(task.AttachedMedia) == 0 && len(routed.AttachedMedia) > 0 {
 				task.AttachedMedia = routed.AttachedMedia
@@ -1039,16 +1210,19 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusNotFound, errors.New("project task not found"))
 				return
 			}
-			if task.WorkspacePath != "" && task.Agent != "image" && task.Agent != "video" {
-				unintegrated, diff, dirty := inspectTaskGitState(task.WorkspacePath, task.WorktreeBranch)
-				if unintegrated > 0 || diff != "" || dirty {
-					task.UnintegratedCommits = unintegrated
-					task.DiffSummary = diff
-					task.IsDirty = dirty
-					if task.ActionNeeded == "" && unintegrated > 0 {
-						task.ActionNeeded = fmt.Sprintf("Action Needed: %d unintegrated commit(s) on %s ready to integrate.", unintegrated, task.WorktreeBranch)
-					}
-				}
+			gitState := inspectTaskGitState(*task, db)
+			task.WorktreeBranch = gitState.worktreeBranch
+			task.WorktreeName = gitState.worktreeName
+			task.BaseBranch = gitState.baseBranch
+			task.UnintegratedCommits = gitState.unintegratedCommits
+			task.BehindCommits = gitState.behindCommits
+			task.IsIntegrated = gitState.isIntegrated
+			task.DiffSummary = gitState.diffSummary
+			task.IsDirty = gitState.isDirty
+			task.DirtyCount = gitState.dirtyCount
+			task.SyncWarning = gitState.syncWarning
+			if gitState.actionNeeded != "" {
+				task.ActionNeeded = gitState.actionNeeded
 			}
 			writeJSON(w, http.StatusOK, map[string]any{
 				"task": task,
@@ -1116,6 +1290,24 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				}
 				if v, ok := patch["worktree_branch"].(string); ok {
 					t.WorktreeBranch = strings.TrimSpace(v)
+				}
+				if v, ok := patch["worktree_name"].(string); ok {
+					t.WorktreeName = strings.TrimSpace(v)
+				}
+				if v, ok := patch["base_branch"].(string); ok {
+					t.BaseBranch = strings.TrimSpace(v)
+				}
+				if v, ok := patch["behind_commits"].(float64); ok {
+					t.BehindCommits = int(v)
+				}
+				if v, ok := patch["is_integrated"].(bool); ok {
+					t.IsIntegrated = v
+				}
+				if v, ok := patch["dirty_count"].(float64); ok {
+					t.DirtyCount = int(v)
+				}
+				if v, ok := patch["sync_warning"].(string); ok {
+					t.SyncWarning = strings.TrimSpace(v)
 				}
 				if v, ok := patch["unintegrated_commits"].(float64); ok {
 					t.UnintegratedCommits = int(v)

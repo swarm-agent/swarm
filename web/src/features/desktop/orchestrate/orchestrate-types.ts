@@ -114,7 +114,7 @@ export type DeliverableThumbnailType = 'cyber_lattice' | 'neural_core' | 'orbita
 export interface MediaDeliverable {
   id: string
   title: string
-  type: 'video' | 'image' | 'audio' | 'code' | 'report'
+  type: 'video' | 'image' | 'audio' | 'code' | 'pr' | 'report' | 'artifact'
   previewUrl?: string
   mediaUrl?: string
   thumbnailType?: DeliverableThumbnailType
@@ -195,9 +195,15 @@ export interface RunningTask {
   // Worktree & Outcome Tracking Fields
   workspacePath?: string
   worktreeBranch?: string
+  worktreeName?: string
+  baseBranch?: string
   unintegratedCommits?: number
+  behindCommits?: number
+  isIntegrated?: boolean
   diffSummary?: string
   isDirty?: boolean
+  dirtyCount?: number
+  syncWarning?: string
   actionNeeded?: string
   whatDidDo?: string[]
   whatNotDone?: string[]

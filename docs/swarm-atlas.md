@@ -2864,5 +2864,23 @@ no scratch/logs or private identifiers were added to tracked documentation.
   - Live candidate testbench (`run-testbench.sh`) on ports 18080/18081 verified all 7 categories end-to-end, confirming live agent execution runs and message history.
   - `tsc -b` passed with 0 errors.
 
+### Coder Router Proposal Sanitization & Worktree Integration Lifecycle (2026-09-26)
+
+- **Coder Router Proposal Sanitization (`swarmd/internal/taskrouter/service.go`, `swarmd/internal/store/pebble/project_router.go`):**
+  - Eliminated erroneous 16:9 aspect ratio and image variant defaults for code change requests (`coder`, `plan`, `finder`, `swarm`), ensuring aspect ratio and variant counts are exclusively assigned to visual generative tasks.
+  - Sanitized router-generated branch names: if router outputs `main`, `dev`, or `master`, sanitized to isolated `agent/<kebab-slug>` format via `MakeWorktreeBranch`.
+  - Added `Kind: "pr"` deliverable (`deliv_code`) for coder and bug-patch tasks so code proposals render pull requests and verification deliverables instead of placeholder image boxes.
+- **Task Worktree & Git Integration State Lifecycle (`swarmd/internal/api/projects.go`, `swarmd/internal/store/pebble/project_store.go`, `web/src/features/desktop/orchestrate/`):**
+  - Suppressed root workspace git inspection for pending approval, planning, and queued tasks, preventing parent repository unpushed commits and diffs from polluting new task proposals.
+  - Inspected task-owned worktrees via `git rev-list --left-right --count <baseBranch>...HEAD` to accurately derive `unintegrated_commits` (ahead) and `behind_commits` (behind).
+  - Added `sync_warning` detection alerting when a worktree is behind the base branch or when the base branch is out of sync with upstream remote.
+  - Updated Orchestrate cards to display worktree branch/name immediately, with an accurate integration lifecycle: no change diff displayed before changes exist; dirty files count when uncommitted changes exist; "Not Integrated" with commit counts and merge action when unmerged; "Integrated" when merged into main/dev; and prominent "Out of Sync" warning banner when branches diverge or lag.
+- **Validation:**
+  - `TestService_RouteTask_CoderTask_NoImageAspectAndSanitizedBranch` passed in `taskrouter`.
+  - `TestProjectCoderTask_PendingApproval_NoGitPollution` passed in `api`.
+  - `orchestrate-media-integration.spec.ts` passed all 8 invariants.
+  - `bash scripts/run-critical-tests.sh fast` PASS.
+  - Frontend typecheck and build (`npm run build`) passed with zero errors.
+
 
 

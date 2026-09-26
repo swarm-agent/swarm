@@ -104,3 +104,35 @@ test('OrchestrateView safely formats media deliverables with parseSafeDate and s
   assert.ok(!source.includes("'/v3/automations/v2?action=list'"), 'Must not send invalid ?action=list query to automations endpoint')
   assert.ok(source.includes("'/v3/automations/v2'"), 'Must query /v3/automations/v2 cleanly')
 })
+
+test('OrchestrateView displays worktree name immediately and implements accurate integration lifecycle', () => {
+  // Invariant: Cards must show worktree name right away, render Code PR deliverable icons
+  // rather than image icons for coder tasks, suppress diffs before changes exist,
+  // show dirty files when pending commit, show not integrated when commits are unmerged,
+  // show integrated when merged, and warn when behind or out of sync.
+  const sourcePath = path.join(__dirname, 'OrchestrateView.tsx')
+  const source = fs.readFileSync(sourcePath, 'utf8')
+
+  // 1. Worktree name shown right away
+  assert.ok(source.includes('task.worktreeBranch || (task.worktreeName ? `agent/${task.worktreeName}` : \'agent/worktree\')'), 'Must display worktree branch/name right away')
+  assert.ok(!source.includes('Branch: <span className="text-indigo-300 font-semibold">{task.worktreeBranch'), 'Must not display raw backwards Branch: main')
+
+  // 2. Code PR spec and deliverables
+  assert.ok(source.includes('Code PR Spec - for code tasks'), 'Must render dedicated Code PR spec for coder tasks')
+  assert.ok(source.includes('Pending Acceptance • Code PR'), 'Must label code deliverables with Code PR')
+  assert.ok(source.includes('GitPullRequest'), 'Must import and use GitPullRequest icon')
+
+  // 3. Image spec restricted to image tasks
+  assert.ok(source.includes("(task.agentType === 'image' || task.outcomeType === 'media_bundle') && task.aspectRatio"), 'Must restrict Aspect Ratio display to image tasks')
+
+  // 4. Git status suppression for pending approval and clean states
+  assert.ok(source.includes('!isPendingApproval && (task.isDirty || hasUnintegrated)'), 'Must not display change bar until changes exist waiting to be committed')
+
+  // 5. Out of sync warning
+  assert.ok(source.includes('Out of Sync Warning:'), 'Must render out of sync warning banner')
+  assert.ok(source.includes('task.syncWarning'), 'Must check task.syncWarning')
+
+  // 6. Integration status
+  assert.ok(source.includes('Integrated:'), 'Must render Integrated banner')
+  assert.ok(source.includes('Not Integrated:'), 'Must render Not Integrated banner')
+})

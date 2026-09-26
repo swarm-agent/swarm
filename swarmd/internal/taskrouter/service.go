@@ -137,7 +137,12 @@ Rules:
   "variant_count": 1,
   "scenes": [{"scene_number": 1, "title": "string", "duration_sec": 4, "prompt": "string", "visual_notes": "string"}],
   "soundtrack": "string"
-}`)
+}
+
+IMPORTANT TASK PROPERTIES:
+- "branch": The proposed isolated git worktree branch for this task, strictly formatted as "agent/<short-kebab-slug>" (e.g. "agent/fix-navbar", "agent/update-agents-md"). NEVER output "main", "dev", or "master" as the branch!
+- For code tasks (agent="coder" or outcome_type="code_pr"|"bug_patch") and discovery tasks (agent="finder"):
+  Do NOT include aspect_ratio, variant_count, or scenes in your output. Those fields are EXCLUSIVELY for visual generative image and video tasks. A code task produces a code pull request and test suite, NOT an image.`)
 
 	var attachedSummary []map[string]any
 	for _, m := range opts.AttachedMedia {
@@ -220,6 +225,12 @@ Rules:
 		return pebblestore.TaskRouteResult{}, fmt.Errorf("invalid AI router response")
 	}
 
+	cleanBranch := strings.TrimSpace(output.Branch)
+	if cleanBranch == "" || cleanBranch == "main" || cleanBranch == "dev" || cleanBranch == "master" || (!strings.HasPrefix(cleanBranch, "agent/") && !strings.HasPrefix(cleanBranch, "worktree/")) {
+		cleanBranch, _ = pebblestore.MakeWorktreeBranch(output.Title, opts.Prompt)
+	}
+	output.Branch = cleanBranch
+
 	wsInvolved := output.WorkspacesInvolved
 	if len(wsInvolved) == 0 && output.HeroWorkspace != "" {
 		wsInvolved = []string{output.HeroWorkspace}
@@ -244,16 +255,23 @@ Rules:
 	}
 	cpParts = append(cpParts, fmt.Sprintf("Contract: %s", output.OutcomeType))
 
-	variantCount := opts.VariantCount
-	if variantCount <= 0 {
-		variantCount = 1
-	}
-	aspectRatio := opts.AspectRatio
-	if aspectRatio == "" {
-		if output.Agent == "image" {
-			aspectRatio = "1:1"
-		} else {
-			aspectRatio = "16:9"
+	isVisualMedia := output.Agent == "image" || output.Agent == "video" ||
+		(output.Agent == "designer" && (output.Tier == "swarm" || output.OutcomeType == "media_bundle" || opts.VariantCount > 1))
+
+	var aspectRatio string
+	var variantCount int
+	if isVisualMedia {
+		variantCount = opts.VariantCount
+		if variantCount <= 0 {
+			variantCount = 1
+		}
+		aspectRatio = strings.TrimSpace(opts.AspectRatio)
+		if aspectRatio == "" {
+			if output.Agent == "image" {
+				aspectRatio = "1:1"
+			} else {
+				aspectRatio = "16:9"
+			}
 		}
 	}
 	var deliverables []pebblestore.ProjectTaskDeliverable
@@ -302,9 +320,19 @@ Rules:
 		deliverables = []pebblestore.ProjectTaskDeliverable{
 			{ID: "deliv_plan", Title: "Structured Execution Plan", Kind: "report", Status: "pending"},
 		}
-	default:
+	case "coder":
 		deliverables = []pebblestore.ProjectTaskDeliverable{
-			{ID: "deliv_task", Title: "Completed Task & Verification", Kind: "pr", Status: "pending"},
+			{ID: "deliv_code", Title: "Code PR & Verified Tests", Kind: "pr", Status: "pending", Description: "Pull request with tested code modifications"},
+		}
+	default:
+		if output.OutcomeType == "code_pr" || output.OutcomeType == "bug_patch" {
+			deliverables = []pebblestore.ProjectTaskDeliverable{
+				{ID: "deliv_code", Title: "Code PR & Verified Tests", Kind: "pr", Status: "pending", Description: "Pull request with tested code modifications"},
+			}
+		} else {
+			deliverables = []pebblestore.ProjectTaskDeliverable{
+				{ID: "deliv_task", Title: "Completed Task & Verification", Kind: "pr", Status: "pending"},
+			}
 		}
 	}
 

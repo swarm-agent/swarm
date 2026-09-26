@@ -281,3 +281,47 @@ func TestService_RouteTask_25Variants_SwarmScaling(t *testing.T) {
 		}
 	}
 }
+
+func TestService_RouteTask_CoderTask_NoImageAspectAndSanitizedBranch(t *testing.T) {
+	// Purpose:
+	// - Invariant: When routing a code change request, the task must NOT have image aspect_ratio
+	//   or variant counts, must produce a "pr" deliverable, and must NEVER adopt "main" or "dev" as branch.
+	// - Threat/regression: AI router returning branch="main" or defaulting to 16:9 aspect ratio
+	//   pollutes coder tasks with image placeholders and backwards branch displays.
+	mockErroneousAI := func(ctx context.Context, instructions string, input string) (string, error) {
+		return `{
+			"title": "Confirm capability by committing an edit into AGENTS.md",
+			"agent": "coder",
+			"tier": "direct",
+			"outcome_type": "code_pr",
+			"branch": "main",
+			"mission": "Make a safe edit to AGENTS.md",
+			"stages": ["Code Implementation", "Verification"],
+			"aspect_ratio": "16:9",
+			"variant_count": 1
+		}`, nil
+	}
+
+	svc := NewService(mockErroneousAI)
+	res := svc.RouteTask(context.Background(), TaskRouteOptions{
+		Prompt:      "Confirm capability by committing an edit into AGENTS.md",
+		Intent:      "code",
+		AspectRatio: "16:9", // simulated frontend accidental leak
+	})
+
+	if res.Agent != "coder" {
+		t.Fatalf("expected agent 'coder', got %q", res.Agent)
+	}
+	if res.AspectRatio != "" {
+		t.Fatalf("expected empty AspectRatio for coder task, got %q", res.AspectRatio)
+	}
+	if res.VariantCount != 0 {
+		t.Fatalf("expected 0 VariantCount for coder task, got %d", res.VariantCount)
+	}
+	if res.Branch == "main" || res.Branch == "dev" || !strings.HasPrefix(res.Branch, "agent/") {
+		t.Fatalf("expected sanitized worktree branch starting with 'agent/', got %q", res.Branch)
+	}
+	if len(res.Deliverables) != 1 || res.Deliverables[0].Kind != "pr" {
+		t.Fatalf("expected 1 'pr' deliverable for coder task, got %v", res.Deliverables)
+	}
+}

@@ -615,3 +615,116 @@ func TestDirectMediaTaskLifecycle(t *testing.T) {
 		t.Fatalf("expected deliverable title to denote continuation, got %q", vd["title"])
 	}
 }
+
+func TestProjectCoderTask_PendingApproval_NoGitPollution(t *testing.T) {
+	// Purpose:
+	// - Invariant: A coder task in pending_approval state must NOT show unmerged commits or diffs
+	//   from the root workspace, must have empty aspect_ratio, and must show a clean worktree branch name.
+	// - Threat/regression: Pending tasks polluting the UI with root workspace unpushed commits and 16:9 image aspect ratio.
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	ss := store.NewSessionStore(db)
+	el, err := store.NewEventLog(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{sessions: sessionruntime.NewService(ss, el)}
+	h := s.apiMux()
+
+	call := func(method, path, body string, scopes []string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, ProjectsPath+path, strings.NewReader(body))
+		p := identity.Principal{Type: "user", UserID: "owner", AccountScopeID: "account"}
+		ctx := context.WithValue(r.Context(), productPrincipalRequestContextKey, p)
+		if len(scopes) > 0 {
+			tokenRec := &store.ScopedTokenRecord{
+				AccountScopeID: "account",
+				UserID:         "owner",
+				Scopes:         scopes,
+			}
+			ctx = context.WithValue(ctx, productScopedTokenRequestContextKey, tokenRec)
+		}
+		r = r.WithContext(ctx)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w
+	}
+
+	dir := t.TempDir()
+	proj := &store.ProjectRecord{
+		Name: "Test Git Integration",
+		Workspaces: []store.ProjectWorkspaceRef{
+			{Path: dir, Label: "Main Repo", Role: "primary_code"},
+		},
+	}
+	if err := ss.PutProject("account", proj); err != nil {
+		t.Fatal(err)
+	}
+
+	taskBody := `{
+		"title": "Confirm capability by committing an edit into AGENTS.md",
+		"prompt": "Make an edit to AGENTS.md",
+		"intent": "code",
+		"aspect_ratio": "16:9",
+		"workspace_path": "` + dir + `"
+	}`
+	w := call(http.MethodPost, "/"+proj.ID+"/tasks", taskBody, []string{"projects:write", "sessions:write"})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201 created, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	taskObj := resp["task"].(map[string]any)
+
+	if taskObj["agent"] != "coder" {
+		t.Fatalf("expected agent coder, got %v", taskObj["agent"])
+	}
+	if taskObj["status"] != "pending_approval" {
+		t.Fatalf("expected pending_approval, got %v", taskObj["status"])
+	}
+	if taskObj["aspect_ratio"] != nil && taskObj["aspect_ratio"] != "" {
+		t.Fatalf("expected empty aspect_ratio on coder task, got %v", taskObj["aspect_ratio"])
+	}
+	if taskObj["unintegrated_commits"] != nil && taskObj["unintegrated_commits"].(float64) != 0 {
+		t.Fatalf("expected 0 unintegrated_commits on pending task, got %v", taskObj["unintegrated_commits"])
+	}
+	if taskObj["diff_summary"] != nil && taskObj["diff_summary"] != "" {
+		t.Fatalf("expected empty diff_summary on pending task, got %v", taskObj["diff_summary"])
+	}
+	if taskObj["is_dirty"] == true {
+		t.Fatalf("expected is_dirty=false on pending task, got true")
+	}
+
+	branch := taskObj["worktree_branch"].(string)
+	if branch == "main" || branch == "dev" || !strings.HasPrefix(branch, "agent/") {
+		t.Fatalf("expected worktree branch starting with agent/, got %q", branch)
+	}
+	name := taskObj["worktree_name"].(string)
+	if name == "" || name == "main" || name == "dev" {
+		t.Fatalf("expected clean worktree_name, got %q", name)
+	}
+
+	// Verify list endpoint preserves clean state
+	w = call(http.MethodGet, "/"+proj.ID+"/tasks", "", []string{"projects:read", "sessions:read"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 ok, got %d", w.Code)
+	}
+	var listResp map[string]any
+	json.Unmarshal(w.Body.Bytes(), &listResp)
+	tasksSlice := listResp["tasks"].([]any)
+	if len(tasksSlice) != 1 {
+		t.Fatalf("expected 1 task in list, got %d", len(tasksSlice))
+	}
+	first := tasksSlice[0].(map[string]any)
+	if first["unintegrated_commits"] != nil && first["unintegrated_commits"].(float64) != 0 {
+		t.Fatalf("expected 0 unintegrated_commits in list, got %v", first["unintegrated_commits"])
+	}
+	if first["is_dirty"] == true {
+		t.Fatalf("expected is_dirty=false in list, got true")
+	}
+}
