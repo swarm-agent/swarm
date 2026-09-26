@@ -197,15 +197,9 @@ func (s *Server) handleDeliverables(w http.ResponseWriter, r *http.Request) {
 			case "publish_x_post":
 				// X / Twitter publication execution
 				// Formats post receipt and records publication
-				postCount := 1
-				if posts, ok := rec.Payload["posts"].([]any); ok && len(posts) > 0 {
-					postCount = len(posts)
-				}
-				actionResult["published_to"] = "x"
-				actionResult["post_count"] = postCount
-				actionResult["status"] = "published"
-				if rec.ActionContract.TargetSecretRef != "" {
-					actionResult["secret_ref"] = rec.ActionContract.TargetSecretRef
+				xResult := ExecuteTwitterPublish(r.Context(), &rec)
+				for k, v := range xResult {
+					actionResult[k] = v
 				}
 			default:
 				actionResult["action"] = rec.ActionContract.Action

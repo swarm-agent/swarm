@@ -1,6 +1,5 @@
 import { useState, useMemo, useEffect, useCallback } from 'react'
 import {
-  Activity,
   AlertTriangle,
   ArrowLeft,
   ArrowRight,
@@ -11,7 +10,6 @@ import {
   ChevronUp,
   Code,
   Code2,
-  Columns3,
   Edit3,
   Eye,
   ExternalLink,
@@ -26,7 +24,6 @@ import {
   Image as ImageIcon,
   Layers,
   ListChecks,
-  ListFilter,
   Loader2,
   MessageSquare,
   MoreHorizontal,
@@ -51,7 +48,10 @@ import {
 } from 'lucide-react'
 import { formatContextWindow } from '../chat/services/model-options'
 import { requestJson } from '../../../app/api'
-import { useDesktopV3CacheSelector } from '../state/desktop-v3-cache-store'
+import { useDesktopV3CacheSelector, getDesktopV3CacheSnapshot } from '../state/desktop-v3-cache-store'
+import { selectPendingWorkerSidebarReviews } from '../state/desktop-automation-v2-state'
+import { desktopAutomationV2 } from '../runtime/desktop-automation-v2'
+import { decidePendingWorkerReview } from '../tools/automations/pending-worker-sidebar-reviews'
 import { DesktopV3ExistingConversationPane } from '../chat/components/desktop-v3-existing-conversation-pane'
 import {
   isDesktopV3SessionTailReady,
@@ -64,7 +64,7 @@ import {
   type DesktopV3RealtimeSessionDemandLease,
 } from '../realtime/v3-realtime-controller'
 import { HistoricalMediaLibrary, MediaViewerModal, type MediaLibraryItem } from '../tools/media-library'
-import { ORCHESTRATE_THEME_IDS, ORCHESTRATE_THEMES } from './orchestrate-themes'
+import { ORCHESTRATE_THEMES } from './orchestrate-themes'
 import {
   DeployedWorker,
   MediaDeliverable,
@@ -1856,7 +1856,7 @@ export function OrchestrateView({
   onNavigateHome,
   initialThemeId = 'modern_navy',
 }: OrchestrateViewProps) {
-  const [currentThemeId, setCurrentThemeId] = useState<OrchestrateThemeId>(initialThemeId)
+  const [currentThemeId] = useState<OrchestrateThemeId>(initialThemeId)
   const theme = ORCHESTRATE_THEMES[currentThemeId] || ORCHESTRATE_THEMES.modern_navy
 
   // Real user profile from /v1/auth/desktop/session
@@ -1899,7 +1899,7 @@ export function OrchestrateView({
   const [automations, setAutomations] = useState<RunningAutomation[]>([])
 
   // Middle canvas layout variant state
-  const [middleVariant, setMiddleVariant] = useState<MiddleCanvasVariant>('matrix')
+  const [middleVariant] = useState<MiddleCanvasVariant>('matrix')
 
   // Search & Filters
   const [searchQuery, setSearchQuery] = useState('')
@@ -1926,7 +1926,29 @@ export function OrchestrateView({
   const [pastedDocContent, setPastedDocContent] = useState<string>('')
 
   // Navigation tab state
-  const [activeNavTab, setActiveNavTab] = useState<'home' | 'projects' | 'automations' | 'deliverables' | 'settings'>('home')
+  const [activeNavTab, setActiveNavTab] = useState<'home' | 'projects' | 'workers' | 'deliverables' | 'settings'>('home')
+
+  // Pending worker reviews awaiting acceptance
+  const pendingReviews = useDesktopV3CacheSelector(selectPendingWorkerSidebarReviews, (a, b) =>
+    a.length === b.length && a.every((item, index) =>
+      item.permission.id === b[index].permission.id && item.permission.toolArguments === b[index].permission.toolArguments
+    )
+  )
+  const [reviewBusyId, setReviewBusyId] = useState<string | null>(null)
+  const [reviewError, setReviewError] = useState<{ id: string; message: string } | null>(null)
+
+  const handleDecideReview = async (id: string, revision: number, digest: string, action: 'accept_automation' | 'decline_automation') => {
+    if (reviewBusyId) return
+    setReviewBusyId(id)
+    setReviewError(null)
+    try {
+      await decidePendingWorkerReview(getDesktopV3CacheSnapshot(), id, revision, digest, action, (input) => desktopAutomationV2.mutate(input))
+    } catch (cause) {
+      setReviewError({ id, message: cause instanceof Error ? cause.message : 'Worker decision failed.' })
+    } finally {
+      setReviewBusyId(null)
+    }
+  }
 
   // Deploy Task Modal State
   const [isDeployModalOpen, setIsDeployModalOpen] = useState(false)
@@ -1950,14 +1972,24 @@ export function OrchestrateView({
     async function bootstrap() {
       // 1. User Session
       try {
-        const auth = await requestJson<{ ok: boolean; user_id?: string; account_scope_id?: string }>('/v1/auth/desktop/session')
+        const auth = await requestJson<{ ok: boolean; user_id?: string; account_scope_id?: string; username?: string }>('/v1/auth/desktop/session')
         if (auth?.user_id && !cancelled) {
           const rawId = auth.user_id
+          const displayName = auth.username || (rawId.startsWith('user_') ? `Operator (${rawId.slice(5, 11)})` : rawId)
           setUserProfile({
             id: rawId,
-            name: rawId.startsWith('user_') ? `Operator (${rawId.slice(5, 11)})` : rawId,
+            name: displayName,
             email: auth.account_scope_id || 'authenticated session',
           })
+        }
+      } catch {}
+      try {
+        const me = await requestJson<{ userID?: string; username?: string }>('/v1/me')
+        if (me?.username && !cancelled) {
+          setUserProfile((prev) => ({
+            ...prev,
+            name: me.username!,
+          }))
         }
       } catch {}
 
@@ -3202,15 +3234,26 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
             <span>Projects ({projects.length})</span>
           </button>
           <button
-            onClick={() => setActiveNavTab('automations')}
-            className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium transition-all ${
-              activeNavTab === 'automations'
-                ? 'bg-white/[0.08] text-white shadow-sm font-semibold'
+            onClick={() => setActiveNavTab('workers')}
+            className={`w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs font-medium transition-all ${
+              activeNavTab === 'workers'
+                ? 'bg-blue-600/15 text-blue-400 border border-blue-500/30 font-semibold'
                 : 'text-slate-400 hover:text-slate-200 hover:bg-white/[0.04]'
             }`}
           >
-            <Zap size={15} />
-            <span>Automations ({automations.length})</span>
+            <div className="flex items-center gap-2.5">
+              <Bot size={15} />
+              <span>Workers</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              {pendingReviews.length > 0 ? (
+                <span className="rounded-full bg-amber-500/20 text-amber-400 border border-amber-500/40 px-1.5 py-0.5 text-[10px] font-bold animate-pulse">
+                  {pendingReviews.length} pending
+                </span>
+              ) : (
+                <span className="text-[10px] font-mono text-slate-500">{automations.length}</span>
+              )}
+            </div>
           </button>
           <button
             onClick={() => setActiveNavTab('deliverables')}
@@ -3460,39 +3503,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
           ))}
         </div>
 
-        {/* Theme Picker */}
-        <div className="p-3 border-b border-slate-800/80">
-          <div className="flex items-center justify-between pb-1.5">
-            <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-              Palette Theme
-            </span>
-            <span className="text-[10px] font-mono text-slate-400">{theme.name}</span>
-          </div>
-          <div className="grid grid-cols-5 gap-1.5">
-            {ORCHESTRATE_THEME_IDS.slice(0, 5).map((tId) => {
-              const t = ORCHESTRATE_THEMES[tId]
-              const isActive = currentThemeId === tId
-              return (
-                <button
-                  key={tId}
-                  onClick={() => setCurrentThemeId(tId)}
-                  className={`flex flex-col items-center justify-center p-1 rounded-lg border text-[9px] transition-all ${
-                    isActive
-                      ? 'border-blue-500 bg-blue-500/10 text-white font-bold'
-                      : 'border-slate-800 bg-[#090d16] text-slate-400 hover:text-slate-200'
-                  }`}
-                  title={t.name}
-                >
-                  <span
-                    className={`h-1.5 w-1.5 rounded-full mb-0.5 ${isActive ? 'scale-125' : 'opacity-60'}`}
-                    style={{ backgroundColor: t.accentColor }}
-                  />
-                  <span className="truncate max-w-[36px]">{t.name.split(' ')[0]}</span>
-                </button>
-              )
-            })}
-          </div>
-        </div>
+
 
         {/* Real User HUD */}
         <div className="p-3 border-t border-slate-800/80 flex items-center justify-between bg-[#0a0f1d]/50">
@@ -3757,43 +3768,274 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
               ))}
             </div>
           </div>
-        ) : activeNavTab === 'automations' ? (
-          /* AUTOMATIONS OVERVIEW TAB */
-          <div className="flex-1 flex flex-col min-h-0 overflow-y-auto p-6 space-y-4">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
-              <div>
-                <h2 className="text-base font-bold text-white">Registered Automations</h2>
-                <p className="text-xs text-slate-400 mt-0.5">Worker V2 schedules and background automations</p>
+        ) : activeNavTab === 'workers' ? (
+          /* WORKERS HUB TAB */
+          <div className="flex-1 flex flex-col min-h-0 overflow-y-auto p-6 space-y-6 max-w-5xl mx-auto w-full">
+            <div className="flex items-center justify-between pb-4 border-b border-slate-800">
+              <div className="flex items-center gap-3">
+                <div className="h-9 w-9 rounded-xl bg-blue-600/20 text-blue-400 flex items-center justify-center border border-blue-500/30">
+                  <Bot size={18} />
+                </div>
+                <div>
+                  <h2 className="text-base font-bold text-white tracking-tight">Workers & Autonomous Fleet</h2>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    Autonomous workers, on-demand trigger endpoints, and cloud deployments
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                {pendingReviews.length > 0 && (
+                  <span className="rounded-full bg-amber-500/15 text-amber-400 border border-amber-500/30 px-2.5 py-1 text-xs font-semibold flex items-center gap-1.5 animate-pulse">
+                    <span className="h-1.5 w-1.5 rounded-full bg-amber-400" />
+                    {pendingReviews.length} Proposal Pending Review
+                  </span>
+                )}
+                <span className="rounded-lg bg-slate-900 border border-slate-800 px-2.5 py-1 text-xs text-slate-400 font-mono">
+                  {automations.length} Registered
+                </span>
               </div>
             </div>
-            {automations.length > 0 ? (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                {automations.map((a) => (
-                  <div key={a.id} className="p-4 rounded-2xl border border-slate-800 bg-[#0a0f1d] space-y-2">
-                    <div className="flex items-center justify-between">
-                      <h4 className="text-xs font-bold text-white flex items-center gap-2">
-                        <Zap size={14} className="text-amber-400" />
-                        <span>{a.name}</span>
-                      </h4>
-                      <span className="text-[9px] uppercase font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-300">
-                        {a.kind}
-                      </span>
+
+            {/* PENDING WORKER PROPOSALS SECTION */}
+            {pendingReviews.length > 0 && (
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-amber-400 flex items-center gap-1.5">
+                    <Sparkles size={13} />
+                    Pending Worker Proposals Awaiting Acceptance
+                  </span>
+                </div>
+
+                {pendingReviews.map(({ permission, proposal }) => {
+                  const doc = proposal.document
+                  const schedule = doc?.automation_v2?.schedule
+                  const isTrigger = schedule?.kind === 'trigger'
+                  const isInterval = schedule?.kind === 'interval'
+                  const isCron = schedule?.kind === 'cron'
+                  const scheduleText = isTrigger
+                    ? 'On-Demand Trigger'
+                    : isInterval
+                      ? `Every ${Math.round((schedule?.interval_seconds || 60) / 60)}m`
+                      : isCron
+                        ? `Cron (${schedule?.cron})`
+                        : 'On-Demand'
+
+                  const goalLower = (doc?.info?.goal || '').toLowerCase()
+                  const titleLower = (doc?.title || '').toLowerCase()
+                  const isCloudTarget =
+                    goalLower.includes('cloud') ||
+                    goalLower.includes('gcs') ||
+                    goalLower.includes('gcp') ||
+                    titleLower.includes('cloud')
+                  const hasTwitter =
+                    goalLower.includes('tweet') ||
+                    goalLower.includes('twitter') ||
+                    goalLower.includes('social') ||
+                    titleLower.includes('social')
+
+                  return (
+                    <div
+                      key={permission.id}
+                      className="rounded-2xl border border-amber-500/30 bg-gradient-to-b from-amber-500/[0.06] to-slate-950/80 p-5 shadow-xl space-y-4"
+                    >
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="flex items-start gap-3">
+                          <div className="h-10 w-10 rounded-xl bg-amber-500/20 text-amber-400 flex items-center justify-center border border-amber-500/40 shrink-0 font-bold text-base">
+                            🤖
+                          </div>
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <h3 className="text-base font-bold text-white">{doc?.title || 'Autonomous Worker'}</h3>
+                              <span className="rounded-md bg-amber-500/20 px-2 py-0.5 text-[10px] font-semibold text-amber-300 border border-amber-500/30">
+                                Revision {proposal.revision}
+                              </span>
+                            </div>
+                            <p className="text-xs text-slate-300 mt-1 leading-relaxed">
+                              {doc?.info?.goal || 'No description provided.'}
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5 pt-1">
+                        <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-3">
+                          <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 block mb-1">
+                            Execution Mode
+                          </span>
+                          <div className="flex items-center gap-1.5 text-xs font-semibold text-blue-400">
+                            <Zap size={13} />
+                            <span>{scheduleText}</span>
+                          </div>
+                        </div>
+
+                        <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-3">
+                          <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 block mb-1">
+                            Target Environment
+                          </span>
+                          <div className="flex items-center gap-1.5 text-xs font-semibold text-emerald-400">
+                            <span>{isCloudTarget ? '☁️ Cloud Run (GCP)' : '💻 Local Workstation'}</span>
+                          </div>
+                        </div>
+
+                        <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-3">
+                          <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 block mb-1">
+                            Required Secrets
+                          </span>
+                          <div
+                            className="flex items-center gap-1.5 text-xs font-mono text-purple-400 truncate"
+                            title={hasTwitter ? 'twitter-api-key, twitter-access-token' : 'Standard environment'}
+                          >
+                            <span>{hasTwitter ? '🔑 twitter-api-key...' : '🔒 Default machine identity'}</span>
+                          </div>
+                        </div>
+
+                        <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-3">
+                          <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 block mb-1">
+                            Bound Project / Repo
+                          </span>
+                          <div
+                            className="flex items-center gap-1.5 text-xs font-mono text-slate-300 truncate"
+                            title={selectedProject?.name || proposal.workspace_id}
+                          >
+                            <Folder size={12} className="text-slate-500 shrink-0" />
+                            <span className="truncate">{selectedProject?.name || 'Assigned workspace'}</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="rounded-xl border border-slate-800/80 bg-[#070b14] p-3 text-xs space-y-1.5">
+                        <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 block">
+                          📋 Execution Pipeline Upon Acceptance
+                        </span>
+                        <ul className="space-y-1 text-slate-300 text-[11px] list-disc list-inside">
+                          <li>Worker registers permanently to your project fleet.</li>
+                          {isTrigger && (
+                            <li>
+                              Swarm automatically mints an isolated trigger key and writes it securely to{' '}
+                              <code className="text-amber-300 bg-amber-500/10 px-1 py-0.5 rounded">
+                                ~/.config/swarm/secrets.env
+                              </code>{' '}
+                              (mode 0600).
+                            </li>
+                          )}
+                          {hasTwitter && (
+                            <li>
+                              Worker will authenticate with Twitter API v2 using your configured GCP Secret Manager credentials.
+                            </li>
+                          )}
+                          <li>
+                            Future worker tasks will pend deliverables with full tweet previews and interactive approval before publishing.
+                          </li>
+                        </ul>
+                      </div>
+
+                      {reviewError?.id === permission.id && (
+                        <div className="rounded-lg bg-red-500/10 border border-red-500/30 p-2.5 text-xs text-red-400">
+                          {reviewError.message}
+                        </div>
+                      )}
+
+                      <div className="flex items-center justify-end gap-3 pt-2">
+                        <button
+                          type="button"
+                          disabled={!!reviewBusyId}
+                          onClick={() =>
+                            handleDecideReview(permission.id, proposal.revision, proposal.digest, 'decline_automation')
+                          }
+                          className="px-3.5 py-1.5 rounded-xl border border-slate-700 bg-slate-800 text-slate-300 hover:text-white hover:bg-slate-700 text-xs font-semibold transition-all disabled:opacity-50"
+                        >
+                          Decline Proposal
+                        </button>
+                        <button
+                          type="button"
+                          disabled={!!reviewBusyId}
+                          onClick={() =>
+                            handleDecideReview(permission.id, proposal.revision, proposal.digest, 'accept_automation')
+                          }
+                          className="px-4 py-1.5 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white text-xs font-bold shadow-lg shadow-blue-500/20 transition-all flex items-center gap-1.5 disabled:opacity-50"
+                        >
+                          {reviewBusyId === permission.id ? (
+                            <>
+                              <Loader2 size={13} className="animate-spin" />
+                              <span>Registering...</span>
+                            </>
+                          ) : (
+                            <>
+                              <Check size={14} />
+                              <span>Accept & Register Worker</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
                     </div>
-                    <p className="text-xs text-slate-400">{a.outputSummary}</p>
-                    <div className="flex items-center justify-between text-[11px] font-mono text-slate-500 pt-2 border-t border-slate-800/80">
-                      <span>Runs: {a.totalRuns}</span>
-                      <span>Next: {a.nextRun || 'On demand'}</span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className="p-8 text-center border border-dashed border-slate-800 rounded-2xl">
-                <Zap size={24} className="mx-auto text-slate-600 mb-2" />
-                <h4 className="text-xs font-bold text-slate-300">No automations registered</h4>
-                <p className="text-[11px] text-slate-500 mt-1">Use Worker V2 or the Automations tab to create scheduled triggers.</p>
+                  )
+                })}
               </div>
             )}
+
+            {/* ACTIVE REGISTERED WORKERS SECTION */}
+            <div className="space-y-3">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                Registered Workers Fleet ({automations.length})
+              </span>
+
+              {automations.length > 0 ? (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {automations.map((a) => {
+                    const isTrigger = a.kind === 'trigger'
+                    return (
+                      <div
+                        key={a.id}
+                        className="rounded-2xl border border-slate-800 bg-slate-900/40 p-4 hover:border-slate-700/80 transition-all space-y-3"
+                      >
+                        <div className="flex items-start justify-between">
+                          <div className="flex items-center gap-2.5">
+                            <div className="h-8 w-8 rounded-xl bg-blue-600/15 text-blue-400 flex items-center justify-center border border-blue-500/20 font-bold text-xs">
+                              🤖
+                            </div>
+                            <div>
+                              <h3 className="text-xs font-bold text-white">{a.name}</h3>
+                              <span className="text-[10px] text-slate-400 font-mono">ID: {a.id}</span>
+                            </div>
+                          </div>
+                          <span className="rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 text-[10px] font-semibold">
+                            ● {a.status}
+                          </span>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-2 text-[11px]">
+                          <div className="rounded-lg bg-slate-950/60 p-2 border border-slate-800/60">
+                            <span className="text-[10px] text-slate-500 block">Schedule</span>
+                            <span className="text-slate-300 font-mono text-[10px]">{a.kind}</span>
+                          </div>
+                          <div className="rounded-lg bg-slate-950/60 p-2 border border-slate-800/60">
+                            <span className="text-[10px] text-slate-500 block">Trigger Mode</span>
+                            <span className="text-blue-400 font-semibold">
+                              {isTrigger ? 'On-Demand API' : 'Background Run'}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center justify-between pt-1 border-t border-slate-800/60 text-[10px]">
+                          <span className="text-slate-500">
+                            {a.lastRun ? `Last run: ${new Date(a.lastRun).toLocaleTimeString()}` : 'Never executed'}
+                          </span>
+                          <span className="text-slate-400 font-mono">Target: {a.id.slice(0, 14)}...</span>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              ) : (
+                <div className="rounded-2xl border border-slate-800/80 bg-slate-900/20 p-8 text-center space-y-2">
+                  <Bot className="h-8 w-8 text-slate-600 mx-auto" />
+                  <h4 className="text-xs font-bold text-slate-300">No active workers registered yet</h4>
+                  <p className="text-[11px] text-slate-500 max-w-sm mx-auto">
+                    Propose a worker or ask Swarm in the AI sidebar to configure a dedicated specialist for this project.
+                  </p>
+                </div>
+              )}
+            </div>
           </div>
         ) : activeNavTab === 'deliverables' ? (
           /* DELIVERABLES TAB */
@@ -4037,76 +4279,13 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                 </div>
               </div>
 
-              {/* 5-VARIANT SELECTOR DOCK: Switch between 5 distinct middle layouts */}
-              <div className="px-3.5 pb-2.5 flex items-center justify-between border-t border-slate-800/50 pt-2 text-xs">
-                <div className="flex items-center gap-1.5">
-                  <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 mr-1">
-                    Canvas View:
-                  </span>
-                  <div className="flex items-center gap-1 rounded-lg bg-[#080c16] p-1 border border-slate-800">
-                    <button
-                      onClick={() => setMiddleVariant('matrix')}
-                      className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-[11px] font-medium transition-all ${
-                        middleVariant === 'matrix'
-                          ? 'bg-blue-600/20 text-blue-400 border border-blue-500/30 font-semibold shadow-sm'
-                          : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'
-                      }`}
-                    >
-                      <ListFilter size={12} />
-                      <span>1. Compact Matrix</span>
-                    </button>
-
-                    <button
-                      onClick={() => setMiddleVariant('kanban')}
-                      className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-[11px] font-medium transition-all ${
-                        middleVariant === 'kanban'
-                          ? 'bg-blue-600/20 text-blue-400 border border-blue-500/30 font-semibold shadow-sm'
-                          : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'
-                      }`}
-                    >
-                      <Columns3 size={12} />
-                      <span>2. Pipeline Kanban</span>
-                    </button>
-
-                    <button
-                      onClick={() => setMiddleVariant('fleet')}
-                      className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-[11px] font-medium transition-all ${
-                        middleVariant === 'fleet'
-                          ? 'bg-blue-600/20 text-blue-400 border border-blue-500/30 font-semibold shadow-sm'
-                          : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'
-                      }`}
-                    >
-                      <Bot size={12} />
-                      <span>3. Worker Fleet</span>
-                    </button>
-
-                    <button
-                      onClick={() => setMiddleVariant('split')}
-                      className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-[11px] font-medium transition-all ${
-                        middleVariant === 'split'
-                          ? 'bg-blue-600/20 text-blue-400 border border-blue-500/30 font-semibold shadow-sm'
-                          : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'
-                      }`}
-                    >
-                      <Layers size={12} />
-                      <span>4. Split Studio</span>
-                    </button>
-
-                    <button
-                      onClick={() => setMiddleVariant('timeline')}
-                      className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-[11px] font-medium transition-all ${
-                        middleVariant === 'timeline'
-                          ? 'bg-blue-600/20 text-blue-400 border border-blue-500/30 font-semibold shadow-sm'
-                          : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'
-                      }`}
-                    >
-                      <Activity size={12} />
-                      <span>5. Timeline Stream</span>
-                    </button>
-                  </div>
+              {/* Clean Status Pipeline Header */}
+              <div className="px-4 py-2.5 flex items-center justify-between border-t border-slate-800/50 text-xs">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-semibold text-white">Project Pipeline</span>
+                  <span className="text-[11px] text-slate-400">({liveTasks.length} tasks)</span>
                 </div>
-
-                {/* Quick status counter summary */}
+                {/* Status counter summary */}
                 <div className="flex items-center gap-2 font-mono text-[10px]">
                   <span className="text-blue-400">● {runningCount} Running</span>
                   <span className="text-amber-400">● {reviewCount} Review</span>
