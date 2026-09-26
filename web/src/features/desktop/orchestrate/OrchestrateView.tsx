@@ -14,6 +14,7 @@ import {
   Columns3,
   Edit3,
   Eye,
+  ExternalLink,
   FileText,
   Film,
   Folder,
@@ -341,6 +342,7 @@ function MinimalTaskCard({
   onPreviewDeliverable,
   onReopen,
   onComplete,
+  onRedeployJob,
 }: {
   task: RunningTask
   isSelected?: boolean
@@ -353,6 +355,7 @@ function MinimalTaskCard({
   onPreviewDeliverable?: (d: MediaDeliverable) => void
   onReopen?: (feedback?: string) => void
   onComplete?: () => void
+  onRedeployJob?: (taskId: string, jobId: string, feedback?: string) => void
 }) {
   const [isFullPlanOpen, setIsFullPlanOpen] = useState(false)
   const [isRefineOpen, setIsRefineOpen] = useState(false)
@@ -367,6 +370,39 @@ function MinimalTaskCard({
   const isNeedsReview = task.status === 'needs_review'
   const isCompleted = task.status === 'completed'
   const hasUnintegrated = (task.unintegratedCommits ?? 0) > 0
+
+  const taskProgramStatus = task.taskProgramStatus || (task as any).task_program_status
+  const taskProgramDef = task.taskProgram || (task as any).task_program || taskProgramStatus?.definition
+  const isTaskProgram = Boolean(
+    (taskProgramDef?.jobs && taskProgramDef.jobs.length > 1) ||
+    (taskProgramStatus?.jobs && taskProgramStatus.jobs.length > 1)
+  )
+
+  const programJobs = useMemo(() => {
+    if (!isTaskProgram) return []
+    if (taskProgramStatus?.jobs && taskProgramStatus.jobs.length > 0) {
+      return taskProgramStatus.jobs
+    }
+    if (taskProgramDef?.jobs) {
+      return taskProgramDef.jobs.map((j: any) => ({
+        job_id: j.id,
+        stage_id: j.stage_id,
+        state: 'declared',
+        attempt_number: 1,
+      }))
+    }
+    return []
+  }, [isTaskProgram, taskProgramStatus, taskProgramDef])
+
+  const findProgramJobDef = (jobId: string) => {
+    return taskProgramDef?.jobs?.find((j: any) => j.id === jobId)
+  }
+
+  const activeStageId = taskProgramStatus?.active_stage_id || taskProgramDef?.stages?.[0]?.id || ''
+  const completedJobsCount = programJobs.filter((j: any) => j.state === 'integrated' || j.state === 'completed' || j.state === 'handoff_ready').length
+  const runningJobsCount = programJobs.filter((j: any) => j.state === 'running').length
+  const conflictJobsCount = programJobs.filter((j: any) => j.state === 'conflict').length
+  const totalJobsCount = programJobs.length
 
   // Dynamic timer updater: ticks every second when running
   useEffect(() => {
@@ -902,8 +938,144 @@ function MinimalTaskCard({
             )}
           </div>
 
-          {/* Agent's Created Execution Plan with Subtasks Checklist */}
-          {task.activePlanCheckpoints && task.activePlanCheckpoints.length > 0 && (
+          {/* Agent's Created Execution Plan with Subtasks Checklist OR Compact Task Program Multi-Coder Grid */}
+          {isTaskProgram ? (
+            <div className="flex flex-col p-3 rounded-lg bg-slate-900/90 border border-slate-800 space-y-2.5">
+              <div className="flex items-center justify-between text-[10px] font-mono">
+                <span className="font-bold uppercase tracking-wider text-slate-300 flex items-center gap-1.5">
+                  <Layers size={12} className="text-blue-400" />
+                  <span>Parallel Multi-Agent Cohort • Stage: {activeStageId || 'Active'}</span>
+                </span>
+                <span className="text-slate-400 font-mono text-[9px]">
+                  {completedJobsCount}/{totalJobsCount} Coders Finished
+                </span>
+              </div>
+
+              {/* High-density Segmented Progress Bar */}
+              <div className="w-full h-1.5 rounded-full bg-slate-800 overflow-hidden flex">
+                <div
+                  className="h-full bg-emerald-500 transition-all duration-300"
+                  style={{ width: `${(completedJobsCount / Math.max(1, totalJobsCount)) * 100}%` }}
+                />
+                <div
+                  className="h-full bg-blue-500 transition-all duration-300"
+                  style={{ width: `${(runningJobsCount / Math.max(1, totalJobsCount)) * 100}%` }}
+                />
+                <div
+                  className="h-full bg-amber-500 transition-all duration-300"
+                  style={{ width: `${(conflictJobsCount / Math.max(1, totalJobsCount)) * 100}%` }}
+                />
+              </div>
+
+              {/* Side-by-side Compact Coder Tiles */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 pt-1 font-mono text-[10px]">
+                {programJobs.map((job: any) => {
+                  const jobDef = findProgramJobDef(job.job_id)
+                  const isJobRunning = job.state === 'running'
+                  const isDone = job.state === 'integrated' || job.state === 'completed'
+                  const isHandoffReady = job.state === 'handoff_ready'
+                  const isConflict = job.state === 'conflict'
+
+                  return (
+                    <div
+                      key={job.job_id}
+                      className={`flex flex-col p-2 rounded-lg border transition-all ${
+                        isConflict
+                          ? 'bg-rose-950/40 border-rose-500/50 shadow-[0_0_10px_rgba(244,63,94,0.15)]'
+                          : isJobRunning
+                            ? 'bg-blue-950/30 border-blue-500/40 shadow-sm'
+                            : isDone
+                              ? 'bg-emerald-950/20 border-emerald-500/30'
+                              : isHandoffReady
+                                ? 'bg-indigo-950/30 border-indigo-500/30'
+                                : 'bg-slate-950/40 border-slate-800/80 text-slate-400'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-1 mb-1">
+                        <span className="text-[8px] uppercase font-bold px-1 py-0.2 rounded bg-indigo-900/60 text-indigo-300 border border-indigo-500/30 flex-shrink-0">
+                          {jobDef?.agent_type?.toUpperCase() || 'CODER'}
+                        </span>
+                        <span className="font-bold text-white text-[11px] truncate flex-1" title={jobDef?.title || job.job_id}>
+                          {jobDef?.title || job.job_id}
+                        </span>
+                        {job.attempt_number && job.attempt_number > 1 && (
+                          <span className="text-[8px] px-1 py-0.2 rounded bg-amber-950/80 text-amber-300 border border-amber-500/30 font-bold flex-shrink-0">
+                            Att {job.attempt_number}
+                          </span>
+                        )}
+                      </div>
+
+                      {jobDef?.owned_scope && jobDef.owned_scope.length > 0 && (
+                        <div className="text-[9px] text-slate-400 truncate mb-1.5" title={jobDef.owned_scope.join(', ')}>
+                          <span className="text-slate-500">scope:</span> {jobDef.owned_scope[0]}
+                        </div>
+                      )}
+
+                      <div className="flex items-center justify-between gap-1 mt-auto pt-1 border-t border-slate-800/60 text-[9px]">
+                        <span className="flex items-center gap-1">
+                          {isJobRunning ? (
+                            <span className="text-blue-400 font-bold flex items-center gap-1">
+                              <span className="h-1.5 w-1.5 rounded-full bg-blue-400 animate-ping inline-block" />
+                              <span>Running</span>
+                            </span>
+                          ) : isDone ? (
+                            <span className="text-emerald-400 font-bold flex items-center gap-1">
+                              <CheckCircle2 size={10} />
+                              <span>Integrated</span>
+                            </span>
+                          ) : isHandoffReady ? (
+                            <span className="text-indigo-300 font-semibold flex items-center gap-1">
+                              <Check size={10} />
+                              <span>Handoff Ready</span>
+                            </span>
+                          ) : isConflict ? (
+                            <span className="text-rose-400 font-bold flex items-center gap-1">
+                              <AlertTriangle size={10} />
+                              <span>Conflict</span>
+                            </span>
+                          ) : (
+                            <span className="text-slate-500 flex items-center gap-1">
+                              <span>○ Declared</span>
+                            </span>
+                          )}
+                        </span>
+
+                        {isConflict && onRedeployJob && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              onRedeployJob(task.id, job.job_id)
+                            }}
+                            className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-rose-600 hover:bg-rose-500 text-white font-bold text-[9px] transition-colors shadow"
+                            title="Redeploy this coder with updated base and conflict resolution instructions"
+                          >
+                            <RotateCcw size={9} />
+                            <span>Redeploy</span>
+                          </button>
+                        )}
+
+                        {job.child_session_id && onOpenChat && !isConflict && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              onOpenChat()
+                            }}
+                            className="text-slate-400 hover:text-white text-[9px] flex items-center gap-0.5"
+                            title="Inspect child session"
+                          >
+                            <span>Session</span>
+                            <ExternalLink size={8} />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          ) : task.activePlanCheckpoints && task.activePlanCheckpoints.length > 0 ? (
             <div className="flex flex-col p-2.5 rounded-lg bg-slate-900/80 border border-slate-800 space-y-2">
               <div className="flex items-center justify-between text-[10px] font-mono text-slate-400">
                 <span className="font-bold uppercase tracking-wider text-slate-300 flex items-center gap-1.5">
@@ -961,7 +1133,7 @@ function MinimalTaskCard({
                 ))}
               </div>
             </div>
-          )}
+          ) : null}
 
           {/* Live Streaming Activity Box */}
           {(task.liveAssistantText || task.toolActivitySummary) && (
@@ -2468,6 +2640,22 @@ export function OrchestrateView({
     }
   }
 
+  // Redeploy task program job on conflict or failure
+  const handleRedeployJob = async (taskId: string, jobId: string, feedback?: string) => {
+    if (!selectedProject?.id) return
+    try {
+      await requestJson(`/v3/projects/${selectedProject.id}/tasks/${taskId}/program:redeploy-job`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ job_id: jobId, feedback }),
+      })
+      fetchProjectTasks(selectedProject.id)
+    } catch (err) {
+      console.warn('Redeploy job failed:', err)
+      fetchProjectTasks(selectedProject.id)
+    }
+  }
+
   // Real-time status transitions linked to V3 session lifecycles
   const liveTasks = useMemo(() => {
     return tasks.map((task) => {
@@ -3949,6 +4137,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                                   onPreviewDeliverable={(d) => handleOpenDeliverableInMediaCenter(d)}
                                   onReopen={(fb) => handleReopenTask(t.id, fb)}
                                   onComplete={() => handleCompleteTask(t.id)}
+                                  onRedeployJob={(tId, jId, fb) => handleRedeployJob(tId, jId, fb)}
                                 />
                               </div>
                             )}
@@ -4033,6 +4222,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                               onPreviewDeliverable={(d) => handleOpenDeliverableInMediaCenter(d)}
                               onReopen={(fb) => handleReopenTask(t.id, fb)}
                               onComplete={() => handleCompleteTask(t.id)}
+                              onRedeployJob={(tId, jId, fb) => handleRedeployJob(tId, jId, fb)}
                             />
                           ))}
                           {colTasks.length === 0 && (
@@ -4129,6 +4319,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                           onPreviewDeliverable={(d) => handleOpenDeliverableInMediaCenter(d)}
                           onReopen={(fb) => handleReopenTask(task.id, fb)}
                           onComplete={() => handleCompleteTask(task.id)}
+                          onRedeployJob={(tId, jId, fb) => handleRedeployJob(tId, jId, fb)}
                         />
                       ))}
                     </div>
@@ -4186,6 +4377,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                         onPreviewDeliverable={(d) => handleOpenDeliverableInMediaCenter(d)}
                         onReopen={(fb) => handleReopenTask(selectedTaskForSplit.id, fb)}
                         onComplete={() => handleCompleteTask(selectedTaskForSplit.id)}
+                        onRedeployJob={(tId, jId, fb) => handleRedeployJob(tId, jId, fb)}
                       />
                     ) : (
                       <div className="flex-1 flex items-center justify-center text-xs text-slate-500">
@@ -4216,6 +4408,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                       onPreviewDeliverable={(d) => handleOpenDeliverableInMediaCenter(d)}
                       onReopen={(fb) => handleReopenTask(t.id, fb)}
                       onComplete={() => handleCompleteTask(t.id)}
+                      onRedeployJob={(tId, jId, fb) => handleRedeployJob(tId, jId, fb)}
                     />
                   ))}
                   {liveTasks.length === 0 && (

@@ -1081,3 +1081,115 @@ func TestProjectTask_SessionLifecycleSync(t *testing.T) {
 		t.Fatalf("expected active session task to remain in_progress, got %s", task.Status)
 	}
 }
+
+func TestProjectTaskProgram_StandaloneExecutionAndRedeploy(t *testing.T) {
+	// Written test purpose:
+	// - Product requirement/invariant: Project tasks with embedded TaskPrograms must be deployable standalone,
+	//   register durable TaskProgramRecords, hydrate live status to task queries, and support in-task job redeployment.
+	// - Regression prevented: Prevents regressions where project tasks cannot run parallel multi-agent programs,
+	//   or where conflicted/failed jobs cannot be redeployed within the same task.
+	// - Boundary/authority: deployProjectTaskProgram and redeployTaskProgramJob in project_task_program.go.
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	ss := store.NewSessionStore(db)
+	s := &Server{sessions: sessionruntime.NewService(ss, nil)}
+
+	principal := identity.Principal{UserID: "owner", AccountScopeID: "account"}
+	proj := &store.ProjectRecord{
+		ID:        "proj_tp_1",
+		AccountID: "account",
+		Name:      "Test Project",
+	}
+	_ = ss.PutProject("account", proj)
+
+	taskProgram := &store.TaskProgramDefinition{
+		ID: "prog_tp_1",
+		Stages: []store.TaskProgramStageSpec{
+			{ID: "stage_ui", DependencyEvidence: "UI components ready"},
+			{ID: "stage_test", DependsOn: []string{"stage_ui"}, DependencyEvidence: "Components built"},
+		},
+		Jobs: []store.TaskProgramJobSpec{
+			{ID: "job_navbar", StageID: "stage_ui", AgentType: "coder", Title: "Fix Navbar", MetaPrompt: "Align navbar", OwnedScope: []string{"web/navbar/**"}},
+			{ID: "job_modal", StageID: "stage_ui", AgentType: "coder", Title: "Fix Modal", MetaPrompt: "Close button handler", OwnedScope: []string{"web/modal/**"}},
+			{ID: "job_e2e", StageID: "stage_test", DependsOn: []string{"job_navbar", "job_modal"}, AgentType: "coder", Title: "E2E Tests", MetaPrompt: "Run test suite"},
+		},
+	}
+
+	task := &store.ProjectTaskRecord{
+		ID:          "task_tp_1",
+		ProjectID:   proj.ID,
+		AccountID:   "account",
+		Title:       "Fix 2 UI Issues in Parallel",
+		Status:      "pending_approval",
+		TaskProgram: taskProgram,
+	}
+	_ = ss.PutProjectTask("account", task)
+
+	// 1. Deploy the task program standalone
+	err = s.deployProjectTaskProgram(principal, proj, task)
+	if err != nil {
+		t.Fatalf("deployProjectTaskProgram failed: %v", err)
+	}
+
+	if task.Status != "in_progress" {
+		t.Fatalf("expected task status in_progress, got %s", task.Status)
+	}
+	if task.SessionID == "" {
+		t.Fatal("expected coordinator session to be allocated")
+	}
+	if task.TaskProgramID != "prog_tp_1" {
+		t.Fatalf("expected task program id prog_tp_1, got %s", task.TaskProgramID)
+	}
+
+	// 2. Verify durable TaskProgramRecord was created in Pebble
+	progRecord, ok, err := ss.GetTaskProgram(task.SessionID, task.TaskProgramID)
+	if err != nil || !ok {
+		t.Fatalf("expected task program record to exist in store: ok=%v, err=%v", ok, err)
+	}
+	if len(progRecord.Jobs) != 3 {
+		t.Fatalf("expected 3 jobs in task program record, got %d", len(progRecord.Jobs))
+	}
+	if progRecord.ActiveStageID != "stage_ui" {
+		t.Fatalf("expected active stage stage_ui, got %s", progRecord.ActiveStageID)
+	}
+
+	// 3. Verify status hydration
+	freshTask := &store.ProjectTaskRecord{
+		ID:            task.ID,
+		SessionID:     task.SessionID,
+		TaskProgramID: task.TaskProgramID,
+	}
+	hydrateTaskProgramStatus(freshTask, ss)
+	if freshTask.TaskProgramStatus == nil {
+		t.Fatal("expected hydrated TaskProgramStatus on task record")
+	}
+	if len(freshTask.TaskProgramStatus.Jobs) != 3 {
+		t.Fatalf("expected 3 jobs in hydrated status, got %d", len(freshTask.TaskProgramStatus.Jobs))
+	}
+
+	// 4. Test redeploying a job
+	err = s.redeployTaskProgramJob(principal, proj.ID, task.ID, "job_navbar", "Please resolve conflict with modal changes")
+	if err != nil {
+		t.Fatalf("redeployTaskProgramJob failed: %v", err)
+	}
+
+	// Verify attempt number incremented and history recorded
+	updatedRecord, ok, _ := ss.GetTaskProgram(task.SessionID, task.TaskProgramID)
+	if !ok {
+		t.Fatal("expected updated task program record")
+	}
+	navbarJob := findJobRecord(updatedRecord.Jobs, "job_navbar")
+	if navbarJob == nil {
+		t.Fatal("expected navbar job in updated record")
+	}
+	if navbarJob.AttemptNumber != 2 {
+		t.Fatalf("expected attempt number 2 on redeployed job, got %d", navbarJob.AttemptNumber)
+	}
+	if len(navbarJob.GenerationHistory) != 1 {
+		t.Fatalf("expected 1 generation history entry, got %d", len(navbarJob.GenerationHistory))
+	}
+}

@@ -27,6 +27,7 @@ type TaskRouteResult struct {
 	Soundtrack         string                   `json:"soundtrack,omitempty"`
 	RouterAlert        string                   `json:"router_alert,omitempty"`
 	AttachedMedia      []ProjectTaskMediaRef    `json:"attached_media,omitempty"`
+	TaskProgram        *TaskProgramDefinition   `json:"task_program,omitempty"`
 }
 
 // TaskPlanOptions encapsulates all inputs for task routing and compilation.

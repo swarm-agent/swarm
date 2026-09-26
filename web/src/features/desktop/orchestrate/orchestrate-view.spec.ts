@@ -59,3 +59,31 @@ test('OrchestrateView synchronizes task cards with live session reality, plans, 
   assert.ok(source.includes('/complete'), 'Must call backend task complete endpoint')
   assert.ok(source.includes('Reopen Task'), 'Task card must provide Reopen Task action')
 })
+
+test('OrchestrateView renders Compact Multi-Coder View for Task Programs with in-task redeployment', () => {
+  // Written test purpose:
+  // - Product requirement/invariant: When a task executes multiple parallel coders via a Task Program,
+  //   the task card must adapt to a compact multi-coder view showing stage progress, side-by-side coder tiles,
+  //   individual scopes, conflict detection, and in-task job redeployment.
+  // - Regression prevented: Prevents regressions where multi-agent tasks render overly verbose linear plans,
+  //   hide parallel execution progress, or prevent redeploying conflicted subagents.
+  const sourcePath = path.join(__dirname, 'OrchestrateView.tsx')
+  const source = fs.readFileSync(sourcePath, 'utf8')
+
+  // Task program detection & compact view
+  assert.ok(source.includes('isTaskProgram'), 'MinimalTaskCard must detect task program multi-agent tasks')
+  assert.ok(source.includes('Parallel Multi-Agent Cohort'), 'MinimalTaskCard must display parallel cohort stage header')
+  assert.ok(source.includes('Coders Finished'), 'MinimalTaskCard must display finished coders count')
+
+  // Side-by-side Coder tiles
+  assert.ok(source.includes('grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3'), 'Must render responsive grid of coder tiles')
+  assert.ok(source.includes('scope:'), 'Coder tiles must display declared owned scope')
+  assert.ok(source.includes('Attempt'), 'Tiles must display attempt numbers when retried')
+
+  // Conflict handling and redeploy action
+  assert.ok(source.includes('onRedeployJob'), 'MinimalTaskCard must support onRedeployJob prop')
+  assert.ok(source.includes('handleRedeployJob'), 'OrchestrateView must implement handleRedeployJob')
+  assert.ok(source.includes('/program:redeploy-job'), 'handleRedeployJob must call backend redeploy endpoint')
+  assert.ok(source.includes('Redeploy'), 'Tile must render Redeploy button on conflict')
+})
+

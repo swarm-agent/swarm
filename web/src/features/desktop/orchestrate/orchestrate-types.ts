@@ -169,6 +169,67 @@ export interface ProjectTaskScene {
   visual_notes?: string
 }
 
+export interface TaskProgramJobSpec {
+  id: string
+  stage_id: string
+  depends_on?: string[]
+  agent_type: string
+  title: string
+  meta_prompt?: string
+  deliverable?: string
+  owned_scope?: string[]
+  acceptance_criteria?: string[]
+}
+
+export interface TaskProgramStageSpec {
+  id: string
+  depends_on?: string[]
+  dependency_evidence?: string
+}
+
+export interface TaskProgramDefinition {
+  id?: string
+  stages: TaskProgramStageSpec[]
+  jobs: TaskProgramJobSpec[]
+}
+
+export interface TaskProgramJobRecord {
+  job_id: string
+  stage_id: string
+  state: string
+  attempt_number?: number
+  child_session_id?: string
+  current_session_id?: string
+  current_run_id?: string
+  worktree_branch?: string
+  child_head?: string
+  integration_state?: string
+  generation_history?: Array<{
+    generation: number
+    session_id: string
+    state: string
+    started_at: number
+    finished_at?: number
+  }>
+  blocker?: {
+    code: string
+    message: string
+  }
+}
+
+export interface TaskProgramRecord {
+  parent_session_id: string
+  program_id: string
+  state: string
+  active_stage_id?: string
+  definition: TaskProgramDefinition
+  jobs: TaskProgramJobRecord[]
+  blocker?: {
+    code: string
+    message: string
+  }
+}
+
 export interface RunningTaskPlanCheckpoint {
   id: string
   title: string
@@ -250,6 +311,14 @@ export interface RunningTask {
   routerAlert?: string
   router_alert?: string
   attachedMedia?: ProjectTaskMediaRef[]
+
+  // Standalone Multi-Agent Task Program Execution
+  taskProgram?: TaskProgramDefinition
+  task_program?: TaskProgramDefinition
+  taskProgramId?: string
+  task_program_id?: string
+  taskProgramStatus?: TaskProgramRecord
+  task_program_status?: TaskProgramRecord
 }
 
 export interface VideoProgressCard {

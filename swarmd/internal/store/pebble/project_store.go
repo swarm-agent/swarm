@@ -265,6 +265,9 @@ type ProjectTaskRecord struct {
 	AutoApprove         bool                     `json:"auto_approve,omitempty"`
 	RouterAlert         string                   `json:"router_alert,omitempty"`
 	AttachedMedia       []ProjectTaskMediaRef    `json:"attached_media,omitempty"`
+	TaskProgram         *TaskProgramDefinition   `json:"task_program,omitempty"`
+	TaskProgramID       string                   `json:"task_program_id,omitempty"`
+	TaskProgramStatus   *TaskProgramRecord       `json:"task_program_status,omitempty"`
 	CreatedAt           int64                    `json:"created_at"`
 	UpdatedAt           int64                    `json:"updated_at"`
 }

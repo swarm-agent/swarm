@@ -1186,6 +1186,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				}
 				origStatus := tasks[i].Status
 				syncTaskSessionState(&tasks[i], db)
+				hydrateTaskProgramStatus(&tasks[i], db)
 				if tasks[i].Status != origStatus {
 					_ = db.PutProjectTask(p.AccountScopeID, &tasks[i])
 				}
@@ -1240,6 +1241,8 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				Soundtrack          string                               `json:"soundtrack,omitempty"`
 				AutoApprove         bool                                 `json:"auto_approve,omitempty"`
 				AttachedMedia       []pebblestore.ProjectTaskMediaRef    `json:"attached_media,omitempty"`
+				TaskProgram         *pebblestore.TaskProgramDefinition   `json:"task_program,omitempty"`
+				TaskProgramID       string                               `json:"task_program_id,omitempty"`
 			}
 			if err := json.Unmarshal(body, &req); err != nil {
 				writeError(w, http.StatusBadRequest, errors.New("invalid JSON payload"))
@@ -1386,6 +1389,11 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				AutoApprove:         req.AutoApprove,
 				RouterAlert:         routed.RouterAlert,
 				AttachedMedia:       req.AttachedMedia,
+				TaskProgram:         req.TaskProgram,
+				TaskProgramID:       req.TaskProgramID,
+			}
+			if task.TaskProgram == nil && routed.TaskProgram != nil {
+				task.TaskProgram = routed.TaskProgram
 			}
 			if task.Agent == "coder" || task.OutcomeType == "code_pr" || task.OutcomeType == "bug_patch" {
 				task.AspectRatio = ""
@@ -1405,8 +1413,13 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				task.AttachedMedia = routed.AttachedMedia
 			}
 
-			// Deploy execution: direct media generation or V3 session with compiled profile and RunIntent
-			_ = s.deployProjectTaskExecution(p, proj, &task, taskStatus, prompt)
+			// Deploy execution: Task Program standalone execution, direct media generation, or V3 session
+			if task.TaskProgram != nil && (taskStatus == "in_progress" || req.AutoApprove) {
+				task.Status = "in_progress"
+				_ = s.deployProjectTaskProgram(p, proj, &task)
+			} else {
+				_ = s.deployProjectTaskExecution(p, proj, &task, taskStatus, prompt)
+			}
 
 			if err := db.PutProjectTask(p.AccountScopeID, &task); err != nil {
 				writeError(w, http.StatusBadRequest, err)
@@ -1466,6 +1479,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			}
 			origStatus := task.Status
 			syncTaskSessionState(task, db)
+			hydrateTaskProgramStatus(task, db)
 			if task.Status != origStatus {
 				_ = db.PutProjectTask(p.AccountScopeID, task)
 			}
@@ -1607,6 +1621,18 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				}
 				if v, ok := patch["revision"].(float64); ok {
 					t.Revision = int(v)
+				}
+				if tpRaw, ok := patch["task_program"]; ok {
+					rawBytes, err := json.Marshal(tpRaw)
+					if err == nil {
+						var tp pebblestore.TaskProgramDefinition
+						if err := json.Unmarshal(rawBytes, &tp); err == nil {
+							t.TaskProgram = &tp
+						}
+					}
+				}
+				if v, ok := patch["task_program_id"].(string); ok {
+					t.TaskProgramID = strings.TrimSpace(v)
 				}
 				return nil
 			})
@@ -1819,7 +1845,10 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		}
 		if updated != nil {
 			proj, _, _ := db.GetProject(p.AccountScopeID, projectID)
-			if updated.Agent == "image" || updated.Agent == "video" {
+			if updated.TaskProgram != nil || updated.TaskProgramID != "" {
+				// Autonomous Task Program execution!
+				_ = s.deployProjectTaskProgram(p, proj, updated)
+			} else if updated.Agent == "image" || updated.Agent == "video" {
 				// Direct media execution!
 				_ = s.deployProjectTaskExecution(p, proj, updated, "in_progress", "")
 				_ = db.PutProjectTask(p.AccountScopeID, updated)
@@ -2119,6 +2148,115 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status": "refined",
 			"task":   updated,
+		})
+		return
+	}
+
+	// 9. Deploy task program: POST /v3/projects/{id}/tasks/{taskId}/program:deploy
+	if len(segments) == 4 && segments[1] == "tasks" && (segments[3] == "program:deploy" || segments[3] == "deploy-program") {
+		taskID := segments[2]
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
+			return
+		}
+		if !s.requireScopeAny(w, r, "projects:write", "sessions:write") {
+			return
+		}
+		task, found, err := db.GetProjectTask(p.AccountScopeID, projectID, taskID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		if !found || task == nil {
+			writeError(w, http.StatusNotFound, errors.New("project task not found"))
+			return
+		}
+		if task.TaskProgram == nil {
+			writeError(w, http.StatusBadRequest, errors.New("task has no task program definition"))
+			return
+		}
+		proj, _, _ := db.GetProject(p.AccountScopeID, projectID)
+		if err := s.deployProjectTaskProgram(p, proj, task); err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status": "deployed",
+			"task":   task,
+		})
+		return
+	}
+
+	// 10. Redeploy task program job: POST /v3/projects/{id}/tasks/{taskId}/program:redeploy-job
+	if len(segments) == 4 && segments[1] == "tasks" && (segments[3] == "program:redeploy-job" || segments[3] == "redeploy-job") {
+		taskID := segments[2]
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
+			return
+		}
+		if !s.requireScopeAny(w, r, "projects:write", "sessions:write") {
+			return
+		}
+		var req struct {
+			JobID    string `json:"job_id"`
+			Feedback string `json:"feedback,omitempty"`
+		}
+		body, _ := io.ReadAll(io.LimitReader(r.Body, 1024*1024))
+		if len(body) > 0 {
+			_ = json.Unmarshal(body, &req)
+		}
+		jobID := strings.TrimSpace(req.JobID)
+		if jobID == "" {
+			writeError(w, http.StatusBadRequest, errors.New("job_id is required"))
+			return
+		}
+		if err := s.redeployTaskProgramJob(p, projectID, taskID, jobID, req.Feedback); err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		updated, _, _ := db.GetProjectTask(p.AccountScopeID, projectID, taskID)
+		hydrateTaskProgramStatus(updated, db)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status": "redeploying",
+			"task":   updated,
+		})
+		return
+	}
+
+	// 11. Inspect task program record: GET /v3/projects/{id}/tasks/{taskId}/program
+	if len(segments) == 4 && segments[1] == "tasks" && segments[3] == "program" {
+		taskID := segments[2]
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
+			return
+		}
+		if !s.requireScopeAny(w, r, "projects:read", "sessions:read") {
+			return
+		}
+		task, found, err := db.GetProjectTask(p.AccountScopeID, projectID, taskID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		if !found || task == nil {
+			writeError(w, http.StatusNotFound, errors.New("project task not found"))
+			return
+		}
+		if task.TaskProgramID == "" || task.SessionID == "" {
+			writeError(w, http.StatusNotFound, errors.New("task has no deployed task program"))
+			return
+		}
+		prog, ok, err := db.GetTaskProgram(task.SessionID, task.TaskProgramID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		if !ok {
+			writeError(w, http.StatusNotFound, errors.New("task program not found"))
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"program": prog,
 		})
 		return
 	}
