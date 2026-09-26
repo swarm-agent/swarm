@@ -106,7 +106,7 @@ function notificationSessionLabel(record: DesktopNotificationCenterRecord): stri
 
 function notificationMeta(record: DesktopNotificationCenterRecord): string[] {
   const meta: string[] = []
-  const origin = record.originLabel || (record.originSwarmID ? shortID(record.originSwarmID) : '')
+  const origin = record.originLabel || (record.workerId ? `Worker: ${record.workerId}` : record.originSwarmID ? shortID(record.originSwarmID) : '')
   if (origin) {
     meta.push(`Origin: ${origin}`)
   }
@@ -332,11 +332,13 @@ export function DesktopNotificationsModal({
       if (
         action.actionType === 'route' ||
         action.id === 'review_cloud' ||
-        action.endpoint?.startsWith('/settings') ||
-        record.payload?.target_tab === 'cloud'
+        action.endpoint?.startsWith('/settings')
       ) {
         onOpenChange(false)
-        void navigate({ to: '/settings', search: { tab: 'cloud' } })
+        const tab = action.endpoint && action.endpoint.includes('tab=')
+          ? new URL(action.endpoint, 'http://localhost').searchParams.get('tab') || 'cloud'
+          : 'cloud'
+        void navigate({ to: '/settings', search: { tab } })
         return
       }
 
@@ -348,6 +350,11 @@ export function DesktopNotificationsModal({
         await requestJson(action.endpoint, { method: 'POST' })
       }
       await onAcknowledge(record)
+
+      if (action.id === 'accept_canonical' || (record.payload?.target_tab === 'cloud' && action.id.includes('accept'))) {
+        onOpenChange(false)
+        void navigate({ to: '/settings', search: { tab: 'cloud' } })
+      }
     } catch (error) {
       console.error('[notifications] failed to execute action', error)
     } finally {
@@ -555,7 +562,11 @@ export function DesktopNotificationsModal({
                           <div className="font-medium text-[var(--app-text)]">{record.title}</div>
                           {isInbox ? (
                             <Badge tone={record.kind === 'ai_request' ? 'live' : 'warning'}>
-                              {record.kind === 'ai_request' ? 'Pairing Request' : 'AI Deliverable'}
+                              {record.kind === 'ai_request'
+                                ? record.payload?.target_tab === 'cloud' || record.payload?.bucket_id || (typeof record.title === 'string' && record.title.toLowerCase().includes('cloud'))
+                                  ? 'Cloud Connection'
+                                  : 'Pairing Request'
+                                : 'AI Deliverable'}
                             </Badge>
                           ) : null}
                           {record.verified ? (
@@ -577,6 +588,48 @@ export function DesktopNotificationsModal({
 
                     {/* Rich Deliverable Media Preview */}
                     {mediaUrl ? <NotificationMediaPreview url={mediaUrl} /> : null}
+
+                    {/* Cloud Storage Connection Proposal Preview */}
+                    {payload.bucket_id || payload.target_tab === 'cloud' || (typeof record.title === 'string' && record.title.toLowerCase().includes('cloud connection')) ? (
+                      <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[var(--app-primary)]/40 bg-[var(--app-surface)] p-3 shadow-inner">
+                        <div className="flex items-center gap-3">
+                          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[var(--app-primary)]/15 text-[var(--app-primary)]">
+                            <Cloud size={20} />
+                          </div>
+                          <div className="min-w-0">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="font-mono text-sm font-semibold text-[var(--app-text)]">
+                                {String(payload.bucket_name || 'Cloud Storage Bucket')}
+                              </span>
+                              {payload.provider ? (
+                                <span className="rounded-md bg-[var(--app-primary)]/20 px-2 py-0.5 text-[11px] font-bold uppercase text-[var(--app-primary)]">
+                                  {String(payload.provider)}
+                                </span>
+                              ) : null}
+                              {payload.region ? (
+                                <span className="font-mono text-xs text-[var(--app-text-subtle)]">
+                                  ({String(payload.region)})
+                                </span>
+                              ) : null}
+                            </div>
+                            <div className="mt-0.5 text-xs text-[var(--app-text-muted)]">
+                              {payload.proposal_reason ? String(payload.proposal_reason) : 'Proposed canonical cloud storage connection for autonomous workers'}
+                            </div>
+                          </div>
+                        </div>
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          className="gap-1.5 shrink-0"
+                          onClick={() => {
+                            onOpenChange(false)
+                            void navigate({ to: '/settings', search: { tab: 'cloud' } })
+                          }}
+                        >
+                          <ExternalLink size={14} /> Open Cloud Settings
+                        </Button>
+                      </div>
+                    ) : null}
 
                     {/* Draft Thread / Posts Preview */}
                     {threadPosts && threadPosts.length > 0 ? (
@@ -653,15 +706,31 @@ export function DesktopNotificationsModal({
                         })}
 
                         {record.actionURL && isSafeActionURL(record.actionURL) ? (
-                          <a
-                            className="inline-flex min-h-9 min-w-[140px] items-center justify-center gap-2 rounded-xl border border-[var(--app-primary)] px-3 text-sm font-medium text-[var(--app-primary)] transition hover:bg-[color-mix(in_oklab,var(--app-primary)_10%,transparent)] hover:text-[var(--app-primary-hover)]"
-                            href={record.actionURL}
-                            target="_blank"
-                            rel="noreferrer"
-                            title={record.actionURL.includes('tab=deliverables') ? 'Open deliverable in review inbox' : 'Open session in a new tab'}
-                          >
-                            <ExternalLink size={14} /> {record.actionURL.includes('tab=deliverables') || record.actionURL.includes('/workers') ? 'Review deliverable' : 'Go to session'}
-                          </a>
+                          record.actionURL.startsWith('/settings') ? (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="gap-1.5"
+                              onClick={() => {
+                                onOpenChange(false)
+                                const url = new URL(record.actionURL!, 'http://localhost')
+                                const tab = url.searchParams.get('tab') || 'cloud'
+                                void navigate({ to: '/settings', search: { tab } })
+                              }}
+                            >
+                              <ExternalLink size={14} /> Open Cloud Settings
+                            </Button>
+                          ) : (
+                            <a
+                              className="inline-flex min-h-9 min-w-[140px] items-center justify-center gap-2 rounded-xl border border-[var(--app-primary)] px-3 text-sm font-medium text-[var(--app-primary)] transition hover:bg-[color-mix(in_oklab,var(--app-primary)_10%,transparent)] hover:text-[var(--app-primary-hover)]"
+                              href={record.actionURL}
+                              target="_blank"
+                              rel="noreferrer"
+                              title={record.actionURL.includes('tab=deliverables') ? 'Open deliverable in review inbox' : 'Open session in a new tab'}
+                            >
+                              <ExternalLink size={14} /> {record.actionURL.includes('tab=deliverables') || record.actionURL.includes('/workers') ? 'Review deliverable' : 'Go to session'}
+                            </a>
+                          )
                         ) : null}
 
                         {record.status === 'active' && !record.readAt ? (

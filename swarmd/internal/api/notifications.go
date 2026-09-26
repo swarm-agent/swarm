@@ -272,6 +272,14 @@ func (s *Server) enrichNotificationRecords(records []pebblestore.NotificationRec
 }
 
 func (s *Server) enrichNotificationRecord(record pebblestore.NotificationRecord) pebblestore.NotificationRecord {
+	if record.OriginLabel == "" && record.WorkerID != "" {
+		record.OriginLabel = "Worker: " + record.WorkerID
+	}
+	if record.ActionURL == "" && record.Payload != nil {
+		if targetTab, ok := record.Payload["target_tab"].(string); ok && strings.TrimSpace(targetTab) == "cloud" {
+			record.ActionURL = "/settings?tab=cloud"
+		}
+	}
 	sessionID := strings.TrimSpace(record.SessionID)
 	if sessionID == "" || s.sessions == nil {
 		if record.SessionLabel == "" && sessionID != "" {

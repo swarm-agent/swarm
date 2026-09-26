@@ -218,17 +218,18 @@ func (s *Service) ProposeBucket(ctx context.Context, bucket pebblestore.StorageB
 
 		actions := []pebblestore.NotificationAction{
 			{
-				ID:         "accept_canonical",
-				Label:      "Accept as Canonical",
-				ActionType: "post",
-				Endpoint:   fmt.Sprintf("/v1/storage/buckets/%s/accept-canonical", bucket.ID),
-				Variant:    "primary",
-			},
-			{
 				ID:         "review_cloud",
 				Label:      "Review in Cloud",
 				ActionType: "route",
 				Endpoint:   "/settings?tab=cloud",
+				Variant:    "primary",
+			},
+			{
+				ID:         "accept_canonical",
+				Label:      "Accept as Canonical",
+				ActionType: "post",
+				Endpoint:   fmt.Sprintf("/v1/storage/buckets/%s/accept-canonical", bucket.ID),
+				Variant:    "secondary",
 			},
 		}
 
@@ -251,6 +252,7 @@ func (s *Service) ProposeBucket(ctx context.Context, bucket pebblestore.StorageB
 			Kind:           pebblestore.NotificationKindAIRequest,
 			WorkerID:       bucket.ProposedBy,
 			OriginLabel:    fmt.Sprintf("Cloud Proposal: %s", sender),
+			ActionURL:      "/settings?tab=cloud",
 			Verified:       true,
 			Payload:        payload,
 			Actions:        actions,
