@@ -271,6 +271,76 @@ func inspectTaskGitState(task pebblestore.ProjectTaskRecord, db *pebblestore.Ses
 	return res
 }
 
+// syncTaskSessionState checks the live V3 session and plan for a task and transitions
+// in_progress tasks to needs_review when the agent finishes execution, ensuring tasks
+// never just flip to complete without review/integration, and allowing reopening.
+func syncTaskSessionState(task *pebblestore.ProjectTaskRecord, db *pebblestore.SessionStore) {
+	if task == nil || task.SessionID == "" || db == nil {
+		return
+	}
+	// Do not override tasks awaiting user approval, planning, or queued
+	if task.Status == "pending_approval" || task.Status == "planning" || task.Status == "queued" {
+		return
+	}
+
+	sess, found, err := db.GetSession(task.SessionID)
+	if err != nil || !found {
+		return
+	}
+
+	// 1. If task is already integrated, it is completed
+	if task.IsIntegrated {
+		task.Status = "completed"
+		return
+	}
+
+	// 2. If task was explicitly marked completed and not reopened, preserve completed
+	if task.Status == "completed" {
+		return
+	}
+
+	// 3. Inspect session lifecycle
+	if sess.Lifecycle != nil {
+		if sess.Lifecycle.Active {
+			task.Status = "in_progress"
+		} else if sess.MessageCount > 1 {
+			// Session run has concluded:
+			// In Swarm V3 orchestration, when an agent finishes execution, the task
+			// transitions to needs_review for user review and git integration,
+			// NEVER directly to completed!
+			if task.Status == "in_progress" {
+				task.Status = "needs_review"
+				if task.ActionNeeded == "" || strings.HasPrefix(task.ActionNeeded, "Action Needed: 0") || task.ActionNeeded == "Executing reopened task" {
+					if task.UnintegratedCommits > 0 {
+						task.ActionNeeded = fmt.Sprintf("Action Needed: Review changes and integrate %d commit(s) into %s", task.UnintegratedCommits, task.BaseBranch)
+					} else {
+						task.ActionNeeded = "Action Needed: Review agent deliverables and verify outcomes"
+					}
+				}
+			}
+		}
+	}
+
+	// 4. Inspect session plans for waiting_review or needs_review status
+	plans, _ := db.ListPlans(task.SessionID, 1)
+	if len(plans) > 0 {
+		plan := plans[0]
+		if plan.Document != nil {
+			if plan.Document.ExecutionState != nil && plan.Document.ExecutionState.Status == "waiting_review" {
+				if task.Status == "in_progress" {
+					task.Status = "needs_review"
+				}
+			}
+			for _, cp := range plan.Document.Checkpoints {
+				if cp.Status == "needs_review" && task.Status == "in_progress" {
+					task.Status = "needs_review"
+					break
+				}
+			}
+		}
+	}
+}
+
 // TaskRouteResult represents the synthesized plan, tier, and workspace scope for a task.
 type TaskRouteResult = pebblestore.TaskRouteResult
 
@@ -1114,6 +1184,11 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				if gitState.actionNeeded != "" {
 					tasks[i].ActionNeeded = gitState.actionNeeded
 				}
+				origStatus := tasks[i].Status
+				syncTaskSessionState(&tasks[i], db)
+				if tasks[i].Status != origStatus {
+					_ = db.PutProjectTask(p.AccountScopeID, &tasks[i])
+				}
 			}
 			writeJSON(w, http.StatusOK, map[string]any{
 				"tasks": tasks,
@@ -1388,6 +1463,11 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			task.SyncWarning = gitState.syncWarning
 			if gitState.actionNeeded != "" {
 				task.ActionNeeded = gitState.actionNeeded
+			}
+			origStatus := task.Status
+			syncTaskSessionState(task, db)
+			if task.Status != origStatus {
+				_ = db.PutProjectTask(p.AccountScopeID, task)
 			}
 			writeJSON(w, http.StatusOK, map[string]any{
 				"task": task,
@@ -1800,6 +1880,125 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status": "approved",
+			"task":   updated,
+		})
+		return
+	}
+
+	// 7b. Reopen task session: POST /v3/projects/{id}/tasks/{taskId}/reopen
+	if len(segments) == 4 && segments[1] == "tasks" && segments[3] == "reopen" {
+		taskID := segments[2]
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
+			return
+		}
+		if !s.requireScopeAny(w, r, "projects:write", "sessions:write") {
+			return
+		}
+		var req struct {
+			Feedback string `json:"feedback,omitempty"`
+		}
+		body, _ := io.ReadAll(io.LimitReader(r.Body, 1024*1024))
+		if len(body) > 0 {
+			_ = json.Unmarshal(body, &req)
+		}
+		fb := strings.TrimSpace(req.Feedback)
+
+		updated, err := db.UpdateProjectTask(p.AccountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
+			t.Status = "in_progress"
+			t.IsIntegrated = false
+			t.ActionNeeded = "Task reopened by user"
+			if fb != "" {
+				t.FeedbackHistory = append(t.FeedbackHistory, fb)
+				t.WhatDidDo = append(t.WhatDidDo, fmt.Sprintf("Reopened with instructions: %s", truncateString(fb, 50)))
+			} else {
+				t.WhatDidDo = append(t.WhatDidDo, "Task reopened for further execution")
+			}
+			return nil
+		})
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		if updated != nil && updated.SessionID != "" {
+			proj, _, _ := db.GetProject(p.AccountScopeID, projectID)
+			now := time.Now().UnixMilli()
+			runID := fmt.Sprintf("desktop-v3-run:%s", sessionruntime.NewSessionID())
+			msgID := fmt.Sprintf("msg_%s_%d", updated.SessionID, now)
+			promptMsg := "Task reopened by user. Please continue execution and complete all requirements."
+			if fb != "" {
+				promptMsg = fmt.Sprintf("Task reopened by user with feedback: %s\nPlease resume execution and address this.", fb)
+			}
+			msg := pebblestore.MessageSnapshot{
+				ID:             msgID,
+				SessionID:      updated.SessionID,
+				UserID:         p.UserID,
+				AccountScopeID: p.AccountScopeID,
+				Role:           "user",
+				Content:        promptMsg,
+				CreatedAt:      now,
+			}
+			parentSessionID := ""
+			if proj != nil {
+				parentSessionID = proj.PrimarySessionID
+			}
+			runIntent := &pebblestore.V3SessionRunIntent{
+				SessionID:       updated.SessionID,
+				RunID:           runID,
+				EpochID:         "epoch-00000000000000000001",
+				UserID:          p.UserID,
+				AccountScopeID:  p.AccountScopeID,
+				ParentSessionID: parentSessionID,
+				SourceMessageID: msgID,
+				Status:          pebblestore.V3RunIntentPendingExecutor,
+				CreatedAt:       now,
+				UpdatedAt:       now,
+			}
+			reopenKey := fmt.Sprintf("project-task:reopen:%s:%d", updated.SessionID, now)
+			_, _ = s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+				SessionID:       updated.SessionID,
+				UserID:          p.UserID,
+				AccountScopeID:  p.AccountScopeID,
+				ClientRequestID: reopenKey,
+				IdempotencyKey:  reopenKey,
+				PayloadHash:     reopenKey,
+				RequestHash:     reopenKey,
+				Kind:            pebblestore.V3SessionMutationAppendMessage,
+				Message:         &msg,
+				RunIntent:       runIntent,
+				NowUnixMs:       now,
+			})
+			s.EnqueueSessionRun(p, updated.SessionID, runID, parentSessionID)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status": "reopened",
+			"task":   updated,
+		})
+		return
+	}
+
+	// 7c. Complete task: POST /v3/projects/{id}/tasks/{taskId}/complete
+	if len(segments) == 4 && segments[1] == "tasks" && segments[3] == "complete" {
+		taskID := segments[2]
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
+			return
+		}
+		if !s.requireScopeAny(w, r, "projects:write", "sessions:write") {
+			return
+		}
+		updated, err := db.UpdateProjectTask(p.AccountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
+			t.Status = "completed"
+			t.ActionNeeded = "Task marked completed by user"
+			t.WhatDidDo = append(t.WhatDidDo, "Accepted and marked completed")
+			return nil
+		})
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status": "completed",
 			"task":   updated,
 		})
 		return

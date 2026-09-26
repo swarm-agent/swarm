@@ -24,6 +24,7 @@ import {
   Home,
   Image as ImageIcon,
   Layers,
+  ListChecks,
   ListFilter,
   Loader2,
   MessageSquare,
@@ -32,12 +33,16 @@ import {
   Palette,
   Paperclip,
   Play,
+  PlayCircle,
   Plus,
+  Radio,
   RefreshCw,
+  RotateCcw,
   Search,
   Settings,
   Sparkles,
   Tag,
+  Timer,
   Trash2,
   Upload,
   Volume2,
@@ -47,8 +52,16 @@ import {
 import { requestJson } from '../../../app/api'
 import { useDesktopV3CacheSelector } from '../state/desktop-v3-cache-store'
 import { DesktopV3ExistingConversationPane } from '../chat/components/desktop-v3-existing-conversation-pane'
-import { isDesktopV3SessionTailReady, selectRenderedSessionMessages } from '../state/desktop-v3-cache-selectors'
-import { selectAndHydrateDesktopV3Session } from '../state/desktop-v3-session-hydrator'
+import {
+  isDesktopV3SessionTailReady,
+  selectRenderedSessionMessages,
+  summarizeDesktopV3TaskToolActivity,
+} from '../state/desktop-v3-cache-selectors'
+import { selectAndHydrateDesktopV3Session, hydrateDesktopV3ChildCard } from '../state/desktop-v3-session-hydrator'
+import {
+  requireDesktopV3RealtimeControllerReady,
+  type DesktopV3RealtimeSessionDemandLease,
+} from '../realtime/v3-realtime-controller'
 import { HistoricalMediaLibrary, MediaViewerModal, type MediaLibraryItem } from '../tools/media-library'
 import { ORCHESTRATE_THEME_IDS, ORCHESTRATE_THEMES } from './orchestrate-themes'
 import {
@@ -60,6 +73,7 @@ import {
   ProjectTaskMediaRef,
   RunningAutomation,
   RunningTask,
+  RunningTaskPlanCheckpoint,
 } from './orchestrate-types'
 
 export interface OrchestrateViewProps {
@@ -326,6 +340,8 @@ function MinimalTaskCard({
   onDelete,
   onRefine,
   onPreviewDeliverable,
+  onReopen,
+  onComplete,
 }: {
   task: RunningTask
   isSelected?: boolean
@@ -336,10 +352,15 @@ function MinimalTaskCard({
   onDelete?: () => void
   onRefine?: (feedback?: string, errorSummary?: string) => void
   onPreviewDeliverable?: (d: MediaDeliverable) => void
+  onReopen?: (feedback?: string) => void
+  onComplete?: () => void
 }) {
   const [isFullPlanOpen, setIsFullPlanOpen] = useState(false)
   const [isRefineOpen, setIsRefineOpen] = useState(false)
   const [refineFeedback, setRefineFeedback] = useState('')
+  const [isReopenOpen, setIsReopenOpen] = useState(false)
+  const [reopenFeedback, setReopenFeedback] = useState('')
+  const [now, setNow] = useState(Date.now())
 
   const isPlanning = task.status === 'planning'
   const isPendingApproval = task.status === 'pending_approval' || task.status === 'queued'
@@ -347,6 +368,25 @@ function MinimalTaskCard({
   const isNeedsReview = task.status === 'needs_review'
   const isCompleted = task.status === 'completed'
   const hasUnintegrated = (task.unintegratedCommits ?? 0) > 0
+
+  // Dynamic timer updater: ticks every second when running
+  useEffect(() => {
+    if (!isRunning) return
+    const interval = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(interval)
+  }, [isRunning])
+
+  const formattedTimer = useMemo(() => {
+    if (isRunning) {
+      const start = task.startedAt || task.createdAt
+      if (!start) return task.elapsed || 'Running...'
+      const totalSec = Math.max(0, Math.floor((now - start) / 1000))
+      const mins = Math.floor(totalSec / 60)
+      const secs = totalSec % 60
+      return `${mins}:${secs.toString().padStart(2, '0')}`
+    }
+    return task.elapsed || 'Just now'
+  }, [isRunning, now, task.startedAt, task.createdAt, task.elapsed])
 
   const variantSlots = useMemo(() => {
     const count =
@@ -492,10 +532,13 @@ function MinimalTaskCard({
                   : 'bg-slate-500'
               }`}
             />
-            <span>{task.status.replace('_', ' ')}</span>
+            <span>{task.status === 'in_progress' ? 'in progress' : task.status.replace('_', ' ')}</span>
           </div>
 
-          <span className="font-mono text-[10px] text-slate-500">{task.elapsed}</span>
+          <span className="font-mono text-[10px] text-slate-400 flex items-center gap-1">
+            {isRunning && <Timer size={10} className="text-blue-400 animate-spin" />}
+            <span>{formattedTimer}</span>
+          </span>
 
           {task.sessionId && (
             <button
@@ -827,6 +870,238 @@ function MinimalTaskCard({
         </div>
       )}
 
+      {/* 2b. IN PROGRESS / RUNNING LIVE EXECUTION SECTION */}
+      {isRunning && (
+        <div className="flex flex-col p-3 rounded-lg bg-[#070d1e]/90 border border-blue-500/40 space-y-2.5 text-xs">
+          {/* Current Focus Banner */}
+          <div className="flex items-center justify-between p-2 rounded-lg bg-blue-950/50 border border-blue-500/30 gap-2">
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="flex h-2 w-2 relative flex-shrink-0">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500"></span>
+              </span>
+              <div className="flex flex-col min-w-0">
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <span className="font-mono text-[9px] uppercase font-bold text-blue-300 tracking-wider">
+                    🎯 Current Focus
+                  </span>
+                  {task.currentTool && (
+                    <span className="font-mono text-[8px] uppercase px-1.5 py-0.2 rounded bg-indigo-900/60 text-indigo-300 border border-indigo-500/30">
+                      tool: {task.currentTool}
+                    </span>
+                  )}
+                </div>
+                <span className="font-semibold text-white truncate text-[11px]">
+                  {task.currentFocus || 'Executing autonomous mission...'}
+                </span>
+              </div>
+            </div>
+            {task.planProgressPercent !== undefined && task.planProgressPercent > 0 && (
+              <div className="flex items-center gap-1 font-mono text-[10px] text-blue-300 font-bold flex-shrink-0 bg-blue-900/40 px-2 py-0.5 rounded border border-blue-500/30">
+                <span>{task.planProgressPercent}%</span>
+              </div>
+            )}
+          </div>
+
+          {/* Agent's Created Execution Plan with Subtasks Checklist */}
+          {task.activePlanCheckpoints && task.activePlanCheckpoints.length > 0 && (
+            <div className="flex flex-col p-2.5 rounded-lg bg-slate-900/80 border border-slate-800 space-y-2">
+              <div className="flex items-center justify-between text-[10px] font-mono text-slate-400">
+                <span className="font-bold uppercase tracking-wider text-slate-300 flex items-center gap-1.5">
+                  <ListChecks size={12} className="text-blue-400" />
+                  <span>Agent Execution Plan</span>
+                </span>
+                {task.subtasksCount && (
+                  <span className="text-slate-400 font-mono text-[9px]">
+                    {task.subtasksCount.completed}/{task.subtasksCount.total} complete
+                  </span>
+                )}
+              </div>
+              {task.planProgressPercent !== undefined && (
+                <div className="w-full h-1.5 rounded-full bg-slate-800 overflow-hidden">
+                  <div
+                    className="h-full bg-blue-500 transition-all duration-300 ease-out"
+                    style={{ width: `${task.planProgressPercent}%` }}
+                  />
+                </div>
+              )}
+              <div className="space-y-1.5 max-h-44 overflow-y-auto font-mono text-[10px] pr-1">
+                {task.activePlanCheckpoints.map((cp) => (
+                  <div key={cp.id} className="space-y-1">
+                    <div className="flex items-center justify-between font-bold text-slate-200">
+                      <div className="flex items-center gap-1.5">
+                        <span className={cp.status === 'completed' ? 'text-emerald-400' : cp.status === 'in_progress' ? 'text-blue-400' : 'text-slate-500'}>
+                          {cp.status === 'completed' ? '✓' : cp.status === 'in_progress' ? '●' : '○'}
+                        </span>
+                        <span>{cp.title}</span>
+                      </div>
+                      <span className="text-[9px] uppercase text-slate-500 font-normal">{cp.status}</span>
+                    </div>
+                    {cp.subtasks?.map((st) => {
+                      const isActive = st.id === task.activeSubtaskId || st.status === 'in_progress'
+                      const isDone = st.completed || st.status === 'completed'
+                      return (
+                        <div
+                          key={st.id}
+                          className={`flex items-start gap-1.5 pl-3 py-0.5 rounded transition-colors ${
+                            isActive
+                              ? 'bg-blue-950/60 text-blue-200 border-l-2 border-blue-400 font-semibold'
+                              : isDone
+                              ? 'text-slate-400 line-through'
+                              : 'text-slate-400'
+                          }`}
+                        >
+                          <span className={isDone ? 'text-emerald-400 font-bold' : isActive ? 'text-blue-400 font-bold animate-pulse' : 'text-slate-600'}>
+                            {isDone ? '✓' : isActive ? '▶' : '·'}
+                          </span>
+                          <span className="truncate">{st.title}</span>
+                        </div>
+                      )
+                    })}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Live Streaming Activity Box */}
+          {(task.liveAssistantText || task.toolActivitySummary) && (
+            <div className="flex flex-col p-2.5 rounded-lg bg-[#050811] border border-blue-500/25 space-y-1.5 font-mono text-[10px]">
+              <div className="flex items-center justify-between text-slate-400">
+                <span className="flex items-center gap-1.5 text-blue-400 font-bold uppercase tracking-wider text-[9px]">
+                  <Radio size={10} className="animate-pulse text-emerald-400" />
+                  <span>Live Streaming Activity</span>
+                </span>
+                {task.toolActivitySummary && (
+                  <span className="text-slate-400 truncate max-w-[200px]" title={task.toolActivitySummary}>
+                    {task.toolActivitySummary}
+                  </span>
+                )}
+              </div>
+              {task.liveAssistantText && (
+                <div className="p-2 rounded bg-black/70 border border-slate-900 text-slate-300 whitespace-pre-wrap leading-relaxed max-h-24 overflow-y-auto">
+                  {task.liveAssistantText.slice(-300)}
+                  <span className="inline-block w-1.5 h-3 bg-blue-400 ml-0.5 animate-pulse" />
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* 2c. NEEDS REVIEW COMPLETION BANNER & ACTIONS */}
+      {isNeedsReview && (
+        <div className="flex flex-col p-3 rounded-lg bg-amber-950/20 border border-amber-500/40 space-y-2.5 text-xs">
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <div className="flex items-center gap-2">
+              <CheckCircle2 size={14} className="text-amber-400 flex-shrink-0" />
+              <div className="flex flex-col">
+                <span className="font-bold text-amber-300 font-mono text-[10px] uppercase">
+                  Mission Execution Completed — Awaiting Review
+                </span>
+                <span className="text-[11px] text-slate-300">
+                  Agent finished execution. Verify changes and integrate or reopen for revisions.
+                </span>
+              </div>
+            </div>
+            <span className="font-mono text-[9px] px-1.5 py-0.5 rounded bg-amber-900/40 text-amber-300 border border-amber-500/30 font-bold uppercase">
+              Needs Review
+            </span>
+          </div>
+
+          {/* Plan Summary if available */}
+          {task.planSummary && (
+            <div className="p-2 rounded bg-slate-900/80 border border-slate-800 text-[11px] font-mono text-slate-300 leading-relaxed">
+              <span className="text-amber-400 font-bold block text-[9px] uppercase tracking-wider mb-0.5">Execution Summary</span>
+              {task.planSummary}
+            </div>
+          )}
+
+          {/* Actions: Integrate, Complete, Reopen */}
+          <div className="flex items-center justify-between pt-1 border-t border-amber-500/20 gap-2 flex-wrap">
+            <div className="flex items-center gap-2">
+              {onReopen && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    setIsReopenOpen(!isReopenOpen)
+                  }}
+                  className="flex items-center gap-1 px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-[10px] font-medium transition-colors border border-slate-700/60"
+                  title="Reopen task to add instructions and continue work"
+                >
+                  <RotateCcw size={10} className="text-amber-400" />
+                  <span>{isReopenOpen ? 'Cancel' : 'Reopen Task'}</span>
+                </button>
+              )}
+            </div>
+
+            <div className="flex items-center gap-2">
+              {onComplete && !hasUnintegrated && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onComplete()
+                  }}
+                  className="flex items-center gap-1.5 px-3 py-1 rounded bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow transition-all active:scale-95"
+                >
+                  <Check size={11} />
+                  <span>Accept & Complete</span>
+                </button>
+              )}
+              {hasUnintegrated && onIntegrate && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onIntegrate()
+                  }}
+                  className="flex items-center gap-1.5 px-3 py-1 rounded bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs shadow transition-all active:scale-95"
+                >
+                  <GitPullRequest size={11} />
+                  <span>Integrate into {task.baseBranch || 'main'}</span>
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Inline Reopen Feedback Input */}
+          {isReopenOpen && onReopen && (
+            <div className="flex items-center gap-2 p-2 rounded bg-slate-900 border border-slate-800 animate-in fade-in duration-200">
+              <input
+                type="text"
+                value={reopenFeedback}
+                onClick={(e) => e.stopPropagation()}
+                onChange={(e) => setReopenFeedback(e.target.value)}
+                placeholder="Instructions for the agent to resume work..."
+                className="flex-1 bg-slate-950 border border-slate-800 rounded px-2.5 py-1 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-amber-500 font-mono"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.stopPropagation()
+                    onReopen(reopenFeedback.trim() || undefined)
+                    setReopenFeedback('')
+                    setIsReopenOpen(false)
+                  }
+                }}
+              />
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onReopen(reopenFeedback.trim() || undefined)
+                  setReopenFeedback('')
+                  setIsReopenOpen(false)
+                }}
+                className="px-3 py-1 rounded bg-amber-600 hover:bg-amber-500 text-white font-bold text-[10px] transition-colors flex-shrink-0"
+              >
+                Resume Run
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Execution Error Recovery Banner */}
       {task.lastError && (
         <div className="flex items-start justify-between p-2.5 rounded-lg bg-rose-950/30 border border-rose-500/40 text-[11px] gap-2">
@@ -902,9 +1177,57 @@ function MinimalTaskCard({
               Changes on {task.worktreeBranch || 'worktree'} have been successfully integrated into {task.baseBranch || 'main'}.
             </span>
           </div>
-          <span className="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-mono text-[9px] font-bold border border-emerald-500/30">
-            Up-to-date
-          </span>
+          <div className="flex items-center gap-2 flex-shrink-0">
+            <span className="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-mono text-[9px] font-bold border border-emerald-500/30">
+              Up-to-date
+            </span>
+            {onReopen && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  setIsReopenOpen(!isReopenOpen)
+                }}
+                className="flex items-center gap-1 px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-[10px] font-medium transition-colors border border-slate-700"
+                title="Reopen task"
+              >
+                <RotateCcw size={10} className="text-indigo-400" />
+                <span>{isReopenOpen ? 'Cancel' : 'Reopen Task'}</span>
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+      {!isPendingApproval && task.isIntegrated && isReopenOpen && onReopen && (
+        <div className="flex items-center gap-2 p-2 rounded bg-slate-900 border border-slate-800 animate-in fade-in duration-200">
+          <input
+            type="text"
+            value={reopenFeedback}
+            onClick={(e) => e.stopPropagation()}
+            onChange={(e) => setReopenFeedback(e.target.value)}
+            placeholder="Instructions for reopening..."
+            className="flex-1 bg-slate-950 border border-slate-800 rounded px-2.5 py-1 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 font-mono"
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.stopPropagation()
+                onReopen(reopenFeedback.trim() || undefined)
+                setReopenFeedback('')
+                setIsReopenOpen(false)
+              }
+            }}
+          />
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation()
+              onReopen(reopenFeedback.trim() || undefined)
+              setReopenFeedback('')
+              setIsReopenOpen(false)
+            }}
+            className="px-3 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-[10px] transition-colors flex-shrink-0"
+          >
+            Reopen
+          </button>
         </div>
       )}
 
@@ -1273,6 +1596,9 @@ export function OrchestrateView({
   // Live Pebble V3 cache state
   const sessionsById = useDesktopV3CacheSelector((s) => s.sessionsById)
   const plansBySession = useDesktopV3CacheSelector((s) => s.plansBySession)
+  const liveRunsBySession = useDesktopV3CacheSelector((s) => s.liveRunsBySession)
+  const currentRunIntentBySession = useDesktopV3CacheSelector((s) => s.currentRunIntentBySession)
+  const sessionViewsById = useDesktopV3CacheSelector((s) => s.sessionViewsById)
 
   // Active Chat Session state (can be executive orchestrator OR a task session)
   const [activeSessionId, setActiveSessionId] = useState<string>('')
@@ -1536,6 +1862,43 @@ export function OrchestrateView({
 
     return () => clearInterval(interval)
   }, [selectedProjectId, tasks, fetchProjectTasks])
+
+  // Realtime session demand and plan hydration for active tasks
+  useEffect(() => {
+    const activeSessionIds = tasks
+      .filter((t) => Boolean(t.sessionId && (t.status === 'running' || t.status === 'in_progress' || t.id === selectedTaskId)))
+      .map((t) => t.sessionId!)
+
+    if (activeSessionIds.length === 0) return
+
+    let cancelled = false
+    const leases: DesktopV3RealtimeSessionDemandLease[] = []
+
+    // 1. Hydrate active plans and child cards
+    activeSessionIds.forEach((sid) => {
+      void hydrateDesktopV3ChildCard(sid, { activePlan: true, permissionSummary: true }).catch(() => undefined)
+    })
+
+    // 2. Acquire realtime demand leases so live events stream
+    void requireDesktopV3RealtimeControllerReady()
+      .then((controller) => {
+        if (cancelled) return
+        activeSessionIds.forEach((sid) => {
+          const ownerKey = `orchestrate-task:${sid}`
+          try {
+            leases.push(controller.acquireSessionDemand(ownerKey, sid))
+          } catch {
+            // ignore
+          }
+        })
+      })
+      .catch(() => undefined)
+
+    return () => {
+      cancelled = true
+      leases.forEach((lease) => lease.release())
+    }
+  }, [tasks, selectedTaskId])
 
   // Helper to ensure an active orchestrator session exists for a project
   const ensureOrchestratorSession = useCallback(async (project: ProjectSummary): Promise<string | null> => {
@@ -2051,40 +2414,198 @@ export function OrchestrateView({
     }
   }
 
+  // Reopen task back to in_progress
+  const handleReopenTask = async (taskId: string, feedback?: string) => {
+    if (!selectedProject?.id) return
+    setTasks((prev) =>
+      prev.map((t) =>
+        t.id === taskId
+          ? {
+              ...t,
+              status: 'in_progress' as const,
+              isIntegrated: false,
+              startedAt: Date.now(),
+            }
+          : t
+      )
+    )
+    try {
+      await requestJson(`/v3/projects/${selectedProject.id}/tasks/${taskId}/reopen`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ feedback }),
+      })
+      fetchProjectTasks(selectedProject.id)
+      const reopenedTask = tasks.find((t) => t.id === taskId)
+      if (reopenedTask?.sessionId) {
+        setActiveSessionId(reopenedTask.sessionId)
+        setActiveTaskId(reopenedTask.id)
+        void hydrateDesktopV3ChildCard(reopenedTask.sessionId, { activePlan: true, permissionSummary: true }).catch(() => undefined)
+      }
+    } catch (err) {
+      console.warn('Reopen task failed:', err)
+      fetchProjectTasks(selectedProject.id)
+    }
+  }
+
+  // Complete task explicitly
+  const handleCompleteTask = async (taskId: string) => {
+    if (!selectedProject?.id) return
+    setTasks((prev) =>
+      prev.map((t) =>
+        t.id === taskId
+          ? { ...t, status: 'completed' as const }
+          : t
+      )
+    )
+    try {
+      await requestJson(`/v3/projects/${selectedProject.id}/tasks/${taskId}/complete`, {
+        method: 'POST',
+      })
+      fetchProjectTasks(selectedProject.id)
+    } catch (err) {
+      console.warn('Complete task failed:', err)
+      fetchProjectTasks(selectedProject.id)
+    }
+  }
+
   // Real-time status transitions linked to V3 session lifecycles
   const liveTasks = useMemo(() => {
     return tasks.map((task) => {
-      if (!task.sessionId || !sessionsById[task.sessionId]) {
+      if (!task.sessionId) {
         return task
       }
       const record = sessionsById[task.sessionId]
       const sess = record?.kind === 'full' ? record.session : undefined
-      const plan = plansBySession[task.sessionId] as any
-      if (!sess) {
-        return task
-      }
-      const lifecycle = sess.lifecycle as any
+      const view = sessionViewsById?.[task.sessionId]
+      const intent = currentRunIntentBySession?.[task.sessionId]
+      const liveRun = intent?.run_id ? liveRunsBySession?.[task.sessionId]?.[intent.run_id] : undefined
+      const planRecord = plansBySession[task.sessionId] as any
+      const planDoc = planRecord?.document
+
+      const lifecycle = sess?.lifecycle as any
+
+      // 1. Status synchronization:
       let status = task.status
-      if (task.status === 'pending_approval') {
+      const isLifecycleActive = Boolean(
+        lifecycle?.active === true ||
+        intent?.status === 'running' ||
+        view?.current_run_state?.status === 'running'
+      )
+      const hasReviewRequired = Boolean(
+        planRecord?.status === 'waiting_review' ||
+        lifecycle?.phase === 'needs_review' ||
+        planDoc?.executionState?.status === 'waiting_review' ||
+        planDoc?.checkpoints?.some((cp: any) => cp.status === 'needs_review')
+      )
+
+      if (task.status === 'pending_approval' || task.status === 'planning' || task.status === 'queued') {
         // Keep pending approval until explicitly approved
-        status = 'pending_approval'
-      } else if (lifecycle?.active) {
+        status = task.status
+      } else if (isLifecycleActive) {
         status = 'running'
-      } else {
-        const hasWaitingReview = plan?.document?.checkpoints?.some((cp: any) => cp.status === 'needs_review')
-        if (hasWaitingReview || lifecycle?.phase === 'needs_review') {
-          status = 'needs_review'
-        } else if (!lifecycle?.active && (sess.message_count ?? 0) > 1) {
+      } else if (hasReviewRequired || (!isLifecycleActive && sess && (sess.message_count ?? 0) > 1)) {
+        // Agent finished execution! Transition to needs_review, never directly to completed!
+        if (task.isIntegrated) {
           status = 'completed'
+        } else if (task.status === 'completed') {
+          status = 'completed'
+        } else {
+          status = 'needs_review'
         }
       }
+
+      // 2. Extract agent's live plan checkpoints & subtasks:
+      let activePlanCheckpoints: RunningTaskPlanCheckpoint[] | undefined
+      let totalSubtasks = 0
+      let completedSubtasks = 0
+      let activeSubtaskId = ''
+      let activeCheckpointTitle = ''
+      let activeSubtaskTitle = ''
+
+      if (planDoc?.checkpoints && Array.isArray(planDoc.checkpoints)) {
+        const activeCheckpointId = planDoc.activeCheckpointId || planDoc.executionState?.lastCheckpointId || ''
+        activePlanCheckpoints = planDoc.checkpoints.map((cp: any) => {
+          const isCpActive = cp.id === activeCheckpointId
+          if (isCpActive && cp.title) {
+            activeCheckpointTitle = cp.title
+          }
+          const subs = (cp.subtasks || []).map((st: any) => {
+            const isDone = st.status === 'completed' || st.completed === true
+            if (isDone) completedSubtasks++
+            totalSubtasks++
+            if (cp.activeSubtaskId === st.id || st.status === 'in_progress') {
+              activeSubtaskId = st.id
+              activeSubtaskTitle = st.title
+            }
+            return {
+              id: st.id,
+              title: st.title,
+              status: st.status || (st.completed ? 'completed' : 'pending'),
+              completed: isDone,
+            }
+          })
+          if (!cp.subtasks || cp.subtasks.length === 0) {
+            totalSubtasks++
+            if (cp.status === 'completed') completedSubtasks++
+          }
+          return {
+            id: cp.id,
+            title: cp.title,
+            status: cp.status,
+            subtasks: subs,
+          }
+        })
+      }
+
+      // 3. Extract tool calls & live streaming text:
+      const toolCalls = liveRun ? Object.values(liveRun.toolCallsByCallId) : []
+      const currentTool = [...toolCalls]
+        .sort((a, b) => b.updatedAt - a.updatedAt)
+        .map((t) => t.toolDisplay?.trim() || t.toolName?.trim() || '')
+        .find(Boolean) || ''
+      const toolActivitySummary = summarizeDesktopV3TaskToolActivity(toolCalls)
+      const liveAssistantText = [
+        ...(liveRun?.assistantSegments ?? []),
+        ...(liveRun?.assistantDraft ? [liveRun.assistantDraft] : []),
+      ]
+        .sort((a, b) => (a.timelineSeq ?? 0) - (b.timelineSeq ?? 0) || a.updatedAt - b.updatedAt)
+        .map((s) => s.content)
+        .join('')
+        .trim()
+      const liveToolCalls = [...toolCalls]
+        .sort((a, b) => a.updatedAt - b.updatedAt)
+        .map((t) => t.toolDisplay?.trim() || t.toolName?.trim() || '')
+        .filter(Boolean)
+        .join('\n')
+
+      // 4. Current focus:
+      const currentFocus = activeSubtaskTitle || activeCheckpointTitle || toolActivitySummary || currentTool || (isLifecycleActive ? 'Executing autonomous mission plan...' : '')
+
+      // 5. Plan progress percent:
+      const planProgressPercent = totalSubtasks > 0 ? Math.round((completedSubtasks / totalSubtasks) * 100) : undefined
+
+      // 6. Elapsed timer:
+      const startedAt = intent?.started_at || lifecycle?.started_at || task.createdAt || (sess ? sess.created_at : undefined)
+      const elapsedMs = intent?.duration_ms || (startedAt ? Date.now() - startedAt : 0)
+
       return {
         ...task,
         status,
-        elapsed: sess.updated_at ? `${Math.max(1, Math.round((Date.now() - (sess.created_at ?? Date.now())) / 60000))}m` : task.elapsed,
+        currentFocus: currentFocus || task.currentFocus,
+        currentTool: currentTool || task.currentTool,
+        liveAssistantText: liveAssistantText || task.liveAssistantText,
+        liveToolCalls: liveToolCalls || task.liveToolCalls,
+        toolActivitySummary: toolActivitySummary || task.toolActivitySummary,
+        activePlanCheckpoints: activePlanCheckpoints && activePlanCheckpoints.length > 0 ? activePlanCheckpoints : task.activePlanCheckpoints,
+        activeSubtaskId: activeSubtaskId || task.activeSubtaskId,
+        planProgressPercent: planProgressPercent !== undefined ? planProgressPercent : task.planProgressPercent,
+        subtasksCount: totalSubtasks > 0 ? { completed: completedSubtasks, total: totalSubtasks } : task.subtasksCount,
+        startedAt,
+        elapsedMs,
       }
     })
-  }, [tasks, sessionsById, plansBySession])
+  }, [tasks, sessionsById, plansBySession, liveRunsBySession, currentRunIntentBySession, sessionViewsById])
 
   // Filtered tasks
   const filteredTasks = useMemo(() => {
@@ -3427,6 +3948,8 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                                   onDelete={() => handleDeleteTask(t.id)}
                                   onRefine={(fb, err) => handleRefineTask(t.id, fb, err)}
                                   onPreviewDeliverable={(d) => handleOpenDeliverableInMediaCenter(d)}
+                                  onReopen={(fb) => handleReopenTask(t.id, fb)}
+                                  onComplete={() => handleCompleteTask(t.id)}
                                 />
                               </div>
                             )}
@@ -3509,6 +4032,8 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                               onDelete={() => handleDeleteTask(t.id)}
                               onRefine={(fb, err) => handleRefineTask(t.id, fb, err)}
                               onPreviewDeliverable={(d) => handleOpenDeliverableInMediaCenter(d)}
+                              onReopen={(fb) => handleReopenTask(t.id, fb)}
+                              onComplete={() => handleCompleteTask(t.id)}
                             />
                           ))}
                           {colTasks.length === 0 && (
@@ -3603,6 +4128,8 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                           onDelete={() => handleDeleteTask(task.id)}
                           onRefine={(fb, err) => handleRefineTask(task.id, fb, err)}
                           onPreviewDeliverable={(d) => handleOpenDeliverableInMediaCenter(d)}
+                          onReopen={(fb) => handleReopenTask(task.id, fb)}
+                          onComplete={() => handleCompleteTask(task.id)}
                         />
                       ))}
                     </div>
@@ -3658,6 +4185,8 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                         onDelete={() => handleDeleteTask(selectedTaskForSplit.id)}
                         onRefine={(fb, err) => handleRefineTask(selectedTaskForSplit.id, fb, err)}
                         onPreviewDeliverable={(d) => handleOpenDeliverableInMediaCenter(d)}
+                        onReopen={(fb) => handleReopenTask(selectedTaskForSplit.id, fb)}
+                        onComplete={() => handleCompleteTask(selectedTaskForSplit.id)}
                       />
                     ) : (
                       <div className="flex-1 flex items-center justify-center text-xs text-slate-500">
@@ -3686,6 +4215,8 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                       onDelete={() => handleDeleteTask(t.id)}
                       onRefine={(fb, err) => handleRefineTask(t.id, fb, err)}
                       onPreviewDeliverable={(d) => handleOpenDeliverableInMediaCenter(d)}
+                      onReopen={(fb) => handleReopenTask(t.id, fb)}
+                      onComplete={() => handleCompleteTask(t.id)}
                     />
                   ))}
                   {liveTasks.length === 0 && (

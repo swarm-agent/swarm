@@ -169,6 +169,18 @@ export interface ProjectTaskScene {
   visual_notes?: string
 }
 
+export interface RunningTaskPlanCheckpoint {
+  id: string
+  title: string
+  status: string
+  subtasks?: Array<{
+    id: string
+    title: string
+    status?: string
+    completed?: boolean
+  }>
+}
+
 export interface RunningTask {
   id: string
   title: string
@@ -191,6 +203,19 @@ export interface RunningTask {
   deliverables?: MediaDeliverable[]
   sessionId?: string
   createdAt?: number
+  startedAt?: number
+  elapsedMs?: number
+
+  // Live session sync, plan & streaming fields
+  currentFocus?: string
+  currentTool?: string
+  toolActivitySummary?: string
+  liveAssistantText?: string
+  liveToolCalls?: string
+  activePlanCheckpoints?: RunningTaskPlanCheckpoint[]
+  activeSubtaskId?: string
+  planProgressPercent?: number
+  subtasksCount?: { completed: number; total: number }
 
   // Worktree & Outcome Tracking Fields
   workspacePath?: string

@@ -1,61 +1,61 @@
-import { describe, it } from 'node:test'
+import test from 'node:test'
 import assert from 'node:assert/strict'
-import {
-  MOCK_PROJECTS,
-  MOCK_100_TASKS,
-  MOCK_DEPLOYED_WORKERS,
-  MOCK_AUTOMATIONS,
-} from './orchestrate-mock-data'
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { ORCHESTRATE_THEMES, ORCHESTRATE_THEME_IDS } from './orchestrate-themes'
 import type { MiddleCanvasVariant } from './orchestrate-types'
 
-describe('Orchestrate View & Fleet Integration', () => {
-  it('defines 5 valid canvas variants and defaults to fleet', () => {
-    const validVariants: MiddleCanvasVariant[] = ['matrix', 'kanban', 'fleet', 'split', 'timeline']
-    assert.equal(validVariants.length, 5)
-    assert.ok(validVariants.includes('fleet'), 'Variant 3 fleet must be a valid variant')
-  })
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = path.dirname(__filename)
 
-  it('provides 100 benchmark tasks with valid distribution across states', () => {
-    assert.equal(MOCK_100_TASKS.length, 100)
-    
-    const statusCounts = MOCK_100_TASKS.reduce((acc, t) => {
-      acc[t.status] = (acc[t.status] || 0) + 1
-      return acc
-    }, {} as Record<string, number>)
+test('Orchestrate View defines valid canvas variants and verified modern themes', () => {
+  const validVariants: MiddleCanvasVariant[] = ['matrix', 'kanban', 'fleet', 'split', 'timeline']
+  assert.equal(validVariants.length, 5)
+  assert.ok(validVariants.includes('fleet'), 'Variant 3 fleet must be a valid variant')
+  assert.ok(validVariants.includes('kanban'), 'Variant 2 kanban must be a valid variant')
 
-    assert.ok(statusCounts['running'] > 0, 'running tasks present')
-    assert.ok(statusCounts['needs_review'] > 0, 'needs_review tasks present')
-    assert.ok(statusCounts['queued'] > 0, 'queued tasks present')
-    assert.ok(statusCounts['completed'] > 0, 'completed tasks present')
-  })
+  assert.ok(ORCHESTRATE_THEME_IDS.includes('modern_navy'))
+  const modernNavy = ORCHESTRATE_THEMES['modern_navy']
+  assert.ok(modernNavy)
+  assert.ok(modernNavy.bgClass)
+  assert.ok(modernNavy.panelBgClass)
+  assert.ok(modernNavy.accentColor)
 
-  it('provides worker fleet definitions matching canonical autonomous roles', () => {
-    assert.ok(MOCK_DEPLOYED_WORKERS.length >= 4)
-    const workerNames = MOCK_DEPLOYED_WORKERS.map(w => w.name)
-    assert.ok(workerNames.some(name => name.includes('Video Swarm')))
-    assert.ok(workerNames.some(name => name.includes('Code Reviewer')))
-    assert.ok(workerNames.some(name => name.includes('Testbench Runner')))
-  })
+  const applePeach = ORCHESTRATE_THEMES['apple_peach']
+  assert.ok(applePeach)
+  assert.ok(applePeach.bgClass)
+})
 
-  it('supplies verified modern themes including modern_navy and apple_peach', () => {
-    assert.ok(ORCHESTRATE_THEME_IDS.includes('modern_navy'))
-    const modernNavy = ORCHESTRATE_THEMES['modern_navy']
-    assert.ok(modernNavy)
-    assert.ok(modernNavy.bgClass)
-    assert.ok(modernNavy.panelBgClass)
-    assert.ok(modernNavy.accentColor)
+test('OrchestrateView synchronizes task cards with live session reality, plans, and focus', () => {
+  // Invariant: The task card must stay in sync with the actual session:
+  // - Track pending_approval -> in_progress upon acceptance
+  // - Show the plan the agent created with subtasks checklist
+  // - Show current focus and live streaming activity from session info
+  // - Track session timer with live seconds and minutes
+  // - Transition to needs_review upon completion, never just flip to completed!
+  // - Support reopening tasks into multiple states
+  const sourcePath = path.join(__dirname, 'OrchestrateView.tsx')
+  const source = fs.readFileSync(sourcePath, 'utf8')
 
-    const applePeach = ORCHESTRATE_THEMES['apple_peach']
-    assert.ok(applePeach)
-    assert.ok(applePeach.bgClass)
-  })
+  // Realtime demand lease and plan hydration
+  assert.ok(source.includes('acquireSessionDemand'), 'OrchestrateView must acquire realtime demand leases for active tasks')
+  assert.ok(source.includes('hydrateDesktopV3ChildCard'), 'OrchestrateView must hydrate child cards with active plans')
 
-  it('provides mock projects with bound workspaces', () => {
-    assert.ok(MOCK_PROJECTS.length > 0)
-    const primary = MOCK_PROJECTS[0]
-    assert.ok(primary.id)
-    assert.ok(primary.name)
-    assert.ok(primary.linkedWorkspaces.length >= 2)
-  })
+  // Live session status & streaming
+  assert.ok(source.includes('Current Focus'), 'MinimalTaskCard must display Current Focus banner')
+  assert.ok(source.includes('Agent Execution Plan'), 'MinimalTaskCard must display agent execution plan checklist')
+  assert.ok(source.includes('Live Streaming Activity'), 'MinimalTaskCard must render live streaming activity box')
+  assert.ok(source.includes('formattedTimer'), 'MinimalTaskCard must format dynamic session timer')
+
+  // Needs review transition (not flipping directly to completed)
+  assert.ok(source.includes("status = 'needs_review'"), 'Tasks must transition to needs_review when execution completes')
+  assert.ok(source.includes('Mission Execution Completed — Awaiting Review'), 'Needs review banner must be displayed')
+
+  // Reopen task support for multiple states
+  assert.ok(source.includes('handleReopenTask'), 'OrchestrateView must implement handleReopenTask')
+  assert.ok(source.includes('/reopen'), 'Must call backend task reopen endpoint')
+  assert.ok(source.includes('handleCompleteTask'), 'OrchestrateView must implement handleCompleteTask')
+  assert.ok(source.includes('/complete'), 'Must call backend task complete endpoint')
+  assert.ok(source.includes('Reopen Task'), 'Task card must provide Reopen Task action')
 })

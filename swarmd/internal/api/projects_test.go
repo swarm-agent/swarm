@@ -264,6 +264,34 @@ func TestProjectsAPIEndpoints(t *testing.T) {
 		t.Fatalf("expected session metadata to contain agent_profile")
 	}
 
+	// 8f. Project Task: POST /v3/projects/{id}/tasks/{taskId}/reopen
+	w = call(http.MethodPost, "/"+projID+"/tasks/"+taskID+"/reopen", `{"feedback":"adjust scope to include auth tests"}`, []string{"sessions:write"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 on task reopen, got %d: %s", w.Code, w.Body.String())
+	}
+	var reopenResp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &reopenResp); err != nil {
+		t.Fatal(err)
+	}
+	reopenedTask := reopenResp["task"].(map[string]any)
+	if reopenedTask["status"] != "in_progress" {
+		t.Fatalf("expected reopened task status in_progress, got %v", reopenedTask["status"])
+	}
+
+	// 8g. Project Task: POST /v3/projects/{id}/tasks/{taskId}/complete
+	w = call(http.MethodPost, "/"+projID+"/tasks/"+taskID+"/complete", "", []string{"sessions:write"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 on task complete, got %d: %s", w.Code, w.Body.String())
+	}
+	var completeResp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &completeResp); err != nil {
+		t.Fatal(err)
+	}
+	completedTask := completeResp["task"].(map[string]any)
+	if completedTask["status"] != "completed" {
+		t.Fatalf("expected completed task status completed, got %v", completedTask["status"])
+	}
+
 	// 9. Project Task: DELETE /v3/projects/{id}/tasks/{taskId}
 	w = call(http.MethodDelete, "/"+projID+"/tasks/"+taskID, "", []string{"sessions:write"})
 	if w.Code != http.StatusOK {
@@ -951,3 +979,106 @@ func TestProjectCoderTask_FallbackAlertPopulatedWhenUnconfigured(t *testing.T) {
 		t.Fatalf("expected router_alert to mention fell back to Swarm default, got %q", alert)
 	}
 }
+
+func TestProjectTask_SessionLifecycleSync(t *testing.T) {
+	// Written Purpose:
+	// - Product Requirement: An in-progress task must reflect the live session reality:
+	//   when an agent session run completes (or reaches waiting_review), the task
+	//   status must transition to needs_review, never directly to completed,
+	//   ensuring user review and git integration gates are respected.
+	// - Boundary/authority: syncTaskSessionState in projects.go.
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	ss := store.NewSessionStore(db)
+	el, err := store.NewEventLog(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{sessions: sessionruntime.NewService(ss, el)}
+
+	sessID := "sess_lifecycle_sync_1"
+	now := time.Now().UnixMilli()
+	sessSnap := store.SessionSnapshot{
+		ID:             sessID,
+		UserID:         "owner",
+		AccountScopeID: "account",
+		Title:          "Worker session",
+		Mode:           "auto",
+		CreatedAt:      now,
+		UpdatedAt:      now,
+		MessageCount:   2,
+		Lifecycle: &store.SessionLifecycleSnapshot{
+			SessionID: sessID,
+			Active:    false, // run completed!
+			Phase:     "completed",
+		},
+	}
+	_, err = s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+		SessionID:       sessID,
+		UserID:          "owner",
+		AccountScopeID:  "account",
+		ClientRequestID: "create:" + sessID,
+		IdempotencyKey:  "create:" + sessID,
+		PayloadHash:     "create:" + sessID,
+		RequestHash:     "create:" + sessID,
+		Kind:            sessionruntime.SessionMutationCreateSession,
+		Session:         &sessSnap,
+		NowUnixMs:       now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	task := &store.ProjectTaskRecord{
+		ID:           "task_sync_1",
+		ProjectID:    "proj_1",
+		AccountID:    "account",
+		Title:        "Implement feature",
+		Status:       "in_progress",
+		SessionID:    sessID,
+		IsIntegrated: false,
+	}
+
+	// Session is completed, but task is not integrated yet -> must transition to needs_review!
+	syncTaskSessionState(task, ss)
+	if task.Status != "needs_review" {
+		t.Fatalf("expected task status to transition to needs_review, got %s", task.Status)
+	}
+
+	// If task is integrated -> transitions to completed
+	task.IsIntegrated = true
+	syncTaskSessionState(task, ss)
+	if task.Status != "completed" {
+		t.Fatalf("expected integrated task status to be completed, got %s", task.Status)
+	}
+
+	// If session is active -> stays in_progress
+	activeLifecycle := &store.SessionLifecycleSnapshot{
+		SessionID: sessID,
+		Active:    true,
+		Phase:     "running",
+	}
+	_, _ = s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+		SessionID:       sessID,
+		UserID:          "owner",
+		AccountScopeID:  "account",
+		ClientRequestID: "update:" + sessID,
+		IdempotencyKey:  "update:" + sessID,
+		PayloadHash:     "update:" + sessID,
+		RequestHash:     "update:" + sessID,
+		Kind:            sessionruntime.SessionMutationUpsertLifecycle,
+		Lifecycle:       activeLifecycle,
+		NowUnixMs:       now + 10,
+	})
+	task.Status = "in_progress"
+	task.IsIntegrated = false
+	syncTaskSessionState(task, ss)
+	if task.Status != "in_progress" {
+		t.Fatalf("expected active session task to remain in_progress, got %s", task.Status)
+	}
+}
+
