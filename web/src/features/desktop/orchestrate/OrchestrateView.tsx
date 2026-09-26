@@ -33,7 +33,6 @@ import {
   Palette,
   Paperclip,
   Play,
-  PlayCircle,
   Plus,
   Radio,
   RefreshCw,

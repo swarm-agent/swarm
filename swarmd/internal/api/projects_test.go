@@ -1081,4 +1081,3 @@ func TestProjectTask_SessionLifecycleSync(t *testing.T) {
 		t.Fatalf("expected active session task to remain in_progress, got %s", task.Status)
 	}
 }
-
