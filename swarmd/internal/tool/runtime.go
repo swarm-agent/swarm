@@ -208,6 +208,7 @@ type Runtime struct {
 	providerRegistry      *provider.Registry
 	projects              manageProjectStore
 	projectTaskDeployer   ProjectTaskDeployer
+	projectTaskLifecycle  ProjectTaskLifecycleService
 }
 
 type manageSessionController interface {
@@ -2091,7 +2092,7 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 	case "manage-actions", "manage_actions":
 		return r.executeManageActions(scope, args)
 	case "manage-projects", "manage_projects":
-		return r.executeManageProjects(scope, args)
+		return r.executeManageProjects(ctx, scope, args)
 	case "manage-connections", "manage_connections":
 		return r.executeManageConnections(ctx, scope, args)
 	case "manage-environments", "manage_environments":

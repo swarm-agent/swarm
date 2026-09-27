@@ -1,6 +1,7 @@
 package tool
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"swarm/packages/swarmd/internal/identity"
+	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -25,17 +28,121 @@ type manageProjectStore interface {
 	DeleteProjectTask(accountScopeID, projectID, taskID string) error
 }
 
+// ProjectTaskLifecycleService defines the canonical operations for project task execution and plan lifecycle.
+type ProjectTaskLifecycleService interface {
+	DeployProjectTask(ctx context.Context, p identity.Principal, projectID, taskID string) error
+	ApproveProjectTask(ctx context.Context, p identity.Principal, projectID, taskID string) (*pebblestore.ProjectTaskRecord, error)
+	SubmitProjectTaskPlan(ctx context.Context, input sessionruntime.ProjectTaskPlanSubmissionInput) (sessionruntime.ProjectTaskPlanSubmissionResult, error)
+}
+
+// ProjectTaskDeployer is a functional deployer callback preserved for backwards compatibility.
+type ProjectTaskDeployer func(accountScopeID, projectID, taskID string) error
+
+type legacyDeployerLifecycleAdapter struct {
+	deployer ProjectTaskDeployer
+	store    manageProjectStore
+}
+
+func (a *legacyDeployerLifecycleAdapter) DeployProjectTask(ctx context.Context, p identity.Principal, projectID, taskID string) error {
+	if a.deployer == nil {
+		return errors.New("project task deployer is not configured")
+	}
+	return a.deployer(p.AccountScopeID, projectID, taskID)
+}
+
+func (a *legacyDeployerLifecycleAdapter) ApproveProjectTask(ctx context.Context, p identity.Principal, projectID, taskID string) (*pebblestore.ProjectTaskRecord, error) {
+	if a.deployer == nil {
+		return nil, errors.New("project task deployer is not configured")
+	}
+	if a.store == nil {
+		return nil, errors.New("project store is not configured")
+	}
+	existingTask, found, err := a.store.GetProjectTask(p.AccountScopeID, projectID, taskID)
+	if err != nil {
+		return nil, err
+	}
+	if !found || existingTask == nil {
+		return nil, fmt.Errorf("task %q not found", taskID)
+	}
+	if existingTask.Status == "in_progress" || existingTask.Status == "completed" {
+		return existingTask, nil
+	}
+	if existingTask.Status == "rejected" {
+		return nil, errors.New("cannot approve rejected task")
+	}
+	if existingTask.Status != "pending_approval" && existingTask.Status != "queued" {
+		return nil, fmt.Errorf("task cannot be approved from status %q", existingTask.Status)
+	}
+	updated, err := a.store.UpdateProjectTask(p.AccountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
+		t.Status = "in_progress"
+		t.ActionNeeded = ""
+		if len(t.WhatDidDo) == 0 {
+			t.WhatDidDo = []string{"Mission approved by user", "Worktree session activated"}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := a.deployer(p.AccountScopeID, projectID, taskID); err != nil {
+		return nil, fmt.Errorf("deploy task: %w", err)
+	}
+	fresh, found, _ := a.store.GetProjectTask(p.AccountScopeID, projectID, taskID)
+	if found && fresh != nil {
+		return fresh, nil
+	}
+	return updated, nil
+}
+
+func (a *legacyDeployerLifecycleAdapter) SubmitProjectTaskPlan(ctx context.Context, input sessionruntime.ProjectTaskPlanSubmissionInput) (sessionruntime.ProjectTaskPlanSubmissionResult, error) {
+	return sessionruntime.ProjectTaskPlanSubmissionResult{}, errors.New("plan submission requires canonical plan lifecycle service")
+}
+
+func (r *Runtime) SetManageProjectStore(store manageProjectStore) {
+	if r == nil {
+		return
+	}
+	r.projects = store
+}
+
+func (r *Runtime) SetProjectTaskDeployer(deployer ProjectTaskDeployer) {
+	if r == nil {
+		return
+	}
+	r.projectTaskDeployer = deployer
+}
+
+func (r *Runtime) SetProjectTaskLifecycleService(service ProjectTaskLifecycleService) {
+	if r == nil {
+		return
+	}
+	r.projectTaskLifecycle = service
+}
+
+func (r *Runtime) getProjectTaskLifecycleService() ProjectTaskLifecycleService {
+	if r == nil {
+		return nil
+	}
+	if r.projectTaskLifecycle != nil {
+		return r.projectTaskLifecycle
+	}
+	if r.projectTaskDeployer != nil {
+		return &legacyDeployerLifecycleAdapter{deployer: r.projectTaskDeployer, store: r.projects}
+	}
+	return nil
+}
+
 func manageProjectsDefinition() Definition {
 	return Definition{
 		Type:        "function",
 		Name:        "manage_projects",
-		Description: "Inspect and manage Projects aggregating workspaces, context (project.md), and ongoing tasks. Supported actions: list, get, create, update, delete, synthesize_context, propose_task, approve_task, deploy_task, refine_task, create_task, list_tasks, update_task.",
+		Description: "Inspect and manage Projects aggregating workspaces, context (project.md), and ongoing tasks. Supported actions: list, get, create, update, delete, synthesize_context, propose_task, approve_task, accept_task, deploy_task, refine_task, create_task, list_tasks, update_task.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"action": map[string]any{
 					"type":        "string",
-					"description": "Action: list|get|create|update|delete|synthesize_context|propose_task|approve_task|deploy_task|refine_task|create_task|list_tasks|update_task",
+					"description": "Action: list|get|create|update|delete|synthesize_context|propose_task|approve_task|accept_task|deploy_task|refine_task|create_task|list_tasks|update_task",
 				},
 				"id": map[string]any{
 					"type":        "string",
@@ -43,11 +150,11 @@ func manageProjectsDefinition() Definition {
 				},
 				"project_id": map[string]any{
 					"type":        "string",
-					"description": "Project ID for task operations (propose_task, approve_task, deploy_task, refine_task, list_tasks, update_task)",
+					"description": "Project ID for task operations (propose_task, approve_task, accept_task, deploy_task, refine_task, list_tasks, update_task)",
 				},
 				"task_id": map[string]any{
 					"type":        "string",
-					"description": "Task ID for approve_task, deploy_task, refine_task, update_task",
+					"description": "Task ID for approve_task, accept_task, deploy_task, refine_task, update_task",
 				},
 				"name": map[string]any{
 					"type":        "string",
@@ -67,7 +174,7 @@ func manageProjectsDefinition() Definition {
 				},
 				"agent": map[string]any{
 					"type":        "string",
-					"description": "Optional agent assignment override (coder, finder, designer, image, video, sound, plan, swarm)",
+					"description": "Optional agent assignment override (coder, finder, designer, image, video, sound, plan, swarm). Small code tasks route to Coder; exploratory big features route to Plan agent.",
 				},
 				"intent": map[string]any{
 					"type":        "string",
@@ -75,7 +182,7 @@ func manageProjectsDefinition() Definition {
 				},
 				"feature_size": map[string]any{
 					"type":        "string",
-					"description": "Optional feature size for code tasks: 'small' (direct coder bug fix / single component) or 'big' (complex multi-stage architecture requiring plan agent)",
+					"description": "Optional feature size for code tasks: 'small' (direct coder bug fix / single component) or 'big' (complex multi-stage architecture requiring plan agent or direct structured plan)",
 				},
 				"worker_name": map[string]any{
 					"type":        "string",
@@ -87,7 +194,15 @@ func manageProjectsDefinition() Definition {
 				},
 				"auto_approve": map[string]any{
 					"type":        "boolean",
-					"description": "Set true to automatically approve and deploy the task immediately upon creation",
+					"description": "Set true to automatically deploy the task immediately upon creation for small tasks or Task Programs; structured plans require explicit user review in the task card",
+				},
+				"plan_document": map[string]any{
+					"type":        "object",
+					"description": "Optional structured plan document {id, title, info: {goal}, checkpoints: [{id, title, tasks, acceptance_criteria}]} for big-feature tasks. When provided, submits the plan directly to the task card for user review without running a separate Plan agent investigation pass.",
+				},
+				"document": map[string]any{
+					"type":        "object",
+					"description": "Alias for plan_document.",
 				},
 				"task_program": map[string]any{
 					"type":        "object",
@@ -151,29 +266,15 @@ func manageProjectsDefinition() Definition {
 	}
 }
 
-type ProjectTaskDeployer func(accountScopeID, projectID, taskID string) error
-
-func (r *Runtime) SetManageProjectStore(store manageProjectStore) {
-	if r == nil {
-		return
-	}
-	r.projects = store
-}
-
-func (r *Runtime) SetProjectTaskDeployer(deployer ProjectTaskDeployer) {
-	if r == nil {
-		return
-	}
-	r.projectTaskDeployer = deployer
-}
-
-func (r *Runtime) executeManageProjects(scope WorkspaceScope, args map[string]any) (string, error) {
+func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScope, args map[string]any) (string, error) {
 	if r == nil || r.projects == nil {
 		return "", errors.New("manage_projects service is not configured")
 	}
-	accountScopeID := strings.TrimSpace(scope.Principal.AccountScopeID)
-	if accountScopeID == "" {
-		return "", errors.New("manage_projects requires an authenticated account scope")
+	p := scope.Principal
+	accountScopeID := strings.TrimSpace(p.AccountScopeID)
+	userID := strings.TrimSpace(p.UserID)
+	if !p.Valid() || accountScopeID == "" || userID == "" || strings.TrimSpace(p.Type) != identity.PrincipalTypeUser {
+		return "", errors.New("manage_projects requires an authenticated user identity")
 	}
 
 	actionName := strings.ToLower(strings.TrimSpace(asString(args["action"])))
@@ -326,7 +427,6 @@ func (r *Runtime) executeManageProjects(scope WorkspaceScope, args map[string]an
 		for _, p := range wsPaths {
 			base := filepath.Base(p)
 			sb.WriteString(fmt.Sprintf("- `%s` (`%s`)\n", base, p))
-			// Bounded scan for README.md or AGENTS.md
 			for _, docName := range []string{"README.md", "AGENTS.md"} {
 				docPath := filepath.Join(p, docName)
 				if fi, err := os.Stat(docPath); err == nil && !fi.IsDir() {
@@ -366,13 +466,15 @@ func (r *Runtime) executeManageProjects(scope WorkspaceScope, args map[string]an
 			return "", errors.New("manage_projects propose_task requires title")
 		}
 
-		proj, found, _ := r.projects.GetProject(accountScopeID, projectID)
-		var projectContext string
-		var workspaces []pebblestore.ProjectWorkspaceRef
-		if found && proj != nil {
-			projectContext = proj.ProjectContext
-			workspaces = proj.Workspaces
+		proj, found, err := r.projects.GetProject(accountScopeID, projectID)
+		if err != nil {
+			return "", err
 		}
+		if !found || proj == nil {
+			return "", fmt.Errorf("project %q not found", projectID)
+		}
+		projectContext := proj.ProjectContext
+		workspaces := proj.Workspaces
 
 		prompt := strings.TrimSpace(asString(args["prompt"]))
 		if prompt == "" {
@@ -421,6 +523,43 @@ func (r *Runtime) executeManageProjects(scope WorkspaceScope, args map[string]an
 			}
 		}
 
+		// Direct structured plan document argument support
+		var planDoc *pebblestore.SessionPlanDocument
+		if rawDoc, ok := args["plan_document"]; ok && rawDoc != nil {
+			var pErr error
+			planDoc, pErr = parseSessionPlanDocument(rawDoc)
+			if pErr != nil {
+				return "", fmt.Errorf("invalid plan_document: %w", pErr)
+			}
+		} else if rawDoc, ok := args["document"]; ok && rawDoc != nil {
+			var pErr error
+			planDoc, pErr = parseSessionPlanDocument(rawDoc)
+			if pErr != nil {
+				return "", fmt.Errorf("invalid document: %w", pErr)
+			}
+		}
+
+		var taskProg *pebblestore.TaskProgramDefinition
+		if rawProg, ok := args["task_program"]; ok && rawProg != nil {
+			var progErr error
+			taskProg, progErr = parseTaskProgram(rawProg)
+			if progErr != nil {
+				return "", progErr
+			}
+		}
+
+		if planDoc != nil {
+			if featureSize == "" {
+				featureSize = "big"
+			}
+			if outcomeType == "" {
+				outcomeType = "plan_spec"
+			}
+			if tier == "" {
+				tier = "complex"
+			}
+		}
+
 		routed, rErr := pebblestore.RouteAndPlanProjectTaskWithOptions(pebblestore.TaskPlanOptions{
 			Prompt:             prompt,
 			RequestedWorkspace: wsPath,
@@ -456,10 +595,6 @@ func (r *Runtime) executeManageProjects(scope WorkspaceScope, args map[string]an
 		if workerName == "" {
 			workerName = fmt.Sprintf("@%s Worker", strings.Title(agentName))
 		}
-		status := strings.TrimSpace(asString(args["status"]))
-		if status == "" || status == "queued" {
-			status = "pending_approval"
-		}
 		if outcomeType == "" {
 			outcomeType = routed.OutcomeType
 		}
@@ -492,7 +627,6 @@ func (r *Runtime) executeManageProjects(scope WorkspaceScope, args map[string]an
 				}
 			}
 		}
-
 		var whatNot []string
 		if rawNot, ok := args["what_not_done"].([]any); ok {
 			for _, item := range rawNot {
@@ -502,21 +636,33 @@ func (r *Runtime) executeManageProjects(scope WorkspaceScope, args map[string]an
 			}
 		}
 
-		var taskProg *pebblestore.TaskProgramDefinition
-		if rawProg, ok := args["task_program"]; ok && rawProg != nil {
-			var err error
-			taskProg, err = parseTaskProgram(rawProg)
-			if err != nil {
-				return "", err
-			}
-		}
-		if autoApprove, ok := args["auto_approve"].(bool); ok && autoApprove {
-			status = "in_progress"
+		// Initial status logic: tool MUST NOT premark in_progress.
+		// Initial state is pending_approval (or planning for Plan agent exploration).
+		status := "pending_approval"
+		if planDoc != nil {
+			status = "pending_approval"
+		} else if agentName == "plan" || (agentName == "swarm" && featureSize == "big") {
+			status = "planning"
 		}
 
 		actionNeeded := strings.TrimSpace(asString(args["action_needed"]))
-		if actionNeeded == "" && status == "pending_approval" {
-			actionNeeded = "Review plan and click Approve"
+		if actionNeeded == "" {
+			if planDoc != nil {
+				actionNeeded = "Review plan in task card and click Approve"
+			} else if status == "planning" {
+				actionNeeded = "Plan agent investigating and authoring structured plan..."
+			} else if status == "pending_approval" {
+				if agentName == "coder" || outcomeType == "code_pr" || outcomeType == "bug_patch" {
+					actionNeeded = "Review task and click Approve to start Coder execution"
+				} else if taskProg != nil {
+					actionNeeded = "Review task program and click Approve"
+				} else {
+					actionNeeded = "Review plan and click Approve"
+				}
+			}
+		}
+		if status == "planning" && len(whatDid) == 0 {
+			whatDid = []string{"Started planning investigation"}
 		}
 
 		var deliverables []pebblestore.ProjectTaskDeliverable
@@ -593,24 +739,100 @@ func (r *Runtime) executeManageProjects(scope WorkspaceScope, args map[string]an
 		if err := r.projects.PutProjectTask(accountScopeID, &task); err != nil {
 			return "", err
 		}
-		if r.projectTaskDeployer != nil && task.Status == "in_progress" {
-			if err := r.projectTaskDeployer(accountScopeID, projectID, task.ID); err != nil {
+		_, _ = r.projects.UpdateProject(accountScopeID, projectID, func(p *pebblestore.ProjectRecord) error {
+			for _, tid := range p.ActiveTaskIDs {
+				if tid == task.ID {
+					return nil
+				}
+			}
+			p.ActiveTaskIDs = append(p.ActiveTaskIDs, task.ID)
+			return nil
+		})
+
+		autoApprove, _ := args["auto_approve"].(bool)
+		lifecycle := r.getProjectTaskLifecycleService()
+
+		if planDoc != nil {
+			// Direct structured plan submission: submits plan document into task-card review
+			if lifecycle == nil {
+				return "", errors.New("project task lifecycle service is not configured")
+			}
+			subResult, err := lifecycle.SubmitProjectTaskPlan(ctx, sessionruntime.ProjectTaskPlanSubmissionInput{
+				AccountScopeID:  accountScopeID,
+				UserID:          userID,
+				ProjectID:       projectID,
+				TaskID:          task.ID,
+				Document:        planDoc,
+				PlanText:        fullPlanMarkdown,
+				Title:           title,
+				WorkspacePath:   task.WorkspacePath,
+				ParentSessionID: proj.PrimarySessionID,
+			})
+			if err != nil {
+				return "", fmt.Errorf("submit structured plan: %w", err)
+			}
+			freshTask, found, _ := r.projects.GetProjectTask(accountScopeID, projectID, task.ID)
+			if found && freshTask != nil {
+				task = *freshTask
+			} else {
+				task = subResult.Task
+			}
+		} else if status == "planning" {
+			// Planning investigation: deploy Plan agent in plan mode
+			if lifecycle == nil {
+				return "", errors.New("project task deployer service is not configured")
+			}
+			if err := lifecycle.DeployProjectTask(ctx, p, projectID, task.ID); err != nil {
+				return "", fmt.Errorf("deploy planning session: %w", err)
+			}
+			freshTask, found, _ := r.projects.GetProjectTask(accountScopeID, projectID, task.ID)
+			if found && freshTask != nil {
+				task = *freshTask
+			}
+		} else if autoApprove {
+			// Auto-approve deployable task (Coder small task, Task Program, or media)
+			if lifecycle == nil {
+				return "", errors.New("project task deployer service is not configured")
+			}
+			if err := lifecycle.DeployProjectTask(ctx, p, projectID, task.ID); err != nil {
 				return "", fmt.Errorf("deploy task: %w", err)
 			}
+			freshTask, found, _ := r.projects.GetProjectTask(accountScopeID, projectID, task.ID)
+			if found && freshTask != nil {
+				task = *freshTask
+			}
 		}
-		if found && proj != nil {
-			_, _ = r.projects.UpdateProject(accountScopeID, projectID, func(p *pebblestore.ProjectRecord) error {
-				for _, tid := range p.ActiveTaskIDs {
-					if tid == task.ID {
-						return nil
-					}
-				}
-				p.ActiveTaskIDs = append(p.ActiveTaskIDs, task.ID)
-				return nil
-			})
-		}
+
 		response["task"] = task
 		response["task_id"] = task.ID
+		response["project_id"] = projectID
+		response["status"] = task.Status
+		if task.SessionID != "" {
+			response["session_id"] = task.SessionID
+		}
+		if task.WorktreeBranch != "" {
+			response["worktree_branch"] = task.WorktreeBranch
+		}
+		if task.WorkspacePath != "" {
+			response["workspace_path"] = task.WorkspacePath
+		}
+		if task.LastError != "" {
+			response["last_error"] = task.LastError
+		}
+		if task.Revision > 0 {
+			response["revision"] = task.Revision
+		}
+		if task.PlanBinding != nil {
+			response["plan_binding"] = task.PlanBinding
+		}
+		if task.TaskProgram != nil {
+			response["task_program"] = task.TaskProgram
+			response["task_program_id"] = task.TaskProgramID
+		}
+		if task.TaskProgramStatus != nil {
+			response["task_program_status"] = task.TaskProgramStatus
+		}
+
 		proposal := map[string]any{
 			"task_id":             task.ID,
 			"project_id":          projectID,
@@ -626,9 +848,18 @@ func (r *Runtime) executeManageProjects(scope WorkspaceScope, args map[string]an
 			"action_needed":       task.ActionNeeded,
 			"status":              task.Status,
 		}
+		if task.SessionID != "" {
+			proposal["session_id"] = task.SessionID
+		}
+		if task.PlanBinding != nil {
+			proposal["plan_binding"] = task.PlanBinding
+		}
 		if task.TaskProgram != nil {
 			proposal["task_program"] = task.TaskProgram
 			proposal["task_program_id"] = task.TaskProgramID
+		}
+		if task.LastError != "" {
+			proposal["last_error"] = task.LastError
 		}
 		response["proposal"] = proposal
 
@@ -691,9 +922,13 @@ func (r *Runtime) executeManageProjects(scope WorkspaceScope, args map[string]an
 		if err != nil {
 			return "", err
 		}
+		freshTask, found, err := r.projects.GetProjectTask(accountScopeID, projectID, taskID)
+		if err == nil && found && freshTask != nil {
+			updated = freshTask
+		}
 		response["task"] = updated
 
-	case "approve_task":
+	case "approve_task", "accept_task":
 		projectID := strings.TrimSpace(asString(args["project_id"]))
 		if projectID == "" {
 			projectID = strings.TrimSpace(asString(args["id"]))
@@ -702,23 +937,46 @@ func (r *Runtime) executeManageProjects(scope WorkspaceScope, args map[string]an
 		if projectID == "" || taskID == "" {
 			return "", errors.New("manage_projects approve_task requires project_id and task_id")
 		}
-		updated, err := r.projects.UpdateProjectTask(accountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
-			t.Status = "in_progress"
-			t.ActionNeeded = ""
-			if len(t.WhatDidDo) == 0 {
-				t.WhatDidDo = []string{"Mission approved by user", "Worktree session activated"}
-			}
-			return nil
-		})
+		lifecycle := r.getProjectTaskLifecycleService()
+		if lifecycle == nil {
+			return "", errors.New("project task lifecycle service is not configured")
+		}
+		approvedTask, err := lifecycle.ApproveProjectTask(ctx, p, projectID, taskID)
 		if err != nil {
-			return "", err
+			return "", fmt.Errorf("approve task: %w", err)
 		}
-		if r.projectTaskDeployer != nil {
-			if err := r.projectTaskDeployer(accountScopeID, projectID, taskID); err != nil {
-				return "", fmt.Errorf("deploy task: %w", err)
-			}
+		freshTask, found, err := r.projects.GetProjectTask(accountScopeID, projectID, taskID)
+		if err == nil && found && freshTask != nil {
+			approvedTask = freshTask
 		}
-		response["task"] = updated
+		response["task"] = approvedTask
+		response["task_id"] = approvedTask.ID
+		response["status"] = approvedTask.Status
+		if approvedTask.SessionID != "" {
+			response["session_id"] = approvedTask.SessionID
+		}
+		if approvedTask.WorktreeBranch != "" {
+			response["worktree_branch"] = approvedTask.WorktreeBranch
+		}
+		if approvedTask.WorkspacePath != "" {
+			response["workspace_path"] = approvedTask.WorkspacePath
+		}
+		if approvedTask.LastError != "" {
+			response["last_error"] = approvedTask.LastError
+		}
+		if approvedTask.Revision > 0 {
+			response["revision"] = approvedTask.Revision
+		}
+		if approvedTask.PlanBinding != nil {
+			response["plan_binding"] = approvedTask.PlanBinding
+		}
+		if approvedTask.TaskProgram != nil {
+			response["task_program"] = approvedTask.TaskProgram
+			response["task_program_id"] = approvedTask.TaskProgramID
+		}
+		if approvedTask.TaskProgramStatus != nil {
+			response["task_program_status"] = approvedTask.TaskProgramStatus
+		}
 
 	case "deploy_task":
 		projectID := strings.TrimSpace(asString(args["project_id"]))
@@ -729,33 +987,67 @@ func (r *Runtime) executeManageProjects(scope WorkspaceScope, args map[string]an
 		if projectID == "" || taskID == "" {
 			return "", errors.New("manage_projects deploy_task requires project_id and task_id")
 		}
-		existingTask, found, _ := r.projects.GetProjectTask(accountScopeID, projectID, taskID)
+		lifecycle := r.getProjectTaskLifecycleService()
+		if lifecycle == nil {
+			return "", errors.New("project task deployer service is not configured")
+		}
+		existingTask, found, err := r.projects.GetProjectTask(accountScopeID, projectID, taskID)
+		if err != nil {
+			return "", err
+		}
 		if !found || existingTask == nil {
 			return "", errors.New("task not found")
 		}
-		if existingTask.Status == "in_progress" || existingTask.Status == "completed" {
+		if existingTask.Status == "completed" {
 			response["task"] = existingTask
-			response["status"] = "already_deployed"
+			response["status"] = "already_completed"
 			raw, _ := json.Marshal(response)
 			return string(raw), nil
+		}
+		if existingTask.Status == "rejected" {
+			return "", errors.New("cannot deploy rejected task")
 		}
 		if err := existingTask.Validate(); err != nil {
 			return "", fmt.Errorf("task validation failed: %w", err)
 		}
-		updated, err := r.projects.UpdateProjectTask(accountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
-			t.Status = "in_progress"
-			t.ActionNeeded = ""
-			return nil
-		})
+		if err := lifecycle.DeployProjectTask(ctx, p, projectID, taskID); err != nil {
+			return "", fmt.Errorf("deploy project task: %w", err)
+		}
+		freshTask, found, err := r.projects.GetProjectTask(accountScopeID, projectID, taskID)
 		if err != nil {
 			return "", err
 		}
-		if r.projectTaskDeployer != nil {
-			if err := r.projectTaskDeployer(accountScopeID, projectID, taskID); err != nil {
-				return "", fmt.Errorf("deploy project task: %w", err)
-			}
+		if !found || freshTask == nil {
+			return "", fmt.Errorf("task %q not found after deployment", taskID)
 		}
-		response["task"] = updated
+		response["task"] = freshTask
+		response["task_id"] = freshTask.ID
+		response["status"] = freshTask.Status
+		if freshTask.SessionID != "" {
+			response["session_id"] = freshTask.SessionID
+		}
+		if freshTask.WorktreeBranch != "" {
+			response["worktree_branch"] = freshTask.WorktreeBranch
+		}
+		if freshTask.WorkspacePath != "" {
+			response["workspace_path"] = freshTask.WorkspacePath
+		}
+		if freshTask.LastError != "" {
+			response["last_error"] = freshTask.LastError
+		}
+		if freshTask.Revision > 0 {
+			response["revision"] = freshTask.Revision
+		}
+		if freshTask.PlanBinding != nil {
+			response["plan_binding"] = freshTask.PlanBinding
+		}
+		if freshTask.TaskProgram != nil {
+			response["task_program"] = freshTask.TaskProgram
+			response["task_program_id"] = freshTask.TaskProgramID
+		}
+		if freshTask.TaskProgramStatus != nil {
+			response["task_program_status"] = freshTask.TaskProgramStatus
+		}
 
 	case "refine_task":
 		projectID := strings.TrimSpace(asString(args["project_id"]))
@@ -853,6 +1145,10 @@ func (r *Runtime) executeManageProjects(scope WorkspaceScope, args map[string]an
 		if err != nil {
 			return "", err
 		}
+		freshTask, found, err := r.projects.GetProjectTask(accountScopeID, projectID, taskID)
+		if err == nil && found && freshTask != nil {
+			updated = freshTask
+		}
 		response["task"] = updated
 		response["status"] = "refined"
 
@@ -865,6 +1161,48 @@ func (r *Runtime) executeManageProjects(scope WorkspaceScope, args map[string]an
 		return "", err
 	}
 	return string(raw), nil
+}
+
+func parseSessionPlanDocument(rawDoc any) (*pebblestore.SessionPlanDocument, error) {
+	if rawDoc == nil {
+		return nil, nil
+	}
+	var docBytes []byte
+	switch v := rawDoc.(type) {
+	case string:
+		v = strings.TrimSpace(v)
+		if v == "" {
+			return nil, nil
+		}
+		docBytes = []byte(v)
+	case *pebblestore.SessionPlanDocument:
+		if v == nil {
+			return nil, nil
+		}
+		if err := sessionruntime.ValidateExecutablePlanDocument(v); err != nil {
+			return nil, err
+		}
+		return v, nil
+	case pebblestore.SessionPlanDocument:
+		if err := sessionruntime.ValidateExecutablePlanDocument(&v); err != nil {
+			return nil, err
+		}
+		return &v, nil
+	default:
+		var err error
+		docBytes, err = json.Marshal(rawDoc)
+		if err != nil {
+			return nil, fmt.Errorf("marshal plan document: %w", err)
+		}
+	}
+	var doc pebblestore.SessionPlanDocument
+	if err := json.Unmarshal(docBytes, &doc); err != nil {
+		return nil, fmt.Errorf("invalid plan document: %w", err)
+	}
+	if err := sessionruntime.ValidateExecutablePlanDocument(&doc); err != nil {
+		return nil, fmt.Errorf("invalid plan document: %w", err)
+	}
+	return &doc, nil
 }
 
 func parseTaskProgram(rawProg any) (*pebblestore.TaskProgramDefinition, error) {
@@ -885,7 +1223,6 @@ func parseTaskProgram(rawProg any) (*pebblestore.TaskProgramDefinition, error) {
 	if err := json.Unmarshal(progBytes, &tp); err != nil {
 		return nil, fmt.Errorf("invalid task_program definition: %w", err)
 	}
-	// Synthesize default stage if jobs are provided without explicit stages
 	if len(tp.Stages) == 0 && len(tp.Jobs) > 0 {
 		stageSet := make(map[string]bool)
 		for i := range tp.Jobs {
