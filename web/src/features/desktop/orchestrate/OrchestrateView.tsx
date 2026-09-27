@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useCallback } from 'react'
+import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
 import { useVideoTaskDefault } from './use-video-task-default'
 import { useQuery } from '@tanstack/react-query'
 import { getUISettings } from '../settings/swarm/queries/get-ui-settings'
@@ -77,6 +77,7 @@ import type { QuickRouteMode } from '../tools/media-library/media-viewer-modal'
 import { ORCHESTRATE_THEMES } from './orchestrate-themes'
 import { listStorageWorkers, activateStorageWorker } from '../storage/api'
 import type { StorageDiscoveredWorker } from '../storage/types'
+import { desktopProjects, useDesktopProject } from '../runtime/desktop-projects'
 import {
   DeployedWorker,
   MediaDeliverable,
@@ -544,6 +545,41 @@ function DeliverableThumbnail({
 }
 
 /**
+ * Leaf component isolating the 1-second elapsed timer updater
+ * to prevent whole MinimalTaskCard re-rendering every second.
+ */
+function TaskElapsedTimer({
+  isRunning,
+  startedAt,
+  createdAt,
+  fallbackElapsed,
+}: {
+  isRunning: boolean
+  startedAt?: number
+  createdAt?: number
+  fallbackElapsed?: string
+}) {
+  const [now, setNow] = useState(() => Date.now())
+
+  useEffect(() => {
+    if (!isRunning) return
+    const interval = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(interval)
+  }, [isRunning])
+
+  if (isRunning) {
+    const start = startedAt || createdAt
+    if (!start) return <span>{fallbackElapsed || 'Running...'}</span>
+    const totalSec = Math.max(0, Math.floor((now - start) / 1000))
+    const mins = Math.floor(totalSec / 60)
+    const secs = totalSec % 60
+    return <span>{`${mins}:${secs.toString().padStart(2, '0')}`}</span>
+  }
+
+  return <span>{fallbackElapsed || 'Just now'}</span>
+}
+
+/**
  * Minimal Task Card: Clean, technical, outcome-focused task card
  * Free of highlight gradients and pill badges. Displays "Action Needed",
  * worktree/unmerged git status, and "What did it do?" vs "What's not done yet?".
@@ -621,7 +657,6 @@ function MinimalTaskCard({
   const [refineFeedback, setRefineFeedback] = useState('')
   const [isReopenOpen, setIsReopenOpen] = useState(false)
   const [reopenFeedback, setReopenFeedback] = useState('')
-  const [now, setNow] = useState(Date.now())
   const isRunning = task.status === 'running' || task.status === 'in_progress'
   const isNeedsReview = task.status === 'needs_review'
   const isCompleted = task.status === 'completed'
@@ -659,25 +694,6 @@ function MinimalTaskCard({
   const runningJobsCount = programJobs.filter((j: any) => j.state === 'running').length
   const conflictJobsCount = programJobs.filter((j: any) => j.state === 'conflict').length
   const totalJobsCount = programJobs.length
-
-  // Dynamic timer updater: ticks every second when running
-  useEffect(() => {
-    if (!isRunning) return
-    const interval = setInterval(() => setNow(Date.now()), 1000)
-    return () => clearInterval(interval)
-  }, [isRunning])
-
-  const formattedTimer = useMemo(() => {
-    if (isRunning) {
-      const start = task.startedAt || task.createdAt
-      if (!start) return task.elapsed || 'Running...'
-      const totalSec = Math.max(0, Math.floor((now - start) / 1000))
-      const mins = Math.floor(totalSec / 60)
-      const secs = totalSec % 60
-      return `${mins}:${secs.toString().padStart(2, '0')}`
-    }
-    return task.elapsed || 'Just now'
-  }, [isRunning, now, task.startedAt, task.createdAt, task.elapsed])
 
   const variantSlots = useMemo(() => {
     const count =
@@ -879,7 +895,12 @@ function MinimalTaskCard({
 
           <span className="font-mono text-[10px] text-slate-400 flex items-center gap-1">
             {isRunning && <Timer size={10} className="text-blue-400 animate-spin" />}
-            <span>{formattedTimer}</span>
+            <TaskElapsedTimer
+              isRunning={isRunning}
+              startedAt={task.startedAt}
+              createdAt={task.createdAt}
+              fallbackElapsed={task.elapsed}
+            />
           </span>
 
           {task.sessionId && (
@@ -2400,19 +2421,68 @@ export function OrchestrateView({
   const [isActivating, setIsActivating] = useState(false)
   const [onboardingContext, setOnboardingContext] = useState('')
 
-  // Live Pebble V3 cache state
-  const sessionsById = useDesktopV3CacheSelector((s) => s.sessionsById)
-  const plansBySession = useDesktopV3CacheSelector((s) => s.plansBySession)
-  const liveRunsBySession = useDesktopV3CacheSelector((s) => s.liveRunsBySession)
-  const currentRunIntentBySession = useDesktopV3CacheSelector((s) => s.currentRunIntentBySession)
-  const sessionViewsById = useDesktopV3CacheSelector((s) => s.sessionViewsById)
+  // Canonical Desktop Projects runtime state
+  const projectState = useDesktopProject(selectedProjectId)
+  const tasks = projectState?.tasks ?? []
+  const uploadedMedia = projectState?.media ?? []
+  const projectTasksError = projectState?.error
+
+  const taskSessionIdsKey = useMemo(() => {
+    const set = new Set<string>()
+    for (const t of tasks) {
+      if (t.sessionId) set.add(t.sessionId)
+    }
+    return Array.from(set).sort().join(',')
+  }, [tasks])
+
+  const liveTaskSessionsData = useDesktopV3CacheSelector(
+    (state) => {
+      const ids = taskSessionIdsKey ? taskSessionIdsKey.split(',').filter(Boolean) : []
+      const result: Record<
+        string,
+        {
+          sessionRecord?: (typeof state.sessionsById)[string]
+          view?: (typeof state.sessionViewsById)[string]
+          intent?: (typeof state.currentRunIntentBySession)[string]
+          liveRun?: any
+          planRecord?: (typeof state.plansBySession)[string]
+        }
+      > = {}
+      for (const sid of ids) {
+        const intent = state.currentRunIntentBySession?.[sid]
+        result[sid] = {
+          sessionRecord: state.sessionsById[sid],
+          view: state.sessionViewsById?.[sid],
+          intent,
+          liveRun: intent?.run_id ? state.liveRunsBySession?.[sid]?.[intent.run_id] : undefined,
+          planRecord: state.plansBySession?.[sid],
+        }
+      }
+      return result
+    },
+    (prev, next) => {
+      const prevKeys = Object.keys(prev)
+      const nextKeys = Object.keys(next)
+      if (prevKeys.length !== nextKeys.length) return false
+      for (const k of nextKeys) {
+        const p = prev[k]
+        const n = next[k]
+        if (!p || !n) return false
+        if (p.sessionRecord !== n.sessionRecord) return false
+        if (p.view !== n.view) return false
+        if (p.intent !== n.intent) return false
+        if (p.liveRun !== n.liveRun) return false
+        if (p.planRecord !== n.planRecord) return false
+      }
+      return true
+    }
+  )
 
   // Active Chat Session state (can be executive orchestrator OR a task session)
   const [activeSessionId, setActiveSessionId] = useState<string>('')
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null)
 
-  // Tasks State
-  const [tasks, setTasks] = useState<RunningTask[]>([])
+  // Automations State
   const [automations, setAutomations] = useState<RunningAutomation[]>([])
 
   // Middle canvas layout variant state
@@ -2433,7 +2503,6 @@ export function OrchestrateView({
   const [activeMediaViewerItem, setActiveMediaViewerItem] = useState<MediaLibraryItem | null>(null)
 
   // Uploaded & Tagged Media State
-  const [uploadedMedia, setUploadedMedia] = useState<ProjectTaskMediaRef[]>([])
   const [taggedMedia, setTaggedMedia] = useState<ProjectTaskMediaRef[]>([])
   const [isUploadingMedia, setIsUploadingMedia] = useState<boolean>(false)
   const [isUploadedMediaExpanded, setIsUploadedMediaExpanded] = useState<boolean>(true)
@@ -2522,21 +2591,21 @@ export function OrchestrateView({
   }
 
   const [cloudWorkers, setCloudWorkers] = useState<StorageDiscoveredWorker[]>([])
+  const [cloudWorkersError, setCloudWorkersError] = useState<string | null>(null)
   const [activatingWorkerId, setActivatingWorkerId] = useState<string | null>(null)
 
   const fetchCloudWorkers = useCallback(async () => {
     try {
+      setCloudWorkersError(null)
       const workers = await listStorageWorkers()
       setCloudWorkers(workers)
-    } catch {
-      // ignore
+    } catch (err) {
+      setCloudWorkersError(err instanceof Error ? err.message : 'Failed to discover storage workers')
     }
   }, [])
 
   useEffect(() => {
-    fetchCloudWorkers()
-    const interval = setInterval(fetchCloudWorkers, 8000)
-    return () => clearInterval(interval)
+    void fetchCloudWorkers()
   }, [fetchCloudWorkers])
 
   const handleActivateCloudWorker = async (workerId: string) => {
@@ -2546,6 +2615,7 @@ export function OrchestrateView({
       await fetchCloudWorkers()
     } catch (err) {
       console.error('Failed to activate cloud worker', err)
+      setCloudWorkersError(err instanceof Error ? err.message : 'Failed to activate cloud worker')
     } finally {
       setActivatingWorkerId(null)
     }
@@ -2919,7 +2989,6 @@ export function OrchestrateView({
           if (loaded[0].primarySessionId) {
             setActiveSessionId(loaded[0].primarySessionId)
           }
-          fetchProjectTasks(loaded[0].id)
         } else {
           if (!cancelled) {
             setProjects([])
@@ -2995,107 +3064,12 @@ export function OrchestrateView({
     }
   }, [])
 
-  // Fetch project tasks for a given project from Pebble
-  const fetchProjectTasks = useCallback((projectId: string) => {
-    if (!projectId) return Promise.resolve()
-    return requestJson<{ tasks?: any[] }>(`/v3/projects/${projectId}/tasks`)
-      .then((res) => {
-        const backendTasks: RunningTask[] = (res.tasks || []).map((t) => ({
-          id: t.id,
-          title: t.title,
-          subtitle: t.description || `Autonomous execution unit for ${t.agent || 'coder'}`,
-          agentType: (t.agent === 'designer' || t.agent === 'finder' || t.agent === 'video' || t.agent === 'swarm' || t.agent === 'image' || t.agent === 'plan' || t.agent === 'sound' || t.agent === 'audio' ? t.agent : 'coder') as any,
-          status: (t.status === 'in_progress' ? 'running' : t.status) || 'queued',
-          outcomeType: t.outcome_type,
-          workspaceTarget: t.workspace_path || t.project_id,
-          workspacePath: t.workspace_path,
-          worktreeBranch: t.worktree_branch,
-          worktreeName: t.worktree_name || (t.worktree_branch ? t.worktree_branch.replace(/^agent\//, '').replace(/^worktree\//, '') : undefined),
-          baseBranch: t.base_branch || 'main',
-          unintegratedCommits: t.unintegrated_commits ?? 0,
-          behindCommits: t.behind_commits ?? 0,
-          isIntegrated: !!t.is_integrated,
-          diffSummary: t.diff_summary ?? '',
-          isDirty: !!t.is_dirty,
-          dirtyCount: t.dirty_count ?? 0,
-          syncWarning: t.sync_warning,
-          actionNeeded: t.action_needed,
-          whatDidDo: t.what_did_do,
-          whatNotDone: t.what_not_done,
-          workspacesInvolved: t.workspaces_involved || (t.workspace_path ? [t.workspace_path] : []),
-          planSummary: t.plan_summary,
-          fullPlanMarkdown: t.full_plan_markdown,
-          tier: t.tier || 'direct',
-          revision: t.revision || 1,
-          lastError: t.last_error,
-          feedbackHistory: t.feedback_history,
-          aspectRatio: t.aspect_ratio,
-          resolution: t.resolution,
-          model: t.model,
-          featureSize: t.feature_size || t.featureSize,
-          feature_size: t.feature_size || t.featureSize,
-          durationSeconds: t.duration_seconds,
-          description: t.description,
-          variantCount: t.variant_count,
-          scenes: t.scenes,
-          soundtrack: t.soundtrack,
-          autoApprove: t.auto_approve,
-          routerAlert: t.router_alert,
-          elapsed: t.created_at ? `${Math.max(1, Math.round((Date.now() - t.created_at) / 60000))}m` : 'Just now',
-          workerName: t.worker_name || `@${t.agent || 'Coder'} Worker`,
-          priority: 'high',
-          sessionId: t.session_id,
-          createdAt: t.created_at,
-          stageIndex: t.current_stage_index,
-          totalStages: t.pipeline_stages?.length || 4,
-          stepTimeline: (t.pipeline_stages || ['Inspect', 'Implement', 'Verify', 'Review']).map((st: string, idx: number) => ({
-            step: idx + 1,
-            label: st,
-            status: idx < (t.current_stage_index || 0) ? 'complete' : (idx === t.current_stage_index ? 'processing' : 'pending'),
-          })),
-          deliverables: (t.deliverables || []).map((d: any) => ({
-            id: d.id,
-            title: d.title,
-            type: d.kind || 'image',
-            status: d.status || 'pending',
-            duration: d.duration || '0:15',
-            previewUrl: d.media_url || d.preview_url || (d.thumbnail && (d.thumbnail.startsWith('data:') || d.thumbnail.startsWith('http') || d.thumbnail.startsWith('/')) ? d.thumbnail : undefined),
-            mediaUrl: d.media_url,
-            thumbnailType: (d.thumbnail || 'cyber_lattice') as any,
-            videoAspect: d.aspect_ratio || d.aspectRatio || undefined,
-            prompt: t.subtitle || t.title,
-            model: d.model || undefined,
-            aspectRatio: d.aspect_ratio || d.aspectRatio || undefined,
-            resolution: d.resolution || undefined,
-            durationSeconds: d.duration_seconds || d.durationSeconds || undefined,
-            videoProvenance: d.video_provenance || d.videoProvenance,
-            createdAt: d.created_at ? (isNaN(new Date(d.created_at).getTime()) ? new Date().toISOString() : new Date(d.created_at).toISOString()) : (d.createdAt || new Date().toISOString()),
-            author: t.worker_name || 'Orchestrator',
-            parentDeliverableId: d.parent_deliverable_id || d.parentDeliverableId,
-            sourceMediaRef: d.source_media_ref || d.sourceMediaRef,
-          })),
-          attachedMedia: t.attached_media,
-          taskProgram: t.task_program || t.taskProgram,
-          task_program: t.task_program || t.taskProgram,
-          taskProgramId: t.task_program_id || t.taskProgramId,
-          task_program_id: t.task_program_id || t.taskProgramId,
-          taskProgramStatus: t.task_program_status || t.taskProgramStatus,
-          task_program_status: t.task_program_status || t.taskProgramStatus,
-          subtasks: [
-            { id: '1', title: 'Verify task scope', completed: true },
-            { id: '2', title: 'Execute implementation', completed: t.status === 'completed' || t.status === 'needs_review' },
-          ],
-        }))
-        setMediaSyncError(null)
-        setTasks(backendTasks)
-        if (backendTasks.length > 0 && !selectedTaskId) {
-          setSelectedTaskId(backendTasks[0].id)
-        }
-      })
-      .catch((error) => {
-        setMediaSyncError(error instanceof Error ? error.message : 'Live task updates are unavailable.')
-      })
-  }, [selectedTaskId])
+  // Auto-select first task if none selected or if selected task no longer exists
+  useEffect(() => {
+    if (tasks.length > 0 && (!selectedTaskId || !tasks.some((t) => t.id === selectedTaskId))) {
+      setSelectedTaskId(tasks[0].id)
+    }
+  }, [tasks, selectedTaskId])
 
   const [mediaSyncError, setMediaSyncError] = useState<string | null>(null)
   const handleUpdateTaskModel = useCallback(
@@ -3118,12 +3092,12 @@ export function OrchestrateView({
         })
         queryClient.invalidateQueries({ queryKey: ['projects', selectedProject.id, 'tasks', taskId, 'model-preview'] })
         queryClient.invalidateQueries({ queryKey: ['projects', selectedProject.id, 'tasks'] })
-        fetchProjectTasks(selectedProject.id)
+        desktopProjects.invalidate(selectedProject.id)
       } catch (err) {
         console.error('Failed to update task model:', err)
       }
     },
-    [selectedProject?.id, fetchProjectTasks, queryClient]
+    [selectedProject?.id, queryClient]
   )
 
   const handleApplyTaskModelFromControl = useCallback(
@@ -3177,93 +3151,64 @@ export function OrchestrateView({
     setAgentSettingsOpenSignal((s) => s + 1)
   }, [taskIntent, featureSize, newTaskModelOverride])
 
-  // Fetch project uploaded media from Pebble
-  const fetchProjectMedia = useCallback((projectId: string) => {
-    if (!projectId) return Promise.resolve()
-    return requestJson<{ media?: ProjectTaskMediaRef[] }>(`/v3/projects/${projectId}/media`)
-      .then((res) => {
-        if (res?.media) {
-          setUploadedMedia(res.media)
-        }
-      })
-      .catch(() => {})
-  }, [])
+  const activeLeasesRef = useRef<Map<string, DesktopV3RealtimeSessionDemandLease>>(new Map())
+  const hydratedSessionsRef = useRef<Set<string>>(new Set())
 
-  // Real-time polling for in-progress tasks, queued/pending tasks, or generating media deliverables
-  const hasActiveTasks = useMemo(() => {
-    return (
-      tasks.some(
-        (t) =>
-          t.status === 'in_progress' ||
-          t.status === 'running' ||
-          t.status === 'queued' ||
-          t.status === 'pending' ||
-          t.deliverables?.some((d) => d.status === 'generating' || d.status === 'pending')
-      ) ||
-      localGenerationJobs.some(
-        (j) => !tasks.some((t) => t.id === j.taskId) && ['submitting', 'queued', 'in_progress', 'running'].includes(j.status)
-      )
-    )
-  }, [tasks, localGenerationJobs])
+  const activeTaskSessionIdsKey = useMemo(() => {
+    const set = new Set<string>()
+    for (const t of tasks) {
+      if (t.sessionId && (t.status === 'running' || t.status === 'in_progress' || t.id === selectedTaskId)) {
+        set.add(t.sessionId)
+      }
+    }
+    return Array.from(set).sort().join(',')
+  }, [tasks, selectedTaskId])
 
+  // Realtime session demand and plan hydration for active tasks (incremental, deduplicated, sorted)
   useEffect(() => {
-    if (!selectedProjectId || !hasActiveTasks) return
-
+    const currentSessionIds = new Set(
+      activeTaskSessionIdsKey ? activeTaskSessionIdsKey.split(',').filter(Boolean) : []
+    )
     let cancelled = false
-    let inFlight = false
 
-    const poll = async () => {
-      if (inFlight || cancelled) return
-      inFlight = true
-      try {
-        await Promise.allSettled([
-          fetchProjectTasks(selectedProjectId),
-          fetchProjectMedia(selectedProjectId),
-        ])
-      } finally {
-        inFlight = false
+    // 1. Remove leases for sessions no longer active
+    for (const [sid, lease] of activeLeasesRef.current.entries()) {
+      if (!currentSessionIds.has(sid)) {
+        lease.release()
+        activeLeasesRef.current.delete(sid)
       }
     }
 
-    const interval = setInterval(() => {
-      void poll()
-    }, 1500)
-
-    // Immediate tick upon entering active task state
-    void poll()
-
-    return () => {
-      cancelled = true
-      clearInterval(interval)
+    // 2. Identify new sessions that need hydration and leases
+    const newSessionIds: string[] = []
+    for (const sid of currentSessionIds) {
+      if (!activeLeasesRef.current.has(sid)) {
+        newSessionIds.push(sid)
+      }
     }
-  }, [selectedProjectId, hasActiveTasks, fetchProjectTasks, fetchProjectMedia])
 
-  // Realtime session demand and plan hydration for active tasks
-  useEffect(() => {
-    const activeSessionIds = tasks
-      .filter((t) => Boolean(t.sessionId && (t.status === 'running' || t.status === 'in_progress' || t.id === selectedTaskId)))
-      .map((t) => t.sessionId!)
+    if (newSessionIds.length === 0) return
 
-    if (activeSessionIds.length === 0) return
-
-    let cancelled = false
-    const leases: DesktopV3RealtimeSessionDemandLease[] = []
-
-    // 1. Hydrate active plans and child cards
-    activeSessionIds.forEach((sid) => {
-      void hydrateDesktopV3ChildCard(sid, { activePlan: true, permissionSummary: true }).catch(() => undefined)
+    // 3. Hydrate NEW sessions only
+    newSessionIds.forEach((sid) => {
+      if (!hydratedSessionsRef.current.has(sid)) {
+        hydratedSessionsRef.current.add(sid)
+        void hydrateDesktopV3ChildCard(sid, { activePlan: true, permissionSummary: true }).catch(() => undefined)
+      }
     })
 
-    // 2. Acquire realtime demand leases so live events stream
+    // 4. Acquire realtime demand leases so live events stream for NEW sessions only
     void requireDesktopV3RealtimeControllerReady()
       .then((controller) => {
         if (cancelled) return
-        activeSessionIds.forEach((sid) => {
-          const ownerKey = `orchestrate-task:${sid}`
-          try {
-            leases.push(controller.acquireSessionDemand(ownerKey, sid))
-          } catch {
-            // ignore
+        newSessionIds.forEach((sid) => {
+          if (!activeLeasesRef.current.has(sid) && currentSessionIds.has(sid)) {
+            const ownerKey = `orchestrate-task:${sid}`
+            try {
+              activeLeasesRef.current.set(sid, controller.acquireSessionDemand(ownerKey, sid))
+            } catch {
+              // ignore
+            }
           }
         })
       })
@@ -3271,9 +3216,19 @@ export function OrchestrateView({
 
     return () => {
       cancelled = true
-      leases.forEach((lease) => lease.release())
     }
-  }, [tasks, selectedTaskId])
+  }, [activeTaskSessionIdsKey])
+
+  // Cleanup all leases on unmount
+  useEffect(() => {
+    return () => {
+      for (const lease of activeLeasesRef.current.values()) {
+        lease.release()
+      }
+      activeLeasesRef.current.clear()
+      hydratedSessionsRef.current.clear()
+    }
+  }, [])
 
   // Helper to ensure an active orchestrator session exists for a project
   const ensureOrchestratorSession = useCallback(async (project: ProjectSummary): Promise<string | null> => {
@@ -3317,12 +3272,11 @@ export function OrchestrateView({
     return null
   }, [])
 
-  // Synchronize active orchestrator session and project tasks with selected project
+  // Synchronize active orchestrator session with selected project
   useEffect(() => {
     if (!selectedProject || isOnboardingActive) return
-    fetchProjectTasks(selectedProject.id)
     void ensureOrchestratorSession(selectedProject)
-  }, [selectedProject?.id, isOnboardingActive, fetchProjectTasks, ensureOrchestratorSession])
+  }, [selectedProject?.id, isOnboardingActive, ensureOrchestratorSession])
 
   // Task selection & Per-Task Session Switching
   const handleSelectTask = (task: RunningTask) => {
@@ -3408,13 +3362,14 @@ export function OrchestrateView({
         )
 
         const savedMedia = res?.media || newMedia
-        setUploadedMedia((prev) => [...prev, savedMedia])
+        desktopProjects.setOptimisticMedia(selectedProject.id, (prev) => [...prev, savedMedia])
         if (taskIntent === 'video') {
           // Exactly one initial image reference for video generation
           setTaggedMedia([savedMedia])
         } else {
           setTaggedMedia((prev) => [...prev, savedMedia])
         }
+        desktopProjects.invalidate(selectedProject.id)
       }
     } catch (err) {
       console.warn('Failed to upload media:', err)
@@ -3429,8 +3384,9 @@ export function OrchestrateView({
       await requestJson(`/v3/projects/${selectedProject.id}/media/${mediaId}`, {
         method: 'DELETE',
       })
-      setUploadedMedia((prev) => prev.filter((m) => m.id !== mediaId))
+      desktopProjects.setOptimisticMedia(selectedProject.id, (prev) => prev.filter((m) => m.id !== mediaId))
       setTaggedMedia((prev) => prev.filter((m) => m.id !== mediaId))
+      desktopProjects.invalidate(selectedProject.id)
     } catch (err) {
       console.warn('Failed to delete uploaded media:', err)
     }
@@ -3467,11 +3423,12 @@ export function OrchestrateView({
         }
       )
       const savedMedia = res?.media || newMedia
-      setUploadedMedia((prev) => [...prev, savedMedia])
+      desktopProjects.setOptimisticMedia(selectedProject.id, (prev) => [...prev, savedMedia])
       setTaggedMedia((prev) => [...prev, savedMedia])
       setIsPasteDocOpen(false)
       setPastedDocTitle('')
       setPastedDocContent('')
+      desktopProjects.invalidate(selectedProject.id)
     } catch (err) {
       console.warn('Failed to save pasted document:', err)
     }
@@ -3722,7 +3679,7 @@ export function OrchestrateView({
                 : j
             )
           )
-          await fetchProjectTasks(selectedProject.id)
+          desktopProjects.invalidate(selectedProject.id)
           if (!activeMediaViewerItem && !showFullMediaCenter && res.task.session_id) {
             setActiveSessionId(res.task.session_id)
             setActiveTaskId(res.task.id)
@@ -3818,32 +3775,48 @@ export function OrchestrateView({
     return jobs
   }, [tasks, localGenerationJobs])
 
-  // Derive real active workers from V3 sessions
-  const deployedWorkers = useMemo<DeployedWorker[]>(() => {
-    const list: DeployedWorker[] = []
-    const allRecords = Object.values(sessionsById)
-    for (const rec of allRecords) {
-      if (rec.kind !== 'full' || !rec.session) continue
-      const sess = rec.session
-      const isActive = !!(sess.lifecycle as any)?.active
-      const agent = (sess as any).agent_name || 'swarm'
-      if (isActive || agent !== 'swarm' || (sess.message_count ?? 0) > 1) {
-        list.push({
-          id: sess.id,
-          name: sess.title || `@${agent}`,
-          role: `${agent.toUpperCase()} Agent • ${sess.workspace_name || 'Workspace'}`,
-          triggerKind: 'trigger',
-          scheduleLabel: isActive ? 'Executing Live Run' : 'Idle / Ready',
-          activeJobsCount: isActive ? 1 : 0,
-          completedJobsCount: (sess.message_count ?? 0) > 2 ? 1 : 0,
-          status: isActive ? 'active' : 'idle',
-          currentJobTitle: sess.title,
-          assignedTaskIds: [],
-        })
+  // Derive real active workers from V3 sessions with equality check to prevent re-render churn
+  const deployedWorkers = useDesktopV3CacheSelector(
+    (state) => {
+      const list: DeployedWorker[] = []
+      const allRecords = Object.values(state.sessionsById)
+      for (const rec of allRecords) {
+        if (rec.kind !== 'full' || !rec.session) continue
+        const sess = rec.session
+        const isActive = !!(sess.lifecycle as any)?.active
+        const agent = (sess as any).agent_name || 'swarm'
+        if (isActive || agent !== 'swarm' || (sess.message_count ?? 0) > 1) {
+          list.push({
+            id: sess.id,
+            name: sess.title || `@${agent}`,
+            role: `${agent.toUpperCase()} Agent • ${sess.workspace_name || 'Workspace'}`,
+            triggerKind: 'trigger',
+            scheduleLabel: isActive ? 'Executing Live Run' : 'Idle / Ready',
+            activeJobsCount: isActive ? 1 : 0,
+            completedJobsCount: (sess.message_count ?? 0) > 2 ? 1 : 0,
+            status: isActive ? 'active' : 'idle',
+            currentJobTitle: sess.title,
+            assignedTaskIds: [],
+          })
+        }
       }
+      return list.slice(0, 12)
+    },
+    (prev, next) => {
+      if (prev.length !== next.length) return false
+      return prev.every((p, i) => {
+        const n = next[i]
+        return (
+          p.id === n.id &&
+          p.status === n.status &&
+          p.name === n.name &&
+          p.scheduleLabel === n.scheduleLabel &&
+          p.activeJobsCount === n.activeJobsCount &&
+          p.completedJobsCount === n.completedJobsCount
+        )
+      })
     }
-    return list.slice(0, 12)
-  }, [sessionsById])
+  )
 
   // Model Change Handlers with UI Settings Persistence & Task Override
   const handleSetImageAsDefault = async (newModel: string) => {
@@ -3984,7 +3957,7 @@ export function OrchestrateView({
         }),
       })
       if (res?.task) {
-        fetchProjectTasks(selectedProject.id)
+        desktopProjects.invalidate(selectedProject.id)
         if (res.task.session_id) {
           setActiveSessionId(res.task.session_id)
           setActiveTaskId(res.task.id)
@@ -4003,7 +3976,7 @@ export function OrchestrateView({
   const handleApproveTask = async (taskId: string) => {
     if (!selectedProject?.id) return
     // Optimistic loading state: immediately mark task as in_progress
-    setTasks((prev) =>
+    desktopProjects.setOptimisticTasks(selectedProject.id, (prev) =>
       prev.map((t) =>
         t.id === taskId
           ? {
@@ -4018,7 +3991,7 @@ export function OrchestrateView({
       await requestJson(`/v3/projects/${selectedProject.id}/tasks/${taskId}/approve`, {
         method: 'POST',
       })
-      fetchProjectTasks(selectedProject.id)
+      desktopProjects.invalidate(selectedProject.id)
       const approvedTask = tasks.find((t) => t.id === taskId)
       if (approvedTask?.sessionId) {
         setActiveSessionId(approvedTask.sessionId)
@@ -4026,7 +3999,7 @@ export function OrchestrateView({
       }
     } catch (err) {
       console.warn('Approve task failed:', err)
-      fetchProjectTasks(selectedProject.id)
+      desktopProjects.invalidate(selectedProject.id)
     }
   }
 
@@ -4037,7 +4010,7 @@ export function OrchestrateView({
       await requestJson(`/v3/projects/${selectedProject.id}/tasks/${taskId}`, {
         method: 'DELETE',
       })
-      fetchProjectTasks(selectedProject.id)
+      desktopProjects.invalidate(selectedProject.id)
       if (activeTaskId === taskId) {
         handleBackToOrchestrator()
       }
@@ -4053,7 +4026,7 @@ export function OrchestrateView({
       await requestJson(`/v3/projects/${selectedProject.id}/tasks/${taskId}/integrate`, {
         method: 'POST',
       })
-      fetchProjectTasks(selectedProject.id)
+      desktopProjects.invalidate(selectedProject.id)
     } catch (err) {
       console.warn('Integrate task failed:', err)
     }
@@ -4071,7 +4044,7 @@ export function OrchestrateView({
           error_summary: errorSummary?.trim() || undefined,
         }),
       })
-      fetchProjectTasks(selectedProject.id)
+      desktopProjects.invalidate(selectedProject.id)
     } catch (err) {
       console.warn('Refine task failed:', err)
     }
@@ -4080,7 +4053,7 @@ export function OrchestrateView({
   // Reopen task back to in_progress
   const handleReopenTask = async (taskId: string, feedback?: string) => {
     if (!selectedProject?.id) return
-    setTasks((prev) =>
+    desktopProjects.setOptimisticTasks(selectedProject.id, (prev) =>
       prev.map((t) =>
         t.id === taskId
           ? {
@@ -4098,7 +4071,7 @@ export function OrchestrateView({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ feedback }),
       })
-      fetchProjectTasks(selectedProject.id)
+      desktopProjects.invalidate(selectedProject.id)
       const reopenedTask = tasks.find((t) => t.id === taskId)
       if (reopenedTask?.sessionId) {
         setActiveSessionId(reopenedTask.sessionId)
@@ -4107,14 +4080,14 @@ export function OrchestrateView({
       }
     } catch (err) {
       console.warn('Reopen task failed:', err)
-      fetchProjectTasks(selectedProject.id)
+      desktopProjects.invalidate(selectedProject.id)
     }
   }
 
   // Complete task explicitly
   const handleCompleteTask = async (taskId: string) => {
     if (!selectedProject?.id) return
-    setTasks((prev) =>
+    desktopProjects.setOptimisticTasks(selectedProject.id, (prev) =>
       prev.map((t) =>
         t.id === taskId
           ? { ...t, status: 'completed' as const }
@@ -4127,10 +4100,10 @@ export function OrchestrateView({
       await requestJson(`/v3/projects/${selectedProject.id}/tasks/${taskId}/${action}`, {
         method: 'POST',
       })
-      fetchProjectTasks(selectedProject.id)
+      desktopProjects.invalidate(selectedProject.id)
     } catch (err) {
       console.warn('Complete task failed:', err)
-      fetchProjectTasks(selectedProject.id)
+      desktopProjects.invalidate(selectedProject.id)
     }
   }
 
@@ -4143,10 +4116,10 @@ export function OrchestrateView({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ job_id: jobId, feedback }),
       })
-      fetchProjectTasks(selectedProject.id)
+      desktopProjects.invalidate(selectedProject.id)
     } catch (err) {
       console.warn('Redeploy job failed:', err)
-      fetchProjectTasks(selectedProject.id)
+      desktopProjects.invalidate(selectedProject.id)
     }
   }
 
@@ -4156,12 +4129,13 @@ export function OrchestrateView({
       if (!task.sessionId) {
         return task
       }
-      const record = sessionsById[task.sessionId]
+      const data = liveTaskSessionsData[task.sessionId]
+      const record = data?.sessionRecord
       const sess = record?.kind === 'full' ? record.session : undefined
-      const view = sessionViewsById?.[task.sessionId]
-      const intent = currentRunIntentBySession?.[task.sessionId]
-      const liveRun = intent?.run_id ? liveRunsBySession?.[task.sessionId]?.[intent.run_id] : undefined
-      const planRecord = plansBySession[task.sessionId] as any
+      const view = data?.view
+      const intent = data?.intent
+      const liveRun = data?.liveRun
+      const planRecord = data?.planRecord as any
       const planDoc = planRecord?.document
 
       const lifecycle = sess?.lifecycle as any
@@ -4286,7 +4260,7 @@ export function OrchestrateView({
         elapsedMs,
       }
     })
-  }, [tasks, sessionsById, plansBySession, liveRunsBySession, currentRunIntentBySession, sessionViewsById])
+  }, [tasks, liveTaskSessionsData])
 
   // Filtered tasks
   const filteredTasks = useMemo(() => {
@@ -4312,6 +4286,7 @@ export function OrchestrateView({
     e?.stopPropagation()
     try {
       await requestJson(`/v3/projects/${projectId}`, { method: 'DELETE' })
+      desktopProjects.invalidate(projectId)
       setProjects((prev) => {
         const next = prev.filter((p) => p.id !== projectId)
         if (selectedProjectId === projectId) {
@@ -4320,7 +4295,6 @@ export function OrchestrateView({
             if (next[0].primarySessionId) {
               setActiveSessionId(next[0].primarySessionId)
             }
-            fetchProjectTasks(next[0].id)
           } else {
             setSelectedProjectId('')
             setActiveSessionId('')
@@ -4481,7 +4455,6 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
     }
     setIsOnboardingActive(false)
     setIsActivating(false)
-    fetchProjectTasks(newId)
   }
 
   // Count summaries
@@ -5483,6 +5456,18 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
 
             {/* ACTIVE REGISTERED WORKERS SECTION */}
             <div className="space-y-3">
+              {cloudWorkersError && (
+                <div className="p-3 bg-red-950/60 border border-red-500/40 rounded-xl text-xs text-red-300 flex items-center justify-between">
+                  <span>Storage workers error: {cloudWorkersError}</span>
+                  <button
+                    type="button"
+                    onClick={() => void fetchCloudWorkers()}
+                    className="px-2.5 py-1 bg-red-800/60 hover:bg-red-700/60 rounded text-red-100 font-medium transition-colors"
+                  >
+                    Retry
+                  </button>
+                </div>
+              )}
               <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
                 Registered Workers Fleet ({automations.length + cloudWorkers.length})
               </span>
@@ -6034,6 +6019,20 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
 
             {/* MAIN BODY: 5 DISTINCT VARIANTS */}
             <div className="flex-1 overflow-hidden flex flex-col">
+              {projectTasksError && (
+                <div className="mx-3.5 mt-2 p-3 bg-red-950/60 border border-red-500/40 rounded-xl text-xs text-red-300 flex items-center justify-between">
+                  <span>Failed to load project tasks: {projectTasksError}</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (selectedProjectId) desktopProjects.invalidate(selectedProjectId)
+                    }}
+                    className="px-2.5 py-1 bg-red-800/60 hover:bg-red-700/60 rounded text-red-100 font-medium transition-colors"
+                  >
+                    Retry
+                  </button>
+                </div>
+              )}
               {/* ─────────────────────────────────────────────────────────────
                   VARIANT 1: COMPACT MATRIX & EXPANDABLE DRAWER
                  ───────────────────────────────────────────────────────────── */}

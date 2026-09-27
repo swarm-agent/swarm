@@ -1,6 +1,7 @@
 import { reduceDesktopEnvironmentsState } from './desktop-environments-state'
 import { reduceAutomationV2Pages } from './desktop-automation-v2-state'
 import { reduceAutomationPages } from './desktop-automation-state'
+import { reduceDesktopProjectsState } from './desktop-projects-state'
 import type {
   CacheEvent,
   DesktopNotificationSummaryWire,
@@ -66,6 +67,7 @@ export function createEmptyDesktopV3CacheState(surface = 'desktop'): DesktopV3Ca
     automationPages: {},
     automationV2Pages: {},
     environmentsByWorkspace: {},
+    projectsState: {},
     syncScopesById: {},
     realtime: {
       status: 'closed',
@@ -138,6 +140,14 @@ export function desktopV3CacheReducer(state: DesktopV3CacheState, action: Deskto
     case 'automation.invalidate':
     case 'automation.evict':
       return { ...state, automationPages: reduceAutomationPages(state.automationPages, action) }
+    case 'projects.beginLoad':
+    case 'projects.loadSuccess':
+    case 'projects.loadError':
+    case 'projects.updateTasks':
+    case 'projects.updateMedia':
+    case 'projects.invalidate':
+    case 'projects.evict':
+      return { ...state, projectsState: reduceDesktopProjectsState(state.projectsState ?? {}, action) }
     case 'desktopSidebarBootstrap.update':
       state.desktopSidebarBootstrap = {
         ...state.desktopSidebarBootstrap,

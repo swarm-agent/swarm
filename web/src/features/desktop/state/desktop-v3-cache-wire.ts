@@ -35,6 +35,7 @@ const SUPPORTED_REALTIME_KINDS = new Set([
   'workspace.catalog.updated',
   'automation.updated',
   'auth.credentials.updated',
+  'project.updated',
 ])
 
 export function assertDesktopV3RealtimeFrame(frame: RealtimeMessage): void {
@@ -49,7 +50,7 @@ export function assertDesktopV3RealtimeFrame(frame: RealtimeMessage): void {
   if (type && type !== kind) {
     throw new Error(`protocol invalid: realtime kind/type mismatch ${kind}/${type}`)
   }
-  if (kind === 'automation.updated' || kind === 'workspace.catalog.updated' || kind === 'notification.resource.updated' || kind === 'task.lifecycle.updated' || kind === 'auth.credentials.updated') return
+  if (kind === 'automation.updated' || kind === 'workspace.catalog.updated' || kind === 'notification.resource.updated' || kind === 'task.lifecycle.updated' || kind === 'auth.credentials.updated' || kind === 'project.updated') return
 
   const event = frame.event
   const payload = event ? eventPayloadRecord(event) : undefined
@@ -234,6 +235,7 @@ export function realtimeFrameToActions(frame: RealtimeMessage): DesktopV3CacheAc
     case 'automation.updated':
     case 'workspace.catalog.updated':
     case 'auth.credentials.updated':
+    case 'project.updated':
       return [{ type: 'realtime.control', frame }]
 
     case 'workset.session.discovered':
