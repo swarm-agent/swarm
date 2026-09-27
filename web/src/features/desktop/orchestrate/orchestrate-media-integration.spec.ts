@@ -48,7 +48,7 @@ test('OrchestrateView supports tagging media and forwarding to tasks', () => {
   assert.ok(source.includes('toggleTagDeliverable'), 'Must support toggleTagDeliverable')
   assert.ok(source.includes('toggleTagMediaRef'), 'Must support toggleTagMediaRef')
   assert.ok(source.includes('Attached Media'), 'Must render Attached Media bar in deploy modal')
-  assert.ok(source.includes('attached_media: taggedMedia'), 'Must pass attached_media in task deployment payload')
+  assert.ok(source.includes('attached_media: attachedMediaForTask'), 'Must pass attached_media in task deployment payload')
 })
 
 test('OrchestrateView and Task Router scale swarm variants up to 25', () => {
@@ -192,25 +192,22 @@ test('OrchestrateView implements compact 5-tab layout (Feature, Image, Video, So
   assert.ok(!source.includes('<span>Audit / Finder</span>'), 'Must eliminate old "Audit / Finder" text')
 })
 
-test('OrchestrateView supports Single Video (1 prompt, 8s model clip) and Multi-Part Video with optional unapproved soundtrack', () => {
-  // Invariant: Video tab must provide two explicit options: Single Video (1 clip, 1 prompt, direct to model, 8s)
-  // and Multi-Part Video (multi-scene timeline). Single video hides separate soundtrack input and generates
-  // audio within the video model directly. Multi-part video provides an explicit optional toggle for soundtrack,
-  // defaulting to empty/unapproved, and warns if no soundtrack is selected.
+test('OrchestrateView supports single video clips with independent 1-8 clip count and verified duration/aspect controls', () => {
+  // Invariant: Video tab generates direct single video shots with native audio synthesis from 1 prompt,
+  // supporting 1..8 independent clip counts and exact model generation options (aspect ratio, resolution, duration).
+  // False multipart timeline and soundtrack controls are removed from this project flow (Video Studio is separate).
   const sourcePath = path.join(__dirname, 'OrchestrateView.tsx')
   const source = fs.readFileSync(sourcePath, 'utf8')
 
-  assert.ok(source.includes("setVideoType('single')"), 'Must provide Single Video selection')
-  assert.ok(source.includes("setVideoType('multipart')"), 'Must provide Multi-Part Video selection')
-  assert.ok(source.includes('1 continuous clip · Direct model shot'), 'Must describe Single Video mode')
-  assert.ok(source.includes('Multi-scene timeline · Automatic flow'), 'Must describe Multi-Part Video mode')
-  assert.ok(source.includes('Single Video Shot (1 Prompt · 8s Clip)'), 'Must explain single video 1-prompt 8s clip')
-  assert.ok(source.includes('How Multi-Part Video Generation Works'), 'Must explain how multi-part video works')
-  assert.ok(source.includes('Swarm drafts a multi-scene visual blueprint'), 'Must explain blueprint and clip sequencing')
-  assert.ok(source.includes('Add Dedicated Soundtrack Clip'), 'Must offer explicit optional checkbox for soundtrack')
-  assert.ok(source.includes('No Soundtrack Selected (Multi-Part Video)'), 'Must warn when no soundtrack is selected for multi-part video')
-  assert.ok(source.includes("won&apos;t come out good") || source.includes("won't come out good"), 'Must warn that audio cuts abruptly between clips without sound')
-  assert.ok(source.includes("videoType === 'single' ? 8 : videoScenes * 4"), 'Must calculate pricing and duration for 8s single video')
+  assert.ok(source.includes('Single Video Shot (1 Prompt · Direct Model Execution)'), 'Must describe direct single video shot mode')
+  assert.ok(source.includes('Multi-part timelines and audio mixing are handled in Video Studio'), 'Must clarify Video Studio separation')
+  assert.ok(source.includes('Clip Count (1..8)'), 'Must provide independent clip count 1..8 selector')
+  assert.ok(source.includes('videoClipCount'), 'Must manage independent videoClipCount state')
+  assert.ok(source.includes('supportedVideoDurations'), 'Must enforce model-supported durations')
+  assert.ok(source.includes('supportedVideoResolutions'), 'Must enforce model-supported resolutions')
+  assert.ok(source.includes('supportedVideoAspectRatios'), 'Must enforce model-supported aspect ratios')
+  assert.ok(!source.includes("setVideoType('multipart')"), 'Must eliminate multipart video mode from project modal')
+  assert.ok(!source.includes('Add Dedicated Soundtrack Clip'), 'Must eliminate soundtrack clip controls from project modal')
 })
 
 test('OrchestrateView provides 720p, 1080p, and 4k video resolution selection with per-model pricing transparency', () => {
@@ -227,19 +224,17 @@ test('OrchestrateView provides 720p, 1080p, and 4k video resolution selection wi
   assert.ok(source.includes("resolution: taskIntent === 'image' ? imageResolution : taskIntent === 'video' ? videoResolution : undefined") || source.includes("taskIntent === 'video' ? videoResolution : undefined"), 'Must pass resolution in task payload')
 })
 
-test('OrchestrateView provides optional soundtrack input box with sound model detection and non-preapproved defaults', () => {
-  // Invariant: Video modal must NOT pre-approve or pre-fill soundtrack;
-  // it must provide an optional text input box for added sound only when opted into, detect if a sound model is ready,
-  // and offer quick-fill preset chips while defaulting to empty.
+test('OrchestrateView restricts video reference inputs to supported images and preserves prompt text', () => {
+  // Invariant: Video reference inputs must strictly be supported image formats (.png, .jpg, etc.),
+  // accepting at most 1 starting image. Text and documents stay directly in the prompt input without truncation.
   const sourcePath = path.join(__dirname, 'OrchestrateView.tsx')
   const source = fs.readFileSync(sourcePath, 'utf8')
 
-  assert.ok(source.includes("useState<string>('')"), 'Soundtrack state must default to empty')
-  assert.ok(source.includes("useState<boolean>(false)"), 'Include soundtrack state must default to false')
-  assert.ok(source.includes('aria-label="Soundtrack Request"'), 'Must render Soundtrack Request input box')
-  assert.ok(source.includes('hasSupportedSoundModel'), 'Must check hasSupportedSoundModel')
-  assert.ok(source.includes('Sound model ready'), 'Must indicate when supported sound model is ready')
-  assert.ok(source.includes('Presets:'), 'Must render optional preset suggestion chips')
+  assert.ok(source.includes('validateVideoAttachment'), 'Must validate video attachments with validateVideoAttachment')
+  assert.ok(source.includes('Text stays in prompt for video task flow'), 'Must keep text/doc content in prompt input')
+  assert.ok(source.includes('videoMediaToAttach'), 'Must filter video attachments to image-only')
+  assert.ok(source.includes('SUPPORTED_VIDEO_IMAGE_EXTENSIONS'), 'Must enforce supported video image extensions')
+  assert.ok(source.includes('Optional Starting Frame (1 Image)'), 'Must guide user that at most 1 image reference is supported')
 })
 
 test('OrchestrateView provides dedicated Sounds tab with audio model dropdown, duration selector, and settings persistence', () => {
@@ -405,24 +400,75 @@ test('resolveImagePricing dynamically scales total cost across variant count, re
   assert.ok(verifiedPricing.formattedSummary.includes('Verified catalog'))
 })
 
-test('resolveVideoPricing dynamically scales duration costs across single shot and multi-scene sequences', () => {
-  // Invariant: Video resolution and scenes must scale cost dynamically with duration (8s single vs 12s/16s/20s scenes).
-  // 1. Single video 8 seconds at 1080p ($0.08/s)
-  const singleVideo = resolveVideoPricing(undefined, '1080p', 8)
-  assert.equal(singleVideo.rateForClip, 0.64)
-  assert.equal(singleVideo.ratePerSec, 0.08)
-  assert.equal(singleVideo.ratesByResolution['720p'], '$0.40 ($0.05/s)')
-  assert.equal(singleVideo.ratesByResolution['1080p'], '$0.64 ($0.08/s)')
-  assert.equal(singleVideo.ratesByResolution['4k'], '$1.60 ($0.20/s)')
-  assert.ok(singleVideo.formattedSummary.includes('$0.64 Total ($0.08/sec × 8s clip)'))
+test('resolveVideoPricing dynamically scales duration and clip count using verified catalog lines without guessing', () => {
+  // Invariant: Video pricing must be derived strictly from verified catalog billing lines.
+  // When catalog is missing or unverified, prices must be marked unavailable without guessing (.05/.08/.20).
+  // Snapshot examples (Standard .40/.40/.60, Lite .05/.08, Fast .10/.12/.30) scale with duration and clip count.
 
-  // 2. 4-Scene multi-part video (16s) at 720p ($0.05/s)
-  const fourScenes = resolveVideoPricing(undefined, '720p', 16)
-  assert.equal(fourScenes.rateForClip, 0.80)
-  assert.equal(fourScenes.ratesByResolution['720p'], '$0.80 ($0.05/s)')
-  assert.equal(fourScenes.ratesByResolution['1080p'], '$1.28 ($0.08/s)')
-  assert.equal(fourScenes.ratesByResolution['4k'], '$3.20 ($0.20/s)')
-  assert.ok(fourScenes.formattedSummary.includes('$0.80 Total ($0.05/sec × 16s clip)'))
+  // 1. Undefined / unverified catalog returns unavailable without guessing
+  const unpriced = resolveVideoPricing(undefined, '1080p', 8, 1)
+  assert.equal(unpriced.isVerified, false)
+  assert.equal(unpriced.totalPrice, undefined)
+  assert.equal(unpriced.ratesByResolution['720p'], 'Unavailable')
+  assert.equal(unpriced.ratesByResolution['1080p'], 'Unavailable')
+  assert.equal(unpriced.ratesByResolution['4k'], 'Unavailable')
+  assert.ok(unpriced.formattedSummary.includes('Pricing unavailable'))
+
+  // 2. Veo Standard (.40/.40/.60 per second)
+  const standardModel: TaskModalModelOption = {
+    id: 'veo-3.1-generate-preview',
+    label: 'Veo 3.1 Standard',
+    ready: true,
+    pricing: {
+      currency: 'USD',
+      billing: {
+        status: 'verified',
+        lines: [
+          { billable: 'video_output', unit: 'second', price_usd: 0.40, conditions: { resolution: '720p' } },
+          { billable: 'video_output', unit: 'second', price_usd: 0.40, conditions: { resolution: '1080p' } },
+          { billable: 'video_output', unit: 'second', price_usd: 0.60, conditions: { resolution: '4k' } },
+        ],
+      },
+    },
+  }
+  const std1080 = resolveVideoPricing(standardModel, '1080p', 8, 1)
+  assert.equal(std1080.isVerified, true)
+  assert.equal(std1080.ratePerSec, 0.40)
+  assert.equal(std1080.rateForClip, 3.20)
+  assert.equal(std1080.totalPrice, 3.20)
+  assert.equal(std1080.ratesByResolution['720p'], '$3.20 ($0.40/s)')
+  assert.equal(std1080.ratesByResolution['1080p'], '$3.20 ($0.40/s)')
+  assert.equal(std1080.ratesByResolution['4k'], '$4.80 ($0.60/s)')
+  assert.ok(std1080.formattedSummary.includes('$3.20 Total ($0.40/sec × 8s clip)'))
+
+  // 3. Clip count scaling (e.g. 2 clips at 720p 8s = $6.40)
+  const std2Clips = resolveVideoPricing(standardModel, '720p', 8, 2)
+  assert.equal(std2Clips.totalPrice, 6.40)
+  assert.ok(std2Clips.formattedSummary.includes('$6.40 Total ($0.40/sec × 8s × 2 clips)'))
+
+  // 4. Veo Lite (.05/.08, no 4k)
+  const liteModel: TaskModalModelOption = {
+    id: 'veo-3.1-lite-generate-preview',
+    label: 'Veo 3.1 Lite',
+    ready: true,
+    pricing: {
+      currency: 'USD',
+      billing: {
+        status: 'verified',
+        lines: [
+          { billable: 'video_output', unit: 'second', price_usd: 0.05, conditions: { resolution: '720p' } },
+          { billable: 'video_output', unit: 'second', price_usd: 0.08, conditions: { resolution: '1080p' } },
+        ],
+      },
+    },
+  }
+  const lite1080 = resolveVideoPricing(liteModel, '1080p', 8, 1)
+  assert.equal(lite1080.isVerified, true)
+  assert.equal(lite1080.rateForClip, 0.64)
+  assert.equal(lite1080.ratesByResolution['4k'], 'Unavailable')
+  const lite4k = resolveVideoPricing(liteModel, '4k', 8, 1)
+  assert.equal(lite4k.isVerified, false)
+  assert.equal(lite4k.totalPrice, undefined)
 })
 
 test('resolveAudioPricing dynamically scales costs across duration choices', () => {
@@ -436,10 +482,10 @@ test('resolveAudioPricing dynamically scales costs across duration choices', () 
   assert.ok(longTrack.formattedSummary.includes('$0.08 Total (60s audio track)'))
 })
 
-test('OrchestrateView UI renders dynamic cost cues on resolution, variant, and scene buttons', () => {
+test('OrchestrateView UI renders dynamic cost cues on resolution, variant, and clip count buttons', () => {
   // Invariant: The UI must not display static 1-image estimates across options;
   // resolution buttons must render dynamic totals, variant count buttons must display per-variant costs,
-  // and video scene buttons must display calculated sequence costs.
+  // and video clip count buttons must display calculated batch costs.
   const sourcePath = path.join(__dirname, 'OrchestrateView.tsx')
   const source = fs.readFileSync(sourcePath, 'utf8')
 
@@ -455,12 +501,11 @@ test('OrchestrateView UI renders dynamic cost cues on resolution, variant, and s
   assert.ok(source.includes('${imagePricingInfo.totalPrice.toFixed(2)} Total'), 'Banner badge must display dynamic total')
 
   // 4. Video Resolution buttons display duration-scaled cost
-  assert.ok(source.includes('duration = videoType === \'single\' ? 8 : videoScenes * 4'), 'Must compute exact duration for video mode')
-  assert.ok(source.includes('${duration}s at $${unitRate.toFixed(2)}/s'), 'Video resolution button must display duration and rate')
+  assert.ok(source.includes('${videoDuration}s at $${unitRate.toFixed(2)}/s'), 'Video resolution button must display duration and rate')
 
-  // 5. Video Scene buttons display sequence duration and dynamic cost
-  assert.ok(source.includes('const costForScenes = (currentResRate * scenesDuration).toFixed(2)'), 'Scene buttons must calculate cost dynamically')
-  assert.ok(source.includes('{scenesDuration}s · ${costForScenes}'), 'Scene buttons must display duration and calculated price')
+  // 5. Video Clip Count buttons display calculated dynamic cost
+  assert.ok(source.includes('const costForC = videoPricingInfo.rateForClip !== undefined'), 'Clip count buttons must calculate cost dynamically')
+  assert.ok(source.includes('videoClipCount === c'), 'Clip count button must track active selection')
 
   // 6. Sound Duration buttons and banner
   assert.ok(source.includes('const dCost = (d >= 60 ? 0.08 : 0.04).toFixed(2)'), 'Sound duration buttons must show cost')
