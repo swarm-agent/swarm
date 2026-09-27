@@ -31,7 +31,26 @@ func TestProjectRealtime_StoreAtomicBatchOutbox(t *testing.T) {
 
 	var published []V3RealtimeOutboxRecord
 	var pubMu sync.Mutex
+	wakes := 0
 	db.SetProjectPublisher(func(rec V3RealtimeOutboxRecord) {
+		wakes++
+		// Requirement: post-commit callbacks run after releasing domain and canonical mutation locks.
+		// TryLock proves release without leaving a hung goroutine on regression.
+		if !db.projectsMu.TryLock() {
+			t.Fatal("publisher holds projectsMu lock")
+		}
+		db.projectsMu.Unlock()
+
+		// Requirement: synthetic session is not exposed as a real user session.
+		if _, found, err := sessionStore.GetSession(rec.SessionID); err != nil || found {
+			t.Fatalf("synthetic session exposed as real session: %v %v", found, err)
+		}
+
+		// Reentrancy: verify domain read authority can be safely called from callback without deadlock
+		if rec.AccountScopeID != "" {
+			_, _, _ = sessionStore.GetProject(rec.AccountScopeID, "reentrancy_probe")
+		}
+
 		pubMu.Lock()
 		defer pubMu.Unlock()
 		published = append(published, rec)
@@ -202,6 +221,40 @@ func TestProjectRealtime_StoreAtomicBatchOutbox(t *testing.T) {
 	if len(foreignReplayed) != 0 {
 		t.Fatalf("expected 0 replayed records for foreign account, got %d", len(foreignReplayed))
 	}
+	if wakes != 6 {
+		t.Fatalf("expected 6 wakes, got %d", wakes)
+	}
+
+	// 9. Database reopen replay: outbox records survive restart and replay cleanly
+	if err := db.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+	db, err = Open(path)
+	if err != nil {
+		t.Fatalf("reopen Open failed: %v", err)
+	}
+	defer db.Close()
+	sessionStore = NewSessionStore(db)
+
+	replayedAfterReopen, err := sessionStore.ListV3RealtimeOutboxForAuthScopeAfter(accountID, "desktop", 0, 100)
+	if err != nil {
+		t.Fatalf("reopened replay outbox failed: %v", err)
+	}
+	if len(replayedAfterReopen) != 6 {
+		t.Fatalf("expected 6 replayed records after reopen, got %d", len(replayedAfterReopen))
+	}
+	for i, r := range replayedAfterReopen {
+		if r.EndpointSeq != published[i].EndpointSeq {
+			t.Fatalf("reopen sequence mismatch at %d: got %d, want %d", i, r.EndpointSeq, published[i].EndpointSeq)
+		}
+	}
+	foreignReopened, err := sessionStore.ListV3RealtimeOutboxForAuthScopeAfter(foreignAccountID, "desktop", 0, 100)
+	if err != nil {
+		t.Fatalf("foreign replay after reopen failed: %v", err)
+	}
+	if len(foreignReopened) != 0 {
+		t.Fatalf("expected 0 replayed records for foreign account after reopen, got %d", len(foreignReopened))
+	}
 }
 
 func TestProjectRealtime_NegativeFailures(t *testing.T) {
@@ -277,5 +330,59 @@ func TestProjectRealtime_NegativeFailures(t *testing.T) {
 	}
 	if err := setProjectRealtimeMutationInBatch(batch, "acct1", mutForeignPath); err != ErrProjectInvalid {
 		t.Fatalf("expected ErrProjectInvalid on foreign key path injection, got %v", err)
+	}
+
+	sessionStore := NewSessionStore(db)
+
+	// Negative 7: commitProjectRealtime failure rollback and no persisted partial state
+	mutBatchFail := &projectRealtimeMutation{
+		accountScopeID: "acct1",
+		projectID:      "proj_fail",
+		writes: map[string][]byte{
+			KeyProject("acct1", "proj_fail"): []byte(`{"id":"proj_fail","name":"partial"}`),
+			"unauthorized/system/key":        []byte(`{}`),
+		},
+	}
+	if err := db.commitProjectRealtime(mutBatchFail); err == nil {
+		t.Fatal("expected commitProjectRealtime to reject mutation with disallowed key")
+	}
+	if mutBatchFail.outbox != nil {
+		t.Fatal("rejected mutation must not retain outbox record")
+	}
+	// Assert no persisted partial state in Pebble
+	var leakedProj any
+	if found, err := db.GetJSON(KeyProject("acct1", "proj_fail"), &leakedProj); err != nil || found {
+		t.Fatalf("partial project leaked into store after failed batch: found=%v", found)
+	}
+	var leakedDisallowed any
+	if found, err := db.GetJSON("unauthorized/system/key", &leakedDisallowed); err != nil || found {
+		t.Fatalf("disallowed key leaked into store after failed batch: found=%v", found)
+	}
+
+	// Negative 8: PutProject and PutProjectTask validate domain constraints and persist no partial state
+	badTask := &ProjectTaskRecord{
+		ProjectID: "",
+		Title:     "Invalid task without project",
+	}
+	if err := sessionStore.PutProjectTask("acct1", badTask); err == nil {
+		t.Fatal("expected PutProjectTask to fail on empty project ID")
+	}
+	if badTask.ID != "" {
+		if _, found, _ := sessionStore.GetProjectTask("acct1", "", badTask.ID); found {
+			t.Fatal("partial task persisted after validation failure")
+		}
+	}
+
+	badProj := &ProjectRecord{
+		ID:   "",
+		Name: "",
+	}
+	if err := sessionStore.PutProject("acct1", badProj); err == nil {
+		t.Fatal("expected PutProject to fail on empty name")
+	}
+	if badProj.ID != "" {
+		if _, found, _ := sessionStore.GetProject("acct1", badProj.ID); found {
+			t.Fatal("partial project persisted after validation failure")
+		}
 	}
 }
