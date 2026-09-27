@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AlertCircle,
@@ -35,6 +35,9 @@ import { saveVideoDefaultModel } from '../../settings/swarm/mutations/save-video
 import { uiSettingsQueryKey, uiSettingsQueryOptions } from '../../../queries/query-options'
 import {
   calculateGenerationCost,
+  normalizeResKey,
+  resolveInitialModel,
+  resolveInitialSetting,
   type MediaGenerationAction,
   type MediaGenerationJob,
   type MediaGenerationRequest,
@@ -51,17 +54,12 @@ export interface MediaViewerModalProps {
   onOpenSession?: (sessionId: string) => void
   isTagged?: boolean
   onToggleTag?: (item: MediaLibraryItem) => void
-  onIterateSwarm?: (item: MediaLibraryItem) => void
   onGenerate?: (request: MediaGenerationRequest) => Promise<void>
   generationJobs?: readonly MediaGenerationJob[]
   initialQuickRouteMode?: QuickRouteMode | null
   isGenerating?: boolean
+  [key: string]: unknown
 }
-
-const COMMON_ASPECT_RATIOS = ['16:9', '1:1', '9:16', '4:3', '3:2', '21:9'] as const
-const COMMON_IMAGE_RESOLUTIONS = ['1k', '2k', '4k'] as const
-const COMMON_VIDEO_RESOLUTIONS = ['720p', '1080p', '4k'] as const
-const COMMON_VIDEO_DURATIONS = [5, 8, 10, 15] as const
 
 export function MediaViewerModal({
   item,
@@ -71,7 +69,6 @@ export function MediaViewerModal({
   onOpenSession,
   isTagged,
   onToggleTag,
-  onIterateSwarm,
   onGenerate,
   generationJobs = [],
   initialQuickRouteMode,
@@ -84,7 +81,12 @@ export function MediaViewerModal({
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [defaultSaved, setDefaultSaved] = useState(false)
 
-  // Query media catalog and UI settings for model switcher & default upgrade
+  // Stable locks and identity tracking
+  const isSubmittingRef = useRef(false)
+  const lastInitializedItemIdRef = useRef<string | null>(null)
+  const lastModelIdRef = useRef<string>('')
+
+  // Query media catalog and UI settings
   const queryClient = useQueryClient()
   const { data: mediaCatalog } = useQuery({
     queryKey: ['media-settings-catalog'],
@@ -93,11 +95,12 @@ export function MediaViewerModal({
   })
   const { data: uiSettings } = useQuery(uiSettingsQueryOptions())
 
-  // Default mode depends on media kind: images -> fine_tune (edit), videos -> next_scene
+  const isVideoSource = item?.kind === 'video'
+
   const defaultModeForKind: QuickRouteMode = useMemo(() => {
     if (!item) return 'fine_tune'
-    return item.kind === 'video' ? 'next_scene' : 'fine_tune'
-  }, [item])
+    return isVideoSource ? 'next_scene' : 'fine_tune'
+  }, [item, isVideoSource])
 
   const [activeQuickRouteMode, setActiveQuickRouteMode] = useState<QuickRouteMode>(
     initialQuickRouteMode ?? defaultModeForKind,
@@ -106,132 +109,279 @@ export function MediaViewerModal({
   const [variantCount, setVariantCount] = useState<number>(1)
   const [selectedModel, setSelectedModel] = useState<string>('')
 
-  // Fine-tune & generation parameters prefilled from source item
-  const [aspectRatio, setAspectRatio] = useState<string>('16:9')
-  const [resolution, setResolution] = useState<string>('1080p')
-  const [durationSeconds, setDurationSeconds] = useState<number>(8)
+  // Settings: initialized strictly from supported options metadata or provider default
+  const [aspectRatio, setAspectRatio] = useState<string>('')
+  const [resolution, setResolution] = useState<string>('')
+  const [durationSeconds, setDurationSeconds] = useState<number | undefined>(undefined)
 
   const isVideoAction =
     activeQuickRouteMode === 'to_video' ||
     activeQuickRouteMode === 'next_scene' ||
-    (activeQuickRouteMode === 'fine_tune' && item?.kind === 'video')
+    (activeQuickRouteMode === 'fine_tune' && isVideoSource)
 
-  // Dynamic model catalogs: video fine tune and video continuations MUST use video models
+  // Available models based on action mode:
+  // to_video selects video_generation_models
+  // video fine_tune and next_scene select video_iteration_models
+  // image actions select image_models
   const availableModels: MediaCatalogModelOption[] = useMemo(() => {
-    if (isVideoAction) {
+    if (activeQuickRouteMode === 'to_video') {
       return (
         mediaCatalog?.video_generation_models ??
         mediaCatalog?.video_models ??
         []
       )
     }
+    if (activeQuickRouteMode === 'next_scene' || (activeQuickRouteMode === 'fine_tune' && isVideoSource)) {
+      return (
+        mediaCatalog?.video_iteration_models ??
+        mediaCatalog?.video_generation_models ??
+        mediaCatalog?.video_models ??
+        []
+      )
+    }
     return mediaCatalog?.image_models ?? []
-  }, [isVideoAction, mediaCatalog])
+  }, [activeQuickRouteMode, isVideoSource, mediaCatalog])
 
-  // Current default model from account settings or catalog
   const defaultImageModel =
     uiSettings?.tools?.image?.default_model ||
     mediaCatalog?.default_image_model ||
     (mediaCatalog?.image_models?.find((m) => m.ready)?.id ?? '')
 
-  const defaultVideoModel =
+  const defaultVideoGenerationModel =
     uiSettings?.tools?.video?.default_model ||
     mediaCatalog?.default_video_model ||
     (mediaCatalog?.video_generation_models?.find((m) => m.ready)?.id ?? '')
 
-  const currentDefaultModel = useMemo(() => {
-    return isVideoAction ? defaultVideoModel : defaultImageModel
-  }, [isVideoAction, defaultImageModel, defaultVideoModel])
+  const defaultVideoIterationModel =
+    uiSettings?.tools?.video?.iteration_model ||
+    (mediaCatalog?.video_iteration_models?.find((m) => m.ready)?.id ?? '') ||
+    defaultVideoGenerationModel
 
-  // Selected model catalog option
+  const currentDefaultModel = useMemo(() => {
+    if (activeQuickRouteMode === 'to_video') {
+      return defaultVideoGenerationModel
+    }
+    if (activeQuickRouteMode === 'next_scene' || (activeQuickRouteMode === 'fine_tune' && isVideoSource)) {
+      return defaultVideoIterationModel
+    }
+    return defaultImageModel
+  }, [
+    activeQuickRouteMode,
+    defaultImageModel,
+    defaultVideoGenerationModel,
+    defaultVideoIterationModel,
+    isVideoSource,
+  ])
+
   const selectedModelOption = useMemo(() => {
     return availableModels.find((m) => m.id === selectedModel)
   }, [availableModels, selectedModel])
 
-  // Detect supported options from model's generation_options or fall back gracefully
   const modelGenOptions = selectedModelOption?.generation_options
+
+  // Supported options directly from model metadata (no invented fallbacks)
   const supportedRatios = useMemo(() => {
     if (modelGenOptions?.aspect_ratios && modelGenOptions.aspect_ratios.length > 0) {
       return modelGenOptions.aspect_ratios
     }
-    return COMMON_ASPECT_RATIOS
+    return []
   }, [modelGenOptions])
 
   const supportedResolutions = useMemo(() => {
     if (modelGenOptions?.resolutions && modelGenOptions.resolutions.length > 0) {
       return modelGenOptions.resolutions
     }
-    return isVideoAction ? COMMON_VIDEO_RESOLUTIONS : COMMON_IMAGE_RESOLUTIONS
-  }, [modelGenOptions, isVideoAction])
+    return []
+  }, [modelGenOptions])
 
   const supportedDurations = useMemo(() => {
     if (modelGenOptions?.durations && modelGenOptions.durations.length > 0) {
       return modelGenOptions.durations
     }
-    return COMMON_VIDEO_DURATIONS
+    return []
   }, [modelGenOptions])
 
-  // Reset viewer state when item changes or quickRouteMode initialized
+  // Initialize viewer state when active item ID changes.
+  // Must NOT reset user changes on every item object reference identity refresh!
   useEffect(() => {
+    if (!item) {
+      lastInitializedItemIdRef.current = null
+      return
+    }
+    if (lastInitializedItemIdRef.current === item.id) {
+      return
+    }
+    lastInitializedItemIdRef.current = item.id
+
     setZoomLevel(1)
     setCopied(false)
     setQuickRoutePrompt('')
     setSubmitError(null)
     setLocalSubmitting(false)
-    if (initialQuickRouteMode) {
-      setActiveQuickRouteMode(initialQuickRouteMode)
-    } else if (item) {
-      setActiveQuickRouteMode(item.kind === 'video' ? 'next_scene' : 'fine_tune')
-    }
-  }, [item?.id, initialQuickRouteMode])
+    isSubmittingRef.current = false
 
-  // Sync selected model when mode or available models change
+    const newMode = initialQuickRouteMode ?? (item.kind === 'video' ? 'next_scene' : 'fine_tune')
+    setActiveQuickRouteMode(newMode)
+    setVariantCount(newMode === 'iterate' ? 4 : 1)
+
+    // Preselect model: source model if available, else preferred default
+    const isVid =
+      newMode === 'to_video' ||
+      newMode === 'next_scene' ||
+      (newMode === 'fine_tune' && item.kind === 'video')
+
+    const models = isVid
+      ? newMode === 'to_video'
+        ? (mediaCatalog?.video_generation_models ?? mediaCatalog?.video_models ?? [])
+        : (mediaCatalog?.video_iteration_models ?? mediaCatalog?.video_generation_models ?? mediaCatalog?.video_models ?? [])
+      : (mediaCatalog?.image_models ?? [])
+
+    const defModel = isVid
+      ? (newMode === 'to_video' ? defaultVideoGenerationModel : defaultVideoIterationModel)
+      : defaultImageModel
+
+    const chosenModelId = resolveInitialModel(item.model, models, defModel)
+    setSelectedModel(chosenModelId)
+    lastModelIdRef.current = chosenModelId
+
+    const chosenOption = models.find((m) => m.id === chosenModelId)
+    const genOpts = chosenOption?.generation_options
+
+    const initRatio = resolveInitialSetting(
+      (item as unknown as { aspectRatio?: string }).aspectRatio,
+      genOpts?.aspect_ratios,
+      genOpts?.default_ratio,
+    )
+    setAspectRatio(initRatio ?? '')
+
+    const initRes = resolveInitialSetting(
+      (item as unknown as { resolution?: string }).resolution,
+      genOpts?.resolutions,
+      genOpts?.default_resolution,
+    )
+    setResolution(initRes ?? '')
+
+    const rawDur =
+      (item as unknown as { durationSeconds?: number }).durationSeconds ??
+      (item.durationMs ? Math.round(item.durationMs / 1000) : undefined)
+    const initDur = resolveInitialSetting(rawDur, genOpts?.durations, genOpts?.default_duration)
+    setDurationSeconds(initDur)
+  }, [
+    defaultImageModel,
+    defaultVideoGenerationModel,
+    defaultVideoIterationModel,
+    initialQuickRouteMode,
+    item?.id,
+    mediaCatalog,
+  ])
+
+  // Adjust settings only when selectedModel changes, preserving user choice if still supported
   useEffect(() => {
-    if (availableModels.length === 0) return
-    const exists = availableModels.some((m) => m.id === selectedModel)
-    if (!exists) {
-      const preferred = availableModels.find((m) => m.id === currentDefaultModel && m.ready)
-        ?? availableModels.find((m) => m.ready)
-        ?? availableModels[0]
-      if (preferred) {
-        setSelectedModel(preferred.id)
+    if (!selectedModel || selectedModel === lastModelIdRef.current) return
+    lastModelIdRef.current = selectedModel
+
+    if (!modelGenOptions) {
+      setAspectRatio('')
+      setResolution('')
+      setDurationSeconds(undefined)
+      return
+    }
+
+    if (aspectRatio) {
+      const stillSupported = modelGenOptions.aspect_ratios?.find(
+        (r) => r.toLowerCase().trim() === aspectRatio.toLowerCase().trim(),
+      )
+      if (stillSupported) {
+        setAspectRatio(stillSupported)
+      } else {
+        setAspectRatio(
+          modelGenOptions.default_ratio &&
+            modelGenOptions.aspect_ratios?.includes(modelGenOptions.default_ratio)
+            ? modelGenOptions.default_ratio
+            : (modelGenOptions.aspect_ratios?.[0] ?? ''),
+        )
       }
-    }
-  }, [availableModels, currentDefaultModel, selectedModel])
-
-  // Prefill settings from source item metadata if present, or model defaults
-  useEffect(() => {
-    if (!item) return
-    const anyItem = item as unknown as {
-      aspectRatio?: string
-      resolution?: string
-      durationSeconds?: number
+    } else if (modelGenOptions.default_ratio) {
+      setAspectRatio(modelGenOptions.default_ratio)
     }
 
-    const initialRatio =
-      anyItem.aspectRatio ||
-      modelGenOptions?.default_ratio ||
-      (item.kind === 'video' ? '16:9' : '1:1')
-    setAspectRatio(initialRatio)
-
-    const initialRes =
-      anyItem.resolution ||
-      modelGenOptions?.default_resolution ||
-      (isVideoAction ? '1080p' : '1k')
-    setResolution(initialRes)
-
-    const initialDur =
-      anyItem.durationSeconds ||
-      modelGenOptions?.default_duration ||
-      (item.durationMs ? Math.round(item.durationMs / 1000) : 8)
-    setDurationSeconds(initialDur)
-
-    if (activeQuickRouteMode === 'iterate') {
-      setVariantCount(4)
-    } else {
-      setVariantCount(1)
+    if (resolution) {
+      const normRes = normalizeResKey(resolution)
+      const stillSupported = modelGenOptions.resolutions?.find(
+        (r) => normalizeResKey(r) === normRes,
+      )
+      if (stillSupported) {
+        setResolution(stillSupported)
+      } else {
+        setResolution(
+          modelGenOptions.default_resolution &&
+            modelGenOptions.resolutions?.includes(modelGenOptions.default_resolution)
+            ? modelGenOptions.default_resolution
+            : (modelGenOptions.resolutions?.[0] ?? ''),
+        )
+      }
+    } else if (modelGenOptions.default_resolution) {
+      setResolution(modelGenOptions.default_resolution)
     }
-  }, [item, activeQuickRouteMode, modelGenOptions, isVideoAction])
+
+    if (durationSeconds !== undefined) {
+      const stillSupported = modelGenOptions.durations?.find((d) => d === durationSeconds)
+      if (stillSupported !== undefined) {
+        setDurationSeconds(stillSupported)
+      } else {
+        setDurationSeconds(
+          modelGenOptions.default_duration &&
+            modelGenOptions.durations?.includes(modelGenOptions.default_duration)
+            ? modelGenOptions.default_duration
+            : modelGenOptions.durations?.[0],
+        )
+      }
+    } else if (modelGenOptions.default_duration) {
+      setDurationSeconds(modelGenOptions.default_duration)
+    }
+  }, [selectedModel, modelGenOptions, aspectRatio, resolution, durationSeconds])
+
+  const handleModeChange = useCallback(
+    (newMode: QuickRouteMode) => {
+      setActiveQuickRouteMode(newMode)
+      if (newMode === 'iterate') {
+        setVariantCount((prev) => (prev > 1 ? prev : 4))
+      } else {
+        setVariantCount(1)
+      }
+
+      const isVid =
+        newMode === 'to_video' ||
+        newMode === 'next_scene' ||
+        (newMode === 'fine_tune' && item?.kind === 'video')
+
+      const models = isVid
+        ? newMode === 'to_video'
+          ? (mediaCatalog?.video_generation_models ?? mediaCatalog?.video_models ?? [])
+          : (mediaCatalog?.video_iteration_models ?? mediaCatalog?.video_generation_models ?? mediaCatalog?.video_models ?? [])
+        : (mediaCatalog?.image_models ?? [])
+
+      const defModel = isVid
+        ? (newMode === 'to_video' ? defaultVideoGenerationModel : defaultVideoIterationModel)
+        : defaultImageModel
+
+      const stillValid = models.find((m) => m.id === selectedModel)
+      if (!stillValid) {
+        const preferred = resolveInitialModel(item?.model, models, defModel)
+        setSelectedModel(preferred)
+        lastModelIdRef.current = preferred
+      }
+    },
+    [
+      defaultImageModel,
+      defaultVideoGenerationModel,
+      defaultVideoIterationModel,
+      item?.kind,
+      item?.model,
+      mediaCatalog,
+      selectedModel,
+    ],
+  )
 
   const handleUpgradeDefaultModel = useCallback(async () => {
     if (!selectedModel) return
@@ -254,31 +404,40 @@ export function MediaViewerModal({
   // Real model metadata cost calculation
   const costEstimate = useMemo(() => {
     const currentSettings: MediaGenerationSettings = {
-      aspectRatio,
-      resolution,
-      durationSeconds: isVideoAction ? durationSeconds : undefined,
+      aspectRatio: aspectRatio.trim() ? aspectRatio.trim() : undefined,
+      resolution: resolution.trim() ? resolution.trim() : undefined,
+      durationSeconds: isVideoAction && durationSeconds && durationSeconds > 0 ? durationSeconds : undefined,
     }
     return calculateGenerationCost({
       modelOption: selectedModelOption,
       action: activeQuickRouteMode,
-      count: variantCount,
+      count: activeQuickRouteMode === 'iterate' ? variantCount : 1,
       settings: currentSettings,
     })
-  }, [activeQuickRouteMode, aspectRatio, durationSeconds, isVideoAction, resolution, selectedModelOption, variantCount])
+  }, [
+    activeQuickRouteMode,
+    aspectRatio,
+    durationSeconds,
+    isVideoAction,
+    resolution,
+    selectedModelOption,
+    variantCount,
+  ])
 
-  // Execute Generation / Fine Tune directly with promise lock and live state
+  // Execute Generation / Fine Tune directly with synchronous ref lock and live state
   const handleExecuteGeneration = useCallback(async () => {
-    if (!item || localSubmitting) return
+    if (!item || isSubmittingRef.current || localSubmitting || isGenerating) return
     const prompt = quickRoutePrompt.trim()
     if (!prompt) return
 
-    setSubmitError(null)
+    isSubmittingRef.current = true
     setLocalSubmitting(true)
+    setSubmitError(null)
 
     const generationSettings: MediaGenerationSettings = {
-      aspectRatio,
-      resolution,
-      durationSeconds: isVideoAction ? durationSeconds : undefined,
+      aspectRatio: aspectRatio.trim() ? aspectRatio.trim() : undefined,
+      resolution: resolution.trim() ? resolution.trim() : undefined,
+      durationSeconds: isVideoAction && durationSeconds && durationSeconds > 0 ? durationSeconds : undefined,
     }
 
     try {
@@ -287,7 +446,7 @@ export function MediaViewerModal({
           item,
           action: activeQuickRouteMode,
           deltaPrompt: prompt,
-          variantCount,
+          variantCount: activeQuickRouteMode === 'iterate' ? variantCount : 1,
           model: selectedModel,
           settings: generationSettings,
         })
@@ -296,12 +455,14 @@ export function MediaViewerModal({
     } catch (err) {
       setSubmitError(err instanceof Error ? err.message : 'Generation request failed.')
     } finally {
+      isSubmittingRef.current = false
       setLocalSubmitting(false)
     }
   }, [
     activeQuickRouteMode,
     aspectRatio,
     durationSeconds,
+    isGenerating,
     isVideoAction,
     item,
     localSubmitting,
@@ -329,7 +490,7 @@ export function MediaViewerModal({
     }
   }, [currentIndex, hasNext, items, onSelect])
 
-  // Keyboard navigation: do not trigger arrow navigation while typing in inputs or textareas!
+  // Keyboard navigation
   useEffect(() => {
     if (!item) return
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -366,8 +527,6 @@ export function MediaViewerModal({
   const lineageChain = useMemo(() => {
     if (!item) return []
     const chain: { role: 'parent' | 'current' | 'child' | 'sibling'; item: MediaLibraryItem; label: string }[] = []
-
-    // 1. Parent / Source keyframe
     const parentId = item.parentId || item.sourceMediaRef
     if (parentId && parentId !== item.id) {
       const parent = items.find((i) => i.id === parentId)
@@ -379,15 +538,11 @@ export function MediaViewerModal({
         })
       }
     }
-
-    // 2. Current Asset
     chain.push({
       role: 'current',
       item: item,
       label: 'Active Asset',
     })
-
-    // 3. Derived Children (items with parentId or sourceMediaRef pointing to this item)
     const children = items.filter((i) => i.id !== item.id && (i.parentId === item.id || i.sourceMediaRef === item.id))
     for (const child of children) {
       chain.push({
@@ -396,8 +551,6 @@ export function MediaViewerModal({
         label: child.kind === 'video' ? 'Video Continuation' : 'Derived Revision',
       })
     }
-
-    // 4. Siblings in the same iteration group
     if (item.iterationGroupId) {
       const existingIds = new Set(chain.map((c) => c.item.id))
       const siblings = items.filter((i) => !existingIds.has(i.id) && i.iterationGroupId === item.iterationGroupId)
@@ -409,7 +562,6 @@ export function MediaViewerModal({
         })
       }
     }
-
     return chain
   }, [item, items])
 
@@ -432,10 +584,10 @@ export function MediaViewerModal({
 
   const isWorking = isGenerating || localSubmitting
   const canSubmit =
+    !isSubmittingRef.current &&
+    !isWorking &&
     Boolean(quickRoutePrompt.trim()) &&
-    Boolean(selectedModel) &&
-    variantCount >= 1 &&
-    !isWorking
+    Boolean(selectedModel)
 
   return (
     <div
@@ -444,7 +596,7 @@ export function MediaViewerModal({
       aria-label={`Media viewer: ${item.title}`}
       className="fixed inset-0 z-50 flex flex-col bg-black/92 backdrop-blur-xl text-[var(--app-text)] animate-in fade-in duration-150"
     >
-      {/* Sleek, Clean Top Header Bar */}
+      {/* Top Header Bar */}
       <header className="flex h-14 shrink-0 items-center justify-between border-b border-white/10 bg-black/40 px-4 backdrop-blur-md">
         {/* Left: Media Title & Info */}
         <div className="flex items-center gap-3 min-w-0">
@@ -472,7 +624,7 @@ export function MediaViewerModal({
           </div>
         </div>
 
-        {/* Right: Clean Utility Controls */}
+        {/* Right: Utility Controls */}
         <div className="flex items-center gap-2">
           {/* Zoom controls for image */}
           {item.kind === 'image' && (
@@ -542,11 +694,7 @@ export function MediaViewerModal({
           <button
             type="button"
             onClick={() => {
-              if (onIterateSwarm) {
-                onIterateSwarm(item)
-              } else {
-                setActiveQuickRouteMode('iterate')
-              }
+              handleModeChange('iterate')
             }}
             title="Configure and run Swarm Iterations for this media"
             aria-label="Swarm Iterations"
@@ -707,7 +855,7 @@ export function MediaViewerModal({
                     <>
                       <button
                         type="button"
-                        onClick={() => setActiveQuickRouteMode('fine_tune')}
+                        onClick={() => handleModeChange('fine_tune')}
                         className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition cursor-pointer ${
                           activeQuickRouteMode === 'fine_tune'
                             ? 'bg-amber-600 text-white shadow-md'
@@ -721,7 +869,7 @@ export function MediaViewerModal({
                       </button>
                       <button
                         type="button"
-                        onClick={() => setActiveQuickRouteMode('to_video')}
+                        onClick={() => handleModeChange('to_video')}
                         className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition cursor-pointer ${
                           activeQuickRouteMode === 'to_video'
                             ? 'bg-purple-600 text-white shadow-md'
@@ -735,7 +883,7 @@ export function MediaViewerModal({
                       </button>
                       <button
                         type="button"
-                        onClick={() => setActiveQuickRouteMode('iterate')}
+                        onClick={() => handleModeChange('iterate')}
                         className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition cursor-pointer ${
                           activeQuickRouteMode === 'iterate'
                             ? 'bg-emerald-600 text-white shadow-md'
@@ -753,7 +901,7 @@ export function MediaViewerModal({
                     <>
                       <button
                         type="button"
-                        onClick={() => setActiveQuickRouteMode('next_scene')}
+                        onClick={() => handleModeChange('next_scene')}
                         className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition cursor-pointer ${
                           activeQuickRouteMode === 'next_scene'
                             ? 'bg-purple-600 text-white shadow-md'
@@ -766,7 +914,7 @@ export function MediaViewerModal({
                       </button>
                       <button
                         type="button"
-                        onClick={() => setActiveQuickRouteMode('fine_tune')}
+                        onClick={() => handleModeChange('fine_tune')}
                         className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition cursor-pointer ${
                           activeQuickRouteMode === 'fine_tune'
                             ? 'bg-amber-600 text-white shadow-md'
@@ -777,13 +925,26 @@ export function MediaViewerModal({
                         <Edit3 size={13} />
                         <span>Fine-Tune</span>
                       </button>
+                      <button
+                        type="button"
+                        onClick={() => handleModeChange('iterate')}
+                        className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition cursor-pointer ${
+                          activeQuickRouteMode === 'iterate'
+                            ? 'bg-emerald-600 text-white shadow-md'
+                            : 'text-white/60 hover:text-white hover:bg-white/5'
+                        }`}
+                        title="Generate video variations in parallel"
+                      >
+                        <Sparkles size={13} />
+                        <span>Swarm Iterations</span>
+                      </button>
                     </>
                   )}
 
                   {item.kind === 'audio' && (
                     <button
                       type="button"
-                      onClick={() => setActiveQuickRouteMode('fine_tune')}
+                      onClick={() => handleModeChange('fine_tune')}
                       className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white shadow-md"
                     >
                       <Music size={13} />
@@ -810,8 +971,8 @@ export function MediaViewerModal({
                           </option>
                         ))
                       ) : (
-                        <option value={selectedModel || 'default'} className="bg-slate-900 text-white">
-                          {selectedModel || 'Default Model'}
+                        <option value={selectedModel || ''} className="bg-slate-900 text-white">
+                          {selectedModel || 'Provider default'}
                         </option>
                       )}
                     </select>
@@ -836,7 +997,7 @@ export function MediaViewerModal({
                     )}
                   </div>
 
-                  {/* Aspect Ratio Selector */}
+                  {/* Aspect Ratio Selector (no invented common options; provider default when metadata absent) */}
                   <div className="flex items-center gap-1.5 bg-white/5 border border-white/10 rounded-xl px-2 py-1 text-xs">
                     <span className="text-[10px] uppercase font-bold text-white/40 tracking-wider">Ratio:</span>
                     <select
@@ -845,15 +1006,21 @@ export function MediaViewerModal({
                       className="bg-transparent text-white font-medium text-xs outline-none cursor-pointer"
                       aria-label="Aspect Ratio"
                     >
-                      {supportedRatios.map((ratio) => (
-                        <option key={ratio} value={ratio} className="bg-slate-900 text-white">
-                          {ratio}
+                      {supportedRatios.length > 0 ? (
+                        supportedRatios.map((ratio) => (
+                          <option key={ratio} value={ratio} className="bg-slate-900 text-white">
+                            {ratio}
+                          </option>
+                        ))
+                      ) : (
+                        <option value="" className="bg-slate-900 text-white">
+                          Provider default
                         </option>
-                      ))}
+                      )}
                     </select>
                   </div>
 
-                  {/* Resolution Selector */}
+                  {/* Resolution Selector (no invented common options; provider default when metadata absent) */}
                   <div className="flex items-center gap-1.5 bg-white/5 border border-white/10 rounded-xl px-2 py-1 text-xs">
                     <span className="text-[10px] uppercase font-bold text-white/40 tracking-wider">Res:</span>
                     <select
@@ -862,52 +1029,69 @@ export function MediaViewerModal({
                       className="bg-transparent text-white font-medium text-xs outline-none cursor-pointer uppercase"
                       aria-label="Resolution"
                     >
-                      {supportedResolutions.map((res) => (
-                        <option key={res} value={res} className="bg-slate-900 text-white uppercase">
-                          {res}
+                      {supportedResolutions.length > 0 ? (
+                        supportedResolutions.map((res) => (
+                          <option key={res} value={res} className="bg-slate-900 text-white uppercase">
+                            {res}
+                          </option>
+                        ))
+                      ) : (
+                        <option value="" className="bg-slate-900 text-white">
+                          Provider default
                         </option>
-                      ))}
+                      )}
                     </select>
                   </div>
 
-                  {/* Video Duration Selector */}
+                  {/* Video Duration Selector (video actions only) */}
                   {isVideoAction && (
                     <div className="flex items-center gap-1.5 bg-white/5 border border-white/10 rounded-xl px-2 py-1 text-xs">
                       <span className="text-[10px] uppercase font-bold text-white/40 tracking-wider">Duration:</span>
                       <select
-                        value={durationSeconds}
-                        onChange={(e) => setDurationSeconds(Number(e.target.value))}
+                        value={durationSeconds ?? ''}
+                        onChange={(e) => {
+                          const val = e.target.value
+                          setDurationSeconds(val ? Number(val) : undefined)
+                        }}
                         className="bg-transparent text-white font-medium text-xs outline-none cursor-pointer"
                         aria-label="Video Duration"
                       >
-                        {supportedDurations.map((sec) => (
-                          <option key={sec} value={sec} className="bg-slate-900 text-white">
-                            {sec}s
+                        {supportedDurations.length > 0 ? (
+                          supportedDurations.map((sec) => (
+                            <option key={sec} value={sec} className="bg-slate-900 text-white">
+                              {sec}s
+                            </option>
+                          ))
+                        ) : (
+                          <option value="" className="bg-slate-900 text-white">
+                            Provider default
                           </option>
-                        ))}
+                        )}
                       </select>
                     </div>
                   )}
 
-                  {/* Output Count Pill (Swarm Iterations & Multi-Variants) */}
-                  <div className="flex items-center gap-1 bg-white/5 border border-white/10 rounded-xl p-1 text-[11px] font-mono">
-                    <span className="px-1 text-white/40 text-[10px] uppercase">Outputs:</span>
-                    {[1, 2, 4, 8].map((n) => (
-                      <button
-                        key={n}
-                        type="button"
-                        onClick={() => setVariantCount(n)}
-                        className={`px-2 py-0.5 rounded-md transition font-bold ${
-                          variantCount === n
-                            ? 'bg-blue-600 text-white shadow-xs'
-                            : 'text-white/50 hover:text-white hover:bg-white/10'
-                        }`}
-                        title={`${n} output${n > 1 ? 's' : ''}`}
-                      >
-                        {n}
-                      </button>
-                    ))}
-                  </div>
+                  {/* Output Count Pill (Swarm Iterations only; bounded UI contract count <=8 video <=50 image) */}
+                  {activeQuickRouteMode === 'iterate' && (
+                    <div className="flex items-center gap-1 bg-white/5 border border-white/10 rounded-xl p-1 text-[11px] font-mono">
+                      <span className="px-1 text-white/40 text-[10px] uppercase">Outputs:</span>
+                      {[1, 2, 4, 8].map((n) => (
+                        <button
+                          key={n}
+                          type="button"
+                          onClick={() => setVariantCount(n)}
+                          className={`px-2 py-0.5 rounded-md transition font-bold ${
+                            variantCount === n
+                              ? 'bg-blue-600 text-white shadow-xs'
+                              : 'text-white/50 hover:text-white hover:bg-white/10'
+                          }`}
+                          title={`${n} output${n > 1 ? 's' : ''}`}
+                        >
+                          {n}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -927,14 +1111,14 @@ export function MediaViewerModal({
                     disabled={isWorking}
                     placeholder={
                       activeQuickRouteMode === 'fine_tune'
-                        ? item.kind === 'video'
+                        ? isVideoSource
                           ? 'Describe fine-tune adjustments to camera pacing, lighting, or atmosphere...'
-                          : 'Describe edits (e.g. "Change background to cyberpunk alley, warm dramatic lighting")...'
+                          : 'Describe edits (e.g. background, lighting, objects)...'
                         : activeQuickRouteMode === 'to_video'
-                          ? 'Describe camera movement and cinematic action (e.g. "Slow cinematic push-in with rising synth")...'
+                          ? 'Describe camera movement and cinematic action...'
                           : activeQuickRouteMode === 'next_scene'
-                            ? 'Describe next sequence in the story (e.g. "Transition into wide orbital view with rising crescendo")...'
-                            : 'Describe variation theme (e.g. "Diverse stylized concept renders with futuristic lighting")...'
+                            ? 'Describe next sequence in the story...'
+                            : 'Describe variation theme...'
                     }
                     className="w-full rounded-xl bg-black/70 border border-white/15 p-3 text-xs text-white placeholder-white/40 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition shadow-inner resize-none"
                   />
@@ -950,7 +1134,7 @@ export function MediaViewerModal({
                     {costEstimate.isAvailable ? (
                       <span className="font-semibold text-emerald-400 font-mono">
                         {costEstimate.formattedTotal}
-                        {variantCount > 1 && (
+                        {costEstimate.quantity > 1 && (
                           <span className="text-white/40 font-normal ml-1">
                             ({costEstimate.formattedPerUnit})
                           </span>
@@ -1001,9 +1185,10 @@ export function MediaViewerModal({
                 <div className="flex items-center justify-between text-[10px] text-white/40">
                   <span>Estimated model charge from catalog metadata; excludes AI agent input tokens.</span>
                   {!modelGenOptions && (
-                    <span className="text-white/30 italic">Using standard model defaults.</span>
+                    <span className="text-white/30 italic">Using provider defaults.</span>
                   )}
                 </div>
+                {/* Note: In Planner and presetSuggestions removed per user instruction */}
               </div>
 
               {/* Live Pending / Queued Generation Jobs for this item */}

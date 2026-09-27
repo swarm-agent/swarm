@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { calculateGenerationCost, extractBillingLines, normalizeResKey } from './media-generation'
+import {
+  calculateGenerationCost,
+  extractBillingLines,
+  normalizeResKey,
+  resolveInitialModel,
+  resolveInitialSetting,
+} from './media-generation'
 import type { MediaCatalogModelOption } from '../../settings/media/queries/get-media-settings'
 
 test('normalizeResKey normalizes common resolution strings properly', () => {
@@ -15,29 +21,44 @@ test('normalizeResKey normalizes common resolution strings properly', () => {
   assert.equal(normalizeResKey('1920x1080'), '1080p')
 })
 
-test('extractBillingLines parses lines from nested billing object and validates positive prices', () => {
+test('extractBillingLines strictly allows image/second/video/clip, divides quantity > 0, and rejects tokens/invalid lines', () => {
   const pricing = {
     billing: {
       status: 'verified',
       lines: [
         { billable: 'image_output', unit: 'image', price_usd: 0.03, conditions: { resolution: '1k' } },
-        { billable: 'image_output', unit: 'image', price_usd: '0.06', conditions: { resolution: '2k' } },
-        { billable: 'invalid', unit: 'image', price_usd: -5 },
+        { billable: 'image_output', unit: 'image', price_usd: 30, quantity: 1000, conditions: { resolution: '2k' } },
+        { billable: 'image_output', unit: 'token', price_usd: 0.00003 }, // Token unit MUST be rejected
+        { billable: 'image_output', unit: 'image', price_usd: 0, conditions: { resolution: '1k' } }, // Zero price is valid finite
+        { billable: 'image_output', unit: 'image', price_usd: -5 }, // Negative price rejected
+        { billable: 'image_output', unit: 'image', price_usd: 10, quantity: 0 }, // Non-positive quantity rejected
+        { billable: 'video_output', unit: 'second', price_usd: 0.05, conditions: { resolution: '720p' } },
+        { billable: 'video_output', unit: 'clip', price_usd: 1.20 },
         null,
       ],
     },
   }
   const lines = extractBillingLines(pricing)
-  assert.equal(lines.length, 2)
-  assert.equal(lines[0].billable, 'image_output')
+  // Expected valid lines:
+  // 1: 0.03 (qty 1)
+  // 2: 30 / 1000 = 0.03 (qty 1000)
+  // 3: 0.00 (qty 1)
+  // 4: 0.05 (second)
+  // 5: 1.20 (clip)
+  assert.equal(lines.length, 5)
   assert.equal(lines[0].priceUsd, 0.03)
-  assert.equal(lines[0].conditions?.resolution, '1k')
-  assert.equal(lines[1].priceUsd, 0.06)
-  assert.equal(lines[1].conditions?.resolution, '2k')
+  assert.equal(lines[0].unit, 'image')
+  assert.equal(lines[1].priceUsd, 0.03)
+  assert.equal(lines[1].quantity, 1000)
+  assert.equal(lines[2].priceUsd, 0)
+  assert.equal(lines[3].unit, 'second')
+  assert.equal(lines[3].priceUsd, 0.05)
+  assert.equal(lines[4].unit, 'clip')
+  assert.equal(lines[4].priceUsd, 1.20)
 })
 
 test('calculateGenerationCost returns unavailable when pricing metadata is missing, empty, or token-only', () => {
-  // Missing modelOption
+  // 1. Missing modelOption
   const res1 = calculateGenerationCost({
     modelOption: undefined,
     action: 'fine_tune',
@@ -47,7 +68,7 @@ test('calculateGenerationCost returns unavailable when pricing metadata is missi
   assert.equal(res1.isAvailable, false)
   assert.equal(res1.formattedTotal, 'Pricing unavailable')
 
-  // Empty pricing object
+  // 2. Empty pricing object
   const res2 = calculateGenerationCost({
     modelOption: {
       id: 'test-model',
@@ -64,7 +85,7 @@ test('calculateGenerationCost returns unavailable when pricing metadata is missi
   })
   assert.equal(res2.isAvailable, false)
 
-  // Token-only pricing (e.g. 0.00003 per token) should NOT be fabricated as flat image price
+  // 3. Token-only pricing (e.g. unit 'token') MUST NOT be fabricated as flat image price
   const res3 = calculateGenerationCost({
     modelOption: {
       id: 'token-model',
@@ -90,7 +111,7 @@ test('calculateGenerationCost returns unavailable when pricing metadata is missi
   assert.equal(res3.formattedTotal, 'Pricing unavailable')
 })
 
-test('calculateGenerationCost matches image resolution condition and computes dynamic quantity costs', () => {
+test('calculateGenerationCost handles resolution mismatch without arbitrary fallback', () => {
   const modelOption: MediaCatalogModelOption = {
     id: 'imagen-3',
     provider: 'google',
@@ -109,34 +130,148 @@ test('calculateGenerationCost matches image resolution condition and computes dy
     },
   }
 
-  // 1k resolution, 1 variant
-  const single1k = calculateGenerationCost({
+  // Requesting 4k resolution when model metadata only declares 1k and 2k
+  // Must NOT arbitrarily fall back to the 1k line!
+  const mismatch = calculateGenerationCost({
+    modelOption,
+    action: 'fine_tune',
+    count: 1,
+    settings: { resolution: '4k' },
+  })
+  assert.equal(mismatch.isAvailable, false)
+  assert.equal(mismatch.formattedTotal, 'Pricing unavailable')
+
+  // Requesting matching 2k resolution matches accurately
+  const match2k = calculateGenerationCost({
+    modelOption,
+    action: 'fine_tune',
+    count: 1,
+    settings: { resolution: '2k' },
+  })
+  assert.equal(match2k.isAvailable, true)
+  assert.equal(match2k.unitPrice, 0.06)
+  assert.equal(match2k.totalPrice, 0.06)
+})
+
+test('calculateGenerationCost scales billing quantity and multi-output requests correctly', () => {
+  const modelOption: MediaCatalogModelOption = {
+    id: 'batch-model',
+    provider: 'google',
+    model: 'batch-model',
+    display_name: 'Batch Model',
+    kind: 'image_generation',
+    ready: true,
+    pricing: {
+      billing: {
+        status: 'verified',
+        lines: [
+          { billable: 'image_output', unit: 'image', price_usd: 50, quantity: 1000, conditions: { resolution: '1k' } },
+        ],
+      },
+    },
+  }
+
+  const res = calculateGenerationCost({
+    modelOption,
+    action: 'iterate',
+    count: 4,
+    settings: { resolution: '1k' },
+  })
+  assert.equal(res.isAvailable, true)
+  assert.equal(res.unitPrice, 0.05) // 50 / 1000 = 0.05 per image
+  assert.equal(res.totalPrice, 0.20) // 0.05 * 4 = 0.20
+  assert.equal(res.formattedTotal, '$0.20')
+})
+
+test('calculateGenerationCost rejects lines with unknown or non-standard conditions', () => {
+  const modelOption: MediaCatalogModelOption = {
+    id: 'unknown-cond-model',
+    provider: 'google',
+    model: 'unknown-cond',
+    display_name: 'Unknown Cond Model',
+    kind: 'image_generation',
+    ready: true,
+    pricing: {
+      billing: {
+        status: 'verified',
+        lines: [
+          // Line with unknown condition key
+          { billable: 'image_output', unit: 'image', price_usd: 0.01, conditions: { resolution: '1k', unsupported_custom_option: true } },
+          // Line with non-standard service tier
+          { billable: 'image_output', unit: 'image', price_usd: 0.01, conditions: { resolution: '1k', service_tier: 'flex' } },
+        ],
+      },
+    },
+  }
+
+  const res = calculateGenerationCost({
     modelOption,
     action: 'fine_tune',
     count: 1,
     settings: { resolution: '1k' },
   })
-  assert.equal(single1k.isAvailable, true)
-  assert.equal(single1k.isVerified, true)
-  assert.equal(single1k.unitPrice, 0.03)
-  assert.equal(single1k.totalPrice, 0.03)
-  assert.equal(single1k.formattedTotal, '$0.03')
-
-  // 2k resolution, 4 variants
-  const four2k = calculateGenerationCost({
-    modelOption,
-    action: 'iterate',
-    count: 4,
-    settings: { resolution: '2k' },
-  })
-  assert.equal(four2k.isAvailable, true)
-  assert.equal(four2k.unitPrice, 0.06)
-  assert.equal(four2k.totalPrice, 0.24)
-  assert.equal(four2k.formattedTotal, '$0.24')
+  assert.equal(res.isAvailable, false)
 })
 
-test('calculateGenerationCost scales video output across duration and resolution with second-based unit rate', () => {
-  const modelOption: MediaCatalogModelOption = {
+test('calculateGenerationCost treats zero price as valid finite price and rejects negative prices', () => {
+  // Free / zero price model
+  const freeModel: MediaCatalogModelOption = {
+    id: 'free-model',
+    provider: 'google',
+    model: 'free-model',
+    display_name: 'Free Model',
+    kind: 'image_generation',
+    ready: true,
+    pricing: {
+      billing: {
+        status: 'verified',
+        lines: [
+          { billable: 'image_output', unit: 'image', price_usd: 0, conditions: { resolution: '1k' } },
+        ],
+      },
+    },
+  }
+
+  const freeRes = calculateGenerationCost({
+    modelOption: freeModel,
+    action: 'fine_tune',
+    count: 4,
+    settings: { resolution: '1k' },
+  })
+  assert.equal(freeRes.isAvailable, true)
+  assert.equal(freeRes.unitPrice, 0)
+  assert.equal(freeRes.totalPrice, 0)
+  assert.equal(freeRes.formattedTotal, '$0.00')
+
+  // Negative price model
+  const negModel: MediaCatalogModelOption = {
+    id: 'neg-model',
+    provider: 'google',
+    model: 'neg-model',
+    display_name: 'Negative Model',
+    kind: 'image_generation',
+    ready: true,
+    pricing: {
+      billing: {
+        status: 'verified',
+        lines: [
+          { billable: 'image_output', unit: 'image', price_usd: -0.05, conditions: { resolution: '1k' } },
+        ],
+      },
+    },
+  }
+
+  const negRes = calculateGenerationCost({
+    modelOption: negModel,
+    action: 'fine_tune',
+    count: 1,
+    settings: { resolution: '1k' },
+  })
+  assert.equal(negRes.isAvailable, false)
+})
+
+test('calculateGenerationCost requires explicit duration for second-based video and does not assume 8s', () => {
+  const videoModel: MediaCatalogModelOption = {
     id: 'veo-3.1',
     provider: 'google',
     model: 'veo-3.1',
@@ -147,36 +282,88 @@ test('calculateGenerationCost scales video output across duration and resolution
       billing: {
         status: 'verified',
         lines: [
-          { billable: 'video_output', unit: 'second', price_usd: 0.05, conditions: { resolution: '720p', service_tier: 'standard' } },
-          { billable: 'video_output', unit: 'second', price_usd: 0.08, conditions: { resolution: '1080p', service_tier: 'standard' } },
+          { billable: 'video_output', unit: 'second', price_usd: 0.05, conditions: { resolution: '720p' } },
         ],
       },
     },
   }
 
-  // 720p at 8s duration
-  const video720p = calculateGenerationCost({
-    modelOption,
+  // Missing duration: must NOT assume 8 seconds! Price is unavailable.
+  const missingDur = calculateGenerationCost({
+    modelOption: videoModel,
     action: 'to_video',
     count: 1,
-    settings: { resolution: '720p', durationSeconds: 8 },
+    settings: { resolution: '720p' }, // No durationSeconds provided
   })
-  assert.equal(video720p.isAvailable, true)
-  assert.equal(video720p.isVerified, true)
-  assert.equal(video720p.unitPrice, 0.05)
-  assert.equal(video720p.totalPrice, 0.40)
-  assert.equal(video720p.formattedTotal, '$0.40')
+  assert.equal(missingDur.isAvailable, false)
 
-  // 1080p at 16s duration across 2 continuations
-  const video1080p = calculateGenerationCost({
-    modelOption,
-    action: 'next_scene',
+  // With explicit duration: calculates accurately
+  const explicitDur = calculateGenerationCost({
+    modelOption: videoModel,
+    action: 'to_video',
     count: 2,
-    settings: { resolution: '1080p', durationSeconds: 16 },
+    settings: { resolution: '720p', durationSeconds: 6 },
   })
-  assert.equal(video1080p.isAvailable, true)
-  assert.equal(video1080p.unitPrice, 0.08)
-  // 0.08 * 16 = 1.28 per clip * 2 clips = 2.56
-  assert.equal(video1080p.totalPrice, 2.56)
-  assert.equal(video1080p.formattedTotal, '$2.56')
+  assert.equal(explicitDur.isAvailable, true)
+  assert.equal(explicitDur.unitPrice, 0.05)
+  // 0.05 * 6s = 0.30 per clip * 2 clips = 0.60
+  assert.equal(explicitDur.totalPrice, 0.60)
+  assert.equal(explicitDur.formattedTotal, '$0.60')
+})
+
+test('resolveInitialSetting only preselects source ratio/resolution/duration if in supported options', () => {
+  // Aspect ratio in supported options with case normalization returning actual metadata spelling
+  const ratioMatch = resolveInitialSetting(' 16:9 ', ['16:9', '9:16'], '16:9')
+  assert.equal(ratioMatch, '16:9')
+
+  // Aspect ratio not in supported options falls back to model default
+  const ratioFallback = resolveInitialSetting('21:9', ['16:9', '1:1'], '16:9')
+  assert.equal(ratioFallback, '16:9')
+
+  // Aspect ratio when metadata is absent (empty/undefined supportedValues) returns undefined
+  const ratioAbsent = resolveInitialSetting('16:9', undefined, undefined)
+  assert.equal(ratioAbsent, undefined)
+
+  // Resolution in supported options with normalization ('1024x1024' -> '1k')
+  const resMatch = resolveInitialSetting('1024x1024', ['1k', '2k', '4k'], '1k')
+  assert.equal(resMatch, '1k')
+
+  // Resolution case normalized returning metadata casing
+  const resCaseMatch = resolveInitialSetting('1K', ['1k', '2k'], '1k')
+  assert.equal(resCaseMatch, '1k')
+
+  // Resolution not in supported options falls back to default
+  const resFallback = resolveInitialSetting('4k', ['1k', '2k'], '1k')
+  assert.equal(resFallback, '1k')
+
+  // Resolution when metadata absent returns undefined (no invented options)
+  const resAbsent = resolveInitialSetting('1080p', [], '1080p')
+  assert.equal(resAbsent, undefined)
+
+  // Duration matching supported durations
+  const durMatch = resolveInitialSetting(8, [4, 6, 8], 8)
+  assert.equal(durMatch, 8)
+
+  // Duration not in supported durations falls back to default
+  const durFallback = resolveInitialSetting(15, [4, 6, 8], 6)
+  assert.equal(durFallback, 6)
+
+  // Duration when metadata absent returns undefined
+  const durAbsent = resolveInitialSetting(8, undefined, undefined)
+  assert.equal(durAbsent, undefined)
+})
+
+test('resolveInitialModel preselects source model if available in model list, else falls back to default', () => {
+  const available: MediaCatalogModelOption[] = [
+    { id: 'veo-3.1-generate-preview', provider: 'google', model: 'veo-3.1-generate-preview', display_name: 'Veo 3.1', kind: 'video_generation', ready: true },
+    { id: 'gemini-omni-1.1-flash', provider: 'google', model: 'gemini-omni-1.1-flash', display_name: 'Gemini Omni', kind: 'video_generation', ready: true },
+  ]
+
+  // Source model matches
+  const match = resolveInitialModel('gemini-omni-1.1-flash', available, 'veo-3.1-generate-preview')
+  assert.equal(match, 'gemini-omni-1.1-flash')
+
+  // Source model absent / not available falls back to default
+  const fallback = resolveInitialModel('unknown-model', available, 'veo-3.1-generate-preview')
+  assert.equal(fallback, 'veo-3.1-generate-preview')
 })
