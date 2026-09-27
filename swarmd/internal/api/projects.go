@@ -2719,9 +2719,6 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				if v, ok := patch["sync_warning"].(string); ok {
 					t.SyncWarning = strings.TrimSpace(v)
 				}
-				if v, ok := patch["git_status"].(string); ok {
-					t.GitStatus = strings.TrimSpace(v)
-				}
 				if v, ok := patch["unintegrated_commits"].(float64); ok {
 					t.UnintegratedCommits = int(v)
 				}

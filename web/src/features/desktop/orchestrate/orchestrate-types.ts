@@ -299,6 +299,7 @@ export interface RunningTask {
   baseBranch?: string
   unintegratedCommits?: number
   behindCommits?: number
+  gitStatus?: string
   isIntegrated?: boolean
   diffSummary?: string
   isDirty?: boolean
