@@ -590,67 +590,93 @@ test('AgentModelControl contract: supports task-scoped apply, save-default, and 
 
 test('Task acceptance payload and revision guard contract', () => {
   // Requirement: Task acceptance must supply exact backend revision guards { session_id, plan_id, definition_revision }.
-  // Prevents stale or rejected plans from being accepted without revision consistency.
+  // Only exact backend plan binding definition_revision is authoritative.
+  // Missing binding must remain missing and block plan acceptance.
+  // Prefer binding.session_id for plan guard rather than unrelated execution session.
 
-  // Case 1: Big feature task with bound structured plan
-  const planTask = {
-    sessionId: 'sess-big-001',
+  // Case 1: Big feature task with normalized camelCase planBinding
+  const camelTask = {
+    sessionId: 'sess-exec-001',
     planBinding: {
-      plan_id: 'plan-auth-v1',
-      definition_revision: 3,
-      session_id: 'sess-big-001',
+      planId: 'plan-auth-v1',
+      definitionRevision: 3,
+      sessionId: 'sess-big-001',
     },
   }
-  const payload1 = buildTaskAcceptancePayload(planTask)
-  assert.equal(payload1.session_id, 'sess-big-001')
+  const payload1 = buildTaskAcceptancePayload(camelTask)
+  assert.equal(payload1.session_id, 'sess-big-001', 'Must prefer binding.sessionId over task.sessionId for plan guard')
   assert.equal(payload1.plan_id, 'plan-auth-v1')
   assert.equal(payload1.definition_revision, 3)
 
-  // Case 2: Direct coder task without plan binding
+  // Case 2: Backend raw task with snake_case plan_binding
+  const snakeTask = {
+    session_id: 'sess-exec-002',
+    plan_binding: {
+      plan_id: 'plan-auth-v2',
+      definition_revision: 5,
+      session_id: 'sess-big-002',
+    },
+  }
+  const payload2 = buildTaskAcceptancePayload(snakeTask)
+  assert.equal(payload2.session_id, 'sess-big-002', 'Must prefer binding.session_id over task.session_id for plan guard')
+  assert.equal(payload2.plan_id, 'plan-auth-v2')
+  assert.equal(payload2.definition_revision, 5)
+
+  // Case 3 (Negative test): Missing plan binding must NOT fall back to planDocument version or task revision
+  const noBindingTask = {
+    sessionId: 'sess-plan-orphan',
+    revision: 12,
+    planDocument: {
+      id: 'plan-doc-orphan',
+      version: 9,
+    },
+  }
+  const payloadNoBinding = buildTaskAcceptancePayload(noBindingTask)
+  assert.equal(payloadNoBinding.session_id, 'sess-plan-orphan')
+  assert.equal(payloadNoBinding.plan_id, undefined, 'Missing binding must not infer plan_id from planDocument')
+  assert.equal(
+    payloadNoBinding.definition_revision,
+    undefined,
+    'Missing binding must remain missing and not infer definition_revision from doc.version or task.revision'
+  )
+
+  // Case 4 (Negative test): Binding missing definition revision must NOT fall back to doc.version or task.revision
+  const bindingWithoutRevTask = {
+    sessionId: 'sess-exec-003',
+    revision: 15,
+    planBinding: {
+      planId: 'plan-auth-v3',
+      sessionId: 'sess-plan-003',
+    },
+    planDocument: {
+      id: 'plan-auth-v3',
+      version: 5,
+    },
+  }
+  const payloadNoRev = buildTaskAcceptancePayload(bindingWithoutRevTask)
+  assert.equal(payloadNoRev.session_id, 'sess-plan-003', 'Must prefer binding.sessionId')
+  assert.equal(payloadNoRev.plan_id, 'plan-auth-v3')
+  assert.equal(
+    payloadNoRev.definition_revision,
+    undefined,
+    'Binding without definition revision must remain undefined, never falling back to doc.version or task.revision'
+  )
+
+  // Case 5: Direct coder task without plan binding
   const coderTask = {
     sessionId: 'sess-coder-002',
     planBinding: undefined,
   }
-  const payload2 = buildTaskAcceptancePayload(coderTask)
-  assert.equal(payload2.session_id, 'sess-coder-002')
-  assert.equal(payload2.plan_id, undefined)
-  assert.equal(payload2.definition_revision, undefined)
+  const payloadCoder = buildTaskAcceptancePayload(coderTask)
+  assert.equal(payloadCoder.session_id, 'sess-coder-002')
+  assert.equal(payloadCoder.plan_id, undefined)
+  assert.equal(payloadCoder.definition_revision, undefined)
 
-  // Case 3: Empty or null task
-  const payload3 = buildTaskAcceptancePayload(null)
-  assert.equal(payload3.session_id, undefined)
-  assert.equal(payload3.plan_id, undefined)
-  assert.equal(payload3.definition_revision, undefined)
-
-  // Case 4: Backend raw task with snake_case plan_binding
-  const snakeTask = {
-    session_id: 'sess-big-003',
-    plan_binding: {
-      plan_id: 'plan-auth-v2',
-      definition_revision: 5,
-      session_id: 'sess-big-003',
-    },
-  }
-  const payload4 = buildTaskAcceptancePayload(snakeTask)
-  assert.equal(payload4.session_id, 'sess-big-003')
-  assert.equal(payload4.plan_id, 'plan-auth-v2')
-  assert.equal(payload4.definition_revision, 5)
-
-  // Case 5: Plan document version fallback when definition_revision is on document
-  const docFallbackTask = {
-    sessionId: 'sess-big-004',
-    planBinding: {
-      plan_id: 'plan-auth-v3',
-    },
-    planDocument: {
-      id: 'plan-auth-v3',
-      version: 2,
-    },
-  }
-  const payload5 = buildTaskAcceptancePayload(docFallbackTask)
-  assert.equal(payload5.session_id, 'sess-big-004')
-  assert.equal(payload5.plan_id, 'plan-auth-v3')
-  assert.equal(payload5.definition_revision, 2)
+  // Case 6: Empty or null task
+  const payloadNull = buildTaskAcceptancePayload(null)
+  assert.equal(payloadNull.session_id, undefined)
+  assert.equal(payloadNull.plan_id, undefined)
+  assert.equal(payloadNull.definition_revision, undefined)
 })
 
 test('Missing workspace handling and resolution for code and audit tasks', () => {
@@ -869,6 +895,30 @@ test('OrchestrateView source contracts: no premature execution, duplicate-click 
   assert.ok(
     source.includes('id: clientTaskId'),
     'Deploy request must pass client task ID for idempotent retries'
+  )
+  assert.ok(
+    source.includes('isDeployingTaskRef.current'),
+    'Deploy submit must use synchronous ref lock against double-click'
+  )
+  assert.ok(
+    source.includes('approvingTaskIdsRef.current.has(taskId)'),
+    'Approve task must use synchronous ref lock against double-click'
+  )
+  assert.ok(
+    source.includes('pendingDeployRequestRef'),
+    'Deploy submit must retain stable request identity across retries for unchanged payload'
+  )
+  assert.ok(
+    source.includes('pendingApproveRequestIdsRef'),
+    'Approve task must retain request identity across retries'
+  )
+  assert.ok(
+    source.includes('approve:${taskId}:${targetTask.revision || 1}:${acceptanceBody.plan_id}:r${acceptanceBody.definition_revision}'),
+    'Approve task must construct exact binding-derived request identity when plan binding is present'
+  )
+  assert.ok(
+    !source.includes('hasReviewRequired || (!isLifecycleActive && sess && (sess.message_count ?? 0) > 1)'),
+    'Must not infer task needs_review status from session.message_count'
   )
   assert.ok(
     source.includes("targetTask.status === 'planning'"),

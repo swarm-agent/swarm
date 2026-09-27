@@ -746,7 +746,7 @@ function MinimalTaskCard({
   const isPlanTaskWithoutStructuredPlan = Boolean(
     (task.agentType === 'plan' || task.outcomeType === 'plan_spec') && !hasStructuredPlan
   )
-  const taskSessionId = task.sessionId || task.planBinding?.session_id || (task as any).plan_binding?.session_id
+  const taskSessionId = task.planBinding?.sessionId || task.planBinding?.session_id || (task as any).plan_binding?.sessionId || (task as any).plan_binding?.session_id || task.sessionId
 
   const programJobs = useMemo(() => {
     if (!isTaskProgram) return []
@@ -3513,6 +3513,13 @@ export function OrchestrateView({
   }, [taskIntent, featureSize, newTaskModelOverride])
 
   const leaseManagerRef = useRef<TaskSessionLeaseManager | null>(null)
+  const isDeployingTaskRef = useRef(false)
+  const approvingTaskIdsRef = useRef<Set<string>>(new Set())
+  const pendingDeployRequestRef = useRef<{
+    payloadKey: string
+    clientTaskId: string
+  } | null>(null)
+  const pendingApproveRequestIdsRef = useRef<Map<string, string>>(new Map())
   if (!leaseManagerRef.current) {
     leaseManagerRef.current = new TaskSessionLeaseManager({
       getControllerReady: requireDesktopV3RealtimeControllerReady,
@@ -3525,7 +3532,7 @@ export function OrchestrateView({
   const activeTaskSessionIds = useMemo(() => {
     const ids = new Set(computeActiveTaskSessionIds(tasks, selectedTaskId))
     for (const t of tasks) {
-      const sid = t.sessionId || t.planBinding?.session_id || (t as any).plan_binding?.session_id
+      const sid = t.planBinding?.sessionId || t.planBinding?.session_id || (t as any).plan_binding?.sessionId || (t as any).plan_binding?.session_id || t.sessionId
       if (sid && (t.status === 'planning' || t.status === 'pending_approval')) {
         ids.add(sid)
       }
@@ -4189,6 +4196,7 @@ export function OrchestrateView({
 
   // Submit Task Proposal with Intent, Visual Controls & Auto-Approve Policy
   const handleDeployModalSubmit = async () => {
+    if (isDeployingTaskRef.current) return
     const prompt = newTaskPrompt.trim()
     if (!prompt || !selectedProject?.id) return
     const scenePrompts = taskIntent === 'video' ? videoScenePrompts.split('\n').map(value => value.trim()).filter(Boolean) : []
@@ -4230,6 +4238,7 @@ export function OrchestrateView({
       setVideoAttachmentError(null)
     }
 
+    isDeployingTaskRef.current = true
     setIsDeployingTask(true)
     setDeployError(null)
     try {
@@ -4258,10 +4267,41 @@ export function OrchestrateView({
       if ((taskIntent === 'code' || taskIntent === 'audit' || targetAgent === 'plan') && (!resolvedWorkspace || resolvedWorkspace === '.' || isExplicitDotWorkspace)) {
         setDeployError("A valid workspace directory is required to launch code/audit tasks (dot '.' is not allowed).")
         setIsDeployingTask(false)
+        isDeployingTaskRef.current = false
         return
       }
 
-      const clientTaskId = `task_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
+      const deployPayload = {
+        prompt,
+        workspace_path: resolvedWorkspace || undefined,
+        intent: taskIntent,
+        feature_size: taskIntent === 'code' ? featureSize : undefined,
+        agent: targetAgent,
+        video_type: taskIntent === 'video' ? (scenePrompts.length ? 'multipart' : 'single') : undefined,
+        operation: taskIntent === 'video' ? 'create' : undefined,
+        scenes: scenePrompts.length ? scenePrompts.map((scenePrompt, index) => ({ scene_number: index + 1, title: `Scene ${index + 1}`, prompt: scenePrompt })) : undefined,
+        scenes_count: scenePrompts.length || undefined,
+        enhance_prompt: taskIntent === 'video' ? enhanceVideoPrompt : undefined,
+        aspect_ratio: taskIntent === 'image' ? imageAspectRatio : taskIntent === 'video' ? (videoAspectRatio && supportedVideoAspectRatios.includes(videoAspectRatio) ? videoAspectRatio : undefined) : undefined,
+        resolution: taskIntent === 'image' ? imageResolution : taskIntent === 'video' ? (videoResolution && supportedVideoResolutions.includes(videoResolution) ? videoResolution : undefined) : undefined,
+        variant_count: taskIntent === 'image' ? imageVariants : taskIntent === 'video' ? videoClipCount : undefined,
+        duration_seconds: taskIntent === 'sound' ? soundDuration : taskIntent === 'video' ? (videoDuration > 0 && supportedVideoDurations.includes(videoDuration) ? videoDuration : undefined) : undefined,
+        model: qualifiedModel,
+        auto_approve: autoApproveTask,
+        deploy_session: true,
+        attached_media: attachedMediaForTask,
+      }
+      const payloadKey = `${selectedProject.id}:${JSON.stringify(deployPayload)}`
+
+      let clientTaskId: string
+      if (pendingDeployRequestRef.current && pendingDeployRequestRef.current.payloadKey === payloadKey) {
+        // Reuse stable request identity across retry of unchanged submitted payload
+        clientTaskId = pendingDeployRequestRef.current.clientTaskId
+      } else {
+        clientTaskId = `task_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
+        pendingDeployRequestRef.current = { payloadKey, clientTaskId }
+      }
+
       const res = await requestJson<{ task: any }>(`/v3/projects/${selectedProject.id}/tasks`, {
         method: 'POST',
         headers: {
@@ -4270,29 +4310,14 @@ export function OrchestrateView({
         },
         body: JSON.stringify({
           id: clientTaskId,
-          prompt,
-          workspace_path: resolvedWorkspace || undefined,
-          intent: taskIntent,
-          feature_size: taskIntent === 'code' ? featureSize : undefined,
-          agent: targetAgent,
-          video_type: taskIntent === 'video' ? (scenePrompts.length ? 'multipart' : 'single') : undefined,
-          operation: taskIntent === 'video' ? 'create' : undefined,
-          scenes: scenePrompts.length ? scenePrompts.map((scenePrompt, index) => ({ scene_number: index + 1, title: `Scene ${index + 1}`, prompt: scenePrompt })) : undefined,
-          scenes_count: scenePrompts.length || undefined,
-          enhance_prompt: taskIntent === 'video' ? enhanceVideoPrompt : undefined,
-          aspect_ratio: taskIntent === 'image' ? imageAspectRatio : taskIntent === 'video' ? (videoAspectRatio && supportedVideoAspectRatios.includes(videoAspectRatio) ? videoAspectRatio : undefined) : undefined,
-          resolution: taskIntent === 'image' ? imageResolution : taskIntent === 'video' ? (videoResolution && supportedVideoResolutions.includes(videoResolution) ? videoResolution : undefined) : undefined,
-          variant_count: taskIntent === 'image' ? imageVariants : taskIntent === 'video' ? videoClipCount : undefined,
-          duration_seconds: taskIntent === 'sound' ? soundDuration : taskIntent === 'video' ? (videoDuration > 0 && supportedVideoDurations.includes(videoDuration) ? videoDuration : undefined) : undefined,
-          model: qualifiedModel,
-          auto_approve: autoApproveTask,
-          deploy_session: true,
-          attached_media: attachedMediaForTask,
+          ...deployPayload,
         }),
       })
       if (!res?.task) {
         throw new Error('Task creation succeeded without returned task authority')
       }
+      // Reset stable request identity only upon successful response
+      pendingDeployRequestRef.current = null
       desktopProjects.invalidate(selectedProject.id)
       if (res.task.session_id) {
         setActiveSessionId(res.task.session_id)
@@ -4307,6 +4332,7 @@ export function OrchestrateView({
       console.warn('Deploy task failed:', err)
       setDeployError(err?.message || 'Failed to deploy task. Please verify workspace and parameters.')
     } finally {
+      isDeployingTaskRef.current = false
       setIsDeployingTask(false)
     }
   }
@@ -4327,13 +4353,19 @@ export function OrchestrateView({
   // Approve pending task and start execution run
   const handleApproveTask = async (taskId: string) => {
     if (!selectedProject?.id) return
-    if (approvingTaskIds.has(taskId)) return
+    if (approvingTaskIdsRef.current.has(taskId) || approvingTaskIds.has(taskId)) return
 
     const targetTask = tasks.find((t) => t.id === taskId) || liveTasks.find((t) => t.id === taskId)
     if (!targetTask) return
 
     // Pre-flight validation against illegal or premature approval
-    if (targetTask.status === 'planning' && (!targetTask.planBinding?.plan_id && !(targetTask as any).plan_binding?.plan_id)) {
+    if (
+      targetTask.status === 'planning' &&
+      (!targetTask.planBinding?.planId &&
+        !targetTask.planBinding?.plan_id &&
+        !(targetTask as any).plan_binding?.planId &&
+        !(targetTask as any).plan_binding?.plan_id)
+    ) {
       setTaskActionErrors((prev) => ({
         ...prev,
         [taskId]: 'Cannot approve task while Plan agent is still investigating. Please wait for the structured plan to be submitted.',
@@ -4359,8 +4391,17 @@ export function OrchestrateView({
     }
 
     const acceptanceBody = buildTaskAcceptancePayload(targetTask)
-    const hasPlanBinding = Boolean(targetTask.planBinding?.plan_id || (targetTask as any).plan_binding?.plan_id)
-    if (hasPlanBinding && (!acceptanceBody.plan_id || acceptanceBody.definition_revision == null || acceptanceBody.definition_revision <= 0)) {
+    const isPlanTask = Boolean(
+      targetTask.agentType === 'plan' ||
+      targetTask.outcomeType === 'plan_spec' ||
+      targetTask.planBinding?.planId ||
+      targetTask.planBinding?.plan_id ||
+      (targetTask as any).plan_binding?.planId ||
+      (targetTask as any).plan_binding?.plan_id ||
+      targetTask.planDocument ||
+      (targetTask as any).plan_document
+    )
+    if (isPlanTask && (!acceptanceBody.plan_id || acceptanceBody.definition_revision == null || acceptanceBody.definition_revision <= 0)) {
       setTaskActionErrors((prev) => ({
         ...prev,
         [taskId]: 'Plan definition revision guard is missing or stale. Cannot execute without verified plan revision.',
@@ -4368,11 +4409,26 @@ export function OrchestrateView({
       return
     }
 
-    // Duplicate-click prevention & in-flight guard: do NOT prematurely flip status to in_progress!
+    // Duplicate-click prevention & in-flight guard: synchronous ref lock + React state
+    approvingTaskIdsRef.current.add(taskId)
     setApprovingTaskIds((prev) => new Set(prev).add(taskId))
     handleClearTaskError(taskId)
 
-    const approveRequestId = `approve:${taskId}:${targetTask.revision || 1}:${Date.now()}`
+    // Acceptance request identity: exact binding-derived or retained across retry
+    let approveRequestId: string
+    if (acceptanceBody.plan_id && typeof acceptanceBody.definition_revision === 'number') {
+      // Deterministic exact binding-derived request identity
+      approveRequestId = `approve:${taskId}:${targetTask.revision || 1}:${acceptanceBody.plan_id}:r${acceptanceBody.definition_revision}`
+    } else {
+      // Retained across retry
+      const retainedId = pendingApproveRequestIdsRef.current.get(taskId)
+      if (retainedId) {
+        approveRequestId = retainedId
+      } else {
+        approveRequestId = `approve:${taskId}:${targetTask.revision || 1}:${Math.random().toString(36).slice(2, 9)}`
+        pendingApproveRequestIdsRef.current.set(taskId, approveRequestId)
+      }
+    }
 
     try {
       const res = await requestJson<{ status: string; task: any; message?: string }>(
@@ -4390,6 +4446,7 @@ export function OrchestrateView({
       if (!res?.task) {
         throw new Error(res?.message || 'Approve succeeded without returned task authority')
       }
+      pendingApproveRequestIdsRef.current.delete(taskId)
 
       const mapped = mapBackendTask(res.task)
       desktopProjects.updateTasks(selectedProject.id, (prev) =>
@@ -4410,6 +4467,7 @@ export function OrchestrateView({
       setTaskActionErrors((prev) => ({ ...prev, [taskId]: errMsg }))
       desktopProjects.invalidate(selectedProject.id)
     } finally {
+      approvingTaskIdsRef.current.delete(taskId)
       setApprovingTaskIds((prev) => {
         const next = new Set(prev)
         next.delete(taskId)
@@ -4579,7 +4637,7 @@ export function OrchestrateView({
         status = task.status
       } else if (isLifecycleActive) {
         status = 'running'
-      } else if (hasReviewRequired || (!isLifecycleActive && sess && (sess.message_count ?? 0) > 1)) {
+      } else if (hasReviewRequired) {
         // Agent finished execution! Transition to needs_review, never directly to completed!
         if (task.isIntegrated) {
           status = 'completed'
@@ -4668,7 +4726,7 @@ export function OrchestrateView({
         ...task,
         status,
         planDocument: planDoc || (task as any).planDocument || (task as any).plan_document,
-        planBinding: task.planBinding || (task as any).plan_binding || (planRecord ? { plan_id: planRecord.id, definition_revision: planRecord.version, session_id: task.sessionId } : undefined),
+        planBinding: task.planBinding || (task as any).plan_binding,
         currentFocus: currentFocus || task.currentFocus,
         currentTool: currentTool || task.currentTool,
         liveAssistantText: liveAssistantText || task.liveAssistantText,

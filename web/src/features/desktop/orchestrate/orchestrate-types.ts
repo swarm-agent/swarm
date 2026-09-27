@@ -342,20 +342,21 @@ export interface RunningTask {
   task_program_status?: TaskProgramRecord
 
   // Structured Plan Document & Plan Binding
-  planBinding?: {
-    plan_id?: string
-    definition_revision?: number
-    session_id?: string
-    receipt?: string
-  }
-  plan_binding?: {
-    plan_id?: string
-    definition_revision?: number
-    session_id?: string
-    receipt?: string
-  }
+  planBinding?: ProjectTaskPlanBinding
+  plan_binding?: ProjectTaskPlanBinding
   planDocument?: any
   plan_document?: any
+}
+
+export interface ProjectTaskPlanBinding {
+  planId?: string
+  definitionRevision?: number
+  sessionId?: string
+  receipt?: string
+  // raw snake_case compatibility
+  plan_id?: string
+  definition_revision?: number
+  session_id?: string
 }
 
 export interface BackendModelPreference {
