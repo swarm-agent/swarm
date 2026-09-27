@@ -1,6 +1,7 @@
 import { ensureDesktopSession } from '../../../app/api'
 import { desktopAutomationV2 } from '../runtime/desktop-automation-v2'
 import { desktopAutomations } from '../runtime/desktop-automations'
+import { desktopProjects } from '../runtime/desktop-projects'
 import {
   getDesktopEnvironments,
   setDesktopEnvironmentsRealtimeRetainer,
@@ -135,6 +136,7 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
           desktopAutomations.invalidate()
           desktopAutomationV2.invalidate()
           getDesktopEnvironments().invalidate()
+          desktopProjects.invalidate()
         }
         const mappedStatus = mapTransportStatus(status)
         getDesktopEnvironments().onRealtimeStatus(
@@ -154,6 +156,7 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
         desktopAutomations.invalidate()
         desktopAutomationV2.invalidate()
         getDesktopEnvironments().invalidate()
+        desktopProjects.invalidate()
         if ((frame as { bootstrap_required?: boolean } | null)?.bootstrap_required) {
           await this.bootstrap({
             preferredSessionId: this.getSnapshot().selectedSessionId,
@@ -433,6 +436,7 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
       desktopAutomations.acceptFrame(frame)
       desktopAutomationV2.acceptFrame(frame)
       getDesktopEnvironments().acceptFrame(frame)
+      desktopProjects.acceptFrame(frame)
       if (frame.kind === 'event' || frame.kind === 'workset.session.discovered' || frame.kind === 'workset.session.updated' || frame.kind === 'workset.session.removed') {
         // Cache listeners and this post-commit path can observe the same frame.
         // Coalesce both signals so an event burst performs one reconciliation.

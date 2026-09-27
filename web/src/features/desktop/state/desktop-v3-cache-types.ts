@@ -576,12 +576,14 @@ export type RealtimeKind =
   | 'task.lifecycle.updated'
   | 'workspace.catalog.updated'
   | 'auth.credentials.updated'
+  | 'project.updated'
 
 export interface RealtimeMessage {
   protocol?: 'v3.realtime' | string
   protocol_version?: 1 | number
   kind: RealtimeKind | string
   session_id?: string
+  project_id?: string
   workset_id?: string
   subscription_id?: string
   endpoint_cursor?: string
@@ -1006,6 +1008,7 @@ export interface DesktopV3CacheState {
   automationPages: import('./desktop-automation-state').AutomationPages
   automationV2Pages: import('./desktop-automation-v2-state').AutomationV2Pages
   environmentsByWorkspace?: Record<string, import('./desktop-environments-state').DesktopEnvironmentWorkspaceState>
+  projectsState?: import('./desktop-projects-state').DesktopProjectsState
   version: 1
   syncScopesById: Record<string, SyncScopeCache>
   realtime: RealtimeCache
@@ -1062,6 +1065,7 @@ export type DesktopV3CacheAction =
   | import('./desktop-automation-state').AutomationCacheAction
   | import('./desktop-automation-v2-state').AutomationV2CacheAction
   | import('./desktop-environments-state').DesktopEnvironmentsAction
+  | import('./desktop-projects-state').DesktopProjectsAction
   | { type: 'desktopV3Cache.applyHydrationPlan'; reusedSessionIds: string[]; hydrateSessionIds: string[] }
   | { type: 'desktopV3Cache.markHydrateInFlight'; sessionIds: string[]; inFlight: boolean }
   | { type: 'desktopSidebarBootstrap.update'; patch: Partial<DesktopSidebarBootstrapState> }
