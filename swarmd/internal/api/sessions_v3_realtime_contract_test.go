@@ -67,6 +67,7 @@ func TestV3RealtimeContractRoundTripsEveryMessageType(t *testing.T) {
 		{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindResume, EndpointCursor: "cursor-12"},
 		{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindAuthDenied, SessionID: "session-b", ErrorCode: "auth_denied", Error: "not authorized"},
 		{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindSlowConsumer, SessionID: "session-a", NextSeq: 13, ErrorCode: "slow_consumer", Reason: "reconnect required"},
+		{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindProjectUpdated, EndpointCursor: "cursor-12", SessionID: "__project__:account:proj-1", ProjectID: "proj-1"},
 	}
 	for _, msg := range messages {
 		raw, err := json.Marshal(msg)

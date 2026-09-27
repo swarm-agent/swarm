@@ -88,6 +88,7 @@ type V3SessionMutationInput struct {
 	AutomationPermission         *AutomationPermissionResolution `json:"-"`
 	automationRealtime           *automationRealtimeMutation
 	environmentRealtime          *environmentRealtimeMutation
+	projectRealtime              *projectRealtimeMutation
 	automationAcceptance         *AutomationApproval
 	AutomationProposal           *AutomationPlanReference      `json:"automation_proposal,omitempty"`
 	SessionID                    string                        `json:"session_id"`
@@ -1092,6 +1093,11 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 	}
 	if input.environmentRealtime != nil {
 		if err := setEnvironmentRealtimeMutationInBatch(batch, input.AccountScopeID, input.environmentRealtime); err != nil {
+			return V3SessionMutationResult{}, err
+		}
+	}
+	if input.projectRealtime != nil {
+		if err := setProjectRealtimeMutationInBatch(batch, input.AccountScopeID, input.projectRealtime); err != nil {
 			return V3SessionMutationResult{}, err
 		}
 	}

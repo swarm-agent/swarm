@@ -29,6 +29,9 @@ type Store struct {
 	environmentsMu         sync.Mutex
 	environmentPublisherMu sync.RWMutex
 	environmentPublisher   func(V3RealtimeOutboxRecord)
+	projectsMu             sync.Mutex
+	projectPublisherMu     sync.RWMutex
+	projectPublisher       func(V3RealtimeOutboxRecord)
 }
 
 func Open(path string) (*Store, error) {
