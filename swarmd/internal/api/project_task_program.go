@@ -151,6 +151,9 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 		if tier == "" {
 			tier = "complex"
 		}
+		if agentName == "" {
+			agentName = "swarm"
+		}
 	}
 
 	routed, rErr := pebblestore.RouteAndPlanProjectTaskWithOptions(pebblestore.TaskPlanOptions{

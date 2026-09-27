@@ -7,12 +7,26 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"swarm/packages/swarmd/internal/identity"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
 )
+
+func (f *matrixTestFixture) seedProjectTask(task *pebblestore.ProjectTaskRecord) {
+	_ = f.server.sessions.Store().PutProjectTask(f.accountID, task)
+	_, _ = f.server.sessions.Store().UpdateProject(f.accountID, task.ProjectID, func(pr *pebblestore.ProjectRecord) error {
+		for _, tid := range pr.ActiveTaskIDs {
+			if tid == task.ID {
+				return nil
+			}
+		}
+		pr.ActiveTaskIDs = append(pr.ActiveTaskIDs, task.ID)
+		return nil
+	})
+}
 
 // Requirement: Malformed JSON bodies sent to task approval must be rejected with 400 Bad Request,
 // preventing silent fallback or execution with unintended/empty guards.
@@ -28,19 +42,38 @@ func TestProjectTaskApprove_MalformedJSONRejected(t *testing.T) {
 	projID := f.createProject(t)
 	p := identity.Principal{Type: "user", UserID: f.userID, AccountScopeID: f.accountID}
 
-	// Create a small coder task
-	w := f.callAPI(http.MethodPost, "/"+projID+"/tasks", map[string]any{
-		"title":  "Direct coder task",
-		"prompt": "Implement fix",
-		"agent":  "coder",
-	}, p)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("create task failed %d: %s", w.Code, w.Body.String())
+	taskID := "task-approve-malformed"
+	sessID := "session-approve-malformed"
+	sess := pebblestore.SessionSnapshot{
+		ID:                 sessID,
+		UserID:             f.userID,
+		AccountScopeID:     f.accountID,
+		WorkspacePath:      "/repo/root",
+		WorktreeEnabled:    true,
+		WorktreeRootPath:   "/mock/worktrees/agent-ws",
+		WorktreeBranch:     "agent/test-task",
+		WorktreeBaseBranch: "dev",
+		CreatedAt:          time.Now().UnixMilli(),
+		UpdatedAt:          time.Now().UnixMilli(),
 	}
-	var resp map[string]any
-	_ = json.Unmarshal(w.Body.Bytes(), &resp)
-	taskMap := resp["task"].(map[string]any)
-	taskID := taskMap["id"].(string)
+	_ = f.server.sessions.Store().PutSession(sess)
+	task := &pebblestore.ProjectTaskRecord{
+		ID:             taskID,
+		ProjectID:      projID,
+		AccountID:      f.accountID,
+		Title:          "Direct coder task",
+		Prompt:         "Implement fix",
+		Agent:          "coder",
+		Status:         "pending_approval",
+		SessionID:      sessID,
+		WorkspacePath:  "/mock/worktrees/agent-ws",
+		WorktreeBranch: "agent/test-task",
+		BaseBranch:     "dev",
+		BaseCommit:     "base-commit-sha-001",
+		CreatedAt:      time.Now().UnixMilli(),
+		UpdatedAt:      time.Now().UnixMilli(),
+	}
+	f.seedProjectTask(task)
 
 	// Case 1: Malformed JSON syntax (truncated JSON)
 	wBadSyntax := f.callAPI(http.MethodPost, "/"+projID+"/tasks/"+taskID+"/approve", "{invalid-json-payload", p)
@@ -130,27 +163,72 @@ func TestProjectTaskApprove_IdempotentRetryAfterPlanLifecycleIncrements(t *testi
 	projID := f.createProject(t)
 	p := identity.Principal{Type: "user", UserID: f.userID, AccountScopeID: f.accountID}
 
+	taskID := "task-plan-idempotent"
+	sessID := "session-plan-idempotent"
+	planID := "plan-idempotent-01"
+
 	doc := &pebblestore.SessionPlanDocument{
-		ID:    "plan-idempotent-01",
+		ID:    planID,
 		Title: "Plan Idempotent Test",
 		Info:  pebblestore.SessionPlanInfo{Goal: "Verify idempotent approval"},
 		Checkpoints: []pebblestore.SessionPlanCheckpoint{
-			{ID: "cp-1", Title: "Checkpoint 1"},
+			{
+				ID:                 "cp-1",
+				Title:              "Checkpoint 1",
+				Order:              1,
+				Tasks:              []string{"Implement idempotent test"},
+				AcceptanceCriteria: []string{"Idempotency verified"},
+			},
 		},
 	}
-	w := f.callAPI(http.MethodPost, "/"+projID+"/tasks", map[string]any{
-		"title":         "Idempotent plan task",
-		"prompt":        "Idempotent prompt",
-		"plan_document": doc,
-	}, p)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("create task failed %d: %s", w.Code, w.Body.String())
+	sess := pebblestore.SessionSnapshot{
+		ID:             sessID,
+		UserID:         f.userID,
+		AccountScopeID: f.accountID,
+		WorkspacePath:  "/repo/root",
+		Mode:           sessionruntime.ModePlan,
+		Metadata: map[string]any{
+			"project_id": projID,
+			"task_id":    taskID,
+		},
+		CreatedAt: time.Now().UnixMilli(),
+		UpdatedAt: time.Now().UnixMilli(),
 	}
-	var resp map[string]any
-	_ = json.Unmarshal(w.Body.Bytes(), &resp)
-	taskMap := resp["task"].(map[string]any)
-	taskID := taskMap["id"].(string)
-	sessID := taskMap["session_id"].(string)
+	_ = f.server.sessions.Store().PutSession(sess)
+	planSnap := pebblestore.SessionPlanSnapshot{
+		ID:             planID,
+		SessionID:      sessID,
+		UserID:         f.userID,
+		AccountScopeID: f.accountID,
+		Title:          "Plan Idempotent Test",
+		Plan:           "# Plan Idempotent Test\n\nVerify idempotent approval",
+		Document:       doc,
+		Status:         "pending_approval",
+		ApprovalState:  "pending_approval",
+		Version:        1,
+		CreatedAt:      time.Now().UnixMilli(),
+		UpdatedAt:      time.Now().UnixMilli(),
+	}
+	_ = f.server.sessions.Store().PutPlan(planSnap)
+	task := &pebblestore.ProjectTaskRecord{
+		ID:             taskID,
+		ProjectID:      projID,
+		AccountID:      f.accountID,
+		Title:          "Idempotent plan task",
+		Prompt:         "Idempotent prompt",
+		Agent:          "swarm",
+		Status:         "pending_approval",
+		SessionID:      sessID,
+		WorkspacePath:  "/repo/root",
+		PlanBinding: &pebblestore.ProjectTaskPlanBinding{
+			SessionID:          sessID,
+			PlanID:             planID,
+			DefinitionRevision: 1,
+		},
+		CreatedAt: time.Now().UnixMilli(),
+		UpdatedAt: time.Now().UnixMilli(),
+	}
+	f.seedProjectTask(task)
 
 	// 1. Initial approval succeeds
 	wApprove := f.callAPI(http.MethodPost, "/"+projID+"/tasks/"+taskID+"/approve", tool.ProjectTaskApprovalGuards{
@@ -229,35 +307,86 @@ func TestProjectTaskApprove_GuardedCanonicalRevision(t *testing.T) {
 	projID := f.createProject(t)
 	p := identity.Principal{Type: "user", UserID: f.userID, AccountScopeID: f.accountID}
 
+	taskID := "task-plan-guard"
+	sessID := "session-plan-guard"
+	planID := "plan-guard-01"
+
 	doc1 := &pebblestore.SessionPlanDocument{
-		ID:    "plan-guard-01",
+		ID:    planID,
 		Title: "Plan Revision 1",
 		Info:  pebblestore.SessionPlanInfo{Goal: "Build auth"},
 		Checkpoints: []pebblestore.SessionPlanCheckpoint{
-			{ID: "cp-1", Title: "Checkpoint 1"},
+			{
+				ID:                 "cp-1",
+				Title:              "Checkpoint 1",
+				Order:              1,
+				Tasks:              []string{"Build auth"},
+				AcceptanceCriteria: []string{"Auth works"},
+			},
 		},
 	}
-	w := f.callAPI(http.MethodPost, "/"+projID+"/tasks", map[string]any{
-		"title":         "Guarded plan task",
-		"prompt":        "Auth plan",
-		"plan_document": doc1,
-	}, p)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("create task failed %d: %s", w.Code, w.Body.String())
+	sess := pebblestore.SessionSnapshot{
+		ID:             sessID,
+		UserID:         f.userID,
+		AccountScopeID: f.accountID,
+		WorkspacePath:  "/repo/root",
+		Mode:           sessionruntime.ModePlan,
+		Metadata: map[string]any{
+			"project_id": projID,
+			"task_id":    taskID,
+		},
+		CreatedAt: time.Now().UnixMilli(),
+		UpdatedAt: time.Now().UnixMilli(),
 	}
-	var resp map[string]any
-	_ = json.Unmarshal(w.Body.Bytes(), &resp)
-	taskMap := resp["task"].(map[string]any)
-	taskID := taskMap["id"].(string)
-	sessID := taskMap["session_id"].(string)
+	_ = f.server.sessions.Store().PutSession(sess)
+	planSnap1 := pebblestore.SessionPlanSnapshot{
+		ID:             planID,
+		SessionID:      sessID,
+		UserID:         f.userID,
+		AccountScopeID: f.accountID,
+		Title:          "Plan Revision 1",
+		Plan:           "# Plan Revision 1\n\nBuild auth",
+		Document:       doc1,
+		Status:         "pending_approval",
+		ApprovalState:  "pending_approval",
+		Version:        1,
+		CreatedAt:      time.Now().UnixMilli(),
+		UpdatedAt:      time.Now().UnixMilli(),
+	}
+	_ = f.server.sessions.Store().PutPlan(planSnap1)
+	task := &pebblestore.ProjectTaskRecord{
+		ID:             taskID,
+		ProjectID:      projID,
+		AccountID:      f.accountID,
+		Title:          "Guarded plan task",
+		Prompt:         "Auth plan",
+		Agent:          "swarm",
+		Status:         "pending_approval",
+		SessionID:      sessID,
+		WorkspacePath:  "/repo/root",
+		PlanBinding: &pebblestore.ProjectTaskPlanBinding{
+			SessionID:          sessID,
+			PlanID:             planID,
+			DefinitionRevision: 1,
+		},
+		CreatedAt: time.Now().UnixMilli(),
+		UpdatedAt: time.Now().UnixMilli(),
+	}
+	f.seedProjectTask(task)
 
 	// 1. Submit Rev 2 via SubmitProjectTaskPlan to bump the canonical plan version to 2
 	doc2 := &pebblestore.SessionPlanDocument{
-		ID:    "plan-guard-01",
+		ID:    planID,
 		Title: "Plan Revision 2",
 		Info:  pebblestore.SessionPlanInfo{Goal: "Build auth with MFA"},
 		Checkpoints: []pebblestore.SessionPlanCheckpoint{
-			{ID: "cp-1", Title: "Checkpoint 1 with MFA"},
+			{
+				ID:                 "cp-1",
+				Title:              "Checkpoint 1 with MFA",
+				Order:              1,
+				Tasks:              []string{"Build auth with MFA"},
+				AcceptanceCriteria: []string{"MFA works"},
+			},
 		},
 	}
 	subResult2, err := f.server.SubmitProjectTaskPlan(context.Background(), sessionruntime.ProjectTaskPlanSubmissionInput{
@@ -266,6 +395,7 @@ func TestProjectTaskApprove_GuardedCanonicalRevision(t *testing.T) {
 		ProjectID:      projID,
 		TaskID:         taskID,
 		SessionID:      sessID,
+		WorkspacePath:  "/repo/root",
 		Document:       doc2,
 		PlanText:       "# Plan Revision 2",
 		Title:          "Plan Revision 2",
@@ -350,26 +480,68 @@ func TestProjectTaskReject_NoPartialFailureOnBoundPlanError(t *testing.T) {
 	projID := f.createProject(t)
 	p := identity.Principal{Type: "user", UserID: f.userID, AccountScopeID: f.accountID}
 
+	taskID := "task-reject-no-partial"
+	sessID := "session-reject-no-partial"
+	planID := "plan-reject-01"
+
 	doc := &pebblestore.SessionPlanDocument{
-		ID:    "plan-reject-01",
+		ID:    planID,
 		Title: "Plan To Reject",
 		Info:  pebblestore.SessionPlanInfo{Goal: "Verify atomic rejection"},
 		Checkpoints: []pebblestore.SessionPlanCheckpoint{
-			{ID: "cp-1", Title: "Checkpoint 1"},
+			{
+				ID:                 "cp-1",
+				Title:              "Checkpoint 1",
+				Order:              1,
+				Tasks:              []string{"Reject checkpoint"},
+				AcceptanceCriteria: []string{"Reject verified"},
+			},
 		},
 	}
-	w := f.callAPI(http.MethodPost, "/"+projID+"/tasks", map[string]any{
-		"title":         "Atomic rejection task",
-		"prompt":        "Verify atomic reject",
-		"plan_document": doc,
-	}, p)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("create task failed %d: %s", w.Code, w.Body.String())
+	sess := pebblestore.SessionSnapshot{
+		ID:             sessID,
+		UserID:         f.userID,
+		AccountScopeID: f.accountID,
+		WorkspacePath:  "/repo/root",
+		Mode:           sessionruntime.ModePlan,
+		CreatedAt:      time.Now().UnixMilli(),
+		UpdatedAt:      time.Now().UnixMilli(),
 	}
-	var resp map[string]any
-	_ = json.Unmarshal(w.Body.Bytes(), &resp)
-	taskMap := resp["task"].(map[string]any)
-	taskID := taskMap["id"].(string)
+	_ = f.server.sessions.Store().PutSession(sess)
+	planSnap := pebblestore.SessionPlanSnapshot{
+		ID:             planID,
+		SessionID:      sessID,
+		UserID:         f.userID,
+		AccountScopeID: f.accountID,
+		Title:          "Plan To Reject",
+		Plan:           "# Plan To Reject",
+		Document:       doc,
+		Status:         "pending_approval",
+		ApprovalState:  "pending_approval",
+		Version:        1,
+		CreatedAt:      time.Now().UnixMilli(),
+		UpdatedAt:      time.Now().UnixMilli(),
+	}
+	_ = f.server.sessions.Store().PutPlan(planSnap)
+	task := &pebblestore.ProjectTaskRecord{
+		ID:             taskID,
+		ProjectID:      projID,
+		AccountID:      f.accountID,
+		Title:          "Atomic rejection task",
+		Prompt:         "Verify atomic reject",
+		Agent:          "swarm",
+		Status:         "pending_approval",
+		SessionID:      sessID,
+		WorkspacePath:  "/repo/root",
+		PlanBinding: &pebblestore.ProjectTaskPlanBinding{
+			SessionID:          sessID,
+			PlanID:             planID,
+			DefinitionRevision: 1,
+		},
+		CreatedAt: time.Now().UnixMilli(),
+		UpdatedAt: time.Now().UnixMilli(),
+	}
+	f.seedProjectTask(task)
 
 	// Simulate broken bound plan by pointing PlanBinding to a non-existent plan ID
 	_, err := f.server.sessions.Store().UpdateProjectTask(f.accountID, projID, taskID, func(task *pebblestore.ProjectTaskRecord) error {
@@ -414,27 +586,68 @@ func TestProjectTaskReject_TaskUpdateFailureReconcilesBoundPlan(t *testing.T) {
 	projID := f.createProject(t)
 	p := identity.Principal{Type: "user", UserID: f.userID, AccountScopeID: f.accountID}
 
+	taskID := "task-reject-reconcile"
+	sessID := "session-reject-reconcile"
+	planID := "plan-reconcile-01"
+
 	doc := &pebblestore.SessionPlanDocument{
-		ID:    "plan-reconcile-01",
+		ID:    planID,
 		Title: "Plan To Reconcile",
 		Info:  pebblestore.SessionPlanInfo{Goal: "Verify reconciliation on task failure"},
 		Checkpoints: []pebblestore.SessionPlanCheckpoint{
-			{ID: "cp-1", Title: "Checkpoint 1"},
+			{
+				ID:                 "cp-1",
+				Title:              "Checkpoint 1",
+				Order:              1,
+				Tasks:              []string{"Reconcile task"},
+				AcceptanceCriteria: []string{"Reconcile verified"},
+			},
 		},
 	}
-	w := f.callAPI(http.MethodPost, "/"+projID+"/tasks", map[string]any{
-		"title":         "Reconcile rejection task",
-		"prompt":        "Verify reconcile reject",
-		"plan_document": doc,
-	}, p)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("create task failed %d: %s", w.Code, w.Body.String())
+	sess := pebblestore.SessionSnapshot{
+		ID:             sessID,
+		UserID:         f.userID,
+		AccountScopeID: f.accountID,
+		WorkspacePath:  "/repo/root",
+		Mode:           sessionruntime.ModePlan,
+		CreatedAt:      time.Now().UnixMilli(),
+		UpdatedAt:      time.Now().UnixMilli(),
 	}
-	var resp map[string]any
-	_ = json.Unmarshal(w.Body.Bytes(), &resp)
-	taskMap := resp["task"].(map[string]any)
-	taskID := taskMap["id"].(string)
-	sessID := taskMap["session_id"].(string)
+	_ = f.server.sessions.Store().PutSession(sess)
+	planSnap := pebblestore.SessionPlanSnapshot{
+		ID:             planID,
+		SessionID:      sessID,
+		UserID:         f.userID,
+		AccountScopeID: f.accountID,
+		Title:          "Plan To Reconcile",
+		Plan:           "# Plan To Reconcile",
+		Document:       doc,
+		Status:         "pending_approval",
+		ApprovalState:  "pending_approval",
+		Version:        1,
+		CreatedAt:      time.Now().UnixMilli(),
+		UpdatedAt:      time.Now().UnixMilli(),
+	}
+	_ = f.server.sessions.Store().PutPlan(planSnap)
+	task := &pebblestore.ProjectTaskRecord{
+		ID:             taskID,
+		ProjectID:      projID,
+		AccountID:      f.accountID,
+		Title:          "Reconcile rejection task",
+		Prompt:         "Verify reconcile reject",
+		Agent:          "swarm",
+		Status:         "pending_approval",
+		SessionID:      sessID,
+		WorkspacePath:  "/repo/root",
+		PlanBinding: &pebblestore.ProjectTaskPlanBinding{
+			SessionID:          sessID,
+			PlanID:             planID,
+			DefinitionRevision: 1,
+		},
+		CreatedAt: time.Now().UnixMilli(),
+		UpdatedAt: time.Now().UnixMilli(),
+	}
+	f.seedProjectTask(task)
 
 	// Verify initial plan state is pending_approval
 	initialPlan, ok, err := f.server.sessions.Store().GetPlan(sessID, "plan-reconcile-01")
@@ -502,27 +715,68 @@ func TestProjectTaskReject_MalformedJSONAndRevisionGuards(t *testing.T) {
 	projID := f.createProject(t)
 	p := identity.Principal{Type: "user", UserID: f.userID, AccountScopeID: f.accountID}
 
+	taskID := "task-reject-guards"
+	sessID := "session-reject-guards"
+	planID := "plan-reject-guard"
+
 	doc := &pebblestore.SessionPlanDocument{
-		ID:    "plan-reject-guard",
+		ID:    planID,
 		Title: "Guard Reject Plan",
 		Info:  pebblestore.SessionPlanInfo{Goal: "Guard reject"},
 		Checkpoints: []pebblestore.SessionPlanCheckpoint{
-			{ID: "cp-1", Title: "Step 1"},
+			{
+				ID:                 "cp-1",
+				Title:              "Step 1",
+				Order:              1,
+				Tasks:              []string{"Guard step"},
+				AcceptanceCriteria: []string{"Guard criterion"},
+			},
 		},
 	}
-	w := f.callAPI(http.MethodPost, "/"+projID+"/tasks", map[string]any{
-		"title":         "Guarded reject task",
-		"prompt":        "Guard test",
-		"plan_document": doc,
-	}, p)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("create task failed %d: %s", w.Code, w.Body.String())
+	sess := pebblestore.SessionSnapshot{
+		ID:             sessID,
+		UserID:         f.userID,
+		AccountScopeID: f.accountID,
+		WorkspacePath:  "/repo/root",
+		Mode:           sessionruntime.ModePlan,
+		CreatedAt:      time.Now().UnixMilli(),
+		UpdatedAt:      time.Now().UnixMilli(),
 	}
-	var resp map[string]any
-	_ = json.Unmarshal(w.Body.Bytes(), &resp)
-	taskMap := resp["task"].(map[string]any)
-	taskID := taskMap["id"].(string)
-	sessID := taskMap["session_id"].(string)
+	_ = f.server.sessions.Store().PutSession(sess)
+	planSnap := pebblestore.SessionPlanSnapshot{
+		ID:             planID,
+		SessionID:      sessID,
+		UserID:         f.userID,
+		AccountScopeID: f.accountID,
+		Title:          "Guard Reject Plan",
+		Plan:           "# Guard Reject Plan",
+		Document:       doc,
+		Status:         "pending_approval",
+		ApprovalState:  "pending_approval",
+		Version:        1,
+		CreatedAt:      time.Now().UnixMilli(),
+		UpdatedAt:      time.Now().UnixMilli(),
+	}
+	_ = f.server.sessions.Store().PutPlan(planSnap)
+	task := &pebblestore.ProjectTaskRecord{
+		ID:             taskID,
+		ProjectID:      projID,
+		AccountID:      f.accountID,
+		Title:          "Guarded reject task",
+		Prompt:         "Guard test",
+		Agent:          "swarm",
+		Status:         "pending_approval",
+		SessionID:      sessID,
+		WorkspacePath:  "/repo/root",
+		PlanBinding: &pebblestore.ProjectTaskPlanBinding{
+			SessionID:          sessID,
+			PlanID:             planID,
+			DefinitionRevision: 1,
+		},
+		CreatedAt: time.Now().UnixMilli(),
+		UpdatedAt: time.Now().UnixMilli(),
+	}
+	f.seedProjectTask(task)
 
 	// 1. Malformed JSON body on reject returns 400
 	wBadJSON := f.callAPI(http.MethodPost, "/"+projID+"/tasks/"+taskID+"/reject", "{invalid-json", p)
@@ -607,26 +861,40 @@ func TestProjectTaskReopen_MalformedJSONAndRevisionGuards(t *testing.T) {
 	projID := f.createProject(t)
 	p := identity.Principal{Type: "user", UserID: f.userID, AccountScopeID: f.accountID}
 
-	// Create direct coder task
-	w := f.callAPI(http.MethodPost, "/"+projID+"/tasks", map[string]any{
-		"title":        "Reopen Direct Task",
-		"prompt":       "Direct coder task for reopen test",
-		"agent":        "coder",
-		"auto_approve": true,
-	}, p)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("create task failed %d: %s", w.Code, w.Body.String())
+	// Seed completed direct coder task
+	taskID := "task-reopen-direct"
+	sessID := "session-reopen-direct"
+	sess := pebblestore.SessionSnapshot{
+		ID:                 sessID,
+		UserID:             f.userID,
+		AccountScopeID:     f.accountID,
+		WorkspacePath:      "/repo/root",
+		WorktreeEnabled:    true,
+		WorktreeRootPath:   "/mock/worktrees/agent-ws",
+		WorktreeBranch:     "agent/test-task",
+		WorktreeBaseBranch: "dev",
+		CreatedAt:          time.Now().UnixMilli(),
+		UpdatedAt:          time.Now().UnixMilli(),
 	}
-	var resp map[string]any
-	_ = json.Unmarshal(w.Body.Bytes(), &resp)
-	taskMap := resp["task"].(map[string]any)
-	taskID := taskMap["id"].(string)
-
-	// Complete task explicitly
-	wComp := f.callAPI(http.MethodPost, "/"+projID+"/tasks/"+taskID+"/complete", nil, p)
-	if wComp.Code != http.StatusOK {
-		t.Fatalf("complete task failed %d: %s", wComp.Code, wComp.Body.String())
+	_ = f.server.sessions.Store().PutSession(sess)
+	task := &pebblestore.ProjectTaskRecord{
+		ID:             taskID,
+		ProjectID:      projID,
+		AccountID:      f.accountID,
+		Title:          "Reopen Direct Task",
+		Prompt:         "Direct coder task for reopen test",
+		Agent:          "coder",
+		Status:         "completed",
+		Revision:       1,
+		SessionID:      sessID,
+		WorkspacePath:  "/mock/worktrees/agent-ws",
+		WorktreeBranch: "agent/test-task",
+		BaseBranch:     "dev",
+		BaseCommit:     "base-commit-sha-001",
+		CreatedAt:      time.Now().UnixMilli(),
+		UpdatedAt:      time.Now().UnixMilli(),
 	}
+	f.seedProjectTask(task)
 
 	// 1. Malformed JSON on reopen returns 400
 	wBadJSON := f.callAPI(http.MethodPost, "/"+projID+"/tasks/"+taskID+"/reopen", "{invalid-json", p)
@@ -684,23 +952,24 @@ func TestProjectTaskReopen_MalformedJSONAndRevisionGuards(t *testing.T) {
 	}
 
 	// 4. Plan tasks in pending_approval or with PlanBinding cannot bypass approval via reopen
-	doc := &pebblestore.SessionPlanDocument{
-		ID:    "plan-reopen-block",
-		Title: "Plan Reopen Block",
-		Info:  pebblestore.SessionPlanInfo{Goal: "Verify plan reopen block"},
-		Checkpoints: []pebblestore.SessionPlanCheckpoint{
-			{ID: "cp-1", Title: "Checkpoint 1"},
+	pTaskID := "task-plan-reopen-block"
+	pTask := &pebblestore.ProjectTaskRecord{
+		ID:            pTaskID,
+		ProjectID:     projID,
+		AccountID:     f.accountID,
+		Title:         "Plan task cannot reopen directly",
+		Prompt:        "Plan task",
+		Agent:         "swarm",
+		Status:        "pending_approval",
+		WorkspacePath: "/repo/root",
+		PlanBinding: &pebblestore.ProjectTaskPlanBinding{
+			PlanID:             "plan-reopen-block",
+			DefinitionRevision: 1,
 		},
+		CreatedAt: time.Now().UnixMilli(),
+		UpdatedAt: time.Now().UnixMilli(),
 	}
-	wPlan := f.callAPI(http.MethodPost, "/"+projID+"/tasks", map[string]any{
-		"title":         "Plan task cannot reopen directly",
-		"prompt":        "Plan task",
-		"plan_document": doc,
-	}, p)
-	var planResp map[string]any
-	_ = json.Unmarshal(wPlan.Body.Bytes(), &planResp)
-	pTaskMap := planResp["task"].(map[string]any)
-	pTaskID := pTaskMap["id"].(string)
+	f.seedProjectTask(pTask)
 
 	wPlanReopen := f.callAPI(http.MethodPost, "/"+projID+"/tasks/"+pTaskID+"/reopen", map[string]any{
 		"feedback": "Skip approval and run",
@@ -724,18 +993,25 @@ func TestProjectTaskCompleteAndRefine_MalformedJSONAndRevisionGuards(t *testing.
 	p := identity.Principal{Type: "user", UserID: f.userID, AccountScopeID: f.accountID}
 	crossPrincipal := identity.Principal{Type: "user", UserID: "rogue", AccountScopeID: "rogue-acct"}
 
-	w := f.callAPI(http.MethodPost, "/"+projID+"/tasks", map[string]any{
-		"title":  "Complete and Refine Task",
-		"prompt": "Test complete and refine guards",
-		"agent":  "coder",
-	}, p)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("create task failed %d: %s", w.Code, w.Body.String())
+	taskID := "task-complete-refine"
+	sessID := "session-complete-refine"
+	task := &pebblestore.ProjectTaskRecord{
+		ID:             taskID,
+		ProjectID:      projID,
+		AccountID:      f.accountID,
+		Title:          "Complete and Refine Task",
+		Prompt:         "Test complete and refine guards",
+		Agent:          "coder",
+		Status:         "in_progress",
+		Revision:       1,
+		SessionID:      sessID,
+		WorkspacePath:  "/repo/root",
+		WorktreeBranch: "agent/test-task",
+		BaseBranch:     "dev",
+		CreatedAt:      time.Now().UnixMilli(),
+		UpdatedAt:      time.Now().UnixMilli(),
 	}
-	var resp map[string]any
-	_ = json.Unmarshal(w.Body.Bytes(), &resp)
-	taskMap := resp["task"].(map[string]any)
-	taskID := taskMap["id"].(string)
+	f.seedProjectTask(task)
 
 	// Complete: Malformed JSON -> 400
 	wCompBad := f.callAPI(http.MethodPost, "/"+projID+"/tasks/"+taskID+"/complete", "{invalid-json", p)

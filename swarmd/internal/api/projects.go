@@ -1062,6 +1062,7 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 		UpdatedAt:       now,
 	}
 
+	var admission *pebblestore.WorktreeAdmissionEvidence
 	if targetAgent == "coder" || task.OutcomeType == "code_pr" || task.OutcomeType == "bug_patch" {
 		if s.worktrees == nil {
 			return errors.New("worktree service is not configured; coding task requires worktree isolation")
@@ -1077,33 +1078,49 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 		sessionSnapshot.WorktreeRootPath = strings.TrimSpace(alloc.WorkspacePath)
 		sessionSnapshot.WorktreeBaseBranch = strings.TrimSpace(alloc.BaseBranch)
 		sessionSnapshot.WorktreeBranch = strings.TrimSpace(alloc.BranchName)
+		sessionSnapshot.WorkspacePath = alloc.WorkspacePath
 		task.WorkspacePath = alloc.WorkspacePath
 		task.WorktreeBranch = alloc.BranchName
 		task.BaseBranch = alloc.BaseBranch
 		task.BaseCommit = alloc.BaseCommit
 		task.WorktreeName = strings.TrimPrefix(alloc.BranchName, "agent/")
+		sourcePath := wsPath
+		if allocRepoRoot := strings.TrimSpace(alloc.RepoRoot); allocRepoRoot != "" {
+			sourcePath = allocRepoRoot
+		}
 		metadata["base_commit"] = alloc.BaseCommit
-		metadata["swarm_v3_source_workspace_path"] = alloc.RepoRoot
+		metadata["swarm_v3_source_workspace_path"] = sourcePath
+		metadata["swarm_v3_runtime_workspace_path"] = alloc.WorkspacePath
+		metadata["swarm_v3_worktree_owner_session_id"] = sessionID
 		sessionSnapshot.Metadata = metadata
 		available := true
 		sessionSnapshot.WorkspaceGrants = append(sessionSnapshot.WorkspaceGrants, pebblestore.WorkspaceGrant{
 			Kind: pebblestore.WorkspaceGrantWorktree, Path: alloc.WorkspacePath, Available: &available,
 		})
 		sessionSnapshot.WorkspaceUsage = pebblestore.WorkspaceUsageFromGrants(sessionSnapshot.WorkspaceGrants)
+		admission = &pebblestore.WorktreeAdmissionEvidence{
+			Kind:           "allocated",
+			Path:           alloc.WorkspacePath,
+			SourcePath:     sourcePath,
+			OwnerSessionID: sessionID,
+			Branch:         alloc.BranchName,
+			DelegatedCoder: true,
+		}
 	}
 
 	createKey := fmt.Sprintf("project-task:create:%s:%s", task.ProjectID, task.ID)
 	_, createErr := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
-		SessionID:       sessionID,
-		UserID:          p.UserID,
-		AccountScopeID:  p.AccountScopeID,
-		ClientRequestID: createKey,
-		IdempotencyKey:  createKey,
-		PayloadHash:     createKey,
-		RequestHash:     createKey,
-		Kind:            sessionruntime.SessionMutationCreateSession,
-		Session:         &sessionSnapshot,
-		NowUnixMs:       now,
+		WorktreeAdmission: admission,
+		SessionID:         sessionID,
+		UserID:            p.UserID,
+		AccountScopeID:    p.AccountScopeID,
+		ClientRequestID:   createKey,
+		IdempotencyKey:    createKey,
+		PayloadHash:       createKey,
+		RequestHash:       createKey,
+		Kind:              sessionruntime.SessionMutationCreateSession,
+		Session:           &sessionSnapshot,
+		NowUnixMs:         now,
 	})
 	if createErr != nil {
 		return createErr
@@ -3355,7 +3372,10 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			if _, err := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
 				SessionID: existingTask.SessionID, UserID: p.UserID, AccountScopeID: p.AccountScopeID,
 				ClientRequestID: key, IdempotencyKey: key, PayloadHash: key, RequestHash: key,
-				Kind: sessionruntime.SessionMutationSavePlan, PlanSave: &pebblestore.V3PlanSaveMutation{Plan: planCopy},
+				Kind: sessionruntime.SessionMutationSavePlan, PlanSave: &pebblestore.V3PlanSaveMutation{
+					Plan:                  planCopy,
+					ExpectedParentVersion: boundPlan.Version,
+				},
 			}); err != nil {
 				writeError(w, http.StatusInternalServerError, err)
 				return
@@ -3373,12 +3393,31 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			// If updating the project task fails after the session plan was marked rejected, attempt to reconcile
 			// the session plan back to its prior state to minimize split-brain inconsistency.
 			if hasBoundPlan {
+				currPlan, currFound, getErr := db.GetPlan(existingTask.SessionID, existingTask.PlanBinding.PlanID)
+				if getErr != nil || !currFound {
+					writeError(w, http.StatusInternalServerError, fmt.Errorf("task update failed: %w; nonrecoverable plan rollback failed: bound plan lookup failed: %v", err, getErr))
+					return
+				}
+				// Verify canonical version and receipt: do not overwrite concurrent changes
+				if currPlan.Version != planCopy.Version ||
+					(existingTask.PlanBinding.Receipt != "" && currPlan.AcceptedDefinitionReceipt != existingTask.PlanBinding.Receipt) ||
+					currPlan.Status != "rejected" {
+					writeError(w, http.StatusInternalServerError, fmt.Errorf("task update failed: %w; nonrecoverable plan rollback: plan compensation skipped due to concurrent modification", err))
+					return
+				}
 				restoreKey := fmt.Sprintf("project-task:reject-reconcile:%s:%d:%d", taskID, existingTask.PlanBinding.DefinitionRevision, time.Now().UnixNano())
-				_, _ = s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+				_, restoreErr := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
 					SessionID: existingTask.SessionID, UserID: p.UserID, AccountScopeID: p.AccountScopeID,
 					ClientRequestID: restoreKey, IdempotencyKey: restoreKey, PayloadHash: restoreKey, RequestHash: restoreKey,
-					Kind: sessionruntime.SessionMutationSavePlan, PlanSave: &pebblestore.V3PlanSaveMutation{Plan: boundPlan},
+					Kind: sessionruntime.SessionMutationSavePlan, PlanSave: &pebblestore.V3PlanSaveMutation{
+						Plan:                  boundPlan,
+						ExpectedParentVersion: planCopy.Version,
+					},
 				})
+				if restoreErr != nil {
+					writeError(w, http.StatusInternalServerError, fmt.Errorf("task update failed: %w; nonrecoverable plan rollback failed: %v", err, restoreErr))
+					return
+				}
 			}
 			writeError(w, http.StatusInternalServerError, err)
 			return
