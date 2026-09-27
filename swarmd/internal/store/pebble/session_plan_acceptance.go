@@ -1,6 +1,8 @@
 package pebblestore
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,12 +16,15 @@ import (
 // It is persisted with the session mode transition and ordered realtime events
 // in one synced Pebble batch.
 type V3PlanAcceptanceMutation struct {
-	Plan             SessionPlanSnapshot  `json:"plan"`
-	ArchivedRevision *SessionPlanSnapshot `json:"archived_revision,omitempty"`
-	Session          SessionSnapshot      `json:"session"`
-	PlanEventPayload json.RawMessage      `json:"plan_event_payload"`
-	ModeEventPayload json.RawMessage      `json:"mode_event_payload"`
-	ModeMessage      *MessageSnapshot     `json:"mode_message,omitempty"`
+	Plan                      SessionPlanSnapshot  `json:"plan"`
+	ArchivedRevision          *SessionPlanSnapshot `json:"archived_revision,omitempty"`
+	Session                   SessionSnapshot      `json:"session"`
+	PlanEventPayload          json.RawMessage      `json:"plan_event_payload"`
+	ModeEventPayload          json.RawMessage      `json:"mode_event_payload"`
+	ModeMessage               *MessageSnapshot     `json:"mode_message,omitempty"`
+	ExpectedBindingRevision   int                  `json:"expected_binding_revision,omitempty"`
+	ExpectedReceipt           string               `json:"expected_receipt,omitempty"`
+	AcceptedDefinitionReceipt string               `json:"accepted_definition_receipt,omitempty"`
 }
 
 func (s *SessionStore) applyV3PlanAcceptanceMutation(input V3SessionMutationInput) (V3SessionMutationResult, error) {
@@ -39,10 +44,68 @@ func (s *SessionStore) applyV3PlanAcceptanceMutation(input V3SessionMutationInpu
 
 	unlockSession := s.store.sessionMutations.lockSessions(input.SessionID)
 	defer unlockSession()
-	if existing, found, err := s.GetPlan(input.SessionID, acceptance.Plan.ID); err != nil {
+	existing, found, err := s.GetPlan(input.SessionID, acceptance.Plan.ID)
+	if err != nil {
 		return V3SessionMutationResult{}, err
 	} else if found && existing.Document != nil && existing.Document.AutomationV2 != nil {
 		return V3SessionMutationResult{}, ErrAutomationV2Conflict
+	}
+	currentSession, foundSession, err := s.GetSession(input.SessionID)
+	if err != nil {
+		return V3SessionMutationResult{}, err
+	} else if !foundSession {
+		return V3SessionMutationResult{}, fmt.Errorf("session %q not found", input.SessionID)
+	}
+
+	acceptedReceipt := strings.TrimSpace(acceptance.AcceptedDefinitionReceipt)
+	if acceptedReceipt == "" && acceptance.ExpectedReceipt != "" {
+		acceptedReceipt = strings.TrimSpace(acceptance.ExpectedReceipt)
+	}
+	if acceptedReceipt == "" && acceptance.Plan.Document != nil {
+		rawDoc, _ := json.Marshal(acceptance.Plan.Document)
+		sum := sha256.Sum256(rawDoc)
+		acceptedReceipt = hex.EncodeToString(sum[:])
+	}
+
+	isAcceptedRetry := false
+	if found && (existing.Status == "approved" || existing.ApprovalState == "approved") {
+		if acceptedReceipt != "" && existing.AcceptedDefinitionReceipt != "" && existing.AcceptedDefinitionReceipt == acceptedReceipt {
+			isAcceptedRetry = true
+		} else if acceptance.ExpectedBindingRevision > 0 && (existing.Version >= acceptance.ExpectedBindingRevision || existing.ParentRevision >= acceptance.ExpectedBindingRevision) {
+			isAcceptedRetry = true
+		}
+	}
+
+	if isAcceptedRetry {
+		return V3SessionMutationResult{
+			SessionID:      input.SessionID,
+			ResponseStatus: V3SessionMutationStatusCompleted,
+			Session:        &currentSession,
+			Plan:           &existing,
+			Replayed:       true,
+		}, nil
+	}
+
+	if currentSession.Mode != "plan" && currentSession.Mode != "plan+bypass_permissions" {
+		return V3SessionMutationResult{}, fmt.Errorf("v3 plan acceptance requires session mode %q, got %q", "plan", currentSession.Mode)
+	}
+
+	if acceptance.ExpectedBindingRevision > 0 {
+		if !found {
+			return V3SessionMutationResult{}, fmt.Errorf("bound plan %q not found", acceptance.Plan.ID)
+		}
+		if existing.Version != acceptance.ExpectedBindingRevision {
+			return V3SessionMutationResult{}, fmt.Errorf("plan definition is stale (expected revision %d, current %d)", acceptance.ExpectedBindingRevision, existing.Version)
+		}
+	}
+
+	if acceptance.ExpectedReceipt != "" && found && existing.Document != nil {
+		rawDoc, _ := json.Marshal(existing.Document)
+		sum := sha256.Sum256(rawDoc)
+		existingReceipt := hex.EncodeToString(sum[:])
+		if existingReceipt != acceptance.ExpectedReceipt {
+			return V3SessionMutationResult{}, fmt.Errorf("plan definition receipt mismatch: expected %q, got %q", acceptance.ExpectedReceipt, existingReceipt)
+		}
 	}
 	idempotencyKey := KeyV3SessionOperationIdempotency(input.AccountScopeID, input.SessionID, input.Kind, input.ClientRequestID)
 	if existing, ok, err := s.getV3SessionIdempotencyRecordByKey(idempotencyKey); err != nil {
@@ -124,6 +187,9 @@ func (s *SessionStore) applyV3PlanAcceptanceMutation(input V3SessionMutationInpu
 	plan := acceptance.Plan
 	plan.Active = true
 	plan.UpdatedAt = now
+	if plan.AcceptedDefinitionReceipt == "" && acceptedReceipt != "" {
+		plan.AcceptedDefinitionReceipt = acceptedReceipt
+	}
 	membership := newV3RealtimeOutboxMembershipFromSession(session, now)
 
 	type eventSpec struct {
