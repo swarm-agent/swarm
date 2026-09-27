@@ -11,6 +11,7 @@ export interface MediaGenerationSettings {
 export type MediaGenerationAction = 'fine_tune' | 'iterate' | 'to_video' | 'next_scene'
 
 export interface MediaGenerationRequest {
+  requestId?: string
   item: MediaLibraryItem
   action: MediaGenerationAction
   deltaPrompt: string
@@ -21,6 +22,10 @@ export interface MediaGenerationRequest {
 
 export interface MediaGenerationJob {
   id: string
+  taskId?: string
+  prompt?: string
+  createdAt?: number
+  outputIds?: string[]
   sourceId: string
   title: string
   count: number

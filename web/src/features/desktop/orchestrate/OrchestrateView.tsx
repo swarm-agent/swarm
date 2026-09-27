@@ -2732,7 +2732,7 @@ export function OrchestrateView({
           t.deliverables?.some((d) => d.status === 'generating' || d.status === 'pending')
       ) ||
       localGenerationJobs.some(
-        (j) => !tasks.some((t) => t.id === j.id) && ['submitting', 'queued', 'in_progress', 'running'].includes(j.status)
+        (j) => !tasks.some((t) => t.id === j.taskId) && ['submitting', 'queued', 'in_progress', 'running'].includes(j.status)
       )
     )
   }, [tasks, localGenerationJobs])
@@ -3057,6 +3057,7 @@ export function OrchestrateView({
     scenesCount?: number
     soundtrack?: string
     autoDeploy?: boolean
+    requestId?: string
     model?: string
     settings?: MediaGenerationSettings
   }) => {
@@ -3124,11 +3125,13 @@ export function OrchestrateView({
       // 1-Click Fast Autonomous Execution: route and deploy immediately!
       setIsDeployingTask(true)
 
-      const tempJobId = `job_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
+      const tempJobId = options.requestId || crypto.randomUUID()
       const jobCount = targetIntent === 'image' ? (action === 'iterate' ? (variantCount || 5) : 1) : (variantCount || 1)
       const optimisticJob: MediaGenerationJob = {
         id: tempJobId,
         sourceId: item.id,
+        prompt: deltaPrompt || composedPrompt,
+        createdAt: Date.now(),
         title: `${action.replace('_', ' ')} (${jobCount}x)`,
         count: jobCount,
         status: 'submitting',
@@ -3166,7 +3169,7 @@ export function OrchestrateView({
               j.id === tempJobId
                 ? {
                     ...j,
-                    id: res.task.id,
+                    taskId: res.task.id,
                     status: res.task.status === 'in_progress' ? 'in_progress' : res.task.status || 'queued',
                     title: res.task.title || j.title,
                   }
@@ -3213,6 +3216,7 @@ export function OrchestrateView({
     async (request: MediaGenerationRequest): Promise<void> => {
       await handleQuickRouteMedia({
         item: request.item,
+        requestId: request.requestId,
         action: request.action,
         deltaPrompt: request.deltaPrompt,
         variantCount: request.variantCount,
@@ -3234,6 +3238,7 @@ export function OrchestrateView({
       seenTaskIds.add(t.id)
 
       for (const am of t.attachedMedia) {
+        const localJob = localGenerationJobs.find((job) => job.taskId === t.id && job.sourceId === am.id)
         let status: string = t.status
         if (t.status === 'failed') {
           status = 'failed'
@@ -3249,7 +3254,11 @@ export function OrchestrateView({
         }
 
         jobs.push({
-          id: `${t.id}_${am.id}`,
+          id: localJob?.id || `${t.id}_${am.id}`,
+          taskId: t.id,
+          prompt: localJob?.prompt || t.description || t.title,
+          createdAt: localJob?.createdAt || t.createdAt,
+          outputIds: t.deliverables?.filter((d) => (d.status === 'ready' || d.status === 'accepted') && (d.mediaUrl || d.previewUrl)).map((d) => d.id) || [],
           sourceId: am.id,
           title: t.title,
           count: t.variantCount || t.deliverables?.length || 1,
@@ -3261,7 +3270,7 @@ export function OrchestrateView({
     }
 
     for (const lj of localGenerationJobs) {
-      if (!seenTaskIds.has(lj.id)) {
+      if (!lj.taskId || !seenTaskIds.has(lj.taskId)) {
         jobs.push(lj)
       }
     }

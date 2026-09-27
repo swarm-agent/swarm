@@ -541,6 +541,7 @@ export function HistoricalMediaLibrary({
       <MediaViewerModal
         item={currentActiveItem}
         items={filteredItems}
+        threadItems={items}
         onClose={() => setActiveItem(null)}
         onSelect={(item) => setActiveItem(item)}
         onOpenSession={onOpenSession}

@@ -511,6 +511,9 @@ test('Legacy quick action buttons open configured composer modal rather than run
   assert.ok(source.includes("handleOpenDeliverableInMediaCenter(d, tasks.find((t) => t.deliverables?.some((entry) => entry.id === d.id)), 'iterate')"), 'Card Iterate button must open configured composer in iterate mode')
 })
 
+// Authority: OrchestrateView.hasActiveTasks and project polling effect. This
+// source-level wiring check guards accidental removal of task-ID reconciliation;
+// it does not establish runtime timing or browser auto-follow behavior.
 test('OrchestrateView implements starvation-free real-time task polling covering queued, pending, and generating states', () => {
   // Invariant: Task polling must not reset interval timers on every tasks change (avoiding starvation),
   // must guard against overlapping network calls with inFlight, and must cover queued, pending, and generating deliverables.
@@ -520,7 +523,7 @@ test('OrchestrateView implements starvation-free real-time task polling covering
   assert.ok(source.includes("t.status === 'queued' ||"), 'Polling trigger must include queued tasks')
   assert.ok(source.includes("t.status === 'pending' ||"), 'Polling trigger must include pending tasks')
   assert.ok(source.includes("d.status === 'generating' || d.status === 'pending'"), 'Polling trigger must include generating/pending deliverables')
-  assert.ok(source.includes("!tasks.some((t) => t.id === j.id) && ['submitting', 'queued', 'in_progress', 'running'].includes(j.status)"), 'Polling trigger must include in-flight local generation jobs')
+  assert.ok(source.includes("!tasks.some((t) => t.id === j.taskId) && ['submitting', 'queued', 'in_progress', 'running'].includes(j.status)"), 'Polling trigger must include in-flight local generation jobs')
   assert.ok(source.includes('inFlight = true'), 'Polling loop must prevent overlapping fetch requests')
   assert.ok(source.includes('hasActiveTasks'), 'Polling effect must depend on stable hasActiveTasks boolean rather than raw tasks array')
 })

@@ -43,11 +43,14 @@ import {
   type MediaGenerationSettings,
 } from './media-generation'
 
+import { getMediaIterationJobs, getMediaIterationOutputs, isMediaGenerationPending } from './media-iteration-thread'
+
 export type QuickRouteMode = MediaGenerationAction
 
 export interface MediaViewerModalProps {
   item: MediaLibraryItem | null
   items: readonly MediaLibraryItem[]
+  threadItems?: readonly MediaLibraryItem[]
   onClose: () => void
   onSelect: (item: MediaLibraryItem) => void
   onOpenSession?: (sessionId: string) => void
@@ -62,6 +65,7 @@ export interface MediaViewerModalProps {
 export function MediaViewerModal({
   item,
   items,
+  threadItems = items,
   onClose,
   onSelect,
   onOpenSession,
@@ -78,6 +82,32 @@ export function MediaViewerModal({
   const [localSubmitting, setLocalSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [defaultSaved, setDefaultSaved] = useState(false)
+  const [selectedTurn, setSelectedTurn] = useState<MediaGenerationJob | null>(null)
+  const selectedTurnRef = useRef<HTMLButtonElement>(null)
+  const activeJob = selectedTurn && (generationJobs.find((job) => job.id === selectedTurn.id) || selectedTurn)
+  const turnOutputs = useMemo(() => getMediaIterationOutputs(activeJob || undefined, threadItems), [activeJob, threadItems])
+  const showingTurn = Boolean(activeJob && item && (activeJob.sourceId === item.id || activeJob.outputIds?.includes(item.id)))
+  const showingRequest = showingTurn && !turnOutputs.some((output) => output.id === item?.id)
+
+  const selectAsset = useCallback((nextItem: MediaLibraryItem) => {
+    setSelectedTurn(null)
+    onSelect(nextItem)
+  }, [onSelect])
+
+  useEffect(() => {
+    if (!item) setSelectedTurn(null)
+  }, [item?.id])
+
+  // Follow only the selected request. Older jobs completing must not steal focus.
+  useEffect(() => {
+    if (showingTurn && turnOutputs.length > 0 && item?.id === activeJob?.sourceId) {
+      onSelect(turnOutputs[0])
+    }
+  }, [showingTurn, turnOutputs, item?.id, activeJob?.sourceId, onSelect])
+
+  useEffect(() => {
+    selectedTurnRef.current?.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'smooth' })
+  }, [selectedTurn?.id])
 
   // Stable locks and identity tracking
   const isSubmittingRef = useRef(false)
@@ -378,7 +408,7 @@ export function MediaViewerModal({
 
   // Execute Generation / Fine Tune directly with synchronous ref lock and live state
   const handleExecuteGeneration = useCallback(async () => {
-    if (!item || !onGenerate || !selectedModelOption?.ready || !hasInitializedSettingsRef.current || isSubmittingRef.current || localSubmitting || isGenerating) return
+    if (!item || !onGenerate || !selectedModelOption?.ready || !hasInitializedSettingsRef.current || isSubmittingRef.current || localSubmitting || isGenerating || showingRequest) return
     const prompt = quickRoutePrompt.trim()
     if (!prompt) return
 
@@ -392,9 +422,22 @@ export function MediaViewerModal({
       durationSeconds: isVideoAction && durationSeconds && durationSeconds > 0 ? durationSeconds : undefined,
     }
 
+    const requestId = crypto.randomUUID()
+    const pendingTurn: MediaGenerationJob = {
+      id: requestId,
+      sourceId: item.id,
+      title: 'New iteration',
+      prompt,
+      count: activeQuickRouteMode === 'iterate' ? variantCount : 1,
+      createdAt: Date.now(),
+      status: 'submitting',
+    }
+    setSelectedTurn(pendingTurn)
+
     try {
       if (onGenerate) {
         await onGenerate({
+          requestId,
           item,
           action: activeQuickRouteMode,
           deltaPrompt: prompt,
@@ -405,7 +448,9 @@ export function MediaViewerModal({
         setQuickRoutePrompt('')
       }
     } catch (err) {
-      setSubmitError(err instanceof Error ? err.message : 'Generation request failed.')
+      const error = err instanceof Error ? err.message : 'Generation request failed.'
+      setSubmitError(error)
+      setSelectedTurn((turn) => turn?.id === requestId ? { ...turn, status: 'failed', error } : turn)
     } finally {
       isSubmittingRef.current = false
       setLocalSubmitting(false)
@@ -419,6 +464,7 @@ export function MediaViewerModal({
     item,
     localSubmitting,
     onGenerate,
+    showingRequest,
     quickRoutePrompt,
     resolution,
     selectedModel,
@@ -433,15 +479,15 @@ export function MediaViewerModal({
 
   const handlePrev = useCallback(() => {
     if (hasPrev) {
-      onSelect(items[currentIndex - 1])
+      selectAsset(items[currentIndex - 1])
     }
-  }, [currentIndex, hasPrev, items, onSelect])
+  }, [currentIndex, hasPrev, items, selectAsset])
 
   const handleNext = useCallback(() => {
     if (hasNext) {
-      onSelect(items[currentIndex + 1])
+      selectAsset(items[currentIndex + 1])
     }
-  }, [currentIndex, hasNext, items, onSelect])
+  }, [currentIndex, hasNext, items, selectAsset])
 
   // Keyboard navigation
   useEffect(() => {
@@ -470,11 +516,11 @@ export function MediaViewerModal({
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [handleNext, handlePrev, item, onClose])
 
-  // Related pending / running generation jobs for this active source item
   const relevantJobs = useMemo(() => {
-    if (!item) return []
-    return generationJobs.filter((job) => job.sourceId === item.id)
-  }, [generationJobs, item])
+    const jobs = selectedTurn && !generationJobs.some((job) => job.id === selectedTurn.id)
+      ? [...generationJobs, selectedTurn] : generationJobs
+    return getMediaIterationJobs(item?.id, threadItems, jobs)
+  }, [generationJobs, item?.id, threadItems, selectedTurn])
 
   // Build Lineage & History Chain
   const lineageChain = useMemo(() => {
@@ -482,7 +528,7 @@ export function MediaViewerModal({
     const chain: { role: 'parent' | 'current' | 'child' | 'sibling'; item: MediaLibraryItem; label: string }[] = []
     const parentId = item.parentId || item.sourceMediaRef
     if (parentId && parentId !== item.id) {
-      const parent = items.find((i) => i.id === parentId)
+      const parent = threadItems.find((i) => i.id === parentId)
       if (parent) {
         chain.push({
           role: 'parent',
@@ -496,7 +542,7 @@ export function MediaViewerModal({
       item: item,
       label: 'Active Asset',
     })
-    const children = items.filter((i) => i.id !== item.id && (i.parentId === item.id || i.sourceMediaRef === item.id))
+    const children = threadItems.filter((i) => i.id !== item.id && (i.parentId === item.id || i.sourceMediaRef === item.id))
     for (const child of children) {
       chain.push({
         role: 'child',
@@ -506,7 +552,7 @@ export function MediaViewerModal({
     }
     if (item.iterationGroupId) {
       const existingIds = new Set(chain.map((c) => c.item.id))
-      const siblings = items.filter((i) => !existingIds.has(i.id) && i.iterationGroupId === item.iterationGroupId)
+      const siblings = threadItems.filter((i) => !existingIds.has(i.id) && i.iterationGroupId === item.iterationGroupId)
       for (const sib of siblings) {
         chain.push({
           role: 'sibling',
@@ -516,7 +562,7 @@ export function MediaViewerModal({
       }
     }
     return chain
-  }, [item, items])
+  }, [item, threadItems])
 
   if (!item) return null
 
@@ -539,6 +585,7 @@ export function MediaViewerModal({
   const canSubmit =
     !isSubmittingRef.current &&
     !isWorking &&
+    !showingRequest &&
     Boolean(quickRoutePrompt.trim()) &&
     Boolean(onGenerate && selectedModelOption?.ready && hasInitializedSettingsRef.current)
 
@@ -560,12 +607,12 @@ export function MediaViewerModal({
             {item.kind === 'animation' && <Sparkles size={16} />}
           </div>
           <div className="min-w-0">
-            <h2 className="truncate text-sm font-semibold text-white tracking-wide">{item.title}</h2>
+            <h2 className="truncate text-sm font-semibold text-white tracking-wide">{showingRequest && activeJob ? activeJob.title : item.title}</h2>
             <div className="flex items-center gap-2 truncate text-xs text-white/50">
               <span className="truncate">{item.filename}</span>
               <span>·</span>
               <span>{item.formattedDate} at {item.formattedTime}</span>
-              {items.length > 1 && (
+              {items.length > 1 && currentIndex >= 0 && (
                 <span className="font-mono text-[10px] text-white/40">({currentIndex + 1} of {items.length})</span>
               )}
               {item.dimensions && (
@@ -737,7 +784,19 @@ export function MediaViewerModal({
         <div className="flex flex-1 flex-col min-w-0 min-h-0 overflow-hidden">
           {/* Media Canvas */}
           <main className="flex flex-1 items-center justify-center overflow-auto p-4 sm:p-6 min-h-0">
-            {item.kind === 'image' && (
+            {showingRequest && activeJob && (
+              <section role="status" aria-live="polite" className="w-full max-w-xl rounded-2xl border border-white/15 bg-white/5 p-6 text-center">
+                {isMediaGenerationPending(activeJob.status)
+                  ? <Loader2 size={32} className="mx-auto mb-4 animate-spin text-blue-400" />
+                  : <AlertCircle size={32} className="mx-auto mb-4 text-amber-400" />}
+                <h3 className="text-lg font-semibold text-white">{isMediaGenerationPending(activeJob.status) ? 'Iteration pending' : activeJob.status === 'completed' ? 'Loading iteration outputs' : activeJob.status.replaceAll('_', ' ')}</h3>
+                <p className="mt-3 max-h-32 overflow-y-auto whitespace-pre-wrap break-words text-sm text-white/80">{activeJob.prompt || activeJob.title}</p>
+                <p className="mt-3 text-xs text-white/50">{activeJob.count} outputs · {activeJob.status.replaceAll('_', ' ')}</p>
+                {activeJob.error && <p role="alert" className="mt-3 text-sm text-rose-300">{activeJob.error}</p>}
+                <button type="button" onClick={() => setSelectedTurn(null)} className="mt-4 rounded-lg bg-white/10 px-3 py-2 text-xs text-white">Back to source</button>
+              </section>
+            )}
+            {!showingRequest && item.kind === 'image' && (
               <div className="relative flex items-center justify-center max-h-full max-w-full">
                 <img
                   src={item.directUrl}
@@ -751,7 +810,7 @@ export function MediaViewerModal({
               </div>
             )}
 
-            {item.kind === 'video' && (
+            {!showingRequest && item.kind === 'video' && (
               <div className="flex w-full max-w-4xl flex-col items-center justify-center">
                 <video
                   src={item.directUrl}
@@ -765,7 +824,7 @@ export function MediaViewerModal({
               </div>
             )}
 
-            {item.kind === 'audio' && (
+            {!showingRequest && item.kind === 'audio' && (
               <div className="flex w-full max-w-md flex-col items-center rounded-2xl border border-white/10 bg-white/5 p-8 backdrop-blur-xl shadow-2xl">
                 <div className="flex size-20 items-center justify-center rounded-full bg-[var(--app-primary)]/20 text-[var(--app-primary)] mb-6 shadow-inner">
                   <Music size={36} />
@@ -784,7 +843,7 @@ export function MediaViewerModal({
               </div>
             )}
 
-            {item.kind === 'animation' && (
+            {!showingRequest && item.kind === 'animation' && (
               <div className="flex h-full w-full max-w-5xl flex-col items-center justify-center">
                 <iframe
                   title={item.title}
@@ -796,6 +855,53 @@ export function MediaViewerModal({
               </div>
             )}
           </main>
+
+          {relevantJobs.length > 0 && (
+            <nav aria-label="Iteration timeline" className="max-h-[28vh] shrink-0 overflow-y-auto border-t border-white/10 bg-black/40 px-4 py-3">
+              <div className="mb-2 flex items-center gap-2 text-xs font-semibold text-white/70"><Clock size={13} /> Iteration thread</div>
+              <div className="flex gap-3 overflow-x-auto pb-1">
+                {relevantJobs.map((job, index) => {
+                  const selected = showingTurn && activeJob?.id === job.id
+                  const outputs = getMediaIterationOutputs(job, threadItems)
+                  return (
+                    <div key={job.id} className={`w-64 shrink-0 rounded-xl border p-3 ${selected ? 'border-blue-400 bg-blue-500/15' : 'border-white/15 bg-white/5'}`}>
+                      <button
+                        type="button"
+                        ref={selected ? selectedTurnRef : undefined}
+                        aria-current={selected ? 'step' : undefined}
+                        onClick={() => {
+                          const target = outputs[0] || threadItems.find((source) => source.id === job.sourceId)
+                          if (target) {
+                            setSelectedTurn(job)
+                            onSelect(target)
+                          }
+                        }}
+                        className="w-full text-left"
+                      >
+                        <span className="flex items-center gap-2 text-xs font-semibold text-white">
+                          {isMediaGenerationPending(job.status) ? <Loader2 size={13} className="animate-spin text-blue-400" /> : job.error || job.status === 'failed' ? <AlertCircle size={13} className="text-rose-400" /> : <Check size={13} className="text-emerald-400" />}
+                          Turn {index + 1} · {job.status.replaceAll('_', ' ')}
+                        </span>
+                        <span className="mt-2 block line-clamp-2 break-words text-xs text-white/80" title={job.prompt || job.title}>{job.prompt || job.title}</span>
+                        <span className="mt-1 block text-[10px] text-white/50">{outputs.length} / {job.count} outputs</span>
+                      </button>
+                      {job.error && <p role="alert" className="mt-2 max-h-16 overflow-y-auto break-words text-xs text-rose-300">{job.error}</p>}
+                      {outputs.length > 0 && <div className="mt-2 flex gap-1 overflow-x-auto">
+                        {outputs.map((output, outputIndex) => <button
+                          key={output.id}
+                          type="button"
+                          aria-label={`Turn ${index + 1}, output ${outputIndex + 1}`}
+                          aria-pressed={!showingRequest && item.id === output.id}
+                          onClick={() => { setSelectedTurn(job); onSelect(output) }}
+                          className={`flex size-10 shrink-0 items-center justify-center overflow-hidden rounded border ${item.id === output.id && !showingRequest ? 'border-blue-400' : 'border-white/20'}`}
+                        >{output.kind === 'image' ? <img src={output.directUrl} alt={output.title} className="size-full object-cover" /> : <Film size={16} />}</button>)}
+                      </div>}
+                    </div>
+                  )
+                })}
+              </div>
+            </nav>
+          )}
 
           {/* Persistent Bottom AI Studio Dock */}
           {(item.kind === 'image' || item.kind === 'video') && <footer className="shrink-0 max-h-[50vh] overflow-y-auto border-t border-white/10 bg-slate-950/95 backdrop-blur-2xl px-4 py-3 sm:px-6 shadow-2xl z-20">
@@ -1140,31 +1246,7 @@ export function MediaViewerModal({
                 {/* Note: In Planner and presetSuggestions removed per user instruction */}
               </div>
 
-              {/* Live Pending / Queued Generation Jobs for this item */}
-              {relevantJobs.length > 0 && (
-                <div role="status" aria-live="polite" className="flex items-center gap-2 border-t border-white/10 pt-2 overflow-x-auto">
-                  <span className="text-[10px] uppercase font-bold text-white/40 tracking-wider shrink-0 flex items-center gap-1">
-                    <Clock size={11} /> Generations:
-                  </span>
-                  {relevantJobs.map((job) => (
-                    <div
-                      key={job.id}
-                      className="flex items-center gap-1.5 bg-white/5 border border-white/10 rounded-lg px-2 py-1 text-[11px] shrink-0"
-                    >
-                      {['submitting', 'pending', 'queued', 'in_progress', 'running'].includes(job.status) ? (
-                        <Loader2 size={12} className="animate-spin text-blue-400 shrink-0" />
-                      ) : job.status === 'failed' || job.status === 'partial_failure' ? (
-                        <AlertCircle size={12} className="text-rose-400 shrink-0" />
-                      ) : (
-                        <Check size={12} className="text-emerald-400 shrink-0" />
-                      )}
-                      <span className="text-white/80 max-w-[120px] truncate">{job.title}</span>
-                      <span className="font-mono text-[10px] text-white/40">{job.count} outputs · {job.status.split('_').join(' ')}</span>
-                      {job.error && <span className="max-w-64 text-rose-300 whitespace-normal">{job.error}</span>}
-                    </div>
-                  ))}
-                </div>
-              )}
+
             </div>
           </footer>}
         </div>
@@ -1186,7 +1268,7 @@ export function MediaViewerModal({
                   </p>
                   <div className="relative pl-4 space-y-3 before:absolute before:left-2 before:top-2 before:bottom-2 before:w-0.5 before:bg-white/15">
                     {lineageChain.map(({ item: chainItem, label }) => {
-                      const isCurrent = chainItem.id === item.id
+                      const isCurrent = !showingRequest && chainItem.id === item.id
                       return (
                         <div
                           key={chainItem.id}
@@ -1196,7 +1278,7 @@ export function MediaViewerModal({
                               : 'bg-white/5 border border-white/10 hover:bg-white/10 cursor-pointer'
                           }`}
                           onClick={() => {
-                            if (!isCurrent) onSelect(chainItem)
+                            selectAsset(chainItem)
                           }}
                         >
                           {/* Dot on vertical line */}
