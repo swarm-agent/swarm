@@ -80,6 +80,7 @@ import {
   computeActiveTaskSessionIds,
   TaskSessionLeaseManager,
 } from '../runtime/desktop-projects'
+import { mapBackendTask } from '../state/desktop-projects-state'
 import {
   DeployedWorker,
   MediaDeliverable,
@@ -107,7 +108,6 @@ import {
   buildTaskAcceptancePayload,
   getPrimarySystemAgentName,
   resolveDeployImpendingConfig,
-  resolveOptimisticApprovedDeliverables,
   resolveTaskImpendingAgents,
   resolveTaskWorkspace,
 } from './orchestrate-task-helpers'
@@ -4449,7 +4449,7 @@ export function OrchestrateView({
       pendingApproveRequestIdsRef.current.delete(taskId)
 
       const mapped = mapBackendTask(res.task)
-      desktopProjects.updateTasks(selectedProject.id, (prev) =>
+      desktopProjects.setOptimisticTasks(selectedProject.id, (prev) =>
         prev.map((t) => (t.id === taskId ? mapped : t))
       )
       desktopProjects.invalidate(selectedProject.id)
@@ -4541,7 +4541,7 @@ export function OrchestrateView({
         throw new Error('Reopen succeeded without returned task authority')
       }
       const mapped = mapBackendTask(res.task)
-      desktopProjects.updateTasks(selectedProject.id, (prev) =>
+      desktopProjects.setOptimisticTasks(selectedProject.id, (prev) =>
         prev.map((t) => (t.id === taskId ? mapped : t))
       )
       desktopProjects.invalidate(selectedProject.id)
@@ -4573,7 +4573,7 @@ export function OrchestrateView({
       )
       if (res?.task) {
         const mapped = mapBackendTask(res.task)
-        desktopProjects.updateTasks(selectedProject.id, (prev) =>
+        desktopProjects.setOptimisticTasks(selectedProject.id, (prev) =>
           prev.map((t) => (t.id === taskId ? mapped : t))
         )
       }

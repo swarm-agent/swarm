@@ -546,8 +546,6 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 		if !found || proj == nil {
 			return "", fmt.Errorf("project %q not found", projectID)
 		}
-		projectContext := proj.ProjectContext
-		workspaces := proj.Workspaces
 
 		prompt := strings.TrimSpace(asString(args["prompt"]))
 		if prompt == "" {
@@ -558,7 +556,6 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 		}
 		wsPath := strings.TrimSpace(asString(args["workspace_path"]))
 		agentName := strings.TrimSpace(asString(args["agent"]))
-		intent := strings.TrimSpace(asString(args["intent"]))
 		featureSize := strings.TrimSpace(asString(args["feature_size"]))
 		outcomeType := strings.TrimSpace(asString(args["outcome_type"]))
 		tier := strings.TrimSpace(asString(args["tier"]))
@@ -859,7 +856,7 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 		if pid := strings.TrimSpace(asString(args["plan_id"])); pid != "" {
 			guards.PlanID = pid
 		}
-		if rev := asInt(args["definition_revision"]); rev > 0 {
+		if rev := asInt(args["definition_revision"], 0); rev > 0 {
 			guards.DefinitionRevision = rev
 		}
 		lifecycle := r.getProjectTaskLifecycleService()
