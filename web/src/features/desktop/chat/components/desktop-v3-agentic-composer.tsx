@@ -270,7 +270,7 @@ export function DesktopV3AgenticComposer({
   onStop,
   mode = 'auto',
   onModeSelect,
-  showModePicker = true,
+  showModePicker: _showModePicker = true,
   resolvedSessionControls = false,
   executionLabel,
   currentAgent = '',
