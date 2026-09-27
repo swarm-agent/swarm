@@ -141,6 +141,7 @@ type Server struct {
 	videoRender                 *videorender.Service
 	imageThreads                *pebblestore.ImageThreadStore
 	imageGen                    *imagegen.Service
+	videoGen                    managedVideoService
 	videoTranscription          *videotranscription.Service
 	integrations                *integrationruntime.Service
 	automationV2Scheduler       *sessionruntime.AutomationV2Scheduler

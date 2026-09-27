@@ -27,30 +27,17 @@ type managedVideoService interface {
 	GenerateManagedVideo(ctx context.Context, req videogen.ManagedVideoRequest) (videogen.ManagedVideoResult, error)
 }
 
-var (
-	directVideoGenService managedVideoService
-	directVideoGenMu      sync.RWMutex
-)
-
-// SetDirectVideoGenerationService overrides the direct video generation service (for testing or runtime injection).
-func SetDirectVideoGenerationService(svc managedVideoService) {
-	directVideoGenMu.Lock()
-	defer directVideoGenMu.Unlock()
-	directVideoGenService = svc
+// SetVideoGenerationService supplies the daemon-owned service, including its
+// canonical account credential authority. Configure it before serving requests.
+func (s *Server) SetVideoGenerationService(svc managedVideoService) {
+	s.videoGen = svc
 }
 
 func (s *Server) resolveVideoGenerationService() (managedVideoService, error) {
-	directVideoGenMu.RLock()
-	svc := directVideoGenService
-	directVideoGenMu.RUnlock()
-	if svc != nil {
-		return svc, nil
+	if s == nil || s.videoGen == nil {
+		return nil, errors.New("video generation service is not configured")
 	}
-	if s == nil || s.sessions == nil || s.sessions.Store() == nil || s.sessions.Store().Underlying() == nil {
-		return nil, errors.New("video generation service not configured: storage not initialized")
-	}
-	authStore := pebblestore.NewAuthStore(s.sessions.Store().Underlying())
-	return videogen.NewService(authStore, s.uiSettings, s.model), nil
+	return s.videoGen, nil
 }
 
 func (s *Server) generateImageMedia(
@@ -491,7 +478,11 @@ func validateProjectMediaTaskSettings(s *Server, task *pebblestore.ProjectTaskRe
 	return nil
 }
 
+var projectTaskUpdateMu sync.Mutex
+
 func updateProjectTaskWithRetry(db *pebblestore.SessionStore, accountScopeID, projectID, taskID string, mutate func(*pebblestore.ProjectTaskRecord) error) (*pebblestore.ProjectTaskRecord, error) {
+	projectTaskUpdateMu.Lock()
+	defer projectTaskUpdateMu.Unlock()
 	var rec *pebblestore.ProjectTaskRecord
 	var err error
 	for attempt := 0; attempt < 10; attempt++ {

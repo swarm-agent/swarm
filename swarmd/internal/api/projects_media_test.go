@@ -108,7 +108,7 @@ func setupDirectMediaTestServer(t *testing.T) (*Server, *pebblestore.SessionStor
 	googleImageProviderSpecific := json.RawMessage(`{"google":{"model_api_surface":"generate_content","image_generation":{"api_surface":"generate_content","status":"verified","managed_image_tool":{"supported":true,"client_setting_names":["aspect_ratio","image_size"]},"settings":{"aspect_ratio":{"status":"verified","default_value":"1:1","supported_values":["1:1","16:9","9:16","4:3","3:4"]},"image_size":{"status":"verified","default_value":"1K","supported_values":["1K","2K"]}}}}}`)
 	googleGenerateContentMedia := &pebblestore.ModelCatalogMediaCapabilities{State: pebblestore.ModelCatalogMediaStateSupported, ProviderSurface: provideriface.MediaProviderSurfaceGoogleGenerateContent}
 
-	googleVideoProviderSpecific := json.RawMessage(`{"google":{"model_api_surface":"predict","video_generation":{"status":"verified","settings":{"aspect_ratio":{"status":"verified","default_value":"16:9","supported_values":["16:9","9:16","1:1","4:3"]},"resolution":{"status":"verified","default_value":"720p","supported_values":["720p","1080p"]},"duration_seconds":{"status":"verified","default_value":8,"supported_values":[4,6,8]}},"features":{"initial_image":{"status":"verified","supported":true,"max_inputs":1}}}}}`)
+	googleVideoProviderSpecific := json.RawMessage(`{"google":{"model_api_surface":"predict","video_generation":{"status":"verified","settings":{"aspect_ratio":{"status":"verified","default_value":"16:9","supported_values":["16:9","9:16","1:1","4:3"]},"resolution":{"status":"verified","default_value":"720p","supported_values":["720p","1080p"]},"duration_seconds":{"status":"verified","default_value":8,"supported_values":[4,6,8],"variants":[{"mode":"std_720p","supported_values":[4,6,8],"conditions":{"resolution":"720p"}},{"mode":"hi_res","supported_values":[8],"conditions":{"resolution":"1080p_or_4k"}}]}},"features":{"initial_image":{"status":"verified","supported":true,"max_inputs":1}}}}}`)
 	googlePredictMedia := &pebblestore.ModelCatalogMediaCapabilities{State: pebblestore.ModelCatalogMediaStateSupported, ProviderSurface: "predict"}
 
 	for _, record := range []pebblestore.ModelCatalogRecord{
@@ -168,6 +168,7 @@ func TestDirectImageExecution_HonestFailure_NeverReturnsSVG(t *testing.T) {
 		Title:       "Generate Cyber Logo",
 		Description: "Create a cyberpunk emblem",
 		Agent:       "image",
+		Model:       "snapshot-image",
 		Status:      "in_progress",
 		Deliverables: []pebblestore.ProjectTaskDeliverable{
 			{
@@ -293,6 +294,7 @@ func TestDirectImageExecution_PartialVariantSuccess(t *testing.T) {
 		Title:       "Generate Two Takes",
 		Description: "Two distinct variants",
 		Agent:       "image",
+		Model:       "snapshot-image",
 		Status:      "in_progress",
 		Deliverables: []pebblestore.ProjectTaskDeliverable{
 			{ID: "d-1", Title: "Take 1", Kind: "image", Status: "generating"},
@@ -348,8 +350,7 @@ func TestDirectVideoExecution_HonestFailure_NeverReturnsSVG(t *testing.T) {
 		shouldFail: true,
 		err:        errors.New("video generation upstream error: server busy"),
 	}
-	SetDirectVideoGenerationService(mockVideoSvc)
-	t.Cleanup(func() { SetDirectVideoGenerationService(nil) })
+	server.SetVideoGenerationService(mockVideoSvc)
 
 	project := &pebblestore.ProjectRecord{
 		ID:        "proj-video-fail",
@@ -359,13 +360,16 @@ func TestDirectVideoExecution_HonestFailure_NeverReturnsSVG(t *testing.T) {
 	_ = ss.PutProject(p.AccountScopeID, project)
 
 	task := &pebblestore.ProjectTaskRecord{
-		ID:          "task-video-fail",
-		ProjectID:   project.ID,
-		AccountID:   p.AccountScopeID,
-		Title:       "Cinematic Sequence",
-		Description: "A flying camera sequence",
-		Agent:       "video",
-		Status:      "in_progress",
+		ID:              "task-video-fail",
+		ProjectID:       project.ID,
+		AccountID:       p.AccountScopeID,
+		Title:           "Cinematic Sequence",
+		Description:     "A flying camera sequence",
+		Agent:           "video",
+		Model:           "veo-3.1-generate-preview",
+		DurationSeconds: 8,
+		Resolution:      "720p",
+		Status:          "in_progress",
 		Deliverables: []pebblestore.ProjectTaskDeliverable{
 			{ID: "d-vid-1", Title: "Single Video", Kind: "video", Status: "generating"},
 		},
@@ -410,8 +414,7 @@ func TestDirectVideoExecution_ExplicitInvalidModel_FailsWithoutSilentFallback(t 
 	server, ss, p := setupDirectMediaTestServer(t)
 
 	mockVideoSvc := &fakeTestVideoGenService{shouldFail: false}
-	SetDirectVideoGenerationService(mockVideoSvc)
-	t.Cleanup(func() { SetDirectVideoGenerationService(nil) })
+	server.SetVideoGenerationService(mockVideoSvc)
 
 	project := &pebblestore.ProjectRecord{
 		ID:        "proj-video-invalid",
@@ -470,8 +473,7 @@ func TestDirectVideoExecution_RealVideoResultDelivery(t *testing.T) {
 			AspectRatio:     "16:9",
 		},
 	}
-	SetDirectVideoGenerationService(mockVideoSvc)
-	t.Cleanup(func() { SetDirectVideoGenerationService(nil) })
+	server.SetVideoGenerationService(mockVideoSvc)
 
 	project := &pebblestore.ProjectRecord{
 		ID:        "proj-video-success",
@@ -617,10 +619,9 @@ func TestDirectMediaTask_InitialPersistenceGuard(t *testing.T) {
 	mockVideoSvc := &fakeTestVideoGenService{
 		shouldFail: false,
 	}
-	SetDirectVideoGenerationService(mockVideoSvc)
+	server.SetVideoGenerationService(mockVideoSvc)
 	t.Cleanup(func() {
 		close(blockChan)
-		SetDirectVideoGenerationService(nil)
 	})
 
 	project := &pebblestore.ProjectRecord{
@@ -683,8 +684,7 @@ func TestDirectVideoExecution_MultiVariantBatch(t *testing.T) {
 			AspectRatio:     "16:9",
 		},
 	}
-	SetDirectVideoGenerationService(mockVideoSvc)
-	t.Cleanup(func() { SetDirectVideoGenerationService(nil) })
+	server.SetVideoGenerationService(mockVideoSvc)
 
 	project := &pebblestore.ProjectRecord{
 		ID:        "proj-video-multi",
@@ -763,8 +763,7 @@ func TestDirectVideoExecution_PartialVariantSuccess(t *testing.T) {
 			AspectRatio:     "16:9",
 		},
 	}
-	SetDirectVideoGenerationService(mockVideoSvc)
-	t.Cleanup(func() { SetDirectVideoGenerationService(nil) })
+	server.SetVideoGenerationService(mockVideoSvc)
 
 	project := &pebblestore.ProjectRecord{
 		ID:        "proj-video-partial",
@@ -847,10 +846,14 @@ func TestDirectMediaExecution_Validation_RejectsInvalidSettings(t *testing.T) {
 		{
 			name: "video unsupported aspect ratio",
 			task: pebblestore.ProjectTaskRecord{
-				ID:          "task-val-vid-ar",
-				Agent:       "video",
-				AspectRatio: "21:9",
-				Status:      "in_progress",
+				ID:              "task-val-vid-ar",
+				Title:           "Video AR",
+				Agent:           "video",
+				Model:           "veo-3.1-generate-preview",
+				AspectRatio:     "21:9",
+				Resolution:      "720p",
+				DurationSeconds: 8,
+				Status:          "in_progress",
 				Deliverables: []pebblestore.ProjectTaskDeliverable{
 					{ID: "d-1", Status: "generating"},
 				},
@@ -860,10 +863,14 @@ func TestDirectMediaExecution_Validation_RejectsInvalidSettings(t *testing.T) {
 		{
 			name: "video unsupported resolution",
 			task: pebblestore.ProjectTaskRecord{
-				ID:         "task-val-vid-res",
-				Agent:      "video",
-				Resolution: "8k",
-				Status:     "in_progress",
+				ID:              "task-val-vid-res",
+				Title:           "Video Res",
+				Agent:           "video",
+				Model:           "veo-3.1-generate-preview",
+				AspectRatio:     "16:9",
+				Resolution:      "8k",
+				DurationSeconds: 8,
+				Status:          "in_progress",
 				Deliverables: []pebblestore.ProjectTaskDeliverable{
 					{ID: "d-1", Status: "generating"},
 				},
@@ -874,7 +881,11 @@ func TestDirectMediaExecution_Validation_RejectsInvalidSettings(t *testing.T) {
 			name: "video unsupported duration",
 			task: pebblestore.ProjectTaskRecord{
 				ID:              "task-val-vid-dur",
+				Title:           "Video Dur",
 				Agent:           "video",
+				Model:           "veo-3.1-generate-preview",
+				AspectRatio:     "16:9",
+				Resolution:      "720p",
 				DurationSeconds: 15,
 				Status:          "in_progress",
 				Deliverables: []pebblestore.ProjectTaskDeliverable{
@@ -887,7 +898,10 @@ func TestDirectMediaExecution_Validation_RejectsInvalidSettings(t *testing.T) {
 			name: "video 1080p requires 8s duration",
 			task: pebblestore.ProjectTaskRecord{
 				ID:              "task-val-vid-1080p-4s",
+				Title:           "Video 1080p 4s",
 				Agent:           "video",
+				Model:           "veo-3.1-generate-preview",
+				AspectRatio:     "16:9",
 				Resolution:      "1080p",
 				DurationSeconds: 4,
 				Status:          "in_progress",
@@ -901,8 +915,11 @@ func TestDirectMediaExecution_Validation_RejectsInvalidSettings(t *testing.T) {
 			name: "image unsupported aspect ratio",
 			task: pebblestore.ProjectTaskRecord{
 				ID:          "task-val-img-ar",
+				Title:       "Image AR",
 				Agent:       "image",
+				Model:       "snapshot-image",
 				AspectRatio: "32:9",
+				Resolution:  "1K",
 				Status:      "in_progress",
 				Deliverables: []pebblestore.ProjectTaskDeliverable{
 					{ID: "d-1", Status: "generating"},
@@ -913,10 +930,13 @@ func TestDirectMediaExecution_Validation_RejectsInvalidSettings(t *testing.T) {
 		{
 			name: "image unsupported resolution",
 			task: pebblestore.ProjectTaskRecord{
-				ID:         "task-val-img-res",
-				Agent:      "image",
-				Resolution: "8k",
-				Status:     "in_progress",
+				ID:          "task-val-img-res",
+				Title:       "Image Res",
+				Agent:       "image",
+				Model:       "snapshot-image",
+				AspectRatio: "1:1",
+				Resolution:  "8k",
+				Status:      "in_progress",
 				Deliverables: []pebblestore.ProjectTaskDeliverable{
 					{ID: "d-1", Status: "generating"},
 				},
@@ -972,8 +992,7 @@ func TestDirectMediaTask_DeployProjectTaskExecution_MultiVideoDeliverables(t *te
 		shouldFail: true,
 		err:        errors.New("blocked"),
 	}
-	SetDirectVideoGenerationService(mockVideoSvc)
-	t.Cleanup(func() { SetDirectVideoGenerationService(nil) })
+	server.SetVideoGenerationService(mockVideoSvc)
 
 	project := &pebblestore.ProjectRecord{
 		ID:        "proj-deploy-multi-vid",
@@ -1032,7 +1051,7 @@ func TestDirectVideoExecution_Preflight_RejectsMultipartStory(t *testing.T) {
 		ID:          "task-multipart-reject",
 		Agent:       "video",
 		OutcomeType: "video_story",
-		Scenes:      []pebblestore.ProjectTaskScene{{SceneIndex: 1}, {SceneIndex: 2}},
+		Scenes:      []pebblestore.ProjectTaskScene{{SceneNumber: 1}, {SceneNumber: 2}},
 	}
 	err := validateProjectMediaTaskSettings(server, &task)
 	if err == nil {
@@ -1199,8 +1218,7 @@ func TestDirectVideoExecution_SingleClipAllocatesOneDeliverable(t *testing.T) {
 		shouldFail: true,
 		err:        errors.New("blocked"),
 	}
-	SetDirectVideoGenerationService(mockVideoSvc)
-	t.Cleanup(func() { SetDirectVideoGenerationService(nil) })
+	server.SetVideoGenerationService(mockVideoSvc)
 
 	project := &pebblestore.ProjectRecord{
 		ID:        "proj-single-vid",

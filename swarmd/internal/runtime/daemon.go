@@ -740,6 +740,7 @@ func New(cfg config.Config) (*Daemon, error) {
 		videoGenSvc.SetSVGRasterizer(htmlRenderer)
 	}
 	toolRuntime.SetManagedVideoGenerationService(videoGenSvc)
+	apiServer.SetVideoGenerationService(videoGenSvc)
 	audioGenSvc := audiogen.NewService(authStore, uiSettingsSvc, modelSvc)
 	toolRuntime.SetManagedAudioGenerationService(audioGenSvc)
 	apiServer.SetTodoService(todoSvc)
