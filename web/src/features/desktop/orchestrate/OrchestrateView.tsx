@@ -67,10 +67,7 @@ import {
   summarizeDesktopV3TaskToolActivity,
 } from '../state/desktop-v3-cache-selectors'
 import { selectAndHydrateDesktopV3Session, hydrateDesktopV3ChildCard } from '../state/desktop-v3-session-hydrator'
-import {
-  requireDesktopV3RealtimeControllerReady,
-  type DesktopV3RealtimeSessionDemandLease,
-} from '../realtime/v3-realtime-controller'
+import { requireDesktopV3RealtimeControllerReady } from '../realtime/v3-realtime-controller'
 import { HistoricalMediaLibrary, MediaViewerModal, type MediaLibraryItem } from '../tools/media-library'
 import type { MediaGenerationJob, MediaGenerationRequest, MediaGenerationSettings } from '../tools/media-library/media-generation'
 import type { QuickRouteMode } from '../tools/media-library/media-viewer-modal'
@@ -2453,7 +2450,7 @@ export function OrchestrateView({
           sessionRecord?: (typeof state.sessionsById)[string]
           view?: (typeof state.sessionViewsById)[string]
           intent?: (typeof state.currentRunIntentBySession)[string]
-          liveRun?: any
+          liveRun?: (typeof state.liveRunsBySession)[string][string]
           planRecord?: (typeof state.plansBySession)[string]
         }
       > = {}
