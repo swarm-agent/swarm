@@ -22,6 +22,9 @@ test('OrchestrateView displays active running automations at top of project with
   assert.ok(source.includes('Registered Workers Fleet'), 'OrchestrateView must render Registered Workers Fleet in Workers Hub')
 })
 
+// Requirement: Desktop navigation must target the canonical Swarm page and
+// Workers section, never the retired orchestrate URL. These source assertions
+// check registration/caller wiring only; browser history needs a rendered test.
 test('DesktopAppPage delists old workers menu and provides Chat vs Swarm mode switch', () => {
   const desktopAppSourcePath = path.join(__dirname, '../layout/desktop-app-page.tsx')
   const source = fs.readFileSync(desktopAppSourcePath, 'utf8')
@@ -33,19 +36,22 @@ test('DesktopAppPage delists old workers menu and provides Chat vs Swarm mode sw
   // Invariant 2: Old Workers sidebar button is delisted
   assert.ok(!source.includes('title="Workers"'), 'DesktopAppPage must not render old standalone Workers button in sidebar')
 
-  // Invariant 3: Automations link routes to orchestrate
-  assert.ok(source.includes("void navigate({ to: '/$workspaceSlug/orchestrate'"), 'DesktopAppPage onOpenAutomations must navigate to orchestrate')
+  // Invariant 3: Automations links open the addressable Workers section.
+  assert.ok(source.includes("void navigate({ to: '/$workspaceSlug/swarm/$swarmSection'"), 'DesktopAppPage onOpenAutomations must navigate to Swarm Workers')
+  assert.ok(source.includes("swarmSection: 'workers'"))
+  assert.ok(!source.includes('/orchestrate\''), 'Navigation must not emit retired URLs')
 })
 
-test('Router redirects legacy workers routes to orchestrate', () => {
+// Requirement: router.tsx redirects legacy worker entry points into the
+// canonical Workers section without confusing them with durable session URLs.
+test('Router redirects legacy workers routes to Swarm Workers', () => {
   const routerSourcePath = path.join(__dirname, '../../../app/router.tsx')
   const source = fs.readFileSync(routerSourcePath, 'utf8')
 
-  // Invariant 1: /workers redirects to /orchestrate
-  assert.ok(source.includes("to: '/orchestrate'"), 'Router must redirect /workers to /orchestrate')
-
-  // Invariant 2: /$workspaceSlug/workers redirects to /$workspaceSlug/orchestrate
-  assert.ok(source.includes("to: '/$workspaceSlug/orchestrate'"), 'Router must redirect /$workspaceSlug/workers to /$workspaceSlug/orchestrate')
+  assert.ok(source.includes("to: '/swarm/$swarmSection'"), 'Global workers redirect must target a Swarm section')
+  assert.ok(source.includes("to: '/$workspaceSlug/swarm/$swarmSection'"), 'Workspace workers redirect must retain workspace scope')
+  assert.ok(source.includes("params: { swarmSection: 'workers' }"))
+  assert.ok(source.includes("params: { workspaceSlug: params.workspaceSlug, swarmSection: 'workers' }"))
 })
 
 test('OrchestrateView renders Scoped Project Workspaces for pending worker proposals with suggest changes capability', () => {

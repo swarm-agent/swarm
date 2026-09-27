@@ -1,4 +1,6 @@
 import { useState, useMemo, useEffect, useCallback } from 'react'
+import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
+import { isSwarmSection, swarmPageLink, type SwarmPage } from './swarm-navigation'
 import {
   AlertTriangle,
   ArrowLeft,
@@ -2164,7 +2166,7 @@ function OrchestratorChatSidebar({
 }
 
 export function OrchestrateView({
-  workspaceSlug: _workspaceSlug,
+  workspaceSlug: workspaceSlugProp,
   onNavigateHome,
   initialThemeId = 'modern_navy',
 }: OrchestrateViewProps) {
@@ -2224,9 +2226,8 @@ export function OrchestrateView({
   // Split Studio selected task state
   const [selectedTaskId, setSelectedTaskId] = useState<string>('')
 
-  // Studio Media Center & Media Viewer Modal state
+  // Only the asset viewer is transient; the library itself is a routed page.
   const [activeMediaViewerItem, setActiveMediaViewerItem] = useState<MediaLibraryItem | null>(null)
-  const [showFullMediaCenter, setShowFullMediaCenter] = useState<boolean>(false)
 
   // Uploaded & Tagged Media State
   const [uploadedMedia, setUploadedMedia] = useState<ProjectTaskMediaRef[]>([])
@@ -2237,8 +2238,20 @@ export function OrchestrateView({
   const [pastedDocTitle, setPastedDocTitle] = useState<string>('')
   const [pastedDocContent, setPastedDocContent] = useState<string>('')
 
-  // Navigation tab state
-  const [activeNavTab, setActiveNavTab] = useState<'home' | 'projects' | 'workers' | 'deliverables' | 'settings'>('home')
+  // The router is the sole authority for section selection, including reloads
+  // and browser back/forward. The shared layout retains project and chat state.
+  const routeParams = useRouterState({
+    select: (state) => state.matches[state.matches.length - 1]?.params as { workspaceSlug?: string; swarmSection?: string } | undefined,
+  }) ?? {}
+  const navigate = useNavigate()
+  const workspaceSlug = routeParams.workspaceSlug ?? workspaceSlugProp
+  const activeNavTab: SwarmPage = isSwarmSection(routeParams.swarmSection) ? routeParams.swarmSection : 'home'
+  const showFullMediaCenter = activeNavTab === 'media'
+  const setActiveNavTab = (page: SwarmPage) => { void navigate(swarmPageLink(workspaceSlug, page)) }
+  const setShowFullMediaCenter = (open: boolean) => {
+    if (open) setActiveNavTab('media')
+    else if (showFullMediaCenter) setActiveNavTab('home')
+  }
 
   // Pending worker reviews awaiting acceptance
   const pendingReviews = useDesktopV3CacheSelector(selectPendingWorkerSidebarReviews, (a, b) =>
@@ -3753,7 +3766,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
       {/* ─────────────────────────────────────────────────────────────
           PANEL 1: LEFT SIDEBAR (NAVIGATION, PROJECTS & USER HUD)
          ───────────────────────────────────────────────────────────── */}
-      <aside className="relative flex w-72 flex-shrink-0 flex-col overflow-hidden rounded-3xl border bg-[#0d121f]/95 border-slate-800/80 shadow-[inset_0_1px_1px_rgba(255,255,255,0.06),0_18px_40px_rgba(0,0,0,0.65)]">
+      <aside className="relative order-first flex w-72 flex-shrink-0 flex-col overflow-hidden rounded-3xl border bg-[#0d121f]/95 border-slate-800/80 shadow-[inset_0_1px_1px_rgba(255,255,255,0.06),0_18px_40px_rgba(0,0,0,0.65)]">
         {/* App Branding & Header */}
         <div className="p-3.5 border-b border-slate-800/80">
           <div className="flex items-center justify-between pb-2">
@@ -3767,15 +3780,15 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
               </div>
             </div>
 
-            {onNavigateHome && (
-              <button
-                onClick={onNavigateHome}
-                className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-800 hover:text-slate-200 transition-all border border-slate-700/60"
-                title="Back to Sessions"
-              >
-                <X size={13} />
-              </button>
-            )}
+            <Link
+              {...(workspaceSlug ? { to: '/$workspaceSlug' as const, params: { workspaceSlug } } : { to: '/' as const })}
+              onClick={onNavigateHome}
+              className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-800 hover:text-slate-200 transition-all border border-slate-700/60"
+              title="Back to Sessions"
+              aria-label="Back to Sessions"
+            >
+              <X size={13} />
+            </Link>
           </div>
 
           {/* Search Bar */}
@@ -3799,9 +3812,10 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
         </div>
 
         {/* Navigation Menu Links */}
-        <div className="p-3 border-b border-slate-800/80 space-y-1">
-          <button
-            onClick={() => setActiveNavTab('home')}
+        <div className="p-3 border-b border-slate-800/80 space-y-1" onClick={() => setIsOnboardingActive(false)}>
+          <Link
+            {...swarmPageLink(workspaceSlug, 'home')}
+            aria-current={activeNavTab === 'home' ? 'page' : undefined}
             className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium transition-all ${
               activeNavTab === 'home'
                 ? 'bg-white/[0.08] text-white shadow-sm font-semibold'
@@ -3810,9 +3824,10 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
           >
             <Home size={15} />
             <span>Tasks & Canvas</span>
-          </button>
-          <button
-            onClick={() => setActiveNavTab('projects')}
+          </Link>
+          <Link
+            {...swarmPageLink(workspaceSlug, 'projects')}
+            aria-current={activeNavTab === 'projects' ? 'page' : undefined}
             className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium transition-all ${
               activeNavTab === 'projects'
                 ? 'bg-white/[0.08] text-white shadow-sm font-semibold'
@@ -3821,9 +3836,10 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
           >
             <Folder size={15} />
             <span>Projects ({projects.length})</span>
-          </button>
-          <button
-            onClick={() => setActiveNavTab('workers')}
+          </Link>
+          <Link
+            {...swarmPageLink(workspaceSlug, 'workers')}
+            aria-current={activeNavTab === 'workers' ? 'page' : undefined}
             className={`w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs font-medium transition-all ${
               activeNavTab === 'workers'
                 ? 'bg-blue-600/15 text-blue-400 border border-blue-500/30 font-semibold'
@@ -3843,9 +3859,10 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                 <span className="text-[10px] font-mono text-slate-500">{automations.length}</span>
               )}
             </div>
-          </button>
-          <button
-            onClick={() => setActiveNavTab('deliverables')}
+          </Link>
+          <Link
+            {...swarmPageLink(workspaceSlug, 'deliverables')}
+            aria-current={activeNavTab === 'deliverables' ? 'page' : undefined}
             className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium transition-all ${
               activeNavTab === 'deliverables'
                 ? 'bg-white/[0.08] text-white shadow-sm font-semibold'
@@ -3854,10 +3871,11 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
           >
             <Layers size={15} />
             <span>Deliverables ({liveTasks.flatMap((t) => t.deliverables || []).length})</span>
-          </button>
-          <button
-            onClick={() => setShowFullMediaCenter(true)}
-            className="w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs font-medium text-slate-400 hover:text-slate-200 hover:bg-white/[0.04] transition-all"
+          </Link>
+          <Link
+            {...swarmPageLink(workspaceSlug, 'media')}
+            aria-current={activeNavTab === 'media' ? 'page' : undefined}
+            className={`w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs font-medium transition-all ${activeNavTab === 'media' ? 'bg-white/[0.08] text-white shadow-sm font-semibold' : 'text-slate-400 hover:text-slate-200 hover:bg-white/[0.04]'}`}
           >
             <div className="flex items-center gap-2.5">
               <Film size={15} className="text-blue-400" />
@@ -3868,9 +3886,10 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                 {allMediaLibraryItems.length}
               </span>
             )}
-          </button>
-          <button
-            onClick={() => setActiveNavTab('settings')}
+          </Link>
+          <Link
+            {...swarmPageLink(workspaceSlug, 'settings')}
+            aria-current={activeNavTab === 'settings' ? 'page' : undefined}
             className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium transition-all ${
               activeNavTab === 'settings'
                 ? 'bg-white/[0.08] text-white shadow-sm font-semibold'
@@ -3879,7 +3898,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
           >
             <Settings size={15} />
             <span>Project Charter</span>
-          </button>
+          </Link>
         </div>
 
         {/* Projects Switcher Section */}
@@ -4114,8 +4133,8 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
       {/* ─────────────────────────────────────────────────────────────
           PANEL 2: MIDDLE SECTION (CANVAS / TASKS / VIEWS)
          ───────────────────────────────────────────────────────────── */}
-      <main className="relative flex flex-1 flex-col overflow-hidden rounded-3xl border bg-[#0d121f]/95 border-slate-800/80 shadow-[inset_0_1px_1px_rgba(255,255,255,0.06),0_18px_40px_rgba(0,0,0,0.65)]">
-        {isOnboardingActive ? (
+      {!showFullMediaCenter && <main className="relative flex flex-1 flex-col overflow-hidden rounded-3xl border bg-[#0d121f]/95 border-slate-800/80 shadow-[inset_0_1px_1px_rgba(255,255,255,0.06),0_18px_40px_rgba(0,0,0,0.65)]">
+        {isOnboardingActive && (activeNavTab === 'home' || activeNavTab === 'projects') ? (
           <div className="flex-1 flex flex-col min-h-0 overflow-y-auto p-6 space-y-6">
             {/* Onboarding Header */}
             <div className="flex items-start justify-between border-b border-slate-800/80 pb-5">
@@ -5700,7 +5719,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
             </div>
           </>
         )}
-      </main>
+      </main>}
 
       {/* ─────────────────────────────────────────────────────────────
           PANEL 3: RIGHT PANEL (CANONICAL DESKTOP V3 AI CHAT SIDEBAR)
@@ -6783,10 +6802,10 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
       )}
 
       {/* ─────────────────────────────────────────────────────────────
-          FULL HISTORICAL MEDIA LIBRARY / STUDIO CENTER MODAL
+          ROUTED HISTORICAL MEDIA LIBRARY / STUDIO CENTER
          ───────────────────────────────────────────────────────────── */}
       {showFullMediaCenter && (
-        <div className="fixed inset-0 z-50 flex flex-col bg-black/95 backdrop-blur-md">
+        <main className="relative order-[-1] flex min-w-0 flex-1 flex-col overflow-hidden rounded-3xl border border-slate-800/80 bg-[#0d121f]/95">
           <div className="flex h-14 items-center justify-between border-b border-slate-800 bg-[#0d121f] px-5">
             <div className="flex items-center gap-3">
               <div className="flex size-8 items-center justify-center rounded-xl bg-blue-600/20 text-blue-400 border border-blue-500/30">
@@ -6800,7 +6819,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
             <button
               onClick={() => setShowFullMediaCenter(false)}
               className="p-2 rounded-xl bg-slate-800 text-slate-400 hover:text-white hover:bg-slate-700 transition"
-              title="Close Media Center"
+              title="Back to Tasks & Canvas"
             >
               <X size={16} />
             </button>
@@ -6876,7 +6895,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
               extraItems={allMediaLibraryItems}
             />
           </div>
-        </div>
+        </main>
       )}
     </div>
   )

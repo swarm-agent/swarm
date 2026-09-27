@@ -2810,8 +2810,8 @@ export function DesktopAppPage() {
   const workspaceAutomationsMatch = matchRoute({ to: '/$workspaceSlug/automations', fuzzy: false })
   const globalWorkersMatch = matchRoute({ to: '/workers', fuzzy: false })
   const globalWorkersDetailMatch = matchRoute({ to: '/workers/$workerId', fuzzy: false })
-  const workspaceOrchestrateMatch = matchRoute({ to: '/$workspaceSlug/orchestrate', fuzzy: false })
-  const globalOrchestrateMatch = matchRoute({ to: '/orchestrate', fuzzy: false })
+  const workspaceOrchestrateMatch = matchRoute({ to: '/$workspaceSlug/swarm', fuzzy: true })
+  const globalOrchestrateMatch = matchRoute({ to: '/swarm', fuzzy: true })
   const isOrchestrateRoute = Boolean(workspaceOrchestrateMatch || globalOrchestrateMatch)
   const isWorkersRoute = Boolean(workspaceWorkersMatch || workspaceWorkersDetailMatch || workspaceWorkerDetailMatch || workspaceAutomationsMatch || globalWorkersMatch || globalWorkersDetailMatch)
   const workspaceTaskMatch = matchRoute({ to: '/$workspaceSlug/task', fuzzy: false })
@@ -5692,16 +5692,9 @@ export function DesktopAppPage() {
                     <MessageSquare size={12} strokeWidth={2} />
                     <span>Chat</span>
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setMobileSidebarOpen(false)
-                      if (topWorkspaceSlug) {
-                        void navigate({ to: '/$workspaceSlug/orchestrate', params: { workspaceSlug: topWorkspaceSlug } })
-                      } else {
-                        void navigate({ to: '/orchestrate' })
-                      }
-                    }}
+                  <Link
+                    {...(topWorkspaceSlug ? { to: '/$workspaceSlug/swarm' as const, params: { workspaceSlug: topWorkspaceSlug } } : { to: '/swarm' as const })}
+                    onClick={() => setMobileSidebarOpen(false)}
                     className={cn(
                       'flex items-center justify-center gap-1.5 py-1 px-2 rounded-md text-[11px] font-semibold transition-all',
                       isOrchestrateRoute
@@ -5717,7 +5710,7 @@ export function DesktopAppPage() {
                         {pendingWorkerCount}
                       </span>
                     ) : null}
-                  </button>
+                  </Link>
                 </div>
 
                 <div className="grid gap-0.5 pt-0.5">
@@ -6013,7 +6006,7 @@ export function DesktopAppPage() {
                     onOpenGit: () => openMainWorktreeGitPanel(topWorkspacePath, topWorkspaceLabel),
                     onOpenAutomations: topWorkspaceSlug ? () => {
                       setMobileSidebarOpen(false)
-                      void navigate({ to: '/$workspaceSlug/orchestrate', params: { workspaceSlug: topWorkspaceSlug }, search: {} })
+                      void navigate({ to: '/$workspaceSlug/swarm/$swarmSection', params: { workspaceSlug: topWorkspaceSlug, swarmSection: 'workers' }, search: {} })
                     } : undefined,
                     onToggleReviewCleanup: () => setNeedsReviewCleanupOpen((open) => !open),
                     onToggleGroupCollapsed: handleToggleSidebarGroupCollapsed,

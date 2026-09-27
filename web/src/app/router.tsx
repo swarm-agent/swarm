@@ -1,5 +1,6 @@
-import { createRootRoute, createRoute, createRouter, redirect, useNavigate } from '@tanstack/react-router'
+import { createRootRoute, createRoute, createRouter, redirect, notFound, useNavigate } from '@tanstack/react-router'
 import { lazy, useEffect } from 'react'
+import { isSwarmSection } from '../features/desktop/orchestrate/swarm-navigation'
 import { StartupRouteError, withStartupScreen } from './startup-recovery'
 import { DesktopDocumentTitleController } from '../features/desktop/runtime/desktop-document-title-controller'
 import { DesktopVaultShell } from '../features/desktop/vault/components/desktop-vault-shell'
@@ -17,8 +18,8 @@ const AutomationToolPage = withStartupScreen(lazy(() => import('../features/desk
 const EnvironmentsPage = withStartupScreen(lazy(() => import('../features/desktop/environments/pages/environments-page').then((module) => ({ default: module.EnvironmentsPage }))))
 const UsagePage = withStartupScreen(lazy(() => import('../features/desktop/usage/pages/usage-page').then((module) => ({ default: module.UsagePage }))))
 const OrchestratePage = withStartupScreen(lazy(() => import('../features/desktop/orchestrate/orchestrate-page').then((module) => ({ default: module.OrchestratePage }))))
-const ROOT_RESERVED_ROUTE_SEGMENTS = new Set(['memory', 'settings', 'integrations', 'tools', 'agents', 'studio', 'environments', 'usage', 'media', 'orchestrate'])
-const WORKSPACE_RESERVED_ROUTE_SEGMENTS = new Set(['settings', 'tools', 'task', 'worktree', 'video', 'studio', 'automations', 'environments', 'usage', 'media', 'orchestrate'])
+const ROOT_RESERVED_ROUTE_SEGMENTS = new Set(['memory', 'settings', 'integrations', 'tools', 'agents', 'studio', 'environments', 'usage', 'media', 'swarm', 'orchestrate'])
+const WORKSPACE_RESERVED_ROUTE_SEGMENTS = new Set(['settings', 'tools', 'task', 'worktree', 'video', 'studio', 'automations', 'environments', 'usage', 'media', 'swarm', 'orchestrate'])
 const MemoryPage = withStartupScreen(lazy(() => import('../features/desktop/settings/components/desktop-settings-page').then(module => ({ default: () => <module.DesktopSettingsPage initialMemoryOpen /> }))))
 
 function currentWorkspaceRoute(pathname: string): { sessionId?: string } | null {
@@ -287,8 +288,8 @@ const workspaceWorkersRoute = createRoute({
   validateSearch: validateWorkspaceSessionSearch,
   beforeLoad: ({ params }) => {
     throw redirect({
-      to: '/$workspaceSlug/orchestrate',
-      params: { workspaceSlug: params.workspaceSlug },
+      to: '/$workspaceSlug/swarm/$swarmSection',
+      params: { workspaceSlug: params.workspaceSlug, swarmSection: 'workers' },
       replace: true,
     })
   },
@@ -333,7 +334,8 @@ const globalWorkersRoute = createRoute({
   validateSearch: validateWorkspaceSessionSearch,
   beforeLoad: () => {
     throw redirect({
-      to: '/orchestrate',
+      to: '/swarm/$swarmSection',
+      params: { swarmSection: 'workers' },
       replace: true,
     })
   },
@@ -464,17 +466,54 @@ const workspaceImageToolSessionRoute = createRoute({
   component: ImageToolPage,
 })
 
+// A persistent page owner keeps project/chat state mounted across section URLs.
+const swarmLayoutRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  id: 'swarm-layout',
+  component: OrchestratePage,
+  notFoundComponent: StartupRouteError,
+})
+
+const swarmRoute = createRoute({
+  getParentRoute: () => swarmLayoutRoute,
+  path: '/swarm',
+})
+
+const workspaceSwarmRoute = createRoute({
+  getParentRoute: () => swarmLayoutRoute,
+  path: '/$workspaceSlug/swarm',
+  parseParams: validateWorkspaceParams,
+})
+
+function validateSwarmSection(params: { swarmSection: string }) {
+  if (!isSwarmSection(params.swarmSection)) throw notFound()
+}
+
+const swarmSectionRoute = createRoute({
+  getParentRoute: () => swarmLayoutRoute,
+  path: '/swarm/$swarmSection',
+  beforeLoad: ({ params }) => validateSwarmSection(params),
+})
+
+const workspaceSwarmSectionRoute = createRoute({
+  getParentRoute: () => swarmLayoutRoute,
+  path: '/$workspaceSlug/swarm/$swarmSection',
+  beforeLoad: ({ params }) => validateSwarmSection(params),
+})
+
 const orchestrateRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/orchestrate',
-  component: OrchestratePage,
+  beforeLoad: () => { throw redirect({ to: '/swarm', replace: true }) },
 })
 
 const workspaceOrchestrateRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/$workspaceSlug/orchestrate',
   parseParams: validateWorkspaceParams,
-  component: OrchestratePage,
+  beforeLoad: ({ params }) => {
+    throw redirect({ to: '/$workspaceSlug/swarm', params, replace: true })
+  },
 })
 
 const routeTree = rootRoute.addChildren([
@@ -506,6 +545,7 @@ const routeTree = rootRoute.addChildren([
   workspaceVideoToolRoute,
   workspaceImageToolRoute,
   workspaceImageToolSessionRoute,
+  swarmLayoutRoute.addChildren([swarmRoute, workspaceSwarmRoute, swarmSectionRoute, workspaceSwarmSectionRoute]),
   orchestrateRoute,
   workspaceOrchestrateRoute,
 ])
