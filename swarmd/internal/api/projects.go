@@ -1639,13 +1639,13 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				}
 				taskTitle := fmt.Sprintf("%s (%ds Audio Clip)", cleanTitle, durSeconds)
 				routed = pebblestore.TaskRouteResult{
-					Title:        taskTitle,
-					Agent:        "sound",
-					OutcomeType:  "audio_clip",
-					Tier:         "direct",
-					VariantCount: 1,
-					Stages:       []string{"Audio Parameter Configuration", "Model Sound Synthesis"},
-					PlanSummary:  fmt.Sprintf("1. Configure %ds audio soundtrack parameters\n2. Synthesize with %s\n3. Deliver verified soundtrack clip", durSeconds, soundModel),
+					Title:            taskTitle,
+					Agent:            "sound",
+					OutcomeType:      "audio_clip",
+					Tier:             "direct",
+					VariantCount:     1,
+					Stages:           []string{"Audio Parameter Configuration", "Model Sound Synthesis"},
+					PlanSummary:      fmt.Sprintf("1. Configure %ds audio soundtrack parameters\n2. Synthesize with %s\n3. Deliver verified soundtrack clip", durSeconds, soundModel),
 					FullPlanMarkdown: fmt.Sprintf("### Task Mission: %s\n\n- **Agent**: `@sound`\n- **Model**: `%s`\n- **Duration**: `%ds`\n\n#### Prompt\n%s\n", taskTitle, soundModel, durSeconds, prompt),
 					Deliverables: []pebblestore.ProjectTaskDeliverable{
 						{
