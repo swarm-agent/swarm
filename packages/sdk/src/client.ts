@@ -3,6 +3,7 @@ import { SwarmAutomationsNamespace } from './automations.js';
 import { SwarmDeliverablesNamespace } from './deliverables.js';
 import { SwarmDeployNamespace } from './deploy/index.js';
 import { SwarmNotificationsNamespace } from './notifications.js';
+import { SwarmProjectsNamespace } from './projects.js';
 import { SwarmSessionsNamespace } from './sessions.js';
 import { SwarmSystemNamespace } from './system.js';
 import { SwarmStorageNamespace } from './storage/index.js';
@@ -23,6 +24,7 @@ export class SwarmClient {
   /** Convenient alias for deliverables namespace: mailbox */
   readonly mailbox: SwarmDeliverablesNamespace;
   readonly workspaces: SwarmWorkspacesNamespace;
+  readonly projects: SwarmProjectsNamespace;
   readonly sessions: SwarmSessionsNamespace;
   readonly system: SwarmSystemNamespace;
   readonly deploy: SwarmDeployNamespace;
@@ -65,6 +67,7 @@ export class SwarmClient {
     this.deliverables = new SwarmDeliverablesNamespace(this.transport);
     this.mailbox = this.deliverables;
     this.workspaces = new SwarmWorkspacesNamespace(this.transport);
+    this.projects = new SwarmProjectsNamespace(this.transport);
     this.sessions = new SwarmSessionsNamespace(this.transport);
     this.system = new SwarmSystemNamespace(this.transport);
     this.deploy = new SwarmDeployNamespace(this.transport);

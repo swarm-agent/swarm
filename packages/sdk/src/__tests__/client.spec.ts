@@ -21,6 +21,7 @@ test('SwarmClient: initializes namespaces and aliases properly', () => {
   assert.ok(client.workers);
   assert.equal(client.workers, client.automations); // workers is an alias
   assert.ok(client.sessions);
+  assert.ok(client.projects);
   assert.ok(client.workspaces);
   assert.ok(client.system);
 

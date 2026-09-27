@@ -4,6 +4,8 @@ export type TokenScope =
   | 'automations:write'
   | 'sessions:read'
   | 'sessions:write'
+  | 'projects:read'
+  | 'projects:write'
   | 'admin'
   | string;
 
@@ -471,3 +473,401 @@ export interface UpdateNotificationParams {
   status?: string;
   swarm_id?: string;
 }
+
+// ============================================================================
+// Projects, Tasks, and Orchestrate Primitives
+// ============================================================================
+
+export interface ProjectWorkspaceRef {
+  workspace_id?: string;
+  path: string;
+  role?: 'primary_code' | 'auxiliary' | 'docs' | string;
+  label?: string;
+}
+
+export interface ProjectTaskMediaRef {
+  id: string;
+  title?: string;
+  url?: string;
+  media_type?: string;
+  kind?: 'image' | 'video' | 'audio' | 'doc' | string;
+  filename?: string;
+  data?: string;
+  size_bytes?: number;
+  created_at?: number;
+}
+
+export interface ProjectRecord {
+  id: string;
+  account_id?: string;
+  name: string;
+  description?: string;
+  workspaces?: ProjectWorkspaceRef[];
+  project_context?: string;
+  active_task_ids?: string[];
+  automation_ids?: string[];
+  primary_session_id?: string;
+  uploaded_media?: ProjectTaskMediaRef[];
+  created_at: number;
+  updated_at: number;
+}
+
+export interface CreateProjectParams {
+  id?: string;
+  name: string;
+  description?: string;
+  workspaces?: ProjectWorkspaceRef[];
+  project_context?: string;
+  active_task_ids?: string[];
+  automation_ids?: string[];
+  primary_session_id?: string;
+  uploaded_media?: ProjectTaskMediaRef[];
+}
+
+export interface UpdateProjectParams {
+  name?: string;
+  description?: string;
+  project_context?: string;
+  primary_session_id?: string;
+  workspaces?: ProjectWorkspaceRef[];
+  active_task_ids?: string[];
+  automation_ids?: string[];
+}
+
+export interface ListProjectsParams {
+  limit?: number;
+}
+
+export interface SynthesizeProjectContextParams {
+  name: string;
+  workspaces: string[];
+}
+
+export interface DeleteProjectResult {
+  status: string;
+  id: string;
+}
+
+export interface ClearProjectContextResult {
+  status: string;
+  [key: string]: unknown;
+}
+
+export interface ProjectTaskDeliverable {
+  id: string;
+  title: string;
+  kind: 'video' | 'code_diff' | 'artifact' | 'report' | string;
+  status: 'ready' | 'accepted' | 'in_progress' | string;
+  duration?: string;
+  thumbnail?: string;
+  description?: string;
+  artifact_ref?: string;
+  code_diff?: string;
+  media_url?: string;
+  parent_deliverable_id?: string;
+  source_media_ref?: string;
+}
+
+export interface ProjectTaskScene {
+  scene_number: number;
+  title: string;
+  duration_sec: number;
+  prompt: string;
+  visual_notes?: string;
+}
+
+export interface ProjectTaskPlanBinding {
+  plan_id?: string;
+  definition_revision?: number;
+  session_id?: string;
+  receipt?: string;
+}
+
+export interface ProjectTaskRecord {
+  id: string;
+  project_id: string;
+  account_id?: string;
+  title: string;
+  description?: string;
+  status:
+    | 'queued'
+    | 'in_progress'
+    | 'needs_review'
+    | 'completed'
+    | 'failed'
+    | 'pending_approval'
+    | 'planning'
+    | 'rejected'
+    | string;
+  session_id?: string;
+  agent?: string;
+  worker_name?: string;
+  outcome_type?: string;
+  workspace_path?: string;
+  worktree_branch?: string;
+  worktree_name?: string;
+  base_branch?: string;
+  base_commit?: string;
+  git_status?: 'clean' | 'dirty' | 'diverged' | 'unknown' | 'stale' | string;
+  unintegrated_commits?: number;
+  behind_commits?: number;
+  is_integrated?: boolean;
+  diff_summary?: string;
+  is_dirty?: boolean;
+  dirty_count?: number;
+  sync_warning?: string;
+  action_needed?: string;
+  what_did_do?: string[];
+  what_not_done?: string[];
+  pipeline_stages?: string[];
+  current_stage_index?: number;
+  deliverables?: ProjectTaskDeliverable[];
+  workspaces_involved?: string[];
+  context_pool_summary?: string;
+  plan_summary?: string;
+  full_plan_markdown?: string;
+  tier?: string;
+  feature_size?: 'small' | 'big' | string;
+  revision?: number;
+  last_error?: string;
+  feedback_history?: string[];
+  aspect_ratio?: string;
+  resolution?: string;
+  variant_count?: number;
+  duration_seconds?: number;
+  model?: string;
+  provider?: string;
+  thinking?: string;
+  service_tier?: string;
+  context_mode?: string;
+  scenes?: ProjectTaskScene[];
+  soundtrack?: string;
+  auto_approve?: boolean;
+  router_alert?: string;
+  attached_media?: ProjectTaskMediaRef[];
+  plan_binding?: ProjectTaskPlanBinding;
+  plan_document?: any;
+  task_program?: any;
+  task_program_id?: string;
+  task_program_status?: any;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface CreateProjectTaskParams {
+  id?: string;
+  title: string;
+  description?: string;
+  prompt?: string;
+  agent?: string;
+  worker_name?: string;
+  feature_size?: 'small' | 'big' | string;
+  workspace_path?: string;
+  worktree_branch?: string;
+  outcome_type?: string;
+  tier?: string;
+  aspect_ratio?: string;
+  resolution?: string;
+  variant_count?: number;
+  deliverable_count?: number;
+  duration_seconds?: number;
+  model?: string;
+  provider?: string;
+  thinking?: string;
+  service_tier?: string;
+  context_mode?: string;
+  soundtrack?: string;
+  auto_approve?: boolean;
+  pipeline_stages?: string[];
+  deliverables?: ProjectTaskDeliverable[];
+  what_did_do?: string[];
+  what_not_done?: string[];
+  attached_media?: ProjectTaskMediaRef[];
+  document?: any;
+  plan_document?: any;
+  task_program?: any;
+  task_program_id?: string;
+  plan_summary?: string;
+  full_plan_markdown?: string;
+  diff_summary?: string;
+  intent?: string;
+  video_type?: string;
+  enhance_prompt?: boolean;
+  scenes_count?: number;
+}
+
+export interface UpdateProjectTaskParams {
+  title?: string;
+  description?: string;
+  agent?: string;
+  worker_name?: string;
+  outcome_type?: string;
+  workspace_path?: string;
+  worktree_branch?: string;
+  worktree_name?: string;
+  base_branch?: string;
+  behind_commits?: number;
+  is_integrated?: boolean;
+  dirty_count?: number;
+  sync_warning?: string;
+  unintegrated_commits?: number;
+  diff_summary?: string;
+  is_dirty?: boolean;
+  action_needed?: string;
+  what_did_do?: string[];
+  what_not_done?: string[];
+  pipeline_stages?: string[];
+  current_stage_index?: number;
+  deliverables?: ProjectTaskDeliverable[];
+  workspaces_involved?: string[];
+  plan_summary?: string;
+  full_plan_markdown?: string;
+  tier?: string;
+  feature_size?: string;
+  last_error?: string;
+  revision?: number;
+  task_program?: any;
+  task_program_id?: string;
+  model?: string;
+  provider?: string;
+  thinking?: string;
+  service_tier?: string;
+  context_mode?: string;
+}
+
+export interface CreateProjectTaskResult {
+  task: ProjectTaskRecord;
+  model_preview?: any;
+}
+
+export interface GetProjectTaskResult {
+  task: ProjectTaskRecord;
+  model_preview?: any;
+}
+
+export interface DeleteProjectTaskResult {
+  status: string;
+  task_id: string;
+}
+
+export interface PreviewProjectTaskParams {
+  prompt?: string;
+  title?: string;
+  intent?: string;
+  feature_size?: string;
+  agent?: string;
+  outcome_type?: string;
+  tier?: string;
+  model?: string;
+  provider?: string;
+  thinking?: string;
+  service_tier?: string;
+  context_mode?: string;
+  workspace_path?: string;
+}
+
+export interface ProjectTaskPreviewResult {
+  task_plan: any;
+  model_preview?: any;
+}
+
+export interface ProjectTaskModelPreviewResult {
+  task: ProjectTaskRecord;
+  model_preview: any;
+}
+
+export interface ProjectTaskApprovalGuards {
+  session_id?: string;
+  plan_id?: string;
+  definition_revision?: number;
+}
+
+export interface ApproveProjectTaskResult {
+  status: 'approved' | 'already_approved' | string;
+  task: ProjectTaskRecord;
+}
+
+export interface RejectProjectTaskResult {
+  status: 'rejected' | string;
+  task: ProjectTaskRecord;
+}
+
+export interface ReopenProjectTaskResult {
+  status: 'reopened' | string;
+  task: ProjectTaskRecord;
+}
+
+export interface CompleteProjectTaskResult {
+  status: 'completed' | string;
+  task: ProjectTaskRecord;
+}
+
+export interface RefineProjectTaskParams {
+  feedback?: string;
+  error_summary?: string;
+  agent?: string;
+  feature_size?: string;
+  outcome_type?: string;
+  tier?: string;
+  model?: string;
+}
+
+export interface RefineProjectTaskResult {
+  status: 'refined' | string;
+  task: ProjectTaskRecord;
+}
+
+export interface IntegrateProjectTaskResult {
+  status: 'integrated' | 'already_integrated' | string;
+  message?: string;
+  task?: ProjectTaskRecord;
+  integration_plan?: any;
+  resulting_target_head?: string;
+  [key: string]: unknown;
+}
+
+export interface DeployProjectTaskProgramResult {
+  status: 'deployed' | string;
+  task: ProjectTaskRecord;
+}
+
+export interface RedeployProjectTaskJobResult {
+  status: 'redeploying' | string;
+  task: ProjectTaskRecord;
+}
+
+export interface GetProjectTaskProgramResult {
+  program: any;
+}
+
+export interface DeleteProjectMediaResult {
+  removed: boolean;
+  media_id: string;
+  uploaded_media: ProjectTaskMediaRef[];
+}
+
+export interface SyncStreamParams {
+  endpoint_cursor: string;
+  session_ids?: string[];
+  surface?: string;
+  selector_kind?: string;
+  global?: boolean;
+  limit?: number;
+  include_active?: boolean;
+  resources?: {
+    notifications?: boolean;
+    notification_summary?: boolean;
+    tasks?: boolean;
+    auth?: boolean;
+  };
+}
+
+export interface SyncStreamResult<TEvent = any> {
+  ok: boolean;
+  endpoint_cursor: string;
+  events: TEvent[];
+  has_more: boolean;
+  selector?: any;
+  replay_instructions?: Record<string, unknown>;
+}
+

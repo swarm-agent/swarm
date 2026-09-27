@@ -107,7 +107,55 @@ for (const ws of workspaces) {
 }
 ```
 
-### 6. Programmable Push Alert Webhooks
+### 6. Projects, Autonomous Tasks, and Orchestrate Primitives
+
+Manage multi-workspace projects, autonomous tasks, route previews, plan review lifecycles, and opaque event sync streams:
+
+```typescript
+// Create a new project aggregating workspaces
+const project = await client.projects.create({
+  name: 'Mobile Core Redesign',
+  description: 'Refactor mobile navigation and auth screens',
+  workspaces: [{ path: '/workspaces/mobile-app', role: 'primary_code' }],
+});
+
+// Create an autonomous task with agent routing
+const { task, model_preview } = await client.projects.createTask(project.id, {
+  title: 'Implement OAuth refresh token rotation',
+  agent: 'coder',
+  feature_size: 'small',
+  prompt: 'Add proactive token refresh before expiration with retry backoff',
+});
+
+// Preview how Orchestrate routes and models a proposed task before creation
+const preview = await client.projects.previewTask(project.id, {
+  title: 'Audit API authorization checks',
+  agent: 'finder',
+});
+
+// Guarded plan acceptance: enforce exact session, plan, and definition revision
+const approved = await client.projects.approveTask(project.id, task.id, {
+  session_id: task.session_id,
+  plan_id: task.plan_binding?.plan_id,
+  definition_revision: task.plan_binding?.definition_revision,
+});
+
+// Reopen a task with focused human feedback directives
+await client.projects.reopenTask(project.id, task.id, {
+  feedback: 'Unit test flake on Node 20; please address.',
+});
+
+// Refine a plan based on feedback or error recovery
+await client.projects.refineTask(project.id, task.id, {
+  feedback: 'Split implementation into schema migration then service logic',
+  agent: 'coder',
+});
+
+// Stream or replay outbox events starting after an opaque cursor
+const streamResult = await client.projects.replayEvents('opaque_cursor_token');
+```
+
+### 7. Programmable Push Alert Webhooks
 
 Register push alert webhook destinations to receive HMAC-signed real-time notifications on worker lifecycle events (`started`, `succeeded`, `failed`, `retry_exhausted`):
 
@@ -134,7 +182,7 @@ const webhooks = await client.automations.listWebhooks();
 await client.automations.deleteWebhook(webhook.id);
 ```
 
-### 7. Deliverables Hub & Agent Mailbox
+### 8. Deliverables Hub & Agent Mailbox
 
 Submit completed work (social media drafts, reports, test alerts) from background workers to the local Swarm Agent Mailbox for human review, editing, and one-click publication actions:
 
@@ -166,7 +214,7 @@ const result = await client.deliverables.approve(deliverable.id);
 console.log('Published:', result.action_result);
 ```
 
-### 8. Cloud Deployment SDK (GCP Cloud Run & Compute Engine)
+### 9. Cloud Deployment SDK (GCP Cloud Run & Compute Engine)
 
 Deploy Swarm as a self-contained, serverless or dedicated cloud service on Google Cloud Platform with sub-1.5s cold starts and true scale-to-zero ($0 idle cost).
 

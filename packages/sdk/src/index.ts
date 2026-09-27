@@ -5,6 +5,7 @@ export * from './deliverables.js';
 export * from './deploy/index.js';
 export * from './notifications.js';
 export * from './sessions.js';
+export * from './projects.js';
 export * from './workspaces.js';
 export * from './system.js';
 export * from './transport.js';
