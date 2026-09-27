@@ -84,7 +84,17 @@ func (s *Service) RouteTask(ctx context.Context, opts TaskRouteOptions) (pebbles
 	}
 
 	// Base authoritative contract derived strictly from explicit structured parameters.
-	baseContract := pebblestore.RouteAndPlanProjectTaskWithOptions(planOpts)
+	baseContract, err := pebblestore.RouteAndPlanProjectTaskWithOptions(planOpts)
+	if err != nil {
+		return pebblestore.TaskRouteResult{}, fmt.Errorf("task configuration invalid: %w", err)
+	}
+
+	// Direct media (sound, single video without prompt enhancement) does not require AI routing
+	isDirectSound := opts.Intent == "sound" || opts.Intent == "audio" || opts.Agent == "sound" || opts.Agent == "audio"
+	isDirectVideo := (opts.Intent == "video" || opts.Agent == "video") && !opts.EnhancePrompt && (opts.VideoType == "single" || opts.ScenesCount <= 1)
+	if isDirectSound || isDirectVideo {
+		return baseContract, nil
+	}
 
 	if s.invoker != nil {
 		aiResult, err := s.invokeAIRouter(ctx, opts, planOpts)

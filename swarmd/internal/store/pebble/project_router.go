@@ -1,6 +1,7 @@
 package pebblestore
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -81,7 +82,7 @@ func tierNumber(tier string) string {
 }
 
 // RouteAndPlanProjectTask is the backward-compatible entrypoint.
-func RouteAndPlanProjectTask(prompt string, wsPath string, projectContext string, workspaces []ProjectWorkspaceRef, feedback string, lastError string) TaskRouteResult {
+func RouteAndPlanProjectTask(prompt string, wsPath string, projectContext string, workspaces []ProjectWorkspaceRef, feedback string, lastError string) (TaskRouteResult, error) {
 	return RouteAndPlanProjectTaskWithOptions(TaskPlanOptions{
 		Prompt:             prompt,
 		RequestedWorkspace: wsPath,
@@ -89,14 +90,15 @@ func RouteAndPlanProjectTask(prompt string, wsPath string, projectContext string
 		Workspaces:         workspaces,
 		Feedback:           feedback,
 		LastError:          lastError,
+		Agent:              "coder",
 	})
 }
 
-// RouteAndPlanProjectTaskWithOptions synthesizes the fallback execution plan when the AI Task Router
-// is unavailable or fails. It defaults directly to the canonical Swarm system agent without fragile
-// keyword scoring heuristics, and sets RouterAlert so the system and user interface clearly alert
-// the user to the router agent failure.
-func RouteAndPlanProjectTaskWithOptions(opts TaskPlanOptions) TaskRouteResult {
+// RouteAndPlanProjectTaskWithOptions derives the canonical execution contract and task plan
+// strictly from explicit structured configuration (agent, intent, feature_size, etc.).
+// It fails closed on missing, unknown, or conflicting configuration and never infers or routes
+// via keyword heuristics or accidental metadata.
+func RouteAndPlanProjectTaskWithOptions(opts TaskPlanOptions) (TaskRouteResult, error) {
 	prompt := strings.TrimSpace(opts.Prompt)
 	feedback := strings.TrimSpace(opts.Feedback)
 	lastError := strings.TrimSpace(opts.LastError)
@@ -112,37 +114,71 @@ func RouteAndPlanProjectTaskWithOptions(opts TaskPlanOptions) TaskRouteResult {
 	}
 	detected := []string{heroWorkspace}
 
-	// Intent and agent resolution strictly via explicit structured intent and agent.
-	// Keyword string-matching heuristics on prompt content are strictly eliminated.
 	explicitAgent := strings.ToLower(strings.TrimSpace(opts.Agent))
 	explicitOutcome := strings.ToLower(strings.TrimSpace(opts.OutcomeType))
 	explicitTier := strings.ToLower(strings.TrimSpace(opts.Tier))
 	intent := strings.ToLower(strings.TrimSpace(opts.Intent))
 	featureSize := strings.ToLower(strings.TrimSpace(opts.FeatureSize))
 
-	agent := "coder"
-	tier := "direct"
-	outcomeType := "code_pr"
+	// 1. Missing structured configuration check: fail closed
+	if explicitAgent == "" && intent == "" {
+		return TaskRouteResult{}, errors.New("missing structured configuration: task agent or intent is required")
+	}
 
+	// 2. Feature size validation: must be small or big if provided
+	if featureSize != "" && featureSize != "small" && featureSize != "big" {
+		return TaskRouteResult{}, fmt.Errorf("unknown feature_size %q (expected 'small' or 'big')", opts.FeatureSize)
+	}
+
+	var agent string
+	var tier string
+	var outcomeType string
+
+	// 3. Resolve and validate agent / intent with strict conflict detection
 	if explicitAgent != "" {
-		agent = explicitAgent
-		switch agent {
+		switch explicitAgent {
 		case "coder":
+			if featureSize == "big" {
+				return TaskRouteResult{}, errors.New("conflicting task configuration: feature_size 'big' cannot use coder agent (use plan agent)")
+			}
+			if intent != "" && intent != "code" {
+				return TaskRouteResult{}, fmt.Errorf("conflicting task configuration: intent %q cannot use coder agent", opts.Intent)
+			}
+			agent = "coder"
 			tier = "direct"
 			outcomeType = "code_pr"
 		case "finder":
+			if intent != "" && intent != "audit" {
+				return TaskRouteResult{}, fmt.Errorf("conflicting task configuration: intent %q cannot use finder agent", opts.Intent)
+			}
+			agent = "finder"
 			tier = "discovery"
 			outcomeType = "audit_report"
 		case "plan":
+			if featureSize == "small" {
+				return TaskRouteResult{}, errors.New("conflicting task configuration: feature_size 'small' cannot use plan agent (use coder agent)")
+			}
+			if intent != "" && intent != "code" && intent != "plan" {
+				return TaskRouteResult{}, fmt.Errorf("conflicting task configuration: intent %q cannot use plan agent", opts.Intent)
+			}
+			agent = "plan"
 			tier = "complex"
 			outcomeType = "plan_spec"
 		case "image":
+			if intent != "" && intent != "image" {
+				return TaskRouteResult{}, fmt.Errorf("conflicting task configuration: intent %q cannot use image agent", opts.Intent)
+			}
+			agent = "image"
 			tier = "direct"
 			outcomeType = "media_bundle"
 			if opts.VariantCount >= 5 {
 				tier = "swarm"
 			}
 		case "video":
+			if intent != "" && intent != "video" {
+				return TaskRouteResult{}, fmt.Errorf("conflicting task configuration: intent %q cannot use video agent", opts.Intent)
+			}
+			agent = "video"
 			tier = "direct"
 			if opts.VideoType == "single" || opts.ScenesCount == 1 {
 				outcomeType = "video_clip"
@@ -150,25 +186,28 @@ func RouteAndPlanProjectTaskWithOptions(opts TaskPlanOptions) TaskRouteResult {
 				outcomeType = "video_story"
 			}
 		case "sound", "audio":
+			if intent != "" && intent != "sound" && intent != "audio" {
+				return TaskRouteResult{}, fmt.Errorf("conflicting task configuration: intent %q cannot use sound agent", opts.Intent)
+			}
 			agent = "sound"
 			tier = "direct"
 			outcomeType = "audio_clip"
 		case "designer":
-			if opts.VariantCount > 1 || explicitTier == "swarm" || explicitOutcome == "media_bundle" {
-				tier = "swarm"
-				outcomeType = "media_bundle"
-			} else {
-				tier = "direct"
-				outcomeType = "artifact"
+			if intent != "" && intent != "design" {
+				return TaskRouteResult{}, fmt.Errorf("conflicting task configuration: intent %q cannot use designer agent", opts.Intent)
 			}
+			agent = "designer"
+			tier = "direct"
+			outcomeType = "artifact"
 		case "swarm":
+			agent = "swarm"
 			tier = "direct"
 			outcomeType = "general"
 		default:
-			tier = "direct"
-			outcomeType = "general"
+			return TaskRouteResult{}, fmt.Errorf("unknown task agent: %q", opts.Agent)
 		}
-	} else if intent != "" {
+	} else {
+		// No explicit agent; resolve strictly from intent
 		switch intent {
 		case "code":
 			if featureSize == "big" {
@@ -210,39 +249,50 @@ func RouteAndPlanProjectTaskWithOptions(opts TaskPlanOptions) TaskRouteResult {
 		case "design":
 			agent = "designer"
 			tier = "direct"
-			outcomeType = "media_bundle"
+			outcomeType = "artifact"
 		default:
-			if featureSize == "big" {
-				agent = "plan"
-				tier = "complex"
-				outcomeType = "plan_spec"
-			} else {
-				agent = "coder"
-				tier = "direct"
-				outcomeType = "code_pr"
-			}
-		}
-	} else {
-		if featureSize == "big" {
-			agent = "plan"
-			tier = "complex"
-			outcomeType = "plan_spec"
-		} else {
-			agent = "coder"
-			tier = "direct"
-			outcomeType = "code_pr"
+			return TaskRouteResult{}, fmt.Errorf("unknown task intent: %q", opts.Intent)
 		}
 	}
 
 	if explicitOutcome != "" {
+		switch agent {
+		case "coder":
+			if explicitOutcome != "code_pr" && explicitOutcome != "bug_patch" && explicitOutcome != "code" {
+				return TaskRouteResult{}, fmt.Errorf("incoherent task contract: coder agent cannot have outcome %q", opts.OutcomeType)
+			}
+		case "finder":
+			if explicitOutcome != "audit_report" && explicitOutcome != "audit" && explicitOutcome != "report" {
+				return TaskRouteResult{}, fmt.Errorf("incoherent task contract: finder agent cannot have outcome %q", opts.OutcomeType)
+			}
+		case "plan":
+			if explicitOutcome != "plan_spec" && explicitOutcome != "plan" && explicitOutcome != "general" {
+				return TaskRouteResult{}, fmt.Errorf("incoherent task contract: plan agent cannot have outcome %q", opts.OutcomeType)
+			}
+		case "image":
+			if explicitOutcome != "media_bundle" && explicitOutcome != "image" {
+				return TaskRouteResult{}, fmt.Errorf("incoherent task contract: image agent cannot have outcome %q", opts.OutcomeType)
+			}
+		case "video":
+			if explicitOutcome != "video_clip" && explicitOutcome != "video_story" && explicitOutcome != "video" {
+				return TaskRouteResult{}, fmt.Errorf("incoherent task contract: video agent cannot have outcome %q", opts.OutcomeType)
+			}
+		case "sound", "audio":
+			if explicitOutcome != "audio_clip" && explicitOutcome != "sound" && explicitOutcome != "audio" {
+				return TaskRouteResult{}, fmt.Errorf("incoherent task contract: sound agent cannot have outcome %q", opts.OutcomeType)
+			}
+		case "designer":
+			if explicitOutcome != "artifact" && explicitOutcome != "ui_design" {
+				return TaskRouteResult{}, fmt.Errorf("incoherent task contract: designer agent cannot have outcome %q", opts.OutcomeType)
+			}
+		}
 		outcomeType = explicitOutcome
 	}
 	if explicitTier != "" {
 		tier = explicitTier
 	}
 
-	isVisualMedia := agent == "image" || agent == "video" ||
-		(agent == "designer" && (tier == "swarm" || outcomeType == "media_bundle" || opts.VariantCount > 1))
+	isVisualMedia := agent == "image" || agent == "video"
 
 	var aspectRatio string
 	var variantCount int
@@ -339,21 +389,24 @@ func RouteAndPlanProjectTaskWithOptions(opts TaskPlanOptions) TaskRouteResult {
 			}
 		}
 	case "designer":
-		if variantCount > 1 || tier == "swarm" || outcomeType == "media_bundle" {
-			stages = []string{"Visual Swarm Formulation", "Media Generation Pipeline"}
-			for i := 1; i <= variantCount; i++ {
+		vCount := opts.VariantCount
+		if vCount <= 0 {
+			vCount = 1
+		}
+		stages = []string{"Visual UI & Animation Design", "Interactive Artifact Compilation"}
+		if vCount > 1 {
+			for i := 1; i <= vCount; i++ {
 				deliverables = append(deliverables, ProjectTaskDeliverable{
-					ID:          fmt.Sprintf("deliv_swarm_slot_%d", i),
-					Title:       fmt.Sprintf("%s (Variant %d, %s)", title, i, aspectRatio),
-					Kind:        "image",
+					ID:          fmt.Sprintf("deliv_design_slot_%d", i),
+					Title:       fmt.Sprintf("%s (Variant %d)", title, i),
+					Kind:        "artifact",
 					Status:      "pending",
-					Description: fmt.Sprintf("Autonomous deliverable for %s in aspect ratio %s", title, aspectRatio),
+					Description: fmt.Sprintf("Autonomous interactive UI artifact for %s (variant %d)", title, i),
 				})
 			}
 		} else {
-			stages = []string{"HTML & Animation Design", "Artifact Compilation"}
 			deliverables = []ProjectTaskDeliverable{
-				{ID: "deliv_design", Title: "Interactive HTML / Motion UI Artifact", Kind: "artifact", Status: "pending"},
+				{ID: "deliv_design", Title: fmt.Sprintf("%s (Interactive Artifact)", title), Kind: "artifact", Status: "pending", Description: fmt.Sprintf("Interactive UI artifact for %s", prompt)},
 			}
 		}
 	case "finder":
@@ -391,7 +444,7 @@ func RouteAndPlanProjectTaskWithOptions(opts TaskPlanOptions) TaskRouteResult {
 		}
 	}
 
-	isMedia := agent == "image" || agent == "video" || agent == "sound" || agent == "audio" || outcomeType == "media_bundle" || outcomeType == "video_story" || outcomeType == "video_clip"
+	isMedia := agent == "image" || agent == "video" || agent == "sound" || agent == "audio"
 	var branch string
 	if !isMedia {
 		branch, _ = MakeWorktreeBranch(title, prompt)
@@ -499,7 +552,7 @@ func RouteAndPlanProjectTaskWithOptions(opts TaskPlanOptions) TaskRouteResult {
 		Soundtrack:         soundtrack,
 		RouterAlert:        routerAlert,
 		AttachedMedia:      opts.AttachedMedia,
-	}
+	}, nil
 }
 
 // MakeWorktreeBranch derives a clean, isolated worktree branch and slug name from a title or prompt.

@@ -264,7 +264,7 @@ type ProjectTaskRecord struct {
 	ContextPoolSummary  string                   `json:"context_pool_summary,omitempty"`
 	PlanSummary         string                   `json:"plan_summary,omitempty"`
 	FullPlanMarkdown    string                   `json:"full_plan_markdown,omitempty"`
-	Tier                string                   `json:"tier,omitempty"` // "direct" | "discovery" | "complex"
+	Tier                string                   `json:"tier,omitempty"`         // "direct" | "discovery" | "complex"
 	FeatureSize         string                   `json:"feature_size,omitempty"` // "small" | "big"
 	Revision            int                      `json:"revision,omitempty"`
 	LastError           string                   `json:"last_error,omitempty"`
@@ -275,6 +275,9 @@ type ProjectTaskRecord struct {
 	DurationSeconds     int                      `json:"duration_seconds,omitempty"`
 	Model               string                   `json:"model,omitempty"`
 	Provider            string                   `json:"provider,omitempty"`
+	Thinking            string                   `json:"thinking,omitempty"`
+	ServiceTier         string                   `json:"service_tier,omitempty"`
+	ContextMode         string                   `json:"context_mode,omitempty"`
 	Scenes              []ProjectTaskScene       `json:"scenes,omitempty"`
 	Soundtrack          string                   `json:"soundtrack,omitempty"`
 	Operation           string                   `json:"operation,omitempty"` // "create" | "edit" | "extend"
@@ -310,9 +313,28 @@ func (t *ProjectTaskRecord) Validate() error {
 	}
 	agent := strings.ToLower(strings.TrimSpace(t.Agent))
 	if agent == "" {
-		agent = "coder"
-		t.Agent = agent
+		return errors.New("task agent is required")
 	}
+	t.Agent = agent
+
+	switch agent {
+	case "coder", "finder", "plan", "image", "video", "sound", "audio", "designer", "swarm":
+		// valid
+	default:
+		return fmt.Errorf("unknown task agent: %q", agent)
+	}
+
+	featSize := strings.ToLower(strings.TrimSpace(t.FeatureSize))
+	if featSize != "" && featSize != "small" && featSize != "big" {
+		return fmt.Errorf("unknown feature_size %q (expected 'small' or 'big')", t.FeatureSize)
+	}
+	if agent == "coder" && featSize == "big" {
+		return errors.New("incoherent task contract: coder agent cannot have feature_size 'big' (use plan agent)")
+	}
+	if agent == "plan" && featSize == "small" {
+		return errors.New("incoherent task contract: plan agent cannot have feature_size 'small' (use coder agent)")
+	}
+
 	if t.OutcomeType == "" {
 		switch agent {
 		case "coder":
@@ -332,11 +354,11 @@ func (t *ProjectTaskRecord) Validate() error {
 		case "sound", "audio":
 			t.OutcomeType = "audio_clip"
 		case "designer":
-			t.OutcomeType = "media_bundle"
+			t.OutcomeType = "artifact"
 		case "swarm":
 			t.OutcomeType = "general"
 		default:
-			t.OutcomeType = "code_pr"
+			t.OutcomeType = "general"
 		}
 	}
 
@@ -376,6 +398,16 @@ func (t *ProjectTaskRecord) Validate() error {
 			k := strings.ToLower(d.Kind)
 			if k == "image" || k == "video" || k == "audio" {
 				return errors.New("incoherent task contract: plan agent cannot have media deliverables")
+			}
+		}
+	case "designer":
+		if outcome != "artifact" && outcome != "ui_design" {
+			return fmt.Errorf("incoherent task contract: designer agent cannot have outcome %q", t.OutcomeType)
+		}
+		for _, d := range t.Deliverables {
+			k := strings.ToLower(d.Kind)
+			if k == "image" || k == "video" || k == "audio" {
+				return errors.New("incoherent task contract: designer agent cannot have media deliverables")
 			}
 		}
 	case "image":

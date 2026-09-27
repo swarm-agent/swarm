@@ -397,27 +397,25 @@ type TaskModelPreview struct {
 	ModelSource         string                       `json:"model_source"` // "task_override" | "account_settings" | "account_default"
 	AccountDefaultModel *pebblestore.ModelPreference `json:"account_default_model,omitempty"`
 	AccountSettingsPath string                       `json:"account_settings_path"`
+	ResolutionError     string                       `json:"resolution_error,omitempty"`
 }
 
-func (s *Server) buildTaskModelPreview(p identity.Principal, task *pebblestore.ProjectTaskRecord) TaskModelPreview {
-	preview := TaskModelPreview{
-		AccountSettingsPath: "/v3/agents/model-settings",
-	}
+func (s *Server) resolveTaskModelPreference(p identity.Principal, task *pebblestore.ProjectTaskRecord) (pebblestore.ModelPreference, string, error) {
 	if task == nil {
-		return preview
+		return pebblestore.ModelPreference{}, "", errors.New("task is required")
 	}
-	preview.TaskID = task.ID
-	preview.Agent = task.Agent
-	preview.ResolvedAgent = task.Agent
-	preview.FeatureSize = task.FeatureSize
-	preview.TaskModelOverride = strings.TrimSpace(task.Model)
+	targetAgent := strings.ToLower(strings.TrimSpace(task.Agent))
+	if targetAgent == "" {
+		targetAgent = "swarm"
+	}
+	isPlan := targetAgent == "plan" || (targetAgent == "swarm" && strings.ToLower(strings.TrimSpace(task.FeatureSize)) == "big")
 
-	// Resolve account default Swarm model
+	// Resolve default Swarm preference for account
 	var defaultSwarmPref pebblestore.ModelPreference
 	if s.agentModelSettings != nil && p.AccountScopeID != "" {
 		if settings, err := s.agentModelSettings.GetForAccount(p.AccountScopeID); err == nil {
 			swarmAssignment := settings.Swarm.Action
-			if task.Agent == "plan" && strings.TrimSpace(settings.Swarm.Plan.Model) != "" {
+			if isPlan && strings.TrimSpace(settings.Swarm.Plan.Model) != "" {
 				swarmAssignment = settings.Swarm.Plan
 			}
 			defaultSwarmPref = pebblestore.ModelPreference{
@@ -434,62 +432,146 @@ func (s *Server) buildTaskModelPreview(p identity.Principal, task *pebblestore.P
 			defaultSwarmPref = def.Preference
 		}
 	}
-	if defaultSwarmPref.Model != "" {
-		preview.AccountDefaultModel = &defaultSwarmPref
-	}
 
 	// 1. Task-level model override takes precedence
-	if preview.TaskModelOverride != "" && s.model != nil {
-		if resolved, err := s.model.ResolvePreference(pebblestore.ModelPreference{Model: preview.TaskModelOverride}); err == nil && resolved.Preference.Model != "" {
-			preview.ResolvedModel = &resolved.Preference
-			preview.ModelSource = "task_override"
-			return preview
+	hasOverride := strings.TrimSpace(task.Model) != "" || strings.TrimSpace(task.Provider) != ""
+	if hasOverride {
+		overridePref := pebblestore.ModelPreference{
+			Provider:    strings.TrimSpace(task.Provider),
+			Model:       strings.TrimSpace(task.Model),
+			Thinking:    strings.TrimSpace(task.Thinking),
+			ServiceTier: strings.TrimSpace(task.ServiceTier),
+			ContextMode: strings.TrimSpace(task.ContextMode),
 		}
+
+		if targetAgent == "image" || targetAgent == "video" || targetAgent == "sound" || targetAgent == "audio" {
+			if targetAgent == "image" && s.imageGen != nil && overridePref.Model != "" {
+				sel, err := s.imageGen.ResolveModelSelection(overridePref.Model)
+				if err != nil {
+					return pebblestore.ModelPreference{}, "", fmt.Errorf("invalid image model override %q: %w", overridePref.Model, err)
+				}
+				overridePref.Model = sel.ID
+			}
+			if targetAgent == "video" && overridePref.Model == "" {
+				return pebblestore.ModelPreference{}, "", errors.New("video model override is empty")
+			}
+			if (targetAgent == "sound" || targetAgent == "audio") && overridePref.Model == "" {
+				return pebblestore.ModelPreference{}, "", errors.New("audio model override is empty")
+			}
+			return overridePref, "task_override", nil
+		}
+
+		if s.model != nil {
+			resolved, err := s.model.ResolvePreference(overridePref)
+			if err != nil {
+				return pebblestore.ModelPreference{}, "", fmt.Errorf("invalid task model override %q: %w", overridePref.Model, err)
+			}
+			if resolved.Preference.Model == "" {
+				return pebblestore.ModelPreference{}, "", fmt.Errorf("task model override %q resolved to empty model", overridePref.Model)
+			}
+			return resolved.Preference, "task_override", nil
+		}
+		return overridePref, "task_override", nil
 	}
 
-	// 2. Canonical subagents (coder, finder, designer, compact)
-	targetAgent := strings.ToLower(strings.TrimSpace(task.Agent))
-	if targetAgent == "plan" {
-		targetAgent = "swarm"
+	// 2. Media agents: strictly media models from uiSettings or canonical defaults (NEVER Swarm LLM!)
+	if targetAgent == "image" || targetAgent == "video" || targetAgent == "sound" || targetAgent == "audio" {
+		if s.uiSettings != nil && strings.TrimSpace(p.AccountScopeID) != "" {
+			if uiSet, err := s.uiSettings.GetForAccount(p.AccountScopeID); err == nil {
+				var mediaModel string
+				switch targetAgent {
+				case "image":
+					mediaModel = strings.TrimSpace(uiSet.Tools.Image.DefaultModel)
+				case "video":
+					mediaModel = strings.TrimSpace(uiSet.Tools.Video.DefaultModel)
+				case "sound", "audio":
+					mediaModel = strings.TrimSpace(uiSet.Tools.Audio.DefaultModel)
+				}
+				if mediaModel != "" {
+					return pebblestore.ModelPreference{Model: mediaModel}, "account_settings", nil
+				}
+			}
+		}
+		var defaultMediaModel string
+		switch targetAgent {
+		case "image":
+			if s.imageGen != nil {
+				if sels, err := s.imageGen.GoogleImageModelSelections(); err == nil && len(sels) > 0 {
+					defaultMediaModel = sels[0].ID
+				}
+			}
+			if defaultMediaModel == "" {
+				defaultMediaModel = "imagen-3.0-generate-002"
+			}
+		case "video":
+			defaultMediaModel = "veo-3.1-generate-preview"
+		case "sound", "audio":
+			defaultMediaModel = "lyria-3.5"
+		}
+		return pebblestore.ModelPreference{Model: defaultMediaModel}, "account_default", nil
 	}
+
+	// 3. Canonical subagents (coder, finder, designer, compact)
 	if canonicalID, isCanonical := agentruntime.CanonicalSystemAgentID(targetAgent); isCanonical && canonicalID != agentruntime.SwarmAgentID {
 		resolvedModel, _, err := agentmodel.ResolveSystemAgent(s.model, s.agents, s.agentModelSettings, p.AccountScopeID, canonicalID, "")
 		if err == nil && resolvedModel.Preference.Model != "" {
-			preview.ResolvedModel = &resolvedModel.Preference
-			preview.ModelSource = "account_settings"
-			return preview
+			return resolvedModel.Preference, "account_settings", nil
+		}
+		// If system agent resolution failed or unconfigured, fall back to Swarm default with warning
+		return defaultSwarmPref, "account_default", nil
+	}
+
+	// 4. Swarm / Plan
+	return defaultSwarmPref, "account_default", nil
+}
+
+func (s *Server) buildTaskModelPreview(p identity.Principal, task *pebblestore.ProjectTaskRecord) TaskModelPreview {
+	preview := TaskModelPreview{
+		AccountSettingsPath: "/v3/agents/model-settings",
+	}
+	if task == nil {
+		return preview
+	}
+	preview.TaskID = task.ID
+	preview.Agent = task.Agent
+	preview.ResolvedAgent = task.Agent
+	preview.FeatureSize = task.FeatureSize
+	preview.TaskModelOverride = strings.TrimSpace(task.Model)
+
+	// Resolve default Swarm model (action or plan depending on feature size/agent)
+	isPlan := strings.ToLower(strings.TrimSpace(task.Agent)) == "plan" || (strings.ToLower(strings.TrimSpace(task.Agent)) == "swarm" && strings.ToLower(strings.TrimSpace(task.FeatureSize)) == "big")
+	if s.agentModelSettings != nil && p.AccountScopeID != "" {
+		if settings, err := s.agentModelSettings.GetForAccount(p.AccountScopeID); err == nil {
+			swarmAssignment := settings.Swarm.Action
+			if isPlan && strings.TrimSpace(settings.Swarm.Plan.Model) != "" {
+				swarmAssignment = settings.Swarm.Plan
+			}
+			preview.AccountDefaultModel = &pebblestore.ModelPreference{
+				Provider:    strings.TrimSpace(swarmAssignment.Provider),
+				Model:       strings.TrimSpace(swarmAssignment.Model),
+				Thinking:    strings.TrimSpace(swarmAssignment.Thinking),
+				ServiceTier: strings.TrimSpace(swarmAssignment.ServiceTier),
+				ContextMode: strings.TrimSpace(swarmAssignment.ContextMode),
+			}
+		}
+	}
+	if (preview.AccountDefaultModel == nil || preview.AccountDefaultModel.Model == "") && s.model != nil {
+		if def, err := s.model.ResolvePreference(pebblestore.ModelPreference{}); err == nil {
+			preview.AccountDefaultModel = &def.Preference
 		}
 	}
 
-	// 3. Media agents from uiSettings
-	if (targetAgent == "image" || targetAgent == "video" || targetAgent == "sound" || targetAgent == "audio") && s.uiSettings != nil && p.AccountScopeID != "" {
-		if uiSet, err := s.uiSettings.GetForAccount(p.AccountScopeID); err == nil {
-			var mediaModel string
-			switch targetAgent {
-			case "image":
-				mediaModel = uiSet.Tools.Image.DefaultModel
-			case "video":
-				mediaModel = uiSet.Tools.Video.DefaultModel
-			case "sound", "audio":
-				mediaModel = uiSet.Tools.Audio.DefaultModel
-			}
-			if mediaModel != "" {
-				preview.ResolvedModel = &pebblestore.ModelPreference{Model: mediaModel}
-				preview.ModelSource = "account_settings"
-				return preview
-			}
-		}
+	pref, source, err := s.resolveTaskModelPreference(p, task)
+	if err != nil {
+		preview.ResolutionError = err.Error()
+		return preview
 	}
-
-	// 4. Default Swarm model
-	if defaultSwarmPref.Model != "" {
-		preview.ResolvedModel = &defaultSwarmPref
-		preview.ModelSource = "account_default"
-	}
+	preview.ResolvedModel = &pref
+	preview.ModelSource = source
 	return preview
 }
 
-func routeAndPlanProjectTask(prompt string, wsPath string, projectContext string, workspaces []pebblestore.ProjectWorkspaceRef, feedback string, lastError string) TaskRouteResult {
+func routeAndPlanProjectTask(prompt string, wsPath string, projectContext string, workspaces []pebblestore.ProjectWorkspaceRef, feedback string, lastError string) (TaskRouteResult, error) {
 	return pebblestore.RouteAndPlanProjectTask(prompt, wsPath, projectContext, workspaces, feedback, lastError)
 }
 
@@ -601,7 +683,7 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 		task.SessionID = ""
 		if taskStatus == "in_progress" {
 			now := time.Now().UnixMilli()
-			if task.Agent == "image" || task.Agent == "designer" {
+			if task.Agent == "image" {
 				count := task.VariantCount
 				if count <= 0 {
 					count = len(task.Deliverables)
@@ -806,57 +888,26 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 	var agentProfile pebblestore.AgentProfile
 	var fallbackAlert string
 
-	taskModelOverride := ""
-	if task != nil {
-		taskModelOverride = strings.TrimSpace(task.Model)
+	pref, source, prefErr := s.resolveTaskModelPreference(p, task)
+	if prefErr != nil {
+		return fmt.Errorf("task model resolution failed: %w", prefErr)
 	}
+	resolvedPref = pref
 
 	if canonicalID, isCanonical := agentruntime.CanonicalSystemAgentID(targetAgent); isCanonical && canonicalID != agentruntime.SwarmAgentID {
-		if taskModelOverride != "" && s.model != nil {
-			if overrideResolved, err := s.model.ResolvePreference(pebblestore.ModelPreference{Model: taskModelOverride}); err == nil && overrideResolved.Preference.Model != "" {
-				resolvedPref = overrideResolved.Preference
-				if s.agents != nil {
-					agentProfile, _ = s.agents.ResolveSystemAgent(canonicalID, pebblestore.AgentProfile{
-						Provider:        resolvedPref.Provider,
-						Model:           resolvedPref.Model,
-						Thinking:        resolvedPref.Thinking,
-						AutoServiceTier: resolvedPref.ServiceTier,
-						ContextMode:     resolvedPref.ContextMode,
-					})
-				}
-			}
+		if source == "account_default" {
+			fallbackAlert = fmt.Sprintf("Configured model for agent %q could not be resolved or was unconfigured; fell back to Swarm default (%s/%s).", targetAgent, resolvedPref.Provider, resolvedPref.Model)
 		}
-		if resolvedPref.Model == "" {
-			resolvedModel, profile, err := agentmodel.ResolveSystemAgent(s.model, s.agents, s.agentModelSettings, p.AccountScopeID, canonicalID, "")
-			if err == nil && resolvedModel.Preference.Model != "" {
-				resolvedPref = resolvedModel.Preference
-				agentProfile = profile
-			} else {
-				// Resolution failed or not configured!
-				// Must fall back to Swarm default AND warn in the task card!
-				resolvedPref = defaultSwarmPref
-				fallbackAlert = fmt.Sprintf("Configured model for agent %q could not be resolved (%v); fell back to Swarm default (%s/%s).", targetAgent, err, defaultSwarmPref.Provider, defaultSwarmPref.Model)
-				if s.agents != nil {
-					agentProfile, _ = s.agents.ResolveSystemAgent(canonicalID, pebblestore.AgentProfile{
-						Provider:        defaultSwarmPref.Provider,
-						Model:           defaultSwarmPref.Model,
-						Thinking:        defaultSwarmPref.Thinking,
-						AutoServiceTier: defaultSwarmPref.ServiceTier,
-						ContextMode:     defaultSwarmPref.ContextMode,
-					})
-				}
-			}
+		if s.agents != nil {
+			agentProfile, _ = s.agents.ResolveSystemAgent(canonicalID, pebblestore.AgentProfile{
+				Provider:        resolvedPref.Provider,
+				Model:           resolvedPref.Model,
+				Thinking:        resolvedPref.Thinking,
+				AutoServiceTier: resolvedPref.ServiceTier,
+				ContextMode:     resolvedPref.ContextMode,
+			})
 		}
 	} else if strings.EqualFold(targetAgent, "swarm") {
-		// Swarm primary agent
-		if taskModelOverride != "" && s.model != nil {
-			if overrideResolved, err := s.model.ResolvePreference(pebblestore.ModelPreference{Model: taskModelOverride}); err == nil && overrideResolved.Preference.Model != "" {
-				resolvedPref = overrideResolved.Preference
-			}
-		}
-		if resolvedPref.Model == "" {
-			resolvedPref = defaultSwarmPref
-		}
 		if s.agents != nil {
 			agentProfile, _ = s.agents.ResolveSystemAgent(agentruntime.SwarmAgentID, pebblestore.AgentProfile{
 				Provider:        resolvedPref.Provider,
@@ -886,15 +937,13 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 				ContextMode: agentProfile.ContextMode,
 			}
 		} else {
-			resolvedPref = defaultSwarmPref
-			fallbackAlert = fmt.Sprintf("Custom agent profile %q not found or has no model; fell back to Swarm default (%s/%s).", targetAgent, defaultSwarmPref.Provider, defaultSwarmPref.Model)
+			fallbackAlert = fmt.Sprintf("Custom agent profile %q not found or has no model; fell back to Swarm default (%s/%s).", targetAgent, resolvedPref.Provider, resolvedPref.Model)
 			if !profileFound && s.agents != nil {
 				agentProfile, _ = s.agents.ResolveSystemAgent(agentruntime.SwarmAgentID, pebblestore.AgentProfile{
-					Provider:        defaultSwarmPref.Provider,
-					Model:           defaultSwarmPref.Model,
-					Thinking:        defaultSwarmPref.Thinking,
-					AutoServiceTier: defaultSwarmPref.ServiceTier,
-					ContextMode:     defaultSwarmPref.ContextMode,
+					Provider:        resolvedPref.Provider,
+					Model:           resolvedPref.Model,
+					Thinking:        resolvedPref.Thinking,
+					AutoServiceTier: resolvedPref.ServiceTier,
 				})
 			}
 		}
@@ -1674,6 +1723,10 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			OutcomeType   string `json:"outcome_type"`
 			Tier          string `json:"tier"`
 			Model         string `json:"model"`
+			Provider      string `json:"provider"`
+			Thinking      string `json:"thinking"`
+			ServiceTier   string `json:"service_tier"`
+			ContextMode   string `json:"context_mode"`
 			WorkspacePath string `json:"workspace_path"`
 		}
 		_ = json.Unmarshal(body, &previewReq)
@@ -1688,7 +1741,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		if prompt == "" {
 			prompt = strings.TrimSpace(previewReq.Title)
 		}
-		routed := pebblestore.RouteAndPlanProjectTaskWithOptions(pebblestore.TaskPlanOptions{
+		routed, rErr := pebblestore.RouteAndPlanProjectTaskWithOptions(pebblestore.TaskPlanOptions{
 			Prompt:             prompt,
 			RequestedWorkspace: previewReq.WorkspacePath,
 			ProjectContext:     projectContext,
@@ -1699,10 +1752,18 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			OutcomeType:        previewReq.OutcomeType,
 			Tier:               previewReq.Tier,
 		})
+		if rErr != nil {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("invalid task preview configuration: %w", rErr))
+			return
+		}
 		dummyTask := &pebblestore.ProjectTaskRecord{
 			ProjectID:   projectID,
 			Agent:       routed.Agent,
 			Model:       previewReq.Model,
+			Provider:    previewReq.Provider,
+			Thinking:    previewReq.Thinking,
+			ServiceTier: previewReq.ServiceTier,
+			ContextMode: previewReq.ContextMode,
 			FeatureSize: previewReq.FeatureSize,
 		}
 		modelPrev := s.buildTaskModelPreview(p, dummyTask)
@@ -1802,6 +1863,10 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				AspectRatio         string                               `json:"aspect_ratio,omitempty"`
 				Resolution          string                               `json:"resolution,omitempty"`
 				Model               string                               `json:"model,omitempty"`
+				Provider            string                               `json:"provider,omitempty"`
+				Thinking            string                               `json:"thinking,omitempty"`
+				ServiceTier         string                               `json:"service_tier,omitempty"`
+				ContextMode         string                               `json:"context_mode,omitempty"`
 				VariantCount        int                                  `json:"variant_count,omitempty"`
 				DeliverableCount    int                                  `json:"deliverable_count,omitempty"`
 				ScenesCount         int                                  `json:"scenes_count,omitempty"`
@@ -2236,7 +2301,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				tier = routed.Tier
 			}
 
-			isMediaAgent := agentName == "image" || agentName == "video" || agentName == "sound" || agentName == "audio" || outcomeType == "media_bundle" || outcomeType == "video_story" || outcomeType == "video_clip"
+			isMediaAgent := agentName == "image" || agentName == "video" || agentName == "sound" || agentName == "audio"
 
 			var worktreeBranch, worktreeName string
 			baseBranch := "dev"
@@ -2287,10 +2352,6 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			fullPlanMarkdown := strings.TrimSpace(req.FullPlanMarkdown)
 			if fullPlanMarkdown == "" {
 				fullPlanMarkdown = routed.FullPlanMarkdown
-			}
-			tier := strings.TrimSpace(req.Tier)
-			if tier == "" {
-				tier = routed.Tier
 			}
 			revision := req.Revision
 			if revision <= 0 {
@@ -2354,6 +2415,10 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				VariantCount:        variantCount,
 				DurationSeconds:     req.DurationSeconds,
 				Model:               strings.TrimSpace(req.Model),
+				Provider:            strings.TrimSpace(req.Provider),
+				Thinking:            strings.TrimSpace(req.Thinking),
+				ServiceTier:         strings.TrimSpace(req.ServiceTier),
+				ContextMode:         strings.TrimSpace(req.ContextMode),
 				Scenes:              routed.Scenes,
 				Soundtrack:          routed.Soundtrack,
 				AutoApprove:         req.AutoApprove,
@@ -2535,32 +2600,6 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// 5b. Task model preview: GET /v3/projects/{id}/tasks/{taskId}/model-preview
-		if len(segments) == 4 && segments[1] == "tasks" && (segments[3] == "model-preview" || segments[3] == "preview") {
-			taskID := segments[2]
-			if r.Method != http.MethodGet {
-				writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
-				return
-			}
-			if !s.requireScopeAny(w, r, "projects:read", "sessions:read") {
-				return
-			}
-			task, found, err := db.GetProjectTask(p.AccountScopeID, projectID, taskID)
-			if err != nil {
-				writeError(w, http.StatusInternalServerError, err)
-				return
-			}
-			if !found || task == nil {
-				writeError(w, http.StatusNotFound, errors.New("project task not found"))
-				return
-			}
-			writeJSON(w, http.StatusOK, map[string]any{
-				"task":          task,
-				"model_preview": s.buildTaskModelPreview(p, task),
-			})
-			return
-		}
-
 		if r.Method == http.MethodPatch {
 			if !s.requireScopeAny(w, r, "projects:write", "sessions:write") {
 				return
@@ -2576,6 +2615,9 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			}
 
 			updated, err := db.UpdateProjectTask(p.AccountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
+				if t.Status != "pending_approval" && t.Status != "queued" {
+					return fmt.Errorf("task cannot be modified in status %q (only pending tasks can be updated)", t.Status)
+				}
 				if v, ok := patch["title"].(string); ok && strings.TrimSpace(v) != "" {
 					t.Title = strings.TrimSpace(v)
 				}
@@ -2741,6 +2783,18 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				if v, ok := patch["model"].(string); ok {
 					t.Model = strings.TrimSpace(v)
 				}
+				if v, ok := patch["provider"].(string); ok {
+					t.Provider = strings.TrimSpace(v)
+				}
+				if v, ok := patch["thinking"].(string); ok {
+					t.Thinking = strings.TrimSpace(v)
+				}
+				if v, ok := patch["service_tier"].(string); ok {
+					t.ServiceTier = strings.TrimSpace(v)
+				}
+				if v, ok := patch["context_mode"].(string); ok {
+					t.ContextMode = strings.TrimSpace(v)
+				}
 				if v, ok := patch["feature_size"].(string); ok {
 					t.FeatureSize = strings.ToLower(strings.TrimSpace(v))
 					if t.FeatureSize == "big" && (t.Agent == "coder" || t.Agent == "plan" || t.Agent == "") {
@@ -2786,6 +2840,32 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		}
 
 		writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
+		return
+	}
+
+	// 5b. Task model preview: GET /v3/projects/{id}/tasks/{taskId}/model-preview
+	if len(segments) == 4 && segments[1] == "tasks" && (segments[3] == "model-preview" || segments[3] == "preview") {
+		taskID := segments[2]
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
+			return
+		}
+		if !s.requireScopeAny(w, r, "projects:read", "sessions:read") {
+			return
+		}
+		task, found, err := db.GetProjectTask(p.AccountScopeID, projectID, taskID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		if !found || task == nil {
+			writeError(w, http.StatusNotFound, errors.New("project task not found"))
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"task":          task,
+			"model_preview": s.buildTaskModelPreview(p, task),
+		})
 		return
 	}
 
@@ -2993,21 +3073,17 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, errors.New("task not found"))
 			return
 		}
-		if existingTask.Status == "in_progress" || existingTask.Status == "completed" {
-			writeJSON(w, http.StatusOK, map[string]any{
-				"status":  "already_approved",
-				"message": "Task is already executing or completed",
-				"task":    existingTask,
-			})
-			return
-		}
-		if err := existingTask.Validate(); err != nil {
-			writeError(w, http.StatusBadRequest, fmt.Errorf("task validation failed: %w", err))
-			return
-		}
+		var wasAlreadyApproved bool
 		updated, err := db.UpdateProjectTask(p.AccountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
-			if (t.Agent == "video" || t.Agent == "image") && t.Status != "pending_approval" && t.Status != "planning" {
-				return errors.New("media task is not awaiting approval")
+			if t.Status == "in_progress" || t.Status == "completed" {
+				wasAlreadyApproved = true
+				return nil
+			}
+			if t.Status != "pending_approval" && t.Status != "queued" {
+				return fmt.Errorf("task cannot be approved from status %q", t.Status)
+			}
+			if err := t.Validate(); err != nil {
+				return fmt.Errorf("task validation failed: %w", err)
 			}
 			t.Status = "in_progress"
 			t.ActionNeeded = ""
@@ -3017,7 +3093,15 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			return nil
 		})
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err)
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if wasAlreadyApproved {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"status":  "already_approved",
+				"message": "Task is already executing or completed",
+				"task":    updated,
+			})
 			return
 		}
 		if updated != nil {

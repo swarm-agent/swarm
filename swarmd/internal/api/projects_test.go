@@ -1427,6 +1427,7 @@ func TestProjectTask_SessionLifecycleSync(t *testing.T) {
 		ProjectID:    "proj_1",
 		AccountID:    "account",
 		Title:        "Implement feature",
+		Agent:        "coder",
 		Status:       "in_progress",
 		SessionID:    sessID,
 		IsIntegrated: false,
@@ -1513,6 +1514,7 @@ func TestProjectTaskProgram_StandaloneExecutionAndRedeploy(t *testing.T) {
 		ProjectID:   proj.ID,
 		AccountID:   "account",
 		Title:       "Fix 2 UI Issues in Parallel",
+		Agent:       "coder",
 		Status:      "pending_approval",
 		TaskProgram: taskProgram,
 	}
@@ -1638,6 +1640,7 @@ func TestProjectTaskProgram_SingleTaskLifecycleAndHydration(t *testing.T) {
 		ProjectID:   projID,
 		AccountID:   accountID,
 		Title:       "Core Feature Delegation",
+		Agent:       "coder",
 		Status:      "pending_approval",
 		TaskProgram: taskProg,
 	}
@@ -2115,6 +2118,236 @@ func TestProjectsAPI_ModelPreviewEndpoint(t *testing.T) {
 	prev2 := prevResp2["model_preview"].(map[string]any)
 	if prev2["task_model_override"] != "gpt-6-astra" {
 		t.Fatalf("expected task_model_override gpt-6-astra, got %v", prev2["task_model_override"])
+	}
+}
+
+func TestProjectsAPI_PendingOnlyPatchEnforcement(t *testing.T) {
+	// Written test purpose:
+	// - Product requirement/invariant: Only pending tasks (pending_approval, queued) can be modified via PATCH.
+	//   Active tasks in progress or completed tasks cannot have their contract patched.
+	// - Regression prevented: Modifying agent, scopes, deliverables or models mid-execution.
+
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	ss := store.NewSessionStore(db)
+	el, _ := store.NewEventLog(db)
+	s := &Server{sessions: sessionruntime.NewService(ss, el)}
+	h := s.apiMux()
+
+	call := func(method, path, body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, ProjectsPath+path, strings.NewReader(body))
+		p := identity.Principal{Type: "user", UserID: "owner", AccountScopeID: "account"}
+		ctx := context.WithValue(r.Context(), productPrincipalRequestContextKey, p)
+		tokenRec := &store.ScopedTokenRecord{
+			AccountScopeID: "account",
+			UserID:         "owner",
+			Scopes:         []string{"sessions:write", "projects:write", "projects:read", "sessions:read"},
+		}
+		ctx = context.WithValue(ctx, productScopedTokenRequestContextKey, tokenRec)
+		r = r.WithContext(ctx)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w
+	}
+
+	w := call(http.MethodPost, "", `{"name":"Patch Guard Project"}`)
+	var projResp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &projResp)
+	projID := projResp["project"].(map[string]any)["id"].(string)
+
+	w = call(http.MethodPost, "/"+projID+"/tasks", `{"title":"Pending task","agent":"coder"}`)
+	var taskResp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &taskResp)
+	taskID := taskResp["task"].(map[string]any)["id"].(string)
+
+	// 1. PATCH while pending_approval -> 200 OK
+	w = call(http.MethodPatch, "/"+projID+"/tasks/"+taskID, `{"title":"Updated title"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 on patch pending task, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// 2. Approve task -> transitions to in_progress
+	w = call(http.MethodPost, "/"+projID+"/tasks/"+taskID+"/approve", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 on approve, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// 3. PATCH while in_progress -> 400 Bad Request
+	w = call(http.MethodPatch, "/"+projID+"/tasks/"+taskID, `{"title":"Hijacked title"}`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 on patch in_progress task, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "only pending tasks can be updated") {
+		t.Fatalf("expected pending-only guard message, got: %s", w.Body.String())
+	}
+}
+
+func TestProjectsAPI_MediaModelResolution_NeverSwarmLLM(t *testing.T) {
+	// Written test purpose:
+	// - Product requirement/invariant: Media tasks (image, video, sound) must resolve to dedicated
+	//   media models (e.g. imagen, veo, lyria), NEVER falling back to Swarm LLM defaults.
+	// - Regression prevented: Generating images or videos with text LLM models or wrong provider.
+
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	ss := store.NewSessionStore(db)
+	el, _ := store.NewEventLog(db)
+	s := &Server{sessions: sessionruntime.NewService(ss, el)}
+	h := s.apiMux()
+
+	call := func(method, path, body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, ProjectsPath+path, strings.NewReader(body))
+		p := identity.Principal{Type: "user", UserID: "owner", AccountScopeID: "account"}
+		ctx := context.WithValue(r.Context(), productPrincipalRequestContextKey, p)
+		tokenRec := &store.ScopedTokenRecord{
+			AccountScopeID: "account",
+			UserID:         "owner",
+			Scopes:         []string{"sessions:write", "projects:write", "projects:read", "sessions:read"},
+		}
+		ctx = context.WithValue(ctx, productScopedTokenRequestContextKey, tokenRec)
+		r = r.WithContext(ctx)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w
+	}
+
+	w := call(http.MethodPost, "", `{"name":"Media Model Project"}`)
+	var projResp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &projResp)
+	projID := projResp["project"].(map[string]any)["id"].(string)
+
+	// Image task
+	w = call(http.MethodPost, "/"+projID+"/tasks", `{"title":"Panda in forest","intent":"image"}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201 on image task, got %d: %s", w.Code, w.Body.String())
+	}
+	var imgTaskResp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &imgTaskResp)
+	imgTaskID := imgTaskResp["task"].(map[string]any)["id"].(string)
+
+	w = call(http.MethodGet, "/"+projID+"/tasks/"+imgTaskID+"/model-preview", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 on image model preview, got %d: %s", w.Code, w.Body.String())
+	}
+	var imgPrevResp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &imgPrevResp)
+	imgPrev := imgPrevResp["model_preview"].(map[string]any)
+	resolvedImgModel := imgPrev["resolved_model"].(map[string]any)["model"].(string)
+	if !strings.Contains(resolvedImgModel, "imagen") {
+		t.Fatalf("expected imagen model for image task, got %q", resolvedImgModel)
+	}
+
+	// Video task
+	w = call(http.MethodPost, "/"+projID+"/tasks", `{"title":"Drone flyover","intent":"video"}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201 on video task, got %d: %s", w.Code, w.Body.String())
+	}
+	var vidTaskResp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &vidTaskResp)
+	vidTaskID := vidTaskResp["task"].(map[string]any)["id"].(string)
+
+	w = call(http.MethodGet, "/"+projID+"/tasks/"+vidTaskID+"/model-preview", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 on video model preview, got %d: %s", w.Code, w.Body.String())
+	}
+	var vidPrevResp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &vidPrevResp)
+	vidPrev := vidPrevResp["model_preview"].(map[string]any)
+	resolvedVidModel := vidPrev["resolved_model"].(map[string]any)["model"].(string)
+	if !strings.Contains(resolvedVidModel, "veo") {
+		t.Fatalf("expected veo model for video task, got %q", resolvedVidModel)
+	}
+
+	// Audio task
+	w = call(http.MethodPost, "/"+projID+"/tasks", `{"title":"Upbeat track","intent":"sound"}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201 on sound task, got %d: %s", w.Code, w.Body.String())
+	}
+	var sndTaskResp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &sndTaskResp)
+	sndTaskID := sndTaskResp["task"].(map[string]any)["id"].(string)
+
+	w = call(http.MethodGet, "/"+projID+"/tasks/"+sndTaskID+"/model-preview", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 on sound model preview, got %d: %s", w.Code, w.Body.String())
+	}
+	var sndPrevResp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &sndPrevResp)
+	sndPrev := sndPrevResp["model_preview"].(map[string]any)
+	resolvedSndModel := sndPrev["resolved_model"].(map[string]any)["model"].(string)
+	if !strings.Contains(resolvedSndModel, "lyria") {
+		t.Fatalf("expected lyria model for sound task, got %q", resolvedSndModel)
+	}
+}
+
+func TestProjectsAPI_TaskCreationValidationFailClosed(t *testing.T) {
+	// Written test purpose:
+	// - Product requirement/invariant: Task creation must reject missing, unknown, or conflicting
+	//   structured configurations with actionable 400 errors.
+	// - Regression prevented: Silent fallback to coder or accepting coder with big feature.
+
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	ss := store.NewSessionStore(db)
+	el, _ := store.NewEventLog(db)
+	s := &Server{sessions: sessionruntime.NewService(ss, el)}
+	h := s.apiMux()
+
+	call := func(method, path, body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, ProjectsPath+path, strings.NewReader(body))
+		p := identity.Principal{Type: "user", UserID: "owner", AccountScopeID: "account"}
+		ctx := context.WithValue(r.Context(), productPrincipalRequestContextKey, p)
+		tokenRec := &store.ScopedTokenRecord{
+			AccountScopeID: "account",
+			UserID:         "owner",
+			Scopes:         []string{"sessions:write", "projects:write", "projects:read", "sessions:read"},
+		}
+		ctx = context.WithValue(ctx, productScopedTokenRequestContextKey, tokenRec)
+		r = r.WithContext(ctx)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w
+	}
+
+	w := call(http.MethodPost, "", `{"name":"Validation Project"}`)
+	var projResp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &projResp)
+	projID := projResp["project"].(map[string]any)["id"].(string)
+
+	// Missing agent and intent
+	w = call(http.MethodPost, "/"+projID+"/tasks", `{"title":"Vague task"}`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 on missing agent and intent, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "missing structured configuration") {
+		t.Fatalf("expected missing configuration message, got: %s", w.Body.String())
+	}
+
+	// Conflicting: coder with big feature
+	w = call(http.MethodPost, "/"+projID+"/tasks", `{"title":"Big feature","agent":"coder","feature_size":"big"}`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 on coder + big feature, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "cannot use coder agent") {
+		t.Fatalf("expected cannot use coder message, got: %s", w.Body.String())
+	}
+
+	// Unknown agent
+	w = call(http.MethodPost, "/"+projID+"/tasks", `{"title":"Unknown agent task","agent":"rogue_bot"}`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 on unknown agent, got %d: %s", w.Code, w.Body.String())
 	}
 }
 

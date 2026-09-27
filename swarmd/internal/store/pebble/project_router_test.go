@@ -22,12 +22,15 @@ func TestRouteAndPlanProjectTask(t *testing.T) {
 	t.Run("explicit agent coder with media keywords produces code PR not media", func(t *testing.T) {
 		prompt := "Allow profile PNG upload or selection from media, remove acct_* label, improve project layout"
 		hero := "/workspace/web"
-		result := RouteAndPlanProjectTaskWithOptions(TaskPlanOptions{
+		result, err := RouteAndPlanProjectTaskWithOptions(TaskPlanOptions{
 			Prompt:             prompt,
 			RequestedWorkspace: hero,
 			Workspaces:         workspaces,
 			Agent:              "coder",
 		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 
 		if result.Agent != "coder" {
 			t.Fatalf("expected agent coder, got %q", result.Agent)
@@ -52,13 +55,16 @@ func TestRouteAndPlanProjectTask(t *testing.T) {
 	})
 
 	t.Run("explicit intent code with feature_size small produces coder agent", func(t *testing.T) {
-		result := RouteAndPlanProjectTaskWithOptions(TaskPlanOptions{
+		result, err := RouteAndPlanProjectTaskWithOptions(TaskPlanOptions{
 			Prompt:             "Fix memory leak in pebble iterator and handle close errors",
 			RequestedWorkspace: "/workspace/backend",
 			Workspaces:         workspaces,
 			Intent:             "code",
 			FeatureSize:        "small",
 		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 
 		if result.Agent != "coder" {
 			t.Fatalf("expected agent coder, got %q", result.Agent)
@@ -72,13 +78,16 @@ func TestRouteAndPlanProjectTask(t *testing.T) {
 	})
 
 	t.Run("explicit intent code with feature_size big produces plan agent with complex tier", func(t *testing.T) {
-		result := RouteAndPlanProjectTaskWithOptions(TaskPlanOptions{
+		result, err := RouteAndPlanProjectTaskWithOptions(TaskPlanOptions{
 			Prompt:             "Architect and implement multi-region sync engine",
 			RequestedWorkspace: "/workspace/backend",
 			Workspaces:         workspaces,
 			Intent:             "code",
 			FeatureSize:        "big",
 		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 
 		if result.Agent != "plan" {
 			t.Fatalf("expected agent plan, got %q", result.Agent)
@@ -95,12 +104,15 @@ func TestRouteAndPlanProjectTask(t *testing.T) {
 	})
 
 	t.Run("explicit intent audit produces finder agent with discovery tier", func(t *testing.T) {
-		result := RouteAndPlanProjectTaskWithOptions(TaskPlanOptions{
+		result, err := RouteAndPlanProjectTaskWithOptions(TaskPlanOptions{
 			Prompt:             "Review and audit credential encryption boundaries",
 			RequestedWorkspace: "/workspace/backend",
 			Workspaces:         workspaces,
 			Intent:             "audit",
 		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 
 		if result.Agent != "finder" {
 			t.Fatalf("expected agent finder, got %q", result.Agent)
@@ -117,12 +129,15 @@ func TestRouteAndPlanProjectTask(t *testing.T) {
 	})
 
 	t.Run("explicit intent image produces image agent and preserves aspect ratio and variants", func(t *testing.T) {
-		result := RouteAndPlanProjectTaskWithOptions(TaskPlanOptions{
+		result, err := RouteAndPlanProjectTaskWithOptions(TaskPlanOptions{
 			Prompt:       "Cyberpunk city skyline at dusk",
 			Intent:       "image",
 			AspectRatio:  "16:9",
 			VariantCount: 4,
 		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 
 		if result.Agent != "image" {
 			t.Fatalf("expected agent image, got %q", result.Agent)
@@ -145,13 +160,16 @@ func TestRouteAndPlanProjectTask(t *testing.T) {
 	})
 
 	t.Run("explicit intent video produces video agent", func(t *testing.T) {
-		result := RouteAndPlanProjectTaskWithOptions(TaskPlanOptions{
+		result, err := RouteAndPlanProjectTaskWithOptions(TaskPlanOptions{
 			Prompt:      "Cinematic fly-through of server room",
 			Intent:      "video",
 			AspectRatio: "16:9",
 			ScenesCount: 3,
 			Soundtrack:  "Deep ambient synth",
 		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 
 		if result.Agent != "video" {
 			t.Fatalf("expected agent video, got %q", result.Agent)
@@ -165,10 +183,13 @@ func TestRouteAndPlanProjectTask(t *testing.T) {
 	})
 
 	t.Run("explicit intent sound produces sound agent", func(t *testing.T) {
-		result := RouteAndPlanProjectTaskWithOptions(TaskPlanOptions{
+		result, err := RouteAndPlanProjectTaskWithOptions(TaskPlanOptions{
 			Prompt: "Upbeat electronic theme song",
 			Intent: "sound",
 		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 
 		if result.Agent != "sound" {
 			t.Fatalf("expected agent sound, got %q", result.Agent)
@@ -178,6 +199,71 @@ func TestRouteAndPlanProjectTask(t *testing.T) {
 		}
 		if len(result.Deliverables) == 0 || result.Deliverables[0].Kind != "audio" {
 			t.Fatalf("expected audio deliverable, got %+v", result.Deliverables)
+		}
+	})
+
+	t.Run("fails closed on missing agent and intent", func(t *testing.T) {
+		_, err := RouteAndPlanProjectTaskWithOptions(TaskPlanOptions{
+			Prompt: "Do something random",
+		})
+		if err == nil || !strings.Contains(err.Error(), "missing structured configuration") {
+			t.Fatalf("expected missing structured configuration error, got %v", err)
+		}
+	})
+
+	t.Run("fails closed on conflicting coder with big feature", func(t *testing.T) {
+		_, err := RouteAndPlanProjectTaskWithOptions(TaskPlanOptions{
+			Prompt:      "Overhaul persistence",
+			Agent:       "coder",
+			FeatureSize: "big",
+		})
+		if err == nil || !strings.Contains(err.Error(), "cannot use coder agent") {
+			t.Fatalf("expected conflict error for coder with big feature, got %v", err)
+		}
+	})
+
+	t.Run("fails closed on unknown agent", func(t *testing.T) {
+		_, err := RouteAndPlanProjectTaskWithOptions(TaskPlanOptions{
+			Prompt: "Hack database",
+			Agent:  "magic_hacker",
+		})
+		if err == nil || !strings.Contains(err.Error(), "unknown task agent") {
+			t.Fatalf("expected unknown agent error, got %v", err)
+		}
+	})
+
+	t.Run("fails closed on unknown intent", func(t *testing.T) {
+		_, err := RouteAndPlanProjectTaskWithOptions(TaskPlanOptions{
+			Prompt: "Do weird stuff",
+			Intent: "teleportation",
+		})
+		if err == nil || !strings.Contains(err.Error(), "unknown task intent") {
+			t.Fatalf("expected unknown intent error, got %v", err)
+		}
+	})
+
+	t.Run("designer produces artifact deliverables not image deliverables", func(t *testing.T) {
+		result, err := RouteAndPlanProjectTaskWithOptions(TaskPlanOptions{
+			Prompt:       "Modern pricing table with toggle",
+			Intent:       "design",
+			VariantCount: 3,
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if result.Agent != "designer" {
+			t.Fatalf("expected agent designer, got %q", result.Agent)
+		}
+		if result.OutcomeType != "artifact" {
+			t.Fatalf("expected outcome artifact, got %q", result.OutcomeType)
+		}
+		if len(result.Deliverables) != 3 {
+			t.Fatalf("expected 3 deliverables, got %d", len(result.Deliverables))
+		}
+		for _, d := range result.Deliverables {
+			if d.Kind != "artifact" {
+				t.Fatalf("designer deliverable must be kind 'artifact', got %q", d.Kind)
+			}
 		}
 	})
 }
@@ -242,6 +328,91 @@ func TestProjectTaskValidationCoherence(t *testing.T) {
 		}
 		if err := task.Validate(); err != nil {
 			t.Fatalf("expected coherent coder task to validate, got %v", err)
+		}
+	})
+
+	t.Run("rejects coder with feature_size big", func(t *testing.T) {
+		task := &ProjectTaskRecord{
+			ProjectID:   "p1",
+			Title:       "Big feature with coder",
+			Agent:       "coder",
+			FeatureSize: "big",
+			OutcomeType: "code_pr",
+		}
+		err := task.Validate()
+		if err == nil || !strings.Contains(err.Error(), "coder agent cannot have feature_size 'big'") {
+			t.Fatalf("expected feature_size big conflict error, got %v", err)
+		}
+	})
+
+	t.Run("rejects plan with feature_size small", func(t *testing.T) {
+		task := &ProjectTaskRecord{
+			ProjectID:   "p1",
+			Title:       "Small feature with plan",
+			Agent:       "plan",
+			FeatureSize: "small",
+			OutcomeType: "plan_spec",
+		}
+		err := task.Validate()
+		if err == nil || !strings.Contains(err.Error(), "plan agent cannot have feature_size 'small'") {
+			t.Fatalf("expected feature_size small conflict error, got %v", err)
+		}
+	})
+
+	t.Run("rejects empty agent", func(t *testing.T) {
+		task := &ProjectTaskRecord{
+			ProjectID:   "p1",
+			Title:       "No agent",
+			Agent:       "",
+			OutcomeType: "code_pr",
+		}
+		err := task.Validate()
+		if err == nil || !strings.Contains(err.Error(), "task agent is required") {
+			t.Fatalf("expected agent required error, got %v", err)
+		}
+	})
+
+	t.Run("rejects unknown agent", func(t *testing.T) {
+		task := &ProjectTaskRecord{
+			ProjectID:   "p1",
+			Title:       "Invalid agent",
+			Agent:       "alien_worker",
+			OutcomeType: "code_pr",
+		}
+		err := task.Validate()
+		if err == nil || !strings.Contains(err.Error(), "unknown task agent") {
+			t.Fatalf("expected unknown agent error, got %v", err)
+		}
+	})
+
+	t.Run("rejects designer with image deliverable", func(t *testing.T) {
+		task := &ProjectTaskRecord{
+			ProjectID:   "p1",
+			Title:       "Design UI",
+			Agent:       "designer",
+			OutcomeType: "artifact",
+			Deliverables: []ProjectTaskDeliverable{
+				{ID: "d1", Title: "logo.png", Kind: "image", Status: "pending"},
+			},
+		}
+		err := task.Validate()
+		if err == nil || !strings.Contains(err.Error(), "cannot have media deliverables") {
+			t.Fatalf("expected error for designer with image deliverable, got %v", err)
+		}
+	})
+
+	t.Run("accepts designer with artifact deliverable", func(t *testing.T) {
+		task := &ProjectTaskRecord{
+			ProjectID:   "p1",
+			Title:       "Design UI",
+			Agent:       "designer",
+			OutcomeType: "artifact",
+			Deliverables: []ProjectTaskDeliverable{
+				{ID: "d1", Title: "Interactive UI", Kind: "artifact", Status: "pending"},
+			},
+		}
+		if err := task.Validate(); err != nil {
+			t.Fatalf("expected valid designer task, got %v", err)
 		}
 	})
 

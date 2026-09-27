@@ -201,3 +201,70 @@ func TestService_RouteTask_BigFeature_RoutesToPlan(t *testing.T) {
 		t.Fatalf("expected outcome 'plan_spec', got %q", res.OutcomeType)
 	}
 }
+
+func TestService_RouteTask_MissingConfiguration_FailsClosed(t *testing.T) {
+	// Purpose:
+	// - Invariant: RouteTask must fail closed if both Agent and Intent are missing.
+	svc := NewService()
+	_, err := svc.RouteTask(context.Background(), TaskRouteOptions{
+		Prompt: "Do unknown task without agent or intent",
+	})
+	if err == nil || !strings.Contains(err.Error(), "missing structured configuration") {
+		t.Fatalf("expected missing structured configuration error, got %v", err)
+	}
+}
+
+func TestService_RouteTask_ConflictingCoderWithBigFeature_FailsClosed(t *testing.T) {
+	// Purpose:
+	// - Invariant: Agent="coder" combined with feature_size="big" must fail closed with an explicit conflict error.
+	svc := NewService()
+	_, err := svc.RouteTask(context.Background(), TaskRouteOptions{
+		Prompt:      "Overhaul persistence layer",
+		Agent:       "coder",
+		FeatureSize: "big",
+	})
+	if err == nil || !strings.Contains(err.Error(), "cannot use coder agent") {
+		t.Fatalf("expected conflict error, got %v", err)
+	}
+}
+
+func TestService_RouteTask_UnknownIntent_FailsClosed(t *testing.T) {
+	// Purpose:
+	// - Invariant: Unknown intent strings must fail closed rather than defaulting to coder.
+	svc := NewService()
+	_, err := svc.RouteTask(context.Background(), TaskRouteOptions{
+		Prompt: "Test unknown intent",
+		Intent: "quantum_compute",
+	})
+	if err == nil || !strings.Contains(err.Error(), "unknown task intent") {
+		t.Fatalf("expected unknown intent error, got %v", err)
+	}
+}
+
+func TestService_RouteTask_DesignerProducesArtifactDeliverables(t *testing.T) {
+	// Purpose:
+	// - Invariant: Designer tasks must produce artifact deliverables, never images, even with variants.
+	svc := NewService()
+	res, err := svc.RouteTask(context.Background(), TaskRouteOptions{
+		Prompt:       "Modern responsive navbar with animations",
+		Intent:       "design",
+		VariantCount: 2,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.Agent != "designer" {
+		t.Fatalf("expected agent designer, got %q", res.Agent)
+	}
+	if res.OutcomeType != "artifact" {
+		t.Fatalf("expected outcome artifact, got %q", res.OutcomeType)
+	}
+	if len(res.Deliverables) != 2 {
+		t.Fatalf("expected 2 deliverables, got %d", len(res.Deliverables))
+	}
+	for _, d := range res.Deliverables {
+		if d.Kind != "artifact" {
+			t.Fatalf("expected deliverable kind 'artifact', got %q", d.Kind)
+		}
+	}
+}

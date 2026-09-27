@@ -904,7 +904,7 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 		return
 	}
 
-	if task.Agent == "image" || task.Agent == "designer" {
+	if task.Agent == "image" {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
 
@@ -950,6 +950,15 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 			}
 		}
 
+		lowerPrompt := strings.ToLower(prompt)
+		isFineTune := strings.Contains(lowerPrompt, "change") || strings.Contains(lowerPrompt, "modify") || strings.Contains(lowerPrompt, "edit") || strings.Contains(lowerPrompt, "tweak") || strings.Contains(lowerPrompt, "replace") || strings.Contains(lowerPrompt, "fine-tune")
+		if sourceErr == nil && sourceImage == nil {
+			if len(task.AttachedMedia) > 0 {
+				sourceErr = errors.New("attached source image could not be resolved")
+			} else if isFineTune {
+				sourceErr = errors.New("image edit or modification requires an attached source image; cannot fall back to text-to-image")
+			}
+		}
 		if sourceErr != nil {
 			_, _ = updateProjectTaskWithRetry(db, p.AccountScopeID, task.ProjectID, task.ID, func(t *pebblestore.ProjectTaskRecord) error {
 				t.Status = "failed"
@@ -981,9 +990,6 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 			})
 			return
 		}
-
-		lowerPrompt := strings.ToLower(prompt)
-		isFineTune := strings.Contains(lowerPrompt, "change") || strings.Contains(lowerPrompt, "modify") || strings.Contains(lowerPrompt, "edit") || strings.Contains(lowerPrompt, "tweak") || strings.Contains(lowerPrompt, "replace") || strings.Contains(lowerPrompt, "fine-tune")
 
 		concurrency := 4
 		if count < concurrency {

@@ -337,30 +337,22 @@ func (s *Server) executeStandaloneTaskProgram(p identity.Principal, projectID, t
 				if subagentName == "" {
 					subagentName = "coder"
 				}
-				if task != nil && strings.TrimSpace(task.Model) != "" && s.model != nil {
-					if override, err := s.model.ResolvePreference(pebblestore.ModelPreference{Model: strings.TrimSpace(task.Model)}); err == nil && override.Preference.Model != "" {
-						pref = override.Preference
-					}
+				dummyChildTask := &pebblestore.ProjectTaskRecord{
+					ProjectID:     task.ProjectID,
+					Agent:         subagentName,
+					WorkspacePath: childWsPath,
 				}
-				if pref.Model == "" {
-					if canonicalID, isCanonical := agentruntime.CanonicalSystemAgentID(subagentName); isCanonical {
-						if resolved, _, err := agentmodel.ResolveSystemAgent(s.model, s.agents, s.agentModelSettings, p.AccountScopeID, canonicalID, ""); err == nil && resolved.Preference.Model != "" {
-							pref = resolved.Preference
-						}
-					}
+				if (task.Agent == subagentName || task.Agent == "swarm" || task.Agent == "") && strings.TrimSpace(task.Model) != "" {
+					dummyChildTask.Model = strings.TrimSpace(task.Model)
+					dummyChildTask.Provider = strings.TrimSpace(task.Provider)
+					dummyChildTask.Thinking = strings.TrimSpace(task.Thinking)
+					dummyChildTask.ServiceTier = strings.TrimSpace(task.ServiceTier)
+					dummyChildTask.ContextMode = strings.TrimSpace(task.ContextMode)
 				}
-				if pref.Model == "" && s.agentModelSettings != nil && p.AccountScopeID != "" {
-					if settings, err := s.agentModelSettings.GetForAccount(p.AccountScopeID); err == nil {
-						pref = pebblestore.ModelPreference{
-							Provider:    strings.TrimSpace(settings.Swarm.Action.Provider),
-							Model:       strings.TrimSpace(settings.Swarm.Action.Model),
-							Thinking:    strings.TrimSpace(settings.Swarm.Action.Thinking),
-							ServiceTier: strings.TrimSpace(settings.Swarm.Action.ServiceTier),
-							ContextMode: strings.TrimSpace(settings.Swarm.Action.ContextMode),
-						}
-					}
-				}
-				if pref.Model == "" && s.model != nil {
+				resolvedChildPref, _, prefErr := s.resolveTaskModelPreference(p, dummyChildTask)
+				if prefErr == nil && resolvedChildPref.Model != "" {
+					pref = resolvedChildPref
+				} else if s.model != nil {
 					if def, err := s.model.ResolvePreference(pebblestore.ModelPreference{}); err == nil {
 						pref = def.Preference
 					}

@@ -391,6 +391,10 @@ func (r *Runtime) executeManageProjects(scope WorkspaceScope, args map[string]an
 		resolution := strings.TrimSpace(asString(args["resolution"]))
 		variantCount := asInt(args["variant_count"], 0)
 		modelName := strings.TrimSpace(asString(args["model"]))
+		provider := strings.TrimSpace(asString(args["provider"]))
+		thinking := strings.TrimSpace(asString(args["thinking"]))
+		serviceTier := strings.TrimSpace(asString(args["service_tier"]))
+		contextMode := strings.TrimSpace(asString(args["context_mode"]))
 		soundtrack := strings.TrimSpace(asString(args["soundtrack"]))
 
 		var attachedMedia []pebblestore.ProjectTaskMediaRef
@@ -417,7 +421,7 @@ func (r *Runtime) executeManageProjects(scope WorkspaceScope, args map[string]an
 			}
 		}
 
-		routed := pebblestore.RouteAndPlanProjectTaskWithOptions(pebblestore.TaskPlanOptions{
+		routed, rErr := pebblestore.RouteAndPlanProjectTaskWithOptions(pebblestore.TaskPlanOptions{
 			Prompt:             prompt,
 			RequestedWorkspace: wsPath,
 			ProjectContext:     projectContext,
@@ -432,6 +436,9 @@ func (r *Runtime) executeManageProjects(scope WorkspaceScope, args map[string]an
 			Soundtrack:         soundtrack,
 			AttachedMedia:      attachedMedia,
 		})
+		if rErr != nil {
+			return "", fmt.Errorf("task configuration invalid: %w", rErr)
+		}
 
 		if aspectRatio == "" {
 			aspectRatio = routed.AspectRatio
@@ -570,6 +577,10 @@ func (r *Runtime) executeManageProjects(scope WorkspaceScope, args map[string]an
 			Resolution:         resolution,
 			VariantCount:       variantCount,
 			Model:              modelName,
+			Provider:           provider,
+			Thinking:           thinking,
+			ServiceTier:        serviceTier,
+			ContextMode:        contextMode,
 			Soundtrack:         soundtrack,
 			AttachedMedia:      attachedMedia,
 			TaskProgram:        taskProg,
@@ -803,7 +814,7 @@ func (r *Runtime) executeManageProjects(scope WorkspaceScope, args map[string]an
 			if seedPrompt == "" {
 				seedPrompt = t.Title
 			}
-			routed := pebblestore.RouteAndPlanProjectTaskWithOptions(pebblestore.TaskPlanOptions{
+			routed, rErr := pebblestore.RouteAndPlanProjectTaskWithOptions(pebblestore.TaskPlanOptions{
 				Prompt:             seedPrompt,
 				RequestedWorkspace: t.WorkspacePath,
 				ProjectContext:     projCtx,
@@ -819,6 +830,9 @@ func (r *Runtime) executeManageProjects(scope WorkspaceScope, args map[string]an
 				Soundtrack:         t.Soundtrack,
 				AttachedMedia:      t.AttachedMedia,
 			})
+			if rErr != nil {
+				return fmt.Errorf("task configuration invalid: %w", rErr)
+			}
 			t.PipelineStages = routed.Stages
 			t.Deliverables = routed.Deliverables
 			t.WorkspacesInvolved = routed.WorkspacesInvolved
