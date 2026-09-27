@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
+  AlertCircle,
   ArrowRight,
   ChevronLeft,
   ChevronRight,
+  Clock,
   Copy,
   Check,
   Download,
@@ -24,12 +26,22 @@ import {
   ZoomOut,
 } from 'lucide-react'
 import type { MediaLibraryItem } from './types'
-import { getMediaSettingsCatalog } from '../../settings/media/queries/get-media-settings'
+import {
+  getMediaSettingsCatalog,
+  type MediaCatalogModelOption,
+} from '../../settings/media/queries/get-media-settings'
 import { saveImageDefaultModel } from '../../settings/swarm/mutations/save-image-default-model'
 import { saveVideoDefaultModel } from '../../settings/swarm/mutations/save-video-models'
 import { uiSettingsQueryKey, uiSettingsQueryOptions } from '../../../queries/query-options'
+import {
+  calculateGenerationCost,
+  type MediaGenerationAction,
+  type MediaGenerationJob,
+  type MediaGenerationRequest,
+  type MediaGenerationSettings,
+} from './media-generation'
 
-export type QuickRouteMode = 'fine_tune' | 'iterate' | 'to_video' | 'next_scene'
+export type QuickRouteMode = MediaGenerationAction
 
 export interface MediaViewerModalProps {
   item: MediaLibraryItem | null
@@ -40,13 +52,16 @@ export interface MediaViewerModalProps {
   isTagged?: boolean
   onToggleTag?: (item: MediaLibraryItem) => void
   onIterateSwarm?: (item: MediaLibraryItem) => void
-  onFineTune?: (item: MediaLibraryItem, editPrompt: string, autoDeploy: boolean, model?: string) => void
-  onIterate?: (item: MediaLibraryItem, variantCount: number, stylePrompt: string, autoDeploy: boolean, model?: string) => void
-  onGenerateVideo?: (item: MediaLibraryItem, prompt: string, autoDeploy: boolean, model?: string) => void
-  onContinueVideo?: (item: MediaLibraryItem, prompt: string, autoDeploy: boolean, model?: string) => void
+  onGenerate?: (request: MediaGenerationRequest) => Promise<void>
+  generationJobs?: readonly MediaGenerationJob[]
   initialQuickRouteMode?: QuickRouteMode | null
   isGenerating?: boolean
 }
+
+const COMMON_ASPECT_RATIOS = ['16:9', '1:1', '9:16', '4:3', '3:2', '21:9'] as const
+const COMMON_IMAGE_RESOLUTIONS = ['1k', '2k', '4k'] as const
+const COMMON_VIDEO_RESOLUTIONS = ['720p', '1080p', '4k'] as const
+const COMMON_VIDEO_DURATIONS = [5, 8, 10, 15] as const
 
 export function MediaViewerModal({
   item,
@@ -57,17 +72,16 @@ export function MediaViewerModal({
   isTagged,
   onToggleTag,
   onIterateSwarm,
-  onFineTune,
-  onIterate,
-  onGenerateVideo,
-  onContinueVideo,
+  onGenerate,
+  generationJobs = [],
   initialQuickRouteMode,
   isGenerating = false,
 }: MediaViewerModalProps) {
   const [zoomLevel, setZoomLevel] = useState(1)
   const [showInfo, setShowInfo] = useState(true)
   const [copied, setCopied] = useState(false)
-  const [localGenerating, setLocalGenerating] = useState(false)
+  const [localSubmitting, setLocalSubmitting] = useState(false)
+  const [submitError, setSubmitError] = useState<string | null>(null)
   const [defaultSaved, setDefaultSaved] = useState(false)
 
   // Query media catalog and UI settings for model switcher & default upgrade
@@ -89,35 +103,81 @@ export function MediaViewerModal({
     initialQuickRouteMode ?? defaultModeForKind,
   )
   const [quickRoutePrompt, setQuickRoutePrompt] = useState('')
-  const [iterationsLimit, setIterationsLimit] = useState<number>(1)
+  const [variantCount, setVariantCount] = useState<number>(1)
   const [selectedModel, setSelectedModel] = useState<string>('')
 
-  // Current default model from catalog/settings
-  const defaultImageModel = uiSettings?.tools?.image?.default_model || mediaCatalog?.default_image_model || 'imagen-3.0-generate-002'
-  const defaultVideoModel = uiSettings?.tools?.video?.default_model || mediaCatalog?.default_video_model || 'veo-3.1-generate-preview'
+  // Fine-tune & generation parameters prefilled from source item
+  const [aspectRatio, setAspectRatio] = useState<string>('16:9')
+  const [resolution, setResolution] = useState<string>('1080p')
+  const [durationSeconds, setDurationSeconds] = useState<number>(8)
+
+  const isVideoAction =
+    activeQuickRouteMode === 'to_video' ||
+    activeQuickRouteMode === 'next_scene' ||
+    (activeQuickRouteMode === 'fine_tune' && item?.kind === 'video')
+
+  // Dynamic model catalogs: video fine tune and video continuations MUST use video models
+  const availableModels: MediaCatalogModelOption[] = useMemo(() => {
+    if (isVideoAction) {
+      return (
+        mediaCatalog?.video_generation_models ??
+        mediaCatalog?.video_models ??
+        []
+      )
+    }
+    return mediaCatalog?.image_models ?? []
+  }, [isVideoAction, mediaCatalog])
+
+  // Current default model from account settings or catalog
+  const defaultImageModel =
+    uiSettings?.tools?.image?.default_model ||
+    mediaCatalog?.default_image_model ||
+    (mediaCatalog?.image_models?.find((m) => m.ready)?.id ?? '')
+
+  const defaultVideoModel =
+    uiSettings?.tools?.video?.default_model ||
+    mediaCatalog?.default_video_model ||
+    (mediaCatalog?.video_generation_models?.find((m) => m.ready)?.id ?? '')
 
   const currentDefaultModel = useMemo(() => {
-    if (activeQuickRouteMode === 'fine_tune' || activeQuickRouteMode === 'iterate') {
-      return defaultImageModel
-    }
-    return defaultVideoModel
-  }, [activeQuickRouteMode, defaultImageModel, defaultVideoModel])
+    return isVideoAction ? defaultVideoModel : defaultImageModel
+  }, [isVideoAction, defaultImageModel, defaultVideoModel])
 
-  // Sync selected model when mode or item changes
-  useEffect(() => {
-    if (activeQuickRouteMode === 'fine_tune' || activeQuickRouteMode === 'iterate') {
-      setSelectedModel(defaultImageModel)
-    } else {
-      setSelectedModel(defaultVideoModel)
-    }
-  }, [activeQuickRouteMode, defaultImageModel, defaultVideoModel])
+  // Selected model catalog option
+  const selectedModelOption = useMemo(() => {
+    return availableModels.find((m) => m.id === selectedModel)
+  }, [availableModels, selectedModel])
 
-  // Reset viewer state when item changes
+  // Detect supported options from model's generation_options or fall back gracefully
+  const modelGenOptions = selectedModelOption?.generation_options
+  const supportedRatios = useMemo(() => {
+    if (modelGenOptions?.aspect_ratios && modelGenOptions.aspect_ratios.length > 0) {
+      return modelGenOptions.aspect_ratios
+    }
+    return COMMON_ASPECT_RATIOS
+  }, [modelGenOptions])
+
+  const supportedResolutions = useMemo(() => {
+    if (modelGenOptions?.resolutions && modelGenOptions.resolutions.length > 0) {
+      return modelGenOptions.resolutions
+    }
+    return isVideoAction ? COMMON_VIDEO_RESOLUTIONS : COMMON_IMAGE_RESOLUTIONS
+  }, [modelGenOptions, isVideoAction])
+
+  const supportedDurations = useMemo(() => {
+    if (modelGenOptions?.durations && modelGenOptions.durations.length > 0) {
+      return modelGenOptions.durations
+    }
+    return COMMON_VIDEO_DURATIONS
+  }, [modelGenOptions])
+
+  // Reset viewer state when item changes or quickRouteMode initialized
   useEffect(() => {
     setZoomLevel(1)
     setCopied(false)
     setQuickRoutePrompt('')
-    setLocalGenerating(false)
+    setSubmitError(null)
+    setLocalSubmitting(false)
     if (initialQuickRouteMode) {
       setActiveQuickRouteMode(initialQuickRouteMode)
     } else if (item) {
@@ -125,22 +185,62 @@ export function MediaViewerModal({
     }
   }, [item?.id, initialQuickRouteMode])
 
-  // Available models based on active mode
-  const availableModels = useMemo(() => {
-    if (activeQuickRouteMode === 'fine_tune' || activeQuickRouteMode === 'iterate') {
-      return mediaCatalog?.image_models ?? []
+  // Sync selected model when mode or available models change
+  useEffect(() => {
+    if (availableModels.length === 0) return
+    const exists = availableModels.some((m) => m.id === selectedModel)
+    if (!exists) {
+      const preferred = availableModels.find((m) => m.id === currentDefaultModel && m.ready)
+        ?? availableModels.find((m) => m.ready)
+        ?? availableModels[0]
+      if (preferred) {
+        setSelectedModel(preferred.id)
+      }
     }
-    return mediaCatalog?.video_generation_models ?? []
-  }, [activeQuickRouteMode, mediaCatalog])
+  }, [availableModels, currentDefaultModel, selectedModel])
+
+  // Prefill settings from source item metadata if present, or model defaults
+  useEffect(() => {
+    if (!item) return
+    const anyItem = item as unknown as {
+      aspectRatio?: string
+      resolution?: string
+      durationSeconds?: number
+    }
+
+    const initialRatio =
+      anyItem.aspectRatio ||
+      modelGenOptions?.default_ratio ||
+      (item.kind === 'video' ? '16:9' : '1:1')
+    setAspectRatio(initialRatio)
+
+    const initialRes =
+      anyItem.resolution ||
+      modelGenOptions?.default_resolution ||
+      (isVideoAction ? '1080p' : '1k')
+    setResolution(initialRes)
+
+    const initialDur =
+      anyItem.durationSeconds ||
+      modelGenOptions?.default_duration ||
+      (item.durationMs ? Math.round(item.durationMs / 1000) : 8)
+    setDurationSeconds(initialDur)
+
+    if (activeQuickRouteMode === 'iterate') {
+      setVariantCount(4)
+    } else {
+      setVariantCount(1)
+    }
+  }, [item, activeQuickRouteMode, modelGenOptions, isVideoAction])
 
   const handleUpgradeDefaultModel = useCallback(async () => {
     if (!selectedModel) return
     try {
-      if (activeQuickRouteMode === 'fine_tune' || activeQuickRouteMode === 'iterate') {
-        const updated = await saveImageDefaultModel({ current: uiSettings ?? {}, defaultModel: selectedModel })
+      if (isVideoAction) {
+        const updated = await saveVideoDefaultModel({ current: uiSettings ?? {}, defaultModel: selectedModel })
         queryClient.setQueryData(uiSettingsQueryKey(), updated)
       } else {
-        const updated = await saveVideoDefaultModel({ current: uiSettings ?? {}, defaultModel: selectedModel })
+        const updated = await saveImageDefaultModel({ current: uiSettings ?? {}, defaultModel: selectedModel })
         queryClient.setQueryData(uiSettingsQueryKey(), updated)
       }
       void queryClient.invalidateQueries({ queryKey: ['media-settings-catalog'] })
@@ -149,65 +249,68 @@ export function MediaViewerModal({
     } catch {
       // Fallback
     }
-  }, [activeQuickRouteMode, queryClient, selectedModel, uiSettings])
+  }, [isVideoAction, queryClient, selectedModel, uiSettings])
 
-  // Contextual Preset Suggestions
-  const presetSuggestions = useMemo(() => {
-    if (!item) return []
-    if (activeQuickRouteMode === 'fine_tune') {
-      return item.kind === 'video'
-        ? ['Alternative camera take', 'Darker cinematic mood', 'Neon cyberpunk aesthetic', 'Faster action pace', 'Ambient synthwave soundtrack']
-        : ['Change lighting to warm sunset', 'Cyberpunk neon theme', 'Moody dark aesthetic', 'Minimalist vector illustration', 'Add cinematic depth of field', 'Crisp studio photography']
+  // Real model metadata cost calculation
+  const costEstimate = useMemo(() => {
+    const currentSettings: MediaGenerationSettings = {
+      aspectRatio,
+      resolution,
+      durationSeconds: isVideoAction ? durationSeconds : undefined,
     }
-    if (activeQuickRouteMode === 'to_video') {
-      return ['Slow cinematic push-in with ambient beats', 'Dramatic camera pan & electronic synth', 'Action sequence with dynamic movement', 'Aerial orbital rotation']
-    }
-    if (activeQuickRouteMode === 'next_scene') {
-      return ['Transition into expansive aerial view', 'Climactic reveal and accelerating tempo', 'Night sequence with glowing skyline', 'Atmospheric wide outro']
-    }
-    if (activeQuickRouteMode === 'iterate') {
-      return ['Diverse creative styles', 'Anime keyframe style', 'Futuristic 3D render', 'Oil painting']
-    }
-    return []
-  }, [activeQuickRouteMode, item])
+    return calculateGenerationCost({
+      modelOption: selectedModelOption,
+      action: activeQuickRouteMode,
+      count: variantCount,
+      settings: currentSettings,
+    })
+  }, [activeQuickRouteMode, aspectRatio, durationSeconds, isVideoAction, resolution, selectedModelOption, variantCount])
 
-  // Execute Quick Revision / Video Route
-  const handleExecuteQuickRoute = useCallback(
-    (autoDeploy: boolean) => {
-      if (!item) return
-      const prompt = quickRoutePrompt.trim()
-      setLocalGenerating(true)
+  // Execute Generation / Fine Tune directly with promise lock and live state
+  const handleExecuteGeneration = useCallback(async () => {
+    if (!item || localSubmitting) return
+    const prompt = quickRoutePrompt.trim()
+    if (!prompt) return
 
-      if (activeQuickRouteMode === 'fine_tune') {
-        if (onFineTune) {
-          onFineTune(item, prompt, autoDeploy, selectedModel)
-        } else if (onIterateSwarm) {
-          onIterateSwarm(item)
-        }
-      } else if (activeQuickRouteMode === 'to_video') {
-        if (onGenerateVideo) {
-          onGenerateVideo(item, prompt, autoDeploy, selectedModel)
-        }
-      } else if (activeQuickRouteMode === 'next_scene') {
-        if (onContinueVideo) {
-          onContinueVideo(item, prompt, autoDeploy, selectedModel)
-        }
-      } else if (activeQuickRouteMode === 'iterate') {
-        if (onIterate) {
-          onIterate(item, iterationsLimit, prompt, autoDeploy, selectedModel)
-        } else if (onIterateSwarm) {
-          onIterateSwarm(item)
-        }
-      }
+    setSubmitError(null)
+    setLocalSubmitting(true)
 
-      // Keep dock open so user can do further revisions; clear prompt
-      setTimeout(() => {
-        setLocalGenerating(false)
+    const generationSettings: MediaGenerationSettings = {
+      aspectRatio,
+      resolution,
+      durationSeconds: isVideoAction ? durationSeconds : undefined,
+    }
+
+    try {
+      if (onGenerate) {
+        await onGenerate({
+          item,
+          action: activeQuickRouteMode,
+          deltaPrompt: prompt,
+          variantCount,
+          model: selectedModel,
+          settings: generationSettings,
+        })
         setQuickRoutePrompt('')
-      }, 1500)
-    },
-    [activeQuickRouteMode, item, iterationsLimit, onContinueVideo, onFineTune, onGenerateVideo, onIterate, onIterateSwarm, quickRoutePrompt, selectedModel],
-  )
+      }
+    } catch (err) {
+      setSubmitError(err instanceof Error ? err.message : 'Generation request failed.')
+    } finally {
+      setLocalSubmitting(false)
+    }
+  }, [
+    activeQuickRouteMode,
+    aspectRatio,
+    durationSeconds,
+    isVideoAction,
+    item,
+    localSubmitting,
+    onGenerate,
+    quickRoutePrompt,
+    resolution,
+    selectedModel,
+    variantCount,
+  ])
 
   // Current index in items
   const currentIndex = item ? items.findIndex((i) => i.id === item.id) : -1
@@ -226,23 +329,38 @@ export function MediaViewerModal({
     }
   }, [currentIndex, hasNext, items, onSelect])
 
-  // Keyboard navigation
+  // Keyboard navigation: do not trigger arrow navigation while typing in inputs or textareas!
   useEffect(() => {
     if (!item) return
-
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         onClose()
-      } else if (event.key === 'ArrowLeft') {
+        return
+      }
+      const activeEl = document.activeElement
+      const isInput =
+        activeEl &&
+        (activeEl.tagName === 'INPUT' ||
+          activeEl.tagName === 'TEXTAREA' ||
+          activeEl.tagName === 'SELECT' ||
+          (activeEl as HTMLElement).isContentEditable)
+      if (isInput) return
+
+      if (event.key === 'ArrowLeft') {
         handlePrev()
       } else if (event.key === 'ArrowRight') {
         handleNext()
       }
     }
-
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [handleNext, handlePrev, item, onClose])
+
+  // Related pending / running generation jobs for this active source item
+  const relevantJobs = useMemo(() => {
+    if (!item) return []
+    return generationJobs.filter((job) => job.sourceId === item.id)
+  }, [generationJobs, item])
 
   // Build Lineage & History Chain
   const lineageChain = useMemo(() => {
@@ -265,7 +383,7 @@ export function MediaViewerModal({
     // 2. Current Asset
     chain.push({
       role: 'current',
-      item,
+      item: item,
       label: 'Active Asset',
     })
 
@@ -312,7 +430,12 @@ export function MediaViewerModal({
     document.body.removeChild(link)
   }
 
-  const isWorking = isGenerating || localGenerating
+  const isWorking = isGenerating || localSubmitting
+  const canSubmit =
+    Boolean(quickRoutePrompt.trim()) &&
+    Boolean(selectedModel) &&
+    variantCount >= 1 &&
+    !isWorking
 
   return (
     <div
@@ -415,19 +538,23 @@ export function MediaViewerModal({
             </button>
           )}
 
-          {/* Swarm Iterations Action */}
-          {onIterateSwarm && (
-            <button
-              type="button"
-              onClick={() => onIterateSwarm(item)}
-              title="Spawn Swarm Iterations for this media"
-              aria-label="Swarm Iterations"
-              className="flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 px-3 py-1.5 text-xs font-semibold text-white shadow-md transition cursor-pointer"
-            >
-              <Sparkles size={14} />
-              <span className="hidden sm:inline">Swarm Iterations</span>
-            </button>
-          )}
+          {/* Swarm Iterations Action Button */}
+          <button
+            type="button"
+            onClick={() => {
+              if (onIterateSwarm) {
+                onIterateSwarm(item)
+              } else {
+                setActiveQuickRouteMode('iterate')
+              }
+            }}
+            title="Configure and run Swarm Iterations for this media"
+            aria-label="Swarm Iterations"
+            className="flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 px-3 py-1.5 text-xs font-semibold text-white shadow-md transition cursor-pointer"
+          >
+            <Sparkles size={14} />
+            <span className="hidden sm:inline">Swarm Iterations</span>
+          </button>
 
           {/* Download */}
           <button
@@ -518,7 +645,7 @@ export function MediaViewerModal({
                     transform: `scale(${zoomLevel})`,
                     transition: 'transform 0.15s ease-out',
                   }}
-                  className="max-h-[68vh] max-w-full rounded-lg object-contain shadow-2xl select-none border border-white/10"
+                  className="max-h-[56vh] max-w-full rounded-lg object-contain shadow-2xl select-none border border-white/10"
                 />
               </div>
             )}
@@ -530,7 +657,7 @@ export function MediaViewerModal({
                   controls
                   autoPlay
                   playsInline
-                  className="max-h-[65vh] w-full rounded-xl bg-black shadow-2xl border border-white/10"
+                  className="max-h-[54vh] w-full rounded-xl bg-black shadow-2xl border border-white/10"
                 >
                   Your browser does not support playing this video.
                 </video>
@@ -545,25 +672,11 @@ export function MediaViewerModal({
                 <h3 className="text-center font-medium text-lg text-white">{item.title}</h3>
                 <p className="mt-1 text-xs text-white/50">{item.mediaType}</p>
 
-                {/* Equalizer animation simulation */}
-                <div className="flex items-end justify-center gap-1 h-8 my-6 w-32" aria-hidden="true">
-                  {[40, 70, 90, 60, 80, 50, 95, 65, 30].map((h, i) => (
-                    <span
-                      key={i}
-                      className="w-1.5 rounded-full bg-[var(--app-primary)] transition-all duration-300"
-                      style={{
-                        height: `${h}%`,
-                        opacity: 0.6 + (i % 3) * 0.2,
-                      }}
-                    />
-                  ))}
-                </div>
-
                 <audio
                   src={item.directUrl}
                   controls
                   autoPlay
-                  className="w-full"
+                  className="w-full mt-6"
                 >
                   Your browser does not support the audio element.
                 </audio>
@@ -577,7 +690,7 @@ export function MediaViewerModal({
                   src={item.directUrl}
                   sandbox="allow-scripts"
                   referrerPolicy="no-referrer"
-                  className="h-[65vh] w-full rounded-xl border border-white/10 bg-white shadow-2xl"
+                  className="h-[54vh] w-full rounded-xl border border-white/10 bg-white shadow-2xl"
                 />
               </div>
             )}
@@ -585,9 +698,9 @@ export function MediaViewerModal({
 
           {/* Persistent Bottom AI Studio Dock */}
           <footer className="shrink-0 border-t border-white/10 bg-slate-950/95 backdrop-blur-2xl px-4 py-3 sm:px-6 shadow-2xl z-20">
-            <div className="flex flex-col gap-2.5 max-w-5xl mx-auto">
-              {/* Dock Top Sub-Bar: Mode Switcher Tabs + Model Selector + Iterations Limit */}
-              <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex flex-col gap-3 max-w-5xl mx-auto">
+              {/* Row 1: Action Mode Switcher + Model Picker + Output Settings */}
+              <div className="flex flex-wrap items-center justify-between gap-3">
                 {/* Action Mode Tabs */}
                 <div className="inline-flex rounded-xl bg-white/5 p-1 border border-white/10">
                   {item.kind === 'image' && (
@@ -600,7 +713,7 @@ export function MediaViewerModal({
                             ? 'bg-amber-600 text-white shadow-md'
                             : 'text-white/60 hover:text-white hover:bg-white/5'
                         }`}
-                        title="Fine-Tune / edit image with conversational instructions"
+                        title="Fine-Tune / edit image with instructions"
                       >
                         <Edit3 size={13} />
                         <span>Fine-Tune</span>
@@ -614,7 +727,7 @@ export function MediaViewerModal({
                             ? 'bg-purple-600 text-white shadow-md'
                             : 'text-white/60 hover:text-white hover:bg-white/5'
                         }`}
-                        title="Transform image keyframe into cinematic motion video"
+                        title="Transform image into video"
                       >
                         <Film size={13} />
                         <span>To Video</span>
@@ -679,8 +792,8 @@ export function MediaViewerModal({
                   )}
                 </div>
 
-                {/* Right controls: Model Switcher & Iterations Limit */}
-                <div className="flex items-center gap-2">
+                {/* Model Selector & Parameters */}
+                <div className="flex flex-wrap items-center gap-2">
                   {/* Model Selector Dropdown & Make Default */}
                   <div className="flex items-center gap-1.5 bg-white/5 border border-white/10 rounded-xl px-2.5 py-1 text-xs">
                     <span className="text-[10px] uppercase font-bold text-white/40 tracking-wider">Model:</span>
@@ -723,20 +836,73 @@ export function MediaViewerModal({
                     )}
                   </div>
 
-                  {/* Iterations Limit Pill */}
+                  {/* Aspect Ratio Selector */}
+                  <div className="flex items-center gap-1.5 bg-white/5 border border-white/10 rounded-xl px-2 py-1 text-xs">
+                    <span className="text-[10px] uppercase font-bold text-white/40 tracking-wider">Ratio:</span>
+                    <select
+                      value={aspectRatio}
+                      onChange={(e) => setAspectRatio(e.target.value)}
+                      className="bg-transparent text-white font-medium text-xs outline-none cursor-pointer"
+                      aria-label="Aspect Ratio"
+                    >
+                      {supportedRatios.map((ratio) => (
+                        <option key={ratio} value={ratio} className="bg-slate-900 text-white">
+                          {ratio}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Resolution Selector */}
+                  <div className="flex items-center gap-1.5 bg-white/5 border border-white/10 rounded-xl px-2 py-1 text-xs">
+                    <span className="text-[10px] uppercase font-bold text-white/40 tracking-wider">Res:</span>
+                    <select
+                      value={resolution}
+                      onChange={(e) => setResolution(e.target.value)}
+                      className="bg-transparent text-white font-medium text-xs outline-none cursor-pointer uppercase"
+                      aria-label="Resolution"
+                    >
+                      {supportedResolutions.map((res) => (
+                        <option key={res} value={res} className="bg-slate-900 text-white uppercase">
+                          {res}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Video Duration Selector */}
+                  {isVideoAction && (
+                    <div className="flex items-center gap-1.5 bg-white/5 border border-white/10 rounded-xl px-2 py-1 text-xs">
+                      <span className="text-[10px] uppercase font-bold text-white/40 tracking-wider">Duration:</span>
+                      <select
+                        value={durationSeconds}
+                        onChange={(e) => setDurationSeconds(Number(e.target.value))}
+                        className="bg-transparent text-white font-medium text-xs outline-none cursor-pointer"
+                        aria-label="Video Duration"
+                      >
+                        {supportedDurations.map((sec) => (
+                          <option key={sec} value={sec} className="bg-slate-900 text-white">
+                            {sec}s
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+
+                  {/* Output Count Pill (Swarm Iterations & Multi-Variants) */}
                   <div className="flex items-center gap-1 bg-white/5 border border-white/10 rounded-xl p-1 text-[11px] font-mono">
-                    <span className="px-1.5 text-white/40 text-[10px] uppercase">Limit:</span>
-                    {[1, 2, 4].map((n) => (
+                    <span className="px-1 text-white/40 text-[10px] uppercase">Outputs:</span>
+                    {[1, 2, 4, 8].map((n) => (
                       <button
                         key={n}
                         type="button"
-                        onClick={() => setIterationsLimit(n)}
+                        onClick={() => setVariantCount(n)}
                         className={`px-2 py-0.5 rounded-md transition font-bold ${
-                          iterationsLimit === n
+                          variantCount === n
                             ? 'bg-blue-600 text-white shadow-xs'
                             : 'text-white/50 hover:text-white hover:bg-white/10'
                         }`}
-                        title={`${n} revision iteration${n > 1 ? 's' : ''}`}
+                        title={`${n} output${n > 1 ? 's' : ''}`}
                       >
                         {n}
                       </button>
@@ -745,83 +911,122 @@ export function MediaViewerModal({
                 </div>
               </div>
 
-              {/* Main Prompt Input Bar */}
-              <div className="flex items-center gap-2">
+              {/* Row 2: Textarea Prompt Box & Action Submission */}
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-end gap-3">
                 <div className="relative flex-1">
-                  <input
-                    type="text"
+                  <textarea
+                    rows={2}
                     value={quickRoutePrompt}
                     onChange={(e) => setQuickRoutePrompt(e.target.value)}
                     onKeyDown={(e) => {
-                      if (e.key === 'Enter' && !e.shiftKey) {
+                      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
                         e.preventDefault()
-                        handleExecuteQuickRoute(true)
+                        void handleExecuteGeneration()
                       }
                     }}
                     disabled={isWorking}
                     placeholder={
                       activeQuickRouteMode === 'fine_tune'
                         ? item.kind === 'video'
-                          ? `Describe changes to video (e.g. "Change color grade to teal and orange, add cinematic pulse")`
-                          : `What to modify? (e.g. "Change lighting to sunset golden hour", "Add glowing neon accents")`
+                          ? 'Describe fine-tune adjustments to camera pacing, lighting, or atmosphere...'
+                          : 'Describe edits (e.g. "Change background to cyberpunk alley, warm dramatic lighting")...'
                         : activeQuickRouteMode === 'to_video'
-                        ? `Video action & camera (e.g. "Slow cinematic push into scene with ambient electronic synth")`
-                        : `Next sequence description (e.g. "Transition into wide orbital view with rising crescendo")`
+                          ? 'Describe camera movement and cinematic action (e.g. "Slow cinematic push-in with rising synth")...'
+                          : activeQuickRouteMode === 'next_scene'
+                            ? 'Describe next sequence in the story (e.g. "Transition into wide orbital view with rising crescendo")...'
+                            : 'Describe variation theme (e.g. "Diverse stylized concept renders with futuristic lighting")...'
                     }
-                    className="w-full h-10 rounded-xl bg-black/70 border border-white/15 px-3.5 text-xs text-white placeholder-white/40 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition shadow-inner"
+                    className="w-full rounded-xl bg-black/70 border border-white/15 p-3 text-xs text-white placeholder-white/40 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition shadow-inner resize-none"
                   />
+                  <div className="absolute right-2.5 bottom-2.5 flex items-center gap-1.5 text-[10px] text-white/40 font-mono pointer-events-none">
+                    <span>Ctrl/⌘+Enter to submit</span>
+                  </div>
                 </div>
 
-                {/* 1-Click Fast Revision Button: Route & Run Now */}
-                <button
-                  type="button"
-                  onClick={() => handleExecuteQuickRoute(true)}
-                  disabled={isWorking}
-                  className="flex items-center gap-1.5 h-10 px-4 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 disabled:opacity-50 text-white font-bold text-xs shadow-lg transition shrink-0 cursor-pointer"
-                  title="Route & Run Now: generate revision automatically"
-                >
-                  {isWorking ? (
-                    <>
-                      <Loader2 size={14} className="animate-spin" />
-                      <span>Generating...</span>
-                    </>
-                  ) : (
-                    <>
-                      <Sparkles size={14} className="fill-current text-white/90" />
-                      <span>Route & Run Now</span>
-                      <span className="sr-only">Auto-Revise</span>
-                    </>
-                  )}
-                </button>
+                {/* Right: Submit Button & Dynamic Cost Display */}
+                <div className="flex flex-col items-stretch sm:items-end gap-1.5 shrink-0">
+                  <div className="flex items-center justify-between sm:justify-end gap-2 text-[11px]">
+                    <span className="text-white/50">Model Cost:</span>
+                    {costEstimate.isAvailable ? (
+                      <span className="font-semibold text-emerald-400 font-mono">
+                        {costEstimate.formattedTotal}
+                        {variantCount > 1 && (
+                          <span className="text-white/40 font-normal ml-1">
+                            ({costEstimate.formattedPerUnit})
+                          </span>
+                        )}
+                      </span>
+                    ) : (
+                      <span className="text-white/40 italic">Pricing unavailable</span>
+                    )}
+                  </div>
 
-                {/* Secondary In Planner button */}
-                <button
-                  type="button"
-                  onClick={() => handleExecuteQuickRoute(false)}
-                  disabled={isWorking}
-                  className="hidden sm:flex items-center gap-1.5 h-10 px-3 rounded-xl bg-white/10 hover:bg-white/20 text-slate-300 hover:text-white text-xs font-semibold border border-white/15 transition shrink-0 cursor-pointer"
-                  title="Open in full task proposal modal"
-                >
-                  <Edit3 size={13} />
-                  <span>In Planner</span>
-                </button>
+                  <button
+                    type="button"
+                    onClick={() => void handleExecuteGeneration()}
+                    disabled={!canSubmit}
+                    className="flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 disabled:opacity-40 text-white font-bold text-xs shadow-lg transition cursor-pointer"
+                    title={
+                      !selectedModel
+                        ? 'Select an active model'
+                        : !quickRoutePrompt.trim()
+                          ? 'Enter prompt instructions to submit'
+                          : 'Generate revision'
+                    }
+                  >
+                    {isWorking ? (
+                      <>
+                        <Loader2 size={15} className="animate-spin" />
+                        <span>Generating...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles size={15} className="fill-current text-white/90" />
+                        <span>Route & Run Now</span>
+                        <span className="sr-only">Auto-Revise</span>
+                      </>
+                    )}
+                  </button>
+                </div>
               </div>
 
-              {/* Quick Preset Chips */}
-              {presetSuggestions.length > 0 && (
-                <div className="flex items-center gap-1.5 flex-wrap pt-0.5">
-                  <span className="text-[10px] font-mono text-white/40 uppercase tracking-wider mr-1">Suggestions:</span>
-                  {presetSuggestions.map((preset) => (
-                    <button
-                      key={preset}
-                      type="button"
-                      onClick={() => {
-                        setQuickRoutePrompt((prev) => (prev ? `${prev}, ${preset}` : preset))
-                      }}
-                      className="px-2.5 py-0.5 rounded-full bg-white/5 border border-white/10 hover:border-blue-500/50 hover:bg-blue-950/40 text-[10px] text-white/70 hover:text-white transition cursor-pointer"
+              {/* Cost Disclosure Note & Submit Error */}
+              <div className="flex flex-col gap-1">
+                {submitError && (
+                  <div className="flex items-center gap-1.5 text-xs text-rose-400 bg-rose-950/40 border border-rose-800/50 rounded-lg px-2.5 py-1.5">
+                    <AlertCircle size={14} className="shrink-0" />
+                    <span>{submitError}</span>
+                  </div>
+                )}
+                <div className="flex items-center justify-between text-[10px] text-white/40">
+                  <span>Estimated model charge from catalog metadata; excludes AI agent input tokens.</span>
+                  {!modelGenOptions && (
+                    <span className="text-white/30 italic">Using standard model defaults.</span>
+                  )}
+                </div>
+              </div>
+
+              {/* Live Pending / Queued Generation Jobs for this item */}
+              {relevantJobs.length > 0 && (
+                <div className="flex items-center gap-2 border-t border-white/10 pt-2 overflow-x-auto">
+                  <span className="text-[10px] uppercase font-bold text-white/40 tracking-wider shrink-0 flex items-center gap-1">
+                    <Clock size={11} /> Generations:
+                  </span>
+                  {relevantJobs.map((job) => (
+                    <div
+                      key={job.id}
+                      className="flex items-center gap-1.5 bg-white/5 border border-white/10 rounded-lg px-2 py-1 text-[11px] shrink-0"
                     >
-                      + {preset}
-                    </button>
+                      {job.status === 'queued' || job.status === 'in_progress' || job.status === 'running' ? (
+                        <Loader2 size={12} className="animate-spin text-blue-400 shrink-0" />
+                      ) : job.status === 'failed' ? (
+                        <AlertCircle size={12} className="text-rose-400 shrink-0" />
+                      ) : (
+                        <Check size={12} className="text-emerald-400 shrink-0" />
+                      )}
+                      <span className="text-white/80 max-w-[120px] truncate">{job.title}</span>
+                      <span className="font-mono text-[10px] text-white/40">({job.status})</span>
+                    </div>
                   ))}
                 </div>
               )}

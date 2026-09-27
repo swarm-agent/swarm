@@ -1,5 +1,15 @@
 import { requestJson } from '../../../../../app/api'
 
+export interface MediaModelGenerationOptions {
+  aspect_ratios?: string[]
+  resolutions?: string[]
+  durations?: number[]
+  default_ratio?: string
+  default_resolution?: string
+  default_duration?: number
+  max_outputs?: number
+}
+
 export interface MediaCatalogModelOption {
   id: string
   provider: string
@@ -9,6 +19,7 @@ export interface MediaCatalogModelOption {
   ready: boolean
   reason?: string
   pricing?: unknown
+  generation_options?: MediaModelGenerationOptions
 }
 
 export interface MediaSettingsCatalog {
