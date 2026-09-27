@@ -35,7 +35,6 @@ import { saveVideoDefaultModel } from '../../settings/swarm/mutations/save-video
 import { uiSettingsQueryKey, uiSettingsQueryOptions } from '../../../queries/query-options'
 import {
   calculateGenerationCost,
-  normalizeResKey,
   resolveInitialModel,
   resolveInitialSetting,
   type MediaGenerationAction,
@@ -58,7 +57,6 @@ export interface MediaViewerModalProps {
   generationJobs?: readonly MediaGenerationJob[]
   initialQuickRouteMode?: QuickRouteMode | null
   isGenerating?: boolean
-  [key: string]: unknown
 }
 
 export function MediaViewerModal({
@@ -85,10 +83,11 @@ export function MediaViewerModal({
   const isSubmittingRef = useRef(false)
   const lastInitializedItemIdRef = useRef<string | null>(null)
   const lastModelIdRef = useRef<string>('')
+  const hasInitializedSettingsRef = useRef(false)
 
   // Query media catalog and UI settings
   const queryClient = useQueryClient()
-  const { data: mediaCatalog } = useQuery({
+  const { data: mediaCatalog, isLoading: catalogLoading, error: catalogError } = useQuery({
     queryKey: ['media-settings-catalog'],
     queryFn: () => getMediaSettingsCatalog(),
     staleTime: 60_000,
@@ -117,7 +116,7 @@ export function MediaViewerModal({
   const isVideoAction =
     activeQuickRouteMode === 'to_video' ||
     activeQuickRouteMode === 'next_scene' ||
-    (activeQuickRouteMode === 'fine_tune' && isVideoSource)
+    ((activeQuickRouteMode === 'fine_tune' || activeQuickRouteMode === 'iterate') && isVideoSource)
 
   // Available models based on action mode:
   // to_video selects video_generation_models
@@ -131,7 +130,7 @@ export function MediaViewerModal({
         []
       )
     }
-    if (activeQuickRouteMode === 'next_scene' || (activeQuickRouteMode === 'fine_tune' && isVideoSource)) {
+    if (activeQuickRouteMode === 'next_scene' || ((activeQuickRouteMode === 'fine_tune' || activeQuickRouteMode === 'iterate') && isVideoSource)) {
       return (
         mediaCatalog?.video_iteration_models ??
         mediaCatalog?.video_generation_models ??
@@ -161,7 +160,7 @@ export function MediaViewerModal({
     if (activeQuickRouteMode === 'to_video') {
       return defaultVideoGenerationModel
     }
-    if (activeQuickRouteMode === 'next_scene' || (activeQuickRouteMode === 'fine_tune' && isVideoSource)) {
+    if (activeQuickRouteMode === 'next_scene' || ((activeQuickRouteMode === 'fine_tune' || activeQuickRouteMode === 'iterate') && isVideoSource)) {
       return defaultVideoIterationModel
     }
     return defaultImageModel
@@ -206,8 +205,10 @@ export function MediaViewerModal({
   useEffect(() => {
     if (!item) {
       lastInitializedItemIdRef.current = null
+      hasInitializedSettingsRef.current = false
       return
     }
+    if (!mediaCatalog) return
     if (lastInitializedItemIdRef.current === item.id) {
       return
     }
@@ -228,7 +229,7 @@ export function MediaViewerModal({
     const isVid =
       newMode === 'to_video' ||
       newMode === 'next_scene' ||
-      (newMode === 'fine_tune' && item.kind === 'video')
+      ((newMode === 'fine_tune' || newMode === 'iterate') && item.kind === 'video')
 
     const models = isVid
       ? newMode === 'to_video'
@@ -243,26 +244,27 @@ export function MediaViewerModal({
     const chosenModelId = resolveInitialModel(item.model, models, defModel)
     setSelectedModel(chosenModelId)
     lastModelIdRef.current = chosenModelId
+    hasInitializedSettingsRef.current = true
 
     const chosenOption = models.find((m) => m.id === chosenModelId)
     const genOpts = chosenOption?.generation_options
 
     const initRatio = resolveInitialSetting(
-      (item as unknown as { aspectRatio?: string }).aspectRatio,
+      item.aspectRatio,
       genOpts?.aspect_ratios,
       genOpts?.default_ratio,
     )
     setAspectRatio(initRatio ?? '')
 
     const initRes = resolveInitialSetting(
-      (item as unknown as { resolution?: string }).resolution,
+      item.resolution,
       genOpts?.resolutions,
       genOpts?.default_resolution,
     )
     setResolution(initRes ?? '')
 
     const rawDur =
-      (item as unknown as { durationSeconds?: number }).durationSeconds ??
+      item.durationSeconds ??
       (item.durationMs ? Math.round(item.durationMs / 1000) : undefined)
     const initDur = resolveInitialSetting(rawDur, genOpts?.durations, genOpts?.default_duration)
     setDurationSeconds(initDur)
@@ -287,58 +289,9 @@ export function MediaViewerModal({
       return
     }
 
-    if (aspectRatio) {
-      const stillSupported = modelGenOptions.aspect_ratios?.find(
-        (r) => r.toLowerCase().trim() === aspectRatio.toLowerCase().trim(),
-      )
-      if (stillSupported) {
-        setAspectRatio(stillSupported)
-      } else {
-        setAspectRatio(
-          modelGenOptions.default_ratio &&
-            modelGenOptions.aspect_ratios?.includes(modelGenOptions.default_ratio)
-            ? modelGenOptions.default_ratio
-            : (modelGenOptions.aspect_ratios?.[0] ?? ''),
-        )
-      }
-    } else if (modelGenOptions.default_ratio) {
-      setAspectRatio(modelGenOptions.default_ratio)
-    }
-
-    if (resolution) {
-      const normRes = normalizeResKey(resolution)
-      const stillSupported = modelGenOptions.resolutions?.find(
-        (r) => normalizeResKey(r) === normRes,
-      )
-      if (stillSupported) {
-        setResolution(stillSupported)
-      } else {
-        setResolution(
-          modelGenOptions.default_resolution &&
-            modelGenOptions.resolutions?.includes(modelGenOptions.default_resolution)
-            ? modelGenOptions.default_resolution
-            : (modelGenOptions.resolutions?.[0] ?? ''),
-        )
-      }
-    } else if (modelGenOptions.default_resolution) {
-      setResolution(modelGenOptions.default_resolution)
-    }
-
-    if (durationSeconds !== undefined) {
-      const stillSupported = modelGenOptions.durations?.find((d) => d === durationSeconds)
-      if (stillSupported !== undefined) {
-        setDurationSeconds(stillSupported)
-      } else {
-        setDurationSeconds(
-          modelGenOptions.default_duration &&
-            modelGenOptions.durations?.includes(modelGenOptions.default_duration)
-            ? modelGenOptions.default_duration
-            : modelGenOptions.durations?.[0],
-        )
-      }
-    } else if (modelGenOptions.default_duration) {
-      setDurationSeconds(modelGenOptions.default_duration)
-    }
+    setAspectRatio(resolveInitialSetting(aspectRatio, modelGenOptions.aspect_ratios, modelGenOptions.default_ratio) ?? '')
+    setResolution(resolveInitialSetting(resolution, modelGenOptions.resolutions, modelGenOptions.default_resolution) ?? '')
+    setDurationSeconds(resolveInitialSetting(durationSeconds, modelGenOptions.durations, modelGenOptions.default_duration))
   }, [selectedModel, modelGenOptions, aspectRatio, resolution, durationSeconds])
 
   const handleModeChange = useCallback(
@@ -353,7 +306,7 @@ export function MediaViewerModal({
       const isVid =
         newMode === 'to_video' ||
         newMode === 'next_scene' ||
-        (newMode === 'fine_tune' && item?.kind === 'video')
+        ((newMode === 'fine_tune' || newMode === 'iterate') && item?.kind === 'video')
 
       const models = isVid
         ? newMode === 'to_video'
@@ -369,7 +322,6 @@ export function MediaViewerModal({
       if (!stillValid) {
         const preferred = resolveInitialModel(item?.model, models, defModel)
         setSelectedModel(preferred)
-        lastModelIdRef.current = preferred
       }
     },
     [
@@ -396,8 +348,8 @@ export function MediaViewerModal({
       void queryClient.invalidateQueries({ queryKey: ['media-settings-catalog'] })
       setDefaultSaved(true)
       setTimeout(() => setDefaultSaved(false), 2000)
-    } catch {
-      // Fallback
+    } catch (error) {
+      setSubmitError(error instanceof Error ? error.message : 'Could not save default model.')
     }
   }, [isVideoAction, queryClient, selectedModel, uiSettings])
 
@@ -426,7 +378,7 @@ export function MediaViewerModal({
 
   // Execute Generation / Fine Tune directly with synchronous ref lock and live state
   const handleExecuteGeneration = useCallback(async () => {
-    if (!item || isSubmittingRef.current || localSubmitting || isGenerating) return
+    if (!item || !onGenerate || !selectedModelOption?.ready || !hasInitializedSettingsRef.current || isSubmittingRef.current || localSubmitting || isGenerating) return
     const prompt = quickRoutePrompt.trim()
     if (!prompt) return
 
@@ -470,6 +422,7 @@ export function MediaViewerModal({
     quickRoutePrompt,
     resolution,
     selectedModel,
+    selectedModelOption,
     variantCount,
   ])
 
@@ -587,7 +540,7 @@ export function MediaViewerModal({
     !isSubmittingRef.current &&
     !isWorking &&
     Boolean(quickRoutePrompt.trim()) &&
-    Boolean(selectedModel)
+    Boolean(onGenerate && selectedModelOption?.ready && hasInitializedSettingsRef.current)
 
   return (
     <div
@@ -966,8 +919,8 @@ export function MediaViewerModal({
                     >
                       {availableModels.length > 0 ? (
                         availableModels.map((m) => (
-                          <option key={m.id} value={m.id} className="bg-slate-900 text-white">
-                            {m.display_name || m.model || m.id}
+                          <option key={m.id} value={m.id} disabled={!m.ready} className="bg-slate-900 text-white">
+                            {m.display_name || m.model || m.id}{!m.ready ? ' (unavailable)' : ''}
                           </option>
                         ))
                       ) : (
@@ -1006,6 +959,7 @@ export function MediaViewerModal({
                       className="bg-transparent text-white font-medium text-xs outline-none cursor-pointer"
                       aria-label="Aspect Ratio"
                     >
+                      {!aspectRatio && <option value="">Provider default</option>}
                       {supportedRatios.length > 0 ? (
                         supportedRatios.map((ratio) => (
                           <option key={ratio} value={ratio} className="bg-slate-900 text-white">
@@ -1029,6 +983,7 @@ export function MediaViewerModal({
                       className="bg-transparent text-white font-medium text-xs outline-none cursor-pointer uppercase"
                       aria-label="Resolution"
                     >
+                      {!resolution && <option value="">Provider default</option>}
                       {supportedResolutions.length > 0 ? (
                         supportedResolutions.map((res) => (
                           <option key={res} value={res} className="bg-slate-900 text-white uppercase">
@@ -1056,6 +1011,7 @@ export function MediaViewerModal({
                         className="bg-transparent text-white font-medium text-xs outline-none cursor-pointer"
                         aria-label="Video Duration"
                       >
+                        {durationSeconds === undefined && <option value="">Provider default</option>}
                         {supportedDurations.length > 0 ? (
                           supportedDurations.map((sec) => (
                             <option key={sec} value={sec} className="bg-slate-900 text-white">
@@ -1130,7 +1086,7 @@ export function MediaViewerModal({
                 {/* Right: Submit Button & Dynamic Cost Display */}
                 <div className="flex flex-col items-stretch sm:items-end gap-1.5 shrink-0">
                   <div className="flex items-center justify-between sm:justify-end gap-2 text-[11px]">
-                    <span className="text-white/50">Model Cost:</span>
+                    <span className="text-white/50">Estimated total:</span>
                     {costEstimate.isAvailable ? (
                       <span className="font-semibold text-emerald-400 font-mono">
                         {costEstimate.formattedTotal}
@@ -1166,7 +1122,7 @@ export function MediaViewerModal({
                     ) : (
                       <>
                         <Sparkles size={15} className="fill-current text-white/90" />
-                        <span>Route & Run Now</span>
+                        <span>{activeQuickRouteMode === 'iterate' ? `Generate ${variantCount} variations` : 'Generate revision'}</span>
                         <span className="sr-only">Auto-Revise</span>
                       </>
                     )}
@@ -1174,6 +1130,8 @@ export function MediaViewerModal({
                 </div>
               </div>
 
+              {catalogLoading && <p role="status" className="text-xs text-white/60">Loading model settings and pricing…</p>}
+              {catalogError && <p role="alert" className="text-xs text-rose-300">Unable to load model settings. Reopen the viewer to retry.</p>}
               {/* Cost Disclosure Note & Submit Error */}
               <div className="flex flex-col gap-1">
                 {submitError && (
@@ -1183,7 +1141,7 @@ export function MediaViewerModal({
                   </div>
                 )}
                 <div className="flex items-center justify-between text-[10px] text-white/40">
-                  <span>Estimated model charge from catalog metadata; excludes AI agent input tokens.</span>
+                  <span>USD estimate from model catalog for the selected outputs. Input and text-token charges may be additional.</span>
                   {!modelGenOptions && (
                     <span className="text-white/30 italic">Using provider defaults.</span>
                   )}
@@ -1193,7 +1151,7 @@ export function MediaViewerModal({
 
               {/* Live Pending / Queued Generation Jobs for this item */}
               {relevantJobs.length > 0 && (
-                <div className="flex items-center gap-2 border-t border-white/10 pt-2 overflow-x-auto">
+                <div role="status" aria-live="polite" className="flex items-center gap-2 border-t border-white/10 pt-2 overflow-x-auto">
                   <span className="text-[10px] uppercase font-bold text-white/40 tracking-wider shrink-0 flex items-center gap-1">
                     <Clock size={11} /> Generations:
                   </span>
@@ -1202,7 +1160,7 @@ export function MediaViewerModal({
                       key={job.id}
                       className="flex items-center gap-1.5 bg-white/5 border border-white/10 rounded-lg px-2 py-1 text-[11px] shrink-0"
                     >
-                      {job.status === 'queued' || job.status === 'in_progress' || job.status === 'running' ? (
+                      {['submitting', 'pending', 'queued', 'in_progress', 'running'].includes(job.status) ? (
                         <Loader2 size={12} className="animate-spin text-blue-400 shrink-0" />
                       ) : job.status === 'failed' ? (
                         <AlertCircle size={12} className="text-rose-400 shrink-0" />
@@ -1210,7 +1168,8 @@ export function MediaViewerModal({
                         <Check size={12} className="text-emerald-400 shrink-0" />
                       )}
                       <span className="text-white/80 max-w-[120px] truncate">{job.title}</span>
-                      <span className="font-mono text-[10px] text-white/40">({job.status})</span>
+                      <span className="font-mono text-[10px] text-white/40">{job.count} outputs · {job.status.replaceAll('_', ' ')}</span>
+                      {job.error && <span className="max-w-64 text-rose-300 whitespace-normal">{job.error}</span>
                     </div>
                   ))}
                 </div>
