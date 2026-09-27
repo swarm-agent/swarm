@@ -1571,9 +1571,13 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 					_ = db.PutProjectTask(p.AccountScopeID, &tasks[i])
 				}
 			}
+			sanitizedTasks := make([]pebblestore.ProjectTaskRecord, len(tasks))
+			for i := range tasks {
+				sanitizedTasks[i] = *sanitizeProjectTaskForClient(&tasks[i])
+			}
 			writeJSON(w, http.StatusOK, map[string]any{
-				"tasks": tasks,
-				"count": len(tasks),
+				"tasks": sanitizedTasks,
+				"count": len(sanitizedTasks),
 			})
 			return
 		}
@@ -1658,10 +1662,13 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 
 			isDirectVideo := req.Intent == "video" || req.Agent == "video" || reqOp == pebblestore.VideoOperationEdit || reqOp == pebblestore.VideoOperationExtend || (reqOp == pebblestore.VideoOperationCreate && req.Agent == "video")
 			var vModel string
+			var vProvider string
 			var vidClipCount int
 			var normAR string
 			var normRes string
 			var normDur int
+			var sourceVideo *videogen.ManagedVideoSource
+			var sourceImage *videogen.ManagedVideoImage
 
 			// Preflight check for video tasks before Router spend or persistence
 			if isDirectVideo {
@@ -1693,6 +1700,13 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 
+				for _, m := range req.AttachedMedia {
+					if hasConflictingMediaDeclaration(m) {
+						writeError(w, http.StatusBadRequest, errors.New("conflicting attachment declarations between kind, media_type, and filename"))
+						return
+					}
+				}
+
 				if reqOp == "" {
 					if len(req.AttachedMedia) == 1 && isVideoAttachment(req.AttachedMedia[0]) {
 						writeError(w, http.StatusBadRequest, errors.New("video operation must be explicitly specified when source media is provided (edit or extend)"))
@@ -1709,6 +1723,10 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 					if len(req.AttachedMedia) == 1 {
 						if isVideoAttachment(req.AttachedMedia[0]) {
 							writeError(w, http.StatusBadRequest, errors.New("cannot provide source video for create operation; use edit or extend"))
+							return
+						}
+						if !isImageAttachment(req.AttachedMedia[0]) {
+							writeError(w, http.StatusBadRequest, fmt.Errorf("unsupported attachment kind %q for video generation; only images are supported as reference inputs", req.AttachedMedia[0].Kind))
 							return
 						}
 					}
@@ -1731,122 +1749,8 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 
-				vModel = strings.TrimSpace(req.Model)
-				if vModel == "" && s.uiSettings != nil && strings.TrimSpace(p.AccountScopeID) != "" {
-					if uiSet, err := s.uiSettings.GetForAccount(p.AccountScopeID); err == nil {
-						if reqOp == pebblestore.VideoOperationEdit {
-							vModel = strings.TrimSpace(uiSet.Tools.Video.IterationModel)
-						} else {
-							vModel = strings.TrimSpace(uiSet.Tools.Video.DefaultModel)
-						}
-					}
-				}
-				if vModel == "" {
-					if reqOp == pebblestore.VideoOperationEdit {
-						writeError(w, http.StatusBadRequest, errors.New("no default video iteration model configured for account; select a model or configure one in Settings"))
-					} else {
-						writeError(w, http.StatusBadRequest, errors.New("no default video model configured for account; select a model or configure one in Settings"))
-					}
-					return
-				}
-				if !isSupportedVideoModel(s, vModel) {
-					writeError(w, http.StatusBadRequest, fmt.Errorf("unsupported video model %q", vModel))
-					return
-				}
-				if reqOp == pebblestore.VideoOperationEdit && videogen.IsVeoModel(vModel) {
-					writeError(w, http.StatusBadRequest, errors.New("Veo models do not support video editing; use Gemini Omni for video editing or extend for Veo continuation"))
-					return
-				}
-				vOpts := s.getVideoModelOptions(vModel)
-				if vOpts == nil {
-					writeError(w, http.StatusBadRequest, fmt.Errorf("model %q does not support video generation", vModel))
-					return
-				}
-
-				if ar := strings.TrimSpace(req.AspectRatio); ar != "" {
-					if len(vOpts.AspectRatios) > 0 {
-						if !videogen.ContainsStringFold(vOpts.AspectRatios, ar) && !videogen.IsEquivalentAspectRatio(vOpts.AspectRatios, ar) {
-							writeError(w, http.StatusBadRequest, fmt.Errorf("unsupported video aspect ratio %q; supported ratios are %s", ar, strings.Join(vOpts.AspectRatios, ", ")))
-							return
-						}
-					} else {
-						writeError(w, http.StatusBadRequest, errors.New("video aspect ratio metadata unavailable for selected model"))
-						return
-					}
-					normAR = videogen.NormalizeAspectRatio(ar)
-				} else if vOpts.DefaultRatio != "" {
-					normAR = vOpts.DefaultRatio
-				}
-
-				if res := strings.TrimSpace(req.Resolution); res != "" {
-					if len(vOpts.Resolutions) > 0 {
-						if !videogen.ContainsStringFold(vOpts.Resolutions, res) {
-							writeError(w, http.StatusBadRequest, fmt.Errorf("unsupported video resolution %q; supported resolutions are %s", res, strings.Join(vOpts.Resolutions, ", ")))
-							return
-						}
-					} else {
-						writeError(w, http.StatusBadRequest, fmt.Errorf("model %q does not support resolution selection", vModel))
-						return
-					}
-					normRes = videogen.NormalizeResolution(res)
-				} else if vOpts.DefaultRes != "" {
-					normRes = vOpts.DefaultRes
-				}
-
-				if videogen.IsOmniModel(vModel) {
-					if req.DurationSeconds > 0 {
-						writeError(w, http.StatusBadRequest, fmt.Errorf("model %q does not accept duration selection", vModel))
-						return
-					}
-					normDur = 0 // Preserve unknown omission for Omni
-				} else {
-					resLower := strings.ToLower(normRes)
-					if resLower == "" && vOpts.DefaultRes != "" {
-						resLower = strings.ToLower(vOpts.DefaultRes)
-					}
-					allowedDurs := vOpts.Durations
-					if vOpts.ResolutionDurations != nil {
-						if rd, ok := vOpts.ResolutionDurations[resLower]; ok && len(rd) > 0 {
-							allowedDurs = rd
-						}
-					}
-					if dur := req.DurationSeconds; dur > 0 {
-						if len(allowedDurs) > 0 {
-							found := false
-							for _, d := range allowedDurs {
-								if d == dur {
-									found = true
-									break
-								}
-							}
-							if !found {
-								if resLower == "1080p" || resLower == "4k" {
-									writeError(w, http.StatusBadRequest, fmt.Errorf("video resolution %s requires 8s duration", req.Resolution))
-									return
-								}
-								var durStrs []string
-								for _, d := range allowedDurs {
-									durStrs = append(durStrs, fmt.Sprintf("%d", d))
-								}
-								writeError(w, http.StatusBadRequest, fmt.Errorf("unsupported video duration %d seconds; supported durations are %s seconds", dur, strings.Join(durStrs, ", ")))
-								return
-							}
-						} else {
-							writeError(w, http.StatusBadRequest, fmt.Errorf("model %q does not support duration selection", vModel))
-							return
-						}
-						normDur = dur
-					} else if vOpts.DefaultDur > 0 {
-						normDur = vOpts.DefaultDur
-					}
-				}
-
 				if reqOp == pebblestore.VideoOperationCreate {
 					if len(req.AttachedMedia) == 1 {
-						if !vOpts.InitialImageSupported {
-							writeError(w, http.StatusBadRequest, fmt.Errorf("model %q does not support initial image input", vModel))
-							return
-						}
 						att := req.AttachedMedia[0]
 						if att.Kind != "" && !strings.EqualFold(att.Kind, "image") {
 							writeError(w, http.StatusBadRequest, fmt.Errorf("unsupported attachment kind %q for video generation; only images are supported as reference inputs", att.Kind))
@@ -1874,10 +1778,14 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 							writeError(w, http.StatusBadRequest, err)
 							return
 						}
+						sourceImage = &videogen.ManagedVideoImage{
+							Bytes:     imgBytes,
+							MediaType: mType,
+						}
 					}
 				} else {
 					att := req.AttachedMedia[0]
-					srcRec, err := s.resolveSourceMediaRecord(r.Context(), p, att, "video")
+					srcRec, err := s.resolveSourceMediaRecord(r.Context(), p, att, "video", proj.ID)
 					if err != nil {
 						writeError(w, http.StatusBadRequest, fmt.Errorf("invalid video attachment: %w", err))
 						return
@@ -1886,7 +1794,50 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 						writeError(w, http.StatusBadRequest, errors.New("attached video payload is empty"))
 						return
 					}
+					sourceVideo = &videogen.ManagedVideoSource{
+						Bytes:      srcRec.Bytes,
+						MediaType:  srcRec.MediaType,
+						Provenance: srcRec.Provenance,
+						SourceLink: srcRec.SourceLink,
+					}
+					if srcRec.Provenance != nil {
+						sourceVideo.InteractionID = srcRec.Provenance.InteractionID
+						sourceVideo.URI = srcRec.Provenance.ProviderResource
+						sourceVideo.Model = srcRec.Provenance.Model
+					}
 				}
+
+				pfReq := videogen.VideoPreflightRequest{
+					AccountScopeID:  p.AccountScopeID,
+					Operation:       reqOp,
+					ExplicitModel:   strings.TrimSpace(req.Model),
+					AspectRatio:     req.AspectRatio,
+					Resolution:      req.Resolution,
+					DurationSeconds: req.DurationSeconds,
+					Prompt:          prompt,
+					Principal:       p,
+					Source:          sourceVideo,
+					SourceProvenance: func() *pebblestore.VideoProvenance {
+						if sourceVideo != nil {
+							return sourceVideo.Provenance
+						}
+						return nil
+					}(),
+					Image:        sourceImage,
+					IsQueuedTask: false,
+				}
+				pfRes, pfErr := s.preflightVideoOperation(r.Context(), pfReq)
+				if pfErr != nil {
+					writeError(w, http.StatusBadRequest, pfErr)
+					return
+				}
+
+				vModel = pfRes.ResolvedModel
+				vProvider = pfRes.ResolvedProvider
+				reqOp = pfRes.Operation
+				normAR = pfRes.AspectRatio
+				normRes = pfRes.Resolution
+				normDur = pfRes.DurationSeconds
 			}
 
 			isDirectSound := req.Intent == "sound" || req.Intent == "audio"
@@ -2208,6 +2159,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				task.OutcomeType = "video_clip"
 				task.Operation = reqOp
 				task.Model = vModel
+				task.Provider = vProvider
 				task.AspectRatio = normAR
 				task.Resolution = normRes
 				task.DurationSeconds = normDur
@@ -2219,6 +2171,13 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				task.WorktreeBranch = ""
 				task.BaseBranch = ""
 				task.Description = prompt
+				if sourceVideo != nil && sourceVideo.SourceLink != nil {
+					task.SourceDigestSHA256 = sourceVideo.SourceLink.DigestSHA256
+					if len(task.AttachedMedia) > 0 {
+						task.AttachedMedia[0].DigestSHA256 = sourceVideo.SourceLink.DigestSHA256
+						task.AttachedMedia[0].SourceLink = sourceVideo.SourceLink
+					}
+				}
 				if enhancePrompt && strings.TrimSpace(routed.Mission) != "" {
 					task.Description = routed.Mission
 				}
@@ -2308,7 +2267,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			})
 
 			writeJSON(w, http.StatusCreated, map[string]any{
-				"task": task,
+				"task": sanitizeProjectTaskForClient(task),
 			})
 			return
 		}
@@ -2354,7 +2313,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				_ = db.PutProjectTask(p.AccountScopeID, task)
 			}
 			writeJSON(w, http.StatusOK, map[string]any{
-				"task": task,
+				"task": sanitizeProjectTaskForClient(task),
 			})
 			return
 		}
@@ -2515,7 +2474,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			}
 
 			writeJSON(w, http.StatusOK, map[string]any{
-				"task": updated,
+				"task": sanitizeProjectTaskForClient(updated),
 			})
 			return
 		}
@@ -2570,7 +2529,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				writeJSON(w, http.StatusOK, map[string]any{
 					"status":  "already_integrated",
 					"message": fmt.Sprintf("Changes from %s are already integrated into %s", gitState.worktreeBranch, gitState.baseBranch),
-					"task":    task,
+					"task":    sanitizeProjectTaskForClient(task),
 				})
 				return
 			}
@@ -2680,7 +2639,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status": "integrated",
-			"task":   updated,
+			"task":   sanitizeProjectTaskForClient(updated),
 			"integration": map[string]any{
 				"target_branch":         parentState.BranchName,
 				"previous_target_head":  parentState.HeadCommit,
@@ -2778,7 +2737,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status": "approved",
-			"task":   updated,
+			"task":   sanitizeProjectTaskForClient(updated),
 		})
 		return
 	}
@@ -2870,7 +2829,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status": "reopened",
-			"task":   updated,
+			"task":   sanitizeProjectTaskForClient(updated),
 		})
 		return
 	}
@@ -2897,7 +2856,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status": "completed",
-			"task":   updated,
+			"task":   sanitizeProjectTaskForClient(updated),
 		})
 		return
 	}
@@ -3016,7 +2975,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status": "refined",
-			"task":   updated,
+			"task":   sanitizeProjectTaskForClient(updated),
 		})
 		return
 	}
@@ -3051,7 +3010,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status": "deployed",
-			"task":   task,
+			"task":   sanitizeProjectTaskForClient(task),
 		})
 		return
 	}
@@ -3087,7 +3046,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		hydrateTaskProgramStatus(updated, db)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status": "redeploying",
-			"task":   updated,
+			"task":   sanitizeProjectTaskForClient(updated),
 		})
 		return
 	}
@@ -3131,4 +3090,25 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeError(w, http.StatusNotFound, errors.New("not found"))
+}
+
+func sanitizeProjectTaskForClient(t *pebblestore.ProjectTaskRecord) *pebblestore.ProjectTaskRecord {
+	if t == nil {
+		return nil
+	}
+	cp := *t
+	if cp.VideoProvenance != nil {
+		cp.VideoProvenance = cp.VideoProvenance.ClientSafeCopy()
+	}
+	if len(cp.Deliverables) > 0 {
+		dels := make([]pebblestore.ProjectTaskDeliverable, len(cp.Deliverables))
+		for i, d := range cp.Deliverables {
+			dels[i] = d
+			if dels[i].VideoProvenance != nil {
+				dels[i].VideoProvenance = dels[i].VideoProvenance.ClientSafeCopy()
+			}
+		}
+		cp.Deliverables = dels
+	}
+	return &cp
 }

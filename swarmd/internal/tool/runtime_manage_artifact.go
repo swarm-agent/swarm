@@ -2522,9 +2522,6 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 					source.InteractionID = srcProv.InteractionID
 					source.URI = srcProv.ProviderResource
 					source.Model = srcProv.Model
-					if srcProv.SourceLink != nil {
-						source.SourceLink = srcProv.SourceLink.Clone()
-					}
 				}
 			}
 		} else {
@@ -2589,10 +2586,10 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 			currentVariantID = fmt.Sprintf("%s-%d", variantID, i+1)
 		}
 		op := pebblestore.VideoOperationCreate
-		if opArg := strings.ToLower(strings.TrimSpace(asString(args["operation"]))); opArg != "" {
-			op = opArg
-		} else if source != nil {
+		if source != nil {
 			op = pebblestore.VideoOperationEdit
+		} else if opArg := strings.ToLower(strings.TrimSpace(asString(args["operation"]))); opArg != "" {
+			op = opArg
 		}
 		generated, err := r.videoGeneration.GenerateManagedVideo(identity.ContextWithPrincipal(ctx, scope.Principal), videogen.ManagedVideoRequest{
 			Operation:       op,
@@ -2754,13 +2751,30 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 			}
 		}
 
+		if generated.Provenance != nil && r.sessions != nil && r.sessions.Store() != nil {
+			stagingVariant := pebblestore.SessionArtifactVariant{
+				AccountScopeID: principal.AccountScopeID,
+				SessionID:      principal.SessionID,
+				CollectionID:   collectionID,
+				ID:             currentVariantID,
+				Status:         pebblestore.SessionArtifactStatusStaging,
+				Lineage: pebblestore.SessionArtifactLineage{
+					ParentSessionID: principal.SessionID,
+					VideoProvenance: generated.Provenance,
+				},
+			}
+			if sourceRef != nil {
+				stagingVariant.Lineage.SourceSessionID = sourceRef.SessionID
+				stagingVariant.Lineage.SourceCollectionID = sourceRef.CollectionID
+				stagingVariant.Lineage.SourceVariantID = sourceRef.VariantID
+				stagingVariant.Lineage.SourceEventSeq = sourceRef.EventSeq
+			}
+			_ = r.sessions.Store().PutArtifactVariant(stagingVariant)
+		}
+
 		published, err := r.artifactAuthority.Create(ctx, principal, create)
 		if err != nil {
 			return managedVideoArtifactResult{}, fmt.Errorf("publish video artifact: %w", err)
-		}
-		if generated.Provenance != nil && r.sessions != nil && r.sessions.Store() != nil {
-			published.Lineage.VideoProvenance = generated.Provenance
-			_ = r.sessions.Store().PutArtifactVariant(published)
 		}
 		lastVariant = published
 		allVariants = append(allVariants, managedArtifactVariant(published))

@@ -22,15 +22,17 @@ type ProjectWorkspaceRef struct {
 
 // ProjectTaskMediaRef represents an attached or tagged media reference for a task.
 type ProjectTaskMediaRef struct {
-	ID        string `json:"id"`
-	Title     string `json:"title,omitempty"`
-	URL       string `json:"url,omitempty"`
-	MediaType string `json:"media_type,omitempty"` // e.g. "image/png", "video/mp4", "text/plain"
-	Kind      string `json:"kind,omitempty"`       // "image" | "video" | "audio" | "doc"
-	Filename  string `json:"filename,omitempty"`
-	Data      string `json:"data,omitempty"` // Optional inline text content (e.g. for pasted doc)
-	SizeBytes int64  `json:"size_bytes,omitempty"`
-	CreatedAt int64  `json:"created_at,omitempty"`
+	ID           string           `json:"id"`
+	Title        string           `json:"title,omitempty"`
+	URL          string           `json:"url,omitempty"`
+	MediaType    string           `json:"media_type,omitempty"` // e.g. "image/png", "video/mp4", "text/plain"
+	Kind         string           `json:"kind,omitempty"`       // "image" | "video" | "audio" | "doc"
+	Filename     string           `json:"filename,omitempty"`
+	Data         string           `json:"data,omitempty"` // Optional inline text content (e.g. for pasted doc)
+	SizeBytes    int64            `json:"size_bytes,omitempty"`
+	DigestSHA256 string           `json:"digest_sha256,omitempty"`
+	SourceLink   *VideoSourceLink `json:"source_link,omitempty"`
+	CreatedAt    int64            `json:"created_at,omitempty"`
 }
 
 // ProjectRecord represents a top-level Project aggregating workspaces, context, and tasks.
@@ -266,9 +268,11 @@ type ProjectTaskRecord struct {
 	VariantCount        int                      `json:"variant_count,omitempty"`
 	DurationSeconds     int                      `json:"duration_seconds,omitempty"`
 	Model               string                   `json:"model,omitempty"`
+	Provider            string                   `json:"provider,omitempty"`
 	Scenes              []ProjectTaskScene       `json:"scenes,omitempty"`
 	Soundtrack          string                   `json:"soundtrack,omitempty"`
 	Operation           string                   `json:"operation,omitempty"` // "create" | "edit" | "extend"
+	SourceDigestSHA256  string                   `json:"source_digest_sha256,omitempty"`
 	VideoProvenance     *VideoProvenance         `json:"video_provenance,omitempty"`
 	AutoApprove         bool                     `json:"auto_approve,omitempty"`
 	RouterAlert         string                   `json:"router_alert,omitempty"`
@@ -321,6 +325,20 @@ func (t *ProjectTaskRecord) Validate() error {
 		}
 	}
 	return nil
+}
+
+// ClientSafeCopy returns a copy of VideoProvenance with internal provider handles
+// and credential identifiers redacted for client-facing serialization.
+func (p *VideoProvenance) ClientSafeCopy() *VideoProvenance {
+	if p == nil {
+		return nil
+	}
+	cp := p.Clone()
+	cp.CredentialID = ""
+	cp.CredentialVersion = ""
+	cp.InteractionID = ""
+	cp.ProviderResource = ""
+	return cp
 }
 
 // PutProjectTask stores or updates a task for a project.

@@ -3,6 +3,8 @@ package tool
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -535,8 +537,10 @@ func (r *Runtime) chainVideo(
 	var videoPaths []string
 	var sourceRefs []pebblestore.SessionArtifactSelectionReference
 	type chainPartInfo struct {
+		index      int
 		ref        *pebblestore.SessionArtifactSelectionReference
 		provenance *pebblestore.VideoProvenance
+		digest     string
 	}
 	var parts []chainPartInfo
 	for i, raw := range rawVideos {
@@ -550,31 +554,9 @@ func (r *Runtime) chainVideo(
 				prov = v.Lineage.VideoProvenance
 			}
 		}
-		partInfo := chainPartInfo{ref: ref, provenance: prov}
+		h := sha256.Sum256(data)
+		digest := hex.EncodeToString(h[:])
 
-		// Reject duplicate prefixes: if this part is a combined extension that already includes
-		// an earlier part in the same chain, or vice versa, reject.
-		if prov != nil && prov.IsCombinedOutput && prov.SourceLink != nil {
-			for j, earlier := range parts {
-				if (earlier.ref != nil && earlier.ref.SessionID == prov.SourceLink.SessionID && earlier.ref.VariantID == prov.SourceLink.VariantID) ||
-					(earlier.provenance != nil && earlier.provenance.OutputDigestSHA256 != "" && strings.EqualFold(earlier.provenance.OutputDigestSHA256, prov.SourceLink.DigestSHA256)) {
-					return pebblestore.SessionArtifactVariant{}, nil, fmt.Errorf("video part %d is a combined extension that already includes part %d; cannot duplicate prefix in video chain", i+1, j+1)
-				}
-			}
-		}
-		for j, earlier := range parts {
-			if earlier.provenance != nil && earlier.provenance.IsCombinedOutput && earlier.provenance.SourceLink != nil {
-				if (ref != nil && ref.SessionID == earlier.provenance.SourceLink.SessionID && ref.VariantID == earlier.provenance.SourceLink.VariantID) ||
-					(prov != nil && prov.OutputDigestSHA256 != "" && strings.EqualFold(prov.OutputDigestSHA256, earlier.provenance.SourceLink.DigestSHA256)) {
-					return pebblestore.SessionArtifactVariant{}, nil, fmt.Errorf("video part %d is already included in combined extension part %d; cannot duplicate prefix in video chain", i+1, j+1)
-				}
-			}
-			if ref != nil && earlier.ref != nil && ref.SessionID == earlier.ref.SessionID && ref.VariantID == earlier.ref.VariantID && ref.EventSeq == earlier.ref.EventSeq {
-				return pebblestore.SessionArtifactVariant{}, nil, fmt.Errorf("video part %d duplicates part %d; cannot include duplicate video clips in video chain", i+1, j+1)
-			}
-		}
-
-		parts = append(parts, partInfo)
 		partPath := filepath.Join(tempDir, fmt.Sprintf("part_%02d.mp4", i+1))
 		if err := os.WriteFile(partPath, data, 0600); err != nil {
 			return pebblestore.SessionArtifactVariant{}, nil, fmt.Errorf("write video part %d: %w", i+1, err)
@@ -582,6 +564,55 @@ func (r *Runtime) chainVideo(
 		videoPaths = append(videoPaths, partPath)
 		if ref != nil {
 			sourceRefs = append(sourceRefs, *ref)
+		}
+		parts = append(parts, chainPartInfo{
+			index:      i,
+			ref:        ref,
+			provenance: prov,
+			digest:     digest,
+		})
+	}
+
+	// 1. Duplicate check across all pairs (i < j)
+	for i := 0; i < len(parts); i++ {
+		for j := i + 1; j < len(parts); j++ {
+			p1, p2 := parts[i], parts[j]
+			if p1.ref != nil && p2.ref != nil &&
+				p1.ref.SessionID == p2.ref.SessionID &&
+				p1.ref.CollectionID == p2.ref.CollectionID &&
+				p1.ref.VariantID == p2.ref.VariantID &&
+				p1.ref.EventSeq == p2.ref.EventSeq {
+				return pebblestore.SessionArtifactVariant{}, nil, fmt.Errorf("video part %d duplicates part %d; cannot include duplicate video clips in video chain", j+1, i+1)
+			}
+			if p1.digest != "" && p2.digest != "" && strings.EqualFold(p1.digest, p2.digest) {
+				return pebblestore.SessionArtifactVariant{}, nil, fmt.Errorf("video part %d duplicates part %d; cannot include duplicate video clips in video chain", j+1, i+1)
+			}
+		}
+	}
+
+	// 2. Combined extension prefix check across all pairs (i != j)
+	// If part i is a combined extension that already includes part j (or vice versa), reject.
+	// Matches exact ref (SessionID, CollectionID, VariantID, EventSeq) or exact digest.
+	for i := 0; i < len(parts); i++ {
+		p1 := parts[i]
+		if p1.provenance != nil && p1.provenance.IsCombinedOutput && p1.provenance.SourceLink != nil {
+			sl := p1.provenance.SourceLink
+			for j := 0; j < len(parts); j++ {
+				if i == j {
+					continue
+				}
+				p2 := parts[j]
+				refMatch := p2.ref != nil && sl.SessionID != "" && sl.VariantID != "" &&
+					p2.ref.SessionID == sl.SessionID &&
+					p2.ref.VariantID == sl.VariantID &&
+					(sl.CollectionID == "" || p2.ref.CollectionID == sl.CollectionID) &&
+					(sl.EventSeq == 0 || p2.ref.EventSeq == sl.EventSeq)
+				digestMatch := sl.DigestSHA256 != "" && (strings.EqualFold(p2.digest, sl.DigestSHA256) ||
+					(p2.provenance != nil && p2.provenance.OutputDigestSHA256 != "" && strings.EqualFold(p2.provenance.OutputDigestSHA256, sl.DigestSHA256)))
+				if refMatch || digestMatch {
+					return pebblestore.SessionArtifactVariant{}, nil, fmt.Errorf("video part %d is a combined extension that already includes part %d; cannot duplicate prefix in video chain", i+1, j+1)
+				}
+			}
 		}
 	}
 

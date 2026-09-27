@@ -3,7 +3,9 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"image"
@@ -11,6 +13,7 @@ import (
 	_ "image/jpeg"
 	_ "image/png"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -552,11 +555,232 @@ func updateProjectTaskWithRetry(db *pebblestore.SessionStore, accountScopeID, pr
 // safely resolving data URIs, raw base64, staged uploads, and canonical session artifacts.
 // Arbitrary external URLs and filesystem paths are explicitly rejected.
 func (s *Server) resolveSourceMediaBytes(ctx context.Context, p identity.Principal, m pebblestore.ProjectTaskMediaRef, expectedKind string) ([]byte, string, error) {
-	rec, err := s.resolveSourceMediaRecord(ctx, p, m, expectedKind)
-	if err != nil {
-		return nil, "", err
+	trimmedURL := strings.TrimSpace(m.URL)
+	urlLower := strings.ToLower(trimmedURL)
+
+	// Disallow arbitrary external URLs
+	if strings.HasPrefix(urlLower, "http://") || strings.HasPrefix(urlLower, "https://") {
+		return nil, "", errors.New("fetching arbitrary external URLs is not permitted")
 	}
-	return rec.Bytes, rec.MediaType, nil
+
+	// Disallow direct filesystem paths
+	isRecognizedRoute := strings.HasPrefix(trimmedURL, "/v3/sessions/") ||
+		strings.HasPrefix(trimmedURL, "/v3/projects/") ||
+		strings.HasPrefix(trimmedURL, "/v3/media-staging/") ||
+		strings.HasPrefix(trimmedURL, "/media/staging/")
+	if (strings.HasPrefix(trimmedURL, "/") && !isRecognizedRoute) ||
+		strings.HasPrefix(trimmedURL, "./") ||
+		strings.HasPrefix(trimmedURL, "../") ||
+		strings.Contains(trimmedURL, "\\") {
+		return nil, "", errors.New("direct filesystem paths are not permitted")
+	}
+
+	// 1. Data URI in URL or Data
+	dataURL := ""
+	if strings.HasPrefix(trimmedURL, "data:") {
+		dataURL = trimmedURL
+	} else if strings.HasPrefix(m.Data, "data:") {
+		dataURL = m.Data
+	}
+	if dataURL != "" {
+		parts := strings.SplitN(dataURL, ",", 2)
+		if len(parts) == 2 {
+			header := parts[0]
+			mediaType := m.MediaType
+			if strings.Contains(header, ";base64") {
+				if sub := strings.TrimPrefix(header, "data:"); strings.Contains(sub, ";") {
+					mediaType = strings.Split(sub, ";")[0]
+				}
+				decoded, err := base64.StdEncoding.DecodeString(parts[1])
+				if err != nil {
+					return nil, "", fmt.Errorf("decode data url: %w", err)
+				}
+				if len(decoded) == 0 {
+					return nil, "", errors.New("data url payload is empty")
+				}
+				if mediaType == "" {
+					if expectedKind == "video" {
+						mediaType = "video/mp4"
+					} else {
+						mediaType = "image/png"
+					}
+				}
+				if err := validateSourceKindMIME(expectedKind, mediaType, decoded); err != nil {
+					return nil, "", err
+				}
+				return decoded, mediaType, nil
+			}
+		}
+		return nil, "", errors.New("invalid data url format")
+	}
+
+	// 2. Raw base64 in m.Data
+	if len(m.Data) > 0 {
+		decoded, err := base64.StdEncoding.DecodeString(m.Data)
+		if err != nil {
+			return nil, "", fmt.Errorf("decode base64 data: %w", err)
+		}
+		if len(decoded) == 0 {
+			return nil, "", errors.New("base64 payload is empty")
+		}
+		mediaType := m.MediaType
+		if mediaType == "" {
+			if expectedKind == "video" {
+				mediaType = "video/mp4"
+			} else {
+				mediaType = "image/png"
+			}
+		}
+		if err := validateSourceKindMIME(expectedKind, mediaType, decoded); err != nil {
+			return nil, "", err
+		}
+		return decoded, mediaType, nil
+	}
+
+	// 3. Staged upload lookup
+	stagingID := ""
+	if strings.HasPrefix(m.ID, "stg_") {
+		stagingID = m.ID
+	} else if idx := strings.Index(trimmedURL, "/media/staging/stg_"); idx >= 0 {
+		sub := trimmedURL[idx+len("/media/staging/"):]
+		if end := strings.IndexAny(sub, "/?#"); end >= 0 {
+			stagingID = sub[:end]
+		} else {
+			stagingID = sub
+		}
+	} else if idx := strings.Index(trimmedURL, "/v3/media-staging/stg_"); idx >= 0 {
+		sub := trimmedURL[idx+len("/v3/media-staging/"):]
+		if end := strings.IndexAny(sub, "/?#"); end >= 0 {
+			stagingID = sub[:end]
+		} else {
+			stagingID = sub
+		}
+	}
+	if stagingID != "" {
+		if s == nil || s.mediaStaging == nil {
+			return nil, "", errors.New("media staging service is not configured")
+		}
+		_, payload, readErr := s.mediaStaging.Read(p.AccountScopeID, stagingID, time.Now().UnixMilli())
+		if readErr != nil {
+			return nil, "", fmt.Errorf("staged upload %q not found or expired: %w", stagingID, readErr)
+		}
+		if len(payload) == 0 {
+			return nil, "", fmt.Errorf("staged upload %q is empty", stagingID)
+		}
+		mediaType := m.MediaType
+		detected := http.DetectContentType(payload)
+		if detected != "" && !strings.Contains(detected, "octet-stream") {
+			mediaType = detected
+		}
+		if mediaType == "" {
+			if expectedKind == "video" {
+				mediaType = "video/mp4"
+			} else {
+				mediaType = "image/png"
+			}
+		}
+		if err := validateSourceKindMIME(expectedKind, mediaType, payload); err != nil {
+			return nil, "", err
+		}
+		return payload, mediaType, nil
+	}
+
+	// 4. Canonical session artifact
+	if strings.Contains(trimmedURL, "/artifacts/") || (strings.HasPrefix(trimmedURL, "/v3/sessions/") && strings.Contains(trimmedURL, "/artifacts")) {
+		u, parseErr := url.Parse(trimmedURL)
+		if parseErr != nil {
+			return nil, "", fmt.Errorf("invalid artifact url: %w", parseErr)
+		}
+		parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+		if len(parts) != 5 || parts[0] != "v3" || parts[1] != "sessions" || parts[3] != "artifacts" {
+			return nil, "", errors.New("invalid artifact URL path; must be /v3/sessions/{sessionID}/artifacts/{variantID}")
+		}
+		sessionID := strings.TrimSpace(parts[2])
+		variantID := strings.TrimSpace(parts[4])
+
+		q := u.Query()
+		requestedRev := q.Get("revision")
+		if requestedRev == "" {
+			requestedRev = q.Get("event_seq")
+		}
+		if requestedRev == "" {
+			requestedRev = q.Get("rev")
+		}
+		if requestedRev == "" {
+			requestedRev = q.Get("eventseq")
+		}
+		if requestedRev == "" {
+			return nil, "", errors.New("artifact source requires exact pinned revision (e.g. ?revision=N or ?event_seq=N)")
+		}
+
+		if s == nil || s.sessions == nil || s.sessions.Store() == nil {
+			return nil, "", errors.New("session store is not configured")
+		}
+		variant, ok, err := s.sessions.Store().GetSessionArtifactVariantByID(p.AccountScopeID, sessionID, variantID)
+		if err != nil {
+			return nil, "", fmt.Errorf("read artifact variant: %w", err)
+		}
+		if !ok {
+			return nil, "", fmt.Errorf("session artifact variant %q not found in account scope", variantID)
+		}
+		curRevStr := fmt.Sprintf("%d", variant.EventSeq)
+		if requestedRev != curRevStr {
+			return nil, "", fmt.Errorf("stale artifact revision %q requested (current revision is %s)", requestedRev, curRevStr)
+		}
+
+		if s.artifacts == nil {
+			return nil, "", errors.New("artifact authority is not configured")
+		}
+		authority := artifact.NewAuthority(s.artifacts, s.sessions)
+		maxBytes := int64(64 << 20)
+		if expectedKind == "video" {
+			maxBytes = 512 << 20
+		}
+		body, _, readErr := authority.ReadReference(ctx, artifact.Principal{
+			SessionID:      sessionID,
+			AccountScopeID: p.AccountScopeID,
+			UserID:         p.UserID,
+		}, pebblestore.SessionArtifactSelectionReference{
+			SessionID:    variant.SessionID,
+			CollectionID: variant.CollectionID,
+			VariantID:    variant.ID,
+			EventSeq:     variant.EventSeq,
+		}, maxBytes)
+		if readErr != nil {
+			return nil, "", fmt.Errorf("read artifact reference: %w", readErr)
+		}
+		if len(body) == 0 {
+			return nil, "", errors.New("artifact reference payload is empty")
+		}
+		mediaType := variant.MediaType
+		if mediaType == "" {
+			if expectedKind == "video" {
+				mediaType = "video/mp4"
+			} else {
+				mediaType = "image/png"
+			}
+		}
+		if err := validateSourceKindMIME(expectedKind, mediaType, body); err != nil {
+			return nil, "", err
+		}
+		return body, mediaType, nil
+	}
+
+	return nil, "", errors.New("no source media bytes available")
+}
+
+func validateSourceKindMIME(expectedKind, mediaType string, bytes []byte) error {
+	detected := http.DetectContentType(bytes)
+	if expectedKind == "image" {
+		if strings.HasPrefix(strings.ToLower(mediaType), "video/") || (detected != "" && strings.HasPrefix(detected, "video/")) {
+			return fmt.Errorf("source media MIME mismatch: expected image, got %s", mediaType)
+		}
+	} else if expectedKind == "video" {
+		if strings.HasPrefix(strings.ToLower(mediaType), "image/") || (detected != "" && strings.HasPrefix(detected, "image/")) {
+			return fmt.Errorf("source media MIME mismatch: expected video, got %s", mediaType)
+		}
+	}
+	return nil
 }
 
 // executeDirectMediaTask handles asynchronous generation of image variants or video stories.
@@ -864,11 +1088,13 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 					if sourceMediaTitle == "" {
 						sourceMediaTitle = m.Filename
 					}
-					srcRec, err := s.resolveSourceMediaRecord(ctx, p, m, "video")
+					srcRec, err := s.resolveSourceMediaRecord(ctx, p, m, "video", task.ProjectID)
 					if err != nil {
 						sourceErr = fmt.Errorf("resolve video source: %w", err)
 					} else if len(srcRec.Bytes) == 0 && srcRec.Provenance == nil {
 						sourceErr = errors.New("attached video payload is empty")
+					} else if task.SourceDigestSHA256 != "" && srcRec.SourceLink != nil && srcRec.SourceLink.DigestSHA256 != "" && !strings.EqualFold(task.SourceDigestSHA256, srcRec.SourceLink.DigestSHA256) {
+						sourceErr = fmt.Errorf("source media digest changed since submission (expected %s, got %s)", task.SourceDigestSHA256, srcRec.SourceLink.DigestSHA256)
 					} else {
 						sourceVideo = &videogen.ManagedVideoSource{
 							Bytes:      srcRec.Bytes,

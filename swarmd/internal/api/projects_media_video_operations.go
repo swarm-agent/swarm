@@ -3,15 +3,12 @@ package api
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"net/http"
+	"net/url"
 	"strings"
-	"time"
 
-	"swarm/packages/swarmd/internal/artifact"
 	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/videogen"
@@ -30,211 +27,274 @@ type resolvedSourceMedia struct {
 
 func isVideoAttachment(m pebblestore.ProjectTaskMediaRef) bool {
 	kind := strings.ToLower(strings.TrimSpace(m.Kind))
-	if kind == "video" {
-		return true
-	}
 	mt := strings.ToLower(strings.TrimSpace(m.MediaType))
-	if strings.HasPrefix(mt, "video/") {
-		return true
-	}
 	fn := strings.ToLower(strings.TrimSpace(m.Filename))
-	if strings.HasSuffix(fn, ".mp4") {
-		return true
+
+	isImg := kind == "image" || strings.HasPrefix(mt, "image/") || strings.HasSuffix(fn, ".png") || strings.HasSuffix(fn, ".jpg") || strings.HasSuffix(fn, ".jpeg") || strings.HasSuffix(fn, ".webp")
+	isVid := kind == "video" || strings.HasPrefix(mt, "video/") || strings.HasSuffix(fn, ".mp4")
+	if isImg && isVid {
+		return false
 	}
-	return false
+	return isVid
 }
 
 func isImageAttachment(m pebblestore.ProjectTaskMediaRef) bool {
 	kind := strings.ToLower(strings.TrimSpace(m.Kind))
-	if kind == "image" {
-		return true
-	}
 	mt := strings.ToLower(strings.TrimSpace(m.MediaType))
-	if strings.HasPrefix(mt, "image/") {
-		return true
-	}
 	fn := strings.ToLower(strings.TrimSpace(m.Filename))
-	if strings.HasSuffix(fn, ".png") || strings.HasSuffix(fn, ".jpg") || strings.HasSuffix(fn, ".jpeg") || strings.HasSuffix(fn, ".webp") {
-		return true
+
+	isImg := kind == "image" || strings.HasPrefix(mt, "image/") || strings.HasSuffix(fn, ".png") || strings.HasSuffix(fn, ".jpg") || strings.HasSuffix(fn, ".jpeg") || strings.HasSuffix(fn, ".webp")
+	isVid := kind == "video" || strings.HasPrefix(mt, "video/") || strings.HasSuffix(fn, ".mp4")
+	if isImg && isVid {
+		return false
 	}
-	return false
+	return isImg
+}
+
+func hasConflictingMediaDeclaration(m pebblestore.ProjectTaskMediaRef) bool {
+	kind := strings.ToLower(strings.TrimSpace(m.Kind))
+	mt := strings.ToLower(strings.TrimSpace(m.MediaType))
+	fn := strings.ToLower(strings.TrimSpace(m.Filename))
+
+	isImg := kind == "image" || strings.HasPrefix(mt, "image/") || strings.HasSuffix(fn, ".png") || strings.HasSuffix(fn, ".jpg") || strings.HasSuffix(fn, ".jpeg") || strings.HasSuffix(fn, ".webp")
+	isVid := kind == "video" || strings.HasPrefix(mt, "video/") || strings.HasSuffix(fn, ".mp4")
+	return isImg && isVid
 }
 
 // resolveSourceMediaRecord resolves full media payload, media type, and server-verified
 // provenance and source link for an attached media reference.
 // Client-supplied provider handles, interaction IDs, and timestamps are NEVER trusted;
 // provenance is authoritatively loaded from the server's own Pebble stores.
-func (s *Server) resolveSourceMediaRecord(ctx context.Context, p identity.Principal, m pebblestore.ProjectTaskMediaRef, expectedKind string) (*resolvedSourceMedia, error) {
-	// Case 1: Canonical session artifact URL (/v3/sessions/{sessionID}/artifacts/{variantID})
-	if strings.Contains(m.URL, "/v3/sessions/") && strings.Contains(m.URL, "/artifacts/") {
-		parts := strings.Split(m.URL, "/v3/sessions/")
-		if len(parts) > 1 {
-			subParts := strings.Split(parts[1], "/artifacts/")
-			if len(subParts) == 2 {
-				sessionID := strings.TrimSpace(subParts[0])
-				remainder := strings.TrimSpace(subParts[1])
-				variantID := remainder
-				requestedRev := ""
-				if q := strings.Index(remainder, "?"); q >= 0 {
-					queryStr := remainder[q+1:]
-					variantID = remainder[:q]
-					for _, param := range strings.Split(queryStr, "&") {
-						kv := strings.SplitN(param, "=", 2)
-						if len(kv) == 2 {
-							key := strings.ToLower(strings.TrimSpace(kv[0]))
-							if key == "event_seq" || key == "eventseq" || key == "rev" || key == "revision" {
-								requestedRev = strings.TrimSpace(kv[1])
-							}
-						}
-					}
+func (s *Server) resolveSourceMediaRecord(ctx context.Context, p identity.Principal, m pebblestore.ProjectTaskMediaRef, expectedKind string, projectID ...string) (*resolvedSourceMedia, error) {
+	if hasConflictingMediaDeclaration(m) {
+		return nil, errors.New("conflicting attachment declarations between kind, media_type, and filename")
+	}
+
+	trimmedURL := strings.TrimSpace(m.URL)
+
+	// Case 1: Session artifact URL (/v3/sessions/{sessionID}/artifacts/{variantID})
+	if strings.Contains(trimmedURL, "/artifacts/") || (strings.HasPrefix(trimmedURL, "/v3/sessions/") && strings.Contains(trimmedURL, "/artifacts")) {
+		u, parseErr := url.Parse(trimmedURL)
+		if parseErr != nil {
+			return nil, fmt.Errorf("invalid artifact url: %w", parseErr)
+		}
+		parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+		if len(parts) != 5 || parts[0] != "v3" || parts[1] != "sessions" || parts[3] != "artifacts" {
+			return nil, errors.New("invalid artifact URL path; must be /v3/sessions/{sessionID}/artifacts/{variantID}")
+		}
+		sessionID := strings.TrimSpace(parts[2])
+		variantID := strings.TrimSpace(parts[4])
+		if sessionID == "" || variantID == "" {
+			return nil, errors.New("invalid artifact URL; session_id and variant_id are required")
+		}
+
+		q := u.Query()
+		requestedRev := q.Get("revision")
+		if requestedRev == "" {
+			requestedRev = q.Get("event_seq")
+		}
+		if requestedRev == "" {
+			requestedRev = q.Get("rev")
+		}
+		if requestedRev == "" {
+			requestedRev = q.Get("eventseq")
+		}
+		if requestedRev == "" {
+			return nil, errors.New("artifact source requires exact pinned revision (e.g. ?revision=N or ?event_seq=N)")
+		}
+
+		if s == nil || s.sessions == nil || s.sessions.Store() == nil {
+			return nil, errors.New("session store is not configured")
+		}
+		variant, ok, err := s.sessions.Store().GetSessionArtifactVariantByID(p.AccountScopeID, sessionID, variantID)
+		if err != nil {
+			return nil, fmt.Errorf("read artifact variant: %w", err)
+		}
+		if !ok {
+			return nil, fmt.Errorf("session artifact variant %q not found in account scope", variantID)
+		}
+		curRevStr := fmt.Sprintf("%d", variant.EventSeq)
+		if requestedRev != curRevStr {
+			return nil, fmt.Errorf("stale artifact revision %q requested (current revision is %s)", requestedRev, curRevStr)
+		}
+
+		bytes, mType, readErr := s.resolveSourceMediaBytes(ctx, p, m, expectedKind)
+		if readErr != nil {
+			if variant.Lineage.VideoProvenance != nil && (variant.Lineage.VideoProvenance.InteractionID != "" || variant.Lineage.VideoProvenance.ProviderResource != "") {
+				bytes = nil
+				mType = variant.MediaType
+				if mType == "" {
+					mType = "video/mp4"
 				}
-				if slash := strings.Index(variantID, "/"); slash >= 0 {
-					variantID = variantID[:slash]
-				}
-				if sessionID != "" && variantID != "" && s != nil && s.sessions != nil && s.sessions.Store() != nil {
-					variant, ok, err := s.sessions.Store().GetSessionArtifactVariantByID(p.AccountScopeID, sessionID, variantID)
-					if err != nil {
-						return nil, fmt.Errorf("read artifact variant: %w", err)
-					}
-					if !ok {
-						return nil, fmt.Errorf("session artifact variant %q not found in account scope", variantID)
-					}
-					if requestedRev != "" {
-						curRevStr := fmt.Sprintf("%d", variant.EventSeq)
-						if requestedRev != curRevStr {
-							return nil, fmt.Errorf("stale artifact revision %q requested (current revision is %s)", requestedRev, curRevStr)
-						}
-					}
-					if s.artifacts != nil {
-						authority := artifact.NewAuthority(s.artifacts, s.sessions)
-						maxBytes := int64(64 << 20)
-						if expectedKind == "video" {
-							maxBytes = 512 << 20
-						}
-						body, _, readErr := authority.ReadReference(ctx, artifact.Principal{
-							SessionID:      sessionID,
-							AccountScopeID: p.AccountScopeID,
-							UserID:         p.UserID,
-						}, pebblestore.SessionArtifactSelectionReference{
-							SessionID:    variant.SessionID,
-							CollectionID: variant.CollectionID,
-							VariantID:    variant.ID,
-							EventSeq:     variant.EventSeq,
-						}, maxBytes)
-						if readErr != nil {
-							return nil, fmt.Errorf("read artifact reference: %w", readErr)
-						}
-						if len(body) == 0 {
-							return nil, errors.New("artifact reference payload is empty")
-						}
-						mediaType := variant.MediaType
-						if mediaType == "" {
-							if expectedKind == "video" {
-								mediaType = "video/mp4"
-							} else {
-								mediaType = "image/png"
-							}
-						}
-						h := sha256.Sum256(body)
-						digest := hex.EncodeToString(h[:])
-						if variant.DigestSHA256 != "" && !strings.EqualFold(variant.DigestSHA256, digest) {
-							return nil, errors.New("artifact body digest mismatch")
-						}
-						srcLink := &pebblestore.VideoSourceLink{
-							SessionID:    variant.SessionID,
-							CollectionID: variant.CollectionID,
-							VariantID:    variant.ID,
-							EventSeq:     variant.EventSeq,
-							DigestSHA256: digest,
-							MediaRefID:   m.ID,
-						}
-						var prov *pebblestore.VideoProvenance
-						if variant.Lineage.VideoProvenance != nil {
-							if variant.Lineage.VideoProvenance.AccountScopeID != "" && p.AccountScopeID != "" && variant.Lineage.VideoProvenance.AccountScopeID != p.AccountScopeID {
-								return nil, errors.New("video source belongs to a different account scope")
-							}
-							prov = variant.Lineage.VideoProvenance.Clone()
-							prov.SourceLink = srcLink
-							if prov.OutputDigestSHA256 == "" {
-								prov.OutputDigestSHA256 = digest
-							}
-						}
-						return &resolvedSourceMedia{
-							Bytes:      body,
-							MediaType:  mediaType,
-							Provenance: prov,
-							SourceLink: srcLink,
-						}, nil
-					}
-				}
+			} else {
+				return nil, fmt.Errorf("read artifact reference: %w", readErr)
 			}
 		}
+
+		digest := variant.DigestSHA256
+		if len(bytes) > 0 {
+			h := sha256.Sum256(bytes)
+			calcDigest := hex.EncodeToString(h[:])
+			if digest != "" && !strings.EqualFold(digest, calcDigest) {
+				return nil, errors.New("artifact body digest mismatch")
+			}
+			digest = calcDigest
+		}
+
+		srcLink := &pebblestore.VideoSourceLink{
+			SessionID:    variant.SessionID,
+			CollectionID: variant.CollectionID,
+			VariantID:    variant.ID,
+			EventSeq:     variant.EventSeq,
+			DigestSHA256: digest,
+			MediaRefID:   m.ID,
+		}
+
+		var prov *pebblestore.VideoProvenance
+		if variant.Lineage.VideoProvenance != nil {
+			if variant.Lineage.VideoProvenance.AccountScopeID != "" && p.AccountScopeID != "" && variant.Lineage.VideoProvenance.AccountScopeID != p.AccountScopeID {
+				return nil, errors.New("video source belongs to a different account scope")
+			}
+			prov = variant.Lineage.VideoProvenance.Clone()
+			prov.SourceLink = srcLink
+			if prov.OutputDigestSHA256 == "" {
+				prov.OutputDigestSHA256 = digest
+			}
+		}
+
+		return &resolvedSourceMedia{
+			Bytes:      bytes,
+			MediaType:  mType,
+			Provenance: prov,
+			SourceLink: srcLink,
+		}, nil
 	}
 
 	// Case 2: Canonical project deliverable reference (/v3/projects/{projectID}/tasks/{taskID}/deliverables/{delivID})
-	if strings.Contains(m.URL, "/v3/projects/") && strings.Contains(m.URL, "/deliverables/") {
-		parts := strings.Split(m.URL, "/v3/projects/")
-		if len(parts) > 1 {
-			sub := parts[1]
-			projID := ""
-			taskID := ""
-			delivID := ""
-			if idx := strings.Index(sub, "/tasks/"); idx >= 0 {
-				projID = sub[:idx]
-				rest := sub[idx+len("/tasks/"):]
-				if dIdx := strings.Index(rest, "/deliverables/"); dIdx >= 0 {
-					taskID = rest[:dIdx]
-					delivID = rest[dIdx+len("/deliverables/"):]
-					if end := strings.IndexAny(delivID, "/?#"); end >= 0 {
-						delivID = delivID[:end]
-					}
-				}
+	if strings.Contains(trimmedURL, "/deliverables/") || (strings.HasPrefix(trimmedURL, "/v3/projects/") && strings.Contains(trimmedURL, "/tasks/")) {
+		u, parseErr := url.Parse(trimmedURL)
+		if parseErr != nil {
+			return nil, fmt.Errorf("invalid deliverable url: %w", parseErr)
+		}
+		parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+		if len(parts) != 7 || parts[0] != "v3" || parts[1] != "projects" || parts[3] != "tasks" || parts[5] != "deliverables" {
+			return nil, errors.New("invalid deliverable URL path; must be /v3/projects/{projectID}/tasks/{taskID}/deliverables/{delivID}")
+		}
+		projID := strings.TrimSpace(parts[2])
+		tID := strings.TrimSpace(parts[4])
+		dID := strings.TrimSpace(parts[6])
+
+		if s == nil || s.sessions == nil || s.sessions.Store() == nil {
+			return nil, errors.New("session store is not configured")
+		}
+		task, found, err := s.sessions.Store().GetProjectTask(p.AccountScopeID, projID, tID)
+		if err != nil {
+			return nil, fmt.Errorf("read project task: %w", err)
+		}
+		if !found || task == nil {
+			return nil, fmt.Errorf("project task %q not found in account scope", tID)
+		}
+
+		var targetDeliv *pebblestore.ProjectTaskDeliverable
+		for _, d := range task.Deliverables {
+			if d.ID == dID {
+				targetDeliv = &d
+				break
 			}
-			if projID != "" && taskID != "" && delivID != "" && s != nil && s.sessions != nil && s.sessions.Store() != nil {
-				task, found, err := s.sessions.Store().GetProjectTask(p.AccountScopeID, projID, taskID)
-				if err == nil && found && task != nil {
-					for _, d := range task.Deliverables {
-						if d.ID == delivID {
-							if d.MediaURL != "" {
-								delivRef := pebblestore.ProjectTaskMediaRef{
-									ID:        d.ID,
-									URL:       d.MediaURL,
-									MediaType: d.Kind,
-									Kind:      expectedKind,
+		}
+		if targetDeliv == nil {
+			return nil, fmt.Errorf("deliverable %q not found in task %q", dID, tID)
+		}
+		if targetDeliv.Status != "ready" {
+			return nil, fmt.Errorf("deliverable %q is not ready", dID)
+		}
+
+		if strings.Contains(targetDeliv.MediaURL, "/deliverables/") {
+			return nil, errors.New("nested deliverable references are not permitted")
+		}
+
+		delivRef := pebblestore.ProjectTaskMediaRef{
+			ID:        targetDeliv.ID,
+			URL:       targetDeliv.MediaURL,
+			Kind:      expectedKind,
+			MediaType: targetDeliv.Kind,
+		}
+		bytes, mType, readErr := s.resolveSourceMediaBytes(ctx, p, delivRef, expectedKind)
+		if readErr != nil && targetDeliv.VideoProvenance == nil {
+			return nil, fmt.Errorf("read deliverable media: %w", readErr)
+		}
+
+		h := sha256.Sum256(bytes)
+		digest := hex.EncodeToString(h[:])
+		srcLink := &pebblestore.VideoSourceLink{
+			ProjectID:     projID,
+			TaskID:        tID,
+			DeliverableID: dID,
+			DigestSHA256:  digest,
+			MediaRefID:    m.ID,
+		}
+
+		var prov *pebblestore.VideoProvenance
+		if targetDeliv.VideoProvenance != nil {
+			if targetDeliv.VideoProvenance.AccountScopeID != "" && p.AccountScopeID != "" && targetDeliv.VideoProvenance.AccountScopeID != p.AccountScopeID {
+				return nil, errors.New("video source belongs to a different account scope")
+			}
+			prov = targetDeliv.VideoProvenance.Clone()
+			prov.SourceLink = srcLink
+			if prov.OutputDigestSHA256 == "" {
+				prov.OutputDigestSHA256 = digest
+			}
+		}
+
+		return &resolvedSourceMedia{
+			Bytes:      bytes,
+			MediaType:  mType,
+			Provenance: prov,
+			SourceLink: srcLink,
+		}, nil
+	}
+
+	// Case 3: Match deliverable by ID in project tasks
+	activeProjID := ""
+	if len(projectID) > 0 && strings.TrimSpace(projectID[0]) != "" {
+		activeProjID = strings.TrimSpace(projectID[0])
+	}
+	if activeProjID != "" && m.ID != "" && !strings.HasPrefix(m.ID, "stg_") && s != nil && s.sessions != nil && s.sessions.Store() != nil {
+		if tasks, err := s.sessions.Store().ListProjectTasks(p.AccountScopeID, activeProjID, 100); err == nil {
+			for _, task := range tasks {
+				for _, d := range task.Deliverables {
+					if d.ID == m.ID && d.Status == "ready" {
+						bytes, mType, readErr := s.resolveSourceMediaBytes(ctx, p, m, expectedKind)
+						if readErr != nil && d.MediaURL != "" {
+							bytes, mType, readErr = s.resolveSourceMediaBytes(ctx, p, pebblestore.ProjectTaskMediaRef{ID: d.ID, URL: d.MediaURL, Kind: expectedKind}, expectedKind)
+						}
+						if readErr == nil && (len(bytes) > 0 || d.VideoProvenance != nil) {
+							h := sha256.Sum256(bytes)
+							digest := hex.EncodeToString(h[:])
+							srcLink := &pebblestore.VideoSourceLink{
+								ProjectID:     activeProjID,
+								TaskID:        task.ID,
+								DeliverableID: d.ID,
+								DigestSHA256:  digest,
+								MediaRefID:    m.ID,
+							}
+							var prov *pebblestore.VideoProvenance
+							if d.VideoProvenance != nil {
+								if d.VideoProvenance.AccountScopeID != "" && p.AccountScopeID != "" && d.VideoProvenance.AccountScopeID != p.AccountScopeID {
+									return nil, errors.New("video source belongs to a different account scope")
 								}
-								delivRes, delivErr := s.resolveSourceMediaRecord(ctx, p, delivRef, expectedKind)
-								if delivErr == nil && delivRes != nil {
-									h := sha256.Sum256(delivRes.Bytes)
-									digest := hex.EncodeToString(h[:])
-									srcLink := &pebblestore.VideoSourceLink{
-										ProjectID:     projID,
-										TaskID:        taskID,
-										DeliverableID: delivID,
-										DigestSHA256:  digest,
-										MediaRefID:    m.ID,
-									}
-									var prov *pebblestore.VideoProvenance
-									if d.VideoProvenance != nil {
-										if d.VideoProvenance.AccountScopeID != "" && p.AccountScopeID != "" && d.VideoProvenance.AccountScopeID != p.AccountScopeID {
-											return nil, errors.New("video source belongs to a different account scope")
-										}
-										prov = d.VideoProvenance.Clone()
-										prov.SourceLink = srcLink
-										if prov.OutputDigestSHA256 == "" {
-											prov.OutputDigestSHA256 = digest
-										}
-									} else if delivRes.Provenance != nil {
-										prov = delivRes.Provenance.Clone()
-										prov.SourceLink = srcLink
-									}
-									return &resolvedSourceMedia{
-										Bytes:      delivRes.Bytes,
-										MediaType:  delivRes.MediaType,
-										Provenance: prov,
-										SourceLink: srcLink,
-									}, nil
+								prov = d.VideoProvenance.Clone()
+								prov.SourceLink = srcLink
+								if prov.OutputDigestSHA256 == "" {
+									prov.OutputDigestSHA256 = digest
 								}
 							}
+							return &resolvedSourceMedia{
+								Bytes:      bytes,
+								MediaType:  mType,
+								Provenance: prov,
+								SourceLink: srcLink,
+							}, nil
 						}
 					}
 				}
@@ -242,135 +302,60 @@ func (s *Server) resolveSourceMediaRecord(ctx context.Context, p identity.Princi
 		}
 	}
 
-	// Case 3: Staging storage lookup (m.ID starts with stg_ or m.URL contains /media/staging/stg_)
-	stagingID := ""
-	if strings.HasPrefix(m.ID, "stg_") {
-		stagingID = m.ID
-	} else if idx := strings.Index(m.URL, "/media/staging/stg_"); idx >= 0 {
-		sub := m.URL[idx+len("/media/staging/"):]
-		if end := strings.IndexAny(sub, "/?#"); end >= 0 {
-			stagingID = sub[:end]
-		} else {
-			stagingID = sub
+	// Case 4: Staging storage lookup
+	isStaging := strings.HasPrefix(m.ID, "stg_") || strings.Contains(trimmedURL, "/media/staging/stg_") || strings.Contains(trimmedURL, "/v3/media-staging/stg_")
+	if isStaging {
+		bytes, mType, err := s.resolveSourceMediaBytes(ctx, p, m, expectedKind)
+		if err != nil {
+			return nil, fmt.Errorf("staged upload not found or expired: %w", err)
 		}
-	}
-	if stagingID != "" && s != nil && s.mediaStaging != nil {
-		_, payload, readErr := s.mediaStaging.Read(p.AccountScopeID, stagingID, time.Now().UnixMilli())
-		if readErr != nil {
-			return nil, fmt.Errorf("staged upload %q not found or expired: %w", stagingID, readErr)
-		}
-		if len(payload) == 0 {
-			return nil, fmt.Errorf("staged upload %q is empty", stagingID)
-		}
-		mediaType := m.MediaType
-		detected := http.DetectContentType(payload)
-		if detected != "" && !strings.Contains(detected, "octet-stream") {
-			mediaType = detected
-		}
-		if mediaType == "" {
-			if expectedKind == "video" {
-				mediaType = "video/mp4"
-			} else {
-				mediaType = "image/png"
-			}
-		}
-		h := sha256.Sum256(payload)
+		h := sha256.Sum256(bytes)
 		digest := hex.EncodeToString(h[:])
 		srcLink := &pebblestore.VideoSourceLink{
 			DigestSHA256: digest,
 			MediaRefID:   m.ID,
 		}
 		return &resolvedSourceMedia{
-			Bytes:      payload,
-			MediaType:  mediaType,
+			Bytes:      bytes,
+			MediaType:  mType,
 			Provenance: nil, // Uploaded media has no server-verified provenance
 			SourceLink: srcLink,
 		}, nil
 	}
 
-	// Case 4: Data URL in m.URL or m.Data
-	dataURL := ""
-	if strings.HasPrefix(m.URL, "data:") {
-		dataURL = m.URL
-	} else if strings.HasPrefix(m.Data, "data:") {
-		dataURL = m.Data
-	}
-	if dataURL != "" {
-		parts := strings.SplitN(dataURL, ",", 2)
-		if len(parts) == 2 {
-			header := parts[0]
-			mediaType := m.MediaType
-			if strings.Contains(header, ";base64") {
-				if sub := strings.TrimPrefix(header, "data:"); strings.Contains(sub, ";") {
-					mediaType = strings.Split(sub, ";")[0]
-				}
-				decoded, err := base64.StdEncoding.DecodeString(parts[1])
-				if err != nil {
-					return nil, fmt.Errorf("decode data url: %w", err)
-				}
-				if len(decoded) == 0 {
-					return nil, errors.New("data url payload is empty")
-				}
-				if mediaType == "" {
-					if expectedKind == "video" {
-						mediaType = "video/mp4"
-					} else {
-						mediaType = "image/png"
-					}
-				}
-				h := sha256.Sum256(decoded)
-				digest := hex.EncodeToString(h[:])
-				srcLink := &pebblestore.VideoSourceLink{
-					DigestSHA256: digest,
-					MediaRefID:   m.ID,
-				}
-				return &resolvedSourceMedia{
-					Bytes:      decoded,
-					MediaType:  mediaType,
-					Provenance: nil,
-					SourceLink: srcLink,
-				}, nil
-			}
+	// Case 5: Data URL or raw base64 data
+	if strings.HasPrefix(trimmedURL, "data:") || strings.HasPrefix(m.Data, "data:") || len(m.Data) > 0 {
+		bytes, mType, err := s.resolveSourceMediaBytes(ctx, p, m, expectedKind)
+		if err != nil {
+			return nil, err
 		}
-	}
-
-	// Case 5: Raw base64 in m.Data
-	if len(m.Data) > 0 {
-		decoded, err := base64.StdEncoding.DecodeString(m.Data)
-		if err == nil && len(decoded) > 0 {
-			mediaType := m.MediaType
-			if mediaType == "" {
-				if expectedKind == "video" {
-					mediaType = "video/mp4"
-				} else {
-					mediaType = "image/png"
-				}
-			}
-			h := sha256.Sum256(decoded)
-			digest := hex.EncodeToString(h[:])
-			srcLink := &pebblestore.VideoSourceLink{
-				DigestSHA256: digest,
-				MediaRefID:   m.ID,
-			}
-			return &resolvedSourceMedia{
-				Bytes:      decoded,
-				MediaType:  mediaType,
-				Provenance: nil,
-				SourceLink: srcLink,
-			}, nil
+		h := sha256.Sum256(bytes)
+		digest := hex.EncodeToString(h[:])
+		srcLink := &pebblestore.VideoSourceLink{
+			DigestSHA256: digest,
+			MediaRefID:   m.ID,
 		}
+		return &resolvedSourceMedia{
+			Bytes:      bytes,
+			MediaType:  mType,
+			Provenance: nil,
+			SourceLink: srcLink,
+		}, nil
 	}
 
-	// Case 6: Reject arbitrary external HTTP/HTTPS URLs and direct filesystem paths
-	urlLower := strings.ToLower(strings.TrimSpace(m.URL))
-	if strings.HasPrefix(urlLower, "http://") || strings.HasPrefix(urlLower, "https://") {
-		return nil, errors.New("fetching arbitrary external URLs is not permitted")
+	// Case 6: External URL or filesystem path rejection via resolveSourceMediaBytes
+	bytes, mType, err := s.resolveSourceMediaBytes(ctx, p, m, expectedKind)
+	if err != nil {
+		return nil, err
 	}
-	if strings.HasPrefix(m.URL, "/") || strings.HasPrefix(m.URL, "./") || strings.HasPrefix(m.URL, "../") || strings.Contains(m.URL, `\`) {
-		return nil, errors.New("direct filesystem paths are not permitted")
-	}
-
-	return nil, errors.New("no source media bytes available")
+	h := sha256.Sum256(bytes)
+	digest := hex.EncodeToString(h[:])
+	return &resolvedSourceMedia{
+		Bytes:      bytes,
+		MediaType:  mType,
+		Provenance: nil,
+		SourceLink: &pebblestore.VideoSourceLink{DigestSHA256: digest, MediaRefID: m.ID},
+	}, nil
 }
 
 // preflightVideoOperation evaluates preflight checks for a video creation, editing, or extension operation.

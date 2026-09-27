@@ -3,8 +3,11 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"swarm/packages/swarmd/internal/artifact"
 	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/uisettings"
@@ -28,6 +32,7 @@ type mockPreflightVideoService struct {
 	failGenErr   error
 	genResult    videogen.ManagedVideoResult
 	preflightErr error
+	uiSettings   *uisettings.Service
 }
 
 func (m *mockPreflightVideoService) GenerateManagedVideo(ctx context.Context, req videogen.ManagedVideoRequest) (videogen.ManagedVideoResult, error) {
@@ -70,13 +75,59 @@ func (m *mockPreflightVideoService) PreflightVideoOperation(ctx context.Context,
 	if m.preflightErr != nil {
 		return nil, m.preflightErr
 	}
+
+	// Check UI settings iteration model if configured
+	if m.uiSettings != nil && req.Principal.AccountScopeID != "" {
+		ui, err := m.uiSettings.GetForAccount(req.Principal.AccountScopeID)
+		if err == nil {
+			if req.Operation == pebblestore.VideoOperationEdit && req.ExplicitModel == "" && ui.Tools.Video.IterationModel == "" {
+				return nil, errors.New("no default video iteration model configured for account; select a model or configure one in Settings")
+			}
+		}
+	}
+
+	model := req.ExplicitModel
+	if model == "" {
+		if req.Operation == pebblestore.VideoOperationEdit {
+			model = "gemini-omni-video"
+		} else if req.Operation == pebblestore.VideoOperationExtend {
+			isOmni := (req.Source != nil && req.Source.InteractionID != "") || (req.SourceProvenance != nil && videogen.IsOmniModel(req.SourceProvenance.Model))
+			if isOmni {
+				model = "gemini-omni-video"
+			} else {
+				model = "veo-3.1-generate-preview"
+			}
+		} else {
+			model = "veo-3.1-generate-preview"
+		}
+	}
+
+	if req.Operation == pebblestore.VideoOperationEdit && videogen.IsVeoModel(model) {
+		return nil, errors.New("Veo models do not support video editing; use Gemini Omni for video editing or extend for Veo continuation")
+	}
+
+	dur := req.DurationSeconds
+	if videogen.IsOmniModel(model) {
+		dur = 0
+	} else if dur <= 0 {
+		dur = 8
+	}
+	ar := req.AspectRatio
+	if ar == "" {
+		ar = "16:9"
+	}
+	res := req.Resolution
+	if res == "" {
+		res = "720p"
+	}
+
 	return &videogen.VideoPreflightResult{
 		Operation:        req.Operation,
-		ResolvedModel:    req.ExplicitModel,
+		ResolvedModel:    model,
 		ResolvedProvider: "google",
-		DurationSeconds:  req.DurationSeconds,
-		AspectRatio:      req.AspectRatio,
-		Resolution:       req.Resolution,
+		DurationSeconds:  dur,
+		AspectRatio:      ar,
+		Resolution:       res,
 	}, nil
 }
 
@@ -359,6 +410,7 @@ func TestVideoOperations_ModelResolutionAndVeoEditRejection(t *testing.T) {
 			},
 		})
 		server.uiSettings = uiSvc
+		mockVideo.uiSettings = uiSvc
 
 		b, _ := json.Marshal(map[string]any{
 			"title":     "Edit Without Iteration Model",
@@ -394,6 +446,7 @@ func TestVideoOperations_ModelResolutionAndVeoEditRejection(t *testing.T) {
 			},
 		})
 		server.uiSettings = uiSvc
+		mockVideo.uiSettings = uiSvc
 
 		b, _ := json.Marshal(map[string]any{
 			"title":     "Edit Explicit Veo",
@@ -451,56 +504,66 @@ func TestVideoOperations_ServerProvenanceBindingNotClientHandles(t *testing.T) {
 		ObservedHeight:     720,
 	}
 
-	artifactVariant := pebblestore.SessionArtifactVariant{
-		AccountScopeID: p.AccountScopeID,
+	server.artifacts = artifact.NewRegistry(server.sessions, artifact.Limits{})
+	auth := artifact.NewAuthority(server.artifacts, server.sessions)
+	createdVariant, err := auth.Create(context.Background(), artifact.Principal{
 		SessionID:      sessionID,
-		CollectionID:   collectionID,
-		ID:             variantID,
-		Filename:       "generated-clip.mp4",
-		MediaType:      "video/mp4",
-		EventSeq:       3,
-		DigestSHA256:   testDigest,
-		Status:         pebblestore.SessionArtifactStatusReady,
-		Lineage: pebblestore.SessionArtifactLineage{
-			VideoProvenance: storedProv,
-		},
+		AccountScopeID: p.AccountScopeID,
+		UserID:         p.UserID,
+	}, artifact.CreateInput{
+		RequestID:    "req-test-prov",
+		CollectionID: collectionID,
+		VariantID:    variantID,
+		Filename:     "generated-clip.mp4",
+		MediaType:    "video/mp4",
+		Body:         testVideoBytes,
+		AutoAccept:   true,
+	})
+	if err != nil {
+		t.Fatalf("create artifact variant: %v", err)
 	}
-	if err := ss.PutArtifactVariant(artifactVariant); err != nil {
+	createdVariant.Lineage.VideoProvenance = storedProv
+	if err := ss.PutArtifactVariant(createdVariant); err != nil {
 		t.Fatalf("put artifact variant: %v", err)
 	}
 
 	// 2. Resolve artifact with valid reference and pinned revision
 	mediaRef := pebblestore.ProjectTaskMediaRef{
 		ID:  "att-1",
-		URL: fmt.Sprintf("/v3/sessions/%s/artifacts/%s?revision=3", sessionID, variantID),
+		URL: fmt.Sprintf("/v3/sessions/%s/artifacts/%s?revision=%d", sessionID, variantID, createdVariant.EventSeq),
 	}
 	rec, err := server.resolveSourceMediaRecord(context.Background(), p, mediaRef, "video")
 	if err != nil {
-		// Note: authority ReadReference may fail if artifacts repository is unset, but
-		// metadata lookup and stale revision verification succeed.
-		if !strings.Contains(err.Error(), "artifact reference") && !strings.Contains(err.Error(), "authority") {
-			t.Fatalf("unexpected error resolving source media record: %v", err)
-		}
-	} else {
-		if rec.Provenance == nil {
-			t.Fatalf("expected non-nil VideoProvenance from server-stored variant")
-		}
-		if rec.Provenance.ProviderResource != storedProv.ProviderResource {
-			t.Errorf("ProviderResource = %q, want %q", rec.Provenance.ProviderResource, storedProv.ProviderResource)
-		}
-		if rec.SourceLink == nil || rec.SourceLink.EventSeq != 3 {
-			t.Errorf("expected SourceLink with EventSeq 3, got: %+v", rec.SourceLink)
-		}
+		t.Fatalf("unexpected error resolving source media record: %v", err)
+	}
+	if rec.Provenance == nil {
+		t.Fatalf("expected non-nil VideoProvenance from server-stored variant")
+	}
+	if rec.Provenance.ProviderResource != storedProv.ProviderResource {
+		t.Errorf("ProviderResource = %q, want %q", rec.Provenance.ProviderResource, storedProv.ProviderResource)
+	}
+	if rec.SourceLink == nil || rec.SourceLink.EventSeq != createdVariant.EventSeq {
+		t.Errorf("expected SourceLink with EventSeq %d, got: %+v", createdVariant.EventSeq, rec.SourceLink)
 	}
 
 	// 3. Stale revision query is rejected
 	mediaRefStale := pebblestore.ProjectTaskMediaRef{
 		ID:  "att-2",
-		URL: fmt.Sprintf("/v3/sessions/%s/artifacts/%s?revision=1", sessionID, variantID),
+		URL: fmt.Sprintf("/v3/sessions/%s/artifacts/%s?revision=%d", sessionID, variantID, createdVariant.EventSeq+99),
 	}
 	_, errStale := server.resolveSourceMediaRecord(context.Background(), p, mediaRefStale, "video")
 	if errStale == nil || !strings.Contains(errStale.Error(), "stale artifact revision") {
 		t.Fatalf("expected stale revision error, got: %v", errStale)
+	}
+
+	// 3b. Missing revision query is rejected (pinning required)
+	mediaRefMissingRev := pebblestore.ProjectTaskMediaRef{
+		ID:  "att-missing-rev",
+		URL: fmt.Sprintf("/v3/sessions/%s/artifacts/%s", sessionID, variantID),
+	}
+	_, errMissingRev := server.resolveSourceMediaRecord(context.Background(), p, mediaRefMissingRev, "video")
+	if errMissingRev == nil || !strings.Contains(errMissingRev.Error(), "exact pinned revision") {
+		t.Fatalf("expected exact pinned revision error, got: %v", errMissingRev)
 	}
 
 	// 4. Cross-account access is rejected
@@ -528,6 +591,48 @@ func TestVideoOperations_ServerProvenanceBindingNotClientHandles(t *testing.T) {
 	}
 	if recUploaded.SourceLink == nil || recUploaded.SourceLink.DigestSHA256 == "" {
 		t.Errorf("expected SourceLink with DigestSHA256 for uploaded video")
+	}
+}
+
+func TestVideoOperations_ConflictingDeclarationsRejected(t *testing.T) {
+	// Purpose:
+	// - Invariant: Mixed or conflicting attachment declarations (e.g. kind="image" but media_type="video/mp4")
+	//   must be strictly rejected to prevent attachment type spoofing or misrouting.
+	// - Boundary: Server.handleProjectTasks and resolveSourceMediaRecord.
+	server, ss, p := setupDirectMediaTestServer(t)
+	proj := &pebblestore.ProjectRecord{
+		ID:        "proj-conflict-test",
+		AccountID: p.AccountScopeID,
+		Name:      "Conflict Test",
+	}
+	if err := ss.PutProject(p.AccountScopeID, proj); err != nil {
+		t.Fatalf("put project: %v", err)
+	}
+
+	b, _ := json.Marshal(map[string]any{
+		"title":     "Conflicting Media",
+		"agent":     "video",
+		"operation": "edit",
+		"attached_media": []map[string]any{
+			{
+				"id":         "conf-1",
+				"kind":       "image",
+				"media_type": "video/mp4",
+				"url":        "data:video/mp4;base64,ZmFrZQ==",
+			},
+		},
+	})
+	req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/v3/projects/%s/tasks", proj.ID), bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(identity.ContextWithPrincipal(req.Context(), p))
+	rec := httptest.NewRecorder()
+
+	server.handleProjectTasks(rec, req, p, proj.ID, []string{"tasks"})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 Bad Request for conflicting declaration, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "conflicting attachment declarations") {
+		t.Fatalf("expected conflicting declaration error message, got: %s", rec.Body.String())
 	}
 }
 
@@ -576,6 +681,7 @@ func TestVideoOperations_ExecutionPreflightAndProvenancePersistence(t *testing.T
 		},
 	})
 	server.uiSettings = uiSvc
+	mockVideo.uiSettings = uiSvc
 
 	proj := &pebblestore.ProjectRecord{
 		ID:        "proj-exec-test",
@@ -638,5 +744,71 @@ func TestVideoOperations_ExecutionPreflightAndProvenancePersistence(t *testing.T
 	// Verify mock received Operation == "edit"
 	if mockVideo.lastReq.Operation != "edit" {
 		t.Errorf("mock received Operation = %q, want edit", mockVideo.lastReq.Operation)
+	}
+
+	// Test client-facing redaction: HTTP response does not leak provider handles
+	clientSafe := sanitizeProjectTaskForClient(updatedTask)
+	if clientSafe.VideoProvenance.InteractionID != "" {
+		t.Errorf("expected sanitized VideoProvenance.InteractionID to be empty for client response, got %q", clientSafe.VideoProvenance.InteractionID)
+	}
+}
+
+func TestVideoOperations_ExecutionRejectsChangedSourceDigest(t *testing.T) {
+	// Purpose:
+	// - Invariant: If the source media content changes between task submission and execution,
+	//   execution must fail instead of operating on mismatched or stale bytes.
+	// - Boundary: Server.executeDirectMediaTask.
+	server, ss, p := setupDirectMediaTestServer(t)
+	seedOmniVideoCatalogRecord(t, server)
+
+	proj := &pebblestore.ProjectRecord{
+		ID:        "proj-digest-change-test",
+		AccountID: p.AccountScopeID,
+		Name:      "Digest Change Project",
+	}
+	if err := ss.PutProject(p.AccountScopeID, proj); err != nil {
+		t.Fatalf("put project: %v", err)
+	}
+
+	originalBytes := []byte("original-video-stream-content")
+	hOrig := sha256.Sum256(originalBytes)
+	originalDigest := hex.EncodeToString(hOrig[:])
+
+	modifiedBytes := []byte("modified-video-stream-content-different")
+	modifiedVideoDataURL := "data:video/mp4;base64," + base64.StdEncoding.EncodeToString(modifiedBytes)
+
+	task := &pebblestore.ProjectTaskRecord{
+		ID:                 "task-digest-test",
+		ProjectID:          proj.ID,
+		AccountID:          p.AccountScopeID,
+		Title:              "Execute Video With Modified Digest",
+		Status:             "in_progress",
+		Agent:              "video",
+		OutcomeType:        "video_clip",
+		Operation:          "edit",
+		Model:              "gemini-omni-video",
+		SourceDigestSHA256: originalDigest, // Pinned at submission to originalDigest!
+		AttachedMedia: []pebblestore.ProjectTaskMediaRef{
+			{ID: "vid-mod", Kind: "video", URL: modifiedVideoDataURL, Filename: "source.mp4"},
+		},
+		Deliverables: []pebblestore.ProjectTaskDeliverable{
+			{ID: "deliv_1", Title: "Edit Take 1", Kind: "video", Status: "pending"},
+		},
+	}
+	if err := ss.PutProjectTask(p.AccountScopeID, task); err != nil {
+		t.Fatalf("put project task: %v", err)
+	}
+
+	server.executeDirectMediaTask(p, proj, task)
+
+	updatedTask, found, err := ss.GetProjectTask(p.AccountScopeID, proj.ID, task.ID)
+	if err != nil || !found || updatedTask == nil {
+		t.Fatalf("get project task: %v", err)
+	}
+	if updatedTask.Status != "failed" {
+		t.Errorf("task status = %q, want failed", updatedTask.Status)
+	}
+	if !strings.Contains(updatedTask.LastError, "source media digest changed since submission") {
+		t.Errorf("expected LastError mentioning digest changed, got: %s", updatedTask.LastError)
 	}
 }
