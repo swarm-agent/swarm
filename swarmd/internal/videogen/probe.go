@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"strconv"
+	"time"
 )
 
 // VideoMetadata contains measured media attributes probed from actual video bytes.
@@ -27,6 +29,35 @@ type VideoProber interface {
 	ProbeVideo(ctx context.Context, videoBytes []byte) (VideoMetadata, error)
 }
 
+// boundedBuffer captures up to limit bytes, silently ignoring overflow.
+type boundedBuffer struct {
+	buf   bytes.Buffer
+	limit int64
+}
+
+func newBoundedBuffer(limit int64) *boundedBuffer {
+	return &boundedBuffer{limit: limit}
+}
+
+func (b *boundedBuffer) Write(p []byte) (n int, err error) {
+	rem := b.limit - int64(b.buf.Len())
+	if rem <= 0 {
+		return len(p), nil
+	}
+	if int64(len(p)) > rem {
+		p = p[:rem]
+	}
+	return b.buf.Write(p)
+}
+
+func (b *boundedBuffer) Bytes() []byte {
+	return b.buf.Bytes()
+}
+
+func (b *boundedBuffer) String() string {
+	return b.buf.String()
+}
+
 // FFprobeVideoProber probes video metadata using the system ffprobe binary.
 type FFprobeVideoProber struct{}
 
@@ -35,10 +66,14 @@ func (p FFprobeVideoProber) ProbeVideo(ctx context.Context, videoBytes []byte) (
 	if len(videoBytes) == 0 {
 		return VideoMetadata{}, errors.New("cannot probe empty video bytes")
 	}
+	if int64(len(videoBytes)) > managedVideoMaxBytes {
+		return VideoMetadata{}, fmt.Errorf("video bytes exceed maximum allowed size (%d bytes)", managedVideoMaxBytes)
+	}
 	ffprobePath, err := exec.LookPath("ffprobe")
 	if err != nil {
 		return VideoMetadata{}, fmt.Errorf("ffprobe runtime is required but not installed or not in PATH: %w", err)
 	}
+
 	tmpFile, err := os.CreateTemp("", "swarm-videogen-probe-*.mp4")
 	if err != nil {
 		return VideoMetadata{}, fmt.Errorf("create temp video probe file: %w", err)
@@ -46,6 +81,7 @@ func (p FFprobeVideoProber) ProbeVideo(ctx context.Context, videoBytes []byte) (
 	defer func() {
 		_ = os.Remove(tmpFile.Name())
 	}()
+
 	if _, err := tmpFile.Write(videoBytes); err != nil {
 		_ = tmpFile.Close()
 		return VideoMetadata{}, fmt.Errorf("write temp video probe file: %w", err)
@@ -54,17 +90,31 @@ func (p FFprobeVideoProber) ProbeVideo(ctx context.Context, videoBytes []byte) (
 		return VideoMetadata{}, fmt.Errorf("close temp video probe file: %w", err)
 	}
 
-	cmd := exec.CommandContext(ctx, ffprobePath,
+	probeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(probeCtx, ffprobePath,
 		"-v", "error",
+		"-nodisp",
+		"-nostdin",
+		"-hide_banner",
+		"-protocol_whitelist", "file",
 		"-show_entries", "format=duration,size,bit_rate,format_name:stream=index,codec_type,codec_name,width,height",
 		"-of", "json",
 		tmpFile.Name(),
 	)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+
+	stdout := newBoundedBuffer(1 << 20)  // 1MB max stdout
+	stderr := newBoundedBuffer(64 << 10) // 64KB max stderr
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+
 	if err := cmd.Run(); err != nil {
-		return VideoMetadata{}, fmt.Errorf("ffprobe failed: %v: %s", err, stderr.String())
+		if probeCtx.Err() != nil {
+			return VideoMetadata{}, fmt.Errorf("ffprobe probe timed out or cancelled: %w", probeCtx.Err())
+		}
+		errMsg := stderr.String()
+		return VideoMetadata{}, fmt.Errorf("ffprobe failed: %v: %s", err, errMsg)
 	}
 
 	var parsed struct {
@@ -98,6 +148,15 @@ func (p FFprobeVideoProber) ProbeVideo(ctx context.Context, videoBytes []byte) (
 		} else if stream.CodecType == "audio" && meta.AudioCodec == "" {
 			meta.AudioCodec = stream.CodecName
 		}
+	}
+	if meta.VideoCodec == "" {
+		return VideoMetadata{}, errors.New("no video stream detected by ffprobe")
+	}
+	if meta.DurationSeconds <= 0 || math.IsNaN(meta.DurationSeconds) || math.IsInf(meta.DurationSeconds, 0) {
+		return VideoMetadata{}, errors.New("ffprobe detected non-positive or non-finite duration")
+	}
+	if meta.Width <= 0 || meta.Height <= 0 {
+		return VideoMetadata{}, errors.New("ffprobe detected non-positive video dimensions")
 	}
 	return meta, nil
 }

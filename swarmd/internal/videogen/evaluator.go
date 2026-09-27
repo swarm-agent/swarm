@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -109,41 +110,54 @@ func (s *Service) PreflightVideoOperation(ctx context.Context, req VideoPrefligh
 		return nil, fmt.Errorf("initial image input is not supported for video %s operation; only create operation supports initial image", op)
 	}
 
-	// 3. Resolve and verify Source Provenance and Handle binding
+	// 3. Resolve source provenance
 	srcProv := req.SourceProvenance
 	if srcProv == nil && req.Source != nil {
 		srcProv = req.Source.Provenance
 	}
 
-	if req.Source != nil {
-		isHandleOnly := len(req.Source.Bytes) == 0 && (strings.TrimSpace(req.Source.InteractionID) != "" || strings.TrimSpace(req.Source.URI) != "")
-		if isHandleOnly {
-			if srcProv == nil {
-				return nil, errors.New("source-only video handle requires verified source provenance bound to caller identity")
+	// 4. Measure source video dimensions and duration safely in preflight
+	var sourceDurationSeconds float64 = req.SourceDurationSeconds
+	var sourceWidth int = req.SourceWidth
+	var sourceHeight int = req.SourceHeight
+
+	if req.Source != nil && len(req.Source.Bytes) > 0 {
+		if sourceDurationSeconds <= 0 || math.IsNaN(sourceDurationSeconds) || math.IsInf(sourceDurationSeconds, 0) || sourceWidth <= 0 || sourceHeight <= 0 {
+			srcMeta, err := s.probeVideoBytes(ctx, req.Source.Bytes)
+			if err != nil {
+				return nil, fmt.Errorf("probe source video: %w", err)
 			}
-			if srcProv.AccountScopeID != "" && accountScopeID != "" && srcProv.AccountScopeID != accountScopeID {
-				return nil, errors.New("source-only video handle belongs to a different account scope")
+			if srcMeta.DurationSeconds <= 0 || math.IsNaN(srcMeta.DurationSeconds) || math.IsInf(srcMeta.DurationSeconds, 0) {
+				return nil, errors.New("source video duration must be positive and finite")
 			}
+			if srcMeta.Width <= 0 || srcMeta.Height <= 0 {
+				return nil, errors.New("source video dimensions must be positive")
+			}
+			sourceDurationSeconds = srcMeta.DurationSeconds
+			sourceWidth = srcMeta.Width
+			sourceHeight = srcMeta.Height
+		}
+	} else if req.Source != nil && len(req.Source.Bytes) == 0 {
+		// Handle-only uses trusted observed metadata from provenance
+		if srcProv != nil {
+			if srcProv.ObservedDurationMs > 0 {
+				sourceDurationSeconds = float64(srcProv.ObservedDurationMs) / 1000.0
+			}
+			sourceWidth = srcProv.ObservedWidth
+			sourceHeight = srcProv.ObservedHeight
 		}
 	}
 
-	if srcProv != nil {
-		if srcProv.AccountScopeID != "" && accountScopeID != "" && srcProv.AccountScopeID != accountScopeID {
-			return nil, errors.New("video source belongs to a different account scope")
+	if op == pebblestore.VideoOperationEdit || op == pebblestore.VideoOperationExtend {
+		if sourceDurationSeconds <= 0 || math.IsNaN(sourceDurationSeconds) || math.IsInf(sourceDurationSeconds, 0) {
+			return nil, errors.New("source video duration must be positive and finite")
 		}
-		if srcProv.ExpiresAt > 0 && time.Now().UnixMilli() > srcProv.ExpiresAt {
-			return nil, errors.New("video source reference has expired")
-		}
-		if req.Source != nil && len(req.Source.Bytes) > 0 && srcProv.OutputDigestSHA256 != "" {
-			h := sha256.Sum256(req.Source.Bytes)
-			calcDigest := hex.EncodeToString(h[:])
-			if !strings.EqualFold(calcDigest, srcProv.OutputDigestSHA256) {
-				return nil, errors.New("source video bytes do not match expected provenance digest")
-			}
+		if sourceWidth <= 0 || sourceHeight <= 0 {
+			return nil, errors.New("source video dimensions must be positive")
 		}
 	}
 
-	// 4. Resolve Target Model without hardcoded silent fallbacks
+	// 5. Resolve Target Model without hardcoded silent fallbacks
 	var targetModel, providerID string
 	explicitModel := strings.TrimSpace(req.ExplicitModel)
 
@@ -195,7 +209,7 @@ func (s *Service) PreflightVideoOperation(ctx context.Context, req VideoPrefligh
 		}
 	}
 
-	// 5. Validate Model in Catalog
+	// 6. Validate Model in Catalog
 	modelRecord, found := s.resolveModelRecord(providerID, targetModel)
 	if !found {
 		return nil, fmt.Errorf("selected video model %q is not in the model catalog", targetModel)
@@ -214,7 +228,7 @@ func (s *Service) PreflightVideoOperation(ctx context.Context, req VideoPrefligh
 	var resolvedAspectRatio, resolvedResolution string
 	resolvedDurationSeconds := req.DurationSeconds
 
-	// 6. Check Active Credential context for provider
+	// 7. Check Active Credential context for provider
 	var credID, credVersion string
 	if s.authStore != nil && accountScopeID != "" {
 		activeCred, ok, err := s.authStore.GetActiveCredentialForAccount(accountScopeID, providerID)
@@ -230,7 +244,61 @@ func (s *Service) PreflightVideoOperation(ctx context.Context, req VideoPrefligh
 		}
 	}
 
-	// 7. Operation-Specific Routing & Invariants
+	// 8. Verify Source Provenance and Handle binding fail-closed
+	hasInteractionHandle := req.Source != nil && strings.TrimSpace(req.Source.InteractionID) != ""
+	isHandleOnly := req.Source != nil && len(req.Source.Bytes) == 0 && (strings.TrimSpace(req.Source.InteractionID) != "" || strings.TrimSpace(req.Source.URI) != "")
+
+	if (isHandleOnly || hasInteractionHandle) && srcProv == nil {
+		return nil, errors.New("source-only video handle requires verified source provenance bound to caller identity")
+	}
+
+	if srcProv != nil {
+		if strings.TrimSpace(srcProv.AccountScopeID) == "" {
+			return nil, errors.New("source provenance account_scope_id is required")
+		}
+		if srcProv.AccountScopeID != accountScopeID {
+			return nil, errors.New("video source belongs to a different account scope")
+		}
+		if strings.TrimSpace(srcProv.CredentialID) == "" {
+			return nil, errors.New("source provenance credential_id is required")
+		}
+		if credID != "" && srcProv.CredentialID != credID {
+			return nil, fmt.Errorf("video interaction credential mismatch: source used credential %q, active credential is %q", srcProv.CredentialID, credID)
+		}
+		if credVersion != "" {
+			if strings.TrimSpace(srcProv.CredentialVersion) == "" {
+				return nil, errors.New("source provenance credential_version is required")
+			}
+			if srcProv.CredentialVersion != credVersion {
+				return nil, fmt.Errorf("video interaction credential version mismatch: source used version %q, active credential is %q", srcProv.CredentialVersion, credVersion)
+			}
+		}
+		if hasInteractionHandle {
+			if strings.TrimSpace(srcProv.InteractionID) == "" {
+				return nil, errors.New("source provenance missing interaction ID")
+			}
+			if strings.TrimSpace(req.Source.InteractionID) != strings.TrimSpace(srcProv.InteractionID) {
+				return nil, fmt.Errorf("source interaction handle %q does not match stored provenance interaction ID %q", req.Source.InteractionID, srcProv.InteractionID)
+			}
+		}
+		if IsOmniModel(srcProv.Model) && strings.TrimSpace(srcProv.InteractionID) == "" {
+			return nil, errors.New("Omni source provenance is missing interaction handle; cannot continue conversation or extend")
+		}
+		if srcProv.ExpiresAt > 0 && time.Now().UnixMilli() > srcProv.ExpiresAt {
+			return nil, errors.New("video source reference has expired")
+		}
+		if req.Source != nil && len(req.Source.Bytes) > 0 && srcProv.OutputDigestSHA256 != "" {
+			h := sha256.Sum256(req.Source.Bytes)
+			calcDigest := hex.EncodeToString(h[:])
+			if !strings.EqualFold(calcDigest, srcProv.OutputDigestSHA256) {
+				return nil, errors.New("source video bytes do not match expected provenance digest")
+			}
+		}
+	} else if op == pebblestore.VideoOperationExtend {
+		return nil, errors.New("video extension requires verified source provenance")
+	}
+
+	// 9. Operation-Specific Routing & Invariants
 	switch op {
 	case pebblestore.VideoOperationEdit:
 		if IsVeoModel(targetModel) {
@@ -243,9 +311,10 @@ func (s *Service) PreflightVideoOperation(ctx context.Context, req VideoPrefligh
 			return nil, fmt.Errorf("video editing is not supported on provider %q; use Google Gemini Omni", providerID)
 		}
 		if !IsStableOmniModel(targetModel) {
-			if opts == nil || !opts.ConversationalEditingSupported {
-				return nil, fmt.Errorf("model %q does not support conversational video editing", targetModel)
-			}
+			return nil, fmt.Errorf("video editing is only supported on stable Gemini Omni (%s); %q is not supported", DefaultVideoIterationModel, targetModel)
+		}
+		if opts == nil || !opts.ConversationalEditingSupported {
+			return nil, fmt.Errorf("model %q does not support conversational video editing", targetModel)
 		}
 
 		if req.DurationSeconds > 0 {
@@ -253,18 +322,19 @@ func (s *Service) PreflightVideoOperation(ctx context.Context, req VideoPrefligh
 		}
 		resolvedDurationSeconds = 0
 
-		if req.Source != nil && strings.TrimSpace(req.Source.InteractionID) != "" {
+		if (req.Source != nil && strings.TrimSpace(req.Source.InteractionID) != "") || (srcProv != nil && strings.TrimSpace(srcProv.InteractionID) != "") {
 			isRetainedInteraction = true
 			if srcProv != nil && srcProv.Model != "" && !strings.EqualFold(srcProv.Model, targetModel) {
 				return nil, fmt.Errorf("video interaction model mismatch: source was created with %q, cannot continue with %q", srcProv.Model, targetModel)
 			}
-			if srcProv != nil && srcProv.CredentialID != "" && credID != "" && srcProv.CredentialID != credID {
-				return nil, fmt.Errorf("video interaction credential mismatch: source used credential %q, active credential is %q", srcProv.CredentialID, credID)
-			}
 		} else {
+			// External upload without interaction ID
 			requiresFilesUpload = true
-			if req.SourceDurationSeconds > 10.0 {
-				return nil, fmt.Errorf("source video duration (%.1fs) exceeds maximum allowed for external video editing (10s)", req.SourceDurationSeconds)
+			if req.Source == nil || len(req.Source.Bytes) == 0 {
+				return nil, errors.New("video editing without interaction handle requires source video bytes")
+			}
+			if sourceDurationSeconds > 10.0 {
+				return nil, fmt.Errorf("source video duration (%.1fs) exceeds maximum allowed for external video editing (10s)", sourceDurationSeconds)
 			}
 			advisoryWarnings = append(advisoryWarnings, "editing uploaded external videos may be restricted in the EU/EEA, UK, and Switzerland; generate the initial video with Gemini Omni Flash to enable multi-turn conversational editing in these regions")
 		}
@@ -277,6 +347,9 @@ func (s *Service) PreflightVideoOperation(ctx context.Context, req VideoPrefligh
 			if !IsVeo31Model(targetModel) || IsVeoLiteModel(targetModel) {
 				return nil, fmt.Errorf("Veo extension is only supported on Veo 3.1 standard or fast models; %q is not eligible", targetModel)
 			}
+			if opts == nil || !opts.VideoExtensionSupported {
+				return nil, fmt.Errorf("model %q does not support video extension in catalog metadata", targetModel)
+			}
 			if srcProv == nil {
 				return nil, errors.New("Veo video extension requires trusted source provenance from a previous Veo generation")
 			}
@@ -286,6 +359,41 @@ func (s *Service) PreflightVideoOperation(ctx context.Context, req VideoPrefligh
 			if IsVeoLiteModel(srcProv.Model) {
 				return nil, errors.New("Veo extension cannot extend videos generated by Veo Lite")
 			}
+			if srcProv.Transport != pebblestore.VideoTransportGooglePredictLongRunning {
+				return nil, fmt.Errorf("Veo source requires google_predict_long_running transport; got %q", srcProv.Transport)
+			}
+			if strings.TrimSpace(srcProv.ProviderResource) == "" {
+				return nil, errors.New("Veo source requires valid provider resource URI")
+			}
+			if strings.TrimSpace(srcProv.OutputDigestSHA256) == "" {
+				return nil, errors.New("Veo source requires non-empty output digest")
+			}
+			if srcProv.CreatedAt <= 0 {
+				return nil, errors.New("Veo source provenance missing created_at timestamp")
+			}
+			if srcProv.ExpiresAt <= 0 {
+				return nil, errors.New("Veo source provenance missing expires_at timestamp")
+			}
+			now := time.Now().UnixMilli()
+			if now > srcProv.ExpiresAt || time.Since(time.UnixMilli(srcProv.CreatedAt)) > 48*time.Hour {
+				return nil, errors.New("Veo source video reference has expired (exceeds 48-hour validity period)")
+			}
+			if !srcProv.ExtensionCountKnown {
+				return nil, errors.New("Veo source extension count must be known")
+			}
+			if srcProv.ExtensionCount < 0 || srcProv.ExtensionCount >= 20 {
+				return nil, errors.New("video extension limit reached (20 extensions maximum)")
+			}
+			if sourceDurationSeconds > 141.0 {
+				return nil, fmt.Errorf("source video duration (%.1fs) exceeds maximum allowed for Veo extension (141s)", sourceDurationSeconds)
+			}
+			if sourceDurationSeconds+7.0 > 148.0 {
+				return nil, fmt.Errorf("extending source video (%.1fs) would exceed maximum output duration (148s)", sourceDurationSeconds)
+			}
+			if req.DurationSeconds != 0 && req.DurationSeconds != 8 {
+				return nil, fmt.Errorf("Veo video extension only supports 8s duration (got %d)", req.DurationSeconds)
+			}
+			resolvedDurationSeconds = 8
 
 			// Enforce 720p resolution
 			if req.Resolution != "" && !strings.EqualFold(NormalizeResolution(req.Resolution), "720p") {
@@ -293,69 +401,71 @@ func (s *Service) PreflightVideoOperation(ctx context.Context, req VideoPrefligh
 			}
 			resolvedResolution = "720p"
 
-			// Enforce 16:9 or 9:16 aspect ratio
-			ar := NormalizeAspectRatio(req.AspectRatio)
-			if ar == "" && opts != nil {
-				ar = opts.DefaultRatio
-			}
-			if ar != "16:9" && ar != "9:16" {
-				return nil, fmt.Errorf("Veo video extension requires 16:9 or 9:16 aspect ratio; got %q", req.AspectRatio)
-			}
-			resolvedAspectRatio = ar
-
-			// Enforce max 20 extensions
-			if srcProv.ExtensionCount >= 20 {
-				return nil, errors.New("video extension limit reached (20 extensions maximum)")
+			// Source dimensions must be observed exactly 1280x720 or 720x1280
+			isSource16x9 := (sourceWidth == 1280 && sourceHeight == 720) && (srcProv.ObservedWidth == 1280 && srcProv.ObservedHeight == 720)
+			isSource9x16 := (sourceWidth == 720 && sourceHeight == 1280) && (srcProv.ObservedWidth == 720 && srcProv.ObservedHeight == 1280)
+			if !isSource16x9 && !isSource9x16 {
+				return nil, fmt.Errorf("Veo source requires observed 720p dimensions (1280x720 or 720x1280); got source=%dx%d observed=%dx%d", sourceWidth, sourceHeight, srcProv.ObservedWidth, srcProv.ObservedHeight)
 			}
 
-			// Enforce 2-day known reference validity
-			if srcProv.CreatedAt > 0 && time.Since(time.UnixMilli(srcProv.CreatedAt)) > 48*time.Hour {
-				return nil, errors.New("Veo source video reference has expired (exceeds 48-hour validity period)")
+			// Use source aspect ratio, not default if omitted
+			if req.AspectRatio == "" {
+				if isSource16x9 {
+					resolvedAspectRatio = "16:9"
+				} else {
+					resolvedAspectRatio = "9:16"
+				}
+			} else {
+				ar := NormalizeAspectRatio(req.AspectRatio)
+				if ar != "16:9" && ar != "9:16" {
+					return nil, fmt.Errorf("Veo video extension requires 16:9 or 9:16 aspect ratio; got %q", req.AspectRatio)
+				}
+				if ar == "16:9" && !isSource16x9 {
+					return nil, fmt.Errorf("requested aspect ratio 16:9 does not match source dimensions (%dx%d)", sourceWidth, sourceHeight)
+				}
+				if ar == "9:16" && !isSource9x16 {
+					return nil, fmt.Errorf("requested aspect ratio 9:16 does not match source dimensions (%dx%d)", sourceWidth, sourceHeight)
+				}
+				resolvedAspectRatio = ar
 			}
-
-			// Enforce input duration <= 141s and output ceiling <= 148s
-			if req.SourceDurationSeconds > 141.0 {
-				return nil, fmt.Errorf("source video duration (%.1fs) exceeds maximum allowed for Veo extension (141s)", req.SourceDurationSeconds)
-			}
-			if req.SourceDurationSeconds > 0 && req.SourceDurationSeconds+7.0 > 148.0 {
-				return nil, fmt.Errorf("extending source video (%.1fs) would exceed maximum output duration (148s)", req.SourceDurationSeconds)
-			}
-
-			// Veo extension REST parameter durationSeconds must be 8
-			resolvedDurationSeconds = 8
 
 		} else if IsOmniModel(targetModel) {
+			if !IsStableOmniModel(targetModel) {
+				return nil, fmt.Errorf("Omni video extension is only supported on stable model %s; %q is not eligible", DefaultVideoIterationModel, targetModel)
+			}
 			if providerID != ProviderGoogleGemini {
 				return nil, fmt.Errorf("video extension is not supported on provider %q; use Google Gemini Omni", providerID)
+			}
+			if opts == nil || !opts.VideoExtensionSupported {
+				return nil, fmt.Errorf("model %q does not support video extension in catalog metadata", targetModel)
 			}
 			if req.DurationSeconds > 0 {
 				return nil, fmt.Errorf("model %q does not accept duration selection", targetModel)
 			}
 			resolvedDurationSeconds = 0
 
-			if req.SourceDurationSeconds > 37.0 {
-				return nil, fmt.Errorf("source video duration (%.1fs) exceeds maximum allowed for Omni video extension (max 40s total)", req.SourceDurationSeconds)
+			if srcProv == nil {
+				return nil, errors.New("Omni video extension requires verified source provenance")
 			}
+			if srcProv.Provider != ProviderGoogleGemini || !IsStableOmniModel(srcProv.Model) {
+				return nil, fmt.Errorf("Omni extension requires source generated by stable Gemini Omni; got %s/%s", srcProv.Provider, srcProv.Model)
+			}
+			if srcProv.Transport != pebblestore.VideoTransportGoogleInteractions {
+				return nil, fmt.Errorf("Omni extension requires google_interactions transport; got %q", srcProv.Transport)
+			}
+			if strings.TrimSpace(srcProv.InteractionID) == "" {
+				return nil, errors.New("Omni source provenance is missing interaction handle; cannot extend")
+			}
+			if !srcProv.ExtensionCountKnown {
+				return nil, errors.New("Omni source extension count must be known")
+			}
+			if sourceDurationSeconds > 37.0 {
+				return nil, fmt.Errorf("source video duration (%.1fs) exceeds maximum allowed for Omni video extension (37s input, max 40s total)", sourceDurationSeconds)
+			}
+			isRetainedInteraction = true
 
-			if req.Source != nil && strings.TrimSpace(req.Source.InteractionID) != "" {
-				isRetainedInteraction = true
-				if srcProv != nil && srcProv.Model != "" && !strings.EqualFold(srcProv.Model, targetModel) {
-					return nil, fmt.Errorf("video interaction model mismatch: source was created with %q, cannot continue with %q", srcProv.Model, targetModel)
-				}
-				if srcProv != nil && srcProv.CredentialID != "" && credID != "" && srcProv.CredentialID != credID {
-					return nil, fmt.Errorf("video interaction credential mismatch: source used credential %q, active credential is %q", srcProv.CredentialID, credID)
-				}
-			} else {
-				requiresFilesUpload = true
-				if req.SourceDurationSeconds > 10.0 {
-					return nil, fmt.Errorf("source video duration (%.1fs) exceeds maximum allowed for external video input (10s)", req.SourceDurationSeconds)
-				}
-				advisoryWarnings = append(advisoryWarnings, "editing/extending uploaded external videos may be restricted in the EU/EEA, UK, and Switzerland; generate the initial video with Gemini Omni Flash in this region")
-			}
 		} else {
-			if opts == nil || !opts.VideoExtensionSupported {
-				return nil, fmt.Errorf("model %q does not support video extension", targetModel)
-			}
+			return nil, fmt.Errorf("model %q does not support video extension; only Google Veo 3.1 and Gemini Omni support extension", targetModel)
 		}
 
 	case pebblestore.VideoOperationCreate:
@@ -367,7 +477,7 @@ func (s *Service) PreflightVideoOperation(ctx context.Context, req VideoPrefligh
 		}
 	}
 
-	// 8. Aspect Ratio & Resolution defaults / validation if not already resolved
+	// 10. Aspect Ratio & Resolution defaults / validation if not already resolved
 	if resolvedAspectRatio == "" {
 		if req.AspectRatio != "" {
 			if opts == nil || len(opts.AspectRatios) == 0 {
@@ -435,14 +545,14 @@ func (s *Service) PreflightVideoOperation(ctx context.Context, req VideoPrefligh
 		}
 	}
 
-	// 9. Initial image capability check for create
+	// Initial image capability check for create
 	if hasImage {
 		if opts == nil || !opts.InitialImageSupported {
 			return nil, fmt.Errorf("model %q does not support initial image input", targetModel)
 		}
 	}
 
-	// 10. Transport Resolution
+	// 11. Transport Resolution
 	var resolvedTransport string
 	switch providerID {
 	case ProviderGoogleGemini:
@@ -457,7 +567,7 @@ func (s *Service) PreflightVideoOperation(ctx context.Context, req VideoPrefligh
 		resolvedTransport = "unknown"
 	}
 
-	// 11. Cost estimation
+	// 12. Cost estimation
 	estimate := pebblestore.EstimateMediaCostFromRecord(modelRecord, pebblestore.MediaCostEstimateOptions{
 		Provider:        providerID,
 		Model:           targetModel,
@@ -473,11 +583,11 @@ func (s *Service) PreflightVideoOperation(ctx context.Context, req VideoPrefligh
 
 	var sourceLink *pebblestore.VideoSourceLink
 	sourceExtCount := 0
+	if req.Source != nil && req.Source.SourceLink != nil {
+		sourceLink = req.Source.SourceLink.Clone()
+	}
 	if srcProv != nil {
 		sourceExtCount = srcProv.ExtensionCount
-		if srcProv.SourceLink != nil {
-			sourceLink = srcProv.SourceLink.Clone()
-		}
 	}
 
 	return &VideoPreflightResult{
@@ -519,5 +629,3 @@ func (s *Service) parseModelAndProvider(modelID string) (string, string) {
 	}
 	return trimmed, s.inferProvider(trimmed)
 }
-
-

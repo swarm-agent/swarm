@@ -23,16 +23,25 @@ type fakeProber struct {
 	width    int
 	height   int
 	err      error
+	byDigest map[string]VideoMetadata
 }
 
-func (p fakeProber) ProbeVideo(_ context.Context, _ []byte) (VideoMetadata, error) {
+func (p fakeProber) ProbeVideo(_ context.Context, b []byte) (VideoMetadata, error) {
 	if p.err != nil {
 		return VideoMetadata{}, p.err
+	}
+	if p.byDigest != nil && len(b) > 0 {
+		h := sha256.Sum256(b)
+		if meta, ok := p.byDigest[hex.EncodeToString(h[:])]; ok {
+			return meta, nil
+		}
 	}
 	return VideoMetadata{
 		DurationSeconds: p.duration,
 		Width:           p.width,
 		Height:          p.height,
+		FormatName:      "mp4",
+		VideoCodec:      "h264",
 	}, nil
 }
 
@@ -188,6 +197,7 @@ func TestVideoPreflight_ModelResolutionRules(t *testing.T) {
 	uiSvc, _, accountID := setupTestUISettings(t, "veo-3.1-generate-preview", "gemini-omni-1.1-flash")
 	authStore, _ := setupTestAuthStore(t, "google-key", "")
 	svc := NewService(authStore, uiSvc, catalog)
+	svc.SetVideoProber(fakeProber{duration: 5.0, width: 1280, height: 720})
 	principal := identity.Principal{AccountScopeID: accountID}
 
 	// Edit resolves iteration model
@@ -207,19 +217,34 @@ func TestVideoPreflight_ModelResolutionRules(t *testing.T) {
 		t.Fatalf("edit model = %q, want gemini-omni-1.1-flash", resEdit.ResolvedModel)
 	}
 
+	vidHash := sha256.Sum256([]byte("vid"))
+	vidDigest := hex.EncodeToString(vidHash[:])
+
 	// Extend on Veo resolves generation default model
+	veoProv := &pebblestore.VideoProvenance{
+		Provider:            ProviderGoogleGemini,
+		Model:               "veo-3.1-generate-preview",
+		AccountScopeID:      accountID,
+		CredentialID:        "cred-google",
+		Transport:           pebblestore.VideoTransportGooglePredictLongRunning,
+		ProviderResource:    "https://generativelanguage.googleapis.com/v1beta/files/veo-test-1",
+		OutputDigestSHA256:  vidDigest,
+		CreatedAt:           time.Now().UnixMilli(),
+		ExpiresAt:           time.Now().Add(48 * time.Hour).UnixMilli(),
+		ObservedDurationMs:  5000,
+		ObservedWidth:       1280,
+		ObservedHeight:      720,
+		ExtensionCountKnown: true,
+		ExtensionCount:      0,
+	}
 	resExtendVeo, err := svc.PreflightVideoOperation(context.Background(), VideoPreflightRequest{
 		Principal: principal,
 		Operation: pebblestore.VideoOperationExtend,
 		Prompt:    "Extend prompt",
 		Source: &ManagedVideoSource{
-			Bytes:     []byte("vid"),
-			MediaType: "video/mp4",
-			Provenance: &pebblestore.VideoProvenance{
-				Provider:       ProviderGoogleGemini,
-				Model:          "veo-3.1-generate-preview",
-				AccountScopeID: accountID,
-			},
+			Bytes:      []byte("vid"),
+			MediaType:  "video/mp4",
+			Provenance: veoProv,
 		},
 	})
 	if err != nil {
@@ -230,17 +255,29 @@ func TestVideoPreflight_ModelResolutionRules(t *testing.T) {
 	}
 
 	// Extend on retained Omni resolves iteration default model
+	omniProv := &pebblestore.VideoProvenance{
+		Provider:            ProviderGoogleGemini,
+		Model:               "gemini-omni-1.1-flash",
+		AccountScopeID:      accountID,
+		CredentialID:        "cred-google",
+		Transport:           pebblestore.VideoTransportGoogleInteractions,
+		InteractionID:       "omni-interaction-1",
+		OutputDigestSHA256:  vidDigest,
+		CreatedAt:           time.Now().UnixMilli(),
+		ExpiresAt:           time.Now().Add(48 * time.Hour).UnixMilli(),
+		ObservedDurationMs:  5000,
+		ObservedWidth:       1280,
+		ObservedHeight:      720,
+		ExtensionCountKnown: true,
+		ExtensionCount:      0,
+	}
 	resExtendOmni, err := svc.PreflightVideoOperation(context.Background(), VideoPreflightRequest{
 		Principal: principal,
 		Operation: pebblestore.VideoOperationExtend,
 		Prompt:    "Extend prompt",
 		Source: &ManagedVideoSource{
 			InteractionID: "omni-interaction-1",
-			Provenance: &pebblestore.VideoProvenance{
-				Provider:       ProviderGoogleGemini,
-				Model:          "gemini-omni-1.1-flash",
-				AccountScopeID: accountID,
-			},
+			Provenance:    omniProv,
 		},
 	})
 	if err != nil {
@@ -284,6 +321,7 @@ func TestVideoPreflight_VeoEditingRejectedBeforeProvider(t *testing.T) {
 	catalog := setupTestCatalog()
 	authStore, accountID := setupTestAuthStore(t, "google-key", "")
 	svc := NewService(authStore, nil, catalog)
+	svc.SetVideoProber(fakeProber{duration: 5.0, width: 1280, height: 720})
 	principal := identity.Principal{AccountScopeID: accountID}
 
 	_, err := svc.PreflightVideoOperation(context.Background(), VideoPreflightRequest{
@@ -314,14 +352,26 @@ func TestVideoPreflight_VeoExtensionEligibilityValidation(t *testing.T) {
 	catalog := setupTestCatalog()
 	authStore, accountID := setupTestAuthStore(t, "google-key", "")
 	svc := NewService(authStore, nil, catalog)
+	svc.SetVideoProber(fakeProber{duration: 8.0, width: 1280, height: 720})
 	principal := identity.Principal{AccountScopeID: accountID}
 
+	h := sha256.Sum256([]byte("vid"))
+	validDigest := hex.EncodeToString(h[:])
 	validProv := &pebblestore.VideoProvenance{
-		Provider:       ProviderGoogleGemini,
-		Model:          "veo-3.1-generate-preview",
-		AccountScopeID: accountID,
-		CreatedAt:      time.Now().UnixMilli(),
-		ExtensionCount: 2,
+		Provider:            ProviderGoogleGemini,
+		Model:               "veo-3.1-generate-preview",
+		AccountScopeID:      accountID,
+		CredentialID:        "cred-google",
+		Transport:           pebblestore.VideoTransportGooglePredictLongRunning,
+		ProviderResource:    "https://generativelanguage.googleapis.com/v1beta/files/veo-valid",
+		OutputDigestSHA256:  validDigest,
+		CreatedAt:           time.Now().UnixMilli(),
+		ExpiresAt:           time.Now().Add(48 * time.Hour).UnixMilli(),
+		ObservedDurationMs:  8000,
+		ObservedWidth:       1280,
+		ObservedHeight:      720,
+		ExtensionCountKnown: true,
+		ExtensionCount:      2,
 	}
 
 	// 1. Veo Lite rejected
@@ -358,10 +408,19 @@ func TestVideoPreflight_VeoExtensionEligibilityValidation(t *testing.T) {
 
 	// 3. Source generated by Omni rejected for Veo extension
 	omniProv := &pebblestore.VideoProvenance{
-		Provider:       ProviderGoogleGemini,
-		Model:          "gemini-omni-1.1-flash",
-		AccountScopeID: accountID,
-		CreatedAt:      time.Now().UnixMilli(),
+		Provider:            ProviderGoogleGemini,
+		Model:               "gemini-omni-1.1-flash",
+		AccountScopeID:      accountID,
+		CredentialID:        "cred-google",
+		Transport:           pebblestore.VideoTransportGoogleInteractions,
+		InteractionID:       "omni-prov-1",
+		OutputDigestSHA256:  validDigest,
+		CreatedAt:           time.Now().UnixMilli(),
+		ExpiresAt:           time.Now().Add(48 * time.Hour).UnixMilli(),
+		ObservedDurationMs:  8000,
+		ObservedWidth:       1280,
+		ObservedHeight:      720,
+		ExtensionCountKnown: true,
 	}
 	_, err = svc.PreflightVideoOperation(context.Background(), VideoPreflightRequest{
 		Principal:     principal,
@@ -432,6 +491,7 @@ func TestVideoPreflight_VeoExtensionEligibilityValidation(t *testing.T) {
 	// 7. Extension count >= 20 rejected
 	maxProv := validProv.Clone()
 	maxProv.ExtensionCount = 20
+	maxProv.ExtensionCountKnown = true
 	_, err = svc.PreflightVideoOperation(context.Background(), VideoPreflightRequest{
 		Principal:     principal,
 		Operation:     pebblestore.VideoOperationExtend,
@@ -450,6 +510,7 @@ func TestVideoPreflight_VeoExtensionEligibilityValidation(t *testing.T) {
 	// 8. Reference > 48h expired rejected
 	expiredProv := validProv.Clone()
 	expiredProv.CreatedAt = time.Now().Add(-50 * time.Hour).UnixMilli()
+	expiredProv.ExpiresAt = time.Now().Add(-2 * time.Hour).UnixMilli()
 	_, err = svc.PreflightVideoOperation(context.Background(), VideoPreflightRequest{
 		Principal:     principal,
 		Operation:     pebblestore.VideoOperationExtend,
@@ -475,6 +536,11 @@ func TestVeoExtension_PredictRequestSerialization(t *testing.T) {
 	fakeSource := []byte("fake-source-mp4-bytes")
 	fakeOutput := []byte("fake-extended-mp4-bytes")
 	veoVideoURI := "https://generativelanguage.googleapis.com/v1beta/files/veo-extended-video-1"
+
+	sourceHash := sha256.Sum256(fakeSource)
+	sourceDigest := hex.EncodeToString(sourceHash[:])
+	outputHash := sha256.Sum256(fakeOutput)
+	outputDigest := hex.EncodeToString(outputHash[:])
 
 	var predictBody map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -513,14 +579,33 @@ func TestVeoExtension_PredictRequestSerialization(t *testing.T) {
 	svc := NewService(authStore, nil, catalog)
 	svc.SetBaseURLs(server.URL, "")
 	svc.SetPollTiming(5*time.Millisecond, 1*time.Second)
-	svc.SetVideoProber(fakeProber{duration: 15.0, width: 1280, height: 720})
+
+	prober := fakeProber{
+		byDigest: map[string]VideoMetadata{
+			sourceDigest: {DurationSeconds: 8.0, Width: 1280, Height: 720, VideoCodec: "h264"},
+			outputDigest: {DurationSeconds: 15.0, Width: 1280, Height: 720, VideoCodec: "h264"},
+		},
+		duration: 15.0,
+		width:    1280,
+		height:   720,
+	}
+	svc.SetVideoProber(prober)
 
 	sourceProv := &pebblestore.VideoProvenance{
-		AccountScopeID: accountID,
-		Provider:       ProviderGoogleGemini,
-		Model:          "veo-3.1-generate-preview",
-		ExtensionCount: 0,
-		CreatedAt:      time.Now().UnixMilli(),
+		AccountScopeID:      accountID,
+		CredentialID:        "cred-google",
+		Provider:            ProviderGoogleGemini,
+		Model:               "veo-3.1-generate-preview",
+		Transport:           pebblestore.VideoTransportGooglePredictLongRunning,
+		ProviderResource:    "https://generativelanguage.googleapis.com/v1beta/files/veo-prev",
+		OutputDigestSHA256:  sourceDigest,
+		CreatedAt:           time.Now().UnixMilli(),
+		ExpiresAt:           time.Now().Add(48 * time.Hour).UnixMilli(),
+		ObservedDurationMs:  8000,
+		ObservedWidth:       1280,
+		ObservedHeight:      720,
+		ExtensionCountKnown: true,
+		ExtensionCount:      0,
 		SourceLink: &pebblestore.VideoSourceLink{
 			DeliverableID: "deliv-prev",
 		},
@@ -536,6 +621,9 @@ func TestVeoExtension_PredictRequestSerialization(t *testing.T) {
 			Bytes:      fakeSource,
 			MediaType:  "video/mp4",
 			Provenance: sourceProv,
+			SourceLink: &pebblestore.VideoSourceLink{
+				DeliverableID: "deliv-selected",
+			},
 		},
 	})
 	if err != nil {
@@ -606,6 +694,10 @@ func TestVeoExtension_PredictRequestSerialization(t *testing.T) {
 	if res.Provenance.ObservedWidth != 1280 || res.Provenance.ObservedHeight != 720 {
 		t.Errorf("Provenance dimensions = %dx%d, want 1280x720", res.Provenance.ObservedWidth, res.Provenance.ObservedHeight)
 	}
+	// Verify exact source link is preserved, not ancestor
+	if res.Provenance.SourceLink == nil || res.Provenance.SourceLink.DeliverableID != "deliv-selected" {
+		t.Errorf("Provenance.SourceLink = %v, want deliv-selected", res.Provenance.SourceLink)
+	}
 }
 
 // TestOmniExtension_TaskSerializationAndCeiling proves:
@@ -615,6 +707,11 @@ func TestVeoExtension_PredictRequestSerialization(t *testing.T) {
 func TestOmniExtension_TaskSerializationAndCeiling(t *testing.T) {
 	fakeSource := []byte("source-vid")
 	fakeOutput := []byte("omni-extended-bytes")
+
+	sourceHash := sha256.Sum256(fakeSource)
+	sourceDigest := hex.EncodeToString(sourceHash[:])
+	outputHash := sha256.Sum256(fakeOutput)
+	outputDigest := hex.EncodeToString(outputHash[:])
 
 	var interactionBody map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -644,13 +741,33 @@ func TestOmniExtension_TaskSerializationAndCeiling(t *testing.T) {
 	catalog := setupTestCatalog()
 	svc := NewService(authStore, nil, catalog)
 	svc.SetBaseURLs(server.URL, "")
-	svc.SetVideoProber(fakeProber{duration: 20.0, width: 1280, height: 720})
+
+	prober := fakeProber{
+		byDigest: map[string]VideoMetadata{
+			sourceDigest: {DurationSeconds: 15.0, Width: 1280, Height: 720, VideoCodec: "h264"},
+			outputDigest: {DurationSeconds: 20.0, Width: 1280, Height: 720, VideoCodec: "h264"},
+		},
+		duration: 20.0,
+		width:    1280,
+		height:   720,
+	}
+	svc.SetVideoProber(prober)
 
 	sourceProv := &pebblestore.VideoProvenance{
-		AccountScopeID: accountID,
-		Provider:       ProviderGoogleGemini,
-		Model:          "gemini-omni-1.1-flash",
-		InteractionID:  "prev-omni-1",
+		AccountScopeID:      accountID,
+		CredentialID:        "cred-google",
+		Provider:            ProviderGoogleGemini,
+		Model:               "gemini-omni-1.1-flash",
+		Transport:           pebblestore.VideoTransportGoogleInteractions,
+		InteractionID:       "prev-omni-1",
+		OutputDigestSHA256:  sourceDigest,
+		CreatedAt:           time.Now().UnixMilli(),
+		ExpiresAt:           time.Now().Add(48 * time.Hour).UnixMilli(),
+		ObservedDurationMs:  15000,
+		ObservedWidth:       1280,
+		ObservedHeight:      720,
+		ExtensionCountKnown: true,
+		ExtensionCount:      0,
 	}
 
 	principal := identity.Principal{AccountScopeID: accountID}
@@ -673,6 +790,12 @@ func TestOmniExtension_TaskSerializationAndCeiling(t *testing.T) {
 	}
 	if res.InteractionID != "omni-ext-1" {
 		t.Errorf("InteractionID = %q, want omni-ext-1", res.InteractionID)
+	}
+	if res.ExtensionCount != 1 {
+		t.Errorf("ExtensionCount = %d, want 1", res.ExtensionCount)
+	}
+	if !res.IsCombinedOutput {
+		t.Errorf("expected IsCombinedOutput = true")
 	}
 
 	// Verify task="extend" in generation_config.video_config
@@ -756,10 +879,18 @@ func TestOmniConversationalEdit_TaskSerialization(t *testing.T) {
 	svc.SetVideoProber(fakeProber{duration: 8.0, width: 1280, height: 720})
 
 	sourceProv := &pebblestore.VideoProvenance{
-		AccountScopeID: accountID,
-		Provider:       ProviderGoogleGemini,
-		Model:          "gemini-omni-1.1-flash",
-		InteractionID:  "prev-omni-edit-0",
+		AccountScopeID:      accountID,
+		CredentialID:        "cred-google",
+		Provider:            ProviderGoogleGemini,
+		Model:               "gemini-omni-1.1-flash",
+		Transport:           pebblestore.VideoTransportGoogleInteractions,
+		InteractionID:       "prev-omni-edit-0",
+		CreatedAt:           time.Now().UnixMilli(),
+		ExpiresAt:           time.Now().Add(48 * time.Hour).UnixMilli(),
+		ObservedDurationMs:  8000,
+		ObservedWidth:       1280,
+		ObservedHeight:      720,
+		ExtensionCountKnown: true,
 	}
 
 	principal := identity.Principal{AccountScopeID: accountID}
@@ -794,12 +925,15 @@ func TestOmniConversationalEdit_TaskSerialization(t *testing.T) {
 // - Retained Omni interaction requires matching model (cannot switch models mid-conversation).
 // - Retained Omni interaction requires matching account scope.
 // - Retained Omni interaction requires matching credential.
+// - Retained Omni interaction requires matching interaction ID.
+// - Missing Omni interaction handle on provenance is rejected and does not silently upload.
 // - Handle-only source requires verified source provenance bound to caller identity.
 // - Never degrades missing/expired/incompatible retained Omni history into upload or generation.
 func TestOmniRetainedHistory_Validation(t *testing.T) {
 	catalog := setupTestCatalog()
 	authStore, accountID := setupTestAuthStore(t, "test-google-key", "")
 	svc := NewService(authStore, nil, catalog)
+	svc.SetVideoProber(fakeProber{duration: 5.0, width: 1280, height: 720})
 	principal := identity.Principal{AccountScopeID: accountID}
 
 	// 1. Handle-only source without provenance is rejected
@@ -810,7 +944,6 @@ func TestOmniRetainedHistory_Validation(t *testing.T) {
 		Prompt:        "Edit",
 		Source: &ManagedVideoSource{
 			InteractionID: "inter-1",
-			// No bytes and no Provenance!
 		},
 	})
 	if err == nil || !strings.Contains(err.Error(), "source-only video handle requires verified source provenance") {
@@ -819,10 +952,18 @@ func TestOmniRetainedHistory_Validation(t *testing.T) {
 
 	// 2. Foreign account scope rejected
 	foreignProv := &pebblestore.VideoProvenance{
-		AccountScopeID: "other-account",
-		Provider:       ProviderGoogleGemini,
-		Model:          "gemini-omni-1.1-flash",
-		InteractionID:  "inter-foreign",
+		AccountScopeID:      "other-account",
+		CredentialID:        "cred-google",
+		Provider:            ProviderGoogleGemini,
+		Model:               "gemini-omni-1.1-flash",
+		Transport:           pebblestore.VideoTransportGoogleInteractions,
+		InteractionID:       "inter-foreign",
+		CreatedAt:           time.Now().UnixMilli(),
+		ExpiresAt:           time.Now().Add(48 * time.Hour).UnixMilli(),
+		ObservedDurationMs:  5000,
+		ObservedWidth:       1280,
+		ObservedHeight:      720,
+		ExtensionCountKnown: true,
 	}
 	_, err = svc.PreflightVideoOperation(context.Background(), VideoPreflightRequest{
 		Principal:     principal,
@@ -840,10 +981,18 @@ func TestOmniRetainedHistory_Validation(t *testing.T) {
 
 	// 3. Model mismatch in retained history rejected
 	veoProv := &pebblestore.VideoProvenance{
-		AccountScopeID: accountID,
-		Provider:       ProviderGoogleGemini,
-		Model:          "veo-3.1-generate-preview",
-		InteractionID:  "inter-mismatch",
+		AccountScopeID:      accountID,
+		CredentialID:        "cred-google",
+		Provider:            ProviderGoogleGemini,
+		Model:               "veo-3.1-generate-preview",
+		Transport:           pebblestore.VideoTransportGooglePredictLongRunning,
+		InteractionID:       "inter-mismatch",
+		CreatedAt:           time.Now().UnixMilli(),
+		ExpiresAt:           time.Now().Add(48 * time.Hour).UnixMilli(),
+		ObservedDurationMs:  5000,
+		ObservedWidth:       1280,
+		ObservedHeight:      720,
+		ExtensionCountKnown: true,
 	}
 	_, err = svc.PreflightVideoOperation(context.Background(), VideoPreflightRequest{
 		Principal:     principal,
@@ -861,10 +1010,19 @@ func TestOmniRetainedHistory_Validation(t *testing.T) {
 
 	// 4. Mismatched bytes digest rejected
 	digestProv := &pebblestore.VideoProvenance{
-		AccountScopeID:     accountID,
-		Provider:           ProviderGoogleGemini,
-		Model:              "gemini-omni-1.1-flash",
-		OutputDigestSHA256: "0000000000000000000000000000000000000000000000000000000000000000",
+		AccountScopeID:      accountID,
+		CredentialID:        "cred-google",
+		Provider:            ProviderGoogleGemini,
+		Model:               "gemini-omni-1.1-flash",
+		Transport:           pebblestore.VideoTransportGoogleInteractions,
+		InteractionID:       "inter-digest",
+		OutputDigestSHA256:  "0000000000000000000000000000000000000000000000000000000000000000",
+		CreatedAt:           time.Now().UnixMilli(),
+		ExpiresAt:           time.Now().Add(48 * time.Hour).UnixMilli(),
+		ObservedDurationMs:  5000,
+		ObservedWidth:       1280,
+		ObservedHeight:      720,
+		ExtensionCountKnown: true,
 	}
 	_, err = svc.PreflightVideoOperation(context.Background(), VideoPreflightRequest{
 		Principal:     principal,
@@ -872,12 +1030,100 @@ func TestOmniRetainedHistory_Validation(t *testing.T) {
 		ExplicitModel: "gemini-omni-1.1-flash",
 		Prompt:        "Edit",
 		Source: &ManagedVideoSource{
-			Bytes:      []byte("actual-bytes"),
-			Provenance: digestProv,
+			Bytes:         []byte("actual-bytes"),
+			InteractionID: "inter-digest",
+			Provenance:    digestProv,
 		},
 	})
 	if err == nil || !strings.Contains(err.Error(), "does not match expected provenance digest") {
 		t.Fatalf("expected digest mismatch rejection, got: %v", err)
+	}
+
+	// 5. Credential mismatch rejected
+	credMismatchProv := &pebblestore.VideoProvenance{
+		AccountScopeID:      accountID,
+		CredentialID:        "other-credential",
+		Provider:            ProviderGoogleGemini,
+		Model:               "gemini-omni-1.1-flash",
+		Transport:           pebblestore.VideoTransportGoogleInteractions,
+		InteractionID:       "inter-cred-mismatch",
+		CreatedAt:           time.Now().UnixMilli(),
+		ExpiresAt:           time.Now().Add(48 * time.Hour).UnixMilli(),
+		ObservedDurationMs:  5000,
+		ObservedWidth:       1280,
+		ObservedHeight:      720,
+		ExtensionCountKnown: true,
+	}
+	_, err = svc.PreflightVideoOperation(context.Background(), VideoPreflightRequest{
+		Principal:     principal,
+		Operation:     pebblestore.VideoOperationEdit,
+		ExplicitModel: "gemini-omni-1.1-flash",
+		Prompt:        "Edit",
+		Source: &ManagedVideoSource{
+			InteractionID: "inter-cred-mismatch",
+			Provenance:    credMismatchProv,
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "credential mismatch") {
+		t.Fatalf("expected credential mismatch rejection, got: %v", err)
+	}
+
+	// 6. Interaction ID mismatch between Source and Provenance rejected
+	idMismatchProv := &pebblestore.VideoProvenance{
+		AccountScopeID:      accountID,
+		CredentialID:        "cred-google",
+		Provider:            ProviderGoogleGemini,
+		Model:               "gemini-omni-1.1-flash",
+		Transport:           pebblestore.VideoTransportGoogleInteractions,
+		InteractionID:       "inter-stored",
+		CreatedAt:           time.Now().UnixMilli(),
+		ExpiresAt:           time.Now().Add(48 * time.Hour).UnixMilli(),
+		ObservedDurationMs:  5000,
+		ObservedWidth:       1280,
+		ObservedHeight:      720,
+		ExtensionCountKnown: true,
+	}
+	_, err = svc.PreflightVideoOperation(context.Background(), VideoPreflightRequest{
+		Principal:     principal,
+		Operation:     pebblestore.VideoOperationEdit,
+		ExplicitModel: "gemini-omni-1.1-flash",
+		Prompt:        "Edit",
+		Source: &ManagedVideoSource{
+			InteractionID: "inter-request",
+			Provenance:    idMismatchProv,
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "does not match stored provenance interaction ID") {
+		t.Fatalf("expected interaction ID mismatch rejection, got: %v", err)
+	}
+
+	// 7. Omni provenance missing interaction handle rejected (must fail, not upload)
+	missingHandleProv := &pebblestore.VideoProvenance{
+		AccountScopeID:      accountID,
+		CredentialID:        "cred-google",
+		Provider:            ProviderGoogleGemini,
+		Model:               "gemini-omni-1.1-flash",
+		Transport:           pebblestore.VideoTransportGoogleInteractions,
+		InteractionID:       "", // blank!
+		CreatedAt:           time.Now().UnixMilli(),
+		ExpiresAt:           time.Now().Add(48 * time.Hour).UnixMilli(),
+		ObservedDurationMs:  5000,
+		ObservedWidth:       1280,
+		ObservedHeight:      720,
+		ExtensionCountKnown: true,
+	}
+	_, err = svc.PreflightVideoOperation(context.Background(), VideoPreflightRequest{
+		Principal:     principal,
+		Operation:     pebblestore.VideoOperationEdit,
+		ExplicitModel: "gemini-omni-1.1-flash",
+		Prompt:        "Edit",
+		Source: &ManagedVideoSource{
+			Bytes:      []byte("fake-bytes"),
+			Provenance: missingHandleProv,
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "missing interaction handle") {
+		t.Fatalf("expected missing interaction handle rejection, got: %v", err)
 	}
 }
 
@@ -891,6 +1137,7 @@ func TestOmniExternalUpload_10sLimitAndAdvisory(t *testing.T) {
 	principal := identity.Principal{AccountScopeID: accountID}
 
 	// > 10s rejected
+	svc.SetVideoProber(fakeProber{duration: 11.0, width: 1280, height: 720})
 	_, err := svc.PreflightVideoOperation(context.Background(), VideoPreflightRequest{
 		Principal:             principal,
 		Operation:             pebblestore.VideoOperationEdit,
@@ -907,6 +1154,7 @@ func TestOmniExternalUpload_10sLimitAndAdvisory(t *testing.T) {
 	}
 
 	// <= 10s accepted and contains advisory warning
+	svc.SetVideoProber(fakeProber{duration: 6.0, width: 1280, height: 720})
 	res, err := svc.PreflightVideoOperation(context.Background(), VideoPreflightRequest{
 		Principal:             principal,
 		Operation:             pebblestore.VideoOperationEdit,

@@ -193,7 +193,7 @@ func (s *Service) generateGoogleOmni(
 		return ManagedVideoResult{}, err
 	}
 
-	return ManagedVideoResult{
+	res := ManagedVideoResult{
 		Bytes:         videoBytes,
 		MediaType:     "video/mp4",
 		InteractionID: omniResp.ID,
@@ -201,7 +201,16 @@ func (s *Service) generateGoogleOmni(
 		Provider:      ProviderGoogleGemini,
 		Operation:     operation,
 		Transport:     pebblestore.VideoTransportGoogleInteractions,
-	}, nil
+	}
+	if operation == pebblestore.VideoOperationExtend {
+		res.IsCombinedOutput = true
+		if source != nil && source.Provenance != nil {
+			res.ExtensionCount = source.Provenance.ExtensionCount + 1
+		} else {
+			res.ExtensionCount = 1
+		}
+	}
+	return res, nil
 }
 
 func (s *Service) extractOmniVideoBytes(ctx context.Context, apiKey string, resp omniInteractionResponse) ([]byte, error) {
@@ -344,12 +353,18 @@ func (s *Service) downloadGoogleFile(ctx context.Context, apiKey string, fileURI
 	if err != nil {
 		return nil, fmt.Errorf("invalid google file URI: %w", err)
 	}
+	if parsedURL.User != nil {
+		return nil, errors.New("userinfo is not permitted in file URI for authenticated download")
+	}
 
 	googleURL, _ := url.Parse(s.googleURL())
 	var targetURL string
 	if !parsedURL.IsAbs() {
 		targetURL = fmt.Sprintf("%s/%s", s.googleURL(), strings.TrimPrefix(fileURI, "/"))
 	} else {
+		if parsedURL.Scheme != "https" && parsedURL.Hostname() != "127.0.0.1" && parsedURL.Hostname() != "localhost" {
+			return nil, fmt.Errorf("insecure scheme %q is not permitted for authenticated download", parsedURL.Scheme)
+		}
 		h := strings.ToLower(parsedURL.Hostname())
 		expectedHost := ""
 		if googleURL != nil {
@@ -379,8 +394,17 @@ func (s *Service) downloadGoogleFile(ctx context.Context, apiKey string, fileURI
 			if len(via) >= 10 {
 				return errors.New("stopped after 10 redirects")
 			}
-			if origHost != "" && !strings.EqualFold(req.URL.Host, origHost) {
+			if req.URL.User != nil {
+				return errors.New("redirect target contains userinfo")
+			}
+			if req.URL.Scheme != "https" && req.URL.Hostname() != "127.0.0.1" && req.URL.Hostname() != "localhost" {
+				return fmt.Errorf("redirect target has insecure scheme: %s", req.URL.Scheme)
+			}
+			if origHost != "" && (!strings.EqualFold(req.URL.Host, origHost) || req.URL.Scheme != "https") {
 				req.Header.Del("x-goog-api-key")
+			}
+			if client.CheckRedirect != nil {
+				return client.CheckRedirect(req, via)
 			}
 			return nil
 		},

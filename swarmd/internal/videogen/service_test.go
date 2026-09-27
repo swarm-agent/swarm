@@ -2,7 +2,9 @@ package videogen
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"math"
 	"net/http"
@@ -105,6 +107,7 @@ func TestGenerateGoogleVeoVideo(t *testing.T) {
 	svc := NewService(authStore, nil, nil)
 	svc.SetBaseURLs(server.URL, "")
 	svc.SetPollTiming(10*time.Millisecond, 2*time.Second)
+	svc.SetVideoProber(fakeProber{duration: 8.0, width: 1280, height: 720})
 
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "u1", AccountScopeID: accountScopeID}
 	res, err := svc.GenerateManagedVideo(context.Background(), ManagedVideoRequest{
@@ -189,6 +192,7 @@ func TestGenerateGoogleOmniInitialAndConversationalEdit(t *testing.T) {
 	authStore, accountScopeID := setupTestAuthStore(t, "test-google-key", "")
 	svc := NewService(authStore, nil, nil)
 	svc.SetBaseURLs(server.URL, "")
+	svc.SetVideoProber(fakeProber{duration: 8.0, width: 1280, height: 720})
 
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "u1", AccountScopeID: accountScopeID}
 
@@ -205,6 +209,22 @@ func TestGenerateGoogleOmniInitialAndConversationalEdit(t *testing.T) {
 	}
 
 	// Turn 2: Conversational edit passing previous interaction ID
+	h1 := sha256.Sum256(res1.Bytes)
+	res1Prov := &pebblestore.VideoProvenance{
+		AccountScopeID:      accountScopeID,
+		CredentialID:        "cred-google",
+		Provider:            ProviderGoogleGemini,
+		Model:               "gemini-omni-1.1-flash",
+		Transport:           pebblestore.VideoTransportGoogleInteractions,
+		InteractionID:       res1.InteractionID,
+		OutputDigestSHA256:  hex.EncodeToString(h1[:]),
+		CreatedAt:           time.Now().UnixMilli(),
+		ExpiresAt:           time.Now().Add(48 * time.Hour).UnixMilli(),
+		ObservedDurationMs:  8000,
+		ObservedWidth:       1280,
+		ObservedHeight:      720,
+		ExtensionCountKnown: true,
+	}
 	res2, err := svc.GenerateManagedVideo(context.Background(), ManagedVideoRequest{
 		Operation: pebblestore.VideoOperationEdit,
 		Prompt:    "Make the violin invisible",
@@ -214,6 +234,7 @@ func TestGenerateGoogleOmniInitialAndConversationalEdit(t *testing.T) {
 			MediaType:     "video/mp4",
 			InteractionID: res1.InteractionID,
 			Model:         "gemini-omni-1.1-flash",
+			Provenance:    res1Prov,
 		},
 	})
 	if err != nil {
@@ -282,6 +303,7 @@ func TestGenerateGoogleOmniBridgeEditFromExternalVideo(t *testing.T) {
 	authStore, accountScopeID := setupTestAuthStore(t, "test-google-key", "")
 	svc := NewService(authStore, nil, nil)
 	svc.SetBaseURLs(server.URL, "")
+	svc.SetVideoProber(fakeProber{duration: 8.0, width: 1280, height: 720})
 
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "u1", AccountScopeID: accountScopeID}
 	res, err := svc.GenerateManagedVideo(context.Background(), ManagedVideoRequest{
@@ -346,6 +368,7 @@ func TestGenerateGoogleOmniContentBlockedDiagnostic(t *testing.T) {
 	authStore, accountScopeID := setupTestAuthStore(t, "test-google-key", "")
 	svc := NewService(authStore, nil, nil)
 	svc.SetBaseURLs(server.URL, "")
+	svc.SetVideoProber(fakeProber{duration: 8.0, width: 1280, height: 720})
 
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "u1", AccountScopeID: accountScopeID}
 	_, err := svc.GenerateManagedVideo(context.Background(), ManagedVideoRequest{
@@ -469,6 +492,7 @@ func TestGenerateGoogleVeoVideoWithImageInput(t *testing.T) {
 	svc := NewService(authStore, nil, nil)
 	svc.SetBaseURLs(server.URL, "")
 	svc.SetPollTiming(10*time.Millisecond, 2*time.Second)
+	svc.SetVideoProber(fakeProber{duration: 8.0, width: 1280, height: 720})
 
 	rawPNG := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\rIDATx\x9cc`\x00\x00\x00\x02\x00\x01H\xaf\xa4q\x00\x00\x00\x00IEND\xaeB`\x82")
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "u1", AccountScopeID: accountScopeID}
@@ -580,6 +604,7 @@ func TestGenerateGoogleOmniWithImageInput(t *testing.T) {
 	authStore, accountScopeID := setupTestAuthStore(t, "test-google-key", "")
 	svc := NewService(authStore, nil, nil)
 	svc.SetBaseURLs(server.URL, "")
+	svc.SetVideoProber(fakeProber{duration: 8.0, width: 1280, height: 720})
 
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "u1", AccountScopeID: accountScopeID}
 	res, err := svc.generateGoogleOmni(context.Background(), "test-google-key", "gemini-omni-1.1-flash", "Bring this image to life", "16:9", "720p", pebblestore.VideoOperationCreate, nil, &ManagedVideoImage{
@@ -784,6 +809,7 @@ func TestGenerateGoogleVeoVideoWithSnapshotCatalogPricing(t *testing.T) {
 	svc := NewService(authStore, nil, catalog)
 	svc.SetBaseURLs(server.URL, "")
 	svc.SetPollTiming(10*time.Millisecond, 2*time.Second)
+	svc.SetVideoProber(fakeProber{duration: 8.0, width: 1280, height: 720})
 
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "u1", AccountScopeID: accountScopeID}
 
@@ -937,6 +963,7 @@ func TestGenerateManagedVideo_OmniOmitsDuration(t *testing.T) {
 
 	svc := NewService(authStore, nil, catalog)
 	svc.SetBaseURLs(server.URL, "")
+	svc.SetVideoProber(fakeProber{duration: 8.0, width: 1280, height: 720})
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "u1", AccountScopeID: accountScopeID}
 
 	res, err := svc.GenerateManagedVideo(context.Background(), ManagedVideoRequest{
