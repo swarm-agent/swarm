@@ -492,173 +492,173 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 
 	// 1. Direct Media Generation: image, generative video, audio, and designer swarm tasks do NOT spin up chat agent sessions.
 	// They directly generate media deliverables and transition to needs_review.
-			isDirectMedia := isDirectMediaTask(task)
-			if isDirectMedia {
-				task.SessionID = ""
-				if taskStatus == "in_progress" {
-					now := time.Now().UnixMilli()
-					if task.Agent == "image" || task.Agent == "designer" {
-						count := task.VariantCount
-						if count <= 0 {
-							count = len(task.Deliverables)
-						}
-						if count <= 0 {
-							count = 1
-						}
-						ar := task.AspectRatio
-						if ar == "" {
-							ar = "1:1"
-						}
-						var delivs []pebblestore.ProjectTaskDeliverable
-						for i := 1; i <= count; i++ {
-							delivs = append(delivs, pebblestore.ProjectTaskDeliverable{
-								ID:          fmt.Sprintf("deliv_img_%d_%d", now, i),
-								Title:       fmt.Sprintf("%s (Variant %d, %s)", task.Title, i, ar),
-								Kind:        "image",
-								Status:      "generating",
-								Description: fmt.Sprintf("Autonomous deliverable for %s in aspect ratio %s", task.Title, ar),
-							})
-						}
-						task.Deliverables = delivs
-						task.Status = "in_progress"
-						task.ActionNeeded = fmt.Sprintf("Generating %d deliverable variant(s)...", count)
-						task.WhatDidDo = []string{"Approved mission", "Generating media assets"}
-					} else if task.Agent == "video" {
-						ar := task.AspectRatio
-						if ar == "" {
-							ar = "16:9"
-						}
-						sceneCount := len(task.Scenes)
-						if sceneCount == 0 {
-							if task.VariantCount > 0 && task.VariantCount <= 1 {
-								sceneCount = 1
-							} else {
-								sceneCount = 2
-							}
-						}
-						soundtrack := task.Soundtrack
-						videoModel := strings.TrimSpace(task.Model)
-						if videoModel == "" {
-							videoModel = "veo-3.1-generate-preview"
-						}
-						resTag := task.Resolution
-						if resTag == "" {
-							resTag = "720p"
-						}
-						durSec := task.DurationSeconds
-						if durSec <= 0 {
-							durSec = 8
-						}
-						durStr := fmt.Sprintf("%ds", durSec)
-
-						count := task.VariantCount
-						if count <= 0 {
-							count = len(task.Deliverables)
-						}
-						if count <= 0 {
-							count = 1
-						}
-
-						var delivs []pebblestore.ProjectTaskDeliverable
-						if count > 1 {
-							for i := 1; i <= count; i++ {
-								delivs = append(delivs, pebblestore.ProjectTaskDeliverable{
-									ID:          fmt.Sprintf("deliv_vid_%d_%d", now, i),
-									Title:       fmt.Sprintf("%s (Take %d, %s)", task.Title, i, ar),
-									Kind:        "video",
-									Status:      "generating",
-									Thumbnail:   "video",
-									Duration:    durStr,
-									Description: fmt.Sprintf("Video variation %d of %d (%s, %s, %s) generating with %s: %s", i, count, ar, resTag, durStr, videoModel, task.Title),
-								})
-							}
-							task.Deliverables = delivs
-							task.Status = "in_progress"
-							task.ActionNeeded = fmt.Sprintf("Rendering %d video deliverable variant(s)...", count)
-							task.WhatDidDo = []string{"Approved mission", fmt.Sprintf("Rendering %d video variations with %s", count, videoModel)}
-						} else if sceneCount <= 1 || task.OutcomeType == "video_clip" {
-							delivs = append(delivs, pebblestore.ProjectTaskDeliverable{
-								ID:          fmt.Sprintf("deliv_vid_%d", now),
-								Title:       fmt.Sprintf("%s (Single Video, %s)", task.Title, ar),
-								Kind:        "video",
-								Status:      "generating",
-								Thumbnail:   "video",
-								Duration:    durStr,
-								Description: fmt.Sprintf("Single video clip (%s, %s, %s) generated via %s: %s", ar, resTag, durStr, videoModel, task.Title),
-							})
-							task.Deliverables = delivs
-							task.Status = "in_progress"
-							task.ActionNeeded = fmt.Sprintf("Rendering single video clip (%s)...", durStr)
-							task.WhatDidDo = []string{"Approved mission", fmt.Sprintf("Rendering %s video clip directly with %s", durStr, videoModel)}
-						} else {
-							desc := fmt.Sprintf("Compiled %d-scene multi-part video (%s): %s", sceneCount, ar, task.Title)
-							if soundtrack != "" {
-								desc = fmt.Sprintf("Compiled %d-scene multi-part video with soundtrack (%s): %s", sceneCount, soundtrack, task.Title)
-							}
-							delivs = append(delivs, pebblestore.ProjectTaskDeliverable{
-								ID:          fmt.Sprintf("deliv_vid_%d", now),
-								Title:       fmt.Sprintf("%s (%d-Scene Multi-Part Video, %s)", task.Title, sceneCount, ar),
-								Kind:        "video",
-								Status:      "generating",
-								Thumbnail:   "video",
-								Duration:    fmt.Sprintf("%ds", sceneCount*4),
-								Description: desc,
-							})
-							task.Deliverables = delivs
-							task.Status = "in_progress"
-							task.ActionNeeded = "Rendering multi-part video sequence..."
-							task.WhatDidDo = []string{"Approved mission", "Rendering multi-part video sequence"}
-						}
-					} else if task.Agent == "sound" || task.Agent == "audio" {
-						soundModel := strings.TrimSpace(task.Model)
-						if soundModel == "" {
-							soundModel = "lyria-3.5"
-						}
-						durSeconds := task.DurationSeconds
-						if durSeconds <= 0 {
-							durSeconds = 30
-						}
-						var delivs []pebblestore.ProjectTaskDeliverable
-						delivs = append(delivs, pebblestore.ProjectTaskDeliverable{
-							ID:          fmt.Sprintf("deliv_snd_%d", now),
-							Title:       fmt.Sprintf("%s (Audio Clip)", task.Title),
-							Kind:        "audio",
-							Status:      "generating",
-							Thumbnail:   "sound",
-							Duration:    fmt.Sprintf("%ds", durSeconds),
-							Description: fmt.Sprintf("Generated %ds audio soundtrack using %s: %s", durSeconds, soundModel, task.Title),
-						})
-						task.Deliverables = delivs
-						task.Status = "in_progress"
-						task.ActionNeeded = "Generating audio soundtrack..."
-						task.WhatDidDo = []string{"Approved mission", "Generating audio track"}
-					}
-
-					// Persist task before starting execution goroutine to eliminate the persistence vs goroutine race.
-					if s.sessions != nil && s.sessions.Store() != nil {
-						_ = s.sessions.Store().PutProjectTask(p.AccountScopeID, task)
-					}
-
-					taskCopy := *task
-					if len(task.Deliverables) > 0 {
-						taskCopy.Deliverables = append([]pebblestore.ProjectTaskDeliverable(nil), task.Deliverables...)
-					}
-					if len(task.AttachedMedia) > 0 {
-						taskCopy.AttachedMedia = append([]pebblestore.ProjectTaskMediaRef(nil), task.AttachedMedia...)
-					}
-					if len(task.Scenes) > 0 {
-						taskCopy.Scenes = append([]pebblestore.ProjectTaskScene(nil), task.Scenes...)
-					}
-					if len(task.WhatDidDo) > 0 {
-						taskCopy.WhatDidDo = append([]string(nil), task.WhatDidDo...)
-					}
-					if len(task.WhatNotDone) > 0 {
-						taskCopy.WhatNotDone = append([]string(nil), task.WhatNotDone...)
-					}
-					go s.executeDirectMediaTask(p, proj, &taskCopy)
+	isDirectMedia := isDirectMediaTask(task)
+	if isDirectMedia {
+		task.SessionID = ""
+		if taskStatus == "in_progress" {
+			now := time.Now().UnixMilli()
+			if task.Agent == "image" || task.Agent == "designer" {
+				count := task.VariantCount
+				if count <= 0 {
+					count = len(task.Deliverables)
 				}
-				return nil
+				if count <= 0 {
+					count = 1
+				}
+				ar := task.AspectRatio
+				if ar == "" {
+					ar = "1:1"
+				}
+				var delivs []pebblestore.ProjectTaskDeliverable
+				for i := 1; i <= count; i++ {
+					delivs = append(delivs, pebblestore.ProjectTaskDeliverable{
+						ID:          fmt.Sprintf("deliv_img_%d_%d", now, i),
+						Title:       fmt.Sprintf("%s (Variant %d, %s)", task.Title, i, ar),
+						Kind:        "image",
+						Status:      "generating",
+						Description: fmt.Sprintf("Autonomous deliverable for %s in aspect ratio %s", task.Title, ar),
+					})
+				}
+				task.Deliverables = delivs
+				task.Status = "in_progress"
+				task.ActionNeeded = fmt.Sprintf("Generating %d deliverable variant(s)...", count)
+				task.WhatDidDo = []string{"Approved mission", "Generating media assets"}
+			} else if task.Agent == "video" {
+				ar := task.AspectRatio
+				if ar == "" {
+					ar = "16:9"
+				}
+				sceneCount := len(task.Scenes)
+				if sceneCount == 0 {
+					if task.VariantCount > 0 && task.VariantCount <= 1 {
+						sceneCount = 1
+					} else {
+						sceneCount = 2
+					}
+				}
+				soundtrack := task.Soundtrack
+				videoModel := strings.TrimSpace(task.Model)
+				if videoModel == "" {
+					videoModel = "veo-3.1-generate-preview"
+				}
+				resTag := task.Resolution
+				if resTag == "" {
+					resTag = "720p"
+				}
+				durSec := task.DurationSeconds
+				if durSec <= 0 {
+					durSec = 8
+				}
+				durStr := fmt.Sprintf("%ds", durSec)
+
+				count := task.VariantCount
+				if count <= 0 {
+					count = len(task.Deliverables)
+				}
+				if count <= 0 {
+					count = 1
+				}
+
+				var delivs []pebblestore.ProjectTaskDeliverable
+				if count > 1 {
+					for i := 1; i <= count; i++ {
+						delivs = append(delivs, pebblestore.ProjectTaskDeliverable{
+							ID:          fmt.Sprintf("deliv_vid_%d_%d", now, i),
+							Title:       fmt.Sprintf("%s (Take %d, %s)", task.Title, i, ar),
+							Kind:        "video",
+							Status:      "generating",
+							Thumbnail:   "video",
+							Duration:    durStr,
+							Description: fmt.Sprintf("Video variation %d of %d (%s, %s, %s) generating with %s: %s", i, count, ar, resTag, durStr, videoModel, task.Title),
+						})
+					}
+					task.Deliverables = delivs
+					task.Status = "in_progress"
+					task.ActionNeeded = fmt.Sprintf("Rendering %d video deliverable variant(s)...", count)
+					task.WhatDidDo = []string{"Approved mission", fmt.Sprintf("Rendering %d video variations with %s", count, videoModel)}
+				} else if sceneCount <= 1 || task.OutcomeType == "video_clip" {
+					delivs = append(delivs, pebblestore.ProjectTaskDeliverable{
+						ID:          fmt.Sprintf("deliv_vid_%d", now),
+						Title:       fmt.Sprintf("%s (Single Video, %s)", task.Title, ar),
+						Kind:        "video",
+						Status:      "generating",
+						Thumbnail:   "video",
+						Duration:    durStr,
+						Description: fmt.Sprintf("Single video clip (%s, %s, %s) generated via %s: %s", ar, resTag, durStr, videoModel, task.Title),
+					})
+					task.Deliverables = delivs
+					task.Status = "in_progress"
+					task.ActionNeeded = fmt.Sprintf("Rendering single video clip (%s)...", durStr)
+					task.WhatDidDo = []string{"Approved mission", fmt.Sprintf("Rendering %s video clip directly with %s", durStr, videoModel)}
+				} else {
+					desc := fmt.Sprintf("Compiled %d-scene multi-part video (%s): %s", sceneCount, ar, task.Title)
+					if soundtrack != "" {
+						desc = fmt.Sprintf("Compiled %d-scene multi-part video with soundtrack (%s): %s", sceneCount, soundtrack, task.Title)
+					}
+					delivs = append(delivs, pebblestore.ProjectTaskDeliverable{
+						ID:          fmt.Sprintf("deliv_vid_%d", now),
+						Title:       fmt.Sprintf("%s (%d-Scene Multi-Part Video, %s)", task.Title, sceneCount, ar),
+						Kind:        "video",
+						Status:      "generating",
+						Thumbnail:   "video",
+						Duration:    fmt.Sprintf("%ds", sceneCount*4),
+						Description: desc,
+					})
+					task.Deliverables = delivs
+					task.Status = "in_progress"
+					task.ActionNeeded = "Rendering multi-part video sequence..."
+					task.WhatDidDo = []string{"Approved mission", "Rendering multi-part video sequence"}
+				}
+			} else if task.Agent == "sound" || task.Agent == "audio" {
+				soundModel := strings.TrimSpace(task.Model)
+				if soundModel == "" {
+					soundModel = "lyria-3.5"
+				}
+				durSeconds := task.DurationSeconds
+				if durSeconds <= 0 {
+					durSeconds = 30
+				}
+				var delivs []pebblestore.ProjectTaskDeliverable
+				delivs = append(delivs, pebblestore.ProjectTaskDeliverable{
+					ID:          fmt.Sprintf("deliv_snd_%d", now),
+					Title:       fmt.Sprintf("%s (Audio Clip)", task.Title),
+					Kind:        "audio",
+					Status:      "generating",
+					Thumbnail:   "sound",
+					Duration:    fmt.Sprintf("%ds", durSeconds),
+					Description: fmt.Sprintf("Generated %ds audio soundtrack using %s: %s", durSeconds, soundModel, task.Title),
+				})
+				task.Deliverables = delivs
+				task.Status = "in_progress"
+				task.ActionNeeded = "Generating audio soundtrack..."
+				task.WhatDidDo = []string{"Approved mission", "Generating audio track"}
 			}
+
+			// Persist task before starting execution goroutine to eliminate the persistence vs goroutine race.
+			if s.sessions != nil && s.sessions.Store() != nil {
+				_ = s.sessions.Store().PutProjectTask(p.AccountScopeID, task)
+			}
+
+			taskCopy := *task
+			if len(task.Deliverables) > 0 {
+				taskCopy.Deliverables = append([]pebblestore.ProjectTaskDeliverable(nil), task.Deliverables...)
+			}
+			if len(task.AttachedMedia) > 0 {
+				taskCopy.AttachedMedia = append([]pebblestore.ProjectTaskMediaRef(nil), task.AttachedMedia...)
+			}
+			if len(task.Scenes) > 0 {
+				taskCopy.Scenes = append([]pebblestore.ProjectTaskScene(nil), task.Scenes...)
+			}
+			if len(task.WhatDidDo) > 0 {
+				taskCopy.WhatDidDo = append([]string(nil), task.WhatDidDo...)
+			}
+			if len(task.WhatNotDone) > 0 {
+				taskCopy.WhatNotDone = append([]string(nil), task.WhatNotDone...)
+			}
+			go s.executeDirectMediaTask(p, proj, &taskCopy)
+		}
+		return nil
+	}
 
 	// 2. Agent Tasks: coder, finder, designer, swarm, plan.
 	// Must create a canonical V3 session with compiled agent_profile, seed message, and RunIntent.

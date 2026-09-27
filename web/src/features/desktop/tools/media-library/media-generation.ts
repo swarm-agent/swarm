@@ -421,10 +421,7 @@ export function calculateGenerationCost({
   count: number
   settings: MediaGenerationSettings
 }): CalculatedCostEstimate {
-  const isVideoModel =
-    modelOption?.kind === 'video_generation' ||
-    modelOption?.kind === 'video_iteration' ||
-    (typeof modelOption?.kind === 'string' && modelOption.kind.includes('video'))
+  const isVideoModel = typeof modelOption?.kind === 'string' && modelOption.kind.includes('video')
 
   const isVideoAction =
     action === 'to_video' ||
@@ -480,7 +477,7 @@ export function calculateGenerationCost({
         unitPrice,
         quantity: effectiveCount,
         unitLabel: effectiveCount === 1 ? 'image' : 'images',
-        totalPrice: total,
+        totalPrice: Number(total.toFixed(10)),
         formattedPerUnit: perUnitStr,
         formattedTotal: totalStr,
         isAvailable: true,
@@ -524,7 +521,7 @@ export function calculateGenerationCost({
           unitPrice,
           quantity: effectiveCount,
           unitLabel: `${duration}s clip`,
-          totalPrice: total,
+          totalPrice: Number(total.toFixed(10)),
           formattedPerUnit: perUnitStr,
           formattedTotal: totalStr,
           isAvailable: true,
@@ -542,7 +539,7 @@ export function calculateGenerationCost({
           unitPrice,
           quantity: effectiveCount,
           unitLabel: effectiveCount === 1 ? 'clip' : 'clips',
-          totalPrice: total,
+          totalPrice: Number(total.toFixed(10)),
           formattedPerUnit: perUnitStr,
           formattedTotal: totalStr,
           isAvailable: true,
@@ -570,7 +567,7 @@ export function calculateGenerationCost({
         unitPrice: directPerImage,
         quantity: effectiveCount,
         unitLabel: effectiveCount === 1 ? 'image' : 'images',
-        totalPrice: total,
+        totalPrice: Number(total.toFixed(10)),
         formattedPerUnit: perUnitStr,
         formattedTotal: totalStr,
         isAvailable: true,
@@ -594,7 +591,7 @@ export function calculateGenerationCost({
         unitPrice: directPerVideo,
         quantity: effectiveCount,
         unitLabel: effectiveCount === 1 ? 'clip' : 'clips',
-        totalPrice: total,
+        totalPrice: Number(total.toFixed(10)),
         formattedPerUnit: perUnitStr,
         formattedTotal: totalStr,
         isAvailable: true,

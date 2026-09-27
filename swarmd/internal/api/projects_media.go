@@ -69,12 +69,7 @@ func (s *Server) generateImageMedia(
 		}
 	}
 	if usedModel == "" {
-		if selections, err := s.imageGen.GoogleImageModelSelections(); err == nil && len(selections) > 0 {
-			usedModel = selections[0].Model
-		}
-	}
-	if usedModel == "" {
-		usedModel = imagegen.DefaultModelSelectionID
+		return "", "", errors.New("configure a default image model or select a model for this generation")
 	}
 
 	ar := strings.TrimSpace(aspectRatio)
@@ -270,20 +265,13 @@ func validateProjectMediaTaskSettings(s *Server, task *pebblestore.ProjectTaskRe
 			}
 		}
 		opts := s.getModelGenerationOptions(model)
-		if opts == nil && model == "" {
-			opts = s.getModelGenerationOptions("veo-3.1-generate-preview")
-		}
 		if ar := strings.TrimSpace(task.AspectRatio); ar != "" {
 			if opts != nil && len(opts.AspectRatios) > 0 {
 				if !containsStringFold(opts.AspectRatios, ar) && !isEquivalentAspectRatio(opts.AspectRatios, ar) {
 					return fmt.Errorf("unsupported video aspect ratio %q; supported ratios are %s", ar, strings.Join(opts.AspectRatios, ", "))
 				}
 			} else {
-				switch strings.ToLower(ar) {
-				case "16:9", "9:16", "1:1", "4:3", "landscape", "portrait":
-				default:
-					return fmt.Errorf("unsupported video aspect ratio %q; supported ratios are 16:9, 9:16, 1:1, 4:3", ar)
-				}
+				return errors.New("video aspect ratio metadata unavailable for selected model")
 			}
 		}
 		if res := strings.TrimSpace(task.Resolution); res != "" {
@@ -292,11 +280,7 @@ func validateProjectMediaTaskSettings(s *Server, task *pebblestore.ProjectTaskRe
 					return fmt.Errorf("unsupported video resolution %q; supported resolutions are %s", res, strings.Join(opts.Resolutions, ", "))
 				}
 			} else {
-				switch strings.ToLower(res) {
-				case "360p", "720p", "1080p", "4k":
-				default:
-					return fmt.Errorf("unsupported video resolution %q; supported resolutions are 360p, 720p, 1080p, 4k", res)
-				}
+				return errors.New("video resolution metadata unavailable for selected model")
 			}
 		}
 		if dur := task.DurationSeconds; dur > 0 {
@@ -316,9 +300,7 @@ func validateProjectMediaTaskSettings(s *Server, task *pebblestore.ProjectTaskRe
 					return fmt.Errorf("unsupported video duration %d seconds; supported durations are %s seconds", dur, strings.Join(durStrs, ", "))
 				}
 			} else {
-				if dur != 4 && dur != 6 && dur != 8 {
-					return fmt.Errorf("unsupported video duration %d seconds; supported durations are 4, 6, 8 seconds", dur)
-				}
+				return errors.New("video duration metadata unavailable for selected model")
 			}
 			resLower := strings.ToLower(strings.TrimSpace(task.Resolution))
 			if (resLower == "1080p" || resLower == "4k") && (dur == 4 || dur == 6) {
@@ -342,20 +324,13 @@ func validateProjectMediaTaskSettings(s *Server, task *pebblestore.ProjectTaskRe
 			}
 		}
 		opts := s.getModelGenerationOptions(model)
-		if opts == nil && model == "" {
-			opts = s.getModelGenerationOptions("snapshot-image")
-		}
 		if ar := strings.TrimSpace(task.AspectRatio); ar != "" {
 			if opts != nil && len(opts.AspectRatios) > 0 {
 				if !containsStringFold(opts.AspectRatios, ar) && !isEquivalentAspectRatio(opts.AspectRatios, ar) {
 					return fmt.Errorf("unsupported image aspect ratio %q; supported ratios are %s", ar, strings.Join(opts.AspectRatios, ", "))
 				}
 			} else {
-				switch strings.ToLower(ar) {
-				case "1:1", "16:9", "9:16", "4:3", "3:4", "portrait", "landscape":
-				default:
-					return fmt.Errorf("unsupported image aspect ratio %q; supported ratios are 1:1, 16:9, 9:16, 4:3, 3:4", ar)
-				}
+				return errors.New("image aspect ratio metadata unavailable for selected model")
 			}
 		}
 		if res := strings.TrimSpace(task.Resolution); res != "" {
@@ -364,11 +339,7 @@ func validateProjectMediaTaskSettings(s *Server, task *pebblestore.ProjectTaskRe
 					return fmt.Errorf("unsupported image resolution %q; supported resolutions are %s", res, strings.Join(opts.Resolutions, ", "))
 				}
 			} else {
-				switch strings.ToLower(res) {
-				case "1k", "2k", "4k", "1024x1024", "standard", "hd", "ultra hd":
-				default:
-					return fmt.Errorf("unsupported image resolution %q; supported resolutions are 1K, 2K, 4K", res)
-				}
+				return errors.New("image resolution metadata unavailable for selected model")
 			}
 		}
 		if task.VariantCount < 0 {
@@ -925,6 +896,7 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 						}
 					}
 					vReq := videogen.ManagedVideoRequest{
+						Model:           videoModel,
 						Prompt:          reqPrompt,
 						AspectRatio:     ar,
 						Resolution:      resTag,
@@ -933,7 +905,14 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 						Source:          sourceVideo,
 						Image:           sourceImage,
 					}
+					if sourceImage != nil {
+						imageCopy := *sourceImage
+						vReq.Image = &imageCopy
+					}
 					vRes, genErr := vg.GenerateManagedVideo(ctx, vReq)
+					if genErr == nil && (len(vRes.Bytes) == 0 || !strings.HasPrefix(vRes.MediaType, "video/")) {
+						genErr = errors.New("video provider returned no playable video")
+					}
 					if genErr != nil {
 						errMu.Lock()
 						if firstGenErr == nil {
@@ -953,6 +932,18 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 									mime = "video/mp4"
 								}
 								mediaURL := fmt.Sprintf("data:%s;base64,%s", mime, base64.StdEncoding.EncodeToString(vRes.Bytes))
+								if vRes.Model != "" {
+									t.Model = vRes.Model
+								}
+								if vRes.AspectRatio != "" {
+									t.AspectRatio = vRes.AspectRatio
+								}
+								if vRes.Resolution != "" {
+									t.Resolution = vRes.Resolution
+								}
+								if vRes.DurationSeconds > 0 {
+									t.DurationSeconds = vRes.DurationSeconds
+								}
 								usedModel := vRes.Model
 								if usedModel == "" {
 									usedModel = videoModel
@@ -980,23 +971,23 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 									if sourceMediaKind == "video" {
 										if isContinuation {
 											t.Deliverables[0].Title = fmt.Sprintf("%s (Continued from %s)", t.Title, sourceMediaTitle)
-											t.Deliverables[0].Description = fmt.Sprintf("Compiled %d-scene continuation using %s from %s with soundtrack (%s): %s", sceneCount, usedModel, sourceMediaTitle, soundtrack, t.Title)
+											t.Deliverables[0].Description = fmt.Sprintf("Video continuation using %s from %s: %s", usedModel, sourceMediaTitle, t.Title)
 										} else {
 											t.Deliverables[0].Title = fmt.Sprintf("%s (Iteration from %s)", t.Title, sourceMediaTitle)
-											t.Deliverables[0].Description = fmt.Sprintf("Compiled %d-scene video iteration using %s of %s with soundtrack (%s): %s", sceneCount, usedModel, sourceMediaTitle, soundtrack, t.Title)
+											t.Deliverables[0].Description = fmt.Sprintf("Video iteration using %s of %s: %s", usedModel, sourceMediaTitle, t.Title)
 										}
 									} else if sourceMediaKind == "image" {
 										t.Deliverables[0].Title = fmt.Sprintf("%s (Keyframe %s)", t.Title, sourceMediaTitle)
-										t.Deliverables[0].Description = fmt.Sprintf("Compiled %d-scene motion sequence using %s from keyframe image %s with soundtrack (%s): %s", sceneCount, usedModel, sourceMediaTitle, soundtrack, t.Title)
+										t.Deliverables[0].Description = fmt.Sprintf("Video clip using %s from keyframe image %s: %s", usedModel, sourceMediaTitle, t.Title)
 									} else if sceneCount <= 1 {
 										t.Deliverables[0].Title = fmt.Sprintf("%s (Single Video, %s)", t.Title, ar)
 										t.Deliverables[0].Duration = durationStr
 										t.Deliverables[0].Description = fmt.Sprintf("Single video clip (%s, %s, %s) generated directly with %s: %s", ar, resTag, durationStr, usedModel, t.Title)
 									} else {
 										if soundtrack != "" {
-											t.Deliverables[0].Description = fmt.Sprintf("Compiled %d-scene multi-part video using %s with soundtrack (%s): %s", sceneCount, usedModel, soundtrack, t.Title)
+											t.Deliverables[0].Description = fmt.Sprintf("Generated video clip using %s: %s", usedModel, t.Title)
 										} else {
-											t.Deliverables[0].Description = fmt.Sprintf("Compiled %d-scene multi-part video using %s (no soundtrack clip): %s", sceneCount, usedModel, t.Title)
+											t.Deliverables[0].Description = fmt.Sprintf("Generated video clip using %s: %s", usedModel, t.Title)
 										}
 									}
 								}
@@ -1019,10 +1010,16 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 					failedCount++
 				}
 			}
-			t.AspectRatio = ar
-			t.Resolution = resTag
-			t.DurationSeconds = durSec
-			if videoModel != "" {
+			if t.AspectRatio == "" {
+				t.AspectRatio = ar
+			}
+			if t.Resolution == "" {
+				t.Resolution = resTag
+			}
+			if t.DurationSeconds == 0 {
+				t.DurationSeconds = durSec
+			}
+			if t.Model == "" {
 				t.Model = videoModel
 			}
 
@@ -1052,26 +1049,26 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 						if isContinuation {
 							t.WhatDidDo = []string{
 								fmt.Sprintf("Referenced prior video cut: %s", sourceMediaTitle),
-								fmt.Sprintf("Sequenced next continuation (%d scenes) with synchronized %s soundtrack", sceneCount, soundtrack),
+								"Generated a continuation clip from the supplied source",
 							}
 							t.ActionNeeded = fmt.Sprintf("Action Needed: Next video scene ready for review (continued from %s).", sourceMediaTitle)
 						} else if isFineTune {
 							t.WhatDidDo = []string{
 								fmt.Sprintf("Referenced source video: %s", sourceMediaTitle),
-								fmt.Sprintf("Applied fine-tuning video modification with %s soundtrack", soundtrack),
+								"Generated a refined clip from the supplied source",
 							}
 							t.ActionNeeded = fmt.Sprintf("Action Needed: Fine-tuned video deliverable ready for review (based on %s).", sourceMediaTitle)
 						} else {
 							t.WhatDidDo = []string{
 								fmt.Sprintf("Referenced source video: %s", sourceMediaTitle),
-								fmt.Sprintf("Rendered video iteration with synchronized %s soundtrack", soundtrack),
+								"Generated a video iteration from the supplied source",
 							}
 							t.ActionNeeded = fmt.Sprintf("Action Needed: Video iteration ready for review (based on %s).", sourceMediaTitle)
 						}
 					} else if sourceMediaKind == "image" {
 						t.WhatDidDo = []string{
 							fmt.Sprintf("Ingested keyframe image: %s", sourceMediaTitle),
-							fmt.Sprintf("Generated %d-scene cinematic motion story with %s soundtrack", sceneCount, soundtrack),
+							"Generated a video clip from the supplied image",
 						}
 						t.ActionNeeded = fmt.Sprintf("Action Needed: Video story ready for review (from keyframe %s).", sourceMediaTitle)
 					} else if sceneCount <= 1 {
@@ -1082,9 +1079,9 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 						t.ActionNeeded = "Action Needed: Single video clip deliverable ready for review."
 					} else {
 						if soundtrack != "" {
-							t.WhatDidDo = []string{"Compiled multi-scene video blueprint", "Rendered video sequence with synchronized soundtrack"}
+							t.WhatDidDo = []string{"Generated a video clip from the supplied prompt"}
 						} else {
-							t.WhatDidDo = []string{"Compiled multi-scene video blueprint", "Rendered multi-scene video sequence without soundtrack"}
+							t.WhatDidDo = []string{"Generated a video clip from the supplied prompt"}
 						}
 						t.ActionNeeded = "Action Needed: Multi-part video deliverable ready for review."
 					}

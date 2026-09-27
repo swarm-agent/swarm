@@ -60,7 +60,7 @@ test('OrchestrateView and Task Router scale swarm variants up to 25', () => {
   const viewerSource = fs.readFileSync(viewerPath, 'utf8')
 
   assert.ok(source.includes('[1, 2, 4, 5, 10, 25]'), 'Variant selector must support up to 25 variants')
-  assert.ok(source.includes('onIterateSwarm'), 'OrchestrateView must pass onIterateSwarm handler')
+  assert.ok(source.includes('onGenerate={handleMediaGenerate}'), 'OrchestrateView must pass the typed generation handler')
   assert.ok(viewerSource.includes('Swarm Iterations'), 'Viewer must offer Swarm Iterations action')
 })
 
@@ -75,7 +75,7 @@ test('MediaViewerModal provides interactive Quick-Route panel with Fine-Tune, It
   assert.ok(viewerSource.includes('Swarm Iterations'), 'Must render Swarm Iterations button')
   assert.ok(viewerSource.includes('To Video'), 'Must offer To Video conversion for image keyframes')
   assert.ok(viewerSource.includes('Next Scene'), 'Must offer Next Scene continuation for videos')
-  assert.ok(viewerSource.includes('Route & Run Now'), 'Must provide 1-click Route & Run Now button')
+  assert.ok(viewerSource.includes('Generate revision'), 'Must label the generation action clearly')
   assert.ok(!viewerSource.includes('>In Planner</button>'), 'Stale In Planner button must be removed')
   assert.ok(!viewerSource.includes('presetSuggestions.map'), 'Stale hardcoded preset suggestion chips must be removed')
 })
@@ -172,7 +172,7 @@ test('OrchestrateView renders Image and Video model dropdowns with availability 
 
   // 5. Task creation passes selected model
   assert.ok(source.includes("model: taskIntent === 'image' ? (selectedImageModel || undefined)"), 'Deploy modal submit must pass selected model')
-  assert.ok(source.includes("model: targetIntent === 'image' ? (selectedImageModel || undefined)"), 'Quick route media must pass selected model')
+  assert.ok(source.includes("model: model || (targetIntent === 'image'"), 'Quick route media must honor the explicitly selected model first')
 })
 
 test('OrchestrateView implements compact 5-tab layout (Feature, Image, Video, Sounds, Audit) fitting in one line', () => {
@@ -483,7 +483,7 @@ test('OrchestrateView wires typed onGenerate, generationJobs, and settings propa
 
   // 3. handleMediaGenerate and handleQuickRouteMedia propagate actual settings
   assert.ok(source.includes('handleMediaGenerate = useCallback'), 'Must define handleMediaGenerate')
-  assert.ok(source.includes('aspect_ratio: settings?.aspectRatio'), 'Must propagate settings.aspectRatio to task API')
+  assert.ok(source.includes('aspect_ratio: settings ? settings.aspectRatio'), 'Must propagate settings.aspectRatio to task API')
   assert.ok(source.includes('resolution: settings?.resolution'), 'Must propagate settings.resolution to task API')
   assert.ok(source.includes('duration_seconds: settings?.durationSeconds'), 'Must propagate settings.durationSeconds to task API')
 
@@ -507,8 +507,8 @@ test('Legacy quick action buttons open configured composer modal rather than run
   assert.ok(source.includes("handleOpenUploadedInMediaCenter(m, 'iterate')"), 'Shelf Iterate button must open configured composer in iterate mode')
 
   // Deliverable cards
-  assert.ok(source.includes("handleOpenDeliverableInMediaCenter(d, task, 'fine_tune')"), 'Card Edit button must open configured composer in fine_tune mode')
-  assert.ok(source.includes("handleOpenDeliverableInMediaCenter(d, task, 'iterate')"), 'Card Iterate button must open configured composer in iterate mode')
+  assert.ok(source.includes("handleOpenDeliverableInMediaCenter(d, tasks.find((t) => t.deliverables?.some((entry) => entry.id === d.id)), 'fine_tune')"), 'Card Edit button must open configured composer in fine_tune mode')
+  assert.ok(source.includes("handleOpenDeliverableInMediaCenter(d, tasks.find((t) => t.deliverables?.some((entry) => entry.id === d.id)), 'iterate')"), 'Card Iterate button must open configured composer in iterate mode')
 })
 
 test('OrchestrateView implements starvation-free real-time task polling covering queued, pending, and generating states', () => {
@@ -520,7 +520,7 @@ test('OrchestrateView implements starvation-free real-time task polling covering
   assert.ok(source.includes("t.status === 'queued' ||"), 'Polling trigger must include queued tasks')
   assert.ok(source.includes("t.status === 'pending' ||"), 'Polling trigger must include pending tasks')
   assert.ok(source.includes("d.status === 'generating' || d.status === 'pending'"), 'Polling trigger must include generating/pending deliverables')
-  assert.ok(source.includes("j.status === 'submitting' || j.status === 'queued'"), 'Polling trigger must include in-flight local generation jobs')
+  assert.ok(source.includes("!tasks.some((t) => t.id === j.id) && ['submitting', 'queued', 'in_progress', 'running'].includes(j.status)"), 'Polling trigger must include in-flight local generation jobs')
   assert.ok(source.includes('inFlight = true'), 'Polling loop must prevent overlapping fetch requests')
   assert.ok(source.includes('hasActiveTasks'), 'Polling effect must depend on stable hasActiveTasks boolean rather than raw tasks array')
 })

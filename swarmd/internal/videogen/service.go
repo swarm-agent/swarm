@@ -37,6 +37,7 @@ type ModelCatalog interface {
 }
 
 type ManagedVideoRequest struct {
+	Model           string
 	Prompt          string
 	AspectRatio     string
 	Resolution      string
@@ -224,14 +225,36 @@ func (s *Service) GenerateManagedVideo(ctx context.Context, req ManagedVideoRequ
 	}
 
 	isIteration := req.Source != nil && len(req.Source.Bytes) > 0
-	modelID, providerID, err := s.resolveTargetModel(ctx, req.Principal, isIteration)
-	if err != nil {
-		return ManagedVideoResult{}, err
+	modelID := strings.TrimSpace(req.Model)
+	providerID := ""
+	if modelID != "" {
+		providerID = s.inferProvider(modelID)
+		if strings.HasPrefix(modelID, "google:") || strings.HasPrefix(modelID, "openrouter:") {
+			parts := strings.SplitN(modelID, ":", 2)
+			providerID, modelID = parts[0], parts[1]
+		}
+		if _, found := s.resolveModelRecord(providerID, modelID); !found {
+			return ManagedVideoResult{}, fmt.Errorf("selected video model %q is not in the model catalog", req.Model)
+		}
+	} else {
+		var err error
+		modelID, providerID, err = s.resolveTargetModel(ctx, req.Principal, isIteration)
+		if err != nil {
+			return ManagedVideoResult{}, err
+		}
+	}
+	if isIteration && !isOmniModel(modelID) {
+		return ManagedVideoResult{}, errors.New("selected model cannot refine a source video; select a video iteration model")
 	}
 
 	aspectRatio := normalizeAspectRatio(req.AspectRatio)
 	resolution := normalizeResolution(req.Resolution)
 	durationSeconds := normalizeDuration(req.DurationSeconds, modelID, resolution)
+	if (req.AspectRatio != "" && aspectRatio != req.AspectRatio) ||
+		(req.Resolution != "" && !strings.EqualFold(resolution, req.Resolution)) ||
+		(req.DurationSeconds > 0 && durationSeconds != req.DurationSeconds) {
+		return ManagedVideoResult{}, errors.New("selected video settings are unsupported; choose a supported aspect ratio, resolution and duration")
+	}
 
 	// Pin pricing to the selected model before the provider request begins.
 	modelRecord, found := s.resolveModelRecord(providerID, modelID)

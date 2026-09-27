@@ -11,7 +11,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/imagegen"
@@ -108,7 +107,7 @@ func setupDirectMediaTestServer(t *testing.T) (*Server, *pebblestore.SessionStor
 	googleGenerateContentMedia := &pebblestore.ModelCatalogMediaCapabilities{State: pebblestore.ModelCatalogMediaStateSupported, ProviderSurface: provideriface.MediaProviderSurfaceGoogleGenerateContent}
 
 	googleVideoProviderSpecific := json.RawMessage(`{"google":{"model_api_surface":"predict","video_generation":{"status":"verified","settings":{"aspect_ratio":{"status":"verified","default_value":"16:9","supported_values":["16:9","9:16","1:1","4:3"]},"resolution":{"status":"verified","default_value":"720p","supported_values":["720p","1080p"]},"duration_seconds":{"status":"verified","default_value":8,"supported_values":[4,6,8]}}}}}`)
-	googlePredictMedia := &pebblestore.ModelCatalogMediaCapabilities{State: pebblestore.ModelCatalogMediaStateSupported, ProviderSurface: provideriface.MediaProviderSurfaceGooglePredict}
+	googlePredictMedia := &pebblestore.ModelCatalogMediaCapabilities{State: pebblestore.ModelCatalogMediaStateSupported, ProviderSurface: "predict"}
 
 	for _, record := range []pebblestore.ModelCatalogRecord{
 		{Provider: "google", Model: "snapshot-image", DisplayName: "Snapshot Image", CatalogModalities: pebblestore.ModelCatalogModalities{Inputs: []string{"text"}, Outputs: []string{"image"}}, Media: googleGenerateContentMedia, ProviderSpecific: googleImageProviderSpecific, Pricing: pricing, SourceSnapshotID: "snap-1", SourceSnapshotVersion: "1"},
@@ -859,10 +858,10 @@ func TestDirectMediaExecution_Validation_RejectsInvalidSettings(t *testing.T) {
 		{
 			name: "video unsupported resolution",
 			task: pebblestore.ProjectTaskRecord{
-				ID:          "task-val-vid-res",
-				Agent:       "video",
-				Resolution:  "8k",
-				Status:      "in_progress",
+				ID:         "task-val-vid-res",
+				Agent:      "video",
+				Resolution: "8k",
+				Status:     "in_progress",
 				Deliverables: []pebblestore.ProjectTaskDeliverable{
 					{ID: "d-1", Status: "generating"},
 				},
@@ -912,10 +911,10 @@ func TestDirectMediaExecution_Validation_RejectsInvalidSettings(t *testing.T) {
 		{
 			name: "image unsupported resolution",
 			task: pebblestore.ProjectTaskRecord{
-				ID:          "task-val-img-res",
-				Agent:       "image",
-				Resolution:  "8k",
-				Status:      "in_progress",
+				ID:         "task-val-img-res",
+				Agent:      "image",
+				Resolution: "8k",
+				Status:     "in_progress",
 				Deliverables: []pebblestore.ProjectTaskDeliverable{
 					{ID: "d-1", Status: "generating"},
 				},

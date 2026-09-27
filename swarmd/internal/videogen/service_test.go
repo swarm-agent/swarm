@@ -864,3 +864,32 @@ func TestEstimateVideoCostNoInventedFallback(t *testing.T) {
 		t.Fatalf("unexpected summary: %q", summary720)
 	}
 }
+
+// Requirement: Media's selected model and settings must reach the provider unchanged.
+// Threat: an explicit choice silently bills a different default model or drops the source.
+// Authority: GenerateManagedVideo, at the narrow service boundary before any provider I/O.
+func TestManagedVideoExplicitSelectionRejectsInvalidWithoutProviderCall(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		http.Error(w, "unexpected provider call", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	catalog := &fakeModelCatalog{records: []pebblestore.ModelCatalogRecord{{Provider: "google", Model: "selected-video", CatalogModalities: pebblestore.ModelCatalogModalities{Outputs: []string{"video"}}}}}
+	svc := NewService(nil, nil, catalog)
+	svc.SetBaseURLs(server.URL, server.URL)
+	for _, req := range []ManagedVideoRequest{
+		{Prompt: "revision", Model: "missing-model"},
+		{Prompt: "revision", Model: "selected-video", AspectRatio: "32:9"},
+		{Prompt: "revision", Model: "selected-video", Resolution: "8k"},
+		{Prompt: "revision", Model: "selected-video", Source: &ManagedVideoSource{Bytes: []byte("source"), MediaType: "video/mp4"}},
+	} {
+		result, err := svc.GenerateManagedVideo(context.Background(), req)
+		if err == nil || len(result.Bytes) != 0 {
+			t.Fatalf("expected rejection without output: request=%+v err=%v", req, err)
+		}
+	}
+	if calls != 0 {
+		t.Fatalf("rejected settings reached provider %d times", calls)
+	}
+}

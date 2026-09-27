@@ -644,7 +644,7 @@ export function MediaViewerModal({
           )}
 
           {/* Swarm Iterations Action Button */}
-          <button
+          {(item.kind === 'image' || item.kind === 'video') && <button
             type="button"
             onClick={() => {
               handleModeChange('iterate')
@@ -655,7 +655,7 @@ export function MediaViewerModal({
           >
             <Sparkles size={14} />
             <span className="hidden sm:inline">Swarm Iterations</span>
-          </button>
+          </button>}
 
           {/* Download */}
           <button
@@ -798,7 +798,7 @@ export function MediaViewerModal({
           </main>
 
           {/* Persistent Bottom AI Studio Dock */}
-          <footer className="shrink-0 border-t border-white/10 bg-slate-950/95 backdrop-blur-2xl px-4 py-3 sm:px-6 shadow-2xl z-20">
+          {(item.kind === 'image' || item.kind === 'video') && <footer className="shrink-0 max-h-[50vh] overflow-y-auto border-t border-white/10 bg-slate-950/95 backdrop-blur-2xl px-4 py-3 sm:px-6 shadow-2xl z-20">
             <div className="flex flex-col gap-3 max-w-5xl mx-auto">
               {/* Row 1: Action Mode Switcher + Model Picker + Output Settings */}
               <div className="flex flex-wrap items-center justify-between gap-3">
@@ -894,16 +894,7 @@ export function MediaViewerModal({
                     </>
                   )}
 
-                  {item.kind === 'audio' && (
-                    <button
-                      type="button"
-                      onClick={() => handleModeChange('fine_tune')}
-                      className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white shadow-md"
-                    >
-                      <Music size={13} />
-                      <span>Vary Soundtrack</span>
-                    </button>
-                  )}
+
                 </div>
 
                 {/* Model Selector & Parameters */}
@@ -1162,25 +1153,25 @@ export function MediaViewerModal({
                     >
                       {['submitting', 'pending', 'queued', 'in_progress', 'running'].includes(job.status) ? (
                         <Loader2 size={12} className="animate-spin text-blue-400 shrink-0" />
-                      ) : job.status === 'failed' ? (
+                      ) : job.status === 'failed' || job.status === 'partial_failure' ? (
                         <AlertCircle size={12} className="text-rose-400 shrink-0" />
                       ) : (
                         <Check size={12} className="text-emerald-400 shrink-0" />
                       )}
                       <span className="text-white/80 max-w-[120px] truncate">{job.title}</span>
-                      <span className="font-mono text-[10px] text-white/40">{job.count} outputs · {job.status.replaceAll('_', ' ')}</span>
-                      {job.error && <span className="max-w-64 text-rose-300 whitespace-normal">{job.error}</span>
+                      <span className="font-mono text-[10px] text-white/40">{job.count} outputs · {job.status.split('_').join(' ')}</span>
+                      {job.error && <span className="max-w-64 text-rose-300 whitespace-normal">{job.error}</span>}
                     </div>
                   ))}
                 </div>
               )}
             </div>
-          </footer>
+          </footer>}
         </div>
 
         {/* Right Details & Lineage Drawer */}
         {showInfo && (
-          <aside className="w-84 shrink-0 border-l border-white/10 bg-black/60 p-5 backdrop-blur-xl overflow-y-auto text-xs text-white/80">
+          <aside className="hidden lg:block w-84 shrink-0 border-l border-white/10 bg-black/60 p-5 backdrop-blur-xl overflow-y-auto text-xs text-white/80">
             {/* Visual Lineage & History Chain */}
             <div className="mb-6 pb-5 border-b border-white/10">
               <div className="flex items-center gap-2 mb-3">

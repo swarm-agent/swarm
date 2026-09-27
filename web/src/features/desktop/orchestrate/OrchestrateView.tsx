@@ -2695,15 +2695,18 @@ export function OrchestrateView({
             { id: '2', title: 'Execute implementation', completed: t.status === 'completed' || t.status === 'needs_review' },
           ],
         }))
+        setMediaSyncError(null)
         setTasks(backendTasks)
         if (backendTasks.length > 0 && !selectedTaskId) {
           setSelectedTaskId(backendTasks[0].id)
         }
       })
-      .catch(() => {
-        setTasks([])
+      .catch((error) => {
+        setMediaSyncError(error instanceof Error ? error.message : 'Live task updates are unavailable.')
       })
   }, [selectedTaskId])
+
+  const [mediaSyncError, setMediaSyncError] = useState<string | null>(null)
 
   // Fetch project uploaded media from Pebble
   const fetchProjectMedia = useCallback((projectId: string) => {
@@ -2729,7 +2732,7 @@ export function OrchestrateView({
           t.deliverables?.some((d) => d.status === 'generating' || d.status === 'pending')
       ) ||
       localGenerationJobs.some(
-        (j) => j.status === 'submitting' || j.status === 'queued' || j.status === 'in_progress'
+        (j) => !tasks.some((t) => t.id === j.id) && ['submitting', 'queued', 'in_progress', 'running'].includes(j.status)
       )
     )
   }, [tasks, localGenerationJobs])
@@ -3057,7 +3060,7 @@ export function OrchestrateView({
     model?: string
     settings?: MediaGenerationSettings
   }) => {
-    if (!selectedProject?.id) return
+    if (!selectedProject?.id) throw new Error('Select a project before generating media.')
     const { item, action, deltaPrompt, variantCount, scenesCount, soundtrack, autoDeploy = true, model, settings } = options
 
     const rawKind = (item as any).kind || (item as any).type || 'image'
@@ -3133,8 +3136,8 @@ export function OrchestrateView({
       setLocalGenerationJobs((prev) => [optimisticJob, ...prev])
 
       try {
-        const finalVariantCount = targetIntent === 'image' ? (action === 'fine_tune' ? 1 : (variantCount || 1)) : undefined
-        const finalScenesCount = targetIntent === 'video' ? (scenesCount || (action === 'iterate' ? variantCount : 2)) : undefined
+        const finalVariantCount = action === 'iterate' ? (variantCount || 1) : 1
+        const finalScenesCount = targetIntent === 'video' ? (scenesCount || 1) : undefined
         const finalSoundtrack = targetIntent === 'video' ? (soundtrack || undefined) : undefined
 
         const res = await requestJson<{ task: any }>(`/v3/projects/${selectedProject.id}/tasks`, {
@@ -3144,7 +3147,7 @@ export function OrchestrateView({
             prompt: composedPrompt,
             workspace_path: selectedProject.repoPath || '.',
             intent: targetIntent,
-            aspect_ratio: settings?.aspectRatio || (targetIntent === 'image' ? imageAspectRatio : targetIntent === 'video' ? '16:9' : undefined),
+            aspect_ratio: settings ? settings.aspectRatio : (targetIntent === 'image' ? imageAspectRatio : undefined),
             resolution: settings?.resolution || undefined,
             duration_seconds: settings?.durationSeconds || undefined,
             variant_count: finalVariantCount,
@@ -3156,7 +3159,8 @@ export function OrchestrateView({
             attached_media: [mediaRef],
           }),
         })
-        if (res?.task) {
+        if (!res?.task?.id) throw new Error('Generation response did not include a task.')
+        if (res.task) {
           setLocalGenerationJobs((prev) =>
             prev.map((j) =>
               j.id === tempJobId
@@ -3230,18 +3234,16 @@ export function OrchestrateView({
       seenTaskIds.add(t.id)
 
       for (const am of t.attachedMedia) {
-        let status = t.status
-        if (t.lastError || t.status === 'failed') {
+        let status: string = t.status
+        if (t.status === 'failed') {
           status = 'failed'
         } else if (t.status === 'in_progress' || t.status === 'running') {
           const hasDelivs = t.deliverables && t.deliverables.length > 0
-          const allReady = hasDelivs && t.deliverables.every((d) => d.status === 'ready' || d.status === 'accepted')
-          const anyFailed = hasDelivs && t.deliverables.some((d) => d.status === 'failed')
+          const allReady = hasDelivs && t.deliverables?.every((d) => d.status === 'ready' || d.status === 'accepted')
           if (allReady) status = 'completed'
-          else if (anyFailed) status = 'failed'
           else status = 'in_progress'
         } else if (t.status === 'completed' || t.status === 'needs_review') {
-          status = 'completed'
+          status = t.lastError ? 'partial_failure' : 'completed'
         } else if (t.status === 'queued' || t.status === 'pending') {
           status = 'queued'
         }
@@ -5117,7 +5119,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                             type="button"
                             onClick={(e) => {
                               e.stopPropagation()
-                              handleOpenDeliverableInMediaCenter(d, task, 'fine_tune')
+                              handleOpenDeliverableInMediaCenter(d, tasks.find((t) => t.deliverables?.some((entry) => entry.id === d.id)), 'fine_tune')
                             }}
                             className="flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-[10px] text-amber-300 hover:text-white transition font-medium"
                             title="Fine-tune / modify this media"
@@ -5129,10 +5131,10 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                             type="button"
                             onClick={(e) => {
                               e.stopPropagation()
-                              handleOpenDeliverableInMediaCenter(d, task, 'iterate')
+                              handleOpenDeliverableInMediaCenter(d, tasks.find((t) => t.deliverables?.some((entry) => entry.id === d.id)), 'iterate')
                             }}
                             className="flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-[10px] text-emerald-300 hover:text-white transition font-medium"
-                            title="Quick 5 swarm iterations"
+                            title="Configure variations"
                           >
                             <Sparkles size={10} />
                             <span>Iterate</span>
@@ -6857,7 +6859,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
         <MediaViewerModal
           item={activeMediaViewerItem}
           items={allMediaLibraryItems}
-          isGenerating={tasks.some((t) => t.status === 'in_progress' || t.status === 'running')}
+          isGenerating={isDeployingTask}
           onClose={() => {
             setActiveMediaViewerItem(null)
             setMediaViewerInitialMode(null)
@@ -6890,14 +6892,6 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
           onGenerate={handleMediaGenerate}
           generationJobs={allGenerationJobs}
           initialQuickRouteMode={mediaViewerInitialMode}
-          onIterateSwarm={(item) => {
-            void handleQuickRouteMedia({
-              item,
-              action: 'iterate',
-              variantCount: 5,
-              autoDeploy: false,
-            })
-          }}
         />
       )}
 
@@ -6924,6 +6918,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
               <X size={16} />
             </button>
           </div>
+          {mediaSyncError && <p role="alert" className="px-5 py-2 text-xs text-amber-300">Live updates interrupted: {mediaSyncError}. Retrying automatically; do not resubmit.</p>}
           <div className="flex-1 min-h-0">
             <HistoricalMediaLibrary
               onClose={() => setShowFullMediaCenter(false)}
@@ -6949,7 +6944,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
               taggedMediaIds={new Set(taggedMedia.map((t) => t.id))}
               onGenerate={handleMediaGenerate}
               generationJobs={allGenerationJobs}
-              isGenerating={tasks.some((t) => t.status === 'in_progress' || t.status === 'running')}
+              isGenerating={isDeployingTask}
               extraItems={allMediaLibraryItems}
             />
           </div>

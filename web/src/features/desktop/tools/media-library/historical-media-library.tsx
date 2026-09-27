@@ -44,11 +44,6 @@ interface HistoricalMediaLibraryProps {
   onClose?: () => void
   onTagMedia?: (item: MediaLibraryItem) => void
   taggedMediaIds?: Set<string>
-  onIterateSwarm?: (item: MediaLibraryItem) => void
-  onFineTune?: (item: MediaLibraryItem, editPrompt: string, autoDeploy: boolean, model?: string) => void
-  onIterate?: (item: MediaLibraryItem, variantCount: number, stylePrompt: string, autoDeploy: boolean, model?: string) => void
-  onGenerateVideo?: (item: MediaLibraryItem, prompt: string, autoDeploy: boolean, model?: string) => void
-  onContinueVideo?: (item: MediaLibraryItem, prompt: string, autoDeploy: boolean, model?: string) => void
   onGenerate?: (request: MediaGenerationRequest) => Promise<void>
   generationJobs?: readonly MediaGenerationJob[]
   isGenerating?: boolean
@@ -64,11 +59,6 @@ export function HistoricalMediaLibrary({
   onClose: _onClose,
   onTagMedia,
   taggedMediaIds,
-  onIterateSwarm,
-  onFineTune,
-  onIterate,
-  onGenerateVideo,
-  onContinueVideo,
   onGenerate,
   generationJobs,
   isGenerating,
@@ -466,6 +456,17 @@ export function HistoricalMediaLibrary({
         </div>
       </div>
 
+      {generationJobs && generationJobs.length > 0 && (
+        <div role="status" aria-live="polite" className="flex shrink-0 gap-3 overflow-x-auto border-b border-[var(--app-border)] p-3">
+          {generationJobs.map((job) => (
+            <div key={job.id} className="min-w-48 max-w-80 rounded-lg border border-[var(--app-border)] p-3 text-xs">
+              <p className="font-semibold truncate">{job.title}</p>
+              <p className="mt-1">{job.count} outputs · {job.status.split('_').join(' ')}</p>
+              {job.error && <p className="mt-1 text-red-400">{job.error}</p>}
+            </div>
+          ))}
+        </div>
+      )}
       {/* Main Content Area */}
       <div className="flex-1 min-h-0 overflow-y-auto px-4 py-6 sm:px-8">
         {loading ? (
@@ -549,11 +550,6 @@ export function HistoricalMediaLibrary({
         generationJobs={generationJobs}
         isGenerating={isGenerating}
         initialQuickRouteMode={initialQuickRouteMode}
-        onIterateSwarm={onIterateSwarm}
-        onFineTune={onFineTune}
-        onIterate={onIterate}
-        onGenerateVideo={onGenerateVideo}
-        onContinueVideo={onContinueVideo}
       />
     </div>
   )
