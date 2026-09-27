@@ -9,7 +9,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unsafe"
 
 	"swarm/packages/swarmd/internal/artifact"
 	"swarm/packages/swarmd/internal/identity"
@@ -33,36 +32,6 @@ func SetDirectVideoGenerationService(svc managedVideoService) {
 	directVideoGenMu.Lock()
 	defer directVideoGenMu.Unlock()
 	directVideoGenService = svc
-}
-
-// managedImageGenerationService defines the direct execution interface for generating managed images.
-type managedImageGenerationService interface {
-	GenerateImage(ctx context.Context, req imagegen.GeminiImageGenerationRequest) (imagegen.GeminiImageGenerationResult, error)
-}
-
-var (
-	directImageGenService managedImageGenerationService
-	directImageGenMu      sync.RWMutex
-)
-
-// SetDirectImageGenerationService overrides the direct image generation service (for testing or runtime injection).
-func SetDirectImageGenerationService(svc managedImageGenerationService) {
-	directImageGenMu.Lock()
-	defer directImageGenMu.Unlock()
-	directImageGenService = svc
-}
-
-type imagegenServiceFields struct {
-	codexClient       any
-	geminiImageClient imagegen.GeminiImageClient
-}
-
-func getGeminiClientFromService(svc *imagegen.Service) imagegen.GeminiImageClient {
-	if svc == nil {
-		return nil
-	}
-	fields := (*imagegenServiceFields)(unsafe.Pointer(svc))
-	return fields.geminiImageClient
 }
 
 func (s *Server) resolveVideoGenerationService() (managedVideoService, error) {
@@ -89,127 +58,200 @@ func (s *Server) generateImageMedia(
 	resolution string,
 	sourceImage *imagegen.ManagedImageSource,
 ) (string, string, error) {
-	directImageGenMu.RLock()
-	dClient := directImageGenService
-	directImageGenMu.RUnlock()
-
-	var client imagegen.GeminiImageClient
-	if dClient != nil {
-		client = dClient
-	} else if s != nil && s.imageGen != nil {
-		client = getGeminiClientFromService(s.imageGen)
+	if s == nil || s.imageGen == nil {
+		return "", "", errors.New("image generation service is not configured")
 	}
 
 	usedModel := strings.TrimSpace(modelOverride)
-	if usedModel == "" && s != nil && s.uiSettings != nil && strings.TrimSpace(p.AccountScopeID) != "" {
+	if usedModel == "" && s.uiSettings != nil && strings.TrimSpace(p.AccountScopeID) != "" {
 		if uiSet, err := s.uiSettings.GetForAccount(p.AccountScopeID); err == nil {
 			usedModel = strings.TrimSpace(uiSet.Tools.Image.DefaultModel)
 		}
 	}
-	if usedModel == "" && s != nil && s.imageGen != nil {
+	if usedModel == "" {
 		if selections, err := s.imageGen.GoogleImageModelSelections(); err == nil && len(selections) > 0 {
 			usedModel = selections[0].Model
 		}
 	}
 	if usedModel == "" {
-		usedModel = "imagen-3.0-generate-002"
+		usedModel = imagegen.DefaultModelSelectionID
 	}
 
 	ar := strings.TrimSpace(aspectRatio)
-	if ar == "" {
-		ar = "1:1"
-	}
 	resTag := strings.TrimSpace(resolution)
-	if resTag == "" {
-		resTag = "1K"
+
+	settings := make(map[string]any)
+	if ar != "" {
+		settings["aspect_ratio"] = ar
+	}
+	if resTag != "" {
+		settings["image_size"] = resTag
 	}
 
-	if client != nil {
-		var apiKey string
-		if s != nil && s.sessions != nil && s.sessions.Store() != nil && s.sessions.Store().Underlying() != nil && strings.TrimSpace(p.AccountScopeID) != "" {
-			authStore := pebblestore.NewAuthStore(s.sessions.Store().Underlying())
-			if cred, ok, err := authStore.GetActiveCredentialForAccount(p.AccountScopeID, "google"); err == nil && ok {
-				apiKey = cred.APIKey
-			}
-		}
-		genReq := imagegen.GeminiImageGenerationRequest{
-			APIKey:      apiKey,
-			Model:       usedModel,
-			Prompt:      prompt,
-			AspectRatio: ar,
-			ImageSize:   resTag,
-			OutputIndex: variantIndex - 1,
-			Source:      sourceImage,
-		}
-		res, err := client.GenerateImage(ctx, genReq)
-		if err != nil {
-			return "", usedModel, err
-		}
-		var rawBytes []byte
-		mime := "image/png"
-		if len(res.Bytes) > 0 {
-			rawBytes = res.Bytes
-			if res.MediaType != "" {
-				mime = res.MediaType
-			}
-		} else if len(res.Images) > 0 {
-			if len(res.Images[0].DecodedPNG) > 0 {
-				rawBytes = res.Images[0].DecodedPNG
-			} else if len(res.Images[0].Base64Image) > 0 {
-				rawBytes, _ = base64.StdEncoding.DecodeString(res.Images[0].Base64Image)
-			}
-			if res.Images[0].MIMEType != "" {
-				mime = res.Images[0].MIMEType
-			}
-		}
-		if len(rawBytes) == 0 {
-			return "", usedModel, errors.New("image generation returned empty image data")
-		}
-		mediaURL := fmt.Sprintf("data:%s;base64,%s", mime, base64.StdEncoding.EncodeToString(rawBytes))
-		return mediaURL, usedModel, nil
+	var capabilityToken string
+	if caps, err := s.imageGen.ManagedImageCapabilities(usedModel); err == nil && caps.CapabilityToken != "" {
+		capabilityToken = caps.CapabilityToken
 	}
 
-	if s != nil && s.imageGen != nil {
-		return "", usedModel, errors.New("image generation client is not configured")
+	genReq := imagegen.ManagedGenerateRequest{
+		SelectionID:     usedModel,
+		Prompt:          prompt,
+		Size:            resTag,
+		Settings:        settings,
+		CapabilityToken: capabilityToken,
+		Principal:       p,
+		Source:          sourceImage,
 	}
 
-	// Deterministic fallback only when running in a standalone testbed without any image generation service configured.
-	mediaURL := generateStyledImageSVGDataURL(prompt, ar, variantIndex, resTag)
+	res, err := s.imageGen.GenerateManagedImage(ctx, genReq)
+	if err != nil {
+		return "", usedModel, err
+	}
+	if len(res.Bytes) == 0 {
+		return "", usedModel, errors.New("image generation returned empty image data")
+	}
+
+	mime := res.MediaType
+	if mime == "" {
+		mime = "image/png"
+	}
+	mediaURL := fmt.Sprintf("data:%s;base64,%s", mime, base64.StdEncoding.EncodeToString(res.Bytes))
 	return mediaURL, usedModel, nil
 }
 
 func isSupportedImageModel(s *Server, modelID string) bool {
-	clean := strings.TrimSpace(strings.ToLower(modelID))
+	clean := strings.TrimSpace(modelID)
 	if clean == "" {
 		return true
 	}
-	known := map[string]bool{
-		"imagen-3.0-generate-002":      true,
-		"imagen-3.0-fast-generate-001": true,
-		"imagen-3.0-capability-001":    true,
-		"gemini-2.5-flash":             true,
-		"gemini-2.5-pro":               true,
-		"gpt-5.5":                      true,
-		"dall-e-3":                     true,
-		"codex-image-gen":              true,
-	}
-	if known[clean] {
-		return true
-	}
 	if s != nil && s.imageGen != nil {
-		if resolved, err := s.imageGen.ResolveModelSelection(modelID); err == nil && resolved.ID != "" {
+		if resolved, err := s.imageGen.ResolveModelSelection(clean); err == nil && resolved.ID != "" {
 			return true
 		}
 	}
 	if s != nil && s.model != nil {
 		for _, provider := range []string{"google", "codex", "openrouter"} {
+			if lookup, err := s.model.GetCatalog(provider, clean); err == nil && lookup.Found {
+				if containsStringFold(lookup.Record.CatalogModalities.Outputs, "image") {
+					return true
+				}
+			}
 			if records, err := s.model.ListCatalog(provider, 200); err == nil {
 				for _, rec := range records {
-					if strings.EqualFold(rec.Model, modelID) {
+					if strings.EqualFold(rec.Model, clean) && containsStringFold(rec.CatalogModalities.Outputs, "image") {
 						return true
 					}
 				}
 			}
+		}
+	}
+	return false
+}
+
+func isSupportedVideoModel(s *Server, modelID string) bool {
+	clean := strings.TrimSpace(modelID)
+	if clean == "" {
+		return false
+	}
+	if s != nil && s.model != nil {
+		for _, provider := range []string{"google", "openrouter"} {
+			if lookup, err := s.model.GetCatalog(provider, clean); err == nil && lookup.Found {
+				if isVideoOutputCatalogRecord(lookup.Record) || containsStringFold(lookup.Record.CatalogModalities.Outputs, "video") {
+					return true
+				}
+			}
+			if records, err := s.model.ListCatalog(provider, 200); err == nil {
+				for _, rec := range records {
+					if strings.EqualFold(rec.Model, clean) && (isVideoOutputCatalogRecord(rec) || containsStringFold(rec.CatalogModalities.Outputs, "video")) {
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
+}
+
+func (s *Server) getModelGenerationOptions(modelID string) *mediaCatalogGenerationOptions {
+	clean := strings.TrimSpace(modelID)
+	if clean == "" || s == nil {
+		return nil
+	}
+	if s.model != nil {
+		for _, provider := range []string{"google", "openrouter", "codex"} {
+			if lookup, err := s.model.GetCatalog(provider, clean); err == nil && lookup.Found {
+				if opts := extractModelGenerationOptions(lookup.Record); opts != nil {
+					return opts
+				}
+			}
+		}
+		for _, provider := range []string{"google", "openrouter", "codex"} {
+			if records, err := s.model.ListCatalog(provider, 200); err == nil {
+				for _, rec := range records {
+					if strings.EqualFold(rec.Model, clean) {
+						if opts := extractModelGenerationOptions(rec); opts != nil {
+							return opts
+						}
+					}
+				}
+			}
+		}
+	}
+	if s.imageGen != nil {
+		if caps, err := s.imageGen.ManagedImageCapabilities(clean); err == nil && caps.Available && len(caps.Settings) > 0 {
+			var arList, resList []string
+			var defAR, defRes string
+			if arCap, ok := caps.Settings["aspect_ratio"]; ok {
+				for _, v := range arCap.SupportedValues {
+					if str, ok := v.(string); ok && str != "" {
+						arList = append(arList, str)
+					}
+				}
+				if str, ok := arCap.DefaultValue.(string); ok {
+					defAR = str
+				}
+			}
+			if resCap, ok := caps.Settings["image_size"]; ok {
+				for _, v := range resCap.SupportedValues {
+					if str, ok := v.(string); ok && str != "" {
+						resList = append(resList, str)
+					}
+				}
+				if str, ok := resCap.DefaultValue.(string); ok {
+					defRes = str
+				}
+			}
+			if len(arList) > 0 || len(resList) > 0 {
+				return &mediaCatalogGenerationOptions{
+					AspectRatios: arList,
+					Resolutions:  resList,
+					DefaultRatio: defAR,
+					DefaultRes:   defRes,
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func containsStringFold(slice []string, val string) bool {
+	for _, s := range slice {
+		if strings.EqualFold(strings.TrimSpace(s), strings.TrimSpace(val)) {
+			return true
+		}
+	}
+	return false
+}
+
+func isEquivalentAspectRatio(supported []string, requested string) bool {
+	reqLower := strings.ToLower(strings.TrimSpace(requested))
+	for _, s := range supported {
+		sLower := strings.ToLower(strings.TrimSpace(s))
+		if (reqLower == "landscape" && sLower == "16:9") ||
+			(reqLower == "portrait" && sLower == "9:16") ||
+			(reqLower == "16:9" && sLower == "landscape") ||
+			(reqLower == "9:16" && sLower == "portrait") {
+			return true
 		}
 	}
 	return false
@@ -221,28 +263,62 @@ func validateProjectMediaTaskSettings(s *Server, task *pebblestore.ProjectTaskRe
 	}
 	agent := strings.TrimSpace(task.Agent)
 	if agent == "video" || task.OutcomeType == "video_clip" || task.OutcomeType == "video_story" {
-		if model := strings.TrimSpace(task.Model); model != "" {
+		model := strings.TrimSpace(task.Model)
+		if model != "" {
 			if !isSupportedVideoModel(s, model) {
 				return fmt.Errorf("unsupported video model %q", model)
 			}
 		}
+		opts := s.getModelGenerationOptions(model)
+		if opts == nil && model == "" {
+			opts = s.getModelGenerationOptions("veo-3.1-generate-preview")
+		}
 		if ar := strings.TrimSpace(task.AspectRatio); ar != "" {
-			switch strings.ToLower(ar) {
-			case "16:9", "9:16", "1:1", "4:3", "landscape", "portrait":
-			default:
-				return fmt.Errorf("unsupported video aspect ratio %q; supported ratios are 16:9, 9:16, 1:1, 4:3", ar)
+			if opts != nil && len(opts.AspectRatios) > 0 {
+				if !containsStringFold(opts.AspectRatios, ar) && !isEquivalentAspectRatio(opts.AspectRatios, ar) {
+					return fmt.Errorf("unsupported video aspect ratio %q; supported ratios are %s", ar, strings.Join(opts.AspectRatios, ", "))
+				}
+			} else {
+				switch strings.ToLower(ar) {
+				case "16:9", "9:16", "1:1", "4:3", "landscape", "portrait":
+				default:
+					return fmt.Errorf("unsupported video aspect ratio %q; supported ratios are 16:9, 9:16, 1:1, 4:3", ar)
+				}
 			}
 		}
 		if res := strings.TrimSpace(task.Resolution); res != "" {
-			switch strings.ToLower(res) {
-			case "360p", "720p", "1080p", "4k":
-			default:
-				return fmt.Errorf("unsupported video resolution %q; supported resolutions are 360p, 720p, 1080p, 4k", res)
+			if opts != nil && len(opts.Resolutions) > 0 {
+				if !containsStringFold(opts.Resolutions, res) {
+					return fmt.Errorf("unsupported video resolution %q; supported resolutions are %s", res, strings.Join(opts.Resolutions, ", "))
+				}
+			} else {
+				switch strings.ToLower(res) {
+				case "360p", "720p", "1080p", "4k":
+				default:
+					return fmt.Errorf("unsupported video resolution %q; supported resolutions are 360p, 720p, 1080p, 4k", res)
+				}
 			}
 		}
 		if dur := task.DurationSeconds; dur > 0 {
-			if dur != 4 && dur != 6 && dur != 8 {
-				return fmt.Errorf("unsupported video duration %d seconds; supported durations are 4, 6, 8 seconds", dur)
+			if opts != nil && len(opts.Durations) > 0 {
+				found := false
+				for _, d := range opts.Durations {
+					if d == dur {
+						found = true
+						break
+					}
+				}
+				if !found {
+					var durStrs []string
+					for _, d := range opts.Durations {
+						durStrs = append(durStrs, fmt.Sprintf("%d", d))
+					}
+					return fmt.Errorf("unsupported video duration %d seconds; supported durations are %s seconds", dur, strings.Join(durStrs, ", "))
+				}
+			} else {
+				if dur != 4 && dur != 6 && dur != 8 {
+					return fmt.Errorf("unsupported video duration %d seconds; supported durations are 4, 6, 8 seconds", dur)
+				}
 			}
 			resLower := strings.ToLower(strings.TrimSpace(task.Resolution))
 			if (resLower == "1080p" || resLower == "4k") && (dur == 4 || dur == 6) {
@@ -259,23 +335,40 @@ func validateProjectMediaTaskSettings(s *Server, task *pebblestore.ProjectTaskRe
 	}
 
 	if agent == "image" || (agent == "designer" && (task.Tier == "swarm" || len(task.Deliverables) > 1 || task.OutcomeType == "media_bundle")) {
-		if model := strings.TrimSpace(task.Model); model != "" {
+		model := strings.TrimSpace(task.Model)
+		if model != "" {
 			if !isSupportedImageModel(s, model) {
 				return fmt.Errorf("unsupported image model %q", model)
 			}
 		}
+		opts := s.getModelGenerationOptions(model)
+		if opts == nil && model == "" {
+			opts = s.getModelGenerationOptions("snapshot-image")
+		}
 		if ar := strings.TrimSpace(task.AspectRatio); ar != "" {
-			switch strings.ToLower(ar) {
-			case "1:1", "16:9", "9:16", "4:3", "3:4", "portrait", "landscape":
-			default:
-				return fmt.Errorf("unsupported image aspect ratio %q; supported ratios are 1:1, 16:9, 9:16, 4:3, 3:4", ar)
+			if opts != nil && len(opts.AspectRatios) > 0 {
+				if !containsStringFold(opts.AspectRatios, ar) && !isEquivalentAspectRatio(opts.AspectRatios, ar) {
+					return fmt.Errorf("unsupported image aspect ratio %q; supported ratios are %s", ar, strings.Join(opts.AspectRatios, ", "))
+				}
+			} else {
+				switch strings.ToLower(ar) {
+				case "1:1", "16:9", "9:16", "4:3", "3:4", "portrait", "landscape":
+				default:
+					return fmt.Errorf("unsupported image aspect ratio %q; supported ratios are 1:1, 16:9, 9:16, 4:3, 3:4", ar)
+				}
 			}
 		}
 		if res := strings.TrimSpace(task.Resolution); res != "" {
-			switch strings.ToLower(res) {
-			case "1k", "2k", "4k", "1024x1024", "standard", "hd", "ultra hd":
-			default:
-				return fmt.Errorf("unsupported image resolution %q; supported resolutions are 1K, 2K, 4K", res)
+			if opts != nil && len(opts.Resolutions) > 0 {
+				if !containsStringFold(opts.Resolutions, res) {
+					return fmt.Errorf("unsupported image resolution %q; supported resolutions are %s", res, strings.Join(opts.Resolutions, ", "))
+				}
+			} else {
+				switch strings.ToLower(res) {
+				case "1k", "2k", "4k", "1024x1024", "standard", "hd", "ultra hd":
+				default:
+					return fmt.Errorf("unsupported image resolution %q; supported resolutions are 1K, 2K, 4K", res)
+				}
 			}
 		}
 		if task.VariantCount < 0 {
@@ -288,40 +381,6 @@ func validateProjectMediaTaskSettings(s *Server, task *pebblestore.ProjectTaskRe
 	}
 
 	return nil
-}
-
-func isSupportedVideoModel(s *Server, modelID string) bool {
-	clean := strings.TrimSpace(strings.ToLower(modelID))
-	if clean == "" {
-		return false
-	}
-	known := map[string]bool{
-		"veo-3.1-generate-preview":      true,
-		"veo-3.1-fast-generate-preview": true,
-		"veo-3.1-lite-generate-preview": true,
-		"gemini-omni-1.1-flash":         true,
-		"gemini-omni-flash-preview":     true,
-		"google/veo-3.1":                true,
-		"google/veo-3.1-fast":           true,
-		"google/veo-3.1-lite":           true,
-		"google/veo-2":                  true,
-		"google/veo-2.0-generate-001":   true,
-	}
-	if known[clean] {
-		return true
-	}
-	if s != nil && s.model != nil {
-		for _, provider := range []string{"google", "openrouter"} {
-			if records, err := s.model.ListCatalog(provider, 200); err == nil {
-				for _, rec := range records {
-					if strings.EqualFold(rec.Model, modelID) {
-						return true
-					}
-				}
-			}
-		}
-	}
-	return false
 }
 
 func updateProjectTaskWithRetry(db *pebblestore.SessionStore, accountScopeID, projectID, taskID string, mutate func(*pebblestore.ProjectTaskRecord) error) (*pebblestore.ProjectTaskRecord, error) {
@@ -565,22 +624,20 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 		}
 
 		imageModel := strings.TrimSpace(task.Model)
-		if imageModel != "" && s.imageGen != nil {
-			if resolved, rErr := s.imageGen.ResolveModelSelection(imageModel); rErr != nil || resolved.ID == "" {
-				modelErr := fmt.Errorf("unsupported image model %q", imageModel)
-				_, _ = updateProjectTaskWithRetry(db, p.AccountScopeID, task.ProjectID, task.ID, func(t *pebblestore.ProjectTaskRecord) error {
-					t.Status = "failed"
-					t.LastError = modelErr.Error()
-					t.ActionNeeded = fmt.Sprintf("Action Needed: %v", modelErr)
-					t.WhatNotDone = []string{modelErr.Error()}
-					for i := range t.Deliverables {
-						t.Deliverables[i].Status = "failed"
-						t.Deliverables[i].Description = fmt.Sprintf("Model error: %v", modelErr)
-					}
-					return nil
-				})
-				return
-			}
+		if imageModel != "" && !isSupportedImageModel(s, imageModel) {
+			modelErr := fmt.Errorf("unsupported image model %q", imageModel)
+			_, _ = updateProjectTaskWithRetry(db, p.AccountScopeID, task.ProjectID, task.ID, func(t *pebblestore.ProjectTaskRecord) error {
+				t.Status = "failed"
+				t.LastError = modelErr.Error()
+				t.ActionNeeded = fmt.Sprintf("Action Needed: %v", modelErr)
+				t.WhatNotDone = []string{modelErr.Error()}
+				for i := range t.Deliverables {
+					t.Deliverables[i].Status = "failed"
+					t.Deliverables[i].Description = fmt.Sprintf("Model error: %v", modelErr)
+				}
+				return nil
+			})
+			return
 		}
 
 		lowerPrompt := strings.ToLower(prompt)
@@ -900,9 +957,6 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 								if usedModel == "" {
 									usedModel = videoModel
 								}
-								if usedModel == "" {
-									usedModel = "veo-3.1-generate-preview"
-								}
 								durationStr := fmt.Sprintf("%ds", vRes.DurationSeconds)
 								if vRes.DurationSeconds <= 0 {
 									durationStr = fmt.Sprintf("%ds", durSec)
@@ -1077,329 +1131,6 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 			return nil
 		})
 	}
-}
-
-// generateStyledImageSVGDataURL creates a high-craft deterministic SVG vector asset
-// tailored to the prompt (e.g. panda, futuristic terminal, cosmic swarm core) and aspect ratio.
-func generateStyledImageSVGDataURL(prompt string, aspectRatio string, variantIndex int, resolution string) string {
-	width, height := 800, 800
-	switch aspectRatio {
-	case "16:9":
-		width, height = 960, 540
-	case "9:16":
-		width, height = 540, 960
-	case "4:3":
-		width, height = 800, 600
-	}
-
-	lowerPrompt := strings.ToLower(prompt)
-	var graphicContent string
-
-	// Color palette definitions based on prompt style keywords
-	strokeMain := "#38bdf8"
-	strokeAccent := "#00F0FF"
-	strokeSoft := "#87CEEB"
-	bgStop1 := "#0b1329"
-	bgStop2 := "#050814"
-	bgStop3 := "#02040a"
-
-	if strings.Contains(lowerPrompt, "sunset") || strings.Contains(lowerPrompt, "amber") || strings.Contains(lowerPrompt, "warm") || strings.Contains(lowerPrompt, "gold") || strings.Contains(lowerPrompt, "orange") {
-		strokeMain = "#f59e0b"
-		strokeAccent = "#fbbf24"
-		strokeSoft = "#fed7aa"
-		bgStop1 = "#3d1c06"
-		bgStop2 = "#1c1917"
-		bgStop3 = "#0c0a09"
-	} else if strings.Contains(lowerPrompt, "cyberpunk") || strings.Contains(lowerPrompt, "neon") || strings.Contains(lowerPrompt, "purple") || strings.Contains(lowerPrompt, "pink") || strings.Contains(lowerPrompt, "magenta") {
-		strokeMain = "#ec4899"
-		strokeAccent = "#a855f7"
-		strokeSoft = "#06b6d4"
-		bgStop1 = "#3b0764"
-		bgStop2 = "#0f172a"
-		bgStop3 = "#020617"
-	} else if strings.Contains(lowerPrompt, "matrix") || strings.Contains(lowerPrompt, "emerald") || strings.Contains(lowerPrompt, "green") {
-		strokeMain = "#10b981"
-		strokeAccent = "#34d399"
-		strokeSoft = "#6ee7b7"
-		bgStop1 = "#064e3b"
-		bgStop2 = "#022c22"
-		bgStop3 = "#020617"
-	} else if strings.Contains(lowerPrompt, "dark") || strings.Contains(lowerPrompt, "obsidian") || strings.Contains(lowerPrompt, "mono") || strings.Contains(lowerPrompt, "slate") {
-		strokeMain = "#94a3b8"
-		strokeAccent = "#cbd5e1"
-		strokeSoft = "#e2e8f0"
-		bgStop1 = "#1e293b"
-		bgStop2 = "#0f172a"
-		bgStop3 = "#020617"
-	}
-
-	rotationAngle := (variantIndex - 1) * 35
-
-	if strings.Contains(lowerPrompt, "panda") {
-		// Adorable stylized geometric Panda in bamboo grove
-		cx, cy := width/2, height/2
-		graphicContent = fmt.Sprintf(`
-		<!-- Bamboo Grove Background -->
-		<g opacity="0.35">
-			<rect x="%d" y="0" width="16" height="%d" rx="4" fill="#059669" />
-			<rect x="%d" y="0" width="12" height="%d" rx="3" fill="#10b981" />
-			<rect x="%d" y="0" width="18" height="%d" rx="4" fill="#047857" />
-			<rect x="%d" y="0" width="14" height="%d" rx="3" fill="#34d399" />
-		</g>
-		<!-- Panda Body and Shadow -->
-		<ellipse cx="%d" cy="%d" rx="140" ry="85" fill="#030712" opacity="0.5" filter="blur(12px)" />
-		<circle cx="%d" cy="%d" r="110" fill="#f8fafc" stroke="#e2e8f0" stroke-width="4" />
-		<!-- Panda Ears -->
-		<circle cx="%d" cy="%d" r="38" fill="#0f172a" />
-		<circle cx="%d" cy="%d" r="22" fill="#1e293b" />
-		<circle cx="%d" cy="%d" r="38" fill="#0f172a" />
-		<circle cx="%d" cy="%d" r="22" fill="#1e293b" />
-		<!-- Panda Eye Patches & Eyes -->
-		<ellipse cx="%d" cy="%d" rx="30" ry="24" transform="rotate(-15 %d %d)" fill="#0f172a" />
-		<circle cx="%d" cy="%d" r="8" fill="#ffffff" />
-		<circle cx="%d" cy="%d" r="4" fill="%s" />
-		<ellipse cx="%d" cy="%d" rx="30" ry="24" transform="rotate(15 %d %d)" fill="#0f172a" />
-		<circle cx="%d" cy="%d" r="8" fill="#ffffff" />
-		<circle cx="%d" cy="%d" r="4" fill="%s" />
-		<!-- Nose and Snout -->
-		<ellipse cx="%d" cy="%d" rx="18" ry="12" fill="#0f172a" />
-		<path d="M %d %d Q %d %d %d %d Q %d %d %d %d" stroke="#0f172a" stroke-width="3" fill="none" stroke-linecap="round" />
-		<!-- Cheeks -->
-		<circle cx="%d" cy="%d" r="14" fill="#fda4af" opacity="0.4" filter="blur(2px)" />
-		<circle cx="%d" cy="%d" r="14" fill="#fda4af" opacity="0.4" filter="blur(2px)" />
-		<!-- Bamboo Stalk Held -->
-		<g transform="rotate(-25 %d %d)">
-			<rect x="%d" y="%d" width="14" height="130" rx="4" fill="#10b981" stroke="#059669" stroke-width="2" />
-			<line x1="%d" y1="%d" x2="%d" y2="%d" stroke="#047857" stroke-width="3" />
-			<line x1="%d" y1="%d" x2="%d" y2="%d" stroke="#047857" stroke-width="3" />
-			<path d="M %d %d Q %d %d %d %d" fill="#34d399" opacity="0.8" />
-		</g>
-		`,
-			width/10, height,
-			width/7, height,
-			width-width/8, height,
-			width-width/5, height,
-			cx, cy+110,
-			cx, cy,
-			cx-80, cy-85, cx-80, cy-85,
-			cx+80, cy-85, cx+80, cy-85,
-			cx-42, cy-12, cx-42, cy-12,
-			cx-40, cy-14, cx-39, cy-14,
-			strokeMain,
-			cx+42, cy-12, cx+42, cy-12,
-			cx+44, cy-14, cx+45, cy-14,
-			strokeMain,
-			cx, cy+20,
-			cx-12, cy+32, cx-6, cy+38, cx, cy+32, cx+6, cy+38, cx+12, cy+32,
-			cx-60, cy+18,
-			cx+60, cy+18,
-			cx+75, cy+70,
-			cx+68, cy-10,
-			cx+68, cy+30, cx+82, cy+30,
-			cx+68, cy+70, cx+82, cy+70,
-			cx+75, cy+20, cx+105, cy+10, cx+110, cy+25,
-		)
-	} else {
-		// Cosmic Swarm Emblem with luminous concentric mark and particle rays
-		cx, cy := width/2, height/2
-		graphicContent = fmt.Sprintf(`
-		<g transform="rotate(%d %d %d)">
-		<!-- Glowing Concentric Mark -->
-		<g filter="url(#glow)">
-			<rect x="%d" y="%d" width="180" height="180" rx="36" fill="none" stroke="%s" stroke-width="2" opacity="0.4" />
-			<rect x="%d" y="%d" width="130" height="130" rx="26" fill="none" stroke="%s" stroke-width="2.5" opacity="0.7" />
-			<rect x="%d" y="%d" width="80" height="80" rx="16" fill="none" stroke="%s" stroke-width="3" opacity="0.9" />
-			<rect x="%d" y="%d" width="36" height="36" rx="8" fill="#ffffff" opacity="0.95" />
-		</g>
-		<!-- Particle Lattice Rays -->
-		<g stroke="%s" stroke-width="1" opacity="0.4">
-			<line x1="%d" y1="%d" x2="%d" y2="%d" />
-			<line x1="%d" y1="%d" x2="%d" y2="%d" />
-			<line x1="%d" y1="%d" x2="%d" y2="%d" />
-			<line x1="%d" y1="%d" x2="%d" y2="%d" />
-		</g>
-		<circle cx="%d" cy="%d" r="3" fill="%s" />
-		<circle cx="%d" cy="%d" r="3" fill="%s" />
-		<circle cx="%d" cy="%d" r="3" fill="%s" />
-		<circle cx="%d" cy="%d" r="3" fill="%s" />
-		</g>
-		`,
-			rotationAngle, cx, cy,
-			cx-90, cy-90, strokeMain,
-			cx-65, cy-65, strokeAccent,
-			cx-40, cy-40, strokeSoft,
-			cx-18, cy-18,
-			strokeMain,
-			cx-150, cy, cx-100, cy,
-			cx+100, cy, cx+150, cy,
-			cx, cy-150, cx, cy-100,
-			cx, cy+100, cx, cy+150,
-			cx-150, cy, strokeAccent,
-			cx+150, cy, strokeAccent,
-			cx, cy-150, strokeSoft,
-			cx, cy+150, strokeSoft,
-		)
-	}
-
-	resTag := strings.TrimSpace(resolution)
-	if resTag == "" {
-		resTag = "1K"
-	}
-	badgeText := fmt.Sprintf("AI DELIVERABLE • VARIANT %d (%s · %s)", variantIndex, aspectRatio, resTag)
-	if strings.Contains(lowerPrompt, "change") || strings.Contains(lowerPrompt, "modify") || strings.Contains(lowerPrompt, "edit") || strings.Contains(lowerPrompt, "fine-tune") || strings.Contains(lowerPrompt, "tweak") {
-		badgeText = fmt.Sprintf("AI FINE-TUNE / EDIT • %s · %s", aspectRatio, resTag)
-	} else if strings.Contains(lowerPrompt, "iteration based on") {
-		badgeText = fmt.Sprintf("AI ITERATION (VARIANT %d) • %s · %s", variantIndex, aspectRatio, resTag)
-	}
-
-	svg := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 %d %d" width="%d" height="%d">
-	<defs>
-		<radialGradient id="bg-grad" cx="50%%" cy="50%%" r="70%%">
-			<stop offset="0%%" stop-color="%s" />
-			<stop offset="60%%" stop-color="%s" />
-			<stop offset="100%%" stop-color="%s" />
-		</radialGradient>
-		<filter id="glow" x="-30%%" y="-30%%" width="160%%" height="160%%">
-			<feGaussianBlur stdDeviation="6" result="blur" />
-			<feComposite in="SourceGraphic" in2="blur" operator="over" />
-		</filter>
-	</defs>
-	<!-- Background Frame -->
-	<rect width="%d" height="%d" fill="url(#bg-grad)" />
-	%s
-	<!-- Prompt & Status Metadata Overlay -->
-	<g transform="translate(24, %d)">
-		<rect width="%d" height="42" rx="8" fill="#030712" opacity="0.8" stroke="#1e293b" stroke-width="1" />
-		<text x="14" y="18" fill="#94a3b8" font-family="monospace" font-size="10px" font-weight="bold">%s</text>
-		<text x="14" y="32" fill="#e2e8f0" font-family="sans-serif" font-size="11px" font-weight="600">%s</text>
-	</g>
-</svg>`,
-		width, height, width, height,
-		bgStop1, bgStop2, bgStop3,
-		width, height,
-		graphicContent,
-		height-66,
-		width-48,
-		badgeText,
-		escapeXML(truncateString(prompt, 60)),
-	)
-
-	return fmt.Sprintf("data:image/svg+xml;base64,%s", base64.StdEncoding.EncodeToString([]byte(svg)))
-}
-
-// generateStyledVideoSVGDataURL creates a cinematic video storyboard asset.
-func generateStyledVideoSVGDataURL(prompt string, aspectRatio string, scenes []pebblestore.ProjectTaskScene, soundtrack string, sourceMediaTitle string, sourceMediaKind string) string {
-	width, height := 960, 540
-	sceneCount := len(scenes)
-	if sceneCount == 0 {
-		sceneCount = 2
-	}
-	headerLabel := fmt.Sprintf("VIDEO STORY COMPOSITION • %d SCENES • %s", sceneCount, aspectRatio)
-	if sourceMediaKind == "video" {
-		lowerPrompt := strings.ToLower(prompt)
-		if strings.Contains(lowerPrompt, "next scene") || strings.Contains(lowerPrompt, "continue") {
-			headerLabel = fmt.Sprintf("VIDEO CONTINUATION (FROM %s) • %d SCENES • %s", escapeXML(truncateString(sourceMediaTitle, 24)), sceneCount, aspectRatio)
-		} else {
-			headerLabel = fmt.Sprintf("VIDEO ITERATION (OF %s) • %d SCENES • %s", escapeXML(truncateString(sourceMediaTitle, 24)), sceneCount, aspectRatio)
-		}
-	} else if sourceMediaKind == "image" {
-		headerLabel = fmt.Sprintf("VIDEO STORY (KEYFRAME: %s) • %d SCENES • %s", escapeXML(truncateString(sourceMediaTitle, 24)), sceneCount, aspectRatio)
-	} else if sceneCount <= 1 {
-		headerLabel = fmt.Sprintf("SINGLE VIDEO CLIP • 8s • %s", aspectRatio)
-	}
-
-	soundtrackSection := ""
-	if strings.TrimSpace(soundtrack) != "" {
-		soundtrackSection = fmt.Sprintf(`	<!-- Soundtrack Audio Waveform Bars -->
-	<g transform="translate(60, 360)">
-		<rect x="0" y="20" width="6" height="40" rx="3" fill="url(#bar-grad)" />
-		<rect x="14" y="8" width="6" height="52" rx="3" fill="url(#bar-grad)" />
-		<rect x="28" y="24" width="6" height="36" rx="3" fill="url(#bar-grad)" />
-		<rect x="42" y="12" width="6" height="48" rx="3" fill="url(#bar-grad)" />
-		<rect x="56" y="4" width="6" height="56" rx="3" fill="url(#bar-grad)" />
-		<rect x="70" y="18" width="6" height="42" rx="3" fill="url(#bar-grad)" />
-		<rect x="84" y="28" width="6" height="32" rx="3" fill="url(#bar-grad)" />
-		<rect x="98" y="10" width="6" height="50" rx="3" fill="url(#bar-grad)" />
-		<rect x="112" y="2" width="6" height="58" rx="3" fill="url(#bar-grad)" />
-		<rect x="126" y="16" width="6" height="44" rx="3" fill="url(#bar-grad)" />
-		<rect x="140" y="24" width="6" height="36" rx="3" fill="url(#bar-grad)" />
-		<rect x="154" y="8" width="6" height="52" rx="3" fill="url(#bar-grad)" />
-		<text x="180" y="38" fill="#94a3b8" font-family="monospace" font-size="11px">SOUNDTRACK: %s</text>
-	</g>`, escapeXML(soundtrack))
-	} else if sceneCount <= 1 {
-		soundtrackSection = `	<!-- Model Generative Audio Indicator -->
-	<g transform="translate(60, 375)">
-		<circle cx="8" cy="8" r="4" fill="#38bdf8" />
-		<text x="24" y="12" fill="#94a3b8" font-family="monospace" font-size="11px">MODEL GENERATIVE AUDIO • ONE PROMPT SHOT (8s)</text>
-	</g>`
-	} else {
-		soundtrackSection = `	<!-- No Soundtrack Attached -->
-	<g transform="translate(60, 375)">
-		<text x="0" y="12" fill="#64748b" font-family="monospace" font-size="11px">NO SOUNDTRACK CLIP ATTACHED</text>
-	</g>`
-	}
-
-	svg := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 %d %d" width="%d" height="%d">
-	<defs>
-		<linearGradient id="vid-grad" x1="0%%" y1="0%%" x2="100%%" y2="100%%">
-			<stop offset="0%%" stop-color="#0c162d" />
-			<stop offset="50%%" stop-color="#070c1e" />
-			<stop offset="100%%" stop-color="#020409" />
-		</linearGradient>
-		<linearGradient id="bar-grad" x1="0%%" y1="0%%" x2="0%%" y2="100%%">
-			<stop offset="0%%" stop-color="#00F0FF" />
-			<stop offset="100%%" stop-color="#3b82f6" />
-		</linearGradient>
-	</defs>
-	<!-- Cinema Background -->
-	<rect width="%d" height="%d" fill="url(#vid-grad)" />
-	<!-- Film Strip Sprockets Top -->
-	<g fill="#1e293b" opacity="0.6">
-		<rect x="20" y="10" width="16" height="12" rx="2" />
-		<rect x="60" y="10" width="16" height="12" rx="2" />
-		<rect x="100" y="10" width="16" height="12" rx="2" />
-		<rect x="140" y="10" width="16" height="12" rx="2" />
-		<rect x="180" y="10" width="16" height="12" rx="2" />
-		<rect x="220" y="10" width="16" height="12" rx="2" />
-		<rect x="260" y="10" width="16" height="12" rx="2" />
-		<rect x="300" y="10" width="16" height="12" rx="2" />
-		<rect x="340" y="10" width="16" height="12" rx="2" />
-		<rect x="380" y="10" width="16" height="12" rx="2" />
-		<rect x="420" y="10" width="16" height="12" rx="2" />
-		<rect x="460" y="10" width="16" height="12" rx="2" />
-		<rect x="500" y="10" width="16" height="12" rx="2" />
-		<rect x="540" y="10" width="16" height="12" rx="2" />
-		<rect x="580" y="10" width="16" height="12" rx="2" />
-		<rect x="620" y="10" width="16" height="12" rx="2" />
-		<rect x="660" y="10" width="16" height="12" rx="2" />
-		<rect x="700" y="10" width="16" height="12" rx="2" />
-		<rect x="740" y="10" width="16" height="12" rx="2" />
-		<rect x="780" y="10" width="16" height="12" rx="2" />
-		<rect x="820" y="10" width="16" height="12" rx="2" />
-		<rect x="860" y="10" width="16" height="12" rx="2" />
-		<rect x="900" y="10" width="16" height="12" rx="2" />
-	</g>
-	<!-- Center Playhead Indicator -->
-	<circle cx="480" cy="230" r="54" fill="#0f172a" stroke="#38bdf8" stroke-width="2" opacity="0.9" />
-	<polygon points="468,206 504,230 468,254" fill="#ffffff" />
-%s
-	<!-- Storyboard Scenes Ribbon -->
-	<g transform="translate(24, 450)">
-		<rect width="912" height="60" rx="8" fill="#030712" opacity="0.85" stroke="#1e293b" stroke-width="1" />
-		<text x="16" y="24" fill="#38bdf8" font-family="monospace" font-size="11px" font-weight="bold">%s</text>
-		<text x="16" y="44" fill="#e2e8f0" font-family="sans-serif" font-size="12px" font-weight="600">%s</text>
-	</g>
-</svg>`,
-		width, height, width, height,
-		width, height,
-		soundtrackSection,
-		headerLabel,
-		escapeXML(truncateString(prompt, 70)),
-	)
-
-	return fmt.Sprintf("data:image/svg+xml;base64,%s", base64.StdEncoding.EncodeToString([]byte(svg)))
 }
 
 func generateStyledAudioSVGDataURL(prompt string, model string, durationSeconds int) string {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -14,6 +15,8 @@ import (
 
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/imagegen"
+	"swarm/packages/swarmd/internal/model"
+	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/videogen"
@@ -38,11 +41,15 @@ func (f *fakeTestGeminiClient) GenerateImage(ctx context.Context, req imagegen.G
 	}
 	raw := f.successBytes
 	if len(raw) == 0 {
-		raw = []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0, 0, 0, 0, 'I', 'H', 'D', 'R'}
+		raw = imageGenerationTestPNGBytes()
 	}
 	return imagegen.GeminiImageGenerationResult{
-		Bytes:     raw,
-		MediaType: "image/png",
+		Images: []imagegen.GeminiGeneratedImage{
+			{
+				DecodedPNG: raw,
+				MIMEType:   "image/png",
+			},
+		},
 	}, nil
 }
 
@@ -95,7 +102,24 @@ func setupDirectMediaTestServer(t *testing.T) (*Server, *pebblestore.SessionStor
 		t.Fatalf("seed credential: %v", err)
 	}
 
-	imageThreads := pebblestore.NewImageThreadStore(db)
+	catalogStore := pebblestore.NewModelCatalogStore(db)
+	pricing := json.RawMessage(`{"input_per_million":1.25,"output_per_million":5}`)
+	googleImageProviderSpecific := json.RawMessage(`{"google":{"model_api_surface":"generate_content","image_generation":{"api_surface":"generate_content","status":"verified","managed_image_tool":{"supported":true,"client_setting_names":["aspect_ratio","image_size"]},"settings":{"aspect_ratio":{"status":"verified","default_value":"1:1","supported_values":["1:1","16:9","9:16","4:3","3:4"]},"image_size":{"status":"verified","default_value":"1K","supported_values":["1K","2K"]}}}}}`)
+	googleGenerateContentMedia := &pebblestore.ModelCatalogMediaCapabilities{State: pebblestore.ModelCatalogMediaStateSupported, ProviderSurface: provideriface.MediaProviderSurfaceGoogleGenerateContent}
+
+	googleVideoProviderSpecific := json.RawMessage(`{"google":{"model_api_surface":"predict","video_generation":{"status":"verified","settings":{"aspect_ratio":{"status":"verified","default_value":"16:9","supported_values":["16:9","9:16","1:1","4:3"]},"resolution":{"status":"verified","default_value":"720p","supported_values":["720p","1080p"]},"duration_seconds":{"status":"verified","default_value":8,"supported_values":[4,6,8]}}}}}`)
+	googlePredictMedia := &pebblestore.ModelCatalogMediaCapabilities{State: pebblestore.ModelCatalogMediaStateSupported, ProviderSurface: provideriface.MediaProviderSurfaceGooglePredict}
+
+	for _, record := range []pebblestore.ModelCatalogRecord{
+		{Provider: "google", Model: "snapshot-image", DisplayName: "Snapshot Image", CatalogModalities: pebblestore.ModelCatalogModalities{Inputs: []string{"text"}, Outputs: []string{"image"}}, Media: googleGenerateContentMedia, ProviderSpecific: googleImageProviderSpecific, Pricing: pricing, SourceSnapshotID: "snap-1", SourceSnapshotVersion: "1"},
+		{Provider: "google", Model: "veo-3.1-generate-preview", DisplayName: "Veo 3.1", CatalogModalities: pebblestore.ModelCatalogModalities{Inputs: []string{"text", "image"}, Outputs: []string{"video"}}, Media: googlePredictMedia, ProviderSpecific: googleVideoProviderSpecific, Pricing: pricing, SourceSnapshotID: "snap-1", SourceSnapshotVersion: "1"},
+	} {
+		if err := catalogStore.SetRecord(record); err != nil {
+			t.Fatalf("seed catalog record: %v", err)
+		}
+	}
+
+	modelSvc := model.NewService(pebblestore.NewModelStore(db), nil, model.NewCatalogService(catalogStore))
 	ss := pebblestore.NewSessionStore(db)
 	el, err := pebblestore.NewEventLog(db)
 	if err != nil {
@@ -104,7 +128,12 @@ func setupDirectMediaTestServer(t *testing.T) (*Server, *pebblestore.SessionStor
 
 	server := &Server{
 		sessions: sessionruntime.NewService(ss, el),
+		model:    modelSvc,
 	}
+	defaultImageClient := &fakeTestGeminiClient{}
+	defaultImageSvc := imagegen.NewService(nil, authStore, pebblestore.NewImageThreadStore(db), modelSvc)
+	defaultImageSvc.SetGeminiImageClient(defaultImageClient)
+	server.SetImageGenerationService(defaultImageSvc)
 	return server, ss, p
 }
 
@@ -118,7 +147,7 @@ func TestDirectImageExecution_HonestFailure_NeverReturnsSVG(t *testing.T) {
 	server, ss, p := setupDirectMediaTestServer(t)
 
 	failingClient := &fakeTestGeminiClient{shouldFail: true}
-	imageSvc := imagegen.NewService(nil, pebblestore.NewAuthStore(ss.Underlying()), pebblestore.NewImageThreadStore(ss.Underlying()))
+	imageSvc := imagegen.NewService(nil, pebblestore.NewAuthStore(ss.Underlying()), pebblestore.NewImageThreadStore(ss.Underlying()), server.model)
 	imageSvc.SetGeminiImageClient(failingClient)
 	server.SetImageGenerationService(imageSvc)
 
@@ -190,7 +219,7 @@ func TestDirectImageExecution_ExplicitInvalidModel_FailsWithoutSilentFallback(t 
 	server, ss, p := setupDirectMediaTestServer(t)
 
 	client := &fakeTestGeminiClient{shouldFail: false}
-	imageSvc := imagegen.NewService(nil, pebblestore.NewAuthStore(ss.Underlying()), pebblestore.NewImageThreadStore(ss.Underlying()))
+	imageSvc := imagegen.NewService(nil, pebblestore.NewAuthStore(ss.Underlying()), pebblestore.NewImageThreadStore(ss.Underlying()), server.model)
 	imageSvc.SetGeminiImageClient(client)
 	server.SetImageGenerationService(imageSvc)
 
@@ -245,7 +274,7 @@ func TestDirectImageExecution_PartialVariantSuccess(t *testing.T) {
 	client := &fakeTestGeminiClient{
 		failOnIndex: 2, // Variant 1 succeeds, Variant 2 fails
 	}
-	imageSvc := imagegen.NewService(nil, pebblestore.NewAuthStore(ss.Underlying()), pebblestore.NewImageThreadStore(ss.Underlying()))
+	imageSvc := imagegen.NewService(nil, pebblestore.NewAuthStore(ss.Underlying()), pebblestore.NewImageThreadStore(ss.Underlying()), server.model)
 	imageSvc.SetGeminiImageClient(client)
 	server.SetImageGenerationService(imageSvc)
 
