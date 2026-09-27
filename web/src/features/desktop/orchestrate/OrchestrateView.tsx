@@ -565,7 +565,6 @@ function MinimalTaskCard({
   onOpenAgentSettings,
   onOpenTaskModelChanger,
   projectId,
-  modelOptions,
   defaultImageModel,
   defaultVideoModel,
   defaultAudioModel,
@@ -2712,7 +2711,6 @@ export function OrchestrateView({
       deployPreviewQuery.error,
     ]
   )
-  const currentAccountDefaultModel = deployConfig.accountDefaultModel
   const resolvedDeployModel = deployConfig.resolvedModel
   const isDeployModelOverridden = deployConfig.isOverridden
 

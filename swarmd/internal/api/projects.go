@@ -571,22 +571,12 @@ func (s *Server) buildTaskModelPreview(p identity.Principal, task *pebblestore.P
 	return preview
 }
 
-func routeAndPlanProjectTask(prompt string, wsPath string, projectContext string, workspaces []pebblestore.ProjectWorkspaceRef, feedback string, lastError string) (TaskRouteResult, error) {
-	return pebblestore.RouteAndPlanProjectTask(prompt, wsPath, projectContext, workspaces, feedback, lastError)
-}
-
 func truncateString(s string, maxLen int) string {
 	s = strings.TrimSpace(s)
 	if len(s) <= maxLen {
 		return s
 	}
 	return s[:maxLen] + "..."
-}
-
-// organizeTaskFromEnglishPrompt delegates to routeAndPlanProjectTask for backward compatibility.
-func organizeTaskFromEnglishPrompt(prompt string, wsPath string) (title string, agent string, outcomeType string, branch string, mission string, stages []string, deliverables []pebblestore.ProjectTaskDeliverable) {
-	routed := routeAndPlanProjectTask(prompt, wsPath, "", nil, "", "")
-	return routed.Title, routed.Agent, routed.OutcomeType, routed.Branch, routed.Mission, routed.Stages, routed.Deliverables
 }
 
 // SynthesizeProjectContext reads AGENTS.md and README.md from the provided workspace paths

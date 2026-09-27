@@ -3272,3 +3272,8 @@ Supersedes the preceding decision to omit equivalent costs: `resolveVideoPricing
 ### Precommit fixture and comment hygiene (2026-09-28)
 
 Inspected `videogen.PreflightVideoOperation` model selection, `pebble.VideoProvenance.Validate`, and `TestVideoProvenance_ValidationAndSecretsBan`. Reworded two model-resolution comments that the policy scanner misclassified, and split a synthetic credential literal while preserving its exact runtime value and rejection assertion. Corrected gofmt alignment in the managed-video request literal in `tool/runtime_manage_artifact.go`. No production behavior, authority, prompt, or gate changed. The full `bash scripts/check-precommit.sh` gate passed on base `666199b7d` plus these repairs, including secret/policy/atlas checks, vulnerability scans and gofmt. The Go regression test was not executed; this source-equivalent fixture edit is not new runtime/security evidence.
+### Orchestrator compilation repair (2026-09-27)
+
+- Removed the uncalled API compatibility pair `organizeTaskFromEnglishPrompt` / `routeAndPlanProjectTask`; its stale single-value call no longer matched the store router's error-returning contract. Earlier ledger descriptions of that pair are historical, not current routing authority.
+- Fixed the missing `fmt` import in task-store validation, duplicate tool `outcomeType` declaration, unused task-program imports, unused video metadata/keyword flags, and unused Desktop bindings. No live routing, model-resolution or media-integrity proof is implied.
+- Validation on the repair working tree: bounded Go build of `./cmd/swarmd ./cmd/swarmctl ./cmd/swarm-fff-search` succeeded; `pnpm build` completed TypeScript and Vite through the existing `.mjs` launchers. No behavioral tests or deployment were run.

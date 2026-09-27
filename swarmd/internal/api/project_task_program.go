@@ -13,8 +13,6 @@ import (
 	"strings"
 	"time"
 
-	agentruntime "swarm/packages/swarmd/internal/agent"
-	"swarm/packages/swarmd/internal/agentmodel"
 	"swarm/packages/swarmd/internal/identity"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"

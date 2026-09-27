@@ -460,7 +460,6 @@ func (r *Runtime) executeManageProjects(scope WorkspaceScope, args map[string]an
 		if status == "" || status == "queued" {
 			status = "pending_approval"
 		}
-		outcomeType := strings.TrimSpace(asString(args["outcome_type"]))
 		if outcomeType == "" {
 			outcomeType = routed.OutcomeType
 		}
