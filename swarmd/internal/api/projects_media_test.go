@@ -106,7 +106,7 @@ func setupDirectMediaTestServer(t *testing.T) (*Server, *pebblestore.SessionStor
 	googleImageProviderSpecific := json.RawMessage(`{"google":{"model_api_surface":"generate_content","image_generation":{"api_surface":"generate_content","status":"verified","managed_image_tool":{"supported":true,"client_setting_names":["aspect_ratio","image_size"]},"settings":{"aspect_ratio":{"status":"verified","default_value":"1:1","supported_values":["1:1","16:9","9:16","4:3","3:4"]},"image_size":{"status":"verified","default_value":"1K","supported_values":["1K","2K"]}}}}}`)
 	googleGenerateContentMedia := &pebblestore.ModelCatalogMediaCapabilities{State: pebblestore.ModelCatalogMediaStateSupported, ProviderSurface: provideriface.MediaProviderSurfaceGoogleGenerateContent}
 
-	googleVideoProviderSpecific := json.RawMessage(`{"google":{"model_api_surface":"predict","video_generation":{"status":"verified","settings":{"aspect_ratio":{"status":"verified","default_value":"16:9","supported_values":["16:9","9:16","1:1","4:3"]},"resolution":{"status":"verified","default_value":"720p","supported_values":["720p","1080p"]},"duration_seconds":{"status":"verified","default_value":8,"supported_values":[4,6,8]}}}}}`)
+	googleVideoProviderSpecific := json.RawMessage(`{"google":{"model_api_surface":"predict","video_generation":{"status":"verified","settings":{"aspect_ratio":{"status":"verified","default_value":"16:9","supported_values":["16:9","9:16","1:1","4:3"]},"resolution":{"status":"verified","default_value":"720p","supported_values":["720p","1080p"]},"duration_seconds":{"status":"verified","default_value":8,"supported_values":[4,6,8]}},"features":{"initial_image":{"status":"verified","supported":true,"max_inputs":1}}}}}`)
 	googlePredictMedia := &pebblestore.ModelCatalogMediaCapabilities{State: pebblestore.ModelCatalogMediaStateSupported, ProviderSurface: "predict"}
 
 	for _, record := range []pebblestore.ModelCatalogRecord{
@@ -1126,16 +1126,63 @@ func TestDirectVideoExecution_Preflight_RejectsMultipleAttachments(t *testing.T)
 
 func TestDirectVideoExecution_Preflight_RejectsMalformedImage(t *testing.T) {
 	// Requirement: Attached images must be validated for valid image headers/bytes before generation begins.
+	// Formats restricted to locally decoded PNG, JPEG, WebP. Never accept SVG string contains, 12-byte RIFF, fake HEIC headers.
+	// MIME must match bytes, bounded size/dimensions.
 	// Threat/regression: Corrupted or garbage image payload passing validation and failing upstream with paid token spend.
 	// Boundary/authority: validateImageBytes in projects_media.go.
 	// Test layer: Direct validation test on malformed image data.
 
-	err := validateImageBytes([]byte("not an image at all just garbage bytes 12345"), "image/png")
-	if err == nil {
+	// 1. Garbage bytes rejected
+	if err := validateImageBytes([]byte("not an image at all just garbage bytes 12345"), "image/png"); err == nil {
 		t.Fatalf("expected error for malformed image bytes")
 	}
-	if !strings.Contains(err.Error(), "malformed") {
-		t.Fatalf("expected error mentioning 'malformed', got: %v", err)
+
+	// 2. SVG string contains rejected (never accept SVG string contains)
+	svgBytes := []byte(`<svg xmlns="http://www.w3.org/2000/svg"><circle r="10"/></svg>`)
+	if err := validateImageBytes(svgBytes, "image/svg+xml"); err == nil {
+		t.Fatalf("expected error rejecting SVG vector image (must be rasterized)")
+	}
+
+	// 3. 12-byte RIFF fake WebP rejected (never accept 12-byte RIFF)
+	fakeRIFF := []byte("RIFF\x04\x00\x00\x00WEBP")
+	if err := validateImageBytes(fakeRIFF, "image/webp"); err == nil {
+		t.Fatalf("expected error rejecting 12-byte RIFF stub")
+	}
+
+	// 4. Fake HEIC ftyp header rejected (never accept fake HEIC headers)
+	fakeHEIC := []byte("\x00\x00\x00\x14ftypheic\x00\x00\x00\x00")
+	if err := validateImageBytes(fakeHEIC, "image/heic"); err == nil {
+		t.Fatalf("expected error rejecting fake HEIC header")
+	}
+
+	// 5. Valid 1x1 PNG accepted
+	validPNG := []byte{
+		0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D,
+		0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+		0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00,
+		0x0A, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0x63, 0x00, 0x01, 0x00, 0x00,
+		0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00, 0x00, 0x00, 0x00, 0x49,
+		0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+	}
+	if err := validateImageBytes(validPNG, "image/png"); err != nil {
+		t.Fatalf("expected valid PNG to pass: %v", err)
+	}
+
+	// 6. MIME mismatch rejected (PNG with image/jpeg)
+	if err := validateImageBytes(validPNG, "image/jpeg"); err == nil {
+		t.Fatalf("expected error on MIME mismatch (PNG with image/jpeg)")
+	}
+
+	// 7. Valid WebP (VP8X 1x1) accepted
+	validWebP := []byte{
+		'R', 'I', 'F', 'F', 22, 0, 0, 0, 'W', 'E', 'B', 'P',
+		'V', 'P', '8', 'X', 10, 0, 0, 0,
+		0, 0, 0, 0, // flags
+		0, 0, 0, // canvas width minus 1 (1px)
+		0, 0, 0, // canvas height minus 1 (1px)
+	}
+	if err := validateImageBytes(validWebP, "image/webp"); err != nil {
+		t.Fatalf("expected valid WebP to pass: %v", err)
 	}
 }
 
@@ -1303,5 +1350,180 @@ func TestProjectTask_DirectVideo_API_RejectsMultipartAndNonImages(t *testing.T) 
 	w4 := call(`{"intent":"video","video_type":"single","prompt":"clip","variant_count":10}`)
 	if w4.Code != http.StatusBadRequest || !strings.Contains(w4.Body.String(), "exceeds maximum allowed (8)") {
 		t.Fatalf("expected 400 for variant_count > 8, got %d: %s", w4.Code, w4.Body.String())
+	}
+}
+
+func TestProjectTask_DirectVideo_API_RejectsNegativeCountsAndUnsupportedModel(t *testing.T) {
+	// Requirement: POST /v3/projects/{id}/tasks must reject negative variant_count, negative deliverable_count,
+	// and unsupported models upfront before Router or persistence.
+	// Threat/regression: Negative counts causing panics, masking invalid inputs, or unpersisted tasks leaking.
+	// Boundary/authority: Server.handleProjects in projects.go.
+	// Test layer: HTTP API endpoint test verifying 400 Bad Request responses.
+
+	server, ss, p := setupDirectMediaTestServer(t)
+	project := &pebblestore.ProjectRecord{
+		ID:        "proj-neg-count-test",
+		AccountID: p.AccountScopeID,
+		Name:      "Neg Count Test",
+	}
+	_ = ss.PutProject(p.AccountScopeID, project)
+	tokenRec := &pebblestore.ScopedTokenRecord{
+		AccountScopeID: p.AccountScopeID,
+		UserID:         p.UserID,
+		Scopes:         []string{"projects:write", "sessions:write"},
+	}
+
+	call := func(body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/v3/projects/"+project.ID+"/tasks", strings.NewReader(body))
+		req = req.WithContext(context.WithValue(req.Context(), productPrincipalRequestContextKey, p))
+		req = req.WithContext(context.WithValue(req.Context(), productScopedTokenRequestContextKey, tokenRec))
+		w := httptest.NewRecorder()
+		server.handleProjects(w, req)
+		return w
+	}
+
+	// 1. Negative variant_count rejected
+	w1 := call(`{"intent":"video","video_type":"single","prompt":"clip","variant_count":-1}`)
+	if w1.Code != http.StatusBadRequest || !strings.Contains(w1.Body.String(), "cannot be negative") {
+		t.Fatalf("expected 400 for negative variant_count, got %d: %s", w1.Code, w1.Body.String())
+	}
+
+	// 2. Negative deliverable_count rejected
+	w2 := call(`{"intent":"video","video_type":"single","prompt":"clip","deliverable_count":-2}`)
+	if w2.Code != http.StatusBadRequest || !strings.Contains(w2.Body.String(), "cannot be negative") {
+		t.Fatalf("expected 400 for negative deliverable_count, got %d: %s", w2.Code, w2.Body.String())
+	}
+
+	// 3. Unsupported video model rejected upfront
+	w3 := call(`{"intent":"video","video_type":"single","prompt":"clip","model":"unsupported-fake-model-xyz"}`)
+	if w3.Code != http.StatusBadRequest || !strings.Contains(w3.Body.String(), "unsupported video model") {
+		t.Fatalf("expected 400 for unsupported model, got %d: %s", w3.Code, w3.Body.String())
+	}
+
+	// Verify no task was persisted
+	tasks, err := ss.ListProjectTasks(p.AccountScopeID, project.ID)
+	if err != nil {
+		t.Fatalf("list tasks: %v", err)
+	}
+	if len(tasks) != 0 {
+		t.Fatalf("expected 0 tasks persisted on validation rejections, got %d", len(tasks))
+	}
+}
+
+func TestProjectTask_DirectVideo_API_ProtectsDirectVideoFieldsFromOverrides(t *testing.T) {
+	// Requirement: Direct video creation must protect task.Agent, task.OutcomeType, task.Deliverables,
+	// and task.Description from caller overrides (e.g. req.Agent="coder" or req.Deliverables).
+	// Threat/regression: Caller mutating direct video tasks into code PR tasks or empty deliverables.
+	// Boundary/authority: Server.handleProjects in projects.go.
+	// Test layer: HTTP API endpoint test verifying persisted task record fields.
+
+	server, ss, p := setupDirectMediaTestServer(t)
+	project := &pebblestore.ProjectRecord{
+		ID:        "proj-protect-test",
+		AccountID: p.AccountScopeID,
+		Name:      "Protect Test",
+	}
+	_ = ss.PutProject(p.AccountScopeID, project)
+	tokenRec := &pebblestore.ScopedTokenRecord{
+		AccountScopeID: p.AccountScopeID,
+		UserID:         p.UserID,
+		Scopes:         []string{"projects:write", "sessions:write"},
+	}
+
+	body := `{
+		"intent": "video",
+		"agent": "coder",
+		"outcome_type": "code_pr",
+		"prompt": "Cinematic flying drone shot over redwood canopy",
+		"model": "veo-3.1-generate-preview",
+		"aspect_ratio": "16:9",
+		"resolution": "720p",
+		"duration_seconds": 8,
+		"variant_count": 2,
+		"deliverables": [{"id":"fake_deliv","title":"Fake Deliverable","kind":"code"}]
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/v3/projects/"+project.ID+"/tasks", strings.NewReader(body))
+	req = req.WithContext(context.WithValue(req.Context(), productPrincipalRequestContextKey, p))
+	req = req.WithContext(context.WithValue(req.Context(), productScopedTokenRequestContextKey, tokenRec))
+	w := httptest.NewRecorder()
+	server.handleProjects(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201 Created, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var res map[string]pebblestore.ProjectTaskRecord
+	if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	task := res["task"]
+	if task.Agent != "video" {
+		t.Errorf("task.Agent = %q, want 'video'", task.Agent)
+	}
+	if task.OutcomeType != "video_clip" {
+		t.Errorf("task.OutcomeType = %q, want 'video_clip'", task.OutcomeType)
+	}
+	if task.VariantCount != 2 {
+		t.Errorf("task.VariantCount = %d, want 2", task.VariantCount)
+	}
+	if len(task.Deliverables) != 2 {
+		t.Fatalf("expected 2 deliverables allocated, got %d", len(task.Deliverables))
+	}
+	for i, d := range task.Deliverables {
+		if d.Kind != "video" {
+			t.Errorf("deliverable %d kind = %q, want 'video'", i, d.Kind)
+		}
+	}
+	if task.AccountID != p.AccountScopeID {
+		t.Errorf("task.AccountID = %q, want %q", task.AccountID, p.AccountScopeID)
+	}
+}
+
+func TestResolveSourceMediaBytes_StaleRevisionRejected(t *testing.T) {
+	// Requirement: Artifact URL revision checking must inspect canonical event_seq query authority
+	// and reject stale revisions with an error. No permissive variant.ID-as-revision.
+	// Threat/regression: Using stale or mismatched artifact revisions silently.
+	// Boundary/authority: resolveSourceMediaBytes in projects_media.go.
+	// Test layer: Artifact resolution test with pebble session store.
+
+	server, ss, p := setupDirectMediaTestServer(t)
+	sessionID := "sess-art-1"
+	variantID := "var-art-1"
+
+	// Put an artifact variant with EventSeq = 3
+	artRecord := &pebblestore.SessionArtifactVariantRecord{
+		SessionID:    sessionID,
+		CollectionID: "coll-1",
+		ID:           variantID,
+		EventSeq:     3,
+		MediaType:    "image/png",
+	}
+	if err := ss.PutSessionArtifactVariant(p.AccountScopeID, artRecord); err != nil {
+		t.Fatalf("put artifact variant: %v", err)
+	}
+
+	// 1. Request with stale revision event_seq=1 -> must be rejected
+	mediaRefStale := pebblestore.ProjectTaskMediaRef{
+		ID:  variantID,
+		URL: fmt.Sprintf("/v3/sessions/%s/artifacts/%s?event_seq=1", sessionID, variantID),
+	}
+	_, _, errStale := server.resolveSourceMediaBytes(context.Background(), p, mediaRefStale, "image")
+	if errStale == nil {
+		t.Fatalf("expected stale revision error for event_seq=1 when current is 3")
+	}
+	if !strings.Contains(errStale.Error(), "stale artifact revision") {
+		t.Fatalf("expected error mentioning 'stale artifact revision', got: %v", errStale)
+	}
+
+	// 2. Request with variant.ID passed as revision (permissive variant.ID-as-revision must be rejected!)
+	mediaRefIDAsRev := pebblestore.ProjectTaskMediaRef{
+		ID:  variantID,
+		URL: fmt.Sprintf("/v3/sessions/%s/artifacts/%s?event_seq=%s", sessionID, variantID, variantID),
+	}
+	_, _, errIDAsRev := server.resolveSourceMediaBytes(context.Background(), p, mediaRefIDAsRev, "image")
+	if errIDAsRev == nil {
+		t.Fatalf("expected error rejecting variant.ID as revision")
+	}
+	if !strings.Contains(errIDAsRev.Error(), "stale artifact revision") {
+		t.Fatalf("expected error mentioning 'stale artifact revision', got: %v", errIDAsRev)
 	}
 }

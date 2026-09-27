@@ -172,8 +172,8 @@ func (s *Server) handleMediaSettingsCatalog(w http.ResponseWriter, r *http.Reque
 				}
 			}
 		}
-		if defaultVideo == "" {
-			defaultVideo = DefaultVideoGenerationModel
+		if defaultVideo == "" && len(response.VideoGenerationModels) > 0 {
+			defaultVideo = response.VideoGenerationModels[0].ID
 		}
 	}
 	if defaultAudio == "" {
@@ -682,6 +682,38 @@ func extractModelGenerationOptions(record pebblestore.ModelCatalogRecord) *media
 			MaxInputs:  maxIn,
 			Conditions: f.Conditions,
 			Notes:      f.Notes,
+		}
+	}
+
+	if isVideo {
+		vOpts := videogen.ExtractVideoOptions(record)
+		if vOpts == nil {
+			return nil
+		}
+		var initialImage *MediaInitialImageOption
+		if vOpts.InitialImageSupported {
+			maxIn := 1
+			if vOpts.InitialImageMaxInputs > 0 {
+				maxIn = vOpts.InitialImageMaxInputs
+			}
+			initialImage = &MediaInitialImageOption{
+				Supported:          true,
+				MaxInputs:          maxIn,
+				SupportedMimeTypes: []string{"image/png", "image/jpeg", "image/webp"},
+			}
+		}
+		return &mediaCatalogGenerationOptions{
+			AspectRatios:        vOpts.AspectRatios,
+			Resolutions:         vOpts.Resolutions,
+			Durations:           vOpts.Durations,
+			DefaultRatio:        vOpts.DefaultRatio,
+			DefaultRes:          vOpts.DefaultRes,
+			DefaultDur:          vOpts.DefaultDur,
+			MaxOutputs:          8,
+			ResolutionDurations: vOpts.ResolutionDurations,
+			InitialImage:        initialImage,
+			Settings:            outSettings,
+			Features:            outFeatures,
 		}
 	}
 

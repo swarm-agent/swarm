@@ -293,8 +293,9 @@ func TestMediaCatalogResponse_ExposesResolutionDurationsAndInitialImage(t *testi
 						"supported_values": ["16:9", "9:16"]
 					},
 					"resolution": {
-						"status": "unsupported",
-						"supported_values": []
+						"status": "verified",
+						"default_value": "720p",
+						"supported_values": ["360p", "720p", "1080p", "4k"]
 					},
 					"duration_seconds": {
 						"status": "unknown",
@@ -373,8 +374,11 @@ func TestMediaCatalogResponse_ExposesResolutionDurationsAndInitialImage(t *testi
 	if omniOpt == nil || omniOpt.GenerationOptions == nil {
 		t.Fatalf("expected generation_options on gemini-omni-1.1-flash")
 	}
-	if len(omniOpt.GenerationOptions.Resolutions) != 0 {
-		t.Errorf("expected empty resolutions for omni, got %#v", omniOpt.GenerationOptions.Resolutions)
+	if len(omniOpt.GenerationOptions.Resolutions) != 4 {
+		t.Errorf("expected 4 resolutions for omni (360p, 720p, 1080p, 4k), got %#v", omniOpt.GenerationOptions.Resolutions)
+	}
+	if omniOpt.GenerationOptions.DefaultRes != "720p" {
+		t.Errorf("expected default resolution 720p for omni, got %q", omniOpt.GenerationOptions.DefaultRes)
 	}
 	if len(omniOpt.GenerationOptions.Durations) != 0 {
 		t.Errorf("expected empty durations for omni, got %#v", omniOpt.GenerationOptions.Durations)

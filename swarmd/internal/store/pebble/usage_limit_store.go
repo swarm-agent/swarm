@@ -221,6 +221,8 @@ type MediaCostEstimateOptions struct {
 	IsIteration     bool
 	OutputTokens    int64
 	ServiceTier     string
+	Variant         string
+	SKU             string
 }
 
 // EstimateMediaCostWithOptions resolves snapshot-backed media pricing for images, videos, and audio.
@@ -415,6 +417,11 @@ func EstimateMediaCostFromRecord(rec ModelCatalogRecord, opts MediaCostEstimateO
 			conds, hasConds := lineMap["conditions"].(map[string]any)
 			serviceTier := ""
 
+			// Informational equivalent cost is not a canonical billing rate
+			if kindVal, _ := lineMap["kind"].(string); kindVal == "equivalent_cost" {
+				continue
+			}
+
 			// Condition matching: resolution, variant, and sku conditions
 			resCond := ""
 			if hasConds {
@@ -436,26 +443,77 @@ func EstimateMediaCostFromRecord(rec ModelCatalogRecord, opts MediaCostEstimateO
 				if opts.Resolution == "" || !strings.EqualFold(resCond, opts.Resolution) {
 					continue
 				}
-			} else if lineVariant != "" && (strings.EqualFold(lineVariant, "720p") || strings.EqualFold(lineVariant, "1080p") || strings.EqualFold(lineVariant, "4k")) {
+			} else if lineVariant != "" && (strings.EqualFold(lineVariant, "360p") || strings.EqualFold(lineVariant, "720p") || strings.EqualFold(lineVariant, "1080p") || strings.EqualFold(lineVariant, "4k")) {
 				// Variant specified as resolution tag
 				if opts.Resolution == "" || !strings.EqualFold(lineVariant, opts.Resolution) {
 					continue
 				}
-			} else if (lineVariant != "" || lineSKU != "") && opts.Resolution == "" {
-				// Line has a variant or SKU condition, but caller gave no resolution/variant to match
+			} else if lineVariant != "" {
+				// Variant specified on line but not a resolution tag
+				if opts.Variant == "" || !strings.EqualFold(lineVariant, opts.Variant) {
+					// Unknown or unmatched variant condition: fail closed
+					continue
+				}
+			}
+
+			// If line has an explicit SKU condition, caller must match it
+			if lineSKU != "" {
+				if opts.SKU == "" || !strings.EqualFold(lineSKU, opts.SKU) {
+					// Unknown or unmatched SKU: fail closed
+					continue
+				}
+			}
+
+			// Verify all conditions on the line are known and satisfied; unknown conditions must fail closed
+			unsupportedCond := false
+			if hasConds {
+				for condKey, condVal := range conds {
+					switch strings.ToLower(condKey) {
+					case "resolution", "variant", "sku":
+						// Handled above
+					case "tier":
+						if tStr, ok := condVal.(string); ok && tStr != "" && !strings.EqualFold(tStr, "paid") {
+							unsupportedCond = true
+						}
+					case "service_tier":
+						if st, ok := condVal.(string); ok && st != "" {
+							serviceTier = st
+						}
+					case "includes_audio":
+						if incAudio, ok := condVal.(bool); ok {
+							if incAudio != opts.IncludesAudio {
+								unsupportedCond = true
+							}
+						}
+					case "is_iteration":
+						if isIter, ok := condVal.(bool); ok {
+							if isIter != opts.IsIteration {
+								unsupportedCond = true
+							}
+						}
+					case "aspect_ratio":
+						if ar, ok := condVal.(string); ok && ar != "" {
+							if opts.AspectRatio == "" || !strings.EqualFold(ar, opts.AspectRatio) {
+								unsupportedCond = true
+							}
+						}
+					case "charged_only_on_success":
+						// Known standard billing contract attribute
+					case "output_tokens_per_second":
+						// Informational rate condition
+					default:
+						// Unknown condition on billing line: fail closed!
+						unsupportedCond = true
+					}
+					if unsupportedCond {
+						break
+					}
+				}
+			}
+			if unsupportedCond {
 				continue
 			}
 
-			if hasConds {
-				if incAudio, ok := conds["includes_audio"].(bool); ok {
-					if incAudio != opts.IncludesAudio {
-						continue
-					}
-				}
-				if st, ok := conds["service_tier"].(string); ok && st != "" {
-					serviceTier = st
-				}
-			}
 			if serviceTier == "" {
 				if st, ok := lineMap["service_tier"].(string); ok && st != "" {
 					serviceTier = st
@@ -476,22 +534,31 @@ func EstimateMediaCostFromRecord(rec ModelCatalogRecord, opts MediaCostEstimateO
 				catalogTag = fmt.Sprintf("(catalog %s)", snapID)
 			}
 			unit, _ := lineMap["unit"].(string)
+			unitLower := strings.ToLower(strings.TrimSpace(unit))
 			var curUnitPrice float64
 			var curSummary string
-			switch strings.ToLower(unit) {
+			switch unitLower {
 			case "second", "sec":
 				if opts.DurationSeconds > 0 {
 					curUnitPrice = pUSD * float64(opts.DurationSeconds)
 					curSummary = fmt.Sprintf("$%.3f/sec ($%.2f for %ds) %s", pUSD, curUnitPrice, opts.DurationSeconds, catalogTag)
+				} else {
+					// Cannot calculate per-second pricing without positive duration; fail closed
+					continue
 				}
 			case "minute", "min":
 				if opts.DurationSeconds > 0 {
 					curUnitPrice = (pUSD / 60.0) * float64(opts.DurationSeconds)
 					curSummary = fmt.Sprintf("$%.2f/min ($%.2f for %ds) %s", pUSD, curUnitPrice, opts.DurationSeconds, catalogTag)
+				} else {
+					continue
 				}
 			case "video", "generation":
 				curUnitPrice = pUSD
 				curSummary = fmt.Sprintf("$%.2f per video %s", curUnitPrice, catalogTag)
+			default:
+				// Unknown billing unit (e.g. million_tokens for video without token count, etc.) must fail closed
+				continue
 			}
 			if curSummary != "" {
 				matchedLines = append(matchedLines, candidateVideoLine{

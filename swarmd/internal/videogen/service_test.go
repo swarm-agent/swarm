@@ -7,6 +7,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -1085,5 +1086,227 @@ func TestGenerateManagedVideo_1080pDurationRequires8s(t *testing.T) {
 	}
 	if calls != 0 {
 		t.Fatalf("provider called %d times on invalid resolution/duration mismatch", calls)
+	}
+}
+
+func loadActualSnapshotRecord(t *testing.T, provider, modelID string) pebblestore.ModelCatalogRecord {
+	t.Helper()
+	snapshotPath := filepath.Join("..", "model", "snapshotdata", "snapshot.json")
+	data, err := os.ReadFile(snapshotPath)
+	if err != nil {
+		t.Fatalf("read snapshot.json: %v", err)
+	}
+	var snap struct {
+		SnapshotID      string `json:"snapshot_id"`
+		SnapshotVersion string `json:"snapshot_version"`
+		Models          []struct {
+			ProviderID   string `json:"provider_id"`
+			ModelID      string `json:"model_id"`
+			DisplayName  string `json:"display_name"`
+			Capabilities struct {
+				SupportsVideoInput  *bool `json:"supports_video_input"`
+				SupportsVideoOutput *bool `json:"supports_video_output"`
+				SupportsImageInput  *bool `json:"supports_image_input"`
+			} `json:"capabilities"`
+			Modalities struct {
+				Input  []string `json:"input"`
+				Output []string `json:"output"`
+			} `json:"modalities"`
+			Pricing          json.RawMessage `json:"pricing"`
+			ProviderSpecific json.RawMessage `json:"provider_specific"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(data, &snap); err != nil {
+		t.Fatalf("unmarshal snapshot.json: %v", err)
+	}
+	for _, m := range snap.Models {
+		if strings.EqualFold(m.ProviderID, provider) && strings.EqualFold(m.ModelID, modelID) {
+			return pebblestore.ModelCatalogRecord{
+				Provider:              m.ProviderID,
+				Model:                 m.ModelID,
+				DisplayName:           m.DisplayName,
+				SourceSnapshotID:      snap.SnapshotID,
+				SourceSnapshotVersion: snap.SnapshotVersion,
+				CatalogModalities: pebblestore.ModelCatalogModalities{
+					Inputs:  m.Modalities.Input,
+					Outputs: m.Modalities.Output,
+				},
+				Pricing:          m.Pricing,
+				ProviderSpecific: m.ProviderSpecific,
+			}
+		}
+	}
+	t.Fatalf("model %s/%s not found in snapshot.json", provider, modelID)
+	return pebblestore.ModelCatalogRecord{}
+}
+
+func TestExtractVideoOptions_ActualSnapshotModels(t *testing.T) {
+	// Requirement: Capabilities and settings must be extracted from actual snapshot records, not fake schemas.
+	// Threat/regression: Hardcoded fallbacks or incorrect capability flags diverging from authoritative model snapshot.
+	// Boundary/authority: ExtractVideoOptions in videogen/options.go against model/snapshotdata/snapshot.json.
+
+	// 1. Veo 3.1 Generate Preview
+	veoRec := loadActualSnapshotRecord(t, "google", "veo-3.1-generate-preview")
+	veoOpts := ExtractVideoOptions(veoRec)
+	if veoOpts == nil {
+		t.Fatalf("expected non-nil options for veo-3.1-generate-preview")
+	}
+	if !veoOpts.HasVideoOutput {
+		t.Errorf("expected HasVideoOutput=true")
+	}
+	if veoOpts.DefaultRes != "720p" {
+		t.Errorf("veo DefaultRes = %q, want 720p", veoOpts.DefaultRes)
+	}
+	if veoOpts.DefaultRatio != "16:9" {
+		t.Errorf("veo DefaultRatio = %q, want 16:9", veoOpts.DefaultRatio)
+	}
+	if !ContainsStringFold(veoOpts.Resolutions, "720p") || !ContainsStringFold(veoOpts.Resolutions, "1080p") || !ContainsStringFold(veoOpts.Resolutions, "4k") {
+		t.Errorf("veo Resolutions = %v, want 720p, 1080p, 4k", veoOpts.Resolutions)
+	}
+	if !ContainsStringFold(veoOpts.AspectRatios, "16:9") || !ContainsStringFold(veoOpts.AspectRatios, "9:16") {
+		t.Errorf("veo AspectRatios = %v, want 16:9, 9:16", veoOpts.AspectRatios)
+	}
+	// Verify resolution-specific durations
+	durs1080p := veoOpts.ResolutionDurations["1080p"]
+	if len(durs1080p) != 1 || durs1080p[0] != 8 {
+		t.Errorf("veo 1080p durations = %v, want [8]", durs1080p)
+	}
+	durs4k := veoOpts.ResolutionDurations["4k"]
+	if len(durs4k) != 1 || durs4k[0] != 8 {
+		t.Errorf("veo 4k durations = %v, want [8]", durs4k)
+	}
+	durs720p := veoOpts.ResolutionDurations["720p"]
+	if len(durs720p) != 3 {
+		t.Errorf("veo 720p durations = %v, want [4, 6, 8]", durs720p)
+	}
+	if !veoOpts.InitialImageSupported || veoOpts.InitialImageMaxInputs != 1 {
+		t.Errorf("veo InitialImageSupported=%v MaxInputs=%d, want true/1", veoOpts.InitialImageSupported, veoOpts.InitialImageMaxInputs)
+	}
+	if veoOpts.ConversationalEditingSupported {
+		t.Errorf("veo should not support conversational editing")
+	}
+
+	// 2. Gemini Omni 1.1 Flash
+	omniRec := loadActualSnapshotRecord(t, "google", "gemini-omni-1.1-flash")
+	omniOpts := ExtractVideoOptions(omniRec)
+	if omniOpts == nil {
+		t.Fatalf("expected non-nil options for gemini-omni-1.1-flash")
+	}
+	if omniOpts.DefaultRes != "720p" {
+		t.Errorf("omni DefaultRes = %q, want 720p", omniOpts.DefaultRes)
+	}
+	if omniOpts.DefaultRatio != "16:9" {
+		t.Errorf("omni DefaultRatio = %q, want 16:9", omniOpts.DefaultRatio)
+	}
+	if len(omniOpts.Resolutions) != 4 || !ContainsStringFold(omniOpts.Resolutions, "360p") || !ContainsStringFold(omniOpts.Resolutions, "720p") || !ContainsStringFold(omniOpts.Resolutions, "1080p") || !ContainsStringFold(omniOpts.Resolutions, "4k") {
+		t.Errorf("omni Resolutions = %v, want 360p, 720p, 1080p, 4k", omniOpts.Resolutions)
+	}
+	if len(omniOpts.Durations) != 0 {
+		t.Errorf("omni Durations = %v, want empty (duration is unknown)", omniOpts.Durations)
+	}
+	if !omniOpts.InitialImageSupported {
+		t.Errorf("omni InitialImageSupported = false, want true")
+	}
+	if !omniOpts.ConversationalEditingSupported {
+		t.Errorf("omni ConversationalEditingSupported = false, want true")
+	}
+
+	// 3. Veo 3.1 Lite (extension unsupported)
+	liteRec := loadActualSnapshotRecord(t, "google", "veo-3.1-lite-generate-preview")
+	liteOpts := ExtractVideoOptions(liteRec)
+	if liteOpts == nil {
+		t.Fatalf("expected non-nil options for veo-3.1-lite")
+	}
+	if liteOpts.VideoExtensionSupported {
+		t.Errorf("veo 3.1 lite should have VideoExtensionSupported=false")
+	}
+}
+
+func TestEstimateMediaCost_ActualSnapshotVeoAndOmni(t *testing.T) {
+	// Requirement: Pricing for video models from snapshot must compute exact dollar amounts when conditions match,
+	// and fail closed (returning 0.0 with unknown price status) when conditions, resolution, or duration are unresolved.
+	// Threat/regression: Silent rate fallback or unconditioned rate matching on specialized models.
+	// Boundary/authority: EstimateMediaCostFromRecord in store/pebble/usage_limit_store.go.
+
+	veoRec := loadActualSnapshotRecord(t, "google", "veo-3.1-generate-preview")
+
+	// 1. 720p 8s -> $0.40 ($0.05/sec * 8s)
+	est720_8s := pebblestore.EstimateMediaCostFromRecord(veoRec, pebblestore.MediaCostEstimateOptions{
+		Resolution:      "720p",
+		DurationSeconds: 8,
+		IncludesAudio:   true,
+		ServiceTier:     "standard",
+	})
+	if math.Abs(est720_8s.CostUSD-0.40) > 0.0001 {
+		t.Fatalf("veo 720p 8s cost = %f, want 0.40", est720_8s.CostUSD)
+	}
+	if est720_8s.PriceStatus != "metered" {
+		t.Errorf("veo 720p 8s price_status = %q, want metered", est720_8s.PriceStatus)
+	}
+
+	// 2. 1080p 8s -> $0.64 ($0.08/sec * 8s)
+	est1080_8s := pebblestore.EstimateMediaCostFromRecord(veoRec, pebblestore.MediaCostEstimateOptions{
+		Resolution:      "1080p",
+		DurationSeconds: 8,
+		IncludesAudio:   true,
+		ServiceTier:     "standard",
+	})
+	if math.Abs(est1080_8s.CostUSD-0.64) > 0.0001 {
+		t.Fatalf("veo 1080p 8s cost = %f, want 0.64", est1080_8s.CostUSD)
+	}
+
+	// 3. 720p 4s -> $0.20 ($0.05/sec * 4s)
+	est720_4s := pebblestore.EstimateMediaCostFromRecord(veoRec, pebblestore.MediaCostEstimateOptions{
+		Resolution:      "720p",
+		DurationSeconds: 4,
+		IncludesAudio:   true,
+		ServiceTier:     "standard",
+	})
+	if math.Abs(est720_4s.CostUSD-0.20) > 0.0001 {
+		t.Fatalf("veo 720p 4s cost = %f, want 0.20", est720_4s.CostUSD)
+	}
+
+	// 4. Missing resolution -> fails closed, unknown
+	estNoRes := pebblestore.EstimateMediaCostFromRecord(veoRec, pebblestore.MediaCostEstimateOptions{
+		DurationSeconds: 8,
+		IncludesAudio:   true,
+		ServiceTier:     "standard",
+	})
+	if estNoRes.CostUSD != 0.0 || estNoRes.PriceStatus != "unknown" {
+		t.Fatalf("veo without resolution must fail closed: got cost=%f, status=%q", estNoRes.CostUSD, estNoRes.PriceStatus)
+	}
+
+	// 5. Unknown resolution "8k" -> fails closed, unknown
+	est8k := pebblestore.EstimateMediaCostFromRecord(veoRec, pebblestore.MediaCostEstimateOptions{
+		Resolution:      "8k",
+		DurationSeconds: 8,
+		IncludesAudio:   true,
+		ServiceTier:     "standard",
+	})
+	if est8k.CostUSD != 0.0 || est8k.PriceStatus != "unknown" {
+		t.Fatalf("veo with unknown resolution 8k must fail closed: got cost=%f, status=%q", est8k.CostUSD, est8k.PriceStatus)
+	}
+
+	// 6. Unknown duration 0s -> fails closed, unknown
+	est0s := pebblestore.EstimateMediaCostFromRecord(veoRec, pebblestore.MediaCostEstimateOptions{
+		Resolution:      "720p",
+		DurationSeconds: 0,
+		IncludesAudio:   true,
+		ServiceTier:     "standard",
+	})
+	if est0s.CostUSD != 0.0 || est0s.PriceStatus != "unknown" {
+		t.Fatalf("veo with 0s duration must fail closed: got cost=%f, status=%q", est0s.CostUSD, est0s.PriceStatus)
+	}
+
+	// 7. Omni with duration 0s (unknown duration) -> fails closed, unknown
+	omniRec := loadActualSnapshotRecord(t, "google", "gemini-omni-1.1-flash")
+	estOmni := pebblestore.EstimateMediaCostFromRecord(omniRec, pebblestore.MediaCostEstimateOptions{
+		Resolution:      "720p",
+		DurationSeconds: 0,
+		IncludesAudio:   true,
+		ServiceTier:     "standard",
+	})
+	if estOmni.CostUSD != 0.0 || estOmni.PriceStatus != "unknown" {
+		t.Fatalf("omni without duration must fail closed: got cost=%f, status=%q", estOmni.CostUSD, estOmni.PriceStatus)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"image"
@@ -148,28 +149,33 @@ func isSupportedImageModel(s *Server, modelID string) bool {
 	return false
 }
 
+func (s *Server) getVideoModelOptions(modelID string) *videogen.ParsedVideoOptions {
+	if s == nil || s.model == nil {
+		return nil
+	}
+	clean := strings.TrimSpace(modelID)
+	for _, provider := range []string{"google", "openrouter"} {
+		if lookup, err := s.model.GetCatalog(provider, clean); err == nil && lookup.Found {
+			return videogen.ExtractVideoOptions(lookup.Record)
+		}
+		if records, err := s.model.ListCatalog(provider, 200); err == nil {
+			for _, rec := range records {
+				if strings.EqualFold(rec.Model, clean) {
+					return videogen.ExtractVideoOptions(rec)
+				}
+			}
+		}
+	}
+	return nil
+}
+
 func isSupportedVideoModel(s *Server, modelID string) bool {
 	clean := strings.TrimSpace(modelID)
 	if clean == "" {
 		return false
 	}
-	if s != nil && s.model != nil {
-		for _, provider := range []string{"google", "openrouter"} {
-			if lookup, err := s.model.GetCatalog(provider, clean); err == nil && lookup.Found {
-				if isVideoOutputCatalogRecord(lookup.Record) || containsStringFold(lookup.Record.CatalogModalities.Outputs, "video") {
-					return true
-				}
-			}
-			if records, err := s.model.ListCatalog(provider, 200); err == nil {
-				for _, rec := range records {
-					if strings.EqualFold(rec.Model, clean) && (isVideoOutputCatalogRecord(rec) || containsStringFold(rec.CatalogModalities.Outputs, "video")) {
-						return true
-					}
-				}
-			}
-		}
-	}
-	return false
+	opts := s.getVideoModelOptions(clean)
+	return opts != nil && opts.HasVideoOutput
 }
 
 func (s *Server) getModelGenerationOptions(modelID string) *mediaCatalogGenerationOptions {
@@ -261,36 +267,121 @@ func isOmniModel(modelID string) bool {
 	return strings.Contains(strings.ToLower(modelID), "omni")
 }
 
+func decodeWebPConfig(data []byte) (image.Config, error) {
+	if len(data) < 30 {
+		return image.Config{}, errors.New("webp payload too short")
+	}
+	if string(data[0:4]) != "RIFF" || string(data[8:12]) != "WEBP" {
+		return image.Config{}, errors.New("not a webp file")
+	}
+	fileSize := binary.LittleEndian.Uint32(data[4:8])
+	if int64(fileSize)+8 > int64(len(data)) {
+		return image.Config{}, errors.New("truncated webp file")
+	}
+	chunkTag := string(data[12:16])
+	switch chunkTag {
+	case "VP8 ":
+		if len(data) < 30 {
+			return image.Config{}, errors.New("truncated vp8 chunk")
+		}
+		if data[23] != 0x9d || data[24] != 0x01 || data[25] != 0x2a {
+			return image.Config{}, errors.New("invalid vp8 sync code")
+		}
+		width := int(binary.LittleEndian.Uint16(data[26:28]) & 0x3fff)
+		height := int(binary.LittleEndian.Uint16(data[28:30]) & 0x3fff)
+		if width <= 0 || height <= 0 {
+			return image.Config{}, errors.New("invalid vp8 dimensions")
+		}
+		return image.Config{Width: width, Height: height}, nil
+	case "VP8L":
+		if len(data) < 25 {
+			return image.Config{}, errors.New("truncated vp8l chunk")
+		}
+		if data[20] != 0x2f {
+			return image.Config{}, errors.New("invalid vp8l signature")
+		}
+		b0 := uint32(data[21])
+		b1 := uint32(data[22])
+		b2 := uint32(data[23])
+		b3 := uint32(data[24])
+		width := int(1 + (b0 | ((b1 & 0x3f) << 8)))
+		height := int(1 + (((b1 >> 6) | (b2 << 2) | ((b3 & 0x0f) << 10))))
+		if width <= 0 || height <= 0 {
+			return image.Config{}, errors.New("invalid vp8l dimensions")
+		}
+		return image.Config{Width: width, Height: height}, nil
+	case "VP8X":
+		if len(data) < 30 {
+			return image.Config{}, errors.New("truncated vp8x chunk")
+		}
+		width := int(1 + uint32(data[24]) | (uint32(data[25]) << 8) | (uint32(data[26]) << 16))
+		height := int(1 + uint32(data[27]) | (uint32(data[28]) << 8) | (uint32(data[29]) << 16))
+		if width <= 0 || height <= 0 {
+			return image.Config{}, errors.New("invalid vp8x dimensions")
+		}
+		return image.Config{Width: width, Height: height}, nil
+	default:
+		return image.Config{}, fmt.Errorf("unsupported webp chunk %q", chunkTag)
+	}
+}
+
+func decodeImageConfig(imgBytes []byte) (image.Config, string, error) {
+	cfg, format, err := image.DecodeConfig(bytes.NewReader(imgBytes))
+	if err == nil && (format == "png" || format == "jpeg") {
+		return cfg, format, nil
+	}
+	if len(imgBytes) >= 12 && string(imgBytes[0:4]) == "RIFF" && string(imgBytes[8:12]) == "WEBP" {
+		wCfg, wErr := decodeWebPConfig(imgBytes)
+		if wErr == nil {
+			return wCfg, "webp", nil
+		}
+		return image.Config{}, "", fmt.Errorf("malformed webp image: %w", wErr)
+	}
+	if err != nil {
+		return image.Config{}, "", err
+	}
+	return image.Config{}, "", fmt.Errorf("unsupported image format %q; only PNG, JPEG, and WebP are supported", format)
+}
+
 func validateImageBytes(imgBytes []byte, mediaType string) error {
 	if len(imgBytes) == 0 {
 		return errors.New("image bytes are empty")
 	}
+	if len(imgBytes) > 50<<20 {
+		return errors.New("image payload exceeds maximum allowed size (50MB)")
+	}
+	cfg, format, err := decodeImageConfig(imgBytes)
+	if err != nil {
+		return fmt.Errorf("malformed or unsupported image data: %w", err)
+	}
+	if cfg.Width <= 0 || cfg.Height <= 0 {
+		return fmt.Errorf("invalid image dimensions (%dx%d)", cfg.Width, cfg.Height)
+	}
+	if cfg.Width > 8192 || cfg.Height > 8192 {
+		return fmt.Errorf("image dimensions (%dx%d) exceed maximum allowed limit (8192x8192)", cfg.Width, cfg.Height)
+	}
 	mType := strings.ToLower(strings.TrimSpace(mediaType))
-	if mType == "image/svg+xml" || (len(imgBytes) > 4 && strings.Contains(string(imgBytes[:min(len(imgBytes), 256)]), "<svg")) {
-		if !strings.Contains(string(imgBytes), "<svg") {
-			return errors.New("malformed SVG image data")
-		}
-		return nil
-	}
-	_, _, err := image.DecodeConfig(bytes.NewReader(imgBytes))
-	if err == nil {
-		return nil
-	}
-	if len(imgBytes) >= 12 && string(imgBytes[0:4]) == "RIFF" && string(imgBytes[8:12]) == "WEBP" {
-		return nil
-	}
-	if len(imgBytes) >= 12 && string(imgBytes[4:8]) == "ftyp" {
-		brand := string(imgBytes[8:12])
-		if brand == "heic" || brand == "heix" || brand == "mif1" || brand == "msf1" {
-			return nil
+	if mType != "" {
+		expectedMIME := "image/" + format
+		if format == "jpeg" && (mType == "image/jpeg" || mType == "image/jpg") {
+			// match
+		} else if mType != expectedMIME {
+			return fmt.Errorf("image content does not match declared media type %q (detected %s)", mediaType, expectedMIME)
 		}
 	}
-	return fmt.Errorf("malformed or unsupported image data: %w", err)
+	return nil
 }
 
-func validateProjectMediaTaskSettings(s *Server, task *pebblestore.ProjectTaskRecord) error {
+func validateProjectMediaTaskSettings(s *Server, task *pebblestore.ProjectTaskRecord, p ...identity.Principal) error {
 	if task == nil {
 		return nil
+	}
+	var principal identity.Principal
+	if len(p) > 0 {
+		principal = p[0]
+	}
+	if principal.AccountScopeID == "" && task.AccountID != "" {
+		principal.AccountScopeID = task.AccountID
 	}
 	agent := strings.TrimSpace(task.Agent)
 	if agent == "video" || task.OutcomeType == "video_clip" || task.OutcomeType == "video_story" {
@@ -316,11 +407,11 @@ func validateProjectMediaTaskSettings(s *Server, task *pebblestore.ProjectTaskRe
 				return fmt.Errorf("unsupported media type %q for video generation; only images are supported as reference inputs", m.MediaType)
 			}
 			fn := strings.ToLower(strings.TrimSpace(m.Filename))
-			if fn != "" && !strings.HasSuffix(fn, ".png") && !strings.HasSuffix(fn, ".jpg") && !strings.HasSuffix(fn, ".jpeg") && !strings.HasSuffix(fn, ".webp") && !strings.HasSuffix(fn, ".heic") && !strings.HasSuffix(fn, ".heif") && !strings.HasSuffix(fn, ".svg") {
-				return fmt.Errorf("unsupported file extension on %q for video generation; only image formats are supported", m.Filename)
+			if fn != "" && !strings.HasSuffix(fn, ".png") && !strings.HasSuffix(fn, ".jpg") && !strings.HasSuffix(fn, ".jpeg") && !strings.HasSuffix(fn, ".webp") {
+				return fmt.Errorf("unsupported file extension on %q for video generation; only PNG, JPEG, and WebP image formats are supported", m.Filename)
 			}
 			if s != nil {
-				imgBytes, mType, err := s.resolveSourceMediaBytes(context.Background(), identity.Principal{AccountScopeID: task.AccountID}, m, "image")
+				imgBytes, mType, err := s.resolveSourceMediaBytes(context.Background(), principal, m, "image")
 				if err != nil {
 					return fmt.Errorf("invalid image attachment: %w", err)
 				}
@@ -334,42 +425,56 @@ func validateProjectMediaTaskSettings(s *Server, task *pebblestore.ProjectTaskRe
 		}
 
 		model := strings.TrimSpace(task.Model)
-		if model != "" {
-			if !isSupportedVideoModel(s, model) {
-				return fmt.Errorf("unsupported video model %q", model)
+		if model == "" && s != nil && s.uiSettings != nil && principal.AccountScopeID != "" {
+			if uiSet, err := s.uiSettings.GetForAccount(principal.AccountScopeID); err == nil {
+				model = strings.TrimSpace(uiSet.Tools.Video.DefaultModel)
 			}
-		} else {
-			model = DefaultVideoGenerationModel
+		}
+		if model == "" {
+			return errors.New("no default video model configured for account; select a model or configure one in Settings")
+		}
+		if !isSupportedVideoModel(s, model) {
+			return fmt.Errorf("unsupported video model %q", model)
 		}
 
-		opts := s.getModelGenerationOptions(model)
+		vOpts := s.getVideoModelOptions(model)
+		if vOpts == nil {
+			return fmt.Errorf("model %q does not support video generation", model)
+		}
+
 		if ar := strings.TrimSpace(task.AspectRatio); ar != "" {
-			if opts != nil && len(opts.AspectRatios) > 0 {
-				if !containsStringFold(opts.AspectRatios, ar) && !isEquivalentAspectRatio(opts.AspectRatios, ar) {
-					return fmt.Errorf("unsupported video aspect ratio %q; supported ratios are %s", ar, strings.Join(opts.AspectRatios, ", "))
+			if len(vOpts.AspectRatios) > 0 {
+				if !videogen.ContainsStringFold(vOpts.AspectRatios, ar) && !videogen.IsEquivalentAspectRatio(vOpts.AspectRatios, ar) {
+					return fmt.Errorf("unsupported video aspect ratio %q; supported ratios are %s", ar, strings.Join(vOpts.AspectRatios, ", "))
 				}
 			} else {
 				return errors.New("video aspect ratio metadata unavailable for selected model")
 			}
 		}
+
 		if res := strings.TrimSpace(task.Resolution); res != "" {
-			if opts != nil && len(opts.Resolutions) > 0 {
-				if !containsStringFold(opts.Resolutions, res) {
-					return fmt.Errorf("unsupported video resolution %q; supported resolutions are %s", res, strings.Join(opts.Resolutions, ", "))
+			if len(vOpts.Resolutions) > 0 {
+				if !videogen.ContainsStringFold(vOpts.Resolutions, res) {
+					return fmt.Errorf("unsupported video resolution %q; supported resolutions are %s", res, strings.Join(vOpts.Resolutions, ", "))
 				}
 			} else {
 				return errors.New("video resolution metadata unavailable for selected model")
 			}
 		}
-		if dur := task.DurationSeconds; dur > 0 {
-			if opts != nil && len(opts.Durations) > 0 {
+
+		if videogen.IsOmniModel(model) {
+			if task.DurationSeconds > 0 {
+				return fmt.Errorf("model %q does not accept duration selection", model)
+			}
+		} else if dur := task.DurationSeconds; dur > 0 {
+			if len(vOpts.Durations) > 0 {
 				resLower := strings.ToLower(strings.TrimSpace(task.Resolution))
-				if resLower == "" && opts.DefaultRes != "" {
-					resLower = strings.ToLower(opts.DefaultRes)
+				if resLower == "" && vOpts.DefaultRes != "" {
+					resLower = strings.ToLower(vOpts.DefaultRes)
 				}
-				allowedDurs := opts.Durations
-				if opts.ResolutionDurations != nil {
-					if rd, ok := opts.ResolutionDurations[resLower]; ok && len(rd) > 0 {
+				allowedDurs := vOpts.Durations
+				if vOpts.ResolutionDurations != nil {
+					if rd, ok := vOpts.ResolutionDurations[resLower]; ok && len(rd) > 0 {
 						allowedDurs = rd
 					}
 				}
@@ -394,8 +499,11 @@ func validateProjectMediaTaskSettings(s *Server, task *pebblestore.ProjectTaskRe
 				return errors.New("video duration metadata unavailable for selected model")
 			}
 		}
-		if len(task.AttachedMedia) > 0 && opts != nil && opts.InitialImage != nil && !opts.InitialImage.Supported {
-			return fmt.Errorf("selected video model %q does not support image input", model)
+
+		if len(task.AttachedMedia) > 0 {
+			if !vOpts.InitialImageSupported {
+				return fmt.Errorf("selected video model %q does not support image input", model)
+			}
 		}
 		return nil
 	}
@@ -554,7 +662,7 @@ func (s *Server) resolveSourceMediaBytes(ctx context.Context, p identity.Princip
 						kv := strings.SplitN(param, "=", 2)
 						if len(kv) == 2 {
 							key := strings.ToLower(strings.TrimSpace(kv[0]))
-							if key == "rev" || key == "revision" {
+							if key == "event_seq" || key == "eventseq" || key == "rev" || key == "revision" {
 								requestedRev = strings.TrimSpace(kv[1])
 							}
 						}
@@ -573,7 +681,7 @@ func (s *Server) resolveSourceMediaBytes(ctx context.Context, p identity.Princip
 					}
 					if requestedRev != "" {
 						curRevStr := fmt.Sprintf("%d", variant.EventSeq)
-						if requestedRev != curRevStr && requestedRev != variant.ID {
+						if requestedRev != curRevStr {
 							return nil, mediaType, fmt.Errorf("stale artifact revision %q requested (current revision is %s)", requestedRev, curRevStr)
 						}
 					}
@@ -875,45 +983,31 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 			m := task.AttachedMedia[0]
 			k := strings.ToLower(m.Kind)
 			mt := strings.ToLower(m.MediaType)
-			if k == "video" || strings.HasPrefix(mt, "video/") || strings.HasSuffix(strings.ToLower(m.Filename), ".mp4") {
-				if !isOmniModel(task.Model) {
-					sourceErr = errors.New("video file attachments are not supported for single video generation; only images are supported as reference inputs")
+			fn := strings.ToLower(strings.TrimSpace(m.Filename))
+			if k == "video" || strings.HasPrefix(mt, "video/") || strings.HasSuffix(fn, ".mp4") {
+				sourceErr = errors.New("video file attachments are not supported for single video generation; only images are supported as reference inputs")
+			} else if k == "image" || strings.HasPrefix(mt, "image/") || strings.HasSuffix(fn, ".png") || strings.HasSuffix(fn, ".jpg") || strings.HasSuffix(fn, ".jpeg") || strings.HasSuffix(fn, ".webp") {
+				if fn != "" && !strings.HasSuffix(fn, ".png") && !strings.HasSuffix(fn, ".jpg") && !strings.HasSuffix(fn, ".jpeg") && !strings.HasSuffix(fn, ".webp") {
+					sourceErr = fmt.Errorf("unsupported file extension on %q for video generation; only PNG, JPEG, and WebP image formats are supported", m.Filename)
 				} else {
-					sourceMediaKind = "video"
+					sourceMediaKind = "image"
 					sourceMediaID = m.ID
 					sourceMediaTitle = m.Title
 					if sourceMediaTitle == "" {
 						sourceMediaTitle = m.Filename
 					}
-					bytes, mType, err := s.resolveSourceMediaBytes(ctx, p, m, "video")
+					bytes, mType, err := s.resolveSourceMediaBytes(ctx, p, m, "image")
 					if err != nil {
-						sourceErr = fmt.Errorf("resolve video source: %w", err)
-					} else if len(bytes) > 0 {
-						sourceVideo = &videogen.ManagedVideoSource{
-							Bytes:         bytes,
-							MediaType:     mType,
-							InteractionID: m.ID,
+						sourceErr = fmt.Errorf("resolve initial image source: %w", err)
+					} else if len(bytes) == 0 {
+						sourceErr = errors.New("attached image is empty")
+					} else if err := validateImageBytes(bytes, mType); err != nil {
+						sourceErr = fmt.Errorf("invalid initial image: %w", err)
+					} else {
+						sourceImage = &videogen.ManagedVideoImage{
+							Bytes:     bytes,
+							MediaType: mType,
 						}
-					}
-				}
-			} else if k == "image" || strings.HasPrefix(mt, "image/") || strings.HasSuffix(strings.ToLower(m.Filename), ".png") || strings.HasSuffix(strings.ToLower(m.Filename), ".jpg") || strings.HasSuffix(strings.ToLower(m.Filename), ".jpeg") || strings.HasSuffix(strings.ToLower(m.Filename), ".webp") || strings.HasSuffix(strings.ToLower(m.Filename), ".heic") || strings.HasSuffix(strings.ToLower(m.Filename), ".heif") || strings.HasSuffix(strings.ToLower(m.Filename), ".svg") {
-				sourceMediaKind = "image"
-				sourceMediaID = m.ID
-				sourceMediaTitle = m.Title
-				if sourceMediaTitle == "" {
-					sourceMediaTitle = m.Filename
-				}
-				bytes, mType, err := s.resolveSourceMediaBytes(ctx, p, m, "image")
-				if err != nil {
-					sourceErr = fmt.Errorf("resolve initial image source: %w", err)
-				} else if len(bytes) == 0 {
-					sourceErr = errors.New("attached image is empty")
-				} else if err := validateImageBytes(bytes, mType); err != nil {
-					sourceErr = fmt.Errorf("invalid initial image: %w", err)
-				} else {
-					sourceImage = &videogen.ManagedVideoImage{
-						Bytes:     bytes,
-						MediaType: mType,
 					}
 				}
 			} else {
@@ -970,8 +1064,8 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 		}
 
 		durSec := task.DurationSeconds
-		if durSec <= 0 {
-			durSec = 8
+		if isOmniModel(videoModel) {
+			durSec = 0
 		}
 		resTag := strings.TrimSpace(task.Resolution)
 		if resTag == "" {
