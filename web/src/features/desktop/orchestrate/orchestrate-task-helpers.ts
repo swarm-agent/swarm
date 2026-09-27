@@ -502,8 +502,9 @@ export function validateSelectedTaskForContext(
 
   // Cross-project & existence check: match exclusively by task.id (NEVER title inference)
   if (currentTasks) {
+    const selectedId = task.id
     const liveMatch = Array.isArray(currentTasks)
-      ? currentTasks.find((t) => t.id === task.id)
+      ? currentTasks.find((t) => t.id === selectedId)
       : (currentTasks.id === task.id ? currentTasks : undefined)
 
     if (!liveMatch) {

@@ -124,7 +124,6 @@ import {
   resolveDeployImpendingConfig,
   resolveTaskImpendingAgents,
   resolveTaskWorkspace,
-  type SelectedTaskContextSnapshot,
 } from './orchestrate-task-helpers'
 import type { DesktopSessionRecord } from '../types/realtime'
 import type { SessionSnapshot } from '../state/desktop-v3-cache-types'
@@ -2538,7 +2537,7 @@ function OrchestratorChatComposer({
   const activeRun = useDesktopV3CacheSelector(
     useCallback((state) => {
       const runs = Object.values(state.liveRunsBySession[sessionId] ?? {})
-      return runs.find((r) => r.status === 'running' || r.status === 'constructing') ?? null
+      return runs.find((r) => r.status === 'running' || r.status === 'pending_executor') ?? null
     }, [sessionId])
   )
   const isRunning = Boolean(activeRun && activeRun.runId)
@@ -2744,11 +2743,11 @@ function OrchestratorChatComposer({
         <div className="flex flex-wrap gap-1.5 pb-1">
           {attachments.map((att, idx) => (
             <div
-              key={att.id || idx}
+              key={att.asset_id || idx}
               className="flex items-center gap-1 px-2 py-0.5 rounded bg-slate-800 text-[11px] text-slate-200 border border-slate-700"
             >
               <Paperclip size={10} className="text-slate-400" />
-              <span className="truncate max-w-[120px]">{att.name || `Attachment ${idx + 1}`}</span>
+              <span className="truncate max-w-[120px]">{`${att.modality} attachment ${idx + 1}`}</span>
               <button
                 type="button"
                 onClick={() => setAttachments((prev) => prev.filter((_, i) => i !== idx))}
