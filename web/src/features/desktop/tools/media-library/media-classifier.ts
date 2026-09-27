@@ -166,7 +166,10 @@ export function toMediaLibraryItem(entry: DesktopV3ArtifactCatalogEntry, referen
     directUrl,
     parentId: (entry as any).parentId || (entry as any).lineage?.sourceVariantId || (entry as any).lineage?.sourceArtifactId,
     sourceMediaRef: (entry as any).sourceMediaRef || (entry as any).lineage?.sourceArtifactId,
-    model: (entry as any).model || (entry as any).artifactModel || (entry as any).metadata?.model,
+    model: (entry as any).model || (entry as any).artifactModel || (entry as any).metadata?.model || (entry as any).metadata?.modelId,
+    aspectRatio: entry.outputRequirements?.aspectRatio || (entry as any).aspectRatio || (entry as any).metadata?.aspect_ratio || (entry as any).metadata?.aspectRatio,
+    resolution: entry.outputRequirements?.resolutionSource || (entry as any).resolution || (entry as any).metadata?.resolution || (entry.outputRequirements?.width && entry.outputRequirements?.height ? `${entry.outputRequirements.width}x${entry.outputRequirements.height}` : undefined),
+    durationSeconds: (entry as any).durationSeconds || (entry as any).metadata?.duration_seconds || (entry as any).metadata?.durationSeconds || (entry.renderProgress?.durationMs ? Math.round(entry.renderProgress.durationMs / 1000) : undefined),
   }
 }
 

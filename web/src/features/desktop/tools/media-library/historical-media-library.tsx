@@ -33,6 +33,8 @@ import type {
   MediaThumbnailSize,
   MediaViewMode,
 } from './types'
+import type { MediaGenerationJob, MediaGenerationRequest } from './media-generation'
+import type { QuickRouteMode } from './media-viewer-modal'
 
 interface HistoricalMediaLibraryProps {
   initialKind?: MediaKind
@@ -47,6 +49,10 @@ interface HistoricalMediaLibraryProps {
   onIterate?: (item: MediaLibraryItem, variantCount: number, stylePrompt: string, autoDeploy: boolean, model?: string) => void
   onGenerateVideo?: (item: MediaLibraryItem, prompt: string, autoDeploy: boolean, model?: string) => void
   onContinueVideo?: (item: MediaLibraryItem, prompt: string, autoDeploy: boolean, model?: string) => void
+  onGenerate?: (request: MediaGenerationRequest) => Promise<void>
+  generationJobs?: readonly MediaGenerationJob[]
+  isGenerating?: boolean
+  initialQuickRouteMode?: QuickRouteMode | null
   extraItems?: readonly MediaLibraryItem[]
 }
 
@@ -63,9 +69,13 @@ export function HistoricalMediaLibrary({
   onIterate,
   onGenerateVideo,
   onContinueVideo,
+  onGenerate,
+  generationJobs,
+  isGenerating,
+  initialQuickRouteMode,
   extraItems,
 }: HistoricalMediaLibraryProps) {
-  const [items, setItems] = useState<MediaLibraryItem[]>([])
+  const [catalogItems, setCatalogItems] = useState<MediaLibraryItem[]>([])
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -82,7 +92,7 @@ export function HistoricalMediaLibrary({
   // Active viewer modal item
   const [activeItem, setActiveItem] = useState<MediaLibraryItem | null>(null)
 
-  // Fetch all artifacts
+  // Fetch all catalog artifacts
   const loadArtifacts = useCallback(async (isRefresh = false) => {
     if (isRefresh) setRefreshing(true)
     else setLoading(true)
@@ -91,13 +101,7 @@ export function HistoricalMediaLibrary({
     try {
       const result = await fetchDesktopV3ArtifactCatalogResult()
       const normalized = normalizeMediaCatalogEntries(result.artifacts)
-      let combined = normalized
-      if (extraItems && extraItems.length > 0) {
-        const seen = new Set(normalized.map((i) => i.id))
-        const extras = extraItems.filter((i) => !seen.has(i.id))
-        combined = [...extras, ...normalized]
-      }
-      setItems(combined)
+      setCatalogItems(normalized)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load media artifacts')
     } finally {
@@ -109,6 +113,35 @@ export function HistoricalMediaLibrary({
   useEffect(() => {
     void loadArtifacts()
   }, [loadArtifacts])
+
+  // Dynamically merge catalog items with extraItems (e.g. project tasks deliverables & uploads)
+  // so that new generations, tasks, and deliverables appear live without manual page refresh.
+  const items = useMemo(() => {
+    if (!extraItems || extraItems.length === 0) return catalogItems
+    const seen = new Set<string>()
+    const merged: MediaLibraryItem[] = []
+    // Add extra items first (newest project deliverables/tasks)
+    for (const item of extraItems) {
+      if (!seen.has(item.id)) {
+        seen.add(item.id)
+        merged.push(item)
+      }
+    }
+    // Then add catalog items that haven't been shadowed
+    for (const item of catalogItems) {
+      if (!seen.has(item.id)) {
+        seen.add(item.id)
+        merged.push(item)
+      }
+    }
+    return merged
+  }, [catalogItems, extraItems])
+
+  // Keep activeItem up to date if the corresponding item in items updates
+  const currentActiveItem = useMemo(() => {
+    if (!activeItem) return null
+    return items.find((i) => i.id === activeItem.id) ?? activeItem
+  }, [items, activeItem])
 
   // Count items by kind
   const counts = useMemo(() => {
@@ -505,13 +538,17 @@ export function HistoricalMediaLibrary({
 
       {/* Modal Media Viewer */}
       <MediaViewerModal
-        item={activeItem}
+        item={currentActiveItem}
         items={filteredItems}
         onClose={() => setActiveItem(null)}
         onSelect={(item) => setActiveItem(item)}
         onOpenSession={onOpenSession}
-        isTagged={activeItem ? taggedMediaIds?.has(activeItem.id) : false}
+        isTagged={currentActiveItem ? taggedMediaIds?.has(currentActiveItem.id) : false}
         onToggleTag={onTagMedia}
+        onGenerate={onGenerate}
+        generationJobs={generationJobs}
+        isGenerating={isGenerating}
+        initialQuickRouteMode={initialQuickRouteMode}
         onIterateSwarm={onIterateSwarm}
         onFineTune={onFineTune}
         onIterate={onIterate}

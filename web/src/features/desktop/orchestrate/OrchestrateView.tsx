@@ -68,6 +68,8 @@ import {
   type DesktopV3RealtimeSessionDemandLease,
 } from '../realtime/v3-realtime-controller'
 import { HistoricalMediaLibrary, MediaViewerModal, type MediaLibraryItem } from '../tools/media-library'
+import type { MediaGenerationJob, MediaGenerationRequest, MediaGenerationSettings } from '../tools/media-library/media-generation'
+import type { QuickRouteMode } from '../tools/media-library/media-viewer-modal'
 import { ORCHESTRATE_THEMES } from './orchestrate-themes'
 import { listStorageWorkers, activateStorageWorker } from '../storage/api'
 import type { StorageDiscoveredWorker } from '../storage/types'
@@ -402,6 +404,9 @@ function deliverableToMediaItem(
     parentId: d.parentDeliverableId || (d as any).parent_deliverable_id,
     sourceMediaRef: d.sourceMediaRef || (d as any).source_media_ref,
     model: parentTask?.model,
+    aspectRatio: parentTask?.aspectRatio || d.videoAspect,
+    resolution: parentTask?.resolution,
+    durationSeconds: parentTask?.durationSeconds,
     artifact: {
       artifactId: d.id,
       sessionId: parentTask?.sessionId || '',
@@ -447,6 +452,10 @@ function uploadedToMediaItem(
     workspacePath: project?.repoPath || '',
     workspaceName: project?.name || 'Project Shelf',
     directUrl: m.url || '',
+    model: (m as any).model,
+    aspectRatio: (m as any).aspectRatio,
+    resolution: (m as any).resolution,
+    durationSeconds: (m as any).durationSeconds,
     artifact: {
       artifactId: m.id,
       sessionId: project?.primarySessionId || '',
@@ -2376,6 +2385,8 @@ export function OrchestrateView({
   const [defaultAudioModel, setDefaultAudioModel] = useState<string>('')
   const [saveImageAsDefault, setSaveImageAsDefault] = useState<boolean>(false)
   const [saveVideoAsDefault, setSaveVideoAsDefault] = useState<boolean>(false)
+  const [localGenerationJobs, setLocalGenerationJobs] = useState<MediaGenerationJob[]>([])
+  const [mediaViewerInitialMode, setMediaViewerInitialMode] = useState<QuickRouteMode | null>(null)
   const [mediaCatalogLoaded, setMediaCatalogLoaded] = useState<boolean>(false)
   const [, setIsSavingModelChoice] = useState<boolean>(false)
 
@@ -2602,8 +2613,8 @@ export function OrchestrateView({
 
   // Fetch project tasks for a given project from Pebble
   const fetchProjectTasks = useCallback((projectId: string) => {
-    if (!projectId) return
-    requestJson<{ tasks?: any[] }>(`/v3/projects/${projectId}/tasks`)
+    if (!projectId) return Promise.resolve()
+    return requestJson<{ tasks?: any[] }>(`/v3/projects/${projectId}/tasks`)
       .then((res) => {
         const backendTasks: RunningTask[] = (res.tasks || []).map((t) => ({
           id: t.id,
@@ -2696,8 +2707,8 @@ export function OrchestrateView({
 
   // Fetch project uploaded media from Pebble
   const fetchProjectMedia = useCallback((projectId: string) => {
-    if (!projectId) return
-    requestJson<{ media?: ProjectTaskMediaRef[] }>(`/v3/projects/${projectId}/media`)
+    if (!projectId) return Promise.resolve()
+    return requestJson<{ media?: ProjectTaskMediaRef[] }>(`/v3/projects/${projectId}/media`)
       .then((res) => {
         if (res?.media) {
           setUploadedMedia(res.media)
@@ -2706,21 +2717,54 @@ export function OrchestrateView({
       .catch(() => {})
   }, [])
 
-  // Real-time polling for in-progress tasks or generating media deliverables
-  useEffect(() => {
-    if (!selectedProjectId) return
-    const hasRunningTasks = tasks.some(
-      (t) => t.status === 'in_progress' || t.status === 'running' || t.deliverables?.some((d) => d.status === 'generating')
+  // Real-time polling for in-progress tasks, queued/pending tasks, or generating media deliverables
+  const hasActiveTasks = useMemo(() => {
+    return (
+      tasks.some(
+        (t) =>
+          t.status === 'in_progress' ||
+          t.status === 'running' ||
+          t.status === 'queued' ||
+          t.status === 'pending' ||
+          t.deliverables?.some((d) => d.status === 'generating' || d.status === 'pending')
+      ) ||
+      localGenerationJobs.some(
+        (j) => j.status === 'submitting' || j.status === 'queued' || j.status === 'in_progress'
+      )
     )
-    if (!hasRunningTasks) return
+  }, [tasks, localGenerationJobs])
+
+  useEffect(() => {
+    if (!selectedProjectId || !hasActiveTasks) return
+
+    let cancelled = false
+    let inFlight = false
+
+    const poll = async () => {
+      if (inFlight || cancelled) return
+      inFlight = true
+      try {
+        await Promise.allSettled([
+          fetchProjectTasks(selectedProjectId),
+          fetchProjectMedia(selectedProjectId),
+        ])
+      } finally {
+        inFlight = false
+      }
+    }
 
     const interval = setInterval(() => {
-      fetchProjectTasks(selectedProjectId)
-      fetchProjectMedia(selectedProjectId)
+      void poll()
     }, 1500)
 
-    return () => clearInterval(interval)
-  }, [selectedProjectId, tasks, fetchProjectTasks])
+    // Immediate tick upon entering active task state
+    void poll()
+
+    return () => {
+      cancelled = true
+      clearInterval(interval)
+    }
+  }, [selectedProjectId, hasActiveTasks, fetchProjectTasks, fetchProjectMedia])
 
   // Realtime session demand and plan hydration for active tasks
   useEffect(() => {
@@ -2989,14 +3033,16 @@ export function OrchestrateView({
     return items
   }, [tasks, uploadedMedia, selectedProject])
 
-  const handleOpenDeliverableInMediaCenter = (d: MediaDeliverable, parentTask?: RunningTask) => {
+  const handleOpenDeliverableInMediaCenter = (d: MediaDeliverable, parentTask?: RunningTask, mode?: QuickRouteMode) => {
     const item = deliverableToMediaItem(d, parentTask, selectedProject)
     setActiveMediaViewerItem(item)
+    setMediaViewerInitialMode(mode ?? null)
   }
 
-  const handleOpenUploadedInMediaCenter = (m: ProjectTaskMediaRef) => {
+  const handleOpenUploadedInMediaCenter = (m: ProjectTaskMediaRef, mode?: QuickRouteMode) => {
     const item = uploadedToMediaItem(m, selectedProject)
     setActiveMediaViewerItem(item)
+    setMediaViewerInitialMode(mode ?? null)
   }
 
   // Quick Route Media: Fine-Tune, Iterations, Video Story, or Continuation
@@ -3009,9 +3055,10 @@ export function OrchestrateView({
     soundtrack?: string
     autoDeploy?: boolean
     model?: string
+    settings?: MediaGenerationSettings
   }) => {
     if (!selectedProject?.id) return
-    const { item, action, deltaPrompt, variantCount, scenesCount, soundtrack, autoDeploy = true, model } = options
+    const { item, action, deltaPrompt, variantCount, scenesCount, soundtrack, autoDeploy = true, model, settings } = options
 
     const rawKind = (item as any).kind || (item as any).type || 'image'
     const isVideo = rawKind === 'video' || (item as any).mediaType?.startsWith('video/')
@@ -3074,9 +3121,20 @@ export function OrchestrateView({
       // 1-Click Fast Autonomous Execution: route and deploy immediately!
       setIsDeployingTask(true)
 
+      const tempJobId = `job_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
+      const jobCount = targetIntent === 'image' ? (action === 'iterate' ? (variantCount || 5) : 1) : (variantCount || 1)
+      const optimisticJob: MediaGenerationJob = {
+        id: tempJobId,
+        sourceId: item.id,
+        title: `${action.replace('_', ' ')} (${jobCount}x)`,
+        count: jobCount,
+        status: 'submitting',
+      }
+      setLocalGenerationJobs((prev) => [optimisticJob, ...prev])
+
       try {
         const finalVariantCount = targetIntent === 'image' ? (action === 'fine_tune' ? 1 : (variantCount || 1)) : undefined
-        const finalScenesCount = targetIntent === 'video' ? (scenesCount || 2) : undefined
+        const finalScenesCount = targetIntent === 'video' ? (scenesCount || (action === 'iterate' ? variantCount : 2)) : undefined
         const finalSoundtrack = targetIntent === 'video' ? (soundtrack || undefined) : undefined
 
         const res = await requestJson<{ task: any }>(`/v3/projects/${selectedProject.id}/tasks`, {
@@ -3086,11 +3144,12 @@ export function OrchestrateView({
             prompt: composedPrompt,
             workspace_path: selectedProject.repoPath || '.',
             intent: targetIntent,
-            aspect_ratio: targetIntent === 'image' ? imageAspectRatio : targetIntent === 'video' ? '16:9' : undefined,
+            aspect_ratio: settings?.aspectRatio || (targetIntent === 'image' ? imageAspectRatio : targetIntent === 'video' ? '16:9' : undefined),
+            resolution: settings?.resolution || undefined,
+            duration_seconds: settings?.durationSeconds || undefined,
             variant_count: finalVariantCount,
             scenes_count: finalScenesCount,
             soundtrack: finalSoundtrack,
-            /* model: targetIntent === 'image' ? (selectedImageModel || undefined) */
             model: model || (targetIntent === 'image' ? (selectedImageModel || undefined) : targetIntent === 'video' ? (selectedVideoModel || undefined) : undefined),
             auto_approve: true,
             deploy_session: true,
@@ -3098,12 +3157,30 @@ export function OrchestrateView({
           }),
         })
         if (res?.task) {
-          fetchProjectTasks(selectedProject.id)
+          setLocalGenerationJobs((prev) =>
+            prev.map((j) =>
+              j.id === tempJobId
+                ? {
+                    ...j,
+                    id: res.task.id,
+                    status: res.task.status === 'in_progress' ? 'in_progress' : res.task.status || 'queued',
+                    title: res.task.title || j.title,
+                  }
+                : j
+            )
+          )
+          await fetchProjectTasks(selectedProject.id)
           if (!activeMediaViewerItem && !showFullMediaCenter && res.task.session_id) {
             setActiveSessionId(res.task.session_id)
             setActiveTaskId(res.task.id)
           }
         }
+      } catch (err: any) {
+        const errMsg = err instanceof Error ? err.message : 'Generation request failed'
+        setLocalGenerationJobs((prev) =>
+          prev.map((j) => (j.id === tempJobId ? { ...j, status: 'failed', error: errMsg } : j))
+        )
+        throw err
       } finally {
         setIsDeployingTask(false)
       }
@@ -3126,6 +3203,69 @@ export function OrchestrateView({
       setIsDeployModalOpen(true)
     }
   }
+
+  // Typed Media Generation handler for MediaViewerModal and HistoricalMediaLibrary
+  const handleMediaGenerate = useCallback(
+    async (request: MediaGenerationRequest): Promise<void> => {
+      await handleQuickRouteMedia({
+        item: request.item,
+        action: request.action,
+        deltaPrompt: request.deltaPrompt,
+        variantCount: request.variantCount,
+        model: request.model,
+        settings: request.settings,
+        autoDeploy: true,
+      })
+    },
+    [handleQuickRouteMedia]
+  )
+
+  // Derive generation jobs combining backend durable tasks with attached media and optimistic/in-flight local jobs
+  const allGenerationJobs = useMemo<MediaGenerationJob[]>(() => {
+    const jobs: MediaGenerationJob[] = []
+    const seenTaskIds = new Set<string>()
+
+    for (const t of tasks) {
+      if (!t.attachedMedia || t.attachedMedia.length === 0) continue
+      seenTaskIds.add(t.id)
+
+      for (const am of t.attachedMedia) {
+        let status = t.status
+        if (t.lastError || t.status === 'failed') {
+          status = 'failed'
+        } else if (t.status === 'in_progress' || t.status === 'running') {
+          const hasDelivs = t.deliverables && t.deliverables.length > 0
+          const allReady = hasDelivs && t.deliverables.every((d) => d.status === 'ready' || d.status === 'accepted')
+          const anyFailed = hasDelivs && t.deliverables.some((d) => d.status === 'failed')
+          if (allReady) status = 'completed'
+          else if (anyFailed) status = 'failed'
+          else status = 'in_progress'
+        } else if (t.status === 'completed' || t.status === 'needs_review') {
+          status = 'completed'
+        } else if (t.status === 'queued' || t.status === 'pending') {
+          status = 'queued'
+        }
+
+        jobs.push({
+          id: `${t.id}_${am.id}`,
+          sourceId: am.id,
+          title: t.title,
+          count: t.variantCount || t.deliverables?.length || 1,
+          status,
+          error: t.lastError,
+          sessionId: t.sessionId,
+        })
+      }
+    }
+
+    for (const lj of localGenerationJobs) {
+      if (!seenTaskIds.has(lj.id)) {
+        jobs.push(lj)
+      }
+    }
+
+    return jobs
+  }, [tasks, localGenerationJobs])
 
   // Derive real active workers from V3 sessions
   const deployedWorkers = useMemo<DeployedWorker[]>(() => {
@@ -4063,7 +4203,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                         <>
                           <button
                             type="button"
-                            onClick={() => void handleQuickRouteMedia({ item: m, action: 'fine_tune', autoDeploy: true })}
+                            onClick={() => handleOpenUploadedInMediaCenter(m, 'fine_tune')}
                             className="px-1.5 py-0.5 rounded text-[9px] font-mono text-amber-300 hover:text-white bg-slate-800 hover:bg-slate-700 transition"
                             title={m.kind === 'video' ? 'Fine-tune / modify video' : 'Fine-tune image ("change this to...")'}
                           >
@@ -4071,7 +4211,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                           </button>
                           <button
                             type="button"
-                            onClick={() => void handleQuickRouteMedia({ item: m, action: 'iterate', variantCount: 5, autoDeploy: true })}
+                            onClick={() => handleOpenUploadedInMediaCenter(m, 'iterate')}
                             className="px-1.5 py-0.5 rounded text-[9px] font-mono text-emerald-300 hover:text-white bg-slate-800 hover:bg-slate-700 transition"
                             title="Iterate variations"
                           >
@@ -4977,11 +5117,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                             type="button"
                             onClick={(e) => {
                               e.stopPropagation()
-                              void handleQuickRouteMedia({
-                                item: d,
-                                action: 'fine_tune',
-                                autoDeploy: true,
-                              })
+                              handleOpenDeliverableInMediaCenter(d, task, 'fine_tune')
                             }}
                             className="flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-[10px] text-amber-300 hover:text-white transition font-medium"
                             title="Fine-tune / modify this media"
@@ -4993,12 +5129,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                             type="button"
                             onClick={(e) => {
                               e.stopPropagation()
-                              void handleQuickRouteMedia({
-                                item: d,
-                                action: 'iterate',
-                                variantCount: 5,
-                                autoDeploy: true,
-                              })
+                              handleOpenDeliverableInMediaCenter(d, task, 'iterate')
                             }}
                             className="flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-[10px] text-emerald-300 hover:text-white transition font-medium"
                             title="Quick 5 swarm iterations"
@@ -6727,7 +6858,10 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
           item={activeMediaViewerItem}
           items={allMediaLibraryItems}
           isGenerating={tasks.some((t) => t.status === 'in_progress' || t.status === 'running')}
-          onClose={() => setActiveMediaViewerItem(null)}
+          onClose={() => {
+            setActiveMediaViewerItem(null)
+            setMediaViewerInitialMode(null)
+          }}
           onSelect={(item) => setActiveMediaViewerItem(item)}
           onOpenSession={(sessionId) => {
             setActiveSessionId(sessionId)
@@ -6753,43 +6887,9 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
               ])
             }
           }}
-          onFineTune={(item, editPrompt, autoDeploy, model) => {
-            void handleQuickRouteMedia({
-              item,
-              action: 'fine_tune',
-              deltaPrompt: editPrompt,
-              autoDeploy,
-              model,
-            })
-          }}
-          onIterate={(item, variantCount, stylePrompt, autoDeploy, model) => {
-            void handleQuickRouteMedia({
-              item,
-              action: 'iterate',
-              variantCount,
-              deltaPrompt: stylePrompt,
-              autoDeploy,
-              model,
-            })
-          }}
-          onGenerateVideo={(item, prompt, autoDeploy, model) => {
-            void handleQuickRouteMedia({
-              item,
-              action: 'to_video',
-              deltaPrompt: prompt,
-              autoDeploy,
-              model,
-            })
-          }}
-          onContinueVideo={(item, prompt, autoDeploy, model) => {
-            void handleQuickRouteMedia({
-              item,
-              action: 'next_scene',
-              deltaPrompt: prompt,
-              autoDeploy,
-              model,
-            })
-          }}
+          onGenerate={handleMediaGenerate}
+          generationJobs={allGenerationJobs}
+          initialQuickRouteMode={mediaViewerInitialMode}
           onIterateSwarm={(item) => {
             void handleQuickRouteMedia({
               item,
@@ -6847,51 +6947,9 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                 })
               }}
               taggedMediaIds={new Set(taggedMedia.map((t) => t.id))}
-              onFineTune={(item, editPrompt, autoDeploy, model) => {
-                void handleQuickRouteMedia({
-                  item,
-                  action: 'fine_tune',
-                  deltaPrompt: editPrompt,
-                  autoDeploy,
-                  model,
-                })
-              }}
-              onIterate={(item, variantCount, stylePrompt, autoDeploy, model) => {
-                void handleQuickRouteMedia({
-                  item,
-                  action: 'iterate',
-                  variantCount,
-                  deltaPrompt: stylePrompt,
-                  autoDeploy,
-                  model,
-                })
-              }}
-              onGenerateVideo={(item, prompt, autoDeploy, model) => {
-                void handleQuickRouteMedia({
-                  item,
-                  action: 'to_video',
-                  deltaPrompt: prompt,
-                  autoDeploy,
-                  model,
-                })
-              }}
-              onContinueVideo={(item, prompt, autoDeploy, model) => {
-                void handleQuickRouteMedia({
-                  item,
-                  action: 'next_scene',
-                  deltaPrompt: prompt,
-                  autoDeploy,
-                  model,
-                })
-              }}
-              onIterateSwarm={(item) => {
-                void handleQuickRouteMedia({
-                  item,
-                  action: 'iterate',
-                  variantCount: 5,
-                  autoDeploy: false,
-                })
-              }}
+              onGenerate={handleMediaGenerate}
+              generationJobs={allGenerationJobs}
+              isGenerating={tasks.some((t) => t.status === 'in_progress' || t.status === 'running')}
               extraItems={allMediaLibraryItems}
             />
           </div>

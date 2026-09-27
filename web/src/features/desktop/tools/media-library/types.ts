@@ -37,6 +37,9 @@ export interface MediaLibraryItem {
   parentId?: string
   sourceMediaRef?: string
   model?: string
+  aspectRatio?: string
+  resolution?: string
+  durationSeconds?: number
 }
 
 export interface HistoricalDateBucket {

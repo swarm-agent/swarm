@@ -67,6 +67,7 @@ test('OrchestrateView and Task Router scale swarm variants up to 25', () => {
 test('MediaViewerModal provides interactive Quick-Route panel with Fine-Tune, Iterations, and Video continuity', () => {
   // Invariant: MediaViewerModal must offer dedicated Quick Route actions for
   // Fine-Tuning ("change this to..."), Swarm Iterations, Keyframe-to-Video, and Next Scene continuation.
+  // Stale 'In Planner' and hardcoded 'presetSuggestions' chips are removed.
   const viewerPath = path.join(__dirname, '../tools/media-library/media-viewer-modal.tsx')
   const viewerSource = fs.readFileSync(viewerPath, 'utf8')
 
@@ -75,8 +76,8 @@ test('MediaViewerModal provides interactive Quick-Route panel with Fine-Tune, It
   assert.ok(viewerSource.includes('To Video'), 'Must offer To Video conversion for image keyframes')
   assert.ok(viewerSource.includes('Next Scene'), 'Must offer Next Scene continuation for videos')
   assert.ok(viewerSource.includes('Route & Run Now'), 'Must provide 1-click Route & Run Now button')
-  assert.ok(viewerSource.includes('In Planner'), 'Must provide In Planner button')
-  assert.ok(viewerSource.includes('presetSuggestions'), 'Must provide quick preset chips')
+  assert.ok(!viewerSource.includes('>In Planner</button>'), 'Stale In Planner button must be removed')
+  assert.ok(!viewerSource.includes('presetSuggestions.map'), 'Stale hardcoded preset suggestion chips must be removed')
 })
 
 test('OrchestrateView handles quick media routing for fine-tuning and iterations with instant deploy', () => {
@@ -464,4 +465,62 @@ test('OrchestrateView UI renders dynamic cost cues on resolution, variant, and s
   // 6. Sound Duration buttons and banner
   assert.ok(source.includes('const dCost = (d >= 60 ? 0.08 : 0.04).toFixed(2)'), 'Sound duration buttons must show cost')
   assert.ok(source.includes('audioPricingInfo.formattedSummary'), 'Must render audio pricing summary')
+})
+
+test('OrchestrateView wires typed onGenerate, generationJobs, and settings propagation end-to-end', () => {
+  // Invariant: MediaViewerModal and HistoricalMediaLibrary receive typed onGenerate and generationJobs,
+  // propagating aspectRatio, resolution, durationSeconds, model, and count to POST /v3/projects/{id}/tasks.
+  const sourcePath = path.join(__dirname, 'OrchestrateView.tsx')
+  const source = fs.readFileSync(sourcePath, 'utf8')
+
+  // 1. MediaViewerModal wired with onGenerate and allGenerationJobs
+  assert.ok(source.includes('onGenerate={handleMediaGenerate}'), 'Must pass handleMediaGenerate to MediaViewerModal')
+  assert.ok(source.includes('generationJobs={allGenerationJobs}'), 'Must pass allGenerationJobs to MediaViewerModal')
+  assert.ok(source.includes('initialQuickRouteMode={mediaViewerInitialMode}'), 'Must pass mediaViewerInitialMode')
+
+  // 2. HistoricalMediaLibrary wired with onGenerate and allGenerationJobs
+  assert.ok(source.includes('<HistoricalMediaLibrary'), 'Must render HistoricalMediaLibrary')
+
+  // 3. handleMediaGenerate and handleQuickRouteMedia propagate actual settings
+  assert.ok(source.includes('handleMediaGenerate = useCallback'), 'Must define handleMediaGenerate')
+  assert.ok(source.includes('aspect_ratio: settings?.aspectRatio'), 'Must propagate settings.aspectRatio to task API')
+  assert.ok(source.includes('resolution: settings?.resolution'), 'Must propagate settings.resolution to task API')
+  assert.ok(source.includes('duration_seconds: settings?.durationSeconds'), 'Must propagate settings.durationSeconds to task API')
+
+  // 4. Source generation metadata preselection mapping
+  assert.ok(source.includes('aspectRatio: parentTask?.aspectRatio || d.videoAspect'), 'deliverableToMediaItem must map task aspectRatio')
+  assert.ok(source.includes('resolution: parentTask?.resolution'), 'deliverableToMediaItem must map task resolution')
+  assert.ok(source.includes('durationSeconds: parentTask?.durationSeconds'), 'deliverableToMediaItem must map task durationSeconds')
+  assert.ok(source.includes('aspectRatio: (m as any).aspectRatio'), 'uploadedToMediaItem must map aspectRatio')
+  assert.ok(source.includes('resolution: (m as any).resolution'), 'uploadedToMediaItem must map resolution')
+  assert.ok(source.includes('durationSeconds: (m as any).durationSeconds'), 'uploadedToMediaItem must map durationSeconds')
+})
+
+test('Legacy quick action buttons open configured composer modal rather than running hardcoded suggestions silently', () => {
+  // Invariant: Clicking Edit or Iterate on uploaded shelf or deliverable cards opens the MediaViewerModal
+  // with preselected mode rather than silently firing arbitrary background auto-deployments.
+  const sourcePath = path.join(__dirname, 'OrchestrateView.tsx')
+  const source = fs.readFileSync(sourcePath, 'utf8')
+
+  // Uploaded media shelf
+  assert.ok(source.includes("handleOpenUploadedInMediaCenter(m, 'fine_tune')"), 'Shelf Edit button must open configured composer in fine_tune mode')
+  assert.ok(source.includes("handleOpenUploadedInMediaCenter(m, 'iterate')"), 'Shelf Iterate button must open configured composer in iterate mode')
+
+  // Deliverable cards
+  assert.ok(source.includes("handleOpenDeliverableInMediaCenter(d, task, 'fine_tune')"), 'Card Edit button must open configured composer in fine_tune mode')
+  assert.ok(source.includes("handleOpenDeliverableInMediaCenter(d, task, 'iterate')"), 'Card Iterate button must open configured composer in iterate mode')
+})
+
+test('OrchestrateView implements starvation-free real-time task polling covering queued, pending, and generating states', () => {
+  // Invariant: Task polling must not reset interval timers on every tasks change (avoiding starvation),
+  // must guard against overlapping network calls with inFlight, and must cover queued, pending, and generating deliverables.
+  const sourcePath = path.join(__dirname, 'OrchestrateView.tsx')
+  const source = fs.readFileSync(sourcePath, 'utf8')
+
+  assert.ok(source.includes("t.status === 'queued' ||"), 'Polling trigger must include queued tasks')
+  assert.ok(source.includes("t.status === 'pending' ||"), 'Polling trigger must include pending tasks')
+  assert.ok(source.includes("d.status === 'generating' || d.status === 'pending'"), 'Polling trigger must include generating/pending deliverables')
+  assert.ok(source.includes("j.status === 'submitting' || j.status === 'queued'"), 'Polling trigger must include in-flight local generation jobs')
+  assert.ok(source.includes('inFlight = true'), 'Polling loop must prevent overlapping fetch requests')
+  assert.ok(source.includes('hasActiveTasks'), 'Polling effect must depend on stable hasActiveTasks boolean rather than raw tasks array')
 })

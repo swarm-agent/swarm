@@ -8,6 +8,8 @@ const gridSourceUrl = new URL('./media-grid-view.tsx', import.meta.url)
 const listSourceUrl = new URL('./media-list-view.tsx', import.meta.url)
 const iterationSourceUrl = new URL('./media-iteration-groups-view.tsx', import.meta.url)
 const videoPageSourceUrl = new URL('../pages/video-tool-page.tsx', import.meta.url)
+const classifierSourceUrl = new URL('./media-classifier.ts', import.meta.url)
+const typesSourceUrl = new URL('./types.ts', import.meta.url)
 
 test('HistoricalMediaLibrary provides explorer toolbar with type filters, grouping, and view switchers', () => {
   const source = readFileSync(librarySourceUrl, 'utf8')
@@ -169,4 +171,47 @@ test('MediaViewerModal lineage chain accurately links parent keyframes and deriv
   assert.match(source, /role:\s*'current'/)
   assert.match(source, /role:\s*'child'/)
   assert.match(source, /child\.kind === 'video' \? 'Video Continuation' : 'Derived Revision'/)
+})
+
+test('HistoricalMediaLibrary forwards onGenerate, generationJobs, and isGenerating to MediaViewerModal', () => {
+  const source = readFileSync(librarySourceUrl, 'utf8')
+
+  // Interface declarations
+  assert.match(source, /onGenerate\?: \(request: MediaGenerationRequest\) => Promise<void>/)
+  assert.match(source, /generationJobs\?: readonly MediaGenerationJob\[\]/)
+  assert.match(source, /isGenerating\?: boolean/)
+  assert.match(source, /initialQuickRouteMode\?: QuickRouteMode \| null/)
+
+  // Forwarding props to MediaViewerModal
+  assert.match(source, /onGenerate=\{onGenerate\}/)
+  assert.match(source, /generationJobs=\{generationJobs\}/)
+  assert.match(source, /isGenerating=\{isGenerating\}/)
+  assert.match(source, /initialQuickRouteMode=\{initialQuickRouteMode\}/)
+})
+
+test('HistoricalMediaLibrary dynamically merges catalog items with extraItems so task deliverables appear live', () => {
+  const source = readFileSync(librarySourceUrl, 'utf8')
+
+  // Separate catalog items state from dynamic extraItems
+  assert.match(source, /const \[catalogItems, setCatalogItems\] = useState<MediaLibraryItem\[\]>\(\[\]\)/)
+  assert.match(source, /const items = useMemo\(\(\) => \{[\s\S]*?extraItems[\s\S]*?catalogItems[\s\S]*?\}, \[catalogItems, extraItems\]\)/)
+
+  // Current active item tracks live updates from items
+  assert.match(source, /const currentActiveItem = useMemo\(\(\) => \{[\s\S]*?items\.find\(\(i\) => i\.id === activeItem\.id\) \?\? activeItem[\s\S]*?\}, \[items, activeItem\]\)/)
+  assert.match(source, /item=\{currentActiveItem\}/)
+})
+
+test('MediaClassifier and types map outputRequirements and metadata into MediaLibraryItem settings', () => {
+  const typesSource = readFileSync(typesSourceUrl, 'utf8')
+  const classifierSource = readFileSync(classifierSourceUrl, 'utf8')
+
+  // Typed fields on MediaLibraryItem
+  assert.match(typesSource, /aspectRatio\?: string/)
+  assert.match(typesSource, /resolution\?: string/)
+  assert.match(typesSource, /durationSeconds\?: number/)
+
+  // Mapping in toMediaLibraryItem
+  assert.match(classifierSource, /aspectRatio: entry\.outputRequirements\?\.aspectRatio \|\|/)
+  assert.match(classifierSource, /resolution: entry\.outputRequirements\?\.resolutionSource \|\|/)
+  assert.match(classifierSource, /durationSeconds: \(entry as any\)\.durationSeconds \|\|/)
 })
