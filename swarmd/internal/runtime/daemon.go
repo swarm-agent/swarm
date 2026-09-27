@@ -743,6 +743,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	apiServer.SetVideoGenerationService(videoGenSvc)
 	audioGenSvc := audiogen.NewService(authStore, uiSettingsSvc, modelSvc)
 	toolRuntime.SetManagedAudioGenerationService(audioGenSvc)
+	apiServer.SetAudioGenerationService(audioGenSvc)
 	apiServer.SetTodoService(todoSvc)
 	apiServer.SetActionService(actionSvc)
 	apiServer.SetIntegrationService(integrationSvc)

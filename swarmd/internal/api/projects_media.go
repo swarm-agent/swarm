@@ -17,11 +17,17 @@ import (
 	"time"
 
 	"swarm/packages/swarmd/internal/artifact"
+	"swarm/packages/swarmd/internal/audiogen"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/imagegen"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/videogen"
 )
+
+// SetAudioGenerationService configures the audio generation service for project tasks.
+func (s *Server) SetAudioGenerationService(svc *audiogen.Service) {
+	s.audioGen = svc
+}
 
 // managedVideoService defines the execution interface for generating managed videos.
 type managedVideoService interface {
@@ -1636,11 +1642,45 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 		if prompt == "" {
 			prompt = strings.TrimSpace(task.Title)
 		}
-		mediaURL := generateStyledAudioSVGDataURL(prompt, soundModel, durSeconds)
+		var genErr error
+		var mediaURL string
+		if s.audioGen != nil {
+			res, err := s.audioGen.GenerateManagedAudio(ctx, audiogen.ManagedAudioRequest{
+				Prompt:          prompt,
+				DurationSeconds: durSeconds,
+				Principal:       p,
+			})
+			if err != nil {
+				genErr = err
+			} else if len(res.Bytes) > 0 {
+				mime := res.MediaType
+				if mime == "" {
+					mime = "audio/mp3"
+				}
+				mediaURL = fmt.Sprintf("data:%s;base64,%s", mime, base64.StdEncoding.EncodeToString(res.Bytes))
+			} else {
+				genErr = errors.New("empty audio generation response")
+			}
+		} else {
+			genErr = errors.New("audio generation service not configured")
+		}
 		_, _ = updateProjectTaskWithRetry(db, p.AccountScopeID, task.ProjectID, task.ID, func(t *pebblestore.ProjectTaskRecord) error {
 			if len(t.Deliverables) > 0 {
 				t.Deliverables[0].Status = "ready"
 				t.Deliverables[0].MediaURL = mediaURL
+				if genErr != nil || mediaURL == "" {
+					t.Deliverables[0].Status = "failed"
+					errMsg := "audio generation failed"
+					if genErr != nil {
+						errMsg = genErr.Error()
+					}
+					t.Deliverables[0].Description = fmt.Sprintf("Audio generation failed: %s", errMsg)
+					t.Status = "failed"
+					t.LastError = errMsg
+					t.ActionNeeded = "Audio generation failed. Review error and retry."
+					t.WhatDidDo = append(t.WhatDidDo, fmt.Sprintf("Audio generation failed: %s", errMsg))
+					return nil
+				}
 				t.Deliverables[0].Thumbnail = "sound"
 				t.Deliverables[0].Duration = fmt.Sprintf("%ds", durSeconds)
 				t.Deliverables[0].Title = fmt.Sprintf("%s (%ds Audio Clip)", t.Title, durSeconds)

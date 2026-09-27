@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -657,4 +658,110 @@ func maxTaskProgramInt(left, right int) int {
 		return left
 	}
 	return right
+}
+
+// NormalizeTaskProgramScope cleans and normalizes a workspace-relative path scope.
+func NormalizeTaskProgramScope(s string) string {
+	s = strings.TrimSpace(strings.TrimPrefix(s, "/"))
+	s = strings.TrimSuffix(s, "/**")
+	s = strings.TrimSuffix(s, "/*")
+	s = strings.TrimSuffix(s, "/")
+	if s == "" || s == "." {
+		return "."
+	}
+	return filepath.Clean(s)
+}
+
+// TaskProgramScopesOverlap checks whether two sets of owned scopes overlap.
+func TaskProgramScopesOverlap(left, right []string) bool {
+	for _, l := range left {
+		normL := NormalizeTaskProgramScope(l)
+		for _, r := range right {
+			normR := NormalizeTaskProgramScope(r)
+			if normL == "." || normR == "." || normL == normR || strings.HasPrefix(normL, normR+"/") || strings.HasPrefix(normR, normL+"/") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// ValidateTaskProgramDefinition checks structural coherence and validates that concurrent
+// Coder jobs within each stage declare non-overlapping owned scopes.
+func ValidateTaskProgramDefinition(def *TaskProgramDefinition) error {
+	if def == nil {
+		return nil
+	}
+	if len(def.Stages) == 0 {
+		return errors.New("task program requires at least one stage")
+	}
+	if len(def.Jobs) == 0 {
+		return errors.New("task program requires at least one job")
+	}
+
+	stageSet := make(map[string]bool)
+	for _, st := range def.Stages {
+		id := strings.TrimSpace(st.ID)
+		if id == "" {
+			return errors.New("task program stage missing id")
+		}
+		if stageSet[id] {
+			return fmt.Errorf("duplicate task program stage id %q", id)
+		}
+		stageSet[id] = true
+	}
+
+	jobSet := make(map[string]bool)
+	for _, job := range def.Jobs {
+		id := strings.TrimSpace(job.ID)
+		if id == "" {
+			return errors.New("task program job missing id")
+		}
+		if jobSet[id] {
+			return fmt.Errorf("duplicate task program job id %q", id)
+		}
+		jobSet[id] = true
+		if !stageSet[job.StageID] {
+			return fmt.Errorf("task program job %q references nonexistent stage %q", id, job.StageID)
+		}
+	}
+
+	// Verify parallel Coder non-overlapping owned scopes in each stage
+	for _, stage := range def.Stages {
+		var coderJobs []TaskProgramJobSpec
+		for _, job := range def.Jobs {
+			if job.StageID == stage.ID && (job.AgentType == "coder" || job.AgentType == "") {
+				coderJobs = append(coderJobs, job)
+			}
+		}
+		for i := 0; i < len(coderJobs); i++ {
+			for j := i + 1; j < len(coderJobs); j++ {
+				jobA := coderJobs[i]
+				jobB := coderJobs[j]
+				dep := false
+				for _, d := range jobB.DependsOn {
+					if d == jobA.ID {
+						dep = true
+						break
+					}
+				}
+				for _, d := range jobA.DependsOn {
+					if d == jobB.ID {
+						dep = true
+						break
+					}
+				}
+				if dep {
+					continue
+				}
+				if len(jobA.OwnedScope) == 0 || len(jobB.OwnedScope) == 0 {
+					return fmt.Errorf("task program concurrent Coder jobs %q and %q require explicit owned_scope", jobA.ID, jobB.ID)
+				}
+				if TaskProgramScopesOverlap(jobA.OwnedScope, jobB.OwnedScope) {
+					return fmt.Errorf("task program concurrent Coder owned scopes overlap between jobs %q and %q", jobA.ID, jobB.ID)
+				}
+			}
+		}
+	}
+	return nil
 }

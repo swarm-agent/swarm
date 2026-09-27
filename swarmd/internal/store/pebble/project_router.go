@@ -38,7 +38,11 @@ type TaskPlanOptions struct {
 	Workspaces         []ProjectWorkspaceRef
 	Feedback           string
 	LastError          string
-	Intent             string // "code", "image", "video", "audit"
+	Intent             string // "code", "image", "video", "audit", "sound"
+	FeatureSize        string // "small", "big"
+	Agent              string // explicit agent override: "coder", "finder", "plan", "swarm", "image", "video", "sound", "designer"
+	OutcomeType        string // explicit outcome type: "code_pr", "audit_report", "plan_spec", "media_bundle", etc.
+	Tier               string // explicit tier: "direct", "discovery", "complex", "swarm"
 	VideoType          string // "single", "multipart"
 	EnhancePrompt      bool
 	AspectRatio        string // "16:9", "1:1", "9:16", "4:3"
@@ -108,101 +112,86 @@ func RouteAndPlanProjectTaskWithOptions(opts TaskPlanOptions) TaskRouteResult {
 	}
 	detected := []string{heroWorkspace}
 
-	// Intent and agent resolution
+	// Intent and agent resolution strictly via explicit structured intent and agent.
+	// Keyword string-matching heuristics on prompt content are strictly eliminated.
+	explicitAgent := strings.ToLower(strings.TrimSpace(opts.Agent))
+	explicitOutcome := strings.ToLower(strings.TrimSpace(opts.OutcomeType))
+	explicitTier := strings.ToLower(strings.TrimSpace(opts.Tier))
 	intent := strings.ToLower(strings.TrimSpace(opts.Intent))
-	promptLower := strings.ToLower(prompt)
+	featureSize := strings.ToLower(strings.TrimSpace(opts.FeatureSize))
 
-	hasAttachedDoc := false
-	hasAttachedImage := false
-	hasAttachedVideo := false
-	for _, m := range opts.AttachedMedia {
-		k := strings.ToLower(m.Kind)
-		mt := strings.ToLower(m.MediaType)
-		fn := strings.ToLower(m.Filename)
-		if k == "doc" || strings.HasPrefix(mt, "text/") || strings.Contains(mt, "pdf") || strings.Contains(mt, "markdown") || strings.HasSuffix(fn, ".md") || strings.HasSuffix(fn, ".txt") || strings.HasSuffix(fn, ".pdf") || m.Data != "" {
-			hasAttachedDoc = true
-		}
-		if k == "image" || strings.HasPrefix(mt, "image/") {
-			hasAttachedImage = true
-		}
-		if k == "video" || strings.HasPrefix(mt, "video/") || strings.HasSuffix(fn, ".mp4") || strings.HasSuffix(fn, ".webm") || strings.HasSuffix(fn, ".mov") {
-			hasAttachedVideo = true
-		}
-	}
-
-	agent := "swarm"
+	agent := "coder"
 	tier := "direct"
-	outcomeType := "general"
+	outcomeType := "code_pr"
 
-	isRecordedApp := strings.Contains(promptLower, "record") || strings.Contains(promptLower, "screen record") ||
-		strings.Contains(promptLower, "demo app") || strings.Contains(promptLower, "app demo") ||
-		strings.Contains(promptLower, "live app")
-	isHTMLAnimation := strings.Contains(promptLower, "html") || strings.Contains(promptLower, "motion ui") ||
-		strings.Contains(promptLower, "canvas") || strings.Contains(promptLower, "svg animation")
-	isComplexCode := strings.Contains(promptLower, "complex") || strings.Contains(promptLower, "overhaul") ||
-		strings.Contains(promptLower, "architect") || strings.Contains(promptLower, "multi-phase") ||
-		strings.Contains(promptLower, "pipeline") || strings.Contains(promptLower, "platform") ||
-		strings.Contains(promptLower, "redesign") || strings.Contains(promptLower, "system architecture")
-
-	isMutation := strings.Contains(promptLower, "edit") || strings.Contains(promptLower, "update") ||
-		strings.Contains(promptLower, "fix") || strings.Contains(promptLower, "modify") ||
-		strings.Contains(promptLower, "change") || strings.Contains(promptLower, "write") ||
-		strings.Contains(promptLower, "add") || strings.Contains(promptLower, "implement") ||
-		strings.Contains(promptLower, "patch") || strings.Contains(promptLower, "refactor") ||
-		strings.Contains(promptLower, "create") || strings.Contains(promptLower, "delete") ||
-		strings.Contains(promptLower, "remove")
-
-	switch {
-	case hasAttachedDoc && (intent == "code" || isMutation):
-		if isComplexCode {
-			agent = "plan"
-			tier = "complex"
-			outcomeType = "plan_spec"
-		} else {
-			agent = "coder"
+	if explicitAgent != "" {
+		agent = explicitAgent
+		switch agent {
+		case "coder":
 			tier = "direct"
 			outcomeType = "code_pr"
-		}
-	case hasAttachedDoc && (intent == "audit" || strings.Contains(promptLower, "read") || strings.Contains(promptLower, "review") || strings.Contains(promptLower, "analyze") || strings.Contains(promptLower, "question") || strings.Contains(promptLower, "explain") || (intent == "" && !isMutation)):
-		agent = "finder"
-		tier = "discovery"
-		outcomeType = "audit_report"
-	case hasAttachedVideo && (intent == "video" || intent == "" || strings.Contains(promptLower, "next scene") || strings.Contains(promptLower, "continue") || strings.Contains(promptLower, "scene") || strings.Contains(promptLower, "iteration") || strings.Contains(promptLower, "variation") || strings.Contains(promptLower, "remix") || strings.Contains(promptLower, "change") || strings.Contains(promptLower, "fine-tune") || strings.Contains(promptLower, "modify") || strings.Contains(promptLower, "video")):
-		agent = "video"
-		tier = "direct"
-		outcomeType = "video_story"
-	case hasAttachedImage && (intent == "video" || strings.Contains(promptLower, "video") || strings.Contains(promptLower, "animate") || strings.Contains(promptLower, "story") || strings.Contains(promptLower, "trailer")):
-		agent = "video"
-		tier = "direct"
-		outcomeType = "video_story"
-	case hasAttachedImage && (strings.Contains(promptLower, "change") || strings.Contains(promptLower, "fine-tune") || strings.Contains(promptLower, "modify") || strings.Contains(promptLower, "edit") || strings.Contains(promptLower, "tweak") || strings.Contains(promptLower, "replace")):
-		agent = "image"
-		tier = "direct"
-		outcomeType = "media_bundle"
-	case hasAttachedImage && (strings.Contains(promptLower, "iteration") || strings.Contains(promptLower, "variation") || strings.Contains(promptLower, "remix") || strings.Contains(promptLower, "swarm")):
-		if opts.VariantCount >= 5 || strings.Contains(promptLower, "swarm") {
-			agent = "designer"
-			tier = "swarm"
+		case "finder":
+			tier = "discovery"
+			outcomeType = "audit_report"
+		case "plan":
+			tier = "complex"
+			outcomeType = "plan_spec"
+		case "image":
+			tier = "direct"
 			outcomeType = "media_bundle"
-		} else {
+			if opts.VariantCount >= 5 {
+				tier = "swarm"
+			}
+		case "video":
+			tier = "direct"
+			if opts.VideoType == "single" || opts.ScenesCount == 1 {
+				outcomeType = "video_clip"
+			} else {
+				outcomeType = "video_story"
+			}
+		case "sound", "audio":
+			agent = "sound"
+			tier = "direct"
+			outcomeType = "audio_clip"
+		case "designer":
+			if opts.VariantCount > 1 || explicitTier == "swarm" || explicitOutcome == "media_bundle" {
+				tier = "swarm"
+				outcomeType = "media_bundle"
+			} else {
+				tier = "direct"
+				outcomeType = "artifact"
+			}
+		case "swarm":
+			tier = "direct"
+			outcomeType = "general"
+		default:
+			tier = "direct"
+			outcomeType = "general"
+		}
+	} else if intent != "" {
+		switch intent {
+		case "code":
+			if featureSize == "big" {
+				agent = "plan"
+				tier = "complex"
+				outcomeType = "plan_spec"
+			} else {
+				agent = "coder"
+				tier = "direct"
+				outcomeType = "code_pr"
+			}
+		case "audit":
+			agent = "finder"
+			tier = "discovery"
+			outcomeType = "audit_report"
+		case "image":
 			agent = "image"
 			tier = "direct"
 			outcomeType = "media_bundle"
-		}
-	case intent == "image" || (intent == "" && (strings.Contains(promptLower, "image") || strings.Contains(promptLower, "photo") || strings.Contains(promptLower, "logo") || strings.Contains(promptLower, "graphic") || strings.Contains(promptLower, "illustration"))):
-		agent = "image"
-		tier = "direct"
-		outcomeType = "media_bundle"
-	case intent == "video" || (intent == "" && (strings.Contains(promptLower, "video") || strings.Contains(promptLower, "trailer") || strings.Contains(promptLower, "teaser"))):
-		if isRecordedApp {
-			agent = "swarm"
-			tier = "direct"
-			outcomeType = "video_story"
-		} else if isHTMLAnimation {
-			agent = "designer"
-			tier = "direct"
-			outcomeType = "media_bundle"
-		} else {
+			if opts.VariantCount >= 5 {
+				tier = "swarm"
+			}
+		case "video":
 			agent = "video"
 			tier = "direct"
 			if opts.VideoType == "single" || opts.ScenesCount == 1 {
@@ -210,17 +199,31 @@ func RouteAndPlanProjectTaskWithOptions(opts TaskPlanOptions) TaskRouteResult {
 			} else {
 				outcomeType = "video_story"
 			}
+		case "sound", "audio":
+			agent = "sound"
+			tier = "direct"
+			outcomeType = "audio_clip"
+		case "plan":
+			agent = "plan"
+			tier = "complex"
+			outcomeType = "plan_spec"
+		case "design":
+			agent = "designer"
+			tier = "direct"
+			outcomeType = "media_bundle"
+		default:
+			if featureSize == "big" {
+				agent = "plan"
+				tier = "complex"
+				outcomeType = "plan_spec"
+			} else {
+				agent = "coder"
+				tier = "direct"
+				outcomeType = "code_pr"
+			}
 		}
-	case intent == "sound" || intent == "audio" || (intent == "" && (strings.Contains(promptLower, "soundtrack") || strings.Contains(promptLower, "audio") || strings.Contains(promptLower, "music") || strings.Contains(promptLower, "sound clip"))):
-		agent = "sound"
-		tier = "direct"
-		outcomeType = "audio_clip"
-	case intent == "audit" || (intent == "" && (strings.Contains(promptLower, "audit") || strings.Contains(promptLower, "investigate") || strings.Contains(promptLower, "inspect") || strings.Contains(promptLower, "diagnose"))):
-		agent = "finder"
-		tier = "discovery"
-		outcomeType = "audit_report"
-	case intent == "code" || (intent == "" && (strings.Contains(promptLower, "fix") || strings.Contains(promptLower, "bug") || strings.Contains(promptLower, "implement") || strings.Contains(promptLower, "add") || strings.Contains(promptLower, "update") || strings.Contains(promptLower, "create") || strings.Contains(promptLower, "patch"))):
-		if isComplexCode {
+	} else {
+		if featureSize == "big" {
 			agent = "plan"
 			tier = "complex"
 			outcomeType = "plan_spec"
@@ -229,10 +232,13 @@ func RouteAndPlanProjectTaskWithOptions(opts TaskPlanOptions) TaskRouteResult {
 			tier = "direct"
 			outcomeType = "code_pr"
 		}
-	default:
-		agent = "swarm"
-		tier = "direct"
-		outcomeType = "general"
+	}
+
+	if explicitOutcome != "" {
+		outcomeType = explicitOutcome
+	}
+	if explicitTier != "" {
+		tier = explicitTier
 	}
 
 	isVisualMedia := agent == "image" || agent == "video" ||
@@ -416,7 +422,10 @@ func RouteAndPlanProjectTaskWithOptions(opts TaskPlanOptions) TaskRouteResult {
 	cpParts = append(cpParts, "Swarm Default Agent")
 	contextPoolSummary := strings.Join(cpParts, " • ")
 
-	routerAlert := fmt.Sprintf("Router agent failed or unavailable. Defaulted to %s route (@%s).", outcomeType, agent)
+	var routerAlert string
+	if lastError != "" {
+		routerAlert = lastError
+	}
 
 	planSummary := fmt.Sprintf("1. Execute %s route (@%s) in [%s]\n2. Deliver outcome: %s\n3. Verify results and review deliverables", outcomeType, agent, heroLabel, outcomeType)
 	if feedback != "" {
@@ -428,9 +437,11 @@ func RouteAndPlanProjectTaskWithOptions(opts TaskPlanOptions) TaskRouteResult {
 
 	var fullPlan strings.Builder
 	fullPlan.WriteString(fmt.Sprintf("### Task Mission: %s\n\n", title))
-	fullPlan.WriteString(fmt.Sprintf("> ⚠️ **Router Agent Alert**: %s\n\n", routerAlert))
-	fullPlan.WriteString(fmt.Sprintf("- **Assigned Agent**: `@%s` (Swarm Default)\n", agent))
-	fullPlan.WriteString(fmt.Sprintf("- **Tier**: `Direct`\n"))
+	if routerAlert != "" {
+		fullPlan.WriteString(fmt.Sprintf("> ⚠️ **Router Agent Alert**: %s\n\n", routerAlert))
+	}
+	fullPlan.WriteString(fmt.Sprintf("- **Assigned Agent**: `@%s`\n", agent))
+	fullPlan.WriteString(fmt.Sprintf("- **Tier**: `%s`\n", strings.Title(tier)))
 	fullPlan.WriteString(fmt.Sprintf("- **Expected Outcome**: `%s`\n", outcomeType))
 	if aspectRatio != "" {
 		fullPlan.WriteString(fmt.Sprintf("- **Aspect Ratio**: `%s`\n", aspectRatio))

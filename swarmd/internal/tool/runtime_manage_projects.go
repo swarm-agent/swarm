@@ -67,7 +67,15 @@ func manageProjectsDefinition() Definition {
 				},
 				"agent": map[string]any{
 					"type":        "string",
-					"description": "Optional agent assignment override (coder, finder, designer, image, video, swarm)",
+					"description": "Optional agent assignment override (coder, finder, designer, image, video, sound, plan, swarm)",
+				},
+				"intent": map[string]any{
+					"type":        "string",
+					"description": "Optional explicit task intent: 'code', 'audit', 'image', 'video', 'sound', 'plan'",
+				},
+				"feature_size": map[string]any{
+					"type":        "string",
+					"description": "Optional feature size for code tasks: 'small' (direct coder bug fix / single component) or 'big' (complex multi-stage architecture requiring plan agent)",
 				},
 				"worker_name": map[string]any{
 					"type":        "string",
@@ -374,22 +382,17 @@ func (r *Runtime) executeManageProjects(scope WorkspaceScope, args map[string]an
 			prompt = title
 		}
 		wsPath := strings.TrimSpace(asString(args["workspace_path"]))
-		routed := pebblestore.RouteAndPlanProjectTask(prompt, wsPath, projectContext, workspaces, "", "")
-
+		agentName := strings.TrimSpace(asString(args["agent"]))
+		intent := strings.TrimSpace(asString(args["intent"]))
+		featureSize := strings.TrimSpace(asString(args["feature_size"]))
+		outcomeType := strings.TrimSpace(asString(args["outcome_type"]))
+		tier := strings.TrimSpace(asString(args["tier"]))
 		aspectRatio := strings.TrimSpace(asString(args["aspect_ratio"]))
-		if aspectRatio == "" {
-			aspectRatio = routed.AspectRatio
-		}
 		resolution := strings.TrimSpace(asString(args["resolution"]))
 		variantCount := asInt(args["variant_count"], 0)
-		if variantCount <= 0 {
-			variantCount = routed.VariantCount
-		}
 		modelName := strings.TrimSpace(asString(args["model"]))
 		soundtrack := strings.TrimSpace(asString(args["soundtrack"]))
-		if soundtrack == "" {
-			soundtrack = routed.Soundtrack
-		}
+
 		var attachedMedia []pebblestore.ProjectTaskMediaRef
 		if rawMedia, ok := args["attached_media"].([]any); ok {
 			for _, item := range rawMedia {
@@ -414,7 +417,31 @@ func (r *Runtime) executeManageProjects(scope WorkspaceScope, args map[string]an
 			}
 		}
 
-		agentName := strings.TrimSpace(asString(args["agent"]))
+		routed := pebblestore.RouteAndPlanProjectTaskWithOptions(pebblestore.TaskPlanOptions{
+			Prompt:             prompt,
+			RequestedWorkspace: wsPath,
+			ProjectContext:     projectContext,
+			Workspaces:         workspaces,
+			Intent:             intent,
+			FeatureSize:        featureSize,
+			Agent:              agentName,
+			OutcomeType:        outcomeType,
+			Tier:               tier,
+			AspectRatio:        aspectRatio,
+			VariantCount:       variantCount,
+			Soundtrack:         soundtrack,
+			AttachedMedia:      attachedMedia,
+		})
+
+		if aspectRatio == "" {
+			aspectRatio = routed.AspectRatio
+		}
+		if variantCount <= 0 {
+			variantCount = routed.VariantCount
+		}
+		if soundtrack == "" {
+			soundtrack = routed.Soundtrack
+		}
 		if agentName == "" {
 			agentName = routed.Agent
 		}
@@ -486,6 +513,35 @@ func (r *Runtime) executeManageProjects(scope WorkspaceScope, args map[string]an
 			actionNeeded = "Review plan and click Approve"
 		}
 
+		var deliverables []pebblestore.ProjectTaskDeliverable
+		if rawDelivs, ok := args["deliverables"].([]any); ok && len(rawDelivs) > 0 {
+			for _, item := range rawDelivs {
+				if m, ok := item.(map[string]any); ok {
+					deliverables = append(deliverables, pebblestore.ProjectTaskDeliverable{
+						ID:          asString(m["id"]),
+						Title:       asString(m["title"]),
+						Kind:        asString(m["kind"]),
+						Status:      "pending",
+						Description: asString(m["description"]),
+					})
+				}
+			}
+		}
+		if len(deliverables) == 0 {
+			deliverables = routed.Deliverables
+		}
+		planSummary := strings.TrimSpace(asString(args["plan_summary"]))
+		if planSummary == "" {
+			planSummary = routed.PlanSummary
+		}
+		fullPlanMarkdown := strings.TrimSpace(asString(args["full_plan_markdown"]))
+		if fullPlanMarkdown == "" {
+			fullPlanMarkdown = routed.FullPlanMarkdown
+		}
+		if tier == "" {
+			tier = routed.Tier
+		}
+
 		task := pebblestore.ProjectTaskRecord{
 			ProjectID:          projectID,
 			Title:              title,
@@ -501,12 +557,13 @@ func (r *Runtime) executeManageProjects(scope WorkspaceScope, args map[string]an
 			WhatNotDone:        whatNot,
 			DiffSummary:        strings.TrimSpace(asString(args["diff_summary"])),
 			PipelineStages:     stages,
-			Deliverables:       routed.Deliverables,
+			Deliverables:       deliverables,
 			WorkspacesInvolved: routed.WorkspacesInvolved,
 			ContextPoolSummary: routed.ContextPoolSummary,
-			PlanSummary:        routed.PlanSummary,
-			FullPlanMarkdown:   routed.FullPlanMarkdown,
-			Tier:               routed.Tier,
+			PlanSummary:        planSummary,
+			FullPlanMarkdown:   fullPlanMarkdown,
+			Tier:               tier,
+			FeatureSize:        featureSize,
 			RouterAlert:        routed.RouterAlert,
 			Revision:           1,
 			AspectRatio:        aspectRatio,
@@ -519,6 +576,9 @@ func (r *Runtime) executeManageProjects(scope WorkspaceScope, args map[string]an
 		}
 		if taskProg != nil && taskProg.ID != "" {
 			task.TaskProgramID = taskProg.ID
+		}
+		if err := task.Validate(); err != nil {
+			return "", fmt.Errorf("task validation failed: %w", err)
 		}
 		if err := r.projects.PutProjectTask(accountScopeID, &task); err != nil {
 			return "", err
@@ -659,6 +719,19 @@ func (r *Runtime) executeManageProjects(scope WorkspaceScope, args map[string]an
 		if projectID == "" || taskID == "" {
 			return "", errors.New("manage_projects deploy_task requires project_id and task_id")
 		}
+		existingTask, found, _ := r.projects.GetProjectTask(accountScopeID, projectID, taskID)
+		if !found || existingTask == nil {
+			return "", errors.New("task not found")
+		}
+		if existingTask.Status == "in_progress" || existingTask.Status == "completed" {
+			response["task"] = existingTask
+			response["status"] = "already_deployed"
+			raw, _ := json.Marshal(response)
+			return string(raw), nil
+		}
+		if err := existingTask.Validate(); err != nil {
+			return "", fmt.Errorf("task validation failed: %w", err)
+		}
 		updated, err := r.projects.UpdateProjectTask(accountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
 			t.Status = "in_progress"
 			t.ActionNeeded = ""
@@ -708,28 +781,59 @@ func (r *Runtime) executeManageProjects(scope WorkspaceScope, args map[string]an
 				t.LastError = ""
 			}
 
+			if v := strings.TrimSpace(asString(args["agent"])); v != "" {
+				t.Agent = v
+			}
+			if v := strings.TrimSpace(asString(args["feature_size"])); v != "" {
+				t.FeatureSize = v
+				if t.FeatureSize == "big" && t.Agent == "coder" {
+					t.Agent = "plan"
+					t.Tier = "complex"
+					t.OutcomeType = "plan_spec"
+				}
+			}
+			if v := strings.TrimSpace(asString(args["outcome_type"])); v != "" {
+				t.OutcomeType = v
+			}
+			if v := strings.TrimSpace(asString(args["tier"])); v != "" {
+				t.Tier = v
+			}
+
 			seedPrompt := t.Description
 			if seedPrompt == "" {
 				seedPrompt = t.Title
 			}
-			routed := pebblestore.RouteAndPlanProjectTask(seedPrompt, t.WorkspacePath, projCtx, projWs, feedback, t.LastError)
-			t.Agent = routed.Agent
-			t.OutcomeType = routed.OutcomeType
-			t.Description = routed.Mission
+			routed := pebblestore.RouteAndPlanProjectTaskWithOptions(pebblestore.TaskPlanOptions{
+				Prompt:             seedPrompt,
+				RequestedWorkspace: t.WorkspacePath,
+				ProjectContext:     projCtx,
+				Workspaces:         projWs,
+				Feedback:           feedback,
+				LastError:          t.LastError,
+				FeatureSize:        t.FeatureSize,
+				Agent:              t.Agent,
+				OutcomeType:        t.OutcomeType,
+				Tier:               t.Tier,
+				AspectRatio:        t.AspectRatio,
+				VariantCount:       t.VariantCount,
+				Soundtrack:         t.Soundtrack,
+				AttachedMedia:      t.AttachedMedia,
+			})
 			t.PipelineStages = routed.Stages
 			t.Deliverables = routed.Deliverables
 			t.WorkspacesInvolved = routed.WorkspacesInvolved
 			t.ContextPoolSummary = routed.ContextPoolSummary
 			t.PlanSummary = routed.PlanSummary
 			t.FullPlanMarkdown = routed.FullPlanMarkdown
-			t.Tier = routed.Tier
-			t.RouterAlert = routed.RouterAlert
 			t.Status = "pending_approval"
 			t.ActionNeeded = fmt.Sprintf("Review revised plan (Rev %d) and click Approve", t.Revision)
 			if feedback != "" {
 				t.WhatDidDo = append(t.WhatDidDo, fmt.Sprintf("Revised plan (Rev %d) based on: %s", t.Revision, feedback))
 			} else if t.LastError != "" {
 				t.WhatDidDo = append(t.WhatDidDo, fmt.Sprintf("Re-planned error recovery strategy (Rev %d)", t.Revision))
+			}
+			if err := t.Validate(); err != nil {
+				return fmt.Errorf("refined task validation failed: %w", err)
 			}
 			return nil
 		})

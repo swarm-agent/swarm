@@ -1835,6 +1835,289 @@ func TestProjectOrchestrator_ClearContext_ResolvesPlanModelAndValidProfile(t *te
 	}
 }
 
+func TestProjectsAPI_ApprovalIdempotency(t *testing.T) {
+	// Written test purpose:
+	// - Product requirement/invariant: Repeated approval of a task must be idempotent,
+	//   returning status="already_approved" without launching duplicate executions or sessions.
+	// - Regression prevented: Duplicated execution runs and goroutines when user or frontend double-clicks approve.
+
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	ss := store.NewSessionStore(db)
+	el, err := store.NewEventLog(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{sessions: sessionruntime.NewService(ss, el)}
+	h := s.apiMux()
+
+	call := func(method, path, body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, ProjectsPath+path, strings.NewReader(body))
+		p := identity.Principal{Type: "user", UserID: "owner", AccountScopeID: "account"}
+		ctx := context.WithValue(r.Context(), productPrincipalRequestContextKey, p)
+		tokenRec := &store.ScopedTokenRecord{
+			AccountScopeID: "account",
+			UserID:         "owner",
+			Scopes:         []string{"sessions:write", "projects:write", "projects:read", "sessions:read"},
+		}
+		ctx = context.WithValue(ctx, productScopedTokenRequestContextKey, tokenRec)
+		r = r.WithContext(ctx)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w
+	}
+
+	// 1. Create project
+	w := call(http.MethodPost, "", `{"name":"Idempotency Project","workspaces":[{"path":"/ws","role":"primary_code","label":"Code"}]}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create project failed: %d: %s", w.Code, w.Body.String())
+	}
+	var projResp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &projResp)
+	projID := projResp["project"].(map[string]any)["id"].(string)
+
+	// 2. Create pending coder task
+	w = call(http.MethodPost, "/"+projID+"/tasks", `{"title":"Add feature","agent":"coder"}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create task failed: %d: %s", w.Code, w.Body.String())
+	}
+	var taskResp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &taskResp)
+	taskID := taskResp["task"].(map[string]any)["id"].(string)
+
+	// 3. First approve -> 200 approved
+	w = call(http.MethodPost, "/"+projID+"/tasks/"+taskID+"/approve", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("first approve failed: %d: %s", w.Code, w.Body.String())
+	}
+	var appResp1 map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &appResp1)
+	if appResp1["status"] != "approved" {
+		t.Fatalf("expected approved status, got %v", appResp1["status"])
+	}
+
+	// 4. Second approve -> 200 already_approved
+	w = call(http.MethodPost, "/"+projID+"/tasks/"+taskID+"/approve", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("second approve expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var appResp2 map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &appResp2)
+	if appResp2["status"] != "already_approved" {
+		t.Fatalf("expected already_approved status on repeated approval, got %v", appResp2["status"])
+	}
+}
+
+func TestProjectsAPI_ExplicitCoderMediaKeywordsNoImageDeliverable(t *testing.T) {
+	// Written test purpose:
+	// - Product requirement/invariant: Proposing a task with explicit agent="coder"
+	//   and media wording in prompt must produce a coder task with code PR deliverable,
+	//   NOT image deliverables or media bundle.
+	// - Threat/regression: The original bug where Orchestrator UI task was turned into image generation.
+
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	ss := store.NewSessionStore(db)
+	el, _ := store.NewEventLog(db)
+	s := &Server{sessions: sessionruntime.NewService(ss, el)}
+	h := s.apiMux()
+
+	call := func(method, path, body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, ProjectsPath+path, strings.NewReader(body))
+		p := identity.Principal{Type: "user", UserID: "owner", AccountScopeID: "account"}
+		ctx := context.WithValue(r.Context(), productPrincipalRequestContextKey, p)
+		tokenRec := &store.ScopedTokenRecord{
+			AccountScopeID: "account",
+			UserID:         "owner",
+			Scopes:         []string{"sessions:write", "projects:write", "projects:read", "sessions:read"},
+		}
+		ctx = context.WithValue(ctx, productScopedTokenRequestContextKey, tokenRec)
+		r = r.WithContext(ctx)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w
+	}
+
+	w := call(http.MethodPost, "", `{"name":"Media Keyword Test Project"}`)
+	var projResp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &projResp)
+	projID := projResp["project"].(map[string]any)["id"].(string)
+
+	w = call(http.MethodPost, "/"+projID+"/tasks", `{
+		"title": "Add profile PNG upload button and allow selection from media",
+		"prompt": "Allow profile PNG upload or selection from media, remove acct_* label, improve project layout",
+		"agent": "coder"
+	}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201 on task create, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	task := resp["task"].(map[string]any)
+	if task["agent"] != "coder" {
+		t.Fatalf("expected agent coder, got %v", task["agent"])
+	}
+	if task["outcome_type"] != "code_pr" {
+		t.Fatalf("expected outcome_type code_pr, got %v", task["outcome_type"])
+	}
+	delivs, _ := task["deliverables"].([]any)
+	if len(delivs) == 0 {
+		t.Fatal("expected deliverables")
+	}
+	for _, d := range delivs {
+		dm := d.(map[string]any)
+		if dm["kind"] == "image" || dm["kind"] == "video" || dm["kind"] == "audio" {
+			t.Fatalf("coder task must not have media deliverable, got: %+v", dm)
+		}
+	}
+}
+
+func TestProjectsAPI_RejectIncompatibleTaskFields(t *testing.T) {
+	// Written test purpose:
+	// - Product requirement/invariant: Task-to-executor pipeline must reject incoherent
+	//   combinations (e.g. coder with media_bundle, finder with code_pr) with an actionable 400 error.
+	// - Threat/regression: Malformed tasks being saved or dispatched to wrong executors.
+
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	ss := store.NewSessionStore(db)
+	el, _ := store.NewEventLog(db)
+	s := &Server{sessions: sessionruntime.NewService(ss, el)}
+	h := s.apiMux()
+
+	call := func(method, path, body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, ProjectsPath+path, strings.NewReader(body))
+		p := identity.Principal{Type: "user", UserID: "owner", AccountScopeID: "account"}
+		ctx := context.WithValue(r.Context(), productPrincipalRequestContextKey, p)
+		tokenRec := &store.ScopedTokenRecord{
+			AccountScopeID: "account",
+			UserID:         "owner",
+			Scopes:         []string{"sessions:write", "projects:write", "projects:read", "sessions:read"},
+		}
+		ctx = context.WithValue(ctx, productScopedTokenRequestContextKey, tokenRec)
+		r = r.WithContext(ctx)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w
+	}
+
+	w := call(http.MethodPost, "", `{"name":"Incompatible Test Project"}`)
+	var projResp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &projResp)
+	projID := projResp["project"].(map[string]any)["id"].(string)
+
+	// Incompatible: coder with media_bundle
+	w = call(http.MethodPost, "/"+projID+"/tasks", `{
+		"title": "Bad combination",
+		"agent": "coder",
+		"outcome_type": "media_bundle"
+	}`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 Bad Request for coder with media_bundle, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "incoherent task contract") {
+		t.Fatalf("expected incoherent contract message, got: %s", w.Body.String())
+	}
+
+	// Incompatible: finder with code_pr
+	w = call(http.MethodPost, "/"+projID+"/tasks", `{
+		"title": "Bad finder",
+		"agent": "finder",
+		"outcome_type": "code_pr"
+	}`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 Bad Request for finder with code_pr, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestProjectsAPI_ModelPreviewEndpoint(t *testing.T) {
+	// Written test purpose:
+	// - Product requirement/invariant: GET /v3/projects/{id}/tasks/{taskId}/model-preview must return
+	//   authoritative resolved model preview and reflect per-task model overrides.
+
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	ss := store.NewSessionStore(db)
+	el, _ := store.NewEventLog(db)
+	s := &Server{sessions: sessionruntime.NewService(ss, el)}
+	h := s.apiMux()
+
+	call := func(method, path, body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, ProjectsPath+path, strings.NewReader(body))
+		p := identity.Principal{Type: "user", UserID: "owner", AccountScopeID: "account"}
+		ctx := context.WithValue(r.Context(), productPrincipalRequestContextKey, p)
+		tokenRec := &store.ScopedTokenRecord{
+			AccountScopeID: "account",
+			UserID:         "owner",
+			Scopes:         []string{"sessions:write", "projects:write", "projects:read", "sessions:read"},
+		}
+		ctx = context.WithValue(ctx, productScopedTokenRequestContextKey, tokenRec)
+		r = r.WithContext(ctx)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w
+	}
+
+	w := call(http.MethodPost, "", `{"name":"Model Preview Project"}`)
+	var projResp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &projResp)
+	projID := projResp["project"].(map[string]any)["id"].(string)
+
+	w = call(http.MethodPost, "/"+projID+"/tasks", `{"title":"Preview task","agent":"coder"}`)
+	var taskResp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &taskResp)
+	taskID := taskResp["task"].(map[string]any)["id"].(string)
+
+	// Check model-preview endpoint
+	w = call(http.MethodGet, "/"+projID+"/tasks/"+taskID+"/model-preview", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 on model-preview, got %d: %s", w.Code, w.Body.String())
+	}
+	var prevResp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &prevResp)
+	prev := prevResp["model_preview"].(map[string]any)
+	if prev["resolved_agent"] != "coder" {
+		t.Fatalf("expected resolved_agent coder, got %v", prev["resolved_agent"])
+	}
+	if prev["account_settings_path"] != "/v3/agents/model-settings" {
+		t.Fatalf("expected account_settings_path /v3/agents/model-settings, got %v", prev["account_settings_path"])
+	}
+
+	// Update task with model override
+	w = call(http.MethodPatch, "/"+projID+"/tasks/"+taskID, `{"model":"gpt-6-astra"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 on patch model, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Check model preview reflects task override
+	w = call(http.MethodGet, "/"+projID+"/tasks/"+taskID+"/model-preview", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 on second model-preview, got %d: %s", w.Code, w.Body.String())
+	}
+	var prevResp2 map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &prevResp2)
+	prev2 := prevResp2["model_preview"].(map[string]any)
+	if prev2["task_model_override"] != "gpt-6-astra" {
+		t.Fatalf("expected task_model_override gpt-6-astra, got %v", prev2["task_model_override"])
+	}
+}
+
 // TestProjectTaskPatch_DeliverableClientMetadataSpoofFails proves:
 //   - Requirement: Client PATCH on project tasks must NOT allow spoofing of server-generated deliverable metadata
 //     (Model, AspectRatio, Resolution, DurationSeconds, VideoProvenance). Server-generated metadata must be retained

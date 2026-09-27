@@ -27,6 +27,7 @@ import (
 	"swarm/packages/swarmd/internal/agentmodelsettings"
 	"swarm/packages/swarmd/internal/artifact"
 	"swarm/packages/swarmd/internal/artifactv2"
+	"swarm/packages/swarmd/internal/audiogen"
 	"swarm/packages/swarmd/internal/auth"
 	"swarm/packages/swarmd/internal/discovery"
 	"swarm/packages/swarmd/internal/executioncapacity"
@@ -55,6 +56,7 @@ import (
 	topologyruntime "swarm/packages/swarmd/internal/topology"
 	"swarm/packages/swarmd/internal/uisettings"
 	"swarm/packages/swarmd/internal/update"
+	"swarm/packages/swarmd/internal/videogen"
 	"swarm/packages/swarmd/internal/videoproject"
 	"swarm/packages/swarmd/internal/videorender"
 	"swarm/packages/swarmd/internal/videotranscription"
@@ -142,6 +144,7 @@ type Server struct {
 	imageThreads                *pebblestore.ImageThreadStore
 	imageGen                    *imagegen.Service
 	videoGen                    managedVideoService
+	audioGen                    *audiogen.Service
 	videoTranscription          *videotranscription.Service
 	integrations                *integrationruntime.Service
 	automationV2Scheduler       *sessionruntime.AutomationV2Scheduler

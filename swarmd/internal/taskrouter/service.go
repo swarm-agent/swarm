@@ -17,7 +17,11 @@ type LLMInvoker func(ctx context.Context, instructions string, input string) (st
 type TaskRouteOptions struct {
 	Prompt             string                            `json:"prompt"`
 	RequestedWorkspace string                            `json:"requested_workspace,omitempty"`
-	Intent             string                            `json:"intent,omitempty"`     // "code", "image", "video", "audit"
+	Intent             string                            `json:"intent,omitempty"`     // "code", "image", "video", "audit", "sound"
+	FeatureSize        string                            `json:"feature_size,omitempty"` // "small", "big"
+	Agent              string                            `json:"agent,omitempty"`      // explicit agent
+	OutcomeType        string                            `json:"outcome_type,omitempty"`
+	Tier               string                            `json:"tier,omitempty"`
 	VideoType          string                            `json:"video_type,omitempty"` // "single", "multipart"
 	EnhancePrompt      bool                              `json:"enhance_prompt,omitempty"`
 	AspectRatio        string                            `json:"aspect_ratio,omitempty"`
@@ -45,11 +49,12 @@ func NewService(invoker ...LLMInvoker) *Service {
 	return s
 }
 
-// RouteTask evaluates a user task request. When an AI invoker is present, it invokes
-// the real configured Router LLM to analyze the request, project workspaces, and guidelines.
-// If the LLM is offline, not configured, or fails, it falls back directly to the canonical
-// Swarm system agent and attaches a clear RouterAlert warning.
-func (s *Service) RouteTask(ctx context.Context, opts TaskRouteOptions) pebblestore.TaskRouteResult {
+// RouteTask evaluates a user task request. The execution contract (agent, tier, outcome type)
+// is determined strictly by explicit structured intent, feature size, and agent overrides.
+// When an AI invoker is present, it elaborates high-context task details (title, mission, stages,
+// plan summary, full plan markdown, scenes, soundtrack). The AI Router CANNOT alter or overwrite
+// the execution contract. If the AI Router fails, it fails explicitly without silent mutation.
+func (s *Service) RouteTask(ctx context.Context, opts TaskRouteOptions) (pebblestore.TaskRouteResult, error) {
 	var workspaces []pebblestore.ProjectWorkspaceRef
 	var projectContext string
 	if opts.Project != nil {
@@ -65,6 +70,10 @@ func (s *Service) RouteTask(ctx context.Context, opts TaskRouteOptions) pebblest
 		Feedback:           opts.Feedback,
 		LastError:          opts.LastError,
 		Intent:             opts.Intent,
+		FeatureSize:        opts.FeatureSize,
+		Agent:              opts.Agent,
+		OutcomeType:        opts.OutcomeType,
+		Tier:               opts.Tier,
 		VideoType:          opts.VideoType,
 		EnhancePrompt:      opts.EnhancePrompt,
 		AspectRatio:        opts.AspectRatio,
@@ -74,25 +83,47 @@ func (s *Service) RouteTask(ctx context.Context, opts TaskRouteOptions) pebblest
 		AttachedMedia:      opts.AttachedMedia,
 	}
 
-	var routerErr error
+	// Base authoritative contract derived strictly from explicit structured parameters.
+	baseContract := pebblestore.RouteAndPlanProjectTaskWithOptions(planOpts)
+
 	if s.invoker != nil {
 		aiResult, err := s.invokeAIRouter(ctx, opts, planOpts)
-		if err == nil {
-			return aiResult
+		if err != nil {
+			return pebblestore.TaskRouteResult{}, fmt.Errorf("router agent failed: %w", err)
 		}
-		routerErr = err
-	} else {
-		routerErr = fmt.Errorf("router agent invoker not configured")
+		// Overlay AI-elaborated fields ON TOP of the authoritative execution contract.
+		// Contract fields (Agent, OutcomeType, Tier, Branch, Deliverables) remain code-governed.
+		res := baseContract
+		if aiResult.Title != "" {
+			res.Title = aiResult.Title
+		}
+		if aiResult.Mission != "" {
+			res.Mission = aiResult.Mission
+		}
+		if len(aiResult.Stages) > 0 {
+			res.Stages = aiResult.Stages
+		}
+		if aiResult.PlanSummary != "" {
+			res.PlanSummary = aiResult.PlanSummary
+		}
+		if aiResult.FullPlanMarkdown != "" {
+			res.FullPlanMarkdown = aiResult.FullPlanMarkdown
+		}
+		if len(aiResult.Scenes) > 0 && baseContract.Agent == "video" {
+			res.Scenes = aiResult.Scenes
+		}
+		if aiResult.Soundtrack != "" && (baseContract.Agent == "video" || baseContract.Agent == "sound") {
+			res.Soundtrack = aiResult.Soundtrack
+		}
+		return res, nil
 	}
 
-	// AI router failed or unavailable — fallback to default Swarm agent with router alert
-	fallback := pebblestore.RouteAndPlanProjectTaskWithOptions(planOpts)
-	fallback.RouterAlert = fmt.Sprintf("Router agent failed (%v). Defaulted to Swarm system agent.", routerErr)
-	return fallback
+	// Deterministic compilation without AI invoker
+	return baseContract, nil
 }
 
 // RefineTask recalculates plan stages and workspace boundaries based on user feedback or execution errors.
-func (s *Service) RefineTask(ctx context.Context, opts TaskRouteOptions) pebblestore.TaskRouteResult {
+func (s *Service) RefineTask(ctx context.Context, opts TaskRouteOptions) (pebblestore.TaskRouteResult, error) {
 	return s.RouteTask(ctx, opts)
 }
 

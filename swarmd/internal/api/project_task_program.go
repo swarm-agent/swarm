@@ -128,11 +128,8 @@ func (s *Server) deployProjectTaskProgram(p identity.Principal, proj *pebblestor
 	if task.TaskProgram == nil {
 		return errors.New("task program is required")
 	}
-	if len(task.TaskProgram.Stages) == 0 {
-		return errors.New("task program requires at least one stage")
-	}
-	if len(task.TaskProgram.Jobs) == 0 {
-		return errors.New("task program requires at least one job")
+	if err := pebblestore.ValidateTaskProgramDefinition(task.TaskProgram); err != nil {
+		return fmt.Errorf("task program validation failed: %w", err)
 	}
 
 	// 1. Ensure coordinator session exists
@@ -155,8 +152,19 @@ func (s *Server) deployProjectTaskProgram(p identity.Principal, proj *pebblestor
 		}
 
 		// Resolve default preference for coordinator
-		pref := pebblestore.ModelPreference{Provider: "google", Model: "gemini-3.8-flash", Thinking: "low"}
-		if s.model != nil {
+		var pref pebblestore.ModelPreference
+		if s.agentModelSettings != nil && p.AccountScopeID != "" {
+			if settings, err := s.agentModelSettings.GetForAccount(p.AccountScopeID); err == nil {
+				pref = pebblestore.ModelPreference{
+					Provider:    strings.TrimSpace(settings.Swarm.Action.Provider),
+					Model:       strings.TrimSpace(settings.Swarm.Action.Model),
+					Thinking:    strings.TrimSpace(settings.Swarm.Action.Thinking),
+					ServiceTier: strings.TrimSpace(settings.Swarm.Action.ServiceTier),
+					ContextMode: strings.TrimSpace(settings.Swarm.Action.ContextMode),
+				}
+			}
+		}
+		if (pref.Provider == "" || pref.Model == "") && s.model != nil {
 			if def, err := s.model.ResolvePreference(pebblestore.ModelPreference{}); err == nil {
 				pref = def.Preference
 			}
@@ -324,14 +332,37 @@ func (s *Server) executeStandaloneTaskProgram(p identity.Principal, projectID, t
 				}
 
 				// Model resolution
-				pref := pebblestore.ModelPreference{Provider: "google", Model: "gemini-3.8-flash", Thinking: "low"}
+				var pref pebblestore.ModelPreference
 				subagentName := jobDef.AgentType
 				if subagentName == "" {
 					subagentName = "coder"
 				}
-				if canonicalID, isCanonical := agentruntime.CanonicalSystemAgentID(subagentName); isCanonical {
-					if resolved, _, err := agentmodel.ResolveSystemAgent(s.model, s.agents, s.agentModelSettings, p.AccountScopeID, canonicalID, ""); err == nil && resolved.Preference.Model != "" {
-						pref = resolved.Preference
+				if task != nil && strings.TrimSpace(task.Model) != "" && s.model != nil {
+					if override, err := s.model.ResolvePreference(pebblestore.ModelPreference{Model: strings.TrimSpace(task.Model)}); err == nil && override.Preference.Model != "" {
+						pref = override.Preference
+					}
+				}
+				if pref.Model == "" {
+					if canonicalID, isCanonical := agentruntime.CanonicalSystemAgentID(subagentName); isCanonical {
+						if resolved, _, err := agentmodel.ResolveSystemAgent(s.model, s.agents, s.agentModelSettings, p.AccountScopeID, canonicalID, ""); err == nil && resolved.Preference.Model != "" {
+							pref = resolved.Preference
+						}
+					}
+				}
+				if pref.Model == "" && s.agentModelSettings != nil && p.AccountScopeID != "" {
+					if settings, err := s.agentModelSettings.GetForAccount(p.AccountScopeID); err == nil {
+						pref = pebblestore.ModelPreference{
+							Provider:    strings.TrimSpace(settings.Swarm.Action.Provider),
+							Model:       strings.TrimSpace(settings.Swarm.Action.Model),
+							Thinking:    strings.TrimSpace(settings.Swarm.Action.Thinking),
+							ServiceTier: strings.TrimSpace(settings.Swarm.Action.ServiceTier),
+							ContextMode: strings.TrimSpace(settings.Swarm.Action.ContextMode),
+						}
+					}
+				}
+				if pref.Model == "" && s.model != nil {
+					if def, err := s.model.ResolvePreference(pebblestore.ModelPreference{}); err == nil {
+						pref = def.Preference
 					}
 				}
 

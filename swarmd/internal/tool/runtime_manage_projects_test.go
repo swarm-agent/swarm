@@ -467,3 +467,269 @@ func TestManageProjects_SingleTaskProgramCohortDeployment(t *testing.T) {
 		t.Fatalf("expected deployer invoked immediately on auto_approve, got %q, %q", deployedProjectID, deployedTaskID)
 	}
 }
+
+func TestManageProjects_ExplicitCoderTaskWithMediaKeywords(t *testing.T) {
+	// Written test purpose:
+	// - Product requirement/invariant: Proposing a task with explicit agent="coder"
+	//   that mentions media terms (PNG, image, media) must NOT route to image generation
+	//   or media deliverables. It must create a coder task with code PR deliverable.
+	// - Regression prevented: Prevents regressions where Orchestrator task proposals
+	//   get corrupted by keyword matching into media generation tasks.
+
+	scope := WorkspaceScope{
+		Principal: identity.Principal{
+			Type:           "user",
+			AccountScopeID: "account",
+		},
+	}
+	db := newMockProjectStore()
+	rt := &Runtime{}
+	rt.SetManageProjectStore(db)
+
+	_ = db.PutProject("account", &pebblestore.ProjectRecord{
+		ID:        "proj_media_kw",
+		AccountID: "account",
+		Name:      "Media KW Project",
+	})
+
+	ctx := context.Background()
+	toolOut, err := rt.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{
+		CallID: "call-media-kw",
+		Name:   "manage_projects",
+		Arguments: `{
+			"action": "propose_task",
+			"project_id": "proj_media_kw",
+			"title": "Add profile PNG upload button and image selection from media",
+			"agent": "coder"
+		}`,
+	})
+	if err != nil {
+		t.Fatalf("propose_task failed: %v", err)
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal([]byte(toolOut), &resp); err != nil {
+		t.Fatal(err)
+	}
+	task, _ := resp["task"].(map[string]any)
+	if task["agent"] != "coder" {
+		t.Fatalf("expected agent coder, got %v", task["agent"])
+	}
+	if task["outcome_type"] != "code_pr" {
+		t.Fatalf("expected outcome_type code_pr, got %v", task["outcome_type"])
+	}
+	if task["status"] != "pending_approval" {
+		t.Fatalf("expected pending_approval status, got %v", task["status"])
+	}
+	delivs, _ := task["deliverables"].([]any)
+	if len(delivs) == 0 {
+		t.Fatal("expected deliverables")
+	}
+	firstDeliv := delivs[0].(map[string]any)
+	if firstDeliv["kind"] == "image" || firstDeliv["kind"] == "video" || firstDeliv["kind"] == "audio" {
+		t.Fatalf("coder task must not have media deliverable, got kind %v", firstDeliv["kind"])
+	}
+}
+
+func TestManageProjects_RefinementStabilityPreservesAgent(t *testing.T) {
+	// Written test purpose:
+	// - Product requirement/invariant: Refining a task must preserve explicit agent and outcome_type
+	//   unless explicitly requested to change; it must not overwrite them with keyword heuristics.
+
+	scope := WorkspaceScope{
+		Principal: identity.Principal{
+			Type:           "user",
+			AccountScopeID: "account",
+		},
+	}
+	db := newMockProjectStore()
+	rt := &Runtime{}
+	rt.SetManageProjectStore(db)
+
+	_ = db.PutProject("account", &pebblestore.ProjectRecord{
+		ID:        "proj_refine_stab",
+		AccountID: "account",
+		Name:      "Refine Stability Project",
+	})
+	_ = db.PutProjectTask("account", &pebblestore.ProjectTaskRecord{
+		ID:          "task_refine_1",
+		ProjectID:   "proj_refine_stab",
+		Title:       "Implement authentication middleware",
+		Agent:       "coder",
+		OutcomeType: "code_pr",
+		Status:      "pending_approval",
+	})
+
+	ctx := context.Background()
+	// Refine with feedback mentioning an image term
+	toolOut, err := rt.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{
+		CallID: "call-refine",
+		Name:   "manage_projects",
+		Arguments: `{
+			"action": "refine_task",
+			"project_id": "proj_refine_stab",
+			"task_id": "task_refine_1",
+			"feedback": "Make sure to also include a SVG test diagram in docs"
+		}`,
+	})
+	if err != nil {
+		t.Fatalf("refine_task failed: %v", err)
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal([]byte(toolOut), &resp); err != nil {
+		t.Fatal(err)
+	}
+	task, _ := resp["task"].(map[string]any)
+	if task["agent"] != "coder" {
+		t.Fatalf("expected agent coder preserved across refinement, got %v", task["agent"])
+	}
+	if task["outcome_type"] != "code_pr" {
+		t.Fatalf("expected outcome_type code_pr preserved across refinement, got %v", task["outcome_type"])
+	}
+}
+
+func TestManageProjects_FeatureSizeRouting(t *testing.T) {
+	// Written test purpose:
+	// - Product requirement/invariant: feature_size="small" routes to coder; feature_size="big" routes to plan agent.
+
+	scope := WorkspaceScope{
+		Principal: identity.Principal{
+			Type:           "user",
+			AccountScopeID: "account",
+		},
+	}
+	db := newMockProjectStore()
+	rt := &Runtime{}
+	rt.SetManageProjectStore(db)
+
+	_ = db.PutProject("account", &pebblestore.ProjectRecord{
+		ID:        "proj_feat_size",
+		AccountID: "account",
+		Name:      "Feature Size Project",
+	})
+
+	ctx := context.Background()
+	// Small feature
+	outSmall, err := rt.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{
+		CallID: "call-small",
+		Name:   "manage_projects",
+		Arguments: `{
+			"action": "propose_task",
+			"project_id": "proj_feat_size",
+			"title": "Minor styling adjustment",
+			"intent": "code",
+			"feature_size": "small"
+		}`,
+	})
+	if err != nil {
+		t.Fatalf("small feature failed: %v", err)
+	}
+	var respSmall map[string]any
+	_ = json.Unmarshal([]byte(outSmall), &respSmall)
+	taskSmall := respSmall["task"].(map[string]any)
+	if taskSmall["agent"] != "coder" {
+		t.Fatalf("expected small feature to route to coder, got %v", taskSmall["agent"])
+	}
+
+	// Big feature
+	outBig, err := rt.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{
+		CallID: "call-big",
+		Name:   "manage_projects",
+		Arguments: `{
+			"action": "propose_task",
+			"project_id": "proj_feat_size",
+			"title": "Architecture overhaul",
+			"intent": "code",
+			"feature_size": "big"
+		}`,
+	})
+	if err != nil {
+		t.Fatalf("big feature failed: %v", err)
+	}
+	var respBig map[string]any
+	_ = json.Unmarshal([]byte(outBig), &respBig)
+	taskBig := respBig["task"].(map[string]any)
+	if taskBig["agent"] != "plan" {
+		t.Fatalf("expected big feature to route to plan, got %v", taskBig["agent"])
+	}
+	if taskBig["tier"] != "complex" {
+		t.Fatalf("expected big feature tier complex, got %v", taskBig["tier"])
+	}
+}
+
+func TestManageProjects_DeployIdempotency(t *testing.T) {
+	// Written test purpose:
+	// - Product requirement/invariant: Deploying an already in_progress task returns status="already_deployed"
+	//   without invoking deployer again.
+
+	scope := WorkspaceScope{
+		Principal: identity.Principal{
+			Type:           "user",
+			AccountScopeID: "account",
+		},
+	}
+	db := newMockProjectStore()
+	rt := &Runtime{}
+	rt.SetManageProjectStore(db)
+
+	deployCount := 0
+	rt.SetProjectTaskDeployer(func(acct, pID, tID string) error {
+		deployCount++
+		return nil
+	})
+
+	_ = db.PutProject("account", &pebblestore.ProjectRecord{
+		ID:        "proj_idemp",
+		AccountID: "account",
+		Name:      "Idempotency Project",
+	})
+	_ = db.PutProjectTask("account", &pebblestore.ProjectTaskRecord{
+		ID:          "task_idemp_1",
+		ProjectID:   "proj_idemp",
+		Title:       "Test task",
+		Agent:       "coder",
+		OutcomeType: "code_pr",
+		Status:      "pending_approval",
+	})
+
+	ctx := context.Background()
+	// First deploy
+	out1, err := rt.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{
+		CallID: "call-dep-1",
+		Name:   "manage_projects",
+		Arguments: `{
+			"action": "deploy_task",
+			"project_id": "proj_idemp",
+			"task_id": "task_idemp_1"
+		}`,
+	})
+	if err != nil {
+		t.Fatalf("first deploy failed: %v", err)
+	}
+	if deployCount != 1 {
+		t.Fatalf("expected deployCount 1, got %d", deployCount)
+	}
+
+	// Second deploy on already in_progress task
+	out2, err := rt.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{
+		CallID: "call-dep-2",
+		Name:   "manage_projects",
+		Arguments: `{
+			"action": "deploy_task",
+			"project_id": "proj_idemp",
+			"task_id": "task_idemp_1"
+		}`,
+	})
+	if err != nil {
+		t.Fatalf("second deploy failed: %v", err)
+	}
+	var resp2 map[string]any
+	_ = json.Unmarshal([]byte(out2), &resp2)
+	if resp2["status"] != "already_deployed" {
+		t.Fatalf("expected already_deployed, got %v", resp2["status"])
+	}
+	if deployCount != 1 {
+		t.Fatalf("deployer invoked again on duplicate deploy! deployCount=%d", deployCount)
+	}
+}

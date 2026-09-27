@@ -386,6 +386,109 @@ func syncTaskSessionState(task *pebblestore.ProjectTaskRecord, db *pebblestore.S
 // TaskRouteResult represents the synthesized plan, tier, and workspace scope for a task.
 type TaskRouteResult = pebblestore.TaskRouteResult
 
+// TaskModelPreview represents the authoritative agent and model preview for a project task.
+type TaskModelPreview struct {
+	TaskID              string                       `json:"task_id,omitempty"`
+	Agent               string                       `json:"agent"`
+	ResolvedAgent       string                       `json:"resolved_agent"`
+	FeatureSize         string                       `json:"feature_size,omitempty"`
+	TaskModelOverride   string                       `json:"task_model_override,omitempty"`
+	ResolvedModel       *pebblestore.ModelPreference `json:"resolved_model,omitempty"`
+	ModelSource         string                       `json:"model_source"` // "task_override" | "account_settings" | "account_default"
+	AccountDefaultModel *pebblestore.ModelPreference `json:"account_default_model,omitempty"`
+	AccountSettingsPath string                       `json:"account_settings_path"`
+}
+
+func (s *Server) buildTaskModelPreview(p identity.Principal, task *pebblestore.ProjectTaskRecord) TaskModelPreview {
+	preview := TaskModelPreview{
+		AccountSettingsPath: "/v3/agents/model-settings",
+	}
+	if task == nil {
+		return preview
+	}
+	preview.TaskID = task.ID
+	preview.Agent = task.Agent
+	preview.ResolvedAgent = task.Agent
+	preview.FeatureSize = task.FeatureSize
+	preview.TaskModelOverride = strings.TrimSpace(task.Model)
+
+	// Resolve account default Swarm model
+	var defaultSwarmPref pebblestore.ModelPreference
+	if s.agentModelSettings != nil && p.AccountScopeID != "" {
+		if settings, err := s.agentModelSettings.GetForAccount(p.AccountScopeID); err == nil {
+			swarmAssignment := settings.Swarm.Action
+			if task.Agent == "plan" && strings.TrimSpace(settings.Swarm.Plan.Model) != "" {
+				swarmAssignment = settings.Swarm.Plan
+			}
+			defaultSwarmPref = pebblestore.ModelPreference{
+				Provider:    strings.TrimSpace(swarmAssignment.Provider),
+				Model:       strings.TrimSpace(swarmAssignment.Model),
+				Thinking:    strings.TrimSpace(swarmAssignment.Thinking),
+				ServiceTier: strings.TrimSpace(swarmAssignment.ServiceTier),
+				ContextMode: strings.TrimSpace(swarmAssignment.ContextMode),
+			}
+		}
+	}
+	if (defaultSwarmPref.Provider == "" || defaultSwarmPref.Model == "") && s.model != nil {
+		if def, err := s.model.ResolvePreference(pebblestore.ModelPreference{}); err == nil {
+			defaultSwarmPref = def.Preference
+		}
+	}
+	if defaultSwarmPref.Model != "" {
+		preview.AccountDefaultModel = &defaultSwarmPref
+	}
+
+	// 1. Task-level model override takes precedence
+	if preview.TaskModelOverride != "" && s.model != nil {
+		if resolved, err := s.model.ResolvePreference(pebblestore.ModelPreference{Model: preview.TaskModelOverride}); err == nil && resolved.Preference.Model != "" {
+			preview.ResolvedModel = &resolved.Preference
+			preview.ModelSource = "task_override"
+			return preview
+		}
+	}
+
+	// 2. Canonical subagents (coder, finder, designer, compact)
+	targetAgent := strings.ToLower(strings.TrimSpace(task.Agent))
+	if targetAgent == "plan" {
+		targetAgent = "swarm"
+	}
+	if canonicalID, isCanonical := agentruntime.CanonicalSystemAgentID(targetAgent); isCanonical && canonicalID != agentruntime.SwarmAgentID {
+		resolvedModel, _, err := agentmodel.ResolveSystemAgent(s.model, s.agents, s.agentModelSettings, p.AccountScopeID, canonicalID, "")
+		if err == nil && resolvedModel.Preference.Model != "" {
+			preview.ResolvedModel = &resolvedModel.Preference
+			preview.ModelSource = "account_settings"
+			return preview
+		}
+	}
+
+	// 3. Media agents from uiSettings
+	if (targetAgent == "image" || targetAgent == "video" || targetAgent == "sound" || targetAgent == "audio") && s.uiSettings != nil && p.AccountScopeID != "" {
+		if uiSet, err := s.uiSettings.GetForAccount(p.AccountScopeID); err == nil {
+			var mediaModel string
+			switch targetAgent {
+			case "image":
+				mediaModel = uiSet.Tools.Image.DefaultModel
+			case "video":
+				mediaModel = uiSet.Tools.Video.DefaultModel
+			case "sound", "audio":
+				mediaModel = uiSet.Tools.Audio.DefaultModel
+			}
+			if mediaModel != "" {
+				preview.ResolvedModel = &pebblestore.ModelPreference{Model: mediaModel}
+				preview.ModelSource = "account_settings"
+				return preview
+			}
+		}
+	}
+
+	// 4. Default Swarm model
+	if defaultSwarmPref.Model != "" {
+		preview.ResolvedModel = &defaultSwarmPref
+		preview.ModelSource = "account_default"
+	}
+	return preview
+}
+
 func routeAndPlanProjectTask(prompt string, wsPath string, projectContext string, workspaces []pebblestore.ProjectWorkspaceRef, feedback string, lastError string) TaskRouteResult {
 	return pebblestore.RouteAndPlanProjectTask(prompt, wsPath, projectContext, workspaces, feedback, lastError)
 }
@@ -698,50 +801,69 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 			}
 		}
 	}
-	if defaultSwarmPref.Provider == "" || defaultSwarmPref.Model == "" {
-		defaultSwarmPref = pebblestore.ModelPreference{
-			Provider: "google",
-			Model:    "gemini-3.8-flash",
-			Thinking: "low",
-		}
-	}
 
 	var resolvedPref pebblestore.ModelPreference
 	var agentProfile pebblestore.AgentProfile
 	var fallbackAlert string
 
+	taskModelOverride := ""
+	if task != nil {
+		taskModelOverride = strings.TrimSpace(task.Model)
+	}
+
 	if canonicalID, isCanonical := agentruntime.CanonicalSystemAgentID(targetAgent); isCanonical && canonicalID != agentruntime.SwarmAgentID {
-		// System subagent (coder, finder, designer, compact, etc.)
-		// Must use canonical account-scoped agent-model settings service (agentmodel.ResolveSystemAgent)
-		resolvedModel, profile, err := agentmodel.ResolveSystemAgent(s.model, s.agents, s.agentModelSettings, p.AccountScopeID, canonicalID, "")
-		if err == nil && resolvedModel.Preference.Model != "" {
-			resolvedPref = resolvedModel.Preference
-			agentProfile = profile
-		} else {
-			// Resolution failed or not configured!
-			// Must fall back to Swarm default AND warn in the task card!
-			resolvedPref = defaultSwarmPref
-			fallbackAlert = fmt.Sprintf("Configured model for agent %q could not be resolved (%v); fell back to Swarm default (%s/%s).", targetAgent, err, defaultSwarmPref.Provider, defaultSwarmPref.Model)
-			if s.agents != nil {
-				agentProfile, _ = s.agents.ResolveSystemAgent(canonicalID, pebblestore.AgentProfile{
-					Provider:        defaultSwarmPref.Provider,
-					Model:           defaultSwarmPref.Model,
-					Thinking:        defaultSwarmPref.Thinking,
-					AutoServiceTier: defaultSwarmPref.ServiceTier,
-					ContextMode:     defaultSwarmPref.ContextMode,
-				})
+		if taskModelOverride != "" && s.model != nil {
+			if overrideResolved, err := s.model.ResolvePreference(pebblestore.ModelPreference{Model: taskModelOverride}); err == nil && overrideResolved.Preference.Model != "" {
+				resolvedPref = overrideResolved.Preference
+				if s.agents != nil {
+					agentProfile, _ = s.agents.ResolveSystemAgent(canonicalID, pebblestore.AgentProfile{
+						Provider:        resolvedPref.Provider,
+						Model:           resolvedPref.Model,
+						Thinking:        resolvedPref.Thinking,
+						AutoServiceTier: resolvedPref.ServiceTier,
+						ContextMode:     resolvedPref.ContextMode,
+					})
+				}
+			}
+		}
+		if resolvedPref.Model == "" {
+			resolvedModel, profile, err := agentmodel.ResolveSystemAgent(s.model, s.agents, s.agentModelSettings, p.AccountScopeID, canonicalID, "")
+			if err == nil && resolvedModel.Preference.Model != "" {
+				resolvedPref = resolvedModel.Preference
+				agentProfile = profile
+			} else {
+				// Resolution failed or not configured!
+				// Must fall back to Swarm default AND warn in the task card!
+				resolvedPref = defaultSwarmPref
+				fallbackAlert = fmt.Sprintf("Configured model for agent %q could not be resolved (%v); fell back to Swarm default (%s/%s).", targetAgent, err, defaultSwarmPref.Provider, defaultSwarmPref.Model)
+				if s.agents != nil {
+					agentProfile, _ = s.agents.ResolveSystemAgent(canonicalID, pebblestore.AgentProfile{
+						Provider:        defaultSwarmPref.Provider,
+						Model:           defaultSwarmPref.Model,
+						Thinking:        defaultSwarmPref.Thinking,
+						AutoServiceTier: defaultSwarmPref.ServiceTier,
+						ContextMode:     defaultSwarmPref.ContextMode,
+					})
+				}
 			}
 		}
 	} else if strings.EqualFold(targetAgent, "swarm") {
 		// Swarm primary agent
-		resolvedPref = defaultSwarmPref
+		if taskModelOverride != "" && s.model != nil {
+			if overrideResolved, err := s.model.ResolvePreference(pebblestore.ModelPreference{Model: taskModelOverride}); err == nil && overrideResolved.Preference.Model != "" {
+				resolvedPref = overrideResolved.Preference
+			}
+		}
+		if resolvedPref.Model == "" {
+			resolvedPref = defaultSwarmPref
+		}
 		if s.agents != nil {
 			agentProfile, _ = s.agents.ResolveSystemAgent(agentruntime.SwarmAgentID, pebblestore.AgentProfile{
-				Provider:        defaultSwarmPref.Provider,
-				Model:           defaultSwarmPref.Model,
-				Thinking:        defaultSwarmPref.Thinking,
-				AutoServiceTier: defaultSwarmPref.ServiceTier,
-				ContextMode:     defaultSwarmPref.ContextMode,
+				Provider:        resolvedPref.Provider,
+				Model:           resolvedPref.Model,
+				Thinking:        resolvedPref.Thinking,
+				AutoServiceTier: resolvedPref.ServiceTier,
+				ContextMode:     resolvedPref.ContextMode,
 			})
 		}
 	} else {
@@ -1274,13 +1396,6 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		if planPref.Provider == "" || planPref.Model == "" {
-			planPref = pebblestore.ModelPreference{
-				Provider: "google",
-				Model:    "gemini-3.8-flash",
-				Thinking: "low",
-			}
-		}
 
 		// 2. Resolve primary Swarm ID and binding
 		var primarySwarmID string
@@ -1537,6 +1652,67 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// 4b. Task preview: POST /v3/projects/{id}/tasks:preview
+	if len(segments) == 2 && (segments[1] == "tasks:preview" || segments[1] == "tasks-preview") {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
+			return
+		}
+		if !s.requireScopeAny(w, r, "projects:read", "sessions:read") {
+			return
+		}
+		body, ok := readProjectMediaRequest(w, r)
+		if !ok {
+			return
+		}
+		var previewReq struct {
+			Prompt        string `json:"prompt"`
+			Title         string `json:"title"`
+			Intent        string `json:"intent"`
+			FeatureSize   string `json:"feature_size"`
+			Agent         string `json:"agent"`
+			OutcomeType   string `json:"outcome_type"`
+			Tier          string `json:"tier"`
+			Model         string `json:"model"`
+			WorkspacePath string `json:"workspace_path"`
+		}
+		_ = json.Unmarshal(body, &previewReq)
+		proj, _, _ := db.GetProject(p.AccountScopeID, projectID)
+		var projectContext string
+		var workspaces []pebblestore.ProjectWorkspaceRef
+		if proj != nil {
+			projectContext = proj.ProjectContext
+			workspaces = proj.Workspaces
+		}
+		prompt := strings.TrimSpace(previewReq.Prompt)
+		if prompt == "" {
+			prompt = strings.TrimSpace(previewReq.Title)
+		}
+		routed := pebblestore.RouteAndPlanProjectTaskWithOptions(pebblestore.TaskPlanOptions{
+			Prompt:             prompt,
+			RequestedWorkspace: previewReq.WorkspacePath,
+			ProjectContext:     projectContext,
+			Workspaces:         workspaces,
+			Intent:             previewReq.Intent,
+			FeatureSize:        previewReq.FeatureSize,
+			Agent:              previewReq.Agent,
+			OutcomeType:        previewReq.OutcomeType,
+			Tier:               previewReq.Tier,
+		})
+		dummyTask := &pebblestore.ProjectTaskRecord{
+			ProjectID:   projectID,
+			Agent:       routed.Agent,
+			Model:       previewReq.Model,
+			FeatureSize: previewReq.FeatureSize,
+		}
+		modelPrev := s.buildTaskModelPreview(p, dummyTask)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"task_plan":     routed,
+			"model_preview": modelPrev,
+		})
+		return
+	}
+
 	// 4. Project Tasks collection: /v3/projects/{id}/tasks
 	if len(segments) == 2 && segments[1] == "tasks" {
 		if r.Method == http.MethodGet {
@@ -1620,6 +1796,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				DeploySession       bool                                 `json:"deploy_session,omitempty"`
 				Prompt              string                               `json:"prompt,omitempty"`
 				Intent              string                               `json:"intent,omitempty"`
+				FeatureSize         string                               `json:"feature_size,omitempty"`
 				VideoType           string                               `json:"video_type,omitempty"`
 				EnhancePrompt       *bool                                `json:"enhance_prompt,omitempty"`
 				AspectRatio         string                               `json:"aspect_ratio,omitempty"`
@@ -1978,10 +2155,15 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				if req.VariantCount <= 0 && req.DeliverableCount > 0 {
 					req.VariantCount = req.DeliverableCount
 				}
-				routed = taskRouter.RouteTask(r.Context(), taskrouter.TaskRouteOptions{
+				var rErr error
+				routed, rErr = taskRouter.RouteTask(r.Context(), taskrouter.TaskRouteOptions{
 					Prompt:             prompt,
 					RequestedWorkspace: req.WorkspacePath,
 					Intent:             req.Intent,
+					FeatureSize:        req.FeatureSize,
+					Agent:              req.Agent,
+					OutcomeType:        req.OutcomeType,
+					Tier:               req.Tier,
 					VideoType:          req.VideoType,
 					EnhancePrompt:      enhancePrompt,
 					AspectRatio:        req.AspectRatio,
@@ -1992,6 +2174,10 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 					AttachedMedia:      req.AttachedMedia,
 					Project:            proj,
 				})
+				if rErr != nil {
+					writeError(w, http.StatusBadRequest, fmt.Errorf("task router: %w", rErr))
+					return
+				}
 				if isDirectVideo {
 					routed.Agent = "video"
 					routed.OutcomeType = "video_clip"
@@ -2029,6 +2215,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 						}
 						routed.Deliverables = delivs
 					}
+
 				}
 			}
 
@@ -2043,6 +2230,10 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			outcomeType := strings.TrimSpace(req.OutcomeType)
 			if outcomeType == "" {
 				outcomeType = routed.OutcomeType
+			}
+			tier := strings.TrimSpace(req.Tier)
+			if tier == "" {
+				tier = routed.Tier
 			}
 
 			isMediaAgent := agentName == "image" || agentName == "video" || agentName == "sound" || agentName == "audio" || outcomeType == "media_bundle" || outcomeType == "video_story" || outcomeType == "video_clip"
@@ -2155,6 +2346,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				PlanSummary:         planSummary,
 				FullPlanMarkdown:    fullPlanMarkdown,
 				Tier:                tier,
+				FeatureSize:         req.FeatureSize,
 				Revision:            revision,
 				LastError:           strings.TrimSpace(req.LastError),
 				AspectRatio:         aspectRatio,
@@ -2254,6 +2446,10 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 			}
+			if err := task.Validate(); err != nil {
+				writeError(w, http.StatusBadRequest, fmt.Errorf("invalid task definition: %w", err))
+				return
+			}
 
 			// Deploy execution: Task Program standalone execution, direct media generation, or V3 session
 			if task.TaskProgram != nil && (taskStatus == "in_progress" || req.AutoApprove) {
@@ -2286,7 +2482,8 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			})
 
 			writeJSON(w, http.StatusCreated, map[string]any{
-				"task": sanitizeProjectTaskForClient(&task),
+				"task":          sanitizeProjectTaskForClient(&task),
+				"model_preview": s.buildTaskModelPreview(p, &task),
 			})
 			return
 		}
@@ -2332,7 +2529,34 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				_ = db.PutProjectTask(p.AccountScopeID, task)
 			}
 			writeJSON(w, http.StatusOK, map[string]any{
-				"task": sanitizeProjectTaskForClient(task),
+				"task":          sanitizeProjectTaskForClient(task),
+				"model_preview": s.buildTaskModelPreview(p, task),
+			})
+			return
+		}
+
+		// 5b. Task model preview: GET /v3/projects/{id}/tasks/{taskId}/model-preview
+		if len(segments) == 4 && segments[1] == "tasks" && (segments[3] == "model-preview" || segments[3] == "preview") {
+			taskID := segments[2]
+			if r.Method != http.MethodGet {
+				writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
+				return
+			}
+			if !s.requireScopeAny(w, r, "projects:read", "sessions:read") {
+				return
+			}
+			task, found, err := db.GetProjectTask(p.AccountScopeID, projectID, taskID)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, err)
+				return
+			}
+			if !found || task == nil {
+				writeError(w, http.StatusNotFound, errors.New("project task not found"))
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{
+				"task":          task,
+				"model_preview": s.buildTaskModelPreview(p, task),
 			})
 			return
 		}
@@ -2514,7 +2738,22 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				if v, ok := patch["task_program_id"].(string); ok {
 					t.TaskProgramID = strings.TrimSpace(v)
 				}
-				return nil
+				if v, ok := patch["model"].(string); ok {
+					t.Model = strings.TrimSpace(v)
+				}
+				if v, ok := patch["feature_size"].(string); ok {
+					t.FeatureSize = strings.ToLower(strings.TrimSpace(v))
+					if t.FeatureSize == "big" && (t.Agent == "coder" || t.Agent == "plan" || t.Agent == "") {
+						t.Agent = "plan"
+						t.Tier = "complex"
+						t.OutcomeType = "plan_spec"
+					} else if t.FeatureSize == "small" && t.Agent == "plan" {
+						t.Agent = "coder"
+						t.Tier = "direct"
+						t.OutcomeType = "code_pr"
+					}
+				}
+				return t.Validate()
 			})
 			if err != nil {
 				if strings.Contains(err.Error(), "not found") {
@@ -2745,6 +2984,27 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+		existingTask, found, err := db.GetProjectTask(p.AccountScopeID, projectID, taskID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		if !found || existingTask == nil {
+			writeError(w, http.StatusNotFound, errors.New("task not found"))
+			return
+		}
+		if existingTask.Status == "in_progress" || existingTask.Status == "completed" {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"status":  "already_approved",
+				"message": "Task is already executing or completed",
+				"task":    existingTask,
+			})
+			return
+		}
+		if err := existingTask.Validate(); err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("task validation failed: %w", err))
+			return
+		}
 		updated, err := db.UpdateProjectTask(p.AccountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
 			if (t.Agent == "video" || t.Agent == "image") && t.Status != "pending_approval" && t.Status != "planning" {
 				return errors.New("media task is not awaiting approval")
@@ -2968,6 +3228,11 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		type refineReq struct {
 			Feedback     string `json:"feedback,omitempty"`
 			ErrorSummary string `json:"error_summary,omitempty"`
+			Agent        string `json:"agent,omitempty"`
+			FeatureSize  string `json:"feature_size,omitempty"`
+			OutcomeType  string `json:"outcome_type,omitempty"`
+			Tier         string `json:"tier,omitempty"`
+			Model        string `json:"model,omitempty"`
 		}
 		var rReq refineReq
 		if len(body) > 0 {
@@ -3002,6 +3267,31 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				t.LastError = ""
 			}
 
+			if rReq.Agent != "" {
+				t.Agent = strings.TrimSpace(rReq.Agent)
+			}
+			if rReq.FeatureSize != "" {
+				t.FeatureSize = strings.ToLower(strings.TrimSpace(rReq.FeatureSize))
+				if t.FeatureSize == "big" && (t.Agent == "coder" || t.Agent == "plan" || t.Agent == "") {
+					t.Agent = "plan"
+					t.Tier = "complex"
+					t.OutcomeType = "plan_spec"
+				} else if t.FeatureSize == "small" && t.Agent == "plan" {
+					t.Agent = "coder"
+					t.Tier = "direct"
+					t.OutcomeType = "code_pr"
+				}
+			}
+			if rReq.OutcomeType != "" {
+				t.OutcomeType = strings.TrimSpace(rReq.OutcomeType)
+			}
+			if rReq.Tier != "" {
+				t.Tier = strings.TrimSpace(rReq.Tier)
+			}
+			if rReq.Model != "" {
+				t.Model = strings.TrimSpace(rReq.Model)
+			}
+
 			seedPrompt := t.Description
 			if seedPrompt == "" {
 				seedPrompt = t.Title
@@ -3013,10 +3303,13 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				}
 				return res.Text, nil
 			})
-			routed := taskRouter.RefineTask(r.Context(), taskrouter.TaskRouteOptions{
+			routed, rErr := taskRouter.RefineTask(r.Context(), taskrouter.TaskRouteOptions{
 				Prompt:             seedPrompt,
 				RequestedWorkspace: t.WorkspacePath,
-				Intent:             t.OutcomeType,
+				Agent:              t.Agent,
+				FeatureSize:        t.FeatureSize,
+				OutcomeType:        t.OutcomeType,
+				Tier:               t.Tier,
 				AspectRatio:        t.AspectRatio,
 				VariantCount:       t.VariantCount,
 				ScenesCount:        len(t.Scenes),
@@ -3025,22 +3318,16 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				LastError:          t.LastError,
 				Project:            proj,
 			})
+			if rErr != nil {
+				return fmt.Errorf("refine task router: %w", rErr)
+			}
 
-			t.Agent = routed.Agent
-			t.OutcomeType = routed.OutcomeType
-			t.Description = routed.Mission
 			t.PipelineStages = routed.Stages
 			t.Deliverables = routed.Deliverables
 			t.WorkspacesInvolved = routed.WorkspacesInvolved
 			t.ContextPoolSummary = routed.ContextPoolSummary
 			t.PlanSummary = routed.PlanSummary
 			t.FullPlanMarkdown = routed.FullPlanMarkdown
-			t.Tier = routed.Tier
-			t.AspectRatio = routed.AspectRatio
-			t.VariantCount = routed.VariantCount
-			t.Scenes = routed.Scenes
-			t.Soundtrack = routed.Soundtrack
-			t.RouterAlert = routed.RouterAlert
 			t.Status = "pending_approval"
 			t.ActionNeeded = fmt.Sprintf("Review revised plan (Rev %d) and click Approve", t.Revision)
 			if fb != "" {
@@ -3048,7 +3335,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			} else if t.LastError != "" {
 				t.WhatDidDo = append(t.WhatDidDo, fmt.Sprintf("Re-planned error recovery strategy (Rev %d)", t.Revision))
 			}
-			return nil
+			return t.Validate()
 		})
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)

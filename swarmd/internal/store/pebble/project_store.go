@@ -265,6 +265,7 @@ type ProjectTaskRecord struct {
 	PlanSummary         string                   `json:"plan_summary,omitempty"`
 	FullPlanMarkdown    string                   `json:"full_plan_markdown,omitempty"`
 	Tier                string                   `json:"tier,omitempty"` // "direct" | "discovery" | "complex"
+	FeatureSize         string                   `json:"feature_size,omitempty"` // "small" | "big"
 	Revision            int                      `json:"revision,omitempty"`
 	LastError           string                   `json:"last_error,omitempty"`
 	FeedbackHistory     []string                 `json:"feedback_history,omitempty"`
@@ -307,15 +308,93 @@ func (t *ProjectTaskRecord) Validate() error {
 	if t.Tier == "" {
 		t.Tier = "direct"
 	}
+	agent := strings.ToLower(strings.TrimSpace(t.Agent))
+	if agent == "" {
+		agent = "coder"
+		t.Agent = agent
+	}
 	if t.OutcomeType == "" {
-		if t.Agent == "designer" || t.Agent == "video" || t.Agent == "image" || t.Agent == "sound" || t.Agent == "audio" {
-			t.OutcomeType = "media_bundle"
-		} else if strings.Contains(strings.ToLower(t.Title), "fix") || strings.Contains(strings.ToLower(t.Title), "bug") {
-			t.OutcomeType = "bug_patch"
-		} else if strings.Contains(strings.ToLower(t.Title), "audit") || strings.Contains(strings.ToLower(t.Title), "inspect") {
-			t.OutcomeType = "audit_report"
-		} else {
+		switch agent {
+		case "coder":
 			t.OutcomeType = "code_pr"
+		case "finder":
+			t.OutcomeType = "audit_report"
+		case "plan":
+			t.OutcomeType = "plan_spec"
+		case "image":
+			t.OutcomeType = "media_bundle"
+		case "video":
+			if t.VariantCount <= 1 && len(t.Scenes) <= 1 {
+				t.OutcomeType = "video_clip"
+			} else {
+				t.OutcomeType = "video_story"
+			}
+		case "sound", "audio":
+			t.OutcomeType = "audio_clip"
+		case "designer":
+			t.OutcomeType = "media_bundle"
+		case "swarm":
+			t.OutcomeType = "general"
+		default:
+			t.OutcomeType = "code_pr"
+		}
+	}
+
+	outcome := strings.ToLower(strings.TrimSpace(t.OutcomeType))
+
+	// Incoherent contract checks: reject incompatible combinations with actionable errors
+	switch agent {
+	case "coder":
+		if outcome != "code_pr" && outcome != "bug_patch" && outcome != "code" {
+			return fmt.Errorf("incoherent task contract: coder agent cannot have outcome %q", t.OutcomeType)
+		}
+		if t.Tier == "discovery" {
+			return fmt.Errorf("incoherent task contract: coder agent cannot have tier %q", t.Tier)
+		}
+		for _, d := range t.Deliverables {
+			k := strings.ToLower(d.Kind)
+			if k == "image" || k == "video" || k == "audio" {
+				return errors.New("incoherent task contract: coder agent cannot have media deliverables")
+			}
+		}
+	case "finder":
+		if outcome != "audit_report" && outcome != "audit" && outcome != "report" {
+			return fmt.Errorf("incoherent task contract: finder agent cannot have outcome %q", t.OutcomeType)
+		}
+		for _, d := range t.Deliverables {
+			k := strings.ToLower(d.Kind)
+			if k == "image" || k == "video" || k == "audio" {
+				return errors.New("incoherent task contract: finder agent cannot have media deliverables")
+			}
+		}
+	case "plan":
+		if outcome != "plan_spec" && outcome != "plan" && outcome != "general" {
+			return fmt.Errorf("incoherent task contract: plan agent cannot have outcome %q", t.OutcomeType)
+		}
+		t.Tier = "complex"
+		for _, d := range t.Deliverables {
+			k := strings.ToLower(d.Kind)
+			if k == "image" || k == "video" || k == "audio" {
+				return errors.New("incoherent task contract: plan agent cannot have media deliverables")
+			}
+		}
+	case "image":
+		if outcome != "media_bundle" && outcome != "image" {
+			return fmt.Errorf("incoherent task contract: image agent cannot have outcome %q", t.OutcomeType)
+		}
+	case "video":
+		if outcome != "video_clip" && outcome != "video_story" && outcome != "video" {
+			return fmt.Errorf("incoherent task contract: video agent cannot have outcome %q", t.OutcomeType)
+		}
+	case "sound", "audio":
+		if outcome != "audio_clip" && outcome != "sound" && outcome != "audio" {
+			return fmt.Errorf("incoherent task contract: sound agent cannot have outcome %q", t.OutcomeType)
+		}
+	}
+
+	if t.TaskProgram != nil {
+		if err := ValidateTaskProgramDefinition(t.TaskProgram); err != nil {
+			return fmt.Errorf("invalid task_program: %w", err)
 		}
 	}
 	if t.Operation != "" {
