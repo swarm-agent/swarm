@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/identity"
@@ -1003,11 +1004,11 @@ func TestManageProjects_PrincipalForwarding(t *testing.T) {
 
 	// 2. Call approve_task -> verifies Principal on Approve
 	_ = db.PutProjectTask("acct_fwd_123", &pebblestore.ProjectTaskRecord{
-		ID:          "task_fwd_approve",
-		ProjectID:   "proj_fwd_1",
-		Title:       "Task to approve",
-		Agent:       "coder",
-		Status:      "pending_approval",
+		ID:        "task_fwd_approve",
+		ProjectID: "proj_fwd_1",
+		Title:     "Task to approve",
+		Agent:     "coder",
+		Status:    "pending_approval",
 	})
 	outApprove, err := rt.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{
 		CallID: "call-fwd-approve",
@@ -1338,10 +1339,10 @@ func TestManageProjects_ApproveTaskGuardsAndStaleRevisions(t *testing.T) {
 
 	// 1. Rejected task approval fails
 	_ = db.PutProjectTask("acct_app_guard", &pebblestore.ProjectTaskRecord{
-		ID:          "task_rejected_1",
-		ProjectID:   "proj_app_guard",
-		Title:       "Rejected Task",
-		Status:      "rejected",
+		ID:        "task_rejected_1",
+		ProjectID: "proj_app_guard",
+		Title:     "Rejected Task",
+		Status:    "rejected",
 	})
 	_, err := rt.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{
 		CallID: "call-app-rej",
@@ -1358,10 +1359,10 @@ func TestManageProjects_ApproveTaskGuardsAndStaleRevisions(t *testing.T) {
 
 	// 2. Stale plan definition revision fails
 	_ = db.PutProjectTask("acct_app_guard", &pebblestore.ProjectTaskRecord{
-		ID:          "task_stale_plan",
-		ProjectID:   "proj_app_guard",
-		Title:       "Stale Plan Task",
-		Status:      "pending_approval",
+		ID:        "task_stale_plan",
+		ProjectID: "proj_app_guard",
+		Title:     "Stale Plan Task",
+		Status:    "pending_approval",
 		PlanBinding: &pebblestore.ProjectTaskPlanBinding{
 			PlanID:             "plan-stale",
 			DefinitionRevision: 2,
@@ -1382,10 +1383,10 @@ func TestManageProjects_ApproveTaskGuardsAndStaleRevisions(t *testing.T) {
 
 	// 3. Normal task approval succeeds and transitions to in_progress with Swarm agent
 	_ = db.PutProjectTask("acct_app_guard", &pebblestore.ProjectTaskRecord{
-		ID:          "task_valid_plan",
-		ProjectID:   "proj_app_guard",
-		Title:       "Valid Plan Task",
-		Status:      "pending_approval",
+		ID:        "task_valid_plan",
+		ProjectID: "proj_app_guard",
+		Title:     "Valid Plan Task",
+		Status:    "pending_approval",
 		PlanBinding: &pebblestore.ProjectTaskPlanBinding{
 			PlanID:             "plan-valid",
 			DefinitionRevision: 1,

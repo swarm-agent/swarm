@@ -21,6 +21,7 @@ import (
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	taskrouter "swarm/packages/swarmd/internal/taskrouter"
+	"swarm/packages/swarmd/internal/tool"
 	"swarm/packages/swarmd/internal/videogen"
 	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
@@ -3306,7 +3307,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			if _, err := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
 				SessionID: updated.SessionID, UserID: p.UserID, AccountScopeID: p.AccountScopeID,
 				ClientRequestID: key, IdempotencyKey: key, PayloadHash: key, RequestHash: key,
-				Kind: sessionruntime.SessionMutationSavePlan, Plan: &plan,
+				Kind: sessionruntime.SessionMutationSavePlan, PlanSave: &pebblestore.V3PlanSaveMutation{Plan: plan},
 			}); err != nil {
 				writeError(w, http.StatusInternalServerError, err)
 				return

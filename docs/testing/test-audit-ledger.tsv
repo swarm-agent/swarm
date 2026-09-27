@@ -6655,3 +6655,11 @@ ta-codex-replay-validation	go-test	swarmd/internal/provider/codex/media_replay_b
 # 2026-09-27 Snapshot equivalent video pricing reinventory: web/src/features/desktop/orchestrate/videoTaskSettings.spec.ts SHA256 d0e60e06525f2ab19fbca326fd69c7f2b6ec6ba67dbbcc985c162ea6e89df43d; approximate per-second display, omitted selector/duration, estimate multiplication and conflicting/invalid/mismatched equivalent rejection assertions added. Supersedes prior digest; execution and independent review pending; not promoted to curated runner.
 # 2026-09-28 precommit fixture hygiene reinventory: operations_test.go splits a synthetic credential literal without changing its runtime value or rejection assertion. Authority: pebble.VideoProvenance.Validate; requirement: credential versions reject secret-shaped values. Source inspection only; Go test not run, independent P1/P2 unreviewed, no curated promotion or passing runtime claim. Supersedes any prior digest for this file.
 # SHA256 0969d7efdcf1466cb5455376d0f890ba6bf602b9d22f5df0382f8fa9702938b9 swarmd/internal/videogen/operations_test.go
+# 2026-09-27 Compilation repair reinventory: syntax/import/fixture type corrections only; assertions retained. Supersedes prior digests for the following files; no new independent review verdict or full matrix execution claimed. Integrated affected-package compile and curated fast gate passed.
+# SHA256 191b5069ef172ecf32c0f935317a6e4e1510619187db3b9820a3c22bec2ee910 swarmd/internal/api/desktop_bootstrap_test.go
+# SHA256 c1de5936205ab9c7072fcc5d0f12f9026c595ca7cf95805d39e1783f02b389f2 swarmd/internal/api/integration_sessions_test.go
+# SHA256 d5d1ae8d5dd86469be6154e7296f310e98f81f4639b50c16f9ceec8e97af349b swarmd/internal/api/project_task_repair_matrix_test.go
+# SHA256 b276f559343c6de1fa7a869ee503f806ee33f8f5b4cd7b3589b4b123dddb528f swarmd/internal/api/projects_realtime_test.go
+# SHA256 c7d957cdaf0869ab21a177724183aa06992a959988227ed1a1c010c436746c70 swarmd/internal/api/sessions_v3_compact_test.go
+# SHA256 e8b33bcc746048fd219aaa1ca36ff5a1be37b1f4cfa98a2eae3ab8d845fde7a4 swarmd/internal/session/plan_task_acceptance_test.go
+# SHA256 1b1e91372c34d80f14667c39af7bc9660a31062d40c9713d88a1ab6711e1e73c swarmd/internal/tool/runtime_manage_projects_test.go

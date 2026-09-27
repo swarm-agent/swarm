@@ -2240,10 +2240,7 @@ func (e *sessionV3Executor) coordinatorTaskProgramResponse(ctx context.Context, 
 		})
 	}
 	return sessionV3AssistantResponse{
-		AssistantMessage: pebblestore.MessageSnapshot{
-			Role:    "assistant",
-			Content: fmt.Sprintf("Task Program %s execution %s.", taskProgramID, statusStr),
-		},
+		Content: fmt.Sprintf("Task Program %s execution %s.", taskProgramID, statusStr),
 	}, nil
 }
 
