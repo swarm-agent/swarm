@@ -1601,6 +1601,7 @@ func TestProjectTaskProgram_SingleTaskLifecycleAndHydration(t *testing.T) {
 	ss := store.NewSessionStore(db)
 	s := &Server{
 		sessions: sessionruntime.NewService(ss, nil),
+		runner:   &testMockRunService{},
 	}
 
 	accountID := "acct_single_tp"

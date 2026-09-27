@@ -675,9 +675,6 @@ func isDirectMediaTask(task *pebblestore.ProjectTaskRecord) bool {
 // deployProjectTaskExecution handles direct media generation for images/videos or
 // creates and enqueues a canonical V3 session with compiled agent profile and RunIntent for agent tasks.
 func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblestore.ProjectRecord, task *pebblestore.ProjectTaskRecord, taskStatus string, prompt string) error {
-	if p.Type == "" && p.UserID != "" {
-		p.Type = identity.PrincipalTypeUser
-	}
 	if !p.Valid() || p.Type != identity.PrincipalTypeUser || strings.TrimSpace(p.UserID) == "" || strings.TrimSpace(p.AccountScopeID) == "" {
 		return errors.New("user id is required")
 	}
@@ -1851,6 +1848,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			var req struct {
+				ID                  string                               `json:"id,omitempty"`
 				Title               string                               `json:"title"`
 				Description         string                               `json:"description,omitempty"`
 				Status              string                               `json:"status,omitempty"`
