@@ -348,6 +348,18 @@ IMPORTANT TASK PROPERTIES:
 		deliverables = []pebblestore.ProjectTaskDeliverable{
 			{ID: "deliv_audit", Title: "Comprehensive Audit Report", Kind: "report", Status: "pending"},
 		}
+	case "sound", "audio":
+		deliverables = []pebblestore.ProjectTaskDeliverable{
+			{
+				ID:          "deliv_snd",
+				Title:       fmt.Sprintf("%s (Audio Clip)", output.Title),
+				Kind:        "audio",
+				Status:      "pending",
+				Thumbnail:   "sound",
+				Duration:    "30s",
+				Description: fmt.Sprintf("Autonomous audio soundtrack: %s", output.Title),
+			},
+		}
 	case "plan":
 		deliverables = []pebblestore.ProjectTaskDeliverable{
 			{ID: "deliv_plan", Title: "Structured Execution Plan", Kind: "report", Status: "pending"},

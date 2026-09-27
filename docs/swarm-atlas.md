@@ -3187,3 +3187,5 @@ no scratch/logs or private identifiers were added to tracked documentation.
 
 
 
+
+- 2026-09-27 — Project task POST/PATCH media envelopes now use `readProjectMediaRequest` (`swarmd/internal/api/projects_media_request.go`) instead of silently truncating at 1 MiB. Default envelope allowance is 256 MiB, including base64 overhead, configurable via positive integer `SWARM_PROJECT_MEDIA_MAX_REQUEST_BYTES` in the daemon environment. This transport allowance does not change provider image limits. Oversize requests return 413 with adjustment guidance before task mutation; invalid configuration returns 500. `TestProjectMediaRequest` exercises preservation above 1 MiB, configurable/exact limits, rejection without partial bytes, and invalid configuration; added but not executed. Provider-backed and full-handler evidence remains outstanding.

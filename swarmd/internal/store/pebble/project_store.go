@@ -199,16 +199,18 @@ func (s *SessionStore) UpdateProject(accountScopeID, id string, mutate func(*Pro
 
 // ProjectTaskDeliverable represents an artifact, video, code diff, or report produced by a task.
 type ProjectTaskDeliverable struct {
-	ID          string `json:"id"`
-	Title       string `json:"title"`
-	Kind        string `json:"kind"`   // "video" | "code_diff" | "artifact" | "report"
-	Status      string `json:"status"` // "ready" | "accepted" | "in_progress"
-	Duration    string `json:"duration,omitempty"`
-	Thumbnail   string `json:"thumbnail,omitempty"`
-	Description string `json:"description,omitempty"`
-	ArtifactRef string `json:"artifact_ref,omitempty"`
-	CodeDiff    string `json:"code_diff,omitempty"`
-	MediaURL    string `json:"media_url,omitempty"`
+	ID                  string `json:"id"`
+	Title               string `json:"title"`
+	Kind                string `json:"kind"`   // "video" | "code_diff" | "artifact" | "report"
+	Status              string `json:"status"` // "ready" | "accepted" | "in_progress"
+	Duration            string `json:"duration,omitempty"`
+	Thumbnail           string `json:"thumbnail,omitempty"`
+	Description         string `json:"description,omitempty"`
+	ArtifactRef         string `json:"artifact_ref,omitempty"`
+	CodeDiff            string `json:"code_diff,omitempty"`
+	MediaURL            string `json:"media_url,omitempty"`
+	ParentDeliverableID string `json:"parent_deliverable_id,omitempty"`
+	SourceMediaRef      string `json:"source_media_ref,omitempty"`
 }
 
 // ProjectTaskScene represents a single scene in a compiled multi-scene video story.

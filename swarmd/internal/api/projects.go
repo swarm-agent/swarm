@@ -1537,9 +1537,8 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			if !s.requireScopeAny(w, r, "projects:write", "sessions:write") {
 				return
 			}
-			body, err := io.ReadAll(io.LimitReader(r.Body, 1024*1024))
-			if err != nil {
-				writeError(w, http.StatusBadRequest, errors.New("cannot read request body"))
+			body, ok := readProjectMediaRequest(w, r)
+			if !ok {
 				return
 			}
 			var req struct {
@@ -1604,11 +1603,64 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				prompt = strings.TrimSpace(req.Title)
 			}
 
-			isDirectVideo := req.Intent == "video" && (req.VideoType == "single" || req.ScenesCount == 1 || (req.VideoType == "" && req.ScenesCount <= 1))
+			isDirectVideo := req.Intent == "video" && (req.VideoType == "single" || (req.VideoType == "" && req.ScenesCount <= 1 && req.VariantCount <= 1))
+			isDirectSound := req.Intent == "sound" || req.Intent == "audio"
 			enhancePrompt := req.EnhancePrompt != nil && *req.EnhancePrompt
 
 			var routed pebblestore.TaskRouteResult
-			if isDirectVideo && !enhancePrompt {
+			if isDirectSound {
+				soundModel := strings.TrimSpace(req.Model)
+				if soundModel == "" && s.uiSettings != nil && strings.TrimSpace(p.AccountScopeID) != "" {
+					if uiSet, err := s.uiSettings.GetForAccount(p.AccountScopeID); err == nil {
+						if def := strings.TrimSpace(uiSet.Tools.Audio.DefaultModel); def != "" {
+							soundModel = def
+						}
+					}
+				}
+				if soundModel == "" {
+					soundModel = "lyria-3.5"
+				}
+				durSeconds := req.DurationSeconds
+				if durSeconds <= 0 {
+					durSeconds = 30
+				}
+				cleanTitle := prompt
+				if len(cleanTitle) > 60 {
+					cleanTitle = cleanTitle[:60]
+					if idx := strings.LastIndex(cleanTitle, " "); idx > 30 {
+						cleanTitle = cleanTitle[:idx]
+					}
+				}
+				cleanTitle = strings.TrimSpace(cleanTitle)
+				if len(cleanTitle) > 0 {
+					cleanTitle = strings.ToUpper(cleanTitle[:1]) + cleanTitle[1:]
+				} else {
+					cleanTitle = "Audio Soundtrack"
+				}
+				taskTitle := fmt.Sprintf("%s (%ds Audio Clip)", cleanTitle, durSeconds)
+				routed = pebblestore.TaskRouteResult{
+					Title:        taskTitle,
+					Agent:        "sound",
+					OutcomeType:  "audio_clip",
+					Tier:         "direct",
+					VariantCount: 1,
+					Stages:       []string{"Audio Parameter Configuration", "Model Sound Synthesis"},
+					PlanSummary:  fmt.Sprintf("1. Configure %ds audio soundtrack parameters\n2. Synthesize with %s\n3. Deliver verified soundtrack clip", durSeconds, soundModel),
+					FullPlanMarkdown: fmt.Sprintf("### Task Mission: %s\n\n- **Agent**: `@sound`\n- **Model**: `%s`\n- **Duration**: `%ds`\n\n#### Prompt\n%s\n", taskTitle, soundModel, durSeconds, prompt),
+					Deliverables: []pebblestore.ProjectTaskDeliverable{
+						{
+							ID:          "deliv_snd",
+							Title:       taskTitle,
+							Kind:        "audio",
+							Status:      "pending",
+							Thumbnail:   "sound",
+							Duration:    fmt.Sprintf("%ds", durSeconds),
+							Description: fmt.Sprintf("Generated %ds audio soundtrack using %s: %s", durSeconds, soundModel, prompt),
+						},
+					},
+					AttachedMedia: req.AttachedMedia,
+				}
+			} else if isDirectVideo && !enhancePrompt {
 				ar := strings.TrimSpace(req.AspectRatio)
 				if ar == "" {
 					ar = "16:9"
@@ -1937,9 +1989,8 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			if !s.requireScopeAny(w, r, "projects:write", "sessions:write") {
 				return
 			}
-			body, err := io.ReadAll(io.LimitReader(r.Body, 1024*1024))
-			if err != nil {
-				writeError(w, http.StatusBadRequest, errors.New("cannot read request body"))
+			body, ok := readProjectMediaRequest(w, r)
+			if !ok {
 				return
 			}
 			var patch map[string]any

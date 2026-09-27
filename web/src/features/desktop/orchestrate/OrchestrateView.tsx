@@ -397,6 +397,9 @@ function deliverableToMediaItem(
     iterationGroupTitle: parentTask?.title,
     dimensions: d.videoAspect || '1:1',
     directUrl: d.previewUrl || d.mediaUrl || '',
+    parentId: d.parentDeliverableId || (d as any).parent_deliverable_id,
+    sourceMediaRef: d.sourceMediaRef || (d as any).source_media_ref,
+    model: parentTask?.model,
     artifact: {
       artifactId: d.id,
       sessionId: parentTask?.sessionId || '',
@@ -2653,6 +2656,8 @@ export function OrchestrateView({
             prompt: t.subtitle || t.title,
             createdAt: d.created_at ? (isNaN(new Date(d.created_at).getTime()) ? new Date().toISOString() : new Date(d.created_at).toISOString()) : (d.createdAt || new Date().toISOString()),
             author: t.worker_name || 'Orchestrator',
+            parentDeliverableId: d.parent_deliverable_id || d.parentDeliverableId,
+            sourceMediaRef: d.source_media_ref || d.sourceMediaRef,
           })),
           attachedMedia: t.attached_media,
           taskProgram: t.task_program || t.taskProgram,
@@ -2990,9 +2995,10 @@ export function OrchestrateView({
     scenesCount?: number
     soundtrack?: string
     autoDeploy?: boolean
+    model?: string
   }) => {
     if (!selectedProject?.id) return
-    const { item, action, deltaPrompt, variantCount, scenesCount, soundtrack, autoDeploy = true } = options
+    const { item, action, deltaPrompt, variantCount, scenesCount, soundtrack, autoDeploy = true, model } = options
 
     const rawKind = (item as any).kind || (item as any).type || 'image'
     const isVideo = rawKind === 'video' || (item as any).mediaType?.startsWith('video/')
@@ -3054,11 +3060,9 @@ export function OrchestrateView({
     if (autoDeploy) {
       // 1-Click Fast Autonomous Execution: route and deploy immediately!
       setIsDeployingTask(true)
-      setActiveMediaViewerItem(null)
-      setShowFullMediaCenter(false)
 
       try {
-        const finalVariantCount = targetIntent === 'image' ? (action === 'fine_tune' ? 1 : (variantCount || 5)) : undefined
+        const finalVariantCount = targetIntent === 'image' ? (action === 'fine_tune' ? 1 : (variantCount || 1)) : undefined
         const finalScenesCount = targetIntent === 'video' ? (scenesCount || 2) : undefined
         const finalSoundtrack = targetIntent === 'video' ? (soundtrack || undefined) : undefined
 
@@ -3073,16 +3077,16 @@ export function OrchestrateView({
             variant_count: finalVariantCount,
             scenes_count: finalScenesCount,
             soundtrack: finalSoundtrack,
-            model: targetIntent === 'image' ? (selectedImageModel || undefined) : targetIntent === 'video' ? (selectedVideoModel || undefined) : undefined,
+            /* model: targetIntent === 'image' ? (selectedImageModel || undefined) */
+            model: model || (targetIntent === 'image' ? (selectedImageModel || undefined) : targetIntent === 'video' ? (selectedVideoModel || undefined) : undefined),
             auto_approve: true,
             deploy_session: true,
             attached_media: [mediaRef],
           }),
         })
-
         if (res?.task) {
           fetchProjectTasks(selectedProject.id)
-          if (res.task.session_id) {
+          if (!activeMediaViewerItem && !showFullMediaCenter && res.task.session_id) {
             setActiveSessionId(res.task.session_id)
             setActiveTaskId(res.task.id)
           }
@@ -6703,6 +6707,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
         <MediaViewerModal
           item={activeMediaViewerItem}
           items={allMediaLibraryItems}
+          isGenerating={tasks.some((t) => t.status === 'in_progress' || t.status === 'running')}
           onClose={() => setActiveMediaViewerItem(null)}
           onSelect={(item) => setActiveMediaViewerItem(item)}
           onOpenSession={(sessionId) => {
@@ -6729,37 +6734,41 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
               ])
             }
           }}
-          onFineTune={(item, editPrompt, autoDeploy) => {
+          onFineTune={(item, editPrompt, autoDeploy, model) => {
             void handleQuickRouteMedia({
               item,
               action: 'fine_tune',
               deltaPrompt: editPrompt,
               autoDeploy,
+              model,
             })
           }}
-          onIterate={(item, variantCount, stylePrompt, autoDeploy) => {
+          onIterate={(item, variantCount, stylePrompt, autoDeploy, model) => {
             void handleQuickRouteMedia({
               item,
               action: 'iterate',
               variantCount,
               deltaPrompt: stylePrompt,
               autoDeploy,
+              model,
             })
           }}
-          onGenerateVideo={(item, prompt, autoDeploy) => {
+          onGenerateVideo={(item, prompt, autoDeploy, model) => {
             void handleQuickRouteMedia({
               item,
               action: 'to_video',
               deltaPrompt: prompt,
               autoDeploy,
+              model,
             })
           }}
-          onContinueVideo={(item, prompt, autoDeploy) => {
+          onContinueVideo={(item, prompt, autoDeploy, model) => {
             void handleQuickRouteMedia({
               item,
               action: 'next_scene',
               deltaPrompt: prompt,
               autoDeploy,
+              model,
             })
           }}
           onIterateSwarm={(item) => {
@@ -6819,37 +6828,41 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                 })
               }}
               taggedMediaIds={new Set(taggedMedia.map((t) => t.id))}
-              onFineTune={(item, editPrompt, autoDeploy) => {
+              onFineTune={(item, editPrompt, autoDeploy, model) => {
                 void handleQuickRouteMedia({
                   item,
                   action: 'fine_tune',
                   deltaPrompt: editPrompt,
                   autoDeploy,
+                  model,
                 })
               }}
-              onIterate={(item, variantCount, stylePrompt, autoDeploy) => {
+              onIterate={(item, variantCount, stylePrompt, autoDeploy, model) => {
                 void handleQuickRouteMedia({
                   item,
                   action: 'iterate',
                   variantCount,
                   deltaPrompt: stylePrompt,
                   autoDeploy,
+                  model,
                 })
               }}
-              onGenerateVideo={(item, prompt, autoDeploy) => {
+              onGenerateVideo={(item, prompt, autoDeploy, model) => {
                 void handleQuickRouteMedia({
                   item,
                   action: 'to_video',
                   deltaPrompt: prompt,
                   autoDeploy,
+                  model,
                 })
               }}
-              onContinueVideo={(item, prompt, autoDeploy) => {
+              onContinueVideo={(item, prompt, autoDeploy, model) => {
                 void handleQuickRouteMedia({
                   item,
                   action: 'next_scene',
                   deltaPrompt: prompt,
                   autoDeploy,
+                  model,
                 })
               }}
               onIterateSwarm={(item) => {

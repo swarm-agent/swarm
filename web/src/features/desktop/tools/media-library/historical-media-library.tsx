@@ -43,10 +43,10 @@ interface HistoricalMediaLibraryProps {
   onTagMedia?: (item: MediaLibraryItem) => void
   taggedMediaIds?: Set<string>
   onIterateSwarm?: (item: MediaLibraryItem) => void
-  onFineTune?: (item: MediaLibraryItem, editPrompt: string, autoDeploy: boolean) => void
-  onIterate?: (item: MediaLibraryItem, variantCount: number, stylePrompt: string, autoDeploy: boolean) => void
-  onGenerateVideo?: (item: MediaLibraryItem, prompt: string, autoDeploy: boolean) => void
-  onContinueVideo?: (item: MediaLibraryItem, prompt: string, autoDeploy: boolean) => void
+  onFineTune?: (item: MediaLibraryItem, editPrompt: string, autoDeploy: boolean, model?: string) => void
+  onIterate?: (item: MediaLibraryItem, variantCount: number, stylePrompt: string, autoDeploy: boolean, model?: string) => void
+  onGenerateVideo?: (item: MediaLibraryItem, prompt: string, autoDeploy: boolean, model?: string) => void
+  onContinueVideo?: (item: MediaLibraryItem, prompt: string, autoDeploy: boolean, model?: string) => void
   extraItems?: readonly MediaLibraryItem[]
 }
 

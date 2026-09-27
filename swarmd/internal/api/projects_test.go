@@ -635,6 +635,12 @@ func TestDirectMediaTaskLifecycle(t *testing.T) {
 	if ftDeliv["status"] != "ready" {
 		t.Fatalf("expected fine-tune deliverable ready, got %v", ftDeliv["status"])
 	}
+	if ftDeliv["parent_deliverable_id"] != "avatar_orig" {
+		t.Fatalf("expected parent_deliverable_id 'avatar_orig', got %v", ftDeliv["parent_deliverable_id"])
+	}
+	if ftDeliv["source_media_ref"] != "avatar_orig" {
+		t.Fatalf("expected source_media_ref 'avatar_orig', got %v", ftDeliv["source_media_ref"])
+	}
 	ftWhatDidDo := completedFineTune["what_did_do"].([]any)
 	hasBaseRef := false
 	for _, step := range ftWhatDidDo {
@@ -877,7 +883,7 @@ func TestDirectMediaTaskLifecycle(t *testing.T) {
 	if directSVTask["outcome_type"] != "video_clip" {
 		t.Fatalf("expected outcome_type video_clip, got %v", directSVTask["outcome_type"])
 	}
-	if directSVTask["worktree_branch"] != "" || directSVTask["worktree_name"] != "" {
+	if (directSVTask["worktree_branch"] != nil && directSVTask["worktree_branch"] != "") || (directSVTask["worktree_name"] != nil && directSVTask["worktree_name"] != "") {
 		t.Fatalf("expected no worktree for single video direct task, got branch=%v name=%v", directSVTask["worktree_branch"], directSVTask["worktree_name"])
 	}
 	if directSVTask["session_id"] != "" && directSVTask["session_id"] != nil {
@@ -956,7 +962,7 @@ func TestDirectMediaTaskLifecycle(t *testing.T) {
 	if enhTask["outcome_type"] != "video_clip" {
 		t.Fatalf("expected outcome_type video_clip for enhanced single video, got %v", enhTask["outcome_type"])
 	}
-	if enhTask["worktree_branch"] != "" || enhTask["worktree_name"] != "" {
+	if (enhTask["worktree_branch"] != nil && enhTask["worktree_branch"] != "") || (enhTask["worktree_name"] != nil && enhTask["worktree_name"] != "") {
 		t.Fatalf("expected no worktree for enhanced single video, got branch=%v name=%v", enhTask["worktree_branch"], enhTask["worktree_name"])
 	}
 	if enhScenes, ok := enhTask["scenes"].([]any); ok && len(enhScenes) > 1 {
@@ -996,15 +1002,22 @@ func TestDirectMediaTaskLifecycle(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200 approving 2k image task, got %d: %s", w.Code, w.Body.String())
 	}
-	time.Sleep(150 * time.Millisecond)
-	w = call(http.MethodGet, "/"+projID+"/tasks", "", []string{"sessions:read"})
-	var checkTasksResp map[string]any
-	_ = json.Unmarshal(w.Body.Bytes(), &checkTasksResp)
 	var completedImgTask map[string]any
-	for _, item := range checkTasksResp["tasks"].([]any) {
-		tm := item.(map[string]any)
-		if tm["id"] == img2KID && tm["status"] == "needs_review" {
-			completedImgTask = tm
+	for wait := 0; wait < 30; wait++ {
+		time.Sleep(100 * time.Millisecond)
+		w = call(http.MethodGet, "/"+projID+"/tasks", "", []string{"sessions:read"})
+		var checkTasksResp map[string]any
+		_ = json.Unmarshal(w.Body.Bytes(), &checkTasksResp)
+		if tasksList, ok := checkTasksResp["tasks"].([]any); ok {
+			for _, item := range tasksList {
+				tm := item.(map[string]any)
+				if tm["id"] == img2KID && tm["status"] == "needs_review" {
+					completedImgTask = tm
+					break
+				}
+			}
+		}
+		if completedImgTask != nil {
 			break
 		}
 	}

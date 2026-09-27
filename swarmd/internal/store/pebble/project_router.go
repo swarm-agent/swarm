@@ -211,6 +211,10 @@ func RouteAndPlanProjectTaskWithOptions(opts TaskPlanOptions) TaskRouteResult {
 				outcomeType = "video_story"
 			}
 		}
+	case intent == "sound" || intent == "audio" || (intent == "" && (strings.Contains(promptLower, "soundtrack") || strings.Contains(promptLower, "audio") || strings.Contains(promptLower, "music") || strings.Contains(promptLower, "sound clip"))):
+		agent = "sound"
+		tier = "direct"
+		outcomeType = "audio_clip"
 	case intent == "audit" || (intent == "" && (strings.Contains(promptLower, "audit") || strings.Contains(promptLower, "investigate") || strings.Contains(promptLower, "inspect") || strings.Contains(promptLower, "diagnose"))):
 		agent = "finder"
 		tier = "discovery"
@@ -355,6 +359,19 @@ func RouteAndPlanProjectTaskWithOptions(opts TaskPlanOptions) TaskRouteResult {
 		stages = []string{"Code Implementation", "Verification & Pull Request"}
 		deliverables = []ProjectTaskDeliverable{
 			{ID: "deliv_code", Title: "Code PR & Verified Tests", Kind: "pr", Status: "pending", Description: "Pull request with tested code modifications"},
+		}
+	case "sound", "audio":
+		stages = []string{"Audio Composition", "Synthesis Pipeline"}
+		deliverables = []ProjectTaskDeliverable{
+			{
+				ID:          "deliv_snd",
+				Title:       fmt.Sprintf("%s (Audio Clip)", title),
+				Kind:        "audio",
+				Status:      "pending",
+				Thumbnail:   "sound",
+				Duration:    "30s",
+				Description: fmt.Sprintf("Autonomous audio soundtrack: %s", prompt),
+			},
 		}
 	case "plan":
 		stages = []string{"Plan & Architecture Formulation", "Plan Review & Checkpoint Execution"}

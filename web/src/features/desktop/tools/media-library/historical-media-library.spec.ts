@@ -77,6 +77,32 @@ test('MediaViewerModal provides rich playback and inspection for all media types
   assert.match(source, /Iteration Group/)
 })
 
+test('MediaViewerModal provides clean studio header, persistent bottom AI dock, model selector, and lineage chain', () => {
+  const source = readFileSync(modalSourceUrl, 'utf8')
+
+  // Clean studio header
+  assert.match(source, /border-b border-white\/10/)
+  assert.match(source, /item\.formattedDate/)
+
+  // Persistent Bottom AI Dock
+  assert.match(source, /Persistent Bottom AI Studio Dock/)
+  assert.match(source, /Edit Image/)
+  assert.match(source, /Turn into Video/)
+  assert.match(source, /Next Scene/)
+  assert.match(source, /Auto-Revise/)
+
+  // Model Selector & Default Upgrade
+  assert.match(source, /Select AI model/)
+  assert.match(source, /Set Default/)
+  assert.match(source, /saveImageDefaultModel/)
+  assert.match(source, /saveVideoDefaultModel/)
+
+  // Lineage & History in right sidebar
+  assert.match(source, /Lineage & History/)
+  assert.match(source, /lineageChain/)
+  assert.match(source, /Active Asset|Current Asset|Initial Keyframe/)
+})
+
 test('MediaGridView renders desktop file-manager style thumbnails with type badges and date headers', () => {
   const source = readFileSync(gridSourceUrl, 'utf8')
 
@@ -133,4 +159,14 @@ test('DesktopAppPage has Media navigation button below Studio in sidebar', () =>
   const environmentsIdx = appPageSource.indexOf('aria-label="Open Environments"')
   assert.ok(studioIdx !== -1 && mediaIdx !== -1 && environmentsIdx !== -1)
   assert.ok(studioIdx < mediaIdx && mediaIdx < environmentsIdx, 'expected Media to be below Studio and above Environments')
+})
+
+test('MediaViewerModal lineage chain accurately links parent keyframes and derived child revisions/videos', () => {
+  const source = readFileSync(modalSourceUrl, 'utf8')
+  // Verifies parent/child lineage traversal logic
+  assert.match(source, /item\.parentId \|\| item\.sourceMediaRef/)
+  assert.match(source, /role:\s*'parent'/)
+  assert.match(source, /role:\s*'current'/)
+  assert.match(source, /role:\s*'child'/)
+  assert.match(source, /child\.kind === 'video' \? 'Video Continuation' : 'Derived Revision'/)
 })

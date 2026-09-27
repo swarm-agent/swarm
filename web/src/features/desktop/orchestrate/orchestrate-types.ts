@@ -127,6 +127,8 @@ export interface MediaDeliverable {
   author: string
   prompt?: string
   metrics?: { views?: string; tokens?: string; renderTime?: string }
+  parentDeliverableId?: string
+  sourceMediaRef?: string
 }
 
 export interface TaskStep {

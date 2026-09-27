@@ -164,6 +164,9 @@ export function toMediaLibraryItem(entry: DesktopV3ArtifactCatalogEntry, referen
     totalVariants,
     dimensions: extractDimensions(entry),
     directUrl,
+    parentId: (entry as any).parentId || (entry as any).lineage?.sourceVariantId || (entry as any).lineage?.sourceArtifactId,
+    sourceMediaRef: (entry as any).sourceMediaRef || (entry as any).lineage?.sourceArtifactId,
+    model: (entry as any).model || (entry as any).artifactModel || (entry as any).metadata?.model,
   }
 }
 

@@ -34,6 +34,9 @@ export interface MediaLibraryItem {
   durationMs?: number
   sizeBytes?: number
   directUrl: string
+  parentId?: string
+  sourceMediaRef?: string
+  model?: string
 }
 
 export interface HistoricalDateBucket {

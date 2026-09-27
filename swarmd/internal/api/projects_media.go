@@ -43,12 +43,21 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 		}
 
 		var sourceTitle string
+		var sourceMediaID string
+		var sourceImage *imagegen.ManagedImageSource
 		for _, m := range task.AttachedMedia {
 			if m.Kind == "image" || strings.HasPrefix(strings.ToLower(m.MediaType), "image/") {
 				if m.Title != "" {
 					sourceTitle = m.Title
 				} else if m.Filename != "" {
 					sourceTitle = m.Filename
+				}
+				sourceMediaID = m.ID
+				if bytes, mType, err := resolveSourceImageBytes(m); err == nil && len(bytes) > 0 {
+					sourceImage = &imagegen.ManagedImageSource{
+						Bytes:     bytes,
+						MediaType: mType,
+					}
 				}
 				break
 			}
@@ -78,7 +87,7 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 					if sourceTitle != "" {
 						reqPrompt = fmt.Sprintf("%s (iteration based on %s)", prompt, sourceTitle)
 					}
-					mediaURL, usedModel, err := s.generateImageMedia(ctx, p, reqPrompt, ar, variantIdx, task.Model, task.Resolution)
+					mediaURL, usedModel, err := s.generateImageMedia(ctx, p, reqPrompt, ar, variantIdx, task.Model, task.Resolution, sourceImage)
 					if err != nil || mediaURL == "" {
 						mediaURL = generateStyledImageSVGDataURL(reqPrompt, ar, variantIdx, task.Resolution)
 					}
@@ -93,6 +102,8 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 							t.Deliverables[slotIndex].Status = "ready"
 							t.Deliverables[slotIndex].MediaURL = mediaURL
 							t.Deliverables[slotIndex].Thumbnail = mediaURL
+							t.Deliverables[slotIndex].ParentDeliverableID = sourceMediaID
+							t.Deliverables[slotIndex].SourceMediaRef = sourceMediaID
 							resTag := strings.TrimSpace(task.Resolution)
 							if resTag == "" {
 								resTag = "1K"
@@ -149,7 +160,9 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 		}
 		sceneCount := len(task.Scenes)
 		if sceneCount == 0 {
-			if task.VariantCount > 0 && task.VariantCount <= 1 {
+			if task.VariantCount > 1 {
+				sceneCount = task.VariantCount
+			} else if task.VariantCount == 1 {
 				sceneCount = 1
 			} else {
 				sceneCount = 2
@@ -163,11 +176,13 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 
 		var sourceMediaTitle string
 		var sourceMediaKind string
+		var sourceMediaID string
 		for _, m := range task.AttachedMedia {
 			k := strings.ToLower(m.Kind)
 			mt := strings.ToLower(m.MediaType)
 			if k == "video" || strings.HasPrefix(mt, "video/") || strings.HasSuffix(strings.ToLower(m.Filename), ".mp4") {
 				sourceMediaKind = "video"
+				sourceMediaID = m.ID
 				if m.Title != "" {
 					sourceMediaTitle = m.Title
 				} else if m.Filename != "" {
@@ -177,6 +192,7 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 			}
 			if k == "image" || strings.HasPrefix(mt, "image/") {
 				sourceMediaKind = "image"
+				sourceMediaID = m.ID
 				if m.Title != "" {
 					sourceMediaTitle = m.Title
 				} else if m.Filename != "" {
@@ -214,11 +230,9 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 				t.Deliverables[0].Status = "ready"
 				t.Deliverables[0].MediaURL = mediaURL
 				t.Deliverables[0].Thumbnail = "cyber_lattice"
-				if sceneCount <= 1 {
-					t.Deliverables[0].Title = fmt.Sprintf("%s (Single Video, %s)", t.Title, ar)
-					t.Deliverables[0].Duration = "8s"
-					t.Deliverables[0].Description = fmt.Sprintf("Single video clip (%s, %s, 8s) generated directly with %s: %s", ar, resTag, videoModel, t.Title)
-				} else if sourceMediaKind == "video" {
+				t.Deliverables[0].ParentDeliverableID = sourceMediaID
+				t.Deliverables[0].SourceMediaRef = sourceMediaID
+				if sourceMediaKind == "video" {
 					if isContinuation {
 						t.Deliverables[0].Title = fmt.Sprintf("%s (Continued from %s)", t.Title, sourceMediaTitle)
 						t.Deliverables[0].Description = fmt.Sprintf("Compiled %d-scene continuation using %s from %s with soundtrack (%s): %s", sceneCount, videoModel, sourceMediaTitle, soundtrack, t.Title)
@@ -229,6 +243,10 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 				} else if sourceMediaKind == "image" {
 					t.Deliverables[0].Title = fmt.Sprintf("%s (Keyframe %s)", t.Title, sourceMediaTitle)
 					t.Deliverables[0].Description = fmt.Sprintf("Compiled %d-scene motion sequence using %s from keyframe image %s with soundtrack (%s): %s", sceneCount, videoModel, sourceMediaTitle, soundtrack, t.Title)
+				} else if sceneCount <= 1 {
+					t.Deliverables[0].Title = fmt.Sprintf("%s (Single Video, %s)", t.Title, ar)
+					t.Deliverables[0].Duration = "8s"
+					t.Deliverables[0].Description = fmt.Sprintf("Single video clip (%s, %s, 8s) generated directly with %s: %s", ar, resTag, videoModel, t.Title)
 				} else {
 					if soundtrack != "" {
 						t.Deliverables[0].Description = fmt.Sprintf("Compiled %d-scene multi-part video using %s with soundtrack (%s): %s", sceneCount, videoModel, soundtrack, t.Title)
@@ -238,13 +256,7 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 				}
 			}
 			t.Status = "needs_review"
-			if sceneCount <= 1 {
-				t.WhatDidDo = []string{
-					fmt.Sprintf("Configured single video shot parameters (%s, %s, 8s)", ar, resTag),
-					fmt.Sprintf("Rendered video clip directly with %s (one-prompt generation)", videoModel),
-				}
-				t.ActionNeeded = "Action Needed: Single video clip deliverable ready for review."
-			} else if sourceMediaKind == "video" {
+			if sourceMediaKind == "video" {
 				if isContinuation {
 					t.WhatDidDo = []string{
 						fmt.Sprintf("Referenced prior video cut: %s", sourceMediaTitle),
@@ -270,6 +282,12 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 					fmt.Sprintf("Generated %d-scene cinematic motion story with %s soundtrack", sceneCount, soundtrack),
 				}
 				t.ActionNeeded = fmt.Sprintf("Action Needed: Video story ready for review (from keyframe %s).", sourceMediaTitle)
+			} else if sceneCount <= 1 {
+				t.WhatDidDo = []string{
+					fmt.Sprintf("Configured single video shot parameters (%s, %s, 8s)", ar, resTag),
+					fmt.Sprintf("Rendered video clip directly with %s (one-prompt generation)", videoModel),
+				}
+				t.ActionNeeded = "Action Needed: Single video clip deliverable ready for review."
 			} else {
 				if soundtrack != "" {
 					t.WhatDidDo = []string{"Compiled multi-scene video blueprint", "Rendered video sequence with synchronized soundtrack"}
@@ -322,8 +340,55 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 	}
 }
 
+// resolveSourceImageBytes extracts and decodes image byte payload from attached media refs.
+func resolveSourceImageBytes(m pebblestore.ProjectTaskMediaRef) ([]byte, string, error) {
+	mediaType := strings.TrimSpace(m.MediaType)
+	if mediaType == "" {
+		mediaType = "image/png"
+	}
+	// Case 1: Data URL in m.URL
+	if strings.HasPrefix(m.URL, "data:") {
+		parts := strings.SplitN(m.URL, ",", 2)
+		if len(parts) == 2 {
+			header := parts[0]
+			if strings.Contains(header, ";base64") {
+				if sub := strings.TrimPrefix(header, "data:"); strings.Contains(sub, ";") {
+					mediaType = strings.Split(sub, ";")[0]
+				}
+				decoded, err := base64.StdEncoding.DecodeString(parts[1])
+				if err == nil && len(decoded) > 0 {
+					return decoded, mediaType, nil
+				}
+			}
+		}
+	}
+	// Case 2: Data URL in m.Data
+	if strings.HasPrefix(m.Data, "data:") {
+		parts := strings.SplitN(m.Data, ",", 2)
+		if len(parts) == 2 {
+			header := parts[0]
+			if strings.Contains(header, ";base64") {
+				if sub := strings.TrimPrefix(header, "data:"); strings.Contains(sub, ";") {
+					mediaType = strings.Split(sub, ";")[0]
+				}
+				decoded, err := base64.StdEncoding.DecodeString(parts[1])
+				if err == nil && len(decoded) > 0 {
+					return decoded, mediaType, nil
+				}
+			}
+		}
+	}
+	// Case 3: Raw base64 in m.Data
+	if len(m.Data) > 0 {
+		if decoded, err := base64.StdEncoding.DecodeString(m.Data); err == nil && len(decoded) > 0 {
+			return decoded, mediaType, nil
+		}
+	}
+	return nil, mediaType, errors.New("no source image bytes available")
+}
+
 // generateImageMedia generates an image asset using the configured Google Gemini / Codex service.
-func (s *Server) generateImageMedia(ctx context.Context, p identity.Principal, prompt string, aspectRatio string, variantIndex int, explicitModel string, resolution string) (string, string, error) {
+func (s *Server) generateImageMedia(ctx context.Context, p identity.Principal, prompt string, aspectRatio string, variantIndex int, explicitModel string, resolution string, source *imagegen.ManagedImageSource) (string, string, error) {
 	if s.imageGen == nil {
 		return "", "", errors.New("image generation service not configured")
 	}
@@ -376,6 +441,7 @@ func (s *Server) generateImageMedia(ctx context.Context, p identity.Principal, p
 		CapabilityToken: caps.CapabilityToken,
 		Principal:       p,
 		Settings:        settings,
+		Source:          source,
 	}
 
 	img, genErr := s.imageGen.GenerateManagedImage(ctx, req)
@@ -608,9 +674,7 @@ func generateStyledVideoSVGDataURL(prompt string, aspectRatio string, scenes []p
 		sceneCount = 2
 	}
 	headerLabel := fmt.Sprintf("VIDEO STORY COMPOSITION • %d SCENES • %s", sceneCount, aspectRatio)
-	if sceneCount <= 1 {
-		headerLabel = fmt.Sprintf("SINGLE VIDEO CLIP • 8s • %s", aspectRatio)
-	} else if sourceMediaKind == "video" {
+	if sourceMediaKind == "video" {
 		lowerPrompt := strings.ToLower(prompt)
 		if strings.Contains(lowerPrompt, "next scene") || strings.Contains(lowerPrompt, "continue") {
 			headerLabel = fmt.Sprintf("VIDEO CONTINUATION (FROM %s) • %d SCENES • %s", escapeXML(truncateString(sourceMediaTitle, 24)), sceneCount, aspectRatio)
@@ -619,6 +683,8 @@ func generateStyledVideoSVGDataURL(prompt string, aspectRatio string, scenes []p
 		}
 	} else if sourceMediaKind == "image" {
 		headerLabel = fmt.Sprintf("VIDEO STORY (KEYFRAME: %s) • %d SCENES • %s", escapeXML(truncateString(sourceMediaTitle, 24)), sceneCount, aspectRatio)
+	} else if sceneCount <= 1 {
+		headerLabel = fmt.Sprintf("SINGLE VIDEO CLIP • 8s • %s", aspectRatio)
 	}
 
 	soundtrackSection := ""
