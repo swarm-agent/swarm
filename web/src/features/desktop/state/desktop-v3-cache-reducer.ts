@@ -146,8 +146,11 @@ export function desktopV3CacheReducer(state: DesktopV3CacheState, action: Deskto
     case 'projects.updateTasks':
     case 'projects.updateMedia':
     case 'projects.invalidate':
-    case 'projects.evict':
-      return { ...state, projectsState: reduceDesktopProjectsState(state.projectsState ?? {}, action) }
+    case 'projects.evict': {
+      const nextProjects = reduceDesktopProjectsState(state.projectsState ?? {}, action)
+      if (nextProjects === state.projectsState) return state
+      return { ...state, projectsState: nextProjects }
+    }
     case 'desktopSidebarBootstrap.update':
       state.desktopSidebarBootstrap = {
         ...state.desktopSidebarBootstrap,
@@ -1189,6 +1192,9 @@ export function applyCacheEvent(
   event: CacheEvent,
 ): DesktopV3CacheState {
   const { sessionId, projection, payload, eventType } = event
+  if (sessionId && sessionId.startsWith('__')) {
+    return state
+  }
   const existingProjection = state.projectionsBySession[sessionId]
   const incomingProjectionIsFresh = projectionSeq(projection) >= projectionSeq(existingProjection)
   if (incomingProjectionIsFresh) {

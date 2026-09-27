@@ -137,16 +137,21 @@ export function reduceDesktopProjectsState(
   action: DesktopProjectsAction
 ): DesktopProjectsState {
   if (action.type === 'projects.invalidate') {
-    return Object.fromEntries(
-      Object.entries(state).map(([id, proj]) => [
-        id,
-        !action.projectId || proj.projectId === action.projectId
-          ? { ...proj, generation: proj.generation + 1, stale: true }
-          : proj,
-      ])
-    )
+    if (Object.keys(state).length === 0) return state
+    let changed = false
+    const next: DesktopProjectsState = {}
+    for (const [id, proj] of Object.entries(state)) {
+      if (!action.projectId || proj.projectId === action.projectId) {
+        changed = true
+        next[id] = { ...proj, generation: proj.generation + 1, stale: true }
+      } else {
+        next[id] = proj
+      }
+    }
+    return changed ? next : state
   }
   if (action.type === 'projects.evict') {
+    if (!state[action.projectId]) return state
     const next = { ...state }
     delete next[action.projectId]
     return next

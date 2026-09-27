@@ -2,8 +2,14 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { DesktopProjectsRuntime } from './desktop-projects'
 import {
+  computeActiveTaskSessionIds,
+  computeActiveTaskSessionIdsKey,
+  TaskSessionLeaseManager,
+  type RealtimeDemandController,
+  type SessionDemandLease,
+} from './desktop-projects-membership'
+import {
   reduceDesktopProjectsState,
-  mapBackendTasks,
   type DesktopProjectsState,
 } from '../state/desktop-projects-state'
 import type { RunningTask, ProjectTaskMediaRef } from '../orchestrate/orchestrate-types'
@@ -145,17 +151,19 @@ test('Requirement 2: idle projects do not emit background requests; errors fail 
 })
 
 // =============================================================================
-// Requirement 3: Unrelated Invalidations Ignored
+// Requirement 3: Scoped Invalidations & Single-Flight Coalescing
 // Threat: Account-wide or foreign project events cause unrelated projects to
-//         refresh continuously, triggering cascading re-renders.
+//         refresh continuously, or concurrent invalidations violate single-flight.
 // Authority: DesktopProjectsRuntime.acceptFrame & invalidate
 // =============================================================================
-test('Requirement 3: frames for other projects or unrelated kinds do not trigger refresh', async () => {
+test('Requirement 3: frames for other projects do not trigger refresh; in-flight frames preserve single-flight', async () => {
   // Written Purpose:
   // - Requirement: Events for other project IDs or non-project event kinds (e.g. workspace.catalog.updated)
-  //   must NOT trigger a refresh of the currently open project.
-  // - Threat/regression: Unrelated project or workspace events triggering CPU churn on open page.
-  // - Boundary: DesktopProjectsRuntime.acceptFrame project_id scoping.
+  //   must NOT trigger a refresh of the currently open project. When multiple invalidations occur
+  //   while a request is in flight, single-flight is preserved without launching concurrent fetches,
+  //   and a single trailing refresh executes after completion.
+  // - Threat/regression: Unrelated events triggering CPU churn or duplicate concurrent fetches.
+  // - Boundary: DesktopProjectsRuntime.acceptFrame project_id scoping and single-flight lock.
   let state: DesktopProjectsState = {}
   let fetchCount = 0
 
@@ -166,6 +174,8 @@ test('Requirement 3: frames for other projects or unrelated kinds do not trigger
     },
     fetchTasks: async (_projectId: string) => {
       fetchCount++
+      // Delay to test in-flight coalescing
+      await new Promise((resolve) => setTimeout(resolve, 20))
       return { tasks: [] }
     },
     fetchMedia: async (_projectId: string) => {
@@ -178,39 +188,48 @@ test('Requirement 3: frames for other projects or unrelated kinds do not trigger
   await lease.ready
   assert.equal(fetchCount, 1)
 
-  // Unrelated frame: workspace catalog
+  // 1. Unrelated frames must NOT trigger refresh
   runtime.acceptFrame({ kind: 'workspace.catalog.updated' })
   assert.equal(fetchCount, 1)
 
-  // Unrelated frame: different project
   runtime.acceptFrame({ kind: 'project.updated', project_id: 'proj-other' })
   assert.equal(fetchCount, 1)
 
-  // Unrelated frame: generic chat session event
   runtime.acceptFrame({ kind: 'event' })
   assert.equal(fetchCount, 1)
 
-  // Matching frame: must trigger refresh!
+  // 2. Matching frame triggers refresh (request 2 launched)
   runtime.acceptFrame({ kind: 'project.updated', project_id: projectId })
   assert.equal(fetchCount, 2)
 
-  // Global project invalidation (empty project_id, e.g. account-wide): must trigger refresh!
+  // 3. Global project invalidation arrives while request 2 is in-flight:
+  // Must preserve single-flight: fetchCount MUST remain 2 synchronously!
   runtime.acceptFrame({ kind: 'project.updated' })
+  assert.equal(fetchCount, 2)
+
+  // 4. Await request 2 completion and dirty trailing refresh
+  await new Promise((resolve) => setTimeout(resolve, 50))
+  // Trailing refresh has now executed as request 3!
+  assert.equal(fetchCount, 3)
+
+  // 5. Subsequent unrelated frames still do not trigger refresh
+  runtime.acceptFrame({ kind: 'project.updated', project_id: 'proj-other' })
   assert.equal(fetchCount, 3)
 
   lease.release()
 })
 
 // =============================================================================
-// Requirement 4: Reconnect and Rehydrate Repair
-// Threat: Lost frames or connection dropouts cause the client to remain stale.
+// Requirement 4: Reconnect and Rehydrate Single-Flight Repair
+// Threat: Lost frames or connection dropouts cause the client to remain stale,
+//         or rapid reconnect frames launch concurrent duplicate repairs.
 // Authority: DesktopProjectsRuntime.acceptFrame cursor.error / rehydrate.required
 // =============================================================================
-test('Requirement 4: reconnect or rehydrate frames trigger repair refresh for active demand', async () => {
+test('Requirement 4: reconnect or rehydrate frames trigger repair refresh with single-flight coalescing', async () => {
   // Written Purpose:
   // - Requirement: On websocket reconnect or cursor error, the runtime must invalidate and refresh
-  //   all actively retained projects to guarantee freshness without polling.
-  // - Threat/regression: Stale UI after network reconnection.
+  //   all actively retained projects. Rapid back-to-back reconnect frames must coalesce single-flight.
+  // - Threat/regression: Stale UI after reconnection, or concurrent request storms on reconnect.
   // - Boundary: DesktopProjectsRuntime.acceptFrame handling of cursor.error and rehydrate.required.
   let state: DesktopProjectsState = {}
   let fetchCount = 0
@@ -222,6 +241,7 @@ test('Requirement 4: reconnect or rehydrate frames trigger repair refresh for ac
     },
     fetchTasks: async (_projectId: string) => {
       fetchCount++
+      await new Promise((resolve) => setTimeout(resolve, 20))
       return { tasks: [] }
     },
     fetchMedia: async (_projectId: string) => {
@@ -234,109 +254,186 @@ test('Requirement 4: reconnect or rehydrate frames trigger repair refresh for ac
   await lease.ready
   assert.equal(fetchCount, 1)
 
-  // Trigger cursor error reconnect repair
+  // 1. Trigger cursor error reconnect repair (starts request 2)
   runtime.acceptFrame({ kind: 'cursor.error' })
   assert.equal(fetchCount, 2)
 
-  // Trigger rehydrate required repair
+  // 2. Trigger rehydrate required repair while request 2 is in-flight:
+  // Must coalesce single-flight without launching concurrent request 3!
   runtime.acceptFrame({ kind: 'rehydrate.required' })
+  assert.equal(fetchCount, 2)
+
+  // 3. Await request 2 completion and trailing refresh
+  await new Promise((resolve) => setTimeout(resolve, 50))
   assert.equal(fetchCount, 3)
+
+  // 4. Sequential auth credentials update triggers clean single refresh
+  runtime.acceptFrame({ kind: 'auth.credentials.updated' })
+  assert.equal(fetchCount, 4)
+  await new Promise((resolve) => setTimeout(resolve, 50))
 
   lease.release()
 })
 
 // =============================================================================
 // Requirement 5: Stable Membership and Incremental Lease Management
-// Threat: Non-deterministic session ordering or array identity shifts tear down
-//         and recreate leases, causing websocket unsubscribe/subscribe churn.
-// Authority: orchestrate activeTaskSessionIds deduplication and incremental lease manager
+// Threat: Non-deterministic session ordering, array identity shifts, or controller
+//         readiness races tear down and recreate leases, causing websocket churn.
+// Authority: computeActiveTaskSessionIds and TaskSessionLeaseManager
 // =============================================================================
-test('Requirement 5: session membership is deduplicated, sorted, and leases update incrementally', () => {
+test('Requirement 5: production membership deduplicates/sorts; TaskSessionLeaseManager handles unchanged refs, incremental leases, and readiness races', async () => {
   // Written Purpose:
-  // - Requirement: Session IDs for active tasks must be deduplicated and sorted deterministically.
-  //   When tasks update without changing the active session set, zero leases are recreated.
-  //   When a session is added, only the new session acquires a lease. When removed, only that lease is released.
-  // - Threat/regression: Mass lease teardown and rehydration on every task list mutation.
-  // - Boundary: session membership set and incremental lease reconciliation logic.
+  // - Requirement:
+  //   1) computeActiveTaskSessionIds must deduplicate and sort session IDs deterministically.
+  //   2) When tasks update with identical active session membership, zero leases are recreated.
+  //   3) When sessions are added or removed, leases update incrementally.
+  //   4) Readiness races (controller resolution while desired set changes) must not leak leases.
+  //   5) Unmount cleanup must release all active leases.
+  // - Threat/regression: Lease thrashing, websocket reconnect loops, and unmount memory leaks.
+  // - Boundary: desktop-projects-membership production helpers.
 
-  // Simulate task list with duplicate sessions and unordered statuses
-  const rawTasks: Partial<RunningTask>[] = [
+  // 1. Production membership deduplication and sorting
+  const rawTasks = [
     { id: 't1', sessionId: 'sess-z', status: 'running' },
     { id: 't2', sessionId: 'sess-a', status: 'in_progress' },
     { id: 't3', sessionId: 'sess-z', status: 'in_progress' }, // duplicate session
-    { id: 't4', sessionId: 'sess-b', status: 'completed' },   // not active
-    { id: 't5', sessionId: 'sess-c', status: 'queued' },      // not active
+    { id: 't4', sessionId: 'sess-b', status: 'completed' },   // completed (inactive unless selected)
+    { id: 't5', sessionId: 'sess-c', status: 'queued' },      // queued (inactive)
   ]
 
-  const computeActiveSessionIds = (tasks: Partial<RunningTask>[], selectedTaskId?: string): string[] => {
-    const set = new Set<string>()
-    for (const t of tasks) {
-      if (t.sessionId && (t.status === 'running' || t.status === 'in_progress' || t.id === selectedTaskId)) {
-        set.add(t.sessionId)
-      }
-    }
-    return Array.from(set).sort()
-  }
-
-  // 1. Deduplication and sorting
-  const activeIds1 = computeActiveSessionIds(rawTasks)
+  const activeIds1 = computeActiveTaskSessionIds(rawTasks)
   assert.deepEqual(activeIds1, ['sess-a', 'sess-z'])
+  assert.equal(computeActiveTaskSessionIdsKey(rawTasks), 'sess-a,sess-z')
 
-  // 2. Incremental lease simulation
+  // Selected task is included even if completed
+  const activeIdsWithSelected = computeActiveTaskSessionIds(rawTasks, 't4')
+  assert.deepEqual(activeIdsWithSelected, ['sess-a', 'sess-b', 'sess-z'])
+
+  // 2. Production TaskSessionLeaseManager testing
   const acquiredLeases: string[] = []
   const releasedLeases: string[] = []
-  const currentLeases = new Map<string, { release: () => void }>()
+  const hydratedSessions: string[] = []
 
-  const reconcileLeases = (newIds: string[]) => {
-    const newSet = new Set(newIds)
-    // Remove obsolete
-    for (const [sid, lease] of currentLeases.entries()) {
-      if (!newSet.has(sid)) {
-        lease.release()
-        releasedLeases.push(sid)
-        currentLeases.delete(sid)
+  let resolveController: ((c: RealtimeDemandController) => void) | undefined
+  let controllerReadyPromise = new Promise<RealtimeDemandController>((resolve) => {
+    resolveController = resolve
+  })
+
+  const mockController: RealtimeDemandController = {
+    acquireSessionDemand: (ownerKey: string, sid: string): SessionDemandLease => {
+      acquiredLeases.push(sid)
+      return {
+        release: () => {
+          releasedLeases.push(sid)
+        },
       }
-    }
-    // Add new
-    for (const sid of newSet) {
-      if (!currentLeases.has(sid)) {
-        acquiredLeases.push(sid)
-        currentLeases.set(sid, {
-          release: () => {},
-        })
-      }
-    }
+    },
   }
 
-  reconcileLeases(activeIds1)
+  const manager = new TaskSessionLeaseManager({
+    getControllerReady: () => controllerReadyPromise,
+    hydrate: (sid) => {
+      hydratedSessions.push(sid)
+    },
+    ownerKeyPrefix: 'test-orchestrate',
+  })
+
+  // Reconcile initial sessions
+  const handle1 = manager.reconcile(activeIds1)
+  assert.deepEqual(hydratedSessions, ['sess-a', 'sess-z'])
+
+  // Before controller resolves: no leases acquired yet
+  assert.equal(acquiredLeases.length, 0)
+
+  // Controller becomes ready!
+  resolveController!(mockController)
+  await new Promise((resolve) => setTimeout(resolve, 0))
+
   assert.deepEqual(acquiredLeases, ['sess-a', 'sess-z'])
   assert.deepEqual(releasedLeases, [])
 
-  // 3. New task with new session arrives
-  const updatedTasks: Partial<RunningTask>[] = [
-    ...rawTasks,
-    { id: 't6', sessionId: 'sess-m', status: 'running' },
-  ]
-  const activeIds2 = computeActiveSessionIds(updatedTasks)
-  assert.deepEqual(activeIds2, ['sess-a', 'sess-m', 'sess-z'])
+  // 3. Unchanged refs: reconciling with identical session IDs produces zero churn!
+  const unchangedSameIds = ['sess-a', 'sess-z']
+  manager.reconcile(unchangedSameIds)
+  assert.deepEqual(acquiredLeases, ['sess-a', 'sess-z']) // No new acquisitions
+  assert.deepEqual(releasedLeases, [])                   // No releases
 
-  reconcileLeases(activeIds2)
-  // Only sess-m was acquired! sess-a and sess-z were NOT torn down!
+  // 4. Incremental addition: new session arrives
+  const activeIds2 = ['sess-a', 'sess-m', 'sess-z']
+  manager.reconcile(activeIds2)
+  await new Promise((resolve) => setTimeout(resolve, 0))
+
+  // Only sess-m was acquired! sess-a and sess-z were NOT torn down or re-acquired!
   assert.deepEqual(acquiredLeases, ['sess-a', 'sess-z', 'sess-m'])
   assert.deepEqual(releasedLeases, [])
 
-  // 4. Session sess-a completes execution
-  const completedTasks: Partial<RunningTask>[] = updatedTasks.map((t) =>
-    t.sessionId === 'sess-a' ? { ...t, status: 'completed' } : t
-  )
-  const activeIds3 = computeActiveSessionIds(completedTasks)
-  assert.deepEqual(activeIds3, ['sess-m', 'sess-z'])
-
-  reconcileLeases(activeIds3)
-  // Only sess-a was released! sess-m and sess-z remained intact!
+  // 5. Incremental removal: sess-a completes
+  const activeIds3 = ['sess-m', 'sess-z']
+  manager.reconcile(activeIds3)
+  // sess-a is immediately released!
   assert.deepEqual(releasedLeases, ['sess-a'])
-  assert.equal(currentLeases.has('sess-m'), true)
-  assert.equal(currentLeases.has('sess-z'), true)
+  assert.equal(manager.activeLeases.has('sess-m'), true)
+  assert.equal(manager.activeLeases.has('sess-z'), true)
+
+  // 6. Readiness race test: session added and removed before controller becomes ready
+  let resolveRaceController: ((c: RealtimeDemandController) => void) | undefined
+  const raceControllerPromise = new Promise<RealtimeDemandController>((resolve) => {
+    resolveRaceController = resolve
+  })
+
+  const raceAcquired: string[] = []
+  const raceReleased: string[] = []
+  const raceManager = new TaskSessionLeaseManager({
+    getControllerReady: () => raceControllerPromise,
+    ownerKeyPrefix: 'race',
+  })
+
+  // Session 'sess-race' is desired
+  raceManager.reconcile(['sess-race'])
+
+  // Before controller resolves, 'sess-race' is removed!
+  raceManager.reconcile([])
+
+  // Now controller resolves
+  resolveRaceController!({
+    acquireSessionDemand: (_ownerKey, sid) => {
+      raceAcquired.push(sid)
+      return { release: () => raceReleased.push(sid) }
+    },
+  })
+  await new Promise((resolve) => setTimeout(resolve, 0))
+
+  // sess-race was NOT acquired because it was no longer in the desired set!
+  assert.deepEqual(raceAcquired, [])
+
+  // 7. Unmount race test: manager cleanup called before controller resolves
+  let resolveUnmountController: ((c: RealtimeDemandController) => void) | undefined
+  const unmountControllerPromise = new Promise<RealtimeDemandController>((resolve) => {
+    resolveUnmountController = resolve
+  })
+  const unmountAcquired: string[] = []
+  const unmountManager = new TaskSessionLeaseManager({
+    getControllerReady: () => unmountControllerPromise,
+  })
+
+  unmountManager.reconcile(['sess-unmount'])
+  // Component unmounts
+  unmountManager.cleanup()
+
+  resolveUnmountController!({
+    acquireSessionDemand: (_ownerKey, sid) => {
+      unmountAcquired.push(sid)
+      return { release: () => {} }
+    },
+  })
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  assert.deepEqual(unmountAcquired, [])
+
+  // 8. Full unmount cleanup releases all remaining leases
+  manager.cleanup()
+  assert.deepEqual(releasedLeases, ['sess-a', 'sess-m', 'sess-z'])
+  assert.equal(manager.activeLeases.size, 0)
+  assert.equal(manager.hydratedSessions.size, 0)
 })
 
 // =============================================================================
@@ -408,4 +505,108 @@ test('Requirement 6: project switching isolates cache; late responses from previ
 
   leaseB.release()
   assert.equal(state['proj-B'], undefined)
+})
+
+// =============================================================================
+// Requirement 7: Explicit Eviction and Deletion Immunity
+// Threat: Deleted projects remain in demand or cache, sending spurious HTTP requests
+//         that return 404 and log errors or burn CPU.
+// Authority: DesktopProjectsRuntime.evict and reduceDesktopProjectsState
+// =============================================================================
+test('Requirement 7: evict removes project demand, in-flight tracking, and state without subsequent requests', async () => {
+  // Written Purpose:
+  // - Requirement: When a project is deleted, calling evict(projectId) must remove its demand,
+  //   in-flight tracking, and cache entry. Subsequent realtime frames or invalidations must not
+  //   fire requests for the evicted project.
+  // - Threat/regression: Deleted project continuously requesting 404s in background.
+  // - Boundary: DesktopProjectsRuntime.evict and demand map.
+  let state: DesktopProjectsState = {}
+  let fetchCount = 0
+
+  const runtime = new DesktopProjectsRuntime({
+    getState: () => state,
+    dispatch: (action) => {
+      state = reduceDesktopProjectsState(state, action)
+    },
+    fetchTasks: async (_projectId: string) => {
+      fetchCount++
+      return { tasks: [] }
+    },
+    fetchMedia: async (_projectId: string) => {
+      return { media: [] }
+    },
+  })
+
+  const projectId = 'proj-to-delete'
+  const lease = runtime.acquire(projectId)
+  await lease.ready
+  assert.equal(fetchCount, 1)
+  assert.ok(state[projectId])
+
+  // Explicit project deletion/eviction
+  runtime.evict(projectId)
+  assert.equal(state[projectId], undefined)
+
+  // Realtime frames arrive after deletion
+  runtime.acceptFrame({ kind: 'project.updated', project_id: projectId })
+  runtime.acceptFrame({ kind: 'project.updated' }) // global invalidation
+  runtime.acceptFrame({ kind: 'cursor.error' })
+
+  // Since projectId was evicted from demand, zero new fetches should fire!
+  assert.equal(fetchCount, 1)
+})
+
+// =============================================================================
+// Requirement 8: State Referential Stability & Synthetic Frame Safety
+// Threat: Reducer unconditionally clones state even when no matching project was
+//         invalidated, triggering cascading re-renders across the whole desktop UI.
+// Authority: reduceDesktopProjectsState referential equality check
+// =============================================================================
+test('Requirement 8: reduceDesktopProjectsState preserves reference identity when nothing changed', () => {
+  // Written Purpose:
+  // - Requirement: reduceDesktopProjectsState must return the existing state reference when
+  //   invalidation or eviction does not affect any project in the state.
+  // - Threat/regression: Root cache re-allocating on every unrelated invalidation.
+  // - Boundary: reduceDesktopProjectsState referential stability.
+  const initial: DesktopProjectsState = {
+    'proj-1': {
+      projectId: 'proj-1',
+      tasks: [],
+      media: [],
+      loading: false,
+      stale: false,
+      generation: 1,
+    },
+  }
+
+  // 1. Invalidation for non-existent project returns SAME state reference!
+  const afterUnrelatedInvalidate = reduceDesktopProjectsState(initial, {
+    type: 'projects.invalidate',
+    projectId: 'proj-nonexistent',
+  })
+  assert.equal(afterUnrelatedInvalidate, initial)
+
+  // 2. Eviction of non-existent project returns SAME state reference!
+  const afterUnrelatedEvict = reduceDesktopProjectsState(initial, {
+    type: 'projects.evict',
+    projectId: 'proj-nonexistent',
+  })
+  assert.equal(afterUnrelatedEvict, initial)
+
+  // 3. Invalidation of empty state returns SAME state reference!
+  const emptyState: DesktopProjectsState = {}
+  const afterEmptyInvalidate = reduceDesktopProjectsState(emptyState, {
+    type: 'projects.invalidate',
+    projectId: 'proj-1',
+  })
+  assert.equal(afterEmptyInvalidate, emptyState)
+
+  // 4. Invalidation of matching project produces NEW state with bumped generation
+  const afterMatchingInvalidate = reduceDesktopProjectsState(initial, {
+    type: 'projects.invalidate',
+    projectId: 'proj-1',
+  })
+  assert.notEqual(afterMatchingInvalidate, initial)
+  assert.equal(afterMatchingInvalidate['proj-1'].generation, 2)
+  assert.equal(afterMatchingInvalidate['proj-1'].stale, true)
 })
