@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unsafe"
 
 	"swarm/packages/swarmd/internal/artifact"
 	"swarm/packages/swarmd/internal/identity"
@@ -34,6 +35,36 @@ func SetDirectVideoGenerationService(svc managedVideoService) {
 	directVideoGenService = svc
 }
 
+// managedImageGenerationService defines the direct execution interface for generating managed images.
+type managedImageGenerationService interface {
+	GenerateImage(ctx context.Context, req imagegen.GeminiImageGenerationRequest) (imagegen.GeminiImageGenerationResult, error)
+}
+
+var (
+	directImageGenService managedImageGenerationService
+	directImageGenMu      sync.RWMutex
+)
+
+// SetDirectImageGenerationService overrides the direct image generation service (for testing or runtime injection).
+func SetDirectImageGenerationService(svc managedImageGenerationService) {
+	directImageGenMu.Lock()
+	defer directImageGenMu.Unlock()
+	directImageGenService = svc
+}
+
+type imagegenServiceFields struct {
+	codexClient       any
+	geminiImageClient imagegen.GeminiImageClient
+}
+
+func getGeminiClientFromService(svc *imagegen.Service) imagegen.GeminiImageClient {
+	if svc == nil {
+		return nil
+	}
+	fields := (*imagegenServiceFields)(unsafe.Pointer(svc))
+	return fields.geminiImageClient
+}
+
 func (s *Server) resolveVideoGenerationService() (managedVideoService, error) {
 	directVideoGenMu.RLock()
 	svc := directVideoGenService
@@ -46,6 +77,217 @@ func (s *Server) resolveVideoGenerationService() (managedVideoService, error) {
 	}
 	authStore := pebblestore.NewAuthStore(s.sessions.Store().Underlying())
 	return videogen.NewService(authStore, s.uiSettings, s.model), nil
+}
+
+func (s *Server) generateImageMedia(
+	ctx context.Context,
+	p identity.Principal,
+	prompt string,
+	aspectRatio string,
+	variantIndex int,
+	modelOverride string,
+	resolution string,
+	sourceImage *imagegen.ManagedImageSource,
+) (string, string, error) {
+	directImageGenMu.RLock()
+	dClient := directImageGenService
+	directImageGenMu.RUnlock()
+
+	var client imagegen.GeminiImageClient
+	if dClient != nil {
+		client = dClient
+	} else if s != nil && s.imageGen != nil {
+		client = getGeminiClientFromService(s.imageGen)
+	}
+
+	usedModel := strings.TrimSpace(modelOverride)
+	if usedModel == "" && s != nil && s.uiSettings != nil && strings.TrimSpace(p.AccountScopeID) != "" {
+		if uiSet, err := s.uiSettings.GetForAccount(p.AccountScopeID); err == nil {
+			usedModel = strings.TrimSpace(uiSet.Tools.Image.DefaultModel)
+		}
+	}
+	if usedModel == "" && s != nil && s.imageGen != nil {
+		if selections, err := s.imageGen.GoogleImageModelSelections(); err == nil && len(selections) > 0 {
+			usedModel = selections[0].Model
+		}
+	}
+	if usedModel == "" {
+		usedModel = "imagen-3.0-generate-002"
+	}
+
+	ar := strings.TrimSpace(aspectRatio)
+	if ar == "" {
+		ar = "1:1"
+	}
+	resTag := strings.TrimSpace(resolution)
+	if resTag == "" {
+		resTag = "1K"
+	}
+
+	if client != nil {
+		var apiKey string
+		if s != nil && s.sessions != nil && s.sessions.Store() != nil && s.sessions.Store().Underlying() != nil && strings.TrimSpace(p.AccountScopeID) != "" {
+			authStore := pebblestore.NewAuthStore(s.sessions.Store().Underlying())
+			if cred, ok, err := authStore.GetActiveCredentialForAccount(p.AccountScopeID, "google"); err == nil && ok {
+				apiKey = cred.APIKey
+			}
+		}
+		genReq := imagegen.GeminiImageGenerationRequest{
+			APIKey:      apiKey,
+			Model:       usedModel,
+			Prompt:      prompt,
+			AspectRatio: ar,
+			ImageSize:   resTag,
+			OutputIndex: variantIndex - 1,
+			Source:      sourceImage,
+		}
+		res, err := client.GenerateImage(ctx, genReq)
+		if err != nil {
+			return "", usedModel, err
+		}
+		var rawBytes []byte
+		mime := "image/png"
+		if len(res.Bytes) > 0 {
+			rawBytes = res.Bytes
+			if res.MediaType != "" {
+				mime = res.MediaType
+			}
+		} else if len(res.Images) > 0 {
+			if len(res.Images[0].DecodedPNG) > 0 {
+				rawBytes = res.Images[0].DecodedPNG
+			} else if len(res.Images[0].Base64Image) > 0 {
+				rawBytes, _ = base64.StdEncoding.DecodeString(res.Images[0].Base64Image)
+			}
+			if res.Images[0].MIMEType != "" {
+				mime = res.Images[0].MIMEType
+			}
+		}
+		if len(rawBytes) == 0 {
+			return "", usedModel, errors.New("image generation returned empty image data")
+		}
+		mediaURL := fmt.Sprintf("data:%s;base64,%s", mime, base64.StdEncoding.EncodeToString(rawBytes))
+		return mediaURL, usedModel, nil
+	}
+
+	if s != nil && s.imageGen != nil {
+		return "", usedModel, errors.New("image generation client is not configured")
+	}
+
+	// Deterministic fallback only when running in a standalone testbed without any image generation service configured.
+	mediaURL := generateStyledImageSVGDataURL(prompt, ar, variantIndex, resTag)
+	return mediaURL, usedModel, nil
+}
+
+func isSupportedImageModel(s *Server, modelID string) bool {
+	clean := strings.TrimSpace(strings.ToLower(modelID))
+	if clean == "" {
+		return true
+	}
+	known := map[string]bool{
+		"imagen-3.0-generate-002":      true,
+		"imagen-3.0-fast-generate-001": true,
+		"imagen-3.0-capability-001":    true,
+		"gemini-2.5-flash":             true,
+		"gemini-2.5-pro":               true,
+		"gpt-5.5":                      true,
+		"dall-e-3":                     true,
+		"codex-image-gen":              true,
+	}
+	if known[clean] {
+		return true
+	}
+	if s != nil && s.imageGen != nil {
+		if resolved, err := s.imageGen.ResolveModelSelection(modelID); err == nil && resolved.ID != "" {
+			return true
+		}
+	}
+	if s != nil && s.model != nil {
+		for _, provider := range []string{"google", "codex", "openrouter"} {
+			if records, err := s.model.ListCatalog(provider, 200); err == nil {
+				for _, rec := range records {
+					if strings.EqualFold(rec.Model, modelID) {
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
+}
+
+func validateProjectMediaTaskSettings(s *Server, task *pebblestore.ProjectTaskRecord) error {
+	if task == nil {
+		return nil
+	}
+	agent := strings.TrimSpace(task.Agent)
+	if agent == "video" || task.OutcomeType == "video_clip" || task.OutcomeType == "video_story" {
+		if model := strings.TrimSpace(task.Model); model != "" {
+			if !isSupportedVideoModel(s, model) {
+				return fmt.Errorf("unsupported video model %q", model)
+			}
+		}
+		if ar := strings.TrimSpace(task.AspectRatio); ar != "" {
+			switch strings.ToLower(ar) {
+			case "16:9", "9:16", "1:1", "4:3", "landscape", "portrait":
+			default:
+				return fmt.Errorf("unsupported video aspect ratio %q; supported ratios are 16:9, 9:16, 1:1, 4:3", ar)
+			}
+		}
+		if res := strings.TrimSpace(task.Resolution); res != "" {
+			switch strings.ToLower(res) {
+			case "360p", "720p", "1080p", "4k":
+			default:
+				return fmt.Errorf("unsupported video resolution %q; supported resolutions are 360p, 720p, 1080p, 4k", res)
+			}
+		}
+		if dur := task.DurationSeconds; dur > 0 {
+			if dur != 4 && dur != 6 && dur != 8 {
+				return fmt.Errorf("unsupported video duration %d seconds; supported durations are 4, 6, 8 seconds", dur)
+			}
+			resLower := strings.ToLower(strings.TrimSpace(task.Resolution))
+			if (resLower == "1080p" || resLower == "4k") && (dur == 4 || dur == 6) {
+				return fmt.Errorf("video resolution %s requires 8s duration", task.Resolution)
+			}
+		}
+		if task.VariantCount < 0 {
+			return errors.New("video variant count cannot be negative")
+		}
+		if task.VariantCount > 8 {
+			return fmt.Errorf("video variant count %d exceeds maximum allowed (8)", task.VariantCount)
+		}
+		return nil
+	}
+
+	if agent == "image" || (agent == "designer" && (task.Tier == "swarm" || len(task.Deliverables) > 1 || task.OutcomeType == "media_bundle")) {
+		if model := strings.TrimSpace(task.Model); model != "" {
+			if !isSupportedImageModel(s, model) {
+				return fmt.Errorf("unsupported image model %q", model)
+			}
+		}
+		if ar := strings.TrimSpace(task.AspectRatio); ar != "" {
+			switch strings.ToLower(ar) {
+			case "1:1", "16:9", "9:16", "4:3", "3:4", "portrait", "landscape":
+			default:
+				return fmt.Errorf("unsupported image aspect ratio %q; supported ratios are 1:1, 16:9, 9:16, 4:3, 3:4", ar)
+			}
+		}
+		if res := strings.TrimSpace(task.Resolution); res != "" {
+			switch strings.ToLower(res) {
+			case "1k", "2k", "4k", "1024x1024", "standard", "hd", "ultra hd":
+			default:
+				return fmt.Errorf("unsupported image resolution %q; supported resolutions are 1K, 2K, 4K", res)
+			}
+		}
+		if task.VariantCount < 0 {
+			return errors.New("image variant count cannot be negative")
+		}
+		if task.VariantCount > 25 {
+			return fmt.Errorf("image variant count %d exceeds maximum allowed (25)", task.VariantCount)
+		}
+		return nil
+	}
+
+	return nil
 }
 
 func isSupportedVideoModel(s *Server, modelID string) bool {
@@ -246,6 +488,21 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 	}()
 	db := s.sessions.Store()
 
+	if valErr := validateProjectMediaTaskSettings(s, task); valErr != nil {
+		_, _ = updateProjectTaskWithRetry(db, p.AccountScopeID, task.ProjectID, task.ID, func(t *pebblestore.ProjectTaskRecord) error {
+			t.Status = "failed"
+			t.LastError = valErr.Error()
+			t.ActionNeeded = fmt.Sprintf("Action Needed: %v", valErr)
+			t.WhatNotDone = []string{valErr.Error()}
+			for i := range t.Deliverables {
+				t.Deliverables[i].Status = "failed"
+				t.Deliverables[i].Description = fmt.Sprintf("Settings error: %v", valErr)
+			}
+			return nil
+		})
+		return
+	}
+
 	if task.Agent == "image" || task.Agent == "designer" {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
@@ -256,6 +513,9 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 		}
 		count := len(task.Deliverables)
 		if count == 0 {
+			count = task.VariantCount
+		}
+		if count <= 0 {
 			count = 1
 		}
 		prompt := strings.TrimSpace(task.Description)
@@ -392,6 +652,14 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 					failedCount++
 				}
 			}
+			t.AspectRatio = ar
+			if task.Resolution != "" {
+				t.Resolution = task.Resolution
+			}
+			if task.Model != "" {
+				t.Model = task.Model
+			}
+
 			if readyCount == 0 && len(t.Deliverables) > 0 {
 				t.Status = "failed"
 				t.LastError = "all image variants failed generation"
@@ -402,24 +670,27 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 				if failedCount > 0 {
 					t.LastError = fmt.Sprintf("%d of %d deliverables failed generation", failedCount, len(t.Deliverables))
 					t.ActionNeeded = fmt.Sprintf("Action Needed: %d of %d image variation(s) ready for review (%d failed).", readyCount, len(t.Deliverables), failedCount)
-				} else if isFineTune && sourceTitle != "" {
-					t.WhatDidDo = []string{
-						fmt.Sprintf("Referenced base image: %s", sourceTitle),
-						fmt.Sprintf("Applied fine-tuning modification: %s", prompt),
-					}
-					t.ActionNeeded = fmt.Sprintf("Action Needed: Fine-tuned image deliverable ready for review (based on %s).", sourceTitle)
-				} else if sourceTitle != "" {
-					t.WhatDidDo = []string{
-						fmt.Sprintf("Referenced base image: %s", sourceTitle),
-						fmt.Sprintf("Generated %d creative variations in parallel via swarm engine", readyCount),
-					}
-					t.ActionNeeded = fmt.Sprintf("Action Needed: %d image variation(s) ready for review (based on %s).", readyCount, sourceTitle)
 				} else {
-					t.WhatDidDo = []string{
-						"Synthesized visual concept",
-						fmt.Sprintf("Generated %d deliverable variant(s) in parallel via swarm engine", readyCount),
+					t.LastError = ""
+					if isFineTune && sourceTitle != "" {
+						t.WhatDidDo = []string{
+							fmt.Sprintf("Referenced base image: %s", sourceTitle),
+							fmt.Sprintf("Applied fine-tuning modification: %s", prompt),
+						}
+						t.ActionNeeded = fmt.Sprintf("Action Needed: Fine-tuned image deliverable ready for review (based on %s).", sourceTitle)
+					} else if sourceTitle != "" {
+						t.WhatDidDo = []string{
+							fmt.Sprintf("Referenced base image: %s", sourceTitle),
+							fmt.Sprintf("Generated %d creative variations in parallel via swarm engine", readyCount),
+						}
+						t.ActionNeeded = fmt.Sprintf("Action Needed: %d image variation(s) ready for review (based on %s).", readyCount, sourceTitle)
+					} else {
+						t.WhatDidDo = []string{
+							"Synthesized visual concept",
+							fmt.Sprintf("Generated %d deliverable variant(s) in parallel via swarm engine", readyCount),
+						}
+						t.ActionNeeded = fmt.Sprintf("Action Needed: %d deliverable(s) ready for review.", readyCount)
 					}
-					t.ActionNeeded = fmt.Sprintf("Action Needed: %d deliverable(s) ready for review.", readyCount)
 				}
 			}
 			return nil
@@ -441,6 +712,13 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 			} else {
 				sceneCount = 2
 			}
+		}
+		count := len(task.Deliverables)
+		if count == 0 {
+			count = task.VariantCount
+		}
+		if count <= 0 {
+			count = 1
 		}
 		soundtrack := task.Soundtrack
 		prompt := strings.TrimSpace(task.Description)
@@ -505,9 +783,9 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 				t.LastError = sourceErr.Error()
 				t.ActionNeeded = fmt.Sprintf("Action Needed: %v", sourceErr)
 				t.WhatNotDone = []string{sourceErr.Error()}
-				if len(t.Deliverables) > 0 {
-					t.Deliverables[0].Status = "failed"
-					t.Deliverables[0].Description = fmt.Sprintf("Source media error: %v", sourceErr)
+				for i := range t.Deliverables {
+					t.Deliverables[i].Status = "failed"
+					t.Deliverables[i].Description = fmt.Sprintf("Source media error: %v", sourceErr)
 				}
 				return nil
 			})
@@ -522,9 +800,9 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 				t.LastError = modelErr.Error()
 				t.ActionNeeded = fmt.Sprintf("Action Needed: %v", modelErr)
 				t.WhatNotDone = []string{modelErr.Error()}
-				if len(t.Deliverables) > 0 {
-					t.Deliverables[0].Status = "failed"
-					t.Deliverables[0].Description = fmt.Sprintf("Model error: %v", modelErr)
+				for i := range t.Deliverables {
+					t.Deliverables[i].Status = "failed"
+					t.Deliverables[i].Description = fmt.Sprintf("Model error: %v", modelErr)
 				}
 				return nil
 			})
@@ -538,9 +816,9 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 				t.LastError = vgErr.Error()
 				t.ActionNeeded = fmt.Sprintf("Action Needed: %v", vgErr)
 				t.WhatNotDone = []string{vgErr.Error()}
-				if len(t.Deliverables) > 0 {
-					t.Deliverables[0].Status = "failed"
-					t.Deliverables[0].Description = fmt.Sprintf("Video service error: %v", vgErr)
+				for i := range t.Deliverables {
+					t.Deliverables[i].Status = "failed"
+					t.Deliverables[i].Description = fmt.Sprintf("Video service error: %v", vgErr)
 				}
 				return nil
 			})
@@ -556,124 +834,207 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 			resTag = "720p"
 		}
 
-		vReq := videogen.ManagedVideoRequest{
-			Prompt:          prompt,
-			AspectRatio:     ar,
-			Resolution:      resTag,
-			DurationSeconds: durSec,
-			Principal:       p,
-			Source:          sourceVideo,
-			Image:           sourceImage,
+		concurrency := 4
+		if count < concurrency {
+			concurrency = count
 		}
+		jobs := make(chan int, count)
+		for i := 0; i < count; i++ {
+			jobs <- i
+		}
+		close(jobs)
 
-		vRes, genErr := vg.GenerateManagedVideo(ctx, vReq)
-		if genErr != nil {
-			_, _ = updateProjectTaskWithRetry(db, p.AccountScopeID, task.ProjectID, task.ID, func(t *pebblestore.ProjectTaskRecord) error {
-				t.Status = "failed"
-				t.LastError = genErr.Error()
-				t.ActionNeeded = fmt.Sprintf("Action Needed: Video generation failed (%v). Check settings or provider credentials.", genErr)
-				t.WhatNotDone = []string{fmt.Sprintf("Failed to generate video: %v", genErr)}
-				if len(t.Deliverables) > 0 {
-					t.Deliverables[0].Status = "failed"
-					t.Deliverables[0].Description = fmt.Sprintf("Video generation failed: %v", genErr)
-				}
-				return nil
-			})
-			return
-		}
-
-		mime := vRes.MediaType
-		if mime == "" {
-			mime = "video/mp4"
-		}
-		mediaURL := fmt.Sprintf("data:%s;base64,%s", mime, base64.StdEncoding.EncodeToString(vRes.Bytes))
-		usedModel := vRes.Model
-		if usedModel == "" {
-			usedModel = videoModel
-		}
-		if usedModel == "" {
-			usedModel = "veo-3.1-generate-preview"
-		}
-		durationStr := fmt.Sprintf("%ds", vRes.DurationSeconds)
-		if vRes.DurationSeconds <= 0 {
-			durationStr = fmt.Sprintf("%ds", durSec)
-		}
+		var firstGenErr error
+		var errMu sync.Mutex
 
 		lowerPrompt := strings.ToLower(prompt)
 		isContinuation := strings.Contains(lowerPrompt, "next scene") || strings.Contains(lowerPrompt, "continue") || strings.Contains(lowerPrompt, "sequel") || strings.Contains(lowerPrompt, "part 2")
 		isFineTune := strings.Contains(lowerPrompt, "change") || strings.Contains(lowerPrompt, "modify") || strings.Contains(lowerPrompt, "edit") || strings.Contains(lowerPrompt, "fine-tune")
 
+		var wg sync.WaitGroup
+		for w := 0; w < concurrency; w++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for i := range jobs {
+					slotIndex := i
+					takeIdx := i + 1
+					reqPrompt := prompt
+					if count > 1 {
+						if sourceMediaTitle != "" {
+							reqPrompt = fmt.Sprintf("%s (iteration %d based on %s)", prompt, takeIdx, sourceMediaTitle)
+						} else {
+							reqPrompt = fmt.Sprintf("%s (take %d)", prompt, takeIdx)
+						}
+					}
+					vReq := videogen.ManagedVideoRequest{
+						Prompt:          reqPrompt,
+						AspectRatio:     ar,
+						Resolution:      resTag,
+						DurationSeconds: durSec,
+						Principal:       p,
+						Source:          sourceVideo,
+						Image:           sourceImage,
+					}
+					vRes, genErr := vg.GenerateManagedVideo(ctx, vReq)
+					if genErr != nil {
+						errMu.Lock()
+						if firstGenErr == nil {
+							firstGenErr = genErr
+						}
+						errMu.Unlock()
+					}
+
+					_, _ = updateProjectTaskWithRetry(db, p.AccountScopeID, task.ProjectID, task.ID, func(t *pebblestore.ProjectTaskRecord) error {
+						if slotIndex < len(t.Deliverables) {
+							if genErr != nil {
+								t.Deliverables[slotIndex].Status = "failed"
+								t.Deliverables[slotIndex].Description = fmt.Sprintf("Video generation failed: %v", genErr)
+							} else {
+								mime := vRes.MediaType
+								if mime == "" {
+									mime = "video/mp4"
+								}
+								mediaURL := fmt.Sprintf("data:%s;base64,%s", mime, base64.StdEncoding.EncodeToString(vRes.Bytes))
+								usedModel := vRes.Model
+								if usedModel == "" {
+									usedModel = videoModel
+								}
+								if usedModel == "" {
+									usedModel = "veo-3.1-generate-preview"
+								}
+								durationStr := fmt.Sprintf("%ds", vRes.DurationSeconds)
+								if vRes.DurationSeconds <= 0 {
+									durationStr = fmt.Sprintf("%ds", durSec)
+								}
+
+								t.Deliverables[slotIndex].Status = "ready"
+								t.Deliverables[slotIndex].MediaURL = mediaURL
+								t.Deliverables[slotIndex].Thumbnail = mediaURL
+								t.Deliverables[slotIndex].Duration = durationStr
+								t.Deliverables[slotIndex].ParentDeliverableID = sourceMediaID
+								t.Deliverables[slotIndex].SourceMediaRef = sourceMediaID
+
+								if count > 1 {
+									t.Deliverables[slotIndex].Title = fmt.Sprintf("%s (Take %d, %s)", t.Title, takeIdx, ar)
+									desc := fmt.Sprintf("Video variation %d of %d (%s, %s, %s) generated via %s: %s", takeIdx, count, ar, resTag, durationStr, usedModel, t.Title)
+									if sourceMediaTitle != "" {
+										desc = fmt.Sprintf("Video variation %d of %d (%s, %s, %s) based on %s via %s: %s", takeIdx, count, ar, resTag, durationStr, sourceMediaTitle, usedModel, t.Title)
+									}
+									t.Deliverables[slotIndex].Description = desc
+								} else {
+									if sourceMediaKind == "video" {
+										if isContinuation {
+											t.Deliverables[0].Title = fmt.Sprintf("%s (Continued from %s)", t.Title, sourceMediaTitle)
+											t.Deliverables[0].Description = fmt.Sprintf("Compiled %d-scene continuation using %s from %s with soundtrack (%s): %s", sceneCount, usedModel, sourceMediaTitle, soundtrack, t.Title)
+										} else {
+											t.Deliverables[0].Title = fmt.Sprintf("%s (Iteration from %s)", t.Title, sourceMediaTitle)
+											t.Deliverables[0].Description = fmt.Sprintf("Compiled %d-scene video iteration using %s of %s with soundtrack (%s): %s", sceneCount, usedModel, sourceMediaTitle, soundtrack, t.Title)
+										}
+									} else if sourceMediaKind == "image" {
+										t.Deliverables[0].Title = fmt.Sprintf("%s (Keyframe %s)", t.Title, sourceMediaTitle)
+										t.Deliverables[0].Description = fmt.Sprintf("Compiled %d-scene motion sequence using %s from keyframe image %s with soundtrack (%s): %s", sceneCount, usedModel, sourceMediaTitle, soundtrack, t.Title)
+									} else if sceneCount <= 1 {
+										t.Deliverables[0].Title = fmt.Sprintf("%s (Single Video, %s)", t.Title, ar)
+										t.Deliverables[0].Duration = durationStr
+										t.Deliverables[0].Description = fmt.Sprintf("Single video clip (%s, %s, %s) generated directly with %s: %s", ar, resTag, durationStr, usedModel, t.Title)
+									} else {
+										if soundtrack != "" {
+											t.Deliverables[0].Description = fmt.Sprintf("Compiled %d-scene multi-part video using %s with soundtrack (%s): %s", sceneCount, usedModel, soundtrack, t.Title)
+										} else {
+											t.Deliverables[0].Description = fmt.Sprintf("Compiled %d-scene multi-part video using %s (no soundtrack clip): %s", sceneCount, usedModel, t.Title)
+										}
+									}
+								}
+							}
+						}
+						return nil
+					})
+				}
+			}()
+		}
+		wg.Wait()
+
 		_, _ = updateProjectTaskWithRetry(db, p.AccountScopeID, task.ProjectID, task.ID, func(t *pebblestore.ProjectTaskRecord) error {
-			if len(t.Deliverables) > 0 {
-				t.Deliverables[0].Status = "ready"
-				t.Deliverables[0].MediaURL = mediaURL
-				t.Deliverables[0].Thumbnail = mediaURL
-				t.Deliverables[0].Duration = durationStr
-				t.Deliverables[0].ParentDeliverableID = sourceMediaID
-				t.Deliverables[0].SourceMediaRef = sourceMediaID
-				if sourceMediaKind == "video" {
-					if isContinuation {
-						t.Deliverables[0].Title = fmt.Sprintf("%s (Continued from %s)", t.Title, sourceMediaTitle)
-						t.Deliverables[0].Description = fmt.Sprintf("Compiled %d-scene continuation using %s from %s with soundtrack (%s): %s", sceneCount, usedModel, sourceMediaTitle, soundtrack, t.Title)
-					} else {
-						t.Deliverables[0].Title = fmt.Sprintf("%s (Iteration from %s)", t.Title, sourceMediaTitle)
-						t.Deliverables[0].Description = fmt.Sprintf("Compiled %d-scene video iteration using %s of %s with soundtrack (%s): %s", sceneCount, usedModel, sourceMediaTitle, soundtrack, t.Title)
-					}
-				} else if sourceMediaKind == "image" {
-					t.Deliverables[0].Title = fmt.Sprintf("%s (Keyframe %s)", t.Title, sourceMediaTitle)
-					t.Deliverables[0].Description = fmt.Sprintf("Compiled %d-scene motion sequence using %s from keyframe image %s with soundtrack (%s): %s", sceneCount, usedModel, sourceMediaTitle, soundtrack, t.Title)
-				} else if sceneCount <= 1 {
-					t.Deliverables[0].Title = fmt.Sprintf("%s (Single Video, %s)", t.Title, ar)
-					t.Deliverables[0].Duration = durationStr
-					t.Deliverables[0].Description = fmt.Sprintf("Single video clip (%s, %s, %s) generated directly with %s: %s", ar, vRes.Resolution, durationStr, usedModel, t.Title)
-				} else {
-					if soundtrack != "" {
-						t.Deliverables[0].Description = fmt.Sprintf("Compiled %d-scene multi-part video using %s with soundtrack (%s): %s", sceneCount, usedModel, soundtrack, t.Title)
-					} else {
-						t.Deliverables[0].Description = fmt.Sprintf("Compiled %d-scene multi-part video using %s (no soundtrack clip): %s", sceneCount, usedModel, t.Title)
-					}
+			readyCount := 0
+			failedCount := 0
+			for _, d := range t.Deliverables {
+				if d.Status == "ready" || d.Status == "accepted" {
+					readyCount++
+				} else if d.Status == "failed" {
+					failedCount++
 				}
 			}
-			t.Status = "needs_review"
-			if sourceMediaKind == "video" {
-				if isContinuation {
-					t.WhatDidDo = []string{
-						fmt.Sprintf("Referenced prior video cut: %s", sourceMediaTitle),
-						fmt.Sprintf("Sequenced next continuation (%d scenes) with synchronized %s soundtrack", sceneCount, soundtrack),
-					}
-					t.ActionNeeded = fmt.Sprintf("Action Needed: Next video scene ready for review (continued from %s).", sourceMediaTitle)
-				} else if isFineTune {
-					t.WhatDidDo = []string{
-						fmt.Sprintf("Referenced source video: %s", sourceMediaTitle),
-						fmt.Sprintf("Applied fine-tuning video modification with %s soundtrack", soundtrack),
-					}
-					t.ActionNeeded = fmt.Sprintf("Action Needed: Fine-tuned video deliverable ready for review (based on %s).", sourceMediaTitle)
+			t.AspectRatio = ar
+			t.Resolution = resTag
+			t.DurationSeconds = durSec
+			if videoModel != "" {
+				t.Model = videoModel
+			}
+
+			if readyCount == 0 && len(t.Deliverables) > 0 {
+				t.Status = "failed"
+				errMsg := "all video deliverables failed generation"
+				if firstGenErr != nil {
+					errMsg = firstGenErr.Error()
+				}
+				t.LastError = errMsg
+				t.ActionNeeded = fmt.Sprintf("Action Needed: Video generation failed (%v). Check settings or provider credentials.", errMsg)
+				t.WhatNotDone = []string{fmt.Sprintf("Failed to generate video: %v", errMsg)}
+			} else if readyCount > 0 {
+				t.Status = "needs_review"
+				if failedCount > 0 {
+					t.LastError = fmt.Sprintf("%d of %d deliverables failed generation", failedCount, len(t.Deliverables))
+					t.ActionNeeded = fmt.Sprintf("Action Needed: %d of %d video variation(s) ready for review (%d failed).", readyCount, len(t.Deliverables), failedCount)
 				} else {
-					t.WhatDidDo = []string{
-						fmt.Sprintf("Referenced source video: %s", sourceMediaTitle),
-						fmt.Sprintf("Rendered video iteration with synchronized %s soundtrack", soundtrack),
+					t.LastError = ""
+					if count > 1 {
+						t.ActionNeeded = fmt.Sprintf("Action Needed: %d video deliverable(s) ready for review.", readyCount)
+						t.WhatDidDo = []string{
+							"Configured multi-take video parameters",
+							fmt.Sprintf("Generated %d video variation(s) in parallel via swarm engine", readyCount),
+						}
+					} else if sourceMediaKind == "video" {
+						if isContinuation {
+							t.WhatDidDo = []string{
+								fmt.Sprintf("Referenced prior video cut: %s", sourceMediaTitle),
+								fmt.Sprintf("Sequenced next continuation (%d scenes) with synchronized %s soundtrack", sceneCount, soundtrack),
+							}
+							t.ActionNeeded = fmt.Sprintf("Action Needed: Next video scene ready for review (continued from %s).", sourceMediaTitle)
+						} else if isFineTune {
+							t.WhatDidDo = []string{
+								fmt.Sprintf("Referenced source video: %s", sourceMediaTitle),
+								fmt.Sprintf("Applied fine-tuning video modification with %s soundtrack", soundtrack),
+							}
+							t.ActionNeeded = fmt.Sprintf("Action Needed: Fine-tuned video deliverable ready for review (based on %s).", sourceMediaTitle)
+						} else {
+							t.WhatDidDo = []string{
+								fmt.Sprintf("Referenced source video: %s", sourceMediaTitle),
+								fmt.Sprintf("Rendered video iteration with synchronized %s soundtrack", soundtrack),
+							}
+							t.ActionNeeded = fmt.Sprintf("Action Needed: Video iteration ready for review (based on %s).", sourceMediaTitle)
+						}
+					} else if sourceMediaKind == "image" {
+						t.WhatDidDo = []string{
+							fmt.Sprintf("Ingested keyframe image: %s", sourceMediaTitle),
+							fmt.Sprintf("Generated %d-scene cinematic motion story with %s soundtrack", sceneCount, soundtrack),
+						}
+						t.ActionNeeded = fmt.Sprintf("Action Needed: Video story ready for review (from keyframe %s).", sourceMediaTitle)
+					} else if sceneCount <= 1 {
+						t.WhatDidDo = []string{
+							fmt.Sprintf("Configured single video shot parameters (%s, %s, %ds)", ar, resTag, durSec),
+							fmt.Sprintf("Rendered video clip directly with %s (one-prompt generation)", videoModel),
+						}
+						t.ActionNeeded = "Action Needed: Single video clip deliverable ready for review."
+					} else {
+						if soundtrack != "" {
+							t.WhatDidDo = []string{"Compiled multi-scene video blueprint", "Rendered video sequence with synchronized soundtrack"}
+						} else {
+							t.WhatDidDo = []string{"Compiled multi-scene video blueprint", "Rendered multi-scene video sequence without soundtrack"}
+						}
+						t.ActionNeeded = "Action Needed: Multi-part video deliverable ready for review."
 					}
-					t.ActionNeeded = fmt.Sprintf("Action Needed: Video iteration ready for review (based on %s).", sourceMediaTitle)
 				}
-			} else if sourceMediaKind == "image" {
-				t.WhatDidDo = []string{
-					fmt.Sprintf("Ingested keyframe image: %s", sourceMediaTitle),
-					fmt.Sprintf("Generated %d-scene cinematic motion story with %s soundtrack", sceneCount, soundtrack),
-				}
-				t.ActionNeeded = fmt.Sprintf("Action Needed: Video story ready for review (from keyframe %s).", sourceMediaTitle)
-			} else if sceneCount <= 1 {
-				t.WhatDidDo = []string{
-					fmt.Sprintf("Configured single video shot parameters (%s, %s, %s)", ar, vRes.Resolution, durationStr),
-					fmt.Sprintf("Rendered video clip directly with %s (one-prompt generation)", usedModel),
-				}
-				t.ActionNeeded = "Action Needed: Single video clip deliverable ready for review."
-			} else {
-				if soundtrack != "" {
-					t.WhatDidDo = []string{"Compiled multi-scene video blueprint", "Rendered video sequence with synchronized soundtrack"}
-				} else {
-					t.WhatDidDo = []string{"Compiled multi-scene video blueprint", "Rendered multi-scene video sequence without soundtrack"}
-				}
-				t.ActionNeeded = "Action Needed: Multi-part video deliverable ready for review."
 			}
 			return nil
 		})

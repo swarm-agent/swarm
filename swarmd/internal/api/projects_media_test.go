@@ -49,6 +49,8 @@ func (f *fakeTestGeminiClient) GenerateImage(ctx context.Context, req imagegen.G
 type fakeTestVideoGenService struct {
 	mu          sync.Mutex
 	shouldFail  bool
+	failOnIndex int
+	callCount   int
 	err         error
 	lastRequest videogen.ManagedVideoRequest
 	result      videogen.ManagedVideoResult
@@ -57,8 +59,9 @@ type fakeTestVideoGenService struct {
 func (f *fakeTestVideoGenService) GenerateManagedVideo(ctx context.Context, req videogen.ManagedVideoRequest) (videogen.ManagedVideoResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.callCount++
 	f.lastRequest = req
-	if f.shouldFail {
+	if f.shouldFail || (f.failOnIndex > 0 && f.callCount == f.failOnIndex) {
 		if f.err != nil {
 			return videogen.ManagedVideoResult{}, f.err
 		}
@@ -626,5 +629,364 @@ func TestDirectMediaTask_InitialPersistenceGuard(t *testing.T) {
 	}
 	if persisted.Deliverables[0].Status != "generating" {
 		t.Fatalf("expected initial deliverable status 'generating', got %q", persisted.Deliverables[0].Status)
+	}
+}
+
+func TestDirectVideoExecution_MultiVariantBatch(t *testing.T) {
+	// Purpose:
+	// - Requirement: Video tasks with VariantCount > 1 must generate multiple independent deliverables in parallel via videogen service, marking each as ready with unique media URLs and titles (Take 1, Take 2, etc.), transitioning task to needs_review.
+	// - Threat/regression: Only generating Deliverables[0] and ignoring VariantCount or leaving other deliverables in 'generating' state indefinitely.
+	// - Boundary/authority: Server.executeDirectMediaTask video multi-variant loop in projects_media.go.
+	// - Test layer: Direct execution boundary against mock videogen service with 3 variants.
+
+	server, ss, p := setupDirectMediaTestServer(t)
+
+	fakeMP4 := []byte{0x00, 0x00, 0x00, 0x18, 'f', 't', 'y', 'p', 'm', 'p', '4', '2'}
+	mockVideoSvc := &fakeTestVideoGenService{
+		shouldFail: false,
+		result: videogen.ManagedVideoResult{
+			Bytes:           fakeMP4,
+			MediaType:       "video/mp4",
+			Model:           "veo-3.1-generate-preview",
+			DurationSeconds: 8,
+			Resolution:      "720p",
+			AspectRatio:     "16:9",
+		},
+	}
+	SetDirectVideoGenerationService(mockVideoSvc)
+	t.Cleanup(func() { SetDirectVideoGenerationService(nil) })
+
+	project := &pebblestore.ProjectRecord{
+		ID:        "proj-video-multi",
+		AccountID: p.AccountScopeID,
+		Name:      "Multi Video Project",
+	}
+	_ = ss.PutProject(p.AccountScopeID, project)
+
+	task := &pebblestore.ProjectTaskRecord{
+		ID:              "task-video-multi-3",
+		ProjectID:       project.ID,
+		AccountID:       p.AccountScopeID,
+		Title:           "Autonomous Action Scene",
+		Description:     "Fast paced camera run through neon alley",
+		Agent:           "video",
+		Model:           "veo-3.1-generate-preview",
+		DurationSeconds: 8,
+		Resolution:      "720p",
+		AspectRatio:     "16:9",
+		VariantCount:    3,
+		Status:          "in_progress",
+		Deliverables: []pebblestore.ProjectTaskDeliverable{
+			{ID: "d-vid-1", Title: "Take 1", Kind: "video", Status: "generating"},
+			{ID: "d-vid-2", Title: "Take 2", Kind: "video", Status: "generating"},
+			{ID: "d-vid-3", Title: "Take 3", Kind: "video", Status: "generating"},
+		},
+	}
+	_ = ss.PutProjectTask(p.AccountScopeID, task)
+
+	server.executeDirectMediaTask(p, project, task)
+
+	updated, ok, _ := ss.GetProjectTask(p.AccountScopeID, project.ID, task.ID)
+	if !ok {
+		t.Fatal("task not found")
+	}
+	if updated.Status != "needs_review" {
+		t.Fatalf("expected task status 'needs_review', got %q (lastError: %s)", updated.Status, updated.LastError)
+	}
+	if updated.LastError != "" {
+		t.Fatalf("expected empty LastError for full success, got %q", updated.LastError)
+	}
+	if len(updated.Deliverables) != 3 {
+		t.Fatalf("expected 3 deliverables, got %d", len(updated.Deliverables))
+	}
+	for i, d := range updated.Deliverables {
+		if d.Status != "ready" {
+			t.Fatalf("deliverable %d status = %q, want 'ready'", i, d.Status)
+		}
+		if !strings.HasPrefix(d.MediaURL, "data:video/mp4;base64,") {
+			t.Fatalf("deliverable %d media URL missing mp4 base64 prefix: %q", i, d.MediaURL)
+		}
+		if !strings.Contains(d.Title, fmt.Sprintf("Take %d", i+1)) {
+			t.Fatalf("deliverable %d title %q does not mention Take %d", i, d.Title, i+1)
+		}
+	}
+}
+
+func TestDirectVideoExecution_PartialVariantSuccess(t *testing.T) {
+	// Purpose:
+	// - Requirement: When generating multiple video variants, successful variants must be preserved with 'ready' status while failed variants are marked 'failed'. Task must transition to 'needs_review' with durable LastError noting partial failure.
+	// - Threat/regression: Entire batch marked failed when one variant fails, or partial failures masked as complete success.
+	// - Boundary/authority: Server.executeDirectMediaTask video batch loop in projects_media.go.
+	// - Test layer: Direct execution boundary with failOnIndex=2 on 2-variant video task.
+
+	server, ss, p := setupDirectMediaTestServer(t)
+
+	fakeMP4 := []byte{0x00, 0x00, 0x00, 0x18, 'f', 't', 'y', 'p', 'm', 'p', '4', '2'}
+	mockVideoSvc := &fakeTestVideoGenService{
+		failOnIndex: 2, // Take 1 succeeds, Take 2 fails
+		result: videogen.ManagedVideoResult{
+			Bytes:           fakeMP4,
+			MediaType:       "video/mp4",
+			Model:           "veo-3.1-generate-preview",
+			DurationSeconds: 8,
+			Resolution:      "720p",
+			AspectRatio:     "16:9",
+		},
+	}
+	SetDirectVideoGenerationService(mockVideoSvc)
+	t.Cleanup(func() { SetDirectVideoGenerationService(nil) })
+
+	project := &pebblestore.ProjectRecord{
+		ID:        "proj-video-partial",
+		AccountID: p.AccountScopeID,
+		Name:      "Partial Video Batch",
+	}
+	_ = ss.PutProject(p.AccountScopeID, project)
+
+	task := &pebblestore.ProjectTaskRecord{
+		ID:              "task-video-partial-2",
+		ProjectID:       project.ID,
+		AccountID:       p.AccountScopeID,
+		Title:           "Two Takes Scene",
+		Description:     "Generate two takes of neon street",
+		Agent:           "video",
+		Model:           "veo-3.1-generate-preview",
+		DurationSeconds: 8,
+		Resolution:      "720p",
+		AspectRatio:     "16:9",
+		VariantCount:    2,
+		Status:          "in_progress",
+		Deliverables: []pebblestore.ProjectTaskDeliverable{
+			{ID: "d-vid-p1", Title: "Take 1", Kind: "video", Status: "generating"},
+			{ID: "d-vid-p2", Title: "Take 2", Kind: "video", Status: "generating"},
+		},
+	}
+	_ = ss.PutProjectTask(p.AccountScopeID, task)
+
+	server.executeDirectMediaTask(p, project, task)
+
+	updated, ok, _ := ss.GetProjectTask(p.AccountScopeID, project.ID, task.ID)
+	if !ok {
+		t.Fatal("task not found")
+	}
+	if updated.Status != "needs_review" {
+		t.Fatalf("expected task status 'needs_review' on partial success, got %q", updated.Status)
+	}
+	if !strings.Contains(updated.LastError, "1 of 2") {
+		t.Fatalf("expected LastError to document 1 of 2 failed deliverables, got %q", updated.LastError)
+	}
+	if len(updated.Deliverables) != 2 {
+		t.Fatalf("expected 2 deliverables, got %d", len(updated.Deliverables))
+	}
+	d0 := updated.Deliverables[0]
+	if d0.Status != "ready" {
+		t.Fatalf("expected deliverable 0 status 'ready', got %q", d0.Status)
+	}
+	if !strings.HasPrefix(d0.MediaURL, "data:video/mp4;base64,") {
+		t.Fatalf("expected real MP4 URL on deliverable 0, got %q", d0.MediaURL)
+	}
+	d1 := updated.Deliverables[1]
+	if d1.Status != "failed" {
+		t.Fatalf("expected deliverable 1 status 'failed', got %q", d1.Status)
+	}
+	if d1.MediaURL != "" {
+		t.Fatalf("expected empty MediaURL on failed deliverable 1, got %q", d1.MediaURL)
+	}
+}
+
+func TestDirectMediaExecution_Validation_RejectsInvalidSettings(t *testing.T) {
+	// Purpose:
+	// - Requirement: Explicit settings (unsupported aspect ratio, unsupported resolution, unsupported duration, or duration/resolution mismatches) on direct media tasks must be rejected rather than silently normalized away.
+	// - Threat/regression: Silently normalizing invalid user choices to defaults without warning or error.
+	// - Boundary/authority: validateProjectMediaTaskSettings and Server.executeDirectMediaTask in projects_media.go.
+	// - Test layer: Direct execution boundary verifying rejection of:
+	//   1) Video invalid aspect ratio "21:9"
+	//   2) Video invalid resolution "8k"
+	//   3) Video invalid duration 15s
+	//   4) Video 1080p resolution with 4s duration (requires 8s)
+	//   5) Image invalid aspect ratio "32:9"
+	//   6) Image invalid resolution "8k"
+
+	server, ss, p := setupDirectMediaTestServer(t)
+
+	cases := []struct {
+		name          string
+		task          pebblestore.ProjectTaskRecord
+		wantErrSubstr string
+	}{
+		{
+			name: "video unsupported aspect ratio",
+			task: pebblestore.ProjectTaskRecord{
+				ID:          "task-val-vid-ar",
+				Agent:       "video",
+				AspectRatio: "21:9",
+				Status:      "in_progress",
+				Deliverables: []pebblestore.ProjectTaskDeliverable{
+					{ID: "d-1", Status: "generating"},
+				},
+			},
+			wantErrSubstr: "unsupported video aspect ratio",
+		},
+		{
+			name: "video unsupported resolution",
+			task: pebblestore.ProjectTaskRecord{
+				ID:          "task-val-vid-res",
+				Agent:       "video",
+				Resolution:  "8k",
+				Status:      "in_progress",
+				Deliverables: []pebblestore.ProjectTaskDeliverable{
+					{ID: "d-1", Status: "generating"},
+				},
+			},
+			wantErrSubstr: "unsupported video resolution",
+		},
+		{
+			name: "video unsupported duration",
+			task: pebblestore.ProjectTaskRecord{
+				ID:              "task-val-vid-dur",
+				Agent:           "video",
+				DurationSeconds: 15,
+				Status:          "in_progress",
+				Deliverables: []pebblestore.ProjectTaskDeliverable{
+					{ID: "d-1", Status: "generating"},
+				},
+			},
+			wantErrSubstr: "unsupported video duration",
+		},
+		{
+			name: "video 1080p requires 8s duration",
+			task: pebblestore.ProjectTaskRecord{
+				ID:              "task-val-vid-1080p-4s",
+				Agent:           "video",
+				Resolution:      "1080p",
+				DurationSeconds: 4,
+				Status:          "in_progress",
+				Deliverables: []pebblestore.ProjectTaskDeliverable{
+					{ID: "d-1", Status: "generating"},
+				},
+			},
+			wantErrSubstr: "requires 8s duration",
+		},
+		{
+			name: "image unsupported aspect ratio",
+			task: pebblestore.ProjectTaskRecord{
+				ID:          "task-val-img-ar",
+				Agent:       "image",
+				AspectRatio: "32:9",
+				Status:      "in_progress",
+				Deliverables: []pebblestore.ProjectTaskDeliverable{
+					{ID: "d-1", Status: "generating"},
+				},
+			},
+			wantErrSubstr: "unsupported image aspect ratio",
+		},
+		{
+			name: "image unsupported resolution",
+			task: pebblestore.ProjectTaskRecord{
+				ID:          "task-val-img-res",
+				Agent:       "image",
+				Resolution:  "8k",
+				Status:      "in_progress",
+				Deliverables: []pebblestore.ProjectTaskDeliverable{
+					{ID: "d-1", Status: "generating"},
+				},
+			},
+			wantErrSubstr: "unsupported image resolution",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			proj := &pebblestore.ProjectRecord{
+				ID:        "proj-" + tc.task.ID,
+				AccountID: p.AccountScopeID,
+				Name:      "Val Test Proj",
+			}
+			_ = ss.PutProject(p.AccountScopeID, proj)
+			tc.task.ProjectID = proj.ID
+			tc.task.AccountID = p.AccountScopeID
+			_ = ss.PutProjectTask(p.AccountScopeID, &tc.task)
+
+			server.executeDirectMediaTask(p, proj, &tc.task)
+
+			updated, ok, err := ss.GetProjectTask(p.AccountScopeID, proj.ID, tc.task.ID)
+			if err != nil || !ok {
+				t.Fatalf("get task failed: ok=%v, err=%v", ok, err)
+			}
+			if updated.Status != "failed" {
+				t.Fatalf("expected task status 'failed', got %q", updated.Status)
+			}
+			if !strings.Contains(strings.ToLower(updated.LastError), strings.ToLower(tc.wantErrSubstr)) {
+				t.Fatalf("expected LastError to contain %q, got %q", tc.wantErrSubstr, updated.LastError)
+			}
+			for i, d := range updated.Deliverables {
+				if d.Status != "failed" {
+					t.Fatalf("deliverable %d status = %q, want 'failed'", i, d.Status)
+				}
+			}
+		})
+	}
+}
+
+func TestDirectMediaTask_DeployProjectTaskExecution_MultiVideoDeliverables(t *testing.T) {
+	// Purpose:
+	// - Requirement: deployProjectTaskExecution for video agent with VariantCount > 1 must allocate VariantCount deliverables in "generating" state with unique IDs and Take numbers.
+	// - Threat/regression: Only 1 deliverable allocated in deployProjectTaskExecution regardless of VariantCount.
+	// - Boundary/authority: Server.deployProjectTaskExecution in projects.go.
+	// - Test layer: Direct deployment boundary checking Pebble persistence and deliverable count.
+
+	server, ss, p := setupDirectMediaTestServer(t)
+
+	// Block video generation so we observe initial persisted state
+	mockVideoSvc := &fakeTestVideoGenService{
+		shouldFail: true,
+		err:        errors.New("blocked"),
+	}
+	SetDirectVideoGenerationService(mockVideoSvc)
+	t.Cleanup(func() { SetDirectVideoGenerationService(nil) })
+
+	project := &pebblestore.ProjectRecord{
+		ID:        "proj-deploy-multi-vid",
+		AccountID: p.AccountScopeID,
+		Name:      "Deploy Multi Vid",
+	}
+	_ = ss.PutProject(p.AccountScopeID, project)
+
+	task := &pebblestore.ProjectTaskRecord{
+		ID:              "task-deploy-vid-4",
+		ProjectID:       project.ID,
+		AccountID:       p.AccountScopeID,
+		Title:           "Cyberpunk Flying Vehicle",
+		Agent:           "video",
+		Model:           "veo-3.1-generate-preview",
+		DurationSeconds: 8,
+		Resolution:      "720p",
+		AspectRatio:     "16:9",
+		VariantCount:    4,
+	}
+
+	err := server.deployProjectTaskExecution(p, project, task, "in_progress", "Generate 4 takes of flying vehicle")
+	if err != nil {
+		t.Fatalf("deployProjectTaskExecution failed: %v", err)
+	}
+
+	// Verify initial persisted task in Pebble has 4 deliverables in generating state
+	persisted, ok, err := ss.GetProjectTask(p.AccountScopeID, project.ID, task.ID)
+	if err != nil || !ok {
+		t.Fatalf("get persisted task failed: ok=%v, err=%v", ok, err)
+	}
+	if len(persisted.Deliverables) != 4 {
+		t.Fatalf("expected 4 deliverables allocated, got %d", len(persisted.Deliverables))
+	}
+	for i, d := range persisted.Deliverables {
+		if !strings.Contains(d.Title, fmt.Sprintf("Take %d", i+1)) {
+			t.Fatalf("deliverable %d title %q does not contain 'Take %d'", i, d.Title, i+1)
+		}
+		if d.Kind != "video" {
+			t.Fatalf("deliverable %d kind = %q, want 'video'", i, d.Kind)
+		}
+		if d.Duration != "8s" {
+			t.Fatalf("deliverable %d duration = %q, want '8s'", i, d.Duration)
+		}
 	}
 }

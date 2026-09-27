@@ -551,8 +551,32 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 						}
 						durStr := fmt.Sprintf("%ds", durSec)
 
+						count := task.VariantCount
+						if count <= 0 {
+							count = len(task.Deliverables)
+						}
+						if count <= 0 {
+							count = 1
+						}
+
 						var delivs []pebblestore.ProjectTaskDeliverable
-						if sceneCount <= 1 || task.OutcomeType == "video_clip" {
+						if count > 1 {
+							for i := 1; i <= count; i++ {
+								delivs = append(delivs, pebblestore.ProjectTaskDeliverable{
+									ID:          fmt.Sprintf("deliv_vid_%d_%d", now, i),
+									Title:       fmt.Sprintf("%s (Take %d, %s)", task.Title, i, ar),
+									Kind:        "video",
+									Status:      "generating",
+									Thumbnail:   "video",
+									Duration:    durStr,
+									Description: fmt.Sprintf("Video variation %d of %d (%s, %s, %s) generating with %s: %s", i, count, ar, resTag, durStr, videoModel, task.Title),
+								})
+							}
+							task.Deliverables = delivs
+							task.Status = "in_progress"
+							task.ActionNeeded = fmt.Sprintf("Rendering %d video deliverable variant(s)...", count)
+							task.WhatDidDo = []string{"Approved mission", fmt.Sprintf("Rendering %d video variations with %s", count, videoModel)}
+						} else if sceneCount <= 1 || task.OutcomeType == "video_clip" {
 							delivs = append(delivs, pebblestore.ProjectTaskDeliverable{
 								ID:          fmt.Sprintf("deliv_vid_%d", now),
 								Title:       fmt.Sprintf("%s (Single Video, %s)", task.Title, ar),
@@ -621,6 +645,15 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 					}
 					if len(task.AttachedMedia) > 0 {
 						taskCopy.AttachedMedia = append([]pebblestore.ProjectTaskMediaRef(nil), task.AttachedMedia...)
+					}
+					if len(task.Scenes) > 0 {
+						taskCopy.Scenes = append([]pebblestore.ProjectTaskScene(nil), task.Scenes...)
+					}
+					if len(task.WhatDidDo) > 0 {
+						taskCopy.WhatDidDo = append([]string(nil), task.WhatDidDo...)
+					}
+					if len(task.WhatNotDone) > 0 {
+						taskCopy.WhatNotDone = append([]string(nil), task.WhatNotDone...)
 					}
 					go s.executeDirectMediaTask(p, proj, &taskCopy)
 				}
@@ -1943,6 +1976,13 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				task.AttachedMedia = routed.AttachedMedia
 			}
 
+			if isDirectMediaTask(&task) {
+				if err := validateProjectMediaTaskSettings(s, &task); err != nil {
+					writeError(w, http.StatusBadRequest, err)
+					return
+				}
+			}
+
 			// Deploy execution: Task Program standalone execution, direct media generation, or V3 session
 			if task.TaskProgram != nil && (taskStatus == "in_progress" || req.AutoApprove) {
 				task.Status = "in_progress"
@@ -1963,13 +2003,13 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			}
 
 			// Add task ID to project.ActiveTaskIDs
-			_, _ = db.UpdateProject(p.AccountScopeID, projectID, func(p *pebblestore.ProjectRecord) error {
-				for _, tid := range p.ActiveTaskIDs {
+			_, _ = db.UpdateProject(p.AccountScopeID, projectID, func(projRecord *pebblestore.ProjectRecord) error {
+				for _, tid := range projRecord.ActiveTaskIDs {
 					if tid == task.ID {
 						return nil
 					}
 				}
-				p.ActiveTaskIDs = append(p.ActiveTaskIDs, task.ID)
+				projRecord.ActiveTaskIDs = append(projRecord.ActiveTaskIDs, task.ID)
 				return nil
 			})
 
