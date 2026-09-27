@@ -1901,6 +1901,64 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
+			isMediaRequest := req.Agent == "image" || req.Agent == "video" || req.Agent == "sound" || req.Agent == "audio" || req.Intent == "image" || req.Intent == "video" || req.Intent == "sound" || req.Intent == "audio" || req.Operation != ""
+			if !isMediaRequest {
+				input := tool.ProjectTaskCreateInput{
+					ID:               req.ID,
+					Title:            req.Title,
+					Description:      req.Description,
+					Prompt:           req.Prompt,
+					Agent:            req.Agent,
+					WorkerName:       req.WorkerName,
+					FeatureSize:      req.FeatureSize,
+					WorkspacePath:    req.WorkspacePath,
+					WorktreeBranch:   req.WorktreeBranch,
+					OutcomeType:      req.OutcomeType,
+					Tier:             req.Tier,
+					AspectRatio:      req.AspectRatio,
+					Resolution:       req.Resolution,
+					VariantCount:     req.VariantCount,
+					DurationSeconds:  req.DurationSeconds,
+					Model:            req.Model,
+					Provider:         req.Provider,
+					Thinking:         req.Thinking,
+					ServiceTier:      req.ServiceTier,
+					ContextMode:      req.ContextMode,
+					Soundtrack:       req.Soundtrack,
+					AutoApprove:      req.AutoApprove,
+					PipelineStages:   req.PipelineStages,
+					Deliverables:     req.Deliverables,
+					WhatDidDo:        req.WhatDidDo,
+					WhatNotDone:      req.WhatNotDone,
+					AttachedMedia:    req.AttachedMedia,
+					Document:         req.Document,
+					PlanDocument:     req.PlanDocument,
+					TaskProgram:      req.TaskProgram,
+					TaskProgramID:    req.TaskProgramID,
+					PlanSummary:      req.PlanSummary,
+					FullPlanMarkdown: req.FullPlanMarkdown,
+					DiffSummary:      req.DiffSummary,
+				}
+				if input.VariantCount <= 0 && req.DeliverableCount > 0 {
+					input.VariantCount = req.DeliverableCount
+				}
+
+				task, err := s.CreateProjectTask(r.Context(), p, projectID, input)
+				if err != nil {
+					status := http.StatusBadRequest
+					if strings.Contains(err.Error(), "forbidden") {
+						status = http.StatusForbidden
+					} else if strings.Contains(err.Error(), "not found") {
+						status = http.StatusNotFound
+					} else if strings.Contains(err.Error(), "worktree allocation failed") || strings.Contains(err.Error(), "internal") {
+						status = http.StatusInternalServerError
+					}
+					writeError(w, status, err)
+					return
+				}
+				writeJSON(w, http.StatusCreated, map[string]any{"task": sanitizeProjectTaskForClient(task), "model_preview": s.buildTaskModelPreview(p, task)})
+				return
+			}
 			proj, found, err := db.GetProject(p.AccountScopeID, projectID)
 			if err != nil {
 				writeError(w, http.StatusInternalServerError, err)
