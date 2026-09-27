@@ -401,12 +401,46 @@ export function resolveTaskWorkspace(
 }
 
 export function buildTaskAcceptancePayload(
-  task: Pick<RunningTask, 'sessionId' | 'planBinding'> | { sessionId?: string; planBinding?: { plan_id?: string; definition_revision?: number; session_id?: string } } | null | undefined
+  task:
+    | Pick<RunningTask, 'sessionId' | 'planBinding'>
+    | { sessionId?: string; planBinding?: { plan_id?: string; definition_revision?: number; session_id?: string } }
+    | any
+    | null
+    | undefined
 ): { session_id?: string; plan_id?: string; definition_revision?: number } {
+  const binding = task?.planBinding || task?.plan_binding
+  const doc = task?.planDocument || task?.plan_document || task?.document
+  const sessionId =
+    task?.sessionId ||
+    task?.session_id ||
+    binding?.session_id ||
+    binding?.sessionId ||
+    doc?.session_id ||
+    doc?.sessionId ||
+    undefined
+  const planId =
+    binding?.plan_id ||
+    binding?.planId ||
+    doc?.plan_id ||
+    doc?.planId ||
+    doc?.id ||
+    undefined
+
+  let definitionRevision: number | undefined
+  if (typeof binding?.definition_revision === 'number') {
+    definitionRevision = binding.definition_revision
+  } else if (typeof binding?.definitionRevision === 'number') {
+    definitionRevision = binding.definitionRevision
+  } else if (typeof doc?.version === 'number') {
+    definitionRevision = doc.version
+  } else if (typeof task?.revision === 'number' && task.revision > 0) {
+    definitionRevision = task.revision
+  }
+
   return {
-    session_id: task?.sessionId || task?.planBinding?.session_id || undefined,
-    plan_id: task?.planBinding?.plan_id || undefined,
-    definition_revision: task?.planBinding?.definition_revision,
+    session_id: sessionId ? String(sessionId).trim() : undefined,
+    plan_id: planId ? String(planId).trim() : undefined,
+    definition_revision: definitionRevision,
   }
 }
 

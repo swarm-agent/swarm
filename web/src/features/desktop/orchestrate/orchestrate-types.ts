@@ -261,7 +261,7 @@ export interface RunningTask {
   title: string
   subtitle?: string
   agentType: 'coder' | 'finder' | 'designer' | 'swarm' | 'video' | 'image' | 'sound' | 'audio' | 'plan'
-  status: 'running' | 'in_progress' | 'completed' | 'needs_review' | 'blocked' | 'queued' | 'pending' | 'failed' | 'pending_approval' | 'planning'
+  status: 'running' | 'in_progress' | 'completed' | 'needs_review' | 'blocked' | 'queued' | 'pending' | 'failed' | 'pending_approval' | 'planning' | 'rejected'
   outcomeType?: TaskOutcomeType
   workspaceTarget: string
   elapsed: string
