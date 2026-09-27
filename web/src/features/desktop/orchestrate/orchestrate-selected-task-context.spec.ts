@@ -400,3 +400,205 @@ test('OrchestrateView wires selected-task context forwarding into OrchestratorCh
   assert.ok(source.includes('handleRedeployJob'), 'handleRedeployJob must be preserved')
   assert.ok(source.includes('/program:redeploy-job'), 'Redeploy job endpoint must be preserved')
 })
+
+test('validateSelectedTaskForContext rejects stale task session ID', () => {
+  // Written test purpose:
+  // - Requirement: Selected task context must reject stale task states if session ID has changed.
+  // - Threat/regression prevented: Chat referring to previous session when backend has allocated a new session.
+  // - Symbols: validateSelectedTaskForContext in orchestrate-task-helpers.ts.
+  const project: ProjectSummary = {
+    id: 'proj-1',
+    name: 'Platform',
+    slug: 'platform',
+    description: '',
+    repoPath: '/workspace/repo',
+    branch: 'dev',
+    gitStatus: 'clean',
+    linkedWorkspaces: [],
+    activeWorkersCount: 0,
+    pendingDeliverablesCount: 0,
+    runningTasksCount: 1,
+  }
+
+  const liveTask: RunningTask = {
+    id: 'task-auth',
+    title: 'Fix CSRF Token Validation',
+    agentType: 'coder',
+    status: 'in_progress',
+    workspaceTarget: '/workspace/repo',
+    elapsed: '10m',
+    subtasks: [],
+    revision: 2,
+    sessionId: 'session-live-2',
+  }
+
+  const staleSessionTask: RunningTask = {
+    ...liveTask,
+    sessionId: 'session-old-1',
+  }
+
+  const res = validateSelectedTaskForContext(project, staleSessionTask, [liveTask])
+  assert.equal(res.valid, false)
+  assert.equal(res.reason, 'stale_task')
+  assert.ok(res.error?.includes('session session-old-1 is stale'))
+})
+
+test('validateSelectedTaskForContext rejects stale plan definition revision', () => {
+  // Written test purpose:
+  // - Requirement: Selected task context must reject stale plan states if plan definition revision incremented.
+  // - Threat/regression prevented: Submitting prompt against outdated plan schema or plan step order.
+  // - Symbols: validateSelectedTaskForContext in orchestrate-task-helpers.ts.
+  const project: ProjectSummary = {
+    id: 'proj-1',
+    name: 'Platform',
+    slug: 'platform',
+    description: '',
+    repoPath: '/workspace/repo',
+    branch: 'dev',
+    gitStatus: 'clean',
+    linkedWorkspaces: [],
+    activeWorkersCount: 0,
+    pendingDeliverablesCount: 0,
+    runningTasksCount: 1,
+  }
+
+  const liveTask: RunningTask = {
+    id: 'task-plan-sync',
+    title: 'Multi-stage Task',
+    agentType: 'plan',
+    status: 'in_progress',
+    workspaceTarget: '/workspace/repo',
+    elapsed: '5m',
+    subtasks: [],
+    revision: 1,
+    planBinding: {
+      planId: 'plan-123',
+      definitionRevision: 3,
+    },
+  }
+
+  const stalePlanTask: RunningTask = {
+    ...liveTask,
+    planBinding: {
+      planId: 'plan-123',
+      definitionRevision: 2,
+    },
+  }
+
+  const res = validateSelectedTaskForContext(project, stalePlanTask, liveTask)
+  assert.equal(res.valid, false)
+  assert.equal(res.reason, 'stale_revision')
+  assert.ok(res.error?.includes('plan definition revision r2 is stale'))
+})
+
+test('validateSelectedTaskForContext supports authoritative single task verification and fails closed on missing task ID', () => {
+  // Written test purpose:
+  // - Requirement: Validate against authoritative task directly from canonical API; fail closed with task ID in error.
+  // - Threat/regression prevented: Missing selected task ID silently dropping context into a general message.
+  // - Symbols: validateSelectedTaskForContext in orchestrate-task-helpers.ts.
+  const project: ProjectSummary = {
+    id: 'proj-1',
+    name: 'Platform',
+    slug: 'platform',
+    description: '',
+    repoPath: '/workspace/repo',
+    branch: 'dev',
+    gitStatus: 'clean',
+    linkedWorkspaces: [],
+    activeWorkersCount: 0,
+    pendingDeliverablesCount: 0,
+    runningTasksCount: 1,
+  }
+
+  const authoritativeTask: RunningTask = {
+    id: 'task-authoritative',
+    title: 'Real Authoritative Task',
+    agentType: 'coder',
+    status: 'in_progress',
+    workspaceTarget: '/workspace/repo',
+    elapsed: '1m',
+    subtasks: [],
+    revision: 1,
+  }
+
+  // Exact ID match with single authoritative task
+  const resValid = validateSelectedTaskForContext(project, authoritativeTask, authoritativeTask)
+  assert.equal(resValid.valid, true)
+  assert.equal(resValid.snapshot?.taskId, 'task-authoritative')
+
+  // Mismatched task ID (cross-project or missing from project)
+  const candidateDifferentId: RunningTask = {
+    ...authoritativeTask,
+    id: 'task-other-id',
+  }
+  const resMismatch = validateSelectedTaskForContext(project, candidateDifferentId, authoritativeTask)
+  assert.equal(resMismatch.valid, false)
+  assert.equal(resMismatch.reason, 'cross_project')
+  assert.ok(resMismatch.error?.includes('task-other-id'))
+  assert.ok(resMismatch.error?.includes('missing from active project'))
+})
+
+test('OrchestratorChatComposer implements permissions, attachments, running states, and authoritative send validation', () => {
+  // Written test purpose:
+  // - Requirement: OrchestratorChatComposer must support file attachments, running states (active run stop/busy),
+  //   pending permissions notifications, and canonical API task validation before send.
+  // - Threat/regression prevented: Stripped custom composer lacking media, run abort, permissions, or stale validation.
+  // - Symbols: OrchestratorChatComposer in OrchestrateView.tsx.
+  const sourcePath = path.join(__dirname, 'OrchestrateView.tsx')
+  const source = fs.readFileSync(sourcePath, 'utf8')
+
+  // Permissions awareness
+  assert.ok(
+    source.includes('data-testid="composer-pending-permissions-notice"'),
+    'Composer must render pending permissions notice when requests await approval'
+  )
+
+  // Attachments support
+  assert.ok(
+    source.includes('data-testid="orchestrator-chat-attach-btn"'),
+    'Composer must render attach button'
+  )
+  assert.ok(
+    source.includes('uploadDesktopV3MediaAsset'),
+    'Composer must upload attachments via uploadDesktopV3MediaAsset'
+  )
+  assert.ok(
+    source.includes('admitComposerFile'),
+    'Composer must admit files via admitComposerFile'
+  )
+
+  // Running states and stop action
+  assert.ok(
+    source.includes('data-testid="orchestrator-chat-stop-btn"'),
+    'Composer must render stop button when agent is running'
+  )
+  assert.ok(
+    source.includes('stopSessionV3Run'),
+    'Composer must stop active run via stopSessionV3Run'
+  )
+
+  // Authoritative API task fetch before send & fail-closed error
+  assert.ok(
+    source.includes('/v3/projects/${encodeURIComponent(project.id)}/tasks/${encodeURIComponent(effectiveTaskId)}'),
+    'Composer must fetch authoritative task from canonical API before send'
+  )
+  assert.ok(
+    source.includes('Context cannot be attached'),
+    'Composer must fail closed with explicit message when task ID is not found on server'
+  )
+})
+
+test('buildSelectedTaskMessageEnvelope and documentation make no server security claims', () => {
+  // Written test purpose:
+  // - Requirement: Documentation and comments must be honest; client message envelope must not claim
+  //   to be a server security boundary or tamper-proof guarantee.
+  // - Threat/regression prevented: False security claims regarding client-side message framing.
+  // - Symbols: orchestrate-task-helpers.ts.
+  const helpersPath = path.join(__dirname, 'orchestrate-task-helpers.ts')
+  const helpersSource = fs.readFileSync(helpersPath, 'utf8')
+
+  assert.ok(
+    helpersSource.includes('not a server security boundary') || helpersSource.includes('does not constitute a server security boundary'),
+    'Helpers documentation must honestly state that client envelope is not a server security boundary'
+  )
+})

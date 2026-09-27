@@ -36,7 +36,8 @@ test('OrchestrateView synchronizes task cards with live session reality, plans, 
   // - Transition to needs_review upon completion, never just flip to completed!
   // - Support reopening tasks into multiple states
   const sourcePath = path.join(__dirname, 'OrchestrateView.tsx')
-  const source = fs.readFileSync(sourcePath, 'utf8')
+  const membershipPath = path.join(__dirname, '../runtime/desktop-projects-membership.ts')
+  const source = fs.readFileSync(sourcePath, 'utf8') + '\n' + fs.readFileSync(membershipPath, 'utf8')
 
   // Realtime demand lease and plan hydration
   assert.ok(source.includes('acquireSessionDemand'), 'OrchestrateView must acquire realtime demand leases for active tasks')

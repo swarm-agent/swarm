@@ -476,11 +476,13 @@ export interface ValidateSelectedTaskResult {
  * - Exact project/task/session/plan revision; never title inference.
  * - Stale/missing/cross-project tasks are rejected immediately.
  * - Snapshot on send: creates an immutable snapshot of verified task state at send time.
+ * Note: This client-side validation ensures the UI forwards accurate, verified task context
+ * to the AI model. It is not a server security boundary or tamper-proof authorization guarantee.
  */
 export function validateSelectedTaskForContext(
   project: Pick<ProjectSummary, 'id' | 'name' | 'repoPath'> | null | undefined,
   task: RunningTask | null | undefined,
-  currentTasks?: RunningTask[],
+  currentTasks?: RunningTask[] | RunningTask,
 ): ValidateSelectedTaskResult {
   if (!project || !project.id || !project.id.trim()) {
     return {
@@ -500,12 +502,25 @@ export function validateSelectedTaskForContext(
 
   // Cross-project & existence check: match exclusively by task.id (NEVER title inference)
   if (currentTasks) {
-    const liveMatch = currentTasks.find((t) => t.id === task.id)
+    const liveMatch = Array.isArray(currentTasks)
+      ? currentTasks.find((t) => t.id === task.id)
+      : (currentTasks.id === task.id ? currentTasks : undefined)
+
     if (!liveMatch) {
       return {
         valid: false,
         reason: 'cross_project',
         error: `Selected task ${task.id} is missing from active project ${project.id} or belongs to another project`,
+      }
+    }
+
+    // Project ID verification if present on live match
+    const liveProjectId = (liveMatch as any).projectId || (liveMatch as any).project_id
+    if (liveProjectId && liveProjectId !== project.id.trim()) {
+      return {
+        valid: false,
+        reason: 'cross_project',
+        error: `Selected task ${task.id} belongs to project ${liveProjectId}, not active project ${project.id}`,
       }
     }
 
@@ -517,6 +532,39 @@ export function validateSelectedTaskForContext(
         valid: false,
         reason: 'stale_revision',
         error: `Selected task ${task.id} revision r${callerRev} is stale (project task is at r${liveRev})`,
+      }
+    }
+
+    // Stale session check: ensure session IDs match if both specify one
+    const callerSid = task.sessionId || (task.planBinding?.sessionId) || (task as any).plan_binding?.sessionId || (task as any).plan_binding?.session_id
+    const liveSid = liveMatch.sessionId || (liveMatch.planBinding?.sessionId) || (liveMatch as any).plan_binding?.sessionId || (liveMatch as any).plan_binding?.session_id
+    if (callerSid && liveSid && callerSid !== liveSid) {
+      return {
+        valid: false,
+        reason: 'stale_task',
+        error: `Selected task ${task.id} session ${callerSid} is stale (project task session is ${liveSid})`,
+      }
+    }
+
+    // Stale plan check: ensure plan IDs and definition revisions match if both specify them
+    const callerBinding = task.planBinding || (task as any).plan_binding
+    const liveBinding = liveMatch.planBinding || (liveMatch as any).plan_binding
+    const callerPlanId = callerBinding?.planId || callerBinding?.plan_id
+    const livePlanId = liveBinding?.planId || liveBinding?.plan_id
+    if (callerPlanId && livePlanId && callerPlanId !== livePlanId) {
+      return {
+        valid: false,
+        reason: 'stale_task',
+        error: `Selected task ${task.id} plan ${callerPlanId} is stale (project task plan is ${livePlanId})`,
+      }
+    }
+    const callerPlanRev = typeof callerBinding?.definitionRevision === 'number' ? callerBinding.definitionRevision : (typeof callerBinding?.definition_revision === 'number' ? callerBinding.definition_revision : undefined)
+    const livePlanRev = typeof liveBinding?.definitionRevision === 'number' ? liveBinding.definitionRevision : (typeof liveBinding?.definition_revision === 'number' ? liveBinding.definition_revision : undefined)
+    if (typeof callerPlanRev === 'number' && typeof livePlanRev === 'number' && callerPlanRev !== livePlanRev) {
+      return {
+        valid: false,
+        reason: 'stale_revision',
+        error: `Selected task ${task.id} plan definition revision r${callerPlanRev} is stale (project task plan is at r${livePlanRev})`,
       }
     }
 
@@ -557,6 +605,9 @@ export function validateSelectedTaskForContext(
  * Builds explicit user-message envelope for forwarding selected-task context.
  * This guarantees the AI receives exact task context in content without backend schema changes
  * or relying on invented metadata ignored by the model executor.
+ * Note: This message envelope is a client-side prompt formatting mechanism so the AI
+ * orchestrator understands which task the operator is discussing; it does not constitute
+ * a server security boundary.
  */
 export function buildSelectedTaskMessageEnvelope(
   snapshot: SelectedTaskContextSnapshot,

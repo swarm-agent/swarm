@@ -52,6 +52,7 @@ import {
   Upload,
   Volume2,
   Send,
+  Square,
   X,
   Zap,
 } from 'lucide-react'
@@ -82,7 +83,7 @@ import {
   computeActiveTaskSessionIds,
   TaskSessionLeaseManager,
 } from '../runtime/desktop-projects'
-import { mapBackendTask } from '../state/desktop-projects-state'
+import { mapBackendTask, mapBackendTasks } from '../state/desktop-projects-state'
 import {
   DeployedWorker,
   MediaDeliverable,
@@ -110,6 +111,10 @@ import {
   createDesktopV3ExistingMessageOperation,
   continueDesktopV3Conversation,
 } from '../session-v3/existing-session-flow'
+import { getDesktopV3MediaCapability, uploadDesktopV3MediaAsset } from '../session-v3/write-api'
+import { admitComposerFile } from '../chat/services/composer-attachments'
+import { stopSessionV3Run } from '../session-v3/api'
+import type { DesktopV3MediaReference } from '../state/desktop-v3-cache-types'
 import {
   buildTaskAcceptancePayload,
   buildSelectedTaskMessageEnvelope,
@@ -2503,27 +2508,100 @@ function MinimalTaskCard({
  * Bottom Composer for Orchestrator Chat with safe selected-task context forwarding.
  * Supports explicit user-message envelope snapshotting on send, exact project/task/revision
  * validation, and rejects stale, missing, or cross-project tasks.
+ * Includes attachments, running states (active run stop/busy), and pending permissions.
  */
 function OrchestratorChatComposer({
   sessionId,
   project,
   targetTask,
-  allTasks,
+  selectedTaskId,
+  allTasks: _allTasks,
   onDeselectTask,
 }: {
   sessionId: string
   project?: ProjectSummary
   targetTask?: RunningTask | null
+  selectedTaskId?: string
   allTasks?: RunningTask[]
   onDeselectTask?: () => void
 }) {
   const [draft, setDraft] = useState('')
   const [sending, setSending] = useState(false)
   const [sendError, setSendError] = useState<string | null>(null)
+  const [attachments, setAttachments] = useState<DesktopV3MediaReference[]>([])
+  const [uploadingAttachment, setUploadingAttachment] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
+
+  const activeRun = useDesktopV3CacheSelector(
+    useCallback((state) => state.activeRunsBySession[sessionId] ?? null, [sessionId])
+  )
+  const isRunning = Boolean(activeRun && activeRun.runId)
+
+  const pendingPermissions = useDesktopV3CacheSelector(
+    useCallback(
+      (state) =>
+        (state.permissionsBySession[sessionId] ?? []).filter(
+          (p) => p.status === 'pending' || (p as any).state === 'pending'
+        ),
+      [sessionId]
+    )
+  )
+
+  const handleStopRun = async () => {
+    if (!activeRun?.runId) return
+    try {
+      await stopSessionV3Run(sessionId, { runId: activeRun.runId })
+    } catch (err: any) {
+      setSendError(err?.message || 'Failed to stop agent execution')
+    }
+  }
+
+  const handleFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files
+    if (!files || files.length === 0) return
+    setUploadingAttachment(true)
+    setSendError(null)
+    try {
+      const capability = await getDesktopV3MediaCapability(sessionId).catch(() => null)
+      for (const file of Array.from(files)) {
+        if (capability) {
+          const admission = admitComposerFile(file, capability)
+          if (admission.kind === 'rejected') {
+            throw new Error(admission.reason)
+          }
+          if (admission.kind === 'media' && capability.contract_token) {
+            const uploaded = await uploadDesktopV3MediaAsset({
+              sessionId,
+              file,
+              mimeType: admission.mimeType || file.type || 'application/octet-stream',
+              modality: admission.capability.modality,
+              fileType: admission.fileType,
+              contractToken: capability.contract_token,
+            })
+            setAttachments((prev) => [...prev, uploaded])
+            continue
+          }
+        }
+        if (file.size <= 1024 * 1024) {
+          const text = await file.text()
+          setDraft((prev) => (prev.trim() ? `${prev}\n\n[File: ${file.name}]\n${text}` : `[File: ${file.name}]\n${text}`))
+        } else {
+          throw new Error(`File ${file.name} exceeds attachment limit and cannot be uploaded.`)
+        }
+      }
+    } catch (err: any) {
+      setSendError(err?.message || 'Failed to attach file')
+    } finally {
+      setUploadingAttachment(false)
+      if (fileInputRef.current) {
+        fileInputRef.current.value = ''
+      }
+    }
+  }
 
   const handleSend = async () => {
     const text = draft.trim()
-    if (!text || sending) return
+    if ((!text && attachments.length === 0) || sending || isRunning) return
 
     setSending(true)
     setSendError(null)
@@ -2535,14 +2613,45 @@ function OrchestratorChatComposer({
         ...(project ? { project_id: project.id } : {}),
       }
 
-      if (targetTask) {
-        // Validation: exact project/task/session/plan revision, never title inference; stale/missing/cross-project reject
-        const validation = validateSelectedTaskForContext(project, targetTask, allTasks)
+      // Check if task context was intended (either targetTask or selectedTaskId is present)
+      const effectiveTaskId = targetTask?.id || selectedTaskId
+
+      if (effectiveTaskId) {
+        if (!project || !project.id || !project.id.trim()) {
+          throw new Error('No active project selected for task context forwarding')
+        }
+
+        // Canonical API fetch before send: never rely solely on stale local cache
+        let authoritativeTask: RunningTask | null = null
+        try {
+          const res = await requestJson<{ task?: any }>(
+            `/v3/projects/${encodeURIComponent(project.id)}/tasks/${encodeURIComponent(effectiveTaskId)}`
+          )
+          if (res?.task) {
+            authoritativeTask = mapBackendTasks([res.task])[0] || null
+          }
+        } catch (fetchErr: any) {
+          throw new Error(
+            `Selected task "${effectiveTaskId}" was not found in project "${project.id}": ${fetchErr?.message || 'task lookup failed'}`
+          )
+        }
+
+        if (!authoritativeTask) {
+          // Fail closed when missing selected ID rather than silently general message
+          throw new Error(
+            `Selected task "${effectiveTaskId}" was not found in project "${project.id}". Context cannot be attached.`
+          )
+        }
+
+        // Validate selected task context against authoritative task:
+        // compares revision, project, session, and plan
+        const candidateTask = targetTask || authoritativeTask
+        const validation = validateSelectedTaskForContext(project, candidateTask, authoritativeTask)
         if (!validation.valid) {
           throw new Error(validation.error || 'Selected task context is invalid or stale')
         }
 
-        // Snapshot on send: capture immutable record at the moment of send
+        // Snapshot on send: capture immutable record at the moment of send from authoritative task
         const snapshot = validation.snapshot!
 
         // Format explicit user-message envelope in content (no system prompt/schema changes)
@@ -2556,10 +2665,12 @@ function OrchestratorChatComposer({
         sessionId,
         prompt: finalContent,
         metadata: finalMetadata,
+        media: attachments.length > 0 ? attachments : undefined,
       })
 
       await continueDesktopV3Conversation(operation)
       setDraft('')
+      setAttachments([])
     } catch (err: any) {
       setSendError(err?.message || String(err))
     } finally {
@@ -2567,23 +2678,38 @@ function OrchestratorChatComposer({
     }
   }
 
+  const effectiveTask = targetTask || (selectedTaskId ? { id: selectedTaskId, title: selectedTaskId, revision: 1 } : null)
+
   return (
     <div
       className="border-t border-slate-800 bg-[#0a0f1d] p-3 text-xs space-y-2 flex-shrink-0"
       data-testid="orchestrator-chat-composer"
     >
-      {targetTask && (
+      {/* Pending permissions indicator if any requests are awaiting approval */}
+      {pendingPermissions.length > 0 && (
+        <div
+          className="flex items-center justify-between px-2.5 py-1 rounded-lg bg-amber-950/40 border border-amber-500/30 text-[11px] text-amber-200"
+          data-testid="composer-pending-permissions-notice"
+        >
+          <span className="font-medium">
+            ⚠️ {pendingPermissions.length} permission request(s) awaiting approval
+          </span>
+        </div>
+      )}
+
+      {/* Task Context Badge */}
+      {effectiveTask && (
         <div
           className="flex items-center justify-between px-2.5 py-1 rounded-lg bg-blue-950/40 border border-blue-500/30 text-[11px] text-blue-200"
           data-testid="composer-task-context-badge"
         >
           <div className="flex items-center gap-1.5 min-w-0">
             <span className="font-semibold text-blue-300">Context:</span>
-            <span className="font-medium text-white truncate max-w-[200px]" title={targetTask.title}>
-              {targetTask.title}
+            <span className="font-medium text-white truncate max-w-[200px]" title={effectiveTask.title}>
+              {effectiveTask.title}
             </span>
             <span className="font-mono text-[9px] px-1 py-0.2 rounded bg-blue-900/60 text-blue-300 border border-blue-500/30 font-bold">
-              r{targetTask.revision || 1}
+              r{effectiveTask.revision || 1}
             </span>
           </div>
           {onDeselectTask && (
@@ -2601,6 +2727,29 @@ function OrchestratorChatComposer({
         </div>
       )}
 
+      {/* Attachments preview list */}
+      {attachments.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 pb-1">
+          {attachments.map((att, idx) => (
+            <div
+              key={att.id || idx}
+              className="flex items-center gap-1 px-2 py-0.5 rounded bg-slate-800 text-[11px] text-slate-200 border border-slate-700"
+            >
+              <Paperclip size={10} className="text-slate-400" />
+              <span className="truncate max-w-[120px]">{att.name || `Attachment ${idx + 1}`}</span>
+              <button
+                type="button"
+                onClick={() => setAttachments((prev) => prev.filter((_, i) => i !== idx))}
+                className="text-slate-400 hover:text-red-300 p-0.5"
+                title="Remove attachment"
+              >
+                <X size={10} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
       {sendError && (
         <div
           className="p-2 rounded bg-red-950/40 border border-red-500/30 text-red-200 text-[11px]"
@@ -2611,6 +2760,13 @@ function OrchestratorChatComposer({
       )}
 
       <div className="relative flex items-end gap-2">
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          className="hidden"
+          onChange={handleFileSelected}
+        />
         <textarea
           value={draft}
           onChange={(e) => {
@@ -2623,20 +2779,51 @@ function OrchestratorChatComposer({
               void handleSend()
             }
           }}
-          disabled={sending}
+          disabled={sending || isRunning}
           rows={2}
           placeholder={
-            targetTask
-              ? `Message about "${targetTask.title}"...`
+            isRunning
+              ? 'Agent is actively executing...'
+              : effectiveTask
+              ? `Message about "${effectiveTask.title}"...`
               : 'Message Swarm Orchestrator...'
           }
-          className="flex-1 rounded-xl bg-slate-950/80 border border-slate-800 p-2.5 text-slate-200 placeholder-slate-500 focus:outline-none focus:border-blue-500/60 resize-none text-xs font-sans leading-relaxed"
+          className="flex-1 rounded-xl bg-slate-950/80 border border-slate-800 p-2.5 text-slate-200 placeholder-slate-500 focus:outline-none focus:border-blue-500/60 resize-none text-xs font-sans leading-relaxed disabled:opacity-60"
           data-testid="orchestrator-chat-input"
         />
+
+        {/* Attachment button */}
+        <button
+          type="button"
+          onClick={() => fileInputRef.current?.click()}
+          disabled={sending || isRunning || uploadingAttachment}
+          className="flex items-center justify-center p-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex-shrink-0"
+          title="Attach file or image"
+          aria-label="Attach file or image"
+          data-testid="orchestrator-chat-attach-btn"
+        >
+          <Paperclip size={14} className={uploadingAttachment ? 'animate-pulse text-blue-400' : ''} />
+        </button>
+
+        {/* Stop button when agent is running */}
+        {isRunning && (
+          <button
+            type="button"
+            onClick={() => void handleStopRun()}
+            className="flex items-center justify-center p-2.5 rounded-xl bg-red-600/80 hover:bg-red-500 text-white transition-colors flex-shrink-0"
+            title="Stop agent run"
+            aria-label="Stop agent run"
+            data-testid="orchestrator-chat-stop-btn"
+          >
+            <Square size={13} className="fill-current" />
+          </button>
+        )}
+
+        {/* Send button */}
         <button
           type="button"
           onClick={() => void handleSend()}
-          disabled={sending || !draft.trim()}
+          disabled={sending || isRunning || (!draft.trim() && attachments.length === 0)}
           className="flex items-center justify-center p-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex-shrink-0"
           title="Send message"
           aria-label="Send message"
@@ -2658,6 +2845,7 @@ function OrchestratorChatSidebar({
   project,
   activeTask,
   selectedTask,
+  selectedTaskId,
   allTasks,
   onBackToOrchestrator,
   onOrchestratorSessionReset,
@@ -2667,6 +2855,7 @@ function OrchestratorChatSidebar({
   project?: ProjectSummary
   activeTask?: RunningTask
   selectedTask?: RunningTask | null
+  selectedTaskId?: string
   allTasks?: RunningTask[]
   onBackToOrchestrator?: () => void
   onOrchestratorSessionReset?: (newSessionId: string) => void
@@ -2871,7 +3060,7 @@ function OrchestratorChatSidebar({
             </button>
           </div>
           {/* Selected Task Context Banner */}
-          {selectedTask && !activeTask && (
+          {(selectedTask || selectedTaskId) && !activeTask && (
             <div
               className="flex items-center justify-between px-3 py-1.5 bg-blue-950/40 border-t border-blue-500/30 text-[11px] text-blue-200"
               data-testid="selected-task-context-banner"
@@ -2879,11 +3068,11 @@ function OrchestratorChatSidebar({
               <div className="flex items-center gap-1.5 min-w-0">
                 <Target size={11} className="text-blue-400 flex-shrink-0" />
                 <span className="font-semibold text-blue-300">Selected Task:</span>
-                <span className="font-medium text-white truncate max-w-[200px]" title={selectedTask.title}>
-                  {selectedTask.title}
+                <span className="font-medium text-white truncate max-w-[200px]" title={selectedTask ? selectedTask.title : selectedTaskId}>
+                  {selectedTask ? selectedTask.title : selectedTaskId}
                 </span>
                 <span className="font-mono text-[9px] px-1 py-0.2 rounded bg-blue-900/60 text-blue-300 border border-blue-500/30 font-bold">
-                  r{selectedTask.revision || 1}
+                  r{selectedTask?.revision || 1}
                 </span>
               </div>
               {onDeselectTask && (
@@ -2928,6 +3117,7 @@ function OrchestratorChatSidebar({
             sessionId={sessionId}
             project={project}
             targetTask={targetTask}
+            selectedTaskId={selectedTaskId}
             allTasks={allTasks}
             onDeselectTask={onDeselectTask}
           />
@@ -3794,6 +3984,7 @@ export function OrchestrateView({
 
   const activeTaskSessionIdsKey = useMemo(() => activeTaskSessionIds.join(','), [activeTaskSessionIds])
 
+  // OrchestrateView acquires realtime session demand leases via TaskSessionLeaseManager (acquireSessionDemand)
   // Realtime session demand and plan hydration for active tasks (incremental, deduplicated, sorted)
   useEffect(() => {
     const handle = leaseManagerRef.current!.reconcile(activeTaskSessionIds)
@@ -7292,6 +7483,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
           project={selectedProject}
           activeTask={activeTask}
           selectedTask={selectedTask}
+          selectedTaskId={selectedTaskId}
           allTasks={tasks}
           onBackToOrchestrator={handleBackToOrchestrator}
           onOrchestratorSessionReset={handleOrchestratorSessionReset}
