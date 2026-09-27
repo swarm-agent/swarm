@@ -1,10 +1,13 @@
 package session
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math/big"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -107,6 +110,28 @@ type PlanLifecycleProposalInput struct {
 	ExecutionGranularity  string
 	ContinuationPolicy    string
 	ContinueAutomatically *bool
+}
+
+// ProjectTaskPlanSubmissionInput encapsulates direct submission of a structured plan document to a project task card.
+type ProjectTaskPlanSubmissionInput struct {
+	AccountScopeID  string
+	UserID          string
+	ProjectID       string
+	TaskID          string
+	SessionID       string
+	Document        *pebblestore.SessionPlanDocument
+	PlanText        string
+	Title           string
+	WorkspacePath   string
+	ParentSessionID string
+}
+
+// ProjectTaskPlanSubmissionResult holds the committed task and plan state after submission.
+type ProjectTaskPlanSubmissionResult struct {
+	Task    pebblestore.ProjectTaskRecord
+	Plan    pebblestore.SessionPlanSnapshot
+	Session pebblestore.SessionSnapshot
+	Receipt string
 }
 
 type PlanLifecycleAmendmentInput struct {
@@ -304,6 +329,188 @@ func (s *PlanLifecycleService) SubmitPlanForApproval(input PlanLifecyclePlanInpu
 	}
 	return PlanLifecycleResult{}, errors.New("submit plan for approval requires the canonical V3 mutation boundary")
 }
+
+// SubmitProjectTaskStructuredPlan submits a structured plan directly to a project task card without starting an implementation run.
+func (s *PlanLifecycleService) SubmitProjectTaskStructuredPlan(input ProjectTaskPlanSubmissionInput) (ProjectTaskPlanSubmissionResult, error) {
+	if s == nil || s.sessions == nil || s.sessions.store == nil {
+		return ProjectTaskPlanSubmissionResult{}, errors.New("plan lifecycle session service unavailable")
+	}
+	input.AccountScopeID = strings.TrimSpace(input.AccountScopeID)
+	input.UserID = strings.TrimSpace(input.UserID)
+	input.ProjectID = strings.TrimSpace(input.ProjectID)
+	input.TaskID = strings.TrimSpace(input.TaskID)
+	if input.AccountScopeID == "" {
+		return ProjectTaskPlanSubmissionResult{}, errors.New("account scope id is required")
+	}
+	if input.UserID == "" {
+		return ProjectTaskPlanSubmissionResult{}, errors.New("user id is required")
+	}
+	if input.ProjectID == "" {
+		return ProjectTaskPlanSubmissionResult{}, errors.New("project id is required")
+	}
+	if input.TaskID == "" {
+		return ProjectTaskPlanSubmissionResult{}, errors.New("task id is required")
+	}
+	if input.Document == nil {
+		return ProjectTaskPlanSubmissionResult{}, errors.New("structured plan document is required")
+	}
+	if err := ValidateExecutablePlanDocument(input.Document); err != nil {
+		return ProjectTaskPlanSubmissionResult{}, fmt.Errorf("invalid plan document: %w", err)
+	}
+
+	task, found, err := s.sessions.store.GetProjectTask(input.AccountScopeID, input.ProjectID, input.TaskID)
+	if err != nil {
+		return ProjectTaskPlanSubmissionResult{}, err
+	}
+	if !found || task == nil {
+		return ProjectTaskPlanSubmissionResult{}, fmt.Errorf("task %q not found", input.TaskID)
+	}
+
+	now := time.Now().UnixMilli()
+	sessionID := strings.TrimSpace(input.SessionID)
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(task.SessionID)
+	}
+	if sessionID == "" {
+		sessionID = NewSessionID()
+	}
+
+	session, sessFound, err := s.sessions.store.GetSession(sessionID)
+	if err != nil {
+		return ProjectTaskPlanSubmissionResult{}, err
+	}
+	wsPath := strings.TrimSpace(input.WorkspacePath)
+	if wsPath == "" {
+		wsPath = strings.TrimSpace(task.WorkspacePath)
+	}
+	if wsPath == "" {
+		wsPath = "."
+	}
+	if !sessFound {
+		session = pebblestore.SessionSnapshot{
+			ID:             sessionID,
+			UserID:         input.UserID,
+			AccountScopeID: input.AccountScopeID,
+			WorkspacePath:  wsPath,
+			WorkspaceName:  filepath.Base(wsPath),
+			Title:          fmt.Sprintf("[%s] %s", input.ProjectID, task.Title),
+			Mode:           ModePlan,
+			Metadata: map[string]any{
+				"project_id": input.ProjectID,
+				"task_id":    task.ID,
+				"task_title": task.Title,
+				"role":       "project_task",
+			},
+			CreatedAt: now,
+			UpdatedAt: now,
+		}
+		if s.applySessionMutation != nil {
+			createKey := fmt.Sprintf("project-task:create:%s:%s", task.ProjectID, task.ID)
+			_, _ = s.applySessionMutation(SessionMutationInput{
+				SessionID:       sessionID,
+				UserID:          input.UserID,
+				AccountScopeID:  input.AccountScopeID,
+				ClientRequestID: createKey,
+				IdempotencyKey:  createKey,
+				PayloadHash:     createKey,
+				RequestHash:     createKey,
+				Kind:            SessionMutationCreateSession,
+				Session:         &session,
+				NowUnixMs:       now,
+			})
+		} else {
+			_ = s.sessions.store.PutSession(session)
+		}
+	}
+
+	planID := strings.TrimSpace(input.Document.ID)
+	if planID == "" {
+		planID = fmt.Sprintf("plan_%d_%s", now, task.ID)
+		input.Document.ID = planID
+	}
+	title := strings.TrimSpace(input.Title)
+	if title == "" {
+		title = strings.TrimSpace(input.Document.Title)
+	}
+	if title == "" {
+		title = task.Title
+	}
+	planText := strings.TrimSpace(input.PlanText)
+	if planText == "" {
+		planText = fmt.Sprintf("# %s\n\n%s", title, input.Document.Info.Goal)
+	}
+
+	existingPlan, planFound, err := s.sessions.store.GetPlan(sessionID, planID)
+	if err != nil {
+		return ProjectTaskPlanSubmissionResult{}, err
+	}
+	version := 1
+	if planFound {
+		version = existingPlan.Version + 1
+	}
+
+	docCopy := clonePlanLifecycleDocument(input.Document)
+	docCopy.ID = planID
+	docCopy.Title = title
+	docCopy.Status = "pending_approval"
+	docCopy.RevisionID = fmt.Sprintf("%s:v%d", planID, version)
+
+	rawDoc, _ := json.Marshal(docCopy)
+	hashSum := sha256.Sum256(rawDoc)
+	receipt := hex.EncodeToString(hashSum[:])
+
+	planSnapshot := pebblestore.SessionPlanSnapshot{
+		ID:             planID,
+		SessionID:      sessionID,
+		UserID:         input.UserID,
+		AccountScopeID: input.AccountScopeID,
+		Title:          title,
+		Plan:           planText,
+		Status:         "pending_approval",
+		ApprovalState:  "pending",
+		Active:         true,
+		Version:        version,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+		Document:       docCopy,
+		UpdateSummary:  "structured plan submitted to task card",
+		UpdateScope:    "plan",
+		UpdateKind:     "task_card_submission",
+	}
+	if err := s.sessions.store.PutPlan(planSnapshot); err != nil {
+		return ProjectTaskPlanSubmissionResult{}, fmt.Errorf("failed to save plan: %w", err)
+	}
+
+	// Update ProjectTaskRecord with PlanBinding
+	task.SessionID = sessionID
+	task.PlanBinding = &pebblestore.ProjectTaskPlanBinding{
+		PlanID:             planID,
+		DefinitionRevision: version,
+		SessionID:          sessionID,
+		Receipt:            receipt,
+	}
+	task.Status = "pending_approval"
+	task.PlanSummary = docCopy.Info.Goal
+	if task.PlanSummary == "" {
+		task.PlanSummary = title
+	}
+	task.FullPlanMarkdown = planText
+	task.ActionNeeded = "Review plan in task card and click Approve"
+	task.WhatDidDo = append(task.WhatDidDo, fmt.Sprintf("Structured plan submitted for review (Rev %d)", version))
+	task.UpdatedAt = now
+
+	if err := s.sessions.store.PutProjectTask(input.AccountScopeID, task); err != nil {
+		return ProjectTaskPlanSubmissionResult{}, fmt.Errorf("failed to update project task: %w", err)
+	}
+
+	return ProjectTaskPlanSubmissionResult{
+		Task:    *task,
+		Plan:    planSnapshot,
+		Session: session,
+		Receipt: receipt,
+	}, nil
+}
+
 
 func (s *PlanLifecycleService) RequestFollowupCheckpoint(input PlanLifecycleFollowupCheckpointInput) (PlanLifecycleResult, error) {
 	if err := s.requireConfigured(); err != nil {

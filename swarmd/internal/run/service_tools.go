@@ -2942,14 +2942,53 @@ func (s *Service) executeExitPlanModeTool(sessionID, sessionMode string, agentPr
 		}
 		return &pebblestore.MessageSnapshot{Role: "system", Content: message.Content, Metadata: message.Metadata}
 	}
+	current, ok, getErr := s.sessions.GetSession(sessionID)
+	if getErr != nil {
+		return "", fmt.Errorf("exit_plan_mode failed to load current session policy: %w", getErr)
+	}
+	if !ok {
+		return "", fmt.Errorf("exit_plan_mode failed to load current session policy: session %q not found", sessionID)
+	}
+
+	var projectID, taskID string
+	if current.Metadata != nil {
+		projectID, _ = current.Metadata["project_id"].(string)
+		taskID, _ = current.Metadata["task_id"].(string)
+	}
+	isLinkedTask := strings.TrimSpace(projectID) != "" && strings.TrimSpace(taskID) != ""
+	if isLinkedTask {
+		lifecycle := sessionruntime.NewPlanLifecycleService(s.sessions)
+		lifecycle.SetApplySessionMutation(applySessionMutation)
+		subResult, subErr := lifecycle.SubmitProjectTaskStructuredPlan(sessionruntime.ProjectTaskPlanSubmissionInput{
+			AccountScopeID:  current.AccountScopeID,
+			UserID:          current.UserID,
+			ProjectID:       projectID,
+			TaskID:          taskID,
+			SessionID:       sessionID,
+			Document:        input.Document,
+			PlanText:        input.Plan,
+			Title:           input.Title,
+			WorkspacePath:   current.WorkspacePath,
+			ParentSessionID: "",
+		})
+		if subErr != nil {
+			return "", fmt.Errorf("exit_plan_mode failed to submit plan to task card: %w", subErr)
+		}
+		resp := map[string]any{
+			"tool":       "exit_plan_mode",
+			"status":     "plan_submitted_for_review",
+			"task_id":    taskID,
+			"project_id": projectID,
+			"plan_id":    subResult.Plan.ID,
+			"revision":   subResult.Plan.Version,
+			"receipt":    subResult.Receipt,
+			"message":    "Structured plan submitted to task card for user review. Implementation will begin once the user accepts the plan on the task card.",
+		}
+		raw, _ := json.Marshal(resp)
+		return string(raw), nil
+	}
+
 	if applySessionMutation != nil {
-		current, ok, getErr := s.sessions.GetSession(sessionID)
-		if getErr != nil {
-			return "", fmt.Errorf("exit_plan_mode failed to load current session policy: %w", getErr)
-		}
-		if !ok {
-			return "", fmt.Errorf("exit_plan_mode failed to load current session policy: session %q not found", sessionID)
-		}
 		transition, resolveErr := s.resolvePlanLifecycleModeTransition(current, agentProfile, sessionruntime.ModeAuto)
 		if resolveErr != nil {
 			return "", fmt.Errorf("exit_plan_mode failed to resolve auto model policy: %w", resolveErr)

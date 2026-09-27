@@ -772,6 +772,50 @@ func (s *Service) ExecuteToolForSessionScope(ctx context.Context, workspacePath 
 	return s.tools.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, call)
 }
 
+// ExecuteTaskProgramForCoordinator launches an approved Task Program through the canonical
+// scheduler using an owning coordinator run and durable reservations.
+func (s *Service) ExecuteTaskProgramForCoordinator(ctx context.Context, p identity.Principal, parentSessionID, runID string, record pebblestore.TaskProgramRecord) (string, error) {
+	if !p.Valid() || p.Type != "user" || p.UserID == "" || p.AccountScopeID == "" {
+		return "", errors.New("user id is required")
+	}
+	if s == nil || s.sessions == nil {
+		return "", errors.New("session service unavailable")
+	}
+	parentSession, found, err := s.sessions.GetSession(parentSessionID)
+	if err != nil {
+		return "", err
+	}
+	if !found {
+		return "", fmt.Errorf("parent session %q not found", parentSessionID)
+	}
+	if parentSession.AccountScopeID != p.AccountScopeID {
+		return "", errors.New("cross-account execution forbidden")
+	}
+
+	callID := fmt.Sprintf("call_tp_%s", record.ProgramID)
+	if s.permissions != nil {
+		readyIdxs := taskProgramReadyJobIndexes(record, 0)
+		_, _ = s.permissions.ReserveSubagentWave(permission.SubagentReservationRequest{
+			SessionID:           parentSessionID,
+			RunID:               runID,
+			CallID:              callID,
+			ManifestHash:        record.DefinitionHash,
+			LaunchCount:         len(record.Definition.Jobs),
+			Program:             true,
+			ReadyCount:          len(readyIdxs),
+			LowerConcurrencyCap: 1,
+		})
+	}
+
+	parsed := taskCallArguments{
+		Action:  "start",
+		Program: &record.Definition,
+	}
+	call := tool.Call{CallID: callID, Name: "task"}
+	return s.executeTaskProgram(ctx, parentSession.Mode, 1, call, nil, taskExecutionRequest{RunID: runID}, parentSession, parsed, record, record.Definition.ID, "Task Program execution")
+}
+
+
 func (s *Service) SetWorkspaceService(workspaceSvc *workspaceruntime.Service) {
 	if s == nil {
 		return
