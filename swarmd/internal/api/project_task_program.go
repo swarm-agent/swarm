@@ -815,11 +815,11 @@ func (s *Server) ApproveProjectTask(ctx context.Context, p identity.Principal, p
 				return nil, fmt.Errorf("plan ID mismatch: expected %q, got %q", planID, guard.PlanID)
 			}
 			if plan.ApprovalState == "approved" {
-				if guard.DefinitionRevision <= 0 || (existingTask.PlanBinding.DefinitionRevision != guard.DefinitionRevision || existingTask.PlanBinding.Receipt == "" || plan.AcceptedDefinitionReceipt != existingTask.PlanBinding.Receipt) {
+				if guard.DefinitionRevision <= 0 || plan.Version != guard.DefinitionRevision || existingTask.PlanBinding.DefinitionRevision != guard.DefinitionRevision || existingTask.PlanBinding.Receipt == "" || plan.AcceptedDefinitionReceipt != existingTask.PlanBinding.Receipt {
 					return nil, fmt.Errorf("plan definition is stale (guarded revision %d, current %d)", guard.DefinitionRevision, plan.Version)
 				}
 			} else {
-				if guard.DefinitionRevision <= 0 || plan.Version != guard.DefinitionRevision {
+				if guard.DefinitionRevision <= 0 || plan.Version != guard.DefinitionRevision || existingTask.PlanBinding.DefinitionRevision != guard.DefinitionRevision {
 					return nil, fmt.Errorf("plan definition is stale (guarded revision %d, current %d)", guard.DefinitionRevision, plan.Version)
 				}
 			}
@@ -830,6 +830,9 @@ func (s *Server) ApproveProjectTask(ctx context.Context, p identity.Principal, p
 	} else if hasGuards {
 		if guard.SessionID != "" && existingTask.SessionID != "" && guard.SessionID != existingTask.SessionID {
 			return nil, fmt.Errorf("session ID mismatch: expected %q, got %q", existingTask.SessionID, guard.SessionID)
+		}
+		if guard.PlanID != "" {
+			return nil, errors.New("plan ID mismatch: task has no plan binding")
 		}
 	}
 

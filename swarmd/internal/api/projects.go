@@ -3235,9 +3235,16 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		}
 		var guards tool.ProjectTaskApprovalGuards
 		if r.Body != nil {
-			var body tool.ProjectTaskApprovalGuards
-			if err := json.NewDecoder(r.Body).Decode(&body); err == nil {
-				guards = body
+			body, err := io.ReadAll(io.LimitReader(r.Body, 1024*1024))
+			if err != nil {
+				writeError(w, http.StatusBadRequest, errors.New("cannot read request body"))
+				return
+			}
+			if len(bytes.TrimSpace(body)) > 0 {
+				if err := json.Unmarshal(body, &guards); err != nil {
+					writeError(w, http.StatusBadRequest, fmt.Errorf("malformed JSON body: %w", err))
+					return
+				}
 			}
 		}
 		existingTask, found, _ := db.GetProjectTask(p.AccountScopeID, projectID, taskID)
@@ -3277,6 +3284,20 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		if !s.requireScopeAny(w, r, "projects:write", "sessions:write") {
 			return
 		}
+		var guards tool.ProjectTaskApprovalGuards
+		if r.Body != nil {
+			body, err := io.ReadAll(io.LimitReader(r.Body, 1024*1024))
+			if err != nil {
+				writeError(w, http.StatusBadRequest, errors.New("cannot read request body"))
+				return
+			}
+			if len(bytes.TrimSpace(body)) > 0 {
+				if err := json.Unmarshal(body, &guards); err != nil {
+					writeError(w, http.StatusBadRequest, fmt.Errorf("malformed JSON body: %w", err))
+					return
+				}
+			}
+		}
 		existingTask, found, err := db.GetProjectTask(p.AccountScopeID, projectID, taskID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)
@@ -3286,6 +3307,64 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, errors.New("task not found"))
 			return
 		}
+		if existingTask.AccountID != "" && existingTask.AccountID != p.AccountScopeID {
+			writeError(w, http.StatusForbidden, errors.New("cross-account task rejection forbidden"))
+			return
+		}
+		if existingTask.ProjectID != "" && existingTask.ProjectID != projectID {
+			writeError(w, http.StatusForbidden, errors.New("cross-project task rejection forbidden"))
+			return
+		}
+		if guards.SessionID != "" && existingTask.SessionID != "" && guards.SessionID != existingTask.SessionID {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("session ID mismatch: expected %q, got %q", existingTask.SessionID, guards.SessionID))
+			return
+		}
+		if guards.PlanID != "" && (existingTask.PlanBinding == nil || guards.PlanID != existingTask.PlanBinding.PlanID) {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("plan ID mismatch: expected %q, got %q", existingTask.PlanBinding.PlanID, guards.PlanID))
+			return
+		}
+
+		if existingTask.PlanBinding != nil && existingTask.PlanBinding.PlanID != "" && existingTask.SessionID != "" {
+			if existingTask.PlanBinding.SessionID != "" && existingTask.SessionID != "" && existingTask.PlanBinding.SessionID != existingTask.SessionID {
+				writeError(w, http.StatusConflict, errors.New("cross-session plan binding forbidden"))
+				return
+			}
+			plan, ok, err := db.GetPlan(existingTask.SessionID, existingTask.PlanBinding.PlanID)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, err)
+				return
+			}
+			if !ok || plan == nil {
+				writeError(w, http.StatusConflict, errors.New("bound plan unavailable"))
+				return
+			}
+			if plan.AccountScopeID != p.AccountScopeID {
+				writeError(w, http.StatusForbidden, errors.New("cross-account plan rejection forbidden"))
+				return
+			}
+			if plan.SessionID != existingTask.SessionID {
+				writeError(w, http.StatusForbidden, errors.New("cross-session plan rejection forbidden"))
+				return
+			}
+			if guards.DefinitionRevision > 0 && plan.Version != guards.DefinitionRevision {
+				writeError(w, http.StatusBadRequest, fmt.Errorf("plan definition is stale (guarded revision %d, current %d)", guards.DefinitionRevision, plan.Version))
+				return
+			}
+
+			// Reject plan definition via canonical mutation FIRST to avoid partial failure.
+			planCopy := *plan
+			planCopy.Status, planCopy.ApprovalState = "rejected", "rejected"
+			key := fmt.Sprintf("project-task:reject:%s:%d", taskID, existingTask.PlanBinding.DefinitionRevision)
+			if _, err := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+				SessionID: existingTask.SessionID, UserID: p.UserID, AccountScopeID: p.AccountScopeID,
+				ClientRequestID: key, IdempotencyKey: key, PayloadHash: key, RequestHash: key,
+				Kind: sessionruntime.SessionMutationSavePlan, PlanSave: &pebblestore.V3PlanSaveMutation{Plan: &planCopy},
+			}); err != nil {
+				writeError(w, http.StatusInternalServerError, err)
+				return
+			}
+		}
+
 		updated, err := db.UpdateProjectTask(p.AccountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
 			t.Status = "rejected"
 			t.ActionNeeded = "Task rejected by user"
@@ -3295,23 +3374,6 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
-		}
-		if updated.PlanBinding != nil && updated.PlanBinding.PlanID != "" && updated.SessionID != "" {
-			plan, ok, err := db.GetPlan(updated.SessionID, updated.PlanBinding.PlanID)
-			if err != nil || !ok {
-				writeError(w, http.StatusConflict, errors.New("bound plan unavailable; rejection retained on task"))
-				return
-			}
-			plan.Status, plan.ApprovalState = "rejected", "rejected"
-			key := fmt.Sprintf("project-task:reject:%s:%d", taskID, updated.PlanBinding.DefinitionRevision)
-			if _, err := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
-				SessionID: updated.SessionID, UserID: p.UserID, AccountScopeID: p.AccountScopeID,
-				ClientRequestID: key, IdempotencyKey: key, PayloadHash: key, RequestHash: key,
-				Kind: sessionruntime.SessionMutationSavePlan, PlanSave: &pebblestore.V3PlanSaveMutation{Plan: plan},
-			}); err != nil {
-				writeError(w, http.StatusInternalServerError, err)
-				return
-			}
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status": "rejected",
@@ -3331,11 +3393,23 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var req struct {
-			Feedback string `json:"feedback,omitempty"`
+			Feedback           string `json:"feedback,omitempty"`
+			DefinitionRevision int    `json:"definition_revision,omitempty"`
+			SessionID          string `json:"session_id,omitempty"`
+			PlanID             string `json:"plan_id,omitempty"`
 		}
-		body, _ := io.ReadAll(io.LimitReader(r.Body, 1024*1024))
-		if len(body) > 0 {
-			_ = json.Unmarshal(body, &req)
+		if r.Body != nil {
+			body, err := io.ReadAll(io.LimitReader(r.Body, 1024*1024))
+			if err != nil {
+				writeError(w, http.StatusBadRequest, errors.New("cannot read request body"))
+				return
+			}
+			if len(bytes.TrimSpace(body)) > 0 {
+				if err := json.Unmarshal(body, &req); err != nil {
+					writeError(w, http.StatusBadRequest, fmt.Errorf("malformed JSON body: %w", err))
+					return
+				}
+			}
 		}
 		fb := strings.TrimSpace(req.Feedback)
 
@@ -3343,6 +3417,32 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		if err != nil || !found || existing == nil {
 			writeError(w, http.StatusNotFound, errors.New("task not found"))
 			return
+		}
+		if existing.AccountID != "" && existing.AccountID != p.AccountScopeID {
+			writeError(w, http.StatusForbidden, errors.New("cross-account task reopen forbidden"))
+			return
+		}
+		if existing.ProjectID != "" && existing.ProjectID != projectID {
+			writeError(w, http.StatusForbidden, errors.New("cross-project task reopen forbidden"))
+			return
+		}
+		if req.SessionID != "" && existing.SessionID != "" && req.SessionID != existing.SessionID {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("session ID mismatch: expected %q, got %q", existing.SessionID, req.SessionID))
+			return
+		}
+		if req.PlanID != "" && (existing.PlanBinding == nil || req.PlanID != existing.PlanBinding.PlanID) {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("plan ID mismatch: expected %q, got %q", existing.PlanBinding.PlanID, req.PlanID))
+			return
+		}
+		if req.DefinitionRevision > 0 {
+			if existing.PlanBinding != nil && existing.PlanBinding.DefinitionRevision > 0 && req.DefinitionRevision != existing.PlanBinding.DefinitionRevision {
+				writeError(w, http.StatusBadRequest, fmt.Errorf("plan definition is stale (guarded revision %d, current %d)", req.DefinitionRevision, existing.PlanBinding.DefinitionRevision))
+				return
+			}
+			if existing.Revision > 0 && req.DefinitionRevision != existing.Revision {
+				writeError(w, http.StatusBadRequest, fmt.Errorf("task revision is stale (guarded revision %d, current %d)", req.DefinitionRevision, existing.Revision))
+				return
+			}
 		}
 		if existing.PlanBinding != nil || existing.Status == "pending_approval" || existing.Status == "planning" || existing.Status == "rejected" {
 			writeError(w, http.StatusConflict, errors.New("task requires structured plan review or revision; reopen cannot bypass approval"))
@@ -3433,6 +3533,51 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		if !s.requireScopeAny(w, r, "projects:write", "sessions:write") {
 			return
 		}
+		var guards tool.ProjectTaskApprovalGuards
+		if r.Body != nil {
+			body, err := io.ReadAll(io.LimitReader(r.Body, 1024*1024))
+			if err != nil {
+				writeError(w, http.StatusBadRequest, errors.New("cannot read request body"))
+				return
+			}
+			if len(bytes.TrimSpace(body)) > 0 {
+				if err := json.Unmarshal(body, &guards); err != nil {
+					writeError(w, http.StatusBadRequest, fmt.Errorf("malformed JSON body: %w", err))
+					return
+				}
+			}
+		}
+		existing, found, err := db.GetProjectTask(p.AccountScopeID, projectID, taskID)
+		if err != nil || !found || existing == nil {
+			writeError(w, http.StatusNotFound, errors.New("task not found"))
+			return
+		}
+		if existing.AccountID != "" && existing.AccountID != p.AccountScopeID {
+			writeError(w, http.StatusForbidden, errors.New("cross-account task completion forbidden"))
+			return
+		}
+		if existing.ProjectID != "" && existing.ProjectID != projectID {
+			writeError(w, http.StatusForbidden, errors.New("cross-project task completion forbidden"))
+			return
+		}
+		if guards.SessionID != "" && existing.SessionID != "" && guards.SessionID != existing.SessionID {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("session ID mismatch: expected %q, got %q", existing.SessionID, guards.SessionID))
+			return
+		}
+		if guards.PlanID != "" && (existing.PlanBinding == nil || guards.PlanID != existing.PlanBinding.PlanID) {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("plan ID mismatch: expected %q, got %q", existing.PlanBinding.PlanID, guards.PlanID))
+			return
+		}
+		if guards.DefinitionRevision > 0 {
+			if existing.PlanBinding != nil && existing.PlanBinding.DefinitionRevision > 0 && guards.DefinitionRevision != existing.PlanBinding.DefinitionRevision {
+				writeError(w, http.StatusBadRequest, fmt.Errorf("plan definition is stale (guarded revision %d, current %d)", guards.DefinitionRevision, existing.PlanBinding.DefinitionRevision))
+				return
+			}
+			if existing.Revision > 0 && guards.DefinitionRevision != existing.Revision {
+				writeError(w, http.StatusBadRequest, fmt.Errorf("task revision is stale (guarded revision %d, current %d)", guards.DefinitionRevision, existing.Revision))
+				return
+			}
+		}
 		updated, err := db.UpdateProjectTask(p.AccountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
 			t.Status = "completed"
 			t.ActionNeeded = "Task marked completed by user"
@@ -3466,17 +3611,24 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		type refineReq struct {
-			Feedback     string `json:"feedback,omitempty"`
-			ErrorSummary string `json:"error_summary,omitempty"`
-			Agent        string `json:"agent,omitempty"`
-			FeatureSize  string `json:"feature_size,omitempty"`
-			OutcomeType  string `json:"outcome_type,omitempty"`
-			Tier         string `json:"tier,omitempty"`
-			Model        string `json:"model,omitempty"`
+			Feedback           string `json:"feedback,omitempty"`
+			ErrorSummary       string `json:"error_summary,omitempty"`
+			Agent              string `json:"agent,omitempty"`
+			FeatureSize        string `json:"feature_size,omitempty"`
+			OutcomeType        string `json:"outcome_type,omitempty"`
+			Tier               string `json:"tier,omitempty"`
+			Model              string `json:"model,omitempty"`
+			DefinitionRevision int    `json:"definition_revision,omitempty"`
+			ExpectedRevision   int    `json:"expected_revision,omitempty"`
+			SessionID          string `json:"session_id,omitempty"`
+			PlanID             string `json:"plan_id,omitempty"`
 		}
 		var rReq refineReq
-		if len(body) > 0 {
-			_ = json.Unmarshal(body, &rReq)
+		if len(bytes.TrimSpace(body)) > 0 {
+			if err := json.Unmarshal(body, &rReq); err != nil {
+				writeError(w, http.StatusBadRequest, fmt.Errorf("malformed JSON body: %w", err))
+				return
+			}
 		}
 
 		proj, found, err := db.GetProject(p.AccountScopeID, projectID)
@@ -3487,6 +3639,46 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		if !found || proj == nil {
 			writeError(w, http.StatusNotFound, errors.New("project not found"))
 			return
+		}
+
+		existingTask, found, err := db.GetProjectTask(p.AccountScopeID, projectID, taskID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		if !found || existingTask == nil {
+			writeError(w, http.StatusNotFound, errors.New("task not found"))
+			return
+		}
+		if existingTask.AccountID != "" && existingTask.AccountID != p.AccountScopeID {
+			writeError(w, http.StatusForbidden, errors.New("cross-account task refinement forbidden"))
+			return
+		}
+		if existingTask.ProjectID != "" && existingTask.ProjectID != projectID {
+			writeError(w, http.StatusForbidden, errors.New("cross-project task refinement forbidden"))
+			return
+		}
+		if rReq.SessionID != "" && existingTask.SessionID != "" && rReq.SessionID != existingTask.SessionID {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("session ID mismatch: expected %q, got %q", existingTask.SessionID, rReq.SessionID))
+			return
+		}
+		if rReq.PlanID != "" && (existingTask.PlanBinding == nil || rReq.PlanID != existingTask.PlanBinding.PlanID) {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("plan ID mismatch: expected %q, got %q", existingTask.PlanBinding.PlanID, rReq.PlanID))
+			return
+		}
+		expectedRev := rReq.DefinitionRevision
+		if expectedRev <= 0 {
+			expectedRev = rReq.ExpectedRevision
+		}
+		if expectedRev > 0 {
+			if existingTask.PlanBinding != nil && existingTask.PlanBinding.DefinitionRevision > 0 && existingTask.PlanBinding.DefinitionRevision != expectedRev {
+				writeError(w, http.StatusBadRequest, fmt.Errorf("plan definition is stale (guarded revision %d, current %d)", expectedRev, existingTask.PlanBinding.DefinitionRevision))
+				return
+			}
+			if existingTask.Revision > 0 && existingTask.Revision != expectedRev {
+				writeError(w, http.StatusBadRequest, fmt.Errorf("task revision is stale (guarded revision %d, current %d)", expectedRev, existingTask.Revision))
+				return
+			}
 		}
 
 		fb := strings.TrimSpace(rReq.Feedback)
@@ -3645,9 +3837,16 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			JobID    string `json:"job_id"`
 			Feedback string `json:"feedback,omitempty"`
 		}
-		body, _ := io.ReadAll(io.LimitReader(r.Body, 1024*1024))
-		if len(body) > 0 {
-			_ = json.Unmarshal(body, &req)
+		body, err := io.ReadAll(io.LimitReader(r.Body, 1024*1024))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, errors.New("cannot read request body"))
+			return
+		}
+		if len(bytes.TrimSpace(body)) > 0 {
+			if err := json.Unmarshal(body, &req); err != nil {
+				writeError(w, http.StatusBadRequest, fmt.Errorf("malformed JSON body: %w", err))
+				return
+			}
 		}
 		jobID := strings.TrimSpace(req.JobID)
 		if jobID == "" {

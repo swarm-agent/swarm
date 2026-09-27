@@ -160,10 +160,38 @@ func TestProjectRealtimeDeliveryAndReplay(t *testing.T) {
 	conn = dialV3RealtimeStream(t, httpServer.URL)
 	resume(initial)
 
-	// Should replay frame1 and frame2
+	// Should replay both frame1 and frame2 with exact cursors and project isolation
 	replayedFrame1 := readProjectFrame(proj.ID)
 	if replayedFrame1.Kind != V3RealtimeKindProjectUpdated {
-		t.Fatalf("expected replayed kind %q, got %q", V3RealtimeKindProjectUpdated, replayedFrame1.Kind)
+		t.Fatalf("expected replayed frame1 kind %q, got %q", V3RealtimeKindProjectUpdated, replayedFrame1.Kind)
+	}
+	if replayedFrame1.ProjectID != proj.ID {
+		t.Fatalf("expected replayed frame1 project_id %q, got %q", proj.ID, replayedFrame1.ProjectID)
+	}
+	if replayedFrame1.EndpointCursor != frame1.EndpointCursor {
+		t.Fatalf("expected replayed frame1 cursor %q to match original %q", replayedFrame1.EndpointCursor, frame1.EndpointCursor)
+	}
+
+	replayedFrame2 := readProjectFrame(proj.ID)
+	if replayedFrame2.Kind != V3RealtimeKindProjectUpdated {
+		t.Fatalf("expected replayed frame2 kind %q, got %q", V3RealtimeKindProjectUpdated, replayedFrame2.Kind)
+	}
+	if replayedFrame2.ProjectID != proj.ID {
+		t.Fatalf("expected replayed frame2 project_id %q, got %q", proj.ID, replayedFrame2.ProjectID)
+	}
+	if replayedFrame2.EndpointCursor != frame2.EndpointCursor {
+		t.Fatalf("expected replayed frame2 cursor %q to match original %q", replayedFrame2.EndpointCursor, frame2.EndpointCursor)
+	}
+
+	if replayedFrame1.EndpointCursor == replayedFrame2.EndpointCursor {
+		t.Fatalf("expected monotonic distinct cursors between replayed frames, got %q", replayedFrame1.EndpointCursor)
+	}
+
+	// Bounded replay assertion: exactly 2 durable frames exist in outbox; no unexpected third frame
+	_ = conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+	var extra V3RealtimeMessage
+	if err := conn.ReadJSON(&extra); err == nil && extra.Kind == V3RealtimeKindProjectUpdated {
+		t.Fatalf("unexpected third project frame replayed: %+v", extra)
 	}
 }
 
