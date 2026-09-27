@@ -612,7 +612,9 @@ func (s *SessionStore) putProjectTaskLocked(accountScopeID string, task *Project
 	}
 	task.UpdatedAt = now
 
-	raw, err := json.Marshal(task)
+	toStore := *task
+	toStore.PlanDocument = nil
+	raw, err := json.Marshal(&toStore)
 	if err != nil {
 		return nil, err
 	}
@@ -663,6 +665,7 @@ func (s *SessionStore) GetProjectTask(accountScopeID, projectID, taskID string) 
 	if err := json.Unmarshal(val, &rec); err != nil {
 		return nil, false, err
 	}
+	s.hydrateProjectTaskPlanDocument(&rec)
 	return &rec, true, nil
 }
 
@@ -687,6 +690,7 @@ func (s *SessionStore) ListProjectTasks(accountScopeID, projectID string, limit 
 			return nil
 		}
 		if rec.AccountID == accountScopeID && rec.ProjectID == projectID {
+			s.hydrateProjectTaskPlanDocument(&rec)
 			tasks = append(tasks, rec)
 		}
 		return nil
@@ -745,6 +749,23 @@ func (s *SessionStore) DeleteProjectTask(accountScopeID, projectID, taskID strin
 	}
 	s.store.publishProjectRealtime(mut)
 	return nil
+}
+
+func (s *SessionStore) hydrateProjectTaskPlanDocument(task *ProjectTaskRecord) {
+	if task == nil {
+		return
+	}
+	if task.PlanDocument == nil && task.PlanBinding != nil && task.PlanBinding.PlanID != "" {
+		sessID := task.SessionID
+		if sessID == "" {
+			sessID = task.PlanBinding.SessionID
+		}
+		if sessID != "" {
+			if plan, found, err := s.GetPlan(sessID, task.PlanBinding.PlanID); err == nil && found && plan.Document != nil {
+				task.PlanDocument = plan.Document
+			}
+		}
+	}
 }
 
 func (s *SessionStore) deleteProjectTaskLocked(accountScopeID, projectID, taskID string) (*projectRealtimeMutation, error) {

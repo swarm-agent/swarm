@@ -181,8 +181,9 @@ type SessionPlanSnapshot struct {
 	RevisionKind        string               `json:"revision_kind,omitempty"`
 	RestoredFromVersion int                  `json:"restored_from_version,omitempty"`
 	Version             int                  `json:"version,omitempty"`
-	ParentRevision      int                  `json:"parent_revision,omitempty"`
-	Checkpoint          bool                 `json:"checkpoint,omitempty"`
+	ParentRevision            int                  `json:"parent_revision,omitempty"`
+	Checkpoint                bool                 `json:"checkpoint,omitempty"`
+	AcceptedDefinitionReceipt string               `json:"accepted_definition_receipt,omitempty"`
 }
 
 // SessionPlanAutomationIntent identifies the exact paused definition reviewed by
