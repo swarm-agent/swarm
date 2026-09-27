@@ -390,27 +390,30 @@ func TestTaskMatrix_Case2_ToolEquivalentPrincipalSharedPath(t *testing.T) {
 	taskID := taskMap["id"].(string)
 
 	// A: Calling with invalid principal (missing UserID) fails closed
-	err := f.server.DeployProjectTaskForPrincipal(identity.Principal{AccountScopeID: f.accountID}, projID, taskID)
+	err := f.server.DeployProjectTask(context.Background(), identity.Principal{AccountScopeID: f.accountID}, projID, taskID)
 	if err == nil || !strings.Contains(err.Error(), "user id is required") {
 		t.Fatalf("expected 'user id is required', got: %v", err)
 	}
 
-	// B: DeployProjectTask with accountScopeID resolves authentic user from identity store
-	err = f.server.DeployProjectTask(f.accountID, projID, taskID)
+	// B: Calling DeployProjectTask on a pending_approval task fails closed without approval
+	err = f.server.DeployProjectTask(context.Background(), p, projID, taskID)
+	if err == nil || !strings.Contains(err.Error(), "awaiting approval") {
+		t.Fatalf("expected awaiting approval error, got: %v", err)
+	}
+
+	// C: Approving task via canonical ApproveProjectTask succeeds and starts execution
+	appTask, err := f.server.ApproveProjectTask(context.Background(), p, projID, taskID)
 	if err != nil {
-		t.Fatalf("expected successful deploy via resolved authentic user, got: %v", err)
+		t.Fatalf("expected successful approval, got: %v", err)
+	}
+	if appTask == nil || appTask.Status != "in_progress" {
+		t.Fatalf("expected task in_progress, got: %#v", appTask)
 	}
 
-	// Verify task status is in_progress
-	task, found, _ := f.server.sessions.Store().GetProjectTask(f.accountID, projID, taskID)
-	if !found || task.Status != "in_progress" {
-		t.Fatalf("expected task in_progress, got: found=%v, status=%v", found, task.Status)
-	}
-
-	// C: Non-existent account fails closed without inventing identities
-	err = f.server.DeployProjectTask("non-existent-account", projID, taskID)
-	if err == nil || !strings.Contains(err.Error(), "user id is required") {
-		t.Fatalf("expected failure on unknown account, got: %v", err)
+	// D: Non-existent account fails closed without inventing identities
+	err = f.server.DeployProjectTask(context.Background(), identity.Principal{Type: "user", UserID: "u", AccountScopeID: "non-existent-account"}, projID, taskID)
+	if err == nil {
+		t.Fatal("expected failure on unknown account")
 	}
 }
 
@@ -421,13 +424,45 @@ func TestTaskMatrix_Case3_ParallelStagedCodersIsolationDependencyCommitConflict(
 	// Requirement-first Purpose:
 	// - Invariant: Staged Task Programs require non-overlapping scopes, verify that clean worktrees
 	//   with zero commits cannot be integrated (HEAD == base), and detect merge conflicts cleanly.
-	// - Authority: integrateStage in run/service_task_program_scheduler.go.
-	// - Threat/regression: False integration of zero-commit worktrees or merge conflict corruption.
+	// - Authority: integrateStage in run/service_task_program_scheduler.go, ValidateTaskProgramDefinition.
+	// - Threat/regression: False integration of zero-commit worktrees, overlapping scope corruption, or merge conflicts.
 	f := setupMatrixTestFixture(t)
 	defer f.db.Close()
 	projID := f.createProject(t)
 	p := identity.Principal{Type: "user", UserID: f.userID, AccountScopeID: f.accountID}
 
+	// 1. Verify overlapping scopes in the same stage fail validation
+	badTpDef := &pebblestore.TaskProgramDefinition{
+		ID: "tp-bad-overlap",
+		Stages: []pebblestore.TaskProgramStageSpec{
+			{ID: "stage-1", DependencyEvidence: "Initial stage"},
+		},
+		Jobs: []pebblestore.TaskProgramJobSpec{
+			{
+				ID:                 "job-1",
+				StageID:            "stage-1",
+				AgentType:          "coder",
+				Title:              "Part A",
+				MetaPrompt:         "Prompt A",
+				OwnedScope:         []string{"pkg/core/**"},
+				AcceptanceCriteria: []string{"A done"},
+			},
+			{
+				ID:                 "job-2",
+				StageID:            "stage-1",
+				AgentType:          "coder",
+				Title:              "Part B",
+				MetaPrompt:         "Prompt B",
+				OwnedScope:         []string{"pkg/core/**"},
+				AcceptanceCriteria: []string{"B done"},
+			},
+		},
+	}
+	if err := pebblestore.ValidateTaskProgramDefinition(badTpDef); err == nil {
+		t.Fatal("expected overlapping scopes in same stage to fail validation")
+	}
+
+	// 2. Create valid multi-stage Coder task program with non-overlapping scopes
 	tpDef := &pebblestore.TaskProgramDefinition{
 		ID: "tp-staged-01",
 		Stages: []pebblestore.TaskProgramStageSpec{
@@ -475,18 +510,40 @@ func TestTaskMatrix_Case3_ParallelStagedCodersIsolationDependencyCommitConflict(
 		t.Fatal("expected task_program_id to be populated")
 	}
 
-	// Deploy the task program
-	err := f.server.DeployProjectTaskForPrincipal(p, projID, taskID)
+	// Approve and deploy the task program
+	appTask, err := f.server.ApproveProjectTask(context.Background(), p, projID, taskID)
 	if err != nil {
-		t.Fatalf("deploy task program failed: %v", err)
+		t.Fatalf("approve task program failed: %v", err)
+	}
+	if appTask == nil || appTask.Status != "in_progress" {
+		t.Fatalf("expected task in_progress, got: %#v", appTask)
 	}
 
-	// Verify canonical scheduler was invoked
+	// Verify canonical scheduler was invoked with staged structure
 	f.runSvc.mu.Lock()
 	executions := f.runSvc.tpExecutions
+	lastRec := f.runSvc.lastTPRecord
 	f.runSvc.mu.Unlock()
 	if executions != 1 {
 		t.Fatalf("expected 1 canonical TP execution, got %d", executions)
+	}
+	if len(lastRec.Definition.Stages) != 2 {
+		t.Fatalf("expected 2 stages, got %d", len(lastRec.Definition.Stages))
+	}
+	if len(lastRec.Definition.Stages[1].DependsOn) != 1 || lastRec.Definition.Stages[1].DependsOn[0] != "stage-1" {
+		t.Fatalf("expected stage-2 to depend on stage-1, got %#v", lastRec.Definition.Stages[1].DependsOn)
+	}
+	if len(lastRec.Definition.Jobs[1].DependsOn) != 1 || lastRec.Definition.Jobs[1].DependsOn[0] != "job-core" {
+		t.Fatalf("expected job-api to depend on job-core, got %#v", lastRec.Definition.Jobs[1].DependsOn)
+	}
+
+	// 3. Verify clean worktrees with zero commits cannot be integrated (HEAD == base)
+	wIntegrate := f.callAPI(http.MethodPost, "/"+projID+"/tasks/"+taskID+"/integrate", nil, p)
+	if wIntegrate.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 Bad Request on integrating zero-commit worktree, got %d: %s", wIntegrate.Code, wIntegrate.Body.String())
+	}
+	if !strings.Contains(wIntegrate.Body.String(), "no commits") {
+		t.Fatalf("expected 'no commits' error message, got: %s", wIntegrate.Body.String())
 	}
 }
 
@@ -568,7 +625,11 @@ func TestTaskMatrix_Case4_ManualPlanningPendingThenExactAcceptModelTransition(t 
 	}
 
 	// 3. User accepts the plan on the task card
-	w = f.callAPI(http.MethodPost, "/"+projID+"/tasks/"+taskID+"/approve", nil, p)
+	w = f.callAPI(http.MethodPost, "/"+projID+"/tasks/"+taskID+"/approve", map[string]any{
+		"session_id":          sessID,
+		"plan_id":             "plan-payment-v1",
+		"definition_revision": 1,
+	}, p)
 	if w.Code != http.StatusOK {
 		t.Fatalf("approve task plan failed %d: %s", w.Code, w.Body.String())
 	}
@@ -687,16 +748,16 @@ func TestTaskMatrix_Case6_UnacceptedNoImplementationIntents(t *testing.T) {
 // -----------------------------------------------------------------------------
 func TestTaskMatrix_Case7_RejectedStaleRevisionsNoSideEffects(t *testing.T) {
 	// Requirement-first Purpose:
-	// - Invariant: Approving a rejected task, a rejected plan, a stale plan revision, or
-	//   a cross-account task must be rejected without mutating durable state.
-	// - Authority: handleProjectTaskApprove in api/projects.go.
+	// - Invariant: Approving a rejected task, a rejected plan, a stale plan revision,
+	//   a mismatched plan/session ID, or a cross-account task must be rejected without mutating durable state.
+	// - Authority: ApproveProjectTask in api/project_task_program.go.
 	// - Threat/regression: Executing stale or rejected plans or bypassing authorization.
 	f := setupMatrixTestFixture(t)
 	defer f.db.Close()
 	projID := f.createProject(t)
 	p := identity.Principal{Type: "user", UserID: f.userID, AccountScopeID: f.accountID}
 
-	// Create task
+	// 1. Create task and reject it
 	w := f.callAPI(http.MethodPost, "/"+projID+"/tasks", map[string]any{
 		"title":  "Task to reject",
 		"prompt": "Reject me",
@@ -707,7 +768,6 @@ func TestTaskMatrix_Case7_RejectedStaleRevisionsNoSideEffects(t *testing.T) {
 	taskMap := resp["task"].(map[string]any)
 	taskID := taskMap["id"].(string)
 
-	// 1. Reject task
 	w = f.callAPI(http.MethodPost, "/"+projID+"/tasks/"+taskID+"/reject", nil, p)
 	if w.Code != http.StatusOK {
 		t.Fatalf("reject task failed %d: %s", w.Code, w.Body.String())
@@ -722,11 +782,105 @@ func TestTaskMatrix_Case7_RejectedStaleRevisionsNoSideEffects(t *testing.T) {
 		t.Fatalf("expected rejected message, got: %s", w.Body.String())
 	}
 
-	// 3. Cross-account approval attempt is rejected with 403 Forbidden
+	// 3. Cross-account approval attempt is rejected with 403 Forbidden or 404 Not Found
 	crossPrincipal := identity.Principal{Type: "user", UserID: "attacker", AccountScopeID: "rogue-account"}
 	w = f.callAPI(http.MethodPost, "/"+projID+"/tasks/"+taskID+"/approve", nil, crossPrincipal)
 	if w.Code != http.StatusNotFound && w.Code != http.StatusForbidden {
 		t.Fatalf("expected 404 or 403 on cross-account approval, got %d", w.Code)
+	}
+
+	// 4. Stale revision rejection: create big feature task with plan Rev 1, then update to Rev 2
+	doc1 := &pebblestore.SessionPlanDocument{
+		ID:    "plan-stale-01",
+		Title: "Plan Rev 1",
+		Info:  pebblestore.SessionPlanInfo{Goal: "Goal 1"},
+		Checkpoints: []pebblestore.SessionPlanCheckpoint{
+			{ID: "cp-1", Title: "Checkpoint 1"},
+		},
+	}
+	wPlan := f.callAPI(http.MethodPost, "/"+projID+"/tasks", map[string]any{
+		"title":         "Stale guard task",
+		"prompt":        "Test stale revision rejection",
+		"plan_document": doc1,
+	}, p)
+	if wPlan.Code != http.StatusCreated {
+		t.Fatalf("create plan task failed %d: %s", wPlan.Code, wPlan.Body.String())
+	}
+	var planResp map[string]any
+	_ = json.Unmarshal(wPlan.Body.Bytes(), &planResp)
+	pTaskMap := planResp["task"].(map[string]any)
+	pTaskID := pTaskMap["id"].(string)
+	pSessID := pTaskMap["session_id"].(string)
+
+	// Submit Rev 2 via SubmitProjectTaskPlan
+	doc2 := &pebblestore.SessionPlanDocument{
+		ID:    "plan-stale-01",
+		Title: "Plan Rev 2",
+		Info:  pebblestore.SessionPlanInfo{Goal: "Goal 2 updated"},
+		Checkpoints: []pebblestore.SessionPlanCheckpoint{
+			{ID: "cp-1", Title: "Checkpoint 1 updated"},
+		},
+	}
+	subResult2, err := f.server.SubmitProjectTaskPlan(context.Background(), sessionruntime.ProjectTaskPlanSubmissionInput{
+		AccountScopeID:  f.accountID,
+		UserID:          f.userID,
+		ProjectID:       projID,
+		TaskID:          pTaskID,
+		SessionID:       pSessID,
+		Document:        doc2,
+		PlanText:        "# Plan Rev 2",
+		Title:           "Plan Rev 2",
+	})
+	if err != nil {
+		t.Fatalf("submit rev 2 failed: %v", err)
+	}
+	if subResult2.Plan.Version != 2 {
+		t.Fatalf("expected plan revision 2, got %d", subResult2.Plan.Version)
+	}
+
+	// Attempt approval with stale definition_revision: 1
+	wStale := f.callAPI(http.MethodPost, "/"+projID+"/tasks/"+pTaskID+"/approve", map[string]any{
+		"session_id":          pSessID,
+		"plan_id":             "plan-stale-01",
+		"definition_revision": 1,
+	}, p)
+	if wStale.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 on stale revision, got %d: %s", wStale.Code, wStale.Body.String())
+	}
+	if !strings.Contains(wStale.Body.String(), "stale") {
+		t.Fatalf("expected 'stale' error message, got: %s", wStale.Body.String())
+	}
+
+	// Attempt approval with mismatched plan_id
+	wMismatchPlan := f.callAPI(http.MethodPost, "/"+projID+"/tasks/"+pTaskID+"/approve", map[string]any{
+		"session_id":          pSessID,
+		"plan_id":             "wrong-plan-id",
+		"definition_revision": 2,
+	}, p)
+	if wMismatchPlan.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 on plan mismatch, got %d: %s", wMismatchPlan.Code, wMismatchPlan.Body.String())
+	}
+
+	// Attempt approval with mismatched session_id
+	wMismatchSess := f.callAPI(http.MethodPost, "/"+projID+"/tasks/"+pTaskID+"/approve", map[string]any{
+		"session_id":          "wrong-session-id",
+		"plan_id":             "plan-stale-01",
+		"definition_revision": 2,
+	}, p)
+	if wMismatchSess.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 on session mismatch, got %d: %s", wMismatchSess.Code, wMismatchSess.Body.String())
+	}
+
+	// 5. Verify no side effects occurred: task remains pending_approval and no run intent created
+	taskAfterStale, _, _ := f.server.sessions.Store().GetProjectTask(f.accountID, projID, pTaskID)
+	if taskAfterStale.Status != "pending_approval" {
+		t.Fatalf("expected task status to remain 'pending_approval', got %q", taskAfterStale.Status)
+	}
+	intents, _ := f.server.sessions.Store().ListRunIntents(pSessID, 10)
+	for _, in := range intents {
+		if in.Status == pebblestore.V3RunIntentPendingExecutor || in.Status == pebblestore.V3RunIntentRunning {
+			t.Fatalf("unexpected active run intent found after rejected approval: %s", in.RunID)
+		}
 	}
 }
 
@@ -737,7 +891,7 @@ func TestTaskMatrix_Case8_DuplicateConcurrentRetriesCounts(t *testing.T) {
 	// Requirement-first Purpose:
 	// - Invariant: Duplicate or concurrent create, deploy, and approve calls must be idempotent
 	//   and not create orphan sessions, duplicate runIntents, or duplicate git worktrees.
-	// - Authority: handleProjectTaskApprove in api/projects.go.
+	// - Authority: ApproveProjectTask in api/project_task_program.go.
 	// - Threat/regression: Duplicate execution runs and orphan sessions on network retries.
 	f := setupMatrixTestFixture(t)
 	defer f.db.Close()
@@ -777,10 +931,58 @@ func TestTaskMatrix_Case8_DuplicateConcurrentRetriesCounts(t *testing.T) {
 		t.Fatalf("expected 'already_approved' on retry, got %v", app2["status"])
 	}
 
-	// Verify only 1 run intent was enqueued
+	// Concurrent retries: 5 goroutines calling approve concurrently
+	var wg sync.WaitGroup
+	concurrentCount := 5
+	results := make([]int, concurrentCount)
+	for i := 0; i < concurrentCount; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			rw := f.callAPI(http.MethodPost, "/"+projID+"/tasks/"+taskID+"/approve", nil, p)
+			results[idx] = rw.Code
+		}(i)
+	}
+	wg.Wait()
+	for i, code := range results {
+		if code != http.StatusOK {
+			t.Fatalf("concurrent approve %d returned code %d", i, code)
+		}
+	}
+
+	// Verify only 1 run intent was enqueued across all retries and concurrent calls
 	intents, _ := f.server.sessions.Store().ListRunIntents(sessID, 10)
 	if len(intents) != 1 {
-		t.Fatalf("expected exactly 1 run intent across retries, got %d", len(intents))
+		t.Fatalf("expected exactly 1 run intent across retries and concurrent calls, got %d", len(intents))
+	}
+
+	// Partial failure and resumption test:
+	// Verify that if a task was partially marked in_progress without run intent,
+	// subsequent approve safely resumes and establishes the run intent.
+	w2 := f.callAPI(http.MethodPost, "/"+projID+"/tasks", map[string]any{
+		"title":  "Partial failure task",
+		"prompt": "Test partial failure resume",
+		"agent":  "coder",
+	}, p)
+	var resp2 map[string]any
+	_ = json.Unmarshal(w2.Body.Bytes(), &resp2)
+	taskMap2 := resp2["task"].(map[string]any)
+	taskID2 := taskMap2["id"].(string)
+	sessID2 := taskMap2["session_id"].(string)
+
+	// Simulate partial failure: task status flipped to in_progress but NO run intent exists
+	_ = f.server.sessions.Store().UpdateProjectTask(f.accountID, projID, taskID2, func(t *pebblestore.ProjectTaskRecord) error {
+		t.Status = "in_progress"
+		return nil
+	})
+	// Approve call detects missing active run intent, resumes and establishes run intent
+	wResume := f.callAPI(http.MethodPost, "/"+projID+"/tasks/"+taskID2+"/approve", nil, p)
+	if wResume.Code != http.StatusOK {
+		t.Fatalf("resumed approve failed %d: %s", wResume.Code, wResume.Body.String())
+	}
+	intents2, _ := f.server.sessions.Store().ListRunIntents(sessID2, 10)
+	if len(intents2) != 1 {
+		t.Fatalf("expected 1 run intent after resumed partial failure, got %d", len(intents2))
 	}
 }
 
@@ -830,9 +1032,9 @@ func TestTaskMatrix_Case9_MissingIdentityWrongAccountAllocationFailures(t *testi
 func TestTaskMatrix_Case10_ReopenStoreRecoveryExactReceiptLinksNoReplay(t *testing.T) {
 	// Requirement-first Purpose:
 	// - Invariant: Closing and reopening Pebble store must preserve exact task-to-session and
-	//   task-to-plan links, receipts, and status without mutation replay.
-	// - Authority: pebble store persistence for ProjectTaskRecord and SessionPlanSnapshot.
-	// - Threat/regression: Data loss or corrupted task linkage upon daemon restart.
+	//   task-to-plan links, receipts, active run intents, and status without mutation replay or duplicate runs.
+	// - Authority: pebble store persistence for ProjectTaskRecord, SessionPlanSnapshot, and V3SessionRunIntent.
+	// - Threat/regression: Data loss, corrupted task linkage, or duplicate runs upon daemon restart.
 	f := setupMatrixTestFixture(t)
 	projID := f.createProject(t)
 	p := identity.Principal{Type: "user", UserID: f.userID, AccountScopeID: f.accountID}
@@ -856,6 +1058,16 @@ func TestTaskMatrix_Case10_ReopenStoreRecoveryExactReceiptLinksNoReplay(t *testi
 	taskID := taskMap["id"].(string)
 	sessID := taskMap["session_id"].(string)
 
+	// Approve task so that plan is accepted and an active RunIntent exists
+	wApp := f.callAPI(http.MethodPost, "/"+projID+"/tasks/"+taskID+"/approve", map[string]any{
+		"session_id":          sessID,
+		"plan_id":             "recovery-plan-01",
+		"definition_revision": 1,
+	}, p)
+	if wApp.Code != http.StatusOK {
+		t.Fatalf("approve before reopen failed %d: %s", wApp.Code, wApp.Body.String())
+	}
+
 	// Close store
 	dir := f.dir
 	f.db.Close()
@@ -869,7 +1081,7 @@ func TestTaskMatrix_Case10_ReopenStoreRecoveryExactReceiptLinksNoReplay(t *testi
 
 	ss2 := pebblestore.NewSessionStore(db2)
 
-	// Verify task record exists with exact links and receipt
+	// Verify task record exists with exact links, receipt, and plan document
 	task, found, err := ss2.GetProjectTask(f.accountID, projID, taskID)
 	if err != nil || !found {
 		t.Fatalf("task not found after reopen: %v", err)
@@ -883,6 +1095,19 @@ func TestTaskMatrix_Case10_ReopenStoreRecoveryExactReceiptLinksNoReplay(t *testi
 	if task.PlanBinding.Receipt == "" {
 		t.Fatal("plan binding receipt was empty after reopen")
 	}
+	hydrateTaskPlanDocument(task, ss2)
+	if task.PlanDocument == nil || task.PlanDocument.ID != "recovery-plan-01" {
+		t.Fatalf("plan document missing or corrupted after reopen: %#v", task.PlanDocument)
+	}
+
+	// Verify active run intent recovered after reopen
+	activeIntent, intentFound, intentErr := ss2.GetV3SessionActiveRunIntent(sessID)
+	if intentErr != nil || !intentFound || activeIntent == nil {
+		t.Fatalf("expected active run intent recovered after reopen: found=%v, err=%v", intentFound, intentErr)
+	}
+	if activeIntent.Status != pebblestore.V3RunIntentPendingExecutor && activeIntent.Status != pebblestore.V3RunIntentRunning {
+		t.Fatalf("unexpected active run intent status: %v", activeIntent.Status)
+	}
 
 	// Verify session metadata retained project and task linkage
 	sess, found, err := ss2.GetSession(sessID)
@@ -891,6 +1116,26 @@ func TestTaskMatrix_Case10_ReopenStoreRecoveryExactReceiptLinksNoReplay(t *testi
 	}
 	if sess.Metadata["task_id"] != taskID || sess.Metadata["project_id"] != projID {
 		t.Fatalf("session task linkage corrupted after reopen: %#v", sess.Metadata)
+	}
+
+	// Verify recovery resumption: calling approve on recovered server does not duplicate run intents
+	server2 := &Server{
+		sessions: sessionruntime.NewService(ss2, nil),
+	}
+	recoveredTask, rErr := server2.ApproveProjectTask(context.Background(), p, projID, taskID, tool.ProjectTaskApprovalGuards{
+		SessionID:          sessID,
+		PlanID:             "recovery-plan-01",
+		DefinitionRevision: 1,
+	})
+	if rErr != nil {
+		t.Fatalf("approve after recovery failed: %v", rErr)
+	}
+	if recoveredTask == nil || recoveredTask.Status != "in_progress" {
+		t.Fatalf("expected in_progress status after recovery approval, got: %#v", recoveredTask)
+	}
+	intentsAfterRecovery, _ := ss2.ListRunIntents(sessID, 10)
+	if len(intentsAfterRecovery) != 1 {
+		t.Fatalf("expected exactly 1 run intent after recovery without duplicates, got %d", len(intentsAfterRecovery))
 	}
 }
 

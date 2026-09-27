@@ -3054,6 +3054,9 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			if next := mapString(decodeToolPayload(gatedResults[i].Output), "next_action"); workerProposalCall(call) && gatedResults[i].Error == "" && (next == "await_automation_acceptance" || next == "await_worker_acceptance") {
 				terminalPlanState.MarkTerminal()
 			}
+			if canonicalToolName(call.Name) == "exit_plan_mode" && strings.TrimSpace(gatedResults[i].Error) == "" {
+				terminalPlanState.MarkTerminal()
+			}
 		}
 		if terminalPlanState.IsTerminal() {
 			break

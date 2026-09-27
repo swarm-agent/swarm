@@ -1823,6 +1823,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				}
 				syncTaskSessionState(&tasks[i], db)
 				hydrateTaskProgramStatus(&tasks[i], db)
+				hydrateTaskPlanDocument(&tasks[i], db)
 			}
 			sanitizedTasks := make([]pebblestore.ProjectTaskRecord, len(tasks))
 			for i := range tasks {
@@ -2547,9 +2548,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 					writeError(w, http.StatusBadRequest, err)
 					return
 				}
-				lifecycle := sessionruntime.NewPlanLifecycleService(s.sessions)
-				lifecycle.SetApplySessionMutation(s.sessions.ApplySessionMutation)
-				subResult, err := lifecycle.SubmitProjectTaskStructuredPlan(sessionruntime.ProjectTaskPlanSubmissionInput{
+				subResult, err := s.SubmitProjectTaskPlan(r.Context(), sessionruntime.ProjectTaskPlanSubmissionInput{
 					AccountScopeID:  p.AccountScopeID,
 					UserID:          p.UserID,
 					ProjectID:       projectID,
@@ -2565,6 +2564,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 				task = subResult.Task
+				hydrateTaskPlanDocument(&task, db)
 			} else if task.Agent == "plan" || (task.Agent == "swarm" && task.FeatureSize == "big") {
 				// Big feature requiring planning:
 				// Map to Swarm ModePlan. Start read-only planning independently of implementation approval.
@@ -2681,6 +2681,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			}
 			syncTaskSessionState(task, db)
 			hydrateTaskProgramStatus(task, db)
+			hydrateTaskPlanDocument(task, db)
 			writeJSON(w, http.StatusOK, map[string]any{
 				"task":          sanitizeProjectTaskForClient(task),
 				"model_preview": s.buildTaskModelPreview(p, task),
@@ -3153,279 +3154,35 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		existingTask, found, err := db.GetProjectTask(p.AccountScopeID, projectID, taskID)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, err)
-			return
+		var guards tool.ProjectTaskApprovalGuards
+		if r.Body != nil {
+			var body tool.ProjectTaskApprovalGuards
+			if err := json.NewDecoder(r.Body).Decode(&body); err == nil {
+				guards = body
+			}
 		}
-		if !found || existingTask == nil {
-			writeError(w, http.StatusNotFound, errors.New("task not found"))
-			return
-		}
-		var wasAlreadyApproved bool
-		if existingTask.Status == "in_progress" || existingTask.Status == "completed" {
+		existingTask, found, _ := db.GetProjectTask(p.AccountScopeID, projectID, taskID)
+		wasAlreadyApproved := false
+		if found && existingTask != nil && (existingTask.Status == "in_progress" || existingTask.Status == "completed") {
 			wasAlreadyApproved = true
-		} else if existingTask.Status == "rejected" {
-			writeError(w, http.StatusBadRequest, errors.New("cannot approve rejected task"))
-			return
-		} else if existingTask.Status != "pending_approval" && existingTask.Status != "queued" {
-			writeError(w, http.StatusBadRequest, fmt.Errorf("task cannot be approved from status %q", existingTask.Status))
-			return
 		}
-
-		if existingTask.PlanBinding != nil && existingTask.PlanBinding.PlanID != "" {
-			plan, ok, pErr := db.GetPlan(existingTask.SessionID, existingTask.PlanBinding.PlanID)
-			if pErr != nil || !ok {
-				writeError(w, http.StatusBadRequest, fmt.Errorf("bound plan %q not found", existingTask.PlanBinding.PlanID))
-				return
-			}
-			if plan.AccountScopeID != p.AccountScopeID {
-				writeError(w, http.StatusForbidden, errors.New("cross-account plan approval forbidden"))
-				return
-			}
-			if plan.Status == "rejected" || plan.ApprovalState == "rejected" {
-				writeError(w, http.StatusBadRequest, errors.New("cannot approve rejected plan definition"))
-				return
-			}
-			if existingTask.PlanBinding.DefinitionRevision > 0 && plan.Version != existingTask.PlanBinding.DefinitionRevision {
-				writeError(w, http.StatusBadRequest, fmt.Errorf("plan definition is stale (task revision %d, current %d)", existingTask.PlanBinding.DefinitionRevision, plan.Version))
-				return
-			}
-		}
-
-		updated, err := db.UpdateProjectTask(p.AccountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
-			if t.Status == "in_progress" || t.Status == "completed" {
-				wasAlreadyApproved = true
-				return nil
-			}
-			if t.Status != "pending_approval" && t.Status != "queued" {
-				return fmt.Errorf("task cannot be approved from status %q", t.Status)
-			}
-			if err := t.Validate(); err != nil {
-				return fmt.Errorf("task validation failed: %w", err)
-			}
-			t.Status = "in_progress"
-			t.ActionNeeded = ""
-			if len(t.WhatDidDo) == 0 {
-				t.WhatDidDo = []string{"Mission approved by user", "Worktree session activated"}
-			}
-			return nil
-		})
+		updated, err := s.ApproveProjectTask(r.Context(), p, projectID, taskID, guards)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, err)
-			return
-		}
-		if wasAlreadyApproved {
-			writeJSON(w, http.StatusOK, map[string]any{
-				"status":  "already_approved",
-				"message": "Task is already executing or completed",
-				"task":    updated,
-			})
-			return
-		}
-		if updated != nil {
-			proj, _, _ := db.GetProject(p.AccountScopeID, projectID)
-			if updated.PlanBinding != nil && updated.PlanBinding.PlanID != "" {
-				// Approved big feature structured plan!
-				// Hand execution to Swarm Default without a second approval.
-				plan, ok, _ := db.GetPlan(updated.SessionID, updated.PlanBinding.PlanID)
-				if ok {
-					var pref pebblestore.ModelPreference
-					if s.agentModelSettings != nil && p.AccountScopeID != "" {
-						if settings, err := s.agentModelSettings.GetForAccount(p.AccountScopeID); err == nil {
-							pref = pebblestore.ModelPreference{
-								Provider:    strings.TrimSpace(settings.Swarm.Action.Provider),
-								Model:       strings.TrimSpace(settings.Swarm.Action.Model),
-								Thinking:    strings.TrimSpace(settings.Swarm.Action.Thinking),
-								ServiceTier: strings.TrimSpace(settings.Swarm.Action.ServiceTier),
-								ContextMode: strings.TrimSpace(settings.Swarm.Action.ContextMode),
-							}
-						}
-					}
-					if (pref.Provider == "" || pref.Model == "") && s.model != nil {
-						if def, err := s.model.ResolvePreference(pebblestore.ModelPreference{}); err == nil {
-							pref = def.Preference
-						}
-					}
-
-					var swarmProfile pebblestore.AgentProfile
-					if s.agents != nil {
-						swarmProfile, _ = s.agents.ResolveSystemAgent(agentruntime.SwarmAgentID, pebblestore.AgentProfile{
-							Provider:        pref.Provider,
-							Model:           pref.Model,
-							Thinking:        pref.Thinking,
-							AutoServiceTier: pref.ServiceTier,
-							ContextMode:     pref.ContextMode,
-						})
-					}
-
-					session, sessFound, sErr := db.GetSession(updated.SessionID)
-					if sErr == nil && sessFound {
-						summary := sessionruntime.SummarizePlanExecution(plan.Document)
-						firstCpID := summary.NextCheckpointID
-						if firstCpID == "" && plan.Document != nil && len(plan.Document.Checkpoints) > 0 {
-							firstCpID = plan.Document.Checkpoints[0].ID
-						}
-
-						lifecycleMsg, _ := sessionruntime.BuildPlanExecutionLifecycleSystemMessage(sessionruntime.PlanExecutionLifecycleMessageInput{
-							Action: "approve_and_start",
-							Plan:   plan,
-							Payload: map[string]any{
-								"action":             "approve_and_start",
-								"checkpoint_id":      firstCpID,
-								"next_checkpoint_id": firstCpID,
-								"next_action":        "run_checkpoint_with_current_context",
-								"context_preserved":  true,
-							},
-						})
-
-						committed, commitErr := s.sessions.CommitV3PlanAcceptance(sessionruntime.PlanAcceptanceCommitInput{
-							Session:              session,
-							PlanID:               plan.ID,
-							Title:                plan.Title,
-							Plan:                 plan.Plan,
-							Document:             plan.Document,
-							ApplySessionMutation: s.sessions.ApplySessionMutation,
-							ModePreference:       pref,
-							ModeAgentProfile:     &swarmProfile,
-							BuildLifecycleMessage: func(p pebblestore.SessionPlanSnapshot, s sessionruntime.PlanExecutionSummary) *pebblestore.MessageSnapshot {
-								if lifecycleMsg.Content == "" {
-									return nil
-								}
-								return &pebblestore.MessageSnapshot{
-									Role:     "system",
-									Content:  lifecycleMsg.Content,
-									Metadata: lifecycleMsg.Metadata,
-								}
-							},
-						})
-						if commitErr != nil {
-							writeError(w, http.StatusInternalServerError, fmt.Errorf("commit plan acceptance: %w", commitErr))
-							return
-						}
-
-						now := time.Now().UnixMilli()
-						runID := fmt.Sprintf("desktop-v3-run:%s", sessionruntime.NewSessionID())
-						parentSessionID := ""
-						if proj != nil {
-							parentSessionID = proj.PrimarySessionID
-						}
-						runIntent := &pebblestore.V3SessionRunIntent{
-							SessionID:       updated.SessionID,
-							RunID:           runID,
-							EpochID:         "epoch-00000000000000000001",
-							UserID:          p.UserID,
-							AccountScopeID:  p.AccountScopeID,
-							ParentSessionID: parentSessionID,
-							PlanID:          plan.ID,
-							CheckpointID:    firstCpID,
-							Status:          pebblestore.V3RunIntentPendingExecutor,
-							CreatedAt:       now,
-							UpdatedAt:       now,
-						}
-						runKey := fmt.Sprintf("project-task:run:%s:%s", updated.ID, runID)
-						_, _ = s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
-							SessionID:       updated.SessionID,
-							UserID:          p.UserID,
-							AccountScopeID:  p.AccountScopeID,
-							ClientRequestID: runKey,
-							IdempotencyKey:  runKey,
-							PayloadHash:     runKey,
-							RequestHash:     runKey,
-							Kind:            sessionruntime.SessionMutationStartRun,
-							RunIntent:       runIntent,
-							NowUnixMs:       now,
-						})
-						s.EnqueueSessionRun(p, updated.SessionID, runID, parentSessionID)
-
-						updated.Agent = "swarm"
-						updated.WorkerName = "@Swarm Worker"
-						updated.PlanBinding.Receipt = committed.Mutation.PayloadHash
-						updated.WhatDidDo = append(updated.WhatDidDo, "Plan approved; Swarm executing plan checkpoints")
-						_ = db.PutProjectTask(p.AccountScopeID, updated)
-					}
-				}
-			} else if updated.TaskProgram != nil || updated.TaskProgramID != "" {
-				// Autonomous Task Program execution!
-				if err := s.deployProjectTaskProgram(p, proj, updated); err != nil {
-					writeError(w, http.StatusInternalServerError, fmt.Errorf("deploy task program: %w", err))
-					return
-				}
-				hydrateTaskProgramStatus(updated, db)
-			} else if updated.Agent == "image" || updated.Agent == "video" || updated.Agent == "sound" || updated.Agent == "audio" {
-				// Direct media execution!
-				if err := s.deployProjectTaskExecution(p, proj, updated, "in_progress", ""); err != nil {
-					writeError(w, http.StatusInternalServerError, fmt.Errorf("deploy media execution: %w", err))
-					return
-				}
-			} else {
-				// Coder / agent session execution!
-				if updated.SessionID == "" {
-					if proj != nil {
-						if err := s.deployProjectTaskExecution(p, proj, updated, "in_progress", ""); err != nil {
-							writeError(w, http.StatusInternalServerError, fmt.Errorf("deploy agent execution: %w", err))
-							return
-						}
-						_ = db.PutProjectTask(p.AccountScopeID, updated)
-					}
-				} else {
-					// Verify worktree isolation for Coder
-					if updated.Agent == "coder" || updated.OutcomeType == "code_pr" || updated.OutcomeType == "bug_patch" {
-						session, sessFound, _ := db.GetSession(updated.SessionID)
-						if sessFound && (!session.WorktreeEnabled || session.WorktreeRootPath == "") {
-							if s.worktrees != nil {
-								alloc, allocErr := s.worktrees.AllocateDetachedWorkspaceRequestedForPrincipal(p, updated.WorkspacePath, updated.SessionID, "", updated.WorktreeBranch)
-								if allocErr != nil || alloc.WorkspacePath == "" {
-									writeError(w, http.StatusInternalServerError, fmt.Errorf("coder worktree allocation failed: %w", allocErr))
-									return
-								}
-								updated.WorkspacePath = alloc.WorkspacePath
-								updated.WorktreeBranch = alloc.BranchName
-								updated.BaseBranch = alloc.BaseBranch
-								updated.BaseCommit = alloc.BaseCommit
-								updated.WorktreeName = strings.TrimPrefix(alloc.BranchName, "agent/")
-							}
-						}
-					}
-					// Activate session with approved run intent
-					now := time.Now().UnixMilli()
-					runID := fmt.Sprintf("desktop-v3-run:%s", sessionruntime.NewSessionID())
-					parentSessionID := ""
-					if proj != nil {
-						parentSessionID = proj.PrimarySessionID
-					}
-					runIntent := &pebblestore.V3SessionRunIntent{
-						SessionID:       updated.SessionID,
-						RunID:           runID,
-						EpochID:         "epoch-00000000000000000001",
-						UserID:          p.UserID,
-						AccountScopeID:  p.AccountScopeID,
-						ParentSessionID: parentSessionID,
-						Status:          pebblestore.V3RunIntentPendingExecutor,
-						CreatedAt:       now,
-						UpdatedAt:       now,
-					}
-					runKey := fmt.Sprintf("project-task:run:%s:%s", updated.ID, runID)
-					_, _ = s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
-						SessionID:       updated.SessionID,
-						UserID:          p.UserID,
-						AccountScopeID:  p.AccountScopeID,
-						ClientRequestID: runKey,
-						IdempotencyKey:  runKey,
-						PayloadHash:     runKey,
-						RequestHash:     runKey,
-						Kind:            sessionruntime.SessionMutationStartRun,
-						RunIntent:       runIntent,
-						NowUnixMs:       now,
-					})
-					s.EnqueueSessionRun(p, updated.SessionID, runID, parentSessionID)
-					updated.WhatDidDo = append(updated.WhatDidDo, "Task execution started")
-					_ = db.PutProjectTask(p.AccountScopeID, updated)
-				}
+			status := http.StatusBadRequest
+			if strings.Contains(err.Error(), "forbidden") {
+				status = http.StatusForbidden
+			} else if strings.Contains(err.Error(), "not found") {
+				status = http.StatusNotFound
 			}
+			writeError(w, status, err)
+			return
+		}
+		respStatus := "approved"
+		if wasAlreadyApproved {
+			respStatus = "already_approved"
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"status": "approved",
+			"status": respStatus,
 			"task":   sanitizeProjectTaskForClient(updated),
 		})
 		return

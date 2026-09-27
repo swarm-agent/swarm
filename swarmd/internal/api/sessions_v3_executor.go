@@ -3730,12 +3730,26 @@ func sessionsV3ProviderCheckpointRunToolResult(results []provideriface.ToolExecu
 func sessionsV3ProviderTerminalPlanToolResult(results []provideriface.ToolExecutionResult) (sessionV3ProviderTerminalPlanResult, bool) {
 	for i := len(results) - 1; i >= 0; i-- {
 		result := results[i]
-		if !strings.EqualFold(strings.TrimSpace(result.Name), "plan_manage") {
-			continue
+		if strings.EqualFold(strings.TrimSpace(result.Name), "plan_manage") {
+			payload := sessionsV3DecodeToolPayload(strings.TrimSpace(firstNonEmpty(result.Output, result.TextForModel, result.Error)))
+			if terminal, ok := sessionsV3ProviderTerminalPlanPayload(payload); ok {
+				return terminal, true
+			}
 		}
-		payload := sessionsV3DecodeToolPayload(strings.TrimSpace(firstNonEmpty(result.Output, result.TextForModel, result.Error)))
-		if terminal, ok := sessionsV3ProviderTerminalPlanPayload(payload); ok {
-			return terminal, true
+		if strings.EqualFold(strings.TrimSpace(result.Name), "exit_plan_mode") {
+			payload := sessionsV3DecodeToolPayload(strings.TrimSpace(firstNonEmpty(result.Output, result.TextForModel, result.Error)))
+			if payload != nil {
+				status := strings.TrimSpace(sessionsV3MapString(payload, "status"))
+				if status == "plan_submitted_for_review" || status == "plan_submitted" || strings.TrimSpace(sessionsV3MapString(payload, "tool")) == "exit_plan_mode" {
+					return sessionV3ProviderTerminalPlanResult{
+						Action:           "exit_plan_mode",
+						NextAction:       "await_user_approval",
+						PlanID:           strings.TrimSpace(sessionsV3MapString(payload, "plan_id")),
+						NextCheckpointID: strings.TrimSpace(sessionsV3MapString(payload, "checkpoint_id")),
+						Summary:          strings.TrimSpace(sessionsV3MapString(payload, "message")),
+					}, true
+				}
+			}
 		}
 	}
 	return sessionV3ProviderTerminalPlanResult{}, false

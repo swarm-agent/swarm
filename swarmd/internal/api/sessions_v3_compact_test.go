@@ -292,3 +292,7 @@ func (r *directCompactRunService) ResolveAgentToolContract(pebblestore.AgentProf
 func (r *directCompactRunService) ResolveAgentToolContractForAccount(string, pebblestore.AgentProfile) (runruntime.ResolvedAgentToolContract, *permission.Policy, map[string]bool, error) {
 	return runruntime.ResolvedAgentToolContract{}, nil, nil, nil
 }
+
+func (r *directCompactRunService) ExecuteTaskProgramForCoordinator(context.Context, identity.Principal, string, string, pebblestore.TaskProgramRecord) (string, error) {
+	return "completed", nil
+}

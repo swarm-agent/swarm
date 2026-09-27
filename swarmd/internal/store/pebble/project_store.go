@@ -355,6 +355,7 @@ type ProjectTaskRecord struct {
 	RouterAlert         string                   `json:"router_alert,omitempty"`
 	AttachedMedia       []ProjectTaskMediaRef    `json:"attached_media,omitempty"`
 	PlanBinding         *ProjectTaskPlanBinding  `json:"plan_binding,omitempty"`
+	PlanDocument        *SessionPlanDocument     `json:"plan_document,omitempty"`
 	TaskProgram         *TaskProgramDefinition   `json:"task_program,omitempty"`
 	TaskProgramID       string                   `json:"task_program_id,omitempty"`
 	TaskProgramStatus   *TaskProgramRecord       `json:"task_program_status,omitempty"`
