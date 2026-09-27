@@ -67,6 +67,10 @@ interface AgentModelControlProps {
   onResetTaskModel?: () => void | Promise<void>
 }
 
+// Omitted optional props must keep their identity across local state updates.
+// The closed-dialog reset effect depends on modelProfiles.
+const EMPTY_MODEL_PROFILES: ModelProfileRecord[] = []
+
 const COMPACT_AGENT_NAME = 'system-compact'
 const FINDER_AGENT_NAME = 'system-finder'
 const CODER_AGENT_NAME = 'system-coder'
@@ -254,7 +258,7 @@ export function AgentModelControl({
   onApplyModelFavorite,
   onApplyModelFavoriteChatOnly,
   popoverAnchorId = '',
-  modelProfiles = [],
+  modelProfiles = EMPTY_MODEL_PROFILES,
   activeModelProfile,
   createModelProfileSignal = 0,
   busy = false,
@@ -533,7 +537,7 @@ export function AgentModelControl({
       setEditingFavoriteName('')
       setEditingFavoriteDraft(null)
       setCreatingNewFavorite(false)
-      setSelectedFavoriteIds([])
+      setSelectedFavoriteIds((current) => current.length === 0 ? current : [])
       setConfirmingBatchDelete(false)
       setDefaultFavoriteName('')
       setFavoritesHelpOpen(false)
