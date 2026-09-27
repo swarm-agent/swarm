@@ -678,6 +678,11 @@ function MinimalTaskCard({
   useEffect(() => {
     setSelectedTaskModel(task.model || '')
   }, [task.model])
+  useEffect(() => {
+    if (isPendingApproval) {
+      setIsFullPlanOpen(true)
+    }
+  }, [isPendingApproval])
 
   const modelPreviewQuery = useQuery({
     queryKey: ['projects', projectId, 'tasks', task.id, 'model-preview'],
@@ -697,6 +702,8 @@ function MinimalTaskCard({
   const isRunning = task.status === 'running' || task.status === 'in_progress'
   const isNeedsReview = task.status === 'needs_review'
   const isCompleted = task.status === 'completed'
+  const isFailed = task.status === 'failed'
+  const isRejected = task.status === 'rejected'
   const hasUnintegrated = (task.unintegratedCommits ?? 0) > 0
 
   const taskProgramStatus = task.taskProgramStatus || (task as any).task_program_status
@@ -706,9 +713,20 @@ function MinimalTaskCard({
     (taskProgramStatus?.jobs && taskProgramStatus.jobs.length > 0)
   )
 
-  const planDoc = (task.planDocument || (task as any).plan_document) as any
+  const rawPlanDoc = task.planDocument || (task as any).plan_document || (task as any).document
+  const planDoc = useMemo(() => {
+    if (!rawPlanDoc) return null
+    if (typeof rawPlanDoc === 'string') {
+      try {
+        return JSON.parse(rawPlanDoc)
+      } catch {
+        return null
+      }
+    }
+    return rawPlanDoc?.document || rawPlanDoc
+  }, [rawPlanDoc])
   const planDocTitle = planDoc?.title || task.planSummary || ''
-  const planDocGoal = planDoc?.info?.goal || planDoc?.objective || ''
+  const planDocGoal = planDoc?.info?.goal || planDoc?.goal || planDoc?.objective || ''
   const planCheckpointsToRender = useMemo(() => {
     if (planDoc?.checkpoints && Array.isArray(planDoc.checkpoints) && planDoc.checkpoints.length > 0) {
       return planDoc.checkpoints
@@ -720,6 +738,15 @@ function MinimalTaskCard({
   }, [planDoc, task.activePlanCheckpoints])
   const hasTaskProgramSpec = Boolean(taskProgramDef && ((taskProgramDef.stages && taskProgramDef.stages.length > 0) || (taskProgramDef.jobs && taskProgramDef.jobs.length > 0)))
   const hasStructuredPlan = planCheckpointsToRender.length > 0 || hasTaskProgramSpec
+  const isPlanRejected = Boolean(
+    planDoc?.status === 'rejected' ||
+    planDoc?.approval_state === 'rejected' ||
+    planDoc?.approvalState === 'rejected'
+  )
+  const isPlanTaskWithoutStructuredPlan = Boolean(
+    (task.agentType === 'plan' || task.outcomeType === 'plan_spec') && !hasStructuredPlan
+  )
+  const taskSessionId = task.sessionId || task.planBinding?.session_id || (task as any).plan_binding?.session_id
 
   const programJobs = useMemo(() => {
     if (!isTaskProgram) return []
@@ -928,6 +955,8 @@ function MinimalTaskCard({
                 ? 'bg-amber-950/40 text-amber-300 border-amber-500/40'
                 : isCompleted
                 ? 'bg-emerald-950/40 text-emerald-300 border-emerald-500/40'
+                : isFailed || isRejected
+                ? 'bg-rose-950/40 text-rose-300 border-rose-500/40'
                 : 'bg-slate-800 text-slate-400 border-slate-700'
             }`}
           >
@@ -943,6 +972,8 @@ function MinimalTaskCard({
                   ? 'bg-amber-400'
                   : isCompleted
                   ? 'bg-emerald-400'
+                  : isFailed || isRejected
+                  ? 'bg-rose-400'
                   : 'bg-slate-500'
               }`}
             />
@@ -959,7 +990,7 @@ function MinimalTaskCard({
             />
           </span>
 
-          {task.sessionId && (
+          {taskSessionId && (
             <button
               type="button"
               onClick={(e) => {
@@ -1009,7 +1040,7 @@ function MinimalTaskCard({
                 Plan Mode (Read-Only)
               </span>
             </div>
-            {task.sessionId && onOpenChat && (
+            {taskSessionId && onOpenChat && (
               <button
                 type="button"
                 onClick={(e) => {
@@ -1417,8 +1448,14 @@ function MinimalTaskCard({
                       )}
                       <div className="space-y-2">
                         {planCheckpointsToRender.map((cp: any, idx: number) => {
-                          const tasksList: string[] = cp.tasks || []
-                          const criteriaList: string[] = cp.acceptanceCriteria || cp.acceptance_criteria || []
+                          const tasksList = (cp.tasks && Array.isArray(cp.tasks) && cp.tasks.length > 0)
+                            ? cp.tasks
+                            : (cp.subtasks && Array.isArray(cp.subtasks) ? cp.subtasks : [])
+                          const criteriaList = (cp.acceptanceCriteria && Array.isArray(cp.acceptanceCriteria) && cp.acceptanceCriteria.length > 0)
+                            ? cp.acceptanceCriteria
+                            : (cp.acceptance_criteria && Array.isArray(cp.acceptance_criteria) && cp.acceptance_criteria.length > 0)
+                            ? cp.acceptance_criteria
+                            : (cp.criteria && Array.isArray(cp.criteria) ? cp.criteria : [])
                           return (
                             <div key={cp.id || idx} className="p-2 rounded bg-slate-900/70 border border-slate-800/60 space-y-1.5" data-testid={`plan-checkpoint-${cp.id || idx}`}>
                               <div className="flex items-center justify-between font-bold text-slate-200">
@@ -1437,9 +1474,12 @@ function MinimalTaskCard({
                                 <div className="space-y-0.5 pt-0.5">
                                   <span className="text-[9px] font-semibold text-slate-400 uppercase tracking-wider">Tasks:</span>
                                   <ul className="list-disc list-inside space-y-0.5 text-[10px] text-slate-300 pl-1">
-                                    {tasksList.map((tText: string, tIdx: number) => (
-                                      <li key={tIdx} className="truncate">{tText}</li>
-                                    ))}
+                                    {tasksList.map((tText: any, tIdx: number) => {
+                                      const label = typeof tText === 'string' ? tText : (tText?.title || tText?.text || JSON.stringify(tText))
+                                      return (
+                                        <li key={tIdx} className="truncate">{label}</li>
+                                      )
+                                    })}
                                   </ul>
                                 </div>
                               )}
@@ -1447,12 +1487,15 @@ function MinimalTaskCard({
                                 <div className="space-y-0.5 pt-0.5">
                                   <span className="text-[9px] font-semibold text-emerald-400/90 uppercase tracking-wider">Acceptance Criteria:</span>
                                   <ul className="space-y-0.5 text-[10px] text-slate-300 pl-1">
-                                    {criteriaList.map((cText: string, cIdx: number) => (
-                                      <li key={cIdx} className="flex items-start gap-1">
-                                        <span className="text-emerald-400 font-bold">✓</span>
-                                        <span className="truncate">{cText}</span>
-                                      </li>
-                                    ))}
+                                    {criteriaList.map((cText: any, cIdx: number) => {
+                                      const label = typeof cText === 'string' ? cText : (cText?.title || cText?.text || cText?.criterion || JSON.stringify(cText))
+                                      return (
+                                        <li key={cIdx} className="flex items-start gap-1">
+                                          <span className="text-emerald-400 font-bold">✓</span>
+                                          <span className="truncate">{label}</span>
+                                        </li>
+                                      )
+                                    })}
                                   </ul>
                                 </div>
                               )}
@@ -1582,6 +1625,15 @@ function MinimalTaskCard({
               </div>
             )}
 
+            {isPlanRejected && (
+              <div className="p-2.5 rounded bg-rose-950/40 border border-rose-500/50 text-rose-200 text-xs flex items-center gap-2" data-testid="task-plan-rejected-banner">
+                <AlertTriangle size={13} className="text-rose-400 shrink-0" />
+                <span className="font-mono text-[11px]">
+                  <strong>Plan Rejected:</strong> This plan definition was rejected. Use &quot;Refine Plan&quot; below to adjust instructions and generate a new plan revision.
+                </span>
+              </div>
+            )}
+
             <div className="flex items-center justify-between text-[11px] gap-2 flex-wrap">
               <div className="flex items-center gap-2">
                 <span className="text-slate-400 font-mono text-[10px]">
@@ -1634,19 +1686,26 @@ function MinimalTaskCard({
                 {onApprove && (
                   <button
                     type="button"
-                    disabled={isApproving}
+                    disabled={isApproving || isPlanRejected || isPlanTaskWithoutStructuredPlan}
                     onClick={(e) => {
                       e.stopPropagation()
-                      if (!isApproving) {
+                      if (!isApproving && !isPlanRejected && !isPlanTaskWithoutStructuredPlan) {
                         onApprove()
                       }
                     }}
                     className={`flex items-center gap-1.5 px-3 py-1.5 rounded font-bold text-xs shadow-md transition-all ${
-                      isApproving
-                        ? 'bg-blue-800/60 text-blue-200 cursor-not-allowed opacity-80'
+                      isApproving || isPlanRejected || isPlanTaskWithoutStructuredPlan
+                        ? 'bg-slate-800 text-slate-500 cursor-not-allowed opacity-80'
                         : 'bg-blue-600 hover:bg-blue-500 text-white active:scale-95'
                     }`}
                     data-testid="approve-task-btn"
+                    title={
+                      isPlanRejected
+                        ? 'Plan definition was rejected. Click Refine Plan to author a revised plan.'
+                        : isPlanTaskWithoutStructuredPlan
+                        ? 'Waiting for structured plan to be authored before approval.'
+                        : undefined
+                    }
                   >
                     {isApproving ? (
                       <>
@@ -2076,6 +2135,43 @@ function MinimalTaskCard({
         </div>
       )}
 
+      {/* 2d. FAILED / REJECTED BANNER */}
+      {(isFailed || isRejected) && (
+        <div className="flex flex-col p-3 rounded-lg bg-rose-950/20 border border-rose-500/40 space-y-2.5 text-xs" data-testid="task-failed-banner">
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <div className="flex items-center gap-2">
+              <AlertTriangle size={14} className="text-rose-400 flex-shrink-0" />
+              <div className="flex flex-col">
+                <span className="font-bold text-rose-300 font-mono text-[10px] uppercase">
+                  {isRejected ? 'Task Rejected' : 'Task Failed'}
+                </span>
+                <span className="text-[11px] text-slate-300">
+                  {task.lastError || (isRejected ? 'This task proposal was rejected.' : 'Execution failed. Review session logs or reopen with new instructions.')}
+                </span>
+              </div>
+            </div>
+            <span className="font-mono text-[9px] px-1.5 py-0.5 rounded bg-rose-900/40 text-rose-300 border border-rose-500/30 font-bold uppercase">
+              {isRejected ? 'Rejected' : 'Failed'}
+            </span>
+          </div>
+          {onReopen && !isRejected && (
+            <div className="flex items-center justify-end pt-1 border-t border-rose-500/20 gap-2">
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  setIsReopenOpen(!isReopenOpen)
+                }}
+                className="flex items-center gap-1 px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-[10px] font-medium transition-colors border border-slate-700/60"
+              >
+                <RotateCcw size={10} className="text-rose-400" />
+                <span>{isReopenOpen ? 'Cancel' : 'Retry / Reopen Task'}</span>
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Execution Error Recovery Banner */}
       {task.lastError && (
         <div className="flex items-start justify-between p-2.5 rounded-lg bg-rose-950/30 border border-rose-500/40 text-[11px] gap-2">
@@ -2375,7 +2471,7 @@ function MinimalTaskCard({
           ))}
         </div>
 
-        {task.sessionId && (
+        {taskSessionId && (
           <span
             onClick={(e) => {
               e.stopPropagation()
@@ -2383,7 +2479,7 @@ function MinimalTaskCard({
             }}
             className="text-blue-400 hover:text-blue-300 hover:underline cursor-pointer flex-shrink-0"
           >
-            sess_{task.sessionId.slice(0, 8)}
+            sess_{taskSessionId.slice(0, 8)}
           </span>
         )}
       </div>
@@ -3429,8 +3525,9 @@ export function OrchestrateView({
   const activeTaskSessionIds = useMemo(() => {
     const ids = new Set(computeActiveTaskSessionIds(tasks, selectedTaskId))
     for (const t of tasks) {
-      if (t.sessionId && (t.status === 'planning' || t.status === 'pending_approval')) {
-        ids.add(t.sessionId)
+      const sid = t.sessionId || t.planBinding?.session_id || (t as any).plan_binding?.session_id
+      if (sid && (t.status === 'planning' || t.status === 'pending_approval')) {
+        ids.add(sid)
       }
     }
     return Array.from(ids).sort()
@@ -4156,17 +4253,23 @@ export function OrchestrateView({
 
       const attachedMediaForTask = taggedMedia
 
-      const resolvedWorkspace = resolveTaskWorkspace(newTaskWorkspace, selectedProject)
-      if ((taskIntent === 'code' || taskIntent === 'audit') && (!resolvedWorkspace || resolvedWorkspace === '.')) {
-        setDeployError('A workspace directory is required to launch code/audit tasks.')
+      const isExplicitDotWorkspace = newTaskWorkspace.trim() === '.'
+      const resolvedWorkspace = isExplicitDotWorkspace ? undefined : resolveTaskWorkspace(newTaskWorkspace, selectedProject)
+      if ((taskIntent === 'code' || taskIntent === 'audit' || targetAgent === 'plan') && (!resolvedWorkspace || resolvedWorkspace === '.' || isExplicitDotWorkspace)) {
+        setDeployError("A valid workspace directory is required to launch code/audit tasks (dot '.' is not allowed).")
         setIsDeployingTask(false)
         return
       }
 
+      const clientTaskId = `task_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
       const res = await requestJson<{ task: any }>(`/v3/projects/${selectedProject.id}/tasks`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Request-ID': clientTaskId,
+        },
         body: JSON.stringify({
+          id: clientTaskId,
           prompt,
           workspace_path: resolvedWorkspace || undefined,
           intent: taskIntent,
@@ -4187,12 +4290,13 @@ export function OrchestrateView({
           attached_media: attachedMediaForTask,
         }),
       })
-      if (res?.task) {
-        desktopProjects.invalidate(selectedProject.id)
-        if (res.task.session_id) {
-          setActiveSessionId(res.task.session_id)
-          setActiveTaskId(res.task.id)
-        }
+      if (!res?.task) {
+        throw new Error('Task creation succeeded without returned task authority')
+      }
+      desktopProjects.invalidate(selectedProject.id)
+      if (res.task.session_id) {
+        setActiveSessionId(res.task.session_id)
+        setActiveTaskId(res.task.id)
       }
       setIsDeployModalOpen(false)
       setNewTaskPrompt('')
@@ -4226,35 +4330,79 @@ export function OrchestrateView({
     if (approvingTaskIds.has(taskId)) return
 
     const targetTask = tasks.find((t) => t.id === taskId) || liveTasks.find((t) => t.id === taskId)
-    const acceptanceBody = buildTaskAcceptancePayload(targetTask || { sessionId: undefined, planBinding: undefined })
+    if (!targetTask) return
+
+    // Pre-flight validation against illegal or premature approval
+    if (targetTask.status === 'planning' && (!targetTask.planBinding?.plan_id && !(targetTask as any).plan_binding?.plan_id)) {
+      setTaskActionErrors((prev) => ({
+        ...prev,
+        [taskId]: 'Cannot approve task while Plan agent is still investigating. Please wait for the structured plan to be submitted.',
+      }))
+      return
+    }
+
+    if (targetTask.status === 'rejected') {
+      setTaskActionErrors((prev) => ({
+        ...prev,
+        [taskId]: 'Cannot approve a rejected task.',
+      }))
+      return
+    }
+
+    const planDoc = targetTask.planDocument || (targetTask as any).plan_document
+    if (planDoc?.status === 'rejected' || planDoc?.approval_state === 'rejected' || planDoc?.approvalState === 'rejected') {
+      setTaskActionErrors((prev) => ({
+        ...prev,
+        [taskId]: 'Cannot approve a rejected plan definition. Please refine or re-plan.',
+      }))
+      return
+    }
+
+    const acceptanceBody = buildTaskAcceptancePayload(targetTask)
+    const hasPlanBinding = Boolean(targetTask.planBinding?.plan_id || (targetTask as any).plan_binding?.plan_id)
+    if (hasPlanBinding && (!acceptanceBody.plan_id || acceptanceBody.definition_revision == null || acceptanceBody.definition_revision <= 0)) {
+      setTaskActionErrors((prev) => ({
+        ...prev,
+        [taskId]: 'Plan definition revision guard is missing or stale. Cannot execute without verified plan revision.',
+      }))
+      return
+    }
 
     // Duplicate-click prevention & in-flight guard: do NOT prematurely flip status to in_progress!
     setApprovingTaskIds((prev) => new Set(prev).add(taskId))
     handleClearTaskError(taskId)
+
+    const approveRequestId = `approve:${taskId}:${targetTask.revision || 1}:${Date.now()}`
 
     try {
       const res = await requestJson<{ status: string; task: any; message?: string }>(
         `/v3/projects/${selectedProject.id}/tasks/${taskId}/approve`,
         {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Request-ID': approveRequestId,
+          },
           body: JSON.stringify(acceptanceBody),
         }
       )
 
-      if (res?.task) {
-        const mapped = mapBackendTask(res.task)
-        desktopProjects.updateTasks(selectedProject.id, (prev) =>
-          prev.map((t) => (t.id === taskId ? mapped : t))
-        )
+      if (!res?.task) {
+        throw new Error(res?.message || 'Approve succeeded without returned task authority')
       }
+
+      const mapped = mapBackendTask(res.task)
+      desktopProjects.updateTasks(selectedProject.id, (prev) =>
+        prev.map((t) => (t.id === taskId ? mapped : t))
+      )
       desktopProjects.invalidate(selectedProject.id)
 
       // Wait for authoritative backend response and open returned linked session
-      const linkedSessionId = res?.task?.session_id || res?.task?.sessionId
+      const linkedSessionId = res.task.session_id || res.task.sessionId || res.task.plan_binding?.session_id || res.task.planBinding?.session_id
       if (linkedSessionId) {
         setActiveSessionId(linkedSessionId)
-        setActiveTaskId(res?.task?.id || taskId)
+        setActiveTaskId(res.task.id || taskId)
+        void hydrateDesktopV3ChildCard(linkedSessionId, { activePlan: true, permissionSummary: true }).catch(() => undefined)
       }
     } catch (err: any) {
       const errMsg = err?.message || String(err)
@@ -4321,33 +4469,33 @@ export function OrchestrateView({
   // Reopen task back to in_progress
   const handleReopenTask = async (taskId: string, feedback?: string) => {
     if (!selectedProject?.id) return
-    desktopProjects.setOptimisticTasks(selectedProject.id, (prev) =>
-      prev.map((t) =>
-        t.id === taskId
-          ? {
-              ...t,
-              status: 'in_progress' as const,
-              isIntegrated: false,
-              startedAt: Date.now(),
-            }
-          : t
-      )
-    )
+    handleClearTaskError(taskId)
     try {
-      await requestJson(`/v3/projects/${selectedProject.id}/tasks/${taskId}/reopen`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ feedback }),
-      })
-      desktopProjects.invalidate(selectedProject.id)
-      const reopenedTask = tasks.find((t) => t.id === taskId)
-      if (reopenedTask?.sessionId) {
-        setActiveSessionId(reopenedTask.sessionId)
-        setActiveTaskId(reopenedTask.id)
-        void hydrateDesktopV3ChildCard(reopenedTask.sessionId, { activePlan: true, permissionSummary: true }).catch(() => undefined)
+      const res = await requestJson<{ status: string; task: any }>(
+        `/v3/projects/${selectedProject.id}/tasks/${taskId}/reopen`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ feedback }),
+        }
+      )
+      if (!res?.task) {
+        throw new Error('Reopen succeeded without returned task authority')
       }
-    } catch (err) {
+      const mapped = mapBackendTask(res.task)
+      desktopProjects.updateTasks(selectedProject.id, (prev) =>
+        prev.map((t) => (t.id === taskId ? mapped : t))
+      )
+      desktopProjects.invalidate(selectedProject.id)
+      const linkedSessionId = res.task.session_id || res.task.sessionId
+      if (linkedSessionId) {
+        setActiveSessionId(linkedSessionId)
+        setActiveTaskId(res.task.id || taskId)
+        void hydrateDesktopV3ChildCard(linkedSessionId, { activePlan: true, permissionSummary: true }).catch(() => undefined)
+      }
+    } catch (err: any) {
       console.warn('Reopen task failed:', err)
+      setTaskActionErrors((prev) => ({ ...prev, [taskId]: err?.message || String(err) }))
       desktopProjects.invalidate(selectedProject.id)
     }
   }
@@ -4355,22 +4503,26 @@ export function OrchestrateView({
   // Complete task explicitly
   const handleCompleteTask = async (taskId: string) => {
     if (!selectedProject?.id) return
-    desktopProjects.setOptimisticTasks(selectedProject.id, (prev) =>
-      prev.map((t) =>
-        t.id === taskId
-          ? { ...t, status: 'completed' as const }
-          : t
-      )
-    )
+    handleClearTaskError(taskId)
     try {
       const task = tasks.find(item => item.id === taskId)
       const action = task?.deliverables?.some(item => item.type === 'video' || item.type === 'image') ? 'accept' : 'complete'
-      await requestJson(`/v3/projects/${selectedProject.id}/tasks/${taskId}/${action}`, {
-        method: 'POST',
-      })
+      const res = await requestJson<{ status?: string; task?: any }>(
+        `/v3/projects/${selectedProject.id}/tasks/${taskId}/${action}`,
+        {
+          method: 'POST',
+        }
+      )
+      if (res?.task) {
+        const mapped = mapBackendTask(res.task)
+        desktopProjects.updateTasks(selectedProject.id, (prev) =>
+          prev.map((t) => (t.id === taskId ? mapped : t))
+        )
+      }
       desktopProjects.invalidate(selectedProject.id)
-    } catch (err) {
+    } catch (err: any) {
       console.warn('Complete task failed:', err)
+      setTaskActionErrors((prev) => ({ ...prev, [taskId]: err?.message || String(err) }))
       desktopProjects.invalidate(selectedProject.id)
     }
   }
@@ -4422,8 +4574,8 @@ export function OrchestrateView({
         planDoc?.checkpoints?.some((cp: any) => cp.status === 'needs_review')
       )
 
-      if (task.status === 'pending_approval' || task.status === 'planning' || task.status === 'queued') {
-        // Keep pending approval until explicitly approved
+      if (task.status === 'pending_approval' || task.status === 'planning' || task.status === 'queued' || task.status === 'failed' || task.status === 'rejected') {
+        // Keep pending approval or terminal outcome until explicitly transitioned
         status = task.status
       } else if (isLifecycleActive) {
         status = 'running'
@@ -4728,10 +4880,11 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
   }
 
   // Count summaries
-  const runningCount = liveTasks.filter((t) => t.status === 'running').length
+  const runningCount = liveTasks.filter((t) => t.status === 'running' || t.status === 'in_progress').length
   const reviewCount = liveTasks.filter((t) => t.status === 'needs_review').length
-  const queuedCount = liveTasks.filter((t) => t.status === 'queued' || t.status === 'pending_approval').length
+  const queuedCount = liveTasks.filter((t) => t.status === 'queued' || t.status === 'pending_approval' || t.status === 'planning').length
   const completedCount = liveTasks.filter((t) => t.status === 'completed').length
+  const failedCount = liveTasks.filter((t) => t.status === 'failed' || t.status === 'rejected').length
 
   return (
     <div
@@ -6148,6 +6301,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                   <span className="text-amber-400">● {reviewCount} Review</span>
                   <span className="text-slate-500">● {queuedCount} Queued</span>
                   <span className="text-emerald-400">● {completedCount} Done</span>
+                  {failedCount > 0 && <span className="text-rose-400">● {failedCount} Failed</span>}
                 </div>
               </div>
             </div>
@@ -6384,7 +6538,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                               <div className="flex items-center gap-2.5 min-w-0 flex-1">
                                 <span
                                   className={`h-2 w-2 rounded-sm flex-shrink-0 ${
-                                    t.status === 'pending_approval'
+                                    t.status === 'pending_approval' || t.status === 'planning'
                                       ? 'bg-amber-400'
                                       : t.status === 'running'
                                       ? 'bg-blue-400 animate-pulse'
@@ -6392,6 +6546,8 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                                       ? 'bg-amber-400'
                                       : t.status === 'completed'
                                       ? 'bg-emerald-400'
+                                      : t.status === 'failed' || t.status === 'rejected'
+                                      ? 'bg-rose-400'
                                       : 'bg-slate-600'
                                   }`}
                                 />
@@ -6500,11 +6656,13 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                       { key: 'running', label: 'In Progress', color: 'blue' },
                       { key: 'needs_review', label: 'Needs Review', color: 'amber' },
                       { key: 'completed', label: 'Completed', color: 'emerald' },
+                      { key: 'failed', label: 'Failed', color: 'rose' },
                     ] as const
                   ).map((col) => {
                     const colTasks = liveTasks.filter((t) => {
-                      if (col.key === 'queued') return t.status === 'queued' || t.status === 'pending_approval'
+                      if (col.key === 'queued') return t.status === 'queued' || t.status === 'pending_approval' || t.status === 'planning'
                       if (col.key === 'running') return t.status === 'running' || t.status === 'in_progress'
+                      if (col.key === 'failed') return t.status === 'failed' || t.status === 'rejected'
                       return t.status === col.key
                     })
                     return (
@@ -6522,6 +6680,8 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                                   ? 'bg-amber-400'
                                   : col.color === 'emerald'
                                   ? 'bg-emerald-400'
+                                  : col.color === 'rose'
+                                  ? 'bg-rose-400'
                                   : 'bg-slate-500'
                               }`}
                             />

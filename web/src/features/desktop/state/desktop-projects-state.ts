@@ -124,8 +124,12 @@ export function mapBackendTask(t: any): RunningTask {
     task_program_status: t.task_program_status || t.taskProgramStatus,
     planBinding: t.plan_binding || t.planBinding,
     plan_binding: t.plan_binding || t.planBinding,
-    planDocument: t.plan_document || t.planDocument || t.document,
-    plan_document: t.plan_document || t.planDocument || t.document,
+    planDocument: typeof (t.plan_document || t.planDocument || t.document) === 'string'
+      ? (() => { try { return JSON.parse(t.plan_document || t.planDocument || t.document) } catch { return t.plan_document || t.planDocument || t.document } })()
+      : (t.plan_document || t.planDocument || t.document),
+    plan_document: typeof (t.plan_document || t.planDocument || t.document) === 'string'
+      ? (() => { try { return JSON.parse(t.plan_document || t.planDocument || t.document) } catch { return t.plan_document || t.planDocument || t.document } })()
+      : (t.plan_document || t.planDocument || t.document),
     subtasks: [
       { id: '1', title: 'Verify task scope', completed: true },
       { id: '2', title: 'Execute implementation', completed: t.status === 'completed' || t.status === 'needs_review' },

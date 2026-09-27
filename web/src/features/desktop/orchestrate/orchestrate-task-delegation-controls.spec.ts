@@ -621,6 +621,36 @@ test('Task acceptance payload and revision guard contract', () => {
   assert.equal(payload3.session_id, undefined)
   assert.equal(payload3.plan_id, undefined)
   assert.equal(payload3.definition_revision, undefined)
+
+  // Case 4: Backend raw task with snake_case plan_binding
+  const snakeTask = {
+    session_id: 'sess-big-003',
+    plan_binding: {
+      plan_id: 'plan-auth-v2',
+      definition_revision: 5,
+      session_id: 'sess-big-003',
+    },
+  }
+  const payload4 = buildTaskAcceptancePayload(snakeTask)
+  assert.equal(payload4.session_id, 'sess-big-003')
+  assert.equal(payload4.plan_id, 'plan-auth-v2')
+  assert.equal(payload4.definition_revision, 5)
+
+  // Case 5: Plan document version fallback when definition_revision is on document
+  const docFallbackTask = {
+    sessionId: 'sess-big-004',
+    planBinding: {
+      plan_id: 'plan-auth-v3',
+    },
+    planDocument: {
+      id: 'plan-auth-v3',
+      version: 2,
+    },
+  }
+  const payload5 = buildTaskAcceptancePayload(docFallbackTask)
+  assert.equal(payload5.session_id, 'sess-big-004')
+  assert.equal(payload5.plan_id, 'plan-auth-v3')
+  assert.equal(payload5.definition_revision, 2)
 })
 
 test('Missing workspace handling and resolution for code and audit tasks', () => {
@@ -650,6 +680,18 @@ test('Missing workspace handling and resolution for code and audit tasks', () =>
   // Case 6: Null or undefined project
   const ws6 = resolveTaskWorkspace('', null)
   assert.equal(ws6, undefined)
+
+  // Case 7: Deploy modal explicit '.' rejection
+  const sourcePath = path.join(__dirname, 'OrchestrateView.tsx')
+  const source = fs.readFileSync(sourcePath, 'utf8')
+  assert.ok(
+    source.includes('isExplicitDotWorkspace'),
+    "Deploy modal must reject explicit dot '.' workspace without falling back to '.'"
+  )
+  assert.ok(
+    source.includes("dot '.' is not allowed"),
+    "Deploy modal must display explicit dot rejection message"
+  )
 })
 
 test('Task Deliverables typing preserves code PR and audit deliverables without media substitution', () => {
@@ -814,5 +856,79 @@ test('OrchestrateView source contracts: no premature execution, duplicate-click 
     source.includes('Code PR • Pending Acceptance'),
     'Pending code deliverables must show Code PR • Pending Acceptance'
   )
+
+  // 8. Idempotent & retry-safe request IDs, pre-flight approval guards, and no premature execution on reopen
+  assert.ok(
+    source.includes("'X-Request-ID': approveRequestId"),
+    'Approve request must include X-Request-ID header'
+  )
+  assert.ok(
+    source.includes("'X-Request-ID': clientTaskId"),
+    'Deploy request must include X-Request-ID header'
+  )
+  assert.ok(
+    source.includes('id: clientTaskId'),
+    'Deploy request must pass client task ID for idempotent retries'
+  )
+  assert.ok(
+    source.includes("targetTask.status === 'planning'"),
+    'handleApproveTask must check planning status before execution'
+  )
+  assert.ok(
+    source.includes("targetTask.status === 'rejected'"),
+    'handleApproveTask must check rejected status before execution'
+  )
+  assert.ok(
+    source.includes("planDoc?.status === 'rejected'"),
+    'handleApproveTask must check rejected plan document'
+  )
+  assert.ok(
+    source.includes('Plan definition revision guard is missing or stale'),
+    'handleApproveTask must enforce plan revision guard'
+  )
+  assert.ok(
+    source.includes("task.status === 'failed' || task.status === 'rejected'"),
+    'liveTasks memo must preserve failed and rejected task statuses without overwrite'
+  )
+  assert.ok(
+    source.includes('data-testid="task-failed-banner"'),
+    'MinimalTaskCard must render failed task banner'
+  )
+  assert.ok(
+    source.includes('data-testid="task-plan-rejected-banner"'),
+    'MinimalTaskCard must render plan rejected banner'
+  )
+  assert.ok(
+    source.includes("{ key: 'failed', label: 'Failed', color: 'rose' }"),
+    'Kanban must render dedicated Failed column'
+  )
+  assert.ok(
+    source.includes('disabled={isApproving || isPlanRejected || isPlanTaskWithoutStructuredPlan}'),
+    'Approve button must be disabled for rejected plans or missing structured plans'
+  )
+})
+
+test('Failed and rejected task retention: terminal outcomes are never overwritten and render visible failure state', () => {
+  // Requirement: Failed and rejected tasks must remain visible and retained across all views.
+  // Must not be overwritten to needs_review or hidden from Kanban.
+  const failedBackend = {
+    id: 't-failed-1',
+    title: 'Broken Build Task',
+    status: 'failed',
+    agent: 'coder',
+    last_error: 'Compile error: exit status 2',
+  }
+  const mappedFailed = mapBackendTask(failedBackend)
+  assert.equal(mappedFailed.status, 'failed', 'mapBackendTask must preserve failed status')
+
+  const rejectedBackend = {
+    id: 't-rejected-1',
+    title: 'Disapproved Task',
+    status: 'rejected',
+    agent: 'coder',
+    action_needed: 'Task rejected by user',
+  }
+  const mappedRejected = mapBackendTask(rejectedBackend)
+  assert.equal(mappedRejected.status, 'rejected', 'mapBackendTask must preserve rejected status')
 })
 
