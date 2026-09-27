@@ -792,16 +792,26 @@ func (s *Service) ExecuteTaskProgramForCoordinator(ctx context.Context, p identi
 		return "", errors.New("cross-account execution forbidden")
 	}
 
+	arguments, err := json.Marshal(map[string]any{
+		"action":  taskProgramActionStart,
+		"mode":    taskModeRegular,
+		"prompt":  "Task Program execution",
+		"program": record.Definition,
+	})
+	if err != nil {
+		return "", fmt.Errorf("encode coordinator task program: %w", err)
+	}
+	parsed, err := parseTaskCallArguments(string(arguments))
+	if err != nil {
+		return "", fmt.Errorf("validate coordinator task program: %w", err)
+	}
+
 	callID := fmt.Sprintf("call_tp_%s", record.ProgramID)
 	if s.permissions == nil {
 		return "", errors.New("task program permission service is not configured")
 	}
 	{
 		readyIdxs := taskProgramReadyJobIndexes(record, taskProgramStageIndex(record))
-		programCap := 0
-		if record.Definition.MaxConcurrency != nil {
-			programCap = *record.Definition.MaxConcurrency
-		}
 		reservation, reserveErr := s.permissions.ReserveSubagentWave(permission.SubagentReservationRequest{
 			SessionID:      parentSessionID,
 			RunID:          runID,
@@ -810,7 +820,7 @@ func (s *Service) ExecuteTaskProgramForCoordinator(ctx context.Context, p identi
 			LaunchCount:    len(record.Definition.Jobs),
 			Program:        true,
 			ReadyCount:     len(readyIdxs),
-			MaxConcurrency: programCap,
+			MaxConcurrency: record.Definition.MaxConcurrency,
 			AccountScopeID: p.AccountScopeID,
 		})
 		if reserveErr != nil {
@@ -821,10 +831,6 @@ func (s *Service) ExecuteTaskProgramForCoordinator(ctx context.Context, p identi
 		}
 	}
 
-	parsed := taskCallArguments{
-		Action:  "start",
-		Program: &record.Definition,
-	}
 	call := tool.Call{CallID: callID, Name: "task"}
 	return s.executeTaskProgram(ctx, parentSession.Mode, 1, call, nil, taskExecutionRequest{RunID: runID, Principal: p}, parentSession, parsed, record, record.Definition.ID, "Task Program execution")
 }
