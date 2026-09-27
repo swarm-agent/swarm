@@ -4,12 +4,15 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
+  buildTaskAcceptancePayload,
   getPrimarySystemAgentName,
   isMediaTaskType,
   resolveDeployImpendingConfig,
   resolveOptimisticApprovedDeliverables,
   resolveTaskImpendingAgents,
+  resolveTaskWorkspace,
 } from './orchestrate-task-helpers'
+import { mapBackendTask } from '../state/desktop-projects-state'
 import type { RunningTask, BackendTaskModelPreview } from './orchestrate-types'
 import type { AgentModelSettings } from '../settings/swarm/types/agent-model-settings'
 import type { AgentModelControlTaskOverrideInput } from '../chat/components/agent-model-control'
@@ -584,3 +587,232 @@ test('AgentModelControl contract: supports task-scoped apply, save-default, and 
     'Must save Swarm action/plan model defaults via canonical authority'
   )
 })
+
+test('Task acceptance payload and revision guard contract', () => {
+  // Requirement: Task acceptance must supply exact backend revision guards { session_id, plan_id, definition_revision }.
+  // Prevents stale or rejected plans from being accepted without revision consistency.
+
+  // Case 1: Big feature task with bound structured plan
+  const planTask = {
+    sessionId: 'sess-big-001',
+    planBinding: {
+      plan_id: 'plan-auth-v1',
+      definition_revision: 3,
+      session_id: 'sess-big-001',
+    },
+  }
+  const payload1 = buildTaskAcceptancePayload(planTask)
+  assert.equal(payload1.session_id, 'sess-big-001')
+  assert.equal(payload1.plan_id, 'plan-auth-v1')
+  assert.equal(payload1.definition_revision, 3)
+
+  // Case 2: Direct coder task without plan binding
+  const coderTask = {
+    sessionId: 'sess-coder-002',
+    planBinding: undefined,
+  }
+  const payload2 = buildTaskAcceptancePayload(coderTask)
+  assert.equal(payload2.session_id, 'sess-coder-002')
+  assert.equal(payload2.plan_id, undefined)
+  assert.equal(payload2.definition_revision, undefined)
+
+  // Case 3: Empty or null task
+  const payload3 = buildTaskAcceptancePayload(null)
+  assert.equal(payload3.session_id, undefined)
+  assert.equal(payload3.plan_id, undefined)
+  assert.equal(payload3.definition_revision, undefined)
+})
+
+test('Missing workspace handling and resolution for code and audit tasks', () => {
+  // Requirement: UI must resolve workspace from override, project repoPath, workspaces list, or linkedWorkspaces,
+  // and reject '.' fallback for code/audit tasks to prevent git worktree allocation failure.
+
+  // Case 1: User explicitly specifies an override path
+  const ws1 = resolveTaskWorkspace('/custom/override/path', { repoPath: '/repo/default' })
+  assert.equal(ws1, '/custom/override/path')
+
+  // Case 2: Override is empty, falls back to project.repoPath
+  const ws2 = resolveTaskWorkspace('', { repoPath: '/repo/default' })
+  assert.equal(ws2, '/repo/default')
+
+  // Case 3: Override and repoPath are '.', falls back to linkedWorkspaces
+  const ws3 = resolveTaskWorkspace('.', { repoPath: '.', linkedWorkspaces: ['/linked/workspace/root'] })
+  assert.equal(ws3, '/linked/workspace/root')
+
+  // Case 4: Override and repoPath are '.', workspaces array provides valid path
+  const ws4 = resolveTaskWorkspace('', { repoPath: '.', workspaces: [{ path: '/ws/first' }] })
+  assert.equal(ws4, '/ws/first')
+
+  // Case 5: No valid workspace available (all '.' or empty) -> returns undefined
+  const ws5 = resolveTaskWorkspace('', { repoPath: '.', linkedWorkspaces: ['.'] })
+  assert.equal(ws5, undefined, 'Must return undefined when no genuine workspace root exists')
+
+  // Case 6: Null or undefined project
+  const ws6 = resolveTaskWorkspace('', null)
+  assert.equal(ws6, undefined)
+})
+
+test('Task Deliverables typing preserves code PR and audit deliverables without media substitution', () => {
+  // Requirement: Coding outputs real code PR/commit deliverables, never image/audit substitution;
+  // retain media deliverables for image/video/audio and audit reports for finder.
+
+  // Case 1: Code task maps deliverable type to 'code', thumbnail to 'default'
+  const codeTaskBackend = {
+    id: 't-code-1',
+    title: 'Add JWT Middleware',
+    agent: 'coder',
+    outcome_type: 'code_pr',
+    deliverables: [{ id: 'd-1', title: 'Branch PR' }],
+    plan_binding: { plan_id: 'p-1', definition_revision: 2, session_id: 's-1' },
+    plan_document: { id: 'p-1', title: 'JWT Plan', checkpoints: [] },
+  }
+  const mappedCode = mapBackendTask(codeTaskBackend)
+  assert.equal(mappedCode.deliverables![0].type, 'code', 'Code deliverable must not default to image')
+  assert.equal(mappedCode.deliverables![0].thumbnailType, 'default', 'Code deliverable thumbnail must not default to cyber_lattice')
+  assert.deepEqual(mappedCode.planBinding, { plan_id: 'p-1', definition_revision: 2, session_id: 's-1' })
+  assert.ok(mappedCode.planDocument)
+
+  // Case 2: Finder audit task maps deliverable type to 'report'
+  const finderTaskBackend = {
+    id: 't-finder-1',
+    title: 'Security Audit',
+    agent: 'finder',
+    outcome_type: 'audit_report',
+    deliverables: [{ id: 'd-2', title: 'Audit Report' }],
+  }
+  const mappedFinder = mapBackendTask(finderTaskBackend)
+  assert.equal(mappedFinder.deliverables![0].type, 'report', 'Audit report deliverable must not default to image')
+
+  // Case 3: Image task preserves image deliverable type
+  const imageTaskBackend = {
+    id: 't-img-1',
+    title: 'Logo Design',
+    agent: 'image',
+    outcome_type: 'media_bundle',
+    deliverables: [{ id: 'd-3', title: 'Logo Variant' }],
+  }
+  const mappedImage = mapBackendTask(imageTaskBackend)
+  assert.equal(mappedImage.deliverables![0].type, 'image')
+  assert.equal(mappedImage.deliverables![0].thumbnailType, 'cyber_lattice')
+
+  // Case 4: Video task preserves video deliverable type
+  const videoTaskBackend = {
+    id: 't-vid-1',
+    title: 'Intro Video',
+    agent: 'video',
+    outcome_type: 'video_clip',
+    deliverables: [{ id: 'd-4', title: 'Clip 1' }],
+  }
+  const mappedVideo = mapBackendTask(videoTaskBackend)
+  assert.equal(mappedVideo.deliverables![0].type, 'video')
+})
+
+test('OrchestrateView source contracts: no premature execution, duplicate-click prevention, authoritative response selection, structured plan rendering, and error recovery', () => {
+  // Written test purpose:
+  // - Product requirement/invariant: Task acceptance must prevent premature execution, supply exact acceptance
+  //   body, prevent duplicate clicks while in-flight, select authoritative returned session ID, render structured
+  //   checkpoints/criteria and Task Program stages/jobs, and display visible error/stale recovery.
+  // - Regression prevented: Premature status flip before backend confirmation, duplicate approval calls,
+  //   selecting stale snapshot session IDs, hiding approval errors in console.warn only, and unreadable plan specs.
+  const sourcePath = path.join(__dirname, 'OrchestrateView.tsx')
+  const source = fs.readFileSync(sourcePath, 'utf8')
+
+  // 1. User-visible pending / no premature execution
+  assert.ok(
+    source.includes('data-testid="task-planning-banner"'),
+    'Must render planning state banner when task is in planning status'
+  )
+  assert.ok(
+    source.includes('Plan Mode (Read-Only)'),
+    'Planning banner must indicate read-only plan mode'
+  )
+  assert.ok(
+    !source.includes('setOptimisticTasks(selectedProject.id, (prev) => prev.map((t) => t.id === taskId ? { ...t, status: \'in_progress\''),
+    'handleApproveTask must NOT prematurely flip task status to in_progress before backend confirmation'
+  )
+
+  // 2. Duplicate-click prevention & in-flight guard
+  assert.ok(
+    source.includes('approvingTaskIds.has(taskId)'),
+    'handleApproveTask must guard against concurrent approvals for the same task'
+  )
+  assert.ok(
+    source.includes('data-testid="approve-task-btn"'),
+    'Must render approve task button with data-testid="approve-task-btn"'
+  )
+  assert.ok(
+    source.includes('disabled={isApproving}'),
+    'Approve button must be disabled when approval is in-flight'
+  )
+  assert.ok(
+    source.includes('Approving & Starting...'),
+    'Approve button must show in-flight spinner state'
+  )
+
+  // 3. Exact acceptance body with revision guards
+  assert.ok(
+    source.includes('buildTaskAcceptancePayload(targetTask'),
+    'handleApproveTask must use buildTaskAcceptancePayload to construct revision guards'
+  )
+
+  // 4. Authoritative backend response link selection
+  assert.ok(
+    source.includes('res?.task?.session_id || res?.task?.sessionId'),
+    'Must use returned linked session ID from authoritative response, not stale pre-call snapshot'
+  )
+
+  // 5. Visible error & stale recovery
+  assert.ok(
+    source.includes('data-testid="task-error-banner"'),
+    'Must render visible task error banner when approval or task actions fail'
+  )
+  assert.ok(
+    source.includes('data-testid="retry-approve-btn"'),
+    'Task error banner must provide Retry button for pending approval tasks'
+  )
+  assert.ok(
+    source.includes('data-testid="deploy-modal-error"'),
+    'Deploy modal must display visible error banner on missing workspace or deploy failure'
+  )
+
+  // 6. Structured plan rendering (checkpoints, tasks, criteria, and Task Program specs)
+  assert.ok(
+    source.includes('data-testid="task-plan-spec"'),
+    'Must render structured plan specification container'
+  )
+  assert.ok(
+    source.includes('data-testid="toggle-plan-spec-btn"'),
+    'Must render toggle button for structured plan spec'
+  )
+  assert.ok(
+    source.includes('Review Structured Plan & Acceptance Criteria'),
+    'Must provide button label for structured plan review'
+  )
+  assert.ok(
+    source.includes('plan-checkpoint-'),
+    'Checkpoints must be rendered as structured list items with checkpoint testids'
+  )
+  assert.ok(
+    source.includes('Acceptance Criteria:'),
+    'Structured plan view must render Acceptance Criteria section'
+  )
+  assert.ok(
+    source.includes('data-testid="task-program-spec"'),
+    'Must render Task Program specification with stages and jobs'
+  )
+
+  // 7. Route & output compatibility
+  assert.ok(
+    source.includes("deliverableType === 'code' || deliverableType === 'pr'"),
+    'Deliverable thumbnail must handle code PR deliverables without image substitution'
+  )
+  assert.ok(
+    source.includes('Executing Coder...'),
+    'Code deliverables must show Executing Coder... while generating, not Generating Media...'
+  )
+  assert.ok(
+    source.includes('Code PR • Pending Acceptance'),
+    'Pending code deliverables must show Code PR • Pending Acceptance'
+  )
+})
+

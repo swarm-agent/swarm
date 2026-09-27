@@ -104,10 +104,12 @@ import {
 
 export { resolveVideoPricing, normalizeVideoResKey, type TaskModalModelOption }
 import {
+  buildTaskAcceptancePayload,
   getPrimarySystemAgentName,
   resolveDeployImpendingConfig,
   resolveOptimisticApprovedDeliverables,
   resolveTaskImpendingAgents,
+  resolveTaskWorkspace,
 } from './orchestrate-task-helpers'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { agentModelSettingsQueryOptions } from '../settings/swarm/queries/get-agent-model-settings'
@@ -436,19 +438,25 @@ function DeliverableThumbnail({
   duration,
   previewUrl,
   status,
+  deliverableType,
   onPlay,
 }: {
   type?: string
   duration?: string
   previewUrl?: string
   status?: string
+  deliverableType?: string
   onPlay?: () => void
 }) {
+  const isCode = deliverableType === 'code' || deliverableType === 'pr' || type === 'code' || type === 'pr'
+
   if (status === 'generating') {
     return (
       <div className="relative aspect-video w-full rounded-lg border border-blue-500/40 bg-blue-950/20 flex flex-col items-center justify-center p-3 animate-pulse space-y-1.5">
         <Loader2 size={18} className="animate-spin text-blue-400" />
-        <span className="text-[10px] font-mono text-blue-300 font-semibold tracking-wider uppercase">Generating Media...</span>
+        <span className="text-[10px] font-mono text-blue-300 font-semibold tracking-wider uppercase">
+          {isCode ? 'Executing Coder...' : 'Generating Media...'}
+        </span>
       </div>
     )
   }
@@ -456,8 +464,29 @@ function DeliverableThumbnail({
   if (status === 'pending') {
     return (
       <div className="relative aspect-video w-full rounded-lg border-2 border-dashed border-slate-700/60 bg-slate-900/30 flex flex-col items-center justify-center p-3 space-y-1 text-center">
-        <ImageIcon size={18} className="text-slate-500" />
-        <span className="text-[10px] font-mono text-slate-400">Empty Slot • Pending</span>
+        {isCode ? <GitPullRequest size={18} className="text-emerald-400" /> : <ImageIcon size={18} className="text-slate-500" />}
+        <span className="text-[10px] font-mono text-slate-400">
+          {isCode ? 'Code PR • Pending Acceptance' : 'Empty Slot • Pending'}
+        </span>
+      </div>
+    )
+  }
+
+  if (isCode) {
+    return (
+      <div
+        onClick={onPlay}
+        className="group/thumb relative aspect-video w-full cursor-pointer overflow-hidden rounded-lg border border-emerald-500/30 bg-[#091512] transition-all hover:border-emerald-500/60 p-2.5 flex flex-col justify-between"
+      >
+        <div className="flex items-center justify-between">
+          <GitPullRequest size={16} className="text-emerald-400" />
+          <span className="px-1.5 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-500/30 font-mono text-[9px] font-bold">
+            Branch PR
+          </span>
+        </div>
+        <div className="text-[10px] font-mono text-slate-300 truncate">
+          Code Branch Deliverable
+        </div>
       </div>
     )
   }
@@ -609,6 +638,9 @@ function MinimalTaskCard({
   imageModelOptions,
   videoModelOptions,
   audioModelOptions,
+  isApproving,
+  taskError,
+  onClearError,
 }: {
   task: RunningTask
   isSelected?: boolean
@@ -633,6 +665,9 @@ function MinimalTaskCard({
   imageModelOptions?: TaskModalModelOption[]
   videoModelOptions?: TaskModalModelOption[]
   audioModelOptions?: TaskModalModelOption[]
+  isApproving?: boolean
+  taskError?: string
+  onClearError?: () => void
 }) {
   const agentModelSettingsQuery = useQuery(agentModelSettingsQueryOptions())
   const isPlanning = task.status === 'planning'
@@ -670,6 +705,21 @@ function MinimalTaskCard({
     (taskProgramDef?.jobs && taskProgramDef.jobs.length > 0) ||
     (taskProgramStatus?.jobs && taskProgramStatus.jobs.length > 0)
   )
+
+  const planDoc = (task.planDocument || (task as any).plan_document) as any
+  const planDocTitle = planDoc?.title || task.planSummary || ''
+  const planDocGoal = planDoc?.info?.goal || planDoc?.objective || ''
+  const planCheckpointsToRender = useMemo(() => {
+    if (planDoc?.checkpoints && Array.isArray(planDoc.checkpoints) && planDoc.checkpoints.length > 0) {
+      return planDoc.checkpoints
+    }
+    if (task.activePlanCheckpoints && task.activePlanCheckpoints.length > 0) {
+      return task.activePlanCheckpoints
+    }
+    return []
+  }, [planDoc, task.activePlanCheckpoints])
+  const hasTaskProgramSpec = Boolean(taskProgramDef && ((taskProgramDef.stages && taskProgramDef.stages.length > 0) || (taskProgramDef.jobs && taskProgramDef.jobs.length > 0)))
+  const hasStructuredPlan = planCheckpointsToRender.length > 0 || hasTaskProgramSpec
 
   const programJobs = useMemo(() => {
     if (!isTaskProgram) return []
@@ -948,18 +998,34 @@ function MinimalTaskCard({
 
       {/* PLANNING STATE BANNER */}
       {isPlanning && (
-        <div className="flex flex-col p-3 rounded-lg bg-indigo-950/30 border border-indigo-500/40 space-y-2 text-xs">
-          <div className="flex items-center gap-2">
-            <span className="font-bold text-indigo-400 flex items-center gap-1.5 font-mono text-[10px] uppercase">
-              <Sparkles size={12} className="animate-spin text-indigo-300" />
-              <span>AI Task Router Planning...</span>
-            </span>
-            <span className="font-mono text-[9px] px-1.5 py-0.5 rounded bg-indigo-900/40 text-indigo-300 border border-indigo-500/30 animate-pulse">
-              Analyzing Workspaces
-            </span>
+        <div className="flex flex-col p-3 rounded-lg bg-indigo-950/30 border border-indigo-500/40 space-y-2 text-xs" data-testid="task-planning-banner">
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <div className="flex items-center gap-2">
+              <span className="font-bold text-indigo-400 flex items-center gap-1.5 font-mono text-[10px] uppercase">
+                <Sparkles size={12} className="animate-spin text-indigo-300" />
+                <span>Plan Agent Investigating...</span>
+              </span>
+              <span className="font-mono text-[9px] px-1.5 py-0.5 rounded bg-indigo-900/40 text-indigo-300 border border-indigo-500/30 animate-pulse">
+                Plan Mode (Read-Only)
+              </span>
+            </div>
+            {task.sessionId && onOpenChat && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onOpenChat()
+                }}
+                className="flex items-center gap-1 px-2 py-0.5 rounded bg-indigo-900/50 hover:bg-indigo-800 text-indigo-200 text-[10px] font-mono border border-indigo-500/40 transition-colors"
+                data-testid="view-planning-session-btn"
+              >
+                <span>View Session</span>
+                <ExternalLink size={9} />
+              </button>
+            )}
           </div>
           <p className="text-slate-300 text-xs leading-relaxed">
-            The AI Router is analyzing project boundaries, detecting target workspaces, and formulating a multi-tier mission plan...
+            The Plan agent is investigating the codebase in plan mode to author an executable structured plan. Implementation is locked until your explicit plan review and acceptance.
           </p>
         </div>
       )}
@@ -1314,9 +1380,9 @@ function MinimalTaskCard({
             </div>
           )}
 
-          {/* Expandable Full Plan */}
-          {task.fullPlanMarkdown && (
-            <div className="border border-slate-800/80 rounded bg-[#070b14]/90 overflow-hidden">
+          {/* Expandable Structured Plan or Task Program or Fallback Markdown */}
+          {(hasStructuredPlan || task.fullPlanMarkdown) && (
+            <div className="border border-slate-800/80 rounded bg-[#070b14]/90 overflow-hidden" data-testid="task-plan-spec">
               <button
                 type="button"
                 onClick={(e) => {
@@ -1324,16 +1390,150 @@ function MinimalTaskCard({
                   setIsFullPlanOpen(!isFullPlanOpen)
                 }}
                 className="w-full flex items-center justify-between px-2.5 py-1.5 text-[10px] font-mono text-slate-400 hover:text-slate-200 transition-colors"
+                data-testid="toggle-plan-spec-btn"
               >
                 <span className="flex items-center gap-1.5 font-semibold">
                   <FileText size={11} className="text-blue-400" />
-                  <span>{isFullPlanOpen ? 'Hide Full Plan Spec' : 'Read Full Plan Spec & Criteria'}</span>
+                  <span>
+                    {hasStructuredPlan
+                      ? (isFullPlanOpen ? 'Hide Structured Plan & Criteria' : 'Review Structured Plan & Acceptance Criteria')
+                      : (isFullPlanOpen ? 'Hide Full Plan Spec' : 'Read Full Plan Spec & Criteria')}
+                  </span>
                 </span>
                 {isFullPlanOpen ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
               </button>
               {isFullPlanOpen && (
-                <div className="p-3 border-t border-slate-800 text-[11px] text-slate-300 font-mono whitespace-pre-wrap leading-relaxed max-h-60 overflow-y-auto bg-slate-950/60">
-                  {task.fullPlanMarkdown}
+                <div className="p-3 border-t border-slate-800 text-[11px] text-slate-300 font-mono leading-relaxed max-h-80 overflow-y-auto bg-slate-950/60 space-y-3">
+                  {/* Render Structured Plan Document Checkpoints */}
+                  {planCheckpointsToRender.length > 0 && (
+                    <div className="space-y-2">
+                      {planDocTitle && (
+                        <div className="text-xs font-bold text-white flex items-center justify-between border-b border-slate-800/80 pb-1">
+                          <span>{planDocTitle}</span>
+                          {planDocGoal && (
+                            <span className="text-[10px] text-slate-400 font-normal truncate max-w-[60%]" title={planDocGoal}>{planDocGoal}</span>
+                          )}
+                        </div>
+                      )}
+                      <div className="space-y-2">
+                        {planCheckpointsToRender.map((cp: any, idx: number) => {
+                          const tasksList: string[] = cp.tasks || []
+                          const criteriaList: string[] = cp.acceptanceCriteria || cp.acceptance_criteria || []
+                          return (
+                            <div key={cp.id || idx} className="p-2 rounded bg-slate-900/70 border border-slate-800/60 space-y-1.5" data-testid={`plan-checkpoint-${cp.id || idx}`}>
+                              <div className="flex items-center justify-between font-bold text-slate-200">
+                                <div className="flex items-center gap-1.5">
+                                  <span className="text-blue-400 font-mono">{idx + 1}.</span>
+                                  <span>{cp.title}</span>
+                                </div>
+                                <span className="text-[9px] uppercase font-mono px-1.5 py-0.2 rounded bg-slate-800 text-slate-400">
+                                  {cp.status || 'pending'}
+                                </span>
+                              </div>
+                              {cp.objective && (
+                                <p className="text-[10px] text-slate-400 leading-snug">{cp.objective}</p>
+                              )}
+                              {tasksList.length > 0 && (
+                                <div className="space-y-0.5 pt-0.5">
+                                  <span className="text-[9px] font-semibold text-slate-400 uppercase tracking-wider">Tasks:</span>
+                                  <ul className="list-disc list-inside space-y-0.5 text-[10px] text-slate-300 pl-1">
+                                    {tasksList.map((tText: string, tIdx: number) => (
+                                      <li key={tIdx} className="truncate">{tText}</li>
+                                    ))}
+                                  </ul>
+                                </div>
+                              )}
+                              {criteriaList.length > 0 && (
+                                <div className="space-y-0.5 pt-0.5">
+                                  <span className="text-[9px] font-semibold text-emerald-400/90 uppercase tracking-wider">Acceptance Criteria:</span>
+                                  <ul className="space-y-0.5 text-[10px] text-slate-300 pl-1">
+                                    {criteriaList.map((cText: string, cIdx: number) => (
+                                      <li key={cIdx} className="flex items-start gap-1">
+                                        <span className="text-emerald-400 font-bold">✓</span>
+                                        <span className="truncate">{cText}</span>
+                                      </li>
+                                    ))}
+                                  </ul>
+                                </div>
+                              )}
+                              {cp.notes && (
+                                <div className="text-[9px] text-slate-500 italic pt-0.5">Note: {cp.notes}</div>
+                              )}
+                            </div>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Render Structured Task Program Spec */}
+                  {taskProgramDef && (taskProgramDef.stages?.length > 0 || taskProgramDef.jobs?.length > 0) && (
+                    <div className="space-y-2 border-t border-slate-800/80 pt-2" data-testid="task-program-spec">
+                      <div className="text-xs font-bold text-indigo-300 flex items-center justify-between">
+                        <span className="flex items-center gap-1.5">
+                          <Layers size={12} className="text-indigo-400" />
+                          <span>Task Program Specification ({taskProgramDef.jobs?.length || 0} Jobs across {taskProgramDef.stages?.length || 1} Stages)</span>
+                        </span>
+                        {taskProgramDef.id && (
+                          <span className="font-mono text-[9px] text-slate-400">{taskProgramDef.id}</span>
+                        )}
+                      </div>
+                      <div className="space-y-2">
+                        {(taskProgramDef.stages || []).map((stage: any, sIdx: number) => {
+                          const stageJobs = (taskProgramDef.jobs || []).filter((j: any) => j.stage_id === stage.id || (!j.stage_id && sIdx === 0))
+                          return (
+                            <div key={stage.id || sIdx} className="p-2 rounded bg-slate-900/60 border border-slate-800/80 space-y-1.5" data-testid={`program-stage-${stage.id || sIdx}`}>
+                              <div className="flex items-center justify-between font-mono text-[10px]">
+                                <span className="font-bold text-slate-200">
+                                  Stage {sIdx + 1}: {stage.id}
+                                </span>
+                                {stage.depends_on && stage.depends_on.length > 0 && (
+                                  <span className="text-slate-400 text-[9px]">depends on: {stage.depends_on.join(', ')}</span>
+                                )}
+                              </div>
+                              {stage.dependency_evidence && (
+                                <p className="text-[10px] text-slate-400 italic">{stage.dependency_evidence}</p>
+                              )}
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1 font-mono text-[10px]">
+                                {stageJobs.map((job: any) => (
+                                  <div key={job.id} className="p-1.5 rounded bg-slate-950/80 border border-slate-800 space-y-1">
+                                    <div className="flex items-center justify-between">
+                                      <span className="text-[9px] uppercase font-bold px-1 py-0.2 rounded bg-indigo-900/60 text-indigo-300 border border-indigo-500/30">
+                                        @{job.agent_type || 'coder'}
+                                      </span>
+                                      <span className="font-bold text-white text-[10px] truncate max-w-[120px]">{job.title || job.id}</span>
+                                    </div>
+                                    {job.owned_scope && job.owned_scope.length > 0 && (
+                                      <div className="text-[9px] text-slate-400 truncate">
+                                        <span className="text-slate-500">scope:</span> {job.owned_scope.join(', ')}
+                                      </div>
+                                    )}
+                                    {job.deliverable && (
+                                      <div className="text-[9px] text-slate-400 truncate">
+                                        <span className="text-slate-500">deliverable:</span> {job.deliverable}
+                                      </div>
+                                    )}
+                                    {job.acceptance_criteria && job.acceptance_criteria.length > 0 && (
+                                      <div className="text-[9px] text-emerald-400/90 pt-0.5 truncate">
+                                        <span>Criteria: {job.acceptance_criteria[0]}</span>
+                                      </div>
+                                    )}
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Fallback Markdown if no structured items */}
+                  {planCheckpointsToRender.length === 0 && (!taskProgramDef || (!taskProgramDef.stages?.length && !taskProgramDef.jobs?.length)) && task.fullPlanMarkdown && (
+                    <div className="whitespace-pre-wrap">
+                      {task.fullPlanMarkdown}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -1341,6 +1541,47 @@ function MinimalTaskCard({
 
           {/* Refine / Actions Bar */}
           <div className="flex flex-col gap-2 pt-1 border-t border-blue-500/20">
+            {/* Action Error Banner with Retry */}
+            {taskError && (
+              <div className="flex items-center justify-between p-2.5 rounded-lg bg-rose-950/40 border border-rose-500/50 text-rose-200 text-xs gap-2" data-testid="task-error-banner">
+                <div className="flex items-center gap-2 min-w-0">
+                  <AlertTriangle size={14} className="text-rose-400 shrink-0" />
+                  <div className="truncate">
+                    <span className="font-bold text-rose-300">Action Failed: </span>
+                    <span>{taskError}</span>
+                  </div>
+                </div>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  {onApprove && isPendingApproval && (
+                    <button
+                      type="button"
+                      disabled={isApproving}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        onApprove()
+                      }}
+                      className="px-2 py-0.5 rounded bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white font-bold text-[10px] transition-colors"
+                      data-testid="retry-approve-btn"
+                    >
+                      Retry
+                    </button>
+                  )}
+                  {onClearError && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        onClearError()
+                      }}
+                      className="text-slate-400 hover:text-white text-[10px] px-1"
+                    >
+                      Dismiss
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+
             <div className="flex items-center justify-between text-[11px] gap-2 flex-wrap">
               <div className="flex items-center gap-2">
                 <span className="text-slate-400 font-mono text-[10px]">
@@ -1393,18 +1634,35 @@ function MinimalTaskCard({
                 {onApprove && (
                   <button
                     type="button"
+                    disabled={isApproving}
                     onClick={(e) => {
                       e.stopPropagation()
-                      onApprove()
+                      if (!isApproving) {
+                        onApprove()
+                      }
                     }}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs shadow-md transition-all active:scale-95"
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded font-bold text-xs shadow-md transition-all ${
+                      isApproving
+                        ? 'bg-blue-800/60 text-blue-200 cursor-not-allowed opacity-80'
+                        : 'bg-blue-600 hover:bg-blue-500 text-white active:scale-95'
+                    }`}
+                    data-testid="approve-task-btn"
                   >
-                    <Sparkles size={11} />
-                    <span>
-                      {task.agentType === 'image' || task.agentType === 'video' || task.outcomeType === 'media_bundle' || task.outcomeType === 'video_story' || task.outcomeType === 'video_clip'
-                        ? `Approve & Generate (${variantSlots.length} ${variantSlots.length === 1 ? (task.agentType === 'video' ? 'Clip' : 'Variant') : 'Variants'})`
-                        : 'Approve & Start Session'}
-                    </span>
+                    {isApproving ? (
+                      <>
+                        <Loader2 size={11} className="animate-spin text-blue-300" />
+                        <span>Approving & Starting...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles size={11} />
+                        <span>
+                          {task.agentType === 'image' || task.agentType === 'video' || task.outcomeType === 'media_bundle' || task.outcomeType === 'video_story' || task.outcomeType === 'video_clip'
+                            ? `Approve & Generate (${variantSlots.length} ${variantSlots.length === 1 ? (task.agentType === 'video' ? 'Clip' : 'Variant') : 'Variants'})`
+                            : 'Approve & Start Session'}
+                        </span>
+                      </>
+                    )}
                   </button>
                 )}
               </div>
@@ -2073,7 +2331,7 @@ function MinimalTaskCard({
                           className="w-full h-full object-cover transition-transform group-hover:scale-105 duration-300"
                         />
                       ) : (
-                        <DeliverableThumbnail type={d.thumbnailType} duration={d.duration} />
+                        <DeliverableThumbnail type={d.thumbnailType} deliverableType={d.type} duration={d.duration} />
                       )}
                       <div className="absolute inset-0 bg-black/40 opacity-0 hover:opacity-100 flex items-center justify-center transition-opacity">
                         <span className="flex items-center gap-1 px-2 py-0.5 rounded bg-black/80 text-[10px] font-mono font-bold text-white border border-white/20">
@@ -2669,6 +2927,7 @@ export function OrchestrateView({
   const [soundDuration, setSoundDuration] = useState<number>(30)
   const [autoApproveTask, setAutoApproveTask] = useState<boolean>(false)
   const [isDeployingTask, setIsDeployingTask] = useState(false)
+  const [deployError, setDeployError] = useState<string | null>(null)
   const [imageModelOptions, setImageModelOptions] = useState<TaskModalModelOption[]>([])
   const videoCatalog = useQuery({
     queryKey: ['video-task-catalog', isDeployModalOpen],
@@ -2743,7 +3002,7 @@ export function OrchestrateView({
             outcome_type: targetOutcomeType,
             tier: targetTier,
             model: newTaskModelOverride || undefined,
-            workspace_path: newTaskWorkspace || selectedProject?.repoPath || '.',
+            workspace_path: resolveTaskWorkspace(newTaskWorkspace, selectedProject),
           }),
         }
       )
@@ -3168,7 +3427,13 @@ export function OrchestrateView({
   }
 
   const activeTaskSessionIds = useMemo(() => {
-    return computeActiveTaskSessionIds(tasks, selectedTaskId)
+    const ids = new Set(computeActiveTaskSessionIds(tasks, selectedTaskId))
+    for (const t of tasks) {
+      if (t.sessionId && (t.status === 'planning' || t.status === 'pending_approval')) {
+        ids.add(t.sessionId)
+      }
+    }
+    return Array.from(ids).sort()
   }, [tasks, selectedTaskId])
 
   const activeTaskSessionIdsKey = useMemo(() => activeTaskSessionIds.join(','), [activeTaskSessionIds])
@@ -3608,7 +3873,7 @@ export function OrchestrateView({
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             prompt: composedPrompt,
-            workspace_path: selectedProject.repoPath || '.',
+            workspace_path: resolveTaskWorkspace('', selectedProject),
             intent: targetIntent,
             operation: targetIntent === 'video' ? (isVideo ? (action === 'next_scene' ? 'extend' : 'edit') : 'create') : undefined,
             aspect_ratio: settings ? settings.aspectRatio : (targetIntent === 'image' ? imageAspectRatio : undefined),
@@ -3869,6 +4134,7 @@ export function OrchestrateView({
     }
 
     setIsDeployingTask(true)
+    setDeployError(null)
     try {
       const qualifiedModel = taskIntent === 'video'
         ? (resolveQualifiedVideoModel(selectedVideoOption, selectedVideoModel) || undefined)
@@ -3890,12 +4156,19 @@ export function OrchestrateView({
 
       const attachedMediaForTask = taggedMedia
 
+      const resolvedWorkspace = resolveTaskWorkspace(newTaskWorkspace, selectedProject)
+      if ((taskIntent === 'code' || taskIntent === 'audit') && (!resolvedWorkspace || resolvedWorkspace === '.')) {
+        setDeployError('A workspace directory is required to launch code/audit tasks.')
+        setIsDeployingTask(false)
+        return
+      }
+
       const res = await requestJson<{ task: any }>(`/v3/projects/${selectedProject.id}/tasks`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           prompt,
-          workspace_path: newTaskWorkspace || selectedProject.repoPath || '.',
+          workspace_path: resolvedWorkspace || undefined,
           intent: taskIntent,
           feature_size: taskIntent === 'code' ? featureSize : undefined,
           agent: targetAgent,
@@ -3925,39 +4198,75 @@ export function OrchestrateView({
       setNewTaskPrompt('')
       setNewTaskModelOverride('')
       setTaggedMedia([])
+      setDeployError(null)
+    } catch (err: any) {
+      console.warn('Deploy task failed:', err)
+      setDeployError(err?.message || 'Failed to deploy task. Please verify workspace and parameters.')
     } finally {
       setIsDeployingTask(false)
     }
   }
 
+  // Track in-flight task approvals to prevent duplicate clicks and premature execution
+  const [approvingTaskIds, setApprovingTaskIds] = useState<Set<string>>(new Set())
+  const [taskActionErrors, setTaskActionErrors] = useState<Record<string, string>>({})
+
+  const handleClearTaskError = useCallback((taskId: string) => {
+    setTaskActionErrors((prev) => {
+      if (!prev[taskId]) return prev
+      const next = { ...prev }
+      delete next[taskId]
+      return next
+    })
+  }, [])
+
   // Approve pending task and start execution run
   const handleApproveTask = async (taskId: string) => {
     if (!selectedProject?.id) return
-    // Optimistic loading state: immediately mark task as in_progress
-    desktopProjects.setOptimisticTasks(selectedProject.id, (prev) =>
-      prev.map((t) =>
-        t.id === taskId
-          ? {
-              ...t,
-              status: 'in_progress' as const,
-              deliverables: resolveOptimisticApprovedDeliverables(t),
-            }
-          : t
-      )
-    )
+    if (approvingTaskIds.has(taskId)) return
+
+    const targetTask = tasks.find((t) => t.id === taskId) || liveTasks.find((t) => t.id === taskId)
+    const acceptanceBody = buildTaskAcceptancePayload(targetTask || { sessionId: undefined, planBinding: undefined })
+
+    // Duplicate-click prevention & in-flight guard: do NOT prematurely flip status to in_progress!
+    setApprovingTaskIds((prev) => new Set(prev).add(taskId))
+    handleClearTaskError(taskId)
+
     try {
-      await requestJson(`/v3/projects/${selectedProject.id}/tasks/${taskId}/approve`, {
-        method: 'POST',
-      })
-      desktopProjects.invalidate(selectedProject.id)
-      const approvedTask = tasks.find((t) => t.id === taskId)
-      if (approvedTask?.sessionId) {
-        setActiveSessionId(approvedTask.sessionId)
-        setActiveTaskId(approvedTask.id)
+      const res = await requestJson<{ status: string; task: any; message?: string }>(
+        `/v3/projects/${selectedProject.id}/tasks/${taskId}/approve`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(acceptanceBody),
+        }
+      )
+
+      if (res?.task) {
+        const mapped = mapBackendTask(res.task)
+        desktopProjects.updateTasks(selectedProject.id, (prev) =>
+          prev.map((t) => (t.id === taskId ? mapped : t))
+        )
       }
-    } catch (err) {
-      console.warn('Approve task failed:', err)
       desktopProjects.invalidate(selectedProject.id)
+
+      // Wait for authoritative backend response and open returned linked session
+      const linkedSessionId = res?.task?.session_id || res?.task?.sessionId
+      if (linkedSessionId) {
+        setActiveSessionId(linkedSessionId)
+        setActiveTaskId(res?.task?.id || taskId)
+      }
+    } catch (err: any) {
+      const errMsg = err?.message || String(err)
+      console.warn('Approve task failed:', err)
+      setTaskActionErrors((prev) => ({ ...prev, [taskId]: errMsg }))
+      desktopProjects.invalidate(selectedProject.id)
+    } finally {
+      setApprovingTaskIds((prev) => {
+        const next = new Set(prev)
+        next.delete(taskId)
+        return next
+      })
     }
   }
 
@@ -4206,6 +4515,8 @@ export function OrchestrateView({
       return {
         ...task,
         status,
+        planDocument: planDoc || (task as any).planDocument || (task as any).plan_document,
+        planBinding: task.planBinding || (task as any).plan_binding || (planRecord ? { plan_id: planRecord.id, definition_revision: planRecord.version, session_id: task.sessionId } : undefined),
         currentFocus: currentFocus || task.currentFocus,
         currentTool: currentTool || task.currentTool,
         liveAssistantText: liveAssistantText || task.liveAssistantText,
@@ -5628,6 +5939,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                   >
                     <DeliverableThumbnail
                       type={d.thumbnailType}
+                      deliverableType={d.type}
                       previewUrl={d.previewUrl || d.mediaUrl}
                       duration={d.duration}
                       status={d.status}
@@ -6141,6 +6453,9 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                                   onOpenAgentSettings={(agentName) => handleOpenAgentSettings(agentName)}
                                   onOpenTaskModelChanger={handleOpenTaskModelChanger}
                                   projectId={selectedProject?.id}
+                                  isApproving={approvingTaskIds.has(t.id)}
+                                  taskError={taskActionErrors[t.id]}
+                                  onClearError={() => handleClearTaskError(t.id)}
                                   modelOptions={modelOptions}
                                   defaultImageModel={defaultImageModel}
                                   defaultVideoModel={defaultVideoModel}
@@ -6237,6 +6552,9 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                               onOpenAgentSettings={(agentName) => handleOpenAgentSettings(agentName)}
                               onOpenTaskModelChanger={handleOpenTaskModelChanger}
                               projectId={selectedProject?.id}
+                              isApproving={approvingTaskIds.has(t.id)}
+                              taskError={taskActionErrors[t.id]}
+                              onClearError={() => handleClearTaskError(t.id)}
                               modelOptions={modelOptions}
                               defaultImageModel={defaultImageModel}
                               defaultVideoModel={defaultVideoModel}
@@ -6345,6 +6663,9 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                           onOpenAgentSettings={(agentName) => handleOpenAgentSettings(agentName)}
                           onOpenTaskModelChanger={handleOpenTaskModelChanger}
                           projectId={selectedProject?.id}
+                          isApproving={approvingTaskIds.has(task.id)}
+                          taskError={taskActionErrors[task.id]}
+                          onClearError={() => handleClearTaskError(task.id)}
                           modelOptions={modelOptions}
                           defaultImageModel={defaultImageModel}
                           defaultVideoModel={defaultVideoModel}
@@ -6414,6 +6735,9 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                         onOpenAgentSettings={(agentName) => handleOpenAgentSettings(agentName)}
                         onOpenTaskModelChanger={handleOpenTaskModelChanger}
                         projectId={selectedProject?.id}
+                        isApproving={approvingTaskIds.has(selectedTaskForSplit.id)}
+                        taskError={taskActionErrors[selectedTaskForSplit.id]}
+                        onClearError={() => handleClearTaskError(selectedTaskForSplit.id)}
                         modelOptions={modelOptions}
                         defaultImageModel={defaultImageModel}
                         defaultVideoModel={defaultVideoModel}
@@ -6456,6 +6780,9 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                       onOpenAgentSettings={(agentName) => handleOpenAgentSettings(agentName)}
                       onOpenTaskModelChanger={handleOpenTaskModelChanger}
                       projectId={selectedProject?.id}
+                      isApproving={approvingTaskIds.has(t.id)}
+                      taskError={taskActionErrors[t.id]}
+                      onClearError={() => handleClearTaskError(t.id)}
                       modelOptions={modelOptions}
                       defaultImageModel={defaultImageModel}
                       defaultVideoModel={defaultVideoModel}
@@ -7444,25 +7771,50 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                 </div>
               )}
 
-              {/* Workspace Selector for Code Intent */}
-              {taskIntent === 'code' && selectedProject?.linkedWorkspaces && selectedProject.linkedWorkspaces.length > 1 && (
+              {/* Workspace Selector for Code/Audit Intent */}
+              {(taskIntent === 'code' || taskIntent === 'audit') && (
                 <div>
                   <div className="flex items-center justify-between mb-1">
-                    <label className="text-[11px] text-slate-400 font-medium">Hero Workspace</label>
-                    <span className="text-[10px] text-blue-400 font-mono">Auto-detected if left empty</span>
+                    <label className="text-[11px] text-slate-400 font-medium">Target Workspace</label>
+                    <span className="text-[10px] text-blue-400 font-mono">
+                      {resolveTaskWorkspace(newTaskWorkspace, selectedProject) || 'Required for code/audit'}
+                    </span>
                   </div>
-                  <select
-                    value={newTaskWorkspace}
-                    onChange={(e) => setNewTaskWorkspace(e.target.value)}
-                    className="w-full rounded-lg bg-slate-950 border border-slate-800 px-3 py-2 text-white focus:outline-none focus:border-blue-500/60 text-xs"
+                  {selectedProject?.linkedWorkspaces && selectedProject.linkedWorkspaces.length > 1 ? (
+                    <select
+                      value={newTaskWorkspace}
+                      onChange={(e) => {
+                        setNewTaskWorkspace(e.target.value)
+                        setDeployError(null)
+                      }}
+                      className="w-full rounded-lg bg-slate-950 border border-slate-800 px-3 py-2 text-white focus:outline-none focus:border-blue-500/60 text-xs"
+                    >
+                      <option value="">✨ Auto-detect ({selectedProject.repoPath || selectedProject.linkedWorkspaces[0]})</option>
+                      {selectedProject.linkedWorkspaces.map((ws) => (
+                        <option key={ws} value={ws}>
+                          {ws}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <div className="text-[11px] font-mono text-slate-400 px-3 py-1.5 rounded-lg bg-slate-950/60 border border-slate-800/80 truncate">
+                      {resolveTaskWorkspace(newTaskWorkspace, selectedProject) || 'No workspace linked to this project'}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Deploy Error Banner */}
+              {deployError && (
+                <div className="p-2.5 rounded-lg bg-rose-950/40 border border-rose-500/50 text-rose-300 text-xs font-mono flex items-center justify-between gap-2" data-testid="deploy-modal-error">
+                  <span>{deployError}</span>
+                  <button
+                    type="button"
+                    onClick={() => setDeployError(null)}
+                    className="text-rose-400 hover:text-white text-[10px]"
                   >
-                    <option value="">✨ Auto-detect from prompt & project context</option>
-                    {selectedProject.linkedWorkspaces.map((ws) => (
-                      <option key={ws} value={ws}>
-                        {ws}
-                      </option>
-                    ))}
-                  </select>
+                    Dismiss
+                  </button>
                 </div>
               )}
 

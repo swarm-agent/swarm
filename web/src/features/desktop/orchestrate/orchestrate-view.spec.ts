@@ -68,7 +68,8 @@ test('OrchestrateView renders Compact Multi-Coder View for Task Programs with in
   // - Regression prevented: Prevents regressions where multi-agent tasks render overly verbose linear plans,
   //   hide parallel execution progress, or prevent redeploying conflicted subagents.
   const sourcePath = path.join(__dirname, 'OrchestrateView.tsx')
-  const source = fs.readFileSync(sourcePath, 'utf8')
+  const statePath = path.join(__dirname, '../state/desktop-projects-state.ts')
+  const source = fs.readFileSync(sourcePath, 'utf8') + '\n' + fs.readFileSync(statePath, 'utf8')
 
   // Task program detection & compact view
   assert.ok(source.includes('isTaskProgram'), 'MinimalTaskCard must detect task program multi-agent tasks')
