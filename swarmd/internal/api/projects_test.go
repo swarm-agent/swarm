@@ -1488,7 +1488,7 @@ func TestProjectTaskProgram_StandaloneExecutionAndRedeploy(t *testing.T) {
 	ss := store.NewSessionStore(db)
 	s := &Server{sessions: sessionruntime.NewService(ss, nil)}
 
-	principal := identity.Principal{UserID: "owner", AccountScopeID: "account"}
+	principal := identity.Principal{Type: "user", UserID: "owner", AccountScopeID: "account"}
 	proj := &store.ProjectRecord{
 		ID:        "proj_tp_1",
 		AccountID: "account",

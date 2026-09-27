@@ -139,6 +139,12 @@ func (a *legacyDeployerLifecycleAdapter) ApproveProjectTask(ctx context.Context,
 		return nil, err
 	}
 	if err := a.deployer(p.AccountScopeID, projectID, taskID); err != nil {
+		_, _ = a.store.UpdateProjectTask(p.AccountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
+			t.Status = existingTask.Status
+			t.ActionNeeded = existingTask.ActionNeeded
+			t.LastError = err.Error()
+			return nil
+		})
 		return nil, fmt.Errorf("deploy task: %w", err)
 	}
 	fresh, found, _ := a.store.GetProjectTask(p.AccountScopeID, projectID, taskID)

@@ -675,6 +675,12 @@ func isDirectMediaTask(task *pebblestore.ProjectTaskRecord) bool {
 // deployProjectTaskExecution handles direct media generation for images/videos or
 // creates and enqueues a canonical V3 session with compiled agent profile and RunIntent for agent tasks.
 func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblestore.ProjectRecord, task *pebblestore.ProjectTaskRecord, taskStatus string, prompt string) error {
+	if p.Type == "" && p.UserID != "" {
+		p.Type = identity.PrincipalTypeUser
+	}
+	if !p.Valid() || p.Type != identity.PrincipalTypeUser || strings.TrimSpace(p.UserID) == "" || strings.TrimSpace(p.AccountScopeID) == "" {
+		return errors.New("user id is required")
+	}
 	if task == nil {
 		return errors.New("task is required")
 	}
@@ -3082,8 +3088,14 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			parentWs = task.WorkspacePath
 		}
 
-		worktreeSvc := &worktreeruntime.Service{}
-		parentState, err := worktreeSvc.InspectTaskWorkspace(parentWs)
+		type workspaceInspector interface {
+			InspectTaskWorkspace(workspacePath string) (worktreeruntime.TaskWorkspaceState, error)
+		}
+		var inspector workspaceInspector = &worktreeruntime.Service{}
+		if s.worktrees != nil {
+			inspector = s.worktrees
+		}
+		parentState, err := inspector.InspectTaskWorkspace(parentWs)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, fmt.Errorf("inspect parent repository %q: %w", parentWs, err))
 			return
@@ -3093,7 +3105,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		childState, err := worktreeSvc.InspectTaskWorkspace(targetPath)
+		childState, err := inspector.InspectTaskWorkspace(targetPath)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, fmt.Errorf("inspect worktree %q: %w", targetPath, err))
 			return
@@ -3120,7 +3132,15 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		plan, err := worktreeSvc.PrepareTaskIntegration(parentWs, parentState.BranchName, parentState.HeadCommit, []worktreeruntime.TaskIntegrationChild{
+		type taskIntegrator interface {
+			PrepareTaskIntegration(workspacePath, targetBranch, targetHead string, children []worktreeruntime.TaskIntegrationChild) (worktreeruntime.TaskIntegrationPlan, error)
+			ApplyTaskIntegration(workspacePath string, plan worktreeruntime.TaskIntegrationPlan) (worktreeruntime.TaskIntegrationResult, error)
+		}
+		var integrator taskIntegrator = &worktreeruntime.Service{}
+		if ti, ok := s.worktrees.(taskIntegrator); ok {
+			integrator = ti
+		}
+		plan, err := integrator.PrepareTaskIntegration(parentWs, parentState.BranchName, parentState.HeadCommit, []worktreeruntime.TaskIntegrationChild{
 			{
 				SessionID:  task.SessionID,
 				BaseCommit: baseCommit,
@@ -3132,7 +3152,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		result, err := worktreeSvc.ApplyTaskIntegration(parentWs, plan)
+		result, err := integrator.ApplyTaskIntegration(parentWs, plan)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, fmt.Errorf("apply integration failed: %w", err))
 			return

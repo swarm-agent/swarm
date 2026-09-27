@@ -183,6 +183,7 @@ type Server struct {
 	reviewCommitActive     map[string]string
 	reviewAutoArchiveOnce  sync.Once
 	projectTaskCreateMu    sync.Mutex
+	projectTaskApproveMu   sync.Mutex
 
 	connections          manageConnectionStore
 	environments         manageEnvironmentStore
