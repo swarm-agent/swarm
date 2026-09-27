@@ -1313,3 +1313,228 @@ func TestTaskMatrix_Case11_NonCodeAndCodeMediaKeywordRouting(t *testing.T) {
 		t.Fatalf("expected outcome_type 'code_pr', got %v", codeTaskMap["outcome_type"])
 	}
 }
+
+// -----------------------------------------------------------------------------
+// Focused Requirement-First Tests for Corrected Defect Areas
+// -----------------------------------------------------------------------------
+
+func TestTaskMatrix_DeployProjectTaskExecution_FailsClosedOnMissingPrincipal(t *testing.T) {
+	// Requirement-first Purpose:
+	// - Invariant: deployProjectTaskExecution MUST fail closed with "user id is required"
+	//   when called with an invalid, non-user, or unauthenticated principal.
+	// - Authority: deployProjectTaskExecution in api/projects.go.
+	// - Threat/regression: Internal or direct deployment bypassing principal checks.
+	f := setupMatrixTestFixture(t)
+	defer f.db.Close()
+	projID := f.createProject(t)
+	proj, _, _ := f.server.sessions.Store().GetProject(f.accountID, projID)
+
+	task := &pebblestore.ProjectTaskRecord{
+		ID:            "task_missing_p",
+		ProjectID:     projID,
+		AccountID:     f.accountID,
+		Title:         "Test Principal Gate",
+		Agent:         "coder",
+		Status:        "pending_approval",
+		WorkspacePath: "/mock/repo",
+	}
+
+	// 1. Empty principal fails closed
+	err := f.server.deployProjectTaskExecution(identity.Principal{}, proj, task, "in_progress", "test")
+	if err == nil || !strings.Contains(err.Error(), "user id is required") {
+		t.Fatalf("expected 'user id is required' on empty principal, got: %v", err)
+	}
+
+	// 2. Missing user ID fails closed
+	err = f.server.deployProjectTaskExecution(identity.Principal{AccountScopeID: f.accountID}, proj, task, "in_progress", "test")
+	if err == nil || !strings.Contains(err.Error(), "user id is required") {
+		t.Fatalf("expected 'user id is required' on principal missing UserID, got: %v", err)
+	}
+
+	// 3. Non-user type fails closed
+	err = f.server.deployProjectTaskExecution(identity.Principal{Type: "device", UserID: "dev1", AccountScopeID: f.accountID}, proj, task, "in_progress", "test")
+	if err == nil || !strings.Contains(err.Error(), "user id is required") {
+		t.Fatalf("expected 'user id is required' on non-user principal, got: %v", err)
+	}
+}
+
+func TestTaskMatrix_ApproveCoderPersistsAllocatedWorktreeMetadata(t *testing.T) {
+	// Requirement-first Purpose:
+	// - Invariant: When ApproveProjectTask allocates an isolated worktree for a Coder task,
+	//   the task record in Pebble MUST persist the allocated worktree path, branch, base branch,
+	//   base commit, and worktree name.
+	// - Authority: ApproveProjectTask in api/project_task_program.go.
+	// - Threat/regression: Task record retains stale pre-allocation workspace path, breaking task card links.
+	f := setupMatrixTestFixture(t)
+	defer f.db.Close()
+	projID := f.createProject(t)
+	p := identity.Principal{Type: "user", UserID: f.userID, AccountScopeID: f.accountID}
+
+	// Create small Coder task
+	w := f.callAPI(http.MethodPost, "/"+projID+"/tasks", map[string]any{
+		"title":          "Refactor auth logic",
+		"prompt":         "Refactor token validation",
+		"agent":          "coder",
+		"feature_size":   "small",
+		"workspace_path": "/mock/repo",
+	}, p)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create task failed %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	taskMap := resp["task"].(map[string]any)
+	taskID := taskMap["id"].(string)
+
+	// Configure mock worktree allocation result
+	f.wt.mu.Lock()
+	f.wt.allocResult = worktreeruntime.Allocation{
+		WorkspacePath: "/mock/worktrees/agent-auth-refactor",
+		BranchName:    "agent/auth-refactor",
+		BaseBranch:    "dev",
+		BaseCommit:    "commit-sha-abc-123",
+		RepoRoot:      "/mock/repo",
+	}
+	f.wt.mu.Unlock()
+
+	// Approve task
+	approvedTask, err := f.server.ApproveProjectTask(context.Background(), p, projID, taskID)
+	if err != nil {
+		t.Fatalf("approve failed: %v", err)
+	}
+
+	// Invariant: Returned and persisted task record must have allocated worktree metadata
+	if approvedTask.WorkspacePath != "/mock/worktrees/agent-auth-refactor" {
+		t.Fatalf("expected task WorkspacePath %q, got %q", "/mock/worktrees/agent-auth-refactor", approvedTask.WorkspacePath)
+	}
+	if approvedTask.WorktreeBranch != "agent/auth-refactor" {
+		t.Fatalf("expected task WorktreeBranch %q, got %q", "agent/auth-refactor", approvedTask.WorktreeBranch)
+	}
+	if approvedTask.BaseCommit != "commit-sha-abc-123" {
+		t.Fatalf("expected task BaseCommit %q, got %q", "commit-sha-abc-123", approvedTask.BaseCommit)
+	}
+
+	// Verify fresh read from Pebble store confirms persistence
+	freshTask, found, err := f.server.sessions.Store().GetProjectTask(f.accountID, projID, taskID)
+	if err != nil || !found || freshTask == nil {
+		t.Fatalf("task not found in store: %v", err)
+	}
+	if freshTask.WorkspacePath != "/mock/worktrees/agent-auth-refactor" {
+		t.Fatalf("persisted task WorkspacePath mismatch: %q", freshTask.WorkspacePath)
+	}
+	if freshTask.WorktreeBranch != "agent/auth-refactor" {
+		t.Fatalf("persisted task WorktreeBranch mismatch: %q", freshTask.WorktreeBranch)
+	}
+	if freshTask.BaseCommit != "commit-sha-abc-123" {
+		t.Fatalf("persisted task BaseCommit mismatch: %q", freshTask.BaseCommit)
+	}
+}
+
+func TestTaskMatrix_DeployProjectTaskProgram_DurableWithoutRunner(t *testing.T) {
+	// Requirement-first Purpose:
+	// - Invariant: deployProjectTaskProgram and redeployTaskProgramJob must succeed in creating
+	//   durable coordinator sessions, TaskProgramRecords, and RunIntents in Pebble even when s.runner is nil.
+	// - Authority: deployProjectTaskProgram, redeployTaskProgramJob in api/project_task_program.go.
+	// - Threat/regression: Unit tests or headless daemons failing standalone task program setup when runner is unset.
+	f := setupMatrixTestFixture(t)
+	defer f.db.Close()
+	projID := f.createProject(t)
+	p := identity.Principal{Type: "user", UserID: f.userID, AccountScopeID: f.accountID}
+
+	// Construct server with nil runner
+	sNoRunner := &Server{
+		sessions:           f.server.sessions,
+		worktrees:          f.wt,
+		agentModelSettings: f.server.agentModelSettings,
+		model:              f.server.model,
+		agents:             f.server.agents,
+	}
+
+	tpDef := &pebblestore.TaskProgramDefinition{
+		ID: "prog-no-runner",
+		Stages: []pebblestore.TaskProgramStageSpec{
+			{ID: "stage-1", DependencyEvidence: "Ready"},
+		},
+		Jobs: []pebblestore.TaskProgramJobSpec{
+			{
+				ID:                 "job-1",
+				StageID:            "stage-1",
+				AgentType:          "coder",
+				Title:              "Job 1",
+				MetaPrompt:         "Prompt 1",
+				OwnedScope:         []string{"pkg/**"},
+				AcceptanceCriteria: []string{"Done"},
+			},
+		},
+	}
+
+	task := &pebblestore.ProjectTaskRecord{
+		ID:            "task-no-runner",
+		ProjectID:     projID,
+		AccountID:     f.accountID,
+		Title:         "Task Program without runner",
+		Agent:         "coder",
+		Status:        "pending_approval",
+		WorkspacePath: "/mock/repo",
+		TaskProgram:   tpDef,
+	}
+	_ = f.server.sessions.Store().PutProjectTask(f.accountID, task)
+	proj, _, _ := f.server.sessions.Store().GetProject(f.accountID, projID)
+
+	// Deploy must succeed and persist records without runner configured
+	err := sNoRunner.deployProjectTaskProgram(p, proj, task)
+	if err != nil {
+		t.Fatalf("deployProjectTaskProgram failed with nil runner: %v", err)
+	}
+
+	// Verify durable TaskProgramRecord created in Pebble
+	prog, ok, err := f.server.sessions.Store().GetTaskProgram(task.SessionID, task.TaskProgramID)
+	if err != nil || !ok {
+		t.Fatalf("expected TaskProgramRecord created in Pebble: ok=%v, err=%v", ok, err)
+	}
+	if len(prog.Jobs) != 1 {
+		t.Fatalf("expected 1 job in TaskProgramRecord, got %d", len(prog.Jobs))
+	}
+
+	// Redeploy must also succeed and record attempt transition without runner
+	err = sNoRunner.redeployTaskProgramJob(p, projID, task.ID, "job-1", "Fix retry")
+	if err != nil {
+		t.Fatalf("redeployTaskProgramJob failed with nil runner: %v", err)
+	}
+
+	progAfter, ok, _ := f.server.sessions.Store().GetTaskProgram(task.SessionID, task.TaskProgramID)
+	if !ok || progAfter.Jobs[0].AttemptNumber != 2 {
+		t.Fatalf("expected job-1 attempt number incremented to 2, got %#v", progAfter.Jobs[0])
+	}
+}
+
+func TestTaskMatrix_DeployProjectTask_RejectsCrossAccount(t *testing.T) {
+	// Requirement-first Purpose:
+	// - Invariant: DeployProjectTask must reject cross-account access with an explicit error,
+	//   never deploying tasks across tenant boundaries.
+	// - Authority: DeployProjectTask in api/project_task_program.go.
+	// - Threat/regression: Cross-tenant task execution vulnerability.
+	f := setupMatrixTestFixture(t)
+	defer f.db.Close()
+	projID := f.createProject(t)
+	p := identity.Principal{Type: "user", UserID: f.userID, AccountScopeID: f.accountID}
+
+	w := f.callAPI(http.MethodPost, "/"+projID+"/tasks", map[string]any{
+		"title":  "Cross account test task",
+		"prompt": "Test prompt",
+		"agent":  "coder",
+	}, p)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create task failed %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	taskID := resp["task"].(map[string]any)["id"].(string)
+
+	// Attacker from different account tries DeployProjectTask
+	attacker := identity.Principal{Type: "user", UserID: "attacker_user", AccountScopeID: "attacker_account"}
+	err := f.server.DeployProjectTask(context.Background(), attacker, projID, taskID)
+	if err == nil {
+		t.Fatal("expected DeployProjectTask to reject cross-account caller, got nil")
+	}
+}

@@ -84,7 +84,10 @@ func findJobRecord(jobs []pebblestore.TaskProgramJobRecord, jobID string) *pebbl
 
 // CreateProjectTask implements the canonical shared creation pipeline for project tasks.
 func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, projectID string, input tool.ProjectTaskCreateInput) (*pebblestore.ProjectTaskRecord, error) {
-	if !p.Valid() || p.Type != "user" || strings.TrimSpace(p.UserID) == "" || strings.TrimSpace(p.AccountScopeID) == "" {
+	if p.Type == "" && p.UserID != "" {
+		p.Type = identity.PrincipalTypeUser
+	}
+	if !p.Valid() || p.Type != identity.PrincipalTypeUser || strings.TrimSpace(p.UserID) == "" || strings.TrimSpace(p.AccountScopeID) == "" {
 		return nil, errors.New("user id is required")
 	}
 	projectID = strings.TrimSpace(projectID)
@@ -408,7 +411,10 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 
 // deployProjectTaskProgram initializes and deploys a TaskProgram on a project task coordinator session.
 func (s *Server) deployProjectTaskProgram(p identity.Principal, proj *pebblestore.ProjectRecord, task *pebblestore.ProjectTaskRecord) error {
-	if !p.Valid() || p.Type != "user" || p.UserID == "" || p.AccountScopeID == "" {
+	if p.Type == "" && p.UserID != "" {
+		p.Type = identity.PrincipalTypeUser
+	}
+	if !p.Valid() || p.Type != identity.PrincipalTypeUser || p.UserID == "" || p.AccountScopeID == "" {
 		return errors.New("deploy task program: user id is required")
 	}
 	if task == nil {
@@ -555,9 +561,6 @@ func (s *Server) deployProjectTaskProgram(p identity.Principal, proj *pebblestor
 	}
 
 	// 3. Start canonical Task Program scheduler through runner with durable RunIntent
-	if s.runner == nil {
-		return errors.New("runner service is not configured")
-	}
 	runID := fmt.Sprintf("desktop-v3-run:tp-%s", task.ID)
 	parentSessionID := ""
 	if proj != nil {
@@ -591,13 +594,18 @@ func (s *Server) deployProjectTaskProgram(p identity.Principal, proj *pebblestor
 		return fmt.Errorf("start coordinator session run intent: %w", mutationErr)
 	}
 
-	s.EnqueueSessionRun(p, task.SessionID, runID, parentSessionID)
+	if s.runner != nil {
+		s.EnqueueSessionRun(p, task.SessionID, runID, parentSessionID)
+	}
 	return nil
 }
 
 // redeployTaskProgramJob redeploys a conflicted or failed job within the task program.
 func (s *Server) redeployTaskProgramJob(p identity.Principal, projectID, taskID, jobID, feedback string) error {
-	if !p.Valid() || p.Type != "user" || p.UserID == "" || p.AccountScopeID == "" {
+	if p.Type == "" && p.UserID != "" {
+		p.Type = identity.PrincipalTypeUser
+	}
+	if !p.Valid() || p.Type != identity.PrincipalTypeUser || p.UserID == "" || p.AccountScopeID == "" {
 		return errors.New("user id is required")
 	}
 	db := s.sessions.Store()
@@ -618,9 +626,6 @@ func (s *Server) redeployTaskProgramJob(p identity.Principal, projectID, taskID,
 	targetJob := findJobRecord(record.Jobs, jobID)
 	if targetJob == nil {
 		return fmt.Errorf("job %q not found in task program", jobID)
-	}
-	if s.runner == nil {
-		return errors.New("runner service is not configured")
 	}
 	now := time.Now().UnixMilli()
 	newAttempt := targetJob.AttemptNumber + 1
@@ -705,14 +710,22 @@ func (s *Server) redeployTaskProgramJob(p identity.Principal, projectID, taskID,
 	if mutationErr != nil {
 		return fmt.Errorf("start retry run intent: %w", mutationErr)
 	}
-	s.EnqueueSessionRun(p, task.SessionID, runID, parentSessionID)
+	if s.runner != nil {
+		s.EnqueueSessionRun(p, task.SessionID, runID, parentSessionID)
+	}
 	return nil
 }
 }
 
 // ApproveProjectTask implements the single canonical authenticated approval lifecycle for project tasks.
 func (s *Server) ApproveProjectTask(ctx context.Context, p identity.Principal, projectID, taskID string, guards ...tool.ProjectTaskApprovalGuards) (*pebblestore.ProjectTaskRecord, error) {
-	if !p.Valid() || p.Type != "user" || strings.TrimSpace(p.UserID) == "" || strings.TrimSpace(p.AccountScopeID) == "" {
+	s.projectTaskApproveMu.Lock()
+	defer s.projectTaskApproveMu.Unlock()
+
+	if p.Type == "" && p.UserID != "" {
+		p.Type = identity.PrincipalTypeUser
+	}
+	if !p.Valid() || p.Type != identity.PrincipalTypeUser || strings.TrimSpace(p.UserID) == "" || strings.TrimSpace(p.AccountScopeID) == "" {
 		return nil, errors.New("approve task requires an authenticated user identity")
 	}
 	projectID = strings.TrimSpace(projectID)
@@ -919,10 +932,15 @@ func (s *Server) ApproveProjectTask(ctx context.Context, p identity.Principal, p
 			receipt = existingTask.PlanBinding.Receipt
 		}
 
-		if s.planLifecycle == nil {
+		planLifecycle := s.planLifecycle
+		if planLifecycle == nil && s.sessions != nil {
+			planLifecycle = sessionruntime.NewPlanLifecycleService(s.sessions)
+			planLifecycle.SetApplySessionMutation(s.sessions.ApplySessionMutation)
+		}
+		if planLifecycle == nil {
 			return nil, errors.New("plan lifecycle service is not configured")
 		}
-		startResult, startErr := s.planLifecycle.ApproveAndStartPlanAutomatic(sessionruntime.PlanLifecycleExecutionInput{
+		startResult, startErr := planLifecycle.ApproveAndStartPlanAutomatic(sessionruntime.PlanLifecycleExecutionInput{
 			SessionID:    existingTask.SessionID,
 			PlanID:       plan.ID,
 			CheckpointID: firstCpID,
@@ -1032,7 +1050,10 @@ func (s *Server) ApproveProjectTask(ctx context.Context, p identity.Principal, p
 	// Verify worktree isolation for Coder
 	if existingTask.Agent == "coder" || existingTask.OutcomeType == "code_pr" || existingTask.OutcomeType == "bug_patch" {
 		session, sessFound, _ := db.GetSession(existingTask.SessionID)
-		if sessFound && (!session.WorktreeEnabled || session.WorktreeRootPath == "") {
+		if !sessFound {
+			return nil, fmt.Errorf("session %q not found", existingTask.SessionID)
+		}
+		if !session.WorktreeEnabled || session.WorktreeRootPath == "" {
 			if s.worktrees == nil {
 				return nil, errors.New("worktree service is not configured; coder task requires worktree isolation")
 			}
@@ -1117,6 +1138,11 @@ func (s *Server) ApproveProjectTask(ctx context.Context, p identity.Principal, p
 	updatedTask, err := db.UpdateProjectTask(p.AccountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
 		t.Status = "in_progress"
 		t.ActionNeeded = ""
+		t.WorkspacePath = existingTask.WorkspacePath
+		t.WorktreeBranch = existingTask.WorktreeBranch
+		t.BaseBranch = existingTask.BaseBranch
+		t.BaseCommit = existingTask.BaseCommit
+		t.WorktreeName = existingTask.WorktreeName
 		t.WhatDidDo = append(t.WhatDidDo, "Task execution started")
 		return nil
 	})
@@ -1130,7 +1156,13 @@ func (s *Server) ApproveProjectTask(ctx context.Context, p identity.Principal, p
 
 // DeployProjectTask deploys a project task execution or standalone Task Program for the authenticated principal.
 func (s *Server) DeployProjectTask(ctx context.Context, p identity.Principal, projectID, taskID string) error {
-	if !p.Valid() || p.Type != "user" || strings.TrimSpace(p.UserID) == "" || strings.TrimSpace(p.AccountScopeID) == "" {
+	s.projectTaskApproveMu.Lock()
+	defer s.projectTaskApproveMu.Unlock()
+
+	if p.Type == "" && p.UserID != "" {
+		p.Type = identity.PrincipalTypeUser
+	}
+	if !p.Valid() || p.Type != identity.PrincipalTypeUser || strings.TrimSpace(p.UserID) == "" || strings.TrimSpace(p.AccountScopeID) == "" {
 		return errors.New("deploy task: user id is required")
 	}
 	db := s.sessions.Store()
@@ -1144,12 +1176,18 @@ func (s *Server) DeployProjectTask(ctx context.Context, p identity.Principal, pr
 	if !found || proj == nil {
 		return fmt.Errorf("project %q not found", projectID)
 	}
+	if proj.AccountID != "" && proj.AccountID != p.AccountScopeID {
+		return errors.New("cross-account project access forbidden")
+	}
 	task, found, err := db.GetProjectTask(p.AccountScopeID, projectID, taskID)
 	if err != nil {
 		return err
 	}
 	if !found || task == nil {
 		return fmt.Errorf("task %q not found", taskID)
+	}
+	if task.AccountID != "" && task.AccountID != p.AccountScopeID {
+		return errors.New("cross-account task access forbidden")
 	}
 	if task.Status == "pending_approval" {
 		return errors.New("cannot deploy task awaiting approval; approve task before deployment")
@@ -1242,7 +1280,10 @@ func (s *Server) SubmitProjectTaskPlan(ctx context.Context, input sessionruntime
 	if s == nil || s.sessions == nil {
 		return sessionruntime.ProjectTaskPlanSubmissionResult{}, errors.New("session service not available")
 	}
-	lifecycle := sessionruntime.NewPlanLifecycleService(s.sessions)
-	lifecycle.SetApplySessionMutation(s.sessions.ApplySessionMutation)
+	lifecycle := s.planLifecycle
+	if lifecycle == nil {
+		lifecycle = sessionruntime.NewPlanLifecycleService(s.sessions)
+		lifecycle.SetApplySessionMutation(s.sessions.ApplySessionMutation)
+	}
 	return lifecycle.SubmitProjectTaskStructuredPlan(input)
 }
