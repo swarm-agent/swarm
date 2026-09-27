@@ -289,6 +289,14 @@ type ProjectTaskScene struct {
 	VisualNotes string `json:"visual_notes,omitempty"`
 }
 
+// ProjectTaskPlanBinding binds a project task to a canonical session plan definition.
+type ProjectTaskPlanBinding struct {
+	PlanID             string `json:"plan_id,omitempty"`
+	DefinitionRevision int    `json:"definition_revision,omitempty"`
+	SessionID          string `json:"session_id,omitempty"`
+	Receipt            string `json:"receipt,omitempty"`
+}
+
 // ProjectTaskRecord represents an autonomous task unit in a project.
 type ProjectTaskRecord struct {
 	ID                  string                   `json:"id"`
@@ -346,6 +354,7 @@ type ProjectTaskRecord struct {
 	AutoApprove         bool                     `json:"auto_approve,omitempty"`
 	RouterAlert         string                   `json:"router_alert,omitempty"`
 	AttachedMedia       []ProjectTaskMediaRef    `json:"attached_media,omitempty"`
+	PlanBinding         *ProjectTaskPlanBinding  `json:"plan_binding,omitempty"`
 	TaskProgram         *TaskProgramDefinition   `json:"task_program,omitempty"`
 	TaskProgramID       string                   `json:"task_program_id,omitempty"`
 	TaskProgramStatus   *TaskProgramRecord       `json:"task_program_status,omitempty"`

@@ -906,6 +906,10 @@ func (p *taskProgramScheduler) integrateStage(stageIndex int) error {
 				p.barrierJobID = job.JobID
 				return fmt.Errorf("Coder job %q is not ready for integration", job.JobID)
 			}
+			if job.ChildHead == job.ImmutableStageBase {
+				p.barrierJobID = job.JobID
+				return fmt.Errorf("Coder job %q has no committed changes (HEAD == base %s); clean worktree with zero commits cannot be integrated", job.JobID, job.ImmutableStageBase)
+			}
 			if expectedHead == "" {
 				expectedHead = job.ImmutableStageBase
 			}
@@ -1015,6 +1019,7 @@ func (p *taskProgramScheduler) advanceStage(stageIndex int) error {
 	p.record, _, err = p.transition(p.parentSession.ID, p.record.ProgramID, pebblestore.TaskProgramTransition{ExpectedRevision: p.record.Revision, MutationID: fmt.Sprintf("stage:%d:%s", p.record.Revision, stageID), ActiveStageID: &stageID, NextAction: &next})
 	if err == nil {
 		p.emitProgramProgress("stage.advanced", fmt.Sprintf("Advanced to stage %s", stageID))
+		p.syncProjectTask("in_progress", fmt.Sprintf("Stage advanced to %s", stageID), []string{fmt.Sprintf("Stage advanced to %s", stageID)}, "")
 	}
 	return err
 }
@@ -1027,6 +1032,7 @@ func (p *taskProgramScheduler) finishCompleted() (string, error) {
 	}
 	p.record = record
 	p.emitProgramProgress("program.completed", "Task Program completed")
+	p.syncProjectTask("needs_review", "Action Needed: All task program jobs finished and integrated. Ready to integrate into dev/main.", []string{"All Task Program stages completed and integrated"}, "")
 	if err := p.service.permissions.FinishSubagentWave(p.parentSession.ID, p.req.RunID, p.call.CallID, "completed"); err != nil {
 		return "", err
 	}
@@ -1055,6 +1061,7 @@ func (p *taskProgramScheduler) finishFailed(runErr error) (string, error) {
 		p.record = record
 	}
 	p.emitProgramProgress("program.failed", "Task Program failed")
+	p.syncProjectTask("failed", runErr.Error(), nil, runErr.Error())
 	_ = p.service.permissions.FinishSubagentWave(p.parentSession.ID, p.req.RunID, p.call.CallID, "failed")
 	status, _ := marshalTaskProgramStatus(p.record, false)
 	return status, runErr
@@ -1062,6 +1069,7 @@ func (p *taskProgramScheduler) finishFailed(runErr error) (string, error) {
 
 func (p *taskProgramScheduler) finishProgramError(runErr error) (string, error) {
 	p.emitProgramProgress("program.blocked", "Task Program blocked")
+	p.syncProjectTask("needs_review", runErr.Error(), nil, runErr.Error())
 	_ = p.service.permissions.FinishSubagentWave(p.parentSession.ID, p.req.RunID, p.call.CallID, "blocked")
 	status, _ := marshalTaskProgramStatus(p.record, false)
 	return status, runErr
@@ -1148,3 +1156,35 @@ func (p *taskProgramScheduler) structuredBlocker(code string, cause error, nextA
 	}
 	return blocker
 }
+
+func (p *taskProgramScheduler) syncProjectTask(status, actionNeeded string, whatDidDo []string, lastErr string) {
+	if p == nil || p.parentSession.Metadata == nil || p.service == nil || p.service.sessions == nil {
+		return
+	}
+	db := p.service.sessions.Store()
+	if db == nil {
+		return
+	}
+	projectID, _ := p.parentSession.Metadata["project_id"].(string)
+	taskID, _ := p.parentSession.Metadata["task_id"].(string)
+	if projectID == "" || taskID == "" {
+		return
+	}
+	_, _ = db.UpdateProjectTask(p.parentSession.AccountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
+		t.TaskProgramStatus = &p.record
+		if status != "" {
+			t.Status = status
+		}
+		if actionNeeded != "" {
+			t.ActionNeeded = actionNeeded
+		}
+		if lastErr != "" {
+			t.LastError = lastErr
+		}
+		if len(whatDidDo) > 0 {
+			t.WhatDidDo = append(t.WhatDidDo, whatDidDo...)
+		}
+		return nil
+	})
+}
+
