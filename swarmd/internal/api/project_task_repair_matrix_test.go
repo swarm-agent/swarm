@@ -683,6 +683,23 @@ func TestTaskMatrix_Case4_ManualPlanningPendingThenExactAcceptModelTransition(t 
 		t.Fatal("expected non-empty plan receipt")
 	}
 
+	// Missing or partial guards must not change the pending document or its mode.
+	// The shared approval boundary is the narrowest layer proving both REST and
+	// tool callers cannot accept an unseen definition by omitting its identity.
+	for _, guards := range []tool.ProjectTaskApprovalGuards{{}, {SessionID: sessID}, {SessionID: sessID, PlanID: doc.ID}} {
+		if _, err := f.server.ApproveProjectTask(context.Background(), p, projID, taskID, guards); err == nil {
+			t.Fatal("accepted a plan without complete exact-definition guards")
+		}
+		unchanged, _, err := f.server.sessions.Store().GetSession(sessID)
+		if err != nil || unchanged.Mode != sessionruntime.ModePlan {
+			t.Fatalf("rejected acceptance changed session mode: %s, %v", unchanged.Mode, err)
+		}
+		pending, _, err := f.server.sessions.Store().GetProjectTask(f.accountID, projID, taskID)
+		if err != nil || pending.Status != "pending_approval" || pending.PlanBinding.Receipt != subResult.Receipt {
+			t.Fatalf("rejected acceptance changed task binding: %#v, %v", pending, err)
+		}
+	}
+
 	// 3. User accepts the plan on the task card
 	w = f.callAPI(http.MethodPost, "/"+projID+"/tasks/"+taskID+"/approve", map[string]any{
 		"session_id":          sessID,
@@ -881,14 +898,14 @@ func TestTaskMatrix_Case7_RejectedStaleRevisionsNoSideEffects(t *testing.T) {
 		},
 	}
 	subResult2, err := f.server.SubmitProjectTaskPlan(context.Background(), sessionruntime.ProjectTaskPlanSubmissionInput{
-		AccountScopeID:  f.accountID,
-		UserID:          f.userID,
-		ProjectID:       projID,
-		TaskID:          pTaskID,
-		SessionID:       pSessID,
-		Document:        doc2,
-		PlanText:        "# Plan Rev 2",
-		Title:           "Plan Rev 2",
+		AccountScopeID: f.accountID,
+		UserID:         f.userID,
+		ProjectID:      projID,
+		TaskID:         pTaskID,
+		SessionID:      pSessID,
+		Document:       doc2,
+		PlanText:       "# Plan Rev 2",
+		Title:          "Plan Rev 2",
 	})
 	if err != nil {
 		t.Fatalf("submit rev 2 failed: %v", err)

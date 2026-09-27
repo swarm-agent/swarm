@@ -793,22 +793,30 @@ func (s *Service) ExecuteTaskProgramForCoordinator(ctx context.Context, p identi
 	}
 
 	callID := fmt.Sprintf("call_tp_%s", record.ProgramID)
-	if s.permissions != nil {
-		readyIdxs := taskProgramReadyJobIndexes(record, 0)
+	if s.permissions == nil {
+		return "", errors.New("task program permission service is not configured")
+	}
+	{
+		readyIdxs := taskProgramReadyJobIndexes(record, taskProgramStageIndex(record))
+		programCap := 0
+		if record.Definition.MaxConcurrency != nil {
+			programCap = *record.Definition.MaxConcurrency
+		}
 		reservation, reserveErr := s.permissions.ReserveSubagentWave(permission.SubagentReservationRequest{
-			SessionID:           parentSessionID,
-			RunID:               runID,
-			CallID:              callID,
-			ManifestHash:        record.DefinitionHash,
-			LaunchCount:         len(record.Definition.Jobs),
-			Program:             true,
-			ReadyCount:          len(readyIdxs),
-			LowerConcurrencyCap: 1,
+			SessionID:      parentSessionID,
+			RunID:          runID,
+			CallID:         callID,
+			ManifestHash:   record.DefinitionHash,
+			LaunchCount:    len(record.Definition.Jobs),
+			Program:        true,
+			ReadyCount:     len(readyIdxs),
+			MaxConcurrency: programCap,
+			AccountScopeID: p.AccountScopeID,
 		})
 		if reserveErr != nil {
 			return "", fmt.Errorf("task program subagent reservation failed: %w", reserveErr)
 		}
-		if !reservation.Allowed || reservation.ActiveCount < 1 {
+		if reservation.Decision != permission.SubagentReservationApprove || reservation.Reservation.ActiveCount < 1 {
 			return "", errors.New("task program scheduler reservation denied or missing capacity")
 		}
 	}
@@ -818,9 +826,8 @@ func (s *Service) ExecuteTaskProgramForCoordinator(ctx context.Context, p identi
 		Program: &record.Definition,
 	}
 	call := tool.Call{CallID: callID, Name: "task"}
-	return s.executeTaskProgram(ctx, parentSession.Mode, 1, call, nil, taskExecutionRequest{RunID: runID}, parentSession, parsed, record, record.Definition.ID, "Task Program execution")
+	return s.executeTaskProgram(ctx, parentSession.Mode, 1, call, nil, taskExecutionRequest{RunID: runID, Principal: p}, parentSession, parsed, record, record.Definition.ID, "Task Program execution")
 }
-
 
 func (s *Service) SetWorkspaceService(workspaceSvc *workspaceruntime.Service) {
 	if s == nil {

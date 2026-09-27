@@ -530,6 +530,7 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 		if projectID == "" {
 			return "", errors.New("manage_projects propose_task requires project_id")
 		}
+		taskID := strings.TrimSpace(asString(args["task_id"]))
 		title := strings.TrimSpace(asString(args["title"]))
 		if title == "" {
 			title = strings.TrimSpace(asString(args["prompt"]))
@@ -868,10 +869,6 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 		approvedTask, err := lifecycle.ApproveProjectTask(ctx, p, projectID, taskID, guards)
 		if err != nil {
 			return "", fmt.Errorf("approve task: %w", err)
-		}
-		freshTask, found, err := r.projects.GetProjectTask(accountScopeID, projectID, taskID)
-		if err == nil && found && freshTask != nil {
-			approvedTask = freshTask
 		}
 		response["task"] = approvedTask
 		response["task_id"] = approvedTask.ID

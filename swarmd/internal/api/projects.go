@@ -850,9 +850,8 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 		wsPath = proj.Workspaces[0].Path
 		task.WorkspacePath = wsPath
 	}
-	if wsPath == "" {
-		wsPath = "."
-		task.WorkspacePath = wsPath
+	if wsPath == "" || !filepath.IsAbs(wsPath) {
+		return errors.New("task execution requires an absolute workspace path")
 	}
 
 	mode := sessionruntime.ModeAuto
@@ -1062,7 +1061,10 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 		UpdatedAt:       now,
 	}
 
-	if s.worktrees != nil && (targetAgent == "coder" || task.OutcomeType == "code_pr" || task.OutcomeType == "bug_patch") {
+	if targetAgent == "coder" || task.OutcomeType == "code_pr" || task.OutcomeType == "bug_patch" {
+		if s.worktrees == nil {
+			return errors.New("worktree service is not configured; coding task requires worktree isolation")
+		}
 		alloc, err := s.worktrees.AllocateDetachedWorkspaceRequestedForPrincipal(p, wsPath, sessionID, "", worktreeBranch)
 		if err != nil {
 			return fmt.Errorf("worktree allocation failed for coder task: %w", err)
@@ -1129,7 +1131,7 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 	var runIntent *pebblestore.V3SessionRunIntent
 	runID := ""
 	if taskStatus == "in_progress" {
-		runID = fmt.Sprintf("desktop-v3-run:%s", sessionruntime.NewSessionID())
+		runID = fmt.Sprintf("desktop-v3-run:task-%s", task.ID)
 		parentSessionID := ""
 		if proj != nil {
 			parentSessionID = proj.PrimarySessionID
@@ -2775,8 +2777,8 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				if v, ok := patch["description"].(string); ok {
 					t.Description = strings.TrimSpace(v)
 				}
-				if v, ok := patch["status"].(string); ok && strings.TrimSpace(v) != "" {
-					t.Status = strings.TrimSpace(v)
+				if v, ok := patch["status"].(string); ok && strings.TrimSpace(v) != "" && strings.TrimSpace(v) != t.Status {
+					return errors.New("task lifecycle status requires its approval or execution operation")
 				}
 				if v, ok := patch["agent"].(string); ok {
 					t.Agent = strings.TrimSpace(v)
@@ -3294,10 +3296,20 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if updated.PlanBinding != nil && updated.PlanBinding.PlanID != "" && updated.SessionID != "" {
-			if plan, ok, _ := db.GetPlan(updated.SessionID, updated.PlanBinding.PlanID); ok {
-				plan.Status = "rejected"
-				plan.ApprovalState = "rejected"
-				_ = db.PutPlan(plan)
+			plan, ok, err := db.GetPlan(updated.SessionID, updated.PlanBinding.PlanID)
+			if err != nil || !ok {
+				writeError(w, http.StatusConflict, errors.New("bound plan unavailable; rejection retained on task"))
+				return
+			}
+			plan.Status, plan.ApprovalState = "rejected", "rejected"
+			key := fmt.Sprintf("project-task:reject:%s:%d", taskID, updated.PlanBinding.DefinitionRevision)
+			if _, err := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+				SessionID: updated.SessionID, UserID: p.UserID, AccountScopeID: p.AccountScopeID,
+				ClientRequestID: key, IdempotencyKey: key, PayloadHash: key, RequestHash: key,
+				Kind: sessionruntime.SessionMutationSavePlan, Plan: &plan,
+			}); err != nil {
+				writeError(w, http.StatusInternalServerError, err)
+				return
 			}
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -3325,6 +3337,16 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			_ = json.Unmarshal(body, &req)
 		}
 		fb := strings.TrimSpace(req.Feedback)
+
+		existing, found, err := db.GetProjectTask(p.AccountScopeID, projectID, taskID)
+		if err != nil || !found || existing == nil {
+			writeError(w, http.StatusNotFound, errors.New("task not found"))
+			return
+		}
+		if existing.PlanBinding != nil || existing.Status == "pending_approval" || existing.Status == "planning" || existing.Status == "rejected" {
+			writeError(w, http.StatusConflict, errors.New("task requires structured plan review or revision; reopen cannot bypass approval"))
+			return
+		}
 
 		updated, err := db.UpdateProjectTask(p.AccountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
 			t.Status = "in_progress"

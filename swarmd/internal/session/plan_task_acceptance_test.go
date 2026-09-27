@@ -350,7 +350,7 @@ func TestSubmitProjectTaskStructuredPlanUnauthorizedExistingSession(t *testing.T
 			"task_id":    "other-task",
 		},
 	}
-	if err := svc.Store().PutSession(unrelatedSession); err != nil {
+	if err := svc.Store().CreateSession(unrelatedSession); err != nil {
 		t.Fatalf("put unrelated session: %v", err)
 	}
 
@@ -382,7 +382,7 @@ func TestSubmitProjectTaskStructuredPlanUnauthorizedExistingSession(t *testing.T
 		Mode:           ModePlan,
 		Metadata:       nil,
 	}
-	if err := svc.Store().PutSession(noMetaSession); err != nil {
+	if err := svc.Store().CreateSession(noMetaSession); err != nil {
 		t.Fatalf("put no-meta session: %v", err)
 	}
 
@@ -416,7 +416,7 @@ func TestSubmitProjectTaskStructuredPlanUnauthorizedExistingSession(t *testing.T
 			"task_id":    taskID,
 		},
 	}
-	if err := svc.Store().PutSession(crossAccountSession); err != nil {
+	if err := svc.Store().CreateSession(crossAccountSession); err != nil {
 		t.Fatalf("put cross-account session: %v", err)
 	}
 
