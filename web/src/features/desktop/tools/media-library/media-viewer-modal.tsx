@@ -789,9 +789,9 @@ export function MediaViewerModal({
                 {isMediaGenerationPending(activeJob.status)
                   ? <Loader2 size={32} className="mx-auto mb-4 animate-spin text-blue-400" />
                   : <AlertCircle size={32} className="mx-auto mb-4 text-amber-400" />}
-                <h3 className="text-lg font-semibold text-white">{isMediaGenerationPending(activeJob.status) ? 'Iteration pending' : activeJob.status === 'completed' ? 'Loading iteration outputs' : activeJob.status.replaceAll('_', ' ')}</h3>
+                <h3 className="text-lg font-semibold text-white">{isMediaGenerationPending(activeJob.status) ? 'Iteration pending' : activeJob.status === 'completed' ? 'Loading iteration outputs' : activeJob.status.replace(/_/g, ' ')}</h3>
                 <p className="mt-3 max-h-32 overflow-y-auto whitespace-pre-wrap break-words text-sm text-white/80">{activeJob.prompt || activeJob.title}</p>
-                <p className="mt-3 text-xs text-white/50">{activeJob.count} outputs · {activeJob.status.replaceAll('_', ' ')}</p>
+                <p className="mt-3 text-xs text-white/50">{activeJob.count} outputs · {activeJob.status.replace(/_/g, ' ')}</p>
                 {activeJob.error && <p role="alert" className="mt-3 text-sm text-rose-300">{activeJob.error}</p>}
                 <button type="button" onClick={() => setSelectedTurn(null)} className="mt-4 rounded-lg bg-white/10 px-3 py-2 text-xs text-white">Back to source</button>
               </section>
@@ -880,7 +880,7 @@ export function MediaViewerModal({
                       >
                         <span className="flex items-center gap-2 text-xs font-semibold text-white">
                           {isMediaGenerationPending(job.status) ? <Loader2 size={13} className="animate-spin text-blue-400" /> : job.error || job.status === 'failed' ? <AlertCircle size={13} className="text-rose-400" /> : <Check size={13} className="text-emerald-400" />}
-                          Turn {index + 1} · {job.status.replaceAll('_', ' ')}
+                          Turn {index + 1} · {job.status.replace(/_/g, ' ')}
                         </span>
                         <span className="mt-2 block line-clamp-2 break-words text-xs text-white/80" title={job.prompt || job.title}>{job.prompt || job.title}</span>
                         <span className="mt-1 block text-[10px] text-white/50">{outputs.length} / {job.count} outputs</span>
