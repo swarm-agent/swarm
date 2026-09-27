@@ -93,6 +93,12 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 	}
 	title := strings.TrimSpace(input.Title)
 	if title == "" {
+		title = strings.TrimSpace(input.Prompt)
+	}
+	if title == "" {
+		title = strings.TrimSpace(input.Description)
+	}
+	if title == "" {
 		return nil, errors.New("title is required")
 	}
 	db := s.sessions.Store()
@@ -302,9 +308,13 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 		task.Status = "planning"
 		task.ActionNeeded = "Plan agent investigating and authoring structured plan..."
 		task.WhatDidDo = []string{"Started planning investigation"}
-	} else if task.Agent == "coder" || task.OutcomeType == "code_pr" || task.OutcomeType == "bug_patch" {
+	} else if task.TaskProgram == nil && (task.Agent == "coder" || task.OutcomeType == "code_pr" || task.OutcomeType == "bug_patch") {
 		task.Status = "pending_approval"
 		task.ActionNeeded = "Review task and click Approve to start Coder execution"
+		if input.AutoApprove {
+			task.Status = "in_progress"
+			task.ActionNeeded = ""
+		}
 	} else if task.TaskProgram != nil {
 		if input.AutoApprove {
 			task.Status = "in_progress"
@@ -367,8 +377,8 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 			return nil, fmt.Errorf("deploy planning session: %w", err)
 		}
 		_ = db.PutProjectTask(p.AccountScopeID, &task)
-	} else if task.Agent == "coder" || task.OutcomeType == "code_pr" || task.OutcomeType == "bug_patch" {
-		if err := s.deployProjectTaskExecution(p, proj, &task, "pending_approval", prompt); err != nil {
+	} else if task.TaskProgram == nil && (task.Agent == "coder" || task.OutcomeType == "code_pr" || task.OutcomeType == "bug_patch") {
+		if err := s.deployProjectTaskExecution(p, proj, &task, task.Status, prompt); err != nil {
 			return nil, fmt.Errorf("deploy coder session: %w", err)
 		}
 		_ = db.PutProjectTask(p.AccountScopeID, &task)
@@ -426,15 +436,26 @@ func (s *Server) deployProjectTaskProgram(p identity.Principal, proj *pebblestor
 	if task.TaskProgram == nil {
 		return errors.New("task program is required")
 	}
+	progID := strings.TrimSpace(task.TaskProgram.ID)
+	if progID == "" {
+		progID = fmt.Sprintf("prog_%s", task.ID)
+		task.TaskProgram.ID = progID
+	}
 	if err := pebblestore.ValidateTaskProgramDefinition(task.TaskProgram); err != nil {
 		return fmt.Errorf("task program validation failed: %w", err)
 	}
 
 	// 1. Ensure coordinator session exists
 	now := time.Now().UnixMilli()
-	if task.SessionID == "" {
-		sessionID := sessionruntime.NewSessionID()
-		task.SessionID = sessionID
+	_, sessionExists, sessionErr := db.GetSession(task.SessionID)
+	if sessionErr != nil {
+		return sessionErr
+	}
+	if !sessionExists {
+		sessionID := task.SessionID
+		if sessionID == "" {
+			return errors.New("task coordinator requires a reserved session identity")
+		}
 		wsPath := strings.TrimSpace(task.WorkspacePath)
 		if wsPath == "" && len(task.WorkspacesInvolved) > 0 {
 			wsPath = task.WorkspacesInvolved[0]
@@ -487,7 +508,7 @@ func (s *Server) deployProjectTaskProgram(p identity.Principal, proj *pebblestor
 			UpdatedAt: now,
 		}
 
-		createKey := fmt.Sprintf("project-task:coordinator:%s:%d", sessionID, now)
+		createKey := fmt.Sprintf("project-task:coordinator:%s", sessionID)
 		_, createErr := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
 			SessionID:       sessionID,
 			UserID:          p.UserID,
@@ -505,11 +526,6 @@ func (s *Server) deployProjectTaskProgram(p identity.Principal, proj *pebblestor
 	}
 
 	// 2. Initialize or get TaskProgramRecord in Pebble
-	progID := strings.TrimSpace(task.TaskProgram.ID)
-	if progID == "" {
-		progID = fmt.Sprintf("prog_%s", task.ID)
-		task.TaskProgram.ID = progID
-	}
 
 	initialRecord := pebblestore.TaskProgramRecord{
 		ParentSessionID: task.SessionID,
@@ -580,7 +596,7 @@ func (s *Server) deployProjectTaskProgram(p identity.Principal, proj *pebblestor
 		IdempotencyKey:  runKey,
 		PayloadHash:     runKey,
 		RequestHash:     runKey,
-		Kind:            sessionruntime.SessionMutationStartRun,
+		Kind:            sessionruntime.SessionMutationRecordRunIntent,
 		RunIntent:       runIntent,
 		NowUnixMs:       now,
 	})
@@ -695,7 +711,7 @@ func (s *Server) redeployTaskProgramJob(p identity.Principal, projectID, taskID,
 		IdempotencyKey:  runKey,
 		PayloadHash:     runKey,
 		RequestHash:     runKey,
-		Kind:            sessionruntime.SessionMutationStartRun,
+		Kind:            sessionruntime.SessionMutationRecordRunIntent,
 		RunIntent:       runIntent,
 		NowUnixMs:       now,
 	})
@@ -759,7 +775,7 @@ func (s *Server) ApproveProjectTask(ctx context.Context, p identity.Principal, p
 	}
 
 	var guard tool.ProjectTaskApprovalGuards
-	hasGuards := len(guards) > 0
+	hasGuards := len(guards) == 1 && strings.TrimSpace(guards[0].SessionID) != "" && strings.TrimSpace(guards[0].PlanID) != "" && guards[0].DefinitionRevision > 0
 	if hasGuards {
 		guard = guards[0]
 	}
@@ -769,6 +785,9 @@ func (s *Server) ApproveProjectTask(ctx context.Context, p identity.Principal, p
 	}
 
 	if existingTask.PlanBinding != nil && existingTask.PlanBinding.PlanID != "" {
+		if !hasGuards {
+			return nil, errors.New("exact session, plan and definition revision guards are required for plan acceptance")
+		}
 		planID := existingTask.PlanBinding.PlanID
 		if existingTask.PlanBinding.SessionID != "" && existingTask.SessionID != "" && existingTask.PlanBinding.SessionID != existingTask.SessionID {
 			return nil, errors.New("cross-session plan binding forbidden")
@@ -795,7 +814,7 @@ func (s *Server) ApproveProjectTask(ctx context.Context, p identity.Principal, p
 				return nil, fmt.Errorf("plan ID mismatch: expected %q, got %q", planID, guard.PlanID)
 			}
 			if plan.ApprovalState == "approved" {
-				if guard.DefinitionRevision <= 0 || (plan.Version != guard.DefinitionRevision && plan.ParentRevision != guard.DefinitionRevision && existingTask.PlanBinding.DefinitionRevision != guard.DefinitionRevision) {
+				if guard.DefinitionRevision <= 0 || (existingTask.PlanBinding.DefinitionRevision != guard.DefinitionRevision || existingTask.PlanBinding.Receipt == "" || plan.AcceptedDefinitionReceipt != existingTask.PlanBinding.Receipt) {
 					return nil, fmt.Errorf("plan definition is stale (guarded revision %d, current %d)", guard.DefinitionRevision, plan.Version)
 				}
 			} else {
@@ -814,7 +833,7 @@ func (s *Server) ApproveProjectTask(ctx context.Context, p identity.Principal, p
 	}
 
 	// Idempotent retry check: if task is in_progress AND execution run is genuinely active, do not duplicate run!
-	if existingTask.Status == "in_progress" && existingTask.SessionID != "" {
+	if existingTask.Status == "in_progress" && existingTask.SessionID != "" && existingTask.PlanBinding == nil {
 		activeIntent, ok, _ := db.GetV3SessionActiveRunIntent(existingTask.SessionID)
 		if ok && activeIntent != nil && (activeIntent.Status == pebblestore.V3RunIntentPendingExecutor || activeIntent.Status == pebblestore.V3RunIntentRunning) {
 			hydrateTaskPlanDocument(existingTask, db)
@@ -848,15 +867,15 @@ func (s *Server) ApproveProjectTask(ctx context.Context, p identity.Principal, p
 				pref = def.Preference
 			}
 		}
-		var swarmProfile pebblestore.AgentProfile
-		if s.agents != nil {
-			swarmProfile, _ = s.agents.ResolveSystemAgent(agentruntime.SwarmAgentID, pebblestore.AgentProfile{
-				Provider:        pref.Provider,
-				Model:           pref.Model,
-				Thinking:        pref.Thinking,
-				AutoServiceTier: pref.ServiceTier,
-				ContextMode:     pref.ContextMode,
-			})
+		if s.agents == nil || pref.Provider == "" || pref.Model == "" {
+			return nil, errors.New("configured Swarm execution model and agent service are required")
+		}
+		swarmProfile, profileErr := s.agents.ResolveSystemAgent(agentruntime.SwarmAgentID, pebblestore.AgentProfile{
+			Provider: pref.Provider, Model: pref.Model, Thinking: pref.Thinking,
+			AutoServiceTier: pref.ServiceTier, ContextMode: pref.ContextMode,
+		})
+		if profileErr != nil {
+			return nil, fmt.Errorf("resolve Swarm execution profile: %w", profileErr)
 		}
 		summary := sessionruntime.SummarizePlanExecution(plan.Document)
 		firstCpID := summary.NextCheckpointID
@@ -887,12 +906,12 @@ func (s *Server) ApproveProjectTask(ctx context.Context, p identity.Principal, p
 			}
 			originalReceipt := existingTask.PlanBinding.Receipt
 			committed, commitErr := s.sessions.CommitV3PlanAcceptance(sessionruntime.PlanAcceptanceCommitInput{
-				Session:                   session,
-				PlanID:                    plan.ID,
-				Title:                     plan.Title,
-				Plan:                      plan.Plan,
-				Document:                  plan.Document,
-				ApplySessionMutation:      s.sessions.ApplySessionMutation,
+				Session:              session,
+				PlanID:               plan.ID,
+				Title:                plan.Title,
+				Plan:                 plan.Plan,
+				Document:             plan.Document,
+				ApplySessionMutation: s.sessions.ApplySessionMutation,
 				ModeEventFields: map[string]any{
 					"preference": pref,
 				},
@@ -916,32 +935,43 @@ func (s *Server) ApproveProjectTask(ctx context.Context, p identity.Principal, p
 				return nil, fmt.Errorf("commit plan acceptance: %w", commitErr)
 			}
 			plan = committed.Plan
-			receipt = committed.Mutation.PayloadHash
+			receipt = committed.Plan.AcceptedDefinitionReceipt
 		} else if existingTask.PlanBinding != nil {
 			receipt = existingTask.PlanBinding.Receipt
 		}
 
+		if active, ok, err := db.GetV3SessionActiveRunIntent(existingTask.SessionID); err != nil {
+			return nil, err
+		} else if ok && active != nil && active.PlanID == plan.ID && (active.Status == pebblestore.V3RunIntentPendingExecutor || active.Status == pebblestore.V3RunIntentRunning) {
+			reconciled, err := db.UpdateProjectTask(p.AccountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
+				t.Status, t.Agent, t.ActionNeeded = "in_progress", "swarm", ""
+				return nil
+			})
+			if err != nil {
+				return nil, err
+			}
+			hydrateTaskPlanDocument(reconciled, db)
+			return reconciled, nil
+		}
 		if s.planLifecycle == nil {
 			return nil, errors.New("plan lifecycle service is not configured")
 		}
-		startResult, startErr := s.planLifecycle.ApproveAndStartPlanAutomatic(sessionruntime.PlanLifecycleExecutionInput{
-			SessionID:    existingTask.SessionID,
-			PlanID:       plan.ID,
-			CheckpointID: firstCpID,
-		})
-		if startErr != nil {
-			return nil, fmt.Errorf("approve and start plan: %w", startErr)
-		}
-		if startResult.Plan.Document != nil {
+		var attemptID, checkpointID string
+		if plan.Document != nil && plan.Document.ExecutionState != nil && plan.Document.ExecutionState.Status == sessionruntime.PlanExecutionStateInProgress {
+			attemptID = plan.Document.ExecutionState.ActiveAttemptID
+			checkpointID = plan.Document.ActiveCheckpointID
+		} else {
+			startResult, startErr := s.planLifecycle.ApproveAndStartPlanAutomatic(sessionruntime.PlanLifecycleExecutionInput{
+				SessionID: existingTask.SessionID, PlanID: plan.ID, CheckpointID: firstCpID,
+			})
+			if startErr != nil {
+				return nil, fmt.Errorf("approve and start plan: %w", startErr)
+			}
 			plan = startResult.Plan
+			attemptID, checkpointID = startResult.AttemptID, startResult.CheckpointID
 		}
-		attemptID := startResult.AttemptID
-		if attemptID == "" {
-			attemptID = "attempt-1"
-		}
-		checkpointID := startResult.CheckpointID
-		if checkpointID == "" {
-			checkpointID = firstCpID
+		if attemptID == "" || checkpointID == "" {
+			return nil, errors.New("approved plan has no durable checkpoint attempt")
 		}
 		runID := sessionsV3PlanModeRunID(existingTask.SessionID, plan.ID, checkpointID, attemptID)
 
@@ -970,7 +1000,7 @@ func (s *Server) ApproveProjectTask(ctx context.Context, p identity.Principal, p
 			IdempotencyKey:  runKey,
 			PayloadHash:     runKey,
 			RequestHash:     runKey,
-			Kind:            sessionruntime.SessionMutationStartRun,
+			Kind:            sessionruntime.SessionMutationRecordRunIntent,
 			RunIntent:       runIntent,
 			NowUnixMs:       now,
 		})
@@ -985,7 +1015,6 @@ func (s *Server) ApproveProjectTask(ctx context.Context, p identity.Principal, p
 			t.Agent = "swarm"
 			t.WorkerName = "@Swarm Worker"
 			if t.PlanBinding != nil {
-				t.PlanBinding.DefinitionRevision = plan.Version
 				if receipt != "" {
 					t.PlanBinding.Receipt = receipt
 				}
@@ -1016,17 +1045,28 @@ func (s *Server) ApproveProjectTask(ctx context.Context, p identity.Principal, p
 		if err := s.deployProjectTaskExecution(p, proj, existingTask, "in_progress", ""); err != nil {
 			return nil, fmt.Errorf("deploy media execution: %w", err)
 		}
-		_ = db.PutProjectTask(p.AccountScopeID, existingTask)
+		existingTask.Status, existingTask.ActionNeeded = "in_progress", ""
+		if err := db.PutProjectTask(p.AccountScopeID, existingTask); err != nil {
+			return nil, err
+		}
 		hydrateTaskPlanDocument(existingTask, db)
 		return existingTask, nil
 	}
 
+	// A reserved session ID does not prove that creation succeeded.
+	_, sessionFound, sessionErr := db.GetSession(existingTask.SessionID)
+	if sessionErr != nil {
+		return nil, sessionErr
+	}
 	// Coder / agent task:
-	if existingTask.SessionID == "" {
+	if !sessionFound {
 		if err := s.deployProjectTaskExecution(p, proj, existingTask, "in_progress", existingTask.Title); err != nil {
 			return nil, fmt.Errorf("deploy agent execution: %w", err)
 		}
-		_ = db.PutProjectTask(p.AccountScopeID, existingTask)
+		existingTask.Status, existingTask.ActionNeeded = "in_progress", ""
+		if err := db.PutProjectTask(p.AccountScopeID, existingTask); err != nil {
+			return nil, err
+		}
 		hydrateTaskPlanDocument(existingTask, db)
 		return existingTask, nil
 	}
@@ -1081,7 +1121,12 @@ func (s *Server) ApproveProjectTask(ctx context.Context, p identity.Principal, p
 			}
 			session.WorkspaceUsage = pebblestore.WorkspaceUsageFromGrants(session.WorkspaceGrants)
 			session.UpdatedAt = time.Now().UnixMilli()
-			if err := db.PutSession(session); err != nil {
+			key := fmt.Sprintf("project-task:worktree:%s:%s", existingTask.ID, session.ID)
+			if _, err := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+				SessionID: session.ID, UserID: p.UserID, AccountScopeID: p.AccountScopeID,
+				ClientRequestID: key, IdempotencyKey: key, PayloadHash: key, RequestHash: key,
+				Kind: sessionruntime.SessionMutationUpdateSettings, Session: &session,
+			}); err != nil {
 				return nil, fmt.Errorf("update session worktree metadata: %w", err)
 			}
 		}
@@ -1110,7 +1155,7 @@ func (s *Server) ApproveProjectTask(ctx context.Context, p identity.Principal, p
 		IdempotencyKey:  runKey,
 		PayloadHash:     runKey,
 		RequestHash:     runKey,
-		Kind:            sessionruntime.SessionMutationStartRun,
+		Kind:            sessionruntime.SessionMutationRecordRunIntent,
 		RunIntent:       runIntent,
 		NowUnixMs:       now,
 	})
@@ -1182,6 +1227,12 @@ func (s *Server) deployProjectTaskLocked(ctx context.Context, p identity.Princip
 	if task.Status == "completed" {
 		return nil
 	}
+	if task.PlanBinding != nil && task.PlanBinding.PlanID != "" {
+		return errors.New("plan-bound tasks require exact task-card acceptance; generic deployment cannot authorize plan execution")
+	}
+	if task.Status == "planning" || task.Agent == "plan" {
+		return errors.New("planning tasks must submit a structured plan before implementation")
+	}
 
 	// Idempotent retry: if active run intent exists, avoid duplicate runs
 	if task.Status == "in_progress" && task.SessionID != "" {
@@ -1230,7 +1281,7 @@ func (s *Server) deployProjectTaskLocked(ctx context.Context, p identity.Princip
 				IdempotencyKey:  runKey,
 				PayloadHash:     runKey,
 				RequestHash:     runKey,
-				Kind:            sessionruntime.SessionMutationStartRun,
+				Kind:            sessionruntime.SessionMutationRecordRunIntent,
 				RunIntent:       runIntent,
 				NowUnixMs:       now,
 			})

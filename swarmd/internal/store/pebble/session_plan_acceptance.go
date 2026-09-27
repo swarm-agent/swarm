@@ -71,8 +71,7 @@ func (s *SessionStore) applyV3PlanAcceptanceMutation(input V3SessionMutationInpu
 	if found && (existing.Status == "approved" || existing.ApprovalState == "approved") {
 		if acceptedReceipt != "" && existing.AcceptedDefinitionReceipt != "" && existing.AcceptedDefinitionReceipt == acceptedReceipt {
 			isAcceptedRetry = true
-		} else if acceptance.ExpectedBindingRevision > 0 && (existing.Version >= acceptance.ExpectedBindingRevision || existing.ParentRevision >= acceptance.ExpectedBindingRevision) {
-			isAcceptedRetry = true
+
 		}
 	}
 
