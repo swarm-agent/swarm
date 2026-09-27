@@ -61,7 +61,8 @@ var manageSessionsRepositoryLocks = struct {
 
 // PrepareManageSessionsCommitManifest resolves model-supplied session/message pairs
 // into an authoritative, approval-safe manifest. Paths are derived exclusively from
-// durable terminal checkpoint data.
+// durable checkpoint data or the account-owned session worktree. Session attention
+// state is not Git authorization: a running checkpoint may commit its own work.
 func (r *Runtime) PrepareManageSessionsCommitManifest(ctx context.Context, scope WorkspaceScope, args map[string]any) (map[string]any, error) {
 	prepared, err := r.prepareManageSessionsCommit(ctx, scope, args, nil)
 	if err != nil {
@@ -138,9 +139,9 @@ func (r *Runtime) manageSessionsCommit(ctx context.Context, scope WorkspaceScope
 			return marshalManageSessionsCommitFailure(results, i, candidate, fmt.Errorf("created commit path set %v does not match approved paths %v", committed, want))
 		}
 		repoHeads[candidate.Repository] = head
-		results = append(results, map[string]any{"session_id": candidate.SessionID, "message": candidate.Message, "commit_hash": head, "files": paths, "repository": candidate.Repository, "ready_for_testing": true, "session_state": "needs_review"})
+		results = append(results, map[string]any{"session_id": candidate.SessionID, "message": candidate.Message, "commit_hash": head, "files": paths, "repository": candidate.Repository, "ready_for_testing": true, "session_state_unchanged": true})
 	}
-	return marshalManageSessions(map[string]any{"action": "commit", "commits": results, "created_count": len(results), "ready_for_testing": true, "sessions_remain_needs_review": true})
+	return marshalManageSessions(map[string]any{"action": "commit", "commits": results, "created_count": len(results), "ready_for_testing": true, "session_states_unchanged": true})
 }
 
 func (r *Runtime) prepareManageSessionsCommit(ctx context.Context, scope WorkspaceScope, args map[string]any, approved *manageSessionsCommitManifest) (manageSessionsCommitPrepared, error) {
@@ -159,12 +160,8 @@ func (r *Runtime) prepareManageSessionsCommit(ctx context.Context, scope Workspa
 		if err != nil {
 			return manageSessionsCommitPrepared{}, err
 		}
-		state, stateErr := r.manageSessionAuthoritativeState(session)
-		if stateErr != nil {
-			return manageSessionsCommitPrepared{}, stateErr
-		}
-		if archived || state != "needs_review" {
-			return manageSessionsCommitPrepared{}, fmt.Errorf("session %s must be active and needs_review", request.SessionID)
+		if archived {
+			return manageSessionsCommitPrepared{}, fmt.Errorf("session %s is archived", request.SessionID)
 		}
 		candidate, err := r.resolveManageSessionsCommitCandidate(ctx, scope, session, request)
 		if err != nil {
@@ -189,12 +186,8 @@ func (r *Runtime) prepareManageSessionsCommit(ctx context.Context, scope Workspa
 		if getErr != nil {
 			return manageSessionsCommitPrepared{}, getErr
 		}
-		state, stateErr := r.manageSessionAuthoritativeState(session)
-		if stateErr != nil {
-			return manageSessionsCommitPrepared{}, stateErr
-		}
-		if archived || state != "needs_review" {
-			return manageSessionsCommitPrepared{}, fmt.Errorf("session %s must remain active and needs_review", request.SessionID)
+		if archived {
+			return manageSessionsCommitPrepared{}, fmt.Errorf("session %s is archived", request.SessionID)
 		}
 		candidate, resolveErr := r.resolveManageSessionsCommitCandidate(ctx, scope, session, request)
 		if resolveErr != nil {
@@ -416,12 +409,8 @@ func (r *Runtime) validateManageSessionsCommitCandidate(ctx context.Context, sco
 	if err != nil {
 		return err
 	}
-	state, stateErr := r.manageSessionAuthoritativeState(session)
-	if stateErr != nil {
-		return stateErr
-	}
-	if archived || session.UpdatedAt != candidate.ExpectedUpdatedAt || state != "needs_review" {
-		return fmt.Errorf("session %s version or needs_review state changed after approval", candidate.SessionID)
+	if archived || session.UpdatedAt != candidate.ExpectedUpdatedAt {
+		return fmt.Errorf("session %s version or archive state changed after approval", candidate.SessionID)
 	}
 	head, err := manageSessionsGitOutput(ctx, candidate.Repository, "rev-parse", "HEAD")
 	if err != nil || head != expectedHead {
