@@ -223,6 +223,7 @@ func setupMatrixTestFixture(t *testing.T) *matrixTestFixture {
 		runner:             mockRun,
 	}
 	s.v3SessionExecutor = newSessionV3Executor(s)
+	s.planLifecycle.SetApplySessionMutation(s.applySessionV3PrimaryMutation)
 
 	return &matrixTestFixture{
 		db:        db,
@@ -394,6 +395,24 @@ func TestTaskMatrix_Case2_ToolEquivalentPrincipalSharedPath(t *testing.T) {
 	err := f.server.DeployProjectTask(context.Background(), identity.Principal{AccountScopeID: f.accountID}, projID, taskID)
 	if err == nil || !strings.Contains(err.Error(), "user id is required") {
 		t.Fatalf("expected 'user id is required', got: %v", err)
+	}
+
+	// A1: Calling DeployProjectTask with missing Type (Type == "") fails closed even with UserID populated
+	err = f.server.DeployProjectTask(context.Background(), identity.Principal{UserID: f.userID, AccountScopeID: f.accountID}, projID, taskID)
+	if err == nil || !strings.Contains(err.Error(), "user id is required") {
+		t.Fatalf("expected 'user id is required' on missing Type in DeployProjectTask, got: %v", err)
+	}
+
+	// A2: Calling ApproveProjectTask with missing Type fails closed
+	_, err = f.server.ApproveProjectTask(context.Background(), identity.Principal{UserID: f.userID, AccountScopeID: f.accountID}, projID, taskID)
+	if err == nil || !strings.Contains(err.Error(), "authenticated user identity") {
+		t.Fatalf("expected 'authenticated user identity' on missing Type in ApproveProjectTask, got: %v", err)
+	}
+
+	// A3: Calling CreateProjectTask with missing Type fails closed
+	_, err = f.server.CreateProjectTask(context.Background(), identity.Principal{UserID: f.userID, AccountScopeID: f.accountID}, projID, tool.ProjectTaskCreateInput{Title: "Missing Type Task"})
+	if err == nil || !strings.Contains(err.Error(), "user id is required") {
+		t.Fatalf("expected 'user id is required' on missing Type in CreateProjectTask, got: %v", err)
 	}
 
 	// B: Calling DeployProjectTask on a pending_approval task fails closed without approval
@@ -1246,6 +1265,7 @@ func TestTaskMatrix_Case10_ReopenStoreRecoveryExactReceiptLinksNoReplay(t *testi
 		agentModelSettings: modelSettingsSvc2,
 	}
 	server2.v3SessionExecutor = newSessionV3Executor(server2)
+	server2.planLifecycle.SetApplySessionMutation(server2.applySessionV3PrimaryMutation)
 	recoveredTask, rErr := server2.ApproveProjectTask(context.Background(), p, projID, taskID, tool.ProjectTaskApprovalGuards{
 		SessionID:          sessID,
 		PlanID:             "recovery-plan-01",
@@ -1356,6 +1376,12 @@ func TestTaskMatrix_DeployProjectTaskExecution_FailsClosedOnMissingPrincipal(t *
 	if err == nil || !strings.Contains(err.Error(), "user id is required") {
 		t.Fatalf("expected 'user id is required' on non-user principal, got: %v", err)
 	}
+
+	// 4. Missing user type (Type == "") fails closed even with UserID populated
+	err = f.server.deployProjectTaskExecution(identity.Principal{UserID: "u1", AccountScopeID: f.accountID}, proj, task, "in_progress", "test")
+	if err == nil || !strings.Contains(err.Error(), "user id is required") {
+		t.Fatalf("expected 'user id is required' on principal with missing Type, got: %v", err)
+	}
 }
 
 func TestTaskMatrix_ApproveCoderPersistsAllocatedWorktreeMetadata(t *testing.T) {
@@ -1432,10 +1458,11 @@ func TestTaskMatrix_ApproveCoderPersistsAllocatedWorktreeMetadata(t *testing.T) 
 
 func TestTaskMatrix_DeployProjectTaskProgram_DurableWithoutRunner(t *testing.T) {
 	// Requirement-first Purpose:
-	// - Invariant: deployProjectTaskProgram and redeployTaskProgramJob must succeed in creating
-	//   durable coordinator sessions, TaskProgramRecords, and RunIntents in Pebble even when s.runner is nil.
+	// - Invariant: deployProjectTaskProgram and redeployTaskProgramJob must fail closed with an explicit
+	//   runner-unavailable error when s.runner is not configured, rather than silently pretending to deploy
+	//   an execution with no executor.
 	// - Authority: deployProjectTaskProgram, redeployTaskProgramJob in api/project_task_program.go.
-	// - Threat/regression: Unit tests or headless daemons failing standalone task program setup when runner is unset.
+	// - Threat/regression: Silent fake deployment leaving tasks in_progress without execution.
 	f := setupMatrixTestFixture(t)
 	defer f.db.Close()
 	projID := f.createProject(t)
@@ -1481,30 +1508,16 @@ func TestTaskMatrix_DeployProjectTaskProgram_DurableWithoutRunner(t *testing.T) 
 	_ = f.server.sessions.Store().PutProjectTask(f.accountID, task)
 	proj, _, _ := f.server.sessions.Store().GetProject(f.accountID, projID)
 
-	// Deploy must succeed and persist records without runner configured
+	// Deploy must fail closed with runner-unavailable error when runner is not configured
 	err := sNoRunner.deployProjectTaskProgram(p, proj, task)
-	if err != nil {
-		t.Fatalf("deployProjectTaskProgram failed with nil runner: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "runner service is not configured") {
+		t.Fatalf("expected runner service is not configured error, got: %v", err)
 	}
 
-	// Verify durable TaskProgramRecord created in Pebble
-	prog, ok, err := f.server.sessions.Store().GetTaskProgram(task.SessionID, task.TaskProgramID)
-	if err != nil || !ok {
-		t.Fatalf("expected TaskProgramRecord created in Pebble: ok=%v, err=%v", ok, err)
-	}
-	if len(prog.Jobs) != 1 {
-		t.Fatalf("expected 1 job in TaskProgramRecord, got %d", len(prog.Jobs))
-	}
-
-	// Redeploy must also succeed and record attempt transition without runner
+	// Redeploy must also fail closed with runner-unavailable error when runner is not configured
 	err = sNoRunner.redeployTaskProgramJob(p, projID, task.ID, "job-1", "Fix retry")
-	if err != nil {
-		t.Fatalf("redeployTaskProgramJob failed with nil runner: %v", err)
-	}
-
-	progAfter, ok, _ := f.server.sessions.Store().GetTaskProgram(task.SessionID, task.TaskProgramID)
-	if !ok || progAfter.Jobs[0].AttemptNumber != 2 {
-		t.Fatalf("expected job-1 attempt number incremented to 2, got %#v", progAfter.Jobs[0])
+	if err == nil || !strings.Contains(err.Error(), "runner service is not configured") {
+		t.Fatalf("expected runner service is not configured error on redeploy, got: %v", err)
 	}
 }
 
