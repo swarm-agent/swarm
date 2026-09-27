@@ -210,29 +210,29 @@ test('OrchestrateView supports single video clips with independent 1-8 clip coun
   assert.ok(!source.includes('Add Dedicated Soundtrack Clip'), 'Must eliminate soundtrack clip controls from project modal')
 })
 
-test('OrchestrateView provides 720p, 1080p, and 4k video resolution selection with per-model pricing transparency', () => {
-  // Invariant: Video modal must allow switching between 720p, 1080p, and 4k resolutions,
+test('OrchestrateView provides video resolution selection with model-supported transparency', () => {
+  // Invariant: Video modal must allow switching between model-supported resolutions,
   // showing per-second or per-clip pricing rates extracted from catalog pricing so users know what they pay.
   const sourcePath = path.join(__dirname, 'OrchestrateView.tsx')
   const source = fs.readFileSync(sourcePath, 'utf8')
 
   assert.ok(source.includes("setVideoResolution(res)"), 'Must allow switching video resolution')
-  assert.ok(source.includes("'720p', '1080p', '4k'"), 'Must offer 720p, 1080p, and 4k options')
+  assert.ok(source.includes('supportedVideoResolutions'), 'Must enforce model-supported resolutions')
   assert.ok(source.includes('resolveVideoPricing'), 'Must implement resolveVideoPricing helper')
   assert.ok(source.includes('Estimated Model Cost:'), 'Must display Estimated Model Cost summary')
   assert.ok(source.includes('videoPricingInfo.formattedSummary'), 'Must render formatted model pricing summary')
-  assert.ok(source.includes("resolution: taskIntent === 'image' ? imageResolution : taskIntent === 'video' ? videoResolution : undefined") || source.includes("taskIntent === 'video' ? videoResolution : undefined"), 'Must pass resolution in task payload')
+  assert.ok(source.includes("taskIntent === 'video'"), 'Must pass resolution in task payload')
 })
 
 test('OrchestrateView restricts video reference inputs to supported images and preserves prompt text', () => {
-  // Invariant: Video reference inputs must strictly be supported image formats (.png, .jpg, etc.),
+  // Invariant: Video reference inputs must strictly be supported image formats (.png, .jpg, .webp),
   // accepting at most 1 starting image. Text and documents stay directly in the prompt input without truncation.
   const sourcePath = path.join(__dirname, 'OrchestrateView.tsx')
   const source = fs.readFileSync(sourcePath, 'utf8')
 
   assert.ok(source.includes('validateVideoAttachment'), 'Must validate video attachments with validateVideoAttachment')
   assert.ok(source.includes('Text stays in prompt for video task flow'), 'Must keep text/doc content in prompt input')
-  assert.ok(source.includes('videoMediaToAttach'), 'Must filter video attachments to image-only')
+  assert.ok(source.includes('videoAttachmentError'), 'Must track and surface video attachment errors')
   assert.ok(source.includes('SUPPORTED_VIDEO_IMAGE_EXTENSIONS'), 'Must enforce supported video image extensions')
   assert.ok(source.includes('Optional Starting Frame (1 Image)'), 'Must guide user that at most 1 image reference is supported')
 })

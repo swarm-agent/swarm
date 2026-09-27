@@ -2272,10 +2272,11 @@ export function OrchestrateView({
   const [isDeployModalOpen, setIsDeployModalOpen] = useState(false)
   const [taskIntent, setTaskIntent] = useState<'code' | 'image' | 'video' | 'sound' | 'audit'>('code')
   const [videoType, setVideoType] = useState<'single'>('single')
-  const [videoResolution, setVideoResolution] = useState<string>('1080p')
-  const [videoDuration, setVideoDuration] = useState<number>(8)
+  const [videoResolution, setVideoResolution] = useState<string>('')
+  const [videoDuration, setVideoDuration] = useState<number>(0)
   const [videoClipCount, setVideoClipCount] = useState<number>(1)
-  const [videoAspectRatio, setVideoAspectRatio] = useState<string>('16:9')
+  const [videoAspectRatio, setVideoAspectRatio] = useState<string>('')
+  const [videoAttachmentError, setVideoAttachmentError] = useState<string | null>(null)
   const [enhanceVideoPrompt, setEnhanceVideoPrompt] = useState<boolean>(false)
   const [newTaskPrompt, setNewTaskPrompt] = useState('')
   const [newTaskWorkspace, setNewTaskWorkspace] = useState('')
@@ -2351,30 +2352,61 @@ export function OrchestrateView({
     if (selectedVideoOption) {
       const gOpts = selectedVideoOption.generationOptions
       const allowedRatios = resolveAllowedVideoAspectRatios(gOpts)
-      if (allowedRatios.length > 0 && !allowedRatios.includes(videoAspectRatio)) {
-        setVideoAspectRatio(gOpts?.default_ratio || allowedRatios[0] || '16:9')
+      if (allowedRatios.length > 0) {
+        if (!allowedRatios.includes(videoAspectRatio)) {
+          setVideoAspectRatio(
+            gOpts?.default_ratio && allowedRatios.includes(gOpts.default_ratio)
+              ? gOpts.default_ratio
+              : allowedRatios[0]
+          )
+        }
+      } else {
+        setVideoAspectRatio('')
       }
+
       const allowedRes = resolveAllowedVideoResolutions(gOpts)
       let currentRes = videoResolution
-      if (allowedRes.length > 0 && !allowedRes.includes(videoResolution)) {
-        currentRes = gOpts?.default_resolution || allowedRes[0] || '720p'
-        setVideoResolution(currentRes)
+      if (allowedRes.length > 0) {
+        if (!allowedRes.includes(videoResolution)) {
+          currentRes =
+            gOpts?.default_resolution && allowedRes.includes(gOpts.default_resolution)
+              ? gOpts.default_resolution
+              : allowedRes[0]
+          setVideoResolution(currentRes)
+        }
+      } else {
+        currentRes = ''
+        setVideoResolution('')
       }
+
       const allowedDurs = resolveAllowedVideoDurations(gOpts, currentRes)
-      if (allowedDurs.length > 0 && !allowedDurs.includes(videoDuration)) {
-        const preferredDur = gOpts?.default_duration && allowedDurs.includes(gOpts.default_duration)
-          ? gOpts.default_duration
-          : allowedDurs[allowedDurs.length - 1] || allowedDurs[0]
-        setVideoDuration(preferredDur)
+      if (allowedDurs.length > 0) {
+        if (!allowedDurs.includes(videoDuration)) {
+          const preferredDur =
+            gOpts?.default_duration && allowedDurs.includes(gOpts.default_duration)
+              ? gOpts.default_duration
+              : allowedDurs[allowedDurs.length - 1] || allowedDurs[0]
+          setVideoDuration(preferredDur)
+        }
+      } else {
+        setVideoDuration(0)
       }
+    } else {
+      setVideoAspectRatio('')
+      setVideoResolution('')
+      setVideoDuration(0)
     }
   }, [selectedVideoOption])
 
   useEffect(() => {
     if (selectedVideoOption) {
       const allowedDurs = resolveAllowedVideoDurations(selectedVideoOption.generationOptions, videoResolution)
-      if (allowedDurs.length > 0 && !allowedDurs.includes(videoDuration)) {
-        setVideoDuration(allowedDurs[allowedDurs.length - 1] || allowedDurs[0])
+      if (allowedDurs.length > 0) {
+        if (!allowedDurs.includes(videoDuration)) {
+          setVideoDuration(allowedDurs[allowedDurs.length - 1] || allowedDurs[0])
+        }
+      } else {
+        setVideoDuration(0)
       }
     }
   }, [videoResolution, selectedVideoOption])
@@ -2871,9 +2903,10 @@ export function OrchestrateView({
           if (taskIntent === 'video') {
             const validation = validateVideoAttachment(file, selectedVideoOption?.generationOptions)
             if (!validation.valid) {
-              console.warn(validation.error)
+              setVideoAttachmentError(validation.error || 'Invalid video reference image')
               continue
             }
+            setVideoAttachmentError(null)
           }
           dataUrl = await new Promise<string>((resolve) => {
             const reader = new FileReader()
@@ -2975,9 +3008,15 @@ export function OrchestrateView({
 
   const toggleTagDeliverable = (d: MediaDeliverable) => {
     if (taskIntent === 'video') {
-      if (d.type !== 'image' && !d.previewUrl?.startsWith('data:image')) {
+      const validation = validateVideoAttachment(
+        { name: d.title, type: d.type === 'video' ? 'video/mp4' : 'image/png', kind: d.type === 'video' ? 'video' : 'image' },
+        selectedVideoOption?.generationOptions
+      )
+      if (!validation.valid) {
+        setVideoAttachmentError(validation.error || 'Invalid video reference image')
         return
       }
+      setVideoAttachmentError(null)
       setTaggedMedia((prev) => {
         const exists = prev.some((t) => t.id === d.id)
         if (exists) return []
@@ -3017,8 +3056,15 @@ export function OrchestrateView({
 
   const toggleTagMediaRef = (m: ProjectTaskMediaRef) => {
     if (taskIntent === 'video') {
-      const isImg = m.kind === 'image' || (m.mediaType && m.mediaType.startsWith('image/'))
-      if (!isImg) return
+      const validation = validateVideoAttachment(
+        { name: m.filename || m.title, type: m.mediaType, kind: m.kind },
+        selectedVideoOption?.generationOptions
+      )
+      if (!validation.valid) {
+        setVideoAttachmentError(validation.error || 'Invalid video reference image')
+        return
+      }
+      setVideoAttachmentError(null)
       setTaggedMedia((prev) => {
         const exists = prev.some((t) => t.id === m.id)
         if (exists) return []
@@ -3394,6 +3440,26 @@ export function OrchestrateView({
   const handleDeployModalSubmit = async () => {
     const prompt = newTaskPrompt.trim()
     if (!prompt || !selectedProject?.id) return
+
+    if (taskIntent === 'video') {
+      if (taggedMedia.length > 1) {
+        setVideoAttachmentError('Selected video flow supports at most 1 initial image reference')
+        return
+      }
+      if (taggedMedia.length === 1) {
+        const m = taggedMedia[0]
+        const validation = validateVideoAttachment(
+          { name: m.filename || m.title, type: m.mediaType, kind: m.kind },
+          selectedVideoOption?.generationOptions
+        )
+        if (!validation.valid) {
+          setVideoAttachmentError(validation.error || 'Invalid video reference image')
+          return
+        }
+      }
+      setVideoAttachmentError(null)
+    }
+
     setIsDeployingTask(true)
     try {
       const qualifiedModel = taskIntent === 'video'
@@ -3404,15 +3470,7 @@ export function OrchestrateView({
         ? (selectedAudioModel || undefined)
         : undefined
 
-      const videoMediaToAttach = taggedMedia.filter((m) => {
-        if (m.kind && m.kind.toLowerCase() !== 'image') return false
-        if (m.mediaType && !m.mediaType.toLowerCase().startsWith('image/')) return false
-        const fn = (m.filename || m.title || '').toLowerCase()
-        if (fn && !SUPPORTED_VIDEO_IMAGE_EXTENSIONS.some((ext) => fn.endsWith(ext))) return false
-        return true
-      }).slice(0, 1)
-
-      const attachedMediaForTask = taskIntent === 'video' ? videoMediaToAttach : taggedMedia
+      const attachedMediaForTask = taggedMedia
 
       const res = await requestJson<{ task: any }>(`/v3/projects/${selectedProject.id}/tasks`, {
         method: 'POST',
@@ -3423,10 +3481,10 @@ export function OrchestrateView({
           intent: taskIntent,
           video_type: taskIntent === 'video' ? videoType : undefined,
           enhance_prompt: taskIntent === 'video' ? enhanceVideoPrompt : undefined,
-          aspect_ratio: taskIntent === 'image' ? imageAspectRatio : taskIntent === 'video' ? (supportedVideoAspectRatios.includes(videoAspectRatio) ? videoAspectRatio : undefined) : undefined,
-          resolution: taskIntent === 'image' ? imageResolution : taskIntent === 'video' ? videoResolution : undefined,
+          aspect_ratio: taskIntent === 'image' ? imageAspectRatio : taskIntent === 'video' ? (videoAspectRatio && supportedVideoAspectRatios.includes(videoAspectRatio) ? videoAspectRatio : undefined) : undefined,
+          resolution: taskIntent === 'image' ? imageResolution : taskIntent === 'video' ? (videoResolution && supportedVideoResolutions.includes(videoResolution) ? videoResolution : undefined) : undefined,
           variant_count: taskIntent === 'image' ? imageVariants : taskIntent === 'video' ? videoClipCount : undefined,
-          duration_seconds: taskIntent === 'sound' ? soundDuration : taskIntent === 'video' ? (supportedVideoDurations.includes(videoDuration) ? videoDuration : undefined) : undefined,
+          duration_seconds: taskIntent === 'sound' ? soundDuration : taskIntent === 'video' ? (videoDuration > 0 && supportedVideoDurations.includes(videoDuration) ? videoDuration : undefined) : undefined,
           model: taskIntent === 'image' ? (selectedImageModel || undefined) : taskIntent === 'video' ? (qualifiedModel || undefined) : taskIntent === 'sound' ? (selectedAudioModel || undefined) : undefined,
           auto_approve: autoApproveTask,
           deploy_session: true,
@@ -6070,6 +6128,18 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                       : 'e.g. investigate why pebble database locks on restart and audit connection pool handling...'
                   }
                   className="w-full rounded-lg bg-slate-950 border border-slate-800 p-3 text-white placeholder-slate-600 focus:outline-none focus:border-blue-500/60 resize-none text-xs leading-relaxed font-sans"
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={(e) => {
+                    e.preventDefault()
+                    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                      void handleFileUpload(e.dataTransfer.files)
+                    }
+                  }}
+                  onPaste={(e) => {
+                    if (e.clipboardData.files && e.clipboardData.files.length > 0) {
+                      void handleFileUpload(e.clipboardData.files)
+                    }
+                  }}
                 />
                 <div className="mt-1.5 flex items-center justify-between text-[11px]">
                   <div className="flex items-center gap-1.5 text-slate-400">
@@ -6080,7 +6150,13 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                     <label className="flex items-center gap-1 px-2 py-0.5 rounded bg-blue-600/20 text-blue-300 hover:bg-blue-600/30 border border-blue-500/30 cursor-pointer font-semibold transition">
                       <Upload size={10} />
                       <span>{isUploadingMedia ? 'Uploading...' : 'Upload'}</span>
-                      <input type="file" multiple className="hidden" onChange={(e) => void handleFileUpload(e.target.files)} />
+                      <input
+                        type="file"
+                        multiple
+                        accept={taskIntent === 'video' ? 'image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp' : undefined}
+                        className="hidden"
+                        onChange={(e) => void handleFileUpload(e.target.files)}
+                      />
                     </label>
                     <button
                       type="button"
@@ -6311,7 +6387,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                         </span>
                       )}
                     </div>
-                    {imageModelOptions.length === 0 && mediaCatalogLoaded ? (
+                    {videoModelOptions.length === 0 && mediaCatalogLoaded ? (
                       <div className="rounded bg-slate-900 border border-amber-500/30 p-2 text-amber-300 text-[11px] font-mono flex items-center gap-2">
                         <AlertTriangle size={13} className="shrink-0 text-amber-400" />
                         <span>No video models connected. Connect Google or OpenRouter key in Settings.</span>
@@ -6324,7 +6400,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                         className="w-full rounded bg-slate-900 border border-slate-800 px-2.5 py-1.5 text-white text-[11px] font-mono focus:outline-none focus:border-blue-500"
                       >
                         {videoModelOptions.map((opt) => (
-                          <option key={opt.id} value={opt.id} disabled={!opt.ready}>
+                          <option key={opt.id} value={opt.id}>
                             {opt.label}{opt.id === defaultVideoModel ? ' (Default)' : ''}{!opt.ready ? ` (Unavailable${opt.reason ? `: ${opt.reason}` : ''})` : ''}
                           </option>
                         ))}
@@ -6417,83 +6493,87 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                     )}
                   </div>
 
-                  {/* Resolution Selector (720p, 1080p, 4k) & Aspect Ratio */}
+                  {/* Resolution Selector & Aspect Ratio */}
                   <div className="grid grid-cols-2 gap-3 pt-2 border-t border-slate-800/60">
                     <div>
                       <div className="flex items-center justify-between mb-1.5">
                         <label className="block text-[10px] text-slate-400 font-mono uppercase font-bold">Resolution & Quality</label>
                         <span className="text-[9px] text-slate-500 font-mono">
-                          {videoDuration}s · {videoClipCount} {videoClipCount === 1 ? 'clip' : 'clips'}
+                          {videoDuration > 0 ? `${videoDuration}s · ` : ''}{videoClipCount} {videoClipCount === 1 ? 'clip' : 'clips'}
                         </span>
                       </div>
-                      <div className="grid grid-cols-3 gap-1 font-mono text-[10px]">
-                        {(['720p', '1080p', '4k'] as const).map((res) => {
-                          const isSupported = supportedVideoResolutions.includes(res)
-                          const totalForRes = videoPricingInfo.totalsByResolution?.[res]
-                          const unitRate = videoPricingInfo.unitRatesByResolution?.[res]
-                          const isSelected = videoResolution === res
-                          return (
-                            <button
-                              key={res}
-                              type="button"
-                              disabled={!isSupported}
-                              onClick={() => setVideoResolution(res)}
-                              className={`py-1.5 px-1 rounded border text-center font-bold flex flex-col items-center justify-center transition-all ${
-                                !isSupported
-                                  ? 'bg-slate-950/60 border-slate-800 text-slate-600 cursor-not-allowed opacity-50'
-                                  : isSelected
-                                  ? 'bg-blue-600 border-blue-400 text-white shadow'
-                                  : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white'
-                              }`}
-                            >
-                              <span className="leading-tight">{res}</span>
-                              <span className={`text-[9px] font-semibold mt-0.5 leading-tight ${isSelected ? 'text-white' : 'text-slate-200'}`}>
-                                {totalForRes !== undefined ? `$${totalForRes.toFixed(2)}` : 'Unavailable'}
-                              </span>
-                              <span className={`text-[8px] font-normal leading-tight ${isSelected ? 'text-blue-100 opacity-90' : 'text-slate-500'}`}>
-                                {unitRate !== undefined
-                                  ? `${videoDuration}s at $${unitRate.toFixed(2)}/s`
-                                  : isSupported
-                                  ? 'No pricing'
-                                  : 'Unsupported'}
-                              </span>
-                            </button>
-                          )
-                        })}
-                      </div>
+                      {supportedVideoResolutions.length > 0 ? (
+                        <div className="grid grid-cols-3 gap-1 font-mono text-[10px]">
+                          {supportedVideoResolutions.map((res) => {
+                            const totalForRes = videoPricingInfo.totalsByResolution?.[res]
+                            const unitRate = videoPricingInfo.unitRatesByResolution?.[res]
+                            const isSelected = videoResolution === res
+                            return (
+                              <button
+                                key={res}
+                                type="button"
+                                onClick={() => setVideoResolution(res)}
+                                className={`py-1.5 px-1 rounded border text-center font-bold flex flex-col items-center justify-center transition-all ${
+                                  isSelected
+                                    ? 'bg-blue-600 border-blue-400 text-white shadow'
+                                    : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white'
+                                }`}
+                              >
+                                <span className="leading-tight">{res}</span>
+                                <span className={`text-[9px] font-semibold mt-0.5 leading-tight ${isSelected ? 'text-white' : 'text-slate-200'}`}>
+                                  {totalForRes !== undefined ? `$${totalForRes.toFixed(2)}` : 'Unavailable'}
+                                </span>
+                                <span className={`text-[8px] font-normal leading-tight ${isSelected ? 'text-blue-100 opacity-90' : 'text-slate-500'}`}>
+                                  {unitRate !== undefined
+                                    ? videoDuration > 0
+                                      ? `${videoDuration}s at $${unitRate.toFixed(2)}/s`
+                                      : `$${unitRate.toFixed(2)}/clip`
+                                    : 'No pricing'}
+                                </span>
+                              </button>
+                            )
+                          })}
+                        </div>
+                      ) : (
+                        <div className="p-2 rounded bg-slate-900/60 border border-slate-800 text-[10px] font-mono text-slate-500">
+                          Resolution not configurable for this model
+                        </div>
+                      )}
                     </div>
 
                     <div>
                       <label className="block text-[10px] text-slate-400 font-mono uppercase font-bold mb-1.5">Aspect Ratio</label>
-                      <div className="grid grid-cols-3 gap-1 font-mono text-[10px]">
-                        {VIDEO_ASPECT_RATIOS.map((ar) => {
-                          const isSupported = supportedVideoAspectRatios.includes(ar.ratio)
-                          const isSelected = videoAspectRatio === ar.ratio
-                          return (
-                            <button
-                              key={ar.ratio}
-                              type="button"
-                              disabled={!isSupported}
-                              onClick={() => setVideoAspectRatio(ar.ratio)}
-                              className={`py-1.5 px-1 rounded border text-center font-bold flex flex-col items-center justify-center gap-1 transition-all ${
-                                !isSupported
-                                  ? 'bg-slate-950/60 border-slate-800 text-slate-600 cursor-not-allowed opacity-50'
-                                  : isSelected
-                                  ? 'bg-blue-600 border-blue-400 text-white shadow'
-                                  : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white'
-                              }`}
-                            >
-                              <div
-                                className={`border rounded-[1.5px] transition-colors ${ar.widthClass} ${ar.heightClass} ${
-                                  isSelected ? 'border-white bg-white/20' : 'border-slate-500 bg-slate-800/40'
+                      {supportedVideoAspectRatios.length > 0 ? (
+                        <div className="grid grid-cols-3 gap-1 font-mono text-[10px]">
+                          {VIDEO_ASPECT_RATIOS.filter((ar) => supportedVideoAspectRatios.includes(ar.ratio)).map((ar) => {
+                            const isSelected = videoAspectRatio === ar.ratio
+                            return (
+                              <button
+                                key={ar.ratio}
+                                type="button"
+                                onClick={() => setVideoAspectRatio(ar.ratio)}
+                                className={`py-1.5 px-1 rounded border text-center font-bold flex flex-col items-center justify-center gap-1 transition-all ${
+                                  isSelected
+                                    ? 'bg-blue-600 border-blue-400 text-white shadow'
+                                    : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white'
                                 }`}
-                              />
-                              <span className="leading-none">{ar.ratio}</span>
-                              <span className="text-[8px] font-sans font-normal opacity-75 leading-none">{ar.label}</span>
-                            </button>
-                          )
-                        })}
-                      </div>
+                              >
+                                <div
+                                  className={`border rounded-[1.5px] transition-colors ${ar.widthClass} ${ar.heightClass} ${
+                                    isSelected ? 'border-white bg-white/20' : 'border-slate-500 bg-slate-800/40'
+                                  }`}
+                                />
+                                <span className="leading-none">{ar.ratio}</span>
+                                <span className="text-[8px] font-sans font-normal opacity-75 leading-none">{ar.label}</span>
+                              </button>
+                            )
+                          })}
+                        </div>
+                      ) : (
+                        <div className="p-2 rounded bg-slate-900/60 border border-slate-800 text-[10px] font-mono text-slate-500">
+                          Aspect ratio not configurable for this model
+                        </div>
+                      )}
                     </div>
                   </div>
 
@@ -6503,33 +6583,43 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                       <div className="flex items-center justify-between mb-1.5">
                         <label className="block text-[10px] text-slate-400 font-mono uppercase font-bold">Duration (Seconds)</label>
                         <span className="text-[9px] text-slate-500 font-mono">
-                          {supportedVideoDurations.length === 1 ? `Fixed for ${videoResolution}` : 'Model constrained'}
+                          {supportedVideoDurations.length === 1
+                            ? `Fixed for ${videoResolution || 'model'}`
+                            : supportedVideoDurations.length > 0
+                            ? 'Model constrained'
+                            : 'Not configurable'}
                         </span>
                       </div>
-                      <div className="grid grid-cols-3 gap-1 font-mono text-[10px]">
-                        {(supportedVideoDurations.length > 0 ? supportedVideoDurations : [videoDuration]).map((dur) => {
-                          const isSelected = videoDuration === dur
-                          return (
-                            <button
-                              key={dur}
-                              type="button"
-                              onClick={() => setVideoDuration(dur)}
-                              className={`py-1.5 px-1 rounded border text-center font-bold flex flex-col items-center justify-center transition-all ${
-                                isSelected
-                                  ? 'bg-blue-600 border-blue-400 text-white shadow'
-                                  : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white'
-                              }`}
-                            >
-                              <span className="leading-tight">{dur}s</span>
-                              <span className={`text-[8px] font-normal leading-tight mt-0.5 ${isSelected ? 'text-blue-100 font-semibold' : 'text-slate-500'}`}>
-                                {videoPricingInfo.ratePerSec !== undefined
-                                  ? `$${(videoPricingInfo.ratePerSec * dur).toFixed(2)}/clip`
-                                  : `${dur} Seconds`}
-                              </span>
-                            </button>
-                          )
-                        })}
-                      </div>
+                      {supportedVideoDurations.length > 0 ? (
+                        <div className="grid grid-cols-3 gap-1 font-mono text-[10px]">
+                          {supportedVideoDurations.map((dur) => {
+                            const isSelected = videoDuration === dur
+                            return (
+                              <button
+                                key={dur}
+                                type="button"
+                                onClick={() => setVideoDuration(dur)}
+                                className={`py-1.5 px-1 rounded border text-center font-bold flex flex-col items-center justify-center transition-all ${
+                                  isSelected
+                                    ? 'bg-blue-600 border-blue-400 text-white shadow'
+                                    : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white'
+                                }`}
+                              >
+                                <span className="leading-tight">{dur}s</span>
+                                <span className={`text-[8px] font-normal leading-tight mt-0.5 ${isSelected ? 'text-blue-100 font-semibold' : 'text-slate-500'}`}>
+                                  {videoPricingInfo.ratePerSec !== undefined
+                                    ? `$${(videoPricingInfo.ratePerSec * dur).toFixed(2)}/clip`
+                                    : `${dur} Seconds`}
+                                </span>
+                              </button>
+                            )
+                          })}
+                        </div>
+                      ) : (
+                        <div className="p-2 rounded bg-slate-900/60 border border-slate-800 text-[10px] font-mono text-slate-500">
+                          Duration not configurable for this model
+                        </div>
+                      )}
                     </div>
 
                     <div>
@@ -6567,6 +6657,23 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                     </div>
                   </div>
 
+                  {/* Video Attachment Error Banner */}
+                  {videoAttachmentError && (
+                    <div className="p-2 rounded bg-red-950/40 border border-red-500/40 text-[11px] font-mono text-red-300 flex items-center justify-between gap-1.5">
+                      <div className="flex items-center gap-1.5">
+                        <AlertTriangle size={12} className="shrink-0 text-red-400" />
+                        <span>{videoAttachmentError}</span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setVideoAttachmentError(null)}
+                        className="text-red-400 hover:text-white text-xs font-bold px-1"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  )}
+
                   {/* Initial Image Reference Guidance */}
                   {selectedVideoGenOptions?.initial_image && !selectedVideoGenOptions.initial_image.supported ? (
                     <div className="p-2 rounded bg-amber-950/20 border border-amber-500/30 text-[10px] font-mono text-amber-300 flex items-center gap-1.5">
@@ -6593,8 +6700,8 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                     </span>
                     <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-slate-800 text-blue-300 border border-slate-700 font-semibold shrink-0">
                       {videoPricingInfo.totalPrice !== undefined
-                        ? `$${videoPricingInfo.totalPrice.toFixed(2)} Total · ${videoResolution.toUpperCase()} · ${videoDuration}s · ${videoClipCount} ${videoClipCount === 1 ? 'clip' : 'clips'}`
-                        : `Pricing Unavailable · ${videoResolution.toUpperCase()} · ${videoDuration}s`}
+                        ? `$${videoPricingInfo.totalPrice.toFixed(2)} Total${videoResolution ? ` · ${videoResolution.toUpperCase()}` : ''}${videoDuration > 0 ? ` · ${videoDuration}s` : ''} · ${videoClipCount} ${videoClipCount === 1 ? 'clip' : 'clips'}`
+                        : `Pricing Unavailable${videoResolution ? ` · ${videoResolution.toUpperCase()}` : ''}${videoDuration > 0 ? ` · ${videoDuration}s` : ''}`}
                     </span>
                   </div>
                 </div>

@@ -26,6 +26,14 @@ export interface MediaOptionSetting {
   notes?: string
 }
 
+export interface MediaFeatureOption {
+  status?: string
+  supported?: boolean
+  max_inputs?: number
+  conditions?: Record<string, any>
+  notes?: string
+}
+
 export interface MediaCatalogGenerationOptions {
   aspect_ratios?: string[]
   resolutions?: string[]
@@ -46,26 +54,33 @@ export interface ModelBillingCondition {
   sku?: string
   includes_audio?: boolean
   service_tier?: string
+  tier?: string
   [key: string]: any
 }
 
 export interface ModelBillingLine {
   billable?: string
   unit?: string
+  unit_per?: number | string
   price_usd?: number | string
+  rate_multiplier?: number
+  multiplier?: number
   conditions?: ModelBillingCondition
   variant?: string
   sku?: string
   service_tier?: string
 }
 
+export interface ModelBilling {
+  status?: string
+  currency?: string
+  lines?: ModelBillingLine[]
+}
+
 export interface ModelPricing {
   currency?: string
   is_free?: boolean
-  billing?: {
-    status?: string
-    lines?: ModelBillingLine[]
-  }
+  billing?: ModelBilling
   video_output?: number
   per_video?: number
   [key: string]: any
@@ -95,7 +110,7 @@ export interface VideoPricingResult {
   priceStatus: 'verified' | 'free' | 'unknown'
 }
 
-export const SUPPORTED_VIDEO_RESOLUTIONS = ['720p', '1080p', '4k'] as const
+export const SUPPORTED_VIDEO_RESOLUTIONS = ['360p', '720p', '1080p', '4k'] as const
 export type SupportedVideoResolution = (typeof SUPPORTED_VIDEO_RESOLUTIONS)[number]
 
 export const SUPPORTED_VIDEO_IMAGE_EXTENSIONS = [
@@ -103,16 +118,20 @@ export const SUPPORTED_VIDEO_IMAGE_EXTENSIONS = [
   '.jpg',
   '.jpeg',
   '.webp',
-  '.heic',
-  '.heif',
-  '.svg',
+] as const
+
+export const SUPPORTED_VIDEO_IMAGE_MIME_TYPES = [
+  'image/png',
+  'image/jpeg',
+  'image/webp',
 ] as const
 
 /**
  * Normalizes user- or catalog-specified resolution keys into standard canonical strings.
  */
-export function normalizeVideoResKey(cond: string): '720p' | '1080p' | '4k' | string {
+export function normalizeVideoResKey(cond: string): '360p' | '720p' | '1080p' | '4k' | string {
   const c = (cond || '').toLowerCase().trim()
+  if (c === '360p' || c === '360' || c === 'sd') return '360p'
   if (c === '720p' || c === '720' || c === 'hd') return '720p'
   if (c === '1080p' || c === '1080' || c === 'fhd' || c === 'standard') return '1080p'
   if (c === '4k' || c === '2160p' || c === 'uhd') return '4k'
@@ -138,26 +157,73 @@ export function resolveVideoPricing(
   options?: ResolveVideoPricingOptions
 ): VideoPricingResult {
   const emptyRates: Record<string, string> = {
+    '360p': 'Unavailable',
     '720p': 'Unavailable',
     '1080p': 'Unavailable',
     '4k': 'Unavailable',
   }
   const emptyUnitRates: Record<string, number | undefined> = {
+    '360p': undefined,
     '720p': undefined,
     '1080p': undefined,
     '4k': undefined,
   }
   const emptyTotals: Record<string, number | undefined> = {
+    '360p': undefined,
     '720p': undefined,
     '1080p': undefined,
     '4k': undefined,
   }
 
-  const count = Math.max(1, Math.min(8, Math.floor(clipCount || 1)))
-  const reqTier = (options?.serviceTier || 'standard').toLowerCase()
+  // Reject NaN / Infinity / non-integer / out-of-bounds clip count
+  if (
+    typeof clipCount !== 'number' ||
+    !Number.isFinite(clipCount) ||
+    isNaN(clipCount) ||
+    !Number.isInteger(clipCount) ||
+    clipCount < 1 ||
+    clipCount > 8
+  ) {
+    return {
+      ratePerSec: undefined,
+      rateForClip: undefined,
+      totalPrice: undefined,
+      fixedPrice: undefined,
+      formattedSummary: 'Pricing unavailable · Invalid clip count',
+      ratesByResolution: emptyRates,
+      unitRatesByResolution: emptyUnitRates,
+      totalsByResolution: emptyTotals,
+      isVerified: false,
+      priceStatus: 'unknown',
+    }
+  }
+
+  // Reject NaN / Infinity / negative duration
+  if (
+    typeof durationSeconds !== 'number' ||
+    !Number.isFinite(durationSeconds) ||
+    isNaN(durationSeconds) ||
+    durationSeconds < 0
+  ) {
+    return {
+      ratePerSec: undefined,
+      rateForClip: undefined,
+      totalPrice: undefined,
+      fixedPrice: undefined,
+      formattedSummary: 'Pricing unavailable · Invalid duration',
+      ratesByResolution: emptyRates,
+      unitRatesByResolution: emptyUnitRates,
+      totalsByResolution: emptyTotals,
+      isVerified: false,
+      priceStatus: 'unknown',
+    }
+  }
+
+  const count = clipCount
+  const reqTier = (options?.serviceTier || 'standard').toLowerCase().trim()
   const reqAudio = options?.includesAudio !== undefined ? options.includesAudio : true
 
-  if (!option || !option.pricing || durationSeconds <= 0) {
+  if (!option || !option.pricing) {
     return {
       ratePerSec: undefined,
       rateForClip: undefined,
@@ -174,14 +240,36 @@ export function resolveVideoPricing(
 
   const p = option.pricing as ModelPricing
 
-  // Strict currency validation: only USD is supported for known billing
-  if (typeof p.currency === 'string' && p.currency.trim() !== '' && p.currency.toUpperCase() !== 'USD') {
+  // Strict currency validation: read billing.currency first, then pricing.currency. Only USD supported.
+  const billingCurrency = (typeof p.billing?.currency === 'string' ? p.billing.currency : '').trim().toUpperCase()
+  const pricingCurrency = (typeof p.currency === 'string' ? p.currency : '').trim().toUpperCase()
+  const currency = billingCurrency || pricingCurrency || 'USD'
+  if (currency !== 'USD') {
     return {
       ratePerSec: undefined,
       rateForClip: undefined,
       totalPrice: undefined,
       fixedPrice: undefined,
-      formattedSummary: `Pricing unavailable · Unsupported currency ${p.currency}`,
+      formattedSummary: `Pricing unavailable · Unsupported currency ${billingCurrency || pricingCurrency}`,
+      ratesByResolution: emptyRates,
+      unitRatesByResolution: emptyUnitRates,
+      totalsByResolution: emptyTotals,
+      isVerified: false,
+      priceStatus: 'unknown',
+    }
+  }
+
+  // Strict billing status check: don't invent pricing from is_free absent authority
+  const billingStatus = (p.billing?.status || '').toLowerCase().trim()
+  const hasVerifiedStatus = billingStatus === 'verified' || billingStatus === 'partially_verified'
+
+  if (!hasVerifiedStatus) {
+    return {
+      ratePerSec: undefined,
+      rateForClip: undefined,
+      totalPrice: undefined,
+      fixedPrice: undefined,
+      formattedSummary: 'Pricing unavailable · Model pricing unverified or unsupported',
       ratesByResolution: emptyRates,
       unitRatesByResolution: emptyUnitRates,
       totalsByResolution: emptyTotals,
@@ -192,16 +280,19 @@ export function resolveVideoPricing(
 
   if (p.is_free === true) {
     const freeRates: Record<string, string> = {
+      '360p': '$0.00',
       '720p': '$0.00',
       '1080p': '$0.00',
       '4k': '$0.00',
     }
     const freeTotals: Record<string, number | undefined> = {
+      '360p': 0,
       '720p': 0,
       '1080p': 0,
       '4k': 0,
     }
     const freeUnits: Record<string, number | undefined> = {
+      '360p': 0,
       '720p': 0,
       '1080p': 0,
       '4k': 0,
@@ -217,22 +308,6 @@ export function resolveVideoPricing(
       totalsByResolution: freeTotals,
       isVerified: true,
       priceStatus: 'free',
-    }
-  }
-
-  const billingStatus = (p.billing?.status || '').toLowerCase().trim()
-  if (billingStatus !== 'verified' && billingStatus !== 'partially_verified') {
-    return {
-      ratePerSec: undefined,
-      rateForClip: undefined,
-      totalPrice: undefined,
-      fixedPrice: undefined,
-      formattedSummary: 'Pricing unavailable · Model pricing unverified or unsupported',
-      ratesByResolution: emptyRates,
-      unitRatesByResolution: emptyUnitRates,
-      totalsByResolution: emptyTotals,
-      isVerified: false,
-      priceStatus: 'unknown',
     }
   }
 
@@ -254,23 +329,55 @@ export function resolveVideoPricing(
       if (billable !== 'video_output' && billable !== 'video') continue
 
       const pUSD = typeof line.price_usd === 'number' ? line.price_usd : parseFloat(String(line.price_usd))
-      if (isNaN(pUSD) || pUSD < 0) continue
+      if (isNaN(pUSD) || pUSD < 0 || !Number.isFinite(pUSD)) continue
 
-      const conds = (line.conditions || {}) as ModelBillingCondition
+      // Support unit_per and rate multipliers from actual snapshot pricing
+      let unitPer = 1
+      if (line.unit_per !== undefined && line.unit_per !== null) {
+        const up = typeof line.unit_per === 'number' ? line.unit_per : parseFloat(String(line.unit_per))
+        if (isNaN(up) || up <= 0 || !Number.isFinite(up)) continue
+        unitPer = up
+      }
+
+      let effectivePrice = pUSD / unitPer
+      const multiplier = line.rate_multiplier || line.multiplier
+      if (typeof multiplier === 'number' && Number.isFinite(multiplier) && multiplier > 0) {
+        effectivePrice *= multiplier
+      }
+
+      const conds = (line.conditions || {}) as Record<string, any>
+      const condKeys = Object.keys(conds)
+
+      // Reject lines with unresolved unknown conditions (provider_sku, region, device, etc.)
+      const knownCondKeys = new Set(['resolution', 'variant', 'sku', 'includes_audio', 'service_tier', 'tier'])
+      const hasUnknownCond = condKeys.some((k) => !knownCondKeys.has(k.toLowerCase()))
+      if (hasUnknownCond) {
+        continue
+      }
+
+      // Reject lines with unresolved SKU conditions
+      const lineSKU = (line.sku || conds.sku || '').trim()
+      if (lineSKU !== '') {
+        continue
+      }
+
       const resCond = normalizeVideoResKey(conds.resolution || '')
       const lineVariant = normalizeVideoResKey(line.variant || conds.variant || '')
-      const lineSKU = line.sku || conds.sku || ''
 
       // Resolution condition matching
       if (resCond !== '') {
         if (resCond !== normalizedTarget) continue
-      } else if (lineVariant === '720p' || lineVariant === '1080p' || lineVariant === '4k') {
-        if (lineVariant !== normalizedTarget) continue
-      } else if ((lineVariant !== '' || lineSKU !== '') && normalizedTarget === '') {
-        continue
-      } else if (lineVariant !== '' || lineSKU !== '') {
-        // Line has an unresolved variant or SKU condition not matching resolution
-        continue
+        // If line also has a variant condition, it must either match normalizedTarget or continue
+        if (lineVariant !== '' && lineVariant !== normalizedTarget) continue
+      } else if (lineVariant !== '') {
+        if (lineVariant === '360p' || lineVariant === '720p' || lineVariant === '1080p' || lineVariant === '4k') {
+          if (lineVariant !== normalizedTarget) continue
+        } else {
+          // Unresolved variant condition not matching resolution
+          continue
+        }
+      } else if (normalizedTarget === '') {
+        // Line has no resolution constraint and target is unspecified
       }
 
       // Audio condition matching
@@ -279,10 +386,11 @@ export function resolveVideoPricing(
       }
 
       // Service tier condition matching
-      const lineTier = (conds.service_tier || line.service_tier || '').toLowerCase().trim()
-      if (lineTier !== '' && lineTier !== reqTier) continue
+      const lineTier = (conds.service_tier || line.service_tier || conds.tier || '').toLowerCase().trim()
+      if (lineTier !== '' && lineTier !== 'paid' && lineTier !== reqTier) continue
 
-      // Compute rate for clip based on unit
+      // Compute rate for clip based on unit.
+      // Fixed-per-video prices can be known with omitted duration (per second cannot).
       const unit = (line.unit || '').toLowerCase().trim()
       let perSec: number | undefined
       let fixed: number | undefined
@@ -291,18 +399,25 @@ export function resolveVideoPricing(
       switch (unit) {
         case 'second':
         case 'sec':
-          perSec = pUSD
-          clipPrice = pUSD * durationSeconds
+          if (durationSeconds <= 0 || !Number.isFinite(durationSeconds)) {
+            continue
+          }
+          perSec = effectivePrice
+          clipPrice = effectivePrice * durationSeconds
           break
         case 'minute':
         case 'min':
-          perSec = pUSD / 60
-          clipPrice = (pUSD / 60) * durationSeconds
+          if (durationSeconds <= 0 || !Number.isFinite(durationSeconds)) {
+            continue
+          }
+          perSec = effectivePrice / 60
+          clipPrice = (effectivePrice / 60) * durationSeconds
           break
         case 'video':
         case 'generation':
-          fixed = pUSD
-          clipPrice = pUSD
+        case 'clip':
+          fixed = effectivePrice
+          clipPrice = effectivePrice
           break
         default:
           continue
@@ -322,11 +437,59 @@ export function resolveVideoPricing(
     return 'ambiguous'
   }
 
+  // Model-level constraint validation
+  const modelAllowedResolutions = resolveAllowedVideoResolutions(option.generationOptions)
+  const normalizedActiveRes = normalizeVideoResKey(resolution)
+  if (modelAllowedResolutions.length > 0 && !modelAllowedResolutions.map(normalizeVideoResKey).includes(normalizedActiveRes)) {
+    return {
+      ratePerSec: undefined,
+      rateForClip: undefined,
+      totalPrice: undefined,
+      fixedPrice: undefined,
+      formattedSummary: `Pricing unavailable · Resolution ${resolution} unsupported for model`,
+      ratesByResolution: emptyRates,
+      unitRatesByResolution: emptyUnitRates,
+      totalsByResolution: emptyTotals,
+      isVerified: false,
+      priceStatus: 'unknown',
+    }
+  }
+
+  const modelAllowedDurations = resolveAllowedVideoDurations(option.generationOptions, normalizedActiveRes)
+  if (modelAllowedDurations.length > 0 && durationSeconds > 0 && !modelAllowedDurations.includes(durationSeconds)) {
+    return {
+      ratePerSec: undefined,
+      rateForClip: undefined,
+      totalPrice: undefined,
+      fixedPrice: undefined,
+      formattedSummary: `Pricing unavailable · Duration ${durationSeconds}s unsupported for resolution ${resolution}`,
+      ratesByResolution: emptyRates,
+      unitRatesByResolution: emptyUnitRates,
+      totalsByResolution: emptyTotals,
+      isVerified: false,
+      priceStatus: 'unknown',
+    }
+  }
+
   const ratesByRes: Record<string, string> = { ...emptyRates }
   const unitRatesByRes: Record<string, number | undefined> = { ...emptyUnitRates }
   const totalsByRes: Record<string, number | undefined> = { ...emptyTotals }
 
-  for (const r of ['720p', '1080p', '4k'] as const) {
+  const resolutionsToCheck = new Set<string>(['360p', '720p', '1080p', '4k'])
+  if (modelAllowedResolutions.length > 0) {
+    for (const r of modelAllowedResolutions) {
+      resolutionsToCheck.add(normalizeVideoResKey(r))
+    }
+  }
+
+  for (const r of resolutionsToCheck) {
+    if (modelAllowedResolutions.length > 0 && !modelAllowedResolutions.map(normalizeVideoResKey).includes(r)) {
+      ratesByRes[r] = 'Unavailable'
+      unitRatesByRes[r] = undefined
+      totalsByRes[r] = undefined
+      continue
+    }
+
     const resCandidate = matchCandidateForRes(r)
     if (resCandidate && resCandidate !== 'ambiguous') {
       const clipPrice = resCandidate.rateForClip
@@ -346,9 +509,7 @@ export function resolveVideoPricing(
     }
   }
 
-  const activeRes = normalizeVideoResKey(resolution)
-  const activeCandidate = matchCandidateForRes(activeRes)
-
+  const activeCandidate = matchCandidateForRes(normalizedActiveRes)
   if (!activeCandidate || activeCandidate === 'ambiguous') {
     return {
       ratePerSec: undefined,
@@ -371,9 +532,15 @@ export function resolveVideoPricing(
 
   let formattedSummary: string
   if (fixedPrice !== undefined) {
-    formattedSummary = count > 1
-      ? `$${totalPrice.toFixed(2)} Total ($${fixedPrice.toFixed(2)}/clip × ${count} clips) · Verified catalog`
-      : `$${totalPrice.toFixed(2)} Total (${durationSeconds}s clip) · Verified catalog`
+    if (durationSeconds > 0) {
+      formattedSummary = count > 1
+        ? `$${totalPrice.toFixed(2)} Total ($${fixedPrice.toFixed(2)}/clip × ${count} clips) · Verified catalog`
+        : `$${totalPrice.toFixed(2)} Total (${durationSeconds}s clip) · Verified catalog`
+    } else {
+      formattedSummary = count > 1
+        ? `$${totalPrice.toFixed(2)} Total ($${fixedPrice.toFixed(2)}/clip × ${count} clips) · Verified catalog`
+        : `$${totalPrice.toFixed(2)} Total · Verified catalog`
+    }
   } else if (ratePerSec !== undefined) {
     formattedSummary = count > 1
       ? `$${totalPrice.toFixed(2)} Total ($${ratePerSec.toFixed(2)}/sec × ${durationSeconds}s × ${count} clips) · Verified catalog`
@@ -398,19 +565,24 @@ export function resolveVideoPricing(
 
 /**
  * Returns allowed video durations for a model and active resolution, respecting resolution-dependent constraints.
- * E.g., Veo 1080p may require 8s duration, while 720p supports 4s, 6s, 8s.
+ * Returns empty array [] on unavailable metadata; never invents fallback durations.
  */
 export function resolveAllowedVideoDurations(
   genOptions?: MediaCatalogGenerationOptions,
   resolution?: string
 ): number[] {
-  if (!genOptions) return [4, 6, 8]
-  const resKey = (resolution || '').toLowerCase().trim()
+  if (!genOptions) return []
+  const resKey = normalizeVideoResKey(resolution || '')
   if (resKey && genOptions.resolution_durations && genOptions.resolution_durations[resKey]) {
     const list = genOptions.resolution_durations[resKey]
-    if (list && list.length > 0) return list
+    if (Array.isArray(list) && list.length > 0) return list
   }
-  if (genOptions.durations && genOptions.durations.length > 0) {
+  const rawKey = (resolution || '').toLowerCase().trim()
+  if (rawKey && genOptions.resolution_durations && genOptions.resolution_durations[rawKey]) {
+    const list = genOptions.resolution_durations[rawKey]
+    if (Array.isArray(list) && list.length > 0) return list
+  }
+  if (Array.isArray(genOptions.durations) && genOptions.durations.length > 0) {
     return genOptions.durations
   }
   return []
@@ -418,37 +590,42 @@ export function resolveAllowedVideoDurations(
 
 /**
  * Returns allowed video resolutions supported by the model.
+ * Returns empty array [] on unavailable metadata; never invents fallback resolutions.
  */
 export function resolveAllowedVideoResolutions(
   genOptions?: MediaCatalogGenerationOptions
 ): string[] {
-  if (genOptions?.resolutions && genOptions.resolutions.length > 0) {
+  if (Array.isArray(genOptions?.resolutions) && genOptions.resolutions.length > 0) {
     return genOptions.resolutions
   }
-  return ['720p', '1080p', '4k']
+  return []
 }
 
 /**
  * Returns allowed video aspect ratios supported by the model.
+ * Returns empty array [] on unavailable metadata; never invents fallback ratios.
  */
 export function resolveAllowedVideoAspectRatios(
   genOptions?: MediaCatalogGenerationOptions
 ): string[] {
-  if (genOptions?.aspect_ratios && genOptions.aspect_ratios.length > 0) {
+  if (Array.isArray(genOptions?.aspect_ratios) && genOptions.aspect_ratios.length > 0) {
     return genOptions.aspect_ratios
   }
-  return ['16:9', '9:16']
+  return []
 }
 
 /**
  * Validates that an attachment for a video task is strictly a supported image reference.
- * Non-image files (docs, audio, video) are rejected.
+ * Fails closed unless genOptions.initial_image.supported is true.
+ * Allows only backend locally decoded PNG, JPEG, and WebP images.
+ * Rejects non-images, SVG, HEIC/HEIF, and mismatched/fake extensions or MIME types.
  */
 export function validateVideoAttachment(
   file: { name?: string; type?: string; kind?: string },
   genOptions?: MediaCatalogGenerationOptions
 ): { valid: boolean; error?: string } {
-  if (genOptions?.initial_image && !genOptions.initial_image.supported) {
+  // Fail closed: model must explicitly advertise initial_image support
+  if (!genOptions?.initial_image || genOptions.initial_image.supported !== true) {
     return {
       valid: false,
       error: 'Selected video model does not support initial image reference inputs',
@@ -462,17 +639,60 @@ export function validateVideoAttachment(
   if (kind !== '' && kind !== 'image') {
     return {
       valid: false,
-      error: `Unsupported attachment kind "${kind}" for video; only images (.png, .jpg, .webp, .heic, .svg) are supported as reference inputs.`,
+      error: `Unsupported attachment kind "${kind}" for video; only locally decoded images (.png, .jpg, .jpeg, .webp) are supported as reference inputs.`,
     }
   }
 
-  const isImageMime = mime.startsWith('image/')
-  const hasImageExt = SUPPORTED_VIDEO_IMAGE_EXTENSIONS.some((ext) => name.endsWith(ext))
-
-  if (!isImageMime && !hasImageExt) {
+  // Reject SVG, HEIC, HEIF explicitly along with any other non-raster formats
+  const hasUnsupportedExt = name.endsWith('.heic') || name.endsWith('.heif') || name.endsWith('.svg')
+  const hasUnsupportedMime = mime.includes('heic') || mime.includes('heif') || mime.includes('svg')
+  if (hasUnsupportedExt || hasUnsupportedMime) {
     return {
       valid: false,
-      error: `Unsupported file type for video reference. Only images (.png, .jpg, .webp, .heic, .svg) are allowed.`,
+      error: 'Unsupported image format. Only locally decoded images (.png, .jpg, .jpeg, .webp) are supported as video reference inputs.',
+    }
+  }
+
+  const hasAllowedExt = SUPPORTED_VIDEO_IMAGE_EXTENSIONS.some((ext) => name.endsWith(ext))
+  const hasAllowedMime = SUPPORTED_VIDEO_IMAGE_MIME_TYPES.some((m) => mime === m)
+
+  // Guard against fake non-image MIME named with image extension (e.g. type: "text/plain", name: "foo.png")
+  if (mime !== '' && !hasAllowedMime) {
+    return {
+      valid: false,
+      error: `Unsupported MIME type "${mime}" for video reference. Only PNG, JPEG, and WebP images are allowed.`,
+    }
+  }
+
+  // Guard against non-image file with image MIME or missing/wrong extension when filename provided
+  if (name !== '' && !hasAllowedExt) {
+    return {
+      valid: false,
+      error: 'Unsupported file extension for video reference. Only .png, .jpg, .jpeg, and .webp are allowed.',
+    }
+  }
+
+  if (!hasAllowedExt && !hasAllowedMime) {
+    return {
+      valid: false,
+      error: 'Invalid image attachment: missing valid PNG, JPEG, or WebP extension or MIME type.',
+    }
+  }
+
+  // Enforce model-level supported_mime_types if specified
+  if (Array.isArray(genOptions.initial_image.supported_mime_types) && genOptions.initial_image.supported_mime_types.length > 0) {
+    const modelAllowedMimes = genOptions.initial_image.supported_mime_types.map((m) => m.toLowerCase().trim())
+    let effectiveMime = mime
+    if (!effectiveMime) {
+      if (name.endsWith('.png')) effectiveMime = 'image/png'
+      else if (name.endsWith('.jpg') || name.endsWith('.jpeg')) effectiveMime = 'image/jpeg'
+      else if (name.endsWith('.webp')) effectiveMime = 'image/webp'
+    }
+    if (effectiveMime && !modelAllowedMimes.includes(effectiveMime)) {
+      return {
+        valid: false,
+        error: `MIME type "${effectiveMime}" is not supported by the selected video model (allowed: ${modelAllowedMimes.join(', ')})`,
+      }
     }
   }
 
@@ -480,13 +700,25 @@ export function validateVideoAttachment(
 }
 
 /**
- * Resolves the canonical model identifier from the selected option.
+ * Resolves the provider-qualified model identifier from the selected option.
+ * Uses option.provider and model/id, avoiding doubled prefixes (e.g. openrouter/google/veo-3.1).
  */
 export function resolveQualifiedVideoModel(
   option?: TaskModalModelOption,
   fallbackModel?: string
 ): string | undefined {
-  if (option?.id) return option.id
-  if (option?.model) return option.model
-  return fallbackModel || undefined
+  const provider = (option?.provider || '').trim().toLowerCase()
+  const raw = (option?.model || option?.id || fallbackModel || '').trim()
+  if (!raw) return undefined
+
+  if (!provider) {
+    return raw
+  }
+
+  const rawLower = raw.toLowerCase()
+  if (rawLower.startsWith(`${provider}/`) || rawLower.startsWith(`${provider}:`)) {
+    return raw
+  }
+
+  return `${provider}/${raw}`
 }
