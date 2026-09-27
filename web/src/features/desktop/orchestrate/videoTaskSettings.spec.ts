@@ -692,3 +692,30 @@ test('fixed clip estimates preserve units even with duration and unknown prices 
   assert.equal(unknown.totalPrice, undefined)
   assert.equal(unknown.isVerified, false)
 })
+
+// Requirement: known token-metered video rates remain visible without fabricated
+// clip totals. Authority: resolveVideoPricing; pure unit layer exercises billing
+// selection, missing resolution, unknown conditions and conflicting rates.
+test('token video billing exposes catalog rate without inventing clip usage', () => {
+  const line = { kind: 'billing_rate', billable: 'video_output', unit: 'million_tokens', price_usd: 12.5, variant: '720p', conditions: { tier: 'paid', service_tier: 'standard' } }
+  const option: TaskModalModelOption = { id: 'token-video-fixture', label: 'Token video', ready: true, pricing: { currency: 'USD', billing: { status: 'verified', lines: [line] } } }
+  for (const duration of [0, 8]) {
+    const result = resolveVideoPricing(option, '720p', duration, 2)
+    assert.match(result.formattedSummary, /\$12\.50\/1M tokens/)
+    assert.match(result.formattedSummary, /Clip total unknown/)
+    assert.equal(result.ratesByResolution['720p'], '$12.50/1M output tokens')
+    assert.equal(result.totalPrice, undefined)
+    assert.equal(result.ratePerSec, undefined)
+    assert.equal(result.totalsByResolution['720p'], undefined)
+  }
+  assert.match(resolveVideoPricing(option, '1080p', 0).formattedSummary, /Pricing unavailable/)
+  for (const lines of [
+    [line, { ...line, price_usd: 15 }],
+    [{ ...line, conditions: { ...line.conditions, region: 'unspecified' } }],
+    [{ ...line, kind: 'equivalent_cost', unit: 'second' }],
+  ]) {
+    const result = resolveVideoPricing({ ...option, pricing: { billing: { status: 'verified', lines } } }, '720p', 8)
+    assert.equal(result.totalPrice, undefined)
+    assert.match(result.formattedSummary, /Pricing unavailable/)
+  }
+})

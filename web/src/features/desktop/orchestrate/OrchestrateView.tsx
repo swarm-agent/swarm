@@ -6509,7 +6509,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                               >
                                 <span className="leading-tight">{res}</span>
                                 <span className={`text-[9px] font-semibold mt-0.5 leading-tight ${isSelected ? 'text-white' : 'text-slate-200'}`}>
-                                  {totalForRes !== undefined ? `$${totalForRes.toFixed(2)}` : 'Unavailable'}
+                                  {totalForRes !== undefined ? `$${totalForRes.toFixed(2)}` : 'Total unknown'}
                                 </span>
                                 <span className={`text-[8px] font-normal leading-tight ${isSelected ? 'text-blue-100 opacity-90' : 'text-slate-500'}`}>
                                   {estimate.ratesByResolution?.[normalizeVideoResKey(res)] || 'No pricing'}

@@ -315,7 +315,8 @@ export function resolveVideoPricing(
   interface MatchedCandidate {
     perSecRate?: number
     fixedPrice?: number
-    rateForClip: number
+    rateForClip?: number
+    perMillionTokens?: number
   }
 
   const matchCandidateForRes = (targetRes: string): MatchedCandidate | null | 'ambiguous' => {
@@ -400,6 +401,11 @@ export function resolveVideoPricing(
       let clipPrice = 0
 
       switch (unit) {
+        case 'million_tokens':
+          // A known output-token rate is not a known clip total. Never assume
+          // output token counts or treat a rounded equivalent as the billing rate.
+          matches.push({ perMillionTokens: effectivePrice })
+          continue
         case 'second':
         case 'sec':
           if (durationSeconds <= 0 || !Number.isFinite(durationSeconds)) {
@@ -433,8 +439,10 @@ export function resolveVideoPricing(
     if (matches.length === 1) return matches[0]
 
     // Check for ambiguity across multiple matching lines
-    const firstPrice = matches[0].rateForClip
-    const allSame = matches.every((m) => Math.abs(m.rateForClip - firstPrice) < 0.0001)
+    const first = matches[0]
+    const allSame = matches.every((m) =>
+      m.perMillionTokens === first.perMillionTokens && m.rateForClip === first.rateForClip
+    )
     if (allSame) return matches[0]
 
     return 'ambiguous'
@@ -495,7 +503,12 @@ export function resolveVideoPricing(
 
     const resCandidate = matchCandidateForRes(r)
     if (resCandidate && resCandidate !== 'ambiguous') {
+      if (resCandidate.perMillionTokens !== undefined) {
+        ratesByRes[r] = `$${resCandidate.perMillionTokens.toFixed(2)}/1M output tokens`
+        continue
+      }
       const clipPrice = resCandidate.rateForClip
+      if (clipPrice === undefined) continue
       const totalForR = clipPrice * count
       totalsByRes[r] = totalForR
       if (resCandidate.fixedPrice !== undefined) {
@@ -528,7 +541,18 @@ export function resolveVideoPricing(
     }
   }
 
-  const rateForClip = activeCandidate.rateForClip
+  if (activeCandidate.perMillionTokens !== undefined) {
+    return {
+      formattedSummary: `Video output: $${activeCandidate.perMillionTokens.toFixed(2)}/1M tokens · Clip total unknown until output usage is known; input charges additional`,
+      ratesByResolution: ratesByRes,
+      unitRatesByResolution: unitRatesByRes,
+      totalsByResolution: totalsByRes,
+      isVerified: false,
+      priceStatus: 'unknown',
+    }
+  }
+
+  const rateForClip = activeCandidate.rateForClip!
   const totalPrice = rateForClip * count
   const ratePerSec = activeCandidate.perSecRate
   const fixedPrice = activeCandidate.fixedPrice
