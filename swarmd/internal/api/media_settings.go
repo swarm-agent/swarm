@@ -24,15 +24,26 @@ const (
 	DefaultAudioGenerationModel = "lyria-3.5"
 )
 
+type mediaCatalogGenerationOptions struct {
+	AspectRatios []string `json:"aspect_ratios,omitempty"`
+	Resolutions  []string `json:"resolutions,omitempty"`
+	Durations    []int    `json:"durations,omitempty"`
+	DefaultRatio string   `json:"default_ratio,omitempty"`
+	DefaultRes   string   `json:"default_resolution,omitempty"`
+	DefaultDur   int      `json:"default_duration,omitempty"`
+	MaxOutputs   int      `json:"max_outputs,omitempty"`
+}
+
 type mediaCatalogOption struct {
-	ID          string          `json:"id"`
-	Provider    string          `json:"provider"`
-	Model       string          `json:"model"`
-	DisplayName string          `json:"display_name"`
-	Kind        string          `json:"kind"`
-	Ready       bool            `json:"ready"`
-	Reason      string          `json:"reason,omitempty"`
-	Pricing     json.RawMessage `json:"pricing,omitempty"`
+	ID                string                         `json:"id"`
+	Provider          string                         `json:"provider"`
+	Model             string                         `json:"model"`
+	DisplayName       string                         `json:"display_name"`
+	Kind              string                         `json:"kind"`
+	Ready             bool                           `json:"ready"`
+	Reason            string                         `json:"reason,omitempty"`
+	Pricing           json.RawMessage                `json:"pricing,omitempty"`
+	GenerationOptions *mediaCatalogGenerationOptions `json:"generation_options,omitempty"`
 }
 
 type mediaCatalogResponse struct {
@@ -176,6 +187,7 @@ func (s *Server) mediaCatalogResponse(caps imagegen.Capabilities, extraStatuses 
 		}
 		if lookup.Found {
 			option.Pricing = cloneMediaPricing(lookup.Record.Pricing)
+			option.GenerationOptions = extractModelGenerationOptions(lookup.Record)
 		}
 		response.ImageModels = append(response.ImageModels, option)
 	}
@@ -195,6 +207,7 @@ func (s *Server) mediaCatalogResponse(caps imagegen.Capabilities, extraStatuses 
 		}
 		if lookup.Found {
 			option.Pricing = cloneMediaPricing(lookup.Record.Pricing)
+			option.GenerationOptions = extractModelGenerationOptions(lookup.Record)
 		}
 		response.ImageModels = append(response.ImageModels, option)
 	}
@@ -211,6 +224,7 @@ func (s *Server) mediaCatalogResponse(caps imagegen.Capabilities, extraStatuses 
 			ID: record.Model, Provider: "google", Model: record.Model,
 			DisplayName: firstMediaDisplayName(record.DisplayName, record.Model), Kind: mediaKindTranscription,
 			Ready: googleStatus.Ready, Reason: googleStatus.Reason, Pricing: cloneMediaPricing(record.Pricing),
+			GenerationOptions: extractModelGenerationOptions(record),
 		})
 	}
 	sort.Slice(response.TranscriptionModels, func(i, j int) bool {
@@ -222,13 +236,14 @@ func (s *Server) mediaCatalogResponse(caps imagegen.Capabilities, extraStatuses 
 		if isVideoOutputCatalogRecord(record) {
 			displayName := firstMediaDisplayName(record.DisplayName, record.Model)
 			baseOption := mediaCatalogOption{
-				ID:          record.Model,
-				Provider:    "google",
-				Model:       record.Model,
-				DisplayName: displayName,
-				Ready:       googleStatus.Ready,
-				Reason:      googleStatus.Reason,
-				Pricing:     cloneMediaPricing(record.Pricing),
+				ID:                record.Model,
+				Provider:          "google",
+				Model:             record.Model,
+				DisplayName:       displayName,
+				Ready:             googleStatus.Ready,
+				Reason:            googleStatus.Reason,
+				Pricing:           cloneMediaPricing(record.Pricing),
+				GenerationOptions: extractModelGenerationOptions(record),
 			}
 			if isVideoGenerationCatalogRecord(record) {
 				genOption := baseOption
@@ -245,14 +260,15 @@ func (s *Server) mediaCatalogResponse(caps imagegen.Capabilities, extraStatuses 
 		if isAudioGenerationCatalogRecord(record) {
 			displayName := firstMediaDisplayName(record.DisplayName, record.Model)
 			response.AudioModels = append(response.AudioModels, mediaCatalogOption{
-				ID:          record.Model,
-				Provider:    "google",
-				Model:       record.Model,
-				DisplayName: displayName,
-				Kind:        mediaKindAudioGeneration,
-				Ready:       googleStatus.Ready,
-				Reason:      googleStatus.Reason,
-				Pricing:     cloneMediaPricing(record.Pricing),
+				ID:                record.Model,
+				Provider:          "google",
+				Model:             record.Model,
+				DisplayName:       displayName,
+				Kind:              mediaKindAudioGeneration,
+				Ready:             googleStatus.Ready,
+				Reason:            googleStatus.Reason,
+				Pricing:           cloneMediaPricing(record.Pricing),
+				GenerationOptions: extractModelGenerationOptions(record),
 			})
 		}
 	}
@@ -264,13 +280,14 @@ func (s *Server) mediaCatalogResponse(caps imagegen.Capabilities, extraStatuses 
 		if isVideoOutputCatalogRecord(record) {
 			displayName := firstMediaDisplayName(record.DisplayName, record.Model)
 			baseOption := mediaCatalogOption{
-				ID:          record.Model,
-				Provider:    "openrouter",
-				Model:       record.Model,
-				DisplayName: displayName,
-				Ready:       openRouterStatus.Ready,
-				Reason:      openRouterStatus.Reason,
-				Pricing:     cloneMediaPricing(record.Pricing),
+				ID:                record.Model,
+				Provider:          "openrouter",
+				Model:             record.Model,
+				DisplayName:       displayName,
+				Ready:             openRouterStatus.Ready,
+				Reason:            openRouterStatus.Reason,
+				Pricing:           cloneMediaPricing(record.Pricing),
+				GenerationOptions: extractModelGenerationOptions(record),
 			}
 			if isVideoGenerationCatalogRecord(record) {
 				genOption := baseOption
@@ -282,14 +299,15 @@ func (s *Server) mediaCatalogResponse(caps imagegen.Capabilities, extraStatuses 
 		if isAudioGenerationCatalogRecord(record) {
 			displayName := firstMediaDisplayName(record.DisplayName, record.Model)
 			response.AudioModels = append(response.AudioModels, mediaCatalogOption{
-				ID:          record.Model,
-				Provider:    "openrouter",
-				Model:       record.Model,
-				DisplayName: displayName,
-				Kind:        mediaKindAudioGeneration,
-				Ready:       openRouterStatus.Ready,
-				Reason:      openRouterStatus.Reason,
-				Pricing:     cloneMediaPricing(record.Pricing),
+				ID:                record.Model,
+				Provider:          "openrouter",
+				Model:             record.Model,
+				DisplayName:       displayName,
+				Kind:              mediaKindAudioGeneration,
+				Ready:             openRouterStatus.Ready,
+				Reason:            openRouterStatus.Reason,
+				Pricing:           cloneMediaPricing(record.Pricing),
+				GenerationOptions: extractModelGenerationOptions(record),
 			})
 		}
 	}
@@ -492,4 +510,148 @@ func cloneMediaPricing(raw json.RawMessage) json.RawMessage {
 		return nil
 	}
 	return append(json.RawMessage(nil), raw...)
+}
+
+func extractModelGenerationOptions(record pebblestore.ModelCatalogRecord) *mediaCatalogGenerationOptions {
+	if len(record.ProviderSpecific) == 0 {
+		return nil
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(record.ProviderSpecific, &raw); err != nil {
+		return nil
+	}
+	providerKey := strings.ToLower(strings.TrimSpace(record.Provider))
+	provData, ok := raw[providerKey]
+	if !ok {
+		// Try first key if single provider
+		for _, v := range raw {
+			provData = v
+			break
+		}
+	}
+	if len(provData) == 0 {
+		return nil
+	}
+
+	var parsed struct {
+		ImageGeneration struct {
+			Status   string `json:"status"`
+			Settings map[string]struct {
+				Status          string `json:"status"`
+				DefaultValue    any    `json:"default_value"`
+				SupportedValues []any  `json:"supported_values"`
+			} `json:"settings"`
+		} `json:"image_generation"`
+		VideoGeneration struct {
+			Status   string `json:"status"`
+			Settings map[string]struct {
+				Status          string `json:"status"`
+				DefaultValue    any    `json:"default_value"`
+				SupportedValues []any  `json:"supported_values"`
+			} `json:"settings"`
+		} `json:"video_generation"`
+		MusicGeneration struct {
+			Status   string `json:"status"`
+			Settings map[string]struct {
+				Status          string `json:"status"`
+				DefaultValue    any    `json:"default_value"`
+				SupportedValues []any  `json:"supported_values"`
+			} `json:"settings"`
+		} `json:"music_generation"`
+		Settings map[string]struct {
+			Status          string `json:"status"`
+			DefaultValue    any    `json:"default_value"`
+			SupportedValues []any  `json:"supported_values"`
+		} `json:"settings"`
+	}
+	if err := json.Unmarshal(provData, &parsed); err != nil {
+		return nil
+	}
+
+	// Candidate setting maps in order of specificity
+	settingMaps := []map[string]struct {
+		Status          string `json:"status"`
+		DefaultValue    any    `json:"default_value"`
+		SupportedValues []any  `json:"supported_values"`
+	}{
+		parsed.ImageGeneration.Settings,
+		parsed.VideoGeneration.Settings,
+		parsed.MusicGeneration.Settings,
+		parsed.Settings,
+	}
+
+	var aspectRatios []string
+	var resolutions []string
+	var durations []int
+	var defaultRatio string
+	var defaultRes string
+	var defaultDur int
+
+	for _, sm := range settingMaps {
+		if sm == nil {
+			continue
+		}
+		// Aspect ratio
+		if ar, ok := sm["aspect_ratio"]; ok && len(aspectRatios) == 0 {
+			for _, v := range ar.SupportedValues {
+				if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
+					aspectRatios = append(aspectRatios, strings.TrimSpace(s))
+				}
+			}
+			if s, ok := ar.DefaultValue.(string); ok {
+				defaultRatio = strings.TrimSpace(s)
+			}
+		}
+		// Resolution / image_size
+		if is, ok := sm["image_size"]; ok && len(resolutions) == 0 {
+			for _, v := range is.SupportedValues {
+				if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
+					resolutions = append(resolutions, strings.TrimSpace(s))
+				}
+			}
+			if s, ok := is.DefaultValue.(string); ok {
+				defaultRes = strings.TrimSpace(s)
+			}
+		}
+		if res, ok := sm["resolution"]; ok && len(resolutions) == 0 {
+			for _, v := range res.SupportedValues {
+				if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
+					resolutions = append(resolutions, strings.TrimSpace(s))
+				}
+			}
+			if s, ok := res.DefaultValue.(string); ok {
+				defaultRes = strings.TrimSpace(s)
+			}
+		}
+		// Duration
+		if dur, ok := sm["duration_seconds"]; ok && len(durations) == 0 {
+			for _, v := range dur.SupportedValues {
+				switch n := v.(type) {
+				case float64:
+					durations = append(durations, int(n))
+				case int:
+					durations = append(durations, n)
+				}
+			}
+			switch n := dur.DefaultValue.(type) {
+			case float64:
+				defaultDur = int(n)
+			case int:
+				defaultDur = n
+			}
+		}
+	}
+
+	if len(aspectRatios) == 0 && len(resolutions) == 0 && len(durations) == 0 {
+		return nil
+	}
+
+	return &mediaCatalogGenerationOptions{
+		AspectRatios: aspectRatios,
+		Resolutions:  resolutions,
+		Durations:    durations,
+		DefaultRatio: defaultRatio,
+		DefaultRes:   defaultRes,
+		DefaultDur:   defaultDur,
+	}
 }

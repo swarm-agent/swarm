@@ -44,6 +44,12 @@ func TestMediaCatalogResponseFiltersVideoUnderstandingChoices(t *testing.T) {
 	if string(response.ImageModels[1].Pricing) != string(pricing) {
 		t.Fatalf("image pricing = %s, want %s", response.ImageModels[1].Pricing, pricing)
 	}
+	if response.ImageModels[1].GenerationOptions == nil || len(response.ImageModels[1].GenerationOptions.AspectRatios) != 1 || response.ImageModels[1].GenerationOptions.AspectRatios[0] != "1:1" {
+		t.Fatalf("image generation options = %#v, want aspect_ratio [1:1]", response.ImageModels[1].GenerationOptions)
+	}
+	if response.ImageModels[0].GenerationOptions != nil {
+		t.Fatalf("hardcoded codex image model with no provider specific should have nil generation options, got %#v", response.ImageModels[0].GenerationOptions)
+	}
 	if len(response.TranscriptionModels) != 1 || response.TranscriptionModels[0].Model != "gemini-video-text" {
 		t.Fatalf("transcription models = %#v, want only gemini-video-text", response.TranscriptionModels)
 	}
@@ -64,9 +70,11 @@ func TestMediaCatalogResponsePopulatesVideoGenerationAndIterationModels(t *testi
 	catalogStore := pebblestore.NewModelCatalogStore(store)
 	pricing := json.RawMessage(`{"video_output":0.4}`)
 
+	videoProviderSpecific := json.RawMessage(`{"google":{"video_generation":{"settings":{"aspect_ratio":{"status":"verified","default_value":"16:9","supported_values":["16:9","9:16"]},"resolution":{"status":"verified","default_value":"720p","supported_values":["720p","1080p","4k"]},"duration_seconds":{"status":"verified","default_value":8,"supported_values":[4,6,8]}}}}}`)
 	veoRecord := pebblestore.ModelCatalogRecord{
 		Provider: "google", Model: "veo-3.1-generate-preview", DisplayName: "Veo 3.1",
 		CatalogModalities: pebblestore.ModelCatalogModalities{Inputs: []string{"text"}, Outputs: []string{"video"}},
+		ProviderSpecific:  videoProviderSpecific,
 		Pricing:           pricing,
 	}
 	omniRecord := pebblestore.ModelCatalogRecord{
@@ -107,6 +115,45 @@ func TestMediaCatalogResponsePopulatesVideoGenerationAndIterationModels(t *testi
 	if len(response.VideoIterationModels) != 1 || response.VideoIterationModels[0].Model != "gemini-omni-1.1-flash" {
 		t.Fatalf("expected 1 video iteration model (gemini-omni-1.1-flash), got: %#v", response.VideoIterationModels)
 	}
+
+	// Invariant: generation_options is populated from canonical model metadata when present
+	var veoGenOption *mediaCatalogOption
+	for i := range response.VideoGenerationModels {
+		if response.VideoGenerationModels[i].Model == "veo-3.1-generate-preview" {
+			veoGenOption = &response.VideoGenerationModels[i]
+			break
+		}
+	}
+	if veoGenOption == nil {
+		t.Fatalf("missing veo-3.1-generate-preview in video generation models")
+	}
+	if veoGenOption.GenerationOptions == nil {
+		t.Fatalf("expected generation_options on veo-3.1-generate-preview, got nil")
+	}
+	if len(veoGenOption.GenerationOptions.AspectRatios) != 2 || veoGenOption.GenerationOptions.DefaultRatio != "16:9" {
+		t.Errorf("veo aspect ratios = %#v (default %q), want [16:9 9:16] default 16:9", veoGenOption.GenerationOptions.AspectRatios, veoGenOption.GenerationOptions.DefaultRatio)
+	}
+	if len(veoGenOption.GenerationOptions.Resolutions) != 3 || veoGenOption.GenerationOptions.DefaultRes != "720p" {
+		t.Errorf("veo resolutions = %#v (default %q), want [720p 1080p 4k] default 720p", veoGenOption.GenerationOptions.Resolutions, veoGenOption.GenerationOptions.DefaultRes)
+	}
+	if len(veoGenOption.GenerationOptions.Durations) != 3 || veoGenOption.GenerationOptions.DefaultDur != 8 {
+		t.Errorf("veo durations = %#v (default %d), want [4 6 8] default 8", veoGenOption.GenerationOptions.Durations, veoGenOption.GenerationOptions.DefaultDur)
+	}
+
+	// When metadata is absent (e.g. openRouterVeoRecord has no ProviderSpecific), GenerationOptions must be nil (expose absence rather than inventing capabilities)
+	var openRouterVeoOption *mediaCatalogOption
+	for i := range response.VideoGenerationModels {
+		if response.VideoGenerationModels[i].Model == "google/veo-3.1" {
+			openRouterVeoOption = &response.VideoGenerationModels[i]
+			break
+		}
+	}
+	if openRouterVeoOption == nil {
+		t.Fatalf("missing google/veo-3.1 in video generation models")
+	}
+	if openRouterVeoOption.GenerationOptions != nil {
+		t.Errorf("expected nil generation_options for openrouter model without settings metadata, got %#v", openRouterVeoOption.GenerationOptions)
+	}
 }
 
 func TestMediaCatalogResponsePopulatesAudioGenerationModels(t *testing.T) {
@@ -118,9 +165,11 @@ func TestMediaCatalogResponsePopulatesAudioGenerationModels(t *testing.T) {
 	catalogStore := pebblestore.NewModelCatalogStore(store)
 	pricing := json.RawMessage(`{"audio_output":0.08}`)
 
+	audioProviderSpecific := json.RawMessage(`{"google":{"music_generation":{"settings":{"duration_seconds":{"status":"verified","default_value":30,"supported_values":[10,20,30]}}}}}`)
 	lyriaSongRecord := pebblestore.ModelCatalogRecord{
 		Provider: "google", Model: "lyria-3.5", DisplayName: "Lyria 3.5",
 		CatalogModalities: pebblestore.ModelCatalogModalities{Inputs: []string{"text"}, Outputs: []string{"audio", "text"}, Categories: []string{"audio_generation"}},
+		ProviderSpecific:  audioProviderSpecific,
 		Pricing:           pricing,
 	}
 	lyriaClipRecord := pebblestore.ModelCatalogRecord{
@@ -162,5 +211,17 @@ func TestMediaCatalogResponsePopulatesAudioGenerationModels(t *testing.T) {
 	}
 	if response.AudioModels[1].Model != "lyria-3-clip-preview" {
 		t.Errorf("second priority audio model = %q, want lyria-3-clip-preview", response.AudioModels[1].Model)
+	}
+
+	// Invariant: generation_options is populated from canonical model metadata for audio
+	if response.AudioModels[0].GenerationOptions == nil {
+		t.Fatalf("expected generation_options on lyria-3.5, got nil")
+	}
+	if len(response.AudioModels[0].GenerationOptions.Durations) != 3 || response.AudioModels[0].GenerationOptions.DefaultDur != 30 {
+		t.Errorf("lyria durations = %#v (default %d), want [10 20 30] default 30", response.AudioModels[0].GenerationOptions.Durations, response.AudioModels[0].GenerationOptions.DefaultDur)
+	}
+	// Model without provider specific has nil GenerationOptions
+	if response.AudioModels[1].GenerationOptions != nil {
+		t.Errorf("expected nil generation_options on unconfigured lyria-3-clip-preview, got %#v", response.AudioModels[1].GenerationOptions)
 	}
 }
