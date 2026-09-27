@@ -163,7 +163,17 @@ export interface DeployedWorker {
   assignedTaskIds: string[]
 }
 
-export type TaskOutcomeType = 'code_pr' | 'media_bundle' | 'bug_patch' | 'audit_report' | 'video_story' | 'video_clip'
+export type TaskOutcomeType =
+  | 'code_pr'
+  | 'media_bundle'
+  | 'bug_patch'
+  | 'audit_report'
+  | 'video_story'
+  | 'video_clip'
+  | 'plan_spec'
+  | 'general'
+  | 'audio_clip'
+  | string
 
 export interface ProjectTaskScene {
   scene_number: number
@@ -312,6 +322,8 @@ export interface RunningTask {
   description?: string
   resolution?: string
   model?: string
+  featureSize?: 'small' | 'big' | string
+  feature_size?: 'small' | 'big' | string
   durationSeconds?: number
   scenes?: ProjectTaskScene[]
   soundtrack?: string
