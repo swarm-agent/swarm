@@ -32,6 +32,7 @@ type taskGitState struct {
 	worktreeName        string
 	baseBranch          string
 	baseCommit          string
+	gitStatus           string
 	unintegratedCommits int
 	behindCommits       int
 	isIntegrated        bool
@@ -48,6 +49,7 @@ func inspectTaskGitState(task pebblestore.ProjectTaskRecord, db *pebblestore.Ses
 		worktreeBranch: task.WorktreeBranch,
 		worktreeName:   task.WorktreeName,
 		baseBranch:     task.BaseBranch,
+		gitStatus:      "unknown",
 	}
 	if res.worktreeBranch == "" || res.worktreeBranch == "main" || res.worktreeBranch == "dev" || res.worktreeBranch == "master" {
 		res.worktreeBranch, res.worktreeName = pebblestore.MakeWorktreeBranch(task.Title, task.Description)
@@ -267,6 +269,17 @@ func inspectTaskGitState(task pebblestore.ProjectTaskRecord, db *pebblestore.Ses
 		res.actionNeeded = fmt.Sprintf("No Action Required: Integrated into %s", res.baseBranch)
 	} else {
 		res.actionNeeded = ""
+	}
+
+	// 13. Resolved Git Status
+	if res.isDirty {
+		res.gitStatus = "dirty"
+	} else if res.unintegratedCommits > 0 {
+		res.gitStatus = "diverged"
+	} else if res.isIntegrated {
+		res.gitStatus = "clean"
+	} else {
+		res.gitStatus = "clean"
 	}
 
 	return res
@@ -1789,6 +1802,17 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				if tasks[i].BaseBranch == "" {
 					tasks[i].BaseBranch = "main"
 				}
+				// Collection GET does not run expensive git subprocesses to avoid CPU churn.
+				// Mark Git status as explicit "unknown" (or "stale" if previously recorded)
+				// so callers know git state has not been freshly verified, without disabling operations.
+				if tasks[i].Agent != "image" && tasks[i].Agent != "video" && tasks[i].Agent != "sound" && tasks[i].Agent != "audio" &&
+					tasks[i].Status != "pending_approval" && tasks[i].Status != "planning" && tasks[i].Status != "queued" {
+					if tasks[i].GitStatus == "" {
+						tasks[i].GitStatus = "unknown"
+					} else {
+						tasks[i].GitStatus = "stale"
+					}
+				}
 				syncTaskSessionState(&tasks[i], db)
 				hydrateTaskProgramStatus(&tasks[i], db)
 			}
@@ -1821,6 +1845,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				Operation           string                               `json:"operation,omitempty"`
 				WorkspacePath       string                               `json:"workspace_path,omitempty"`
 				WorktreeBranch      string                               `json:"worktree_branch,omitempty"`
+				GitStatus           string                               `json:"git_status,omitempty"`
 				UnintegratedCommits int                                  `json:"unintegrated_commits,omitempty"`
 				DiffSummary         string                               `json:"diff_summary,omitempty"`
 				IsDirty             bool                                 `json:"is_dirty,omitempty"`
@@ -2375,6 +2400,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				WorktreeBranch:      worktreeBranch,
 				WorktreeName:        worktreeName,
 				BaseBranch:          baseBranch,
+				GitStatus:           "unknown",
 				UnintegratedCommits: req.UnintegratedCommits,
 				DiffSummary:         strings.TrimSpace(req.DiffSummary),
 				IsDirty:             req.IsDirty,
@@ -2559,6 +2585,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			task.WorktreeBranch = gitState.worktreeBranch
 			task.WorktreeName = gitState.worktreeName
 			task.BaseBranch = gitState.baseBranch
+			task.GitStatus = gitState.gitStatus
 			task.UnintegratedCommits = gitState.unintegratedCommits
 			task.BehindCommits = gitState.behindCommits
 			task.IsIntegrated = gitState.isIntegrated
@@ -2691,6 +2718,9 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				}
 				if v, ok := patch["sync_warning"].(string); ok {
 					t.SyncWarning = strings.TrimSpace(v)
+				}
+				if v, ok := patch["git_status"].(string); ok {
+					t.GitStatus = strings.TrimSpace(v)
 				}
 				if v, ok := patch["unintegrated_commits"].(float64); ok {
 					t.UnintegratedCommits = int(v)
@@ -2977,6 +3007,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		updated, err := db.UpdateProjectTask(p.AccountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
 			t.Status = "completed"
 			t.IsIntegrated = true
+			t.GitStatus = "clean"
 			t.UnintegratedCommits = 0
 			t.ActionNeeded = fmt.Sprintf("No Action Required: Integrated into %s", parentState.BranchName)
 			t.WhatDidDo = append(t.WhatDidDo, fmt.Sprintf("Integrated commits into %s (HEAD: %s)", parentState.BranchName, headDisplay))
@@ -3175,6 +3206,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		updated, err := db.UpdateProjectTask(p.AccountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
 			t.Status = "in_progress"
 			t.IsIntegrated = false
+			t.GitStatus = "unknown"
 			t.ActionNeeded = "Task reopened by user"
 			if fb != "" {
 				t.FeedbackHistory = append(t.FeedbackHistory, fb)

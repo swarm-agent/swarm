@@ -225,10 +225,6 @@ func (s *SessionStore) deleteProjectLocked(accountScopeID, id string) (*projectR
 		eventPayload:   payload,
 	}
 	mutation.delete(KeyProject(accountScopeID, id))
-	_ = s.store.IteratePrefix(ProjectTaskPrefix(accountScopeID, id), 10000, func(key string, _ []byte) error {
-		mutation.delete(key)
-		return nil
-	})
 	if err := s.store.commitProjectRealtime(mutation); err != nil {
 		return nil, err
 	}
@@ -310,6 +306,7 @@ type ProjectTaskRecord struct {
 	WorktreeName        string                   `json:"worktree_name,omitempty"`
 	BaseBranch          string                   `json:"base_branch,omitempty"`
 	BaseCommit          string                   `json:"base_commit,omitempty"`
+	GitStatus           string                   `json:"git_status,omitempty"` // "clean" | "dirty" | "diverged" | "unknown" | "stale"
 	UnintegratedCommits int                      `json:"unintegrated_commits,omitempty"`
 	BehindCommits       int                      `json:"behind_commits,omitempty"`
 	IsIntegrated        bool                     `json:"is_integrated,omitempty"`

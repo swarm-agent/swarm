@@ -746,6 +746,7 @@ func (s *Server) executeStandaloneTaskProgram(p identity.Principal, projectID, t
 				t.UnintegratedCommits = gitState.unintegratedCommits
 				t.DiffSummary = gitState.diffSummary
 				t.IsIntegrated = false
+				t.GitStatus = "diverged"
 				t.ActionNeeded = "Action Needed: All task program jobs finished and integrated. Ready to integrate into dev/main."
 				t.WhatDidDo = append(t.WhatDidDo, "All Task Program stages completed and integrated")
 				return nil
