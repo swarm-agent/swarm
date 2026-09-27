@@ -74,8 +74,9 @@ type SessionArtifactLineage struct {
 	CheckpointID            string `json:"checkpoint_id,omitempty"`
 	AttemptID               string `json:"attempt_id,omitempty"`
 	VideoProjectID          string `json:"video_project_id,omitempty"`
-	VideoRevisionID         string `json:"video_revision_id,omitempty"`
-	VideoRevisionEventSeq   uint64 `json:"video_revision_event_seq,omitempty"`
+	VideoRevisionID         string           `json:"video_revision_id,omitempty"`
+	VideoRevisionEventSeq   uint64           `json:"video_revision_event_seq,omitempty"`
+	VideoProvenance         *VideoProvenance `json:"video_provenance,omitempty"`
 }
 
 // SessionArtifactPresentation contains bounded client display hints. It is
@@ -1254,6 +1255,9 @@ func normalizeArtifactLineage(lineage *SessionArtifactLineage) {
 	lineage.PlanID = strings.TrimSpace(lineage.PlanID)
 	lineage.CheckpointID = strings.TrimSpace(lineage.CheckpointID)
 	lineage.AttemptID = strings.TrimSpace(lineage.AttemptID)
+	if lineage.VideoProvenance != nil {
+		lineage.VideoProvenance.Normalize()
+	}
 }
 
 func normalizeArtifactPart(part *SessionArtifactPart) {
@@ -1544,6 +1548,11 @@ func validateArtifactLineage(lineage SessionArtifactLineage) error {
 		}
 		if len(seen) < 2 || len(seen) > SessionArtifactMaxParts {
 			return errors.New("artifact multi-target review lineage requires a bounded multi-target id set")
+		}
+	}
+	if lineage.VideoProvenance != nil {
+		if err := lineage.VideoProvenance.Validate(); err != nil {
+			return fmt.Errorf("artifact video provenance invalid: %w", err)
 		}
 	}
 	return nil
@@ -1872,7 +1881,7 @@ func (s *SessionStore) prepareV3ArtifactMutation(input V3SessionMutationInput, s
 			copy := current
 			prepared.PreviousVariant = &copy
 		}
-		if variantOK && incoming.Variant.Lineage != (SessionArtifactLineage{}) && current.Lineage != (SessionArtifactLineage{}) && incoming.Variant.Lineage != current.Lineage {
+		if variantOK && incoming.Variant.Lineage != (SessionArtifactLineage{}) && current.Lineage != (SessionArtifactLineage{}) && !equalArtifactLineage(incoming.Variant.Lineage, current.Lineage) {
 			return preparedV3ArtifactMutation{}, errors.New("artifact variant lineage is immutable")
 		}
 		if variantOK && !equalArtifactOutputRequirements(current.OutputRequirements, incoming.Variant.OutputRequirements) {
@@ -2370,6 +2379,42 @@ func (s *SessionStore) prepareV3ArtifactMutation(input V3SessionMutationInput, s
 
 func artifactCollectionLineageCompatible(existing, incoming SessionArtifactLineage) bool {
 	return existing.ParentSessionID == incoming.ParentSessionID && existing.TaskCallID == incoming.TaskCallID && existing.ProgramID == incoming.ProgramID
+}
+
+func equalArtifactLineage(a, b SessionArtifactLineage) bool {
+	if a.ParentSessionID != b.ParentSessionID ||
+		a.SourceSessionID != b.SourceSessionID ||
+		a.SourceCollectionID != b.SourceCollectionID ||
+		a.SourceVariantID != b.SourceVariantID ||
+		a.SourceEventSeq != b.SourceEventSeq ||
+		a.TaskCallID != b.TaskCallID ||
+		a.ProgramID != b.ProgramID ||
+		a.ProgramJobID != b.ProgramJobID ||
+		a.ChildSessionID != b.ChildSessionID ||
+		a.IterationGroupID != b.IterationGroupID ||
+		a.IterationGroup != b.IterationGroup ||
+		a.IterationID != b.IterationID ||
+		a.IterationIndex != b.IterationIndex ||
+		a.IterationLabel != b.IterationLabel ||
+		a.IterationTheme != b.IterationTheme ||
+		a.IterationSectionID != b.IterationSectionID ||
+		a.IterationSectionLabel != b.IterationSectionLabel ||
+		a.IterationSectionStartMs != b.IterationSectionStartMs ||
+		a.IterationSectionEndMs != b.IterationSectionEndMs ||
+		a.PartID != b.PartID ||
+		a.PartLabel != b.PartLabel ||
+		a.PartKind != b.PartKind ||
+		a.SelectedReviewTargetIDs != b.SelectedReviewTargetIDs ||
+		a.RunID != b.RunID ||
+		a.PlanID != b.PlanID ||
+		a.CheckpointID != b.CheckpointID ||
+		a.AttemptID != b.AttemptID ||
+		a.VideoProjectID != b.VideoProjectID ||
+		a.VideoRevisionID != b.VideoRevisionID ||
+		a.VideoRevisionEventSeq != b.VideoRevisionEventSeq {
+		return false
+	}
+	return EqualVideoProvenance(a.VideoProvenance, b.VideoProvenance)
 }
 
 func artifactCollectionProgressTotal(collection SessionArtifactCollection) int {

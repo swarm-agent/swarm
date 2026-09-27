@@ -193,7 +193,7 @@ func TestGenerateGoogleOmniInitialAndConversationalEdit(t *testing.T) {
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "u1", AccountScopeID: accountScopeID}
 
 	// Turn 1: Initial generation with Omni explicitly requested
-	res1, err := svc.generateGoogleOmni(context.Background(), "test-google-key", "gemini-omni-1.1-flash", "A violinist in the park", "16:9", "720p", nil, nil)
+	res1, err := svc.generateGoogleOmni(context.Background(), "test-google-key", "gemini-omni-1.1-flash", "A violinist in the park", "16:9", "720p", pebblestore.VideoOperationCreate, nil, nil)
 	if err != nil {
 		t.Fatalf("Turn 1 failed: %v", err)
 	}
@@ -206,6 +206,7 @@ func TestGenerateGoogleOmniInitialAndConversationalEdit(t *testing.T) {
 
 	// Turn 2: Conversational edit passing previous interaction ID
 	res2, err := svc.GenerateManagedVideo(context.Background(), ManagedVideoRequest{
+		Operation: pebblestore.VideoOperationEdit,
 		Prompt:    "Make the violin invisible",
 		Principal: principal,
 		Source: &ManagedVideoSource{
@@ -284,6 +285,7 @@ func TestGenerateGoogleOmniBridgeEditFromExternalVideo(t *testing.T) {
 
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "u1", AccountScopeID: accountScopeID}
 	res, err := svc.GenerateManagedVideo(context.Background(), ManagedVideoRequest{
+		Operation: pebblestore.VideoOperationEdit,
 		Prompt:    "Change lighting to sunset",
 		Principal: principal,
 		Source: &ManagedVideoSource{
@@ -347,6 +349,7 @@ func TestGenerateGoogleOmniContentBlockedDiagnostic(t *testing.T) {
 
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "u1", AccountScopeID: accountScopeID}
 	_, err := svc.GenerateManagedVideo(context.Background(), ManagedVideoRequest{
+		Operation: pebblestore.VideoOperationEdit,
 		Prompt:    "Change lighting to sunset",
 		Principal: principal,
 		Source: &ManagedVideoSource{
@@ -358,8 +361,8 @@ func TestGenerateGoogleOmniContentBlockedDiagnostic(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	if !stringsContains(err.Error(), "EU/EEA, UK, and Switzerland") {
-		t.Fatalf("expected regional diagnostic in error message, got: %v", err)
+	if !stringsContains(err.Error(), "content_blocked") {
+		t.Fatalf("expected content_blocked error from provider, got: %v", err)
 	}
 }
 
@@ -579,7 +582,7 @@ func TestGenerateGoogleOmniWithImageInput(t *testing.T) {
 	svc.SetBaseURLs(server.URL, "")
 
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "u1", AccountScopeID: accountScopeID}
-	res, err := svc.generateGoogleOmni(context.Background(), "test-google-key", "gemini-omni-1.1-flash", "Bring this image to life", "16:9", "720p", nil, &ManagedVideoImage{
+	res, err := svc.generateGoogleOmni(context.Background(), "test-google-key", "gemini-omni-1.1-flash", "Bring this image to life", "16:9", "720p", pebblestore.VideoOperationCreate, nil, &ManagedVideoImage{
 		Bytes:     rawPNG,
 		MediaType: "image/png",
 	})

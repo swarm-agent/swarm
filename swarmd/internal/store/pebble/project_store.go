@@ -209,8 +209,9 @@ type ProjectTaskDeliverable struct {
 	ArtifactRef         string `json:"artifact_ref,omitempty"`
 	CodeDiff            string `json:"code_diff,omitempty"`
 	MediaURL            string `json:"media_url,omitempty"`
-	ParentDeliverableID string `json:"parent_deliverable_id,omitempty"`
-	SourceMediaRef      string `json:"source_media_ref,omitempty"`
+	ParentDeliverableID string           `json:"parent_deliverable_id,omitempty"`
+	SourceMediaRef      string           `json:"source_media_ref,omitempty"`
+	VideoProvenance     *VideoProvenance `json:"video_provenance,omitempty"`
 }
 
 // ProjectTaskScene represents a single scene in a compiled multi-scene video story.
@@ -267,6 +268,8 @@ type ProjectTaskRecord struct {
 	Model               string                   `json:"model,omitempty"`
 	Scenes              []ProjectTaskScene       `json:"scenes,omitempty"`
 	Soundtrack          string                   `json:"soundtrack,omitempty"`
+	Operation           string                   `json:"operation,omitempty"` // "create" | "edit" | "extend"
+	VideoProvenance     *VideoProvenance         `json:"video_provenance,omitempty"`
 	AutoApprove         bool                     `json:"auto_approve,omitempty"`
 	RouterAlert         string                   `json:"router_alert,omitempty"`
 	AttachedMedia       []ProjectTaskMediaRef    `json:"attached_media,omitempty"`
@@ -304,6 +307,17 @@ func (t *ProjectTaskRecord) Validate() error {
 			t.OutcomeType = "audit_report"
 		} else {
 			t.OutcomeType = "code_pr"
+		}
+	}
+	if t.Operation != "" {
+		t.Operation = strings.ToLower(strings.TrimSpace(t.Operation))
+		if t.Operation != VideoOperationCreate && t.Operation != VideoOperationEdit && t.Operation != VideoOperationExtend {
+			return fmt.Errorf("task operation %q is invalid; must be create, edit, or extend", t.Operation)
+		}
+	}
+	if t.VideoProvenance != nil {
+		if err := t.VideoProvenance.Validate(); err != nil {
+			return fmt.Errorf("task video provenance invalid: %w", err)
 		}
 	}
 	return nil

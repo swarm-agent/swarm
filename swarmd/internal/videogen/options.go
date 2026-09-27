@@ -30,6 +30,32 @@ func IsOmniModel(modelID string) bool {
 	return strings.Contains(lower, "omni")
 }
 
+// IsVeoModel returns true if the model is a Google Veo model.
+func IsVeoModel(modelID string) bool {
+	lower := strings.ToLower(modelID)
+	return strings.Contains(lower, "veo")
+}
+
+// IsVeo31Model returns true if the model is a Veo 3.1 standard or fast model.
+func IsVeo31Model(modelID string) bool {
+	lower := strings.ToLower(modelID)
+	return (strings.Contains(lower, "veo-3.1") || strings.Contains(lower, "veo-3-1") || strings.Contains(lower, "veo_3_1")) && !strings.Contains(lower, "lite")
+}
+
+// IsVeoLiteModel returns true if the model is a Veo Lite model.
+func IsVeoLiteModel(modelID string) bool {
+	lower := strings.ToLower(modelID)
+	return strings.Contains(lower, "veo") && strings.Contains(lower, "lite")
+}
+
+// IsStableOmniModel returns true if the model is the stable Google Gemini Omni model.
+func IsStableOmniModel(modelID string) bool {
+	clean := strings.ToLower(strings.TrimSpace(modelID))
+	clean = strings.TrimPrefix(clean, "google:")
+	clean = strings.TrimPrefix(clean, "google/")
+	return clean == "gemini-omni-1.1-flash"
+}
+
 // IsEquivalentAspectRatio checks if the requested aspect ratio has a supported equivalent.
 func IsEquivalentAspectRatio(supported []string, requested string) bool {
 	reqLower := strings.ToLower(strings.TrimSpace(requested))
