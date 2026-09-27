@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sort"
 	"strings"
 	"time"
@@ -319,9 +320,40 @@ func (t *ProjectTaskRecord) Validate() error {
 			return fmt.Errorf("task operation %q is invalid; must be create, edit, or extend", t.Operation)
 		}
 	}
+	if t.SourceDigestSHA256 != "" {
+		t.SourceDigestSHA256 = strings.ToLower(strings.TrimSpace(t.SourceDigestSHA256))
+		if len(t.SourceDigestSHA256) != 64 {
+			return errors.New("task source digest must be a 64-character sha256 hex string")
+		}
+		if _, err := hex.DecodeString(t.SourceDigestSHA256); err != nil {
+			return errors.New("task source digest is not valid hex")
+		}
+	}
 	if t.VideoProvenance != nil {
 		if err := t.VideoProvenance.Validate(); err != nil {
 			return fmt.Errorf("task video provenance invalid: %w", err)
+		}
+	}
+	for i, d := range t.Deliverables {
+		if d.VideoProvenance != nil {
+			if err := d.VideoProvenance.Validate(); err != nil {
+				return fmt.Errorf("task deliverable %d video provenance invalid: %w", i, err)
+			}
+		}
+	}
+	for i, m := range t.AttachedMedia {
+		if m.DigestSHA256 != "" {
+			if len(m.DigestSHA256) != 64 {
+				return fmt.Errorf("task attached media %d digest must be a 64-character sha256 hex string", i)
+			}
+			if _, err := hex.DecodeString(m.DigestSHA256); err != nil {
+				return fmt.Errorf("task attached media %d digest is not valid hex", i)
+			}
+		}
+		if m.SourceLink != nil {
+			if err := m.SourceLink.Validate(); err != nil {
+				return fmt.Errorf("task attached media %d source link invalid: %w", i, err)
+			}
 		}
 	}
 	return nil

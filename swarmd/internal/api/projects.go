@@ -2069,6 +2069,14 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			if len(deliverables) == 0 {
 				deliverables = routed.Deliverables
 			}
+			for i := range deliverables {
+				// Client cannot supply arbitrary VideoProvenance or provider handles
+				deliverables[i].VideoProvenance = nil
+			}
+			for i := range req.AttachedMedia {
+				// Client cannot supply arbitrary SourceLink or provider handles
+				req.AttachedMedia[i].SourceLink = nil
+			}
 			workspacesInvolved := req.WorkspacesInvolved
 			if len(workspacesInvolved) == 0 && !isMediaAgent {
 				workspacesInvolved = routed.WorkspacesInvolved
@@ -2365,6 +2373,19 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 					if err == nil {
 						var delivs []pebblestore.ProjectTaskDeliverable
 						if err := json.Unmarshal(rawBytes, &delivs); err == nil {
+							existingProv := make(map[string]*pebblestore.VideoProvenance)
+							for _, oldDeliv := range t.Deliverables {
+								if oldDeliv.VideoProvenance != nil {
+									existingProv[oldDeliv.ID] = oldDeliv.VideoProvenance
+								}
+							}
+							for i := range delivs {
+								if oldP, ok := existingProv[delivs[i].ID]; ok {
+									delivs[i].VideoProvenance = oldP
+								} else {
+									delivs[i].VideoProvenance = nil
+								}
+							}
 							t.Deliverables = delivs
 						}
 					}
@@ -3109,6 +3130,34 @@ func sanitizeProjectTaskForClient(t *pebblestore.ProjectTaskRecord) *pebblestore
 			}
 		}
 		cp.Deliverables = dels
+	}
+	if len(cp.AttachedMedia) > 0 {
+		att := make([]pebblestore.ProjectTaskMediaRef, len(cp.AttachedMedia))
+		for i, m := range cp.AttachedMedia {
+			att[i] = m
+			if m.SourceLink != nil {
+				att[i].SourceLink = m.SourceLink.Clone()
+			}
+		}
+		cp.AttachedMedia = att
+	}
+	if len(cp.Scenes) > 0 {
+		cp.Scenes = append([]pebblestore.ProjectTaskScene(nil), cp.Scenes...)
+	}
+	if len(cp.WhatDidDo) > 0 {
+		cp.WhatDidDo = append([]string(nil), cp.WhatDidDo...)
+	}
+	if len(cp.WhatNotDone) > 0 {
+		cp.WhatNotDone = append([]string(nil), cp.WhatNotDone...)
+	}
+	if len(cp.PipelineStages) > 0 {
+		cp.PipelineStages = append([]string(nil), cp.PipelineStages...)
+	}
+	if len(cp.WorkspacesInvolved) > 0 {
+		cp.WorkspacesInvolved = append([]string(nil), cp.WorkspacesInvolved...)
+	}
+	if len(cp.FeedbackHistory) > 0 {
+		cp.FeedbackHistory = append([]string(nil), cp.FeedbackHistory...)
 	}
 	return &cp
 }

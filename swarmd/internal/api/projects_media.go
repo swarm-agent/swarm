@@ -389,7 +389,7 @@ func validateProjectMediaTaskSettings(s *Server, task *pebblestore.ProjectTaskRe
 				return fmt.Errorf("unsupported file extension on %q for video %s operation; only MP4 video format is supported", m.Filename, op)
 			}
 			if s != nil {
-				srcRec, err := s.resolveSourceMediaRecord(context.Background(), principal, m, "video")
+				srcRec, err := s.resolveSourceMediaRecord(context.Background(), principal, m, "video", task.ProjectID)
 				if err != nil {
 					return fmt.Errorf("invalid video attachment: %w", err)
 				}
@@ -764,6 +764,54 @@ func (s *Server) resolveSourceMediaBytes(ctx context.Context, p identity.Princip
 			return nil, "", err
 		}
 		return body, mediaType, nil
+	}
+
+	// 5. Canonical project deliverable reference
+	if strings.Contains(trimmedURL, "/deliverables/") || (strings.HasPrefix(trimmedURL, "/v3/projects/") && strings.Contains(trimmedURL, "/tasks/")) {
+		u, parseErr := url.Parse(trimmedURL)
+		if parseErr != nil {
+			return nil, "", fmt.Errorf("invalid deliverable url: %w", parseErr)
+		}
+		parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+		if len(parts) != 7 || parts[0] != "v3" || parts[1] != "projects" || parts[3] != "tasks" || parts[5] != "deliverables" {
+			return nil, "", errors.New("invalid deliverable URL path; must be /v3/projects/{projectID}/tasks/{taskID}/deliverables/{delivID}")
+		}
+		projID := strings.TrimSpace(parts[2])
+		tID := strings.TrimSpace(parts[4])
+		dID := strings.TrimSpace(parts[6])
+		if s == nil || s.sessions == nil || s.sessions.Store() == nil {
+			return nil, "", errors.New("session store is not configured")
+		}
+		task, found, err := s.sessions.Store().GetProjectTask(p.AccountScopeID, projID, tID)
+		if err != nil {
+			return nil, "", fmt.Errorf("read project task: %w", err)
+		}
+		if !found || task == nil {
+			return nil, "", fmt.Errorf("project task %q not found in account scope", tID)
+		}
+		var targetDeliv *pebblestore.ProjectTaskDeliverable
+		for _, d := range task.Deliverables {
+			if d.ID == dID {
+				targetDeliv = &d
+				break
+			}
+		}
+		if targetDeliv == nil {
+			return nil, "", fmt.Errorf("deliverable %q not found in task %q", dID, tID)
+		}
+		if targetDeliv.Status != "ready" {
+			return nil, "", fmt.Errorf("deliverable %q is not ready", dID)
+		}
+		if strings.Contains(targetDeliv.MediaURL, "/deliverables/") {
+			return nil, "", errors.New("nested deliverable references are not permitted")
+		}
+		delivRef := pebblestore.ProjectTaskMediaRef{
+			ID:        targetDeliv.ID,
+			URL:       targetDeliv.MediaURL,
+			Kind:      expectedKind,
+			MediaType: targetDeliv.Kind,
+		}
+		return s.resolveSourceMediaBytes(ctx, p, delivRef, expectedKind)
 	}
 
 	return nil, "", errors.New("no source media bytes available")
@@ -1220,8 +1268,40 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 			})
 			return
 		}
-		if pfRes != nil && pfRes.ResolvedModel != "" {
-			videoModel = pfRes.ResolvedModel
+		if pfRes != nil {
+			if task.Model != "" && pfRes.ResolvedModel != "" && task.Model != pfRes.ResolvedModel {
+				changeErr := fmt.Errorf("task execution model changed: task submitted with %q but preflight resolved %q", task.Model, pfRes.ResolvedModel)
+				_, _ = updateProjectTaskWithRetry(db, p.AccountScopeID, task.ProjectID, task.ID, func(t *pebblestore.ProjectTaskRecord) error {
+					t.Status = "failed"
+					t.LastError = changeErr.Error()
+					t.ActionNeeded = fmt.Sprintf("Action Needed: %v", changeErr)
+					t.WhatNotDone = []string{changeErr.Error()}
+					for i := range t.Deliverables {
+						t.Deliverables[i].Status = "failed"
+						t.Deliverables[i].Description = fmt.Sprintf("Model mismatch error: %v", changeErr)
+					}
+					return nil
+				})
+				return
+			}
+			if task.Provider != "" && pfRes.ResolvedProvider != "" && !strings.EqualFold(task.Provider, pfRes.ResolvedProvider) {
+				changeErr := fmt.Errorf("task execution provider changed: task submitted with %q but preflight resolved %q", task.Provider, pfRes.ResolvedProvider)
+				_, _ = updateProjectTaskWithRetry(db, p.AccountScopeID, task.ProjectID, task.ID, func(t *pebblestore.ProjectTaskRecord) error {
+					t.Status = "failed"
+					t.LastError = changeErr.Error()
+					t.ActionNeeded = fmt.Sprintf("Action Needed: %v", changeErr)
+					t.WhatNotDone = []string{changeErr.Error()}
+					for i := range t.Deliverables {
+						t.Deliverables[i].Status = "failed"
+						t.Deliverables[i].Description = fmt.Sprintf("Provider mismatch error: %v", changeErr)
+					}
+					return nil
+				})
+				return
+			}
+			if pfRes.ResolvedModel != "" {
+				videoModel = pfRes.ResolvedModel
+			}
 		}
 
 		concurrency := 4

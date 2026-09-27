@@ -224,8 +224,13 @@ func (s *Server) resolveSourceMediaRecord(ctx context.Context, p identity.Princi
 			return nil, fmt.Errorf("read deliverable media: %w", readErr)
 		}
 
-		h := sha256.Sum256(bytes)
-		digest := hex.EncodeToString(h[:])
+		var digest string
+		if len(bytes) > 0 {
+			h := sha256.Sum256(bytes)
+			digest = hex.EncodeToString(h[:])
+		} else if targetDeliv.VideoProvenance != nil && targetDeliv.VideoProvenance.OutputDigestSHA256 != "" {
+			digest = targetDeliv.VideoProvenance.OutputDigestSHA256
+		}
 		srcLink := &pebblestore.VideoSourceLink{
 			ProjectID:     projID,
 			TaskID:        tID,
@@ -254,47 +259,62 @@ func (s *Server) resolveSourceMediaRecord(ctx context.Context, p identity.Princi
 		}, nil
 	}
 
-	// Case 3: Match deliverable by ID in project tasks
-	activeProjID := ""
+	// Case 3: Match deliverable by ID or MediaURL in project tasks
+	activeProjIDs := []string{}
 	if len(projectID) > 0 && strings.TrimSpace(projectID[0]) != "" {
-		activeProjID = strings.TrimSpace(projectID[0])
+		activeProjIDs = append(activeProjIDs, strings.TrimSpace(projectID[0]))
+	} else if s != nil && s.sessions != nil && s.sessions.Store() != nil {
+		if projs, err := s.sessions.Store().ListProjects(p.AccountScopeID, 50); err == nil {
+			for _, pr := range projs {
+				activeProjIDs = append(activeProjIDs, pr.ID)
+			}
+		}
 	}
-	if activeProjID != "" && m.ID != "" && !strings.HasPrefix(m.ID, "stg_") && s != nil && s.sessions != nil && s.sessions.Store() != nil {
-		if tasks, err := s.sessions.Store().ListProjectTasks(p.AccountScopeID, activeProjID, 100); err == nil {
-			for _, task := range tasks {
-				for _, d := range task.Deliverables {
-					if d.ID == m.ID && d.Status == "ready" {
-						bytes, mType, readErr := s.resolveSourceMediaBytes(ctx, p, m, expectedKind)
-						if readErr != nil && d.MediaURL != "" {
-							bytes, mType, readErr = s.resolveSourceMediaBytes(ctx, p, pebblestore.ProjectTaskMediaRef{ID: d.ID, URL: d.MediaURL, Kind: expectedKind}, expectedKind)
-						}
-						if readErr == nil && (len(bytes) > 0 || d.VideoProvenance != nil) {
-							h := sha256.Sum256(bytes)
-							digest := hex.EncodeToString(h[:])
-							srcLink := &pebblestore.VideoSourceLink{
-								ProjectID:     activeProjID,
-								TaskID:        task.ID,
-								DeliverableID: d.ID,
-								DigestSHA256:  digest,
-								MediaRefID:    m.ID,
+	for _, aProjID := range activeProjIDs {
+		if s != nil && s.sessions != nil && s.sessions.Store() != nil {
+			if tasks, err := s.sessions.Store().ListProjectTasks(p.AccountScopeID, aProjID, 100); err == nil {
+				for _, task := range tasks {
+					for _, d := range task.Deliverables {
+						matchesID := m.ID != "" && !strings.HasPrefix(m.ID, "stg_") && d.ID == m.ID
+						matchesURL := trimmedURL != "" && d.MediaURL != "" && (trimmedURL == d.MediaURL || trimmedURL == d.Thumbnail)
+						if (matchesID || matchesURL) && d.Status == "ready" {
+							bytes, mType, readErr := s.resolveSourceMediaBytes(ctx, p, m, expectedKind)
+							if readErr != nil && d.MediaURL != "" {
+								bytes, mType, readErr = s.resolveSourceMediaBytes(ctx, p, pebblestore.ProjectTaskMediaRef{ID: d.ID, URL: d.MediaURL, Kind: expectedKind}, expectedKind)
 							}
-							var prov *pebblestore.VideoProvenance
-							if d.VideoProvenance != nil {
-								if d.VideoProvenance.AccountScopeID != "" && p.AccountScopeID != "" && d.VideoProvenance.AccountScopeID != p.AccountScopeID {
-									return nil, errors.New("video source belongs to a different account scope")
+							if readErr == nil && (len(bytes) > 0 || d.VideoProvenance != nil) {
+								var digest string
+								if len(bytes) > 0 {
+									h := sha256.Sum256(bytes)
+									digest = hex.EncodeToString(h[:])
+								} else if d.VideoProvenance != nil && d.VideoProvenance.OutputDigestSHA256 != "" {
+									digest = d.VideoProvenance.OutputDigestSHA256
 								}
-								prov = d.VideoProvenance.Clone()
-								prov.SourceLink = srcLink
-								if prov.OutputDigestSHA256 == "" {
-									prov.OutputDigestSHA256 = digest
+								srcLink := &pebblestore.VideoSourceLink{
+									ProjectID:     aProjID,
+									TaskID:        task.ID,
+									DeliverableID: d.ID,
+									DigestSHA256:  digest,
+									MediaRefID:    m.ID,
 								}
+								var prov *pebblestore.VideoProvenance
+								if d.VideoProvenance != nil {
+									if d.VideoProvenance.AccountScopeID != "" && p.AccountScopeID != "" && d.VideoProvenance.AccountScopeID != p.AccountScopeID {
+										return nil, errors.New("video source belongs to a different account scope")
+									}
+									prov = d.VideoProvenance.Clone()
+									prov.SourceLink = srcLink
+									if prov.OutputDigestSHA256 == "" {
+										prov.OutputDigestSHA256 = digest
+									}
+								}
+								return &resolvedSourceMedia{
+									Bytes:      bytes,
+									MediaType:  mType,
+									Provenance: prov,
+									SourceLink: srcLink,
+								}, nil
 							}
-							return &resolvedSourceMedia{
-								Bytes:      bytes,
-								MediaType:  mType,
-								Provenance: prov,
-								SourceLink: srcLink,
-							}, nil
 						}
 					}
 				}

@@ -2676,6 +2676,9 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 			create.SourceVariantID = sourceRef.VariantID
 			create.SourceEventSeq = sourceRef.EventSeq
 		}
+		if generated.Provenance != nil {
+			create.VideoProvenance = generated.Provenance.Clone()
+		}
 
 		effectiveVideoDurationSeconds := generated.DurationSeconds
 		if effectiveVideoDurationSeconds <= 0 {
@@ -2749,27 +2752,6 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 			if recErr := r.sessions.RecordMediaUsage(mediaRec); recErr != nil {
 				return managedVideoArtifactResult{}, fmt.Errorf("record video media usage: %w", recErr)
 			}
-		}
-
-		if generated.Provenance != nil && r.sessions != nil && r.sessions.Store() != nil {
-			stagingVariant := pebblestore.SessionArtifactVariant{
-				AccountScopeID: principal.AccountScopeID,
-				SessionID:      principal.SessionID,
-				CollectionID:   collectionID,
-				ID:             currentVariantID,
-				Status:         pebblestore.SessionArtifactStatusStaging,
-				Lineage: pebblestore.SessionArtifactLineage{
-					ParentSessionID: principal.SessionID,
-					VideoProvenance: generated.Provenance,
-				},
-			}
-			if sourceRef != nil {
-				stagingVariant.Lineage.SourceSessionID = sourceRef.SessionID
-				stagingVariant.Lineage.SourceCollectionID = sourceRef.CollectionID
-				stagingVariant.Lineage.SourceVariantID = sourceRef.VariantID
-				stagingVariant.Lineage.SourceEventSeq = sourceRef.EventSeq
-			}
-			_ = r.sessions.Store().PutArtifactVariant(stagingVariant)
 		}
 
 		published, err := r.artifactAuthority.Create(ctx, principal, create)
