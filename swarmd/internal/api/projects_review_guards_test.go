@@ -26,6 +26,11 @@ func (f *matrixTestFixture) seedProjectTask(task *pebblestore.ProjectTaskRecord)
 		pr.ActiveTaskIDs = append(pr.ActiveTaskIDs, task.ID)
 		return nil
 	})
+	if task.SessionID != "" {
+		if _, ok, _ := f.server.sessions.Store().GetActiveExecutionEpoch(task.SessionID); !ok {
+			f.seedExecutionEpoch(task.SessionID)
+		}
+	}
 }
 
 // Requirement: Malformed JSON bodies sent to task approval must be rejected with 400 Bad Request,
@@ -56,7 +61,7 @@ func TestProjectTaskApprove_MalformedJSONRejected(t *testing.T) {
 		CreatedAt:          time.Now().UnixMilli(),
 		UpdatedAt:          time.Now().UnixMilli(),
 	}
-	if err := f.server.sessions.Store().CreateSession(sess); err != nil {
+	if err := f.seedSession(sess); err != nil {
 		t.Fatalf("create session %q: %v", sessID, err)
 	}
 	task := &pebblestore.ProjectTaskRecord{
@@ -196,7 +201,7 @@ func TestProjectTaskApprove_IdempotentRetryAfterPlanLifecycleIncrements(t *testi
 		CreatedAt: time.Now().UnixMilli(),
 		UpdatedAt: time.Now().UnixMilli(),
 	}
-	if err := f.server.sessions.Store().CreateSession(sess); err != nil {
+	if err := f.seedSession(sess); err != nil {
 		t.Fatalf("create session %q: %v", sessID, err)
 	}
 	planSnap := pebblestore.SessionPlanSnapshot{
@@ -344,7 +349,7 @@ func TestProjectTaskApprove_GuardedCanonicalRevision(t *testing.T) {
 		CreatedAt: time.Now().UnixMilli(),
 		UpdatedAt: time.Now().UnixMilli(),
 	}
-	if err := f.server.sessions.Store().CreateSession(sess); err != nil {
+	if err := f.seedSession(sess); err != nil {
 		t.Fatalf("create session %q: %v", sessID, err)
 	}
 	planSnap1 := pebblestore.SessionPlanSnapshot{
@@ -517,7 +522,7 @@ func TestProjectTaskReject_NoPartialFailureOnBoundPlanError(t *testing.T) {
 		CreatedAt:      time.Now().UnixMilli(),
 		UpdatedAt:      time.Now().UnixMilli(),
 	}
-	if err := f.server.sessions.Store().CreateSession(sess); err != nil {
+	if err := f.seedSession(sess); err != nil {
 		t.Fatalf("create session %q: %v", sessID, err)
 	}
 	planSnap := pebblestore.SessionPlanSnapshot{
@@ -627,7 +632,7 @@ func TestProjectTaskReject_TaskUpdateFailureReconcilesBoundPlan(t *testing.T) {
 		CreatedAt:      time.Now().UnixMilli(),
 		UpdatedAt:      time.Now().UnixMilli(),
 	}
-	if err := f.server.sessions.Store().CreateSession(sess); err != nil {
+	if err := f.seedSession(sess); err != nil {
 		t.Fatalf("create session %q: %v", sessID, err)
 	}
 	planSnap := pebblestore.SessionPlanSnapshot{
@@ -760,7 +765,7 @@ func TestProjectTaskReject_MalformedJSONAndRevisionGuards(t *testing.T) {
 		CreatedAt:      time.Now().UnixMilli(),
 		UpdatedAt:      time.Now().UnixMilli(),
 	}
-	if err := f.server.sessions.Store().CreateSession(sess); err != nil {
+	if err := f.seedSession(sess); err != nil {
 		t.Fatalf("create session %q: %v", sessID, err)
 	}
 	planSnap := pebblestore.SessionPlanSnapshot{
@@ -898,7 +903,7 @@ func TestProjectTaskReopen_MalformedJSONAndRevisionGuards(t *testing.T) {
 		CreatedAt:          time.Now().UnixMilli(),
 		UpdatedAt:          time.Now().UnixMilli(),
 	}
-	if err := f.server.sessions.Store().CreateSession(sess); err != nil {
+	if err := f.seedSession(sess); err != nil {
 		t.Fatalf("create session %q: %v", sessID, err)
 	}
 	task := &pebblestore.ProjectTaskRecord{

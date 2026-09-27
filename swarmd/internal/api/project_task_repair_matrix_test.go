@@ -180,7 +180,7 @@ func setupMatrixTestFixture(t *testing.T) *matrixTestFixture {
 
 	// Agent model settings setup
 	settingsStore := pebblestore.NewAgentModelSettingsStore(db)
-	_, _ = settingsStore.PutForAccount(pebblestore.AgentModelSettingsRecord{
+	if _, err := settingsStore.PutForAccount(pebblestore.AgentModelSettingsRecord{
 		AccountScopeID: accountID,
 		Swarm: pebblestore.SwarmAgentModelAssignments{
 			Action: pebblestore.AgentModelAssignment{
@@ -197,14 +197,40 @@ func setupMatrixTestFixture(t *testing.T) *matrixTestFixture {
 			},
 		},
 		SystemAgents: pebblestore.SystemAgentModelAssignments{
+			Compact: pebblestore.AgentModelAssignment{
+				Provider:    "anthropic",
+				Model:       "claude-3-haiku",
+				Thinking:    "low",
+				ServiceTier: "standard",
+			},
+			Finder: pebblestore.AgentModelAssignment{
+				Provider:    "anthropic",
+				Model:       "claude-3-haiku",
+				Thinking:    "medium",
+				ServiceTier: "standard",
+			},
 			Coder: pebblestore.AgentModelAssignment{
 				Provider:    "anthropic",
 				Model:       "claude-3-7-sonnet",
 				Thinking:    "medium",
 				ServiceTier: "standard",
 			},
+			Designer: pebblestore.AgentModelAssignment{
+				Provider:    "anthropic",
+				Model:       "claude-3-7-sonnet",
+				Thinking:    "medium",
+				ServiceTier: "standard",
+			},
+			Router: pebblestore.AgentModelAssignment{
+				Provider:    "anthropic",
+				Model:       "claude-3-haiku",
+				Thinking:    "low",
+				ServiceTier: "standard",
+			},
 		},
-	})
+	}); err != nil {
+		t.Fatalf("setupMatrixTestFixture: put agent model settings: %v", err)
+	}
 	modelSettingsSvc := agentmodelsettings.NewService(settingsStore)
 
 	agents := agentruntime.NewService(pebblestore.NewAgentStore(db), el)
@@ -235,6 +261,22 @@ func setupMatrixTestFixture(t *testing.T) *matrixTestFixture {
 		accountID: accountID,
 		userID:    userID,
 	}
+}
+
+func (f *matrixTestFixture) seedExecutionEpoch(sessionID string) {
+	epoch := pebblestore.NewInitialExecutionEpoch(sessionID, f.userID, f.accountID, 1, time.Now().UnixMilli())
+	_ = f.db.PutJSON(pebblestore.KeyExecutionEpoch(sessionID, epoch.EpochID), epoch)
+	_ = f.db.PutBytes(pebblestore.KeyExecutionEpochOrdinal(sessionID, epoch.Ordinal), []byte(epoch.EpochID))
+	_ = f.db.PutJSON(pebblestore.KeyExecutionEpochLatest(sessionID), epoch)
+	_ = f.db.PutJSON(pebblestore.KeyExecutionEpochActive(sessionID), epoch)
+}
+
+func (f *matrixTestFixture) seedSession(sess pebblestore.SessionSnapshot) error {
+	if err := f.server.sessions.Store().CreateSession(sess); err != nil {
+		return err
+	}
+	f.seedExecutionEpoch(sess.ID)
+	return nil
 }
 
 func (f *matrixTestFixture) callAPI(method, path string, body any, p identity.Principal) *httptest.ResponseRecorder {
