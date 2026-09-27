@@ -77,7 +77,12 @@ import type { QuickRouteMode } from '../tools/media-library/media-viewer-modal'
 import { ORCHESTRATE_THEMES } from './orchestrate-themes'
 import { listStorageWorkers, activateStorageWorker } from '../storage/api'
 import type { StorageDiscoveredWorker } from '../storage/types'
-import { desktopProjects, useDesktopProject } from '../runtime/desktop-projects'
+import {
+  desktopProjects,
+  useDesktopProject,
+  computeActiveTaskSessionIds,
+  TaskSessionLeaseManager,
+} from '../runtime/desktop-projects'
 import {
   DeployedWorker,
   MediaDeliverable,
@@ -3151,82 +3156,34 @@ export function OrchestrateView({
     setAgentSettingsOpenSignal((s) => s + 1)
   }, [taskIntent, featureSize, newTaskModelOverride])
 
-  const activeLeasesRef = useRef<Map<string, DesktopV3RealtimeSessionDemandLease>>(new Map())
-  const hydratedSessionsRef = useRef<Set<string>>(new Set())
+  const leaseManagerRef = useRef<TaskSessionLeaseManager | null>(null)
+  if (!leaseManagerRef.current) {
+    leaseManagerRef.current = new TaskSessionLeaseManager({
+      getControllerReady: requireDesktopV3RealtimeControllerReady,
+      hydrate: (sid) =>
+        void hydrateDesktopV3ChildCard(sid, { activePlan: true, permissionSummary: true }).catch(() => undefined),
+      ownerKeyPrefix: 'orchestrate-task',
+    })
+  }
 
-  const activeTaskSessionIdsKey = useMemo(() => {
-    const set = new Set<string>()
-    for (const t of tasks) {
-      if (t.sessionId && (t.status === 'running' || t.status === 'in_progress' || t.id === selectedTaskId)) {
-        set.add(t.sessionId)
-      }
-    }
-    return Array.from(set).sort().join(',')
+  const activeTaskSessionIds = useMemo(() => {
+    return computeActiveTaskSessionIds(tasks, selectedTaskId)
   }, [tasks, selectedTaskId])
+
+  const activeTaskSessionIdsKey = useMemo(() => activeTaskSessionIds.join(','), [activeTaskSessionIds])
 
   // Realtime session demand and plan hydration for active tasks (incremental, deduplicated, sorted)
   useEffect(() => {
-    const currentSessionIds = new Set(
-      activeTaskSessionIdsKey ? activeTaskSessionIdsKey.split(',').filter(Boolean) : []
-    )
-    let cancelled = false
-
-    // 1. Remove leases for sessions no longer active
-    for (const [sid, lease] of activeLeasesRef.current.entries()) {
-      if (!currentSessionIds.has(sid)) {
-        lease.release()
-        activeLeasesRef.current.delete(sid)
-      }
-    }
-
-    // 2. Identify new sessions that need hydration and leases
-    const newSessionIds: string[] = []
-    for (const sid of currentSessionIds) {
-      if (!activeLeasesRef.current.has(sid)) {
-        newSessionIds.push(sid)
-      }
-    }
-
-    if (newSessionIds.length === 0) return
-
-    // 3. Hydrate NEW sessions only
-    newSessionIds.forEach((sid) => {
-      if (!hydratedSessionsRef.current.has(sid)) {
-        hydratedSessionsRef.current.add(sid)
-        void hydrateDesktopV3ChildCard(sid, { activePlan: true, permissionSummary: true }).catch(() => undefined)
-      }
-    })
-
-    // 4. Acquire realtime demand leases so live events stream for NEW sessions only
-    void requireDesktopV3RealtimeControllerReady()
-      .then((controller) => {
-        if (cancelled) return
-        newSessionIds.forEach((sid) => {
-          if (!activeLeasesRef.current.has(sid) && currentSessionIds.has(sid)) {
-            const ownerKey = `orchestrate-task:${sid}`
-            try {
-              activeLeasesRef.current.set(sid, controller.acquireSessionDemand(ownerKey, sid))
-            } catch {
-              // ignore
-            }
-          }
-        })
-      })
-      .catch(() => undefined)
-
+    const handle = leaseManagerRef.current!.reconcile(activeTaskSessionIds)
     return () => {
-      cancelled = true
+      handle.cancel()
     }
   }, [activeTaskSessionIdsKey])
 
   // Cleanup all leases on unmount
   useEffect(() => {
     return () => {
-      for (const lease of activeLeasesRef.current.values()) {
-        lease.release()
-      }
-      activeLeasesRef.current.clear()
-      hydratedSessionsRef.current.clear()
+      leaseManagerRef.current?.cleanup()
     }
   }, [])
 
@@ -4007,6 +3964,7 @@ export function OrchestrateView({
   const handleDeleteTask = async (taskId: string) => {
     if (!selectedProject?.id) return
     try {
+      desktopProjects.setOptimisticTasks(selectedProject.id, (prev) => prev.filter((t) => t.id !== taskId))
       await requestJson(`/v3/projects/${selectedProject.id}/tasks/${taskId}`, {
         method: 'DELETE',
       })
@@ -4286,7 +4244,7 @@ export function OrchestrateView({
     e?.stopPropagation()
     try {
       await requestJson(`/v3/projects/${projectId}`, { method: 'DELETE' })
-      desktopProjects.invalidate(projectId)
+      desktopProjects.evict(projectId)
       setProjects((prev) => {
         const next = prev.filter((p) => p.id !== projectId)
         if (selectedProjectId === projectId) {
@@ -5106,6 +5064,15 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                 <span className="rounded-lg bg-slate-900 border border-slate-800 px-2.5 py-1 text-xs text-slate-400 font-mono">
                   {automations.length} Registered
                 </span>
+                <button
+                  type="button"
+                  onClick={() => void fetchCloudWorkers()}
+                  className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-800 text-xs text-slate-300 font-medium transition-colors"
+                  title="Refresh workers"
+                >
+                  <RefreshCw size={11} />
+                  <span>Refresh</span>
+                </button>
               </div>
             </div>
 
@@ -5468,9 +5435,20 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                   </button>
                 </div>
               )}
-              <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
-                Registered Workers Fleet ({automations.length + cloudWorkers.length})
-              </span>
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                  Registered Workers Fleet ({automations.length + cloudWorkers.length})
+                </span>
+                <button
+                  type="button"
+                  onClick={() => void fetchCloudWorkers()}
+                  className="flex items-center gap-1 text-[11px] text-slate-400 hover:text-slate-200 transition-colors"
+                  title="Refresh storage workers"
+                >
+                  <RefreshCw size={11} />
+                  <span>Refresh</span>
+                </button>
+              </div>
 
               {automations.length > 0 || cloudWorkers.length > 0 ? (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">

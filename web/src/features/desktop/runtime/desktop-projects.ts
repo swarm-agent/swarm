@@ -13,20 +13,34 @@ import {
   useDesktopV3CacheSelector,
 } from '../state/desktop-v3-cache-store'
 
+export * from './desktop-projects-membership'
+
+export interface DesktopProjectsRuntimeDeps {
+  fetchTasks: (projectId: string) => Promise<{ tasks?: any[] }>
+  fetchMedia: (projectId: string) => Promise<{ media?: ProjectTaskMediaRef[] }>
+  getState: () => DesktopProjectsState
+  dispatch: (action: DesktopProjectsAction) => void
+}
+
 export class DesktopProjectsRuntime {
   private readonly demand = new Map<string, { projectId: string; count: number }>()
   private readonly inFlight = new Map<string, Promise<void>>()
+  private readonly deps: DesktopProjectsRuntimeDeps
 
-  constructor(
-    private readonly deps = {
-      fetchTasks: (projectId: string) =>
-        requestJson<{ tasks?: any[] }>(`/v3/projects/${encodeURIComponent(projectId)}/tasks`),
-      fetchMedia: (projectId: string) =>
-        requestJson<{ media?: ProjectTaskMediaRef[] }>(`/v3/projects/${encodeURIComponent(projectId)}/media`),
-      getState: (): DesktopProjectsState => getDesktopV3CacheSnapshot().projectsState ?? {},
-      dispatch: (action: DesktopProjectsAction) => dispatchDesktopV3Cache(action as any),
+  constructor(deps?: Partial<DesktopProjectsRuntimeDeps>) {
+    this.deps = {
+      fetchTasks:
+        deps?.fetchTasks ??
+        ((projectId: string) =>
+          requestJson<{ tasks?: any[] }>(`/v3/projects/${encodeURIComponent(projectId)}/tasks`)),
+      fetchMedia:
+        deps?.fetchMedia ??
+        ((projectId: string) =>
+          requestJson<{ media?: ProjectTaskMediaRef[] }>(`/v3/projects/${encodeURIComponent(projectId)}/media`)),
+      getState: deps?.getState ?? (() => getDesktopV3CacheSnapshot().projectsState ?? {}),
+      dispatch: deps?.dispatch ?? ((action: DesktopProjectsAction) => dispatchDesktopV3Cache(action as any)),
     }
-  ) {}
+  }
 
   acquire(projectId: string): { ready: Promise<void>; release: () => void } {
     if (!projectId) return { ready: Promise.resolve(), release: () => {} }
@@ -46,6 +60,18 @@ export class DesktopProjectsRuntime {
         }
       },
     }
+  }
+
+  evict(projectId: string): void {
+    if (!projectId) return
+    this.demand.delete(projectId)
+    this.inFlight.delete(projectId)
+    this.deps.dispatch({ type: 'projects.evict', projectId })
+  }
+
+  reset(): void {
+    this.demand.clear()
+    this.inFlight.clear()
   }
 
   refresh(projectId: string): Promise<void> {
@@ -108,10 +134,15 @@ export class DesktopProjectsRuntime {
     }
   }
 
-  acceptFrame(frame: { kind: string; project_id?: string }): void {
+  acceptFrame(frame: { kind: string; project_id?: string; projectId?: string }): void {
+    const projectId = frame.project_id || frame.projectId
     if (frame.kind === 'project.updated') {
-      this.invalidate(frame.project_id)
-    } else if (frame.kind === 'cursor.error' || frame.kind === 'rehydrate.required') {
+      this.invalidate(projectId)
+    } else if (
+      frame.kind === 'cursor.error' ||
+      frame.kind === 'rehydrate.required' ||
+      frame.kind === 'auth.credentials.updated'
+    ) {
       this.invalidate()
     }
   }

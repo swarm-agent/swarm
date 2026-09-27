@@ -223,8 +223,13 @@ export function reconnectResponseToActions(raw: SessionsReconnectResponse): Desk
 export function realtimeFrameToActions(frame: RealtimeMessage): DesktopV3CacheAction[] {
   assertDesktopV3RealtimeFrame(frame)
   switch (frame.kind) {
-    case 'event':
+    case 'event': {
+      const sid = frame.session_id || frame.event?.session_id
+      if (sid && sid.startsWith('__')) {
+        return []
+      }
       return [{ type: 'realtime.applyEvent', event: normalizeRealtimeEventFrame(frame), endpointCursor: frame.endpoint_cursor }]
+    }
 
     case 'notification.resource.updated':
       return [{ type: 'realtime.applyNotificationResource', frame }]

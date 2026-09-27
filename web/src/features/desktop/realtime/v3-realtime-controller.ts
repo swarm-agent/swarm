@@ -440,7 +440,10 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
       if (frame.kind === 'event' || frame.kind === 'workset.session.discovered' || frame.kind === 'workset.session.updated' || frame.kind === 'workset.session.removed') {
         // Cache listeners and this post-commit path can observe the same frame.
         // Coalesce both signals so an event burst performs one reconciliation.
-        this.scheduleDesiredSessionReconciliation()
+        const sid = frame.session_id || frame.event?.session_id
+        if (!sid || !sid.startsWith('__')) {
+          this.scheduleDesiredSessionReconciliation()
+        }
       }
     } catch (error) {
       this.livePatchCoordinator.resetGeneration(0)
@@ -923,6 +926,7 @@ export function resetDesktopV3RealtimeControllerForTests(): void {
   retainedDesktopV3RealtimeController = undefined
   desktopV3RealtimeGeneration += 1
   desktopV3RealtimeControllerFactory = () => new DesktopV3RealtimeControllerRuntime()
+  desktopProjects.reset()
 }
 
 export function setDesktopV3RealtimeControllerFactoryForTests(factory: () => DesktopV3RealtimeControllerRuntime): void {
