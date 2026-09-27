@@ -439,12 +439,12 @@ export class SwarmProjectsNamespace {
   /**
    * Rejects a task and marks its bound plan as rejected.
    */
-  async rejectTask(projectId: string, taskId: string, options?: RequestOptions): Promise<RejectProjectTaskResult> {
+  async rejectTask(projectId: string, taskId: string, guards?: ProjectTaskApprovalGuards, options?: RequestOptions): Promise<RejectProjectTaskResult> {
     const pId = encodeURIComponent(projectId.trim());
     const tId = encodeURIComponent(taskId.trim());
     const res = await this.transport.request<RejectProjectTaskResult>(
       `/v3/projects/${pId}/tasks/${tId}/reject`,
-      { method: 'POST', ...options }
+      { method: 'POST', body: guards ?? {}, ...options }
     );
     const data = res.data;
     if (data && typeof data === 'object' && 'task' in data && data.task) {
@@ -465,7 +465,7 @@ export class SwarmProjectsNamespace {
   async reopenTask(
     projectId: string,
     taskId: string,
-    params?: { feedback?: string },
+    params?: ProjectTaskApprovalGuards & { feedback?: string },
     options?: RequestOptions
   ): Promise<ReopenProjectTaskResult> {
     const pId = encodeURIComponent(projectId.trim());

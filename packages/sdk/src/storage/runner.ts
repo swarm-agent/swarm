@@ -155,7 +155,7 @@ export class WorkerActorRunner {
       const pendingTask = spec.tasks?.find((t) => t.status === 'pending');
       if (pendingTask) {
         targetTask = pendingTask;
-        jobType = pendingTask.type;
+        jobType = pendingTask.type === 'automated' ? 'automation' : pendingTask.type;
         log('info', `Selected queued task "${targetTask.id}": ${targetTask.title}`);
       } else {
         log('info', `No queued tasks found; executing worker scheduled routine: "${spec.name}"`);
@@ -261,8 +261,8 @@ export class WorkerActorRunner {
         {
           id: 'publish_x_post',
           label: 'Approve for Cloud Dispatch',
-          actionURL: '/v1/deliverables/' + sessionId + '/publish',
-          style: 'primary',
+          endpoint: '/v1/deliverables/' + sessionId + '/publish',
+          variant: 'primary',
         },
       ],
     });

@@ -802,7 +802,7 @@ export interface CompleteProjectTaskResult {
   task: ProjectTaskRecord;
 }
 
-export interface RefineProjectTaskParams {
+export interface RefineProjectTaskParams extends ProjectTaskApprovalGuards {
   feedback?: string;
   error_summary?: string;
   agent?: string;
