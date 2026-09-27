@@ -13,6 +13,7 @@ import (
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/identity"
+	runruntime "swarm/packages/swarmd/internal/run"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
@@ -835,7 +836,7 @@ func (s *Server) ApproveProjectTask(ctx context.Context, p identity.Principal, p
 	// Idempotent retry check: if task is in_progress AND execution run is genuinely active, do not duplicate run!
 	if existingTask.Status == "in_progress" && existingTask.SessionID != "" && existingTask.PlanBinding == nil {
 		activeIntent, ok, _ := db.GetV3SessionActiveRunIntent(existingTask.SessionID)
-		if ok && activeIntent != nil && (activeIntent.Status == pebblestore.V3RunIntentPendingExecutor || activeIntent.Status == pebblestore.V3RunIntentRunning) {
+		if ok && (activeIntent.Status == pebblestore.V3RunIntentPendingExecutor || activeIntent.Status == pebblestore.V3RunIntentRunning) {
 			hydrateTaskPlanDocument(existingTask, db)
 			hydrateTaskProgramStatus(existingTask, db)
 			return existingTask, nil
@@ -886,7 +887,7 @@ func (s *Server) ApproveProjectTask(ctx context.Context, p identity.Principal, p
 			return nil, errors.New("plan has no checkpoints to execute")
 		}
 
-		lifecycleMsg, _ := sessionruntime.BuildPlanExecutionLifecycleSystemMessage(sessionruntime.PlanExecutionLifecycleMessageInput{
+		lifecycleMsg, _ := runruntime.BuildPlanExecutionLifecycleSystemMessage(runruntime.PlanExecutionLifecycleMessageInput{
 			Action: "approve_and_start",
 			Plan:   plan,
 			Payload: map[string]any{
@@ -942,7 +943,7 @@ func (s *Server) ApproveProjectTask(ctx context.Context, p identity.Principal, p
 
 		if active, ok, err := db.GetV3SessionActiveRunIntent(existingTask.SessionID); err != nil {
 			return nil, err
-		} else if ok && active != nil && active.PlanID == plan.ID && (active.Status == pebblestore.V3RunIntentPendingExecutor || active.Status == pebblestore.V3RunIntentRunning) {
+		} else if ok && active.PlanID == plan.ID && (active.Status == pebblestore.V3RunIntentPendingExecutor || active.Status == pebblestore.V3RunIntentRunning) {
 			reconciled, err := db.UpdateProjectTask(p.AccountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
 				t.Status, t.Agent, t.ActionNeeded = "in_progress", "swarm", ""
 				return nil
@@ -1237,7 +1238,7 @@ func (s *Server) deployProjectTaskLocked(ctx context.Context, p identity.Princip
 	// Idempotent retry: if active run intent exists, avoid duplicate runs
 	if task.Status == "in_progress" && task.SessionID != "" {
 		activeIntent, ok, _ := db.GetV3SessionActiveRunIntent(task.SessionID)
-		if ok && activeIntent != nil && (activeIntent.Status == pebblestore.V3RunIntentPendingExecutor || activeIntent.Status == pebblestore.V3RunIntentRunning) {
+		if ok && (activeIntent.Status == pebblestore.V3RunIntentPendingExecutor || activeIntent.Status == pebblestore.V3RunIntentRunning) {
 			return nil
 		}
 	}

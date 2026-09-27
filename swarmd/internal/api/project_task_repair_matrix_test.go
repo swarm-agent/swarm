@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -177,13 +176,13 @@ func setupMatrixTestFixture(t *testing.T) *matrixTestFixture {
 		AccountScopeID: accountID,
 	})
 
-	authSvc := auth.NewService(idStore, &auth.SystemIdentity{})
+	authSvc := auth.NewService(pebblestore.NewAuthStore(db), el)
 
 	// Agent model settings setup
 	settingsStore := pebblestore.NewAgentModelSettingsStore(db)
 	_, _ = settingsStore.PutForAccount(pebblestore.AgentModelSettingsRecord{
 		AccountScopeID: accountID,
-		Swarm: pebblestore.AgentModelSwarmAssignments{
+		Swarm: pebblestore.SwarmAgentModelAssignments{
 			Action: pebblestore.AgentModelAssignment{
 				Provider:    "google",
 				Model:       "gemini-2.5-action",
@@ -197,16 +196,18 @@ func setupMatrixTestFixture(t *testing.T) *matrixTestFixture {
 				ServiceTier: "standard",
 			},
 		},
-		Coder: pebblestore.AgentModelAssignment{
-			Provider:    "anthropic",
-			Model:       "claude-3-7-sonnet",
-			Thinking:    "medium",
-			ServiceTier: "standard",
+		SystemAgents: pebblestore.SystemAgentModelAssignments{
+			Coder: pebblestore.AgentModelAssignment{
+				Provider:    "anthropic",
+				Model:       "claude-3-7-sonnet",
+				Thinking:    "medium",
+				ServiceTier: "standard",
+			},
 		},
 	})
 	modelSettingsSvc := agentmodelsettings.NewService(settingsStore)
 
-	agents := agentruntime.NewService(pebblestore.NewAgentStore(db))
+	agents := agentruntime.NewService(pebblestore.NewAgentStore(db), el)
 	modelSvc := model.NewService(pebblestore.NewModelStore(db), el, nil)
 
 	mockWT := &testMockWorktreeService{}
@@ -764,7 +765,6 @@ func TestTaskMatrix_Case5_DirectPlanNoPlanningRun(t *testing.T) {
 	var resp map[string]any
 	_ = json.Unmarshal(w.Body.Bytes(), &resp)
 	taskMap := resp["task"].(map[string]any)
-	taskID := taskMap["id"].(string)
 
 	if taskMap["status"] != "pending_approval" {
 		t.Fatalf("expected status 'pending_approval', got %v", taskMap["status"])
@@ -1055,7 +1055,7 @@ func TestTaskMatrix_Case8_DuplicateConcurrentRetriesCounts(t *testing.T) {
 	}
 
 	// 3. First approval
-	w = f.callAPI(http.MethodPost, "/"+projID+"/tasks/"+taskID+"/approve", nil, p)
+	w := f.callAPI(http.MethodPost, "/"+projID+"/tasks/"+taskID+"/approve", nil, p)
 	if w.Code != http.StatusOK {
 		t.Fatalf("first approve failed %d", w.Code)
 	}
@@ -1247,7 +1247,7 @@ func TestTaskMatrix_Case10_ReopenStoreRecoveryExactReceiptLinksNoReplay(t *testi
 
 	// Verify active run intent recovered after reopen
 	activeIntent, intentFound, intentErr := ss2.GetV3SessionActiveRunIntent(sessID)
-	if intentErr != nil || !intentFound || activeIntent == nil {
+	if intentErr != nil || !intentFound {
 		t.Fatalf("expected active run intent recovered after reopen: found=%v, err=%v", intentFound, intentErr)
 	}
 	if activeIntent.Status != pebblestore.V3RunIntentPendingExecutor && activeIntent.Status != pebblestore.V3RunIntentRunning {
@@ -1267,11 +1267,10 @@ func TestTaskMatrix_Case10_ReopenStoreRecoveryExactReceiptLinksNoReplay(t *testi
 	el2, _ := pebblestore.NewEventLog(db2)
 	sessions2 := sessionruntime.NewService(ss2, el2)
 	planLifecycle2 := sessionruntime.NewPlanLifecycleService(sessions2)
-	idStore2 := pebblestore.NewIdentityStore(db2)
-	authSvc2 := auth.NewService(idStore2, &auth.SystemIdentity{})
+	authSvc2 := auth.NewService(pebblestore.NewAuthStore(db2), el2)
 	settingsStore2 := pebblestore.NewAgentModelSettingsStore(db2)
 	modelSettingsSvc2 := agentmodelsettings.NewService(settingsStore2)
-	agents2 := agentruntime.NewService(pebblestore.NewAgentStore(db2))
+	agents2 := agentruntime.NewService(pebblestore.NewAgentStore(db2), el2)
 	modelSvc2 := model.NewService(pebblestore.NewModelStore(db2), el2, nil)
 	server2 := &Server{
 		sessions:           sessions2,

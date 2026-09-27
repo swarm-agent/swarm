@@ -521,3 +521,4 @@ func TestProjectTasks_CollectionGet_NoSubprocessStormAndHydration(t *testing.T) 
 	if _, err := os.Stat(sentinelLog); err != nil {
 		t.Fatalf("expected single task GET to execute git subprocess sentinel, but sentinel was not invoked")
 	}
+}
