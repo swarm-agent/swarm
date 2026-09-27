@@ -2479,7 +2479,11 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 	}
 	content := loopResult.FinalContent
 	if strings.TrimSpace(content) == "" {
-		return sessionV3AssistantResponse{}, errors.New("provider returned empty assistant response")
+		if loopResult.DurableFlushCount > 0 {
+			content = "Task completed."
+		} else {
+			return sessionV3AssistantResponse{}, errors.New("provider returned empty assistant response")
+		}
 	}
 	providerRunnerID := strings.TrimSpace(runner.ID())
 	if providerRunnerID == "" {

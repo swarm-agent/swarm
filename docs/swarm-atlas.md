@@ -3072,6 +3072,23 @@ no scratch/logs or private identifiers were added to tracked documentation.
   - `web/src/features/desktop/orchestrate/orchestrate-workers-dogfood.spec.ts`: verified Scoped Project Workspaces rendering, Suggest Changes button, and workspace scope update handler.
   - All unit tests pass cleanly.
 
+### Automation V2 Validation Diagnostics & Provider Empty-Content Fallback (2026-09-27)
+
+- **Actionable Automation V2 Error Reporting (`swarmd/internal/api/automations_v2.go`):**
+  - Updated `automationV2Error` to surface structured plan document validation errors (`executable plan document is invalid`), checkpoint constraint errors (`automation checkpoints must be unexecuted`), setting validation errors, and policy rejections directly in the HTTP 400 response body.
+  - Preserved security and public-safe boundary by redacting internal database and commit errors with generic error response (`automation v2 operation rejected`).
+- **Provider Empty-Content Tool Execution Fallback (`swarmd/internal/api/sessions_v3_executor.go`):**
+  - Hardened `providerAssistantResponse`: when `loopResult.FinalContent` is empty but tool flushes were executed (`loopResult.DurableFlushCount > 0`), defaults assistant content to `"Task completed."` instead of failing the run with `provider returned empty assistant response`.
+  - Ensures autonomous background runs and worker occurrences do not fail after successfully executing all tool actions.
+- **Verification & Live E2E Qualification:**
+  - `swarmd/internal/api/automations_v2_test.go`: verified all `TestAutomationV2*` unit tests pass.
+  - Executed full 5-benchmark Worker Automation suite on live Google Cloud Platform Compute Engine testbench VM:
+    - WB-1 (Job-Free Specialist Worker, dynamic trigger): PASSED (14.1s)
+    - WB-2 (Recurring Worker & DailyRunCap): PASSED (12.1s)
+    - WB-3 (Cron Worker & Overlap Serialization): PASSED (6.1s)
+    - WB-4 (Deliverable & Action Return Pipeline): PASSED (24.1s)
+    - WB-5 (Anomaly Detection & Attention Alerting): PASSED (8.1s)
+
 
 
 

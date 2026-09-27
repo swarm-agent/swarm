@@ -64,7 +64,10 @@ func automationV2Error(w http.ResponseWriter, err error) {
 		msg := err.Error()
 		if strings.Contains(msg, "paused") || strings.Contains(msg, "cancelled") || strings.Contains(msg, "archived") ||
 			strings.Contains(msg, "expired") || strings.Contains(msg, "serialize") || strings.Contains(msg, "pre-configured jobs") ||
-			strings.Contains(msg, "daily run cap") || strings.Contains(msg, "workspace required") || strings.Contains(msg, "target worker") {
+			strings.Contains(msg, "daily run cap") || strings.Contains(msg, "workspace required") || strings.Contains(msg, "target worker") ||
+			strings.Contains(msg, "executable plan document is invalid") || strings.Contains(msg, "invalid automation v2 policy") ||
+			strings.Contains(msg, "automation checkpoints must be unexecuted") || strings.Contains(msg, "automation subtasks must be unexecuted") ||
+			strings.Contains(msg, "exclusive automation_v2 required") || strings.Contains(msg, "worker_id required") || strings.Contains(msg, "scope required") {
 			writeError(w, http.StatusBadRequest, errors.New(msg))
 			return
 		}
