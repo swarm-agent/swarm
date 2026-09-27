@@ -546,25 +546,29 @@ export function validateSelectedTaskForContext(
       }
     }
 
-    // Stale plan check: ensure plan IDs and definition revisions match if both specify them
+    // Stale plan check: ensure plan IDs and definition revisions match
     const callerBinding = task.planBinding || (task as any).plan_binding
     const liveBinding = liveMatch.planBinding || (liveMatch as any).plan_binding
     const callerPlanId = callerBinding?.planId || callerBinding?.plan_id
     const livePlanId = liveBinding?.planId || liveBinding?.plan_id
-    if (callerPlanId && livePlanId && callerPlanId !== livePlanId) {
+    if (callerPlanId !== livePlanId) {
       return {
         valid: false,
         reason: 'stale_task',
-        error: `Selected task ${task.id} plan ${callerPlanId} is stale (project task plan is ${livePlanId})`,
+        error: `Selected task ${task.id} plan ${callerPlanId || 'none'} is stale (project task plan is ${livePlanId || 'none'})`,
       }
     }
-    const callerPlanRev = typeof callerBinding?.definitionRevision === 'number' ? callerBinding.definitionRevision : (typeof callerBinding?.definition_revision === 'number' ? callerBinding.definition_revision : undefined)
-    const livePlanRev = typeof liveBinding?.definitionRevision === 'number' ? liveBinding.definitionRevision : (typeof liveBinding?.definition_revision === 'number' ? liveBinding.definition_revision : undefined)
-    if (typeof callerPlanRev === 'number' && typeof livePlanRev === 'number' && callerPlanRev !== livePlanRev) {
+    const callerPlanRev = typeof callerBinding?.definitionRevision === 'number'
+      ? callerBinding.definitionRevision
+      : (typeof callerBinding?.definition_revision === 'number' ? callerBinding.definition_revision : undefined)
+    const livePlanRev = typeof liveBinding?.definitionRevision === 'number'
+      ? liveBinding.definitionRevision
+      : (typeof liveBinding?.definition_revision === 'number' ? liveBinding.definition_revision : undefined)
+    if (callerPlanRev !== livePlanRev) {
       return {
         valid: false,
         reason: 'stale_revision',
-        error: `Selected task ${task.id} plan definition revision r${callerPlanRev} is stale (project task plan is at r${livePlanRev})`,
+        error: `Selected task ${task.id} plan definition revision ${callerPlanRev !== undefined ? `r${callerPlanRev}` : 'none'} is stale (project task plan is at ${livePlanRev !== undefined ? `r${livePlanRev}` : 'none'})`,
       }
     }
 

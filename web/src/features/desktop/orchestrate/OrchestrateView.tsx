@@ -63,7 +63,7 @@ import { selectPendingWorkerSidebarReviews } from '../state/desktop-automation-v
 import { desktopAutomationV2 } from '../runtime/desktop-automation-v2'
 import { decidePendingWorkerReview } from '../tools/automations/pending-worker-sidebar-reviews'
 import type { AutomationV2Proposal } from '../state/desktop-automation-v2-api'
-import { DesktopV3ExistingConversationPane } from '../chat/components/desktop-v3-existing-conversation-pane'
+import { DesktopV3ExistingConversationPane, resolveDesktopV3StopRunRequest } from '../chat/components/desktop-v3-existing-conversation-pane'
 import {
   isDesktopV3SessionTailReady,
   selectRenderedSessionMessages,
@@ -119,7 +119,6 @@ import {
   buildTaskAcceptancePayload,
   buildSelectedTaskMessageEnvelope,
   buildSelectedTaskMessageMetadata,
-  parseSelectedTaskMessageEnvelope,
   validateSelectedTaskForContext,
   getPrimarySystemAgentName,
   resolveDeployImpendingConfig,
@@ -127,6 +126,8 @@ import {
   resolveTaskWorkspace,
   type SelectedTaskContextSnapshot,
 } from './orchestrate-task-helpers'
+import type { DesktopSessionRecord } from '../types/realtime'
+import type { SessionSnapshot } from '../state/desktop-v3-cache-types'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { agentModelSettingsQueryOptions } from '../settings/swarm/queries/get-agent-model-settings'
 import { AgentModelControl, type AgentModelControlTaskOverrideInput } from '../chat/components/agent-model-control'
@@ -2512,6 +2513,7 @@ function MinimalTaskCard({
  */
 function OrchestratorChatComposer({
   sessionId,
+  session,
   project,
   targetTask,
   selectedTaskId,
@@ -2519,6 +2521,7 @@ function OrchestratorChatComposer({
   onDeselectTask,
 }: {
   sessionId: string
+  session?: DesktopSessionRecord | SessionSnapshot | null
   project?: ProjectSummary
   targetTask?: RunningTask | null
   selectedTaskId?: string
@@ -2533,7 +2536,10 @@ function OrchestratorChatComposer({
   const fileInputRef = useRef<HTMLInputElement | null>(null)
 
   const activeRun = useDesktopV3CacheSelector(
-    useCallback((state) => state.activeRunsBySession[sessionId] ?? null, [sessionId])
+    useCallback((state) => {
+      const runs = Object.values(state.liveRunsBySession[sessionId] ?? {})
+      return runs.find((r) => r.status === 'running' || r.status === 'constructing') ?? null
+    }, [sessionId])
   )
   const isRunning = Boolean(activeRun && activeRun.runId)
 
@@ -2550,7 +2556,13 @@ function OrchestratorChatComposer({
   const handleStopRun = async () => {
     if (!activeRun?.runId) return
     try {
-      await stopSessionV3Run(sessionId, { runId: activeRun.runId })
+      const stopRequest = resolveDesktopV3StopRunRequest({
+        route: null,
+        runId: activeRun.runId,
+        session,
+        targetSwarmId: 'host',
+      })
+      await stopSessionV3Run(sessionId, stopRequest)
     } catch (err: any) {
       setSendError(err?.message || 'Failed to stop agent execution')
     }
@@ -3115,6 +3127,7 @@ function OrchestratorChatSidebar({
         composerOverride={
           <OrchestratorChatComposer
             sessionId={sessionId}
+            session={currentSession}
             project={project}
             targetTask={targetTask}
             selectedTaskId={selectedTaskId}

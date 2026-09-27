@@ -602,3 +602,150 @@ test('buildSelectedTaskMessageEnvelope and documentation make no server security
     'Helpers documentation must honestly state that client envelope is not a server security boundary'
   )
 })
+
+test('validateSelectedTaskForContext rejects mismatched plan ID between caller and authoritative task', () => {
+  // Written test purpose:
+  // - Requirement: Selected task context must verify plan ID matches authoritative state.
+  // - Threat/regression prevented: Stale or unaligned plan references attached to orchestrator prompts.
+  // - Symbols: validateSelectedTaskForContext in orchestrate-task-helpers.ts.
+  const project: ProjectSummary = {
+    id: 'proj-1',
+    name: 'Platform',
+    slug: 'platform',
+    description: '',
+    repoPath: '/workspace/repo',
+    branch: 'dev',
+    gitStatus: 'clean',
+    linkedWorkspaces: [],
+    activeWorkersCount: 0,
+    pendingDeliverablesCount: 0,
+    runningTasksCount: 1,
+  }
+
+  const liveTask: RunningTask = {
+    id: 'task-plan-id-check',
+    title: 'Plan ID Task',
+    agentType: 'plan',
+    status: 'in_progress',
+    workspaceTarget: '/workspace/repo',
+    elapsed: '1m',
+    subtasks: [],
+    revision: 1,
+    planBinding: {
+      planId: 'plan-live-abc',
+      definitionRevision: 1,
+    },
+  }
+
+  // Caller specifies different plan ID
+  const mismatchedPlanTask: RunningTask = {
+    ...liveTask,
+    planBinding: {
+      planId: 'plan-caller-xyz',
+      definitionRevision: 1,
+    },
+  }
+
+  const res = validateSelectedTaskForContext(project, mismatchedPlanTask, liveTask)
+  assert.equal(res.valid, false)
+  assert.equal(res.reason, 'stale_task')
+  assert.ok(res.error?.includes('plan plan-caller-xyz is stale'))
+
+  // Caller has no plan binding while live task has one
+  const noPlanTask: RunningTask = {
+    ...liveTask,
+    planBinding: undefined,
+  }
+  const resNoPlan = validateSelectedTaskForContext(project, noPlanTask, liveTask)
+  assert.equal(resNoPlan.valid, false)
+  assert.equal(resNoPlan.reason, 'stale_task')
+
+  // Live task has no plan binding while caller specifies one
+  const liveWithoutPlan: RunningTask = { ...liveTask, planBinding: undefined }
+  const resLiveNoPlan = validateSelectedTaskForContext(project, liveTask, liveWithoutPlan)
+  assert.equal(resLiveNoPlan.valid, false)
+  assert.equal(resLiveNoPlan.reason, 'stale_task')
+})
+
+test('validateSelectedTaskForContext preserves definitionRevision 0 and never defaults missing values silently to 0', () => {
+  // Written test purpose:
+  // - Requirement: Snapshot and validation must treat definitionRevision 0 as valid distinct revision,
+  //   and must reject missing definitionRevision against 0 rather than silently coercing undefined to 0.
+  // - Threat/regression prevented: Silent revision collision between unversioned and initial-revision tasks.
+  // - Symbols: validateSelectedTaskForContext in orchestrate-task-helpers.ts.
+  const project: ProjectSummary = {
+    id: 'proj-1',
+    name: 'Platform',
+    slug: 'platform',
+    description: '',
+    repoPath: '/workspace/repo',
+    branch: 'dev',
+    gitStatus: 'clean',
+    linkedWorkspaces: [],
+    activeWorkersCount: 0,
+    pendingDeliverablesCount: 0,
+    runningTasksCount: 1,
+  }
+
+  const taskRevZero: RunningTask = {
+    id: 'task-rev-0',
+    title: 'Initial Plan Task',
+    agentType: 'plan',
+    status: 'in_progress',
+    workspaceTarget: '/workspace/repo',
+    elapsed: '10s',
+    subtasks: [],
+    revision: 1,
+    planBinding: {
+      planId: 'plan-init',
+      definitionRevision: 0,
+    },
+  }
+
+  // Matching revision 0 succeeds and snapshot retains 0 (not undefined or 1)
+  const resZero = validateSelectedTaskForContext(project, taskRevZero, taskRevZero)
+  assert.equal(resZero.valid, true)
+  assert.equal(resZero.snapshot?.planDefinitionRevision, 0)
+
+  // Revision 0 vs Revision 1 fails with stale_revision
+  const taskRevOne: RunningTask = {
+    ...taskRevZero,
+    planBinding: {
+      planId: 'plan-init',
+      definitionRevision: 1,
+    },
+  }
+  const resMismatch = validateSelectedTaskForContext(project, taskRevZero, taskRevOne)
+  assert.equal(resMismatch.valid, false)
+  assert.equal(resMismatch.reason, 'stale_revision')
+  assert.ok(resMismatch.error?.includes('r0 is stale (project task plan is at r1)'))
+
+  // Missing definitionRevision vs Revision 0 is detected as stale_revision, never silently matched
+  const taskMissingRev: RunningTask = {
+    ...taskRevZero,
+    planBinding: {
+      planId: 'plan-init',
+    } as any,
+  }
+  const resMissing = validateSelectedTaskForContext(project, taskMissingRev, taskRevZero)
+  assert.equal(resMissing.valid, false)
+  assert.equal(resMissing.reason, 'stale_revision')
+})
+
+test('DesktopV3UserMessage extracts and renders task context badge from user message envelope', () => {
+  // Written test purpose:
+  // - Requirement: DesktopV3UserMessage must detect enveloped task context headers and render
+  //   a dedicated context badge, showing clean user prompt text without raw envelope metadata.
+  // - Threat/regression prevented: Visual clutter from raw YAML/bracketed metadata leaked into conversation pane.
+  // - Symbols: DesktopV3UserMessage in desktop-v3-existing-conversation-pane.tsx.
+  const panePath = path.join(__dirname, '../chat/components/desktop-v3-existing-conversation-pane.tsx')
+  const paneSource = fs.readFileSync(panePath, 'utf8')
+  assert.ok(
+    paneSource.includes('data-testid="user-message-task-context-badge"'),
+    'DesktopV3UserMessage must render user-message-task-context-badge for enveloped messages'
+  )
+  assert.ok(
+    paneSource.includes('Task Context:'),
+    'DesktopV3UserMessage must display Task Context label'
+  )
+})

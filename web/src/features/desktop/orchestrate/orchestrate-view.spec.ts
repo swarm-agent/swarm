@@ -47,7 +47,7 @@ test('OrchestrateView synchronizes task cards with live session reality, plans, 
   assert.ok(source.includes('Current Focus'), 'MinimalTaskCard must display Current Focus banner')
   assert.ok(source.includes('Agent Execution Plan'), 'MinimalTaskCard must display agent execution plan checklist')
   assert.ok(source.includes('Live Streaming Activity'), 'MinimalTaskCard must render live streaming activity box')
-  assert.ok(source.includes('formattedTimer'), 'MinimalTaskCard must format dynamic session timer')
+  assert.ok(source.includes('TaskElapsedTimer'), 'MinimalTaskCard must format dynamic session timer')
 
   // Needs review transition (not flipping directly to completed)
   assert.ok(source.includes("status = 'needs_review'"), 'Tasks must transition to needs_review when execution completes')

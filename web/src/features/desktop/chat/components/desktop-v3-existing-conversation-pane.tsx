@@ -4839,10 +4839,44 @@ function DesktopV3UserMessage({
   artifactSelections?: DesktopV3ArtifactSelectionReference[];
   pendingLabel?: string;
 }) {
+  const envelope = useMemo(() => {
+    if (!content.startsWith('[Task Context:')) return null;
+    const sepIdx = content.indexOf('\n---\n');
+    if (sepIdx === -1) return null;
+    const header = content.slice(0, sepIdx);
+    const userPrompt = content.slice(sepIdx + 5).trim();
+    const taskTitleMatch = header.match(/task_title:\s*([^\n]+)/);
+    const taskIdMatch = header.match(/task_id:\s*([^\n]+)/);
+    const taskTitle = taskTitleMatch?.[1]?.trim() || taskIdMatch?.[1]?.trim() || 'Task';
+    const taskRevMatch = header.match(/task_revision:\s*([^\n]+)/);
+    const taskRev = taskRevMatch?.[1]?.trim();
+    return { taskTitle, taskRev, userPrompt };
+  }, [content]);
+
   return (
     <div className="flex justify-end">
       <div className="max-w-[70%] rounded-xl bg-[var(--app-primary)] px-4 py-3 text-sm leading-6 text-[var(--app-primary-text)] shadow-sm">
-        {content ? <div className="whitespace-pre-wrap break-words">{content}</div> : null}
+        {envelope ? (
+          <div className="space-y-1.5">
+            <div
+              className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-black/20 text-xs border border-white/20 font-medium"
+              data-testid="user-message-task-context-badge"
+            >
+              <span className="opacity-75">Task Context:</span>
+              <span className="font-semibold">{envelope.taskTitle}</span>
+              {envelope.taskRev && (
+                <span className="font-mono text-[10px] px-1 py-0.2 rounded bg-black/30 opacity-90">
+                  r{envelope.taskRev}
+                </span>
+              )}
+            </div>
+            {envelope.userPrompt ? (
+              <div className="whitespace-pre-wrap break-words">{envelope.userPrompt}</div>
+            ) : null}
+          </div>
+        ) : content ? (
+          <div className="whitespace-pre-wrap break-words">{content}</div>
+        ) : null}
         {media?.length ? <div className="mt-2 flex flex-wrap gap-1.5">{media.map((item, index) => <span key={`${item.asset_id}:${index}`} className="rounded-md border border-white/25 px-2 py-1 text-xs">{item.file_type?.toUpperCase() || item.mime_type} · {Math.ceil(item.size / 1024)} KB</span>)}</div> : null}
         {artifactSelections?.length ? <div className="mt-2 flex flex-wrap gap-1.5" data-testid="desktop-user-message-artifact-selections">{artifactSelections.map((selection) => <span key={`${selection.session_id}:${selection.collection_id}:${selection.variant_id}`} className="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-md border border-white/30 bg-white/10 px-2 py-1 text-xs"><GalleryHorizontal size={12} className="shrink-0" aria-hidden="true" /><span className="max-w-52 truncate" title={selection.description || selection.label}>{selection.label || 'Designer iteration'}</span>{selection.action === 'use' ? <span className="text-[9px] font-semibold uppercase tracking-wide opacity-75">Use design</span> : null}</span>)}</div> : null}
         {pendingLabel ? (
