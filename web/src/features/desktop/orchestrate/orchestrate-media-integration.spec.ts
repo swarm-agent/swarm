@@ -156,7 +156,8 @@ test('OrchestrateView renders Image and Video model dropdowns with availability 
 
   // 2. Fetch media catalog and default models on mount
   assert.ok(source.includes("'/v1/media/settings/catalog'"), 'Must query media catalog on mount')
-  assert.ok(source.includes("'/v1/desktop/ui-settings'"), 'Must query ui-settings on mount')
+  // Source guard only: behavioral shared-cache assertions live in video-default-state.spec.ts.
+  assert.ok(source.includes('useVideoTaskDefault(isDeployModalOpen, videoModelOptions)'), 'Video defaults must use shared canonical settings')
 
   // 3. Dropdowns with aria-labels and availability warning states
   assert.ok(source.includes('aria-label="Image Model"'), 'Must render Image Model dropdown')
@@ -164,11 +165,11 @@ test('OrchestrateView renders Image and Video model dropdowns with availability 
   assert.ok(source.includes('aria-label="Video Model"'), 'Must render Video Model dropdown')
   assert.ok(source.includes('No video models connected. Connect Google or OpenRouter key in Settings.'), 'Must display warning when no video models connected')
 
-  // 4. Model change handlers persist to /v1/desktop/ui-settings
+  // 4. Video default persistence is delegated to the canonical shared-cache hook.
   assert.ok(source.includes('handleImageModelChange'), 'Must provide handleImageModelChange')
   assert.ok(source.includes('handleVideoModelChange'), 'Must provide handleVideoModelChange')
   assert.ok(source.includes('tools: { image: { default_model: newModel } }'), 'Must persist image model choice')
-  assert.ok(source.includes('tools: { video: { default_model: newModel } }'), 'Must persist video model choice')
+  assert.ok(source.includes('const handleSetVideoAsDefault = videoDefaults.save'), 'Must persist video choice through canonical settings')
 
   // 5. Task creation passes selected model
   assert.ok(source.includes("model: taskIntent === 'image' ? (selectedImageModel || undefined)"), 'Deploy modal submit must pass selected model')

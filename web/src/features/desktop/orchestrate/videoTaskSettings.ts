@@ -301,7 +301,7 @@ export function resolveVideoPricing(
       rateForClip: 0,
       totalPrice: 0,
       fixedPrice: 0,
-      formattedSummary: 'Free ($0.00 billed)',
+      formattedSummary: 'Catalog estimate: $0.00 (not a billed charge)',
       ratesByResolution: freeRates,
       unitRatesByResolution: freeUnits,
       totalsByResolution: freeTotals,
@@ -537,19 +537,19 @@ export function resolveVideoPricing(
   if (fixedPrice !== undefined) {
     if (durationSeconds > 0) {
       formattedSummary = count > 1
-        ? `$${totalPrice.toFixed(2)} Total ($${fixedPrice.toFixed(2)}/clip × ${count} clips) · Verified catalog`
-        : `$${totalPrice.toFixed(2)} Total (${durationSeconds}s clip) · Verified catalog`
+        ? `$${totalPrice.toFixed(2)} Total ($${fixedPrice.toFixed(2)}/clip × ${count} clips) · Catalog estimate (not a billed charge)`
+        : `$${totalPrice.toFixed(2)} Total (${durationSeconds}s clip) · Catalog estimate (not a billed charge)`
     } else {
       formattedSummary = count > 1
-        ? `$${totalPrice.toFixed(2)} Total ($${fixedPrice.toFixed(2)}/clip × ${count} clips) · Verified catalog`
-        : `$${totalPrice.toFixed(2)} Total · Verified catalog`
+        ? `$${totalPrice.toFixed(2)} Total ($${fixedPrice.toFixed(2)}/clip × ${count} clips) · Catalog estimate (not a billed charge)`
+        : `$${totalPrice.toFixed(2)} Total · Catalog estimate (not a billed charge)`
     }
   } else if (ratePerSec !== undefined) {
     formattedSummary = count > 1
-      ? `$${totalPrice.toFixed(2)} Total ($${ratePerSec.toFixed(2)}/sec × ${durationSeconds}s × ${count} clips) · Verified catalog`
-      : `$${totalPrice.toFixed(2)} Total ($${ratePerSec.toFixed(2)}/sec × ${durationSeconds}s clip) · Verified catalog`
+      ? `$${totalPrice.toFixed(2)} Total ($${ratePerSec.toFixed(2)}/sec × ${durationSeconds}s × ${count} clips) · Catalog estimate (not a billed charge)`
+      : `$${totalPrice.toFixed(2)} Total ($${ratePerSec.toFixed(2)}/sec × ${durationSeconds}s clip) · Catalog estimate (not a billed charge)`
   } else {
-    formattedSummary = `$${totalPrice.toFixed(2)} Total · Verified catalog`
+    formattedSummary = `$${totalPrice.toFixed(2)} Total · Catalog estimate (not a billed charge)`
   }
 
   return {

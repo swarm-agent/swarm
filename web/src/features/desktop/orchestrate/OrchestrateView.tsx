@@ -1,4 +1,7 @@
 import { useState, useMemo, useEffect, useCallback } from 'react'
+import { useVideoTaskDefault } from './use-video-task-default'
+import { useQuery } from '@tanstack/react-query'
+import { getUISettings } from '../settings/swarm/queries/get-ui-settings'
 import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
 import { isSwarmSection, swarmPageLink, type SwarmPage } from './swarm-navigation'
 import {
@@ -2282,13 +2285,25 @@ export function OrchestrateView({
   const [autoApproveTask, setAutoApproveTask] = useState<boolean>(false)
   const [isDeployingTask, setIsDeployingTask] = useState(false)
   const [imageModelOptions, setImageModelOptions] = useState<TaskModalModelOption[]>([])
-  const [videoModelOptions, setVideoModelOptions] = useState<TaskModalModelOption[]>([])
+  const videoCatalog = useQuery({
+    queryKey: ['video-task-catalog', isDeployModalOpen],
+    queryFn: () => requestJson<{ video_generation_models?: any[] }>('/v1/media/settings/catalog'),
+    enabled: isDeployModalOpen,
+    staleTime: 0,
+  })
+  const videoModelOptions = useMemo<TaskModalModelOption[]>(() =>
+    (videoCatalog.data?.video_generation_models || []).map(m => ({
+      id: m.id || m.model, label: m.display_name || m.model || m.id,
+      ready: m.ready !== false, reason: m.reason || '', pricing: m.pricing,
+      provider: m.provider, model: m.model, generationOptions: m.generation_options,
+    })), [videoCatalog.data])
   const [audioModelOptions, setAudioModelOptions] = useState<TaskModalModelOption[]>([])
   const [selectedImageModel, setSelectedImageModel] = useState<string>('')
-  const [selectedVideoModel, setSelectedVideoModel] = useState<string>('')
+  const videoDefaults = useVideoTaskDefault(isDeployModalOpen, videoModelOptions)
+  const selectedVideoModel = videoDefaults.selected
+  const defaultVideoModel = videoDefaults.defaultModel
   const [selectedAudioModel, setSelectedAudioModel] = useState<string>('')
   const [defaultImageModel, setDefaultImageModel] = useState<string>('')
-  const [defaultVideoModel, setDefaultVideoModel] = useState<string>('')
   const [defaultAudioModel, setDefaultAudioModel] = useState<string>('')
   const [saveImageAsDefault, setSaveImageAsDefault] = useState<boolean>(false)
   const [saveVideoAsDefault, setSaveVideoAsDefault] = useState<boolean>(false)
@@ -2518,12 +2533,11 @@ export function OrchestrateView({
       // 5. Image, Video & Audio Models Catalog and UI Defaults
       try {
         const [settingsRes, catalogRes] = await Promise.all([
-          requestJson<{ tools?: { image?: { default_model?: string }; video?: { default_model?: string }; audio?: { default_model?: string } } }>('/v1/desktop/ui-settings').catch(() => null),
+          getUISettings(),
           requestJson<{ image_models?: any[]; video_generation_models?: any[]; video_models?: any[]; audio_models?: any[]; default_image_model?: string; default_video_model?: string; default_audio_model?: string }>('/v1/media/settings/catalog').catch(() => null),
         ])
         if (!cancelled) {
           const configuredImage = settingsRes?.tools?.image?.default_model || ''
-          const configuredVideo = settingsRes?.tools?.video?.default_model || ''
           const configuredAudio = settingsRes?.tools?.audio?.default_model || ''
 
           if (catalogRes?.image_models && Array.isArray(catalogRes.image_models)) {
@@ -2544,27 +2558,6 @@ export function OrchestrateView({
             const resolvedDefaultImage = match?.id || catalogDefault?.id || firstReady?.id || (imgOpts[0]?.id ?? '')
             setDefaultImageModel(resolvedDefaultImage)
             setSelectedImageModel(resolvedDefaultImage)
-          }
-
-          const vidModels = catalogRes?.video_generation_models || catalogRes?.video_models || []
-          if (Array.isArray(vidModels)) {
-            const vidOpts: TaskModalModelOption[] = vidModels.map((m: any) => ({
-              id: m.id || m.model,
-              label: m.display_name || m.model || m.id,
-              ready: m.ready !== false,
-              reason: m.reason || '',
-              pricing: m.pricing,
-              provider: m.provider,
-              model: m.model,
-              generationOptions: m.generation_options,
-            }))
-            setVideoModelOptions(vidOpts)
-            const match = vidOpts.find((m) => m.id === configuredVideo)
-            const catalogDefault = vidOpts.find((m) => m.id === catalogRes?.default_video_model)
-            const firstReady = vidOpts.find((m) => m.ready)
-            const resolvedDefaultVideo = match?.id || catalogDefault?.id || firstReady?.id || (vidOpts[0]?.id ?? '')
-            setDefaultVideoModel(resolvedDefaultVideo)
-            setSelectedVideoModel(resolvedDefaultVideo)
           }
 
           if (catalogRes?.audio_models && Array.isArray(catalogRes.audio_models)) {
@@ -3382,24 +3375,10 @@ export function OrchestrateView({
     }
   }
 
-  const handleSetVideoAsDefault = async (newModel: string) => {
-    setDefaultVideoModel(newModel)
-    setIsSavingModelChoice(true)
-    try {
-      await requestJson('/v1/desktop/ui-settings', {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tools: { video: { default_model: newModel } } }),
-      })
-    } catch (err) {
-      console.warn('Failed to save default video model:', err)
-    } finally {
-      setIsSavingModelChoice(false)
-    }
-  }
+  const handleSetVideoAsDefault = videoDefaults.save
 
   const handleVideoModelChange = async (newModel: string, alsoSetDefault = false) => {
-    setSelectedVideoModel(newModel)
+    videoDefaults.select(newModel)
     if (alsoSetDefault || saveVideoAsDefault) {
       await handleSetVideoAsDefault(newModel)
     }
@@ -3427,8 +3406,18 @@ export function OrchestrateView({
     if (!prompt || !selectedProject?.id) return
 
     if (taskIntent === 'video') {
+      if (videoDefaults.loading || videoDefaults.loadFailed || videoCatalog.isFetching || videoCatalog.isError) {
+        setVideoAttachmentError('Load video defaults before submitting')
+        return
+      }
       if (!selectedVideoOption?.ready) {
         setVideoAttachmentError('Select an available video model before submitting')
+        return
+      }
+      if ((supportedVideoAspectRatios.length > 0 && !supportedVideoAspectRatios.includes(videoAspectRatio)) ||
+          (supportedVideoResolutions.length > 0 && !supportedVideoResolutions.includes(videoResolution)) ||
+          (supportedVideoDurations.length > 0 && !supportedVideoDurations.includes(videoDuration))) {
+        setVideoAttachmentError('Selected video options are no longer supported. Review the catalog controls.')
         return
       }
       if (taggedMedia.length > 1) {
@@ -6289,7 +6278,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                   </div>
 
                   {/* Aspect Ratio with visual cues & Variants Count */}
-                  <div className="grid grid-cols-2 gap-3 pt-2 border-t border-slate-800/60">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-slate-800/60">
                     <div>
                       <label className="block text-[10px] text-slate-400 font-mono uppercase font-bold mb-1.5">Aspect Ratio</label>
                       <div className="grid grid-cols-4 gap-1 font-mono text-[10px]">
@@ -6366,6 +6355,10 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
               {/* Visual Selectors for Video Intent */}
               {taskIntent === 'video' && (
                 <div className="space-y-3 p-3 rounded-lg bg-slate-950/70 border border-slate-800">
+                  {videoCatalog.isError && <p role="alert" className="text-xs text-amber-300">Unable to load video catalog. <button type="button" onClick={() => void videoCatalog.refetch()}>Retry catalog</button></p>}
+                  {(videoDefaults.loading || videoCatalog.isFetching) && <p role="status" className="text-xs text-slate-400">Loading video defaults…</p>}
+                  {videoDefaults.error && <p role="alert" className="text-xs text-amber-300">{videoDefaults.error} <button type="button" onClick={() => void videoDefaults.retry()}>Retry</button></p>}
+                  {!videoDefaults.loading && !selectedVideoModel && <p className="text-xs text-amber-300">{videoDefaults.configured ? 'Configured default is unavailable in this catalog. Select a model explicitly.' : 'No video default configured. Select a model explicitly.'}</p>}
                   {/* Video Model Selector */}
                   <div>
                     <div className="flex items-center justify-between mb-1">
@@ -6384,10 +6377,12 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                     ) : (
                       <select
                         aria-label="Video Model"
+                        disabled={videoDefaults.loading || videoDefaults.saving || videoDefaults.loadFailed || videoCatalog.isFetching || videoCatalog.isError}
                         value={selectedVideoModel}
                         onChange={(e) => handleVideoModelChange(e.target.value)}
                         className="w-full rounded bg-slate-900 border border-slate-800 px-2.5 py-1.5 text-white text-[11px] font-mono focus:outline-none focus:border-blue-500"
                       >
+                        <option value="">Select a video model</option>
                         {videoModelOptions.map((opt) => (
                           <option key={opt.id} value={opt.id} disabled={!opt.ready}>
                             {opt.label}{opt.id === defaultVideoModel ? ' (Default)' : ''}{!opt.ready ? ` (Unavailable${opt.reason ? `: ${opt.reason}` : ''})` : ''}
@@ -6397,7 +6392,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                     )}
 
                     {/* Override vs Default Controls for Video */}
-                    {selectedVideoModel && defaultVideoModel && (
+                    {selectedVideoModel && (
                       <div className="mt-1.5 pt-1.5 border-t border-slate-800/40 space-y-1 text-[10px] font-mono">
                         <div className="flex flex-wrap items-center justify-between gap-1">
                           {selectedVideoModel !== defaultVideoModel ? (
@@ -6408,6 +6403,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                               </span>
                               <button
                                 type="button"
+                                disabled={videoDefaults.saving}
                                 onClick={() => handleSetVideoAsDefault(selectedVideoModel)}
                                 className="text-blue-400 hover:text-blue-300 font-semibold underline underline-offset-2 transition"
                               >
@@ -6426,6 +6422,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                             <input
                               type="checkbox"
                               checked={saveVideoAsDefault}
+                              disabled={videoDefaults.saving}
                               onChange={(e) => {
                                 setSaveVideoAsDefault(e.target.checked)
                                 if (e.target.checked) {
@@ -6448,7 +6445,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                       <span>Single Video Shot (1 Prompt · Direct Model Execution)</span>
                     </div>
                     <p className="text-[11px] text-slate-300">
-                      Generates continuous video directly with the model from your single prompt with native audio synthesis. Multi-part timelines and audio mixing are handled in Video Studio.
+                      Generates continuous video directly with the selected model; audio availability depends on its catalog capabilities. Multi-part timelines and audio mixing are handled in Video Studio.
                     </p>
                   </div>
 
@@ -6483,7 +6480,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                   </div>
 
                   {/* Resolution Selector & Aspect Ratio */}
-                  <div className="grid grid-cols-2 gap-3 pt-2 border-t border-slate-800/60">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-slate-800/60">
                     <div>
                       <div className="flex items-center justify-between mb-1.5">
                         <label className="block text-[10px] text-slate-400 font-mono uppercase font-bold">Resolution & Quality</label>
@@ -6492,10 +6489,12 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                         </span>
                       </div>
                       {supportedVideoResolutions.length > 0 ? (
-                        <div className="grid grid-cols-3 gap-1 font-mono text-[10px]">
+                        <div className="grid grid-cols-[repeat(auto-fit,minmax(5rem,1fr))] auto-rows-fr gap-1 font-mono text-[10px]">
                           {supportedVideoResolutions.map((res) => {
-                            const totalForRes = videoPricingInfo.totalsByResolution?.[res]
-                            const unitRate = videoPricingInfo.unitRatesByResolution?.[res]
+                            const durations = resolveAllowedVideoDurations(selectedVideoGenOptions, res)
+                            const estimateDuration = durations.includes(videoDuration) ? videoDuration : (durations[durations.length - 1] || 0)
+                            const estimate = resolveVideoPricing(selectedVideoOption, res, estimateDuration, videoClipCount)
+                            const totalForRes = estimate.totalPrice
                             const isSelected = videoResolution === res
                             return (
                               <button
@@ -6513,11 +6512,8 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                                   {totalForRes !== undefined ? `$${totalForRes.toFixed(2)}` : 'Unavailable'}
                                 </span>
                                 <span className={`text-[8px] font-normal leading-tight ${isSelected ? 'text-blue-100 opacity-90' : 'text-slate-500'}`}>
-                                  {unitRate !== undefined
-                                    ? videoDuration > 0
-                                      ? `${videoDuration}s at $${unitRate.toFixed(2)}/s`
-                                      : `$${unitRate.toFixed(2)}/clip`
-                                    : 'No pricing'}
+                                  {estimate.ratesByResolution?.[normalizeVideoResKey(res)] || 'No pricing'}
+                                  {estimateDuration > 0 ? ` · ${estimateDuration}s` : ''}
                                 </span>
                               </button>
                             )
@@ -6533,7 +6529,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                     <div>
                       <label className="block text-[10px] text-slate-400 font-mono uppercase font-bold mb-1.5">Aspect Ratio</label>
                       {supportedVideoAspectRatios.length > 0 ? (
-                        <div className="grid grid-cols-3 gap-1 font-mono text-[10px]">
+                        <div className="grid grid-cols-[repeat(auto-fit,minmax(5rem,1fr))] auto-rows-fr gap-1 font-mono text-[10px]">
                           {VIDEO_ASPECT_RATIOS.filter((ar) => supportedVideoAspectRatios.includes(ar.ratio)).map((ar) => {
                             const isSelected = videoAspectRatio === ar.ratio
                             return (
@@ -6567,7 +6563,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                   </div>
 
                   {/* Duration & Clip Count Selectors */}
-                  <div className="grid grid-cols-2 gap-3 pt-2 border-t border-slate-800/60">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-slate-800/60">
                     <div>
                       <div className="flex items-center justify-between mb-1.5">
                         <label className="block text-[10px] text-slate-400 font-mono uppercase font-bold">Duration (Seconds)</label>
@@ -6580,7 +6576,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                         </span>
                       </div>
                       {supportedVideoDurations.length > 0 ? (
-                        <div className="grid grid-cols-3 gap-1 font-mono text-[10px]">
+                        <div className="grid grid-cols-[repeat(auto-fit,minmax(5rem,1fr))] auto-rows-fr gap-1 font-mono text-[10px]">
                           {supportedVideoDurations.map((dur) => {
                             const isSelected = videoDuration === dur
                             return (
@@ -6664,10 +6660,10 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                   )}
 
                   {/* Initial Image Reference Guidance */}
-                  {selectedVideoGenOptions?.initial_image && !selectedVideoGenOptions.initial_image.supported ? (
+                  {!selectedVideoGenOptions?.initial_image?.supported ? (
                     <div className="p-2 rounded bg-amber-950/20 border border-amber-500/30 text-[10px] font-mono text-amber-300 flex items-center gap-1.5">
                       <AlertTriangle size={12} className="shrink-0 text-amber-400" />
-                      <span>Model does not support initial image reference inputs. Prompts are text-only.</span>
+                      <span>Initial image support is unavailable or unverified for this model. Use a text prompt.</span>
                     </div>
                   ) : (
                     <div className="p-2 rounded bg-slate-900/60 border border-slate-800 text-[10px] font-mono text-slate-400 flex items-center justify-between">
@@ -6682,7 +6678,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                   )}
 
                   {/* Pricing Transparency Summary */}
-                  <div className="p-2.5 rounded-lg bg-slate-900/90 border border-slate-800 text-[11px] font-mono flex items-center justify-between">
+                  <div className="p-2.5 rounded-lg bg-slate-900/90 border border-slate-800 text-[11px] font-mono flex flex-wrap items-center justify-between gap-2">
                     <span className="text-slate-300 flex items-center gap-1.5">
                       <Tag size={12} className="text-blue-400" />
                       <span>Estimated Model Cost: <strong className="text-white font-semibold">{videoPricingInfo.formattedSummary}</strong></span>

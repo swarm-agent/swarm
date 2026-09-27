@@ -2123,7 +2123,7 @@ export function ManageArtifactCard({
                 </span>
               </div>
               <div className="text-sm font-semibold tracking-wide text-white">
-                {isVideoIteration ? "Iterating video with Gemini Omni…" : "Generating cinematic video with Veo…"}
+                {isVideoIteration ? "Iterating video with the configured model…" : "Generating video with the configured model…"}
               </div>
               <p className="mt-1 text-xs text-white/70 max-w-md">
                 Synthesizing high-frame-rate motion and diffusion keyframes. This usually takes 30–60 seconds.

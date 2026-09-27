@@ -1075,9 +1075,8 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 									mime = "video/mp4"
 								}
 								mediaURL := fmt.Sprintf("data:%s;base64,%s", mime, base64.StdEncoding.EncodeToString(vRes.Bytes))
-								if vRes.Model != "" {
-									t.Model = vRes.Model
-								}
+								// Preserve the requested model on the task; report execution
+								// identity on the individual result instead.
 								if vRes.AspectRatio != "" {
 									t.AspectRatio = vRes.AspectRatio
 								}
@@ -1087,10 +1086,7 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 								if vRes.DurationSeconds > 0 {
 									t.DurationSeconds = vRes.DurationSeconds
 								}
-								usedModel := vRes.Model
-								if usedModel == "" {
-									usedModel = videoModel
-								}
+								usedModel := videoExecutionIdentity(vRes.Provider, vRes.Model)
 								durationStr := fmt.Sprintf("%ds", vRes.DurationSeconds)
 								if vRes.DurationSeconds <= 0 {
 									durationStr = fmt.Sprintf("%ds", durSec)
@@ -1358,4 +1354,18 @@ func escapeXML(s string) string {
 	s = strings.ReplaceAll(s, `"`, "&quot;")
 	s = strings.ReplaceAll(s, "'", "&apos;")
 	return s
+}
+
+// videoExecutionIdentity labels adapter-reported execution, not the requested default
+// or independently verified billing identity. Missing evidence stays explicit.
+func videoExecutionIdentity(provider, modelID string) string {
+	provider = strings.TrimSpace(provider)
+	modelID = strings.TrimSpace(modelID)
+	if provider == "" || modelID == "" {
+		return "unknown execution identity"
+	}
+	if strings.HasPrefix(modelID, provider+":") {
+		return modelID
+	}
+	return provider + ":" + modelID
 }

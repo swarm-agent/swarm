@@ -158,25 +158,8 @@ func (s *Server) handleMediaSettingsCatalog(w http.ResponseWriter, r *http.Reque
 			defaultImage = response.ImageModels[0].ID
 		}
 	}
-	if defaultVideo == "" {
-		for _, m := range response.VideoGenerationModels {
-			if m.ID == DefaultVideoGenerationModel && m.Ready {
-				defaultVideo = m.ID
-				break
-			}
-		}
-		if defaultVideo == "" {
-			for _, m := range response.VideoGenerationModels {
-				if m.Ready {
-					defaultVideo = m.ID
-					break
-				}
-			}
-		}
-		if defaultVideo == "" && len(response.VideoGenerationModels) > 0 {
-			defaultVideo = response.VideoGenerationModels[0].ID
-		}
-	}
+	// Video defaults are persisted account choices, never catalog suggestions.
+	// Keep an absent default empty, matching videogen's fail-closed resolution.
 	if defaultAudio == "" {
 		for _, m := range response.AudioModels {
 			if m.ID == DefaultAudioGenerationModel && m.Ready {

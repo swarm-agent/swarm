@@ -671,3 +671,24 @@ test('resolveVideoPricing verifies against actual pinned snapshot data from snap
     }
   }
 })
+
+// Requirement: catalog estimates must not claim billed charges or upstream verification.
+// Regression: positive duration mislabeled fixed clip pricing as per-second in cards.
+// Authority/layer: resolveVideoPricing produces card units and summary; pure unit test.
+test('fixed clip estimates preserve units even with duration and unknown prices remain unavailable', () => {
+  const option: TaskModalModelOption = {
+    id: 'fixture', label: 'Fixture', ready: true,
+    pricing: { billing: { status: 'verified', currency: 'USD', lines: [
+      { billable: 'video_output', unit: 'clip', price_usd: 2 },
+    ] } },
+  }
+  const result = resolveVideoPricing(option, '720p', 8, 2)
+  assert.equal(result.totalPrice, 4)
+  assert.equal(result.ratePerSec, undefined)
+  assert.equal(result.ratesByResolution['720p'], '$4.00 ($2.00/clip)')
+  assert.match(result.formattedSummary, /Catalog estimate \(not a billed charge\)/)
+  assert.doesNotMatch(result.formattedSummary, /Verified catalog/)
+  const unknown = resolveVideoPricing({ ...option, pricing: undefined }, '720p', 8, 2)
+  assert.equal(unknown.totalPrice, undefined)
+  assert.equal(unknown.isVerified, false)
+})
