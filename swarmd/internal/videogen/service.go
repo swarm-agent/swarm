@@ -285,18 +285,24 @@ func (s *Service) GenerateManagedVideo(ctx context.Context, req ManagedVideoRequ
 		srcDurationSec = srcMeta.DurationSeconds
 		srcWidth = srcMeta.Width
 		srcHeight = srcMeta.Height
-	} else if req.Source != nil && len(req.Source.Bytes) == 0 {
-		srcProv := req.SourceProvenance
-		if srcProv == nil && req.Source != nil {
-			srcProv = req.Source.Provenance
+	}
+	srcProv := req.SourceProvenance
+	if srcProv == nil && req.Source != nil {
+		srcProv = req.Source.Provenance
+	}
+	if srcDurationSec <= 0 && srcProv != nil {
+		if srcProv.ObservedDurationMs > 0 {
+			srcDurationSec = float64(srcProv.ObservedDurationMs) / 1000.0
 		}
-		if srcProv != nil {
-			if srcProv.ObservedDurationMs > 0 {
-				srcDurationSec = float64(srcProv.ObservedDurationMs) / 1000.0
-			}
+		if srcWidth <= 0 {
 			srcWidth = srcProv.ObservedWidth
+		}
+		if srcHeight <= 0 {
 			srcHeight = srcProv.ObservedHeight
 		}
+	}
+	if req.Source != nil && req.Source.Provenance == nil && srcProv != nil {
+		req.Source.Provenance = srcProv
 	}
 
 	// Validate, resolve, and preflight operation using canonical evaluator
@@ -379,26 +385,25 @@ func (s *Service) GenerateManagedVideo(ctx context.Context, req ManagedVideoRequ
 
 	// Enforce output bounds and deltas for extensions
 	if operation == pebblestore.VideoOperationExtend {
+		if srcDurationSec <= 0 {
+			return ManagedVideoResult{}, errors.New("source video duration is required to verify extension output delta")
+		}
 		if IsVeoModel(modelID) {
 			if outMeta.DurationSeconds > 148.0 {
 				return ManagedVideoResult{}, fmt.Errorf("extended Veo video duration (%.1fs) exceeds maximum allowed ceiling (148s)", outMeta.DurationSeconds)
 			}
-			if srcDurationSec > 0 {
-				delta := outMeta.DurationSeconds - srcDurationSec
-				if delta < 5.0 || delta > 10.0 {
-					return ManagedVideoResult{}, fmt.Errorf("extended Veo video output duration unexpected (source %.1fs, output %.1fs, delta %.1fs; expected ~7s)", srcDurationSec, outMeta.DurationSeconds, delta)
-				}
+			delta := outMeta.DurationSeconds - srcDurationSec
+			if delta < 5.0 || delta > 10.0 {
+				return ManagedVideoResult{}, fmt.Errorf("extended Veo video output duration unexpected (source %.1fs, output %.1fs, delta %.1fs; expected ~7s)", srcDurationSec, outMeta.DurationSeconds, delta)
 			}
 		}
 		if IsOmniModel(modelID) {
 			if outMeta.DurationSeconds > 40.0 {
 				return ManagedVideoResult{}, fmt.Errorf("extended Omni video duration (%.1fs) exceeds maximum allowed ceiling (40s)", outMeta.DurationSeconds)
 			}
-			if srcDurationSec > 0 {
-				delta := outMeta.DurationSeconds - srcDurationSec
-				if delta < 3.0 || delta > 10.0 {
-					return ManagedVideoResult{}, fmt.Errorf("extended Omni video output duration delta (%.1fs) outside allowed range 3-10s", delta)
-				}
+			delta := outMeta.DurationSeconds - srcDurationSec
+			if delta < 3.0 || delta > 10.0 {
+				return ManagedVideoResult{}, fmt.Errorf("extended Omni video output duration delta (%.1fs) outside allowed range 3-10s", delta)
 			}
 		}
 	}
@@ -567,70 +572,8 @@ func (s *Service) getOpenRouterAPIKey(accountScopeID, expectedCredID, expectedCr
 	return strings.TrimSpace(record.APIKey), nil
 }
 
-func defaultTestCatalogRecords() []pebblestore.ModelCatalogRecord {
-	return []pebblestore.ModelCatalogRecord{
-		{
-			Provider: ProviderGoogleGemini,
-			Model:    DefaultVideoGenerationModel,
-			CatalogModalities: pebblestore.ModelCatalogModalities{
-				Outputs:    []string{"video"},
-				Categories: []string{"video_generation"},
-			},
-			ProviderSpecific: []byte(`{"google":{"video_generation":{"settings":{"aspect_ratio":{"status":"verified","supported_values":["16:9","9:16"],"default_value":"16:9"},"resolution":{"status":"verified","supported_values":["720p","1080p"],"default_value":"720p"},"duration_seconds":{"status":"verified","supported_values":[5,8],"default_value":5}},"features":{"video_extension":{"status":"verified","supported":true},"initial_image":{"status":"verified","supported":true}}}}}`),
-		},
-		{
-			Provider: ProviderGoogleGemini,
-			Model:    "veo-lite-preview",
-			CatalogModalities: pebblestore.ModelCatalogModalities{
-				Outputs:    []string{"video"},
-				Categories: []string{"video_generation"},
-			},
-		},
-		{
-			Provider: ProviderGoogleGemini,
-			Model:    DefaultVideoIterationModel,
-			CatalogModalities: pebblestore.ModelCatalogModalities{
-				Outputs:    []string{"video"},
-				Categories: []string{"video_generation", "video_iteration"},
-			},
-			ProviderSpecific: []byte(`{"google":{"video_generation":{"settings":{"aspect_ratio":{"status":"verified","supported_values":["16:9","9:16"],"default_value":"16:9"},"resolution":{"status":"verified","supported_values":["720p"],"default_value":"720p"}},"features":{"conversational_editing":{"status":"verified","supported":true},"video_extension":{"status":"verified","supported":true},"initial_image":{"status":"verified","supported":true}}}}}`),
-		},
-		{
-			Provider: ProviderOpenRouter,
-			Model:    "google/veo-3.1",
-			CatalogModalities: pebblestore.ModelCatalogModalities{
-				Outputs:    []string{"video"},
-				Categories: []string{"video_generation"},
-			},
-		},
-		{
-			Provider: ProviderOpenRouter,
-			Model:    "google/veo-3.1-generate-preview",
-			CatalogModalities: pebblestore.ModelCatalogModalities{
-				Outputs:    []string{"video"},
-				Categories: []string{"video_generation"},
-			},
-		},
-	}
-}
-
 func (s *Service) resolveModelRecord(providerID, modelID string) (pebblestore.ModelCatalogRecord, bool) {
-	if s == nil {
-		return pebblestore.ModelCatalogRecord{}, false
-	}
-	if s.modelCatalog == nil {
-		for _, rec := range defaultTestCatalogRecords() {
-			if strings.EqualFold(rec.Provider, providerID) && strings.EqualFold(rec.Model, modelID) {
-				return rec, true
-			}
-		}
-		cleanModel := strings.TrimPrefix(strings.TrimPrefix(modelID, providerID+"/"), "google/")
-		for _, rec := range defaultTestCatalogRecords() {
-			cleanRec := strings.TrimPrefix(strings.TrimPrefix(rec.Model, providerID+"/"), "google/")
-			if strings.EqualFold(cleanRec, cleanModel) {
-				return rec, true
-			}
-		}
+	if s == nil || s.modelCatalog == nil {
 		return pebblestore.ModelCatalogRecord{}, false
 	}
 	records, err := s.modelCatalog.ListCatalog(providerID, 100)
@@ -669,7 +612,7 @@ func EstimateVideoCostWithResolution(providerID, modelID string, durationSeconds
 		Model:    modelID,
 		Pricing:  catalogPricing,
 	}
-	estimate := pebblestore.MediaCostEstimateFromRecord(rec, pebblestore.MediaCostEstimateOptions{
+	estimate := pebblestore.EstimateMediaCostFromRecord(rec, pebblestore.MediaCostEstimateOptions{
 		Provider:        providerID,
 		Model:           modelID,
 		Kind:            "video",

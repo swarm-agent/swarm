@@ -104,7 +104,9 @@ func TestGenerateGoogleVeoVideo(t *testing.T) {
 	defer server.Close()
 
 	authStore, accountScopeID := setupTestAuthStore(t, "test-google-key", "")
-	svc := NewService(authStore, nil, nil)
+	uiSvc := setupTestUISettingsForAccount(t, accountScopeID, DefaultVideoGenerationModel, DefaultVideoIterationModel)
+	catalog := setupTestCatalog()
+	svc := NewService(authStore, uiSvc, catalog)
 	svc.SetBaseURLs(server.URL, "")
 	svc.SetPollTiming(10*time.Millisecond, 2*time.Second)
 	svc.SetVideoProber(fakeProber{duration: 8.0, width: 1280, height: 720})
@@ -190,7 +192,8 @@ func TestGenerateGoogleOmniInitialAndConversationalEdit(t *testing.T) {
 	defer server.Close()
 
 	authStore, accountScopeID := setupTestAuthStore(t, "test-google-key", "")
-	svc := NewService(authStore, nil, nil)
+	catalog := setupTestCatalog()
+	svc := NewService(authStore, nil, catalog)
 	svc.SetBaseURLs(server.URL, "")
 	svc.SetVideoProber(fakeProber{duration: 8.0, width: 1280, height: 720})
 
@@ -301,7 +304,9 @@ func TestGenerateGoogleOmniBridgeEditFromExternalVideo(t *testing.T) {
 	uploadServerURL = server.URL
 
 	authStore, accountScopeID := setupTestAuthStore(t, "test-google-key", "")
-	svc := NewService(authStore, nil, nil)
+	uiSvc := setupTestUISettingsForAccount(t, accountScopeID, DefaultVideoGenerationModel, DefaultVideoIterationModel)
+	catalog := setupTestCatalog()
+	svc := NewService(authStore, uiSvc, catalog)
 	svc.SetBaseURLs(server.URL, "")
 	svc.SetVideoProber(fakeProber{duration: 8.0, width: 1280, height: 720})
 
@@ -366,7 +371,9 @@ func TestGenerateGoogleOmniContentBlockedDiagnostic(t *testing.T) {
 	defer server.Close()
 
 	authStore, accountScopeID := setupTestAuthStore(t, "test-google-key", "")
-	svc := NewService(authStore, nil, nil)
+	uiSvc := setupTestUISettingsForAccount(t, accountScopeID, DefaultVideoGenerationModel, DefaultVideoIterationModel)
+	catalog := setupTestCatalog()
+	svc := NewService(authStore, uiSvc, catalog)
 	svc.SetBaseURLs(server.URL, "")
 	svc.SetVideoProber(fakeProber{duration: 8.0, width: 1280, height: 720})
 
@@ -426,7 +433,8 @@ func TestGenerateOpenRouterVideo(t *testing.T) {
 	defer server.Close()
 
 	authStore, _ := setupTestAuthStore(t, "", "test-or-key")
-	svc := NewService(authStore, nil, nil)
+	catalog := setupTestCatalog()
+	svc := NewService(authStore, nil, catalog)
 	svc.SetBaseURLs("", server.URL)
 	svc.SetPollTiming(10*time.Millisecond, 2*time.Second)
 
@@ -489,7 +497,9 @@ func TestGenerateGoogleVeoVideoWithImageInput(t *testing.T) {
 	defer server.Close()
 
 	authStore, accountScopeID := setupTestAuthStore(t, "test-google-key", "")
-	svc := NewService(authStore, nil, nil)
+	uiSvc := setupTestUISettingsForAccount(t, accountScopeID, DefaultVideoGenerationModel, DefaultVideoIterationModel)
+	catalog := setupTestCatalog()
+	svc := NewService(authStore, uiSvc, catalog)
 	svc.SetBaseURLs(server.URL, "")
 	svc.SetPollTiming(10*time.Millisecond, 2*time.Second)
 	svc.SetVideoProber(fakeProber{duration: 8.0, width: 1280, height: 720})
@@ -602,7 +612,8 @@ func TestGenerateGoogleOmniWithImageInput(t *testing.T) {
 	defer server.Close()
 
 	authStore, accountScopeID := setupTestAuthStore(t, "test-google-key", "")
-	svc := NewService(authStore, nil, nil)
+	catalog := setupTestCatalog()
+	svc := NewService(authStore, nil, catalog)
 	svc.SetBaseURLs(server.URL, "")
 	svc.SetVideoProber(fakeProber{duration: 8.0, width: 1280, height: 720})
 
@@ -669,7 +680,8 @@ func TestGenerateOpenRouterWithImageInput(t *testing.T) {
 	defer server.Close()
 
 	authStore, _ := setupTestAuthStore(t, "", "test-or-key")
-	svc := NewService(authStore, nil, nil)
+	catalog := setupTestCatalog()
+	svc := NewService(authStore, nil, catalog)
 	svc.SetBaseURLs("", server.URL)
 	svc.SetPollTiming(10*time.Millisecond, 2*time.Second)
 
@@ -724,7 +736,16 @@ type fakeModelCatalog struct {
 }
 
 func (f *fakeModelCatalog) ListCatalog(providerID string, limit int) ([]pebblestore.ModelCatalogRecord, error) {
-	return f.records, nil
+	if providerID == "" {
+		return f.records, nil
+	}
+	var matched []pebblestore.ModelCatalogRecord
+	for _, r := range f.records {
+		if strings.EqualFold(r.Provider, providerID) || r.Provider == "" {
+			matched = append(matched, r)
+		}
+	}
+	return matched, nil
 }
 
 // Requirement: GenerateManagedVideo must price effective request dimensions from the
@@ -806,7 +827,8 @@ func TestGenerateGoogleVeoVideoWithSnapshotCatalogPricing(t *testing.T) {
 		},
 	}
 
-	svc := NewService(authStore, nil, catalog)
+	uiSvc := setupTestUISettingsForAccount(t, accountScopeID, DefaultVideoGenerationModel, DefaultVideoIterationModel)
+	svc := NewService(authStore, uiSvc, catalog)
 	svc.SetBaseURLs(server.URL, "")
 	svc.SetPollTiming(10*time.Millisecond, 2*time.Second)
 	svc.SetVideoProber(fakeProber{duration: 8.0, width: 1280, height: 720})
@@ -1116,6 +1138,23 @@ func TestGenerateManagedVideo_1080pDurationRequires8s(t *testing.T) {
 	}
 	if calls != 0 {
 		t.Fatalf("provider called %d times on invalid resolution/duration mismatch", calls)
+	}
+}
+
+// Requirement: ModelCatalog must be authoritative; nil or missing catalog must fail closed without invented fallbacks.
+// Threat/regression: Hardcoded fallback catalogs inventing model capabilities when catalog is nil.
+// Boundary/authority: Service.resolveModelRecord in videogen/service.go.
+func TestNilModelCatalogFailsClosed(t *testing.T) {
+	authStore, accountScopeID := setupTestAuthStore(t, "test-google-key", "")
+	svc := NewService(authStore, nil, nil)
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "u1", AccountScopeID: accountScopeID}
+	_, err := svc.PreflightVideoOperation(context.Background(), VideoPreflightRequest{
+		Operation:     "create",
+		ExplicitModel: "veo-3.1-generate-preview",
+		Principal:     principal,
+	})
+	if err == nil || !strings.Contains(err.Error(), "not in the model catalog") {
+		t.Fatalf("expected nil catalog to fail closed with 'not in the model catalog', got: %v", err)
 	}
 }
 

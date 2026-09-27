@@ -137,13 +137,16 @@ func (s *Service) PreflightVideoOperation(ctx context.Context, req VideoPrefligh
 			sourceWidth = srcMeta.Width
 			sourceHeight = srcMeta.Height
 		}
-	} else if req.Source != nil && len(req.Source.Bytes) == 0 {
+	}
+	if sourceDurationSeconds <= 0 && srcProv != nil {
 		// Handle-only uses trusted observed metadata from provenance
-		if srcProv != nil {
-			if srcProv.ObservedDurationMs > 0 {
-				sourceDurationSeconds = float64(srcProv.ObservedDurationMs) / 1000.0
-			}
+		if srcProv.ObservedDurationMs > 0 {
+			sourceDurationSeconds = float64(srcProv.ObservedDurationMs) / 1000.0
+		}
+		if sourceWidth <= 0 {
 			sourceWidth = srcProv.ObservedWidth
+		}
+		if sourceHeight <= 0 {
 			sourceHeight = srcProv.ObservedHeight
 		}
 	}

@@ -55,7 +55,7 @@ func setupTestCatalog() *fakeModelCatalog {
 					Outputs:    []string{"video"},
 					Categories: []string{"video_generation"},
 				},
-				ProviderSpecific: []byte(`{"google":{"video_generation":{"settings":{"aspect_ratio":{"status":"verified","supported_values":["16:9","9:16"],"default_value":"16:9"},"resolution":{"status":"verified","supported_values":["720p","1080p"],"default_value":"720p"},"duration_seconds":{"status":"verified","supported_values":[5,8],"default_value":5}},"features":{"video_extension":{"status":"verified","supported":true},"initial_image":{"status":"verified","supported":true}}}}}`),
+				ProviderSpecific: []byte(`{"google":{"video_generation":{"settings":{"aspect_ratio":{"status":"verified","supported_values":["16:9","9:16"],"default_value":"16:9"},"resolution":{"status":"verified","supported_values":["720p","1080p"],"default_value":"720p"},"duration_seconds":{"status":"verified","supported_values":[4,6,8],"default_value":8}},"features":{"video_extension":{"status":"verified","supported":true},"initial_image":{"status":"verified","supported":true}}}}}`),
 			},
 			{
 				Provider: ProviderGoogleGemini,
@@ -76,14 +76,42 @@ func setupTestCatalog() *fakeModelCatalog {
 			},
 			{
 				Provider: ProviderOpenRouter,
+				Model:    "google/veo-3.1",
+				CatalogModalities: pebblestore.ModelCatalogModalities{
+					Outputs:    []string{"video"},
+					Categories: []string{"video_generation"},
+				},
+				ProviderSpecific: []byte(`{"openrouter":{"video_generation":{"settings":{"aspect_ratio":{"status":"verified","supported_values":["16:9","9:16"],"default_value":"16:9"},"resolution":{"status":"verified","supported_values":["720p","1080p"],"default_value":"720p"},"duration_seconds":{"status":"verified","supported_values":[4,6,8],"default_value":8}},"features":{"initial_image":{"status":"verified","supported":true}}}}}`),
+			},
+			{
+				Provider: ProviderOpenRouter,
 				Model:    "google/veo-3.1-generate-preview",
 				CatalogModalities: pebblestore.ModelCatalogModalities{
 					Outputs:    []string{"video"},
 					Categories: []string{"video_generation"},
 				},
+				ProviderSpecific: []byte(`{"openrouter":{"video_generation":{"settings":{"aspect_ratio":{"status":"verified","supported_values":["16:9","9:16"],"default_value":"16:9"},"resolution":{"status":"verified","supported_values":["720p","1080p"],"default_value":"720p"},"duration_seconds":{"status":"verified","supported_values":[4,6,8],"default_value":8}},"features":{"initial_image":{"status":"verified","supported":true}}}}}`),
 			},
 		},
 	}
+}
+
+func setupTestUISettingsForAccount(t *testing.T, accountID, defaultModel, iterModel string) *uisettings.Service {
+	tmpDir := t.TempDir()
+	store, err := pebblestore.Open(tmpDir)
+	if err != nil {
+		t.Fatalf("open pebble: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	sessionStore := pebblestore.NewSessionStore(store)
+	svc := uisettings.NewService(sessionStore)
+	if err := svc.UpdateToolsVideoSettings(accountID, uisettings.ToolsVideoSettings{
+		DefaultModel:   defaultModel,
+		IterationModel: iterModel,
+	}); err != nil {
+		t.Fatalf("update video settings: %v", err)
+	}
+	return svc
 }
 
 func setupTestUISettings(t *testing.T, defaultModel, iterModel string) (*uisettings.Service, *pebblestore.Store, string) {

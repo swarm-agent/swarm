@@ -95,14 +95,14 @@ func (p FFprobeVideoProber) ProbeVideo(ctx context.Context, videoBytes []byte) (
 
 	cmd := exec.CommandContext(probeCtx, ffprobePath,
 		"-v", "error",
-		"-nodisp",
-		"-nostdin",
 		"-hide_banner",
+		"-f", "mov",
 		"-protocol_whitelist", "file",
 		"-show_entries", "format=duration,size,bit_rate,format_name:stream=index,codec_type,codec_name,width,height",
 		"-of", "json",
 		tmpFile.Name(),
 	)
+	cmd.Stdin = nil
 
 	stdout := newBoundedBuffer(1 << 20)  // 1MB max stdout
 	stderr := newBoundedBuffer(64 << 10) // 64KB max stderr
