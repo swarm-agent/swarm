@@ -1,4 +1,4 @@
-import type { RunningTask, ProjectTaskMediaRef } from '../orchestrate/orchestrate-types'
+import type { RunningTask, ProjectTaskMediaRef, ProjectTaskPlanBinding } from '../orchestrate/orchestrate-types'
 
 export interface DesktopProjectState {
   projectId: string
@@ -43,6 +43,31 @@ export type DesktopProjectsAction =
     }
   | { type: 'projects.invalidate'; projectId?: string }
   | { type: 'projects.evict'; projectId: string }
+
+export function normalizePlanBinding(raw: any): ProjectTaskPlanBinding | undefined {
+  if (!raw || typeof raw !== 'object') return undefined
+  const planId = raw.planId ?? raw.plan_id
+  const definitionRevision =
+    typeof raw.definitionRevision === 'number'
+      ? raw.definitionRevision
+      : typeof raw.definition_revision === 'number'
+        ? raw.definition_revision
+        : undefined
+  const sessionId = raw.sessionId ?? raw.session_id
+  const receipt = raw.receipt
+  if (!planId && definitionRevision === undefined && !sessionId && !receipt) {
+    return undefined
+  }
+  return {
+    planId: planId ? String(planId).trim() : undefined,
+    definitionRevision,
+    sessionId: sessionId ? String(sessionId).trim() : undefined,
+    receipt: receipt ? String(receipt).trim() : undefined,
+    plan_id: raw.plan_id ? String(raw.plan_id).trim() : (planId ? String(planId).trim() : undefined),
+    definition_revision: typeof raw.definition_revision === 'number' ? raw.definition_revision : definitionRevision,
+    session_id: raw.session_id ? String(raw.session_id).trim() : (sessionId ? String(sessionId).trim() : undefined),
+  }
+}
 
 export function mapBackendTask(t: any): RunningTask {
   return {
@@ -122,7 +147,7 @@ export function mapBackendTask(t: any): RunningTask {
     task_program_id: t.task_program_id || t.taskProgramId,
     taskProgramStatus: t.task_program_status || t.taskProgramStatus,
     task_program_status: t.task_program_status || t.taskProgramStatus,
-    planBinding: t.plan_binding || t.planBinding,
+    planBinding: normalizePlanBinding(t.plan_binding || t.planBinding),
     plan_binding: t.plan_binding || t.planBinding,
     planDocument: typeof (t.plan_document || t.planDocument || t.document) === 'string'
       ? (() => { try { return JSON.parse(t.plan_document || t.planDocument || t.document) } catch { return t.plan_document || t.planDocument || t.document } })()

@@ -1,4 +1,4 @@
-import type { RunningTask, MediaDeliverable, TaskOutcomeType, BackendTaskModelPreview } from './orchestrate-types'
+import type { RunningTask, MediaDeliverable, TaskOutcomeType, BackendTaskModelPreview, ProjectTaskPlanBinding } from './orchestrate-types'
 import type { AgentModelSettings } from '../settings/swarm/types/agent-model-settings'
 
 export interface ImpendingAgentView {
@@ -400,41 +400,46 @@ export function resolveTaskWorkspace(
   return undefined
 }
 
-export function buildTaskAcceptancePayload(
-  task:
-    | Pick<RunningTask, 'sessionId' | 'planBinding'>
-    | { sessionId?: string; planBinding?: { plan_id?: string; definition_revision?: number; session_id?: string } }
-    | any
-    | null
-    | undefined
-): { session_id?: string; plan_id?: string; definition_revision?: number } {
-  const binding = task?.planBinding || task?.plan_binding
-  const doc = task?.planDocument || task?.plan_document || task?.document
-  const sessionId =
-    task?.sessionId ||
-    task?.session_id ||
-    binding?.session_id ||
-    binding?.sessionId ||
-    doc?.session_id ||
-    doc?.sessionId ||
-    undefined
-  const planId =
-    binding?.plan_id ||
-    binding?.planId ||
-    doc?.plan_id ||
-    doc?.planId ||
-    doc?.id ||
-    undefined
+export interface TaskAcceptanceTarget {
+  sessionId?: string
+  session_id?: string
+  planBinding?: ProjectTaskPlanBinding
+  plan_binding?: ProjectTaskPlanBinding
+  agentType?: string
+  outcomeType?: string
+  planDocument?: unknown
+  plan_document?: unknown
+  revision?: number
+}
 
+export interface TaskAcceptancePayload {
+  session_id?: string
+  plan_id?: string
+  definition_revision?: number
+}
+
+export function buildTaskAcceptancePayload(
+  task: TaskAcceptanceTarget | null | undefined
+): TaskAcceptancePayload {
+  const binding = task?.planBinding || task?.plan_binding
+  const bindingSessionId = binding?.sessionId || binding?.session_id
+  const executionSessionId = task?.sessionId || task?.session_id
+  const sessionId = bindingSessionId || executionSessionId
+
+  if (!binding) {
+    return {
+      session_id: sessionId ? String(sessionId).trim() : undefined,
+      plan_id: undefined,
+      definition_revision: undefined,
+    }
+  }
+
+  const planId = binding.planId || binding.plan_id
   let definitionRevision: number | undefined
-  if (typeof binding?.definition_revision === 'number') {
-    definitionRevision = binding.definition_revision
-  } else if (typeof binding?.definitionRevision === 'number') {
+  if (typeof binding.definitionRevision === 'number') {
     definitionRevision = binding.definitionRevision
-  } else if (typeof doc?.version === 'number') {
-    definitionRevision = doc.version
-  } else if (typeof task?.revision === 'number' && task.revision > 0) {
-    definitionRevision = task.revision
+  } else if (typeof binding.definition_revision === 'number') {
+    definitionRevision = binding.definition_revision
   }
 
   return {
