@@ -1593,6 +1593,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				Agent               string                               `json:"agent,omitempty"`
 				WorkerName          string                               `json:"worker_name,omitempty"`
 				OutcomeType         string                               `json:"outcome_type,omitempty"`
+				Operation           string                               `json:"operation,omitempty"`
 				WorkspacePath       string                               `json:"workspace_path,omitempty"`
 				WorktreeBranch      string                               `json:"worktree_branch,omitempty"`
 				UnintegratedCommits int                                  `json:"unintegrated_commits,omitempty"`
@@ -1649,7 +1650,13 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				prompt = strings.TrimSpace(req.Title)
 			}
 
-			isDirectVideo := req.Intent == "video" || req.Agent == "video"
+			reqOp := strings.ToLower(strings.TrimSpace(req.Operation))
+			if reqOp != "" && reqOp != pebblestore.VideoOperationCreate && reqOp != pebblestore.VideoOperationEdit && reqOp != pebblestore.VideoOperationExtend {
+				writeError(w, http.StatusBadRequest, fmt.Errorf("task operation %q is invalid; must be create, edit, or extend", req.Operation))
+				return
+			}
+
+			isDirectVideo := req.Intent == "video" || req.Agent == "video" || reqOp == pebblestore.VideoOperationEdit || reqOp == pebblestore.VideoOperationExtend || (reqOp == pebblestore.VideoOperationCreate && req.Agent == "video")
 			var vModel string
 			var vidClipCount int
 			var normAR string
@@ -1686,18 +1693,68 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 
+				if reqOp == "" {
+					if len(req.AttachedMedia) == 1 && isVideoAttachment(req.AttachedMedia[0]) {
+						writeError(w, http.StatusBadRequest, errors.New("video operation must be explicitly specified when source media is provided (edit or extend)"))
+						return
+					}
+					reqOp = pebblestore.VideoOperationCreate
+				}
+
+				if reqOp == pebblestore.VideoOperationCreate {
+					if len(req.AttachedMedia) > 1 {
+						writeError(w, http.StatusBadRequest, errors.New("at most one initial image attachment is supported for video generation"))
+						return
+					}
+					if len(req.AttachedMedia) == 1 {
+						if isVideoAttachment(req.AttachedMedia[0]) {
+							writeError(w, http.StatusBadRequest, errors.New("cannot provide source video for create operation; use edit or extend"))
+							return
+						}
+					}
+				} else {
+					if len(req.AttachedMedia) == 0 {
+						writeError(w, http.StatusBadRequest, fmt.Errorf("video %s operation requires source video", reqOp))
+						return
+					}
+					if len(req.AttachedMedia) > 1 {
+						writeError(w, http.StatusBadRequest, fmt.Errorf("video %s operation requires exactly 1 source video; multiple attachments are not supported", reqOp))
+						return
+					}
+					if isImageAttachment(req.AttachedMedia[0]) {
+						writeError(w, http.StatusBadRequest, fmt.Errorf("initial image input is not supported for video %s operation; only create operation supports initial image", reqOp))
+						return
+					}
+					if !isVideoAttachment(req.AttachedMedia[0]) {
+						writeError(w, http.StatusBadRequest, fmt.Errorf("unsupported attachment kind %q for video %s operation; only video attachments are supported", req.AttachedMedia[0].Kind, reqOp))
+						return
+					}
+				}
+
 				vModel = strings.TrimSpace(req.Model)
 				if vModel == "" && s.uiSettings != nil && strings.TrimSpace(p.AccountScopeID) != "" {
 					if uiSet, err := s.uiSettings.GetForAccount(p.AccountScopeID); err == nil {
-						vModel = strings.TrimSpace(uiSet.Tools.Video.DefaultModel)
+						if reqOp == pebblestore.VideoOperationEdit {
+							vModel = strings.TrimSpace(uiSet.Tools.Video.IterationModel)
+						} else {
+							vModel = strings.TrimSpace(uiSet.Tools.Video.DefaultModel)
+						}
 					}
 				}
 				if vModel == "" {
-					writeError(w, http.StatusBadRequest, errors.New("no default video model configured for account; select a model or configure one in Settings"))
+					if reqOp == pebblestore.VideoOperationEdit {
+						writeError(w, http.StatusBadRequest, errors.New("no default video iteration model configured for account; select a model or configure one in Settings"))
+					} else {
+						writeError(w, http.StatusBadRequest, errors.New("no default video model configured for account; select a model or configure one in Settings"))
+					}
 					return
 				}
 				if !isSupportedVideoModel(s, vModel) {
 					writeError(w, http.StatusBadRequest, fmt.Errorf("unsupported video model %q", vModel))
+					return
+				}
+				if reqOp == pebblestore.VideoOperationEdit && videogen.IsVeoModel(vModel) {
+					writeError(w, http.StatusBadRequest, errors.New("Veo models do not support video editing; use Gemini Omni for video editing or extend for Veo continuation"))
 					return
 				}
 				vOpts := s.getVideoModelOptions(vModel)
@@ -1784,40 +1841,49 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 
-				if len(req.AttachedMedia) > 1 {
-					writeError(w, http.StatusBadRequest, errors.New("at most one initial image attachment is supported for video generation"))
-					return
-				}
-				if len(req.AttachedMedia) == 1 {
-					if !vOpts.InitialImageSupported {
-						writeError(w, http.StatusBadRequest, fmt.Errorf("model %q does not support initial image input", vModel))
-						return
+				if reqOp == pebblestore.VideoOperationCreate {
+					if len(req.AttachedMedia) == 1 {
+						if !vOpts.InitialImageSupported {
+							writeError(w, http.StatusBadRequest, fmt.Errorf("model %q does not support initial image input", vModel))
+							return
+						}
+						att := req.AttachedMedia[0]
+						if att.Kind != "" && !strings.EqualFold(att.Kind, "image") {
+							writeError(w, http.StatusBadRequest, fmt.Errorf("unsupported attachment kind %q for video generation; only images are supported as reference inputs", att.Kind))
+							return
+						}
+						if att.MediaType != "" && !strings.HasPrefix(strings.ToLower(att.MediaType), "image/") {
+							writeError(w, http.StatusBadRequest, fmt.Errorf("unsupported media type %q for video generation; only images are supported as reference inputs", att.MediaType))
+							return
+						}
+						fn := strings.ToLower(strings.TrimSpace(att.Filename))
+						if fn != "" && !strings.HasSuffix(fn, ".png") && !strings.HasSuffix(fn, ".jpg") && !strings.HasSuffix(fn, ".jpeg") {
+							writeError(w, http.StatusBadRequest, fmt.Errorf("unsupported file extension on %q for video generation; only PNG and JPEG image formats are supported", att.Filename))
+							return
+						}
+						imgBytes, mType, err := s.resolveSourceMediaBytes(r.Context(), p, att, "image")
+						if err != nil {
+							writeError(w, http.StatusBadRequest, fmt.Errorf("invalid image attachment: %w", err))
+							return
+						}
+						if len(imgBytes) == 0 {
+							writeError(w, http.StatusBadRequest, errors.New("attached image payload is empty"))
+							return
+						}
+						if err := validateImageBytes(imgBytes, mType); err != nil {
+							writeError(w, http.StatusBadRequest, err)
+							return
+						}
 					}
+				} else {
 					att := req.AttachedMedia[0]
-					if att.Kind != "" && !strings.EqualFold(att.Kind, "image") {
-						writeError(w, http.StatusBadRequest, fmt.Errorf("unsupported attachment kind %q for video generation; only images are supported as reference inputs", att.Kind))
-						return
-					}
-					if att.MediaType != "" && !strings.HasPrefix(strings.ToLower(att.MediaType), "image/") {
-						writeError(w, http.StatusBadRequest, fmt.Errorf("unsupported media type %q for video generation; only images are supported as reference inputs", att.MediaType))
-						return
-					}
-					fn := strings.ToLower(strings.TrimSpace(att.Filename))
-					if fn != "" && !strings.HasSuffix(fn, ".png") && !strings.HasSuffix(fn, ".jpg") && !strings.HasSuffix(fn, ".jpeg") {
-						writeError(w, http.StatusBadRequest, fmt.Errorf("unsupported file extension on %q for video generation; only PNG and JPEG image formats are supported", att.Filename))
-						return
-					}
-					imgBytes, mType, err := s.resolveSourceMediaBytes(r.Context(), p, att, "image")
+					srcRec, err := s.resolveSourceMediaRecord(r.Context(), p, att, "video")
 					if err != nil {
-						writeError(w, http.StatusBadRequest, fmt.Errorf("invalid image attachment: %w", err))
+						writeError(w, http.StatusBadRequest, fmt.Errorf("invalid video attachment: %w", err))
 						return
 					}
-					if len(imgBytes) == 0 {
-						writeError(w, http.StatusBadRequest, errors.New("attached image payload is empty"))
-						return
-					}
-					if err := validateImageBytes(imgBytes, mType); err != nil {
-						writeError(w, http.StatusBadRequest, err)
+					if len(srcRec.Bytes) == 0 && srcRec.Provenance == nil {
+						writeError(w, http.StatusBadRequest, errors.New("attached video payload is empty"))
 						return
 					}
 				}
@@ -2103,6 +2169,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				Agent:               agentName,
 				WorkerName:          workerName,
 				OutcomeType:         outcomeType,
+				Operation:           reqOp,
 				WorkspacePath:       strings.TrimSpace(req.WorkspacePath),
 				WorktreeBranch:      worktreeBranch,
 				WorktreeName:        worktreeName,
@@ -2139,6 +2206,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			if isDirectVideo {
 				task.Agent = "video"
 				task.OutcomeType = "video_clip"
+				task.Operation = reqOp
 				task.Model = vModel
 				task.AspectRatio = normAR
 				task.Resolution = normRes

@@ -534,11 +534,47 @@ func (r *Runtime) chainVideo(
 
 	var videoPaths []string
 	var sourceRefs []pebblestore.SessionArtifactSelectionReference
+	type chainPartInfo struct {
+		ref        *pebblestore.SessionArtifactSelectionReference
+		provenance *pebblestore.VideoProvenance
+	}
+	var parts []chainPartInfo
 	for i, raw := range rawVideos {
 		data, ref, _, err := r.resolveVideoSourceBytes(ctx, scope, principal, raw)
 		if err != nil {
 			return pebblestore.SessionArtifactVariant{}, nil, fmt.Errorf("resolve video part %d: %w", i+1, err)
 		}
+		var prov *pebblestore.VideoProvenance
+		if ref != nil && r.artifactAuthority != nil {
+			if v, getErr := r.artifactAuthority.GetReference(principal, *ref); getErr == nil {
+				prov = v.Lineage.VideoProvenance
+			}
+		}
+		partInfo := chainPartInfo{ref: ref, provenance: prov}
+
+		// Reject duplicate prefixes: if this part is a combined extension that already includes
+		// an earlier part in the same chain, or vice versa, reject.
+		if prov != nil && prov.IsCombinedOutput && prov.SourceLink != nil {
+			for j, earlier := range parts {
+				if (earlier.ref != nil && earlier.ref.SessionID == prov.SourceLink.SessionID && earlier.ref.VariantID == prov.SourceLink.VariantID) ||
+					(earlier.provenance != nil && earlier.provenance.OutputDigestSHA256 != "" && strings.EqualFold(earlier.provenance.OutputDigestSHA256, prov.SourceLink.DigestSHA256)) {
+					return pebblestore.SessionArtifactVariant{}, nil, fmt.Errorf("video part %d is a combined extension that already includes part %d; cannot duplicate prefix in video chain", i+1, j+1)
+				}
+			}
+		}
+		for j, earlier := range parts {
+			if earlier.provenance != nil && earlier.provenance.IsCombinedOutput && earlier.provenance.SourceLink != nil {
+				if (ref != nil && ref.SessionID == earlier.provenance.SourceLink.SessionID && ref.VariantID == earlier.provenance.SourceLink.VariantID) ||
+					(prov != nil && prov.OutputDigestSHA256 != "" && strings.EqualFold(prov.OutputDigestSHA256, earlier.provenance.SourceLink.DigestSHA256)) {
+					return pebblestore.SessionArtifactVariant{}, nil, fmt.Errorf("video part %d is already included in combined extension part %d; cannot duplicate prefix in video chain", i+1, j+1)
+				}
+			}
+			if ref != nil && earlier.ref != nil && ref.SessionID == earlier.ref.SessionID && ref.VariantID == earlier.ref.VariantID && ref.EventSeq == earlier.ref.EventSeq {
+				return pebblestore.SessionArtifactVariant{}, nil, fmt.Errorf("video part %d duplicates part %d; cannot include duplicate video clips in video chain", i+1, j+1)
+			}
+		}
+
+		parts = append(parts, partInfo)
 		partPath := filepath.Join(tempDir, fmt.Sprintf("part_%02d.mp4", i+1))
 		if err := os.WriteFile(partPath, data, 0600); err != nil {
 			return pebblestore.SessionArtifactVariant{}, nil, fmt.Errorf("write video part %d: %w", i+1, err)

@@ -2502,11 +2502,29 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 					MediaType: "image/png",
 				}
 			} else {
-				interactionID := strings.TrimSpace(variant.Lineage.IterationID)
+				var srcProv *pebblestore.VideoProvenance
+				if variant.Lineage.VideoProvenance != nil {
+					srcProv = variant.Lineage.VideoProvenance.Clone()
+				}
 				source = &videogen.ManagedVideoSource{
-					Bytes:         append([]byte(nil), body...),
-					MediaType:     "video/mp4",
-					InteractionID: interactionID,
+					Bytes:      append([]byte(nil), body...),
+					MediaType:  "video/mp4",
+					Provenance: srcProv,
+					SourceLink: &pebblestore.VideoSourceLink{
+						SessionID:    variant.SessionID,
+						CollectionID: variant.CollectionID,
+						VariantID:    variant.ID,
+						EventSeq:     variant.EventSeq,
+						DigestSHA256: variant.DigestSHA256,
+					},
+				}
+				if srcProv != nil {
+					source.InteractionID = srcProv.InteractionID
+					source.URI = srcProv.ProviderResource
+					source.Model = srcProv.Model
+					if srcProv.SourceLink != nil {
+						source.SourceLink = srcProv.SourceLink.Clone()
+					}
 				}
 			}
 		} else {
@@ -2570,13 +2588,27 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 		if i > 0 && !managedDestination {
 			currentVariantID = fmt.Sprintf("%s-%d", variantID, i+1)
 		}
+		op := pebblestore.VideoOperationCreate
+		if opArg := strings.ToLower(strings.TrimSpace(asString(args["operation"]))); opArg != "" {
+			op = opArg
+		} else if source != nil {
+			op = pebblestore.VideoOperationEdit
+		}
 		generated, err := r.videoGeneration.GenerateManagedVideo(identity.ContextWithPrincipal(ctx, scope.Principal), videogen.ManagedVideoRequest{
+			Operation:       op,
+			Model:           model,
 			Prompt:          prompt,
 			AspectRatio:     aspectRatio,
 			Resolution:      resolution,
 			DurationSeconds: durationSeconds,
 			Principal:       scope.Principal,
 			Source:          source,
+			SourceProvenance: func() *pebblestore.VideoProvenance {
+				if source != nil {
+					return source.Provenance
+				}
+				return nil
+			}(),
 			Image:           videoImage,
 		})
 		if err != nil {
@@ -2622,6 +2654,10 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 			}
 		}
 
+		iterationID := ""
+		if run, ok := ctx.Value(artifactRunContextKey{}).(ArtifactRunContext); ok {
+			iterationID = strings.TrimSpace(run.IterationID)
+		}
 		create := artifact.CreateInput{
 			RequestID:             fmt.Sprintf("%s-%d", requestID, i),
 			CollectionID:          collectionID,
@@ -2631,7 +2667,7 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 			Filename:              filename,
 			MediaType:             "video/mp4",
 			Presentation:          presentation,
-			IterationID:           generated.InteractionID,
+			IterationID:           iterationID,
 			IterationIndex:        iterationIndex,
 			IterationLabel:        iterationLabel,
 			Body:                  append([]byte(nil), generated.Bytes...),
@@ -2721,6 +2757,10 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 		published, err := r.artifactAuthority.Create(ctx, principal, create)
 		if err != nil {
 			return managedVideoArtifactResult{}, fmt.Errorf("publish video artifact: %w", err)
+		}
+		if generated.Provenance != nil && r.sessions != nil && r.sessions.Store() != nil {
+			published.Lineage.VideoProvenance = generated.Provenance
+			_ = r.sessions.Store().PutArtifactVariant(published)
 		}
 		lastVariant = published
 		allVariants = append(allVariants, managedArtifactVariant(published))

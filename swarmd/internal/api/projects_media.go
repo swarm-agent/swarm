@@ -327,31 +327,71 @@ func validateProjectMediaTaskSettings(s *Server, task *pebblestore.ProjectTaskRe
 			return fmt.Errorf("video variant count %d exceeds maximum allowed (8)", task.VariantCount)
 		}
 
-		if len(task.AttachedMedia) > 1 {
-			return errors.New("at most one initial image attachment is supported for video generation")
-		}
-		if len(task.AttachedMedia) == 1 {
-			m := task.AttachedMedia[0]
-			if m.Kind != "" && !strings.EqualFold(m.Kind, "image") {
-				return fmt.Errorf("unsupported attachment kind %q for video generation; only images are supported as reference inputs", m.Kind)
+		op := strings.ToLower(strings.TrimSpace(task.Operation))
+		if op == "" {
+			if len(task.AttachedMedia) == 1 && isVideoAttachment(task.AttachedMedia[0]) {
+				return errors.New("video operation must be explicitly specified when source media is provided (edit or extend)")
 			}
-			if m.MediaType != "" && !strings.HasPrefix(strings.ToLower(m.MediaType), "image/") {
-				return fmt.Errorf("unsupported media type %q for video generation; only images are supported as reference inputs", m.MediaType)
+			op = pebblestore.VideoOperationCreate
+		}
+		if op != pebblestore.VideoOperationCreate && op != pebblestore.VideoOperationEdit && op != pebblestore.VideoOperationExtend {
+			return fmt.Errorf("task operation %q is invalid; must be create, edit, or extend", task.Operation)
+		}
+
+		if op == pebblestore.VideoOperationCreate {
+			if len(task.AttachedMedia) > 1 {
+				return errors.New("at most one initial image attachment is supported for video generation")
+			}
+			if len(task.AttachedMedia) == 1 {
+				m := task.AttachedMedia[0]
+				if isVideoAttachment(m) {
+					return errors.New("cannot provide source video for create operation; use edit or extend")
+				}
+				if !isImageAttachment(m) {
+					return fmt.Errorf("unsupported attachment kind %q for video generation; only images are supported as reference inputs", m.Kind)
+				}
+				fn := strings.ToLower(strings.TrimSpace(m.Filename))
+				if fn != "" && !strings.HasSuffix(fn, ".png") && !strings.HasSuffix(fn, ".jpg") && !strings.HasSuffix(fn, ".jpeg") {
+					return fmt.Errorf("unsupported file extension on %q for video generation; only PNG and JPEG image formats are supported", m.Filename)
+				}
+				if s != nil {
+					imgBytes, mType, err := s.resolveSourceMediaBytes(context.Background(), principal, m, "image")
+					if err != nil {
+						return fmt.Errorf("invalid image attachment: %w", err)
+					}
+					if len(imgBytes) == 0 {
+						return errors.New("image attachment payload is empty")
+					}
+					if err := validateImageBytes(imgBytes, mType); err != nil {
+						return err
+					}
+				}
+			}
+		} else {
+			if len(task.AttachedMedia) == 0 {
+				return fmt.Errorf("video %s operation requires source video", op)
+			}
+			if len(task.AttachedMedia) > 1 {
+				return fmt.Errorf("video %s operation requires exactly 1 source video; multiple attachments are not supported", op)
+			}
+			m := task.AttachedMedia[0]
+			if isImageAttachment(m) {
+				return fmt.Errorf("initial image input is not supported for video %s operation; only create operation supports initial image", op)
+			}
+			if !isVideoAttachment(m) {
+				return fmt.Errorf("unsupported attachment kind %q for video %s operation; only video attachments are supported", m.Kind, op)
 			}
 			fn := strings.ToLower(strings.TrimSpace(m.Filename))
-			if fn != "" && !strings.HasSuffix(fn, ".png") && !strings.HasSuffix(fn, ".jpg") && !strings.HasSuffix(fn, ".jpeg") {
-				return fmt.Errorf("unsupported file extension on %q for video generation; only PNG and JPEG image formats are supported", m.Filename)
+			if fn != "" && !strings.HasSuffix(fn, ".mp4") {
+				return fmt.Errorf("unsupported file extension on %q for video %s operation; only MP4 video format is supported", m.Filename, op)
 			}
 			if s != nil {
-				imgBytes, mType, err := s.resolveSourceMediaBytes(context.Background(), principal, m, "image")
+				srcRec, err := s.resolveSourceMediaRecord(context.Background(), principal, m, "video")
 				if err != nil {
-					return fmt.Errorf("invalid image attachment: %w", err)
+					return fmt.Errorf("invalid video attachment: %w", err)
 				}
-				if len(imgBytes) == 0 {
-					return errors.New("image attachment payload is empty")
-				}
-				if err := validateImageBytes(imgBytes, mType); err != nil {
-					return err
+				if len(srcRec.Bytes) == 0 && srcRec.Provenance == nil {
+					return errors.New("video attachment payload is empty")
 				}
 			}
 		}
@@ -359,14 +399,24 @@ func validateProjectMediaTaskSettings(s *Server, task *pebblestore.ProjectTaskRe
 		model := strings.TrimSpace(task.Model)
 		if model == "" && s != nil && s.uiSettings != nil && principal.AccountScopeID != "" {
 			if uiSet, err := s.uiSettings.GetForAccount(principal.AccountScopeID); err == nil {
-				model = strings.TrimSpace(uiSet.Tools.Video.DefaultModel)
+				if op == pebblestore.VideoOperationEdit {
+					model = strings.TrimSpace(uiSet.Tools.Video.IterationModel)
+				} else {
+					model = strings.TrimSpace(uiSet.Tools.Video.DefaultModel)
+				}
 			}
 		}
 		if model == "" {
+			if op == pebblestore.VideoOperationEdit {
+				return errors.New("no default video iteration model configured for account; select a model or configure one in Settings")
+			}
 			return errors.New("no default video model configured for account; select a model or configure one in Settings")
 		}
 		if !isSupportedVideoModel(s, model) {
 			return fmt.Errorf("unsupported video model %q", model)
+		}
+		if op == pebblestore.VideoOperationEdit && videogen.IsVeoModel(model) {
+			return errors.New("Veo models do not support video editing; use Gemini Omni for video editing or extend for Veo continuation")
 		}
 
 		vOpts := s.getVideoModelOptions(model)
@@ -502,166 +552,11 @@ func updateProjectTaskWithRetry(db *pebblestore.SessionStore, accountScopeID, pr
 // safely resolving data URIs, raw base64, staged uploads, and canonical session artifacts.
 // Arbitrary external URLs and filesystem paths are explicitly rejected.
 func (s *Server) resolveSourceMediaBytes(ctx context.Context, p identity.Principal, m pebblestore.ProjectTaskMediaRef, expectedKind string) ([]byte, string, error) {
-	mediaType := strings.TrimSpace(m.MediaType)
-	if mediaType == "" {
-		if expectedKind == "video" {
-			mediaType = "video/mp4"
-		} else {
-			mediaType = "image/png"
-		}
+	rec, err := s.resolveSourceMediaRecord(ctx, p, m, expectedKind)
+	if err != nil {
+		return nil, "", err
 	}
-
-	// Case 1: Data URL in m.URL
-	if strings.HasPrefix(m.URL, "data:") {
-		parts := strings.SplitN(m.URL, ",", 2)
-		if len(parts) == 2 {
-			header := parts[0]
-			if strings.Contains(header, ";base64") {
-				if sub := strings.TrimPrefix(header, "data:"); strings.Contains(sub, ";") {
-					mediaType = strings.Split(sub, ";")[0]
-				}
-				decoded, err := base64.StdEncoding.DecodeString(parts[1])
-				if err == nil && len(decoded) > 0 {
-					return decoded, mediaType, nil
-				}
-				return nil, mediaType, fmt.Errorf("decode data url: %w", err)
-			}
-		}
-	}
-
-	// Case 2: Data URL in m.Data
-	if strings.HasPrefix(m.Data, "data:") {
-		parts := strings.SplitN(m.Data, ",", 2)
-		if len(parts) == 2 {
-			header := parts[0]
-			if strings.Contains(header, ";base64") {
-				if sub := strings.TrimPrefix(header, "data:"); strings.Contains(sub, ";") {
-					mediaType = strings.Split(sub, ";")[0]
-				}
-				decoded, err := base64.StdEncoding.DecodeString(parts[1])
-				if err == nil && len(decoded) > 0 {
-					return decoded, mediaType, nil
-				}
-				return nil, mediaType, fmt.Errorf("decode inline data url: %w", err)
-			}
-		}
-	}
-
-	// Case 3: Raw base64 in m.Data
-	if len(m.Data) > 0 {
-		if decoded, err := base64.StdEncoding.DecodeString(m.Data); err == nil && len(decoded) > 0 {
-			return decoded, mediaType, nil
-		}
-	}
-
-	// Case 4: Staging storage lookup (m.ID starts with stg_ or m.URL contains /media/staging/stg_)
-	stagingID := ""
-	if strings.HasPrefix(m.ID, "stg_") {
-		stagingID = m.ID
-	} else if idx := strings.Index(m.URL, "/media/staging/stg_"); idx >= 0 {
-		sub := m.URL[idx+len("/media/staging/"):]
-		if end := strings.IndexAny(sub, "/?#"); end >= 0 {
-			stagingID = sub[:end]
-		} else {
-			stagingID = sub
-		}
-	}
-	if stagingID != "" && s != nil && s.mediaStaging != nil {
-		_, payload, readErr := s.mediaStaging.Read(p.AccountScopeID, stagingID, time.Now().UnixMilli())
-		if readErr != nil {
-			return nil, mediaType, fmt.Errorf("staged upload %q not found or expired: %w", stagingID, readErr)
-		}
-		if len(payload) == 0 {
-			return nil, mediaType, fmt.Errorf("staged upload %q is empty", stagingID)
-		}
-		detected := http.DetectContentType(payload)
-		if detected != "" && !strings.Contains(detected, "octet-stream") {
-			mediaType = detected
-		}
-		return payload, mediaType, nil
-	}
-
-	// Case 5: Canonical session artifact URL (/v3/sessions/{sessionID}/artifacts/{variantID})
-	if strings.Contains(m.URL, "/v3/sessions/") && strings.Contains(m.URL, "/artifacts/") {
-		parts := strings.Split(m.URL, "/v3/sessions/")
-		if len(parts) > 1 {
-			subParts := strings.Split(parts[1], "/artifacts/")
-			if len(subParts) == 2 {
-				sessionID := strings.TrimSpace(subParts[0])
-				remainder := strings.TrimSpace(subParts[1])
-				variantID := remainder
-				requestedRev := ""
-				if q := strings.Index(remainder, "?"); q >= 0 {
-					queryStr := remainder[q+1:]
-					variantID = remainder[:q]
-					for _, param := range strings.Split(queryStr, "&") {
-						kv := strings.SplitN(param, "=", 2)
-						if len(kv) == 2 {
-							key := strings.ToLower(strings.TrimSpace(kv[0]))
-							if key == "event_seq" || key == "eventseq" || key == "rev" || key == "revision" {
-								requestedRev = strings.TrimSpace(kv[1])
-							}
-						}
-					}
-				}
-				if slash := strings.Index(variantID, "/"); slash >= 0 {
-					variantID = variantID[:slash]
-				}
-				if sessionID != "" && variantID != "" && s != nil && s.sessions != nil && s.sessions.Store() != nil {
-					variant, ok, err := s.sessions.Store().GetSessionArtifactVariantByID(p.AccountScopeID, sessionID, variantID)
-					if err != nil {
-						return nil, mediaType, fmt.Errorf("read artifact variant: %w", err)
-					}
-					if !ok {
-						return nil, mediaType, fmt.Errorf("session artifact variant %q not found in account scope", variantID)
-					}
-					if requestedRev != "" {
-						curRevStr := fmt.Sprintf("%d", variant.EventSeq)
-						if requestedRev != curRevStr {
-							return nil, mediaType, fmt.Errorf("stale artifact revision %q requested (current revision is %s)", requestedRev, curRevStr)
-						}
-					}
-					if s.artifacts != nil {
-						authority := artifact.NewAuthority(s.artifacts, s.sessions)
-						maxBytes := int64(64 << 20)
-						if expectedKind == "video" {
-							maxBytes = 512 << 20
-						}
-						body, _, readErr := authority.ReadReference(ctx, artifact.Principal{
-							SessionID:      sessionID,
-							AccountScopeID: p.AccountScopeID,
-							UserID:         p.UserID,
-						}, pebblestore.SessionArtifactSelectionReference{
-							SessionID:    variant.SessionID,
-							CollectionID: variant.CollectionID,
-							VariantID:    variant.ID,
-							EventSeq:     variant.EventSeq,
-						}, maxBytes)
-						if readErr != nil {
-							return nil, mediaType, fmt.Errorf("read artifact reference: %w", readErr)
-						}
-						if len(body) > 0 {
-							if variant.MediaType != "" {
-								mediaType = variant.MediaType
-							}
-							return body, mediaType, nil
-						}
-					}
-				}
-			}
-		}
-	}
-
-	// Case 6: Reject arbitrary external HTTP/HTTPS URLs and direct filesystem paths
-	urlLower := strings.ToLower(strings.TrimSpace(m.URL))
-	if strings.HasPrefix(urlLower, "http://") || strings.HasPrefix(urlLower, "https://") {
-		return nil, mediaType, errors.New("fetching arbitrary external URLs is not permitted")
-	}
-	if strings.HasPrefix(m.URL, "/") || strings.HasPrefix(m.URL, "./") || strings.HasPrefix(m.URL, "../") || strings.Contains(m.URL, `\`) {
-		return nil, mediaType, errors.New("direct filesystem paths are not permitted")
-	}
-
-	return nil, mediaType, errors.New("no source media bytes available")
+	return rec.Bytes, rec.MediaType, nil
 }
 
 // executeDirectMediaTask handles asynchronous generation of image variants or video stories.
@@ -676,7 +571,7 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 	}()
 	db := s.sessions.Store()
 
-	if valErr := validateProjectMediaTaskSettings(s, task); valErr != nil {
+	if valErr := validateProjectMediaTaskSettings(s, task, p); valErr != nil {
 		_, _ = updateProjectTaskWithRetry(db, p.AccountScopeID, task.ProjectID, task.ID, func(t *pebblestore.ProjectTaskRecord) error {
 			t.Status = "failed"
 			t.LastError = valErr.Error()
@@ -903,6 +798,11 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 			prompt = strings.TrimSpace(task.Title)
 		}
 
+		op := strings.ToLower(strings.TrimSpace(task.Operation))
+		if op == "" {
+			op = pebblestore.VideoOperationCreate
+		}
+
 		var sourceMediaTitle string
 		var sourceMediaKind string
 		var sourceMediaID string
@@ -910,41 +810,79 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 		var sourceImage *videogen.ManagedVideoImage
 		var sourceErr error
 
-		if len(task.AttachedMedia) > 1 {
-			sourceErr = errors.New("at most one initial image attachment is supported for video generation")
-		} else if len(task.AttachedMedia) == 1 {
-			m := task.AttachedMedia[0]
-			k := strings.ToLower(m.Kind)
-			mt := strings.ToLower(m.MediaType)
-			fn := strings.ToLower(strings.TrimSpace(m.Filename))
-			if k == "video" || strings.HasPrefix(mt, "video/") || strings.HasSuffix(fn, ".mp4") {
-				sourceErr = errors.New("video file attachments are not supported for single video generation; only images are supported as reference inputs")
-			} else if k == "image" || strings.HasPrefix(mt, "image/") || strings.HasSuffix(fn, ".png") || strings.HasSuffix(fn, ".jpg") || strings.HasSuffix(fn, ".jpeg") || strings.HasSuffix(fn, ".webp") {
-				if fn != "" && !strings.HasSuffix(fn, ".png") && !strings.HasSuffix(fn, ".jpg") && !strings.HasSuffix(fn, ".jpeg") {
-					sourceErr = fmt.Errorf("unsupported file extension on %q for video generation; only PNG and JPEG image formats are supported", m.Filename)
+		if op == pebblestore.VideoOperationCreate {
+			if len(task.AttachedMedia) > 1 {
+				sourceErr = errors.New("at most one initial image attachment is supported for video generation")
+			} else if len(task.AttachedMedia) == 1 {
+				m := task.AttachedMedia[0]
+				if isVideoAttachment(m) {
+					sourceErr = errors.New("cannot provide source video for create operation; use edit or extend")
+				} else if isImageAttachment(m) {
+					fn := strings.ToLower(strings.TrimSpace(m.Filename))
+					if fn != "" && !strings.HasSuffix(fn, ".png") && !strings.HasSuffix(fn, ".jpg") && !strings.HasSuffix(fn, ".jpeg") {
+						sourceErr = fmt.Errorf("unsupported file extension on %q for video generation; only PNG and JPEG image formats are supported", m.Filename)
+					} else {
+						sourceMediaKind = "image"
+						sourceMediaID = m.ID
+						sourceMediaTitle = m.Title
+						if sourceMediaTitle == "" {
+							sourceMediaTitle = m.Filename
+						}
+						bytes, mType, err := s.resolveSourceMediaBytes(ctx, p, m, "image")
+						if err != nil {
+							sourceErr = fmt.Errorf("resolve initial image source: %w", err)
+						} else if len(bytes) == 0 {
+							sourceErr = errors.New("attached image is empty")
+						} else if err := validateImageBytes(bytes, mType); err != nil {
+							sourceErr = fmt.Errorf("invalid initial image: %w", err)
+						} else {
+							sourceImage = &videogen.ManagedVideoImage{
+								Bytes:     bytes,
+								MediaType: mType,
+							}
+						}
+					}
 				} else {
-					sourceMediaKind = "image"
+					sourceErr = fmt.Errorf("unsupported attachment kind %q for video generation; only images are supported as reference inputs", m.Kind)
+				}
+			}
+		} else {
+			if len(task.AttachedMedia) == 0 {
+				sourceErr = fmt.Errorf("video %s operation requires source video", op)
+			} else if len(task.AttachedMedia) > 1 {
+				sourceErr = fmt.Errorf("video %s operation requires exactly 1 source video; multiple attachments are not supported", op)
+			} else {
+				m := task.AttachedMedia[0]
+				if isImageAttachment(m) {
+					sourceErr = fmt.Errorf("initial image input is not supported for video %s operation; only create operation supports initial image", op)
+				} else if !isVideoAttachment(m) {
+					sourceErr = fmt.Errorf("unsupported attachment kind %q for video %s operation; only video attachments are supported", m.Kind, op)
+				} else {
+					sourceMediaKind = "video"
 					sourceMediaID = m.ID
 					sourceMediaTitle = m.Title
 					if sourceMediaTitle == "" {
 						sourceMediaTitle = m.Filename
 					}
-					bytes, mType, err := s.resolveSourceMediaBytes(ctx, p, m, "image")
+					srcRec, err := s.resolveSourceMediaRecord(ctx, p, m, "video")
 					if err != nil {
-						sourceErr = fmt.Errorf("resolve initial image source: %w", err)
-					} else if len(bytes) == 0 {
-						sourceErr = errors.New("attached image is empty")
-					} else if err := validateImageBytes(bytes, mType); err != nil {
-						sourceErr = fmt.Errorf("invalid initial image: %w", err)
+						sourceErr = fmt.Errorf("resolve video source: %w", err)
+					} else if len(srcRec.Bytes) == 0 && srcRec.Provenance == nil {
+						sourceErr = errors.New("attached video payload is empty")
 					} else {
-						sourceImage = &videogen.ManagedVideoImage{
-							Bytes:     bytes,
-							MediaType: mType,
+						sourceVideo = &videogen.ManagedVideoSource{
+							Bytes:      srcRec.Bytes,
+							MediaType:  srcRec.MediaType,
+							Provenance: srcRec.Provenance,
+							SourceLink: srcRec.SourceLink,
+						}
+						if srcRec.Provenance != nil {
+							sourceVideo.InteractionID = srcRec.Provenance.InteractionID
+							sourceVideo.URI = srcRec.Provenance.ProviderResource
+							sourceVideo.Model = srcRec.Provenance.Model
 						}
 					}
 				}
-			} else {
-				sourceErr = fmt.Errorf("unsupported attachment kind %q for video generation; only images are supported as reference inputs", m.Kind)
 			}
 		}
 
@@ -980,6 +918,22 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 			return
 		}
 
+		if op == pebblestore.VideoOperationEdit && videogen.IsVeoModel(videoModel) {
+			veoErr := errors.New("Veo models do not support video editing; use Gemini Omni for video editing or extend for Veo continuation")
+			_, _ = updateProjectTaskWithRetry(db, p.AccountScopeID, task.ProjectID, task.ID, func(t *pebblestore.ProjectTaskRecord) error {
+				t.Status = "failed"
+				t.LastError = veoErr.Error()
+				t.ActionNeeded = fmt.Sprintf("Action Needed: %v", veoErr)
+				t.WhatNotDone = []string{veoErr.Error()}
+				for i := range t.Deliverables {
+					t.Deliverables[i].Status = "failed"
+					t.Deliverables[i].Description = fmt.Sprintf("Operation error: %v", veoErr)
+				}
+				return nil
+			})
+			return
+		}
+
 		vg, vgErr := s.resolveVideoGenerationService()
 		if vgErr != nil {
 			_, _ = updateProjectTaskWithRetry(db, p.AccountScopeID, task.ProjectID, task.ID, func(t *pebblestore.ProjectTaskRecord) error {
@@ -1005,6 +959,45 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 			resTag = "720p"
 		}
 
+		// Revalidate capabilities and references at execution before dispatching
+		pfReq := videogen.VideoPreflightRequest{
+			AccountScopeID:  p.AccountScopeID,
+			Operation:       op,
+			ExplicitModel:   videoModel,
+			AspectRatio:     ar,
+			Resolution:      resTag,
+			DurationSeconds: durSec,
+			Prompt:          prompt,
+			Principal:       p,
+			Source:          sourceVideo,
+			SourceProvenance: func() *pebblestore.VideoProvenance {
+				if sourceVideo != nil {
+					return sourceVideo.Provenance
+				}
+				return nil
+			}(),
+			Image:        sourceImage,
+			IsQueuedTask: true,
+		}
+		pfRes, pfErr := s.preflightVideoOperation(ctx, pfReq)
+		if pfErr != nil {
+			_, _ = updateProjectTaskWithRetry(db, p.AccountScopeID, task.ProjectID, task.ID, func(t *pebblestore.ProjectTaskRecord) error {
+				t.Status = "failed"
+				t.LastError = pfErr.Error()
+				t.ActionNeeded = fmt.Sprintf("Action Needed: %v", pfErr)
+				t.WhatNotDone = []string{pfErr.Error()}
+				for i := range t.Deliverables {
+					t.Deliverables[i].Status = "failed"
+					t.Deliverables[i].Description = fmt.Sprintf("Preflight error: %v", pfErr)
+				}
+				return nil
+			})
+			return
+		}
+		if pfRes != nil && pfRes.ResolvedModel != "" {
+			videoModel = pfRes.ResolvedModel
+		}
+
 		concurrency := 4
 		if count < concurrency {
 			concurrency = count
@@ -1018,9 +1011,7 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 		var firstGenErr error
 		var errMu sync.Mutex
 
-		lowerPrompt := strings.ToLower(prompt)
-		isContinuation := strings.Contains(lowerPrompt, "next scene") || strings.Contains(lowerPrompt, "continue") || strings.Contains(lowerPrompt, "sequel") || strings.Contains(lowerPrompt, "part 2")
-		isFineTune := strings.Contains(lowerPrompt, "change") || strings.Contains(lowerPrompt, "modify") || strings.Contains(lowerPrompt, "edit") || strings.Contains(lowerPrompt, "fine-tune")
+
 
 		var wg sync.WaitGroup
 		for w := 0; w < concurrency; w++ {
@@ -1039,6 +1030,7 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 						}
 					}
 					vReq := videogen.ManagedVideoRequest{
+						Operation:       op,
 						Model:           videoModel,
 						Prompt:          reqPrompt,
 						AspectRatio:     ar,
@@ -1046,6 +1038,12 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 						DurationSeconds: durSec,
 						Principal:       p,
 						Source:          sourceVideo,
+						SourceProvenance: func() *pebblestore.VideoProvenance {
+							if sourceVideo != nil {
+								return sourceVideo.Provenance
+							}
+							return nil
+						}(),
 						Image:           sourceImage,
 					}
 					if sourceImage != nil {
@@ -1098,6 +1096,8 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 								t.Deliverables[slotIndex].Duration = durationStr
 								t.Deliverables[slotIndex].ParentDeliverableID = sourceMediaID
 								t.Deliverables[slotIndex].SourceMediaRef = sourceMediaID
+								t.Deliverables[slotIndex].VideoProvenance = vRes.Provenance
+								t.VideoProvenance = vRes.Provenance
 
 								if count > 1 {
 									t.Deliverables[slotIndex].Title = fmt.Sprintf("%s (Take %d, %s)", t.Title, takeIdx, ar)
@@ -1107,14 +1107,12 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 									}
 									t.Deliverables[slotIndex].Description = desc
 								} else {
-									if sourceMediaKind == "video" {
-										if isContinuation {
-											t.Deliverables[0].Title = fmt.Sprintf("%s (Continued from %s)", t.Title, sourceMediaTitle)
-											t.Deliverables[0].Description = fmt.Sprintf("Video continuation using %s from %s: %s", usedModel, sourceMediaTitle, t.Title)
-										} else {
-											t.Deliverables[0].Title = fmt.Sprintf("%s (Iteration from %s)", t.Title, sourceMediaTitle)
-											t.Deliverables[0].Description = fmt.Sprintf("Video iteration using %s of %s: %s", usedModel, sourceMediaTitle, t.Title)
-										}
+									if op == pebblestore.VideoOperationExtend {
+										t.Deliverables[0].Title = fmt.Sprintf("%s (Continued from %s)", t.Title, sourceMediaTitle)
+										t.Deliverables[0].Description = fmt.Sprintf("Video continuation using %s from %s: %s", usedModel, sourceMediaTitle, t.Title)
+									} else if op == pebblestore.VideoOperationEdit {
+										t.Deliverables[0].Title = fmt.Sprintf("%s (Iteration from %s)", t.Title, sourceMediaTitle)
+										t.Deliverables[0].Description = fmt.Sprintf("Video iteration using %s of %s: %s", usedModel, sourceMediaTitle, t.Title)
 									} else if sourceMediaKind == "image" {
 										t.Deliverables[0].Title = fmt.Sprintf("%s (Keyframe %s)", t.Title, sourceMediaTitle)
 										t.Deliverables[0].Description = fmt.Sprintf("Video clip using %s from keyframe image %s: %s", usedModel, sourceMediaTitle, t.Title)
@@ -1138,6 +1136,27 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 			}()
 		}
 		wg.Wait()
+
+		if firstGenErr != nil || ctx.Err() != nil {
+			errToReport := firstGenErr
+			if errToReport == nil {
+				errToReport = ctx.Err()
+			}
+			_, _ = updateProjectTaskWithRetry(db, p.AccountScopeID, task.ProjectID, task.ID, func(t *pebblestore.ProjectTaskRecord) error {
+				t.Status = "failed"
+				t.LastError = errToReport.Error()
+				t.ActionNeeded = fmt.Sprintf("Action Needed: %v", errToReport)
+				t.WhatNotDone = []string{errToReport.Error()}
+				for i := range t.Deliverables {
+					t.Deliverables[i].Status = "failed"
+					t.Deliverables[i].Description = fmt.Sprintf("Video generation failed: %v", errToReport)
+					t.Deliverables[i].MediaURL = ""
+					t.Deliverables[i].Thumbnail = ""
+				}
+				return nil
+			})
+			return
+		}
 
 		_, _ = updateProjectTaskWithRetry(db, p.AccountScopeID, task.ProjectID, task.ID, func(t *pebblestore.ProjectTaskRecord) error {
 			readyCount := 0
@@ -1185,13 +1204,13 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 							fmt.Sprintf("Generated %d video variation(s) in parallel via swarm engine", readyCount),
 						}
 					} else if sourceMediaKind == "video" {
-						if isContinuation {
+						if op == pebblestore.VideoOperationExtend {
 							t.WhatDidDo = []string{
 								fmt.Sprintf("Referenced prior video cut: %s", sourceMediaTitle),
 								"Generated a continuation clip from the supplied source",
 							}
 							t.ActionNeeded = fmt.Sprintf("Action Needed: Next video scene ready for review (continued from %s).", sourceMediaTitle)
-						} else if isFineTune {
+						} else if op == pebblestore.VideoOperationEdit {
 							t.WhatDidDo = []string{
 								fmt.Sprintf("Referenced source video: %s", sourceMediaTitle),
 								"Generated a refined clip from the supplied source",
