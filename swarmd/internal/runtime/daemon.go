@@ -660,6 +660,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	// waking realtime. Wake failures cannot turn a committed execution into retry.
 	apiServer.ConfigureAutomationRealtime(store)
 	apiServer.ConfigureEnvironmentRealtime(store)
+	apiServer.ConfigureProjectRealtime(store)
 	// Keep the legacy catalog read-only. Do not install V1 approval, dispatch,
 	// tool execution, or run-context authorities alongside plan-native V2.
 	apiServer.ConfigureAutomations(automationSvc, nil, nil, nil)

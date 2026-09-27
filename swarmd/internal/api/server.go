@@ -351,8 +351,11 @@ func NewServer(authSvc *auth.Service, agentSvc *agentruntime.Service, modelSvc *
 	if notificationSvc, ok := notificationSvc.(*notification.Service); ok {
 		notificationSvc.SetRealtimePublisher(server.publishNotificationV3Realtime)
 	}
-	if sessionSvc != nil && sessionSvc.Store() != nil && sessionSvc.Store().Underlying() != nil && notificationSvc != nil {
-		server.storageHub = storagehub.NewService(sessionSvc.Store().Underlying(), notificationSvc)
+	if sessionSvc != nil && sessionSvc.Store() != nil && sessionSvc.Store().Underlying() != nil {
+		if notificationSvc != nil {
+			server.storageHub = storagehub.NewService(sessionSvc.Store().Underlying(), notificationSvc)
+		}
+		server.ConfigureProjectRealtime(sessionSvc.Store().Underlying())
 	}
 	if server.workspace != nil {
 		server.workspace.SetCatalogPublisher(func(record pebblestore.V3RealtimeOutboxRecord) {

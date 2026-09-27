@@ -33,6 +33,7 @@ const (
 	V3RealtimeKindWorkspaceCatalog         = "workspace.catalog.updated"
 	V3RealtimeKindAutomationChanged        = "automation.updated"
 	V3RealtimeKindEnvironmentChanged       = "environment.updated"
+	V3RealtimeKindProjectUpdated           = "project.updated"
 	V3RealtimeKindAuthResource             = "auth.credentials.updated"
 	V3RealtimeKindAuthDenied               = "auth.denied"
 	V3RealtimeKindSlowConsumer             = "slow_consumer.reconnect_required"
@@ -94,6 +95,7 @@ type V3RealtimeMessage struct {
 	PermissionSummary          *sessionsV3PermissionSummary           `json:"permission_summary,omitempty"`
 	Notification               *pebblestore.NotificationRecord        `json:"notification,omitempty"`
 	NotificationSummary        *pebblestore.NotificationSummary       `json:"notification_summary,omitempty"`
+	ProjectID                  string                                 `json:"project_id,omitempty"`
 	AITask                     *sessionsV3AITaskLifecyclePayload      `json:"task,omitempty"`
 	Auth                       *sessionsV3AuthResourcePayload         `json:"auth,omitempty"`
 	ErrorCode                  string                                 `json:"error_code,omitempty"`
@@ -193,6 +195,11 @@ func ValidateV3RealtimeSchemaMessage(message V3RealtimeMessage) error {
 	case V3RealtimeKindEnvironmentChanged:
 		if strings.TrimSpace(message.EndpointCursor) == "" {
 			return errors.New("environment update requires endpoint_cursor")
+		}
+		return nil
+	case V3RealtimeKindProjectUpdated:
+		if strings.TrimSpace(message.EndpointCursor) == "" {
+			return errors.New("project update requires endpoint_cursor")
 		}
 		return nil
 	case V3RealtimeKindWorkspaceCatalog:
@@ -335,7 +342,7 @@ func ValidateV3RealtimeOutboundServerMessage(message V3RealtimeMessage) error {
 		V3RealtimeKindWorksetSessionRemoved,
 		V3RealtimeKindNotificationResource,
 		V3RealtimeKindAITaskResource,
-		V3RealtimeKindWorkspaceCatalog, V3RealtimeKindAutomationChanged, V3RealtimeKindEnvironmentChanged,
+		V3RealtimeKindWorkspaceCatalog, V3RealtimeKindAutomationChanged, V3RealtimeKindEnvironmentChanged, V3RealtimeKindProjectUpdated,
 		V3RealtimeKindAuthResource,
 		V3RealtimeKindAuthDenied,
 		V3RealtimeKindSlowConsumer:
@@ -347,7 +354,7 @@ func ValidateV3RealtimeOutboundServerMessage(message V3RealtimeMessage) error {
 
 func v3RealtimeKindAllowed(kind string) bool {
 	switch kind {
-	case V3RealtimeKindHello, V3RealtimeKindEvent, V3RealtimeKindReplayStart, V3RealtimeKindReplayDone, V3RealtimeKindCursorError, V3RealtimeKindKeepalive, V3RealtimeKindEndpointWatermark, V3RealtimeKindHighWater, V3RealtimeKindSubscribe, V3RealtimeKindUnsubscribe, V3RealtimeKindResume, V3RealtimeKindWorksetSessionDiscovered, V3RealtimeKindWorksetSessionUpdated, V3RealtimeKindWorksetSessionRemoved, V3RealtimeKindNotificationResource, V3RealtimeKindAITaskResource, V3RealtimeKindWorkspaceCatalog, V3RealtimeKindAutomationChanged, V3RealtimeKindEnvironmentChanged, V3RealtimeKindAuthResource, V3RealtimeKindAuthDenied, V3RealtimeKindSlowConsumer:
+	case V3RealtimeKindHello, V3RealtimeKindEvent, V3RealtimeKindReplayStart, V3RealtimeKindReplayDone, V3RealtimeKindCursorError, V3RealtimeKindKeepalive, V3RealtimeKindEndpointWatermark, V3RealtimeKindHighWater, V3RealtimeKindSubscribe, V3RealtimeKindUnsubscribe, V3RealtimeKindResume, V3RealtimeKindWorksetSessionDiscovered, V3RealtimeKindWorksetSessionUpdated, V3RealtimeKindWorksetSessionRemoved, V3RealtimeKindNotificationResource, V3RealtimeKindAITaskResource, V3RealtimeKindWorkspaceCatalog, V3RealtimeKindAutomationChanged, V3RealtimeKindEnvironmentChanged, V3RealtimeKindProjectUpdated, V3RealtimeKindAuthResource, V3RealtimeKindAuthDenied, V3RealtimeKindSlowConsumer:
 		return true
 	default:
 		return false

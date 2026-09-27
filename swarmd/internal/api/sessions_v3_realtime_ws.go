@@ -597,7 +597,7 @@ func (s *Server) v3RealtimeProcessOutboxRecord(conn *transportws.Conn, principal
 		advanced.LastSentEndpointSeq = record.EndpointSeq
 		return advanced, true, true
 	}
-	if record.Event.EventType == pebblestore.WorkspaceCatalogEventType || record.Event.EventType == pebblestore.AutomationChangedEventType || record.Event.EventType == pebblestore.EnvironmentChangedEventType {
+	if record.Event.EventType == pebblestore.WorkspaceCatalogEventType || record.Event.EventType == pebblestore.AutomationChangedEventType || record.Event.EventType == pebblestore.EnvironmentChangedEventType || record.Event.EventType == pebblestore.ProjectUpdatedEventType {
 		// Catalog membership and workspace environments are account-wide or workspace-scoped, independent of the selected session.
 		if len(worksets) == 0 {
 			return advanced, true, false
@@ -612,9 +612,14 @@ func (s *Server) v3RealtimeProcessOutboxRecord(conn *transportws.Conn, principal
 			Kind:            record.Event.EventType,
 			EndpointCursor:  cursor,
 		}
-		if record.Event.EventType == pebblestore.EnvironmentChangedEventType {
+		if record.Event.EventType == pebblestore.EnvironmentChangedEventType || record.Event.EventType == pebblestore.ProjectUpdatedEventType {
 			msg.SessionID = record.SessionID
 			msg.Event = &record.Event
+		}
+		if record.Event.EventType == pebblestore.ProjectUpdatedEventType {
+			if projID := v3RealtimeProjectIDFromRecord(record); projID != "" {
+				msg.ProjectID = projID
+			}
 		}
 		if err := s.sendV3RealtimeMessage(conn, msg); err != nil {
 			return advanced, false, false
@@ -902,7 +907,7 @@ func canonicalV3RealtimeWorksetSelector(selector V3RealtimeWorksetSelector) (V3R
 
 func v3RealtimeWorksetResourceAllowed(resource string) bool {
 	switch strings.TrimSpace(resource) {
-	case "sessions", "projections", "events", "messages", "run_intents", "current_run_state", "permission_summaries", "notifications", "notification_summary", "tasks", "auth", "active_plan", "plan_revisions", "membership", "tombstones":
+	case "sessions", "projections", "events", "messages", "run_intents", "current_run_state", "permission_summaries", "notifications", "notification_summary", "tasks", "auth", "active_plan", "plan_revisions", "membership", "tombstones", "projects":
 		return true
 	default:
 		return false
@@ -1062,6 +1067,22 @@ func v3RealtimeAutoSubscriptionID(workset v3RealtimeWorksetSubscription, session
 		base = "workset"
 	}
 	return base + ":session:" + strings.TrimSpace(sessionID)
+}
+
+func v3RealtimeProjectIDFromRecord(record sessionruntime.RealtimeOutboxRecord) string {
+	if len(record.Event.Payload) > 0 {
+		var payload struct {
+			ProjectID string `json:"project_id"`
+		}
+		if err := json.Unmarshal(record.Event.Payload, &payload); err == nil && payload.ProjectID != "" {
+			return payload.ProjectID
+		}
+	}
+	parts := strings.Split(record.SessionID, ":")
+	if len(parts) >= 3 && parts[0] == "__project__" {
+		return parts[2]
+	}
+	return ""
 }
 
 func v3RealtimeRecordRemovesFromWorkset(record sessionruntime.RealtimeOutboxRecord) bool {
@@ -1285,7 +1306,7 @@ func v3RealtimeRecordVisibleToPrincipal(principal identity.Principal, record ses
 		payload, ok := sessionsV3AITaskLifecyclePayloadFromRecord(record)
 		return ok && payload.UserID == strings.TrimSpace(principal.UserID)
 	}
-	if strings.TrimSpace(record.Event.EventType) == v3AuthResourceEventType || (record.Event.EventType == pebblestore.WorkspaceCatalogEventType || record.Event.EventType == pebblestore.AutomationChangedEventType || record.Event.EventType == pebblestore.EnvironmentChangedEventType) {
+	if strings.TrimSpace(record.Event.EventType) == v3AuthResourceEventType || (record.Event.EventType == pebblestore.WorkspaceCatalogEventType || record.Event.EventType == pebblestore.AutomationChangedEventType || record.Event.EventType == pebblestore.EnvironmentChangedEventType || record.Event.EventType == pebblestore.ProjectUpdatedEventType) {
 		return true
 	}
 	if strings.TrimSpace(record.UserID) == "" || strings.TrimSpace(record.UserID) != strings.TrimSpace(principal.UserID) {

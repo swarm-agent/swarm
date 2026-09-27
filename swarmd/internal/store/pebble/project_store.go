@@ -66,20 +66,33 @@ func (s *SessionStore) PutProject(accountScopeID string, proj *ProjectRecord) er
 	if s == nil || s.store == nil || s.store.db == nil {
 		return errors.New("database not available")
 	}
+	s.store.projectsMu.Lock()
+	mut, err := s.putProjectLocked(accountScopeID, proj)
+	s.store.projectsMu.Unlock()
+	if err != nil {
+		return err
+	}
+	s.store.publishProjectRealtime(mut)
+	return nil
+}
+
+func (s *SessionStore) putProjectLocked(accountScopeID string, proj *ProjectRecord) (*projectRealtimeMutation, error) {
 	if proj == nil {
-		return errors.New("project definition required")
+		return nil, errors.New("project definition required")
 	}
 	accountScopeID = strings.TrimSpace(accountScopeID)
 	if accountScopeID == "" {
-		return errors.New("account scope id is required")
+		return nil, errors.New("account scope id is required")
 	}
 	proj.AccountID = accountScopeID
 	if err := proj.Validate(); err != nil {
-		return err
+		return nil, err
 	}
 
 	now := time.Now().UnixMilli()
+	isNew := false
 	if proj.ID == "" {
+		isNew = true
 		b := make([]byte, 8)
 		_, _ = rand.Read(b)
 		proj.ID = "proj_" + hex.EncodeToString(b)
@@ -91,10 +104,27 @@ func (s *SessionStore) PutProject(accountScopeID string, proj *ProjectRecord) er
 
 	raw, err := json.Marshal(proj)
 	if err != nil {
-		return err
+		return nil, err
 	}
-
-	return s.store.db.Set([]byte(KeyProject(accountScopeID, proj.ID)), raw, pebble.Sync)
+	action := "project_updated"
+	if isNew {
+		action = "project_created"
+	}
+	payload, _ := json.Marshal(map[string]any{
+		"project_id": proj.ID,
+		"account_id": accountScopeID,
+		"action":     action,
+	})
+	mutation := &projectRealtimeMutation{
+		accountScopeID: accountScopeID,
+		projectID:      proj.ID,
+		eventPayload:   payload,
+	}
+	mutation.putBytes(KeyProject(accountScopeID, proj.ID), raw)
+	if err := s.store.commitProjectRealtime(mutation); err != nil {
+		return nil, err
+	}
+	return mutation, nil
 }
 
 // GetProject returns a project record by ID within an account scope.
@@ -168,13 +198,41 @@ func (s *SessionStore) DeleteProject(accountScopeID, id string) error {
 	if s == nil || s.store == nil || s.store.db == nil {
 		return errors.New("database not available")
 	}
+	s.store.projectsMu.Lock()
+	mut, err := s.deleteProjectLocked(accountScopeID, id)
+	s.store.projectsMu.Unlock()
+	if err != nil {
+		return err
+	}
+	s.store.publishProjectRealtime(mut)
+	return nil
+}
+
+func (s *SessionStore) deleteProjectLocked(accountScopeID, id string) (*projectRealtimeMutation, error) {
 	accountScopeID = strings.TrimSpace(accountScopeID)
 	id = strings.TrimSpace(id)
 	if accountScopeID == "" || id == "" {
-		return errors.New("account scope id and project id are required")
+		return nil, errors.New("account scope id and project id are required")
 	}
-
-	return s.store.db.Delete([]byte(KeyProject(accountScopeID, id)), pebble.Sync)
+	payload, _ := json.Marshal(map[string]any{
+		"project_id": id,
+		"account_id": accountScopeID,
+		"action":     "project_deleted",
+	})
+	mutation := &projectRealtimeMutation{
+		accountScopeID: accountScopeID,
+		projectID:      id,
+		eventPayload:   payload,
+	}
+	mutation.delete(KeyProject(accountScopeID, id))
+	_ = s.store.IteratePrefix(ProjectTaskPrefix(accountScopeID, id), 10000, func(key string, _ []byte) error {
+		mutation.delete(key)
+		return nil
+	})
+	if err := s.store.commitProjectRealtime(mutation); err != nil {
+		return nil, err
+	}
+	return mutation, nil
 }
 
 // UpdateProject reads, mutates, and writes back a project atomically.
@@ -182,21 +240,26 @@ func (s *SessionStore) UpdateProject(accountScopeID, id string, mutate func(*Pro
 	if s == nil || s.store == nil || s.store.db == nil {
 		return nil, errors.New("database not available")
 	}
+	s.store.projectsMu.Lock()
 	record, found, err := s.GetProject(accountScopeID, id)
 	if err != nil {
+		s.store.projectsMu.Unlock()
 		return nil, err
 	}
 	if !found || record == nil {
+		s.store.projectsMu.Unlock()
 		return nil, errors.New("project not found")
 	}
-
 	if err := mutate(record); err != nil {
+		s.store.projectsMu.Unlock()
 		return nil, err
 	}
-
-	if err := s.PutProject(accountScopeID, record); err != nil {
+	mut, err := s.putProjectLocked(accountScopeID, record)
+	s.store.projectsMu.Unlock()
+	if err != nil {
 		return nil, err
 	}
+	s.store.publishProjectRealtime(mut)
 	return record, nil
 }
 
@@ -507,19 +570,32 @@ func (s *SessionStore) PutProjectTask(accountScopeID string, task *ProjectTaskRe
 	if s == nil || s.store == nil || s.store.db == nil {
 		return errors.New("database not available")
 	}
+	s.store.projectsMu.Lock()
+	mut, err := s.putProjectTaskLocked(accountScopeID, task)
+	s.store.projectsMu.Unlock()
+	if err != nil {
+		return err
+	}
+	s.store.publishProjectRealtime(mut)
+	return nil
+}
+
+func (s *SessionStore) putProjectTaskLocked(accountScopeID string, task *ProjectTaskRecord) (*projectRealtimeMutation, error) {
 	if task == nil {
-		return errors.New("project task definition required")
+		return nil, errors.New("project task definition required")
 	}
 	accountScopeID = strings.TrimSpace(accountScopeID)
 	if accountScopeID == "" {
-		return errors.New("account scope id is required")
+		return nil, errors.New("account scope id is required")
 	}
 	task.AccountID = accountScopeID
 	if err := task.Validate(); err != nil {
-		return err
+		return nil, err
 	}
 	now := time.Now().UnixMilli()
+	isNew := false
 	if task.ID == "" {
+		isNew = true
 		b := make([]byte, 8)
 		_, _ = rand.Read(b)
 		task.ID = "task_" + hex.EncodeToString(b)
@@ -528,12 +604,32 @@ func (s *SessionStore) PutProjectTask(accountScopeID string, task *ProjectTaskRe
 		task.CreatedAt = now
 	}
 	task.UpdatedAt = now
+
 	raw, err := json.Marshal(task)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	key := []byte(KeyProjectTask(accountScopeID, task.ProjectID, task.ID))
-	return s.store.db.Set(key, raw, pebble.Sync)
+	key := KeyProjectTask(accountScopeID, task.ProjectID, task.ID)
+	action := "task_updated"
+	if isNew {
+		action = "task_created"
+	}
+	payload, _ := json.Marshal(map[string]any{
+		"project_id": task.ProjectID,
+		"account_id": accountScopeID,
+		"task_id":    task.ID,
+		"action":     action,
+	})
+	mutation := &projectRealtimeMutation{
+		accountScopeID: accountScopeID,
+		projectID:      task.ProjectID,
+		eventPayload:   payload,
+	}
+	mutation.putBytes(key, raw)
+	if err := s.store.commitProjectRealtime(mutation); err != nil {
+		return nil, err
+	}
+	return mutation, nil
 }
 
 // GetProjectTask fetches a project task by ID.
@@ -606,19 +702,26 @@ func (s *SessionStore) UpdateProjectTask(accountScopeID, projectID, taskID strin
 	if s == nil || s.store == nil || s.store.db == nil {
 		return nil, errors.New("database not available")
 	}
+	s.store.projectsMu.Lock()
 	record, found, err := s.GetProjectTask(accountScopeID, projectID, taskID)
 	if err != nil {
+		s.store.projectsMu.Unlock()
 		return nil, err
 	}
 	if !found || record == nil {
+		s.store.projectsMu.Unlock()
 		return nil, errors.New("project task not found")
 	}
 	if err := mutate(record); err != nil {
+		s.store.projectsMu.Unlock()
 		return nil, err
 	}
-	if err := s.PutProjectTask(accountScopeID, record); err != nil {
+	mut, err := s.putProjectTaskLocked(accountScopeID, record)
+	s.store.projectsMu.Unlock()
+	if err != nil {
 		return nil, err
 	}
+	s.store.publishProjectRealtime(mut)
 	return record, nil
 }
 
@@ -627,11 +730,38 @@ func (s *SessionStore) DeleteProjectTask(accountScopeID, projectID, taskID strin
 	if s == nil || s.store == nil || s.store.db == nil {
 		return errors.New("database not available")
 	}
+	s.store.projectsMu.Lock()
+	mut, err := s.deleteProjectTaskLocked(accountScopeID, projectID, taskID)
+	s.store.projectsMu.Unlock()
+	if err != nil {
+		return err
+	}
+	s.store.publishProjectRealtime(mut)
+	return nil
+}
+
+func (s *SessionStore) deleteProjectTaskLocked(accountScopeID, projectID, taskID string) (*projectRealtimeMutation, error) {
 	accountScopeID = strings.TrimSpace(accountScopeID)
 	projectID = strings.TrimSpace(projectID)
 	taskID = strings.TrimSpace(taskID)
 	if accountScopeID == "" || projectID == "" || taskID == "" {
-		return errors.New("account scope id, project id, and task id are required")
+		return nil, errors.New("account scope id, project id, and task id are required")
 	}
-	return s.store.db.Delete([]byte(KeyProjectTask(accountScopeID, projectID, taskID)), pebble.Sync)
+	payload, _ := json.Marshal(map[string]any{
+		"project_id": projectID,
+		"account_id": accountScopeID,
+		"task_id":    taskID,
+		"action":     "task_deleted",
+	})
+	mutation := &projectRealtimeMutation{
+		accountScopeID: accountScopeID,
+		projectID:      projectID,
+		eventPayload:   payload,
+	}
+	key := KeyProjectTask(accountScopeID, projectID, taskID)
+	mutation.delete(key)
+	if err := s.store.commitProjectRealtime(mutation); err != nil {
+		return nil, err
+	}
+	return mutation, nil
 }

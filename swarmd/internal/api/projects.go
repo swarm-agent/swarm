@@ -1779,26 +1779,18 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				tasks = []pebblestore.ProjectTaskRecord{}
 			}
 			for i := range tasks {
-				gitState := inspectTaskGitState(tasks[i], db)
-				tasks[i].WorktreeBranch = gitState.worktreeBranch
-				tasks[i].WorktreeName = gitState.worktreeName
-				tasks[i].BaseBranch = gitState.baseBranch
-				tasks[i].UnintegratedCommits = gitState.unintegratedCommits
-				tasks[i].BehindCommits = gitState.behindCommits
-				tasks[i].IsIntegrated = gitState.isIntegrated
-				tasks[i].DiffSummary = gitState.diffSummary
-				tasks[i].IsDirty = gitState.isDirty
-				tasks[i].DirtyCount = gitState.dirtyCount
-				tasks[i].SyncWarning = gitState.syncWarning
-				if gitState.actionNeeded != "" {
-					tasks[i].ActionNeeded = gitState.actionNeeded
+				if tasks[i].WorktreeBranch == "" || tasks[i].WorktreeBranch == "main" || tasks[i].WorktreeBranch == "dev" || tasks[i].WorktreeBranch == "master" {
+					tasks[i].WorktreeBranch, tasks[i].WorktreeName = pebblestore.MakeWorktreeBranch(tasks[i].Title, tasks[i].Description)
 				}
-				origStatus := tasks[i].Status
+				if tasks[i].WorktreeName == "" {
+					tasks[i].WorktreeName = strings.TrimPrefix(tasks[i].WorktreeBranch, "agent/")
+					tasks[i].WorktreeName = strings.TrimPrefix(tasks[i].WorktreeName, "worktree/")
+				}
+				if tasks[i].BaseBranch == "" {
+					tasks[i].BaseBranch = "main"
+				}
 				syncTaskSessionState(&tasks[i], db)
 				hydrateTaskProgramStatus(&tasks[i], db)
-				if tasks[i].Status != origStatus {
-					_ = db.PutProjectTask(p.AccountScopeID, &tasks[i])
-				}
 			}
 			sanitizedTasks := make([]pebblestore.ProjectTaskRecord, len(tasks))
 			for i := range tasks {
@@ -2577,12 +2569,8 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			if gitState.actionNeeded != "" {
 				task.ActionNeeded = gitState.actionNeeded
 			}
-			origStatus := task.Status
 			syncTaskSessionState(task, db)
 			hydrateTaskProgramStatus(task, db)
-			if task.Status != origStatus {
-				_ = db.PutProjectTask(p.AccountScopeID, task)
-			}
 			writeJSON(w, http.StatusOK, map[string]any{
 				"task":          sanitizeProjectTaskForClient(task),
 				"model_preview": s.buildTaskModelPreview(p, task),
