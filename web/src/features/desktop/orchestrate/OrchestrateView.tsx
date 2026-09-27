@@ -106,11 +106,12 @@ import {
   resolveOptimisticApprovedDeliverables,
   resolveTaskImpendingAgents,
 } from './orchestrate-task-helpers'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { agentModelSettingsQueryOptions } from '../settings/swarm/queries/get-agent-model-settings'
-import { AgentModelControl } from '../chat/components/agent-model-control'
+import { AgentModelControl, type AgentModelControlTaskOverrideInput } from '../chat/components/agent-model-control'
 import { modelOptionsQueryOptions } from '../../queries/query-options'
 import type { ModelOptionRecord } from '../chat/types/chat'
+import type { BackendTaskModelPreview } from './orchestrate-types'
 
 export interface OrchestrateViewProps {
   workspaceSlug?: string
@@ -562,6 +563,8 @@ function MinimalTaskCard({
   onRedeployJob,
   onUpdateModel,
   onOpenAgentSettings,
+  onOpenTaskModelChanger,
+  projectId,
   modelOptions,
   defaultImageModel,
   defaultVideoModel,
@@ -582,8 +585,10 @@ function MinimalTaskCard({
   onReopen?: (feedback?: string) => void
   onComplete?: () => void
   onRedeployJob?: (taskId: string, jobId: string, feedback?: string) => void
-  onUpdateModel?: (taskId: string, model: string) => void | Promise<void>
+  onUpdateModel?: (taskId: string, model: string, scopeInput?: AgentModelControlTaskOverrideInput | null) => void | Promise<void>
   onOpenAgentSettings?: (agentName: string) => void
+  onOpenTaskModelChanger?: (task: RunningTask) => void
+  projectId?: string
   modelOptions?: ModelOptionRecord[]
   defaultImageModel?: string
   defaultVideoModel?: string
@@ -601,6 +606,18 @@ function MinimalTaskCard({
   useEffect(() => {
     setSelectedTaskModel(task.model || '')
   }, [task.model])
+
+  const modelPreviewQuery = useQuery({
+    queryKey: ['projects', projectId, 'tasks', task.id, 'model-preview'],
+    queryFn: async () => {
+      const res = await requestJson<{ task: any; model_preview: BackendTaskModelPreview }>(
+        `/v3/projects/${projectId}/tasks/${task.id}/model-preview`
+      )
+      return res.model_preview
+    },
+    enabled: Boolean(projectId && task.id && isPendingApproval),
+    staleTime: 60_000,
+  })
   const [isRefineOpen, setIsRefineOpen] = useState(false)
   const [refineFeedback, setRefineFeedback] = useState('')
   const [isReopenOpen, setIsReopenOpen] = useState(false)
@@ -697,7 +714,9 @@ function MinimalTaskCard({
           image: defaultImageModel,
           video: defaultVideoModel,
           audio: defaultAudioModel,
-        }
+        },
+        modelPreviewQuery.data,
+        modelPreviewQuery.isError ? ((modelPreviewQuery.error as Error)?.message || 'Failed to load model preview') : null
       ),
     [
       task,
@@ -707,6 +726,9 @@ function MinimalTaskCard({
       defaultImageModel,
       defaultVideoModel,
       defaultAudioModel,
+      modelPreviewQuery.data,
+      modelPreviewQuery.isError,
+      modelPreviewQuery.error,
     ]
   )
 
@@ -958,21 +980,65 @@ function MinimalTaskCard({
                 <Bot size={12} className="text-blue-400" />
                 <span>Impending Execution</span>
               </span>
-              {onUpdateModel && (
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    setIsModelChangerOpen(!isModelChangerOpen)
-                  }}
-                  className="text-[10px] text-blue-400 hover:text-blue-300 flex items-center gap-1 font-semibold underline decoration-dotted"
-                  data-testid="task-card-change-model-btn"
-                >
-                  <Settings2 size={11} />
-                  <span>{isModelChangerOpen ? 'Close Model Settings' : 'Change Model'}</span>
-                </button>
-              )}
+              <div className="flex items-center gap-2">
+                {!isMediaTask && onOpenAgentSettings && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      onOpenAgentSettings(primaryAgentName)
+                    }}
+                    className="text-[10px] text-slate-400 hover:text-slate-300 font-semibold flex items-center gap-1"
+                    data-testid="task-model-open-agents-btn"
+                    title="Configure Default in /agents"
+                  >
+                    <span>(/agents)</span>
+                  </button>
+                )}
+                {task.model && onUpdateModel && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setSelectedTaskModel('')
+                      void onUpdateModel(task.id, '')
+                    }}
+                    className="text-[10px] text-amber-400 hover:text-amber-300 font-semibold underline decoration-dotted"
+                    data-testid="task-model-reset-default-btn"
+                    title="Reset to account default"
+                  >
+                    Reset
+                  </button>
+                )}
+                {onUpdateModel && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      if (isMediaTask) {
+                        setIsModelChangerOpen(!isModelChangerOpen)
+                      } else if (onOpenTaskModelChanger) {
+                        onOpenTaskModelChanger(task)
+                      } else if (onOpenAgentSettings) {
+                        onOpenAgentSettings(primaryAgentName)
+                      }
+                    }}
+                    className="text-[10px] text-blue-400 hover:text-blue-300 flex items-center gap-1 font-semibold underline decoration-dotted"
+                    data-testid="task-card-change-model-btn"
+                  >
+                    <Settings2 size={11} />
+                    <span>{isMediaTask && isModelChangerOpen ? 'Close Settings' : 'Change Model'}</span>
+                  </button>
+                )}
+              </div>
             </div>
+
+            {modelPreviewQuery.isError && (
+              <div className="p-2 rounded bg-amber-950/40 border border-amber-500/30 text-amber-300 text-[10px] font-mono flex items-center gap-1.5" data-testid="task-model-preview-error">
+                <AlertTriangle size={12} className="text-amber-400 shrink-0" />
+                <span>Model preview unavailable: {(modelPreviewQuery.error as Error)?.message || 'Failed to load model preview'}</span>
+              </div>
+            )}
 
             <div className="flex flex-wrap items-center gap-2 pt-0.5">
               {impendingAgents.map((ag, idx) => (
@@ -994,62 +1060,36 @@ function MinimalTaskCard({
               ))}
             </div>
 
-            {/* Model Changer Drawer */}
-            {isModelChangerOpen && onUpdateModel && (
+            {/* Media Model Changer Drawer (media tools only, not Swarm agent settings) */}
+            {isMediaTask && isModelChangerOpen && onUpdateModel && (
               <div
                 className="mt-2 p-3 rounded-lg bg-slate-950 border border-slate-750 flex flex-col gap-2.5"
                 onClick={(e) => e.stopPropagation()}
               >
                 <div className="flex items-center justify-between text-[11px] gap-2 flex-wrap">
-                  <span className="font-semibold text-slate-300">Model Selection for This Task:</span>
-                  {onOpenAgentSettings && (
-                    <button
-                      type="button"
-                      onClick={() => onOpenAgentSettings(primaryAgentName)}
-                      className="text-blue-400 hover:text-blue-300 font-semibold flex items-center gap-1 text-[10px]"
-                      data-testid="task-model-open-agents-btn"
-                    >
-                      <Settings2 size={11} />
-                      <span>Configure Default in /agents</span>
-                    </button>
-                  )}
+                  <span className="font-semibold text-slate-300">Media Model Selection:</span>
+                  <span className="text-[10px] text-slate-400 font-mono">Media Settings Authority</span>
                 </div>
 
                 <div className="flex items-center gap-2 flex-wrap">
-                  {isMediaTask ? (
-                    <select
-                      value={selectedTaskModel}
-                      onChange={(e) => setSelectedTaskModel(e.target.value)}
-                      className="flex-1 min-w-[200px] bg-slate-900 border border-slate-700 rounded px-2.5 py-1.5 text-xs text-white"
-                      data-testid="task-card-model-select"
-                    >
-                      <option value="">Account Default ({impendingAgents[0]?.model || 'Default'})</option>
-                      {(task.agentType === 'video'
-                        ? (videoModelOptions || [])
-                        : task.agentType === 'sound' || task.agentType === 'audio'
-                          ? (audioModelOptions || [])
-                          : (imageModelOptions || [])
-                      ).map((m) => (
-                        <option key={m.id} value={m.id}>
-                          {m.label || m.id}
-                        </option>
-                      ))}
-                    </select>
-                  ) : (
-                    <select
-                      value={selectedTaskModel}
-                      onChange={(e) => setSelectedTaskModel(e.target.value)}
-                      className="flex-1 min-w-[200px] bg-slate-900 border border-slate-700 rounded px-2.5 py-1.5 text-xs text-white"
-                      data-testid="task-card-model-select"
-                    >
-                      <option value="">Account Default ({impendingAgents[0]?.model || 'Default'})</option>
-                      {(modelOptions || []).map((opt) => (
-                        <option key={opt.key || opt.model} value={opt.model}>
-                          {opt.label || opt.model} ({opt.provider})
-                        </option>
-                      ))}
-                    </select>
-                  )}
+                  <select
+                    value={selectedTaskModel}
+                    onChange={(e) => setSelectedTaskModel(e.target.value)}
+                    className="flex-1 min-w-[200px] bg-slate-900 border border-slate-700 rounded px-2.5 py-1.5 text-xs text-white"
+                    aria-label="Media Task Model"
+                  >
+                    <option value="">Account Default ({impendingAgents[0]?.model || 'Default'})</option>
+                    {(task.agentType === 'video'
+                      ? (videoModelOptions || [])
+                      : task.agentType === 'sound' || task.agentType === 'audio'
+                        ? (audioModelOptions || [])
+                        : (imageModelOptions || [])
+                    ).map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.label || m.id}
+                      </option>
+                    ))}
+                  </select>
 
                   <button
                     type="button"
@@ -2513,6 +2553,7 @@ export function OrchestrateView({
   }
 
   // Deploy Task Modal State
+  const queryClient = useQueryClient()
   const [isDeployModalOpen, setIsDeployModalOpen] = useState(false)
   const [taskIntent, setTaskIntent] = useState<'code' | 'image' | 'video' | 'sound' | 'audit'>('code')
   const [videoResolution, setVideoResolution] = useState<string>('')
@@ -2523,15 +2564,24 @@ export function OrchestrateView({
   const [videoAttachmentError, setVideoAttachmentError] = useState<string | null>(null)
   const [featureSize, setFeatureSize] = useState<'small' | 'big'>('small')
   const [newTaskModelOverride, setNewTaskModelOverride] = useState<string>('')
-  const [isDeployModelSettingsOpen, setIsDeployModelSettingsOpen] = useState(false)
+  const [, setNewTaskModelScope] = useState<AgentModelControlTaskOverrideInput | null>(null)
+  const [, setTaskModelOverrides] = useState<Record<string, AgentModelControlTaskOverrideInput>>({})
   const [agentSettingsOpenSignal, setAgentSettingsOpenSignal] = useState(0)
   const [agentSettingsInitialAgent, setAgentSettingsInitialAgent] = useState('system-coder')
+  const [agentSettingsTaskContext, setAgentSettingsTaskContext] = useState<{
+    taskId: string
+    label: string
+    hasOverride: boolean
+    isDeployModal: boolean
+    currentModel?: string
+  } | null>(null)
   const modelOptionsQuery = useQuery(modelOptionsQueryOptions())
   const modelOptions = modelOptionsQuery.data ?? []
   const agentModelSettingsQuery = useQuery(agentModelSettingsQueryOptions())
 
   const handleOpenAgentSettings = useCallback((agentName: string) => {
     setAgentSettingsInitialAgent(agentName)
+    setAgentSettingsTaskContext(null)
     setAgentSettingsOpenSignal((s) => s + 1)
   }, [])
 
@@ -2572,6 +2622,62 @@ export function OrchestrateView({
   const [mediaCatalogLoaded, setMediaCatalogLoaded] = useState<boolean>(false)
   const [, setIsSavingModelChoice] = useState<boolean>(false)
 
+  const deployPreviewQuery = useQuery({
+    queryKey: ['projects', selectedProject?.id, 'tasks:preview', {
+      prompt: newTaskPrompt.trim() || 'New task',
+      intent: taskIntent,
+      featureSize: taskIntent === 'code' ? featureSize : undefined,
+      model: newTaskModelOverride || undefined,
+      agent: taskIntent === 'code' ? (featureSize === 'big' ? 'plan' : 'coder') : (taskIntent === 'audit' ? 'finder' : taskIntent),
+      tier: taskIntent === 'code' ? (featureSize === 'big' ? 'complex' : 'direct') : (taskIntent === 'audit' ? 'discovery' : 'direct'),
+    }],
+    queryFn: async () => {
+      const targetAgent = taskIntent === 'code'
+        ? (featureSize === 'big' ? 'plan' : 'coder')
+        : taskIntent === 'audit'
+          ? 'finder'
+          : taskIntent === 'image'
+            ? 'image'
+            : taskIntent === 'video'
+              ? 'video'
+              : 'sound'
+      const targetOutcomeType = taskIntent === 'code'
+        ? (featureSize === 'big' ? 'plan_spec' : 'code_pr')
+        : taskIntent === 'audit'
+          ? 'audit_report'
+          : taskIntent === 'image'
+            ? 'media_bundle'
+            : taskIntent === 'video'
+              ? 'video_clip'
+              : 'audio_clip'
+      const targetTier = taskIntent === 'code'
+        ? (featureSize === 'big' ? 'complex' : 'direct')
+        : taskIntent === 'audit'
+          ? 'discovery'
+          : 'direct'
+      const res = await requestJson<{ task_plan: any; model_preview: BackendTaskModelPreview }>(
+        `/v3/projects/${selectedProject!.id}/tasks:preview`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            prompt: newTaskPrompt.trim() || 'New task',
+            intent: taskIntent,
+            feature_size: taskIntent === 'code' ? featureSize : undefined,
+            agent: targetAgent,
+            outcome_type: targetOutcomeType,
+            tier: targetTier,
+            model: newTaskModelOverride || undefined,
+            workspace_path: newTaskWorkspace || selectedProject?.repoPath || '.',
+          }),
+        }
+      )
+      return res.model_preview
+    },
+    enabled: Boolean(selectedProject?.id && isDeployModalOpen && (taskIntent === 'code' || taskIntent === 'audit')),
+    staleTime: 30_000,
+  })
+
   const deployConfig = useMemo(
     () =>
       resolveDeployImpendingConfig(
@@ -2586,7 +2692,9 @@ export function OrchestrateView({
           defaultVideoModel,
           selectedAudioModel,
           defaultAudioModel,
-        }
+        },
+        deployPreviewQuery.data,
+        deployPreviewQuery.isError ? ((deployPreviewQuery.error as Error)?.message || 'Failed to load model preview') : null
       ),
     [
       taskIntent,
@@ -2599,6 +2707,9 @@ export function OrchestrateView({
       defaultVideoModel,
       selectedAudioModel,
       defaultAudioModel,
+      deployPreviewQuery.data,
+      deployPreviewQuery.isError,
+      deployPreviewQuery.error,
     ]
   )
   const currentAccountDefaultModel = deployConfig.accountDefaultModel
@@ -2989,19 +3100,84 @@ export function OrchestrateView({
   }, [selectedTaskId])
 
   const [mediaSyncError, setMediaSyncError] = useState<string | null>(null)
-  const handleUpdateTaskModel = useCallback(async (taskId: string, newModel: string) => {
-    if (!selectedProject?.id) return
-    try {
-      await requestJson(`/v3/projects/${selectedProject.id}/tasks/${taskId}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: newModel }),
-      })
-      fetchProjectTasks(selectedProject.id)
-    } catch (err) {
-      console.error('Failed to update task model:', err)
+  const handleUpdateTaskModel = useCallback(
+    async (taskId: string, newModel: string, scopeInput?: AgentModelControlTaskOverrideInput | null) => {
+      if (!selectedProject?.id) return
+      try {
+        if (scopeInput) {
+          setTaskModelOverrides((prev) => ({ ...prev, [taskId]: scopeInput }))
+        } else if (newModel === '') {
+          setTaskModelOverrides((prev) => {
+            const next = { ...prev }
+            delete next[taskId]
+            return next
+          })
+        }
+        await requestJson(`/v3/projects/${selectedProject.id}/tasks/${taskId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model: newModel }),
+        })
+        queryClient.invalidateQueries({ queryKey: ['projects', selectedProject.id, 'tasks', taskId, 'model-preview'] })
+        queryClient.invalidateQueries({ queryKey: ['projects', selectedProject.id, 'tasks'] })
+        fetchProjectTasks(selectedProject.id)
+      } catch (err) {
+        console.error('Failed to update task model:', err)
+      }
+    },
+    [selectedProject?.id, fetchProjectTasks, queryClient]
+  )
+
+  const handleApplyTaskModelFromControl = useCallback(
+    async (input: AgentModelControlTaskOverrideInput) => {
+      if (!agentSettingsTaskContext) return
+      if (agentSettingsTaskContext.isDeployModal) {
+        setNewTaskModelOverride(input.model)
+        setNewTaskModelScope(input)
+      } else if (agentSettingsTaskContext.taskId) {
+        await handleUpdateTaskModel(agentSettingsTaskContext.taskId, input.model, input)
+      }
+    },
+    [agentSettingsTaskContext, handleUpdateTaskModel]
+  )
+
+  const handleResetTaskModelFromControl = useCallback(async () => {
+    if (!agentSettingsTaskContext) return
+    if (agentSettingsTaskContext.isDeployModal) {
+      setNewTaskModelOverride('')
+      setNewTaskModelScope(null)
+    } else if (agentSettingsTaskContext.taskId) {
+      await handleUpdateTaskModel(agentSettingsTaskContext.taskId, '', null)
     }
-  }, [selectedProject?.id, fetchProjectTasks])
+  }, [agentSettingsTaskContext, handleUpdateTaskModel])
+
+  const handleOpenTaskModelChanger = useCallback((t: RunningTask) => {
+    const agentName = getPrimarySystemAgentName(t.agentType)
+    setAgentSettingsInitialAgent(agentName)
+    setAgentSettingsTaskContext({
+      taskId: t.id,
+      label: t.title,
+      hasOverride: Boolean(t.model),
+      isDeployModal: false,
+      currentModel: t.model,
+    })
+    setAgentSettingsOpenSignal((s) => s + 1)
+  }, [])
+
+  const handleOpenDeployModelChanger = useCallback(() => {
+    const agentName = taskIntent === 'code'
+      ? (featureSize === 'big' ? 'swarm' : 'system-coder')
+      : 'system-finder'
+    setAgentSettingsInitialAgent(agentName)
+    setAgentSettingsTaskContext({
+      taskId: '',
+      label: 'New Task',
+      hasOverride: Boolean(newTaskModelOverride),
+      isDeployModal: true,
+      currentModel: newTaskModelOverride,
+    })
+    setAgentSettingsOpenSignal((s) => s + 1)
+  }, [taskIntent, featureSize, newTaskModelOverride])
 
   // Fetch project uploaded media from Pebble
   const fetchProjectMedia = useCallback((projectId: string) => {
@@ -5987,6 +6163,8 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                                   onRedeployJob={(tId, jId, fb) => handleRedeployJob(tId, jId, fb)}
                                   onUpdateModel={(taskId, model) => handleUpdateTaskModel(taskId, model)}
                                   onOpenAgentSettings={(agentName) => handleOpenAgentSettings(agentName)}
+                                  onOpenTaskModelChanger={handleOpenTaskModelChanger}
+                                  projectId={selectedProject?.id}
                                   modelOptions={modelOptions}
                                   defaultImageModel={defaultImageModel}
                                   defaultVideoModel={defaultVideoModel}
@@ -6081,6 +6259,8 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                               onRedeployJob={(tId, jId, fb) => handleRedeployJob(tId, jId, fb)}
                               onUpdateModel={(taskId, model) => handleUpdateTaskModel(taskId, model)}
                               onOpenAgentSettings={(agentName) => handleOpenAgentSettings(agentName)}
+                              onOpenTaskModelChanger={handleOpenTaskModelChanger}
+                              projectId={selectedProject?.id}
                               modelOptions={modelOptions}
                               defaultImageModel={defaultImageModel}
                               defaultVideoModel={defaultVideoModel}
@@ -6187,6 +6367,8 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                           onRedeployJob={(tId, jId, fb) => handleRedeployJob(tId, jId, fb)}
                           onUpdateModel={(taskId, model) => handleUpdateTaskModel(taskId, model)}
                           onOpenAgentSettings={(agentName) => handleOpenAgentSettings(agentName)}
+                          onOpenTaskModelChanger={handleOpenTaskModelChanger}
+                          projectId={selectedProject?.id}
                           modelOptions={modelOptions}
                           defaultImageModel={defaultImageModel}
                           defaultVideoModel={defaultVideoModel}
@@ -6254,6 +6436,8 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                         onRedeployJob={(tId, jId, fb) => handleRedeployJob(tId, jId, fb)}
                         onUpdateModel={(taskId, model) => handleUpdateTaskModel(taskId, model)}
                         onOpenAgentSettings={(agentName) => handleOpenAgentSettings(agentName)}
+                        onOpenTaskModelChanger={handleOpenTaskModelChanger}
+                        projectId={selectedProject?.id}
                         modelOptions={modelOptions}
                         defaultImageModel={defaultImageModel}
                         defaultVideoModel={defaultVideoModel}
@@ -6294,6 +6478,8 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                       onRedeployJob={(tId, jId, fb) => handleRedeployJob(tId, jId, fb)}
                       onUpdateModel={(taskId, model) => handleUpdateTaskModel(taskId, model)}
                       onOpenAgentSettings={(agentName) => handleOpenAgentSettings(agentName)}
+                      onOpenTaskModelChanger={handleOpenTaskModelChanger}
+                      projectId={selectedProject?.id}
                       modelOptions={modelOptions}
                       defaultImageModel={defaultImageModel}
                       defaultVideoModel={defaultVideoModel}
@@ -6478,18 +6664,54 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                     {isDeployModelOverridden ? 'Task Override' : 'Account Default'}
                   </span>
                   {(taskIntent === 'code' || taskIntent === 'audit') && (
-                    <button
-                      type="button"
-                      onClick={() => setIsDeployModelSettingsOpen(!isDeployModelSettingsOpen)}
-                      className="text-[10px] text-blue-400 hover:text-blue-300 font-semibold underline decoration-dotted flex items-center gap-1"
-                      data-testid="deploy-modal-change-model-btn"
-                    >
-                      <Settings2 size={11} />
-                      <span>{isDeployModelSettingsOpen ? 'Hide' : 'Change'}</span>
-                    </button>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={handleOpenDeployModelChanger}
+                        className="text-[10px] text-blue-400 hover:text-blue-300 font-semibold underline decoration-dotted flex items-center gap-1"
+                        data-testid="deploy-modal-change-model-btn"
+                      >
+                        <Settings2 size={11} />
+                        <span>Change</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const targetAgentName = taskIntent === 'code'
+                            ? (featureSize === 'big' ? 'swarm' : 'system-coder')
+                            : 'system-finder'
+                          handleOpenAgentSettings(targetAgentName)
+                        }}
+                        className="text-[10px] text-slate-400 hover:text-slate-300 font-semibold flex items-center gap-1"
+                        data-testid="modal-open-agents-btn"
+                        title="Configure Default in /agents"
+                      >
+                        <span>(/agents)</span>
+                      </button>
+                      {newTaskModelOverride && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setNewTaskModelOverride('')
+                            setNewTaskModelScope(null)
+                          }}
+                          className="text-[10px] text-amber-400 hover:text-amber-300 font-semibold underline decoration-dotted"
+                          data-testid="deploy-modal-reset-override-btn"
+                        >
+                          Reset
+                        </button>
+                      )}
+                    </div>
                   )}
                 </div>
               </div>
+
+              {deployPreviewQuery.isError && (
+                <div className="p-2 rounded bg-amber-950/40 border border-amber-500/30 text-amber-300 text-[10px] font-mono flex items-center gap-1.5" data-testid="deploy-modal-preview-error">
+                  <AlertTriangle size={12} className="text-amber-400 shrink-0" />
+                  <span>Model preview unavailable: {(deployPreviewQuery.error as Error)?.message || 'Failed to load model preview'}</span>
+                </div>
+              )}
 
               <p className="text-[10px] text-slate-400 leading-normal">
                 {taskIntent === 'code' && featureSize === 'small' && 'Direct autonomous code generation and tests on an isolated worktree branch via @coder.'}
@@ -6499,52 +6721,6 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                 {taskIntent === 'video' && 'Video shot/storyline generation with selected video model.'}
                 {taskIntent === 'sound' && 'Audio sound clip synthesis with selected audio model.'}
               </p>
-
-              {(taskIntent === 'code' || taskIntent === 'audit') && isDeployModelSettingsOpen && (
-                <div className="mt-1 p-2.5 rounded-lg bg-slate-900 border border-slate-750 flex flex-col gap-2">
-                  <div className="flex items-center justify-between text-[10px] text-slate-400">
-                    <span className="font-semibold text-slate-300">Override Model for This Task:</span>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const targetAgentName = taskIntent === 'code'
-                          ? (featureSize === 'big' ? 'swarm' : 'system-coder')
-                          : 'system-finder'
-                        handleOpenAgentSettings(targetAgentName)
-                      }}
-                      className="text-blue-400 hover:text-blue-300 font-semibold flex items-center gap-1"
-                      data-testid="modal-open-agents-btn"
-                    >
-                      <Settings2 size={11} />
-                      <span>Configure Default in /agents</span>
-                    </button>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <select
-                      value={newTaskModelOverride}
-                      onChange={(e) => setNewTaskModelOverride(e.target.value)}
-                      className="flex-1 bg-slate-950 border border-slate-700 rounded px-2 py-1 text-xs text-white"
-                      data-testid="deploy-modal-model-select"
-                    >
-                      <option value="">Use Account Default ({currentAccountDefaultModel})</option>
-                      {modelOptions.map((opt) => (
-                        <option key={opt.key || opt.model} value={opt.model}>
-                          {opt.label || opt.model} ({opt.provider})
-                        </option>
-                      ))}
-                    </select>
-                    {newTaskModelOverride && (
-                      <button
-                        type="button"
-                        onClick={() => setNewTaskModelOverride('')}
-                        className="px-2 py-1 rounded bg-slate-800 text-slate-400 hover:text-white text-[10px]"
-                      >
-                        Reset
-                      </button>
-                    )}
-                  </div>
-                </div>
-              )}
             </div>
 
             {/* Tagged / Attached Media Bar */}
@@ -7538,6 +7714,12 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
         setupOpenSignal={agentSettingsOpenSignal}
         initialAgentName={agentSettingsInitialAgent}
         showTrigger={false}
+        taskScoped={agentSettingsTaskContext !== null}
+        taskLabel={agentSettingsTaskContext?.label}
+        taskModelOverride={agentSettingsTaskContext?.currentModel}
+        hasTaskOverride={Boolean(agentSettingsTaskContext?.hasOverride)}
+        onApplyTaskModel={handleApplyTaskModelFromControl}
+        onResetTaskModel={handleResetTaskModelFromControl}
       />
     </div>
   )

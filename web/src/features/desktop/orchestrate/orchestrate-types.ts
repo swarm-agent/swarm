@@ -341,6 +341,31 @@ export interface RunningTask {
   task_program_status?: TaskProgramRecord
 }
 
+export interface BackendModelPreference {
+  provider: string
+  model: string
+  thinking?: string
+  service_tier?: string
+  context_mode?: string
+}
+
+export interface BackendTaskModelPreview {
+  task_id?: string
+  agent: string
+  resolved_agent: string
+  feature_size?: string
+  task_model_override?: string
+  resolved_model?: BackendModelPreference | null
+  model_source: 'task_override' | 'account_settings' | 'account_default' | string
+  account_default_model?: BackendModelPreference | null
+  account_settings_path: string
+}
+
+export interface TaskCreationPreviewResult {
+  task_plan?: any
+  model_preview: BackendTaskModelPreview
+}
+
 export interface VideoProgressCard {
   title: string
   progressPercent: number

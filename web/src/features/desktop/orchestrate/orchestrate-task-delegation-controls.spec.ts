@@ -10,8 +10,9 @@ import {
   resolveOptimisticApprovedDeliverables,
   resolveTaskImpendingAgents,
 } from './orchestrate-task-helpers'
-import type { RunningTask } from './orchestrate-types'
+import type { RunningTask, BackendTaskModelPreview } from './orchestrate-types'
 import type { AgentModelSettings } from '../settings/swarm/types/agent-model-settings'
+import type { AgentModelControlTaskOverrideInput } from '../chat/components/agent-model-control'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -340,5 +341,246 @@ test('OrchestrateView UI wiring contract: tabs, model preview, change triggers, 
     source,
     /'veo-3.1-generate-preview'/,
     'Hardcoded veo-3.1 model fallback must be removed'
+  )
+
+  // No duplicate model-only dropdown in deploy modal
+  assert.doesNotMatch(
+    source,
+    /data-testid="deploy-modal-model-select"/,
+    'Duplicate deploy-modal-model-select dropdown must be removed in favor of AgentModelControl'
+  )
+
+  // Reused AgentModelControl receives task-scoped props and handlers
+  assert.ok(
+    source.includes('taskScoped={agentSettingsTaskContext !== null}'),
+    'Must pass taskScoped prop to reused AgentModelControl'
+  )
+  assert.ok(
+    source.includes('onApplyTaskModel={handleApplyTaskModelFromControl}'),
+    'Must wire onApplyTaskModel handler to reused AgentModelControl'
+  )
+  assert.ok(
+    source.includes('onResetTaskModel={handleResetTaskModelFromControl}'),
+    'Must wire onResetTaskModel handler to reused AgentModelControl'
+  )
+
+  // Request-driven backend preview queries without polling
+  assert.ok(
+    source.includes("tasks:preview'"),
+    'Must query POST /v3/projects/{id}/tasks:preview for authoritative deploy model preview'
+  )
+  assert.ok(
+    source.includes("model-preview'"),
+    'Must query GET /v3/projects/{id}/tasks/{taskId}/model-preview for authoritative task model preview'
+  )
+  assert.ok(
+    source.includes('data-testid="deploy-modal-preview-error"'),
+    'Must render deploy modal preview error banner when backend preview fails'
+  )
+  assert.ok(
+    source.includes('data-testid="task-model-preview-error"'),
+    'Must render task card preview error banner when backend preview fails'
+  )
+})
+
+test('Authoritative Backend Model Preview consumption and visible error handling', () => {
+  // Requirement: UI must consume backend actual resolved agents/model/error
+  // and avoid showing wrong provider/defaults.
+  // Missing preview fails visibly, not a guessed label.
+
+  // Case 1: Backend returns authoritative resolved model with full metadata
+  const task: Pick<RunningTask, 'agentType' | 'model' | 'outcomeType'> = {
+    agentType: 'coder',
+    model: 'claude-3-7-sonnet',
+    outcomeType: 'code_pr',
+  }
+  const backendPreview: BackendTaskModelPreview = {
+    task_id: 'task-100',
+    agent: 'coder',
+    resolved_agent: 'coder',
+    feature_size: 'small',
+    task_model_override: 'claude-3-7-sonnet',
+    resolved_model: {
+      provider: 'anthropic',
+      model: 'claude-3-7-sonnet',
+      thinking: 'high',
+      service_tier: 'standard',
+      context_mode: '',
+    },
+    model_source: 'task_override',
+    account_default_model: {
+      provider: 'anthropic',
+      model: 'claude-3-5-sonnet-latest',
+      thinking: 'medium',
+      service_tier: 'standard',
+    },
+    account_settings_path: '/v3/agents/model-settings',
+  }
+
+  const cohorts = resolveTaskImpendingAgents(
+    task,
+    [],
+    undefined,
+    mockAgentModelSettings,
+    undefined,
+    backendPreview
+  )
+  assert.equal(cohorts.length, 1)
+  assert.equal(cohorts[0].model, 'claude-3-7-sonnet', 'Must use backend resolved model')
+  assert.equal(cohorts[0].provider, 'anthropic', 'Must preserve provider from backend')
+  assert.equal(cohorts[0].thinking, 'high', 'Must preserve thinking level from backend')
+  assert.equal(cohorts[0].isOverride, true, 'Must reflect task_override source')
+  assert.equal(cohorts[0].previewFailed, undefined)
+
+  // Case 2: Backend preview fails with an error -> FAILS VISIBLY without guessing label!
+  const failedCohorts = resolveTaskImpendingAgents(
+    task,
+    [],
+    undefined,
+    mockAgentModelSettings,
+    undefined,
+    null,
+    'Failed to connect to daemon model preview endpoint'
+  )
+  assert.equal(failedCohorts.length, 1)
+  assert.equal(failedCohorts[0].previewFailed, true, 'Must be marked as previewFailed')
+  assert.equal(failedCohorts[0].model, 'Preview unavailable', 'Must visibly display Preview unavailable')
+  assert.equal(failedCohorts[0].error, 'Failed to connect to daemon model preview endpoint')
+
+  // Case 3: Deploy impending config with backend preview
+  const deployConfig = resolveDeployImpendingConfig(
+    'code',
+    'small',
+    '',
+    mockAgentModelSettings,
+    undefined,
+    backendPreview
+  )
+  assert.equal(deployConfig.resolvedModel, 'claude-3-7-sonnet')
+  assert.equal(deployConfig.provider, 'anthropic')
+  assert.equal(deployConfig.thinking, 'high')
+  assert.equal(deployConfig.isOverridden, true)
+  assert.equal(deployConfig.accountDefaultModel, 'claude-3-5-sonnet-latest')
+
+  // Case 4: Deploy impending config with preview error
+  const failedDeployConfig = resolveDeployImpendingConfig(
+    'code',
+    'small',
+    '',
+    mockAgentModelSettings,
+    undefined,
+    null,
+    'Backend unavailable'
+  )
+  assert.equal(failedDeployConfig.previewFailed, true)
+  assert.equal(failedDeployConfig.resolvedModel, 'Preview unavailable')
+  assert.equal(failedDeployConfig.error, 'Backend unavailable')
+})
+
+test('Grouped Coders cohort with backend authoritative preview and task-level override', () => {
+  // Requirement: Task programs with multiple coders must group correctly,
+  // showing count and label (e.g. "2 Coders (@coder)"), and consume backend-resolved model.
+
+  const multiCoderTask: Pick<RunningTask, 'agentType' | 'model' | 'outcomeType'> = {
+    agentType: 'coder',
+    model: 'gemini-2.5-pro-override',
+    outcomeType: 'code_pr',
+  }
+  const programJobs = [
+    { id: 'job-1', agent_type: 'coder' },
+    { id: 'job-2', agent_type: 'coder' },
+    { id: 'job-3', agent_type: 'finder' },
+  ]
+  const backendPreview: BackendTaskModelPreview = {
+    task_id: 'task-prog-1',
+    agent: 'coder',
+    resolved_agent: 'coder',
+    task_model_override: 'gemini-2.5-pro-override',
+    resolved_model: {
+      provider: 'google',
+      model: 'gemini-2.5-pro-override',
+      thinking: 'high',
+      service_tier: 'priority',
+      context_mode: '',
+    },
+    model_source: 'task_override',
+    account_settings_path: '/v3/agents/model-settings',
+  }
+
+  const cohorts = resolveTaskImpendingAgents(
+    multiCoderTask,
+    programJobs,
+    undefined,
+    mockAgentModelSettings,
+    undefined,
+    backendPreview
+  )
+  assert.equal(cohorts.length, 2, 'Should group into Coder and Finder cohorts')
+
+  const coderCohort = cohorts.find((c) => c.agent === 'coder')!
+  assert.ok(coderCohort)
+  assert.equal(coderCohort.count, 2)
+  assert.equal(coderCohort.label, '2 Coders (@coder)')
+  assert.equal(coderCohort.model, 'gemini-2.5-pro-override')
+  assert.equal(coderCohort.provider, 'google')
+  assert.equal(coderCohort.thinking, 'high')
+  assert.equal(coderCohort.serviceTier, 'priority')
+  assert.equal(coderCohort.isOverride, true)
+
+  const finderCohort = cohorts.find((c) => c.agent === 'finder')!
+  assert.ok(finderCohort)
+  assert.equal(finderCohort.count, 1)
+  assert.equal(finderCohort.model, 'gemini-2.5-flash')
+  assert.equal(finderCohort.provider, 'google')
+  assert.equal(finderCohort.isOverride, false)
+})
+
+test('AgentModelControl contract: supports task-scoped apply, save-default, and reset override', () => {
+  // Requirement: Reuse /agents UX, no duplicate UI.
+  // AgentModelControl supports task-scoped apply and save-default as needed,
+  // maintaining canonical settings authority.
+  const controlPath = path.join(__dirname, '../chat/components/agent-model-control.tsx')
+  const controlSource = fs.readFileSync(controlPath, 'utf8')
+
+  // Verify task-scoped types and props
+  assert.ok(
+    controlSource.includes('export type AgentModelControlTaskOverrideInput'),
+    'Must export AgentModelControlTaskOverrideInput'
+  )
+  assert.ok(
+    controlSource.includes('taskScoped?: boolean'),
+    'Must declare taskScoped prop'
+  )
+  assert.ok(
+    controlSource.includes('onApplyTaskModel?: (input: AgentModelControlTaskOverrideInput) => void | Promise<void>'),
+    'Must declare onApplyTaskModel prop'
+  )
+  assert.ok(
+    controlSource.includes('onResetTaskModel?: () => void | Promise<void>'),
+    'Must declare onResetTaskModel prop'
+  )
+
+  // Verify action buttons in task-scoped mode
+  assert.ok(
+    controlSource.includes('data-testid="task-model-apply-override-btn"'),
+    'Must render Apply to Task button with data-testid="task-model-apply-override-btn"'
+  )
+  assert.ok(
+    controlSource.includes('data-testid="task-model-reset-default-btn"'),
+    'Must render Reset Task Override button with data-testid="task-model-reset-default-btn"'
+  )
+  assert.ok(
+    controlSource.includes('data-testid="task-model-open-agents-btn"'),
+    'Must render Save as Default button with data-testid="task-model-open-agents-btn"'
+  )
+
+  // Verify canonical settings authority is preserved
+  assert.ok(
+    controlSource.includes('saveSystemAgentModelSettings'),
+    'Must save system agent model defaults via canonical settings authority'
+  )
+  assert.ok(
+    controlSource.includes('saveSwarmModels'),
+    'Must save Swarm action/plan model defaults via canonical authority'
   )
 })

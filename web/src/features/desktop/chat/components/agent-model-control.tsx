@@ -24,6 +24,15 @@ export type AgentModelControlConfirmInput = {
   makeDefault: boolean
 }
 
+export type AgentModelControlTaskOverrideInput = {
+  agentName: string
+  model: string
+  provider: string
+  thinking: string
+  serviceTier: string
+  contextMode: string
+}
+
 interface AgentModelControlProps {
   currentAgent: string
   selectedPrimaryAgent: string
@@ -50,6 +59,12 @@ interface AgentModelControlProps {
   busy?: boolean
   showTrigger?: boolean
   initialAgentName?: string
+  taskScoped?: boolean
+  taskLabel?: string
+  taskModelOverride?: string
+  hasTaskOverride?: boolean
+  onApplyTaskModel?: (input: AgentModelControlTaskOverrideInput) => void | Promise<void>
+  onResetTaskModel?: () => void | Promise<void>
 }
 
 const COMPACT_AGENT_NAME = 'system-compact'
@@ -245,6 +260,12 @@ export function AgentModelControl({
   busy = false,
   showTrigger = true,
   initialAgentName = '',
+  taskScoped = false,
+  taskLabel = '',
+  taskModelOverride = '',
+  hasTaskOverride = false,
+  onApplyTaskModel,
+  onResetTaskModel,
 }: AgentModelControlProps) {
   const queryClient = useQueryClient()
   const agentModelSettingsQuery = useQuery(agentModelSettingsQueryOptions())
@@ -386,7 +407,30 @@ export function AgentModelControl({
     const settings = agentModelSettingsQuery.data?.swarm
     const action = settings?.action ?? fallback
     const plan = settings?.plan ?? action
-    setSingleDraft(fallback)
+    let draft = fallback
+    if (taskScoped && taskModelOverride) {
+      const match = modelOptions.find((m) => m.model === taskModelOverride)
+      if (match) {
+        draft = {
+          provider: match.provider,
+          upstreamFamily: modelOptionUpstreamFamily(match),
+          model: match.model,
+          thinking: normalizeDraftThinking(match.provider, match.model, modelOptions, ''),
+          serviceTier: match.defaultServiceTier || '',
+          contextMode: match.contextMode || '',
+        }
+      } else {
+        draft = {
+          provider: fallback.provider,
+          upstreamFamily: fallback.upstreamFamily,
+          model: taskModelOverride,
+          thinking: fallback.thinking,
+          serviceTier: fallback.serviceTier,
+          contextMode: fallback.contextMode,
+        }
+      }
+    }
+    setSingleDraft(taskScoped && taskModelOverride ? draft : fallback)
     setActionDraft(action)
     setPlanDraft(plan)
     setEditingProfileId(profile && !isCompiledSystemAgent(profile.name) && activeModelProfile?.source === 'saved' ? activeModelProfile.profileId : '')
@@ -981,7 +1025,7 @@ export function AgentModelControl({
         <div className="flex flex-col gap-3 border-b border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-3 sm:flex-row sm:items-start sm:justify-between sm:px-5 sm:py-4">
           <div className="min-w-0">
             <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">
-              {setupSection === 'favorites' ? 'Favorites' : 'Agent setup'}
+              {setupSection === 'favorites' ? 'Favorites' : taskScoped ? (taskLabel ? `Task Model: ${taskLabel}` : 'Task Model Settings') : 'Agent setup'}
             </div>
             <div className="mt-1 truncate text-sm font-semibold text-[var(--app-text)]">
               {setupSection === 'favorites' ? 'Model Favorites' : (displayAgentName(draftAgentName) || 'Agent')}
@@ -1476,6 +1520,89 @@ export function AgentModelControl({
             <>
               <button type="button" onClick={() => { setError(null); setSetupSection('agent') }} className="mr-auto min-h-10 rounded-lg border border-[var(--app-border)] px-3 py-2 text-[11px] font-semibold text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] sm:min-h-0 sm:py-1.5">Agent Setup</button>
               <button type="button" onClick={() => setOpen(false)} className="min-h-10 rounded-lg border border-[var(--app-border)] px-3 py-2 text-[11px] font-semibold text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] sm:min-h-0 sm:py-1.5">Close</button>
+            </>
+          ) : taskScoped ? (
+            <>
+              <button type="button" onClick={() => setOpen(false)} className="min-h-10 rounded-lg border border-[var(--app-border)] px-3 py-2 text-[11px] font-semibold text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] sm:min-h-0 sm:py-1.5">Cancel</button>
+              {hasTaskOverride && onResetTaskModel ? (
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      setSaving(true)
+                      setError(null)
+                      await onResetTaskModel()
+                      setOpen(false)
+                    } catch (cause) {
+                      setError(cause instanceof Error ? cause.message : String(cause))
+                    } finally {
+                      setSaving(false)
+                    }
+                  }}
+                  className="min-h-10 rounded-lg border border-amber-500/40 bg-amber-950/20 px-3 py-2 text-[11px] font-semibold text-amber-300 hover:bg-amber-950/40 sm:min-h-0 sm:py-1.5"
+                  data-testid="task-model-reset-default-btn"
+                >
+                  Reset Task Override
+                </button>
+              ) : null}
+              <button
+                type="button"
+                disabled={busy || saving || (draftAgentName !== SWARM_AGENT_NAME && !draftProfile)}
+                onClick={async () => {
+                  await confirm(false)
+                  if (onApplyTaskModel) {
+                    const draft = draftAgentName === SWARM_AGENT_NAME
+                      ? (initialAgentName === 'plan' ? planDraft : actionDraft)
+                      : singleDraft
+                    await onApplyTaskModel({
+                      agentName: draftAgentName,
+                      model: draft.model,
+                      provider: draft.provider,
+                      thinking: draft.thinking,
+                      serviceTier: draft.serviceTier,
+                      contextMode: draft.contextMode,
+                    })
+                  }
+                  setOpen(false)
+                }}
+                className="min-h-10 rounded-lg border border-[var(--app-border)] px-3 py-2 text-[11px] font-semibold text-[var(--app-text)] hover:bg-[var(--app-surface-hover)] disabled:opacity-60 sm:min-h-0 sm:py-1.5"
+                data-testid="task-model-open-agents-btn"
+                title="Save selected model as the account-wide default for this agent"
+              >
+                {saving ? 'Saving…' : 'Save as Default'}
+              </button>
+              <button
+                type="button"
+                disabled={busy || saving || (draftAgentName !== SWARM_AGENT_NAME && !draftProfile)}
+                onClick={async () => {
+                  if (onApplyTaskModel) {
+                    try {
+                      setSaving(true)
+                      setError(null)
+                      const draft = draftAgentName === SWARM_AGENT_NAME
+                        ? (initialAgentName === 'plan' ? planDraft : actionDraft)
+                        : singleDraft
+                      await onApplyTaskModel({
+                        agentName: draftAgentName,
+                        model: draft.model,
+                        provider: draft.provider,
+                        thinking: draft.thinking,
+                        serviceTier: draft.serviceTier,
+                        contextMode: draft.contextMode,
+                      })
+                      setOpen(false)
+                    } catch (cause) {
+                      setError(cause instanceof Error ? cause.message : String(cause))
+                    } finally {
+                      setSaving(false)
+                    }
+                  }
+                }}
+                className="min-h-10 rounded-lg border border-[var(--app-primary)] bg-[var(--app-primary)] px-4 py-2 text-[11px] font-semibold text-[var(--app-primary-text)] hover:bg-[var(--app-primary-hover)] disabled:opacity-60 sm:min-h-0 sm:py-1.5"
+                data-testid="task-model-apply-override-btn"
+              >
+                {saving ? 'Applying…' : 'Apply to Task'}
+              </button>
             </>
           ) : (
             <>
