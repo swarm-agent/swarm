@@ -515,15 +515,15 @@ test('validateVideoAttachment fails closed when initial_image is unsupported or 
   assert.equal(validateVideoAttachment({ name: 'shot.png', type: 'image/png' }, { initial_image: { supported: false } }).valid, false)
 })
 
-test('validateVideoAttachment allows only locally decoded PNG, JPEG, and WebP images', () => {
-  // Requirement: Only PNG, JPEG, and WebP raster images are allowed as video keyframe references.
+test('validateVideoAttachment allows only locally decoded PNG and JPEG images', () => {
+  // Requirement: Only PNG and JPEG raster images are allowed as video keyframe references.
   // Threat: Passing unsupported codecs or corrupt binary inputs.
   // Boundary: validateVideoAttachment raster format check.
   const validModel = { initial_image: { supported: true } }
   assert.equal(validateVideoAttachment({ name: 'shot.png', type: 'image/png' }, validModel).valid, true)
   assert.equal(validateVideoAttachment({ name: 'photo.jpg', type: 'image/jpeg' }, validModel).valid, true)
   assert.equal(validateVideoAttachment({ name: 'photo.jpeg', type: 'image/jpeg' }, validModel).valid, true)
-  assert.equal(validateVideoAttachment({ name: 'frame.webp', type: 'image/webp' }, validModel).valid, true)
+  assert.equal(validateVideoAttachment({ name: 'frame.webp', type: 'image/webp' }, validModel).valid, false)
 })
 
 test('validateVideoAttachment rejects SVG and HEIC/HEIF images', () => {
@@ -567,7 +567,7 @@ test('validateVideoAttachment enforces model supported_mime_types when specified
     },
   }
   assert.equal(validateVideoAttachment({ name: 'shot.png', type: 'image/png' }, pngOnlyModel).valid, true)
-  const webpRes = validateVideoAttachment({ name: 'shot.webp', type: 'image/webp' }, pngOnlyModel)
+  const webpRes = validateVideoAttachment({ name: 'shot.jpg', type: 'image/jpeg' }, pngOnlyModel)
   assert.equal(webpRes.valid, false)
   assert.ok(webpRes.error?.includes('not supported by the selected video model'))
 })
@@ -583,7 +583,7 @@ test('resolveQualifiedVideoModel qualifies with option.provider/model and avoids
     model: 'veo-3.1-generate-preview',
     provider: 'google',
   }
-  assert.equal(resolveQualifiedVideoModel(googleOpt), 'google/veo-3.1-generate-preview')
+  assert.equal(resolveQualifiedVideoModel(googleOpt), 'google:veo-3.1-generate-preview')
 
   const openRouterOpt: TaskModalModelOption = {
     id: 'google/veo-3.1',
@@ -592,27 +592,27 @@ test('resolveQualifiedVideoModel qualifies with option.provider/model and avoids
     model: 'google/veo-3.1',
     provider: 'openrouter',
   }
-  assert.equal(resolveQualifiedVideoModel(openRouterOpt), 'openrouter/google/veo-3.1')
+  assert.equal(resolveQualifiedVideoModel(openRouterOpt), 'openrouter:google/veo-3.1')
 
   // Avoid doubled openrouter/ prefix
   const alreadyPrefixedOpt: TaskModalModelOption = {
-    id: 'openrouter/google/veo-3.1',
+    id: 'openrouter:google/veo-3.1',
     label: 'Google: Veo 3.1',
     ready: true,
-    model: 'openrouter/google/veo-3.1',
+    model: 'openrouter:google/veo-3.1',
     provider: 'openrouter',
   }
-  assert.equal(resolveQualifiedVideoModel(alreadyPrefixedOpt), 'openrouter/google/veo-3.1')
+  assert.equal(resolveQualifiedVideoModel(alreadyPrefixedOpt), 'openrouter:google/veo-3.1')
 
   // Avoid doubled google/ prefix
   const googleAlreadyPrefixed: TaskModalModelOption = {
     id: 'google/veo-3.1',
     label: 'Veo 3.1',
     ready: true,
-    model: 'google/veo-3.1',
+    model: 'google:veo-3.1',
     provider: 'google',
   }
-  assert.equal(resolveQualifiedVideoModel(googleAlreadyPrefixed), 'google/veo-3.1')
+  assert.equal(resolveQualifiedVideoModel(googleAlreadyPrefixed), 'google:veo-3.1')
 
   // Avoid doubled google: colon prefix
   const colonPrefixed: TaskModalModelOption = {
@@ -632,10 +632,7 @@ test('resolveVideoPricing verifies against actual pinned snapshot data from snap
   // Threat: Inventing synthetic models or verifying against stale unpinned fixtures.
   // Boundary: Reading swarmd/internal/model/snapshotdata/snapshot.json via node:fs.
   const snapshotPath = path.resolve(__dirname, '../../../../../swarmd/internal/model/snapshotdata/snapshot.json')
-  if (!fs.existsSync(snapshotPath)) {
-    t.skip('snapshot.json not found on disk')
-    return
-  }
+  assert.ok(fs.existsSync(snapshotPath), 'Pinned snapshot must exist')
 
   const raw = fs.readFileSync(snapshotPath, 'utf8')
   const snapshot = JSON.parse(raw)
@@ -647,7 +644,8 @@ test('resolveVideoPricing verifies against actual pinned snapshot data from snap
     (m: any) => m.model_id === 'veo-3.1-generate-preview' || m.model === 'veo-3.1-generate-preview'
   )
 
-  if (veo && veo.pricing) {
+  assert.ok(veo?.pricing, 'Pinned Google Veo pricing must exist')
+  {
     const rawPricing = typeof veo.pricing === 'string' ? JSON.parse(veo.pricing) : veo.pricing
     const modelOpt: TaskModalModelOption = {
       id: veo.model_id || 'veo-3.1-generate-preview',
@@ -665,7 +663,7 @@ test('resolveVideoPricing verifies against actual pinned snapshot data from snap
     if (status === 'verified' || status === 'partially_verified') {
       assert.equal(result.isVerified, true, 'Verified snapshot record must resolve as verified')
       assert.equal(result.priceStatus, 'verified')
-      assert.ok(result.totalPrice !== undefined && result.totalPrice > 0)
+      assert.equal(result.totalPrice, 3.20)
     } else {
       assert.equal(result.isVerified, false, 'Unverified snapshot record must not invent verified status')
       assert.equal(result.priceStatus, 'unknown')

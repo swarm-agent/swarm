@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -1181,8 +1183,8 @@ func TestDirectVideoExecution_Preflight_RejectsMalformedImage(t *testing.T) {
 		0, 0, 0, // canvas width minus 1 (1px)
 		0, 0, 0, // canvas height minus 1 (1px)
 	}
-	if err := validateImageBytes(validWebP, "image/webp"); err != nil {
-		t.Fatalf("expected valid WebP to pass: %v", err)
+	if err := validateImageBytes(validWebP, "image/webp"); err == nil {
+		t.Fatal("WebP must be rejected until a full decoder is available")
 	}
 }
 
@@ -1401,7 +1403,7 @@ func TestProjectTask_DirectVideo_API_RejectsNegativeCountsAndUnsupportedModel(t 
 	}
 
 	// Verify no task was persisted
-	tasks, err := ss.ListProjectTasks(p.AccountScopeID, project.ID)
+	tasks, err := ss.ListProjectTasks(p.AccountScopeID, project.ID, 10)
 	if err != nil {
 		t.Fatalf("list tasks: %v", err)
 	}
@@ -1490,14 +1492,15 @@ func TestResolveSourceMediaBytes_StaleRevisionRejected(t *testing.T) {
 	variantID := "var-art-1"
 
 	// Put an artifact variant with EventSeq = 3
-	artRecord := &pebblestore.SessionArtifactVariantRecord{
-		SessionID:    sessionID,
-		CollectionID: "coll-1",
-		ID:           variantID,
-		EventSeq:     3,
-		MediaType:    "image/png",
+	artRecord := pebblestore.SessionArtifactVariant{
+		AccountScopeID: p.AccountScopeID,
+		SessionID:      sessionID,
+		CollectionID:   "coll-1",
+		ID:             variantID,
+		EventSeq:       3,
+		MediaType:      "image/png",
 	}
-	if err := ss.PutSessionArtifactVariant(p.AccountScopeID, artRecord); err != nil {
+	if err := ss.PutArtifactVariant(artRecord); err != nil {
 		t.Fatalf("put artifact variant: %v", err)
 	}
 

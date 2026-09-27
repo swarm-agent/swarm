@@ -3442,6 +3442,10 @@ export function OrchestrateView({
     if (!prompt || !selectedProject?.id) return
 
     if (taskIntent === 'video') {
+      if (!selectedVideoOption?.ready) {
+        setVideoAttachmentError('Select an available video model before submitting')
+        return
+      }
       if (taggedMedia.length > 1) {
         setVideoAttachmentError('Selected video flow supports at most 1 initial image reference')
         return
@@ -6153,7 +6157,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                       <input
                         type="file"
                         multiple
-                        accept={taskIntent === 'video' ? 'image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp' : undefined}
+                        accept={taskIntent === 'video' ? 'image/png,image/jpeg,.png,.jpg,.jpeg' : undefined}
                         className="hidden"
                         onChange={(e) => void handleFileUpload(e.target.files)}
                       />
@@ -6400,7 +6404,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                         className="w-full rounded bg-slate-900 border border-slate-800 px-2.5 py-1.5 text-white text-[11px] font-mono focus:outline-none focus:border-blue-500"
                       >
                         {videoModelOptions.map((opt) => (
-                          <option key={opt.id} value={opt.id}>
+                          <option key={opt.id} value={opt.id} disabled={!opt.ready}>
                             {opt.label}{opt.id === defaultVideoModel ? ' (Default)' : ''}{!opt.ready ? ` (Unavailable${opt.reason ? `: ${opt.reason}` : ''})` : ''}
                           </option>
                         ))}

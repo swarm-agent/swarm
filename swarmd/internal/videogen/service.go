@@ -2,7 +2,6 @@ package videogen
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -252,9 +251,9 @@ func (s *Service) GenerateManagedVideo(ctx context.Context, req ManagedVideoRequ
 	if !found {
 		return ManagedVideoResult{}, fmt.Errorf("selected video model %q is not in the model catalog", req.Model)
 	}
-	hasVideoOutput := containsStringFold(modelRecord.CatalogModalities.Outputs, "video") ||
-		containsStringFold(modelRecord.CatalogModalities.Categories, "video_generation") ||
-		containsStringFold(modelRecord.CatalogModalities.Categories, "video_iteration")
+	hasVideoOutput := ContainsStringFold(modelRecord.CatalogModalities.Outputs, "video") ||
+		ContainsStringFold(modelRecord.CatalogModalities.Categories, "video_generation") ||
+		ContainsStringFold(modelRecord.CatalogModalities.Categories, "video_iteration")
 	if !hasVideoOutput {
 		return ManagedVideoResult{}, fmt.Errorf("selected model %q does not support video output", req.Model)
 	}
@@ -276,6 +275,9 @@ func (s *Service) GenerateManagedVideo(ctx context.Context, req ManagedVideoRequ
 		durationSeconds = 0 // Preserve unknown omission for Omni
 
 		if req.AspectRatio != "" {
+			if opts == nil || len(opts.AspectRatios) == 0 {
+				return ManagedVideoResult{}, errors.New("video aspect ratio metadata unavailable for selected model")
+			}
 			if opts != nil && len(opts.AspectRatios) > 0 {
 				if !ContainsStringFold(opts.AspectRatios, req.AspectRatio) && !IsEquivalentAspectRatio(opts.AspectRatios, req.AspectRatio) {
 					return ManagedVideoResult{}, fmt.Errorf("unsupported aspect ratio %q for model %q; supported: %s", req.AspectRatio, modelID, strings.Join(opts.AspectRatios, ", "))
@@ -287,6 +289,9 @@ func (s *Service) GenerateManagedVideo(ctx context.Context, req ManagedVideoRequ
 		}
 
 		if req.Resolution != "" {
+			if opts == nil || len(opts.Resolutions) == 0 {
+				return ManagedVideoResult{}, errors.New("video resolution metadata unavailable for selected model")
+			}
 			if opts != nil && len(opts.Resolutions) > 0 {
 				if !ContainsStringFold(opts.Resolutions, req.Resolution) {
 					return ManagedVideoResult{}, fmt.Errorf("unsupported resolution %q for model %q; supported: %s", req.Resolution, modelID, strings.Join(opts.Resolutions, ", "))
@@ -305,6 +310,9 @@ func (s *Service) GenerateManagedVideo(ctx context.Context, req ManagedVideoRequ
 	} else {
 		// Veo / standard video models
 		if req.AspectRatio != "" {
+			if opts == nil || len(opts.AspectRatios) == 0 {
+				return ManagedVideoResult{}, errors.New("video aspect ratio metadata unavailable for selected model")
+			}
 			if opts != nil && len(opts.AspectRatios) > 0 {
 				if !ContainsStringFold(opts.AspectRatios, req.AspectRatio) && !IsEquivalentAspectRatio(opts.AspectRatios, req.AspectRatio) {
 					return ManagedVideoResult{}, fmt.Errorf("unsupported aspect ratio %q for model %q; supported: %s", req.AspectRatio, modelID, strings.Join(opts.AspectRatios, ", "))
@@ -316,6 +324,9 @@ func (s *Service) GenerateManagedVideo(ctx context.Context, req ManagedVideoRequ
 		}
 
 		if req.Resolution != "" {
+			if opts == nil || len(opts.Resolutions) == 0 {
+				return ManagedVideoResult{}, errors.New("video resolution metadata unavailable for selected model")
+			}
 			if opts != nil && len(opts.Resolutions) > 0 {
 				if !ContainsStringFold(opts.Resolutions, req.Resolution) {
 					return ManagedVideoResult{}, fmt.Errorf("unsupported resolution %q for model %q; supported: %s", req.Resolution, modelID, strings.Join(opts.Resolutions, ", "))
@@ -338,6 +349,9 @@ func (s *Service) GenerateManagedVideo(ctx context.Context, req ManagedVideoRequ
 		}
 
 		if req.DurationSeconds > 0 {
+			if len(allowedDurs) == 0 {
+				return ManagedVideoResult{}, errors.New("video duration metadata unavailable for selected model")
+			}
 			if len(allowedDurs) > 0 {
 				foundDur := false
 				for _, d := range allowedDurs {
@@ -369,8 +383,7 @@ func (s *Service) GenerateManagedVideo(ctx context.Context, req ManagedVideoRequ
 		}
 	}
 
-	// Pin pricing to the selected model before the provider request begins.
-	modelRecord, found := s.resolveModelRecord(providerID, modelID)
+	// Pricing remains pinned to modelRecord resolved before provider dispatch.
 	var result ManagedVideoResult
 	var genErr error
 	switch providerID {

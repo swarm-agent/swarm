@@ -1656,6 +1656,10 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 
 			// Preflight check for video tasks before Router spend or persistence
 			if isDirectVideo {
+				if req.DurationSeconds < 0 || req.TaskProgram != nil || req.TaskProgramID != "" {
+					writeError(w, http.StatusBadRequest, errors.New("video tasks require nonnegative duration and cannot carry a task program"))
+					return
+				}
 				if req.VideoType == "multipart" || req.VideoType == "story" || req.ScenesCount > 1 || req.OutcomeType == "video_story" || len(req.Scenes) > 0 {
 					writeError(w, http.StatusBadRequest, errors.New("multipart video stories are not supported; video generation supports single video clips"))
 					return
@@ -1797,8 +1801,8 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 						return
 					}
 					fn := strings.ToLower(strings.TrimSpace(att.Filename))
-					if fn != "" && !strings.HasSuffix(fn, ".png") && !strings.HasSuffix(fn, ".jpg") && !strings.HasSuffix(fn, ".jpeg") && !strings.HasSuffix(fn, ".webp") {
-						writeError(w, http.StatusBadRequest, fmt.Errorf("unsupported file extension on %q for video generation; only PNG, JPEG, and WebP image formats are supported", att.Filename))
+					if fn != "" && !strings.HasSuffix(fn, ".png") && !strings.HasSuffix(fn, ".jpg") && !strings.HasSuffix(fn, ".jpeg") {
+						writeError(w, http.StatusBadRequest, fmt.Errorf("unsupported file extension on %q for video generation; only PNG and JPEG image formats are supported", att.Filename))
 						return
 					}
 					imgBytes, mType, err := s.resolveSourceMediaBytes(r.Context(), p, att, "image")
@@ -2145,6 +2149,10 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				task.WorktreeBranch = ""
 				task.BaseBranch = ""
 				task.Description = prompt
+				if enhancePrompt && strings.TrimSpace(routed.Mission) != "" {
+					task.Description = routed.Mission
+				}
+				routed.TaskProgram = nil
 			}
 			if task.TaskProgram == nil && routed.TaskProgram != nil {
 				task.TaskProgram = routed.TaskProgram

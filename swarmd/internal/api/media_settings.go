@@ -572,10 +572,10 @@ func extractModelGenerationOptions(record pebblestore.ModelCatalogRecord) *media
 	}
 
 	type rawSetting struct {
-		Status                   string         `json:"status"`
-		DefaultValue             any            `json:"default_value"`
-		SupportedValues          []any          `json:"supported_values"`
-		ProviderDocumentedValues []any          `json:"provider_documented_values"`
+		Status                   string `json:"status"`
+		DefaultValue             any    `json:"default_value"`
+		SupportedValues          []any  `json:"supported_values"`
+		ProviderDocumentedValues []any  `json:"provider_documented_values"`
 		Variants                 []struct {
 			Mode            string         `json:"mode"`
 			SupportedValues []any          `json:"supported_values"`
@@ -699,7 +699,7 @@ func extractModelGenerationOptions(record pebblestore.ModelCatalogRecord) *media
 			initialImage = &MediaInitialImageOption{
 				Supported:          true,
 				MaxInputs:          maxIn,
-				SupportedMimeTypes: []string{"image/png", "image/jpeg", "image/webp"},
+				SupportedMimeTypes: []string{"image/png", "image/jpeg"},
 			}
 		}
 		return &mediaCatalogGenerationOptions{

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"image"
@@ -154,7 +153,14 @@ func (s *Server) getVideoModelOptions(modelID string) *videogen.ParsedVideoOptio
 		return nil
 	}
 	clean := strings.TrimSpace(modelID)
-	for _, provider := range []string{"google", "openrouter"} {
+	providers := []string{"google", "openrouter"}
+	if provider, model, qualified := strings.Cut(clean, ":"); qualified {
+		if provider != "google" && provider != "openrouter" {
+			return nil
+		}
+		providers, clean = []string{provider}, model
+	}
+	for _, provider := range providers {
 		if lookup, err := s.model.GetCatalog(provider, clean); err == nil && lookup.Found {
 			return videogen.ExtractVideoOptions(lookup.Record)
 		}
@@ -267,80 +273,15 @@ func isOmniModel(modelID string) bool {
 	return strings.Contains(strings.ToLower(modelID), "omni")
 }
 
-func decodeWebPConfig(data []byte) (image.Config, error) {
-	if len(data) < 30 {
-		return image.Config{}, errors.New("webp payload too short")
-	}
-	if string(data[0:4]) != "RIFF" || string(data[8:12]) != "WEBP" {
-		return image.Config{}, errors.New("not a webp file")
-	}
-	fileSize := binary.LittleEndian.Uint32(data[4:8])
-	if int64(fileSize)+8 > int64(len(data)) {
-		return image.Config{}, errors.New("truncated webp file")
-	}
-	chunkTag := string(data[12:16])
-	switch chunkTag {
-	case "VP8 ":
-		if len(data) < 30 {
-			return image.Config{}, errors.New("truncated vp8 chunk")
-		}
-		if data[23] != 0x9d || data[24] != 0x01 || data[25] != 0x2a {
-			return image.Config{}, errors.New("invalid vp8 sync code")
-		}
-		width := int(binary.LittleEndian.Uint16(data[26:28]) & 0x3fff)
-		height := int(binary.LittleEndian.Uint16(data[28:30]) & 0x3fff)
-		if width <= 0 || height <= 0 {
-			return image.Config{}, errors.New("invalid vp8 dimensions")
-		}
-		return image.Config{Width: width, Height: height}, nil
-	case "VP8L":
-		if len(data) < 25 {
-			return image.Config{}, errors.New("truncated vp8l chunk")
-		}
-		if data[20] != 0x2f {
-			return image.Config{}, errors.New("invalid vp8l signature")
-		}
-		b0 := uint32(data[21])
-		b1 := uint32(data[22])
-		b2 := uint32(data[23])
-		b3 := uint32(data[24])
-		width := int(1 + (b0 | ((b1 & 0x3f) << 8)))
-		height := int(1 + (((b1 >> 6) | (b2 << 2) | ((b3 & 0x0f) << 10))))
-		if width <= 0 || height <= 0 {
-			return image.Config{}, errors.New("invalid vp8l dimensions")
-		}
-		return image.Config{Width: width, Height: height}, nil
-	case "VP8X":
-		if len(data) < 30 {
-			return image.Config{}, errors.New("truncated vp8x chunk")
-		}
-		width := int(1 + uint32(data[24]) | (uint32(data[25]) << 8) | (uint32(data[26]) << 16))
-		height := int(1 + uint32(data[27]) | (uint32(data[28]) << 8) | (uint32(data[29]) << 16))
-		if width <= 0 || height <= 0 {
-			return image.Config{}, errors.New("invalid vp8x dimensions")
-		}
-		return image.Config{Width: width, Height: height}, nil
-	default:
-		return image.Config{}, fmt.Errorf("unsupported webp chunk %q", chunkTag)
-	}
-}
-
 func decodeImageConfig(imgBytes []byte) (image.Config, string, error) {
 	cfg, format, err := image.DecodeConfig(bytes.NewReader(imgBytes))
 	if err == nil && (format == "png" || format == "jpeg") {
 		return cfg, format, nil
 	}
-	if len(imgBytes) >= 12 && string(imgBytes[0:4]) == "RIFF" && string(imgBytes[8:12]) == "WEBP" {
-		wCfg, wErr := decodeWebPConfig(imgBytes)
-		if wErr == nil {
-			return wCfg, "webp", nil
-		}
-		return image.Config{}, "", fmt.Errorf("malformed webp image: %w", wErr)
-	}
 	if err != nil {
 		return image.Config{}, "", err
 	}
-	return image.Config{}, "", fmt.Errorf("unsupported image format %q; only PNG, JPEG, and WebP are supported", format)
+	return image.Config{}, "", fmt.Errorf("unsupported image format %q; only PNG and JPEG are supported", format)
 }
 
 func validateImageBytes(imgBytes []byte, mediaType string) error {
@@ -368,6 +309,10 @@ func validateImageBytes(imgBytes []byte, mediaType string) error {
 		} else if mType != expectedMIME {
 			return fmt.Errorf("image content does not match declared media type %q (detected %s)", mediaType, expectedMIME)
 		}
+	}
+	// Decode the complete image, not just its header, before provider dispatch.
+	if _, _, err := image.Decode(bytes.NewReader(imgBytes)); err != nil {
+		return fmt.Errorf("malformed image payload: %w", err)
 	}
 	return nil
 }
@@ -407,8 +352,8 @@ func validateProjectMediaTaskSettings(s *Server, task *pebblestore.ProjectTaskRe
 				return fmt.Errorf("unsupported media type %q for video generation; only images are supported as reference inputs", m.MediaType)
 			}
 			fn := strings.ToLower(strings.TrimSpace(m.Filename))
-			if fn != "" && !strings.HasSuffix(fn, ".png") && !strings.HasSuffix(fn, ".jpg") && !strings.HasSuffix(fn, ".jpeg") && !strings.HasSuffix(fn, ".webp") {
-				return fmt.Errorf("unsupported file extension on %q for video generation; only PNG, JPEG, and WebP image formats are supported", m.Filename)
+			if fn != "" && !strings.HasSuffix(fn, ".png") && !strings.HasSuffix(fn, ".jpg") && !strings.HasSuffix(fn, ".jpeg") {
+				return fmt.Errorf("unsupported file extension on %q for video generation; only PNG and JPEG image formats are supported", m.Filename)
 			}
 			if s != nil {
 				imgBytes, mType, err := s.resolveSourceMediaBytes(context.Background(), principal, m, "image")
@@ -950,9 +895,6 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 		defer cancel()
 
 		ar := task.AspectRatio
-		if ar == "" {
-			ar = "16:9"
-		}
 		sceneCount := 1
 		count := len(task.Deliverables)
 		if count == 0 {
@@ -987,8 +929,8 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 			if k == "video" || strings.HasPrefix(mt, "video/") || strings.HasSuffix(fn, ".mp4") {
 				sourceErr = errors.New("video file attachments are not supported for single video generation; only images are supported as reference inputs")
 			} else if k == "image" || strings.HasPrefix(mt, "image/") || strings.HasSuffix(fn, ".png") || strings.HasSuffix(fn, ".jpg") || strings.HasSuffix(fn, ".jpeg") || strings.HasSuffix(fn, ".webp") {
-				if fn != "" && !strings.HasSuffix(fn, ".png") && !strings.HasSuffix(fn, ".jpg") && !strings.HasSuffix(fn, ".jpeg") && !strings.HasSuffix(fn, ".webp") {
-					sourceErr = fmt.Errorf("unsupported file extension on %q for video generation; only PNG, JPEG, and WebP image formats are supported", m.Filename)
+				if fn != "" && !strings.HasSuffix(fn, ".png") && !strings.HasSuffix(fn, ".jpg") && !strings.HasSuffix(fn, ".jpeg") {
+					sourceErr = fmt.Errorf("unsupported file extension on %q for video generation; only PNG and JPEG image formats are supported", m.Filename)
 				} else {
 					sourceMediaKind = "image"
 					sourceMediaID = m.ID

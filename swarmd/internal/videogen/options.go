@@ -110,15 +110,6 @@ func ExtractVideoOptions(rec pebblestore.ModelCatalogRecord) *ParsedVideoOptions
 	providerKey := strings.ToLower(strings.TrimSpace(rec.Provider))
 	provData, ok := raw[providerKey]
 	if !ok || len(provData) == 0 {
-		if strings.EqualFold(providerKey, "openrouter") && strings.Contains(rec.Model, "/") {
-			parts := strings.SplitN(rec.Model, "/", 2)
-			if upstream, uOk := raw[strings.ToLower(parts[0])]; uOk && len(upstream) > 0 {
-				provData = upstream
-				ok = true
-			}
-		}
-	}
-	if !ok || len(provData) == 0 {
 		return opts
 	}
 
@@ -168,7 +159,7 @@ func ExtractVideoOptions(rec pebblestore.ModelCatalogRecord) *ParsedVideoOptions
 	}
 
 	// 1. Aspect Ratio
-	if ar, ok := settingsMap["aspect_ratio"]; ok && !strings.EqualFold(ar.Status, "unsupported") {
+	if ar, ok := settingsMap["aspect_ratio"]; ok && strings.EqualFold(ar.Status, "verified") {
 		for _, v := range ar.SupportedValues {
 			if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
 				opts.AspectRatios = append(opts.AspectRatios, strings.TrimSpace(s))
@@ -180,7 +171,7 @@ func ExtractVideoOptions(rec pebblestore.ModelCatalogRecord) *ParsedVideoOptions
 	}
 
 	// 2. Resolution
-	if res, ok := settingsMap["resolution"]; ok && !strings.EqualFold(res.Status, "unsupported") {
+	if res, ok := settingsMap["resolution"]; ok && strings.EqualFold(res.Status, "verified") {
 		for _, v := range res.SupportedValues {
 			if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
 				opts.Resolutions = append(opts.Resolutions, strings.TrimSpace(s))
@@ -192,7 +183,7 @@ func ExtractVideoOptions(rec pebblestore.ModelCatalogRecord) *ParsedVideoOptions
 	}
 
 	// 3. Duration seconds
-	if dur, ok := settingsMap["duration_seconds"]; ok && !strings.EqualFold(dur.Status, "unsupported") && !strings.EqualFold(dur.Status, "unknown") {
+	if dur, ok := settingsMap["duration_seconds"]; ok && strings.EqualFold(dur.Status, "verified") {
 		for _, v := range dur.SupportedValues {
 			switch n := v.(type) {
 			case float64:
@@ -253,18 +244,18 @@ func ExtractVideoOptions(rec pebblestore.ModelCatalogRecord) *ParsedVideoOptions
 	}
 
 	// 5. Features - strict metadata-only, no modality inference!
-	if feat, ok := featuresMap["initial_image"]; ok && feat.Supported {
+	if feat, ok := featuresMap["initial_image"]; ok && strings.EqualFold(feat.Status, "verified") && feat.Supported {
 		opts.InitialImageSupported = true
 		if feat.MaxInputs != nil && *feat.MaxInputs > 0 {
 			opts.InitialImageMaxInputs = *feat.MaxInputs
 		}
 	}
 
-	if feat, ok := featuresMap["conversational_editing"]; ok && feat.Supported {
+	if feat, ok := featuresMap["conversational_editing"]; ok && strings.EqualFold(feat.Status, "verified") && feat.Supported {
 		opts.ConversationalEditingSupported = true
 	}
 
-	if feat, ok := featuresMap["video_extension"]; ok && feat.Supported {
+	if feat, ok := featuresMap["video_extension"]; ok && strings.EqualFold(feat.Status, "verified") && feat.Supported {
 		opts.VideoExtensionSupported = true
 	}
 
@@ -276,8 +267,8 @@ func matchResolutionCondition(conds map[string]any, rLower string) bool {
 		return false
 	}
 	condVal, ok := conds["resolution"]
-	if !ok {
-		return len(conds) == 0 && rLower == "720p"
+	if !ok || len(conds) != 1 {
+		return false
 	}
 	switch v := condVal.(type) {
 	case string:

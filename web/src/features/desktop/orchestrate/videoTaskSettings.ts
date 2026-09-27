@@ -59,6 +59,7 @@ export interface ModelBillingCondition {
 }
 
 export interface ModelBillingLine {
+  kind?: string
   billable?: string
   unit?: string
   unit_per?: number | string
@@ -117,13 +118,11 @@ export const SUPPORTED_VIDEO_IMAGE_EXTENSIONS = [
   '.png',
   '.jpg',
   '.jpeg',
-  '.webp',
 ] as const
 
 export const SUPPORTED_VIDEO_IMAGE_MIME_TYPES = [
   'image/png',
   'image/jpeg',
-  'image/webp',
 ] as const
 
 /**
@@ -325,6 +324,7 @@ export function resolveVideoPricing(
 
     for (const line of rawLines) {
       if (!line || typeof line !== 'object') continue
+      if (line.kind && line.kind !== 'billing_rate') continue
       const billable = (line.billable || '').toLowerCase().trim()
       if (billable !== 'video_output' && billable !== 'video') continue
 
@@ -349,11 +349,14 @@ export function resolveVideoPricing(
       const condKeys = Object.keys(conds)
 
       // Reject lines with unresolved unknown conditions (provider_sku, region, device, etc.)
-      const knownCondKeys = new Set(['resolution', 'variant', 'sku', 'includes_audio', 'service_tier', 'tier'])
+      const knownCondKeys = new Set(['resolution', 'variant', 'sku', 'includes_audio', 'service_tier', 'tier', 'charged_only_on_success'])
       const hasUnknownCond = condKeys.some((k) => !knownCondKeys.has(k.toLowerCase()))
       if (hasUnknownCond) {
         continue
       }
+
+      if (conds.tier !== undefined && conds.tier !== 'paid') continue
+      if (conds.charged_only_on_success !== undefined && typeof conds.charged_only_on_success !== 'boolean') continue
 
       // Reject lines with unresolved SKU conditions
       const lineSKU = (line.sku || conds.sku || '').trim()
@@ -617,7 +620,7 @@ export function resolveAllowedVideoAspectRatios(
 /**
  * Validates that an attachment for a video task is strictly a supported image reference.
  * Fails closed unless genOptions.initial_image.supported is true.
- * Allows only backend locally decoded PNG, JPEG, and WebP images.
+ * Allows only backend locally decoded PNG and JPEG images.
  * Rejects non-images, SVG, HEIC/HEIF, and mismatched/fake extensions or MIME types.
  */
 export function validateVideoAttachment(
@@ -660,7 +663,7 @@ export function validateVideoAttachment(
   if (mime !== '' && !hasAllowedMime) {
     return {
       valid: false,
-      error: `Unsupported MIME type "${mime}" for video reference. Only PNG, JPEG, and WebP images are allowed.`,
+      error: `Unsupported MIME type "${mime}" for video reference. Only PNG and JPEG images are allowed.`,
     }
   }
 
@@ -686,7 +689,6 @@ export function validateVideoAttachment(
     if (!effectiveMime) {
       if (name.endsWith('.png')) effectiveMime = 'image/png'
       else if (name.endsWith('.jpg') || name.endsWith('.jpeg')) effectiveMime = 'image/jpeg'
-      else if (name.endsWith('.webp')) effectiveMime = 'image/webp'
     }
     if (effectiveMime && !modelAllowedMimes.includes(effectiveMime)) {
       return {
@@ -715,10 +717,8 @@ export function resolveQualifiedVideoModel(
     return raw
   }
 
-  const rawLower = raw.toLowerCase()
-  if (rawLower.startsWith(`${provider}/`) || rawLower.startsWith(`${provider}:`)) {
-    return raw
-  }
-
-  return `${provider}/${raw}`
+  const prefix = `${provider}:`
+  if (raw.toLowerCase().startsWith(prefix)) return raw
+  // Model IDs such as google/veo-3.1 belong to OpenRouter and must remain intact.
+  return `${provider}:${raw}`
 }

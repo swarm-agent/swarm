@@ -857,7 +857,7 @@ func TestEstimateVideoCostNoInventedFallback(t *testing.T) {
 			]
 		}
 	}`)
-	cost720, summary720 := EstimateVideoCost("google", "veo-3.1-generate-preview", 8, false, catalogPricing)
+	cost720, summary720 := EstimateVideoCostWithResolution("google", "veo-3.1-generate-preview", 8, "720p", false, catalogPricing)
 	if math.Abs(cost720-0.40) > 0.0001 {
 		t.Fatalf("expected 0.40 for 8s 720p, got %f", cost720)
 	}
@@ -1230,44 +1230,48 @@ func TestEstimateMediaCost_ActualSnapshotVeoAndOmni(t *testing.T) {
 
 	veoRec := loadActualSnapshotRecord(t, "google", "veo-3.1-generate-preview")
 
-	// 1. 720p 8s -> $0.40 ($0.05/sec * 8s)
+	// 1. Standard 720p 8s -> $3.20 ($0.40/sec * 8s)
 	est720_8s := pebblestore.EstimateMediaCostFromRecord(veoRec, pebblestore.MediaCostEstimateOptions{
+		Kind:            "video",
 		Resolution:      "720p",
 		DurationSeconds: 8,
 		IncludesAudio:   true,
 		ServiceTier:     "standard",
 	})
-	if math.Abs(est720_8s.CostUSD-0.40) > 0.0001 {
-		t.Fatalf("veo 720p 8s cost = %f, want 0.40", est720_8s.CostUSD)
+	if math.Abs(est720_8s.CostUSD-3.20) > 0.0001 {
+		t.Fatalf("veo 720p 8s cost = %f, want 3.20", est720_8s.CostUSD)
 	}
-	if est720_8s.PriceStatus != "metered" {
-		t.Errorf("veo 720p 8s price_status = %q, want metered", est720_8s.PriceStatus)
+	if est720_8s.PriceStatus != "known" {
+		t.Errorf("veo 720p 8s price_status = %q, want known", est720_8s.PriceStatus)
 	}
 
-	// 2. 1080p 8s -> $0.64 ($0.08/sec * 8s)
+	// 2. Standard 1080p 8s -> $3.20 ($0.40/sec * 8s)
 	est1080_8s := pebblestore.EstimateMediaCostFromRecord(veoRec, pebblestore.MediaCostEstimateOptions{
+		Kind:            "video",
 		Resolution:      "1080p",
 		DurationSeconds: 8,
 		IncludesAudio:   true,
 		ServiceTier:     "standard",
 	})
-	if math.Abs(est1080_8s.CostUSD-0.64) > 0.0001 {
-		t.Fatalf("veo 1080p 8s cost = %f, want 0.64", est1080_8s.CostUSD)
+	if math.Abs(est1080_8s.CostUSD-3.20) > 0.0001 {
+		t.Fatalf("veo 1080p 8s cost = %f, want 3.20", est1080_8s.CostUSD)
 	}
 
-	// 3. 720p 4s -> $0.20 ($0.05/sec * 4s)
+	// 3. Standard 720p 4s -> $1.60 ($0.40/sec * 4s)
 	est720_4s := pebblestore.EstimateMediaCostFromRecord(veoRec, pebblestore.MediaCostEstimateOptions{
+		Kind:            "video",
 		Resolution:      "720p",
 		DurationSeconds: 4,
 		IncludesAudio:   true,
 		ServiceTier:     "standard",
 	})
-	if math.Abs(est720_4s.CostUSD-0.20) > 0.0001 {
-		t.Fatalf("veo 720p 4s cost = %f, want 0.20", est720_4s.CostUSD)
+	if math.Abs(est720_4s.CostUSD-1.60) > 0.0001 {
+		t.Fatalf("veo 720p 4s cost = %f, want 1.60", est720_4s.CostUSD)
 	}
 
 	// 4. Missing resolution -> fails closed, unknown
 	estNoRes := pebblestore.EstimateMediaCostFromRecord(veoRec, pebblestore.MediaCostEstimateOptions{
+		Kind:            "video",
 		DurationSeconds: 8,
 		IncludesAudio:   true,
 		ServiceTier:     "standard",
@@ -1278,6 +1282,7 @@ func TestEstimateMediaCost_ActualSnapshotVeoAndOmni(t *testing.T) {
 
 	// 5. Unknown resolution "8k" -> fails closed, unknown
 	est8k := pebblestore.EstimateMediaCostFromRecord(veoRec, pebblestore.MediaCostEstimateOptions{
+		Kind:            "video",
 		Resolution:      "8k",
 		DurationSeconds: 8,
 		IncludesAudio:   true,
@@ -1289,6 +1294,7 @@ func TestEstimateMediaCost_ActualSnapshotVeoAndOmni(t *testing.T) {
 
 	// 6. Unknown duration 0s -> fails closed, unknown
 	est0s := pebblestore.EstimateMediaCostFromRecord(veoRec, pebblestore.MediaCostEstimateOptions{
+		Kind:            "video",
 		Resolution:      "720p",
 		DurationSeconds: 0,
 		IncludesAudio:   true,
@@ -1301,6 +1307,7 @@ func TestEstimateMediaCost_ActualSnapshotVeoAndOmni(t *testing.T) {
 	// 7. Omni with duration 0s (unknown duration) -> fails closed, unknown
 	omniRec := loadActualSnapshotRecord(t, "google", "gemini-omni-1.1-flash")
 	estOmni := pebblestore.EstimateMediaCostFromRecord(omniRec, pebblestore.MediaCostEstimateOptions{
+		Kind:            "video",
 		Resolution:      "720p",
 		DurationSeconds: 0,
 		IncludesAudio:   true,
