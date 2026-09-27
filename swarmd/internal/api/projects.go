@@ -21,6 +21,7 @@ import (
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	taskrouter "swarm/packages/swarmd/internal/taskrouter"
+	"swarm/packages/swarmd/internal/videogen"
 	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
 
@@ -1620,6 +1621,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				VariantCount        int                                  `json:"variant_count,omitempty"`
 				DeliverableCount    int                                  `json:"deliverable_count,omitempty"`
 				ScenesCount         int                                  `json:"scenes_count,omitempty"`
+				Scenes              []json.RawMessage                    `json:"scenes,omitempty"`
 				Soundtrack          string                               `json:"soundtrack,omitempty"`
 				DurationSeconds     int                                  `json:"duration_seconds,omitempty"`
 				AutoApprove         bool                                 `json:"auto_approve,omitempty"`

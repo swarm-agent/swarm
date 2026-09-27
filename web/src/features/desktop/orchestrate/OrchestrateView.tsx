@@ -92,11 +92,7 @@ import {
   resolveAllowedVideoAspectRatios,
   validateVideoAttachment,
   resolveQualifiedVideoModel,
-  SUPPORTED_VIDEO_RESOLUTIONS,
-  SUPPORTED_VIDEO_IMAGE_EXTENSIONS,
   type TaskModalModelOption,
-  type MediaCatalogGenerationOptions,
-  type VideoPricingResult,
 } from './videoTaskSettings'
 
 export { resolveVideoPricing, normalizeVideoResKey, type TaskModalModelOption }
@@ -2271,7 +2267,6 @@ export function OrchestrateView({
   // Deploy Task Modal State
   const [isDeployModalOpen, setIsDeployModalOpen] = useState(false)
   const [taskIntent, setTaskIntent] = useState<'code' | 'image' | 'video' | 'sound' | 'audit'>('code')
-  const [videoType, setVideoType] = useState<'single'>('single')
   const [videoResolution, setVideoResolution] = useState<string>('')
   const [videoDuration, setVideoDuration] = useState<number>(0)
   const [videoClipCount, setVideoClipCount] = useState<number>(1)
@@ -2321,10 +2316,6 @@ export function OrchestrateView({
   const defaultVideoOption = useMemo(
     () => videoModelOptions.find((opt) => opt.id === defaultVideoModel),
     [videoModelOptions, defaultVideoModel]
-  )
-  const hasSupportedSoundModel = useMemo(
-    () => audioModelOptions.some((opt) => opt.ready),
-    [audioModelOptions]
   )
 
   const selectedVideoGenOptions = useMemo(
@@ -3269,12 +3260,6 @@ export function OrchestrateView({
       if (targetIntent === 'image' && variantCount) {
         setImageVariants(variantCount)
       }
-      if (targetIntent === 'video' && scenesCount) {
-        setVideoScenes(scenesCount)
-      }
-      if (targetIntent === 'video' && soundtrack) {
-        setVideoSoundtrack(soundtrack)
-      }
       setIsDeployModalOpen(true)
     }
   }
@@ -3483,7 +3468,7 @@ export function OrchestrateView({
           prompt,
           workspace_path: newTaskWorkspace || selectedProject.repoPath || '.',
           intent: taskIntent,
-          video_type: taskIntent === 'video' ? videoType : undefined,
+          video_type: taskIntent === 'video' ? 'single' : undefined,
           enhance_prompt: taskIntent === 'video' ? enhanceVideoPrompt : undefined,
           aspect_ratio: taskIntent === 'image' ? imageAspectRatio : taskIntent === 'video' ? (videoAspectRatio && supportedVideoAspectRatios.includes(videoAspectRatio) ? videoAspectRatio : undefined) : undefined,
           resolution: taskIntent === 'image' ? imageResolution : taskIntent === 'video' ? (videoResolution && supportedVideoResolutions.includes(videoResolution) ? videoResolution : undefined) : undefined,
