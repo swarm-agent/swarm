@@ -28,10 +28,17 @@ type manageProjectStore interface {
 	DeleteProjectTask(accountScopeID, projectID, taskID string) error
 }
 
+// ProjectTaskApprovalGuards specifies caller-provided guards for task approval.
+type ProjectTaskApprovalGuards struct {
+	SessionID          string `json:"session_id,omitempty"`
+	PlanID             string `json:"plan_id,omitempty"`
+	DefinitionRevision int    `json:"definition_revision,omitempty"`
+}
+
 // ProjectTaskLifecycleService defines the canonical operations for project task execution and plan lifecycle.
 type ProjectTaskLifecycleService interface {
 	DeployProjectTask(ctx context.Context, p identity.Principal, projectID, taskID string) error
-	ApproveProjectTask(ctx context.Context, p identity.Principal, projectID, taskID string) (*pebblestore.ProjectTaskRecord, error)
+	ApproveProjectTask(ctx context.Context, p identity.Principal, projectID, taskID string, guards ...ProjectTaskApprovalGuards) (*pebblestore.ProjectTaskRecord, error)
 	SubmitProjectTaskPlan(ctx context.Context, input sessionruntime.ProjectTaskPlanSubmissionInput) (sessionruntime.ProjectTaskPlanSubmissionResult, error)
 }
 
@@ -50,7 +57,7 @@ func (a *legacyDeployerLifecycleAdapter) DeployProjectTask(ctx context.Context, 
 	return a.deployer(p.AccountScopeID, projectID, taskID)
 }
 
-func (a *legacyDeployerLifecycleAdapter) ApproveProjectTask(ctx context.Context, p identity.Principal, projectID, taskID string) (*pebblestore.ProjectTaskRecord, error) {
+func (a *legacyDeployerLifecycleAdapter) ApproveProjectTask(ctx context.Context, p identity.Principal, projectID, taskID string, guards ...ProjectTaskApprovalGuards) (*pebblestore.ProjectTaskRecord, error) {
 	if a.deployer == nil {
 		return nil, errors.New("project task deployer is not configured")
 	}
@@ -155,6 +162,18 @@ func manageProjectsDefinition() Definition {
 				"task_id": map[string]any{
 					"type":        "string",
 					"description": "Task ID for approve_task, accept_task, deploy_task, refine_task, update_task",
+				},
+				"session_id": map[string]any{
+					"type":        "string",
+					"description": "Optional session ID guard for approve_task or accept_task",
+				},
+				"plan_id": map[string]any{
+					"type":        "string",
+					"description": "Optional plan ID guard for approve_task or accept_task",
+				},
+				"definition_revision": map[string]any{
+					"type":        "integer",
+					"description": "Optional plan definition revision guard for approve_task or accept_task",
 				},
 				"name": map[string]any{
 					"type":        "string",
@@ -807,6 +826,9 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 		response["task_id"] = task.ID
 		response["project_id"] = projectID
 		response["status"] = task.Status
+		if task.PlanDocument != nil {
+			response["plan_document"] = task.PlanDocument
+		}
 		if task.SessionID != "" {
 			response["session_id"] = task.SessionID
 		}
@@ -937,11 +959,21 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 		if projectID == "" || taskID == "" {
 			return "", errors.New("manage_projects approve_task requires project_id and task_id")
 		}
+		var guards ProjectTaskApprovalGuards
+		if sid := strings.TrimSpace(asString(args["session_id"])); sid != "" {
+			guards.SessionID = sid
+		}
+		if pid := strings.TrimSpace(asString(args["plan_id"])); pid != "" {
+			guards.PlanID = pid
+		}
+		if rev := asInt(args["definition_revision"]); rev > 0 {
+			guards.DefinitionRevision = rev
+		}
 		lifecycle := r.getProjectTaskLifecycleService()
 		if lifecycle == nil {
 			return "", errors.New("project task lifecycle service is not configured")
 		}
-		approvedTask, err := lifecycle.ApproveProjectTask(ctx, p, projectID, taskID)
+		approvedTask, err := lifecycle.ApproveProjectTask(ctx, p, projectID, taskID, guards)
 		if err != nil {
 			return "", fmt.Errorf("approve task: %w", err)
 		}
@@ -969,6 +1001,9 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 		}
 		if approvedTask.PlanBinding != nil {
 			response["plan_binding"] = approvedTask.PlanBinding
+		}
+		if approvedTask.PlanDocument != nil {
+			response["plan_document"] = approvedTask.PlanDocument
 		}
 		if approvedTask.TaskProgram != nil {
 			response["task_program"] = approvedTask.TaskProgram
@@ -1040,6 +1075,9 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 		}
 		if freshTask.PlanBinding != nil {
 			response["plan_binding"] = freshTask.PlanBinding
+		}
+		if freshTask.PlanDocument != nil {
+			response["plan_document"] = freshTask.PlanDocument
 		}
 		if freshTask.TaskProgram != nil {
 			response["task_program"] = freshTask.TaskProgram

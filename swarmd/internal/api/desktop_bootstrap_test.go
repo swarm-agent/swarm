@@ -739,6 +739,10 @@ func (workspaceOverviewNoopRunService) ResolveAgentToolContractForAccount(string
 	return runruntime.ResolvedAgentToolContract{}, nil, nil, nil
 }
 
+func (workspaceOverviewNoopRunService) ExecuteTaskProgramForCoordinator(context.Context, identity.Principal, string, string, pebblestore.TaskProgramRecord) (string, error) {
+	return "completed", nil
+}
+
 // Requirement: handleWorkspaceOverview's explicit catalog mode must not depend
 // on session/permission/todo services or execute Git. The handler layer proves
 // response identity and compatibility defaults while unusable services and a

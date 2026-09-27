@@ -1641,15 +1641,16 @@ func TestProjectTaskProgram_SingleTaskLifecycleAndHydration(t *testing.T) {
 		AccountID:   accountID,
 		Title:       "Core Feature Delegation",
 		Agent:       "coder",
-		Status:      "pending_approval",
+		Status:      "queued",
 		TaskProgram: taskProg,
 	}
 	if err := ss.PutProjectTask(accountID, task); err != nil {
 		t.Fatal(err)
 	}
 
+	p := identity.Principal{Type: "user", UserID: "usr_single_tp", AccountScopeID: accountID}
 	// 1. Deploy via DeployProjectTask
-	if err := s.DeployProjectTask(accountID, projID, taskID); err != nil {
+	if err := s.DeployProjectTask(context.Background(), p, projID, taskID); err != nil {
 		t.Fatalf("DeployProjectTask failed: %v", err)
 	}
 

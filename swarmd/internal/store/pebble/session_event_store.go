@@ -2200,6 +2200,11 @@ func (s *SessionStore) ListV3SessionRunIntents(sessionID string, afterSeq uint64
 	return out, err
 }
 
+// ListRunIntents lists up to limit V3SessionRunIntents for a session.
+func (s *SessionStore) ListRunIntents(sessionID string, limit int) ([]V3SessionRunIntent, error) {
+	return s.ListV3SessionRunIntents(sessionID, 0, limit)
+}
+
 func (s *SessionStore) ListV3SessionRunIntentsByStatus(status string, limit int) ([]V3SessionRunIntent, error) {
 	out, _, err := s.ListV3SessionRunIntentsByStatusPaged(status, "", limit)
 	return out, err

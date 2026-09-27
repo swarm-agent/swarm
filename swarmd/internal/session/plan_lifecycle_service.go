@@ -365,6 +365,15 @@ func (s *PlanLifecycleService) SubmitProjectTaskStructuredPlan(input ProjectTask
 	if !found || task == nil {
 		return ProjectTaskPlanSubmissionResult{}, fmt.Errorf("task %q not found", input.TaskID)
 	}
+	if task.AccountID != "" && task.AccountID != input.AccountScopeID {
+		return ProjectTaskPlanSubmissionResult{}, errors.New("cross-account plan submission forbidden")
+	}
+	if task.ProjectID != "" && task.ProjectID != input.ProjectID {
+		return ProjectTaskPlanSubmissionResult{}, errors.New("cross-project plan submission forbidden")
+	}
+	if task.SessionID != "" && input.SessionID != "" && task.SessionID != input.SessionID {
+		return ProjectTaskPlanSubmissionResult{}, errors.New("cross-session plan submission forbidden")
+	}
 
 	now := time.Now().UnixMilli()
 	sessionID := strings.TrimSpace(input.SessionID)
@@ -406,7 +415,7 @@ func (s *PlanLifecycleService) SubmitProjectTaskStructuredPlan(input ProjectTask
 		}
 		if s.applySessionMutation != nil {
 			createKey := fmt.Sprintf("project-task:create:%s:%s", task.ProjectID, task.ID)
-			_, _ = s.applySessionMutation(SessionMutationInput{
+			if _, createErr := s.applySessionMutation(SessionMutationInput{
 				SessionID:       sessionID,
 				UserID:          input.UserID,
 				AccountScopeID:  input.AccountScopeID,
@@ -417,9 +426,13 @@ func (s *PlanLifecycleService) SubmitProjectTaskStructuredPlan(input ProjectTask
 				Kind:            SessionMutationCreateSession,
 				Session:         &session,
 				NowUnixMs:       now,
-			})
+			}); createErr != nil {
+				return ProjectTaskPlanSubmissionResult{}, fmt.Errorf("create bound plan session: %w", createErr)
+			}
 		} else {
-			_ = s.sessions.store.PutSession(session)
+			if putErr := s.sessions.store.PutSession(session); putErr != nil {
+				return ProjectTaskPlanSubmissionResult{}, fmt.Errorf("save bound plan session: %w", putErr)
+			}
 		}
 	}
 
@@ -489,6 +502,7 @@ func (s *PlanLifecycleService) SubmitProjectTaskStructuredPlan(input ProjectTask
 		SessionID:          sessionID,
 		Receipt:            receipt,
 	}
+	task.PlanDocument = docCopy
 	task.Status = "pending_approval"
 	task.PlanSummary = docCopy.Info.Goal
 	if task.PlanSummary == "" {

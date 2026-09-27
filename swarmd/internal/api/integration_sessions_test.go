@@ -209,3 +209,7 @@ func (r *recordingRunService) ResolveAgentToolContract(profile pebblestore.Agent
 func (r *recordingRunService) ResolveAgentToolContractForAccount(accountScopeID string, profile pebblestore.AgentProfile) (runruntime.ResolvedAgentToolContract, *permission.Policy, map[string]bool, error) {
 	return runruntime.ResolvedAgentToolContract{}, nil, nil, nil
 }
+
+func (r *recordingRunService) ExecuteTaskProgramForCoordinator(_ context.Context, _ identity.Principal, _ string, _ string, _ pebblestore.TaskProgramRecord) (string, error) {
+	return "completed", nil
+}

@@ -196,7 +196,7 @@ func (m *mockProjectTaskLifecycleService) DeployProjectTask(ctx context.Context,
 	return nil
 }
 
-func (m *mockProjectTaskLifecycleService) ApproveProjectTask(ctx context.Context, p identity.Principal, projectID, taskID string) (*pebblestore.ProjectTaskRecord, error) {
+func (m *mockProjectTaskLifecycleService) ApproveProjectTask(ctx context.Context, p identity.Principal, projectID, taskID string, guards ...ProjectTaskApprovalGuards) (*pebblestore.ProjectTaskRecord, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.lastContext = ctx
@@ -212,6 +212,18 @@ func (m *mockProjectTaskLifecycleService) ApproveProjectTask(ctx context.Context
 		}
 		if task.Status == "rejected" {
 			return nil, errors.New("cannot approve rejected task")
+		}
+		if len(guards) > 0 {
+			g := guards[0]
+			if g.SessionID != "" && task.SessionID != "" && g.SessionID != task.SessionID {
+				return nil, fmt.Errorf("session ID mismatch: expected %q, got %q", task.SessionID, g.SessionID)
+			}
+			if g.PlanID != "" && task.PlanBinding != nil && g.PlanID != task.PlanBinding.PlanID {
+				return nil, fmt.Errorf("plan ID mismatch: expected %q, got %q", task.PlanBinding.PlanID, g.PlanID)
+			}
+			if g.DefinitionRevision > 0 && task.PlanBinding != nil && g.DefinitionRevision != task.PlanBinding.DefinitionRevision {
+				return nil, fmt.Errorf("plan definition is stale (task revision %d, current %d)", task.PlanBinding.DefinitionRevision, g.DefinitionRevision)
+			}
 		}
 		if task.PlanBinding != nil && task.PlanBinding.DefinitionRevision > 1 {
 			return nil, errors.New("plan definition is stale (task revision 2, current 1)")
