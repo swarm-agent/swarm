@@ -3,6 +3,7 @@ import { Image } from 'lucide-react'
 import { Card } from '../../../../../components/ui/card'
 import { Select } from '../../../../../components/ui/select'
 import { imageProvidersQueryOptions } from '../queries/get-image-providers'
+import { getMediaSettingsCatalog } from '../../media/queries/get-media-settings'
 import { saveImageDefaultModel } from '../../swarm/mutations/save-image-default-model'
 import { getUISettings } from '../../swarm/queries/get-ui-settings'
 import { normalizeImageDefaultModel, type UISettingsWire } from '../../swarm/types/swarm-settings'
@@ -17,6 +18,7 @@ export function ImagesSettingsPage() {
   const queryClient = useQueryClient()
   const settingsQuery = useQuery({ queryKey: uiSettingsQueryKey, queryFn: getUISettings, staleTime: 30_000 })
   const providersQuery = useQuery(imageProvidersQueryOptions())
+  const catalogQuery = useQuery({ queryKey: ['media-settings-catalog'], queryFn: ({ signal }) => getMediaSettingsCatalog(signal), staleTime: 30_000 })
   const saveMutation = useMutation({
     mutationFn: (defaultModel: string) => saveImageDefaultModel({ current: settingsQuery.data ?? {}, defaultModel }),
     onSuccess: (settings) => queryClient.setQueryData<UISettingsWire>(uiSettingsQueryKey, settings),
@@ -25,8 +27,9 @@ export function ImagesSettingsPage() {
   const providers = providersQuery.data ?? []
   const modelOptions = providers.flatMap((provider) => provider.models.map((model) => ({ ...model, provider })))
   const configuredModel = normalizeImageDefaultModel(settingsQuery.data)
+  const defaultFromCatalog = catalogQuery.data?.default_image_model || ''
   const firstReadyModel = modelOptions.find((option) => option.provider.ready)?.id || ''
-  const selectedModel = configuredModel || firstReadyModel
+  const selectedModel = configuredModel || defaultFromCatalog || firstReadyModel
   const selectedProvider = modelOptions.find((option) => option.id === selectedModel)?.provider
   const loadError = settingsQuery.error || providersQuery.error
   const error = saveMutation.error

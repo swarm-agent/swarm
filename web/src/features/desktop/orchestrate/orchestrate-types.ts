@@ -161,7 +161,7 @@ export interface DeployedWorker {
   assignedTaskIds: string[]
 }
 
-export type TaskOutcomeType = 'code_pr' | 'media_bundle' | 'bug_patch' | 'audit_report' | 'video_story'
+export type TaskOutcomeType = 'code_pr' | 'media_bundle' | 'bug_patch' | 'audit_report' | 'video_story' | 'video_clip'
 
 export interface ProjectTaskScene {
   scene_number: number
@@ -248,7 +248,7 @@ export interface RunningTask {
   id: string
   title: string
   subtitle?: string
-  agentType: 'coder' | 'finder' | 'designer' | 'swarm' | 'video' | 'image' | 'plan'
+  agentType: 'coder' | 'finder' | 'designer' | 'swarm' | 'video' | 'image' | 'sound' | 'audio' | 'plan'
   status: 'running' | 'in_progress' | 'completed' | 'needs_review' | 'blocked' | 'queued' | 'pending_approval' | 'planning'
   outcomeType?: TaskOutcomeType
   workspaceTarget: string
@@ -307,6 +307,10 @@ export interface RunningTask {
   feedbackHistory?: string[]
   aspectRatio?: string
   variantCount?: number
+  description?: string
+  resolution?: string
+  model?: string
+  durationSeconds?: number
   scenes?: ProjectTaskScene[]
   soundtrack?: string
   autoApprove?: boolean

@@ -87,6 +87,14 @@ export interface OrchestrateViewProps {
   initialThemeId?: OrchestrateThemeId
 }
 
+export interface TaskModalModelOption {
+  id: string
+  label: string
+  ready: boolean
+  reason?: string
+  pricing?: any
+}
+
 /**
  * Helper to safely parse any date/time representation into a valid Date object.
  * Prevents "RangeError: Invalid time value" on Date.prototype.toISOString() or toLocaleDateString().
@@ -118,8 +126,244 @@ function safeIsoDayKey(date: Date): string {
 }
 
 /**
- * Adapter to convert a MediaDeliverable into a studio-grade MediaLibraryItem
+ * Helper to parse pricing information from model catalog option
  */
+function normalizeVideoResKey(cond: string): '720p' | '1080p' | '4k' | string {
+  const c = cond.toLowerCase().trim()
+  if (c === '720p' || c === '720' || c === 'hd') return '720p'
+  if (c === '1080p' || c === '1080' || c === 'fhd' || c === 'standard') return '1080p'
+  if (c === '4k' || c === '2160p' || c === 'uhd') return '4k'
+  return c
+}
+
+export function resolveVideoPricing(
+  option: TaskModalModelOption | undefined,
+  resolution: string,
+  durationSeconds: number
+): {
+  ratePerSec?: number
+  rateForClip?: number
+  fixedPrice?: number
+  formattedSummary: string
+  ratesByResolution: Record<string, string>
+  unitRatesByResolution: Record<string, number>
+  totalsByResolution: Record<string, number>
+  isVerified: boolean
+} {
+  const defaultRateValues: Record<'720p' | '1080p' | '4k', number> = {
+    '720p': 0.05,
+    '1080p': 0.08,
+    '4k': 0.20,
+  }
+  const unitRates: Record<string, number> = { ...defaultRateValues }
+  let isVerified = false
+  let fixedPrice: number | undefined
+
+  if (option && option.pricing) {
+    const p = option.pricing as Record<string, any>
+    if (p.billing?.lines && Array.isArray(p.billing.lines)) {
+      for (const line of p.billing.lines) {
+        if (!line || typeof line !== 'object') continue
+        const condRes = normalizeVideoResKey(line.conditions?.resolution || '')
+        const price = typeof line.price_usd === 'number' ? line.price_usd : parseFloat(line.price_usd)
+        if (!isNaN(price) && price > 0) {
+          isVerified = true
+          if (condRes in unitRates) {
+            unitRates[condRes] = price
+          } else if (!unitRates['1080p']) {
+            unitRates['1080p'] = price
+          }
+        }
+      }
+    }
+
+    if (typeof p.video_output === 'number' && p.video_output > 0) {
+      fixedPrice = p.video_output
+      isVerified = true
+    } else if (typeof p.per_video === 'number' && p.per_video > 0) {
+      fixedPrice = p.per_video
+      isVerified = true
+    }
+  }
+
+  const normalizedRes = (normalizeVideoResKey(resolution) as '720p' | '1080p' | '4k') || '1080p'
+  const finalRatePerSec = unitRates[normalizedRes] ?? (defaultRateValues[normalizedRes] || 0.08)
+  const total = fixedPrice !== undefined ? fixedPrice : finalRatePerSec * durationSeconds
+
+  const totalsByResolution: Record<string, number> = {}
+  const ratesByResolution: Record<string, string> = {}
+
+  for (const res of ['720p', '1080p', '4k'] as const) {
+    if (fixedPrice !== undefined) {
+      totalsByResolution[res] = fixedPrice
+      ratesByResolution[res] = `$${fixedPrice.toFixed(2)}/clip`
+    } else {
+      const uRate = unitRates[res] ?? defaultRateValues[res]
+      const resTotal = uRate * durationSeconds
+      totalsByResolution[res] = resTotal
+      ratesByResolution[res] = `$${resTotal.toFixed(2)} ($${uRate.toFixed(2)}/s)`
+    }
+  }
+
+  let formattedSummary: string
+  if (fixedPrice !== undefined) {
+    formattedSummary = `$${fixedPrice.toFixed(2)} Total (${durationSeconds}s clip) · ${isVerified ? 'Verified catalog' : 'Standard estimate'}`
+  } else {
+    formattedSummary = `$${total.toFixed(2)} Total ($${finalRatePerSec.toFixed(2)}/sec × ${durationSeconds}s clip) · ${isVerified ? 'Verified catalog' : 'Standard estimate'}`
+  }
+
+  return {
+    ratePerSec: finalRatePerSec,
+    rateForClip: total,
+    fixedPrice,
+    formattedSummary,
+    ratesByResolution,
+    unitRatesByResolution: unitRates,
+    totalsByResolution,
+    isVerified,
+  }
+}
+
+export interface AspectRatioOption<T extends string = string> {
+  ratio: T
+  label: string
+  widthClass: string
+  heightClass: string
+}
+
+export const IMAGE_ASPECT_RATIOS: AspectRatioOption<'1:1' | '16:9' | '9:16' | '4:3'>[] = [
+  { ratio: '16:9', label: 'Landscape', widthClass: 'w-5', heightClass: 'h-3' },
+  { ratio: '1:1', label: 'Square', widthClass: 'w-3.5', heightClass: 'h-3.5' },
+  { ratio: '9:16', label: 'Portrait', widthClass: 'w-3', heightClass: 'h-5' },
+  { ratio: '4:3', label: 'Standard', widthClass: 'w-4', heightClass: 'h-3' },
+]
+
+export const VIDEO_ASPECT_RATIOS: AspectRatioOption<'16:9' | '9:16' | '1:1'>[] = [
+  { ratio: '16:9', label: 'Landscape', widthClass: 'w-5', heightClass: 'h-3' },
+  { ratio: '9:16', label: 'Portrait', widthClass: 'w-3', heightClass: 'h-5' },
+  { ratio: '1:1', label: 'Square', widthClass: 'w-3.5', heightClass: 'h-3.5' },
+]
+
+/**
+ * Helper to resolve estimated pricing for image generation based on model catalog and resolution
+ */
+function normalizeImageResKey(cond: string): '1k' | '2k' | '4k' | string {
+  const c = cond.toLowerCase().trim()
+  if (c === '1k' || c === '1024x1024' || c === '1024×1024' || c === 'standard' || c === '1024') return '1k'
+  if (c === '2k' || c === '2048x2048' || c === '2048×2048' || c === 'hd' || c === '2048') return '2k'
+  if (c === '4k' || c === '4096x4096' || c === '4096×4096' || c === 'ultra_hd' || c === 'uhd' || c === '4096') return '4k'
+  return c
+}
+
+export function resolveImagePricing(
+  option: TaskModalModelOption | undefined,
+  resolution: string,
+  variantCount: number
+): {
+  ratePerImage: number
+  totalPrice: number
+  formattedSummary: string
+  ratesByResolution: Record<string, string>
+  unitRatesByResolution: Record<string, number>
+  totalsByResolution: Record<string, number>
+  isVerified: boolean
+} {
+  const defaultRateValues: Record<'1k' | '2k' | '4k', number> = {
+    '1k': 0.03,
+    '2k': 0.06,
+    '4k': 0.12,
+  }
+  const unitRates: Record<string, number> = { ...defaultRateValues }
+  let isVerified = false
+
+  if (option && option.pricing) {
+    const p = option.pricing as Record<string, any>
+    if (p.billing?.lines && Array.isArray(p.billing.lines)) {
+      for (const line of p.billing.lines) {
+        if (!line || typeof line !== 'object') continue
+        const rawCond = line.conditions?.resolution || line.conditions?.image_size || ''
+        const condRes = normalizeImageResKey(String(rawCond))
+        const priceVal = typeof line.price_usd === 'number' ? line.price_usd : parseFloat(line.price_usd)
+        if (!isNaN(priceVal) && priceVal > 0) {
+          isVerified = true
+          if (condRes in unitRates) {
+            unitRates[condRes] = priceVal
+          } else if (!unitRates['1k']) {
+            unitRates['1k'] = priceVal
+          }
+        }
+      }
+    }
+    const directPrice = typeof p.per_image === 'number' ? p.per_image : typeof p.image === 'number' ? p.image : undefined
+    if (typeof directPrice === 'number' && directPrice > 0) {
+      isVerified = true
+      unitRates['1k'] = directPrice
+      if (unitRates['2k'] === defaultRateValues['2k']) unitRates['2k'] = directPrice * 2
+      if (unitRates['4k'] === defaultRateValues['4k']) unitRates['4k'] = directPrice * 4
+    }
+  }
+
+  const normalizedRes = (normalizeImageResKey(resolution) as '1k' | '2k' | '4k') || '1k'
+  const finalRate = unitRates[normalizedRes] ?? (defaultRateValues[normalizedRes] || 0.03)
+  const total = finalRate * variantCount
+
+  const totalsByResolution: Record<string, number> = {}
+  const ratesByResolution: Record<string, string> = {}
+
+  for (const res of ['1k', '2k', '4k'] as const) {
+    const uRate = unitRates[res] ?? defaultRateValues[res]
+    const resTotal = uRate * variantCount
+    totalsByResolution[res] = resTotal
+    ratesByResolution[res] = variantCount > 1
+      ? `$${resTotal.toFixed(2)} ($${uRate.toFixed(2)}/ea)`
+      : `$${uRate.toFixed(2)}/img`
+  }
+
+  const formattedSummary = variantCount > 1
+    ? `$${total.toFixed(2)} Total ($${finalRate.toFixed(2)}/image × ${variantCount} images) · ${isVerified ? 'Verified catalog' : 'Standard estimate'}`
+    : `$${total.toFixed(2)} Total ($${finalRate.toFixed(2)}/image) · ${isVerified ? 'Verified catalog' : 'Standard estimate'}`
+
+  return {
+    ratePerImage: finalRate,
+    totalPrice: total,
+    formattedSummary,
+    ratesByResolution,
+    unitRatesByResolution: unitRates,
+    totalsByResolution,
+    isVerified,
+  }
+}
+
+/**
+ * Helper to resolve estimated pricing for audio generation based on model catalog and duration
+ */
+export function resolveAudioPricing(
+  option: TaskModalModelOption | undefined,
+  durationSeconds: number
+): {
+  cost: number
+  formattedSummary: string
+  isVerified: boolean
+} {
+  let rate = 0.04
+  let isVerified = false
+  if (option && option.pricing) {
+    const p = option.pricing as Record<string, any>
+    if (typeof p.audio_output === 'number' && p.audio_output > 0) {
+      rate = p.audio_output
+      isVerified = true
+    } else if (typeof p.per_audio === 'number' && p.per_audio > 0) {
+      rate = p.per_audio
+      isVerified = true
+    }
+  }
+  const total = durationSeconds >= 60 ? rate * 2 : rate
+  return {
+    cost: total,
+    formattedSummary: `$${total.toFixed(2)} Total (${durationSeconds}s audio track) · ${isVerified ? 'Verified catalog' : 'Standard estimate'}`,
+    isVerified,
+  }
+}
 function deliverableToMediaItem(
   d: MediaDeliverable,
   parentTask?: RunningTask,
@@ -438,6 +682,19 @@ function MinimalTaskCard({
     return Array.from({ length: count }, (_, i) => i + 1)
   }, [task.variantCount, task.deliverables])
 
+  const isMediaTask =
+    task.agentType === 'image' ||
+    task.agentType === 'video' ||
+    task.agentType === 'sound' ||
+    task.agentType === 'audio' ||
+    task.outcomeType === 'media_bundle' ||
+    task.outcomeType === 'video_story' ||
+    task.outcomeType === 'video_clip'
+
+  const isSingleVideo =
+    task.agentType === 'video' &&
+    (task.outcomeType === 'video_clip' || !task.scenes || task.scenes.length <= 1)
+
   return (
     <div
       onClick={onSelect}
@@ -464,37 +721,41 @@ function MinimalTaskCard({
             </span>
             {task.outcomeType && (
               <span className="font-mono text-[9px] uppercase px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700/50">
-                {task.outcomeType.replace('_', ' ')}
+                {task.outcomeType === 'video_clip' ? 'SINGLE VIDEO' : task.outcomeType.replace('_', ' ')}
               </span>
             )}
-            {/* Show worktree name right away */}
-            <span
-              className="font-mono text-[9px] px-1.5 py-0.5 rounded bg-indigo-950/70 text-indigo-300 border border-indigo-500/30 flex items-center gap-1 font-semibold"
-              title={`Worktree: ${task.worktreeBranch || (task.worktreeName ? `agent/${task.worktreeName}` : 'agent/worktree')}`}
-            >
-              <GitBranch size={9} />
-              <span>{task.worktreeBranch || (task.worktreeName ? `agent/${task.worktreeName}` : 'agent/worktree')}</span>
-            </span>
-            {/* Show integration status right away */}
-            {task.isIntegrated ? (
-              <span className="font-mono text-[9px] px-1.5 py-0.5 rounded bg-emerald-950/80 text-emerald-300 border border-emerald-500/40 flex items-center gap-1 font-semibold">
-                <CheckCircle2 size={9} />
-                <span>Integrated</span>
+            {/* Show worktree name right away for non-media tasks */}
+            {!isMediaTask && (task.worktreeBranch || task.worktreeName) && (
+              <span
+                className="font-mono text-[9px] px-1.5 py-0.5 rounded bg-indigo-950/70 text-indigo-300 border border-indigo-500/30 flex items-center gap-1 font-semibold"
+                title={`Worktree: ${task.worktreeBranch || (task.worktreeName ? `agent/${task.worktreeName}` : 'agent/worktree')}`}
+              >
+                <GitBranch size={9} />
+                <span>{task.worktreeBranch || (task.worktreeName ? `agent/${task.worktreeName}` : 'agent/worktree')}</span>
               </span>
-            ) : hasUnintegrated ? (
-              <span className="font-mono text-[9px] px-1.5 py-0.5 rounded bg-amber-950/80 text-amber-300 border border-amber-500/40 flex items-center gap-1 font-semibold">
-                <span>Not Integrated ({task.unintegratedCommits})</span>
-              </span>
-            ) : task.isDirty ? (
-              <span className="font-mono text-[9px] px-1.5 py-0.5 rounded bg-amber-950/50 text-amber-300 border border-amber-500/30 flex items-center gap-1 font-semibold">
-                <span>Changes Pending Commit</span>
-              </span>
-            ) : task.syncWarning || (task.behindCommits && task.behindCommits > 0) ? (
-              <span className="font-mono text-[9px] px-1.5 py-0.5 rounded bg-rose-950/80 text-rose-300 border border-rose-500/40 flex items-center gap-1 font-semibold">
-                <AlertTriangle size={9} />
-                <span>Out of Sync</span>
-              </span>
-            ) : null}
+            )}
+            {/* Show integration status right away for non-media tasks */}
+            {!isMediaTask && (
+              task.isIntegrated ? (
+                <span className="font-mono text-[9px] px-1.5 py-0.5 rounded bg-emerald-950/80 text-emerald-300 border border-emerald-500/40 flex items-center gap-1 font-semibold">
+                  <CheckCircle2 size={9} />
+                  <span>Integrated</span>
+                </span>
+              ) : hasUnintegrated ? (
+                <span className="font-mono text-[9px] px-1.5 py-0.5 rounded bg-amber-950/80 text-amber-300 border border-amber-500/40 flex items-center gap-1 font-semibold">
+                  <span>Not Integrated ({task.unintegratedCommits})</span>
+                </span>
+              ) : task.isDirty ? (
+                <span className="font-mono text-[9px] px-1.5 py-0.5 rounded bg-amber-950/50 text-amber-300 border border-amber-500/30 flex items-center gap-1 font-semibold">
+                  <span>Changes Pending Commit</span>
+                </span>
+              ) : task.syncWarning || (task.behindCommits && task.behindCommits > 0) ? (
+                <span className="font-mono text-[9px] px-1.5 py-0.5 rounded bg-rose-950/80 text-rose-300 border border-rose-500/40 flex items-center gap-1 font-semibold">
+                  <AlertTriangle size={9} />
+                  <span>Out of Sync</span>
+                </span>
+              ) : null
+            )}
             {(task.routerAlert || (task as any).router_alert) && (
               <span className="font-mono text-[9px] uppercase px-1.5 py-0.5 rounded bg-amber-950/80 text-amber-300 border border-amber-500/50 flex items-center gap-1 font-bold">
                 <AlertTriangle size={9} />
@@ -505,7 +766,7 @@ function MinimalTaskCard({
           <h3 className="text-xs font-bold text-white tracking-tight leading-snug truncate">
             {task.title}
           </h3>
-          {task.workspacesInvolved && task.workspacesInvolved.length > 0 && (
+          {!isMediaTask && task.workspacesInvolved && task.workspacesInvolved.length > 0 && (
             <div className="flex items-center gap-1.5 flex-wrap pt-0.5">
               <span className="font-mono text-[9px] uppercase tracking-wider text-slate-500 font-semibold">Workspaces:</span>
               {task.workspacesInvolved.map((ws, i) => {
@@ -659,13 +920,15 @@ function MinimalTaskCard({
                 </span>
               )}
             </div>
-            <span className="text-[10px] font-mono text-slate-400 flex items-center gap-1.5">
-              <span>Worktree:</span>
-              <span className="text-indigo-300 font-semibold flex items-center gap-1">
-                <GitBranch size={10} />
-                <span>{task.worktreeBranch || (task.worktreeName ? `agent/${task.worktreeName}` : 'agent/worktree')}</span>
+            {!isMediaTask && (task.worktreeBranch || task.worktreeName) && (
+              <span className="text-[10px] font-mono text-slate-400 flex items-center gap-1.5">
+                <span>Worktree:</span>
+                <span className="text-indigo-300 font-semibold flex items-center gap-1">
+                  <GitBranch size={10} />
+                  <span>{task.worktreeBranch || (task.worktreeName ? `agent/${task.worktreeName}` : 'agent/worktree')}</span>
+                </span>
               </span>
-            </span>
+            )}
           </div>
 
           <p className="text-slate-200 text-xs leading-relaxed">
@@ -683,7 +946,7 @@ function MinimalTaskCard({
           )}
 
           {/* Multi-Scene Video Production Script */}
-          {task.scenes && task.scenes.length > 0 && (
+          {!isSingleVideo && task.scenes && task.scenes.length > 0 && (
             <div className="flex flex-col p-2.5 rounded bg-slate-900/90 border border-slate-800 space-y-2 text-xs">
               <div className="flex items-center justify-between text-[10px] font-mono">
                 <span className="font-bold text-blue-400 flex items-center gap-1.5 uppercase">
@@ -715,6 +978,46 @@ function MinimalTaskCard({
             </div>
           )}
 
+          {/* Single Video Shot Spec */}
+          {isSingleVideo && (
+            <div className="flex flex-col p-2.5 rounded bg-slate-900/90 border border-slate-800 space-y-2 text-xs">
+              <div className="flex items-center justify-between text-[10px] font-mono">
+                <span className="font-bold text-blue-400 flex items-center gap-1.5 uppercase">
+                  <Film size={11} />
+                  <span>Single Video Shot Spec ({task.aspectRatio || '16:9'} · 8s)</span>
+                </span>
+                <span className="px-1.5 py-0.5 rounded bg-blue-950/60 text-blue-300 border border-blue-500/30 text-[9px] font-mono font-semibold">
+                  Direct Model Execution
+                </span>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[10px] font-mono">
+                <div className="p-1.5 rounded bg-slate-950/70 border border-slate-800/80">
+                  <span className="text-slate-500 block text-[9px]">Duration</span>
+                  <span className="text-white font-bold">8 Seconds</span>
+                </div>
+                <div className="p-1.5 rounded bg-slate-950/70 border border-slate-800/80">
+                  <span className="text-slate-500 block text-[9px]">Resolution</span>
+                  <span className="text-white font-bold">{task.resolution || '1080p'}</span>
+                </div>
+                <div className="p-1.5 rounded bg-slate-950/70 border border-slate-800/80">
+                  <span className="text-slate-500 block text-[9px]">Video Model</span>
+                  <span className="text-white font-bold truncate block" title={task.model || 'veo-3.1-generate-preview'}>{task.model || 'veo-3.1-generate-preview'}</span>
+                </div>
+                <div className="p-1.5 rounded bg-slate-950/70 border border-slate-800/80">
+                  <span className="text-slate-500 block text-[9px]">Audio Synthesis</span>
+                  <span className="text-emerald-400 font-bold">Model Native</span>
+                </div>
+              </div>
+              <div className="p-2 rounded bg-slate-950/80 border border-slate-800/80 text-[11px] font-mono text-slate-300">
+                <div className="text-[9px] text-blue-400 font-bold uppercase mb-0.5">Prompt Concept</div>
+                <p className="text-slate-300 text-[10px] leading-relaxed">{task.description || task.title}</p>
+                {task.scenes && task.scenes[0]?.visual_notes && (
+                  <p className="text-[9px] text-blue-400/80 italic mt-1 font-mono">Camera: {task.scenes[0].visual_notes}</p>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* Image Spec - ONLY for image/media tasks */}
           {(task.agentType === 'image' || task.outcomeType === 'media_bundle') && task.aspectRatio && (!task.scenes || task.scenes.length === 0) && (
             <div className="flex items-center gap-2 p-2 rounded bg-slate-900/80 border border-slate-800 text-[10px] font-mono text-slate-300">
@@ -742,7 +1045,7 @@ function MinimalTaskCard({
           )}
 
           {/* Visual Deliverable Blueprint / Placeholders (Empty boxes before acceptance) */}
-          {(task.agentType === 'image' || task.agentType === 'video' || task.outcomeType === 'media_bundle' || task.outcomeType === 'video_story') && (
+          {(task.agentType === 'image' || task.agentType === 'video' || task.outcomeType === 'media_bundle' || task.outcomeType === 'video_story' || task.outcomeType === 'video_clip') && (
             <div className="flex flex-col space-y-2 pt-2 pb-1 border-t border-blue-500/20">
               <div className="flex items-center justify-between text-[10px] font-mono text-slate-400">
                 <span className="font-bold uppercase tracking-wider text-blue-400 flex items-center gap-1.5">
@@ -764,7 +1067,7 @@ function MinimalTaskCard({
                         {task.agentType === 'video' ? <Film size={16} /> : <ImageIcon size={16} />}
                       </div>
                       <span className="text-[11px] font-mono font-bold text-slate-200">
-                        Slot {slotNum}: {task.aspectRatio || (task.agentType === 'video' ? '16:9' : '1:1')} {task.agentType === 'video' ? 'Video Story' : 'Image'}
+                        Slot {slotNum}: {task.aspectRatio || (task.agentType === 'video' ? '16:9' : '1:1')} {task.agentType === 'video' ? (isSingleVideo ? 'Single Video' : 'Video Story') : 'Image'}
                       </span>
                       <span className="text-[9px] font-mono text-blue-400/80 bg-blue-950/40 px-2 py-0.5 rounded border border-blue-500/20">
                         Pending Acceptance
@@ -811,7 +1114,9 @@ function MinimalTaskCard({
                     {task.agentType === 'image'
                       ? `${task.variantCount || 1} Image ${task.variantCount === 1 ? 'Variant' : 'Variants'} (${task.aspectRatio || '1:1'})`
                       : task.agentType === 'video'
-                      ? `${task.scenes?.length || 2}-Scene Video Story (${task.aspectRatio || '16:9'})`
+                      ? (isSingleVideo
+                          ? `Single Video Clip (${task.aspectRatio || '16:9'} · 8s)`
+                          : `${task.scenes?.length || 2}-Scene Video Story (${task.aspectRatio || '16:9'})`)
                       : task.outcomeType === 'media_bundle'
                       ? `${task.variantCount || 1} Media Asset(s)`
                       : task.outcomeType === 'bug_patch'
@@ -861,8 +1166,8 @@ function MinimalTaskCard({
                   >
                     <Sparkles size={11} />
                     <span>
-                      {task.agentType === 'image' || task.agentType === 'video' || task.outcomeType === 'media_bundle' || task.outcomeType === 'video_story'
-                        ? `Approve & Generate (${variantSlots.length} ${variantSlots.length === 1 ? 'Variant' : 'Variants'})`
+                      {task.agentType === 'image' || task.agentType === 'video' || task.outcomeType === 'media_bundle' || task.outcomeType === 'video_story' || task.outcomeType === 'video_clip'
+                        ? `Approve & Generate (${variantSlots.length} ${variantSlots.length === 1 ? (task.agentType === 'video' ? 'Clip' : 'Variant') : 'Variants'})`
                         : 'Approve & Start Session'}
                     </span>
                   </button>
@@ -1319,7 +1624,7 @@ function MinimalTaskCard({
       )}
 
       {/* 4. Action Needed / Not Integrated Banner (if unintegrated commits ready to land) */}
-      {!isPendingApproval && hasUnintegrated && (
+      {!isPendingApproval && !isMediaTask && hasUnintegrated && (
         <div className="flex items-center justify-between p-2 rounded-lg bg-amber-950/25 border border-amber-500/40 text-amber-200 text-[11px] gap-2">
           <div className="flex items-center gap-2 min-w-0">
             <GitPullRequest size={12} className="text-amber-400 flex-shrink-0" />
@@ -1344,7 +1649,7 @@ function MinimalTaskCard({
       )}
 
       {/* 5. Already Integrated Banner */}
-      {!isPendingApproval && task.isIntegrated && (
+      {!isPendingApproval && !isMediaTask && task.isIntegrated && (
         <div className="flex items-center justify-between p-2 rounded-lg bg-emerald-950/20 border border-emerald-500/30 text-emerald-200 text-[11px] gap-2">
           <div className="flex items-center gap-2 min-w-0">
             <CheckCircle2 size={12} className="text-emerald-400 flex-shrink-0" />
@@ -1408,7 +1713,7 @@ function MinimalTaskCard({
       )}
 
       {/* 6. Worktree & Git Changes Bar (ONLY show when there are changes waiting to be committed or unintegrated commits) */}
-      {!isPendingApproval && (task.isDirty || hasUnintegrated) && (
+      {!isPendingApproval && !isMediaTask && (task.isDirty || hasUnintegrated) && (
         <div className="flex items-center justify-between p-2 rounded-lg bg-[#070b14] border border-slate-800/80 text-[10px] font-mono text-slate-400">
           <div className="flex items-center gap-2 truncate">
             <span className="text-indigo-400 flex items-center gap-1">
@@ -2029,15 +2334,71 @@ export function OrchestrateView({
 
   // Deploy Task Modal State
   const [isDeployModalOpen, setIsDeployModalOpen] = useState(false)
-  const [taskIntent, setTaskIntent] = useState<'code' | 'image' | 'video' | 'audit'>('code')
+  const [taskIntent, setTaskIntent] = useState<'code' | 'image' | 'video' | 'sound' | 'audit'>('code')
+  const [videoType, setVideoType] = useState<'single' | 'multipart'>('single')
+  const [videoResolution, setVideoResolution] = useState<'720p' | '1080p' | '4k'>('1080p')
+  const [enhanceVideoPrompt, setEnhanceVideoPrompt] = useState<boolean>(false)
   const [newTaskPrompt, setNewTaskPrompt] = useState('')
   const [newTaskWorkspace, setNewTaskWorkspace] = useState('')
   const [imageAspectRatio, setImageAspectRatio] = useState<'1:1' | '16:9' | '9:16' | '4:3'>('16:9')
   const [imageVariants, setImageVariants] = useState<number>(1)
+  const [imageResolution, setImageResolution] = useState<'1k' | '2k' | '4k'>('1k')
   const [videoScenes, setVideoScenes] = useState<number>(3)
-  const [videoSoundtrack, setVideoSoundtrack] = useState<string>('Driving cinematic synthwave, 120 BPM')
+  const [videoSoundtrack, setVideoSoundtrack] = useState<string>('')
+  const [includeSoundtrack, setIncludeSoundtrack] = useState<boolean>(false)
+  const [soundDuration, setSoundDuration] = useState<number>(30)
   const [autoApproveTask, setAutoApproveTask] = useState<boolean>(false)
   const [isDeployingTask, setIsDeployingTask] = useState(false)
+  const [imageModelOptions, setImageModelOptions] = useState<TaskModalModelOption[]>([])
+  const [videoModelOptions, setVideoModelOptions] = useState<TaskModalModelOption[]>([])
+  const [audioModelOptions, setAudioModelOptions] = useState<TaskModalModelOption[]>([])
+  const [selectedImageModel, setSelectedImageModel] = useState<string>('')
+  const [selectedVideoModel, setSelectedVideoModel] = useState<string>('')
+  const [selectedAudioModel, setSelectedAudioModel] = useState<string>('')
+  const [defaultImageModel, setDefaultImageModel] = useState<string>('')
+  const [defaultVideoModel, setDefaultVideoModel] = useState<string>('')
+  const [defaultAudioModel, setDefaultAudioModel] = useState<string>('')
+  const [saveImageAsDefault, setSaveImageAsDefault] = useState<boolean>(false)
+  const [saveVideoAsDefault, setSaveVideoAsDefault] = useState<boolean>(false)
+  const [mediaCatalogLoaded, setMediaCatalogLoaded] = useState<boolean>(false)
+  const [, setIsSavingModelChoice] = useState<boolean>(false)
+
+  const selectedImageOption = useMemo(
+    () => imageModelOptions.find((opt) => opt.id === selectedImageModel),
+    [imageModelOptions, selectedImageModel]
+  )
+  const selectedVideoOption = useMemo(
+    () => videoModelOptions.find((opt) => opt.id === selectedVideoModel),
+    [videoModelOptions, selectedVideoModel]
+  )
+  const selectedAudioOption = useMemo(
+    () => audioModelOptions.find((opt) => opt.id === selectedAudioModel),
+    [audioModelOptions, selectedAudioModel]
+  )
+  const defaultImageOption = useMemo(
+    () => imageModelOptions.find((opt) => opt.id === defaultImageModel),
+    [imageModelOptions, defaultImageModel]
+  )
+  const defaultVideoOption = useMemo(
+    () => videoModelOptions.find((opt) => opt.id === defaultVideoModel),
+    [videoModelOptions, defaultVideoModel]
+  )
+  const hasSupportedSoundModel = useMemo(
+    () => audioModelOptions.some((opt) => opt.ready),
+    [audioModelOptions]
+  )
+  const videoPricingInfo = useMemo(() => {
+    const duration = videoType === 'single' ? 8 : videoScenes * 4
+    return resolveVideoPricing(selectedVideoOption, videoResolution, duration)
+  }, [selectedVideoOption, videoResolution, videoType, videoScenes])
+
+  const imagePricingInfo = useMemo(() => {
+    return resolveImagePricing(selectedImageOption, imageResolution, imageVariants)
+  }, [selectedImageOption, imageResolution, imageVariants])
+
+  const audioPricingInfo = useMemo(() => {
+    return resolveAudioPricing(selectedAudioOption, soundDuration)
+  }, [selectedAudioOption, soundDuration])
 
   // Active task object derived from activeTaskId
   const activeTask = useMemo(() => tasks.find((t) => t.id === activeTaskId), [tasks, activeTaskId])
@@ -2142,6 +2503,74 @@ export function OrchestrateView({
         }
       } catch (err) {
         console.warn('Failed to load projects from Pebble:', err)
+      }
+
+      // 5. Image, Video & Audio Models Catalog and UI Defaults
+      try {
+        const [settingsRes, catalogRes] = await Promise.all([
+          requestJson<{ tools?: { image?: { default_model?: string }; video?: { default_model?: string }; audio?: { default_model?: string } } }>('/v1/desktop/ui-settings').catch(() => null),
+          requestJson<{ image_models?: any[]; video_generation_models?: any[]; video_models?: any[]; audio_models?: any[]; default_image_model?: string; default_video_model?: string; default_audio_model?: string }>('/v1/media/settings/catalog').catch(() => null),
+        ])
+        if (!cancelled) {
+          const configuredImage = settingsRes?.tools?.image?.default_model || ''
+          const configuredVideo = settingsRes?.tools?.video?.default_model || ''
+          const configuredAudio = settingsRes?.tools?.audio?.default_model || ''
+
+          if (catalogRes?.image_models && Array.isArray(catalogRes.image_models)) {
+            const imgOpts: TaskModalModelOption[] = catalogRes.image_models.map((m: any) => ({
+              id: m.id || m.model,
+              label: m.display_name || m.model || m.id,
+              ready: m.ready !== false,
+              reason: m.reason || '',
+              pricing: m.pricing,
+            }))
+            setImageModelOptions(imgOpts)
+            const match = imgOpts.find((m) => m.id === configuredImage)
+            const catalogDefault = imgOpts.find((m) => m.id === catalogRes?.default_image_model)
+            const firstReady = imgOpts.find((m) => m.ready)
+            const resolvedDefaultImage = match?.id || catalogDefault?.id || firstReady?.id || (imgOpts[0]?.id ?? '')
+            setDefaultImageModel(resolvedDefaultImage)
+            setSelectedImageModel(resolvedDefaultImage)
+          }
+
+          const vidModels = catalogRes?.video_generation_models || catalogRes?.video_models || []
+          if (Array.isArray(vidModels)) {
+            const vidOpts: TaskModalModelOption[] = vidModels.map((m: any) => ({
+              id: m.id || m.model,
+              label: m.display_name || m.model || m.id,
+              ready: m.ready !== false,
+              reason: m.reason || '',
+              pricing: m.pricing,
+            }))
+            setVideoModelOptions(vidOpts)
+            const match = vidOpts.find((m) => m.id === configuredVideo)
+            const catalogDefault = vidOpts.find((m) => m.id === catalogRes?.default_video_model)
+            const firstReady = vidOpts.find((m) => m.ready)
+            const resolvedDefaultVideo = match?.id || catalogDefault?.id || firstReady?.id || (vidOpts[0]?.id ?? '')
+            setDefaultVideoModel(resolvedDefaultVideo)
+            setSelectedVideoModel(resolvedDefaultVideo)
+          }
+
+          if (catalogRes?.audio_models && Array.isArray(catalogRes.audio_models)) {
+            const audOpts: TaskModalModelOption[] = catalogRes.audio_models.map((m: any) => ({
+              id: m.id || m.model,
+              label: m.display_name || m.model || m.id,
+              ready: m.ready !== false,
+              reason: m.reason || '',
+              pricing: m.pricing,
+            }))
+            setAudioModelOptions(audOpts)
+            const match = audOpts.find((m) => m.id === configuredAudio)
+            const catalogDefault = audOpts.find((m) => m.id === catalogRes?.default_audio_model)
+            const firstReady = audOpts.find((m) => m.ready)
+            const resolvedDefaultAudio = match?.id || catalogDefault?.id || firstReady?.id || (audOpts[0]?.id ?? '')
+            setDefaultAudioModel(resolvedDefaultAudio)
+            setSelectedAudioModel(resolvedDefaultAudio)
+          }
+          setMediaCatalogLoaded(true)
+        }
+      } catch (err) {
+        console.warn('Failed to load media catalog in OrchestrateView:', err)
       } finally {
         if (!cancelled) {
           setIsLoadingProjects(false)
@@ -2190,6 +2619,10 @@ export function OrchestrateView({
           lastError: t.last_error,
           feedbackHistory: t.feedback_history,
           aspectRatio: t.aspect_ratio,
+          resolution: t.resolution,
+          model: t.model,
+          durationSeconds: t.duration_seconds,
+          description: t.description,
           variantCount: t.variant_count,
           scenes: t.scenes,
           soundtrack: t.soundtrack,
@@ -2627,7 +3060,7 @@ export function OrchestrateView({
       try {
         const finalVariantCount = targetIntent === 'image' ? (action === 'fine_tune' ? 1 : (variantCount || 5)) : undefined
         const finalScenesCount = targetIntent === 'video' ? (scenesCount || 2) : undefined
-        const finalSoundtrack = targetIntent === 'video' ? (soundtrack || 'Ambient Electronic Beats') : undefined
+        const finalSoundtrack = targetIntent === 'video' ? (soundtrack || undefined) : undefined
 
         const res = await requestJson<{ task: any }>(`/v3/projects/${selectedProject.id}/tasks`, {
           method: 'POST',
@@ -2640,6 +3073,7 @@ export function OrchestrateView({
             variant_count: finalVariantCount,
             scenes_count: finalScenesCount,
             soundtrack: finalSoundtrack,
+            model: targetIntent === 'image' ? (selectedImageModel || undefined) : targetIntent === 'video' ? (selectedVideoModel || undefined) : undefined,
             auto_approve: true,
             deploy_session: true,
             attached_media: [mediaRef],
@@ -2703,6 +3137,69 @@ export function OrchestrateView({
     return list.slice(0, 12)
   }, [sessionsById])
 
+  // Model Change Handlers with UI Settings Persistence & Task Override
+  const handleSetImageAsDefault = async (newModel: string) => {
+    setDefaultImageModel(newModel)
+    setIsSavingModelChoice(true)
+    try {
+      await requestJson('/v1/desktop/ui-settings', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tools: { image: { default_model: newModel } } }),
+      })
+    } catch (err) {
+      console.warn('Failed to save default image model:', err)
+    } finally {
+      setIsSavingModelChoice(false)
+    }
+  }
+
+  const handleImageModelChange = async (newModel: string, alsoSetDefault = false) => {
+    setSelectedImageModel(newModel)
+    if (alsoSetDefault || saveImageAsDefault) {
+      await handleSetImageAsDefault(newModel)
+    }
+  }
+
+  const handleSetVideoAsDefault = async (newModel: string) => {
+    setDefaultVideoModel(newModel)
+    setIsSavingModelChoice(true)
+    try {
+      await requestJson('/v1/desktop/ui-settings', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tools: { video: { default_model: newModel } } }),
+      })
+    } catch (err) {
+      console.warn('Failed to save default video model:', err)
+    } finally {
+      setIsSavingModelChoice(false)
+    }
+  }
+
+  const handleVideoModelChange = async (newModel: string, alsoSetDefault = false) => {
+    setSelectedVideoModel(newModel)
+    if (alsoSetDefault || saveVideoAsDefault) {
+      await handleSetVideoAsDefault(newModel)
+    }
+  }
+
+  const handleAudioModelChange = async (newModel: string) => {
+    setSelectedAudioModel(newModel)
+    setIsSavingModelChoice(true)
+    try {
+      await requestJson('/v1/desktop/ui-settings', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tools: { audio: { default_model: newModel } } }),
+      })
+    } catch (err) {
+      console.warn('Failed to save default audio model:', err)
+    } finally {
+      setIsSavingModelChoice(false)
+    }
+  }
+
   // Submit Task Proposal with Intent, Visual Controls & Auto-Approve Policy
   const handleDeployModalSubmit = async () => {
     const prompt = newTaskPrompt.trim()
@@ -2716,10 +3213,15 @@ export function OrchestrateView({
           prompt,
           workspace_path: newTaskWorkspace || selectedProject.repoPath || '.',
           intent: taskIntent,
+          video_type: taskIntent === 'video' ? videoType : undefined,
+          enhance_prompt: taskIntent === 'video' ? enhanceVideoPrompt : undefined,
           aspect_ratio: taskIntent === 'image' || taskIntent === 'video' ? imageAspectRatio : undefined,
+          resolution: taskIntent === 'image' ? imageResolution : taskIntent === 'video' ? videoResolution : undefined,
           variant_count: taskIntent === 'image' ? imageVariants : undefined,
-          scenes_count: taskIntent === 'video' ? videoScenes : undefined,
-          soundtrack: taskIntent === 'video' ? videoSoundtrack : undefined,
+          scenes_count: taskIntent === 'video' ? (videoType === 'single' ? 1 : videoScenes) : undefined,
+          soundtrack: taskIntent === 'video' && videoType === 'multipart' && includeSoundtrack ? (videoSoundtrack.trim() || undefined) : undefined,
+          duration_seconds: taskIntent === 'sound' ? soundDuration : taskIntent === 'video' ? (videoType === 'single' ? 8 : videoScenes * 4) : undefined,
+          model: taskIntent === 'image' ? (selectedImageModel || undefined) : taskIntent === 'video' ? (selectedVideoModel || undefined) : taskIntent === 'sound' ? (selectedAudioModel || undefined) : undefined,
           auto_approve: autoApproveTask,
           deploy_session: true,
           attached_media: taggedMedia,
@@ -5241,7 +5743,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
             </div>
 
             {/* Intent Category Tabs */}
-            <div className="grid grid-cols-4 gap-1 p-1 bg-slate-950 rounded-xl border border-slate-800 text-[11px] font-mono">
+            <div className="grid grid-cols-5 gap-1 p-1 bg-slate-950 rounded-xl border border-slate-800 text-[11px] font-mono">
               <button
                 type="button"
                 onClick={() => setTaskIntent('code')}
@@ -5252,7 +5754,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                 }`}
               >
                 <Code size={12} />
-                <span>Code / Feature</span>
+                <span>Feature</span>
               </button>
               <button
                 type="button"
@@ -5264,7 +5766,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                 }`}
               >
                 <ImageIcon size={12} />
-                <span>Image Gen</span>
+                <span>Image</span>
               </button>
               <button
                 type="button"
@@ -5276,7 +5778,19 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                 }`}
               >
                 <Film size={12} />
-                <span>Video Story</span>
+                <span>Video</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setTaskIntent('sound')}
+                className={`flex items-center justify-center gap-1.5 py-1.5 rounded-lg font-bold transition-all ${
+                  taskIntent === 'sound'
+                    ? 'bg-blue-600 text-white shadow'
+                    : 'text-slate-400 hover:text-white hover:bg-slate-900'
+                }`}
+              >
+                <Volume2 size={12} />
+                <span>Sounds</span>
               </button>
               <button
                 type="button"
@@ -5288,7 +5802,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                 }`}
               >
                 <Search size={12} />
-                <span>Audit / Finder</span>
+                <span>Audit</span>
               </button>
             </div>
 
@@ -5332,7 +5846,8 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                 <label className="block text-[11px] text-slate-400 font-medium mb-1">
                   {taskIntent === 'code' && 'Plain English Instructions'}
                   {taskIntent === 'image' && 'Visual Concept & Composition Details'}
-                  {taskIntent === 'video' && 'Video Story Concept & Narrative'}
+                  {taskIntent === 'video' && (videoType === 'single' ? 'Single Video Shot Concept (1 Prompt · Visuals & Audio)' : 'Multi-Part Video Concept & Storyline')}
+                  {taskIntent === 'sound' && 'Audio Soundtrack / Mood Prompt'}
                   {taskIntent === 'audit' && 'Investigation Objective & Target Questions'}
                 </label>
                 <textarea
@@ -5346,7 +5861,11 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                       : taskIntent === 'image'
                       ? 'e.g. futuristic neon AI developer workstation in isometric pixel art with dark mood lighting...'
                       : taskIntent === 'video'
-                      ? 'e.g. high-energy launch trailer showcasing Swarm multi-agent orchestrator with dynamic transitions...'
+                      ? (videoType === 'single'
+                          ? 'e.g. dramatic drone shot flying over a futuristic neon city at dusk with volumetric fog, ambient engine drone and synth pads...'
+                          : 'e.g. high-energy launch trailer showcasing Swarm multi-agent orchestrator with dynamic transitions...')
+                      : taskIntent === 'sound'
+                      ? 'e.g. energetic techno synthwave soundtrack at 128 BPM with driving bass and hi-hats...'
                       : 'e.g. investigate why pebble database locks on restart and audit connection pool handling...'
                   }
                   className="w-full rounded-lg bg-slate-950 border border-slate-800 p-3 text-white placeholder-slate-600 focus:outline-none focus:border-blue-500/60 resize-none text-xs leading-relaxed font-sans"
@@ -5384,103 +5903,659 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
 
               {/* Visual Selectors for Image Intent */}
               {taskIntent === 'image' && (
-                <div className="grid grid-cols-2 gap-3 p-3 rounded-lg bg-slate-950/70 border border-slate-800">
+                <div className="space-y-3 p-3 rounded-lg bg-slate-950/70 border border-slate-800">
+                  {/* Image Model Selector */}
                   <div>
-                    <label className="block text-[10px] text-slate-400 font-mono uppercase font-bold mb-1.5">Aspect Ratio</label>
-                    <div className="grid grid-cols-4 gap-1 font-mono text-[10px]">
-                      {(['1:1', '16:9', '9:16', '4:3'] as const).map((ar) => (
-                        <button
-                          key={ar}
-                          type="button"
-                          onClick={() => setImageAspectRatio(ar)}
-                          className={`py-1 rounded border text-center font-bold transition-all ${
-                            imageAspectRatio === ar
-                              ? 'bg-blue-600 border-blue-400 text-white'
-                              : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white'
-                          }`}
-                        >
-                          {ar}
-                        </button>
-                      ))}
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="block text-[10px] text-slate-400 font-mono uppercase font-bold">Image Model</label>
+                      <div className="flex items-center gap-2">
+                        {selectedImageOption && !selectedImageOption.ready ? (
+                          <span className="text-[10px] text-amber-400 flex items-center gap-1 font-mono">
+                            <AlertTriangle size={10} /> {selectedImageOption.reason || 'Not configured'}
+                          </span>
+                        ) : (
+                          <span className="text-[10px] text-emerald-400 flex items-center gap-1 font-mono">
+                            ✓ Connected
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    {imageModelOptions.length === 0 && mediaCatalogLoaded ? (
+                      <div className="rounded bg-slate-900 border border-amber-500/30 p-2 text-amber-300 text-[11px] font-mono flex items-center gap-2">
+                        <AlertTriangle size={13} className="shrink-0 text-amber-400" />
+                        <span>No image models connected. Add Google or OpenAI key in Settings.</span>
+                      </div>
+                    ) : (
+                      <select
+                        aria-label="Image Model"
+                        value={selectedImageModel}
+                        onChange={(e) => handleImageModelChange(e.target.value)}
+                        className="w-full rounded bg-slate-900 border border-slate-800 px-2.5 py-1.5 text-white text-[11px] font-mono focus:outline-none focus:border-blue-500"
+                      >
+                        {imageModelOptions.map((opt) => (
+                          <option key={opt.id} value={opt.id} disabled={!opt.ready}>
+                            {opt.label}{opt.id === defaultImageModel ? ' (Default)' : ''}{!opt.ready ? ` (Unavailable${opt.reason ? `: ${opt.reason}` : ''})` : ''}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+
+                    {/* Override vs Default Controls */}
+                    {selectedImageModel && defaultImageModel && (
+                      <div className="mt-1.5 pt-1.5 border-t border-slate-800/40 space-y-1 text-[10px] font-mono">
+                        <div className="flex flex-wrap items-center justify-between gap-1">
+                          {selectedImageModel !== defaultImageModel ? (
+                            <>
+                              <span className="text-amber-400 flex items-center gap-1">
+                                <span>Override for this task</span>
+                                <span className="text-slate-500">(Default: {defaultImageOption?.label || defaultImageModel})</span>
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => handleSetImageAsDefault(selectedImageModel)}
+                                className="text-blue-400 hover:text-blue-300 font-semibold underline underline-offset-2 transition"
+                              >
+                                Set as default for next time
+                              </button>
+                            </>
+                          ) : (
+                            <span className="text-slate-400 flex items-center gap-1">
+                              <span className="text-emerald-400 font-bold">✓ Default image model</span>
+                              <span className="text-slate-500">· Saved for future tasks</span>
+                            </span>
+                          )}
+                        </div>
+                        {selectedImageModel !== defaultImageModel && (
+                          <label className="flex items-center gap-1.5 text-slate-400 cursor-pointer pt-0.5">
+                            <input
+                              type="checkbox"
+                              checked={saveImageAsDefault}
+                              onChange={(e) => {
+                                setSaveImageAsDefault(e.target.checked)
+                                if (e.target.checked) {
+                                  void handleSetImageAsDefault(selectedImageModel)
+                                }
+                              }}
+                              className="rounded border-slate-700 bg-slate-900 text-blue-500 focus:ring-0 w-3 h-3"
+                            />
+                            <span className="font-sans text-[10px]">Change default in this menu for next time</span>
+                          </label>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Resolution Selector (4K, 2K, 1K) */}
+                  <div className="pt-2 border-t border-slate-800/60">
+                    <div className="flex items-center justify-between mb-1.5">
+                      <label className="block text-[10px] text-slate-400 font-mono uppercase font-bold">Resolution & Quality</label>
+                      <span className="text-[10px] text-slate-500 font-mono">
+                        {imageResolution === '1k' ? '1024×1024 (Standard)' : imageResolution === '2k' ? '2048×2048 (HD)' : '4096×4096 (Ultra HD)'}
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-3 gap-1.5 font-mono text-[10px]">
+                      {(['1k', '2k', '4k'] as const).map((res) => {
+                        const unitRate = imagePricingInfo.unitRatesByResolution?.[res] ?? (res === '1k' ? 0.03 : res === '2k' ? 0.06 : 0.12)
+                        const totalForRes = imagePricingInfo.totalsByResolution?.[res] ?? (unitRate * imageVariants)
+                        const isSelected = imageResolution === res
+                        return (
+                          <button
+                            key={res}
+                            type="button"
+                            onClick={() => setImageResolution(res)}
+                            className={`py-1.5 px-2 rounded border text-center transition-all flex flex-col items-center justify-center ${
+                              isSelected
+                                ? 'bg-blue-600 border-blue-400 text-white shadow-sm'
+                                : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white'
+                            }`}
+                          >
+                            <div className="font-bold uppercase leading-tight">{res}</div>
+                            <div className={`text-[10px] font-semibold mt-0.5 leading-tight ${isSelected ? 'text-white' : 'text-slate-200'}`}>
+                              ${totalForRes.toFixed(2)}
+                            </div>
+                            <div className={`text-[8px] leading-tight ${isSelected ? 'text-blue-100 opacity-90' : 'text-slate-500'}`}>
+                              {imageVariants > 1 ? `${imageVariants}x at $${unitRate.toFixed(2)}/ea` : `$${unitRate.toFixed(2)}/img`}
+                            </div>
+                          </button>
+                        )
+                      })}
                     </div>
                   </div>
-                  <div>
-                    <label className="block text-[10px] text-slate-400 font-mono uppercase font-bold mb-1.5">Variants Count</label>
-                    <div className="grid grid-cols-6 gap-1 font-mono text-[10px]">
-                      {[1, 2, 4, 5, 10, 25].map((v) => (
-                        <button
-                          key={v}
-                          type="button"
-                          onClick={() => setImageVariants(v)}
-                          className={`py-1 rounded border text-center font-bold transition-all ${
-                            imageVariants === v
-                              ? 'bg-blue-600 border-blue-400 text-white'
-                              : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white'
-                          }`}
-                        >
-                          {v}{v >= 5 ? 'x' : ''}
-                        </button>
-                      ))}
+
+                  {/* Aspect Ratio with visual cues & Variants Count */}
+                  <div className="grid grid-cols-2 gap-3 pt-2 border-t border-slate-800/60">
+                    <div>
+                      <label className="block text-[10px] text-slate-400 font-mono uppercase font-bold mb-1.5">Aspect Ratio</label>
+                      <div className="grid grid-cols-4 gap-1 font-mono text-[10px]">
+                        {IMAGE_ASPECT_RATIOS.map((ar) => (
+                          <button
+                            key={ar.ratio}
+                            type="button"
+                            onClick={() => setImageAspectRatio(ar.ratio)}
+                            className={`py-1.5 px-0.5 rounded border text-center font-bold flex flex-col items-center justify-center gap-1 transition-all ${
+                              imageAspectRatio === ar.ratio
+                                ? 'bg-blue-600 border-blue-400 text-white shadow'
+                                : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white'
+                            }`}
+                          >
+                            <div
+                              className={`border rounded-[1.5px] transition-colors ${ar.widthClass} ${ar.heightClass} ${
+                                imageAspectRatio === ar.ratio ? 'border-white bg-white/20' : 'border-slate-500 bg-slate-800/40'
+                              }`}
+                            />
+                            <span className="leading-none">{ar.ratio}</span>
+                            <span className="text-[8px] font-sans font-normal opacity-75 leading-none">{ar.label}</span>
+                          </button>
+                        ))}
+                      </div>
                     </div>
+                    <div>
+                      <div className="flex items-center justify-between mb-1.5">
+                        <label className="block text-[10px] text-slate-400 font-mono uppercase font-bold">Variants Count</label>
+                        <span className="text-[9px] text-slate-500 font-mono">
+                          {imageVariants} {imageVariants === 1 ? 'image' : 'images'}
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-6 gap-1 font-mono text-[10px]">
+                        {[1, 2, 4, 5, 10, 25].map((v) => {
+                          const costForV = (imagePricingInfo.ratePerImage * v).toFixed(2)
+                          const isSelected = imageVariants === v
+                          return (
+                            <button
+                              key={v}
+                              type="button"
+                              onClick={() => setImageVariants(v)}
+                              className={`py-1 rounded border text-center font-bold flex flex-col items-center justify-center transition-all ${
+                                isSelected
+                                  ? 'bg-blue-600 border-blue-400 text-white'
+                                  : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white'
+                              }`}
+                            >
+                              <span className="leading-tight">{v}{v >= 5 ? 'x' : ''}</span>
+                              <span className={`text-[8px] font-normal leading-tight mt-0.5 ${isSelected ? 'text-blue-100 font-semibold' : 'text-slate-400'}`}>
+                                ${costForV}
+                              </span>
+                            </button>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Estimated Model Cost Banner for Images */}
+                  <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-2.5 flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Sparkles size={13} className="text-blue-400 shrink-0" />
+                      <span className="text-[11px] font-mono text-slate-300">
+                        Estimated Model Cost: <strong className="text-white font-semibold">{imagePricingInfo.formattedSummary}</strong>
+                      </span>
+                    </div>
+                    <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-slate-800 text-blue-300 border border-slate-700 font-semibold shrink-0">
+                      ${imagePricingInfo.totalPrice.toFixed(2)} Total · {imageVariants} {imageVariants === 1 ? 'image' : 'images'} · {imageResolution.toUpperCase()}
+                    </span>
                   </div>
                 </div>
               )}
 
               {/* Visual Selectors for Video Intent */}
               {taskIntent === 'video' && (
-                <div className="space-y-2.5 p-3 rounded-lg bg-slate-950/70 border border-slate-800">
-                  <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-3 p-3 rounded-lg bg-slate-950/70 border border-slate-800">
+                  {/* Video Model Selector */}
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="block text-[10px] text-slate-400 font-mono uppercase font-bold">Video Model</label>
+                      {selectedVideoOption && !selectedVideoOption.ready && (
+                        <span className="text-[10px] text-amber-400 flex items-center gap-1 font-mono">
+                          <AlertTriangle size={10} /> {selectedVideoOption.reason || 'Not configured'}
+                        </span>
+                      )}
+                    </div>
+                    {imageModelOptions.length === 0 && mediaCatalogLoaded ? (
+                      <div className="rounded bg-slate-900 border border-amber-500/30 p-2 text-amber-300 text-[11px] font-mono flex items-center gap-2">
+                        <AlertTriangle size={13} className="shrink-0 text-amber-400" />
+                        <span>No video models connected. Connect Google or OpenRouter key in Settings.</span>
+                      </div>
+                    ) : (
+                      <select
+                        aria-label="Video Model"
+                        value={selectedVideoModel}
+                        onChange={(e) => handleVideoModelChange(e.target.value)}
+                        className="w-full rounded bg-slate-900 border border-slate-800 px-2.5 py-1.5 text-white text-[11px] font-mono focus:outline-none focus:border-blue-500"
+                      >
+                        {videoModelOptions.map((opt) => (
+                          <option key={opt.id} value={opt.id} disabled={!opt.ready}>
+                            {opt.label}{opt.id === defaultVideoModel ? ' (Default)' : ''}{!opt.ready ? ` (Unavailable${opt.reason ? `: ${opt.reason}` : ''})` : ''}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+
+                    {/* Override vs Default Controls for Video */}
+                    {selectedVideoModel && defaultVideoModel && (
+                      <div className="mt-1.5 pt-1.5 border-t border-slate-800/40 space-y-1 text-[10px] font-mono">
+                        <div className="flex flex-wrap items-center justify-between gap-1">
+                          {selectedVideoModel !== defaultVideoModel ? (
+                            <>
+                              <span className="text-amber-400 flex items-center gap-1">
+                                <span>Override for this task</span>
+                                <span className="text-slate-500">(Default: {defaultVideoOption?.label || defaultVideoModel})</span>
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => handleSetVideoAsDefault(selectedVideoModel)}
+                                className="text-blue-400 hover:text-blue-300 font-semibold underline underline-offset-2 transition"
+                              >
+                                Set as default for next time
+                              </button>
+                            </>
+                          ) : (
+                            <span className="text-slate-400 flex items-center gap-1">
+                              <span className="text-emerald-400 font-bold">✓ Default video model</span>
+                              <span className="text-slate-500">· Saved for future tasks</span>
+                            </span>
+                          )}
+                        </div>
+                        {selectedVideoModel !== defaultVideoModel && (
+                          <label className="flex items-center gap-1.5 text-slate-400 cursor-pointer pt-0.5">
+                            <input
+                              type="checkbox"
+                              checked={saveVideoAsDefault}
+                              onChange={(e) => {
+                                setSaveVideoAsDefault(e.target.checked)
+                                if (e.target.checked) {
+                                  void handleSetVideoAsDefault(selectedVideoModel)
+                                }
+                              }}
+                              className="rounded border-slate-700 bg-slate-900 text-blue-500 focus:ring-0 w-3 h-3"
+                            />
+                            <span className="font-sans text-[10px]">Change default in this menu for next time</span>
+                          </label>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Video Generation Mode: Single Video vs Multi-Part Video */}
+                  <div className="pt-2 border-t border-slate-800/60">
+                    <label className="block text-[10px] text-slate-400 font-mono uppercase font-bold mb-1.5">Video Generation Type</label>
+                    <div className="grid grid-cols-2 gap-2 font-mono text-[11px]">
+                      <button
+                        type="button"
+                        onClick={() => setVideoType('single')}
+                        className={`flex items-center justify-center gap-2 py-2 px-3 rounded-lg border text-left font-bold transition-all ${
+                          videoType === 'single'
+                            ? 'bg-blue-600/30 border-blue-500 text-white shadow'
+                            : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white hover:border-slate-700'
+                        }`}
+                      >
+                        <Film size={13} className={videoType === 'single' ? 'text-blue-400' : 'text-slate-500'} />
+                        <div className="flex flex-col text-left">
+                          <span>Single Video</span>
+                          <span className="text-[9px] font-normal text-slate-400 font-sans">1 continuous clip · Direct model shot</span>
+                        </div>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setVideoType('multipart')}
+                        className={`flex items-center justify-center gap-2 py-2 px-3 rounded-lg border text-left font-bold transition-all ${
+                          videoType === 'multipart'
+                            ? 'bg-blue-600/30 border-blue-500 text-white shadow'
+                            : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white hover:border-slate-700'
+                        }`}
+                      >
+                        <Layers size={13} className={videoType === 'multipart' ? 'text-blue-400' : 'text-slate-500'} />
+                        <div className="flex flex-col text-left">
+                          <span>Multi-Part Video</span>
+                          <span className="text-[9px] font-normal text-slate-400 font-sans">Multi-scene timeline · Automatic flow</span>
+                        </div>
+                      </button>
+                    </div>
+
+                    {/* How Single Video Works explanation */}
+                    {videoType === 'single' && (
+                      <div className="mt-2.5 p-2.5 rounded-lg bg-blue-950/20 border border-blue-500/20 text-[11px] text-slate-300 space-y-1.5 font-sans leading-relaxed">
+                        <div className="flex items-center gap-1.5 font-bold text-blue-400 text-[10px] font-mono uppercase">
+                          <Sparkles size={11} />
+                          <span>Single Video Shot (1 Prompt · 8s Clip)</span>
+                        </div>
+                        <p className="text-[11px] text-slate-300">
+                          Generates 1 continuous 8-second video shot directly with the video model. Visuals and generative audio are created directly within the model from your single prompt—no separate soundtrack clip required.
+                        </p>
+                      </div>
+                    )}
+
+                    {/* How Multi-Part Video Works explanation */}
+                    {videoType === 'multipart' && (
+                      <div className="mt-2.5 p-2.5 rounded-lg bg-blue-950/20 border border-blue-500/20 text-[11px] text-slate-300 space-y-1.5 font-sans leading-relaxed">
+                        <div className="flex items-center gap-1.5 font-bold text-blue-400 text-[10px] font-mono uppercase">
+                          <Sparkles size={11} />
+                          <span>How Multi-Part Video Generation Works</span>
+                        </div>
+                        <p className="text-[11px] text-slate-300">
+                          Swarm drafts a multi-scene visual blueprint, sends each scene to the video model with prompt continuity, and automatically sequences the clips into a unified video story.
+                        </p>
+                      </div>
+                    )}
+
+                    {/* AI Prompt Enhancement Toggle */}
+                    <div className="mt-2.5 pt-2 border-t border-slate-800/60">
+                      <label className="flex items-center justify-between cursor-pointer select-none">
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="checkbox"
+                            checked={enhanceVideoPrompt}
+                            onChange={(e) => setEnhanceVideoPrompt(e.target.checked)}
+                            className="rounded border-slate-700 bg-slate-900 text-blue-600 focus:ring-0 focus:ring-offset-0 h-3.5 w-3.5"
+                          />
+                          <span className="font-mono text-[10px] uppercase font-bold text-slate-300 flex items-center gap-1.5">
+                            <Sparkles size={11} className={enhanceVideoPrompt ? 'text-indigo-400' : 'text-slate-500'} />
+                            <span>Enhance prompt with AI</span>
+                          </span>
+                        </div>
+                        <span className="text-[10px] font-mono text-slate-500">
+                          {enhanceVideoPrompt ? 'Uses Router to polish prompt' : 'Direct to Video Model (No router rewrite)'}
+                        </span>
+                      </label>
+                      {enhanceVideoPrompt ? (
+                        <p className="mt-1 text-[10px] text-slate-400 pl-5 leading-relaxed font-sans">
+                          The AI router will refine your prompt for visual lighting and camera motion without decomposing your single shot into multiple scenes.
+                        </p>
+                      ) : (
+                        <p className="mt-1 text-[10px] text-slate-500 pl-5 leading-relaxed font-sans">
+                          Your prompt is sent directly to the video model without AI prompt modification or router planning.
+                        </p>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Resolution Selector (720p, 1080p, 4k) & Aspect Ratio */}
+                  <div className="grid grid-cols-2 gap-3 pt-2 border-t border-slate-800/60">
+                    <div>
+                      <div className="flex items-center justify-between mb-1.5">
+                        <label className="block text-[10px] text-slate-400 font-mono uppercase font-bold">Resolution & Quality</label>
+                        <span className="text-[9px] text-slate-500 font-mono">
+                          {videoType === 'single' ? '8s clip' : `${videoScenes * 4}s timeline`}
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-3 gap-1 font-mono text-[10px]">
+                        {(['720p', '1080p', '4k'] as const).map((res) => {
+                          const unitRate = videoPricingInfo.unitRatesByResolution?.[res] ?? (res === '720p' ? 0.05 : res === '1080p' ? 0.08 : 0.20)
+                          const duration = videoType === 'single' ? 8 : videoScenes * 4
+                          const totalForRes = videoPricingInfo.totalsByResolution?.[res] ?? (unitRate * duration)
+                          const isSelected = videoResolution === res
+                          return (
+                            <button
+                              key={res}
+                              type="button"
+                              onClick={() => setVideoResolution(res)}
+                              className={`py-1.5 px-1 rounded border text-center font-bold flex flex-col items-center justify-center transition-all ${
+                                isSelected
+                                  ? 'bg-blue-600 border-blue-400 text-white shadow'
+                                  : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white'
+                              }`}
+                            >
+                              <span className="leading-tight">{res}</span>
+                              <span className={`text-[9px] font-semibold mt-0.5 leading-tight ${isSelected ? 'text-white' : 'text-slate-200'}`}>
+                                ${totalForRes.toFixed(2)}
+                              </span>
+                              <span className={`text-[8px] font-normal leading-tight ${isSelected ? 'text-blue-100 opacity-90' : 'text-slate-500'}`}>
+                                {videoPricingInfo.fixedPrice !== undefined ? 'per clip' : `${duration}s at $${unitRate.toFixed(2)}/s`}
+                              </span>
+                            </button>
+                          )
+                        })}
+                      </div>
+                    </div>
+
                     <div>
                       <label className="block text-[10px] text-slate-400 font-mono uppercase font-bold mb-1.5">Aspect Ratio</label>
                       <div className="grid grid-cols-3 gap-1 font-mono text-[10px]">
-                        {(['16:9', '9:16', '1:1'] as const).map((ar) => (
+                        {VIDEO_ASPECT_RATIOS.map((ar) => (
                           <button
-                            key={ar}
+                            key={ar.ratio}
                             type="button"
-                            onClick={() => setImageAspectRatio(ar)}
-                            className={`py-1 rounded border text-center font-bold transition-all ${
-                              imageAspectRatio === ar
-                                ? 'bg-blue-600 border-blue-400 text-white'
+                            onClick={() => setImageAspectRatio(ar.ratio)}
+                            className={`py-1.5 px-1 rounded border text-center font-bold flex flex-col items-center justify-center gap-1 transition-all ${
+                              imageAspectRatio === ar.ratio
+                                ? 'bg-blue-600 border-blue-400 text-white shadow'
                                 : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white'
                             }`}
                           >
-                            {ar}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                    <div>
-                      <label className="block text-[10px] text-slate-400 font-mono uppercase font-bold mb-1.5">Timeline Scenes</label>
-                      <div className="grid grid-cols-3 gap-1 font-mono text-[10px]">
-                        {[2, 3, 4].map((s) => (
-                          <button
-                            key={s}
-                            type="button"
-                            onClick={() => setVideoScenes(s)}
-                            className={`py-1 rounded border text-center font-bold transition-all ${
-                              videoScenes === s
-                                ? 'bg-blue-600 border-blue-400 text-white'
-                                : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white'
-                            }`}
-                          >
-                            {s} Scenes
+                            <div
+                              className={`border rounded-[1.5px] transition-colors ${ar.widthClass} ${ar.heightClass} ${
+                                imageAspectRatio === ar.ratio ? 'border-white bg-white/20' : 'border-slate-500 bg-slate-800/40'
+                              }`}
+                            />
+                            <span className="leading-none">{ar.ratio}</span>
+                            <span className="text-[8px] font-sans font-normal opacity-75 leading-none">{ar.label}</span>
                           </button>
                         ))}
                       </div>
                     </div>
                   </div>
+
+                  {/* Multi-Part Timeline Scenes (only when multipart is selected) */}
+                  {videoType === 'multipart' && (
+                    <div>
+                      <div className="flex items-center justify-between mb-1.5">
+                        <label className="block text-[10px] text-slate-400 font-mono uppercase font-bold">Timeline Scenes</label>
+                        <span className="text-[10px] text-blue-400 font-mono">{videoScenes * 4}s total sequence</span>
+                      </div>
+                      <div className="grid grid-cols-4 gap-1.5 font-mono text-[10px]">
+                        {[2, 3, 4, 5].map((s) => {
+                          const scenesDuration = s * 4
+                          const currentResRate = videoPricingInfo.ratePerSec ?? 0.08
+                          const costForScenes = (currentResRate * scenesDuration).toFixed(2)
+                          const isSelected = videoScenes === s
+                          return (
+                            <button
+                              key={s}
+                              type="button"
+                              onClick={() => setVideoScenes(s)}
+                              className={`py-1.5 rounded border text-center font-bold flex flex-col items-center justify-center transition-all ${
+                                isSelected
+                                  ? 'bg-blue-600 border-blue-400 text-white'
+                                  : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white'
+                              }`}
+                            >
+                              <span className="leading-tight">{s} Scenes</span>
+                              <span className={`text-[8px] font-normal mt-0.5 leading-tight ${isSelected ? 'text-blue-100' : 'text-slate-400'}`}>
+                                {scenesDuration}s · ${costForScenes}
+                              </span>
+                            </button>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Pricing Transparency Summary */}
+                  <div className="p-2.5 rounded-lg bg-slate-900/90 border border-slate-800 text-[11px] font-mono flex items-center justify-between">
+                    <span className="text-slate-300 flex items-center gap-1.5">
+                      <Tag size={12} className="text-blue-400" />
+                      <span>Estimated Model Cost: <strong className="text-white font-semibold">{videoPricingInfo.formattedSummary}</strong></span>
+                    </span>
+                    <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-slate-800 text-blue-300 border border-slate-700 font-semibold shrink-0">
+                      ${videoPricingInfo.rateForClip?.toFixed(2) || '0.00'} Total · {videoResolution.toUpperCase()} · {videoType === 'single' ? '8s' : `${videoScenes * 4}s`}
+                    </span>
+                  </div>
+
+                  {/* Soundtrack Request / Added Sound (Multi-Part Video only) */}
+                  {videoType === 'multipart' && (
+                    <div className="pt-2 border-t border-slate-800/60 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <label className="flex items-center gap-2 cursor-pointer select-none text-[11px] text-slate-300 font-medium">
+                          <input
+                            type="checkbox"
+                            checked={includeSoundtrack}
+                            onChange={(e) => {
+                              const checked = e.target.checked
+                              setIncludeSoundtrack(checked)
+                              if (checked && !videoSoundtrack) {
+                                setVideoSoundtrack('Driving cinematic synthwave, 120 BPM')
+                              }
+                            }}
+                            className="rounded border-slate-700 bg-slate-900 text-blue-600 focus:ring-0 focus:ring-offset-0 h-3.5 w-3.5"
+                          />
+                          <span className="font-mono text-[10px] uppercase font-bold text-slate-300">
+                            Add Dedicated Soundtrack Clip <span className="font-normal lowercase text-slate-500">(optional)</span>
+                          </span>
+                        </label>
+                        {includeSoundtrack && (
+                          hasSupportedSoundModel ? (
+                            <span className="text-[10px] text-emerald-400 font-mono flex items-center gap-1">
+                              <Volume2 size={10} /> Sound model ready ({selectedAudioOption?.label || 'Lyria 3.5'})
+                            </span>
+                          ) : (
+                            <span className="text-[10px] text-slate-500 font-mono">Ambient audio prompt</span>
+                          )
+                        )}
+                      </div>
+
+                      {/* When Soundtrack NOT included: Explain warning clearly */}
+                      {!includeSoundtrack ? (
+                        <div className="p-2.5 rounded-lg border bg-amber-950/20 border-amber-500/30 text-amber-200 text-[11px] font-sans">
+                          <div className="flex items-start gap-1.5">
+                            <AlertTriangle size={13} className="shrink-0 mt-0.5 text-amber-400" />
+                            <div className="space-y-0.5">
+                              <span className="font-semibold block text-[11px] text-amber-300">
+                                No Soundtrack Selected (Multi-Part Video)
+                              </span>
+                              <span className="text-[10px] leading-relaxed block text-slate-400">
+                                Video players support sound, but for multi-part generations you are better off creating a dedicated sound clip beforehand. Without a continuous sound clip, the audio won&apos;t come out good and will cut abruptly between scene clips.
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="space-y-1.5 pl-5">
+                          <input
+                            type="text"
+                            aria-label="Soundtrack Request"
+                            value={videoSoundtrack}
+                            onChange={(e) => setVideoSoundtrack(e.target.value)}
+                            placeholder="e.g. Driving cinematic synthwave with deep pulsing bass, 120 BPM..."
+                            className="w-full rounded bg-slate-900 border border-slate-800 px-2.5 py-1.5 text-white text-[11px] font-mono focus:outline-none focus:border-blue-500 placeholder-slate-600"
+                          />
+                          <div className="flex flex-wrap items-center gap-1 text-[9px] font-mono text-slate-400">
+                            <span className="text-slate-500">Presets:</span>
+                            {[
+                              'Driving cinematic synthwave, 120 BPM',
+                              'Ambient lo-fi chillout with vinyl warmth',
+                              'High-energy electronic trailer beats',
+                              'Dramatic orchestral strings and brass swells',
+                            ].map((preset) => (
+                              <button
+                                key={preset}
+                                type="button"
+                                onClick={() => setVideoSoundtrack(preset)}
+                                className="px-1.5 py-0.5 rounded bg-slate-900 border border-slate-800 hover:border-slate-700 hover:text-white transition"
+                              >
+                                {preset.split(',')[0]}
+                              </button>
+                            ))}
+                            {videoSoundtrack && (
+                              <button
+                                type="button"
+                                onClick={() => setVideoSoundtrack('')}
+                                className="px-1.5 py-0.5 rounded bg-red-950/40 text-red-400 border border-red-800/40 hover:bg-red-900/40 transition"
+                              >
+                                Clear
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Audio Selectors for Sounds Intent */}
+              {taskIntent === 'sound' && (
+                <div className="space-y-3 p-3 rounded-lg bg-slate-950/70 border border-slate-800">
+                  {/* Audio Model Selector */}
                   <div>
-                    <label className="block text-[10px] text-slate-400 font-mono uppercase font-bold mb-1">Soundtrack Mood / Direction</label>
-                    <select
-                      value={videoSoundtrack}
-                      onChange={(e) => setVideoSoundtrack(e.target.value)}
-                      className="w-full rounded bg-slate-900 border border-slate-800 px-2.5 py-1.5 text-white text-[11px] font-mono focus:outline-none focus:border-blue-500"
-                    >
-                      <option value="Driving cinematic synthwave, 120 BPM, punchy bassline">Driving Cinematic Synthwave (120 BPM)</option>
-                      <option value="Ambient atmospheric lo-fi chillout with gentle vinyl warmth">Ambient Lo-Fi Chillout</option>
-                      <option value="High-energy electronic beats with modern drop">High-Energy Electronic Beats</option>
-                      <option value="Dramatic orchestral strings and epic brass swells">Dramatic Orchestral Trailer</option>
-                    </select>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="block text-[10px] text-slate-400 font-mono uppercase font-bold">Audio / Sound Model</label>
+                      {selectedAudioOption && !selectedAudioOption.ready && (
+                        <span className="text-[10px] text-amber-400 flex items-center gap-1 font-mono">
+                          <AlertTriangle size={10} /> {selectedAudioOption.reason || 'Not configured'}
+                        </span>
+                      )}
+                    </div>
+                    {audioModelOptions.length === 0 && mediaCatalogLoaded ? (
+                      <div className="rounded bg-slate-900 border border-amber-500/30 p-2 text-amber-300 text-[11px] font-mono flex items-center gap-2">
+                        <AlertTriangle size={13} className="shrink-0 text-amber-400" />
+                        <span>No sound models connected. Add Google (Lyria) or OpenRouter key in Settings.</span>
+                      </div>
+                    ) : (
+                      <select
+                        aria-label="Audio Model"
+                        value={selectedAudioModel}
+                        onChange={(e) => handleAudioModelChange(e.target.value)}
+                        className="w-full rounded bg-slate-900 border border-slate-800 px-2.5 py-1.5 text-white text-[11px] font-mono focus:outline-none focus:border-blue-500"
+                      >
+                        {audioModelOptions.map((opt) => (
+                          <option key={opt.id} value={opt.id} disabled={!opt.ready}>
+                            {opt.label}{opt.id === defaultAudioModel ? ' (Default)' : ''}{!opt.ready ? ` (Unavailable${opt.reason ? `: ${opt.reason}` : ''})` : ''}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                  </div>
+
+                  {/* Sound Clip Duration */}
+                  <div className="pt-2 border-t border-slate-800/60">
+                    <div className="flex items-center justify-between mb-1.5">
+                      <label className="block text-[10px] text-slate-400 font-mono uppercase font-bold">Audio Duration</label>
+                      <span className="text-[10px] text-blue-400 font-mono">{soundDuration} seconds</span>
+                    </div>
+                    <div className="grid grid-cols-4 gap-1.5 font-mono text-[10px]">
+                      {[15, 30, 60, 120].map((d) => {
+                        const dCost = (d >= 60 ? 0.08 : 0.04).toFixed(2)
+                        const isSelected = soundDuration === d
+                        return (
+                          <button
+                            key={d}
+                            type="button"
+                            onClick={() => setSoundDuration(d)}
+                            className={`py-1.5 rounded border text-center font-bold flex flex-col items-center justify-center transition-all ${
+                              isSelected
+                                ? 'bg-blue-600 border-blue-400 text-white'
+                                : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white'
+                            }`}
+                          >
+                            <span className="leading-tight">{d >= 60 ? `${d / 60}m Track` : `${d}s Clip`}</span>
+                            <span className={`text-[8px] font-normal leading-tight mt-0.5 ${isSelected ? 'text-blue-100 font-semibold' : 'text-slate-400'}`}>
+                              ${dCost}
+                            </span>
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Pricing Transparency Summary for Sound */}
+                  <div className="p-2.5 rounded-lg bg-slate-900/90 border border-slate-800 text-[11px] font-mono flex items-center justify-between">
+                    <span className="text-slate-300 flex items-center gap-1.5">
+                      <Tag size={12} className="text-blue-400" />
+                      <span>Estimated Model Cost: <strong className="text-white font-semibold">{audioPricingInfo.formattedSummary}</strong></span>
+                    </span>
+                    <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-slate-800 text-blue-300 border border-slate-700 font-semibold shrink-0">
+                      ${audioPricingInfo.cost.toFixed(2)} Total · {soundDuration}s
+                    </span>
+                  </div>
+
+                  {/* Audio Usage Tip */}
+                  <div className="p-2.5 rounded-lg bg-blue-950/20 border border-blue-500/20 text-[11px] text-slate-300 space-y-1 font-sans">
+                    <span className="font-semibold text-blue-400 flex items-center gap-1.5 text-[10px] font-mono uppercase">
+                      <Music size={11} />
+                      <span>Soundtracks & Media Pairing</span>
+                    </span>
+                    <p className="text-[10px] text-slate-400 leading-relaxed">
+                      Generated sound clips can be previewed in the Media Center and used as soundtrack clips for your single and multi-part video tasks to give them cohesive audio.
+                    </p>
                   </div>
                 </div>
               )}

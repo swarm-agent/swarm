@@ -17,7 +17,9 @@ type LLMInvoker func(ctx context.Context, instructions string, input string) (st
 type TaskRouteOptions struct {
 	Prompt             string                            `json:"prompt"`
 	RequestedWorkspace string                            `json:"requested_workspace,omitempty"`
-	Intent             string                            `json:"intent,omitempty"` // "code", "image", "video", "audit"
+	Intent             string                            `json:"intent,omitempty"`     // "code", "image", "video", "audit"
+	VideoType          string                            `json:"video_type,omitempty"` // "single", "multipart"
+	EnhancePrompt      bool                              `json:"enhance_prompt,omitempty"`
 	AspectRatio        string                            `json:"aspect_ratio,omitempty"`
 	VariantCount       int                               `json:"variant_count,omitempty"`
 	ScenesCount        int                               `json:"scenes_count,omitempty"`
@@ -63,6 +65,8 @@ func (s *Service) RouteTask(ctx context.Context, opts TaskRouteOptions) pebblest
 		Feedback:           opts.Feedback,
 		LastError:          opts.LastError,
 		Intent:             opts.Intent,
+		VideoType:          opts.VideoType,
+		EnhancePrompt:      opts.EnhancePrompt,
 		AspectRatio:        opts.AspectRatio,
 		VariantCount:       opts.VariantCount,
 		ScenesCount:        opts.ScenesCount,
@@ -114,7 +118,8 @@ Rules:
 1. Intent Classification & Agent Routing:
    - "image": Generative visual assets, illustrations, photo generation. tier="direct", agent="image", outcome_type="media_bundle". (Direct generation without an LLM chat session).
    - "video":
-     * Generative multi-part video stories, teasers, or AI video clips: tier="direct", agent="video", outcome_type="video_story". Compile 2-4 scenes with durations, visual prompts, camera directions, and soundtrack. (Direct generation without an LLM chat session).
+     * Single Video Clip (single 8s continuous shot, 1 prompt): tier="direct", agent="video", outcome_type="video_clip", variant_count=1. Refine the user's prompt slightly for cinematic lighting, atmosphere, and camera motion for a SINGLE continuous 8-second video shot. Do NOT compile multiple scenes or a multi-scene blueprint! Set scenes=[] and soundtrack="". Title format: "Single clip of [Subject]" or "Single Video: [Subject]". Branch must be "".
+     * Generative multi-part video stories, teasers, or AI video clips: tier="direct", agent="video", outcome_type="video_story". Compile 2-4 scenes with durations, visual prompts, camera directions, and soundtrack. (Direct generation without an LLM chat session). Branch must be "".
      * Standalone HTML/motion UI animations (Canvas, SVG, CSS animations without project source/running app): tier="direct", agent="designer", outcome_type="media_bundle".
      * Recorded video / App demo / Recording live app or requiring project source/bash execution: tier="direct", agent="swarm", outcome_type="video_story". (Designers have no bash/source execution and cannot run or record local running applications; Swarm executes with full bash tools).
    - "code":
@@ -126,7 +131,7 @@ Rules:
   "title": "string",
   "agent": "coder|plan|finder|designer|swarm|image|video",
   "tier": "direct|discovery|complex|swarm",
-  "outcome_type": "code_pr|bug_patch|audit_report|media_bundle|video_story|plan_spec",
+  "outcome_type": "code_pr|bug_patch|audit_report|media_bundle|video_story|video_clip|plan_spec",
   "hero_workspace": "string",
   "workspaces_involved": ["string"],
   "branch": "string",
@@ -166,6 +171,8 @@ IMPORTANT TASK PROPERTIES:
 	inputPayload := map[string]any{
 		"prompt":              opts.Prompt,
 		"intent":              opts.Intent,
+		"video_type":          opts.VideoType,
+		"enhance_prompt":      opts.EnhancePrompt,
 		"requested_workspace": opts.RequestedWorkspace,
 		"aspect_ratio":        opts.AspectRatio,
 		"variant_count":       opts.VariantCount,
@@ -225,11 +232,23 @@ IMPORTANT TASK PROPERTIES:
 		return pebblestore.TaskRouteResult{}, fmt.Errorf("invalid AI router response")
 	}
 
+	isMedia := output.Agent == "image" || output.Agent == "video" || output.Agent == "sound" || output.Agent == "audio" || output.OutcomeType == "media_bundle" || output.OutcomeType == "video_story" || output.OutcomeType == "video_clip"
 	cleanBranch := strings.TrimSpace(output.Branch)
-	if cleanBranch == "" || cleanBranch == "main" || cleanBranch == "dev" || cleanBranch == "master" || (!strings.HasPrefix(cleanBranch, "agent/") && !strings.HasPrefix(cleanBranch, "worktree/")) {
+	if isMedia {
+		cleanBranch = ""
+	} else if cleanBranch == "" || cleanBranch == "main" || cleanBranch == "dev" || cleanBranch == "master" || (!strings.HasPrefix(cleanBranch, "agent/") && !strings.HasPrefix(cleanBranch, "worktree/")) {
 		cleanBranch, _ = pebblestore.MakeWorktreeBranch(output.Title, opts.Prompt)
 	}
 	output.Branch = cleanBranch
+
+	isSingleVideo := output.OutcomeType == "video_clip" || opts.VideoType == "single" || (opts.Intent == "video" && opts.ScenesCount == 1)
+	if isSingleVideo {
+		output.Agent = "video"
+		output.OutcomeType = "video_clip"
+		output.Scenes = nil
+		output.Soundtrack = ""
+		output.Branch = ""
+	}
 
 	wsInvolved := output.WorkspacesInvolved
 	if len(wsInvolved) == 0 && output.HeroWorkspace != "" {
@@ -293,8 +312,21 @@ IMPORTANT TASK PROPERTIES:
 			})
 		}
 	case "video":
-		deliverables = []pebblestore.ProjectTaskDeliverable{
-			{ID: "deliv_vid", Title: fmt.Sprintf("Video Story (%s)", aspectRatio), Kind: "video", Status: "pending"},
+		if isSingleVideo {
+			deliverables = []pebblestore.ProjectTaskDeliverable{
+				{
+					ID:          "deliv_vid",
+					Title:       fmt.Sprintf("%s (Single Video, %s)", output.Title, aspectRatio),
+					Kind:        "video",
+					Status:      "pending",
+					Duration:    "8s",
+					Description: fmt.Sprintf("Single video clip (%s, 8s): %s", aspectRatio, output.Title),
+				},
+			}
+		} else {
+			deliverables = []pebblestore.ProjectTaskDeliverable{
+				{ID: "deliv_vid", Title: fmt.Sprintf("Video Story (%s)", aspectRatio), Kind: "video", Status: "pending"},
+			}
 		}
 	case "designer":
 		if variantCount > 1 || output.Tier == "swarm" || output.OutcomeType == "media_bundle" {

@@ -18,6 +18,9 @@ export interface MediaSettingsCatalog {
   video_iteration_models: MediaCatalogModelOption[]
   video_models: MediaCatalogModelOption[]
   audio_models?: MediaCatalogModelOption[]
+  default_image_model?: string
+  default_video_model?: string
+  default_audio_model?: string
   video_ready: boolean
   video_status: string
   audio_ready?: boolean

@@ -78,9 +78,9 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 					if sourceTitle != "" {
 						reqPrompt = fmt.Sprintf("%s (iteration based on %s)", prompt, sourceTitle)
 					}
-					mediaURL, err := s.generateImageMedia(ctx, p, reqPrompt, ar, variantIdx)
+					mediaURL, usedModel, err := s.generateImageMedia(ctx, p, reqPrompt, ar, variantIdx, task.Model, task.Resolution)
 					if err != nil || mediaURL == "" {
-						mediaURL = generateStyledImageSVGDataURL(reqPrompt, ar, variantIdx)
+						mediaURL = generateStyledImageSVGDataURL(reqPrompt, ar, variantIdx, task.Resolution)
 					}
 					if count <= 4 {
 						time.Sleep(time.Duration(i*300) * time.Millisecond)
@@ -93,7 +93,15 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 							t.Deliverables[slotIndex].Status = "ready"
 							t.Deliverables[slotIndex].MediaURL = mediaURL
 							t.Deliverables[slotIndex].Thumbnail = mediaURL
-							t.Deliverables[slotIndex].Description = fmt.Sprintf("Autonomous deliverable for %s in aspect ratio %s", t.Title, ar)
+							resTag := strings.TrimSpace(task.Resolution)
+							if resTag == "" {
+								resTag = "1K"
+							}
+							desc := fmt.Sprintf("Autonomous deliverable for %s in aspect ratio %s (%s)", t.Title, ar, resTag)
+							if usedModel != "" {
+								desc = fmt.Sprintf("Autonomous deliverable for %s in aspect ratio %s (%s) using %s", t.Title, ar, resTag, usedModel)
+							}
+							t.Deliverables[slotIndex].Description = desc
 						}
 						return nil
 					})
@@ -141,12 +149,13 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 		}
 		sceneCount := len(task.Scenes)
 		if sceneCount == 0 {
-			sceneCount = 2
+			if task.VariantCount > 0 && task.VariantCount <= 1 {
+				sceneCount = 1
+			} else {
+				sceneCount = 2
+			}
 		}
 		soundtrack := task.Soundtrack
-		if soundtrack == "" {
-			soundtrack = "Ambient Electronic Beats"
-		}
 		prompt := strings.TrimSpace(task.Description)
 		if prompt == "" {
 			prompt = strings.TrimSpace(task.Title)
@@ -180,6 +189,22 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 		isContinuation := strings.Contains(lowerPrompt, "next scene") || strings.Contains(lowerPrompt, "continue") || strings.Contains(lowerPrompt, "sequel") || strings.Contains(lowerPrompt, "part 2")
 		isFineTune := strings.Contains(lowerPrompt, "change") || strings.Contains(lowerPrompt, "modify") || strings.Contains(lowerPrompt, "edit") || strings.Contains(lowerPrompt, "fine-tune")
 
+		videoModel := strings.TrimSpace(task.Model)
+		if videoModel == "" && s.uiSettings != nil && strings.TrimSpace(p.AccountScopeID) != "" {
+			if uiSet, err := s.uiSettings.GetForAccount(p.AccountScopeID); err == nil {
+				if def := strings.TrimSpace(uiSet.Tools.Video.DefaultModel); def != "" {
+					videoModel = def
+				}
+			}
+		}
+		if videoModel == "" {
+			videoModel = "veo-3.1-generate-preview"
+		}
+		resTag := strings.TrimSpace(task.Resolution)
+		if resTag == "" {
+			resTag = "1080p"
+		}
+
 		// Simulate rendering stages with realistic responsive timing
 		time.Sleep(150 * time.Millisecond)
 		mediaURL := generateStyledVideoSVGDataURL(prompt, ar, task.Scenes, soundtrack, sourceMediaTitle, sourceMediaKind)
@@ -189,23 +214,37 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 				t.Deliverables[0].Status = "ready"
 				t.Deliverables[0].MediaURL = mediaURL
 				t.Deliverables[0].Thumbnail = "cyber_lattice"
-				if sourceMediaKind == "video" {
+				if sceneCount <= 1 {
+					t.Deliverables[0].Title = fmt.Sprintf("%s (Single Video, %s)", t.Title, ar)
+					t.Deliverables[0].Duration = "8s"
+					t.Deliverables[0].Description = fmt.Sprintf("Single video clip (%s, %s, 8s) generated directly with %s: %s", ar, resTag, videoModel, t.Title)
+				} else if sourceMediaKind == "video" {
 					if isContinuation {
 						t.Deliverables[0].Title = fmt.Sprintf("%s (Continued from %s)", t.Title, sourceMediaTitle)
-						t.Deliverables[0].Description = fmt.Sprintf("Compiled %d-scene continuation from %s with soundtrack (%s): %s", sceneCount, sourceMediaTitle, soundtrack, t.Title)
+						t.Deliverables[0].Description = fmt.Sprintf("Compiled %d-scene continuation using %s from %s with soundtrack (%s): %s", sceneCount, videoModel, sourceMediaTitle, soundtrack, t.Title)
 					} else {
 						t.Deliverables[0].Title = fmt.Sprintf("%s (Iteration from %s)", t.Title, sourceMediaTitle)
-						t.Deliverables[0].Description = fmt.Sprintf("Compiled %d-scene video iteration of %s with soundtrack (%s): %s", sceneCount, sourceMediaTitle, soundtrack, t.Title)
+						t.Deliverables[0].Description = fmt.Sprintf("Compiled %d-scene video iteration using %s of %s with soundtrack (%s): %s", sceneCount, videoModel, sourceMediaTitle, soundtrack, t.Title)
 					}
 				} else if sourceMediaKind == "image" {
 					t.Deliverables[0].Title = fmt.Sprintf("%s (Keyframe %s)", t.Title, sourceMediaTitle)
-					t.Deliverables[0].Description = fmt.Sprintf("Compiled %d-scene motion sequence from keyframe image %s with soundtrack (%s): %s", sceneCount, sourceMediaTitle, soundtrack, t.Title)
+					t.Deliverables[0].Description = fmt.Sprintf("Compiled %d-scene motion sequence using %s from keyframe image %s with soundtrack (%s): %s", sceneCount, videoModel, sourceMediaTitle, soundtrack, t.Title)
 				} else {
-					t.Deliverables[0].Description = fmt.Sprintf("Compiled %d-scene video story with soundtrack (%s): %s", sceneCount, soundtrack, t.Title)
+					if soundtrack != "" {
+						t.Deliverables[0].Description = fmt.Sprintf("Compiled %d-scene multi-part video using %s with soundtrack (%s): %s", sceneCount, videoModel, soundtrack, t.Title)
+					} else {
+						t.Deliverables[0].Description = fmt.Sprintf("Compiled %d-scene multi-part video using %s (no soundtrack clip): %s", sceneCount, videoModel, t.Title)
+					}
 				}
 			}
 			t.Status = "needs_review"
-			if sourceMediaKind == "video" {
+			if sceneCount <= 1 {
+				t.WhatDidDo = []string{
+					fmt.Sprintf("Configured single video shot parameters (%s, %s, 8s)", ar, resTag),
+					fmt.Sprintf("Rendered video clip directly with %s (one-prompt generation)", videoModel),
+				}
+				t.ActionNeeded = "Action Needed: Single video clip deliverable ready for review."
+			} else if sourceMediaKind == "video" {
 				if isContinuation {
 					t.WhatDidDo = []string{
 						fmt.Sprintf("Referenced prior video cut: %s", sourceMediaTitle),
@@ -232,57 +271,129 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 				}
 				t.ActionNeeded = fmt.Sprintf("Action Needed: Video story ready for review (from keyframe %s).", sourceMediaTitle)
 			} else {
-				t.WhatDidDo = []string{"Compiled multi-scene video blueprint", "Rendered video sequence with synchronized soundtrack"}
-				t.ActionNeeded = "Action Needed: Video story deliverable ready for review."
+				if soundtrack != "" {
+					t.WhatDidDo = []string{"Compiled multi-scene video blueprint", "Rendered video sequence with synchronized soundtrack"}
+				} else {
+					t.WhatDidDo = []string{"Compiled multi-scene video blueprint", "Rendered multi-scene video sequence without soundtrack"}
+				}
+				t.ActionNeeded = "Action Needed: Multi-part video deliverable ready for review."
 			}
+			return nil
+		})
+	} else if task.Agent == "sound" || task.Agent == "audio" {
+		soundModel := strings.TrimSpace(task.Model)
+		if soundModel == "" && s.uiSettings != nil && strings.TrimSpace(p.AccountScopeID) != "" {
+			if uiSet, err := s.uiSettings.GetForAccount(p.AccountScopeID); err == nil {
+				if def := strings.TrimSpace(uiSet.Tools.Audio.DefaultModel); def != "" {
+					soundModel = def
+				}
+			}
+		}
+		if soundModel == "" {
+			soundModel = "lyria-3.5"
+		}
+		durSeconds := task.DurationSeconds
+		if durSeconds <= 0 {
+			durSeconds = 30
+		}
+		prompt := strings.TrimSpace(task.Description)
+		if prompt == "" {
+			prompt = strings.TrimSpace(task.Title)
+		}
+		time.Sleep(120 * time.Millisecond)
+		mediaURL := generateStyledAudioSVGDataURL(prompt, soundModel, durSeconds)
+		_, _ = db.UpdateProjectTask(p.AccountScopeID, task.ProjectID, task.ID, func(t *pebblestore.ProjectTaskRecord) error {
+			if len(t.Deliverables) > 0 {
+				t.Deliverables[0].Status = "ready"
+				t.Deliverables[0].MediaURL = mediaURL
+				t.Deliverables[0].Thumbnail = "sound"
+				t.Deliverables[0].Duration = fmt.Sprintf("%ds", durSeconds)
+				t.Deliverables[0].Title = fmt.Sprintf("%s (%ds Audio Clip)", t.Title, durSeconds)
+				t.Deliverables[0].Description = fmt.Sprintf("Generated %ds audio soundtrack using %s: %s", durSeconds, soundModel, prompt)
+			}
+			t.Status = "needs_review"
+			t.WhatDidDo = []string{
+				fmt.Sprintf("Synthesized audio clip with %s", soundModel),
+				fmt.Sprintf("Generated %d-second audio track", durSeconds),
+			}
+			t.ActionNeeded = "Action Needed: Audio deliverable ready for review (can be attached as soundtrack to video)."
 			return nil
 		})
 	}
 }
 
 // generateImageMedia generates an image asset using the configured Google Gemini / Codex service.
-func (s *Server) generateImageMedia(ctx context.Context, p identity.Principal, prompt string, aspectRatio string, variantIndex int) (string, error) {
+func (s *Server) generateImageMedia(ctx context.Context, p identity.Principal, prompt string, aspectRatio string, variantIndex int, explicitModel string, resolution string) (string, string, error) {
 	if s.imageGen == nil {
-		return "", errors.New("image generation service not configured")
+		return "", "", errors.New("image generation service not configured")
 	}
 
-	selections, err := s.imageGen.GoogleImageModelSelections()
-	if err == nil && len(selections) > 0 {
-		modelID := selections[0].ID
-		caps, _ := s.imageGen.ManagedImageCapabilities(modelID)
-
-		reqPrompt := prompt
-		if variantIndex > 1 {
-			reqPrompt = fmt.Sprintf("%s, variation %d", prompt, variantIndex)
-		}
-
-		req := imagegen.ManagedGenerateRequest{
-			SelectionID:     modelID,
-			Prompt:          reqPrompt,
-			CapabilityToken: caps.CapabilityToken,
-			Principal:       p,
-			Settings: map[string]any{
-				"aspect_ratio": aspectRatio,
-			},
-		}
-
-		img, genErr := s.imageGen.GenerateManagedImage(ctx, req)
-		if genErr == nil && len(img.Bytes) > 0 {
-			mime := img.MediaType
-			if mime == "" {
-				mime = "image/jpeg"
+	targetModel := strings.TrimSpace(explicitModel)
+	if targetModel == "" && s.uiSettings != nil && strings.TrimSpace(p.AccountScopeID) != "" {
+		if uiSet, err := s.uiSettings.GetForAccount(p.AccountScopeID); err == nil {
+			if def := strings.TrimSpace(uiSet.Tools.Image.DefaultModel); def != "" {
+				targetModel = def
 			}
-			dataURL := fmt.Sprintf("data:%s;base64,%s", mime, base64.StdEncoding.EncodeToString(img.Bytes))
-			return dataURL, nil
 		}
 	}
 
-	return "", errors.New("provider generation not available")
+	var sel imagegen.ModelSelection
+	if targetModel != "" {
+		resolved, rErr := s.imageGen.ResolveModelSelection(targetModel)
+		if rErr == nil && resolved.ID != "" {
+			sel = resolved
+		}
+	}
+
+	if sel.ID == "" {
+		selections, err := s.imageGen.GoogleImageModelSelections()
+		if err == nil && len(selections) > 0 {
+			sel = selections[0]
+		}
+	}
+
+	if sel.ID == "" {
+		return "", "", errors.New("no image model available")
+	}
+
+	modelID := sel.ID
+	caps, _ := s.imageGen.ManagedImageCapabilities(modelID)
+
+	reqPrompt := prompt
+	if variantIndex > 1 {
+		reqPrompt = fmt.Sprintf("%s, variation %d", prompt, variantIndex)
+	}
+
+	settings := map[string]any{
+		"aspect_ratio": aspectRatio,
+	}
+	if res := strings.TrimSpace(resolution); res != "" {
+		settings["image_size"] = res
+	}
+	req := imagegen.ManagedGenerateRequest{
+		SelectionID:     modelID,
+		Prompt:          reqPrompt,
+		CapabilityToken: caps.CapabilityToken,
+		Principal:       p,
+		Settings:        settings,
+	}
+
+	img, genErr := s.imageGen.GenerateManagedImage(ctx, req)
+	if genErr == nil && len(img.Bytes) > 0 {
+		mime := img.MediaType
+		if mime == "" {
+			mime = "image/jpeg"
+		}
+		dataURL := fmt.Sprintf("data:%s;base64,%s", mime, base64.StdEncoding.EncodeToString(img.Bytes))
+		return dataURL, modelID, nil
+	}
+
+	return "", modelID, errors.New("provider generation not available")
 }
 
 // generateStyledImageSVGDataURL creates a high-craft deterministic SVG vector asset
 // tailored to the prompt (e.g. panda, futuristic terminal, cosmic swarm core) and aspect ratio.
-func generateStyledImageSVGDataURL(prompt string, aspectRatio string, variantIndex int) string {
+func generateStyledImageSVGDataURL(prompt string, aspectRatio string, variantIndex int, resolution string) string {
 	width, height := 800, 800
 	switch aspectRatio {
 	case "16:9":
@@ -442,11 +553,15 @@ func generateStyledImageSVGDataURL(prompt string, aspectRatio string, variantInd
 		)
 	}
 
-	badgeText := fmt.Sprintf("AI DELIVERABLE • VARIANT %d (%s)", variantIndex, aspectRatio)
+	resTag := strings.TrimSpace(resolution)
+	if resTag == "" {
+		resTag = "1K"
+	}
+	badgeText := fmt.Sprintf("AI DELIVERABLE • VARIANT %d (%s · %s)", variantIndex, aspectRatio, resTag)
 	if strings.Contains(lowerPrompt, "change") || strings.Contains(lowerPrompt, "modify") || strings.Contains(lowerPrompt, "edit") || strings.Contains(lowerPrompt, "fine-tune") || strings.Contains(lowerPrompt, "tweak") {
-		badgeText = fmt.Sprintf("AI FINE-TUNE / EDIT • %s", aspectRatio)
+		badgeText = fmt.Sprintf("AI FINE-TUNE / EDIT • %s · %s", aspectRatio, resTag)
 	} else if strings.Contains(lowerPrompt, "iteration based on") {
-		badgeText = fmt.Sprintf("AI ITERATION (VARIANT %d) • %s", variantIndex, aspectRatio)
+		badgeText = fmt.Sprintf("AI ITERATION (VARIANT %d) • %s · %s", variantIndex, aspectRatio, resTag)
 	}
 
 	svg := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
@@ -492,12 +607,10 @@ func generateStyledVideoSVGDataURL(prompt string, aspectRatio string, scenes []p
 	if sceneCount == 0 {
 		sceneCount = 2
 	}
-	if soundtrack == "" {
-		soundtrack = "Ambient Electronic Beats"
-	}
-
 	headerLabel := fmt.Sprintf("VIDEO STORY COMPOSITION • %d SCENES • %s", sceneCount, aspectRatio)
-	if sourceMediaKind == "video" {
+	if sceneCount <= 1 {
+		headerLabel = fmt.Sprintf("SINGLE VIDEO CLIP • 8s • %s", aspectRatio)
+	} else if sourceMediaKind == "video" {
 		lowerPrompt := strings.ToLower(prompt)
 		if strings.Contains(lowerPrompt, "next scene") || strings.Contains(lowerPrompt, "continue") {
 			headerLabel = fmt.Sprintf("VIDEO CONTINUATION (FROM %s) • %d SCENES • %s", escapeXML(truncateString(sourceMediaTitle, 24)), sceneCount, aspectRatio)
@@ -506,6 +619,37 @@ func generateStyledVideoSVGDataURL(prompt string, aspectRatio string, scenes []p
 		}
 	} else if sourceMediaKind == "image" {
 		headerLabel = fmt.Sprintf("VIDEO STORY (KEYFRAME: %s) • %d SCENES • %s", escapeXML(truncateString(sourceMediaTitle, 24)), sceneCount, aspectRatio)
+	}
+
+	soundtrackSection := ""
+	if strings.TrimSpace(soundtrack) != "" {
+		soundtrackSection = fmt.Sprintf(`	<!-- Soundtrack Audio Waveform Bars -->
+	<g transform="translate(60, 360)">
+		<rect x="0" y="20" width="6" height="40" rx="3" fill="url(#bar-grad)" />
+		<rect x="14" y="8" width="6" height="52" rx="3" fill="url(#bar-grad)" />
+		<rect x="28" y="24" width="6" height="36" rx="3" fill="url(#bar-grad)" />
+		<rect x="42" y="12" width="6" height="48" rx="3" fill="url(#bar-grad)" />
+		<rect x="56" y="4" width="6" height="56" rx="3" fill="url(#bar-grad)" />
+		<rect x="70" y="18" width="6" height="42" rx="3" fill="url(#bar-grad)" />
+		<rect x="84" y="28" width="6" height="32" rx="3" fill="url(#bar-grad)" />
+		<rect x="98" y="10" width="6" height="50" rx="3" fill="url(#bar-grad)" />
+		<rect x="112" y="2" width="6" height="58" rx="3" fill="url(#bar-grad)" />
+		<rect x="126" y="16" width="6" height="44" rx="3" fill="url(#bar-grad)" />
+		<rect x="140" y="24" width="6" height="36" rx="3" fill="url(#bar-grad)" />
+		<rect x="154" y="8" width="6" height="52" rx="3" fill="url(#bar-grad)" />
+		<text x="180" y="38" fill="#94a3b8" font-family="monospace" font-size="11px">SOUNDTRACK: %s</text>
+	</g>`, escapeXML(soundtrack))
+	} else if sceneCount <= 1 {
+		soundtrackSection = `	<!-- Model Generative Audio Indicator -->
+	<g transform="translate(60, 375)">
+		<circle cx="8" cy="8" r="4" fill="#38bdf8" />
+		<text x="24" y="12" fill="#94a3b8" font-family="monospace" font-size="11px">MODEL GENERATIVE AUDIO • ONE PROMPT SHOT (8s)</text>
+	</g>`
+	} else {
+		soundtrackSection = `	<!-- No Soundtrack Attached -->
+	<g transform="translate(60, 375)">
+		<text x="0" y="12" fill="#64748b" font-family="monospace" font-size="11px">NO SOUNDTRACK CLIP ATTACHED</text>
+	</g>`
 	}
 
 	svg := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
@@ -552,22 +696,7 @@ func generateStyledVideoSVGDataURL(prompt string, aspectRatio string, scenes []p
 	<!-- Center Playhead Indicator -->
 	<circle cx="480" cy="230" r="54" fill="#0f172a" stroke="#38bdf8" stroke-width="2" opacity="0.9" />
 	<polygon points="468,206 504,230 468,254" fill="#ffffff" />
-	<!-- Soundtrack Audio Waveform Bars -->
-	<g transform="translate(60, 360)">
-		<rect x="0" y="20" width="6" height="40" rx="3" fill="url(#bar-grad)" />
-		<rect x="14" y="8" width="6" height="52" rx="3" fill="url(#bar-grad)" />
-		<rect x="28" y="24" width="6" height="36" rx="3" fill="url(#bar-grad)" />
-		<rect x="42" y="12" width="6" height="48" rx="3" fill="url(#bar-grad)" />
-		<rect x="56" y="4" width="6" height="56" rx="3" fill="url(#bar-grad)" />
-		<rect x="70" y="18" width="6" height="42" rx="3" fill="url(#bar-grad)" />
-		<rect x="84" y="28" width="6" height="32" rx="3" fill="url(#bar-grad)" />
-		<rect x="98" y="10" width="6" height="50" rx="3" fill="url(#bar-grad)" />
-		<rect x="112" y="2" width="6" height="58" rx="3" fill="url(#bar-grad)" />
-		<rect x="126" y="16" width="6" height="44" rx="3" fill="url(#bar-grad)" />
-		<rect x="140" y="24" width="6" height="36" rx="3" fill="url(#bar-grad)" />
-		<rect x="154" y="8" width="6" height="52" rx="3" fill="url(#bar-grad)" />
-		<text x="180" y="38" fill="#94a3b8" font-family="monospace" font-size="11px">SOUNDTRACK: %s</text>
-	</g>
+%s
 	<!-- Storyboard Scenes Ribbon -->
 	<g transform="translate(24, 450)">
 		<rect width="912" height="60" rx="8" fill="#030712" opacity="0.85" stroke="#1e293b" stroke-width="1" />
@@ -577,11 +706,89 @@ func generateStyledVideoSVGDataURL(prompt string, aspectRatio string, scenes []p
 </svg>`,
 		width, height, width, height,
 		width, height,
-		escapeXML(soundtrack),
+		soundtrackSection,
 		headerLabel,
 		escapeXML(truncateString(prompt, 70)),
 	)
 
+	return fmt.Sprintf("data:image/svg+xml;base64,%s", base64.StdEncoding.EncodeToString([]byte(svg)))
+}
+
+func generateStyledAudioSVGDataURL(prompt string, model string, durationSeconds int) string {
+	width, height := 800, 400
+	svg := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 %d %d" width="%d" height="%d">
+	<defs>
+		<linearGradient id="aud-grad" x1="0%%" y1="0%%" x2="100%%" y2="100%%">
+			<stop offset="0%%" stop-color="#090d16" />
+			<stop offset="50%%" stop-color="#0f172a" />
+			<stop offset="100%%" stop-color="#030712" />
+		</linearGradient>
+		<linearGradient id="wave-grad" x1="0%%" y1="100%%" x2="0%%" y2="0%%">
+			<stop offset="0%%" stop-color="#8b5cf6" />
+			<stop offset="50%%" stop-color="#ec4899" />
+			<stop offset="100%%" stop-color="#06b6d4" />
+		</linearGradient>
+	</defs>
+	<rect width="%d" height="%d" fill="url(#aud-grad)" />
+	<!-- Top Spec Bar -->
+	<g transform="translate(30, 30)">
+		<rect width="740" height="40" rx="8" fill="#1e293b" opacity="0.6" stroke="#334155" stroke-width="1" />
+		<text x="20" y="25" fill="#38bdf8" font-family="monospace" font-size="11px" font-weight="bold">AUDIO SOUNDTRACK • %ds • %s</text>
+	</g>
+	<!-- Audio Waveform Visualization -->
+	<g transform="translate(50, 200)">
+		<rect x="0" y="-30" width="8" height="60" rx="4" fill="url(#wave-grad)" />
+		<rect x="18" y="-55" width="8" height="110" rx="4" fill="url(#wave-grad)" />
+		<rect x="36" y="-80" width="8" height="160" rx="4" fill="url(#wave-grad)" />
+		<rect x="54" y="-45" width="8" height="90" rx="4" fill="url(#wave-grad)" />
+		<rect x="72" y="-95" width="8" height="190" rx="4" fill="url(#wave-grad)" />
+		<rect x="90" y="-60" width="8" height="120" rx="4" fill="url(#wave-grad)" />
+		<rect x="108" y="-35" width="8" height="70" rx="4" fill="url(#wave-grad)" />
+		<rect x="126" y="-75" width="8" height="150" rx="4" fill="url(#wave-grad)" />
+		<rect x="144" y="-105" width="8" height="210" rx="4" fill="url(#wave-grad)" />
+		<rect x="162" y="-50" width="8" height="100" rx="4" fill="url(#wave-grad)" />
+		<rect x="180" y="-85" width="8" height="170" rx="4" fill="url(#wave-grad)" />
+		<rect x="198" y="-65" width="8" height="130" rx="4" fill="url(#wave-grad)" />
+		<rect x="216" y="-40" width="8" height="80" rx="4" fill="url(#wave-grad)" />
+		<rect x="234" y="-90" width="8" height="180" rx="4" fill="url(#wave-grad)" />
+		<rect x="252" y="-115" width="8" height="230" rx="4" fill="url(#wave-grad)" />
+		<rect x="270" y="-70" width="8" height="140" rx="4" fill="url(#wave-grad)" />
+		<rect x="288" y="-45" width="8" height="90" rx="4" fill="url(#wave-grad)" />
+		<rect x="306" y="-80" width="8" height="160" rx="4" fill="url(#wave-grad)" />
+		<rect x="324" y="-100" width="8" height="200" rx="4" fill="url(#wave-grad)" />
+		<rect x="342" y="-55" width="8" height="110" rx="4" fill="url(#wave-grad)" />
+		<rect x="360" y="-90" width="8" height="180" rx="4" fill="url(#wave-grad)" />
+		<rect x="378" y="-60" width="8" height="120" rx="4" fill="url(#wave-grad)" />
+		<rect x="396" y="-35" width="8" height="70" rx="4" fill="url(#wave-grad)" />
+		<rect x="414" y="-75" width="8" height="150" rx="4" fill="url(#wave-grad)" />
+		<rect x="432" y="-105" width="8" height="210" rx="4" fill="url(#wave-grad)" />
+		<rect x="450" y="-60" width="8" height="120" rx="4" fill="url(#wave-grad)" />
+		<rect x="468" y="-85" width="8" height="170" rx="4" fill="url(#wave-grad)" />
+		<rect x="486" y="-45" width="8" height="90" rx="4" fill="url(#wave-grad)" />
+		<rect x="504" y="-65" width="8" height="130" rx="4" fill="url(#wave-grad)" />
+		<rect x="522" y="-95" width="8" height="190" rx="4" fill="url(#wave-grad)" />
+		<rect x="540" y="-55" width="8" height="110" rx="4" fill="url(#wave-grad)" />
+		<rect x="558" y="-30" width="8" height="60" rx="4" fill="url(#wave-grad)" />
+		<rect x="576" y="-75" width="8" height="150" rx="4" fill="url(#wave-grad)" />
+		<rect x="594" y="-100" width="8" height="200" rx="4" fill="url(#wave-grad)" />
+		<rect x="612" y="-65" width="8" height="130" rx="4" fill="url(#wave-grad)" />
+		<rect x="630" y="-85" width="8" height="170" rx="4" fill="url(#wave-grad)" />
+		<rect x="648" y="-45" width="8" height="90" rx="4" fill="url(#wave-grad)" />
+		<rect x="666" y="-70" width="8" height="140" rx="4" fill="url(#wave-grad)" />
+		<rect x="684" y="-30" width="8" height="60" rx="4" fill="url(#wave-grad)" />
+	</g>
+	<!-- Audio Prompt Footer -->
+	<g transform="translate(30, 320)">
+		<rect width="740" height="50" rx="8" fill="#030712" opacity="0.9" stroke="#1e293b" stroke-width="1" />
+		<text x="16" y="30" fill="#f8fafc" font-family="sans-serif" font-size="12px" font-weight="600">%s</text>
+	</g>
+</svg>`,
+		width, height, width, height,
+		width, height,
+		durationSeconds, escapeXML(model),
+		escapeXML(truncateString(prompt, 75)),
+	)
 	return fmt.Sprintf("data:image/svg+xml;base64,%s", base64.StdEncoding.EncodeToString([]byte(svg)))
 }
 

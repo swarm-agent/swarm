@@ -64,7 +64,7 @@ func inspectTaskGitState(task pebblestore.ProjectTaskRecord, db *pebblestore.Ses
 		return res
 	}
 	// 2. Media tasks don't have git tracking
-	if task.Agent == "image" || task.Agent == "video" {
+	if task.Agent == "image" || task.Agent == "video" || task.Agent == "sound" || task.Agent == "audio" {
 		return res
 	}
 
@@ -482,9 +482,9 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 		return errors.New("task is required")
 	}
 
-	// 1. Direct Media Generation: image, generative video, and designer swarm tasks do NOT spin up chat agent sessions.
+	// 1. Direct Media Generation: image, generative video, audio, and designer swarm tasks do NOT spin up chat agent sessions.
 	// They directly generate media deliverables and transition to needs_review.
-	isDirectMedia := task.Agent == "image" || task.Agent == "video" || (task.Agent == "designer" && (task.Tier == "swarm" || len(task.Deliverables) > 1 || task.OutcomeType == "media_bundle"))
+	isDirectMedia := task.Agent == "image" || task.Agent == "video" || task.Agent == "sound" || task.Agent == "audio" || (task.Agent == "designer" && (task.Tier == "swarm" || len(task.Deliverables) > 1 || task.OutcomeType == "media_bundle"))
 	if isDirectMedia {
 		task.SessionID = ""
 		if taskStatus == "in_progress" {
@@ -522,26 +522,79 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 				}
 				sceneCount := len(task.Scenes)
 				if sceneCount == 0 {
-					sceneCount = 2
+					if task.VariantCount > 0 && task.VariantCount <= 1 {
+						sceneCount = 1
+					} else {
+						sceneCount = 2
+					}
 				}
 				soundtrack := task.Soundtrack
-				if soundtrack == "" {
-					soundtrack = "Ambient Electronic Beats"
+				videoModel := strings.TrimSpace(task.Model)
+				if videoModel == "" {
+					videoModel = "veo-3.1-generate-preview"
+				}
+				resTag := task.Resolution
+				if resTag == "" {
+					resTag = "1080p"
+				}
+
+				var delivs []pebblestore.ProjectTaskDeliverable
+				if sceneCount <= 1 || task.OutcomeType == "video_clip" {
+					delivs = append(delivs, pebblestore.ProjectTaskDeliverable{
+						ID:          fmt.Sprintf("deliv_vid_%d", now),
+						Title:       fmt.Sprintf("%s (Single Video, %s)", task.Title, ar),
+						Kind:        "video",
+						Status:      "generating",
+						Thumbnail:   "video",
+						Duration:    "8s",
+						Description: fmt.Sprintf("Single video clip (%s, %s, 8s) generated via %s: %s", ar, resTag, videoModel, task.Title),
+					})
+					task.Deliverables = delivs
+					task.Status = "in_progress"
+					task.ActionNeeded = "Rendering single video clip (8s)..."
+					task.WhatDidDo = []string{"Approved mission", fmt.Sprintf("Rendering 8s video clip directly with %s", videoModel)}
+				} else {
+					desc := fmt.Sprintf("Compiled %d-scene multi-part video (%s): %s", sceneCount, ar, task.Title)
+					if soundtrack != "" {
+						desc = fmt.Sprintf("Compiled %d-scene multi-part video with soundtrack (%s): %s", sceneCount, soundtrack, task.Title)
+					}
+					delivs = append(delivs, pebblestore.ProjectTaskDeliverable{
+						ID:          fmt.Sprintf("deliv_vid_%d", now),
+						Title:       fmt.Sprintf("%s (%d-Scene Multi-Part Video, %s)", task.Title, sceneCount, ar),
+						Kind:        "video",
+						Status:      "generating",
+						Thumbnail:   "video",
+						Duration:    fmt.Sprintf("%ds", sceneCount*4),
+						Description: desc,
+					})
+					task.Deliverables = delivs
+					task.Status = "in_progress"
+					task.ActionNeeded = "Rendering multi-part video sequence..."
+					task.WhatDidDo = []string{"Approved mission", "Rendering multi-part video sequence"}
+				}
+			} else if task.Agent == "sound" || task.Agent == "audio" {
+				soundModel := strings.TrimSpace(task.Model)
+				if soundModel == "" {
+					soundModel = "lyria-3.5"
+				}
+				durSeconds := task.DurationSeconds
+				if durSeconds <= 0 {
+					durSeconds = 30
 				}
 				var delivs []pebblestore.ProjectTaskDeliverable
 				delivs = append(delivs, pebblestore.ProjectTaskDeliverable{
-					ID:          fmt.Sprintf("deliv_vid_%d", now),
-					Title:       fmt.Sprintf("%s (Video Story, %s)", task.Title, ar),
-					Kind:        "video",
+					ID:          fmt.Sprintf("deliv_snd_%d", now),
+					Title:       fmt.Sprintf("%s (Audio Clip)", task.Title),
+					Kind:        "audio",
 					Status:      "generating",
-					Thumbnail:   "video",
-					Duration:    fmt.Sprintf("%ds", sceneCount*4),
-					Description: fmt.Sprintf("Compiled %d-scene video story with soundtrack (%s): %s", sceneCount, soundtrack, task.Title),
+					Thumbnail:   "sound",
+					Duration:    fmt.Sprintf("%ds", durSeconds),
+					Description: fmt.Sprintf("Generated %ds audio soundtrack using %s: %s", durSeconds, soundModel, task.Title),
 				})
 				task.Deliverables = delivs
 				task.Status = "in_progress"
-				task.ActionNeeded = "Rendering video story sequence..."
-				task.WhatDidDo = []string{"Approved mission", "Rendering video sequence"}
+				task.ActionNeeded = "Generating audio soundtrack..."
+				task.WhatDidDo = []string{"Approved mission", "Generating audio track"}
 			}
 			go s.executeDirectMediaTask(p, proj, task)
 		}
@@ -1385,7 +1438,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				if item.CreatedAt == 0 {
 					item.CreatedAt = time.Now().UnixMilli()
 				}
-				var updatedList []pebblestore.ProjectTaskMediaRef
+				updatedList := []pebblestore.ProjectTaskMediaRef{}
 				_, err = db.UpdateProject(p.AccountScopeID, projectID, func(p *pebblestore.ProjectRecord) error {
 					p.UploadedMedia = append(p.UploadedMedia, item)
 					updatedList = p.UploadedMedia
@@ -1411,7 +1464,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				if !s.requireScopeAny(w, r, "projects:write", "sessions:write") {
 					return
 				}
-				var updatedList []pebblestore.ProjectTaskMediaRef
+				updatedList := []pebblestore.ProjectTaskMediaRef{}
 				_, err = db.UpdateProject(p.AccountScopeID, projectID, func(p *pebblestore.ProjectRecord) error {
 					for _, m := range p.UploadedMedia {
 						if m.ID != mediaID {
@@ -1516,11 +1569,16 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				DeploySession       bool                                 `json:"deploy_session,omitempty"`
 				Prompt              string                               `json:"prompt,omitempty"`
 				Intent              string                               `json:"intent,omitempty"`
+				VideoType           string                               `json:"video_type,omitempty"`
+				EnhancePrompt       *bool                                `json:"enhance_prompt,omitempty"`
 				AspectRatio         string                               `json:"aspect_ratio,omitempty"`
+				Resolution          string                               `json:"resolution,omitempty"`
+				Model               string                               `json:"model,omitempty"`
 				VariantCount        int                                  `json:"variant_count,omitempty"`
 				DeliverableCount    int                                  `json:"deliverable_count,omitempty"`
 				ScenesCount         int                                  `json:"scenes_count,omitempty"`
 				Soundtrack          string                               `json:"soundtrack,omitempty"`
+				DurationSeconds     int                                  `json:"duration_seconds,omitempty"`
 				AutoApprove         bool                                 `json:"auto_approve,omitempty"`
 				AttachedMedia       []pebblestore.ProjectTaskMediaRef    `json:"attached_media,omitempty"`
 				TaskProgram         *pebblestore.TaskProgramDefinition   `json:"task_program,omitempty"`
@@ -1546,28 +1604,94 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				prompt = strings.TrimSpace(req.Title)
 			}
 
-			taskRouter := taskrouter.NewService(func(ctx context.Context, instructions, input string) (string, error) {
-				res, err := s.invokeConfiguredRouterOnce(ctx, p, instructions, input, 64<<10)
-				if err != nil {
-					return "", err
+			isDirectVideo := req.Intent == "video" && (req.VideoType == "single" || req.ScenesCount == 1 || (req.VideoType == "" && req.ScenesCount <= 1))
+			enhancePrompt := req.EnhancePrompt != nil && *req.EnhancePrompt
+
+			var routed pebblestore.TaskRouteResult
+			if isDirectVideo && !enhancePrompt {
+				ar := strings.TrimSpace(req.AspectRatio)
+				if ar == "" {
+					ar = "16:9"
 				}
-				return res.Text, nil
-			})
-			if req.VariantCount <= 0 && req.DeliverableCount > 0 {
-				req.VariantCount = req.DeliverableCount
+				resTag := strings.TrimSpace(req.Resolution)
+				if resTag == "" {
+					resTag = "1080p"
+				}
+				videoModel := strings.TrimSpace(req.Model)
+				if videoModel == "" && s.uiSettings != nil && strings.TrimSpace(p.AccountScopeID) != "" {
+					if uiSet, err := s.uiSettings.GetForAccount(p.AccountScopeID); err == nil {
+						if def := strings.TrimSpace(uiSet.Tools.Video.DefaultModel); def != "" {
+							videoModel = def
+						}
+					}
+				}
+				if videoModel == "" {
+					videoModel = "veo-3.1-generate-preview"
+				}
+
+				cleanTitle := prompt
+				if len(cleanTitle) > 60 {
+					cleanTitle = cleanTitle[:60]
+					if idx := strings.LastIndex(cleanTitle, " "); idx > 30 {
+						cleanTitle = cleanTitle[:idx]
+					}
+				}
+				cleanTitle = strings.TrimSpace(cleanTitle)
+				if len(cleanTitle) > 0 {
+					cleanTitle = strings.ToUpper(cleanTitle[:1]) + cleanTitle[1:]
+				} else {
+					cleanTitle = "Single Video Shot"
+				}
+				taskTitle := fmt.Sprintf("Single clip of %s", cleanTitle)
+
+				routed = pebblestore.TaskRouteResult{
+					Title:            taskTitle,
+					Agent:            "video",
+					OutcomeType:      "video_clip",
+					Tier:             "direct",
+					AspectRatio:      ar,
+					VariantCount:     1,
+					Stages:           []string{"Video Parameter Configuration", "Model Generative Synthesis"},
+					PlanSummary:      fmt.Sprintf("1. Configure single 8s video shot (%s, %s)\n2. Render directly with %s using native model audio\n3. Deliver verified video clip for review", ar, resTag, videoModel),
+					FullPlanMarkdown: fmt.Sprintf("### Task Mission: %s\n\n- **Agent**: `@video`\n- **Mode**: Single Video (1 Clip · 8s)\n- **Model**: `%s`\n- **Resolution**: `%s`\n- **Aspect Ratio**: `%s`\n- **Audio**: Model Generative Audio (Synchronized in 1 prompt)\n\n#### Visual Prompt\n%s\n", taskTitle, videoModel, resTag, ar, prompt),
+					Deliverables: []pebblestore.ProjectTaskDeliverable{
+						{
+							ID:          "deliv_vid",
+							Title:       fmt.Sprintf("%s (Single Video, %s)", cleanTitle, ar),
+							Kind:        "video",
+							Status:      "pending",
+							Duration:    "8s",
+							Description: fmt.Sprintf("Single video clip (%s, %s, 8s) generated directly with %s: %s", ar, resTag, videoModel, prompt),
+						},
+					},
+					AttachedMedia: req.AttachedMedia,
+				}
+			} else {
+				taskRouter := taskrouter.NewService(func(ctx context.Context, instructions, input string) (string, error) {
+					res, err := s.invokeConfiguredRouterOnce(ctx, p, instructions, input, 64<<10)
+					if err != nil {
+						return "", err
+					}
+					return res.Text, nil
+				})
+				if req.VariantCount <= 0 && req.DeliverableCount > 0 {
+					req.VariantCount = req.DeliverableCount
+				}
+				routed = taskRouter.RouteTask(r.Context(), taskrouter.TaskRouteOptions{
+					Prompt:             prompt,
+					RequestedWorkspace: req.WorkspacePath,
+					Intent:             req.Intent,
+					VideoType:          req.VideoType,
+					EnhancePrompt:      enhancePrompt,
+					AspectRatio:        req.AspectRatio,
+					VariantCount:       req.VariantCount,
+					ScenesCount:        req.ScenesCount,
+					Soundtrack:         req.Soundtrack,
+					AutoApprove:        req.AutoApprove,
+					AttachedMedia:      req.AttachedMedia,
+					Project:            proj,
+				})
 			}
-			routed := taskRouter.RouteTask(r.Context(), taskrouter.TaskRouteOptions{
-				Prompt:             prompt,
-				RequestedWorkspace: req.WorkspacePath,
-				Intent:             req.Intent,
-				AspectRatio:        req.AspectRatio,
-				VariantCount:       req.VariantCount,
-				ScenesCount:        req.ScenesCount,
-				Soundtrack:         req.Soundtrack,
-				AutoApprove:        req.AutoApprove,
-				AttachedMedia:      req.AttachedMedia,
-				Project:            proj,
-			})
 
 			title := strings.TrimSpace(req.Title)
 			if title == "" {
@@ -1581,15 +1705,24 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			if outcomeType == "" {
 				outcomeType = routed.OutcomeType
 			}
-			worktreeBranch := strings.TrimSpace(req.WorktreeBranch)
-			if worktreeBranch == "" || worktreeBranch == "main" || worktreeBranch == "dev" || worktreeBranch == "master" {
-				worktreeBranch = routed.Branch
+
+			isMediaAgent := agentName == "image" || agentName == "video" || agentName == "sound" || agentName == "audio" || outcomeType == "media_bundle" || outcomeType == "video_story" || outcomeType == "video_clip"
+
+			var worktreeBranch, worktreeName string
+			baseBranch := "dev"
+			if isMediaAgent {
+				baseBranch = ""
+			} else {
+				worktreeBranch = strings.TrimSpace(req.WorktreeBranch)
+				if worktreeBranch == "" || worktreeBranch == "main" || worktreeBranch == "dev" || worktreeBranch == "master" {
+					worktreeBranch = routed.Branch
+				}
+				if worktreeBranch == "" || worktreeBranch == "main" || worktreeBranch == "dev" || worktreeBranch == "master" {
+					worktreeBranch, _ = pebblestore.MakeWorktreeBranch(title, prompt)
+				}
+				worktreeName = strings.TrimPrefix(worktreeBranch, "agent/")
+				worktreeName = strings.TrimPrefix(worktreeName, "worktree/")
 			}
-			if worktreeBranch == "" || worktreeBranch == "main" || worktreeBranch == "dev" || worktreeBranch == "master" {
-				worktreeBranch, _ = pebblestore.MakeWorktreeBranch(title, prompt)
-			}
-			worktreeName := strings.TrimPrefix(worktreeBranch, "agent/")
-			worktreeName = strings.TrimPrefix(worktreeName, "worktree/")
 			description := strings.TrimSpace(req.Description)
 			if description == "" {
 				description = routed.Mission
@@ -1603,7 +1736,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				deliverables = routed.Deliverables
 			}
 			workspacesInvolved := req.WorkspacesInvolved
-			if len(workspacesInvolved) == 0 {
+			if len(workspacesInvolved) == 0 && !isMediaAgent {
 				workspacesInvolved = routed.WorkspacesInvolved
 			}
 			planSummary := strings.TrimSpace(req.PlanSummary)
@@ -1647,7 +1780,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				WorkspacePath:       strings.TrimSpace(req.WorkspacePath),
 				WorktreeBranch:      worktreeBranch,
 				WorktreeName:        worktreeName,
-				BaseBranch:          "dev",
+				BaseBranch:          baseBranch,
 				UnintegratedCommits: req.UnintegratedCommits,
 				DiffSummary:         strings.TrimSpace(req.DiffSummary),
 				IsDirty:             req.IsDirty,
@@ -1665,7 +1798,10 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				Revision:            revision,
 				LastError:           strings.TrimSpace(req.LastError),
 				AspectRatio:         routed.AspectRatio,
+				Resolution:          strings.TrimSpace(req.Resolution),
 				VariantCount:        routed.VariantCount,
+				DurationSeconds:     req.DurationSeconds,
+				Model:               strings.TrimSpace(req.Model),
 				Scenes:              routed.Scenes,
 				Soundtrack:          routed.Soundtrack,
 				AutoApprove:         req.AutoApprove,
@@ -2157,7 +2293,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				// Autonomous Task Program execution!
 				_ = s.deployProjectTaskProgram(p, proj, updated)
 				hydrateTaskProgramStatus(updated, db)
-			} else if updated.Agent == "image" || updated.Agent == "video" {
+			} else if updated.Agent == "image" || updated.Agent == "video" || updated.Agent == "sound" || updated.Agent == "audio" {
 				// Direct media execution!
 				_ = s.deployProjectTaskExecution(p, proj, updated, "in_progress", "")
 				_ = db.PutProjectTask(p.AccountScopeID, updated)

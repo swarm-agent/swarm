@@ -42,6 +42,9 @@ type mediaCatalogResponse struct {
 	VideoIterationModels  []mediaCatalogOption `json:"video_iteration_models"`
 	VideoModels           []mediaCatalogOption `json:"video_models"`
 	AudioModels           []mediaCatalogOption `json:"audio_models"`
+	DefaultImageModel     string               `json:"default_image_model,omitempty"`
+	DefaultVideoModel     string               `json:"default_video_model,omitempty"`
+	DefaultAudioModel     string               `json:"default_audio_model,omitempty"`
 	VideoReady            bool                 `json:"video_ready"`
 	VideoStatus           string               `json:"video_status"`
 	AudioReady            bool                 `json:"audio_ready"`
@@ -81,6 +84,74 @@ func (s *Server) handleMediaSettingsCatalog(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	var defaultImage, defaultVideo, defaultAudio string
+	if s.uiSettings != nil && strings.TrimSpace(principal.AccountScopeID) != "" {
+		if uiSet, err := s.uiSettings.GetForAccount(principal.AccountScopeID); err == nil {
+			defaultImage = strings.TrimSpace(uiSet.Tools.Image.DefaultModel)
+			defaultVideo = strings.TrimSpace(uiSet.Tools.Video.DefaultModel)
+			defaultAudio = strings.TrimSpace(uiSet.Tools.Audio.DefaultModel)
+		}
+	}
+	if defaultImage == "" {
+		for _, m := range response.ImageModels {
+			if m.Ready && m.Provider == "google" {
+				defaultImage = m.ID
+				break
+			}
+		}
+		if defaultImage == "" {
+			for _, m := range response.ImageModels {
+				if m.Ready {
+					defaultImage = m.ID
+					break
+				}
+			}
+		}
+		if defaultImage == "" && len(response.ImageModels) > 0 {
+			defaultImage = response.ImageModels[0].ID
+		}
+	}
+	if defaultVideo == "" {
+		for _, m := range response.VideoGenerationModels {
+			if m.ID == DefaultVideoGenerationModel && m.Ready {
+				defaultVideo = m.ID
+				break
+			}
+		}
+		if defaultVideo == "" {
+			for _, m := range response.VideoGenerationModels {
+				if m.Ready {
+					defaultVideo = m.ID
+					break
+				}
+			}
+		}
+		if defaultVideo == "" {
+			defaultVideo = DefaultVideoGenerationModel
+		}
+	}
+	if defaultAudio == "" {
+		for _, m := range response.AudioModels {
+			if m.ID == DefaultAudioGenerationModel && m.Ready {
+				defaultAudio = m.ID
+				break
+			}
+		}
+		if defaultAudio == "" {
+			for _, m := range response.AudioModels {
+				if m.Ready {
+					defaultAudio = m.ID
+					break
+				}
+			}
+		}
+		if defaultAudio == "" {
+			defaultAudio = DefaultAudioGenerationModel
+		}
+	}
+	response.DefaultImageModel = defaultImage
+	response.DefaultVideoModel = defaultVideo
+	response.DefaultAudioModel = defaultAudio
 	writeJSON(w, http.StatusOK, response)
 }
 

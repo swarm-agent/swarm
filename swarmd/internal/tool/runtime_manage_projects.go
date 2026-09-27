@@ -85,6 +85,31 @@ func manageProjectsDefinition() Definition {
 					"type":        "object",
 					"description": "Optional Task Program for staged parallel multi-agent cohort execution inside this project task: {id, stages: [{id, depends_on, dependency_evidence}], jobs: [{id, stage_id, agent_type, title, meta_prompt, deliverable, owned_scope, acceptance_criteria, dependency_evidence}]}",
 				},
+				"model": map[string]any{
+					"type":        "string",
+					"description": "Optional model selection override (e.g. image model or video model ID)",
+				},
+				"aspect_ratio": map[string]any{
+					"type":        "string",
+					"description": "Optional aspect ratio ('1:1', '16:9', '9:16', '4:3')",
+				},
+				"resolution": map[string]any{
+					"type":        "string",
+					"description": "Optional video resolution ('720p', '1080p', '4k')",
+				},
+				"variant_count": map[string]any{
+					"type":        "integer",
+					"description": "Optional count of variants to generate for image or direct media tasks",
+				},
+				"attached_media": map[string]any{
+					"type":        "array",
+					"description": "Optional array of media items to attach / reference for the task [{id, kind, title, media_url, thumbnail, filename}]",
+					"items":       map[string]any{"type": "object"},
+				},
+				"soundtrack": map[string]any{
+					"type":        "string",
+					"description": "Optional soundtrack description for video tasks",
+				},
 				"pipeline_stages": map[string]any{
 					"type":        "array",
 					"description": "Array of stage name strings for the task",
@@ -351,6 +376,44 @@ func (r *Runtime) executeManageProjects(scope WorkspaceScope, args map[string]an
 		wsPath := strings.TrimSpace(asString(args["workspace_path"]))
 		routed := pebblestore.RouteAndPlanProjectTask(prompt, wsPath, projectContext, workspaces, "", "")
 
+		aspectRatio := strings.TrimSpace(asString(args["aspect_ratio"]))
+		if aspectRatio == "" {
+			aspectRatio = routed.AspectRatio
+		}
+		resolution := strings.TrimSpace(asString(args["resolution"]))
+		variantCount := asInt(args["variant_count"], 0)
+		if variantCount <= 0 {
+			variantCount = routed.VariantCount
+		}
+		modelName := strings.TrimSpace(asString(args["model"]))
+		soundtrack := strings.TrimSpace(asString(args["soundtrack"]))
+		if soundtrack == "" {
+			soundtrack = routed.Soundtrack
+		}
+		var attachedMedia []pebblestore.ProjectTaskMediaRef
+		if rawMedia, ok := args["attached_media"].([]any); ok {
+			for _, item := range rawMedia {
+				if m, ok := item.(map[string]any); ok {
+					mediaURL := asString(m["url"])
+					if mediaURL == "" {
+						mediaURL = asString(m["media_url"])
+					}
+					ref := pebblestore.ProjectTaskMediaRef{
+						ID:        asString(m["id"]),
+						Kind:      asString(m["kind"]),
+						Title:     asString(m["title"]),
+						URL:       mediaURL,
+						Filename:  asString(m["filename"]),
+						MediaType: asString(m["media_type"]),
+						Data:      asString(m["data"]),
+					}
+					if ref.ID != "" || ref.Title != "" || ref.URL != "" {
+						attachedMedia = append(attachedMedia, ref)
+					}
+				}
+			}
+		}
+
 		agentName := strings.TrimSpace(asString(args["agent"]))
 		if agentName == "" {
 			agentName = routed.Agent
@@ -446,6 +509,12 @@ func (r *Runtime) executeManageProjects(scope WorkspaceScope, args map[string]an
 			Tier:               routed.Tier,
 			RouterAlert:        routed.RouterAlert,
 			Revision:           1,
+			AspectRatio:        aspectRatio,
+			Resolution:         resolution,
+			VariantCount:       variantCount,
+			Model:              modelName,
+			Soundtrack:         soundtrack,
+			AttachedMedia:      attachedMedia,
 			TaskProgram:        taskProg,
 		}
 		if taskProg != nil && taskProg.ID != "" {

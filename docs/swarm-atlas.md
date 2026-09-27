@@ -3087,7 +3087,102 @@ no scratch/logs or private identifiers were added to tracked documentation.
     - WB-2 (Recurring Worker & DailyRunCap): PASSED (12.1s)
     - WB-3 (Cron Worker & Overlap Serialization): PASSED (6.1s)
     - WB-4 (Deliverable & Action Return Pipeline): PASSED (24.1s)
-    - WB-5 (Anomaly Detection & Attention Alerting): PASSED (8.1s)
+### Task Deploy Modal Model Selectors & Backend Model Resolution (2026-09-27)
+
+- **Task Deploy Modal Model Dropdowns (`web/src/features/desktop/orchestrate/OrchestrateView.tsx`):**
+  - Fetches `/v1/media/settings/catalog` and `/v1/desktop/ui-settings` on mount.
+  - Added interactive Image Model and Video Model dropdown selectors in the Task Deploy Modal for Image and Video intents, showing display names, availability status, and reasons.
+  - Displays amber warning banner and disabled state if 0 models are connected or ready, prompting the user to connect API keys in Settings.
+  - Persists user model choice directly to `/v1/desktop/ui-settings` via `handleImageModelChange` and `handleVideoModelChange`.
+  - Forwards user-selected `model` in task creation (`handleDeployModalSubmit`) and quick-route media payloads (`handleQuickRouteMedia`).
+- **Backend Model Resolution & Task Storage (`swarmd/internal/store/pebble/project_store.go`, `swarmd/internal/api/projects.go`, `swarmd/internal/api/projects_media.go`):**
+  - Added `Model string` to `ProjectTaskRecord` in Pebble store and `POST /v3/projects/:id/tasks` request body.
+  - In `generateImageMedia` (`projects_media.go`): eliminated hardcoded `selections[0].ID` in favor of prioritized model resolution: explicit task model -> user account `tools.image.default_model` -> first ready model -> error if none available.
+  - In direct video generation: resolves model from explicit task model -> user account `tools.video.default_model` -> default `veo-3.1-generate-preview`. Deliverable descriptions explicitly record the model used.
+- **Orchestrator Tool & Prompt Context (`swarmd/internal/tool/runtime_manage_projects.go`, `swarmd/internal/run/service_prompt.go`):**
+  - Updated `manage_projects` schema and `propose_task` / `create_task` execution to accept and store `model`, `aspect_ratio`, `variant_count`, `attached_media`, and `soundtrack`.
+  - Enhanced `projectContextPromptBlock` in `service_prompt.go` to append recent project tasks and deliverables so Orchestrator natively understands conversational references like "picture 2" or "variant 1".
+- **Verification & Tests:**
+  - `web/src/features/desktop/orchestrate/orchestrate-media-integration.spec.ts`: verified model dropdown rendering, warning states, persistence, and task submission forwarding.
+  - `swarmd/internal/api/projects_test.go`: verified task creation with explicit model.
+  - `swarmd/internal/tool`: verified tool execution with new properties.
+  - All critical fast tests (Go + web) pass cleanly.
+
+- 2026-09-27 — Task Modal Video Single/Multi-Part Flow, Resolution & Pricing Transparency, and Sounds Tab:
+  - **Compact 5-Tab Intent Navigation (`OrchestrateView.tsx`):**
+    - Renamed modal tabs to `Feature`, `Image`, `Video`, `Sounds`, `Audit` in a 5-column grid (`grid-cols-5`), replacing lengthy names ("Code / Feature", "Video Story", "Audit / Finder") so all tabs fit cleanly without wrapping.
+  - **Video Single vs Multi-Part Generation (`OrchestrateView.tsx`):**
+    - Added explicit mode toggle between **Single Video** (1 continuous clip, direct to video model) and **Multi-Part Video** (multi-scene timeline).
+    - **Single Video One-Prompt Flow & 8s Duration**: Single video uses strictly ONE prompt (no separate soundtrack input or sound clip generation). Audio and visuals are synthesized together directly within the video generator from the single prompt. Duration defaults to 8 seconds (matching Google Veo 3.1 standard clip length) with matching 8s pricing calculations.
+    - **Multi-Part Video**: Swarm drafts a multi-scene visual blueprint, sends each scene to the video model with prompt continuity, and automatically sequences the clips into a unified video story.
+  - **Truly Optional, Non-Preapproved Soundtracks (`OrchestrateView.tsx`, `projects.go`, `projects_media.go`):**
+    - Soundtrack is strictly optional for multi-part video via an explicit opt-in checkbox (`Add Dedicated Soundtrack Clip`, default false/unchecked), and hidden completely for single video.
+    - Removed pre-filled default soundtrack text in the frontend (`videoSoundtrack` defaults to empty `""` instead of pre-approved text).
+    - Removed backend default soundtrack forcing (`"Ambient Electronic Beats"`) when soundtrack is empty. If omitted, multi-part video tasks execute without a soundtrack clip, and the UI displays a clear guidance warning explaining that audio may cut between scenes.
+  - **Video Resolution & Pricing Transparency (`OrchestrateView.tsx`, `project_store.go`, `projects.go`):**
+    - Added resolution buttons (`720p`, `1080p`, `4k`) with per-second rate badges extracted from catalog pricing (`resolveVideoPricing`), and an estimated total cost summary banner (computing 8s for single video clips).
+    - Stored and passed `resolution` in `ProjectTaskRecord` and task API payload.
+  - **Optional Soundtrack Request with Sound Model Detection (`OrchestrateView.tsx`):**
+    - Provided an optional text input box for added sound only when the soundtrack checkbox is opted into, auto-detecting connected sound models (`hasSupportedSoundModel`) and providing quick-fill preset chips.
+  - **Dedicated Sounds Tab (`OrchestrateView.tsx`):**
+    - Added Sounds tab featuring an Audio/Sound model dropdown (`audioModelOptions`), duration buttons (`15s`, `30s`, `60s`, `120s`), and UI settings persistence (`tools.audio.default_model`).
+  - **Backend Media & Audio Execution (`projects.go`, `projects_media.go`):**
+    - Updated `deployProjectTaskExecution` and `executeDirectMediaTask` to support single video clip generation (1 scene, direct shot, 8s duration), multi-part video generation with optional soundtrack, and audio soundtrack generation (`sound`/`audio` agent) rendering waveform SVG assets.
+  - **Automated Tests:**
+    - `orchestrate-media-integration.spec.ts`: added tests for 5-tab layout, Single vs Multi-Part flow, 1-prompt single video, 8s duration pricing, optional unapproved soundtrack, 720p/1080p/4k resolutions and pricing summary, and Sounds tab persistence (14/14 tests passing).
+    - `projects_test.go`: added automated tests for 8s single video clip task execution, audio soundtrack task execution, and multi-part video execution with optional empty soundtrack (`TestProjectsAPIEndpoints` passing).
+
+- 2026-09-27 — Direct Single Video Execution, Optional AI Prompt Enhancement & Clean Media Task Cards:
+  - **AI Prompt Enhancement Toggle (`OrchestrateView.tsx`, `projects.go`):**
+    - Added an explicit "Enhance prompt with AI" toggle (`enhanceVideoPrompt`, default false) in the Video modal tab.
+    - When unchecked (default direct mode): task submission bypasses AI router LLM calls completely, constructing the single video task card directly without converting single shots into multi-scene blueprints.
+    - When checked: passes `enhance_prompt: true` to the backend. The router refines the prompt and camera motion for a single continuous 8-second video shot without decomposing into scenes or generating soundtracks.
+  - **Single Video Shot Spec & Task Card Presentation (`OrchestrateView.tsx`):**
+    - Single video tasks now render a dedicated **Single Video Shot Spec** (8s continuous duration, resolution, video model, model native audio) instead of a multi-scene video blueprint.
+    - Updated top outcome badge to `SINGLE VIDEO` for `video_clip` tasks.
+    - Updated deliverable blueprint slot to `Slot 1: Single Video (8s)` and approve button to `Approve & Generate (1 Clip)`.
+  - **Worktree Suppression for Direct Media Tasks (`OrchestrateView.tsx`, `projects.go`, `project_router.go`, `service.go`):**
+    - Direct media tasks (`video`, `image`, `sound`, `audio`, `video_clip`, `video_story`, `media_bundle`) no longer derive or allocate Git worktree branches (`worktreeBranch = ""`, `worktreeName = ""`, `baseBranch = ""`).
+    - Suppressed worktree badges, `Worktree:` labels, and git integration status bars on media task cards across `OrchestrateView.tsx`.
+  - **Automated Tests:**
+    - `orchestrate-media-integration.spec.ts`: added comprehensive test verifying AI Prompt Enhancement toggle, Single Video Shot Spec rendering, and media task worktree suppression (15/15 tests passing).
+    - `projects_test.go`: added tests 19 & 20 verifying direct single video creation (pending_approval, no worktree, no session, 8s model clip) and single video with `enhance_prompt: true`.
+
+- 2026-09-27 — Actual Media Models in Settings, Task Override & Default Change in Same Menu, Image Pricing & Visual Aspect Ratio Cues:
+  - **Actual Configured Model Detection & Server Authority (`media_settings.go`, `media-settings-page.tsx`, `images-settings-page.tsx`):**
+    - Enhanced `/v1/media/settings/catalog` to compute and return `default_image_model`, `default_video_model`, and `default_audio_model` reflecting the active account defaults or the primary connected provider model (e.g. Imagen 3.0 for Google, Veo 3.1 for video) rather than arbitrarily picking the first model.
+    - Updated Settings pages (`MediaSettingsPage`, `ImagesSettingsPage`) to display the actual connected/configured model and tag default options cleanly.
+  - **Natural Task Override & In-Menu Default Change (`OrchestrateView.tsx`):**
+    - Model selection in the Task Deploy modal now acts as a natural per-task override without silently forcing a change to the user's permanent `ui-settings`.
+    - Added an interactive in-menu control: when a user selects a model different from the default, it shows "Task override (Default: ...)" with a 1-click "Set as default for next time" button and an optional checkbox to change the saved default for future tasks in the same menu.
+    - Tagged default models with a `(Default)` label in the dropdowns.
+  - **Image Resolution (1K, 2K, 4K) & Pricing Transparency (`OrchestrateView.tsx`, `projects.go`, `projects_media.go`):**
+    - Added image resolution choices (`1K (Standard)`, `2K (HD)`, `4K (Ultra HD)`) with per-model/per-resolution pricing badges on buttons.
+    - Implemented `resolveImagePricing` calculating estimated costs from catalog billing lines or standard rates, displaying an **Estimated Model Cost** banner for images.
+    - Updated `generateImageMedia` and SVG deliverables to pass and reflect the selected image resolution.
+  - **Visual Aspect Ratio Box Cues for Image & Video (`OrchestrateView.tsx`):**
+    - Replaced raw text aspect ratio buttons with visual rectangular wireframe box cues illustrating actual proportions: `16:9` (Landscape `w-5 h-3`), `1:1` (Square `w-3.5 h-3.5`), `9:16` (Portrait `w-3 h-5`), `4:3` (Standard `w-4 h-3`) with descriptive labels.
+  - **Automated Tests:**
+    - `orchestrate-media-integration.spec.ts`: added tests for natural task model override and in-menu default persistence, 1K/2K/4K image resolutions and pricing summary, and visual aspect ratio box wireframe cues (18/18 tests passing).
+    - `projects_test.go`: added test 21 verifying 2K image task creation, resolution persistence, and deliverable execution.
+
+- 2026-09-27 — Dynamic Media Pricing Scaling with User Choices (Variants, Resolutions, Scenes & Durations):
+  - **Dynamic Image Pricing Scaling (`OrchestrateView.tsx`):**
+    - `resolveImagePricing` dynamically computes `totalsByResolution` and `ratesByResolution` scaled by the user's active `variantCount` (e.g. 5 images updates 1K to $0.15, 2K to $0.30, 4K to $0.60) instead of showing static 1-image estimates across all options.
+    - Resolution selector buttons (1K, 2K, 4K) now display the dynamic total cost for the selected variant count alongside the unit rate breakdown (`5x at $0.03/ea` or `$0.03/img`).
+    - Variant count buttons (`1`, `2`, `4`, `5x`, `10x`, `25x`) display dynamic price tags calculated from the active resolution's unit rate (e.g. at 2K, buttons display `$0.06`, `$0.12`, `$0.24`, `$0.30`, `$0.60`, `$1.50`).
+    - The **Estimated Model Cost** banner prominently displays the calculated dynamic total with full mathematical transparency (`$0.15 Total ($0.03/image × 5 images) · Standard estimate` / `Verified catalog`).
+  - **Dynamic Video Pricing Scaling (`OrchestrateView.tsx`):**
+    - `resolveVideoPricing` dynamically calculates duration-scaled costs across resolutions (`720p`, `1080p`, `4k`) and modes (8s single video vs 8s/12s/16s/20s multi-scene sequences).
+    - Video resolution buttons display the total duration cost for the active mode (`${totalForRes}`) and the duration rate breakdown (`8s at $0.08/s`).
+    - Multi-part timeline scene buttons (`2`, `3`, `4`, `5` scenes) dynamically display sequence duration and total cost (e.g. at 1080p: `2 Scenes: 8s · $0.64`, `3 Scenes: 12s · $0.96`, `4 Scenes: 16s · $1.28`, `5 Scenes: 20s · $1.60`).
+    - Video Estimated Model Cost banner highlights the exact total for the selected duration and sequence.
+  - **Audio Pricing Transparency (`OrchestrateView.tsx`):**
+    - `resolveAudioPricing` calculates track costs for duration choices (`15s`, `30s`, `60s`, `120s`).
+    - Sounds tab displays duration cost tags on buttons and an Estimated Model Cost summary banner.
+  - **Automated Tests:**
+    - `orchestrate-media-integration.spec.ts`: added unit tests for `resolveImagePricing`, `resolveVideoPricing`, and `resolveAudioPricing` testing variant scaling, duration scaling, and verified catalog line parsing, plus UI template assertions for all dynamic button price tags (22/22 tests passing).
+
 
 
 

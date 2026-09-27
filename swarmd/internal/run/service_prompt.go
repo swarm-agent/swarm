@@ -583,6 +583,22 @@ func (s *Service) projectContextPromptBlock(scope tool.WorkspaceScope) string {
 		sb.WriteString(fmt.Sprintf("# %s\nNo detailed project.md has been synthesized yet. Call manage_projects action=\"synthesize_context\" to generate it from workspace docs.", matchedProject.Name))
 	}
 
+	// Append recent tasks & deliverables so orchestrator understands references like "picture 2", "variant 1", etc.
+	if tasks, err := db.ListProjectTasks(accountScopeID, matchedProject.ID, 10); err == nil && len(tasks) > 0 {
+		sb.WriteString("\n\n## Recent Project Tasks & Deliverables\n")
+		for _, t := range tasks {
+			sb.WriteString(fmt.Sprintf("- Task `%s` (%s) [%s]: %s\n", t.ID, t.Agent, t.Status, t.Title))
+			for dIdx, d := range t.Deliverables {
+				itemNum := dIdx + 1
+				desc := d.Title
+				if desc == "" {
+					desc = d.Description
+				}
+				sb.WriteString(fmt.Sprintf("  * Deliverable #%d (Picture/Asset %d): %s (status: %s, kind: %s, id: %s)\n", itemNum, itemNum, desc, d.Status, d.Kind, d.ID))
+			}
+		}
+	}
+
 	return strings.TrimSpace(sb.String())
 }
 

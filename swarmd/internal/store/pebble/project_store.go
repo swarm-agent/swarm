@@ -259,7 +259,10 @@ type ProjectTaskRecord struct {
 	LastError           string                   `json:"last_error,omitempty"`
 	FeedbackHistory     []string                 `json:"feedback_history,omitempty"`
 	AspectRatio         string                   `json:"aspect_ratio,omitempty"`
+	Resolution          string                   `json:"resolution,omitempty"`
 	VariantCount        int                      `json:"variant_count,omitempty"`
+	DurationSeconds     int                      `json:"duration_seconds,omitempty"`
+	Model               string                   `json:"model,omitempty"`
 	Scenes              []ProjectTaskScene       `json:"scenes,omitempty"`
 	Soundtrack          string                   `json:"soundtrack,omitempty"`
 	AutoApprove         bool                     `json:"auto_approve,omitempty"`
@@ -291,7 +294,7 @@ func (t *ProjectTaskRecord) Validate() error {
 		t.Tier = "direct"
 	}
 	if t.OutcomeType == "" {
-		if t.Agent == "designer" || t.Agent == "video" || t.Agent == "image" {
+		if t.Agent == "designer" || t.Agent == "video" || t.Agent == "image" || t.Agent == "sound" || t.Agent == "audio" {
 			t.OutcomeType = "media_bundle"
 		} else if strings.Contains(strings.ToLower(t.Title), "fix") || strings.Contains(strings.ToLower(t.Title), "bug") {
 			t.OutcomeType = "bug_patch"

@@ -39,6 +39,8 @@ type TaskPlanOptions struct {
 	Feedback           string
 	LastError          string
 	Intent             string // "code", "image", "video", "audit"
+	VideoType          string // "single", "multipart"
+	EnhancePrompt      bool
 	AspectRatio        string // "16:9", "1:1", "9:16", "4:3"
 	VariantCount       int    // 1, 2, 4, 5..25
 	ScenesCount        int    // 2, 3, 4
@@ -203,7 +205,11 @@ func RouteAndPlanProjectTaskWithOptions(opts TaskPlanOptions) TaskRouteResult {
 		} else {
 			agent = "video"
 			tier = "direct"
-			outcomeType = "video_story"
+			if opts.VideoType == "single" || opts.ScenesCount == 1 {
+				outcomeType = "video_clip"
+			} else {
+				outcomeType = "video_story"
+			}
 		}
 	case intent == "audit" || (intent == "" && (strings.Contains(promptLower, "audit") || strings.Contains(promptLower, "investigate") || strings.Contains(promptLower, "inspect") || strings.Contains(promptLower, "diagnose"))):
 		agent = "finder"
@@ -290,22 +296,37 @@ func RouteAndPlanProjectTaskWithOptions(opts TaskPlanOptions) TaskRouteResult {
 		if aspectRatio == "" {
 			aspectRatio = "16:9"
 		}
-		sceneCount := opts.ScenesCount
-		if sceneCount <= 0 {
-			sceneCount = 2
-		}
-		stages = []string{"Scene & Storyboard Compilation", "Synchronized Video & Audio Synthesis"}
-		for s := 1; s <= sceneCount; s++ {
-			scenes = append(scenes, ProjectTaskScene{
-				SceneNumber: s,
-				Title:       fmt.Sprintf("Scene %d", s),
-				DurationSec: 4,
-				Prompt:      fmt.Sprintf("%s - Scene %d", prompt, s),
-				VisualNotes: "Cinematic lighting, smooth camera movement",
-			})
-		}
-		deliverables = []ProjectTaskDeliverable{
-			{ID: "deliv_vid", Title: fmt.Sprintf("Video Story (%s)", aspectRatio), Kind: "video", Status: "pending"},
+		if opts.VideoType == "single" || opts.ScenesCount == 1 {
+			outcomeType = "video_clip"
+			stages = []string{"Video Parameter Configuration", "Model Generative Synthesis"}
+			deliverables = []ProjectTaskDeliverable{
+				{
+					ID:          "deliv_vid",
+					Title:       fmt.Sprintf("%s (Single Video, %s)", title, aspectRatio),
+					Kind:        "video",
+					Status:      "pending",
+					Duration:    "8s",
+					Description: fmt.Sprintf("Single video clip (%s, 8s): %s", aspectRatio, prompt),
+				},
+			}
+		} else {
+			sceneCount := opts.ScenesCount
+			if sceneCount <= 0 {
+				sceneCount = 2
+			}
+			stages = []string{"Scene & Storyboard Compilation", "Synchronized Video & Audio Synthesis"}
+			for s := 1; s <= sceneCount; s++ {
+				scenes = append(scenes, ProjectTaskScene{
+					SceneNumber: s,
+					Title:       fmt.Sprintf("Scene %d", s),
+					DurationSec: 4,
+					Prompt:      fmt.Sprintf("%s - Scene %d", prompt, s),
+					VisualNotes: "Cinematic lighting, smooth camera movement",
+				})
+			}
+			deliverables = []ProjectTaskDeliverable{
+				{ID: "deliv_vid", Title: fmt.Sprintf("Video Story (%s)", aspectRatio), Kind: "video", Status: "pending"},
+			}
 		}
 	case "designer":
 		if variantCount > 1 || tier == "swarm" || outcomeType == "media_bundle" {
@@ -347,8 +368,17 @@ func RouteAndPlanProjectTaskWithOptions(opts TaskPlanOptions) TaskRouteResult {
 		}
 	}
 
-	branch, _ := MakeWorktreeBranch(title, prompt)
-	mission := fmt.Sprintf("Autonomous %s mission: %s. Target: %s.", agent, prompt, branch)
+	isMedia := agent == "image" || agent == "video" || agent == "sound" || agent == "audio" || outcomeType == "media_bundle" || outcomeType == "video_story" || outcomeType == "video_clip"
+	var branch string
+	if !isMedia {
+		branch, _ = MakeWorktreeBranch(title, prompt)
+	}
+	var mission string
+	if isMedia {
+		mission = fmt.Sprintf("Direct %s generation: %s.", agent, prompt)
+	} else {
+		mission = fmt.Sprintf("Autonomous %s mission: %s. Target: %s.", agent, prompt, branch)
+	}
 
 	var heroLabel string
 	for _, w := range opts.Workspaces {
@@ -393,7 +423,11 @@ func RouteAndPlanProjectTaskWithOptions(opts TaskPlanOptions) TaskRouteResult {
 	}
 	fullPlan.WriteString(fmt.Sprintf("- **Context Pool**: %s\n", contextPoolSummary))
 	fullPlan.WriteString(fmt.Sprintf("- **Workspace**: %s\n", heroLabel))
-	fullPlan.WriteString(fmt.Sprintf("- **Target Worktree Branch**: `%s`\n\n", branch))
+	if !isMedia && branch != "" {
+		fullPlan.WriteString(fmt.Sprintf("- **Target Worktree Branch**: `%s`\n\n", branch))
+	} else {
+		fullPlan.WriteString("\n")
+	}
 
 	fullPlan.WriteString("#### Execution Pipeline Stages\n")
 	for i, st := range stages {
@@ -403,7 +437,9 @@ func RouteAndPlanProjectTaskWithOptions(opts TaskPlanOptions) TaskRouteResult {
 	if len(deliverables) > 0 {
 		fullPlan.WriteString(fmt.Sprintf("- [ ] Deliverable `%s` ready and verified\n", deliverables[0].Title))
 	}
-	fullPlan.WriteString("- [ ] Worktree branch clean and ready for integration into dev\n")
+	if !isMedia {
+		fullPlan.WriteString("- [ ] Worktree branch clean and ready for integration into dev\n")
+	}
 	fullPlan.WriteString("- [ ] Regression gates pass with zero broken contracts\n")
 
 	if feedback != "" {

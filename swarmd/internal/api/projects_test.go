@@ -416,7 +416,8 @@ func TestDirectMediaTaskLifecycle(t *testing.T) {
 		"description": "make 3 cute panda images",
 		"agent": "image",
 		"aspect_ratio": "16:9",
-		"variant_count": 3
+		"variant_count": 3,
+		"model": "imagen-3.0-generate-002"
 	}`
 	w = call(http.MethodPost, "/"+projID+"/tasks", imgTaskBody, []string{"sessions:write"})
 	if w.Code != http.StatusCreated {
@@ -429,6 +430,9 @@ func TestDirectMediaTaskLifecycle(t *testing.T) {
 
 	if taskObj["status"] != "pending_approval" {
 		t.Fatalf("expected pending_approval status, got %v", taskObj["status"])
+	}
+	if taskObj["model"] != "imagen-3.0-generate-002" {
+		t.Fatalf("expected task model imagen-3.0-generate-002, got %v", taskObj["model"])
 	}
 
 	delivs, ok := taskObj["deliverables"].([]any)
@@ -699,6 +703,321 @@ func TestDirectMediaTaskLifecycle(t *testing.T) {
 	}
 	if !strings.Contains(vd["title"].(string), "Continued from") && !strings.Contains(vd["title"].(string), "Scene 2") {
 		t.Fatalf("expected deliverable title to denote continuation, got %q", vd["title"])
+	}
+
+	// 16. Single video clip task with resolution & model (8s duration)
+	singleVidBody := `{
+		"title": "Single Rocket Launch Shot",
+		"prompt": "Cinematic 8s slow-mo shot of rocket ignition",
+		"intent": "video",
+		"variant_count": 1,
+		"aspect_ratio": "16:9",
+		"resolution": "1080p",
+		"duration_seconds": 8,
+		"model": "veo-3.1-generate-preview",
+		"auto_approve": true
+	}`
+	w = call(http.MethodPost, "/"+projID+"/tasks", singleVidBody, []string{"sessions:write"})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201 for single video task, got %d: %s", w.Code, w.Body.String())
+	}
+	var singleVidResp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &singleVidResp)
+	singleVidTaskID := singleVidResp["task"].(map[string]any)["id"].(string)
+
+	var completedSingleVid map[string]any
+	for wait := 0; wait < 30; wait++ {
+		time.Sleep(100 * time.Millisecond)
+		w = call(http.MethodGet, "/"+projID+"/tasks/"+singleVidTaskID, "", []string{"sessions:read"})
+		if w.Code == http.StatusOK {
+			var resp map[string]any
+			if err := json.Unmarshal(w.Body.Bytes(), &resp); err == nil {
+				taskObj := resp["task"].(map[string]any)
+				if taskObj["status"] == "needs_review" {
+					completedSingleVid = taskObj
+					break
+				}
+			}
+		}
+	}
+	if completedSingleVid == nil {
+		t.Fatal("expected single video task to complete with status needs_review")
+	}
+	svDelivs := completedSingleVid["deliverables"].([]any)
+	if len(svDelivs) != 1 {
+		t.Fatalf("expected 1 deliverable for single video, got %d", len(svDelivs))
+	}
+	svd := svDelivs[0].(map[string]any)
+	if !strings.Contains(svd["title"].(string), "Single Video") {
+		t.Fatalf("expected single video title, got %q", svd["title"])
+	}
+	if svd["duration"] != "8s" {
+		t.Fatalf("expected single video duration to be 8s, got %v", svd["duration"])
+	}
+	if !strings.Contains(svd["description"].(string), "8s") {
+		t.Fatalf("expected single video description to contain 8s, got %v", svd["description"])
+	}
+
+	// 17. Sound / Audio track task
+	soundBody := `{
+		"title": "Launch Theme Soundtrack",
+		"prompt": "Driving synthwave with pulsing bassline 120 BPM",
+		"intent": "sound",
+		"duration_seconds": 30,
+		"model": "lyria-3.5",
+		"auto_approve": true
+	}`
+	w = call(http.MethodPost, "/"+projID+"/tasks", soundBody, []string{"sessions:write"})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201 for sound task, got %d: %s", w.Code, w.Body.String())
+	}
+	var soundResp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &soundResp)
+	soundTaskID := soundResp["task"].(map[string]any)["id"].(string)
+
+	var completedSound map[string]any
+	for wait := 0; wait < 30; wait++ {
+		time.Sleep(100 * time.Millisecond)
+		w = call(http.MethodGet, "/"+projID+"/tasks/"+soundTaskID, "", []string{"sessions:read"})
+		if w.Code == http.StatusOK {
+			var resp map[string]any
+			if err := json.Unmarshal(w.Body.Bytes(), &resp); err == nil {
+				taskObj := resp["task"].(map[string]any)
+				if taskObj["status"] == "needs_review" {
+					completedSound = taskObj
+					break
+				}
+			}
+		}
+	}
+	if completedSound == nil {
+		t.Fatal("expected sound task to complete with status needs_review")
+	}
+	sndDelivs := completedSound["deliverables"].([]any)
+	if len(sndDelivs) != 1 {
+		t.Fatalf("expected 1 audio deliverable, got %d", len(sndDelivs))
+	}
+	snd := sndDelivs[0].(map[string]any)
+	if snd["kind"] != "audio" || !strings.Contains(snd["title"].(string), "Audio Clip") {
+		t.Fatalf("expected audio deliverable, got kind=%v title=%v", snd["kind"], snd["title"])
+	}
+
+	// 18. Multi-part video task with optional EMPTY soundtrack
+	noSoundVidBody := `{
+		"title": "Silent Documentary Montage",
+		"prompt": "Multi-scene montage of deep space nebulae",
+		"intent": "video",
+		"variant_count": 3,
+		"aspect_ratio": "16:9",
+		"resolution": "1080p",
+		"model": "veo-3.1-generate-preview",
+		"auto_approve": true
+	}`
+	w = call(http.MethodPost, "/"+projID+"/tasks", noSoundVidBody, []string{"sessions:write"})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201 for no-soundtrack multi-part video task, got %d: %s", w.Code, w.Body.String())
+	}
+	var noSoundVidResp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &noSoundVidResp)
+	noSoundVidTaskID := noSoundVidResp["task"].(map[string]any)["id"].(string)
+
+	var completedNoSoundVid map[string]any
+	for wait := 0; wait < 30; wait++ {
+		time.Sleep(100 * time.Millisecond)
+		w = call(http.MethodGet, "/"+projID+"/tasks/"+noSoundVidTaskID, "", []string{"sessions:read"})
+		if w.Code == http.StatusOK {
+			var resp map[string]any
+			if err := json.Unmarshal(w.Body.Bytes(), &resp); err == nil {
+				taskObj := resp["task"].(map[string]any)
+				if taskObj["status"] == "needs_review" {
+					completedNoSoundVid = taskObj
+					break
+				}
+			}
+		}
+	}
+	if completedNoSoundVid == nil {
+		t.Fatal("expected no-soundtrack multi-part video task to complete with status needs_review")
+	}
+	nsDelivs := completedNoSoundVid["deliverables"].([]any)
+	if len(nsDelivs) != 1 {
+		t.Fatalf("expected 1 deliverable, got %d", len(nsDelivs))
+	}
+	nsd := nsDelivs[0].(map[string]any)
+	if strings.Contains(nsd["description"].(string), "Ambient Electronic Beats") {
+		t.Fatalf("did not expect default Ambient Electronic Beats when soundtrack is omitted, got %q", nsd["description"])
+	}
+	if !strings.Contains(nsd["description"].(string), "no soundtrack clip") {
+		t.Fatalf("expected deliverable description to state no soundtrack clip, got %q", nsd["description"])
+	}
+
+	// 19. Single Video Direct Task: strictly 1 clip, pending_approval, no worktree, no session, 8s model clip
+	directSingleVidBody := `{
+		"title": "Futuristic Neon Metropolis Drone Flyover",
+		"prompt": "dramatic drone shot flying over a futuristic neon city at dusk with volumetric fog",
+		"intent": "video",
+		"video_type": "single",
+		"aspect_ratio": "16:9",
+		"resolution": "1080p",
+		"model": "veo-3.1-generate-preview",
+		"auto_approve": false
+	}`
+	w = call(http.MethodPost, "/"+projID+"/tasks", directSingleVidBody, []string{"sessions:write"})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201 for single video task, got %d: %s", w.Code, w.Body.String())
+	}
+	var directSVResp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &directSVResp)
+	directSVTask := directSVResp["task"].(map[string]any)
+	directSVTaskID := directSVTask["id"].(string)
+
+	if directSVTask["status"] != "pending_approval" {
+		t.Fatalf("expected pending_approval for single video task, got %v", directSVTask["status"])
+	}
+	if directSVTask["outcome_type"] != "video_clip" {
+		t.Fatalf("expected outcome_type video_clip, got %v", directSVTask["outcome_type"])
+	}
+	if directSVTask["worktree_branch"] != "" || directSVTask["worktree_name"] != "" {
+		t.Fatalf("expected no worktree for single video direct task, got branch=%v name=%v", directSVTask["worktree_branch"], directSVTask["worktree_name"])
+	}
+	if directSVTask["session_id"] != "" && directSVTask["session_id"] != nil {
+		t.Fatalf("expected no session_id for direct media task, got %v", directSVTask["session_id"])
+	}
+	if svScenes, ok := directSVTask["scenes"].([]any); ok && len(svScenes) > 1 {
+		t.Fatalf("expected 0 or 1 scene for single video, got %d scenes", len(svScenes))
+	}
+	if directSVTask["soundtrack"] != "" && directSVTask["soundtrack"] != nil {
+		t.Fatalf("expected empty soundtrack for single video, got %v", directSVTask["soundtrack"])
+	}
+	directSVDelivs := directSVTask["deliverables"].([]any)
+	if len(directSVDelivs) != 1 {
+		t.Fatalf("expected 1 deliverable slot, got %d", len(directSVDelivs))
+	}
+	dsvd0 := directSVDelivs[0].(map[string]any)
+	if dsvd0["duration"] != "8s" {
+		t.Fatalf("expected 8s duration for single video deliverable, got %v", dsvd0["duration"])
+	}
+
+	// Approve single video task and verify direct execution to needs_review
+	w = call(http.MethodPost, "/"+projID+"/tasks/"+directSVTaskID+"/approve", "", []string{"sessions:write"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for single video approve, got %d: %s", w.Code, w.Body.String())
+	}
+	var directCompletedSV map[string]any
+	for wait := 0; wait < 30; wait++ {
+		time.Sleep(100 * time.Millisecond)
+		w = call(http.MethodGet, "/"+projID+"/tasks/"+directSVTaskID, "", []string{"sessions:read"})
+		if w.Code == http.StatusOK {
+			var resp map[string]any
+			if err := json.Unmarshal(w.Body.Bytes(), &resp); err == nil {
+				taskObj := resp["task"].(map[string]any)
+				if taskObj["status"] == "needs_review" {
+					directCompletedSV = taskObj
+					break
+				}
+			}
+		}
+	}
+	if directCompletedSV == nil {
+		t.Fatal("expected approved single video task to complete with status needs_review")
+	}
+	directCompletedDelivs := directCompletedSV["deliverables"].([]any)
+	if len(directCompletedDelivs) != 1 {
+		t.Fatalf("expected 1 deliverable on completed single video, got %d", len(directCompletedDelivs))
+	}
+	cdsvd := directCompletedDelivs[0].(map[string]any)
+	if cdsvd["status"] != "ready" {
+		t.Fatalf("expected deliverable status ready, got %v", cdsvd["status"])
+	}
+	if !strings.Contains(cdsvd["description"].(string), "Single video clip") {
+		t.Fatalf("expected single video description, got %q", cdsvd["description"])
+	}
+
+	// 20. Single video task with enhance_prompt=true
+	enhancedSVBody := `{
+		"title": "Cyberpunk Neon Alleys",
+		"prompt": "neon alley in rain with holographic signs",
+		"intent": "video",
+		"video_type": "single",
+		"enhance_prompt": true,
+		"aspect_ratio": "16:9",
+		"resolution": "1080p",
+		"model": "veo-3.1-generate-preview",
+		"auto_approve": false
+	}`
+	w = call(http.MethodPost, "/"+projID+"/tasks", enhancedSVBody, []string{"sessions:write"})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201 for enhanced single video task, got %d: %s", w.Code, w.Body.String())
+	}
+	var enhResp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &enhResp)
+	enhTask := enhResp["task"].(map[string]any)
+
+	if enhTask["outcome_type"] != "video_clip" {
+		t.Fatalf("expected outcome_type video_clip for enhanced single video, got %v", enhTask["outcome_type"])
+	}
+	if enhTask["worktree_branch"] != "" || enhTask["worktree_name"] != "" {
+		t.Fatalf("expected no worktree for enhanced single video, got branch=%v name=%v", enhTask["worktree_branch"], enhTask["worktree_name"])
+	}
+	if enhScenes, ok := enhTask["scenes"].([]any); ok && len(enhScenes) > 1 {
+		t.Fatalf("expected at most 1 scene for enhanced single video, got %d scenes", len(enhScenes))
+	}
+	if enhTask["soundtrack"] != "" && enhTask["soundtrack"] != nil {
+		t.Fatalf("expected no soundtrack for enhanced single video, got %v", enhTask["soundtrack"])
+	}
+
+	// 21. Image task with 2K resolution & explicit model
+	image2KBody := `{
+		"title": "Cosmic Nebular Swarm",
+		"prompt": "hyper-detailed nebula with swirling star clusters",
+		"intent": "image",
+		"aspect_ratio": "16:9",
+		"resolution": "2k",
+		"model": "imagen-3.0-generate-002",
+		"variant_count": 2,
+		"auto_approve": false
+	}`
+	w = call(http.MethodPost, "/"+projID+"/tasks", image2KBody, []string{"sessions:write"})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201 for 2k image task, got %d: %s", w.Code, w.Body.String())
+	}
+	var img2KResp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &img2KResp)
+	img2KTask := img2KResp["task"].(map[string]any)
+	if img2KTask["resolution"] != "2k" {
+		t.Fatalf("expected resolution 2k, got %v", img2KTask["resolution"])
+	}
+	if img2KTask["model"] != "imagen-3.0-generate-002" {
+		t.Fatalf("expected model imagen-3.0-generate-002, got %v", img2KTask["model"])
+	}
+	// Approve and verify execution deliverables reflect 2k resolution
+	img2KID := img2KTask["id"].(string)
+	w = call(http.MethodPost, "/"+projID+"/tasks/"+img2KID+"/approve", "{}", []string{"sessions:write"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 approving 2k image task, got %d: %s", w.Code, w.Body.String())
+	}
+	time.Sleep(150 * time.Millisecond)
+	w = call(http.MethodGet, "/"+projID+"/tasks", "", []string{"sessions:read"})
+	var checkTasksResp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &checkTasksResp)
+	var completedImgTask map[string]any
+	for _, item := range checkTasksResp["tasks"].([]any) {
+		tm := item.(map[string]any)
+		if tm["id"] == img2KID && tm["status"] == "needs_review" {
+			completedImgTask = tm
+			break
+		}
+	}
+	if completedImgTask == nil {
+		t.Fatal("expected approved 2k image task to complete with status needs_review")
+	}
+	cImgDelivs := completedImgTask["deliverables"].([]any)
+	if len(cImgDelivs) != 2 {
+		t.Fatalf("expected 2 deliverables for 2k image task, got %d", len(cImgDelivs))
+	}
+	imgDeliv := cImgDelivs[0].(map[string]any)
+	if !strings.Contains(imgDeliv["description"].(string), "2k") && !strings.Contains(imgDeliv["description"].(string), "2K") {
+		t.Fatalf("expected deliverable description to mention 2k, got %q", imgDeliv["description"])
 	}
 }
 
