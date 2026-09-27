@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
@@ -59,6 +60,43 @@ func TestProjectTaskApprove_MalformedJSONRejected(t *testing.T) {
 		t.Fatalf("expected 'malformed JSON body' error message, got: %s", wTypeMismatch.Body.String())
 	}
 
+	// Case 3: Top-level null body rejected
+	wNull := f.callAPI(http.MethodPost, "/"+projID+"/tasks/"+taskID+"/approve", "null", p)
+	if wNull.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 on null body, got %d: %s", wNull.Code, wNull.Body.String())
+	}
+	if !strings.Contains(wNull.Body.String(), "malformed JSON body") {
+		t.Fatalf("expected 'malformed JSON body' error message on null, got: %s", wNull.Body.String())
+	}
+
+	// Case 4: Trailing garbage after valid JSON object rejected
+	wTrailing := f.callAPI(http.MethodPost, "/"+projID+"/tasks/"+taskID+"/approve", `{"definition_revision":1} trailing_data`, p)
+	if wTrailing.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 on trailing garbage, got %d: %s", wTrailing.Code, wTrailing.Body.String())
+	}
+	if !strings.Contains(wTrailing.Body.String(), "malformed JSON body") {
+		t.Fatalf("expected 'malformed JSON body' error message on trailing data, got: %s", wTrailing.Body.String())
+	}
+
+	// Case 5: Multiple JSON objects rejected
+	wMultiple := f.callAPI(http.MethodPost, "/"+projID+"/tasks/"+taskID+"/approve", `{"definition_revision":1}{"extra":2}`, p)
+	if wMultiple.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 on multiple JSON objects, got %d: %s", wMultiple.Code, wMultiple.Body.String())
+	}
+	if !strings.Contains(wMultiple.Body.String(), "malformed JSON body") {
+		t.Fatalf("expected 'malformed JSON body' error message on multiple objects, got: %s", wMultiple.Body.String())
+	}
+
+	// Case 6: Oversized body with valid JSON prefix rejected (max+1 enforcement)
+	oversizedBody := `{"definition_revision":1}` + strings.Repeat(" ", 1024*1024+32)
+	wOversized := f.callAPI(http.MethodPost, "/"+projID+"/tasks/"+taskID+"/approve", oversizedBody, p)
+	if wOversized.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 on oversized body with valid prefix, got %d: %s", wOversized.Code, wOversized.Body.String())
+	}
+	if !strings.Contains(wOversized.Body.String(), "exceeds maximum allowed size") {
+		t.Fatalf("expected 'exceeds maximum allowed size' error message on oversized body, got: %s", wOversized.Body.String())
+	}
+
 	// Verify task remained pending_approval and was NOT approved
 	taskAfterBad, found, err := f.server.sessions.Store().GetProjectTask(f.accountID, projID, taskID)
 	if err != nil || !found {
@@ -68,10 +106,113 @@ func TestProjectTaskApprove_MalformedJSONRejected(t *testing.T) {
 		t.Fatalf("expected task status to remain 'pending_approval' after rejected malformed approval, got %q", taskAfterBad.Status)
 	}
 
-	// Case 3: Empty body or valid empty object succeeds for direct unguided task
+	// Case 7: Empty body or valid empty object succeeds for direct unguided task
 	wGood := f.callAPI(http.MethodPost, "/"+projID+"/tasks/"+taskID+"/approve", "", p)
 	if wGood.Code != http.StatusOK {
 		t.Fatalf("expected 200 on valid empty body approve, got %d: %s", wGood.Code, wGood.Body.String())
+	}
+}
+
+// Requirement: Plan task approvals must support idempotent retry after execution lifecycle
+// increments plan.Version. The approval guard must verify definition revision and accepted receipt,
+// not plan.Version, preventing false-stale rejections of valid retries.
+func TestProjectTaskApprove_IdempotentRetryAfterPlanLifecycleIncrements(t *testing.T) {
+	// Written Purpose:
+	// - Product Requirement: POST /v3/projects/{id}/tasks/{taskId}/approve must support idempotent
+	//   retries when plan execution has already begun and bumped plan.Version. It must compare
+	//   guard.DefinitionRevision against the task's PlanBinding.DefinitionRevision and accepted receipt,
+	//   not the volatile execution plan.Version.
+	// - Authority: ApproveProjectTask in swarmd/internal/api/project_task_program.go.
+	// - Threat/regression: Review guard regression where plan.Version advancement during checkpoint
+	//   execution falsely blocks subsequent idempotent approval retries.
+	f := setupMatrixTestFixture(t)
+	defer f.db.Close()
+	projID := f.createProject(t)
+	p := identity.Principal{Type: "user", UserID: f.userID, AccountScopeID: f.accountID}
+
+	doc := &pebblestore.SessionPlanDocument{
+		ID:    "plan-idempotent-01",
+		Title: "Plan Idempotent Test",
+		Info:  pebblestore.SessionPlanInfo{Goal: "Verify idempotent approval"},
+		Checkpoints: []pebblestore.SessionPlanCheckpoint{
+			{ID: "cp-1", Title: "Checkpoint 1"},
+		},
+	}
+	w := f.callAPI(http.MethodPost, "/"+projID+"/tasks", map[string]any{
+		"title":         "Idempotent plan task",
+		"prompt":        "Idempotent prompt",
+		"plan_document": doc,
+	}, p)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create task failed %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	taskMap := resp["task"].(map[string]any)
+	taskID := taskMap["id"].(string)
+	sessID := taskMap["session_id"].(string)
+
+	// 1. Initial approval succeeds
+	wApprove := f.callAPI(http.MethodPost, "/"+projID+"/tasks/"+taskID+"/approve", tool.ProjectTaskApprovalGuards{
+		SessionID:          sessID,
+		PlanID:             "plan-idempotent-01",
+		DefinitionRevision: 1,
+	}, p)
+	if wApprove.Code != http.StatusOK {
+		t.Fatalf("initial approve failed %d: %s", wApprove.Code, wApprove.Body.String())
+	}
+	var appResp map[string]any
+	_ = json.Unmarshal(wApprove.Body.Bytes(), &appResp)
+	if appResp["status"] != "approved" {
+		t.Fatalf("expected status 'approved', got %q", appResp["status"])
+	}
+
+	// Verify plan was approved and accepted definition receipt was recorded
+	planAfterFirst, ok, err := f.server.sessions.Store().GetPlan(sessID, "plan-idempotent-01")
+	if err != nil || !ok {
+		t.Fatalf("lookup plan failed: %v", err)
+	}
+	if planAfterFirst.ApprovalState != "approved" {
+		t.Fatalf("expected plan approval state 'approved', got %q", planAfterFirst.ApprovalState)
+	}
+	if planAfterFirst.AcceptedDefinitionReceipt == "" {
+		t.Fatal("expected plan to have AcceptedDefinitionReceipt set")
+	}
+
+	// 2. Simulate execution lifecycle advancing plan.Version (e.g. checkpoint transition to version 3)
+	planAdvanced := planAfterFirst
+	planAdvanced.Version = 3
+	planAdvanced.ParentRevision = 2
+	if err := f.server.sessions.Store().PutPlan(planAdvanced); err != nil {
+		t.Fatalf("put advanced plan: %v", err)
+	}
+
+	// 3. Idempotent retry with original definition guards (DefinitionRevision: 1) MUST SUCCEED!
+	wRetry := f.callAPI(http.MethodPost, "/"+projID+"/tasks/"+taskID+"/approve", tool.ProjectTaskApprovalGuards{
+		SessionID:          sessID,
+		PlanID:             "plan-idempotent-01",
+		DefinitionRevision: 1,
+	}, p)
+	if wRetry.Code != http.StatusOK {
+		t.Fatalf("idempotent retry failed %d: %s", wRetry.Code, wRetry.Body.String())
+	}
+	var retryResp map[string]any
+	_ = json.Unmarshal(wRetry.Body.Bytes(), &retryResp)
+	if retryResp["status"] != "already_approved" && retryResp["status"] != "approved" {
+		t.Fatalf("expected status 'already_approved' or 'approved', got %q", retryResp["status"])
+	}
+
+	// 4. Stale retry with non-matching definition revision (e.g. 99) MUST be rejected with 400
+	wStale := f.callAPI(http.MethodPost, "/"+projID+"/tasks/"+taskID+"/approve", tool.ProjectTaskApprovalGuards{
+		SessionID:          sessID,
+		PlanID:             "plan-idempotent-01",
+		DefinitionRevision: 99,
+	}, p)
+	if wStale.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 on stale revision retry, got %d: %s", wStale.Code, wStale.Body.String())
+	}
+	if !strings.Contains(wStale.Body.String(), "stale") {
+		t.Fatalf("expected 'stale' error message, got: %s", wStale.Body.String())
 	}
 }
 
@@ -258,6 +399,96 @@ func TestProjectTaskReject_NoPartialFailureOnBoundPlanError(t *testing.T) {
 	}
 }
 
+// Requirement: If updating the project task fails after marking the bound session plan rejected,
+// the honest reconciliation boundary must restore the plan to its prior status.
+func TestProjectTaskReject_TaskUpdateFailureReconcilesBoundPlan(t *testing.T) {
+	// Written Purpose:
+	// - Product Requirement: POST /v3/projects/{id}/tasks/{taskId}/reject reconciles across
+	//   canonical session mutations and project task store updates. When task store update fails
+	//   after plan rejection, the reconciliation boundary must restore the bound plan so it does
+	//   not remain rejected in an inconsistent split-brain state.
+	// - Authority: handleProjects in swarmd/internal/api/projects.go.
+	// - Threat/regression: Failed task updates leaving orphaned rejected plans in the session store.
+	f := setupMatrixTestFixture(t)
+	defer f.db.Close()
+	projID := f.createProject(t)
+	p := identity.Principal{Type: "user", UserID: f.userID, AccountScopeID: f.accountID}
+
+	doc := &pebblestore.SessionPlanDocument{
+		ID:    "plan-reconcile-01",
+		Title: "Plan To Reconcile",
+		Info:  pebblestore.SessionPlanInfo{Goal: "Verify reconciliation on task failure"},
+		Checkpoints: []pebblestore.SessionPlanCheckpoint{
+			{ID: "cp-1", Title: "Checkpoint 1"},
+		},
+	}
+	w := f.callAPI(http.MethodPost, "/"+projID+"/tasks", map[string]any{
+		"title":         "Reconcile rejection task",
+		"prompt":        "Verify reconcile reject",
+		"plan_document": doc,
+	}, p)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create task failed %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	taskMap := resp["task"].(map[string]any)
+	taskID := taskMap["id"].(string)
+	sessID := taskMap["session_id"].(string)
+
+	// Verify initial plan state is pending_approval
+	initialPlan, ok, err := f.server.sessions.Store().GetPlan(sessID, "plan-reconcile-01")
+	if err != nil || !ok {
+		t.Fatalf("lookup initial plan: %v", err)
+	}
+	if initialPlan.Status != "pending_approval" {
+		t.Fatalf("expected initial plan status 'pending_approval', got %q", initialPlan.Status)
+	}
+
+	// Install failure seam on UpdateProjectTask
+	restore := f.server.sessions.Store().SetProjectTaskUpdateHookForTest(func(tID string) error {
+		if tID == taskID {
+			return errors.New("injected project task update failure")
+		}
+		return nil
+	})
+	defer restore()
+
+	// Attempt rejection: task update will fail, triggering reconciliation boundary
+	wReject := f.callAPI(http.MethodPost, "/"+projID+"/tasks/"+taskID+"/reject", tool.ProjectTaskApprovalGuards{
+		SessionID:          sessID,
+		PlanID:             "plan-reconcile-01",
+		DefinitionRevision: 1,
+	}, p)
+	if wReject.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 when task update fails, got %d: %s", wReject.Code, wReject.Body.String())
+	}
+
+	// CRITICAL INVARIANT 1: Task status must NOT be 'rejected' (must remain pending_approval)
+	taskAfterFail, found, err := f.server.sessions.Store().GetProjectTask(f.accountID, projID, taskID)
+	if err != nil || !found {
+		t.Fatalf("task lookup failed: %v", err)
+	}
+	if taskAfterFail.Status == "rejected" {
+		t.Fatal("task was partially marked rejected despite store failure")
+	}
+	if taskAfterFail.Status != "pending_approval" {
+		t.Fatalf("expected task status 'pending_approval', got %q", taskAfterFail.Status)
+	}
+
+	// CRITICAL INVARIANT 2: Bound plan must NOT remain 'rejected' (reconciled back to prior state)
+	planAfterReconcile, ok, err := f.server.sessions.Store().GetPlan(sessID, "plan-reconcile-01")
+	if err != nil || !ok {
+		t.Fatalf("lookup reconciled plan: %v", err)
+	}
+	if planAfterReconcile.Status == "rejected" || planAfterReconcile.ApprovalState == "rejected" {
+		t.Fatalf("plan was left in 'rejected' state after task update failure; reconciliation failed: status=%q state=%q", planAfterReconcile.Status, planAfterReconcile.ApprovalState)
+	}
+	if planAfterReconcile.Status != initialPlan.Status {
+		t.Fatalf("expected plan status %q, got %q", initialPlan.Status, planAfterReconcile.Status)
+	}
+}
+
 // Requirement: Task rejection accepts optional revision guards, validates JSON body,
 // and rejects malformed payloads and stale revisions with 400 Bad Request.
 func TestProjectTaskReject_MalformedJSONAndRevisionGuards(t *testing.T) {
@@ -297,6 +528,30 @@ func TestProjectTaskReject_MalformedJSONAndRevisionGuards(t *testing.T) {
 	wBadJSON := f.callAPI(http.MethodPost, "/"+projID+"/tasks/"+taskID+"/reject", "{invalid-json", p)
 	if wBadJSON.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 on malformed JSON reject, got %d: %s", wBadJSON.Code, wBadJSON.Body.String())
+	}
+
+	// 1b. Top-level null rejected
+	wNull := f.callAPI(http.MethodPost, "/"+projID+"/tasks/"+taskID+"/reject", "null", p)
+	if wNull.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 on null reject body, got %d: %s", wNull.Code, wNull.Body.String())
+	}
+	if !strings.Contains(wNull.Body.String(), "malformed JSON body") {
+		t.Fatalf("expected 'malformed JSON body' on null reject, got: %s", wNull.Body.String())
+	}
+
+	// 1c. Trailing data rejected
+	wTrailing := f.callAPI(http.MethodPost, "/"+projID+"/tasks/"+taskID+"/reject", `{"definition_revision":1} trailing`, p)
+	if wTrailing.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 on trailing reject data, got %d: %s", wTrailing.Code, wTrailing.Body.String())
+	}
+	if !strings.Contains(wTrailing.Body.String(), "malformed JSON body") {
+		t.Fatalf("expected 'malformed JSON body' on trailing reject, got: %s", wTrailing.Body.String())
+	}
+
+	// 1d. Oversized body with valid prefix rejected
+	wOversized := f.callAPI(http.MethodPost, "/"+projID+"/tasks/"+taskID+"/reject", `{"definition_revision":1}`+strings.Repeat(" ", 1024*1024+32), p)
+	if wOversized.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 on oversized reject body, got %d: %s", wOversized.Code, wOversized.Body.String())
 	}
 
 	// 2. Stale definition revision on reject returns 400 (guarded 99 vs current 1)
@@ -377,6 +632,30 @@ func TestProjectTaskReopen_MalformedJSONAndRevisionGuards(t *testing.T) {
 	wBadJSON := f.callAPI(http.MethodPost, "/"+projID+"/tasks/"+taskID+"/reopen", "{invalid-json", p)
 	if wBadJSON.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 on malformed JSON reopen, got %d: %s", wBadJSON.Code, wBadJSON.Body.String())
+	}
+
+	// 1b. Top-level null rejected
+	wNull := f.callAPI(http.MethodPost, "/"+projID+"/tasks/"+taskID+"/reopen", "null", p)
+	if wNull.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 on null reopen body, got %d: %s", wNull.Code, wNull.Body.String())
+	}
+	if !strings.Contains(wNull.Body.String(), "malformed JSON body") {
+		t.Fatalf("expected 'malformed JSON body' on null reopen, got: %s", wNull.Body.String())
+	}
+
+	// 1c. Trailing data rejected
+	wTrailing := f.callAPI(http.MethodPost, "/"+projID+"/tasks/"+taskID+"/reopen", `{"feedback":"fix"} trailing`, p)
+	if wTrailing.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 on trailing reopen data, got %d: %s", wTrailing.Code, wTrailing.Body.String())
+	}
+	if !strings.Contains(wTrailing.Body.String(), "malformed JSON body") {
+		t.Fatalf("expected 'malformed JSON body' on trailing reopen, got: %s", wTrailing.Body.String())
+	}
+
+	// 1d. Oversized body with valid prefix rejected
+	wOversized := f.callAPI(http.MethodPost, "/"+projID+"/tasks/"+taskID+"/reopen", `{"feedback":"fix"}`+strings.Repeat(" ", 1024*1024+32), p)
+	if wOversized.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 on oversized reopen body, got %d: %s", wOversized.Code, wOversized.Body.String())
 	}
 
 	// 2. Stale revision guard on reopen returns 400 (guarded 99 vs current revision 1)
@@ -464,6 +743,22 @@ func TestProjectTaskCompleteAndRefine_MalformedJSONAndRevisionGuards(t *testing.
 		t.Fatalf("expected 400 on malformed complete body, got %d: %s", wCompBad.Code, wCompBad.Body.String())
 	}
 
+	// Complete: Null -> 400
+	wCompNull := f.callAPI(http.MethodPost, "/"+projID+"/tasks/"+taskID+"/complete", "null", p)
+	if wCompNull.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 on null complete body, got %d: %s", wCompNull.Code, wCompNull.Body.String())
+	}
+	// Complete: Trailing -> 400
+	wCompTrailing := f.callAPI(http.MethodPost, "/"+projID+"/tasks/"+taskID+"/complete", `{"definition_revision":1} trailing`, p)
+	if wCompTrailing.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 on trailing complete body, got %d: %s", wCompTrailing.Code, wCompTrailing.Body.String())
+	}
+	// Complete: Oversized with valid prefix -> 400
+	wCompOversized := f.callAPI(http.MethodPost, "/"+projID+"/tasks/"+taskID+"/complete", `{"definition_revision":1}`+strings.Repeat(" ", 1024*1024+32), p)
+	if wCompOversized.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 on oversized complete body, got %d: %s", wCompOversized.Code, wCompOversized.Body.String())
+	}
+
 	// Complete: Stale revision guard -> 400
 	wCompStale := f.callAPI(http.MethodPost, "/"+projID+"/tasks/"+taskID+"/complete", tool.ProjectTaskApprovalGuards{
 		DefinitionRevision: 42,
@@ -482,6 +777,22 @@ func TestProjectTaskCompleteAndRefine_MalformedJSONAndRevisionGuards(t *testing.
 	wRefBad := f.callAPI(http.MethodPost, "/"+projID+"/tasks/"+taskID+"/refine", "{invalid-json", p)
 	if wRefBad.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 on malformed refine body, got %d: %s", wRefBad.Code, wRefBad.Body.String())
+	}
+
+	// Refine: Null -> 400
+	wRefNull := f.callAPI(http.MethodPost, "/"+projID+"/tasks/"+taskID+"/refine", "null", p)
+	if wRefNull.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 on null refine body, got %d: %s", wRefNull.Code, wRefNull.Body.String())
+	}
+	// Refine: Trailing -> 400
+	wRefTrailing := f.callAPI(http.MethodPost, "/"+projID+"/tasks/"+taskID+"/refine", `{"feedback":"fix"} trailing`, p)
+	if wRefTrailing.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 on trailing refine body, got %d: %s", wRefTrailing.Code, wRefTrailing.Body.String())
+	}
+	// Refine: Oversized with valid prefix -> 400
+	wRefOversized := f.callAPI(http.MethodPost, "/"+projID+"/tasks/"+taskID+"/refine", `{"feedback":"fix"}`+strings.Repeat(" ", 1024*1024+32), p)
+	if wRefOversized.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 on oversized refine body, got %d: %s", wRefOversized.Code, wRefOversized.Body.String())
 	}
 
 	// Refine: Stale revision guard -> 400

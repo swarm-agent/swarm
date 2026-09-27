@@ -708,12 +708,34 @@ func (s *SessionStore) ListProjectTasks(accountScopeID, projectID string, limit 
 	return tasks, nil
 }
 
+// SetProjectTaskUpdateHookForTest installs a test failure seam before UpdateProjectTask mutates the record.
+func (s *SessionStore) SetProjectTaskUpdateHookForTest(hook func(taskID string) error) func() {
+	if s == nil || s.store == nil {
+		return func() {}
+	}
+	s.store.projectsMu.Lock()
+	previous := s.store.beforeProjectTaskUpdateHook
+	s.store.beforeProjectTaskUpdateHook = hook
+	s.store.projectsMu.Unlock()
+	return func() {
+		s.store.projectsMu.Lock()
+		s.store.beforeProjectTaskUpdateHook = previous
+		s.store.projectsMu.Unlock()
+	}
+}
+
 // UpdateProjectTask mutates a task atomically.
 func (s *SessionStore) UpdateProjectTask(accountScopeID, projectID, taskID string, mutate func(*ProjectTaskRecord) error) (*ProjectTaskRecord, error) {
 	if s == nil || s.store == nil || s.store.db == nil {
 		return nil, errors.New("database not available")
 	}
 	s.store.projectsMu.Lock()
+	if hook := s.store.beforeProjectTaskUpdateHook; hook != nil {
+		if err := hook(taskID); err != nil {
+			s.store.projectsMu.Unlock()
+			return nil, err
+		}
+	}
 	record, found, err := s.GetProjectTask(accountScopeID, projectID, taskID)
 	if err != nil {
 		s.store.projectsMu.Unlock()

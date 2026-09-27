@@ -815,12 +815,12 @@ func (s *Server) ApproveProjectTask(ctx context.Context, p identity.Principal, p
 				return nil, fmt.Errorf("plan ID mismatch: expected %q, got %q", planID, guard.PlanID)
 			}
 			if plan.ApprovalState == "approved" {
-				if guard.DefinitionRevision <= 0 || plan.Version != guard.DefinitionRevision || existingTask.PlanBinding.DefinitionRevision != guard.DefinitionRevision || existingTask.PlanBinding.Receipt == "" || plan.AcceptedDefinitionReceipt != existingTask.PlanBinding.Receipt {
-					return nil, fmt.Errorf("plan definition is stale (guarded revision %d, current %d)", guard.DefinitionRevision, plan.Version)
+				if guard.DefinitionRevision <= 0 || existingTask.PlanBinding.DefinitionRevision != guard.DefinitionRevision || existingTask.PlanBinding.Receipt == "" || plan.AcceptedDefinitionReceipt != existingTask.PlanBinding.Receipt {
+					return nil, fmt.Errorf("plan definition is stale (guarded revision %d, current %d)", guard.DefinitionRevision, existingTask.PlanBinding.DefinitionRevision)
 				}
 			} else {
 				if guard.DefinitionRevision <= 0 || plan.Version != guard.DefinitionRevision || existingTask.PlanBinding.DefinitionRevision != guard.DefinitionRevision {
-					return nil, fmt.Errorf("plan definition is stale (guarded revision %d, current %d)", guard.DefinitionRevision, plan.Version)
+					return nil, fmt.Errorf("plan definition is stale (guarded revision %d, current %d)", guard.DefinitionRevision, existingTask.PlanBinding.DefinitionRevision)
 				}
 			}
 		}
