@@ -3,7 +3,9 @@ import test from 'node:test'
 import {
   calculateGenerationCost,
   extractBillingLines,
+  getLineResolution,
   normalizeResKey,
+  resolveAudioContext,
   resolveInitialModel,
   resolveInitialSetting,
 } from './media-generation'
@@ -12,16 +14,22 @@ import type { MediaCatalogModelOption } from '../../settings/media/queries/get-m
 test('normalizeResKey normalizes common resolution strings properly', () => {
   assert.equal(normalizeResKey('1024x1024'), '1k')
   assert.equal(normalizeResKey(' standard '), '1k')
+  assert.equal(normalizeResKey('up_to_1024x1024'), '1k')
+  assert.equal(normalizeResKey('up to 1024x1024'), '1k')
+  assert.equal(normalizeResKey('1K'), '1k')
   assert.equal(normalizeResKey('2048x2048'), '2k')
   assert.equal(normalizeResKey('HD'), '2k')
+  assert.equal(normalizeResKey('up_to_2048x2048'), '2k')
+  assert.equal(normalizeResKey('2K'), '2k')
   assert.equal(normalizeResKey('4096x4096'), '4k')
+  assert.equal(normalizeResKey('4K'), '4k')
   assert.equal(normalizeResKey('720p'), '720p')
   assert.equal(normalizeResKey('1280x720'), '720p')
   assert.equal(normalizeResKey('1080p'), '1080p')
   assert.equal(normalizeResKey('1920x1080'), '1080p')
 })
 
-test('extractBillingLines strictly allows image/second/video/clip, divides quantity > 0, and rejects tokens/invalid lines', () => {
+test('extractBillingLines strictly allows image/second/video/clip, divides quantity > 0, and rejects tokens/inputs/invalid lines', () => {
   const pricing = {
     billing: {
       status: 'verified',
@@ -32,6 +40,7 @@ test('extractBillingLines strictly allows image/second/video/clip, divides quant
         { billable: 'image_output', unit: 'image', price_usd: 0, conditions: { resolution: '1k' } }, // Zero price is valid finite
         { billable: 'image_output', unit: 'image', price_usd: -5 }, // Negative price rejected
         { billable: 'image_output', unit: 'image', price_usd: 10, quantity: 0 }, // Non-positive quantity rejected
+        { billable: 'image_input', unit: 'image', price_usd: 0.005 }, // Input rate MUST be rejected
         { billable: 'video_output', unit: 'second', price_usd: 0.05, conditions: { resolution: '720p' } },
         { billable: 'video_output', unit: 'clip', price_usd: 1.20 },
         null,
@@ -309,6 +318,467 @@ test('calculateGenerationCost requires explicit duration for second-based video 
   // 0.05 * 6s = 0.30 per clip * 2 clips = 0.60
   assert.equal(explicitDur.totalPrice, 0.60)
   assert.equal(explicitDur.formattedTotal, '$0.60')
+})
+
+test('calculateGenerationCost accurately prices real Google Gemini image equivalent_cost with output_tokens and up_to_1024x1024 variant', () => {
+  // Real snapshot shape from snapshotdata/snapshot.json for gemini-2.5-flash-image
+  const geminiImageModel: MediaCatalogModelOption = {
+    id: 'gemini-2.5-flash-image',
+    provider: 'google',
+    model: 'gemini-2.5-flash-image',
+    display_name: 'Nano Banana',
+    kind: 'image_generation',
+    ready: true,
+    pricing: {
+      billing: {
+        status: 'verified',
+        lines: [
+          {
+            kind: 'billing_rate',
+            billable: 'text_input',
+            unit: 'million_tokens',
+            price_usd: 0.3,
+            variant: 'standard',
+            conditions: { tier: 'paid', service_tier: 'standard' },
+          },
+          {
+            kind: 'billing_rate',
+            billable: 'image_input',
+            unit: 'million_tokens',
+            price_usd: 0.3,
+            variant: 'standard',
+            conditions: { tier: 'paid', service_tier: 'standard' },
+          },
+          {
+            kind: 'billing_rate',
+            billable: 'image_output',
+            unit: 'million_tokens',
+            price_usd: 30,
+            variant: 'standard',
+            conditions: { tier: 'paid', service_tier: 'standard' },
+          },
+          {
+            kind: 'equivalent_cost',
+            billable: 'image_output',
+            unit: 'image',
+            price_usd: 0.039,
+            variant: 'up_to_1024x1024',
+            conditions: {
+              tier: 'paid',
+              service_tier: 'standard',
+              output_tokens: 1290,
+            },
+          },
+          {
+            kind: 'equivalent_cost',
+            billable: 'image_output',
+            unit: 'image',
+            price_usd: 0.0195,
+            variant: 'up_to_1024x1024',
+            conditions: {
+              tier: 'paid',
+              service_tier: 'batch',
+            },
+          },
+        ],
+      },
+    },
+  }
+
+  // Matches 1k resolution against standard equivalent_cost line (ignoring batch line and tokens)
+  const res1k = calculateGenerationCost({
+    modelOption: geminiImageModel,
+    action: 'fine_tune',
+    count: 2,
+    settings: { resolution: '1k' },
+  })
+  assert.equal(res1k.isAvailable, true)
+  assert.equal(res1k.unitPrice, 0.039)
+  assert.equal(res1k.totalPrice, 0.078)
+  assert.equal(res1k.formattedPerUnit, '$0.039/image')
+  assert.equal(res1k.formattedTotal, '$0.08')
+  assert.equal(res1k.isVerified, true)
+
+  // Resolution mismatch: model only declared up_to_1024x1024 ('1k')
+  const res2k = calculateGenerationCost({
+    modelOption: geminiImageModel,
+    action: 'fine_tune',
+    count: 1,
+    settings: { resolution: '2k' },
+  })
+  assert.equal(res2k.isAvailable, false)
+})
+
+test('calculateGenerationCost accurately prices real Google Veo video with includes_audio:true and charged_only_on_success:true', () => {
+  // Real snapshot shape from snapshotdata/snapshot.json for veo-3.1-generate-preview
+  const veoModel: MediaCatalogModelOption = {
+    id: 'veo-3.1-generate-preview',
+    provider: 'google',
+    model: 'veo-3.1-generate-preview',
+    display_name: 'Veo 3.1',
+    kind: 'video_generation',
+    ready: true,
+    pricing: {
+      billing: {
+        status: 'verified',
+        lines: [
+          {
+            kind: 'billing_rate',
+            billable: 'video_output',
+            unit: 'second',
+            price_usd: 0.4,
+            variant: '720p',
+            conditions: {
+              tier: 'paid',
+              service_tier: 'standard',
+              resolution: '720p',
+              includes_audio: true,
+              charged_only_on_success: true,
+            },
+          },
+          {
+            kind: 'billing_rate',
+            billable: 'video_output',
+            unit: 'second',
+            price_usd: 0.4,
+            variant: '1080p',
+            conditions: {
+              tier: 'paid',
+              service_tier: 'standard',
+              resolution: '1080p',
+              includes_audio: true,
+              charged_only_on_success: true,
+            },
+          },
+          {
+            kind: 'billing_rate',
+            billable: 'video_output',
+            unit: 'second',
+            price_usd: 0.6,
+            variant: '4K',
+            conditions: {
+              tier: 'paid',
+              service_tier: 'standard',
+              resolution: '4K',
+              includes_audio: true,
+              charged_only_on_success: true,
+            },
+          },
+        ],
+      },
+    },
+  }
+
+  // 1. 720p video for 8 seconds, 1 clip
+  const res720p = calculateGenerationCost({
+    modelOption: veoModel,
+    action: 'to_video',
+    count: 1,
+    settings: { resolution: '720p', durationSeconds: 8 },
+  })
+  assert.equal(res720p.isAvailable, true)
+  assert.equal(res720p.unitPrice, 0.4)
+  assert.equal(res720p.totalPrice, 3.20) // 0.4 * 8s = 3.20
+  assert.equal(res720p.formattedPerUnit, '$0.400/sec ($3.20/clip)')
+  assert.equal(res720p.formattedTotal, '$3.20')
+  assert.equal(res720p.unitLabel, '8s clip')
+
+  // 2. 1080p video for 6 seconds, 2 clips
+  const res1080p = calculateGenerationCost({
+    modelOption: veoModel,
+    action: 'to_video',
+    count: 2,
+    settings: { resolution: '1080p', durationSeconds: 6 },
+  })
+  assert.equal(res1080p.isAvailable, true)
+  assert.equal(res1080p.unitPrice, 0.4)
+  assert.equal(res1080p.totalPrice, 4.80) // 0.4 * 6s = 2.40 * 2 = 4.80
+  assert.equal(res1080p.formattedTotal, '$4.80')
+
+  // 3. 4K video for 8 seconds, 1 clip (4K @ $0.60/s)
+  const res4k = calculateGenerationCost({
+    modelOption: veoModel,
+    action: 'to_video',
+    count: 1,
+    settings: { resolution: '4k', durationSeconds: 8 },
+  })
+  assert.equal(res4k.isAvailable, true)
+  assert.equal(res4k.unitPrice, 0.6)
+  assert.equal(res4k.totalPrice, 4.80) // 0.6 * 8s = 4.80
+  assert.equal(res4k.formattedTotal, '$4.80')
+})
+
+test('calculateGenerationCost matches image resolution from variant (e.g. variant:1K, 2K) when conditions.resolution is omitted', () => {
+  const modelWithVariantRes: MediaCatalogModelOption = {
+    id: 'variant-res-model',
+    provider: 'google',
+    model: 'variant-res-model',
+    display_name: 'Variant Res Model',
+    kind: 'image_generation',
+    ready: true,
+    pricing: {
+      billing: {
+        status: 'verified',
+        lines: [
+          {
+            kind: 'billing_rate',
+            billable: 'image_output',
+            unit: 'image',
+            price_usd: 0.03,
+            variant: '1K',
+            conditions: { tier: 'paid', service_tier: 'standard' },
+          },
+          {
+            kind: 'billing_rate',
+            billable: 'image_output',
+            unit: 'image',
+            price_usd: 0.06,
+            variant: '2K',
+            conditions: { tier: 'paid', service_tier: 'standard' },
+          },
+        ],
+      },
+    },
+  }
+
+  // Requesting 1k matches 1K variant
+  const res1k = calculateGenerationCost({
+    modelOption: modelWithVariantRes,
+    action: 'fine_tune',
+    count: 1,
+    settings: { resolution: '1k' },
+  })
+  assert.equal(res1k.isAvailable, true)
+  assert.equal(res1k.unitPrice, 0.03)
+
+  // Requesting 2k matches 2K variant
+  const res2k = calculateGenerationCost({
+    modelOption: modelWithVariantRes,
+    action: 'fine_tune',
+    count: 3,
+    settings: { resolution: '2k' },
+  })
+  assert.equal(res2k.isAvailable, true)
+  assert.equal(res2k.unitPrice, 0.06)
+  assert.equal(res2k.totalPrice, 0.18)
+
+  // Requesting 4k has no matching line
+  const res4k = calculateGenerationCost({
+    modelOption: modelWithVariantRes,
+    action: 'fine_tune',
+    count: 1,
+    settings: { resolution: '4k' },
+  })
+  assert.equal(res4k.isAvailable, false)
+})
+
+test('calculateGenerationCost properly routes video iteration using model kind instead of treating it as image', () => {
+  const videoModel: MediaCatalogModelOption = {
+    id: 'veo-3.1-generate-preview',
+    provider: 'google',
+    model: 'veo-3.1-generate-preview',
+    display_name: 'Veo 3.1',
+    kind: 'video_generation',
+    ready: true,
+    pricing: {
+      billing: {
+        status: 'verified',
+        lines: [
+          {
+            kind: 'billing_rate',
+            billable: 'video_output',
+            unit: 'second',
+            price_usd: 0.4,
+            variant: '720p',
+            conditions: {
+              tier: 'paid',
+              service_tier: 'standard',
+              resolution: '720p',
+              includes_audio: true,
+              charged_only_on_success: true,
+            },
+          },
+        ],
+      },
+    },
+  }
+
+  // action: 'iterate' with kind: 'video_generation' MUST be treated as video, NOT image!
+  const iterRes = calculateGenerationCost({
+    modelOption: videoModel,
+    action: 'iterate',
+    count: 3,
+    settings: { resolution: '720p', durationSeconds: 8 },
+  })
+  assert.equal(iterRes.isAvailable, true)
+  assert.equal(iterRes.unitPrice, 0.4)
+  // 0.4 * 8s = 3.20 per clip * 3 clips = 9.60
+  assert.equal(iterRes.totalPrice, 9.60)
+  assert.equal(iterRes.formattedTotal, '$9.60')
+  assert.equal(iterRes.unitLabel, '8s clip')
+})
+
+test('calculateGenerationCost rejects input billing rates (e.g. image_input, video_input)', () => {
+  const inputOnlyModel: MediaCatalogModelOption = {
+    id: 'input-only',
+    provider: 'google',
+    model: 'input-only',
+    display_name: 'Input Only Model',
+    kind: 'image_generation',
+    ready: true,
+    pricing: {
+      billing: {
+        status: 'verified',
+        lines: [
+          {
+            kind: 'billing_rate',
+            billable: 'image_input',
+            unit: 'image',
+            price_usd: 0.005,
+          },
+        ],
+      },
+    },
+  }
+
+  const res = calculateGenerationCost({
+    modelOption: inputOnlyModel,
+    action: 'fine_tune',
+    count: 1,
+    settings: {},
+  })
+  assert.equal(res.isAvailable, false)
+  assert.equal(res.formattedTotal, 'Pricing unavailable')
+})
+
+test('calculateGenerationCost handles ambiguous vs unambiguous audio inclusion and rejects mismatched audio request', () => {
+  // 1. Dual-rate model: separate prices for audio vs silent video
+  const dualModel: MediaCatalogModelOption = {
+    id: 'dual-video',
+    provider: 'google',
+    model: 'dual-video',
+    display_name: 'Dual Video',
+    kind: 'video_generation',
+    ready: true,
+    pricing: {
+      billing: {
+        status: 'verified',
+        lines: [
+          {
+            billable: 'video_output',
+            unit: 'second',
+            price_usd: 0.10,
+            conditions: { resolution: '720p', includes_audio: true },
+          },
+          {
+            billable: 'video_output',
+            unit: 'second',
+            price_usd: 0.05,
+            conditions: { resolution: '720p', includes_audio: false },
+          },
+        ],
+      },
+    },
+  }
+
+  // Without specifying includesAudio: ambiguous -> unavailable
+  const ambRes = calculateGenerationCost({
+    modelOption: dualModel,
+    action: 'to_video',
+    count: 1,
+    settings: { resolution: '720p', durationSeconds: 6 },
+  })
+  assert.equal(ambRes.isAvailable, false)
+
+  // With explicit includesAudio: true -> matches audio line ($0.10/s * 6 = $0.60)
+  const audioTrueRes = calculateGenerationCost({
+    modelOption: dualModel,
+    action: 'to_video',
+    count: 1,
+    settings: { resolution: '720p', durationSeconds: 6, includesAudio: true },
+  })
+  assert.equal(audioTrueRes.isAvailable, true)
+  assert.equal(audioTrueRes.unitPrice, 0.10)
+  assert.equal(audioTrueRes.totalPrice, 0.60)
+
+  // With explicit includesAudio: false -> matches silent line ($0.05/s * 6 = $0.30)
+  const audioFalseRes = calculateGenerationCost({
+    modelOption: dualModel,
+    action: 'to_video',
+    count: 1,
+    settings: { resolution: '720p', durationSeconds: 6, includesAudio: false },
+  })
+  assert.equal(audioFalseRes.isAvailable, true)
+  assert.equal(audioFalseRes.unitPrice, 0.05)
+  assert.equal(audioFalseRes.totalPrice, 0.30)
+
+  // 2. Veo model (all lines have includes_audio: true): explicit includesAudio: false MUST be rejected
+  const veoModel: MediaCatalogModelOption = {
+    id: 'veo-all-audio',
+    provider: 'google',
+    model: 'veo-all-audio',
+    display_name: 'Veo',
+    kind: 'video_generation',
+    ready: true,
+    pricing: {
+      billing: {
+        status: 'verified',
+        lines: [
+          {
+            billable: 'video_output',
+            unit: 'second',
+            price_usd: 0.40,
+            conditions: { resolution: '720p', includes_audio: true, charged_only_on_success: true },
+          },
+        ],
+      },
+    },
+  }
+  const veoSilentMismatch = calculateGenerationCost({
+    modelOption: veoModel,
+    action: 'to_video',
+    count: 1,
+    settings: { resolution: '720p', durationSeconds: 8, includesAudio: false },
+  })
+  assert.equal(veoSilentMismatch.isAvailable, false)
+})
+
+test('calculateGenerationCost rejects lines with non-standard service_tier in variant (batch/flex/priority)', () => {
+  const batchVariantModel: MediaCatalogModelOption = {
+    id: 'batch-variant',
+    provider: 'google',
+    model: 'batch-variant',
+    display_name: 'Batch Variant Model',
+    kind: 'image_generation',
+    ready: true,
+    pricing: {
+      billing: {
+        status: 'verified',
+        lines: [
+          {
+            billable: 'image_output',
+            unit: 'image',
+            price_usd: 0.01,
+            variant: 'batch',
+          },
+          {
+            billable: 'image_output',
+            unit: 'image',
+            price_usd: 0.01,
+            variant: 'flex',
+          },
+        ],
+      },
+    },
+  }
+
+  const res = calculateGenerationCost({
+    modelOption: batchVariantModel,
+    action: 'fine_tune',
+    count: 1,
+    settings: {},
+  })
+  assert.equal(res.isAvailable, false)
 })
 
 test('resolveInitialSetting only preselects source ratio/resolution/duration if in supported options', () => {

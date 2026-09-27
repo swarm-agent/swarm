@@ -5,6 +5,7 @@ export interface MediaGenerationSettings {
   aspectRatio?: string
   resolution?: string
   durationSeconds?: number
+  includesAudio?: boolean
 }
 
 export type MediaGenerationAction = 'fine_tune' | 'iterate' | 'to_video' | 'next_scene'
@@ -35,6 +36,9 @@ export interface PricingLineCondition {
   tier?: string
   service_tier?: string
   duration_seconds?: number
+  charged_only_on_success?: boolean
+  output_tokens?: number
+  output_tokens_per_second?: number
   [key: string]: unknown
 }
 
@@ -51,10 +55,12 @@ export interface BillingLineRecord {
 }
 
 export interface ParsedPricingLine {
+  kind?: string
   billable: string
   unit: string
   priceUsd: number
   quantity: number
+  variant?: string
   conditions?: PricingLineCondition
 }
 
@@ -71,17 +77,95 @@ export interface CalculatedCostEstimate {
 }
 
 const ALLOWED_MEDIA_UNITS = new Set(['image', 'second', 'video', 'clip'])
-const KNOWN_CONDITION_KEYS = new Set(['resolution', 'image_size', 'tier', 'service_tier', 'includes_audio'])
+const KNOWN_CONDITION_KEYS = new Set([
+  'resolution',
+  'image_size',
+  'tier',
+  'service_tier',
+  'includes_audio',
+  'charged_only_on_success',
+  'output_tokens',
+  'output_tokens_per_second',
+  'duration_seconds',
+])
 
 export function normalizeResKey(raw: string | undefined): string {
   if (!raw) return ''
   const c = raw.toLowerCase().trim()
-  if (c === '1k' || c === '1024x1024' || c === '1024×1024' || c === 'standard' || c === '1024') return '1k'
-  if (c === '2k' || c === '2048x2048' || c === '2048×2048' || c === 'hd' || c === '2048') return '2k'
-  if (c === '4k' || c === '4096x4096' || c === '4096×4096' || c === 'ultra_hd' || c === 'uhd' || c === '4096') return '4k'
+  if (
+    c === '1k' ||
+    c === '1024x1024' ||
+    c === '1024×1024' ||
+    c === 'standard' ||
+    c === '1024' ||
+    c === 'up_to_1024x1024' ||
+    c === 'up to 1024x1024'
+  ) {
+    return '1k'
+  }
+  if (
+    c === '2k' ||
+    c === '2048x2048' ||
+    c === '2048×2048' ||
+    c === 'hd' ||
+    c === '2048' ||
+    c === 'up_to_2048x2048' ||
+    c === 'up to 2048x2048'
+  ) {
+    return '2k'
+  }
+  if (
+    c === '4k' ||
+    c === '4096x4096' ||
+    c === '4096×4096' ||
+    c === 'ultra_hd' ||
+    c === 'uhd' ||
+    c === '4096' ||
+    c === 'up_to_4096x4096' ||
+    c === 'up to 4096x4096'
+  ) {
+    return '4k'
+  }
   if (c === '720p' || c === '1280x720') return '720p'
   if (c === '1080p' || c === '1920x1080') return '1080p'
   return c
+}
+
+export function getLineResolution(line: ParsedPricingLine): string | undefined {
+  const condRes = line.conditions?.resolution || line.conditions?.image_size
+  if (condRes !== undefined && condRes !== null && String(condRes).trim() !== '') {
+    return normalizeResKey(String(condRes))
+  }
+  if (line.variant) {
+    const v = line.variant.trim()
+    const lower = v.toLowerCase()
+    if (
+      lower === 'batch' ||
+      lower === 'flex' ||
+      lower === 'priority' ||
+      lower.includes('input') ||
+      lower === 'standard_output'
+    ) {
+      return undefined
+    }
+    const norm = normalizeResKey(v)
+    if (
+      norm === '1k' ||
+      norm === '2k' ||
+      norm === '4k' ||
+      norm === '720p' ||
+      norm === '1080p' ||
+      /^\d+[kp]$/i.test(norm) ||
+      /^\d+x\d+$/i.test(norm)
+    ) {
+      // If variant was "standard" but line is for video, "standard" is not a video resolution
+      if (lower === 'standard' && (line.unit === 'second' || line.unit === 'clip' || line.unit === 'video')) {
+        return undefined
+      }
+      return norm
+    }
+  }
+  return undefined
 }
 
 export function extractBillingLines(pricing: unknown): ParsedPricingLine[] {
@@ -99,7 +183,12 @@ export function extractBillingLines(pricing: unknown): ParsedPricingLine[] {
       continue
     }
 
-    const billable = typeof line.billable === 'string' ? line.billable : ''
+    const billable = typeof line.billable === 'string' ? line.billable.trim() : ''
+    // Output billable not input: input rates are strictly rejected
+    if (billable.toLowerCase().includes('input')) {
+      continue
+    }
+
     const priceRaw = line.price_usd
     const priceNum = typeof priceRaw === 'number' ? priceRaw : typeof priceRaw === 'string' ? parseFloat(priceRaw) : NaN
 
@@ -123,65 +212,148 @@ export function extractBillingLines(pricing: unknown): ParsedPricingLine[] {
     const effectivePriceUsd = priceNum / quantity
 
     results.push({
+      kind: typeof line.kind === 'string' ? line.kind : undefined,
       billable,
       unit: unitRaw,
       priceUsd: effectivePriceUsd,
       quantity,
+      variant: typeof line.variant === 'string' ? line.variant.trim() : undefined,
       conditions: line.conditions as PricingLineCondition | undefined,
     })
   }
   return results
 }
 
-interface ConditionMatchResult {
-  matches: boolean
-  exactResMatch: boolean
-}
-
-function evaluateLineConditions(
-  line: ParsedPricingLine,
-  targetRes: string,
-): ConditionMatchResult {
-  const cond = line.conditions
-  if (!cond) {
-    return { matches: true, exactResMatch: false }
+export function resolveAudioContext(
+  settingsAudio: boolean | undefined,
+  modelOption: MediaCatalogModelOption | undefined,
+  videoLines: ParsedPricingLine[],
+): { audio: boolean | undefined; ambiguous: boolean } {
+  if (typeof settingsAudio === 'boolean') {
+    return { audio: settingsAudio, ambiguous: false }
   }
 
-  // Reject malformed / unknown conditions
-  for (const key of Object.keys(cond)) {
-    if (!KNOWN_CONDITION_KEYS.has(key)) {
-      const val = cond[key]
-      if (val !== undefined && val !== null && val !== '') {
-        return { matches: false, exactResMatch: false }
+  // Check explicit model capabilities / modalities on modelOption if present
+  const rawModel = modelOption as Record<string, unknown> | undefined
+  if (rawModel) {
+    const caps = rawModel.capabilities as Record<string, unknown> | undefined
+    if (caps && typeof caps.supports_audio_output === 'boolean') {
+      return { audio: caps.supports_audio_output, ambiguous: false }
+    }
+    const modalities = rawModel.modalities as { output?: string[] } | undefined
+    if (modalities && Array.isArray(modalities.output)) {
+      const hasAudioOut = modalities.output.includes('audio')
+      const hasVideoOut = modalities.output.includes('video')
+      if (hasVideoOut) {
+        return { audio: hasAudioOut, ambiguous: false }
       }
     }
   }
 
-  // Standard service tier condition check
-  if (cond.service_tier !== undefined && cond.service_tier !== null) {
-    const st = String(cond.service_tier).trim().toLowerCase()
-    if (st !== '' && st !== 'standard' && st !== 'default') {
+  // Inspect video lines
+  const linesWithAudioTrue = videoLines.filter((l) => l.conditions?.includes_audio === true)
+  const linesWithAudioFalse = videoLines.filter((l) => l.conditions?.includes_audio === false)
+  const linesWithoutAudio = videoLines.filter(
+    (l) => l.conditions?.includes_audio === undefined || l.conditions?.includes_audio === null,
+  )
+
+  if (linesWithAudioTrue.length > 0 && linesWithAudioFalse.length === 0 && linesWithoutAudio.length === 0) {
+    // Unambiguous: all video lines on this model require/include audio (e.g. Google Veo)
+    return { audio: true, ambiguous: false }
+  }
+
+  if (linesWithAudioFalse.length > 0 && linesWithAudioTrue.length === 0 && linesWithoutAudio.length === 0) {
+    // Unambiguous: all video lines on this model exclude audio
+    return { audio: false, ambiguous: false }
+  }
+
+  if (linesWithAudioTrue.length > 0 && (linesWithAudioFalse.length > 0 || linesWithoutAudio.length > 0)) {
+    // Ambiguous: some lines have audio condition and some do not, and caller didn't specify
+    return { audio: undefined, ambiguous: true }
+  }
+
+  // No audio conditions on any video lines
+  return { audio: undefined, ambiguous: false }
+}
+
+export interface ConditionMatchResult {
+  matches: boolean
+  exactResMatch: boolean
+}
+
+export function evaluateLineConditions(
+  line: ParsedPricingLine,
+  targetRes: string,
+  audioContext: { audio: boolean | undefined; ambiguous: boolean },
+  targetDur?: number,
+): ConditionMatchResult {
+  // Reject non-standard serving tiers marked on variant
+  if (line.variant) {
+    const v = line.variant.trim().toLowerCase()
+    if (v === 'batch' || v === 'flex' || v === 'priority') {
       return { matches: false, exactResMatch: false }
     }
   }
 
-  // Tier condition check
-  if (cond.tier !== undefined && cond.tier !== null) {
-    const t = String(cond.tier).trim().toLowerCase()
-    if (t !== '' && t !== 'standard' && t !== 'paid') {
-      return { matches: false, exactResMatch: false }
+  const cond = line.conditions
+
+  if (cond) {
+    // Reject malformed / unknown conditions
+    for (const key of Object.keys(cond)) {
+      if (!KNOWN_CONDITION_KEYS.has(key)) {
+        const val = cond[key]
+        if (val !== undefined && val !== null && val !== '') {
+          return { matches: false, exactResMatch: false }
+        }
+      }
+    }
+
+    // Standard service tier condition check
+    if (cond.service_tier !== undefined && cond.service_tier !== null) {
+      const st = String(cond.service_tier).trim().toLowerCase()
+      if (st !== '' && st !== 'standard' && st !== 'default') {
+        return { matches: false, exactResMatch: false }
+      }
+    }
+
+    // Tier condition check
+    if (cond.tier !== undefined && cond.tier !== null) {
+      const t = String(cond.tier).trim().toLowerCase()
+      if (t !== '' && t !== 'standard' && t !== 'paid') {
+        return { matches: false, exactResMatch: false }
+      }
+    }
+
+    // Audio inclusion condition check
+    if (cond.includes_audio !== undefined && cond.includes_audio !== null) {
+      if (typeof cond.includes_audio === 'boolean') {
+        if (audioContext.ambiguous) {
+          // Line has an audio condition, but audio inclusion is ambiguous from settings & metadata
+          return { matches: false, exactResMatch: false }
+        }
+        if (audioContext.audio !== undefined && cond.includes_audio !== audioContext.audio) {
+          return { matches: false, exactResMatch: false }
+        }
+      }
+    }
+
+    // Duration condition check
+    if (cond.duration_seconds !== undefined && cond.duration_seconds !== null) {
+      const durNum =
+        typeof cond.duration_seconds === 'number'
+          ? cond.duration_seconds
+          : parseFloat(String(cond.duration_seconds))
+      if (Number.isFinite(durNum) && durNum > 0) {
+        if (!targetDur || targetDur !== durNum) {
+          return { matches: false, exactResMatch: false }
+        }
+      }
     }
   }
 
-  // Audio inclusion condition check
-  if (cond.includes_audio === true) {
-    return { matches: false, exactResMatch: false }
-  }
-
-  // Resolution / Image size condition check
-  const rawLineRes = cond.resolution || cond.image_size
-  if (rawLineRes !== undefined && rawLineRes !== null && String(rawLineRes).trim() !== '') {
-    const lineRes = normalizeResKey(String(rawLineRes))
+  // Resolution / Image size condition & Variant resolution check
+  const lineRes = getLineResolution(line)
+  if (lineRes) {
     if (!targetRes) {
       // Resolution condition specified on line, but no resolution selected/provided -> ambiguous
       return { matches: false, exactResMatch: false }
@@ -194,6 +366,42 @@ function evaluateLineConditions(
   }
 
   return { matches: true, exactResMatch: false }
+}
+
+function findMatchingLine(
+  lines: ParsedPricingLine[],
+  targetRes: string,
+  audioContext: { audio: boolean | undefined; ambiguous: boolean },
+  targetDur?: number,
+): ParsedPricingLine | undefined {
+  let matchedLine: ParsedPricingLine | undefined
+  let matchedExact = false
+
+  for (const line of lines) {
+    const evalResult = evaluateLineConditions(line, targetRes, audioContext, targetDur)
+    if (evalResult.matches) {
+      if (evalResult.exactResMatch) {
+        matchedLine = line
+        matchedExact = true
+        break
+      }
+      if (!matchedLine) {
+        matchedLine = line
+      }
+    }
+  }
+
+  if (!matchedLine) {
+    return undefined
+  }
+
+  // If any candidate line has a resolution constraint but none matched the requested resolution, do not fall back
+  const anyLineHasRes = lines.some((l) => getLineResolution(l) !== undefined)
+  if (anyLineHasRes && targetRes && !matchedExact) {
+    return undefined
+  }
+
+  return matchedLine
 }
 
 /**
@@ -213,10 +421,15 @@ export function calculateGenerationCost({
   count: number
   settings: MediaGenerationSettings
 }): CalculatedCostEstimate {
+  const isVideoModel =
+    modelOption?.kind === 'video_generation' ||
+    modelOption?.kind === 'video_iteration' ||
+    (typeof modelOption?.kind === 'string' && modelOption.kind.includes('video'))
+
   const isVideoAction =
     action === 'to_video' ||
     action === 'next_scene' ||
-    (action === 'fine_tune' && modelOption?.kind === 'video_generation')
+    isVideoModel
 
   const effectiveCount = Math.max(1, count)
 
@@ -245,39 +458,15 @@ export function calculateGenerationCost({
     const targetRes = normalizeResKey(settings.resolution)
 
     if (!isVideoAction) {
-      // Image lines must have unit 'image' (allowlist strictly checked in extractBillingLines)
-      const imageLines = lines.filter((l) => l.unit === 'image')
+      // Image lines must have unit 'image' and billable output (not input)
+      const imageLines = lines.filter((l) => l.unit === 'image' && !l.billable.toLowerCase().includes('input'))
       if (imageLines.length === 0) {
         return defaultUnavailable
       }
 
-      let matchedLine: ParsedPricingLine | undefined
-      let matchedExact = false
-
-      for (const line of imageLines) {
-        const evalResult = evaluateLineConditions(line, targetRes)
-        if (evalResult.matches) {
-          if (evalResult.exactResMatch) {
-            matchedLine = line
-            matchedExact = true
-            break
-          }
-          if (!matchedLine) {
-            matchedLine = line
-          }
-        }
-      }
-
-      // If target resolution was requested but no exact or general line matched, it is a mismatch
+      const audioContext = { audio: false, ambiguous: false }
+      const matchedLine = findMatchingLine(imageLines, targetRes, audioContext)
       if (!matchedLine) {
-        return defaultUnavailable
-      }
-
-      // If lines have resolution conditions but none matched the requested resolution, do not arbitrarily fall back
-      const anyLineHasRes = imageLines.some(
-        (l) => l.conditions?.resolution || l.conditions?.image_size,
-      )
-      if (anyLineHasRes && targetRes && !matchedExact) {
         return defaultUnavailable
       }
 
@@ -285,6 +474,7 @@ export function calculateGenerationCost({
       const total = unitPrice * effectiveCount
       const perUnitStr = unitPrice === 0 ? '$0.00/image' : `$${unitPrice.toFixed(3)}/image`
       const totalStr = total === 0 ? '$0.00' : `$${total.toFixed(2)}`
+      const resLabel = getLineResolution(matchedLine)
 
       return {
         unitPrice,
@@ -295,48 +485,28 @@ export function calculateGenerationCost({
         formattedTotal: totalStr,
         isAvailable: true,
         isVerified,
-        matchedLineDescription: matchedLine.conditions?.resolution
-          ? `${matchedLine.conditions.resolution} rate`
-          : 'image rate',
+        matchedLineDescription: resLabel ? `${resLabel} rate` : 'image rate',
       }
     } else {
-      // Video lines: unit must be second, clip, or video
+      // Video lines: unit must be second, clip, or video and billable output (not input)
       const videoLines = lines.filter(
-        (l) => l.unit === 'second' || l.unit === 'clip' || l.unit === 'video',
+        (l) =>
+          (l.unit === 'second' || l.unit === 'clip' || l.unit === 'video') &&
+          !l.billable.toLowerCase().includes('input'),
       )
       if (videoLines.length === 0) {
         return defaultUnavailable
       }
 
-      let matchedLine: ParsedPricingLine | undefined
-      let matchedExact = false
-
-      for (const line of videoLines) {
-        const evalResult = evaluateLineConditions(line, targetRes)
-        if (evalResult.matches) {
-          if (evalResult.exactResMatch) {
-            matchedLine = line
-            matchedExact = true
-            break
-          }
-          if (!matchedLine) {
-            matchedLine = line
-          }
-        }
-      }
-
+      const duration = settings.durationSeconds
+      const audioContext = resolveAudioContext(settings.includesAudio, modelOption, videoLines)
+      const matchedLine = findMatchingLine(videoLines, targetRes, audioContext, duration)
       if (!matchedLine) {
-        return defaultUnavailable
-      }
-
-      const anyLineHasRes = videoLines.some((l) => l.conditions?.resolution)
-      if (anyLineHasRes && targetRes && !matchedExact) {
         return defaultUnavailable
       }
 
       if (matchedLine.unit === 'second') {
         // Per-second video rate requires valid positive duration; do NOT assume 8 seconds!
-        const duration = settings.durationSeconds
         if (!duration || duration <= 0) {
           return defaultUnavailable
         }
@@ -377,7 +547,7 @@ export function calculateGenerationCost({
           formattedTotal: totalStr,
           isAvailable: true,
           isVerified,
-          matchedLineDescription: 'per clip rate',
+          matchedLineDescription: matchedLine.variant ? `${matchedLine.variant} rate` : 'per clip rate',
         }
       }
     }
