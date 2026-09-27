@@ -43,7 +43,15 @@ func TestProjectTaskApprove_MalformedJSONRejected(t *testing.T) {
 	// - Threat/regression: Callers intending to pass safety guards (such as definition_revision) having
 	//   malformed JSON silently ignored, leading to unguided approval of stale plan revisions.
 	f := setupMatrixTestFixture(t)
-	defer f.db.Close()
+	defer func() {
+		f.server.BeginShutdown()
+		f.server.CancelInFlightRuns()
+		if !f.server.WaitForInFlightRuns(5 * time.Second) {
+			t.Error("fixture runs did not stop before store cleanup")
+			return
+		}
+		f.db.Close()
+	}()
 	projID := f.createProject(t)
 	p := identity.Principal{Type: "user", UserID: f.userID, AccountScopeID: f.accountID}
 
@@ -166,7 +174,15 @@ func TestProjectTaskApprove_IdempotentRetryAfterPlanLifecycleIncrements(t *testi
 	// - Threat/regression: Review guard regression where plan.Version advancement during checkpoint
 	//   execution falsely blocks subsequent idempotent approval retries.
 	f := setupMatrixTestFixture(t)
-	defer f.db.Close()
+	defer func() {
+		f.server.BeginShutdown()
+		f.server.CancelInFlightRuns()
+		if !f.server.WaitForInFlightRuns(5 * time.Second) {
+			t.Error("fixture runs did not stop before store cleanup")
+			return
+		}
+		f.db.Close()
+	}()
 	projID := f.createProject(t)
 	p := identity.Principal{Type: "user", UserID: f.userID, AccountScopeID: f.accountID}
 
@@ -314,7 +330,15 @@ func TestProjectTaskApprove_GuardedCanonicalRevision(t *testing.T) {
 	// - Authority: ApproveProjectTask in swarmd/internal/api/project_task_program.go.
 	// - Threat/regression: Approving stale or out-of-order plan revisions during concurrent editing.
 	f := setupMatrixTestFixture(t)
-	defer f.db.Close()
+	defer func() {
+		f.server.BeginShutdown()
+		f.server.CancelInFlightRuns()
+		if !f.server.WaitForInFlightRuns(5 * time.Second) {
+			t.Error("fixture runs did not stop before store cleanup")
+			return
+		}
+		f.db.Close()
+	}()
 	projID := f.createProject(t)
 	p := identity.Principal{Type: "user", UserID: f.userID, AccountScopeID: f.accountID}
 
@@ -491,7 +515,15 @@ func TestProjectTaskReject_NoPartialFailureOnBoundPlanError(t *testing.T) {
 	// - Authority: handleProjects in swarmd/internal/api/projects.go.
 	// - Threat/regression: Tasks marked as rejected while the bound plan remains pending_approval.
 	f := setupMatrixTestFixture(t)
-	defer f.db.Close()
+	defer func() {
+		f.server.BeginShutdown()
+		f.server.CancelInFlightRuns()
+		if !f.server.WaitForInFlightRuns(5 * time.Second) {
+			t.Error("fixture runs did not stop before store cleanup")
+			return
+		}
+		f.db.Close()
+	}()
 	projID := f.createProject(t)
 	p := identity.Principal{Type: "user", UserID: f.userID, AccountScopeID: f.accountID}
 
@@ -601,7 +633,15 @@ func TestProjectTaskReject_TaskUpdateFailureReconcilesBoundPlan(t *testing.T) {
 	// - Authority: handleProjects in swarmd/internal/api/projects.go.
 	// - Threat/regression: Failed task updates leaving orphaned rejected plans in the session store.
 	f := setupMatrixTestFixture(t)
-	defer f.db.Close()
+	defer func() {
+		f.server.BeginShutdown()
+		f.server.CancelInFlightRuns()
+		if !f.server.WaitForInFlightRuns(5 * time.Second) {
+			t.Error("fixture runs did not stop before store cleanup")
+			return
+		}
+		f.db.Close()
+	}()
 	projID := f.createProject(t)
 	p := identity.Principal{Type: "user", UserID: f.userID, AccountScopeID: f.accountID}
 
@@ -734,7 +774,15 @@ func TestProjectTaskReject_MalformedJSONAndRevisionGuards(t *testing.T) {
 	// - Authority: handleProjects in swarmd/internal/api/projects.go.
 	// - Threat/regression: Rejecting the wrong plan revision or ignoring malformed client requests.
 	f := setupMatrixTestFixture(t)
-	defer f.db.Close()
+	defer func() {
+		f.server.BeginShutdown()
+		f.server.CancelInFlightRuns()
+		if !f.server.WaitForInFlightRuns(5 * time.Second) {
+			t.Error("fixture runs did not stop before store cleanup")
+			return
+		}
+		f.db.Close()
+	}()
 	projID := f.createProject(t)
 	p := identity.Principal{Type: "user", UserID: f.userID, AccountScopeID: f.accountID}
 
@@ -884,7 +932,15 @@ func TestProjectTaskReopen_MalformedJSONAndRevisionGuards(t *testing.T) {
 	// - Authority: handleProjects in swarmd/internal/api/projects.go.
 	// - Threat/regression: Corrupted reopen payloads, stale send-backs, or bypassing plan approval.
 	f := setupMatrixTestFixture(t)
-	defer f.db.Close()
+	defer func() {
+		f.server.BeginShutdown()
+		f.server.CancelInFlightRuns()
+		if !f.server.WaitForInFlightRuns(5 * time.Second) {
+			t.Error("fixture runs did not stop before store cleanup")
+			return
+		}
+		f.db.Close()
+	}()
 	projID := f.createProject(t)
 	p := identity.Principal{Type: "user", UserID: f.userID, AccountScopeID: f.accountID}
 
@@ -1017,7 +1073,15 @@ func TestProjectTaskCompleteAndRefine_MalformedJSONAndRevisionGuards(t *testing.
 	// - Authority: handleProjects in swarmd/internal/api/projects.go.
 	// - Threat/regression: Corrupted complete/refine payloads, cross-account tampering, stale plan edits.
 	f := setupMatrixTestFixture(t)
-	defer f.db.Close()
+	defer func() {
+		f.server.BeginShutdown()
+		f.server.CancelInFlightRuns()
+		if !f.server.WaitForInFlightRuns(5 * time.Second) {
+			t.Error("fixture runs did not stop before store cleanup")
+			return
+		}
+		f.db.Close()
+	}()
 	projID := f.createProject(t)
 	p := identity.Principal{Type: "user", UserID: f.userID, AccountScopeID: f.accountID}
 	crossPrincipal := identity.Principal{Type: "user", UserID: "rogue", AccountScopeID: "rogue-acct"}

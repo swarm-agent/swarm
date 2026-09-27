@@ -249,6 +249,7 @@ func setupMatrixTestFixture(t *testing.T) *matrixTestFixture {
 		worktrees:          mockWT,
 		runner:             mockRun,
 	}
+	s.runCtx, s.runCancel = context.WithCancel(context.Background())
 	s.v3SessionExecutor = newSessionV3Executor(s)
 	s.planLifecycle.SetApplySessionMutation(s.applySessionV3PrimaryMutation)
 
