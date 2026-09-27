@@ -46,10 +46,12 @@ import {
   Settings2,
   Sparkles,
   Tag,
+  Target,
   Timer,
   Trash2,
   Upload,
   Volume2,
+  Send,
   X,
   Zap,
 } from 'lucide-react'
@@ -105,11 +107,20 @@ import {
 
 export { resolveVideoPricing, normalizeVideoResKey, type TaskModalModelOption }
 import {
+  createDesktopV3ExistingMessageOperation,
+  continueDesktopV3Conversation,
+} from '../session-v3/existing-session-flow'
+import {
   buildTaskAcceptancePayload,
+  buildSelectedTaskMessageEnvelope,
+  buildSelectedTaskMessageMetadata,
+  parseSelectedTaskMessageEnvelope,
+  validateSelectedTaskForContext,
   getPrimarySystemAgentName,
   resolveDeployImpendingConfig,
   resolveTaskImpendingAgents,
   resolveTaskWorkspace,
+  type SelectedTaskContextSnapshot,
 } from './orchestrate-task-helpers'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { agentModelSettingsQueryOptions } from '../settings/swarm/queries/get-agent-model-settings'
@@ -990,15 +1001,16 @@ function MinimalTaskCard({
             />
           </span>
 
-          {taskSessionId && (
+          {onOpenChat && (
             <button
               type="button"
               onClick={(e) => {
                 e.stopPropagation()
-                onOpenChat?.()
+                onOpenChat()
               }}
               className="flex items-center gap-1 px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-[10px] font-medium transition-colors border border-slate-700/60"
-              title="Open session chat with this worker"
+              title={taskSessionId ? 'Open session chat with this worker' : 'Discuss this task in orchestrator chat'}
+              data-testid="task-card-chat-btn"
             >
               <MessageSquare size={11} />
               <span>Chat</span>
@@ -2488,6 +2500,156 @@ function MinimalTaskCard({
 }
 
 /**
+ * Bottom Composer for Orchestrator Chat with safe selected-task context forwarding.
+ * Supports explicit user-message envelope snapshotting on send, exact project/task/revision
+ * validation, and rejects stale, missing, or cross-project tasks.
+ */
+function OrchestratorChatComposer({
+  sessionId,
+  project,
+  targetTask,
+  allTasks,
+  onDeselectTask,
+}: {
+  sessionId: string
+  project?: ProjectSummary
+  targetTask?: RunningTask | null
+  allTasks?: RunningTask[]
+  onDeselectTask?: () => void
+}) {
+  const [draft, setDraft] = useState('')
+  const [sending, setSending] = useState(false)
+  const [sendError, setSendError] = useState<string | null>(null)
+
+  const handleSend = async () => {
+    const text = draft.trim()
+    if (!text || sending) return
+
+    setSending(true)
+    setSendError(null)
+
+    try {
+      let finalContent = text
+      let finalMetadata: Record<string, unknown> = {
+        orchestrate_view: true,
+        ...(project ? { project_id: project.id } : {}),
+      }
+
+      if (targetTask) {
+        // Validation: exact project/task/session/plan revision, never title inference; stale/missing/cross-project reject
+        const validation = validateSelectedTaskForContext(project, targetTask, allTasks)
+        if (!validation.valid) {
+          throw new Error(validation.error || 'Selected task context is invalid or stale')
+        }
+
+        // Snapshot on send: capture immutable record at the moment of send
+        const snapshot = validation.snapshot!
+
+        // Format explicit user-message envelope in content (no system prompt/schema changes)
+        finalContent = buildSelectedTaskMessageEnvelope(snapshot, text)
+
+        // Set metadata for tracking without relying on invented backend ignored metadata
+        finalMetadata = buildSelectedTaskMessageMetadata(snapshot, finalMetadata)
+      }
+
+      const operation = createDesktopV3ExistingMessageOperation({
+        sessionId,
+        prompt: finalContent,
+        metadata: finalMetadata,
+      })
+
+      await continueDesktopV3Conversation(operation)
+      setDraft('')
+    } catch (err: any) {
+      setSendError(err?.message || String(err))
+    } finally {
+      setSending(false)
+    }
+  }
+
+  return (
+    <div
+      className="border-t border-slate-800 bg-[#0a0f1d] p-3 text-xs space-y-2 flex-shrink-0"
+      data-testid="orchestrator-chat-composer"
+    >
+      {targetTask && (
+        <div
+          className="flex items-center justify-between px-2.5 py-1 rounded-lg bg-blue-950/40 border border-blue-500/30 text-[11px] text-blue-200"
+          data-testid="composer-task-context-badge"
+        >
+          <div className="flex items-center gap-1.5 min-w-0">
+            <span className="font-semibold text-blue-300">Context:</span>
+            <span className="font-medium text-white truncate max-w-[200px]" title={targetTask.title}>
+              {targetTask.title}
+            </span>
+            <span className="font-mono text-[9px] px-1 py-0.2 rounded bg-blue-900/60 text-blue-300 border border-blue-500/30 font-bold">
+              r{targetTask.revision || 1}
+            </span>
+          </div>
+          {onDeselectTask && (
+            <button
+              type="button"
+              onClick={onDeselectTask}
+              className="text-slate-400 hover:text-white p-0.5 rounded hover:bg-slate-800 transition-colors"
+              title="Clear selected task context"
+              aria-label="Clear selected task context"
+              data-testid="composer-clear-task-context-btn"
+            >
+              <X size={10} />
+            </button>
+          )}
+        </div>
+      )}
+
+      {sendError && (
+        <div
+          className="p-2 rounded bg-red-950/40 border border-red-500/30 text-red-200 text-[11px]"
+          data-testid="chat-send-error"
+        >
+          {sendError}
+        </div>
+      )}
+
+      <div className="relative flex items-end gap-2">
+        <textarea
+          value={draft}
+          onChange={(e) => {
+            setDraft(e.target.value)
+            if (sendError) setSendError(null)
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault()
+              void handleSend()
+            }
+          }}
+          disabled={sending}
+          rows={2}
+          placeholder={
+            targetTask
+              ? `Message about "${targetTask.title}"...`
+              : 'Message Swarm Orchestrator...'
+          }
+          className="flex-1 rounded-xl bg-slate-950/80 border border-slate-800 p-2.5 text-slate-200 placeholder-slate-500 focus:outline-none focus:border-blue-500/60 resize-none text-xs font-sans leading-relaxed"
+          data-testid="orchestrator-chat-input"
+        />
+        <button
+          type="button"
+          onClick={() => void handleSend()}
+          disabled={sending || !draft.trim()}
+          className="flex items-center justify-center p-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex-shrink-0"
+          title="Send message"
+          aria-label="Send message"
+          data-testid="orchestrator-chat-send-btn"
+        >
+          <Send size={14} className={sending ? 'animate-pulse' : ''} />
+        </button>
+      </div>
+    </div>
+  )
+}
+
+/**
  * Right AI Chat Panel: Supports switching between Executive Project Orchestrator
  * and individual Task Worker sessions with a back-button navigation bar.
  */
@@ -2495,19 +2657,28 @@ function OrchestratorChatSidebar({
   sessionId,
   project,
   activeTask,
+  selectedTask,
+  allTasks,
   onBackToOrchestrator,
   onOrchestratorSessionReset,
+  onDeselectTask,
 }: {
   sessionId: string
   project?: ProjectSummary
   activeTask?: RunningTask
+  selectedTask?: RunningTask | null
+  allTasks?: RunningTask[]
   onBackToOrchestrator?: () => void
   onOrchestratorSessionReset?: (newSessionId: string) => void
+  onDeselectTask?: () => void
 }) {
   const [error, setError] = useState(false)
   const [attempt, setAttempt] = useState(0)
   const [clearingContext, setClearingContext] = useState(false)
   const [clearSuccess, setClearSuccess] = useState(false)
+
+  // Target task is activeTask if viewing task child session, or selectedTask if viewing orchestrator session
+  const targetTask = activeTask || selectedTask || null
 
   const messages = useDesktopV3CacheSelector(
     useCallback((state) => selectRenderedSessionMessages(state, sessionId), [sessionId]),
@@ -2699,6 +2870,36 @@ function OrchestratorChatSidebar({
               <span>{clearingContext ? 'Clearing...' : clearSuccess ? 'Cleared!' : 'Clear Context'}</span>
             </button>
           </div>
+          {/* Selected Task Context Banner */}
+          {selectedTask && !activeTask && (
+            <div
+              className="flex items-center justify-between px-3 py-1.5 bg-blue-950/40 border-t border-blue-500/30 text-[11px] text-blue-200"
+              data-testid="selected-task-context-banner"
+            >
+              <div className="flex items-center gap-1.5 min-w-0">
+                <Target size={11} className="text-blue-400 flex-shrink-0" />
+                <span className="font-semibold text-blue-300">Selected Task:</span>
+                <span className="font-medium text-white truncate max-w-[200px]" title={selectedTask.title}>
+                  {selectedTask.title}
+                </span>
+                <span className="font-mono text-[9px] px-1 py-0.2 rounded bg-blue-900/60 text-blue-300 border border-blue-500/30 font-bold">
+                  r{selectedTask.revision || 1}
+                </span>
+              </div>
+              {onDeselectTask && (
+                <button
+                  type="button"
+                  onClick={onDeselectTask}
+                  className="text-slate-400 hover:text-white p-0.5 rounded hover:bg-slate-800 transition-colors"
+                  title="Clear selected task context"
+                  aria-label="Clear selected task context"
+                  data-testid="clear-selected-task-context-btn"
+                >
+                  <X size={11} />
+                </button>
+              )}
+            </div>
+          )}
         </div>
       )}
 
@@ -2722,6 +2923,15 @@ function OrchestratorChatSidebar({
         renderedMessages={messages}
         messagesLoaded={ready}
         loadedMessageCount={count}
+        composerOverride={
+          <OrchestratorChatComposer
+            sessionId={sessionId}
+            project={project}
+            targetTask={targetTask}
+            allTasks={allTasks}
+            onDeselectTask={onDeselectTask}
+          />
+        }
         contextChip={
           activeTask
             ? {
@@ -2729,6 +2939,13 @@ function OrchestratorChatSidebar({
                 label: activeTask.title,
                 kind: 'task',
                 description: `Task Session (${activeTask.agentType}) for ${activeTask.title}`,
+              }
+            : selectedTask
+            ? {
+                id: selectedTask.id,
+                label: selectedTask.title,
+                kind: 'selected_task',
+                description: `Selected Task Context: ${selectedTask.title} (r${selectedTask.revision || 1} · ${selectedTask.agentType})`,
               }
             : project
             ? {
@@ -2739,11 +2956,30 @@ function OrchestratorChatSidebar({
               }
             : null
         }
-        metadata={{
-          orchestrate_view: true,
-          ...(project ? { project_id: project.id } : {}),
-          ...(activeTask ? { task_id: activeTask.id } : {}),
-        }}
+        onContextChipRemove={selectedTask && !activeTask ? onDeselectTask : undefined}
+        metadata={
+          targetTask
+            ? buildSelectedTaskMessageMetadata(
+                {
+                  projectId: project?.id || '',
+                  projectName: project?.name,
+                  taskId: targetTask.id,
+                  taskTitle: targetTask.title,
+                  agentType: targetTask.agentType,
+                  status: targetTask.status,
+                  sessionId: targetTask.sessionId,
+                  taskRevision: targetTask.revision || 1,
+                  planId: targetTask.planBinding?.planId || (targetTask as any).plan_binding?.plan_id,
+                  planDefinitionRevision: targetTask.planBinding?.definitionRevision ?? (targetTask as any).plan_binding?.definition_revision,
+                  snapshotTimestamp: Date.now(),
+                },
+                { orchestrate_view: true, project_id: project?.id }
+              )
+            : {
+                orchestrate_view: true,
+                ...(project ? { project_id: project.id } : {}),
+              }
+        }
       />
     </aside>
   )
@@ -3258,8 +3494,24 @@ export function OrchestrateView({
     return resolveAudioPricing(selectedAudioOption, soundDuration)
   }, [selectedAudioOption, soundDuration])
 
-  // Active task object derived from activeTaskId
+  // Active task object derived from activeTaskId (task whose child session is open in chat)
   const activeTask = useMemo(() => tasks.find((t) => t.id === activeTaskId), [tasks, activeTaskId])
+
+  // Selected task object derived from selectedTaskId (canvas selection)
+  const selectedTask = useMemo(
+    () => (selectedTaskId ? tasks.find((t) => t.id === selectedTaskId) || null : null),
+    [tasks, selectedTaskId]
+  )
+
+  const handleDeselectTask = useCallback(() => {
+    setSelectedTaskId('')
+  }, [])
+
+  // Clear task selection on project switch to prevent cross-project context leaks
+  useEffect(() => {
+    setSelectedTaskId('')
+    setActiveTaskId(null)
+  }, [selectedProjectId])
 
   // 1. Fetch User Auth, Workspaces, Automations, and Projects on mount
   useEffect(() => {
@@ -3611,6 +3863,11 @@ export function OrchestrateView({
     if (task.sessionId) {
       setActiveSessionId(task.sessionId)
       setActiveTaskId(task.id)
+    } else {
+      setActiveTaskId(null)
+      if (selectedProject?.primarySessionId) {
+        setActiveSessionId(selectedProject.primarySessionId)
+      }
     }
   }
 
@@ -4487,6 +4744,9 @@ export function OrchestrateView({
       desktopProjects.invalidate(selectedProject.id)
       if (activeTaskId === taskId) {
         handleBackToOrchestrator()
+      }
+      if (selectedTaskId === taskId) {
+        setSelectedTaskId('')
       }
     } catch (err) {
       console.warn('Delete task failed:', err)
@@ -7031,8 +7291,11 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
           sessionId={activeSessionId}
           project={selectedProject}
           activeTask={activeTask}
+          selectedTask={selectedTask}
+          allTasks={tasks}
           onBackToOrchestrator={handleBackToOrchestrator}
           onOrchestratorSessionReset={handleOrchestratorSessionReset}
+          onDeselectTask={handleDeselectTask}
         />
       ) : (
         <aside className="relative flex w-[440px] flex-shrink-0 flex-col items-center justify-center p-6 text-center rounded-3xl border border-slate-800/80 bg-[#0d121f] text-xs text-slate-400 shadow-[inset_0_1px_1px_rgba(255,255,255,0.06),0_18px_40px_rgba(0,0,0,0.65)]">

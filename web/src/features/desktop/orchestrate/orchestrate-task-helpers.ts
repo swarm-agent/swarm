@@ -1,4 +1,4 @@
-import type { RunningTask, MediaDeliverable, TaskOutcomeType, BackendTaskModelPreview, ProjectTaskPlanBinding } from './orchestrate-types'
+import type { RunningTask, MediaDeliverable, TaskOutcomeType, BackendTaskModelPreview, ProjectTaskPlanBinding, ProjectSummary } from './orchestrate-types'
 import type { AgentModelSettings } from '../settings/swarm/types/agent-model-settings'
 
 export interface ImpendingAgentView {
@@ -448,4 +448,231 @@ export function buildTaskAcceptancePayload(
     definition_revision: definitionRevision,
   }
 }
+
+export interface SelectedTaskContextSnapshot {
+  projectId: string
+  projectName?: string
+  taskId: string
+  taskTitle: string
+  agentType?: string
+  status: string
+  sessionId?: string
+  taskRevision: number
+  planId?: string
+  planDefinitionRevision?: number
+  snapshotTimestamp: number
+}
+
+export interface ValidateSelectedTaskResult {
+  valid: boolean
+  error?: string
+  reason?: 'missing_project' | 'missing_task' | 'cross_project' | 'stale_task' | 'stale_revision'
+  snapshot?: SelectedTaskContextSnapshot
+}
+
+/**
+ * Validates selected task context before chat forwarding.
+ * Invariants:
+ * - Exact project/task/session/plan revision; never title inference.
+ * - Stale/missing/cross-project tasks are rejected immediately.
+ * - Snapshot on send: creates an immutable snapshot of verified task state at send time.
+ */
+export function validateSelectedTaskForContext(
+  project: Pick<ProjectSummary, 'id' | 'name' | 'repoPath'> | null | undefined,
+  task: RunningTask | null | undefined,
+  currentTasks?: RunningTask[],
+): ValidateSelectedTaskResult {
+  if (!project || !project.id || !project.id.trim()) {
+    return {
+      valid: false,
+      reason: 'missing_project',
+      error: 'No active project selected for task context forwarding',
+    }
+  }
+
+  if (!task || !task.id || !task.id.trim()) {
+    return {
+      valid: false,
+      reason: 'missing_task',
+      error: 'No task selected for context forwarding',
+    }
+  }
+
+  // Cross-project & existence check: match exclusively by task.id (NEVER title inference)
+  if (currentTasks) {
+    const liveMatch = currentTasks.find((t) => t.id === task.id)
+    if (!liveMatch) {
+      return {
+        valid: false,
+        reason: 'cross_project',
+        error: `Selected task ${task.id} is missing from active project ${project.id} or belongs to another project`,
+      }
+    }
+
+    // Stale revision check: ensure the caller's task revision matches authoritative current state
+    const callerRev = typeof task.revision === 'number' ? task.revision : 1
+    const liveRev = typeof liveMatch.revision === 'number' ? liveMatch.revision : 1
+    if (callerRev !== liveRev) {
+      return {
+        valid: false,
+        reason: 'stale_revision',
+        error: `Selected task ${task.id} revision r${callerRev} is stale (project task is at r${liveRev})`,
+      }
+    }
+
+    // Use latest live match to ensure snapshot reflects latest verified attributes
+    task = liveMatch
+  }
+
+  // Exact plan definition revision guard
+  const binding = task.planBinding || task.plan_binding
+  const planId = binding?.planId || binding?.plan_id
+  let planDefinitionRevision: number | undefined
+  if (typeof binding?.definitionRevision === 'number') {
+    planDefinitionRevision = binding.definitionRevision
+  } else if (typeof binding?.definition_revision === 'number') {
+    planDefinitionRevision = binding.definition_revision
+  }
+
+  const taskSessionId = task.sessionId || binding?.sessionId || binding?.session_id
+
+  const snapshot: SelectedTaskContextSnapshot = {
+    projectId: project.id.trim(),
+    projectName: project.name?.trim(),
+    taskId: task.id.trim(),
+    taskTitle: task.title?.trim() || task.id,
+    agentType: task.agentType,
+    status: task.status,
+    sessionId: taskSessionId ? String(taskSessionId).trim() : undefined,
+    taskRevision: typeof task.revision === 'number' ? task.revision : 1,
+    planId: planId ? String(planId).trim() : undefined,
+    planDefinitionRevision,
+    snapshotTimestamp: Date.now(),
+  }
+
+  return { valid: true, snapshot }
+}
+
+/**
+ * Builds explicit user-message envelope for forwarding selected-task context.
+ * This guarantees the AI receives exact task context in content without backend schema changes
+ * or relying on invented metadata ignored by the model executor.
+ */
+export function buildSelectedTaskMessageEnvelope(
+  snapshot: SelectedTaskContextSnapshot,
+  userPrompt: string,
+): string {
+  const headerLines = [
+    `[Task Context: ${snapshot.taskId}]`,
+    `project_id: ${snapshot.projectId}`,
+    `task_id: ${snapshot.taskId}`,
+    `task_title: ${snapshot.taskTitle}`,
+    `task_status: ${snapshot.status}`,
+    `task_revision: ${snapshot.taskRevision}`,
+  ]
+  if (snapshot.agentType) {
+    headerLines.push(`agent_type: ${snapshot.agentType}`)
+  }
+  if (snapshot.sessionId) {
+    headerLines.push(`session_id: ${snapshot.sessionId}`)
+  }
+  if (snapshot.planId) {
+    headerLines.push(`plan_id: ${snapshot.planId}`)
+  }
+  if (snapshot.planDefinitionRevision != null) {
+    headerLines.push(`plan_definition_revision: ${snapshot.planDefinitionRevision}`)
+  }
+  headerLines.push('---')
+
+  const promptText = userPrompt.trim()
+  if (promptText) {
+    headerLines.push(promptText)
+  }
+
+  return headerLines.join('\n')
+}
+
+/**
+ * Builds tracking metadata accompanying selected-task chat messages.
+ */
+export function buildSelectedTaskMessageMetadata(
+  snapshot: SelectedTaskContextSnapshot,
+  baseMetadata?: Record<string, unknown>,
+): Record<string, unknown> {
+  return {
+    ...baseMetadata,
+    orchestrate_view: true,
+    project_id: snapshot.projectId,
+    task_id: snapshot.taskId,
+    selected_task_id: snapshot.taskId,
+    task_revision: snapshot.taskRevision,
+    ...(snapshot.sessionId ? { task_session_id: snapshot.sessionId } : {}),
+    ...(snapshot.planId ? { plan_id: snapshot.planId } : {}),
+    ...(snapshot.planDefinitionRevision != null ? { plan_definition_revision: snapshot.planDefinitionRevision } : {}),
+  }
+}
+
+/**
+ * Parses explicit user-message envelope from message content.
+ */
+export function parseSelectedTaskMessageEnvelope(content: string): {
+  hasEnvelope: boolean
+  taskId?: string
+  projectId?: string
+  taskRevision?: number
+  planId?: string
+  planDefinitionRevision?: number
+  agentType?: string
+  taskStatus?: string
+  userPrompt: string
+} {
+  const trimmed = (content || '').trim()
+  const match = trimmed.match(/^\[Task Context:\s*([^\]]+)\]\n([\s\S]*?)\n---\n?([\s\S]*)$/)
+  if (!match) {
+    return { hasEnvelope: false, userPrompt: trimmed }
+  }
+
+  const taskId = match[1].trim()
+  const headerBlock = match[2]
+  const userPrompt = match[3].trim()
+
+  let projectId: string | undefined
+  let taskRevision: number | undefined
+  let planId: string | undefined
+  let planDefinitionRevision: number | undefined
+  let agentType: string | undefined
+  let taskStatus: string | undefined
+
+  for (const line of headerBlock.split('\n')) {
+    const colonIdx = line.indexOf(':')
+    if (colonIdx === -1) continue
+    const key = line.slice(0, colonIdx).trim()
+    const val = line.slice(colonIdx + 1).trim()
+    if (key === 'project_id') projectId = val
+    if (key === 'plan_id') planId = val
+    if (key === 'agent_type') agentType = val
+    if (key === 'task_status') taskStatus = val
+    if (key === 'task_revision') {
+      const parsed = parseInt(val, 10)
+      if (!isNaN(parsed)) taskRevision = parsed
+    }
+    if (key === 'plan_definition_revision') {
+      const parsed = parseInt(val, 10)
+      if (!isNaN(parsed)) planDefinitionRevision = parsed
+    }
+  }
+
+  return {
+    hasEnvelope: true,
+    taskId,
+    projectId,
+    taskRevision,
+    planId,
+    planDefinitionRevision,
+    agentType,
+    taskStatus,
+    userPrompt,
+  }
+}
+
 

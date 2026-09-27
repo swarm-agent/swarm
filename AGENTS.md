@@ -173,42 +173,7 @@ Prefer maintained scripts over one-off replacements:
 - `./scripts/check-atlas-sync.sh` — canonical atlas synchronization check for documentation and architecture tracking.
 - `./scripts/check-precommit.sh`, `./scripts/check-launch-readiness.sh`, and release verification scripts — public/release gates.
 
-### Local Candidate Testbench & Operator Scripts (`~/work`)
-
-When testing, evaluating, or executing candidate testbenches, the AI should use the dedicated operator testbench environment in `~/work`:
-
-- **Testbench Runner**: `~/work/run-testbench.sh`
-- **Environment Configuration**: `~/work/gemini-testbench.env` (dedicated Google Gemini key locked to generativelanguage.googleapis.com and host IP, with a 2,000 requests/day Cloud Quota cap).
-- **Isolated Ports**: API `18080`, Desktop `18081` (never touches host services on `7781`/`7777` or `5555`).
-- **Dynamic Worktree Resolution**: Automatically builds and runs against the current active worktree or repository (defaults to `~/swarm-go`, overridable with `SWARM_WORKTREE=/path/to/worktree`).
-- **1-Hour Lease & Auto-Shutdown Lifecycle**:
-  - **Start**: `~/work/run-testbench.sh start [lease_seconds]` starts the candidate daemon and acquires a 1-hour lease (3,600s default) with an automatic background shutdown watcher.
-  - **Status**: `~/work/run-testbench.sh status` displays candidate worktree, process PID, desktop/API URLs, active lease countdown, and watcher status.
-  - **Lease / Renew**: `~/work/run-testbench.sh lease [duration_seconds]` extends or renews the lease for another 1 hour (3600s) or custom duration.
-  - **Stop / Turn-Down**: `~/work/run-testbench.sh stop` immediately stops the daemon and releases the lease.
-  - **Auto-Turn-Down Safety**: If an AI agent or test session exits, crashes, or forgets to turn down the testbench, the background watcher automatically shuts down the daemon when the 1-hour lease expires, releasing ports and Pebble database locks.
-- **Worker & Matrix Tests**:
-  - `~/work/run-testbench.sh test-worker`: starts the testbench and executes `~/work/test-worker-e2e.mjs`.
-  - `node ~/work/test-worker-matrix.mjs`: comprehensive automation matrix tests.
-  - After test execution, always turn down the testbench with `~/work/run-testbench.sh stop`.
-
 Use each script’s `--help`. Do not manually reproduce a script’s contract, hardcode remote paths, pass raw secrets on command lines, or substitute an unrequested host/helper.
-
-### Alias-driven E2E testbench
-
-- **Use the agreed endpoint first.** When the user supplies a testbench URL, or the conversation has already established one, use that exact URL for inspection and testing. Do not ask the user to repeat it or replace it with ports from `.env`, another checkout, or a newly allocated lane. Treat a page URL as the requested page; derive API origins from it only as required by the maintained client's contract.
-- **Existing endpoint access is not fresh deployment.** Start with bounded, authenticated inspection of the specified endpoint and its candidate identity. A missing local `.env`, a stale configuration, or a wrapper refusing an occupied forward port is a local setup limitation—not evidence that the supplied endpoint is unusable. Do not deploy another candidate, allocate a replacement testbench, or stop an existing tunnel to make the wrapper pass. If the maintained runner cannot attach to the existing endpoint, identify and repair that attachment gap within the approved scope while preserving authentication and isolation; do not silently reroute.
-- **Keep target choice separate from safety checks.** An HTTP success alone does not establish candidate identity, lane ownership, or permission to mutate it. Verify those against the specified endpoint before stateful tests or deployment. If access or ownership genuinely prevents the requested operation, report the exact failed operation and evidence; do not invent another target or repeat unrelated setup checks. Deployment and privileged changes still require their applicable approvals.
-- **Slots are not test counts.** The deployment client's two container slots isolate candidates; they do not impose a two-test limit. Test-suite concurrency is a separate runner setting. Check the selected runner's actual concurrency and shared-state constraints before running multiple tests; do not claim live concurrency is verified merely because the source supports it.
-
-- Live candidate tests use the broker-owned two-slot `systemd-nspawn` pool managed by `./scripts/testbench-container-deploy.sh`. Each slot has independent candidate state and listeners. Never deploy, rebuild, or restart host `swarm.service` for a live candidate test, or substitute host ports `5555/7781`. Use `docs/testing/testbench-container.md` and the maintained scripts as the routing authority.
-- Testbench configuration is data-only and non-secret: use the ignored repository-root `.env` or the supported `SWARM_TESTBENCH_ENV_FILE` override. The configuration validator expects the slot-1 defaults (remote Desktop `5655`, API `7881`); the pool client derives actual ports from the assigned slot. Slot 1 forwards local `15655`/`17881` to remote `5655`/`7881`; slot 2 forwards local `15656`/`17882` to remote `5656`/`7882`. Preserve an explicitly requested endpoint; verify its slot and candidate rather than silently selecting another. Never put tokens, passwords, cookies, API keys, private keys, provider payloads, or other credentials in this file.
-- Deploy the exact clean committed checkout with `./scripts/testbench-container-deploy.sh deploy`. Its supported actions are `deploy`, `status`, `stop`, `tunnel`, and `pool-status`; it has no `check` or `run` action. Inspect pool ownership before deployment and never replace another active lane. Use `./scripts/testbench-e2e-tunnel.sh check` for the maintained exact-HEAD check. That wrapper also rejects occupied local forward ports, so an already-open endpoint is not evidence that its candidate is stale or incorrect.
-- `./scripts/testbench-e2e-tunnel.sh run <command...>` owns the command-execution wrapper: it deploys the exact clean committed `HEAD` when the assigned slot is absent, inactive, or stale, opens temporary loopback forwards, and exports `SWARM_DESKTOP_URL`, `SWARM_PRIMARY_API_URL`, and `SWARM_RUNNER_API_URL`. It does not reuse occupied local forward ports. Do not terminate an existing tunnel or substitute another endpoint merely to satisfy this wrapper. Use `./scripts/run-testbench-desktop-e2e.sh` for the Desktop launch suite and `./scripts/run-testbench-runner.sh <runner-name>` for registered scenarios; inspect their current contracts before execution.
-- Run `./scripts/run-testbench-launch-prerun.sh` for the canonical launch pre-run. It runs the local deterministic `critical` gate alongside the independent onboarding, Desktop, TUI, Plan/Auto, task-routing, Task Program, and provider-backed sync/realtime suites with bounded parallelism and aggregate failure reporting; connectivity is checked once before execution. Use `--list-suites`, repeated `--suite`, and `--dry-run` to inspect or narrow the manifest; do not add a second launch-test manifest elsewhere.
-- The Desktop listener remains remote-loopback-only. Do not bind test ports to `0.0.0.0`, use raw hosts in runners, or bypass the SSH alias. If the remote test requires a callback to a local loopback service, set both reverse-port variables in `.env`; the tunnel runner adds one bounded `ssh -R remote:127.0.0.1:local` forwarding rule.
-- E2E scripts must use these environment variables or explicit equivalent CLI arguments, produce bounded evidence under an existing ignored `.tmp/` location, clean up tunnel processes, and never persist authentication material.
-- Never run one opaque 30-minute E2E wait. Split live proofs into resumable stages with one independently inspectable result per stage, cap each stage at 10 minutes, emit a heartbeat at least every 15 seconds showing the current run status and observable progress, and stop early with durable session evidence when progress stalls or a failure becomes visible.
 
 ## Temporary Data
 

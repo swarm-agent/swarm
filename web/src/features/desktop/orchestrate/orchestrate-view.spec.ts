@@ -113,3 +113,39 @@ test('OrchestrateView displays orchestrator context used and provides clear cont
   assert.ok(source.includes('onOrchestratorSessionReset'), 'OrchestratorChatSidebar must accept onOrchestratorSessionReset prop')
 })
 
+test('OrchestrateView forwards selected-task context to orchestrator chat with explicit envelope and preserves canonical actions', () => {
+  // Written test purpose:
+  // - Product requirement/invariant: When an operator selects a task card, OrchestrateView must forward
+  //   the selected task context into the chat sidebar, display a selected task badge with deselect capability,
+  //   and forward the snapshot-on-send explicit user-message envelope into the chat conversation.
+  // - Regression prevented: Prevents selectedTaskId from acting as a cosmetic UI highlight only without chat forwarding.
+  // - Symbols: OrchestrateView.tsx, OrchestratorChatComposer, OrchestratorChatSidebar.
+  const sourcePath = path.join(__dirname, 'OrchestrateView.tsx')
+  const source = fs.readFileSync(sourcePath, 'utf8')
+
+  // Selected task state and chat sidebar wiring
+  assert.ok(source.includes('selectedTask = useMemo('), 'Must derive selectedTask from selectedTaskId')
+  assert.ok(source.includes('selectedTask={selectedTask}'), 'Must pass selectedTask to OrchestratorChatSidebar')
+  assert.ok(source.includes('allTasks={tasks}'), 'Must pass allTasks to OrchestratorChatSidebar')
+  assert.ok(source.includes('onDeselectTask={handleDeselectTask}'), 'Must pass onDeselectTask callback')
+
+  // Explicit user-message envelope and validation
+  assert.ok(source.includes('validateSelectedTaskForContext'), 'Must validate selected task context before sending')
+  assert.ok(source.includes('buildSelectedTaskMessageEnvelope'), 'Must build explicit user-message envelope')
+  assert.ok(source.includes('buildSelectedTaskMessageMetadata'), 'Must build selected task tracking metadata')
+
+  // Composer override and UI elements
+  assert.ok(source.includes('composerOverride='), 'Must provide composerOverride to DesktopV3ExistingConversationPane')
+  assert.ok(source.includes('data-testid="selected-task-context-banner"'), 'Must render selected-task-context-banner testid')
+  assert.ok(source.includes('data-testid="clear-selected-task-context-btn"'), 'Must render clear-selected-task-context-btn testid')
+  assert.ok(source.includes('data-testid="orchestrator-chat-composer"'), 'Must render orchestrator-chat-composer testid')
+
+  // Canonical paths preserved
+  assert.ok(source.includes('handleApproveTask'), 'handleApproveTask must be preserved')
+  assert.ok(source.includes('handleRefineTask'), 'handleRefineTask must be preserved')
+  assert.ok(source.includes('handleReopenTask'), 'handleReopenTask must be preserved')
+  assert.ok(source.includes('handleCompleteTask'), 'handleCompleteTask must be preserved')
+  assert.ok(source.includes('handleRedeployJob'), 'handleRedeployJob must be preserved')
+})
+
+
