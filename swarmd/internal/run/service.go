@@ -795,7 +795,7 @@ func (s *Service) ExecuteTaskProgramForCoordinator(ctx context.Context, p identi
 	callID := fmt.Sprintf("call_tp_%s", record.ProgramID)
 	if s.permissions != nil {
 		readyIdxs := taskProgramReadyJobIndexes(record, 0)
-		_, _ = s.permissions.ReserveSubagentWave(permission.SubagentReservationRequest{
+		reservation, reserveErr := s.permissions.ReserveSubagentWave(permission.SubagentReservationRequest{
 			SessionID:           parentSessionID,
 			RunID:               runID,
 			CallID:              callID,
@@ -805,6 +805,12 @@ func (s *Service) ExecuteTaskProgramForCoordinator(ctx context.Context, p identi
 			ReadyCount:          len(readyIdxs),
 			LowerConcurrencyCap: 1,
 		})
+		if reserveErr != nil {
+			return "", fmt.Errorf("task program subagent reservation failed: %w", reserveErr)
+		}
+		if !reservation.Allowed || reservation.ActiveCount < 1 {
+			return "", errors.New("task program scheduler reservation denied or missing capacity")
+		}
 	}
 
 	parsed := taskCallArguments{
@@ -3055,7 +3061,10 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 				terminalPlanState.MarkTerminal()
 			}
 			if canonicalToolName(call.Name) == "exit_plan_mode" && strings.TrimSpace(gatedResults[i].Error) == "" {
-				terminalPlanState.MarkTerminal()
+				payload := decodeToolPayload(gatedResults[i].Output)
+				if mapString(payload, "status") == "plan_submitted_for_review" {
+					terminalPlanState.MarkTerminal()
+				}
 			}
 		}
 		if terminalPlanState.IsTerminal() {

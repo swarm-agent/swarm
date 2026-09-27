@@ -28,6 +28,48 @@ type manageProjectStore interface {
 	DeleteProjectTask(accountScopeID, projectID, taskID string) error
 }
 
+// ProjectTaskCreateInput specifies arguments for canonical project task creation.
+type ProjectTaskCreateInput struct {
+	ID               string                               `json:"id,omitempty"`
+	SessionID        string                               `json:"session_id,omitempty"`
+	Title            string                               `json:"title"`
+	Description      string                               `json:"description,omitempty"`
+	Prompt           string                               `json:"prompt,omitempty"`
+	Agent            string                               `json:"agent,omitempty"`
+	WorkerName       string                               `json:"worker_name,omitempty"`
+	FeatureSize      string                               `json:"feature_size,omitempty"`
+	WorkspacePath    string                               `json:"workspace_path,omitempty"`
+	WorktreeBranch   string                               `json:"worktree_branch,omitempty"`
+	OutcomeType      string                               `json:"outcome_type,omitempty"`
+	Tier             string                               `json:"tier,omitempty"`
+	AspectRatio      string                               `json:"aspect_ratio,omitempty"`
+	Resolution       string                               `json:"resolution,omitempty"`
+	VariantCount     int                                  `json:"variant_count,omitempty"`
+	DurationSeconds  int                                  `json:"duration_seconds,omitempty"`
+	Model            string                               `json:"model,omitempty"`
+	Provider         string                               `json:"provider,omitempty"`
+	Thinking         string                               `json:"thinking,omitempty"`
+	ServiceTier      string                               `json:"service_tier,omitempty"`
+	ContextMode      string                               `json:"context_mode,omitempty"`
+	Scenes           []pebblestore.ProjectTaskScene       `json:"scenes,omitempty"`
+	Soundtrack       string                               `json:"soundtrack,omitempty"`
+	AutoApprove      bool                                 `json:"auto_approve,omitempty"`
+	PipelineStages   []string                             `json:"pipeline_stages,omitempty"`
+	Deliverables     []pebblestore.ProjectTaskDeliverable `json:"deliverables,omitempty"`
+	WhatDidDo        []string                             `json:"what_did_do,omitempty"`
+	WhatNotDone      []string                             `json:"what_not_done,omitempty"`
+	AttachedMedia    []pebblestore.ProjectTaskMediaRef    `json:"attached_media,omitempty"`
+	Document         *pebblestore.SessionPlanDocument     `json:"document,omitempty"`
+	PlanDocument     *pebblestore.SessionPlanDocument     `json:"plan_document,omitempty"`
+	TaskProgram      *pebblestore.TaskProgramDefinition   `json:"task_program,omitempty"`
+	TaskProgramID    string                               `json:"task_program_id,omitempty"`
+	PlanSummary      string                               `json:"plan_summary,omitempty"`
+	FullPlanMarkdown string                               `json:"full_plan_markdown,omitempty"`
+	DiffSummary      string                               `json:"diff_summary,omitempty"`
+	ClientRequestID  string                               `json:"client_request_id,omitempty"`
+	Status           string                               `json:"status,omitempty"`
+}
+
 // ProjectTaskApprovalGuards specifies caller-provided guards for task approval.
 type ProjectTaskApprovalGuards struct {
 	SessionID          string `json:"session_id,omitempty"`
@@ -37,6 +79,7 @@ type ProjectTaskApprovalGuards struct {
 
 // ProjectTaskLifecycleService defines the canonical operations for project task execution and plan lifecycle.
 type ProjectTaskLifecycleService interface {
+	CreateProjectTask(ctx context.Context, p identity.Principal, projectID string, input ProjectTaskCreateInput) (*pebblestore.ProjectTaskRecord, error)
 	DeployProjectTask(ctx context.Context, p identity.Principal, projectID, taskID string) error
 	ApproveProjectTask(ctx context.Context, p identity.Principal, projectID, taskID string, guards ...ProjectTaskApprovalGuards) (*pebblestore.ProjectTaskRecord, error)
 	SubmitProjectTaskPlan(ctx context.Context, input sessionruntime.ProjectTaskPlanSubmissionInput) (sessionruntime.ProjectTaskPlanSubmissionResult, error)
@@ -48,6 +91,10 @@ type ProjectTaskDeployer func(accountScopeID, projectID, taskID string) error
 type legacyDeployerLifecycleAdapter struct {
 	deployer ProjectTaskDeployer
 	store    manageProjectStore
+}
+
+func (a *legacyDeployerLifecycleAdapter) CreateProjectTask(ctx context.Context, p identity.Principal, projectID string, input ProjectTaskCreateInput) (*pebblestore.ProjectTaskRecord, error) {
+	return nil, errors.New("create task requires canonical project task lifecycle service")
 }
 
 func (a *legacyDeployerLifecycleAdapter) DeployProjectTask(ctx context.Context, p identity.Principal, projectID, taskID string) error {
@@ -567,64 +614,9 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 			}
 		}
 
-		if planDoc != nil {
-			if featureSize == "" {
-				featureSize = "big"
-			}
-			if outcomeType == "" {
-				outcomeType = "plan_spec"
-			}
-			if tier == "" {
-				tier = "complex"
-			}
-		}
-
-		routed, rErr := pebblestore.RouteAndPlanProjectTaskWithOptions(pebblestore.TaskPlanOptions{
-			Prompt:             prompt,
-			RequestedWorkspace: wsPath,
-			ProjectContext:     projectContext,
-			Workspaces:         workspaces,
-			Intent:             intent,
-			FeatureSize:        featureSize,
-			Agent:              agentName,
-			OutcomeType:        outcomeType,
-			Tier:               tier,
-			AspectRatio:        aspectRatio,
-			VariantCount:       variantCount,
-			Soundtrack:         soundtrack,
-			AttachedMedia:      attachedMedia,
-		})
-		if rErr != nil {
-			return "", fmt.Errorf("task configuration invalid: %w", rErr)
-		}
-
-		if aspectRatio == "" {
-			aspectRatio = routed.AspectRatio
-		}
-		if variantCount <= 0 {
-			variantCount = routed.VariantCount
-		}
-		if soundtrack == "" {
-			soundtrack = routed.Soundtrack
-		}
-		if agentName == "" {
-			agentName = routed.Agent
-		}
 		workerName := strings.TrimSpace(asString(args["worker_name"]))
-		if workerName == "" {
-			workerName = fmt.Sprintf("@%s Worker", strings.Title(agentName))
-		}
-		if outcomeType == "" {
-			outcomeType = routed.OutcomeType
-		}
 		worktreeBranch := strings.TrimSpace(asString(args["worktree_branch"]))
-		if worktreeBranch == "" {
-			worktreeBranch = routed.Branch
-		}
 		description := strings.TrimSpace(asString(args["description"]))
-		if description == "" {
-			description = routed.Mission
-		}
 
 		var stages []string
 		if rawStages, ok := args["pipeline_stages"].([]any); ok {
@@ -633,9 +625,6 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 					stages = append(stages, s)
 				}
 			}
-		}
-		if len(stages) == 0 {
-			stages = routed.Stages
 		}
 
 		var whatDid []string
@@ -655,37 +644,8 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 			}
 		}
 
-		// Initial status logic: tool MUST NOT premark in_progress.
-		// Initial state is pending_approval (or planning for Plan agent exploration).
-		status := "pending_approval"
-		if planDoc != nil {
-			status = "pending_approval"
-		} else if agentName == "plan" || (agentName == "swarm" && featureSize == "big") {
-			status = "planning"
-		}
-
-		actionNeeded := strings.TrimSpace(asString(args["action_needed"]))
-		if actionNeeded == "" {
-			if planDoc != nil {
-				actionNeeded = "Review plan in task card and click Approve"
-			} else if status == "planning" {
-				actionNeeded = "Plan agent investigating and authoring structured plan..."
-			} else if status == "pending_approval" {
-				if agentName == "coder" || outcomeType == "code_pr" || outcomeType == "bug_patch" {
-					actionNeeded = "Review task and click Approve to start Coder execution"
-				} else if taskProg != nil {
-					actionNeeded = "Review task program and click Approve"
-				} else {
-					actionNeeded = "Review plan and click Approve"
-				}
-			}
-		}
-		if status == "planning" && len(whatDid) == 0 {
-			whatDid = []string{"Started planning investigation"}
-		}
-
 		var deliverables []pebblestore.ProjectTaskDeliverable
-		if rawDelivs, ok := args["deliverables"].([]any); ok && len(rawDelivs) > 0 {
+		if rawDelivs, ok := args["deliverables"].([]any); ok {
 			for _, item := range rawDelivs {
 				if m, ok := item.(map[string]any); ok {
 					deliverables = append(deliverables, pebblestore.ProjectTaskDeliverable{
@@ -698,129 +658,55 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 				}
 			}
 		}
-		if len(deliverables) == 0 {
-			deliverables = routed.Deliverables
-		}
+
 		planSummary := strings.TrimSpace(asString(args["plan_summary"]))
-		if planSummary == "" {
-			planSummary = routed.PlanSummary
-		}
 		fullPlanMarkdown := strings.TrimSpace(asString(args["full_plan_markdown"]))
-		if fullPlanMarkdown == "" {
-			fullPlanMarkdown = routed.FullPlanMarkdown
-		}
-		if tier == "" {
-			tier = routed.Tier
-		}
-
-		task := pebblestore.ProjectTaskRecord{
-			ProjectID:          projectID,
-			Title:              title,
-			Description:        description,
-			Status:             status,
-			Agent:              agentName,
-			WorkerName:         workerName,
-			OutcomeType:        outcomeType,
-			WorkspacePath:      wsPath,
-			WorktreeBranch:     worktreeBranch,
-			ActionNeeded:       actionNeeded,
-			WhatDidDo:          whatDid,
-			WhatNotDone:        whatNot,
-			DiffSummary:        strings.TrimSpace(asString(args["diff_summary"])),
-			PipelineStages:     stages,
-			Deliverables:       deliverables,
-			WorkspacesInvolved: routed.WorkspacesInvolved,
-			ContextPoolSummary: routed.ContextPoolSummary,
-			PlanSummary:        planSummary,
-			FullPlanMarkdown:   fullPlanMarkdown,
-			Tier:               tier,
-			FeatureSize:        featureSize,
-			RouterAlert:        routed.RouterAlert,
-			Revision:           1,
-			AspectRatio:        aspectRatio,
-			Resolution:         resolution,
-			VariantCount:       variantCount,
-			Model:              modelName,
-			Provider:           provider,
-			Thinking:           thinking,
-			ServiceTier:        serviceTier,
-			ContextMode:        contextMode,
-			Soundtrack:         soundtrack,
-			AttachedMedia:      attachedMedia,
-			TaskProgram:        taskProg,
-		}
-		if taskProg != nil && taskProg.ID != "" {
-			task.TaskProgramID = taskProg.ID
-		}
-		if err := task.Validate(); err != nil {
-			return "", fmt.Errorf("task validation failed: %w", err)
-		}
-		if err := r.projects.PutProjectTask(accountScopeID, &task); err != nil {
-			return "", err
-		}
-		_, _ = r.projects.UpdateProject(accountScopeID, projectID, func(p *pebblestore.ProjectRecord) error {
-			for _, tid := range p.ActiveTaskIDs {
-				if tid == task.ID {
-					return nil
-				}
-			}
-			p.ActiveTaskIDs = append(p.ActiveTaskIDs, task.ID)
-			return nil
-		})
-
+		diffSummary := strings.TrimSpace(asString(args["diff_summary"]))
 		autoApprove, _ := args["auto_approve"].(bool)
-		lifecycle := r.getProjectTaskLifecycleService()
 
-		if planDoc != nil {
-			// Direct structured plan submission: submits plan document into task-card review
-			if lifecycle == nil {
-				return "", errors.New("project task lifecycle service is not configured")
-			}
-			subResult, err := lifecycle.SubmitProjectTaskPlan(ctx, sessionruntime.ProjectTaskPlanSubmissionInput{
-				AccountScopeID:  accountScopeID,
-				UserID:          userID,
-				ProjectID:       projectID,
-				TaskID:          task.ID,
-				Document:        planDoc,
-				PlanText:        fullPlanMarkdown,
-				Title:           title,
-				WorkspacePath:   task.WorkspacePath,
-				ParentSessionID: proj.PrimarySessionID,
-			})
-			if err != nil {
-				return "", fmt.Errorf("submit structured plan: %w", err)
-			}
-			freshTask, found, _ := r.projects.GetProjectTask(accountScopeID, projectID, task.ID)
-			if found && freshTask != nil {
-				task = *freshTask
-			} else {
-				task = subResult.Task
-			}
-		} else if status == "planning" {
-			// Planning investigation: deploy Plan agent in plan mode
-			if lifecycle == nil {
-				return "", errors.New("project task deployer service is not configured")
-			}
-			if err := lifecycle.DeployProjectTask(ctx, p, projectID, task.ID); err != nil {
-				return "", fmt.Errorf("deploy planning session: %w", err)
-			}
-			freshTask, found, _ := r.projects.GetProjectTask(accountScopeID, projectID, task.ID)
-			if found && freshTask != nil {
-				task = *freshTask
-			}
-		} else if autoApprove {
-			// Auto-approve deployable task (Coder small task, Task Program, or media)
-			if lifecycle == nil {
-				return "", errors.New("project task deployer service is not configured")
-			}
-			if err := lifecycle.DeployProjectTask(ctx, p, projectID, task.ID); err != nil {
-				return "", fmt.Errorf("deploy task: %w", err)
-			}
-			freshTask, found, _ := r.projects.GetProjectTask(accountScopeID, projectID, task.ID)
-			if found && freshTask != nil {
-				task = *freshTask
-			}
+		lifecycle := r.getProjectTaskLifecycleService()
+		if lifecycle == nil {
+			return "", errors.New("project task lifecycle service is not configured")
 		}
+
+		createdTask, err := lifecycle.CreateProjectTask(ctx, p, projectID, ProjectTaskCreateInput{
+			ID:               taskID,
+			Title:            title,
+			Description:      description,
+			Prompt:           prompt,
+			Agent:            agentName,
+			WorkerName:       workerName,
+			FeatureSize:      featureSize,
+			WorkspacePath:    wsPath,
+			WorktreeBranch:   worktreeBranch,
+			OutcomeType:      outcomeType,
+			Tier:             tier,
+			AspectRatio:      aspectRatio,
+			Resolution:       resolution,
+			VariantCount:     variantCount,
+			DurationSeconds:  asInt(args["duration_seconds"], 0),
+			Model:            modelName,
+			Provider:         provider,
+			Thinking:         thinking,
+			ServiceTier:      serviceTier,
+			ContextMode:      contextMode,
+			Soundtrack:       soundtrack,
+			AutoApprove:      autoApprove,
+			PipelineStages:   stages,
+			Deliverables:     deliverables,
+			WhatDidDo:        whatDid,
+			WhatNotDone:      whatNot,
+			AttachedMedia:    attachedMedia,
+			PlanDocument:     planDoc,
+			TaskProgram:      taskProg,
+			PlanSummary:      planSummary,
+			FullPlanMarkdown: fullPlanMarkdown,
+			DiffSummary:      diffSummary,
+		})
+		if err != nil {
+			return "", fmt.Errorf("create task: %w", err)
+		}
+		task := *createdTask
 
 		response["task"] = task
 		response["task_id"] = task.ID

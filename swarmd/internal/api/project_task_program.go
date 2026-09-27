@@ -82,6 +82,330 @@ func findJobRecord(jobs []pebblestore.TaskProgramJobRecord, jobID string) *pebbl
 	return nil
 }
 
+// CreateProjectTask implements the canonical shared creation pipeline for project tasks.
+func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, projectID string, input tool.ProjectTaskCreateInput) (*pebblestore.ProjectTaskRecord, error) {
+	if !p.Valid() || p.Type != "user" || strings.TrimSpace(p.UserID) == "" || strings.TrimSpace(p.AccountScopeID) == "" {
+		return nil, errors.New("user id is required")
+	}
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		return nil, errors.New("project id is required")
+	}
+	title := strings.TrimSpace(input.Title)
+	if title == "" {
+		return nil, errors.New("title is required")
+	}
+	db := s.sessions.Store()
+	if db == nil {
+		return nil, errors.New("database not available")
+	}
+	proj, found, err := db.GetProject(p.AccountScopeID, projectID)
+	if err != nil {
+		return nil, err
+	}
+	if !found || proj == nil {
+		return nil, fmt.Errorf("project %q not found", projectID)
+	}
+	if proj.AccountID != "" && proj.AccountID != p.AccountScopeID {
+		return nil, errors.New("cross-account project access forbidden")
+	}
+
+	prompt := strings.TrimSpace(input.Prompt)
+	if prompt == "" {
+		prompt = strings.TrimSpace(input.Description)
+	}
+	if prompt == "" {
+		prompt = title
+	}
+	wsPath := strings.TrimSpace(input.WorkspacePath)
+	if wsPath == "" && len(proj.Workspaces) > 0 {
+		wsPath = strings.TrimSpace(proj.Workspaces[0].Path)
+	}
+	agentName := strings.TrimSpace(input.Agent)
+	if (agentName == "coder" || input.OutcomeType == "code_pr" || input.OutcomeType == "bug_patch") && (wsPath == "" || wsPath == ".") {
+		return nil, errors.New("coder task requires a valid repository workspace path (dot '.' is not allowed)")
+	}
+
+	structDoc := input.Document
+	if structDoc == nil && input.PlanDocument != nil {
+		structDoc = input.PlanDocument
+	}
+	taskProg := input.TaskProgram
+	featureSize := strings.TrimSpace(input.FeatureSize)
+	outcomeType := strings.TrimSpace(input.OutcomeType)
+	tier := strings.TrimSpace(input.Tier)
+	if structDoc != nil {
+		if featureSize == "" {
+			featureSize = "big"
+		}
+		if outcomeType == "" {
+			outcomeType = "plan_spec"
+		}
+		if tier == "" {
+			tier = "complex"
+		}
+	}
+
+	routed, rErr := pebblestore.RouteAndPlanProjectTaskWithOptions(pebblestore.TaskPlanOptions{
+		Prompt:             prompt,
+		RequestedWorkspace: wsPath,
+		ProjectContext:     proj.ProjectContext,
+		Workspaces:         proj.Workspaces,
+		FeatureSize:        featureSize,
+		Agent:              agentName,
+		OutcomeType:        outcomeType,
+		Tier:               tier,
+		AspectRatio:        input.AspectRatio,
+		VariantCount:       input.VariantCount,
+		Soundtrack:         input.Soundtrack,
+		AttachedMedia:      input.AttachedMedia,
+	})
+	if rErr != nil {
+		return nil, fmt.Errorf("task configuration invalid: %w", rErr)
+	}
+	if agentName == "" {
+		agentName = routed.Agent
+	}
+	if outcomeType == "" {
+		outcomeType = routed.OutcomeType
+	}
+	if tier == "" {
+		tier = routed.Tier
+	}
+	aspectRatio := input.AspectRatio
+	if aspectRatio == "" {
+		aspectRatio = routed.AspectRatio
+	}
+	variantCount := input.VariantCount
+	if variantCount <= 0 {
+		variantCount = routed.VariantCount
+	}
+	soundtrack := input.Soundtrack
+	if soundtrack == "" {
+		soundtrack = routed.Soundtrack
+	}
+	workerName := strings.TrimSpace(input.WorkerName)
+	if workerName == "" {
+		workerName = fmt.Sprintf("@%s Worker", strings.Title(agentName))
+	}
+	worktreeBranch := strings.TrimSpace(input.WorktreeBranch)
+	if worktreeBranch == "" {
+		worktreeBranch = routed.Branch
+	}
+	description := strings.TrimSpace(input.Description)
+	if description == "" {
+		description = routed.Mission
+	}
+	stages := input.PipelineStages
+	if len(stages) == 0 {
+		stages = routed.Stages
+	}
+	deliverables := input.Deliverables
+	if len(deliverables) == 0 {
+		deliverables = routed.Deliverables
+	}
+	planSummary := strings.TrimSpace(input.PlanSummary)
+	if planSummary == "" {
+		planSummary = routed.PlanSummary
+	}
+	fullPlanMarkdown := strings.TrimSpace(input.FullPlanMarkdown)
+	if fullPlanMarkdown == "" {
+		fullPlanMarkdown = routed.FullPlanMarkdown
+	}
+	taskProgID := strings.TrimSpace(input.TaskProgramID)
+	if taskProg != nil {
+		if taskProg.ID == "" {
+			taskProg.ID = fmt.Sprintf("prog-%d", time.Now().UnixMilli())
+		}
+		if taskProgID == "" {
+			taskProgID = taskProg.ID
+		}
+	} else if routed.TaskProgram != nil {
+		taskProg = routed.TaskProgram
+		taskProgID = taskProg.ID
+	}
+
+	taskID := strings.TrimSpace(input.ID)
+	if taskID == "" {
+		taskID = fmt.Sprintf("task_%d", time.Now().UnixMilli())
+	}
+
+	s.projectTaskCreateMu.Lock()
+	defer s.projectTaskCreateMu.Unlock()
+
+	// Check if already exists (idempotent create)
+	if existing, found, getErr := db.GetProjectTask(p.AccountScopeID, projectID, taskID); getErr == nil && found && existing != nil {
+		hydrateTaskPlanDocument(existing, db)
+		hydrateTaskProgramStatus(existing, db)
+		return existing, nil
+	}
+
+	isDirectMedia := agentName == "image" || agentName == "video" || agentName == "sound" || agentName == "audio"
+	sessionID := strings.TrimSpace(input.SessionID)
+	if !isDirectMedia && sessionID == "" {
+		sum := sha256.Sum256([]byte(fmt.Sprintf("task-session:%s:%s:%s", p.AccountScopeID, projectID, taskID)))
+		sessionID = hex.EncodeToString(sum[:16])
+	}
+
+	task := pebblestore.ProjectTaskRecord{
+		ID:                 taskID,
+		ProjectID:          projectID,
+		AccountID:          p.AccountScopeID,
+		Title:              title,
+		Description:        description,
+		SessionID:          sessionID,
+		Agent:              agentName,
+		WorkerName:         workerName,
+		OutcomeType:        outcomeType,
+		WorkspacePath:      wsPath,
+		WorktreeBranch:     worktreeBranch,
+		PipelineStages:     stages,
+		Deliverables:       deliverables,
+		WorkspacesInvolved: routed.WorkspacesInvolved,
+		ContextPoolSummary: routed.ContextPoolSummary,
+		PlanSummary:        planSummary,
+		FullPlanMarkdown:   fullPlanMarkdown,
+		Tier:               tier,
+		FeatureSize:        featureSize,
+		Revision:           1,
+		AspectRatio:        aspectRatio,
+		Resolution:         input.Resolution,
+		VariantCount:       variantCount,
+		DurationSeconds:    input.DurationSeconds,
+		Model:              strings.TrimSpace(input.Model),
+		Provider:           strings.TrimSpace(input.Provider),
+		Thinking:           strings.TrimSpace(input.Thinking),
+		ServiceTier:        strings.TrimSpace(input.ServiceTier),
+		ContextMode:        strings.TrimSpace(input.ContextMode),
+		Scenes:             routed.Scenes,
+		Soundtrack:         soundtrack,
+		AutoApprove:        input.AutoApprove,
+		RouterAlert:        routed.RouterAlert,
+		AttachedMedia:      input.AttachedMedia,
+		TaskProgram:        taskProg,
+		TaskProgramID:      taskProgID,
+		CreatedAt:          time.Now().UnixMilli(),
+		UpdatedAt:          time.Now().UnixMilli(),
+	}
+	if len(task.AttachedMedia) == 0 && len(routed.AttachedMedia) > 0 {
+		task.AttachedMedia = routed.AttachedMedia
+	}
+	if task.Agent == "coder" || task.OutcomeType == "code_pr" || task.OutcomeType == "bug_patch" {
+		task.AspectRatio = ""
+		task.VariantCount = 0
+	}
+
+	if structDoc != nil {
+		task.Status = "pending_approval"
+		task.ActionNeeded = "Review plan in task card and click Approve"
+	} else if task.Agent == "plan" || (task.Agent == "swarm" && task.FeatureSize == "big") {
+		task.Status = "planning"
+		task.ActionNeeded = "Plan agent investigating and authoring structured plan..."
+		task.WhatDidDo = []string{"Started planning investigation"}
+	} else if task.Agent == "coder" || task.OutcomeType == "code_pr" || task.OutcomeType == "bug_patch" {
+		task.Status = "pending_approval"
+		task.ActionNeeded = "Review task and click Approve to start Coder execution"
+	} else if task.TaskProgram != nil {
+		if input.AutoApprove {
+			task.Status = "in_progress"
+		} else {
+			task.Status = "pending_approval"
+			task.ActionNeeded = "Review task program and click Approve"
+		}
+	} else if isDirectMedia {
+		if input.AutoApprove {
+			task.Status = "in_progress"
+		} else {
+			task.Status = "pending_approval"
+			task.ActionNeeded = "Review media task and click Approve"
+		}
+	} else {
+		if input.AutoApprove {
+			task.Status = "in_progress"
+		} else {
+			task.Status = "pending_approval"
+		}
+	}
+
+	if err := task.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid task definition: %w", err)
+	}
+
+	// Persist task reservation FIRST
+	if err := db.PutProjectTask(p.AccountScopeID, &task); err != nil {
+		return nil, err
+	}
+	_, _ = db.UpdateProject(p.AccountScopeID, projectID, func(pr *pebblestore.ProjectRecord) error {
+		for _, tid := range pr.ActiveTaskIDs {
+			if tid == task.ID {
+				return nil
+			}
+		}
+		pr.ActiveTaskIDs = append(pr.ActiveTaskIDs, task.ID)
+		return nil
+	})
+
+	// Deploy execution
+	if structDoc != nil {
+		subResult, sErr := s.SubmitProjectTaskPlan(ctx, sessionruntime.ProjectTaskPlanSubmissionInput{
+			AccountScopeID:  p.AccountScopeID,
+			UserID:          p.UserID,
+			ProjectID:       projectID,
+			TaskID:          task.ID,
+			Document:        structDoc,
+			PlanText:        fullPlanMarkdown,
+			Title:           title,
+			WorkspacePath:   task.WorkspacePath,
+			ParentSessionID: proj.PrimarySessionID,
+		})
+		if sErr != nil {
+			return nil, fmt.Errorf("submit structured plan: %w", sErr)
+		}
+		task = subResult.Task
+	} else if task.Status == "planning" {
+		if err := s.deployProjectTaskExecution(p, proj, &task, "in_progress", prompt); err != nil {
+			return nil, fmt.Errorf("deploy planning session: %w", err)
+		}
+		_ = db.PutProjectTask(p.AccountScopeID, &task)
+	} else if task.Agent == "coder" || task.OutcomeType == "code_pr" || task.OutcomeType == "bug_patch" {
+		if err := s.deployProjectTaskExecution(p, proj, &task, "pending_approval", prompt); err != nil {
+			return nil, fmt.Errorf("deploy coder session: %w", err)
+		}
+		_ = db.PutProjectTask(p.AccountScopeID, &task)
+	} else if task.TaskProgram != nil {
+		if task.Status == "in_progress" {
+			if err := s.deployProjectTaskProgram(p, proj, &task); err != nil {
+				return nil, fmt.Errorf("deploy task program: %w", err)
+			}
+		}
+		_ = db.PutProjectTask(p.AccountScopeID, &task)
+	} else if isDirectMedia {
+		if task.Status == "in_progress" {
+			if err := s.deployProjectTaskExecution(p, proj, &task, "in_progress", prompt); err != nil {
+				return nil, fmt.Errorf("deploy media execution: %w", err)
+			}
+		}
+		_ = db.PutProjectTask(p.AccountScopeID, &task)
+	} else {
+		if task.Status == "in_progress" {
+			if err := s.deployProjectTaskExecution(p, proj, &task, "in_progress", prompt); err != nil {
+				return nil, fmt.Errorf("deploy task execution: %w", err)
+			}
+		}
+		_ = db.PutProjectTask(p.AccountScopeID, &task)
+	}
+
+	freshTask, found, _ := db.GetProjectTask(p.AccountScopeID, projectID, task.ID)
+	if found && freshTask != nil {
+		hydrateTaskPlanDocument(freshTask, db)
+		hydrateTaskProgramStatus(freshTask, db)
+		return freshTask, nil
+	}
+	hydrateTaskPlanDocument(&task, db)
+	hydrateTaskProgramStatus(&task, db)
+	return &task, nil
+}
+
 // deployProjectTaskProgram initializes and deploys a TaskProgram on a project task coordinator session.
 func (s *Server) deployProjectTaskProgram(p identity.Principal, proj *pebblestore.ProjectRecord, task *pebblestore.ProjectTaskRecord) error {
 	if !p.Valid() || p.Type != "user" || p.UserID == "" || p.AccountScopeID == "" {
@@ -267,21 +591,7 @@ func (s *Server) deployProjectTaskProgram(p identity.Principal, proj *pebblestor
 		return fmt.Errorf("start coordinator session run intent: %w", mutationErr)
 	}
 
-	go func() {
-		_, execErr := s.runner.ExecuteTaskProgramForCoordinator(context.Background(), p, task.SessionID, runID, record)
-		if execErr != nil {
-			_ = db.UpdateProjectTask(p.AccountScopeID, task.ProjectID, task.ID, func(t *pebblestore.ProjectTaskRecord) error {
-				t.Status = "failed"
-				t.LastError = execErr.Error()
-				t.ActionNeeded = fmt.Sprintf("Task program execution failed: %v", execErr)
-				t.WhatNotDone = append(t.WhatNotDone, execErr.Error())
-				return nil
-			})
-			failedStatus := pebblestore.V3RunIntentFailed
-			nowMs := time.Now().UnixMilli()
-			_ = s.sessions.Store().TransitionV3SessionRunIntentState(task.SessionID, runID, failedStatus, nowMs, p.AccountScopeID, p.UserID, execErr.Error())
-		}
-	}()
+	s.EnqueueSessionRun(p, task.SessionID, runID, parentSessionID)
 	return nil
 }
 
@@ -308,6 +618,9 @@ func (s *Server) redeployTaskProgramJob(p identity.Principal, projectID, taskID,
 	targetJob := findJobRecord(record.Jobs, jobID)
 	if targetJob == nil {
 		return fmt.Errorf("job %q not found in task program", jobID)
+	}
+	if s.runner == nil {
+		return errors.New("runner service is not configured")
 	}
 	now := time.Now().UnixMilli()
 	newAttempt := targetJob.AttemptNumber + 1
@@ -349,6 +662,7 @@ func (s *Server) redeployTaskProgramJob(p identity.Principal, projectID, taskID,
 	_, _ = db.UpdateProjectTask(p.AccountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
 		t.TaskProgramStatus = &updatedRecord
 		t.Status = "in_progress"
+		t.LastError = ""
 		t.ActionNeeded = fmt.Sprintf("Redeploying job %s (Attempt %d)...", jobID, newAttempt)
 		if fb != "" {
 			t.FeedbackHistory = append(t.FeedbackHistory, fmt.Sprintf("Job %s retry feedback: %s", jobID, fb))
@@ -359,23 +673,41 @@ func (s *Server) redeployTaskProgramJob(p identity.Principal, projectID, taskID,
 		return nil
 	})
 
-	// Restart canonical execution if runner is active
-	if s.runner == nil {
-		return errors.New("runner service is not configured")
-	}
 	runID := fmt.Sprintf("desktop-v3-run:tp-%s-retry-%d", task.ID, newAttempt)
-	go func() {
-		_, execErr := s.runner.ExecuteTaskProgramForCoordinator(context.Background(), p, task.SessionID, runID, updatedRecord)
-		if execErr != nil {
-			_ = db.UpdateProjectTask(p.AccountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
-				t.LastError = execErr.Error()
-				t.ActionNeeded = fmt.Sprintf("Job %s retry failed: %v", jobID, execErr)
-				t.WhatNotDone = append(t.WhatNotDone, execErr.Error())
-				return nil
-			})
-		}
-	}()
+	parentSessionID := ""
+	if proj, pFound, _ := db.GetProject(p.AccountScopeID, projectID); pFound && proj != nil {
+		parentSessionID = proj.PrimarySessionID
+	}
+	runIntent := &pebblestore.V3SessionRunIntent{
+		SessionID:       task.SessionID,
+		RunID:           runID,
+		EpochID:         "epoch-00000000000000000001",
+		UserID:          p.UserID,
+		AccountScopeID:  p.AccountScopeID,
+		ParentSessionID: parentSessionID,
+		Status:          pebblestore.V3RunIntentPendingExecutor,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+	runKey := fmt.Sprintf("project-task:run:%s:%s", task.ID, runID)
+	_, mutationErr := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+		SessionID:       task.SessionID,
+		UserID:          p.UserID,
+		AccountScopeID:  p.AccountScopeID,
+		ClientRequestID: runKey,
+		IdempotencyKey:  runKey,
+		PayloadHash:     runKey,
+		RequestHash:     runKey,
+		Kind:            sessionruntime.SessionMutationStartRun,
+		RunIntent:       runIntent,
+		NowUnixMs:       now,
+	})
+	if mutationErr != nil {
+		return fmt.Errorf("start retry run intent: %w", mutationErr)
+	}
+	s.EnqueueSessionRun(p, task.SessionID, runID, parentSessionID)
 	return nil
+}
 }
 
 // ApproveProjectTask implements the single canonical authenticated approval lifecycle for project tasks.
@@ -425,28 +757,17 @@ func (s *Server) ApproveProjectTask(ctx context.Context, p identity.Principal, p
 	}
 
 	var guard tool.ProjectTaskApprovalGuards
-	if len(guards) > 0 {
+	hasGuards := len(guards) > 0
+	if hasGuards {
 		guard = guards[0]
 	}
-	if guard.SessionID != "" && existingTask.SessionID != "" && guard.SessionID != existingTask.SessionID {
-		return nil, fmt.Errorf("session ID mismatch: expected %q, got %q", existingTask.SessionID, guard.SessionID)
-	}
 
-	// Idempotent retry check: if task is in_progress AND execution run is genuinely active, do not duplicate run!
-	if existingTask.Status == "in_progress" && existingTask.SessionID != "" {
-		activeIntent, ok, _ := db.GetV3SessionActiveRunIntent(existingTask.SessionID)
-		if ok && activeIntent != nil && (activeIntent.Status == pebblestore.V3RunIntentPendingExecutor || activeIntent.Status == pebblestore.V3RunIntentRunning) {
-			hydrateTaskPlanDocument(existingTask, db)
-			hydrateTaskProgramStatus(existingTask, db)
-			return existingTask, nil
-		}
+	if existingTask.Status == "planning" && (existingTask.PlanBinding == nil || existingTask.PlanBinding.PlanID == "") {
+		return nil, errors.New("cannot approve task in planning without a submitted structured plan")
 	}
 
 	if existingTask.PlanBinding != nil && existingTask.PlanBinding.PlanID != "" {
 		planID := existingTask.PlanBinding.PlanID
-		if guard.PlanID != "" && guard.PlanID != planID {
-			return nil, fmt.Errorf("plan ID mismatch: expected %q, got %q", planID, guard.PlanID)
-		}
 		if existingTask.PlanBinding.SessionID != "" && existingTask.SessionID != "" && existingTask.PlanBinding.SessionID != existingTask.SessionID {
 			return nil, errors.New("cross-session plan binding forbidden")
 		}
@@ -463,18 +784,51 @@ func (s *Server) ApproveProjectTask(ctx context.Context, p identity.Principal, p
 		if plan.Status == "rejected" || plan.ApprovalState == "rejected" {
 			return nil, errors.New("cannot approve rejected plan definition")
 		}
-		if existingTask.PlanBinding.DefinitionRevision > 0 && plan.Version != existingTask.PlanBinding.DefinitionRevision {
+
+		if hasGuards {
+			if strings.TrimSpace(guard.SessionID) == "" || guard.SessionID != existingTask.SessionID {
+				return nil, fmt.Errorf("session ID mismatch: expected %q, got %q", existingTask.SessionID, guard.SessionID)
+			}
+			if strings.TrimSpace(guard.PlanID) == "" || guard.PlanID != planID {
+				return nil, fmt.Errorf("plan ID mismatch: expected %q, got %q", planID, guard.PlanID)
+			}
+			if plan.ApprovalState == "approved" {
+				if guard.DefinitionRevision <= 0 || (plan.Version != guard.DefinitionRevision && plan.ParentRevision != guard.DefinitionRevision && existingTask.PlanBinding.DefinitionRevision != guard.DefinitionRevision) {
+					return nil, fmt.Errorf("plan definition is stale (guarded revision %d, current %d)", guard.DefinitionRevision, plan.Version)
+				}
+			} else {
+				if guard.DefinitionRevision <= 0 || plan.Version != guard.DefinitionRevision {
+					return nil, fmt.Errorf("plan definition is stale (guarded revision %d, current %d)", guard.DefinitionRevision, plan.Version)
+				}
+			}
+		}
+		if plan.ApprovalState != "approved" && existingTask.PlanBinding.DefinitionRevision > 0 && plan.Version != existingTask.PlanBinding.DefinitionRevision {
 			return nil, fmt.Errorf("plan definition is stale (task revision %d, current %d)", existingTask.PlanBinding.DefinitionRevision, plan.Version)
 		}
-		if guard.DefinitionRevision > 0 && plan.Version != guard.DefinitionRevision {
-			return nil, fmt.Errorf("plan definition is stale (guarded revision %d, current %d)", guard.DefinitionRevision, plan.Version)
+	} else if hasGuards {
+		if guard.SessionID != "" && existingTask.SessionID != "" && guard.SessionID != existingTask.SessionID {
+			return nil, fmt.Errorf("session ID mismatch: expected %q, got %q", existingTask.SessionID, guard.SessionID)
 		}
+	}
+
+	// Idempotent retry check: if task is in_progress AND execution run is genuinely active, do not duplicate run!
+	if existingTask.Status == "in_progress" && existingTask.SessionID != "" {
+		activeIntent, ok, _ := db.GetV3SessionActiveRunIntent(existingTask.SessionID)
+		if ok && activeIntent != nil && (activeIntent.Status == pebblestore.V3RunIntentPendingExecutor || activeIntent.Status == pebblestore.V3RunIntentRunning) {
+			hydrateTaskPlanDocument(existingTask, db)
+			hydrateTaskProgramStatus(existingTask, db)
+			return existingTask, nil
+		}
+	}
+
+	if existingTask.PlanBinding != nil && existingTask.PlanBinding.PlanID != "" {
+		planID := existingTask.PlanBinding.PlanID
+		plan, _, _ := db.GetPlan(existingTask.SessionID, planID)
 
 		session, sessFound, sErr := db.GetSession(existingTask.SessionID)
 		if sErr != nil || !sessFound {
 			return nil, fmt.Errorf("session %q not found", existingTask.SessionID)
 		}
-
 		var pref pebblestore.ModelPreference
 		if s.agentModelSettings != nil && p.AccountScopeID != "" {
 			if settings, err := s.agentModelSettings.GetForAccount(p.AccountScopeID); err == nil {
@@ -492,7 +846,6 @@ func (s *Server) ApproveProjectTask(ctx context.Context, p identity.Principal, p
 				pref = def.Preference
 			}
 		}
-
 		var swarmProfile pebblestore.AgentProfile
 		if s.agents != nil {
 			swarmProfile, _ = s.agents.ResolveSystemAgent(agentruntime.SwarmAgentID, pebblestore.AgentProfile{
@@ -503,7 +856,6 @@ func (s *Server) ApproveProjectTask(ctx context.Context, p identity.Principal, p
 				ContextMode:     pref.ContextMode,
 			})
 		}
-
 		summary := sessionruntime.SummarizePlanExecution(plan.Document)
 		firstCpID := summary.NextCheckpointID
 		if firstCpID == "" && plan.Document != nil && len(plan.Document.Checkpoints) > 0 {
@@ -527,15 +879,26 @@ func (s *Server) ApproveProjectTask(ctx context.Context, p identity.Principal, p
 
 		var receipt string
 		if plan.ApprovalState != "approved" {
+			expectedRev := existingTask.PlanBinding.DefinitionRevision
+			if guard.DefinitionRevision > 0 {
+				expectedRev = guard.DefinitionRevision
+			}
+			originalReceipt := existingTask.PlanBinding.Receipt
 			committed, commitErr := s.sessions.CommitV3PlanAcceptance(sessionruntime.PlanAcceptanceCommitInput{
-				Session:              session,
-				PlanID:               plan.ID,
-				Title:                plan.Title,
-				Plan:                 plan.Plan,
-				Document:             plan.Document,
-				ApplySessionMutation: s.sessions.ApplySessionMutation,
-				ModePreference:       pref,
-				ModeAgentProfile:     &swarmProfile,
+				Session:                   session,
+				PlanID:                    plan.ID,
+				Title:                     plan.Title,
+				Plan:                      plan.Plan,
+				Document:                  plan.Document,
+				ApplySessionMutation:      s.sessions.ApplySessionMutation,
+				ModeEventFields: map[string]any{
+					"preference": pref,
+				},
+				ModePreference:            pref,
+				ModeAgentProfile:          &swarmProfile,
+				ExpectedBindingRevision:   expectedRev,
+				ExpectedReceipt:           originalReceipt,
+				AcceptedDefinitionReceipt: originalReceipt,
 				BuildLifecycleMessage: func(p pebblestore.SessionPlanSnapshot, s sessionruntime.PlanExecutionSummary) *pebblestore.MessageSnapshot {
 					if lifecycleMsg.Content == "" {
 						return nil
@@ -556,23 +919,29 @@ func (s *Server) ApproveProjectTask(ctx context.Context, p identity.Principal, p
 			receipt = existingTask.PlanBinding.Receipt
 		}
 
-		runID := sessionsV3PlanModeRunID(existingTask.SessionID, plan.ID, firstCpID, "attempt-1")
-		attemptID := "attempt-1"
-		if s.planLifecycle != nil {
-			startResult, startErr := s.planLifecycle.ApproveAndStartPlanAutomatic(sessionruntime.PlanLifecycleExecutionInput{
-				SessionID:    existingTask.SessionID,
-				PlanID:       plan.ID,
-				CheckpointID: firstCpID,
-				RunID:        runID,
-				AttemptID:    attemptID,
-			})
-			if startErr == nil && startResult.AttemptID != "" {
-				attemptID = startResult.AttemptID
-			}
-			if startResult.Plan.Document != nil {
-				plan = startResult.Plan
-			}
+		if s.planLifecycle == nil {
+			return nil, errors.New("plan lifecycle service is not configured")
 		}
+		startResult, startErr := s.planLifecycle.ApproveAndStartPlanAutomatic(sessionruntime.PlanLifecycleExecutionInput{
+			SessionID:    existingTask.SessionID,
+			PlanID:       plan.ID,
+			CheckpointID: firstCpID,
+		})
+		if startErr != nil {
+			return nil, fmt.Errorf("approve and start plan: %w", startErr)
+		}
+		if startResult.Plan.Document != nil {
+			plan = startResult.Plan
+		}
+		attemptID := startResult.AttemptID
+		if attemptID == "" {
+			attemptID = "attempt-1"
+		}
+		checkpointID := startResult.CheckpointID
+		if checkpointID == "" {
+			checkpointID = firstCpID
+		}
+		runID := sessionsV3PlanModeRunID(existingTask.SessionID, plan.ID, checkpointID, attemptID)
 
 		now := time.Now().UnixMilli()
 		parentSessionID := proj.PrimarySessionID
@@ -584,7 +953,7 @@ func (s *Server) ApproveProjectTask(ctx context.Context, p identity.Principal, p
 			AccountScopeID:  p.AccountScopeID,
 			ParentSessionID: parentSessionID,
 			PlanID:          plan.ID,
-			CheckpointID:    firstCpID,
+			CheckpointID:    checkpointID,
 			AttemptID:       attemptID,
 			Status:          pebblestore.V3RunIntentPendingExecutor,
 			CreatedAt:       now,
@@ -614,6 +983,7 @@ func (s *Server) ApproveProjectTask(ctx context.Context, p identity.Principal, p
 			t.Agent = "swarm"
 			t.WorkerName = "@Swarm Worker"
 			if t.PlanBinding != nil {
+				t.PlanBinding.DefinitionRevision = plan.Version
 				if receipt != "" {
 					t.PlanBinding.Receipt = receipt
 				}
@@ -678,6 +1048,37 @@ func (s *Server) ApproveProjectTask(ctx context.Context, p identity.Principal, p
 			existingTask.BaseBranch = alloc.BaseBranch
 			existingTask.BaseCommit = alloc.BaseCommit
 			existingTask.WorktreeName = strings.TrimPrefix(alloc.BranchName, "agent/")
+
+			// Persist updated worktree metadata to the canonical session record in Pebble
+			session.WorktreeEnabled = true
+			session.WorktreeRootPath = strings.TrimSpace(alloc.WorkspacePath)
+			session.WorktreeBaseBranch = strings.TrimSpace(alloc.BaseBranch)
+			session.WorktreeBranch = strings.TrimSpace(alloc.BranchName)
+			if session.Metadata == nil {
+				session.Metadata = make(map[string]any)
+			}
+			session.Metadata["base_commit"] = alloc.BaseCommit
+			session.Metadata["swarm_v3_source_workspace_path"] = alloc.RepoRoot
+			session.Metadata["worktree_branch"] = alloc.BranchName
+			session.Metadata["worktree_name"] = strings.TrimPrefix(alloc.BranchName, "agent/")
+			available := true
+			hasGrant := false
+			for _, g := range session.WorkspaceGrants {
+				if g.Kind == pebblestore.WorkspaceGrantWorktree && g.Path == alloc.WorkspacePath {
+					hasGrant = true
+					break
+				}
+			}
+			if !hasGrant {
+				session.WorkspaceGrants = append(session.WorkspaceGrants, pebblestore.WorkspaceGrant{
+					Kind: pebblestore.WorkspaceGrantWorktree, Path: alloc.WorkspacePath, Available: &available,
+				})
+			}
+			session.WorkspaceUsage = pebblestore.WorkspaceUsageFromGrants(session.WorkspaceGrants)
+			session.UpdatedAt = time.Now().UnixMilli()
+			if err := db.PutSession(session); err != nil {
+				return nil, fmt.Errorf("update session worktree metadata: %w", err)
+			}
 		}
 	}
 
@@ -817,7 +1218,18 @@ func (s *Server) DeployProjectTask(ctx context.Context, p identity.Principal, pr
 			s.EnqueueSessionRun(p, task.SessionID, runID, proj.PrimarySessionID)
 		}
 	}
-	return db.PutProjectTask(p.AccountScopeID, task)
+	_, updateErr := db.UpdateProjectTask(p.AccountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
+		t.Status = "in_progress"
+		t.ActionNeeded = ""
+		t.SessionID = task.SessionID
+		t.WorkspacePath = task.WorkspacePath
+		t.WorktreeBranch = task.WorktreeBranch
+		t.BaseBranch = task.BaseBranch
+		t.BaseCommit = task.BaseCommit
+		t.WorktreeName = task.WorktreeName
+		return nil
+	})
+	return updateErr
 }
 
 // DeployProjectTaskForPrincipal deploys a project task execution or standalone Task Program for the authenticated principal.

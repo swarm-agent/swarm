@@ -222,6 +222,7 @@ func setupMatrixTestFixture(t *testing.T) *matrixTestFixture {
 		worktrees:          mockWT,
 		runner:             mockRun,
 	}
+	s.v3SessionExecutor = newSessionV3Executor(s)
 
 	return &matrixTestFixture{
 		db:        db,
@@ -520,6 +521,15 @@ func TestTaskMatrix_Case3_ParallelStagedCodersIsolationDependencyCommitConflict(
 	}
 
 	// Verify canonical scheduler was invoked with staged structure
+	for i := 0; i < 50; i++ {
+		f.runSvc.mu.Lock()
+		execs := f.runSvc.tpExecutions
+		f.runSvc.mu.Unlock()
+		if execs >= 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	f.runSvc.mu.Lock()
 	executions := f.runSvc.tpExecutions
 	lastRec := f.runSvc.lastTPRecord
@@ -544,6 +554,36 @@ func TestTaskMatrix_Case3_ParallelStagedCodersIsolationDependencyCommitConflict(
 	}
 	if !strings.Contains(wIntegrate.Body.String(), "no commits") {
 		t.Fatalf("expected 'no commits' error message, got: %s", wIntegrate.Body.String())
+	}
+
+	// 4. Negative assertion: non-existent job redeploy fails closed
+	errRedeploy := f.server.redeployTaskProgramJob(p, projID, taskID, "nonexistent-job", "Fix conflict")
+	if errRedeploy == nil || !strings.Contains(errRedeploy.Error(), "not found") {
+		t.Fatalf("expected error on redeploying non-existent job, got: %v", errRedeploy)
+	}
+
+	// 5. Negative assertion: redeploying task without task program fails closed
+	smallTaskRec := f.callAPI(http.MethodPost, "/"+projID+"/tasks", map[string]any{
+		"title":  "Plain task",
+		"prompt": "Plain prompt",
+		"agent":  "coder",
+	}, p)
+	var smallResp map[string]any
+	_ = json.Unmarshal(smallTaskRec.Body.Bytes(), &smallResp)
+	plainTaskID := smallResp["task"].(map[string]any)["id"].(string)
+	errNoProg := f.server.redeployTaskProgramJob(p, projID, plainTaskID, "any-job", "Retry")
+	if errNoProg == nil || !strings.Contains(errNoProg.Error(), "no associated task program") {
+		t.Fatalf("expected no associated task program error, got: %v", errNoProg)
+	}
+
+	// 6. Valid redeploy job records feedback and increments attempt number
+	errRedeployValid := f.server.redeployTaskProgramJob(p, projID, taskID, "job-core", "Resolve lock conflict in core")
+	if errRedeployValid != nil {
+		t.Fatalf("expected successful redeploy of job-core, got: %v", errRedeployValid)
+	}
+	taskAfterRedeploy, _, _ := f.server.sessions.Store().GetProjectTask(f.accountID, projID, taskID)
+	if len(taskAfterRedeploy.FeedbackHistory) == 0 || !strings.Contains(taskAfterRedeploy.FeedbackHistory[0], "Resolve lock conflict") {
+		t.Fatalf("expected feedback recorded in task feedback history, got: %#v", taskAfterRedeploy.FeedbackHistory)
 	}
 }
 
@@ -898,18 +938,87 @@ func TestTaskMatrix_Case8_DuplicateConcurrentRetriesCounts(t *testing.T) {
 	projID := f.createProject(t)
 	p := identity.Principal{Type: "user", UserID: f.userID, AccountScopeID: f.accountID}
 
-	w := f.callAPI(http.MethodPost, "/"+projID+"/tasks", map[string]any{
-		"title":  "Idempotent task",
-		"prompt": "Test retries",
-		"agent":  "coder",
-	}, p)
-	var resp map[string]any
-	_ = json.Unmarshal(w.Body.Bytes(), &resp)
-	taskMap := resp["task"].(map[string]any)
-	taskID := taskMap["id"].(string)
-	sessID := taskMap["session_id"].(string)
+	// 1. Concurrent create: 5 concurrent callers create the same task
+	var wgCreate sync.WaitGroup
+	createCount := 5
+	createCodes := make([]int, createCount)
+	createdSessIDs := make([]string, createCount)
+	f.wt.mu.Lock()
+	allocsBefore := f.wt.allocCalls
+	f.wt.mu.Unlock()
 
-	// First approval
+	for i := 0; i < createCount; i++ {
+		wgCreate.Add(1)
+		go func(idx int) {
+			defer wgCreate.Done()
+			cw := f.callAPI(http.MethodPost, "/"+projID+"/tasks", map[string]any{
+				"id":     "concurrent-task-01",
+				"title":  "Concurrent Task",
+				"prompt": "Test concurrent create",
+				"agent":  "coder",
+			}, p)
+			createCodes[idx] = cw.Code
+			var cResp map[string]any
+			if err := json.Unmarshal(cw.Body.Bytes(), &cResp); err == nil {
+				if tm, ok := cResp["task"].(map[string]any); ok {
+					if sid, ok := tm["session_id"].(string); ok {
+						createdSessIDs[idx] = sid
+					}
+				}
+			}
+		}(i)
+	}
+	wgCreate.Wait()
+
+	for i, code := range createCodes {
+		if code != http.StatusCreated && code != http.StatusOK {
+			t.Fatalf("concurrent create %d returned unexpected code %d", i, code)
+		}
+	}
+	// All concurrent callers received the exact same deterministic session ID!
+	sessID := createdSessIDs[0]
+	if sessID == "" {
+		t.Fatal("expected non-empty session ID from concurrent create")
+	}
+	for i, sid := range createdSessIDs {
+		if sid != sessID {
+			t.Fatalf("concurrent create %d session ID mismatch: expected %q, got %q", i, sessID, sid)
+		}
+	}
+	// Verify exactly 1 worktree allocation occurred across all concurrent creates
+	f.wt.mu.Lock()
+	allocsAfter := f.wt.allocCalls
+	f.wt.mu.Unlock()
+	if allocsAfter-allocsBefore != 1 {
+		t.Fatalf("expected exactly 1 worktree allocation across concurrent creates, got %d", allocsAfter-allocsBefore)
+	}
+	// Verify 0 run intents exist before approval
+	intentsBeforeApprove, _ := f.server.sessions.Store().ListRunIntents(sessID, 10)
+	if len(intentsBeforeApprove) != 0 {
+		t.Fatalf("expected 0 run intents before approval, got %d", len(intentsBeforeApprove))
+	}
+
+	taskID := "concurrent-task-01"
+
+	// 2. Concurrent deploy before approval: all fail closed
+	var wgDeploy sync.WaitGroup
+	deployCount := 5
+	deployErrs := make([]error, deployCount)
+	for i := 0; i < deployCount; i++ {
+		wgDeploy.Add(1)
+		go func(idx int) {
+			defer wgDeploy.Done()
+			deployErrs[idx] = f.server.DeployProjectTask(context.Background(), p, projID, taskID)
+		}(i)
+	}
+	wgDeploy.Wait()
+	for i, err := range deployErrs {
+		if err == nil || !strings.Contains(err.Error(), "awaiting approval") {
+			t.Fatalf("expected awaiting approval error on concurrent deploy %d, got: %v", i, err)
+		}
+	}
+
+	// 3. First approval
 	w = f.callAPI(http.MethodPost, "/"+projID+"/tasks/"+taskID+"/approve", nil, p)
 	if w.Code != http.StatusOK {
 		t.Fatalf("first approve failed %d", w.Code)
@@ -971,7 +1080,7 @@ func TestTaskMatrix_Case8_DuplicateConcurrentRetriesCounts(t *testing.T) {
 	sessID2 := taskMap2["session_id"].(string)
 
 	// Simulate partial failure: task status flipped to in_progress but NO run intent exists
-	_ = f.server.sessions.Store().UpdateProjectTask(f.accountID, projID, taskID2, func(t *pebblestore.ProjectTaskRecord) error {
+	_, _ = f.server.sessions.Store().UpdateProjectTask(f.accountID, projID, taskID2, func(t *pebblestore.ProjectTaskRecord) error {
 		t.Status = "in_progress"
 		return nil
 	})
@@ -1118,10 +1227,25 @@ func TestTaskMatrix_Case10_ReopenStoreRecoveryExactReceiptLinksNoReplay(t *testi
 		t.Fatalf("session task linkage corrupted after reopen: %#v", sess.Metadata)
 	}
 
-	// Verify recovery resumption: calling approve on recovered server does not duplicate run intents
+	// Verify recovery resumption: reconstructing full services and calling approve on recovered server resumes reserved op without duplicating run intents
+	el2, _ := pebblestore.NewEventLog(db2)
+	sessions2 := sessionruntime.NewService(ss2, el2)
+	planLifecycle2 := sessionruntime.NewPlanLifecycleService(sessions2)
+	idStore2 := pebblestore.NewIdentityStore(db2)
+	authSvc2 := auth.NewService(idStore2, &auth.SystemIdentity{})
+	settingsStore2 := pebblestore.NewAgentModelSettingsStore(db2)
+	modelSettingsSvc2 := agentmodelsettings.NewService(settingsStore2)
+	agents2 := agentruntime.NewService(pebblestore.NewAgentStore(db2))
+	modelSvc2 := model.NewService(pebblestore.NewModelStore(db2), el2, nil)
 	server2 := &Server{
-		sessions: sessionruntime.NewService(ss2, nil),
+		sessions:           sessions2,
+		planLifecycle:      planLifecycle2,
+		auth:               authSvc2,
+		agents:             agents2,
+		model:              modelSvc2,
+		agentModelSettings: modelSettingsSvc2,
 	}
+	server2.v3SessionExecutor = newSessionV3Executor(server2)
 	recoveredTask, rErr := server2.ApproveProjectTask(context.Background(), p, projID, taskID, tool.ProjectTaskApprovalGuards{
 		SessionID:          sessID,
 		PlanID:             "recovery-plan-01",

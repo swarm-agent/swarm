@@ -2135,6 +2135,23 @@ func (e *sessionV3Executor) assistantResponse(ctx context.Context, job sessionV3
 	if err != nil {
 		return sessionV3AssistantResponse{}, err
 	}
+
+	// Coordinator task program execution detection:
+	isCoordinatorTP := false
+	var taskProgramID string
+	if resolved.Session.Metadata != nil {
+		role, _ := resolved.Session.Metadata["role"].(string)
+		if role == "project_task_coordinator" || role == "task_program_coordinator" {
+			isCoordinatorTP = true
+		}
+		if tpid, _ := resolved.Session.Metadata["task_program_id"].(string); strings.TrimSpace(tpid) != "" {
+			taskProgramID = strings.TrimSpace(tpid)
+			isCoordinatorTP = true
+		}
+	}
+	if isCoordinatorTP {
+		return e.coordinatorTaskProgramResponse(ctx, job, resolved, taskProgramID)
+	}
 	var planContextGuard *runruntime.PlanContextGuard
 	if e.server != nil && e.server.uiSettings != nil {
 		accountScopeID := strings.TrimSpace(job.Principal.AccountScopeID)
@@ -2152,6 +2169,82 @@ func (e *sessionV3Executor) assistantResponse(ctx context.Context, job sessionV3
 		)
 	}
 	return e.providerAssistantResponse(ctx, job, resolved, "", false, planContextGuard)
+}
+
+func (e *sessionV3Executor) coordinatorTaskProgramResponse(ctx context.Context, job sessionV3ExecutorJob, resolved sessionV3ResolvedRuntime, taskProgramID string) (sessionV3AssistantResponse, error) {
+	if taskProgramID == "" {
+		return sessionV3AssistantResponse{}, errors.New("coordinator session missing task_program_id")
+	}
+	db := e.server.sessions.Store()
+	if db == nil {
+		return sessionV3AssistantResponse{}, errors.New("session store not available")
+	}
+	record, ok, err := db.GetTaskProgram(job.SessionID, taskProgramID)
+	if err != nil {
+		return sessionV3AssistantResponse{}, fmt.Errorf("load task program %q: %w", taskProgramID, err)
+	}
+	if !ok {
+		return sessionV3AssistantResponse{}, fmt.Errorf("task program %q not found", taskProgramID)
+	}
+	if e.server.runner == nil {
+		return sessionV3AssistantResponse{}, errors.New("runner service is not configured")
+	}
+
+	principal := job.Principal
+	if principal.AccountScopeID == "" {
+		principal.AccountScopeID = resolved.Session.AccountScopeID
+	}
+	if principal.UserID == "" {
+		principal.UserID = resolved.Session.UserID
+	}
+	if principal.Type == "" {
+		principal.Type = "user"
+	}
+
+	statusStr, execErr := e.server.runner.ExecuteTaskProgramForCoordinator(ctx, principal, job.SessionID, job.RunID, record)
+
+	projectID, _ := resolved.Session.Metadata["project_id"].(string)
+	taskID, _ := resolved.Session.Metadata["task_id"].(string)
+	accountScopeID := principal.AccountScopeID
+
+	if execErr != nil {
+		if projectID != "" && taskID != "" {
+			_, _ = db.UpdateProjectTask(accountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
+				t.Status = "failed"
+				t.LastError = execErr.Error()
+				t.ActionNeeded = fmt.Sprintf("Task program execution failed: %v", execErr)
+				t.WhatNotDone = append(t.WhatNotDone, execErr.Error())
+				return nil
+			})
+		}
+		return sessionV3AssistantResponse{}, execErr
+	}
+
+	freshRecord, _, _ := db.GetTaskProgram(job.SessionID, taskProgramID)
+	if projectID != "" && taskID != "" {
+		_, _ = db.UpdateProjectTask(accountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
+			t.TaskProgramStatus = &freshRecord
+			if freshRecord.State == pebblestore.TaskProgramStateCompleted {
+				t.Status = "completed"
+				t.ActionNeeded = ""
+				t.WhatDidDo = append(t.WhatDidDo, "Task program completed successfully")
+			} else if freshRecord.State == pebblestore.TaskProgramStateBlocked {
+				t.Status = "needs_review"
+				t.ActionNeeded = "Task program blocked; review needed"
+			} else if freshRecord.State == pebblestore.TaskProgramStateFailed {
+				t.Status = "failed"
+				t.LastError = statusStr
+				t.ActionNeeded = "Task program failed"
+			}
+			return nil
+		})
+	}
+	return sessionV3AssistantResponse{
+		AssistantMessage: pebblestore.MessageSnapshot{
+			Role:    "assistant",
+			Content: fmt.Sprintf("Task Program %s execution %s.", taskProgramID, statusStr),
+		},
+	}, nil
 }
 
 func (e *sessionV3Executor) contextOverflowCompactedAssistantResponse(ctx context.Context, job sessionV3ExecutorJob, cause error) (sessionV3AssistantResponse, sessionV3ExecutorJob, error) {

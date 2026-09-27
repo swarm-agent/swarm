@@ -175,6 +175,72 @@ func newMockProjectTaskLifecycleService(store *mockProjectStore) *mockProjectTas
 	}
 }
 
+func (m *mockProjectTaskLifecycleService) CreateProjectTask(ctx context.Context, p identity.Principal, projectID string, input ProjectTaskCreateInput) (*pebblestore.ProjectTaskRecord, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.lastContext = ctx
+	m.lastPrincipal = p
+	if m.store == nil {
+		return nil, errors.New("store not available")
+	}
+	taskID := strings.TrimSpace(input.ID)
+	if taskID == "" {
+		taskID = fmt.Sprintf("task_%d", time.Now().UnixMilli())
+	}
+	sessionID := strings.TrimSpace(input.SessionID)
+	if sessionID == "" && input.Agent != "image" && input.Agent != "video" && input.Agent != "sound" && input.Agent != "audio" {
+		sessionID = "sess_" + taskID
+	}
+	status := "pending_approval"
+	if input.Document != nil || input.PlanDocument != nil {
+		status = "pending_approval"
+	} else if input.Agent == "plan" || (input.Agent == "swarm" && input.FeatureSize == "big") {
+		status = "planning"
+	} else if input.AutoApprove {
+		status = "in_progress"
+	}
+	task := pebblestore.ProjectTaskRecord{
+		ID:             taskID,
+		ProjectID:      projectID,
+		AccountID:      p.AccountScopeID,
+		Title:          input.Title,
+		Description:    input.Description,
+		Status:         status,
+		SessionID:      sessionID,
+		Agent:          input.Agent,
+		WorkerName:     input.WorkerName,
+		OutcomeType:    input.OutcomeType,
+		WorkspacePath:  input.WorkspacePath,
+		WorktreeBranch: input.WorktreeBranch,
+		FeatureSize:    input.FeatureSize,
+		Tier:           input.Tier,
+		PlanDocument:   input.PlanDocument,
+		TaskProgram:    input.TaskProgram,
+		Deliverables:   input.Deliverables,
+		PipelineStages: input.PipelineStages,
+		CreatedAt:      time.Now().UnixMilli(),
+		UpdatedAt:      time.Now().UnixMilli(),
+	}
+	if task.Agent == "" {
+		task.Agent = "swarm"
+	}
+	if task.PlanDocument == nil && input.Document != nil {
+		task.PlanDocument = input.Document
+	}
+	if task.PlanDocument != nil {
+		task.PlanBinding = &pebblestore.ProjectTaskPlanBinding{
+			PlanID:             task.PlanDocument.ID,
+			DefinitionRevision: 1,
+			SessionID:          sessionID,
+			Receipt:            "mock-receipt",
+		}
+	}
+	if err := m.store.PutProjectTask(p.AccountScopeID, &task); err != nil {
+		return nil, err
+	}
+	return &task, nil
+}
+
 func (m *mockProjectTaskLifecycleService) DeployProjectTask(ctx context.Context, p identity.Principal, projectID, taskID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
