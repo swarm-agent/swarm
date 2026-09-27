@@ -3332,6 +3332,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		}
 
 		var boundPlan pebblestore.SessionPlanSnapshot
+		var planCopy pebblestore.SessionPlanSnapshot
 		hasBoundPlan := existingTask.PlanBinding != nil && existingTask.PlanBinding.PlanID != "" && existingTask.SessionID != ""
 		if hasBoundPlan {
 			if existingTask.PlanBinding.SessionID != "" && existingTask.SessionID != "" && existingTask.PlanBinding.SessionID != existingTask.SessionID {
@@ -3364,16 +3365,25 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			boundPlan = pSnap
+			if boundPlan.Version <= 0 {
+				boundPlan.Version = 1
+			}
 
 			// Reject plan definition via canonical mutation.
-			planCopy := boundPlan
+			planCopy = boundPlan
 			planCopy.Status, planCopy.ApprovalState = "rejected", "rejected"
+			planCopy.ParentRevision = boundPlan.Version
+			planCopy.Version = boundPlan.Version + 1
+			planCopy.UpdatedAt = time.Now().UnixMilli()
+			archived := boundPlan
+			archived.Active = false
 			key := fmt.Sprintf("project-task:reject:%s:%d", taskID, existingTask.PlanBinding.DefinitionRevision)
 			if _, err := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
 				SessionID: existingTask.SessionID, UserID: p.UserID, AccountScopeID: p.AccountScopeID,
 				ClientRequestID: key, IdempotencyKey: key, PayloadHash: key, RequestHash: key,
 				Kind: sessionruntime.SessionMutationSavePlan, PlanSave: &pebblestore.V3PlanSaveMutation{
 					Plan:                  planCopy,
+					ArchivedRevision:      &archived,
 					ExpectedParentVersion: boundPlan.Version,
 				},
 			}); err != nil {
@@ -3405,13 +3415,20 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 					writeError(w, http.StatusInternalServerError, fmt.Errorf("task update failed: %w; nonrecoverable plan rollback: plan compensation skipped due to concurrent modification", err))
 					return
 				}
+				reconciledPlan := boundPlan
+				reconciledPlan.Version = currPlan.Version + 1
+				reconciledPlan.ParentRevision = currPlan.Version
+				reconciledPlan.UpdatedAt = time.Now().UnixMilli()
+				currArchived := currPlan
+				currArchived.Active = false
 				restoreKey := fmt.Sprintf("project-task:reject-reconcile:%s:%d:%d", taskID, existingTask.PlanBinding.DefinitionRevision, time.Now().UnixNano())
 				_, restoreErr := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
 					SessionID: existingTask.SessionID, UserID: p.UserID, AccountScopeID: p.AccountScopeID,
 					ClientRequestID: restoreKey, IdempotencyKey: restoreKey, PayloadHash: restoreKey, RequestHash: restoreKey,
 					Kind: sessionruntime.SessionMutationSavePlan, PlanSave: &pebblestore.V3PlanSaveMutation{
-						Plan:                  boundPlan,
-						ExpectedParentVersion: planCopy.Version,
+						Plan:                  reconciledPlan,
+						ArchivedRevision:      &currArchived,
+						ExpectedParentVersion: currPlan.Version,
 					},
 				})
 				if restoreErr != nil {

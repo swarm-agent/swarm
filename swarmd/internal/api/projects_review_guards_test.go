@@ -56,13 +56,15 @@ func TestProjectTaskApprove_MalformedJSONRejected(t *testing.T) {
 		CreatedAt:          time.Now().UnixMilli(),
 		UpdatedAt:          time.Now().UnixMilli(),
 	}
-	_ = f.server.sessions.Store().PutSession(sess)
+	if err := f.server.sessions.Store().CreateSession(sess); err != nil {
+		t.Fatalf("create session %q: %v", sessID, err)
+	}
 	task := &pebblestore.ProjectTaskRecord{
 		ID:             taskID,
 		ProjectID:      projID,
 		AccountID:      f.accountID,
 		Title:          "Direct coder task",
-		Prompt:         "Implement fix",
+		Description:    "Implement fix",
 		Agent:          "coder",
 		Status:         "pending_approval",
 		SessionID:      sessID,
@@ -194,7 +196,9 @@ func TestProjectTaskApprove_IdempotentRetryAfterPlanLifecycleIncrements(t *testi
 		CreatedAt: time.Now().UnixMilli(),
 		UpdatedAt: time.Now().UnixMilli(),
 	}
-	_ = f.server.sessions.Store().PutSession(sess)
+	if err := f.server.sessions.Store().CreateSession(sess); err != nil {
+		t.Fatalf("create session %q: %v", sessID, err)
+	}
 	planSnap := pebblestore.SessionPlanSnapshot{
 		ID:             planID,
 		SessionID:      sessID,
@@ -209,13 +213,15 @@ func TestProjectTaskApprove_IdempotentRetryAfterPlanLifecycleIncrements(t *testi
 		CreatedAt:      time.Now().UnixMilli(),
 		UpdatedAt:      time.Now().UnixMilli(),
 	}
-	_ = f.server.sessions.Store().PutPlan(planSnap)
+	if err := f.server.sessions.Store().PutPlan(planSnap); err != nil {
+		t.Fatalf("put plan %q: %v", planID, err)
+	}
 	task := &pebblestore.ProjectTaskRecord{
 		ID:             taskID,
 		ProjectID:      projID,
 		AccountID:      f.accountID,
 		Title:          "Idempotent plan task",
-		Prompt:         "Idempotent prompt",
+		Description:    "Idempotent prompt",
 		Agent:          "swarm",
 		Status:         "pending_approval",
 		SessionID:      sessID,
@@ -338,7 +344,9 @@ func TestProjectTaskApprove_GuardedCanonicalRevision(t *testing.T) {
 		CreatedAt: time.Now().UnixMilli(),
 		UpdatedAt: time.Now().UnixMilli(),
 	}
-	_ = f.server.sessions.Store().PutSession(sess)
+	if err := f.server.sessions.Store().CreateSession(sess); err != nil {
+		t.Fatalf("create session %q: %v", sessID, err)
+	}
 	planSnap1 := pebblestore.SessionPlanSnapshot{
 		ID:             planID,
 		SessionID:      sessID,
@@ -353,13 +361,15 @@ func TestProjectTaskApprove_GuardedCanonicalRevision(t *testing.T) {
 		CreatedAt:      time.Now().UnixMilli(),
 		UpdatedAt:      time.Now().UnixMilli(),
 	}
-	_ = f.server.sessions.Store().PutPlan(planSnap1)
+	if err := f.server.sessions.Store().PutPlan(planSnap1); err != nil {
+		t.Fatalf("put plan %q: %v", planID, err)
+	}
 	task := &pebblestore.ProjectTaskRecord{
 		ID:             taskID,
 		ProjectID:      projID,
 		AccountID:      f.accountID,
 		Title:          "Guarded plan task",
-		Prompt:         "Auth plan",
+		Description:    "Auth plan",
 		Agent:          "swarm",
 		Status:         "pending_approval",
 		SessionID:      sessID,
@@ -507,7 +517,9 @@ func TestProjectTaskReject_NoPartialFailureOnBoundPlanError(t *testing.T) {
 		CreatedAt:      time.Now().UnixMilli(),
 		UpdatedAt:      time.Now().UnixMilli(),
 	}
-	_ = f.server.sessions.Store().PutSession(sess)
+	if err := f.server.sessions.Store().CreateSession(sess); err != nil {
+		t.Fatalf("create session %q: %v", sessID, err)
+	}
 	planSnap := pebblestore.SessionPlanSnapshot{
 		ID:             planID,
 		SessionID:      sessID,
@@ -522,13 +534,15 @@ func TestProjectTaskReject_NoPartialFailureOnBoundPlanError(t *testing.T) {
 		CreatedAt:      time.Now().UnixMilli(),
 		UpdatedAt:      time.Now().UnixMilli(),
 	}
-	_ = f.server.sessions.Store().PutPlan(planSnap)
+	if err := f.server.sessions.Store().PutPlan(planSnap); err != nil {
+		t.Fatalf("put plan %q: %v", planID, err)
+	}
 	task := &pebblestore.ProjectTaskRecord{
 		ID:             taskID,
 		ProjectID:      projID,
 		AccountID:      f.accountID,
 		Title:          "Atomic rejection task",
-		Prompt:         "Verify atomic reject",
+		Description:    "Verify atomic reject",
 		Agent:          "swarm",
 		Status:         "pending_approval",
 		SessionID:      sessID,
@@ -613,7 +627,9 @@ func TestProjectTaskReject_TaskUpdateFailureReconcilesBoundPlan(t *testing.T) {
 		CreatedAt:      time.Now().UnixMilli(),
 		UpdatedAt:      time.Now().UnixMilli(),
 	}
-	_ = f.server.sessions.Store().PutSession(sess)
+	if err := f.server.sessions.Store().CreateSession(sess); err != nil {
+		t.Fatalf("create session %q: %v", sessID, err)
+	}
 	planSnap := pebblestore.SessionPlanSnapshot{
 		ID:             planID,
 		SessionID:      sessID,
@@ -628,13 +644,15 @@ func TestProjectTaskReject_TaskUpdateFailureReconcilesBoundPlan(t *testing.T) {
 		CreatedAt:      time.Now().UnixMilli(),
 		UpdatedAt:      time.Now().UnixMilli(),
 	}
-	_ = f.server.sessions.Store().PutPlan(planSnap)
+	if err := f.server.sessions.Store().PutPlan(planSnap); err != nil {
+		t.Fatalf("put plan %q: %v", planID, err)
+	}
 	task := &pebblestore.ProjectTaskRecord{
 		ID:             taskID,
 		ProjectID:      projID,
 		AccountID:      f.accountID,
 		Title:          "Reconcile rejection task",
-		Prompt:         "Verify reconcile reject",
+		Description:    "Verify reconcile reject",
 		Agent:          "swarm",
 		Status:         "pending_approval",
 		SessionID:      sessID,
@@ -742,7 +760,9 @@ func TestProjectTaskReject_MalformedJSONAndRevisionGuards(t *testing.T) {
 		CreatedAt:      time.Now().UnixMilli(),
 		UpdatedAt:      time.Now().UnixMilli(),
 	}
-	_ = f.server.sessions.Store().PutSession(sess)
+	if err := f.server.sessions.Store().CreateSession(sess); err != nil {
+		t.Fatalf("create session %q: %v", sessID, err)
+	}
 	planSnap := pebblestore.SessionPlanSnapshot{
 		ID:             planID,
 		SessionID:      sessID,
@@ -757,13 +777,15 @@ func TestProjectTaskReject_MalformedJSONAndRevisionGuards(t *testing.T) {
 		CreatedAt:      time.Now().UnixMilli(),
 		UpdatedAt:      time.Now().UnixMilli(),
 	}
-	_ = f.server.sessions.Store().PutPlan(planSnap)
+	if err := f.server.sessions.Store().PutPlan(planSnap); err != nil {
+		t.Fatalf("put plan %q: %v", planID, err)
+	}
 	task := &pebblestore.ProjectTaskRecord{
 		ID:             taskID,
 		ProjectID:      projID,
 		AccountID:      f.accountID,
 		Title:          "Guarded reject task",
-		Prompt:         "Guard test",
+		Description:    "Guard test",
 		Agent:          "swarm",
 		Status:         "pending_approval",
 		SessionID:      sessID,
@@ -876,13 +898,15 @@ func TestProjectTaskReopen_MalformedJSONAndRevisionGuards(t *testing.T) {
 		CreatedAt:          time.Now().UnixMilli(),
 		UpdatedAt:          time.Now().UnixMilli(),
 	}
-	_ = f.server.sessions.Store().PutSession(sess)
+	if err := f.server.sessions.Store().CreateSession(sess); err != nil {
+		t.Fatalf("create session %q: %v", sessID, err)
+	}
 	task := &pebblestore.ProjectTaskRecord{
 		ID:             taskID,
 		ProjectID:      projID,
 		AccountID:      f.accountID,
 		Title:          "Reopen Direct Task",
-		Prompt:         "Direct coder task for reopen test",
+		Description:    "Direct coder task for reopen test",
 		Agent:          "coder",
 		Status:         "completed",
 		Revision:       1,
@@ -958,7 +982,7 @@ func TestProjectTaskReopen_MalformedJSONAndRevisionGuards(t *testing.T) {
 		ProjectID:     projID,
 		AccountID:     f.accountID,
 		Title:         "Plan task cannot reopen directly",
-		Prompt:        "Plan task",
+		Description:   "Plan task",
 		Agent:         "swarm",
 		Status:        "pending_approval",
 		WorkspacePath: "/repo/root",
@@ -1000,7 +1024,7 @@ func TestProjectTaskCompleteAndRefine_MalformedJSONAndRevisionGuards(t *testing.
 		ProjectID:      projID,
 		AccountID:      f.accountID,
 		Title:          "Complete and Refine Task",
-		Prompt:         "Test complete and refine guards",
+		Description:    "Test complete and refine guards",
 		Agent:          "coder",
 		Status:         "in_progress",
 		Revision:       1,
