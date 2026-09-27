@@ -59,6 +59,7 @@ export function mapBackendTask(t: any): RunningTask {
     baseBranch: t.base_branch || 'main',
     unintegratedCommits: t.unintegrated_commits ?? 0,
     behindCommits: t.behind_commits ?? 0,
+    gitStatus: t.git_status,
     isIntegrated: !!t.is_integrated,
     diffSummary: t.diff_summary ?? '',
     isDirty: !!t.is_dirty,

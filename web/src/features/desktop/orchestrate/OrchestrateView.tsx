@@ -798,7 +798,11 @@ function MinimalTaskCard({
             )}
             {/* Show integration status right away for non-media tasks */}
             {!isMediaTask && (
-              task.isIntegrated ? (
+              task.gitStatus === 'unknown' || task.gitStatus === 'stale' ? (
+                <span className="font-mono text-[9px] text-slate-400" title="Git is verified when performing repository operations; task list refreshes do not scan repositories.">
+                  {task.gitStatus === 'stale' ? 'Git: last known state' : 'Git: not inspected'}
+                </span>
+              ) : task.isIntegrated ? (
                 <span className="font-mono text-[9px] px-1.5 py-0.5 rounded bg-emerald-950/80 text-emerald-300 border border-emerald-500/40 flex items-center gap-1 font-semibold">
                   <CheckCircle2 size={9} />
                   <span>Integrated</span>
