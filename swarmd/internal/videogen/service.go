@@ -2,6 +2,7 @@ package videogen
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -228,13 +229,16 @@ func (s *Service) GenerateManagedVideo(ctx context.Context, req ManagedVideoRequ
 	modelID := strings.TrimSpace(req.Model)
 	providerID := ""
 	if modelID != "" {
-		providerID = s.inferProvider(modelID)
-		if strings.HasPrefix(modelID, "google:") || strings.HasPrefix(modelID, "openrouter:") {
+		if strings.Contains(modelID, ":") {
 			parts := strings.SplitN(modelID, ":", 2)
-			providerID, modelID = parts[0], parts[1]
-		}
-		if _, found := s.resolveModelRecord(providerID, modelID); !found {
-			return ManagedVideoResult{}, fmt.Errorf("selected video model %q is not in the model catalog", req.Model)
+			providerID, modelID = strings.ToLower(strings.TrimSpace(parts[0])), strings.TrimSpace(parts[1])
+		} else if strings.HasPrefix(strings.ToLower(modelID), "openrouter/") && strings.Count(modelID, "/") >= 2 {
+			providerID = ProviderOpenRouter
+			modelID = modelID[len("openrouter/"):]
+		} else if strings.HasPrefix(strings.ToLower(modelID), "google/") && !strings.Contains(modelID[len("google/"):], "/") {
+			providerID = ProviderOpenRouter
+		} else {
+			providerID = s.inferProvider(modelID)
 		}
 	} else {
 		var err error
@@ -243,17 +247,126 @@ func (s *Service) GenerateManagedVideo(ctx context.Context, req ManagedVideoRequ
 			return ManagedVideoResult{}, err
 		}
 	}
+
+	modelRecord, found := s.resolveModelRecord(providerID, modelID)
+	if !found {
+		return ManagedVideoResult{}, fmt.Errorf("selected video model %q is not in the model catalog", req.Model)
+	}
+	hasVideoOutput := containsStringFold(modelRecord.CatalogModalities.Outputs, "video") ||
+		containsStringFold(modelRecord.CatalogModalities.Categories, "video_generation") ||
+		containsStringFold(modelRecord.CatalogModalities.Categories, "video_iteration")
+	if !hasVideoOutput {
+		return ManagedVideoResult{}, fmt.Errorf("selected model %q does not support video output", req.Model)
+	}
+
 	if isIteration && !isOmniModel(modelID) {
 		return ManagedVideoResult{}, errors.New("selected model cannot refine a source video; select a video iteration model")
 	}
 
-	aspectRatio := normalizeAspectRatio(req.AspectRatio)
-	resolution := normalizeResolution(req.Resolution)
-	durationSeconds := normalizeDuration(req.DurationSeconds, modelID, resolution)
-	if (req.AspectRatio != "" && aspectRatio != req.AspectRatio) ||
-		(req.Resolution != "" && !strings.EqualFold(resolution, req.Resolution)) ||
-		(req.DurationSeconds > 0 && durationSeconds != req.DurationSeconds) {
-		return ManagedVideoResult{}, errors.New("selected video settings are unsupported; choose a supported aspect ratio, resolution and duration")
+	var aspectRatio string
+	var resolution string
+	var durationSeconds int
+
+	opts := extractVideoOptions(modelRecord)
+
+	if isOmniModel(modelID) {
+		if req.DurationSeconds > 0 {
+			return ManagedVideoResult{}, fmt.Errorf("model %q does not accept duration selection", modelID)
+		}
+		durationSeconds = 0 // Preserve unknown omission for Omni
+
+		if req.AspectRatio != "" {
+			reqAR := strings.ToLower(strings.TrimSpace(req.AspectRatio))
+			if reqAR == "9:16" || reqAR == "portrait" {
+				aspectRatio = "9:16"
+			} else if reqAR == "16:9" || reqAR == "landscape" {
+				aspectRatio = "16:9"
+			} else {
+				return ManagedVideoResult{}, fmt.Errorf("unsupported aspect ratio %q for model %q", req.AspectRatio, modelID)
+			}
+		} else {
+			aspectRatio = "16:9"
+		}
+
+		if req.Resolution != "" {
+			if !strings.EqualFold(strings.TrimSpace(req.Resolution), "720p") {
+				return ManagedVideoResult{}, fmt.Errorf("model %q does not support resolution %q; only 720p is supported", modelID, req.Resolution)
+			}
+			resolution = "720p"
+		} else {
+			resolution = "720p"
+		}
+	} else {
+		// Veo / standard video models
+		if req.AspectRatio != "" {
+			if opts != nil && len(opts.AspectRatios) > 0 {
+				if !containsStringFold(opts.AspectRatios, req.AspectRatio) && !isEquivalentAspectRatio(opts.AspectRatios, req.AspectRatio) {
+					return ManagedVideoResult{}, fmt.Errorf("unsupported aspect ratio %q for model %q; supported: %s", req.AspectRatio, modelID, strings.Join(opts.AspectRatios, ", "))
+				}
+			}
+			aspectRatio = normalizeAspectRatio(req.AspectRatio)
+		} else {
+			aspectRatio = "16:9"
+			if opts != nil && opts.DefaultRatio != "" {
+				aspectRatio = opts.DefaultRatio
+			}
+		}
+
+		if req.Resolution != "" {
+			if opts != nil && len(opts.Resolutions) > 0 {
+				if !containsStringFold(opts.Resolutions, req.Resolution) {
+					return ManagedVideoResult{}, fmt.Errorf("unsupported resolution %q for model %q; supported: %s", req.Resolution, modelID, strings.Join(opts.Resolutions, ", "))
+				}
+			}
+			resolution = normalizeResolution(req.Resolution)
+		} else {
+			resolution = "720p"
+			if opts != nil && opts.DefaultRes != "" {
+				resolution = opts.DefaultRes
+			}
+		}
+
+		resLower := strings.ToLower(resolution)
+		allowedDurs := []int{4, 6, 8}
+		if opts != nil && len(opts.Durations) > 0 {
+			allowedDurs = opts.Durations
+		}
+		if opts != nil && opts.ResolutionDurations != nil {
+			if rd, ok := opts.ResolutionDurations[resLower]; ok && len(rd) > 0 {
+				allowedDurs = rd
+			}
+		}
+
+		if req.DurationSeconds > 0 {
+			foundDur := false
+			for _, d := range allowedDurs {
+				if d == req.DurationSeconds {
+					foundDur = true
+					break
+				}
+			}
+			if !foundDur {
+				if (resLower == "1080p" || resLower == "4k") && strings.Contains(strings.ToLower(modelID), "veo") {
+					return ManagedVideoResult{}, fmt.Errorf("video resolution %s requires 8s duration", resolution)
+				}
+				return ManagedVideoResult{}, fmt.Errorf("unsupported duration %d seconds for model %q at %s", req.DurationSeconds, modelID, resolution)
+			}
+			durationSeconds = req.DurationSeconds
+		} else {
+			if opts != nil && opts.DefaultDur > 0 {
+				durationSeconds = opts.DefaultDur
+			} else if len(allowedDurs) > 0 {
+				durationSeconds = allowedDurs[len(allowedDurs)-1]
+			} else {
+				durationSeconds = 8
+			}
+		}
+
+		if req.Image != nil && len(req.Image.Bytes) > 0 {
+			if opts != nil && opts.InitialImage != nil && !opts.InitialImage.Supported {
+				return ManagedVideoResult{}, fmt.Errorf("model %q does not support initial image input", modelID)
+			}
+		}
 	}
 
 	// Pin pricing to the selected model before the provider request begins.
@@ -411,7 +524,206 @@ func (s *Service) getOpenRouterAPIKey(accountScopeID string) (string, error) {
 	return strings.TrimSpace(record.APIKey), nil
 }
 
-func isOmniModel(modelID string) bool {
+func isEquivalentAspectRatio(supported []string, requested string) bool {
+	reqLower := strings.ToLower(strings.TrimSpace(requested))
+	for _, s := range supported {
+		sLower := strings.ToLower(strings.TrimSpace(s))
+		if (reqLower == "landscape" && sLower == "16:9") ||
+			(reqLower == "portrait" && sLower == "9:16") ||
+			(reqLower == "16:9" && sLower == "landscape") ||
+			(reqLower == "9:16" && sLower == "portrait") {
+			return true
+		}
+	}
+	return false
+}
+
+func containsStringFold(slice []string, val string) bool {
+	for _, s := range slice {
+		if strings.EqualFold(strings.TrimSpace(s), strings.TrimSpace(val)) {
+			return true
+		}
+	}
+	return false
+}
+
+type parsedVideoOptions struct {
+	AspectRatios        []string
+	Resolutions         []string
+	Durations           []int
+	DefaultRatio        string
+	DefaultRes          string
+	DefaultDur          int
+	ResolutionDurations map[string][]int
+	InitialImage        *struct {
+		Supported bool
+		MaxInputs int
+	}
+}
+
+func extractVideoOptions(rec pebblestore.ModelCatalogRecord) *parsedVideoOptions {
+	if len(rec.ProviderSpecific) == 0 {
+		return nil
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(rec.ProviderSpecific, &raw); err != nil {
+		return nil
+	}
+	providerKey := strings.ToLower(strings.TrimSpace(rec.Provider))
+	provData, ok := raw[providerKey]
+	if !ok || len(provData) == 0 {
+		return nil
+	}
+	var parsed struct {
+		VideoGeneration *struct {
+			Status   string `json:"status"`
+			Settings map[string]struct {
+				Status          string `json:"status"`
+				DefaultValue    any    `json:"default_value"`
+				SupportedValues []any  `json:"supported_values"`
+				Variants        []struct {
+					Mode            string         `json:"mode"`
+					SupportedValues []any          `json:"supported_values"`
+					Conditions      map[string]any `json:"conditions"`
+				} `json:"variants"`
+			} `json:"settings"`
+			Features map[string]struct {
+				Status    string `json:"status"`
+				Supported bool   `json:"supported"`
+				MaxInputs *int   `json:"max_inputs"`
+			} `json:"features"`
+		} `json:"video_generation"`
+		Settings map[string]struct {
+			Status          string `json:"status"`
+			DefaultValue    any    `json:"default_value"`
+			SupportedValues []any  `json:"supported_values"`
+			Variants        []struct {
+				Mode            string         `json:"mode"`
+				SupportedValues []any          `json:"supported_values"`
+				Conditions      map[string]any `json:"conditions"`
+			} `json:"variants"`
+		} `json:"settings"`
+		Features map[string]struct {
+			Status    string `json:"status"`
+			Supported bool   `json:"supported"`
+			MaxInputs *int   `json:"max_inputs"`
+		} `json:"features"`
+	}
+	if err := json.Unmarshal(provData, &parsed); err != nil {
+		return nil
+	}
+	settingsMap := parsed.Settings
+	featuresMap := parsed.Features
+	if parsed.VideoGeneration != nil {
+		if len(parsed.VideoGeneration.Settings) > 0 {
+			settingsMap = parsed.VideoGeneration.Settings
+		}
+		if len(parsed.VideoGeneration.Features) > 0 {
+			featuresMap = parsed.VideoGeneration.Features
+		}
+	}
+	if len(settingsMap) == 0 && len(featuresMap) == 0 {
+		return nil
+	}
+
+	opts := &parsedVideoOptions{
+		ResolutionDurations: make(map[string][]int),
+	}
+
+	if ar, ok := settingsMap["aspect_ratio"]; ok && !strings.EqualFold(ar.Status, "unsupported") {
+		for _, v := range ar.SupportedValues {
+			if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
+				opts.AspectRatios = append(opts.AspectRatios, strings.TrimSpace(s))
+			}
+		}
+		if s, ok := ar.DefaultValue.(string); ok {
+			opts.DefaultRatio = strings.TrimSpace(s)
+		}
+	}
+
+	if res, ok := settingsMap["resolution"]; ok && !strings.EqualFold(res.Status, "unsupported") {
+		for _, v := range res.SupportedValues {
+			if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
+				opts.Resolutions = append(opts.Resolutions, strings.TrimSpace(s))
+			}
+		}
+		if s, ok := res.DefaultValue.(string); ok {
+			opts.DefaultRes = strings.TrimSpace(s)
+		}
+	}
+
+	if dur, ok := settingsMap["duration_seconds"]; ok && !strings.EqualFold(dur.Status, "unsupported") && !strings.EqualFold(dur.Status, "unknown") {
+		for _, v := range dur.SupportedValues {
+			switch n := v.(type) {
+			case float64:
+				opts.Durations = append(opts.Durations, int(n))
+			case int:
+				opts.Durations = append(opts.Durations, n)
+			}
+		}
+		switch n := dur.DefaultValue.(type) {
+		case float64:
+			opts.DefaultDur = int(n)
+		case int:
+			opts.DefaultDur = n
+		}
+	}
+
+	if len(opts.Resolutions) > 0 && len(opts.Durations) > 0 {
+		for _, r := range opts.Resolutions {
+			rLower := strings.ToLower(r)
+			var rDurs []int
+			if durSetting, ok := settingsMap["duration_seconds"]; ok && len(durSetting.Variants) > 0 {
+				for _, v := range durSetting.Variants {
+					condRes, _ := v.Conditions["resolution"].(string)
+					condResLower := strings.ToLower(condRes)
+					matchesRes := condResLower == rLower ||
+						((rLower == "1080p" || rLower == "4k") && condResLower == "1080p_or_4k") ||
+						(condResLower == "" && len(v.Conditions) == 0 && rLower == "720p")
+					if matchesRes {
+						for _, val := range v.SupportedValues {
+							switch n := val.(type) {
+							case float64:
+								rDurs = append(rDurs, int(n))
+							case int:
+								rDurs = append(rDurs, n)
+							}
+						}
+					}
+				}
+			}
+			if len(rDurs) > 0 {
+				opts.ResolutionDurations[rLower] = rDurs
+			} else {
+				opts.ResolutionDurations[rLower] = opts.Durations
+			}
+		}
+	}
+
+	if feat, ok := featuresMap["initial_image"]; ok && feat.Supported {
+		maxIn := 1
+		if feat.MaxInputs != nil && *feat.MaxInputs > 0 {
+			maxIn = *feat.MaxInputs
+		}
+		opts.InitialImage = &struct {
+			Supported bool
+			MaxInputs int
+		}{
+			Supported: true,
+			MaxInputs: maxIn,
+		}
+	} else if containsStringFold(rec.CatalogModalities.Inputs, "image") {
+		opts.InitialImage = &struct {
+			Supported bool
+			MaxInputs int
+		}{
+			Supported: true,
+			MaxInputs: 1,
+		}
+	}
+
+	return opts
+}
 	lower := strings.ToLower(modelID)
 	return strings.Contains(lower, "omni")
 }

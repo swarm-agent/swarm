@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -394,23 +395,58 @@ func EstimateMediaCostFromRecord(rec ModelCatalogRecord, opts MediaCostEstimateO
 	switch kind {
 	case "video":
 		// Check verified billing lines for video
+		hasVerifiedVideoLines := false
+		type candidateVideoLine struct {
+			unitPrice float64
+			summary   string
+		}
+		var matchedLines []candidateVideoLine
+
 		for _, lineMap := range verifiedLines {
 			billable, _ := lineMap["billable"].(string)
 			if billable != "video_output" && billable != "video" {
 				continue
 			}
+			hasVerifiedVideoLines = true
 			pUSD, ok := toFloat64(lineMap["price_usd"])
 			if !ok || pUSD < 0 {
 				continue
 			}
-			// Condition matching: resolution, includes_audio, service_tier
+			conds, hasConds := lineMap["conditions"].(map[string]any)
 			serviceTier := ""
-			if conds, ok := lineMap["conditions"].(map[string]any); ok {
-				if res, ok := conds["resolution"].(string); ok && res != "" {
-					if opts.Resolution == "" || !strings.EqualFold(res, opts.Resolution) {
-						continue
-					}
+
+			// Condition matching: resolution, variant, and sku conditions
+			resCond := ""
+			if hasConds {
+				if r, ok := conds["resolution"].(string); ok && r != "" {
+					resCond = r
 				}
+			}
+			lineVariant, _ := lineMap["variant"].(string)
+			if lineVariant == "" && hasConds {
+				lineVariant, _ = conds["variant"].(string)
+			}
+			lineSKU, _ := lineMap["sku"].(string)
+			if lineSKU == "" && hasConds {
+				lineSKU, _ = conds["sku"].(string)
+			}
+
+			// If resolution condition is specified on the line:
+			if resCond != "" {
+				if opts.Resolution == "" || !strings.EqualFold(resCond, opts.Resolution) {
+					continue
+				}
+			} else if lineVariant != "" && (strings.EqualFold(lineVariant, "720p") || strings.EqualFold(lineVariant, "1080p") || strings.EqualFold(lineVariant, "4k")) {
+				// Variant specified as resolution tag
+				if opts.Resolution == "" || !strings.EqualFold(lineVariant, opts.Resolution) {
+					continue
+				}
+			} else if (lineVariant != "" || lineSKU != "") && opts.Resolution == "" {
+				// Line has a variant or SKU condition, but caller gave no resolution/variant to match
+				continue
+			}
+
+			if hasConds {
 				if incAudio, ok := conds["includes_audio"].(bool); ok {
 					if incAudio != opts.IncludesAudio {
 						continue
@@ -434,34 +470,83 @@ func EstimateMediaCostFromRecord(rec ModelCatalogRecord, opts MediaCostEstimateO
 					continue
 				}
 			}
+
 			catalogTag := "(catalog)"
 			if snapID != "" {
 				catalogTag = fmt.Sprintf("(catalog %s)", snapID)
 			}
 			unit, _ := lineMap["unit"].(string)
+			var curUnitPrice float64
+			var curSummary string
 			switch strings.ToLower(unit) {
 			case "second", "sec":
 				if opts.DurationSeconds > 0 {
-					unitPrice = pUSD * float64(opts.DurationSeconds)
-					foundPrice = true
-					summaryText = fmt.Sprintf("$%.3f/sec ($%.2f for %ds) %s", pUSD, unitPrice, opts.DurationSeconds, catalogTag)
+					curUnitPrice = pUSD * float64(opts.DurationSeconds)
+					curSummary = fmt.Sprintf("$%.3f/sec ($%.2f for %ds) %s", pUSD, curUnitPrice, opts.DurationSeconds, catalogTag)
 				}
 			case "minute", "min":
 				if opts.DurationSeconds > 0 {
-					unitPrice = (pUSD / 60.0) * float64(opts.DurationSeconds)
-					foundPrice = true
-					summaryText = fmt.Sprintf("$%.2f/min ($%.2f for %ds) %s", pUSD, unitPrice, opts.DurationSeconds, catalogTag)
+					curUnitPrice = (pUSD / 60.0) * float64(opts.DurationSeconds)
+					curSummary = fmt.Sprintf("$%.2f/min ($%.2f for %ds) %s", pUSD, curUnitPrice, opts.DurationSeconds, catalogTag)
 				}
 			case "video", "generation":
-				unitPrice = pUSD
-				foundPrice = true
-				summaryText = fmt.Sprintf("$%.2f per video %s", unitPrice, catalogTag)
+				curUnitPrice = pUSD
+				curSummary = fmt.Sprintf("$%.2f per video %s", curUnitPrice, catalogTag)
 			}
-			if foundPrice {
-				break
+			if curSummary != "" {
+				matchedLines = append(matchedLines, candidateVideoLine{
+					unitPrice: curUnitPrice,
+					summary:   curSummary,
+				})
 			}
 		}
+
+		if len(matchedLines) == 1 {
+			unitPrice = matchedLines[0].unitPrice
+			summaryText = matchedLines[0].summary
+			foundPrice = true
+		} else if len(matchedLines) > 1 {
+			// Check if all matched lines agree on price
+			allSame := true
+			for i := 1; i < len(matchedLines); i++ {
+				if math.Abs(matchedLines[i].unitPrice-matchedLines[0].unitPrice) > 0.0001 {
+					allSame = false
+					break
+				}
+			}
+			if allSame {
+				unitPrice = matchedLines[0].unitPrice
+				summaryText = matchedLines[0].summary
+				foundPrice = true
+			} else {
+				// Ambiguous matching lines with differing prices: must return unknown
+				return MediaCostEstimate{
+					CostUSD:         0.0,
+					PriceStatus:     "unknown",
+					PricingSummary:  fmt.Sprintf("unknown pricing (ambiguous pricing conditions for model %q in snapshot)", model),
+					SnapshotID:      snapID,
+					SnapshotVersion: snapVer,
+				}
+			}
+		}
+
 		if !foundPrice {
+			if hasVerifiedVideoLines {
+				// Verified billing lines existed for video, but conditions/resolution/variant were unresolved.
+				// Do NOT fall back to unconditioned top-level rates (no false estimate).
+				summary := fmt.Sprintf("unknown pricing (unresolved pricing conditions for model %q in snapshot)", model)
+				if snapID != "" {
+					summary = fmt.Sprintf("unknown pricing (unresolved pricing conditions for model %q in snapshot %s)", model, snapID)
+				}
+				return MediaCostEstimate{
+					CostUSD:         0.0,
+					PriceStatus:     "unknown",
+					PricingSummary:  summary,
+					SnapshotID:      snapID,
+					SnapshotVersion: snapVer,
+				}
+			}
+
 			catalogTag := "(catalog)"
 			if snapID != "" {
 				catalogTag = fmt.Sprintf("(catalog %s)", snapID)

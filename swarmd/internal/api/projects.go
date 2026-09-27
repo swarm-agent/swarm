@@ -524,22 +524,26 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 				task.ActionNeeded = fmt.Sprintf("Generating %d deliverable variant(s)...", count)
 				task.WhatDidDo = []string{"Approved mission", "Generating media assets"}
 			} else if task.Agent == "video" {
+				if task.OutcomeType == "video_story" || len(task.Scenes) > 1 {
+					return errors.New("multipart video stories are not supported; video generation supports single video clips")
+				}
 				ar := task.AspectRatio
 				if ar == "" {
 					ar = "16:9"
 				}
-				sceneCount := len(task.Scenes)
-				if sceneCount == 0 {
-					if task.VariantCount > 0 && task.VariantCount <= 1 {
-						sceneCount = 1
-					} else {
-						sceneCount = 2
-					}
+				count := task.VariantCount
+				if count <= 0 {
+					count = len(task.Deliverables)
 				}
-				soundtrack := task.Soundtrack
+				if count <= 0 {
+					count = 1
+				}
+				if count > 8 {
+					count = 8
+				}
 				videoModel := strings.TrimSpace(task.Model)
 				if videoModel == "" {
-					videoModel = "veo-3.1-generate-preview"
+					videoModel = DefaultVideoGenerationModel
 				}
 				resTag := task.Resolution
 				if resTag == "" {
@@ -550,14 +554,6 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 					durSec = 8
 				}
 				durStr := fmt.Sprintf("%ds", durSec)
-
-				count := task.VariantCount
-				if count <= 0 {
-					count = len(task.Deliverables)
-				}
-				if count <= 0 {
-					count = 1
-				}
 
 				var delivs []pebblestore.ProjectTaskDeliverable
 				if count > 1 {
@@ -572,11 +568,7 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 							Description: fmt.Sprintf("Video variation %d of %d (%s, %s, %s) generating with %s: %s", i, count, ar, resTag, durStr, videoModel, task.Title),
 						})
 					}
-					task.Deliverables = delivs
-					task.Status = "in_progress"
-					task.ActionNeeded = fmt.Sprintf("Rendering %d video deliverable variant(s)...", count)
-					task.WhatDidDo = []string{"Approved mission", fmt.Sprintf("Rendering %d video variations with %s", count, videoModel)}
-				} else if sceneCount <= 1 || task.OutcomeType == "video_clip" {
+				} else {
 					delivs = append(delivs, pebblestore.ProjectTaskDeliverable{
 						ID:          fmt.Sprintf("deliv_vid_%d", now),
 						Title:       fmt.Sprintf("%s (Single Video, %s)", task.Title, ar),
@@ -584,31 +576,13 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 						Status:      "generating",
 						Thumbnail:   "video",
 						Duration:    durStr,
-						Description: fmt.Sprintf("Single video clip (%s, %s, %s) generated via %s: %s", ar, resTag, durStr, videoModel, task.Title),
+						Description: fmt.Sprintf("Single video clip (%s, %s, %s) generating with %s: %s", ar, resTag, durStr, videoModel, task.Title),
 					})
-					task.Deliverables = delivs
-					task.Status = "in_progress"
-					task.ActionNeeded = fmt.Sprintf("Rendering single video clip (%s)...", durStr)
-					task.WhatDidDo = []string{"Approved mission", fmt.Sprintf("Rendering %s video clip directly with %s", durStr, videoModel)}
-				} else {
-					desc := fmt.Sprintf("Compiled %d-scene multi-part video (%s): %s", sceneCount, ar, task.Title)
-					if soundtrack != "" {
-						desc = fmt.Sprintf("Compiled %d-scene multi-part video with soundtrack (%s): %s", sceneCount, soundtrack, task.Title)
-					}
-					delivs = append(delivs, pebblestore.ProjectTaskDeliverable{
-						ID:          fmt.Sprintf("deliv_vid_%d", now),
-						Title:       fmt.Sprintf("%s (%d-Scene Multi-Part Video, %s)", task.Title, sceneCount, ar),
-						Kind:        "video",
-						Status:      "generating",
-						Thumbnail:   "video",
-						Duration:    fmt.Sprintf("%ds", sceneCount*4),
-						Description: desc,
-					})
-					task.Deliverables = delivs
-					task.Status = "in_progress"
-					task.ActionNeeded = "Rendering multi-part video sequence..."
-					task.WhatDidDo = []string{"Approved mission", "Rendering multi-part video sequence"}
 				}
+				task.Deliverables = delivs
+				task.Status = "in_progress"
+				task.ActionNeeded = fmt.Sprintf("Rendering %d video deliverable(s)...", count)
+				task.WhatDidDo = []string{"Approved mission", fmt.Sprintf("Rendering %d video clip(s) with %s", count, videoModel)}
 			} else if task.Agent == "sound" || task.Agent == "audio" {
 				soundModel := strings.TrimSpace(task.Model)
 				if soundModel == "" {
@@ -1662,7 +1636,140 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				prompt = strings.TrimSpace(req.Title)
 			}
 
-			isDirectVideo := req.Intent == "video" && (req.VideoType == "single" || (req.VideoType == "" && req.ScenesCount <= 1 && req.VariantCount <= 1))
+			// Preflight check for video tasks before Router spend or persistence
+			if req.Intent == "video" || req.Agent == "video" {
+				if req.VideoType == "multipart" || req.VideoType == "story" || req.ScenesCount > 1 || req.OutcomeType == "video_story" || len(req.Scenes) > 0 {
+					writeError(w, http.StatusBadRequest, errors.New("multipart video stories are not supported; video generation supports single video clips"))
+					return
+				}
+				vidClipCount := req.VariantCount
+				if vidClipCount <= 0 {
+					vidClipCount = req.DeliverableCount
+				}
+				if vidClipCount < 0 {
+					writeError(w, http.StatusBadRequest, errors.New("video clip count cannot be negative"))
+					return
+				}
+				if vidClipCount > 8 {
+					writeError(w, http.StatusBadRequest, fmt.Errorf("video clip count %d exceeds maximum allowed (8)", vidClipCount))
+					return
+				}
+
+				if len(req.AttachedMedia) > 1 {
+					writeError(w, http.StatusBadRequest, errors.New("at most one initial image attachment is supported for video generation"))
+					return
+				}
+				if len(req.AttachedMedia) == 1 {
+					att := req.AttachedMedia[0]
+					if att.Kind != "" && !strings.EqualFold(att.Kind, "image") {
+						writeError(w, http.StatusBadRequest, fmt.Errorf("unsupported attachment kind %q for video generation; only images are supported as reference inputs", att.Kind))
+						return
+					}
+					if att.MediaType != "" && !strings.HasPrefix(strings.ToLower(att.MediaType), "image/") {
+						writeError(w, http.StatusBadRequest, fmt.Errorf("unsupported media type %q for video generation; only images are supported as reference inputs", att.MediaType))
+						return
+					}
+					fn := strings.ToLower(strings.TrimSpace(att.Filename))
+					if fn != "" && !strings.HasSuffix(fn, ".png") && !strings.HasSuffix(fn, ".jpg") && !strings.HasSuffix(fn, ".jpeg") && !strings.HasSuffix(fn, ".webp") && !strings.HasSuffix(fn, ".heic") && !strings.HasSuffix(fn, ".heif") && !strings.HasSuffix(fn, ".svg") {
+						writeError(w, http.StatusBadRequest, fmt.Errorf("unsupported file extension on %q for video generation; only image formats are supported", att.Filename))
+						return
+					}
+					imgBytes, mType, err := s.resolveSourceMediaBytes(r.Context(), p, att, "image")
+					if err != nil {
+						writeError(w, http.StatusBadRequest, fmt.Errorf("invalid image attachment: %w", err))
+						return
+					}
+					if len(imgBytes) == 0 {
+						writeError(w, http.StatusBadRequest, errors.New("attached image payload is empty"))
+						return
+					}
+					if err := validateImageBytes(imgBytes, mType); err != nil {
+						writeError(w, http.StatusBadRequest, err)
+						return
+					}
+				}
+
+				vModel := strings.TrimSpace(req.Model)
+				if vModel == "" && s.uiSettings != nil && strings.TrimSpace(p.AccountScopeID) != "" {
+					if uiSet, err := s.uiSettings.GetForAccount(p.AccountScopeID); err == nil {
+						if def := strings.TrimSpace(uiSet.Tools.Video.DefaultModel); def != "" {
+							vModel = def
+						}
+					}
+				}
+				if vModel == "" {
+					vModel = DefaultVideoGenerationModel
+				}
+				if !isSupportedVideoModel(s, vModel) {
+					writeError(w, http.StatusBadRequest, fmt.Errorf("unsupported video model %q", vModel))
+					return
+				}
+				vOpts := s.getModelGenerationOptions(vModel)
+				if ar := strings.TrimSpace(req.AspectRatio); ar != "" {
+					if vOpts != nil && len(vOpts.AspectRatios) > 0 {
+						if !containsStringFold(vOpts.AspectRatios, ar) && !isEquivalentAspectRatio(vOpts.AspectRatios, ar) {
+							writeError(w, http.StatusBadRequest, fmt.Errorf("unsupported video aspect ratio %q; supported ratios are %s", ar, strings.Join(vOpts.AspectRatios, ", ")))
+							return
+						}
+					} else {
+						writeError(w, http.StatusBadRequest, errors.New("video aspect ratio metadata unavailable for selected model"))
+						return
+					}
+				}
+				if res := strings.TrimSpace(req.Resolution); res != "" {
+					if vOpts != nil && len(vOpts.Resolutions) > 0 {
+						if !containsStringFold(vOpts.Resolutions, res) {
+							writeError(w, http.StatusBadRequest, fmt.Errorf("unsupported video resolution %q; supported resolutions are %s", res, strings.Join(vOpts.Resolutions, ", ")))
+							return
+						}
+					} else {
+						writeError(w, http.StatusBadRequest, fmt.Errorf("model %q does not support resolution selection", vModel))
+						return
+					}
+				}
+				if dur := req.DurationSeconds; dur > 0 {
+					if vOpts != nil && len(vOpts.Durations) > 0 {
+						resLower := strings.ToLower(strings.TrimSpace(req.Resolution))
+						if resLower == "" && vOpts.DefaultRes != "" {
+							resLower = strings.ToLower(vOpts.DefaultRes)
+						}
+						allowedDurs := vOpts.Durations
+						if vOpts.ResolutionDurations != nil {
+							if rd, ok := vOpts.ResolutionDurations[resLower]; ok && len(rd) > 0 {
+								allowedDurs = rd
+							}
+						}
+						found := false
+						for _, d := range allowedDurs {
+							if d == dur {
+								found = true
+								break
+							}
+						}
+						if !found {
+							if resLower == "1080p" || resLower == "4k" {
+								writeError(w, http.StatusBadRequest, fmt.Errorf("video resolution %s requires 8s duration", req.Resolution))
+								return
+							}
+							var durStrs []string
+							for _, d := range allowedDurs {
+								durStrs = append(durStrs, fmt.Sprintf("%d", d))
+							}
+							writeError(w, http.StatusBadRequest, fmt.Errorf("unsupported video duration %d seconds; supported durations are %s seconds", dur, strings.Join(durStrs, ", ")))
+							return
+						}
+					} else {
+						writeError(w, http.StatusBadRequest, fmt.Errorf("model %q does not support duration selection", vModel))
+						return
+					}
+				}
+				if len(req.AttachedMedia) > 0 && vOpts != nil && vOpts.InitialImage != nil && !vOpts.InitialImage.Supported {
+					writeError(w, http.StatusBadRequest, fmt.Errorf("model %q does not support initial image input", vModel))
+					return
+				}
+			}
+
+			isDirectVideo := req.Intent == "video" || req.Agent == "video"
 			isDirectSound := req.Intent == "sound" || req.Intent == "audio"
 			enhancePrompt := req.EnhancePrompt != nil && *req.EnhancePrompt
 
@@ -1720,14 +1827,6 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 					AttachedMedia: req.AttachedMedia,
 				}
 			} else if isDirectVideo && !enhancePrompt {
-				ar := strings.TrimSpace(req.AspectRatio)
-				if ar == "" {
-					ar = "16:9"
-				}
-				resTag := strings.TrimSpace(req.Resolution)
-				if resTag == "" {
-					resTag = "1080p"
-				}
 				videoModel := strings.TrimSpace(req.Model)
 				if videoModel == "" && s.uiSettings != nil && strings.TrimSpace(p.AccountScopeID) != "" {
 					if uiSet, err := s.uiSettings.GetForAccount(p.AccountScopeID); err == nil {
@@ -1737,7 +1836,45 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 				if videoModel == "" {
-					videoModel = "veo-3.1-generate-preview"
+					videoModel = DefaultVideoGenerationModel
+				}
+
+				opts := s.getModelGenerationOptions(videoModel)
+				ar := strings.TrimSpace(req.AspectRatio)
+				if ar == "" {
+					if opts != nil && opts.DefaultRatio != "" {
+						ar = opts.DefaultRatio
+					} else {
+						ar = "16:9"
+					}
+				}
+				resTag := strings.TrimSpace(req.Resolution)
+				if resTag == "" {
+					if opts != nil && opts.DefaultRes != "" {
+						resTag = opts.DefaultRes
+					} else {
+						resTag = "720p"
+					}
+				}
+				durSec := req.DurationSeconds
+				if durSec <= 0 {
+					if opts != nil && opts.DefaultDur > 0 {
+						durSec = opts.DefaultDur
+					} else {
+						durSec = 8
+					}
+				}
+				durStr := fmt.Sprintf("%ds", durSec)
+
+				count := req.VariantCount
+				if count <= 0 {
+					count = req.DeliverableCount
+				}
+				if count <= 0 {
+					count = 1
+				}
+				if count > 8 {
+					count = 8
 				}
 
 				cleanTitle := prompt
@@ -1754,6 +1891,34 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 					cleanTitle = "Single Video Shot"
 				}
 				taskTitle := fmt.Sprintf("Single clip of %s", cleanTitle)
+				if count > 1 {
+					taskTitle = fmt.Sprintf("%d clips of %s", count, cleanTitle)
+				}
+
+				var deliverables []pebblestore.ProjectTaskDeliverable
+				if count > 1 {
+					for i := 1; i <= count; i++ {
+						deliverables = append(deliverables, pebblestore.ProjectTaskDeliverable{
+							ID:          fmt.Sprintf("deliv_vid_%d", i),
+							Title:       fmt.Sprintf("%s (Take %d, %s)", cleanTitle, i, ar),
+							Kind:        "video",
+							Status:      "pending",
+							Duration:    durStr,
+							Description: fmt.Sprintf("Video clip %d of %d (%s, %s, %s) generated directly with %s: %s", i, count, ar, resTag, durStr, videoModel, prompt),
+						})
+					}
+				} else {
+					deliverables = []pebblestore.ProjectTaskDeliverable{
+						{
+							ID:          "deliv_vid",
+							Title:       fmt.Sprintf("%s (Single Video, %s)", cleanTitle, ar),
+							Kind:        "video",
+							Status:      "pending",
+							Duration:    durStr,
+							Description: fmt.Sprintf("Single video clip (%s, %s, %s) generated directly with %s: %s", ar, resTag, durStr, videoModel, prompt),
+						},
+					}
+				}
 
 				routed = pebblestore.TaskRouteResult{
 					Title:            taskTitle,
@@ -1761,21 +1926,13 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 					OutcomeType:      "video_clip",
 					Tier:             "direct",
 					AspectRatio:      ar,
-					VariantCount:     1,
+					VariantCount:     count,
+					Mission:          prompt, // FULL PROMPT PRESERVED!
 					Stages:           []string{"Video Parameter Configuration", "Model Generative Synthesis"},
-					PlanSummary:      fmt.Sprintf("1. Configure single 8s video shot (%s, %s)\n2. Render directly with %s using native model audio\n3. Deliver verified video clip for review", ar, resTag, videoModel),
-					FullPlanMarkdown: fmt.Sprintf("### Task Mission: %s\n\n- **Agent**: `@video`\n- **Mode**: Single Video (1 Clip · 8s)\n- **Model**: `%s`\n- **Resolution**: `%s`\n- **Aspect Ratio**: `%s`\n- **Audio**: Model Generative Audio (Synchronized in 1 prompt)\n\n#### Visual Prompt\n%s\n", taskTitle, videoModel, resTag, ar, prompt),
-					Deliverables: []pebblestore.ProjectTaskDeliverable{
-						{
-							ID:          "deliv_vid",
-							Title:       fmt.Sprintf("%s (Single Video, %s)", cleanTitle, ar),
-							Kind:        "video",
-							Status:      "pending",
-							Duration:    "8s",
-							Description: fmt.Sprintf("Single video clip (%s, %s, 8s) generated directly with %s: %s", ar, resTag, videoModel, prompt),
-						},
-					},
-					AttachedMedia: req.AttachedMedia,
+					PlanSummary:      fmt.Sprintf("1. Configure %s video shot (%s, %s)\n2. Render directly with %s using native model audio\n3. Deliver verified video clip for review", durStr, ar, resTag, videoModel),
+					FullPlanMarkdown: fmt.Sprintf("### Task Mission: %s\n\n- **Agent**: `@video`\n- **Mode**: Single Video (%d Clip · %s)\n- **Model**: `%s`\n- **Resolution**: `%s`\n- **Aspect Ratio**: `%s`\n- **Audio**: Model Generative Audio (Synchronized in 1 prompt)\n\n#### Visual Prompt\n%s\n", taskTitle, count, durStr, videoModel, resTag, ar, prompt),
+					Deliverables:     deliverables,
+					AttachedMedia:    req.AttachedMedia,
 				}
 			} else {
 				taskRouter := taskrouter.NewService(func(ctx context.Context, instructions, input string) (string, error) {
@@ -1802,6 +1959,57 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 					AttachedMedia:      req.AttachedMedia,
 					Project:            proj,
 				})
+				if req.Intent == "video" || req.Agent == "video" {
+					// Preserve explicit video settings with or without Router:
+					routed.Agent = "video"
+					routed.OutcomeType = "video_clip"
+					routed.Branch = ""
+					routed.Scenes = nil
+					routed.Soundtrack = ""
+					count := req.VariantCount
+					if count <= 0 {
+						count = req.DeliverableCount
+					}
+					if count <= 0 {
+						count = 1
+					}
+					if count > 8 {
+						count = 8
+					}
+					routed.VariantCount = count
+					if req.AspectRatio != "" {
+						routed.AspectRatio = req.AspectRatio
+					}
+					durText := "8s"
+					if req.DurationSeconds > 0 {
+						durText = fmt.Sprintf("%ds", req.DurationSeconds)
+					}
+					if count == 1 {
+						routed.Deliverables = []pebblestore.ProjectTaskDeliverable{
+							{
+								ID:          "deliv_vid",
+								Title:       fmt.Sprintf("%s (Single Video, %s)", routed.Title, routed.AspectRatio),
+								Kind:        "video",
+								Status:      "pending",
+								Duration:    durText,
+								Description: fmt.Sprintf("Single video clip (%s, %s): %s", routed.AspectRatio, durText, routed.Title),
+							},
+						}
+					} else {
+						var delivs []pebblestore.ProjectTaskDeliverable
+						for i := 1; i <= count; i++ {
+							delivs = append(delivs, pebblestore.ProjectTaskDeliverable{
+								ID:          fmt.Sprintf("deliv_vid_%d", i),
+								Title:       fmt.Sprintf("%s (Take %d, %s)", routed.Title, i, routed.AspectRatio),
+								Kind:        "video",
+								Status:      "pending",
+								Duration:    durText,
+								Description: fmt.Sprintf("Video clip %d of %d (%s, %s): %s", i, count, routed.AspectRatio, durText, routed.Title),
+							})
+						}
+						routed.Deliverables = delivs
+					}
+				}
 			}
 
 			title := strings.TrimSpace(req.Title)
@@ -1837,6 +2045,9 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			description := strings.TrimSpace(req.Description)
 			if description == "" {
 				description = routed.Mission
+			}
+			if description == "" && prompt != "" {
+				description = prompt
 			}
 			stages := req.PipelineStages
 			if len(stages) == 0 {
@@ -1929,6 +2140,38 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				AttachedMedia:       req.AttachedMedia,
 				TaskProgram:         req.TaskProgram,
 				TaskProgramID:       req.TaskProgramID,
+			}
+			if task.Agent == "video" || task.OutcomeType == "video_clip" {
+				if task.Model == "" {
+					vm := strings.TrimSpace(req.Model)
+					if vm == "" && s.uiSettings != nil && strings.TrimSpace(p.AccountScopeID) != "" {
+						if uiSet, err := s.uiSettings.GetForAccount(p.AccountScopeID); err == nil {
+							if def := strings.TrimSpace(uiSet.Tools.Video.DefaultModel); def != "" {
+								vm = def
+							}
+						}
+					}
+					if vm == "" {
+						vm = DefaultVideoGenerationModel
+					}
+					task.Model = vm
+				}
+				if task.Resolution == "" {
+					if opts := s.getModelGenerationOptions(task.Model); opts != nil && opts.DefaultRes != "" {
+						task.Resolution = opts.DefaultRes
+					} else {
+						task.Resolution = "720p"
+					}
+				}
+				if task.DurationSeconds <= 0 {
+					if opts := s.getModelGenerationOptions(task.Model); opts != nil && opts.DefaultDur > 0 {
+						task.DurationSeconds = opts.DefaultDur
+					} else {
+						task.DurationSeconds = 8
+					}
+				}
+				task.Scenes = nil
+				task.Soundtrack = ""
 			}
 			if task.TaskProgram == nil && routed.TaskProgram != nil {
 				task.TaskProgram = routed.TaskProgram

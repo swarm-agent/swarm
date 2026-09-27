@@ -225,3 +225,179 @@ func TestMediaCatalogResponsePopulatesAudioGenerationModels(t *testing.T) {
 		t.Errorf("expected nil generation_options on unconfigured lyria-3-clip-preview, got %#v", response.AudioModels[1].GenerationOptions)
 	}
 }
+
+func TestMediaCatalogResponse_ExposesResolutionDurationsAndInitialImage(t *testing.T) {
+	// Requirement: mediaCatalogResponse must expose exact resolution-dependent durations,
+	// initial-image capability, and allowed image MIME types from snapshot metadata without inventing capabilities.
+	// Threat/regression: Flat options maps discard conditional durations (e.g. 1080p requiring 8s) or omit initial-image constraints.
+	// Boundary/authority: extractModelGenerationOptions and Server.mediaCatalogResponse in media_settings.go.
+	// Test layer: API unit test using hermetic Pebble store with realistic snapshot ProviderSpecific fixture.
+
+	store, err := pebblestore.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	catalogStore := pebblestore.NewModelCatalogStore(store)
+
+	veoProviderSpecific := json.RawMessage(`{
+		"google": {
+			"video_generation": {
+				"status": "verified",
+				"settings": {
+					"aspect_ratio": {
+						"status": "verified",
+						"default_value": "16:9",
+						"supported_values": ["16:9", "9:16"]
+					},
+					"resolution": {
+						"status": "verified",
+						"default_value": "720p",
+						"supported_values": ["720p", "1080p", "4k"],
+						"variants": [
+							{"mode": "all", "supported_values": ["720p"], "conditions": {}},
+							{"mode": "all", "supported_values": ["1080p"], "conditions": {"duration_seconds": 8}},
+							{"mode": "all", "supported_values": ["4k"], "conditions": {"duration_seconds": 8}}
+						]
+					},
+					"duration_seconds": {
+						"status": "verified",
+						"default_value": 8,
+						"supported_values": [4, 6, 8],
+						"variants": [
+							{"mode": "std_720p", "supported_values": [4, 6, 8], "conditions": {"resolution": "720p"}},
+							{"mode": "hi_res", "supported_values": [8], "conditions": {"resolution": "1080p_or_4k"}}
+						]
+					}
+				},
+				"features": {
+					"initial_image": {
+						"status": "verified",
+						"supported": true,
+						"max_inputs": 1,
+						"notes": "An initial image can be animated for image-to-video generation."
+					}
+				}
+			}
+		}
+	}`)
+
+	omniProviderSpecific := json.RawMessage(`{
+		"google": {
+			"video_generation": {
+				"status": "partially_verified",
+				"settings": {
+					"aspect_ratio": {
+						"status": "verified",
+						"default_value": "16:9",
+						"supported_values": ["16:9", "9:16"]
+					},
+					"resolution": {
+						"status": "unsupported",
+						"supported_values": []
+					},
+					"duration_seconds": {
+						"status": "unknown",
+						"supported_values": []
+					}
+				},
+				"features": {
+					"conversational_editing": {
+						"status": "verified",
+						"supported": true
+					},
+					"initial_image": {
+						"status": "verified",
+						"supported": true,
+						"max_inputs": 1
+					}
+				}
+			}
+		}
+	}`)
+
+	veoRecord := pebblestore.ModelCatalogRecord{
+		Provider: "google", Model: "veo-3.1-generate-preview", DisplayName: "Veo 3.1",
+		CatalogModalities: pebblestore.ModelCatalogModalities{Inputs: []string{"text", "image"}, Outputs: []string{"video"}},
+		ProviderSpecific:  veoProviderSpecific,
+	}
+	omniRecord := pebblestore.ModelCatalogRecord{
+		Provider: "google", Model: "gemini-omni-1.1-flash", DisplayName: "Gemini Omni 1.1 Flash",
+		CatalogModalities: pebblestore.ModelCatalogModalities{Inputs: []string{"text", "image"}, Outputs: []string{"video"}},
+		ProviderSpecific:  omniProviderSpecific,
+	}
+
+	for _, rec := range []pebblestore.ModelCatalogRecord{veoRecord, omniRecord} {
+		if err := catalogStore.SetRecord(rec); err != nil {
+			t.Fatalf("seed record: %v", err)
+		}
+	}
+
+	server := NewServer(nil, nil, model.NewService(pebblestore.NewModelStore(store), nil, model.NewCatalogService(catalogStore)), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	server.imageGen = imagegen.NewService(nil, nil, nil, server.model)
+	caps := imagegen.Capabilities{Providers: []imagegen.ProviderStatus{{ID: imagegen.ProviderGoogleGemini, Ready: true}}}
+	openRouterStatus := imagegen.ProviderStatus{ID: "openrouter", Ready: false}
+
+	response, err := server.mediaCatalogResponse(caps, openRouterStatus)
+	if err != nil {
+		t.Fatalf("mediaCatalogResponse failed: %v", err)
+	}
+
+	// 1. Veo resolution-dependent durations
+	var veoOpt *mediaCatalogOption
+	for i := range response.VideoGenerationModels {
+		if response.VideoGenerationModels[i].Model == "veo-3.1-generate-preview" {
+			veoOpt = &response.VideoGenerationModels[i]
+			break
+		}
+	}
+	if veoOpt == nil || veoOpt.GenerationOptions == nil {
+		t.Fatalf("expected generation_options on veo-3.1-generate-preview")
+	}
+	rd := veoOpt.GenerationOptions.ResolutionDurations
+	if len(rd["720p"]) != 3 || len(rd["1080p"]) != 1 || rd["1080p"][0] != 8 || len(rd["4k"]) != 1 || rd["4k"][0] != 8 {
+		t.Errorf("unexpected resolution_durations for veo: %#v", rd)
+	}
+	if veoOpt.GenerationOptions.InitialImage == nil || !veoOpt.GenerationOptions.InitialImage.Supported || veoOpt.GenerationOptions.InitialImage.MaxInputs != 1 {
+		t.Errorf("expected initial_image with max_inputs=1 for veo, got %#v", veoOpt.GenerationOptions.InitialImage)
+	}
+
+	// 2. Omni must omit unsupported resolutions and unknown durations (no invented selectors)
+	var omniOpt *mediaCatalogOption
+	for i := range response.VideoIterationModels {
+		if response.VideoIterationModels[i].Model == "gemini-omni-1.1-flash" {
+			omniOpt = &response.VideoIterationModels[i]
+			break
+		}
+	}
+	if omniOpt == nil || omniOpt.GenerationOptions == nil {
+		t.Fatalf("expected generation_options on gemini-omni-1.1-flash")
+	}
+	if len(omniOpt.GenerationOptions.Resolutions) != 0 {
+		t.Errorf("expected empty resolutions for omni, got %#v", omniOpt.GenerationOptions.Resolutions)
+	}
+	if len(omniOpt.GenerationOptions.Durations) != 0 {
+		t.Errorf("expected empty durations for omni, got %#v", omniOpt.GenerationOptions.Durations)
+	}
+	if omniOpt.GenerationOptions.InitialImage == nil || !omniOpt.GenerationOptions.InitialImage.Supported {
+		t.Errorf("expected initial_image supported for omni")
+	}
+}
+
+func TestMediaCatalogResponse_NeverFallsBackToDifferentProvider(t *testing.T) {
+	// Requirement: extractModelGenerationOptions must strictly match record.Provider against ProviderSpecific keys.
+	// Threat/regression: An OpenRouter model record containing Google provider-specific payload silently inherits Google settings.
+	// Boundary/authority: extractModelGenerationOptions in media_settings.go.
+	// Test layer: Unit test verifying absence of fallback to first provider key.
+
+	googlePayload := json.RawMessage(`{"google":{"video_generation":{"settings":{"resolution":{"status":"verified","default_value":"720p","supported_values":["720p"]}}}}}`)
+	openRouterRec := pebblestore.ModelCatalogRecord{
+		Provider:         "openrouter",
+		Model:            "google/veo-3.1",
+		ProviderSpecific: googlePayload,
+	}
+	opts := extractModelGenerationOptions(openRouterRec)
+	if opts != nil {
+		t.Fatalf("expected nil generation_options when provider 'openrouter' does not match payload key 'google', got %#v", opts)
+	}
+}

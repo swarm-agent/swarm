@@ -1018,3 +1018,290 @@ func TestDirectMediaTask_DeployProjectTaskExecution_MultiVideoDeliverables(t *te
 		}
 	}
 }
+
+func TestDirectVideoExecution_Preflight_RejectsMultipartStory(t *testing.T) {
+	// Requirement: Direct video execution must reject unsupported multipart stories and multi-scene sequences up front.
+	// Threat/regression: Direct video engine attempting to compile multi-scene sequences which it cannot assemble.
+	// Boundary/authority: validateProjectMediaTaskSettings and deployProjectTaskExecution in projects.go / projects_media.go.
+	// Test layer: API unit test checking rejection before video provider invocation.
+
+	server, _, p := setupDirectMediaTestServer(t)
+	task := pebblestore.ProjectTaskRecord{
+		ID:          "task-multipart-reject",
+		Agent:       "video",
+		OutcomeType: "video_story",
+		Scenes:      []pebblestore.ProjectTaskScene{{SceneIndex: 1}, {SceneIndex: 2}},
+	}
+	err := validateProjectMediaTaskSettings(server, &task)
+	if err == nil {
+		t.Fatalf("expected error on multipart video story")
+	}
+	if !strings.Contains(err.Error(), "multipart video stories are not supported") {
+		t.Fatalf("expected error mentioning multipart unsupported, got: %v", err)
+	}
+
+	deployErr := server.deployProjectTaskExecution(p, &pebblestore.ProjectRecord{ID: "proj-1", AccountID: p.AccountScopeID}, &task, "in_progress", "prompt")
+	if deployErr == nil {
+		t.Fatalf("expected deployProjectTaskExecution to reject multipart video story")
+	}
+}
+
+func TestDirectVideoExecution_Preflight_RejectsNonImageAttachment(t *testing.T) {
+	// Requirement: Video generation tasks must enforce images only for reference inputs and reject non-images (videos, text files, audio).
+	// Threat/regression: Users attaching text files or videos expecting the single-video generator to read them.
+	// Boundary/authority: validateProjectMediaTaskSettings in projects_media.go.
+	// Test layer: Direct execution boundary checking attachment validation.
+
+	server, _, _ := setupDirectMediaTestServer(t)
+
+	// 1. Text file attachment
+	taskTxt := pebblestore.ProjectTaskRecord{
+		ID:    "task-att-txt",
+		Agent: "video",
+		Model: "veo-3.1-generate-preview",
+		AttachedMedia: []pebblestore.ProjectTaskMediaRef{
+			{
+				ID:        "doc-1",
+				Kind:      "doc",
+				MediaType: "text/plain",
+				Filename:  "notes.txt",
+			},
+		},
+	}
+	errTxt := validateProjectMediaTaskSettings(server, &taskTxt)
+	if errTxt == nil {
+		t.Fatalf("expected error on text file attachment")
+	}
+	if !strings.Contains(errTxt.Error(), "only images are supported") {
+		t.Fatalf("expected error mentioning 'only images are supported', got: %v", errTxt)
+	}
+
+	// 2. Video file attachment
+	taskVid := pebblestore.ProjectTaskRecord{
+		ID:    "task-att-vid",
+		Agent: "video",
+		Model: "veo-3.1-generate-preview",
+		AttachedMedia: []pebblestore.ProjectTaskMediaRef{
+			{
+				ID:        "vid-1",
+				Kind:      "video",
+				MediaType: "video/mp4",
+				Filename:  "intro.mp4",
+			},
+		},
+	}
+	errVid := validateProjectMediaTaskSettings(server, &taskVid)
+	if errVid == nil {
+		t.Fatalf("expected error on video attachment for single video")
+	}
+	if !strings.Contains(errVid.Error(), "only images are supported") {
+		t.Fatalf("expected error mentioning 'only images are supported', got: %v", errVid)
+	}
+}
+
+func TestDirectVideoExecution_Preflight_RejectsMultipleAttachments(t *testing.T) {
+	// Requirement: Video generation tasks accept at most one initial image attachment (adapter capacity).
+	// Threat/regression: Passing multiple images causing provider errors or silently ignoring all but the first.
+	// Boundary/authority: validateProjectMediaTaskSettings in projects_media.go.
+	// Test layer: Validation test on attached media count.
+
+	server, _, _ := setupDirectMediaTestServer(t)
+	task := pebblestore.ProjectTaskRecord{
+		ID:    "task-att-multi",
+		Agent: "video",
+		Model: "veo-3.1-generate-preview",
+		AttachedMedia: []pebblestore.ProjectTaskMediaRef{
+			{ID: "img-1", Kind: "image", MediaType: "image/png", Filename: "first.png"},
+			{ID: "img-2", Kind: "image", MediaType: "image/png", Filename: "second.png"},
+		},
+	}
+	err := validateProjectMediaTaskSettings(server, &task)
+	if err == nil {
+		t.Fatalf("expected error when attaching more than 1 image")
+	}
+	if !strings.Contains(err.Error(), "at most one") {
+		t.Fatalf("expected error mentioning 'at most one', got: %v", err)
+	}
+}
+
+func TestDirectVideoExecution_Preflight_RejectsMalformedImage(t *testing.T) {
+	// Requirement: Attached images must be validated for valid image headers/bytes before generation begins.
+	// Threat/regression: Corrupted or garbage image payload passing validation and failing upstream with paid token spend.
+	// Boundary/authority: validateImageBytes in projects_media.go.
+	// Test layer: Direct validation test on malformed image data.
+
+	err := validateImageBytes([]byte("not an image at all just garbage bytes 12345"), "image/png")
+	if err == nil {
+		t.Fatalf("expected error for malformed image bytes")
+	}
+	if !strings.Contains(err.Error(), "malformed") {
+		t.Fatalf("expected error mentioning 'malformed', got: %v", err)
+	}
+}
+
+func TestDirectVideoExecution_SingleClipAllocatesOneDeliverable(t *testing.T) {
+	// Requirement: Selecting 1 clip must allocate exactly 1 deliverable, never 2 scenes or 4 clips.
+	// Threat/regression: Single video tasks calculating 4 clips or 2 scenes by default.
+	// Boundary/authority: Server.deployProjectTaskExecution in projects.go.
+	// Test layer: Hermetic Pebble persistence check on allocated deliverables.
+
+	server, ss, p := setupDirectMediaTestServer(t)
+	mockVideoSvc := &fakeTestVideoGenService{
+		shouldFail: true,
+		err:        errors.New("blocked"),
+	}
+	SetDirectVideoGenerationService(mockVideoSvc)
+	t.Cleanup(func() { SetDirectVideoGenerationService(nil) })
+
+	project := &pebblestore.ProjectRecord{
+		ID:        "proj-single-vid",
+		AccountID: p.AccountScopeID,
+		Name:      "Single Vid Project",
+	}
+	_ = ss.PutProject(p.AccountScopeID, project)
+
+	task := &pebblestore.ProjectTaskRecord{
+		ID:              "task-single-vid-1",
+		ProjectID:       project.ID,
+		AccountID:       p.AccountScopeID,
+		Title:           "Ocean Sunset Drone Shot",
+		Agent:           "video",
+		Model:           "veo-3.1-generate-preview",
+		DurationSeconds: 8,
+		Resolution:      "720p",
+		AspectRatio:     "16:9",
+		VariantCount:    1,
+	}
+
+	err := server.deployProjectTaskExecution(p, project, task, "in_progress", "A golden hour drone shot over breaking ocean waves")
+	if err != nil {
+		t.Fatalf("deployProjectTaskExecution failed: %v", err)
+	}
+
+	persisted, ok, err := ss.GetProjectTask(p.AccountScopeID, project.ID, task.ID)
+	if err != nil || !ok {
+		t.Fatalf("get persisted task failed: ok=%v, err=%v", ok, err)
+	}
+	if len(persisted.Deliverables) != 1 {
+		t.Fatalf("expected exactly 1 deliverable for 1 clip, got %d", len(persisted.Deliverables))
+	}
+	if persisted.Deliverables[0].Title != "Ocean Sunset Drone Shot (Single Video, 16:9)" {
+		t.Errorf("unexpected deliverable title: %q", persisted.Deliverables[0].Title)
+	}
+}
+
+func TestProjectTask_DirectVideo_FullPromptPreserved_NotTruncated(t *testing.T) {
+	// Requirement: Direct unenhanced video task creation must preserve the complete user prompt
+	// in task.Description rather than truncating it to a 60-character title.
+	// Threat/regression: Direct video execution losing prompt details downstream.
+	// Boundary/authority: Server.handleProjects in projects.go.
+	// Test layer: HTTP API endpoint test verifying task record fields in Pebble.
+
+	server, ss, p := setupDirectMediaTestServer(t)
+	project := &pebblestore.ProjectRecord{
+		ID:        "proj-prompt-test",
+		AccountID: p.AccountScopeID,
+		Name:      "Prompt Test",
+	}
+	_ = ss.PutProject(p.AccountScopeID, project)
+
+	longPrompt := "A sweeping cinematic drone shot flying over rugged snow-covered Nordic mountains during golden hour with dramatic pink and amber sunlight reflecting on icy glacier lakes below, 24fps smooth gimbal motion"
+
+	body := fmt.Sprintf(`{
+		"intent": "video",
+		"video_type": "single",
+		"prompt": %q,
+		"model": "veo-3.1-generate-preview",
+		"resolution": "720p",
+		"aspect_ratio": "16:9",
+		"duration_seconds": 8
+	}`, longPrompt)
+
+	req := httptest.NewRequest(http.MethodPost, "/v3/projects/"+project.ID+"/tasks", strings.NewReader(body))
+	req = req.WithContext(context.WithValue(req.Context(), productPrincipalRequestContextKey, p))
+	tokenRec := &pebblestore.ScopedTokenRecord{
+		AccountScopeID: p.AccountScopeID,
+		UserID:         p.UserID,
+		Scopes:         []string{"projects:write", "sessions:write"},
+	}
+	req = req.WithContext(context.WithValue(req.Context(), productScopedTokenRequestContextKey, tokenRec))
+	w := httptest.NewRecorder()
+
+	server.handleProjects(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201 Created, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var res map[string]pebblestore.ProjectTaskRecord
+	if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	task := res["task"]
+	if task.Description != longPrompt {
+		t.Fatalf("task.Description was truncated or corrupted: got %q, want %q", task.Description, longPrompt)
+	}
+	if task.Agent != "video" {
+		t.Fatalf("task.Agent = %q, want 'video'", task.Agent)
+	}
+	if task.OutcomeType != "video_clip" {
+		t.Fatalf("task.OutcomeType = %q, want 'video_clip'", task.OutcomeType)
+	}
+	if len(task.Deliverables) != 1 {
+		t.Fatalf("expected exactly 1 deliverable for 1 clip, got %d", len(task.Deliverables))
+	}
+}
+
+func TestProjectTask_DirectVideo_API_RejectsMultipartAndNonImages(t *testing.T) {
+	// Requirement: POST /v3/projects/{id}/tasks must reject multipart video stories,
+	// non-image attachments, and more than 1 attachment before Router spend or persistence.
+	// Threat/regression: Invalid video requests consuming Router tokens or persisting invalid task state.
+	// Boundary/authority: Server.handleProjects in projects.go.
+	// Test layer: HTTP API endpoint test verifying 400 Bad Request responses.
+
+	server, ss, p := setupDirectMediaTestServer(t)
+	project := &pebblestore.ProjectRecord{
+		ID:        "proj-preflight-test",
+		AccountID: p.AccountScopeID,
+		Name:      "Preflight Test",
+	}
+	_ = ss.PutProject(p.AccountScopeID, project)
+
+	tokenRec := &pebblestore.ScopedTokenRecord{
+		AccountScopeID: p.AccountScopeID,
+		UserID:         p.UserID,
+		Scopes:         []string{"projects:write", "sessions:write"},
+	}
+
+	call := func(body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/v3/projects/"+project.ID+"/tasks", strings.NewReader(body))
+		req = req.WithContext(context.WithValue(req.Context(), productPrincipalRequestContextKey, p))
+		req = req.WithContext(context.WithValue(req.Context(), productScopedTokenRequestContextKey, tokenRec))
+		w := httptest.NewRecorder()
+		server.handleProjects(w, req)
+		return w
+	}
+
+	// 1. Multipart video story rejected
+	w1 := call(`{"intent":"video","video_type":"multipart","prompt":"story","scenes_count":3}`)
+	if w1.Code != http.StatusBadRequest || !strings.Contains(w1.Body.String(), "multipart video stories are not supported") {
+		t.Fatalf("expected 400 for multipart video, got %d: %s", w1.Code, w1.Body.String())
+	}
+
+	// 2. Non-image attachment rejected
+	w2 := call(`{"intent":"video","video_type":"single","prompt":"clip","attached_media":[{"id":"doc1","kind":"doc","media_type":"text/plain","filename":"notes.txt"}]}`)
+	if w2.Code != http.StatusBadRequest || !strings.Contains(w2.Body.String(), "only images are supported") {
+		t.Fatalf("expected 400 for text file attachment, got %d: %s", w2.Code, w2.Body.String())
+	}
+
+	// 3. More than 1 attachment rejected
+	w3 := call(`{"intent":"video","video_type":"single","prompt":"clip","attached_media":[{"id":"img1","kind":"image"},{"id":"img2","kind":"image"}]}`)
+	if w3.Code != http.StatusBadRequest || !strings.Contains(w3.Body.String(), "at most one") {
+		t.Fatalf("expected 400 for multiple attachments, got %d: %s", w3.Code, w3.Body.String())
+	}
+
+	// 4. Clip count > 8 rejected
+	w4 := call(`{"intent":"video","video_type":"single","prompt":"clip","variant_count":10}`)
+	if w4.Code != http.StatusBadRequest || !strings.Contains(w4.Body.String(), "exceeds maximum allowed (8)") {
+		t.Fatalf("expected 400 for variant_count > 8, got %d: %s", w4.Code, w4.Body.String())
+	}
+}

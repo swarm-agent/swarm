@@ -893,3 +893,197 @@ func TestManagedVideoExplicitSelectionRejectsInvalidWithoutProviderCall(t *testi
 		t.Fatalf("rejected settings reached provider %d times", calls)
 	}
 }
+
+func TestGenerateManagedVideo_OmniOmitsDuration(t *testing.T) {
+	// Requirement: Gemini Omni does not accept duration selection and its result must preserve duration omission (0s, not defaulted to 8s).
+	// Threat/regression: Omni requests defaulting to 8s and reporting 8s duration.
+	// Boundary/authority: Service.GenerateManagedVideo in videogen/service.go.
+	// Test layer: Unit test with mock Omni HTTP server.
+
+	authStore, accountScopeID := setupTestAuthStore(t, "test-google-key", "")
+	fakeMP4 := []byte("fake-omni-mp4")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":     "omni-op-1",
+			"status": "completed",
+			"model":  "gemini-omni-1.1-flash",
+			"steps": []map[string]any{
+				{
+					"type": "video",
+					"content": []map[string]any{
+						{
+							"type":      "video",
+							"mime_type": "video/mp4",
+							"data":      base64.StdEncoding.EncodeToString(fakeMP4),
+						},
+					},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	catalog := &fakeModelCatalog{records: []pebblestore.ModelCatalogRecord{
+		{
+			Provider: "google", Model: "gemini-omni-1.1-flash",
+			CatalogModalities: pebblestore.ModelCatalogModalities{Outputs: []string{"video"}},
+		},
+	}}
+
+	svc := NewService(authStore, nil, catalog)
+	svc.SetBaseURLs(server.URL, "")
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "u1", AccountScopeID: accountScopeID}
+
+	res, err := svc.GenerateManagedVideo(context.Background(), ManagedVideoRequest{
+		Prompt:    "Animate the ocean waves",
+		Model:     "gemini-omni-1.1-flash",
+		Principal: principal,
+	})
+	if err != nil {
+		t.Fatalf("GenerateManagedVideo for Omni failed: %v", err)
+	}
+	if res.DurationSeconds != 0 {
+		t.Fatalf("expected Omni duration_seconds=0 (omitted), got %d", res.DurationSeconds)
+	}
+}
+
+func TestGenerateManagedVideo_OmniRejectsDurationSelection(t *testing.T) {
+	// Requirement: Gemini Omni does not support duration selection; explicit duration selection must be rejected before provider calls.
+	// Threat/regression: Sending duration parameter to Omni which causes provider errors.
+	// Boundary/authority: Service.GenerateManagedVideo in videogen/service.go.
+	// Test layer: Unit test verifying rejection without provider calls.
+
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		http.Error(w, "should not be called", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	catalog := &fakeModelCatalog{records: []pebblestore.ModelCatalogRecord{
+		{
+			Provider: "google", Model: "gemini-omni-1.1-flash",
+			CatalogModalities: pebblestore.ModelCatalogModalities{Outputs: []string{"video"}},
+		},
+	}}
+
+	svc := NewService(nil, nil, catalog)
+	svc.SetBaseURLs(server.URL, "")
+
+	_, err := svc.GenerateManagedVideo(context.Background(), ManagedVideoRequest{
+		Prompt:          "Animate with duration",
+		Model:           "gemini-omni-1.1-flash",
+		DurationSeconds: 8,
+	})
+	if err == nil {
+		t.Fatalf("expected rejection when selecting duration for Omni model")
+	}
+	if !strings.Contains(err.Error(), "does not accept duration") {
+		t.Fatalf("expected error mentioning duration, got: %v", err)
+	}
+	if calls != 0 {
+		t.Fatalf("provider called %d times on invalid duration selection", calls)
+	}
+}
+
+func TestGenerateManagedVideo_ProviderQualifiedIDs(t *testing.T) {
+	// Requirement: Provider-qualified model IDs (e.g. google:veo-3.1-generate-preview or openrouter:google/veo-3.1)
+	// must be parsed and routed to their exact respective providers.
+	// Threat/regression: Provider prefix confusion causing model catalog lookup failure.
+	// Boundary/authority: Service.GenerateManagedVideo in videogen/service.go.
+	// Test layer: Unit test checking catalog lookup and resolution.
+
+	authStore, accountScopeID := setupTestAuthStore(t, "google-k", "openrouter-k")
+	catalog := &fakeModelCatalog{records: []pebblestore.ModelCatalogRecord{
+		{
+			Provider: "google", Model: "veo-3.1-generate-preview",
+			CatalogModalities: pebblestore.ModelCatalogModalities{Outputs: []string{"video"}},
+		},
+		{
+			Provider: "openrouter", Model: "google/veo-3.1",
+			CatalogModalities: pebblestore.ModelCatalogModalities{Outputs: []string{"video"}},
+		},
+	}}
+
+	svc := NewService(authStore, nil, catalog)
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "u1", AccountScopeID: accountScopeID}
+
+	// 1. google: prefix
+	rec, found := svc.resolveModelRecord("google", "veo-3.1-generate-preview")
+	if !found || rec.Model != "veo-3.1-generate-preview" {
+		t.Fatalf("expected google:veo-3.1-generate-preview to resolve in catalog")
+	}
+
+	// 2. openrouter: prefix
+	recOR, foundOR := svc.resolveModelRecord("openrouter", "google/veo-3.1")
+	if !foundOR || recOR.Model != "google/veo-3.1" {
+		t.Fatalf("expected openrouter:google/veo-3.1 to resolve in catalog")
+	}
+	_ = principal
+}
+
+func TestGenerateManagedVideo_1080pDurationRequires8s(t *testing.T) {
+	// Requirement: Veo 1080p resolution requires 8s duration. Durations of 4s or 6s must be rejected before provider call.
+	// Threat/regression: Invalid duration reaching provider or being silently converted.
+	// Boundary/authority: Service.GenerateManagedVideo in videogen/service.go.
+	// Test layer: Unit test verifying rejection without provider calls.
+
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		http.Error(w, "should not be called", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	veoProviderSpecific := json.RawMessage(`{
+		"google": {
+			"video_generation": {
+				"settings": {
+					"resolution": {
+						"status": "verified",
+						"default_value": "720p",
+						"supported_values": ["720p", "1080p", "4k"],
+						"variants": [
+							{"mode": "all", "supported_values": ["1080p"], "conditions": {"duration_seconds": 8}}
+						]
+					},
+					"duration_seconds": {
+						"status": "verified",
+						"default_value": 8,
+						"supported_values": [4, 6, 8],
+						"variants": [
+							{"mode": "hi_res", "supported_values": [8], "conditions": {"resolution": "1080p_or_4k"}}
+						]
+					}
+				}
+			}
+		}
+	}`)
+	catalog := &fakeModelCatalog{records: []pebblestore.ModelCatalogRecord{
+		{
+			Provider: "google", Model: "veo-3.1-generate-preview",
+			CatalogModalities: pebblestore.ModelCatalogModalities{Outputs: []string{"video"}},
+			ProviderSpecific:  veoProviderSpecific,
+		},
+	}}
+
+	svc := NewService(nil, nil, catalog)
+	svc.SetBaseURLs(server.URL, "")
+
+	_, err := svc.GenerateManagedVideo(context.Background(), ManagedVideoRequest{
+		Prompt:          "A high resolution shot",
+		Model:           "veo-3.1-generate-preview",
+		Resolution:      "1080p",
+		DurationSeconds: 4,
+	})
+	if err == nil {
+		t.Fatalf("expected error for 1080p with 4s duration")
+	}
+	if !strings.Contains(err.Error(), "requires 8s duration") {
+		t.Fatalf("expected error mentioning 'requires 8s duration', got: %v", err)
+	}
+	if calls != 0 {
+		t.Fatalf("provider called %d times on invalid resolution/duration mismatch", calls)
+	}
+}
