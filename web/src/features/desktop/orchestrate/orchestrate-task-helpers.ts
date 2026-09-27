@@ -385,3 +385,28 @@ export function resolveOptimisticApprovedDeliverables(
     author: task.workerName || 'Orchestrator',
   }))
 }
+
+export function resolveTaskWorkspace(
+  override?: string,
+  project?: { repoPath?: string; workspaces?: Array<{ path?: string }>; linkedWorkspaces?: string[] } | null
+): string | undefined {
+  const chosen = override?.trim()
+  if (chosen && chosen !== '.') return chosen
+  if (project?.repoPath && project.repoPath.trim() !== '.') return project.repoPath.trim()
+  const firstWs = project?.workspaces?.find((w) => w?.path && w.path.trim() !== '.')?.path
+  if (firstWs) return firstWs.trim()
+  const firstLinked = project?.linkedWorkspaces?.find((w) => w && w.trim() !== '.')
+  if (firstLinked) return firstLinked.trim()
+  return undefined
+}
+
+export function buildTaskAcceptancePayload(
+  task: Pick<RunningTask, 'sessionId' | 'planBinding'> | { sessionId?: string; planBinding?: { plan_id?: string; definition_revision?: number; session_id?: string } } | null | undefined
+): { session_id?: string; plan_id?: string; definition_revision?: number } {
+  return {
+    session_id: task?.sessionId || task?.planBinding?.session_id || undefined,
+    plan_id: task?.planBinding?.plan_id || undefined,
+    definition_revision: task?.planBinding?.definition_revision,
+  }
+}
+
