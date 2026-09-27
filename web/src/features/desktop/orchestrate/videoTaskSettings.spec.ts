@@ -719,3 +719,35 @@ test('token video billing exposes catalog rate without inventing clip usage', ()
     assert.match(result.formattedSummary, /Pricing unavailable/)
   }
 })
+
+// Requirement: snapshot equivalent_cost metadata must be visible as an approximate
+// per-second price, never an exact invoice or an invented duration. Authority:
+// resolveVideoPricing; this pure unit layer proves matching and rejection rules.
+test('token video pricing displays snapshot equivalents and duration-based estimates', () => {
+  const billing = { kind: 'billing_rate', billable: 'video_output', unit: 'million_tokens', price_usd: 17.5, variant: '720p', conditions: { tier: 'paid', service_tier: 'standard' } }
+  const equivalent = { ...billing, kind: 'equivalent_cost', unit: 'second', price_usd: 0.1, conditions: { ...billing.conditions, output_tokens_per_second: 5792 } }
+  const option: TaskModalModelOption = { id: 'snapshot-equivalent-fixture', label: 'Video', ready: true, pricing: { currency: 'USD', billing: { status: 'verified', lines: [billing, equivalent] } } }
+  const result = resolveVideoPricing(option, '720p', 0, 2)
+  assert.match(result.formattedSummary, /≈\$0\.10\/second at 720p/)
+  assert.match(result.formattedSummary, /billed at \$17\.50\/1M output tokens/)
+  assert.equal(result.ratesByResolution['720p'], '≈$0.10/s')
+  assert.equal(result.totalPrice, undefined)
+  assert.equal(result.approximate, true)
+  assert.equal(result.ratePerSec, undefined)
+  assert.match(resolveVideoPricing(option, '', 0).formattedSummary, /≈\$0\.10\/second at 720p/)
+  const timed = resolveVideoPricing(option, '720p', 8, 2)
+  assert.equal(timed.totalPrice, 1.6)
+  assert.match(timed.formattedSummary, /≈\$1\.60/)
+  assert.match(resolveVideoPricing(option, '1080p', 0).formattedSummary, /Pricing unavailable/)
+  for (const equivalents of [
+    [equivalent, { ...equivalent, price_usd: 0.2 }],
+    [{ ...equivalent, conditions: { ...equivalent.conditions, region: 'unknown' } }],
+    [{ ...equivalent, conditions: { ...equivalent.conditions, output_tokens_per_second: -1 } }],
+    [{ ...equivalent, variant: '1080p' }],
+  ]) {
+    const rejected = resolveVideoPricing({ ...option, pricing: { billing: { status: 'verified', lines: [billing, ...equivalents] } } }, '720p', 8)
+    assert.equal(rejected.totalPrice, undefined)
+    assert.equal(rejected.approximate, false)
+    assert.doesNotMatch(rejected.formattedSummary, /≈/)
+  }
+})

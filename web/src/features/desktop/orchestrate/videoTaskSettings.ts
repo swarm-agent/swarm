@@ -102,6 +102,7 @@ export interface VideoPricingResult {
   ratePerSec?: number
   rateForClip?: number
   totalPrice?: number
+  approximate?: boolean
   fixedPrice?: number
   formattedSummary: string
   ratesByResolution: Record<string, string>
@@ -317,15 +318,16 @@ export function resolveVideoPricing(
     fixedPrice?: number
     rateForClip?: number
     perMillionTokens?: number
+    approximatePerSec?: number
   }
 
-  const matchCandidateForRes = (targetRes: string): MatchedCandidate | null | 'ambiguous' => {
+  const matchBillingCandidate = (targetRes: string, equivalent = false): MatchedCandidate | null | 'ambiguous' => {
     const normalizedTarget = normalizeVideoResKey(targetRes)
     const matches: MatchedCandidate[] = []
 
     for (const line of rawLines) {
       if (!line || typeof line !== 'object') continue
-      if (line.kind && line.kind !== 'billing_rate') continue
+      if (equivalent ? line.kind !== 'equivalent_cost' : (line.kind && line.kind !== 'billing_rate')) continue
       const billable = (line.billable || '').toLowerCase().trim()
       if (billable !== 'video_output' && billable !== 'video') continue
 
@@ -351,6 +353,9 @@ export function resolveVideoPricing(
 
       // Reject lines with unresolved unknown conditions (provider_sku, region, device, etc.)
       const knownCondKeys = new Set(['resolution', 'variant', 'sku', 'includes_audio', 'service_tier', 'tier', 'charged_only_on_success'])
+      if (equivalent) knownCondKeys.add('output_tokens_per_second')
+      if (equivalent && conds.output_tokens_per_second !== undefined &&
+          (typeof conds.output_tokens_per_second !== 'number' || !Number.isFinite(conds.output_tokens_per_second) || conds.output_tokens_per_second <= 0)) continue
       const hasUnknownCond = condKeys.some((k) => !knownCondKeys.has(k.toLowerCase()))
       if (hasUnknownCond) {
         continue
@@ -396,6 +401,10 @@ export function resolveVideoPricing(
       // Compute rate for clip based on unit.
       // Fixed-per-video prices can be known with omitted duration (per second cannot).
       const unit = (line.unit || '').toLowerCase().trim()
+      if (equivalent) {
+        if (unit === 'second' || unit === 'sec') matches.push({ approximatePerSec: effectivePrice })
+        continue
+      }
       let perSec: number | undefined
       let fixed: number | undefined
       let clipPrice = 0
@@ -441,16 +450,36 @@ export function resolveVideoPricing(
     // Check for ambiguity across multiple matching lines
     const first = matches[0]
     const allSame = matches.every((m) =>
-      m.perMillionTokens === first.perMillionTokens && m.rateForClip === first.rateForClip
+      m.perMillionTokens === first.perMillionTokens && m.rateForClip === first.rateForClip &&
+      m.approximatePerSec === first.approximatePerSec
     )
     if (allSame) return matches[0]
 
     return 'ambiguous'
   }
 
+  // An equivalent is display/estimate metadata, not a replacement billing rate.
+  // Only attach it to a matching, unambiguous token-metered output rate.
+  const matchCandidateForRes = (targetRes: string): MatchedCandidate | null | 'ambiguous' => {
+    const candidate = matchBillingCandidate(targetRes)
+    if (!candidate || candidate === 'ambiguous' || candidate.perMillionTokens === undefined) return candidate
+    const equivalent = matchBillingCandidate(targetRes, true)
+    return equivalent && equivalent !== 'ambiguous'
+      ? { ...candidate, approximatePerSec: equivalent.approximatePerSec }
+      : candidate
+  }
+
   // Model-level constraint validation
   const modelAllowedResolutions = resolveAllowedVideoResolutions(option.generationOptions)
-  const normalizedActiveRes = normalizeVideoResKey(resolution)
+  // Fixed-output models have no resolution selector. A single catalog billing
+  // resolution can still be quoted explicitly without inventing a request option.
+  const billingResolutions = new Set(rawLines
+    .filter((line) => line && (!line.kind || line.kind === 'billing_rate') &&
+      (line.billable === 'video_output' || line.billable === 'video'))
+    .map((line) => normalizeVideoResKey(line.conditions?.resolution || line.variant || line.conditions?.variant || ''))
+    .filter((value) => ['360p', '720p', '1080p', '4k'].includes(value)))
+  const normalizedActiveRes = normalizeVideoResKey(resolution) ||
+    (modelAllowedResolutions.length === 0 && billingResolutions.size === 1 ? [...billingResolutions][0] : '')
   if (modelAllowedResolutions.length > 0 && !modelAllowedResolutions.map(normalizeVideoResKey).includes(normalizedActiveRes)) {
     return {
       ratePerSec: undefined,
@@ -504,7 +533,9 @@ export function resolveVideoPricing(
     const resCandidate = matchCandidateForRes(r)
     if (resCandidate && resCandidate !== 'ambiguous') {
       if (resCandidate.perMillionTokens !== undefined) {
-        ratesByRes[r] = `$${resCandidate.perMillionTokens.toFixed(2)}/1M output tokens`
+        ratesByRes[r] = resCandidate.approximatePerSec !== undefined
+          ? `≈$${resCandidate.approximatePerSec.toFixed(2)}/s`
+          : `$${resCandidate.perMillionTokens.toFixed(2)}/1M output tokens`
         continue
       }
       const clipPrice = resCandidate.rateForClip
@@ -542,8 +573,20 @@ export function resolveVideoPricing(
   }
 
   if (activeCandidate.perMillionTokens !== undefined) {
+    const equivalent = activeCandidate.approximatePerSec
+    const hasDuration = durationSeconds > 0 && Number.isFinite(durationSeconds)
+    const estimatedClip = equivalent !== undefined && hasDuration ? equivalent * durationSeconds : undefined
+    const estimatedTotal = estimatedClip !== undefined ? estimatedClip * count : undefined
+    if (estimatedTotal !== undefined) totalsByRes[normalizedActiveRes] = estimatedTotal
+    const tokenRate = `$${activeCandidate.perMillionTokens.toFixed(2)}/1M output tokens`
+    const formattedSummary = equivalent !== undefined
+      ? `Video output: ≈$${equivalent.toFixed(2)}/second at ${normalizedActiveRes}${estimatedTotal !== undefined ? ` · ≈$${estimatedTotal.toFixed(2)} for ${count} × ${durationSeconds}s clip${count === 1 ? '' : 's'}` : ' · Cost depends on generated duration'} · Snapshot estimate; billed at ${tokenRate}; input charges additional`
+      : `Video output: $${activeCandidate.perMillionTokens.toFixed(2)}/1M tokens · Clip total unknown until output usage is known; input charges additional`
     return {
-      formattedSummary: `Video output: $${activeCandidate.perMillionTokens.toFixed(2)}/1M tokens · Clip total unknown until output usage is known; input charges additional`,
+      approximate: equivalent !== undefined,
+      rateForClip: estimatedClip,
+      totalPrice: estimatedTotal,
+      formattedSummary,
       ratesByResolution: ratesByRes,
       unitRatesByResolution: unitRatesByRes,
       totalsByResolution: totalsByRes,
