@@ -4,6 +4,9 @@ const COMPILED_SYSTEM_AGENT_LABELS: Readonly<Record<string, string>> = {
   'system-coder': 'Coder',
   'system-designer': 'Designer',
   'system-router': 'Router',
+  'system-orchestrator': 'Plan / Orchestrator',
+  'swarm-orchestrator': 'Plan / Orchestrator',
+  orchestrator: 'Plan / Orchestrator',
   'system-clone': 'Coder', // Historical durable sessions only; new launches use system-coder.
   coder: 'Coder',
   swarm: 'Swarm',

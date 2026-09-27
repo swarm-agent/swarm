@@ -12,6 +12,6 @@ test('thinking options remain catalog driven for direct model editors', () => {
   assert.match(source, /const thinkingOptions = thinkingOptionsForOption\(selectedOption\)/)
   assert.match(source, /thinking: normalizeDraftThinking\(current\.provider, model, modelOptions, current\.thinking\)/)
   assert.match(source, /title="Default Model"/)
-  assert.match(source, /title="Plan Model"/)
+  assert.match(source, /title="Plan \/ Orchestrator Model"/)
   assert.doesNotMatch(source, /ThinkingSlider|Plan agent model|Action agent model|autoDraft/)
 })

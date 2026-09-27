@@ -107,13 +107,11 @@ test('worktree isolation has no routed composer toggle or command', async () => 
   assert.doesNotMatch(source, /worktreePrimed|enable-new-session-worktree|onRoutedWorktreeRequestedChange|worktreeCommandWarning/)
 })
 
-test('routed new-chat composer exposes Plan as its only execution-mode choice with a waiting model bar', async () => {
+test('routed new-chat composer removes plan mode toggle with a waiting model bar', async () => {
   const source = await readFile(composerURL, 'utf8')
 
   assert.match(source, /routedNewSession\?: boolean/)
-  assert.match(source, /routedNewSession && showModePicker/)
-  assert.match(source, /<DesktopComposerPlanToggle[\s\S]*active=\{mode === 'plan'\}[\s\S]*onActiveChange=\{\(active\) => onModeSelect\?\.\(active \? 'plan' : 'auto'\)\}[\s\S]*allowDisable/)
-  assert.match(source, /resolvedSessionControls && showModePicker && mode === 'plan'[\s\S]*<DesktopComposerPlanToggle active readOnly/)
+  assert.doesNotMatch(source, /<DesktopComposerPlanToggle/)
   assert.match(source, /onAttach=\{routedNewSession \? \(onRoutedStageAttachments/)
   assert.doesNotMatch(source, /DesktopRoutedWorktreePrime|routedWorktreeRequested/)
   assert.match(source, /statusLabel=\{modelStatusLabel\}/)

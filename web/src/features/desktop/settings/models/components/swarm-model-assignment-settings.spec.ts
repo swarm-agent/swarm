@@ -29,7 +29,7 @@ test('direct selections are normalized independently', () => {
 test('component exposes direct Action and Plan editors without favorite assignment controls', () => {
   assert.match(source, /onSave: \(input: SwarmModelAssignmentSaveInput\) => void/)
   assert.match(source, /label="Action model"/)
-  assert.match(source, /label="Plan model"/)
+  assert.match(source, /label="Plan \/ Orchestrator model"/)
   assert.match(source, /do not create or assign model favorites/)
   assert.doesNotMatch(source, /actionFavoriteId|planFavoriteId|planEnabled|Choose an Action favorite|Enable Plan assignment/)
   assert.doesNotMatch(source, /requestJson|useQuery|useMutation/)

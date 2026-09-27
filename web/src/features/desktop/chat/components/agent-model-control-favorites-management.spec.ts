@@ -14,7 +14,7 @@ test('agent setup modal includes dedicated Favorites section in navigation sideb
 test('star button to create favorite is removed from Default Model draft card header', () => {
   assert.doesNotMatch(source, /aria-label="Save Default Model as favorite"/)
   assert.match(source, /title="Default Model"/)
-  assert.match(source, /title="Plan Model"/)
+  assert.match(source, /title="Plan \/ Orchestrator Model"/)
 })
 
 test('favorites management view provides offer banner when default model is not already saved', () => {

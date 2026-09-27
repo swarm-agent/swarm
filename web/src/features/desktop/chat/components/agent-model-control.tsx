@@ -544,7 +544,7 @@ export function AgentModelControl({
   async function restoreModelDefaults() {
     const settings = agentModelSettingsQuery.data
     if (!settings || saving || busy) return
-    if (!window.confirm('Restore current recommendations for Action, Plan and all system agents? Providers are kept. Model, thinking, service tier and context overrides are reset. Credentials, favorites and existing sessions are unchanged.')) return
+    if (!window.confirm('Restore current recommendations for Action, Plan / Orchestrator and all system agents? Providers are kept. Model, thinking, service tier and context overrides are reset. Credentials, favorites and existing sessions are unchanged.')) return
     setSaving(true)
     setError(null)
     try {
@@ -558,7 +558,7 @@ export function AgentModelControl({
 
   async function saveSwarmModels() {
     const action = validateDraft('Swarm Action', actionDraft)
-    const plan = validateDraft('Swarm Plan', planDraft)
+    const plan = validateDraft('Swarm Plan / Orchestrator', planDraft)
     const saved = await saveSwarmAgentModelSettings({
       action: { provider: action.provider, model: action.model, thinking: action.thinking, serviceTier: action.serviceTier, contextMode: action.contextMode },
       plan: { provider: plan.provider, model: plan.model, thinking: plan.thinking, serviceTier: plan.serviceTier, contextMode: plan.contextMode },
@@ -602,15 +602,22 @@ export function AgentModelControl({
     setSwitchingFavoriteId(profile.profileId)
     setError(null)
     try {
+      const isOrchestrator = selectedPrimaryAgent === 'system-orchestrator' || currentAgent === 'system-orchestrator'
       const saved = await saveSwarmAgentModelSettings({
-        action: {
+        action: isOrchestrator ? settings.swarm.action : {
           provider: profile.provider,
           model: profile.model,
           thinking: profile.thinking,
           serviceTier: profile.serviceTier,
           contextMode: profile.contextMode,
         },
-        plan: settings.swarm.plan,
+        plan: isOrchestrator ? {
+          provider: profile.provider,
+          model: profile.model,
+          thinking: profile.thinking,
+          serviceTier: profile.serviceTier,
+          contextMode: profile.contextMode,
+        } : settings.swarm.plan,
       })
       queryClient.setQueryData<AgentModelSettings>(agentModelSettingsQueryKey, saved)
       await onApplyModelFavorite?.(profile)
@@ -1437,7 +1444,7 @@ export function AgentModelControl({
               draftAgentName === SWARM_AGENT_NAME ? (
                 <div className="grid gap-4">
                   <ModelDraftEditor title="Default Model" draft={actionDraft} providers={providers} modelOptions={modelOptions} onProviderChange={(provider) => updateProvider(setActionDraft, provider)} onModelChange={(model) => updateModel(setActionDraft, model)} onThinkingChange={(thinking) => setActionDraft((current) => ({ ...current, thinking }))} onServiceTierChange={(serviceTier) => setActionDraft((current) => ({ ...current, serviceTier }))} showServiceTier />
-                  <ModelDraftEditor title="Plan Model" draft={planDraft} providers={providers} modelOptions={modelOptions} onProviderChange={(provider) => updateProvider(setPlanDraft, provider)} onModelChange={(model) => updateModel(setPlanDraft, model)} onThinkingChange={(thinking) => setPlanDraft((current) => ({ ...current, thinking }))} onServiceTierChange={(serviceTier) => setPlanDraft((current) => ({ ...current, serviceTier }))} showServiceTier />
+                  <ModelDraftEditor title="Plan / Orchestrator Model" draft={planDraft} providers={providers} modelOptions={modelOptions} onProviderChange={(provider) => updateProvider(setPlanDraft, provider)} onModelChange={(model) => updateModel(setPlanDraft, model)} onThinkingChange={(thinking) => setPlanDraft((current) => ({ ...current, thinking }))} onServiceTierChange={(serviceTier) => setPlanDraft((current) => ({ ...current, serviceTier }))} showServiceTier />
                 </div>
               ) : (
                 <>

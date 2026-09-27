@@ -908,6 +908,13 @@ func (s *Server) handleSessionsV3PrimaryCreate(w http.ResponseWriter, r *http.Re
 	if err == nil && req.ModelProfile == nil && (strings.EqualFold(strings.TrimSpace(resolvedAgent.Profile.Name), agentruntime.SwarmAgentID) || strings.EqualFold(strings.TrimSpace(resolvedAgent.Profile.Name), agentruntime.SwarmOrchestratorAgentID)) {
 		modelProfileSnapshot, err = s.sessionModelProfileSnapshotFromAccountDefault(identity.ContextWithPrincipal(r.Context(), principal), now)
 	}
+	if err == nil && req.ModelProfile != nil && strings.EqualFold(strings.TrimSpace(resolvedAgent.Profile.Name), agentruntime.SwarmOrchestratorAgentID) {
+		if modelProfileSnapshot != nil && modelProfileSnapshot.Plan == nil {
+			modelProfileSnapshot.Plan = pebblestore.CloneModelProfileSelection(&modelProfileSnapshot.Action)
+			modelProfileSnapshot.PlanFavoriteID = modelProfileSnapshot.ActionFavoriteID
+			modelProfileSnapshot.PlanFavoriteName = modelProfileSnapshot.ActionFavoriteName
+		}
+	}
 	if err != nil {
 		writeModelProfileError(w, err)
 		return

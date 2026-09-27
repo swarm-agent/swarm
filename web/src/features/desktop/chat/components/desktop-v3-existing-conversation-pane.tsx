@@ -2003,8 +2003,11 @@ export function DesktopV3ExistingConversationPane({
   );
   const cachedPolicyMatchesSelectedMode = mode === settingsBaseline.mode;
   const sessionActiveModelProfile = useMemo(() => activeModelProfileFromMetadata(sessionMetadata), [sessionMetadata]);
+  const isOrchestratorAgent = selectedAgent.trim().toLowerCase() === 'system-orchestrator' || selectedAgent.trim().toLowerCase() === 'swarm-orchestrator' || selectedAgent.trim().toLowerCase() === 'orchestrator';
   const composerActiveModelProfile = selectedAgent.trim().toLowerCase() === 'swarm'
     ? { source: 'agent-default' as const, profileId: '', name: 'Swarm model' }
+    : isOrchestratorAgent && !sessionActiveModelProfile.source
+    ? { source: 'agent-default' as const, profileId: '', name: 'Plan / Orchestrator model' }
     : sessionActiveModelProfile;
   const sessionProfilePreference = useMemo(
     () => preferenceFromModelProfileMetadata(sessionMetadata, mode),

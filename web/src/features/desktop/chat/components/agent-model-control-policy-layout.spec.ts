@@ -16,7 +16,7 @@ test('agent setup keeps direct assignments behind the favorites launcher', () =>
   assert.match(source, /> Agent Setup/)
   assert.match(source, /aria-label=\{`Actions for \$\{profile\.name\}`\}/)
   assert.match(source, /title="Default Model"/)
-  assert.match(source, /title="Plan Model"/)
+  assert.match(source, /title="Plan \/ Orchestrator Model"/)
   assert.match(source, /Configure this system agent’s model directly/)
   assert.match(source, /label="Provider"[\s\S]*label="Model"[\s\S]*label="Thinking"[\s\S]*label="Service tier"/)
   assert.doesNotMatch(source, /Make account default|Continue for this chat only|Save as new/)

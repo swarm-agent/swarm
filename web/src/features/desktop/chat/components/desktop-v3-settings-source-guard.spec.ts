@@ -18,7 +18,7 @@ test('Desktop V3 chat switches agents canonically and keeps mode separate', asyn
   assert.match(composerSource, /<ModePicker mode=\{mode\}[\s\S]*<AgentPicker/)
   assert.doesNotMatch(pickerSource, /onModeSelect|Session mode for/)
   assert.match(settingsSource, /title="Default Model"/)
-  assert.match(settingsSource, /title="Plan Model"/)
+  assert.match(settingsSource, /title="Plan \/ Orchestrator Model"/)
   assert.match(settingsSource, /System agents/)
   assert.doesNotMatch(settingsSource, /Saved profiles|Profile settings/)
 })
