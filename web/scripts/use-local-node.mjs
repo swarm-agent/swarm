@@ -15,7 +15,7 @@ if (!script) {
   process.exit(2)
 }
 if (!existsSync(localNode)) {
-  console.error(`missing local Node runtime at ${localNode}; run pnpm install from ${webRoot}`)
+  console.error(`missing local Node runtime at ${localNode}; from ${webRoot}, run pnpm install, then pnpm rebuild node if the runtime is still missing (for example, after an install with scripts disabled)`)
   process.exit(1)
 }
 
