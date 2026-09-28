@@ -1062,6 +1062,7 @@ export interface WorkerRevisionRecord {
 }
 
 export interface WorkerRunRecord {
+  cancel_requested?: boolean;
   id: string;
   account_scope_id: string;
   worker_id: string;
@@ -1185,6 +1186,8 @@ export interface ImportWorkerOptions {
 }
 
 export interface ActivateWorkerParams {
+  /** Set false to approve local bindings for an idle test without enabling schedules. */
+  activate?: boolean;
   worker_id: string;
   expected_revision: number;
   local_bindings: Record<string, string>;

@@ -128,6 +128,7 @@ type WorkerRevisionRecord struct {
 }
 
 type WorkerRunRecord struct {
+	CancelRequested    bool                           `json:"cancel_requested,omitempty"`
 	UserID             string                         `json:"user_id,omitempty"`
 	ID                 string                         `json:"id"`
 	AccountScopeID     string                         `json:"account_scope_id"`
@@ -2206,7 +2207,13 @@ func (ws *WorkerStore) RecordWorkerRun(account string, run WorkerRunRecord) (Wor
 	run.AccountScopeID = account
 
 	ws.store.workersMu.Lock()
-	defer ws.store.workersMu.Unlock()
+	var published *workerRealtimeMutation
+	defer func() {
+		ws.store.workersMu.Unlock()
+		if published != nil {
+			ws.store.publishWorkerRealtime(published)
+		}
+	}()
 
 	w, ok, err := ws.GetWorker(account, workerID)
 	if err != nil {
@@ -2312,6 +2319,8 @@ func (ws *WorkerStore) RecordWorkerRun(account string, run WorkerRunRecord) (Wor
 		if !bytes.Equal(oldInput, newInput) {
 			return WorkerRunRecord{}, fmt.Errorf("%w: accepted input is immutable", ErrWorkerConflict)
 		}
+		// Cancellation closes this occurrence permanently, including later checkpoints.
+		run.CancelRequested = run.CancelRequested || existingRun.CancelRequested
 		run.CreatedAt = existingRun.CreatedAt
 	} else {
 		if run.RequestSource == "" {
@@ -2342,28 +2351,22 @@ func (ws *WorkerStore) RecordWorkerRun(account string, run WorkerRunRecord) (Wor
 		run.Deliverables = []SessionPlanArtifactReference{}
 	}
 
-	batch := ws.store.NewBatch()
-	defer batch.Close()
-
-	payload, err := json.Marshal(run)
-	if err != nil {
+	m := &workerRealtimeMutation{accountScopeID: account, userID: run.UserID, workerID: workerID}
+	if err := m.put(KeyWorkerRun(account, workerID, run.ID), run); err != nil {
 		return WorkerRunRecord{}, err
 	}
-	if err := batch.Set([]byte(KeyWorkerRun(account, workerID, run.ID)), payload, nil); err != nil {
-		return WorkerRunRecord{}, err
-	}
-	if strings.TrimSpace(run.OccurrenceID) != "" {
-		occPayload, err := json.Marshal(workerID + ":" + run.ID)
-		if err != nil {
-			return WorkerRunRecord{}, err
-		}
-		if err := batch.Set([]byte(KeyWorkerRunByOccurrence(account, run.OccurrenceID)), occPayload, nil); err != nil {
+	if run.OccurrenceID != "" {
+		if err := m.put(KeyWorkerRunByOccurrence(account, run.OccurrenceID), workerID+":"+run.ID); err != nil {
 			return WorkerRunRecord{}, err
 		}
 	}
-	if err := batch.Commit(pebble.Sync); err != nil {
+	if err := m.setPayload(WorkerRealtimePayload{WorkerID: workerID, Revision: w.Revision, LifecycleState: w.LifecycleState, ChangeSummary: "run " + run.Status}); err != nil {
 		return WorkerRunRecord{}, err
 	}
+	if err := ws.store.commitWorkerRealtime(m); err != nil {
+		return WorkerRunRecord{}, err
+	}
+	published = m
 	return run, nil
 }
 

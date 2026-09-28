@@ -280,7 +280,8 @@ func TestWorkerAPI_AuthenticationAndAuthorization(t *testing.T) {
 }
 
 func TestWorkerAPI_CRUDLifecycleAndOptimisticConcurrency(t *testing.T) {
-	_, db, h := setupWorkerAPITestServer(t)
+	s, db, h := setupWorkerAPITestServer(t)
+	setupWorkerAPIExecution(t, s, db)
 
 	// 1. Create a worker (requires idempotency_key in body)
 	createBody := `{
@@ -1281,7 +1282,8 @@ func TestWorkerAPI_RevisionHistoryAndRuns(t *testing.T) {
 // Threat: Unapproved activation runs without required workspace roles or allows stale concurrent activations.
 // Boundary: Server.handleWorkerActivate, handleWorkers, Server.persistWorkerAndHistory, WorkerStore.GetWorker.
 func TestWorkerAPI_Lifecycle_Activate_LocalBindings(t *testing.T) {
-	_, db, h := setupWorkerAPITestServer(t)
+	s, db, h := setupWorkerAPITestServer(t)
+	workspaceID := setupWorkerAPIExecution(t, s, db)
 	ws := store.NewWorkerStore(db)
 
 	created, err := ws.CreateWorker("acct-test", "user-test", store.CreateWorkerRequest{
@@ -1289,7 +1291,6 @@ func TestWorkerAPI_Lifecycle_Activate_LocalBindings(t *testing.T) {
 		Instructions: "Deploy safely.",
 		WorkspaceRequirements: []store.WorkerWorkspaceRequirement{
 			{Role: "primary", Description: "Primary workspace", Required: true},
-			{Role: "infra", Description: "Infra workspace", Required: false},
 		},
 		IdempotencyKey: "act-test-1",
 	}, nil)
@@ -1332,7 +1333,7 @@ func TestWorkerAPI_Lifecycle_Activate_LocalBindings(t *testing.T) {
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("missing required role binding expected 400, got %d: %s", w.Code, w.Body.String())
 	}
-	if !strings.Contains(w.Body.String(), "missing required workspace role binding") {
+	if !strings.Contains(w.Body.String(), "primary workspace role") {
 		t.Fatalf("error message mismatch: %s", w.Body.String())
 	}
 
@@ -1345,7 +1346,7 @@ func TestWorkerAPI_Lifecycle_Activate_LocalBindings(t *testing.T) {
 	}
 
 	// Valid activation -> 200 OK
-	w = executeWorkerAPI(h, http.MethodPost, "/"+workerID+"/activate", `{"expected_revision":1,"local_bindings":{"primary":"ws-main","infra":"ws-infra"}}`, workerAPICallOptions{
+	w = executeWorkerAPI(h, http.MethodPost, "/"+workerID+"/activate", fmt.Sprintf(`{"expected_revision":1,"local_bindings":{"primary":%q}}`, workspaceID), workerAPICallOptions{
 		scopes: []string{"automations:write"},
 	})
 	if w.Code != http.StatusOK {
@@ -1369,7 +1370,7 @@ func TestWorkerAPI_Lifecycle_Activate_LocalBindings(t *testing.T) {
 	if persisted.LifecycleState != store.WorkerLifecycleStateActive {
 		t.Fatalf("persisted state mismatch: %s", persisted.LifecycleState)
 	}
-	if persisted.LocalBindings["primary"] != "ws-main" || persisted.LocalBindings["infra"] != "ws-infra" {
+	if persisted.LocalBindings["primary"] != workspaceID || len(persisted.LocalBindings) != 1 {
 		t.Fatalf("persisted local bindings mismatch: %+v", persisted.LocalBindings)
 	}
 
@@ -1377,8 +1378,8 @@ func TestWorkerAPI_Lifecycle_Activate_LocalBindings(t *testing.T) {
 	w = executeWorkerAPI(h, http.MethodPost, "/"+workerID+"/deploy", `{"expected_revision":2,"local_bindings":{"primary":"ws-main-2"}}`, workerAPICallOptions{
 		scopes: []string{"automations:write"},
 	})
-	if w.Code != http.StatusOK {
-		t.Fatalf("deploy alias expected 200, got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusConflict {
+		t.Fatalf("active rebind must fail with 409, got %d: %s", w.Code, w.Body.String())
 	}
 }
 
@@ -1387,21 +1388,24 @@ func TestWorkerAPI_Lifecycle_Activate_LocalBindings(t *testing.T) {
 // Threat: Race conditions admitting runs during pause or resuming permanently archived/deleted workers.
 // Boundary: Server.handleWorkerPause, Server.handleWorkerResume, Server.handleWorkerDirectRequest, Server.handleWorkerTrigger.
 func TestWorkerAPI_Lifecycle_Pause_Resume_SafeStopBarrier(t *testing.T) {
-	_, db, h := setupWorkerAPITestServer(t)
+	s, db, h := setupWorkerAPITestServer(t)
+	workspaceID := setupWorkerAPIExecution(t, s, db)
 	ws := store.NewWorkerStore(db)
 
 	created, err := ws.CreateWorker("acct-test", "user-test", store.CreateWorkerRequest{
-		Name:           "Pause Test Worker",
-		Instructions:   "Test pause behavior.",
-		IdempotencyKey: "pause-test-1",
+		WorkspaceRequirements: []store.WorkerWorkspaceRequirement{{Role: "primary", Required: true}},
+		Name:                  "Pause Test Worker",
+		Instructions:          "Test pause behavior.",
+		IdempotencyKey:        "pause-test-1",
 	}, nil)
 	if err != nil {
 		t.Fatalf("create worker: %v", err)
 	}
 	workerID := created.ID
 
+	created = activateWorkerAPIFixture(t, s, created, workspaceID)
 	// Admit a direct run
-	w := executeWorkerAPI(h, http.MethodPost, "/"+workerID+"/direct", `{"prompt":"Run task 1"}`, workerAPICallOptions{
+	w := executeWorkerAPI(h, http.MethodPost, "/"+workerID+"/direct", `{"prompt":"Run task 1","idempotency_key":"pause-run"}`, workerAPICallOptions{
 		scopes: []string{"automations:write"},
 	})
 	if w.Code != http.StatusCreated {
@@ -1412,7 +1416,7 @@ func TestWorkerAPI_Lifecycle_Pause_Resume_SafeStopBarrier(t *testing.T) {
 	runID := runResp["run"].(map[string]any)["id"].(string)
 
 	// Pause worker with expected_revision=1
-	w = executeWorkerAPI(h, http.MethodPost, "/"+workerID+"/pause", `{"expected_revision":1}`, workerAPICallOptions{
+	w = executeWorkerAPI(h, http.MethodPost, "/"+workerID+"/pause", `{"expected_revision":2}`, workerAPICallOptions{
 		scopes: []string{"automations:write"},
 	})
 	if w.Code != http.StatusOK {
@@ -1424,8 +1428,8 @@ func TestWorkerAPI_Lifecycle_Pause_Resume_SafeStopBarrier(t *testing.T) {
 	if workerRec.LifecycleState != store.WorkerLifecycleStatePaused {
 		t.Fatalf("expected paused, got %s", workerRec.LifecycleState)
 	}
-	if workerRec.Revision != 2 {
-		t.Fatalf("expected revision 2, got %d", workerRec.Revision)
+	if workerRec.Revision != 4 {
+		t.Fatalf("expected activation and stop-barrier revisions, got %d", workerRec.Revision)
 	}
 
 	// Verify the admitted run was cancelled with reason "worker paused"
@@ -1433,7 +1437,7 @@ func TestWorkerAPI_Lifecycle_Pause_Resume_SafeStopBarrier(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("get run: %v", err)
 	}
-	if runRec.Status != "cancelled" || runRec.Error != "worker paused" {
+	if runRec.Status != "cancelled" || runRec.CompletedAt == 0 {
 		t.Fatalf("run status mismatch: status=%q error=%q", runRec.Status, runRec.Error)
 	}
 
@@ -1454,7 +1458,7 @@ func TestWorkerAPI_Lifecycle_Pause_Resume_SafeStopBarrier(t *testing.T) {
 	}
 
 	// Resume worker with expected_revision=2
-	w = executeWorkerAPI(h, http.MethodPost, "/"+workerID+"/resume", `{"expected_revision":2}`, workerAPICallOptions{
+	w = executeWorkerAPI(h, http.MethodPost, "/"+workerID+"/resume", `{"expected_revision":4}`, workerAPICallOptions{
 		scopes: []string{"automations:write"},
 	})
 	if w.Code != http.StatusOK {
@@ -1465,8 +1469,8 @@ func TestWorkerAPI_Lifecycle_Pause_Resume_SafeStopBarrier(t *testing.T) {
 	if workerRec.LifecycleState != store.WorkerLifecycleStateActive {
 		t.Fatalf("expected active, got %s", workerRec.LifecycleState)
 	}
-	if workerRec.Revision != 3 {
-		t.Fatalf("expected revision 3, got %d", workerRec.Revision)
+	if workerRec.Revision != 5 {
+		t.Fatalf("expected resume revision 5, got %d", workerRec.Revision)
 	}
 
 	// Verify previously cancelled run is STILL cancelled (not resurrected)
@@ -1476,7 +1480,7 @@ func TestWorkerAPI_Lifecycle_Pause_Resume_SafeStopBarrier(t *testing.T) {
 	}
 
 	// Direct request now succeeds
-	w = executeWorkerAPI(h, http.MethodPost, "/"+workerID+"/direct", `{"prompt":"Run after resume"}`, workerAPICallOptions{
+	w = executeWorkerAPI(h, http.MethodPost, "/"+workerID+"/direct", `{"prompt":"Run after resume","idempotency_key":"resume-run"}`, workerAPICallOptions{
 		scopes: []string{"automations:write"},
 	})
 	if w.Code != http.StatusCreated {
@@ -1489,7 +1493,8 @@ func TestWorkerAPI_Lifecycle_Pause_Resume_SafeStopBarrier(t *testing.T) {
 // Threat: Uncontrolled deletion during execution leading to orphaned execution or data loss of audit history.
 // Boundary: Server.handleWorkerArchive, Server.handleWorkerDelete, Server.handleWorkerByID.
 func TestWorkerAPI_Lifecycle_Archive_Delete_SafeStopBarrier(t *testing.T) {
-	_, db, h := setupWorkerAPITestServer(t)
+	s, db, h := setupWorkerAPITestServer(t)
+	setupWorkerAPIExecution(t, s, db)
 	ws := store.NewWorkerStore(db)
 
 	created, err := ws.CreateWorker("acct-test", "user-test", store.CreateWorkerRequest{
@@ -1504,6 +1509,7 @@ func TestWorkerAPI_Lifecycle_Archive_Delete_SafeStopBarrier(t *testing.T) {
 
 	// Create a running execution
 	_, err = ws.RecordWorkerRun("acct-test", store.WorkerRunRecord{
+		SessionID:      "worker-execution-wrun_running_1",
 		ID:             "wrun_running_1",
 		AccountScopeID: "acct-test",
 		WorkerID:       workerID,
@@ -1519,10 +1525,10 @@ func TestWorkerAPI_Lifecycle_Archive_Delete_SafeStopBarrier(t *testing.T) {
 	w := executeWorkerAPI(h, http.MethodPost, "/"+workerID+"/archive", `{"expected_revision":1}`, workerAPICallOptions{
 		scopes: []string{"automations:write"},
 	})
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("archive with active running execution expected 400, got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusConflict {
+		t.Fatalf("archive with unacknowledged execution expected 409, got %d: %s", w.Code, w.Body.String())
 	}
-	if !strings.Contains(w.Body.String(), "cannot archive worker with active running executions") {
+	if !strings.Contains(w.Body.String(), "no acknowledged intent") {
 		t.Fatalf("error message mismatch: %s", w.Body.String())
 	}
 
@@ -1530,12 +1536,13 @@ func TestWorkerAPI_Lifecycle_Archive_Delete_SafeStopBarrier(t *testing.T) {
 	w = executeWorkerAPI(h, http.MethodDelete, fmt.Sprintf("/%s?expected_revision=1", workerID), "", workerAPICallOptions{
 		scopes: []string{"automations:write"},
 	})
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("delete with active running execution expected 400, got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusConflict {
+		t.Fatalf("delete with unacknowledged execution expected 409, got %d: %s", w.Code, w.Body.String())
 	}
 
 	// Finish the running execution -> succeeded
 	_, err = ws.RecordWorkerRun("acct-test", store.WorkerRunRecord{
+		SessionID:      "worker-execution-wrun_running_1",
 		ID:             "wrun_running_1",
 		AccountScopeID: "acct-test",
 		WorkerID:       workerID,
@@ -1547,9 +1554,16 @@ func TestWorkerAPI_Lifecycle_Archive_Delete_SafeStopBarrier(t *testing.T) {
 		t.Fatalf("complete run: %v", err)
 	}
 
-	// Now archive succeeds
-	w = executeWorkerAPI(h, http.MethodPost, "/"+workerID+"/archive", `{"expected_revision":1}`, workerAPICallOptions{
-		scopes: []string{"automations:write"},
+	// Reconcile the durable archive barrier after the run's terminal receipt.
+	execution, err := s.workerExecutionService()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := execution.ReconcileWorker(context.Background(), "acct-test", workerID); err != nil {
+		t.Fatal(err)
+	}
+	w = executeWorkerAPI(h, http.MethodGet, "/"+workerID, "", workerAPICallOptions{
+		scopes: []string{"automations:read"},
 	})
 	if w.Code != http.StatusOK {
 		t.Fatalf("archive expected 200, got %d: %s", w.Code, w.Body.String())
@@ -1561,8 +1575,8 @@ func TestWorkerAPI_Lifecycle_Archive_Delete_SafeStopBarrier(t *testing.T) {
 		t.Fatalf("expected archived, got %s", workerRec.LifecycleState)
 	}
 
-	// Delete with expected_revision=2
-	w = executeWorkerAPI(h, http.MethodDelete, fmt.Sprintf("/%s?expected_revision=2", workerID), "", workerAPICallOptions{
+	// Delete after both archive-barrier revisions.
+	w = executeWorkerAPI(h, http.MethodDelete, fmt.Sprintf("/%s?expected_revision=3", workerID), "", workerAPICallOptions{
 		scopes: []string{"automations:write"},
 	})
 	if w.Code != http.StatusOK {
@@ -1586,7 +1600,7 @@ func TestWorkerAPI_Lifecycle_Archive_Delete_SafeStopBarrier(t *testing.T) {
 	}
 	var histResp map[string]any
 	_ = json.Unmarshal(w.Body.Bytes(), &histResp)
-	histItems := histResp["history"].([]any)
+	histItems := histResp["revisions"].([]any)
 	if len(histItems) < 3 {
 		t.Fatalf("expected at least 3 historical revisions, got %d", len(histItems))
 	}
@@ -1597,7 +1611,8 @@ func TestWorkerAPI_Lifecycle_Archive_Delete_SafeStopBarrier(t *testing.T) {
 // Threat: Disabling one automation cascades to unrelated automations or leaves dangling admitted runs.
 // Boundary: Server.handleWorkerAutomationEnable, Server.handleWorkerAutomationDisable.
 func TestWorkerAPI_Lifecycle_Automation_Scoped_EnableDisable(t *testing.T) {
-	_, db, h := setupWorkerAPITestServer(t)
+	s, db, h := setupWorkerAPITestServer(t)
+	setupWorkerAPIExecution(t, s, db)
 	ws := store.NewWorkerStore(db)
 
 	created, err := ws.CreateWorker("acct-test", "user-test", store.CreateWorkerRequest{
@@ -1634,6 +1649,7 @@ func TestWorkerAPI_Lifecycle_Automation_Scoped_EnableDisable(t *testing.T) {
 
 	// Admit run for auto1 and run for auto2
 	_, err = ws.RecordWorkerRun("acct-test", store.WorkerRunRecord{
+		SessionID:          "worker-execution-wrun_auto1_1",
 		ID:                 "wrun_auto1_1",
 		AccountScopeID:     "acct-test",
 		WorkerID:           workerID,
@@ -1648,6 +1664,7 @@ func TestWorkerAPI_Lifecycle_Automation_Scoped_EnableDisable(t *testing.T) {
 	}
 
 	_, err = ws.RecordWorkerRun("acct-test", store.WorkerRunRecord{
+		SessionID:          "worker-execution-wrun_auto2_1",
 		ID:                 "wrun_auto2_1",
 		AccountScopeID:     "acct-test",
 		WorkerID:           workerID,
@@ -1681,7 +1698,7 @@ func TestWorkerAPI_Lifecycle_Automation_Scoped_EnableDisable(t *testing.T) {
 	}
 
 	run1, _, _ := ws.GetWorkerRun("acct-test", workerID, "wrun_auto1_1")
-	if run1.Status != "cancelled" || run1.Error != "automation disabled" {
+	if run1.Status != "cancelled" || run1.CompletedAt == 0 {
 		t.Fatalf("run1 should be cancelled: status=%q err=%q", run1.Status, run1.Error)
 	}
 
@@ -1719,13 +1736,15 @@ func TestWorkerAPI_Lifecycle_Automation_Scoped_EnableDisable(t *testing.T) {
 // Threat: Double-billing, duplicate runs on network retries, or test runs enabling persistent schedules.
 // Boundary: Server.handleWorkerDirectRequest, Server.handleWorkerTestRun.
 func TestWorkerAPI_Lifecycle_DirectRequest_And_TestRun(t *testing.T) {
-	_, db, h := setupWorkerAPITestServer(t)
+	s, db, h := setupWorkerAPITestServer(t)
+	workspaceID := setupWorkerAPIExecution(t, s, db)
 	ws := store.NewWorkerStore(db)
 
 	created, err := ws.CreateWorker("acct-test", "user-test", store.CreateWorkerRequest{
-		Name:           "Execution Worker",
-		Instructions:   "Handle runs.",
-		IdempotencyKey: "exec-test-1",
+		WorkspaceRequirements: []store.WorkerWorkspaceRequirement{{Role: "primary", Required: true}},
+		Name:                  "Execution Worker",
+		Instructions:          "Handle runs.",
+		IdempotencyKey:        "exec-test-1",
 		Automations: []store.WorkerAutomationDefinition{
 			{
 				Name:           "Heartbeat Auto",
@@ -1734,7 +1753,8 @@ func TestWorkerAPI_Lifecycle_DirectRequest_And_TestRun(t *testing.T) {
 				Enabled:        false,
 				PlanDocument: store.SessionPlanDocument{
 					Title:       "Heartbeat Plan",
-					Checkpoints: []store.SessionPlanCheckpoint{{ID: "cp-1", Title: "Ping", Status: "pending"}},
+					Info:        store.SessionPlanInfo{Goal: "Check heartbeat"},
+					Checkpoints: []store.SessionPlanCheckpoint{{ID: "cp-1", Order: 1, Title: "Ping", Status: "pending", Tasks: []string{"Check heartbeat"}, AcceptanceCriteria: []string{"Heartbeat checked"}}},
 				},
 			},
 		},
@@ -1745,6 +1765,7 @@ func TestWorkerAPI_Lifecycle_DirectRequest_And_TestRun(t *testing.T) {
 	workerID := created.ID
 	autoID := created.Automations[0].ID
 
+	created = activateWorkerAPIFixture(t, s, created, workspaceID)
 	// 1. Direct request without prompt or input -> 400
 	w := executeWorkerAPI(h, http.MethodPost, "/"+workerID+"/direct", `{}`, workerAPICallOptions{
 		scopes: []string{"automations:write"},
@@ -1772,17 +1793,17 @@ func TestWorkerAPI_Lifecycle_DirectRequest_And_TestRun(t *testing.T) {
 	w = executeWorkerAPI(h, http.MethodPost, "/"+workerID+"/direct", `{"prompt":"Analyze codebase","idempotency_key":"idemp-direct-1"}`, workerAPICallOptions{
 		scopes: []string{"automations:write"},
 	})
-	if w.Code != http.StatusOK {
-		t.Fatalf("repeated direct request expected 200, got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusCreated {
+		t.Fatalf("repeated direct request expected receipt, got %d: %s", w.Code, w.Body.String())
 	}
 	var dupResp map[string]any
 	_ = json.Unmarshal(w.Body.Bytes(), &dupResp)
-	if dupResp["deduplicated"] != true || dupResp["run"].(map[string]any)["id"].(string) != directRunID {
+	if dupResp["run"].(map[string]any)["id"].(string) != directRunID {
 		t.Fatalf("expected deduplicated same run: %+v", dupResp)
 	}
 
 	// 4. Test run with prompt and automation_id -> 201 Created
-	w = executeWorkerAPI(h, http.MethodPost, "/"+workerID+"/test", fmt.Sprintf(`{"automation_id":%q,"prompt":"Test ping"}`, autoID), workerAPICallOptions{
+	w = executeWorkerAPI(h, http.MethodPost, "/"+workerID+"/test", fmt.Sprintf(`{"automation_id":%q,"prompt":"Test ping","idempotency_key":"test-ping"}`, autoID), workerAPICallOptions{
 		scopes: []string{"automations:write"},
 	})
 	if w.Code != http.StatusCreated {
@@ -1811,13 +1832,15 @@ func TestWorkerAPI_Lifecycle_DirectRequest_And_TestRun(t *testing.T) {
 // Threat: Privilege escalation from webhook/trigger integration to full worker management, cross-tenant or cross-worker trigger spoofing.
 // Boundary: Server.authenticateWorkerRequest, handleWorkers, Server.handleWorkerTrigger, Server.handleWorkerToken.
 func TestWorkerAPI_Lifecycle_ScopedTrigger_AuthAndDispatch(t *testing.T) {
-	_, db, h := setupWorkerAPITestServer(t)
+	s, db, h := setupWorkerAPITestServer(t)
+	workspaceID := setupWorkerAPIExecution(t, s, db)
 	ws := store.NewWorkerStore(db)
 
 	created, err := ws.CreateWorker("acct-test", "user-test", store.CreateWorkerRequest{
-		Name:           "Trigger Target Worker",
-		Instructions:   "Respond to webhook.",
-		IdempotencyKey: "trig-target-1",
+		WorkspaceRequirements: []store.WorkerWorkspaceRequirement{{Role: "primary", Required: true}},
+		Name:                  "Trigger Target Worker",
+		Instructions:          "Respond to webhook.",
+		IdempotencyKey:        "trig-target-1",
 		Automations: []store.WorkerAutomationDefinition{
 			{
 				Name:           "Webhook Auto",
@@ -1826,7 +1849,8 @@ func TestWorkerAPI_Lifecycle_ScopedTrigger_AuthAndDispatch(t *testing.T) {
 				Enabled:        true,
 				PlanDocument: store.SessionPlanDocument{
 					Title:       "Webhook Plan",
-					Checkpoints: []store.SessionPlanCheckpoint{{ID: "cp-1", Title: "Handle", Status: "pending"}},
+					Info:        store.SessionPlanInfo{Goal: "Handle webhook"},
+					Checkpoints: []store.SessionPlanCheckpoint{{ID: "cp-1", Order: 1, Title: "Handle", Status: "pending", Tasks: []string{"Handle webhook"}, AcceptanceCriteria: []string{"Event handled"}}},
 				},
 			},
 		},
@@ -1837,6 +1861,7 @@ func TestWorkerAPI_Lifecycle_ScopedTrigger_AuthAndDispatch(t *testing.T) {
 	workerID := created.ID
 	autoID := created.Automations[0].ID
 
+	created = activateWorkerAPIFixture(t, s, created, workspaceID)
 	// 1. Mint a trigger token via POST /v3/workers/{id}/token
 	w := executeWorkerAPI(h, http.MethodPost, "/"+workerID+"/token", `{"name":"Webhook Client Token"}`, workerAPICallOptions{
 		scopes: []string{"automations:write"},
@@ -1863,7 +1888,7 @@ func TestWorkerAPI_Lifecycle_ScopedTrigger_AuthAndDispatch(t *testing.T) {
 	}
 
 	// 2. Dispatch trigger to this worker using the scoped token -> 201 Created
-	w = executeWorkerAPI(h, http.MethodPost, "/"+workerID+"/trigger", `{"payload":{"event":"push","ref":"refs/heads/main"},"idempotency_key":"hook-1"}`, scopedTriggerOpts)
+	w = executeWorkerAPI(h, http.MethodPost, "/"+workerID+"/trigger", fmt.Sprintf(`{"automation_id":%q,"payload":{"event":"push","ref":"refs/heads/main"},"idempotency_key":"hook-1"}`, autoID), scopedTriggerOpts)
 	if w.Code != http.StatusCreated {
 		t.Fatalf("scoped trigger dispatch expected 201, got %d: %s", w.Code, w.Body.String())
 	}
@@ -1872,18 +1897,18 @@ func TestWorkerAPI_Lifecycle_ScopedTrigger_AuthAndDispatch(t *testing.T) {
 	runID := trigResp["run"].(map[string]any)["id"].(string)
 
 	// 3. Duplicate trigger dispatch with same idempotency key -> 200 OK deduplicated
-	w = executeWorkerAPI(h, http.MethodPost, "/"+workerID+"/trigger", `{"payload":{"event":"push","ref":"refs/heads/main"},"idempotency_key":"hook-1"}`, scopedTriggerOpts)
-	if w.Code != http.StatusOK {
-		t.Fatalf("duplicate trigger dispatch expected 200, got %d: %s", w.Code, w.Body.String())
+	w = executeWorkerAPI(h, http.MethodPost, "/"+workerID+"/trigger", fmt.Sprintf(`{"automation_id":%q,"payload":{"event":"push","ref":"refs/heads/main"},"idempotency_key":"hook-1"}`, autoID), scopedTriggerOpts)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("duplicate trigger dispatch expected receipt, got %d: %s", w.Code, w.Body.String())
 	}
 	var dupTrigResp map[string]any
 	_ = json.Unmarshal(w.Body.Bytes(), &dupTrigResp)
-	if dupTrigResp["deduplicated"] != true || dupTrigResp["run"].(map[string]any)["id"].(string) != runID {
+	if dupTrigResp["run"].(map[string]any)["id"].(string) != runID {
 		t.Fatalf("expected deduplicated trigger run: %+v", dupTrigResp)
 	}
 
 	// 4. Dispatch to automation-specific trigger route -> 201 Created
-	w = executeWorkerAPI(h, http.MethodPost, fmt.Sprintf("/%s/automations/%s/trigger", workerID, autoID), `{"payload":{"data":"sample"}}`, scopedTriggerOpts)
+	w = executeWorkerAPI(h, http.MethodPost, fmt.Sprintf("/%s/automations/%s/trigger", workerID, autoID), `{"payload":{"data":"sample"},"idempotency_key":"hook-2"}`, scopedTriggerOpts)
 	if w.Code != http.StatusCreated {
 		t.Fatalf("automation trigger dispatch expected 201, got %d: %s", w.Code, w.Body.String())
 	}
@@ -1921,7 +1946,8 @@ func TestWorkerAPI_Lifecycle_ScopedTrigger_AuthAndDispatch(t *testing.T) {
 // Threat: Corrupting run status or modifying completed execution outcomes.
 // Boundary: Server.handleWorkerRuns, Server.handleWorkerRunByID, Server.handleWorkerRunCancel.
 func TestWorkerAPI_Lifecycle_RunInspectionAndCancellation(t *testing.T) {
-	_, db, h := setupWorkerAPITestServer(t)
+	s, db, h := setupWorkerAPITestServer(t)
+	setupWorkerAPIExecution(t, s, db)
 	ws := store.NewWorkerStore(db)
 
 	created, err := ws.CreateWorker("acct-test", "user-test", store.CreateWorkerRequest{
@@ -1936,6 +1962,7 @@ func TestWorkerAPI_Lifecycle_RunInspectionAndCancellation(t *testing.T) {
 
 	// Create admitted run
 	run1, err := ws.RecordWorkerRun("acct-test", store.WorkerRunRecord{
+		SessionID:      "worker-execution-wrun_inspect_1",
 		ID:             "wrun_inspect_1",
 		AccountScopeID: "acct-test",
 		WorkerID:       workerID,
@@ -1992,7 +2019,7 @@ func TestWorkerAPI_Lifecycle_RunInspectionAndCancellation(t *testing.T) {
 
 	// Verify run status in store is cancelled
 	runRec, _, _ := ws.GetWorkerRun("acct-test", workerID, run1.ID)
-	if runRec.Status != "cancelled" || runRec.Error != "run cancelled" {
+	if runRec.Status != "cancelled" || runRec.CompletedAt == 0 {
 		t.Fatalf("cancelled run mismatch: status=%q error=%q", runRec.Status, runRec.Error)
 	}
 

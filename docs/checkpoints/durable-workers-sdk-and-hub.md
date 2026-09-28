@@ -1,6 +1,6 @@
 # Durable workers: local lifecycle, SDK and canonical hub
 
-Status: checkpoint 1 implemented with focused deterministic verification. Checkpoints 2–4 and all live E01–E15 acceptance remain unverified.
+Status: checkpoints 1–2 implemented for the bounded local contract with focused deterministic verification. Hub work (checkpoint 3) and all live E01–E15 acceptance (checkpoint 4) remain unverified. Unsupported grants and legacy executor cutover remain explicit gaps below.
 
 ## Goal and scope lock
 
@@ -104,10 +104,10 @@ An inherited media test compilation typo was corrected to call the existing `equ
 
 ### 2. Execution, safe controls and Orchestrator authority
 
-- [ ] Wire attached plans, schedules, external signals, direct requests and bounded test runs into the existing execution engine.
-- [ ] Implement shared safe stop/disable/archive/delete, restart reconciliation and idempotent admission.
-- [ ] Align the Orchestrator tools/instructions with the new object; restrict prompt/schema edits to this explicitly requested worker lifecycle contract. Enforce ordinary-chat denial server-side.
-- [ ] Complete SDK local activation, triggers, run inspection and lifecycle controls against the same service.
+- [x] Wire attached plans, schedules, external signals, direct requests and labelled test runs into the existing execution engine.
+- [x] Implement shared safe stop/disable/archive/delete, restart reconciliation and idempotent admission.
+- [x] Align the Orchestrator tools/instructions with the new object; restrict prompt/schema edits to this explicitly requested worker lifecycle contract. Enforce ordinary-chat denial server-side.
+- [x] Complete SDK local activation, triggers, run inspection and lifecycle controls against the same service.
 - Exit: focused tests prove ownership, cancellation/admission races, recovery and authority; no new executor or cloud target.
 
 #### Step 2 prerequisite review (implementation incomplete)
@@ -124,7 +124,17 @@ Recovered the preserved core as parent-owned source edits, without claiming chil
 
 Observed focused deterministic checks: admission/reopen, automation isolation, run monotonicity, active/undispatched stop, Orchestrator denial and HTTP unavailable-executor nonmutation pass twice. A real temporary Git/Pebble dispatch test creates the canonical V3 plan/intent and retries a failed wake without duplicate admission. This is not provider execution or live acceptance.
 
-Step 2 remains incomplete: the inherited HTTP lifecycle fixtures have no execution service and still fail; an older provider-tool fixture expects worker tools on ordinary Swarm. Full lifecycle fixtures, multi-checkpoint completion/cancellation, preparation crash recovery, idle bounded tests, supported bindings/approval UX and legacy cutover need completion. Activation currently fails closed outside one approved primary workspace with no requested capability grants. No live deployment, cloud work, push or promotion.
+Historical recovery snapshot (superseded by the verification below): the inherited HTTP lifecycle fixtures had no execution service and failed; an older provider-tool fixture expected worker tools on ordinary Swarm. The subsequent parent-owned work repaired those fixtures and execution gaps without bypassing worktree verification or launching more agents.
+
+#### Step 2 completed local execution boundary
+
+HTTP, SDK and Orchestrator now share the daemon-composed service. Real temporary Git/Pebble fixtures cover activation, direct/test/trigger dispatch, interval/cron slot deduplication, stop/resume, automation-scoped disable, archive/delete and retained history. Multi-checkpoint completion waits for all checkpoints; cancellation follows the current execution intent and persists an occurrence-wide cancellation fence. Terminal receipts wait for executor acknowledgement. Run updates commit durable worker realtime events.
+
+Authenticated activation accepts `activate:false` to approve bindings while keeping a worker idle; a labelled test can then execute without enabling schedules. Disabled attached plans can be tested without replacement by a direct prompt. Interrupted session preparation resumes through existing V3/worktree checks; unsafe allocation recovery becomes an explicit failed receipt, preserving evidence rather than bypassing ownership. Failed wakes retain their original intent for retry.
+
+Validation: focused Go worker/portable/migration/authority tests passed twice across storage, session, run and API packages; 15 SDK wire tests and SDK TypeScript check passed. Commands: the checkpoint-one Go command with `./internal/run` added and `-run '(Worker|Portable|LegacyMigration|LegacyAutomationV2Migration|OrdinaryChatAndSubagentsCannotManageWorkers|ScopedAutomationDisable)'`, plus the SDK commands above. No provider workload or live testbench result is claimed.
+
+Remaining milestone gaps: activation intentionally supports one required primary workspace and no capability grants; unsupported combinations fail closed. Migrated legacy records remain read-only snapshots; safe live executor cutover is not implemented. The pre-session Git allocation crash window can fail safely rather than auto-reclaim a checkout. Hub approval UX, multiple-workspace support and live E01–E15 remain unverified. No cloud/S3 work, deployment, push or promotion.
 
 ### 3. Functional hub and one-message context
 

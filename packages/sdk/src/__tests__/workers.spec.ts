@@ -690,6 +690,11 @@ test('SwarmWorkersNamespace: activate, deploy, pause, resume, archive lifecycle 
     assert.deepEqual(lastBody.local_bindings, { primary: 'ws_abc' });
     assert.equal(act.lifecycle_state, 'active');
 
+    // Explicit idle-test binding approval must survive SDK serialization; a
+    // dropped false would accidentally open scheduled admission.
+    await workers.activate({ worker_id: 'w_life', expected_revision: 2, local_bindings: { primary: 'ws_abc' }, activate: false });
+    assert.equal(lastBody.activate, false);
+
     // 2. Deploy alias
     const dep = await workers.deploy({
       worker_id: 'w_life',

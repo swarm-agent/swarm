@@ -1118,6 +1118,7 @@ func (s *Server) handleWorkerRunByID(w http.ResponseWriter, r *http.Request, p i
 }
 
 type activateWorkerRequestBody struct {
+	Activate         *bool             `json:"activate,omitempty"`
 	ExpectedRevision uint64            `json:"expected_revision"`
 	LocalBindings    map[string]string `json:"local_bindings"`
 }
@@ -1185,7 +1186,8 @@ func (s *Server) handleWorkerActivate(w http.ResponseWriter, r *http.Request, p 
 		workerHTTPError(w, err)
 		return
 	}
-	worker, err := execution.Activate(p.AccountScopeID, p.UserID, workerID, req.ExpectedRevision, req.LocalBindings)
+	activate := req.Activate == nil || *req.Activate
+	worker, err := execution.ConfigureBindings(p.AccountScopeID, p.UserID, workerID, req.ExpectedRevision, req.LocalBindings, activate)
 	if err != nil {
 		workerHTTPError(w, err)
 		return

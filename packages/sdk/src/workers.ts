@@ -501,6 +501,7 @@ export class SwarmWorkersNamespace {
         body: {
           expected_revision: params.expected_revision,
           local_bindings: params.local_bindings,
+          ...(params.activate === undefined ? {} : { activate: params.activate }),
         },
       }
     );
