@@ -227,3 +227,14 @@ test('SwarmSessionsNamespace: waitForRun polls until completion', async () => {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 });
+
+test('denyPermission targets one encoded permission and never enables bypass', async () => {
+  // Requirement: headless callers can decline an exact tool request, not account policy.
+  let captured: any;
+  const transport = {request: async (url: string, options: any) => { captured={url,...options}; return {data:{ok:true}}; }} as unknown as SwarmTransport;
+  const sessions = new SwarmSessionsNamespace(transport);
+  assert.deepEqual(await sessions.denyPermission(' session/a ', 'permission/b', 'Use read tools'), {ok:true});
+  assert.equal(captured.url, '/v3/sessions/session%2Fa/permissions/permission%2Fb/resolve');
+  assert.equal(captured.method, 'POST');
+  assert.deepEqual(captured.body, {action:'deny',reason:'Use read tools'});
+});

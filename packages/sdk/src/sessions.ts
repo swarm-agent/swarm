@@ -109,6 +109,15 @@ export class SwarmSessionsNamespace {
     return data as SessionDetail;
   }
 
+  /** Resolve one exact pending tool permission; never changes account-wide policy. */
+  async denyPermission(sessionId: string, permissionId: string, reason?: string): Promise<{ ok: boolean }> {
+    const res = await this.transport.request<{ ok: boolean }>(
+      `/v3/sessions/${encodeURIComponent(sessionId.trim())}/permissions/${encodeURIComponent(permissionId.trim())}/resolve`,
+      { method: 'POST', body: { action: 'deny', reason } }
+    );
+    return res.data;
+  }
+
   /**
    * Archives a session.
    */
