@@ -56,6 +56,8 @@ type TaskProgramRecord struct {
 	ActiveStageID     string                     `json:"active_stage_id,omitempty"`
 	ParentHead        string                     `json:"parent_head,omitempty"`
 	RepositoryLane    *TaskProgramRepositoryLane `json:"repository_lane,omitempty"`
+	RepositoryLanes   map[string]TaskProgramRepositoryLane `json:"repository_lanes,omitempty"`
+	LaneHeads         map[string]string `json:"lane_heads,omitempty"`
 	State             string                     `json:"state"`
 	NextAction        string                     `json:"next_action"`
 	LastMutationID    string                     `json:"last_mutation_id,omitempty"`
@@ -159,6 +161,7 @@ type TaskProgramJobRecord struct {
 	CurrentGeneration  int                        `json:"current_generation,omitempty"`
 	GenerationHistory  []TaskProgramJobGeneration `json:"generation_history,omitempty"`
 	WorkspacePath      string                     `json:"workspace_path,omitempty"`
+	SourceWorkspacePath string                    `json:"source_workspace_path,omitempty"`
 	WorktreeBranch     string                     `json:"worktree_branch,omitempty"`
 	ParentBranch       string                     `json:"parent_branch,omitempty"`
 	ImmutableStageBase string                     `json:"immutable_stage_base,omitempty"`
@@ -245,6 +248,8 @@ type TaskProgramRepositoryLane struct {
 
 type TaskProgramTransition struct {
 	RepositoryLane   *TaskProgramRepositoryLane
+	RepositoryLanes  map[string]TaskProgramRepositoryLane
+	LaneHeads        map[string]string
 	ExpectedRevision int
 	MutationID       string
 	State            *string
@@ -267,6 +272,7 @@ type TaskProgramJobTransition struct {
 	CurrentGeneration  int
 	GenerationHistory  []TaskProgramJobGeneration
 	WorkspacePath      string
+	SourceWorkspacePath string
 	WorktreeBranch     string
 	ParentBranch       string
 	ImmutableStageBase string
@@ -413,6 +419,23 @@ func (s *SessionStore) TransitionTaskProgram(parentSessionID, programID string, 
 		}
 		record.RepositoryLane = &lane
 	}
+	for source, lane := range transition.RepositoryLanes {
+		if source == "" || source != lane.SourcePath || lane.WorkspacePath == "" || source == lane.WorkspacePath || lane.Branch == "" || !artifactV3OIDPattern.MatchString(lane.BaseCommit) {
+			return TaskProgramRecord{}, false, errors.New("invalid task program repository lane binding")
+		}
+		if previous, ok := record.RepositoryLanes[source]; ok && previous != lane {
+			return TaskProgramRecord{}, false, errors.New("task program repository lane is immutable")
+		}
+		if record.RepositoryLanes == nil { record.RepositoryLanes = make(map[string]TaskProgramRepositoryLane) }
+		record.RepositoryLanes[source] = lane
+	}
+	for source, head := range transition.LaneHeads {
+		if _, ok := record.RepositoryLanes[source]; !ok || !artifactV3OIDPattern.MatchString(head) {
+			return TaskProgramRecord{}, false, errors.New("invalid task program lane head")
+		}
+		if record.LaneHeads == nil { record.LaneHeads = make(map[string]string) }
+		record.LaneHeads[source] = head
+	}
 	if transition.State != nil {
 		record.State = strings.TrimSpace(*transition.State)
 	}
@@ -444,6 +467,15 @@ func (s *SessionStore) TransitionTaskProgram(parentSessionID, programID string, 
 		job := &record.Jobs[index]
 		if expected := strings.TrimSpace(update.ExpectedState); expected != "" && job.State != expected {
 			return TaskProgramRecord{}, false, fmt.Errorf("task program job %q state mismatch: expected %s, current %s", job.JobID, expected, job.State)
+		}
+		if source := strings.TrimSpace(update.SourceWorkspacePath); source != "" && job.SourceWorkspacePath != "" && job.SourceWorkspacePath != source {
+			return TaskProgramRecord{}, false, errors.New("task program job repository source binding is immutable")
+		}
+		if job.CurrentSessionID != "" && update.CurrentSessionID != "" && job.CurrentSessionID != update.CurrentSessionID && update.CurrentGeneration <= job.CurrentGeneration {
+			return TaskProgramRecord{}, false, errors.New("task program stale child session callback")
+		}
+		if job.CurrentRunID != "" && update.CurrentRunID != "" && job.CurrentRunID != update.CurrentRunID && update.CurrentGeneration <= job.CurrentGeneration {
+			return TaskProgramRecord{}, false, errors.New("task program stale child run callback")
 		}
 		if update.ArtifactRef != nil && job.ArtifactRef != nil && *update.ArtifactRef != *job.ArtifactRef {
 			return TaskProgramRecord{}, false, errors.New("task program native artifact reference is immutable")
@@ -492,6 +524,9 @@ func applyTaskProgramJobTransition(job *TaskProgramJobRecord, update TaskProgram
 	}
 	if value := strings.TrimSpace(update.WorkspacePath); value != "" {
 		job.WorkspacePath = value
+	}
+	if value := strings.TrimSpace(update.SourceWorkspacePath); value != "" {
+		job.SourceWorkspacePath = value
 	}
 	if value := strings.TrimSpace(update.WorktreeBranch); value != "" {
 		job.WorktreeBranch = value
@@ -542,6 +577,11 @@ func validateTaskProgramRecord(record TaskProgramRecord) error {
 	}
 	for i := range record.Jobs {
 		job := &record.Jobs[i]
+		if job.SourceWorkspacePath != "" {
+			if _, ok := record.RepositoryLanes[job.SourceWorkspacePath]; !ok {
+				return fmt.Errorf("task program job %q has no bound repository lane", job.JobID)
+			}
+		}
 		if job.CurrentSessionID == "" {
 			job.CurrentSessionID = job.ChildSessionID
 		}
@@ -752,6 +792,12 @@ func ValidateTaskProgramDefinition(def *TaskProgramDefinition) error {
 					}
 				}
 				if dep {
+					continue
+				}
+				// Relative scopes are independent only when both explicit canonical
+				// repository targets are distinct. Missing targets may resolve to
+				// the same parent lane and must remain conservatively overlapping.
+				if filepath.IsAbs(jobA.WorkspacePath) && filepath.IsAbs(jobB.WorkspacePath) && filepath.Clean(jobA.WorkspacePath) != filepath.Clean(jobB.WorkspacePath) {
 					continue
 				}
 				if len(jobA.OwnedScope) == 0 || len(jobB.OwnedScope) == 0 {

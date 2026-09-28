@@ -239,3 +239,62 @@ func TestTaskProgramStoreReconstructsBoundedHandoffAfterReopen(t *testing.T) {
 		t.Fatalf("reconstructed=%#v ok=%v err=%v", reconstructed, ok, err)
 	}
 }
+
+// Requirement: relative ownership is per explicit repository, but ambiguous
+// targets cannot bypass the same-repository overlap guard. Definition validation
+// is the narrowest boundary for the concurrent-scope threat.
+func TestTaskProgramRepositoryPartitionedScopes(t *testing.T) {
+ repoA, repoB := filepath.Join(t.TempDir(), "a"), filepath.Join(t.TempDir(), "b")
+ def := TaskProgramDefinition{Stages: []TaskProgramStageSpec{{ID: "s"}}, Jobs: []TaskProgramJobSpec{
+  {ID:"a", StageID:"s", AgentType:"coder", WorkspacePath:repoA, OwnedScope:[]string{"src/**"}},
+  {ID:"b", StageID:"s", AgentType:"coder", WorkspacePath:repoB, OwnedScope:[]string{"src/**"}},
+ }}
+ if err := ValidateTaskProgramDefinition(&def); err != nil { t.Fatalf("distinct repositories rejected: %v",err) }
+ def.Jobs[1].WorkspacePath = repoA
+ if err := ValidateTaskProgramDefinition(&def); err == nil || !strings.Contains(err.Error(), "overlap") { t.Fatalf("same repository overlap err=%v",err) }
+ def.Jobs[1].WorkspacePath = ""
+ if err := ValidateTaskProgramDefinition(&def); err == nil { t.Fatal("ambiguous repository bypassed overlapping scope") }
+}
+
+// Requirement: duplicate callbacks cannot rebind immutable destinations or
+// overwrite another revision's integration receipt. A temp Pebble store proves
+// rejection without partial mutation at the durable transition boundary.
+func TestTaskProgramRepositoryBindingAndRevisionFence(t *testing.T) {
+ sessions := NewSessionStore(openTaskProgramTestStore(t))
+ record, _, err := sessions.CreateTaskProgram(taskProgramStoreFixture("parent-multi", "multi", "hash"))
+ if err != nil { t.Fatal(err) }
+ oid := strings.Repeat("a",40)
+ lane := TaskProgramRepositoryLane{SourcePath:"/repo-a",WorkspacePath:"/lane-a",Branch:"agent/a",BaseCommit:oid}
+ bind := TaskProgramTransition{ExpectedRevision:record.Revision,MutationID:"bind",RepositoryLanes:map[string]TaskProgramRepositoryLane{lane.SourcePath:lane}}
+ record, changed, err := sessions.TransitionTaskProgram("parent-multi","multi",bind)
+ if err != nil || !changed { t.Fatalf("bind changed=%v err=%v",changed,err) }
+ if replay, changed, err := sessions.TransitionTaskProgram("parent-multi","multi",bind); err != nil || changed || replay.Revision != record.Revision { t.Fatalf("replay changed=%v err=%v",changed,err) }
+ corrupt := lane; corrupt.WorkspacePath = "/other"
+ if _, _, err := sessions.TransitionTaskProgram("parent-multi","multi",TaskProgramTransition{ExpectedRevision:record.Revision,MutationID:"rebind",RepositoryLanes:map[string]TaskProgramRepositoryLane{lane.SourcePath:corrupt}}); err == nil { t.Fatal("mutable lane accepted") }
+ head := strings.Repeat("b",40)
+ saved, _, err := sessions.TransitionTaskProgram("parent-multi","multi",TaskProgramTransition{ExpectedRevision:record.Revision,MutationID:"receipt",LaneHeads:map[string]string{lane.SourcePath:head}})
+ if err != nil || saved.LaneHeads[lane.SourcePath] != head { t.Fatalf("receipt=%v err=%v",saved.LaneHeads,err) }
+ if _, _, err := sessions.TransitionTaskProgram("parent-multi","multi",TaskProgramTransition{ExpectedRevision:record.Revision,MutationID:"stale-receipt",LaneHeads:map[string]string{lane.SourcePath:oid}}); err == nil { t.Fatal("stale receipt accepted") }
+}
+
+// Requirement: a callback from a replaced child may not claim its successor's
+// job or swap an already bound source, even if it supplies the current revision.
+// The rejected transition must leave the durable projection unchanged.
+func TestTaskProgramStaleChildAndSourceBindingRejected(t *testing.T) {
+ sessions := NewSessionStore(openTaskProgramTestStore(t))
+ fixture := taskProgramStoreFixture("parent-fence", "fence", "hash")
+ record, _, err := sessions.CreateTaskProgram(fixture)
+ if err != nil { t.Fatal(err) }
+ oid := strings.Repeat("a",40)
+ lane := TaskProgramRepositoryLane{SourcePath:"/repo-a", WorkspacePath:"/lane-a", Branch:"agent/a", BaseCommit:oid}
+ record, _, err = sessions.TransitionTaskProgram("parent-fence","fence",TaskProgramTransition{ExpectedRevision:record.Revision,MutationID:"bind",RepositoryLanes:map[string]TaskProgramRepositoryLane{lane.SourcePath:lane},Jobs:[]TaskProgramJobTransition{{JobID:"api",ExpectedState:TaskProgramJobDeclared,State:TaskProgramJobRunning,SourceWorkspacePath:lane.SourcePath,ChildSessionID:"original",CurrentSessionID:"successor",CurrentRunID:"new-run",CurrentGeneration:2}}})
+ if err != nil { t.Fatal(err) }
+ for _, update := range []TaskProgramJobTransition{
+  {JobID:"api",ExpectedState:TaskProgramJobRunning,State:TaskProgramJobHandoffReady,CurrentSessionID:"original",CurrentRunID:"old-run",CurrentGeneration:1},
+  {JobID:"api",ExpectedState:TaskProgramJobRunning,State:TaskProgramJobHandoffReady,SourceWorkspacePath:"/repo-b"},
+ } {
+  if _, _, err := sessions.TransitionTaskProgram("parent-fence","fence",TaskProgramTransition{ExpectedRevision:record.Revision,MutationID:"stale",Jobs:[]TaskProgramJobTransition{update}}); err == nil { t.Fatalf("stale callback accepted: %#v",update) }
+  saved, _, err := sessions.GetTaskProgram("parent-fence","fence")
+  if err != nil || saved.Revision != record.Revision || saved.Jobs[0].State != TaskProgramJobRunning { t.Fatalf("rejection mutated durable state: %#v err=%v",saved,err) }
+ }
+}
