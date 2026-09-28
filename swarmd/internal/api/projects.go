@@ -3316,6 +3316,50 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		// Mutation requests must identify the exact selected session and captured lane.
+		var selection struct {
+			SessionID    string `json:"session_id"`
+			SourceBranch string `json:"source_branch"`
+			TargetBranch string `json:"target_branch"`
+		}
+		if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&selection); err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("select the task session and target branch before integrating: %w", err))
+			return
+		}
+		if selection.SessionID == "" || selection.SessionID != task.SessionID || selection.SourceBranch == "" || selection.TargetBranch == "" {
+			writeError(w, http.StatusConflict, errors.New("task selection changed or captured source/target branch is missing; refresh the task"))
+			return
+		}
+		selectedSession, sessionFound, sessionErr := db.GetSession(selection.SessionID)
+		if sessionErr != nil || !sessionFound || selectedSession.AccountScopeID != p.AccountScopeID || selectedSession.UserID != p.UserID || !selectedSession.WorktreeEnabled || strings.TrimSpace(selectedSession.WorktreeRootPath) == "" || strings.TrimSpace(selectedSession.WorktreeBranch) != selection.SourceBranch || strings.TrimSpace(selectedSession.WorktreeBaseBranch) != selection.TargetBranch || (task.WorktreeBranch != "" && task.WorktreeBranch != selection.SourceBranch) || (task.BaseBranch != "" && task.BaseBranch != selection.TargetBranch) {
+			writeError(w, http.StatusConflict, errors.New("selected task is not bound to an owned worktree and captured target branch; refresh its lineage"))
+			return
+		}
+		capturedPath, _ := selectedSession.Metadata["swarm_v3_source_workspace_path"].(string)
+		capturedBase, _ := selectedSession.Metadata["base_commit"].(string)
+		if strings.TrimSpace(capturedPath) == "" || strings.TrimSpace(capturedBase) == "" || (task.SourceWorkspace.Path != "" && task.SourceWorkspace.Path != capturedPath) || (task.BaseCommit != "" && task.BaseCommit != capturedBase) {
+			writeError(w, http.StatusConflict, errors.New("captured source repository or fork commit is missing or differs from the task; refresh its lineage"))
+			return
+		}
+		receipt := &pebblestore.ProjectTaskIntegration{State: "in_progress", SessionID: selection.SessionID, SourceBranch: selection.SourceBranch, TargetBranch: selection.TargetBranch}
+		if _, err := db.UpdateProjectTask(p.AccountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
+			t.IsIntegrated = false
+			t.Integration = receipt
+			return nil
+		}); err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		defer func() {
+			if receipt.State == "in_progress" {
+				receipt.State = "conflict"
+				receipt.Error = "Integration did not complete. Inspect the source and target Git state before retrying."
+				_, _ = db.UpdateProjectTask(p.AccountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
+					t.Integration = receipt
+					return nil
+				})
+			}
+		}()
 		// Inspect git state first
 		gitState := inspectTaskGitState(*task, db)
 		if gitState.isDirty {
@@ -3324,10 +3368,32 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		}
 		if gitState.unintegratedCommits == 0 {
 			if gitState.isIntegrated {
+				// Inspect the captured checkout, not a remote-tracking ref, before
+				// claiming this task was integrated into the requested target.
+				checkout, checkoutErr := s.worktrees.InspectTaskWorkspace(capturedPath)
+				sourceState, sourceErr := s.worktrees.InspectTaskWorkspace(selectedSession.WorktreeRootPath)
+				if checkoutErr != nil || sourceErr != nil || checkout.BranchName != selection.TargetBranch || !checkout.Clean || !sourceState.Clean || sourceState.HeadCommit == capturedBase {
+					writeError(w, http.StatusConflict, errors.New("captured target or committed source is unavailable; inspect Git before retrying"))
+					return
+				}
+				ancestorCtx, ancestorCancel := context.WithTimeout(r.Context(), 3*time.Second)
+				defer ancestorCancel()
+				if err := exec.CommandContext(ancestorCtx, "git", "-C", capturedPath, "merge-base", "--is-ancestor", sourceState.HeadCommit, checkout.HeadCommit).Run(); err != nil {
+					writeError(w, http.StatusConflict, errors.New("source commit is not an ancestor of captured target HEAD"))
+					return
+				}
+				receipt.SourceHead = sourceState.HeadCommit
+				receipt.ResultingTargetHead = checkout.HeadCommit
+				receipt.State = "already_integrated"
+				updated, updateErr := db.UpdateProjectTask(p.AccountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
+					t.IsIntegrated = true
+					t.Integration = receipt
+					return nil
+				})
+				if updateErr != nil { writeError(w, http.StatusInternalServerError, updateErr); return }
 				writeJSON(w, http.StatusOK, map[string]any{
 					"status":  "already_integrated",
-					"message": fmt.Sprintf("Changes from %s are already integrated into %s", gitState.worktreeBranch, gitState.baseBranch),
-					"task":    sanitizeProjectTaskForClient(task),
+					"task":    sanitizeProjectTaskForClient(updated),
 				})
 				return
 			}
@@ -3352,14 +3418,9 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				parentWs = src
 			}
 		}
-		if parentWs == "" {
-			proj, _, _ := db.GetProject(p.AccountScopeID, projectID)
-			if proj != nil && len(proj.Workspaces) > 0 {
-				parentWs = proj.Workspaces[0].Path
-			}
-		}
-		if parentWs == "" {
-			parentWs = task.WorkspacePath
+		if parentWs != capturedPath || targetPath != selectedSession.WorktreeRootPath || parentWs == targetPath {
+			writeError(w, http.StatusConflict, errors.New("task worktree does not match the captured repository and session lane"))
+			return
 		}
 
 		type workspaceInspector interface {
@@ -3375,7 +3436,11 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if !parentState.Clean {
-			writeError(w, http.StatusConflict, fmt.Errorf("parent repository %q is dirty (%s); commit or stash changes before integrating", parentWs, parentState.BranchName))
+			writeError(w, http.StatusConflict, fmt.Errorf("captured repository is dirty on %s; finish those changes before integrating", parentState.BranchName))
+			return
+		}
+		if parentState.BranchName != selection.TargetBranch {
+			writeError(w, http.StatusConflict, fmt.Errorf("captured checkout is on %s, not selected target %s; check out the target and retry", parentState.BranchName, selection.TargetBranch))
 			return
 		}
 
@@ -3385,23 +3450,16 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if !childState.Clean {
-			writeError(w, http.StatusConflict, fmt.Errorf("worktree %q is dirty; commit changes before integrating", targetPath))
+			writeError(w, http.StatusConflict, errors.New("source worktree is dirty; explicitly commit changes before integrating"))
+			return
+		}
+		if childState.BranchName != selection.SourceBranch {
+			writeError(w, http.StatusConflict, errors.New("source worktree branch changed; refresh the selected task"))
 			return
 		}
 
-		baseCommit := gitState.baseCommit
-		if baseCommit == "" {
-			baseCommit = task.BaseCommit
-		}
-		if baseCommit == "" {
-			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-			defer cancel()
-			cmdMb := exec.CommandContext(ctx, "git", "-C", targetPath, "merge-base", parentState.HeadCommit, childState.HeadCommit)
-			if out, mbErr := cmdMb.Output(); mbErr == nil && len(bytes.TrimSpace(out)) > 0 {
-				baseCommit = strings.TrimSpace(string(out))
-			}
-		}
-		if baseCommit == "" || baseCommit == childState.HeadCommit {
+		baseCommit := capturedBase
+		if baseCommit == childState.HeadCommit {
 			writeError(w, http.StatusBadRequest, errors.New("cannot integrate: worktree has no commits beyond its base commit"))
 			return
 		}
@@ -3416,7 +3474,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		}
 		plan, err := integrator.PrepareTaskIntegration(parentWs, parentState.BranchName, parentState.HeadCommit, []worktreeruntime.TaskIntegrationChild{
 			{
-				SessionID:  task.SessionID,
+				SessionID:  selection.SessionID,
 				BaseCommit: baseCommit,
 				HeadCommit: childState.HeadCommit,
 			},
@@ -3426,20 +3484,37 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		receipt.SourceHead = childState.HeadCommit
+		receipt.PreviousTargetHead = parentState.HeadCommit
 		result, err := integrator.ApplyTaskIntegration(parentWs, plan)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, fmt.Errorf("apply integration failed: %w", err))
 			return
 		}
 
+		receipt.ResultingTargetHead = result.ResultingParentHead
+		// The integration service reports an applied operation, but the receipt is
+		// authoritative only after verifying the actual checked-out target ancestry.
+		verified, verifyErr := inspector.InspectTaskWorkspace(parentWs)
+		if verifyErr != nil || verified.BranchName != selection.TargetBranch || verified.HeadCommit != result.ResultingParentHead {
+			writeError(w, http.StatusConflict, errors.New("target changed after promotion; inspect Git before retrying"))
+			return
+		}
+		verifyCtx, verifyCancel := context.WithTimeout(r.Context(), 3*time.Second)
+		defer verifyCancel()
+		if err := exec.CommandContext(verifyCtx, "git", "-C", parentWs, "merge-base", "--is-ancestor", childState.HeadCommit, verified.HeadCommit).Run(); err != nil {
+			writeError(w, http.StatusConflict, errors.New("source commit ancestry on target could not be verified; inspect Git before retrying"))
+			return
+		}
 		headDisplay := result.ResultingParentHead
 		if len(headDisplay) > 8 {
 			headDisplay = headDisplay[:8]
 		}
 
+		receipt.State = "integrated"
 		updated, err := db.UpdateProjectTask(p.AccountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
-			t.Status = "completed"
 			t.IsIntegrated = true
+			t.Integration = receipt
 			t.GitStatus = "clean"
 			t.UnintegratedCommits = 0
 			t.ActionNeeded = fmt.Sprintf("No Action Required: Integrated into %s", parentState.BranchName)

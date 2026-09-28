@@ -306,6 +306,19 @@ type ProjectTaskSource struct {
 	Provenance          string `json:"provenance"`
 }
 
+// ProjectTaskIntegration is the last explicit promotion attempt and its Git receipt.
+// A success is valid only for the recorded source HEAD and target branch/HEAD.
+type ProjectTaskIntegration struct {
+	State              string `json:"state"` // in_progress | integrated | already_integrated | failed | conflict
+	SessionID          string `json:"session_id"`
+	SourceBranch       string `json:"source_branch"`
+	SourceHead         string `json:"source_head,omitempty"`
+	TargetBranch       string `json:"target_branch"`
+	PreviousTargetHead string `json:"previous_target_head,omitempty"`
+	ResultingTargetHead string `json:"resulting_target_head,omitempty"`
+	Error              string `json:"error,omitempty"`
+}
+
 // ProjectTaskRecord represents an autonomous task unit in a project.
 type ProjectTaskRecord struct {
 	ID                  string                   `json:"id"`
@@ -333,6 +346,7 @@ type ProjectTaskRecord struct {
 	UnintegratedCommits int                      `json:"unintegrated_commits,omitempty"`
 	BehindCommits       int                      `json:"behind_commits,omitempty"`
 	IsIntegrated        bool                     `json:"is_integrated,omitempty"`
+	Integration         *ProjectTaskIntegration  `json:"integration,omitempty"`
 	DiffSummary         string                   `json:"diff_summary,omitempty"`
 	IsDirty             bool                     `json:"is_dirty,omitempty"`
 	DirtyCount          int                      `json:"dirty_count,omitempty"`

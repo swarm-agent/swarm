@@ -1212,8 +1212,8 @@ func TestProjectCoderTask_ZeroCommitsNotIntegrated(t *testing.T) {
 
 func TestProjectTask_IntegrateRejectsEmptyCommits(t *testing.T) {
 	// Purpose:
-	// - Invariant: POST /v3/projects/{id}/tasks/{taskId}/integrate must reject tasks
-	//   that have 0 unintegrated commits with 400 Bad Request, never faking integration.
+	// - Invariant: POST /v3/projects/{id}/tasks/{taskId}/integrate rejects a task
+	//   without a selected owned session and target, never faking integration.
 	// - Boundary/authority: Server.handleProjects in projects.go.
 	// - Threat/regression: Calling integrate on an empty task mutates database strings to claim integration occurred.
 
@@ -1280,13 +1280,13 @@ func TestProjectTask_IntegrateRejectsEmptyCommits(t *testing.T) {
 	}
 	_ = ss.PutProjectTask("account", task)
 
-	// POST integrate should fail with 400 Bad Request
-	w := call(http.MethodPost, "/"+proj.ID+"/tasks/"+task.ID+"/integrate", "", []string{"projects:write", "sessions:write"})
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400 Bad Request when integrating task with 0 commits, got %d: %s", w.Code, w.Body.String())
+	// Explicit selection cannot invent session lineage, even for a clean task.
+	w := call(http.MethodPost, "/"+proj.ID+"/tasks/"+task.ID+"/integrate", `{"session_id":"missing","source_branch":"agent/test-task-2","target_branch":"dev"}`, []string{"projects:write", "sessions:write"})
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409 Conflict for missing selected session, got %d: %s", w.Code, w.Body.String())
 	}
-	if !strings.Contains(w.Body.String(), "no commits to integrate") {
-		t.Fatalf("expected error message to mention no commits to integrate, got %s", w.Body.String())
+	if !strings.Contains(w.Body.String(), "selection changed") {
+		t.Fatalf("expected actionable selection error, got %s", w.Body.String())
 	}
 
 	// Verify task in DB was NOT modified to claim it was integrated

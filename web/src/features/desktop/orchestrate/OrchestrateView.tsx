@@ -644,6 +644,7 @@ function MinimalTaskCard({
   onOpenChat,
   onApprove,
   onIntegrate,
+  isIntegrating,
   onDelete,
   onRefine,
   onPreviewDeliverable,
@@ -674,6 +675,7 @@ function MinimalTaskCard({
   onOpenChat?: () => void
   onApprove?: () => void
   onIntegrate?: () => void
+  isIntegrating?: boolean
   onDelete?: () => void
   onRefine?: (feedback?: string, errorSummary?: string) => void
   onPreviewDeliverable?: (d: MediaDeliverable) => void
@@ -1109,12 +1111,13 @@ function MinimalTaskCard({
           {isNeedsReview && hasUnintegrated && onIntegrate && (
             <button
               type="button"
+              disabled={isIntegrating || !task.baseBranch}
               onClick={(e) => {
                 e.stopPropagation()
                 onIntegrate()
               }}
               className="flex items-center gap-1 px-2.5 py-1 rounded bg-amber-500 hover:bg-amber-400 text-slate-950 text-[10px] font-bold transition-all shadow"
-              title={`Integrate changes into ${task.baseBranch || 'main'}`}
+              title={task.baseBranch ? `Integrate changes into ${task.baseBranch}` : 'Target branch unavailable; refresh task lineage'}
             >
               <GitPullRequest size={10} />
               <span>Integrate</span>
@@ -2252,6 +2255,7 @@ function MinimalTaskCard({
               {hasUnintegrated && onIntegrate && (
                 <button
                   type="button"
+                  disabled={isIntegrating || !task.baseBranch}
                   onClick={(e) => {
                     e.stopPropagation()
                     onIntegrate()
@@ -2259,7 +2263,7 @@ function MinimalTaskCard({
                   className="flex items-center gap-1.5 px-3 py-1 rounded bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs shadow transition-all active:scale-95"
                 >
                   <GitPullRequest size={11} />
-                  <span>Integrate into {task.baseBranch || 'main'}</span>
+                  <span>{isIntegrating ? 'Integrating…' : task.baseBranch ? `Integrate into ${task.baseBranch}` : 'Target unavailable'}</span>
                 </button>
               )}
             </div>
@@ -2390,19 +2394,20 @@ function MinimalTaskCard({
             <GitPullRequest size={12} className="text-amber-400 flex-shrink-0" />
             <span className="font-bold text-amber-400 flex-shrink-0">Not Integrated:</span>
             <span className="truncate">
-              {task.unintegratedCommits} commit(s) on {task.worktreeBranch || 'worktree'} ready to integrate into {task.baseBranch || 'main'}.
+              {task.unintegratedCommits} commit(s) on {task.worktreeBranch || 'worktree'} ready to integrate into {task.baseBranch || 'an unavailable target'}.
             </span>
           </div>
           {onIntegrate && (
             <button
               type="button"
+              disabled={isIntegrating || !task.baseBranch}
               onClick={(e) => {
                 e.stopPropagation()
                 onIntegrate()
               }}
               className="flex-shrink-0 px-2.5 py-0.5 rounded bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-[10px] transition-colors"
             >
-              Integrate into {task.baseBranch || 'main'}
+              {isIntegrating ? 'Integrating…' : task.baseBranch ? `Integrate into ${task.baseBranch}` : 'Target unavailable'}
             </button>
           )}
         </div>
@@ -5189,6 +5194,8 @@ export function OrchestrateView({
   // Track in-flight task approvals to prevent duplicate clicks and premature execution
   const [approvingTaskIds, setApprovingTaskIds] = useState<Set<string>>(new Set())
   const [taskActionErrors, setTaskActionErrors] = useState<Record<string, string>>({})
+  const [integratingTaskIds, setIntegratingTaskIds] = useState<Set<string>>(new Set())
+  const integratingTaskFlights = useRef(new Set<string>())
 
   const handleClearTaskError = useCallback((taskId: string) => {
     setTaskActionErrors((prev) => {
@@ -5353,14 +5360,29 @@ export function OrchestrateView({
 
   // Integrate / Promote task commits into target branch
   const handleIntegrateTask = async (taskId: string) => {
-    if (!selectedProject?.id) return
+    if (integratingTaskFlights.current.has(taskId)) return
+    const projectId = selectedProject?.id
+    const task = tasks.find(row => row.id === taskId)
+    if (!projectId || !task || !task.sessionId || !task.baseBranch || !task.worktreeBranch) {
+      setTaskActionErrors(prev => ({ ...prev, [taskId]: 'Selected task or captured Git lineage is unavailable. Refresh the project and retry.' }))
+      return
+    }
+    integratingTaskFlights.current.add(taskId)
+    setIntegratingTaskIds(prev => new Set(prev).add(taskId))
+    setTaskActionErrors(prev => ({ ...prev, [taskId]: '' }))
     try {
-      await requestJson(`/v3/projects/${selectedProject.id}/tasks/${taskId}/integrate`, {
+      await requestJson(`/v3/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(taskId)}/integrate`, {
         method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: task.sessionId, source_branch: task.worktreeBranch, target_branch: task.baseBranch }),
       })
-      desktopProjects.invalidate(selectedProject.id)
+      desktopProjects.invalidate(projectId)
     } catch (err) {
-      console.warn('Integrate task failed:', err)
+      setTaskActionErrors(prev => ({ ...prev, [taskId]: err instanceof Error ? err.message : 'Integration failed; inspect Git and retry.' }))
+      desktopProjects.invalidate(projectId)
+    } finally {
+      integratingTaskFlights.current.delete(taskId)
+      setIntegratingTaskIds(prev => { const next = new Set(prev); next.delete(taskId); return next })
     }
   }
 
@@ -6775,6 +6797,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                           onOpenChat={() => handleSelectTask(t)}
                           onApprove={() => handleApproveTask(t.id)}
                           onIntegrate={() => handleIntegrateTask(t.id)}
+                          isIntegrating={integratingTaskIds.has(t.id)}
                           onDelete={() => handleDeleteTask(t.id)}
                           onRefine={(fb, err) => handleRefineTask(t.id, fb, err)}
                           onPreviewDeliverable={(d) => handleOpenDeliverableInMediaCenter(d)}
@@ -6879,6 +6902,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                               onOpenChat={() => handleSelectTask(t)}
                               onApprove={() => handleApproveTask(t.id)}
                               onIntegrate={() => handleIntegrateTask(t.id)}
+                              isIntegrating={integratingTaskIds.has(t.id)}
                               onDelete={() => handleDeleteTask(t.id)}
                               onRefine={(fb, err) => handleRefineTask(t.id, fb, err)}
                               onPreviewDeliverable={(d) => handleOpenDeliverableInMediaCenter(d)}
@@ -6994,6 +7018,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                           onOpenChat={() => handleSelectTask(task)}
                           onApprove={() => handleApproveTask(task.id)}
                           onIntegrate={() => handleIntegrateTask(task.id)}
+                          isIntegrating={integratingTaskIds.has(task.id)}
                           onDelete={() => handleDeleteTask(task.id)}
                           onRefine={(fb, err) => handleRefineTask(task.id, fb, err)}
                           onPreviewDeliverable={(d) => handleOpenDeliverableInMediaCenter(d)}
@@ -7098,6 +7123,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                         onOpenChat={() => handleSelectTask(selectedTaskForSplit)}
                         onApprove={() => handleApproveTask(selectedTaskForSplit.id)}
                         onIntegrate={() => handleIntegrateTask(selectedTaskForSplit.id)}
+                        isIntegrating={integratingTaskIds.has(selectedTaskForSplit.id)}
                         onDelete={() => handleDeleteTask(selectedTaskForSplit.id)}
                         onRefine={(fb, err) => handleRefineTask(selectedTaskForSplit.id, fb, err)}
                         onPreviewDeliverable={(d) => handleOpenDeliverableInMediaCenter(d)}
@@ -7147,6 +7173,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                       onOpenChat={() => handleSelectTask(t)}
                       onApprove={() => handleApproveTask(t.id)}
                       onIntegrate={() => handleIntegrateTask(t.id)}
+                      isIntegrating={integratingTaskIds.has(t.id)}
                       onDelete={() => handleDeleteTask(t.id)}
                       onRefine={(fb, err) => handleRefineTask(t.id, fb, err)}
                       onPreviewDeliverable={(d) => handleOpenDeliverableInMediaCenter(d)}
