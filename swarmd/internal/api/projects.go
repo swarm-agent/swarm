@@ -300,7 +300,7 @@ func inspectTaskGitState(task pebblestore.ProjectTaskRecord, db *pebblestore.Ses
 // in_progress tasks to needs_review when the agent finishes execution, ensuring tasks
 // never just flip to complete without review/integration, and allowing reopening.
 func syncTaskSessionState(task *pebblestore.ProjectTaskRecord, db *pebblestore.SessionStore) {
-	if task == nil || db == nil {
+	if task == nil || db == nil || task.Archived {
 		return
 	}
 	// Preserve manual task approval and queue ownership. Generated tasks
@@ -2024,9 +2024,13 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusInternalServerError, err)
 				return
 			}
-			if tasks == nil {
-				tasks = []pebblestore.ProjectTaskRecord{}
+			visible := make([]pebblestore.ProjectTaskRecord, 0, len(tasks))
+			for _, task := range tasks {
+				if !task.Archived {
+					visible = append(visible, task)
+				}
 			}
+			tasks = visible
 			workerOnly := r.URL.Query().Get("worker_only") == "true"
 			targetWorkerID := strings.TrimSpace(r.URL.Query().Get("worker_id"))
 			if workerOnly || targetWorkerID != "" {

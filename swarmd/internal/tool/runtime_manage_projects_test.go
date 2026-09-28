@@ -132,6 +132,15 @@ func (m *mockProjectStore) UpdateProjectTask(accountScopeID, projectID, taskID s
 	return t, nil
 }
 
+func (m *mockProjectStore) ArchiveProjectTaskIfRevision(accountScopeID, projectID, taskID string, revision int) (*pebblestore.ProjectTaskRecord, error) {
+ return m.UpdateProjectTask(accountScopeID,projectID,taskID,func(t *pebblestore.ProjectTaskRecord) error {
+  if t.Revision != revision { return fmt.Errorf("stale task revision") }
+  if t.Archived { return fmt.Errorf("task already archived") }
+  if t.SessionID != "" && (t.Status == "in_progress" || t.Status == "planning" || t.Status == "queued") { return fmt.Errorf("linked active task lifecycle") }
+  t.Archived=true;t.Revision++;return nil
+ })
+}
+
 func (m *mockProjectStore) DeleteProjectTask(accountScopeID, projectID, taskID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

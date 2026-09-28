@@ -77,7 +77,7 @@ func (s *Server) reconcileProjectTaskRunLifecycle(job sessionV3ExecutorJob, stat
 	if (!isPrimarySession && !isTaskProgramSession) || (task.AccountID != "" && task.AccountID != accountScopeID) {
 		return nil
 	}
-	if task.Agent == "image" || task.Agent == "video" || task.Agent == "sound" || task.Agent == "audio" {
+	if task.Archived || task.Agent == "image" || task.Agent == "video" || task.Agent == "sound" || task.Agent == "audio" {
 		return nil
 	}
 	if task.IsIntegrated || task.Status == "completed" || task.Status == "rejected" || task.Status == "pending_approval" || (task.Status == "queued" && status == sessionruntime.RunIntentCompleted) {

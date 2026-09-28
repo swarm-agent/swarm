@@ -44,6 +44,14 @@ func (r *Runtime) executeManageProjectTasks(scope WorkspaceScope, action string,
    result["deleted"] = true; result["task_id"] = taskID
    break
   }
+  if action == "archive_task" {
+   archiver, ok := r.projects.(interface{ ArchiveProjectTaskIfRevision(string,string,string,int) (*pebblestore.ProjectTaskRecord,error) })
+   if !ok { return "", errors.New("atomic guarded task archive unavailable") }
+   updated, err := archiver.ArchiveProjectTaskIfRevision(account, projectID, taskID, revision)
+   if err != nil { return "", err }
+   result["task"] = projectTaskSummary(*updated)
+   break
+  }
   if action == "update_task" {
    for _, key := range []string{"status", "current_stage_index", "task_program", "agent", "workspace_path", "session_id", "worktree_branch", "source_workspace", "revision"} {
     if _, exists := args[key]; exists { return "", fmt.Errorf("%s is not an editable task definition field", key) }
@@ -54,22 +62,17 @@ func (r *Runtime) executeManageProjectTasks(scope WorkspaceScope, action string,
   }
   updated, err := r.projects.UpdateProjectTask(account, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
    if t.Revision != revision { return fmt.Errorf("stale task revision: expected %d, current %d", revision, t.Revision) }
-   if action == "archive_task" {
-    if t.Status == "in_progress" || t.Status == "planning" || t.Status == "queued" && t.SessionID != "" { return errors.New("active task cannot be archived") }
-    t.Archived = true
-   } else {
-    if t.Archived { return errors.New("archived task cannot be edited") }
+   if t.Archived { return errors.New("archived task cannot be edited") }
     if raw, ok := args["title"]; ok { t.Title = strings.TrimSpace(asString(raw)); if t.Title == "" { return errors.New("title cannot be empty") } }
     if raw, ok := args["description"]; ok { t.Description = strings.TrimSpace(asString(raw)) }
     if raw, ok := args["worker_name"]; ok { t.WorkerName = strings.TrimSpace(asString(raw)) }
     if raw, ok := args["priority"]; ok { t.Priority = strings.TrimSpace(asString(raw)) }
     if raw, ok := args["group"]; ok { t.Group = strings.TrimSpace(asString(raw)) }
     if _, ok := args["order"]; ok { n, err := projectTaskInteger(args,"order",0,1000000); if err != nil { return err }; t.Order = n }
-   }
    t.Revision++
    return t.Validate()
   })
-  if err != nil { return "", err }; result["task"] = updated
+  if err != nil { return "", err }; result["task"] = projectTaskSummary(*updated)
  case "list_tasks", "reconcile_tasks":
   limit := 25
   if _, ok := args["limit"]; ok { limit, err = projectTaskInteger(args,"limit",1,100); if err != nil { return "", err } }
@@ -96,7 +99,11 @@ func (r *Runtime) executeManageProjectTasks(scope WorkspaceScope, action string,
   if cursor > len(filtered) { cursor = len(filtered) }
   end := cursor+limit; if end > len(filtered) { end = len(filtered) }
   if end < len(filtered) { result["next_cursor"] = end }
-  if action == "list_tasks" { result["tasks"] = filtered[cursor:end] } else {
+  if action == "list_tasks" {
+   rows := make([]projectTaskListRow,0,end-cursor)
+   for _, task := range filtered[cursor:end] { rows = append(rows,projectTaskSummary(task)) }
+   result["tasks"] = rows
+  } else {
    rows := make([]map[string]any,0,end-cursor)
    for _, task := range filtered[cursor:end] { rows = append(rows, r.reconcileProjectTask(scope,task)) }
    result["worktrees"] = rows
@@ -105,6 +112,31 @@ func (r *Runtime) executeManageProjectTasks(scope WorkspaceScope, action string,
  default: return "", fmt.Errorf("unknown project task action %q",action)
  }
  raw, err := json.Marshal(result); return string(raw),err
+}
+
+// projectTaskListRow is deliberately independent of the persisted record: adding
+// media or plan fields to storage must never expand list/mutation tool output.
+type projectTaskListRow struct {
+ ID string `json:"id"`
+ ProjectID string `json:"project_id"`
+ Revision int `json:"revision"`
+ Title string `json:"title"`
+ Status string `json:"status"`
+ Archived bool `json:"archived"`
+ Agent string `json:"agent,omitempty"`
+ SessionID string `json:"session_id,omitempty"`
+ TaskProgramID string `json:"task_program_id,omitempty"`
+ WorktreeBranch string `json:"worktree_branch,omitempty"`
+ SourceWorkspaceID string `json:"source_workspace_id,omitempty"`
+ Group string `json:"group,omitempty"`
+ Order int `json:"order"`
+ Priority string `json:"priority,omitempty"`
+}
+
+func projectTaskSummary(t pebblestore.ProjectTaskRecord) projectTaskListRow {
+ title := []rune(t.Title)
+ if len(title) > 256 { title = title[:256] }
+ return projectTaskListRow{ID:t.ID,ProjectID:t.ProjectID,Revision:t.Revision,Title:string(title),Status:t.Status,Archived:t.Archived,Agent:t.Agent,SessionID:t.SessionID,TaskProgramID:t.TaskProgramID,WorktreeBranch:t.WorktreeBranch,SourceWorkspaceID:t.SourceWorkspace.WorkspaceID,Group:t.Group,Order:t.Order,Priority:t.Priority}
 }
 
 func projectTaskInteger(args map[string]any, key string, min, max int) (int,error) {

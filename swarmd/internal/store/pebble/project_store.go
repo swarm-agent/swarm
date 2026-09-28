@@ -639,6 +639,12 @@ func (s *SessionStore) PutProjectTask(accountScopeID string, task *ProjectTaskRe
 }
 
 func (s *SessionStore) putProjectTaskLocked(accountScopeID string, task *ProjectTaskRecord) (*projectRealtimeMutation, error) {
+	return s.persistProjectTaskLocked(accountScopeID, task, true)
+}
+
+// persistProjectTaskLocked uses the same durable event boundary for ordinary
+// validated writes and archival of historical records with invalid contracts.
+func (s *SessionStore) persistProjectTaskLocked(accountScopeID string, task *ProjectTaskRecord, validate bool) (*projectRealtimeMutation, error) {
 	if task == nil {
 		return nil, errors.New("project task definition required")
 	}
@@ -646,9 +652,13 @@ func (s *SessionStore) putProjectTaskLocked(accountScopeID string, task *Project
 	if accountScopeID == "" {
 		return nil, errors.New("account scope id is required")
 	}
-	task.AccountID = accountScopeID
-	if err := task.Validate(); err != nil {
-		return nil, err
+	if validate {
+		task.AccountID = accountScopeID
+		if err := task.Validate(); err != nil {
+			return nil, err
+		}
+	} else if task.AccountID != accountScopeID || strings.TrimSpace(task.ProjectID) == "" || strings.TrimSpace(task.ID) == "" {
+		return nil, errors.New("archive task identity mismatch")
 	}
 	now := time.Now().UnixMilli()
 	isNew := false
@@ -832,6 +842,63 @@ func (s *SessionStore) UpdateProjectTask(accountScopeID, projectID, taskID strin
 		return nil, err
 	}
 	mut, err := s.putProjectTaskLocked(accountScopeID, record)
+	s.store.projectsMu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	s.store.publishProjectRealtime(mut)
+	return record, nil
+}
+
+// ArchiveProjectTaskIfRevision changes only archive metadata under the same
+// project lock and realtime transaction used for normal task mutations. It does
+// not revalidate historical execution contracts or mutate their lifecycle.
+func (s *SessionStore) ArchiveProjectTaskIfRevision(accountScopeID, projectID, taskID string, revision int) (*ProjectTaskRecord, error) {
+	if s == nil || s.store == nil || s.store.db == nil {
+		return nil, errors.New("database not available")
+	}
+	s.store.projectsMu.Lock()
+	record, found, err := s.GetProjectTask(accountScopeID, projectID, taskID)
+	if err == nil && (!found || record == nil) {
+		err = errors.New("project task not found")
+	}
+	if err == nil && record.Revision != revision {
+		err = fmt.Errorf("stale task revision: expected %d, current %d", revision, record.Revision)
+	}
+	if err == nil && record.Archived {
+		err = errors.New("task already archived")
+	}
+	if err == nil && record.SessionID != "" {
+		active, found, runErr := s.GetV3SessionActiveRunIntent(record.SessionID)
+		if runErr != nil {
+			err = runErr
+		} else if found && active.AccountScopeID == accountScopeID && (active.Status == V3RunIntentRunning || active.Status == V3RunIntentPendingExecutor) {
+			err = errors.New("task session has an active run; wait for its terminal lifecycle before archiving")
+		} else if found {
+			err = errors.New("task session has an unrelated active run; resolve its lifecycle before archiving")
+		}
+		// A linked reservation can still be picked up by recovery even when no
+		// executor is currently attached. Refuse ambiguous work rather than
+		// treating a missing active run as a terminal lifecycle event.
+		if err == nil && (record.Status == "in_progress" || record.Status == "planning" || record.Status == "queued") {
+			err = errors.New("task has a linked session in an active or recoverable state; resolve its lifecycle before archiving")
+		}
+	}
+	if err == nil && record.Status == "queued" {
+		err = errors.New("queued task may still be deployed; resolve its lifecycle before archiving")
+	}
+	if err == nil && record.TaskProgramID != "" && (record.Status == "in_progress" || record.Status == "planning") {
+		err = errors.New("task program may still be active; resolve its lifecycle before archiving")
+	}
+	if err == nil && record.SessionID == "" && record.TaskProgramID == "" && (record.Status == "in_progress" || record.Status == "planning") && (record.WorktreeBranch != "" || record.PlanBinding != nil) {
+		err = errors.New("task has execution linkage but no session; reconcile its lifecycle before archiving")
+	}
+	var mut *projectRealtimeMutation
+	if err == nil {
+		record.Archived = true
+		record.Revision++
+		mut, err = s.persistProjectTaskLocked(accountScopeID, record, false)
+	}
 	s.store.projectsMu.Unlock()
 	if err != nil {
 		return nil, err
