@@ -988,7 +988,7 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 
 	mode := sessionruntime.ModeAuto
 	targetAgent := strings.TrimSpace(task.Agent)
-	if targetAgent == "plan" || task.Status == "planning" || (targetAgent == "swarm" && strings.EqualFold(task.FeatureSize, "big")) {
+	if targetAgent == "plan" || task.Status == "planning" || task.TaskProgram != nil || task.OutcomeType == "plan_spec" || (targetAgent == "swarm" && strings.EqualFold(task.FeatureSize, "big")) {
 		mode = sessionruntime.ModePlan
 		targetAgent = "swarm"
 	}

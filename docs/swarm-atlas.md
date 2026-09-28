@@ -3345,3 +3345,8 @@ interaction verified the persisted replacement plan becomes visible without refr
 A sampled submitted-plan event-to-render interval was 63 ms, separate from 4.9 s
 planning wall time; three new-card samples were 69/62/93 ms. These are individual
 local-client samples, not population percentiles or a guarantee for every workload.
+
+Program-only project proposals are normalized into a guarded executable checkpoint
+before coordinator creation, avoiding the legacy bare session without agent profile.
+Program tasks now get plan mode and owned integration lanes. The focused
+`TestProgramOnlyTaskUsesCanonicalPlanSession` regression passes with no provider run.

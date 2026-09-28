@@ -141,11 +141,36 @@ func TestIdenticalTaskPromptsGetDistinctOwnedWorktrees(t *testing.T) {
 		t.Fatal("identical prompts shared a mutable worktree")
 	}
 	replayed, err := f.server.CreateProjectTask(context.Background(), p, project, input)
-	if err != nil || replayed.SessionID != second.SessionID || replayed.WorkspacePath != second.WorkspacePath { t.Fatalf("retry changed owned lane: %#v %v", replayed, err) }
+	if err != nil || replayed.SessionID != second.SessionID || replayed.WorkspacePath != second.WorkspacePath {
+		t.Fatalf("retry changed owned lane: %#v %v", replayed, err)
+	}
 }
 
 type distinctFixtureWorktrees struct{ testMockWorktreeService }
 
 func (m *distinctFixtureWorktrees) AllocateDetachedWorkspaceRequestedForPrincipal(p identity.Principal, workspace, seed, base, branch string) (worktreeruntime.Allocation, error) {
 	return worktreeruntime.Allocation{WorkspacePath: "/mock/worktrees/" + branch, BranchName: branch, BaseBranch: "dev", BaseCommit: "base-commit-sha-001", RepoRoot: workspace}, nil
+}
+
+func TestProgramOnlyTaskUsesCanonicalPlanSession(t *testing.T) {
+	f := setupMatrixTestFixture(t)
+	defer f.db.Close()
+	f.server.v3SessionExecutor = nil
+	p := identity.Principal{Type: "user", UserID: f.userID, AccountScopeID: f.accountID}
+	project := f.createProject(t)
+	if err := f.server.sessions.Store().CompleteRepositoryHistoryMaintenance(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var prog pebblestore.TaskProgramDefinition
+	if err := json.Unmarshal([]byte(`{"id":"files","stages":[{"id":"s1","dependency_evidence":"Ready"}],"jobs":[{"id":"file","stage_id":"s1","agent_type":"coder","title":"File","meta_prompt":"Write result.txt and commit","deliverable":"Committed result.txt","owned_scope":["result.txt"],"acceptance_criteria":["File committed"],"dependency_evidence":"Ready"}]}`), &prog); err != nil {
+		t.Fatal(err)
+	}
+	task, err := f.server.CreateProjectTask(context.Background(), p, project, tool.ProjectTaskCreateInput{Title: "Program only", Prompt: "Write a file", Agent: "swarm", TaskProgram: &prog})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, _, _ := f.server.sessions.Store().GetSession(task.SessionID)
+	if task.PlanBinding == nil || task.PlanDocument == nil || !sess.WorktreeEnabled || sess.Metadata["agent_profile"] == nil || sess.Mode != sessionruntime.ModePlan {
+		t.Fatalf("noncanonical program coordinator: task=%#v session=%#v", task, sess)
+	}
 }

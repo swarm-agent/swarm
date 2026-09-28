@@ -138,6 +138,14 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 		structDoc = input.PlanDocument
 	}
 	taskProg := input.TaskProgram
+	// Program-only proposals use the same executable-plan coordinator authority.
+	// The legacy bare coordinator lacks an agent profile and owned integration lane.
+	if structDoc == nil && taskProg != nil {
+		if err := pebblestore.ValidateTaskProgramDefinition(taskProg); err != nil {
+			return nil, err
+		}
+		structDoc = &pebblestore.SessionPlanDocument{Title: title, Info: pebblestore.SessionPlanInfo{Goal: prompt}, Checkpoints: []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Order: 1, Title: title, Tasks: []string{"Execute the proposed task program and verify its deliverables"}, AcceptanceCriteria: []string{"All declared jobs deliver their accepted committed outputs"}, TaskProgram: taskProg}}}
+	}
 	featureSize := strings.TrimSpace(input.FeatureSize)
 	outcomeType := strings.TrimSpace(input.OutcomeType)
 	tier := strings.TrimSpace(input.Tier)
