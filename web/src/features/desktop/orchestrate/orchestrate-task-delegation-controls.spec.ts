@@ -988,9 +988,18 @@ test('OrchestrateView source contracts: no premature execution, duplicate-click 
     source.includes('Plan definition revision guard is missing or stale'),
     'handleApproveTask must enforce plan revision guard'
   )
+  // The memo delegates reconciliation to the helper; terminal precedence lives there.
+  const helperSource = fs.readFileSync(path.join(__dirname, 'orchestrate-task-helpers.ts'), 'utf8')
   assert.ok(
-    source.includes("task.status === 'failed' || task.status === 'rejected'"),
-    'liveTasks memo must preserve failed and rejected task statuses without overwrite'
+    source.includes('tasks.map((task) => aggregateTaskLiveState(task, liveTaskSessionsData))'),
+    'liveTasks memo must use the canonical session-state aggregator'
+  )
+  assert.ok(
+    helperSource.includes("} else if (task.status === 'rejected') {") &&
+      helperSource.includes("status = 'rejected'") &&
+      helperSource.includes('if (isAnyFailed) {') &&
+      helperSource.includes("status = 'failed'"),
+    'aggregateTaskLiveState must retain rejected outcomes and prioritize failure over review'
   )
   assert.ok(
     source.includes('data-testid="task-failed-banner"'),
