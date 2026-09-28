@@ -2275,7 +2275,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			})
 
 			writeJSON(w, http.StatusCreated, map[string]any{
-				"task": sanitizeProjectTaskForClient(task),
+				"task": sanitizeProjectTaskForClient(&task),
 			})
 			return
 		}

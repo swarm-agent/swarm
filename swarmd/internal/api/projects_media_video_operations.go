@@ -386,7 +386,5 @@ func (s *Server) preflightVideoOperation(ctx context.Context, req videogen.Video
 	if pf, ok := s.videoGen.(videoPreflightService); ok {
 		return pf.PreflightVideoOperation(ctx, req)
 	}
-	// Fall back to direct videogen evaluator service constructed with server authority
-	svc := videogen.NewService(s.auth, s.uiSettings, s.model)
-	return svc.PreflightVideoOperation(ctx, req)
+	return nil, errors.New("video preflight service is not configured")
 }
