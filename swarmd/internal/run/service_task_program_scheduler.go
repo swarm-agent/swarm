@@ -1171,7 +1171,13 @@ func (p *taskProgramScheduler) syncProjectTask(status, actionNeeded string, what
 		return
 	}
 	_, _ = db.UpdateProjectTask(p.parentSession.AccountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
+		if t.SessionID != p.parentSession.ID {
+			return nil
+		}
 		t.TaskProgramStatus = &p.record
+		if t.IsIntegrated || t.Status == "completed" || t.Status == "rejected" {
+			return nil
+		}
 		if status != "" {
 			t.Status = status
 		}

@@ -77,12 +77,32 @@ func (s *Server) reconcileProjectTaskRunLifecycle(job sessionV3ExecutorJob, stat
 	if (!isPrimarySession && !isTaskProgramSession) || (task.AccountID != "" && task.AccountID != accountScopeID) {
 		return nil
 	}
+	if task.Agent == "image" || task.Agent == "video" || task.Agent == "sound" || task.Agent == "audio" {
+		return nil
+	}
+	if task.IsIntegrated || task.Status == "completed" || task.Status == "rejected" || task.Status == "pending_approval" || (task.Status == "queued" && status == sessionruntime.RunIntentCompleted) {
+		return nil
+	}
+
 	// Task Programs: sync TaskProgramStatus and task status, then emit project invalidation
 	if task.TaskProgramID != "" || task.TaskProgram != nil {
 		if progID != "" && task.SessionID != "" {
 			if prog, ok, _ := db.GetTaskProgram(task.SessionID, progID); ok {
 				_, err = db.UpdateProjectTask(accountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
+					if t.SessionID != task.SessionID {
+						return nil
+					}
+					currentProgID := t.TaskProgramID
+					if currentProgID == "" && t.TaskProgram != nil {
+						currentProgID = t.TaskProgram.ID
+					}
+					if currentProgID != progID {
+						return nil
+					}
 					t.TaskProgramStatus = &prog
+					if t.IsIntegrated || t.Status == "completed" || t.Status == "rejected" {
+						return nil
+					}
 					switch prog.State {
 					case pebblestore.TaskProgramStateRunning:
 						t.Status = "in_progress"
@@ -101,7 +121,7 @@ func (s *Server) reconcileProjectTaskRunLifecycle(job sessionV3ExecutorJob, stat
 							t.ActionNeeded = prog.Blocker.Message
 							t.LastError = prog.Blocker.Message
 						}
-					case pebblestore.TaskProgramStateFailed:
+					case pebblestore.TaskProgramStateFailed, pebblestore.TaskProgramStateCancelled:
 						t.Status = "failed"
 						if prog.Blocker != nil && prog.Blocker.Message != "" {
 							t.LastError = prog.Blocker.Message
@@ -112,12 +132,6 @@ func (s *Server) reconcileProjectTaskRunLifecycle(job sessionV3ExecutorJob, stat
 				return err
 			}
 		}
-		return nil
-	}
-	if task.Agent == "image" || task.Agent == "video" || task.Agent == "sound" || task.Agent == "audio" {
-		return nil
-	}
-	if task.IsIntegrated || task.Status == "completed" || task.Status == "pending_approval" || (task.Status == "queued" && status == sessionruntime.RunIntentCompleted) {
 		return nil
 	}
 
@@ -174,7 +188,13 @@ func (s *Server) reconcileProjectTaskRunLifecycle(job sessionV3ExecutorJob, stat
 		}
 		gitState := inspectTaskGitState(*task, db)
 		_, err = db.UpdateProjectTask(accountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
-			if t.Status != "in_progress" || t.SessionID != job.SessionID {
+			if t.SessionID != job.SessionID {
+				return nil
+			}
+			if t.IsIntegrated || t.Status == "completed" || t.Status == "rejected" {
+				return nil
+			}
+			if t.Status != "in_progress" {
 				return nil
 			}
 			if gitState.unintegratedCommits > 0 {
@@ -215,7 +235,13 @@ func (s *Server) reconcileProjectTaskRunLifecycle(job sessionV3ExecutorJob, stat
 		return err
 	case sessionruntime.RunIntentCancelled:
 		_, err = db.UpdateProjectTask(accountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
-			if (t.Status != "in_progress" && t.Status != "planning") || t.SessionID != job.SessionID {
+			if t.SessionID != job.SessionID {
+				return nil
+			}
+			if t.IsIntegrated || t.Status == "completed" || t.Status == "rejected" {
+				return nil
+			}
+			if t.Status != "in_progress" && t.Status != "planning" {
 				return nil
 			}
 			t.Status = "failed"
@@ -228,7 +254,13 @@ func (s *Server) reconcileProjectTaskRunLifecycle(job sessionV3ExecutorJob, stat
 		return err
 	case sessionruntime.RunIntentFailed, sessionruntime.RunIntentExpired, sessionruntime.RunIntentInterrupted, sessionruntime.RunIntentDispatchBlocked:
 		_, err = db.UpdateProjectTask(accountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
-			if (t.Status != "in_progress" && t.Status != "planning") || t.SessionID != job.SessionID {
+			if t.SessionID != job.SessionID {
+				return nil
+			}
+			if t.IsIntegrated || t.Status == "completed" || t.Status == "rejected" {
+				return nil
+			}
+			if t.Status != "in_progress" && t.Status != "planning" {
 				return nil
 			}
 			t.Status = "failed"

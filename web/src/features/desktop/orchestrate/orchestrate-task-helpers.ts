@@ -804,24 +804,45 @@ export function aggregateTaskLiveState(
   const primaryPlanDoc = selectTaskPlanDocument(task, primaryPlanRecord)
   const primaryLifecycle = primarySess?.lifecycle as any
 
+  const primaryIntentStatus = primaryIntent?.status?.trim().toLowerCase()
+  const primaryRunStatus = primaryView?.current_run_state?.status?.trim().toLowerCase()
+  const primaryPhase = primaryLifecycle?.phase?.trim().toLowerCase()
+
   const isPrimaryActive = Boolean(
     primaryLifecycle?.active === true ||
-    primaryIntent?.status === 'running' ||
-    primaryView?.current_run_state?.status === 'running'
+    primaryIntentStatus === 'running' ||
+    primaryIntentStatus === 'pending_executor' ||
+    primaryRunStatus === 'running' ||
+    primaryRunStatus === 'pending_executor'
   )
   const isPrimaryReview = Boolean(
     primaryPlanRecord?.status === 'waiting_review' ||
-    primaryLifecycle?.phase === 'needs_review' ||
+    primaryPhase === 'needs_review' ||
     primaryPlanDoc?.executionState?.status === 'waiting_review' ||
     primaryPlanDoc?.checkpoints?.some((cp: any) => cp.status === 'needs_review')
   )
   const isPrimaryFailed = Boolean(
-    primaryIntent?.status === 'failed' ||
-    primaryIntent?.status === 'cancelled' ||
-    primaryLifecycle?.phase === 'failed'
+    primaryIntentStatus === 'failed' ||
+    primaryIntentStatus === 'cancelled' ||
+    primaryIntentStatus === 'interrupted' ||
+    primaryIntentStatus === 'expired' ||
+    primaryPhase === 'failed' ||
+    primaryPhase === 'cancelled'
   )
 
-  const programJobs = task.taskProgramStatus?.jobs || (task as any).task_program_status?.jobs || []
+  const programJobs =
+    task.taskProgramStatus?.jobs ||
+    (task as any).task_program_status?.jobs ||
+    task.taskProgram?.jobs ||
+    (task as any).task_program?.jobs ||
+    []
+  const hasTaskProgram = Boolean(
+    task.taskProgramStatus ||
+    (task as any).task_program_status ||
+    task.taskProgram ||
+    (task as any).task_program ||
+    programJobs.length > 0
+  )
 
   // Map state for each associated session
   const sessionStates: TaskSessionStateItem[] = associatedSids.map((sid) => {
@@ -832,42 +853,92 @@ export function aggregateTaskLiveState(
     const sView = sData?.view
     const sLifecycle = sSess?.lifecycle as any
     const sPlan = sData?.planRecord as any
-    const sPlanDoc = selectTaskPlanDocument(task, sPlan)
+
+    // CRITICAL: Do NOT assign parent's plan to child coder sessions!
+    const isPlanOwner = Boolean(
+      (task.planBinding?.sessionId && task.planBinding.sessionId === sid) ||
+      (task.planBinding?.session_id && task.planBinding.session_id === sid) ||
+      ((task as any).plan_binding?.sessionId && (task as any).plan_binding.sessionId === sid) ||
+      ((task as any).plan_binding?.session_id && (task as any).plan_binding.session_id === sid) ||
+      (!hasTaskProgram && primarySessionId === sid)
+    )
+    const sPlanDoc = isPlanOwner ? selectTaskPlanDocument(task, sPlan) : sPlan?.document
+
+    const intentStatus = sIntent?.status?.trim().toLowerCase()
+    const currentRunStatus = sView?.current_run_state?.status?.trim().toLowerCase()
+    const lifecyclePhase = sLifecycle?.phase?.trim().toLowerCase()
+    const isLifecycleActiveFlag = Boolean(sLifecycle?.active === true)
 
     const isAct = Boolean(
-      sIntent?.status === 'running' ||
-      sView?.current_run_state?.status === 'running' ||
-      sLifecycle?.active === true
+      intentStatus === 'running' ||
+      intentStatus === 'pending_executor' ||
+      currentRunStatus === 'running' ||
+      currentRunStatus === 'pending_executor' ||
+      isLifecycleActiveFlag
     )
     const isRev = Boolean(
       sPlan?.status === 'waiting_review' ||
-      sLifecycle?.phase === 'needs_review' ||
+      lifecyclePhase === 'needs_review' ||
       sPlanDoc?.executionState?.status === 'waiting_review' ||
       sPlanDoc?.checkpoints?.some((cp: any) => cp.status === 'needs_review')
     )
     const isFail = Boolean(
-      sIntent?.status === 'failed' ||
-      sIntent?.status === 'cancelled' ||
-      sLifecycle?.phase === 'failed'
-    )
-    const isComp = Boolean(
-      (sIntent?.status === 'completed' || sLifecycle?.phase === 'completed') && !isRev && !isFail
+      intentStatus === 'failed' ||
+      intentStatus === 'cancelled' ||
+      intentStatus === 'interrupted' ||
+      intentStatus === 'expired' ||
+      lifecyclePhase === 'failed' ||
+      lifecyclePhase === 'cancelled'
     )
 
-    let itemStatus: 'running' | 'needs_review' | 'completed' | 'failed' | 'queued' = 'queued'
-    if (isAct) itemStatus = 'running'
-    else if (isRev) itemStatus = 'needs_review'
-    else if (isFail) itemStatus = 'failed'
-    else if (isComp) itemStatus = 'completed'
+    // CRITICAL: An approved plan with unfinished checkpoints does NOT complete on provider turn completion!
+    let isPlanUnfinished = false
+    if (isPlanOwner && sPlanDoc?.checkpoints && Array.isArray(sPlanDoc.checkpoints) && sPlanDoc.checkpoints.length > 0) {
+      if (sPlanDoc.checkpoints.some((cp: any) => cp.status !== 'completed')) {
+        isPlanUnfinished = true
+      }
+    }
+
+    const hasCompletedIntent = Boolean(
+      (intentStatus === 'completed' || lifecyclePhase === 'completed') && !isRev && !isFail
+    )
+    const isComp = hasCompletedIntent && !isPlanUnfinished
 
     const matchingJob = programJobs.find(
       (j: any) => j.child_session_id === sid || j.current_session_id === sid
     )
-    if (matchingJob) {
-      if (matchingJob.state === 'running') itemStatus = 'running'
-      else if (matchingJob.state === 'conflict') itemStatus = 'failed'
-      else if (matchingJob.state === 'handoff_ready') itemStatus = 'needs_review'
-      else if (matchingJob.state === 'integrated' || matchingJob.state === 'completed') itemStatus = 'completed'
+
+    const isHydrated = Boolean(sData && (sRecord || sIntent || sView))
+
+    let itemStatus: 'running' | 'needs_review' | 'completed' | 'failed' | 'queued' = 'queued'
+    if (isHydrated) {
+      // Runtime session terminal/active evidence is authoritative over stale job state
+      if (isFail) {
+        itemStatus = 'failed'
+      } else if (isRev) {
+        itemStatus = 'needs_review'
+      } else if (isComp) {
+        itemStatus = 'completed'
+      } else if (isAct || intentStatus === 'dispatch_blocked') {
+        itemStatus = 'running'
+      } else if (matchingJob) {
+        if (matchingJob.state === 'running') itemStatus = 'running'
+        else if (matchingJob.state === 'conflict' || matchingJob.state === 'failed') itemStatus = 'failed'
+        else if (matchingJob.state === 'handoff_ready') itemStatus = 'needs_review'
+        else if (matchingJob.state === 'integrated' || matchingJob.state === 'completed') itemStatus = 'completed'
+        else itemStatus = 'queued'
+      }
+    } else {
+      // Unhydrated != queued: use matchingJob state if present
+      if (matchingJob) {
+        if (matchingJob.state === 'running') itemStatus = 'running'
+        else if (matchingJob.state === 'conflict' || matchingJob.state === 'failed') itemStatus = 'failed'
+        else if (matchingJob.state === 'handoff_ready') itemStatus = 'needs_review'
+        else if (matchingJob.state === 'integrated' || matchingJob.state === 'completed') itemStatus = 'completed'
+        else itemStatus = 'queued'
+      } else {
+        itemStatus = 'queued'
+      }
     }
 
     const jobDef = task.taskProgram?.jobs?.find((j: any) => j.id === matchingJob?.job_id)
@@ -881,25 +952,47 @@ export function aggregateTaskLiveState(
     }
   })
 
-  // Overlay jobs that might not have sessions materialized yet
+  // For Task Programs: separate child coder jobs from the parent coordinator session
+  const isTaskProgramTask = hasTaskProgram && programJobs.length > 0
+  const relevantSessionStates = isTaskProgramTask
+    ? sessionStates.filter((s) => s.sessionId !== primarySessionId || programJobs.some((j: any) => (j.current_session_id || j.child_session_id) === s.sessionId))
+    : sessionStates
+
+  let unallocatedJobsCount = 0
   let jobRunningCount = 0
   let jobReviewCount = 0
   let jobFailedCount = 0
   let jobCompletedCount = 0
   for (const j of programJobs) {
-    if (j.state === 'running') jobRunningCount++
-    else if (j.state === 'conflict') jobFailedCount++
-    else if (j.state === 'handoff_ready') jobReviewCount++
-    else if (j.state === 'integrated' || j.state === 'completed') jobCompletedCount++
+    const jobSid = (j.current_session_id || j.child_session_id)?.trim()
+    const state = j.state?.trim().toLowerCase()
+    if (!jobSid || state === 'declared' || state === 'queued') {
+      unallocatedJobsCount++
+    }
+    if (state === 'running') jobRunningCount++
+    else if (state === 'conflict' || state === 'failed') jobFailedCount++
+    else if (state === 'handoff_ready') jobReviewCount++
+    else if (state === 'integrated' || state === 'completed') jobCompletedCount++
   }
 
-  const runningSessions = Math.max(sessionStates.filter((s) => s.status === 'running').length, jobRunningCount)
-  const reviewSessions = Math.max(sessionStates.filter((s) => s.status === 'needs_review').length, jobReviewCount)
-  const failedSessions = Math.max(sessionStates.filter((s) => s.status === 'failed').length, jobFailedCount)
-  const completedSessions = Math.max(sessionStates.filter((s) => s.status === 'completed').length, jobCompletedCount)
+  const runningSessions = isTaskProgramTask
+    ? relevantSessionStates.filter((s) => s.status === 'running').length
+    : Math.max(relevantSessionStates.filter((s) => s.status === 'running').length, jobRunningCount)
+
+  const reviewSessions = isTaskProgramTask
+    ? relevantSessionStates.filter((s) => s.status === 'needs_review').length
+    : Math.max(relevantSessionStates.filter((s) => s.status === 'needs_review').length, jobReviewCount)
+
+  const failedSessions = isTaskProgramTask
+    ? relevantSessionStates.filter((s) => s.status === 'failed').length
+    : Math.max(relevantSessionStates.filter((s) => s.status === 'failed').length, jobFailedCount)
+
+  const completedSessions = isTaskProgramTask
+    ? relevantSessionStates.filter((s) => s.status === 'completed').length
+    : Math.max(relevantSessionStates.filter((s) => s.status === 'completed').length, jobCompletedCount)
 
   const sessionSummary: TaskSessionSummary = {
-    totalSessions: Math.max(sessionStates.length, programJobs.length, 1),
+    totalSessions: isTaskProgramTask ? programJobs.length : Math.max(relevantSessionStates.length, 1),
     runningSessions,
     reviewSessions,
     failedSessions,
@@ -909,7 +1002,7 @@ export function aggregateTaskLiveState(
 
   // Aggregate Status computation
   let status = task.status
-  const isLifecycleActive = isPrimaryActive || runningSessions > 0
+  const isLifecycleActive = isPrimaryActive || runningSessions > 0 || unallocatedJobsCount > 0
   const hasReviewRequired = isPrimaryReview || reviewSessions > 0
   const isAnyFailed = isPrimaryFailed || failedSessions > 0
 
@@ -940,21 +1033,41 @@ export function aggregateTaskLiveState(
     }
   } else {
     // In execution (in_progress, running, needs_review, failed)
-    if (isLifecycleActive) {
-      status = 'running'
-    } else if (hasReviewRequired) {
-      if (task.isIntegrated) {
-        status = 'completed'
-      } else {
+    const tpRecordState = (task.taskProgramStatus?.state || (task as any).task_program_status?.state)?.trim().toLowerCase()
+    if (tpRecordState) {
+      // Backend TaskProgram record is authoritative
+      if (tpRecordState === 'completed') {
+        status = (task.isIntegrated || task.status === 'completed') ? 'completed' : 'needs_review'
+      } else if (tpRecordState === 'failed' || tpRecordState === 'cancelled') {
+        status = 'failed'
+      } else if (tpRecordState === 'blocked') {
         status = 'needs_review'
+      } else if (tpRecordState === 'running') {
+        status = 'running'
       }
-    } else if (isAnyFailed) {
-      status = 'failed'
-    } else if (sessionStates.length > 0 && completedSessions === sessionStates.length) {
-      if (task.isIntegrated || task.status === 'completed') {
-        status = 'completed'
-      } else {
-        status = 'needs_review'
+    } else {
+      // Live session aggregation
+      if (isLifecycleActive) {
+        status = 'running'
+      } else if (isAnyFailed) {
+        // CRITICAL: Check failure BEFORE review; never mask failures with review!
+        status = 'failed'
+      } else if (hasReviewRequired) {
+        if (task.isIntegrated) {
+          status = 'completed'
+        } else {
+          status = 'needs_review'
+        }
+      } else if (
+        isTaskProgramTask
+          ? (programJobs.length > 0 && completedSessions === programJobs.length && unallocatedJobsCount === 0)
+          : (relevantSessionStates.length > 0 && completedSessions === relevantSessionStates.length)
+      ) {
+        if (task.isIntegrated || task.status === 'completed') {
+          status = 'completed'
+        } else {
+          status = 'needs_review'
+        }
       }
     }
   }
@@ -1039,9 +1152,9 @@ export function aggregateTaskLiveState(
   const programJobsCount = programJobs.length
   let planProgressPercent: number | undefined
   if (totalSubtasks > 0) {
-    planProgressPercent = Math.round((completedSubtasks / totalSubtasks) * 100)
+    planProgressPercent = Math.min(100, Math.round((completedSubtasks / totalSubtasks) * 100))
   } else if (programJobsCount > 0) {
-    planProgressPercent = Math.round((completedSessions / programJobsCount) * 100)
+    planProgressPercent = Math.min(100, Math.round((completedSessions / programJobsCount) * 100))
   } else {
     planProgressPercent = task.planProgressPercent
   }
@@ -1074,7 +1187,7 @@ export function aggregateTaskLiveState(
       totalSubtasks > 0
         ? { completed: completedSubtasks, total: totalSubtasks }
         : programJobsCount > 0
-        ? { completed: completedSessions, total: programJobsCount }
+        ? { completed: Math.min(completedSessions, programJobsCount), total: programJobsCount }
         : task.subtasksCount,
     startedAt,
     elapsedMs,

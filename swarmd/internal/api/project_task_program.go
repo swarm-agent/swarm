@@ -62,33 +62,34 @@ func hydrateTaskProgramStatus(task *pebblestore.ProjectTaskRecord, db *pebblesto
 	}
 }
 
-// hydrateTaskPlanDocument populates PlanDocument from Pebble if a PlanBinding exists.
+// hydrateTaskPlanDocument populates PlanDocument from Pebble if an exact PlanBinding exists.
+// Hydration must honor exact PlanBinding.SessionID, PlanID, and DefinitionRevision, and never
+// attach an unrelated active plan.
 func hydrateTaskPlanDocument(task *pebblestore.ProjectTaskRecord, db *pebblestore.SessionStore) {
 	if task == nil || db == nil {
 		return
 	}
-	sessID := task.SessionID
-	if sessID == "" && task.PlanBinding != nil {
-		sessID = task.PlanBinding.SessionID
+	if task.PlanBinding == nil || task.PlanBinding.PlanID == "" {
+		return
 	}
-	if task.PlanDocument == nil && task.PlanBinding != nil && task.PlanBinding.PlanID != "" && sessID != "" {
-		if plan, ok, _ := db.GetPlan(sessID, task.PlanBinding.PlanID); ok && plan.Document != nil {
-			task.PlanDocument = plan.Document
-		}
+	sessID := task.PlanBinding.SessionID
+	if sessID == "" {
+		sessID = task.SessionID
 	}
-	if task.PlanDocument == nil && sessID != "" {
-		if active, ok, _ := db.GetActivePlan(sessID); ok && active.PlanID != "" {
-			if plan, ok, _ := db.GetPlan(sessID, active.PlanID); ok && plan.Document != nil {
-				task.PlanDocument = plan.Document
-				if task.PlanBinding == nil {
-					task.PlanBinding = &pebblestore.ProjectTaskPlanBinding{
-						PlanID:             plan.ID,
-						SessionID:          sessID,
-						DefinitionRevision: plan.Version,
-					}
+	if sessID == "" {
+		return
+	}
+	if plan, ok, _ := db.GetPlan(sessID, task.PlanBinding.PlanID); ok && plan.Document != nil {
+		if task.PlanBinding.DefinitionRevision > 0 {
+			if plan.ApprovalState == "approved" {
+				if task.PlanBinding.Receipt != "" && plan.AcceptedDefinitionReceipt != "" && plan.AcceptedDefinitionReceipt != task.PlanBinding.Receipt {
+					return
 				}
+			} else if plan.Version > 0 && plan.Version != task.PlanBinding.DefinitionRevision {
+				return
 			}
 		}
+		task.PlanDocument = plan.Document
 	}
 }
 

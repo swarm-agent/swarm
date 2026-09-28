@@ -2229,15 +2229,28 @@ func (e *sessionV3Executor) coordinatorTaskProgramResponse(ctx context.Context, 
 	freshRecord, _, _ := db.GetTaskProgram(job.SessionID, taskProgramID)
 	if projectID != "" && taskID != "" {
 		_, _ = db.UpdateProjectTask(accountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
+			if t.SessionID != job.SessionID {
+				return nil
+			}
 			t.TaskProgramStatus = &freshRecord
+			if t.IsIntegrated || t.Status == "completed" || t.Status == "rejected" {
+				return nil
+			}
 			if freshRecord.State == pebblestore.TaskProgramStateCompleted {
-				t.Status = "completed"
-				t.ActionNeeded = ""
+				if !t.IsIntegrated {
+					t.Status = "needs_review"
+					if t.ActionNeeded == "" || strings.HasPrefix(t.ActionNeeded, "Action Needed: 0") {
+						t.ActionNeeded = "Action Needed: All task program jobs finished and integrated. Ready to integrate into dev/main."
+					}
+				} else {
+					t.Status = "completed"
+					t.ActionNeeded = ""
+				}
 				t.WhatDidDo = append(t.WhatDidDo, "Task program completed successfully")
 			} else if freshRecord.State == pebblestore.TaskProgramStateBlocked {
 				t.Status = "needs_review"
 				t.ActionNeeded = "Task program blocked; review needed"
-			} else if freshRecord.State == pebblestore.TaskProgramStateFailed {
+			} else if freshRecord.State == pebblestore.TaskProgramStateFailed || freshRecord.State == pebblestore.TaskProgramStateCancelled {
 				t.Status = "failed"
 				t.LastError = statusStr
 				t.ActionNeeded = "Task program failed"

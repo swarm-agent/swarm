@@ -795,6 +795,20 @@ function MinimalTaskCard({
   const isPlanTaskWithoutStructuredPlan = Boolean(
     (task.agentType === 'plan' || task.outcomeType === 'plan_spec') && !hasStructuredPlan
   )
+  const bindingRevision =
+    task.planBinding?.definitionRevision ??
+    task.planBinding?.definition_revision ??
+    (task as any).plan_binding?.definitionRevision ??
+    (task as any).plan_binding?.definition_revision
+  const hasPlanBinding = Boolean(
+    task.planBinding?.planId ||
+    task.planBinding?.plan_id ||
+    (task as any).plan_binding?.planId ||
+    (task as any).plan_binding?.plan_id
+  )
+  const isPlanBindingMissingRevision = Boolean(
+    hasPlanBinding && (typeof bindingRevision !== 'number' || bindingRevision <= 0)
+  )
   const taskSessionId = task.planBinding?.sessionId || task.planBinding?.session_id || (task as any).plan_binding?.sessionId || (task as any).plan_binding?.session_id || task.sessionId
 
   const programJobs = useMemo(() => {
@@ -1071,15 +1085,19 @@ function MinimalTaskCard({
           {isPendingApproval && onApprove && (
             <button
               type="button"
-              disabled={isApproving || isPlanRejected || isPlanTaskWithoutStructuredPlan}
+              disabled={isApproving || isPlanRejected || isPlanTaskWithoutStructuredPlan || isPlanBindingMissingRevision}
               onClick={(e) => {
                 e.stopPropagation()
-                if (!isApproving && !isPlanRejected && !isPlanTaskWithoutStructuredPlan) {
+                if (!isApproving && !isPlanRejected && !isPlanTaskWithoutStructuredPlan && !isPlanBindingMissingRevision) {
                   onApprove()
                 }
               }}
               className="flex items-center gap-1 px-2.5 py-1 rounded bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-[10px] font-bold transition-all shadow"
-              title="Approve and start task execution"
+              title={
+                isPlanBindingMissingRevision
+                  ? 'Plan definition revision guard is missing or unverified'
+                  : 'Approve and start task execution'
+              }
             >
               {isApproving ? <Loader2 size={10} className="animate-spin text-blue-200" /> : <Sparkles size={10} />}
               <span>Approve</span>
@@ -1826,15 +1844,15 @@ function MinimalTaskCard({
                 {onApprove && (
                   <button
                     type="button"
-                    disabled={isApproving || isPlanRejected || isPlanTaskWithoutStructuredPlan}
+                    disabled={isApproving || isPlanRejected || isPlanTaskWithoutStructuredPlan || isPlanBindingMissingRevision}
                     onClick={(e) => {
                       e.stopPropagation()
-                      if (!isApproving && !isPlanRejected && !isPlanTaskWithoutStructuredPlan) {
+                      if (!isApproving && !isPlanRejected && !isPlanTaskWithoutStructuredPlan && !isPlanBindingMissingRevision) {
                         onApprove()
                       }
                     }}
                     className={`flex items-center gap-1.5 px-3 py-1.5 rounded font-bold text-xs shadow-md transition-all ${
-                      isApproving || isPlanRejected || isPlanTaskWithoutStructuredPlan
+                      isApproving || isPlanRejected || isPlanTaskWithoutStructuredPlan || isPlanBindingMissingRevision
                         ? 'bg-slate-800 text-slate-500 cursor-not-allowed opacity-80'
                         : 'bg-blue-600 hover:bg-blue-500 text-white active:scale-95'
                     }`}
@@ -1844,6 +1862,8 @@ function MinimalTaskCard({
                         ? 'Plan definition was rejected. Click Refine Plan to author a revised plan.'
                         : isPlanTaskWithoutStructuredPlan
                         ? 'Waiting for structured plan to be authored before approval.'
+                        : isPlanBindingMissingRevision
+                        ? 'Plan definition revision guard is missing or unverified.'
                         : undefined
                     }
                   >
@@ -5222,7 +5242,13 @@ export function OrchestrateView({
       targetTask.planDocument ||
       (targetTask as any).plan_document
     )
-    if (isPlanTask && (!acceptanceBody.plan_id || acceptanceBody.definition_revision == null || acceptanceBody.definition_revision <= 0)) {
+    const hasBinding = Boolean(
+      targetTask.planBinding?.planId ||
+      targetTask.planBinding?.plan_id ||
+      (targetTask as any).plan_binding?.planId ||
+      (targetTask as any).plan_binding?.plan_id
+    )
+    if ((isPlanTask || hasBinding) && (!acceptanceBody.plan_id || acceptanceBody.definition_revision == null || acceptanceBody.definition_revision <= 0)) {
       setTaskActionErrors((prev) => ({
         ...prev,
         [taskId]: 'Plan definition revision guard is missing or stale. Cannot execute without verified plan revision.',

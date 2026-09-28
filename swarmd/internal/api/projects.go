@@ -319,6 +319,9 @@ func syncTaskSessionState(task *pebblestore.ProjectTaskRecord, db *pebblestore.S
 	if task.Status == "completed" {
 		return
 	}
+	if task.Status == "rejected" {
+		return
+	}
 
 	// 2a. Planning task check: check if planning session produced an active plan or concluded with failure
 	if task.Status == "planning" {
@@ -366,6 +369,9 @@ func syncTaskSessionState(task *pebblestore.ProjectTaskRecord, db *pebblestore.S
 		if progID != "" && task.SessionID != "" {
 			if prog, ok, _ := db.GetTaskProgram(task.SessionID, progID); ok {
 				task.TaskProgramStatus = &prog
+				if task.IsIntegrated || task.Status == "completed" || task.Status == "rejected" {
+					return
+				}
 				switch prog.State {
 				case pebblestore.TaskProgramStateRunning:
 					task.Status = "in_progress"
@@ -387,8 +393,11 @@ func syncTaskSessionState(task *pebblestore.ProjectTaskRecord, db *pebblestore.S
 						task.LastError = prog.Blocker.Message
 					}
 					return
-				case pebblestore.TaskProgramStateFailed:
+				case pebblestore.TaskProgramStateFailed, pebblestore.TaskProgramStateCancelled:
 					task.Status = "failed"
+					if prog.Blocker != nil && prog.Blocker.Message != "" {
+						task.LastError = prog.Blocker.Message
+					}
 					return
 				}
 			}

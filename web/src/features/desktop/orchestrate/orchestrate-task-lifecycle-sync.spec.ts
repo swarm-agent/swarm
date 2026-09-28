@@ -77,10 +77,11 @@ test('Invariant 1: extractTaskSessionIds extracts and deduplicates session IDs a
     },
   }
   const sids3 = extractTaskSessionIds(task3)
+  // Current attempt supersedes historical sessions and generation_history is excluded
+  // so old failures cannot poison state/counts.
   assert.deepEqual(sids3, [
     'sess-coder-a',
     'sess-coder-b-new',
-    'sess-coder-b-old',
     'sess-coder-c',
     'sess-coordinator-3',
   ])
@@ -122,6 +123,7 @@ test('Invariant 2: computeActiveTaskSessionIds includes all associated sessions 
     'sess-job-1',
     'sess-job-2',
     'sess-plan',
+    'sess-queue',
     'sess-run',
   ])
 
@@ -133,6 +135,7 @@ test('Invariant 2: computeActiveTaskSessionIds includes all associated sessions 
     'sess-job-1',
     'sess-job-2',
     'sess-plan',
+    'sess-queue',
     'sess-run',
   ])
 })
@@ -373,4 +376,254 @@ test('Invariant 5: Source static assertions: MinimalTaskCard renders bigger defa
   assert.ok(source.includes('data-testid="toggle-task-details-btn"'), 'Must render expand details toggle button')
   assert.ok(source.includes('data-testid="orchestrate-task-list"'), 'Must render orchestrate-task-list testid')
   assert.ok(!source.includes('className="flex items-center justify-between p-3 cursor-pointer hover:bg-white/[0.02]"'), 'Thin task bar must be eliminated')
+})
+
+test('Invariant 6: Approved plan with unfinished checkpoints does NOT complete on provider turn completion', () => {
+  // Written Purpose:
+  // - Requirement: When a plan-driven task has an approved plan with unfinished checkpoints,
+  //   a completed provider turn (intent status completed) must NOT mark the task or session completed or ready for review.
+  // - Threat/regression: premature task completion when agent finishes single checkpoint turn in a multi-checkpoint plan.
+  // - Boundary: aggregateTaskLiveState in orchestrate-task-helpers.ts.
+
+  const planTask: RunningTask = {
+    id: 'task-plan-exec-1',
+    title: 'Multi-checkpoint Plan Execution',
+    agentType: 'swarm',
+    status: 'in_progress',
+    workspaceTarget: 'swarm-go',
+    elapsed: '1m',
+    subtasks: [],
+    sessionId: 'sess-plan-exec',
+    planBinding: {
+      planId: 'plan-exec-1',
+      sessionId: 'sess-plan-exec',
+      definitionRevision: 2,
+    },
+    planDocument: {
+      id: 'plan-exec-1',
+      title: 'Execution Plan',
+      checkpoints: [
+        { id: 'cp-1', title: 'Checkpoint 1', status: 'completed' },
+        { id: 'cp-2', title: 'Checkpoint 2', status: 'pending' },
+      ],
+    },
+  }
+
+  // Provider turn ended for cp-1, but cp-2 is still pending
+  const turnCompletedLookup: Record<string, SessionDataLookup> = {
+    'sess-plan-exec': {
+      intent: { status: 'completed' },
+      sessionRecord: {
+        kind: 'full',
+        session: { id: 'sess-plan-exec', lifecycle: { active: false, phase: 'in_progress' } },
+      },
+      planRecord: {
+        id: 'plan-exec-1',
+        version: 2,
+        document: planTask.planDocument,
+      },
+    },
+  }
+
+  const live = aggregateTaskLiveState(planTask, turnCompletedLookup)
+  assert.notEqual(live.status, 'completed', 'Task must NOT complete when plan checkpoints remain pending')
+  assert.notEqual(live.status, 'needs_review', 'Task must NOT transition to needs_review when plan checkpoints remain pending')
+  assert.equal(live.sessionSummary?.completedSessions, 0, 'Session must not be counted completed while plan is unfinished')
+})
+
+test('Invariant 7: Child coder sessions do NOT inherit parent plan document and do not get falsely marked needs_review', () => {
+  // Written Purpose:
+  // - Requirement: Child sessions in a Task Program must not inherit the parent coordinator\'s plan document.
+  // - Threat/regression: Parent plan review state polluting child session states.
+  // - Boundary: aggregateTaskLiveState in orchestrate-task-helpers.ts.
+
+  const taskProgramWithPlan: RunningTask = {
+    id: 'task-tp-plan',
+    title: 'Coordinator With Plan',
+    agentType: 'swarm',
+    status: 'in_progress',
+    workspaceTarget: 'swarm-go',
+    elapsed: '30s',
+    subtasks: [],
+    sessionId: 'sess-coord-p',
+    planBinding: {
+      planId: 'plan-coord',
+      sessionId: 'sess-coord-p',
+      definitionRevision: 1,
+    },
+    planDocument: {
+      id: 'plan-coord',
+      status: 'waiting_review',
+      checkpoints: [{ id: 'cp-1', status: 'needs_review' }],
+    },
+    taskProgramStatus: {
+      parent_session_id: 'sess-coord-p',
+      program_id: 'prog-p',
+      state: 'running',
+      definition: { stages: [], jobs: [] },
+      jobs: [
+        { job_id: 'job-1', stage_id: 's1', state: 'running', child_session_id: 'sess-child-1' },
+      ],
+    },
+  }
+
+  const lookup: Record<string, SessionDataLookup> = {
+    'sess-coord-p': {
+      sessionRecord: { kind: 'full', session: { id: 'sess-coord-p', lifecycle: { active: true } } },
+      planRecord: { id: 'plan-coord', status: 'waiting_review', document: taskProgramWithPlan.planDocument },
+    },
+    'sess-child-1': {
+      intent: { status: 'running' },
+      sessionRecord: { kind: 'full', session: { id: 'sess-child-1', lifecycle: { active: true } } },
+    },
+  }
+
+  const live = aggregateTaskLiveState(taskProgramWithPlan, lookup)
+  const childState = live.sessionSummary?.sessionStates.find((s) => s.sessionId === 'sess-child-1')
+  assert.equal(childState?.status, 'running', 'Child session must NOT inherit parent plan waiting_review status!')
+})
+
+test('Invariant 8: Stale running job state does NOT override terminal child session evidence', () => {
+  // Written Purpose:
+  // - Requirement: If a child session has completed or failed in runtime session store,
+  //   a stale job state (\'running\') in the Task Program record must not override the terminal session status.
+  // - Threat/regression: UI stuck in running state because job record in Pebble has not yet transitioned.
+  // - Boundary: aggregateTaskLiveState in orchestrate-task-helpers.ts.
+
+  const taskWithStaleJob: RunningTask = {
+    id: 'task-tp-stale',
+    title: 'Stale Job Override Test',
+    agentType: 'swarm',
+    status: 'in_progress',
+    workspaceTarget: 'swarm-go',
+    elapsed: '45s',
+    subtasks: [],
+    sessionId: 'sess-coord-s',
+    taskProgramStatus: {
+      parent_session_id: 'sess-coord-s',
+      program_id: 'prog-s',
+      state: 'running',
+      definition: { stages: [], jobs: [] },
+      jobs: [
+        // Stale job record claims running
+        { job_id: 'job-done', stage_id: 's1', state: 'running', child_session_id: 'sess-child-done' },
+      ],
+    },
+  }
+
+  // Session runtime has terminal completed intent
+  const lookup: Record<string, SessionDataLookup> = {
+    'sess-coord-s': {
+      sessionRecord: { kind: 'full', session: { id: 'sess-coord-s', lifecycle: { active: true } } },
+    },
+    'sess-child-done': {
+      intent: { status: 'completed' },
+      sessionRecord: { kind: 'full', session: { id: 'sess-child-done', lifecycle: { active: false, phase: 'completed' } } },
+    },
+  }
+
+  const live = aggregateTaskLiveState(taskWithStaleJob, lookup)
+  const childState = live.sessionSummary?.sessionStates.find((s) => s.sessionId === 'sess-child-done')
+  assert.equal(childState?.status, 'completed', 'Terminal child session must not be overridden by stale running job state!')
+})
+
+test('Invariant 9: Unallocated/queued jobs prevent whole-task completion or review, and progress percent <= 100%', () => {
+  // Written Purpose:
+  // - Requirement: When a Task Program has unallocated jobs or jobs in declared/queued state,
+  //   the overall task cannot be completed or needs_review. Progress percent must never exceed 100%.
+  // - Threat/regression: Early review state before later pipeline stages/jobs even launch.
+  // - Boundary: aggregateTaskLiveState in orchestrate-task-helpers.ts.
+
+  const taskWithUnallocated: RunningTask = {
+    id: 'task-tp-unalloc',
+    title: 'Multi-stage Pipeline',
+    agentType: 'swarm',
+    status: 'in_progress',
+    workspaceTarget: 'swarm-go',
+    elapsed: '1m',
+    subtasks: [],
+    sessionId: 'sess-coord-u',
+    taskProgramStatus: {
+      parent_session_id: 'sess-coord-u',
+      program_id: 'prog-u',
+      state: 'running',
+      definition: { stages: [], jobs: [] },
+      jobs: [
+        { job_id: 'job-1', stage_id: 's1', state: 'completed', child_session_id: 'sess-j1' },
+        { job_id: 'job-2', stage_id: 's2', state: 'declared' }, // Unallocated
+      ],
+    },
+  }
+
+  const lookup: Record<string, SessionDataLookup> = {
+    'sess-coord-u': {
+      sessionRecord: { kind: 'full', session: { id: 'sess-coord-u', lifecycle: { active: false } } },
+    },
+    'sess-j1': {
+      intent: { status: 'completed' },
+      sessionRecord: { kind: 'full', session: { id: 'sess-j1', lifecycle: { active: false, phase: 'completed' } } },
+    },
+  }
+
+  const live = aggregateTaskLiveState(taskWithUnallocated, lookup)
+  assert.equal(live.status, 'running', 'Task with unallocated jobs must remain running!')
+  assert.ok(typeof live.planProgressPercent === 'number' && live.planProgressPercent <= 100, 'Progress must be <= 100%')
+})
+
+test('Invariant 10: Failures are never masked by review sessions in multi-session aggregation', () => {
+  // Written Purpose:
+  // - Requirement: If any associated session or job has failed, the task status must surface failed,
+  //   even if other sessions are in needs_review or handoff_ready.
+  // - Threat/regression: Review priority hiding catastrophic child failure.
+  // - Boundary: aggregateTaskLiveState in orchestrate-task-helpers.ts.
+
+  const taskMixed: RunningTask = {
+    id: 'task-tp-mixed',
+    title: 'Mixed Review and Fail',
+    agentType: 'swarm',
+    status: 'in_progress',
+    workspaceTarget: 'swarm-go',
+    elapsed: '1m',
+    subtasks: [],
+    sessionId: 'sess-coord-m',
+    taskProgramStatus: {
+      parent_session_id: 'sess-coord-m',
+      program_id: 'prog-m',
+      jobs: [
+        { job_id: 'j-rev', stage_id: 's1', state: 'handoff_ready', child_session_id: 'sess-rev' },
+        { job_id: 'j-fail', stage_id: 's1', state: 'conflict', child_session_id: 'sess-fail' },
+      ],
+    },
+  }
+
+  const lookup: Record<string, SessionDataLookup> = {
+    'sess-coord-m': {
+      sessionRecord: { kind: 'full', session: { id: 'sess-coord-m', lifecycle: { active: false } } },
+    },
+    'sess-rev': {
+      intent: { status: 'completed' },
+      sessionRecord: { kind: 'full', session: { id: 'sess-rev', lifecycle: { active: false, phase: 'needs_review' } } },
+    },
+    'sess-fail': {
+      intent: { status: 'failed', blocked_reason: 'Branch conflict on rebase' },
+      sessionRecord: { kind: 'full', session: { id: 'sess-fail', lifecycle: { active: false, phase: 'failed' } } },
+    },
+  }
+
+  const live = aggregateTaskLiveState(taskMixed, lookup)
+  assert.equal(live.status, 'failed', 'Failure MUST take precedence over review!')
+  assert.equal(live.sessionSummary?.failedSessions, 1)
+  assert.equal(live.sessionSummary?.reviewSessions, 1)
+})
+
+test('Invariant 11: Plan binding without verified definitionRevision disables Approve button', () => {
+  // Written Purpose:
+  // - Requirement: Frontend must not authorize Approve if plan binding lacks definition revision (> 0).
+  // - Threat/regression: Authorizing stale plan definitions or bypassing revision verification.
+  // - Boundary: OrchestrateView.tsx source checks.
+
+  const sourcePath = path.join(__dirname, 'OrchestrateView.tsx')
+  const source = fs.readFileSync(sourcePath, 'utf8')
+  assert.ok(source.includes('isPlanBindingMissingRevision'), 'Must enforce isPlanBindingMissingRevision guard')
+  assert.ok(source.includes('data-testid="approve-task-btn"'), 'Must have approve-task-btn')
 })

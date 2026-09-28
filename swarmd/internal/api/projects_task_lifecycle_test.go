@@ -1105,3 +1105,213 @@ func TestProjectTask_ReconcilePlanningRun_Failure_TransitionsToFailed(t *testing
 		t.Fatalf("expected LastError 'Model quota exceeded', got %q", updatedTask.LastError)
 	}
 }
+
+func TestProjectTask_ReconcileProjectTaskRunLifecycle_PreservesCompletedAndIntegratedAndRejected(t *testing.T) {
+	// Written Purpose:
+	// - Product Requirement: reconcileProjectTaskRunLifecycle must NOT regress tasks that are already
+	//   completed, integrated, or rejected, even when a concurrent or late task program run terminates.
+	// - Boundary/authority: reconcileProjectTaskRunLifecycle in projects_realtime.go, UpdateProjectTask callback guards.
+	// - Threat/regression: Completed or integrated tasks regressing to in_progress or needs_review.
+	// - Narrowest layer: Server unit test exercising reconcileProjectTaskRunLifecycle against pre-terminal tasks.
+
+	server, _, dbStore := newWorkspaceOverviewTopologyTestServer(t)
+	accountID := testPrincipal().AccountScopeID
+	now := time.Now().UnixMilli()
+	sessionStore := pebblestore.NewSessionStore(dbStore)
+
+	proj := &pebblestore.ProjectRecord{Name: "Terminal Preservation Project"}
+	if err := sessionStore.PutProject(accountID, proj); err != nil {
+		t.Fatal(err)
+	}
+
+	testCases := []struct {
+		name         string
+		taskID       string
+		sessID       string
+		initialState string
+		isIntegrated bool
+	}{
+		{name: "CompletedTask", taskID: "task_term_completed", sessID: "sess_term_completed", initialState: "completed", isIntegrated: false},
+		{name: "IntegratedTask", taskID: "task_term_integrated", sessID: "sess_term_integrated", initialState: "completed", isIntegrated: true},
+		{name: "RejectedTask", taskID: "task_term_rejected", sessID: "sess_term_rejected", initialState: "rejected", isIntegrated: false},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			sessSnap := pebblestore.SessionSnapshot{
+				ID:             tc.sessID,
+				UserID:         testPrincipal().UserID,
+				AccountScopeID: accountID,
+				Title:          "Terminal Worker",
+				Mode:           "auto",
+				CreatedAt:      now,
+				UpdatedAt:      now,
+				Metadata: map[string]any{
+					"project_id": proj.ID,
+					"task_id":    tc.taskID,
+				},
+			}
+			if _, err := applyProjectLifecycleFixture(server, sessionruntime.SessionMutationInput{
+				SessionID:       tc.sessID,
+				UserID:          testPrincipal().UserID,
+				AccountScopeID:  accountID,
+				ClientRequestID: "create:" + tc.sessID,
+				IdempotencyKey:  "create:" + tc.sessID,
+				PayloadHash:     "create:" + tc.sessID,
+				RequestHash:     "create:" + tc.sessID,
+				Kind:            sessionruntime.SessionMutationCreateSession,
+				Session:         &sessSnap,
+				NowUnixMs:       now,
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			task := &pebblestore.ProjectTaskRecord{
+				ID:           tc.taskID,
+				ProjectID:    proj.ID,
+				AccountID:    accountID,
+				Title:        "Terminal Guarded Task",
+				Agent:        "coder",
+				Status:       tc.initialState,
+				IsIntegrated: tc.isIntegrated,
+				SessionID:    tc.sessID,
+			}
+			if err := sessionStore.PutProjectTask(accountID, task); err != nil {
+				t.Fatal(err)
+			}
+
+			job := sessionV3ExecutorJob{
+				Principal: testPrincipal(),
+				SessionID: tc.sessID,
+				RunID:     "run-term-check",
+			}
+			// Reconcile terminal run
+			if err := server.reconcileProjectTaskRunLifecycle(job, sessionruntime.RunIntentCompleted, ""); err != nil {
+				t.Fatalf("reconcile failed: %v", err)
+			}
+
+			updated, found, err := sessionStore.GetProjectTask(accountID, proj.ID, tc.taskID)
+			if err != nil || !found {
+				t.Fatalf("get task failed: %v", err)
+			}
+			if updated.Status != tc.initialState {
+				t.Fatalf("task status regressed from %q to %q", tc.initialState, updated.Status)
+			}
+			if updated.IsIntegrated != tc.isIntegrated {
+				t.Fatalf("task isIntegrated altered from %v to %v", tc.isIntegrated, updated.IsIntegrated)
+			}
+		})
+	}
+}
+
+func TestProjectTask_HydrateTaskPlanDocument_HonorsExactBinding(t *testing.T) {
+	// Written Purpose:
+	// - Product Requirement: hydrateTaskPlanDocument must honor exact PlanBinding (SessionID, PlanID,
+	//   and DefinitionRevision) and must NOT attach an unrelated active plan when binding is missing or mismatched.
+	// - Boundary/authority: hydrateTaskPlanDocument in project_task_program.go.
+	// - Threat/regression: Cross-session plan contamination or arbitrary active plans attached to tasks.
+	// - Narrowest layer: Focused unit test with Pebble session store.
+
+	_, _, dbStore := newWorkspaceOverviewTopologyTestServer(t)
+	sessionStore := pebblestore.NewSessionStore(dbStore)
+	accountID := testPrincipal().AccountScopeID
+	now := time.Now().UnixMilli()
+
+	sessID := "sess_plan_exact"
+	sessSnap := pebblestore.SessionSnapshot{
+		ID:             sessID,
+		UserID:         testPrincipal().UserID,
+		AccountScopeID: accountID,
+		Title:          "Plan Session",
+		Mode:           "plan",
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	if err := sessionStore.PutSessionSnapshot(sessSnap); err != nil {
+		t.Fatal(err)
+	}
+
+	// Seed active plan "active-plan"
+	activeDoc := &pebblestore.SessionPlanDocument{
+		ID:    "active-plan",
+		Title: "Unrelated Active Plan",
+		Checkpoints: []pebblestore.SessionPlanCheckpoint{
+			{ID: "cp-active-1", Title: "Active Checkpoint"},
+		},
+	}
+	activePlan := pebblestore.PlanRecord{
+		SessionID:     sessID,
+		ID:            "active-plan",
+		Version:       1,
+		ApprovalState: "approved",
+		Document:      activeDoc,
+	}
+	if err := sessionStore.PutPlan(activePlan); err != nil {
+		t.Fatal(err)
+	}
+	if err := sessionStore.SetActivePlan(sessID, "active-plan", 1); err != nil {
+		t.Fatal(err)
+	}
+
+	// Seed bound plan "bound-plan-v2"
+	boundDoc := &pebblestore.SessionPlanDocument{
+		ID:    "bound-plan",
+		Title: "Exact Bound Plan",
+		Checkpoints: []pebblestore.SessionPlanCheckpoint{
+			{ID: "cp-bound-1", Title: "Bound Checkpoint"},
+		},
+	}
+	boundPlan := pebblestore.PlanRecord{
+		SessionID:     sessID,
+		ID:            "bound-plan",
+		Version:       2,
+		ApprovalState: "pending_approval",
+		Document:      boundDoc,
+	}
+	if err := sessionStore.PutPlan(boundPlan); err != nil {
+		t.Fatal(err)
+	}
+
+	// Case 1: Task with NO PlanBinding must NOT get the active plan attached
+	taskNoBinding := &pebblestore.ProjectTaskRecord{
+		ID:        "task_no_binding",
+		SessionID: sessID,
+		Status:    "in_progress",
+	}
+	hydrateTaskPlanDocument(taskNoBinding, sessionStore)
+	if taskNoBinding.PlanDocument != nil {
+		t.Fatalf("expected nil PlanDocument when PlanBinding is missing, got %+v", taskNoBinding.PlanDocument)
+	}
+
+	// Case 2: Task with exact PlanBinding for "bound-plan" gets the exact bound document
+	taskWithBinding := &pebblestore.ProjectTaskRecord{
+		ID:        "task_with_binding",
+		SessionID: sessID,
+		Status:    "pending_approval",
+		PlanBinding: &pebblestore.ProjectTaskPlanBinding{
+			PlanID:             "bound-plan",
+			SessionID:          sessID,
+			DefinitionRevision: 2,
+		},
+	}
+	hydrateTaskPlanDocument(taskWithBinding, sessionStore)
+	if taskWithBinding.PlanDocument == nil || taskWithBinding.PlanDocument.Title != "Exact Bound Plan" {
+		t.Fatalf("expected exact bound plan document, got %+v", taskWithBinding.PlanDocument)
+	}
+
+	// Case 3: Task with mismatched revision must NOT hydrate stale document
+	taskMismatchedRev := &pebblestore.ProjectTaskRecord{
+		ID:        "task_mismatched_rev",
+		SessionID: sessID,
+		Status:    "pending_approval",
+		PlanBinding: &pebblestore.ProjectTaskPlanBinding{
+			PlanID:             "bound-plan",
+			SessionID:          sessID,
+			DefinitionRevision: 99, // Mismatched
+		},
+	}
+	hydrateTaskPlanDocument(taskMismatchedRev, sessionStore)
+	if taskMismatchedRev.PlanDocument != nil {
+		t.Fatalf("expected nil PlanDocument on revision mismatch, got %+v", taskMismatchedRev.PlanDocument)
+	}
+}

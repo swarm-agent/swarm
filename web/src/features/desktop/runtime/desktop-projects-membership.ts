@@ -60,18 +60,12 @@ export function extractTaskSessionIds(task?: TaskSessionCandidate | null): strin
   for (const jobs of programSources) {
     if (Array.isArray(jobs)) {
       for (const j of jobs) {
-        if (j?.child_session_id && typeof j.child_session_id === 'string' && j.child_session_id.trim()) {
-          set.add(j.child_session_id.trim())
-        }
-        if (j?.current_session_id && typeof j.current_session_id === 'string' && j.current_session_id.trim()) {
-          set.add(j.current_session_id.trim())
-        }
-        if (Array.isArray(j?.generation_history)) {
-          for (const gh of j.generation_history) {
-            if (gh?.session_id && typeof gh.session_id === 'string' && gh.session_id.trim()) {
-              set.add(gh.session_id.trim())
-            }
-          }
+        // Current attempt supersedes historical sessions so old failures cannot poison state/counts.
+        const currentSid =
+          (j?.current_session_id && typeof j.current_session_id === 'string' && j.current_session_id.trim()) ||
+          (j?.child_session_id && typeof j.child_session_id === 'string' && j.child_session_id.trim())
+        if (currentSid) {
+          set.add(currentSid)
         }
       }
     }
@@ -117,7 +111,8 @@ export function computeActiveTaskSessionIds(
       t.status === 'in_progress' ||
       t.status === 'planning' ||
       t.status === 'pending_approval' ||
-      t.status === 'needs_review'
+      t.status === 'needs_review' ||
+      t.status === 'queued'
     if (isSelected || isActive) {
       for (const sid of extractTaskSessionIds(t)) {
         set.add(sid)
