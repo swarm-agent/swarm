@@ -471,6 +471,17 @@ func (s *SessionStore) TransitionTaskProgram(parentSessionID, programID string, 
 		if source := strings.TrimSpace(update.SourceWorkspacePath); source != "" && job.SourceWorkspacePath != "" && job.SourceWorkspacePath != source {
 			return TaskProgramRecord{}, false, errors.New("task program job repository source binding is immutable")
 		}
+		// A terminal callback must prove the exact current generation, session,
+		// and run. A missing identity is not a wildcard after a successor exists.
+		// Scheduling and integration transitions may omit identity, but cannot
+		// replace an attached child or advance its generation implicitly.
+		terminal := update.State == TaskProgramJobHandoffReady || update.State == TaskProgramJobCompleted || update.State == TaskProgramJobBlocked || update.State == TaskProgramJobFailed || update.State == TaskProgramJobCancelled
+		if terminal && job.CurrentGeneration > 1 && (update.CurrentGeneration != job.CurrentGeneration || update.CurrentSessionID != job.CurrentSessionID || (job.CurrentRunID != "" && update.CurrentRunID != job.CurrentRunID)) {
+			return TaskProgramRecord{}, false, errors.New("task program stale child terminal callback")
+		}
+		if update.CurrentGeneration > 0 && update.CurrentGeneration < job.CurrentGeneration {
+			return TaskProgramRecord{}, false, errors.New("task program stale child generation callback")
+		}
 		if job.CurrentSessionID != "" && update.CurrentSessionID != "" && job.CurrentSessionID != update.CurrentSessionID && update.CurrentGeneration <= job.CurrentGeneration {
 			return TaskProgramRecord{}, false, errors.New("task program stale child session callback")
 		}

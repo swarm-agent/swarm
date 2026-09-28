@@ -403,7 +403,17 @@ func (p *taskProgramScheduler) runCohort(indexes []int) error {
 			// sibling still runs instead of waiting for the entire cohort.
 			outcomes := taskProgramOutcomesFromPayload(map[string]any{"launches": []any{launch}}, 1)
 			updates := taskProgramOutcomeTransitions(&taskProgramSpec{Jobs: []taskProgramJob{p.parsed.Program.Jobs[index]}}, outcomes, nil)
-			_, _, lineageErr = p.transition(p.parentSession.ID, p.record.ProgramID, pebblestore.TaskProgramTransition{ExpectedRevision: p.record.Revision, MutationID: "child-handoff:" + jobID, Jobs: updates})
+			job := p.record.Jobs[index]
+			if job.CurrentGeneration > 1 {
+				if len(updates) != 1 || updates[0].CurrentSessionID != job.CurrentSessionID || (job.CurrentRunID != "" && updates[0].CurrentRunID != job.CurrentRunID) {
+					lineageErr = errors.New("task program handoff does not match current child generation")
+				} else {
+					updates[0].CurrentGeneration = job.CurrentGeneration
+				}
+			}
+			if lineageErr == nil {
+				_, _, lineageErr = p.transition(p.parentSession.ID, p.record.ProgramID, pebblestore.TaskProgramTransition{ExpectedRevision: p.record.Revision, MutationID: "child-handoff:" + jobID, Jobs: updates})
+			}
 		}
 		presentation := taskProgramPresentationPayload(p.record)
 		program, status := taskProgramStreamMetadata(p.record)
@@ -441,6 +451,14 @@ func (p *taskProgramScheduler) runCohort(indexes []int) error {
 		job := p.record.Jobs[taskProgramJobIndex(p.record, updates[i].JobID)]
 		if job.State == pebblestore.TaskProgramJobHandoffReady && updates[i].State == pebblestore.TaskProgramJobHandoffReady {
 			updates[i].ExpectedState = job.State
+		}
+		if job.CurrentGeneration > 1 {
+			// The ordinary executor returns exact child identity; never turn a
+			// missing or stale outcome into a successful successor callback.
+			if updates[i].CurrentSessionID != job.CurrentSessionID || (job.CurrentRunID != "" && updates[i].CurrentRunID != job.CurrentRunID) {
+				return errors.New("task program outcome does not match current child generation")
+			}
+			updates[i].CurrentGeneration = job.CurrentGeneration
 		}
 	}
 	for _, update := range updates {

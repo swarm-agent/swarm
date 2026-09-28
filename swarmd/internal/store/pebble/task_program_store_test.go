@@ -292,9 +292,30 @@ func TestTaskProgramStaleChildAndSourceBindingRejected(t *testing.T) {
  for _, update := range []TaskProgramJobTransition{
   {JobID:"api",ExpectedState:TaskProgramJobRunning,State:TaskProgramJobHandoffReady,CurrentSessionID:"original",CurrentRunID:"old-run",CurrentGeneration:1},
   {JobID:"api",ExpectedState:TaskProgramJobRunning,State:TaskProgramJobHandoffReady,SourceWorkspacePath:"/repo-b"},
+  {JobID:"api",ExpectedState:TaskProgramJobRunning,State:TaskProgramJobHandoffReady},
+  {JobID:"api",ExpectedState:TaskProgramJobRunning,State:TaskProgramJobFailed,CurrentSessionID:"successor",CurrentRunID:"new-run"},
+  {JobID:"api",ExpectedState:TaskProgramJobRunning,State:TaskProgramJobHandoffReady,CurrentSessionID:"successor",CurrentRunID:"new-run",CurrentGeneration:1},
+  {JobID:"api",ExpectedState:TaskProgramJobRunning,State:TaskProgramJobHandoffReady,CurrentSessionID:"successor",CurrentRunID:"old-run",CurrentGeneration:2},
  } {
   if _, _, err := sessions.TransitionTaskProgram("parent-fence","fence",TaskProgramTransition{ExpectedRevision:record.Revision,MutationID:"stale",Jobs:[]TaskProgramJobTransition{update}}); err == nil { t.Fatalf("stale callback accepted: %#v",update) }
   saved, _, err := sessions.GetTaskProgram("parent-fence","fence")
   if err != nil || saved.Revision != record.Revision || saved.Jobs[0].State != TaskProgramJobRunning { t.Fatalf("rejection mutated durable state: %#v err=%v",saved,err) }
  }
+}
+
+// Purpose: a revision-guarded durable reservation must admit one scheduler for
+// a job while refusing a competing launch at the same revision. A second job
+// remains independently schedulable in the same transition.
+func TestTaskProgramConcurrentJobReservationSingleWinner(t *testing.T) {
+	sessions := NewSessionStore(openTaskProgramTestStore(t))
+	fixture := taskProgramStoreFixture("parent-reserve", "reserve", "hash")
+	fixture.Definition.Jobs = append(fixture.Definition.Jobs, TaskProgramJobSpec{ID: "other", StageID: "build", AgentType: "coder", OwnedScope: []string{"other/**"}})
+	fixture.Jobs = append(fixture.Jobs, TaskProgramJobRecord{JobID: "other", StageID: "build", State: TaskProgramJobDeclared})
+	record, _, err := sessions.CreateTaskProgram(fixture)
+	if err != nil { t.Fatal(err) }
+	first, changed, err := sessions.TransitionTaskProgram("parent-reserve", "reserve", TaskProgramTransition{ExpectedRevision: record.Revision, MutationID: "reserve-api", Jobs: []TaskProgramJobTransition{{JobID: "api", ExpectedState: TaskProgramJobDeclared, State: TaskProgramJobRunning, AttemptNumber: 1}}})
+	if err != nil || !changed { t.Fatalf("first reservation: %v", err) }
+	if _, _, err := sessions.TransitionTaskProgram("parent-reserve", "reserve", TaskProgramTransition{ExpectedRevision: record.Revision, MutationID: "reserve-api-competing", Jobs: []TaskProgramJobTransition{{JobID: "api", ExpectedState: TaskProgramJobDeclared, State: TaskProgramJobRunning, AttemptNumber: 1}}}); err == nil { t.Fatal("competing reservation accepted") }
+	other, changed, err := sessions.TransitionTaskProgram("parent-reserve", "reserve", TaskProgramTransition{ExpectedRevision: first.Revision, MutationID: "reserve-other", Jobs: []TaskProgramJobTransition{{JobID: "other", ExpectedState: TaskProgramJobDeclared, State: TaskProgramJobRunning, AttemptNumber: 1}}})
+	if err != nil || !changed || other.Jobs[0].AttemptNumber != 1 || other.Jobs[1].AttemptNumber != 1 { t.Fatalf("independent reservation rejected: %+v %v", other.Jobs, err) }
 }
