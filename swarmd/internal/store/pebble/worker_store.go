@@ -164,6 +164,12 @@ type PortableAutomationDefinition struct {
 	DeliverableRequirements []WorkerDeliverableRequirement `json:"deliverable_requirements,omitempty"`
 }
 
+type PortableWorkerProvenance struct {
+	SourceWorkerID string `json:"source_worker_id,omitempty"`
+	SourceRevision uint64 `json:"source_revision,omitempty"`
+	ExportedAt     int64  `json:"exported_at,omitempty"`
+}
+
 type PortableWorkerDefinition struct {
 	SchemaVersion         int                            `json:"schema_version"`
 	Name                  string                         `json:"name"`
@@ -173,7 +179,7 @@ type PortableWorkerDefinition struct {
 	Capabilities          []WorkerCapabilityRequest      `json:"capabilities,omitempty"`
 	WorkspaceRequirements []WorkerWorkspaceRequirement   `json:"workspace_requirements,omitempty"`
 	Automations           []PortableAutomationDefinition `json:"automations,omitempty"`
-	Provenance            *WorkerProvenance              `json:"provenance,omitempty"`
+	Provenance            *PortableWorkerProvenance      `json:"provenance,omitempty"`
 }
 
 type ListWorkersQuery struct {
@@ -186,7 +192,7 @@ type ListWorkersQuery struct {
 type ListWorkersResult struct {
 	Workers    []WorkerRecord `json:"workers"`
 	NextCursor string         `json:"next_cursor,omitempty"`
-	TotalCount int            `json:"total_count"`
+	TotalCount int            `json:"total_count"` // PageCount: count of items returned on this page
 }
 
 type CreateWorkerRequest struct {
@@ -410,14 +416,42 @@ func ValidateWorkerRecord(w *WorkerRecord, validate func(*SessionPlanDocument) e
 			return errors.New("automation description exceeds 4096 characters")
 		}
 		switch auto.ActivationMode {
-		case "manual", "interval", "cron", "external_trigger":
-		default:
-			return fmt.Errorf("invalid activation mode: %q", auto.ActivationMode)
-		}
-		if auto.ActivationMode == "interval" || auto.ActivationMode == "cron" {
+		case "manual":
+			if auto.Schedule != nil {
+				return errors.New("manual activation mode must not declare schedule")
+			}
+			if auto.Trigger != nil {
+				return errors.New("manual activation mode must not declare trigger configuration")
+			}
+		case "interval":
+			if auto.Schedule == nil || auto.Schedule.Kind != "interval" {
+				return errors.New("interval activation mode requires schedule with kind interval")
+			}
+			if auto.Trigger != nil {
+				return errors.New("interval activation mode must not declare trigger configuration")
+			}
 			if err := ValidateSchedule(auto.Schedule); err != nil {
 				return fmt.Errorf("automation %q schedule: %w", auto.ID, err)
 			}
+		case "cron":
+			if auto.Schedule == nil || auto.Schedule.Kind != "cron" {
+				return errors.New("cron activation mode requires schedule with kind cron")
+			}
+			if auto.Trigger != nil {
+				return errors.New("cron activation mode must not declare trigger configuration")
+			}
+			if err := ValidateSchedule(auto.Schedule); err != nil {
+				return fmt.Errorf("automation %q schedule: %w", auto.ID, err)
+			}
+		case "external_trigger":
+			if auto.Trigger == nil {
+				return errors.New("external_trigger activation mode requires trigger configuration")
+			}
+			if auto.Schedule != nil && auto.Schedule.Kind != "trigger" && auto.Schedule.Kind != "" {
+				return errors.New("external_trigger activation mode must not declare interval or cron schedule")
+			}
+		default:
+			return fmt.Errorf("invalid activation mode: %q", auto.ActivationMode)
 		}
 		if auto.Trigger != nil {
 			switch auto.Trigger.TriggerKind {
@@ -432,6 +466,9 @@ func ValidateWorkerRecord(w *WorkerRecord, validate func(*SessionPlanDocument) e
 			}
 			if strings.ContainsAny(auto.Trigger.SecretRef, "\r\n") {
 				return errors.New("trigger secret_ref cannot contain newlines")
+			}
+			if strings.HasPrefix(auto.Trigger.SecretRef, "/") || strings.Contains(auto.Trigger.SecretRef, "..") {
+				return errors.New("trigger secret_ref cannot declare host path or traversal")
 			}
 		}
 		seenInputs := make(map[string]struct{}, len(auto.InputRequirements))
@@ -470,6 +507,13 @@ func ValidateWorkerRecord(w *WorkerRecord, validate func(*SessionPlanDocument) e
 			return fmt.Errorf("automation %q plan document: %w", auto.ID, err)
 		}
 	}
+	recBytes, err := json.Marshal(w)
+	if err != nil {
+		return err
+	}
+	if len(recBytes) > 1024*1024 {
+		return errors.New("worker record exceeds maximum size of 1 MiB")
+	}
 	return nil
 }
 
@@ -477,15 +521,30 @@ func validateUnexecutedPlanDocument(doc *SessionPlanDocument, validate func(*Ses
 	if doc == nil {
 		return errors.New("plan document required")
 	}
-	if doc.AutomationV2 != nil || doc.WorkerV2 != nil {
-		return errors.New("plan document cannot contain nested AutomationV2 or WorkerV2 settings")
+	if doc.AutomationV2 != nil || doc.WorkerV2 != nil || doc.Automation != nil {
+		return errors.New("plan document cannot contain nested automation or worker settings")
 	}
 	if doc.ID != "" || doc.RevisionID != "" || doc.ExecutionOrigin != "" || doc.ExecutionState != nil || len(doc.OriginalCheckpoints) != 0 || (doc.Status != "" && doc.Status != "pending") {
 		return errors.New("plan document cannot contain execution state")
 	}
+	for _, art := range doc.Artifacts {
+		if art.Path != "" && (strings.HasPrefix(art.Path, "/") || strings.Contains(art.Path, "..")) {
+			return fmt.Errorf("plan artifact cannot declare absolute host path or traversal: %q", art.Path)
+		}
+	}
 	for _, c := range doc.Checkpoints {
 		if (c.Status != "" && c.Status != "pending") || c.AttemptID != "" || c.RunID != "" || c.SessionID != "" || c.StartedAt != 0 || c.CompletedAt != 0 || len(c.Attempts) != 0 || c.Review != nil || c.Handoff != nil || c.Recommendation != nil || c.Report != "" || c.Result != "" || c.ActiveSubtaskID != "" {
 			return errors.New("plan checkpoints must be unexecuted")
+		}
+		for _, art := range c.Artifacts {
+			if art.Path != "" && (strings.HasPrefix(art.Path, "/") || strings.Contains(art.Path, "..")) {
+				return fmt.Errorf("checkpoint artifact cannot declare absolute host path or traversal: %q", art.Path)
+			}
+		}
+		for _, f := range c.ChangedFiles {
+			if strings.HasPrefix(f, "/") || strings.Contains(f, "..") {
+				return fmt.Errorf("checkpoint changed_files cannot declare absolute host paths or traversal: %q", f)
+			}
 		}
 		for _, t := range c.Subtasks {
 			if (t.Status != "" && t.Status != "pending") || t.StartedAt != 0 || t.CompletedAt != 0 || t.Result != "" {
@@ -509,6 +568,16 @@ func validateTaskProgramUnexecuted(prog *TaskProgramDefinition) error {
 		return nil
 	}
 	for _, job := range prog.Jobs {
+		if job.WorkspacePath != "" {
+			if strings.HasPrefix(job.WorkspacePath, "/") || strings.Contains(job.WorkspacePath, "..") {
+				return fmt.Errorf("task program workspace_path cannot declare absolute host paths or traversal: %q", job.WorkspacePath)
+			}
+		}
+		if job.RecoverySourceDigest != "" {
+			if strings.HasPrefix(job.RecoverySourceDigest, "/") || strings.Contains(job.RecoverySourceDigest, "..") {
+				return fmt.Errorf("task program recovery_source_digest cannot declare host paths or traversal: %q", job.RecoverySourceDigest)
+			}
+		}
 		for _, scope := range job.OwnedScope {
 			if strings.HasPrefix(scope, "/") || strings.Contains(scope, "..") {
 				return fmt.Errorf("task program owned_scope cannot declare absolute host paths or traversal: %q", scope)
@@ -656,14 +725,42 @@ func ValidatePortableWorkerDefinition(data []byte, validate func(*SessionPlanDoc
 			return PortableWorkerDefinition{}, errors.New("automation description exceeds 4096 characters")
 		}
 		switch auto.ActivationMode {
-		case "manual", "interval", "cron", "external_trigger":
-		default:
-			return PortableWorkerDefinition{}, fmt.Errorf("invalid activation mode: %q", auto.ActivationMode)
-		}
-		if auto.ActivationMode == "interval" || auto.ActivationMode == "cron" {
+		case "manual":
+			if auto.Schedule != nil {
+				return PortableWorkerDefinition{}, errors.New("manual activation mode must not declare schedule")
+			}
+			if auto.Trigger != nil {
+				return PortableWorkerDefinition{}, errors.New("manual activation mode must not declare trigger configuration")
+			}
+		case "interval":
+			if auto.Schedule == nil || auto.Schedule.Kind != "interval" {
+				return PortableWorkerDefinition{}, errors.New("interval activation mode requires schedule with kind interval")
+			}
+			if auto.Trigger != nil {
+				return PortableWorkerDefinition{}, errors.New("interval activation mode must not declare trigger configuration")
+			}
 			if err := ValidateSchedule(auto.Schedule); err != nil {
 				return PortableWorkerDefinition{}, fmt.Errorf("automation %q schedule: %w", auto.Name, err)
 			}
+		case "cron":
+			if auto.Schedule == nil || auto.Schedule.Kind != "cron" {
+				return PortableWorkerDefinition{}, errors.New("cron activation mode requires schedule with kind cron")
+			}
+			if auto.Trigger != nil {
+				return PortableWorkerDefinition{}, errors.New("cron activation mode must not declare trigger configuration")
+			}
+			if err := ValidateSchedule(auto.Schedule); err != nil {
+				return PortableWorkerDefinition{}, fmt.Errorf("automation %q schedule: %w", auto.Name, err)
+			}
+		case "external_trigger":
+			if auto.Trigger == nil {
+				return PortableWorkerDefinition{}, errors.New("external_trigger activation mode requires trigger configuration")
+			}
+			if auto.Schedule != nil && auto.Schedule.Kind != "trigger" && auto.Schedule.Kind != "" {
+				return PortableWorkerDefinition{}, errors.New("external_trigger activation mode must not declare interval or cron schedule")
+			}
+		default:
+			return PortableWorkerDefinition{}, fmt.Errorf("invalid activation mode: %q", auto.ActivationMode)
 		}
 		if auto.Trigger != nil {
 			switch auto.Trigger.TriggerKind {
@@ -678,6 +775,9 @@ func ValidatePortableWorkerDefinition(data []byte, validate func(*SessionPlanDoc
 			}
 			if strings.ContainsAny(auto.Trigger.SecretRef, "\r\n") {
 				return PortableWorkerDefinition{}, errors.New("trigger secret_ref cannot contain newlines")
+			}
+			if strings.HasPrefix(auto.Trigger.SecretRef, "/") || strings.Contains(auto.Trigger.SecretRef, "..") {
+				return PortableWorkerDefinition{}, errors.New("trigger secret_ref cannot declare host path or traversal")
 			}
 		}
 		seenInputs := make(map[string]struct{}, len(auto.InputRequirements))
@@ -744,7 +844,13 @@ func (ws *WorkerStore) CreateWorker(account, user string, req CreateWorkerReques
 	}
 
 	ws.store.workersMu.Lock()
-	defer ws.store.workersMu.Unlock()
+	var toPublish *workerRealtimeMutation
+	defer func() {
+		ws.store.workersMu.Unlock()
+		if toPublish != nil {
+			ws.store.publishWorkerRealtime(toPublish)
+		}
+	}()
 
 	idempKey := strings.TrimSpace(req.IdempotencyKey)
 	var payloadHash string
@@ -859,15 +965,17 @@ func (ws *WorkerStore) CreateWorker(account, user string, req CreateWorkerReques
 		}
 	}
 
+	_ = m.setPayload(WorkerRealtimePayload{
+		WorkerID:       w.ID,
+		Revision:       w.Revision,
+		LifecycleState: w.LifecycleState,
+		ChangeSummary:  hist.ChangeSummary,
+	})
 	if err := ws.store.commitWorkerRealtime(m); err != nil {
 		return WorkerRecord{}, err
 	}
 
-	// Unlock domain mutex before invoking publisher callbacks
-	ws.store.workersMu.Unlock()
-	ws.store.publishWorkerRealtime(m)
-	ws.store.workersMu.Lock()
-
+	toPublish = m
 	return w, nil
 }
 
@@ -934,6 +1042,9 @@ func (ws *WorkerStore) ListWorkers(account string, query ListWorkersQuery) (List
 	lower := prefix
 	after := strings.TrimSpace(query.After)
 	if after != "" {
+		if !workerIDRegexp.MatchString(after) {
+			return ListWorkersResult{}, errors.New("invalid cursor")
+		}
 		lower = KeyWorker(account, after) + "\x00"
 	}
 
@@ -948,13 +1059,21 @@ func (ws *WorkerStore) ListWorkers(account string, query ListWorkersQuery) (List
 
 	list := make([]WorkerRecord, 0, limit)
 	var nextCursor string
+	scannedRows := 0
+	scannedBytes := 0
 	for valid := it.First(); valid; valid = it.Next() {
+		scannedRows++
+		scannedBytes += len(it.Value())
+		if scannedRows > 10000 || scannedBytes > 32*1024*1024 {
+			return ListWorkersResult{}, errors.New("scan budget exceeded")
+		}
+
 		var w WorkerRecord
 		if err := json.Unmarshal(it.Value(), &w); err != nil {
-			continue
+			return ListWorkersResult{}, fmt.Errorf("corrupt worker record at %s: %w", string(it.Key()), err)
 		}
 		if w.AccountScopeID != account {
-			continue
+			return ListWorkersResult{}, fmt.Errorf("account scope mismatch in worker index: key belongs to %s, expected %s", w.AccountScopeID, account)
 		}
 		if !query.IncludeDeleted && w.LifecycleState == WorkerLifecycleStateDeleted {
 			continue
@@ -994,7 +1113,13 @@ func (ws *WorkerStore) UpdateWorker(account, user, workerID string, expectedRevi
 	}
 
 	ws.store.workersMu.Lock()
-	defer ws.store.workersMu.Unlock()
+	var toPublish *workerRealtimeMutation
+	defer func() {
+		ws.store.workersMu.Unlock()
+		if toPublish != nil {
+			ws.store.publishWorkerRealtime(toPublish)
+		}
+	}()
 
 	var current WorkerRecord
 	ok, err := ws.store.GetJSON(KeyWorker(account, workerID), &current)
@@ -1063,11 +1188,7 @@ func (ws *WorkerStore) UpdateWorker(account, user, workerID string, expectedRevi
 					}
 				}
 				if prior == nil {
-					// Check cross-worker collision
-					var otherWorkerID string
-					if ok, err := ws.store.GetJSON(KeyWorkerByAutomation(account, autoID), &otherWorkerID); err == nil && ok && otherWorkerID != "" && otherWorkerID != workerID {
-						return WorkerRecord{}, fmt.Errorf("%w: automation id %q is owned by another worker %s", ErrWorkerConflict, autoID, otherWorkerID)
-					}
+					return WorkerRecord{}, fmt.Errorf("%w: cannot supply new automation id %q on update; only existing automations can be updated by id", ErrWorkerConflict, autoID)
 				}
 			} else {
 				autoID = GenerateWorkerAutomationID()
@@ -1133,14 +1254,17 @@ func (ws *WorkerStore) UpdateWorker(account, user, workerID string, expectedRevi
 		}
 	}
 
+	_ = m.setPayload(WorkerRealtimePayload{
+		WorkerID:       updated.ID,
+		Revision:       updated.Revision,
+		LifecycleState: updated.LifecycleState,
+		ChangeSummary:  hist.ChangeSummary,
+	})
 	if err := ws.store.commitWorkerRealtime(m); err != nil {
 		return WorkerRecord{}, err
 	}
 
-	ws.store.workersMu.Unlock()
-	ws.store.publishWorkerRealtime(m)
-	ws.store.workersMu.Lock()
-
+	toPublish = m
 	return updated, nil
 }
 
@@ -1155,7 +1279,13 @@ func (ws *WorkerStore) DeleteWorker(account, user, workerID string, expectedRevi
 	}
 
 	ws.store.workersMu.Lock()
-	defer ws.store.workersMu.Unlock()
+	var toPublish *workerRealtimeMutation
+	defer func() {
+		ws.store.workersMu.Unlock()
+		if toPublish != nil {
+			ws.store.publishWorkerRealtime(toPublish)
+		}
+	}()
 
 	var current WorkerRecord
 	ok, err := ws.store.GetJSON(KeyWorker(account, workerID), &current)
@@ -1215,14 +1345,17 @@ func (ws *WorkerStore) DeleteWorker(account, user, workerID string, expectedRevi
 		m.delete(KeyWorkerByAutomation(account, auto.ID))
 	}
 
+	_ = m.setPayload(WorkerRealtimePayload{
+		WorkerID:       current.ID,
+		Revision:       current.Revision,
+		LifecycleState: current.LifecycleState,
+		ChangeSummary:  hist.ChangeSummary,
+	})
 	if err := ws.store.commitWorkerRealtime(m); err != nil {
 		return err
 	}
 
-	ws.store.workersMu.Unlock()
-	ws.store.publishWorkerRealtime(m)
-	ws.store.workersMu.Lock()
-
+	toPublish = m
 	return nil
 }
 
@@ -1266,13 +1399,11 @@ func (ws *WorkerStore) ListWorkerRevisions(account, workerID string, limit int, 
 	lower := prefix
 	after = strings.TrimSpace(after)
 	if after != "" {
-		if afterRev, err := strconv.ParseUint(after, 10, 64); err == nil {
-			lower = KeyWorkerHistory(account, workerID, afterRev) + "\x00"
-		} else if strings.HasPrefix(after, prefix) {
-			lower = after + "\x00"
-		} else {
+		afterRev, err := strconv.ParseUint(after, 10, 64)
+		if err != nil || afterRev == 0 {
 			return nil, "", errors.New("invalid cursor")
 		}
+		lower = KeyWorkerHistory(account, workerID, afterRev) + "\x00"
 	}
 
 	it, err := ws.store.db.NewIter(&pebble.IterOptions{
@@ -1286,18 +1417,27 @@ func (ws *WorkerStore) ListWorkerRevisions(account, workerID string, limit int, 
 
 	list := make([]WorkerRevisionRecord, 0, limit)
 	var nextCursor string
+	scannedRows := 0
+	scannedBytes := 0
 	for valid := it.First(); valid; valid = it.Next() {
+		scannedRows++
+		scannedBytes += len(it.Value())
+		if scannedRows > 10000 || scannedBytes > 32*1024*1024 {
+			return nil, "", errors.New("scan budget exceeded")
+		}
+
 		var h WorkerRevisionRecord
 		if err := json.Unmarshal(it.Value(), &h); err != nil {
-			continue
+			return nil, "", fmt.Errorf("corrupt worker revision record at %s: %w", string(it.Key()), err)
 		}
-		if h.AccountScopeID == account && h.WorkerID == workerID {
-			if len(list) < limit {
-				list = append(list, h)
-			} else {
-				nextCursor = fmt.Sprintf("%d", list[len(list)-1].Revision)
-				break
-			}
+		if h.AccountScopeID != account || h.WorkerID != workerID {
+			return nil, "", fmt.Errorf("record mismatch in history index: got worker %s account %s, expected %s / %s", h.WorkerID, h.AccountScopeID, workerID, account)
+		}
+		if len(list) < limit {
+			list = append(list, h)
+		} else {
+			nextCursor = fmt.Sprintf("%d", list[len(list)-1].Revision)
+			break
 		}
 	}
 	if err := it.Error(); err != nil {
@@ -1317,7 +1457,13 @@ func (ws *WorkerStore) AttachWorkerAutomation(account, user, workerID string, ex
 	}
 
 	ws.store.workersMu.Lock()
-	defer ws.store.workersMu.Unlock()
+	var toPublish *workerRealtimeMutation
+	defer func() {
+		ws.store.workersMu.Unlock()
+		if toPublish != nil {
+			ws.store.publishWorkerRealtime(toPublish)
+		}
+	}()
 
 	var current WorkerRecord
 	ok, err := ws.store.GetJSON(KeyWorker(account, workerID), &current)
@@ -1394,14 +1540,17 @@ func (ws *WorkerStore) AttachWorkerAutomation(account, user, workerID string, ex
 		return WorkerRecord{}, err
 	}
 
+	_ = m.setPayload(WorkerRealtimePayload{
+		WorkerID:       current.ID,
+		Revision:       current.Revision,
+		LifecycleState: current.LifecycleState,
+		ChangeSummary:  hist.ChangeSummary,
+	})
 	if err := ws.store.commitWorkerRealtime(m); err != nil {
 		return WorkerRecord{}, err
 	}
 
-	ws.store.workersMu.Unlock()
-	ws.store.publishWorkerRealtime(m)
-	ws.store.workersMu.Lock()
-
+	toPublish = m
 	return current, nil
 }
 
@@ -1417,7 +1566,13 @@ func (ws *WorkerStore) UpdateWorkerAutomation(account, user, workerID, automatio
 	}
 
 	ws.store.workersMu.Lock()
-	defer ws.store.workersMu.Unlock()
+	var toPublish *workerRealtimeMutation
+	defer func() {
+		ws.store.workersMu.Unlock()
+		if toPublish != nil {
+			ws.store.publishWorkerRealtime(toPublish)
+		}
+	}()
 
 	var current WorkerRecord
 	ok, err := ws.store.GetJSON(KeyWorker(account, workerID), &current)
@@ -1504,14 +1659,17 @@ func (ws *WorkerStore) UpdateWorkerAutomation(account, user, workerID, automatio
 		return WorkerRecord{}, err
 	}
 
+	_ = m.setPayload(WorkerRealtimePayload{
+		WorkerID:       current.ID,
+		Revision:       current.Revision,
+		LifecycleState: current.LifecycleState,
+		ChangeSummary:  hist.ChangeSummary,
+	})
 	if err := ws.store.commitWorkerRealtime(m); err != nil {
 		return WorkerRecord{}, err
 	}
 
-	ws.store.workersMu.Unlock()
-	ws.store.publishWorkerRealtime(m)
-	ws.store.workersMu.Lock()
-
+	toPublish = m
 	return current, nil
 }
 
@@ -1527,7 +1685,13 @@ func (ws *WorkerStore) RemoveWorkerAutomation(account, user, workerID, automatio
 	}
 
 	ws.store.workersMu.Lock()
-	defer ws.store.workersMu.Unlock()
+	var toPublish *workerRealtimeMutation
+	defer func() {
+		ws.store.workersMu.Unlock()
+		if toPublish != nil {
+			ws.store.publishWorkerRealtime(toPublish)
+		}
+	}()
 
 	var current WorkerRecord
 	ok, err := ws.store.GetJSON(KeyWorker(account, workerID), &current)
@@ -1591,14 +1755,17 @@ func (ws *WorkerStore) RemoveWorkerAutomation(account, user, workerID, automatio
 	}
 	m.delete(KeyWorkerByAutomation(account, automationID))
 
+	_ = m.setPayload(WorkerRealtimePayload{
+		WorkerID:       current.ID,
+		Revision:       current.Revision,
+		LifecycleState: current.LifecycleState,
+		ChangeSummary:  hist.ChangeSummary,
+	})
 	if err := ws.store.commitWorkerRealtime(m); err != nil {
 		return WorkerRecord{}, err
 	}
 
-	ws.store.workersMu.Unlock()
-	ws.store.publishWorkerRealtime(m)
-	ws.store.workersMu.Lock()
-
+	toPublish = m
 	return current, nil
 }
 
@@ -1613,6 +1780,14 @@ func (ws *WorkerStore) ExportWorker(account, workerID string) (PortableWorkerDef
 
 	automations := make([]PortableAutomationDefinition, len(w.Automations))
 	for i, a := range w.Automations {
+		if a.Trigger != nil && a.Trigger.SecretRef != "" {
+			if strings.HasPrefix(a.Trigger.SecretRef, "/") || strings.Contains(a.Trigger.SecretRef, "..") {
+				return PortableWorkerDefinition{}, nil, fmt.Errorf("cannot export automation %q: trigger secret_ref contains host path or traversal", a.ID)
+			}
+		}
+		if err := validateUnexecutedPlanDocument(&a.PlanDocument, nil); err != nil {
+			return PortableWorkerDefinition{}, nil, fmt.Errorf("cannot export automation %q: %w", a.ID, err)
+		}
 		automations[i] = PortableAutomationDefinition{
 			ID:                      a.ID,
 			Name:                    a.Name,
@@ -1627,6 +1802,21 @@ func (ws *WorkerStore) ExportWorker(account, workerID string) (PortableWorkerDef
 		}
 	}
 
+	var prov *PortableWorkerProvenance
+	if w.Provenance != nil {
+		prov = &PortableWorkerProvenance{
+			SourceWorkerID: w.ID,
+			SourceRevision: w.Revision,
+			ExportedAt:     time.Now().UnixMilli(),
+		}
+	} else {
+		prov = &PortableWorkerProvenance{
+			SourceWorkerID: w.ID,
+			SourceRevision: w.Revision,
+			ExportedAt:     time.Now().UnixMilli(),
+		}
+	}
+
 	def := PortableWorkerDefinition{
 		SchemaVersion:         1,
 		Name:                  w.Name,
@@ -1636,16 +1826,18 @@ func (ws *WorkerStore) ExportWorker(account, workerID string) (PortableWorkerDef
 		Capabilities:          w.RequestedCapabilities,
 		WorkspaceRequirements: w.WorkspaceRequirements,
 		Automations:           automations,
-		Provenance: &WorkerProvenance{
-			SourceWorkerID: w.ID,
-			SourceRevision: w.Revision,
-			ExportedAt:     time.Now().UnixMilli(),
-		},
+		Provenance:            prov,
 	}
 
 	b, err := json.MarshalIndent(def, "", "  ")
 	if err != nil {
 		return PortableWorkerDefinition{}, nil, err
+	}
+	if len(b) > 512*1024 {
+		return PortableWorkerDefinition{}, nil, errors.New("exported worker definition exceeds 512 KiB")
+	}
+	if _, err := ValidatePortableWorkerDefinition(b, nil); err != nil {
+		return PortableWorkerDefinition{}, nil, fmt.Errorf("exported worker definition validation failed: %w", err)
 	}
 	return def, b, nil
 }
@@ -1662,7 +1854,13 @@ func (ws *WorkerStore) ImportWorkerAsNew(account, user string, data []byte, vali
 	}
 
 	ws.store.workersMu.Lock()
-	defer ws.store.workersMu.Unlock()
+	var toPublish *workerRealtimeMutation
+	defer func() {
+		ws.store.workersMu.Unlock()
+		if toPublish != nil {
+			ws.store.publishWorkerRealtime(toPublish)
+		}
+	}()
 
 	var payloadHash string
 	if idempKey != "" {
@@ -1704,12 +1902,21 @@ func (ws *WorkerStore) ImportWorkerAsNew(account, user string, data []byte, vali
 		}
 	}
 
-	prov := def.Provenance
-	if prov == nil {
-		prov = &WorkerProvenance{}
+	var prov *WorkerProvenance
+	if def.Provenance != nil {
+		prov = &WorkerProvenance{
+			SourceWorkerID: def.Provenance.SourceWorkerID,
+			SourceRevision: def.Provenance.SourceRevision,
+			ExportedAt:     def.Provenance.ExportedAt,
+			ImportedAt:     now,
+			Author:         user,
+		}
+	} else {
+		prov = &WorkerProvenance{
+			ImportedAt: now,
+			Author:     user,
+		}
 	}
-	prov.ImportedAt = now
-	prov.Author = user
 
 	caps := def.Capabilities
 	if caps == nil {
@@ -1775,14 +1982,17 @@ func (ws *WorkerStore) ImportWorkerAsNew(account, user string, data []byte, vali
 		}
 	}
 
+	_ = m.setPayload(WorkerRealtimePayload{
+		WorkerID:       w.ID,
+		Revision:       w.Revision,
+		LifecycleState: w.LifecycleState,
+		ChangeSummary:  hist.ChangeSummary,
+	})
 	if err := ws.store.commitWorkerRealtime(m); err != nil {
 		return WorkerRecord{}, err
 	}
 
-	ws.store.workersMu.Unlock()
-	ws.store.publishWorkerRealtime(m)
-	ws.store.workersMu.Lock()
-
+	toPublish = m
 	return w, nil
 }
 
@@ -1793,7 +2003,13 @@ func (ws *WorkerStore) ImportWorkerUpdate(account, user, workerID string, expect
 	}
 
 	ws.store.workersMu.Lock()
-	defer ws.store.workersMu.Unlock()
+	var toPublish *workerRealtimeMutation
+	defer func() {
+		ws.store.workersMu.Unlock()
+		if toPublish != nil {
+			ws.store.publishWorkerRealtime(toPublish)
+		}
+	}()
 
 	var current WorkerRecord
 	ok, err := ws.store.GetJSON(KeyWorker(account, workerID), &current)
@@ -1820,17 +2036,43 @@ func (ws *WorkerStore) ImportWorkerUpdate(account, user, workerID string, expect
 
 	now := time.Now().UnixMilli()
 	automations := make([]WorkerAutomationDefinition, len(def.Automations))
+	seenIDs := make(map[string]struct{}, len(def.Automations))
+	seenNames := make(map[string]struct{}, len(def.Automations))
 	for i, a := range def.Automations {
-		autoID := a.ID
-		if strings.TrimSpace(autoID) == "" {
+		autoName := strings.TrimSpace(a.Name)
+		if autoName == "" {
+			return WorkerRecord{}, errors.New("automation name is required")
+		}
+		if _, ok := seenNames[autoName]; ok {
+			return WorkerRecord{}, fmt.Errorf("duplicate automation name: %q", autoName)
+		}
+		seenNames[autoName] = struct{}{}
+
+		autoID := strings.TrimSpace(a.ID)
+		var prior *WorkerAutomationDefinition
+		if autoID != "" {
+			for j := range current.Automations {
+				if current.Automations[j].ID == autoID {
+					prior = &current.Automations[j]
+					break
+				}
+			}
+			if prior == nil {
+				return WorkerRecord{}, fmt.Errorf("%w: automation id %q does not belong to worker %s", ErrWorkerConflict, autoID, workerID)
+			}
+		} else {
 			autoID = GenerateWorkerAutomationID()
 		}
+		if _, ok := seenIDs[autoID]; ok {
+			return WorkerRecord{}, fmt.Errorf("duplicate automation id: %q", autoID)
+		}
+		seenIDs[autoID] = struct{}{}
+
 		rev := uint64(1)
-		for _, oldA := range current.Automations {
-			if oldA.ID == autoID {
-				rev = oldA.Revision + 1
-				break
-			}
+		createdAt := now
+		if prior != nil {
+			rev = prior.Revision + 1
+			createdAt = prior.CreatedAt
 		}
 		automations[i] = WorkerAutomationDefinition{
 			ID:                      autoID,
@@ -1845,17 +2087,26 @@ func (ws *WorkerStore) ImportWorkerUpdate(account, user, workerID string, expect
 			InputRequirements:       a.InputRequirements,
 			DeliverableRequirements: a.DeliverableRequirements,
 			Revision:                rev,
-			CreatedAt:               now,
+			CreatedAt:               createdAt,
 			UpdatedAt:               now,
 		}
 	}
 
-	prov := def.Provenance
-	if prov == nil {
-		prov = &WorkerProvenance{}
+	var prov *WorkerProvenance
+	if def.Provenance != nil {
+		prov = &WorkerProvenance{
+			SourceWorkerID: def.Provenance.SourceWorkerID,
+			SourceRevision: def.Provenance.SourceRevision,
+			ExportedAt:     def.Provenance.ExportedAt,
+			ImportedAt:     now,
+			Author:         user,
+		}
+	} else {
+		prov = &WorkerProvenance{
+			ImportedAt: now,
+			Author:     user,
+		}
 	}
-	prov.ImportedAt = now
-	prov.Author = user
 
 	caps := def.Capabilities
 	if caps == nil {
@@ -1923,14 +2174,17 @@ func (ws *WorkerStore) ImportWorkerUpdate(account, user, workerID string, expect
 		}
 	}
 
+	_ = m.setPayload(WorkerRealtimePayload{
+		WorkerID:       updated.ID,
+		Revision:       updated.Revision,
+		LifecycleState: updated.LifecycleState,
+		ChangeSummary:  hist.ChangeSummary,
+	})
 	if err := ws.store.commitWorkerRealtime(m); err != nil {
 		return WorkerRecord{}, err
 	}
 
-	ws.store.workersMu.Unlock()
-	ws.store.publishWorkerRealtime(m)
-	ws.store.workersMu.Lock()
-
+	toPublish = m
 	return updated, nil
 }
 
@@ -1966,22 +2220,30 @@ func (ws *WorkerStore) RecordWorkerRun(account string, run WorkerRunRecord) (Wor
 		return WorkerRunRecord{}, fmt.Errorf("%w: run worker_revision %d exceeds worker revision %d", ErrWorkerConflict, run.WorkerRevision, w.Revision)
 	}
 
+	hist, histOk, histErr := ws.GetWorkerRevision(account, workerID, run.WorkerRevision)
+	if histErr != nil {
+		return WorkerRunRecord{}, histErr
+	}
+	if !histOk {
+		return WorkerRunRecord{}, fmt.Errorf("%w: worker snapshot revision %d not found", ErrWorkerConflict, run.WorkerRevision)
+	}
+
 	if strings.TrimSpace(run.AutomationID) != "" {
 		foundAuto := false
-		for _, a := range w.Automations {
+		for _, a := range hist.Worker.Automations {
 			if a.ID == run.AutomationID {
 				foundAuto = true
 				if run.AutomationRevision == 0 {
 					run.AutomationRevision = a.Revision
 				}
-				if run.AutomationRevision > a.Revision {
-					return WorkerRunRecord{}, fmt.Errorf("%w: run automation_revision %d exceeds automation revision %d", ErrWorkerConflict, run.AutomationRevision, a.Revision)
+				if run.AutomationRevision != a.Revision {
+					return WorkerRunRecord{}, fmt.Errorf("%w: run automation_revision %d does not match snapshot automation revision %d", ErrWorkerConflict, run.AutomationRevision, a.Revision)
 				}
 				break
 			}
 		}
 		if !foundAuto {
-			return WorkerRunRecord{}, fmt.Errorf("automation %q not found on worker", run.AutomationID)
+			return WorkerRunRecord{}, fmt.Errorf("automation %q not found on worker revision %d", run.AutomationID, run.WorkerRevision)
 		}
 	}
 
@@ -2024,15 +2286,38 @@ func (ws *WorkerStore) RecordWorkerRun(account string, run WorkerRunRecord) (Wor
 		if existingRun.AutomationRevision != run.AutomationRevision {
 			return WorkerRunRecord{}, fmt.Errorf("%w: cannot rewrite pinned automation revision from %d to %d", ErrWorkerConflict, existingRun.AutomationRevision, run.AutomationRevision)
 		}
-		if existingRun.OccurrenceID != "" && run.OccurrenceID != "" && existingRun.OccurrenceID != run.OccurrenceID {
-			return WorkerRunRecord{}, fmt.Errorf("%w: cannot change occurrence id from %q to %q", ErrWorkerConflict, existingRun.OccurrenceID, run.OccurrenceID)
+		if existingRun.OccurrenceID != "" && run.OccurrenceID != existingRun.OccurrenceID {
+			return WorkerRunRecord{}, fmt.Errorf("%w: cannot change or clear immutable occurrence id", ErrWorkerConflict)
 		}
-		if existingRun.RequestSource != "" && run.RequestSource != "" && existingRun.RequestSource != run.RequestSource {
-			return WorkerRunRecord{}, fmt.Errorf("%w: cannot change request source", ErrWorkerConflict)
+		if existingRun.RequestSource != "" && run.RequestSource != existingRun.RequestSource {
+			return WorkerRunRecord{}, fmt.Errorf("%w: cannot change or clear immutable request source", ErrWorkerConflict)
+		}
+		if existingRun.SessionID != "" && run.SessionID != "" && run.SessionID != existingRun.SessionID {
+			return WorkerRunRecord{}, fmt.Errorf("%w: cannot change immutable session id", ErrWorkerConflict)
+		}
+		if existingRun.Input != nil && run.Input == nil {
+			run.Input = existingRun.Input
 		}
 		run.CreatedAt = existingRun.CreatedAt
+	} else {
+		if run.RequestSource == "" {
+			run.RequestSource = "direct"
+		}
+		switch run.RequestSource {
+		case "direct", "schedule", "trigger", "test_run", "orchestrator":
+		default:
+			return WorkerRunRecord{}, fmt.Errorf("invalid request_source: %q", run.RequestSource)
+		}
 	}
 
+	if run.Status == "" {
+		run.Status = "admitted"
+	}
+	switch run.Status {
+	case "admitted", "running", "succeeded", "failed", "cancelled":
+	default:
+		return WorkerRunRecord{}, fmt.Errorf("invalid run status: %q", run.Status)
+	}
 	if run.Deliverables == nil {
 		run.Deliverables = []SessionPlanArtifactReference{}
 	}
@@ -2103,11 +2388,10 @@ func (ws *WorkerStore) ListWorkerRuns(account, workerID string, limit int, after
 	lower := prefix
 	after = strings.TrimSpace(after)
 	if after != "" {
-		if strings.HasPrefix(after, prefix) {
-			lower = after + "\x00"
-		} else {
-			lower = KeyWorkerRun(account, workerID, after) + "\x00"
+		if !workerIDRegexp.MatchString(after) {
+			return nil, "", errors.New("invalid cursor")
 		}
+		lower = KeyWorkerRun(account, workerID, after) + "\x00"
 	}
 
 	it, err := ws.store.db.NewIter(&pebble.IterOptions{
@@ -2121,18 +2405,27 @@ func (ws *WorkerStore) ListWorkerRuns(account, workerID string, limit int, after
 
 	list := make([]WorkerRunRecord, 0, limit)
 	var nextCursor string
+	scannedRows := 0
+	scannedBytes := 0
 	for valid := it.First(); valid; valid = it.Next() {
+		scannedRows++
+		scannedBytes += len(it.Value())
+		if scannedRows > 10000 || scannedBytes > 32*1024*1024 {
+			return nil, "", errors.New("scan budget exceeded")
+		}
+
 		var r WorkerRunRecord
 		if err := json.Unmarshal(it.Value(), &r); err != nil {
-			continue
+			return nil, "", fmt.Errorf("corrupt worker run record at %s: %w", string(it.Key()), err)
 		}
-		if r.AccountScopeID == account && r.WorkerID == workerID {
-			if len(list) < limit {
-				list = append(list, r)
-			} else {
-				nextCursor = list[len(list)-1].ID
-				break
-			}
+		if r.AccountScopeID != account || r.WorkerID != workerID {
+			return nil, "", fmt.Errorf("record mismatch in run index: got worker %s account %s, expected %s / %s", r.WorkerID, r.AccountScopeID, workerID, account)
+		}
+		if len(list) < limit {
+			list = append(list, r)
+		} else {
+			nextCursor = list[len(list)-1].ID
+			break
 		}
 	}
 	if err := it.Error(); err != nil {
@@ -2169,16 +2462,30 @@ func (ws *WorkerStore) MigrateLegacyAutomationsV2(account string) (WorkerMigrati
 	seenAutomations := make(map[string]AutomationV2Record)
 	var toMigrate []AutomationV2Record
 	hasPreflightErrors := false
+	scannedRecords := 0
 
 	for valid := it.First(); valid; valid = it.Next() {
+		scannedRecords++
+		if scannedRecords > 10000 {
+			summary.FailedCount++
+			summary.Errors = append(summary.Errors, "migration scan budget exceeded (10000 records)")
+			hasPreflightErrors = true
+			break
+		}
 		var rec AutomationV2Record
 		if err := json.Unmarshal(it.Value(), &rec); err != nil {
 			summary.FailedCount++
-			summary.Errors = append(summary.Errors, "unmarshal legacy record failed: corrupt payload")
+			summary.Errors = append(summary.Errors, fmt.Sprintf("unmarshal legacy record failed: corrupt payload: %v", err))
 			hasPreflightErrors = true
 			continue
 		}
 		if rec.AutomationID == "" {
+			continue
+		}
+		if rec.AccountID != "" && rec.AccountID != account {
+			summary.FailedCount++
+			summary.Errors = append(summary.Errors, fmt.Sprintf("account mismatch on legacy record %s: record belongs to %s, migrating for %s", rec.AutomationID, rec.AccountID, account))
+			hasPreflightErrors = true
 			continue
 		}
 		if !workerIDRegexp.MatchString(rec.AutomationID) {
@@ -2188,24 +2495,30 @@ func (ws *WorkerStore) MigrateLegacyAutomationsV2(account string) (WorkerMigrati
 			continue
 		}
 		if prev, ok := seenAutomations[rec.AutomationID]; ok {
-			// Compare exact provenance and identity
-			if prev.SessionID != rec.SessionID || prev.ProposalID != rec.ProposalID {
+			prevBytes, _ := json.Marshal(prev)
+			recBytes, _ := json.Marshal(rec)
+			if !bytes.Equal(prevBytes, recBytes) {
 				summary.FailedCount++
-				summary.Errors = append(summary.Errors, fmt.Sprintf("colliding legacy automation id %q across sessions %s and %s", rec.AutomationID, prev.SessionID, rec.SessionID))
+				summary.Errors = append(summary.Errors, fmt.Sprintf("colliding legacy automation id %q with different payload across sessions %s and %s", rec.AutomationID, prev.SessionID, rec.SessionID))
 				hasPreflightErrors = true
 				continue
 			}
+			// Exact duplicate accepted index entry, legitimate duplicate copies in accepted indexes
 			continue
 		}
 		seenAutomations[rec.AutomationID] = rec
 		toMigrate = append(toMigrate, rec)
 	}
 	if err := it.Error(); err != nil {
+		summary.FailedCount++
+		summary.Errors = append(summary.Errors, fmt.Sprintf("iteration error: %v", err))
+		summary.MigratedCount = 0
 		return summary, err
 	}
 
 	summary.ScannedCount = len(toMigrate)
-	if hasPreflightErrors {
+	if hasPreflightErrors || summary.FailedCount > 0 {
+		summary.MigratedCount = 0
 		return summary, nil
 	}
 
@@ -2214,13 +2527,16 @@ func (ws *WorkerStore) MigrateLegacyAutomationsV2(account string) (WorkerMigrati
 	defer batch.Close()
 
 	for _, rec := range toMigrate {
-		targetWorkerID := rec.AutomationID // Preserve exact established av2 ID!
+		targetWorkerID := rec.AutomationID
 
 		// Check if already migrated
 		var existing WorkerRecord
 		if ok, err := ws.store.GetJSON(KeyWorker(account, targetWorkerID), &existing); err == nil && ok {
-			// Idempotent: check if it matches this legacy record
-			if existing.Provenance != nil && existing.Provenance.MigratedAt > 0 && existing.Provenance.SourceWorkerID == rec.AutomationID && (rec.ProposalID == "" || existing.Provenance.SourceProposalID == rec.ProposalID) {
+			// Exact provenance session + proposal + worker for repeat
+			if existing.Provenance != nil && existing.Provenance.MigratedAt > 0 &&
+				existing.Provenance.SourceWorkerID == rec.AutomationID &&
+				existing.Provenance.SourceSessionID == rec.SessionID &&
+				existing.Provenance.SourceProposalID == rec.ProposalID {
 				summary.SkippedCount++
 				continue
 			}
@@ -2273,7 +2589,6 @@ func (ws *WorkerStore) MigrateLegacyAutomationsV2(account string) (WorkerMigrati
 			}
 		}
 
-		// Multi-workspace bindings preservation
 		wsReqs := make([]WorkerWorkspaceRequirement, 0)
 		bindings := make(map[string]string)
 		if rec.WorkspaceID != "" {
@@ -2305,13 +2620,18 @@ func (ws *WorkerStore) MigrateLegacyAutomationsV2(account string) (WorkerMigrati
 
 		var automations []WorkerAutomationDefinition
 		if len(rec.Document.Checkpoints) > 0 {
+			var trig *WorkerTriggerConfig
+			if actMode == "external_trigger" {
+				trig = &WorkerTriggerConfig{TriggerKind: "webhook"}
+			}
 			autoDef := WorkerAutomationDefinition{
-				ID:             rec.AutomationID, // Preserving av2 ID
+				ID:             rec.AutomationID,
 				WorkerID:       targetWorkerID,
 				Name:           name,
 				Description:    desc,
 				ActivationMode: actMode,
 				Schedule:       sched,
+				Trigger:        trig,
 				Enabled:        rec.Enabled && !rec.Cancelled && !rec.Archived,
 				PlanDocument:   rec.Document,
 				Revision:       rev,
@@ -2320,7 +2640,6 @@ func (ws *WorkerStore) MigrateLegacyAutomationsV2(account string) (WorkerMigrati
 			}
 			automations = append(automations, autoDef)
 		} else {
-			// Zero-checkpoint specialist maps to worker without fake executable auto
 			automations = make([]WorkerAutomationDefinition, 0)
 		}
 
@@ -2346,42 +2665,55 @@ func (ws *WorkerStore) MigrateLegacyAutomationsV2(account string) (WorkerMigrati
 			UpdatedAt: rec.AcceptedAt,
 		}
 
-		hist := WorkerRevisionRecord{
-			WorkerID:       w.ID,
-			AccountScopeID: account,
-			Revision:       w.Revision,
-			Worker:         w,
-			CommittedAt:    now,
-			CommittedBy:    "migration",
-			ChangeSummary:  "migrated from legacy automation v2",
-		}
-
 		wBytes, err := json.Marshal(w)
 		if err != nil {
 			summary.FailedCount++
 			summary.Errors = append(summary.Errors, fmt.Sprintf("marshal worker %s: %v", w.ID, err))
 			continue
 		}
-		hBytes, err := json.Marshal(hist)
-		if err != nil {
+		if err := batch.Set([]byte(KeyWorker(account, w.ID)), wBytes, nil); err != nil {
 			summary.FailedCount++
-			summary.Errors = append(summary.Errors, fmt.Sprintf("marshal history %s: %v", w.ID, err))
+			summary.Errors = append(summary.Errors, fmt.Sprintf("batch set worker %s: %v", w.ID, err))
 			continue
 		}
 
-		if err := batch.Set([]byte(KeyWorker(account, w.ID)), wBytes, nil); err != nil {
-			return summary, err
+		// Retain snapshot worker revisions: write all revisions 1..rev
+		for r := uint64(1); r <= w.Revision; r++ {
+			snapW := w
+			snapW.Revision = r
+			hist := WorkerRevisionRecord{
+				WorkerID:       w.ID,
+				AccountScopeID: account,
+				Revision:       r,
+				Worker:         snapW,
+				CommittedAt:    now,
+				CommittedBy:    "migration",
+				ChangeSummary:  fmt.Sprintf("migrated snapshot revision %d from legacy automation v2", r),
+			}
+			hBytes, err := json.Marshal(hist)
+			if err != nil {
+				summary.FailedCount++
+				summary.Errors = append(summary.Errors, fmt.Sprintf("marshal history %s rev %d: %v", w.ID, r, err))
+				break
+			}
+			if err := batch.Set([]byte(KeyWorkerHistory(account, w.ID, r)), hBytes, nil); err != nil {
+				summary.FailedCount++
+				summary.Errors = append(summary.Errors, fmt.Sprintf("batch set history %s rev %d: %v", w.ID, r, err))
+				break
+			}
 		}
-		if err := batch.Set([]byte(KeyWorkerHistory(account, w.ID, w.Revision)), hBytes, nil); err != nil {
-			return summary, err
-		}
+
 		for _, a := range w.Automations {
 			autoIDBytes, err := json.Marshal(w.ID)
 			if err != nil {
-				return summary, err
+				summary.FailedCount++
+				summary.Errors = append(summary.Errors, fmt.Sprintf("marshal auto link: %v", err))
+				continue
 			}
 			if err := batch.Set([]byte(KeyWorkerByAutomation(account, a.ID)), autoIDBytes, nil); err != nil {
-				return summary, err
+				summary.FailedCount++
+				summary.Errors = append(summary.Errors, fmt.Sprintf("batch set auto link: %v", err))
+				continue
 			}
 		}
 
@@ -2391,60 +2723,102 @@ func (ws *WorkerStore) MigrateLegacyAutomationsV2(account string) (WorkerMigrati
 			LowerBound: []byte(occPrefix),
 			UpperBound: []byte(occPrefix + "\xff"),
 		})
-		if occErr == nil {
-			for occValid := occIt.First(); occValid; occValid = occIt.Next() {
-				var o AutomationV2Occurrence
-				if err := json.Unmarshal(occIt.Value(), &o); err != nil {
-					continue
-				}
-				// Verify strict ownership
-				if o.Record.AutomationID != rec.AutomationID || o.Record.AccountID != account {
-					continue
-				}
-				occRev := o.Record.Generation
-				if occRev == 0 {
-					occRev = rev
-				}
-				delivs := o.Deliverables
-				if delivs == nil {
-					delivs = []SessionPlanArtifactReference{}
-				}
-				autoID := ""
-				if len(w.Automations) > 0 {
-					autoID = w.Automations[0].ID
-				}
-				run := WorkerRunRecord{
-					ID:                 "wrun_" + o.ID,
-					AccountScopeID:     account,
-					WorkerID:           targetWorkerID,
-					WorkerRevision:     occRev, // pinned snapshot revision
-					AutomationID:       autoID,
-					AutomationRevision: occRev, // pinned snapshot revision
-					OccurrenceID:       o.ID,
-					SessionID:          o.SessionID,
-					RequestSource:      "schedule",
-					Input:              o.TriggerContext,
-					Status:             o.State,
-					Error:              o.Detail,
-					Deliverables:       delivs,
-					StartedAt:          o.AdmittedAt,
-					CompletedAt:        o.ObservedAt,
-					CreatedAt:          o.AdmittedAt,
-				}
-				runBytes, rErr := json.Marshal(run)
-				if rErr == nil {
-					_ = batch.Set([]byte(KeyWorkerRun(account, targetWorkerID, run.ID)), runBytes, nil)
-					occLinkBytes, _ := json.Marshal(targetWorkerID + ":" + run.ID)
-					_ = batch.Set([]byte(KeyWorkerRunByOccurrence(account, o.ID)), occLinkBytes, nil)
-				}
-			}
-			occIt.Close()
+		if occErr != nil {
+			summary.FailedCount++
+			summary.Errors = append(summary.Errors, fmt.Sprintf("scan occurrences for session %s: %v", rec.SessionID, occErr))
+			continue
 		}
+		occCount := 0
+		for occValid := occIt.First(); occValid; occValid = occIt.Next() {
+			occCount++
+			if occCount > 10000 {
+				summary.FailedCount++
+				summary.Errors = append(summary.Errors, fmt.Sprintf("occurrence scan budget exceeded for session %s", rec.SessionID))
+				break
+			}
+			var o AutomationV2Occurrence
+			if err := json.Unmarshal(occIt.Value(), &o); err != nil {
+				summary.FailedCount++
+				summary.Errors = append(summary.Errors, fmt.Sprintf("corrupt occurrence record for session %s: %v", rec.SessionID, err))
+				continue
+			}
+			if o.Record.AutomationID != rec.AutomationID || (o.Record.AccountID != "" && o.Record.AccountID != account) {
+				continue
+			}
+			occRev := o.Record.Generation
+			if occRev == 0 {
+				occRev = rev
+			}
+			delivs := o.Deliverables
+			if delivs == nil {
+				delivs = []SessionPlanArtifactReference{}
+			}
+			autoID := ""
+			if len(w.Automations) > 0 {
+				autoID = w.Automations[0].ID
+			}
+
+			// Map run sources properly where representable
+			reqSource := "schedule"
+			if o.TriggerContext != nil && (o.TriggerContext["test_run"] == true || o.TriggerContext["mode"] == "test" || o.TriggerContext["test"] == true) {
+				reqSource = "test_run"
+			} else if (o.Record.Document.WorkerV2 != nil && o.Record.Document.WorkerV2.Schedule.Kind == "trigger") || (o.Record.Document.AutomationV2 != nil && o.Record.Document.AutomationV2.Schedule.Kind == "trigger") || len(o.TriggerContext) > 0 {
+				reqSource = "trigger"
+			}
+
+			run := WorkerRunRecord{
+				ID:                 "wrun_" + o.ID,
+				AccountScopeID:     account,
+				WorkerID:           targetWorkerID,
+				WorkerRevision:     occRev,
+				AutomationID:       autoID,
+				AutomationRevision: occRev,
+				OccurrenceID:       o.ID,
+				SessionID:          o.SessionID,
+				RequestSource:      reqSource,
+				Input:              o.TriggerContext,
+				Status:             o.State,
+				Error:              o.Detail,
+				Deliverables:       delivs,
+				StartedAt:          o.AdmittedAt,
+				CompletedAt:        o.ObservedAt,
+				CreatedAt:          o.AdmittedAt,
+			}
+			runBytes, rErr := json.Marshal(run)
+			if rErr != nil {
+				summary.FailedCount++
+				summary.Errors = append(summary.Errors, fmt.Sprintf("marshal run %s: %v", run.ID, rErr))
+				continue
+			}
+			if err := batch.Set([]byte(KeyWorkerRun(account, targetWorkerID, run.ID)), runBytes, nil); err != nil {
+				summary.FailedCount++
+				summary.Errors = append(summary.Errors, fmt.Sprintf("batch set run %s: %v", run.ID, err))
+				continue
+			}
+			occLinkBytes, _ := json.Marshal(targetWorkerID + ":" + run.ID)
+			if err := batch.Set([]byte(KeyWorkerRunByOccurrence(account, o.ID)), occLinkBytes, nil); err != nil {
+				summary.FailedCount++
+				summary.Errors = append(summary.Errors, fmt.Sprintf("batch set occ link %s: %v", o.ID, err))
+				continue
+			}
+		}
+		if err := occIt.Error(); err != nil {
+			summary.FailedCount++
+			summary.Errors = append(summary.Errors, fmt.Sprintf("occurrence iterator error for session %s: %v", rec.SessionID, err))
+		}
+		occIt.Close()
 
 		summary.MigratedCount++
 	}
 
+	// Fail closed if any error occurred: zero migrated count and no commit!
+	if summary.FailedCount > 0 || len(summary.Errors) > 0 {
+		summary.MigratedCount = 0
+		return summary, nil
+	}
+
 	if err := batch.Commit(pebble.Sync); err != nil {
+		summary.MigratedCount = 0
 		return summary, err
 	}
 	return summary, nil

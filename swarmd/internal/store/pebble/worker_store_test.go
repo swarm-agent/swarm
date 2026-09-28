@@ -1740,3 +1740,623 @@ func TestWorkerPublisherUnlocked(t *testing.T) {
 		t.Fatalf("expected 1 wake, got %d", wakes)
 	}
 }
+
+// Invariant: Automation IDs across workers and new unowned IDs must never be accepted on import/bulk update.
+// Threat: Overwriting index keys, stealing automations across workers, or creating orphaned indexes.
+// Boundary: WorkerStore ImportWorkerUpdate, UpdateWorker.
+func TestWorkerAutomationIDIntegrityAndNoMutation(t *testing.T) {
+	_, ws := openTestStore(t)
+
+	wA, err := ws.CreateWorker("acct-1", "user-1", CreateWorkerRequest{
+		Name:         "Worker A",
+		Instructions: "Instructions A",
+		Automations: []WorkerAutomationDefinition{
+			{Name: "Task A1", ActivationMode: "manual", Enabled: true, PlanDocument: testPlanDoc("Plan A1")},
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("CreateWorker A: %v", err)
+	}
+	autoA1ID := wA.Automations[0].ID
+
+	wB, err := ws.CreateWorker("acct-1", "user-1", CreateWorkerRequest{
+		Name:         "Worker B",
+		Instructions: "Instructions B",
+		Automations: []WorkerAutomationDefinition{
+			{Name: "Task B1", ActivationMode: "manual", Enabled: true, PlanDocument: testPlanDoc("Plan B1")},
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("CreateWorker B: %v", err)
+	}
+	autoB1ID := wB.Automations[0].ID
+
+	// 1. ImportWorkerUpdate on B using A's automation ID -> must fail
+	defSteal := PortableWorkerDefinition{
+		SchemaVersion: 1,
+		Name:          "Worker B Steal",
+		Instructions:  "Instructions B",
+		Automations: []PortableAutomationDefinition{
+			{ID: autoA1ID, Name: "Stolen Task", ActivationMode: "manual", Enabled: true, Plan: testPlanDoc("Steal Plan")},
+		},
+	}
+	rawSteal, _ := json.Marshal(defSteal)
+	_, err = ws.ImportWorkerUpdate("acct-1", "user-1", wB.ID, wB.Revision, rawSteal, nil)
+	if err == nil || !errors.Is(err, ErrWorkerConflict) {
+		t.Fatalf("expected ErrWorkerConflict stealing auto across workers, got %v", err)
+	}
+
+	// Verify Worker B is completely unmutated
+	checkB, ok, err := ws.GetWorker("acct-1", wB.ID)
+	if err != nil || !ok {
+		t.Fatalf("GetWorker B: ok=%v, err=%v", ok, err)
+	}
+	if checkB.Revision != wB.Revision || len(checkB.Automations) != 1 || checkB.Automations[0].ID != autoB1ID {
+		t.Fatalf("Worker B was mutated on failed import: %+v", checkB)
+	}
+
+	// 2. ImportWorkerUpdate on B using arbitrary new supplied ID -> must fail
+	defNewID := PortableWorkerDefinition{
+		SchemaVersion: 1,
+		Name:          "Worker B New ID",
+		Instructions:  "Instructions B",
+		Automations: []PortableAutomationDefinition{
+			{ID: "wauto_invented_new", Name: "Invented Task", ActivationMode: "manual", Enabled: true, Plan: testPlanDoc("New Plan")},
+		},
+	}
+	rawNewID, _ := json.Marshal(defNewID)
+	_, err = ws.ImportWorkerUpdate("acct-1", "user-1", wB.ID, wB.Revision, rawNewID, nil)
+	if err == nil || !errors.Is(err, ErrWorkerConflict) {
+		t.Fatalf("expected ErrWorkerConflict on invented auto ID, got %v", err)
+	}
+
+	// 3. ImportWorkerUpdate on B with duplicate IDs -> must fail
+	defDup := PortableWorkerDefinition{
+		SchemaVersion: 1,
+		Name:          "Worker B Duplicate ID",
+		Instructions:  "Instructions B",
+		Automations: []PortableAutomationDefinition{
+			{ID: autoB1ID, Name: "Task 1", ActivationMode: "manual", Enabled: true, Plan: testPlanDoc("Plan 1")},
+			{ID: autoB1ID, Name: "Task 2", ActivationMode: "manual", Enabled: true, Plan: testPlanDoc("Plan 2")},
+		},
+	}
+	rawDup, _ := json.Marshal(defDup)
+	_, err = ws.ImportWorkerUpdate("acct-1", "user-1", wB.ID, wB.Revision, rawDup, nil)
+	if err == nil {
+		t.Fatal("expected error on duplicate automation IDs in import, got nil")
+	}
+
+	// 4. UpdateWorker bulk on B with A's ID -> must fail
+	_, err = ws.UpdateWorker("acct-1", "user-1", wB.ID, wB.Revision, UpdateWorkerRequest{
+		Automations: []WorkerAutomationDefinition{
+			{ID: autoA1ID, Name: "Steal Task", ActivationMode: "manual", Enabled: true, PlanDocument: testPlanDoc("Steal")},
+		},
+	}, nil)
+	if err == nil || !errors.Is(err, ErrWorkerConflict) {
+		t.Fatalf("expected ErrWorkerConflict on cross-worker bulk update, got %v", err)
+	}
+
+	// 5. UpdateWorker bulk on B with unknown supplied ID -> must fail
+	_, err = ws.UpdateWorker("acct-1", "user-1", wB.ID, wB.Revision, UpdateWorkerRequest{
+		Automations: []WorkerAutomationDefinition{
+			{ID: "wauto_unknown_99", Name: "Unknown Task", ActivationMode: "manual", Enabled: true, PlanDocument: testPlanDoc("Unknown")},
+		},
+	}, nil)
+	if err == nil || !errors.Is(err, ErrWorkerConflict) {
+		t.Fatalf("expected ErrWorkerConflict on unknown bulk automation ID, got %v", err)
+	}
+
+	// 6. UpdateWorker bulk on B with duplicate IDs -> must fail
+	_, err = ws.UpdateWorker("acct-1", "user-1", wB.ID, wB.Revision, UpdateWorkerRequest{
+		Automations: []WorkerAutomationDefinition{
+			{ID: autoB1ID, Name: "Task 1", ActivationMode: "manual", Enabled: true, PlanDocument: testPlanDoc("Plan 1")},
+			{ID: autoB1ID, Name: "Task 2", ActivationMode: "manual", Enabled: true, PlanDocument: testPlanDoc("Plan 2")},
+		},
+	}, nil)
+	if err == nil {
+		t.Fatal("expected error on duplicate bulk automation IDs, got nil")
+	}
+
+	// 7. Legitimate bulk update preserving existing ID retains CreatedAt
+	origCreatedAt := wB.Automations[0].CreatedAt
+	updatedB, err := ws.UpdateWorker("acct-1", "user-1", wB.ID, wB.Revision, UpdateWorkerRequest{
+		Automations: []WorkerAutomationDefinition{
+			{ID: autoB1ID, Name: "Task B1 Renamed", ActivationMode: "manual", Enabled: true, PlanDocument: testPlanDoc("Plan B1 Renamed")},
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("UpdateWorker legitimate: %v", err)
+	}
+	if updatedB.Automations[0].CreatedAt != origCreatedAt {
+		t.Fatalf("expected CreatedAt preserved on bulk update: %d vs %d", updatedB.Automations[0].CreatedAt, origCreatedAt)
+	}
+	if updatedB.Automations[0].Revision != 2 {
+		t.Fatalf("expected automation revision incremented to 2, got %d", updatedB.Automations[0].Revision)
+	}
+}
+
+// Invariant: Imported portable provenance must never accept or forge local migration markers (MigratedAt/SourceProposalID).
+// Threat: Forging migration markers to lock imported workers into permanent read-only migration mirror state.
+// Boundary: ValidatePortableWorkerDefinition, ImportWorkerAsNew, ImportWorkerUpdate.
+func TestWorkerPortableProvenanceSecurity(t *testing.T) {
+	_, ws := openTestStore(t)
+
+	// 1. JSON containing migrated_at must be rejected as an unknown field
+	jsonWithMigrated := []byte(`{
+		"schema_version": 1,
+		"name": "Forged Migration Worker",
+		"instructions": "Instructions",
+		"provenance": {
+			"source_worker_id": "worker_orig",
+			"migrated_at": 1700000000000
+		}
+	}`)
+	_, err := ValidatePortableWorkerDefinition(jsonWithMigrated, nil)
+	if err == nil {
+		t.Fatal("expected error on portable definition with migrated_at, got nil")
+	}
+
+	// 2. JSON containing source_proposal_id must be rejected as an unknown field
+	jsonWithProposal := []byte(`{
+		"schema_version": 1,
+		"name": "Forged Proposal Worker",
+		"instructions": "Instructions",
+		"provenance": {
+			"source_worker_id": "worker_orig",
+			"source_proposal_id": "prop_forged"
+		}
+	}`)
+	_, err = ValidatePortableWorkerDefinition(jsonWithProposal, nil)
+	if err == nil {
+		t.Fatal("expected error on portable definition with source_proposal_id, got nil")
+	}
+
+	// 3. Valid portable provenance is imported with server-owned ImportedAt and Author
+	validJSON := []byte(`{
+		"schema_version": 1,
+		"name": "Legit Portable Worker",
+		"instructions": "Instructions",
+		"provenance": {
+			"source_worker_id": "worker_legit",
+			"source_revision": 5,
+			"exported_at": 1690000000000
+		}
+	}`)
+	imported, err := ws.ImportWorkerAsNew("acct-sec", "user-sec", validJSON, nil)
+	if err != nil {
+		t.Fatalf("ImportWorkerAsNew: %v", err)
+	}
+	if imported.Provenance == nil {
+		t.Fatal("expected non-nil provenance on imported worker")
+	}
+	if imported.Provenance.SourceWorkerID != "worker_legit" || imported.Provenance.SourceRevision != 5 {
+		t.Fatalf("source worker/revision mismatch: %+v", imported.Provenance)
+	}
+	if imported.Provenance.MigratedAt != 0 || imported.Provenance.SourceProposalID != "" {
+		t.Fatalf("imported worker must not have local migration markers: %+v", imported.Provenance)
+	}
+	if imported.Provenance.Author != "user-sec" || imported.Provenance.ImportedAt == 0 {
+		t.Fatalf("server author/imported_at not set: %+v", imported.Provenance)
+	}
+
+	// 4. Verify imported worker is NOT locked as read-only and can be normally updated
+	newName := "Legit Portable Worker Renamed"
+	updated, err := ws.UpdateWorker("acct-sec", "user-sec", imported.ID, imported.Revision, UpdateWorkerRequest{
+		Name: &newName,
+	}, nil)
+	if err != nil {
+		t.Fatalf("UpdateWorker on imported worker should succeed, got %v", err)
+	}
+	if updated.Name != newName {
+		t.Fatalf("expected updated name %q, got %q", newName, updated.Name)
+	}
+}
+
+// Invariant: Legacy migration must be bounded, fail-closed atomic, zero migrated_count on failure, and strictly isolated by account.
+// Threat: Partial writes during failure, cross-account contamination, duplicate collisions across sessions.
+// Boundary: WorkerStore MigrateLegacyAutomationsV2.
+func TestLegacyMigrationFailClosedAtomicAndScenarios(t *testing.T) {
+	s, ws := openTestStore(t)
+
+	// 1. Mixed valid + invalid record: must fail closed with 0 migrated count and NO writes
+	validDoc := testPlanDoc("Valid Plan")
+	validRec := AutomationV2Record{
+		AutomationID: "av2_valid_atomic_01",
+		AcceptedBy:   "user-1",
+		AcceptedAt:   time.Now().UnixMilli() - 1000,
+		Enabled:      true,
+		Generation:   1,
+		AutomationV2Proposal: AutomationV2Proposal{
+			AutomationV2Review: AutomationV2Review{ProposalID: "prop-valid", Revision: 1, Digest: "dig-1"},
+			AccountID:          "acct-atomic",
+			UserID:             "user-1",
+			WorkspaceID:        "ws-1",
+			SessionID:          "sess-valid",
+			Document:           validDoc,
+			CreatedAt:          time.Now().UnixMilli() - 2000,
+		},
+	}
+	invalidRec := AutomationV2Record{
+		AutomationID: "invalid_id_with_$$$$$", // Invalid format
+		AcceptedBy:   "user-1",
+		AcceptedAt:   time.Now().UnixMilli(),
+		Enabled:      true,
+		Generation:   1,
+		AutomationV2Proposal: AutomationV2Proposal{
+			AutomationV2Review: AutomationV2Review{ProposalID: "prop-inv", Revision: 1, Digest: "dig-2"},
+			AccountID:          "acct-atomic",
+			UserID:             "user-1",
+			WorkspaceID:        "ws-1",
+			SessionID:          "sess-inv",
+			Document:           validDoc,
+			CreatedAt:          time.Now().UnixMilli(),
+		},
+	}
+
+	bValid, _ := json.Marshal(validRec)
+	bInv, _ := json.Marshal(invalidRec)
+	_ = s.PutBytes(automationV2Key("accepted", "acct-atomic", validRec.AutomationID), bValid)
+	_ = s.PutBytes(automationV2Key("accepted", "acct-atomic", invalidRec.AutomationID), bInv)
+
+	summary, err := ws.MigrateLegacyAutomationsV2("acct-atomic")
+	if err != nil {
+		t.Fatalf("MigrateLegacyAutomationsV2: %v", err)
+	}
+	if summary.MigratedCount != 0 {
+		t.Fatalf("expected 0 migrated on failure, got %d", summary.MigratedCount)
+	}
+	if summary.FailedCount == 0 || len(summary.Errors) == 0 {
+		t.Fatalf("expected failures in summary, got %+v", summary)
+	}
+
+	// Verify validRec was NOT committed to the store (fail-closed atomic batch)
+	_, found, err := ws.GetWorker("acct-atomic", validRec.AutomationID)
+	if err != nil {
+		t.Fatalf("GetWorker: %v", err)
+	}
+	if found {
+		t.Fatal("valid worker was unexpectedly committed during failed migration batch")
+	}
+
+	// Clean up invalid record
+	_ = s.Delete(automationV2Key("accepted", "acct-atomic", invalidRec.AutomationID))
+
+	// 2. Successful migration of valid record
+	summary2, err := ws.MigrateLegacyAutomationsV2("acct-atomic")
+	if err != nil {
+		t.Fatalf("MigrateLegacyAutomationsV2 clean: %v", err)
+	}
+	if summary2.MigratedCount != 1 || summary2.FailedCount != 0 {
+		t.Fatalf("expected 1 migrated, got %+v", summary2)
+	}
+
+	// 3. Repeated migration is idempotent: skipped count increments, migrated count is 0
+	summaryRepeat, err := ws.MigrateLegacyAutomationsV2("acct-atomic")
+	if err != nil {
+		t.Fatalf("MigrateLegacyAutomationsV2 repeat: %v", err)
+	}
+	if summaryRepeat.MigratedCount != 0 || summaryRepeat.SkippedCount != 1 || summaryRepeat.FailedCount != 0 {
+		t.Fatalf("expected 1 skipped and 0 migrated on repeat, got %+v", summaryRepeat)
+	}
+
+	// 4. Duplicate identical records in accepted index (legitimate duplicate copies)
+	_ = s.PutBytes(automationV2Key("accepted", "acct-atomic", validRec.AutomationID+"_dup_key"), bValid)
+	summaryDup, err := ws.MigrateLegacyAutomationsV2("acct-atomic")
+	if err != nil {
+		t.Fatalf("MigrateLegacyAutomationsV2 duplicate copies: %v", err)
+	}
+	if summaryDup.FailedCount != 0 {
+		t.Fatalf("expected 0 failures on identical duplicate copies, got %+v", summaryDup)
+	}
+
+	// 5. Account isolation: Account B must not migrate Account A records
+	summaryB, err := ws.MigrateLegacyAutomationsV2("acct-other")
+	if err != nil {
+		t.Fatalf("MigrateLegacyAutomationsV2 other: %v", err)
+	}
+	if summaryB.MigratedCount != 0 || summaryB.ScannedCount != 0 {
+		t.Fatalf("expected 0 scanned/migrated for empty account, got %+v", summaryB)
+	}
+
+	// 6. Occurrences and snapshot revisions
+	wValid, ok, err := ws.GetWorker("acct-atomic", validRec.AutomationID)
+	if err != nil || !ok {
+		t.Fatalf("GetWorker: ok=%v, err=%v", ok, err)
+	}
+	// Verify history record exists for revision 1
+	hist, hOk, hErr := ws.GetWorkerRevision("acct-atomic", wValid.ID, 1)
+	if hErr != nil || !hOk {
+		t.Fatalf("GetWorkerRevision 1: ok=%v, err=%v", hOk, hErr)
+	}
+	if hist.Worker.ID != wValid.ID {
+		t.Fatalf("unexpected history worker ID: %s", hist.Worker.ID)
+	}
+}
+
+// Invariant: List scans must reject invalid cursors, enforce scan budgets, and fail closed on corrupt rows.
+// Threat: Unbounded disk scanning, silent data corruption, or cursor account bypassing.
+// Boundary: WorkerStore ListWorkers, ListWorkerRevisions, ListWorkerRuns.
+func TestWorkerListScansCursorAndCorruptRows(t *testing.T) {
+	s, ws := openTestStore(t)
+
+	w, err := ws.CreateWorker("acct-scans", "user-1", CreateWorkerRequest{
+		Name:         "Scan Test Worker",
+		Instructions: "Instructions",
+	}, nil)
+	if err != nil {
+		t.Fatalf("CreateWorker: %v", err)
+	}
+
+	// 1. Invalid cursors
+	_, err = ws.ListWorkers("acct-scans", ListWorkersQuery{After: "invalid/cursor/path"})
+	if err == nil {
+		t.Fatal("expected error on invalid ListWorkers cursor, got nil")
+	}
+
+	_, _, err = ws.ListWorkerRevisions("acct-scans", w.ID, 10, "not-a-number")
+	if err == nil {
+		t.Fatal("expected error on non-numeric ListWorkerRevisions cursor, got nil")
+	}
+
+	_, _, err = ws.ListWorkerRuns("acct-scans", w.ID, 10, "invalid/run/cursor")
+	if err == nil {
+		t.Fatal("expected error on invalid ListWorkerRuns cursor, got nil")
+	}
+
+	// 2. Corrupt row in ListWorkers must fail closed, not silently skip
+	corruptKey := KeyWorker("acct-scans", "worker_corrupt_test")
+	_ = s.PutBytes(corruptKey, []byte("invalid-json-{"))
+	defer s.Delete(corruptKey)
+
+	_, err = ws.ListWorkers("acct-scans", ListWorkersQuery{})
+	if err == nil || !strings.Contains(err.Error(), "corrupt worker record") {
+		t.Fatalf("expected corrupt worker record error, got %v", err)
+	}
+}
+
+// Invariant: Plan portability and activation modes must strictly match schedule kinds and reject host-bound paths.
+// Threat: Silent execution of incompatible activation modes or path traversal vulnerabilities in exported plans.
+// Boundary: ValidateWorkerRecord, ValidatePortableWorkerDefinition, ExportWorker.
+func TestWorkerPlanPortabilityAndActivationModeIntegrity(t *testing.T) {
+	_, ws := openTestStore(t)
+
+	// 1. Inconsistent ActivationMode: manual with schedule -> rejected
+	_, err := ws.CreateWorker("acct-port", "user-1", CreateWorkerRequest{
+		Name:         "Inconsistent Worker",
+		Instructions: "Instructions",
+		Automations: []WorkerAutomationDefinition{
+			{
+				Name:           "Manual with Schedule",
+				ActivationMode: "manual",
+				Schedule:       &AutomationV2Schedule{Kind: "interval", IntervalSeconds: 300},
+				Enabled:        true,
+				PlanDocument:   testPlanDoc("Plan"),
+			},
+		},
+	}, nil)
+	if err == nil {
+		t.Fatal("expected rejection of manual activation with schedule, got nil")
+	}
+
+	// 2. Inconsistent ActivationMode: interval with cron schedule -> rejected
+	_, err = ws.CreateWorker("acct-port", "user-1", CreateWorkerRequest{
+		Name:         "Inconsistent Worker 2",
+		Instructions: "Instructions",
+		Automations: []WorkerAutomationDefinition{
+			{
+				Name:           "Interval with Cron",
+				ActivationMode: "interval",
+				Schedule:       &AutomationV2Schedule{Kind: "cron", Cron: "* * * * *", Timezone: "UTC"},
+				Enabled:        true,
+				PlanDocument:   testPlanDoc("Plan"),
+			},
+		},
+	}, nil)
+	if err == nil {
+		t.Fatal("expected rejection of interval activation with cron schedule, got nil")
+	}
+
+	// 3. TaskProgram job with absolute host path -> rejected
+	docHostPath := testPlanDoc("Host Path Plan")
+	docHostPath.Checkpoints[0].TaskProgram = &TaskProgramDefinition{
+		Stages: []TaskProgramStageSpec{{ID: "s1", DependencyEvidence: "ready"}},
+		Jobs: []TaskProgramJobSpec{
+			{
+				ID:            "job-1",
+				StageID:       "s1",
+				AgentType:     "coder",
+				WorkspacePath: "/etc/shadow",
+			},
+		},
+	}
+	_, err = ws.CreateWorker("acct-port", "user-1", CreateWorkerRequest{
+		Name:         "Host Path Worker",
+		Instructions: "Instructions",
+		Automations: []WorkerAutomationDefinition{
+			{
+				Name:           "Host Path Task",
+				ActivationMode: "manual",
+				Enabled:        true,
+				PlanDocument:   docHostPath,
+			},
+		},
+	}, nil)
+	if err == nil {
+		t.Fatal("expected rejection of task program with absolute host path, got nil")
+	}
+
+	// 4. TaskProgram job with path traversal in OwnedScope -> rejected
+	docTraversal := testPlanDoc("Traversal Plan")
+	docTraversal.Checkpoints[0].TaskProgram = &TaskProgramDefinition{
+		Stages: []TaskProgramStageSpec{{ID: "s1", DependencyEvidence: "ready"}},
+		Jobs: []TaskProgramJobSpec{
+			{
+				ID:         "job-1",
+				StageID:    "s1",
+				AgentType:  "coder",
+				OwnedScope: []string{"../../secret"},
+			},
+		},
+	}
+	_, err = ws.CreateWorker("acct-port", "user-1", CreateWorkerRequest{
+		Name:         "Traversal Worker",
+		Instructions: "Instructions",
+		Automations: []WorkerAutomationDefinition{
+			{
+				Name:           "Traversal Task",
+				ActivationMode: "manual",
+				Enabled:        true,
+				PlanDocument:   docTraversal,
+			},
+		},
+	}, nil)
+	if err == nil {
+		t.Fatal("expected rejection of task program with path traversal, got nil")
+	}
+
+	// 5. Trigger with host-bound secret_ref -> rejected
+	_, err = ws.CreateWorker("acct-port", "user-1", CreateWorkerRequest{
+		Name:         "SecretRef Worker",
+		Instructions: "Instructions",
+		Automations: []WorkerAutomationDefinition{
+			{
+				Name:           "Trigger Job",
+				ActivationMode: "external_trigger",
+				Trigger:        &WorkerTriggerConfig{TriggerKind: "webhook", SecretRef: "/var/run/secret"},
+				Enabled:        true,
+				PlanDocument:   testPlanDoc("Plan"),
+			},
+		},
+	}, nil)
+	if err == nil {
+		t.Fatal("expected rejection of secret_ref declaring host path, got nil")
+	}
+}
+
+// Invariant: RecordWorkerRun must validate against the exact accepted worker revision snapshot and disallow clearing immutable fields.
+// Threat: Mismatched execution against uncommitted automation revisions or mutating immutable receipts.
+// Boundary: WorkerStore RecordWorkerRun.
+func TestRecordWorkerRunSnapshotAndImmutableFields(t *testing.T) {
+	_, ws := openTestStore(t)
+
+	w, err := ws.CreateWorker("acct-run", "user-1", CreateWorkerRequest{
+		Name:         "Run Test Worker",
+		Instructions: "Instructions",
+		Automations: []WorkerAutomationDefinition{
+			{Name: "Auto 1", ActivationMode: "manual", Enabled: true, PlanDocument: testPlanDoc("Plan 1")},
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("CreateWorker: %v", err)
+	}
+	autoID := w.Automations[0].ID
+
+	// Update worker to revision 2: updating the automation to revision 2
+	wRev2, err := ws.UpdateWorkerAutomation("acct-run", "user-1", w.ID, autoID, 1, WorkerAutomationDefinition{
+		Name:           "Auto 1 Rev 2",
+		ActivationMode: "manual",
+		Enabled:        true,
+		PlanDocument:   testPlanDoc("Plan 1 Rev 2"),
+	}, nil)
+	if err != nil {
+		t.Fatalf("UpdateWorkerAutomation: %v", err)
+	}
+	if wRev2.Revision != 2 || wRev2.Automations[0].Revision != 2 {
+		t.Fatalf("expected worker rev 2 auto rev 2: %+v", wRev2)
+	}
+
+	// 1. Run for Worker Revision 1 specifying Automation Revision 2 must fail (snapshot revision 1 only had auto at rev 1)
+	_, err = ws.RecordWorkerRun("acct-run", WorkerRunRecord{
+		WorkerID:           w.ID,
+		WorkerRevision:     1,
+		AutomationID:       autoID,
+		AutomationRevision: 2,
+		RequestSource:      "direct",
+		Status:             "admitted",
+	})
+	if err == nil || !errors.Is(err, ErrWorkerConflict) {
+		t.Fatalf("expected ErrWorkerConflict for mismatched snapshot automation revision, got %v", err)
+	}
+
+	// 2. Run for Worker Revision 1 specifying Automation Revision 1 succeeds
+	rec1, err := ws.RecordWorkerRun("acct-run", WorkerRunRecord{
+		WorkerID:           w.ID,
+		WorkerRevision:     1,
+		AutomationID:       autoID,
+		AutomationRevision: 1,
+		OccurrenceID:       "occ-001",
+		RequestSource:      "direct",
+		Status:             "admitted",
+	})
+	if err != nil {
+		t.Fatalf("RecordWorkerRun rev 1: %v", err)
+	}
+
+	// 3. Attempt to clear occurrence_id or request_source on update must be rejected
+	recMutate := rec1
+	recMutate.OccurrenceID = "" // Attempt to clear
+	_, err = ws.RecordWorkerRun("acct-run", recMutate)
+	if err == nil || !errors.Is(err, ErrWorkerConflict) {
+		t.Fatalf("expected ErrWorkerConflict clearing occurrence_id, got %v", err)
+	}
+
+	recMutate2 := rec1
+	recMutate2.RequestSource = "schedule" // Attempt to change
+	_, err = ws.RecordWorkerRun("acct-run", recMutate2)
+	if err == nil || !errors.Is(err, ErrWorkerConflict) {
+		t.Fatalf("expected ErrWorkerConflict changing request_source, got %v", err)
+	}
+
+	// 4. Occurrence collision for a different run ID must be rejected
+	_, err = ws.RecordWorkerRun("acct-run", WorkerRunRecord{
+		ID:                 "wrun_different",
+		WorkerID:           w.ID,
+		WorkerRevision:     1,
+		AutomationID:       autoID,
+		AutomationRevision: 1,
+		OccurrenceID:       "occ-001", // Reusing occ-001
+		RequestSource:      "direct",
+		Status:             "admitted",
+	})
+	if err == nil || !errors.Is(err, ErrWorkerConflict) {
+		t.Fatalf("expected ErrWorkerConflict on occurrence collision, got %v", err)
+	}
+}
+
+// Invariant: Realtime publisher outbox payloads must contain worker invalidation metadata and be resilient to subscriber panics.
+// Threat: Empty invalidation payloads or crashing the store daemon on subscriber panic.
+// Boundary: commitWorkerRealtime, publishWorkerRealtime.
+func TestWorkerRealtimePayloadValidation(t *testing.T) {
+	_, ws := openTestStore(t)
+
+	var receivedRecord V3RealtimeOutboxRecord
+	var payload WorkerRealtimePayload
+	ws.store.SetWorkerPublisher(func(record V3RealtimeOutboxRecord) {
+		receivedRecord = record
+		_ = json.Unmarshal(record.Event.Payload, &payload)
+		// Simulate panic in a subscriber callback
+		panic("subscriber crash simulation")
+	})
+
+	// CreateWorker must not panic despite subscriber panic
+	w, err := ws.CreateWorker("acct-rt", "user-1", CreateWorkerRequest{
+		Name:         "Realtime Worker",
+		Instructions: "Instructions",
+	}, nil)
+	if err != nil {
+		t.Fatalf("CreateWorker failed: %v", err)
+	}
+
+	if payload.WorkerID != w.ID {
+		t.Fatalf("expected payload WorkerID %s, got %s", w.ID, payload.WorkerID)
+	}
+	if payload.Revision != w.Revision {
+		t.Fatalf("expected payload Revision %d, got %d", w.Revision, payload.Revision)
+	}
+	if payload.LifecycleState != WorkerLifecycleStateIdle {
+		t.Fatalf("expected payload LifecycleState %s, got %s", WorkerLifecycleStateIdle, payload.LifecycleState)
+	}
+	if receivedRecord.AccountScopeID != "acct-rt" {
+		t.Fatalf("expected AccountScopeID acct-rt, got %s", receivedRecord.AccountScopeID)
+	}
+}

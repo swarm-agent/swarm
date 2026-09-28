@@ -14,6 +14,14 @@ import (
 // WorkerUpdatedEventType is the canonical event type for worker invalidation updates.
 const WorkerUpdatedEventType = "worker.updated"
 
+// WorkerRealtimePayload conveys invalidation metadata for live worker updates.
+type WorkerRealtimePayload struct {
+	WorkerID       string               `json:"worker_id"`
+	Revision       uint64               `json:"revision,omitempty"`
+	LifecycleState WorkerLifecycleState `json:"lifecycle_state,omitempty"`
+	ChangeSummary  string               `json:"change_summary,omitempty"`
+}
+
 // ErrWorkerInvalid indicates that a worker mutation violates domain invariants or scope boundaries.
 var ErrWorkerInvalid = errors.New("invalid worker mutation")
 
@@ -27,6 +35,15 @@ type workerRealtimeMutation struct {
 	deletes        []string
 	eventPayload   json.RawMessage
 	outbox         *V3RealtimeOutboxRecord
+}
+
+func (m *workerRealtimeMutation) setPayload(payload WorkerRealtimePayload) error {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	m.eventPayload = data
+	return nil
 }
 
 func (m *workerRealtimeMutation) put(key string, value any) error {
@@ -125,7 +142,10 @@ func (s *Store) commitWorkerRealtime(m *workerRealtimeMutation) error {
 
 	payload := m.eventPayload
 	if len(payload) == 0 {
-		payload = json.RawMessage(`{}`)
+		defaultPayload, _ := json.Marshal(WorkerRealtimePayload{
+			WorkerID: m.workerID,
+		})
+		payload = defaultPayload
 	}
 
 	outbox := V3RealtimeOutboxRecord{
@@ -199,6 +219,9 @@ func (s *Store) publishWorkerRealtime(m *workerRealtimeMutation) {
 	publish := s.workerPublisher
 	s.workerPublisherMu.RUnlock()
 	if publish != nil {
+		defer func() {
+			_ = recover() // safe against subscriber panic
+		}()
 		publish(*m.outbox)
 	}
 }
