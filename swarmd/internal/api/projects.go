@@ -1247,6 +1247,9 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 
 	var tr taskrouter.Service
 	seedMsg := tr.BuildAgentSeedPrompt(task, proj)
+	if mode == sessionruntime.ModePlan {
+		seedMsg += "\n\n## Planning phase\nInvestigate only as needed, then submit a complete executable structured plan using exit_plan_mode. Include ordered checkpoints, concrete tasks and acceptance criteria. This project task must show the submitted plan for user approval before any implementation. Do not write implementation files or execute the task in this phase."
+	}
 	msgID := fmt.Sprintf("msg_%s_%d", sessionID, now)
 	msg := pebblestore.MessageSnapshot{
 		ID:             msgID,
