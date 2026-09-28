@@ -238,3 +238,11 @@ test('denyPermission targets one encoded permission and never enables bypass', a
   assert.equal(captured.method, 'POST');
   assert.deepEqual(captured.body, {action:'deny',reason:'Use read tools'});
 });
+
+test('approvePermissionOnce grants only the exact pending call', async () => {
+  let captured: any;
+  const transport = {request: async (url: string, options: any) => { captured={url,...options}; return {data:{ok:true}}; }} as unknown as SwarmTransport;
+  await new SwarmSessionsNamespace(transport).approvePermissionOnce('s','p','Reviewed');
+  assert.equal(captured.url, '/v3/sessions/s/permissions/p/resolve');
+  assert.deepEqual(captured.body,{action:'allow_once',reason:'Reviewed'});
+});
