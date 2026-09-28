@@ -143,14 +143,12 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 	if prompt == "" {
 		prompt = title
 	}
-	wsPath := strings.TrimSpace(input.WorkspacePath)
-	if wsPath == "" && len(proj.Workspaces) > 0 {
-		wsPath = strings.TrimSpace(proj.Workspaces[0].Path)
+	source, err := s.resolveProjectTaskSource(p, proj, input.WorkspacePath, input.WorkspaceID, input.WorkspaceGeneration)
+	if err != nil {
+		return nil, err
 	}
+	wsPath := source.Path
 	agentName := strings.TrimSpace(input.Agent)
-	if (agentName == "coder" || input.OutcomeType == "code_pr" || input.OutcomeType == "bug_patch") && (wsPath == "" || wsPath == ".") {
-		return nil, errors.New("coder task requires a valid repository workspace path (dot '.' is not allowed)")
-	}
 
 	structDoc := input.Document
 	if structDoc == nil && input.PlanDocument != nil {
@@ -278,7 +276,7 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 
 	taskID := strings.TrimSpace(input.ID)
 	if taskID == "" {
-		taskID = fmt.Sprintf("task_%d", time.Now().UnixMilli())
+		taskID = "task_" + sessionruntime.NewSessionID()
 	}
 
 	// User-selected branch names retain conflict checks. Generated names must be
@@ -290,8 +288,29 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 	s.projectTaskCreateMu.Lock()
 	defer s.projectTaskCreateMu.Unlock()
 
-	// Check if already exists (idempotent create)
-	if existing, found, getErr := db.GetProjectTask(p.AccountScopeID, projectID, taskID); getErr == nil && found && existing != nil {
+	// Reservation identity and submission bytes are independent of generated plan prose.
+	submissionHash, err := projectTaskSubmissionHash(projectID, input, source)
+	if err != nil {
+		return nil, err
+	}
+	if existing, found, getErr := db.GetProjectTask(p.AccountScopeID, projectID, taskID); getErr != nil {
+		return nil, getErr
+	} else if found && existing != nil {
+		if existing.SubmissionHash == "" || existing.SubmissionHash != submissionHash || existing.ClientRequestID != strings.TrimSpace(input.ClientRequestID) {
+			return nil, errors.New("task submission identity conflicts with reserved payload or target")
+		}
+		if err := s.revalidateProjectTaskSource(p, proj, existing); err != nil {
+			return nil, err
+		}
+		if owned, ok, err := db.GetSession(existing.SessionID); err != nil {
+			return nil, err
+		} else if !ok && existing.Agent != "image" && existing.Agent != "video" && existing.Agent != "sound" && existing.Agent != "audio" {
+			return nil, errors.New("task reservation has no session; reconcile reservation before retry")
+		} else if ok {
+			if err := verifyProjectTaskSession(existing, owned, p.AccountScopeID); err != nil {
+				return nil, err
+			}
+		}
 		hydrateTaskPlanDocument(existing, db)
 		hydrateTaskProgramStatus(existing, db)
 		return existing, nil
@@ -315,6 +334,9 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 		WorkerName:         workerName,
 		OutcomeType:        outcomeType,
 		WorkspacePath:      wsPath,
+		SourceWorkspace:   source,
+		ClientRequestID:   strings.TrimSpace(input.ClientRequestID),
+		SubmissionHash:    submissionHash,
 		WorktreeBranch:     worktreeBranch,
 		PipelineStages:     stages,
 		Deliverables:       deliverables,
@@ -396,7 +418,7 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 	if err := db.PutProjectTask(p.AccountScopeID, &task); err != nil {
 		return nil, err
 	}
-	_, _ = db.UpdateProject(p.AccountScopeID, projectID, func(pr *pebblestore.ProjectRecord) error {
+	_, err = db.UpdateProject(p.AccountScopeID, projectID, func(pr *pebblestore.ProjectRecord) error {
 		for _, tid := range pr.ActiveTaskIDs {
 			if tid == task.ID {
 				return nil
@@ -405,6 +427,7 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 		pr.ActiveTaskIDs = append(pr.ActiveTaskIDs, task.ID)
 		return nil
 	})
+	if err != nil { return nil, err }
 
 	// Deploy execution
 	if structDoc != nil {
@@ -435,36 +458,49 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 		if err := s.deployProjectTaskExecution(p, proj, &task, "in_progress", prompt); err != nil {
 			return nil, fmt.Errorf("deploy planning session: %w", err)
 		}
-		_ = db.PutProjectTask(p.AccountScopeID, &task)
+		if err := db.PutProjectTask(p.AccountScopeID, &task); err != nil {
+			return nil, err
+		}
 	} else if task.TaskProgram == nil && (task.Agent == "coder" || task.OutcomeType == "code_pr" || task.OutcomeType == "bug_patch") {
 		if err := s.deployProjectTaskExecution(p, proj, &task, task.Status, prompt); err != nil {
 			return nil, fmt.Errorf("deploy coder session: %w", err)
 		}
-		_ = db.PutProjectTask(p.AccountScopeID, &task)
+		if err := db.PutProjectTask(p.AccountScopeID, &task); err != nil {
+			return nil, err
+		}
 	} else if task.TaskProgram != nil {
 		if task.Status == "in_progress" {
 			if err := s.deployProjectTaskProgram(p, proj, &task); err != nil {
 				return nil, fmt.Errorf("deploy task program: %w", err)
 			}
 		}
-		_ = db.PutProjectTask(p.AccountScopeID, &task)
+		if err := db.PutProjectTask(p.AccountScopeID, &task); err != nil {
+			return nil, err
+		}
 	} else if isDirectMedia {
 		if task.Status == "in_progress" {
 			if err := s.deployProjectTaskExecution(p, proj, &task, "in_progress", prompt); err != nil {
 				return nil, fmt.Errorf("deploy media execution: %w", err)
 			}
 		}
-		_ = db.PutProjectTask(p.AccountScopeID, &task)
+		if err := db.PutProjectTask(p.AccountScopeID, &task); err != nil {
+			return nil, err
+		}
 	} else {
 		if task.Status == "in_progress" {
 			if err := s.deployProjectTaskExecution(p, proj, &task, "in_progress", prompt); err != nil {
 				return nil, fmt.Errorf("deploy task execution: %w", err)
 			}
 		}
-		_ = db.PutProjectTask(p.AccountScopeID, &task)
+		if err := db.PutProjectTask(p.AccountScopeID, &task); err != nil {
+			return nil, err
+		}
 	}
 
-	freshTask, found, _ := db.GetProjectTask(p.AccountScopeID, projectID, task.ID)
+	freshTask, found, err := db.GetProjectTask(p.AccountScopeID, projectID, task.ID)
+	if err != nil {
+		return nil, err
+	}
 	if found && freshTask != nil {
 		hydrateTaskPlanDocument(freshTask, db)
 		hydrateTaskProgramStatus(freshTask, db)
@@ -515,17 +551,10 @@ func (s *Server) deployProjectTaskProgram(p identity.Principal, proj *pebblestor
 		if sessionID == "" {
 			return errors.New("task coordinator requires a reserved session identity")
 		}
-		wsPath := strings.TrimSpace(task.WorkspacePath)
-		if wsPath == "" && len(task.WorkspacesInvolved) > 0 {
-			wsPath = task.WorkspacesInvolved[0]
-			task.WorkspacePath = wsPath
-		}
-		if wsPath == "" && proj != nil && len(proj.Workspaces) > 0 {
-			wsPath = proj.Workspaces[0].Path
-			task.WorkspacePath = wsPath
-		}
-		if wsPath == "" || wsPath == "." {
-			return errors.New("deploy task program requires a valid repository workspace path (dot '.' is not allowed)")
+		if err := s.revalidateProjectTaskSource(p, proj, task); err != nil { return err }
+		wsPath := task.SourceWorkspace.Path
+		if task.WorkspacePath != wsPath {
+			return errors.New("task program source differs from reserved workspace")
 		}
 
 		// Resolve default preference for coordinator
@@ -562,6 +591,9 @@ func (s *Server) deployProjectTaskProgram(p identity.Principal, proj *pebblestor
 				"task_title":      task.Title,
 				"role":            "task_program_coordinator",
 				"task_program_id": task.TaskProgram.ID,
+				"swarm_v3_source_workspace_id": task.SourceWorkspace.WorkspaceID,
+				"swarm_v3_source_workspace_generation": task.SourceWorkspace.WorkspaceGeneration,
+				"swarm_v3_source_workspace_path": task.SourceWorkspace.Path,
 			},
 			CreatedAt: now,
 			UpdatedAt: now,
@@ -824,6 +856,18 @@ func (s *Server) ApproveProjectTask(ctx context.Context, p identity.Principal, p
 	if proj.AccountID != "" && proj.AccountID != p.AccountScopeID {
 		return nil, errors.New("cross-account project access forbidden")
 	}
+	if err := s.revalidateProjectTaskSource(p, proj, existingTask); err != nil {
+		return nil, err
+	}
+	if existingTask.SessionID != "" {
+		if owned, ok, err := db.GetSession(existingTask.SessionID); err != nil {
+			return nil, err
+		} else if ok {
+			if err := verifyProjectTaskSession(existingTask, owned, p.AccountScopeID); err != nil {
+				return nil, err
+			}
+		}
+	}
 	if existingTask.Status == "rejected" {
 		return nil, errors.New("cannot approve rejected task")
 	}
@@ -896,8 +940,9 @@ func (s *Server) ApproveProjectTask(ctx context.Context, p identity.Principal, p
 
 	// Idempotent retry check: if task is in_progress AND execution run is genuinely active, do not duplicate run!
 	if existingTask.Status == "in_progress" && existingTask.SessionID != "" && existingTask.PlanBinding == nil {
-		activeIntent, ok, _ := db.GetV3SessionActiveRunIntent(existingTask.SessionID)
-		if ok && (activeIntent.Status == pebblestore.V3RunIntentPendingExecutor || activeIntent.Status == pebblestore.V3RunIntentRunning) {
+		activeIntent, ok, intentErr := db.GetV3SessionActiveRunIntent(existingTask.SessionID)
+		if intentErr != nil { return nil, intentErr }
+		if ok && activeIntent.AccountScopeID == p.AccountScopeID && activeIntent.RunID == fmt.Sprintf("desktop-v3-run:task-%s", existingTask.ID) && (activeIntent.Status == pebblestore.V3RunIntentPendingExecutor || activeIntent.Status == pebblestore.V3RunIntentRunning) {
 			hydrateTaskPlanDocument(existingTask, db)
 			hydrateTaskProgramStatus(existingTask, db)
 			return existingTask, nil
@@ -1141,58 +1186,8 @@ func (s *Server) ApproveProjectTask(ctx context.Context, p identity.Principal, p
 		if !sessFound {
 			return nil, fmt.Errorf("session %q not found", existingTask.SessionID)
 		}
-		if !session.WorktreeEnabled || session.WorktreeRootPath == "" {
-			if s.worktrees == nil {
-				return nil, errors.New("worktree service is not configured; coder task requires worktree isolation")
-			}
-			if existingTask.WorkspacePath == "." || existingTask.WorkspacePath == "" {
-				return nil, errors.New("coder task requires a valid repository workspace path (dot '.' is not allowed)")
-			}
-			alloc, allocErr := s.worktrees.AllocateDetachedWorkspaceRequestedForPrincipal(p, existingTask.WorkspacePath, existingTask.SessionID, "", existingTask.WorktreeBranch)
-			if allocErr != nil || alloc.WorkspacePath == "" {
-				return nil, fmt.Errorf("coder worktree allocation failed: %w", allocErr)
-			}
-			existingTask.WorkspacePath = alloc.WorkspacePath
-			existingTask.WorktreeBranch = alloc.BranchName
-			existingTask.BaseBranch = alloc.BaseBranch
-			existingTask.BaseCommit = alloc.BaseCommit
-			existingTask.WorktreeName = strings.TrimPrefix(alloc.BranchName, "agent/")
-
-			// Persist updated worktree metadata to the canonical session record in Pebble
-			session.WorktreeEnabled = true
-			session.WorktreeRootPath = strings.TrimSpace(alloc.WorkspacePath)
-			session.WorktreeBaseBranch = strings.TrimSpace(alloc.BaseBranch)
-			session.WorktreeBranch = strings.TrimSpace(alloc.BranchName)
-			if session.Metadata == nil {
-				session.Metadata = make(map[string]any)
-			}
-			session.Metadata["base_commit"] = alloc.BaseCommit
-			session.Metadata["swarm_v3_source_workspace_path"] = alloc.RepoRoot
-			session.Metadata["worktree_branch"] = alloc.BranchName
-			session.Metadata["worktree_name"] = strings.TrimPrefix(alloc.BranchName, "agent/")
-			available := true
-			hasGrant := false
-			for _, g := range session.WorkspaceGrants {
-				if g.Kind == pebblestore.WorkspaceGrantWorktree && g.Path == alloc.WorkspacePath {
-					hasGrant = true
-					break
-				}
-			}
-			if !hasGrant {
-				session.WorkspaceGrants = append(session.WorkspaceGrants, pebblestore.WorkspaceGrant{
-					Kind: pebblestore.WorkspaceGrantWorktree, Path: alloc.WorkspacePath, Available: &available,
-				})
-			}
-			session.WorkspaceUsage = pebblestore.WorkspaceUsageFromGrants(session.WorkspaceGrants)
-			session.UpdatedAt = time.Now().UnixMilli()
-			key := fmt.Sprintf("project-task:worktree:%s:%s", existingTask.ID, session.ID)
-			if _, err := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
-				SessionID: session.ID, UserID: p.UserID, AccountScopeID: p.AccountScopeID,
-				ClientRequestID: key, IdempotencyKey: key, PayloadHash: key, RequestHash: key,
-				Kind: sessionruntime.SessionMutationUpdateSettings, Session: &session,
-			}); err != nil {
-				return nil, fmt.Errorf("update session worktree metadata: %w", err)
-			}
+		if err := verifyProjectTaskSession(existingTask, session, p.AccountScopeID); err != nil {
+			return nil, err
 		}
 	}
 
@@ -1281,6 +1276,12 @@ func (s *Server) deployProjectTaskLocked(ctx context.Context, p identity.Princip
 	}
 	if task.AccountID != "" && task.AccountID != p.AccountScopeID {
 		return errors.New("cross-account task access forbidden")
+	}
+	if err := s.revalidateProjectTaskSource(p, proj, task); err != nil { return err }
+	if task.SessionID != "" {
+		if owned, ok, err := db.GetSession(task.SessionID); err != nil { return err } else if ok {
+			if err := verifyProjectTaskSession(task, owned, p.AccountScopeID); err != nil { return err }
+		}
 	}
 	if task.Status == "pending_approval" {
 		return errors.New("cannot deploy task awaiting approval; approve task before deployment")

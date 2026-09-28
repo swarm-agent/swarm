@@ -459,3 +459,18 @@ func TestProjectTaskValidationCoherence(t *testing.T) {
 		}
 	})
 }
+
+// Purpose: project ordering and the primary_code label cannot select an execution
+// repository. Threat: an omitted multi-repository target launches a Coder in the
+// coordination checkout. RouteAndPlanProjectTaskWithOptions is the narrowest
+// deterministic routing layer; catalog authorization is checked by the API.
+func TestProjectRouterDoesNotSelectFirstWorkspace(t *testing.T) {
+	workspaces := []ProjectWorkspaceRef{{Path: "/coordination", Role: "primary_code"}, {Path: "/implementation", Role: "auxiliary"}}
+	if _, err := RouteAndPlanProjectTaskWithOptions(TaskPlanOptions{Prompt: "Change code", Agent: "coder", Workspaces: workspaces}); err == nil || !strings.Contains(err.Error(), "ambiguous") {
+		t.Fatalf("missing target selected project ordering: %v", err)
+	}
+	routed, err := RouteAndPlanProjectTaskWithOptions(TaskPlanOptions{Prompt: "Change code", Agent: "coder", RequestedWorkspace: "/implementation", Workspaces: workspaces})
+	if err != nil || len(routed.WorkspacesInvolved) != 1 || routed.WorkspacesInvolved[0] != "/implementation" {
+		t.Fatalf("explicit target lost: %#v %v", routed.WorkspacesInvolved, err)
+	}
+}

@@ -103,14 +103,19 @@ func RouteAndPlanProjectTaskWithOptions(opts TaskPlanOptions) (TaskRouteResult, 
 	feedback := strings.TrimSpace(opts.Feedback)
 	lastError := strings.TrimSpace(opts.LastError)
 
-	// Primary workspace resolution: use requested workspace if supplied; otherwise first project workspace or "."
+	// Routing describes an already selected target; project ordering is not authority.
 	heroWorkspace := strings.TrimSpace(opts.RequestedWorkspace)
-	if heroWorkspace == "" {
-		if len(opts.Workspaces) > 0 {
-			heroWorkspace = opts.Workspaces[0].Path
-		} else {
-			heroWorkspace = "."
-		}
+	if heroWorkspace == "" && len(opts.Workspaces) == 1 {
+		heroWorkspace = strings.TrimSpace(opts.Workspaces[0].Path)
+	}
+	if len(opts.Workspaces) > 1 && heroWorkspace == "" {
+		return TaskRouteResult{}, errors.New("execution target is ambiguous; select a project workspace explicitly")
+	}
+	// A catalog-free route can produce media previews, but cannot authorize a
+	// repository allocation. The project task creation boundary validates roots.
+	if heroWorkspace == "" { heroWorkspace = "." }
+	if heroWorkspace != "." && !filepath.IsAbs(heroWorkspace) {
+		return TaskRouteResult{}, errors.New("execution target requires an absolute workspace root")
 	}
 	detected := []string{heroWorkspace}
 

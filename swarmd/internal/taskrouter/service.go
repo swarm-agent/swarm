@@ -291,13 +291,8 @@ IMPORTANT TASK PROPERTIES:
 		output.Branch = ""
 	}
 
-	wsInvolved := output.WorkspacesInvolved
-	if len(wsInvolved) == 0 && output.HeroWorkspace != "" {
-		wsInvolved = []string{output.HeroWorkspace}
-	}
-	if len(wsInvolved) == 0 && len(planOpts.Workspaces) > 0 {
-		wsInvolved = []string{planOpts.Workspaces[0].Path}
-	}
+	// AI-proposed workspaces are descriptive only, not target authority.
+	wsInvolved := baseContract.WorkspacesInvolved
 
 	var cpParts []string
 	if len(wsInvolved) > 0 {
@@ -463,7 +458,10 @@ func (s *Service) BuildAgentSeedPrompt(task *pebblestore.ProjectTaskRecord, proj
 	sb.WriteString("\n\n")
 
 	sb.WriteString("## Injected Context Pool\n")
-	sb.WriteString(fmt.Sprintf("- **Primary Workspace**: `%s`\n", task.WorkspacePath))
+	if task.SourceWorkspace.Path != "" {
+		sb.WriteString(fmt.Sprintf("- **Source Repository**: `%s` (workspace `%s`, generation %d)\n", task.SourceWorkspace.Path, task.SourceWorkspace.WorkspaceID, task.SourceWorkspace.WorkspaceGeneration))
+	}
+	sb.WriteString(fmt.Sprintf("- **Isolated Execution Workspace**: `%s`\n", task.WorkspacePath))
 	if len(task.WorkspacesInvolved) > 1 {
 		sb.WriteString("- **Additional Project Workspaces**:\n")
 		for _, w := range task.WorkspacesInvolved {

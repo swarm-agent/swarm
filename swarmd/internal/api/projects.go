@@ -1024,17 +1024,18 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 
 	// 2. Agent Tasks: coder, finder, designer, swarm, plan.
 	// Must create a canonical V3 session with compiled agent_profile, seed message, and RunIntent.
-	wsPath := strings.TrimSpace(task.WorkspacePath)
-	if wsPath == "" && len(task.WorkspacesInvolved) > 0 {
-		wsPath = task.WorkspacesInvolved[0]
-		task.WorkspacePath = wsPath
+	if err := s.revalidateProjectTaskSource(p, proj, task); err != nil {
+		return err
 	}
-	if wsPath == "" && proj != nil && len(proj.Workspaces) > 0 {
-		wsPath = proj.Workspaces[0].Path
-		task.WorkspacePath = wsPath
+	wsPath := task.SourceWorkspace.Path
+	if task.WorkspacePath != wsPath {
+		return errors.New("task execution source differs from reserved workspace; reconcile existing session")
 	}
-	if wsPath == "" || !filepath.IsAbs(wsPath) {
-		return errors.New("task execution requires an absolute workspace path")
+	if existing, ok, err := s.sessions.Store().GetSession(task.SessionID); err != nil {
+		return err
+	} else if ok {
+		if err := verifyProjectTaskSession(task, existing, p.AccountScopeID); err != nil { return err }
+		return errors.New("task session already reserved; reconcile existing seed and run intent before redeployment")
 	}
 
 	mode := sessionruntime.ModeAuto
@@ -1205,22 +1206,11 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 
 	avail := true
 	taskWsID := ""
-	if proj != nil {
-		for _, pw := range proj.Workspaces {
-			if pw.Path == wsPath && strings.TrimSpace(pw.WorkspaceID) != "" {
-				taskWsID = strings.TrimSpace(pw.WorkspaceID)
-				break
-			}
-		}
-		if taskWsID == "" && len(proj.Workspaces) > 0 && strings.TrimSpace(proj.Workspaces[0].WorkspaceID) != "" {
-			taskWsID = strings.TrimSpace(proj.Workspaces[0].WorkspaceID)
-		}
-	}
-	if taskWsID == "" && s.workspace != nil && wsPath != "" && wsPath != "." {
-		if sc, scErr := s.workspace.ScopeForPathForPrincipal(p, wsPath); scErr == nil && strings.TrimSpace(sc.WorkspaceID) != "" {
-			taskWsID = strings.TrimSpace(sc.WorkspaceID)
-		}
-	}
+	taskWsID = task.SourceWorkspace.WorkspaceID
+	metadata["swarm_v3_source_workspace_id"] = taskWsID
+	metadata["swarm_v3_source_workspace_generation"] = task.SourceWorkspace.WorkspaceGeneration
+	metadata["swarm_v3_source_workspace_path"] = wsPath
+	metadata["swarm_v3_source_workspace_provenance"] = task.SourceWorkspace.Provenance
 	grants := []pebblestore.WorkspaceGrant{
 		{Kind: pebblestore.WorkspaceGrantPrimary, WorkspaceID: taskWsID, Path: wsPath, Name: filepath.Base(wsPath), Available: &avail},
 	}
@@ -1273,8 +1263,8 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 		task.BaseCommit = alloc.BaseCommit
 		task.WorktreeName = strings.TrimPrefix(alloc.BranchName, "agent/")
 		sourcePath := wsPath
-		if allocRepoRoot := strings.TrimSpace(alloc.RepoRoot); allocRepoRoot != "" {
-			sourcePath = allocRepoRoot
+		if allocRepoRoot := strings.TrimSpace(alloc.RepoRoot); allocRepoRoot != "" && allocRepoRoot != wsPath {
+			return errors.New("worktree allocation source does not match reserved workspace")
 		}
 		metadata["base_commit"] = alloc.BaseCommit
 		metadata["swarm_v3_source_workspace_path"] = sourcePath
@@ -2087,6 +2077,9 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				OutcomeType         string                               `json:"outcome_type,omitempty"`
 				Operation           string                               `json:"operation,omitempty"`
 				WorkspacePath       string                               `json:"workspace_path,omitempty"`
+				WorkspaceID         string                               `json:"workspace_id,omitempty"`
+				WorkspaceGeneration int64                                `json:"workspace_generation,omitempty"`
+				ClientRequestID     string                               `json:"client_request_id,omitempty"`
 				WorktreeBranch      string                               `json:"worktree_branch,omitempty"`
 				GitStatus           string                               `json:"git_status,omitempty"`
 				UnintegratedCommits int                                  `json:"unintegrated_commits,omitempty"`
@@ -2150,6 +2143,9 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 					WorkerName:       req.WorkerName,
 					FeatureSize:      req.FeatureSize,
 					WorkspacePath:    req.WorkspacePath,
+					WorkspaceID:      req.WorkspaceID,
+					WorkspaceGeneration: req.WorkspaceGeneration,
+					ClientRequestID: req.ClientRequestID,
 					WorktreeBranch:   req.WorktreeBranch,
 					OutcomeType:      req.OutcomeType,
 					Tier:             req.Tier,

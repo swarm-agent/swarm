@@ -39,6 +39,8 @@ type ProjectTaskCreateInput struct {
 	WorkerName       string                               `json:"worker_name,omitempty"`
 	FeatureSize      string                               `json:"feature_size,omitempty"`
 	WorkspacePath    string                               `json:"workspace_path,omitempty"`
+	WorkspaceID      string                               `json:"workspace_id,omitempty"`
+	WorkspaceGeneration int64                            `json:"workspace_generation,omitempty"`
 	WorktreeBranch   string                               `json:"worktree_branch,omitempty"`
 	OutcomeType      string                               `json:"outcome_type,omitempty"`
 	Tier             string                               `json:"tier,omitempty"`
@@ -311,9 +313,11 @@ func manageProjectsDefinition() Definition {
 					"items":       map[string]any{"type": "string"},
 				},
 				"workspace_path": map[string]any{
-					"type":        "string",
-					"description": "Workspace root path for the task",
+					"type": "string", "description": "Explicit exact source repository root; omission is allowed only when one authorized project repository exists. Never use a coordination workspace merely because it is first.",
 				},
+				"workspace_id": map[string]any{"type": "string", "description": "Optional exact account workspace catalog ID for execution source"},
+				"workspace_generation": map[string]any{"type": "integer", "description": "Optional expected catalog generation; stale bindings are rejected"},
+				"client_request_id": map[string]any{"type": "string", "description": "Stable submission identity reused only for retries of the identical payload and target"},
 				"workspaces": map[string]any{
 					"type":        "array",
 					"description": "Array of workspace objects [{path, role, label}]",
@@ -682,6 +686,9 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 			WorkerName:       workerName,
 			FeatureSize:      featureSize,
 			WorkspacePath:    wsPath,
+			WorkspaceID:      strings.TrimSpace(asString(args["workspace_id"])),
+			WorkspaceGeneration: int64(asInt(args["workspace_generation"], 0)),
+			ClientRequestID: strings.TrimSpace(asString(args["client_request_id"])),
 			WorktreeBranch:   worktreeBranch,
 			OutcomeType:      outcomeType,
 			Tier:             tier,

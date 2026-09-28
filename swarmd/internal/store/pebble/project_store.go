@@ -297,6 +297,15 @@ type ProjectTaskPlanBinding struct {
 	Receipt            string `json:"receipt,omitempty"`
 }
 
+// ProjectTaskSource is the immutable catalog binding for a task's source repository.
+// WorkspacePath on the task remains the mutable execution/worktree path.
+type ProjectTaskSource struct {
+	WorkspaceID string `json:"workspace_id"`
+	WorkspaceGeneration int64 `json:"workspace_generation"`
+	Path string `json:"path"`
+	Provenance string `json:"provenance"`
+}
+
 // ProjectTaskRecord represents an autonomous task unit in a project.
 type ProjectTaskRecord struct {
 	ID                  string                   `json:"id"`
@@ -313,6 +322,9 @@ type ProjectTaskRecord struct {
 	AutomationID        string                   `json:"automation_id,omitempty"`
 	OutcomeType         string                   `json:"outcome_type,omitempty"` // "code_pr" | "media_bundle" | "bug_patch" | "audit_report" | "video_story"
 	WorkspacePath       string                   `json:"workspace_path,omitempty"`
+	SourceWorkspace     ProjectTaskSource        `json:"source_workspace,omitempty"`
+	ClientRequestID     string                   `json:"client_request_id,omitempty"`
+	SubmissionHash      string                   `json:"submission_hash,omitempty"`
 	WorktreeBranch      string                   `json:"worktree_branch,omitempty"`
 	WorktreeName        string                   `json:"worktree_name,omitempty"`
 	BaseBranch          string                   `json:"base_branch,omitempty"`
@@ -377,6 +389,9 @@ func (t *ProjectTaskRecord) Validate() error {
 	}
 	if t.Status == "" {
 		t.Status = "queued"
+	}
+	if t.SourceWorkspace.Path != "" && (t.SourceWorkspace.WorkspaceID == "" || t.SourceWorkspace.WorkspaceGeneration <= 0 || t.SourceWorkspace.Provenance == "") {
+		return errors.New("source workspace binding is incomplete")
 	}
 	if t.Revision <= 0 {
 		t.Revision = 1
