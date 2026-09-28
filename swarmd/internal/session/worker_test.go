@@ -341,3 +341,117 @@ func TestServiceWorkerMigration(t *testing.T) {
 		t.Fatalf("expected 1 skipped, got %+v", summary2)
 	}
 }
+
+// Invariant: session.Service rejects caller-specified worker IDs and local bindings on create.
+// Threat: Direct ID assignment or arbitrary local bindings escaping service boundary.
+// Boundary: session.Service CreateWorker.
+func TestServiceWorkerCreateGuards(t *testing.T) {
+	svc, _ := setupTestSessionService(t)
+	ctx := context.Background()
+
+	// 1. Caller-specified ID rejected
+	_, err := svc.CreateWorker(ctx, "acct-guards", "user-1", pebblestore.CreateWorkerRequest{
+		ID:           "caller_id",
+		Name:         "Worker Custom ID",
+		Instructions: "Instructions",
+	})
+	if err == nil || !strings.Contains(err.Error(), "server-owned") {
+		t.Fatalf("expected server-owned ID rejection, got %v", err)
+	}
+
+	// 2. Local bindings rejected
+	_, err = svc.CreateWorker(ctx, "acct-guards", "user-1", pebblestore.CreateWorkerRequest{
+		Name:          "Worker Bindings",
+		Instructions:  "Instructions",
+		LocalBindings: map[string]string{"primary": "/unauthorized"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "local bindings cannot be specified") {
+		t.Fatalf("expected local bindings rejection, got %v", err)
+	}
+}
+
+// Invariant: session.Service ImportWorkerAsNew supports idempotency key and replays exact receipt.
+// Threat: Double import creating multiple distinct workers.
+// Boundary: session.Service ImportWorkerAsNew.
+func TestServiceWorkerImportAsNewIdempotency(t *testing.T) {
+	svc, _ := setupTestSessionService(t)
+
+	rawJSON := []byte(`{"schema_version":1,"name":"Idempotent Import","instructions":"Inst"}`)
+	w1, err := svc.ImportWorkerAsNew("acct-idemp", "user-1", rawJSON, "import-key-svc")
+	if err != nil {
+		t.Fatalf("ImportWorkerAsNew: %v", err)
+	}
+
+	// Replay
+	w2, err := svc.ImportWorkerAsNew("acct-idemp", "user-1", rawJSON, "import-key-svc")
+	if err != nil {
+		t.Fatalf("ImportWorkerAsNew replay: %v", err)
+	}
+	if w2.ID != w1.ID || w2.Revision != 1 {
+		t.Fatalf("expected exact replay, got %+v vs %+v", w2, w1)
+	}
+
+	// Mismatched payload with same key
+	diffJSON := []byte(`{"schema_version":1,"name":"Mismatched Import","instructions":"Inst"}`)
+	_, err = svc.ImportWorkerAsNew("acct-idemp", "user-1", diffJSON, "import-key-svc")
+	if err == nil || !errors.Is(err, pebblestore.ErrWorkerConflict) {
+		t.Fatalf("expected ErrWorkerConflict on mismatched payload, got %v", err)
+	}
+}
+
+// Invariant: Migrated legacy workers are read-only across all service mutation APIs.
+// Threat: Mutating migrated workers prior to checkpoint 2 stop barrier controls.
+// Boundary: session.Service UpdateWorker, DeleteWorker, AttachWorkerAutomation.
+func TestServiceWorkerMigratedReadOnly(t *testing.T) {
+	svc, store := setupTestSessionService(t)
+
+	autoID := "av2_mig_readonly"
+	rec := pebblestore.AutomationV2Record{
+		AutomationID: autoID,
+		AcceptedBy:   "user-1",
+		AcceptedAt:   time.Now().UnixMilli() - 1000,
+		Enabled:      true,
+		Generation:   1,
+		AutomationV2Proposal: pebblestore.AutomationV2Proposal{
+			AutomationV2Review: pebblestore.AutomationV2Review{ProposalID: "prop-ro", Revision: 1, Digest: "dig-ro"},
+			AccountID:          "acct-ro",
+			UserID:             "user-1",
+			WorkspaceID:        "ws-ro",
+			SessionID:          "sess-ro",
+			Document:           testExecutablePlan("Read Only Plan"),
+			CreatedAt:          time.Now().UnixMilli() - 2000,
+		},
+	}
+	recBytes, _ := json.Marshal(rec)
+	keyAccepted := fmt.Sprintf("automation/v2/accepted/%x/%x", "acct-ro", autoID)
+	_ = store.PutBytes(keyAccepted, recBytes)
+
+	_, err := svc.MigrateLegacyAutomationsV2("acct-ro")
+	if err != nil {
+		t.Fatalf("MigrateLegacyAutomationsV2: %v", err)
+	}
+
+	// Attempt Update
+	newName := "Hacked Name"
+	_, err = svc.UpdateWorker("acct-ro", "user-1", autoID, 1, pebblestore.UpdateWorkerRequest{Name: &newName})
+	if err == nil || !strings.Contains(err.Error(), "migrated legacy workers are rejected") {
+		t.Fatalf("expected migrated legacy update rejection, got %v", err)
+	}
+
+	// Attempt Delete
+	err = svc.DeleteWorker("acct-ro", "user-1", autoID, 1)
+	if err == nil || !strings.Contains(err.Error(), "migrated legacy workers are rejected") {
+		t.Fatalf("expected migrated legacy delete rejection, got %v", err)
+	}
+
+	// Attempt Attach
+	_, err = svc.AttachWorkerAutomation("acct-ro", "user-1", autoID, 1, pebblestore.WorkerAutomationDefinition{
+		Name:           "New Auto",
+		ActivationMode: "manual",
+		Enabled:        true,
+		PlanDocument:   testExecutablePlan("Plan"),
+	})
+	if err == nil || !strings.Contains(err.Error(), "migrated legacy workers are rejected") {
+		t.Fatalf("expected migrated legacy attach rejection, got %v", err)
+	}
+}

@@ -148,7 +148,7 @@ func (s *Service) ExportWorker(account, workerID string) (pebblestore.PortableWo
 }
 
 // ImportWorkerAsNew allocates a fresh identity and imports the portable definition into the idle state.
-func (s *Service) ImportWorkerAsNew(account, user string, data []byte) (pebblestore.WorkerRecord, error) {
+func (s *Service) ImportWorkerAsNew(account, user string, data []byte, idempotencyKey ...string) (pebblestore.WorkerRecord, error) {
 	if s == nil || s.store == nil {
 		return pebblestore.WorkerRecord{}, errors.New("session service not configured")
 	}
@@ -156,7 +156,7 @@ func (s *Service) ImportWorkerAsNew(account, user string, data []byte) (pebblest
 	if ws == nil {
 		return pebblestore.WorkerRecord{}, errors.New("worker store not configured")
 	}
-	return ws.ImportWorkerAsNew(account, user, data, ValidateExecutablePlanDocument)
+	return ws.ImportWorkerAsNew(account, user, data, ValidateExecutablePlanDocument, idempotencyKey...)
 }
 
 // ImportWorkerUpdate strictly validates and updates an existing target worker with expected revision.

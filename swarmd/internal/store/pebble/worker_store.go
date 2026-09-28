@@ -3,11 +3,15 @@ package pebblestore
 import (
 	"bytes"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -72,9 +76,9 @@ type WorkerProvenance struct {
 }
 
 type WorkerTriggerConfig struct {
-	TriggerKind string `json:"trigger_kind"`           // "webhook", "event"
-	Format      string `json:"format,omitempty"`       // "generic", "slack", "discord", "github"
-	SecretRef   string `json:"secret_ref,omitempty"`   // reference only, never raw credentials
+	TriggerKind string `json:"trigger_kind"`         // "webhook", "event"
+	Format      string `json:"format,omitempty"`     // "generic", "slack", "discord", "github"
+	SecretRef   string `json:"secret_ref,omitempty"` // reference only, never raw credentials
 }
 
 type WorkerAutomationDefinition struct {
@@ -139,6 +143,13 @@ type WorkerRunRecord struct {
 	StartedAt          int64                          `json:"started_at,omitempty"`
 	CompletedAt        int64                          `json:"completed_at,omitempty"`
 	CreatedAt          int64                          `json:"created_at"`
+}
+
+type WorkerIdempotencyRecord struct {
+	WorkerID    string       `json:"worker_id"`
+	PayloadHash string       `json:"payload_hash"`
+	Receipt     WorkerRecord `json:"receipt"`
+	CreatedAt   int64        `json:"created_at"`
 }
 
 type PortableAutomationDefinition struct {
@@ -230,6 +241,74 @@ func GenerateWorkerRunID() string {
 	return fmt.Sprintf("wrun_%x", b)
 }
 
+func hashWorkerPayload(v any) (string, error) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return "", err
+	}
+	h := sha256.Sum256(b)
+	return hex.EncodeToString(h[:]), nil
+}
+
+func ValidateSchedule(s *AutomationV2Schedule) error {
+	if s == nil {
+		return errors.New("schedule is required")
+	}
+	switch s.Kind {
+	case "interval":
+		if s.IntervalSeconds < 60 || s.IntervalSeconds > 31622400 || s.Cron != "" || s.Timezone != "" {
+			return errors.New("interval requires elapsed interval_seconds from 60 to 31622400 and no cron/timezone")
+		}
+	case "cron":
+		if s.IntervalSeconds != 0 || len(s.Cron) > 128 || s.Timezone == "" || s.Timezone == "Local" {
+			return errors.New("cron requires five fields and an explicit IANA timezone, without interval_seconds")
+		}
+		if _, err := time.LoadLocation(s.Timezone); err != nil {
+			return errors.New("explicit IANA timezone required for cron")
+		}
+		fields := strings.Fields(s.Cron)
+		if len(fields) != 5 {
+			return errors.New("five cron fields required")
+		}
+		bounds := [][2]int{{0, 59}, {0, 23}, {1, 31}, {1, 12}, {0, 6}}
+		for i, f := range fields {
+			if f == "*" {
+				continue
+			}
+			step := strings.HasPrefix(f, "*/")
+			if step {
+				f = strings.TrimPrefix(f, "*/")
+			}
+			if f == "" {
+				return errors.New("invalid cron field")
+			}
+			for _, c := range f {
+				if c < '0' || c > '9' {
+					return errors.New("cron supports numeric fields, * and */n only; ranges, lists and names are unsupported")
+				}
+			}
+			n, err := strconv.Atoi(f)
+			lo, hi := bounds[i][0], bounds[i][1]
+			if step {
+				lo, hi = 1, hi-lo+1
+			}
+			if err != nil || n < lo || n > hi {
+				return errors.New("cron field outside bounds")
+			}
+		}
+		if fields[2] != "*" && fields[4] != "*" {
+			return errors.New("both cron day fields cannot be restricted")
+		}
+	case "trigger", "":
+		if s.IntervalSeconds != 0 || s.Cron != "" {
+			return errors.New("trigger schedule must not declare interval_seconds or cron")
+		}
+	default:
+		return fmt.Errorf("invalid schedule kind: %q", s.Kind)
+	}
+	return nil
+}
+
 func ValidateWorkerRecord(w *WorkerRecord, validate func(*SessionPlanDocument) error) error {
 	if w == nil {
 		return errors.New("worker record is required")
@@ -261,82 +340,146 @@ func ValidateWorkerRecord(w *WorkerRecord, validate func(*SessionPlanDocument) e
 	if len(w.RequestedCapabilities) > 64 {
 		return errors.New("capabilities exceed maximum of 64")
 	}
+	seenCaps := make(map[string]struct{}, len(w.RequestedCapabilities))
 	for _, cap := range w.RequestedCapabilities {
-		if strings.TrimSpace(cap.Name) == "" {
+		capName := strings.TrimSpace(cap.Name)
+		if capName == "" {
 			return errors.New("capability name is required")
 		}
 		if len(cap.Name) > 128 {
 			return errors.New("capability name exceeds 128 characters")
 		}
+		switch cap.Type {
+		case "tool", "permission", "network", "environment":
+		default:
+			return fmt.Errorf("invalid capability type: %q", cap.Type)
+		}
+		if _, ok := seenCaps[capName]; ok {
+			return fmt.Errorf("duplicate capability name: %q", capName)
+		}
+		seenCaps[capName] = struct{}{}
 	}
 	if len(w.WorkspaceRequirements) > 32 {
 		return errors.New("workspace requirements exceed maximum of 32")
 	}
+	seenRoles := make(map[string]struct{}, len(w.WorkspaceRequirements))
 	for _, req := range w.WorkspaceRequirements {
-		if strings.TrimSpace(req.Role) == "" {
+		role := strings.TrimSpace(req.Role)
+		if role == "" {
 			return errors.New("workspace requirement role is required")
 		}
 		if len(req.Role) > 64 {
 			return errors.New("workspace requirement role exceeds 64 characters")
 		}
+		if _, ok := seenRoles[role]; ok {
+			return fmt.Errorf("duplicate workspace requirement role: %q", role)
+		}
+		seenRoles[role] = struct{}{}
+	}
+	if len(w.LocalBindings) > 0 && (w.Provenance == nil || w.Provenance.MigratedAt == 0) {
+		return errors.New("local bindings cannot be specified directly until approved activation")
+	}
+	if len(w.Metadata) > 64 {
+		return errors.New("metadata keys exceed maximum of 64")
 	}
 	if len(w.Automations) > 64 {
 		return errors.New("automations exceed maximum of 64")
 	}
 	seenAutoIDs := make(map[string]struct{}, len(w.Automations))
+	seenAutoNames := make(map[string]struct{}, len(w.Automations))
 	for i := range w.Automations {
 		auto := &w.Automations[i]
 		if !workerIDRegexp.MatchString(auto.ID) {
-			return fmt.SprintfError("invalid automation id format: %q", auto.ID)
+			return fmt.Errorf("invalid automation id format: %q", auto.ID)
 		}
 		if _, ok := seenAutoIDs[auto.ID]; ok {
-			return fmt.SprintfError("duplicate automation id: %q", auto.ID)
+			return fmt.Errorf("duplicate automation id: %q", auto.ID)
 		}
 		seenAutoIDs[auto.ID] = struct{}{}
-		if strings.TrimSpace(auto.Name) == "" {
+		autoName := strings.TrimSpace(auto.Name)
+		if autoName == "" {
 			return errors.New("automation name is required")
 		}
 		if len(auto.Name) > 256 {
 			return errors.New("automation name exceeds 256 characters")
 		}
+		if _, ok := seenAutoNames[autoName]; ok {
+			return fmt.Errorf("duplicate automation name: %q", autoName)
+		}
+		seenAutoNames[autoName] = struct{}{}
 		if len(auto.Description) > 4096 {
 			return errors.New("automation description exceeds 4096 characters")
 		}
 		switch auto.ActivationMode {
 		case "manual", "interval", "cron", "external_trigger":
 		default:
-			return fmt.SprintfError("invalid activation mode: %q", auto.ActivationMode)
+			return fmt.Errorf("invalid activation mode: %q", auto.ActivationMode)
 		}
-		if auto.ActivationMode == "interval" {
-			if auto.Schedule == nil || auto.Schedule.IntervalSeconds < 60 || auto.Schedule.IntervalSeconds > 31622400 || auto.Schedule.Cron != "" || auto.Schedule.Timezone != "" {
-				return errors.New("interval activation requires interval_seconds between 60 and 31622400 and no cron/timezone")
+		if auto.ActivationMode == "interval" || auto.ActivationMode == "cron" {
+			if err := ValidateSchedule(auto.Schedule); err != nil {
+				return fmt.Errorf("automation %q schedule: %w", auto.ID, err)
 			}
-		} else if auto.ActivationMode == "cron" {
-			if auto.Schedule == nil || auto.Schedule.Cron == "" || auto.Schedule.Timezone == "" {
-				return errors.New("cron activation requires cron expression and explicit timezone")
+		}
+		if auto.Trigger != nil {
+			switch auto.Trigger.TriggerKind {
+			case "webhook", "event":
+			default:
+				return fmt.Errorf("invalid trigger kind: %q", auto.Trigger.TriggerKind)
 			}
-			if _, err := time.LoadLocation(auto.Schedule.Timezone); err != nil {
-				return errors.New("explicit IANA timezone required for cron")
+			switch auto.Trigger.Format {
+			case "", "generic", "slack", "discord", "github":
+			default:
+				return fmt.Errorf("invalid trigger format: %q", auto.Trigger.Format)
 			}
-			fields := strings.Fields(auto.Schedule.Cron)
-			if len(fields) != 5 {
-				return errors.New("cron requires five fields")
+			if strings.ContainsAny(auto.Trigger.SecretRef, "\r\n") {
+				return errors.New("trigger secret_ref cannot contain newlines")
 			}
+		}
+		seenInputs := make(map[string]struct{}, len(auto.InputRequirements))
+		for _, inReq := range auto.InputRequirements {
+			inName := strings.TrimSpace(inReq.Name)
+			if inName == "" {
+				return errors.New("input requirement name is required")
+			}
+			switch inReq.Kind {
+			case "string", "number", "boolean", "object", "array":
+			default:
+				return fmt.Errorf("invalid input requirement kind: %q", inReq.Kind)
+			}
+			if _, ok := seenInputs[inName]; ok {
+				return fmt.Errorf("duplicate input requirement name: %q", inName)
+			}
+			seenInputs[inName] = struct{}{}
+		}
+		seenDelivs := make(map[string]struct{}, len(auto.DeliverableRequirements))
+		for _, delReq := range auto.DeliverableRequirements {
+			delName := strings.TrimSpace(delReq.Name)
+			if delName == "" {
+				return errors.New("deliverable requirement name is required")
+			}
+			switch delReq.Kind {
+			case "artifact", "report", "pull_request", "alert", "custom":
+			default:
+				return fmt.Errorf("invalid deliverable requirement kind: %q", delReq.Kind)
+			}
+			if _, ok := seenDelivs[delName]; ok {
+				return fmt.Errorf("duplicate deliverable requirement name: %q", delName)
+			}
+			seenDelivs[delName] = struct{}{}
 		}
 		if err := validateUnexecutedPlanDocument(&auto.PlanDocument, validate); err != nil {
-			return fmt.SprintfError("automation %q plan document: %w", auto.ID, err)
+			return fmt.Errorf("automation %q plan document: %w", auto.ID, err)
 		}
 	}
 	return nil
 }
 
-func fmtSprintfError(format string, a ...any) error {
-	return fmt.Errorf(format, a...)
-}
-
 func validateUnexecutedPlanDocument(doc *SessionPlanDocument, validate func(*SessionPlanDocument) error) error {
 	if doc == nil {
 		return errors.New("plan document required")
+	}
+	if doc.AutomationV2 != nil || doc.WorkerV2 != nil {
+		return errors.New("plan document cannot contain nested AutomationV2 or WorkerV2 settings")
 	}
 	if doc.ID != "" || doc.RevisionID != "" || doc.ExecutionOrigin != "" || doc.ExecutionState != nil || len(doc.OriginalCheckpoints) != 0 || (doc.Status != "" && doc.Status != "pending") {
 		return errors.New("plan document cannot contain execution state")
@@ -350,9 +493,28 @@ func validateUnexecutedPlanDocument(doc *SessionPlanDocument, validate func(*Ses
 				return errors.New("plan subtasks must be unexecuted")
 			}
 		}
+		if c.TaskProgram != nil {
+			if err := validateTaskProgramUnexecuted(c.TaskProgram); err != nil {
+				return fmt.Errorf("checkpoint %s task program: %w", c.ID, err)
+			}
+		}
 	}
 	if validate != nil {
 		return validate(doc)
+	}
+	return nil
+}
+
+func validateTaskProgramUnexecuted(prog *TaskProgramSpec) error {
+	if prog == nil {
+		return nil
+	}
+	for _, job := range prog.Jobs {
+		for _, scope := range job.OwnedScope {
+			if strings.HasPrefix(scope, "/") || strings.Contains(scope, "..") {
+				return fmt.Errorf("task program owned_scope cannot declare absolute host paths or traversal: %q", scope)
+			}
+		}
 	}
 	return nil
 }
@@ -364,6 +526,8 @@ func SanitizePlanForExport(doc SessionPlanDocument) SessionPlanDocument {
 	out.ExecutionOrigin = ""
 	out.ExecutionState = nil
 	out.OriginalCheckpoints = nil
+	out.AutomationV2 = nil
+	out.WorkerV2 = nil
 	out.Status = "pending"
 	if len(out.Checkpoints) > 0 {
 		cps := make([]SessionPlanCheckpoint, len(out.Checkpoints))
@@ -411,7 +575,8 @@ func ValidatePortableWorkerDefinition(data []byte, validate func(*SessionPlanDoc
 	if err := dec.Decode(&def); err != nil {
 		return PortableWorkerDefinition{}, fmt.Errorf("parse portable worker definition: %w", err)
 	}
-	if dec.More() {
+	var trailing json.RawMessage
+	if err := dec.Decode(&trailing); err != io.EOF {
 		return PortableWorkerDefinition{}, errors.New("unexpected trailing data in worker definition")
 	}
 	if def.SchemaVersion != 1 {
@@ -433,35 +598,61 @@ func ValidatePortableWorkerDefinition(data []byte, validate func(*SessionPlanDoc
 	if len(def.Capabilities) > 64 {
 		return PortableWorkerDefinition{}, errors.New("capabilities exceed maximum of 64")
 	}
+	seenCaps := make(map[string]struct{}, len(def.Capabilities))
 	for _, cap := range def.Capabilities {
-		if strings.TrimSpace(cap.Name) == "" {
+		capName := strings.TrimSpace(cap.Name)
+		if capName == "" {
 			return PortableWorkerDefinition{}, errors.New("capability name is required")
 		}
 		if len(cap.Name) > 128 {
 			return PortableWorkerDefinition{}, errors.New("capability name exceeds 128 characters")
 		}
+		switch cap.Type {
+		case "tool", "permission", "network", "environment":
+		default:
+			return PortableWorkerDefinition{}, fmt.Errorf("invalid capability type: %q", cap.Type)
+		}
+		if _, ok := seenCaps[capName]; ok {
+			return PortableWorkerDefinition{}, fmt.Errorf("duplicate capability name: %q", capName)
+		}
+		seenCaps[capName] = struct{}{}
 	}
 	if len(def.WorkspaceRequirements) > 32 {
 		return PortableWorkerDefinition{}, errors.New("workspace requirements exceed maximum of 32")
 	}
+	seenRoles := make(map[string]struct{}, len(def.WorkspaceRequirements))
 	for _, req := range def.WorkspaceRequirements {
-		if strings.TrimSpace(req.Role) == "" {
+		role := strings.TrimSpace(req.Role)
+		if role == "" {
 			return PortableWorkerDefinition{}, errors.New("workspace requirement role is required")
 		}
 		if len(req.Role) > 64 {
 			return PortableWorkerDefinition{}, errors.New("workspace requirement role exceeds 64 characters")
 		}
+		if _, ok := seenRoles[role]; ok {
+			return PortableWorkerDefinition{}, fmt.Errorf("duplicate workspace requirement role: %q", role)
+		}
+		seenRoles[role] = struct{}{}
+	}
+	if len(def.Metadata) > 64 {
+		return PortableWorkerDefinition{}, errors.New("metadata keys exceed maximum of 64")
 	}
 	if len(def.Automations) > 64 {
 		return PortableWorkerDefinition{}, errors.New("automations exceed maximum of 64")
 	}
+	seenAutoNames := make(map[string]struct{}, len(def.Automations))
 	for _, auto := range def.Automations {
-		if strings.TrimSpace(auto.Name) == "" {
+		autoName := strings.TrimSpace(auto.Name)
+		if autoName == "" {
 			return PortableWorkerDefinition{}, errors.New("automation name is required")
 		}
 		if len(auto.Name) > 256 {
 			return PortableWorkerDefinition{}, errors.New("automation name exceeds 256 characters")
 		}
+		if _, ok := seenAutoNames[autoName]; ok {
+			return PortableWorkerDefinition{}, fmt.Errorf("duplicate automation name: %q", autoName)
+		}
+		seenAutoNames[autoName] = struct{}{}
 		if len(auto.Description) > 4096 {
 			return PortableWorkerDefinition{}, errors.New("automation description exceeds 4096 characters")
 		}
@@ -470,21 +661,57 @@ func ValidatePortableWorkerDefinition(data []byte, validate func(*SessionPlanDoc
 		default:
 			return PortableWorkerDefinition{}, fmt.Errorf("invalid activation mode: %q", auto.ActivationMode)
 		}
-		if auto.ActivationMode == "interval" {
-			if auto.Schedule == nil || auto.Schedule.IntervalSeconds < 60 || auto.Schedule.IntervalSeconds > 31622400 || auto.Schedule.Cron != "" || auto.Schedule.Timezone != "" {
-				return PortableWorkerDefinition{}, errors.New("interval activation requires interval_seconds between 60 and 31622400 and no cron/timezone")
+		if auto.ActivationMode == "interval" || auto.ActivationMode == "cron" {
+			if err := ValidateSchedule(auto.Schedule); err != nil {
+				return PortableWorkerDefinition{}, fmt.Errorf("automation %q schedule: %w", auto.Name, err)
 			}
-		} else if auto.ActivationMode == "cron" {
-			if auto.Schedule == nil || auto.Schedule.Cron == "" || auto.Schedule.Timezone == "" {
-				return PortableWorkerDefinition{}, errors.New("cron activation requires cron expression and explicit timezone")
+		}
+		if auto.Trigger != nil {
+			switch auto.Trigger.TriggerKind {
+			case "webhook", "event":
+			default:
+				return PortableWorkerDefinition{}, fmt.Errorf("invalid trigger kind: %q", auto.Trigger.TriggerKind)
 			}
-			if _, err := time.LoadLocation(auto.Schedule.Timezone); err != nil {
-				return PortableWorkerDefinition{}, errors.New("explicit IANA timezone required for cron")
+			switch auto.Trigger.Format {
+			case "", "generic", "slack", "discord", "github":
+			default:
+				return PortableWorkerDefinition{}, fmt.Errorf("invalid trigger format: %q", auto.Trigger.Format)
 			}
-			fields := strings.Fields(auto.Schedule.Cron)
-			if len(fields) != 5 {
-				return PortableWorkerDefinition{}, errors.New("cron requires five fields")
+			if strings.ContainsAny(auto.Trigger.SecretRef, "\r\n") {
+				return PortableWorkerDefinition{}, errors.New("trigger secret_ref cannot contain newlines")
 			}
+		}
+		seenInputs := make(map[string]struct{}, len(auto.InputRequirements))
+		for _, inReq := range auto.InputRequirements {
+			inName := strings.TrimSpace(inReq.Name)
+			if inName == "" {
+				return PortableWorkerDefinition{}, errors.New("input requirement name is required")
+			}
+			switch inReq.Kind {
+			case "string", "number", "boolean", "object", "array":
+			default:
+				return PortableWorkerDefinition{}, fmt.Errorf("invalid input requirement kind: %q", inReq.Kind)
+			}
+			if _, ok := seenInputs[inName]; ok {
+				return PortableWorkerDefinition{}, fmt.Errorf("duplicate input requirement name: %q", inName)
+			}
+			seenInputs[inName] = struct{}{}
+		}
+		seenDelivs := make(map[string]struct{}, len(auto.DeliverableRequirements))
+		for _, delReq := range auto.DeliverableRequirements {
+			delName := strings.TrimSpace(delReq.Name)
+			if delName == "" {
+				return PortableWorkerDefinition{}, errors.New("deliverable requirement name is required")
+			}
+			switch delReq.Kind {
+			case "artifact", "report", "pull_request", "alert", "custom":
+			default:
+				return PortableWorkerDefinition{}, fmt.Errorf("invalid deliverable requirement kind: %q", delReq.Kind)
+			}
+			if _, ok := seenDelivs[delName]; ok {
+				return PortableWorkerDefinition{}, fmt.Errorf("duplicate deliverable requirement name: %q", delName)
+			}
+			seenDelivs[delName] = struct{}{}
 		}
 		planCopy := auto.Plan
 		if err := validateUnexecutedPlanDocument(&planCopy, validate); err != nil {
@@ -510,47 +737,69 @@ func (ws *WorkerStore) CreateWorker(account, user string, req CreateWorkerReques
 	if account == "" {
 		return WorkerRecord{}, errors.New("account is required")
 	}
+	if strings.TrimSpace(req.ID) != "" {
+		return WorkerRecord{}, errors.New("worker id is server-owned and cannot be specified on create")
+	}
+	if len(req.LocalBindings) > 0 {
+		return WorkerRecord{}, errors.New("local bindings cannot be specified until approved activation")
+	}
+
 	ws.store.workersMu.Lock()
 	defer ws.store.workersMu.Unlock()
 
 	idempKey := strings.TrimSpace(req.IdempotencyKey)
+	var payloadHash string
 	if idempKey != "" {
-		var existingWorkerID string
-		ok, err := ws.store.GetJSON(KeyWorkerIdempotency(account, idempKey), &existingWorkerID)
-		if err == nil && ok && existingWorkerID != "" {
-			var existing WorkerRecord
-			if ok, err := ws.store.GetJSON(KeyWorker(account, existingWorkerID), &existing); err == nil && ok {
-				return existing, nil
+		reqForHash := req
+		reqForHash.IdempotencyKey = ""
+		var err error
+		payloadHash, err = hashWorkerPayload(reqForHash)
+		if err != nil {
+			return WorkerRecord{}, fmt.Errorf("hash idempotency payload: %w", err)
+		}
+		var existingIdemp WorkerIdempotencyRecord
+		ok, err := ws.store.GetJSON(KeyWorkerIdempotency(account, idempKey), &existingIdemp)
+		if err != nil {
+			return WorkerRecord{}, err
+		}
+		if ok {
+			if existingIdemp.PayloadHash != payloadHash {
+				return WorkerRecord{}, fmt.Errorf("%w: idempotency key reused with different payload", ErrWorkerConflict)
 			}
+			return existingIdemp.Receipt, nil
 		}
 	}
 
-	workerID := strings.TrimSpace(req.ID)
-	if workerID == "" {
-		workerID = GenerateWorkerID()
-	}
-
-	var existing WorkerRecord
-	if ok, err := ws.store.GetJSON(KeyWorker(account, workerID), &existing); err == nil && ok {
-		return WorkerRecord{}, ErrWorkerConflict
-	}
-
+	workerID := GenerateWorkerID()
 	now := time.Now().UnixMilli()
+
 	automations := make([]WorkerAutomationDefinition, len(req.Automations))
+	seenAutoNames := make(map[string]struct{}, len(req.Automations))
 	for i, auto := range req.Automations {
+		name := strings.TrimSpace(auto.Name)
+		if name == "" {
+			return WorkerRecord{}, errors.New("automation name is required")
+		}
+		if _, ok := seenAutoNames[name]; ok {
+			return WorkerRecord{}, fmt.Errorf("duplicate automation name: %q", name)
+		}
+		seenAutoNames[name] = struct{}{}
 		autoCopy := auto
-		if strings.TrimSpace(autoCopy.ID) == "" {
-			autoCopy.ID = GenerateWorkerAutomationID()
-		}
+		autoCopy.ID = GenerateWorkerAutomationID() // server-owned
 		autoCopy.WorkerID = workerID
-		if autoCopy.Revision == 0 {
-			autoCopy.Revision = 1
-		}
-		if autoCopy.CreatedAt == 0 {
-			autoCopy.CreatedAt = now
-		}
+		autoCopy.Revision = 1 // server-owned
+		autoCopy.CreatedAt = now
 		autoCopy.UpdatedAt = now
 		automations[i] = autoCopy
+	}
+
+	reqCaps := req.RequestedCapabilities
+	if reqCaps == nil {
+		reqCaps = []WorkerCapabilityRequest{}
+	}
+	wsReqs := req.WorkspaceRequirements
+	if wsReqs == nil {
+		wsReqs = []WorkerWorkspaceRequirement{}
 	}
 
 	w := WorkerRecord{
@@ -561,9 +810,8 @@ func (ws *WorkerStore) CreateWorker(account, user string, req CreateWorkerReques
 		Instructions:          req.Instructions,
 		LifecycleState:        WorkerLifecycleStateIdle, // Create/import always idle
 		Revision:              1,
-		RequestedCapabilities: req.RequestedCapabilities,
-		WorkspaceRequirements: req.WorkspaceRequirements,
-		LocalBindings:         req.LocalBindings,
+		RequestedCapabilities: reqCaps,
+		WorkspaceRequirements: wsReqs,
 		Automations:           automations,
 		Metadata:              req.Metadata,
 		CreatedAt:             now,
@@ -586,6 +834,7 @@ func (ws *WorkerStore) CreateWorker(account, user string, req CreateWorkerReques
 
 	m := &workerRealtimeMutation{
 		accountScopeID: account,
+		userID:         user,
 		workerID:       w.ID,
 	}
 	if err := m.put(KeyWorker(account, w.ID), w); err != nil {
@@ -595,10 +844,18 @@ func (ws *WorkerStore) CreateWorker(account, user string, req CreateWorkerReques
 		return WorkerRecord{}, err
 	}
 	for _, auto := range w.Automations {
-		m.putBytes(KeyWorkerByAutomation(account, auto.ID), []byte(w.ID))
+		if err := m.put(KeyWorkerByAutomation(account, auto.ID), w.ID); err != nil {
+			return WorkerRecord{}, err
+		}
 	}
 	if idempKey != "" {
-		if err := m.put(KeyWorkerIdempotency(account, idempKey), w.ID); err != nil {
+		idempRec := WorkerIdempotencyRecord{
+			WorkerID:    w.ID,
+			PayloadHash: payloadHash,
+			Receipt:     w,
+			CreatedAt:   now,
+		}
+		if err := m.put(KeyWorkerIdempotency(account, idempKey), idempRec); err != nil {
 			return WorkerRecord{}, err
 		}
 	}
@@ -606,7 +863,12 @@ func (ws *WorkerStore) CreateWorker(account, user string, req CreateWorkerReques
 	if err := ws.store.commitWorkerRealtime(m); err != nil {
 		return WorkerRecord{}, err
 	}
+
+	// Unlock domain mutex before invoking publisher callbacks
+	ws.store.workersMu.Unlock()
 	ws.store.publishWorkerRealtime(m)
+	ws.store.workersMu.Lock()
+
 	return w, nil
 }
 
@@ -645,15 +907,11 @@ func (ws *WorkerStore) GetWorkerByAutomation(account, automationID string) (Work
 	if account == "" || automationID == "" {
 		return WorkerRecord{}, false, nil
 	}
-	raw, closer, err := ws.store.db.Get([]byte(KeyWorkerByAutomation(account, automationID)))
-	if err != nil {
-		if errors.Is(err, pebble.ErrNotFound) {
-			return WorkerRecord{}, false, nil
-		}
+	var workerID string
+	ok, err := ws.store.GetJSON(KeyWorkerByAutomation(account, automationID), &workerID)
+	if err != nil || !ok || workerID == "" {
 		return WorkerRecord{}, false, err
 	}
-	defer closer.Close()
-	workerID := string(raw)
 	return ws.GetWorker(account, workerID)
 }
 
@@ -689,9 +947,8 @@ func (ws *WorkerStore) ListWorkers(account string, query ListWorkersQuery) (List
 	}
 	defer it.Close()
 
-	var list []WorkerRecord
+	list := make([]WorkerRecord, 0, limit)
 	var nextCursor string
-	total := 0
 	for valid := it.First(); valid; valid = it.Next() {
 		var w WorkerRecord
 		if err := json.Unmarshal(it.Value(), &w); err != nil {
@@ -706,17 +963,21 @@ func (ws *WorkerStore) ListWorkers(account string, query ListWorkersQuery) (List
 		if query.LifecycleState != "" && w.LifecycleState != query.LifecycleState {
 			continue
 		}
-		total++
 		if len(list) < limit {
 			list = append(list, w)
-		} else if nextCursor == "" {
+		} else {
 			nextCursor = list[len(list)-1].ID
+			break
 		}
 	}
+	if err := it.Error(); err != nil {
+		return ListWorkersResult{}, err
+	}
+
 	return ListWorkersResult{
 		Workers:    list,
 		NextCursor: nextCursor,
-		TotalCount: total,
+		TotalCount: len(list),
 	}, nil
 }
 
@@ -729,6 +990,9 @@ func (ws *WorkerStore) UpdateWorker(account, user, workerID string, expectedRevi
 	if account == "" || workerID == "" {
 		return WorkerRecord{}, errors.New("account and worker_id are required")
 	}
+	if req.LocalBindings != nil && len(req.LocalBindings) > 0 {
+		return WorkerRecord{}, errors.New("local bindings cannot be specified until approved activation")
+	}
 
 	ws.store.workersMu.Lock()
 	defer ws.store.workersMu.Unlock()
@@ -738,15 +1002,20 @@ func (ws *WorkerStore) UpdateWorker(account, user, workerID string, expectedRevi
 	if err != nil {
 		return WorkerRecord{}, err
 	}
-	if !ok || current.AccountScopeID != account {
+	if !ok || current.AccountScopeID != account || current.LifecycleState == WorkerLifecycleStateDeleted {
 		return WorkerRecord{}, ErrWorkerNotFound
+	}
+	if current.Provenance != nil && (current.Provenance.MigratedAt > 0 || current.Provenance.SourceProposalID != "") {
+		return WorkerRecord{}, errors.New("mutations to migrated legacy workers are rejected until safe stop barrier is active")
 	}
 	if current.Revision != expectedRevision {
 		return WorkerRecord{}, ErrWorkerConflict
 	}
-	// Check active schedule update rejection until checkpoint 2 safe stop controls exist
+	if current.LifecycleState != WorkerLifecycleStateIdle {
+		return WorkerRecord{}, ErrActiveScheduleUpdateRejected
+	}
 	for _, auto := range current.Automations {
-		if current.LifecycleState == WorkerLifecycleStateActive && auto.Enabled && (auto.ActivationMode == "interval" || auto.ActivationMode == "cron") {
+		if auto.Enabled && (auto.ActivationMode == "interval" || auto.ActivationMode == "cron" || auto.ActivationMode == "external_trigger") {
 			return WorkerRecord{}, ErrActiveScheduleUpdateRejected
 		}
 	}
@@ -768,24 +1037,53 @@ func (ws *WorkerStore) UpdateWorker(account, user, workerID string, expectedRevi
 	if req.WorkspaceRequirements != nil {
 		updated.WorkspaceRequirements = req.WorkspaceRequirements
 	}
-	if req.LocalBindings != nil {
-		updated.LocalBindings = req.LocalBindings
-	}
 	if req.Metadata != nil {
 		updated.Metadata = req.Metadata
 	}
 	if req.Automations != nil {
 		automations := make([]WorkerAutomationDefinition, len(req.Automations))
+		seenIDs := make(map[string]struct{}, len(req.Automations))
+		seenNames := make(map[string]struct{}, len(req.Automations))
 		for i, a := range req.Automations {
+			name := strings.TrimSpace(a.Name)
+			if name == "" {
+				return WorkerRecord{}, errors.New("automation name is required")
+			}
+			if _, ok := seenNames[name]; ok {
+				return WorkerRecord{}, fmt.Errorf("duplicate automation name: %q", name)
+			}
+			seenNames[name] = struct{}{}
 			aCopy := a
-			if strings.TrimSpace(aCopy.ID) == "" {
-				aCopy.ID = GenerateWorkerAutomationID()
+			autoID := strings.TrimSpace(aCopy.ID)
+			var prior *WorkerAutomationDefinition
+			if autoID != "" {
+				for j := range current.Automations {
+					if current.Automations[j].ID == autoID {
+						prior = &current.Automations[j]
+						break
+					}
+				}
+				if prior == nil {
+					// Check cross-worker collision
+					var otherWorkerID string
+					if ok, err := ws.store.GetJSON(KeyWorkerByAutomation(account, autoID), &otherWorkerID); err == nil && ok && otherWorkerID != "" && otherWorkerID != workerID {
+						return WorkerRecord{}, fmt.Errorf("%w: automation id %q is owned by another worker %s", ErrWorkerConflict, autoID, otherWorkerID)
+					}
+				}
+			} else {
+				autoID = GenerateWorkerAutomationID()
 			}
+			if _, ok := seenIDs[autoID]; ok {
+				return WorkerRecord{}, fmt.Errorf("duplicate automation id: %q", autoID)
+			}
+			seenIDs[autoID] = struct{}{}
+			aCopy.ID = autoID
 			aCopy.WorkerID = workerID
-			if aCopy.Revision == 0 {
+			if prior != nil {
+				aCopy.Revision = prior.Revision + 1 // never let bulk update reset revision
+				aCopy.CreatedAt = prior.CreatedAt
+			} else {
 				aCopy.Revision = 1
-			}
-			if aCopy.CreatedAt == 0 {
 				aCopy.CreatedAt = now
 			}
 			aCopy.UpdatedAt = now
@@ -813,6 +1111,7 @@ func (ws *WorkerStore) UpdateWorker(account, user, workerID string, expectedRevi
 
 	m := &workerRealtimeMutation{
 		accountScopeID: account,
+		userID:         user,
 		workerID:       updated.ID,
 	}
 	if err := m.put(KeyWorker(account, updated.ID), updated); err != nil {
@@ -822,11 +1121,12 @@ func (ws *WorkerStore) UpdateWorker(account, user, workerID string, expectedRevi
 		return WorkerRecord{}, err
 	}
 
-	// Remove deleted automations from lookup
 	newAutoIDs := make(map[string]struct{}, len(updated.Automations))
 	for _, a := range updated.Automations {
 		newAutoIDs[a.ID] = struct{}{}
-		m.putBytes(KeyWorkerByAutomation(account, a.ID), []byte(updated.ID))
+		if err := m.put(KeyWorkerByAutomation(account, a.ID), updated.ID); err != nil {
+			return WorkerRecord{}, err
+		}
 	}
 	for _, oldA := range current.Automations {
 		if _, ok := newAutoIDs[oldA.ID]; !ok {
@@ -837,7 +1137,11 @@ func (ws *WorkerStore) UpdateWorker(account, user, workerID string, expectedRevi
 	if err := ws.store.commitWorkerRealtime(m); err != nil {
 		return WorkerRecord{}, err
 	}
+
+	ws.store.workersMu.Unlock()
 	ws.store.publishWorkerRealtime(m)
+	ws.store.workersMu.Lock()
+
 	return updated, nil
 }
 
@@ -859,16 +1163,26 @@ func (ws *WorkerStore) DeleteWorker(account, user, workerID string, expectedRevi
 	if err != nil {
 		return err
 	}
-	if !ok || current.AccountScopeID != account {
+	if !ok || current.AccountScopeID != account || current.LifecycleState == WorkerLifecycleStateDeleted {
 		return ErrWorkerNotFound
+	}
+	if current.Provenance != nil && (current.Provenance.MigratedAt > 0 || current.Provenance.SourceProposalID != "") {
+		return errors.New("mutations to migrated legacy workers are rejected until safe stop barrier is active")
 	}
 	if current.Revision != expectedRevision {
 		return ErrWorkerConflict
 	}
-	// Check active schedule rejection
-	for _, auto := range current.Automations {
-		if current.LifecycleState == WorkerLifecycleStateActive && auto.Enabled && (auto.ActivationMode == "interval" || auto.ActivationMode == "cron") {
-			return ErrActiveScheduleUpdateRejected
+	if current.LifecycleState != WorkerLifecycleStateIdle {
+		return errors.New("cannot delete non-idle worker")
+	}
+
+	runs, _, err := ws.ListWorkerRuns(account, workerID, 100, "")
+	if err != nil {
+		return err
+	}
+	for _, r := range runs {
+		if r.Status == "running" || r.Status == "admitted" {
+			return errors.New("cannot delete worker with active runs")
 		}
 	}
 
@@ -889,6 +1203,7 @@ func (ws *WorkerStore) DeleteWorker(account, user, workerID string, expectedRevi
 
 	m := &workerRealtimeMutation{
 		accountScopeID: account,
+		userID:         user,
 		workerID:       current.ID,
 	}
 	if err := m.put(KeyWorker(account, current.ID), current); err != nil {
@@ -904,7 +1219,11 @@ func (ws *WorkerStore) DeleteWorker(account, user, workerID string, expectedRevi
 	if err := ws.store.commitWorkerRealtime(m); err != nil {
 		return err
 	}
+
+	ws.store.workersMu.Unlock()
 	ws.store.publishWorkerRealtime(m)
+	ws.store.workersMu.Lock()
+
 	return nil
 }
 
@@ -948,7 +1267,13 @@ func (ws *WorkerStore) ListWorkerRevisions(account, workerID string, limit int, 
 	lower := prefix
 	after = strings.TrimSpace(after)
 	if after != "" {
-		lower = after + "\x00"
+		if afterRev, err := strconv.ParseUint(after, 10, 64); err == nil {
+			lower = KeyWorkerHistory(account, workerID, afterRev) + "\x00"
+		} else if strings.HasPrefix(after, prefix) {
+			lower = after + "\x00"
+		} else {
+			return nil, "", errors.New("invalid cursor")
+		}
 	}
 
 	it, err := ws.store.db.NewIter(&pebble.IterOptions{
@@ -960,20 +1285,24 @@ func (ws *WorkerStore) ListWorkerRevisions(account, workerID string, limit int, 
 	}
 	defer it.Close()
 
-	var list []WorkerRevisionRecord
+	list := make([]WorkerRevisionRecord, 0, limit)
 	var nextCursor string
 	for valid := it.First(); valid; valid = it.Next() {
-		if len(list) >= limit {
-			nextCursor = string(it.Key())
-			break
-		}
 		var h WorkerRevisionRecord
 		if err := json.Unmarshal(it.Value(), &h); err != nil {
 			continue
 		}
 		if h.AccountScopeID == account && h.WorkerID == workerID {
-			list = append(list, h)
+			if len(list) < limit {
+				list = append(list, h)
+			} else {
+				nextCursor = fmt.Sprintf("%d", list[len(list)-1].Revision)
+				break
+			}
 		}
+	}
+	if err := it.Error(); err != nil {
+		return nil, "", err
 	}
 	return list, nextCursor, nil
 }
@@ -996,32 +1325,40 @@ func (ws *WorkerStore) AttachWorkerAutomation(account, user, workerID string, ex
 	if err != nil {
 		return WorkerRecord{}, err
 	}
-	if !ok || current.AccountScopeID != account {
+	if !ok || current.AccountScopeID != account || current.LifecycleState == WorkerLifecycleStateDeleted {
 		return WorkerRecord{}, ErrWorkerNotFound
+	}
+	if current.Provenance != nil && (current.Provenance.MigratedAt > 0 || current.Provenance.SourceProposalID != "") {
+		return WorkerRecord{}, errors.New("mutations to migrated legacy workers are rejected until safe stop barrier is active")
 	}
 	if current.Revision != expectedWorkerRevision {
 		return WorkerRecord{}, ErrWorkerConflict
 	}
+	if current.LifecycleState != WorkerLifecycleStateIdle {
+		return WorkerRecord{}, ErrActiveScheduleUpdateRejected
+	}
 	for _, a := range current.Automations {
-		if current.LifecycleState == WorkerLifecycleStateActive && a.Enabled && (a.ActivationMode == "interval" || a.ActivationMode == "cron") {
+		if a.Enabled && (a.ActivationMode == "interval" || a.ActivationMode == "cron" || a.ActivationMode == "external_trigger") {
 			return WorkerRecord{}, ErrActiveScheduleUpdateRejected
 		}
 	}
 
 	now := time.Now().UnixMilli()
-	autoID := strings.TrimSpace(auto.ID)
-	if autoID == "" {
-		autoID = GenerateWorkerAutomationID()
+	autoID := GenerateWorkerAutomationID() // server-owned!
+
+	autoName := strings.TrimSpace(auto.Name)
+	if autoName == "" {
+		return WorkerRecord{}, errors.New("automation name is required")
 	}
 	for _, a := range current.Automations {
-		if a.ID == autoID {
-			return WorkerRecord{}, fmt.Errorf("automation with id %q already exists on worker", autoID)
+		if strings.TrimSpace(a.Name) == autoName {
+			return WorkerRecord{}, fmt.Errorf("automation with name %q already exists on worker", autoName)
 		}
 	}
 
 	auto.ID = autoID
 	auto.WorkerID = workerID
-	auto.Revision = 1
+	auto.Revision = 1 // server-owned!
 	auto.CreatedAt = now
 	auto.UpdatedAt = now
 
@@ -1045,6 +1382,7 @@ func (ws *WorkerStore) AttachWorkerAutomation(account, user, workerID string, ex
 
 	m := &workerRealtimeMutation{
 		accountScopeID: account,
+		userID:         user,
 		workerID:       current.ID,
 	}
 	if err := m.put(KeyWorker(account, current.ID), current); err != nil {
@@ -1053,12 +1391,18 @@ func (ws *WorkerStore) AttachWorkerAutomation(account, user, workerID string, ex
 	if err := m.put(KeyWorkerHistory(account, current.ID, current.Revision), hist); err != nil {
 		return WorkerRecord{}, err
 	}
-	m.putBytes(KeyWorkerByAutomation(account, auto.ID), []byte(current.ID))
+	if err := m.put(KeyWorkerByAutomation(account, auto.ID), current.ID); err != nil {
+		return WorkerRecord{}, err
+	}
 
 	if err := ws.store.commitWorkerRealtime(m); err != nil {
 		return WorkerRecord{}, err
 	}
+
+	ws.store.workersMu.Unlock()
 	ws.store.publishWorkerRealtime(m)
+	ws.store.workersMu.Lock()
+
 	return current, nil
 }
 
@@ -1081,14 +1425,20 @@ func (ws *WorkerStore) UpdateWorkerAutomation(account, user, workerID, automatio
 	if err != nil {
 		return WorkerRecord{}, err
 	}
-	if !ok || current.AccountScopeID != account {
+	if !ok || current.AccountScopeID != account || current.LifecycleState == WorkerLifecycleStateDeleted {
 		return WorkerRecord{}, ErrWorkerNotFound
+	}
+	if current.Provenance != nil && (current.Provenance.MigratedAt > 0 || current.Provenance.SourceProposalID != "") {
+		return WorkerRecord{}, errors.New("mutations to migrated legacy workers are rejected until safe stop barrier is active")
 	}
 	if current.Revision != expectedWorkerRevision {
 		return WorkerRecord{}, ErrWorkerConflict
 	}
+	if current.LifecycleState != WorkerLifecycleStateIdle {
+		return WorkerRecord{}, ErrActiveScheduleUpdateRejected
+	}
 	for _, a := range current.Automations {
-		if current.LifecycleState == WorkerLifecycleStateActive && a.Enabled && (a.ActivationMode == "interval" || a.ActivationMode == "cron") {
+		if a.Enabled && (a.ActivationMode == "interval" || a.ActivationMode == "cron" || a.ActivationMode == "external_trigger") {
 			return WorkerRecord{}, ErrActiveScheduleUpdateRejected
 		}
 	}
@@ -1102,6 +1452,16 @@ func (ws *WorkerStore) UpdateWorkerAutomation(account, user, workerID, automatio
 	}
 	if foundIdx == -1 {
 		return WorkerRecord{}, errors.New("automation not found on worker")
+	}
+
+	newName := strings.TrimSpace(auto.Name)
+	if newName == "" {
+		return WorkerRecord{}, errors.New("automation name is required")
+	}
+	for i, a := range current.Automations {
+		if i != foundIdx && strings.TrimSpace(a.Name) == newName {
+			return WorkerRecord{}, fmt.Errorf("duplicate automation name: %q", newName)
+		}
 	}
 
 	now := time.Now().UnixMilli()
@@ -1132,6 +1492,7 @@ func (ws *WorkerStore) UpdateWorkerAutomation(account, user, workerID, automatio
 
 	m := &workerRealtimeMutation{
 		accountScopeID: account,
+		userID:         user,
 		workerID:       current.ID,
 	}
 	if err := m.put(KeyWorker(account, current.ID), current); err != nil {
@@ -1140,12 +1501,18 @@ func (ws *WorkerStore) UpdateWorkerAutomation(account, user, workerID, automatio
 	if err := m.put(KeyWorkerHistory(account, current.ID, current.Revision), hist); err != nil {
 		return WorkerRecord{}, err
 	}
-	m.putBytes(KeyWorkerByAutomation(account, auto.ID), []byte(current.ID))
+	if err := m.put(KeyWorkerByAutomation(account, auto.ID), current.ID); err != nil {
+		return WorkerRecord{}, err
+	}
 
 	if err := ws.store.commitWorkerRealtime(m); err != nil {
 		return WorkerRecord{}, err
 	}
+
+	ws.store.workersMu.Unlock()
 	ws.store.publishWorkerRealtime(m)
+	ws.store.workersMu.Lock()
+
 	return current, nil
 }
 
@@ -1168,14 +1535,20 @@ func (ws *WorkerStore) RemoveWorkerAutomation(account, user, workerID, automatio
 	if err != nil {
 		return WorkerRecord{}, err
 	}
-	if !ok || current.AccountScopeID != account {
+	if !ok || current.AccountScopeID != account || current.LifecycleState == WorkerLifecycleStateDeleted {
 		return WorkerRecord{}, ErrWorkerNotFound
+	}
+	if current.Provenance != nil && (current.Provenance.MigratedAt > 0 || current.Provenance.SourceProposalID != "") {
+		return WorkerRecord{}, errors.New("mutations to migrated legacy workers are rejected until safe stop barrier is active")
 	}
 	if current.Revision != expectedWorkerRevision {
 		return WorkerRecord{}, ErrWorkerConflict
 	}
+	if current.LifecycleState != WorkerLifecycleStateIdle {
+		return WorkerRecord{}, ErrActiveScheduleUpdateRejected
+	}
 	for _, a := range current.Automations {
-		if current.LifecycleState == WorkerLifecycleStateActive && a.Enabled && (a.ActivationMode == "interval" || a.ActivationMode == "cron") {
+		if a.Enabled && (a.ActivationMode == "interval" || a.ActivationMode == "cron" || a.ActivationMode == "external_trigger") {
 			return WorkerRecord{}, ErrActiveScheduleUpdateRejected
 		}
 	}
@@ -1208,6 +1581,7 @@ func (ws *WorkerStore) RemoveWorkerAutomation(account, user, workerID, automatio
 
 	m := &workerRealtimeMutation{
 		accountScopeID: account,
+		userID:         user,
 		workerID:       current.ID,
 	}
 	if err := m.put(KeyWorker(account, current.ID), current); err != nil {
@@ -1221,7 +1595,11 @@ func (ws *WorkerStore) RemoveWorkerAutomation(account, user, workerID, automatio
 	if err := ws.store.commitWorkerRealtime(m); err != nil {
 		return WorkerRecord{}, err
 	}
+
+	ws.store.workersMu.Unlock()
 	ws.store.publishWorkerRealtime(m)
+	ws.store.workersMu.Lock()
+
 	return current, nil
 }
 
@@ -1230,7 +1608,7 @@ func (ws *WorkerStore) ExportWorker(account, workerID string) (PortableWorkerDef
 	if err != nil {
 		return PortableWorkerDefinition{}, nil, err
 	}
-	if !ok {
+	if !ok || w.LifecycleState == WorkerLifecycleStateDeleted {
 		return PortableWorkerDefinition{}, nil, ErrWorkerNotFound
 	}
 
@@ -1273,10 +1651,35 @@ func (ws *WorkerStore) ExportWorker(account, workerID string) (PortableWorkerDef
 	return def, b, nil
 }
 
-func (ws *WorkerStore) ImportWorkerAsNew(account, user string, data []byte, validate func(*SessionPlanDocument) error) (WorkerRecord, error) {
+func (ws *WorkerStore) ImportWorkerAsNew(account, user string, data []byte, validate func(*SessionPlanDocument) error, idempotencyKey ...string) (WorkerRecord, error) {
 	def, err := ValidatePortableWorkerDefinition(data, validate)
 	if err != nil {
 		return WorkerRecord{}, err
+	}
+
+	var idempKey string
+	if len(idempotencyKey) > 0 {
+		idempKey = strings.TrimSpace(idempotencyKey[0])
+	}
+
+	ws.store.workersMu.Lock()
+	defer ws.store.workersMu.Unlock()
+
+	var payloadHash string
+	if idempKey != "" {
+		h := sha256.Sum256(data)
+		payloadHash = hex.EncodeToString(h[:])
+		var existingIdemp WorkerIdempotencyRecord
+		ok, err := ws.store.GetJSON(KeyWorkerIdempotency(account, idempKey), &existingIdemp)
+		if err != nil {
+			return WorkerRecord{}, err
+		}
+		if ok {
+			if existingIdemp.PayloadHash != payloadHash {
+				return WorkerRecord{}, fmt.Errorf("%w: idempotency key reused with different payload", ErrWorkerConflict)
+			}
+			return existingIdemp.Receipt, nil
+		}
 	}
 
 	now := time.Now().UnixMilli()
@@ -1309,6 +1712,15 @@ func (ws *WorkerStore) ImportWorkerAsNew(account, user string, data []byte, vali
 	prov.ImportedAt = now
 	prov.Author = user
 
+	caps := def.Capabilities
+	if caps == nil {
+		caps = []WorkerCapabilityRequest{}
+	}
+	wsReqs := def.WorkspaceRequirements
+	if wsReqs == nil {
+		wsReqs = []WorkerWorkspaceRequirement{}
+	}
+
 	w := WorkerRecord{
 		ID:                    newWorkerID,
 		AccountScopeID:        account,
@@ -1317,17 +1729,14 @@ func (ws *WorkerStore) ImportWorkerAsNew(account, user string, data []byte, vali
 		Instructions:          def.Instructions,
 		LifecycleState:        WorkerLifecycleStateIdle, // Create/import always idle
 		Revision:              1,
-		RequestedCapabilities: def.Capabilities,
-		WorkspaceRequirements: def.WorkspaceRequirements,
+		RequestedCapabilities: caps,
+		WorkspaceRequirements: wsReqs,
 		Automations:           automations,
 		Metadata:              def.Metadata,
 		Provenance:            prov,
 		CreatedAt:             now,
 		UpdatedAt:             now,
 	}
-
-	ws.store.workersMu.Lock()
-	defer ws.store.workersMu.Unlock()
 
 	hist := WorkerRevisionRecord{
 		WorkerID:       w.ID,
@@ -1341,6 +1750,7 @@ func (ws *WorkerStore) ImportWorkerAsNew(account, user string, data []byte, vali
 
 	m := &workerRealtimeMutation{
 		accountScopeID: account,
+		userID:         user,
 		workerID:       w.ID,
 	}
 	if err := m.put(KeyWorker(account, w.ID), w); err != nil {
@@ -1350,13 +1760,30 @@ func (ws *WorkerStore) ImportWorkerAsNew(account, user string, data []byte, vali
 		return WorkerRecord{}, err
 	}
 	for _, auto := range w.Automations {
-		m.putBytes(KeyWorkerByAutomation(account, auto.ID), []byte(w.ID))
+		if err := m.put(KeyWorkerByAutomation(account, auto.ID), w.ID); err != nil {
+			return WorkerRecord{}, err
+		}
+	}
+	if idempKey != "" {
+		idempRec := WorkerIdempotencyRecord{
+			WorkerID:    w.ID,
+			PayloadHash: payloadHash,
+			Receipt:     w,
+			CreatedAt:   now,
+		}
+		if err := m.put(KeyWorkerIdempotency(account, idempKey), idempRec); err != nil {
+			return WorkerRecord{}, err
+		}
 	}
 
 	if err := ws.store.commitWorkerRealtime(m); err != nil {
 		return WorkerRecord{}, err
 	}
+
+	ws.store.workersMu.Unlock()
 	ws.store.publishWorkerRealtime(m)
+	ws.store.workersMu.Lock()
+
 	return w, nil
 }
 
@@ -1374,14 +1801,20 @@ func (ws *WorkerStore) ImportWorkerUpdate(account, user, workerID string, expect
 	if err != nil {
 		return WorkerRecord{}, err
 	}
-	if !ok || current.AccountScopeID != account {
+	if !ok || current.AccountScopeID != account || current.LifecycleState == WorkerLifecycleStateDeleted {
 		return WorkerRecord{}, ErrWorkerNotFound
+	}
+	if current.Provenance != nil && (current.Provenance.MigratedAt > 0 || current.Provenance.SourceProposalID != "") {
+		return WorkerRecord{}, errors.New("mutations to migrated legacy workers are rejected until safe stop barrier is active")
 	}
 	if current.Revision != expectedRevision {
 		return WorkerRecord{}, ErrWorkerConflict
 	}
+	if current.LifecycleState != WorkerLifecycleStateIdle {
+		return WorkerRecord{}, ErrActiveScheduleUpdateRejected
+	}
 	for _, a := range current.Automations {
-		if current.LifecycleState == WorkerLifecycleStateActive && a.Enabled && (a.ActivationMode == "interval" || a.ActivationMode == "cron") {
+		if a.Enabled && (a.ActivationMode == "interval" || a.ActivationMode == "cron" || a.ActivationMode == "external_trigger") {
 			return WorkerRecord{}, ErrActiveScheduleUpdateRejected
 		}
 	}
@@ -1425,6 +1858,15 @@ func (ws *WorkerStore) ImportWorkerUpdate(account, user, workerID string, expect
 	prov.ImportedAt = now
 	prov.Author = user
 
+	caps := def.Capabilities
+	if caps == nil {
+		caps = []WorkerCapabilityRequest{}
+	}
+	wsReqs := def.WorkspaceRequirements
+	if wsReqs == nil {
+		wsReqs = []WorkerWorkspaceRequirement{}
+	}
+
 	updated := WorkerRecord{
 		ID:                    workerID,
 		AccountScopeID:        account,
@@ -1433,8 +1875,8 @@ func (ws *WorkerStore) ImportWorkerUpdate(account, user, workerID string, expect
 		Instructions:          def.Instructions,
 		LifecycleState:        WorkerLifecycleStateIdle, // Create/import always idle
 		Revision:              current.Revision + 1,
-		RequestedCapabilities: def.Capabilities,
-		WorkspaceRequirements: def.WorkspaceRequirements,
+		RequestedCapabilities: caps,
+		WorkspaceRequirements: wsReqs,
 		LocalBindings:         current.LocalBindings,
 		Automations:           automations,
 		Metadata:              def.Metadata,
@@ -1459,6 +1901,7 @@ func (ws *WorkerStore) ImportWorkerUpdate(account, user, workerID string, expect
 
 	m := &workerRealtimeMutation{
 		accountScopeID: account,
+		userID:         user,
 		workerID:       updated.ID,
 	}
 	if err := m.put(KeyWorker(account, updated.ID), updated); err != nil {
@@ -1471,7 +1914,9 @@ func (ws *WorkerStore) ImportWorkerUpdate(account, user, workerID string, expect
 	newAutoIDs := make(map[string]struct{}, len(updated.Automations))
 	for _, a := range updated.Automations {
 		newAutoIDs[a.ID] = struct{}{}
-		m.putBytes(KeyWorkerByAutomation(account, a.ID), []byte(updated.ID))
+		if err := m.put(KeyWorkerByAutomation(account, a.ID), updated.ID); err != nil {
+			return WorkerRecord{}, err
+		}
 	}
 	for _, oldA := range current.Automations {
 		if _, ok := newAutoIDs[oldA.ID]; !ok {
@@ -1482,7 +1927,11 @@ func (ws *WorkerStore) ImportWorkerUpdate(account, user, workerID string, expect
 	if err := ws.store.commitWorkerRealtime(m); err != nil {
 		return WorkerRecord{}, err
 	}
+
+	ws.store.workersMu.Unlock()
 	ws.store.publishWorkerRealtime(m)
+	ws.store.workersMu.Lock()
+
 	return updated, nil
 }
 
@@ -1500,6 +1949,9 @@ func (ws *WorkerStore) RecordWorkerRun(account string, run WorkerRunRecord) (Wor
 	}
 	run.AccountScopeID = account
 
+	ws.store.workersMu.Lock()
+	defer ws.store.workersMu.Unlock()
+
 	w, ok, err := ws.GetWorker(account, workerID)
 	if err != nil {
 		return WorkerRunRecord{}, err
@@ -1507,14 +1959,83 @@ func (ws *WorkerStore) RecordWorkerRun(account string, run WorkerRunRecord) (Wor
 	if !ok {
 		return WorkerRunRecord{}, ErrWorkerNotFound
 	}
+
 	if run.WorkerRevision == 0 {
 		run.WorkerRevision = w.Revision
 	}
+	if run.WorkerRevision > w.Revision {
+		return WorkerRunRecord{}, fmt.Errorf("%w: run worker_revision %d exceeds worker revision %d", ErrWorkerConflict, run.WorkerRevision, w.Revision)
+	}
+
+	if strings.TrimSpace(run.AutomationID) != "" {
+		foundAuto := false
+		for _, a := range w.Automations {
+			if a.ID == run.AutomationID {
+				foundAuto = true
+				if run.AutomationRevision == 0 {
+					run.AutomationRevision = a.Revision
+				}
+				if run.AutomationRevision > a.Revision {
+					return WorkerRunRecord{}, fmt.Errorf("%w: run automation_revision %d exceeds automation revision %d", ErrWorkerConflict, run.AutomationRevision, a.Revision)
+				}
+				break
+			}
+		}
+		if !foundAuto {
+			return WorkerRunRecord{}, fmt.Errorf("automation %q not found on worker", run.AutomationID)
+		}
+	}
+
 	if strings.TrimSpace(run.ID) == "" {
 		run.ID = GenerateWorkerRunID()
 	}
+	now := time.Now().UnixMilli()
 	if run.CreatedAt == 0 {
-		run.CreatedAt = time.Now().UnixMilli()
+		run.CreatedAt = now
+	}
+
+	// Validate occurrence ownership
+	if strings.TrimSpace(run.OccurrenceID) != "" {
+		var existingOccLink string
+		occOk, occErr := ws.store.GetJSON(KeyWorkerRunByOccurrence(account, run.OccurrenceID), &existingOccLink)
+		if occErr != nil {
+			return WorkerRunRecord{}, occErr
+		}
+		if occOk && existingOccLink != "" {
+			expectedLink := workerID + ":" + run.ID
+			if existingOccLink != expectedLink {
+				return WorkerRunRecord{}, fmt.Errorf("%w: occurrence %q is already linked to %s", ErrWorkerConflict, run.OccurrenceID, existingOccLink)
+			}
+		}
+	}
+
+	// Validate existing run immutable fields
+	var existingRun WorkerRunRecord
+	existingOk, runErr := ws.store.GetJSON(KeyWorkerRun(account, workerID, run.ID), &existingRun)
+	if runErr != nil {
+		return WorkerRunRecord{}, runErr
+	}
+	if existingOk {
+		if existingRun.WorkerRevision != run.WorkerRevision {
+			return WorkerRunRecord{}, fmt.Errorf("%w: cannot rewrite pinned worker revision from %d to %d", ErrWorkerConflict, existingRun.WorkerRevision, run.WorkerRevision)
+		}
+		if existingRun.AutomationID != run.AutomationID {
+			return WorkerRunRecord{}, fmt.Errorf("%w: cannot change automation id from %q to %q", ErrWorkerConflict, existingRun.AutomationID, run.AutomationID)
+		}
+		if existingRun.AutomationRevision != run.AutomationRevision {
+			return WorkerRunRecord{}, fmt.Errorf("%w: cannot rewrite pinned automation revision from %d to %d", ErrWorkerConflict, existingRun.AutomationRevision, run.AutomationRevision)
+		}
+		if existingRun.OccurrenceID != "" && run.OccurrenceID != "" && existingRun.OccurrenceID != run.OccurrenceID {
+			return WorkerRunRecord{}, fmt.Errorf("%w: cannot change occurrence id from %q to %q", ErrWorkerConflict, existingRun.OccurrenceID, run.OccurrenceID)
+		}
+		if existingRun.RequestSource != "" && run.RequestSource != "" && existingRun.RequestSource != run.RequestSource {
+			return WorkerRunRecord{}, fmt.Errorf("%w: cannot change request source", ErrWorkerConflict)
+		}
+		run.CreatedAt = existingRun.CreatedAt
+	}
+
+	if run.Deliverables == nil {
+		run.Deliverables = []SessionPlanArtifactReference{}
 	}
 
 	batch := ws.store.NewBatch()
@@ -1528,7 +2049,11 @@ func (ws *WorkerStore) RecordWorkerRun(account string, run WorkerRunRecord) (Wor
 		return WorkerRunRecord{}, err
 	}
 	if strings.TrimSpace(run.OccurrenceID) != "" {
-		if err := batch.Set([]byte(KeyWorkerRunByOccurrence(account, run.OccurrenceID)), []byte(workerID+":"+run.ID), nil); err != nil {
+		occPayload, err := json.Marshal(workerID + ":" + run.ID)
+		if err != nil {
+			return WorkerRunRecord{}, err
+		}
+		if err := batch.Set([]byte(KeyWorkerRunByOccurrence(account, run.OccurrenceID)), occPayload, nil); err != nil {
 			return WorkerRunRecord{}, err
 		}
 	}
@@ -1579,7 +2104,11 @@ func (ws *WorkerStore) ListWorkerRuns(account, workerID string, limit int, after
 	lower := prefix
 	after = strings.TrimSpace(after)
 	if after != "" {
-		lower = after + "\x00"
+		if strings.HasPrefix(after, prefix) {
+			lower = after + "\x00"
+		} else {
+			lower = KeyWorkerRun(account, workerID, after) + "\x00"
+		}
 	}
 
 	it, err := ws.store.db.NewIter(&pebble.IterOptions{
@@ -1591,20 +2120,24 @@ func (ws *WorkerStore) ListWorkerRuns(account, workerID string, limit int, after
 	}
 	defer it.Close()
 
-	var list []WorkerRunRecord
+	list := make([]WorkerRunRecord, 0, limit)
 	var nextCursor string
 	for valid := it.First(); valid; valid = it.Next() {
-		if len(list) >= limit {
-			nextCursor = string(it.Key())
-			break
-		}
 		var r WorkerRunRecord
 		if err := json.Unmarshal(it.Value(), &r); err != nil {
 			continue
 		}
 		if r.AccountScopeID == account && r.WorkerID == workerID {
-			list = append(list, r)
+			if len(list) < limit {
+				list = append(list, r)
+			} else {
+				nextCursor = list[len(list)-1].ID
+				break
+			}
 		}
+	}
+	if err := it.Error(); err != nil {
+		return nil, "", err
 	}
 	return list, nextCursor, nil
 }
@@ -1633,53 +2166,72 @@ func (ws *WorkerStore) MigrateLegacyAutomationsV2(account string) (WorkerMigrati
 	}
 	defer it.Close()
 
-	seenAutomations := make(map[string]struct{})
+	// Preflight: scan all legacy records and detect conflicts or collisions
+	seenAutomations := make(map[string]AutomationV2Record)
 	var toMigrate []AutomationV2Record
+	hasPreflightErrors := false
 
 	for valid := it.First(); valid; valid = it.Next() {
 		var rec AutomationV2Record
 		if err := json.Unmarshal(it.Value(), &rec); err != nil {
+			summary.FailedCount++
+			summary.Errors = append(summary.Errors, "unmarshal legacy record failed: corrupt payload")
+			hasPreflightErrors = true
 			continue
 		}
 		if rec.AutomationID == "" {
 			continue
 		}
-		if _, ok := seenAutomations[rec.AutomationID]; ok {
+		if !workerIDRegexp.MatchString(rec.AutomationID) {
+			summary.FailedCount++
+			summary.Errors = append(summary.Errors, fmt.Sprintf("unconvertible record with invalid automation id %q", rec.AutomationID))
+			hasPreflightErrors = true
 			continue
 		}
-		seenAutomations[rec.AutomationID] = struct{}{}
+		if prev, ok := seenAutomations[rec.AutomationID]; ok {
+			// Compare exact provenance and identity
+			if prev.SessionID != rec.SessionID || prev.ProposalID != rec.ProposalID {
+				summary.FailedCount++
+				summary.Errors = append(summary.Errors, fmt.Sprintf("colliding legacy automation id %q across sessions %s and %s", rec.AutomationID, prev.SessionID, rec.SessionID))
+				hasPreflightErrors = true
+				continue
+			}
+			continue
+		}
+		seenAutomations[rec.AutomationID] = rec
 		toMigrate = append(toMigrate, rec)
+	}
+	if err := it.Error(); err != nil {
+		return summary, err
 	}
 
 	summary.ScannedCount = len(toMigrate)
-	now := time.Now().UnixMilli()
+	if hasPreflightErrors {
+		return summary, nil
+	}
 
+	now := time.Now().UnixMilli()
 	batch := ws.store.NewBatch()
 	defer batch.Close()
 
 	for _, rec := range toMigrate {
-		if !workerIDRegexp.MatchString(rec.AutomationID) {
-			summary.FailedCount++
-			summary.Errors = append(summary.Errors, fmt.Sprintf("unconvertible record with invalid automation id %q", rec.AutomationID))
-			continue
-		}
-
-		targetWorkerID := rec.AutomationID
-		if !strings.HasPrefix(targetWorkerID, "worker_") {
-			targetWorkerID = "worker_" + rec.AutomationID
-		}
+		targetWorkerID := rec.AutomationID // Preserve exact established av2 ID!
 
 		// Check if already migrated
 		var existing WorkerRecord
 		if ok, err := ws.store.GetJSON(KeyWorker(account, targetWorkerID), &existing); err == nil && ok {
 			// Idempotent: check if it matches this legacy record
-			if existing.Provenance != nil && (existing.Provenance.SourceProposalID == rec.ProposalID || existing.Provenance.SourceWorkerID == rec.AutomationID) {
+			if existing.Provenance != nil && existing.Provenance.MigratedAt > 0 && existing.Provenance.SourceWorkerID == rec.AutomationID && (rec.ProposalID == "" || existing.Provenance.SourceProposalID == rec.ProposalID) {
 				summary.SkippedCount++
 				continue
 			}
-			// Collision! Never merge
+			// Collision!
+			var sourceSession string
+			if existing.Provenance != nil {
+				sourceSession = existing.Provenance.SourceSessionID
+			}
 			summary.FailedCount++
-			summary.Errors = append(summary.Errors, fmt.Sprintf("collision for worker %s: existing record from session %s differs from legacy session %s", targetWorkerID, existing.Provenance.SourceSessionID, rec.SessionID))
+			summary.Errors = append(summary.Errors, fmt.Sprintf("collision for worker %s: existing record from session %s differs from legacy session %s", targetWorkerID, sourceSession, rec.SessionID))
 			continue
 		}
 
@@ -1692,11 +2244,7 @@ func (ws *WorkerStore) MigrateLegacyAutomationsV2(account string) (WorkerMigrati
 		if instructions == "" {
 			instructions = desc
 		}
-		if instructions == "" {
-			instructions = "Migrated standing instructions for " + name
-		}
 
-		// Lifecycle state: truthfully represent legacy lifecycle
 		lifecycleState := WorkerLifecycleStatePaused
 		if rec.Cancelled || rec.Archived {
 			lifecycleState = WorkerLifecycleStateArchived
@@ -1704,28 +2252,51 @@ func (ws *WorkerStore) MigrateLegacyAutomationsV2(account string) (WorkerMigrati
 			lifecycleState = WorkerLifecycleStateActive
 		}
 
+		settings := rec.Document.AutomationV2
+		if settings == nil {
+			settings = rec.Document.WorkerV2
+		}
+
 		actMode := "manual"
 		var sched *AutomationV2Schedule
-		if rec.Document.AutomationV2 != nil {
-			switch rec.Document.AutomationV2.Schedule.Kind {
+		if settings != nil {
+			switch settings.Schedule.Kind {
 			case "interval":
 				actMode = "interval"
-				s := rec.Document.AutomationV2.Schedule
+				s := settings.Schedule
 				sched = &s
 			case "cron":
 				actMode = "cron"
-				s := rec.Document.AutomationV2.Schedule
+				s := settings.Schedule
 				sched = &s
 			default:
 				actMode = "external_trigger"
 			}
 		}
 
-		var wsReqs []WorkerWorkspaceRequirement
-		var bindings map[string]string
+		// Multi-workspace bindings preservation
+		wsReqs := make([]WorkerWorkspaceRequirement, 0)
+		bindings := make(map[string]string)
 		if rec.WorkspaceID != "" {
-			wsReqs = []WorkerWorkspaceRequirement{{Role: "primary", Description: "Primary workspace", Required: true}}
-			bindings = map[string]string{"primary": rec.WorkspaceID}
+			wsReqs = append(wsReqs, WorkerWorkspaceRequirement{Role: "primary", Description: "Primary workspace", Required: true})
+			bindings["primary"] = rec.WorkspaceID
+		}
+		allWS := append([]string(nil), rec.WorkspaceIDs...)
+		if settings != nil {
+			allWS = append(allWS, settings.WorkspaceIDs...)
+		}
+		seenWS := map[string]bool{rec.WorkspaceID: true}
+		wsIdx := 1
+		for _, wid := range allWS {
+			wid = strings.TrimSpace(wid)
+			if wid == "" || seenWS[wid] {
+				continue
+			}
+			seenWS[wid] = true
+			role := fmt.Sprintf("workspace_%d", wsIdx)
+			wsIdx++
+			wsReqs = append(wsReqs, WorkerWorkspaceRequirement{Role: role, Description: "Workspace grant", Required: false})
+			bindings[role] = wid
 		}
 
 		rev := rec.Generation
@@ -1733,18 +2304,25 @@ func (ws *WorkerStore) MigrateLegacyAutomationsV2(account string) (WorkerMigrati
 			rev = 1
 		}
 
-		autoDef := WorkerAutomationDefinition{
-			ID:             rec.AutomationID, // Preserving av2 ID
-			WorkerID:       targetWorkerID,
-			Name:           name,
-			Description:    desc,
-			ActivationMode: actMode,
-			Schedule:       sched,
-			Enabled:        rec.Enabled && !rec.Cancelled && !rec.Archived,
-			PlanDocument:   rec.Document,
-			Revision:       rev,
-			CreatedAt:      rec.CreatedAt,
-			UpdatedAt:      rec.AcceptedAt,
+		var automations []WorkerAutomationDefinition
+		if len(rec.Document.Checkpoints) > 0 {
+			autoDef := WorkerAutomationDefinition{
+				ID:             rec.AutomationID, // Preserving av2 ID
+				WorkerID:       targetWorkerID,
+				Name:           name,
+				Description:    desc,
+				ActivationMode: actMode,
+				Schedule:       sched,
+				Enabled:        rec.Enabled && !rec.Cancelled && !rec.Archived,
+				PlanDocument:   rec.Document,
+				Revision:       rev,
+				CreatedAt:      rec.CreatedAt,
+				UpdatedAt:      rec.AcceptedAt,
+			}
+			automations = append(automations, autoDef)
+		} else {
+			// Zero-checkpoint specialist maps to worker without fake executable auto
+			automations = make([]WorkerAutomationDefinition, 0)
 		}
 
 		w := WorkerRecord{
@@ -1755,9 +2333,10 @@ func (ws *WorkerStore) MigrateLegacyAutomationsV2(account string) (WorkerMigrati
 			Instructions:          instructions,
 			LifecycleState:        lifecycleState,
 			Revision:              rev,
+			RequestedCapabilities: []WorkerCapabilityRequest{},
 			WorkspaceRequirements: wsReqs,
 			LocalBindings:         bindings,
-			Automations:           []WorkerAutomationDefinition{autoDef},
+			Automations:           automations,
 			Provenance: &WorkerProvenance{
 				SourceWorkerID:   rec.AutomationID,
 				SourceSessionID:  rec.SessionID,
@@ -1797,11 +2376,17 @@ func (ws *WorkerStore) MigrateLegacyAutomationsV2(account string) (WorkerMigrati
 		if err := batch.Set([]byte(KeyWorkerHistory(account, w.ID, w.Revision)), hBytes, nil); err != nil {
 			return summary, err
 		}
-		if err := batch.Set([]byte(KeyWorkerByAutomation(account, autoDef.ID)), []byte(w.ID), nil); err != nil {
-			return summary, err
+		for _, a := range w.Automations {
+			autoIDBytes, err := json.Marshal(w.ID)
+			if err != nil {
+				return summary, err
+			}
+			if err := batch.Set([]byte(KeyWorkerByAutomation(account, a.ID)), autoIDBytes, nil); err != nil {
+				return summary, err
+			}
 		}
 
-		// Link occurrences
+		// Link occurrences for this specific automation and account
 		occPrefix := automationV2OccurrencePrefix(account, rec.SessionID)
 		occIt, occErr := ws.store.db.NewIter(&pebble.IterOptions{
 			LowerBound: []byte(occPrefix),
@@ -1813,18 +2398,36 @@ func (ws *WorkerStore) MigrateLegacyAutomationsV2(account string) (WorkerMigrati
 				if err := json.Unmarshal(occIt.Value(), &o); err != nil {
 					continue
 				}
+				// Verify strict ownership
+				if o.Record.AutomationID != rec.AutomationID || o.Record.AccountID != account {
+					continue
+				}
+				occRev := o.Record.Generation
+				if occRev == 0 {
+					occRev = rev
+				}
+				delivs := o.Deliverables
+				if delivs == nil {
+					delivs = []SessionPlanArtifactReference{}
+				}
+				autoID := ""
+				if len(w.Automations) > 0 {
+					autoID = w.Automations[0].ID
+				}
 				run := WorkerRunRecord{
 					ID:                 "wrun_" + o.ID,
 					AccountScopeID:     account,
 					WorkerID:           targetWorkerID,
-					WorkerRevision:     w.Revision, // pinned revision
-					AutomationID:       autoDef.ID,
-					AutomationRevision: autoDef.Revision, // pinned revision
+					WorkerRevision:     occRev, // pinned snapshot revision
+					AutomationID:       autoID,
+					AutomationRevision: occRev, // pinned snapshot revision
 					OccurrenceID:       o.ID,
 					SessionID:          o.SessionID,
 					RequestSource:      "schedule",
+					Input:              o.TriggerContext,
 					Status:             o.State,
-					Deliverables:       o.Deliverables,
+					Error:              o.Detail,
+					Deliverables:       delivs,
 					StartedAt:          o.AdmittedAt,
 					CompletedAt:        o.ObservedAt,
 					CreatedAt:          o.AdmittedAt,
@@ -1832,7 +2435,8 @@ func (ws *WorkerStore) MigrateLegacyAutomationsV2(account string) (WorkerMigrati
 				runBytes, rErr := json.Marshal(run)
 				if rErr == nil {
 					_ = batch.Set([]byte(KeyWorkerRun(account, targetWorkerID, run.ID)), runBytes, nil)
-					_ = batch.Set([]byte(KeyWorkerRunByOccurrence(account, o.ID)), []byte(targetWorkerID+":"+run.ID), nil)
+					occLinkBytes, _ := json.Marshal(targetWorkerID + ":" + run.ID)
+					_ = batch.Set([]byte(KeyWorkerRunByOccurrence(account, o.ID)), occLinkBytes, nil)
 				}
 			}
 			occIt.Close()

@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/cockroachdb/pebble"
-	"github.com/google/uuid"
 )
 
 // WorkerUpdatedEventType is the canonical event type for worker invalidation updates.
@@ -17,11 +17,11 @@ const WorkerUpdatedEventType = "worker.updated"
 // ErrWorkerInvalid indicates that a worker mutation violates domain invariants or scope boundaries.
 var ErrWorkerInvalid = errors.New("invalid worker mutation")
 
-// workerRealtimeMutation is a private participant that attaches atomic worker writes
-// to the canonical V3 session mutation and realtime outbox.
-// Lock order is workersMu -> canonical session mutation lock.
+// workerRealtimeMutation is a private participant that holds atomic worker writes
+// and outbox records committed in a single Pebble batch.
 type workerRealtimeMutation struct {
 	accountScopeID string
+	userID         string
 	workerID       string
 	writes         map[string][]byte
 	deletes        []string
@@ -112,29 +112,82 @@ func (s *Store) SetWorkerPublisher(publish func(V3RealtimeOutboxRecord)) {
 }
 
 func (s *Store) commitWorkerRealtime(m *workerRealtimeMutation) error {
-	requestID := uuid.NewString()
+	if m == nil || strings.TrimSpace(m.accountScopeID) == "" || strings.TrimSpace(m.workerID) == "" {
+		return ErrWorkerInvalid
+	}
+
+	reserved, err := s.sessionMutations.reserveOutbox(s, 1)
+	if err != nil {
+		return err
+	}
+	endpointSeq := reserved[0]
+	now := time.Now().UnixMilli()
+
 	payload := m.eventPayload
 	if len(payload) == 0 {
 		payload = json.RawMessage(`{}`)
 	}
-	// Session ID is lowercase to satisfy canonical session validation
-	sessionID := fmt.Sprintf("__worker__:%s:%s", strings.ToLower(strings.TrimSpace(m.accountScopeID)), strings.ToLower(strings.TrimSpace(m.workerID)))
-	result, err := NewSessionStore(s).ApplyV3SessionMutation(V3SessionMutationInput{
-		SessionID:       sessionID,
-		AccountScopeID:  m.accountScopeID,
-		UserID:          "desktop",
-		ClientRequestID: requestID,
-		IdempotencyKey:  requestID,
-		PayloadHash:     requestID,
-		Kind:            WorkerUpdatedEventType,
-		EventType:       WorkerUpdatedEventType,
-		EventPayload:    payload,
-		workerRealtime:  m,
-	})
+
+	outbox := V3RealtimeOutboxRecord{
+		EndpointSeq:    endpointSeq,
+		EndpointCursor: V3RealtimeOutboxCursor(endpointSeq),
+		SessionID:      "",
+		UserID:         strings.TrimSpace(m.userID),
+		AccountScopeID: m.accountScopeID,
+		Event: V3SessionEvent{
+			ID:        fmt.Sprintf("wkevt_%020d", endpointSeq),
+			Seq:       endpointSeq,
+			EventType: WorkerUpdatedEventType,
+			Payload:   payload,
+			TsUnixMs:  now,
+		},
+		CreatedAt: now,
+	}
+
+	outboxRaw, err := json.Marshal(outbox)
 	if err != nil {
+		s.sessionMutations.abandonOutbox(reserved)
+		return fmt.Errorf("marshal worker outbox: %w", err)
+	}
+	outboxRef, err := marshalV3RealtimeOutboxReference(outbox)
+	if err != nil {
+		s.sessionMutations.abandonOutbox(reserved)
+		return fmt.Errorf("marshal worker outbox ref: %w", err)
+	}
+
+	batch := s.NewBatch()
+	defer batch.Close()
+
+	if err := setWorkerRealtimeMutationInBatch(batch, m.accountScopeID, m); err != nil {
+		s.sessionMutations.abandonOutbox(reserved)
 		return err
 	}
-	m.outbox = result.RealtimeOutbox
+
+	if err := batch.Set([]byte(KeyV3RealtimeOutbox(endpointSeq)), outboxRaw, nil); err != nil {
+		s.sessionMutations.abandonOutbox(reserved)
+		return err
+	}
+	if err := batch.Set([]byte(KeyV3RealtimeOutboxByAuthScope(m.accountScopeID, "", endpointSeq)), outboxRef, nil); err != nil {
+		s.sessionMutations.abandonOutbox(reserved)
+		return err
+	}
+	if m.userID != "" {
+		if err := batch.Set([]byte(KeyV3RealtimeOutboxByAuthScope(m.accountScopeID, m.userID, endpointSeq)), outboxRef, nil); err != nil {
+			s.sessionMutations.abandonOutbox(reserved)
+			return err
+		}
+	}
+
+	if err := batch.Commit(pebble.Sync); err != nil {
+		s.sessionMutations.abandonOutbox(reserved)
+		return err
+	}
+
+	if err := s.sessionMutations.commitOutbox(s, reserved); err != nil {
+		return err
+	}
+
+	m.outbox = &outbox
 	return nil
 }
 

@@ -2,6 +2,7 @@ package pebblestore
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -746,7 +747,7 @@ func TestLegacyAutomationV2Migration(t *testing.T) {
 	}
 
 	// Verify active record was migrated truthfully as active with interval schedule
-	wActive, ok, err := ws.GetWorker("acct-mig", "worker_"+activeAutoID)
+	wActive, ok, err := ws.GetWorker("acct-mig", activeAutoID)
 	if err != nil || !ok {
 		t.Fatalf("GetWorker active: ok=%v, err=%v", ok, err)
 	}
@@ -776,7 +777,7 @@ func TestLegacyAutomationV2Migration(t *testing.T) {
 	}
 
 	// Verify cancelled record was migrated as archived
-	wCancelled, ok, err := ws.GetWorker("acct-mig", "worker_"+cancelledAutoID)
+	wCancelled, ok, err := ws.GetWorker("acct-mig", cancelledAutoID)
 	if err != nil || !ok {
 		t.Fatalf("GetWorker cancelled: ok=%v, err=%v", ok, err)
 	}
@@ -814,7 +815,7 @@ func TestLegacyAutomationV2Migration(t *testing.T) {
 	// Place collision in acct-mig under different session key in accepted index
 	_ = s.PutBytes(automationV2Key("accepted", "acct-collision", activeAutoID), bCollision)
 	// Mutate existing worker's provenance in acct-collision to create collision
-	_ = s.PutBytes(KeyWorker("acct-collision", "worker_"+activeAutoID), []byte(`{"id":"worker_`+activeAutoID+`","account_scope_id":"acct-collision","provenance":{"source_proposal_id":"prop-original","source_session_id":"sess-orig"}}`))
+	_ = s.PutBytes(KeyWorker("acct-collision", activeAutoID), []byte(`{"id":"`+activeAutoID+`","account_scope_id":"acct-collision","provenance":{"source_proposal_id":"prop-original","source_session_id":"sess-orig"}}`))
 
 	colSummary, err := ws.MigrateLegacyAutomationsV2("acct-collision")
 	if err != nil {
@@ -864,5 +865,878 @@ func TestNewSDKIdleWorkerDoesNotEnterLegacyScheduler(t *testing.T) {
 		if r.AccountID == "acct-sched" || strings.Contains(r.AutomationID, w.ID) {
 			t.Fatalf("new SDK idle worker leaked into legacy scheduler scan: %+v", r)
 		}
+	}
+}
+
+// Invariant: CreateWorker must reject caller-specified IDs; automation IDs/revisions must be server-owned.
+// Threat: Callers hijacking worker identity or forging revision sequences.
+// Boundary: WorkerStore CreateWorker.
+func TestWorkerServerOwnedIDs(t *testing.T) {
+	_, ws := openTestStore(t)
+
+	// Explicit worker ID must be rejected
+	_, err := ws.CreateWorker("acct-1", "user-1", CreateWorkerRequest{
+		ID:           "caller_supplied_id",
+		Name:         "Worker With Custom ID",
+		Instructions: "Instructions",
+	}, nil)
+	if err == nil || !strings.Contains(err.Error(), "server-owned") {
+		t.Fatalf("expected server-owned ID rejection, got %v", err)
+	}
+
+	// Create with caller-specified automation ID and revision must have them assigned/reset by server
+	w, err := ws.CreateWorker("acct-1", "user-1", CreateWorkerRequest{
+		Name:         "Worker Server Owned",
+		Instructions: "Instructions",
+		Automations: []WorkerAutomationDefinition{
+			{
+				ID:             "caller_auto_id",
+				Name:           "Auto 1",
+				ActivationMode: "manual",
+				Revision:       99,
+				Enabled:        true,
+				PlanDocument:   testPlanDoc("Plan 1"),
+			},
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("CreateWorker: %v", err)
+	}
+	if !strings.HasPrefix(w.ID, "worker_") {
+		t.Fatalf("expected server-generated worker ID with prefix worker_, got %s", w.ID)
+	}
+	if len(w.Automations) != 1 {
+		t.Fatalf("expected 1 automation, got %d", len(w.Automations))
+	}
+	auto := w.Automations[0]
+	if auto.ID == "caller_auto_id" || !strings.HasPrefix(auto.ID, "wauto_") {
+		t.Fatalf("expected server-owned automation ID, got %s", auto.ID)
+	}
+	if auto.Revision != 1 {
+		t.Fatalf("expected automation revision 1, got %d", auto.Revision)
+	}
+}
+
+// Invariant: Bulk updates must preserve and increment existing automation revisions, and reject stealing IDs from other workers.
+// Threat: Resetting automation revision history or hijacking another worker's automation lookup.
+// Boundary: WorkerStore UpdateWorker.
+func TestWorkerBulkUpdateRevisionProtectionAndCollision(t *testing.T) {
+	_, ws := openTestStore(t)
+
+	// Create Worker A with 2 automations
+	wA, err := ws.CreateWorker("acct-1", "user-1", CreateWorkerRequest{
+		Name:         "Worker A",
+		Instructions: "Instructions A",
+		Automations: []WorkerAutomationDefinition{
+			{Name: "Task 1", ActivationMode: "manual", Enabled: true, PlanDocument: testPlanDoc("Plan 1")},
+			{Name: "Task 2", ActivationMode: "manual", Enabled: true, PlanDocument: testPlanDoc("Plan 2")},
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("CreateWorker A: %v", err)
+	}
+	auto1 := wA.Automations[0]
+	auto2 := wA.Automations[1]
+
+	// Create Worker B with 1 automation
+	wB, err := ws.CreateWorker("acct-1", "user-1", CreateWorkerRequest{
+		Name:         "Worker B",
+		Instructions: "Instructions B",
+		Automations: []WorkerAutomationDefinition{
+			{Name: "Task B", ActivationMode: "manual", Enabled: true, PlanDocument: testPlanDoc("Plan B")},
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("CreateWorker B: %v", err)
+	}
+	autoB := wB.Automations[0]
+
+	// 1. Bulk update Worker A: attempt to reset auto1.Revision to 1
+	auto1Mod := auto1
+	auto1Mod.Revision = 1
+	auto1Mod.Name = "Task 1 Renamed"
+	auto2Mod := auto2
+	auto2Mod.Revision = 1
+
+	updatedA, err := ws.UpdateWorker("acct-1", "user-1", wA.ID, 1, UpdateWorkerRequest{
+		Automations: []WorkerAutomationDefinition{auto1Mod, auto2Mod},
+	}, nil)
+	if err != nil {
+		t.Fatalf("UpdateWorker A: %v", err)
+	}
+	// Revisions must have incremented, not reset
+	if updatedA.Automations[0].Revision != 2 || updatedA.Automations[1].Revision != 2 {
+		t.Fatalf("expected automation revisions to increment to 2, got %d and %d",
+			updatedA.Automations[0].Revision, updatedA.Automations[1].Revision)
+	}
+
+	// 2. Cross-worker automation collision: Worker A tries to claim autoB.ID
+	stolenAuto := WorkerAutomationDefinition{
+		ID:             autoB.ID,
+		Name:           "Stolen Task",
+		ActivationMode: "manual",
+		Enabled:        true,
+		PlanDocument:   testPlanDoc("Stolen Plan"),
+	}
+	_, err = ws.UpdateWorker("acct-1", "user-1", wA.ID, 2, UpdateWorkerRequest{
+		Automations: []WorkerAutomationDefinition{auto1Mod, stolenAuto},
+	}, nil)
+	if err == nil || !errors.Is(err, ErrWorkerConflict) {
+		t.Fatalf("expected ErrWorkerConflict when stealing another worker's automation, got %v", err)
+	}
+
+	// 3. Duplicate automation names in bulk update must be rejected
+	dupNameAuto := auto2Mod
+	dupNameAuto.Name = auto1Mod.Name
+	_, err = ws.UpdateWorker("acct-1", "user-1", wA.ID, 2, UpdateWorkerRequest{
+		Automations: []WorkerAutomationDefinition{auto1Mod, dupNameAuto},
+	}, nil)
+	if err == nil || !strings.Contains(err.Error(), "duplicate automation name") {
+		t.Fatalf("expected duplicate automation name rejection, got %v", err)
+	}
+}
+
+// Invariant: Tombstoned workers cannot be edited, imported into, or deleted again.
+// Threat: Resurrecting deleted workers or corrupting tombstone state.
+// Boundary: WorkerStore UpdateWorker, DeleteWorker, AttachWorkerAutomation, ImportWorkerUpdate.
+func TestWorkerTombstoneImmutability(t *testing.T) {
+	_, ws := openTestStore(t)
+
+	w, err := ws.CreateWorker("acct-1", "user-1", CreateWorkerRequest{
+		Name:         "Ephemeral Worker",
+		Instructions: "Doomed to be deleted",
+	}, nil)
+	if err != nil {
+		t.Fatalf("CreateWorker: %v", err)
+	}
+
+	if err := ws.DeleteWorker("acct-1", "user-1", w.ID, 1); err != nil {
+		t.Fatalf("DeleteWorker: %v", err)
+	}
+
+	// 1. Update rejected
+	newName := "Resurrected"
+	_, err = ws.UpdateWorker("acct-1", "user-1", w.ID, 2, UpdateWorkerRequest{Name: &newName}, nil)
+	if !errors.Is(err, ErrWorkerNotFound) {
+		t.Fatalf("expected ErrWorkerNotFound updating tombstoned worker, got %v", err)
+	}
+
+	// 2. Delete again rejected
+	err = ws.DeleteWorker("acct-1", "user-1", w.ID, 2)
+	if !errors.Is(err, ErrWorkerNotFound) {
+		t.Fatalf("expected ErrWorkerNotFound deleting already-deleted worker, got %v", err)
+	}
+
+	// 3. Attach automation rejected
+	_, err = ws.AttachWorkerAutomation("acct-1", "user-1", w.ID, 2, WorkerAutomationDefinition{
+		Name:           "Postmortem Task",
+		ActivationMode: "manual",
+		Enabled:        true,
+		PlanDocument:   testPlanDoc("Postmortem Plan"),
+	}, nil)
+	if !errors.Is(err, ErrWorkerNotFound) {
+		t.Fatalf("expected ErrWorkerNotFound attaching automation to tombstone, got %v", err)
+	}
+
+	// 4. Import update rejected
+	_, expJSON, _ := ws.ExportWorker("acct-1", w.ID) // should fail because w is deleted
+	if len(expJSON) == 0 {
+		expJSON = []byte(`{"schema_version":1,"name":"Tombstone Update","instructions":"None"}`)
+	}
+	_, err = ws.ImportWorkerUpdate("acct-1", "user-1", w.ID, 2, expJSON, nil)
+	if !errors.Is(err, ErrWorkerNotFound) {
+		t.Fatalf("expected ErrWorkerNotFound importing update into tombstone, got %v", err)
+	}
+}
+
+// Invariant: Migrated legacy objects are read-only until checkpoint 2 stop barrier controls exist.
+// Threat: Desync between legacy execution scheduler and edited worker definition.
+// Boundary: WorkerStore UpdateWorker, DeleteWorker, AttachWorkerAutomation.
+func TestWorkerMigratedLegacyReadOnly(t *testing.T) {
+	_, ws := openTestStore(t)
+
+	// Create worker with legacy migration provenance
+	now := time.Now().UnixMilli()
+	migrated := WorkerRecord{
+		ID:             "worker_migrated_legacy",
+		AccountScopeID: "acct-1",
+		Name:           "Migrated Worker",
+		Instructions:   "Migrated instructions",
+		LifecycleState: WorkerLifecycleStateActive,
+		Revision:       1,
+		Provenance: &WorkerProvenance{
+			SourceWorkerID:  "av2_old_id",
+			SourceSessionID: "sess-legacy",
+			MigratedAt:      now,
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	m := &workerRealtimeMutation{
+		accountScopeID: "acct-1",
+		workerID:       migrated.ID,
+	}
+	_ = m.put(KeyWorker("acct-1", migrated.ID), migrated)
+	if err := ws.store.commitWorkerRealtime(m); err != nil {
+		t.Fatalf("commit legacy worker: %v", err)
+	}
+
+	// 1. UpdateWorker rejected
+	newName := "Edited Name"
+	_, err := ws.UpdateWorker("acct-1", "user-1", migrated.ID, 1, UpdateWorkerRequest{Name: &newName}, nil)
+	if err == nil || !strings.Contains(err.Error(), "migrated legacy workers are rejected") {
+		t.Fatalf("expected migrated legacy mutation rejection, got %v", err)
+	}
+
+	// 2. DeleteWorker rejected
+	err = ws.DeleteWorker("acct-1", "user-1", migrated.ID, 1)
+	if err == nil || !strings.Contains(err.Error(), "migrated legacy workers are rejected") {
+		t.Fatalf("expected migrated legacy deletion rejection, got %v", err)
+	}
+
+	// 3. AttachWorkerAutomation rejected
+	_, err = ws.AttachWorkerAutomation("acct-1", "user-1", migrated.ID, 1, WorkerAutomationDefinition{
+		Name:           "New Auto",
+		ActivationMode: "manual",
+		Enabled:        true,
+		PlanDocument:   testPlanDoc("Plan"),
+	}, nil)
+	if err == nil || !strings.Contains(err.Error(), "migrated legacy workers are rejected") {
+		t.Fatalf("expected migrated legacy attach rejection, got %v", err)
+	}
+}
+
+// Invariant: Non-idle workers and workers with active trigger automations must reject mutations.
+// Threat: Modifying workers during active event handling or execution.
+// Boundary: WorkerStore UpdateWorker, DeleteWorker.
+func TestWorkerNonIdleAndActiveTriggerRejection(t *testing.T) {
+	_, ws := openTestStore(t)
+
+	// 1. Worker with enabled trigger automation
+	wTrigger, err := ws.CreateWorker("acct-1", "user-1", CreateWorkerRequest{
+		Name:         "Trigger Worker",
+		Instructions: "Instructions",
+		Automations: []WorkerAutomationDefinition{
+			{
+				Name:           "Webhook Job",
+				ActivationMode: "external_trigger",
+				Trigger:        &WorkerTriggerConfig{TriggerKind: "webhook"},
+				Enabled:        true,
+				PlanDocument:   testPlanDoc("Webhook Plan"),
+			},
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("CreateWorker trigger: %v", err)
+	}
+
+	// Mutating worker with active trigger automation must be rejected
+	newName := "Renamed"
+	_, err = ws.UpdateWorker("acct-1", "user-1", wTrigger.ID, 1, UpdateWorkerRequest{Name: &newName}, nil)
+	if !errors.Is(err, ErrActiveScheduleUpdateRejected) {
+		t.Fatalf("expected ErrActiveScheduleUpdateRejected on active trigger worker, got %v", err)
+	}
+
+	// 2. Paused/Active worker mutation rejection
+	wIdle, err := ws.CreateWorker("acct-1", "user-1", CreateWorkerRequest{
+		Name:         "Idle To Paused",
+		Instructions: "Instructions",
+	}, nil)
+	if err != nil {
+		t.Fatalf("CreateWorker idle: %v", err)
+	}
+	wIdle.LifecycleState = WorkerLifecycleStatePaused
+	wBytes, _ := json.Marshal(wIdle)
+	_ = ws.store.PutBytes(KeyWorker("acct-1", wIdle.ID), wBytes)
+
+	_, err = ws.UpdateWorker("acct-1", "user-1", wIdle.ID, 1, UpdateWorkerRequest{Name: &newName}, nil)
+	if !errors.Is(err, ErrActiveScheduleUpdateRejected) {
+		t.Fatalf("expected ErrActiveScheduleUpdateRejected on paused worker, got %v", err)
+	}
+
+	// Deleting non-idle worker must be rejected
+	err = ws.DeleteWorker("acct-1", "user-1", wIdle.ID, 1)
+	if err == nil || !strings.Contains(err.Error(), "cannot delete non-idle worker") {
+		t.Fatalf("expected non-idle delete rejection, got %v", err)
+	}
+}
+
+// Invariant: Workers cannot be deleted while they have active runs.
+// Threat: Orphaned running sessions or lost occurrence linkage.
+// Boundary: WorkerStore DeleteWorker.
+func TestWorkerDeleteActiveRunRejection(t *testing.T) {
+	_, ws := openTestStore(t)
+
+	w, err := ws.CreateWorker("acct-1", "user-1", CreateWorkerRequest{
+		Name:         "Active Run Worker",
+		Instructions: "Instructions",
+	}, nil)
+	if err != nil {
+		t.Fatalf("CreateWorker: %v", err)
+	}
+
+	// Record a running run
+	run, err := ws.RecordWorkerRun("acct-1", WorkerRunRecord{
+		WorkerID:       w.ID,
+		WorkerRevision: 1,
+		Status:         "running",
+	})
+	if err != nil {
+		t.Fatalf("RecordWorkerRun: %v", err)
+	}
+
+	// Deleting must fail
+	err = ws.DeleteWorker("acct-1", "user-1", w.ID, 1)
+	if err == nil || !strings.Contains(err.Error(), "cannot delete worker with active runs") {
+		t.Fatalf("expected active run delete rejection, got %v", err)
+	}
+
+	// Complete run
+	run.Status = "succeeded"
+	_, err = ws.RecordWorkerRun("acct-1", run)
+	if err != nil {
+		t.Fatalf("update run to succeeded: %v", err)
+	}
+
+	// Deleting must now succeed
+	err = ws.DeleteWorker("acct-1", "user-1", w.ID, 1)
+	if err != nil {
+		t.Fatalf("DeleteWorker after run completed: %v", err)
+	}
+}
+
+// Invariant: Strict portable schema enforces EOF, valid enums, duplicate checks, nested plan bounds.
+// Threat: Trailing payload injection, invalid capability types, duplicate names, or credentials leak.
+// Boundary: ValidatePortableWorkerDefinition.
+func TestWorkerStrictPortableSchemaValidation(t *testing.T) {
+	// 1. Trailing JSON after top-level object
+	trailingData := `{"schema_version": 1, "name": "Worker", "instructions": "Inst"} {"unexpected": true}`
+	_, err := ValidatePortableWorkerDefinition([]byte(trailingData), nil)
+	if err == nil || !strings.Contains(err.Error(), "unexpected trailing data") {
+		t.Fatalf("expected trailing data error, got %v", err)
+	}
+
+	// 2. Invalid capability type
+	invalidCapType := `{
+		"schema_version": 1,
+		"name": "Worker",
+		"instructions": "Inst",
+		"capabilities": [{"type": "magic", "name": "wand"}]
+	}`
+	_, err = ValidatePortableWorkerDefinition([]byte(invalidCapType), nil)
+	if err == nil || !strings.Contains(err.Error(), "invalid capability type") {
+		t.Fatalf("expected invalid capability type error, got %v", err)
+	}
+
+	// 3. Duplicate capability names
+	dupCaps := `{
+		"schema_version": 1,
+		"name": "Worker",
+		"instructions": "Inst",
+		"capabilities": [
+			{"type": "tool", "name": "bash"},
+			{"type": "tool", "name": "bash"}
+		]
+	}`
+	_, err = ValidatePortableWorkerDefinition([]byte(dupCaps), nil)
+	if err == nil || !strings.Contains(err.Error(), "duplicate capability name") {
+		t.Fatalf("expected duplicate capability name error, got %v", err)
+	}
+
+	// 4. Duplicate workspace roles
+	dupRoles := `{
+		"schema_version": 1,
+		"name": "Worker",
+		"instructions": "Inst",
+		"workspace_requirements": [
+			{"role": "primary", "description": "Repo 1"},
+			{"role": "primary", "description": "Repo 2"}
+		]
+	}`
+	_, err = ValidatePortableWorkerDefinition([]byte(dupRoles), nil)
+	if err == nil || !strings.Contains(err.Error(), "duplicate workspace requirement role") {
+		t.Fatalf("expected duplicate workspace requirement role error, got %v", err)
+	}
+
+	// 5. Duplicate automation names
+	dupAutos := `{
+		"schema_version": 1,
+		"name": "Worker",
+		"instructions": "Inst",
+		"automations": [
+			{"name": "Scan", "activation_mode": "manual", "enabled": true, "plan": {"title": "P1", "status": "pending"}},
+			{"name": "Scan", "activation_mode": "manual", "enabled": true, "plan": {"title": "P2", "status": "pending"}}
+		]
+	}`
+	_, err = ValidatePortableWorkerDefinition([]byte(dupAutos), nil)
+	if err == nil || !strings.Contains(err.Error(), "duplicate automation name") {
+		t.Fatalf("expected duplicate automation name error, got %v", err)
+	}
+
+	// 6. Plan containing nested AutomationV2 or WorkerV2 settings
+	nestedSettings := `{
+		"schema_version": 1,
+		"name": "Worker",
+		"instructions": "Inst",
+		"automations": [
+			{
+				"name": "Scan",
+				"activation_mode": "manual",
+				"enabled": true,
+				"plan": {
+					"title": "Nested Settings Plan",
+					"status": "pending",
+					"automation_v2": {"schema_version": 2}
+				}
+			}
+		]
+	}`
+	_, err = ValidatePortableWorkerDefinition([]byte(nestedSettings), nil)
+	if err == nil || !strings.Contains(err.Error(), "nested AutomationV2 or WorkerV2") {
+		t.Fatalf("expected nested settings error, got %v", err)
+	}
+
+	// 7. Plan containing task program with absolute host path
+	hostPathPlan := `{
+		"schema_version": 1,
+		"name": "Worker",
+		"instructions": "Inst",
+		"automations": [
+			{
+				"name": "Scan",
+				"activation_mode": "manual",
+				"enabled": true,
+				"plan": {
+					"title": "Host Path Plan",
+					"status": "pending",
+					"checkpoints": [
+						{
+							"id": "cp-1",
+							"title": "Check",
+							"status": "pending",
+							"task_program": {
+								"id": "prog-1",
+								"stages": [{"id": "s1"}],
+								"jobs": [{"id": "j1", "stage_id": "s1", "agent_type": "coder", "owned_scope": ["/etc/hosts"]}]
+							}
+						}
+					]
+				}
+			}
+		]
+	}`
+	_, err = ValidatePortableWorkerDefinition([]byte(hostPathPlan), nil)
+	if err == nil || !strings.Contains(err.Error(), "absolute host paths") {
+		t.Fatalf("expected host path rejection, got %v", err)
+	}
+
+	// 8. Weak/invalid cron expression (out of bounds)
+	badCron := `{
+		"schema_version": 1,
+		"name": "Worker",
+		"instructions": "Inst",
+		"automations": [
+			{
+				"name": "Bad Cron",
+				"activation_mode": "cron",
+				"schedule": {"kind": "cron", "cron": "99 * * * *", "timezone": "UTC"},
+				"enabled": true,
+				"plan": {"title": "P", "status": "pending"}
+			}
+		]
+	}`
+	_, err = ValidatePortableWorkerDefinition([]byte(badCron), nil)
+	if err == nil || !strings.Contains(err.Error(), "outside bounds") {
+		t.Fatalf("expected cron bounds error, got %v", err)
+	}
+}
+
+// Invariant: Local bindings must be rejected on create and update until approved activation.
+// Threat: Callers injecting unauthorized workspace paths or bindings.
+// Boundary: WorkerStore CreateWorker, UpdateWorker.
+func TestWorkerLocalBindingsRejected(t *testing.T) {
+	_, ws := openTestStore(t)
+
+	// Create with local bindings rejected
+	_, err := ws.CreateWorker("acct-1", "user-1", CreateWorkerRequest{
+		Name:          "Worker Bindings",
+		Instructions:  "Instructions",
+		LocalBindings: map[string]string{"primary": "/unauthorized/path"},
+	}, nil)
+	if err == nil || !strings.Contains(err.Error(), "local bindings cannot be specified") {
+		t.Fatalf("expected local bindings rejection on create, got %v", err)
+	}
+
+	// Create valid idle worker
+	w, err := ws.CreateWorker("acct-1", "user-1", CreateWorkerRequest{
+		Name:         "Worker Valid",
+		Instructions: "Instructions",
+	}, nil)
+	if err != nil {
+		t.Fatalf("CreateWorker: %v", err)
+	}
+
+	// Update with local bindings rejected
+	_, err = ws.UpdateWorker("acct-1", "user-1", w.ID, 1, UpdateWorkerRequest{
+		LocalBindings: map[string]string{"primary": "/unauthorized/path"},
+	}, nil)
+	if err == nil || !strings.Contains(err.Error(), "local bindings cannot be specified") {
+		t.Fatalf("expected local bindings rejection on update, got %v", err)
+	}
+}
+
+// Invariant: Idempotent CreateWorker and ImportWorkerAsNew must bind payload digest and replay exact receipt.
+// Threat: Mismatched payload accepted under same idempotency key or edited worker returned on replay.
+// Boundary: WorkerStore CreateWorker, ImportWorkerAsNew.
+func TestWorkerIdempotency(t *testing.T) {
+	_, ws := openTestStore(t)
+
+	req := CreateWorkerRequest{
+		Name:           "Idempotent Worker",
+		Instructions:   "Idempotent instructions",
+		IdempotencyKey: "idemp-key-123",
+	}
+
+	// 1. Initial create
+	w1, err := ws.CreateWorker("acct-1", "user-1", req, nil)
+	if err != nil {
+		t.Fatalf("CreateWorker initial: %v", err)
+	}
+
+	// 2. Modify worker to revision 2
+	newName := "Idempotent Worker Edited"
+	_, err = ws.UpdateWorker("acct-1", "user-1", w1.ID, 1, UpdateWorkerRequest{Name: &newName}, nil)
+	if err != nil {
+		t.Fatalf("UpdateWorker: %v", err)
+	}
+
+	// 3. Replay CreateWorker with same key and payload -> must return exact original receipt (revision 1)
+	replayed, err := ws.CreateWorker("acct-1", "user-1", req, nil)
+	if err != nil {
+		t.Fatalf("CreateWorker replay: %v", err)
+	}
+	if replayed.ID != w1.ID || replayed.Revision != 1 || replayed.Name != "Idempotent Worker" {
+		t.Fatalf("expected exact original receipt at revision 1, got %+v", replayed)
+	}
+
+	// 4. Replay with same key but different payload -> conflict
+	differentReq := req
+	differentReq.Name = "Different Worker Name"
+	_, err = ws.CreateWorker("acct-1", "user-1", differentReq, nil)
+	if err == nil || !errors.Is(err, ErrWorkerConflict) {
+		t.Fatalf("expected ErrWorkerConflict on different payload with same idempotency key, got %v", err)
+	}
+
+	// 5. ImportWorkerAsNew idempotency
+	rawDef := []byte(`{"schema_version":1,"name":"Imported Idemp","instructions":"Inst"}`)
+	imp1, err := ws.ImportWorkerAsNew("acct-1", "user-1", rawDef, nil, "import-idemp-1")
+	if err != nil {
+		t.Fatalf("ImportWorkerAsNew 1: %v", err)
+	}
+	impReplay, err := ws.ImportWorkerAsNew("acct-1", "user-1", rawDef, nil, "import-idemp-1")
+	if err != nil {
+		t.Fatalf("ImportWorkerAsNew replay: %v", err)
+	}
+	if impReplay.ID != imp1.ID {
+		t.Fatalf("expected same worker ID on import replay, got %s vs %s", impReplay.ID, imp1.ID)
+	}
+
+	diffDef := []byte(`{"schema_version":1,"name":"Different Def","instructions":"Inst"}`)
+	_, err = ws.ImportWorkerAsNew("acct-1", "user-1", diffDef, nil, "import-idemp-1")
+	if err == nil || !errors.Is(err, ErrWorkerConflict) {
+		t.Fatalf("expected ErrWorkerConflict on different import payload, got %v", err)
+	}
+}
+
+// Invariant: Pagination across history and runs must not skip unread records, must bound scans, and return empty arrays not null.
+// Threat: Missing history entries during pagination, unbounded iteration loops, or JSON null serialization.
+// Boundary: WorkerStore ListWorkerRevisions, ListWorkerRuns, ListWorkers.
+func TestWorkerPaginationNoSkipAndBounded(t *testing.T) {
+	_, ws := openTestStore(t)
+
+	w, err := ws.CreateWorker("acct-1", "user-1", CreateWorkerRequest{
+		Name:         "Paging Worker",
+		Instructions: "Instructions",
+	}, nil)
+	if err != nil {
+		t.Fatalf("CreateWorker: %v", err)
+	}
+
+	// Create 4 updates to generate revisions 1, 2, 3, 4, 5
+	for rev := uint64(1); rev <= 4; rev++ {
+		name := fmt.Sprintf("Paging Worker Rev %d", rev+1)
+		_, err := ws.UpdateWorker("acct-1", "user-1", w.ID, rev, UpdateWorkerRequest{Name: &name}, nil)
+		if err != nil {
+			t.Fatalf("UpdateWorker rev %d: %v", rev, err)
+		}
+	}
+
+	// Page through revisions with limit = 2
+	var allRevs []uint64
+	cursor := ""
+	for {
+		page, next, err := ws.ListWorkerRevisions("acct-1", w.ID, 2, cursor)
+		if err != nil {
+			t.Fatalf("ListWorkerRevisions: %v", err)
+		}
+		for _, r := range page {
+			allRevs = append(allRevs, r.Revision)
+		}
+		if next == "" {
+			break
+		}
+		cursor = next
+	}
+
+	if len(allRevs) != 5 {
+		t.Fatalf("expected 5 revisions across pages without skipping, got %d: %v", len(allRevs), allRevs)
+	}
+	for i, expected := range []uint64{1, 2, 3, 4, 5} {
+		if allRevs[i] != expected {
+			t.Fatalf("revision index %d mismatch: got %d, want %d", i, allRevs[i], expected)
+		}
+	}
+
+	// Verify runs pagination does not skip
+	for i := 1; i <= 5; i++ {
+		_, err := ws.RecordWorkerRun("acct-1", WorkerRunRecord{
+			ID:             fmt.Sprintf("run_%03d", i),
+			WorkerID:       w.ID,
+			WorkerRevision: 5,
+			Status:         "succeeded",
+		})
+		if err != nil {
+			t.Fatalf("RecordWorkerRun %d: %v", i, err)
+		}
+	}
+
+	var allRunIDs []string
+	runCursor := ""
+	for {
+		runs, next, err := ws.ListWorkerRuns("acct-1", w.ID, 2, runCursor)
+		if err != nil {
+			t.Fatalf("ListWorkerRuns: %v", err)
+		}
+		for _, r := range runs {
+			allRunIDs = append(allRunIDs, r.ID)
+		}
+		if next == "" {
+			break
+		}
+		runCursor = next
+	}
+	if len(allRunIDs) != 5 {
+		t.Fatalf("expected 5 runs without skipping, got %d: %v", len(allRunIDs), allRunIDs)
+	}
+
+	// Verify ListWorkers bounds count and returns empty array on empty account
+	emptyRes, err := ws.ListWorkers("acct-empty", ListWorkersQuery{})
+	if err != nil {
+		t.Fatalf("ListWorkers empty: %v", err)
+	}
+	if emptyRes.Workers == nil || len(emptyRes.Workers) != 0 {
+		t.Fatalf("expected non-nil empty slice, got %+v", emptyRes.Workers)
+	}
+}
+
+// Invariant: RecordWorkerRun must validate pinned revisions, prevent revision rewriting, and enforce occurrence exclusivity.
+// Threat: Overwriting historical run records to claim different revisions or occurrences.
+// Boundary: WorkerStore RecordWorkerRun.
+func TestWorkerRecordRunValidation(t *testing.T) {
+	_, ws := openTestStore(t)
+
+	w, err := ws.CreateWorker("acct-1", "user-1", CreateWorkerRequest{
+		Name:         "Run Validation Worker",
+		Instructions: "Instructions",
+		Automations: []WorkerAutomationDefinition{
+			{Name: "Job 1", ActivationMode: "manual", Enabled: true, PlanDocument: testPlanDoc("Plan 1")},
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("CreateWorker: %v", err)
+	}
+	autoID := w.Automations[0].ID
+
+	// 1. WorkerRevision exceeding worker revision must conflict
+	_, err = ws.RecordWorkerRun("acct-1", WorkerRunRecord{
+		WorkerID:       w.ID,
+		WorkerRevision: 99,
+	})
+	if err == nil || !errors.Is(err, ErrWorkerConflict) {
+		t.Fatalf("expected ErrWorkerConflict for invalid WorkerRevision, got %v", err)
+	}
+
+	// 2. AutomationID not found on worker must fail
+	_, err = ws.RecordWorkerRun("acct-1", WorkerRunRecord{
+		WorkerID:     w.ID,
+		AutomationID: "unknown_automation",
+	})
+	if err == nil || !strings.Contains(err.Error(), "not found on worker") {
+		t.Fatalf("expected unknown automation error, got %v", err)
+	}
+
+	// 3. Record valid run with occurrence
+	run1, err := ws.RecordWorkerRun("acct-1", WorkerRunRecord{
+		ID:                 "run_001",
+		WorkerID:           w.ID,
+		WorkerRevision:     1,
+		AutomationID:       autoID,
+		AutomationRevision: 1,
+		OccurrenceID:       "occ_unique_1",
+		RequestSource:      "manual",
+		Status:             "running",
+	})
+	if err != nil {
+		t.Fatalf("RecordWorkerRun 1: %v", err)
+	}
+
+	// 4. Occurrence collision: another run trying to link same occurrence
+	_, err = ws.RecordWorkerRun("acct-1", WorkerRunRecord{
+		ID:           "run_002",
+		WorkerID:     w.ID,
+		OccurrenceID: "occ_unique_1",
+		Status:       "running",
+	})
+	if err == nil || !errors.Is(err, ErrWorkerConflict) {
+		t.Fatalf("expected ErrWorkerConflict on occurrence collision, got %v", err)
+	}
+
+	// 5. Blind rewrite of existing run with different pinned revision must be rejected
+	runRewrite := run1
+	runRewrite.WorkerRevision = 2
+	_, err = ws.RecordWorkerRun("acct-1", runRewrite)
+	if err == nil || !errors.Is(err, ErrWorkerConflict) {
+		t.Fatalf("expected ErrWorkerConflict rewriting pinned worker revision, got %v", err)
+	}
+}
+
+// Invariant: Migration maps zero-checkpoint specialists to workers without fake automations, preserves WorkerV2 schedule, and retains multi-workspace bindings.
+// Threat: Synthesizing fake automations, dropping secondary workspaces, or losing WorkerV2 schedules during migration.
+// Boundary: WorkerStore MigrateLegacyAutomationsV2.
+func TestLegacyMigrationSpecialistAndMultiWorkspace(t *testing.T) {
+	s, ws := openTestStore(t)
+
+	// 1. Zero-checkpoint specialist record
+	specialistDoc := SessionPlanDocument{
+		Title: "Specialist Agent",
+		Info: SessionPlanInfo{
+			Goal:    "Direct instruction responder",
+			Context: "Specialist system instructions",
+		},
+		Checkpoints: nil, // Zero checkpoints!
+	}
+	recSpecialist := AutomationV2Record{
+		AutomationID: "av2_specialist_01",
+		AcceptedBy:   "user-1",
+		AcceptedAt:   time.Now().UnixMilli() - 5000,
+		Enabled:      true,
+		Generation:   1,
+		AutomationV2Proposal: AutomationV2Proposal{
+			AutomationV2Review: AutomationV2Review{ProposalID: "prop-spec", Revision: 1, Digest: "dig-spec"},
+			AccountID:          "acct-spec",
+			UserID:             "user-1",
+			WorkspaceID:        "ws-primary",
+			WorkspaceIDs:       []string{"ws-primary", "ws-extra-1", "ws-extra-2"},
+			SessionID:          "sess-spec",
+			Document:           specialistDoc,
+			CreatedAt:          time.Now().UnixMilli() - 10000,
+		},
+	}
+
+	// 2. Record using WorkerV2 schedule field
+	workerV2Doc := testPlanDoc("WorkerV2 Plan")
+	workerV2Doc.WorkerV2 = &AutomationV2Settings{
+		Schedule: AutomationV2Schedule{
+			Kind:            "interval",
+			IntervalSeconds: 600,
+		},
+	}
+	recWorkerV2 := AutomationV2Record{
+		AutomationID: "av2_workerv2_02",
+		AcceptedBy:   "user-1",
+		AcceptedAt:   time.Now().UnixMilli() - 2000,
+		Enabled:      true,
+		Generation:   1,
+		AutomationV2Proposal: AutomationV2Proposal{
+			AutomationV2Review: AutomationV2Review{ProposalID: "prop-wv2", Revision: 1, Digest: "dig-wv2"},
+			AccountID:          "acct-spec",
+			UserID:             "user-1",
+			WorkspaceID:        "ws-primary",
+			SessionID:          "sess-wv2",
+			Document:           workerV2Doc,
+			CreatedAt:          time.Now().UnixMilli() - 5000,
+		},
+	}
+
+	bSpec, _ := json.Marshal(recSpecialist)
+	bWV2, _ := json.Marshal(recWorkerV2)
+	_ = s.PutBytes(automationV2Key("accepted", "acct-spec", recSpecialist.AutomationID), bSpec)
+	_ = s.PutBytes(automationV2Key("accepted", "acct-spec", recWorkerV2.AutomationID), bWV2)
+
+	summary, err := ws.MigrateLegacyAutomationsV2("acct-spec")
+	if err != nil {
+		t.Fatalf("MigrateLegacyAutomationsV2: %v", err)
+	}
+	if summary.MigratedCount != 2 || summary.FailedCount != 0 {
+		t.Fatalf("expected 2 migrated, got %+v", summary)
+	}
+
+	// Verify specialist worker has 0 automations (no fake executable automation)
+	wSpec, ok, err := ws.GetWorker("acct-spec", recSpecialist.AutomationID)
+	if err != nil || !ok {
+		t.Fatalf("GetWorker specialist: ok=%v, err=%v", ok, err)
+	}
+	if len(wSpec.Automations) != 0 {
+		t.Fatalf("expected 0 automations for zero-checkpoint specialist, got %d", len(wSpec.Automations))
+	}
+	if wSpec.Instructions != "Specialist system instructions" {
+		t.Fatalf("unexpected instructions: %q", wSpec.Instructions)
+	}
+	// Verify multi-workspace bindings preserved
+	if len(wSpec.LocalBindings) != 3 {
+		t.Fatalf("expected 3 workspace bindings preserved, got %+v", wSpec.LocalBindings)
+	}
+	if wSpec.LocalBindings["primary"] != "ws-primary" {
+		t.Fatalf("expected primary binding, got %+v", wSpec.LocalBindings)
+	}
+
+	// Verify WorkerV2 schedule was recognized
+	wWV2, ok, err := ws.GetWorker("acct-spec", recWorkerV2.AutomationID)
+	if err != nil || !ok {
+		t.Fatalf("GetWorker workerV2: ok=%v, err=%v", ok, err)
+	}
+	if len(wWV2.Automations) != 1 {
+		t.Fatalf("expected 1 automation for workerV2, got %d", len(wWV2.Automations))
+	}
+	if wWV2.Automations[0].ActivationMode != "interval" || wWV2.Automations[0].Schedule.IntervalSeconds != 600 {
+		t.Fatalf("expected interval 600 schedule recognized from WorkerV2, got %+v", wWV2.Automations[0].Schedule)
+	}
+}
+
+// Invariant: Realtime publisher callback is called only after workersMu is unlocked.
+// Threat: Deadlocks in callbacks that attempt domain lookups or reentrant store operations.
+// Boundary: Store SetWorkerPublisher, commitWorkerRealtime.
+func TestWorkerPublisherUnlocked(t *testing.T) {
+	_, ws := openTestStore(t)
+
+	wakes := 0
+	ws.store.SetWorkerPublisher(func(record V3RealtimeOutboxRecord) {
+		wakes++
+		// If workersMu was locked, TryLock would return false
+		if !ws.store.workersMu.TryLock() {
+			t.Fatal("workerPublisher called while workersMu is still locked!")
+		}
+		ws.store.workersMu.Unlock()
+	})
+
+	_, err := ws.CreateWorker("acct-wake", "user-1", CreateWorkerRequest{
+		Name:         "Wake Worker",
+		Instructions: "Instructions",
+	}, nil)
+	if err != nil {
+		t.Fatalf("CreateWorker: %v", err)
+	}
+	if wakes != 1 {
+		t.Fatalf("expected 1 wake, got %d", wakes)
 	}
 }
