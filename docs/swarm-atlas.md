@@ -3420,3 +3420,7 @@ Daemon compilation and Desktop TypeScript checking passed during integration. Fo
 ### 2026-09-28 — Task-card lifecycle validation corrections
 
 Reviewed `hydrateProjectTaskPlanDocument` alongside API hydration: store reads now honor the bound session and never invent a binding from an unrelated active plan. Corrected test fixture APIs, current-session counts, blocked/queued/unknown chips, and video preview rendering. Canonical project runtime reconnect/coalescing remains unchanged; cards consume its refreshed tasks and V3 session cache. No approval-to-execution or model-setting changes. Focused frontend lifecycle/view/plan-authority/runtime checks passed (26); TypeScript and API reconciliation/hydration checks passed. Adjacent delegation/media source-contract failures reproduce on the unchanged baseline. Actual browser rendering, provider-backed transitions and GCP reconnect proof remain unverified; deterministic checks do not close that gap.
+
+### 2026-09-28 — Direct-session terminal badge correction
+
+Provider-backed browser inspection found that a completed direct session can hydrate without lifecycle or active-intent fields. `aggregateTaskLiveState` now uses the authoritative terminal task state only for its sole direct session when no stronger session evidence exists. It never spreads an aggregate result across a delegated cohort or overrides an active session. All 13 focused lifecycle assertions pass; full browser proof remains pending the corrected candidate rerun.

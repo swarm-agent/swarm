@@ -947,6 +947,15 @@ export function aggregateTaskLiveState(
       }
     }
 
+    // Completed direct sessions may no longer have an active intent or lifecycle
+    // projection. Only a one-session task can safely supply its terminal state;
+    // never spread a parent's aggregate result across a delegated cohort.
+    if (itemStatus === 'unknown' && !hasTaskProgram && associatedSids.length === 1 && sid === primarySessionId) {
+      if (task.status === 'needs_review' || task.status === 'completed' || task.status === 'failed' || task.status === 'blocked') {
+        itemStatus = task.status
+      }
+    }
+
     const jobDef = task.taskProgram?.jobs?.find((j: any) => j.id === matchingJob?.job_id)
 
     return {

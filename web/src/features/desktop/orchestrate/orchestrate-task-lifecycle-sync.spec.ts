@@ -645,3 +645,18 @@ test('Missing, queued and blocked sessions remain distinguishable without invent
   assert.equal(blocked.sessionSummary?.sessionStates[0].status, 'blocked')
   assert.equal(blocked.sessionSummary?.completedSessions, 0)
 })
+
+// A real direct-session hydration can omit both lifecycle and active intent after
+// completion. aggregateTaskLiveState must preserve its authoritative task result,
+// but must not project one aggregate result onto multiple unknown sessions.
+test('direct terminal task supplies missing badge state without masking active or cohort evidence', () => {
+  for (const status of ['needs_review', 'failed', 'completed', 'blocked'] as const) {
+    const task = { id: 'direct', status, sessionId: 'one' } as RunningTask
+    const result = aggregateTaskLiveState(task, { one: { sessionRecord: { kind: 'full', session: { id: 'one' } } } as any })
+    assert.equal(result.sessionSummary?.sessionStates[0].status, status)
+    const active = aggregateTaskLiveState(task, { one: { intent: { status: 'running' } } as any })
+    assert.equal(active.sessionSummary?.sessionStates[0].status, 'running')
+  }
+  const cohort = aggregateTaskLiveState({ id: 'cohort', status: 'needs_review', sessionId: 'parent', taskProgramStatus: { jobs: [{ job_id: 'a', child_session_id: 'child' }] } } as any, {})
+  assert.notEqual(cohort.sessionSummary?.sessionStates[0].status, 'needs_review')
+})
