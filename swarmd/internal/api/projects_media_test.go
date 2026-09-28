@@ -1040,9 +1040,9 @@ func TestDirectMediaTask_DeployProjectTaskExecution_MultiVideoDeliverables(t *te
 	}
 }
 
-func TestDirectVideoExecution_Preflight_RejectsMultipartStory(t *testing.T) {
-	// Requirement: Direct video execution must reject unsupported multipart stories and multi-scene sequences up front.
-	// Threat/regression: Direct video engine attempting to compile multi-scene sequences which it cannot assemble.
+func TestDirectVideoExecution_Preflight_RejectsMalformedStory(t *testing.T) {
+	// Requirement: Direct video execution must reject malformed scene lists up front.
+	// Threat/regression: Empty scene prompts consuming provider calls.
 	// Boundary/authority: validateProjectMediaTaskSettings and deployProjectTaskExecution in projects.go / projects_media.go.
 	// Test layer: API unit test checking rejection before video provider invocation.
 
@@ -1057,8 +1057,8 @@ func TestDirectVideoExecution_Preflight_RejectsMultipartStory(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error on multipart video story")
 	}
-	if !strings.Contains(err.Error(), "multipart video stories are not supported") {
-		t.Fatalf("expected error mentioning multipart unsupported, got: %v", err)
+	if !strings.Contains(err.Error(), "scene 1 requires a prompt") {
+		t.Fatalf("expected missing scene prompt error, got: %v", err)
 	}
 
 	deployErr := server.deployProjectTaskExecution(p, &pebblestore.ProjectRecord{ID: "proj-1", AccountID: p.AccountScopeID}, &task, "in_progress", "prompt")
@@ -1318,8 +1318,8 @@ func TestProjectTask_DirectVideo_FullPromptPreserved_NotTruncated(t *testing.T) 
 	}
 }
 
-func TestProjectTask_DirectVideo_API_RejectsMultipartAndNonImages(t *testing.T) {
-	// Requirement: POST /v3/projects/{id}/tasks must reject multipart video stories,
+func TestProjectTask_DirectVideo_API_RejectsIncompleteStoryAndNonImages(t *testing.T) {
+	// Requirement: POST /v3/projects/{id}/tasks must reject stories without explicit scenes,
 	// non-image attachments, and more than 1 attachment before Router spend or persistence.
 	// Threat/regression: Invalid video requests consuming Router tokens or persisting invalid task state.
 	// Boundary/authority: Server.handleProjects in projects.go.
@@ -1348,9 +1348,9 @@ func TestProjectTask_DirectVideo_API_RejectsMultipartAndNonImages(t *testing.T) 
 		return w
 	}
 
-	// 1. Multipart video story rejected
+	// 1. Multipart video story without explicit scenes rejected
 	w1 := call(`{"intent":"video","video_type":"multipart","prompt":"story","scenes_count":3}`)
-	if w1.Code != http.StatusBadRequest || !strings.Contains(w1.Body.String(), "multipart video stories are not supported") {
+	if w1.Code != http.StatusBadRequest || !strings.Contains(w1.Body.String(), "require 2..8 explicit scenes") {
 		t.Fatalf("expected 400 for multipart video, got %d: %s", w1.Code, w1.Body.String())
 	}
 

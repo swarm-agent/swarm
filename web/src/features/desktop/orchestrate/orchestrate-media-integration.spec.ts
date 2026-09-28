@@ -196,18 +196,18 @@ test('OrchestrateView implements compact 5-tab layout (Feature, Image, Video, So
 test('OrchestrateView supports single video clips with independent 1-8 clip count and verified duration/aspect controls', () => {
   // Invariant: Video tab generates direct single video shots with native audio synthesis from 1 prompt,
   // supporting 1..8 independent clip counts and exact model generation options (aspect ratio, resolution, duration).
-  // False multipart timeline and soundtrack controls are removed from this project flow (Video Studio is separate).
+  // Source wiring only: explicit scenes assemble separately from Video Studio timeline/audio editing.
   const sourcePath = path.join(__dirname, 'OrchestrateView.tsx')
   const source = fs.readFileSync(sourcePath, 'utf8')
 
   assert.ok(source.includes('Single Video Shot (1 Prompt · Direct Model Execution)'), 'Must describe direct single video shot mode')
-  assert.ok(source.includes('Multi-part timelines and audio mixing are handled in Video Studio'), 'Must clarify Video Studio separation')
+  assert.ok(source.includes('Timeline editing and audio mixing are handled in Video Studio'), 'Must clarify Video Studio separation')
   assert.ok(source.includes('Clip Count (1..8)'), 'Must provide independent clip count 1..8 selector')
   assert.ok(source.includes('videoClipCount'), 'Must manage independent videoClipCount state')
   assert.ok(source.includes('supportedVideoDurations'), 'Must enforce model-supported durations')
   assert.ok(source.includes('supportedVideoResolutions'), 'Must enforce model-supported resolutions')
   assert.ok(source.includes('supportedVideoAspectRatios'), 'Must enforce model-supported aspect ratios')
-  assert.ok(!source.includes("setVideoType('multipart')"), 'Must eliminate multipart video mode from project modal')
+  assert.ok(source.includes('video-scene-prompts'), 'Must expose explicit scene prompts for bounded multipart assembly')
   assert.ok(!source.includes('Add Dedicated Soundtrack Clip'), 'Must eliminate soundtrack clip controls from project modal')
 })
 
@@ -226,7 +226,7 @@ test('OrchestrateView provides video resolution selection with model-supported t
 })
 
 test('OrchestrateView restricts video reference inputs to supported images and preserves prompt text', () => {
-  // Invariant: Video reference inputs must strictly be supported image formats (.png, .jpg, .webp),
+  // Invariant: Video reference inputs must strictly be supported image formats (.png, .jpg, .jpeg),
   // accepting at most 1 starting image. Text and documents stay directly in the prompt input without truncation.
   const sourcePath = path.join(__dirname, 'OrchestrateView.tsx')
   const source = fs.readFileSync(sourcePath, 'utf8')
@@ -234,7 +234,7 @@ test('OrchestrateView restricts video reference inputs to supported images and p
   assert.ok(source.includes('validateVideoAttachment'), 'Must validate video attachments with validateVideoAttachment')
   assert.ok(source.includes('Text stays in prompt for video task flow'), 'Must keep text/doc content in prompt input')
   assert.ok(source.includes('videoAttachmentError'), 'Must track and surface video attachment errors')
-  assert.ok(source.includes('SUPPORTED_VIDEO_IMAGE_EXTENSIONS'), 'Must enforce supported video image extensions')
+  assert.ok(source.includes("'image/png,image/jpeg,.png,.jpg,.jpeg'"), 'Must enforce supported video image extensions')
   assert.ok(source.includes('Optional Starting Frame (1 Image)'), 'Must guide user that at most 1 image reference is supported')
 })
 
@@ -266,7 +266,7 @@ test('OrchestrateView provides AI Prompt Enhancement toggle and Single Video Sho
   assert.ok(source.includes('Enhance prompt with AI'), 'Must render Enhance prompt with AI toggle')
   assert.ok(source.includes('Direct to Video Model (No router rewrite)'), 'Must describe direct mode when toggle is unchecked')
   assert.ok(source.includes('Uses Router to polish prompt'), 'Must describe router enhancement when toggle is checked')
-  assert.ok(source.includes('video_type: taskIntent === \'video\' ? videoType : undefined'), 'Must pass video_type in task payload')
+  assert.ok(source.includes("video_type: taskIntent === 'video' ? (scenePrompts.length ? 'multipart' : 'single') : undefined"), 'Must pass video_type in task payload')
   assert.ok(source.includes('enhance_prompt: taskIntent === \'video\' ? enhanceVideoPrompt : undefined'), 'Must pass enhance_prompt in task payload')
 
   // 2. Single Video Shot Spec
@@ -294,7 +294,7 @@ test('OrchestrateView enables natural task model override and in-menu option to 
   assert.ok(source.includes('defaultImageModel'), 'Must manage defaultImageModel state')
   assert.ok(source.includes('defaultVideoModel'), 'Must manage defaultVideoModel state')
   assert.ok(source.includes('catalogRes?.default_image_model'), 'Must resolve default image model from catalog')
-  assert.ok(source.includes('catalogRes?.default_video_model'), 'Must resolve default video model from catalog')
+  assert.ok(source.includes('const defaultVideoModel = videoDefaults.defaultModel'), 'Must resolve default video model from catalog')
 
   // 2. Clear Default tagging in dropdowns
   assert.ok(source.includes("opt.id === defaultImageModel ? ' (Default)' : ''"), 'Must label default image model in dropdown')
@@ -502,7 +502,7 @@ test('OrchestrateView UI renders dynamic cost cues on resolution, variant, and c
   assert.ok(source.includes('${imagePricingInfo.totalPrice.toFixed(2)} Total'), 'Banner badge must display dynamic total')
 
   // 4. Video Resolution buttons display duration-scaled cost
-  assert.ok(source.includes('${videoDuration}s at $${unitRate.toFixed(2)}/s'), 'Video resolution button must display duration and rate')
+  assert.ok(source.includes('resolveVideoPricing(selectedVideoOption, res, estimateDuration, videoClipCount)'), 'Video resolution button must display duration and rate')
 
   // 5. Video Clip Count buttons display calculated dynamic cost
   assert.ok(source.includes('const costForC = videoPricingInfo.rateForClip !== undefined'), 'Clip count buttons must calculate cost dynamically')

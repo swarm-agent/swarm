@@ -86,10 +86,15 @@ func (s *Service) generateGoogleOmni(
 	}
 
 	if operation == pebblestore.VideoOperationEdit || operation == pebblestore.VideoOperationExtend {
-		reqBody.GenerationConfig = &omniGenerationConfig{
-			VideoConfig: &omniVideoConfig{
-				Task: operation,
-			},
+		// Iterations retain the source geometry. Google rejects aspect_ratio
+		// for edits, including when a catalog default supplied it upstream.
+		reqBody.ResponseFormat.AspectRatio = ""
+		// Stateful conversations infer the task from the follow-up prompt;
+		// Google forbids a task alongside previous_interaction_id.
+		if source == nil || strings.TrimSpace(source.InteractionID) == "" {
+			reqBody.GenerationConfig = &omniGenerationConfig{
+				VideoConfig: &omniVideoConfig{Task: operation},
+			}
 		}
 	}
 

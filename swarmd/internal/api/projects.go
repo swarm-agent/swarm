@@ -526,7 +526,9 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 				task.WhatDidDo = []string{"Approved mission", "Generating media assets"}
 			} else if task.Agent == "video" {
 				if task.OutcomeType == "video_story" || len(task.Scenes) > 1 {
-					return errors.New("multipart video stories are not supported; video generation supports single video clips")
+					if err := validateVideoScenes(task.Scenes, task.Operation, task.VariantCount, task.Soundtrack); err != nil {
+						return err
+					}
 				}
 				videoModel := strings.TrimSpace(task.Model)
 				if videoModel == "" && s.uiSettings != nil && strings.TrimSpace(p.AccountScopeID) != "" {
@@ -1626,7 +1628,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				VariantCount        int                                  `json:"variant_count,omitempty"`
 				DeliverableCount    int                                  `json:"deliverable_count,omitempty"`
 				ScenesCount         int                                  `json:"scenes_count,omitempty"`
-				Scenes              []json.RawMessage                    `json:"scenes,omitempty"`
+				Scenes              []pebblestore.ProjectTaskScene       `json:"scenes,omitempty"`
 				Soundtrack          string                               `json:"soundtrack,omitempty"`
 				DurationSeconds     int                                  `json:"duration_seconds,omitempty"`
 				AutoApprove         bool                                 `json:"auto_approve,omitempty"`
@@ -1677,8 +1679,14 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 				if req.VideoType == "multipart" || req.VideoType == "story" || req.ScenesCount > 1 || req.OutcomeType == "video_story" || len(req.Scenes) > 0 {
-					writeError(w, http.StatusBadRequest, errors.New("multipart video stories are not supported; video generation supports single video clips"))
-					return
+					if err := validateVideoScenes(req.Scenes, reqOp, max(req.VariantCount, req.DeliverableCount), req.Soundtrack); err != nil {
+						writeError(w, http.StatusBadRequest, err)
+						return
+					}
+					if req.ScenesCount > 0 && req.ScenesCount != len(req.Scenes) {
+						writeError(w, http.StatusBadRequest, errors.New("scene count does not match explicit scenes"))
+						return
+					}
 				}
 				if req.VariantCount < 0 {
 					writeError(w, http.StatusBadRequest, errors.New("video variant count cannot be negative"))
@@ -2174,7 +2182,10 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				task.VariantCount = vidClipCount
 				task.Deliverables = routed.Deliverables
 				task.AccountID = p.AccountScopeID
-				task.Scenes = nil
+				task.Scenes = append([]pebblestore.ProjectTaskScene(nil), req.Scenes...)
+				if len(task.Scenes) > 1 {
+					task.OutcomeType = "video_story"
+				}
 				task.Soundtrack = ""
 				task.WorktreeBranch = ""
 				task.BaseBranch = ""
@@ -2680,7 +2691,44 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		if !s.requireScopeAny(w, r, "projects:write", "sessions:write") {
 			return
 		}
+		if segments[3] == "accept" {
+			current, found, err := db.GetProjectTask(p.AccountScopeID, projectID, taskID)
+			if err != nil || !found || current == nil {
+				writeError(w, http.StatusNotFound, errors.New("task not found"))
+				return
+			}
+			if current.Agent == "video" || current.Agent == "image" {
+				updated, err := db.UpdateProjectTask(p.AccountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
+					if t.Status == "completed" {
+						return nil
+					}
+					if t.Status != "needs_review" || len(t.Deliverables) == 0 {
+						return errors.New("media task is not ready for acceptance")
+					}
+					for _, d := range t.Deliverables {
+						if (d.Status != "ready" && d.Status != "accepted") || d.MediaURL == "" {
+							return errors.New("all media deliverables must be ready before acceptance")
+						}
+					}
+					for i := range t.Deliverables {
+						t.Deliverables[i].Status = "accepted"
+					}
+					t.Status = "completed"
+					t.ActionNeeded = ""
+					return nil
+				})
+				if err != nil {
+					writeError(w, http.StatusConflict, err)
+					return
+				}
+				writeJSON(w, http.StatusOK, map[string]any{"status": "accepted", "task": sanitizeProjectTaskForClient(updated)})
+				return
+			}
+		}
 		updated, err := db.UpdateProjectTask(p.AccountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
+			if (t.Agent == "video" || t.Agent == "image") && t.Status != "pending_approval" && t.Status != "planning" {
+				return errors.New("media task is not awaiting approval")
+			}
 			t.Status = "in_progress"
 			t.ActionNeeded = ""
 			if len(t.WhatDidDo) == 0 {

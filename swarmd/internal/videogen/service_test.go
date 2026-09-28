@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -228,7 +229,13 @@ func TestGenerateGoogleOmniInitialAndConversationalEdit(t *testing.T) {
 		ObservedHeight:      720,
 		ExtensionCountKnown: true,
 	}
+	credential, _, err := authStore.GetActiveCredentialForAccount(accountScopeID, "google")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res1Prov.CredentialVersion = fmt.Sprintf("v%d", credential.UpdatedAt)
 	res2, err := svc.GenerateManagedVideo(context.Background(), ManagedVideoRequest{
+		Model:     "gemini-omni-1.1-flash",
 		Operation: pebblestore.VideoOperationEdit,
 		Prompt:    "Make the violin invisible",
 		Principal: principal,
@@ -251,6 +258,9 @@ func TestGenerateGoogleOmniInitialAndConversationalEdit(t *testing.T) {
 	}
 }
 
+// Requirement: external-video editing uploads the source and sends task=edit
+// without aspect_ratio or invented history. The HTTP adapter is the narrowest
+// boundary proving the payload that previously failed provider validation.
 func TestGenerateGoogleOmniBridgeEditFromExternalVideo(t *testing.T) {
 	fakeSourceBytes := []byte("source-external-video-bytes")
 	fakeOmniEdited := []byte("omni-edited-bridge-video-bytes")
@@ -277,6 +287,18 @@ func TestGenerateGoogleOmniBridgeEditFromExternalVideo(t *testing.T) {
 			interactionCalled = true
 			var req map[string]any
 			_ = json.NewDecoder(r.Body).Decode(&req)
+			format, _ := req["response_format"].(map[string]any)
+			if _, exists := format["aspect_ratio"]; exists {
+				t.Error("external edit must not send aspect ratio")
+			}
+			if _, exists := req["previous_interaction_id"]; exists {
+				t.Error("external edit must not invent interaction history")
+			}
+			config, _ := req["generation_config"].(map[string]any)
+			videoConfig, _ := config["video_config"].(map[string]any)
+			if videoConfig["task"] != "edit" {
+				t.Error("external edit must preserve explicit task")
+			}
 			inputs, ok := req["input"].([]any)
 			if !ok || len(inputs) < 2 {
 				http.Error(w, "expected multimodal array input", http.StatusBadRequest)

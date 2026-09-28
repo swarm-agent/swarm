@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -103,12 +104,11 @@ func setupTestUISettingsForAccount(t *testing.T, accountID, defaultModel, iterMo
 		t.Fatalf("open pebble: %v", err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	sessionStore := pebblestore.NewSessionStore(store)
+	sessionStore := pebblestore.NewUISettingsStore(store)
 	svc := uisettings.NewService(sessionStore)
-	if err := svc.UpdateToolsVideoSettings(accountID, uisettings.ToolsVideoSettings{
-		DefaultModel:   defaultModel,
-		IterationModel: iterModel,
-	}); err != nil {
+	if _, err := svc.SetForAccount(accountID, uisettings.UISettings{Tools: uisettings.ToolSettings{Video: uisettings.ToolVideoSettings{
+		DefaultModel: defaultModel, IterationModel: iterModel,
+	}}}); err != nil {
 		t.Fatalf("update video settings: %v", err)
 	}
 	return svc
@@ -121,13 +121,12 @@ func setupTestUISettings(t *testing.T, defaultModel, iterModel string) (*uisetti
 		t.Fatalf("open pebble: %v", err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	sessionStore := pebblestore.NewSessionStore(store)
+	sessionStore := pebblestore.NewUISettingsStore(store)
 	svc := uisettings.NewService(sessionStore)
 	accountID := "acc-ops-test"
-	if err := svc.UpdateToolsVideoSettings(accountID, uisettings.ToolsVideoSettings{
-		DefaultModel:   defaultModel,
-		IterationModel: iterModel,
-	}); err != nil {
+	if _, err := svc.SetForAccount(accountID, uisettings.UISettings{Tools: uisettings.ToolSettings{Video: uisettings.ToolVideoSettings{
+		DefaultModel: defaultModel, IterationModel: iterModel,
+	}}}); err != nil {
 		t.Fatalf("update video settings: %v", err)
 	}
 	return svc, store, accountID
@@ -556,7 +555,8 @@ func TestVideoPreflight_VeoExtensionEligibilityValidation(t *testing.T) {
 }
 
 // TestVeoExtension_PredictRequestSerialization proves that Veo extension:
-// 1. Serializes instances[].video.inlineData with mimeType: video/mp4 and base64 bytes.
+// 1. Serializes the exact retained provider URI, never unsupported inlineData.
+// Boundary: generateGoogleVeo. Prevents rejected payloads and wrong-source extension.
 // 2. Serializes parameters durationSeconds 8 and resolution 720p.
 // 3. Flags result IsCombinedOutput = true and persists returned Veo URI in ProviderResource.
 // 4. Server authors typed VideoProvenance with all required fields.
@@ -608,6 +608,7 @@ func TestVeoExtension_PredictRequestSerialization(t *testing.T) {
 	svc.SetBaseURLs(server.URL, "")
 	svc.SetPollTiming(5*time.Millisecond, 1*time.Second)
 
+	veoVideoURI = server.URL + "/v1beta/files/veo-extended-video-1"
 	prober := fakeProber{
 		byDigest: map[string]VideoMetadata{
 			sourceDigest: {DurationSeconds: 8.0, Width: 1280, Height: 720, VideoCodec: "h264"},
@@ -639,12 +640,17 @@ func TestVeoExtension_PredictRequestSerialization(t *testing.T) {
 		},
 	}
 
+	credential, _, err := authStore.GetActiveCredentialForAccount(accountID, "google")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceProv.CredentialVersion = fmt.Sprintf("v%d", credential.UpdatedAt)
 	principal := identity.Principal{AccountScopeID: accountID}
 	res, err := svc.GenerateManagedVideo(context.Background(), ManagedVideoRequest{
-		Operation:     pebblestore.VideoOperationExtend,
-		ExplicitModel: "veo-3.1-generate-preview",
-		Prompt:        "Continue camera panning right",
-		Principal:     principal,
+		Operation: pebblestore.VideoOperationExtend,
+		Model:     "veo-3.1-generate-preview",
+		Prompt:    "Continue camera panning right",
+		Principal: principal,
 		Source: &ManagedVideoSource{
 			Bytes:      fakeSource,
 			MediaType:  "video/mp4",
@@ -658,7 +664,7 @@ func TestVeoExtension_PredictRequestSerialization(t *testing.T) {
 		t.Fatalf("GenerateManagedVideo extend failed: %v", err)
 	}
 
-	// 1. Verify instances[0].video.inlineData
+	// 1. Verify instances[0].video.uri refers to the selected source.
 	instances, ok := predictBody["instances"].([]any)
 	if !ok || len(instances) == 0 {
 		t.Fatalf("expected instances array in predict request, got: %v", predictBody)
@@ -668,15 +674,8 @@ func TestVeoExtension_PredictRequestSerialization(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected video in instance, got: %v", firstInst)
 	}
-	inlineData, ok := videoData["inlineData"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected inlineData in video, got: %v", videoData)
-	}
-	if inlineData["mimeType"] != "video/mp4" {
-		t.Errorf("mimeType = %v, want video/mp4", inlineData["mimeType"])
-	}
-	if inlineData["data"] != base64.StdEncoding.EncodeToString(fakeSource) {
-		t.Errorf("data mismatch in inlineData")
+	if len(videoData) != 1 || videoData["uri"] != sourceProv.ProviderResource {
+		t.Fatalf("video must contain only the exact retained provider URI, got: %v", videoData)
 	}
 
 	// 2. Verify parameters durationSeconds=8 and resolution=720p
@@ -800,12 +799,17 @@ func TestOmniExtension_TaskSerializationAndCeiling(t *testing.T) {
 
 	principal := identity.Principal{AccountScopeID: accountID}
 
+	credential, _, err := authStore.GetActiveCredentialForAccount(accountID, "google")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceProv.CredentialVersion = fmt.Sprintf("v%d", credential.UpdatedAt)
 	// 1. Test Omni extension serialization
 	res, err := svc.GenerateManagedVideo(context.Background(), ManagedVideoRequest{
-		Operation:     pebblestore.VideoOperationExtend,
-		ExplicitModel: "gemini-omni-1.1-flash",
-		Prompt:        "Extend video by 5 seconds",
-		Principal:     principal,
+		Operation: pebblestore.VideoOperationExtend,
+		Model:     "gemini-omni-1.1-flash",
+		Prompt:    "Extend video by 5 seconds",
+		Principal: principal,
 		Source: &ManagedVideoSource{
 			Bytes:         fakeSource,
 			MediaType:     "video/mp4",
@@ -826,17 +830,9 @@ func TestOmniExtension_TaskSerializationAndCeiling(t *testing.T) {
 		t.Errorf("expected IsCombinedOutput = true")
 	}
 
-	// Verify task="extend" in generation_config.video_config
-	genConfig, ok := interactionBody["generation_config"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected generation_config in Omni request, got: %v", interactionBody)
-	}
-	videoConfig, ok := genConfig["video_config"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected video_config in generation_config, got: %v", genConfig)
-	}
-	if videoConfig["task"] != "extend" {
-		t.Errorf("task = %v, want extend", videoConfig["task"])
+	// Stateful iterations must not send the mutually exclusive task field.
+	if _, exists := interactionBody["generation_config"]; exists || interactionBody["previous_interaction_id"] != "prev-omni-1" {
+		t.Fatalf("incorrect retained extension payload: %v", interactionBody)
 	}
 
 	// 2. Reject duration selection
@@ -855,7 +851,8 @@ func TestOmniExtension_TaskSerializationAndCeiling(t *testing.T) {
 		t.Fatalf("expected Omni duration rejection, got: %v", err)
 	}
 
-	// 3. Reject source duration > 37s
+	// 3. Reject measured source duration > 37s, not an untrusted caller hint.
+	prober.byDigest[sourceDigest] = VideoMetadata{DurationSeconds: 38, Width: 1280, Height: 720, VideoCodec: "h264"}
 	_, err = svc.PreflightVideoOperation(context.Background(), VideoPreflightRequest{
 		Principal:             principal,
 		Operation:             pebblestore.VideoOperationExtend,
@@ -873,7 +870,7 @@ func TestOmniExtension_TaskSerializationAndCeiling(t *testing.T) {
 }
 
 // TestOmniConversationalEdit_TaskSerialization proves that Omni conversational edit
-// serializes generation_config.video_config.task = "edit".
+// preserves the conversation without a mutually exclusive task field.
 func TestOmniConversationalEdit_TaskSerialization(t *testing.T) {
 	fakeOutput := []byte("omni-edited-bytes")
 	var interactionBody map[string]any
@@ -921,12 +918,17 @@ func TestOmniConversationalEdit_TaskSerialization(t *testing.T) {
 		ExtensionCountKnown: true,
 	}
 
+	credential, _, err := authStore.GetActiveCredentialForAccount(accountID, "google")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceProv.CredentialVersion = fmt.Sprintf("v%d", credential.UpdatedAt)
 	principal := identity.Principal{AccountScopeID: accountID}
-	_, err := svc.GenerateManagedVideo(context.Background(), ManagedVideoRequest{
-		Operation:     pebblestore.VideoOperationEdit,
-		ExplicitModel: "gemini-omni-1.1-flash",
-		Prompt:        "Change dress to red",
-		Principal:     principal,
+	_, err = svc.GenerateManagedVideo(context.Background(), ManagedVideoRequest{
+		Operation: pebblestore.VideoOperationEdit,
+		Model:     "gemini-omni-1.1-flash",
+		Prompt:    "Change dress to red",
+		Principal: principal,
 		Source: &ManagedVideoSource{
 			InteractionID: "prev-omni-edit-0",
 			Provenance:    sourceProv,
@@ -936,16 +938,8 @@ func TestOmniConversationalEdit_TaskSerialization(t *testing.T) {
 		t.Fatalf("GenerateManagedVideo edit failed: %v", err)
 	}
 
-	genConfig, ok := interactionBody["generation_config"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected generation_config, got: %v", interactionBody)
-	}
-	videoConfig, ok := genConfig["video_config"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected video_config, got: %v", genConfig)
-	}
-	if videoConfig["task"] != "edit" {
-		t.Errorf("task = %v, want edit", videoConfig["task"])
+	if _, exists := interactionBody["generation_config"]; exists || interactionBody["previous_interaction_id"] != "prev-omni-edit-0" {
+		t.Fatalf("incorrect retained edit payload: %v", interactionBody)
 	}
 }
 

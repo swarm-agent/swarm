@@ -30,12 +30,7 @@ type veoImageInput struct {
 }
 
 type veoVideoInput struct {
-	InlineData *veoInlineData `json:"inlineData,omitempty"`
-}
-
-type veoInlineData struct {
-	MIMEType string `json:"mimeType"`
-	Data     string `json:"data"`
+	URI string `json:"uri"`
 }
 
 type veoInstance struct {
@@ -92,15 +87,12 @@ func (s *Service) generateGoogleVeo(
 	instance := veoInstance{Prompt: prompt}
 
 	if operation == pebblestore.VideoOperationExtend {
-		if source == nil || len(source.Bytes) == 0 {
-			return ManagedVideoResult{}, errors.New("Veo video extension requires source video bytes")
+		if source == nil || source.Provenance == nil || strings.TrimSpace(source.Provenance.ProviderResource) == "" {
+			return ManagedVideoResult{}, errors.New("Veo video extension requires the retained provider video resource")
 		}
-		instance.Video = &veoVideoInput{
-			InlineData: &veoInlineData{
-				MIMEType: "video/mp4",
-				Data:     base64.StdEncoding.EncodeToString(source.Bytes),
-			},
-		}
+		// predictLongRunning extensions use the resource from the exact prior
+		// generation, not generateContent-style inlineData or an uploaded copy.
+		instance.Video = &veoVideoInput{URI: strings.TrimSpace(source.Provenance.ProviderResource)}
 		// For Veo extension, resolution must be 720p and durationSeconds parameter must be 8
 		resolution = "720p"
 		durationSeconds = 8

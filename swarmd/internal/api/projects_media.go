@@ -319,7 +319,9 @@ func validateProjectMediaTaskSettings(s *Server, task *pebblestore.ProjectTaskRe
 	agent := strings.TrimSpace(task.Agent)
 	if agent == "video" || task.OutcomeType == "video_clip" || task.OutcomeType == "video_story" {
 		if task.OutcomeType == "video_story" || len(task.Scenes) > 1 {
-			return errors.New("multipart video stories are not supported; video generation supports single video clips")
+			if err := validateVideoScenes(task.Scenes, task.Operation, task.VariantCount, task.Soundtrack); err != nil {
+				return err
+			}
 		}
 		if task.VariantCount < 0 {
 			return errors.New("video variant count cannot be negative")
@@ -483,7 +485,21 @@ func validateProjectMediaTaskSettings(s *Server, task *pebblestore.ProjectTaskRe
 			}
 		}
 
-		if len(task.AttachedMedia) > 0 {
+		if len(task.Scenes) > 1 {
+			for i, scene := range task.Scenes {
+				if scene.DurationSec == 0 {
+					continue
+				}
+				copy := *task
+				copy.Scenes = nil
+				copy.OutcomeType = "video_clip"
+				copy.DurationSeconds = scene.DurationSec
+				if err := validateProjectMediaTaskSettings(s, &copy, principal); err != nil {
+					return fmt.Errorf("scene %d: %w", i+1, err)
+				}
+			}
+		}
+		if op == pebblestore.VideoOperationCreate && len(task.AttachedMedia) > 0 {
 			if !vOpts.InitialImageSupported {
 				return fmt.Errorf("selected video model %q does not support image input", model)
 			}
@@ -797,7 +813,7 @@ func (s *Server) resolveSourceMediaBytes(ctx context.Context, p identity.Princip
 		if targetDeliv == nil {
 			return nil, "", fmt.Errorf("deliverable %q not found in task %q", dID, tID)
 		}
-		if targetDeliv.Status != "ready" {
+		if targetDeliv.Status != "ready" && targetDeliv.Status != "accepted" {
 			return nil, "", fmt.Errorf("deliverable %q is not ready", dID)
 		}
 		if strings.Contains(targetDeliv.MediaURL, "/deliverables/") {
@@ -1051,7 +1067,7 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 		defer cancel()
 
 		ar := task.AspectRatio
-		sceneCount := 1
+		sceneCount := max(1, len(task.Scenes))
 		count := len(task.Deliverables)
 		if count == 0 {
 			count = task.VariantCount
@@ -1315,8 +1331,6 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 		var firstGenErr error
 		var errMu sync.Mutex
 
-
-
 		var wg sync.WaitGroup
 		for w := 0; w < concurrency; w++ {
 			wg.Add(1)
@@ -1348,13 +1362,19 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 							}
 							return nil
 						}(),
-						Image:           sourceImage,
+						Image: sourceImage,
 					}
 					if sourceImage != nil {
 						imageCopy := *sourceImage
 						vReq.Image = &imageCopy
 					}
-					vRes, genErr := vg.GenerateManagedVideo(ctx, vReq)
+					var vRes videogen.ManagedVideoResult
+					var genErr error
+					if sceneCount > 1 {
+						vRes, genErr = generateProjectVideoStory(ctx, vg, vReq, task.Scenes)
+					} else {
+						vRes, genErr = vg.GenerateManagedVideo(ctx, vReq)
+					}
 					if genErr == nil && (len(vRes.Bytes) == 0 || !strings.HasPrefix(vRes.MediaType, "video/")) {
 						genErr = errors.New("video provider returned no playable video")
 					}

@@ -136,17 +136,17 @@ func seedOmniVideoCatalogRecord(t *testing.T, server *Server) {
 	t.Helper()
 	catStore := pebblestore.NewModelCatalogStore(server.sessions.Store().Underlying())
 	omniRecord := pebblestore.ModelCatalogRecord{
-		Provider:         "google",
-		Model:            "gemini-omni-video",
-		DisplayName:      "Gemini Omni Video",
+		Provider:          "google",
+		Model:             "gemini-omni-video",
+		DisplayName:       "Gemini Omni Video",
 		CatalogModalities: pebblestore.ModelCatalogModalities{Inputs: []string{"text", "video", "image"}, Outputs: []string{"video"}},
 		Media: &pebblestore.ModelCatalogMediaCapabilities{
 			State:           pebblestore.ModelCatalogMediaStateSupported,
 			ProviderSurface: "predict",
 		},
-		ProviderSpecific: json.RawMessage(`{"google":{"model_api_surface":"predict","video_generation":{"status":"verified","settings":{"aspect_ratio":{"status":"verified","default_value":"16:9","supported_values":["16:9","9:16","1:1","4:3"]},"resolution":{"status":"verified","default_value":"720p","supported_values":["720p"]}},"features":{"conversational_iteration":true,"initial_image":{"status":"verified","supported":true,"max_inputs":1}}}}}`),
-		Pricing:          json.RawMessage(`{"input_per_million":1.25,"output_per_million":5}`),
-		SourceSnapshotID: "snap-1",
+		ProviderSpecific:      json.RawMessage(`{"google":{"model_api_surface":"predict","video_generation":{"status":"verified","settings":{"aspect_ratio":{"status":"verified","default_value":"16:9","supported_values":["16:9","9:16","1:1","4:3"]},"resolution":{"status":"verified","default_value":"720p","supported_values":["720p"]}},"features":{"conversational_iteration":true,"initial_image":{"status":"verified","supported":true,"max_inputs":1}}}}}`),
+		Pricing:               json.RawMessage(`{"input_per_million":1.25,"output_per_million":5}`),
+		SourceSnapshotID:      "snap-1",
 		SourceSnapshotVersion: "1",
 	}
 	if err := catStore.SetRecord(omniRecord); err != nil {
@@ -168,11 +168,11 @@ func TestVideoOperations_ExplicitDiscriminatorAcrossProjectTask(t *testing.T) {
 	mockVideo := &mockPreflightVideoService{}
 	server.SetVideoGenerationService(mockVideo)
 
-	uiChatStore := pebblestore.NewUIChatSettingsStore(ss.Underlying())
+	uiChatStore := pebblestore.NewUISettingsStore(ss.Underlying())
 	uiSvc := uisettings.NewService(uiChatStore)
-	_ = uiSvc.SaveForAccount(p.AccountScopeID, uisettings.AccountUISettingsRecord{
-		Tools: uisettings.AccountToolsSettings{
-			Video: uisettings.AccountVideoSettings{
+	_, _ = uiSvc.SetForAccount(p.AccountScopeID, uisettings.UISettings{
+		Tools: uisettings.ToolSettings{
+			Video: uisettings.ToolVideoSettings{
 				DefaultModel:   "veo-3.1-generate-preview",
 				IterationModel: "gemini-omni-video",
 			},
@@ -202,9 +202,9 @@ func TestVideoOperations_ExplicitDiscriminatorAcrossProjectTask(t *testing.T) {
 		{
 			name: "invalid operation string rejected",
 			payload: map[string]any{
-				"title":       "Invalid Op Video",
-				"agent":       "video",
-				"operation":   "remix_magic",
+				"title":        "Invalid Op Video",
+				"agent":        "video",
+				"operation":    "remix_magic",
 				"aspect_ratio": "16:9",
 			},
 			wantStatus: http.StatusBadRequest,
@@ -348,7 +348,7 @@ func TestVideoOperations_ExplicitDiscriminatorAcrossProjectTask(t *testing.T) {
 			req = req.WithContext(identity.ContextWithPrincipal(req.Context(), p))
 			rec := httptest.NewRecorder()
 
-			server.handleProjectTasks(rec, req, p, proj.ID, []string{"tasks"})
+			server.handleProjects(rec, req)
 			if rec.Code != tc.wantStatus {
 				t.Fatalf("expected status %d, got %d: %s", tc.wantStatus, rec.Code, rec.Body.String())
 			}
@@ -398,12 +398,12 @@ func TestVideoOperations_ModelResolutionAndVeoEditRejection(t *testing.T) {
 	validVideoDataURL := "data:video/mp4;base64," + base64.StdEncoding.EncodeToString([]byte("fake-mp4-stream-data"))
 
 	t.Run("edit without configured iteration model fails without generation fallback", func(t *testing.T) {
-		uiChatStore := pebblestore.NewUIChatSettingsStore(ss.Underlying())
+		uiChatStore := pebblestore.NewUISettingsStore(ss.Underlying())
 		uiSvc := uisettings.NewService(uiChatStore)
 		// Only DefaultModel is set; IterationModel is empty!
-		_ = uiSvc.SaveForAccount(p.AccountScopeID, uisettings.AccountUISettingsRecord{
-			Tools: uisettings.AccountToolsSettings{
-				Video: uisettings.AccountVideoSettings{
+		_, _ = uiSvc.SetForAccount(p.AccountScopeID, uisettings.UISettings{
+			Tools: uisettings.ToolSettings{
+				Video: uisettings.ToolVideoSettings{
 					DefaultModel:   "veo-3.1-generate-preview",
 					IterationModel: "",
 				},
@@ -425,7 +425,7 @@ func TestVideoOperations_ModelResolutionAndVeoEditRejection(t *testing.T) {
 		req = req.WithContext(identity.ContextWithPrincipal(req.Context(), p))
 		rec := httptest.NewRecorder()
 
-		server.handleProjectTasks(rec, req, p, proj.ID, []string{"tasks"})
+		server.handleProjects(rec, req)
 		if rec.Code != http.StatusBadRequest {
 			t.Fatalf("expected 400 Bad Request, got %d: %s", rec.Code, rec.Body.String())
 		}
@@ -435,11 +435,11 @@ func TestVideoOperations_ModelResolutionAndVeoEditRejection(t *testing.T) {
 	})
 
 	t.Run("edit with explicit Veo model rejected before provider dispatch", func(t *testing.T) {
-		uiChatStore := pebblestore.NewUIChatSettingsStore(ss.Underlying())
+		uiChatStore := pebblestore.NewUISettingsStore(ss.Underlying())
 		uiSvc := uisettings.NewService(uiChatStore)
-		_ = uiSvc.SaveForAccount(p.AccountScopeID, uisettings.AccountUISettingsRecord{
-			Tools: uisettings.AccountToolsSettings{
-				Video: uisettings.AccountVideoSettings{
+		_, _ = uiSvc.SetForAccount(p.AccountScopeID, uisettings.UISettings{
+			Tools: uisettings.ToolSettings{
+				Video: uisettings.ToolVideoSettings{
 					DefaultModel:   "veo-3.1-generate-preview",
 					IterationModel: "gemini-omni-video",
 				},
@@ -462,7 +462,7 @@ func TestVideoOperations_ModelResolutionAndVeoEditRejection(t *testing.T) {
 		req = req.WithContext(identity.ContextWithPrincipal(req.Context(), p))
 		rec := httptest.NewRecorder()
 
-		server.handleProjectTasks(rec, req, p, proj.ID, []string{"tasks"})
+		server.handleProjects(rec, req)
 		if rec.Code != http.StatusBadRequest {
 			t.Fatalf("expected 400 Bad Request, got %d: %s", rec.Code, rec.Body.String())
 		}
@@ -627,7 +627,7 @@ func TestVideoOperations_ConflictingDeclarationsRejected(t *testing.T) {
 	req = req.WithContext(identity.ContextWithPrincipal(req.Context(), p))
 	rec := httptest.NewRecorder()
 
-	server.handleProjectTasks(rec, req, p, proj.ID, []string{"tasks"})
+	server.handleProjects(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 Bad Request for conflicting declaration, got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -670,11 +670,11 @@ func TestVideoOperations_ExecutionPreflightAndProvenancePersistence(t *testing.T
 	}
 	server.SetVideoGenerationService(mockVideo)
 
-	uiChatStore := pebblestore.NewUIChatSettingsStore(ss.Underlying())
+	uiChatStore := pebblestore.NewUISettingsStore(ss.Underlying())
 	uiSvc := uisettings.NewService(uiChatStore)
-	_ = uiSvc.SaveForAccount(p.AccountScopeID, uisettings.AccountUISettingsRecord{
-		Tools: uisettings.AccountToolsSettings{
-			Video: uisettings.AccountVideoSettings{
+	_, _ = uiSvc.SetForAccount(p.AccountScopeID, uisettings.UISettings{
+		Tools: uisettings.ToolSettings{
+			Video: uisettings.ToolVideoSettings{
 				DefaultModel:   "veo-3.1-generate-preview",
 				IterationModel: "gemini-omni-video",
 			},

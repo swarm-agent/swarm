@@ -205,7 +205,7 @@ func (s *Server) resolveSourceMediaRecord(ctx context.Context, p identity.Princi
 		if targetDeliv == nil {
 			return nil, fmt.Errorf("deliverable %q not found in task %q", dID, tID)
 		}
-		if targetDeliv.Status != "ready" {
+		if targetDeliv.Status != "ready" && targetDeliv.Status != "accepted" {
 			return nil, fmt.Errorf("deliverable %q is not ready", dID)
 		}
 
@@ -277,7 +277,7 @@ func (s *Server) resolveSourceMediaRecord(ctx context.Context, p identity.Princi
 					for _, d := range task.Deliverables {
 						matchesID := m.ID != "" && !strings.HasPrefix(m.ID, "stg_") && d.ID == m.ID
 						matchesURL := trimmedURL != "" && d.MediaURL != "" && (trimmedURL == d.MediaURL || trimmedURL == d.Thumbnail)
-						if (matchesID || matchesURL) && d.Status == "ready" {
+						if (matchesID || matchesURL) && (d.Status == "ready" || d.Status == "accepted") {
 							bytes, mType, readErr := s.resolveSourceMediaBytes(ctx, p, m, expectedKind)
 							if readErr != nil && d.MediaURL != "" {
 								bytes, mType, readErr = s.resolveSourceMediaBytes(ctx, p, pebblestore.ProjectTaskMediaRef{ID: d.ID, URL: d.MediaURL, Kind: expectedKind}, expectedKind)

@@ -2272,6 +2272,7 @@ export function OrchestrateView({
   const [taskIntent, setTaskIntent] = useState<'code' | 'image' | 'video' | 'sound' | 'audit'>('code')
   const [videoResolution, setVideoResolution] = useState<string>('')
   const [videoDuration, setVideoDuration] = useState<number>(0)
+  const [videoScenePrompts, setVideoScenePrompts] = useState('')
   const [videoClipCount, setVideoClipCount] = useState<number>(1)
   const [videoAspectRatio, setVideoAspectRatio] = useState<string>('')
   const [videoAttachmentError, setVideoAttachmentError] = useState<string | null>(null)
@@ -3202,6 +3203,7 @@ export function OrchestrateView({
             prompt: composedPrompt,
             workspace_path: selectedProject.repoPath || '.',
             intent: targetIntent,
+            operation: targetIntent === 'video' ? (isVideo ? (action === 'next_scene' ? 'extend' : 'edit') : 'create') : undefined,
             aspect_ratio: settings ? settings.aspectRatio : (targetIntent === 'image' ? imageAspectRatio : undefined),
             resolution: settings?.resolution || undefined,
             duration_seconds: settings?.durationSeconds || undefined,
@@ -3404,8 +3406,13 @@ export function OrchestrateView({
   const handleDeployModalSubmit = async () => {
     const prompt = newTaskPrompt.trim()
     if (!prompt || !selectedProject?.id) return
+    const scenePrompts = taskIntent === 'video' ? videoScenePrompts.split('\n').map(value => value.trim()).filter(Boolean) : []
 
     if (taskIntent === 'video') {
+      if (scenePrompts.length > 0 && (scenePrompts.length < 2 || scenePrompts.length > 8 || videoClipCount !== 1)) {
+        setVideoAttachmentError('Multipart requires 2–8 scene prompts and one assembled clip.')
+        return
+      }
       if (videoDefaults.loading || videoDefaults.loadFailed || videoCatalog.isFetching || videoCatalog.isError) {
         setVideoAttachmentError('Load video defaults before submitting')
         return
@@ -3457,7 +3464,10 @@ export function OrchestrateView({
           prompt,
           workspace_path: newTaskWorkspace || selectedProject.repoPath || '.',
           intent: taskIntent,
-          video_type: taskIntent === 'video' ? 'single' : undefined,
+          video_type: taskIntent === 'video' ? (scenePrompts.length ? 'multipart' : 'single') : undefined,
+          operation: taskIntent === 'video' ? 'create' : undefined,
+          scenes: scenePrompts.length ? scenePrompts.map((scenePrompt, index) => ({ scene_number: index + 1, title: `Scene ${index + 1}`, prompt: scenePrompt })) : undefined,
+          scenes_count: scenePrompts.length || undefined,
           enhance_prompt: taskIntent === 'video' ? enhanceVideoPrompt : undefined,
           aspect_ratio: taskIntent === 'image' ? imageAspectRatio : taskIntent === 'video' ? (videoAspectRatio && supportedVideoAspectRatios.includes(videoAspectRatio) ? videoAspectRatio : undefined) : undefined,
           resolution: taskIntent === 'image' ? imageResolution : taskIntent === 'video' ? (videoResolution && supportedVideoResolutions.includes(videoResolution) ? videoResolution : undefined) : undefined,
@@ -3617,7 +3627,9 @@ export function OrchestrateView({
       )
     )
     try {
-      await requestJson(`/v3/projects/${selectedProject.id}/tasks/${taskId}/complete`, {
+      const task = tasks.find(item => item.id === taskId)
+      const action = task?.deliverables?.some(item => item.type === 'video' || item.type === 'image') ? 'accept' : 'complete'
+      await requestJson(`/v3/projects/${selectedProject.id}/tasks/${taskId}/${action}`, {
         method: 'POST',
       })
       fetchProjectTasks(selectedProject.id)
@@ -6445,7 +6457,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                       <span>Single Video Shot (1 Prompt · Direct Model Execution)</span>
                     </div>
                     <p className="text-[11px] text-slate-300">
-                      Generates continuous video directly with the selected model; audio availability depends on its catalog capabilities. Multi-part timelines and audio mixing are handled in Video Studio.
+                      Generates video directly with the selected model; audio availability depends on its catalog capabilities. Optional scene prompts create an ordered assembled cut. Timeline editing and audio mixing are handled in Video Studio.
                     </p>
                   </div>
 
@@ -6564,6 +6576,11 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                     </div>
                   </div>
 
+                  <div>
+                    <label htmlFor="video-scene-prompts" className="block text-[10px] text-slate-400 font-mono uppercase font-bold mb-1.5">Multipart scene prompts (optional)</label>
+                    <textarea id="video-scene-prompts" value={videoScenePrompts} onChange={event => setVideoScenePrompts(event.target.value)} rows={3} className="w-full rounded border border-slate-700 bg-slate-900 p-2 text-sm text-slate-100" placeholder="One scene per line, 2–8 scenes. Leave empty for a single shot." />
+                    <p className="text-[10px] text-slate-400">Scenes generate sequentially and assemble in order. Select one clip. Each scene is billed separately; generated scene audio is retained.</p>
+                  </div>
                   {/* Duration & Clip Count Selectors */}
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-slate-800/60">
                     <div>
