@@ -871,3 +871,294 @@ export interface SyncStreamResult<TEvent = any> {
   replay_instructions?: Record<string, unknown>;
 }
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CANONICAL DURABLE WORKER CONTRACT (Checkpoint 1)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type WorkerLifecycleState = 'idle' | 'active' | 'paused' | 'archived' | 'deleted';
+
+export interface WorkerCapabilityRequest {
+  type: string;
+  name: string;
+  description?: string;
+  required: boolean;
+}
+
+export interface WorkerWorkspaceRequirement {
+  role: string;
+  description?: string;
+  required: boolean;
+}
+
+export interface WorkerInputRequirement {
+  name: string;
+  kind: string;
+  description?: string;
+  required: boolean;
+  default?: unknown;
+}
+
+export interface WorkerDeliverableRequirement {
+  name: string;
+  kind: string;
+  description?: string;
+  required: boolean;
+}
+
+export interface WorkerProvenance {
+  source_worker_id?: string;
+  source_revision?: number;
+  source_session_id?: string;
+  source_proposal_id?: string;
+  imported_at?: number;
+  migrated_at?: number;
+  exported_at?: number;
+  author?: string;
+}
+
+export interface WorkerTriggerConfig {
+  trigger_kind: string;
+  format?: string;
+  secret_ref?: string;
+}
+
+export interface SessionPlanSubtask {
+  id: string;
+  title: string;
+  status?: string;
+  started_at?: number;
+  completed_at?: number;
+  result?: string;
+  notes?: string;
+}
+
+export interface SessionPlanCheckpoint {
+  id: string;
+  title?: string;
+  status?: string;
+  objective?: string;
+  tasks?: string[];
+  subtasks?: SessionPlanSubtask[];
+  active_subtask_id?: string;
+  acceptance_criteria?: string[];
+  source_message_id?: string;
+  notes?: string;
+  report?: string;
+  result?: string;
+  [key: string]: unknown;
+}
+
+export interface SessionPlanInfo {
+  goal?: string;
+  scope?: string;
+  context?: string;
+  decisions?: string[];
+  constraints?: string[];
+  assumptions?: string[];
+  open_questions?: string[];
+  relevant_files?: string[];
+  success_criteria?: string[];
+  validation_strategy?: string[];
+}
+
+export interface SessionPlanArtifactReference {
+  session_id?: string;
+  artifact_id?: string;
+  revision_ref?: string;
+  collection_id?: string;
+  variant_id?: string;
+  event_seq?: number;
+  source_ref?: string;
+  label?: string;
+  path?: string;
+  role?: string;
+  description?: string;
+  media_type?: string;
+}
+
+export interface SessionPlanDocument {
+  id?: string;
+  title: string;
+  status?: string;
+  schema_version?: string;
+  revision_id?: string;
+  info?: SessionPlanInfo;
+  checkpoints?: SessionPlanCheckpoint[];
+  original_checkpoints?: SessionPlanCheckpoint[];
+  active_checkpoint_id?: string;
+  rendered_text?: string;
+  display_text?: string;
+  execution_origin?: string;
+  artifacts?: SessionPlanArtifactReference[];
+  [key: string]: unknown;
+}
+
+export interface WorkerAutomationDefinition {
+  id: string;
+  worker_id: string;
+  name: string;
+  description?: string;
+  activation_mode: 'manual' | 'interval' | 'cron' | 'external_trigger' | string;
+  schedule?: {
+    kind: 'interval' | 'cron' | 'trigger';
+    interval_seconds?: number;
+    cron?: string;
+    timezone?: string;
+  };
+  trigger?: WorkerTriggerConfig;
+  enabled: boolean;
+  plan_document: SessionPlanDocument;
+  input_requirements?: WorkerInputRequirement[];
+  deliverable_requirements?: WorkerDeliverableRequirement[];
+  revision: number;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface WorkerRecord {
+  id: string;
+  account_scope_id: string;
+  name: string;
+  description?: string;
+  instructions: string;
+  lifecycle_state: WorkerLifecycleState;
+  revision: number;
+  requested_capabilities?: WorkerCapabilityRequest[];
+  workspace_requirements?: WorkerWorkspaceRequirement[];
+  local_bindings?: Record<string, string>;
+  automations?: WorkerAutomationDefinition[];
+  metadata?: Record<string, unknown>;
+  provenance?: WorkerProvenance;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface WorkerRevisionRecord {
+  worker_id: string;
+  account_scope_id: string;
+  revision: number;
+  worker: WorkerRecord;
+  committed_at: number;
+  committed_by?: string;
+  change_summary?: string;
+}
+
+export interface WorkerRunRecord {
+  id: string;
+  account_scope_id: string;
+  worker_id: string;
+  worker_revision: number;
+  automation_id?: string;
+  automation_revision?: number;
+  occurrence_id?: string;
+  session_id?: string;
+  request_source: 'direct' | 'schedule' | 'trigger' | 'test_run' | 'orchestrator' | string;
+  input?: Record<string, unknown>;
+  status: 'admitted' | 'running' | 'succeeded' | 'failed' | 'cancelled' | string;
+  error?: string;
+  deliverables?: SessionPlanArtifactReference[];
+  started_at?: number;
+  completed_at?: number;
+  created_at: number;
+}
+
+export interface PortableAutomationDefinition {
+  id?: string;
+  name: string;
+  description?: string;
+  activation_mode: 'manual' | 'interval' | 'cron' | 'external_trigger' | string;
+  schedule?: {
+    kind: 'interval' | 'cron' | 'trigger';
+    interval_seconds?: number;
+    cron?: string;
+    timezone?: string;
+  };
+  trigger?: WorkerTriggerConfig;
+  enabled: boolean;
+  plan: SessionPlanDocument;
+  input_requirements?: WorkerInputRequirement[];
+  deliverable_requirements?: WorkerDeliverableRequirement[];
+}
+
+export interface PortableWorkerDefinition {
+  schema_version: 1;
+  name: string;
+  description?: string;
+  instructions: string;
+  metadata?: Record<string, unknown>;
+  capabilities?: WorkerCapabilityRequest[];
+  workspace_requirements?: WorkerWorkspaceRequirement[];
+  automations?: PortableAutomationDefinition[];
+  provenance?: WorkerProvenance;
+}
+
+export interface CreateWorkerParams {
+  id?: string;
+  name: string;
+  description?: string;
+  instructions: string;
+  requested_capabilities?: WorkerCapabilityRequest[];
+  workspace_requirements?: WorkerWorkspaceRequirement[];
+  local_bindings?: Record<string, string>;
+  automations?: WorkerAutomationDefinition[];
+  metadata?: Record<string, unknown>;
+  idempotency_key?: string;
+}
+
+export interface UpdateWorkerParams {
+  name?: string;
+  description?: string;
+  instructions?: string;
+  requested_capabilities?: WorkerCapabilityRequest[];
+  workspace_requirements?: WorkerWorkspaceRequirement[];
+  local_bindings?: Record<string, string>;
+  automations?: WorkerAutomationDefinition[];
+  metadata?: Record<string, unknown>;
+  change_summary?: string;
+}
+
+export interface ListWorkersParams {
+  limit?: number;
+  after?: string;
+  lifecycle_state?: WorkerLifecycleState;
+  include_deleted?: boolean;
+}
+
+export interface ListWorkersResult {
+  workers: WorkerRecord[];
+  next_cursor?: string;
+  total_count: number;
+}
+
+export interface AttachWorkerAutomationParams {
+  worker_id: string;
+  expected_worker_revision: number;
+  automation: WorkerAutomationDefinition;
+}
+
+export interface UpdateWorkerAutomationParams {
+  worker_id: string;
+  automation_id: string;
+  expected_worker_revision: number;
+  automation: WorkerAutomationDefinition;
+}
+
+export interface RemoveWorkerAutomationParams {
+  worker_id: string;
+  automation_id: string;
+  expected_worker_revision: number;
+}
+
+export interface WorkerValidateResult {
+  ok: boolean;
+  definition?: PortableWorkerDefinition;
+  error?: string;
+}
+
+export interface WorkerExportResult {
+  ok: boolean;
+  worker_id: string;
+  definition: PortableWorkerDefinition;
+  raw_json: string;
+}

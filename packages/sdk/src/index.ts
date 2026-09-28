@@ -1,6 +1,7 @@
 export * from './client.js';
 export * from './auth.js';
 export * from './automations.js';
+export * from './workers.js';
 export * from './deliverables.js';
 export * from './deploy/index.js';
 export * from './notifications.js';
@@ -12,4 +13,3 @@ export * from './transport.js';
 export * from './errors.js';
 export * from './types.js';
 export * from './storage/index.js';
-

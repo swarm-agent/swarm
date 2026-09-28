@@ -2,8 +2,10 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import { test } from 'node:test';
 import { createSwarmClient, SwarmClient } from '../client.js';
+import { SwarmAutomationsNamespace } from '../automations.js';
+import { SwarmWorkersNamespace } from '../workers.js';
 
-test('SwarmClient: initializes namespaces and aliases properly', () => {
+test('SwarmClient: initializes namespaces and distinct workers namespace properly', () => {
   const client = createSwarmClient({
     baseUrl: 'http://127.0.0.1:18080',
     token: 'swk_my_test_token',
@@ -18,8 +20,11 @@ test('SwarmClient: initializes namespaces and aliases properly', () => {
   // Check namespaces
   assert.ok(client.auth);
   assert.ok(client.automations);
+  assert.ok(client.automations instanceof SwarmAutomationsNamespace);
   assert.ok(client.workers);
-  assert.equal(client.workers, client.automations); // workers is an alias
+  assert.ok(client.workers instanceof SwarmWorkersNamespace);
+  // workers and automations are distinct authorities (workers is /v3/workers, automations is legacy /v3/automations/v2)
+  assert.notEqual(client.workers, client.automations);
   assert.ok(client.sessions);
   assert.ok(client.projects);
   assert.ok(client.workspaces);
