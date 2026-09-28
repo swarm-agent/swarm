@@ -3350,3 +3350,9 @@ Program-only project proposals are normalized into a guarded executable checkpoi
 before coordinator creation, avoiding the legacy bare session without agent profile.
 Program tasks now get plan mode and owned integration lanes. The focused
 `TestProgramOnlyTaskUsesCanonicalPlanSession` regression passes with no provider run.
+
+Pixel verification found a stale session-plan overlay after refinement: the summary
+was current while old rejected criteria disabled approval. `orchestrate-plan-authority`
+now compares plan identity/revision before overlaying session execution documents on
+new task definitions. Its regression passes; the strengthened real-browser check
+requires current criteria, no rejected banner, and enabled approval, and passes.

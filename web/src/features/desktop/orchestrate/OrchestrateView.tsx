@@ -134,6 +134,8 @@ import { modelOptionsQueryOptions } from '../../queries/query-options'
 import type { ModelOptionRecord } from '../chat/types/chat'
 import type { BackendTaskModelPreview } from './orchestrate-types'
 
+import { selectTaskPlanDocument } from './orchestrate-plan-authority'
+
 export interface OrchestrateViewProps {
   workspaceSlug?: string
   onNavigateHome?: () => void
@@ -5082,7 +5084,7 @@ export function OrchestrateView({
       const intent = data?.intent
       const liveRun = data?.liveRun
       const planRecord = data?.planRecord as any
-      const planDoc = planRecord?.document
+      const planDoc = selectTaskPlanDocument(task, planRecord)
 
       const lifecycle = sess?.lifecycle as any
 
