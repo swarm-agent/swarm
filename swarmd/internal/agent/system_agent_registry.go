@@ -112,7 +112,13 @@ func NewSystemAgentRegistry(definitions []SystemAgentDefinition) (*SystemAgentRe
 		if profile.Mode == ModeSubagent && agentToolEnabled(profile.ToolContract, "task") {
 			return nil, fmt.Errorf("system subagent %q must disable task delegation", definition.ID)
 		}
-		if profile.Mode == ModePrimary && (pebblestore.AgentProfileRuntimeMode(profile) != pebblestore.AgentRuntimeModePlanAuto || profile.ExitPlanModeEnabled == nil || !*profile.ExitPlanModeEnabled) {
+		// Orchestrator plans on project task cards, not session plans. Validate
+		// its distinct primary contract without invalidating the whole registry.
+		if definition.ID == SwarmOrchestratorAgentID {
+			if profile.Mode != ModePrimary || pebblestore.AgentProfileRuntimeMode(profile) != pebblestore.AgentRuntimeModeReadWrite || profile.ExitPlanModeEnabled == nil || *profile.ExitPlanModeEnabled || agentToolEnabled(profile.ToolContract, "plan_manage") || agentToolEnabled(profile.ToolContract, "exit_plan_mode") {
+				return nil, fmt.Errorf("system orchestrator %q must use read_write runtime with session planning disabled", definition.ID)
+			}
+		} else if profile.Mode == ModePrimary && (pebblestore.AgentProfileRuntimeMode(profile) != pebblestore.AgentRuntimeModePlanAuto || profile.ExitPlanModeEnabled == nil || !*profile.ExitPlanModeEnabled) {
 			return nil, fmt.Errorf("system primary %q must use plan_auto runtime", definition.ID)
 		}
 		registry.byID[definition.ID] = definition
