@@ -873,6 +873,9 @@ func TestProjectTask_BigSwarmUsesReadOnlyPlanning(t *testing.T) {
 	defer f.db.Close()
 	p := identity.Principal{Type: "user", UserID: f.userID, AccountScopeID: f.accountID}
 	project := f.createProject(t)
+	if err := f.server.sessions.Store().CompleteRepositoryHistoryMaintenance(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	w := f.callAPI(http.MethodPost, "/"+project+"/tasks", map[string]any{"title": "Plan a change", "prompt": "Create a reviewed plan", "agent": "swarm", "feature_size": "big"}, p)
 	if w.Code != http.StatusCreated {
 		t.Fatalf("create: %d %s", w.Code, w.Body.String())
@@ -886,5 +889,8 @@ func TestProjectTask_BigSwarmUsesReadOnlyPlanning(t *testing.T) {
 	sess, ok, err := f.server.sessions.Store().GetSession(response.Task.SessionID)
 	if err != nil || !ok || sess.Mode != sessionruntime.ModePlan {
 		t.Fatalf("big task requires plan mode, got %s err=%v", sess.Mode, err)
+	}
+	if !sess.WorktreeEnabled || sess.WorktreeRootPath == "" {
+		t.Fatal("planner needs a session-owned lane for approved Task Program integration")
 	}
 }

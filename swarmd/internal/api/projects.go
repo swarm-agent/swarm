@@ -1192,7 +1192,7 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 	}
 
 	var admission *pebblestore.WorktreeAdmissionEvidence
-	if targetAgent == "coder" || task.OutcomeType == "code_pr" || task.OutcomeType == "bug_patch" {
+	if targetAgent == "coder" || mode == sessionruntime.ModePlan || task.OutcomeType == "code_pr" || task.OutcomeType == "bug_patch" {
 		if s.worktrees == nil {
 			return errors.New("worktree service is not configured; coding task requires worktree isolation")
 		}
@@ -1228,12 +1228,13 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 		})
 		sessionSnapshot.WorkspaceUsage = pebblestore.WorkspaceUsageFromGrants(sessionSnapshot.WorkspaceGrants)
 		admission = &pebblestore.WorktreeAdmissionEvidence{
-			Kind:           "allocated",
-			Path:           alloc.WorkspacePath,
-			SourcePath:     sourcePath,
-			OwnerSessionID: sessionID,
-			Branch:         alloc.BranchName,
-			DelegatedCoder: true,
+			Kind:                 "allocated",
+			Path:                 alloc.WorkspacePath,
+			SourcePath:           sourcePath,
+			OwnerSessionID:       sessionID,
+			Branch:               alloc.BranchName,
+			DelegatedCoder:       targetAgent == "coder",
+			AllocatedRuntimeRoot: mode == sessionruntime.ModePlan,
 		}
 	}
 

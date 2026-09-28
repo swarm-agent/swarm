@@ -22,6 +22,9 @@ type WorktreeAdmissionEvidence struct {
 	// WorkspacePath is the runtime root, not the original source. Never set
 	// for shared Finder lanes or based solely on decoded session metadata.
 	DelegatedCoder bool
+	// AllocatedRuntimeRoot attests a primary session lane allocated by the server,
+	// with the same exact source/runtime/owner checks as an isolated Coder.
+	AllocatedRuntimeRoot bool
 }
 
 func (s *SessionStore) validateWorktreeAdmission(input V3SessionMutationInput, next SessionSnapshot) error {
@@ -174,7 +177,7 @@ func worktreeAdmissionHistorySourceMatches(e *WorktreeAdmissionEvidence, row Ses
 }
 
 func worktreeAdmissionSourceMatches(e *WorktreeAdmissionEvidence, snapshot SessionSnapshot) bool {
-	if !e.DelegatedCoder {
+	if !e.DelegatedCoder && !e.AllocatedRuntimeRoot {
 		return snapshot.WorkspacePath == e.SourcePath
 	}
 	return snapshot.WorkspacePath == e.Path &&

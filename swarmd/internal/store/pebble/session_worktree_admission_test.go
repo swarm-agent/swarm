@@ -148,7 +148,7 @@ func TestWorktreeAdmissionRestartReservation(t *testing.T) {
 // with exact original-source metadata; metadata alone and Finder allocations
 // cannot create exclusive ownership. The store boundary observes no partial claim.
 func TestWorktreeAdmissionDelegatedRuntime(t *testing.T) {
-	for _, scenario := range []string{"coder", "metadata-only", "finder", "wrong-source"} {
+	for _, scenario := range []string{"coder", "planner", "planner-wrong-source", "metadata-only", "finder", "wrong-source"} {
 		t.Run(scenario, func(t *testing.T) {
 			s := NewSessionStore(openV3SessionEventTestStore(t))
 			createRecoverySession(t, s, "seed", "")
@@ -157,6 +157,13 @@ func TestWorktreeAdmissionDelegatedRuntime(t *testing.T) {
 			next := SessionSnapshot{ID: "child", WorkspacePath: runtime, WorktreeEnabled: true, WorktreeRootPath: runtime, WorktreeBranch: "agent/child", Metadata: map[string]interface{}{"subagent": "coder", "swarm_v3_source_workspace_path": source, "swarm_v3_runtime_workspace_path": runtime, "swarm_v3_worktree_owner_session_id": "child"}}
 			e := &WorktreeAdmissionEvidence{Kind: "allocated", Path: runtime, SourcePath: source, OwnerSessionID: "child", Branch: next.WorktreeBranch, DelegatedCoder: true}
 			switch scenario {
+			case "planner", "planner-wrong-source":
+				e.DelegatedCoder = false
+				e.AllocatedRuntimeRoot = true
+				delete(next.Metadata, "subagent")
+				if scenario == "planner-wrong-source" {
+					next.Metadata["swarm_v3_source_workspace_path"] = runtime
+				}
 			case "metadata-only":
 				e.DelegatedCoder = false
 			case "finder":
@@ -165,7 +172,7 @@ func TestWorktreeAdmissionDelegatedRuntime(t *testing.T) {
 				next.Metadata["swarm_v3_source_workspace_path"] = runtime
 			}
 			_, err := s.ApplyV3SessionMutation(V3SessionMutationInput{SessionID: "child", UserID: "user", AccountScopeID: "account", Kind: V3SessionMutationCreateSession, IdempotencyKey: "create", PayloadHash: "create", Session: &next, WorktreeAdmission: e})
-			if scenario == "coder" {
+			if scenario == "coder" || scenario == "planner" {
 				if err != nil {
 					t.Fatal(err)
 				}

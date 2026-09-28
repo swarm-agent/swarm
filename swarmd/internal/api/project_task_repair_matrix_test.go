@@ -666,6 +666,9 @@ func TestTaskMatrix_Case4_ManualPlanningPendingThenExactAcceptModelTransition(t 
 	projID := f.createProject(t)
 	p := identity.Principal{Type: "user", UserID: f.userID, AccountScopeID: f.accountID}
 
+	if err := f.server.sessions.Store().CompleteRepositoryHistoryMaintenance(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	// 1. Create big feature task
 	w := f.callAPI(http.MethodPost, "/"+projID+"/tasks", map[string]any{
 		"title":        "Architect Payment Subsystem",
