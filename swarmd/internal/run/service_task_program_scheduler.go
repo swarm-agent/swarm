@@ -850,6 +850,7 @@ func (p *taskProgramScheduler) programWorkspacePath() (string, error) {
 	// stage destination. The normal launch authority still authenticates source,
 	// Git ownership, captured ancestry and cleanliness before reuse.
 	if p.record.RepositoryLane != nil {
+		if err := p.validateRepositoryLaneSource(*p.record.RepositoryLane); err != nil { return "", err }
 		if p.record.Revision > 0 {
 			if p.record.ParentSessionID != parent.ID {
 				return "", errors.New("Task Program repository admission parent mismatch")
@@ -948,8 +949,24 @@ func (p *taskProgramScheduler) multiRepositoryWorkspacePath() (string, error) {
 		if !seen { sources = append(sources, source) }
 	}
 	if len(sources) < 2 { return "", errors.New("multi-repository program has fewer than two authenticated sources") }
+	if p.service == nil || p.service.worktrees == nil { return "", errors.New("Task Program worktree authority unavailable") }
+	// Source aliases must not acquire separate lanes for the same repository.
+	// Resolve actual Git roots before allocation, not merely lexical paths.
+	for i, source := range sources {
+		base, err := p.service.worktrees.ResolveTaskBase(source)
+		if err != nil { return "", err }
+		for j := 0; j < i; j++ {
+			other, err := p.service.worktrees.ResolveTaskBase(sources[j])
+			if err != nil { return "", err }
+			if sameTaskProgramPath(base.RepoRoot, other.RepoRoot) {
+				return "", errors.New("multi-repository program targets the same canonical repository more than once")
+			}
+		}
+	}
 	for _, source := range sources {
+		if _, _, err := p.canonicalRepositorySource(source); err != nil { return "", err }
 		if lane, ok := p.record.RepositoryLanes[source]; ok {
+			if err := p.validateRepositoryLaneSource(lane); err != nil { return "", err }
 			if _, _, err := p.service.resolveTaskTargetWorkspace(p.parentSession, p.req.Principal, &taskLaunchSpec{RequestedSubagentType: "coder", ProgramRepositoryLane: &lane}); err != nil { return "", err }
 		} else if _, err := p.service.worktrees.ResolveTaskBase(source); err != nil { return "", err }
 	}
@@ -1088,9 +1105,10 @@ func (p *taskProgramScheduler) integrateMultiRepositoryStage(stageIndex int) err
 		if !ok { return fmt.Errorf("Coder job %q has no bound repository lane", def.ID) }
 		state, err := p.service.worktrees.InspectTaskWorkspace(lane.WorkspacePath)
 		if err != nil { return err }
+		if err := p.validateRepositoryLaneSource(lane); err != nil { return err }
 		if !state.Clean || state.BranchName != lane.Branch { return fmt.Errorf("repository lane %q changed before integration", source) }
 		head := firstNonEmptyString(p.record.LaneHeads[source], lane.BaseCommit)
-		if state.HeadCommit != head { return fmt.Errorf("repository lane %q head differs from durable receipt", source) }
+		if state.HeadCommit != head { return fmt.Errorf("repository lane %q head differs from durable receipt; Git may have advanced before receipt persistence, so refuse replay", source) }
 		var children []worktreeruntime.TaskIntegrationChild
 		var updates []pebblestore.TaskProgramJobTransition
 		for _, sibling := range p.record.Definition.Jobs {

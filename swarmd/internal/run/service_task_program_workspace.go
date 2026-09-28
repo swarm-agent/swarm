@@ -34,6 +34,7 @@ func (p *taskProgramScheduler) repositoryLaneForSource(requested string, multi b
 		if saved, ok := p.record.RepositoryLanes[requested]; ok { bound = &saved }
 	} else { bound = p.record.RepositoryLane }
 	if lane := bound; lane != nil {
+		if err := p.validateRepositoryLaneSource(*lane); err != nil { return "", err }
 		// Explicit alternate requests must not repurpose an admitted program.
 		if requested != "" && !sameTaskProgramPath(requested, lane.SourcePath) && !sameTaskProgramPath(requested, lane.WorkspacePath) {
 			return "", errors.New("Task Program repository lane source mismatch")
@@ -45,6 +46,10 @@ func (p *taskProgramScheduler) repositoryLaneForSource(requested string, multi b
 	if err != nil {
 		return "", err
 	}
+	// Pin the canonical workspace generation before Git allocation. A path grant
+	// alone cannot serve as durable identity when a workspace is re-bound.
+	workspaceID, generation, err := p.canonicalRepositorySource(target)
+	if err != nil { return "", err }
 	// Preflight runs before program persistence and must not allocate resources.
 	if p.record.Revision == 0 {
 		if _, err := p.service.worktrees.ResolveTaskBase(target); err != nil {
@@ -78,13 +83,7 @@ func (p *taskProgramScheduler) repositoryLaneForSource(requested string, multi b
 		if err != nil {
 			return "", err
 		}
-		lane = &pebblestore.TaskProgramRepositoryLane{SourcePath: target, WorkspacePath: allocation.WorkspacePath, Branch: allocation.BranchName, BaseCommit: base.BaseCommit}
-		for _, grant := range p.parentSession.WorkspaceGrants {
-			if grant.Path == target && grant.WorkspaceID != "" {
-				lane.WorkspaceID, lane.WorkspaceGeneration = grant.WorkspaceID, grant.WorkspaceGeneration
-				break
-			}
-		}
+		lane = &pebblestore.TaskProgramRepositoryLane{WorkspaceID: workspaceID, WorkspaceGeneration: generation, SourcePath: target, WorkspacePath: allocation.WorkspacePath, Branch: allocation.BranchName, BaseCommit: base.BaseCommit}
 		binding := pebblestore.TaskProgramTransition{ExpectedRevision: p.record.Revision, MutationID: fmt.Sprintf("lane:%d", p.record.Revision)}
 		if multi { binding.RepositoryLanes = map[string]pebblestore.TaskProgramRepositoryLane{target: *lane} } else { binding.RepositoryLane = lane }
 		record, _, persistErr := p.service.sessions.TransitionTaskProgram(p.parentSession.ID, p.record.ProgramID, binding)
@@ -93,6 +92,9 @@ func (p *taskProgramScheduler) repositoryLaneForSource(requested string, multi b
 		}
 		p.record = record
 		p.emitProgramProgress("repository.allocated", "Task Program repository inventory changed")
+	}
+	if lane.WorkspaceID != workspaceID || lane.WorkspaceGeneration != generation {
+		return "", errors.New("Task Program repository lane canonical workspace identity changed")
 	}
 	validator, ok := p.service.worktrees.(interface {
 		ValidateTaskRepositoryLane(string, string, string, string) error
