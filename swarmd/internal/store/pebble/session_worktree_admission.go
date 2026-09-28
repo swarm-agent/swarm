@@ -147,7 +147,20 @@ func (s *SessionStore) validateRetainedWorktreeProgramClaims(path, owner string)
 			return ErrWorktreeRecoveryConflict
 		}
 		for _, job := range program.Jobs {
-			if job.WorkspacePath == path && job.ChildSessionID != owner && job.CurrentSessionID != owner {
+			if job.WorkspacePath != path || job.ChildSessionID == owner || job.CurrentSessionID == owner {
+				continue
+			}
+			// Finder jobs borrow a workspace for read-only discovery; their
+			// recorded runtime path is not an exclusive worktree claim. Use
+			// the retained definition, not mutable child metadata or status.
+			readOnly := false
+			for _, definition := range program.Definition.Jobs {
+				if definition.ID == job.JobID && definition.AgentType == "finder" {
+					readOnly = true
+					break
+				}
+			}
+			if !readOnly {
 				return ErrWorktreeRecoveryConflict
 			}
 		}
