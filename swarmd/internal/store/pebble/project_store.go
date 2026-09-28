@@ -382,6 +382,8 @@ func (p *VideoProvenance) ClientSafeCopy() *VideoProvenance {
 		return nil
 	}
 	cp := p.Clone()
+	cp.HasInteraction = strings.TrimSpace(p.InteractionID) != ""
+	cp.HasProviderResource = strings.TrimSpace(p.ProviderResource) != ""
 	cp.CredentialID = ""
 	cp.CredentialVersion = ""
 	cp.InteractionID = ""

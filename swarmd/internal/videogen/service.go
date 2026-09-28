@@ -480,6 +480,7 @@ func (s *Service) GenerateManagedVideo(ctx context.Context, req ManagedVideoRequ
 		IsCombinedOutput:    isCombined,
 		AspectRatio:         preflight.AspectRatio,
 		Resolution:          preflight.Resolution,
+		DurationSeconds:     preflight.DurationSeconds,
 	}
 	result.Provenance = prov
 	result.ExtensionCount = extCount

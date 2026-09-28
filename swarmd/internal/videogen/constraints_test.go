@@ -158,6 +158,48 @@ func TestBuildVideoOperationConstraints(t *testing.T) {
 	if !c.Extend.RequiresVeoSource || !c.Extend.DisallowsVeoLiteSource || c.Extend.MaxExtensionCount != 20 {
 		t.Errorf("veo extend source constraints mismatch: %#v", c.Extend)
 	}
+	if c.Extend.RequiredSourceProvider != ProviderGoogleGemini {
+		t.Errorf("veo extend required provider = %q, want %q", c.Extend.RequiredSourceProvider, ProviderGoogleGemini)
+	}
+	if c.Extend.RequiredSourceTransport != pebblestore.VideoTransportGooglePredictLongRunning {
+		t.Errorf("veo extend required transport = %q, want %q", c.Extend.RequiredSourceTransport, pebblestore.VideoTransportGooglePredictLongRunning)
+	}
+	if !c.Extend.RequiresProviderResource || !c.Extend.RequiresOutputDigest || !c.Extend.RequiresKnownExtensionCount {
+		t.Errorf("veo extend required flags mismatch: resource=%v, digest=%v, count=%v",
+			c.Extend.RequiresProviderResource, c.Extend.RequiresOutputDigest, c.Extend.RequiresKnownExtensionCount)
+	}
+	if c.Extend.MaxReferenceAgeMs != 48*3600*1000 {
+		t.Errorf("veo extend max reference age = %d, want 48h", c.Extend.MaxReferenceAgeMs)
+	}
+	if len(c.Extend.ObservedDimensionPairs) != 2 {
+		t.Errorf("veo extend observed dimension pairs = %#v, want 2 pairs", c.Extend.ObservedDimensionPairs)
+	}
+
+	// Omni constraint checks: must NOT have global 20 count
+	omniRec := pebblestore.ModelCatalogRecord{
+		Provider: ProviderGoogleGemini,
+		Model:    "gemini-omni-1.1-flash",
+		CatalogModalities: pebblestore.ModelCatalogModalities{
+			Outputs: []string{"video"},
+		},
+		ProviderSpecific: []byte(`{"google":{"video_generation":{"settings":{"aspect_ratio":{"status":"verified","default_value":"16:9","supported_values":["16:9","9:16"]},"resolution":{"status":"verified","default_value":"720p","supported_values":["720p"]}},"features":{"conversational_editing":{"status":"verified","supported":true},"video_extension":{"status":"verified","supported":true}}}}}`),
+	}
+	omniC := BuildVideoOperationConstraints(ProviderGoogleGemini, "gemini-omni-1.1-flash", omniRec)
+	if omniC == nil {
+		t.Fatalf("expected non-nil constraints for stable omni")
+	}
+	if omniC.Extend.MaxExtensionCount != 0 {
+		t.Errorf("omni extend must NOT have global 20 extension count, got %d", omniC.Extend.MaxExtensionCount)
+	}
+	if !omniC.Extend.RequiresInteractionHandle {
+		t.Errorf("omni extend must require interaction handle")
+	}
+	if omniC.Edit.MaxExternalDurationSec != 10.0 {
+		t.Errorf("omni edit max external duration = %f, want 10.0", omniC.Edit.MaxExternalDurationSec)
+	}
+	if !omniC.Edit.RequiresHandleForLongVideo {
+		t.Errorf("omni edit requires_handle_for_long_video must be true")
+	}
 }
 
 func TestCheckSourceCompatibility(t *testing.T) {
@@ -250,6 +292,78 @@ func TestCheckSourceCompatibility(t *testing.T) {
 	res = CheckSourceCompatibility(ProviderGoogleGemini, "gemini-omni-1.1-flash", "edit", validOmniProv, 1280, 720, 10.0)
 	if !res.Compatible {
 		t.Fatalf("expected edit compatible with stable Omni, got reason: %s", res.Reason)
+	}
+
+	// 8. Sanitized provenance (interaction_id stripped, HasInteraction=true) -> compatible for Omni extend
+	sanitizedOmniProv := &pebblestore.VideoProvenance{
+		AccountScopeID:      "acc-1",
+		Provider:            ProviderGoogleGemini,
+		Model:               "gemini-omni-1.1-flash",
+		Transport:           pebblestore.VideoTransportGoogleInteractions,
+		HasInteraction:      true,
+		CreatedAt:           now - 1000,
+		ExpiresAt:           now + 3600*1000,
+		ExtensionCountKnown: true,
+	}
+	res = CheckSourceCompatibility(ProviderGoogleGemini, "gemini-omni-1.1-flash", "extend", sanitizedOmniProv, 1280, 720, 10.0)
+	if !res.Compatible {
+		t.Fatalf("expected sanitized Omni provenance (HasInteraction=true) to be compatible for extend, got reason: %s", res.Reason)
+	}
+
+	// 9. Sanitized provenance without handle -> rejected for Omni extend
+	missingHandleOmniProv := sanitizedOmniProv.Clone()
+	missingHandleOmniProv.HasInteraction = false
+	res = CheckSourceCompatibility(ProviderGoogleGemini, "gemini-omni-1.1-flash", "extend", missingHandleOmniProv, 1280, 720, 10.0)
+	if res.Compatible || !strings.Contains(res.Reason, "missing interaction handle") {
+		t.Fatalf("expected rejection for missing interaction handle, got: %#v", res)
+	}
+
+	// 10. Sanitized Veo provenance (ProviderResource stripped, HasProviderResource=true) -> compatible for Veo extend
+	sanitizedVeoProv := &pebblestore.VideoProvenance{
+		AccountScopeID:      "acc-1",
+		Provider:            ProviderGoogleGemini,
+		Model:               "veo-3.1-generate-preview",
+		Transport:           pebblestore.VideoTransportGooglePredictLongRunning,
+		HasProviderResource: true,
+		OutputDigestSHA256:  strings.Repeat("a", 64),
+		CreatedAt:           now - 1000,
+		ExpiresAt:           now + 3600*1000,
+		ExtensionCountKnown: true,
+		ObservedWidth:       1280,
+		ObservedHeight:      720,
+	}
+	res = CheckSourceCompatibility(ProviderGoogleGemini, "veo-3.1-generate-preview", "extend", sanitizedVeoProv, 1280, 720, 8.0)
+	if !res.Compatible {
+		t.Fatalf("expected sanitized Veo provenance (HasProviderResource=true) to be compatible for extend, got reason: %s", res.Reason)
+	}
+
+	// 11. Expired provenance -> rejected
+	expiredProv := validVeoProv.Clone()
+	expiredProv.ExpiresAt = now - 1000
+	res = CheckSourceCompatibility(ProviderGoogleGemini, "veo-3.1-generate-preview", "extend", expiredProv, 1280, 720, 8.0)
+	if res.Compatible || !strings.Contains(res.Reason, "expired") {
+		t.Fatalf("expected rejection for expired provenance, got: %#v", res)
+	}
+
+	// 12. Non-finite duration (NaN or negative) -> rejected
+	if err := ValidateSourceCompatibility(ProviderGoogleGemini, "veo-3.1-generate-preview", "extend", validVeoProv, 1280, 720, -5.0); err == nil {
+		t.Fatal("expected rejection for negative duration")
+	}
+
+	// 13. External edit without handle up to 10s allowed, >10s rejected
+	externalEditProv := &pebblestore.VideoProvenance{
+		AccountScopeID: "acc-1",
+		Provider:       ProviderGoogleGemini,
+		Model:          "gemini-omni-1.1-flash",
+		Transport:      pebblestore.VideoTransportGoogleInteractions,
+	}
+	res = CheckSourceCompatibility(ProviderGoogleGemini, "gemini-omni-1.1-flash", "edit", externalEditProv, 1280, 720, 10.0)
+	if !res.Compatible {
+		t.Fatalf("expected external edit up to 10s to be compatible, got: %s", res.Reason)
+	}
+	res = CheckSourceCompatibility(ProviderGoogleGemini, "gemini-omni-1.1-flash", "edit", externalEditProv, 1280, 720, 10.5)
+	if res.Compatible || !strings.Contains(res.Reason, "exceeds maximum allowed for external video editing (10s)") {
+		t.Fatalf("expected external edit >10s to be rejected, got: %#v", res)
 	}
 }
 

@@ -2412,18 +2412,10 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 								} else {
 									delivs[i].VideoProvenance = nil
 								}
-								if delivs[i].Model == "" {
-									delivs[i].Model = existingModel[delivs[i].ID]
-								}
-								if delivs[i].AspectRatio == "" {
-									delivs[i].AspectRatio = existingAR[delivs[i].ID]
-								}
-								if delivs[i].Resolution == "" {
-									delivs[i].Resolution = existingRes[delivs[i].ID]
-								}
-								if delivs[i].DurationSeconds <= 0 {
-									delivs[i].DurationSeconds = existingDur[delivs[i].ID]
-								}
+								delivs[i].Model = existingModel[delivs[i].ID]
+								delivs[i].AspectRatio = existingAR[delivs[i].ID]
+								delivs[i].Resolution = existingRes[delivs[i].ID]
+								delivs[i].DurationSeconds = existingDur[delivs[i].ID]
 							}
 							t.Deliverables = delivs
 						}
@@ -3204,7 +3196,11 @@ func sanitizeProjectTaskForClient(t *pebblestore.ProjectTaskRecord) *pebblestore
 			if dels[i].VideoProvenance != nil {
 				dels[i].VideoProvenance = dels[i].VideoProvenance.ClientSafeCopy()
 				if dels[i].VideoProvenance.Model != "" {
-					dels[i].Model = dels[i].VideoProvenance.Model
+					if dels[i].VideoProvenance.Provider != "" {
+						dels[i].Model = videoExecutionIdentity(dels[i].VideoProvenance.Provider, dels[i].VideoProvenance.Model)
+					} else {
+						dels[i].Model = dels[i].VideoProvenance.Model
+					}
 				}
 				if dels[i].VideoProvenance.AspectRatio != "" {
 					dels[i].AspectRatio = dels[i].VideoProvenance.AspectRatio
@@ -3212,8 +3208,8 @@ func sanitizeProjectTaskForClient(t *pebblestore.ProjectTaskRecord) *pebblestore
 				if dels[i].VideoProvenance.Resolution != "" {
 					dels[i].Resolution = dels[i].VideoProvenance.Resolution
 				}
-				if dels[i].VideoProvenance.ObservedDurationMs > 0 {
-					dels[i].DurationSeconds = int((dels[i].VideoProvenance.ObservedDurationMs + 500) / 1000)
+				if dels[i].VideoProvenance.DurationSeconds > 0 {
+					dels[i].DurationSeconds = dels[i].VideoProvenance.DurationSeconds
 				}
 			}
 		}

@@ -91,10 +91,21 @@ func (s *Server) generateImageMedia(
 		if resTag == "" && caps.Settings != nil {
 			if resSet, ok := caps.Settings["image_size"]; ok {
 				if defVal, ok := resSet.DefaultValue.(string); ok && strings.TrimSpace(defVal) != "" {
-					resTag = strings.TrimSpace(defVal)
+					settings["image_size"] = strings.TrimSpace(defVal)
 				}
 			}
 		}
+	}
+
+	actualModel := usedModel
+	if sel, err := s.imageGen.ResolveModelSelection(usedModel); err == nil {
+		provider := sel.Provider
+		if provider == imagegen.ProviderGoogleGemini {
+			provider = "google"
+		} else if provider == imagegen.ProviderCodexOpenAI {
+			provider = "codex"
+		}
+		actualModel = videoExecutionIdentity(provider, sel.Model)
 	}
 
 	genReq := imagegen.ManagedGenerateRequest{
@@ -109,10 +120,10 @@ func (s *Server) generateImageMedia(
 
 	res, err := s.imageGen.GenerateManagedImage(ctx, genReq)
 	if err != nil {
-		return "", usedModel, ar, resTag, err
+		return "", actualModel, ar, resTag, err
 	}
 	if len(res.Bytes) == 0 {
-		return "", usedModel, ar, resTag, errors.New("image generation returned empty image data")
+		return "", actualModel, ar, resTag, errors.New("image generation returned empty image data")
 	}
 
 	mime := res.MediaType
@@ -120,7 +131,7 @@ func (s *Server) generateImageMedia(
 		mime = "image/png"
 	}
 	mediaURL := fmt.Sprintf("data:%s;base64,%s", mime, base64.StdEncoding.EncodeToString(res.Bytes))
-	return mediaURL, usedModel, ar, resTag, nil
+	return mediaURL, actualModel, ar, resTag, nil
 }
 
 func isSupportedImageModel(s *Server, modelID string) bool {
@@ -1010,17 +1021,16 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 								t.Deliverables[slotIndex].Model = usedModel
 								t.Deliverables[slotIndex].AspectRatio = resolvedAR
 								t.Deliverables[slotIndex].Resolution = resolvedRes
-								resTag := resolvedRes
-								if resTag == "" {
-									resTag = "1K"
+								desc := fmt.Sprintf("Autonomous deliverable for %s in aspect ratio %s", t.Title, descAR)
+								if resolvedRes != "" {
+									desc = fmt.Sprintf("Autonomous deliverable for %s in aspect ratio %s (%s)", t.Title, descAR, resolvedRes)
 								}
-								descAR := resolvedAR
-								if descAR == "" {
-									descAR = ar
-								}
-								desc := fmt.Sprintf("Autonomous deliverable for %s in aspect ratio %s (%s)", t.Title, descAR, resTag)
 								if usedModel != "" {
-									desc = fmt.Sprintf("Autonomous deliverable for %s in aspect ratio %s (%s) using %s", t.Title, descAR, resTag, usedModel)
+									if resolvedRes != "" {
+										desc = fmt.Sprintf("Autonomous deliverable for %s in aspect ratio %s (%s) using %s", t.Title, descAR, resolvedRes, usedModel)
+									} else {
+										desc = fmt.Sprintf("Autonomous deliverable for %s in aspect ratio %s using %s", t.Title, descAR, usedModel)
+									}
 								}
 								t.Deliverables[slotIndex].Description = desc
 							}
@@ -1449,24 +1459,12 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 									t.Deliverables[slotIndex].Model = videoExecutionIdentity(vRes.Provenance.Provider, vRes.Provenance.Model)
 								}
 								t.Deliverables[slotIndex].AspectRatio = vRes.AspectRatio
-								if t.Deliverables[slotIndex].AspectRatio == "" {
-									t.Deliverables[slotIndex].AspectRatio = ar
-								}
 								t.Deliverables[slotIndex].Resolution = vRes.Resolution
-								if t.Deliverables[slotIndex].Resolution == "" {
-									t.Deliverables[slotIndex].Resolution = resTag
-								}
 								t.Deliverables[slotIndex].DurationSeconds = vRes.DurationSeconds
-								if t.Deliverables[slotIndex].DurationSeconds <= 0 {
-									t.Deliverables[slotIndex].DurationSeconds = durSec
-								}
 								if vRes.Provenance != nil {
-									if vRes.Provenance.AspectRatio == "" {
-										vRes.Provenance.AspectRatio = t.Deliverables[slotIndex].AspectRatio
-									}
-									if vRes.Provenance.Resolution == "" {
-										vRes.Provenance.Resolution = t.Deliverables[slotIndex].Resolution
-									}
+									vRes.Provenance.AspectRatio = vRes.AspectRatio
+									vRes.Provenance.Resolution = vRes.Resolution
+									vRes.Provenance.DurationSeconds = vRes.DurationSeconds
 								}
 								t.VideoProvenance = vRes.Provenance
 

@@ -41,15 +41,21 @@ func TestVideoProvenance_AspectRatioAndResolutionSerialization(t *testing.T) {
 		ExtensionCountKnown: true,
 		AspectRatio:         "16:9",
 		Resolution:          "720p",
+		DurationSeconds:     8,
 	}
 
 	if err := prov.Validate(); err != nil {
 		t.Fatalf("prov.Validate() failed: %v", err)
 	}
 
+	prov.HasInteraction = true
+	prov.HasProviderResource = true
 	prov.Normalize()
-	if prov.AspectRatio != "16:9" || prov.Resolution != "720p" {
-		t.Errorf("Normalize altered valid values: ar=%q, res=%q", prov.AspectRatio, prov.Resolution)
+	if prov.HasInteraction || prov.HasProviderResource {
+		t.Errorf("Normalize must clear HasInteraction and HasProviderResource from stored record")
+	}
+	if prov.AspectRatio != "16:9" || prov.Resolution != "720p" || prov.DurationSeconds != 8 {
+		t.Errorf("Normalize altered valid values: ar=%q, res=%q, dur=%d", prov.AspectRatio, prov.Resolution, prov.DurationSeconds)
 	}
 
 	// ClientSafeCopy must redact secrets/handles but preserve AspectRatio and Resolution
@@ -69,6 +75,25 @@ func TestVideoProvenance_AspectRatioAndResolutionSerialization(t *testing.T) {
 	}
 	if safe.ObservedDurationMs != 8000 {
 		t.Errorf("ClientSafeCopy lost observed duration: %d", safe.ObservedDurationMs)
+	}
+	if safe.DurationSeconds != 8 {
+		t.Errorf("ClientSafeCopy lost duration seconds: %d", safe.DurationSeconds)
+	}
+	if !safe.HasInteraction {
+		t.Errorf("ClientSafeCopy failed to project HasInteraction=true for non-empty InteractionID")
+	}
+	if !safe.HasProviderResource {
+		t.Errorf("ClientSafeCopy failed to project HasProviderResource=true for non-empty ProviderResource")
+	}
+
+	// Verify ClientSafeCopy with empty handles produces false
+	emptyHandlesProv := prov.Clone()
+	emptyHandlesProv.InteractionID = ""
+	emptyHandlesProv.ProviderResource = ""
+	emptySafe := emptyHandlesProv.ClientSafeCopy()
+	if emptySafe.HasInteraction || emptySafe.HasProviderResource {
+		t.Errorf("ClientSafeCopy with empty handles must project false: has_interaction=%v, has_provider_resource=%v",
+			emptySafe.HasInteraction, emptySafe.HasProviderResource)
 	}
 
 	// EqualVideoProvenance check

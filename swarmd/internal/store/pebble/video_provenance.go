@@ -109,6 +109,9 @@ type VideoProvenance struct {
 	IsCombinedOutput    bool             `json:"is_combined_output,omitempty"` // true if output already includes full video (e.g. Veo extension)
 	AspectRatio         string           `json:"aspect_ratio,omitempty"`
 	Resolution          string           `json:"resolution,omitempty"`
+	DurationSeconds     int              `json:"duration_seconds,omitempty"`
+	HasInteraction      bool             `json:"has_interaction,omitempty"`
+	HasProviderResource bool             `json:"has_provider_resource,omitempty"`
 }
 
 // Validate checks field constraints and verifies that no raw secrets are stored.
@@ -171,6 +174,9 @@ func (p *VideoProvenance) Validate() error {
 	if p.ObservedDurationMs < 0 || p.ObservedWidth < 0 || p.ObservedHeight < 0 {
 		return errors.New("video provenance observed properties cannot be negative")
 	}
+	if p.DurationSeconds < 0 {
+		return errors.New("video provenance duration_seconds cannot be negative")
+	}
 	if p.SourceLink != nil {
 		if err := p.SourceLink.Validate(); err != nil {
 			return fmt.Errorf("video provenance source link invalid: %w", err)
@@ -196,6 +202,8 @@ func (p *VideoProvenance) Normalize() {
 	p.ProviderResource = strings.TrimSpace(p.ProviderResource)
 	p.AspectRatio = strings.TrimSpace(p.AspectRatio)
 	p.Resolution = strings.TrimSpace(p.Resolution)
+	p.HasInteraction = false
+	p.HasProviderResource = false
 	if p.SourceLink != nil {
 		p.SourceLink.Normalize()
 	}
@@ -241,7 +249,10 @@ func EqualVideoProvenance(a, b *VideoProvenance) bool {
 		a.ExtensionCountKnown != b.ExtensionCountKnown ||
 		a.IsCombinedOutput != b.IsCombinedOutput ||
 		a.AspectRatio != b.AspectRatio ||
-		a.Resolution != b.Resolution {
+		a.Resolution != b.Resolution ||
+		a.DurationSeconds != b.DurationSeconds ||
+		a.HasInteraction != b.HasInteraction ||
+		a.HasProviderResource != b.HasProviderResource {
 		return false
 	}
 	return EqualVideoSourceLink(a.SourceLink, b.SourceLink)

@@ -1834,3 +1834,207 @@ func TestProjectOrchestrator_ClearContext_ResolvesPlanModelAndValidProfile(t *te
 		t.Fatalf("expected effective model claude-3-7-sonnet, got %q", effectivePref.Model)
 	}
 }
+
+// TestProjectTaskPatch_DeliverableClientMetadataSpoofFails proves:
+// - Requirement: Client PATCH on project tasks must NOT allow spoofing of server-generated deliverable metadata
+//   (Model, AspectRatio, Resolution, DurationSeconds, VideoProvenance). Server-generated metadata must be retained
+//   by deliverable ID, and unknown IDs must have these fields cleared.
+// - Threat/regression: Malicious or misbehaving client modifies deliverable model/settings or provenance via PATCH.
+// - Boundary: Server.handleProjectTask PATCH in projects.go.
+// - Test layer: Direct HTTP endpoint boundary asserting retention of server-generated metadata and rejection of spoofed fields.
+func TestProjectTaskPatch_DeliverableClientMetadataSpoofFails(t *testing.T) {
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	ss := store.NewSessionStore(db)
+	el, err := store.NewEventLog(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{sessions: sessionruntime.NewService(ss, el)}
+	h := s.apiMux()
+
+	p := identity.Principal{Type: "user", UserID: "owner", AccountScopeID: "account"}
+	call := func(method, path, body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, ProjectsPath+path, strings.NewReader(body))
+		ctx := context.WithValue(r.Context(), productPrincipalRequestContextKey, p)
+		tokenRec := &store.ScopedTokenRecord{
+			AccountScopeID: "account",
+			UserID:         "owner",
+			Scopes:         []string{"sessions:read", "sessions:write", "projects:read", "projects:write"},
+		}
+		ctx = context.WithValue(ctx, productScopedTokenRequestContextKey, tokenRec)
+		r = r.WithContext(ctx)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w
+	}
+
+	// 1. Create a project
+	proj := &store.ProjectRecord{
+		ID:        "proj-spoof-test",
+		AccountID: p.AccountScopeID,
+		Name:      "Spoof Defense Project",
+	}
+	if err := ss.PutProject(p.AccountScopeID, proj); err != nil {
+		t.Fatalf("put project: %v", err)
+	}
+
+	// 2. Put a task with a server-authored deliverable
+	initialProv := &store.VideoProvenance{
+		AccountScopeID:      p.AccountScopeID,
+		Provider:            "google",
+		Model:               "veo-3.1-generate-preview",
+		Transport:           store.VideoTransportGooglePredictLongRunning,
+		Operation:           store.VideoOperationCreate,
+		InteractionID:       "secret-interaction-123",
+		ProviderResource:    "secret-resource-456",
+		AspectRatio:         "16:9",
+		Resolution:          "720p",
+		DurationSeconds:     8,
+		ObservedDurationMs:  8000,
+		ExtensionCountKnown: true,
+	}
+	task := &store.ProjectTaskRecord{
+		ID:        "task-spoof-1",
+		ProjectID: proj.ID,
+		AccountID: p.AccountScopeID,
+		Title:     "Original Task",
+		Status:    "in_progress",
+		Agent:     "video",
+		Model:     "veo-3.1-generate-preview",
+		Deliverables: []store.ProjectTaskDeliverable{
+			{
+				ID:              "deliv-legit-1",
+				Title:           "Original Deliverable",
+				Kind:            "video",
+				Status:          "ready",
+				Model:           "google:veo-3.1-generate-preview",
+				AspectRatio:     "16:9",
+				Resolution:      "720p",
+				DurationSeconds: 8,
+				VideoProvenance: initialProv,
+			},
+		},
+	}
+	if err := ss.PutProjectTask(p.AccountScopeID, task); err != nil {
+		t.Fatalf("put project task: %v", err)
+	}
+
+	// 3. Client attempts to spoof deliverable fields and inject an unknown deliverable
+	patchBody := `{
+		"deliverables": [
+			{
+				"id": "deliv-legit-1",
+				"title": "Renamed Deliverable",
+				"model": "spoofed-openrouter:super-model",
+				"aspect_ratio": "1:1",
+				"resolution": "4K",
+				"duration_seconds": 999,
+				"video_provenance": {
+					"account_scope_id": "attacker-account",
+					"provider": "attacker-provider",
+					"model": "fake-model"
+				}
+			},
+			{
+				"id": "deliv-unknown-2",
+				"title": "Injected Deliverable",
+				"model": "injected-model",
+				"aspect_ratio": "9:16",
+				"resolution": "1080p",
+				"duration_seconds": 60,
+				"video_provenance": {
+					"provider": "fake"
+				}
+			}
+		]
+	}`
+
+	w := call(http.MethodPatch, "/"+proj.ID+"/tasks/"+task.ID, patchBody)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 on task patch, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// 4. Verify in storage that existing deliverable metadata is completely unchanged
+	updated, ok, err := ss.GetProjectTask(p.AccountScopeID, proj.ID, task.ID)
+	if err != nil || !ok {
+		t.Fatalf("get project task failed: ok=%v, err=%v", ok, err)
+	}
+	if len(updated.Deliverables) != 2 {
+		t.Fatalf("expected 2 deliverables, got %d", len(updated.Deliverables))
+	}
+
+	d0 := updated.Deliverables[0]
+	if d0.ID != "deliv-legit-1" {
+		t.Fatalf("expected d0 id deliv-legit-1, got %q", d0.ID)
+	}
+	if d0.Title != "Renamed Deliverable" {
+		t.Errorf("title update should succeed, got %q", d0.Title)
+	}
+	// Spoofed fields must be ignored and retain original server metadata
+	if d0.Model != "google:veo-3.1-generate-preview" {
+		t.Errorf("Model was overwritten by client spoof: got %q, want google:veo-3.1-generate-preview", d0.Model)
+	}
+	if d0.AspectRatio != "16:9" {
+		t.Errorf("AspectRatio was overwritten by client spoof: got %q, want 16:9", d0.AspectRatio)
+	}
+	if d0.Resolution != "720p" {
+		t.Errorf("Resolution was overwritten by client spoof: got %q, want 720p", d0.Resolution)
+	}
+	if d0.DurationSeconds != 8 {
+		t.Errorf("DurationSeconds was overwritten by client spoof: got %d, want 8", d0.DurationSeconds)
+	}
+	if d0.VideoProvenance == nil || d0.VideoProvenance.InteractionID != "secret-interaction-123" {
+		t.Errorf("VideoProvenance was altered: got %#v", d0.VideoProvenance)
+	}
+
+	// Unknown deliverable ID must have server metadata cleared
+	d1 := updated.Deliverables[1]
+	if d1.ID != "deliv-unknown-2" {
+		t.Fatalf("expected d1 id deliv-unknown-2, got %q", d1.ID)
+	}
+	if d1.Model != "" {
+		t.Errorf("unknown deliverable Model must be cleared, got %q", d1.Model)
+	}
+	if d1.AspectRatio != "" {
+		t.Errorf("unknown deliverable AspectRatio must be cleared, got %q", d1.AspectRatio)
+	}
+	if d1.Resolution != "" {
+		t.Errorf("unknown deliverable Resolution must be cleared, got %q", d1.Resolution)
+	}
+	if d1.DurationSeconds != 0 {
+		t.Errorf("unknown deliverable DurationSeconds must be 0, got %d", d1.DurationSeconds)
+	}
+	if d1.VideoProvenance != nil {
+		t.Errorf("unknown deliverable VideoProvenance must be nil, got %#v", d1.VideoProvenance)
+	}
+
+	// 5. Verify sanitized response returned to client
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	taskMap := resp["task"].(map[string]any)
+	delivsList := taskMap["deliverables"].([]any)
+	d0Map := delivsList[0].(map[string]any)
+	if d0Map["model"] != "google:veo-3.1-generate-preview" {
+		t.Errorf("response d0 model mismatch: got %v", d0Map["model"])
+	}
+	provMap := d0Map["video_provenance"].(map[string]any)
+	if provMap["interaction_id"] != nil {
+		t.Errorf("interaction_id leaked in response: %v", provMap["interaction_id"])
+	}
+	if provMap["has_interaction"] != true {
+		t.Errorf("expected has_interaction=true in sanitized response, got %v", provMap["has_interaction"])
+	}
+	if provMap["has_provider_resource"] != true {
+		t.Errorf("expected has_provider_resource=true in sanitized response, got %v", provMap["has_provider_resource"])
+	}
+	if int(provMap["duration_seconds"].(float64)) != 8 {
+		t.Errorf("expected duration_seconds=8 in sanitized response, got %v", provMap["duration_seconds"])
+	}
+}

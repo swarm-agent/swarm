@@ -451,7 +451,11 @@ func (s *Server) handleSessionsV3Artifacts(w http.ResponseWriter, r *http.Reques
 					itemDur := lineage.DurationSeconds
 					if lineage.VideoProvenance != nil {
 						if lineage.VideoProvenance.Model != "" {
-							itemModel = lineage.VideoProvenance.Model
+							if lineage.VideoProvenance.Provider != "" {
+								itemModel = videoExecutionIdentity(lineage.VideoProvenance.Provider, lineage.VideoProvenance.Model)
+							} else {
+								itemModel = lineage.VideoProvenance.Model
+							}
 						}
 						if lineage.VideoProvenance.AspectRatio != "" {
 							itemAR = lineage.VideoProvenance.AspectRatio
@@ -459,15 +463,12 @@ func (s *Server) handleSessionsV3Artifacts(w http.ResponseWriter, r *http.Reques
 						if lineage.VideoProvenance.Resolution != "" {
 							itemRes = lineage.VideoProvenance.Resolution
 						}
-						if lineage.VideoProvenance.ObservedDurationMs > 0 {
-							itemDur = int((lineage.VideoProvenance.ObservedDurationMs + 500) / 1000)
+						if lineage.VideoProvenance.DurationSeconds > 0 {
+							itemDur = lineage.VideoProvenance.DurationSeconds
 						}
 					}
 					if itemAR == "" && variant.OutputRequirements != nil && variant.OutputRequirements.AspectRatio != "" {
 						itemAR = variant.OutputRequirements.AspectRatio
-					}
-					if itemRes == "" && variant.OutputRequirements != nil && variant.OutputRequirements.ResolutionSource != "" {
-						itemRes = variant.OutputRequirements.ResolutionSource
 					}
 					kind, previewable := sessionsV3ArtifactPresentation(variant)
 					if variant.Status == pebblestore.SessionArtifactStatusReady {
