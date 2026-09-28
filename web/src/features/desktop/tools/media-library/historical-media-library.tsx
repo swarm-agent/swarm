@@ -538,20 +538,23 @@ export function HistoricalMediaLibrary({
       </div>
 
       {/* Modal Media Viewer */}
-      <MediaViewerModal
-        item={currentActiveItem}
-        items={filteredItems}
-        threadItems={items}
-        onClose={() => setActiveItem(null)}
-        onSelect={(item) => setActiveItem(item)}
-        onOpenSession={onOpenSession}
-        isTagged={currentActiveItem ? taggedMediaIds?.has(currentActiveItem.id) : false}
-        onToggleTag={onTagMedia}
-        onGenerate={onGenerate}
-        generationJobs={generationJobs}
-        isGenerating={isGenerating}
-        initialQuickRouteMode={initialQuickRouteMode}
-      />
+      {currentActiveItem && (
+        <MediaViewerModal
+          key={currentActiveItem.id}
+          item={currentActiveItem}
+          items={filteredItems}
+          threadItems={items}
+          onClose={() => setActiveItem(null)}
+          onSelect={(item) => setActiveItem(item)}
+          onOpenSession={onOpenSession}
+          isTagged={currentActiveItem ? taggedMediaIds?.has(currentActiveItem.id) : false}
+          onToggleTag={onTagMedia}
+          onGenerate={onGenerate}
+          generationJobs={generationJobs}
+          isGenerating={isGenerating}
+          initialQuickRouteMode={initialQuickRouteMode}
+        />
+      )}
     </div>
   )
 }

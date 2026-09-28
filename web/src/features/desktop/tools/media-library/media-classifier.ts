@@ -153,9 +153,11 @@ export function toMediaLibraryItem(entry: DesktopV3ArtifactCatalogEntry, referen
     durationSeconds = (entry as any).duration_seconds
   } else if (typeof (entry as any).metadata?.duration_seconds === 'number' && (entry as any).metadata.duration_seconds > 0) {
     durationSeconds = (entry as any).metadata.duration_seconds
+  } else if (typeof videoProvenance?.duration_seconds === 'number' && videoProvenance.duration_seconds > 0) {
+    durationSeconds = videoProvenance.duration_seconds
   } else if (videoProvenance?.observed_duration_ms && videoProvenance.observed_duration_ms > 0 && !videoProvenance.is_combined_output) {
-    // Do not infer generation duration from total extended output when is_combined_output is true!
-    durationSeconds = Math.round((videoProvenance.observed_duration_ms + 500) / 1000)
+    // Exact generation duration without double rounding
+    durationSeconds = Math.round(videoProvenance.observed_duration_ms / 1000)
   }
 
   return {

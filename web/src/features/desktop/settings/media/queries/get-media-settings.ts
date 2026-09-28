@@ -19,9 +19,14 @@ export interface VideoEditConstraint {
   supported: boolean
   reason?: string
   supports_duration?: boolean
+  max_external_duration_sec?: number
   max_source_duration_sec?: number
   requires_handle_match?: boolean
+  requires_handle_for_long_video?: boolean
+  requires_interaction_handle?: boolean
   supported_providers?: string[]
+  required_source_provider?: string
+  required_source_transport?: string
   source_model_match?: string
 }
 
@@ -41,6 +46,16 @@ export interface VideoExtendConstraint {
   disallows_veo_lite_source?: boolean
   source_observed_resolutions?: string[]
   requires_source_provenance?: boolean
+  required_source_provider?: string
+  required_source_transport?: string
+  requires_provider_resource?: boolean
+  requires_interaction_handle?: boolean
+  requires_output_digest?: boolean
+  requires_known_extension_count?: boolean
+  max_reference_age_ms?: number
+  allowed_source_models?: string[]
+  disallowed_source_models?: string[]
+  observed_dimension_pairs?: Array<[number, number]>
 }
 
 export interface VideoOperationConstraints {

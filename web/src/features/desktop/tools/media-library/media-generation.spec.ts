@@ -965,6 +965,8 @@ test('media provenance integrity: Veo 3.1 standard locks duration to 8s, resolut
       observed_duration_ms: 8000,
       extension_count: 0,
       extension_count_known: true,
+      has_provider_resource: true,
+      output_digest_sha256: 'a'.repeat(64),
       aspect_ratio: '16:9',
       resolution: '720p',
     },
@@ -1054,10 +1056,12 @@ test('media provenance integrity: stable Gemini Omni allows extension and editin
       transport: 'google_interactions',
       operation: 'create',
       created_at: 1000,
-      interaction_id: 'interactions/omni-handle-123',
+      has_interaction: true,
       observed_width: 1280,
       observed_height: 720,
       observed_duration_ms: 10000,
+      extension_count: 0,
+      extension_count_known: true,
       aspect_ratio: '16:9',
       resolution: '720p',
     },
@@ -1138,13 +1142,35 @@ test('media provenance integrity: Preview Omni rejects extension and fine-tuning
     },
   }
 
-  const extSupport = evaluateVideoActionSupport('next_scene', previewOmniItem, undefined)
-  assert.equal(extSupport.supported, false)
-  assert.match(extSupport.reason || '', /stable model \(gemini-omni-1.1-flash\)/i)
+  // Preview Omni catalog option with server constraints (supported: false)
+  const previewOmniModelOption: MediaCatalogModelOption = {
+    id: 'gemini-omni-preview',
+    provider: 'google',
+    model: 'gemini-omni-preview',
+    display_name: 'Gemini Omni Preview',
+    kind: 'video_generation',
+    ready: true,
+    constraints: {
+      model: 'gemini-omni-preview',
+      provider: 'google',
+      create: { supported: true },
+      edit: { supported: false, reason: 'Video editing is only supported on stable Gemini Omni (gemini-omni-1.1-flash); "gemini-omni-preview" is not supported' },
+      extend: { supported: false, reason: 'Omni video extension is only supported on stable model gemini-omni-1.1-flash; "gemini-omni-preview" is not eligible' },
+    },
+  }
 
-  const editSupport = evaluateVideoActionSupport('fine_tune', previewOmniItem, undefined)
+  const extSupport = evaluateVideoActionSupport('next_scene', previewOmniItem, previewOmniModelOption)
+  assert.equal(extSupport.supported, false)
+  assert.match(extSupport.reason || '', /stable model|not eligible/i)
+
+  const editSupport = evaluateVideoActionSupport('fine_tune', previewOmniItem, previewOmniModelOption)
   assert.equal(editSupport.supported, false)
-  assert.match(editSupport.reason || '', /stable Gemini Omni/i)
+  assert.match(editSupport.reason || '', /stable Gemini Omni|not supported/i)
+
+  // When modelOption has no constraints or is undefined, fails closed with clear reason
+  const failClosedExt = evaluateVideoActionSupport('next_scene', previewOmniItem, undefined)
+  assert.equal(failClosedExt.supported, false)
+  assert.match(failClosedExt.reason || '', /constraints unavailable/i)
 })
 
 test('media provenance integrity: missing or expired provenance blocks next scene', () => {
@@ -1170,7 +1196,7 @@ test('media provenance integrity: missing or expired provenance blocks next scen
     videoProvenance: null,
   }
 
-  const missingResult = evaluateVideoActionSupport('next_scene', missingProvItem, undefined)
+  const missingResult = evaluateVideoActionSupport('next_scene', missingProvItem, veoStandardModelOption)
   assert.equal(missingResult.supported, false)
   assert.match(missingResult.reason || '', /requires verified source provenance/i)
 
@@ -1187,7 +1213,7 @@ test('media provenance integrity: missing or expired provenance blocks next scen
       expires_at: 5000,
     },
   }
-  const expiredResult = evaluateVideoActionSupport('next_scene', expiredItem, undefined, { nowMs: 6000 })
+  const expiredResult = evaluateVideoActionSupport('next_scene', expiredItem, veoStandardModelOption, { nowMs: 6000 })
   assert.equal(expiredResult.supported, false)
   assert.match(expiredResult.reason || '', /has expired/i)
 
@@ -1204,7 +1230,7 @@ test('media provenance integrity: missing or expired provenance blocks next scen
       expires_at: 1000 + 100 * 3600 * 1000,
     },
   }
-  const oldResult = evaluateVideoActionSupport('next_scene', oldItem, undefined, { nowMs: 1000 + 49 * 3600 * 1000 })
+  const oldResult = evaluateVideoActionSupport('next_scene', oldItem, veoStandardModelOption, { nowMs: 1000 + 49 * 3600 * 1000 })
   assert.equal(oldResult.supported, false)
   assert.match(oldResult.reason || '', /has expired \(exceeds 48-hour validity period\)/i)
 })
@@ -1244,7 +1270,7 @@ test('media provenance integrity: non-720p observed dimensions reject Veo extens
     },
   }
 
-  const result = evaluateVideoActionSupport('next_scene', hdItem, undefined, { nowMs: 2000 })
+  const result = evaluateVideoActionSupport('next_scene', hdItem, veoStandardModelOption, { nowMs: 2000 })
   assert.equal(result.supported, false)
   assert.match(result.reason || '', /requires observed 720p dimensions/i)
 })
@@ -1269,10 +1295,17 @@ test('media provenance integrity: resolveVideoContinuationModel never silently r
   assert.equal(unknownRes.isUnknown, true)
   assert.equal(unknownRes.modelOption, undefined)
 
-  // Unconfigured source string preserves original identifier
-  const customRes = resolveVideoContinuationModel('custom-model-id', videoCatalog)
-  assert.equal(customRes.modelId, 'custom-model-id')
-  assert.equal(customRes.isUnknown, false)
+  // Ambiguous bare model present under multiple providers does NOT silently match
+  const multiProviderCatalog: MediaCatalogModelOption[] = [
+    { id: 'google:veo-3.1', provider: 'google', model: 'veo-3.1', display_name: 'Google Veo 3.1', kind: 'video_generation', ready: true },
+    { id: 'openrouter:google/veo-3.1', provider: 'openrouter', model: 'google/veo-3.1', display_name: 'OpenRouter Veo', kind: 'video_generation', ready: true },
+  ]
+  const ambiguousRes = resolveVideoContinuationModel('veo-3.1', multiProviderCatalog)
+  assert.equal(ambiguousRes.modelOption, undefined, 'Ambiguous bare model across multiple providers must not silently resolve')
+  // But if sourceProvider is specified, matches the right provider
+  const qualifiedRes = resolveVideoContinuationModel('veo-3.1', multiProviderCatalog, 'google')
+  assert.equal(qualifiedRes.modelId, 'google:veo-3.1')
+  assert.equal(qualifiedRes.modelOption?.provider, 'google')
 })
 
 test('media provenance integrity: extractGenerationDurationSeconds never derives generation duration from extended combined output', () => {

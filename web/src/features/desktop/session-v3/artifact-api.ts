@@ -683,6 +683,9 @@ export interface VideoProvenance {
   is_combined_output?: boolean
   aspect_ratio?: string
   resolution?: string
+  duration_seconds?: number
+  has_interaction?: boolean
+  has_provider_resource?: boolean
 }
 
 function normalizeVideoProvenance(value: unknown): VideoProvenance | null {
@@ -732,6 +735,9 @@ function normalizeVideoProvenance(value: unknown): VideoProvenance | null {
     is_combined_output: record.is_combined_output === true,
     aspect_ratio: artifactCatalogString(record.aspect_ratio) || undefined,
     resolution: artifactCatalogString(record.resolution) || undefined,
+    duration_seconds: typeof record.duration_seconds === 'number' && Number.isFinite(record.duration_seconds) && record.duration_seconds > 0 ? record.duration_seconds : undefined,
+    has_interaction: record.has_interaction === true,
+    has_provider_resource: record.has_provider_resource === true,
   }
 }
 

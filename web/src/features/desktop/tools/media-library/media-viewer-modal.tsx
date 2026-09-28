@@ -148,7 +148,15 @@ export function MediaViewerModal({
 
   const sourceModelOption = useMemo(() => {
     if (!sourceModel) return undefined
+    const pNorm = (sourceProvenance?.provider || '').trim().toLowerCase()
     if (isVideoSource) {
+      if (pNorm) {
+        const provMatch = allVideoModels.find(
+          (m) => (m.provider || '').toLowerCase().trim() === pNorm &&
+                 (m.id.toLowerCase() === sourceModel.toLowerCase() || m.model.toLowerCase() === sourceModel.toLowerCase()),
+        )
+        if (provMatch) return provMatch
+      }
       return allVideoModels.find(
         (m) => m.id.toLowerCase() === sourceModel.toLowerCase() || m.model.toLowerCase() === sourceModel.toLowerCase(),
       )
@@ -156,7 +164,7 @@ export function MediaViewerModal({
     return allImageModels.find(
       (m) => m.id.toLowerCase() === sourceModel.toLowerCase() || m.model.toLowerCase() === sourceModel.toLowerCase(),
     )
-  }, [allImageModels, allVideoModels, isVideoSource, sourceModel])
+  }, [allImageModels, allVideoModels, isVideoSource, sourceModel, sourceProvenance])
 
   const defaultModeForKind: QuickRouteMode = useMemo(() => {
     if (!item) return 'fine_tune'
@@ -241,8 +249,26 @@ export function MediaViewerModal({
       }
       return []
     }
+    if (isImageSource && (activeQuickRouteMode === 'fine_tune' || activeQuickRouteMode === 'iterate')) {
+      const imgs = mediaCatalog?.image_models ?? []
+      if (sourceModel && !imgs.some((m) => m.id === sourceModel || m.model === sourceModel)) {
+        return [
+          {
+            id: sourceModel,
+            provider: 'unknown',
+            model: sourceModel,
+            display_name: `${sourceModel} (unavailable)`,
+            kind: 'image_generation',
+            ready: false,
+            reason: 'Model is unavailable or not configured in catalog',
+          },
+          ...imgs,
+        ]
+      }
+      return imgs
+    }
     return mediaCatalog?.image_models ?? []
-  }, [activeQuickRouteMode, isVideoSource, mediaCatalog, sourceModel, sourceModelOption, sourceProvenance])
+  }, [activeQuickRouteMode, isImageSource, isVideoSource, mediaCatalog, sourceModel, sourceModelOption, sourceProvenance])
 
   const defaultImageModel =
     uiSettings?.tools?.image?.default_model ||
@@ -353,7 +379,7 @@ export function MediaViewerModal({
       // For video continuation / fine-tune: keep exact generating model!
       // Unknown source stays explicitly unknown; don't silently replace unavailable known model with default.
       if (item.model && item.model.trim()) {
-        const cont = resolveVideoContinuationModel(item.model, allVideoModels)
+        const cont = resolveVideoContinuationModel(item.model, allVideoModels, sourceProvenance?.provider)
         chosenModelId = cont.modelId
       } else {
         chosenModelId = ''
@@ -367,7 +393,8 @@ export function MediaViewerModal({
         })
         chosenModelId = resolveInitialModel(undefined, toVidModels, defaultVideoGenerationModel)
       } else {
-        chosenModelId = resolveInitialModel(item.model, mediaCatalog.image_models ?? [], defaultImageModel)
+        // Image editing: opening image with saved model unavailable must not fallback silently to default!
+        chosenModelId = resolveInitialModel(item.model, mediaCatalog.image_models ?? [], defaultImageModel, { preserveUnavailable: true })
       }
     }
 
@@ -385,14 +412,16 @@ export function MediaViewerModal({
       item.aspectRatio,
       genOpts?.aspect_ratios,
       genOpts?.default_ratio,
-    ) ?? ''
+      { preserveUnsupported: true },
+    ) ?? (item.aspectRatio || '')
     setAspectRatio(initRatio)
 
     const initRes = locks?.resolution ?? resolveInitialSetting(
       item.resolution,
       genOpts?.resolutions,
       genOpts?.default_resolution,
-    ) ?? ''
+      { preserveUnsupported: true },
+    ) ?? (item.resolution || '')
     setResolution(initRes)
 
     const rawDur = item.durationSeconds ?? (item.videoProvenance && !item.videoProvenance.is_combined_output && item.videoProvenance.observed_duration_ms ? Math.round(item.videoProvenance.observed_duration_ms / 1000) : undefined)
@@ -475,7 +504,7 @@ export function MediaViewerModal({
           const chosen = resolveInitialModel(undefined, toVidModels, defaultVideoGenerationModel)
           setSelectedModel(chosen)
         } else {
-          const chosen = resolveInitialModel(item?.model, mediaCatalog?.image_models ?? [], defaultImageModel)
+          const chosen = resolveInitialModel(item?.model, mediaCatalog?.image_models ?? [], defaultImageModel, { preserveUnavailable: true })
           setSelectedModel(chosen)
         }
       }
@@ -530,15 +559,31 @@ export function MediaViewerModal({
     const prompt = quickRoutePrompt.trim()
     if (!prompt) return
 
-    isSubmittingRef.current = true
-    setLocalSubmitting(true)
-    setSubmitError(null)
-
     const generationSettings: MediaGenerationSettings = {
       aspectRatio: aspectRatio.trim() ? aspectRatio.trim() : undefined,
       resolution: resolution.trim() ? resolution.trim() : undefined,
       durationSeconds: isVideoAction && durationSeconds && durationSeconds > 0 ? durationSeconds : undefined,
     }
+
+    // Preflight validation gate
+    const validation = validateMediaGenerationRequest({
+      action: activeQuickRouteMode,
+      item,
+      model: selectedModel,
+      modelOption: selectedModelOption,
+      prompt,
+      settings: generationSettings,
+      variantCount: activeQuickRouteMode === 'iterate' ? variantCount : 1,
+    })
+
+    if (!validation.valid) {
+      setSubmitError(validation.error || 'Generation request cannot be submitted.')
+      return
+    }
+
+    isSubmittingRef.current = true
+    setLocalSubmitting(true)
+    setSubmitError(null)
 
     const requestId = crypto.randomUUID()
     const pendingTurn: MediaGenerationJob = {
@@ -699,13 +744,30 @@ export function MediaViewerModal({
     document.body.removeChild(link)
   }
 
+  const activeValidation = useMemo(() => {
+    if (!item || !selectedModelOption) return { valid: false, error: 'Model selection required.' }
+    return validateMediaGenerationRequest({
+      action: activeQuickRouteMode,
+      item,
+      model: selectedModel,
+      modelOption: selectedModelOption,
+      prompt: quickRoutePrompt.trim() || 'preview',
+      settings: {
+        aspectRatio: aspectRatio.trim() ? aspectRatio.trim() : undefined,
+        resolution: resolution.trim() ? resolution.trim() : undefined,
+        durationSeconds: isVideoAction && durationSeconds && durationSeconds > 0 ? durationSeconds : undefined,
+      },
+      variantCount: activeQuickRouteMode === 'iterate' ? variantCount : 1,
+    })
+  }, [activeQuickRouteMode, aspectRatio, durationSeconds, isVideoAction, item, quickRoutePrompt, resolution, selectedModel, selectedModelOption, variantCount])
+
   const isWorking = isGenerating || localSubmitting
   const canSubmit =
     !isSubmittingRef.current &&
     !isWorking &&
     !showingRequest &&
     Boolean(quickRoutePrompt.trim()) &&
-    Boolean(onGenerate && selectedModelOption?.ready && hasInitializedSettingsRef.current)
+    Boolean(onGenerate && selectedModelOption?.ready && hasInitializedSettingsRef.current && currentActionSupport.supported && activeValidation.valid)
 
   return (
     <div
@@ -1392,9 +1454,15 @@ export function MediaViewerModal({
                     title={
                       !selectedModel
                         ? 'Select an active model'
-                        : !quickRoutePrompt.trim()
-                          ? 'Enter prompt instructions to submit'
-                          : 'Generate revision'
+                        : !selectedModelOption?.ready
+                          ? 'Selected model is unavailable'
+                          : !currentActionSupport.supported
+                            ? (currentActionSupport.reason || 'Action is not supported for this media')
+                            : !activeValidation.valid
+                              ? (activeValidation.error || 'Invalid configuration')
+                              : !quickRoutePrompt.trim()
+                                ? 'Enter prompt instructions to submit'
+                                : 'Generate revision'
                     }
                   >
                     {isWorking ? (

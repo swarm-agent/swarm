@@ -293,19 +293,19 @@ function deliverableToMediaItem(
   const dayKey = safeIsoDayKey(createdDate)
 
     const prov = (d as any).videoProvenance || (d as any).video_provenance || null
-    const model = prov?.model || (d as any).model || parentTask?.model || undefined
-    const aspectRatio = prov?.aspect_ratio || (d as any).aspectRatio || (d as any).aspect_ratio || d.videoAspect || parentTask?.aspectRatio || undefined
-    const resolution = prov?.resolution || (d as any).resolution || parentTask?.resolution || undefined
+    const model = prov?.model || (d as any).model || undefined
+    const aspectRatio = prov?.aspect_ratio || (d as any).aspectRatio || (d as any).aspect_ratio || d.videoAspect || undefined // Deliverable actual aspect ratio only; parentTask?.aspectRatio is legacy requested settings
+    const resolution = prov?.resolution || (d as any).resolution || undefined // Deliverable actual resolution only; parentTask?.resolution is legacy requested settings
     let durationSeconds: number | undefined = undefined
     if (typeof (d as any).durationSeconds === 'number' && (d as any).durationSeconds > 0) {
       durationSeconds = (d as any).durationSeconds
     } else if (typeof (d as any).duration_seconds === 'number' && (d as any).duration_seconds > 0) {
       durationSeconds = (d as any).duration_seconds
+    } else if (typeof prov?.duration_seconds === 'number' && prov.duration_seconds > 0) {
+      durationSeconds = prov.duration_seconds
     } else if (prov?.observed_duration_ms && prov.observed_duration_ms > 0 && !prov.is_combined_output) {
-      durationSeconds = Math.round((prov.observed_duration_ms + 500) / 1000)
-    } else if (typeof parentTask?.durationSeconds === 'number' && parentTask.durationSeconds > 0) {
-      durationSeconds = parentTask.durationSeconds
-    }
+      durationSeconds = Math.round(prov.observed_duration_ms / 1000)
+    } // Deliverable actual durationSeconds only; parentTask?.durationSeconds is legacy requested settings
 
     const durationMs = prov?.observed_duration_ms && prov.observed_duration_ms > 0
       ? prov.observed_duration_ms
@@ -330,7 +330,7 @@ function deliverableToMediaItem(
     workspaceName: project?.name || 'Project Canvas',
     iterationGroupId: parentTask?.id,
     iterationGroupTitle: parentTask?.title,
-    dimensions: d.videoAspect || '1:1',
+    dimensions: d.videoAspect || aspectRatio || undefined,
     durationMs,
     directUrl: d.previewUrl || d.mediaUrl || '',
     parentId: d.parentDeliverableId || (d as any).parent_deliverable_id,
@@ -340,6 +340,12 @@ function deliverableToMediaItem(
     resolution,
     durationSeconds,
     videoProvenance: prov,
+    legacyRequestedSettings: parentTask ? {
+      model: parentTask.model,
+      aspectRatio: parentTask.aspectRatio,
+      resolution: parentTask.resolution,
+      durationSeconds: parentTask.durationSeconds,
+    } : undefined,
     artifact: {
       artifactId: d.id,
       sessionId: parentTask?.sessionId || '',
@@ -2687,12 +2693,12 @@ export function OrchestrateView({
             previewUrl: d.media_url || d.preview_url || (d.thumbnail && (d.thumbnail.startsWith('data:') || d.thumbnail.startsWith('http') || d.thumbnail.startsWith('/')) ? d.thumbnail : undefined),
             mediaUrl: d.media_url,
             thumbnailType: (d.thumbnail || 'cyber_lattice') as any,
-            videoAspect: d.aspect_ratio || d.aspectRatio || t.aspect_ratio || '16:9',
+            videoAspect: d.aspect_ratio || d.aspectRatio || undefined,
             prompt: t.subtitle || t.title,
-            model: d.model || t.model,
-            aspectRatio: d.aspect_ratio || d.aspectRatio || t.aspect_ratio,
-            resolution: d.resolution || t.resolution,
-            durationSeconds: d.duration_seconds || d.durationSeconds || t.duration_seconds || t.durationSeconds,
+            model: d.model || undefined,
+            aspectRatio: d.aspect_ratio || d.aspectRatio || undefined,
+            resolution: d.resolution || undefined,
+            durationSeconds: d.duration_seconds || d.durationSeconds || undefined,
             videoProvenance: d.video_provenance || d.videoProvenance,
             createdAt: d.created_at ? (isNaN(new Date(d.created_at).getTime()) ? new Date().toISOString() : new Date(d.created_at).toISOString()) : (d.createdAt || new Date().toISOString()),
             author: t.worker_name || 'Orchestrator',
@@ -3154,9 +3160,11 @@ export function OrchestrateView({
     const isVideo = rawKind === 'video' || (item as any).mediaType?.startsWith('video/')
     const itemTitle = item.title || (item as any).filename || 'Media Item'
     let directUrl = (item as any).directUrl || (item as any).url || (item as any).previewUrl || (item as any).mediaUrl || ''
-    if ((item as any).artifact?.eventSeq && directUrl && !directUrl.includes('revision=') && !directUrl.includes('event_seq=') && !directUrl.startsWith('data:')) {
+    const art = (item as any).artifact
+    const isLegacyExactRef = Boolean(art?.collectionId && art?.eventSeq && !art?.revision_ref && !art?.revisionRef)
+    if (isLegacyExactRef && directUrl && !directUrl.includes('revision=') && !directUrl.includes('event_seq=') && !directUrl.startsWith('data:')) {
       const sep = directUrl.includes('?') ? '&' : '?'
-      directUrl = `${directUrl}${sep}revision=${(item as any).artifact.eventSeq}`
+      directUrl = `${directUrl}${sep}revision=${art.eventSeq}`
     }
     const mediaType = (item as any).mediaType || (isVideo ? 'video/mp4' : 'image/png')
 
@@ -6978,6 +6986,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
          ───────────────────────────────────────────────────────────── */}
       {activeMediaViewerItem && (
         <MediaViewerModal
+          key={activeMediaViewerItem.id}
           item={activeMediaViewerItem}
           items={allMediaLibraryItems}
           isGenerating={isDeployingTask}
