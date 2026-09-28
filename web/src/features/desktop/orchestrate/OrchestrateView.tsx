@@ -76,7 +76,8 @@ import type { MediaGenerationJob, MediaGenerationRequest, MediaGenerationSetting
 import type { QuickRouteMode } from '../tools/media-library/media-viewer-modal'
 import { ORCHESTRATE_THEMES } from './orchestrate-themes'
 import { TaskCardSummary } from './task-card-summary'
-import { projectThemePatch, resolveSwarmProjectTheme } from './swarm-section-theme'
+import { inheritedSwarmThemeStyle, projectThemePatch, resolveSwarmProjectTheme } from './swarm-section-theme'
+import { createProjectThemeRefresh } from './project-theme-refresh'
 import { WORKSPACE_THEME_OPTIONS, setWorkspaceThemeCatalog, formatWorkspaceThemeLabel } from '../../workspaces/launcher/services/workspace-theme'
 import './swarm-section.css'
 import {
@@ -911,7 +912,7 @@ function MinimalTaskCard({
       <div className="swarm-task-actions">
       {/* Existing guarded actions remain connected to their original handlers. */}
       <div className="swarm-task-action-row flex items-start justify-between gap-3">
-        <div className="swarm-task-legacy-heading flex flex-col gap-1 min-w-0 flex-1">
+        {expanded && <div className="swarm-task-context flex flex-col gap-1 min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <span
               className={`font-mono text-[9px] uppercase font-bold px-2 py-0.5 rounded border ${
@@ -985,9 +986,6 @@ function MinimalTaskCard({
               </span>
             )}
           </div>
-          <h3 className="text-xs font-bold text-white tracking-tight leading-snug truncate">
-            {task.title}
-          </h3>
           {!isMediaTask && task.workspacesInvolved && task.workspacesInvolved.length > 0 && (
             <div className="flex items-center gap-1.5 flex-wrap pt-0.5">
               <span className="font-mono text-[9px] uppercase tracking-wider text-slate-500 font-semibold">Workspaces:</span>
@@ -1022,7 +1020,7 @@ function MinimalTaskCard({
               </span>
             </div>
           )}
-        </div>
+        </div>}
 
         <div className="swarm-task-action-buttons flex items-center gap-2 flex-shrink-0">
           <div
@@ -1234,7 +1232,7 @@ function MinimalTaskCard({
           </div>
 
           {/* Impending Execution Agents & Resolved Models */}
-          <div className="flex flex-col gap-2 p-2.5 rounded bg-slate-900/90 border border-slate-800 text-[11px] font-mono" data-testid="task-impending-agents">
+          {expanded && <div className="flex flex-col gap-2 p-2.5 rounded bg-slate-900/90 border border-slate-800 text-[11px] font-mono" data-testid="task-impending-agents">
             <div className="flex items-center justify-between gap-2 flex-wrap">
               <span className="text-[10px] uppercase tracking-wider text-slate-400 font-bold flex items-center gap-1.5">
                 <Bot size={12} className="text-blue-400" />
@@ -1380,14 +1378,14 @@ function MinimalTaskCard({
                 </div>
               </div>
             )}
-          </div>
+          </div>}
 
-          <p className="text-slate-200 text-xs leading-relaxed">
+          {expanded && <p className="text-slate-200 text-xs leading-relaxed">
             {task.subtitle || task.title}
-          </p>
+          </p>}
 
           {/* Plan Summary */}
-          {task.planSummary && (
+          {expanded && task.planSummary && (
             <div className="p-2.5 rounded bg-slate-900/80 border border-slate-800 text-[11px] font-mono text-slate-300 whitespace-pre-line leading-relaxed">
               <div className="text-[9px] uppercase tracking-wider text-blue-400 font-bold mb-1">
                 Execution Overview
@@ -2481,7 +2479,7 @@ function MinimalTaskCard({
       )}
 
       {/* 2e. Multi-Session Cohort / Parallel Sessions Strip */}
-      {task.sessionSummary && task.sessionSummary.totalSessions > 0 && (
+      {expanded && task.sessionSummary && task.sessionSummary.totalSessions > 0 && (
         <div className="flex flex-col p-2.5 rounded-lg bg-slate-900/80 border border-slate-800 space-y-2 text-xs" data-testid="task-multi-session-strip">
           <div className="flex items-center justify-between text-[10px] font-mono">
             <span className="font-bold uppercase tracking-wider text-slate-300 flex items-center gap-1.5">
@@ -2673,6 +2671,7 @@ function MinimalTaskCard({
             handleToggleExpand()
           }}
           className="swarm-task-details-toggle"
+          aria-expanded={expanded}
           data-testid="toggle-task-details-btn"
         >
           <span className="flex items-center gap-1.5 font-semibold">
@@ -3641,21 +3640,26 @@ export function OrchestrateView({
   const themeOptions = useMemo(() => [...WORKSPACE_THEME_OPTIONS], [themeCatalogRevision])
   useEffect(() => {
     let active = true
-    const unsubscribe = desktopProjects.onProjectUpdate((projectId) => {
-      if (!selectedProjectId || (projectId && projectId !== selectedProjectId)) return
-      // Theme creation and assignment may arrive in the same project event. Refresh the
-      // account catalog before resolving the returned project reference.
-      void Promise.all([
-        requestJson<{ project: { id: string; theme_id?: string } }>(`/v3/projects/${encodeURIComponent(selectedProjectId)}`),
-        getUISettings(),
-      ]).then(([{ project }, settings]) => {
+    if (!selectedProjectId) return
+    const refresh = createProjectThemeRefresh(selectedProjectId, async () => {
+      // Theme creation and assignment may arrive together. Refresh the account catalog
+      // before resolving the saved project reference; in-flight invalidations coalesce.
+      try {
+        const [{ project }, settings] = await Promise.all([
+          requestJson<{ project: { id: string; theme_id?: string } }>(`/v3/projects/${encodeURIComponent(selectedProjectId)}`),
+          getUISettings(),
+        ])
         if (!active) return
         setWorkspaceThemeCatalog(settings.theme)
         setThemeCatalogRevision((revision) => revision + 1)
         setProjects((prev) => prev.map((item) => item.id === project.id ? { ...item, themeId: project.theme_id || '' } : item))
-      }).catch((error) => { if (active) setThemeError(error instanceof Error ? error.message : 'Unable to refresh project theme') })
+        setThemeError('')
+      } catch (error) {
+        if (active) setThemeError(error instanceof Error ? error.message : 'Unable to refresh project theme')
+      }
     })
-    return () => { active = false; unsubscribe() }
+    const unsubscribe = desktopProjects.onProjectUpdate(refresh.invalidate)
+    return () => { active = false; refresh.dispose(); unsubscribe() }
   }, [selectedProjectId])
   const handleProjectThemeChange = async (themeId: string) => {
     if (!selectedProject || themeSaving) return
@@ -5778,9 +5782,9 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
 
   return (
     <div
-      className={`swarm-section relative flex h-screen w-screen overflow-hidden p-3 gap-3 ${projectTheme.state === 'selected' ? 'swarm-section-themed' : ''} ${theme.bgClass} ${theme.textPrimaryClass} font-sans select-none`}
+      className="swarm-section relative flex h-screen w-screen overflow-hidden p-3 gap-3 font-sans select-none"
       data-project-theme={projectTheme.state}
-      style={{ ...theme.customVars, ...projectTheme.style, ...(projectTheme.colorScheme ? { colorScheme: projectTheme.colorScheme } : {}) } as React.CSSProperties}
+      style={{ ...theme.customVars, ...inheritedSwarmThemeStyle(initialThemeId), ...projectTheme.style, ...(projectTheme.colorScheme ? { colorScheme: projectTheme.colorScheme } : {}) } as React.CSSProperties}
     >
       {/* ─────────────────────────────────────────────────────────────
           PANEL 1: LEFT SIDEBAR (NAVIGATION, PROJECTS & USER HUD)

@@ -1,8 +1,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { TaskCardSummary, taskCardFacts } from './task-card-summary'
-import { projectThemePatch, resolveSwarmProjectTheme } from './swarm-section-theme'
+import { inheritedSwarmThemeStyle, projectThemePatch, resolveSwarmProjectTheme } from './swarm-section-theme'
 import { setWorkspaceThemeCatalog } from '../../workspaces/launcher/services/workspace-theme'
 import type { RunningTask } from './orchestrate-types'
 
@@ -30,7 +31,8 @@ test('card summary renders real branch and target, unknown Git, and no invented 
 
 test('stale Git is not presented as integrated even if cached integrated flag is true', () => {
   assert.equal(taskCardFacts({ ...task, gitStatus: 'stale', isIntegrated: true }).git, 'Git: last known state')
-  assert.equal(taskCardFacts({ ...task, gitStatus: 'clean', isIntegrated: true }).git, 'Integrated')
+  assert.match(taskCardFacts({ ...task, gitStatus: 'clean', isIntegrated: true }).git, /3 unintegrated commit\(s\)/)
+  assert.equal(taskCardFacts({ ...task, gitStatus: 'clean', isIntegrated: true, unintegratedCommits: 0 }).git, 'Integrated')
   assert.equal(taskCardFacts({ ...task, gitStatus: 'clean', baseBranch: undefined }).target, null)
 })
 
@@ -56,10 +58,22 @@ test('project theme selects canonical palette, resets to inherited, and exposes 
     assert.equal((selected.style as Record<string, string>)['--swarm-background'], '#202532')
     assert.equal((selected.style as Record<string, string>)['--swarm-warning'], '#ebcb8b')
     assert.equal((selected.style as Record<string, string>)['--app-bg'], undefined)
+    setWorkspaceThemeCatalog({ custom_themes: [{ id: 'paper', name: 'Paper', palette: {
+      background: '#f7f7f3', panel: '#ffffff', border: '#c2c2ba', text: '#202423', text_muted: '#515b58',
+      primary: '#285c99', success: '#236d49', warning: '#84600b', error: '#9d3045',
+    } }] })
+    const light = resolveSwarmProjectTheme('paper')
+    assert.equal(light.colorScheme, 'light')
+    assert.equal((light.style as Record<string, string>)['--swarm-text'], '#202423')
+    assert.equal((light.style as Record<string, string>)['--swarm-surface'], '#ffffff')
     const missing = resolveSwarmProjectTheme('deleted')
     assert.equal(missing.state, 'missing')
     assert.deepEqual(missing.style, {})
     assert.equal(resolveSwarmProjectTheme('').state, 'inherited')
+    const inherited = inheritedSwarmThemeStyle('deep_indigo')
+    assert.equal(inherited['--swarm-background'], '#070914')
+    assert.equal(inherited['--swarm-accent'], '#6366f1')
+    assert.notEqual(inherited['--swarm-accent'], inheritedSwarmThemeStyle('modern_navy')['--swarm-accent'])
     assert.deepEqual(projectThemePatch(''), { theme_id: '' })
     assert.deepEqual(projectThemePatch('nord'), { theme_id: 'nord' })
   } finally { setWorkspaceThemeCatalog(null) }
