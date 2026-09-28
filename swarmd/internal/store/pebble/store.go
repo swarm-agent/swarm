@@ -33,6 +33,9 @@ type Store struct {
 	projectPublisherMu          sync.RWMutex
 	projectPublisher            func(V3RealtimeOutboxRecord)
 	beforeProjectTaskUpdateHook func(taskID string) error
+	workersMu                   sync.Mutex
+	workerPublisherMu           sync.RWMutex
+	workerPublisher             func(V3RealtimeOutboxRecord)
 }
 
 func Open(path string) (*Store, error) {

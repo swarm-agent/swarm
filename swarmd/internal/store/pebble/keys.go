@@ -23,6 +23,12 @@ const (
 	KeyStorageBucketAccountPrefix                  = "storage_hub/bucket_by_account/"
 	KeyStorageWorkerAccountPrefix                  = "storage_hub/worker_by_account/"
 	KeyStorageDeliverableAccountPrefix             = "storage_hub/deliverable_by_account/"
+	KeyWorkerAccountPrefix                         = "worker/account/"
+	KeyWorkerHistoryAccountPrefix                  = "worker/history/"
+	KeyWorkerAutomationAccountPrefix               = "worker/automation/"
+	KeyWorkerRunAccountPrefix                      = "worker/run/"
+	KeyWorkerRunOccAccountPrefix                   = "worker/run_occ/"
+	KeyWorkerIdempotencyAccountPrefix              = "worker/idempotency/"
 	KeyAuthVaultMeta                               = "auth/vault/meta" // legacy singleton key; retained for explicit migration only.
 	KeyAuthVaultMetaAccountPrefix                  = "auth/vault/meta_by_account/"
 	KeyAuthCredentialPrefix                        = "auth/credential/"
@@ -1888,4 +1894,62 @@ func KeyStorageDeliverable(accountScopeID, deliverableID string) string {
 
 func KeyStorageDeliverablePrefix(accountScopeID string) string {
 	return fmt.Sprintf("%s%s/", KeyStorageDeliverableAccountPrefix, keyPart(accountScopeID))
+}
+
+func KeyWorker(accountScopeID, workerID string) string {
+	return fmt.Sprintf("%s%s/%s", KeyWorkerAccountPrefix, keyPart(accountScopeID), keyPart(workerID))
+}
+
+func WorkerAccountPrefix(accountScopeID string) string {
+	accountPart := keyPart(accountScopeID)
+	if accountPart == "" {
+		return KeyWorkerAccountPrefix
+	}
+	return fmt.Sprintf("%s%s/", KeyWorkerAccountPrefix, accountPart)
+}
+
+func KeyWorkerHistory(accountScopeID, workerID string, revision uint64) string {
+	return fmt.Sprintf("%s%s/%s/%020d", KeyWorkerHistoryAccountPrefix, keyPart(accountScopeID), keyPart(workerID), revision)
+}
+
+func WorkerHistoryPrefix(accountScopeID, workerID string) string {
+	accountPart := keyPart(accountScopeID)
+	workerPart := keyPart(workerID)
+	if workerPart == "" {
+		return fmt.Sprintf("%s%s/", KeyWorkerHistoryAccountPrefix, accountPart)
+	}
+	return fmt.Sprintf("%s%s/%s/", KeyWorkerHistoryAccountPrefix, accountPart, workerPart)
+}
+
+func KeyWorkerByAutomation(accountScopeID, automationID string) string {
+	return fmt.Sprintf("%s%s/%s", KeyWorkerAutomationAccountPrefix, keyPart(accountScopeID), keyPart(automationID))
+}
+
+func WorkerAutomationPrefix(accountScopeID string) string {
+	accountPart := keyPart(accountScopeID)
+	if accountPart == "" {
+		return KeyWorkerAutomationAccountPrefix
+	}
+	return fmt.Sprintf("%s%s/", KeyWorkerAutomationAccountPrefix, accountPart)
+}
+
+func KeyWorkerRun(accountScopeID, workerID, runID string) string {
+	return fmt.Sprintf("%s%s/%s/%s", KeyWorkerRunAccountPrefix, keyPart(accountScopeID), keyPart(workerID), keyPart(runID))
+}
+
+func WorkerRunPrefix(accountScopeID, workerID string) string {
+	accountPart := keyPart(accountScopeID)
+	workerPart := keyPart(workerID)
+	if workerPart == "" {
+		return fmt.Sprintf("%s%s/", KeyWorkerRunAccountPrefix, accountPart)
+	}
+	return fmt.Sprintf("%s%s/%s/", KeyWorkerRunAccountPrefix, accountPart, workerPart)
+}
+
+func KeyWorkerRunByOccurrence(accountScopeID, occurrenceID string) string {
+	return fmt.Sprintf("%s%s/%s", KeyWorkerRunOccAccountPrefix, keyPart(accountScopeID), keyPart(occurrenceID))
+}
+
+func KeyWorkerIdempotency(accountScopeID, idempotencyKey string) string {
+	return fmt.Sprintf("%s%s/%s", KeyWorkerIdempotencyAccountPrefix, keyPart(accountScopeID), keyPart(idempotencyKey))
 }
