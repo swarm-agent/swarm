@@ -3,6 +3,7 @@ package run
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os/exec"
 	"swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/agentmodelsettings"
@@ -23,6 +24,14 @@ import (
 // acknowledgement. Real session mutations and lifecycle state are the narrowest
 // deterministic boundary; this is not a provider-backed execution benchmark.
 func TestWorkerStopWaitsForExecutionAcknowledgement(t *testing.T) {
+	for _, later := range []bool{false, true} {
+		t.Run(fmt.Sprintf("later-checkpoint-%t", later), func(t *testing.T) {
+			testWorkerStopAcknowledgement(t, later)
+		})
+	}
+}
+
+func testWorkerStopAcknowledgement(t *testing.T, later bool) {
 	runs, ss, _ := setupWorkerOrchestratorTestEnv(t)
 	execution := &WorkerExecutionService{host: &AutomationV2ExecutionHost{runs: runs, apply: ss.ApplySessionMutation}}
 	ws := ss.Store().WorkerStore()
@@ -41,16 +50,20 @@ func TestWorkerStopWaitsForExecutionAcknowledgement(t *testing.T) {
 	if err = ss.Store().CreateSession(store.SessionSnapshot{ID: r.SessionID, AccountScopeID: "account", UserID: "owner", Mode: "auto"}); err != nil {
 		t.Fatal(err)
 	}
-	intent := store.V3SessionRunIntent{SessionID: r.SessionID, UserID: "owner", AccountScopeID: "account", RunID: r.ID, PlanID: r.ID, Status: sessions.RunIntentPendingExecutor}
+	executionID := r.ID
+	if later {
+		executionID += "-checkpoint-2"
+	}
+	intent := store.V3SessionRunIntent{SessionID: r.SessionID, UserID: "owner", AccountScopeID: "account", RunID: executionID, PlanID: r.ID, Status: sessions.RunIntentPendingExecutor}
 	_, err = ss.ApplySessionMutation(sessions.SessionMutationInput{SessionID: r.SessionID, UserID: "owner", AccountScopeID: "account", Kind: sessions.SessionMutationRecordRunIntent, ClientRequestID: "start", IdempotencyKey: "start", PayloadHash: "start", RequestHash: "start", EventType: "session.run_intent.recorded", RunIntent: &intent, NowUnixMs: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = runs.beginSessionLifecycle(r.SessionID, r.ID, "test"); err != nil {
+	if _, err = runs.beginSessionLifecycle(r.SessionID, executionID, "test"); err != nil {
 		t.Fatal(err)
 	}
 	cancelled := false
-	runs.attachLifecycleCancel(r.SessionID, r.ID, func() { cancelled = true })
+	runs.attachLifecycleCancel(r.SessionID, executionID, func() { cancelled = true })
 	stopped, err := execution.Stop(context.Background(), "account", "owner", w.ID, w.Revision, store.WorkerLifecycleStateArchived)
 	if !errors.Is(err, store.ErrWorkerConflict) {
 		t.Fatalf("stop before acknowledgement: %v", err)
@@ -64,10 +77,10 @@ func TestWorkerStopWaitsForExecutionAcknowledgement(t *testing.T) {
 		t.Fatalf("lost durable stop barrier: %+v cancelled=%v", current, cancelled)
 	}
 	receipt, _, err := ws.GetWorkerRun("account", w.ID, r.ID)
-	if err != nil || receipt.Status != "admitted" {
+	if err != nil || receipt.Status != "admitted" || !receipt.CancelRequested {
 		t.Fatalf("premature terminal receipt: %+v %v", receipt, err)
 	}
-	if _, _, err = runs.finishSessionLifecycle(r.SessionID, r.ID, context.Canceled); err != nil {
+	if _, _, err = runs.finishSessionLifecycle(r.SessionID, executionID, context.Canceled); err != nil {
 		t.Fatal(err)
 	}
 	final, err := execution.ReconcileStop("account", "owner", w.ID, current.Revision, store.WorkerLifecycleStateArchived)
@@ -117,7 +130,8 @@ func TestWorkerStopCancelsUndispatchedReceipt(t *testing.T) {
 // plan/intent, not just a worker receipt. Threat: wake failure loses accepted
 // work or a retry duplicates execution. Real Git/Pebble and a bounded enqueue
 // callback exercise the production preparation and retry boundary without LLMs.
-func TestWorkerDispatchCreatesV3IntentAndRetriesWake(t *testing.T) {
+func setupWorkerExecutionFixture(t *testing.T, enqueue func(identity.Principal, store.V3SessionRunIntent) bool) (*Service, *sessions.Service, *WorkerExecutionService, string) {
+	t.Helper()
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
@@ -164,23 +178,31 @@ func TestWorkerDispatchCreatesV3IntentAndRetriesWake(t *testing.T) {
 		return SessionDeployCanonicalization{SourceWorkspaceID: entry.WorkspaceID, SourceWorkspaceGeneration: 1, SourceWorkspacePath: repo, SourceWorkspaceName: "fixture", Metadata: map[string]any{}}, nil
 	}
 	trees := worktree.NewService(store.NewWorktreeStore(db), workspaces, nil)
+	execution, err := NewWorkerExecutionService(runs, repository, trees, ss.ApplySessionMutation, enqueue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runs.SetWorkerExecutionService(execution)
+	return runs, ss, execution, entry.WorkspaceID
+}
+
+func TestWorkerDispatchCreatesV3IntentAndRetriesWake(t *testing.T) {
 	wake := false
 	calls := 0
-	execution, err := NewWorkerExecutionService(runs, repository, trees, ss.ApplySessionMutation, func(principal identity.Principal, intent store.V3SessionRunIntent) bool {
+	_, ss, execution, workspaceID := setupWorkerExecutionFixture(t, func(principal identity.Principal, intent store.V3SessionRunIntent) bool {
 		calls++
 		if principal.AccountScopeID != "account" || intent.PlanID == "" || intent.CheckpointID != "cp-1" {
 			t.Fatalf("wrong intent: %+v", intent)
 		}
 		return wake
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 	w, err := ss.Store().WorkerStore().CreateWorker("account", "owner", store.CreateWorkerRequest{Name: "dispatch", Instructions: "Review only", WorkspaceRequirements: []store.WorkerWorkspaceRequirement{{Role: "primary", Required: true}}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	w, err = execution.Activate("account", "owner", w.ID, w.Revision, map[string]string{"primary": entry.WorkspaceID})
+	w, err = execution.Activate("account", "owner", w.ID, w.Revision, map[string]string{"primary": workspaceID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,7 +215,7 @@ func TestWorkerDispatchCreatesV3IntentAndRetriesWake(t *testing.T) {
 	if e != nil || !found {
 		t.Fatalf("dispatch did not prepare V3 session: %v; dispatch=%v", e, err)
 	}
-	if !snapshot.WorktreeEnabled || snapshot.WorktreeRootPath == repo || snapshot.Metadata["worker_id"] != w.ID {
+	if !snapshot.WorktreeEnabled || snapshot.WorktreeRootPath == snapshot.WorkspacePath || snapshot.Metadata["worker_id"] != w.ID {
 		t.Fatalf("wrong isolation/linkage: %+v", snapshot)
 	}
 	intent, found, e := ss.GetSessionRunIntent(r.SessionID, r.ID)
@@ -210,5 +232,212 @@ func TestWorkerDispatchCreatesV3IntentAndRetriesWake(t *testing.T) {
 	}
 	if calls != 2 {
 		t.Fatalf("duplicate wake: %d", calls)
+	}
+}
+
+// Requirement: a user-approved idle test uses real preparation without opening
+// schedules; interrupted session preparation is retryable and stoppable. These
+// tests inject only the mutation failure, not execution or provider telemetry.
+func TestWorkerIdleTestAndPreparationRecovery(t *testing.T) {
+	_, ss, execution, workspaceID := setupWorkerExecutionFixture(t, func(identity.Principal, store.V3SessionRunIntent) bool { return true })
+	ws := ss.Store().WorkerStore()
+	w, err := ws.CreateWorker("account", "owner", store.CreateWorkerRequest{Name: "idle test", WorkspaceRequirements: []store.WorkerWorkspaceRequirement{{Role: "primary", Required: true}}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err = execution.ConfigureBindings("account", "owner", w.ID, w.Revision, map[string]string{"primary": workspaceID}, false)
+	if err != nil || w.LifecycleState != store.WorkerLifecycleStateIdle {
+		t.Fatalf("idle binding: %+v %v", w, err)
+	}
+	req := store.WorkerRunAdmission{WorkerID: w.ID, RequestSource: "test_run", Input: map[string]any{"prompt": "Review"}, IdempotencyKey: "idle-test"}
+	apply := execution.host.apply
+	execution.host.apply = func(in sessions.SessionMutationInput) (sessions.SessionMutationResult, error) {
+		if in.Kind != sessions.SessionMutationCreateSession {
+			return sessions.SessionMutationResult{}, errors.New("injected preparation failure")
+		}
+		return apply(in)
+	}
+	r, err := execution.Dispatch(context.Background(), "account", "owner", req)
+	if err == nil {
+		t.Fatal("preparation failure hidden")
+	}
+	if _, found, err := ss.GetSession(r.SessionID); err != nil || !found {
+		t.Fatalf("missing partial session: %v", err)
+	}
+	execution.host.apply = apply
+	if err = execution.ReconcileWorker(context.Background(), "account", w.ID); err != nil {
+		t.Fatal(err)
+	}
+	recovered, _, err := ws.GetWorkerRun("account", w.ID, r.ID)
+	if err != nil || recovered.Status != "running" {
+		t.Fatalf("recovery: %+v %v", recovered, err)
+	}
+	current, _, err := ws.GetWorker("account", w.ID)
+	if err != nil || current.LifecycleState != store.WorkerLifecycleStateIdle || current.Revision != w.Revision {
+		t.Fatalf("test enabled worker: %+v %v", current, err)
+	}
+	req.RequestSource, req.IdempotencyKey = "direct", "idle-direct"
+	if _, err = execution.Dispatch(context.Background(), "account", "owner", req); !errors.Is(err, store.ErrWorkerConflict) {
+		t.Fatalf("idle direct admitted: %v", err)
+	}
+	cancelled, err := execution.CancelRun(context.Background(), "account", w.ID, r.ID)
+	if err != nil || cancelled.Status != "cancelled" || !cancelled.CancelRequested {
+		t.Fatalf("cancel idle test: %+v %v", cancelled, err)
+	}
+	snapshot, _, _ := ss.GetSession(r.SessionID)
+	if err = execution.host.runs.validateWorkerExecution(snapshot); !errors.Is(err, store.ErrWorkerConflict) {
+		t.Fatalf("cancelled run regained execution: %v", err)
+	}
+}
+
+// Requirement: stopping preparation between session creation and intent creation
+// must settle safely rather than strand the worker in stopping forever.
+func TestWorkerStopDuringPreparation(t *testing.T) {
+	_, ss, execution, workspaceID := setupWorkerExecutionFixture(t, func(identity.Principal, store.V3SessionRunIntent) bool { return true })
+	ws := ss.Store().WorkerStore()
+	w, err := ws.CreateWorker("account", "owner", store.CreateWorkerRequest{Name: "preparation", WorkspaceRequirements: []store.WorkerWorkspaceRequirement{{Role: "primary", Required: true}}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err = execution.Activate("account", "owner", w.ID, w.Revision, map[string]string{"primary": workspaceID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	apply := execution.host.apply
+	execution.host.apply = func(in sessions.SessionMutationInput) (sessions.SessionMutationResult, error) {
+		if in.Kind != sessions.SessionMutationCreateSession {
+			return sessions.SessionMutationResult{}, errors.New("injected preparation failure")
+		}
+		return apply(in)
+	}
+	r, err := execution.Dispatch(context.Background(), "account", "owner", store.WorkerRunAdmission{WorkerID: w.ID, RequestSource: "direct", Input: map[string]any{"prompt": "Review"}, IdempotencyKey: "prepare-stop"})
+	if err == nil {
+		t.Fatal("preparation failure hidden")
+	}
+	execution.host.apply = apply
+	w, err = execution.Stop(context.Background(), "account", "owner", w.ID, w.Revision, store.WorkerLifecycleStatePaused)
+	if err != nil || w.LifecycleState != store.WorkerLifecycleStatePaused {
+		t.Fatalf("stop preparation: %+v %v", w, err)
+	}
+	receipt, _, err := ws.GetWorkerRun("account", w.ID, r.ID)
+	if err != nil || receipt.Status != "cancelled" {
+		t.Fatalf("receipt: %+v %v", receipt, err)
+	}
+	if err = execution.ReconcileWorker(context.Background(), "account", w.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := ss.GetSessionRunIntent(r.SessionID, r.ID); err != nil || found {
+		t.Fatalf("stopped preparation executed: %v %v", found, err)
+	}
+}
+
+// Requirement: interval/cron admission deduplicates each slot, preserves the
+// attached plan, and skips offline slots. TickWorker plus real V3 preparation
+// is the narrowest boundary; no provider is invoked in this scheduler test.
+func TestWorkerScheduleDeduplicationAndRestartFence(t *testing.T) {
+	_, ss, execution, workspaceID := setupWorkerExecutionFixture(t, func(identity.Principal, store.V3SessionRunIntent) bool { return true })
+	ws := ss.Store().WorkerStore()
+	plan := store.SessionPlanDocument{Title: "Scheduled review", Info: store.SessionPlanInfo{Goal: "Review"}, Checkpoints: []store.SessionPlanCheckpoint{{ID: "cp-1", Order: 1, Title: "Review", Tasks: []string{"Review"}, AcceptanceCriteria: []string{"Reviewed"}, Status: "pending"}}}
+	w, err := ws.CreateWorker("account", "owner", store.CreateWorkerRequest{Name: "scheduler", WorkspaceRequirements: []store.WorkerWorkspaceRequirement{{Role: "primary", Required: true}}, Automations: []store.WorkerAutomationDefinition{{Name: "interval", ActivationMode: "interval", Enabled: true, Schedule: &store.AutomationV2Schedule{Kind: "interval", IntervalSeconds: 60}, PlanDocument: plan}, {Name: "cron", ActivationMode: "cron", Enabled: true, Schedule: &store.AutomationV2Schedule{Kind: "cron", Cron: "* * * * *", Timezone: "UTC"}, PlanDocument: plan}}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err = execution.Activate("account", "owner", w.ID, w.Revision, map[string]string{"primary": workspaceID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	after := time.UnixMilli(w.UpdatedAt).Add(time.Second)
+	execution.MarkWorkerSweep(after)
+	now := after.Add(time.Minute)
+	for i := 0; i < 2; i++ {
+		if err = execution.TickWorker(context.Background(), "account", w.ID, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	receipts, _, err := ws.ListWorkerRuns("account", w.ID, 10, "")
+	if err != nil || len(receipts) != 2 {
+		t.Fatalf("slot deduplication: %d %v", len(receipts), err)
+	}
+	for _, r := range receipts {
+		if r.RequestSource != "schedule" || r.AutomationRevision != 1 || r.Status != "running" {
+			t.Fatalf("wrong scheduled receipt: %+v", r)
+		}
+		accepted, found, err := ss.GetActivePlan(r.SessionID)
+		if err != nil || !found || accepted.Document.Info.Goal != "Review" {
+			t.Fatalf("lost plan: %+v %v", accepted, err)
+		}
+	}
+	restarted := &WorkerExecutionService{host: execution.host}
+	if err = restarted.TickWorker(context.Background(), "account", w.ID, now.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	receipts, _, err = ws.ListWorkerRuns("account", w.ID, 10, "")
+	if err != nil || len(receipts) != 2 {
+		t.Fatalf("restart replayed slots: %d %v", len(receipts), err)
+	}
+}
+
+// Requirement: a worker completes only after every attached checkpoint, including
+// a later executor run, has completed. A first-turn completion is not a worker
+// success. Canonical plan mutations plus V3 intents prove the receipt mapping.
+func TestWorkerMultiCheckpointCompletion(t *testing.T) {
+	runs, ss, execution, workspaceID := setupWorkerExecutionFixture(t, func(identity.Principal, store.V3SessionRunIntent) bool { return true })
+	ws := ss.Store().WorkerStore()
+	doc := store.SessionPlanDocument{Title: "Two steps", Info: store.SessionPlanInfo{Goal: "Review then report"}, Checkpoints: []store.SessionPlanCheckpoint{{ID: "cp-1", Order: 1, Title: "Review", Tasks: []string{"Review"}, AcceptanceCriteria: []string{"Reviewed"}, Status: "pending"}, {ID: "cp-2", Order: 2, Title: "Report", Tasks: []string{"Report"}, AcceptanceCriteria: []string{"Reported"}, Status: "pending"}}}
+	w, err := ws.CreateWorker("account", "owner", store.CreateWorkerRequest{Name: "two steps", WorkspaceRequirements: []store.WorkerWorkspaceRequirement{{Role: "primary", Required: true}}, Automations: []store.WorkerAutomationDefinition{{Name: "review", ActivationMode: "manual", Enabled: true, PlanDocument: doc}}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err = execution.Activate("account", "owner", w.ID, w.Revision, map[string]string{"primary": workspaceID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := execution.Dispatch(context.Background(), "account", "owner", store.WorkerRunAdmission{WorkerID: w.ID, AutomationID: w.Automations[0].ID, RequestSource: "test_run", Input: map[string]any{"prompt": "Extra input must not replace the plan"}, IdempotencyKey: "multi"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, _, err := ss.GetActivePlan(r.SessionID)
+	if err != nil || len(plan.Document.Checkpoints) != 2 {
+		t.Fatalf("attached plan replaced: %+v %v", plan, err)
+	}
+	if _, err = runs.executePlanManageToolWithMutation(r.SessionID, fmt.Sprintf(`{"action":"complete_checkpoint","checkpoint_id":"cp-1","run_id":%q,"attempt_id":%q,"run_session_id":%q,"parent_session_id":%q,"report":"Reviewed","result":"done"}`, r.ID, plan.Document.Checkpoints[0].AttemptID, r.SessionID, r.SessionID), "", ss.ApplySessionMutation); err != nil {
+		t.Fatal(err)
+	}
+	first, _, err := ss.GetSessionRunIntent(r.SessionID, r.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.Status = sessions.RunIntentCompleted
+	recordIntent := func(intent store.V3SessionRunIntent, key string) {
+		t.Helper()
+		_, err := ss.ApplySessionMutation(sessions.SessionMutationInput{SessionID: r.SessionID, UserID: "owner", AccountScopeID: "account", Kind: sessions.SessionMutationRecordRunIntent, ClientRequestID: key, IdempotencyKey: key, PayloadHash: key, RequestHash: key, EventType: "session.run_intent.updated", RunIntent: &intent, NowUnixMs: time.Now().UnixMilli()})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	recordIntent(first, "first-completed")
+	if err = execution.observeRun(r); !errors.Is(err, store.ErrWorkerConflict) {
+		t.Fatalf("premature success: %v", err)
+	}
+	nextID := r.ID + "-next"
+	lifecycle := sessions.NewPlanLifecycleService(ss)
+	lifecycle.SetApplySessionMutation(ss.ApplySessionMutation)
+	next, err := lifecycle.StartCheckpoint(sessions.PlanLifecycleExecutionInput{SessionID: r.SessionID, PlanID: r.ID, CheckpointID: "cp-2", RunID: nextID, RunSessionID: r.SessionID, ParentSessionID: r.SessionID, StartedAt: time.Now().UnixMilli()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := store.V3SessionRunIntent{SessionID: r.SessionID, UserID: "owner", AccountScopeID: "account", PlanID: r.ID, CheckpointID: "cp-2", AttemptID: next.AttemptID, RunID: nextID, Status: sessions.RunIntentPendingExecutor}
+	recordIntent(second, "second-pending")
+	if _, err = runs.executePlanManageToolWithMutation(r.SessionID, fmt.Sprintf(`{"action":"complete_checkpoint","checkpoint_id":"cp-2","run_id":%q,"attempt_id":%q,"run_session_id":%q,"parent_session_id":%q,"report":"Reported","result":"done"}`, nextID, next.AttemptID, r.SessionID, r.SessionID), "", ss.ApplySessionMutation); err != nil {
+		t.Fatal(err)
+	}
+	second.Status = sessions.RunIntentCompleted
+	recordIntent(second, "second-completed")
+	if err = execution.ReconcileWorker(context.Background(), "account", w.ID); err != nil {
+		t.Fatal(err)
+	}
+	receipt, _, err := ws.GetWorkerRun("account", w.ID, r.ID)
+	if err != nil || receipt.Status != "succeeded" || receipt.CompletedAt == 0 {
+		t.Fatalf("completion: %+v %v", receipt, err)
 	}
 }

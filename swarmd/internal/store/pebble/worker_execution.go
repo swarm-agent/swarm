@@ -154,7 +154,7 @@ func (ws *WorkerStore) AdmitWorkerRun(account string, req WorkerRunAdmission) (W
 	if !found || worker.AccountScopeID != account {
 		return WorkerRunRecord{}, ErrWorkerNotFound
 	}
-	if worker.LifecycleState != WorkerLifecycleStateActive {
+	if worker.LifecycleState != WorkerLifecycleStateActive && !(req.RequestSource == "test_run" && worker.LifecycleState == WorkerLifecycleStateIdle) {
 		return WorkerRunRecord{}, fmt.Errorf("%w: worker admission closed (%s)", ErrWorkerConflict, worker.LifecycleState)
 	}
 	if worker.Provenance != nil && (worker.Provenance.MigratedAt != 0 || worker.Provenance.SourceProposalID != "") {
@@ -167,7 +167,7 @@ func (ws *WorkerStore) AdmitWorkerRun(account string, req WorkerRunAdmission) (W
 	if req.AutomationID != "" {
 		for _, a := range worker.Automations {
 			if a.ID == req.AutomationID {
-				if !a.Enabled {
+				if !a.Enabled && req.RequestSource != "test_run" {
 					return WorkerRunRecord{}, ErrWorkerConflict
 				}
 				if req.RequestSource == "schedule" && a.ActivationMode != "interval" && a.ActivationMode != "cron" {
@@ -291,7 +291,7 @@ func (ws *WorkerStore) SetWorkerLifecycle(account, user, id string, revision uin
 	case WorkerLifecycleStateActive:
 		allowed = w.LifecycleState == WorkerLifecycleStateIdle || w.LifecycleState == WorkerLifecycleStatePaused
 	case WorkerLifecycleStateStopping:
-		allowed = w.LifecycleState == WorkerLifecycleStateActive || w.LifecycleState == WorkerLifecycleStateIdle || w.LifecycleState == WorkerLifecycleStatePaused
+		allowed = w.LifecycleState == WorkerLifecycleStateActive || w.LifecycleState == WorkerLifecycleStateIdle || w.LifecycleState == WorkerLifecycleStatePaused || (w.LifecycleState == WorkerLifecycleStateArchived && len(stopTarget) == 1 && stopTarget[0] == WorkerLifecycleStateDeleted)
 	case WorkerLifecycleStatePaused, WorkerLifecycleStateArchived, WorkerLifecycleStateDeleted:
 		allowed = w.LifecycleState == WorkerLifecycleStateStopping
 	}
@@ -376,7 +376,13 @@ func (ws *WorkerStore) DisableWorkerAutomation(account, user, id, autoID string,
 		return WorkerRecord{}, nil, ErrWorkerNotFound
 	}
 	if !w.Automations[index].Enabled {
-		return WorkerRecord{}, nil, ErrWorkerConflict
+		pending, err := ws.unfinishedWorkerRuns(account, id, autoID)
+		if err != nil {
+			return WorkerRecord{}, nil, err
+		}
+		if len(pending) == 0 {
+			return WorkerRecord{}, nil, ErrWorkerConflict
+		}
 	}
 	w.Automations[index].Enabled = false
 	w.Automations[index].Revision++
@@ -448,6 +454,12 @@ func (ws *WorkerStore) UnfinishedWorkerRuns(account, id, autoID string) ([]Worke
 // The service must authorize every binding before calling this method; callers
 // cannot grant capabilities by passing a portable definition.
 func (ws *WorkerStore) ActivateWorker(account, user, id string, revision uint64, bindings map[string]string) (WorkerRecord, error) {
+	return ws.ConfigureWorkerBindings(account, user, id, revision, bindings, true)
+}
+
+// ConfigureWorkerBindings records user-approved roles without opening schedule
+// admission when activate is false (an explicitly requested idle test).
+func (ws *WorkerStore) ConfigureWorkerBindings(account, user, id string, revision uint64, bindings map[string]string, activate bool) (WorkerRecord, error) {
 	if ws == nil || ws.store == nil || ws.store.db == nil {
 		return WorkerRecord{}, errors.New("store is not open")
 	}
@@ -487,10 +499,14 @@ func (ws *WorkerStore) ActivateWorker(account, user, id string, revision uint64,
 	}
 	now := time.Now().UnixMilli()
 	w.LocalBindings = map[string]string{"primary": bindings["primary"]}
-	w.LifecycleState = WorkerLifecycleStateActive
+	if activate {
+		w.LifecycleState = WorkerLifecycleStateActive
+	} else if w.LifecycleState != WorkerLifecycleStateIdle {
+		return WorkerRecord{}, ErrWorkerConflict
+	}
 	w.Revision++
 	w.UpdatedAt = now
-	hist := WorkerRevisionRecord{WorkerID: id, AccountScopeID: account, Revision: w.Revision, Worker: w, CommittedAt: now, CommittedBy: user, ChangeSummary: "activated worker"}
+	hist := WorkerRevisionRecord{WorkerID: id, AccountScopeID: account, Revision: w.Revision, Worker: w, CommittedAt: now, CommittedBy: user, ChangeSummary: "approved worker bindings"}
 	m := &workerRealtimeMutation{accountScopeID: account, userID: user, workerID: id}
 	if err = m.put(KeyWorker(account, id), w); err != nil {
 		return WorkerRecord{}, err

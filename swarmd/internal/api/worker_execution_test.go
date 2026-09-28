@@ -47,3 +47,37 @@ func TestWorkerAPIExecutionUnavailableDoesNotMutate(t *testing.T) {
 		})
 	}
 }
+
+// Requirement: authenticated approval of bindings for an idle test must not
+// enable schedules or ordinary dispatch. The HTTP/shared-service boundary is
+// narrower than a provider test and verifies persisted state, not just status.
+func TestWorkerAPIIdleTestApproval(t *testing.T) {
+	s, db, h := setupWorkerAPITestServer(t)
+	workspaceID := setupWorkerAPIExecution(t, s, db)
+	ws := store.NewWorkerStore(db)
+	w, err := ws.CreateWorker("acct-test", "user-test", store.CreateWorkerRequest{Name: "idle", WorkspaceRequirements: []store.WorkerWorkspaceRequirement{{Role: "primary", Required: true}}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := workerAPICallOptions{scopes: []string{"automations:write"}}
+	result := executeWorkerAPI(h, http.MethodPost, "/"+w.ID+"/activate", fmt.Sprintf(`{"expected_revision":1,"local_bindings":{"primary":%q},"activate":false}`, workspaceID), opts)
+	if result.Code != http.StatusOK {
+		t.Fatalf("approval: %d %s", result.Code, result.Body.String())
+	}
+	result = executeWorkerAPI(h, http.MethodPost, "/"+w.ID+"/test", `{"prompt":"Review","idempotency_key":"idle-test"}`, opts)
+	if result.Code != http.StatusCreated {
+		t.Fatalf("test: %d %s", result.Code, result.Body.String())
+	}
+	current, _, err := ws.GetWorker("acct-test", w.ID)
+	if err != nil || current.LifecycleState != store.WorkerLifecycleStateIdle || current.Revision != 2 {
+		t.Fatalf("test activated worker: %+v %v", current, err)
+	}
+	result = executeWorkerAPI(h, http.MethodPost, "/"+w.ID+"/direct", `{"prompt":"Review","idempotency_key":"idle-direct"}`, opts)
+	if result.Code != http.StatusConflict {
+		t.Fatalf("idle direct accepted: %d %s", result.Code, result.Body.String())
+	}
+	receipts, _, err := ws.ListWorkerRuns("acct-test", w.ID, 10, "")
+	if err != nil || len(receipts) != 1 || receipts[0].RequestSource != "test_run" {
+		t.Fatalf("unauthorized admission: %+v %v", receipts, err)
+	}
+}

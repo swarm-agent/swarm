@@ -57,9 +57,13 @@ func (s *WorkerExecutionService) workerStore() (*store.WorkerStore, error) {
 }
 
 // Activate validates every declared role against principal-authorized workspace
-// IDs. Until binding persistence has a reviewed approval contract, an unbound
-// worker cannot be activated; a migrated worker cannot be cut over implicitly.
+// IDs. Authenticated user ingress owns approval; AI tools cannot self-approve.
+// An unbound worker cannot execute or implicitly cut over a legacy schedule.
 func (s *WorkerExecutionService) Activate(account, user, id string, revision uint64, bindings map[string]string) (store.WorkerRecord, error) {
+	return s.ConfigureBindings(account, user, id, revision, bindings, true)
+}
+
+func (s *WorkerExecutionService) ConfigureBindings(account, user, id string, revision uint64, bindings map[string]string, activate bool) (store.WorkerRecord, error) {
 	if err := s.authorizeWorkerOwner(account, user); err != nil {
 		return store.WorkerRecord{}, err
 	}
@@ -74,13 +78,13 @@ func (s *WorkerExecutionService) Activate(account, user, id string, revision uin
 	if !found {
 		return store.WorkerRecord{}, store.ErrWorkerNotFound
 	}
-	if w.Revision != revision {
+	if w.Revision != revision || (w.LifecycleState != store.WorkerLifecycleStateIdle && w.LifecycleState != store.WorkerLifecycleStatePaused) {
 		return store.WorkerRecord{}, store.ErrWorkerConflict
 	}
 	if len(w.RequestedCapabilities) != 0 {
 		return store.WorkerRecord{}, errors.New("worker capability grants require explicit approval; unsupported activation")
 	}
-	if len(w.WorkspaceRequirements) != 1 || w.WorkspaceRequirements[0].Role != "primary" || !w.WorkspaceRequirements[0].Required || len(bindings) != 1 || bindings["primary"] == "" {
+	if len(w.WorkspaceRequirements) != 1 || w.WorkspaceRequirements[0].Role != "primary" || !w.WorkspaceRequirements[0].Required || len(bindings) != 1 || strings.TrimSpace(bindings["primary"]) == "" {
 		return store.WorkerRecord{}, errors.New("exactly one required primary workspace role must be bound")
 	}
 	if s.host.runs.workspace == nil {
@@ -94,7 +98,7 @@ func (s *WorkerExecutionService) Activate(account, user, id string, revision uin
 	if !found || !strings.EqualFold(entry.State, "active") {
 		return store.WorkerRecord{}, store.ErrWorkerConflict
 	}
-	return ws.ActivateWorker(account, user, id, revision, bindings)
+	return ws.ConfigureWorkerBindings(account, user, id, revision, bindings, activate)
 }
 
 // Dispatch admits once. The pinned receipt survives wake failure and can be
@@ -183,6 +187,9 @@ func (s *WorkerExecutionService) startLocked(ctx context.Context, receipt store.
 	if receipt.WorkerRevision != actual.WorkerRevision || receipt.AutomationRevision != actual.AutomationRevision {
 		return store.ErrWorkerConflict
 	}
+	if actual.CancelRequested {
+		return store.ErrWorkerConflict
+	}
 	if actual.Status == "running" {
 		return nil
 	}
@@ -193,7 +200,7 @@ func (s *WorkerExecutionService) startLocked(ctx context.Context, receipt store.
 	if err != nil {
 		return err
 	}
-	if !found || current.LifecycleState != store.WorkerLifecycleStateActive {
+	if !found || !workerRunAdmissionOpen(current, actual) {
 		return store.ErrWorkerConflict
 	}
 	if current.Provenance != nil && (current.Provenance.MigratedAt != 0 || current.Provenance.SourceProposalID != "") {
@@ -205,7 +212,7 @@ func (s *WorkerExecutionService) startLocked(ctx context.Context, receipt store.
 	if actual.AutomationID != "" {
 		enabled := false
 		for _, a := range current.Automations {
-			if a.ID == actual.AutomationID && a.Enabled {
+			if a.ID == actual.AutomationID && (a.Enabled || (actual.RequestSource == "test_run" && a.Revision == actual.AutomationRevision)) {
 				enabled = true
 				break
 			}
@@ -344,10 +351,10 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 	if err != nil {
 		return err
 	}
-	if !found || current.LifecycleState != store.WorkerLifecycleStateActive {
+	if !found || !workerRunAdmissionOpen(current, r) {
 		return store.ErrWorkerConflict
 	}
-	if !workerAutomationEnabled(current, r.AutomationID) {
+	if !workerRunAutomationEnabled(current, r) {
 		return store.ErrWorkerConflict
 	}
 	planRecord, found, err := h.runs.sessions.GetActivePlan(r.SessionID)
@@ -367,7 +374,7 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 		copyDoc.WorkerV2 = nil
 		copyDoc.AutomationV2 = nil
 		copyDoc.Artifacts = nil
-		if r.RequestSource == "direct" || r.RequestSource == "orchestrator" || r.RequestSource == "test_run" {
+		if r.AutomationID == "" {
 			if prompt, ok := r.Input["prompt"].(string); ok && strings.TrimSpace(prompt) != "" {
 				copyDoc.Info.Goal = strings.TrimSpace(prompt)
 				copyDoc.Checkpoints = []store.SessionPlanCheckpoint{{ID: "cp-1", Order: 1, Title: "Worker request", Objective: prompt, Tasks: []string{prompt}, AcceptanceCriteria: []string{"Complete the requested task"}, Status: "pending"}}
@@ -482,19 +489,28 @@ func (s *WorkerExecutionService) ReconcileStop(account, user, id string, revisio
 // A stop request alone is not proof the provider has stopped; observeRun keeps
 // the receipt open until the V3 intent and lifecycle agree.
 func (s *WorkerExecutionService) cancelRun(r store.WorkerRunRecord, reason string) error {
-	intent, found, err := s.host.runs.sessions.GetSessionRunIntent(r.SessionID, r.ID)
+	ws, err := s.workerStore()
+	if err != nil {
+		return err
+	}
+	r.CancelRequested = true
+	r.Error = reason
+	if _, err = ws.RecordWorkerRun(r.AccountScopeID, r); err != nil {
+		return err
+	}
+	intent, found, err := s.workerRunIntent(r)
 	if err != nil {
 		return err
 	}
 	if !found {
 		return nil
 	} // admitted but never dispatched; recovery will settle it
-	if intent.SessionID != r.SessionID || intent.RunID != r.ID || intent.PlanID != r.ID {
+	if intent.SessionID != r.SessionID || intent.PlanID != r.ID {
 		return store.ErrWorkerConflict
 	}
 	if intent.Status == sessions.RunIntentPendingExecutor || intent.Status == sessions.RunIntentRunning {
 		intent.Status = sessions.RunIntentCancelled
-		key := "worker-cancel:" + r.ID
+		key := "worker-cancel:" + r.ID + ":" + intent.RunID
 		_, err = s.host.apply(sessions.SessionMutationInput{SessionID: r.SessionID, UserID: r.UserID, AccountScopeID: r.AccountScopeID, Kind: sessions.SessionMutationRecordRunIntent, ClientRequestID: key, IdempotencyKey: key, PayloadHash: key, RequestHash: key, EventType: "session.run_intent.updated", RunIntent: &intent, NowUnixMs: time.Now().UnixMilli()})
 		if err != nil {
 			return err
@@ -504,7 +520,7 @@ func (s *WorkerExecutionService) cancelRun(r store.WorkerRunRecord, reason strin
 	runs := s.host.runs
 	runs.lifecycleMu.Lock()
 	active := runs.activeRuns[r.SessionID]
-	if active != nil && active.runID == r.ID {
+	if active != nil && active.runID == intent.RunID {
 		active.userStop = true
 		active.stopReason = reason
 		cancel := active.cancel
@@ -515,15 +531,52 @@ func (s *WorkerExecutionService) cancelRun(r store.WorkerRunRecord, reason strin
 		return nil // finishSessionLifecycle owns the terminal acknowledgement
 	}
 	for pendingID, cancel := range runs.pendingAdmissions[r.SessionID] {
-		if pendingID == r.ID {
+		if pendingID == intent.RunID {
 			cancel()
 		}
 	}
 	runs.lifecycleMu.Unlock()
 	lifecycle := sessions.NewPlanLifecycleService(s.host.runs.sessions)
 	lifecycle.SetApplySessionMutation(s.host.apply)
-	_, _, err = lifecycle.ReconcileCancelledRun(sessions.PlanLifecycleExecutionInput{SessionID: r.SessionID, PlanID: r.ID, CheckpointID: intent.CheckpointID, AttemptID: intent.AttemptID, RunID: r.ID, RunSessionID: r.SessionID, ParentSessionID: r.SessionID, Notes: reason, ReviewedAt: time.Now().UnixMilli()})
+	_, _, err = lifecycle.ReconcileCancelledRun(sessions.PlanLifecycleExecutionInput{SessionID: r.SessionID, PlanID: r.ID, CheckpointID: intent.CheckpointID, AttemptID: intent.AttemptID, RunID: intent.RunID, RunSessionID: r.SessionID, ParentSessionID: r.SessionID, Notes: reason, ReviewedAt: time.Now().UnixMilli()})
 	return err
+}
+
+// A worker occurrence owns a plan, not only its first checkpoint run. Active
+// intent pointers clear at termination, so use lifecycle/plan evidence before
+// falling back to the first run's immutable intent.
+func (s *WorkerExecutionService) workerRunIntent(r store.WorkerRunRecord) (store.V3SessionRunIntent, bool, error) {
+	if r.SessionID == "" {
+		return store.V3SessionRunIntent{}, false, nil
+	}
+	intent, found, err := s.host.runs.sessions.GetSessionActiveRunIntent(r.SessionID)
+	if err != nil || found {
+		return intent, found, err
+	}
+	_, exists, err := s.host.runs.sessions.GetSession(r.SessionID)
+	if err != nil || !exists {
+		return intent, false, err
+	}
+	plan, found, err := s.host.runs.sessions.GetActivePlan(r.SessionID)
+	if err != nil {
+		return intent, false, err
+	}
+	if found && plan.ID == r.ID && plan.Document != nil {
+		for i := len(plan.Document.Checkpoints) - 1; i >= 0; i-- {
+			cp := plan.Document.Checkpoints[i]
+			if cp.RunID != "" {
+				return s.host.runs.sessions.GetSessionRunIntent(r.SessionID, cp.RunID)
+			}
+		}
+	}
+	lifecycle, exists, err := s.host.runs.sessions.GetLifecycle(r.SessionID)
+	if err != nil {
+		return intent, false, err
+	}
+	if exists && lifecycle.RunID != "" {
+		return s.host.runs.sessions.GetSessionRunIntent(r.SessionID, lifecycle.RunID)
+	}
+	return s.host.runs.sessions.GetSessionRunIntent(r.SessionID, r.ID)
 }
 
 func (s *WorkerExecutionService) observeRun(r store.WorkerRunRecord) error {
@@ -541,25 +594,43 @@ func (s *WorkerExecutionService) observeRun(r store.WorkerRunRecord) error {
 	if store.AutomationV2Terminal(current.Status) {
 		return nil
 	}
-	intent, found, err := s.host.runs.sessions.GetSessionRunIntent(r.SessionID, r.ID)
+	intent, found, err := s.workerRunIntent(r)
 	if err != nil {
 		return err
 	}
-	if found && (intent.SessionID != r.SessionID || intent.RunID != r.ID || intent.PlanID != r.ID) {
+	if found && (intent.SessionID != r.SessionID || intent.PlanID != r.ID) {
 		return store.ErrWorkerConflict
 	}
-	if !found { // only an admitted receipt without a created session is safe to cancel
-		_, sessionFound, err := s.host.runs.sessions.GetSession(r.SessionID)
+	if !found { // Preparation may have committed a session but not yet an intent.
+		snapshot, sessionFound, err := s.host.runs.sessions.GetSession(r.SessionID)
 		if err != nil {
 			return err
 		}
-		if !sessionFound && current.Status == "admitted" {
+		preparing := !sessionFound
+		if sessionFound {
+			if snapshot.AccountScopeID != r.AccountScopeID || snapshot.UserID != r.UserID || snapshot.Metadata["worker_execution_run_id"] != r.ID {
+				return store.ErrWorkerConflict
+			}
+			lifecycle, exists, err := s.host.runs.sessions.GetLifecycle(r.SessionID)
+			if err != nil {
+				return err
+			}
+			preparing = !exists || !lifecycle.Active
+		}
+		if preparing && current.Status == "admitted" {
 			current.Status = "cancelled"
 			current.CompletedAt = time.Now().UnixMilli()
 			_, err = ws.RecordWorkerRun(r.AccountScopeID, current)
 			return err
 		}
 		return fmt.Errorf("%w: run has no acknowledged intent", store.ErrWorkerConflict)
+	}
+	lifecycle, hasLifecycle, err := s.host.runs.sessions.GetLifecycle(r.SessionID)
+	if err != nil {
+		return err
+	}
+	if hasLifecycle && lifecycle.Active {
+		return fmt.Errorf("%w: executor has not acknowledged termination", store.ErrWorkerConflict)
 	}
 	switch intent.Status {
 	case sessions.RunIntentCompleted:
@@ -584,7 +655,7 @@ func (s *WorkerExecutionService) observeRun(r store.WorkerRunRecord) error {
 		if err != nil {
 			return err
 		}
-		if ok && (lifecycle.Active || lifecycle.RunID != r.ID) {
+		if ok && lifecycle.Active {
 			return fmt.Errorf("%w: run cancellation not acknowledged", store.ErrWorkerConflict)
 		}
 		current.Status = "cancelled"
@@ -618,9 +689,9 @@ func (s *Service) WorkerExecutionService() *WorkerExecutionService {
 	return s.workerExecution
 }
 
-// ReconcileWorker processes durable receipts after restart. It does not replay
-// missed scheduled slots or start an admitted receipt without an existing V3
-// intent: worktree allocation may have been interrupted.
+// ReconcileWorker processes durable receipts after restart. Preparation retries
+// retain the same session and ownership checks; unsafe allocation recovery is
+// reported as failure, never bypassed. Missed scheduled slots are not replayed.
 func (s *WorkerExecutionService) ReconcileWorker(ctx context.Context, account, id string) error {
 	s.dispatchMu.Lock()
 	defer s.dispatchMu.Unlock()
@@ -644,16 +715,16 @@ func (s *WorkerExecutionService) ReconcileWorker(ctx context.Context, account, i
 		if err = ctx.Err(); err != nil {
 			return err
 		}
-		intent, exists, e := s.host.runs.sessions.GetSessionRunIntent(r.SessionID, r.ID)
+		intent, exists, e := s.workerRunIntent(r)
 		if e != nil {
 			failures = append(failures, e)
 			continue
 		}
-		if exists && (intent.SessionID != r.SessionID || intent.RunID != r.ID || intent.PlanID != r.ID) {
+		if exists && (intent.SessionID != r.SessionID || intent.PlanID != r.ID) {
 			failures = append(failures, store.ErrWorkerConflict)
 			continue
 		}
-		if (w.LifecycleState != store.WorkerLifecycleStateActive || !workerAutomationEnabled(w, r.AutomationID)) && exists && (intent.Status == sessions.RunIntentPendingExecutor || intent.Status == sessions.RunIntentRunning) {
+		if (r.CancelRequested || !workerRunAdmissionOpen(w, r) || !workerRunAutomationEnabled(w, r)) && exists && (intent.Status == sessions.RunIntentPendingExecutor || intent.Status == sessions.RunIntentRunning) {
 			e = s.cancelRun(r, "worker admission closed")
 			if e != nil {
 				failures = append(failures, e)
@@ -661,7 +732,7 @@ func (s *WorkerExecutionService) ReconcileWorker(ctx context.Context, account, i
 			}
 		}
 		if exists {
-			if w.LifecycleState == store.WorkerLifecycleStateActive && workerAutomationEnabled(w, r.AutomationID) && r.Status == "admitted" && intent.Status == sessions.RunIntentPendingExecutor {
+			if !r.CancelRequested && workerRunAdmissionOpen(w, r) && workerRunAutomationEnabled(w, r) && r.Status == "admitted" && intent.Status == sessions.RunIntentPendingExecutor {
 				if e = s.startLocked(ctx, r); e != nil {
 					failures = append(failures, e)
 				}
@@ -672,8 +743,26 @@ func (s *WorkerExecutionService) ReconcileWorker(ctx context.Context, account, i
 			}
 			continue
 		}
-		if w.LifecycleState != store.WorkerLifecycleStateActive || !workerAutomationEnabled(w, r.AutomationID) {
+		if r.CancelRequested || !workerRunAdmissionOpen(w, r) || !workerRunAutomationEnabled(w, r) {
 			if e = s.observeRun(r); e != nil {
+				failures = append(failures, e)
+			}
+		} else if r.Status == "admitted" {
+			// Resume interrupted preparation through the same ownership checks.
+			// If allocation cannot be safely recovered, retain evidence and fail
+			// visibly instead of leaving an admitted receipt stranded forever.
+			if e = s.startLocked(ctx, r); e != nil {
+				_, hasIntent, inspectErr := s.workerRunIntent(r)
+				if inspectErr != nil {
+					failures = append(failures, inspectErr)
+					continue
+				}
+				if !hasIntent && ctx.Err() == nil {
+					r.Status, r.Error, r.CompletedAt = "failed", "worker preparation failed: "+e.Error(), time.Now().UnixMilli()
+					if _, recordErr := ws.RecordWorkerRun(account, r); recordErr != nil {
+						failures = append(failures, recordErr)
+					}
+				}
 				failures = append(failures, e)
 			}
 		}
@@ -686,6 +775,21 @@ func (s *WorkerExecutionService) ReconcileWorker(ctx context.Context, account, i
 	}
 	return errors.Join(failures...)
 }
+func workerRunAdmissionOpen(w store.WorkerRecord, r store.WorkerRunRecord) bool {
+	return w.LifecycleState == store.WorkerLifecycleStateActive || (w.LifecycleState == store.WorkerLifecycleStateIdle && r.RequestSource == "test_run")
+}
+
+func workerRunAutomationEnabled(w store.WorkerRecord, r store.WorkerRunRecord) bool {
+	if r.RequestSource == "test_run" {
+		for _, a := range w.Automations {
+			if a.ID == r.AutomationID {
+				return a.Revision == r.AutomationRevision
+			}
+		}
+	}
+	return workerAutomationEnabled(w, r.AutomationID)
+}
+
 func workerAutomationEnabled(w store.WorkerRecord, id string) bool {
 	if id == "" {
 		return true
@@ -848,7 +952,7 @@ func (s *Service) validateWorkerExecution(current store.SessionSnapshot) error {
 	if err != nil {
 		return err
 	}
-	if !found || r.SessionID != current.ID || r.UserID != current.UserID || (r.Status != "admitted" && r.Status != "running") {
+	if !found || r.CancelRequested || r.SessionID != current.ID || r.UserID != current.UserID || (r.Status != "admitted" && r.Status != "running") {
 		return store.ErrWorkerConflict
 	}
 	intent, hasIntent, intentErr := s.sessions.GetSessionActiveRunIntent(current.ID)
@@ -862,7 +966,7 @@ func (s *Service) validateWorkerExecution(current store.SessionSnapshot) error {
 	if err != nil {
 		return err
 	}
-	if !found || w.LifecycleState != store.WorkerLifecycleStateActive || len(w.RequestedCapabilities) != 0 || r.SessionID != "worker-execution-"+r.ID || (w.Provenance != nil && (w.Provenance.MigratedAt != 0 || w.Provenance.SourceProposalID != "")) {
+	if !found || !workerRunAdmissionOpen(w, r) || len(w.RequestedCapabilities) != 0 || r.SessionID != "worker-execution-"+r.ID || (w.Provenance != nil && (w.Provenance.MigratedAt != 0 || w.Provenance.SourceProposalID != "")) {
 		return store.ErrWorkerConflict
 	}
 	if len(current.WorkspaceGrants) != 2 || len(pinned.WorkspaceGrants) != 2 || current.WorkspaceGrants[0].WorkspaceID != w.LocalBindings["primary"] || pinned.WorkspaceGrants[0].WorkspaceID != w.LocalBindings["primary"] || current.WorkspaceGrants[1].Path != pinned.WorkspaceGrants[1].Path {
@@ -871,7 +975,7 @@ func (s *Service) validateWorkerExecution(current store.SessionSnapshot) error {
 	if r.AutomationID != "" {
 		active := false
 		for _, a := range w.Automations {
-			if a.ID == r.AutomationID && a.Enabled {
+			if a.ID == r.AutomationID && (a.Enabled || (r.RequestSource == "test_run" && a.Revision == r.AutomationRevision)) {
 				active = true
 				break
 			}

@@ -311,7 +311,7 @@ func TestWorkerV2ProviderDispatch(t *testing.T) {
 	permissions := permission.NewService(ps, events, nil)
 	permissions.SetBypassPermissions(true)
 	svc := NewService(sessions, nil, nil, tool.NewRuntime(1), permissions, nil, nil, events)
-	profile := agent.SwarmAgentProfileForContext(store.AgentProfile{})
+	profile := agent.SwarmOrchestratorAgentProfileForContext(store.AgentProfile{})
 	_, policy, disabled, err := svc.compileResolvedAgentToolContract("account", profile)
 	if err != nil {
 		t.Fatal(err)
@@ -341,7 +341,10 @@ func TestWorkerV2ProviderDispatch(t *testing.T) {
 			map[string]any{"id": "report", "title": "Report", "status": "pending", "order": 1, "tasks": []string{"Report repository status without changes"}, "acceptance_criteria": []string{"Factual report returned"}},
 		},
 	}
-	args := map[string]any{"action": "propose", "document": doc}
+	if err := ss.PutProject("account", &store.ProjectRecord{ID: "worker-project", AccountID: "account", Name: "Worker project", Workspaces: []store.ProjectWorkspaceRef{{WorkspaceID: w.WorkspaceID, Path: w.Path, Role: "primary_code"}}}); err != nil {
+		t.Fatal(err)
+	}
+	args := map[string]any{"action": "propose", "document": doc, "project_id": "worker-project"}
 	raw, _ := json.Marshal(args)
 	invoker := svc.newProviderToolInvoker(providerToolInvokerConfig{sessionID: "author", principal: identity.Principal{Type: identity.PrincipalTypeUser, UserID: "owner", AccountScopeID: "account"}, sessionMode: "auto", runID: "authoring", providerManagedV3: true, applySessionMutation: sessions.ApplySessionMutation, agentProfile: profile, policy: policy, terminalPlanState: &terminalPlanToolState{}})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -417,7 +420,7 @@ func TestAutomationV2ManageWorkersHelpAndProjectWorkspaceResolution(t *testing.T
 	}
 
 	// action=help on manage_workers must succeed without workspace
-	helpWorkers, err := svc.executeManageAutomationV2Tool("no-ws-session", `{"action":"help"}`)
+	helpWorkers, err := svc.executeManageWorkersTool("no-ws-session", `{"action":"help"}`, agent.SwarmOrchestratorAgentProfileForContext(store.AgentProfile{}))
 	if err != nil {
 		t.Fatalf("manage_workers action=help failed without workspace: %v", err)
 	}
@@ -426,7 +429,7 @@ func TestAutomationV2ManageWorkersHelpAndProjectWorkspaceResolution(t *testing.T
 	}
 
 	// action=help on manage_automation must succeed without workspace
-	helpAuto, err := svc.executeManageAutomationV2Tool("no-ws-session", `{"action":"help"}`)
+	helpAuto, err := svc.executeManageWorkersTool("no-ws-session", `{"action":"help"}`, agent.SwarmOrchestratorAgentProfileForContext(store.AgentProfile{}))
 	if err != nil {
 		t.Fatalf("manage_automation action=help failed without workspace: %v", err)
 	}
@@ -475,7 +478,7 @@ func TestAutomationV2ManageWorkersHelpAndProjectWorkspaceResolution(t *testing.T
 	}
 
 	// Review/context should not fail with "target workspace required"
-	reviewOut, err := svc.executeManageAutomationV2Tool("orch-session", `{"action":"review"}`)
+	reviewOut, err := svc.executeManageWorkersTool("orch-session", `{"action":"review"}`, agent.SwarmOrchestratorAgentProfileForContext(store.AgentProfile{}))
 	if err != nil {
 		t.Fatalf("manage_workers review failed on orchestrator session: %v", err)
 	}

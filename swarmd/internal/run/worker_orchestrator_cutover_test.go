@@ -241,7 +241,7 @@ func TestWorkerActivationAISelfApprovalDenied(t *testing.T) {
 }
 
 func TestOrchestratorWorkerLifecycleActions(t *testing.T) {
-	svc, sessionsSvc, _ := setupWorkerOrchestratorTestEnv(t)
+	svc, sessionsSvc, execution, workspaceID := setupWorkerExecutionFixture(t, func(identity.Principal, store.V3SessionRunIntent) bool { return true })
 	orchProfile := agent.SwarmOrchestratorAgentProfileForContext(store.AgentProfile{})
 
 	invoker := svc.newProviderToolInvoker(providerToolInvokerConfig{
@@ -255,12 +255,14 @@ func TestOrchestratorWorkerLifecycleActions(t *testing.T) {
 		terminalPlanState:    &terminalPlanToolState{},
 	})
 
+	callNumber := 0
 	callTool := func(args map[string]any) map[string]any {
 		t.Helper()
+		callNumber++
 		raw, _ := json.Marshal(args)
 		res, err := invoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{
 			Name:      "manage_workers",
-			CallID:    "call-step",
+			CallID:    fmt.Sprintf("call-step-%d", callNumber),
 			Arguments: string(raw),
 		})
 		if err != nil {
@@ -288,9 +290,7 @@ func TestOrchestratorWorkerLifecycleActions(t *testing.T) {
 		"name":         "Code Reviewer",
 		"description":  "Performs automated reviews",
 		"instructions": "Review PR diffs thoroughly",
-		"requested_capabilities": []map[string]any{
-			{"type": "tool", "name": "read", "required": true},
-		},
+
 		"workspace_requirements": []map[string]any{
 			{"role": "primary", "required": true},
 		},
@@ -376,6 +376,7 @@ func TestOrchestratorWorkerLifecycleActions(t *testing.T) {
 		"name":              "Daily PR Audit",
 		"activation_mode":   "manual",
 		"description":       "Runs daily audit",
+		"plan_document":     store.SessionPlanDocument{Title: "Audit", Info: store.SessionPlanInfo{Goal: "Review repository"}, Checkpoints: []store.SessionPlanCheckpoint{{ID: "cp-1", Order: 1, Title: "Review", Status: "pending", Tasks: []string{"Review repository"}, AcceptanceCriteria: []string{"Review delivered"}}}},
 	})
 	if attachOut["status"] != "attached" {
 		t.Fatalf("attach expected status attached, got %v", attachOut)
@@ -394,32 +395,38 @@ func TestOrchestratorWorkerLifecycleActions(t *testing.T) {
 		t.Fatalf("expected revision 3, got %v", attachedWorker["revision"])
 	}
 
+	// User approval activates bindings; AI cannot self-approve.
+	if _, err := execution.Activate("account", "owner", workerID, 3, map[string]string{"primary": workspaceID}); err != nil {
+		t.Fatal(err)
+	}
 	// 8. action=test (labelled test run)
 	testOut := callTool(map[string]any{
-		"action":        "test",
-		"worker_id":     workerID,
-		"automation_id": autoID,
-		"prompt":        "Run test verification",
+		"action":          "test",
+		"worker_id":       workerID,
+		"automation_id":   autoID,
+		"prompt":          "Run test verification",
+		"idempotency_key": "tool-test",
 	})
-	if testOut["status"] != "admitted" || testOut["is_test"] != true {
+	if testOut["status"] != "running" {
 		t.Fatalf("test expected status admitted and is_test=true, got %v", testOut)
 	}
 	testRun, _ := testOut["run"].(map[string]any)
-	if testRun["request_source"] != "test" || testRun["worker_id"] != workerID {
+	if testRun["request_source"] != "test_run" || testRun["worker_id"] != workerID {
 		t.Fatalf("mismatched test run: %v", testRun)
 	}
 
 	// 9. action=request (direct request)
 	reqOut := callTool(map[string]any{
-		"action":    "request",
-		"worker_id": workerID,
-		"prompt":    "Review commit abc1234",
+		"action":          "request",
+		"worker_id":       workerID,
+		"prompt":          "Review commit abc1234",
+		"idempotency_key": "tool-request",
 	})
-	if reqOut["status"] != "admitted" || reqOut["is_test"] != false {
+	if reqOut["status"] != "running" {
 		t.Fatalf("request expected status admitted and is_test=false, got %v", reqOut)
 	}
 	reqRun, _ := reqOut["run"].(map[string]any)
-	if reqRun["request_source"] != "direct" || reqRun["worker_id"] != workerID {
+	if reqRun["request_source"] != "orchestrator" || reqRun["worker_id"] != workerID {
 		t.Fatalf("mismatched direct run: %v", reqRun)
 	}
 
@@ -428,7 +435,7 @@ func TestOrchestratorWorkerLifecycleActions(t *testing.T) {
 		"action":            "disable_automation",
 		"worker_id":         workerID,
 		"automation_id":     autoID,
-		"expected_revision": 3,
+		"expected_revision": 4,
 	})
 	if disableOut["status"] != "automation_disabled" {
 		t.Fatalf("disable_automation expected status automation_disabled, got %v", disableOut)
@@ -439,7 +446,7 @@ func TestOrchestratorWorkerLifecycleActions(t *testing.T) {
 	if disAuto0["enabled"] != false {
 		t.Fatalf("expected automation enabled=false, got %v", disAuto0["enabled"])
 	}
-	if uint64(disWorker["revision"].(float64)) != 4 {
+	if uint64(disWorker["revision"].(float64)) != 5 {
 		t.Fatalf("expected revision 4, got %v", disWorker["revision"])
 	}
 
@@ -447,21 +454,22 @@ func TestOrchestratorWorkerLifecycleActions(t *testing.T) {
 	pauseOut := callTool(map[string]any{
 		"action":            "pause",
 		"worker_id":         workerID,
-		"expected_revision": 4,
+		"expected_revision": 5,
 	})
 	if pauseOut["status"] != "paused" {
 		t.Fatalf("pause expected status paused, got %v", pauseOut)
 	}
 	pausedWorker, _ := pauseOut["worker"].(map[string]any)
-	if uint64(pausedWorker["revision"].(float64)) != 5 {
+	if uint64(pausedWorker["revision"].(float64)) != 7 {
 		t.Fatalf("expected revision 5, got %v", pausedWorker["revision"])
 	}
 
 	// Direct request to paused worker must be rejected
 	pausedReqArgs, _ := json.Marshal(map[string]any{
-		"action":    "request",
-		"worker_id": workerID,
-		"prompt":    "Cannot run while paused",
+		"action":          "request",
+		"worker_id":       workerID,
+		"prompt":          "Cannot run while paused",
+		"idempotency_key": "paused-request",
 	})
 	pausedReqRes, err := invoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{
 		Name:      "manage_workers",
@@ -471,7 +479,7 @@ func TestOrchestratorWorkerLifecycleActions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(pausedReqRes.Error, "admission is closed for paused worker") {
+	if !strings.Contains(pausedReqRes.Error, "admission closed (paused)") {
 		t.Fatalf("expected admission closed error for paused worker, got: %q", pausedReqRes.Error)
 	}
 
@@ -479,23 +487,24 @@ func TestOrchestratorWorkerLifecycleActions(t *testing.T) {
 	resumeOut := callTool(map[string]any{
 		"action":            "resume",
 		"worker_id":         workerID,
-		"expected_revision": 5,
+		"expected_revision": 7,
 	})
-	if resumeOut["status"] != "resumed" {
+	if resumeOut["status"] != "active" {
 		t.Fatalf("resume expected status resumed, got %v", resumeOut)
 	}
 	resumedWorker, _ := resumeOut["worker"].(map[string]any)
-	if uint64(resumedWorker["revision"].(float64)) != 6 {
+	if uint64(resumedWorker["revision"].(float64)) != 8 {
 		t.Fatalf("expected revision 6, got %v", resumedWorker["revision"])
 	}
 
 	// Request after resume succeeds
 	afterResumeOut := callTool(map[string]any{
-		"action":    "request",
-		"worker_id": workerID,
-		"prompt":    "Runs fine after resume",
+		"action":          "request",
+		"worker_id":       workerID,
+		"prompt":          "Runs fine after resume",
+		"idempotency_key": "resumed-request",
 	})
-	if afterResumeOut["status"] != "admitted" {
+	if afterResumeOut["status"] != "running" {
 		t.Fatalf("request after resume failed: %v", afterResumeOut)
 	}
 
@@ -503,7 +512,7 @@ func TestOrchestratorWorkerLifecycleActions(t *testing.T) {
 	deleteOut := callTool(map[string]any{
 		"action":            "delete",
 		"worker_id":         workerID,
-		"expected_revision": 6,
+		"expected_revision": 8,
 	})
 	if deleteOut["status"] != "deleted" {
 		t.Fatalf("delete expected status deleted, got %v", deleteOut)
@@ -522,13 +531,18 @@ func TestOrchestratorWorkerLifecycleActions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(delInspectRes.Error, "worker not found") {
-		t.Fatalf("expected worker not found error after delete, got: %q", delInspectRes.Error)
+	var tombstone struct {
+		Worker store.WorkerRecord `json:"worker"`
+	}
+	if err := json.Unmarshal([]byte(delInspectRes.Output), &tombstone); err != nil || tombstone.Worker.LifecycleState != store.WorkerLifecycleStateDeleted {
+		t.Fatalf("expected retained deleted tombstone: %s %v", delInspectRes.Output, err)
 	}
 }
 
 func TestScopedAutomationDisableDoesNotStopUnrelatedRuns(t *testing.T) {
 	svc, sessionsSvc, _ := setupWorkerOrchestratorTestEnv(t)
+	svc.SetWorkerExecutionService(&WorkerExecutionService{host: &AutomationV2ExecutionHost{runs: svc, apply: sessionsSvc.ApplySessionMutation}})
+	plan := store.SessionPlanDocument{Title: "Review", Info: store.SessionPlanInfo{Goal: "Review"}, Checkpoints: []store.SessionPlanCheckpoint{{ID: "cp-1", Order: 1, Title: "Review", Status: "pending", Tasks: []string{"Review"}, AcceptanceCriteria: []string{"Reviewed"}}}}
 	orchProfile := agent.SwarmOrchestratorAgentProfileForContext(store.AgentProfile{})
 
 	invoker := svc.newProviderToolInvoker(providerToolInvokerConfig{
@@ -542,12 +556,14 @@ func TestScopedAutomationDisableDoesNotStopUnrelatedRuns(t *testing.T) {
 		terminalPlanState:    &terminalPlanToolState{},
 	})
 
+	callNumber := 0
 	callTool := func(args map[string]any) map[string]any {
 		t.Helper()
+		callNumber++
 		raw, _ := json.Marshal(args)
 		res, err := invoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{
 			Name:      "manage_workers",
-			CallID:    "call-step",
+			CallID:    fmt.Sprintf("call-step-%d", callNumber),
 			Arguments: string(raw),
 		})
 		if err != nil {
@@ -578,6 +594,7 @@ func TestScopedAutomationDisableDoesNotStopUnrelatedRuns(t *testing.T) {
 		"worker_id":         workerID,
 		"expected_revision": 1,
 		"name":              "Auto One",
+		"plan_document":     plan,
 	})
 	w1 := a1Out["worker"].(map[string]any)
 	autos1 := w1["automations"].([]any)
@@ -589,6 +606,7 @@ func TestScopedAutomationDisableDoesNotStopUnrelatedRuns(t *testing.T) {
 		"worker_id":         workerID,
 		"expected_revision": 2,
 		"name":              "Auto Two",
+		"plan_document":     plan,
 	})
 	w2 := a2Out["worker"].(map[string]any)
 	autos2 := w2["automations"].([]any)
@@ -606,6 +624,7 @@ func TestScopedAutomationDisableDoesNotStopUnrelatedRuns(t *testing.T) {
 		ID:           store.GenerateWorkerRunID(),
 		WorkerID:     workerID,
 		AutomationID: auto1ID,
+		SessionID:    "undispatched-one",
 		Status:       "admitted",
 		CreatedAt:    100,
 	})
@@ -618,6 +637,7 @@ func TestScopedAutomationDisableDoesNotStopUnrelatedRuns(t *testing.T) {
 		ID:           store.GenerateWorkerRunID(),
 		WorkerID:     workerID,
 		AutomationID: auto2ID,
+		SessionID:    "undispatched-two",
 		Status:       "admitted",
 		CreatedAt:    200,
 	})
