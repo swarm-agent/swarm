@@ -607,6 +607,25 @@ export function validateSelectedTaskForContext(
 }
 
 /**
+ * Reconciles the selected task ID against the current list of project tasks.
+ *
+ * Invariants:
+ * - Never implicitly auto-selects or defaults to the first task or any task.
+ * - Ordinary chat must remain unattached unless the user explicitly selects a task.
+ * - Deliberate selection is preserved as long as the selected task exists in the current project.
+ * - Stale selections (e.g. task deleted, project switched, or empty tasks) are cleared to an empty string.
+ */
+export function reconcileSelectedTaskId(
+  currentSelectedTaskId: string | null | undefined,
+  availableTasks: Array<{ id: string }>
+): string {
+  if (!currentSelectedTaskId || !currentSelectedTaskId.trim()) return ''
+  const trimmed = currentSelectedTaskId.trim()
+  const exists = availableTasks.some((t) => t.id === trimmed)
+  return exists ? trimmed : ''
+}
+
+/**
  * Builds explicit user-message envelope for forwarding selected-task context.
  * This guarantees the AI receives exact task context in content without backend schema changes
  * or relying on invented metadata ignored by the model executor.

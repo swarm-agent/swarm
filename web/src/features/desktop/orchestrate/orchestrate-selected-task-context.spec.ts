@@ -8,6 +8,7 @@ import {
   buildSelectedTaskMessageEnvelope,
   buildSelectedTaskMessageMetadata,
   parseSelectedTaskMessageEnvelope,
+  reconcileSelectedTaskId,
   type SelectedTaskContextSnapshot,
 } from './orchestrate-task-helpers'
 import type { RunningTask, ProjectSummary } from './orchestrate-types'
@@ -749,3 +750,164 @@ test('DesktopV3UserMessage extracts and renders task context badge from user mes
     'DesktopV3UserMessage must display Task Context label'
   )
 })
+
+test('reconcileSelectedTaskId never auto-selects or implicitly defaults to first task', () => {
+  // Written test purpose:
+  // - Requirement: Reconciling task selection against a non-empty task list when currentSelectedTaskId
+  //   is empty or whitespace must return ''. Never implicitly auto-select the first task or any default task.
+  // - Threat/regression prevented: Ordinary orchestrator chat being hijacked by auto-selected tasks
+  //   (such as completed image or coder tasks) without operator selection.
+  // - Symbols: reconcileSelectedTaskId in orchestrate-task-helpers.ts.
+  // - Narrowest layer: Direct pure function unit test verifying task selection lifecycle across task arrays.
+  const tasks = [
+    { id: 'task-c4f309d71fe91aa3', title: 'Panda Riding a Giraffe' },
+    { id: 'task-auth-2', title: 'Refactor Authentication' },
+    { id: 'task-ui-3', title: 'Design System Header' },
+  ]
+
+  // Empty string selection preserves empty string (no implicit first-task selection)
+  assert.equal(reconcileSelectedTaskId('', tasks), '')
+  assert.equal(reconcileSelectedTaskId('   ', tasks), '')
+  assert.equal(reconcileSelectedTaskId(null as any, tasks), '')
+  assert.equal(reconcileSelectedTaskId(undefined as any, tasks), '')
+})
+
+test('reconcileSelectedTaskId preserves deliberate user selection when task exists', () => {
+  // Written test purpose:
+  // - Requirement: When an operator explicitly selects a task, and that task exists in the current project's
+  //   task list, reconcileSelectedTaskId must preserve that exact task ID.
+  // - Threat/regression prevented: Dropping intentional task context while the operator is discussing or refining a specific task.
+  // - Symbols: reconcileSelectedTaskId in orchestrate-task-helpers.ts.
+  // - Narrowest layer: Direct pure function unit test verifying deliberate selection retention.
+  const tasks = [
+    { id: 'task-100', title: 'Task One' },
+    { id: 'task-200', title: 'Task Two' },
+    { id: 'task-300', title: 'Task Three' },
+  ]
+
+  assert.equal(reconcileSelectedTaskId('task-100', tasks), 'task-100')
+  assert.equal(reconcileSelectedTaskId('task-200', tasks), 'task-200')
+  assert.equal(reconcileSelectedTaskId('task-300', tasks), 'task-300')
+  // Trims whitespace around selected ID
+  assert.equal(reconcileSelectedTaskId('  task-200  ', tasks), 'task-200')
+})
+
+test('reconcileSelectedTaskId clears stale selection across project and deletion boundaries', () => {
+  // Written test purpose:
+  // - Requirement: When a selected task is deleted, pruned, or when switching to an empty or different
+  //   project where the task does not exist, reconcileSelectedTaskId must return ''.
+  // - Threat/regression prevented: Stale task context leaking into subsequent messages or cross-project context pollution.
+  // - Symbols: reconcileSelectedTaskId in orchestrate-task-helpers.ts.
+  // - Narrowest layer: Direct pure function unit test verifying deleted task IDs and mismatched project task lists.
+  const activeTasks = [
+    { id: 'task-live-1', title: 'Live Task' },
+    { id: 'task-live-2', title: 'Another Live Task' },
+  ]
+
+  // Task was deleted from current project -> clears to '' (never falls back to task-live-1)
+  assert.equal(reconcileSelectedTaskId('task-deleted', activeTasks), '')
+  // Stale selection from a previous project -> clears to ''
+  assert.equal(reconcileSelectedTaskId('task-from-old-project', activeTasks), '')
+  // Current project has zero tasks -> clears to ''
+  assert.equal(reconcileSelectedTaskId('task-live-1', []), '')
+})
+
+test('reconcileSelectedTaskId guarantees deselect / clear is stable and never resurrected', () => {
+  // Written test purpose:
+  // - Requirement: Once cleared/deselected (currentSelectedTaskId is ''), subsequent reconciliation
+  //   with updated task lists must remain '' and never resurrect or auto-select tasks[0].
+  // - Threat/regression prevented: Deselect button failing because an effect or helper immediately restores the first task.
+  // - Symbols: reconcileSelectedTaskId in orchestrate-task-helpers.ts.
+  // - Narrowest layer: Direct pure function unit test verifying multi-turn state transitions.
+  const initialTasks = [{ id: 'task-img-1', title: 'Initial Image Task' }]
+  // Step 1: User explicitly selected task
+  let currentSelection = reconcileSelectedTaskId('task-img-1', initialTasks)
+  assert.equal(currentSelection, 'task-img-1')
+
+  // Step 2: User clicks deselect -> selection reset to ''
+  currentSelection = ''
+
+  // Step 3: Tasks update (e.g. background sync adds new tasks)
+  const updatedTasks = [
+    { id: 'task-img-1', title: 'Initial Image Task' },
+    { id: 'task-coder-2', title: 'New Coder Task' },
+  ]
+  const reconciledAfterUpdate = reconcileSelectedTaskId(currentSelection, updatedTasks)
+  assert.equal(reconciledAfterUpdate, '', 'Must remain empty and never resurrect task-img-1')
+})
+
+test('OrchestrateView enforces explicit-only task selection lifecycle and clears across boundaries', () => {
+  // Written test purpose:
+  // - Requirement: OrchestrateView.tsx must never implicitly auto-select tasks[0], must use reconcileSelectedTaskId,
+  //   must clear selectedTaskId on deselect, back-to-orchestrator, orchestrator session reset, context clear, and project switch,
+  //   while preserving intentional deliberate selection and task action routes.
+  // - Threat/regression prevented: Silent auto-selection of tasks[0] hijacking orchestrator composer, broken deselect action,
+  //   and stale selection retention across session/project boundaries.
+  // - Symbols: OrchestrateView.tsx, reconcileSelectedTaskId, handleDeselectTask, handleBackToOrchestrator, handleOrchestratorSessionReset.
+  // - Narrowest layer: Source contract inspection proving production invariants and absence of auto-select anti-patterns.
+  const sourcePath = path.join(__dirname, 'OrchestrateView.tsx')
+  const source = fs.readFileSync(sourcePath, 'utf8')
+
+  // Invariant 1: No implicit auto-selection of tasks[0]
+  assert.ok(
+    !source.includes('setSelectedTaskId(tasks[0].id)'),
+    'OrchestrateView must NOT auto-select tasks[0].id'
+  )
+  assert.ok(
+    source.includes('reconcileSelectedTaskId(selectedTaskId, tasks)'),
+    'OrchestrateView must use reconcileSelectedTaskId to manage selection lifecycle'
+  )
+
+  // Invariant 2: Split view inspector must not fall back to liveTasks[0]
+  assert.ok(
+    !source.includes('liveTasks.find((t) => t.id === selectedTaskId) || liveTasks[0]'),
+    'selectedTaskForSplit must NOT fall back to liveTasks[0]'
+  )
+
+  // Invariant 3: Explicit clear / deselect resets selectedTaskId
+  assert.ok(
+    source.includes('handleDeselectTask = useCallback('),
+    'OrchestrateView must provide handleDeselectTask'
+  )
+  assert.ok(
+    source.includes("setSelectedTaskId('')"),
+    'handleDeselectTask must reset selectedTaskId to empty string'
+  )
+
+  // Invariant 4: Session boundary - back to orchestrator resets selectedTaskId
+  assert.ok(
+    source.includes('const handleBackToOrchestrator = () => {'),
+    'OrchestrateView must define handleBackToOrchestrator'
+  )
+  assert.ok(
+    source.includes("const handleBackToOrchestrator = () => {\n    setActiveTaskId(null)\n    setSelectedTaskId('')"),
+    'handleBackToOrchestrator must clear selectedTaskId when returning to orchestrator'
+  )
+
+  // Invariant 5: Session boundary - orchestrator session reset clears selectedTaskId
+  assert.ok(
+    source.includes("const handleOrchestratorSessionReset = useCallback((newSessionId: string) => {\n    setActiveSessionId(newSessionId)\n    setSelectedTaskId('')"),
+    'handleOrchestratorSessionReset must clear selectedTaskId'
+  )
+
+  // Invariant 6: Sidebar clear-context action triggers onDeselectTask
+  assert.ok(
+    source.includes("const handleClearContext = async () => {\n    if (!project?.id || clearingContext) return\n    setClearingContext(true)\n    setClearSuccess(false)\n    try {\n      onDeselectTask?.()"),
+    'handleClearContext must call onDeselectTask to clear composer state immediately'
+  )
+
+  // Invariant 7: Project boundary - project switch clears selectedTaskId and activeTaskId
+  assert.ok(
+    source.includes('[selectedProjectId]'),
+    'OrchestrateView must have an effect dependent on selectedProjectId'
+  )
+
+  // Invariant 8: Preserves intentional task action paths
+  assert.ok(source.includes('handleApproveTask'), 'handleApproveTask must be preserved')
+  assert.ok(source.includes('handleRefineTask'), 'handleRefineTask must be preserved')
+  assert.ok(source.includes('handleReopenTask'), 'handleReopenTask must be preserved')
+  assert.ok(source.includes('handleCompleteTask'), 'handleCompleteTask must be preserved')
+  assert.ok(source.includes('handleIntegrateTask'), 'handleIntegrateTask must be preserved')
+  assert.ok(source.includes('handleRedeployJob'), 'handleRedeployJob must be preserved')
+})
+
