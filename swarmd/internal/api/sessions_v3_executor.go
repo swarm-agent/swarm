@@ -1324,7 +1324,7 @@ func (e *sessionV3Executor) recordRunStatusInEpoch(job sessionV3ExecutorJob, mut
 		err = e.server.reconcileAITaskRunLifecycle(job, status, sanitizedReason, "")
 	}
 	if err == nil {
-		_ = e.server.reconcileProjectTaskRunLifecycle(job, status, sanitizedReason)
+		err = e.server.reconcileProjectTaskRunLifecycle(job, status, sanitizedReason)
 	}
 	return result, err
 }
@@ -1874,7 +1874,7 @@ func (e *sessionV3Executor) completeRun(job sessionV3ExecutorJob, response sessi
 		err = e.server.reconcileAITaskRunLifecycle(job, sessionruntime.RunIntentCompleted, "", content)
 	}
 	if err == nil {
-		_ = e.server.reconcileProjectTaskRunLifecycle(job, sessionruntime.RunIntentCompleted, "")
+		err = e.server.reconcileProjectTaskRunLifecycle(job, sessionruntime.RunIntentCompleted, "")
 	}
 	return result, err
 }

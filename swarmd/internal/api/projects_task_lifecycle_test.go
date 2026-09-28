@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -48,7 +47,7 @@ func TestProjectTask_V3RunAuthority_LifecycleAbsentSuccessfulRun(t *testing.T) {
 		MessageCount:   10,
 		Lifecycle:      nil, // Canonical V3 session: Lifecycle is ABSENT
 	}
-	if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+	if _, err := applyProjectLifecycleFixture(server, sessionruntime.SessionMutationInput{
 		SessionID:       sessID,
 		UserID:          testPrincipal().UserID,
 		AccountScopeID:  accountID,
@@ -65,7 +64,7 @@ func TestProjectTask_V3RunAuthority_LifecycleAbsentSuccessfulRun(t *testing.T) {
 
 	// Record completed run intent on the session via canonical V3 mutation
 	runID := "desktop-v3-run:task_1"
-	if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+	if _, err := applyProjectLifecycleFixture(server, sessionruntime.SessionMutationInput{
 		SessionID:       sessID,
 		UserID:          testPrincipal().UserID,
 		AccountScopeID:  accountID,
@@ -165,7 +164,7 @@ func TestProjectTask_V3RunAuthority_ActiveRun(t *testing.T) {
 		MessageCount:   3,
 		Lifecycle:      nil,
 	}
-	if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+	if _, err := applyProjectLifecycleFixture(server, sessionruntime.SessionMutationInput{
 		SessionID:       sessID,
 		UserID:          testPrincipal().UserID,
 		AccountScopeID:  accountID,
@@ -182,7 +181,7 @@ func TestProjectTask_V3RunAuthority_ActiveRun(t *testing.T) {
 
 	// 1. Running state
 	runID := "desktop-v3-run:active_1"
-	if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+	if _, err := applyProjectLifecycleFixture(server, sessionruntime.SessionMutationInput{
 		SessionID:       sessID,
 		UserID:          testPrincipal().UserID,
 		AccountScopeID:  accountID,
@@ -252,7 +251,7 @@ func TestProjectTask_V3RunAuthority_FailedAndCancelled(t *testing.T) {
 		UpdatedAt:      now,
 		Lifecycle:      nil,
 	}
-	if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+	if _, err := applyProjectLifecycleFixture(server, sessionruntime.SessionMutationInput{
 		SessionID:       sessFailedID,
 		UserID:          testPrincipal().UserID,
 		AccountScopeID:  accountID,
@@ -266,7 +265,7 @@ func TestProjectTask_V3RunAuthority_FailedAndCancelled(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+	if _, err := applyProjectLifecycleFixture(server, sessionruntime.SessionMutationInput{
 		SessionID:       sessFailedID,
 		UserID:          testPrincipal().UserID,
 		AccountScopeID:  accountID,
@@ -317,7 +316,7 @@ func TestProjectTask_V3RunAuthority_FailedAndCancelled(t *testing.T) {
 		UpdatedAt:      now,
 		Lifecycle:      nil,
 	}
-	if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+	if _, err := applyProjectLifecycleFixture(server, sessionruntime.SessionMutationInput{
 		SessionID:       sessCancelID,
 		UserID:          testPrincipal().UserID,
 		AccountScopeID:  accountID,
@@ -331,7 +330,7 @@ func TestProjectTask_V3RunAuthority_FailedAndCancelled(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+	if _, err := applyProjectLifecycleFixture(server, sessionruntime.SessionMutationInput{
 		SessionID:       sessCancelID,
 		UserID:          testPrincipal().UserID,
 		AccountScopeID:  accountID,
@@ -392,7 +391,7 @@ func TestProjectTask_V3RunAuthority_NoExecution(t *testing.T) {
 		MessageCount:   10,  // Many seed messages exist!
 		Lifecycle:      nil, // Lifecycle is absent
 	}
-	if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+	if _, err := applyProjectLifecycleFixture(server, sessionruntime.SessionMutationInput{
 		SessionID:       sessID,
 		UserID:          testPrincipal().UserID,
 		AccountScopeID:  accountID,
@@ -447,7 +446,7 @@ func TestProjectTask_V3RunAuthority_AccountBoundaryIsolation(t *testing.T) {
 		UpdatedAt:      now,
 		Lifecycle:      nil,
 	}
-	if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+	if _, err := applyProjectLifecycleFixture(server, sessionruntime.SessionMutationInput{
 		SessionID:       foreignSessID,
 		UserID:          "foreign_user",
 		AccountScopeID:  foreignAccount,
@@ -461,7 +460,7 @@ func TestProjectTask_V3RunAuthority_AccountBoundaryIsolation(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+	if _, err := applyProjectLifecycleFixture(server, sessionruntime.SessionMutationInput{
 		SessionID:       foreignSessID,
 		UserID:          "foreign_user",
 		AccountScopeID:  foreignAccount,
@@ -530,7 +529,7 @@ func TestProjectTask_V3RunAuthority_ReadPurity(t *testing.T) {
 		UpdatedAt:      now,
 		Lifecycle:      nil,
 	}
-	if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+	if _, err := applyProjectLifecycleFixture(server, sessionruntime.SessionMutationInput{
 		SessionID:       sessID,
 		UserID:          testPrincipal().UserID,
 		AccountScopeID:  accountID,
@@ -544,7 +543,7 @@ func TestProjectTask_V3RunAuthority_ReadPurity(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+	if _, err := applyProjectLifecycleFixture(server, sessionruntime.SessionMutationInput{
 		SessionID:       sessID,
 		UserID:          testPrincipal().UserID,
 		AccountScopeID:  accountID,
@@ -673,7 +672,7 @@ func TestProjectTask_ReconcileProjectTaskRunLifecycle_RealtimeInvalidation(t *te
 		},
 		Lifecycle: nil,
 	}
-	if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+	if _, err := applyProjectLifecycleFixture(server, sessionruntime.SessionMutationInput{
 		SessionID:       sessID,
 		UserID:          testPrincipal().UserID,
 		AccountScopeID:  accountID,
@@ -787,7 +786,7 @@ func TestProjectTask_WorktreeHydrationFromSession(t *testing.T) {
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
-	if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+	if _, err := applyProjectLifecycleFixture(server, sessionruntime.SessionMutationInput{
 		SessionID:       sessID,
 		UserID:          testPrincipal().UserID,
 		AccountScopeID:  accountID,
@@ -828,4 +827,22 @@ func TestProjectTask_WorktreeHydrationFromSession(t *testing.T) {
 	if task.BaseCommit != "c3f659bdb5ef50929af78568fb66c04a89097368" {
 		t.Fatalf("expected BaseCommit hydrated to %q, got %q", "c3f659bdb5ef50929af78568fb66c04a89097368", task.BaseCommit)
 	}
+}
+
+// Seed the canonical pending intent before simulating executor transitions.
+func applyProjectLifecycleFixture(server *Server, input sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error) {
+	if input.Kind == sessionruntime.SessionMutationRecordRunIntent && input.RunIntent != nil && input.RunIntent.Status != pebblestore.V3RunIntentPendingExecutor {
+		pending := input
+		intent := *input.RunIntent
+		intent.Status = pebblestore.V3RunIntentPendingExecutor
+		pending.RunIntent = &intent
+		pending.ClientRequestID += ":pending"
+		pending.IdempotencyKey += ":pending"
+		pending.PayloadHash += ":pending"
+		pending.RequestHash += ":pending"
+		if _, err := server.applySessionV3PrimaryMutation(pending); err != nil {
+			return sessionruntime.SessionMutationResult{}, err
+		}
+	}
+	return server.applySessionV3PrimaryMutation(input)
 }

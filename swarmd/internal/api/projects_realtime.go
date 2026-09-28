@@ -54,7 +54,7 @@ func (s *Server) reconcileProjectTaskRunLifecycle(job sessionV3ExecutorJob, stat
 	if err != nil || !ok || task == nil {
 		return err
 	}
-	if task.AccountID != "" && task.AccountID != accountScopeID {
+	if task.SessionID != job.SessionID || (task.AccountID != "" && task.AccountID != accountScopeID) {
 		return nil
 	}
 	// Do not override TaskPrograms, direct media tasks, or completed/integrated tasks
@@ -70,11 +70,11 @@ func (s *Server) reconcileProjectTaskRunLifecycle(job sessionV3ExecutorJob, stat
 
 	switch status {
 	case sessionruntime.RunIntentCompleted:
+		gitState := inspectTaskGitState(*task, db)
 		_, err = db.UpdateProjectTask(accountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
-			if t.Status != "in_progress" {
+			if t.Status != "in_progress" || t.SessionID != job.SessionID {
 				return nil
 			}
-			gitState := inspectTaskGitState(*t, db)
 			if gitState.unintegratedCommits > 0 {
 				t.UnintegratedCommits = gitState.unintegratedCommits
 				t.GitStatus = gitState.gitStatus
@@ -113,7 +113,7 @@ func (s *Server) reconcileProjectTaskRunLifecycle(job sessionV3ExecutorJob, stat
 		return err
 	case sessionruntime.RunIntentCancelled:
 		_, err = db.UpdateProjectTask(accountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
-			if t.Status != "in_progress" {
+			if t.Status != "in_progress" || t.SessionID != job.SessionID {
 				return nil
 			}
 			t.Status = "failed"
@@ -126,7 +126,7 @@ func (s *Server) reconcileProjectTaskRunLifecycle(job sessionV3ExecutorJob, stat
 		return err
 	case sessionruntime.RunIntentFailed, sessionruntime.RunIntentExpired, sessionruntime.RunIntentInterrupted, sessionruntime.RunIntentDispatchBlocked:
 		_, err = db.UpdateProjectTask(accountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
-			if t.Status != "in_progress" {
+			if t.Status != "in_progress" || t.SessionID != job.SessionID {
 				return nil
 			}
 			t.Status = "failed"
