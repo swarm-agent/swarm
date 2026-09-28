@@ -19,15 +19,15 @@ import (
 // Purpose: Verify the canonical authenticated /v3/workers API contract.
 // Product Invariants:
 //  1. Workers are stable, account-scoped entities independent of sessions/plans.
-//  2. All worker endpoints require authenticated user principal and reject agents/unauthenticated callers.
+//  2. All worker endpoints require authenticated user principal and active account membership, rejecting agents, revoked members, and unauthenticated callers.
 //  3. Scopes are enforced: automations:read for queries/exports/validation, automations:write for mutations/import/migration.
-//  4. Trigger credentials and worker-scoped tokens cannot enumerate or manage workers, and cannot access foreign workers.
+//  4. Trigger credentials and worker-scoped tokens cannot enumerate or manage workers, and cannot access foreign workers. All scoped trigger tokens are rejected centrally.
 //  5. Cross-account isolation: data from account A is never visible or mutable from account B.
-//  6. Optimistic concurrency control: updates, deletes, and attachment changes reject stale expected revisions with 409 Conflict.
+//  6. Optimistic concurrency control: updates and attachment changes reject stale expected revisions with 409 Conflict.
 //  7. Stale or invalid requests cause no partial mutations to underlying storage.
-//  8. Strict request parsing rejects unknown fields, trailing payloads, and invalid query parameters.
-//  9. Idempotent worker creation with idempotency_key returns the existing record on duplicate calls.
-// 10. Definition attachment management and legacy migration are supported.
+//  8. Strict request parsing rejects unknown fields, trailing payloads, and invalid or duplicate query parameters.
+//  9. Idempotent worker creation with required idempotency_key in body returns the existing record on duplicate calls.
+// 10. Definition attachment management and legacy migration are supported. Worker DELETE route is removed (stop barrier).
 
 func setupWorkerAPITestServer(t *testing.T) (*Server, *store.Store, http.Handler) {
 	t.Helper()
@@ -36,6 +36,21 @@ func setupWorkerAPITestServer(t *testing.T) (*Server, *store.Store, http.Handler
 		t.Fatalf("open store: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
+
+	// Seed active account memberships for test accounts
+	ids := store.NewIdentityStore(db)
+	for _, pair := range [][2]string{
+		{"acct-test", "user-test"},
+		{"acct-1", "user-1"},
+		{"acct-2", "user-2"},
+	} {
+		_, _ = ids.PutAccountUser(store.AccountUserRecord{
+			ID:             "mem-" + pair[0] + "-" + pair[1],
+			AccountScopeID: pair[0],
+			UserID:         pair[1],
+			Status:         store.AccountUserStatusActive,
+		})
+	}
 
 	ss := store.NewSessionStore(db)
 	s := &Server{sessions: sessionruntime.NewService(ss, nil)}
@@ -111,7 +126,7 @@ func executeWorkerAPI(h http.Handler, method, path, body string, opts workerAPIC
 }
 
 func TestWorkerAPI_AuthenticationAndAuthorization(t *testing.T) {
-	_, _, h := setupWorkerAPITestServer(t)
+	_, db, h := setupWorkerAPITestServer(t)
 
 	// 1. Unauthenticated request -> 401 Unauthorized
 	r := httptest.NewRequest(http.MethodGet, WorkersPath, nil)
@@ -140,7 +155,38 @@ func TestWorkerAPI_AuthenticationAndAuthorization(t *testing.T) {
 		t.Fatalf("bound agent origin expected 403, got %d: %s", w.Code, w.Body.String())
 	}
 
-	// 4. Missing required read scope -> 403 Forbidden
+	// 4. Revoked membership -> 403 Forbidden
+	ids := store.NewIdentityStore(db)
+	_, _ = ids.PutAccountUser(store.AccountUserRecord{
+		ID:             "mem-acct-test-user-test",
+		AccountScopeID: "acct-test",
+		UserID:         "user-test",
+		Status:         "revoked",
+	})
+	w = executeWorkerAPI(h, http.MethodGet, "", "", workerAPICallOptions{
+		scopes: []string{"automations:read"},
+	})
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("revoked membership expected 403, got %d: %s", w.Code, w.Body.String())
+	}
+	// Restore active membership
+	_, _ = ids.PutAccountUser(store.AccountUserRecord{
+		ID:             "mem-acct-test-user-test",
+		AccountScopeID: "acct-test",
+		UserID:         "user-test",
+		Status:         store.AccountUserStatusActive,
+	})
+
+	// 5. Missing membership in identity store -> 403 Forbidden
+	w = executeWorkerAPI(h, http.MethodGet, "", "", workerAPICallOptions{
+		user:   "unregistered-user",
+		scopes: []string{"automations:read"},
+	})
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("missing membership expected 403, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// 6. Missing required read scope -> 403 Forbidden
 	w = executeWorkerAPI(h, http.MethodGet, "", "", workerAPICallOptions{
 		scopes: []string{"sessions:read"},
 	})
@@ -148,27 +194,36 @@ func TestWorkerAPI_AuthenticationAndAuthorization(t *testing.T) {
 		t.Fatalf("missing automations:read expected 403, got %d: %s", w.Code, w.Body.String())
 	}
 
-	// 5. Missing required write scope on POST -> 403 Forbidden
-	w = executeWorkerAPI(h, http.MethodPost, "", `{"name":"test"}`, workerAPICallOptions{
+	// 7. Missing required write scope on POST -> 403 Forbidden
+	w = executeWorkerAPI(h, http.MethodPost, "", `{"name":"test","idempotency_key":"key-1"}`, workerAPICallOptions{
 		scopes: []string{"automations:read"},
 	})
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("missing automations:write expected 403, got %d: %s", w.Code, w.Body.String())
 	}
 
-	// 6. Trigger-only credential cannot enumerate workers -> 403 Forbidden
-	w = executeWorkerAPI(h, http.MethodGet, "", "", workerAPICallOptions{
+	// 8. Scoped trigger tokens denied centrally across endpoints -> 403 Forbidden
+	triggerOpts := workerAPICallOptions{
 		scopedToken: &store.ScopedTokenRecord{
 			AccountScopeID: "acct-test",
 			UserID:         "user-test",
 			Scopes:         []string{"automations:trigger"},
 		},
-	})
+	}
+	w = executeWorkerAPI(h, http.MethodGet, "", "", triggerOpts)
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("trigger-only token expected 403 on list, got %d: %s", w.Code, w.Body.String())
 	}
+	w = executeWorkerAPI(h, http.MethodPost, "", `{"name":"test","idempotency_key":"key-1"}`, triggerOpts)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("trigger-only token expected 403 on create, got %d: %s", w.Code, w.Body.String())
+	}
+	w = executeWorkerAPI(h, http.MethodGet, "/some_worker", "", triggerOpts)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("trigger-only token expected 403 on get, got %d: %s", w.Code, w.Body.String())
+	}
 
-	// 7. Worker-scoped token cannot enumerate (list) -> 403 Forbidden
+	// 9. Worker-scoped token cannot enumerate (list) -> 403 Forbidden
 	w = executeWorkerAPI(h, http.MethodGet, "", "", workerAPICallOptions{
 		scopedToken: &store.ScopedTokenRecord{
 			AccountScopeID: "acct-test",
@@ -181,8 +236,8 @@ func TestWorkerAPI_AuthenticationAndAuthorization(t *testing.T) {
 		t.Fatalf("worker-scoped token on list expected 403, got %d: %s", w.Code, w.Body.String())
 	}
 
-	// 8. Worker-scoped token cannot manage (create) -> 403 Forbidden
-	w = executeWorkerAPI(h, http.MethodPost, "", `{"name":"test"}`, workerAPICallOptions{
+	// 10. Worker-scoped token cannot manage (create) -> 403 Forbidden
+	w = executeWorkerAPI(h, http.MethodPost, "", `{"name":"test","idempotency_key":"key-1"}`, workerAPICallOptions{
 		scopedToken: &store.ScopedTokenRecord{
 			AccountScopeID: "acct-test",
 			UserID:         "user-test",
@@ -198,11 +253,12 @@ func TestWorkerAPI_AuthenticationAndAuthorization(t *testing.T) {
 func TestWorkerAPI_CRUDLifecycleAndOptimisticConcurrency(t *testing.T) {
 	_, db, h := setupWorkerAPITestServer(t)
 
-	// 1. Create a worker
+	// 1. Create a worker (requires idempotency_key in body)
 	createBody := `{
 		"name": "Data Pipeline Worker",
 		"description": "Processes telemetry pipelines",
 		"instructions": "Run ingestion and summarize alerts.",
+		"idempotency_key": "idemp-crud-test-1",
 		"requested_capabilities": [
 			{"type": "tool", "name": "bash", "required": true}
 		],
@@ -303,7 +359,7 @@ func TestWorkerAPI_CRUDLifecycleAndOptimisticConcurrency(t *testing.T) {
 		t.Fatalf("persisted name was mutated on conflict! Got %s", persisted.Name)
 	}
 
-	// 6. Update worker with valid expected revision -> 200 OK & revision incremented
+	// 6. Update worker with valid expected revision in body -> 200 OK & revision incremented
 	validUpdateBody := `{
 		"expected_revision": 1,
 		"name": "Updated Pipeline Worker",
@@ -325,7 +381,7 @@ func TestWorkerAPI_CRUDLifecycleAndOptimisticConcurrency(t *testing.T) {
 		t.Fatalf("expected updated name, got %v", updatedWorker["name"])
 	}
 
-	// 7. List workers with pagination and state filtering
+	// 7. List workers with pagination and state filtering (no total_count in canonical wire)
 	w = executeWorkerAPI(h, http.MethodGet, "?limit=10&lifecycle_state=idle", "", workerAPICallOptions{
 		scopes: []string{"automations:read"},
 	})
@@ -338,43 +394,25 @@ func TestWorkerAPI_CRUDLifecycleAndOptimisticConcurrency(t *testing.T) {
 	if len(items) != 1 {
 		t.Fatalf("expected 1 worker in list, got %d", len(items))
 	}
+	if _, hasTotal := listResp["total_count"]; hasTotal {
+		t.Fatalf("total_count must not be present in canonical wire response")
+	}
 
-	// 8. Delete worker with stale revision -> 409 Conflict
-	w = executeWorkerAPI(h, http.MethodDelete, "/"+workerID+"?expected_revision=1", "", workerAPICallOptions{
+	// 8. Worker DELETE route is REMOVED -> 405 Method Not Allowed
+	w = executeWorkerAPI(h, http.MethodDelete, "/"+workerID, "", workerAPICallOptions{
 		scopes: []string{"automations:write"},
 	})
-	if w.Code != http.StatusConflict {
-		t.Fatalf("stale delete expected 409, got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("worker DELETE route expected 405 Method Not Allowed, got %d: %s", w.Code, w.Body.String())
 	}
 
-	// 9. Delete worker with correct expected revision -> 200 OK (tombstone)
-	w = executeWorkerAPI(h, http.MethodDelete, "/"+workerID+"?expected_revision=2", "", workerAPICallOptions{
-		scopes: []string{"automations:write"},
-	})
-	if w.Code != http.StatusOK {
-		t.Fatalf("valid delete expected 200, got %d: %s", w.Code, w.Body.String())
+	// Verify worker is still active/persisted and was NOT deleted
+	persistedStill, found, err := ws.GetWorker("acct-test", workerID)
+	if err != nil || !found {
+		t.Fatalf("worker was unexpectedly deleted: %v", err)
 	}
-
-	// 10. GET deleted worker -> 404 Not Found
-	w = executeWorkerAPI(h, http.MethodGet, "/"+workerID, "", workerAPICallOptions{
-		scopes: []string{"automations:read"},
-	})
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("deleted worker expected 404, got %d: %s", w.Code, w.Body.String())
-	}
-
-	// 11. List workers with include_deleted=true includes tombstone
-	w = executeWorkerAPI(h, http.MethodGet, "?include_deleted=true", "", workerAPICallOptions{
-		scopes: []string{"automations:read"},
-	})
-	if w.Code != http.StatusOK {
-		t.Fatalf("list with include_deleted expected 200, got %d: %s", w.Code, w.Body.String())
-	}
-	var deletedListResp map[string]any
-	_ = json.Unmarshal(w.Body.Bytes(), &deletedListResp)
-	delItems := deletedListResp["workers"].([]any)
-	if len(delItems) != 1 {
-		t.Fatalf("expected 1 deleted worker in list, got %d", len(delItems))
+	if persistedStill.LifecycleState == store.WorkerLifecycleStateDeleted {
+		t.Fatalf("worker was marked deleted despite 405 method not allowed")
 	}
 }
 
@@ -382,7 +420,7 @@ func TestWorkerAPI_CrossAccountIsolation(t *testing.T) {
 	_, _, h := setupWorkerAPITestServer(t)
 
 	// Create worker in account-1
-	createBody := `{"name": "Private Account 1 Worker"}`
+	createBody := `{"name": "Private Account 1 Worker", "idempotency_key": "idemp-acct1-1"}`
 	w := executeWorkerAPI(h, http.MethodPost, "", createBody, workerAPICallOptions{
 		account: "acct-1",
 		user:    "user-1",
@@ -426,8 +464,9 @@ func TestWorkerAPI_CrossAccountIsolation(t *testing.T) {
 	}
 	var listResp map[string]any
 	_ = json.Unmarshal(w.Body.Bytes(), &listResp)
-	if listResp["total_count"].(float64) != 0 {
-		t.Fatalf("cross-account list leaked items: total_count=%v", listResp["total_count"])
+	acct2Workers := listResp["workers"].([]any)
+	if len(acct2Workers) != 0 {
+		t.Fatalf("cross-account list leaked items: len=%d", len(acct2Workers))
 	}
 }
 
@@ -438,7 +477,6 @@ func TestWorkerAPI_Idempotency(t *testing.T) {
 		"name": "Idempotent Deployment Worker",
 		"idempotency_key": "idemp-deploy-key-1"
 	}`
-
 	// First call
 	w1 := executeWorkerAPI(h, http.MethodPost, "", createBody, workerAPICallOptions{
 		scopes: []string{"automations:write"},
@@ -465,14 +503,27 @@ func TestWorkerAPI_Idempotency(t *testing.T) {
 		t.Fatalf("idempotency violation: first ID %q != second ID %q", w1ID, w2ID)
 	}
 
+	// Third call with same idempotency key but different payload -> 409 Conflict
+	conflictBody := `{
+		"name": "Different Worker Name Reusing Key",
+		"idempotency_key": "idemp-deploy-key-1"
+	}`
+	w3 := executeWorkerAPI(h, http.MethodPost, "", conflictBody, workerAPICallOptions{
+		scopes: []string{"automations:write"},
+	})
+	if w3.Code != http.StatusConflict {
+		t.Fatalf("idempotency payload conflict expected 409, got %d: %s", w3.Code, w3.Body.String())
+	}
+
 	// Verify only 1 worker exists in list
 	wList := executeWorkerAPI(h, http.MethodGet, "", "", workerAPICallOptions{
 		scopes: []string{"automations:read"},
 	})
 	var listResp map[string]any
 	_ = json.Unmarshal(wList.Body.Bytes(), &listResp)
-	if listResp["total_count"].(float64) != 1 {
-		t.Fatalf("expected exactly 1 worker in store, got %v", listResp["total_count"])
+	items := listResp["workers"].([]any)
+	if len(items) != 1 {
+		t.Fatalf("expected exactly 1 worker in store, got %d", len(items))
 	}
 }
 
@@ -480,7 +531,7 @@ func TestWorkerAPI_StrictParsingAndRejections(t *testing.T) {
 	_, _, h := setupWorkerAPITestServer(t)
 
 	// 1. Unknown fields rejection on POST /v3/workers
-	unknownFieldBody := `{"name": "Valid Name", "unknown_rogue_field": "injected"}`
+	unknownFieldBody := `{"name": "Valid Name", "idempotency_key": "idemp-s-1", "unknown_rogue_field": "injected"}`
 	w := executeWorkerAPI(h, http.MethodPost, "", unknownFieldBody, workerAPICallOptions{
 		scopes: []string{"automations:write"},
 	})
@@ -488,8 +539,35 @@ func TestWorkerAPI_StrictParsingAndRejections(t *testing.T) {
 		t.Fatalf("unknown field body expected 400, got %d: %s", w.Code, w.Body.String())
 	}
 
-	// 2. Trailing payload rejection
-	trailingBody := `{"name": "Valid Name"} {"trailing": "data"}`
+	// 2. Client-supplied ID rejection on POST /v3/workers
+	suppliedIDBody := `{"name": "Valid Name", "idempotency_key": "idemp-s-2", "id": "custom_worker_id"}`
+	w = executeWorkerAPI(h, http.MethodPost, "", suppliedIDBody, workerAPICallOptions{
+		scopes: []string{"automations:write"},
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("supplied id body expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// 3. Client-supplied local_bindings rejection on POST /v3/workers
+	suppliedBindingsBody := `{"name": "Valid Name", "idempotency_key": "idemp-s-3", "local_bindings": {"ws": "local"}}`
+	w = executeWorkerAPI(h, http.MethodPost, "", suppliedBindingsBody, workerAPICallOptions{
+		scopes: []string{"automations:write"},
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("supplied local_bindings body expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// 4. Missing required idempotency_key on POST /v3/workers
+	missingIdempBody := `{"name": "Valid Name"}`
+	w = executeWorkerAPI(h, http.MethodPost, "", missingIdempBody, workerAPICallOptions{
+		scopes: []string{"automations:write"},
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("missing idempotency_key expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// 5. Trailing payload rejection
+	trailingBody := `{"name": "Valid Name", "idempotency_key": "idemp-s-4"} {"trailing": "data"}`
 	w = executeWorkerAPI(h, http.MethodPost, "", trailingBody, workerAPICallOptions{
 		scopes: []string{"automations:write"},
 	})
@@ -497,7 +575,7 @@ func TestWorkerAPI_StrictParsingAndRejections(t *testing.T) {
 		t.Fatalf("trailing payload body expected 400, got %d: %s", w.Code, w.Body.String())
 	}
 
-	// 3. Invalid query parameters on GET /v3/workers
+	// 6. Invalid query parameters on GET /v3/workers
 	w = executeWorkerAPI(h, http.MethodGet, "?invalid_filter=something", "", workerAPICallOptions{
 		scopes: []string{"automations:read"},
 	})
@@ -505,13 +583,37 @@ func TestWorkerAPI_StrictParsingAndRejections(t *testing.T) {
 		t.Fatalf("invalid query parameter expected 400, got %d: %s", w.Code, w.Body.String())
 	}
 
-	// 4. Missing required name
-	missingNameBody := `{"description": "No name"}`
+	// 7. Duplicate query parameter on GET /v3/workers
+	w = executeWorkerAPI(h, http.MethodGet, "?limit=10&limit=20", "", workerAPICallOptions{
+		scopes: []string{"automations:read"},
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("duplicate query parameter expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// 8. Query parameter on POST /v3/workers -> rejected
+	w = executeWorkerAPI(h, http.MethodPost, "?unexpected=query", `{"name":"Valid","idempotency_key":"k"}`, workerAPICallOptions{
+		scopes: []string{"automations:write"},
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("query on POST expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// 9. Missing required name
+	missingNameBody := `{"idempotency_key": "idemp-s-5", "description": "No name"}`
 	w = executeWorkerAPI(h, http.MethodPost, "", missingNameBody, workerAPICallOptions{
 		scopes: []string{"automations:write"},
 	})
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("missing name expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// 10. Missing expected_revision in body on PUT /v3/workers/{id}
+	w = executeWorkerAPI(h, http.MethodPut, "/worker_test_id", `{"name":"New Name"}`, workerAPICallOptions{
+		scopes: []string{"automations:write"},
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("missing expected_revision in body expected 400, got %d: %s", w.Code, w.Body.String())
 	}
 }
 
@@ -539,7 +641,7 @@ func TestWorkerAPI_ValidateImportAndExport(t *testing.T) {
 		]
 	}`
 
-	// 1. POST /v3/workers/validate with valid document -> 200 OK
+	// 1. POST /v3/workers/validate with valid raw document -> 200 OK: {"valid":true,"worker":def}
 	w := executeWorkerAPI(h, http.MethodPost, "/validate", portableJSON, workerAPICallOptions{
 		scopes: []string{"automations:read"},
 	})
@@ -551,8 +653,19 @@ func TestWorkerAPI_ValidateImportAndExport(t *testing.T) {
 	if valResp["valid"] != true {
 		t.Fatalf("expected valid: true, got %v", valResp["valid"])
 	}
+	if valResp["worker"] == nil {
+		t.Fatalf("expected worker object in validate response")
+	}
 
-	// 2. POST /v3/workers/validate with invalid schema version -> 400 Bad Request
+	// 2. POST /v3/workers/validate rejects query parameters -> 400 Bad Request
+	w = executeWorkerAPI(h, http.MethodPost, "/validate?unexpected=true", portableJSON, workerAPICallOptions{
+		scopes: []string{"automations:read"},
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("validate with query expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// 3. POST /v3/workers/validate with invalid schema version -> 400 Bad Request
 	invalidSchemaJSON := `{"schema_version": 99, "name": "Bad Schema"}`
 	w = executeWorkerAPI(h, http.MethodPost, "/validate", invalidSchemaJSON, workerAPICallOptions{
 		scopes: []string{"automations:read"},
@@ -561,8 +674,16 @@ func TestWorkerAPI_ValidateImportAndExport(t *testing.T) {
 		t.Fatalf("validate invalid schema expected 400, got %d: %s", w.Code, w.Body.String())
 	}
 
-	// 3. POST /v3/workers/import (mode=new) -> 201 Created
+	// 4. POST /v3/workers/import (mode=new) requires idempotency_key in query -> 400 without it
 	w = executeWorkerAPI(h, http.MethodPost, "/import?mode=new", portableJSON, workerAPICallOptions{
+		scopes: []string{"automations:write"},
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("import new without idempotency_key expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// 5. POST /v3/workers/import (mode=new&idempotency_key=...) with raw portable doc -> 201 Created
+	w = executeWorkerAPI(h, http.MethodPost, "/import?mode=new&idempotency_key=imp-key-1", portableJSON, workerAPICallOptions{
 		scopes: []string{"automations:write"},
 	})
 	if w.Code != http.StatusCreated {
@@ -586,7 +707,15 @@ func TestWorkerAPI_ValidateImportAndExport(t *testing.T) {
 		t.Fatalf("expected 1 attached automation on imported worker, got %d", len(autos))
 	}
 
-	// 4. GET /v3/workers/{id}/export -> 200 OK with worker definition
+	// 6. Duplicate import mode=new with same idempotency key -> idempotent return
+	wDup := executeWorkerAPI(h, http.MethodPost, "/import?mode=new&idempotency_key=imp-key-1", portableJSON, workerAPICallOptions{
+		scopes: []string{"automations:write"},
+	})
+	if wDup.Code != http.StatusCreated && wDup.Code != http.StatusOK {
+		t.Fatalf("duplicate import expected 200/201, got %d: %s", wDup.Code, wDup.Body.String())
+	}
+
+	// 7. GET /v3/workers/{id}/export -> 200 OK with {"worker": def} only
 	w = executeWorkerAPI(h, http.MethodGet, "/"+impID+"/export", "", workerAPICallOptions{
 		scopes: []string{"automations:read"},
 	})
@@ -600,22 +729,15 @@ func TestWorkerAPI_ValidateImportAndExport(t *testing.T) {
 		t.Fatalf("exported def name mismatch: %v", exportedDef["name"])
 	}
 
-	// 5. GET /v3/workers/{id}/export?raw=true -> returns raw indented JSON directly
+	// 8. GET /v3/workers/{id}/export with query parameters (raw export variant removed) -> 400 Bad Request
 	w = executeWorkerAPI(h, http.MethodGet, "/"+impID+"/export?raw=true", "", workerAPICallOptions{
 		scopes: []string{"automations:read"},
 	})
-	if w.Code != http.StatusOK {
-		t.Fatalf("export raw expected 200, got %d: %s", w.Code, w.Body.String())
-	}
-	var rawParsed map[string]any
-	if err := json.Unmarshal(w.Body.Bytes(), &rawParsed); err != nil {
-		t.Fatalf("failed unmarshaling raw export bytes: %v", err)
-	}
-	if rawParsed["schema_version"].(float64) != 1 || rawParsed["name"].(string) != "Cloud Backup Specialist" {
-		t.Fatalf("raw export content mismatch: %v", rawParsed)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("export with query parameter expected 400, got %d: %s", w.Code, w.Body.String())
 	}
 
-	// 6. POST /v3/workers/import (mode=update) with stale revision -> 409 Conflict
+	// 9. POST /v3/workers/import (mode=update) with stale revision -> 409 Conflict
 	modifiedJSON := strings.Replace(portableJSON, "Cloud Backup Specialist", "Updated Backup Specialist", 1)
 	w = executeWorkerAPI(h, http.MethodPost, fmt.Sprintf("/import?mode=update&worker_id=%s&expected_revision=99", impID), modifiedJSON, workerAPICallOptions{
 		scopes: []string{"automations:write"},
@@ -624,7 +746,7 @@ func TestWorkerAPI_ValidateImportAndExport(t *testing.T) {
 		t.Fatalf("import update with stale revision expected 409, got %d: %s", w.Code, w.Body.String())
 	}
 
-	// 7. POST /v3/workers/import (mode=update) with correct revision -> 200 OK
+	// 10. POST /v3/workers/import (mode=update) with correct revision -> 200 OK
 	w = executeWorkerAPI(h, http.MethodPost, fmt.Sprintf("/import?mode=update&worker_id=%s&expected_revision=1", impID), modifiedJSON, workerAPICallOptions{
 		scopes: []string{"automations:write"},
 	})
@@ -640,13 +762,21 @@ func TestWorkerAPI_ValidateImportAndExport(t *testing.T) {
 	if updatedWorker["revision"].(float64) != 2 {
 		t.Fatalf("updated worker revision expected 2, got %v", updatedWorker["revision"])
 	}
+
+	// 11. POST /v3/workers/import (mode=update) rejects idempotency_key parameter -> 400 Bad Request
+	w = executeWorkerAPI(h, http.MethodPost, fmt.Sprintf("/import?mode=update&worker_id=%s&expected_revision=2&idempotency_key=k", impID), modifiedJSON, workerAPICallOptions{
+		scopes: []string{"automations:write"},
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("import update with idempotency_key expected 400, got %d: %s", w.Code, w.Body.String())
+	}
 }
 
 func TestWorkerAPI_AutomationAttachmentManagement(t *testing.T) {
 	_, _, h := setupWorkerAPITestServer(t)
 
 	// Create initial worker
-	createBody := `{"name": "Task Runner"}`
+	createBody := `{"name": "Task Runner", "idempotency_key": "idemp-attach-1"}`
 	w := executeWorkerAPI(h, http.MethodPost, "", createBody, workerAPICallOptions{
 		scopes: []string{"automations:write"},
 	})
@@ -688,8 +818,16 @@ func TestWorkerAPI_AutomationAttachmentManagement(t *testing.T) {
 		t.Fatalf("expected 1 automation attached, got %d", len(autos))
 	}
 
-	// 2. Update attached automation with stale revision -> 409 Conflict
-	updateAutoBody := `{
+	// 2. Attach automation rejecting query parameters -> 400 Bad Request
+	w = executeWorkerAPI(h, http.MethodPost, "/"+workerID+"/automations?expected_worker_revision=2", attachBody, workerAPICallOptions{
+		scopes: []string{"automations:write"},
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("attach with query param expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// 3. Update attached automation with stale revision in body -> 409 Conflict
+	updateAutoBodyStale := `{
 		"expected_worker_revision": 1,
 		"automation": {
 			"name": "Updated Triage Title",
@@ -697,14 +835,14 @@ func TestWorkerAPI_AutomationAttachmentManagement(t *testing.T) {
 			"enabled": false
 		}
 	}`
-	w = executeWorkerAPI(h, http.MethodPut, "/"+workerID+"/automations/auto_task_1", updateAutoBody, workerAPICallOptions{
+	w = executeWorkerAPI(h, http.MethodPut, "/"+workerID+"/automations/auto_task_1", updateAutoBodyStale, workerAPICallOptions{
 		scopes: []string{"automations:write"},
 	})
 	if w.Code != http.StatusConflict {
 		t.Fatalf("update automation with stale revision expected 409, got %d: %s", w.Code, w.Body.String())
 	}
 
-	// 3. Update attached automation with valid revision -> 200 OK & worker revision incremented to 3
+	// 4. Update attached automation with valid revision in body -> 200 OK & worker revision incremented to 3
 	updateAutoBodyValid := `{
 		"expected_worker_revision": 2,
 		"automation": {
@@ -730,7 +868,15 @@ func TestWorkerAPI_AutomationAttachmentManagement(t *testing.T) {
 		t.Fatalf("expected revision 3 after update, got %v", workerAfterUpdate["revision"])
 	}
 
-	// 4. Delete attached automation -> 200 OK & worker revision incremented to 4
+	// 5. Delete attached automation with stale revision -> 409 Conflict
+	w = executeWorkerAPI(h, http.MethodDelete, "/"+workerID+"/automations/auto_task_1?expected_worker_revision=2", "", workerAPICallOptions{
+		scopes: []string{"automations:write"},
+	})
+	if w.Code != http.StatusConflict {
+		t.Fatalf("delete automation with stale revision expected 409, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// 6. Delete attached automation with valid revision -> 200 OK & worker revision incremented to 4
 	w = executeWorkerAPI(h, http.MethodDelete, "/"+workerID+"/automations/auto_task_1?expected_worker_revision=3", "", workerAPICallOptions{
 		scopes: []string{"automations:write"},
 	})
@@ -797,10 +943,11 @@ func TestWorkerAPI_MigrateLegacyAutomations(t *testing.T) {
 	})
 	var listResp map[string]any
 	_ = json.Unmarshal(wList.Body.Bytes(), &listResp)
-	if listResp["total_count"].(float64) != 1 {
-		t.Fatalf("expected 1 migrated worker in list, got %v", listResp["total_count"])
+	items := listResp["workers"].([]any)
+	if len(items) != 1 {
+		t.Fatalf("expected 1 migrated worker in list, got %d", len(items))
 	}
-	worker := listResp["workers"].([]any)[0].(map[string]any)
+	worker := items[0].(map[string]any)
 	if worker["name"].(string) != "Legacy Ingest Worker" {
 		t.Fatalf("expected migrated worker name 'Legacy Ingest Worker', got %v", worker["name"])
 	}
@@ -810,7 +957,7 @@ func TestWorkerAPI_RevisionHistoryAndRuns(t *testing.T) {
 	_, db, h := setupWorkerAPITestServer(t)
 
 	// Create worker
-	createBody := `{"name": "Audited Worker"}`
+	createBody := `{"name": "Audited Worker", "idempotency_key": "idemp-audit-1"}`
 	w := executeWorkerAPI(h, http.MethodPost, "", createBody, workerAPICallOptions{
 		scopes: []string{"automations:write"},
 	})

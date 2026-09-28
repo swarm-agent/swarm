@@ -1,11 +1,13 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -28,16 +30,58 @@ func workerHTTPError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, err)
 		return
 	}
-	msg := err.Error()
-	if strings.Contains(msg, "not found") {
-		writeError(w, http.StatusNotFound, err)
-		return
-	}
-	if strings.Contains(msg, "conflict") || strings.Contains(msg, "revision") || strings.Contains(msg, "cannot update active scheduled worker") {
-		writeError(w, http.StatusConflict, err)
+	if errors.Is(err, automation.ErrDenied) || errors.Is(err, identity.ErrProductIdentityRequired) {
+		writeError(w, http.StatusForbidden, err)
 		return
 	}
 	writeError(w, http.StatusBadRequest, err)
+}
+
+func validateQueryKeys(q url.Values, allowedKeys ...string) error {
+	allowed := make(map[string]bool, len(allowedKeys))
+	for _, k := range allowedKeys {
+		allowed[k] = true
+	}
+	for k, vals := range q {
+		if !allowed[k] {
+			return fmt.Errorf("unexpected query parameter: %q", k)
+		}
+		if len(vals) != 1 {
+			return fmt.Errorf("duplicate query parameter: %q", k)
+		}
+	}
+	return nil
+}
+
+func decodeJSONStrict(w http.ResponseWriter, r *http.Request, maxBytes int64, dst any) error {
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBytes))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dst); err != nil {
+		return fmt.Errorf("invalid json payload: %w", err)
+	}
+	if err := dec.Decode(new(any)); err != io.EOF {
+		return errors.New("unexpected trailing data in payload")
+	}
+	return nil
+}
+
+func readRawJSONStrict(w http.ResponseWriter, r *http.Request, maxBytes int64) ([]byte, error) {
+	bodyBytes, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBytes))
+	if err != nil {
+		return nil, fmt.Errorf("read body: %w", err)
+	}
+	if len(bytes.TrimSpace(bodyBytes)) == 0 {
+		return nil, errors.New("empty worker definition payload")
+	}
+	dec := json.NewDecoder(bytes.NewReader(bodyBytes))
+	var dummy any
+	if err := dec.Decode(&dummy); err != nil {
+		return nil, fmt.Errorf("invalid json payload: %w", err)
+	}
+	if err := dec.Decode(new(any)); err != io.EOF {
+		return nil, errors.New("unexpected trailing data in payload")
+	}
+	return bodyBytes, nil
 }
 
 func (s *Server) authenticateWorkerRequest(w http.ResponseWriter, r *http.Request) (identity.Principal, bool) {
@@ -60,9 +104,27 @@ func (s *Server) authenticateWorkerRequest(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusForbidden, errors.New("explicit user required"))
 		return identity.Principal{}, false
 	}
+	if scopedRec, ok := ScopedTokenFromRequest(r); ok && scopedRec != nil {
+		if scopedRec.HasScope("automations:trigger") || scopedRec.HasScope("workers:trigger") {
+			writeError(w, http.StatusForbidden, errors.New("scoped trigger token cannot access worker api"))
+			return identity.Principal{}, false
+		}
+	}
 	if s.sessions == nil {
 		writeError(w, http.StatusServiceUnavailable, errors.New("session service unavailable"))
 		return identity.Principal{}, false
+	}
+	if s.sessions.Store() != nil && s.sessions.Store().Underlying() != nil {
+		ids := pebblestore.NewIdentityStore(s.sessions.Store().Underlying())
+		m, found, err := ids.GetAccountUser(p.AccountScopeID, p.UserID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return identity.Principal{}, false
+		}
+		if !found || !strings.EqualFold(strings.TrimSpace(m.Status), pebblestore.AccountUserStatusActive) || m.UserID != p.UserID || m.AccountScopeID != p.AccountScopeID {
+			writeError(w, http.StatusForbidden, errors.New("active account membership required"))
+			return identity.Principal{}, false
+		}
 	}
 	return p, true
 }
@@ -144,16 +206,14 @@ func (s *Server) handleWorkers(w http.ResponseWriter, r *http.Request) {
 }
 
 type createWorkerRequestBody struct {
-	ID                    string                                  `json:"id,omitempty"`
-	Name                  string                                  `json:"name"`
-	Description           string                                  `json:"description,omitempty"`
-	Instructions          string                                  `json:"instructions,omitempty"`
-	RequestedCapabilities []pebblestore.WorkerCapabilityRequest    `json:"requested_capabilities,omitempty"`
-	WorkspaceRequirements []pebblestore.WorkerWorkspaceRequirement `json:"workspace_requirements,omitempty"`
-	LocalBindings         map[string]string                       `json:"local_bindings,omitempty"`
-	Automations           []pebblestore.WorkerAutomationDefinition `json:"automations,omitempty"`
-	Metadata              map[string]any                          `json:"metadata,omitempty"`
-	IdempotencyKey        string                                  `json:"idempotency_key,omitempty"`
+	Name                  string                                   `json:"name"`
+	Description           string                                   `json:"description,omitempty"`
+	Instructions          string                                   `json:"instructions,omitempty"`
+	RequestedCapabilities []pebblestore.WorkerCapabilityRequest     `json:"requested_capabilities,omitempty"`
+	WorkspaceRequirements []pebblestore.WorkerWorkspaceRequirement  `json:"workspace_requirements,omitempty"`
+	Automations           []pebblestore.WorkerAutomationDefinition  `json:"automations,omitempty"`
+	Metadata              map[string]any                           `json:"metadata,omitempty"`
+	IdempotencyKey        string                                   `json:"idempotency_key"`
 }
 
 func (s *Server) handleWorkerCollection(w http.ResponseWriter, r *http.Request, p identity.Principal) {
@@ -169,14 +229,12 @@ func (s *Server) handleWorkerCollection(w http.ResponseWriter, r *http.Request, 
 			}
 		}
 
-		q := r.URL.Query()
-		for key := range q {
-			if key != "limit" && key != "cursor" && key != "lifecycle_state" && key != "include_deleted" {
-				writeError(w, http.StatusBadRequest, fmt.Errorf("invalid query parameter: %q", key))
-				return
-			}
+		if err := validateQueryKeys(r.URL.Query(), "limit", "cursor", "lifecycle_state", "include_deleted"); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
 		}
 
+		q := r.URL.Query()
 		limit := 50
 		if q.Has("limit") {
 			n, err := strconv.Atoi(q.Get("limit"))
@@ -236,7 +294,6 @@ func (s *Server) handleWorkerCollection(w http.ResponseWriter, r *http.Request, 
 		writeJSON(w, http.StatusOK, map[string]any{
 			"workers":     res.Workers,
 			"next_cursor": res.NextCursor,
-			"total_count": res.TotalCount,
 		})
 
 	case http.MethodPost:
@@ -244,46 +301,37 @@ func (s *Server) handleWorkerCollection(w http.ResponseWriter, r *http.Request, 
 			return
 		}
 		if scopedRec, ok := ScopedTokenFromRequest(r); ok && scopedRec != nil {
-			if scopedRec.WorkerID != "" {
-				writeError(w, http.StatusForbidden, errors.New("scoped trigger token cannot manage workers"))
-				return
-			}
+			writeError(w, http.StatusForbidden, errors.New("scoped trigger token cannot manage workers"))
+			return
 		}
 
-		if len(r.URL.Query()) > 0 {
-			writeError(w, http.StatusBadRequest, errors.New("unexpected query parameters on worker creation"))
+		if err := validateQueryKeys(r.URL.Query()); err != nil {
+			writeError(w, http.StatusBadRequest, err)
 			return
 		}
 
 		var req createWorkerRequestBody
-		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 512*1024))
-		dec.DisallowUnknownFields()
-		if err := dec.Decode(&req); err != nil {
-			workerHTTPError(w, fmt.Errorf("invalid json payload: %w", err))
-			return
-		}
-		if err := dec.Decode(new(any)); err != io.EOF {
-			workerHTTPError(w, errors.New("unexpected trailing data in payload"))
+		if err := decodeJSONStrict(w, r, 512*1024, &req); err != nil {
+			workerHTTPError(w, err)
 			return
 		}
 
 		idempKey := strings.TrimSpace(req.IdempotencyKey)
 		if idempKey == "" {
-			if headerIdemp := strings.TrimSpace(r.Header.Get("Idempotency-Key")); headerIdemp != "" {
-				idempKey = headerIdemp
-			} else if headerIdemp := strings.TrimSpace(r.Header.Get("X-Idempotency-Key")); headerIdemp != "" {
-				idempKey = headerIdemp
-			}
+			writeError(w, http.StatusBadRequest, errors.New("idempotency_key is required"))
+			return
+		}
+		if strings.TrimSpace(req.Name) == "" {
+			writeError(w, http.StatusBadRequest, errors.New("worker name is required"))
+			return
 		}
 
 		created, err := s.sessions.CreateWorker(r.Context(), p.AccountScopeID, p.UserID, pebblestore.CreateWorkerRequest{
-			ID:                    req.ID,
 			Name:                  req.Name,
 			Description:           req.Description,
 			Instructions:          req.Instructions,
 			RequestedCapabilities: req.RequestedCapabilities,
 			WorkspaceRequirements: req.WorkspaceRequirements,
-			LocalBindings:         req.LocalBindings,
 			Automations:           req.Automations,
 			Metadata:              req.Metadata,
 			IdempotencyKey:        idempKey,
@@ -303,13 +351,12 @@ func (s *Server) handleWorkerCollection(w http.ResponseWriter, r *http.Request, 
 }
 
 type updateWorkerRequestBody struct {
-	ExpectedRevision      uint64                                   `json:"expected_revision,omitempty"`
+	ExpectedRevision      uint64                                   `json:"expected_revision"`
 	Name                  *string                                  `json:"name,omitempty"`
 	Description           *string                                  `json:"description,omitempty"`
 	Instructions          *string                                  `json:"instructions,omitempty"`
 	RequestedCapabilities []pebblestore.WorkerCapabilityRequest     `json:"requested_capabilities,omitempty"`
 	WorkspaceRequirements []pebblestore.WorkerWorkspaceRequirement  `json:"workspace_requirements,omitempty"`
-	LocalBindings         map[string]string                        `json:"local_bindings,omitempty"`
 	Automations           []pebblestore.WorkerAutomationDefinition  `json:"automations,omitempty"`
 	Metadata              map[string]any                           `json:"metadata,omitempty"`
 	ChangeSummary         string                                   `json:"change_summary,omitempty"`
@@ -328,8 +375,8 @@ func (s *Server) handleWorkerByID(w http.ResponseWriter, r *http.Request, p iden
 		if !s.requireScope(w, r, "automations:read") {
 			return
 		}
-		if len(r.URL.Query()) > 0 {
-			writeError(w, http.StatusBadRequest, errors.New("unexpected query parameters"))
+		if err := validateQueryKeys(r.URL.Query()); err != nil {
+			writeError(w, http.StatusBadRequest, err)
 			return
 		}
 
@@ -352,53 +399,31 @@ func (s *Server) handleWorkerByID(w http.ResponseWriter, r *http.Request, p iden
 			return
 		}
 		if scopedRec, ok := ScopedTokenFromRequest(r); ok && scopedRec != nil {
-			if scopedRec.WorkerID != "" {
-				writeError(w, http.StatusForbidden, errors.New("scoped trigger token cannot manage workers"))
-				return
-			}
+			writeError(w, http.StatusForbidden, errors.New("scoped trigger token cannot manage workers"))
+			return
+		}
+		if err := validateQueryKeys(r.URL.Query()); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
 		}
 
 		var req updateWorkerRequestBody
-		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 512*1024))
-		dec.DisallowUnknownFields()
-		if err := dec.Decode(&req); err != nil {
-			workerHTTPError(w, fmt.Errorf("invalid json payload: %w", err))
-			return
-		}
-		if err := dec.Decode(new(any)); err != io.EOF {
-			workerHTTPError(w, errors.New("unexpected trailing data in payload"))
+		if err := decodeJSONStrict(w, r, 512*1024, &req); err != nil {
+			workerHTTPError(w, err)
 			return
 		}
 
-		expectedRevision := req.ExpectedRevision
-		if expectedRevision == 0 && r.URL.Query().Has("expected_revision") {
-			if v, err := strconv.ParseUint(r.URL.Query().Get("expected_revision"), 10, 64); err == nil {
-				expectedRevision = v
-			}
-		}
-		if expectedRevision == 0 {
-			if match := strings.Trim(strings.TrimSpace(r.Header.Get("If-Match")), `"`); match != "" {
-				if v, err := strconv.ParseUint(match, 10, 64); err == nil {
-					expectedRevision = v
-				}
-			} else if match := strings.TrimSpace(r.Header.Get("X-Expected-Revision")); match != "" {
-				if v, err := strconv.ParseUint(match, 10, 64); err == nil {
-					expectedRevision = v
-				}
-			}
-		}
-		if expectedRevision == 0 {
-			writeError(w, http.StatusBadRequest, errors.New("expected_revision is required"))
+		if req.ExpectedRevision == 0 {
+			writeError(w, http.StatusBadRequest, errors.New("expected_revision in body is required"))
 			return
 		}
 
-		updated, err := s.sessions.UpdateWorker(p.AccountScopeID, p.UserID, workerID, expectedRevision, pebblestore.UpdateWorkerRequest{
+		updated, err := s.sessions.UpdateWorker(p.AccountScopeID, p.UserID, workerID, req.ExpectedRevision, pebblestore.UpdateWorkerRequest{
 			Name:                  req.Name,
 			Description:           req.Description,
 			Instructions:          req.Instructions,
 			RequestedCapabilities: req.RequestedCapabilities,
 			WorkspaceRequirements: req.WorkspaceRequirements,
-			LocalBindings:         req.LocalBindings,
 			Automations:           req.Automations,
 			Metadata:              req.Metadata,
 			ChangeSummary:         req.ChangeSummary,
@@ -410,58 +435,6 @@ func (s *Server) handleWorkerByID(w http.ResponseWriter, r *http.Request, p iden
 
 		writeJSON(w, http.StatusOK, map[string]any{
 			"worker": updated,
-		})
-
-	case http.MethodDelete:
-		if !s.requireScope(w, r, "automations:write") {
-			return
-		}
-		if scopedRec, ok := ScopedTokenFromRequest(r); ok && scopedRec != nil {
-			if scopedRec.WorkerID != "" {
-				writeError(w, http.StatusForbidden, errors.New("scoped trigger token cannot manage workers"))
-				return
-			}
-		}
-
-		var expectedRevision uint64
-		if r.URL.Query().Has("expected_revision") {
-			if v, err := strconv.ParseUint(r.URL.Query().Get("expected_revision"), 10, 64); err == nil {
-				expectedRevision = v
-			}
-		}
-		if expectedRevision == 0 {
-			if match := strings.Trim(strings.TrimSpace(r.Header.Get("If-Match")), `"`); match != "" {
-				if v, err := strconv.ParseUint(match, 10, 64); err == nil {
-					expectedRevision = v
-				}
-			} else if match := strings.TrimSpace(r.Header.Get("X-Expected-Revision")); match != "" {
-				if v, err := strconv.ParseUint(match, 10, 64); err == nil {
-					expectedRevision = v
-				}
-			}
-		}
-		if expectedRevision == 0 && r.Body != nil && r.ContentLength > 0 {
-			var delReq struct {
-				ExpectedRevision uint64 `json:"expected_revision"`
-			}
-			dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64*1024))
-			dec.DisallowUnknownFields()
-			if err := dec.Decode(&delReq); err == nil {
-				expectedRevision = delReq.ExpectedRevision
-			}
-		}
-		if expectedRevision == 0 {
-			writeError(w, http.StatusBadRequest, errors.New("expected_revision is required"))
-			return
-		}
-
-		if err := s.sessions.DeleteWorker(p.AccountScopeID, p.UserID, workerID, expectedRevision); err != nil {
-			workerHTTPError(w, err)
-			return
-		}
-
-		writeJSON(w, http.StatusOK, map[string]any{
-			"ok": true,
 		})
 
 	default:
@@ -477,19 +450,18 @@ func (s *Server) handleWorkerValidate(w http.ResponseWriter, r *http.Request, _ 
 	if !s.requireScopeAny(w, r, "automations:read", "automations:write") {
 		return
 	}
+	if err := validateQueryKeys(r.URL.Query()); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
 
-	bodyBytes, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 512*1024))
+	bodyBytes, err := readRawJSONStrict(w, r, 512*1024)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("read body: %w", err))
-		return
-	}
-	if len(bodyBytes) == 0 {
-		writeError(w, http.StatusBadRequest, errors.New("empty worker definition payload"))
+		workerHTTPError(w, err)
 		return
 	}
 
-	targetBytes := extractWorkerPayloadBytes(bodyBytes)
-	def, err := s.sessions.ValidatePortableWorkerDefinition(targetBytes)
+	def, err := s.sessions.ValidatePortableWorkerDefinition(bodyBytes)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -510,20 +482,16 @@ func (s *Server) handleWorkerImport(w http.ResponseWriter, r *http.Request, p id
 		return
 	}
 	if scopedRec, ok := ScopedTokenFromRequest(r); ok && scopedRec != nil {
-		if scopedRec.WorkerID != "" {
-			writeError(w, http.StatusForbidden, errors.New("scoped trigger token cannot manage workers"))
-			return
-		}
+		writeError(w, http.StatusForbidden, errors.New("scoped trigger token cannot manage workers"))
+		return
+	}
+
+	if err := validateQueryKeys(r.URL.Query(), "mode", "idempotency_key", "worker_id", "expected_revision"); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
 	}
 
 	q := r.URL.Query()
-	for key := range q {
-		if key != "mode" && key != "worker_id" && key != "expected_revision" {
-			writeError(w, http.StatusBadRequest, fmt.Errorf("invalid query parameter: %q", key))
-			return
-		}
-	}
-
 	mode := strings.TrimSpace(q.Get("mode"))
 	if mode == "" {
 		mode = "new"
@@ -533,57 +501,67 @@ func (s *Server) handleWorkerImport(w http.ResponseWriter, r *http.Request, p id
 		return
 	}
 
-	var workerID string
-	var expectedRevision uint64
-	if mode == "update" {
-		workerID = strings.TrimSpace(q.Get("worker_id"))
-		if workerID == "" {
-			writeError(w, http.StatusBadRequest, errors.New("worker_id is required for update mode"))
+	if mode == "new" {
+		if q.Has("worker_id") || q.Has("expected_revision") {
+			writeError(w, http.StatusBadRequest, errors.New("worker_id and expected_revision are not permitted when mode is 'new'"))
 			return
 		}
-		revStr := strings.TrimSpace(q.Get("expected_revision"))
-		if revStr == "" {
-			writeError(w, http.StatusBadRequest, errors.New("expected_revision is required for update mode"))
+		idempKey := strings.TrimSpace(q.Get("idempotency_key"))
+		if idempKey == "" {
+			writeError(w, http.StatusBadRequest, errors.New("idempotency_key query parameter is required when mode is 'new'"))
 			return
 		}
-		v, err := strconv.ParseUint(revStr, 10, 64)
-		if err != nil || v == 0 {
-			writeError(w, http.StatusBadRequest, errors.New("invalid expected_revision"))
-			return
-		}
-		expectedRevision = v
-	}
 
-	bodyBytes, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 512*1024))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("read body: %w", err))
-		return
-	}
-	if len(bodyBytes) == 0 {
-		writeError(w, http.StatusBadRequest, errors.New("empty worker definition payload"))
-		return
-	}
-
-	targetBytes := extractWorkerPayloadBytes(bodyBytes)
-
-	if mode == "update" {
-		rec, err := s.sessions.ImportWorkerUpdate(p.AccountScopeID, p.UserID, workerID, expectedRevision, targetBytes)
+		bodyBytes, err := readRawJSONStrict(w, r, 512*1024)
 		if err != nil {
 			workerHTTPError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{
+
+		rec, err := s.sessions.ImportWorkerAsNew(p.AccountScopeID, p.UserID, bodyBytes, idempKey)
+		if err != nil {
+			workerHTTPError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusCreated, map[string]any{
 			"worker": rec,
 		})
 		return
 	}
 
-	rec, err := s.sessions.ImportWorkerAsNew(p.AccountScopeID, p.UserID, targetBytes)
+	// mode == "update"
+	if q.Has("idempotency_key") {
+		writeError(w, http.StatusBadRequest, errors.New("idempotency_key is not permitted when mode is 'update'"))
+		return
+	}
+	workerID := strings.TrimSpace(q.Get("worker_id"))
+	if workerID == "" {
+		writeError(w, http.StatusBadRequest, errors.New("worker_id is required when mode is 'update'"))
+		return
+	}
+	revStr := strings.TrimSpace(q.Get("expected_revision"))
+	if revStr == "" {
+		writeError(w, http.StatusBadRequest, errors.New("expected_revision is required when mode is 'update'"))
+		return
+	}
+	expectedRevision, err := strconv.ParseUint(revStr, 10, 64)
+	if err != nil || expectedRevision == 0 {
+		writeError(w, http.StatusBadRequest, errors.New("invalid expected_revision"))
+		return
+	}
+
+	bodyBytes, err := readRawJSONStrict(w, r, 512*1024)
 	if err != nil {
 		workerHTTPError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{
+
+	rec, err := s.sessions.ImportWorkerUpdate(p.AccountScopeID, p.UserID, workerID, expectedRevision, bodyBytes)
+	if err != nil {
+		workerHTTPError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
 		"worker": rec,
 	})
 }
@@ -597,26 +575,18 @@ func (s *Server) handleWorkerMigrate(w http.ResponseWriter, r *http.Request, p i
 		return
 	}
 	if scopedRec, ok := ScopedTokenFromRequest(r); ok && scopedRec != nil {
-		if scopedRec.WorkerID != "" {
-			writeError(w, http.StatusForbidden, errors.New("scoped trigger token cannot manage workers"))
-			return
-		}
+		writeError(w, http.StatusForbidden, errors.New("scoped trigger token cannot manage workers"))
+		return
 	}
-	if len(r.URL.Query()) > 0 {
-		writeError(w, http.StatusBadRequest, errors.New("unexpected query parameters on worker migration"))
+	if err := validateQueryKeys(r.URL.Query()); err != nil {
+		writeError(w, http.StatusBadRequest, err)
 		return
 	}
 
 	if r.Body != nil && r.ContentLength > 0 {
 		var empty struct{}
-		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64*1024))
-		dec.DisallowUnknownFields()
-		if err := dec.Decode(&empty); err != nil && err != io.EOF {
-			workerHTTPError(w, fmt.Errorf("invalid json payload: %w", err))
-			return
-		}
-		if err := dec.Decode(new(any)); err != io.EOF {
-			workerHTTPError(w, errors.New("unexpected trailing data in payload"))
+		if err := decodeJSONStrict(w, r, 64*1024, &empty); err != nil && err != io.EOF {
+			workerHTTPError(w, err)
 			return
 		}
 	}
@@ -646,19 +616,14 @@ func (s *Server) handleWorkerExport(w http.ResponseWriter, r *http.Request, p id
 			return
 		}
 	}
-
-	def, rawJSON, err := s.sessions.ExportWorker(p.AccountScopeID, workerID)
-	if err != nil {
-		workerHTTPError(w, err)
+	if err := validateQueryKeys(r.URL.Query()); err != nil {
+		writeError(w, http.StatusBadRequest, err)
 		return
 	}
 
-	q := r.URL.Query()
-	if q.Get("raw") == "true" || q.Get("format") == "raw" || strings.Contains(r.Header.Get("Accept"), "application/octet-stream") {
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		w.Header().Set("Cache-Control", "no-store")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(rawJSON)
+	def, _, err := s.sessions.ExportWorker(p.AccountScopeID, workerID)
+	if err != nil {
+		workerHTTPError(w, err)
 		return
 	}
 
@@ -668,27 +633,14 @@ func (s *Server) handleWorkerExport(w http.ResponseWriter, r *http.Request, p id
 }
 
 type attachWorkerAutomationRequestBody struct {
-	ExpectedWorkerRevision  uint64                                     `json:"expected_worker_revision,omitempty"`
-	Automation              *pebblestore.WorkerAutomationDefinition    `json:"automation,omitempty"`
-	ID                      string                                     `json:"id,omitempty"`
-	Name                    string                                     `json:"name,omitempty"`
-	Description             string                                     `json:"description,omitempty"`
-	ActivationMode          string                                     `json:"activation_mode,omitempty"`
-	Schedule                *pebblestore.AutomationV2Schedule          `json:"schedule,omitempty"`
-	Trigger                 *pebblestore.WorkerTriggerConfig           `json:"trigger,omitempty"`
-	Enabled                 *bool                                      `json:"enabled,omitempty"`
-	PlanDocument            *pebblestore.SessionPlanDocument           `json:"plan_document,omitempty"`
-	Plan                    *pebblestore.SessionPlanDocument           `json:"plan,omitempty"`
-	InputRequirements       []pebblestore.WorkerInputRequirement       `json:"input_requirements,omitempty"`
-	DeliverableRequirements []pebblestore.WorkerDeliverableRequirement `json:"deliverable_requirements,omitempty"`
+	ExpectedWorkerRevision uint64                                 `json:"expected_worker_revision"`
+	Automation             pebblestore.WorkerAutomationDefinition `json:"automation"`
 }
 
 func (s *Server) handleWorkerAutomations(w http.ResponseWriter, r *http.Request, p identity.Principal, workerID string, subparts []string) {
 	if scopedRec, ok := ScopedTokenFromRequest(r); ok && scopedRec != nil {
-		if scopedRec.WorkerID != "" {
-			writeError(w, http.StatusForbidden, errors.New("scoped trigger token cannot manage workers"))
-			return
-		}
+		writeError(w, http.StatusForbidden, errors.New("scoped trigger token cannot manage workers"))
+		return
 	}
 
 	if len(subparts) == 0 {
@@ -700,48 +652,30 @@ func (s *Server) handleWorkerAutomations(w http.ResponseWriter, r *http.Request,
 		if !s.requireScope(w, r, "automations:write") {
 			return
 		}
+		if err := validateQueryKeys(r.URL.Query()); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
 
 		var req attachWorkerAutomationRequestBody
-		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 512*1024))
-		dec.DisallowUnknownFields()
-		if err := dec.Decode(&req); err != nil {
-			workerHTTPError(w, fmt.Errorf("invalid json payload: %w", err))
+		if err := decodeJSONStrict(w, r, 512*1024, &req); err != nil {
+			workerHTTPError(w, err)
 			return
 		}
-		if err := dec.Decode(new(any)); err != io.EOF {
-			workerHTTPError(w, errors.New("unexpected trailing data in payload"))
+		if req.ExpectedWorkerRevision == 0 {
+			writeError(w, http.StatusBadRequest, errors.New("expected_worker_revision in body is required"))
 			return
 		}
-
-		expectedRevision := req.ExpectedWorkerRevision
-		if expectedRevision == 0 && r.URL.Query().Has("expected_worker_revision") {
-			if v, err := strconv.ParseUint(r.URL.Query().Get("expected_worker_revision"), 10, 64); err == nil {
-				expectedRevision = v
-			}
-		}
-		if expectedRevision == 0 {
-			if match := strings.Trim(strings.TrimSpace(r.Header.Get("If-Match")), `"`); match != "" {
-				if v, err := strconv.ParseUint(match, 10, 64); err == nil {
-					expectedRevision = v
-				}
-			} else if match := strings.TrimSpace(r.Header.Get("X-Expected-Revision")); match != "" {
-				if v, err := strconv.ParseUint(match, 10, 64); err == nil {
-					expectedRevision = v
-				}
-			}
-		}
-		if expectedRevision == 0 {
-			writeError(w, http.StatusBadRequest, errors.New("expected_worker_revision is required"))
+		if strings.TrimSpace(req.Automation.Name) == "" {
+			writeError(w, http.StatusBadRequest, errors.New("automation name is required"))
 			return
 		}
 
-		autoDef := resolveWorkerAutomationDefinition(req)
-		updated, err := s.sessions.AttachWorkerAutomation(p.AccountScopeID, p.UserID, workerID, expectedRevision, autoDef)
+		updated, err := s.sessions.AttachWorkerAutomation(p.AccountScopeID, p.UserID, workerID, req.ExpectedWorkerRevision, req.Automation)
 		if err != nil {
 			workerHTTPError(w, err)
 			return
 		}
-
 		writeJSON(w, http.StatusCreated, map[string]any{
 			"worker": updated,
 		})
@@ -760,47 +694,30 @@ func (s *Server) handleWorkerAutomations(w http.ResponseWriter, r *http.Request,
 			if !s.requireScope(w, r, "automations:write") {
 				return
 			}
+			if err := validateQueryKeys(r.URL.Query()); err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+
 			var req attachWorkerAutomationRequestBody
-			dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 512*1024))
-			dec.DisallowUnknownFields()
-			if err := dec.Decode(&req); err != nil {
-				workerHTTPError(w, fmt.Errorf("invalid json payload: %w", err))
+			if err := decodeJSONStrict(w, r, 512*1024, &req); err != nil {
+				workerHTTPError(w, err)
 				return
 			}
-			if err := dec.Decode(new(any)); err != io.EOF {
-				workerHTTPError(w, errors.New("unexpected trailing data in payload"))
+			if req.ExpectedWorkerRevision == 0 {
+				writeError(w, http.StatusBadRequest, errors.New("expected_worker_revision in body is required"))
 				return
 			}
-
-			expectedRevision := req.ExpectedWorkerRevision
-			if expectedRevision == 0 && r.URL.Query().Has("expected_worker_revision") {
-				if v, err := strconv.ParseUint(r.URL.Query().Get("expected_worker_revision"), 10, 64); err == nil {
-					expectedRevision = v
-				}
-			}
-			if expectedRevision == 0 {
-				if match := strings.Trim(strings.TrimSpace(r.Header.Get("If-Match")), `"`); match != "" {
-					if v, err := strconv.ParseUint(match, 10, 64); err == nil {
-						expectedRevision = v
-					}
-				} else if match := strings.TrimSpace(r.Header.Get("X-Expected-Revision")); match != "" {
-					if v, err := strconv.ParseUint(match, 10, 64); err == nil {
-						expectedRevision = v
-					}
-				}
-			}
-			if expectedRevision == 0 {
-				writeError(w, http.StatusBadRequest, errors.New("expected_worker_revision is required"))
+			if strings.TrimSpace(req.Automation.Name) == "" {
+				writeError(w, http.StatusBadRequest, errors.New("automation name is required"))
 				return
 			}
 
-			autoDef := resolveWorkerAutomationDefinition(req)
-			updated, err := s.sessions.UpdateWorkerAutomation(p.AccountScopeID, p.UserID, workerID, automationID, expectedRevision, autoDef)
+			updated, err := s.sessions.UpdateWorkerAutomation(p.AccountScopeID, p.UserID, workerID, automationID, req.ExpectedWorkerRevision, req.Automation)
 			if err != nil {
 				workerHTTPError(w, err)
 				return
 			}
-
 			writeJSON(w, http.StatusOK, map[string]any{
 				"worker": updated,
 			})
@@ -809,30 +726,22 @@ func (s *Server) handleWorkerAutomations(w http.ResponseWriter, r *http.Request,
 			if !s.requireScope(w, r, "automations:write") {
 				return
 			}
+			if err := validateQueryKeys(r.URL.Query(), "expected_worker_revision"); err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+
 			var expectedRevision uint64
 			if r.URL.Query().Has("expected_worker_revision") {
 				if v, err := strconv.ParseUint(r.URL.Query().Get("expected_worker_revision"), 10, 64); err == nil {
 					expectedRevision = v
 				}
 			}
-			if expectedRevision == 0 {
-				if match := strings.Trim(strings.TrimSpace(r.Header.Get("If-Match")), `"`); match != "" {
-					if v, err := strconv.ParseUint(match, 10, 64); err == nil {
-						expectedRevision = v
-					}
-				} else if match := strings.TrimSpace(r.Header.Get("X-Expected-Revision")); match != "" {
-					if v, err := strconv.ParseUint(match, 10, 64); err == nil {
-						expectedRevision = v
-					}
-				}
-			}
 			if expectedRevision == 0 && r.Body != nil && r.ContentLength > 0 {
 				var delReq struct {
 					ExpectedWorkerRevision uint64 `json:"expected_worker_revision"`
 				}
-				dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64*1024))
-				dec.DisallowUnknownFields()
-				if err := dec.Decode(&delReq); err == nil {
+				if err := decodeJSONStrict(w, r, 64*1024, &delReq); err == nil {
 					expectedRevision = delReq.ExpectedWorkerRevision
 				}
 			}
@@ -846,7 +755,6 @@ func (s *Server) handleWorkerAutomations(w http.ResponseWriter, r *http.Request,
 				workerHTTPError(w, err)
 				return
 			}
-
 			writeJSON(w, http.StatusOK, map[string]any{
 				"worker": updated,
 			})
@@ -873,6 +781,10 @@ func (s *Server) handleWorkerHistory(w http.ResponseWriter, r *http.Request, p i
 			writeError(w, http.StatusForbidden, fmt.Errorf("scoped token is restricted to worker %q", scopedRec.WorkerID))
 			return
 		}
+	}
+	if err := validateQueryKeys(r.URL.Query(), "limit", "cursor"); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
 	}
 
 	q := r.URL.Query()
@@ -913,6 +825,10 @@ func (s *Server) handleWorkerRevisionByNumber(w http.ResponseWriter, r *http.Req
 			return
 		}
 	}
+	if err := validateQueryKeys(r.URL.Query()); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
 
 	rev, err := strconv.ParseUint(revStr, 10, 64)
 	if err != nil || rev == 0 {
@@ -948,6 +864,10 @@ func (s *Server) handleWorkerRuns(w http.ResponseWriter, r *http.Request, p iden
 			writeError(w, http.StatusForbidden, fmt.Errorf("scoped token is restricted to worker %q", scopedRec.WorkerID))
 			return
 		}
+	}
+	if err := validateQueryKeys(r.URL.Query(), "limit", "cursor"); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
 	}
 
 	q := r.URL.Query()
@@ -988,6 +908,10 @@ func (s *Server) handleWorkerRunByID(w http.ResponseWriter, r *http.Request, p i
 			return
 		}
 	}
+	if err := validateQueryKeys(r.URL.Query()); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
 
 	run, found, err := s.sessions.GetWorkerRun(p.AccountScopeID, workerID, runID)
 	if err != nil {
@@ -1002,42 +926,4 @@ func (s *Server) handleWorkerRunByID(w http.ResponseWriter, r *http.Request, p i
 	writeJSON(w, http.StatusOK, map[string]any{
 		"run": run,
 	})
-}
-
-func extractWorkerPayloadBytes(data []byte) []byte {
-	var env struct {
-		Worker json.RawMessage `json:"worker"`
-	}
-	if err := json.Unmarshal(data, &env); err == nil && len(env.Worker) > 0 {
-		return env.Worker
-	}
-	return data
-}
-
-func resolveWorkerAutomationDefinition(req attachWorkerAutomationRequestBody) pebblestore.WorkerAutomationDefinition {
-	if req.Automation != nil {
-		return *req.Automation
-	}
-	enabled := true
-	if req.Enabled != nil {
-		enabled = *req.Enabled
-	}
-	var planDoc pebblestore.SessionPlanDocument
-	if req.PlanDocument != nil {
-		planDoc = *req.PlanDocument
-	} else if req.Plan != nil {
-		planDoc = *req.Plan
-	}
-	return pebblestore.WorkerAutomationDefinition{
-		ID:                      req.ID,
-		Name:                    req.Name,
-		Description:             req.Description,
-		ActivationMode:          req.ActivationMode,
-		Schedule:                req.Schedule,
-		Trigger:                 req.Trigger,
-		Enabled:                 enabled,
-		PlanDocument:            planDoc,
-		InputRequirements:       req.InputRequirements,
-		DeliverableRequirements: req.DeliverableRequirements,
-	}
 }
