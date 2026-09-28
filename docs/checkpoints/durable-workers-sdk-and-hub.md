@@ -118,6 +118,14 @@ An inherited media test compilation typo was corrected to call the existing `equ
 - Implementation delegation failed before editing on both staged and single-Coder launch paths: parent lineage publication could not obtain fresh worktree recovery evidence. Exact-worktree discovery also returned no fresh recovery identity, despite clean Git status. Do not bypass ownership checks or mark step 2 complete.
 - The configured managed test environment is Docker, not the required existing local nspawn pool; it was inspected but not deployed. No new test execution or live acceptance is claimed for this repair.
 
+#### Step 2 direct recovery progress
+
+Recovered the preserved core as parent-owned source edits, without claiming child Git integration. The daemon now composes `WorkerExecutionService`; HTTP and Orchestrator execution/lifecycle controls use it instead of raw worker writes, fabricated realtime notifications or receipt-only dispatch. Admission pins revisions/input and atomically persists idempotency; stops retain a durable target and require terminal acknowledgement. Ordinary chat and missing agent identity are denied. Existing V3 plan/intent execution and isolated Git worktrees are reused.
+
+Observed focused deterministic checks: admission/reopen, automation isolation, run monotonicity, active/undispatched stop, Orchestrator denial and HTTP unavailable-executor nonmutation pass twice. A real temporary Git/Pebble dispatch test creates the canonical V3 plan/intent and retries a failed wake without duplicate admission. This is not provider execution or live acceptance.
+
+Step 2 remains incomplete: the inherited HTTP lifecycle fixtures have no execution service and still fail; an older provider-tool fixture expects worker tools on ordinary Swarm. Full lifecycle fixtures, multi-checkpoint completion/cancellation, preparation crash recovery, idle bounded tests, supported bindings/approval UX and legacy cutover need completion. Activation currently fails closed outside one approved primary workspace with no requested capability grants. No live deployment, cloud work, push or promotion.
+
 ### 3. Functional hub and one-message context
 
 - [ ] Wire hub cards, worker detail, daily history, sessions, deliverables, lifecycle controls and one-time chat selection to canonical state/actions.

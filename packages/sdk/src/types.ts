@@ -876,7 +876,7 @@ export interface SyncStreamResult<TEvent = any> {
 // CANONICAL DURABLE WORKER CONTRACT (Checkpoint 1)
 // ─────────────────────────────────────────────────────────────────────────────
 
-export type WorkerLifecycleState = 'idle' | 'active' | 'paused' | 'archived' | 'deleted';
+export type WorkerLifecycleState = 'idle' | 'active' | 'stopping' | 'paused' | 'archived' | 'deleted';
 
 export interface WorkerCapabilityRequest {
   type: string;

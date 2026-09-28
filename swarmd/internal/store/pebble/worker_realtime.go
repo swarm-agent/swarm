@@ -88,6 +88,7 @@ func isAllowedWorkerKey(accountScopeID string, key string) bool {
 		strings.HasPrefix(key, automationPrefix) ||
 		strings.HasPrefix(key, runPrefix) ||
 		strings.HasPrefix(key, runOccPrefix) ||
+		strings.HasPrefix(key, KeyWorkerRunIdempotencyAccountPrefix+accountPart+"/") ||
 		strings.HasPrefix(key, idempPrefix)
 }
 

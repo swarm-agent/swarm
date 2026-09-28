@@ -30,6 +30,7 @@ type WorkerLifecycleState string
 const (
 	WorkerLifecycleStateIdle     WorkerLifecycleState = "idle"
 	WorkerLifecycleStateActive   WorkerLifecycleState = "active"
+	WorkerLifecycleStateStopping WorkerLifecycleState = "stopping"
 	WorkerLifecycleStatePaused   WorkerLifecycleState = "paused"
 	WorkerLifecycleStateArchived WorkerLifecycleState = "archived"
 	WorkerLifecycleStateDeleted  WorkerLifecycleState = "deleted"
@@ -98,6 +99,7 @@ type WorkerAutomationDefinition struct {
 }
 
 type WorkerRecord struct {
+	StopTarget            WorkerLifecycleState         `json:"stop_target,omitempty"`
 	ID                    string                       `json:"id"`
 	AccountScopeID        string                       `json:"account_scope_id"`
 	Name                  string                       `json:"name"`
@@ -126,6 +128,7 @@ type WorkerRevisionRecord struct {
 }
 
 type WorkerRunRecord struct {
+	UserID             string                         `json:"user_id,omitempty"`
 	ID                 string                         `json:"id"`
 	AccountScopeID     string                         `json:"account_scope_id"`
 	WorkerID           string                         `json:"worker_id"`
@@ -338,7 +341,7 @@ func ValidateWorkerRecord(w *WorkerRecord, validate func(*SessionPlanDocument) e
 		return errors.New("worker instructions exceed 128 KiB")
 	}
 	switch w.LifecycleState {
-	case WorkerLifecycleStateIdle, WorkerLifecycleStateActive, WorkerLifecycleStatePaused, WorkerLifecycleStateArchived, WorkerLifecycleStateDeleted:
+	case WorkerLifecycleStateIdle, WorkerLifecycleStateActive, WorkerLifecycleStateStopping, WorkerLifecycleStatePaused, WorkerLifecycleStateArchived, WorkerLifecycleStateDeleted:
 	default:
 		return fmt.Errorf("invalid worker lifecycle state: %q", w.LifecycleState)
 	}
@@ -2277,6 +2280,9 @@ func (ws *WorkerStore) RecordWorkerRun(account string, run WorkerRunRecord) (Wor
 		return WorkerRunRecord{}, runErr
 	}
 	if existingOk {
+		if existingRun.UserID != run.UserID {
+			return WorkerRunRecord{}, fmt.Errorf("%w: cannot change immutable run owner", ErrWorkerConflict)
+		}
 		if existingRun.WorkerRevision != run.WorkerRevision {
 			return WorkerRunRecord{}, fmt.Errorf("%w: cannot rewrite pinned worker revision from %d to %d", ErrWorkerConflict, existingRun.WorkerRevision, run.WorkerRevision)
 		}
