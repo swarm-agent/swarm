@@ -925,6 +925,12 @@ export function aggregateTaskLiveState(
         itemStatus = 'needs_review'
       } else if (isComp) {
         itemStatus = 'completed'
+      } else if (matchingJob?.state === 'integrated' || matchingJob?.state === 'completed') {
+        itemStatus = 'completed'
+      } else if (matchingJob?.state === 'handoff_ready') {
+        itemStatus = 'needs_review'
+      } else if (matchingJob?.state === 'failed' || matchingJob?.state === 'conflict') {
+        itemStatus = 'failed'
       } else if (isAct) {
         itemStatus = 'running'
       } else if (matchingJob) {

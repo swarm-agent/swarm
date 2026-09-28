@@ -660,3 +660,12 @@ test('direct terminal task supplies missing badge state without masking active o
   const cohort = aggregateTaskLiveState({ id: 'cohort', status: 'needs_review', sessionId: 'parent', taskProgramStatus: { jobs: [{ job_id: 'a', child_session_id: 'child' }] } } as any, {})
   assert.notEqual(cohort.sessionSummary?.sessionStates[0].status, 'needs_review')
 })
+
+// Durable scheduler handoffs arrive independently of cached child snapshots.
+// A matching current job's verified terminal state must beat stale running data.
+test('verified current-job handoff wins over stale running child projection', () => {
+  for (const [state, expected] of [['handoff_ready', 'needs_review'], ['integrated', 'completed'], ['failed', 'failed']]) {
+    const result = aggregateTaskLiveState({ id: 'program', status: 'running', sessionId: 'parent', taskProgramStatus: { state: 'running', jobs: [{ job_id: 'job', state, child_session_id: 'child' }] } } as any, { child: { intent: { status: 'running' } } as any })
+    assert.equal(result.sessionSummary?.sessionStates[0].status, expected)
+  }
+})
