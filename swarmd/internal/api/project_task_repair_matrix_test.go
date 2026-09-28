@@ -697,8 +697,8 @@ func TestTaskMatrix_Case4_ManualPlanningPendingThenExactAcceptModelTransition(t 
 		Title: "Payment Architecture Plan",
 		Info:  pebblestore.SessionPlanInfo{Goal: "Architect and implement billing subsystem"},
 		Checkpoints: []pebblestore.SessionPlanCheckpoint{
-			{ID: "cp-1", Title: "Stripe Webhook Handler", Tasks: []string{"Add webhook handler"}},
-			{ID: "cp-2", Title: "Subscription DB Models", Tasks: []string{"Add DB models"}},
+			{ID: "cp-1", Order: 1, Title: "Stripe Webhook Handler", Tasks: []string{"Add webhook handler"}, AcceptanceCriteria: []string{"Handler validates webhooks"}},
+			{ID: "cp-2", Order: 2, Title: "Subscription DB Models", Tasks: []string{"Add DB models"}, AcceptanceCriteria: []string{"Models persist subscriptions"}},
 		},
 	}
 	subResult, err := f.server.planLifecycle.SubmitProjectTaskStructuredPlan(sessionruntime.ProjectTaskPlanSubmissionInput{
@@ -763,6 +763,11 @@ func TestTaskMatrix_Case4_ManualPlanningPendingThenExactAcceptModelTransition(t 
 		t.Fatalf("expected agent 'swarm' executing approved plan, got %v", taskAfterApprove.Agent)
 	}
 
+	// Approval must bind the checkpoint attempt to the exact executing run.
+	boundPlan, _, _ := f.server.sessions.Store().GetPlan(sessID, "plan-payment-v1")
+	if boundPlan.Document.ExecutionState == nil || boundPlan.Document.Checkpoints[0].RunID == "" {
+		t.Fatal("approved checkpoint has no executing run owner")
+	}
 	// Verify session mode transitioned to auto and model switched to Swarm Action
 	sessAfterApprove, _, _ := f.server.sessions.Store().GetSession(sessID)
 	if sessAfterApprove.Mode != sessionruntime.ModeAuto {

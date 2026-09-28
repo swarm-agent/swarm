@@ -968,9 +968,11 @@ func (s *Server) ApproveProjectTask(ctx context.Context, p identity.Principal, p
 			attemptID = plan.Document.ExecutionState.ActiveAttemptID
 			checkpointID = plan.Document.ActiveCheckpointID
 		} else {
-			startResult, startErr := s.planLifecycle.ApproveAndStartPlanAutomatic(sessionruntime.PlanLifecycleExecutionInput{
-				SessionID: existingTask.SessionID, PlanID: plan.ID, CheckpointID: firstCpID,
-			})
+			runInput, inputErr := s.sessionsV3PlanModeRunInput(existingTask.SessionID, plan.ID, firstCpID)
+			if inputErr != nil {
+				return nil, inputErr
+			}
+			startResult, startErr := s.planLifecycle.ApproveAndStartPlanAutomatic(runInput)
 			if startErr != nil {
 				return nil, fmt.Errorf("approve and start plan: %w", startErr)
 			}
