@@ -144,7 +144,7 @@ export function toMediaLibraryItem(entry: DesktopV3ArtifactCatalogEntry, referen
   const videoProvenance = entry.videoProvenance ?? (entry as any).lineage?.video_provenance ?? (entry as any).lineage?.videoProvenance ?? null
   const model = videoProvenance?.model?.trim() || entry.model?.trim() || (entry as any).artifactModel?.trim() || (entry as any).metadata?.model?.trim() || (entry as any).metadata?.modelId?.trim() || undefined
   const aspectRatio = videoProvenance?.aspect_ratio?.trim() || entry.aspectRatio?.trim() || entry.outputRequirements?.aspectRatio?.trim() || (entry as any).aspectRatio?.trim() || (entry as any).metadata?.aspect_ratio?.trim() || (entry as any).metadata?.aspectRatio?.trim() || undefined
-  const resolution = videoProvenance?.resolution?.trim() || entry.resolution?.trim() || entry.outputRequirements?.resolutionSource?.trim() || (entry as any).resolution?.trim() || (entry as any).metadata?.resolution?.trim() || (entry.outputRequirements?.width && entry.outputRequirements?.height ? `${entry.outputRequirements.width}x${entry.outputRequirements.height}` : undefined)
+  const resolution = videoProvenance?.resolution?.trim() || entry.resolution?.trim() || (entry as any).resolution?.trim() || (entry as any).metadata?.resolution?.trim() || (entry.outputRequirements?.width && entry.outputRequirements?.height ? `${entry.outputRequirements.width}x${entry.outputRequirements.height}` : undefined)
 
   let durationSeconds: number | undefined = undefined
   if (typeof entry.durationSeconds === 'number' && Number.isFinite(entry.durationSeconds) && entry.durationSeconds > 0) {
@@ -155,9 +155,6 @@ export function toMediaLibraryItem(entry: DesktopV3ArtifactCatalogEntry, referen
     durationSeconds = (entry as any).metadata.duration_seconds
   } else if (typeof videoProvenance?.duration_seconds === 'number' && videoProvenance.duration_seconds > 0) {
     durationSeconds = videoProvenance.duration_seconds
-  } else if (videoProvenance?.observed_duration_ms && videoProvenance.observed_duration_ms > 0 && !videoProvenance.is_combined_output) {
-    // Exact generation duration without double rounding
-    durationSeconds = Math.round(videoProvenance.observed_duration_ms / 1000)
   }
 
   return {

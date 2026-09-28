@@ -301,7 +301,18 @@ func (s *Service) PreflightVideoOperation(ctx context.Context, req VideoPrefligh
 		return nil, errors.New("video extension requires verified source provenance")
 	}
 
-	// 9. Operation-Specific Routing & Invariants
+	// 9. Operation-Specific Routing & Invariants. Catalog feature support and
+	// source compatibility are separate checks; both must pass.
+	if op == pebblestore.VideoOperationEdit {
+		if err := CheckVideoEditSupport(providerID, targetModel, opts); err != nil {
+			return nil, err
+		}
+	}
+	if op == pebblestore.VideoOperationExtend {
+		if err := CheckVideoExtendSupport(providerID, targetModel, opts); err != nil {
+			return nil, err
+		}
+	}
 	if op == pebblestore.VideoOperationEdit || op == pebblestore.VideoOperationExtend {
 		if err := ValidateSourceCompatibility(providerID, targetModel, op, srcProv, sourceWidth, sourceHeight, sourceDurationSeconds); err != nil {
 			return nil, err

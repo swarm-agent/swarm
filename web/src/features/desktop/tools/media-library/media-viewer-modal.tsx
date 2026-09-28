@@ -37,12 +37,12 @@ import {
   calculateGenerationCost,
   evaluateVideoActionSupport,
   getSupportedDurationsForResolution,
-  isOmniModel,
-  isVeoModel,
+  extractGenerationDurationSeconds,
   resolveInitialModel,
   resolveInitialSetting,
   resolveVideoContinuationModel,
   validateMediaGenerationRequest,
+  type VideoActionSupportResult,
   type MediaGenerationAction,
   type MediaGenerationJob,
   type MediaGenerationRequest,
@@ -148,22 +148,7 @@ export function MediaViewerModal({
 
   const sourceModelOption = useMemo(() => {
     if (!sourceModel) return undefined
-    const pNorm = (sourceProvenance?.provider || '').trim().toLowerCase()
-    if (isVideoSource) {
-      if (pNorm) {
-        const provMatch = allVideoModels.find(
-          (m) => (m.provider || '').toLowerCase().trim() === pNorm &&
-                 (m.id.toLowerCase() === sourceModel.toLowerCase() || m.model.toLowerCase() === sourceModel.toLowerCase()),
-        )
-        if (provMatch) return provMatch
-      }
-      return allVideoModels.find(
-        (m) => m.id.toLowerCase() === sourceModel.toLowerCase() || m.model.toLowerCase() === sourceModel.toLowerCase(),
-      )
-    }
-    return allImageModels.find(
-      (m) => m.id.toLowerCase() === sourceModel.toLowerCase() || m.model.toLowerCase() === sourceModel.toLowerCase(),
-    )
+    return resolveVideoContinuationModel(sourceModel, isVideoSource ? allVideoModels : allImageModels, sourceProvenance?.provider).modelOption
   }, [allImageModels, allVideoModels, isVideoSource, sourceModel, sourceProvenance])
 
   const defaultModeForKind: QuickRouteMode = useMemo(() => {
@@ -188,29 +173,29 @@ export function MediaViewerModal({
     activeQuickRouteMode === 'next_scene' ||
     ((activeQuickRouteMode === 'fine_tune' || activeQuickRouteMode === 'iterate') && isVideoSource)
 
-  const nextSceneSupport = useMemo(() => {
+  const nextSceneSupport = useMemo<VideoActionSupportResult>(() => {
     if (!item || item.kind !== 'video') return { supported: false, reason: 'Next Scene is only supported for videos.' }
     return evaluateVideoActionSupport('next_scene', item, sourceModelOption)
   }, [item, sourceModelOption])
 
-  const fineTuneSupport = useMemo(() => {
+  const fineTuneSupport = useMemo<VideoActionSupportResult>(() => {
     if (!item) return { supported: false }
     if (item.kind !== 'video') return { supported: true }
     return evaluateVideoActionSupport('fine_tune', item, sourceModelOption)
   }, [item, sourceModelOption])
 
-  const iterateSupport = useMemo(() => {
+  const iterateSupport = useMemo<VideoActionSupportResult>(() => {
     if (!item) return { supported: false }
     if (item.kind !== 'video') return { supported: true }
     return evaluateVideoActionSupport('iterate', item, sourceModelOption)
   }, [item, sourceModelOption])
 
-  const toVideoSupport = useMemo(() => {
+  const toVideoSupport = useMemo<VideoActionSupportResult>(() => {
     if (!item || item.kind !== 'image') return { supported: false }
     return { supported: true }
   }, [item])
 
-  const currentActionSupport = useMemo(() => {
+  const currentActionSupport = useMemo<VideoActionSupportResult>(() => {
     if (activeQuickRouteMode === 'next_scene') return nextSceneSupport
     if (activeQuickRouteMode === 'fine_tune') return fineTuneSupport
     if (activeQuickRouteMode === 'iterate') return iterateSupport
@@ -230,9 +215,7 @@ export function MediaViewerModal({
       return allVid.filter((m) => {
         const initImg = m.generation_options?.initial_image
         const initConstraint = m.constraints?.create?.initial_image_supported
-        if (initImg !== undefined && initImg.supported === false) return false
-        if (initConstraint !== undefined && initConstraint === false) return false
-        return true
+        return m.constraints?.create?.supported === true && (initConstraint === true || initImg?.supported === true)
       })
     }
     if (isVideoSource && (activeQuickRouteMode === 'next_scene' || activeQuickRouteMode === 'fine_tune' || activeQuickRouteMode === 'iterate')) {
@@ -240,11 +223,12 @@ export function MediaViewerModal({
       if (sourceModel) {
         return [{
           id: sourceModel,
-          provider: sourceProvenance?.provider || 'google',
+          provider: sourceProvenance?.provider || 'unknown',
           model: sourceModel,
           display_name: sourceModel,
           kind: 'video_generation',
-          ready: true,
+          ready: false,
+          reason: 'Source model is unavailable in the catalog.',
         }]
       }
       return []
@@ -389,12 +373,12 @@ export function MediaViewerModal({
         const toVidModels = allVideoModels.filter((m) => {
           const initImg = m.generation_options?.initial_image
           const initConstraint = m.constraints?.create?.initial_image_supported
-          return initImg?.supported !== false && initConstraint !== false
+          return m.constraints?.create?.supported === true && (initConstraint === true || initImg?.supported === true)
         })
         chosenModelId = resolveInitialModel(undefined, toVidModels, defaultVideoGenerationModel)
       } else {
         // Image editing: opening image with saved model unavailable must not fallback silently to default!
-        chosenModelId = resolveInitialModel(item.model, mediaCatalog.image_models ?? [], defaultImageModel, { preserveUnavailable: true })
+        chosenModelId = item.model ? resolveVideoContinuationModel(item.model, mediaCatalog.image_models ?? []).modelId : ''
       }
     }
 
@@ -405,7 +389,7 @@ export function MediaViewerModal({
       ? allVideoModels.find((m) => m.id === chosenModelId || m.model === chosenModelId)
       : (mediaCatalog.image_models ?? []).find((m) => m.id === chosenModelId) || allVideoModels.find((m) => m.id === chosenModelId)
     const genOpts = chosenOption?.generation_options
-    const actionSupport = isVid ? evaluateVideoActionSupport(newMode, item, chosenOption) : { supported: true }
+    const actionSupport: VideoActionSupportResult = isVid ? evaluateVideoActionSupport(newMode, item, chosenOption) : { supported: true }
     const locks = actionSupport.lockedOptions
 
     const initRatio = locks?.aspectRatio ?? resolveInitialSetting(
@@ -424,7 +408,7 @@ export function MediaViewerModal({
     ) ?? (item.resolution || '')
     setResolution(initRes)
 
-    const rawDur = item.durationSeconds ?? (item.videoProvenance && !item.videoProvenance.is_combined_output && item.videoProvenance.observed_duration_ms ? Math.round(item.videoProvenance.observed_duration_ms / 1000) : undefined)
+    const rawDur = extractGenerationDurationSeconds(item)
     const initDur = locks?.durationSeconds !== undefined
       ? locks.durationSeconds
       : locks?.supportsDuration === false
@@ -474,6 +458,7 @@ export function MediaViewerModal({
 
   const handleModeChange = useCallback(
     (newMode: QuickRouteMode) => {
+      if (isVideoSource && item && !evaluateVideoActionSupport(newMode, item, sourceModelOption).supported) return
       setActiveQuickRouteMode(newMode)
       if (newMode === 'iterate') {
         setVariantCount((prev) => (prev > 1 ? prev : 4))
@@ -483,7 +468,7 @@ export function MediaViewerModal({
 
       if (isVideoSource) {
         if (sourceModel) {
-          setSelectedModel(sourceModel)
+          setSelectedModel(sourceModelOption?.id || sourceModel)
         } else {
           setSelectedModel('')
         }
@@ -499,12 +484,12 @@ export function MediaViewerModal({
           const toVidModels = allVideoModels.filter((m) => {
             const initImg = m.generation_options?.initial_image
             const initConstraint = m.constraints?.create?.initial_image_supported
-            return initImg?.supported !== false && initConstraint !== false
+            return m.constraints?.create?.supported === true && (initConstraint === true || initImg?.supported === true)
           })
           const chosen = resolveInitialModel(undefined, toVidModels, defaultVideoGenerationModel)
           setSelectedModel(chosen)
         } else {
-          const chosen = resolveInitialModel(item?.model, mediaCatalog?.image_models ?? [], defaultImageModel, { preserveUnavailable: true })
+          const chosen = item?.model ? resolveVideoContinuationModel(item.model, mediaCatalog?.image_models ?? []).modelId : ''
           setSelectedModel(chosen)
         }
       }
@@ -555,7 +540,7 @@ export function MediaViewerModal({
 
   // Execute Generation / Fine Tune directly with synchronous ref lock and live state
   const handleExecuteGeneration = useCallback(async () => {
-    if (!item || !onGenerate || !selectedModelOption?.ready || !hasInitializedSettingsRef.current || isSubmittingRef.current || localSubmitting || isGenerating || showingRequest) return
+    if (!item || !onGenerate || !selectedModelOption?.ready || !hasInitializedSettingsRef.current || lastInitializedItemIdRef.current !== item.id || isSubmittingRef.current || localSubmitting || isGenerating || showingRequest) return
     const prompt = quickRoutePrompt.trim()
     if (!prompt) return
 
@@ -744,7 +729,7 @@ export function MediaViewerModal({
     document.body.removeChild(link)
   }
 
-  const activeValidation = useMemo(() => {
+  const activeValidation = (() => {
     if (!item || !selectedModelOption) return { valid: false, error: 'Model selection required.' }
     return validateMediaGenerationRequest({
       action: activeQuickRouteMode,
@@ -759,7 +744,7 @@ export function MediaViewerModal({
       },
       variantCount: activeQuickRouteMode === 'iterate' ? variantCount : 1,
     })
-  }, [activeQuickRouteMode, aspectRatio, durationSeconds, isVideoAction, item, quickRoutePrompt, resolution, selectedModel, selectedModelOption, variantCount])
+  })()
 
   const isWorking = isGenerating || localSubmitting
   const canSubmit =
@@ -767,7 +752,7 @@ export function MediaViewerModal({
     !isWorking &&
     !showingRequest &&
     Boolean(quickRoutePrompt.trim()) &&
-    Boolean(onGenerate && selectedModelOption?.ready && hasInitializedSettingsRef.current && currentActionSupport.supported && activeValidation.valid)
+    Boolean(onGenerate && selectedModelOption?.ready && hasInitializedSettingsRef.current && lastInitializedItemIdRef.current === item.id && currentActionSupport.supported && activeValidation.valid)
 
   return (
     <div
@@ -1118,6 +1103,12 @@ export function MediaViewerModal({
                 )}
               </div>
 
+              {item.legacyRequestedSettings && (!sourceModel || !sourceAspectRatio || !sourceResolution) && (
+                <p className="text-xs text-white/60">Legacy task request (not verified output metadata): {[item.legacyRequestedSettings.model, item.legacyRequestedSettings.aspectRatio, item.legacyRequestedSettings.resolution, item.legacyRequestedSettings.durationSeconds ? `${item.legacyRequestedSettings.durationSeconds}s` : undefined].filter(Boolean).join(' · ')}</p>
+              )}
+              {currentActionSupport.supported && !activeValidation.valid && (
+                <p role="status" className="text-xs text-amber-300">{activeValidation.error}</p>
+              )}
               {/* Action Disabled Alert Banner */}
               {!currentActionSupport.supported && (
                 <div className="flex items-center gap-2 rounded-xl bg-amber-950/40 border border-amber-800/50 p-2.5 text-xs text-amber-300">
@@ -1244,6 +1235,7 @@ export function MediaViewerModal({
                       aria-label="Select AI model"
                       title={isVideoSource ? 'Model is locked to the generating model for video operations' : 'Select AI model'}
                     >
+                      {!selectedModel && <option value="">Unknown source model — choose explicitly</option>}
                       {availableModels.length > 0 ? (
                         availableModels.map((m) => (
                           <option key={m.id} value={m.id} disabled={!m.ready} className="bg-slate-900 text-white">
@@ -1252,7 +1244,7 @@ export function MediaViewerModal({
                         ))
                       ) : (
                         <option value={selectedModel || ''} className="bg-slate-900 text-white">
-                          {selectedModel || (isVideoSource ? 'Unknown source model' : 'Provider default')}
+                          {selectedModel || 'Unknown source model'}
                         </option>
                       )}
                     </select>
@@ -1334,7 +1326,7 @@ export function MediaViewerModal({
                     <div className="flex items-center gap-1.5 bg-white/5 border border-white/10 rounded-xl px-2 py-1 text-xs">
                       <span className="text-[10px] uppercase font-bold text-white/40 tracking-wider">Duration:</span>
                       <select
-                        value={activeLockedOptions?.supportsDuration === false ? '' : (durationSeconds ?? '')}
+                        value={activeLockedOptions?.durationSeconds ?? (activeLockedOptions?.supportsDuration === false ? '' : (durationSeconds ?? ''))}
                         disabled={activeLockedOptions?.supportsDuration === false || activeLockedOptions?.durationSeconds !== undefined}
                         onChange={(e) => {
                           const val = e.target.value
@@ -1350,7 +1342,7 @@ export function MediaViewerModal({
                             : 'Video Duration'
                         }
                       >
-                        {activeLockedOptions?.supportsDuration === false ? (
+                        {activeLockedOptions?.supportsDuration === false && activeLockedOptions?.durationSeconds === undefined ? (
                           <option value="" className="bg-slate-900 text-white">Auto (Managed)</option>
                         ) : (
                           <>

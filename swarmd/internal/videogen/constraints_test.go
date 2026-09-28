@@ -294,7 +294,7 @@ func TestCheckSourceCompatibility(t *testing.T) {
 		t.Fatalf("expected edit compatible with stable Omni, got reason: %s", res.Reason)
 	}
 
-	// 8. Sanitized provenance (interaction_id stripped, HasInteraction=true) -> compatible for Omni extend
+	// Display-only presence flags must never authorize execution without a real handle.
 	sanitizedOmniProv := &pebblestore.VideoProvenance{
 		AccountScopeID:      "acc-1",
 		Provider:            ProviderGoogleGemini,
@@ -306,8 +306,8 @@ func TestCheckSourceCompatibility(t *testing.T) {
 		ExtensionCountKnown: true,
 	}
 	res = CheckSourceCompatibility(ProviderGoogleGemini, "gemini-omni-1.1-flash", "extend", sanitizedOmniProv, 1280, 720, 10.0)
-	if !res.Compatible {
-		t.Fatalf("expected sanitized Omni provenance (HasInteraction=true) to be compatible for extend, got reason: %s", res.Reason)
+	if res.Compatible || !strings.Contains(res.Reason, "missing interaction handle") {
+		t.Fatalf("display-only interaction presence authorized execution: %#v", res)
 	}
 
 	// 9. Sanitized provenance without handle -> rejected for Omni extend
@@ -318,7 +318,7 @@ func TestCheckSourceCompatibility(t *testing.T) {
 		t.Fatalf("expected rejection for missing interaction handle, got: %#v", res)
 	}
 
-	// 10. Sanitized Veo provenance (ProviderResource stripped, HasProviderResource=true) -> compatible for Veo extend
+	// Display-only resource presence must not substitute for the server-owned URI.
 	sanitizedVeoProv := &pebblestore.VideoProvenance{
 		AccountScopeID:      "acc-1",
 		Provider:            ProviderGoogleGemini,
@@ -333,8 +333,8 @@ func TestCheckSourceCompatibility(t *testing.T) {
 		ObservedHeight:      720,
 	}
 	res = CheckSourceCompatibility(ProviderGoogleGemini, "veo-3.1-generate-preview", "extend", sanitizedVeoProv, 1280, 720, 8.0)
-	if !res.Compatible {
-		t.Fatalf("expected sanitized Veo provenance (HasProviderResource=true) to be compatible for extend, got reason: %s", res.Reason)
+	if res.Compatible || !strings.Contains(res.Reason, "provider resource URI") {
+		t.Fatalf("display-only resource presence authorized execution: %#v", res)
 	}
 
 	// 11. Expired provenance -> rejected

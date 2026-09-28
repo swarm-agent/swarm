@@ -85,28 +85,27 @@ func (s *Server) generateImageMedia(
 			if arSet, ok := caps.Settings["aspect_ratio"]; ok {
 				if defVal, ok := arSet.DefaultValue.(string); ok && strings.TrimSpace(defVal) != "" {
 					ar = strings.TrimSpace(defVal)
+					settings["aspect_ratio"] = ar
 				}
 			}
 		}
 		if resTag == "" && caps.Settings != nil {
 			if resSet, ok := caps.Settings["image_size"]; ok {
 				if defVal, ok := resSet.DefaultValue.(string); ok && strings.TrimSpace(defVal) != "" {
-					settings["image_size"] = strings.TrimSpace(defVal)
+					resTag = strings.TrimSpace(defVal)
+					settings["image_size"] = resTag
 				}
 			}
 		}
 	}
 
-	actualModel := usedModel
-	if sel, err := s.imageGen.ResolveModelSelection(usedModel); err == nil {
-		provider := sel.Provider
-		if provider == imagegen.ProviderGoogleGemini {
-			provider = "google"
-		} else if provider == imagegen.ProviderCodexOpenAI {
-			provider = "codex"
-		}
-		actualModel = videoExecutionIdentity(provider, sel.Model)
+	selection, err := s.imageGen.ResolveModelSelection(usedModel)
+	if err != nil {
+		return "", "", "", "", err
 	}
+	// The image service returns bytes, not an alternate result model. Preserve
+	// its canonical resolved selection ID, also used by the image catalog.
+	actualModel := selection.ID
 
 	genReq := imagegen.ManagedGenerateRequest{
 		SelectionID:     usedModel,
@@ -1462,9 +1461,10 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 								t.Deliverables[slotIndex].Resolution = vRes.Resolution
 								t.Deliverables[slotIndex].DurationSeconds = vRes.DurationSeconds
 								if vRes.Provenance != nil {
-									vRes.Provenance.AspectRatio = vRes.AspectRatio
-									vRes.Provenance.Resolution = vRes.Resolution
-									vRes.Provenance.DurationSeconds = vRes.DurationSeconds
+									// Preflight-resolved request settings, not total playback duration.
+									t.Deliverables[slotIndex].AspectRatio = vRes.Provenance.AspectRatio
+									t.Deliverables[slotIndex].Resolution = vRes.Provenance.Resolution
+									t.Deliverables[slotIndex].DurationSeconds = vRes.Provenance.DurationSeconds
 								}
 								t.VideoProvenance = vRes.Provenance
 

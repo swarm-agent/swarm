@@ -57,15 +57,15 @@ type MediaInitialImageOption struct {
 }
 
 type mediaCatalogGenerationOptions struct {
-	AspectRatios        []string                      `json:"aspect_ratios,omitempty"`
-	Resolutions         []string                      `json:"resolutions,omitempty"`
-	Durations           []int                         `json:"durations,omitempty"`
-	DefaultRatio        string                        `json:"default_ratio,omitempty"`
-	DefaultRes          string                        `json:"default_resolution,omitempty"`
-	DefaultDur          int                           `json:"default_duration,omitempty"`
-	MaxOutputs          int                           `json:"max_outputs,omitempty"`
-	ResolutionDurations map[string][]int              `json:"resolution_durations,omitempty"`
-	InitialImage        *MediaInitialImageOption      `json:"initial_image,omitempty"`
+	AspectRatios        []string                            `json:"aspect_ratios,omitempty"`
+	Resolutions         []string                            `json:"resolutions,omitempty"`
+	Durations           []int                               `json:"durations,omitempty"`
+	DefaultRatio        string                              `json:"default_ratio,omitempty"`
+	DefaultRes          string                              `json:"default_resolution,omitempty"`
+	DefaultDur          int                                 `json:"default_duration,omitempty"`
+	MaxOutputs          int                                 `json:"max_outputs,omitempty"`
+	ResolutionDurations map[string][]int                    `json:"resolution_durations,omitempty"`
+	InitialImage        *MediaInitialImageOption            `json:"initial_image,omitempty"`
 	Settings            map[string]MediaOptionSetting       `json:"settings,omitempty"`
 	Features            map[string]MediaFeatureOption       `json:"features,omitempty"`
 	Constraints         *videogen.VideoOperationConstraints `json:"constraints,omitempty"`

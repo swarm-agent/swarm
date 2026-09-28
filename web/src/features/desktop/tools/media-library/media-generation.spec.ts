@@ -7,11 +7,6 @@ import {
   extractGenerationDurationSeconds,
   getLineResolution,
   getSupportedDurationsForResolution,
-  isOmniModel,
-  isStableOmniModel,
-  isVeo31Model,
-  isVeoLiteModel,
-  isVeoModel,
   normalizeResKey,
   resolveAudioContext,
   resolveInitialModel,
@@ -897,6 +892,7 @@ test('media provenance integrity: Veo Lite rejects extension and fine-tuning wit
     display_name: 'Google Veo 3.1 Lite',
     kind: 'video_generation',
     ready: true,
+    generation_options: { aspect_ratios: ['16:9', '9:16'], resolutions: ['720p'], durations: [4, 6, 8] },
     constraints: {
       model: 'veo-3.1-lite-generate-preview',
       provider: 'google',
@@ -907,12 +903,12 @@ test('media provenance integrity: Veo Lite rejects extension and fine-tuning wit
   }
 
   // 1. Next Scene extension is blocked
-  const extendSupport = evaluateVideoActionSupport('next_scene', veoLiteItem, veoLiteModelOption)
+  const extendSupport = evaluateVideoActionSupport('next_scene', veoLiteItem, veoLiteModelOption, { nowMs: 2000 })
   assert.equal(extendSupport.supported, false)
-  assert.match(extendSupport.reason || '', /Veo Lite/i)
+  assert.match(extendSupport.reason || '', /veo-3\.1-lite/i)
 
   // 2. Fine-tune is blocked
-  const editSupport = evaluateVideoActionSupport('fine_tune', veoLiteItem, veoLiteModelOption)
+  const editSupport = evaluateVideoActionSupport('fine_tune', veoLiteItem, veoLiteModelOption, { nowMs: 2000 })
   assert.equal(editSupport.supported, false)
   assert.match(editSupport.reason || '', /Veo models do not support video editing/i)
 
@@ -920,13 +916,14 @@ test('media provenance integrity: Veo Lite rejects extension and fine-tuning wit
   const validation = validateMediaGenerationRequest({
     action: 'next_scene',
     item: veoLiteItem,
+    nowMs: 2000,
     model: 'veo-3.1-lite-generate-preview',
     modelOption: veoLiteModelOption,
     prompt: 'Add more action',
     settings: { durationSeconds: 8, resolution: '720p', aspectRatio: '16:9' },
   })
   assert.equal(validation.valid, false)
-  assert.match(validation.error || '', /Veo Lite/i)
+  assert.match(validation.error || '', /veo-3\.1-lite/i)
 })
 
 test('media provenance integrity: Veo 3.1 standard locks duration to 8s, resolution to 720p, and source AR', () => {
@@ -979,6 +976,7 @@ test('media provenance integrity: Veo 3.1 standard locks duration to 8s, resolut
     display_name: 'Google Veo 3.1',
     kind: 'video_generation',
     ready: true,
+    generation_options: { aspect_ratios: ['16:9', '9:16'], resolutions: ['720p'], durations: [4, 6, 8] },
     constraints: {
       model: 'veo-3.1-generate-preview',
       provider: 'google',
@@ -1074,6 +1072,7 @@ test('media provenance integrity: stable Gemini Omni allows extension and editin
     display_name: 'Gemini Omni 1.1 Flash',
     kind: 'video_iteration',
     ready: true,
+    generation_options: { aspect_ratios: ['16:9', '9:16'], resolutions: ['720p'], durations: [4, 6, 8] },
     constraints: {
       model: 'gemini-omni-1.1-flash',
       provider: 'google',
@@ -1103,7 +1102,7 @@ test('media provenance integrity: stable Gemini Omni allows extension and editin
     settings: { durationSeconds: 8, resolution: '720p', aspectRatio: '16:9' },
   })
   assert.equal(invalidDur.valid, false)
-  assert.match(invalidDur.error || '', /does not accept duration selection/i)
+  assert.match(invalidDur.error || '', /Duration selection is not accepted/i)
 })
 
 test('media provenance integrity: Preview Omni rejects extension and fine-tuning', () => {
@@ -1150,6 +1149,7 @@ test('media provenance integrity: Preview Omni rejects extension and fine-tuning
     display_name: 'Gemini Omni Preview',
     kind: 'video_generation',
     ready: true,
+    generation_options: { aspect_ratios: ['16:9', '9:16'], resolutions: ['720p'], durations: [4, 6, 8] },
     constraints: {
       model: 'gemini-omni-preview',
       provider: 'google',
@@ -1172,6 +1172,12 @@ test('media provenance integrity: Preview Omni rejects extension and fine-tuning
   assert.equal(failClosedExt.supported, false)
   assert.match(failClosedExt.reason || '', /constraints unavailable/i)
 })
+
+const veoStandardModelOption = {
+  id: 'veo-3.1-generate-preview', provider: 'google', model: 'veo-3.1-generate-preview', display_name: 'Veo', kind: 'video_generation', ready: true,
+  generation_options: { aspect_ratios: ['16:9', '9:16'], resolutions: ['720p'], durations: [8] },
+  constraints: { model: 'veo-3.1-generate-preview', provider: 'google', create: { supported: true, initial_image_supported: true, supports_duration: true }, edit: { supported: false, supports_duration: false }, extend: { supported: true, supports_duration: false, requires_source_provenance: true, max_reference_age_ms: 172800000, observed_dimension_pairs: [[1280, 720], [720, 1280]] } },
+} as MediaCatalogModelOption
 
 test('media provenance integrity: missing or expired provenance blocks next scene', () => {
   // Requirement: Missing videoProvenance or expired timestamps fail-closed with actionable reasons
@@ -1198,7 +1204,7 @@ test('media provenance integrity: missing or expired provenance blocks next scen
 
   const missingResult = evaluateVideoActionSupport('next_scene', missingProvItem, veoStandardModelOption)
   assert.equal(missingResult.supported, false)
-  assert.match(missingResult.reason || '', /requires verified source provenance/i)
+  assert.match(missingResult.reason || '', /source provenance/i)
 
   // Expired provenance (expires_at in past)
   const expiredItem: MediaLibraryItem = {
@@ -1211,6 +1217,7 @@ test('media provenance integrity: missing or expired provenance blocks next scen
       operation: 'create',
       created_at: 1000,
       expires_at: 5000,
+      observed_width: 1280, observed_height: 720, observed_duration_ms: 8000,
     },
   }
   const expiredResult = evaluateVideoActionSupport('next_scene', expiredItem, veoStandardModelOption, { nowMs: 6000 })
@@ -1228,6 +1235,7 @@ test('media provenance integrity: missing or expired provenance blocks next scen
       operation: 'create',
       created_at: 1000,
       expires_at: 1000 + 100 * 3600 * 1000,
+      observed_width: 1280, observed_height: 720, observed_duration_ms: 8000,
     },
   }
   const oldResult = evaluateVideoActionSupport('next_scene', oldItem, veoStandardModelOption, { nowMs: 1000 + 49 * 3600 * 1000 })
@@ -1264,6 +1272,7 @@ test('media provenance integrity: non-720p observed dimensions reject Veo extens
       operation: 'create',
       created_at: 1000,
       expires_at: 1000 + 48 * 3600 * 1000,
+      observed_duration_ms: 8000,
       observed_width: 1920,
       observed_height: 1080,
       resolution: '1080p',
@@ -1272,7 +1281,7 @@ test('media provenance integrity: non-720p observed dimensions reject Veo extens
 
   const result = evaluateVideoActionSupport('next_scene', hdItem, veoStandardModelOption, { nowMs: 2000 })
   assert.equal(result.supported, false)
-  assert.match(result.reason || '', /requires observed 720p dimensions/i)
+  assert.match(result.reason || '', /requires observed dimensions matching/i)
 })
 
 test('media provenance integrity: resolveVideoContinuationModel never silently replaces known source model', () => {
@@ -1410,4 +1419,50 @@ test('media provenance integrity: resolution-duration dependencies and initial-i
   const support = evaluateVideoActionSupport('to_video', imageItem, modelNoInitialImage)
   assert.equal(support.supported, false)
   assert.match(support.reason || '', /does not support initial image/i)
+})
+
+// Requirement: native viewer requests must fail before dispatch when source evidence or
+// required options are absent. Authority: evaluateVideoActionSupport and
+// validateMediaGenerationRequest; pure unit tests are the narrowest option gate proof.
+// This is not a provider benchmark or live generation test.
+test('native preflight rejects incomplete evidence and missing locked settings', () => {
+  const model = {
+    ...veoStandardModelOption,
+    constraints: {
+      ...veoStandardModelOption.constraints!,
+      extend: {
+        ...veoStandardModelOption.constraints!.extend,
+        locked_duration_seconds: 8, locked_resolution: '720p', locked_aspect_ratio_matches_source: true,
+        supported_aspect_ratios: ['16:9', '9:16'], requires_provider_resource: true,
+        required_source_provider: 'google', required_source_transport: 'google_predict_long_running',
+        requires_known_extension_count: true, requires_output_digest: true,
+        max_source_duration_sec: 141, max_extension_count: 20,
+      },
+    },
+  }
+  const item = {
+    kind: 'video', model: model.id, aspectRatio: '16:9', resolution: '720p', durationSeconds: 8,
+    videoProvenance: {
+      provider: 'google', model: model.model, transport: 'google_predict_long_running',
+      operation: 'extend', account_scope_id: 'test-account', created_at: 1000, expires_at: 172801000,
+      observed_width: 1280, observed_height: 720, observed_duration_ms: 141000,
+      has_provider_resource: true, extension_count_known: true, extension_count: 0,
+      output_digest_sha256: 'a'.repeat(64),
+    },
+  } as MediaLibraryItem
+  const request = {
+    action: 'next_scene' as const, item, model: model.id, modelOption: model,
+    prompt: 'Continue', settings: { aspectRatio: '16:9', resolution: '720p', durationSeconds: 8 }, nowMs: 2000,
+  }
+  assert.equal(validateMediaGenerationRequest(request).valid, true, '141s source is allowed; 8s request is not 8s appended playback')
+  for (const key of ['aspectRatio', 'resolution', 'durationSeconds'] as const) {
+    assert.equal(validateMediaGenerationRequest({ ...request, settings: { ...request.settings, [key]: undefined } }).valid, false, key)
+  }
+  assert.equal(validateMediaGenerationRequest({ ...request, settings: { ...request.settings, aspectRatio: '9:16' } }).valid, false)
+  for (const key of ['provider', 'transport', 'observed_width', 'observed_duration_ms', 'created_at', 'expires_at', 'has_provider_resource', 'extension_count_known'] as const) {
+    const incomplete = { ...item, videoProvenance: { ...item.videoProvenance!, [key]: undefined } }
+    assert.equal(evaluateVideoActionSupport('next_scene', incomplete as MediaLibraryItem, model, { nowMs: 2000 }).supported, false, key)
+  }
+  assert.equal(resolveVideoContinuationModel(model.model, [{ ...model, provider: 'openrouter' }], 'google').modelOption, undefined)
+  assert.equal(extractGenerationDurationSeconds({ videoProvenance: { ...item.videoProvenance!, observed_duration_ms: 8000, is_combined_output: false } }), undefined, 'Playback duration is not requested duration')
 })

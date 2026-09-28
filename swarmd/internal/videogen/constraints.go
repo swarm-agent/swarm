@@ -41,44 +41,44 @@ type VideoEditConstraint struct {
 	Supported                  bool     `json:"supported"`
 	Reason                     string   `json:"reason,omitempty"`
 	SupportsDuration           bool     `json:"supports_duration"`
-	MaxExternalDurationSec     float64  `json:"max_external_duration_sec,omitempty"`   // 10.0 for external uploads
-	MaxSourceDurationSec       float64  `json:"max_source_duration_sec,omitempty"`     // 10.0 for backwards-compatibility
-	RequiresHandleMatch        bool     `json:"requires_handle_match"`                 // true for conversational Omni
+	MaxExternalDurationSec     float64  `json:"max_external_duration_sec,omitempty"`      // 10.0 for external uploads
+	MaxSourceDurationSec       float64  `json:"max_source_duration_sec,omitempty"`        // 10.0 for backwards-compatibility
+	RequiresHandleMatch        bool     `json:"requires_handle_match"`                    // true for conversational Omni
 	RequiresHandleForLongVideo bool     `json:"requires_handle_for_long_video,omitempty"` // true: uploads > 10s require handle
-	RequiresInteractionHandle  bool     `json:"requires_interaction_handle,omitempty"` // conversational continuation requires handle
-	SupportedProviders         []string `json:"supported_providers,omitempty"`        // ["google"]
-	RequiredSourceProvider     string   `json:"required_source_provider,omitempty"`    // "google"
-	RequiredSourceTransport    string   `json:"required_source_transport,omitempty"`   // "google_interactions"
-	SourceModelMatch           string   `json:"source_model_match,omitempty"`         // "gemini-omni-1.1-flash"
+	RequiresInteractionHandle  bool     `json:"requires_interaction_handle,omitempty"`    // conversational continuation requires handle
+	SupportedProviders         []string `json:"supported_providers,omitempty"`            // ["google"]
+	RequiredSourceProvider     string   `json:"required_source_provider,omitempty"`       // "google"
+	RequiredSourceTransport    string   `json:"required_source_transport,omitempty"`      // "google_interactions"
+	SourceModelMatch           string   `json:"source_model_match,omitempty"`             // "gemini-omni-1.1-flash"
 }
 
 // VideoExtendConstraint defines the locked parameters and source rules for video extension (next scene).
 type VideoExtendConstraint struct {
-	Supported                      bool       `json:"supported"`
-	Reason                         string     `json:"reason,omitempty"`
-	LockedDurationSeconds          int        `json:"locked_duration_seconds,omitempty"`            // 8 for Veo, 0 for Omni
-	LockedResolution               string     `json:"locked_resolution,omitempty"`                  // "720p" for Veo
-	LockedAspectRatioMatchesSource bool       `json:"locked_aspect_ratio_matches_source,omitempty"` // true for Veo
-	SupportedAspectRatios          []string   `json:"supported_aspect_ratios,omitempty"`            // ["16:9", "9:16"] for Veo
-	SupportsDuration               bool       `json:"supports_duration"`                            // false for both
-	MaxSourceDurationSec           float64    `json:"max_source_duration_sec,omitempty"`            // 141.0 for Veo, 37.0 for Omni
-	MaxTotalDurationSec            float64    `json:"max_total_duration_sec,omitempty"`             // 148.0 for Veo, 40.0 for Omni
-	MaxExtensionCount              int        `json:"max_extension_count,omitempty"`                // 20 for Veo (omitted for Omni)
-	RequiresVeoSource              bool       `json:"requires_veo_source,omitempty"`                // true for Veo
-	RequiresOmniSource             bool       `json:"requires_omni_source,omitempty"`               // true for Omni
-	DisallowsVeoLiteSource         bool       `json:"disallows_veo_lite_source,omitempty"`          // true for Veo
-	SourceObservedResolutions      []string   `json:"source_observed_resolutions,omitempty"`         // ["720p", "1280x720", "720x1280"]
-	RequiresSourceProvenance       bool       `json:"requires_source_provenance,omitempty"`          // true for both
-	RequiredSourceProvider         string     `json:"required_source_provider,omitempty"`            // "google"
-	RequiredSourceTransport        string     `json:"required_source_transport,omitempty"`           // "google_predict_long_running" or "google_interactions"
-	RequiresProviderResource       bool       `json:"requires_provider_resource,omitempty"`         // true for Veo
-	RequiresInteractionHandle      bool       `json:"requires_interaction_handle,omitempty"`        // true for Omni
-	RequiresOutputDigest           bool       `json:"requires_output_digest,omitempty"`             // true for Veo
-	RequiresKnownExtensionCount    bool       `json:"requires_known_extension_count,omitempty"`      // true for both
-	MaxReferenceAgeMs              int64      `json:"max_reference_age_ms,omitempty"`                // 48h (172800000ms) for Veo
-	AllowedSourceModels            []string   `json:"allowed_source_models,omitempty"`              // ["veo-3.1-generate-preview", "veo-3.1-fast-generate-preview"] or ["gemini-omni-1.1-flash"]
-	DisallowedSourceModels         []string   `json:"disallowed_source_models,omitempty"`           // ["veo-3.1-lite-generate-preview"]
-	ObservedDimensionPairs         [][2]int   `json:"observed_dimension_pairs,omitempty"`           // [[1280, 720], [720, 1280]] for Veo
+	Supported                      bool     `json:"supported"`
+	Reason                         string   `json:"reason,omitempty"`
+	LockedDurationSeconds          int      `json:"locked_duration_seconds,omitempty"`            // 8 for Veo, 0 for Omni
+	LockedResolution               string   `json:"locked_resolution,omitempty"`                  // "720p" for Veo
+	LockedAspectRatioMatchesSource bool     `json:"locked_aspect_ratio_matches_source,omitempty"` // true for Veo
+	SupportedAspectRatios          []string `json:"supported_aspect_ratios,omitempty"`            // ["16:9", "9:16"] for Veo
+	SupportsDuration               bool     `json:"supports_duration"`                            // false for both
+	MaxSourceDurationSec           float64  `json:"max_source_duration_sec,omitempty"`            // 141.0 for Veo, 37.0 for Omni
+	MaxTotalDurationSec            float64  `json:"max_total_duration_sec,omitempty"`             // 148.0 for Veo, 40.0 for Omni
+	MaxExtensionCount              int      `json:"max_extension_count,omitempty"`                // 20 for Veo (omitted for Omni)
+	RequiresVeoSource              bool     `json:"requires_veo_source,omitempty"`                // true for Veo
+	RequiresOmniSource             bool     `json:"requires_omni_source,omitempty"`               // true for Omni
+	DisallowsVeoLiteSource         bool     `json:"disallows_veo_lite_source,omitempty"`          // true for Veo
+	SourceObservedResolutions      []string `json:"source_observed_resolutions,omitempty"`        // ["720p", "1280x720", "720x1280"]
+	RequiresSourceProvenance       bool     `json:"requires_source_provenance,omitempty"`         // true for both
+	RequiredSourceProvider         string   `json:"required_source_provider,omitempty"`           // "google"
+	RequiredSourceTransport        string   `json:"required_source_transport,omitempty"`          // "google_predict_long_running" or "google_interactions"
+	RequiresProviderResource       bool     `json:"requires_provider_resource,omitempty"`         // true for Veo
+	RequiresInteractionHandle      bool     `json:"requires_interaction_handle,omitempty"`        // true for Omni
+	RequiresOutputDigest           bool     `json:"requires_output_digest,omitempty"`             // true for Veo
+	RequiresKnownExtensionCount    bool     `json:"requires_known_extension_count,omitempty"`     // true for both
+	MaxReferenceAgeMs              int64    `json:"max_reference_age_ms,omitempty"`               // 48h (172800000ms) for Veo
+	AllowedSourceModels            []string `json:"allowed_source_models,omitempty"`              // ["veo-3.1-generate-preview", "veo-3.1-fast-generate-preview"] or ["gemini-omni-1.1-flash"]
+	DisallowedSourceModels         []string `json:"disallowed_source_models,omitempty"`           // ["veo-3.1-lite-generate-preview"]
+	ObservedDimensionPairs         [][2]int `json:"observed_dimension_pairs,omitempty"`           // [[1280, 720], [720, 1280]] for Veo
 }
 
 // SourceCompatibilityResult indicates whether a given source video is compatible with a target model and operation.
@@ -320,7 +320,7 @@ func ValidateSourceCompatibility(
 		if !IsStableOmniModel(mID) {
 			return fmt.Errorf("video editing is only supported on stable Gemini Omni (%s); %q is not supported", DefaultVideoIterationModel, mID)
 		}
-		hasHandle := srcProv != nil && (strings.TrimSpace(srcProv.InteractionID) != "" || srcProv.HasInteraction)
+		hasHandle := srcProv != nil && strings.TrimSpace(srcProv.InteractionID) != ""
 		if hasHandle {
 			if srcProv.Model != "" && !strings.EqualFold(srcProv.Model, mID) {
 				return fmt.Errorf("video interaction model mismatch: source was created with %q, cannot continue with %q", srcProv.Model, mID)
@@ -350,7 +350,7 @@ func ValidateSourceCompatibility(
 			if srcProv.Transport != pebblestore.VideoTransportGooglePredictLongRunning {
 				return fmt.Errorf("Veo source requires google_predict_long_running transport; got %q", srcProv.Transport)
 			}
-			if strings.TrimSpace(srcProv.ProviderResource) == "" && !srcProv.HasProviderResource {
+			if strings.TrimSpace(srcProv.ProviderResource) == "" {
 				return errors.New("Veo source requires valid provider resource URI")
 			}
 			if strings.TrimSpace(srcProv.OutputDigestSHA256) == "" {
@@ -398,7 +398,7 @@ func ValidateSourceCompatibility(
 			if srcProv.Transport != pebblestore.VideoTransportGoogleInteractions {
 				return fmt.Errorf("Omni extension requires google_interactions transport; got %q", srcProv.Transport)
 			}
-			if strings.TrimSpace(srcProv.InteractionID) == "" && !srcProv.HasInteraction {
+			if strings.TrimSpace(srcProv.InteractionID) == "" {
 				return errors.New("Omni source provenance is missing interaction handle; cannot extend")
 			}
 			if !srcProv.ExtensionCountKnown {

@@ -721,36 +721,6 @@ export function resolveInitialModel(
   return availableModels[0]?.id || ''
 }
 
-export function isVeoModel(modelId: string | undefined): boolean {
-  if (!modelId) return false
-  return modelId.toLowerCase().includes('veo')
-}
-
-export function isVeoLiteModel(modelId: string | undefined): boolean {
-  if (!modelId) return false
-  const lower = modelId.toLowerCase()
-  return lower.includes('veo') && lower.includes('lite')
-}
-
-export function isVeo31Model(modelId: string | undefined): boolean {
-  if (!modelId) return false
-  const lower = modelId.toLowerCase()
-  return (lower.includes('veo-3.1') || lower.includes('veo-3-1') || lower.includes('veo_3_1')) && !lower.includes('lite')
-}
-
-export function isOmniModel(modelId: string | undefined): boolean {
-  if (!modelId) return false
-  return modelId.toLowerCase().includes('omni')
-}
-
-export function isStableOmniModel(modelId: string | undefined): boolean {
-  if (!modelId) return false
-  let clean = modelId.toLowerCase().trim()
-  if (clean.startsWith('google:')) clean = clean.slice(7)
-  if (clean.startsWith('google/')) clean = clean.slice(7)
-  return clean === 'gemini-omni-1.1-flash'
-}
-
 export function resolveVideoContinuationModel(
   sourceModel: string | undefined,
   allVideoModels: readonly MediaCatalogModelOption[] | undefined,
@@ -768,6 +738,7 @@ export function resolveVideoContinuationModel(
   let modelBare = lower
   if (lower.includes(':')) {
     const parts = lower.split(':')
+    if (pNorm && pNorm !== parts[0]) return { modelId: trimmed, isUnknown: false }
     explicitProvider = parts[0]
     modelBare = parts.slice(1).join(':')
   }
@@ -789,6 +760,8 @@ export function resolveVideoContinuationModel(
       }
     }
   }
+
+  if (explicitProvider) return { modelId: trimmed, isUnknown: false }
 
   // 2. If no provider was known, check if multiple options from different providers share the bare model name
   const candidateMatches = allVideoModels?.filter(
@@ -837,7 +810,7 @@ export function evaluateVideoActionSupport(
   if (action === 'to_video') {
     const initImg = modelOption?.generation_options?.initial_image
     const initConstraint = modelOption?.constraints?.create?.initial_image_supported
-    if (initImg?.supported === false || initConstraint === false) {
+    if (!modelOption?.constraints?.create?.supported || (initConstraint !== true && initImg?.supported !== true)) {
       return { supported: false, reason: 'Selected video model does not support initial image input.' }
     }
     return { supported: true }
@@ -855,6 +828,16 @@ export function evaluateVideoActionSupport(
   const prov = item.videoProvenance
   const now = options?.nowMs ?? Date.now()
 
+  if (!modelOption?.ready) return { supported: false, reason: 'Source model is unavailable.' }
+  if (!prov || !prov.model?.trim() || !prov.provider?.trim() || !prov.transport?.trim()) {
+    return { supported: false, reason: 'Verified source provenance is incomplete.' }
+  }
+  const sourceMatch = resolveVideoContinuationModel(prov.model, [modelOption], prov.provider)
+  if (!sourceMatch.modelOption) return { supported: false, reason: 'Source and action model must match.' }
+  if (!Number.isFinite(prov.observed_width) || !Number.isFinite(prov.observed_height) || (prov.observed_width ?? 0) <= 0 || (prov.observed_height ?? 0) <= 0) {
+    return { supported: false, reason: 'Observed source dimensions are required.' }
+  }
+
   // Verify timestamps and expiry on provenance if present
   if (prov) {
     if (prov.expires_at && now > prov.expires_at) {
@@ -869,11 +852,9 @@ export function evaluateVideoActionSupport(
   const rawObservedMs = prov?.observed_duration_ms
   const observedDurSec = typeof rawObservedMs === 'number' && Number.isFinite(rawObservedMs) && rawObservedMs > 0
     ? rawObservedMs / 1000
-    : typeof item.durationSeconds === 'number' && Number.isFinite(item.durationSeconds) && item.durationSeconds > 0
-    ? item.durationSeconds
     : 0
 
-  if (!Number.isFinite(observedDurSec) || observedDurSec < 0) {
+  if (!Number.isFinite(observedDurSec) || observedDurSec <= 0) {
     return { supported: false, reason: 'Source video duration is invalid or not finite.' }
   }
 
@@ -914,10 +895,8 @@ export function evaluateVideoActionSupport(
       }
     }
 
-    const hasHandle = Boolean(
-      (prov?.interaction_id && prov.interaction_id.trim()) ||
-      prov?.has_interaction
-    )
+    const hasHandle = prov.has_interaction === true
+    if (!hasHandle) return { supported: false, reason: 'Native fine-tuning requires the saved interaction handle.' }
 
     if (editC.requires_interaction_handle && !hasHandle) {
       return {
@@ -971,7 +950,10 @@ export function evaluateVideoActionSupport(
     }
 
     if (prov) {
-      if (extC.max_reference_age_ms && extC.max_reference_age_ms > 0 && prov.created_at) {
+      if (extC.max_reference_age_ms && extC.max_reference_age_ms > 0) {
+        if (!Number.isFinite(prov.created_at) || prov.created_at <= 0 || !Number.isFinite(prov.expires_at) || (prov.expires_at ?? 0) <= 0) {
+          return { supported: false, reason: 'Source reference creation and expiry timestamps are required.' }
+        }
         if ((now - prov.created_at) > extC.max_reference_age_ms) {
           return {
             supported: false,
@@ -987,6 +969,9 @@ export function evaluateVideoActionSupport(
         }
       }
 
+      if (prov.extension_count !== undefined && (!Number.isInteger(prov.extension_count) || prov.extension_count < 0)) {
+        return { supported: false, reason: 'Source extension count is invalid.' }
+      }
       if (typeof extC.max_extension_count === 'number' && typeof prov.extension_count === 'number') {
         if (prov.extension_count >= extC.max_extension_count) {
           return {
@@ -1015,10 +1000,7 @@ export function evaluateVideoActionSupport(
       }
 
       if (extC.requires_provider_resource) {
-        const hasRes = Boolean(
-          (prov.provider_resource && prov.provider_resource.trim()) ||
-          prov.has_provider_resource
-        )
+        const hasRes = prov.has_provider_resource === true
         if (!hasRes) {
           return {
             supported: false,
@@ -1028,10 +1010,7 @@ export function evaluateVideoActionSupport(
       }
 
       if (extC.requires_interaction_handle) {
-        const hasHandle = Boolean(
-          (prov.interaction_id && prov.interaction_id.trim()) ||
-          prov.has_interaction
-        )
+        const hasHandle = prov.has_interaction === true
         if (!hasHandle) {
           return {
             supported: false,
@@ -1091,25 +1070,26 @@ export function evaluateVideoActionSupport(
         }
       }
 
-      if (typeof extC.max_total_duration_sec === 'number') {
-        const extensionStep = extC.locked_duration_seconds ?? 7.0
-        if (observedDurSec + (extensionStep > 0 ? extensionStep : 1.0) > extC.max_total_duration_sec) {
-          return {
-            supported: false,
-            reason: `Extending source video (${observedDurSec.toFixed(1)}s) would exceed maximum output duration (${extC.max_total_duration_sec}s).`,
-          }
-        }
-      }
+      // max_source_duration_sec is the server's authoritative input limit.
+      // Request duration is not the appended playback length (overlap/provider-managed output).
     }
 
-    const targetAR = prov?.aspect_ratio || item.aspectRatio || (prov?.observed_width === 720 ? '9:16' : '16:9')
+    const targetAR = extC.locked_aspect_ratio_matches_source
+      ? extC.supported_aspect_ratios?.find((ratio) => {
+          const [w, h] = ratio.split(':').map(Number)
+          return w > 0 && h > 0 && (prov.observed_width ?? 0) * h === (prov.observed_height ?? 0) * w
+        })
+      : undefined
+    if (extC.locked_aspect_ratio_matches_source && !targetAR) {
+      return { supported: false, reason: 'Source dimensions do not match a supported aspect ratio.' }
+    }
 
     return {
       supported: true,
       lockedOptions: {
         durationSeconds: extC.locked_duration_seconds !== undefined && extC.locked_duration_seconds > 0 ? extC.locked_duration_seconds : undefined,
         resolution: extC.locked_resolution || undefined,
-        aspectRatio: extC.locked_aspect_ratio_matches_source ? targetAR : (prov?.aspect_ratio || item.aspectRatio),
+        aspectRatio: targetAR,
         supportsDuration: extC.supports_duration ?? false,
         explanation: extC.locked_duration_seconds
           ? `Video extension is fixed at ${extC.locked_duration_seconds}s duration, ${extC.locked_resolution || 'source'} resolution, matching source aspect ratio.`
@@ -1148,9 +1128,6 @@ export function extractGenerationDurationSeconds(
   const prov = item.videoProvenance
   if (typeof prov?.duration_seconds === 'number' && prov.duration_seconds > 0) {
     return prov.duration_seconds
-  }
-  if (prov?.observed_duration_ms && prov.observed_duration_ms > 0 && !prov.is_combined_output) {
-    return Math.round(prov.observed_duration_ms / 1000)
   }
   return undefined
 }
@@ -1198,6 +1175,27 @@ export function validateMediaGenerationRequest(options: {
     return { valid: false, error: `Selected model identifier "${model}" does not match catalog option "${modelOption.id}".` }
   }
 
+  if ((item.kind !== 'image' && item.kind !== 'video') || (action === 'to_video' && item.kind !== 'image') || (action === 'next_scene' && item.kind !== 'video')) {
+    return { valid: false, error: 'Action is incompatible with this source media.' }
+  }
+  const genOptions = modelOption.generation_options
+  if (!genOptions) return { valid: false, error: 'Model option metadata is unavailable.' }
+  for (const [label, value, allowed] of [
+    ['Aspect ratio', settings.aspectRatio, genOptions.aspect_ratios],
+    ['Resolution', settings.resolution, genOptions.resolutions],
+  ] as const) {
+    if (allowed?.length && (!value || !allowed.some((v) => v.toLowerCase() === value.toLowerCase()))) {
+      return { valid: false, error: `${label} must be selected from supported options.` }
+    }
+    if (value && !allowed?.length) return { valid: false, error: `${label} metadata is unavailable.` }
+  }
+  if (action === 'to_video') {
+    const allowed = getSupportedDurationsForResolution(modelOption, settings.resolution)
+    if (modelOption.constraints?.create.supports_duration) {
+      if (!settings.durationSeconds || !allowed.includes(settings.durationSeconds)) return { valid: false, error: 'Select a supported duration for this resolution.' }
+    } else if (settings.durationSeconds !== undefined) return { valid: false, error: 'Duration is managed automatically by this model.' }
+  }
+
   // Validate variant count
   if (variantCount !== undefined) {
     if (!Number.isFinite(variantCount) || variantCount <= 0 || !Number.isInteger(variantCount)) {
@@ -1211,7 +1209,7 @@ export function validateMediaGenerationRequest(options: {
 
   // Validate durationSeconds numeric integrity if present
   if (settings.durationSeconds !== undefined) {
-    if (!Number.isFinite(settings.durationSeconds) || settings.durationSeconds < 0 || !Number.isInteger(settings.durationSeconds)) {
+    if (!Number.isFinite(settings.durationSeconds) || settings.durationSeconds <= 0 || !Number.isInteger(settings.durationSeconds)) {
       return { valid: false, error: 'Duration seconds must be a positive integer.' }
     }
   }
@@ -1223,14 +1221,13 @@ export function validateMediaGenerationRequest(options: {
     }
 
     const locks = support.lockedOptions
-    const genOpts = modelOption.generation_options
     const extC = modelOption.constraints?.extend
     const editC = modelOption.constraints?.edit
 
     if (action === 'next_scene') {
       // Must enforce locked duration
       if (locks?.durationSeconds !== undefined) {
-        if (settings.durationSeconds !== undefined && settings.durationSeconds !== locks.durationSeconds) {
+        if (settings.durationSeconds !== locks.durationSeconds) {
           return { valid: false, error: `Video extension only supports ${locks.durationSeconds}s duration.` }
         }
       } else if (locks?.supportsDuration === false) {
@@ -1241,14 +1238,14 @@ export function validateMediaGenerationRequest(options: {
 
       // Must enforce locked resolution
       if (locks?.resolution) {
-        if (settings.resolution && settings.resolution.toLowerCase() !== locks.resolution.toLowerCase()) {
+        if (settings.resolution?.toLowerCase() !== locks.resolution.toLowerCase()) {
           return { valid: false, error: `Video extension requires ${locks.resolution} resolution.` }
         }
       }
 
       // Must enforce locked aspect ratio
       if (locks?.aspectRatio) {
-        if (settings.aspectRatio && settings.aspectRatio !== locks.aspectRatio) {
+        if (settings.aspectRatio !== locks.aspectRatio) {
           return { valid: false, error: `Video extension requires matching source aspect ratio (${locks.aspectRatio}).` }
         }
       }

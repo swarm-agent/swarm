@@ -46,34 +46,34 @@ type SessionArtifactLineage struct {
 	// ParentSessionID is the trusted destination session that owns the
 	// collection. SourceSessionID identifies the producing child when output is
 	// routed into a parent-owned managed collection.
-	ParentSessionID         string `json:"parent_session_id,omitempty"`
-	SourceSessionID         string `json:"source_session_id,omitempty"`
-	SourceCollectionID      string `json:"source_collection_id,omitempty"`
-	SourceVariantID         string `json:"source_variant_id,omitempty"`
-	SourceEventSeq          uint64 `json:"source_event_seq,omitempty"`
-	TaskCallID              string `json:"task_call_id,omitempty"`
-	ProgramID               string `json:"program_id,omitempty"`
-	ProgramJobID            string `json:"program_job_id,omitempty"`
-	ChildSessionID          string `json:"child_session_id,omitempty"`
-	IterationGroupID        string `json:"iteration_group_id,omitempty"`
-	IterationGroup          string `json:"iteration_group,omitempty"`
-	IterationID             string `json:"iteration_id,omitempty"`
-	IterationIndex          int    `json:"iteration_index,omitempty"`
-	IterationLabel          string `json:"iteration_label,omitempty"`
-	IterationTheme          string `json:"iteration_theme,omitempty"`
-	IterationSectionID      string `json:"iteration_section_id,omitempty"`
-	IterationSectionLabel   string `json:"iteration_section_label,omitempty"`
-	IterationSectionStartMs int64  `json:"iteration_section_start_ms,omitempty"`
-	IterationSectionEndMs   int64  `json:"iteration_section_end_ms,omitempty"`
-	PartID                  string `json:"part_id,omitempty"`
-	PartLabel               string `json:"part_label,omitempty"`
-	PartKind                string `json:"part_kind,omitempty"`
-	SelectedReviewTargetIDs string `json:"selected_review_target_ids,omitempty"`
-	RunID                   string `json:"run_id,omitempty"`
-	PlanID                  string `json:"plan_id,omitempty"`
-	CheckpointID            string `json:"checkpoint_id,omitempty"`
-	AttemptID               string `json:"attempt_id,omitempty"`
-	VideoProjectID          string `json:"video_project_id,omitempty"`
+	ParentSessionID         string           `json:"parent_session_id,omitempty"`
+	SourceSessionID         string           `json:"source_session_id,omitempty"`
+	SourceCollectionID      string           `json:"source_collection_id,omitempty"`
+	SourceVariantID         string           `json:"source_variant_id,omitempty"`
+	SourceEventSeq          uint64           `json:"source_event_seq,omitempty"`
+	TaskCallID              string           `json:"task_call_id,omitempty"`
+	ProgramID               string           `json:"program_id,omitempty"`
+	ProgramJobID            string           `json:"program_job_id,omitempty"`
+	ChildSessionID          string           `json:"child_session_id,omitempty"`
+	IterationGroupID        string           `json:"iteration_group_id,omitempty"`
+	IterationGroup          string           `json:"iteration_group,omitempty"`
+	IterationID             string           `json:"iteration_id,omitempty"`
+	IterationIndex          int              `json:"iteration_index,omitempty"`
+	IterationLabel          string           `json:"iteration_label,omitempty"`
+	IterationTheme          string           `json:"iteration_theme,omitempty"`
+	IterationSectionID      string           `json:"iteration_section_id,omitempty"`
+	IterationSectionLabel   string           `json:"iteration_section_label,omitempty"`
+	IterationSectionStartMs int64            `json:"iteration_section_start_ms,omitempty"`
+	IterationSectionEndMs   int64            `json:"iteration_section_end_ms,omitempty"`
+	PartID                  string           `json:"part_id,omitempty"`
+	PartLabel               string           `json:"part_label,omitempty"`
+	PartKind                string           `json:"part_kind,omitempty"`
+	SelectedReviewTargetIDs string           `json:"selected_review_target_ids,omitempty"`
+	RunID                   string           `json:"run_id,omitempty"`
+	PlanID                  string           `json:"plan_id,omitempty"`
+	CheckpointID            string           `json:"checkpoint_id,omitempty"`
+	AttemptID               string           `json:"attempt_id,omitempty"`
+	VideoProjectID          string           `json:"video_project_id,omitempty"`
 	VideoRevisionID         string           `json:"video_revision_id,omitempty"`
 	VideoRevisionEventSeq   uint64           `json:"video_revision_event_seq,omitempty"`
 	VideoProvenance         *VideoProvenance `json:"video_provenance,omitempty"`

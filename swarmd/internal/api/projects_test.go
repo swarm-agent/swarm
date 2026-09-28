@@ -1836,12 +1836,12 @@ func TestProjectOrchestrator_ClearContext_ResolvesPlanModelAndValidProfile(t *te
 }
 
 // TestProjectTaskPatch_DeliverableClientMetadataSpoofFails proves:
-// - Requirement: Client PATCH on project tasks must NOT allow spoofing of server-generated deliverable metadata
-//   (Model, AspectRatio, Resolution, DurationSeconds, VideoProvenance). Server-generated metadata must be retained
-//   by deliverable ID, and unknown IDs must have these fields cleared.
-// - Threat/regression: Malicious or misbehaving client modifies deliverable model/settings or provenance via PATCH.
-// - Boundary: Server.handleProjectTask PATCH in projects.go.
-// - Test layer: Direct HTTP endpoint boundary asserting retention of server-generated metadata and rejection of spoofed fields.
+//   - Requirement: Client PATCH on project tasks must NOT allow spoofing of server-generated deliverable metadata
+//     (Model, AspectRatio, Resolution, DurationSeconds, VideoProvenance). Server-generated metadata must be retained
+//     by deliverable ID, and unknown IDs must have these fields cleared.
+//   - Threat/regression: Malicious or misbehaving client modifies deliverable model/settings or provenance via PATCH.
+//   - Boundary: Server.handleProjectTask PATCH in projects.go.
+//   - Test layer: Direct HTTP endpoint boundary asserting retention of server-generated metadata and rejection of spoofed fields.
 func TestProjectTaskPatch_DeliverableClientMetadataSpoofFails(t *testing.T) {
 	db, err := store.Open(t.TempDir())
 	if err != nil {

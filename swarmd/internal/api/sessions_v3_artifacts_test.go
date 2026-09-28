@@ -1124,11 +1124,15 @@ func TestSessionsV3ArtifactCatalog_ResolutionSourceNotMappedToResolution(t *test
 		RunID:          checkpoint.RunID,
 		PlanID:         plan.ID,
 		CheckpointID:   checkpoint.ID,
-	}, artifact.CreateArtifactOptions{
+		AttemptID:      checkpoint.AttemptID,
+	}, artifact.CreateInput{
+		RequestID:      "req-preset-metadata",
+		CollectionID:   "preset-metadata",
+		VariantID:      "preset-metadata-output",
 		CollectionName: "Preset Test Collection",
-		Filename:       "test.png",
-		MediaType:      "image/png",
-		Content:        []byte("png-bytes"),
+		Filename:       "test.txt",
+		MediaType:      "text/plain",
+		Body:           []byte("metadata fixture"),
 		OutputRequirements: &pebblestore.SessionArtifactOutputRequirements{
 			PresetID:         "x_header",
 			Width:            1500,

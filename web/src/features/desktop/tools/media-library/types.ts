@@ -36,6 +36,7 @@ export interface MediaLibraryItem {
   directUrl: string
   parentId?: string
   sourceMediaRef?: string
+  legacyRequestedSettings?: { model?: string; aspectRatio?: string; resolution?: string; durationSeconds?: number }
   model?: string
   aspectRatio?: string
   resolution?: string

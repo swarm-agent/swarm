@@ -16,7 +16,9 @@ import { chromium } from 'playwright'
 // Authority: MediaViewerModal, validateMediaGenerationRequest, evaluateVideoActionSupport.
 
 test('MediaViewerModal rendered component behavior with onGenerate spy', { timeout: 30000 }, async () => {
+  const now = 1_800_000_000_000
   const fixture = `
+    Date.now = () => 1800000000000;
     import React from 'react';
     import { createRoot } from 'react-dom/client';
     import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -185,7 +187,7 @@ test('MediaViewerModal rendered component behavior with onGenerate spy', { timeo
       {
         name: 'mock-boundaries',
         setup(b) {
-          b.onResolve({ filter: /(?:app\/api|get-media-settings|uiSettingsQueryOptions)$/ }, (args) => ({
+          b.onResolve({ filter: /(?:app\/api|get-media-settings|queries\/query-options)$/ }, (args) => ({
             path: args.path.split('/').pop()!,
             namespace: 'fixture',
           }));
@@ -196,10 +198,10 @@ test('MediaViewerModal rendered component behavior with onGenerate spy', { timeo
                 contents: `export const getMediaSettingsCatalog = async () => (${JSON.stringify(catalogMock)});`,
               };
             }
-            if (args.path === 'uiSettingsQueryOptions') {
+            if (args.path === 'query-options') {
               return {
                 loader: 'tsx',
-                contents: `export const uiSettingsQueryOptions = () => ({ queryKey: ['ui-settings'], queryFn: async () => ({}) });`,
+                contents: `export const uiSettingsQueryKey = () => ['ui-settings']; export const uiSettingsQueryOptions = () => ({ queryKey: uiSettingsQueryKey(), queryFn: async () => ({}) });`,
               };
             }
             return {
@@ -214,7 +216,7 @@ test('MediaViewerModal rendered component behavior with onGenerate spy', { timeo
 
   const browser = await chromium.launch({
     headless: true,
-    channel: process.env.SWARM_TEST_BROWSER_CHANNEL || 'chrome',
+    channel: process.env.SWARM_TEST_BROWSER_CHANNEL || undefined,
   });
 
   try {
@@ -261,8 +263,8 @@ test('MediaViewerModal rendered component behavior with onGenerate spy', { timeo
         model: 'veo-3.1-lite-generate-preview',
         transport: 'google_predict_long_running',
         operation: 'create',
-        created_at: 1000,
-        expires_at: 1000 + 48 * 3600 * 1000,
+        created_at: now - 1000,
+        expires_at: now + 48 * 3600 * 1000,
         observed_width: 1280,
         observed_height: 720,
         observed_duration_ms: 8000,

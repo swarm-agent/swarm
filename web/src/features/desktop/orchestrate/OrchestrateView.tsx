@@ -303,8 +303,6 @@ function deliverableToMediaItem(
       durationSeconds = (d as any).duration_seconds
     } else if (typeof prov?.duration_seconds === 'number' && prov.duration_seconds > 0) {
       durationSeconds = prov.duration_seconds
-    } else if (prov?.observed_duration_ms && prov.observed_duration_ms > 0 && !prov.is_combined_output) {
-      durationSeconds = Math.round(prov.observed_duration_ms / 1000)
     } // Deliverable actual durationSeconds only; parentTask?.durationSeconds is legacy requested settings
 
     const durationMs = prov?.observed_duration_ms && prov.observed_duration_ms > 0
