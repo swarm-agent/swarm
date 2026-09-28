@@ -163,6 +163,9 @@ func setupMatrixTestFixture(t *testing.T) *matrixTestFixture {
 		t.Fatalf("new event log: %v", err)
 	}
 	sessions := sessionruntime.NewService(ss, el)
+	// Production completes the repository-history migration before allocating
+	// project sessions. The temp store must satisfy that same write boundary.
+	requireMatrixRepositoryHistoryReady(t, ss)
 	planLifecycle := sessionruntime.NewPlanLifecycleService(sessions)
 
 	// Auth and Identity setup
@@ -267,6 +270,21 @@ func setupMatrixTestFixture(t *testing.T) *matrixTestFixture {
 		accountID: accountID,
 		userID:    userID,
 	}
+}
+
+func requireMatrixRepositoryHistoryReady(t *testing.T, store *pebblestore.SessionStore) {
+	t.Helper()
+	// Backfill advances one bounded phase at a time, including empty stores.
+	for i := 0; i < 20; i++ {
+		ready, err := store.BackfillRepositoryHistory(100)
+		if err != nil {
+			t.Fatalf("backfill repository history: %v", err)
+		}
+		if ready {
+			return
+		}
+	}
+	t.Fatal("repository history not ready after bounded backfill")
 }
 
 func (f *matrixTestFixture) seedExecutionEpoch(sessionID string) {
@@ -443,6 +461,9 @@ func TestTaskMatrix_Case2_ToolEquivalentPrincipalSharedPath(t *testing.T) {
 		"prompt": "Implement helper",
 		"agent":  "coder",
 	}, p)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create tool-equivalent task failed %d: %s", w.Code, w.Body.String())
+	}
 	var resp map[string]any
 	_ = json.Unmarshal(w.Body.Bytes(), &resp)
 	taskMap := resp["task"].(map[string]any)
@@ -1289,6 +1310,9 @@ func TestTaskMatrix_Case10_ReopenStoreRecoveryExactReceiptLinksNoReplay(t *testi
 	defer db2.Close()
 
 	ss2 := pebblestore.NewSessionStore(db2)
+	// Reopened services must inherit the production migration-ready contract;
+	// this is a no-op when the original store persisted readiness correctly.
+	requireMatrixRepositoryHistoryReady(t, ss2)
 
 	// Verify task record exists with exact links, receipt, and plan document
 	task, found, err := ss2.GetProjectTask(f.accountID, projID, taskID)

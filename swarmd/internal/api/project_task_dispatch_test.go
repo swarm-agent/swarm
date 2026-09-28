@@ -194,6 +194,9 @@ func setupProjectTaskReopenedServer(t *testing.T, f *matrixTestFixture) *Server 
  events, err := pebblestore.NewEventLog(f.db)
  if err != nil { t.Fatal(err) }
  sessions := sessionruntime.NewService(sessionsStore, events)
+ // A reopened daemon resumes only after the persisted repository-history
+ // migration is ready; preserve that precondition in the recovery fixture.
+ requireMatrixRepositoryHistoryReady(t, sessionsStore)
  plans := sessionruntime.NewPlanLifecycleService(sessions)
  server := &Server{
   sessions:sessions, planLifecycle:plans,
