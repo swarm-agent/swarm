@@ -280,7 +280,7 @@ func manageProjectsDefinition() Definition {
 				},
 				"task_program": map[string]any{
 					"type":        "object",
-					"description": "Optional Task Program for staged parallel multi-agent cohort execution inside this project task: {id, stages: [{id, depends_on, dependency_evidence}], jobs: [{id, stage_id, agent_type, title, meta_prompt, deliverable, owned_scope, acceptance_criteria, dependency_evidence}]}",
+					"description": "Optional Task Program for dependent/staged work: {id, stages: [{id, depends_on, dependency_evidence}], jobs: [{id, stage_id, agent_type, title, meta_prompt, deliverable, workspace_path, owned_scope, acceptance_criteria, dependency_evidence}]}. For dependent cross-repository changes set workspace_path on every Coder job to its exact authorized source; integration remains per repository. Independent cross-repository changes use parallel workspace-specific tasks/Coders instead.",
 				},
 				"model": map[string]any{
 					"type":        "string",
@@ -313,14 +313,14 @@ func manageProjectsDefinition() Definition {
 					"items":       map[string]any{"type": "string"},
 				},
 				"workspace_path": map[string]any{
-					"type": "string", "description": "Explicit exact source repository root; omission is allowed only when one authorized project repository exists. Never use a coordination workspace merely because it is first.",
+					"type": "string", "description": "Exact canonical source repository root in the account workspace catalog (not a linked subdirectory). Omission is allowed only when exactly one authorized project repository exists. Project membership, a coordination workspace, and first-workspace order are not execution grants; ambiguous, stale, or conflicting targets are rejected.",
 				},
-				"workspace_id": map[string]any{"type": "string", "description": "Optional exact account workspace catalog ID for execution source"},
-				"workspace_generation": map[string]any{"type": "integer", "description": "Optional expected catalog generation; stale bindings are rejected"},
-				"client_request_id": map[string]any{"type": "string", "description": "Stable submission identity reused only for retries of the identical payload and target"},
+				"workspace_id": map[string]any{"type": "string", "description": "Exact account workspace catalog ID for the execution source; if supplied with workspace_path, both must identify the same authorized root"},
+				"workspace_generation": map[string]any{"type": "integer", "description": "Optional expected catalog generation for that source; stale bindings are rejected"},
+				"client_request_id": map[string]any{"type": "string", "description": "Stable submission identity reused only for retries of the identical payload and resolved source target; it does not authorize deployment"},
 				"workspaces": map[string]any{
 					"type":        "array",
-					"description": "Array of workspace objects [{path, role, label}]",
+					"description": "Project workspace references [{path, role, label}]; membership is not an execution grant or default source target",
 					"items":       map[string]any{"type": "object"},
 				},
 				"project_context": map[string]any{

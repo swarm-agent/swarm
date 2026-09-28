@@ -1698,7 +1698,7 @@ func (r *Runtime) Definitions() []Definition {
 					},
 					"deliverable":        map[string]any{"type": "string", "description": "Specific child output the parent will verify."},
 					"concurrency_reason": map[string]any{"type": "string", "description": "Omit in mode=swarm; swarm concurrency is defined by count."},
-					"workspace_path":     map[string]any{"type": "string", "description": "Regular Coder/Finder single-launch target. Coder worktrees are based on the selected target repository HEAD."},
+					"workspace_path":     map[string]any{"type": "string", "description": "Regular Coder/Finder single-launch target: exact authorized source repository root, not a project coordination workspace or first linked workspace. Coder worktrees are isolated from the selected target repository HEAD."},
 					"committed_source": map[string]any{
 						"type":        "object",
 						"description": "Optional prior committed Coder source for isolated correction/iteration. Requires task_call_id, child_session_id, and exact full head_commit.",
@@ -1725,7 +1725,7 @@ func (r *Runtime) Definitions() []Definition {
 								"role":              map[string]any{"type": "string", "description": "Alias for meta_prompt."},
 								"animation_profile": map[string]any{"type": "object", "description": "Optional animation profile: motion_ui, spatial_3d, vector_playback, or final_render."},
 								"output_mode":       map[string]any{"type": "string", "enum": []string{"managed", "workspace"}, "description": "Designer output contract only; defaults to managed."},
-								"workspace_path":    map[string]any{"type": "string", "description": "Optional authorized linked/shared workspace target for this Coder or Finder."},
+								"workspace_path":    map[string]any{"type": "string", "description": "Explicit exact authorized source repository root for this Coder or Finder. Independent cross-repository changes use parallel workspace-specific Coder launches and per-repository integration; project membership alone is not authorization."},
 								"committed_source": map[string]any{
 									"type":        "object",
 									"description": "Optional prior committed Coder source for isolated correction/iteration. Requires task_call_id, child_session_id, and exact full head_commit.",
@@ -1821,7 +1821,7 @@ func taskProgramToolSchema() map[string]any {
 						},
 						"workspace_path": map[string]any{
 							"type":        "string",
-							"description": "Optional target workspace root (supported for Coder or Finder only).",
+							"description": "Exact authorized source repository root for this Coder or Finder job. Set on each Coder job in a dependent multi-repository program; stage integration uses repository-specific lanes, never the project's first/coordination workspace by default.",
 						},
 						"owned_scope": map[string]any{
 							"type":        "array",

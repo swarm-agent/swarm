@@ -162,8 +162,9 @@ type mockProjectTaskLifecycleService struct {
 	deployedTasks  []string
 	approvedTasks  []string
 	submittedPlans []sessionruntime.ProjectTaskPlanSubmissionInput
-	lastPrincipal  identity.Principal
-	lastContext    context.Context
+	lastPrincipal   identity.Principal
+	lastContext     context.Context
+	lastCreateInput ProjectTaskCreateInput
 	failDeploy     error
 	failApprove    error
 	failSubmit     error
@@ -181,6 +182,7 @@ func (m *mockProjectTaskLifecycleService) CreateProjectTask(ctx context.Context,
 	defer m.mu.Unlock()
 	m.lastContext = ctx
 	m.lastPrincipal = p
+	m.lastCreateInput = input
 	if m.store == nil {
 		return nil, errors.New("store not available")
 	}
@@ -1579,5 +1581,50 @@ func TestManageProjects_TruthfulAuthoritativeOutputs(t *testing.T) {
 	}
 	if len(lifecycle.deployedTasks) <= initialDeployCount {
 		t.Fatal("deploy_task falsely equated status with deployed and skipped dormant session deployer invocation!")
+	}
+}
+
+// Purpose: the project proposal tool must carry the selected source identity to
+// CreateProjectTask without replacing it with the first project workspace.
+// Threat: a coordination repository receives a Coder task meant for another
+// project repository. This boundary test uses an observing lifecycle fake;
+// resolveProjectTaskSource in api/project_task_source.go owns catalog admission.
+func TestManageProjectsProposalForwardsExactSourceIdentity(t *testing.T) {
+	store := newMockProjectStore()
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "tester", AccountScopeID: "account"}
+	if err := store.PutProject(principal.AccountScopeID, &pebblestore.ProjectRecord{
+		ID: "project", Workspaces: []pebblestore.ProjectWorkspaceRef{
+			{Path: "/coordination"}, {Path: "/source"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	lifecycle := newMockProjectTaskLifecycleService(store)
+	rt := &Runtime{}
+	rt.SetManageProjectStore(store)
+	rt.SetProjectTaskLifecycleService(lifecycle)
+	for _, tc := range []struct {
+		name, path, id string
+		generation     int64
+	}{
+		{"explicit", "/source", "source-id", 7},
+		{"unresolved", "", "", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := rt.executeManageProjects(context.Background(), WorkspaceScope{Principal: principal}, map[string]any{
+				"action": "propose_task", "project_id": "project", "task_id": tc.name, "title": "Fix source", "agent": "coder",
+				"workspace_path": tc.path, "workspace_id": tc.id, "workspace_generation": tc.generation,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			task, found, err := store.GetProjectTask(principal.AccountScopeID, "project", tc.name)
+			if err != nil || !found {
+				t.Fatalf("task missing: %v", err)
+			}
+			if task.WorkspacePath != tc.path || lifecycle.lastCreateInput.WorkspaceID != tc.id || lifecycle.lastCreateInput.WorkspaceGeneration != tc.generation {
+				t.Fatalf("forwarded source = (%q, %q, %d), want (%q, %q, %d); never infer first workspace", task.WorkspacePath, lifecycle.lastCreateInput.WorkspaceID, lifecycle.lastCreateInput.WorkspaceGeneration, tc.path, tc.id, tc.generation)
+			}
+		})
 	}
 }

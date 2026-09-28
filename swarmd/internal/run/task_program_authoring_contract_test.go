@@ -126,7 +126,7 @@ func TestTaskProgramAuthoringContractAliasConflict(t *testing.T) {
 // above; this is a discoverability guard, not standalone security evidence.
 func TestTaskProgramAuthoringContractGuidance(t *testing.T) {
 	prompt := masterHarnessPrompt("/workspace")
-	for _, required := range []string{taskscope.Guidance, "prefer jobs[].agent_type", "only a durable started/failed program requires a new ID"} {
+	for _, required := range []string{taskscope.Guidance, "prefer jobs[].agent_type", "only a durable started/failed program requires a new ID", "parallel workspace-specific Coders", "workspace_path on each Coder job", "repository-specific integration lanes", "project membership, the first/coordination workspace", "Do not impose repo-wide locks"} {
 		if !strings.Contains(prompt, required) {
 			t.Fatalf("missing guidance %q", required)
 		}
