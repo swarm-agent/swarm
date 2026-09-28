@@ -11,6 +11,8 @@ import {
   resolveOptimisticApprovedDeliverables,
   resolveTaskImpendingAgents,
   resolveTaskWorkspace,
+  taskWorkspaceSelection,
+  taskDeployRequestIdentity,
 } from './orchestrate-task-helpers'
 import { mapBackendTask } from '../state/desktop-projects-state'
 import type { RunningTask, BackendTaskModelPreview } from './orchestrate-types'
@@ -679,45 +681,59 @@ test('Task acceptance payload and revision guard contract', () => {
   assert.equal(payloadNull.definition_revision, undefined)
 })
 
-test('Missing workspace handling and resolution for code and audit tasks', () => {
-  // Requirement: UI must resolve workspace from override, project repoPath, workspaces list, or linkedWorkspaces,
-  // and reject '.' fallback for code/audit tasks to prevent git worktree allocation failure.
+test('Desktop target selection omits Auto-detect and preserves explicit project identity', () => {
+  // Requirement: project coordination ordering must never become execution authority.
+  // Threat: a multi-repository project silently deploys a Coder into its first repository.
+  // Boundary: resolveTaskWorkspace/taskWorkspaceSelection used by preview and submit; backend resolves omitted targets.
+  // This pure helper layer is the narrowest proof of identical preview/submit selection payloads.
+  const project = {
+    workspaces: [
+      { path: '/coordination', workspace_id: 'ws-coord' },
+      { path: '/product', workspace_id: 'ws-product' },
+    ],
+  }
+  assert.equal(resolveTaskWorkspace(''), undefined)
+  assert.deepEqual(taskWorkspaceSelection('', project), {}, 'Auto-detect sends no default path or ID')
+  assert.deepEqual(taskWorkspaceSelection(' /product ', project), {
+    workspace_path: '/product', workspace_id: 'ws-product',
+  }, 'explicit selection carries product path and catalog ID')
+  assert.deepEqual(taskWorkspaceSelection('/product', project), taskWorkspaceSelection(' /product ', project),
+    'preview and submit use the same normalized target')
+  assert.throws(() => taskWorkspaceSelection('.', project), /dot '\.' is not allowed/)
+  assert.throws(() => taskWorkspaceSelection('/stale', project), /not linked/)
+  assert.deepEqual(taskWorkspaceSelection('', { workspaces: [{ path: '/only', workspace_id: 'ws-only' }] }), {},
+    'even a single repository is resolved by the backend, not selected by UI')
+  const mapped = mapBackendTask({ id: 'task', title: 'Change', project_id: 'project',
+    workspace_path: '/allocated/worktree', source_workspace: {
+      path: '/product', workspace_id: 'ws-product', workspace_generation: 3, provenance: 'explicit',
+    },
+  })
+  assert.equal(mapped.workspaceTarget, '/product', 'source repository label must not show allocated runtime as target')
+  assert.equal(mapped.workspacePath, '/allocated/worktree', 'runtime path stays separately available')
+  assert.equal(mapped.sourceWorkspaceId, 'ws-product')
+  assert.equal(mapped.sourceWorkspaceGeneration, 3)
+})
 
-  // Case 1: User explicitly specifies an override path
-  const ws1 = resolveTaskWorkspace('/custom/override/path', { repoPath: '/repo/default' })
-  assert.equal(ws1, '/custom/override/path')
-
-  // Case 2: Override is empty, falls back to project.repoPath
-  const ws2 = resolveTaskWorkspace('', { repoPath: '/repo/default' })
-  assert.equal(ws2, '/repo/default')
-
-  // Case 3: Override and repoPath are '.', falls back to linkedWorkspaces
-  const ws3 = resolveTaskWorkspace('.', { repoPath: '.', linkedWorkspaces: ['/linked/workspace/root'] })
-  assert.equal(ws3, '/linked/workspace/root')
-
-  // Case 4: Override and repoPath are '.', workspaces array provides valid path
-  const ws4 = resolveTaskWorkspace('', { repoPath: '.', workspaces: [{ path: '/ws/first' }] })
-  assert.equal(ws4, '/ws/first')
-
-  // Case 5: No valid workspace available (all '.' or empty) -> returns undefined
-  const ws5 = resolveTaskWorkspace('', { repoPath: '.', linkedWorkspaces: ['.'] })
-  assert.equal(ws5, undefined, 'Must return undefined when no genuine workspace root exists')
-
-  // Case 6: Null or undefined project
-  const ws6 = resolveTaskWorkspace('', null)
-  assert.equal(ws6, undefined)
-
-  // Case 7: Deploy modal explicit '.' rejection
-  const sourcePath = path.join(__dirname, 'OrchestrateView.tsx')
-  const source = fs.readFileSync(sourcePath, 'utf8')
-  assert.ok(
-    source.includes('isExplicitDotWorkspace'),
-    "Deploy modal must reject explicit dot '.' workspace without falling back to '.'"
-  )
-  assert.ok(
-    source.includes("dot '.' is not allowed"),
-    "Deploy modal must display explicit dot rejection message"
-  )
+test('Task submission retry identity is stable only for an unchanged execution contract', () => {
+  // Requirement: transport retries may reuse their ID, but changed target or project must not replay an old reservation.
+  // Threat: an ambiguous request or stale target is retried as a different workspace with the same task identity.
+  // Boundary: taskDeployRequestIdentity keys the exact payload submitted to project task creation.
+  let count = 0
+  const nextId = () => `task-${++count}`
+  const first = taskDeployRequestIdentity(null, 'project', { prompt: 'change', ...taskWorkspaceSelection('') }, nextId)
+  assert.deepEqual(taskDeployRequestIdentity(first, 'project', { prompt: 'change' }, nextId), first)
+  const product = taskDeployRequestIdentity(first, 'project', {
+    prompt: 'change', ...taskWorkspaceSelection('/product', {
+      workspaces: [{ path: '/product', workspace_id: 'ws-product' }],
+    }),
+  }, nextId)
+  assert.notEqual(product.clientTaskId, first.clientTaskId)
+  assert.equal(taskDeployRequestIdentity(product, 'project', {
+    prompt: 'change', workspace_path: '/product', workspace_id: 'ws-product',
+  }, nextId).clientTaskId, product.clientTaskId)
+  assert.notEqual(taskDeployRequestIdentity(product, 'another-project', {
+    prompt: 'change', workspace_path: '/product', workspace_id: 'ws-product',
+  }, nextId).clientTaskId, product.clientTaskId)
 })
 
 test('Task Deliverables typing preserves code PR and audit deliverables without media substitution', () => {

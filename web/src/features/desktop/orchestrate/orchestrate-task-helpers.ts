@@ -399,18 +399,32 @@ export function resolveOptimisticApprovedDeliverables(
   }))
 }
 
-export function resolveTaskWorkspace(
-  override?: string,
-  project?: { repoPath?: string; workspaces?: Array<{ path?: string }>; linkedWorkspaces?: string[] } | null
-): string | undefined {
-  const chosen = override?.trim()
-  if (chosen && chosen !== '.') return chosen
-  if (project?.repoPath && project.repoPath.trim() !== '.') return project.repoPath.trim()
-  const firstWs = project?.workspaces?.find((w) => w?.path && w.path.trim() !== '.')?.path
-  if (firstWs) return firstWs.trim()
-  const firstLinked = project?.linkedWorkspaces?.find((w) => w && w.trim() !== '.')
-  if (firstLinked) return firstLinked.trim()
-  return undefined
+// Auto-detect is omission, not an implicit choice of the project's coordination root.
+// Only the backend may bind an omitted target to a unique authorized repository.
+export function resolveTaskWorkspace(override?: string): string | undefined {
+  return override?.trim() || undefined
+}
+
+export function taskWorkspaceSelection(override: string, project?: Pick<ProjectSummary, 'workspaces'> | null): {
+  workspace_path?: string
+  workspace_id?: string
+} {
+  const workspace_path = resolveTaskWorkspace(override)
+  if (!workspace_path) return {}
+  if (workspace_path === '.') throw new Error("dot '.' is not allowed as an execution target")
+  const matches = project?.workspaces?.filter((ws) => ws.path === workspace_path) || []
+  if (matches.length !== 1) throw new Error('Selected target workspace is not linked to this project; refresh the project and select a workspace.')
+  return { workspace_path, workspace_id: matches[0].workspace_id || undefined }
+}
+
+export function taskDeployRequestIdentity(
+  pending: { payloadKey: string; clientTaskId: string } | null,
+  projectId: string,
+  payload: object,
+  makeId: () => string
+): { payloadKey: string; clientTaskId: string } {
+  const payloadKey = `${projectId}:${JSON.stringify(payload)}`
+  return pending?.payloadKey === payloadKey ? pending : { payloadKey, clientTaskId: makeId() }
 }
 
 export interface TaskAcceptanceTarget {

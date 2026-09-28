@@ -319,6 +319,10 @@ export interface RunningTask {
 
   // Worktree & Outcome Tracking Fields
   workspacePath?: string
+  sourceWorkspacePath?: string
+  sourceWorkspaceId?: string
+  sourceWorkspaceGeneration?: number
+  sourceWorkspaceProvenance?: string
   worktreeBranch?: string
   worktreeName?: string
   baseBranch?: string

@@ -124,6 +124,8 @@ import {
   resolveDeployImpendingConfig,
   resolveTaskImpendingAgents,
   resolveTaskWorkspace,
+  taskWorkspaceSelection,
+  taskDeployRequestIdentity,
 } from './orchestrate-task-helpers'
 import type { DesktopSessionRecord } from '../types/realtime'
 import type { SessionSnapshot } from '../state/desktop-v3-cache-types'
@@ -3869,6 +3871,7 @@ export function OrchestrateView({
       intent: taskIntent,
       featureSize: taskIntent === 'code' ? featureSize : undefined,
       model: newTaskModelOverride || undefined,
+      workspace: newTaskWorkspace.trim(),
       agent: taskIntent === 'code' ? (featureSize === 'big' ? 'plan' : 'coder') : (taskIntent === 'audit' ? 'finder' : taskIntent),
       tier: taskIntent === 'code' ? (featureSize === 'big' ? 'complex' : 'direct') : (taskIntent === 'audit' ? 'discovery' : 'direct'),
     }],
@@ -3909,7 +3912,7 @@ export function OrchestrateView({
             outcome_type: targetOutcomeType,
             tier: targetTier,
             model: newTaskModelOverride || undefined,
-            workspace_path: resolveTaskWorkspace(newTaskWorkspace, selectedProject),
+            ...taskWorkspaceSelection(newTaskWorkspace, selectedProject),
           }),
         }
       )
@@ -4829,7 +4832,6 @@ export function OrchestrateView({
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             prompt: composedPrompt,
-            workspace_path: resolveTaskWorkspace('', selectedProject),
             intent: targetIntent,
             operation: targetIntent === 'video' ? (isVideo ? (action === 'next_scene' ? 'extend' : 'edit') : 'create') : undefined,
             aspect_ratio: settings ? settings.aspectRatio : (targetIntent === 'image' ? imageAspectRatio : undefined),
@@ -5114,18 +5116,15 @@ export function OrchestrateView({
 
       const attachedMediaForTask = taggedMedia
 
-      const isExplicitDotWorkspace = newTaskWorkspace.trim() === '.'
-      const resolvedWorkspace = isExplicitDotWorkspace ? undefined : resolveTaskWorkspace(newTaskWorkspace, selectedProject)
-      if ((taskIntent === 'code' || taskIntent === 'audit' || targetAgent === 'plan') && (!resolvedWorkspace || resolvedWorkspace === '.' || isExplicitDotWorkspace)) {
-        setDeployError("A valid workspace directory is required to launch code/audit tasks (dot '.' is not allowed).")
-        setIsDeployingTask(false)
-        isDeployingTaskRef.current = false
-        return
-      }
+      // Omitted Auto-detect is resolved by the backend only if there is exactly one
+      // authorized project repository. Explicit choices must match the project catalog.
+      const workspaceSelection = taskIntent === 'code' || taskIntent === 'audit'
+        ? taskWorkspaceSelection(newTaskWorkspace, selectedProject)
+        : {}
 
       const deployPayload = {
         prompt,
-        workspace_path: resolvedWorkspace || undefined,
+        ...workspaceSelection,
         intent: taskIntent,
         feature_size: taskIntent === 'code' ? featureSize : undefined,
         agent: targetAgent,
@@ -5143,16 +5142,13 @@ export function OrchestrateView({
         deploy_session: true,
         attached_media: attachedMediaForTask,
       }
-      const payloadKey = `${selectedProject.id}:${JSON.stringify(deployPayload)}`
-
-      let clientTaskId: string
-      if (pendingDeployRequestRef.current && pendingDeployRequestRef.current.payloadKey === payloadKey) {
-        // Reuse stable request identity across retry of unchanged submitted payload
-        clientTaskId = pendingDeployRequestRef.current.clientTaskId
-      } else {
-        clientTaskId = `task_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
-        pendingDeployRequestRef.current = { payloadKey, clientTaskId }
-      }
+      pendingDeployRequestRef.current = taskDeployRequestIdentity(
+        pendingDeployRequestRef.current,
+        selectedProject.id,
+        deployPayload,
+        () => `task_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
+      )
+      const { clientTaskId } = pendingDeployRequestRef.current
 
       const res = await requestJson<{ task: any }>(`/v3/projects/${selectedProject.id}/tasks`, {
         method: 'POST',
@@ -8170,10 +8166,10 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                   <div className="flex items-center justify-between mb-1">
                     <label className="text-[11px] text-slate-400 font-medium">Target Workspace</label>
                     <span className="text-[10px] text-blue-400 font-mono">
-                      {resolveTaskWorkspace(newTaskWorkspace, selectedProject) || 'Required for code/audit'}
+                      {resolveTaskWorkspace(newTaskWorkspace) || 'Auto-detect (backend validates unique repository)'}
                     </span>
                   </div>
-                  {selectedProject?.linkedWorkspaces && selectedProject.linkedWorkspaces.length > 1 ? (
+                  {selectedProject?.workspaces && selectedProject.workspaces.length > 0 ? (
                     <select
                       value={newTaskWorkspace}
                       onChange={(e) => {
@@ -8182,16 +8178,16 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                       }}
                       className="w-full rounded-lg bg-slate-950 border border-slate-800 px-3 py-2 text-white focus:outline-none focus:border-blue-500/60 text-xs"
                     >
-                      <option value="">✨ Auto-detect ({selectedProject.repoPath || selectedProject.linkedWorkspaces[0]})</option>
-                      {selectedProject.linkedWorkspaces.map((ws) => (
-                        <option key={ws} value={ws}>
-                          {ws}
+                      <option value="">✨ Auto-detect (unique authorized repository only)</option>
+                      {selectedProject.workspaces.map((ws) => (
+                        <option key={ws.workspace_id || ws.path} value={ws.path}>
+                          {ws.label ? `${ws.label} — ` : ''}{ws.path}
                         </option>
                       ))}
                     </select>
                   ) : (
                     <div className="text-[11px] font-mono text-slate-400 px-3 py-1.5 rounded-lg bg-slate-950/60 border border-slate-800/80 truncate">
-                      {resolveTaskWorkspace(newTaskWorkspace, selectedProject) || 'No workspace linked to this project'}
+                      {resolveTaskWorkspace(newTaskWorkspace) || 'No project repository linked'}
                     </div>
                   )}
                 </div>
