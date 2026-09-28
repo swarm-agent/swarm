@@ -80,6 +80,16 @@ func inspectTaskGitState(task pebblestore.ProjectTaskRecord, db *pebblestore.Ses
 		}
 	}
 
+	if sess != nil && sess.WorktreeEnabled {
+		if strings.TrimSpace(sess.WorktreeBranch) != "" {
+			res.worktreeBranch = strings.TrimSpace(sess.WorktreeBranch)
+			res.worktreeName = strings.TrimPrefix(strings.TrimPrefix(res.worktreeBranch, "agent/"), "worktree/")
+		}
+		if strings.TrimSpace(sess.WorktreeBaseBranch) != "" {
+			res.baseBranch = strings.TrimSpace(sess.WorktreeBaseBranch)
+		}
+	}
+
 	targetPath := strings.TrimSpace(task.WorkspacePath)
 	if sess != nil && sess.WorktreeEnabled && strings.TrimSpace(sess.WorktreeRootPath) != "" {
 		targetPath = strings.TrimSpace(sess.WorktreeRootPath)
@@ -355,20 +365,126 @@ func syncTaskSessionState(task *pebblestore.ProjectTaskRecord, db *pebblestore.S
 		return
 	}
 
-	// 3. Inspect session lifecycle
-	if sess.Lifecycle != nil {
+	// Account boundary: verify task and session belong to matching account scope
+	if task.AccountID != "" && sess.AccountScopeID != "" && task.AccountID != sess.AccountScopeID {
+		return
+	}
+
+	// Hydrate worktree metadata from session when unpopulated on task
+	if sess.WorktreeEnabled {
+		if (task.WorkspacePath == "" || task.WorkspacePath == ".") && strings.TrimSpace(sess.WorktreeRootPath) != "" {
+			task.WorkspacePath = strings.TrimSpace(sess.WorktreeRootPath)
+		}
+		if task.WorktreeBranch == "" && strings.TrimSpace(sess.WorktreeBranch) != "" {
+			task.WorktreeBranch = strings.TrimSpace(sess.WorktreeBranch)
+		}
+		if task.WorktreeName == "" && task.WorktreeBranch != "" {
+			task.WorktreeName = strings.TrimPrefix(strings.TrimPrefix(task.WorktreeBranch, "agent/"), "worktree/")
+		}
+		if task.BaseBranch == "" && strings.TrimSpace(sess.WorktreeBaseBranch) != "" {
+			task.BaseBranch = strings.TrimSpace(sess.WorktreeBaseBranch)
+		}
+		if task.BaseCommit == "" && sess.Metadata != nil {
+			if bc, ok := sess.Metadata["base_commit"].(string); ok && strings.TrimSpace(bc) != "" {
+				task.BaseCommit = strings.TrimSpace(bc)
+			}
+		}
+	}
+
+	// 3. Inspect canonical V3 run authority (active/terminal run intent in Pebble)
+	runState, runFound, _ := db.GetV3SessionRunState(task.SessionID)
+	if runFound && task.AccountID != "" && runState.AccountScopeID != "" && task.AccountID != runState.AccountScopeID {
+		runFound = false
+		runState = pebblestore.V3SessionRunState{}
+	}
+	if (!runFound || strings.TrimSpace(runState.RunID) == "") && db != nil {
+		if intents, err := db.ListRunIntents(task.SessionID, 10); err == nil && len(intents) > 0 {
+			latest := intents[len(intents)-1]
+			for _, intent := range intents {
+				if intent.UpdatedAt > latest.UpdatedAt || intent.EventSeq > latest.EventSeq {
+					latest = intent
+				}
+			}
+			if task.AccountID == "" || latest.AccountScopeID == "" || task.AccountID == latest.AccountScopeID {
+				runState = pebblestore.V3SessionRunState{
+					SessionID:      latest.SessionID,
+					AccountScopeID: latest.AccountScopeID,
+					RunID:          latest.RunID,
+					Status:         latest.Status,
+					Active:         latest.Status == pebblestore.V3RunIntentPendingExecutor || latest.Status == pebblestore.V3RunIntentRunning,
+					BlockedReason:  latest.BlockedReason,
+				}
+				runFound = true
+			}
+		}
+	}
+
+	if runFound && strings.TrimSpace(runState.RunID) != "" {
+		if runState.Active || runState.Status == pebblestore.V3RunIntentPendingExecutor || runState.Status == pebblestore.V3RunIntentRunning {
+			task.Status = "in_progress"
+		} else {
+			// Run concluded:
+			switch runState.Status {
+			case pebblestore.V3RunIntentCompleted:
+				// In Swarm V3 orchestration, when an agent finishes execution, the task
+				// transitions to needs_review for user review and git integration,
+				// NEVER directly to completed!
+				if task.Status == "in_progress" {
+					task.Status = "needs_review"
+					if task.ActionNeeded == "" || strings.HasPrefix(task.ActionNeeded, "Action Needed: 0") || task.ActionNeeded == "Executing reopened task" {
+						if task.UnintegratedCommits > 0 {
+							baseBranch := task.BaseBranch
+							if baseBranch == "" {
+								baseBranch = "dev/main"
+							}
+							task.ActionNeeded = fmt.Sprintf("Action Needed: Review changes and integrate %d commit(s) into %s", task.UnintegratedCommits, baseBranch)
+						} else {
+							task.ActionNeeded = "Action Needed: Review agent deliverables and verify outcomes"
+						}
+					}
+				}
+			case pebblestore.V3RunIntentFailed, pebblestore.V3RunIntentCancelled, pebblestore.V3RunIntentExpired, pebblestore.V3RunIntentInterrupted, pebblestore.V3RunIntentDispatchBlocked:
+				if task.Status == "in_progress" {
+					task.Status = "failed"
+					if runState.BlockedReason != "" && task.LastError == "" {
+						task.LastError = runState.BlockedReason
+					}
+					if task.ActionNeeded == "" || strings.HasPrefix(task.ActionNeeded, "Action Needed: 0") || task.ActionNeeded == "Executing reopened task" {
+						if runState.Status == pebblestore.V3RunIntentCancelled {
+							task.ActionNeeded = "Action Needed: Run was cancelled. Retry or reassign task."
+						} else if runState.BlockedReason != "" {
+							task.ActionNeeded = fmt.Sprintf("Action Needed: Run failed (%s). Retry task.", runState.BlockedReason)
+						} else {
+							task.ActionNeeded = "Action Needed: Run failed. Review error and retry task."
+						}
+					}
+				}
+			}
+		}
+	} else if sess.Lifecycle != nil {
+		// Legacy session lifecycle fallback
 		if sess.Lifecycle.Active {
 			task.Status = "in_progress"
-		} else if sess.MessageCount > 1 {
-			// Session run has concluded:
-			// In Swarm V3 orchestration, when an agent finishes execution, the task
-			// transitions to needs_review for user review and git integration,
-			// NEVER directly to completed!
+		} else if sess.Lifecycle.Phase == "failed" || sess.Lifecycle.Phase == "error" {
+			if task.Status == "in_progress" {
+				task.Status = "failed"
+				if sess.Lifecycle.Error != "" && task.LastError == "" {
+					task.LastError = sess.Lifecycle.Error
+				}
+				if task.ActionNeeded == "" || strings.HasPrefix(task.ActionNeeded, "Action Needed: 0") || task.ActionNeeded == "Executing reopened task" {
+					task.ActionNeeded = "Action Needed: Run failed. Review error and retry task."
+				}
+			}
+		} else if sess.Lifecycle.Phase == "completed" || sess.Lifecycle.EndedAt > 0 || (!sess.Lifecycle.Active && sess.Lifecycle.Phase != "failed" && sess.Lifecycle.Phase != "error" && sess.MessageCount > 1) {
 			if task.Status == "in_progress" {
 				task.Status = "needs_review"
 				if task.ActionNeeded == "" || strings.HasPrefix(task.ActionNeeded, "Action Needed: 0") || task.ActionNeeded == "Executing reopened task" {
 					if task.UnintegratedCommits > 0 {
-						task.ActionNeeded = fmt.Sprintf("Action Needed: Review changes and integrate %d commit(s) into %s", task.UnintegratedCommits, task.BaseBranch)
+						baseBranch := task.BaseBranch
+						if baseBranch == "" {
+							baseBranch = "dev/main"
+						}
+						task.ActionNeeded = fmt.Sprintf("Action Needed: Review changes and integrate %d commit(s) into %s", task.UnintegratedCommits, baseBranch)
 					} else {
 						task.ActionNeeded = "Action Needed: Review agent deliverables and verify outcomes"
 					}
@@ -376,6 +492,8 @@ func syncTaskSessionState(task *pebblestore.ProjectTaskRecord, db *pebblestore.S
 			}
 		}
 	}
+	// If neither canonical run state nor sess.Lifecycle indicates execution,
+	// no execution has occurred yet: preserve current task.Status (e.g. in_progress) without guessing from MessageCount.
 
 	// 4. Inspect session plans for waiting_review or needs_review status
 	plans, _ := db.ListPlans(task.SessionID, 1)
