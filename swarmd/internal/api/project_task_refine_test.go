@@ -140,6 +140,8 @@ func TestIdenticalTaskPromptsGetDistinctOwnedWorktrees(t *testing.T) {
 	if first.WorkspacePath == second.WorkspacePath || first.WorktreeBranch == second.WorktreeBranch {
 		t.Fatal("identical prompts shared a mutable worktree")
 	}
+	replayed, err := f.server.CreateProjectTask(context.Background(), p, project, input)
+	if err != nil || replayed.SessionID != second.SessionID || replayed.WorkspacePath != second.WorkspacePath { t.Fatalf("retry changed owned lane: %#v %v", replayed, err) }
 }
 
 type distinctFixtureWorktrees struct{ testMockWorktreeService }
