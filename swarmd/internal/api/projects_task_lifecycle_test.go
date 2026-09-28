@@ -1212,7 +1212,7 @@ func TestProjectTask_HydrateTaskPlanDocument_HonorsExactBinding(t *testing.T) {
 	// - Threat/regression: Cross-session plan contamination or arbitrary active plans attached to tasks.
 	// - Narrowest layer: Focused unit test with Pebble session store.
 
-	_, _, dbStore := newWorkspaceOverviewTopologyTestServer(t)
+	server, _, dbStore := newWorkspaceOverviewTopologyTestServer(t)
 	sessionStore := pebblestore.NewSessionStore(dbStore)
 	accountID := testPrincipal().AccountScopeID
 	now := time.Now().UnixMilli()
@@ -1227,7 +1227,12 @@ func TestProjectTask_HydrateTaskPlanDocument_HonorsExactBinding(t *testing.T) {
 		CreatedAt:      now,
 		UpdatedAt:      now,
 	}
-	if err := sessionStore.PutSessionSnapshot(sessSnap); err != nil {
+	if _, err := applyProjectLifecycleFixture(server, sessionruntime.SessionMutationInput{
+		SessionID: sessID, UserID: testPrincipal().UserID, AccountScopeID: accountID,
+		ClientRequestID: "create:" + sessID, IdempotencyKey: "create:" + sessID,
+		PayloadHash: "create:" + sessID, RequestHash: "create:" + sessID,
+		Kind: sessionruntime.SessionMutationCreateSession, Session: &sessSnap, NowUnixMs: now,
+	}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1239,7 +1244,7 @@ func TestProjectTask_HydrateTaskPlanDocument_HonorsExactBinding(t *testing.T) {
 			{ID: "cp-active-1", Title: "Active Checkpoint"},
 		},
 	}
-	activePlan := pebblestore.PlanRecord{
+	activePlan := pebblestore.SessionPlanSnapshot{
 		SessionID:     sessID,
 		ID:            "active-plan",
 		Version:       1,
@@ -1261,7 +1266,7 @@ func TestProjectTask_HydrateTaskPlanDocument_HonorsExactBinding(t *testing.T) {
 			{ID: "cp-bound-1", Title: "Bound Checkpoint"},
 		},
 	}
-	boundPlan := pebblestore.PlanRecord{
+	boundPlan := pebblestore.SessionPlanSnapshot{
 		SessionID:     sessID,
 		ID:            "bound-plan",
 		Version:       2,

@@ -319,7 +319,10 @@ test('Invariant 4: aggregateTaskLiveState multi-session: NEVER whole-task comple
     },
   }
 
-  const liveCohortFailed = aggregateTaskLiveState(taskProgramTask, mixedFailedLookup)
+  const awaitingProgram = aggregateTaskLiveState(taskProgramTask, mixedFailedLookup)
+  assert.equal(awaitingProgram.status, 'running', 'Coordinator owns program outcome until it publishes terminal state')
+  assert.equal(awaitingProgram.sessionSummary?.failedSessions, 1, 'Child failure remains visible while coordinator reconciles')
+  const liveCohortFailed = aggregateTaskLiveState({ ...taskProgramTask, taskProgramStatus: { ...taskProgramTask.taskProgramStatus!, state: 'failed' } }, mixedFailedLookup)
   assert.equal(liveCohortFailed.status, 'failed', 'Task must surface failure when a child session fails!')
   assert.equal(liveCohortFailed.sessionSummary?.failedSessions, 1)
   assert.equal(liveCohortFailed.sessionSummary?.completedSessions, 2)
@@ -344,7 +347,7 @@ test('Invariant 4: aggregateTaskLiveState multi-session: NEVER whole-task comple
   }
 
   const liveCohortNeedsReview = aggregateTaskLiveState(
-    { ...taskProgramTask, isIntegrated: false },
+    { ...taskProgramTask, isIntegrated: false, taskProgramStatus: { ...taskProgramTask.taskProgramStatus!, state: 'completed' } },
     allDoneNotIntegratedLookup,
   )
   assert.equal(liveCohortNeedsReview.status, 'needs_review', 'Task must transition to needs_review before integration!')
@@ -626,4 +629,19 @@ test('Invariant 11: Plan binding without verified definitionRevision disables Ap
   const source = fs.readFileSync(sourcePath, 'utf8')
   assert.ok(source.includes('isPlanBindingMissingRevision'), 'Must enforce isPlanBindingMissingRevision guard')
   assert.ok(source.includes('data-testid="approve-task-btn"'), 'Must have approve-task-btn')
+})
+
+// Requirement: absence of hydration is not a queued run, and blocked dispatch is not execution.
+// Authority: aggregateTaskLiveState consuming canonical session projections; hermetic selector tests.
+test('Missing, queued and blocked sessions remain distinguishable without invented sessions', () => {
+  const task = { id: 'state-task', title: 'State task', agentType: 'coder', status: 'in_progress', sessionId: 'state-session', subtasks: [] } as RunningTask
+  assert.equal(aggregateTaskLiveState({ ...task, sessionId: undefined }, {}).sessionSummary?.totalSessions, 0)
+  assert.equal(aggregateTaskLiveState(task, {}).sessionSummary?.sessionStates[0].status, 'unknown')
+  const queued = aggregateTaskLiveState(task, { 'state-session': { intent: { status: 'pending_executor' } } })
+  assert.equal(queued.sessionSummary?.sessionStates[0].status, 'queued')
+  assert.equal(queued.sessionSummary?.runningSessions, 0)
+  const blocked = aggregateTaskLiveState(task, { 'state-session': { intent: { status: 'dispatch_blocked' } } })
+  assert.equal(blocked.status, 'blocked')
+  assert.equal(blocked.sessionSummary?.sessionStates[0].status, 'blocked')
+  assert.equal(blocked.sessionSummary?.completedSessions, 0)
 })

@@ -784,27 +784,23 @@ func (s *SessionStore) hydrateProjectTaskPlanDocument(task *ProjectTaskRecord) {
 	if task == nil {
 		return
 	}
-	sessID := task.SessionID
-	if sessID == "" && task.PlanBinding != nil {
-		sessID = task.PlanBinding.SessionID
+	// Never infer a binding from whichever plan happens to be active.
+	if task.PlanBinding == nil || task.PlanBinding.PlanID == "" {
+		return
 	}
-	if task.PlanDocument == nil && task.PlanBinding != nil && task.PlanBinding.PlanID != "" && sessID != "" {
-		if plan, found, err := s.GetPlan(sessID, task.PlanBinding.PlanID); err == nil && found && plan.Document != nil {
-			task.PlanDocument = plan.Document
-		}
+	sessID := task.PlanBinding.SessionID
+	if sessID == "" {
+		sessID = task.SessionID
 	}
 	if task.PlanDocument == nil && sessID != "" {
-		if active, found, err := s.GetActivePlan(sessID); err == nil && found && active.PlanID != "" {
-			if plan, found, err := s.GetPlan(sessID, active.PlanID); err == nil && found && plan.Document != nil {
-				task.PlanDocument = plan.Document
-				if task.PlanBinding == nil {
-					task.PlanBinding = &ProjectTaskPlanBinding{
-						PlanID:             plan.ID,
-						SessionID:          sessID,
-						DefinitionRevision: plan.Version,
-					}
-				}
+		if plan, found, err := s.GetPlan(sessID, task.PlanBinding.PlanID); err == nil && found && plan.Document != nil {
+			if task.PlanBinding.DefinitionRevision > 0 && plan.ApprovalState != "approved" && plan.Version != task.PlanBinding.DefinitionRevision {
+				return
 			}
+			if task.PlanBinding.Receipt != "" && plan.AcceptedDefinitionReceipt != "" && task.PlanBinding.Receipt != plan.AcceptedDefinitionReceipt {
+				return
+			}
+			task.PlanDocument = plan.Document
 		}
 	}
 }

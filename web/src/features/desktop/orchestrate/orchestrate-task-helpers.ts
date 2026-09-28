@@ -910,16 +910,22 @@ export function aggregateTaskLiveState(
 
     const isHydrated = Boolean(sData && (sRecord || sIntent || sView))
 
-    let itemStatus: 'running' | 'needs_review' | 'completed' | 'failed' | 'queued' = 'queued'
+    let itemStatus: TaskSessionStateItem['status'] = 'unknown'
     if (isHydrated) {
       // Runtime session terminal/active evidence is authoritative over stale job state
-      if (isFail) {
+      if (intentStatus === 'dispatch_blocked' || lifecyclePhase === 'blocked') {
+        itemStatus = 'blocked'
+      } else if (lifecyclePhase === 'paused') {
+        itemStatus = 'paused'
+      } else if (intentStatus === 'pending_executor' || currentRunStatus === 'pending_executor') {
+        itemStatus = 'queued'
+      } else if (isFail) {
         itemStatus = 'failed'
       } else if (isRev) {
         itemStatus = 'needs_review'
       } else if (isComp) {
         itemStatus = 'completed'
-      } else if (isAct || intentStatus === 'dispatch_blocked') {
+      } else if (isAct) {
         itemStatus = 'running'
       } else if (matchingJob) {
         if (matchingJob.state === 'running') itemStatus = 'running'
@@ -937,7 +943,7 @@ export function aggregateTaskLiveState(
         else if (matchingJob.state === 'integrated' || matchingJob.state === 'completed') itemStatus = 'completed'
         else itemStatus = 'queued'
       } else {
-        itemStatus = 'queued'
+        itemStatus = 'unknown'
       }
     }
 
@@ -992,12 +998,12 @@ export function aggregateTaskLiveState(
     : Math.max(relevantSessionStates.filter((s) => s.status === 'completed').length, jobCompletedCount)
 
   const sessionSummary: TaskSessionSummary = {
-    totalSessions: isTaskProgramTask ? programJobs.length : Math.max(relevantSessionStates.length, 1),
+    totalSessions: relevantSessionStates.length,
     runningSessions,
     reviewSessions,
     failedSessions,
     completedSessions,
-    sessionStates,
+    sessionStates: relevantSessionStates,
   }
 
   // Aggregate Status computation
@@ -1037,7 +1043,7 @@ export function aggregateTaskLiveState(
     if (tpRecordState) {
       // Backend TaskProgram record is authoritative
       if (tpRecordState === 'completed') {
-        status = (task.isIntegrated || task.status === 'completed') ? 'completed' : 'needs_review'
+        status = task.isIntegrated ? 'completed' : 'needs_review'
       } else if (tpRecordState === 'failed' || tpRecordState === 'cancelled') {
         status = 'failed'
       } else if (tpRecordState === 'blocked') {
@@ -1047,7 +1053,9 @@ export function aggregateTaskLiveState(
       }
     } else {
       // Live session aggregation
-      if (isLifecycleActive) {
+      if (sessionStates.some((s) => s.status === 'blocked' || s.status === 'paused') && runningSessions === 0) {
+        status = 'blocked'
+      } else if (isLifecycleActive) {
         status = 'running'
       } else if (isAnyFailed) {
         // CRITICAL: Check failure BEFORE review; never mask failures with review!
@@ -1063,7 +1071,7 @@ export function aggregateTaskLiveState(
           ? (programJobs.length > 0 && completedSessions === programJobs.length && unallocatedJobsCount === 0)
           : (relevantSessionStates.length > 0 && completedSessions === relevantSessionStates.length)
       ) {
-        if (task.isIntegrated || task.status === 'completed') {
+        if (task.isIntegrated) {
           status = 'completed'
         } else {
           status = 'needs_review'
@@ -1122,7 +1130,7 @@ export function aggregateTaskLiveState(
   const activeData = activeSid ? liveTaskSessionsData[activeSid] : primaryData
   const effectiveLiveRun = activeData?.liveRun || primaryLiveRun
 
-  const toolCalls = effectiveLiveRun ? Object.values(effectiveLiveRun.toolCallsByCallId as Record<string, any>) : []
+  const toolCalls = effectiveLiveRun ? Object.values((effectiveLiveRun.toolCallsByCallId || {}) as Record<string, any>) : []
   const currentTool = [...toolCalls]
     .sort((a, b) => b.updatedAt - a.updatedAt)
     .map((t) => t.toolDisplay?.trim() || t.toolName?.trim() || '')

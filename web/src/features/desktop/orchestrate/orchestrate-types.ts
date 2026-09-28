@@ -248,7 +248,7 @@ export interface TaskSessionStateItem {
   sessionId: string
   title?: string
   role?: string
-  status: 'running' | 'needs_review' | 'completed' | 'failed' | 'queued'
+  status: 'running' | 'needs_review' | 'completed' | 'failed' | 'queued' | 'blocked' | 'paused' | 'unknown'
   lastError?: string
 }
 

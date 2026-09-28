@@ -298,12 +298,15 @@ test('Requirement 5: production membership deduplicates/sorts; TaskSessionLeaseM
     { id: 't2', sessionId: 'sess-a', status: 'in_progress' },
     { id: 't3', sessionId: 'sess-z', status: 'in_progress' }, // duplicate session
     { id: 't4', sessionId: 'sess-b', status: 'completed' },   // completed (inactive unless selected)
-    { id: 't5', sessionId: 'sess-c', status: 'queued' },      // queued (inactive)
+    { id: 't5', status: 'queued' }, // Undeployed tasks have no session to lease.
   ]
 
   const activeIds1 = computeActiveTaskSessionIds(rawTasks)
   assert.deepEqual(activeIds1, ['sess-a', 'sess-z'])
   assert.equal(computeActiveTaskSessionIdsKey(rawTasks), 'sess-a,sess-z')
+
+  // Deployed queued sessions need updates before execution begins.
+  assert.deepEqual(computeActiveTaskSessionIds([...rawTasks, { id: 'deployed', sessionId: 'sess-c', status: 'queued' }]), ['sess-a', 'sess-c', 'sess-z'])
 
   // Selected task is included even if completed
   const activeIdsWithSelected = computeActiveTaskSessionIds(rawTasks, 't4')
@@ -431,7 +434,8 @@ test('Requirement 5: production membership deduplicates/sorts; TaskSessionLeaseM
 
   // 8. Full unmount cleanup releases all remaining leases
   manager.cleanup()
-  assert.deepEqual(releasedLeases, ['sess-a', 'sess-m', 'sess-z'])
+  // Cleanup follows acquisition order; every lease must be released exactly once.
+  assert.deepEqual([...releasedLeases].sort(), ['sess-a', 'sess-m', 'sess-z'])
   assert.equal(manager.activeLeases.size, 0)
   assert.equal(manager.hydratedSessions.size, 0)
 })

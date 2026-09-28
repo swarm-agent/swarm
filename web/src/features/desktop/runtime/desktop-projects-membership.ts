@@ -6,6 +6,7 @@ export interface TaskSessionCandidate {
   plan_binding?: { sessionId?: string; session_id?: string }
   taskProgram?: {
     jobs?: Array<{
+      id?: string
       child_session_id?: string
       current_session_id?: string
       generation_history?: Array<{ session_id?: string }>
@@ -13,6 +14,7 @@ export interface TaskSessionCandidate {
   }
   task_program?: {
     jobs?: Array<{
+      id?: string
       child_session_id?: string
       current_session_id?: string
       generation_history?: Array<{ session_id?: string }>
@@ -20,6 +22,7 @@ export interface TaskSessionCandidate {
   }
   taskProgramStatus?: {
     jobs?: Array<{
+      id?: string
       child_session_id?: string
       current_session_id?: string
       generation_history?: Array<{ session_id?: string }>
@@ -27,6 +30,7 @@ export interface TaskSessionCandidate {
   }
   task_program_status?: {
     jobs?: Array<{
+      id?: string
       child_session_id?: string
       current_session_id?: string
       generation_history?: Array<{ session_id?: string }>
@@ -112,6 +116,8 @@ export function computeActiveTaskSessionIds(
       t.status === 'planning' ||
       t.status === 'pending_approval' ||
       t.status === 'needs_review' ||
+      t.status === 'blocked' ||
+      t.status === 'failed' ||
       t.status === 'queued'
     if (isSelected || isActive) {
       for (const sid of extractTaskSessionIds(t)) {

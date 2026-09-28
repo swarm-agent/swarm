@@ -68,7 +68,6 @@ import { DesktopV3ExistingConversationPane, resolveDesktopV3StopRunRequest } fro
 import {
   isDesktopV3SessionTailReady,
   selectRenderedSessionMessages,
-  summarizeDesktopV3TaskToolActivity,
 } from '../state/desktop-v3-cache-selectors'
 import { selectAndHydrateDesktopV3Session, hydrateDesktopV3ChildCard } from '../state/desktop-v3-session-hydrator'
 import { requireDesktopV3RealtimeControllerReady } from '../realtime/v3-realtime-controller'
@@ -93,7 +92,6 @@ import {
   ProjectSummary,
   ProjectTaskMediaRef,
   RunningTask,
-  RunningTaskPlanCheckpoint,
 } from './orchestrate-types'
 import {
   resolveVideoPricing,
@@ -136,7 +134,6 @@ import { modelOptionsQueryOptions } from '../../queries/query-options'
 import type { ModelOptionRecord } from '../chat/types/chat'
 import type { BackendTaskModelPreview } from './orchestrate-types'
 
-import { selectTaskPlanDocument } from './orchestrate-plan-authority'
 
 export interface OrchestrateViewProps {
   workerDetailId?: string
@@ -897,6 +894,9 @@ function MinimalTaskCard({
   return (
     <div
       onClick={onSelect}
+      data-testid="orchestrate-task-card"
+      data-task-id={task.id}
+      data-task-state={task.status}
       className={`relative flex flex-col rounded-xl border transition-all p-3.5 space-y-3 cursor-pointer ${
         isSelected
           ? 'bg-[#0f1526] border-blue-500/60 shadow-[0_4px_20px_rgba(0,0,0,0.5)]'
@@ -2300,6 +2300,11 @@ function MinimalTaskCard({
       )}
 
       {/* 2d. FAILED / REJECTED BANNER */}
+      {task.status === 'blocked' && (
+        <div role="status" className="rounded-lg border border-amber-500/30 bg-amber-950/20 p-3 text-xs text-amber-200">
+          {task.actionNeeded || task.lastError || 'Execution is blocked or paused. Open the session to inspect the required action.'}
+        </div>
+      )}
       {(isFailed || isRejected) && (
         <div className="flex flex-col p-3 rounded-lg bg-rose-950/20 border border-rose-500/40 space-y-2.5 text-xs" data-testid="task-failed-banner">
           <div className="flex items-center justify-between gap-2 flex-wrap">
@@ -2466,12 +2471,12 @@ function MinimalTaskCard({
       )}
 
       {/* 2e. Multi-Session Cohort / Parallel Sessions Strip */}
-      {task.sessionSummary && task.sessionSummary.totalSessions > 1 && (
+      {task.sessionSummary && task.sessionSummary.totalSessions > 0 && (
         <div className="flex flex-col p-2.5 rounded-lg bg-slate-900/80 border border-slate-800 space-y-2 text-xs" data-testid="task-multi-session-strip">
           <div className="flex items-center justify-between text-[10px] font-mono">
             <span className="font-bold uppercase tracking-wider text-slate-300 flex items-center gap-1.5">
               <Layers size={11} className="text-blue-400" />
-              <span>Parallel Sessions ({task.sessionSummary.totalSessions})</span>
+              <span>Sessions ({task.sessionSummary.totalSessions})</span>
             </span>
             <div className="flex items-center gap-2">
               {task.sessionSummary.runningSessions > 0 && (
@@ -2505,6 +2510,8 @@ function MinimalTaskCard({
             {task.sessionSummary.sessionStates.map((st) => (
               <div
                 key={st.sessionId}
+                data-session-id={st.sessionId}
+                data-session-state={st.status}
                 className={`flex items-center gap-1.5 px-2 py-1 rounded border flex-shrink-0 ${
                   st.status === 'running'
                     ? 'bg-blue-950/40 text-blue-300 border-blue-500/40'
@@ -2561,7 +2568,9 @@ function MinimalTaskCard({
                 className="relative h-16 w-24 flex-shrink-0 rounded-lg overflow-hidden border border-slate-700 bg-black flex items-center justify-center group"
                 title={`Attached: ${m.title || m.filename || 'source media'}`}
               >
-                {m.url || (m.data && m.data.startsWith('data:')) ? (
+                {m.kind === 'video' && m.url ? (
+                  <video src={m.url} preload="metadata" muted playsInline aria-label={m.title || 'Attached video'} className="h-full w-full object-contain" />
+                ) : m.kind === 'image' && (m.url || (m.data && m.data.startsWith('data:'))) ? (
                   <img src={m.url || m.data} alt={m.title || 'media'} className="h-full w-full object-cover" />
                 ) : (
                   <div className="flex flex-col items-center justify-center text-slate-500 text-[9px] font-mono">
@@ -2576,7 +2585,7 @@ function MinimalTaskCard({
             ))}
             {/* Deliverable Previews */}
             {task.deliverables?.map((d) => {
-              const hasThumb = Boolean(d.previewUrl || d.mediaUrl || (d.thumbnailType && d.thumbnailType.startsWith('data:')))
+              const hasThumb = Boolean(d.previewUrl || (d.type === 'image' && d.mediaUrl))
               const isGenerating = d.status === 'generating'
               const isReady = d.status === 'ready' || d.status === 'accepted'
               return (
@@ -2602,6 +2611,8 @@ function MinimalTaskCard({
                       <Loader2 size={13} className="animate-spin text-blue-400" />
                       <span className="text-[8px] font-mono text-blue-300 mt-1 truncate max-w-full">Generating</span>
                     </div>
+                  ) : d.type === 'video' && d.mediaUrl ? (
+                    <video src={d.mediaUrl} poster={d.previewUrl} preload="metadata" muted playsInline aria-label={d.title} className="h-full w-full object-contain" />
                   ) : hasThumb ? (
                     <img
                       src={d.previewUrl || d.mediaUrl || d.thumbnailType}
@@ -6819,6 +6830,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                       { key: 'queued', label: 'Pending Approval', color: 'amber' },
                       { key: 'running', label: 'In Progress', color: 'blue' },
                       { key: 'needs_review', label: 'Needs Review', color: 'amber' },
+                      { key: 'blocked', label: 'Blocked', color: 'amber' },
                       { key: 'completed', label: 'Completed', color: 'emerald' },
                       { key: 'failed', label: 'Failed', color: 'rose' },
                     ] as const
