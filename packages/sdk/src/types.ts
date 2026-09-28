@@ -1183,3 +1183,92 @@ export interface ImportWorkerOptions {
   targetWorkerId?: string;
   expectedRevision?: number;
 }
+
+export interface ActivateWorkerParams {
+  worker_id: string;
+  expected_revision: number;
+  local_bindings: Record<string, string>;
+}
+
+export interface PauseWorkerParams {
+  worker_id: string;
+  expected_revision: number;
+}
+
+export interface ResumeWorkerParams {
+  worker_id: string;
+  expected_revision: number;
+}
+
+export interface ArchiveWorkerParams {
+  worker_id: string;
+  expected_revision: number;
+}
+
+export interface DeleteWorkerParams {
+  worker_id: string;
+  expected_revision: number;
+}
+
+export interface SetWorkerAutomationEnabledParams {
+  worker_id: string;
+  automation_id: string;
+  expected_worker_revision: number;
+}
+
+export interface DirectWorkerRequestParams {
+  worker_id: string;
+  prompt?: string;
+  input?: Record<string, unknown>;
+  idempotency_key?: string;
+}
+
+export interface TestWorkerRunParams {
+  worker_id: string;
+  automation_id?: string;
+  prompt?: string;
+  input?: Record<string, unknown>;
+  idempotency_key?: string;
+}
+
+export interface TriggerWorkerParams {
+  worker_id: string;
+  automation_id?: string;
+  payload?: Record<string, unknown>;
+  idempotency_key?: string;
+}
+
+export interface MintWorkerTriggerTokenParams {
+  worker_id: string;
+  name?: string;
+  save_to_secrets?: boolean;
+}
+
+export interface MintWorkerTriggerTokenResult {
+  ok: boolean;
+  token: string;
+  worker_id: string;
+  scopes?: string[];
+}
+
+export interface ListWorkerRunsParams {
+  worker_id: string;
+  limit?: number;
+  cursor?: string;
+}
+
+export interface ListWorkerRunsResult {
+  runs: WorkerRunRecord[];
+  next_cursor?: string;
+}
+
+export interface GetWorkerRunParams {
+  worker_id: string;
+  run_id: string;
+}
+
+export interface CancelWorkerRunParams {
+  worker_id: string;
+  run_id: string;
+}
+

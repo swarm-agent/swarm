@@ -340,9 +340,34 @@ test('SwarmWorkersNamespace: update worker sends expected_revision in body only 
   }
 });
 
-// Worker deletion requires checkpoint-two cancellation barriers; do not advertise a missing route.
-test('SwarmWorkersNamespace: worker deletion is not exposed before safe stop support', () => {
-  assert.equal('delete' in SwarmWorkersNamespace.prototype, false);
+// Invariant: Worker deletion is supported over canonical API with safe stop barrier and expected_revision CAS.
+test('SwarmWorkersNamespace: worker deletion sends expected_revision and validates { ok: true, deleted: true }', async () => {
+  assert.equal('delete' in SwarmWorkersNamespace.prototype, true);
+  let receivedMethod = '';
+  let receivedUrl = '';
+  const server = http.createServer((req, res) => {
+    receivedMethod = req.method || '';
+    receivedUrl = req.url || '';
+    if (req.method === 'DELETE' && req.url === '/v3/workers/w1?expected_revision=2') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, deleted: true }));
+    } else {
+      res.writeHead(400);
+      res.end();
+    }
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+  const port = (server.address() as any).port;
+  try {
+    const transport = new SwarmTransport({ baseUrl: `http://127.0.0.1:${port}`, token: 't', defaultHeaders: {}, timeoutMs: 5000 });
+    const workers = new SwarmWorkersNamespace(transport);
+    const result = await workers.delete({ worker_id: 'w1', expected_revision: 2 });
+    assert.deepEqual(result, { ok: true, deleted: true });
+    assert.equal(receivedMethod, 'DELETE');
+    assert.equal(receivedUrl, '/v3/workers/w1?expected_revision=2');
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
 });
 
 test('SwarmWorkersNamespace: validate sends raw PortableWorkerDefinition and parses { valid: true, worker: doc }', async () => {
@@ -618,4 +643,303 @@ test('SwarmWorkersNamespace: rejects caller authority and invalid revision witho
     await assert.rejects(workers.update('worker', revision, { name: 'Updated' }), SwarmValidationError);
   }
   assert.equal(calls, 0);
+});
+
+test('SwarmWorkersNamespace: activate, deploy, pause, resume, archive lifecycle methods send correct endpoints and CAS bodies', async () => {
+  let lastMethod = '';
+  let lastUrl = '';
+  let lastBody: any = null;
+
+  const server = http.createServer((req, res) => {
+    lastMethod = req.method || '';
+    lastUrl = req.url || '';
+    const chunks: Buffer[] = [];
+    req.on('data', (c) => chunks.push(c));
+    req.on('end', () => {
+      if (chunks.length > 0) {
+        lastBody = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        worker: sampleWorkerRecord({
+          id: 'w_life',
+          revision: 2,
+          lifecycle_state: lastUrl.includes('/pause') ? 'paused' : lastUrl.includes('/archive') ? 'archived' : 'active',
+          local_bindings: lastBody?.local_bindings,
+        }),
+      }));
+    });
+  });
+
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+  const port = (server.address() as any).port;
+
+  try {
+    const transport = new SwarmTransport({ baseUrl: `http://127.0.0.1:${port}`, token: 'swk_test', defaultHeaders: {}, timeoutMs: 5000 });
+    const workers = new SwarmWorkersNamespace(transport);
+
+    // 1. Activate
+    const act = await workers.activate({
+      worker_id: 'w_life',
+      expected_revision: 1,
+      local_bindings: { primary: 'ws_abc' },
+    });
+    assert.equal(lastMethod, 'POST');
+    assert.equal(lastUrl, '/v3/workers/w_life/activate');
+    assert.equal(lastBody.expected_revision, 1);
+    assert.deepEqual(lastBody.local_bindings, { primary: 'ws_abc' });
+    assert.equal(act.lifecycle_state, 'active');
+
+    // 2. Deploy alias
+    const dep = await workers.deploy({
+      worker_id: 'w_life',
+      expected_revision: 2,
+      local_bindings: { primary: 'ws_abc' },
+    });
+    assert.equal(lastMethod, 'POST');
+    assert.equal(lastUrl, '/v3/workers/w_life/activate');
+    assert.equal(dep.lifecycle_state, 'active');
+
+    // 3. Pause
+    const paused = await workers.pause({ worker_id: 'w_life', expected_revision: 2 });
+    assert.equal(lastMethod, 'POST');
+    assert.equal(lastUrl, '/v3/workers/w_life/pause');
+    assert.equal(lastBody.expected_revision, 2);
+    assert.equal(paused.lifecycle_state, 'paused');
+
+    // 4. Resume
+    const resumed = await workers.resume({ worker_id: 'w_life', expected_revision: 3 });
+    assert.equal(lastMethod, 'POST');
+    assert.equal(lastUrl, '/v3/workers/w_life/resume');
+    assert.equal(lastBody.expected_revision, 3);
+    assert.equal(resumed.lifecycle_state, 'active');
+
+    // 5. Archive
+    const archived = await workers.archive({ worker_id: 'w_life', expected_revision: 4 });
+    assert.equal(lastMethod, 'POST');
+    assert.equal(lastUrl, '/v3/workers/w_life/archive');
+    assert.equal(lastBody.expected_revision, 4);
+    assert.equal(archived.lifecycle_state, 'archived');
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test('SwarmWorkersNamespace: enableAutomation and disableAutomation send expected_worker_revision in body', async () => {
+  let lastMethod = '';
+  let lastUrl = '';
+  let lastBody: any = null;
+
+  const server = http.createServer((req, res) => {
+    lastMethod = req.method || '';
+    lastUrl = req.url || '';
+    const chunks: Buffer[] = [];
+    req.on('data', (c) => chunks.push(c));
+    req.on('end', () => {
+      lastBody = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ worker: sampleWorkerRecord({ id: 'w1', revision: 3 }) }));
+    });
+  });
+
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+  const port = (server.address() as any).port;
+
+  try {
+    const transport = new SwarmTransport({ baseUrl: `http://127.0.0.1:${port}`, token: 'swk_test', defaultHeaders: {}, timeoutMs: 5000 });
+    const workers = new SwarmWorkersNamespace(transport);
+
+    await workers.enableAutomation({ worker_id: 'w1', automation_id: 'a1', expected_worker_revision: 2 });
+    assert.equal(lastMethod, 'POST');
+    assert.equal(lastUrl, '/v3/workers/w1/automations/a1/enable');
+    assert.equal(lastBody.expected_worker_revision, 2);
+
+    await workers.disableAutomation({ worker_id: 'w1', automation_id: 'a1', expected_worker_revision: 3 });
+    assert.equal(lastMethod, 'POST');
+    assert.equal(lastUrl, '/v3/workers/w1/automations/a1/disable');
+    assert.equal(lastBody.expected_worker_revision, 3);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test('SwarmWorkersNamespace: directRequest, testRun, trigger dispatch and parse WorkerRunRecord envelopes', async () => {
+  let lastMethod = '';
+  let lastUrl = '';
+  let lastHeaders: http.IncomingHttpHeaders = {};
+  let lastBody: any = null;
+
+  const server = http.createServer((req, res) => {
+    lastMethod = req.method || '';
+    lastUrl = req.url || '';
+    lastHeaders = req.headers;
+    const chunks: Buffer[] = [];
+    req.on('data', (c) => chunks.push(c));
+    req.on('end', () => {
+      lastBody = chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : {};
+      res.writeHead(201, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        ok: true,
+        run: {
+          id: 'wrun_test_1',
+          account_scope_id: 'acct_1',
+          worker_id: 'w_exec',
+          worker_revision: 1,
+          request_source: lastUrl.includes('/test') ? 'test_run' : lastUrl.includes('/trigger') ? 'trigger' : 'direct',
+          status: 'admitted',
+          created_at: Date.now(),
+        },
+      }));
+    });
+  });
+
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+  const port = (server.address() as any).port;
+
+  try {
+    const transport = new SwarmTransport({ baseUrl: `http://127.0.0.1:${port}`, token: 'swk_test', defaultHeaders: {}, timeoutMs: 5000 });
+    const workers = new SwarmWorkersNamespace(transport);
+
+    // Direct request validation
+    await assert.rejects(workers.directRequest({ worker_id: 'w_exec' }), SwarmValidationError);
+
+    // Direct request
+    const directRun = await workers.directRequest({
+      worker_id: 'w_exec',
+      prompt: 'Execute query',
+      idempotency_key: 'idemp_dir',
+    });
+    assert.equal(lastMethod, 'POST');
+    assert.equal(lastUrl, '/v3/workers/w_exec/direct');
+    assert.equal(lastHeaders['idempotency-key'], 'idemp_dir');
+    assert.equal(lastBody.prompt, 'Execute query');
+    assert.equal(directRun.request_source, 'direct');
+
+    // Test run
+    const testRun = await workers.testRun({
+      worker_id: 'w_exec',
+      automation_id: 'auto_ping',
+      prompt: 'Ping test',
+      idempotency_key: 'idemp_test',
+    });
+    assert.equal(lastMethod, 'POST');
+    assert.equal(lastUrl, '/v3/workers/w_exec/test');
+    assert.equal(lastHeaders['idempotency-key'], 'idemp_test');
+    assert.equal(lastBody.automation_id, 'auto_ping');
+    assert.equal(testRun.request_source, 'test_run');
+
+    // Worker trigger
+    const trigRun = await workers.trigger({
+      worker_id: 'w_exec',
+      payload: { event: 'alert' },
+      idempotency_key: 'idemp_trig',
+    });
+    assert.equal(lastMethod, 'POST');
+    assert.equal(lastUrl, '/v3/workers/w_exec/trigger');
+    assert.equal(lastHeaders['idempotency-key'], 'idemp_trig');
+    assert.deepEqual(lastBody.payload, { event: 'alert' });
+    assert.equal(trigRun.request_source, 'trigger');
+
+    // Automation trigger
+    await workers.trigger({
+      worker_id: 'w_exec',
+      automation_id: 'auto_webhook',
+      payload: { event: 'webhook' },
+    });
+    assert.equal(lastMethod, 'POST');
+    assert.equal(lastUrl, '/v3/workers/w_exec/automations/auto_webhook/trigger');
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test('SwarmWorkersNamespace: mintTriggerToken, listRuns, getRun, cancelRun, getHistory, getRevision work as specified', async () => {
+  let lastUrl = '';
+  let lastMethod = '';
+
+  const server = http.createServer((req, res) => {
+    lastUrl = req.url || '';
+    lastMethod = req.method || '';
+    if (req.method === 'POST' && req.url === '/v3/workers/w1/token') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, token: 'swk_scoped_tok', worker_id: 'w1', scopes: ['workers:trigger'] }));
+      return;
+    }
+    if (req.method === 'GET' && req.url?.startsWith('/v3/workers/w1/runs')) {
+      if (req.url === '/v3/workers/w1/runs/r_404') {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'not found' }));
+        return;
+      }
+      if (req.url === '/v3/workers/w1/runs/r1') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ run: { id: 'r1', worker_id: 'w1', status: 'admitted', created_at: 1000 } }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ runs: [{ id: 'r1', worker_id: 'w1', status: 'admitted', created_at: 1000 }], next_cursor: 'cur2' }));
+      return;
+    }
+    if (req.method === 'POST' && req.url === '/v3/workers/w1/runs/r1/cancel') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ run: { id: 'r1', worker_id: 'w1', status: 'cancelled', error: 'run cancelled', created_at: 1000 } }));
+      return;
+    }
+    if (req.method === 'GET' && req.url?.startsWith('/v3/workers/w1/history')) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ history: [{ worker_id: 'w1', revision: 1, committed_at: 1000 }], next_cursor: '' }));
+      return;
+    }
+    if (req.method === 'GET' && req.url === '/v3/workers/w1/revisions/1') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ revision: { worker_id: 'w1', revision: 1, committed_at: 1000 } }));
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  });
+
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+  const port = (server.address() as any).port;
+
+  try {
+    const transport = new SwarmTransport({ baseUrl: `http://127.0.0.1:${port}`, token: 'swk_test', defaultHeaders: {}, timeoutMs: 5000 });
+    const workers = new SwarmWorkersNamespace(transport);
+
+    // 1. Mint trigger token
+    const tokenResult = await workers.mintTriggerToken({ worker_id: 'w1', name: 'Hook Token' });
+    assert.equal(tokenResult.token, 'swk_scoped_tok');
+    assert.equal(tokenResult.worker_id, 'w1');
+
+    // 2. List runs
+    const runsResult = await workers.listRuns({ worker_id: 'w1', limit: 10, cursor: 'cur1' });
+    assert.equal(runsResult.runs.length, 1);
+    assert.equal(runsResult.next_cursor, 'cur2');
+    assert.ok(lastUrl.includes('limit=10'));
+    assert.ok(lastUrl.includes('cursor=cur1'));
+
+    // 3. Get run (existing)
+    const run = await workers.getRun({ worker_id: 'w1', run_id: 'r1' });
+    assert.ok(run);
+    assert.equal(run.id, 'r1');
+
+    // 4. Get run (404 -> null)
+    const notFoundRun = await workers.getRun({ worker_id: 'w1', run_id: 'r_404' });
+    assert.equal(notFoundRun, null);
+
+    // 5. Cancel run
+    const cancelled = await workers.cancelRun({ worker_id: 'w1', run_id: 'r1' });
+    assert.equal(cancelled.status, 'cancelled');
+
+    // 6. History
+    const historyResult = await workers.getHistory({ worker_id: 'w1' });
+    assert.equal(historyResult.history.length, 1);
+
+    // 7. Revision
+    const revRecord = await workers.getRevision({ worker_id: 'w1', revision: 1 });
+    assert.ok(revRecord);
+    assert.equal(revRecord.revision, 1);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
 });

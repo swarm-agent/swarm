@@ -1,6 +1,8 @@
 import type { SwarmTransport } from './transport.js';
 import type {
   WorkerRecord,
+  WorkerRevisionRecord,
+  WorkerRunRecord,
   PortableWorkerDefinition,
   CreateWorkerParams,
   UpdateWorkerParams,
@@ -12,6 +14,21 @@ import type {
   WorkerValidateResult,
   WorkerExportResult,
   ImportWorkerOptions,
+  ActivateWorkerParams,
+  PauseWorkerParams,
+  ResumeWorkerParams,
+  ArchiveWorkerParams,
+  DeleteWorkerParams,
+  SetWorkerAutomationEnabledParams,
+  DirectWorkerRequestParams,
+  TestWorkerRunParams,
+  TriggerWorkerParams,
+  MintWorkerTriggerTokenParams,
+  MintWorkerTriggerTokenResult,
+  ListWorkerRunsParams,
+  ListWorkerRunsResult,
+  GetWorkerRunParams,
+  CancelWorkerRunParams,
 } from './types.js';
 import { SwarmValidationError } from './errors.js';
 
@@ -457,5 +474,506 @@ export class SwarmWorkersNamespace {
       throw new SwarmValidationError('Malformed response envelope: expected worker record');
     }
     return res.data.worker;
+  }
+
+  /**
+   * Activates a stored worker with approved local workspace bindings.
+   * Transitions worker from idle/paused to active state.
+   */
+  async activate(params: ActivateWorkerParams): Promise<WorkerRecord> {
+    if (!params || typeof params !== 'object') {
+      throw new SwarmValidationError('Activate worker parameters are required');
+    }
+    if (!params.worker_id || typeof params.worker_id !== 'string' || params.worker_id.trim() === '') {
+      throw new SwarmValidationError('Worker ID is required and cannot be blank');
+    }
+    if (!Number.isSafeInteger(params.expected_revision) || params.expected_revision < 1) {
+      throw new SwarmValidationError('Explicit numeric expected_revision >= 1 is required');
+    }
+    if (!params.local_bindings || typeof params.local_bindings !== 'object') {
+      throw new SwarmValidationError('Approved local_bindings map is required');
+    }
+
+    const res = await this.transport.request<{ worker?: WorkerRecord }>(
+      `/v3/workers/${encodeURIComponent(params.worker_id.trim())}/activate`,
+      {
+        method: 'POST',
+        body: {
+          expected_revision: params.expected_revision,
+          local_bindings: params.local_bindings,
+        },
+      }
+    );
+    if (!res.data || typeof res.data !== 'object' || !res.data.worker) {
+      throw new SwarmValidationError('Malformed response envelope: expected worker record');
+    }
+    return res.data.worker;
+  }
+
+  /**
+   * Local deployment alias for activate: validates and activates with approved bindings.
+   */
+  async deploy(params: ActivateWorkerParams): Promise<WorkerRecord> {
+    return this.activate(params);
+  }
+
+  /**
+   * Pauses an active worker, closing admission and invalidating queued work.
+   */
+  async pause(params: PauseWorkerParams): Promise<WorkerRecord> {
+    if (!params || typeof params !== 'object') {
+      throw new SwarmValidationError('Pause worker parameters are required');
+    }
+    if (!params.worker_id || typeof params.worker_id !== 'string' || params.worker_id.trim() === '') {
+      throw new SwarmValidationError('Worker ID is required and cannot be blank');
+    }
+    if (!Number.isSafeInteger(params.expected_revision) || params.expected_revision < 1) {
+      throw new SwarmValidationError('Explicit numeric expected_revision >= 1 is required');
+    }
+
+    const res = await this.transport.request<{ worker?: WorkerRecord }>(
+      `/v3/workers/${encodeURIComponent(params.worker_id.trim())}/pause`,
+      {
+        method: 'POST',
+        body: { expected_revision: params.expected_revision },
+      }
+    );
+    if (!res.data || typeof res.data !== 'object' || !res.data.worker) {
+      throw new SwarmValidationError('Malformed response envelope: expected worker record');
+    }
+    return res.data.worker;
+  }
+
+  /**
+   * Resumes a paused worker without replaying cancelled work.
+   */
+  async resume(params: ResumeWorkerParams): Promise<WorkerRecord> {
+    if (!params || typeof params !== 'object') {
+      throw new SwarmValidationError('Resume worker parameters are required');
+    }
+    if (!params.worker_id || typeof params.worker_id !== 'string' || params.worker_id.trim() === '') {
+      throw new SwarmValidationError('Worker ID is required and cannot be blank');
+    }
+    if (!Number.isSafeInteger(params.expected_revision) || params.expected_revision < 1) {
+      throw new SwarmValidationError('Explicit numeric expected_revision >= 1 is required');
+    }
+
+    const res = await this.transport.request<{ worker?: WorkerRecord }>(
+      `/v3/workers/${encodeURIComponent(params.worker_id.trim())}/resume`,
+      {
+        method: 'POST',
+        body: { expected_revision: params.expected_revision },
+      }
+    );
+    if (!res.data || typeof res.data !== 'object' || !res.data.worker) {
+      throw new SwarmValidationError('Malformed response envelope: expected worker record');
+    }
+    return res.data.worker;
+  }
+
+  /**
+   * Archives a worker, stopping future work and disabling automations.
+   * Rejects if there are active running executions.
+   */
+  async archive(params: ArchiveWorkerParams): Promise<WorkerRecord> {
+    if (!params || typeof params !== 'object') {
+      throw new SwarmValidationError('Archive worker parameters are required');
+    }
+    if (!params.worker_id || typeof params.worker_id !== 'string' || params.worker_id.trim() === '') {
+      throw new SwarmValidationError('Worker ID is required and cannot be blank');
+    }
+    if (!Number.isSafeInteger(params.expected_revision) || params.expected_revision < 1) {
+      throw new SwarmValidationError('Explicit numeric expected_revision >= 1 is required');
+    }
+
+    const res = await this.transport.request<{ worker?: WorkerRecord }>(
+      `/v3/workers/${encodeURIComponent(params.worker_id.trim())}/archive`,
+      {
+        method: 'POST',
+        body: { expected_revision: params.expected_revision },
+      }
+    );
+    if (!res.data || typeof res.data !== 'object' || !res.data.worker) {
+      throw new SwarmValidationError('Malformed response envelope: expected worker record');
+    }
+    return res.data.worker;
+  }
+
+  /**
+   * Deletes a worker with safe stop barrier enforcement (tombstone).
+   * Rejects if there are active running executions.
+   */
+  async delete(params: DeleteWorkerParams): Promise<{ ok: boolean; deleted: boolean }> {
+    if (!params || typeof params !== 'object') {
+      throw new SwarmValidationError('Delete worker parameters are required');
+    }
+    if (!params.worker_id || typeof params.worker_id !== 'string' || params.worker_id.trim() === '') {
+      throw new SwarmValidationError('Worker ID is required and cannot be blank');
+    }
+    if (!Number.isSafeInteger(params.expected_revision) || params.expected_revision < 1) {
+      throw new SwarmValidationError('Explicit numeric expected_revision >= 1 is required');
+    }
+
+    const res = await this.transport.request<{ ok?: boolean; deleted?: boolean }>(
+      `/v3/workers/${encodeURIComponent(params.worker_id.trim())}?expected_revision=${params.expected_revision}`,
+      { method: 'DELETE' }
+    );
+    if (!res.data || typeof res.data !== 'object' || !res.data.ok) {
+      throw new SwarmValidationError('Malformed response envelope: expected { ok: true, deleted: true }');
+    }
+    return { ok: true, deleted: true };
+  }
+
+  /**
+   * Enables a specific attached automation on the worker.
+   */
+  async enableAutomation(params: SetWorkerAutomationEnabledParams): Promise<WorkerRecord> {
+    if (!params || typeof params !== 'object') {
+      throw new SwarmValidationError('Enable automation parameters are required');
+    }
+    if (!params.worker_id || typeof params.worker_id !== 'string' || params.worker_id.trim() === '') {
+      throw new SwarmValidationError('Worker ID is required and cannot be blank');
+    }
+    if (!params.automation_id || typeof params.automation_id !== 'string' || params.automation_id.trim() === '') {
+      throw new SwarmValidationError('Automation ID is required and cannot be blank');
+    }
+    if (!Number.isSafeInteger(params.expected_worker_revision) || params.expected_worker_revision < 1) {
+      throw new SwarmValidationError('Explicit numeric expected_worker_revision >= 1 is required');
+    }
+
+    const res = await this.transport.request<{ worker?: WorkerRecord }>(
+      `/v3/workers/${encodeURIComponent(params.worker_id.trim())}/automations/${encodeURIComponent(params.automation_id.trim())}/enable`,
+      {
+        method: 'POST',
+        body: { expected_worker_revision: params.expected_worker_revision },
+      }
+    );
+    if (!res.data || typeof res.data !== 'object' || !res.data.worker) {
+      throw new SwarmValidationError('Malformed response envelope: expected worker record');
+    }
+    return res.data.worker;
+  }
+
+  /**
+   * Disables a specific attached automation on the worker without stopping other jobs.
+   */
+  async disableAutomation(params: SetWorkerAutomationEnabledParams): Promise<WorkerRecord> {
+    if (!params || typeof params !== 'object') {
+      throw new SwarmValidationError('Disable automation parameters are required');
+    }
+    if (!params.worker_id || typeof params.worker_id !== 'string' || params.worker_id.trim() === '') {
+      throw new SwarmValidationError('Worker ID is required and cannot be blank');
+    }
+    if (!params.automation_id || typeof params.automation_id !== 'string' || params.automation_id.trim() === '') {
+      throw new SwarmValidationError('Automation ID is required and cannot be blank');
+    }
+    if (!Number.isSafeInteger(params.expected_worker_revision) || params.expected_worker_revision < 1) {
+      throw new SwarmValidationError('Explicit numeric expected_worker_revision >= 1 is required');
+    }
+
+    const res = await this.transport.request<{ worker?: WorkerRecord }>(
+      `/v3/workers/${encodeURIComponent(params.worker_id.trim())}/automations/${encodeURIComponent(params.automation_id.trim())}/disable`,
+      {
+        method: 'POST',
+        body: { expected_worker_revision: params.expected_worker_revision },
+      }
+    );
+    if (!res.data || typeof res.data !== 'object' || !res.data.worker) {
+      throw new SwarmValidationError('Malformed response envelope: expected worker record');
+    }
+    return res.data.worker;
+  }
+
+  /**
+   * Dispatches a direct execution request to the worker without creating a persistent automation.
+   */
+  async directRequest(params: DirectWorkerRequestParams): Promise<WorkerRunRecord> {
+    if (!params || typeof params !== 'object') {
+      throw new SwarmValidationError('Direct request parameters are required');
+    }
+    if (!params.worker_id || typeof params.worker_id !== 'string' || params.worker_id.trim() === '') {
+      throw new SwarmValidationError('Worker ID is required and cannot be blank');
+    }
+    const hasPrompt = typeof params.prompt === 'string' && params.prompt.trim() !== '';
+    const hasInput = params.input && typeof params.input === 'object' && Object.keys(params.input).length > 0;
+    if (!hasPrompt && !hasInput) {
+      throw new SwarmValidationError('Prompt or input is required for direct request');
+    }
+
+    const headers: Record<string, string> = {};
+    if (params.idempotency_key && typeof params.idempotency_key === 'string' && params.idempotency_key.trim() !== '') {
+      headers['Idempotency-Key'] = params.idempotency_key.trim();
+    }
+    const body: Record<string, unknown> = {};
+    if (hasPrompt) body.prompt = params.prompt!.trim();
+    if (params.input) body.input = params.input;
+    if (params.idempotency_key) body.idempotency_key = params.idempotency_key.trim();
+
+    const res = await this.transport.request<{ ok?: boolean; run?: WorkerRunRecord }>(
+      `/v3/workers/${encodeURIComponent(params.worker_id.trim())}/direct`,
+      {
+        method: 'POST',
+        headers,
+        body,
+      }
+    );
+    if (!res.data || typeof res.data !== 'object' || !res.data.run) {
+      throw new SwarmValidationError('Malformed response envelope: expected worker run record');
+    }
+    return res.data.run;
+  }
+
+  /**
+   * Dispatches an explicitly labelled test run. Does not enable schedules.
+   */
+  async testRun(params: TestWorkerRunParams): Promise<WorkerRunRecord> {
+    if (!params || typeof params !== 'object') {
+      throw new SwarmValidationError('Test run parameters are required');
+    }
+    if (!params.worker_id || typeof params.worker_id !== 'string' || params.worker_id.trim() === '') {
+      throw new SwarmValidationError('Worker ID is required and cannot be blank');
+    }
+
+    const headers: Record<string, string> = {};
+    if (params.idempotency_key && typeof params.idempotency_key === 'string' && params.idempotency_key.trim() !== '') {
+      headers['Idempotency-Key'] = params.idempotency_key.trim();
+    }
+    const body: Record<string, unknown> = {};
+    if (params.automation_id && typeof params.automation_id === 'string' && params.automation_id.trim() !== '') {
+      body.automation_id = params.automation_id.trim();
+    }
+    if (params.prompt && typeof params.prompt === 'string' && params.prompt.trim() !== '') {
+      body.prompt = params.prompt.trim();
+    }
+    if (params.input && typeof params.input === 'object') {
+      body.input = params.input;
+    }
+    if (params.idempotency_key) body.idempotency_key = params.idempotency_key.trim();
+
+    const res = await this.transport.request<{ ok?: boolean; run?: WorkerRunRecord }>(
+      `/v3/workers/${encodeURIComponent(params.worker_id.trim())}/test`,
+      {
+        method: 'POST',
+        headers,
+        body,
+      }
+    );
+    if (!res.data || typeof res.data !== 'object' || !res.data.run) {
+      throw new SwarmValidationError('Malformed response envelope: expected worker run record');
+    }
+    return res.data.run;
+  }
+
+  /**
+   * Dispatches an authenticated external trigger to the worker or specific automation.
+   */
+  async trigger(params: TriggerWorkerParams): Promise<WorkerRunRecord> {
+    if (!params || typeof params !== 'object') {
+      throw new SwarmValidationError('Trigger parameters are required');
+    }
+    if (!params.worker_id || typeof params.worker_id !== 'string' || params.worker_id.trim() === '') {
+      throw new SwarmValidationError('Worker ID is required and cannot be blank');
+    }
+
+    const headers: Record<string, string> = {};
+    if (params.idempotency_key && typeof params.idempotency_key === 'string' && params.idempotency_key.trim() !== '') {
+      headers['Idempotency-Key'] = params.idempotency_key.trim();
+    }
+    const body: Record<string, unknown> = {};
+    if (params.automation_id && typeof params.automation_id === 'string' && params.automation_id.trim() !== '') {
+      body.automation_id = params.automation_id.trim();
+    }
+    if (params.payload && typeof params.payload === 'object') {
+      body.payload = params.payload;
+    }
+    if (params.idempotency_key) body.idempotency_key = params.idempotency_key.trim();
+
+    const url = params.automation_id
+      ? `/v3/workers/${encodeURIComponent(params.worker_id.trim())}/automations/${encodeURIComponent(params.automation_id.trim())}/trigger`
+      : `/v3/workers/${encodeURIComponent(params.worker_id.trim())}/trigger`;
+
+    const res = await this.transport.request<{ ok?: boolean; run?: WorkerRunRecord }>(
+      url,
+      {
+        method: 'POST',
+        headers,
+        body,
+      }
+    );
+    if (!res.data || typeof res.data !== 'object' || !res.data.run) {
+      throw new SwarmValidationError('Malformed response envelope: expected worker run record');
+    }
+    return res.data.run;
+  }
+
+  /**
+   * Mints an authenticated scoped trigger token for this worker.
+   */
+  async mintTriggerToken(params: MintWorkerTriggerTokenParams): Promise<MintWorkerTriggerTokenResult> {
+    if (!params || typeof params !== 'object') {
+      throw new SwarmValidationError('Mint trigger token parameters are required');
+    }
+    if (!params.worker_id || typeof params.worker_id !== 'string' || params.worker_id.trim() === '') {
+      throw new SwarmValidationError('Worker ID is required and cannot be blank');
+    }
+
+    const body: Record<string, unknown> = {};
+    if (params.name) body.name = params.name.trim();
+    if (params.save_to_secrets !== undefined) body.save_to_secrets = params.save_to_secrets;
+
+    const res = await this.transport.request<MintWorkerTriggerTokenResult>(
+      `/v3/workers/${encodeURIComponent(params.worker_id.trim())}/token`,
+      {
+        method: 'POST',
+        body,
+      }
+    );
+    if (!res.data || typeof res.data !== 'object' || typeof res.data.token !== 'string' || res.data.token === '') {
+      throw new SwarmValidationError('Malformed response envelope: expected trigger token result');
+    }
+    return res.data;
+  }
+
+  /**
+   * Lists historical and active execution runs for a worker with pagination.
+   */
+  async listRuns(params: ListWorkerRunsParams): Promise<ListWorkerRunsResult> {
+    if (!params || typeof params !== 'object') {
+      throw new SwarmValidationError('List runs parameters are required');
+    }
+    if (!params.worker_id || typeof params.worker_id !== 'string' || params.worker_id.trim() === '') {
+      throw new SwarmValidationError('Worker ID is required and cannot be blank');
+    }
+
+    const q = new URLSearchParams();
+    if (params.limit !== undefined) q.set('limit', String(params.limit));
+    if (params.cursor !== undefined && params.cursor.trim() !== '') q.set('cursor', params.cursor.trim());
+    const qs = q.toString() ? `?${q.toString()}` : '';
+
+    const res = await this.transport.request<{ runs?: WorkerRunRecord[]; next_cursor?: string }>(
+      `/v3/workers/${encodeURIComponent(params.worker_id.trim())}/runs${qs}`,
+      { method: 'GET' }
+    );
+    if (!res.data || typeof res.data !== 'object' || !Array.isArray(res.data.runs)) {
+      throw new SwarmValidationError('Malformed response envelope: expected { runs: WorkerRunRecord[] }');
+    }
+    return {
+      runs: res.data.runs,
+      next_cursor: res.data.next_cursor,
+    };
+  }
+
+  /**
+   * Retrieves a single worker execution run by ID.
+   */
+  async getRun(params: GetWorkerRunParams): Promise<WorkerRunRecord | null> {
+    if (!params || typeof params !== 'object') {
+      throw new SwarmValidationError('Get run parameters are required');
+    }
+    if (!params.worker_id || typeof params.worker_id !== 'string' || params.worker_id.trim() === '') {
+      throw new SwarmValidationError('Worker ID is required and cannot be blank');
+    }
+    if (!params.run_id || typeof params.run_id !== 'string' || params.run_id.trim() === '') {
+      throw new SwarmValidationError('Run ID is required and cannot be blank');
+    }
+
+    try {
+      const res = await this.transport.request<{ run?: WorkerRunRecord }>(
+        `/v3/workers/${encodeURIComponent(params.worker_id.trim())}/runs/${encodeURIComponent(params.run_id.trim())}`,
+        { method: 'GET' }
+      );
+      if (!res.data || typeof res.data !== 'object' || !res.data.run) {
+        throw new SwarmValidationError('Malformed response envelope: expected { run: WorkerRunRecord }');
+      }
+      return res.data.run;
+    } catch (err: any) {
+      if (err?.status === 404 || err?.statusCode === 404) {
+        return null;
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Cancels an active or admitted execution run.
+   */
+  async cancelRun(params: CancelWorkerRunParams): Promise<WorkerRunRecord> {
+    if (!params || typeof params !== 'object') {
+      throw new SwarmValidationError('Cancel run parameters are required');
+    }
+    if (!params.worker_id || typeof params.worker_id !== 'string' || params.worker_id.trim() === '') {
+      throw new SwarmValidationError('Worker ID is required and cannot be blank');
+    }
+    if (!params.run_id || typeof params.run_id !== 'string' || params.run_id.trim() === '') {
+      throw new SwarmValidationError('Run ID is required and cannot be blank');
+    }
+
+    const res = await this.transport.request<{ ok?: boolean; run?: WorkerRunRecord }>(
+      `/v3/workers/${encodeURIComponent(params.worker_id.trim())}/runs/${encodeURIComponent(params.run_id.trim())}/cancel`,
+      { method: 'POST' }
+    );
+    if (!res.data || typeof res.data !== 'object' || !res.data.run) {
+      throw new SwarmValidationError('Malformed response envelope: expected { run: WorkerRunRecord }');
+    }
+    return res.data.run;
+  }
+
+  /**
+   * Retrieves revision history snapshots for a worker.
+   */
+  async getHistory(params: { worker_id: string; limit?: number; cursor?: string }): Promise<{ history: WorkerRevisionRecord[]; next_cursor?: string }> {
+    if (!params || typeof params !== 'object') {
+      throw new SwarmValidationError('History parameters are required');
+    }
+    if (!params.worker_id || typeof params.worker_id !== 'string' || params.worker_id.trim() === '') {
+      throw new SwarmValidationError('Worker ID is required and cannot be blank');
+    }
+    const q = new URLSearchParams();
+    if (params.limit !== undefined) q.set('limit', String(params.limit));
+    if (params.cursor !== undefined && params.cursor.trim() !== '') q.set('cursor', params.cursor.trim());
+    const qs = q.toString() ? `?${q.toString()}` : '';
+
+    const res = await this.transport.request<{ history?: WorkerRevisionRecord[]; next_cursor?: string }>(
+      `/v3/workers/${encodeURIComponent(params.worker_id.trim())}/history${qs}`,
+      { method: 'GET' }
+    );
+    if (!res.data || typeof res.data !== 'object' || !Array.isArray(res.data.history)) {
+      throw new SwarmValidationError('Malformed response envelope: expected { history: WorkerRevisionRecord[] }');
+    }
+    return {
+      history: res.data.history,
+      next_cursor: res.data.next_cursor,
+    };
+  }
+
+  /**
+   * Retrieves a specific pinned revision snapshot of a worker.
+   */
+  async getRevision(params: { worker_id: string; revision: number }): Promise<WorkerRevisionRecord | null> {
+    if (!params || typeof params !== 'object') {
+      throw new SwarmValidationError('Revision parameters are required');
+    }
+    if (!params.worker_id || typeof params.worker_id !== 'string' || params.worker_id.trim() === '') {
+      throw new SwarmValidationError('Worker ID is required and cannot be blank');
+    }
+    if (!Number.isSafeInteger(params.revision) || params.revision < 1) {
+      throw new SwarmValidationError('Explicit numeric revision >= 1 is required');
+    }
+
+    try {
+      const res = await this.transport.request<{ revision?: WorkerRevisionRecord }>(
+        `/v3/workers/${encodeURIComponent(params.worker_id.trim())}/revisions/${params.revision}`,
+        { method: 'GET' }
+      );
+      if (!res.data || typeof res.data !== 'object' || !res.data.revision) {
+        throw new SwarmValidationError('Malformed response envelope: expected { revision: WorkerRevisionRecord }');
+      }
+      return res.data.revision;
+    } catch (err: any) {
+      if (err?.status === 404 || err?.statusCode === 404) {
+        return null;
+      }
+      throw err;
+    }
   }
 }

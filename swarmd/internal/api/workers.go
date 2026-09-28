@@ -2,6 +2,9 @@ package api
 
 import (
 	"bytes"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,9 +13,12 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"swarm/packages/swarmd/internal/automation"
 	"swarm/packages/swarmd/internal/identity"
+	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -133,8 +139,20 @@ func (s *Server) authenticateWorkerRequest(w http.ResponseWriter, r *http.Reques
 	}
 	if scopedRec, ok := ScopedTokenFromRequest(r); ok && scopedRec != nil {
 		if isTriggerCredential(scopedRec) {
-			writeError(w, http.StatusForbidden, errors.New("scoped trigger token cannot access worker api"))
-			return identity.Principal{}, false
+			path := strings.TrimPrefix(r.URL.Path, WorkersPath)
+			path = strings.TrimPrefix(path, "/")
+			parts := strings.Split(path, "/")
+			isTriggerPath := r.Method == http.MethodPost && (
+				(len(parts) == 2 && parts[1] == "trigger") ||
+				(len(parts) == 4 && parts[1] == "automations" && parts[3] == "trigger"))
+			if !isTriggerPath {
+				writeError(w, http.StatusForbidden, errors.New("scoped trigger token cannot access worker api"))
+				return identity.Principal{}, false
+			}
+			if scopedRec.WorkerID != "" && parts[0] != scopedRec.WorkerID {
+				writeError(w, http.StatusForbidden, fmt.Errorf("scoped token is restricted to worker %q", scopedRec.WorkerID))
+				return identity.Principal{}, false
+			}
 		}
 	}
 	if s.sessions == nil || s.sessions.Store() == nil || s.sessions.Store().Underlying() == nil {
@@ -215,6 +233,60 @@ func (s *Server) handleWorkers(w http.ResponseWriter, r *http.Request) {
 
 	sub := parts[1]
 	switch sub {
+	case "activate", "deploy":
+		if len(parts) != 2 {
+			writeError(w, http.StatusNotFound, errors.New("not found"))
+			return
+		}
+		s.handleWorkerActivate(w, r, p, workerID)
+	case "pause":
+		if len(parts) != 2 {
+			writeError(w, http.StatusNotFound, errors.New("not found"))
+			return
+		}
+		s.handleWorkerPause(w, r, p, workerID)
+	case "resume":
+		if len(parts) != 2 {
+			writeError(w, http.StatusNotFound, errors.New("not found"))
+			return
+		}
+		s.handleWorkerResume(w, r, p, workerID)
+	case "archive":
+		if len(parts) != 2 {
+			writeError(w, http.StatusNotFound, errors.New("not found"))
+			return
+		}
+		s.handleWorkerArchive(w, r, p, workerID)
+	case "delete":
+		if len(parts) != 2 {
+			writeError(w, http.StatusNotFound, errors.New("not found"))
+			return
+		}
+		s.handleWorkerDelete(w, r, p, workerID)
+	case "direct", "request":
+		if len(parts) != 2 {
+			writeError(w, http.StatusNotFound, errors.New("not found"))
+			return
+		}
+		s.handleWorkerDirectRequest(w, r, p, workerID)
+	case "test", "test-run":
+		if len(parts) != 2 {
+			writeError(w, http.StatusNotFound, errors.New("not found"))
+			return
+		}
+		s.handleWorkerTestRun(w, r, p, workerID)
+	case "trigger":
+		if len(parts) != 2 {
+			writeError(w, http.StatusNotFound, errors.New("not found"))
+			return
+		}
+		s.handleWorkerTrigger(w, r, p, workerID, "")
+	case "token":
+		if len(parts) != 2 {
+			writeError(w, http.StatusNotFound, errors.New("not found"))
+			return
+		}
+		s.handleWorkerToken(w, r, p, workerID)
 	case "export":
 		if len(parts) != 2 {
 			writeError(w, http.StatusNotFound, errors.New("not found"))
@@ -240,6 +312,8 @@ func (s *Server) handleWorkers(w http.ResponseWriter, r *http.Request) {
 			s.handleWorkerRuns(w, r, p, workerID)
 		} else if len(parts) == 3 {
 			s.handleWorkerRunByID(w, r, p, workerID, parts[2])
+		} else if len(parts) == 4 && parts[3] == "cancel" {
+			s.handleWorkerRunCancel(w, r, p, workerID, parts[2])
 		} else {
 			writeError(w, http.StatusNotFound, errors.New("not found"))
 		}
@@ -503,6 +577,9 @@ func (s *Server) handleWorkerByID(w http.ResponseWriter, r *http.Request, p iden
 		writeJSON(w, http.StatusOK, map[string]any{
 			"worker": updated,
 		})
+
+	case http.MethodDelete:
+		s.handleWorkerDelete(w, r, p, workerID)
 
 	default:
 		methodNotAllowed(w)
@@ -855,6 +932,26 @@ func (s *Server) handleWorkerAutomations(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
+	if len(subparts) == 2 {
+		automationID := strings.TrimSpace(subparts[0])
+		action := strings.TrimSpace(subparts[1])
+		if automationID == "" {
+			writeError(w, http.StatusBadRequest, errors.New("automation id is required"))
+			return
+		}
+		switch action {
+		case "enable":
+			s.handleWorkerAutomationEnable(w, r, p, workerID, automationID)
+		case "disable":
+			s.handleWorkerAutomationDisable(w, r, p, workerID, automationID)
+		case "trigger":
+			s.handleWorkerTrigger(w, r, p, workerID, automationID)
+		default:
+			writeError(w, http.StatusNotFound, errors.New("not found"))
+		}
+		return
+	}
+
 	writeError(w, http.StatusNotFound, errors.New("not found"))
 }
 
@@ -1017,3 +1114,1031 @@ func (s *Server) handleWorkerRunByID(w http.ResponseWriter, r *http.Request, p i
 		"run": run,
 	})
 }
+
+var workerLifecycleMu sync.Mutex
+
+type activateWorkerRequestBody struct {
+	ExpectedRevision uint64            `json:"expected_revision"`
+	LocalBindings    map[string]string `json:"local_bindings"`
+}
+
+type workerLifecycleRequestBody struct {
+	ExpectedRevision uint64 `json:"expected_revision"`
+}
+
+type setAutomationEnabledRequestBody struct {
+	ExpectedWorkerRevision uint64 `json:"expected_worker_revision"`
+}
+
+type directWorkerRequestBody struct {
+	Prompt         string         `json:"prompt,omitempty"`
+	Input          map[string]any `json:"input,omitempty"`
+	IdempotencyKey string         `json:"idempotency_key,omitempty"`
+}
+
+type testWorkerRunRequestBody struct {
+	AutomationID   string         `json:"automation_id,omitempty"`
+	Prompt         string         `json:"prompt,omitempty"`
+	Input          map[string]any `json:"input,omitempty"`
+	IdempotencyKey string         `json:"idempotency_key,omitempty"`
+}
+
+type triggerWorkerRequestBody struct {
+	AutomationID   string         `json:"automation_id,omitempty"`
+	Payload        map[string]any `json:"payload,omitempty"`
+	IdempotencyKey string         `json:"idempotency_key,omitempty"`
+}
+
+type mintWorkerTokenRequestBody struct {
+	Name          string `json:"name,omitempty"`
+	SaveToSecrets *bool  `json:"save_to_secrets,omitempty"`
+}
+
+func (s *Server) persistWorkerAndHistory(account, user string, worker pebblestore.WorkerRecord, changeSummary string) error {
+	if s.sessions == nil || s.sessions.Store() == nil || s.sessions.Store().Underlying() == nil {
+		return errors.New("store unavailable")
+	}
+	store := s.sessions.Store().Underlying()
+
+	worker.UpdatedAt = time.Now().UnixMilli()
+	if worker.CreatedAt == 0 {
+		worker.CreatedAt = worker.UpdatedAt
+	}
+
+	if err := store.PutJSON(pebblestore.KeyWorker(account, worker.ID), worker); err != nil {
+		return fmt.Errorf("persist worker: %w", err)
+	}
+
+	hist := pebblestore.WorkerRevisionRecord{
+		WorkerID:       worker.ID,
+		AccountScopeID: account,
+		Revision:       worker.Revision,
+		Worker:         worker,
+		CommittedAt:    worker.UpdatedAt,
+		CommittedBy:    user,
+		ChangeSummary:  changeSummary,
+	}
+	if err := store.PutJSON(pebblestore.KeyWorkerHistory(account, worker.ID, worker.Revision), hist); err != nil {
+		return fmt.Errorf("persist worker history: %w", err)
+	}
+
+	for _, a := range worker.Automations {
+		if a.ID != "" {
+			_ = store.PutJSON(pebblestore.KeyWorkerByAutomation(account, a.ID), worker.ID)
+		}
+	}
+
+	if seq, err := s.sessions.CurrentRealtimeOutboxRevision(); err == nil && seq > 0 {
+		_ = s.publishCommittedV3RealtimeOutbox(sessionruntime.RealtimeOutboxRecord{
+			EndpointSeq:    seq,
+			EndpointCursor: pebblestore.V3RealtimeOutboxCursor(seq),
+			AccountScopeID: account,
+			UserID:         user,
+			Event: pebblestore.V3SessionEvent{
+				Seq:       seq,
+				EventType: pebblestore.WorkerUpdatedEventType,
+				TsUnixMs:  worker.UpdatedAt,
+			},
+			CreatedAt: worker.UpdatedAt,
+		})
+	}
+	return nil
+}
+
+func (s *Server) handleWorkerActivate(w http.ResponseWriter, r *http.Request, p identity.Principal, workerID string) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	if !s.requireScope(w, r, "automations:write") {
+		return
+	}
+	if _, err := parseAndValidateQuery(r); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	var req activateWorkerRequestBody
+	if err := decodeJSONStrict(w, r, 512*1024, &req); err != nil {
+		workerHTTPError(w, err)
+		return
+	}
+	if req.ExpectedRevision == 0 {
+		writeError(w, http.StatusBadRequest, errors.New("expected_revision in body is required"))
+		return
+	}
+	if req.LocalBindings == nil {
+		writeError(w, http.StatusBadRequest, errors.New("local_bindings in body is required"))
+		return
+	}
+
+	workerLifecycleMu.Lock()
+	defer workerLifecycleMu.Unlock()
+
+	worker, found, err := s.sessions.GetWorker(p.AccountScopeID, workerID)
+	if err != nil {
+		workerHTTPError(w, err)
+		return
+	}
+	if !found || worker.LifecycleState == pebblestore.WorkerLifecycleStateDeleted {
+		writeError(w, http.StatusNotFound, pebblestore.ErrWorkerNotFound)
+		return
+	}
+	if worker.Revision != req.ExpectedRevision {
+		writeError(w, http.StatusConflict, pebblestore.ErrWorkerConflict)
+		return
+	}
+	if worker.LifecycleState == pebblestore.WorkerLifecycleStateArchived {
+		writeError(w, http.StatusBadRequest, errors.New("cannot activate archived worker; resume or recreate first"))
+		return
+	}
+
+	for _, reqRole := range worker.WorkspaceRequirements {
+		if reqRole.Required {
+			val, ok := req.LocalBindings[reqRole.Role]
+			if !ok || strings.TrimSpace(val) == "" {
+				writeError(w, http.StatusBadRequest, fmt.Errorf("missing required workspace role binding: %q", reqRole.Role))
+				return
+			}
+		}
+	}
+	for role, bid := range req.LocalBindings {
+		if strings.TrimSpace(bid) == "" {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("binding for role %q cannot be blank", role))
+			return
+		}
+	}
+
+	worker.LocalBindings = req.LocalBindings
+	worker.LifecycleState = pebblestore.WorkerLifecycleStateActive
+	worker.Revision++
+
+	if err := s.persistWorkerAndHistory(p.AccountScopeID, p.UserID, worker, "activated with approved local bindings"); err != nil {
+		workerHTTPError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"worker": worker,
+	})
+}
+
+func (s *Server) handleWorkerPause(w http.ResponseWriter, r *http.Request, p identity.Principal, workerID string) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	if !s.requireScope(w, r, "automations:write") {
+		return
+	}
+	if _, err := parseAndValidateQuery(r); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	var req workerLifecycleRequestBody
+	if err := decodeJSONStrict(w, r, 512*1024, &req); err != nil {
+		workerHTTPError(w, err)
+		return
+	}
+	if req.ExpectedRevision == 0 {
+		writeError(w, http.StatusBadRequest, errors.New("expected_revision in body is required"))
+		return
+	}
+
+	workerLifecycleMu.Lock()
+	defer workerLifecycleMu.Unlock()
+
+	worker, found, err := s.sessions.GetWorker(p.AccountScopeID, workerID)
+	if err != nil {
+		workerHTTPError(w, err)
+		return
+	}
+	if !found || worker.LifecycleState == pebblestore.WorkerLifecycleStateDeleted {
+		writeError(w, http.StatusNotFound, pebblestore.ErrWorkerNotFound)
+		return
+	}
+	if worker.Revision != req.ExpectedRevision {
+		writeError(w, http.StatusConflict, pebblestore.ErrWorkerConflict)
+		return
+	}
+	if worker.LifecycleState == pebblestore.WorkerLifecycleStateArchived {
+		writeError(w, http.StatusBadRequest, errors.New("cannot pause archived worker"))
+		return
+	}
+
+	now := time.Now().UnixMilli()
+	runs, _, _ := s.sessions.ListWorkerRuns(p.AccountScopeID, workerID, 100, "")
+	for _, run := range runs {
+		if run.Status == "admitted" {
+			run.Status = "cancelled"
+			run.Error = "worker paused"
+			run.CompletedAt = now
+			_, _ = s.sessions.RecordWorkerRun(p.AccountScopeID, run)
+		}
+	}
+
+	worker.LifecycleState = pebblestore.WorkerLifecycleStatePaused
+	worker.Revision++
+
+	if err := s.persistWorkerAndHistory(p.AccountScopeID, p.UserID, worker, "paused worker"); err != nil {
+		workerHTTPError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"worker": worker,
+	})
+}
+
+func (s *Server) handleWorkerResume(w http.ResponseWriter, r *http.Request, p identity.Principal, workerID string) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	if !s.requireScope(w, r, "automations:write") {
+		return
+	}
+	if _, err := parseAndValidateQuery(r); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	var req workerLifecycleRequestBody
+	if err := decodeJSONStrict(w, r, 512*1024, &req); err != nil {
+		workerHTTPError(w, err)
+		return
+	}
+	if req.ExpectedRevision == 0 {
+		writeError(w, http.StatusBadRequest, errors.New("expected_revision in body is required"))
+		return
+	}
+
+	workerLifecycleMu.Lock()
+	defer workerLifecycleMu.Unlock()
+
+	worker, found, err := s.sessions.GetWorker(p.AccountScopeID, workerID)
+	if err != nil {
+		workerHTTPError(w, err)
+		return
+	}
+	if !found || worker.LifecycleState == pebblestore.WorkerLifecycleStateDeleted {
+		writeError(w, http.StatusNotFound, pebblestore.ErrWorkerNotFound)
+		return
+	}
+	if worker.Revision != req.ExpectedRevision {
+		writeError(w, http.StatusConflict, pebblestore.ErrWorkerConflict)
+		return
+	}
+	if worker.LifecycleState == pebblestore.WorkerLifecycleStateArchived {
+		writeError(w, http.StatusBadRequest, errors.New("cannot resume archived worker"))
+		return
+	}
+	if worker.LifecycleState != pebblestore.WorkerLifecycleStatePaused && worker.LifecycleState != pebblestore.WorkerLifecycleStateIdle {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("worker is already %s", worker.LifecycleState))
+		return
+	}
+
+	worker.LifecycleState = pebblestore.WorkerLifecycleStateActive
+	worker.Revision++
+
+	if err := s.persistWorkerAndHistory(p.AccountScopeID, p.UserID, worker, "resumed worker"); err != nil {
+		workerHTTPError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"worker": worker,
+	})
+}
+
+func (s *Server) handleWorkerArchive(w http.ResponseWriter, r *http.Request, p identity.Principal, workerID string) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	if !s.requireScope(w, r, "automations:write") {
+		return
+	}
+	if _, err := parseAndValidateQuery(r); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	var req workerLifecycleRequestBody
+	if err := decodeJSONStrict(w, r, 512*1024, &req); err != nil {
+		workerHTTPError(w, err)
+		return
+	}
+	if req.ExpectedRevision == 0 {
+		writeError(w, http.StatusBadRequest, errors.New("expected_revision in body is required"))
+		return
+	}
+
+	workerLifecycleMu.Lock()
+	defer workerLifecycleMu.Unlock()
+
+	worker, found, err := s.sessions.GetWorker(p.AccountScopeID, workerID)
+	if err != nil {
+		workerHTTPError(w, err)
+		return
+	}
+	if !found || worker.LifecycleState == pebblestore.WorkerLifecycleStateDeleted {
+		writeError(w, http.StatusNotFound, pebblestore.ErrWorkerNotFound)
+		return
+	}
+	if worker.Revision != req.ExpectedRevision {
+		writeError(w, http.StatusConflict, pebblestore.ErrWorkerConflict)
+		return
+	}
+
+	runs, _, _ := s.sessions.ListWorkerRuns(p.AccountScopeID, workerID, 100, "")
+	for _, run := range runs {
+		if run.Status == "running" {
+			writeError(w, http.StatusBadRequest, errors.New("cannot archive worker with active running executions; stop runs first"))
+			return
+		}
+	}
+	now := time.Now().UnixMilli()
+	for _, run := range runs {
+		if run.Status == "admitted" {
+			run.Status = "cancelled"
+			run.Error = "worker archived"
+			run.CompletedAt = now
+			_, _ = s.sessions.RecordWorkerRun(p.AccountScopeID, run)
+		}
+	}
+
+	for i := range worker.Automations {
+		worker.Automations[i].Enabled = false
+		worker.Automations[i].Revision++
+		worker.Automations[i].UpdatedAt = now
+	}
+
+	worker.LifecycleState = pebblestore.WorkerLifecycleStateArchived
+	worker.Revision++
+
+	if err := s.persistWorkerAndHistory(p.AccountScopeID, p.UserID, worker, "archived worker"); err != nil {
+		workerHTTPError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"worker": worker,
+	})
+}
+
+func (s *Server) handleWorkerDelete(w http.ResponseWriter, r *http.Request, p identity.Principal, workerID string) {
+	if !s.requireScope(w, r, "automations:write") {
+		return
+	}
+	var expectedRevision uint64
+	q, err := parseAndValidateQuery(r, "expected_revision")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if q.Has("expected_revision") {
+		expectedRevision, err = strconv.ParseUint(q.Get("expected_revision"), 10, 64)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, errors.New("expected_revision is required"))
+			return
+		}
+	}
+	if expectedRevision == 0 && r.Body != nil && r.ContentLength > 0 {
+		var req workerLifecycleRequestBody
+		if err := decodeJSONStrict(w, r, 64*1024, &req); err == nil {
+			expectedRevision = req.ExpectedRevision
+		}
+	}
+	if expectedRevision == 0 {
+		writeError(w, http.StatusBadRequest, errors.New("expected_revision is required"))
+		return
+	}
+
+	workerLifecycleMu.Lock()
+	defer workerLifecycleMu.Unlock()
+
+	worker, found, err := s.sessions.GetWorker(p.AccountScopeID, workerID)
+	if err != nil {
+		workerHTTPError(w, err)
+		return
+	}
+	if !found || worker.LifecycleState == pebblestore.WorkerLifecycleStateDeleted {
+		writeError(w, http.StatusNotFound, pebblestore.ErrWorkerNotFound)
+		return
+	}
+	if worker.Revision != expectedRevision {
+		writeError(w, http.StatusConflict, pebblestore.ErrWorkerConflict)
+		return
+	}
+
+	runs, _, _ := s.sessions.ListWorkerRuns(p.AccountScopeID, workerID, 100, "")
+	for _, run := range runs {
+		if run.Status == "running" || run.Status == "admitted" {
+			writeError(w, http.StatusBadRequest, errors.New("cannot delete worker with active runs"))
+			return
+		}
+	}
+
+	worker.LifecycleState = pebblestore.WorkerLifecycleStateDeleted
+	worker.Revision++
+
+	if err := s.persistWorkerAndHistory(p.AccountScopeID, p.UserID, worker, "deleted worker"); err != nil {
+		workerHTTPError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":      true,
+		"deleted": true,
+	})
+}
+
+func (s *Server) handleWorkerAutomationEnable(w http.ResponseWriter, r *http.Request, p identity.Principal, workerID, automationID string) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	if !s.requireScope(w, r, "automations:write") {
+		return
+	}
+	if _, err := parseAndValidateQuery(r); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	var req setAutomationEnabledRequestBody
+	if err := decodeJSONStrict(w, r, 512*1024, &req); err != nil {
+		workerHTTPError(w, err)
+		return
+	}
+	if req.ExpectedWorkerRevision == 0 {
+		writeError(w, http.StatusBadRequest, errors.New("expected_worker_revision in body is required"))
+		return
+	}
+
+	workerLifecycleMu.Lock()
+	defer workerLifecycleMu.Unlock()
+
+	worker, found, err := s.sessions.GetWorker(p.AccountScopeID, workerID)
+	if err != nil {
+		workerHTTPError(w, err)
+		return
+	}
+	if !found || worker.LifecycleState == pebblestore.WorkerLifecycleStateDeleted {
+		writeError(w, http.StatusNotFound, pebblestore.ErrWorkerNotFound)
+		return
+	}
+	if worker.Revision != req.ExpectedWorkerRevision {
+		writeError(w, http.StatusConflict, pebblestore.ErrWorkerConflict)
+		return
+	}
+
+	foundIdx := -1
+	for i, a := range worker.Automations {
+		if a.ID == automationID {
+			foundIdx = i
+			break
+		}
+	}
+	if foundIdx == -1 {
+		writeError(w, http.StatusNotFound, errors.New("automation not found on worker"))
+		return
+	}
+
+	now := time.Now().UnixMilli()
+	worker.Automations[foundIdx].Enabled = true
+	worker.Automations[foundIdx].Revision++
+	worker.Automations[foundIdx].UpdatedAt = now
+	worker.Revision++
+
+	if err := s.persistWorkerAndHistory(p.AccountScopeID, p.UserID, worker, fmt.Sprintf("enabled automation %s", automationID)); err != nil {
+		workerHTTPError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"worker": worker,
+	})
+}
+
+func (s *Server) handleWorkerAutomationDisable(w http.ResponseWriter, r *http.Request, p identity.Principal, workerID, automationID string) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	if !s.requireScope(w, r, "automations:write") {
+		return
+	}
+	if _, err := parseAndValidateQuery(r); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	var req setAutomationEnabledRequestBody
+	if err := decodeJSONStrict(w, r, 512*1024, &req); err != nil {
+		workerHTTPError(w, err)
+		return
+	}
+	if req.ExpectedWorkerRevision == 0 {
+		writeError(w, http.StatusBadRequest, errors.New("expected_worker_revision in body is required"))
+		return
+	}
+
+	workerLifecycleMu.Lock()
+	defer workerLifecycleMu.Unlock()
+
+	worker, found, err := s.sessions.GetWorker(p.AccountScopeID, workerID)
+	if err != nil {
+		workerHTTPError(w, err)
+		return
+	}
+	if !found || worker.LifecycleState == pebblestore.WorkerLifecycleStateDeleted {
+		writeError(w, http.StatusNotFound, pebblestore.ErrWorkerNotFound)
+		return
+	}
+	if worker.Revision != req.ExpectedWorkerRevision {
+		writeError(w, http.StatusConflict, pebblestore.ErrWorkerConflict)
+		return
+	}
+
+	foundIdx := -1
+	for i, a := range worker.Automations {
+		if a.ID == automationID {
+			foundIdx = i
+			break
+		}
+	}
+	if foundIdx == -1 {
+		writeError(w, http.StatusNotFound, errors.New("automation not found on worker"))
+		return
+	}
+
+	now := time.Now().UnixMilli()
+	runs, _, _ := s.sessions.ListWorkerRuns(p.AccountScopeID, workerID, 100, "")
+	for _, run := range runs {
+		if run.AutomationID == automationID && run.Status == "admitted" {
+			run.Status = "cancelled"
+			run.Error = "automation disabled"
+			run.CompletedAt = now
+			_, _ = s.sessions.RecordWorkerRun(p.AccountScopeID, run)
+		}
+	}
+
+	worker.Automations[foundIdx].Enabled = false
+	worker.Automations[foundIdx].Revision++
+	worker.Automations[foundIdx].UpdatedAt = now
+	worker.Revision++
+
+	if err := s.persistWorkerAndHistory(p.AccountScopeID, p.UserID, worker, fmt.Sprintf("disabled automation %s", automationID)); err != nil {
+		workerHTTPError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"worker": worker,
+	})
+}
+
+func (s *Server) handleWorkerDirectRequest(w http.ResponseWriter, r *http.Request, p identity.Principal, workerID string) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	if !s.requireScope(w, r, "automations:write") {
+		return
+	}
+	if _, err := parseAndValidateQuery(r); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	var req directWorkerRequestBody
+	if err := decodeJSONStrict(w, r, 512*1024, &req); err != nil {
+		workerHTTPError(w, err)
+		return
+	}
+	prompt := strings.TrimSpace(req.Prompt)
+	if prompt == "" && len(req.Input) == 0 {
+		writeError(w, http.StatusBadRequest, errors.New("prompt or input is required for direct request"))
+		return
+	}
+	idempKey := strings.TrimSpace(req.IdempotencyKey)
+	if idempKey == "" {
+		idempKey = strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	}
+
+	worker, found, err := s.sessions.GetWorker(p.AccountScopeID, workerID)
+	if err != nil {
+		workerHTTPError(w, err)
+		return
+	}
+	if !found || worker.LifecycleState == pebblestore.WorkerLifecycleStateDeleted {
+		writeError(w, http.StatusNotFound, pebblestore.ErrWorkerNotFound)
+		return
+	}
+	if worker.LifecycleState == pebblestore.WorkerLifecycleStatePaused || worker.LifecycleState == pebblestore.WorkerLifecycleStateArchived {
+		writeError(w, http.StatusConflict, fmt.Errorf("cannot admit direct request: worker is %s", worker.LifecycleState))
+		return
+	}
+
+	if idempKey != "" {
+		var existingRun pebblestore.WorkerRunRecord
+		ok, err := s.sessions.Store().Underlying().GetJSON(pebblestore.KeyWorkerIdempotency(p.AccountScopeID, "run:"+idempKey), &existingRun)
+		if err == nil && ok && existingRun.ID != "" {
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "run": existingRun, "deduplicated": true})
+			return
+		}
+	}
+
+	now := time.Now().UnixMilli()
+	inputMap := make(map[string]any)
+	for k, v := range req.Input {
+		inputMap[k] = v
+	}
+	if prompt != "" {
+		inputMap["prompt"] = prompt
+	}
+
+	runID := pebblestore.GenerateWorkerRunID()
+	run := pebblestore.WorkerRunRecord{
+		ID:             runID,
+		AccountScopeID: p.AccountScopeID,
+		WorkerID:       workerID,
+		WorkerRevision: worker.Revision,
+		RequestSource:  "direct",
+		Input:          inputMap,
+		Status:         "admitted",
+		CreatedAt:      now,
+	}
+
+	recorded, err := s.sessions.RecordWorkerRun(p.AccountScopeID, run)
+	if err != nil {
+		workerHTTPError(w, err)
+		return
+	}
+
+	if idempKey != "" {
+		_ = s.sessions.Store().Underlying().PutJSON(pebblestore.KeyWorkerIdempotency(p.AccountScopeID, "run:"+idempKey), recorded)
+	}
+
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"ok":  true,
+		"run": recorded,
+	})
+}
+
+func (s *Server) handleWorkerTestRun(w http.ResponseWriter, r *http.Request, p identity.Principal, workerID string) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	if !s.requireScope(w, r, "automations:write") {
+		return
+	}
+	if _, err := parseAndValidateQuery(r); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	var req testWorkerRunRequestBody
+	if err := decodeJSONStrict(w, r, 512*1024, &req); err != nil {
+		workerHTTPError(w, err)
+		return
+	}
+	idempKey := strings.TrimSpace(req.IdempotencyKey)
+	if idempKey == "" {
+		idempKey = strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	}
+
+	worker, found, err := s.sessions.GetWorker(p.AccountScopeID, workerID)
+	if err != nil {
+		workerHTTPError(w, err)
+		return
+	}
+	if !found || worker.LifecycleState == pebblestore.WorkerLifecycleStateDeleted {
+		writeError(w, http.StatusNotFound, pebblestore.ErrWorkerNotFound)
+		return
+	}
+	if worker.LifecycleState == pebblestore.WorkerLifecycleStateArchived {
+		writeError(w, http.StatusBadRequest, errors.New("cannot run test on archived worker"))
+		return
+	}
+
+	autoID := strings.TrimSpace(req.AutomationID)
+	var autoRev uint64
+	if autoID != "" {
+		foundAuto := false
+		for _, a := range worker.Automations {
+			if a.ID == autoID {
+				foundAuto = true
+				autoRev = a.Revision
+				break
+			}
+		}
+		if !foundAuto {
+			writeError(w, http.StatusNotFound, errors.New("automation not found on worker"))
+			return
+		}
+	}
+
+	if idempKey != "" {
+		var existingRun pebblestore.WorkerRunRecord
+		ok, err := s.sessions.Store().Underlying().GetJSON(pebblestore.KeyWorkerIdempotency(p.AccountScopeID, "run:"+idempKey), &existingRun)
+		if err == nil && ok && existingRun.ID != "" {
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "run": existingRun, "deduplicated": true})
+			return
+		}
+	}
+
+	now := time.Now().UnixMilli()
+	inputMap := make(map[string]any)
+	for k, v := range req.Input {
+		inputMap[k] = v
+	}
+	inputMap["test_run"] = true
+	prompt := strings.TrimSpace(req.Prompt)
+	if prompt != "" {
+		inputMap["prompt"] = prompt
+	}
+
+	runID := pebblestore.GenerateWorkerRunID()
+	run := pebblestore.WorkerRunRecord{
+		ID:                 runID,
+		AccountScopeID:     p.AccountScopeID,
+		WorkerID:           workerID,
+		WorkerRevision:     worker.Revision,
+		AutomationID:       autoID,
+		AutomationRevision: autoRev,
+		RequestSource:      "test_run",
+		Input:              inputMap,
+		Status:             "admitted",
+		CreatedAt:          now,
+	}
+
+	recorded, err := s.sessions.RecordWorkerRun(p.AccountScopeID, run)
+	if err != nil {
+		workerHTTPError(w, err)
+		return
+	}
+
+	if idempKey != "" {
+		_ = s.sessions.Store().Underlying().PutJSON(pebblestore.KeyWorkerIdempotency(p.AccountScopeID, "run:"+idempKey), recorded)
+	}
+
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"ok":  true,
+		"run": recorded,
+	})
+}
+
+func (s *Server) handleWorkerTrigger(w http.ResponseWriter, r *http.Request, p identity.Principal, workerID, pathAutoID string) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	if !s.requireScopeAny(w, r, "workers:trigger", "automations:trigger", "automations:write") {
+		return
+	}
+	if _, err := parseAndValidateQuery(r); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	if scopedRec, ok := ScopedTokenFromRequest(r); ok && scopedRec != nil {
+		if scopedRec.WorkerID != "" && scopedRec.WorkerID != workerID {
+			writeError(w, http.StatusForbidden, fmt.Errorf("scoped token is restricted to worker %q", scopedRec.WorkerID))
+			return
+		}
+	}
+
+	var req triggerWorkerRequestBody
+	if err := decodeJSONStrict(w, r, 300*1024, &req); err != nil {
+		workerHTTPError(w, err)
+		return
+	}
+
+	autoID := pathAutoID
+	if autoID == "" {
+		autoID = strings.TrimSpace(req.AutomationID)
+	} else if req.AutomationID != "" && req.AutomationID != autoID {
+		writeError(w, http.StatusBadRequest, errors.New("automation_id in body does not match path"))
+		return
+	}
+
+	idempKey := strings.TrimSpace(req.IdempotencyKey)
+	if idempKey == "" {
+		idempKey = strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	}
+
+	worker, found, err := s.sessions.GetWorker(p.AccountScopeID, workerID)
+	if err != nil {
+		workerHTTPError(w, err)
+		return
+	}
+	if !found || worker.LifecycleState == pebblestore.WorkerLifecycleStateDeleted {
+		writeError(w, http.StatusNotFound, pebblestore.ErrWorkerNotFound)
+		return
+	}
+	if worker.LifecycleState == pebblestore.WorkerLifecycleStatePaused || worker.LifecycleState == pebblestore.WorkerLifecycleStateArchived {
+		writeError(w, http.StatusConflict, fmt.Errorf("cannot trigger worker: worker is %s", worker.LifecycleState))
+		return
+	}
+
+	var autoRev uint64
+	if autoID != "" {
+		foundAuto := false
+		for _, a := range worker.Automations {
+			if a.ID == autoID {
+				foundAuto = true
+				if !a.Enabled {
+					writeError(w, http.StatusConflict, fmt.Errorf("automation %q is disabled", autoID))
+					return
+				}
+				autoRev = a.Revision
+				break
+			}
+		}
+		if !foundAuto {
+			writeError(w, http.StatusNotFound, errors.New("automation not found on worker"))
+			return
+		}
+	}
+
+	if idempKey != "" {
+		var existingRun pebblestore.WorkerRunRecord
+		ok, err := s.sessions.Store().Underlying().GetJSON(pebblestore.KeyWorkerIdempotency(p.AccountScopeID, "run:"+idempKey), &existingRun)
+		if err == nil && ok && existingRun.ID != "" {
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "run": existingRun, "deduplicated": true})
+			return
+		}
+	}
+
+	now := time.Now().UnixMilli()
+	payload := req.Payload
+	if payload == nil {
+		payload = make(map[string]any)
+	}
+
+	runID := pebblestore.GenerateWorkerRunID()
+	run := pebblestore.WorkerRunRecord{
+		ID:                 runID,
+		AccountScopeID:     p.AccountScopeID,
+		WorkerID:           workerID,
+		WorkerRevision:     worker.Revision,
+		AutomationID:       autoID,
+		AutomationRevision: autoRev,
+		RequestSource:      "trigger",
+		Input:              payload,
+		Status:             "admitted",
+		CreatedAt:          now,
+	}
+
+	recorded, err := s.sessions.RecordWorkerRun(p.AccountScopeID, run)
+	if err != nil {
+		workerHTTPError(w, err)
+		return
+	}
+
+	if idempKey != "" {
+		_ = s.sessions.Store().Underlying().PutJSON(pebblestore.KeyWorkerIdempotency(p.AccountScopeID, "run:"+idempKey), recorded)
+	}
+
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"ok":  true,
+		"run": recorded,
+	})
+}
+
+func (s *Server) handleWorkerToken(w http.ResponseWriter, r *http.Request, p identity.Principal, workerID string) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	if !s.requireScope(w, r, "automations:write") {
+		return
+	}
+	if _, err := parseAndValidateQuery(r); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	var req mintWorkerTokenRequestBody
+	if err := decodeJSONStrict(w, r, 512*1024, &req); err != nil {
+		workerHTTPError(w, err)
+		return
+	}
+
+	worker, found, err := s.sessions.GetWorker(p.AccountScopeID, workerID)
+	if err != nil {
+		workerHTTPError(w, err)
+		return
+	}
+	if !found || worker.LifecycleState == pebblestore.WorkerLifecycleStateDeleted {
+		writeError(w, http.StatusNotFound, pebblestore.ErrWorkerNotFound)
+		return
+	}
+
+	tokenName := strings.TrimSpace(req.Name)
+	if tokenName == "" {
+		tokenName = "Trigger Worker: " + worker.Name
+		if strings.TrimSpace(worker.Name) == "" {
+			tokenName = "Trigger Worker: " + workerID
+		}
+	}
+
+	if s.security != nil {
+		rawToken, tokenRecord, err := s.security.CreateScopedToken(
+			tokenName,
+			[]string{"workers:trigger", "automations:trigger"},
+			p.AccountScopeID,
+			p.UserID,
+			0,
+			workerID,
+			tokenName,
+		)
+		if err != nil {
+			workerHTTPError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":        true,
+			"token":     rawToken,
+			"record":    tokenRecord,
+			"worker_id": workerID,
+			"scopes":    []string{"workers:trigger", "automations:trigger"},
+		})
+		return
+	}
+
+	authStore := pebblestore.NewClientAuthStore(s.sessions.Store().Underlying())
+	var b [32]byte
+	_, _ = rand.Read(b[:])
+	rawToken := "swk_" + hex.EncodeToString(b[:])
+	hash := sha256.Sum256([]byte(rawToken))
+	tokenHash := hex.EncodeToString(hash[:])
+	tokenID := "tok_" + hex.EncodeToString(b[:8])
+	now := time.Now().UnixMilli()
+	tokenRecord := pebblestore.ScopedTokenRecord{
+		ID:             tokenID,
+		Name:           tokenName,
+		TokenHash:      tokenHash,
+		AccountScopeID: p.AccountScopeID,
+		UserID:         p.UserID,
+		Scopes:         []string{"workers:trigger", "automations:trigger"},
+		WorkerID:       workerID,
+		CreatedAt:      now,
+	}
+	if err := authStore.PutScopedToken(tokenRecord); err != nil {
+		workerHTTPError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":        true,
+		"token":     rawToken,
+		"record":    tokenRecord,
+		"worker_id": workerID,
+		"scopes":    []string{"workers:trigger", "automations:trigger"},
+	})
+}
+
+func (s *Server) handleWorkerRunCancel(w http.ResponseWriter, r *http.Request, p identity.Principal, workerID, runID string) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	if !s.requireScope(w, r, "automations:write") {
+		return
+	}
+	if _, err := parseAndValidateQuery(r); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	workerLifecycleMu.Lock()
+	defer workerLifecycleMu.Unlock()
+
+	run, found, err := s.sessions.GetWorkerRun(p.AccountScopeID, workerID, runID)
+	if err != nil {
+		workerHTTPError(w, err)
+		return
+	}
+	if !found {
+		writeError(w, http.StatusNotFound, errors.New("worker run not found"))
+		return
+	}
+	if run.Status == "succeeded" || run.Status == "failed" || run.Status == "cancelled" {
+		writeError(w, http.StatusConflict, fmt.Errorf("cannot cancel run in terminal status %q", run.Status))
+		return
+	}
+
+	now := time.Now().UnixMilli()
+	run.Status = "cancelled"
+	run.Error = "run cancelled"
+	run.CompletedAt = now
+
+	recorded, err := s.sessions.RecordWorkerRun(p.AccountScopeID, run)
+	if err != nil {
+		workerHTTPError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":  true,
+		"run": recorded,
+	})
+}
+

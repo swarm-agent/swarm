@@ -21,13 +21,13 @@ import (
 //  1. Workers are stable, account-scoped entities independent of sessions/plans.
 //  2. All worker endpoints require authenticated user principal and active account membership, rejecting agents, revoked members, and unauthenticated callers.
 //  3. Scopes are enforced: automations:read for queries/exports/validation, automations:write for mutations/import/migration.
-//  4. Trigger credentials and worker-scoped tokens cannot enumerate or manage workers, and cannot access foreign workers. All scoped trigger tokens are rejected centrally.
+//  4. Trigger credentials and worker-scoped tokens cannot enumerate or manage workers, and cannot access foreign workers. Trigger tokens only dispatch scoped triggers.
 //  5. Cross-account isolation: data from account A is never visible or mutable from account B.
 //  6. Optimistic concurrency control: updates and attachment changes reject stale expected revisions with 409 Conflict.
 //  7. Stale or invalid requests cause no partial mutations to underlying storage.
 //  8. Strict request parsing rejects unknown fields, trailing payloads, and invalid or duplicate query parameters.
 //  9. Idempotent worker creation with required idempotency_key in body returns the existing record on duplicate calls.
-// 10. Definition attachment management and legacy migration are supported. Worker DELETE route is removed (stop barrier).
+// 10. Definition attachment management, legacy migration, and safe stop barrier lifecycle controls (activate, pause, resume, archive, delete, enable, disable, direct, test, trigger, token) are supported.
 
 func setupWorkerAPITestServer(t *testing.T) (*Server, *store.Store, http.Handler) {
 	t.Helper()
@@ -427,21 +427,54 @@ func TestWorkerAPI_CRUDLifecycleAndOptimisticConcurrency(t *testing.T) {
 		t.Fatalf("total_count must not be present in canonical wire response")
 	}
 
-	// 8. Worker DELETE route is REMOVED -> 405 Method Not Allowed
+	// 8. Worker DELETE requires expected_revision -> 400 Bad Request
 	w = executeWorkerAPI(h, http.MethodDelete, "/"+workerID, "", workerAPICallOptions{
 		scopes: []string{"automations:write"},
 	})
-	if w.Code != http.StatusMethodNotAllowed {
-		t.Fatalf("worker DELETE route expected 405 Method Not Allowed, got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("worker DELETE without expected_revision expected 400, got %d: %s", w.Code, w.Body.String())
 	}
 
-	// Verify worker is still active/persisted and was NOT deleted
+	// Worker is still not deleted
 	persistedStill, found, err := ws.GetWorker("acct-test", workerID)
 	if err != nil || !found {
 		t.Fatalf("worker was unexpectedly deleted: %v", err)
 	}
 	if persistedStill.LifecycleState == store.WorkerLifecycleStateDeleted {
-		t.Fatalf("worker was marked deleted despite 405 method not allowed")
+		t.Fatalf("worker was marked deleted despite bad request")
+	}
+
+	// Stale expected_revision -> 409 Conflict
+	w = executeWorkerAPI(h, http.MethodDelete, fmt.Sprintf("/%s?expected_revision=1", workerID), "", workerAPICallOptions{
+		scopes: []string{"automations:write"},
+	})
+	if w.Code != http.StatusConflict {
+		t.Fatalf("worker DELETE with stale revision expected 409, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Valid expected_revision -> 200 OK tombstone
+	w = executeWorkerAPI(h, http.MethodDelete, fmt.Sprintf("/%s?expected_revision=2", workerID), "", workerAPICallOptions{
+		scopes: []string{"automations:write"},
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("worker DELETE with valid revision expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Worker is now tombstoned
+	persistedDeleted, found, err := ws.GetWorker("acct-test", workerID)
+	if err != nil || !found {
+		t.Fatalf("worker record missing after delete: %v", err)
+	}
+	if persistedDeleted.LifecycleState != store.WorkerLifecycleStateDeleted {
+		t.Fatalf("worker was not marked deleted: %s", persistedDeleted.LifecycleState)
+	}
+
+	// GET returns 404
+	w = executeWorkerAPI(h, http.MethodGet, "/"+workerID, "", workerAPICallOptions{
+		scopes: []string{"automations:read"},
+	})
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("GET deleted worker expected 404, got %d: %s", w.Code, w.Body.String())
 	}
 }
 
@@ -1240,6 +1273,735 @@ func TestWorkerAPI_RevisionHistoryAndRuns(t *testing.T) {
 	gotRun := runResp["run"].(map[string]any)
 	if gotRun["id"].(string) != runRec.ID {
 		t.Fatalf("run ID mismatch: %v vs %v", gotRun["id"], runRec.ID)
+	}
+}
+
+// Purpose: Prove that worker activation requires valid expected_revision and resolves all required WorkspaceRequirements to non-empty local bindings, updating LifecycleState to active and incrementing revision.
+// Invariant: Activation is explicit, guarded by revision CAS, fails if required workspace roles are unbound, and transitions worker from idle to active.
+// Threat: Unapproved activation runs without required workspace roles or allows stale concurrent activations.
+// Boundary: Server.handleWorkerActivate, handleWorkers, Server.persistWorkerAndHistory, WorkerStore.GetWorker.
+func TestWorkerAPI_Lifecycle_Activate_LocalBindings(t *testing.T) {
+	_, db, h := setupWorkerAPITestServer(t)
+	ws := store.NewWorkerStore(db)
+
+	created, err := ws.CreateWorker("acct-test", "user-test", store.CreateWorkerRequest{
+		Name:         "Deploy Specialist",
+		Instructions: "Deploy safely.",
+		WorkspaceRequirements: []store.WorkerWorkspaceRequirement{
+			{Role: "primary", Description: "Primary workspace", Required: true},
+			{Role: "infra", Description: "Infra workspace", Required: false},
+		},
+		IdempotencyKey: "act-test-1",
+	}, nil)
+	if err != nil {
+		t.Fatalf("create worker: %v", err)
+	}
+	workerID := created.ID
+	if created.LifecycleState != store.WorkerLifecycleStateIdle {
+		t.Fatalf("expected idle, got %s", created.LifecycleState)
+	}
+
+	// Missing expected_revision -> 400
+	w := executeWorkerAPI(h, http.MethodPost, "/"+workerID+"/activate", `{"local_bindings":{"primary":"ws-1"}}`, workerAPICallOptions{
+		scopes: []string{"automations:write"},
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("missing expected_revision expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Missing local_bindings -> 400
+	w = executeWorkerAPI(h, http.MethodPost, "/"+workerID+"/activate", `{"expected_revision":1}`, workerAPICallOptions{
+		scopes: []string{"automations:write"},
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("missing local_bindings expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Stale expected_revision -> 409
+	w = executeWorkerAPI(h, http.MethodPost, "/"+workerID+"/activate", `{"expected_revision":99,"local_bindings":{"primary":"ws-1"}}`, workerAPICallOptions{
+		scopes: []string{"automations:write"},
+	})
+	if w.Code != http.StatusConflict {
+		t.Fatalf("stale expected_revision expected 409, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Missing required role binding ("primary" is required, provided only "infra") -> 400
+	w = executeWorkerAPI(h, http.MethodPost, "/"+workerID+"/activate", `{"expected_revision":1,"local_bindings":{"infra":"ws-infra"}}`, workerAPICallOptions{
+		scopes: []string{"automations:write"},
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("missing required role binding expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "missing required workspace role binding") {
+		t.Fatalf("error message mismatch: %s", w.Body.String())
+	}
+
+	// Blank binding value -> 400
+	w = executeWorkerAPI(h, http.MethodPost, "/"+workerID+"/activate", `{"expected_revision":1,"local_bindings":{"primary":"  "}}`, workerAPICallOptions{
+		scopes: []string{"automations:write"},
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("blank binding value expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Valid activation -> 200 OK
+	w = executeWorkerAPI(h, http.MethodPost, "/"+workerID+"/activate", `{"expected_revision":1,"local_bindings":{"primary":"ws-main","infra":"ws-infra"}}`, workerAPICallOptions{
+		scopes: []string{"automations:write"},
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("valid activation expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var actResp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &actResp)
+	workerObj := actResp["worker"].(map[string]any)
+	if workerObj["lifecycle_state"].(string) != "active" {
+		t.Fatalf("expected active state, got %v", workerObj["lifecycle_state"])
+	}
+	if uint64(workerObj["revision"].(float64)) != 2 {
+		t.Fatalf("expected revision 2, got %v", workerObj["revision"])
+	}
+
+	// Verify persistence in store
+	persisted, found, err := ws.GetWorker("acct-test", workerID)
+	if err != nil || !found {
+		t.Fatalf("get worker: %v", err)
+	}
+	if persisted.LifecycleState != store.WorkerLifecycleStateActive {
+		t.Fatalf("persisted state mismatch: %s", persisted.LifecycleState)
+	}
+	if persisted.LocalBindings["primary"] != "ws-main" || persisted.LocalBindings["infra"] != "ws-infra" {
+		t.Fatalf("persisted local bindings mismatch: %+v", persisted.LocalBindings)
+	}
+
+	// Alias /deploy works with revision CAS
+	w = executeWorkerAPI(h, http.MethodPost, "/"+workerID+"/deploy", `{"expected_revision":2,"local_bindings":{"primary":"ws-main-2"}}`, workerAPICallOptions{
+		scopes: []string{"automations:write"},
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("deploy alias expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// Purpose: Prove that pausing a worker closes admission, cancels admitted/queued runs, transitions state to paused, and resume restores active state without replaying cancelled work.
+// Invariant: Pausing invalidates admitted runs and prevents subsequent direct requests or triggers. Resuming an archived or deleted worker is rejected.
+// Threat: Race conditions admitting runs during pause or resuming permanently archived/deleted workers.
+// Boundary: Server.handleWorkerPause, Server.handleWorkerResume, Server.handleWorkerDirectRequest, Server.handleWorkerTrigger.
+func TestWorkerAPI_Lifecycle_Pause_Resume_SafeStopBarrier(t *testing.T) {
+	_, db, h := setupWorkerAPITestServer(t)
+	ws := store.NewWorkerStore(db)
+
+	created, err := ws.CreateWorker("acct-test", "user-test", store.CreateWorkerRequest{
+		Name:           "Pause Test Worker",
+		Instructions:   "Test pause behavior.",
+		IdempotencyKey: "pause-test-1",
+	}, nil)
+	if err != nil {
+		t.Fatalf("create worker: %v", err)
+	}
+	workerID := created.ID
+
+	// Admit a direct run
+	w := executeWorkerAPI(h, http.MethodPost, "/"+workerID+"/direct", `{"prompt":"Run task 1"}`, workerAPICallOptions{
+		scopes: []string{"automations:write"},
+	})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("direct request expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	var runResp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &runResp)
+	runID := runResp["run"].(map[string]any)["id"].(string)
+
+	// Pause worker with expected_revision=1
+	w = executeWorkerAPI(h, http.MethodPost, "/"+workerID+"/pause", `{"expected_revision":1}`, workerAPICallOptions{
+		scopes: []string{"automations:write"},
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("pause worker expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Verify worker is paused and revision incremented
+	workerRec, _, _ := ws.GetWorker("acct-test", workerID)
+	if workerRec.LifecycleState != store.WorkerLifecycleStatePaused {
+		t.Fatalf("expected paused, got %s", workerRec.LifecycleState)
+	}
+	if workerRec.Revision != 2 {
+		t.Fatalf("expected revision 2, got %d", workerRec.Revision)
+	}
+
+	// Verify the admitted run was cancelled with reason "worker paused"
+	runRec, found, err := ws.GetWorkerRun("acct-test", workerID, runID)
+	if err != nil || !found {
+		t.Fatalf("get run: %v", err)
+	}
+	if runRec.Status != "cancelled" || runRec.Error != "worker paused" {
+		t.Fatalf("run status mismatch: status=%q error=%q", runRec.Status, runRec.Error)
+	}
+
+	// Direct request while paused is rejected with 409
+	w = executeWorkerAPI(h, http.MethodPost, "/"+workerID+"/direct", `{"prompt":"Run while paused"}`, workerAPICallOptions{
+		scopes: []string{"automations:write"},
+	})
+	if w.Code != http.StatusConflict {
+		t.Fatalf("direct request while paused expected 409, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// External trigger while paused is rejected with 409
+	w = executeWorkerAPI(h, http.MethodPost, "/"+workerID+"/trigger", `{"payload":{"event":"tick"}}`, workerAPICallOptions{
+		scopes: []string{"automations:write"},
+	})
+	if w.Code != http.StatusConflict {
+		t.Fatalf("trigger while paused expected 409, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Resume worker with expected_revision=2
+	w = executeWorkerAPI(h, http.MethodPost, "/"+workerID+"/resume", `{"expected_revision":2}`, workerAPICallOptions{
+		scopes: []string{"automations:write"},
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("resume worker expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	workerRec, _, _ = ws.GetWorker("acct-test", workerID)
+	if workerRec.LifecycleState != store.WorkerLifecycleStateActive {
+		t.Fatalf("expected active, got %s", workerRec.LifecycleState)
+	}
+	if workerRec.Revision != 3 {
+		t.Fatalf("expected revision 3, got %d", workerRec.Revision)
+	}
+
+	// Verify previously cancelled run is STILL cancelled (not resurrected)
+	runRec, _, _ = ws.GetWorkerRun("acct-test", workerID, runID)
+	if runRec.Status != "cancelled" {
+		t.Fatalf("cancelled run was resurrected: %s", runRec.Status)
+	}
+
+	// Direct request now succeeds
+	w = executeWorkerAPI(h, http.MethodPost, "/"+workerID+"/direct", `{"prompt":"Run after resume"}`, workerAPICallOptions{
+		scopes: []string{"automations:write"},
+	})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("direct request after resume expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// Purpose: Prove that archiving or deleting a worker obeys the safe stop barrier, rejecting operations while executions are running, and tombstoning on delete without cascading history destruction.
+// Invariant: Worker deletion preserves history revisions, marks state deleted, and rejects active runs. Archiving disables automations and cancels admitted runs.
+// Threat: Uncontrolled deletion during execution leading to orphaned execution or data loss of audit history.
+// Boundary: Server.handleWorkerArchive, Server.handleWorkerDelete, Server.handleWorkerByID.
+func TestWorkerAPI_Lifecycle_Archive_Delete_SafeStopBarrier(t *testing.T) {
+	_, db, h := setupWorkerAPITestServer(t)
+	ws := store.NewWorkerStore(db)
+
+	created, err := ws.CreateWorker("acct-test", "user-test", store.CreateWorkerRequest{
+		Name:           "Stop Barrier Test Worker",
+		Instructions:   "Test stop barrier.",
+		IdempotencyKey: "stop-test-1",
+	}, nil)
+	if err != nil {
+		t.Fatalf("create worker: %v", err)
+	}
+	workerID := created.ID
+
+	// Create a running execution
+	_, err = ws.RecordWorkerRun("acct-test", store.WorkerRunRecord{
+		ID:             "wrun_running_1",
+		AccountScopeID: "acct-test",
+		WorkerID:       workerID,
+		WorkerRevision: 1,
+		RequestSource:  "direct",
+		Status:         "running",
+	})
+	if err != nil {
+		t.Fatalf("record running run: %v", err)
+	}
+
+	// Archive while execution is running -> 400 Bad Request
+	w := executeWorkerAPI(h, http.MethodPost, "/"+workerID+"/archive", `{"expected_revision":1}`, workerAPICallOptions{
+		scopes: []string{"automations:write"},
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("archive with active running execution expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "cannot archive worker with active running executions") {
+		t.Fatalf("error message mismatch: %s", w.Body.String())
+	}
+
+	// Delete while execution is running -> 400 Bad Request
+	w = executeWorkerAPI(h, http.MethodDelete, fmt.Sprintf("/%s?expected_revision=1", workerID), "", workerAPICallOptions{
+		scopes: []string{"automations:write"},
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("delete with active running execution expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Finish the running execution -> succeeded
+	_, err = ws.RecordWorkerRun("acct-test", store.WorkerRunRecord{
+		ID:             "wrun_running_1",
+		AccountScopeID: "acct-test",
+		WorkerID:       workerID,
+		WorkerRevision: 1,
+		RequestSource:  "direct",
+		Status:         "succeeded",
+	})
+	if err != nil {
+		t.Fatalf("complete run: %v", err)
+	}
+
+	// Now archive succeeds
+	w = executeWorkerAPI(h, http.MethodPost, "/"+workerID+"/archive", `{"expected_revision":1}`, workerAPICallOptions{
+		scopes: []string{"automations:write"},
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("archive expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Verify state is archived
+	workerRec, _, _ := ws.GetWorker("acct-test", workerID)
+	if workerRec.LifecycleState != store.WorkerLifecycleStateArchived {
+		t.Fatalf("expected archived, got %s", workerRec.LifecycleState)
+	}
+
+	// Delete with expected_revision=2
+	w = executeWorkerAPI(h, http.MethodDelete, fmt.Sprintf("/%s?expected_revision=2", workerID), "", workerAPICallOptions{
+		scopes: []string{"automations:write"},
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("delete expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// GET worker -> 404
+	w = executeWorkerAPI(h, http.MethodGet, "/"+workerID, "", workerAPICallOptions{
+		scopes: []string{"automations:read"},
+	})
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("get deleted worker expected 404, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// GET history -> 200 with all revisions preserved
+	w = executeWorkerAPI(h, http.MethodGet, "/"+workerID+"/history", "", workerAPICallOptions{
+		scopes: []string{"automations:read"},
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("get history after delete expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var histResp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &histResp)
+	histItems := histResp["history"].([]any)
+	if len(histItems) < 3 {
+		t.Fatalf("expected at least 3 historical revisions, got %d", len(histItems))
+	}
+}
+
+// Purpose: Prove that enabling and disabling automations updates the specific automation state, increments revisions, and disabling cancels admitted runs for that automation without affecting other automations.
+// Invariant: Automation enablement is isolated per automation ID and revision-guarded.
+// Threat: Disabling one automation cascades to unrelated automations or leaves dangling admitted runs.
+// Boundary: Server.handleWorkerAutomationEnable, Server.handleWorkerAutomationDisable.
+func TestWorkerAPI_Lifecycle_Automation_Scoped_EnableDisable(t *testing.T) {
+	_, db, h := setupWorkerAPITestServer(t)
+	ws := store.NewWorkerStore(db)
+
+	created, err := ws.CreateWorker("acct-test", "user-test", store.CreateWorkerRequest{
+		Name:           "Multi-Auto Worker",
+		Instructions:   "Manage automations.",
+		IdempotencyKey: "multi-auto-1",
+		Automations: []store.WorkerAutomationDefinition{
+			{
+				Name:           "Auto One",
+				ActivationMode: "manual",
+				Enabled:        true,
+				PlanDocument: store.SessionPlanDocument{
+					Title:       "Plan 1",
+					Checkpoints: []store.SessionPlanCheckpoint{{ID: "cp-1", Title: "Step 1", Status: "pending"}},
+				},
+			},
+			{
+				Name:           "Auto Two",
+				ActivationMode: "manual",
+				Enabled:        true,
+				PlanDocument: store.SessionPlanDocument{
+					Title:       "Plan 2",
+					Checkpoints: []store.SessionPlanCheckpoint{{ID: "cp-2", Title: "Step 2", Status: "pending"}},
+				},
+			},
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("create worker: %v", err)
+	}
+	workerID := created.ID
+	auto1 := created.Automations[0].ID
+	auto2 := created.Automations[1].ID
+
+	// Admit run for auto1 and run for auto2
+	_, err = ws.RecordWorkerRun("acct-test", store.WorkerRunRecord{
+		ID:                 "wrun_auto1_1",
+		AccountScopeID:     "acct-test",
+		WorkerID:           workerID,
+		WorkerRevision:     1,
+		AutomationID:       auto1,
+		AutomationRevision: 1,
+		RequestSource:      "trigger",
+		Status:             "admitted",
+	})
+	if err != nil {
+		t.Fatalf("record run 1: %v", err)
+	}
+
+	_, err = ws.RecordWorkerRun("acct-test", store.WorkerRunRecord{
+		ID:                 "wrun_auto2_1",
+		AccountScopeID:     "acct-test",
+		WorkerID:           workerID,
+		WorkerRevision:     1,
+		AutomationID:       auto2,
+		AutomationRevision: 1,
+		RequestSource:      "trigger",
+		Status:             "admitted",
+	})
+	if err != nil {
+		t.Fatalf("record run 2: %v", err)
+	}
+
+	// Disable auto1 with expected_worker_revision=1
+	w := executeWorkerAPI(h, http.MethodPost, fmt.Sprintf("/%s/automations/%s/disable", workerID, auto1), `{"expected_worker_revision":1}`, workerAPICallOptions{
+		scopes: []string{"automations:write"},
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("disable auto1 expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Verify auto1 is disabled, run for auto1 is cancelled, but run for auto2 is still admitted
+	workerRec, _, _ := ws.GetWorker("acct-test", workerID)
+	for _, a := range workerRec.Automations {
+		if a.ID == auto1 && a.Enabled {
+			t.Fatalf("auto1 should be disabled")
+		}
+		if a.ID == auto2 && !a.Enabled {
+			t.Fatalf("auto2 should remain enabled")
+		}
+	}
+
+	run1, _, _ := ws.GetWorkerRun("acct-test", workerID, "wrun_auto1_1")
+	if run1.Status != "cancelled" || run1.Error != "automation disabled" {
+		t.Fatalf("run1 should be cancelled: status=%q err=%q", run1.Status, run1.Error)
+	}
+
+	run2, _, _ := ws.GetWorkerRun("acct-test", workerID, "wrun_auto2_1")
+	if run2.Status != "admitted" {
+		t.Fatalf("run2 should remain admitted: %s", run2.Status)
+	}
+
+	// Triggering disabled auto1 fails with 409
+	w = executeWorkerAPI(h, http.MethodPost, fmt.Sprintf("/%s/automations/%s/trigger", workerID, auto1), `{"payload":{}}`, workerAPICallOptions{
+		scopes: []string{"automations:write"},
+	})
+	if w.Code != http.StatusConflict {
+		t.Fatalf("trigger disabled automation expected 409, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Re-enable auto1 with expected_worker_revision=2
+	w = executeWorkerAPI(h, http.MethodPost, fmt.Sprintf("/%s/automations/%s/enable", workerID, auto1), `{"expected_worker_revision":2}`, workerAPICallOptions{
+		scopes: []string{"automations:write"},
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("enable auto1 expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	workerRec, _, _ = ws.GetWorker("acct-test", workerID)
+	for _, a := range workerRec.Automations {
+		if a.ID == auto1 && !a.Enabled {
+			t.Fatalf("auto1 should be enabled")
+		}
+	}
+}
+
+// Purpose: Prove that direct requests and test runs admit runs into the execution store, test runs are explicitly labelled request_source: "test_run", and idempotency keys deduplicate repeated submissions.
+// Invariant: Test runs do not mutate schedules or enable automations, direct requests require prompt or input, and repeated idempotency keys return existing run without duplicate admission.
+// Threat: Double-billing, duplicate runs on network retries, or test runs enabling persistent schedules.
+// Boundary: Server.handleWorkerDirectRequest, Server.handleWorkerTestRun.
+func TestWorkerAPI_Lifecycle_DirectRequest_And_TestRun(t *testing.T) {
+	_, db, h := setupWorkerAPITestServer(t)
+	ws := store.NewWorkerStore(db)
+
+	created, err := ws.CreateWorker("acct-test", "user-test", store.CreateWorkerRequest{
+		Name:           "Execution Worker",
+		Instructions:   "Handle runs.",
+		IdempotencyKey: "exec-test-1",
+		Automations: []store.WorkerAutomationDefinition{
+			{
+				Name:           "Heartbeat Auto",
+				ActivationMode: "interval",
+				Schedule:       &store.AutomationV2Schedule{Kind: "interval", IntervalSeconds: 3600},
+				Enabled:        false,
+				PlanDocument: store.SessionPlanDocument{
+					Title:       "Heartbeat Plan",
+					Checkpoints: []store.SessionPlanCheckpoint{{ID: "cp-1", Title: "Ping", Status: "pending"}},
+				},
+			},
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("create worker: %v", err)
+	}
+	workerID := created.ID
+	autoID := created.Automations[0].ID
+
+	// 1. Direct request without prompt or input -> 400
+	w := executeWorkerAPI(h, http.MethodPost, "/"+workerID+"/direct", `{}`, workerAPICallOptions{
+		scopes: []string{"automations:write"},
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("empty direct request expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// 2. Direct request with prompt and idempotency key -> 201 Created
+	w = executeWorkerAPI(h, http.MethodPost, "/"+workerID+"/direct", `{"prompt":"Analyze codebase","idempotency_key":"idemp-direct-1"}`, workerAPICallOptions{
+		scopes: []string{"automations:write"},
+	})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("valid direct request expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	var directResp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &directResp)
+	directRun := directResp["run"].(map[string]any)
+	directRunID := directRun["id"].(string)
+	if directRun["request_source"].(string) != "direct" {
+		t.Fatalf("request_source mismatch: %v", directRun["request_source"])
+	}
+
+	// 3. Repeated direct request with same idempotency key -> 200 OK deduplicated
+	w = executeWorkerAPI(h, http.MethodPost, "/"+workerID+"/direct", `{"prompt":"Analyze codebase","idempotency_key":"idemp-direct-1"}`, workerAPICallOptions{
+		scopes: []string{"automations:write"},
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("repeated direct request expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var dupResp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &dupResp)
+	if dupResp["deduplicated"] != true || dupResp["run"].(map[string]any)["id"].(string) != directRunID {
+		t.Fatalf("expected deduplicated same run: %+v", dupResp)
+	}
+
+	// 4. Test run with prompt and automation_id -> 201 Created
+	w = executeWorkerAPI(h, http.MethodPost, "/"+workerID+"/test", fmt.Sprintf(`{"automation_id":%q,"prompt":"Test ping"}`, autoID), workerAPICallOptions{
+		scopes: []string{"automations:write"},
+	})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("test run expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	var testResp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &testResp)
+	testRun := testResp["run"].(map[string]any)
+	if testRun["request_source"].(string) != "test_run" {
+		t.Fatalf("test run request_source mismatch: %v", testRun["request_source"])
+	}
+	inputMap := testRun["input"].(map[string]any)
+	if inputMap["test_run"] != true {
+		t.Fatalf("expected test_run input flag: %v", inputMap)
+	}
+
+	// Verify worker automation schedule remained disabled!
+	workerRec, _, _ := ws.GetWorker("acct-test", workerID)
+	if workerRec.Automations[0].Enabled {
+		t.Fatalf("test run must not enable automation schedule")
+	}
+}
+
+// Purpose: Prove that external trigger tokens can dispatch triggers to their assigned worker and automation, but cannot enumerate, manage, or access foreign workers.
+// Invariant: Scoped trigger tokens have least-privilege dispatch-only authority; cross-worker access and management access fail closed with 403 Forbidden. Idempotency keys prevent duplicate dispatch.
+// Threat: Privilege escalation from webhook/trigger integration to full worker management, cross-tenant or cross-worker trigger spoofing.
+// Boundary: Server.authenticateWorkerRequest, handleWorkers, Server.handleWorkerTrigger, Server.handleWorkerToken.
+func TestWorkerAPI_Lifecycle_ScopedTrigger_AuthAndDispatch(t *testing.T) {
+	_, db, h := setupWorkerAPITestServer(t)
+	ws := store.NewWorkerStore(db)
+
+	created, err := ws.CreateWorker("acct-test", "user-test", store.CreateWorkerRequest{
+		Name:           "Trigger Target Worker",
+		Instructions:   "Respond to webhook.",
+		IdempotencyKey: "trig-target-1",
+		Automations: []store.WorkerAutomationDefinition{
+			{
+				Name:           "Webhook Auto",
+				ActivationMode: "external_trigger",
+				Trigger:        &store.WorkerTriggerConfig{TriggerKind: "webhook"},
+				Enabled:        true,
+				PlanDocument: store.SessionPlanDocument{
+					Title:       "Webhook Plan",
+					Checkpoints: []store.SessionPlanCheckpoint{{ID: "cp-1", Title: "Handle", Status: "pending"}},
+				},
+			},
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("create worker: %v", err)
+	}
+	workerID := created.ID
+	autoID := created.Automations[0].ID
+
+	// 1. Mint a trigger token via POST /v3/workers/{id}/token
+	w := executeWorkerAPI(h, http.MethodPost, "/"+workerID+"/token", `{"name":"Webhook Client Token"}`, workerAPICallOptions{
+		scopes: []string{"automations:write"},
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("mint token expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var tokenResp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &tokenResp)
+	tokenRecord := tokenResp["record"].(map[string]any)
+	if tokenResp["worker_id"].(string) != workerID {
+		t.Fatalf("token worker_id mismatch: %v", tokenResp["worker_id"])
+	}
+
+	// Construct scoped token options matching the minted token
+	scopedTriggerOpts := workerAPICallOptions{
+		scopedToken: &store.ScopedTokenRecord{
+			ID:             tokenRecord["id"].(string),
+			AccountScopeID: "acct-test",
+			UserID:         "user-test",
+			Scopes:         []string{"workers:trigger", "automations:trigger"},
+			WorkerID:       workerID,
+		},
+	}
+
+	// 2. Dispatch trigger to this worker using the scoped token -> 201 Created
+	w = executeWorkerAPI(h, http.MethodPost, "/"+workerID+"/trigger", `{"payload":{"event":"push","ref":"refs/heads/main"},"idempotency_key":"hook-1"}`, scopedTriggerOpts)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("scoped trigger dispatch expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	var trigResp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &trigResp)
+	runID := trigResp["run"].(map[string]any)["id"].(string)
+
+	// 3. Duplicate trigger dispatch with same idempotency key -> 200 OK deduplicated
+	w = executeWorkerAPI(h, http.MethodPost, "/"+workerID+"/trigger", `{"payload":{"event":"push","ref":"refs/heads/main"},"idempotency_key":"hook-1"}`, scopedTriggerOpts)
+	if w.Code != http.StatusOK {
+		t.Fatalf("duplicate trigger dispatch expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var dupTrigResp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &dupTrigResp)
+	if dupTrigResp["deduplicated"] != true || dupTrigResp["run"].(map[string]any)["id"].(string) != runID {
+		t.Fatalf("expected deduplicated trigger run: %+v", dupTrigResp)
+	}
+
+	// 4. Dispatch to automation-specific trigger route -> 201 Created
+	w = executeWorkerAPI(h, http.MethodPost, fmt.Sprintf("/%s/automations/%s/trigger", workerID, autoID), `{"payload":{"data":"sample"}}`, scopedTriggerOpts)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("automation trigger dispatch expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// 5. Scoped token attempt on foreign worker -> 403 Forbidden
+	w = executeWorkerAPI(h, http.MethodPost, "/foreign_worker_id/trigger", `{"payload":{}}`, scopedTriggerOpts)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("scoped token on foreign worker expected 403, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "restricted to worker") {
+		t.Fatalf("error message mismatch: %s", w.Body.String())
+	}
+
+	// 6. Scoped token attempt to list workers (enumeration denial) -> 403 Forbidden
+	w = executeWorkerAPI(h, http.MethodGet, "", "", scopedTriggerOpts)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("scoped token list expected 403, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// 7. Scoped token attempt to activate / deploy worker -> 403 Forbidden
+	w = executeWorkerAPI(h, http.MethodPost, "/"+workerID+"/activate", `{"expected_revision":1,"local_bindings":{}}`, scopedTriggerOpts)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("scoped token activate expected 403, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// 8. Scoped token attempt to delete worker -> 403 Forbidden
+	w = executeWorkerAPI(h, http.MethodDelete, fmt.Sprintf("/%s?expected_revision=1", workerID), "", scopedTriggerOpts)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("scoped token delete expected 403, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// Purpose: Prove that worker runs can be listed with pagination, inspected individually with deliverables, and non-terminal runs can be cancelled.
+// Invariant: Run status transitions are monotonic; cancelling terminal runs is rejected with conflict.
+// Threat: Corrupting run status or modifying completed execution outcomes.
+// Boundary: Server.handleWorkerRuns, Server.handleWorkerRunByID, Server.handleWorkerRunCancel.
+func TestWorkerAPI_Lifecycle_RunInspectionAndCancellation(t *testing.T) {
+	_, db, h := setupWorkerAPITestServer(t)
+	ws := store.NewWorkerStore(db)
+
+	created, err := ws.CreateWorker("acct-test", "user-test", store.CreateWorkerRequest{
+		Name:           "Runs Worker",
+		Instructions:   "Test runs.",
+		IdempotencyKey: "runs-worker-1",
+	}, nil)
+	if err != nil {
+		t.Fatalf("create worker: %v", err)
+	}
+	workerID := created.ID
+
+	// Create admitted run
+	run1, err := ws.RecordWorkerRun("acct-test", store.WorkerRunRecord{
+		ID:             "wrun_inspect_1",
+		AccountScopeID: "acct-test",
+		WorkerID:       workerID,
+		WorkerRevision: 1,
+		RequestSource:  "direct",
+		Status:         "admitted",
+		Deliverables: []store.SessionPlanArtifactReference{
+			{SessionID: "sess-1", CollectionID: "col-1", VariantID: "var-1", EventSeq: 1},
+		},
+	})
+	if err != nil {
+		t.Fatalf("record run 1: %v", err)
+	}
+
+	// 1. List runs -> 200 OK
+	w := executeWorkerAPI(h, http.MethodGet, "/"+workerID+"/runs", "", workerAPICallOptions{
+		scopes: []string{"automations:read"},
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("list runs expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var listResp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &listResp)
+	runs := listResp["runs"].([]any)
+	if len(runs) != 1 {
+		t.Fatalf("expected 1 run, got %d", len(runs))
+	}
+
+	// 2. Get run by ID -> 200 OK with deliverables
+	w = executeWorkerAPI(h, http.MethodGet, fmt.Sprintf("/%s/runs/%s", workerID, run1.ID), "", workerAPICallOptions{
+		scopes: []string{"automations:read"},
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("get run expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var getResp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &getResp)
+	gotRun := getResp["run"].(map[string]any)
+	if gotRun["id"].(string) != run1.ID {
+		t.Fatalf("run ID mismatch: %v", gotRun["id"])
+	}
+	delivs := gotRun["deliverables"].([]any)
+	if len(delivs) != 1 {
+		t.Fatalf("expected 1 deliverable, got %d", len(delivs))
+	}
+
+	// 3. Cancel run -> 200 OK
+	w = executeWorkerAPI(h, http.MethodPost, fmt.Sprintf("/%s/runs/%s/cancel", workerID, run1.ID), "", workerAPICallOptions{
+		scopes: []string{"automations:write"},
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("cancel run expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Verify run status in store is cancelled
+	runRec, _, _ := ws.GetWorkerRun("acct-test", workerID, run1.ID)
+	if runRec.Status != "cancelled" || runRec.Error != "run cancelled" {
+		t.Fatalf("cancelled run mismatch: status=%q error=%q", runRec.Status, runRec.Error)
+	}
+
+	// 4. Cancelling an already cancelled run -> 409 Conflict
+	w = executeWorkerAPI(h, http.MethodPost, fmt.Sprintf("/%s/runs/%s/cancel", workerID, run1.ID), "", workerAPICallOptions{
+		scopes: []string{"automations:write"},
+	})
+	if w.Code != http.StatusConflict {
+		t.Fatalf("cancel already cancelled run expected 409, got %d: %s", w.Code, w.Body.String())
 	}
 }
 
