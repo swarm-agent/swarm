@@ -2369,7 +2369,7 @@ function MinimalTaskCard({
       )}
 
       {/* 3. Out of Sync Warning Banner */}
-      {!isPendingApproval && (task.syncWarning || (task.behindCommits && task.behindCommits > 0)) && (
+      {!isPendingApproval && (Boolean(task.syncWarning) || (task.behindCommits ?? 0) > 0) && (
         <div className="flex items-center justify-between p-2 rounded-lg bg-rose-950/30 border border-rose-500/50 text-rose-200 text-[11px] gap-2">
           <div className="flex items-center gap-2 min-w-0">
             <AlertTriangle size={12} className="text-rose-400 flex-shrink-0" />
