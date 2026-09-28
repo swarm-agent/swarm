@@ -51,6 +51,9 @@ func (m *workerRealtimeMutation) put(key string, value any) error {
 	if err != nil {
 		return err
 	}
+	if len(data) > 2*1024*1024 {
+		return fmt.Errorf("%w: worker record exceeds 2 MiB", ErrWorkerInvalid)
+	}
 	if m.writes == nil {
 		m.writes = make(map[string][]byte)
 	}

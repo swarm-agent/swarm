@@ -1097,6 +1097,12 @@ export interface PortableAutomationDefinition {
   deliverable_requirements?: WorkerDeliverableRequirement[];
 }
 
+export interface PortableWorkerProvenance {
+  source_worker_id?: string;
+  source_revision?: number;
+  exported_at?: number;
+}
+
 export interface PortableWorkerDefinition {
   schema_version: 1;
   name: string;
@@ -1106,13 +1112,13 @@ export interface PortableWorkerDefinition {
   capabilities?: WorkerCapabilityRequest[] | null;
   workspace_requirements?: WorkerWorkspaceRequirement[] | null;
   automations?: PortableAutomationDefinition[] | null;
-  provenance?: WorkerProvenance | null;
+  provenance?: PortableWorkerProvenance | null;
 }
 
 export interface CreateWorkerParams {
   name: string;
   description?: string;
-  instructions: string;
+  instructions?: string;
   requested_capabilities?: WorkerCapabilityRequest[];
   workspace_requirements?: WorkerWorkspaceRequirement[];
   automations?: WorkerAutomationInput[];
@@ -1126,7 +1132,7 @@ export interface UpdateWorkerParams {
   instructions?: string;
   requested_capabilities?: WorkerCapabilityRequest[];
   workspace_requirements?: WorkerWorkspaceRequirement[];
-  automations?: WorkerAutomationInput[];
+  automations?: (WorkerAutomationInput & { id?: string })[];
   metadata?: Record<string, unknown>;
   change_summary?: string;
 }

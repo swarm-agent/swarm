@@ -252,9 +252,9 @@ type createWorkerRequestBody struct {
 	Name                  string                                   `json:"name"`
 	Description           string                                   `json:"description,omitempty"`
 	Instructions          string                                   `json:"instructions,omitempty"`
-	RequestedCapabilities []pebblestore.WorkerCapabilityRequest     `json:"requested_capabilities,omitempty"`
-	WorkspaceRequirements []pebblestore.WorkerWorkspaceRequirement  `json:"workspace_requirements,omitempty"`
-	Automations           []pebblestore.WorkerAutomationDefinition  `json:"automations,omitempty"`
+	RequestedCapabilities []pebblestore.WorkerCapabilityRequest    `json:"requested_capabilities,omitempty"`
+	WorkspaceRequirements []pebblestore.WorkerWorkspaceRequirement `json:"workspace_requirements,omitempty"`
+	Automations           []pebblestore.WorkerAutomationDefinition `json:"automations,omitempty"`
 	Metadata              map[string]any                           `json:"metadata,omitempty"`
 	IdempotencyKey        string                                   `json:"idempotency_key"`
 }
@@ -426,9 +426,9 @@ type updateWorkerRequestBody struct {
 	Name                  *string                                  `json:"name,omitempty"`
 	Description           *string                                  `json:"description,omitempty"`
 	Instructions          *string                                  `json:"instructions,omitempty"`
-	RequestedCapabilities []pebblestore.WorkerCapabilityRequest     `json:"requested_capabilities,omitempty"`
-	WorkspaceRequirements []pebblestore.WorkerWorkspaceRequirement  `json:"workspace_requirements,omitempty"`
-	Automations           []pebblestore.WorkerAutomationDefinition  `json:"automations,omitempty"`
+	RequestedCapabilities []pebblestore.WorkerCapabilityRequest    `json:"requested_capabilities,omitempty"`
+	WorkspaceRequirements []pebblestore.WorkerWorkspaceRequirement `json:"workspace_requirements,omitempty"`
+	Automations           []pebblestore.WorkerAutomationDefinition `json:"automations,omitempty"`
 	Metadata              map[string]any                           `json:"metadata,omitempty"`
 	ChangeSummary         string                                   `json:"change_summary,omitempty"`
 }

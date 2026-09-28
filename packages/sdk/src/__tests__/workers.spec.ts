@@ -340,49 +340,9 @@ test('SwarmWorkersNamespace: update worker sends expected_revision in body only 
   }
 });
 
-test('SwarmWorkersNamespace: delete worker sends expected_revision and validates nonblank ID', async () => {
-  let receivedMethod = '';
-  let receivedPath = '';
-
-  const server = http.createServer((req, res) => {
-    receivedMethod = req.method || '';
-    receivedPath = req.url || '';
-    if (req.method === 'DELETE' && req.url === '/v3/workers/worker_del?expected_revision=3') {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true }));
-    } else {
-      res.writeHead(404);
-      res.end();
-    }
-  });
-
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
-  const port = (server.address() as any).port;
-
-  try {
-    const transport = new SwarmTransport({
-      baseUrl: `http://127.0.0.1:${port}`,
-      token: 'swk_test_auth',
-      defaultHeaders: {},
-      timeoutMs: 5000,
-    });
-    const workers = new SwarmWorkersNamespace(transport);
-
-    await assert.rejects(async () => {
-      await workers.delete('', 1);
-    }, SwarmValidationError);
-
-    await assert.rejects(async () => {
-      await workers.delete('worker_del', 0);
-    }, SwarmValidationError);
-
-    const ok = await workers.delete('worker_del', 3);
-    assert.equal(ok, true);
-    assert.equal(receivedMethod, 'DELETE');
-    assert.equal(receivedPath, '/v3/workers/worker_del?expected_revision=3');
-  } finally {
-    await new Promise<void>((resolve) => server.close(() => resolve()));
-  }
+// Worker deletion requires checkpoint-two cancellation barriers; do not advertise a missing route.
+test('SwarmWorkersNamespace: worker deletion is not exposed before safe stop support', () => {
+  assert.equal('delete' in SwarmWorkersNamespace.prototype, false);
 });
 
 test('SwarmWorkersNamespace: validate sends raw PortableWorkerDefinition and parses { valid: true, worker: doc }', async () => {
@@ -644,4 +604,18 @@ test('SwarmWorkersNamespace: attach and update send body {expected_worker_revisi
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
+});
+
+// Requirement: unsupported authority fields fail locally rather than disappearing during serialization.
+// Boundary: worker SDK request validation; no transport should be invoked on rejection.
+test('SwarmWorkersNamespace: rejects caller authority and invalid revision without transport', async () => {
+  let calls = 0;
+  const transport = { request: async () => { calls++; throw new Error('unexpected transport'); } } as unknown as SwarmTransport;
+  const workers = new SwarmWorkersNamespace(transport);
+  await assert.rejects(workers.create({ name: 'Worker', idempotency_key: 'key', id: 'forged' } as any), SwarmValidationError);
+  await assert.rejects(workers.update('worker', 1, { local_bindings: { primary: 'foreign' } } as any), SwarmValidationError);
+  for (const revision of [NaN, Infinity, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+    await assert.rejects(workers.update('worker', revision, { name: 'Updated' }), SwarmValidationError);
+  }
+  assert.equal(calls, 0);
 });

@@ -614,7 +614,7 @@ func TestWorkerRunsLinkageAndRevisionPinning(t *testing.T) {
 		AutomationRevision: 1,
 		OccurrenceID:       "occ-123",
 		SessionID:          "sess-456",
-		RequestSource:      "manual",
+		RequestSource:      "direct",
 		Status:             "succeeded",
 		Deliverables: []SessionPlanArtifactReference{
 			{Role: "workspace_file", Path: "output.txt"},
@@ -1292,7 +1292,7 @@ func TestWorkerStrictPortableSchemaValidation(t *testing.T) {
 		]
 	}`
 	_, err = ValidatePortableWorkerDefinition([]byte(nestedSettings), nil)
-	if err == nil || !strings.Contains(err.Error(), "nested AutomationV2 or WorkerV2") {
+	if err == nil || !strings.Contains(err.Error(), "nested automation or worker settings") {
 		t.Fatalf("expected nested settings error, got %v", err)
 	}
 
@@ -1583,7 +1583,7 @@ func TestWorkerRecordRunValidation(t *testing.T) {
 		AutomationID:       autoID,
 		AutomationRevision: 1,
 		OccurrenceID:       "occ_unique_1",
-		RequestSource:      "manual",
+		RequestSource:      "direct",
 		Status:             "running",
 	})
 	if err != nil {
@@ -2358,5 +2358,74 @@ func TestWorkerRealtimePayloadValidation(t *testing.T) {
 	}
 	if receivedRecord.AccountScopeID != "acct-rt" {
 		t.Fatalf("expected AccountScopeID acct-rt, got %s", receivedRecord.AccountScopeID)
+	}
+}
+
+// Requirement: migration preserves real occurrence snapshots and never invents missing history.
+// Threat: latest instructions get falsely attributed to old runs, or revision gaps cause unbounded writes.
+// Boundary: WorkerStore.MigrateLegacyAutomationsV2 and GetWorkerRevision; temporary Pebble is the narrowest durable layer.
+func TestWorkerMigrationRetainsOnlyObservedSnapshots(t *testing.T) {
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ws := NewWorkerStore(db)
+	latest := AutomationV2Record{AutomationID: "av2_history", Generation: 1000000, AutomationV2Proposal: AutomationV2Proposal{AccountID: "acct-history", SessionID: "author-history", Document: SessionPlanDocument{Title: "Latest", Info: SessionPlanInfo{Context: "Latest instructions"}}}}
+	if err := db.PutJSON(fmt.Sprintf("automation/v2/accepted/%x/%x", "acct-history", "av2_history"), latest); err != nil {
+		t.Fatal(err)
+	}
+	old := latest
+	old.Generation = 2
+	old.Document.Title = "Old"
+	old.Document.Info.Context = "Old instructions"
+	occurrence := AutomationV2Occurrence{ID: "occ-history", Record: old, SessionID: "execution-history", State: "succeeded"}
+	if err := db.PutJSON(automationV2OccurrencePrefix("acct-history", "author-history")+"observed", occurrence); err != nil {
+		t.Fatal(err)
+	}
+	summary, err := ws.MigrateLegacyAutomationsV2("acct-history")
+	if err != nil || summary.MigratedCount != 1 {
+		t.Fatalf("migration: %+v %v", summary, err)
+	}
+	history, _, err := ws.ListWorkerRevisions("acct-history", "av2_history", 100, "")
+	if err != nil || len(history) != 2 {
+		t.Fatalf("must retain exactly two observed revisions: %d %v", len(history), err)
+	}
+	snapshot, ok, err := ws.GetWorkerRevision("acct-history", "av2_history", 2)
+	if err != nil || !ok || snapshot.Worker.Instructions != "Old instructions" {
+		t.Fatalf("old definition lost: %+v %v", snapshot, err)
+	}
+	if _, ok, err := ws.GetWorkerRevision("acct-history", "av2_history", 1); err != nil || ok {
+		t.Fatalf("invented revision: %v %v", ok, err)
+	}
+}
+
+// Requirement: accepted run input cannot be rewritten or cleared by status updates.
+// Threat: history misrepresents what was authorized. Boundary: RecordWorkerRun atomic store mutation.
+func TestWorkerAcceptedInputImmutable(t *testing.T) {
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ws := NewWorkerStore(db)
+	w, err := ws.CreateWorker("acct-input", "user", CreateWorkerRequest{Name: "Input"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := ws.RecordWorkerRun("acct-input", WorkerRunRecord{WorkerID: w.ID, Input: map[string]any{"task": "original"}, SessionID: "execution", Status: "running"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, input := range []map[string]any{nil, {"task": "changed"}} {
+		changed := run
+		changed.Input = input
+		if _, err := ws.RecordWorkerRun("acct-input", changed); !errors.Is(err, ErrWorkerConflict) {
+			t.Fatalf("accepted rewrite: %v", err)
+		}
+	}
+	got, ok, err := ws.GetWorkerRun("acct-input", w.ID, run.ID)
+	if err != nil || !ok || got.Input["task"] != "original" {
+		t.Fatalf("run changed: %+v %v", got, err)
 	}
 }

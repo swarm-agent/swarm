@@ -30,7 +30,7 @@ export class SwarmWorkersNamespace {
 
   /**
    * Creates a new durable worker in idle state.
-   * Requires nonblank name, instructions, and idempotency_key.
+   * Requires nonblank name and idempotency_key; instructions may be empty.
    * Server assigns stable identity and initial revision 1.
    */
   async create(params: CreateWorkerParams): Promise<WorkerRecord> {
@@ -40,8 +40,11 @@ export class SwarmWorkersNamespace {
     if (!params.name || typeof params.name !== 'string' || params.name.trim() === '') {
       throw new SwarmValidationError('Worker name is required and cannot be blank');
     }
-    if (!params.instructions || typeof params.instructions !== 'string' || params.instructions.trim() === '') {
-      throw new SwarmValidationError('Worker instructions are required and cannot be blank');
+    if (params.instructions !== undefined && typeof params.instructions !== 'string') {
+      throw new SwarmValidationError('Worker instructions must be a string');
+    }
+    if ('id' in params || 'local_bindings' in params) {
+      throw new SwarmValidationError('Worker identity and local bindings are server-owned');
     }
     if (!params.idempotency_key || typeof params.idempotency_key !== 'string' || params.idempotency_key.trim() === '') {
       throw new SwarmValidationError('Worker idempotency_key is required and cannot be blank');
@@ -146,6 +149,7 @@ export class SwarmWorkersNamespace {
     if (!res.data || typeof res.data !== 'object' || !Array.isArray(res.data.workers)) {
       throw new SwarmValidationError('Malformed response envelope: expected workers array');
     }
+    if (res.data.next_cursor !== undefined && typeof res.data.next_cursor !== 'string') throw new SwarmValidationError('Malformed response cursor');
     return {
       workers: res.data.workers,
       next_cursor: typeof res.data.next_cursor === 'string' && res.data.next_cursor.length > 0 ? res.data.next_cursor : undefined,
@@ -167,6 +171,7 @@ export class SwarmWorkersNamespace {
       throw new SwarmValidationError('Update parameters are required');
     }
 
+    if ('local_bindings' in params) throw new SwarmValidationError('Local bindings require approved activation');
     const body: Record<string, unknown> = {
       expected_revision: expectedRevision,
     };
@@ -198,30 +203,6 @@ export class SwarmWorkersNamespace {
       throw new SwarmValidationError('Malformed response envelope: expected worker record');
     }
     return res.data.worker;
-  }
-
-  /**
-   * Deletes a worker with explicit revision guard.
-   */
-  async delete(id: string, expectedRevision: number): Promise<boolean> {
-    if (!id || typeof id !== 'string' || id.trim() === '') {
-      throw new SwarmValidationError('Worker ID is required and cannot be blank');
-    }
-    if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1) {
-      throw new SwarmValidationError('Explicit numeric expectedRevision >= 1 is required');
-    }
-
-    const res = await this.transport.request<{ ok?: boolean }>(
-      `/v3/workers/${encodeURIComponent(id.trim())}?expected_revision=${expectedRevision}`,
-      {
-        method: 'DELETE',
-      }
-    );
-
-    if (!res.data || typeof res.data !== 'object' || res.data.ok !== true) {
-      throw new SwarmValidationError('Malformed response envelope: expected ok: true');
-    }
-    return true;
   }
 
   /**

@@ -2286,17 +2286,25 @@ func (ws *WorkerStore) RecordWorkerRun(account string, run WorkerRunRecord) (Wor
 		if existingRun.AutomationRevision != run.AutomationRevision {
 			return WorkerRunRecord{}, fmt.Errorf("%w: cannot rewrite pinned automation revision from %d to %d", ErrWorkerConflict, existingRun.AutomationRevision, run.AutomationRevision)
 		}
-		if existingRun.OccurrenceID != "" && run.OccurrenceID != existingRun.OccurrenceID {
+		if run.OccurrenceID != existingRun.OccurrenceID {
 			return WorkerRunRecord{}, fmt.Errorf("%w: cannot change or clear immutable occurrence id", ErrWorkerConflict)
 		}
 		if existingRun.RequestSource != "" && run.RequestSource != existingRun.RequestSource {
 			return WorkerRunRecord{}, fmt.Errorf("%w: cannot change or clear immutable request source", ErrWorkerConflict)
 		}
-		if existingRun.SessionID != "" && run.SessionID != "" && run.SessionID != existingRun.SessionID {
+		if existingRun.SessionID != "" && run.SessionID != existingRun.SessionID {
 			return WorkerRunRecord{}, fmt.Errorf("%w: cannot change immutable session id", ErrWorkerConflict)
 		}
-		if existingRun.Input != nil && run.Input == nil {
-			run.Input = existingRun.Input
+		oldInput, err := json.Marshal(existingRun.Input)
+		if err != nil {
+			return WorkerRunRecord{}, err
+		}
+		newInput, err := json.Marshal(run.Input)
+		if err != nil {
+			return WorkerRunRecord{}, err
+		}
+		if !bytes.Equal(oldInput, newInput) {
+			return WorkerRunRecord{}, fmt.Errorf("%w: accepted input is immutable", ErrWorkerConflict)
 		}
 		run.CreatedAt = existingRun.CreatedAt
 	} else {
@@ -2463,9 +2471,14 @@ func (ws *WorkerStore) MigrateLegacyAutomationsV2(account string) (WorkerMigrati
 	var toMigrate []AutomationV2Record
 	hasPreflightErrors := false
 	scannedRecords := 0
+	migrationBytes := 0
 
 	for valid := it.First(); valid; valid = it.Next() {
 		scannedRecords++
+		migrationBytes += len(it.Value())
+		if migrationBytes > 32*1024*1024 {
+			return WorkerMigrationSummary{}, errors.New("migration byte budget exceeded")
+		}
 		if scannedRecords > 10000 {
 			summary.FailedCount++
 			summary.Errors = append(summary.Errors, "migration scan budget exceeded (10000 records)")
@@ -2531,7 +2544,11 @@ func (ws *WorkerStore) MigrateLegacyAutomationsV2(account string) (WorkerMigrati
 
 		// Check if already migrated
 		var existing WorkerRecord
-		if ok, err := ws.store.GetJSON(KeyWorker(account, targetWorkerID), &existing); err == nil && ok {
+		exists, readErr := ws.store.GetJSON(KeyWorker(account, targetWorkerID), &existing)
+		if readErr != nil {
+			return summary, readErr
+		}
+		if exists {
 			// Exact provenance session + proposal + worker for repeat
 			if existing.Provenance != nil && existing.Provenance.MigratedAt > 0 &&
 				existing.Provenance.SourceWorkerID == rec.AutomationID &&
@@ -2677,8 +2694,8 @@ func (ws *WorkerStore) MigrateLegacyAutomationsV2(account string) (WorkerMigrati
 			continue
 		}
 
-		// Retain snapshot worker revisions: write all revisions 1..rev
-		for r := uint64(1); r <= w.Revision; r++ {
+		// Only persist revisions for which legacy data actually contains a snapshot.
+		for _, r := range []uint64{w.Revision} {
 			snapW := w
 			snapW.Revision = r
 			hist := WorkerRevisionRecord{
@@ -2728,9 +2745,15 @@ func (ws *WorkerStore) MigrateLegacyAutomationsV2(account string) (WorkerMigrati
 			summary.Errors = append(summary.Errors, fmt.Sprintf("scan occurrences for session %s: %v", rec.SessionID, occErr))
 			continue
 		}
+		historicalSnapshots := make(map[uint64][]byte)
 		occCount := 0
 		for occValid := occIt.First(); occValid; occValid = occIt.Next() {
 			occCount++
+			migrationBytes += len(occIt.Value())
+			if migrationBytes > 32*1024*1024 {
+				occIt.Close()
+				return WorkerMigrationSummary{}, errors.New("migration byte budget exceeded")
+			}
 			if occCount > 10000 {
 				summary.FailedCount++
 				summary.Errors = append(summary.Errors, fmt.Sprintf("occurrence scan budget exceeded for session %s", rec.SessionID))
@@ -2747,7 +2770,28 @@ func (ws *WorkerStore) MigrateLegacyAutomationsV2(account string) (WorkerMigrati
 			}
 			occRev := o.Record.Generation
 			if occRev == 0 {
-				occRev = rev
+				occRev = 1
+			}
+			if occRev > w.Revision {
+				return WorkerMigrationSummary{}, fmt.Errorf("%w: occurrence revision exceeds accepted definition", ErrWorkerConflict)
+			}
+			if occRev != w.Revision {
+				snapshot, err := legacyWorkerSnapshot(account, o.Record, now)
+				if err != nil {
+					return WorkerMigrationSummary{}, err
+				}
+				history := WorkerRevisionRecord{WorkerID: w.ID, AccountScopeID: account, Revision: occRev, Worker: snapshot, CommittedAt: now, CommittedBy: "migration", ChangeSummary: "retained legacy occurrence snapshot"}
+				raw, err := json.Marshal(history)
+				if err != nil {
+					return WorkerMigrationSummary{}, err
+				}
+				if prior, ok := historicalSnapshots[occRev]; ok && !bytes.Equal(prior, raw) {
+					return WorkerMigrationSummary{}, fmt.Errorf("%w: divergent occurrence snapshots", ErrWorkerConflict)
+				}
+				historicalSnapshots[occRev] = raw
+				if err := batch.Set([]byte(KeyWorkerHistory(account, w.ID, occRev)), raw, nil); err != nil {
+					return WorkerMigrationSummary{}, err
+				}
 			}
 			delivs := o.Deliverables
 			if delivs == nil {
@@ -2817,9 +2861,83 @@ func (ws *WorkerStore) MigrateLegacyAutomationsV2(account string) (WorkerMigrati
 		return summary, nil
 	}
 
+	if batch.Len() > 64*1024*1024 {
+		return WorkerMigrationSummary{}, errors.New("migration write budget exceeded")
+	}
 	if err := batch.Commit(pebble.Sync); err != nil {
 		summary.MigratedCount = 0
 		return summary, err
 	}
 	return summary, nil
+}
+
+// legacyWorkerSnapshot converts only the retained occurrence definition, never the latest definition.
+func legacyWorkerSnapshot(account string, rec AutomationV2Record, now int64) (WorkerRecord, error) {
+	if rec.AccountID != account || !workerIDRegexp.MatchString(rec.AutomationID) {
+		return WorkerRecord{}, fmt.Errorf("%w: invalid legacy snapshot ownership", ErrWorkerConflict)
+	}
+	rev := rec.Generation
+	if rev == 0 {
+		rev = 1
+	}
+	name := strings.TrimSpace(rec.Document.Title)
+	if name == "" {
+		name = rec.AutomationID
+	}
+	instructions := strings.TrimSpace(rec.Document.Info.Context)
+	if instructions == "" {
+		instructions = strings.TrimSpace(rec.Document.Info.Goal)
+	}
+	state := WorkerLifecycleStatePaused
+	if rec.Cancelled || rec.Archived {
+		state = WorkerLifecycleStateArchived
+	} else if rec.Enabled {
+		state = WorkerLifecycleStateActive
+	}
+	w := WorkerRecord{ID: rec.AutomationID, AccountScopeID: account, Name: name, Description: strings.TrimSpace(rec.Document.Info.Goal), Instructions: instructions, Revision: rev, LifecycleState: state, CreatedAt: rec.CreatedAt, UpdatedAt: rec.AcceptedAt,
+		Provenance: &WorkerProvenance{SourceWorkerID: rec.AutomationID, SourceSessionID: rec.SessionID, SourceProposalID: rec.ProposalID, MigratedAt: now}}
+	settings := rec.Document.AutomationV2
+	if settings == nil {
+		settings = rec.Document.WorkerV2
+	}
+	mode := "manual"
+	var schedule *AutomationV2Schedule
+	var trigger *WorkerTriggerConfig
+	if settings != nil {
+		switch settings.Schedule.Kind {
+		case "interval", "cron":
+			mode = settings.Schedule.Kind
+			value := settings.Schedule
+			schedule = &value
+		case "trigger":
+			mode = "external_trigger"
+			trigger = &WorkerTriggerConfig{TriggerKind: "webhook"}
+		default:
+			return WorkerRecord{}, errors.New("unsupported legacy schedule")
+		}
+	}
+	if len(rec.Document.Checkpoints) > 0 {
+		w.Automations = []WorkerAutomationDefinition{{ID: rec.AutomationID, WorkerID: w.ID, Name: name, Description: w.Description, ActivationMode: mode, Schedule: schedule, Trigger: trigger, Enabled: rec.Enabled && !rec.Cancelled && !rec.Archived, PlanDocument: rec.Document, Revision: rev, CreatedAt: rec.CreatedAt, UpdatedAt: rec.AcceptedAt}}
+	}
+	w.LocalBindings = map[string]string{}
+	if rec.WorkspaceID != "" {
+		w.LocalBindings["primary"] = rec.WorkspaceID
+		w.WorkspaceRequirements = append(w.WorkspaceRequirements, WorkerWorkspaceRequirement{Role: "primary", Description: "Primary workspace", Required: true})
+	}
+	ids := append([]string(nil), rec.WorkspaceIDs...)
+	if settings != nil {
+		ids = append(ids, settings.WorkspaceIDs...)
+	}
+	seen := map[string]bool{rec.WorkspaceID: true}
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		role := fmt.Sprintf("workspace_%d", len(seen)-1)
+		w.LocalBindings[role] = id
+		w.WorkspaceRequirements = append(w.WorkspaceRequirements, WorkerWorkspaceRequirement{Role: role, Description: "Workspace grant"})
+	}
+	return w, nil
 }

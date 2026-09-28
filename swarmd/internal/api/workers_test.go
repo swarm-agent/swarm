@@ -509,9 +509,9 @@ func TestWorkerAPI_CrossAccountIsolation(t *testing.T) {
 	}
 
 	// Verify database: account-2 has 0 workers
-	dbList, _, err := ws.ListWorkers("acct-2", store.ListWorkersQuery{})
-	if err != nil || len(dbList) != 0 {
-		t.Fatalf("account-2 unexpectedly has %d workers in database", len(dbList))
+	dbList, err := ws.ListWorkers("acct-2", store.ListWorkersQuery{})
+	if err != nil || len(dbList.Workers) != 0 {
+		t.Fatalf("account-2 unexpectedly has %d workers in database", len(dbList.Workers))
 	}
 }
 
@@ -698,9 +698,9 @@ func TestWorkerAPI_StrictParsingAndRejections(t *testing.T) {
 
 	// Nonmutation check: verify zero workers were created by all rejected requests
 	ws := store.NewWorkerStore(db)
-	list, _, err := ws.ListWorkers("acct-test", store.ListWorkersQuery{})
-	if err != nil || len(list) != 0 {
-		t.Fatalf("expected 0 workers in store after rejected requests, got %d", len(list))
+	list, err := ws.ListWorkers("acct-test", store.ListWorkersQuery{})
+	if err != nil || len(list.Workers) != 0 {
+		t.Fatalf("expected 0 workers in store after rejected requests, got %d", len(list.Workers))
 	}
 }
 
@@ -1093,28 +1093,28 @@ func TestWorkerAPI_MigrateLegacyAutomations(t *testing.T) {
 	legacyKey := fmt.Sprintf("automation/v2/accepted/%x/%x", account, "legacy_worker_1")
 	legacyRecord := store.AutomationV2Record{
 		AutomationID: "legacy_worker_1",
-		Generation: 1,
+		Generation:   1,
 		AutomationV2Proposal: store.AutomationV2Proposal{
-		AccountID: account,
-		SessionID:   "session_leg_1",
-		WorkspaceID: "ws_leg_1",
-		Document: store.SessionPlanDocument{
-			Title: "Legacy Ingest Worker",
-			Info: store.SessionPlanInfo{
-				Goal: "Ingest daily feeds",
-			},
-			AutomationV2: &store.AutomationV2Settings{
-				SchemaVersion: 2,
-				Schedule: store.AutomationV2Schedule{
-					Kind:            "interval",
-					IntervalSeconds: 3600,
+			AccountID:   account,
+			SessionID:   "session_leg_1",
+			WorkspaceID: "ws_leg_1",
+			Document: store.SessionPlanDocument{
+				Title: "Legacy Ingest Worker",
+				Info: store.SessionPlanInfo{
+					Goal: "Ingest daily feeds",
 				},
-				Expiration:       store.AutomationV2Expiration{Kind: "indefinite"},
-				Missed:           "skip",
-				Overlap:          "serialize",
-				ActivateOnAccept: true,
+				AutomationV2: &store.AutomationV2Settings{
+					SchemaVersion: 2,
+					Schedule: store.AutomationV2Schedule{
+						Kind:            "interval",
+						IntervalSeconds: 3600,
+					},
+					Expiration:       store.AutomationV2Expiration{Kind: "indefinite"},
+					Missed:           "skip",
+					Overlap:          "serialize",
+					ActivateOnAccept: true,
+				},
 			},
-		},
 		},
 	}
 	if err := db.PutJSON(legacyKey, legacyRecord); err != nil {

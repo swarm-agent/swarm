@@ -2,11 +2,11 @@ package session
 
 import (
 	"context"
-	"errors"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"strings"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -38,11 +38,12 @@ func testExecutablePlan(title string) pebblestore.SessionPlanDocument {
 		},
 		Checkpoints: []pebblestore.SessionPlanCheckpoint{
 			{
-				ID:        "cp-1",
-				Title:     "Execute checks",
-				Objective: "Run verified checklist",
-				Status:    "pending",
-				Order:     1,
+				ID:                 "cp-1",
+				Title:              "Execute checks",
+				Objective:          "Run verified checklist",
+				Status:             "pending",
+				Order:              1,
+				AcceptanceCriteria: []string{"Checks report their result"},
 				Subtasks: []pebblestore.SessionPlanSubtask{
 					{
 						ID:     "sub-1",
@@ -75,7 +76,7 @@ func TestServiceWorkerLifecycle(t *testing.T) {
 					Kind:            "interval",
 					IntervalSeconds: 300,
 				},
-				Enabled:      true,
+				Enabled:      false,
 				PlanDocument: testExecutablePlan("Heartbeat Plan"),
 			},
 		},
@@ -99,7 +100,7 @@ func TestServiceWorkerLifecycle(t *testing.T) {
 				Name:           "Invalid Plan Job",
 				ActivationMode: "manual",
 				Enabled:        true,
-				PlanDocument: pebblestore.SessionPlanDocument{
+				PlanDocument:   pebblestore.SessionPlanDocument{
 					// Missing title and checkpoints
 				},
 			},
@@ -219,7 +220,15 @@ func TestServiceWorkerImportExport(t *testing.T) {
 		t.Fatalf("CreateWorker target: %v", err)
 	}
 
-	updatedTarget, err := svc.ImportWorkerUpdate("acct-target", "user-2", existingTarget.ID, 1, rawJSON)
+	// Source automation IDs are provenance, not permission to overwrite target IDs.
+	for i := range def.Automations {
+		def.Automations[i].ID = ""
+	}
+	updateJSON, err := json.Marshal(def)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updatedTarget, err := svc.ImportWorkerUpdate("acct-target", "user-2", existingTarget.ID, 1, updateJSON)
 	if err != nil {
 		t.Fatalf("ImportWorkerUpdate: %v", err)
 	}
@@ -252,7 +261,7 @@ func TestServiceWorkerAutomationOperations(t *testing.T) {
 			Cron:     "0 12 * * *",
 			Timezone: "America/New_York",
 		},
-		Enabled:      true,
+		Enabled:      false,
 		PlanDocument: testExecutablePlan("Noon Cron Plan"),
 	})
 	if err != nil {

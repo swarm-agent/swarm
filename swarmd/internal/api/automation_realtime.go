@@ -9,6 +9,11 @@ import (
 // ConfigureAutomationRealtime wires startup publication to the durable V3 hub.
 // Missed wakeups are repaired by scoped outbox replay, never by polling.
 func (s *Server) ConfigureAutomationRealtime(store *pebblestore.Store) {
+	store.SetWorkerPublisher(func(record pebblestore.V3RealtimeOutboxRecord) {
+		if err := s.publishCommittedV3RealtimeOutbox(record); err != nil {
+			log.Print("worker realtime wake failed; durable replay required")
+		}
+	})
 	store.SetAutomationPublisher(func(record pebblestore.V3RealtimeOutboxRecord) {
 		if err := s.publishCommittedV3RealtimeOutbox(record); err != nil {
 			log.Print("automation realtime wake failed; durable replay required")
