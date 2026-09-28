@@ -46,25 +46,25 @@ const (
 // declared program. It deliberately stores no child transcript, report, or
 // artifact content; those remain authoritative in their native stores.
 type TaskProgramRecord struct {
-	ParentSessionID   string                     `json:"parent_session_id"`
-	ProgramID         string                     `json:"program_id"`
-	DefinitionHash    string                     `json:"definition_hash"`
-	ReservationRunID  string                     `json:"reservation_run_id,omitempty"`
-	ReservationCallID string                     `json:"reservation_call_id,omitempty"`
-	Definition        TaskProgramDefinition      `json:"definition"`
-	Revision          int                        `json:"revision"`
-	ActiveStageID     string                     `json:"active_stage_id,omitempty"`
-	ParentHead        string                     `json:"parent_head,omitempty"`
-	RepositoryLane    *TaskProgramRepositoryLane `json:"repository_lane,omitempty"`
+	ParentSessionID   string                               `json:"parent_session_id"`
+	ProgramID         string                               `json:"program_id"`
+	DefinitionHash    string                               `json:"definition_hash"`
+	ReservationRunID  string                               `json:"reservation_run_id,omitempty"`
+	ReservationCallID string                               `json:"reservation_call_id,omitempty"`
+	Definition        TaskProgramDefinition                `json:"definition"`
+	Revision          int                                  `json:"revision"`
+	ActiveStageID     string                               `json:"active_stage_id,omitempty"`
+	ParentHead        string                               `json:"parent_head,omitempty"`
+	RepositoryLane    *TaskProgramRepositoryLane           `json:"repository_lane,omitempty"`
 	RepositoryLanes   map[string]TaskProgramRepositoryLane `json:"repository_lanes,omitempty"`
-	LaneHeads         map[string]string `json:"lane_heads,omitempty"`
-	State             string                     `json:"state"`
-	NextAction        string                     `json:"next_action"`
-	LastMutationID    string                     `json:"last_mutation_id,omitempty"`
-	Blocker           *TaskProgramBlocker        `json:"blocker,omitempty"`
-	Jobs              []TaskProgramJobRecord     `json:"jobs"`
-	CreatedAt         int64                      `json:"created_at"`
-	UpdatedAt         int64                      `json:"updated_at"`
+	LaneHeads         map[string]string                    `json:"lane_heads,omitempty"`
+	State             string                               `json:"state"`
+	NextAction        string                               `json:"next_action"`
+	LastMutationID    string                               `json:"last_mutation_id,omitempty"`
+	Blocker           *TaskProgramBlocker                  `json:"blocker,omitempty"`
+	Jobs              []TaskProgramJobRecord               `json:"jobs"`
+	CreatedAt         int64                                `json:"created_at"`
+	UpdatedAt         int64                                `json:"updated_at"`
 }
 
 // TaskProgramDefinition is the canonical staged implementation graph. It can
@@ -151,26 +151,26 @@ func (j *TaskProgramJobSpec) UnmarshalJSON(data []byte) error {
 }
 
 type TaskProgramJobRecord struct {
-	JobID              string                     `json:"job_id"`
-	StageID            string                     `json:"stage_id"`
-	State              string                     `json:"state"`
-	AttemptNumber      int                        `json:"attempt_number"`
-	ChildSessionID     string                     `json:"child_session_id,omitempty"`
-	CurrentSessionID   string                     `json:"current_session_id,omitempty"`
-	CurrentRunID       string                     `json:"current_run_id,omitempty"`
-	CurrentGeneration  int                        `json:"current_generation,omitempty"`
-	GenerationHistory  []TaskProgramJobGeneration `json:"generation_history,omitempty"`
-	WorkspacePath      string                     `json:"workspace_path,omitempty"`
-	SourceWorkspacePath string                    `json:"source_workspace_path,omitempty"`
-	WorktreeBranch     string                     `json:"worktree_branch,omitempty"`
-	ParentBranch       string                     `json:"parent_branch,omitempty"`
-	ImmutableStageBase string                     `json:"immutable_stage_base,omitempty"`
-	ChildHead          string                     `json:"child_head,omitempty"`
-	IntegrationState   string                     `json:"integration_state,omitempty"`
-	HandoffRef         *TaskProgramHandoffRef     `json:"handoff_ref,omitempty"`
-	ArtifactRef        *TaskProgramArtifactRef    `json:"artifact_ref,omitempty"`
-	Blocker            *TaskProgramBlocker        `json:"blocker,omitempty"`
-	UpdatedAt          int64                      `json:"updated_at"`
+	JobID               string                     `json:"job_id"`
+	StageID             string                     `json:"stage_id"`
+	State               string                     `json:"state"`
+	AttemptNumber       int                        `json:"attempt_number"`
+	ChildSessionID      string                     `json:"child_session_id,omitempty"`
+	CurrentSessionID    string                     `json:"current_session_id,omitempty"`
+	CurrentRunID        string                     `json:"current_run_id,omitempty"`
+	CurrentGeneration   int                        `json:"current_generation,omitempty"`
+	GenerationHistory   []TaskProgramJobGeneration `json:"generation_history,omitempty"`
+	WorkspacePath       string                     `json:"workspace_path,omitempty"`
+	SourceWorkspacePath string                     `json:"source_workspace_path,omitempty"`
+	WorktreeBranch      string                     `json:"worktree_branch,omitempty"`
+	ParentBranch        string                     `json:"parent_branch,omitempty"`
+	ImmutableStageBase  string                     `json:"immutable_stage_base,omitempty"`
+	ChildHead           string                     `json:"child_head,omitempty"`
+	IntegrationState    string                     `json:"integration_state,omitempty"`
+	HandoffRef          *TaskProgramHandoffRef     `json:"handoff_ref,omitempty"`
+	ArtifactRef         *TaskProgramArtifactRef    `json:"artifact_ref,omitempty"`
+	Blocker             *TaskProgramBlocker        `json:"blocker,omitempty"`
+	UpdatedAt           int64                      `json:"updated_at"`
 }
 
 // TaskProgramArtifactRef retains native Git identity; it never aliases legacy variants.
@@ -262,26 +262,26 @@ type TaskProgramTransition struct {
 }
 
 type TaskProgramJobTransition struct {
-	JobID              string
-	ExpectedState      string
-	State              string
-	AttemptNumber      int
-	ChildSessionID     string
-	CurrentSessionID   string
-	CurrentRunID       string
-	CurrentGeneration  int
-	GenerationHistory  []TaskProgramJobGeneration
-	WorkspacePath      string
+	JobID               string
+	ExpectedState       string
+	State               string
+	AttemptNumber       int
+	ChildSessionID      string
+	CurrentSessionID    string
+	CurrentRunID        string
+	CurrentGeneration   int
+	GenerationHistory   []TaskProgramJobGeneration
+	WorkspacePath       string
 	SourceWorkspacePath string
-	WorktreeBranch     string
-	ParentBranch       string
-	ImmutableStageBase string
-	ChildHead          string
-	IntegrationState   string
-	HandoffRef         *TaskProgramHandoffRef
-	ArtifactRef        *TaskProgramArtifactRef
-	Blocker            *TaskProgramBlocker
-	ClearBlocker       bool
+	WorktreeBranch      string
+	ParentBranch        string
+	ImmutableStageBase  string
+	ChildHead           string
+	IntegrationState    string
+	HandoffRef          *TaskProgramHandoffRef
+	ArtifactRef         *TaskProgramArtifactRef
+	Blocker             *TaskProgramBlocker
+	ClearBlocker        bool
 }
 
 var taskProgramLocks sync.Map
@@ -426,14 +426,18 @@ func (s *SessionStore) TransitionTaskProgram(parentSessionID, programID string, 
 		if previous, ok := record.RepositoryLanes[source]; ok && previous != lane {
 			return TaskProgramRecord{}, false, errors.New("task program repository lane is immutable")
 		}
-		if record.RepositoryLanes == nil { record.RepositoryLanes = make(map[string]TaskProgramRepositoryLane) }
+		if record.RepositoryLanes == nil {
+			record.RepositoryLanes = make(map[string]TaskProgramRepositoryLane)
+		}
 		record.RepositoryLanes[source] = lane
 	}
 	for source, head := range transition.LaneHeads {
 		if _, ok := record.RepositoryLanes[source]; !ok || !artifactV3OIDPattern.MatchString(head) {
 			return TaskProgramRecord{}, false, errors.New("invalid task program lane head")
 		}
-		if record.LaneHeads == nil { record.LaneHeads = make(map[string]string) }
+		if record.LaneHeads == nil {
+			record.LaneHeads = make(map[string]string)
+		}
 		record.LaneHeads[source] = head
 	}
 	if transition.State != nil {

@@ -158,17 +158,17 @@ func (m *mockProjectStore) PutPlan(plan pebblestore.SessionPlanSnapshot) error {
 
 // mockProjectTaskLifecycleService implements ProjectTaskLifecycleService for testing.
 type mockProjectTaskLifecycleService struct {
-	mu             sync.Mutex
-	deployedTasks  []string
-	approvedTasks  []string
-	submittedPlans []sessionruntime.ProjectTaskPlanSubmissionInput
+	mu              sync.Mutex
+	deployedTasks   []string
+	approvedTasks   []string
+	submittedPlans  []sessionruntime.ProjectTaskPlanSubmissionInput
 	lastPrincipal   identity.Principal
 	lastContext     context.Context
 	lastCreateInput ProjectTaskCreateInput
-	failDeploy     error
-	failApprove    error
-	failSubmit     error
-	store          *mockProjectStore
+	failDeploy      error
+	failApprove     error
+	failSubmit      error
+	store           *mockProjectStore
 }
 
 func newMockProjectTaskLifecycleService(store *mockProjectStore) *mockProjectTaskLifecycleService {

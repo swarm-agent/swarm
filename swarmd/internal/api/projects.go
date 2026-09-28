@@ -1930,30 +1930,45 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var previewReq struct {
-			Prompt        string `json:"prompt"`
-			Title         string `json:"title"`
-			Intent        string `json:"intent"`
-			FeatureSize   string `json:"feature_size"`
-			Agent         string `json:"agent"`
-			OutcomeType   string `json:"outcome_type"`
-			Tier          string `json:"tier"`
-			Model         string `json:"model"`
-			Provider      string `json:"provider"`
-			Thinking      string `json:"thinking"`
-			ServiceTier   string `json:"service_tier"`
-			ContextMode   string `json:"context_mode"`
-			WorkspacePath string `json:"workspace_path"`
-			WorkspaceID string `json:"workspace_id"`
-			WorkspaceGeneration int64 `json:"workspace_generation"`
+			Prompt              string `json:"prompt"`
+			Title               string `json:"title"`
+			Intent              string `json:"intent"`
+			FeatureSize         string `json:"feature_size"`
+			Agent               string `json:"agent"`
+			OutcomeType         string `json:"outcome_type"`
+			Tier                string `json:"tier"`
+			Model               string `json:"model"`
+			Provider            string `json:"provider"`
+			Thinking            string `json:"thinking"`
+			ServiceTier         string `json:"service_tier"`
+			ContextMode         string `json:"context_mode"`
+			WorkspacePath       string `json:"workspace_path"`
+			WorkspaceID         string `json:"workspace_id"`
+			WorkspaceGeneration int64  `json:"workspace_generation"`
 		}
-		if err := json.Unmarshal(body, &previewReq); err != nil { writeError(w, http.StatusBadRequest, err); return }
+		if err := json.Unmarshal(body, &previewReq); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
 		proj, found, err := db.GetProject(p.AccountScopeID, projectID)
-		if err != nil { writeError(w, http.StatusInternalServerError, err); return }
-		if !found || proj == nil { writeError(w, http.StatusNotFound, errors.New("project not found")); return }
-		if proj.AccountID != "" && proj.AccountID != p.AccountScopeID { writeError(w, http.StatusForbidden, errors.New("cross-account project preview forbidden")); return }
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		if !found || proj == nil {
+			writeError(w, http.StatusNotFound, errors.New("project not found"))
+			return
+		}
+		if proj.AccountID != "" && proj.AccountID != p.AccountScopeID {
+			writeError(w, http.StatusForbidden, errors.New("cross-account project preview forbidden"))
+			return
+		}
 		requiresRepo := previewReq.Agent != "image" && previewReq.Agent != "video" && previewReq.Agent != "sound" && previewReq.Agent != "audio"
 		source, err := s.resolveProjectTaskSource(p, proj, previewReq.WorkspacePath, previewReq.WorkspaceID, previewReq.WorkspaceGeneration, requiresRepo)
-		if err != nil { writeError(w, http.StatusBadRequest, err); return }
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
 		var projectContext string
 		var workspaces []pebblestore.ProjectWorkspaceRef
 		if proj != nil {
@@ -1991,9 +2006,9 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		}
 		modelPrev := s.buildTaskModelPreview(p, dummyTask)
 		writeJSON(w, http.StatusOK, map[string]any{
-			"task_plan":     routed,
+			"task_plan":        routed,
 			"source_workspace": source,
-			"model_preview": modelPrev,
+			"model_preview":    modelPrev,
 		})
 		return
 	}
@@ -2143,43 +2158,43 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			isMediaRequest := req.Agent == "image" || req.Agent == "video" || req.Agent == "sound" || req.Agent == "audio" || req.Intent == "image" || req.Intent == "video" || req.Intent == "sound" || req.Intent == "audio" || req.Operation != ""
 			if !isMediaRequest {
 				input := tool.ProjectTaskCreateInput{
-					ID:               req.ID,
-					Title:            req.Title,
-					Description:      req.Description,
-					Prompt:           req.Prompt,
-					Agent:            req.Agent,
-					WorkerName:       req.WorkerName,
-					FeatureSize:      req.FeatureSize,
-					WorkspacePath:    req.WorkspacePath,
-					WorkspaceID:      req.WorkspaceID,
+					ID:                  req.ID,
+					Title:               req.Title,
+					Description:         req.Description,
+					Prompt:              req.Prompt,
+					Agent:               req.Agent,
+					WorkerName:          req.WorkerName,
+					FeatureSize:         req.FeatureSize,
+					WorkspacePath:       req.WorkspacePath,
+					WorkspaceID:         req.WorkspaceID,
 					WorkspaceGeneration: req.WorkspaceGeneration,
-					ClientRequestID: req.ClientRequestID,
-					WorktreeBranch:   req.WorktreeBranch,
-					OutcomeType:      req.OutcomeType,
-					Tier:             req.Tier,
-					AspectRatio:      req.AspectRatio,
-					Resolution:       req.Resolution,
-					VariantCount:     req.VariantCount,
-					DurationSeconds:  req.DurationSeconds,
-					Model:            req.Model,
-					Provider:         req.Provider,
-					Thinking:         req.Thinking,
-					ServiceTier:      req.ServiceTier,
-					ContextMode:      req.ContextMode,
-					Soundtrack:       req.Soundtrack,
-					AutoApprove:      req.AutoApprove,
-					PipelineStages:   req.PipelineStages,
-					Deliverables:     req.Deliverables,
-					WhatDidDo:        req.WhatDidDo,
-					WhatNotDone:      req.WhatNotDone,
-					AttachedMedia:    req.AttachedMedia,
-					Document:         req.Document,
-					PlanDocument:     req.PlanDocument,
-					TaskProgram:      req.TaskProgram,
-					TaskProgramID:    req.TaskProgramID,
-					PlanSummary:      req.PlanSummary,
-					FullPlanMarkdown: req.FullPlanMarkdown,
-					DiffSummary:      req.DiffSummary,
+					ClientRequestID:     req.ClientRequestID,
+					WorktreeBranch:      req.WorktreeBranch,
+					OutcomeType:         req.OutcomeType,
+					Tier:                req.Tier,
+					AspectRatio:         req.AspectRatio,
+					Resolution:          req.Resolution,
+					VariantCount:        req.VariantCount,
+					DurationSeconds:     req.DurationSeconds,
+					Model:               req.Model,
+					Provider:            req.Provider,
+					Thinking:            req.Thinking,
+					ServiceTier:         req.ServiceTier,
+					ContextMode:         req.ContextMode,
+					Soundtrack:          req.Soundtrack,
+					AutoApprove:         req.AutoApprove,
+					PipelineStages:      req.PipelineStages,
+					Deliverables:        req.Deliverables,
+					WhatDidDo:           req.WhatDidDo,
+					WhatNotDone:         req.WhatNotDone,
+					AttachedMedia:       req.AttachedMedia,
+					Document:            req.Document,
+					PlanDocument:        req.PlanDocument,
+					TaskProgram:         req.TaskProgram,
+					TaskProgramID:       req.TaskProgramID,
+					PlanSummary:         req.PlanSummary,
+					FullPlanMarkdown:    req.FullPlanMarkdown,
+					DiffSummary:         req.DiffSummary,
 				}
 				if input.VariantCount <= 0 && req.DeliverableCount > 0 {
 					input.VariantCount = req.DeliverableCount

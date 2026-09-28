@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +17,22 @@ import (
 )
 
 func (f *matrixTestFixture) seedProjectTask(task *pebblestore.ProjectTaskRecord) {
+	if sess, found, err := f.server.sessions.Store().GetSession(task.SessionID); err == nil && found && sess.Metadata["swarm_v3_source_workspace_id"] != nil {
+		task.SourceWorkspace = pebblestore.ProjectTaskSource{
+			Path:        sess.Metadata["swarm_v3_source_workspace_path"].(string),
+			WorkspaceID: sess.Metadata["swarm_v3_source_workspace_id"].(string),
+			Provenance:  "explicit",
+		}
+		// Metadata round-trips JSON numbers; use the canonical catalog resolver.
+		p := identity.Principal{Type: "user", UserID: f.userID, AccountScopeID: f.accountID}
+		project, _, _ := f.server.sessions.Store().GetProject(f.accountID, task.ProjectID)
+		binding, err := f.server.resolveProjectTaskSource(p, project, task.SourceWorkspace.Path, task.SourceWorkspace.WorkspaceID, 0, true)
+		if err != nil {
+			panic(err)
+		}
+		task.SourceWorkspace = binding
+		task.WorkspacePath, task.WorktreeBranch, task.BaseBranch = sess.WorkspacePath, sess.WorktreeBranch, sess.WorktreeBaseBranch
+	}
 	_ = f.server.sessions.Store().PutProjectTask(f.accountID, task)
 	_, _ = f.server.sessions.Store().UpdateProject(f.accountID, task.ProjectID, func(pr *pebblestore.ProjectRecord) error {
 		for _, tid := range pr.ActiveTaskIDs {
@@ -30,6 +47,35 @@ func (f *matrixTestFixture) seedProjectTask(task *pebblestore.ProjectTaskRecord)
 		if _, ok, _ := f.server.sessions.Store().GetActiveExecutionEpoch(task.SessionID); !ok {
 			f.seedExecutionEpoch(task.SessionID)
 		}
+	}
+}
+
+// Approval fixtures must satisfy the independent source/owner gate before
+// malformed JSON and stale definition assertions can reach their boundary.
+func (f *matrixTestFixture) bindReviewSource(t *testing.T, projectID, taskID string, sess *pebblestore.SessionSnapshot) {
+	t.Helper()
+	project, found, err := f.server.sessions.Store().GetProject(f.accountID, projectID)
+	if err != nil || !found {
+		t.Fatalf("project source: %v", err)
+	}
+	p := identity.Principal{Type: "user", UserID: f.userID, AccountScopeID: f.accountID}
+	ref := project.Workspaces[0]
+	source, err := f.server.resolveProjectTaskSource(p, project, ref.Path, ref.WorkspaceID, 0, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess.WorkspacePath = filepath.Join(f.dir, "review-worktree")
+	sess.WorktreeEnabled = true
+	sess.WorktreeRootPath = sess.WorkspacePath
+	sess.WorktreeBranch = "agent/review"
+	sess.WorktreeBaseBranch = "dev"
+	sess.Metadata = map[string]any{
+		"project_id": projectID, "task_id": taskID,
+		"swarm_v3_source_workspace_path":       source.Path,
+		"swarm_v3_source_workspace_id":         source.WorkspaceID,
+		"swarm_v3_source_workspace_generation": source.WorkspaceGeneration,
+		"swarm_v3_runtime_workspace_path":      sess.WorkspacePath,
+		"swarm_v3_worktree_owner_session_id":   sess.ID,
 	}
 }
 
@@ -69,6 +115,7 @@ func TestProjectTaskApprove_MalformedJSONRejected(t *testing.T) {
 		CreatedAt:          time.Now().UnixMilli(),
 		UpdatedAt:          time.Now().UnixMilli(),
 	}
+	f.bindReviewSource(t, projID, taskID, &sess)
 	if err := f.seedSession(sess); err != nil {
 		t.Fatalf("create session %q: %v", sessID, err)
 	}
@@ -217,6 +264,7 @@ func TestProjectTaskApprove_IdempotentRetryAfterPlanLifecycleIncrements(t *testi
 		CreatedAt: time.Now().UnixMilli(),
 		UpdatedAt: time.Now().UnixMilli(),
 	}
+	f.bindReviewSource(t, projID, taskID, &sess)
 	if err := f.seedSession(sess); err != nil {
 		t.Fatalf("create session %q: %v", sessID, err)
 	}
@@ -373,6 +421,7 @@ func TestProjectTaskApprove_GuardedCanonicalRevision(t *testing.T) {
 		CreatedAt: time.Now().UnixMilli(),
 		UpdatedAt: time.Now().UnixMilli(),
 	}
+	f.bindReviewSource(t, projID, taskID, &sess)
 	if err := f.seedSession(sess); err != nil {
 		t.Fatalf("create session %q: %v", sessID, err)
 	}
@@ -434,7 +483,7 @@ func TestProjectTaskApprove_GuardedCanonicalRevision(t *testing.T) {
 		ProjectID:      projID,
 		TaskID:         taskID,
 		SessionID:      sessID,
-		WorkspacePath:  "/repo/root",
+		WorkspacePath:  sess.WorkspacePath,
 		Document:       doc2,
 		PlanText:       "# Plan Revision 2",
 		Title:          "Plan Revision 2",
@@ -554,6 +603,7 @@ func TestProjectTaskReject_NoPartialFailureOnBoundPlanError(t *testing.T) {
 		CreatedAt:      time.Now().UnixMilli(),
 		UpdatedAt:      time.Now().UnixMilli(),
 	}
+	f.bindReviewSource(t, projID, taskID, &sess)
 	if err := f.seedSession(sess); err != nil {
 		t.Fatalf("create session %q: %v", sessID, err)
 	}
@@ -672,6 +722,7 @@ func TestProjectTaskReject_TaskUpdateFailureReconcilesBoundPlan(t *testing.T) {
 		CreatedAt:      time.Now().UnixMilli(),
 		UpdatedAt:      time.Now().UnixMilli(),
 	}
+	f.bindReviewSource(t, projID, taskID, &sess)
 	if err := f.seedSession(sess); err != nil {
 		t.Fatalf("create session %q: %v", sessID, err)
 	}
@@ -813,6 +864,7 @@ func TestProjectTaskReject_MalformedJSONAndRevisionGuards(t *testing.T) {
 		CreatedAt:      time.Now().UnixMilli(),
 		UpdatedAt:      time.Now().UnixMilli(),
 	}
+	f.bindReviewSource(t, projID, taskID, &sess)
 	if err := f.seedSession(sess); err != nil {
 		t.Fatalf("create session %q: %v", sessID, err)
 	}
@@ -959,6 +1011,7 @@ func TestProjectTaskReopen_MalformedJSONAndRevisionGuards(t *testing.T) {
 		CreatedAt:          time.Now().UnixMilli(),
 		UpdatedAt:          time.Now().UnixMilli(),
 	}
+	f.bindReviewSource(t, projID, taskID, &sess)
 	if err := f.seedSession(sess); err != nil {
 		t.Fatalf("create session %q: %v", sessID, err)
 	}

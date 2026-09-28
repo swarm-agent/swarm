@@ -31,10 +31,16 @@ func (p *taskProgramScheduler) repositoryLaneForSource(requested string, multi b
 	}
 	var bound *pebblestore.TaskProgramRepositoryLane
 	if multi {
-		if saved, ok := p.record.RepositoryLanes[requested]; ok { bound = &saved }
-	} else { bound = p.record.RepositoryLane }
+		if saved, ok := p.record.RepositoryLanes[requested]; ok {
+			bound = &saved
+		}
+	} else {
+		bound = p.record.RepositoryLane
+	}
 	if lane := bound; lane != nil {
-		if err := p.validateRepositoryLaneSource(*lane); err != nil { return "", err }
+		if err := p.validateRepositoryLaneSource(*lane); err != nil {
+			return "", err
+		}
 		// Explicit alternate requests must not repurpose an admitted program.
 		if requested != "" && !sameTaskProgramPath(requested, lane.SourcePath) && !sameTaskProgramPath(requested, lane.WorkspacePath) {
 			return "", errors.New("Task Program repository lane source mismatch")
@@ -49,7 +55,9 @@ func (p *taskProgramScheduler) repositoryLaneForSource(requested string, multi b
 	// Pin the canonical workspace generation before Git allocation. A path grant
 	// alone cannot serve as durable identity when a workspace is re-bound.
 	workspaceID, generation, err := p.canonicalRepositorySource(target)
-	if err != nil { return "", err }
+	if err != nil {
+		return "", err
+	}
 	// Preflight runs before program persistence and must not allocate resources.
 	if p.record.Revision == 0 {
 		if _, err := p.service.worktrees.ResolveTaskBase(target); err != nil {
@@ -85,7 +93,11 @@ func (p *taskProgramScheduler) repositoryLaneForSource(requested string, multi b
 		}
 		lane = &pebblestore.TaskProgramRepositoryLane{WorkspaceID: workspaceID, WorkspaceGeneration: generation, SourcePath: target, WorkspacePath: allocation.WorkspacePath, Branch: allocation.BranchName, BaseCommit: base.BaseCommit}
 		binding := pebblestore.TaskProgramTransition{ExpectedRevision: p.record.Revision, MutationID: fmt.Sprintf("lane:%d", p.record.Revision)}
-		if multi { binding.RepositoryLanes = map[string]pebblestore.TaskProgramRepositoryLane{target: *lane} } else { binding.RepositoryLane = lane }
+		if multi {
+			binding.RepositoryLanes = map[string]pebblestore.TaskProgramRepositoryLane{target: *lane}
+		} else {
+			binding.RepositoryLane = lane
+		}
 		record, _, persistErr := p.service.sessions.TransitionTaskProgram(p.parentSession.ID, p.record.ProgramID, binding)
 		if persistErr != nil {
 			return "", errors.Join(persistErr, p.service.worktrees.RollbackAllocation(allocation))
@@ -123,7 +135,11 @@ func (p *taskProgramScheduler) repositoryLaneForSource(requested string, multi b
 	// before this program acquires its durable binding.
 	if bound == nil {
 		binding := pebblestore.TaskProgramTransition{ExpectedRevision: p.record.Revision, MutationID: fmt.Sprintf("lane:%d", p.record.Revision)}
-		if multi { binding.RepositoryLanes = map[string]pebblestore.TaskProgramRepositoryLane{target: *lane} } else { binding.RepositoryLane = lane }
+		if multi {
+			binding.RepositoryLanes = map[string]pebblestore.TaskProgramRepositoryLane{target: *lane}
+		} else {
+			binding.RepositoryLane = lane
+		}
 		record, _, err := p.service.sessions.TransitionTaskProgram(p.parentSession.ID, p.record.ProgramID, binding)
 		if err != nil {
 			return "", err

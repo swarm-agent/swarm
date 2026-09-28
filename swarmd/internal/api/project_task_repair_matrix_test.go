@@ -258,7 +258,10 @@ func setupMatrixTestFixture(t *testing.T) *matrixTestFixture {
 		runner:             mockRun,
 	}
 	s.runCtx, s.runCancel = context.WithCancel(context.Background())
-	s.v3SessionExecutor = newSessionV3Executor(s)
+	// These API/store contract tests stop at durable run admission; provider
+	// execution belongs to the executor tests. Do not start asynchronous workers
+	// that can race fixture teardown or consume the intent under assertion.
+	s.v3SessionExecutor = nil
 	s.planLifecycle.SetApplySessionMutation(s.applySessionV3PrimaryMutation)
 
 	return &matrixTestFixture{
@@ -350,13 +353,20 @@ func requireMatrixTaskResponse(t *testing.T, w *httptest.ResponseRecorder, statu
 func (f *matrixTestFixture) createProject(t *testing.T) string {
 	p := identity.Principal{Type: "user", UserID: f.userID, AccountScopeID: f.accountID}
 	repo := filepath.Join(f.dir, "repo")
-	if err := os.Mkdir(repo, 0700); err != nil { t.Fatal(err) }
+	if err := os.Mkdir(repo, 0700); err != nil {
+		t.Fatal(err)
+	}
 	for _, args := range [][]string{{"init"}, {"-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "base"}} {
-		cmd := exec.Command("git", args...); cmd.Dir = repo
-		if out, err := cmd.CombinedOutput(); err != nil { t.Fatalf("git %v: %v %s", args, err, out) }
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repo
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
 	}
 	entry, err := pebblestore.NewWorkspaceStore(f.db).AddForAccount(f.accountID, repo, "repo")
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	w := f.callAPI(http.MethodPost, "", map[string]any{
 		"name": "Matrix Test Project",
 		"workspaces": []map[string]string{
@@ -645,8 +655,13 @@ func TestTaskMatrix_Case3_ParallelStagedCodersIsolationDependencyCommitConflict(
 		t.Fatal("expected task_program_id to be populated")
 	}
 
-	// Approve and deploy the task program
-	appTask, err := f.server.ApproveProjectTask(context.Background(), p, projID, taskID)
+	// Program proposals are executable plans: accept only the exact bound definition.
+	reserved, found, err := f.server.sessions.Store().GetProjectTask(f.accountID, projID, taskID)
+	if err != nil || !found || reserved.PlanBinding == nil {
+		t.Fatalf("missing program plan binding: %+v %v", reserved, err)
+	}
+	guards := tool.ProjectTaskApprovalGuards{SessionID: reserved.SessionID, PlanID: reserved.PlanBinding.PlanID, DefinitionRevision: reserved.PlanBinding.DefinitionRevision}
+	appTask, err := f.server.ApproveProjectTask(context.Background(), p, projID, taskID, guards)
 	if err != nil {
 		t.Fatalf("approve task program failed: %v", err)
 	}
@@ -654,31 +669,21 @@ func TestTaskMatrix_Case3_ParallelStagedCodersIsolationDependencyCommitConflict(
 		t.Fatalf("expected task in_progress, got: %#v", appTask)
 	}
 
-	// Verify canonical scheduler was invoked with staged structure
-	for i := 0; i < 50; i++ {
-		f.runSvc.mu.Lock()
-		execs := f.runSvc.tpExecutions
-		f.runSvc.mu.Unlock()
-		if execs >= 1 {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
+	// This API test proves durable admission, not provider/scheduler execution.
+	plan, found, err := f.server.sessions.Store().GetPlan(reserved.SessionID, guards.PlanID)
+	if err != nil || !found || plan.Document == nil || len(plan.Document.Checkpoints) != 1 {
+		t.Fatalf("missing accepted program plan: %+v %v", plan, err)
 	}
-	f.runSvc.mu.Lock()
-	executions := f.runSvc.tpExecutions
-	lastRec := f.runSvc.lastTPRecord
-	f.runSvc.mu.Unlock()
-	if executions != 1 {
-		t.Fatalf("expected 1 canonical TP execution, got %d", executions)
+	program := plan.Document.Checkpoints[0].TaskProgram
+	if program == nil || len(program.Stages) != 2 || len(program.Stages[1].DependsOn) != 1 || program.Stages[1].DependsOn[0] != "stage-1" || len(program.Jobs[1].DependsOn) != 1 || program.Jobs[1].DependsOn[0] != "job-core" {
+		t.Fatalf("program dependency graph changed: %+v", program)
 	}
-	if len(lastRec.Definition.Stages) != 2 {
-		t.Fatalf("expected 2 stages, got %d", len(lastRec.Definition.Stages))
+	if _, err := f.server.ApproveProjectTask(context.Background(), p, projID, taskID, guards); err != nil {
+		t.Fatalf("repeat exact acceptance: %v", err)
 	}
-	if len(lastRec.Definition.Stages[1].DependsOn) != 1 || lastRec.Definition.Stages[1].DependsOn[0] != "stage-1" {
-		t.Fatalf("expected stage-2 to depend on stage-1, got %#v", lastRec.Definition.Stages[1].DependsOn)
-	}
-	if len(lastRec.Definition.Jobs[1].DependsOn) != 1 || lastRec.Definition.Jobs[1].DependsOn[0] != "job-core" {
-		t.Fatalf("expected job-api to depend on job-core, got %#v", lastRec.Definition.Jobs[1].DependsOn)
+	intents, err := f.server.sessions.Store().ListRunIntents(reserved.SessionID, 10)
+	if err != nil || len(intents) != 1 || intents[0].RunID != plan.Document.Checkpoints[0].RunID {
+		t.Fatalf("program acceptance duplicated or lost run owner: %+v %v", intents, err)
 	}
 
 	// 3. Verify clean worktrees with zero commits cannot be integrated (HEAD == base)
@@ -708,14 +713,13 @@ func TestTaskMatrix_Case3_ParallelStagedCodersIsolationDependencyCommitConflict(
 		t.Fatalf("expected no associated task program error, got: %v", errNoProg)
 	}
 
-	// 6. Valid redeploy job records feedback and increments attempt number
-	errRedeployValid := f.server.redeployTaskProgramJob(p, projID, taskID, "job-core", "Resolve lock conflict in core")
-	if errRedeployValid != nil {
-		t.Fatalf("expected successful redeploy of job-core, got: %v", errRedeployValid)
+	// A declared program has no executed child to redeploy at this boundary.
+	if err := f.server.redeployTaskProgramJob(p, projID, taskID, "job-core", "Resolve lock conflict in core"); err == nil {
+		t.Fatal("redeployed an unexecuted program job")
 	}
-	taskAfterRedeploy, _, _ := f.server.sessions.Store().GetProjectTask(f.accountID, projID, taskID)
-	if len(taskAfterRedeploy.FeedbackHistory) == 0 || !strings.Contains(taskAfterRedeploy.FeedbackHistory[0], "Resolve lock conflict") {
-		t.Fatalf("expected feedback recorded in task feedback history, got: %#v", taskAfterRedeploy.FeedbackHistory)
+	after, err := f.server.sessions.Store().ListRunIntents(reserved.SessionID, 10)
+	if err != nil || len(after) != 1 || after[0].RunID != intents[0].RunID {
+		t.Fatalf("rejected redeploy changed active owner: %+v %v", after, err)
 	}
 }
 
@@ -812,6 +816,17 @@ func TestTaskMatrix_Case4_ManualPlanningPendingThenExactAcceptModelTransition(t 
 		if err != nil || pending.Status != "pending_approval" || pending.PlanBinding.Receipt != subResult.Receipt {
 			t.Fatalf("rejected acceptance changed task binding: %#v, %v", pending, err)
 		}
+	}
+
+	// The planning executor finishes before the separately approved run is admitted.
+	intent, found, err := f.server.sessions.Store().GetV3SessionActiveRunIntent(sessID)
+	if err != nil || !found {
+		t.Fatalf("missing planning intent: %v", err)
+	}
+	intent.Status = pebblestore.V3RunIntentCompleted
+	key := "fixture-planning-complete"
+	if _, err := f.server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{SessionID: sessID, UserID: p.UserID, AccountScopeID: p.AccountScopeID, Kind: sessionruntime.SessionMutationRecordRunIntent, ClientRequestID: key, IdempotencyKey: key, PayloadHash: key, RequestHash: key, RunIntent: &intent}); err != nil {
+		t.Fatal(err)
 	}
 
 	// 3. User accepts the plan on the task card
@@ -1423,22 +1438,18 @@ func TestTaskMatrix_Case11_NonCodeAndCodeMediaKeywordRouting(t *testing.T) {
 	projID := f.createProject(t)
 	p := identity.Principal{Type: "user", UserID: f.userID, AccountScopeID: f.accountID}
 
-	// A: Explicit media task has NO chat session
-	w := f.callAPI(http.MethodPost, "/"+projID+"/tasks", map[string]any{
-		"title":  "Generate Hero Graphic",
-		"prompt": "Create futuristic tesseract",
-		"agent":  "image",
-	}, p)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("create media task failed %d: %s", w.Code, w.Body.String())
+	// A: Shared creation of an explicitly routed media proposal reserves no chat
+	// session. HTTP Router/provider hydration is a separate media-service contract.
+	media, err := f.server.CreateProjectTask(context.Background(), p, projID, tool.ProjectTaskCreateInput{Title: "Generate Hero Graphic", Prompt: "Create futuristic tesseract", Agent: "image"})
+	if err != nil {
+		t.Fatalf("create explicit media proposal: %v", err)
 	}
-	taskMap := requireMatrixTaskResponse(t, w, http.StatusCreated)
-	if taskMap["session_id"] != nil && taskMap["session_id"] != "" {
-		t.Fatalf("media tasks must not create chat sessions, got session_id %v", taskMap["session_id"])
+	if media.SessionID != "" {
+		t.Fatalf("media tasks must not create chat sessions, got %v", media.SessionID)
 	}
 
 	// B: Code task containing media keywords in prompt strictly routes to Coder
-	w = f.callAPI(http.MethodPost, "/"+projID+"/tasks", map[string]any{
+	w := f.callAPI(http.MethodPost, "/"+projID+"/tasks", map[string]any{
 		"title":        "Build Image and Video Gallery Component",
 		"prompt":       "Implement React UI component that renders video clips and image thumbnails",
 		"agent":        "coder",
@@ -1508,7 +1519,7 @@ func TestTaskMatrix_DeployProjectTaskExecution_FailsClosedOnMissingPrincipal(t *
 
 func TestTaskMatrix_ApproveCoderPersistsAllocatedWorktreeMetadata(t *testing.T) {
 	// Requirement-first Purpose:
-	// - Invariant: When ApproveProjectTask allocates an isolated worktree for a Coder task,
+	// - Invariant: Creation reserves an isolated worktree and approval preserves its ownership;
 	//   the task record in Pebble MUST persist the allocated worktree path, branch, base branch,
 	//   base commit, and worktree name.
 	// - Authority: ApproveProjectTask in api/project_task_program.go.
@@ -1518,8 +1529,16 @@ func TestTaskMatrix_ApproveCoderPersistsAllocatedWorktreeMetadata(t *testing.T) 
 	projID := f.createProject(t)
 	p := identity.Principal{Type: "user", UserID: f.userID, AccountScopeID: f.accountID}
 
-	// Create small Coder task
+	// Creation reserves the owned worktree; approval must preserve it.
 	project, _, _ := f.server.sessions.Store().GetProject(f.accountID, projID)
+	allocated := filepath.Join(f.dir, "agent-auth-refactor")
+	f.wt.allocResult = worktreeruntime.Allocation{
+		WorkspacePath: allocated,
+		BranchName:    "agent/auth-refactor",
+		BaseBranch:    "dev",
+		BaseCommit:    "commit-sha-abc-123",
+		RepoRoot:      project.Workspaces[0].Path,
+	}
 	w := f.callAPI(http.MethodPost, "/"+projID+"/tasks", map[string]any{
 		"title":          "Refactor auth logic",
 		"prompt":         "Refactor token validation",
@@ -1533,19 +1552,9 @@ func TestTaskMatrix_ApproveCoderPersistsAllocatedWorktreeMetadata(t *testing.T) 
 	taskMap := requireMatrixTaskResponse(t, w, http.StatusCreated)
 	taskID := taskMap["id"].(string)
 
-	// Configure mock worktree allocation result
-	allocated := filepath.Join(f.dir, "agent-auth-refactor")
-	proj, found, err := f.server.sessions.Store().GetProject(f.accountID, projID)
-	if err != nil || !found { t.Fatalf("project source: %v", err) }
-	f.wt.mu.Lock()
-	f.wt.allocResult = worktreeruntime.Allocation{
-		WorkspacePath: allocated,
-		BranchName:    "agent/auth-refactor",
-		BaseBranch:    "dev",
-		BaseCommit:    "commit-sha-abc-123",
-		RepoRoot:      proj.Workspaces[0].Path,
+	if taskMap["workspace_path"] != allocated {
+		t.Fatalf("creation did not persist allocated runtime: %v", taskMap["workspace_path"])
 	}
-	f.wt.mu.Unlock()
 
 	// Approve task
 	approvedTask, err := f.server.ApproveProjectTask(context.Background(), p, projID, taskID)
@@ -1553,6 +1562,9 @@ func TestTaskMatrix_ApproveCoderPersistsAllocatedWorktreeMetadata(t *testing.T) 
 		t.Fatalf("approve failed: %v", err)
 	}
 
+	if f.wt.allocCalls != 1 {
+		t.Fatalf("approval replaced the reserved allocation: %d calls", f.wt.allocCalls)
+	}
 	// Invariant: Returned and persisted task record must have allocated worktree metadata
 	if approvedTask.WorkspacePath != allocated {
 		t.Fatalf("expected task WorkspacePath %q, got %q", allocated, approvedTask.WorkspacePath)
@@ -1582,9 +1594,8 @@ func TestTaskMatrix_ApproveCoderPersistsAllocatedWorktreeMetadata(t *testing.T) 
 
 func TestTaskMatrix_DeployProjectTaskProgram_DurableWithoutRunner(t *testing.T) {
 	// Requirement-first Purpose:
-	// - Invariant: deployProjectTaskProgram and redeployTaskProgramJob must fail closed with an explicit
-	//   runner-unavailable error when s.runner is not configured, rather than silently pretending to deploy
-	//   an execution with no executor.
+	// - Invariant: deployment reports an unavailable runner, and retry cannot
+	//   duplicate its durable pending intent. Neither path may pretend execution succeeded.
 	// - Authority: deployProjectTaskProgram, redeployTaskProgramJob in api/project_task_program.go.
 	// - Threat/regression: Silent fake deployment leaving tasks in_progress without execution.
 	f := setupMatrixTestFixture(t)
@@ -1594,7 +1605,9 @@ func TestTaskMatrix_DeployProjectTaskProgram_DurableWithoutRunner(t *testing.T) 
 	project, _, _ := f.server.sessions.Store().GetProject(f.accountID, projID)
 	projectRoot := project.Workspaces[0].Path
 	binding, err := f.server.resolveProjectTaskSource(p, project, projectRoot, project.Workspaces[0].WorkspaceID, 0, true)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// Construct server with nil runner
 	sNoRunner := &Server{
@@ -1627,16 +1640,16 @@ func TestTaskMatrix_DeployProjectTaskProgram_DurableWithoutRunner(t *testing.T) 
 	}
 
 	task := &pebblestore.ProjectTaskRecord{
-		ID:            "task-no-runner",
-		ProjectID:     projID,
-		AccountID:     f.accountID,
-		Title:         "Task Program without runner",
-		Agent:         "coder",
-		Status:        "pending_approval",
-		WorkspacePath: projectRoot,
+		ID:              "task-no-runner",
+		ProjectID:       projID,
+		AccountID:       f.accountID,
+		Title:           "Task Program without runner",
+		Agent:           "coder",
+		Status:          "pending_approval",
+		WorkspacePath:   projectRoot,
 		SourceWorkspace: binding,
-		SessionID: "task-no-runner-session",
-		TaskProgram:   tpDef,
+		SessionID:       "task-no-runner-session",
+		TaskProgram:     tpDef,
 	}
 	_ = f.server.sessions.Store().PutProjectTask(f.accountID, task)
 	proj, _, _ := f.server.sessions.Store().GetProject(f.accountID, projID)
@@ -1647,10 +1660,15 @@ func TestTaskMatrix_DeployProjectTaskProgram_DurableWithoutRunner(t *testing.T) 
 		t.Fatalf("expected runner service is not configured error, got: %v", err)
 	}
 
-	// Redeploy must also fail closed with runner-unavailable error when runner is not configured
+	// The persisted pending intent remains the sole owner; a retry must not book
+	// a second run merely because the executor was unavailable.
 	err = sNoRunner.redeployTaskProgramJob(p, projID, task.ID, "job-1", "Fix retry")
-	if err == nil || !strings.Contains(err.Error(), "runner service is not configured") {
-		t.Fatalf("expected runner service is not configured error on redeploy, got: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "already has active v3 run") {
+		t.Fatalf("expected active-owner rejection on redeploy, got: %v", err)
+	}
+	intents, err := f.server.sessions.Store().ListRunIntents(task.SessionID, 10)
+	if err != nil || len(intents) != 1 || intents[0].RunID != "desktop-v3-run:tp-"+task.ID {
+		t.Fatalf("retry duplicated the pending owner: %+v %v", intents, err)
 	}
 }
 

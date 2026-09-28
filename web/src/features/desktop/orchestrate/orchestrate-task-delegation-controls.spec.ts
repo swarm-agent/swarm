@@ -1014,7 +1014,7 @@ test('OrchestrateView source contracts: no premature execution, duplicate-click 
     'Kanban must render dedicated Failed column'
   )
   assert.ok(
-    source.includes('disabled={isApproving || isPlanRejected || isPlanTaskWithoutStructuredPlan}'),
+    source.includes('disabled={isApproving || isPlanRejected || isPlanTaskWithoutStructuredPlan || isPlanBindingMissingRevision}'),
     'Approve button must be disabled for rejected plans or missing structured plans'
   )
 })

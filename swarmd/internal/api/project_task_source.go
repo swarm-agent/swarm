@@ -10,8 +10,8 @@ import (
 	"strings"
 
 	"swarm/packages/swarmd/internal/identity"
-	"swarm/packages/swarmd/internal/tool"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/tool"
 	"swarm/packages/swarmd/internal/workspace"
 )
 
@@ -23,10 +23,12 @@ func projectTaskSubmissionHash(projectID string, input tool.ProjectTaskCreateInp
 	input.ClientRequestID = ""
 	raw, err := json.Marshal(struct {
 		ProjectID string
-		Input tool.ProjectTaskCreateInput
-		Source pebblestore.ProjectTaskSource
+		Input     tool.ProjectTaskCreateInput
+		Source    pebblestore.ProjectTaskSource
 	}{projectID, input, source})
-	if err != nil { return "", err }
+	if err != nil {
+		return "", err
+	}
 	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:]), nil
 }

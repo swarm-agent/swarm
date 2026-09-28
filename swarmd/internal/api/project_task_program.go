@@ -313,7 +313,9 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 			return nil, err
 		}
 		if !isDirectMediaTask(existing) {
-			if err := s.recoverProjectTaskReservation(ctx, p, proj, existing, input); err != nil { return nil, err }
+			if err := s.recoverProjectTaskReservation(ctx, p, proj, existing, input); err != nil {
+				return nil, err
+			}
 		}
 		hydrateTaskPlanDocument(existing, db)
 		hydrateTaskProgramStatus(existing, db)
@@ -338,9 +340,9 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 		WorkerName:         workerName,
 		OutcomeType:        outcomeType,
 		WorkspacePath:      wsPath,
-		SourceWorkspace:   source,
-		ClientRequestID:   strings.TrimSpace(input.ClientRequestID),
-		SubmissionHash:    submissionHash,
+		SourceWorkspace:    source,
+		ClientRequestID:    strings.TrimSpace(input.ClientRequestID),
+		SubmissionHash:     submissionHash,
 		WorktreeBranch:     worktreeBranch,
 		PipelineStages:     stages,
 		Deliverables:       deliverables,
@@ -420,8 +422,12 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 
 	// Persist task reservation FIRST
 	claimed, err := db.ReserveProjectTaskIfAbsent(p.AccountScopeID, &task)
-	if err != nil { return nil, err }
-	if !claimed { return nil, errors.New("task reservation was claimed concurrently; retry using the same task ID and payload") }
+	if err != nil {
+		return nil, err
+	}
+	if !claimed {
+		return nil, errors.New("task reservation was claimed concurrently; retry using the same task ID and payload")
+	}
 	_, err = db.UpdateProject(p.AccountScopeID, projectID, func(pr *pebblestore.ProjectRecord) error {
 		for _, tid := range pr.ActiveTaskIDs {
 			if tid == task.ID {
@@ -431,7 +437,9 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 		pr.ActiveTaskIDs = append(pr.ActiveTaskIDs, task.ID)
 		return nil
 	})
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 
 	// Deploy execution
 	if structDoc != nil {
@@ -543,7 +551,9 @@ func (s *Server) deployProjectTaskProgram(p identity.Principal, proj *pebblestor
 	if err := pebblestore.ValidateTaskProgramDefinition(task.TaskProgram); err != nil {
 		return fmt.Errorf("task program validation failed: %w", err)
 	}
-	if err := s.revalidateProjectTaskSource(p, proj, task); err != nil { return err }
+	if err := s.revalidateProjectTaskSource(p, proj, task); err != nil {
+		return err
+	}
 
 	// 1. Ensure coordinator session exists
 	now := time.Now().UnixMilli()
@@ -590,14 +600,14 @@ func (s *Server) deployProjectTaskProgram(p identity.Principal, proj *pebblestor
 			Mode:           sessionruntime.ModeAuto,
 			Preference:     pref,
 			Metadata: map[string]any{
-				"project_id":      task.ProjectID,
-				"task_id":         task.ID,
-				"task_title":      task.Title,
-				"role":            "task_program_coordinator",
-				"task_program_id": task.TaskProgram.ID,
-				"swarm_v3_source_workspace_id": task.SourceWorkspace.WorkspaceID,
+				"project_id":                           task.ProjectID,
+				"task_id":                              task.ID,
+				"task_title":                           task.Title,
+				"role":                                 "task_program_coordinator",
+				"task_program_id":                      task.TaskProgram.ID,
+				"swarm_v3_source_workspace_id":         task.SourceWorkspace.WorkspaceID,
 				"swarm_v3_source_workspace_generation": task.SourceWorkspace.WorkspaceGeneration,
-				"swarm_v3_source_workspace_path": task.SourceWorkspace.Path,
+				"swarm_v3_source_workspace_path":       task.SourceWorkspace.Path,
 			},
 			CreatedAt: now,
 			UpdatedAt: now,
@@ -622,7 +632,9 @@ func (s *Server) deployProjectTaskProgram(p identity.Principal, proj *pebblestor
 		if ownedSession.AccountScopeID != p.AccountScopeID || ownedSession.UserID != p.UserID || ownedSession.Metadata == nil || ownedSession.Metadata["project_id"] != task.ProjectID || ownedSession.Metadata["task_id"] != task.ID || ownedSession.Metadata["task_program_id"] != progID || ownedSession.Metadata["swarm_v3_source_workspace_path"] != task.SourceWorkspace.Path || ownedSession.Metadata["swarm_v3_source_workspace_id"] != task.SourceWorkspace.WorkspaceID || fmt.Sprint(ownedSession.Metadata["swarm_v3_source_workspace_generation"]) != fmt.Sprint(task.SourceWorkspace.WorkspaceGeneration) {
 			return errors.New("task program coordinator ownership does not match reservation")
 		}
-		if ownedSession.WorkspacePath != task.SourceWorkspace.Path { return errors.New("task program coordinator target does not match reservation") }
+		if ownedSession.WorkspacePath != task.SourceWorkspace.Path {
+			return errors.New("task program coordinator target does not match reservation")
+		}
 	}
 
 	// 2. Initialize or get TaskProgramRecord in Pebble
@@ -656,7 +668,9 @@ func (s *Server) deployProjectTaskProgram(p identity.Principal, proj *pebblestor
 			return fmt.Errorf("create task program record: %w", err)
 		}
 	}
-	if record.ParentSessionID != task.SessionID || record.DefinitionHash != initialRecord.DefinitionHash { return errors.New("task program definition conflicts with reservation") }
+	if record.ParentSessionID != task.SessionID || record.DefinitionHash != initialRecord.DefinitionHash {
+		return errors.New("task program definition conflicts with reservation")
+	}
 
 	task.TaskProgramID = progID
 	task.TaskProgramStatus = &record
@@ -673,12 +687,22 @@ func (s *Server) deployProjectTaskProgram(p identity.Principal, proj *pebblestor
 
 	// 3. Start canonical Task Program scheduler through runner with durable RunIntent
 	runID := fmt.Sprintf("desktop-v3-run:tp-%s", task.ID)
-	if active, ok, err := db.GetV3SessionActiveRunIntent(task.SessionID); err != nil { return err } else if ok {
-		if active.RunID != runID || active.AccountScopeID != p.AccountScopeID { return errors.New("task program has unrelated active run") }
-		if active.Status == pebblestore.V3RunIntentPendingExecutor || active.Status == pebblestore.V3RunIntentRunning { return nil }
+	if active, ok, err := db.GetV3SessionActiveRunIntent(task.SessionID); err != nil {
+		return err
+	} else if ok {
+		if active.RunID != runID || active.AccountScopeID != p.AccountScopeID {
+			return errors.New("task program has unrelated active run")
+		}
+		if active.Status == pebblestore.V3RunIntentPendingExecutor || active.Status == pebblestore.V3RunIntentRunning {
+			return nil
+		}
 		return errors.New("task program run already recorded; use explicit retry lifecycle")
 	}
-	if history, err := db.ListRunIntents(task.SessionID, 1000); err != nil { return err } else if len(history) != 0 { return errors.New("task program already has run history; use explicit retry lifecycle") }
+	if history, err := db.ListRunIntents(task.SessionID, 1000); err != nil {
+		return err
+	} else if len(history) != 0 {
+		return errors.New("task program already has run history; use explicit retry lifecycle")
+	}
 	parentSessionID := ""
 	if proj != nil {
 		parentSessionID = proj.PrimarySessionID
@@ -880,15 +904,25 @@ func (s *Server) ApproveProjectTask(ctx context.Context, p identity.Principal, p
 			return nil, err
 		} else if ok {
 			if existingTask.WorkspacePath == existingTask.SourceWorkspace.Path && owned.WorktreeEnabled {
-				if err := s.reconcileProjectTaskSession(p, proj, existingTask, owned, "pending_approval"); err != nil { return nil, err }
-				if err := db.PutProjectTask(p.AccountScopeID, existingTask); err != nil { return nil, err }
+				if err := s.reconcileProjectTaskSession(p, proj, existingTask, owned, "pending_approval"); err != nil {
+					return nil, err
+				}
+				if err := db.PutProjectTask(p.AccountScopeID, existingTask); err != nil {
+					return nil, err
+				}
 			} else if err := verifyProjectTaskSession(existingTask, owned, p.AccountScopeID); err != nil {
 				return nil, err
 			}
 		} else if !isDirectMediaTask(existingTask) {
-			if existingTask.WorkspacePath != existingTask.SourceWorkspace.Path { return nil, errors.New("task reservation has allocated runtime but no session") }
-			if err := s.deployProjectTaskExecution(p, proj, existingTask, "pending_approval", existingTask.Title); err != nil { return nil, err }
-			if err := db.PutProjectTask(p.AccountScopeID, existingTask); err != nil { return nil, err }
+			if existingTask.WorkspacePath != existingTask.SourceWorkspace.Path {
+				return nil, errors.New("task reservation has allocated runtime but no session")
+			}
+			if err := s.deployProjectTaskExecution(p, proj, existingTask, "pending_approval", existingTask.Title); err != nil {
+				return nil, err
+			}
+			if err := db.PutProjectTask(p.AccountScopeID, existingTask); err != nil {
+				return nil, err
+			}
 		}
 	}
 	if existingTask.Status == "rejected" {
@@ -964,7 +998,9 @@ func (s *Server) ApproveProjectTask(ctx context.Context, p identity.Principal, p
 	// Idempotent retry check: if task is in_progress AND execution run is genuinely active, do not duplicate run!
 	if existingTask.Status == "in_progress" && existingTask.SessionID != "" && existingTask.PlanBinding == nil {
 		activeIntent, ok, intentErr := db.GetV3SessionActiveRunIntent(existingTask.SessionID)
-		if intentErr != nil { return nil, intentErr }
+		if intentErr != nil {
+			return nil, intentErr
+		}
 		if ok && activeIntent.AccountScopeID == p.AccountScopeID && activeIntent.RunID == fmt.Sprintf("desktop-v3-run:task-%s", existingTask.ID) && (activeIntent.Status == pebblestore.V3RunIntentPendingExecutor || activeIntent.Status == pebblestore.V3RunIntentRunning) {
 			hydrateTaskPlanDocument(existingTask, db)
 			hydrateTaskProgramStatus(existingTask, db)
@@ -1300,10 +1336,16 @@ func (s *Server) deployProjectTaskLocked(ctx context.Context, p identity.Princip
 	if task.AccountID != "" && task.AccountID != p.AccountScopeID {
 		return errors.New("cross-account task access forbidden")
 	}
-	if err := s.revalidateProjectTaskSource(p, proj, task); err != nil { return err }
+	if err := s.revalidateProjectTaskSource(p, proj, task); err != nil {
+		return err
+	}
 	if task.SessionID != "" {
-		if owned, ok, err := db.GetSession(task.SessionID); err != nil { return err } else if ok {
-			if err := verifyProjectTaskSession(task, owned, p.AccountScopeID); err != nil { return err }
+		if owned, ok, err := db.GetSession(task.SessionID); err != nil {
+			return err
+		} else if ok {
+			if err := verifyProjectTaskSession(task, owned, p.AccountScopeID); err != nil {
+				return err
+			}
 		}
 	}
 	if task.Status == "pending_approval" {
@@ -1325,10 +1367,16 @@ func (s *Server) deployProjectTaskLocked(ctx context.Context, p identity.Princip
 	// Idempotent retry: if active run intent exists, avoid duplicate runs
 	if task.Status == "in_progress" && task.SessionID != "" && task.TaskProgram == nil && task.TaskProgramID == "" {
 		activeIntent, ok, intentErr := db.GetV3SessionActiveRunIntent(task.SessionID)
-		if intentErr != nil { return intentErr }
+		if intentErr != nil {
+			return intentErr
+		}
 		if ok {
-			if activeIntent.AccountScopeID != p.AccountScopeID || activeIntent.RunID != fmt.Sprintf("desktop-v3-run:task-%s", task.ID) { return errors.New("task session has unrelated active run") }
-			if activeIntent.Status == pebblestore.V3RunIntentPendingExecutor || activeIntent.Status == pebblestore.V3RunIntentRunning { return nil }
+			if activeIntent.AccountScopeID != p.AccountScopeID || activeIntent.RunID != fmt.Sprintf("desktop-v3-run:task-%s", task.ID) {
+				return errors.New("task session has unrelated active run")
+			}
+			if activeIntent.Status == pebblestore.V3RunIntentPendingExecutor || activeIntent.Status == pebblestore.V3RunIntentRunning {
+				return nil
+			}
 		}
 	}
 
@@ -1350,12 +1398,20 @@ func (s *Server) deployProjectTaskLocked(ctx context.Context, p identity.Princip
 			}
 		} else {
 			owned, found, err := db.GetSession(task.SessionID)
-			if err != nil { return err }
+			if err != nil {
+				return err
+			}
 			if !found {
-				if task.WorkspacePath != task.SourceWorkspace.Path { return errors.New("reserved task runtime has no session") }
-				if err := s.deployProjectTaskExecution(p, proj, task, "in_progress", task.Title); err != nil { return err }
+				if task.WorkspacePath != task.SourceWorkspace.Path {
+					return errors.New("reserved task runtime has no session")
+				}
+				if err := s.deployProjectTaskExecution(p, proj, task, "in_progress", task.Title); err != nil {
+					return err
+				}
 			} else {
-				if err := s.reconcileProjectTaskSession(p, proj, task, owned, "in_progress"); err != nil { return err }
+				if err := s.reconcileProjectTaskSession(p, proj, task, owned, "in_progress"); err != nil {
+					return err
+				}
 			}
 		}
 	}

@@ -310,25 +310,46 @@ func TestProjectStore_UploadedMedia_CRUD(t *testing.T) {
 // submissions. Threat: last-writer-wins replacement dispatches the same ID to a
 // second repository. ReserveProjectTaskIfAbsent is the narrow durable authority.
 func TestReserveProjectTaskIfAbsentConcurrentDoesNotOverwrite(t *testing.T) {
- db, err := Open(t.TempDir())
- if err != nil { t.Fatal(err) }
- defer db.Close()
- store := NewSessionStore(db)
- first := &ProjectTaskRecord{ID:"task-one", ProjectID:"project", Title:"Implement", Agent:"coder", Status:"pending_approval", WorkspacePath:"/repo/one", SessionID:"session-one", SourceWorkspace:ProjectTaskSource{WorkspaceID:"one", Path:"/repo/one", WorkspaceGeneration:1, Provenance:"explicit"}}
- second := &ProjectTaskRecord{ID:"task-one", ProjectID:"project", Title:"Implement", Agent:"coder", Status:"pending_approval", WorkspacePath:"/repo/two", SessionID:"session-two", SourceWorkspace:ProjectTaskSource{WorkspaceID:"two", Path:"/repo/two", WorkspaceGeneration:1, Provenance:"explicit"}}
- var wg sync.WaitGroup
- results := make(chan bool, 2)
- for _, task := range []*ProjectTaskRecord{first, second} {
-  wg.Add(1)
-  go func(task *ProjectTaskRecord) { defer wg.Done(); claimed, err := store.ReserveProjectTaskIfAbsent("account", task); if err != nil { t.Errorf("reserve: %v", err) }; results <- claimed }(task)
- }
- wg.Wait()
- close(results)
- claims := 0
- for claimed := range results { if claimed { claims++ } }
- if claims != 1 { t.Fatalf("expected exactly one owner, got %d", claims) }
- saved, found, err := store.GetProjectTask("account", "project", "task-one")
- if err != nil || !found { t.Fatalf("missing owner: %v", err) }
- if saved.SourceWorkspace.WorkspaceID != "one" && saved.SourceWorkspace.WorkspaceID != "two" { t.Fatalf("unexpected owner: %+v", saved.SourceWorkspace) }
- if _, found, err := store.GetProjectTask("other", "project", "task-one"); err != nil || found { t.Fatalf("cross-account reservation visible: %v", err) }
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	store := NewSessionStore(db)
+	first := &ProjectTaskRecord{ID: "task-one", ProjectID: "project", Title: "Implement", Agent: "coder", Status: "pending_approval", WorkspacePath: "/repo/one", SessionID: "session-one", SourceWorkspace: ProjectTaskSource{WorkspaceID: "one", Path: "/repo/one", WorkspaceGeneration: 1, Provenance: "explicit"}}
+	second := &ProjectTaskRecord{ID: "task-one", ProjectID: "project", Title: "Implement", Agent: "coder", Status: "pending_approval", WorkspacePath: "/repo/two", SessionID: "session-two", SourceWorkspace: ProjectTaskSource{WorkspaceID: "two", Path: "/repo/two", WorkspaceGeneration: 1, Provenance: "explicit"}}
+	var wg sync.WaitGroup
+	results := make(chan bool, 2)
+	for _, task := range []*ProjectTaskRecord{first, second} {
+		wg.Add(1)
+		go func(task *ProjectTaskRecord) {
+			defer wg.Done()
+			claimed, err := store.ReserveProjectTaskIfAbsent("account", task)
+			if err != nil {
+				t.Errorf("reserve: %v", err)
+			}
+			results <- claimed
+		}(task)
+	}
+	wg.Wait()
+	close(results)
+	claims := 0
+	for claimed := range results {
+		if claimed {
+			claims++
+		}
+	}
+	if claims != 1 {
+		t.Fatalf("expected exactly one owner, got %d", claims)
+	}
+	saved, found, err := store.GetProjectTask("account", "project", "task-one")
+	if err != nil || !found {
+		t.Fatalf("missing owner: %v", err)
+	}
+	if saved.SourceWorkspace.WorkspaceID != "one" && saved.SourceWorkspace.WorkspaceID != "two" {
+		t.Fatalf("unexpected owner: %+v", saved.SourceWorkspace)
+	}
+	if _, found, err := store.GetProjectTask("other", "project", "task-one"); err != nil || found {
+		t.Fatalf("cross-account reservation visible: %v", err)
+	}
 }

@@ -300,10 +300,10 @@ type ProjectTaskPlanBinding struct {
 // ProjectTaskSource is the immutable catalog binding for a task's source repository.
 // WorkspacePath on the task remains the mutable execution/worktree path.
 type ProjectTaskSource struct {
-	WorkspaceID string `json:"workspace_id"`
-	WorkspaceGeneration int64 `json:"workspace_generation"`
-	Path string `json:"path"`
-	Provenance string `json:"provenance"`
+	WorkspaceID         string `json:"workspace_id"`
+	WorkspaceGeneration int64  `json:"workspace_generation"`
+	Path                string `json:"path"`
+	Provenance          string `json:"provenance"`
 }
 
 // ProjectTaskRecord represents an autonomous task unit in a project.
@@ -667,16 +667,29 @@ func (s *SessionStore) putProjectTaskLocked(accountScopeID string, task *Project
 // A concurrent creator must read and reconcile the existing reservation rather
 // than overwrite a durable target or allocate a second execution.
 func (s *SessionStore) ReserveProjectTaskIfAbsent(accountScopeID string, task *ProjectTaskRecord) (bool, error) {
-	if s == nil || s.store == nil || s.store.db == nil { return false, errors.New("database not available") }
-	if task == nil || strings.TrimSpace(task.ID) == "" || strings.TrimSpace(task.ProjectID) == "" { return false, errors.New("task ID and project ID are required") }
+	if s == nil || s.store == nil || s.store.db == nil {
+		return false, errors.New("database not available")
+	}
+	if task == nil || strings.TrimSpace(task.ID) == "" || strings.TrimSpace(task.ProjectID) == "" {
+		return false, errors.New("task ID and project ID are required")
+	}
 	s.store.projectsMu.Lock()
 	key := []byte(KeyProjectTask(accountScopeID, task.ProjectID, task.ID))
 	_, closer, err := s.store.db.Get(key)
-	if err == nil { closer.Close(); s.store.projectsMu.Unlock(); return false, nil }
-	if !errors.Is(err, pebble.ErrNotFound) { s.store.projectsMu.Unlock(); return false, err }
+	if err == nil {
+		closer.Close()
+		s.store.projectsMu.Unlock()
+		return false, nil
+	}
+	if !errors.Is(err, pebble.ErrNotFound) {
+		s.store.projectsMu.Unlock()
+		return false, err
+	}
 	mut, err := s.putProjectTaskLocked(accountScopeID, task)
 	s.store.projectsMu.Unlock()
-	if err != nil { return false, err }
+	if err != nil {
+		return false, err
+	}
 	s.store.publishProjectRealtime(mut)
 	return true, nil
 }

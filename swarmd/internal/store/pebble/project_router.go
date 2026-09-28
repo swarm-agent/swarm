@@ -113,7 +113,9 @@ func RouteAndPlanProjectTaskWithOptions(opts TaskPlanOptions) (TaskRouteResult, 
 	}
 	// A catalog-free route can produce media previews, but cannot authorize a
 	// repository allocation. The project task creation boundary validates roots.
-	if heroWorkspace == "" { heroWorkspace = "." }
+	if heroWorkspace == "" {
+		heroWorkspace = "."
+	}
 	if heroWorkspace != "." && !filepath.IsAbs(heroWorkspace) {
 		return TaskRouteResult{}, errors.New("execution target requires an absolute workspace root")
 	}

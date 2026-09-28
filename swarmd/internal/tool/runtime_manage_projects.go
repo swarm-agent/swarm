@@ -30,46 +30,46 @@ type manageProjectStore interface {
 
 // ProjectTaskCreateInput specifies arguments for canonical project task creation.
 type ProjectTaskCreateInput struct {
-	ID               string                               `json:"id,omitempty"`
-	SessionID        string                               `json:"session_id,omitempty"`
-	Title            string                               `json:"title"`
-	Description      string                               `json:"description,omitempty"`
-	Prompt           string                               `json:"prompt,omitempty"`
-	Agent            string                               `json:"agent,omitempty"`
-	WorkerName       string                               `json:"worker_name,omitempty"`
-	FeatureSize      string                               `json:"feature_size,omitempty"`
-	WorkspacePath    string                               `json:"workspace_path,omitempty"`
-	WorkspaceID      string                               `json:"workspace_id,omitempty"`
-	WorkspaceGeneration int64                            `json:"workspace_generation,omitempty"`
-	WorktreeBranch   string                               `json:"worktree_branch,omitempty"`
-	OutcomeType      string                               `json:"outcome_type,omitempty"`
-	Tier             string                               `json:"tier,omitempty"`
-	AspectRatio      string                               `json:"aspect_ratio,omitempty"`
-	Resolution       string                               `json:"resolution,omitempty"`
-	VariantCount     int                                  `json:"variant_count,omitempty"`
-	DurationSeconds  int                                  `json:"duration_seconds,omitempty"`
-	Model            string                               `json:"model,omitempty"`
-	Provider         string                               `json:"provider,omitempty"`
-	Thinking         string                               `json:"thinking,omitempty"`
-	ServiceTier      string                               `json:"service_tier,omitempty"`
-	ContextMode      string                               `json:"context_mode,omitempty"`
-	Scenes           []pebblestore.ProjectTaskScene       `json:"scenes,omitempty"`
-	Soundtrack       string                               `json:"soundtrack,omitempty"`
-	AutoApprove      bool                                 `json:"auto_approve,omitempty"`
-	PipelineStages   []string                             `json:"pipeline_stages,omitempty"`
-	Deliverables     []pebblestore.ProjectTaskDeliverable `json:"deliverables,omitempty"`
-	WhatDidDo        []string                             `json:"what_did_do,omitempty"`
-	WhatNotDone      []string                             `json:"what_not_done,omitempty"`
-	AttachedMedia    []pebblestore.ProjectTaskMediaRef    `json:"attached_media,omitempty"`
-	Document         *pebblestore.SessionPlanDocument     `json:"document,omitempty"`
-	PlanDocument     *pebblestore.SessionPlanDocument     `json:"plan_document,omitempty"`
-	TaskProgram      *pebblestore.TaskProgramDefinition   `json:"task_program,omitempty"`
-	TaskProgramID    string                               `json:"task_program_id,omitempty"`
-	PlanSummary      string                               `json:"plan_summary,omitempty"`
-	FullPlanMarkdown string                               `json:"full_plan_markdown,omitempty"`
-	DiffSummary      string                               `json:"diff_summary,omitempty"`
-	ClientRequestID  string                               `json:"client_request_id,omitempty"`
-	Status           string                               `json:"status,omitempty"`
+	ID                  string                               `json:"id,omitempty"`
+	SessionID           string                               `json:"session_id,omitempty"`
+	Title               string                               `json:"title"`
+	Description         string                               `json:"description,omitempty"`
+	Prompt              string                               `json:"prompt,omitempty"`
+	Agent               string                               `json:"agent,omitempty"`
+	WorkerName          string                               `json:"worker_name,omitempty"`
+	FeatureSize         string                               `json:"feature_size,omitempty"`
+	WorkspacePath       string                               `json:"workspace_path,omitempty"`
+	WorkspaceID         string                               `json:"workspace_id,omitempty"`
+	WorkspaceGeneration int64                                `json:"workspace_generation,omitempty"`
+	WorktreeBranch      string                               `json:"worktree_branch,omitempty"`
+	OutcomeType         string                               `json:"outcome_type,omitempty"`
+	Tier                string                               `json:"tier,omitempty"`
+	AspectRatio         string                               `json:"aspect_ratio,omitempty"`
+	Resolution          string                               `json:"resolution,omitempty"`
+	VariantCount        int                                  `json:"variant_count,omitempty"`
+	DurationSeconds     int                                  `json:"duration_seconds,omitempty"`
+	Model               string                               `json:"model,omitempty"`
+	Provider            string                               `json:"provider,omitempty"`
+	Thinking            string                               `json:"thinking,omitempty"`
+	ServiceTier         string                               `json:"service_tier,omitempty"`
+	ContextMode         string                               `json:"context_mode,omitempty"`
+	Scenes              []pebblestore.ProjectTaskScene       `json:"scenes,omitempty"`
+	Soundtrack          string                               `json:"soundtrack,omitempty"`
+	AutoApprove         bool                                 `json:"auto_approve,omitempty"`
+	PipelineStages      []string                             `json:"pipeline_stages,omitempty"`
+	Deliverables        []pebblestore.ProjectTaskDeliverable `json:"deliverables,omitempty"`
+	WhatDidDo           []string                             `json:"what_did_do,omitempty"`
+	WhatNotDone         []string                             `json:"what_not_done,omitempty"`
+	AttachedMedia       []pebblestore.ProjectTaskMediaRef    `json:"attached_media,omitempty"`
+	Document            *pebblestore.SessionPlanDocument     `json:"document,omitempty"`
+	PlanDocument        *pebblestore.SessionPlanDocument     `json:"plan_document,omitempty"`
+	TaskProgram         *pebblestore.TaskProgramDefinition   `json:"task_program,omitempty"`
+	TaskProgramID       string                               `json:"task_program_id,omitempty"`
+	PlanSummary         string                               `json:"plan_summary,omitempty"`
+	FullPlanMarkdown    string                               `json:"full_plan_markdown,omitempty"`
+	DiffSummary         string                               `json:"diff_summary,omitempty"`
+	ClientRequestID     string                               `json:"client_request_id,omitempty"`
+	Status              string                               `json:"status,omitempty"`
 }
 
 // ProjectTaskApprovalGuards specifies caller-provided guards for task approval.
@@ -315,9 +315,9 @@ func manageProjectsDefinition() Definition {
 				"workspace_path": map[string]any{
 					"type": "string", "description": "Exact canonical source repository root in the account workspace catalog (not a linked subdirectory). Omission is allowed only when exactly one authorized project repository exists. Project membership, a coordination workspace, and first-workspace order are not execution grants; ambiguous, stale, or conflicting targets are rejected.",
 				},
-				"workspace_id": map[string]any{"type": "string", "description": "Exact account workspace catalog ID for the execution source; if supplied with workspace_path, both must identify the same authorized root"},
+				"workspace_id":         map[string]any{"type": "string", "description": "Exact account workspace catalog ID for the execution source; if supplied with workspace_path, both must identify the same authorized root"},
 				"workspace_generation": map[string]any{"type": "integer", "description": "Optional expected catalog generation for that source; stale bindings are rejected"},
-				"client_request_id": map[string]any{"type": "string", "description": "Stable submission identity reused only for retries of the identical payload and resolved source target; it does not authorize deployment"},
+				"client_request_id":    map[string]any{"type": "string", "description": "Stable submission identity reused only for retries of the identical payload and resolved source target; it does not authorize deployment"},
 				"workspaces": map[string]any{
 					"type":        "array",
 					"description": "Project workspace references [{path, role, label}]; membership is not an execution grant or default source target",
@@ -678,41 +678,41 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 		}
 
 		createdTask, err := lifecycle.CreateProjectTask(ctx, p, projectID, ProjectTaskCreateInput{
-			ID:               taskID,
-			Title:            title,
-			Description:      description,
-			Prompt:           prompt,
-			Agent:            agentName,
-			WorkerName:       workerName,
-			FeatureSize:      featureSize,
-			WorkspacePath:    wsPath,
-			WorkspaceID:      strings.TrimSpace(asString(args["workspace_id"])),
+			ID:                  taskID,
+			Title:               title,
+			Description:         description,
+			Prompt:              prompt,
+			Agent:               agentName,
+			WorkerName:          workerName,
+			FeatureSize:         featureSize,
+			WorkspacePath:       wsPath,
+			WorkspaceID:         strings.TrimSpace(asString(args["workspace_id"])),
 			WorkspaceGeneration: int64(asInt(args["workspace_generation"], 0)),
-			ClientRequestID: strings.TrimSpace(asString(args["client_request_id"])),
-			WorktreeBranch:   worktreeBranch,
-			OutcomeType:      outcomeType,
-			Tier:             tier,
-			AspectRatio:      aspectRatio,
-			Resolution:       resolution,
-			VariantCount:     variantCount,
-			DurationSeconds:  asInt(args["duration_seconds"], 0),
-			Model:            modelName,
-			Provider:         provider,
-			Thinking:         thinking,
-			ServiceTier:      serviceTier,
-			ContextMode:      contextMode,
-			Soundtrack:       soundtrack,
-			AutoApprove:      autoApprove,
-			PipelineStages:   stages,
-			Deliverables:     deliverables,
-			WhatDidDo:        whatDid,
-			WhatNotDone:      whatNot,
-			AttachedMedia:    attachedMedia,
-			PlanDocument:     planDoc,
-			TaskProgram:      taskProg,
-			PlanSummary:      planSummary,
-			FullPlanMarkdown: fullPlanMarkdown,
-			DiffSummary:      diffSummary,
+			ClientRequestID:     strings.TrimSpace(asString(args["client_request_id"])),
+			WorktreeBranch:      worktreeBranch,
+			OutcomeType:         outcomeType,
+			Tier:                tier,
+			AspectRatio:         aspectRatio,
+			Resolution:          resolution,
+			VariantCount:        variantCount,
+			DurationSeconds:     asInt(args["duration_seconds"], 0),
+			Model:               modelName,
+			Provider:            provider,
+			Thinking:            thinking,
+			ServiceTier:         serviceTier,
+			ContextMode:         contextMode,
+			Soundtrack:          soundtrack,
+			AutoApprove:         autoApprove,
+			PipelineStages:      stages,
+			Deliverables:        deliverables,
+			WhatDidDo:           whatDid,
+			WhatNotDone:         whatNot,
+			AttachedMedia:       attachedMedia,
+			PlanDocument:        planDoc,
+			TaskProgram:         taskProg,
+			PlanSummary:         planSummary,
+			FullPlanMarkdown:    fullPlanMarkdown,
+			DiffSummary:         diffSummary,
 		})
 		if err != nil {
 			return "", fmt.Errorf("create task: %w", err)

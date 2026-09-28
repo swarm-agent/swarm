@@ -241,9 +241,13 @@ func (p *taskProgramScheduler) runCohort(indexes []int) error {
 		if agentruntime.IsCoderAgentName(launch.RequestedSubagentType) {
 			if len(p.record.RepositoryLanes) > 0 {
 				source, sourceErr := p.coderSourceForJob(definition)
-				if sourceErr != nil { return sourceErr }
+				if sourceErr != nil {
+					return sourceErr
+				}
 				lane, ok := p.record.RepositoryLanes[source]
-				if !ok { return fmt.Errorf("Coder job %q has no repository lane", definition.ID) }
+				if !ok {
+					return fmt.Errorf("Coder job %q has no repository lane", definition.ID)
+				}
 				launch.ProgramRepositoryLane = &lane
 			} else if p.record.RepositoryLane != nil {
 				copy := *p.record.RepositoryLane
@@ -342,7 +346,10 @@ func (p *taskProgramScheduler) runCohort(indexes []int) error {
 		job := p.record.Jobs[index]
 		update := pebblestore.TaskProgramJobTransition{JobID: job.JobID, ExpectedState: pebblestore.TaskProgramJobDeclared, State: pebblestore.TaskProgramJobRunning, AttemptNumber: job.AttemptNumber + 1}
 		if len(p.record.RepositoryLanes) > 0 && agentruntime.IsCoderAgentName(p.record.Definition.Jobs[index].AgentType) {
-			source, err := p.coderSourceForJob(p.record.Definition.Jobs[index]); if err != nil { return err }
+			source, err := p.coderSourceForJob(p.record.Definition.Jobs[index])
+			if err != nil {
+				return err
+			}
 			update.SourceWorkspacePath = source
 		}
 		running = append(running, update)
@@ -851,24 +858,38 @@ func (p *taskProgramScheduler) programWorkspacePath() (string, error) {
 	if !hasCoder {
 		return strings.TrimSpace(parent.WorkspacePath), nil
 	}
-	if len(p.record.RepositoryLanes) > 0 { return p.multiRepositoryWorkspacePath() }
+	if len(p.record.RepositoryLanes) > 0 {
+		return p.multiRepositoryWorkspacePath()
+	}
 	// Multi-repository programs may be coordinated by a different parent
 	// repository. Resolve explicit source identities before testing whether the
 	// parent's own worktree is an integration destination.
 	var firstSource string
 	for _, def := range p.record.Definition.Jobs {
-		if !agentruntime.IsCoderAgentName(def.AgentType) { continue }
-		if def.WorkspacePath == "" && p.parsed.ProgramWorkspacePath == "" { continue }
+		if !agentruntime.IsCoderAgentName(def.AgentType) {
+			continue
+		}
+		if def.WorkspacePath == "" && p.parsed.ProgramWorkspacePath == "" {
+			continue
+		}
 		source, err := p.coderSourceForJob(def)
-		if err != nil { return "", err }
-		if firstSource == "" { firstSource = source } else if !sameTaskProgramPath(firstSource, source) { return p.multiRepositoryWorkspacePath() }
+		if err != nil {
+			return "", err
+		}
+		if firstSource == "" {
+			firstSource = source
+		} else if !sameTaskProgramPath(firstSource, source) {
+			return p.multiRepositoryWorkspacePath()
+		}
 	}
 	// Once admitted, the program's lane is immutable. A refreshed parent may
 	// have adopted a successor; never reinterpret its default as this program's
 	// stage destination. The normal launch authority still authenticates source,
 	// Git ownership, captured ancestry and cleanliness before reuse.
 	if p.record.RepositoryLane != nil {
-		if err := p.validateRepositoryLaneSource(*p.record.RepositoryLane); err != nil { return "", err }
+		if err := p.validateRepositoryLaneSource(*p.record.RepositoryLane); err != nil {
+			return "", err
+		}
 		if p.record.Revision > 0 {
 			if p.record.ParentSessionID != parent.ID {
 				return "", errors.New("Task Program repository admission parent mismatch")
@@ -945,11 +966,17 @@ func (p *taskProgramScheduler) programWorkspacePath() (string, error) {
 // authorization; project membership alone does not grant execution access.
 func (p *taskProgramScheduler) coderSourceForJob(def pebblestore.TaskProgramJobSpec) (string, error) {
 	requested := strings.TrimSpace(firstNonEmptyString(def.WorkspacePath, p.parsed.ProgramWorkspacePath))
-	if requested == "" { return "", fmt.Errorf("Coder job %q requires an explicit workspace_path in a multi-repository program", def.ID) }
+	if requested == "" {
+		return "", fmt.Errorf("Coder job %q requires an explicit workspace_path in a multi-repository program", def.ID)
+	}
 	path, _, err := p.service.resolveTaskTargetWorkspace(p.parentSession, p.req.Principal, &taskLaunchSpec{RequestedSubagentType: "coder", TargetWorkspacePath: requested})
-	if err != nil { return "", err }
+	if err != nil {
+		return "", err
+	}
 	for source, lane := range p.record.RepositoryLanes {
-		if sameTaskProgramPath(path, lane.WorkspacePath) { return source, nil }
+		if sameTaskProgramPath(path, lane.WorkspacePath) {
+			return source, nil
+		}
 	}
 	return path, nil
 }
@@ -959,41 +986,74 @@ func (p *taskProgramScheduler) multiRepositoryWorkspacePath() (string, error) {
 	// targets cannot silently route through the primary checkout.
 	sources := make([]string, 0, len(p.record.Definition.Jobs))
 	for _, def := range p.record.Definition.Jobs {
-		if !agentruntime.IsCoderAgentName(def.AgentType) { continue }
+		if !agentruntime.IsCoderAgentName(def.AgentType) {
+			continue
+		}
 		source, err := p.coderSourceForJob(def)
-		if err != nil { return "", err }
+		if err != nil {
+			return "", err
+		}
 		seen := false
-		for _, item := range sources { if sameTaskProgramPath(item, source) { seen = true; break } }
-		if !seen { sources = append(sources, source) }
+		for _, item := range sources {
+			if sameTaskProgramPath(item, source) {
+				seen = true
+				break
+			}
+		}
+		if !seen {
+			sources = append(sources, source)
+		}
 	}
-	if len(sources) < 2 { return "", errors.New("multi-repository program has fewer than two authenticated sources") }
-	if p.service == nil || p.service.worktrees == nil { return "", errors.New("Task Program worktree authority unavailable") }
+	if len(sources) < 2 {
+		return "", errors.New("multi-repository program has fewer than two authenticated sources")
+	}
+	if p.service == nil || p.service.worktrees == nil {
+		return "", errors.New("Task Program worktree authority unavailable")
+	}
 	// Source aliases must not acquire separate lanes for the same repository.
 	// Resolve actual Git roots before allocation, not merely lexical paths.
 	for i, source := range sources {
 		base, err := p.service.worktrees.ResolveTaskBase(source)
-		if err != nil { return "", err }
+		if err != nil {
+			return "", err
+		}
 		for j := 0; j < i; j++ {
 			other, err := p.service.worktrees.ResolveTaskBase(sources[j])
-			if err != nil { return "", err }
+			if err != nil {
+				return "", err
+			}
 			if sameTaskProgramPath(base.RepoRoot, other.RepoRoot) {
 				return "", errors.New("multi-repository program targets the same canonical repository more than once")
 			}
 		}
 	}
 	for _, source := range sources {
-		if _, _, err := p.canonicalRepositorySource(source); err != nil { return "", err }
+		if _, _, err := p.canonicalRepositorySource(source); err != nil {
+			return "", err
+		}
 		if lane, ok := p.record.RepositoryLanes[source]; ok {
-			if err := p.validateRepositoryLaneSource(lane); err != nil { return "", err }
-			if _, _, err := p.service.resolveTaskTargetWorkspace(p.parentSession, p.req.Principal, &taskLaunchSpec{RequestedSubagentType: "coder", ProgramRepositoryLane: &lane}); err != nil { return "", err }
-		} else if _, err := p.service.worktrees.ResolveTaskBase(source); err != nil { return "", err }
+			if err := p.validateRepositoryLaneSource(lane); err != nil {
+				return "", err
+			}
+			if _, _, err := p.service.resolveTaskTargetWorkspace(p.parentSession, p.req.Principal, &taskLaunchSpec{RequestedSubagentType: "coder", ProgramRepositoryLane: &lane}); err != nil {
+				return "", err
+			}
+		} else if _, err := p.service.worktrees.ResolveTaskBase(source); err != nil {
+			return "", err
+		}
 	}
 	if p.record.Revision == 0 {
-		for _, source := range sources { if _, err := p.service.worktrees.ResolveTaskBase(source); err != nil { return "", err } }
+		for _, source := range sources {
+			if _, err := p.service.worktrees.ResolveTaskBase(source); err != nil {
+				return "", err
+			}
+		}
 		return sources[0], nil
 	}
 	for _, source := range sources {
-		if _, err := p.repositoryLaneForSource(source, true); err != nil { return "", err }
+		if _, err := p.repositoryLaneForSource(source, true); err != nil {
+			return "", err
+		}
 	}
 	return p.record.RepositoryLanes[sources[0]].WorkspacePath, nil
 }
@@ -1012,7 +1072,9 @@ func sameTaskProgramPath(left, right string) bool {
 }
 
 func (p *taskProgramScheduler) integrateStage(stageIndex int) error {
-	if len(p.record.RepositoryLanes) > 0 { return p.integrateMultiRepositoryStage(stageIndex) }
+	if len(p.record.RepositoryLanes) > 0 {
+		return p.integrateMultiRepositoryStage(stageIndex)
+	}
 	stageID := p.record.Definition.Stages[stageIndex].ID
 	programWorkspacePath, err := p.programWorkspacePath()
 	if err != nil {
@@ -1107,33 +1169,59 @@ func (p *taskProgramScheduler) integrateStage(stageIndex int) error {
 func (p *taskProgramScheduler) integrateMultiRepositoryStage(stageIndex int) error {
 	stageID := p.record.Definition.Stages[stageIndex].ID
 	integrator, ok := p.service.worktrees.(taskProgramIntegrationService)
-	if !ok { return errors.New("worktree service does not support canonical task integration") }
+	if !ok {
+		return errors.New("worktree service does not support canonical task integration")
+	}
 	for _, def := range p.record.Definition.Jobs {
-		if def.StageID != stageID || agentruntime.IsCoderAgentName(def.AgentType) { continue }
+		if def.StageID != stageID || agentruntime.IsCoderAgentName(def.AgentType) {
+			continue
+		}
 		job := p.record.Jobs[taskProgramJobIndex(p.record, def.ID)]
-		if job.State != pebblestore.TaskProgramJobCompleted { return fmt.Errorf("job %q did not complete", def.ID) }
+		if job.State != pebblestore.TaskProgramJobCompleted {
+			return fmt.Errorf("job %q did not complete", def.ID)
+		}
 	}
 	// Commit one lane receipt before proceeding to the next. A reopened stage
 	// verifies the exact recorded head rather than applying the same child twice.
 	for _, def := range p.record.Definition.Jobs {
-		if def.StageID != stageID || !agentruntime.IsCoderAgentName(def.AgentType) { continue }
+		if def.StageID != stageID || !agentruntime.IsCoderAgentName(def.AgentType) {
+			continue
+		}
 		source, err := p.coderSourceForJob(def)
-		if err != nil { return err }
+		if err != nil {
+			return err
+		}
 		lane, ok := p.record.RepositoryLanes[source]
-		if !ok { return fmt.Errorf("Coder job %q has no bound repository lane", def.ID) }
+		if !ok {
+			return fmt.Errorf("Coder job %q has no bound repository lane", def.ID)
+		}
 		state, err := p.service.worktrees.InspectTaskWorkspace(lane.WorkspacePath)
-		if err != nil { return err }
-		if err := p.validateRepositoryLaneSource(lane); err != nil { return err }
-		if !state.Clean || state.BranchName != lane.Branch { return fmt.Errorf("repository lane %q changed before integration", source) }
+		if err != nil {
+			return err
+		}
+		if err := p.validateRepositoryLaneSource(lane); err != nil {
+			return err
+		}
+		if !state.Clean || state.BranchName != lane.Branch {
+			return fmt.Errorf("repository lane %q changed before integration", source)
+		}
 		head := firstNonEmptyString(p.record.LaneHeads[source], lane.BaseCommit)
-		if state.HeadCommit != head { return fmt.Errorf("repository lane %q head differs from durable receipt; Git may have advanced before receipt persistence, so refuse replay", source) }
+		if state.HeadCommit != head {
+			return fmt.Errorf("repository lane %q head differs from durable receipt; Git may have advanced before receipt persistence, so refuse replay", source)
+		}
 		var children []worktreeruntime.TaskIntegrationChild
 		var updates []pebblestore.TaskProgramJobTransition
 		for _, sibling := range p.record.Definition.Jobs {
-			if sibling.StageID != stageID || !agentruntime.IsCoderAgentName(sibling.AgentType) { continue }
+			if sibling.StageID != stageID || !agentruntime.IsCoderAgentName(sibling.AgentType) {
+				continue
+			}
 			job := p.record.Jobs[taskProgramJobIndex(p.record, sibling.ID)]
-			if job.SourceWorkspacePath != source { continue }
-			if job.State == pebblestore.TaskProgramJobIntegrated { continue }
+			if job.SourceWorkspacePath != source {
+				continue
+			}
+			if job.State == pebblestore.TaskProgramJobIntegrated {
+				continue
+			}
 			if job.State != pebblestore.TaskProgramJobHandoffReady || job.ChildHead == "" || job.ChildHead == job.ImmutableStageBase || job.ImmutableStageBase != head || job.ParentBranch != lane.Branch || len(sibling.OwnedScope) == 0 {
 				p.barrierJobID = job.JobID
 				return fmt.Errorf("Coder job %q has invalid immutable integration evidence", job.JobID)
@@ -1141,23 +1229,37 @@ func (p *taskProgramScheduler) integrateMultiRepositoryStage(stageIndex int) err
 			children = append(children, worktreeruntime.TaskIntegrationChild{SessionID: firstNonEmptyString(job.CurrentSessionID, job.ChildSessionID), BaseCommit: job.ImmutableStageBase, HeadCommit: job.ChildHead, OwnedScopes: append([]string(nil), sibling.OwnedScope...)})
 			updates = append(updates, pebblestore.TaskProgramJobTransition{JobID: job.JobID, ExpectedState: pebblestore.TaskProgramJobHandoffReady, State: pebblestore.TaskProgramJobIntegrated, IntegrationState: "integrated"})
 		}
-		if len(children) == 0 { continue }
+		if len(children) == 0 {
+			continue
+		}
 		plan, err := integrator.PrepareTaskIntegration(lane.WorkspacePath, lane.Branch, head, children)
-		if err != nil { return err }
+		if err != nil {
+			return err
+		}
 		result, err := integrator.ApplyTaskIntegration(lane.WorkspacePath, plan)
-		if err != nil { return err }
+		if err != nil {
+			return err
+		}
 		nextHead := result.ResultingParentHead
-		if nextHead == "" { return errors.New("task integration returned no parent head") }
+		if nextHead == "" {
+			return errors.New("task integration returned no parent head")
+		}
 		next := "integrate_remaining_lanes"
 		_, _, err = p.transition(p.parentSession.ID, p.record.ProgramID, pebblestore.TaskProgramTransition{ExpectedRevision: p.record.Revision, MutationID: fmt.Sprintf("integrate-lane:%d", p.record.Revision), LaneHeads: map[string]string{source: nextHead}, NextAction: &next, Jobs: updates})
-		if err != nil { return err }
+		if err != nil {
+			return err
+		}
 	}
 	for _, def := range p.record.Definition.Jobs {
-		if def.StageID == stageID && agentruntime.IsCoderAgentName(def.AgentType) && p.record.Jobs[taskProgramJobIndex(p.record, def.ID)].State != pebblestore.TaskProgramJobIntegrated { return fmt.Errorf("Coder job %q remains unintegrated", def.ID) }
+		if def.StageID == stageID && agentruntime.IsCoderAgentName(def.AgentType) && p.record.Jobs[taskProgramJobIndex(p.record, def.ID)].State != pebblestore.TaskProgramJobIntegrated {
+			return fmt.Errorf("Coder job %q remains unintegrated", def.ID)
+		}
 	}
 	next := "advance_stage"
 	_, _, err := p.transition(p.parentSession.ID, p.record.ProgramID, pebblestore.TaskProgramTransition{ExpectedRevision: p.record.Revision, MutationID: fmt.Sprintf("integrate-stage:%d", p.record.Revision), NextAction: &next})
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	return p.cleanupIntegratedStageWorktrees(stageID)
 }
 
@@ -1180,7 +1282,9 @@ func (p *taskProgramScheduler) cleanupIntegratedStageWorktrees(stageID string) e
 		parentPath, pathErr := p.programWorkspacePath()
 		if len(p.record.RepositoryLanes) > 0 {
 			lane, ok := p.record.RepositoryLanes[job.SourceWorkspacePath]
-			if !ok { return fmt.Errorf("Coder job %q lost its repository lane", job.JobID) }
+			if !ok {
+				return fmt.Errorf("Coder job %q lost its repository lane", job.JobID)
+			}
 			parentPath, pathErr = lane.WorkspacePath, nil
 		}
 		if pathErr != nil {
