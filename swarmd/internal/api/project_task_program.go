@@ -67,9 +67,27 @@ func hydrateTaskPlanDocument(task *pebblestore.ProjectTaskRecord, db *pebblestor
 	if task == nil || db == nil {
 		return
 	}
-	if task.PlanDocument == nil && task.PlanBinding != nil && task.PlanBinding.PlanID != "" && task.SessionID != "" {
-		if plan, ok, _ := db.GetPlan(task.SessionID, task.PlanBinding.PlanID); ok && plan.Document != nil {
+	sessID := task.SessionID
+	if sessID == "" && task.PlanBinding != nil {
+		sessID = task.PlanBinding.SessionID
+	}
+	if task.PlanDocument == nil && task.PlanBinding != nil && task.PlanBinding.PlanID != "" && sessID != "" {
+		if plan, ok, _ := db.GetPlan(sessID, task.PlanBinding.PlanID); ok && plan.Document != nil {
 			task.PlanDocument = plan.Document
+		}
+	}
+	if task.PlanDocument == nil && sessID != "" {
+		if active, ok, _ := db.GetActivePlan(sessID); ok && active.PlanID != "" {
+			if plan, ok, _ := db.GetPlan(sessID, active.PlanID); ok && plan.Document != nil {
+				task.PlanDocument = plan.Document
+				if task.PlanBinding == nil {
+					task.PlanBinding = &pebblestore.ProjectTaskPlanBinding{
+						PlanID:             plan.ID,
+						SessionID:          sessID,
+						DefinitionRevision: plan.Version,
+					}
+				}
+			}
 		}
 	}
 }

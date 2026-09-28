@@ -784,14 +784,26 @@ func (s *SessionStore) hydrateProjectTaskPlanDocument(task *ProjectTaskRecord) {
 	if task == nil {
 		return
 	}
-	if task.PlanDocument == nil && task.PlanBinding != nil && task.PlanBinding.PlanID != "" {
-		sessID := task.SessionID
-		if sessID == "" {
-			sessID = task.PlanBinding.SessionID
+	sessID := task.SessionID
+	if sessID == "" && task.PlanBinding != nil {
+		sessID = task.PlanBinding.SessionID
+	}
+	if task.PlanDocument == nil && task.PlanBinding != nil && task.PlanBinding.PlanID != "" && sessID != "" {
+		if plan, found, err := s.GetPlan(sessID, task.PlanBinding.PlanID); err == nil && found && plan.Document != nil {
+			task.PlanDocument = plan.Document
 		}
-		if sessID != "" {
-			if plan, found, err := s.GetPlan(sessID, task.PlanBinding.PlanID); err == nil && found && plan.Document != nil {
+	}
+	if task.PlanDocument == nil && sessID != "" {
+		if active, found, err := s.GetActivePlan(sessID); err == nil && found && active.PlanID != "" {
+			if plan, found, err := s.GetPlan(sessID, active.PlanID); err == nil && found && plan.Document != nil {
 				task.PlanDocument = plan.Document
+				if task.PlanBinding == nil {
+					task.PlanBinding = &ProjectTaskPlanBinding{
+						PlanID:             plan.ID,
+						SessionID:          sessID,
+						DefinitionRevision: plan.Version,
+					}
+				}
 			}
 		}
 	}

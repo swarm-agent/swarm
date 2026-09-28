@@ -57,22 +57,106 @@ func (s *Server) reconcileProjectTaskRunLifecycle(job sessionV3ExecutorJob, stat
 	if err != nil || !ok || task == nil {
 		return err
 	}
-	if task.SessionID != job.SessionID || (task.AccountID != "" && task.AccountID != accountScopeID) {
+	isPrimarySession := task.SessionID == job.SessionID
+	isTaskProgramSession := false
+	progID := task.TaskProgramID
+	if progID == "" && task.TaskProgram != nil {
+		progID = task.TaskProgram.ID
+	}
+	if progID != "" && task.SessionID != "" {
+		if prog, ok, _ := db.GetTaskProgram(task.SessionID, progID); ok {
+			for _, j := range prog.Jobs {
+				if j.ChildSessionID == job.SessionID || j.CurrentSessionID == job.SessionID {
+					isTaskProgramSession = true
+					break
+				}
+			}
+		}
+	}
+
+	if (!isPrimarySession && !isTaskProgramSession) || (task.AccountID != "" && task.AccountID != accountScopeID) {
 		return nil
 	}
-	// Do not override TaskPrograms, direct media tasks, or completed/integrated tasks
+	// Task Programs: sync TaskProgramStatus and task status, then emit project invalidation
 	if task.TaskProgramID != "" || task.TaskProgram != nil {
+		if progID != "" && task.SessionID != "" {
+			if prog, ok, _ := db.GetTaskProgram(task.SessionID, progID); ok {
+				_, err = db.UpdateProjectTask(accountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
+					t.TaskProgramStatus = &prog
+					switch prog.State {
+					case pebblestore.TaskProgramStateRunning:
+						t.Status = "in_progress"
+					case pebblestore.TaskProgramStateCompleted:
+						if !t.IsIntegrated {
+							t.Status = "needs_review"
+							if t.ActionNeeded == "" || strings.HasPrefix(t.ActionNeeded, "Action Needed: 0") {
+								t.ActionNeeded = "Action Needed: All task program jobs finished and integrated. Ready to integrate into dev/main."
+							}
+						} else {
+							t.Status = "completed"
+						}
+					case pebblestore.TaskProgramStateBlocked:
+						t.Status = "needs_review"
+						if prog.Blocker != nil && prog.Blocker.Message != "" {
+							t.ActionNeeded = prog.Blocker.Message
+							t.LastError = prog.Blocker.Message
+						}
+					case pebblestore.TaskProgramStateFailed:
+						t.Status = "failed"
+						if prog.Blocker != nil && prog.Blocker.Message != "" {
+							t.LastError = prog.Blocker.Message
+						}
+					}
+					return nil
+				})
+				return err
+			}
+		}
 		return nil
 	}
 	if task.Agent == "image" || task.Agent == "video" || task.Agent == "sound" || task.Agent == "audio" {
 		return nil
 	}
-	if task.IsIntegrated || task.Status == "completed" || task.Status == "pending_approval" || task.Status == "planning" || (task.Status == "queued" && status == sessionruntime.RunIntentCompleted) {
+	if task.IsIntegrated || task.Status == "completed" || task.Status == "pending_approval" || (task.Status == "queued" && status == sessionruntime.RunIntentCompleted) {
 		return nil
 	}
 
 	switch status {
 	case sessionruntime.RunIntentCompleted:
+		if task.Status == "planning" {
+			active, hasActive, planErr := db.GetActivePlan(task.SessionID)
+			if planErr == nil && hasActive && active.PlanID != "" {
+				plan, found, pErr := db.GetPlan(task.SessionID, active.PlanID)
+				if pErr == nil && found && plan.Document != nil && len(plan.Document.Checkpoints) > 0 {
+					_, err = db.UpdateProjectTask(accountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
+						if t.SessionID != job.SessionID || t.Status != "planning" {
+							return nil
+						}
+						t.Status = "pending_approval"
+						t.PlanBinding = &pebblestore.ProjectTaskPlanBinding{
+							PlanID:             plan.ID,
+							SessionID:          task.SessionID,
+							DefinitionRevision: plan.Version,
+						}
+						t.PlanDocument = plan.Document
+						t.ActionNeeded = "Review plan in task card and click Approve"
+						t.WhatDidDo = append(t.WhatDidDo, "Plan agent authored structured plan")
+						return nil
+					})
+					return err
+				}
+			}
+			_, err = db.UpdateProjectTask(accountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
+				if t.SessionID != job.SessionID || t.Status != "planning" {
+					return nil
+				}
+				t.Status = "needs_review"
+				t.ActionNeeded = "Action Needed: Plan agent finished investigation. Review session findings."
+				t.WhatDidDo = append(t.WhatDidDo, "Completed planning investigation")
+				return nil
+			})
+			return err
+		}
 		// A provider turn ending does not complete an approved checkpoint plan.
 		if task.PlanBinding != nil && task.PlanBinding.PlanID != "" {
 			plan, found, planErr := db.GetPlan(task.SessionID, task.PlanBinding.PlanID)
@@ -131,7 +215,7 @@ func (s *Server) reconcileProjectTaskRunLifecycle(job sessionV3ExecutorJob, stat
 		return err
 	case sessionruntime.RunIntentCancelled:
 		_, err = db.UpdateProjectTask(accountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
-			if t.Status != "in_progress" || t.SessionID != job.SessionID {
+			if (t.Status != "in_progress" && t.Status != "planning") || t.SessionID != job.SessionID {
 				return nil
 			}
 			t.Status = "failed"
@@ -144,7 +228,7 @@ func (s *Server) reconcileProjectTaskRunLifecycle(job sessionV3ExecutorJob, stat
 		return err
 	case sessionruntime.RunIntentFailed, sessionruntime.RunIntentExpired, sessionruntime.RunIntentInterrupted, sessionruntime.RunIntentDispatchBlocked:
 		_, err = db.UpdateProjectTask(accountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
-			if t.Status != "in_progress" || t.SessionID != job.SessionID {
+			if (t.Status != "in_progress" && t.Status != "planning") || t.SessionID != job.SessionID {
 				return nil
 			}
 			t.Status = "failed"

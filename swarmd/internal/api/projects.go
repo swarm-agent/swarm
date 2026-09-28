@@ -303,9 +303,9 @@ func syncTaskSessionState(task *pebblestore.ProjectTaskRecord, db *pebblestore.S
 	if task == nil || db == nil {
 		return
 	}
-	// Preserve manual task approval/planning and queue ownership. Generated tasks
+	// Preserve manual task approval and queue ownership. Generated tasks
 	// alone may reconcile their queue state from the worker execution session.
-	if task.Status == "pending_approval" || task.Status == "planning" || (task.Status == "queued" && task.WorkerID == "") {
+	if task.Status == "pending_approval" || (task.Status == "queued" && task.WorkerID == "") {
 		return
 	}
 
@@ -317,6 +317,43 @@ func syncTaskSessionState(task *pebblestore.ProjectTaskRecord, db *pebblestore.S
 
 	// 2. If task was explicitly marked completed and not reopened, preserve completed
 	if task.Status == "completed" {
+		return
+	}
+
+	// 2a. Planning task check: check if planning session produced an active plan or concluded with failure
+	if task.Status == "planning" {
+		if task.SessionID != "" {
+			active, hasActive, planErr := db.GetActivePlan(task.SessionID)
+			if planErr == nil && hasActive && active.PlanID != "" {
+				if plan, found, pErr := db.GetPlan(task.SessionID, active.PlanID); pErr == nil && found && plan.Document != nil && len(plan.Document.Checkpoints) > 0 {
+					task.Status = "pending_approval"
+					task.PlanBinding = &pebblestore.ProjectTaskPlanBinding{
+						PlanID:             plan.ID,
+						SessionID:          task.SessionID,
+						DefinitionRevision: plan.Version,
+					}
+					task.PlanDocument = plan.Document
+					task.ActionNeeded = "Review plan in task card and click Approve"
+					return
+				}
+			}
+			runState, runFound, _ := db.GetV3SessionRunState(task.SessionID)
+			if runFound && !runState.Active && runState.Status != pebblestore.V3RunIntentPendingExecutor && runState.Status != pebblestore.V3RunIntentRunning {
+				switch runState.Status {
+				case pebblestore.V3RunIntentCancelled, pebblestore.V3RunIntentFailed, pebblestore.V3RunIntentExpired, pebblestore.V3RunIntentInterrupted, pebblestore.V3RunIntentDispatchBlocked:
+					task.Status = "failed"
+					if runState.BlockedReason != "" {
+						task.LastError = runState.BlockedReason
+						task.ActionNeeded = fmt.Sprintf("Action Needed: Planning run failed (%s). Retry task.", runState.BlockedReason)
+					}
+					return
+				case pebblestore.V3RunIntentCompleted:
+					task.Status = "needs_review"
+					task.ActionNeeded = "Action Needed: Plan agent finished investigation. Review session findings."
+					return
+				}
+			}
+		}
 		return
 	}
 

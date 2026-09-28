@@ -244,6 +244,23 @@ export interface TaskProgramRecord {
   }
 }
 
+export interface TaskSessionStateItem {
+  sessionId: string
+  title?: string
+  role?: string
+  status: 'running' | 'needs_review' | 'completed' | 'failed' | 'queued'
+  lastError?: string
+}
+
+export interface TaskSessionSummary {
+  totalSessions: number
+  runningSessions: number
+  reviewSessions: number
+  failedSessions: number
+  completedSessions: number
+  sessionStates: TaskSessionStateItem[]
+}
+
 export interface RunningTaskPlanCheckpoint {
   id: string
   title: string
@@ -297,6 +314,8 @@ export interface RunningTask {
   activeSubtaskId?: string
   planProgressPercent?: number
   subtasksCount?: { completed: number; total: number }
+  sessionSummary?: TaskSessionSummary
+  associatedSessionIds?: string[]
 
   // Worktree & Outcome Tracking Fields
   workspacePath?: string

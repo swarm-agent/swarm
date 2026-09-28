@@ -902,3 +902,206 @@ func TestProjectTask_BigSwarmUsesReadOnlyPlanning(t *testing.T) {
 		t.Fatal("planner needs a session-owned lane for approved Task Program integration")
 	}
 }
+
+func TestProjectTask_ReconcilePlanningRun_PlanAuthored_TransitionsToPendingApproval(t *testing.T) {
+	// Requirement: When a plan agent session completes with an active plan,
+	// reconcileProjectTaskRunLifecycle transitions the task from 'planning'
+	// to 'pending_approval' with PlanBinding and PlanDocument, emitting project.updated.
+	server, _, dbStore := newWorkspaceOverviewTopologyTestServer(t)
+	accountID := testPrincipal().AccountScopeID
+	now := time.Now().UnixMilli()
+
+	outboxChan := make(chan pebblestore.V3RealtimeOutboxRecord, 10)
+	dbStore.SetProjectPublisher(func(record pebblestore.V3RealtimeOutboxRecord) {
+		outboxChan <- record
+	})
+	sessionStore := pebblestore.NewSessionStore(dbStore)
+
+	proj := &pebblestore.ProjectRecord{Name: "Planning Reconcile Project"}
+	if err := sessionStore.PutProject(accountID, proj); err != nil {
+		t.Fatal(err)
+	}
+
+	sessID := "sess_plan_recon"
+	taskID := "task_plan_recon"
+	sessSnap := pebblestore.SessionSnapshot{
+		ID:             sessID,
+		UserID:         testPrincipal().UserID,
+		AccountScopeID: accountID,
+		Title:          "Plan Agent Worker",
+		Mode:           "plan",
+		CreatedAt:      now,
+		UpdatedAt:      now,
+		Metadata: map[string]any{
+			"project_id": proj.ID,
+			"task_id":    taskID,
+		},
+	}
+	if _, err := applyProjectLifecycleFixture(server, sessionruntime.SessionMutationInput{
+		SessionID:       sessID,
+		UserID:          testPrincipal().UserID,
+		AccountScopeID:  accountID,
+		ClientRequestID: "create:" + sessID,
+		IdempotencyKey:  "create:" + sessID,
+		PayloadHash:     "create:" + sessID,
+		RequestHash:     "create:" + sessID,
+		Kind:            sessionruntime.SessionMutationCreateSession,
+		Session:         &sessSnap,
+		NowUnixMs:       now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	task := &pebblestore.ProjectTaskRecord{
+		ID:        taskID,
+		ProjectID: proj.ID,
+		AccountID: accountID,
+		Title:     "Plan Big Feature",
+		Agent:     "plan",
+		Status:    "planning",
+		SessionID: sessID,
+	}
+	if err := sessionStore.PutProjectTask(accountID, task); err != nil {
+		t.Fatal(err)
+	}
+
+	planDoc := &pebblestore.SessionPlanDocument{
+		ID:    "plan-v1",
+		Title: "Engine Architecture Plan",
+		Info:  pebblestore.SessionPlanInfo{Goal: "Architect engine"},
+		Checkpoints: []pebblestore.SessionPlanCheckpoint{
+			{ID: "cp-1", Order: 1, Title: "Core Engine", Tasks: []string{"Build core"}, AcceptanceCriteria: []string{"Tests pass"}},
+		},
+	}
+	if err := sessionStore.PutPlan(pebblestore.SessionPlanSnapshot{
+		ID:             "plan-v1",
+		SessionID:      sessID,
+		UserID:         testPrincipal().UserID,
+		AccountScopeID: accountID,
+		Version:        1,
+		Document:       planDoc,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := sessionStore.SetActivePlan(sessID, "plan-v1", now); err != nil {
+		t.Fatal(err)
+	}
+
+	for len(outboxChan) > 0 {
+		<-outboxChan
+	}
+
+	job := sessionV3ExecutorJob{
+		Principal: testPrincipal(),
+		SessionID: sessID,
+		RunID:     "run-plan-1",
+	}
+
+	if err := server.reconcileProjectTaskRunLifecycle(job, sessionruntime.RunIntentCompleted, ""); err != nil {
+		t.Fatalf("reconcile planning completed failed: %v", err)
+	}
+
+	updatedTask, found, err := sessionStore.GetProjectTask(accountID, proj.ID, taskID)
+	if err != nil || !found {
+		t.Fatalf("get task failed: %v", err)
+	}
+	if updatedTask.Status != "pending_approval" {
+		t.Fatalf("expected status 'pending_approval', got %q", updatedTask.Status)
+	}
+	if updatedTask.PlanBinding == nil || updatedTask.PlanBinding.PlanID != "plan-v1" {
+		t.Fatalf("expected PlanBinding for plan-v1, got %#v", updatedTask.PlanBinding)
+	}
+	if updatedTask.PlanDocument == nil || updatedTask.PlanDocument.Title != "Engine Architecture Plan" {
+		t.Fatalf("expected PlanDocument populated, got %#v", updatedTask.PlanDocument)
+	}
+
+	select {
+	case rec := <-outboxChan:
+		if rec.Event.EventType != pebblestore.ProjectUpdatedEventType {
+			t.Fatalf("expected event type %q, got %q", pebblestore.ProjectUpdatedEventType, rec.Event.EventType)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for project.updated outbox invalidation")
+	}
+}
+
+func TestProjectTask_ReconcilePlanningRun_Failure_TransitionsToFailed(t *testing.T) {
+	// Requirement: When a plan agent session fails or cancels, reconcileProjectTaskRunLifecycle
+	// transitions the task from 'planning' to 'failed' with LastError.
+	server, _, dbStore := newWorkspaceOverviewTopologyTestServer(t)
+	accountID := testPrincipal().AccountScopeID
+	now := time.Now().UnixMilli()
+
+	sessionStore := pebblestore.NewSessionStore(dbStore)
+
+	proj := &pebblestore.ProjectRecord{Name: "Planning Fail Project"}
+	if err := sessionStore.PutProject(accountID, proj); err != nil {
+		t.Fatal(err)
+	}
+
+	sessID := "sess_plan_fail"
+	taskID := "task_plan_fail"
+	sessSnap := pebblestore.SessionSnapshot{
+		ID:             sessID,
+		UserID:         testPrincipal().UserID,
+		AccountScopeID: accountID,
+		Title:          "Plan Agent Worker Fail",
+		Mode:           "plan",
+		CreatedAt:      now,
+		UpdatedAt:      now,
+		Metadata: map[string]any{
+			"project_id": proj.ID,
+			"task_id":    taskID,
+		},
+	}
+	if _, err := applyProjectLifecycleFixture(server, sessionruntime.SessionMutationInput{
+		SessionID:       sessID,
+		UserID:          testPrincipal().UserID,
+		AccountScopeID:  accountID,
+		ClientRequestID: "create:" + sessID,
+		IdempotencyKey:  "create:" + sessID,
+		PayloadHash:     "create:" + sessID,
+		RequestHash:     "create:" + sessID,
+		Kind:            sessionruntime.SessionMutationCreateSession,
+		Session:         &sessSnap,
+		NowUnixMs:       now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	task := &pebblestore.ProjectTaskRecord{
+		ID:        taskID,
+		ProjectID: proj.ID,
+		AccountID: accountID,
+		Title:     "Plan That Fails",
+		Agent:     "plan",
+		Status:    "planning",
+		SessionID: sessID,
+	}
+	if err := sessionStore.PutProjectTask(accountID, task); err != nil {
+		t.Fatal(err)
+	}
+
+	job := sessionV3ExecutorJob{
+		Principal: testPrincipal(),
+		SessionID: sessID,
+		RunID:     "run-plan-fail-1",
+	}
+
+	if err := server.reconcileProjectTaskRunLifecycle(job, sessionruntime.RunIntentFailed, "Model quota exceeded"); err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+
+	updatedTask, found, err := sessionStore.GetProjectTask(accountID, proj.ID, taskID)
+	if err != nil || !found {
+		t.Fatalf("get task failed: %v", err)
+	}
+	if updatedTask.Status != "failed" {
+		t.Fatalf("expected status 'failed', got %q", updatedTask.Status)
+	}
+	if updatedTask.LastError != "Model quota exceeded" {
+		t.Fatalf("expected LastError 'Model quota exceeded', got %q", updatedTask.LastError)
+	}
+}
