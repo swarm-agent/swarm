@@ -119,6 +119,7 @@ import {
   buildTaskAcceptancePayload,
   buildSelectedTaskMessageEnvelope,
   buildSelectedTaskMessageMetadata,
+  reconcileSelectedTaskId,
   validateSelectedTaskForContext,
   getPrimarySystemAgentName,
   resolveDeployImpendingConfig,
@@ -2941,6 +2942,7 @@ function OrchestratorChatSidebar({
     setClearingContext(true)
     setClearSuccess(false)
     try {
+      onDeselectTask?.()
       const res = await requestJson<{ ok: boolean; session_id: string }>(
         `/v3/projects/${project.id}/orchestrator:clear-context`,
         { method: 'POST' }
@@ -3881,10 +3883,12 @@ export function OrchestrateView({
     }
   }, [])
 
-  // Auto-select first task if none selected or if selected task no longer exists
+  // Reconcile task selection against live project tasks:
+  // Invariant: Never implicitly auto-selects tasks. Prunes stale selections if task was deleted.
   useEffect(() => {
-    if (tasks.length > 0 && (!selectedTaskId || !tasks.some((t) => t.id === selectedTaskId))) {
-      setSelectedTaskId(tasks[0].id)
+    const reconciled = reconcileSelectedTaskId(selectedTaskId, tasks)
+    if (reconciled !== selectedTaskId) {
+      setSelectedTaskId(reconciled)
     }
   }, [tasks, selectedTaskId])
 
@@ -4078,6 +4082,7 @@ export function OrchestrateView({
 
   const handleBackToOrchestrator = () => {
     setActiveTaskId(null)
+    setSelectedTaskId('')
     if (selectedProject?.primarySessionId) {
       setActiveSessionId(selectedProject.primarySessionId)
     }
@@ -4085,6 +4090,7 @@ export function OrchestrateView({
 
   const handleOrchestratorSessionReset = useCallback((newSessionId: string) => {
     setActiveSessionId(newSessionId)
+    setSelectedTaskId('')
     if (selectedProject) {
       setProjects((prev) =>
         prev.map((p) => (p.id === selectedProject.id ? { ...p, primarySessionId: newSessionId } : p))
@@ -5229,7 +5235,7 @@ export function OrchestrateView({
   }, [liveTasks, searchQuery, statusFilter, selectedTag])
 
   const selectedTaskForSplit = useMemo(() => {
-    return liveTasks.find((t) => t.id === selectedTaskId) || liveTasks[0]
+    return selectedTaskId ? liveTasks.find((t) => t.id === selectedTaskId) || null : null
   }, [liveTasks, selectedTaskId])
 
   const handleDeleteProject = async (projectId: string, e?: React.MouseEvent) => {

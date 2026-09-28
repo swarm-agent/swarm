@@ -141,6 +141,11 @@ test('OrchestrateView forwards selected-task context to orchestrator chat with e
   assert.ok(source.includes('data-testid="clear-selected-task-context-btn"'), 'Must render clear-selected-task-context-btn testid')
   assert.ok(source.includes('data-testid="orchestrator-chat-composer"'), 'Must render orchestrator-chat-composer testid')
 
+  // Anti-regression: No implicit auto-selection of tasks[0]
+  assert.ok(!source.includes('setSelectedTaskId(tasks[0].id)'), 'OrchestrateView must not auto-select tasks[0]')
+  assert.ok(!source.includes('liveTasks.find((t) => t.id === selectedTaskId) || liveTasks[0]'), 'Split view inspector must not fall back to liveTasks[0]')
+  assert.ok(source.includes('reconcileSelectedTaskId'), 'Must use reconcileSelectedTaskId for task selection lifecycle')
+
   // Canonical paths preserved
   assert.ok(source.includes('handleApproveTask'), 'handleApproveTask must be preserved')
   assert.ok(source.includes('handleRefineTask'), 'handleRefineTask must be preserved')
