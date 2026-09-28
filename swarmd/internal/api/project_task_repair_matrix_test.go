@@ -326,6 +326,27 @@ func (f *matrixTestFixture) callAPI(method, path string, body any, p identity.Pr
 	return w
 }
 
+// requireMatrixTaskResponse rejects failed or malformed API responses before tests
+// inspect task fields; otherwise a validation error can appear as a map assertion panic.
+func requireMatrixTaskResponse(t *testing.T, w *httptest.ResponseRecorder, status int) map[string]any {
+	t.Helper()
+	if w.Code != status {
+		t.Fatalf("task response status %d, want %d: %s", w.Code, status, w.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode task response: %v: %s", err, w.Body.String())
+	}
+	task, ok := resp["task"].(map[string]any)
+	if !ok {
+		t.Fatalf("task response missing task object: %s", w.Body.String())
+	}
+	if id, ok := task["id"].(string); !ok || id == "" {
+		t.Fatalf("task response missing task id: %s", w.Body.String())
+	}
+	return task
+}
+
 func (f *matrixTestFixture) createProject(t *testing.T) string {
 	p := identity.Principal{Type: "user", UserID: f.userID, AccountScopeID: f.accountID}
 	repo := filepath.Join(f.dir, "repo")
@@ -346,9 +367,18 @@ func (f *matrixTestFixture) createProject(t *testing.T) string {
 		t.Fatalf("create project failed %d: %s", w.Code, w.Body.String())
 	}
 	var resp map[string]any
-	_ = json.Unmarshal(w.Body.Bytes(), &resp)
-	proj := resp["project"].(map[string]any)
-	return proj["id"].(string)
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode project response: %v: %s", err, w.Body.String())
+	}
+	proj, ok := resp["project"].(map[string]any)
+	if !ok {
+		t.Fatalf("project response missing project object: %s", w.Body.String())
+	}
+	id, ok := proj["id"].(string)
+	if !ok || id == "" {
+		t.Fatalf("project response missing project id: %s", w.Body.String())
+	}
+	return id
 }
 
 // -----------------------------------------------------------------------------
@@ -376,9 +406,7 @@ func TestTaskMatrix_Case1_ManualSmallTaskIdentityProfileWorktreeRun(t *testing.T
 	if w.Code != http.StatusCreated {
 		t.Fatalf("create small task failed %d: %s", w.Code, w.Body.String())
 	}
-	var resp map[string]any
-	_ = json.Unmarshal(w.Body.Bytes(), &resp)
-	taskMap := resp["task"].(map[string]any)
+	taskMap := requireMatrixTaskResponse(t, w, http.StatusCreated)
 	taskID := taskMap["id"].(string)
 
 	// Verify task routed to Coder with pending_approval
@@ -419,13 +447,18 @@ func TestTaskMatrix_Case1_ManualSmallTaskIdentityProfileWorktreeRun(t *testing.T
 		t.Fatalf("approve task failed %d: %s", w.Code, w.Body.String())
 	}
 	var appResp map[string]any
-	_ = json.Unmarshal(w.Body.Bytes(), &appResp)
+	if err := json.Unmarshal(w.Body.Bytes(), &appResp); err != nil {
+		t.Fatalf("decode approval response: %v: %s", err, w.Body.String())
+	}
 	if appResp["status"] != "approved" {
 		t.Fatalf("expected status 'approved', got %v", appResp["status"])
 	}
 
 	// Verify task status transitioned to in_progress
-	appTask := appResp["task"].(map[string]any)
+	appTask, ok := appResp["task"].(map[string]any)
+	if !ok {
+		t.Fatalf("approval response missing task: %s", w.Body.String())
+	}
 	if appTask["status"] != "in_progress" {
 		t.Fatalf("expected task status 'in_progress', got %v", appTask["status"])
 	}
@@ -464,9 +497,7 @@ func TestTaskMatrix_Case2_ToolEquivalentPrincipalSharedPath(t *testing.T) {
 	if w.Code != http.StatusCreated {
 		t.Fatalf("create tool-equivalent task failed %d: %s", w.Code, w.Body.String())
 	}
-	var resp map[string]any
-	_ = json.Unmarshal(w.Body.Bytes(), &resp)
-	taskMap := resp["task"].(map[string]any)
+	taskMap := requireMatrixTaskResponse(t, w, http.StatusCreated)
 	taskID := taskMap["id"].(string)
 
 	// A: Calling with invalid principal (missing UserID) fails closed
@@ -542,6 +573,8 @@ func TestTaskMatrix_Case3_ParallelStagedCodersIsolationDependencyCommitConflict(
 				AgentType:          "coder",
 				Title:              "Part A",
 				MetaPrompt:         "Prompt A",
+				Deliverable:        "Committed core implementation",
+				DependencyEvidence: "Initial stage is ready",
 				OwnedScope:         []string{"pkg/core/**"},
 				AcceptanceCriteria: []string{"A done"},
 			},
@@ -551,13 +584,15 @@ func TestTaskMatrix_Case3_ParallelStagedCodersIsolationDependencyCommitConflict(
 				AgentType:          "coder",
 				Title:              "Part B",
 				MetaPrompt:         "Prompt B",
+				Deliverable:        "Committed core tests",
+				DependencyEvidence: "Initial stage is ready",
 				OwnedScope:         []string{"pkg/core/**"},
 				AcceptanceCriteria: []string{"B done"},
 			},
 		},
 	}
-	if err := pebblestore.ValidateTaskProgramDefinition(badTpDef); err == nil {
-		t.Fatal("expected overlapping scopes in same stage to fail validation")
+	if err := pebblestore.ValidateTaskProgramDefinition(badTpDef); err == nil || !strings.Contains(err.Error(), "owned scopes overlap") {
+		t.Fatalf("expected overlapping scopes in same stage to fail validation specifically for overlap, got: %v", err)
 	}
 
 	// 2. Create valid multi-stage Coder task program with non-overlapping scopes
@@ -574,6 +609,8 @@ func TestTaskMatrix_Case3_ParallelStagedCodersIsolationDependencyCommitConflict(
 				AgentType:          "coder",
 				Title:              "Core Impl",
 				MetaPrompt:         "Implement core",
+				Deliverable:        "Committed core implementation",
+				DependencyEvidence: "Initial stage is ready",
 				OwnedScope:         []string{"pkg/core/**"},
 				AcceptanceCriteria: []string{"Core complete"},
 			},
@@ -584,6 +621,8 @@ func TestTaskMatrix_Case3_ParallelStagedCodersIsolationDependencyCommitConflict(
 				AgentType:          "coder",
 				Title:              "API Impl",
 				MetaPrompt:         "Implement API",
+				Deliverable:        "Committed API implementation",
+				DependencyEvidence: "Core implementation is committed",
 				OwnedScope:         []string{"pkg/api/**"},
 				AcceptanceCriteria: []string{"API complete"},
 			},
@@ -598,9 +637,7 @@ func TestTaskMatrix_Case3_ParallelStagedCodersIsolationDependencyCommitConflict(
 	if w.Code != http.StatusCreated {
 		t.Fatalf("create staged task program failed %d: %s", w.Code, w.Body.String())
 	}
-	var resp map[string]any
-	_ = json.Unmarshal(w.Body.Bytes(), &resp)
-	taskMap := resp["task"].(map[string]any)
+	taskMap := requireMatrixTaskResponse(t, w, http.StatusCreated)
 	taskID := taskMap["id"].(string)
 
 	// Verify TaskProgram status is declared and associated
@@ -665,9 +702,7 @@ func TestTaskMatrix_Case3_ParallelStagedCodersIsolationDependencyCommitConflict(
 		"prompt": "Plain prompt",
 		"agent":  "coder",
 	}, p)
-	var smallResp map[string]any
-	_ = json.Unmarshal(smallTaskRec.Body.Bytes(), &smallResp)
-	plainTaskID := smallResp["task"].(map[string]any)["id"].(string)
+	plainTaskID := requireMatrixTaskResponse(t, smallTaskRec, http.StatusCreated)["id"].(string)
 	errNoProg := f.server.redeployTaskProgramJob(p, projID, plainTaskID, "any-job", "Retry")
 	if errNoProg == nil || !strings.Contains(errNoProg.Error(), "no associated task program") {
 		t.Fatalf("expected no associated task program error, got: %v", errNoProg)
@@ -713,9 +748,7 @@ func TestTaskMatrix_Case4_ManualPlanningPendingThenExactAcceptModelTransition(t 
 	if w.Code != http.StatusCreated {
 		t.Fatalf("create big task failed %d: %s", w.Code, w.Body.String())
 	}
-	var resp map[string]any
-	_ = json.Unmarshal(w.Body.Bytes(), &resp)
-	taskMap := resp["task"].(map[string]any)
+	taskMap := requireMatrixTaskResponse(t, w, http.StatusCreated)
 	taskID := taskMap["id"].(string)
 	sessID := taskMap["session_id"].(string)
 
@@ -834,7 +867,7 @@ func TestTaskMatrix_Case5_DirectPlanNoPlanningRun(t *testing.T) {
 		Title: "Direct Orchestrator Plan",
 		Info:  pebblestore.SessionPlanInfo{Goal: "Pre-authored pipeline overhaul"},
 		Checkpoints: []pebblestore.SessionPlanCheckpoint{
-			{ID: "cp-1", Title: "Setup CI Lint", Tasks: []string{"Configure golangci-lint"}},
+			{ID: "cp-1", Order: 1, Title: "Setup CI Lint", Tasks: []string{"Configure golangci-lint"}, AcceptanceCriteria: []string{"CI invokes golangci-lint on the Go modules"}},
 		},
 	}
 
@@ -847,9 +880,7 @@ func TestTaskMatrix_Case5_DirectPlanNoPlanningRun(t *testing.T) {
 	if w.Code != http.StatusCreated {
 		t.Fatalf("create direct plan task failed %d: %s", w.Code, w.Body.String())
 	}
-	var resp map[string]any
-	_ = json.Unmarshal(w.Body.Bytes(), &resp)
-	taskMap := resp["task"].(map[string]any)
+	taskMap := requireMatrixTaskResponse(t, w, http.StatusCreated)
 
 	if taskMap["status"] != "pending_approval" {
 		t.Fatalf("expected status 'pending_approval', got %v", taskMap["status"])
@@ -888,9 +919,7 @@ func TestTaskMatrix_Case6_UnacceptedNoImplementationIntents(t *testing.T) {
 		"prompt": "Do not run yet",
 		"agent":  "coder",
 	}, p)
-	var resp map[string]any
-	_ = json.Unmarshal(w.Body.Bytes(), &resp)
-	taskMap := resp["task"].(map[string]any)
+	taskMap := requireMatrixTaskResponse(t, w, http.StatusCreated)
 	sessID := taskMap["session_id"].(string)
 
 	intents, err := f.server.sessions.Store().ListRunIntents(sessID, 10)
@@ -924,9 +953,7 @@ func TestTaskMatrix_Case7_RejectedStaleRevisionsNoSideEffects(t *testing.T) {
 		"prompt": "Reject me",
 		"agent":  "coder",
 	}, p)
-	var resp map[string]any
-	_ = json.Unmarshal(w.Body.Bytes(), &resp)
-	taskMap := resp["task"].(map[string]any)
+	taskMap := requireMatrixTaskResponse(t, w, http.StatusCreated)
 	taskID := taskMap["id"].(string)
 
 	w = f.callAPI(http.MethodPost, "/"+projID+"/tasks/"+taskID+"/reject", nil, p)
@@ -956,7 +983,7 @@ func TestTaskMatrix_Case7_RejectedStaleRevisionsNoSideEffects(t *testing.T) {
 		Title: "Plan Rev 1",
 		Info:  pebblestore.SessionPlanInfo{Goal: "Goal 1"},
 		Checkpoints: []pebblestore.SessionPlanCheckpoint{
-			{ID: "cp-1", Title: "Checkpoint 1"},
+			{ID: "cp-1", Order: 1, Title: "Checkpoint 1", Tasks: []string{"Implement the initial revision"}, AcceptanceCriteria: []string{"Initial revision is reviewable"}},
 		},
 	}
 	wPlan := f.callAPI(http.MethodPost, "/"+projID+"/tasks", map[string]any{
@@ -967,9 +994,7 @@ func TestTaskMatrix_Case7_RejectedStaleRevisionsNoSideEffects(t *testing.T) {
 	if wPlan.Code != http.StatusCreated {
 		t.Fatalf("create plan task failed %d: %s", wPlan.Code, wPlan.Body.String())
 	}
-	var planResp map[string]any
-	_ = json.Unmarshal(wPlan.Body.Bytes(), &planResp)
-	pTaskMap := planResp["task"].(map[string]any)
+	pTaskMap := requireMatrixTaskResponse(t, wPlan, http.StatusCreated)
 	pTaskID := pTaskMap["id"].(string)
 	pSessID := pTaskMap["session_id"].(string)
 
@@ -979,7 +1004,7 @@ func TestTaskMatrix_Case7_RejectedStaleRevisionsNoSideEffects(t *testing.T) {
 		Title: "Plan Rev 2",
 		Info:  pebblestore.SessionPlanInfo{Goal: "Goal 2 updated"},
 		Checkpoints: []pebblestore.SessionPlanCheckpoint{
-			{ID: "cp-1", Title: "Checkpoint 1 updated"},
+			{ID: "cp-1", Order: 1, Title: "Checkpoint 1 updated", Tasks: []string{"Implement the revised changes"}, AcceptanceCriteria: []string{"Revised changes are reviewable"}},
 		},
 	}
 	subResult2, err := f.server.SubmitProjectTaskPlan(context.Background(), sessionruntime.ProjectTaskPlanSubmissionInput{
@@ -1194,9 +1219,7 @@ func TestTaskMatrix_Case8_DuplicateConcurrentRetriesCounts(t *testing.T) {
 		"prompt": "Test partial failure resume",
 		"agent":  "coder",
 	}, p)
-	var resp2 map[string]any
-	_ = json.Unmarshal(w2.Body.Bytes(), &resp2)
-	taskMap2 := resp2["task"].(map[string]any)
+	taskMap2 := requireMatrixTaskResponse(t, w2, http.StatusCreated)
 	taskID2 := taskMap2["id"].(string)
 	sessID2 := taskMap2["session_id"].(string)
 
@@ -1274,7 +1297,7 @@ func TestTaskMatrix_Case10_ReopenStoreRecoveryExactReceiptLinksNoReplay(t *testi
 		Title: "Recovery Verification Plan",
 		Info:  pebblestore.SessionPlanInfo{Goal: "Verify durable persistence across reopen"},
 		Checkpoints: []pebblestore.SessionPlanCheckpoint{
-			{ID: "cp-1", Title: "Step 1", Tasks: []string{"Durable step"}},
+			{ID: "cp-1", Order: 1, Title: "Step 1", Tasks: []string{"Persist task-to-plan links and execution intent"}, AcceptanceCriteria: []string{"Reopened store retains the plan receipt, links, and one execution intent"}},
 		},
 	}
 	w := f.callAPI(http.MethodPost, "/"+projID+"/tasks", map[string]any{
@@ -1282,9 +1305,7 @@ func TestTaskMatrix_Case10_ReopenStoreRecoveryExactReceiptLinksNoReplay(t *testi
 		"prompt":        "Verify persistence",
 		"plan_document": doc,
 	}, p)
-	var resp map[string]any
-	_ = json.Unmarshal(w.Body.Bytes(), &resp)
-	taskMap := resp["task"].(map[string]any)
+	taskMap := requireMatrixTaskResponse(t, w, http.StatusCreated)
 	taskID := taskMap["id"].(string)
 	sessID := taskMap["session_id"].(string)
 
@@ -1411,9 +1432,7 @@ func TestTaskMatrix_Case11_NonCodeAndCodeMediaKeywordRouting(t *testing.T) {
 	if w.Code != http.StatusCreated {
 		t.Fatalf("create media task failed %d: %s", w.Code, w.Body.String())
 	}
-	var resp map[string]any
-	_ = json.Unmarshal(w.Body.Bytes(), &resp)
-	taskMap := resp["task"].(map[string]any)
+	taskMap := requireMatrixTaskResponse(t, w, http.StatusCreated)
 	if taskMap["session_id"] != nil && taskMap["session_id"] != "" {
 		t.Fatalf("media tasks must not create chat sessions, got session_id %v", taskMap["session_id"])
 	}
@@ -1428,9 +1447,7 @@ func TestTaskMatrix_Case11_NonCodeAndCodeMediaKeywordRouting(t *testing.T) {
 	if w.Code != http.StatusCreated {
 		t.Fatalf("create code task with media keywords failed %d: %s", w.Code, w.Body.String())
 	}
-	var codeResp map[string]any
-	_ = json.Unmarshal(w.Body.Bytes(), &codeResp)
-	codeTaskMap := codeResp["task"].(map[string]any)
+	codeTaskMap := requireMatrixTaskResponse(t, w, http.StatusCreated)
 	if codeTaskMap["agent"] != "coder" {
 		t.Fatalf("expected agent 'coder', got %v", codeTaskMap["agent"])
 	}
@@ -1513,9 +1530,7 @@ func TestTaskMatrix_ApproveCoderPersistsAllocatedWorktreeMetadata(t *testing.T) 
 	if w.Code != http.StatusCreated {
 		t.Fatalf("create task failed %d: %s", w.Code, w.Body.String())
 	}
-	var resp map[string]any
-	_ = json.Unmarshal(w.Body.Bytes(), &resp)
-	taskMap := resp["task"].(map[string]any)
+	taskMap := requireMatrixTaskResponse(t, w, http.StatusCreated)
 	taskID := taskMap["id"].(string)
 
 	// Configure mock worktree allocation result
@@ -1603,6 +1618,8 @@ func TestTaskMatrix_DeployProjectTaskProgram_DurableWithoutRunner(t *testing.T) 
 				AgentType:          "coder",
 				Title:              "Job 1",
 				MetaPrompt:         "Prompt 1",
+				Deliverable:        "Committed package changes",
+				DependencyEvidence: "Initial stage is ready",
 				OwnedScope:         []string{"pkg/**"},
 				AcceptanceCriteria: []string{"Done"},
 			},
@@ -1656,9 +1673,7 @@ func TestTaskMatrix_DeployProjectTask_RejectsCrossAccount(t *testing.T) {
 	if w.Code != http.StatusCreated {
 		t.Fatalf("create task failed %d: %s", w.Code, w.Body.String())
 	}
-	var resp map[string]any
-	_ = json.Unmarshal(w.Body.Bytes(), &resp)
-	taskID := resp["task"].(map[string]any)["id"].(string)
+	taskID := requireMatrixTaskResponse(t, w, http.StatusCreated)["id"].(string)
 
 	// Attacker from different account tries DeployProjectTask
 	attacker := identity.Principal{Type: "user", UserID: "attacker_user", AccountScopeID: "attacker_account"}
