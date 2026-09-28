@@ -1,6 +1,6 @@
 # Durable workers: local lifecycle, SDK and canonical hub
 
-Status: implementation plan; no implementation or test result is claimed here.
+Status: checkpoint 1 implemented with focused deterministic verification. Checkpoints 2–4 and all live E01–E15 acceptance remain unverified.
 
 ## Goal and scope lock
 
@@ -81,10 +81,26 @@ One local deployment operation validates and activates the stored worker with ap
 
 ### 1. Stable object and shared SDK contract
 
-- [ ] Implement worker record/revisions, automation ownership, run linkage, migration and portable JSON validation/import/export.
-- [ ] Expose canonical worker APIs and SDK methods together; reconcile existing SDK actor types.
-- [ ] Add focused requirements-first persistence, round-trip, ownership, stale-update and migration tests; update atlas and test inventory.
+- [x] Implement worker record/revisions, automation ownership, run linkage, migration and portable JSON validation/import/export.
+- [x] Expose canonical worker definition APIs and SDK methods together; distinguish legacy SDK actor types.
+- [x] Add focused requirements-first persistence, round-trip, ownership, stale-update and migration tests; update atlas and test inventory.
 - Exit: an idle worker is independently durable; SDK reads/edits the same object after restart and round-trips its definition without enabling work.
+
+#### Checkpoint 1 implementation and verification
+
+`store/pebble/worker_store.go` owns account-scoped worker identities, revision snapshots, automation indexes and run links; `session/worker.go`, `api/workers.go` and `packages/sdk/src/workers.ts` share this authority. Schema version 1 imports create idle identities; updates require explicit target/revision. Create/import-new require idempotency keys at HTTP/SDK ingress. Portable provenance excludes local migration/approval authority. Legacy `WorkerActorSpec` remains explicitly incompatible, not silently converted.
+
+Definition routes: collection GET/POST, worker GET/PUT, validate/import/export, automation attach/update/remove, revision/run inspection and explicit migration. SDK implements definition CRUD/import/export/validation/attachments; run controls, deployment and Orchestrator tool cutover remain checkpoint 2. Worker DELETE is deliberately not exposed before a safe stop barrier. Local bindings are rejected before approved activation. Migrated legacy records are read-only snapshots while the old executor remains authoritative; migration does not activate anything or modify legacy records. Re-run/cutover freshness must be reconciled in checkpoint 2. Only actually retained historical definitions are migrated—missing revisions are not invented.
+
+Observed deterministic checks (not live acceptance): focused Go persistence/service/API tests pass twice; SDK transport tests pass (11); SDK TypeScript check passes. Real temporary Pebble reopen and loopback realtime replay are exercised, not provider execution. Reproducible commands, from repository root with Go/tsx/tsc available:
+
+```sh
+(cd swarmd && GOMAXPROCS=2 go test -count=2 -p 1 -timeout 60s ./internal/store/pebble ./internal/session ./internal/api -run '(Worker|Portable|LegacyMigration|LegacyAutomationV2Migration|SessionArtifactLineage_ModelAndSettings)')
+tsx --test --test-concurrency=1 packages/sdk/src/__tests__/workers.spec.ts
+tsc --noEmit -p packages/sdk/tsconfig.json
+```
+
+An inherited media test compilation typo was corrected to call the existing `equalArtifactLineage` helper without changing its assertions. No live testbench, host deployment, cloud work, prompt/schema changes, push or promotion is included. End-to-end SDK against a restarted candidate daemon remains E06/E10; component tests do not establish that live result.
 
 ### 2. Execution, safe controls and Orchestrator authority
 
