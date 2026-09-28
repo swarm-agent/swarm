@@ -689,6 +689,11 @@ run and remains pending executed validation.
 
 ## 14. Revision ledger and update template
 
+### 2026-09-28 — Worker run monotonicity prerequisite
+
+Inspected `WorkerStore.RecordWorkerRun`, its immutable revision/input checks, worker service/API run readers, and the existing Automation V2 admission/dispatch scheduler boundaries. Run recording now rejects terminal-outcome changes and running-to-admitted regressions under `workersMu`, preventing stale observations from reopening cancelled/completed receipts. `worker_run_transition_test.go` exercises all 25 status pairs and unchanged persisted receipts on rejection. Tests are authored but not executed; independent audit and live recovery/stop-barrier proof remain pending. This is a prerequisite repair, not checkpoint-two execution completion.
+
+
 ### 2026-09-28 — Durable worker definition foundation
 
 Inspected worker route registration, membership/runtime/scoped-token guards, service and Pebble revision/index/run/migration boundaries, portable schema and SDK transport. Corrected client wire divergence, supplied identity/automation collisions, stale writes, replay receipts, missing membership fixtures, compilation defects and fabricated historical snapshot filling. Registered account-scoped `worker.updated` delivery/replay; no executor, UI, model, tool-schema or prompt changes. Focused Go worker/service/API tests passed twice; eleven SDK wire tests and SDK TypeScript check passed. Tests include actual temporary-store reopen, immutable acceptance data, migration no-partial-write/observed snapshots, and loopback event replay. Test inventory updated without claiming independent audit promotion. Live E01–E15, SDK against restarted candidate, and old-executor cutover remain unproved; see `docs/checkpoints/durable-workers-sdk-and-hub.md`.

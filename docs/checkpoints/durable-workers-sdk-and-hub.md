@@ -110,6 +110,14 @@ An inherited media test compilation typo was corrected to call the existing `equ
 - [ ] Complete SDK local activation, triggers, run inspection and lifecycle controls against the same service.
 - Exit: focused tests prove ownership, cancellation/admission races, recovery and authority; no new executor or cloud target.
 
+#### Step 2 prerequisite review (implementation incomplete)
+
+- Confirmed checkpoint 1 was committed and clean before review.
+- Found and guarded a run-history defect in `WorkerStore.RecordWorkerRun`: terminal outcomes could be overwritten or reopened, and running receipts could regress to admitted. The guard runs under the existing worker mutation mutex. Added a 25-transition regression matrix asserting rejected writes leave the persisted receipt unchanged; execution is still pending.
+- Execution wiring still needs independent worker occurrence admission (without an authoring session), activation approval/bindings, coordinated dispatch/stop barriers and explicit migration cutover. Existing `provider_tool_invoker.go` already gates worker proposals to Orchestrator; inner management dispatch needs review rather than claiming the outer gate is absent.
+- Implementation delegation failed before editing on both staged and single-Coder launch paths: parent lineage publication could not obtain fresh worktree recovery evidence. Exact-worktree discovery also returned no fresh recovery identity, despite clean Git status. Do not bypass ownership checks or mark step 2 complete.
+- The configured managed test environment is Docker, not the required existing local nspawn pool; it was inspected but not deployed. No new test execution or live acceptance is claimed for this repair.
+
 ### 3. Functional hub and one-message context
 
 - [ ] Wire hub cards, worker detail, daily history, sessions, deliverables, lifecycle controls and one-time chat selection to canonical state/actions.

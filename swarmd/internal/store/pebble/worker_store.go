@@ -2326,6 +2326,12 @@ func (ws *WorkerStore) RecordWorkerRun(account string, run WorkerRunRecord) (Wor
 	default:
 		return WorkerRunRecord{}, fmt.Errorf("invalid run status: %q", run.Status)
 	}
+	// A delayed scheduler observation must never reopen cancelled/completed work
+	// or replace its terminal outcome. Serialize this check with the write.
+	if existingOk && ((AutomationV2Terminal(existingRun.Status) && run.Status != existingRun.Status) ||
+		(existingRun.Status == "running" && run.Status == "admitted")) {
+		return WorkerRunRecord{}, fmt.Errorf("%w: cannot regress run status from %s to %s", ErrWorkerConflict, existingRun.Status, run.Status)
+	}
 	if run.Deliverables == nil {
 		run.Deliverables = []SessionPlanArtifactReference{}
 	}
