@@ -846,3 +846,26 @@ func applyProjectLifecycleFixture(server *Server, input sessionruntime.SessionMu
 	}
 	return server.applySessionV3PrimaryMutation(input)
 }
+
+func TestProjectTask_BigSwarmUsesReadOnlyPlanning(t *testing.T) {
+	// Requirement: a big Swarm task must not execute writes before a plan is approved.
+	// Regresses the live case where task status was planning but session mode was auto.
+	f := setupMatrixTestFixture(t)
+	defer f.db.Close()
+	p := identity.Principal{Type: "user", UserID: f.userID, AccountScopeID: f.accountID}
+	project := f.createProject(t)
+	w := f.callAPI(http.MethodPost, "/"+project+"/tasks", map[string]any{"title": "Plan a change", "prompt": "Create a reviewed plan", "agent": "swarm", "feature_size": "big"}, p)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", w.Code, w.Body.String())
+	}
+	var response struct {
+		Task pebblestore.ProjectTaskRecord `json:"task"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	sess, ok, err := f.server.sessions.Store().GetSession(response.Task.SessionID)
+	if err != nil || !ok || sess.Mode != sessionruntime.ModePlan {
+		t.Fatalf("big task requires plan mode, got %s err=%v", sess.Mode, err)
+	}
+}
