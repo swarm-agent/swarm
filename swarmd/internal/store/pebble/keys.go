@@ -1953,3 +1953,9 @@ func KeyWorkerRunByOccurrence(accountScopeID, occurrenceID string) string {
 func KeyWorkerIdempotency(accountScopeID, idempotencyKey string) string {
 	return fmt.Sprintf("%s%s/%s", KeyWorkerIdempotencyAccountPrefix, keyPart(accountScopeID), keyPart(idempotencyKey))
 }
+
+const KeyWorkerRunIdempotencyAccountPrefix = "worker/run_idempotency/"
+
+func KeyWorkerRunIdempotency(accountScopeID, idempotencyKey string) string {
+	return fmt.Sprintf("%s%s/%s", KeyWorkerRunIdempotencyAccountPrefix, keyPart(accountScopeID), keyPart(idempotencyKey))
+}
