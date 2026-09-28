@@ -13,6 +13,7 @@ import (
 	"swarm/packages/swarmd/internal/identity"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/uisettings"
 )
 
 type manageProjectStore interface {
@@ -230,6 +231,7 @@ func manageProjectsDefinition() Definition {
 					"type":        "integer",
 					"description": "Optional plan definition revision guard for approve_task or accept_task",
 				},
+				"theme_id": map[string]any{"type": "string", "description": "Optional project theme ID from the account's existing builtin/custom manage-theme catalog; empty string clears to Swarm default. Inspect manage-theme first; create a custom theme there before assigning it here."},
 				"name": map[string]any{
 					"type":        "string",
 					"description": "Project display name",
@@ -350,6 +352,27 @@ func manageProjectsDefinition() Definition {
 	}
 }
 
+func (r *Runtime) resolveProjectThemeID(accountScopeID string, raw any) (string, error) {
+	if raw == nil {
+		return "", nil
+	}
+	id, ok := raw.(string)
+	if !ok {
+		return "", errors.New("theme_id must be a string (empty clears the selection)")
+	}
+	if strings.TrimSpace(id) == "" {
+		return "", nil
+	}
+	if r.uiSettings == nil {
+		return "", errors.New("account theme catalog is unavailable")
+	}
+	settings, err := r.uiSettings.GetForAccount(accountScopeID)
+	if err != nil {
+		return "", fmt.Errorf("read account theme catalog: %w", err)
+	}
+	return uisettings.ResolveProjectThemeID(settings, id)
+}
+
 func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScope, args map[string]any) (string, error) {
 	if r == nil || r.projects == nil {
 		return "", errors.New("manage_projects service is not configured")
@@ -407,6 +430,10 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 		}
 		desc := strings.TrimSpace(asString(args["description"]))
 		pCtx := asString(args["project_context"])
+		themeID, err := r.resolveProjectThemeID(accountScopeID, args["theme_id"])
+		if err != nil {
+			return "", err
+		}
 
 		var wsRefs []pebblestore.ProjectWorkspaceRef
 		if wsRaw, ok := args["workspaces"].([]any); ok {
@@ -427,6 +454,7 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 
 		proj := &pebblestore.ProjectRecord{
 			Name:           name,
+			ThemeID:        themeID,
 			Description:    desc,
 			Workspaces:     wsRefs,
 			ProjectContext: pCtx,
@@ -441,7 +469,21 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 		if id == "" {
 			return "", errors.New("project id is required for update")
 		}
+		var themeID string
+		if raw, present := args["theme_id"]; present {
+			if raw == nil {
+				return "", errors.New("theme_id must be a string (empty clears the selection)")
+			}
+			var err error
+			themeID, err = r.resolveProjectThemeID(accountScopeID, raw)
+			if err != nil {
+				return "", err
+			}
+		}
 		updated, err := r.projects.UpdateProject(accountScopeID, id, func(p *pebblestore.ProjectRecord) error {
+			if _, present := args["theme_id"]; present {
+				p.ThemeID = themeID
+			}
 			if v := strings.TrimSpace(asString(args["name"])); v != "" {
 				p.Name = v
 			}
@@ -472,6 +514,9 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 		})
 		if err != nil {
 			return "", err
+		}
+		if updated == nil {
+			return "", fmt.Errorf("project %q not found", id)
 		}
 		response["project"] = updated
 

@@ -42,6 +42,7 @@ type ProjectRecord struct {
 	AccountID        string                `json:"account_id"`
 	Name             string                `json:"name"`
 	Description      string                `json:"description,omitempty"`
+	ThemeID          string                `json:"theme_id,omitempty"` // account catalog reference; empty uses the Swarm default
 	Workspaces       []ProjectWorkspaceRef `json:"workspaces,omitempty"`
 	ProjectContext   string                `json:"project_context,omitempty"` // synthesized project.md
 	ActiveTaskIDs    []string              `json:"active_task_ids,omitempty"`

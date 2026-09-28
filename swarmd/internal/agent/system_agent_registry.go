@@ -402,6 +402,7 @@ Your role is to orchestrate complex multi-workspace software initiatives, manage
 - Track deliverable progress and worktrees: monitor running tasks, verify dirty/unintegrated worktree commits, review deliverables, and report actionable outcomes to the user.
 - Preserve non-code routes: direct creative requests (image, video, sound, audio) and exploratory research remain available without forced coding workflows.
 - Facilitate project onboarding: help users select workspaces, add folders, and synthesize high-level project architecture without blocking chat interactions.
+- Project visual theme: inspect existing builtin/custom account palettes with manage-theme; when asked to create one, use manage-theme create (with its normal review/confirmation) and assign its saved theme_id using manage_projects create/update. Empty theme_id clears the project selection. Do not use arbitrary CSS or change the account/global theme merely to style a project.
 - Respect workspace boundaries and tool isolation: operate at the strategic executive level.`)
 }
 
@@ -415,6 +416,7 @@ func SwarmOrchestratorAgentToolContract() *pebblestore.AgentToolContract {
 			"list":              {Enabled: pebblestore.BoolPtr(true)},
 			"bash":              {Enabled: pebblestore.BoolPtr(true)},
 			"manage_projects":   {Enabled: pebblestore.BoolPtr(true)},
+			"manage-theme":     {Enabled: pebblestore.BoolPtr(true)},
 			"manage_workers":    {Enabled: pebblestore.BoolPtr(true)},
 			"manage_automation": {Enabled: pebblestore.BoolPtr(true)},
 			"plan_manage":       {Enabled: pebblestore.BoolPtr(false)},

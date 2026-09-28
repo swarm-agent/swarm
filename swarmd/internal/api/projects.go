@@ -20,6 +20,7 @@ import (
 	"swarm/packages/swarmd/internal/identity"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/uisettings"
 	taskrouter "swarm/packages/swarmd/internal/taskrouter"
 	"swarm/packages/swarmd/internal/tool"
 	"swarm/packages/swarmd/internal/videogen"
@@ -27,6 +28,20 @@ import (
 )
 
 const ProjectsPath = "/v3/projects"
+
+func (s *Server) resolveProjectThemeID(accountScopeID, themeID string) (string, error) {
+	if strings.TrimSpace(themeID) == "" {
+		return "", nil
+	}
+	if s.uiSettings == nil {
+		return "", errors.New("account theme catalog is unavailable")
+	}
+	settings, err := s.uiSettings.GetForAccount(accountScopeID)
+	if err != nil {
+		return "", fmt.Errorf("read account theme catalog: %w", err)
+	}
+	return uisettings.ResolveProjectThemeID(settings, themeID)
+}
 
 type taskGitState struct {
 	worktreeBranch      string
@@ -1441,6 +1456,22 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
+			var themeInput map[string]json.RawMessage
+			if err := json.Unmarshal(body, &themeInput); err != nil {
+				writeError(w, http.StatusBadRequest, errors.New("invalid project payload"))
+				return
+			}
+			if raw, present := themeInput["theme_id"]; present {
+				var id string
+				if err := json.Unmarshal(raw, &id); err != nil || string(raw) == "null" {
+					writeError(w, http.StatusBadRequest, errors.New("theme_id must be a string (empty clears the selection)"))
+					return
+				}
+			}
+			if rec.ThemeID, err = s.resolveProjectThemeID(p.AccountScopeID, rec.ThemeID); err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
 			if err := db.PutProject(p.AccountScopeID, &rec); err != nil {
 				writeError(w, http.StatusBadRequest, err)
 				return
@@ -1524,7 +1555,23 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
+			var themeID string
+			if raw, present := patch["theme_id"]; present {
+				value, ok := raw.(string)
+				if !ok {
+					writeError(w, http.StatusBadRequest, errors.New("theme_id must be a string (empty clears the selection)"))
+					return
+				}
+				themeID, err = s.resolveProjectThemeID(p.AccountScopeID, value)
+				if err != nil {
+					writeError(w, http.StatusBadRequest, err)
+					return
+				}
+			}
 			updated, err := db.UpdateProject(p.AccountScopeID, projectID, func(p *pebblestore.ProjectRecord) error {
+				if _, present := patch["theme_id"]; present {
+					p.ThemeID = themeID
+				}
 				if v, ok := patch["name"].(string); ok && strings.TrimSpace(v) != "" {
 					p.Name = strings.TrimSpace(v)
 				}
