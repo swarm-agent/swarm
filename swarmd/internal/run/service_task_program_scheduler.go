@@ -834,6 +834,17 @@ func (p *taskProgramScheduler) programWorkspacePath() (string, error) {
 		return strings.TrimSpace(parent.WorkspacePath), nil
 	}
 	if len(p.record.RepositoryLanes) > 0 { return p.multiRepositoryWorkspacePath() }
+	// Multi-repository programs may be coordinated by a different parent
+	// repository. Resolve explicit source identities before testing whether the
+	// parent's own worktree is an integration destination.
+	var firstSource string
+	for _, def := range p.record.Definition.Jobs {
+		if !agentruntime.IsCoderAgentName(def.AgentType) { continue }
+		if def.WorkspacePath == "" && p.parsed.ProgramWorkspacePath == "" { continue }
+		source, err := p.coderSourceForJob(def)
+		if err != nil { return "", err }
+		if firstSource == "" { firstSource = source } else if !sameTaskProgramPath(firstSource, source) { return p.multiRepositoryWorkspacePath() }
+	}
 	// Once admitted, the program's lane is immutable. A refreshed parent may
 	// have adopted a successor; never reinterpret its default as this program's
 	// stage destination. The normal launch authority still authenticates source,
