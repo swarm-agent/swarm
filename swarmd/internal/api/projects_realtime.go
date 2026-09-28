@@ -70,6 +70,21 @@ func (s *Server) reconcileProjectTaskRunLifecycle(job sessionV3ExecutorJob, stat
 
 	switch status {
 	case sessionruntime.RunIntentCompleted:
+		// A provider turn ending does not complete an approved checkpoint plan.
+		if task.PlanBinding != nil && task.PlanBinding.PlanID != "" {
+			plan, found, planErr := db.GetPlan(task.SessionID, task.PlanBinding.PlanID)
+			if planErr != nil {
+				return planErr
+			}
+			if !found || plan.Document == nil || len(plan.Document.Checkpoints) == 0 {
+				return nil
+			}
+			for _, checkpoint := range plan.Document.Checkpoints {
+				if checkpoint.Status != "completed" {
+					return nil
+				}
+			}
+		}
 		gitState := inspectTaskGitState(*task, db)
 		_, err = db.UpdateProjectTask(accountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
 			if t.Status != "in_progress" || t.SessionID != job.SessionID {

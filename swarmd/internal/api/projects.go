@@ -426,6 +426,17 @@ func syncTaskSessionState(task *pebblestore.ProjectTaskRecord, db *pebblestore.S
 			// Run concluded:
 			switch runState.Status {
 			case pebblestore.V3RunIntentCompleted:
+				if task.PlanBinding != nil && task.PlanBinding.PlanID != "" {
+					plan, found, err := db.GetPlan(task.SessionID, task.PlanBinding.PlanID)
+					if err != nil || !found || plan.Document == nil || len(plan.Document.Checkpoints) == 0 {
+						return
+					}
+					for _, checkpoint := range plan.Document.Checkpoints {
+						if checkpoint.Status != "completed" {
+							return
+						}
+					}
+				}
 				// In Swarm V3 orchestration, when an agent finishes execution, the task
 				// transitions to needs_review for user review and git integration,
 				// NEVER directly to completed!
@@ -1248,7 +1259,7 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 	var tr taskrouter.Service
 	seedMsg := tr.BuildAgentSeedPrompt(task, proj)
 	if mode == sessionruntime.ModePlan {
-		seedMsg += "\n\n## Planning phase\nInvestigate only as needed, then submit a complete executable structured plan using exit_plan_mode. Include ordered checkpoints, concrete tasks and acceptance criteria. This project task must show the submitted plan for user approval before any implementation. Do not write implementation files or execute the task in this phase."
+		seedMsg += "\n\n## Planning phase\nInvestigate only as needed, then submit a complete executable structured plan using exit_plan_mode. Include ordered checkpoints, concrete tasks and acceptance criteria. This project task must show the submitted plan for user approval before any implementation. Do not write implementation files or execute the task in this phase. For coding deliverables, include a checkpoint task_program with a Coder job, explicit workspace-relative owned_scope, implementation instructions, deliverable, acceptance_criteria and dependency_evidence. The approved checkpoint must launch that program rather than implementing directly in the planner workspace. Preserve every user requirement, including committing changes. Complete the checkpoint through the plan lifecycle only after verifying the returned deliverable; completing subtasks alone is not checkpoint completion."
 	}
 	msgID := fmt.Sprintf("msg_%s_%d", sessionID, now)
 	msg := pebblestore.MessageSnapshot{
