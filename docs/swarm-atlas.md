@@ -3332,3 +3332,9 @@ selected-task feedback produced committed revised output; a structured five-file
 program produced committed Coder outputs. Initial-card event-to-render timing and
 browser reconnect were observed in the real UI; these do not certify every plan
 rendering transition or arbitrary project decomposition.
+
+Generated task branches now include a stable task-identity suffix, so independent
+same-prompt tasks do not collide; explicit caller branch names still fail on real
+conflicts. `TestIdenticalTaskPromptsGetDistinctOwnedWorktrees` validates the requested
+allocation paths with no provider execution. Live browser tests exposed the collision
+before this repair. No existing worktree is overwritten or taken over.

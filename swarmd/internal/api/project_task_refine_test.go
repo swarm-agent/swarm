@@ -10,6 +10,7 @@ import (
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
+	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
 
 // A summary revision must never leave an old executable plan approvable.
@@ -114,4 +115,35 @@ func TestSuppliedProjectPlanHasOwnedLaneWithoutRun(t *testing.T) {
 	if intent, found, _ := f.server.sessions.Store().GetV3SessionActiveRunIntent(task.SessionID); found {
 		t.Fatalf("unapproved run started: %#v", intent)
 	}
+}
+
+func TestIdenticalTaskPromptsGetDistinctOwnedWorktrees(t *testing.T) {
+	f := setupMatrixTestFixture(t)
+	defer f.db.Close()
+	f.server.v3SessionExecutor = nil
+	p := identity.Principal{Type: "user", UserID: f.userID, AccountScopeID: f.accountID}
+	project := f.createProject(t)
+	if err := f.server.sessions.Store().CompleteRepositoryHistoryMaintenance(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	f.server.worktrees = &distinctFixtureWorktrees{}
+	input := tool.ProjectTaskCreateInput{ID: "task-one", Title: "Same title", Prompt: "Same small change", Agent: "coder", FeatureSize: "small"}
+	first, err := f.server.CreateProjectTask(context.Background(), p, project, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input.ID = "task-two"
+	second, err := f.server.CreateProjectTask(context.Background(), p, project, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.WorkspacePath == second.WorkspacePath || first.WorktreeBranch == second.WorktreeBranch {
+		t.Fatal("identical prompts shared a mutable worktree")
+	}
+}
+
+type distinctFixtureWorktrees struct{ testMockWorktreeService }
+
+func (m *distinctFixtureWorktrees) AllocateDetachedWorkspaceRequestedForPrincipal(p identity.Principal, workspace, seed, base, branch string) (worktreeruntime.Allocation, error) {
+	return worktreeruntime.Allocation{WorkspacePath: "/mock/worktrees/" + branch, BranchName: branch, BaseBranch: "dev", BaseCommit: "base-commit-sha-001", RepoRoot: workspace}, nil
 }

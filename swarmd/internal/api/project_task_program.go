@@ -254,6 +254,12 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 		taskID = fmt.Sprintf("task_%d", time.Now().UnixMilli())
 	}
 
+	// User-selected branch names retain conflict checks. Generated names must be
+	// task-owned: identical prompts are valid independent tasks, not a collision.
+	if strings.TrimSpace(input.WorktreeBranch) == "" && worktreeBranch != "" {
+		suffix := sha256.Sum256([]byte(projectID + ":" + taskID))
+		worktreeBranch += "-" + hex.EncodeToString(suffix[:4])
+	}
 	s.projectTaskCreateMu.Lock()
 	defer s.projectTaskCreateMu.Unlock()
 
