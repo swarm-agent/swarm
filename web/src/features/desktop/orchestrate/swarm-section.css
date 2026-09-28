@@ -1,0 +1,66 @@
+/* Swarm palette is scoped to its own root. It never writes account or workspace DOM variables. */
+.swarm-section { --swarm-background: #090d18; --swarm-surface: #0d121f; --swarm-surface-subtle: #0a0f1d; --swarm-surface-hover: #182235; --swarm-background-inset: #080c16; --swarm-border: #293449; --swarm-border-muted: #222d41; --swarm-border-accent: #5283c8; --swarm-text: #f1f5f9; --swarm-text-muted: #a1afc4; --swarm-text-subtle: #8290a5; --swarm-text-accent: #80a9ef; --swarm-accent: #3976d4; --swarm-accent-hover: #4b89ea; --swarm-accent-text: #fff; --swarm-warning: #e9ba65; --swarm-warning-bg: #33271b; --swarm-warning-border: #8e6a36; --swarm-success: #65c5a0; --swarm-success-bg: #15372e; --swarm-danger: #e17784; --swarm-danger-bg: #40212c; --swarm-info: #7ea9ed; --swarm-info-bg: #18314d; }
+.swarm-section-themed { background: var(--swarm-background); color: var(--swarm-text); }
+.swarm-section-themed > aside, .swarm-section-themed > main { background: var(--swarm-surface); border-color: var(--swarm-border-muted); color: var(--swarm-text); }
+.swarm-section-themed > aside textarea { background: var(--swarm-background-inset); color: var(--swarm-text); border-color: var(--swarm-border); }
+.swarm-section-themed > aside > *, .swarm-section-themed > main > * { border-color: var(--swarm-border-muted); }
+.swarm-section-themed .swarm-task-card, .swarm-section-themed .swarm-theme-picker select { background: var(--swarm-surface); }
+.swarm-section-themed > aside .text-white, .swarm-section-themed > main .text-white { color: var(--swarm-text); }
+.swarm-section-themed > aside .text-slate-300, .swarm-section-themed > main .text-slate-300 { color: var(--swarm-text-muted); }
+.swarm-section-themed > aside .text-slate-400, .swarm-section-themed > main .text-slate-400 { color: var(--swarm-text-muted); }
+.swarm-section-themed > aside .text-slate-500, .swarm-section-themed > main .text-slate-500 { color: var(--swarm-text-subtle); }
+.swarm-section-themed > aside .text-blue-400, .swarm-section-themed > main .text-blue-400 { color: var(--swarm-text-accent); }
+.swarm-section-themed > aside .border-slate-800, .swarm-section-themed > main .border-slate-800 { border-color: var(--swarm-border-muted); }
+.swarm-section-themed > aside .bg-blue-600, .swarm-section-themed > main .bg-blue-600 { background-color: var(--swarm-accent); color: var(--swarm-accent-text); }
+.swarm-section-themed > aside .bg-blue-600:hover, .swarm-section-themed > main .bg-blue-600:hover { background-color: var(--swarm-accent-hover); }
+.swarm-section-themed > aside [class~="bg-[#0d121f]/95"], .swarm-section-themed > main [class~="bg-[#0d121f]/95"] { background: var(--swarm-surface); }
+.swarm-section-themed > aside [class~="bg-[#090d16"], .swarm-section-themed > main [class~="bg-[#090d16"] { background: var(--swarm-background-inset); }
+.swarm-section-themed > aside [class~="bg-[#0a0f1d]/60"], .swarm-section-themed > main [class~="bg-[#0a0f1d]/60"] { background: var(--swarm-surface-subtle); }
+.swarm-section-themed > aside [class~="bg-slate-900/50"], .swarm-section-themed > main [class~="bg-slate-900/50"] { background: var(--swarm-surface-subtle); }
+.swarm-section-themed > aside [class~="bg-blue-950/20"], .swarm-section-themed > main [class~="bg-blue-950/20"] { background: var(--swarm-info-bg); }
+.swarm-section-themed > aside [class~="bg-amber-950/40"], .swarm-section-themed > main [class~="bg-amber-950/40"] { background: var(--swarm-warning-bg); }
+.swarm-section-themed > aside [class~="bg-rose-950/40"], .swarm-section-themed > main [class~="bg-rose-950/40"] { background: var(--swarm-danger-bg); }
+.swarm-section-themed > aside [class~="text-amber-300"], .swarm-section-themed > main [class~="text-amber-300"] { color: var(--swarm-warning); }
+.swarm-section-themed > aside [class~="text-rose-300"], .swarm-section-themed > main [class~="text-rose-300"] { color: var(--swarm-danger); }
+.swarm-section-themed > aside [class~="text-emerald-300"], .swarm-section-themed > main [class~="text-emerald-300"] { color: var(--swarm-success); }
+.swarm-section-themed > aside input, .swarm-section-themed > main input, .swarm-section-themed > main textarea, .swarm-section-themed > main select { color: var(--swarm-text); }
+.swarm-section-themed > aside input::placeholder, .swarm-section-themed > main input::placeholder, .swarm-section-themed > main textarea::placeholder { color: var(--swarm-text-subtle); }
+.swarm-section-themed :focus-visible { outline: 2px solid var(--swarm-accent); outline-offset: 2px; }
+.swarm-theme-picker { display: grid; gap: 5px; padding: 7px 2px; font-size: 11px; color: var(--swarm-text-muted); }
+.swarm-theme-picker label { font-weight: 650; }
+.swarm-theme-picker select { width: 100%; border: 1px solid var(--swarm-border); border-radius: 9px; padding: 6px 8px; background: var(--swarm-surface-subtle); color: var(--swarm-text); }
+.swarm-theme-picker p { line-height: 1.4; color: var(--swarm-warning); }
+.swarm-task-card { gap: 12px; padding: 16px; border: 1px solid var(--swarm-border-muted); border-radius: 16px; background: var(--swarm-surface); color: var(--swarm-text); }
+.swarm-task-card:hover { border-color: var(--swarm-border); background: var(--swarm-surface-hover); }
+.swarm-task-card-selected { border-color: var(--swarm-border-accent); }
+.swarm-task-summary { display: grid; grid-template-columns: 158px minmax(0,1fr); gap: 17px; min-width: 0; }
+.swarm-task-visual { position: relative; display: flex; align-items: center; justify-content: center; width: 158px; height: 130px; overflow: hidden; border: 1px solid var(--swarm-border-muted); border-radius: 12px; background: var(--swarm-background-inset); color: var(--swarm-accent); padding: 0; }
+.swarm-task-visual img, .swarm-task-visual video { width: 100%; height: 100%; object-fit: cover; }
+.swarm-task-visual-icon { background: var(--swarm-surface-subtle); }
+.swarm-task-visual-icon > svg:not(.swarm-task-dependencies) { position: relative; z-index: 1; }
+.swarm-task-dependencies { position: absolute; inset: 0; width: 100%; height: 100%; opacity: .3; fill: var(--swarm-accent); stroke: var(--swarm-accent); stroke-width: 1.5; }
+.swarm-task-summary-content { min-width: 0; }
+.swarm-task-summary h3 { font-size: 19px; font-weight: 680; letter-spacing: -.025em; line-height: 1.25; overflow-wrap: anywhere; }
+.swarm-task-byline { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 5px; font-size: 11px; text-transform: capitalize; color: var(--swarm-text-muted); }
+.swarm-task-description { margin-top: 9px; font-size: 12px; line-height: 1.5; color: var(--swarm-text-muted); overflow-wrap: anywhere; }
+.swarm-task-facts { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 6px 13px; margin-top: 12px; }
+.swarm-task-fact { min-width: 0; font-size: 11px; line-height: 1.35; }
+.swarm-task-fact dt { font-size: 10px; color: var(--swarm-text-subtle); }
+.swarm-task-fact dd { display: flex; align-items: center; gap: 3px; margin: 2px 0 0; overflow-wrap: anywhere; word-break: break-word; color: var(--swarm-text); }
+.swarm-task-fact:last-child { grid-column: 1/-1; }
+.swarm-task-break { overflow-wrap: anywhere; }
+.swarm-task-evidence { display: flex; flex-wrap: wrap; gap: 5px 15px; margin-top: 12px; border-top: 1px solid var(--swarm-border-muted); padding-top: 9px; font-size: 11px; color: var(--swarm-text-muted); }
+.swarm-task-evidence span:not(:first-child)::before { content: '·'; margin-right: 12px; color: var(--swarm-text-subtle); }
+.swarm-task-action-row { justify-content: flex-end; }
+.swarm-task-card [data-testid="task-impending-agents"], .swarm-task-card [data-testid="task-plan-spec"], .swarm-task-card [data-testid="task-media-thumbnails-strip"] { border-color: var(--swarm-border-muted); background: var(--swarm-surface-subtle); }
+.swarm-task-card [data-testid="task-impending-agents"] { margin-top: 4px; }
+.swarm-task-card [data-testid="task-plan-spec"] { margin-top: 6px; }
+.swarm-task-legacy-heading { display: none; }
+.swarm-task-action-buttons { flex-wrap: wrap; justify-content: flex-end; }
+.swarm-task-action-buttons [data-testid="task-card-chat-btn"] { order: 2; background: transparent; border-color: var(--swarm-border); color: var(--swarm-text-muted); }
+.swarm-task-action-buttons > button:not([data-testid="task-card-chat-btn"]) { order: 1; border-radius: 9px; padding: 7px 11px; font-size: 11px; }
+.swarm-task-details-toggle { display: flex; align-items: center; justify-content: space-between; width: 100%; border-top: 1px solid var(--swarm-border-muted); padding: 9px 0 0; text-align: left; font-size: 11px; color: var(--swarm-text-muted); }
+.swarm-task-details-toggle:hover { color: var(--swarm-text); }
+@container (max-width: 460px) { .swarm-task-summary { grid-template-columns: 1fr; } .swarm-task-visual { width: 100%; height: 125px; } }
+.swarm-task-card { container-type: inline-size; }
+@media (max-width: 640px) { .swarm-task-summary { grid-template-columns: 1fr; } .swarm-task-visual { width: 100%; height: 125px; } }

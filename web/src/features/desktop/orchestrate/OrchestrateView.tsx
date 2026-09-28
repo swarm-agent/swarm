@@ -75,6 +75,10 @@ import { HistoricalMediaLibrary, MediaViewerModal, type MediaLibraryItem } from 
 import type { MediaGenerationJob, MediaGenerationRequest, MediaGenerationSettings } from '../tools/media-library/media-generation'
 import type { QuickRouteMode } from '../tools/media-library/media-viewer-modal'
 import { ORCHESTRATE_THEMES } from './orchestrate-themes'
+import { TaskCardSummary } from './task-card-summary'
+import { projectThemePatch, resolveSwarmProjectTheme } from './swarm-section-theme'
+import { WORKSPACE_THEME_OPTIONS, setWorkspaceThemeCatalog, formatWorkspaceThemeLabel } from '../../workspaces/launcher/services/workspace-theme'
+import './swarm-section.css'
 import {
   desktopProjects,
   useDesktopProject,
@@ -901,15 +905,13 @@ function MinimalTaskCard({
       data-testid="orchestrate-task-card"
       data-task-id={task.id}
       data-task-state={task.status}
-      className={`relative flex flex-col rounded-xl border transition-all p-3.5 space-y-3 cursor-pointer ${
-        isSelected
-          ? 'bg-[#0f1526] border-blue-500/60 shadow-[0_4px_20px_rgba(0,0,0,0.5)]'
-          : 'bg-[#0a0f1d] border-slate-800/80 hover:border-slate-700/80 hover:bg-[#0c1222]'
-      }`}
+      className={`swarm-task-card relative flex flex-col transition-all cursor-pointer ${isSelected ? 'swarm-task-card-selected' : ''}`}
     >
-      {/* 1. Header: Agent Tag + Title + Status + Actions */}
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex flex-col gap-1 min-w-0 flex-1">
+      <TaskCardSummary task={task} onPreview={onPreviewDeliverable} />
+      <div className="swarm-task-actions">
+      {/* Existing guarded actions remain connected to their original handlers. */}
+      <div className="swarm-task-action-row flex items-start justify-between gap-3">
+        <div className="swarm-task-legacy-heading flex flex-col gap-1 min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <span
               className={`font-mono text-[9px] uppercase font-bold px-2 py-0.5 rounded border ${
@@ -1022,7 +1024,7 @@ function MinimalTaskCard({
           )}
         </div>
 
-        <div className="flex items-center gap-2 flex-shrink-0">
+        <div className="swarm-task-action-buttons flex items-center gap-2 flex-shrink-0">
           <div
             className={`font-mono text-[10px] font-bold uppercase px-2 py-0.5 rounded border flex items-center gap-1.5 ${
               isPlanning
@@ -1141,6 +1143,7 @@ function MinimalTaskCard({
         </div>
       </div>
 
+      </div>
       {/* ROUTER AGENT FAILURE ALERT BANNER */}
       {(task.routerAlert || (task as any).router_alert) && (
         <div className="flex items-start gap-2.5 p-3 rounded-lg bg-amber-950/40 border border-amber-500/60 text-amber-200 text-xs">
@@ -2553,8 +2556,8 @@ function MinimalTaskCard({
         </div>
       )}
 
-      {/* 2f. Media & Deliverables Preview Strip (at-a-glance in default view) */}
-      {((task.deliverables && task.deliverables.length > 0) || (task.attachedMedia && task.attachedMedia.length > 0)) && (
+      {/* 2f. Media & Deliverables Preview Strip (secondary details) */}
+      {expanded && ((task.deliverables && task.deliverables.length > 0) || (task.attachedMedia && task.attachedMedia.length > 0)) && (
         <div className="flex flex-col p-2.5 rounded-lg bg-slate-900/60 border border-slate-800/80 space-y-1.5 text-xs" data-testid="task-media-thumbnails-strip">
           <div className="flex items-center justify-between text-[10px] font-mono text-slate-400">
             <span className="font-bold uppercase tracking-wider text-slate-300 flex items-center gap-1.5">
@@ -2669,7 +2672,7 @@ function MinimalTaskCard({
             e.stopPropagation()
             handleToggleExpand()
           }}
-          className="w-full flex items-center justify-between py-1.5 px-2.5 rounded-lg bg-slate-900/50 hover:bg-slate-900 border border-slate-800/80 hover:border-slate-700 text-[10px] font-mono text-slate-400 hover:text-slate-200 transition-colors"
+          className="swarm-task-details-toggle"
           data-testid="toggle-task-details-btn"
         >
           <span className="flex items-center gap-1.5 font-semibold">
@@ -2691,7 +2694,7 @@ function MinimalTaskCard({
       {expanded && (
         <>
       {/* 6. Worktree & Git Changes Bar (ONLY show when there are changes waiting to be committed or unintegrated commits) */}
-      {!isPendingApproval && !isMediaTask && (task.isDirty || hasUnintegrated) && (
+      {!isPendingApproval && !isMediaTask && task.gitStatus !== 'unknown' && task.gitStatus !== 'stale' && (task.isDirty || hasUnintegrated) && (
         <div className="flex items-center justify-between p-2 rounded-lg bg-[#070b14] border border-slate-800/80 text-[10px] font-mono text-slate-400">
           <div className="flex items-center gap-2 truncate">
             <span className="text-indigo-400 flex items-center gap-1">
@@ -3617,8 +3620,7 @@ export function OrchestrateView({
   onNavigateHome,
   initialThemeId = 'modern_navy',
 }: OrchestrateViewProps) {
-  const [currentThemeId] = useState<OrchestrateThemeId>(initialThemeId)
-  const theme = ORCHESTRATE_THEMES[currentThemeId] || ORCHESTRATE_THEMES.modern_navy
+  const theme = ORCHESTRATE_THEMES[initialThemeId] || ORCHESTRATE_THEMES.modern_navy
 
   // Real user profile from /v1/auth/desktop/session
   const [userProfile, setUserProfile] = useState<{ id: string; name: string; email: string }>({
@@ -3632,6 +3634,44 @@ export function OrchestrateView({
   const [selectedProjectId, setSelectedProjectId] = useState<string>('')
   const [, setIsLoadingProjects] = useState<boolean>(true)
   const selectedProject = projects.find((p) => p.id === selectedProjectId) ?? projects[0]
+  const [themeCatalogRevision, setThemeCatalogRevision] = useState(0)
+  const [themeSaving, setThemeSaving] = useState(false)
+  const [themeError, setThemeError] = useState('')
+  const projectTheme = resolveSwarmProjectTheme(selectedProject?.themeId)
+  const themeOptions = useMemo(() => [...WORKSPACE_THEME_OPTIONS], [themeCatalogRevision])
+  useEffect(() => {
+    let active = true
+    const unsubscribe = desktopProjects.onProjectUpdate((projectId) => {
+      if (!selectedProjectId || (projectId && projectId !== selectedProjectId)) return
+      // Theme creation and assignment may arrive in the same project event. Refresh the
+      // account catalog before resolving the returned project reference.
+      void Promise.all([
+        requestJson<{ project: { id: string; theme_id?: string } }>(`/v3/projects/${encodeURIComponent(selectedProjectId)}`),
+        getUISettings(),
+      ]).then(([{ project }, settings]) => {
+        if (!active) return
+        setWorkspaceThemeCatalog(settings.theme)
+        setThemeCatalogRevision((revision) => revision + 1)
+        setProjects((prev) => prev.map((item) => item.id === project.id ? { ...item, themeId: project.theme_id || '' } : item))
+      }).catch((error) => { if (active) setThemeError(error instanceof Error ? error.message : 'Unable to refresh project theme') })
+    })
+    return () => { active = false; unsubscribe() }
+  }, [selectedProjectId])
+  const handleProjectThemeChange = async (themeId: string) => {
+    if (!selectedProject || themeSaving) return
+    setThemeSaving(true)
+    setThemeError('')
+    try {
+      const response = await requestJson<{ project: { theme_id?: string } }>(`/v3/projects/${encodeURIComponent(selectedProject.id)}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(projectThemePatch(themeId)),
+      })
+      setProjects((prev) => prev.map((project) => project.id === selectedProject.id ? { ...project, themeId: response.project.theme_id || '' } : project))
+      desktopProjects.invalidate(selectedProject.id)
+    } catch (error) {
+      setThemeError(error instanceof Error ? error.message : 'Unable to save project theme')
+    } finally { setThemeSaving(false) }
+  }
 
   // Project Onboarding & Creation State
   const [isOnboardingActive, setIsOnboardingActive] = useState<boolean>(false)
@@ -4161,6 +4201,7 @@ export function OrchestrateView({
             pendingDeliverablesCount: 0,
             runningTasksCount: 0,
             projectContext: p.project_context,
+            themeId: p.theme_id || '',
             primarySessionId: p.primary_session_id,
           }))
           setProjects(loaded)
@@ -4187,6 +4228,8 @@ export function OrchestrateView({
           requestJson<{ image_models?: any[]; video_generation_models?: any[]; video_models?: any[]; audio_models?: any[]; default_image_model?: string; default_video_model?: string; default_audio_model?: string }>('/v1/media/settings/catalog').catch(() => null),
         ])
         if (!cancelled) {
+          setWorkspaceThemeCatalog(settingsRes?.theme)
+          setThemeCatalogRevision((revision) => revision + 1)
           const configuredImage = settingsRes?.tools?.image?.default_model || ''
           const configuredAudio = settingsRes?.tools?.audio?.default_model || ''
 
@@ -5735,8 +5778,9 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
 
   return (
     <div
-      className={`relative flex h-screen w-screen overflow-hidden p-3 gap-3 ${theme.bgClass} ${theme.textPrimaryClass} font-sans select-none`}
-      style={theme.customVars as React.CSSProperties}
+      className={`swarm-section relative flex h-screen w-screen overflow-hidden p-3 gap-3 ${projectTheme.state === 'selected' ? 'swarm-section-themed' : ''} ${theme.bgClass} ${theme.textPrimaryClass} font-sans select-none`}
+      data-project-theme={projectTheme.state}
+      style={{ ...theme.customVars, ...projectTheme.style, ...(projectTheme.colorScheme ? { colorScheme: projectTheme.colorScheme } : {}) } as React.CSSProperties}
     >
       {/* ─────────────────────────────────────────────────────────────
           PANEL 1: LEFT SIDEBAR (NAVIGATION, PROJECTS & USER HUD)
@@ -5766,6 +5810,17 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
             </Link>
           </div>
 
+          <div className="swarm-theme-picker">
+            <label htmlFor="swarm-project-theme">Project theme</label>
+            <select id="swarm-project-theme" aria-label="Project theme" disabled={!selectedProject || themeSaving}
+              value={selectedProject?.themeId || ''} onChange={(event) => void handleProjectThemeChange(event.target.value)}>
+              <option value="">Inherit Swarm default</option>
+              {selectedProject?.themeId && projectTheme.state === 'missing' && <option value={selectedProject.themeId}>Missing theme: {selectedProject.themeId}</option>}
+              {themeOptions.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
+            </select>
+            {projectTheme.state === 'missing' && <p role="status">{formatWorkspaceThemeLabel(selectedProject!.themeId!)} was deleted or is unavailable. Reset or select a saved theme.</p>}
+            {themeError && <p role="alert">{themeError}</p>}
+          </div>
           {/* Search Bar */}
           <div className="mt-2.5 flex items-center justify-between px-3 py-1.5 rounded-xl bg-[#090d16] border border-slate-800 text-xs text-slate-400">
             <div className="flex items-center gap-2">

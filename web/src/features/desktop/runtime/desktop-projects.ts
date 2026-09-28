@@ -23,6 +23,11 @@ export interface DesktopProjectsRuntimeDeps {
 }
 
 export class DesktopProjectsRuntime {
+  private readonly projectUpdateListeners = new Set<(projectId?: string) => void>()
+  onProjectUpdate(listener: (projectId?: string) => void): () => void {
+    this.projectUpdateListeners.add(listener)
+    return () => { this.projectUpdateListeners.delete(listener) }
+  }
   private readonly demand = new Map<string, { projectId: string; count: number }>()
   private readonly inFlight = new Map<string, Promise<void>>()
   private readonly deps: DesktopProjectsRuntimeDeps
@@ -138,6 +143,7 @@ export class DesktopProjectsRuntime {
     const projectId = frame.project_id || frame.projectId
     if (frame.kind === 'project.updated') {
       this.invalidate(projectId)
+      for (const listener of this.projectUpdateListeners) listener(projectId)
     } else if (
       frame.kind === 'cursor.error' ||
       frame.kind === 'rehydrate.required' ||

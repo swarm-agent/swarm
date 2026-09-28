@@ -94,6 +94,7 @@ export interface ProjectSummary {
   pendingDeliverablesCount: number
   runningTasksCount: number
   projectContext?: string
+  themeId?: string // canonical project theme_id; empty inherits Swarm default
   primarySessionId?: string
   uploadedMedia?: ProjectTaskMediaRef[]
 }
