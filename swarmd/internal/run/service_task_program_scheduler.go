@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -345,7 +346,11 @@ func (p *taskProgramScheduler) runCohort(indexes []int) error {
 	cohortReq.ParentSession = &p.parentSession
 	cohortReq.ApprovedArguments = approved
 	cohortReq.ProgramCohort = true
+	var cohortMu sync.Mutex
+	var lineageErr error
 	cohortEmit := func(event StreamEvent) {
+		cohortMu.Lock()
+		defer cohortMu.Unlock()
 		if event.Type != StreamEventToolDelta || strings.TrimSpace(event.Output) == "" {
 			if p.emit != nil {
 				p.emit(event)
@@ -363,6 +368,22 @@ func (p *taskProgramScheduler) runCohort(indexes []int) error {
 		jobID := p.taskProgramCohortJobID(indexes, launch)
 		if jobID == "" {
 			return
+		}
+		if childID := mapString(launch, "child_session_id"); childID != "" {
+			index := taskProgramJobIndex(p.record, jobID)
+			job := p.record.Jobs[index]
+			if job.ChildSessionID == "" && lineageErr == nil {
+				_, _, lineageErr = p.transition(p.parentSession.ID, p.record.ProgramID, pebblestore.TaskProgramTransition{ExpectedRevision: p.record.Revision, MutationID: "child-attached:" + jobID + ":" + childID, Jobs: []pebblestore.TaskProgramJobTransition{{JobID: jobID, ExpectedState: job.State, State: job.State, ChildSessionID: childID, CurrentSessionID: childID}}})
+			}
+		}
+		index := taskProgramJobIndex(p.record, jobID)
+		if lineageErr == nil && mapString(payload, "phase") == "completed" && agentruntime.IsCoderAgentName(p.parsed.Program.Jobs[index].RequestedSubagentType) && p.record.Jobs[index].State == pebblestore.TaskProgramJobRunning {
+			// This internal event is emitted only after the executor verifies the
+			// Coder's committed, clean descendant handoff. Preserve it while a
+			// sibling still runs instead of waiting for the entire cohort.
+			outcomes := taskProgramOutcomesFromPayload(map[string]any{"launches": []any{launch}}, 1)
+			updates := taskProgramOutcomeTransitions(&taskProgramSpec{Jobs: []taskProgramJob{p.parsed.Program.Jobs[index]}}, outcomes, nil)
+			_, _, lineageErr = p.transition(p.parentSession.ID, p.record.ProgramID, pebblestore.TaskProgramTransition{ExpectedRevision: p.record.Revision, MutationID: "child-handoff:" + jobID, Jobs: updates})
 		}
 		presentation := taskProgramPresentationPayload(p.record)
 		program, status := taskProgramStreamMetadata(p.record)
@@ -383,6 +404,9 @@ func (p *taskProgramScheduler) runCohort(indexes []int) error {
 		emitTaskStreamPayload(p.emit, p.step, "task", cohortCall.CallID, programPayload)
 	}
 	output, runErr := p.service.executeTaskToolWithParsed(p.ctx, p.parentSession.ID, p.sessionMode, p.step, cohortCall, cohortEmit, cohortReq)
+	if lineageErr != nil {
+		return fmt.Errorf("persist live task child lineage: %w", lineageErr)
+	}
 	var payload map[string]any
 	if json.Unmarshal([]byte(output), &payload) == nil {
 		p.allOutcomes = append(p.allOutcomes, taskProgramLaunchRows(payload)...)
@@ -393,6 +417,12 @@ func (p *taskProgramScheduler) runCohort(indexes []int) error {
 		runErr = validationErr
 	}
 	updates := taskProgramOutcomeTransitions(&taskProgramSpec{Jobs: jobs}, outcomes, runErrs)
+	for i := range updates {
+		job := p.record.Jobs[taskProgramJobIndex(p.record, updates[i].JobID)]
+		if job.State == pebblestore.TaskProgramJobHandoffReady && updates[i].State == pebblestore.TaskProgramJobHandoffReady {
+			updates[i].ExpectedState = job.State
+		}
+	}
 	for _, update := range updates {
 		if runErr == nil && update.Blocker != nil {
 			runErr = errors.New(update.Blocker.Message)
