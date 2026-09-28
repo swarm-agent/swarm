@@ -15,7 +15,7 @@ var errAutomationPolicy = errors.New("automation execution policy denied")
 // checkpoint edits and recovered runs cannot replace or remove it.
 func (s *Service) automationPolicy(sessionID string) (*store.AutomationAuthorizationPolicy, error) {
 	if s == nil || s.sessions == nil {
-		if !strings.HasPrefix(sessionID, "automation-") && !strings.HasPrefix(sessionID, "av2-execution-") {
+		if !strings.HasPrefix(sessionID, "automation-") && !strings.HasPrefix(sessionID, "av2-execution-") && !strings.HasPrefix(sessionID, "worker-execution-") {
 			return nil, nil
 		}
 		return nil, errAutomationPolicy
@@ -54,6 +54,12 @@ func (s *Service) automationPolicy(sessionID string) (*store.AutomationAuthoriza
 	}
 	if strings.HasPrefix(sessionID, "av2-execution-") {
 		return nil, s.validateAutomationV2Execution(currentSession)
+	}
+	if strings.HasPrefix(sessionID, "worker-execution-") {
+		if !exists {
+			return nil, errAutomationPolicy
+		}
+		return nil, s.validateWorkerExecution(currentSession)
 	}
 	if !strings.HasPrefix(sessionID, "automation-") {
 		return nil, nil

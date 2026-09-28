@@ -292,33 +292,11 @@ func unmarshalJSONArg(src any, dst any) error {
 	return json.Unmarshal(raw, dst)
 }
 
-func (s *Service) cancelWorkerRuns(account, workerID string, automationID ...string) {
-	if s == nil || s.sessions == nil {
-		return
+func (s *Service) workerExecutionService() (*WorkerExecutionService, error) {
+	if s == nil || s.workerExecution == nil {
+		return nil, errors.New("worker execution service is not configured")
 	}
-	targetAuto := ""
-	if len(automationID) > 0 {
-		targetAuto = strings.TrimSpace(automationID[0])
-	}
-	runs, _, err := s.sessions.ListWorkerRuns(account, workerID, 50, "")
-	if err != nil {
-		return
-	}
-	now := time.Now().UnixMilli()
-	for _, r := range runs {
-		if targetAuto != "" && r.AutomationID != targetAuto {
-			continue
-		}
-		if r.Status == "running" || r.Status == "admitted" {
-			for _, sid := range r.SessionIDs {
-				_ = s.StopSessionRun(sid, "", "worker execution stopped")
-			}
-			r.Status = "cancelled"
-			r.ErrorMessage = "worker execution cancelled by lifecycle control"
-			r.UpdatedAt = now
-			_, _ = s.sessions.RecordWorkerRun(account, r)
-		}
-	}
+	return s.workerExecution, nil
 }
 
 func (s *Service) executeManageAutomationV2Tool(id, arguments string) (string, error) {
@@ -353,7 +331,7 @@ func (s *Service) executeManageWorkersTool(id, arguments string, profile ...stor
 			mapString(current.Metadata, "resolved_agent_name"),
 			mapString(current.Metadata, "agent_name"),
 		))
-		if sessionAgent != "" && !agentruntime.IsOrchestratorAgentName(sessionAgent) && mapString(current.Metadata, "role") != "project_orchestrator" {
+		if !agentruntime.IsOrchestratorAgentName(sessionAgent) {
 			return "", errors.New("Worker and automation management is exclusive to Swarm Orchestrator in Swarm mode")
 		}
 	}
@@ -434,7 +412,7 @@ func (s *Service) executeManageWorkersTool(id, arguments string, profile ...stor
 		}
 		query := store.ListWorkersQuery{
 			Limit:          limit,
-			Cursor:         cursor,
+			After:          cursor,
 			IncludeDeleted: includeDeleted,
 		}
 		res, err := s.sessions.ListWorkers(current.AccountScopeID, query)
@@ -661,15 +639,17 @@ func (s *Service) executeManageWorkersTool(id, arguments string, profile ...stor
 		if targetAuto == nil {
 			return "", fmt.Errorf("automation %q not found on worker %q", automationID, workerID)
 		}
-		targetAuto.Enabled = false
-		updated, err := s.sessions.UpdateWorkerAutomation(current.AccountScopeID, current.UserID, workerID, automationID, expectedRevision, *targetAuto)
+		service, err := s.workerExecutionService()
 		if err != nil {
 			return "", err
 		}
-		s.cancelWorkerRuns(current.AccountScopeID, workerID, automationID)
+		updated, err := service.DisableAutomation(context.Background(), current.AccountScopeID, current.UserID, workerID, automationID, expectedRevision)
+		if err != nil {
+			return "", err
+		}
 		raw, err := json.Marshal(map[string]any{
 			"status":        "automation_disabled",
-			"worker_id":    workerID,
+			"worker_id":     workerID,
 			"automation_id": automationID,
 			"worker":        updated,
 		})
@@ -684,7 +664,11 @@ func (s *Service) executeManageWorkersTool(id, arguments string, profile ...stor
 		if !ok || expectedRevision == 0 {
 			return "", errors.New("expected_revision is required for delete")
 		}
-		err := s.sessions.DeleteWorker(current.AccountScopeID, current.UserID, workerID, expectedRevision)
+		service, err := s.workerExecutionService()
+		if err != nil {
+			return "", err
+		}
+		_, err = service.Stop(context.Background(), current.AccountScopeID, current.UserID, workerID, expectedRevision, store.WorkerLifecycleStateDeleted)
 		if err != nil {
 			return "", err
 		}
@@ -698,252 +682,15 @@ func (s *Service) executeManageWorkersTool(id, arguments string, profile ...stor
 		return "", errors.New("worker activation requires explicit user approval; AI cannot self-approve worker activation or capability grants. Submit proposals for user acceptance via manage_workers action=propose.")
 
 	case "test":
-		workerID := strings.TrimSpace(firstNonEmptyString(mapString(args, "worker_id"), mapString(args, "id")))
-		if workerID == "" {
-			return "", errors.New("worker_id is required for test")
-		}
-		w, found, err := s.sessions.GetWorker(current.AccountScopeID, workerID)
-		if err != nil {
-			return "", err
-		}
-		if !found {
-			return "", store.ErrWorkerNotFound
-		}
-		if w.LifecycleState == store.WorkerLifecycleStateDeleted || w.LifecycleState == store.WorkerLifecycleStateArchived {
-			return "", fmt.Errorf("cannot run test on worker in %s state", w.LifecycleState)
-		}
-		automationID := strings.TrimSpace(mapString(args, "automation_id"))
-		var automationRevision uint64
-		if automationID != "" {
-			foundAuto := false
-			for _, a := range w.Automations {
-				if a.ID == automationID {
-					automationRevision = a.Revision
-					foundAuto = true
-					break
-				}
-			}
-			if !foundAuto {
-				return "", fmt.Errorf("automation %q not found on worker %q", automationID, workerID)
-			}
-		}
-		now := time.Now().UnixMilli()
-		runID := store.GenerateWorkerRunID()
-		var acceptedInput map[string]any
-		if inRaw, ok := args["input"].(map[string]any); ok {
-			acceptedInput = inRaw
-		} else if prompt := strings.TrimSpace(mapString(args, "prompt")); prompt != "" {
-			acceptedInput = map[string]any{"prompt": prompt}
-		}
-		runRec := store.WorkerRunRecord{
-			RunID:              runID,
-			WorkerID:           workerID,
-			WorkerRevision:     w.Revision,
-			AutomationID:       automationID,
-			AutomationRevision: automationRevision,
-			RequestSource:      "test",
-			IsTest:             true,
-			Status:             "admitted",
-			AcceptedInput:      acceptedInput,
-			CreatedAt:          now,
-			UpdatedAt:          now,
-		}
-		rec, err := s.sessions.RecordWorkerRun(current.AccountScopeID, runRec)
-		if err != nil {
-			return "", err
-		}
-		raw, err := json.Marshal(map[string]any{
-			"status":  "admitted",
-			"is_test": true,
-			"run":     rec,
-		})
-		return string(raw), err
-
+		return s.dispatchWorkerTool(current, args, "test_run")
 	case "request":
-		workerID := strings.TrimSpace(firstNonEmptyString(mapString(args, "worker_id"), mapString(args, "id")))
-		if workerID == "" {
-			return "", errors.New("worker_id is required for request")
-		}
-		prompt := strings.TrimSpace(mapString(args, "prompt"))
-		if prompt == "" {
-			return "", errors.New("prompt is required for worker request")
-		}
-		w, found, err := s.sessions.GetWorker(current.AccountScopeID, workerID)
-		if err != nil {
-			return "", err
-		}
-		if !found {
-			return "", store.ErrWorkerNotFound
-		}
-		if w.LifecycleState == store.WorkerLifecycleStateDeleted || w.LifecycleState == store.WorkerLifecycleStateArchived {
-			return "", fmt.Errorf("cannot dispatch request to worker in %s state", w.LifecycleState)
-		}
-		if w.LifecycleState == store.WorkerLifecycleStatePaused || (w.Metadata != nil && mapBool(w.Metadata, "lifecycle_pause")) {
-			return "", errors.New("cannot dispatch request: admission is closed for paused worker")
-		}
-		now := time.Now().UnixMilli()
-		runID := store.GenerateWorkerRunID()
-		acceptedInput := map[string]any{"prompt": prompt}
-		if inRaw, ok := args["input"].(map[string]any); ok {
-			for k, v := range inRaw {
-				acceptedInput[k] = v
-			}
-		}
-		runRec := store.WorkerRunRecord{
-			RunID:          runID,
-			WorkerID:       workerID,
-			WorkerRevision: w.Revision,
-			RequestSource:  "direct",
-			IsTest:         false,
-			Status:         "admitted",
-			AcceptedInput:  acceptedInput,
-			CreatedAt:      now,
-			UpdatedAt:      now,
-		}
-		rec, err := s.sessions.RecordWorkerRun(current.AccountScopeID, runRec)
-		if err != nil {
-			return "", err
-		}
-		raw, err := json.Marshal(map[string]any{
-			"status":  "admitted",
-			"is_test": false,
-			"run":     rec,
-		})
-		return string(raw), err
-
+		return s.dispatchWorkerTool(current, args, "orchestrator")
 	case "pause":
-		workerID := strings.TrimSpace(firstNonEmptyString(mapString(args, "worker_id"), mapString(args, "id")))
-		if workerID == "" {
-			return "", errors.New("worker_id is required for pause")
-		}
-		expectedRevision, ok := parseUint64Arg(args, "expected_revision")
-		if !ok || expectedRevision == 0 {
-			return "", errors.New("expected_revision is required for pause")
-		}
-		w, found, err := s.sessions.GetWorker(current.AccountScopeID, workerID)
-		if err != nil {
-			return "", err
-		}
-		if !found {
-			return "", store.ErrWorkerNotFound
-		}
-		if w.LifecycleState == store.WorkerLifecycleStateDeleted || w.LifecycleState == store.WorkerLifecycleStateArchived {
-			return "", fmt.Errorf("cannot pause worker in %s state", w.LifecycleState)
-		}
-		s.cancelWorkerRuns(current.AccountScopeID, workerID)
-		automations := make([]store.WorkerAutomationDefinition, len(w.Automations))
-		copy(automations, w.Automations)
-		for i := range automations {
-			automations[i].Enabled = false
-		}
-		meta := make(map[string]any)
-		for k, v := range w.Metadata {
-			meta[k] = v
-		}
-		meta["paused_at"] = time.Now().UnixMilli()
-		meta["lifecycle_pause"] = true
-		req := store.UpdateWorkerRequest{
-			Automations:   automations,
-			Metadata:      meta,
-			ChangeSummary: "paused worker",
-		}
-		updated, err := s.sessions.UpdateWorker(current.AccountScopeID, current.UserID, workerID, expectedRevision, req)
-		if err != nil {
-			return "", err
-		}
-		raw, err := json.Marshal(map[string]any{
-			"status":    "paused",
-			"worker_id": workerID,
-			"worker":    updated,
-		})
-		return string(raw), err
-
+		return s.stopWorkerTool(current, args, store.WorkerLifecycleStatePaused)
 	case "resume":
-		workerID := strings.TrimSpace(firstNonEmptyString(mapString(args, "worker_id"), mapString(args, "id")))
-		if workerID == "" {
-			return "", errors.New("worker_id is required for resume")
-		}
-		expectedRevision, ok := parseUint64Arg(args, "expected_revision")
-		if !ok || expectedRevision == 0 {
-			return "", errors.New("expected_revision is required for resume")
-		}
-		w, found, err := s.sessions.GetWorker(current.AccountScopeID, workerID)
-		if err != nil {
-			return "", err
-		}
-		if !found {
-			return "", store.ErrWorkerNotFound
-		}
-		if w.LifecycleState == store.WorkerLifecycleStateDeleted || w.LifecycleState == store.WorkerLifecycleStateArchived {
-			return "", fmt.Errorf("cannot resume worker in %s state", w.LifecycleState)
-		}
-		meta := make(map[string]any)
-		for k, v := range w.Metadata {
-			meta[k] = v
-		}
-		delete(meta, "lifecycle_pause")
-		meta["resumed_at"] = time.Now().UnixMilli()
-		req := store.UpdateWorkerRequest{
-			Metadata:      meta,
-			ChangeSummary: "resumed worker",
-		}
-		updated, err := s.sessions.UpdateWorker(current.AccountScopeID, current.UserID, workerID, expectedRevision, req)
-		if err != nil {
-			return "", err
-		}
-		raw, err := json.Marshal(map[string]any{
-			"status":    "resumed",
-			"worker_id": workerID,
-			"worker":    updated,
-		})
-		return string(raw), err
-
+		return s.resumeWorkerTool(current, args)
 	case "archive":
-		workerID := strings.TrimSpace(firstNonEmptyString(mapString(args, "worker_id"), mapString(args, "id")))
-		if workerID == "" {
-			return "", errors.New("worker_id is required for archive")
-		}
-		expectedRevision, ok := parseUint64Arg(args, "expected_revision")
-		if !ok || expectedRevision == 0 {
-			return "", errors.New("expected_revision is required for archive")
-		}
-		w, found, err := s.sessions.GetWorker(current.AccountScopeID, workerID)
-		if err != nil {
-			return "", err
-		}
-		if !found {
-			return "", store.ErrWorkerNotFound
-		}
-		if w.LifecycleState == store.WorkerLifecycleStateDeleted {
-			return "", errors.New("cannot archive deleted worker")
-		}
-		s.cancelWorkerRuns(current.AccountScopeID, workerID)
-		automations := make([]store.WorkerAutomationDefinition, len(w.Automations))
-		copy(automations, w.Automations)
-		for i := range automations {
-			automations[i].Enabled = false
-		}
-		meta := make(map[string]any)
-		for k, v := range w.Metadata {
-			meta[k] = v
-		}
-		meta["archived_at"] = time.Now().UnixMilli()
-		meta["lifecycle_archived"] = true
-		req := store.UpdateWorkerRequest{
-			Automations:   automations,
-			Metadata:      meta,
-			ChangeSummary: "archived worker",
-		}
-		updated, err := s.sessions.UpdateWorker(current.AccountScopeID, current.UserID, workerID, expectedRevision, req)
-		if err != nil {
-			return "", err
-		}
-		raw, err := json.Marshal(map[string]any{
-			"status":    "archived",
-			"worker_id": workerID,
-			"worker":    updated,
-		})
-		return string(raw), err
+		return s.stopWorkerTool(current, args, store.WorkerLifecycleStateArchived)
 
 	default:
 		return "", errors.New("V1 automation operations are retired; V2 mutations require a Worker plan review and explicit user acceptance")

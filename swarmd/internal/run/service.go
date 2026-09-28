@@ -108,6 +108,7 @@ var (
 )
 
 type Service struct {
+	workerExecution              *WorkerExecutionService
 	automationContext            func(string) (string, error)
 	sessions                     *sessionruntime.Service
 	model                        *model.Service

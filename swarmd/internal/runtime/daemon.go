@@ -135,6 +135,7 @@ type Daemon struct {
 	automationMu              sync.Mutex
 	automationClosed          bool
 	automationV2Scheduler     *sessionruntime.AutomationV2Scheduler
+	workerExecution           *run.WorkerExecutionService
 	webhookDispatcher         *webhook.Dispatcher
 	automationLoop            *automationLoop
 	automationExecution       *automation.ExecutionService
@@ -702,6 +703,15 @@ func New(cfg config.Config) (*Daemon, error) {
 		_ = lk.Release()
 		return nil, fmt.Errorf("compose automation v2 execution: %w", err)
 	}
+	workerExecution, err := run.NewWorkerExecutionService(runSvc, sessionSvc.Store(), worktreeSvc, sessionSvc.ApplySessionMutation, apiServer.EnqueueAutomationRun)
+	if err != nil {
+		bgCancel()
+		_ = secretStore.Close()
+		_ = store.Close()
+		_ = lk.Release()
+		return nil, fmt.Errorf("compose worker execution: %w", err)
+	}
+	runSvc.SetWorkerExecutionService(workerExecution)
 	runSvc.SetAITaskBinder(todoSvc)
 	aiTaskDispatcher, err := runSvc.StartAITaskV2Dispatcher(bgCtx, aiTaskQueueAdapter{service: todoSvc}, sessionSvc.ApplySessionMutation)
 	if err != nil {
@@ -794,6 +804,7 @@ func New(cfg config.Config) (*Daemon, error) {
 		toolRuntime:               toolRuntime,
 		videoRenderService:        videoRenderSvc,
 		aiTaskDispatcher:          aiTaskDispatcher,
+		workerExecution:           workerExecution,
 		deploymentMgr:             deploymentMgr,
 		localTransportRuntimeName: localTransportRuntimeName,
 	}

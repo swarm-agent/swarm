@@ -23,6 +23,12 @@ func TestWorkerRunStatusCannotRegress(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
+				// Compare durable before/after values, not the pre-serialization receipt
+				// whose empty slices are omitted by the JSON storage contract.
+				run, found, err := ws.GetWorkerRun("account", w.ID, run.ID)
+				if err != nil || !found {
+					t.Fatalf("read baseline: %v, %v", found, err)
+				}
 				update := run
 				update.Status = to
 				_, err = ws.RecordWorkerRun("account", update)

@@ -123,7 +123,7 @@ func TestOrdinaryChatAndSubagentsCannotManageWorkers(t *testing.T) {
 		{"subagent_coder", agent.CoderAgentProfileForParent(store.AgentProfile{})},
 		{"subagent_finder", agent.FinderAgentProfileForParent(store.AgentProfile{})},
 		{"subagent_designer", agent.DesignerAgentProfileForParent(store.AgentProfile{})},
-		{"compact", agent.CompactAgentProfileForContext(store.AgentProfile{})},
+		{"compact", agent.CompactAgentProfileForParent(store.AgentProfile{})},
 	}
 
 	actionsToTest := []string{
@@ -227,7 +227,7 @@ func TestWorkerActivationAISelfApprovalDenied(t *testing.T) {
 		t.Run(act, func(t *testing.T) {
 			res, err := invoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{
 				Name:      "manage_workers",
-				CallID:    "call-act",
+				CallID:    "call-act-" + act,
 				Arguments: fmt.Sprintf(`{"action":%q,"worker_id":"worker_123"}`, act),
 			})
 			if err != nil {
@@ -603,12 +603,11 @@ func TestScopedAutomationDisableDoesNotStopUnrelatedRuns(t *testing.T) {
 
 	// Create run for Auto 1
 	run1, err := sessionsSvc.RecordWorkerRun("account", store.WorkerRunRecord{
-		RunID:        store.GenerateWorkerRunID(),
+		ID:           store.GenerateWorkerRunID(),
 		WorkerID:     workerID,
 		AutomationID: auto1ID,
 		Status:       "admitted",
 		CreatedAt:    100,
-		UpdatedAt:    100,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -616,12 +615,11 @@ func TestScopedAutomationDisableDoesNotStopUnrelatedRuns(t *testing.T) {
 
 	// Create run for Auto 2
 	run2, err := sessionsSvc.RecordWorkerRun("account", store.WorkerRunRecord{
-		RunID:        store.GenerateWorkerRunID(),
+		ID:           store.GenerateWorkerRunID(),
 		WorkerID:     workerID,
 		AutomationID: auto2ID,
 		Status:       "admitted",
 		CreatedAt:    200,
-		UpdatedAt:    200,
 	})
 	if err != nil {
 		t.Fatal(err)
