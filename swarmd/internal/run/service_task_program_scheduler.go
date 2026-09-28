@@ -66,6 +66,12 @@ func (p *taskProgramScheduler) transition(parentID, programID string, input pebb
 	if err != nil {
 		return p.record, false, err
 	}
+	if changed {
+		// Publish allocation and individual job transitions, not only stage/final
+		// completion, so cards can subscribe to the live child cohort immediately.
+		p.record = record
+		p.syncProjectTask("", "", nil, "")
+	}
 	return record, changed, nil
 }
 
@@ -1174,6 +1180,7 @@ func (p *taskProgramScheduler) syncProjectTask(status, actionNeeded string, what
 		if t.SessionID != p.parentSession.ID {
 			return nil
 		}
+		t.TaskProgramID = p.record.ProgramID
 		t.TaskProgramStatus = &p.record
 		if t.IsIntegrated || t.Status == "completed" || t.Status == "rejected" {
 			return nil

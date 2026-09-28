@@ -3424,3 +3424,5 @@ Reviewed `hydrateProjectTaskPlanDocument` alongside API hydration: store reads n
 ### 2026-09-28 — Direct-session terminal badge correction
 
 Provider-backed browser inspection found that a completed direct session can hydrate without lifecycle or active-intent fields. `aggregateTaskLiveState` now uses the authoritative terminal task state only for its sole direct session when no stronger session evidence exists. It never spreads an aggregate result across a delegated cohort or overrides an active session. All 13 focused lifecycle assertions pass; full browser proof remains pending the corrected candidate rerun.
+
+The live multi-session check additionally exposed stage-only project publication. Scheduler `transition` now projects each successfully persisted allocation/job transition through `UpdateProjectTask`, attaching the exact program ID before completion. This enables card child hydration during execution; it adds no polling or approval changes. `TestTaskProgramTransitionPublishesLiveCardChildren` passes against the real store, including rejected stale-transition preservation. Live rerun remains required.
