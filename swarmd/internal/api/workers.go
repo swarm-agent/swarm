@@ -22,8 +22,8 @@ func workerHTTPError(w http.ResponseWriter, err error) {
 	if err == nil {
 		return
 	}
-	if errors.Is(err, pebblestore.ErrWorkerNotFound) {
-		writeError(w, http.StatusNotFound, err)
+	if errors.Is(err, pebblestore.ErrWorkerNotFound) || strings.Contains(strings.ToLower(err.Error()), "not found") {
+		writeError(w, http.StatusNotFound, pebblestore.ErrWorkerNotFound)
 		return
 	}
 	if errors.Is(err, pebblestore.ErrWorkerConflict) || errors.Is(err, pebblestore.ErrActiveScheduleUpdateRejected) {
@@ -37,20 +37,47 @@ func workerHTTPError(w http.ResponseWriter, err error) {
 	writeError(w, http.StatusBadRequest, err)
 }
 
-func validateQueryKeys(q url.Values, allowedKeys ...string) error {
+func parseAndValidateQuery(r *http.Request, allowedKeys ...string) (url.Values, error) {
+	if r.URL.RawQuery == "" {
+		return url.Values{}, nil
+	}
+	q, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil {
+		return nil, fmt.Errorf("malformed query string: %w", err)
+	}
 	allowed := make(map[string]bool, len(allowedKeys))
 	for _, k := range allowedKeys {
 		allowed[k] = true
 	}
 	for k, vals := range q {
 		if !allowed[k] {
-			return fmt.Errorf("unexpected query parameter: %q", k)
+			return nil, fmt.Errorf("unexpected query parameter: %q", k)
 		}
 		if len(vals) != 1 {
-			return fmt.Errorf("duplicate query parameter: %q", k)
+			return nil, fmt.Errorf("duplicate query parameter: %q", k)
 		}
 	}
-	return nil
+	return q, nil
+}
+
+func isTriggerCredential(r *pebblestore.ScopedTokenRecord) bool {
+	if r == nil {
+		return false
+	}
+	// Note: HasScope handles wildcard (*, admin, automations:*, workers:*),
+	// so calling r.HasScope("automations:trigger") on a wildcard/admin token returns true.
+	// A true trigger credential explicitly declares trigger scope and does not have full-scope / admin wildcard.
+	hasExplicitTrigger := false
+	for _, s := range r.Scopes {
+		clean := strings.ToLower(strings.TrimSpace(s))
+		if clean == "*" || clean == "admin" || clean == "automations:*" || clean == "workers:*" {
+			return false
+		}
+		if clean == "automations:trigger" || clean == "workers:trigger" {
+			hasExplicitTrigger = true
+		}
+	}
+	return hasExplicitTrigger
 }
 
 func decodeJSONStrict(w http.ResponseWriter, r *http.Request, maxBytes int64, dst any) error {
@@ -105,26 +132,24 @@ func (s *Server) authenticateWorkerRequest(w http.ResponseWriter, r *http.Reques
 		return identity.Principal{}, false
 	}
 	if scopedRec, ok := ScopedTokenFromRequest(r); ok && scopedRec != nil {
-		if scopedRec.HasScope("automations:trigger") || scopedRec.HasScope("workers:trigger") {
+		if isTriggerCredential(scopedRec) {
 			writeError(w, http.StatusForbidden, errors.New("scoped trigger token cannot access worker api"))
 			return identity.Principal{}, false
 		}
 	}
-	if s.sessions == nil {
-		writeError(w, http.StatusServiceUnavailable, errors.New("session service unavailable"))
+	if s.sessions == nil || s.sessions.Store() == nil || s.sessions.Store().Underlying() == nil {
+		writeError(w, http.StatusServiceUnavailable, errors.New("identity store unavailable"))
 		return identity.Principal{}, false
 	}
-	if s.sessions.Store() != nil && s.sessions.Store().Underlying() != nil {
-		ids := pebblestore.NewIdentityStore(s.sessions.Store().Underlying())
-		m, found, err := ids.GetAccountUser(p.AccountScopeID, p.UserID)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, err)
-			return identity.Principal{}, false
-		}
-		if !found || !strings.EqualFold(strings.TrimSpace(m.Status), pebblestore.AccountUserStatusActive) || m.UserID != p.UserID || m.AccountScopeID != p.AccountScopeID {
-			writeError(w, http.StatusForbidden, errors.New("active account membership required"))
-			return identity.Principal{}, false
-		}
+	ids := pebblestore.NewIdentityStore(s.sessions.Store().Underlying())
+	m, found, err := ids.GetAccountUser(p.AccountScopeID, p.UserID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return identity.Principal{}, false
+	}
+	if !found || !strings.EqualFold(strings.TrimSpace(m.Status), pebblestore.AccountUserStatusActive) || m.UserID != p.UserID || m.AccountScopeID != p.AccountScopeID {
+		writeError(w, http.StatusForbidden, errors.New("active account membership required"))
+		return identity.Principal{}, false
 	}
 	return p, true
 }
@@ -138,6 +163,8 @@ func (s *Server) handleWorkers(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, WorkersPath)
 	path = strings.TrimPrefix(path, "/")
 
+	scopedRec, hasScopedToken := ScopedTokenFromRequest(r)
+
 	if path == "" {
 		s.handleWorkerCollection(w, r, p)
 		return
@@ -145,14 +172,26 @@ func (s *Server) handleWorkers(w http.ResponseWriter, r *http.Request) {
 
 	// Dispatch top-level worker actions
 	if path == "validate" {
+		if hasScopedToken && scopedRec != nil && scopedRec.WorkerID != "" {
+			writeError(w, http.StatusForbidden, errors.New("scoped token cannot validate workers"))
+			return
+		}
 		s.handleWorkerValidate(w, r, p)
 		return
 	}
 	if path == "import" {
+		if hasScopedToken && scopedRec != nil && scopedRec.WorkerID != "" {
+			writeError(w, http.StatusForbidden, errors.New("scoped token cannot manage workers"))
+			return
+		}
 		s.handleWorkerImport(w, r, p)
 		return
 	}
 	if path == "migrate" {
+		if hasScopedToken && scopedRec != nil && scopedRec.WorkerID != "" {
+			writeError(w, http.StatusForbidden, errors.New("scoped token cannot manage workers"))
+			return
+		}
 		s.handleWorkerMigrate(w, r, p)
 		return
 	}
@@ -162,6 +201,10 @@ func (s *Server) handleWorkers(w http.ResponseWriter, r *http.Request) {
 	workerID := strings.TrimSpace(parts[0])
 	if workerID == "" {
 		writeError(w, http.StatusBadRequest, errors.New("worker id is required"))
+		return
+	}
+	if hasScopedToken && scopedRec != nil && scopedRec.WorkerID != "" && scopedRec.WorkerID != workerID {
+		writeError(w, http.StatusForbidden, fmt.Errorf("scoped token is restricted to worker %q", scopedRec.WorkerID))
 		return
 	}
 
@@ -229,12 +272,12 @@ func (s *Server) handleWorkerCollection(w http.ResponseWriter, r *http.Request, 
 			}
 		}
 
-		if err := validateQueryKeys(r.URL.Query(), "limit", "cursor", "lifecycle_state", "include_deleted"); err != nil {
+		q, err := parseAndValidateQuery(r, "limit", "cursor", "lifecycle_state", "include_deleted")
+		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
 
-		q := r.URL.Query()
 		limit := 50
 		if q.Has("limit") {
 			n, err := strconv.Atoi(q.Get("limit"))
@@ -301,11 +344,13 @@ func (s *Server) handleWorkerCollection(w http.ResponseWriter, r *http.Request, 
 			return
 		}
 		if scopedRec, ok := ScopedTokenFromRequest(r); ok && scopedRec != nil {
-			writeError(w, http.StatusForbidden, errors.New("scoped trigger token cannot manage workers"))
-			return
+			if scopedRec.WorkerID != "" {
+				writeError(w, http.StatusForbidden, errors.New("scoped token cannot manage workers"))
+				return
+			}
 		}
 
-		if err := validateQueryKeys(r.URL.Query()); err != nil {
+		if _, err := parseAndValidateQuery(r); err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
@@ -321,9 +366,35 @@ func (s *Server) handleWorkerCollection(w http.ResponseWriter, r *http.Request, 
 			writeError(w, http.StatusBadRequest, errors.New("idempotency_key is required"))
 			return
 		}
+		if len(idempKey) > 256 {
+			writeError(w, http.StatusBadRequest, errors.New("idempotency_key exceeds maximum length of 256 characters"))
+			return
+		}
 		if strings.TrimSpace(req.Name) == "" {
 			writeError(w, http.StatusBadRequest, errors.New("worker name is required"))
 			return
+		}
+		if len(req.Name) > 256 {
+			writeError(w, http.StatusBadRequest, errors.New("worker name exceeds maximum length of 256 characters"))
+			return
+		}
+		for _, auto := range req.Automations {
+			if strings.TrimSpace(auto.ID) != "" {
+				writeError(w, http.StatusBadRequest, errors.New("client-supplied automation id is not permitted on create"))
+				return
+			}
+			if strings.TrimSpace(auto.WorkerID) != "" {
+				writeError(w, http.StatusBadRequest, errors.New("client-supplied automation worker_id is not permitted on create"))
+				return
+			}
+			if auto.Revision != 0 {
+				writeError(w, http.StatusBadRequest, errors.New("client-supplied automation revision is not permitted on create"))
+				return
+			}
+			if auto.CreatedAt != 0 || auto.UpdatedAt != 0 {
+				writeError(w, http.StatusBadRequest, errors.New("client-supplied automation timestamps are not permitted on create"))
+				return
+			}
 		}
 
 		created, err := s.sessions.CreateWorker(r.Context(), p.AccountScopeID, p.UserID, pebblestore.CreateWorkerRequest{
@@ -375,7 +446,7 @@ func (s *Server) handleWorkerByID(w http.ResponseWriter, r *http.Request, p iden
 		if !s.requireScope(w, r, "automations:read") {
 			return
 		}
-		if err := validateQueryKeys(r.URL.Query()); err != nil {
+		if _, err := parseAndValidateQuery(r); err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
@@ -398,11 +469,7 @@ func (s *Server) handleWorkerByID(w http.ResponseWriter, r *http.Request, p iden
 		if !s.requireScope(w, r, "automations:write") {
 			return
 		}
-		if scopedRec, ok := ScopedTokenFromRequest(r); ok && scopedRec != nil {
-			writeError(w, http.StatusForbidden, errors.New("scoped trigger token cannot manage workers"))
-			return
-		}
-		if err := validateQueryKeys(r.URL.Query()); err != nil {
+		if _, err := parseAndValidateQuery(r); err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
@@ -450,7 +517,7 @@ func (s *Server) handleWorkerValidate(w http.ResponseWriter, r *http.Request, _ 
 	if !s.requireScopeAny(w, r, "automations:read", "automations:write") {
 		return
 	}
-	if err := validateQueryKeys(r.URL.Query()); err != nil {
+	if _, err := parseAndValidateQuery(r); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
@@ -482,16 +549,17 @@ func (s *Server) handleWorkerImport(w http.ResponseWriter, r *http.Request, p id
 		return
 	}
 	if scopedRec, ok := ScopedTokenFromRequest(r); ok && scopedRec != nil {
-		writeError(w, http.StatusForbidden, errors.New("scoped trigger token cannot manage workers"))
-		return
+		if scopedRec.WorkerID != "" {
+			writeError(w, http.StatusForbidden, errors.New("scoped token cannot manage workers"))
+			return
+		}
 	}
 
-	if err := validateQueryKeys(r.URL.Query(), "mode", "idempotency_key", "worker_id", "expected_revision"); err != nil {
+	q, err := parseAndValidateQuery(r, "mode", "idempotency_key", "worker_id", "expected_revision")
+	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-
-	q := r.URL.Query()
 	mode := strings.TrimSpace(q.Get("mode"))
 	if mode == "" {
 		mode = "new"
@@ -509,6 +577,10 @@ func (s *Server) handleWorkerImport(w http.ResponseWriter, r *http.Request, p id
 		idempKey := strings.TrimSpace(q.Get("idempotency_key"))
 		if idempKey == "" {
 			writeError(w, http.StatusBadRequest, errors.New("idempotency_key query parameter is required when mode is 'new'"))
+			return
+		}
+		if len(idempKey) > 256 {
+			writeError(w, http.StatusBadRequest, errors.New("idempotency_key exceeds maximum length of 256 characters"))
 			return
 		}
 
@@ -537,6 +609,10 @@ func (s *Server) handleWorkerImport(w http.ResponseWriter, r *http.Request, p id
 	workerID := strings.TrimSpace(q.Get("worker_id"))
 	if workerID == "" {
 		writeError(w, http.StatusBadRequest, errors.New("worker_id is required when mode is 'update'"))
+		return
+	}
+	if len(workerID) > 256 {
+		writeError(w, http.StatusBadRequest, errors.New("worker_id exceeds maximum length of 256 characters"))
 		return
 	}
 	revStr := strings.TrimSpace(q.Get("expected_revision"))
@@ -575,10 +651,12 @@ func (s *Server) handleWorkerMigrate(w http.ResponseWriter, r *http.Request, p i
 		return
 	}
 	if scopedRec, ok := ScopedTokenFromRequest(r); ok && scopedRec != nil {
-		writeError(w, http.StatusForbidden, errors.New("scoped trigger token cannot manage workers"))
-		return
+		if scopedRec.WorkerID != "" {
+			writeError(w, http.StatusForbidden, errors.New("scoped token cannot manage workers"))
+			return
+		}
 	}
-	if err := validateQueryKeys(r.URL.Query()); err != nil {
+	if _, err := parseAndValidateQuery(r); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
@@ -616,7 +694,7 @@ func (s *Server) handleWorkerExport(w http.ResponseWriter, r *http.Request, p id
 			return
 		}
 	}
-	if err := validateQueryKeys(r.URL.Query()); err != nil {
+	if _, err := parseAndValidateQuery(r); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
@@ -638,11 +716,6 @@ type attachWorkerAutomationRequestBody struct {
 }
 
 func (s *Server) handleWorkerAutomations(w http.ResponseWriter, r *http.Request, p identity.Principal, workerID string, subparts []string) {
-	if scopedRec, ok := ScopedTokenFromRequest(r); ok && scopedRec != nil {
-		writeError(w, http.StatusForbidden, errors.New("scoped trigger token cannot manage workers"))
-		return
-	}
-
 	if len(subparts) == 0 {
 		// POST /v3/workers/{id}/automations
 		if r.Method != http.MethodPost {
@@ -652,7 +725,7 @@ func (s *Server) handleWorkerAutomations(w http.ResponseWriter, r *http.Request,
 		if !s.requireScope(w, r, "automations:write") {
 			return
 		}
-		if err := validateQueryKeys(r.URL.Query()); err != nil {
+		if _, err := parseAndValidateQuery(r); err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
@@ -668,6 +741,22 @@ func (s *Server) handleWorkerAutomations(w http.ResponseWriter, r *http.Request,
 		}
 		if strings.TrimSpace(req.Automation.Name) == "" {
 			writeError(w, http.StatusBadRequest, errors.New("automation name is required"))
+			return
+		}
+		if strings.TrimSpace(req.Automation.ID) != "" {
+			writeError(w, http.StatusBadRequest, errors.New("client-supplied automation id is not permitted on attach"))
+			return
+		}
+		if strings.TrimSpace(req.Automation.WorkerID) != "" {
+			writeError(w, http.StatusBadRequest, errors.New("client-supplied automation worker_id is not permitted on attach"))
+			return
+		}
+		if req.Automation.Revision != 0 {
+			writeError(w, http.StatusBadRequest, errors.New("client-supplied automation revision is not permitted on attach"))
+			return
+		}
+		if req.Automation.CreatedAt != 0 || req.Automation.UpdatedAt != 0 {
+			writeError(w, http.StatusBadRequest, errors.New("client-supplied automation timestamps are not permitted on attach"))
 			return
 		}
 
@@ -694,7 +783,7 @@ func (s *Server) handleWorkerAutomations(w http.ResponseWriter, r *http.Request,
 			if !s.requireScope(w, r, "automations:write") {
 				return
 			}
-			if err := validateQueryKeys(r.URL.Query()); err != nil {
+			if _, err := parseAndValidateQuery(r); err != nil {
 				writeError(w, http.StatusBadRequest, err)
 				return
 			}
@@ -712,6 +801,16 @@ func (s *Server) handleWorkerAutomations(w http.ResponseWriter, r *http.Request,
 				writeError(w, http.StatusBadRequest, errors.New("automation name is required"))
 				return
 			}
+			if strings.TrimSpace(req.Automation.ID) != "" && strings.TrimSpace(req.Automation.ID) != automationID {
+				writeError(w, http.StatusBadRequest, errors.New("automation id in body does not match path"))
+				return
+			}
+			if strings.TrimSpace(req.Automation.WorkerID) != "" && strings.TrimSpace(req.Automation.WorkerID) != workerID {
+				writeError(w, http.StatusBadRequest, errors.New("automation worker_id in body does not match path"))
+				return
+			}
+			req.Automation.ID = automationID
+			req.Automation.WorkerID = workerID
 
 			updated, err := s.sessions.UpdateWorkerAutomation(p.AccountScopeID, p.UserID, workerID, automationID, req.ExpectedWorkerRevision, req.Automation)
 			if err != nil {
@@ -726,26 +825,17 @@ func (s *Server) handleWorkerAutomations(w http.ResponseWriter, r *http.Request,
 			if !s.requireScope(w, r, "automations:write") {
 				return
 			}
-			if err := validateQueryKeys(r.URL.Query(), "expected_worker_revision"); err != nil {
+			q, err := parseAndValidateQuery(r, "expected_worker_revision")
+			if err != nil {
 				writeError(w, http.StatusBadRequest, err)
 				return
 			}
-
-			var expectedRevision uint64
-			if r.URL.Query().Has("expected_worker_revision") {
-				if v, err := strconv.ParseUint(r.URL.Query().Get("expected_worker_revision"), 10, 64); err == nil {
-					expectedRevision = v
-				}
+			if !q.Has("expected_worker_revision") {
+				writeError(w, http.StatusBadRequest, errors.New("expected_worker_revision is required"))
+				return
 			}
-			if expectedRevision == 0 && r.Body != nil && r.ContentLength > 0 {
-				var delReq struct {
-					ExpectedWorkerRevision uint64 `json:"expected_worker_revision"`
-				}
-				if err := decodeJSONStrict(w, r, 64*1024, &delReq); err == nil {
-					expectedRevision = delReq.ExpectedWorkerRevision
-				}
-			}
-			if expectedRevision == 0 {
+			expectedRevision, err := strconv.ParseUint(q.Get("expected_worker_revision"), 10, 64)
+			if err != nil || expectedRevision == 0 {
 				writeError(w, http.StatusBadRequest, errors.New("expected_worker_revision is required"))
 				return
 			}
@@ -782,12 +872,12 @@ func (s *Server) handleWorkerHistory(w http.ResponseWriter, r *http.Request, p i
 			return
 		}
 	}
-	if err := validateQueryKeys(r.URL.Query(), "limit", "cursor"); err != nil {
+	q, err := parseAndValidateQuery(r, "limit", "cursor")
+	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
 
-	q := r.URL.Query()
 	limit := 50
 	if q.Has("limit") {
 		if n, err := strconv.Atoi(q.Get("limit")); err == nil && n > 0 && n <= 100 {
@@ -825,7 +915,7 @@ func (s *Server) handleWorkerRevisionByNumber(w http.ResponseWriter, r *http.Req
 			return
 		}
 	}
-	if err := validateQueryKeys(r.URL.Query()); err != nil {
+	if _, err := parseAndValidateQuery(r); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
@@ -865,12 +955,12 @@ func (s *Server) handleWorkerRuns(w http.ResponseWriter, r *http.Request, p iden
 			return
 		}
 	}
-	if err := validateQueryKeys(r.URL.Query(), "limit", "cursor"); err != nil {
+	q, err := parseAndValidateQuery(r, "limit", "cursor")
+	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
 
-	q := r.URL.Query()
 	limit := 50
 	if q.Has("limit") {
 		if n, err := strconv.Atoi(q.Get("limit")); err == nil && n > 0 && n <= 100 {
@@ -908,7 +998,7 @@ func (s *Server) handleWorkerRunByID(w http.ResponseWriter, r *http.Request, p i
 			return
 		}
 	}
-	if err := validateQueryKeys(r.URL.Query()); err != nil {
+	if _, err := parseAndValidateQuery(r); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}

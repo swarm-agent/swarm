@@ -37,19 +37,34 @@ func setupWorkerAPITestServer(t *testing.T) (*Server, *store.Store, http.Handler
 	}
 	t.Cleanup(func() { _ = db.Close() })
 
-	// Seed active account memberships for test accounts
+	// Seed active account memberships for test accounts with valid IdentityStore records
 	ids := store.NewIdentityStore(db)
 	for _, pair := range [][2]string{
 		{"acct-test", "user-test"},
 		{"acct-1", "user-1"},
 		{"acct-2", "user-2"},
 	} {
-		_, _ = ids.PutAccountUser(store.AccountUserRecord{
+		if _, err := ids.PutUser(store.UserRecord{
+			ID:       pair[1],
+			Username: pair[1],
+		}); err != nil {
+			t.Fatalf("seed user %s: %v", pair[1], err)
+		}
+		if _, err := ids.PutAccountScope(store.AccountScopeRecord{
+			ID:              pair[0],
+			Type:            store.AccountScopeTypePersonal,
+			CreatedByUserID: pair[1],
+		}); err != nil {
+			t.Fatalf("seed account scope %s: %v", pair[0], err)
+		}
+		if _, err := ids.PutAccountUser(store.AccountUserRecord{
 			ID:             "mem-" + pair[0] + "-" + pair[1],
 			AccountScopeID: pair[0],
 			UserID:         pair[1],
 			Status:         store.AccountUserStatusActive,
-		})
+		}); err != nil {
+			t.Fatalf("seed account user %s/%s: %v", pair[0], pair[1], err)
+		}
 	}
 
 	ss := store.NewSessionStore(db)
@@ -88,19 +103,19 @@ func executeWorkerAPI(h http.Handler, method, path, body string, opts workerAPIC
 	}
 
 	ctx := r.Context()
+	var p identity.Principal
 	if opts.principal != nil {
-		ctx = context.WithValue(ctx, productPrincipalRequestContextKey, *opts.principal)
-	} else if !opts.agentOrigin {
-		p := identity.Principal{Type: "user", UserID: user, AccountScopeID: account}
-		ctx = context.WithValue(ctx, productPrincipalRequestContextKey, p)
+		p = *opts.principal
 	} else {
-		p := identity.Principal{Type: "agent", UserID: user, AccountScopeID: account}
-		ctx = context.WithValue(ctx, productPrincipalRequestContextKey, p)
+		p = identity.Principal{Type: "user", UserID: user, AccountScopeID: account}
 	}
+	ctx = context.WithValue(ctx, productPrincipalRequestContextKey, p)
 
 	if opts.agentOrigin {
-		p := identity.Principal{Type: "user", UserID: user, AccountScopeID: account}
-		boundCtx, _ := automation.BindRuntimeIdentity(ctx, p, "agent", "child-session-1")
+		boundCtx, err := automation.BindRuntimeIdentity(ctx, p, "agent", "child-session-1")
+		if err != nil {
+			panic(err)
+		}
 		ctx = boundCtx
 	}
 
@@ -136,17 +151,17 @@ func TestWorkerAPI_AuthenticationAndAuthorization(t *testing.T) {
 		t.Fatalf("unauthenticated expected 401, got %d: %s", w.Code, w.Body.String())
 	}
 
-	// 2. Agent principal (Type != "user") -> 403 Forbidden
+	// 2. Invalid principal (Type != "user") -> 401 Unauthorized
 	agentPrincipal := identity.Principal{Type: "agent", UserID: "bot", AccountScopeID: "acct-test"}
 	w = executeWorkerAPI(h, http.MethodGet, "", "", workerAPICallOptions{
 		principal: &agentPrincipal,
 		scopes:    []string{"automations:read"},
 	})
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("agent principal expected 403, got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("invalid agent principal expected 401, got %d: %s", w.Code, w.Body.String())
 	}
 
-	// 3. Runtime bound agent -> 403 Forbidden
+	// 3. REAL valid runtime-bound agent -> 403 Forbidden
 	w = executeWorkerAPI(h, http.MethodGet, "", "", workerAPICallOptions{
 		agentOrigin: true,
 		scopes:      []string{"automations:read"},
@@ -157,12 +172,14 @@ func TestWorkerAPI_AuthenticationAndAuthorization(t *testing.T) {
 
 	// 4. Revoked membership -> 403 Forbidden
 	ids := store.NewIdentityStore(db)
-	_, _ = ids.PutAccountUser(store.AccountUserRecord{
+	if _, err := ids.PutAccountUser(store.AccountUserRecord{
 		ID:             "mem-acct-test-user-test",
 		AccountScopeID: "acct-test",
 		UserID:         "user-test",
 		Status:         "revoked",
-	})
+	}); err != nil {
+		t.Fatalf("put revoked account user: %v", err)
+	}
 	w = executeWorkerAPI(h, http.MethodGet, "", "", workerAPICallOptions{
 		scopes: []string{"automations:read"},
 	})
@@ -170,12 +187,14 @@ func TestWorkerAPI_AuthenticationAndAuthorization(t *testing.T) {
 		t.Fatalf("revoked membership expected 403, got %d: %s", w.Code, w.Body.String())
 	}
 	// Restore active membership
-	_, _ = ids.PutAccountUser(store.AccountUserRecord{
+	if _, err := ids.PutAccountUser(store.AccountUserRecord{
 		ID:             "mem-acct-test-user-test",
 		AccountScopeID: "acct-test",
 		UserID:         "user-test",
 		Status:         store.AccountUserStatusActive,
-	})
+	}); err != nil {
+		t.Fatalf("restore active account user: %v", err)
+	}
 
 	// 5. Missing membership in identity store -> 403 Forbidden
 	w = executeWorkerAPI(h, http.MethodGet, "", "", workerAPICallOptions{
@@ -247,6 +266,16 @@ func TestWorkerAPI_AuthenticationAndAuthorization(t *testing.T) {
 	})
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("worker-scoped token on create expected 403, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Verify nonmutation: no workers were created or modified by any unauthorized calls
+	ws := store.NewWorkerStore(db)
+	listRes, err := ws.ListWorkers("acct-test", store.ListWorkersQuery{})
+	if err != nil {
+		t.Fatalf("list workers: %v", err)
+	}
+	if len(listRes.Workers) != 0 {
+		t.Fatalf("unauthorized calls created %d workers, expected 0", len(listRes.Workers))
 	}
 }
 
@@ -417,7 +446,8 @@ func TestWorkerAPI_CRUDLifecycleAndOptimisticConcurrency(t *testing.T) {
 }
 
 func TestWorkerAPI_CrossAccountIsolation(t *testing.T) {
-	_, _, h := setupWorkerAPITestServer(t)
+	_, db, h := setupWorkerAPITestServer(t)
+	ws := store.NewWorkerStore(db)
 
 	// Create worker in account-1
 	createBody := `{"name": "Private Account 1 Worker", "idempotency_key": "idemp-acct1-1"}`
@@ -453,6 +483,15 @@ func TestWorkerAPI_CrossAccountIsolation(t *testing.T) {
 		t.Fatalf("cross-account update expected 404, got %d: %s", w.Code, w.Body.String())
 	}
 
+	// Verify nonmutation: worker in account-1 is completely untouched
+	persisted, found, err := ws.GetWorker("acct-1", workerID)
+	if err != nil || !found {
+		t.Fatalf("fetch account-1 worker: %v", err)
+	}
+	if persisted.Name != "Private Account 1 Worker" || persisted.Revision != 1 {
+		t.Fatalf("account-1 worker was mutated by cross-account call: %+v", persisted)
+	}
+
 	// List in account-2 -> empty list
 	w = executeWorkerAPI(h, http.MethodGet, "", "", workerAPICallOptions{
 		account: "acct-2",
@@ -467,6 +506,12 @@ func TestWorkerAPI_CrossAccountIsolation(t *testing.T) {
 	acct2Workers := listResp["workers"].([]any)
 	if len(acct2Workers) != 0 {
 		t.Fatalf("cross-account list leaked items: len=%d", len(acct2Workers))
+	}
+
+	// Verify database: account-2 has 0 workers
+	dbList, _, err := ws.ListWorkers("acct-2", store.ListWorkersQuery{})
+	if err != nil || len(dbList) != 0 {
+		t.Fatalf("account-2 unexpectedly has %d workers in database", len(dbList))
 	}
 }
 
@@ -528,7 +573,7 @@ func TestWorkerAPI_Idempotency(t *testing.T) {
 }
 
 func TestWorkerAPI_StrictParsingAndRejections(t *testing.T) {
-	_, _, h := setupWorkerAPITestServer(t)
+	_, db, h := setupWorkerAPITestServer(t)
 
 	// 1. Unknown fields rejection on POST /v3/workers
 	unknownFieldBody := `{"name": "Valid Name", "idempotency_key": "idemp-s-1", "unknown_rogue_field": "injected"}`
@@ -557,6 +602,15 @@ func TestWorkerAPI_StrictParsingAndRejections(t *testing.T) {
 		t.Fatalf("supplied local_bindings body expected 400, got %d: %s", w.Code, w.Body.String())
 	}
 
+	// 3b. Client-supplied automation ID rejection on POST /v3/workers
+	suppliedAutoIDBody := `{"name": "Valid Name", "idempotency_key": "idemp-s-3b", "automations": [{"id": "client_auto_id", "name": "Auto 1", "activation_mode": "manual"}]}`
+	w = executeWorkerAPI(h, http.MethodPost, "", suppliedAutoIDBody, workerAPICallOptions{
+		scopes: []string{"automations:write"},
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("supplied automation id expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+
 	// 4. Missing required idempotency_key on POST /v3/workers
 	missingIdempBody := `{"name": "Valid Name"}`
 	w = executeWorkerAPI(h, http.MethodPost, "", missingIdempBody, workerAPICallOptions{
@@ -566,6 +620,15 @@ func TestWorkerAPI_StrictParsingAndRejections(t *testing.T) {
 		t.Fatalf("missing idempotency_key expected 400, got %d: %s", w.Code, w.Body.String())
 	}
 
+	// 4b. Idempotency key exceeding 256 characters on POST /v3/workers -> 400 Bad Request
+	oversizedIdempBody := fmt.Sprintf(`{"name": "Valid Name", "idempotency_key": "%s"}`, strings.Repeat("k", 257))
+	w = executeWorkerAPI(h, http.MethodPost, "", oversizedIdempBody, workerAPICallOptions{
+		scopes: []string{"automations:write"},
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("oversized idempotency_key expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+
 	// 5. Trailing payload rejection
 	trailingBody := `{"name": "Valid Name", "idempotency_key": "idemp-s-4"} {"trailing": "data"}`
 	w = executeWorkerAPI(h, http.MethodPost, "", trailingBody, workerAPICallOptions{
@@ -573,6 +636,14 @@ func TestWorkerAPI_StrictParsingAndRejections(t *testing.T) {
 	})
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("trailing payload body expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// 5b. Malformed URL query (invalid percent encoding) -> 400 Bad Request
+	w = executeWorkerAPI(h, http.MethodGet, "?limit=%zz", "", workerAPICallOptions{
+		scopes: []string{"automations:read"},
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("malformed query expected 400, got %d: %s", w.Code, w.Body.String())
 	}
 
 	// 6. Invalid query parameters on GET /v3/workers
@@ -608,6 +679,15 @@ func TestWorkerAPI_StrictParsingAndRejections(t *testing.T) {
 		t.Fatalf("missing name expected 400, got %d: %s", w.Code, w.Body.String())
 	}
 
+	// 9b. Name exceeding 256 characters -> 400 Bad Request
+	oversizedNameBody := fmt.Sprintf(`{"name": "%s", "idempotency_key": "idemp-s-6"}`, strings.Repeat("n", 257))
+	w = executeWorkerAPI(h, http.MethodPost, "", oversizedNameBody, workerAPICallOptions{
+		scopes: []string{"automations:write"},
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("oversized name expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+
 	// 10. Missing expected_revision in body on PUT /v3/workers/{id}
 	w = executeWorkerAPI(h, http.MethodPut, "/worker_test_id", `{"name":"New Name"}`, workerAPICallOptions{
 		scopes: []string{"automations:write"},
@@ -615,10 +695,18 @@ func TestWorkerAPI_StrictParsingAndRejections(t *testing.T) {
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("missing expected_revision in body expected 400, got %d: %s", w.Code, w.Body.String())
 	}
+
+	// Nonmutation check: verify zero workers were created by all rejected requests
+	ws := store.NewWorkerStore(db)
+	list, _, err := ws.ListWorkers("acct-test", store.ListWorkersQuery{})
+	if err != nil || len(list) != 0 {
+		t.Fatalf("expected 0 workers in store after rejected requests, got %d", len(list))
+	}
 }
 
 func TestWorkerAPI_ValidateImportAndExport(t *testing.T) {
-	_, _, h := setupWorkerAPITestServer(t)
+	_, db, h := setupWorkerAPITestServer(t)
+	ws := store.NewWorkerStore(db)
 
 	portableJSON := `{
 		"schema_version": 1,
@@ -635,7 +723,17 @@ func TestWorkerAPI_ValidateImportAndExport(t *testing.T) {
 				"enabled": true,
 				"plan": {
 					"title": "Execute Backup Plan",
-					"info": {"goal": "Safely archive data"}
+					"info": {"goal": "Safely archive data"},
+					"checkpoints": [
+						{
+							"id": "cp-1",
+							"title": "Backup Checkpoint",
+							"status": "pending",
+							"order": 1,
+							"tasks": ["Run backup"],
+							"acceptance_criteria": ["Backup complete"]
+						}
+					]
 				}
 			}
 		]
@@ -680,6 +778,15 @@ func TestWorkerAPI_ValidateImportAndExport(t *testing.T) {
 	})
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("import new without idempotency_key expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// 4b. POST /v3/workers/import (mode=new) rejects oversized idempotency_key -> 400 Bad Request
+	oversizedKeyURL := fmt.Sprintf("/import?mode=new&idempotency_key=%s", strings.Repeat("k", 257))
+	w = executeWorkerAPI(h, http.MethodPost, oversizedKeyURL, portableJSON, workerAPICallOptions{
+		scopes: []string{"automations:write"},
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("import new with oversized key expected 400, got %d: %s", w.Code, w.Body.String())
 	}
 
 	// 5. POST /v3/workers/import (mode=new&idempotency_key=...) with raw portable doc -> 201 Created
@@ -745,6 +852,23 @@ func TestWorkerAPI_ValidateImportAndExport(t *testing.T) {
 	if w.Code != http.StatusConflict {
 		t.Fatalf("import update with stale revision expected 409, got %d: %s", w.Code, w.Body.String())
 	}
+	// Verify nonmutation on conflict: revision is still 1, name is still original
+	persistedImp, found, err := ws.GetWorker("acct-test", impID)
+	if err != nil || !found {
+		t.Fatalf("fetch imported worker: %v", err)
+	}
+	if persistedImp.Revision != 1 || persistedImp.Name != "Cloud Backup Specialist" {
+		t.Fatalf("imported worker was mutated on conflict! Revision: %d, Name: %s", persistedImp.Revision, persistedImp.Name)
+	}
+
+	// 9b. POST /v3/workers/import (mode=update) rejects oversized worker_id -> 400 Bad Request
+	oversizedWorkerURL := fmt.Sprintf("/import?mode=update&worker_id=%s&expected_revision=1", strings.Repeat("w", 257))
+	w = executeWorkerAPI(h, http.MethodPost, oversizedWorkerURL, modifiedJSON, workerAPICallOptions{
+		scopes: []string{"automations:write"},
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("import update with oversized worker_id expected 400, got %d: %s", w.Code, w.Body.String())
+	}
 
 	// 10. POST /v3/workers/import (mode=update) with correct revision -> 200 OK
 	w = executeWorkerAPI(h, http.MethodPost, fmt.Sprintf("/import?mode=update&worker_id=%s&expected_revision=1", impID), modifiedJSON, workerAPICallOptions{
@@ -787,17 +911,57 @@ func TestWorkerAPI_AutomationAttachmentManagement(t *testing.T) {
 	_ = json.Unmarshal(w.Body.Bytes(), &createResp)
 	workerID := createResp["worker"].(map[string]any)["id"].(string)
 
-	// 1. Attach automation -> 201 Created & worker revision incremented to 2
-	attachBody := `{
+	// 0. Attempt to attach with client-supplied ID -> 400 Bad Request
+	attachWithSuppliedID := `{
 		"expected_worker_revision": 1,
 		"automation": {
-			"id": "auto_task_1",
+			"id": "client_supplied_id",
 			"name": "Recurring Triage",
 			"activation_mode": "manual",
 			"enabled": true,
 			"plan_document": {
 				"title": "Triage Inbox",
-				"info": {"goal": "Check incoming issues"}
+				"info": {"goal": "Check incoming issues"},
+				"checkpoints": [
+					{
+						"id": "cp-1",
+						"title": "Triage Checkpoint",
+						"status": "pending",
+						"order": 1,
+						"tasks": ["Check incoming issues"],
+						"acceptance_criteria": ["All incoming issues checked"]
+					}
+				]
+			}
+		}
+	}`
+	w = executeWorkerAPI(h, http.MethodPost, "/"+workerID+"/automations", attachWithSuppliedID, workerAPICallOptions{
+		scopes: []string{"automations:write"},
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("attach with supplied id expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// 1. Attach automation without client ID -> 201 Created & worker revision incremented to 2
+	attachBody := `{
+		"expected_worker_revision": 1,
+		"automation": {
+			"name": "Recurring Triage",
+			"activation_mode": "manual",
+			"enabled": true,
+			"plan_document": {
+				"title": "Triage Inbox",
+				"info": {"goal": "Check incoming issues"},
+				"checkpoints": [
+					{
+						"id": "cp-1",
+						"title": "Triage Checkpoint",
+						"status": "pending",
+						"order": 1,
+						"tasks": ["Check incoming issues"],
+						"acceptance_criteria": ["All incoming issues checked"]
+					}
+				]
 			}
 		}
 	}`
@@ -817,6 +981,11 @@ func TestWorkerAPI_AutomationAttachmentManagement(t *testing.T) {
 	if len(autos) != 1 {
 		t.Fatalf("expected 1 automation attached, got %d", len(autos))
 	}
+	auto0 := autos[0].(map[string]any)
+	assignedAutoID := auto0["id"].(string)
+	if assignedAutoID == "" {
+		t.Fatalf("expected server-assigned automation ID")
+	}
 
 	// 2. Attach automation rejecting query parameters -> 400 Bad Request
 	w = executeWorkerAPI(h, http.MethodPost, "/"+workerID+"/automations?expected_worker_revision=2", attachBody, workerAPICallOptions{
@@ -835,7 +1004,7 @@ func TestWorkerAPI_AutomationAttachmentManagement(t *testing.T) {
 			"enabled": false
 		}
 	}`
-	w = executeWorkerAPI(h, http.MethodPut, "/"+workerID+"/automations/auto_task_1", updateAutoBodyStale, workerAPICallOptions{
+	w = executeWorkerAPI(h, http.MethodPut, "/"+workerID+"/automations/"+assignedAutoID, updateAutoBodyStale, workerAPICallOptions{
 		scopes: []string{"automations:write"},
 	})
 	if w.Code != http.StatusConflict {
@@ -851,11 +1020,21 @@ func TestWorkerAPI_AutomationAttachmentManagement(t *testing.T) {
 			"enabled": true,
 			"plan_document": {
 				"title": "Triage Inbox Updated",
-				"info": {"goal": "Check incoming issues"}
+				"info": {"goal": "Check incoming issues"},
+				"checkpoints": [
+					{
+						"id": "cp-1",
+						"title": "Triage Updated Checkpoint",
+						"status": "pending",
+						"order": 1,
+						"tasks": ["Check incoming issues"],
+						"acceptance_criteria": ["All incoming issues checked"]
+					}
+				]
 			}
 		}
 	}`
-	w = executeWorkerAPI(h, http.MethodPut, "/"+workerID+"/automations/auto_task_1", updateAutoBodyValid, workerAPICallOptions{
+	w = executeWorkerAPI(h, http.MethodPut, "/"+workerID+"/automations/"+assignedAutoID, updateAutoBodyValid, workerAPICallOptions{
 		scopes: []string{"automations:write"},
 	})
 	if w.Code != http.StatusOK {
@@ -869,7 +1048,7 @@ func TestWorkerAPI_AutomationAttachmentManagement(t *testing.T) {
 	}
 
 	// 5. Delete attached automation with stale revision -> 409 Conflict
-	w = executeWorkerAPI(h, http.MethodDelete, "/"+workerID+"/automations/auto_task_1?expected_worker_revision=2", "", workerAPICallOptions{
+	w = executeWorkerAPI(h, http.MethodDelete, fmt.Sprintf("/%s/automations/%s?expected_worker_revision=2", workerID, assignedAutoID), "", workerAPICallOptions{
 		scopes: []string{"automations:write"},
 	})
 	if w.Code != http.StatusConflict {
@@ -877,7 +1056,7 @@ func TestWorkerAPI_AutomationAttachmentManagement(t *testing.T) {
 	}
 
 	// 6. Delete attached automation with valid revision -> 200 OK & worker revision incremented to 4
-	w = executeWorkerAPI(h, http.MethodDelete, "/"+workerID+"/automations/auto_task_1?expected_worker_revision=3", "", workerAPICallOptions{
+	w = executeWorkerAPI(h, http.MethodDelete, fmt.Sprintf("/%s/automations/%s?expected_worker_revision=3", workerID, assignedAutoID), "", workerAPICallOptions{
 		scopes: []string{"automations:write"},
 	})
 	if w.Code != http.StatusOK {
@@ -889,9 +1068,20 @@ func TestWorkerAPI_AutomationAttachmentManagement(t *testing.T) {
 	if workerAfterDelete["revision"].(float64) != 4 {
 		t.Fatalf("expected revision 4 after delete, got %v", workerAfterDelete["revision"])
 	}
-	autosAfterDel := workerAfterDelete["automations"].([]any)
-	if len(autosAfterDel) != 0 {
-		t.Fatalf("expected 0 automations after delete, got %d", len(autosAfterDel))
+	// Empty automations omitted by omitempty, tests shouldn't panic
+	if autosVal, ok := workerAfterDelete["automations"]; ok && autosVal != nil {
+		autosAfterDel := autosVal.([]any)
+		if len(autosAfterDel) != 0 {
+			t.Fatalf("expected 0 automations after delete, got %d", len(autosAfterDel))
+		}
+	}
+
+	// 7. Missing automation -> 404 Not Found (typed ErrWorkerNotFound mapped from store)
+	w = executeWorkerAPI(h, http.MethodDelete, fmt.Sprintf("/%s/automations/nonexistent_auto?expected_worker_revision=4", workerID), "", workerAPICallOptions{
+		scopes: []string{"automations:write"},
+	})
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("missing automation expected 404, got %d: %s", w.Code, w.Body.String())
 	}
 }
 
@@ -916,8 +1106,13 @@ func TestWorkerAPI_MigrateLegacyAutomations(t *testing.T) {
 			AutomationV2: &store.AutomationV2Settings{
 				SchemaVersion: 2,
 				Schedule: store.AutomationV2Schedule{
-					Kind: "manual",
+					Kind:            "interval",
+					IntervalSeconds: 3600,
 				},
+				Expiration:       store.AutomationV2Expiration{Kind: "indefinite"},
+				Missed:           "skip",
+				Overlap:          "serialize",
+				ActivateOnAccept: true,
 			},
 		},
 		},
