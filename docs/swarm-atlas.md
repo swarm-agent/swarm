@@ -3304,3 +3304,17 @@ Inspected `videogen.PreflightVideoOperation` model selection, `pebble.VideoProve
 Inspected `executeManageSessions`/`PrepareManageSessionsCommitManifest`, `prepareManageSessionsCommit`, `validateManageSessionsCommitCandidate`, and `manageWorktreePromote`. Removed the `needs_review` prerequisite from both commit preparation passes and execution validation: an authorized running or blocked session can commit without first completing its checkpoint. Commit responses report unchanged lifecycle rather than falsely claiming review state. Promotion already authorizes owned captured lineage and real clean Git state, not review attention; that path is unchanged.
 
 Account/repository ownership, archive rejection, approved session version, repository locking, clean index/conflict checks, HEAD identity, attributable paths and exact approved blobs remain enforced. Added `TestManageSessionsCommitDoesNotRequireReviewState` using real temporary Git repositories for in-progress, blocked and review states, plus stale-byte rejection with unchanged HEAD/index and exact committed content assertions. Source inspection only; tests, build and atlas-sync were not run. No live-daemon fix or deployment is claimed.
+
+### Bound task plan refinement
+
+`POST /v3/projects/{id}/tasks/{task}/refine` now sends bound pending plans through
+`api/project_task_refine.go`, not the legacy router-summary mutation. It requires
+exact session/plan/definition guards, invalidates the prior definition through the
+V3 plan-save boundary before requesting a new read-only planning turn, and leaves
+approval disabled if a later step fails. Resubmission uses the existing structured
+plan lifecycle and creates a new guarded definition. Approved/executing plans are
+not edited through this pending-plan path. Focused regression
+`TestBoundProjectTaskRefineInvalidatesApproval` passes, including missing/stale
+guards and prior-approval rejection before and after resubmission. Full live
+revision-to-execution verification is still pending; task and plan writes are not
+one atomic transaction.

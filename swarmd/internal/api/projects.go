@@ -3835,6 +3835,15 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, fmt.Errorf("plan ID mismatch: expected %q, got %q", existingTask.PlanBinding.PlanID, rReq.PlanID))
 			return
 		}
+		if existingTask.PlanBinding != nil {
+			updated, err := s.refineBoundProjectTask(p, existingTask, tool.ProjectTaskApprovalGuards{SessionID: rReq.SessionID, PlanID: rReq.PlanID, DefinitionRevision: rReq.DefinitionRevision}, rReq.Feedback)
+			if err != nil {
+				writeError(w, http.StatusConflict, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"status": "planning", "task": updated})
+			return
+		}
 		expectedRev := rReq.DefinitionRevision
 		if expectedRev <= 0 {
 			expectedRev = rReq.ExpectedRevision
