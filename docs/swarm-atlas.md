@@ -3318,3 +3318,17 @@ not edited through this pending-plan path. Focused regression
 guards and prior-approval rejection before and after resubmission. Full live
 revision-to-execution verification is still pending; task and plan writes are not
 one atomic transaction.
+
+Qualification follow-up: Orchestrator `manage_projects refine_task` now shares the
+same exact-guard bound-plan authority. Supplied project plans allocate an owned
+planning worktree without starting a run, and separate top-level programs that
+are absent from their executable checkpoints are rejected. Task sessions capture
+the local runtime identity; SDK stopRun resolves it rather than inventing `self`.
+Canonical completed retries can recover failed task cards even when no client saw
+the intermediate running state. Orchestrate now uses the maintained `/v1/ui/settings`
+route. Focused API lifecycle/refinement/isolation/realtime tests, seven SDK session
+tests and fifteen selected-task context tests pass. Live plan revision and exact
+selected-task feedback produced committed revised output; a structured five-file
+program produced committed Coder outputs. Initial-card event-to-render timing and
+browser reconnect were observed in the real UI; these do not certify every plan
+rendering transition or arbitrary project decomposition.

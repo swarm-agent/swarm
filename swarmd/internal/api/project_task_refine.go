@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -91,4 +92,22 @@ func (s *Server) refineBoundProjectTask(p identity.Principal, task *pebblestore.
 		s.v3SessionExecutor.EnqueueRun(*job)
 	}
 	return updated, nil
+}
+
+// RefineBoundProjectTask shares the guarded API authority with Orchestrator tools.
+func (s *Server) RefineBoundProjectTask(ctx context.Context, p identity.Principal, projectID, taskID string, guards tool.ProjectTaskApprovalGuards, feedback string) (*pebblestore.ProjectTaskRecord, error) {
+	if !p.Valid() || p.Type != identity.PrincipalTypeUser {
+		return nil, errors.New("user principal required")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	task, found, err := s.sessions.Store().GetProjectTask(p.AccountScopeID, projectID, taskID)
+	if err != nil {
+		return nil, err
+	}
+	if !found || task == nil || task.AccountID != p.AccountScopeID || task.ProjectID != projectID {
+		return nil, errors.New("task not found in project")
+	}
+	return s.refineBoundProjectTask(p, task, guards, feedback)
 }

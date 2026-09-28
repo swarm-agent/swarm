@@ -439,8 +439,10 @@ func syncTaskSessionState(task *pebblestore.ProjectTaskRecord, db *pebblestore.S
 				}
 				// In Swarm V3 orchestration, when an agent finishes execution, the task
 				// transitions to needs_review for user review and git integration,
-				// NEVER directly to completed!
-				if task.Status == "in_progress" {
+				// NEVER directly to completed! A successful explicit retry may finish
+				// before a reader observes its intermediate in_progress state.
+				if task.Status == "in_progress" || task.Status == "failed" || task.Status == "blocked" {
+					task.LastError = ""
 					task.Status = "needs_review"
 					if task.ActionNeeded == "" || strings.HasPrefix(task.ActionNeeded, "Action Needed: 0") || task.ActionNeeded == "Executing reopened task" {
 						if task.UnintegratedCommits > 0 {
@@ -1174,6 +1176,12 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 	projName := "Project"
 	if proj != nil && proj.Name != "" {
 		projName = proj.Name
+	}
+	if node, ok, err := s.swarmLocalNode(); err != nil {
+		return err
+	} else if ok && strings.TrimSpace(node.SwarmID) != "" {
+		metadata["swarm_v3_runtime_swarm_id"] = strings.TrimSpace(node.SwarmID)
+		metadata["swarm_v3_authority_host_swarm_id"] = strings.TrimSpace(node.SwarmID)
 	}
 	sessionSnapshot := pebblestore.SessionSnapshot{
 		ID:              sessionID,

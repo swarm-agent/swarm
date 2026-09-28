@@ -110,6 +110,14 @@ func TestProjectTask_V3RunAuthority_LifecycleAbsentSuccessfulRun(t *testing.T) {
 		t.Fatalf("expected ActionNeeded to prompt review, got %q", task.ActionNeeded)
 	}
 
+	// A completed explicit retry must recover a persisted failed card even when
+	// nobody read the task during the brief intermediate running state.
+	task.Status, task.LastError = "failed", "prior cancellation"
+	syncTaskSessionState(task, sessionStore)
+	if task.Status != "needs_review" || task.LastError != "" {
+		t.Fatalf("retry stayed failed: %#v", task)
+	}
+
 	// 2. HTTP GET /v3/projects/{id}/tasks/{taskId} handler invocation:
 	t.Setenv("SWARM_API_NO_AUTH", "1")
 	h := server.apiMux()

@@ -142,6 +142,20 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 	outcomeType := strings.TrimSpace(input.OutcomeType)
 	tier := strings.TrimSpace(input.Tier)
 	if structDoc != nil {
+		if err := sessionruntime.ValidateExecutablePlanDocument(structDoc); err != nil {
+			return nil, err
+		}
+		if taskProg != nil {
+			bound := false
+			for _, cp := range structDoc.Checkpoints {
+				if cp.TaskProgram != nil && computeTaskProgramDefinitionHash(*cp.TaskProgram) == computeTaskProgramDefinitionHash(*taskProg) {
+					bound = true
+				}
+			}
+			if !bound {
+				return nil, errors.New("task_program must be embedded in the executable plan checkpoint; a separate top-level program is not executed by plan approval")
+			}
+		}
 		if featureSize == "" {
 			featureSize = "big"
 		}
@@ -361,6 +375,14 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 
 	// Deploy execution
 	if structDoc != nil {
+		// Supplied plans need the same authenticated isolated integration lane as
+		// agent-authored plans, without starting an unapproved provider run.
+		if err := s.deployProjectTaskExecution(p, proj, &task, "pending_approval", prompt); err != nil {
+			return nil, fmt.Errorf("prepare supplied-plan session: %w", err)
+		}
+		if err := db.PutProjectTask(p.AccountScopeID, &task); err != nil {
+			return nil, err
+		}
 		subResult, sErr := s.SubmitProjectTaskPlan(ctx, sessionruntime.ProjectTaskPlanSubmissionInput{
 			AccountScopeID:  p.AccountScopeID,
 			UserID:          p.UserID,

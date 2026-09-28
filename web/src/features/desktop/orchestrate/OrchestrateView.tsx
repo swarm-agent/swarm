@@ -4610,7 +4610,7 @@ export function OrchestrateView({
     setDefaultImageModel(newModel)
     setIsSavingModelChoice(true)
     try {
-      await requestJson('/v1/desktop/ui-settings', {
+      await requestJson('/v1/ui/settings', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ tools: { image: { default_model: newModel } } }),
@@ -4642,7 +4642,7 @@ export function OrchestrateView({
     setSelectedAudioModel(newModel)
     setIsSavingModelChoice(true)
     try {
-      await requestJson('/v1/desktop/ui-settings', {
+      await requestJson('/v1/ui/settings', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ tools: { audio: { default_model: newModel } } }),

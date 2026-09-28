@@ -984,6 +984,28 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 		}
 		feedback := strings.TrimSpace(asString(args["feedback"]))
 		errorSummary := strings.TrimSpace(asString(args["error_summary"]))
+		existing, exists, lookupErr := r.projects.GetProjectTask(accountScopeID, projectID, taskID)
+		if lookupErr != nil {
+			return "", lookupErr
+		}
+		if !exists || existing == nil {
+			return "", errors.New("task not found")
+		}
+		if existing.PlanBinding != nil {
+			refiner, ok := r.getProjectTaskLifecycleService().(interface {
+				RefineBoundProjectTask(context.Context, identity.Principal, string, string, ProjectTaskApprovalGuards, string) (*pebblestore.ProjectTaskRecord, error)
+			})
+			if !ok {
+				return "", errors.New("canonical bound plan refinement unavailable")
+			}
+			guards := ProjectTaskApprovalGuards{SessionID: strings.TrimSpace(asString(args["session_id"])), PlanID: strings.TrimSpace(asString(args["plan_id"])), DefinitionRevision: asInt(args["definition_revision"], 0)}
+			updated, err := refiner.RefineBoundProjectTask(ctx, p, projectID, taskID, guards, feedback)
+			if err != nil {
+				return "", err
+			}
+			response["task"], response["status"], response["task_id"] = updated, updated.Status, taskID
+			break
+		}
 
 		proj, found, _ := r.projects.GetProject(accountScopeID, projectID)
 		var projCtx string

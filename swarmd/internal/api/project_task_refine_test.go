@@ -16,6 +16,8 @@ import (
 func TestBoundProjectTaskRefineInvalidatesApproval(t *testing.T) {
 	f := setupMatrixTestFixture(t)
 	defer f.db.Close()
+	// These boundary tests inspect durable intents, not provider execution.
+	f.server.v3SessionExecutor = nil
 	p := identity.Principal{Type: "user", UserID: f.userID, AccountScopeID: f.accountID}
 	project := f.createProject(t)
 	if err := f.server.sessions.Store().CompleteRepositoryHistoryMaintenance(context.Background()); err != nil {
@@ -32,6 +34,15 @@ func TestBoundProjectTaskRefineInvalidatesApproval(t *testing.T) {
 		t.Fatal(err)
 	}
 	task := response.Task
+	if intent, found, err := f.server.sessions.Store().GetV3SessionActiveRunIntent(task.SessionID); err != nil {
+		t.Fatal(err)
+	} else if found {
+		intent.Status = pebblestore.V3RunIntentCompleted
+		key := "fixture-planning-complete"
+		if _, err := f.server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{SessionID: task.SessionID, UserID: p.UserID, AccountScopeID: p.AccountScopeID, Kind: sessionruntime.SessionMutationRecordRunIntent, ClientRequestID: key, IdempotencyKey: key, PayloadHash: key, RequestHash: key, RunIntent: &intent}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	doc := &pebblestore.SessionPlanDocument{ID: "revise-plan", Title: "Write output", Info: pebblestore.SessionPlanInfo{Goal: "Create old.json"}, Checkpoints: []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Order: 1, Title: "Write file", Tasks: []string{"Create old.json"}, AcceptanceCriteria: []string{"old.json committed"}}}}
 	_, err := f.server.planLifecycle.SubmitProjectTaskStructuredPlan(sessionruntime.ProjectTaskPlanSubmissionInput{AccountScopeID: f.accountID, UserID: f.userID, ProjectID: project, TaskID: task.ID, SessionID: task.SessionID, Document: doc})
 	if err != nil {
@@ -74,5 +85,33 @@ func TestBoundProjectTaskRefineInvalidatesApproval(t *testing.T) {
 	}
 	if _, err = f.server.ApproveProjectTask(context.Background(), p, project, task.ID, guards); err == nil {
 		t.Fatal("old approval accepted replacement")
+	}
+}
+
+// A supplied task plan must not execute in the captured source checkout.
+func TestSuppliedProjectPlanHasOwnedLaneWithoutRun(t *testing.T) {
+	f := setupMatrixTestFixture(t)
+	defer f.db.Close()
+	// These boundary tests inspect durable intents, not provider execution.
+	f.server.v3SessionExecutor = nil
+	p := identity.Principal{Type: "user", UserID: f.userID, AccountScopeID: f.accountID}
+	project := f.createProject(t)
+	if err := f.server.sessions.Store().CompleteRepositoryHistoryMaintenance(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	doc := &pebblestore.SessionPlanDocument{ID: "supplied-plan", Title: "Write output", Info: pebblestore.SessionPlanInfo{Goal: "Write file"}, Checkpoints: []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Order: 1, Title: "Write file", Tasks: []string{"Create result.txt"}, AcceptanceCriteria: []string{"result.txt committed"}}}}
+	task, err := f.server.CreateProjectTask(context.Background(), p, project, tool.ProjectTaskCreateInput{Title: "Supplied plan", Prompt: "Create result.txt", Agent: "swarm", FeatureSize: "big", Document: doc})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, ok, err := f.server.sessions.Store().GetSession(task.SessionID)
+	if err != nil || !ok || !sess.WorktreeEnabled || sess.WorktreeRootPath == "" || sess.Mode != sessionruntime.ModePlan {
+		t.Fatalf("no isolated planning lane: %#v %v", sess, err)
+	}
+	if task.WorkspacePath != sess.WorktreeRootPath || task.Status != "pending_approval" {
+		t.Fatalf("task not bound to pending lane: %#v", task)
+	}
+	if intent, found, _ := f.server.sessions.Store().GetV3SessionActiveRunIntent(task.SessionID); found {
+		t.Fatalf("unapproved run started: %#v", intent)
 	}
 }

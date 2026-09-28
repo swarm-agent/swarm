@@ -190,11 +190,19 @@ export class SwarmSessionsNamespace {
     params: { run_id: string; target_swarm_id?: string }
   ): Promise<boolean> {
     const id = encodeURIComponent(sessionId.trim());
+    let target = params.target_swarm_id?.trim();
+    if (!target) {
+      const session = await this.get(sessionId);
+      const rawSession = session.raw?.session as { metadata?: Record<string, unknown> } | undefined;
+      const runtime = rawSession?.metadata?.swarm_v3_runtime_swarm_id;
+      target = typeof runtime === 'string' ? runtime.trim() : undefined;
+      if (!target) throw new Error('Session has no authoritative runtime identity; supply target_swarm_id');
+    }
     const res = await this.transport.request<{ ok: boolean }>(`/v3/sessions/${id}/run/stop`, {
       method: 'POST',
       body: {
         run_id: params.run_id,
-        target_swarm_id: params.target_swarm_id || 'self',
+        target_swarm_id: target,
       },
     });
     return res.data?.ok === true;

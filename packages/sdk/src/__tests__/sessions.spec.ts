@@ -159,10 +159,10 @@ test('SwarmSessionsNamespace: list, get, archive, unarchive, delete, sendMessage
     assert.equal(lastBody.content, 'hello agent');
 
     // Run stop
-    const stopped = await sessions.stopRun('sess_1', { run_id: 'run_123' });
+    const stopped = await sessions.stopRun('sess_1', { run_id: 'run_123', target_swarm_id: 'runtime-exact' });
     assert.equal(stopped, true);
     assert.equal(lastBody.run_id, 'run_123');
-    assert.equal(lastBody.target_swarm_id, 'self');
+    assert.equal(lastBody.target_swarm_id, 'runtime-exact');
 
     // Archive
     const archived = await sessions.archive('sess_1');
@@ -245,4 +245,16 @@ test('approvePermissionOnce grants only the exact pending call', async () => {
   await new SwarmSessionsNamespace(transport).approvePermissionOnce('s','p','Reviewed');
   assert.equal(captured.url, '/v3/sessions/s/permissions/p/resolve');
   assert.deepEqual(captured.body,{action:'allow_once',reason:'Reviewed'});
+});
+
+test('stopRun resolves exact runtime rather than inventing self', async () => {
+ const calls:any[]=[];
+ const transport={request:async(url:string,options:any)=>{calls.push({url,...options});return options.method==='GET'?{data:{session:{id:'s',metadata:{swarm_v3_runtime_swarm_id:'runtime-exact'}}}}:{data:{ok:true}}}} as unknown as SwarmTransport;
+ assert.equal(await new SwarmSessionsNamespace(transport).stopRun('s',{run_id:'r'}),true);
+ assert.equal(calls[1].body.target_swarm_id,'runtime-exact');
+});
+
+test('stopRun refuses missing runtime identity without mutation', async () => {
+ const transport={request:async(_url:string,options:any)=>{assert.equal(options.method,'GET');return {data:{session:{id:'s'}}}}} as unknown as SwarmTransport;
+ await assert.rejects(()=>new SwarmSessionsNamespace(transport).stopRun('s',{run_id:'r'}),/authoritative runtime/);
 });
