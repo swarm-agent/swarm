@@ -108,15 +108,18 @@ export function resolveTaskImpendingAgents(
       let thinking: string | undefined
       let serviceTier: string | undefined
       let contextMode: string | undefined
-      let cohortIsOverride = isOverride
+      // A task-scoped override belongs to its target agent, not every job in a
+      // mixed-agent program. Other cohorts keep their own account defaults.
+      const cohortHasOverride = isOverride && agentType === (backendModelPreview?.agent || task.agentType)
+      let cohortIsOverride = cohortHasOverride
 
-      if (isOverride && backendModelPreview?.resolved_model?.model) {
+      if (cohortHasOverride && backendModelPreview?.resolved_model?.model) {
         resolvedModel = backendModelPreview.resolved_model.model
         provider = backendModelPreview.resolved_model.provider
         thinking = backendModelPreview.resolved_model.thinking
         serviceTier = backendModelPreview.resolved_model.service_tier
         contextMode = backendModelPreview.resolved_model.context_mode
-      } else if (isOverride && task.model?.trim()) {
+      } else if (cohortHasOverride && task.model?.trim()) {
         resolvedModel = task.model.trim()
       } else if (backendModelPreview?.resolved_model?.model && agentType === (backendModelPreview.agent || task.agentType)) {
         resolvedModel = backendModelPreview.resolved_model.model
@@ -408,13 +411,19 @@ export function resolveTaskWorkspace(override?: string): string | undefined {
 export function taskWorkspaceSelection(override: string, project?: Pick<ProjectSummary, 'workspaces'> | null): {
   workspace_path?: string
   workspace_id?: string
+  workspace_generation?: number
 } {
   const workspace_path = resolveTaskWorkspace(override)
   if (!workspace_path) return {}
   if (workspace_path === '.') throw new Error("dot '.' is not allowed as an execution target")
   const matches = project?.workspaces?.filter((ws) => ws.path === workspace_path) || []
   if (matches.length !== 1) throw new Error('Selected target workspace is not linked to this project; refresh the project and select a workspace.')
-  return { workspace_path, workspace_id: matches[0].workspace_id || undefined }
+  const selected = matches[0]
+  return {
+    workspace_path,
+    workspace_id: selected.workspace_id || undefined,
+    ...(selected.workspace_generation != null ? { workspace_generation: selected.workspace_generation } : {}),
+  }
 }
 
 export function taskDeployRequestIdentity(

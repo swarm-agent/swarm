@@ -3872,6 +3872,7 @@ export function OrchestrateView({
       featureSize: taskIntent === 'code' ? featureSize : undefined,
       model: newTaskModelOverride || undefined,
       workspace: newTaskWorkspace.trim(),
+      workspaceCatalog: selectedProject?.workspaces,
       agent: taskIntent === 'code' ? (featureSize === 'big' ? 'plan' : 'coder') : (taskIntent === 'audit' ? 'finder' : taskIntent),
       tier: taskIntent === 'code' ? (featureSize === 'big' ? 'complex' : 'direct') : (taskIntent === 'audit' ? 'discovery' : 'direct'),
     }],

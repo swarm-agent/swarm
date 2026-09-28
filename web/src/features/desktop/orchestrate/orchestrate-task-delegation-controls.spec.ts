@@ -538,6 +538,16 @@ test('Grouped Coders cohort with backend authoritative preview and task-level ov
   assert.equal(finderCohort.model, 'gemini-2.5-flash')
   assert.equal(finderCohort.provider, 'google')
   assert.equal(finderCohort.isOverride, false)
+
+  // Requirement: a Coder-only task override must never leak into a Finder job
+  // when the backend preview is absent; each cohort retains its own authority.
+  const withoutPreview = resolveTaskImpendingAgents(
+    multiCoderTask, programJobs, undefined, mockAgentModelSettings
+  )
+  assert.equal(withoutPreview.find((c) => c.agent === 'coder')?.model, 'gemini-2.5-pro-override')
+  assert.equal(withoutPreview.find((c) => c.agent === 'coder')?.isOverride, true)
+  assert.equal(withoutPreview.find((c) => c.agent === 'finder')?.model, 'gemini-2.5-flash')
+  assert.equal(withoutPreview.find((c) => c.agent === 'finder')?.isOverride, false)
 })
 
 test('AgentModelControl contract: supports task-scoped apply, save-default, and reset override', () => {
@@ -697,6 +707,13 @@ test('Desktop target selection omits Auto-detect and preserves explicit project 
   assert.deepEqual(taskWorkspaceSelection(' /product ', project), {
     workspace_path: '/product', workspace_id: 'ws-product',
   }, 'explicit selection carries product path and catalog ID')
+  // The project catalog may omit generation; when supplied, both request paths
+  // must use this same selector so a stale target cannot silently retarget.
+  const generationProject = { workspaces: [{ path: '/product', workspace_id: 'ws-product', workspace_generation: 7 }] }
+  assert.deepEqual(taskWorkspaceSelection('/product', generationProject), {
+    workspace_path: '/product', workspace_id: 'ws-product', workspace_generation: 7,
+  }, 'catalog generation guards preview and submit against a stale repository binding')
+  assert.deepEqual(taskWorkspaceSelection('', generationProject), {}, 'Auto-detect must not claim catalog identity')
   assert.deepEqual(taskWorkspaceSelection('/product', project), taskWorkspaceSelection(' /product ', project),
     'preview and submit use the same normalized target')
   assert.throws(() => taskWorkspaceSelection('.', project), /dot '\.' is not allowed/)
@@ -712,6 +729,11 @@ test('Desktop target selection omits Auto-detect and preserves explicit project 
   assert.equal(mapped.workspacePath, '/allocated/worktree', 'runtime path stays separately available')
   assert.equal(mapped.sourceWorkspaceId, 'ws-product')
   assert.equal(mapped.sourceWorkspaceGeneration, 3)
+  const viewSource = fs.readFileSync(path.join(__dirname, 'OrchestrateView.tsx'), 'utf8')
+  assert.equal(viewSource.split('taskWorkspaceSelection(newTaskWorkspace, selectedProject)').length - 1, 2,
+    'model preview and task submission must share the exact workspace selection helper')
+  assert.ok(viewSource.includes('workspaceCatalog: selectedProject?.workspaces'),
+    'a changed catalog generation must invalidate the model preview query')
 })
 
 test('Task submission retry identity is stable only for an unchanged execution contract', () => {
@@ -728,6 +750,13 @@ test('Task submission retry identity is stable only for an unchanged execution c
     }),
   }, nextId)
   assert.notEqual(product.clientTaskId, first.clientTaskId)
+  const nextGeneration = taskDeployRequestIdentity(product, 'project', {
+    prompt: 'change', ...taskWorkspaceSelection('/product', {
+      workspaces: [{ path: '/product', workspace_id: 'ws-product', workspace_generation: 8 }],
+    }),
+  }, nextId)
+  assert.notEqual(nextGeneration.clientTaskId, product.clientTaskId,
+    'a changed catalog generation must not replay the old request identity')
   assert.equal(taskDeployRequestIdentity(product, 'project', {
     prompt: 'change', workspace_path: '/product', workspace_id: 'ws-product',
   }, nextId).clientTaskId, product.clientTaskId)
@@ -753,7 +782,12 @@ test('Task Deliverables typing preserves code PR and audit deliverables without 
   const mappedCode = mapBackendTask(codeTaskBackend)
   assert.equal(mappedCode.deliverables![0].type, 'code', 'Code deliverable must not default to image')
   assert.equal(mappedCode.deliverables![0].thumbnailType, 'default', 'Code deliverable thumbnail must not default to cyber_lattice')
-  assert.deepEqual(mappedCode.planBinding, { plan_id: 'p-1', definition_revision: 2, session_id: 's-1' })
+  assert.equal(mappedCode.planBinding?.planId, 'p-1')
+  assert.equal(mappedCode.planBinding?.definitionRevision, 2)
+  assert.equal(mappedCode.planBinding?.sessionId, 's-1')
+  assert.deepEqual(buildTaskAcceptancePayload(mappedCode), {
+    session_id: 's-1', plan_id: 'p-1', definition_revision: 2,
+  }, 'normalized plan guard must retain authoritative backend revision and session')
   assert.ok(mappedCode.planDocument)
 
   // Case 2: Finder audit task maps deliverable type to 'report'
@@ -841,7 +875,9 @@ test('OrchestrateView source contracts: no premature execution, duplicate-click 
 
   // 4. Authoritative backend response link selection
   assert.ok(
-    source.includes('res?.task?.session_id || res?.task?.sessionId'),
+    source.includes('const linkedSessionId = res.task.session_id || res.task.sessionId || res.task.plan_binding?.session_id || res.task.planBinding?.session_id') &&
+    source.includes('setActiveSessionId(linkedSessionId)') &&
+    !source.includes('setActiveSessionId(targetTask.sessionId)'),
     'Must use returned linked session ID from authoritative response, not stale pre-call snapshot'
   )
 
