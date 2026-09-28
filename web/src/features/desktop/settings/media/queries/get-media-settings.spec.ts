@@ -119,6 +119,39 @@ test('media settings catalog decodes video generation and iteration options', as
   assert.equal(result.audio_models?.[0]?.model, 'lyria-3.5')
 })
 
+test('media settings catalog decodes video operation constraints on models', async () => {
+  const payloadWithConstraints = {
+    image_models: [],
+    transcription_models: [],
+    video_generation_models: [
+      {
+        id: 'veo-3.1-generate-preview',
+        provider: 'google',
+        model: 'veo-3.1-generate-preview',
+        display_name: 'Veo 3.1',
+        kind: 'video_generation',
+        ready: true,
+        constraints: {
+          model: 'veo-3.1-generate-preview',
+          provider: 'google',
+          create: { supported: true, resolutions: ['720p', '1080p'], durations: [4, 6, 8] },
+          edit: { supported: false, reason: 'Veo models do not support video editing' },
+          extend: { supported: true, locked_duration_seconds: 8, locked_resolution: '720p' },
+        },
+      },
+    ],
+    video_iteration_models: [],
+    video_models: [],
+    video_ready: true,
+    video_status: 'ready',
+  }
+
+  globalThis.fetch = (async () => Response.json(payloadWithConstraints)) as typeof fetch
+  const result = await getMediaSettingsCatalog()
+  assert.equal(result.video_generation_models[0].constraints?.extend.locked_duration_seconds, 8)
+  assert.equal(result.video_generation_models[0].constraints?.edit.supported, false)
+})
+
 test('focus notes use the backend byte limit without splitting unicode', () => {
   const value = `${'a'.repeat(498)}éextra`
   assert.equal(value.length < 500, false)

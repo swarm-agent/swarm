@@ -393,9 +393,41 @@ test('multipart selection rejects duplicate part choices before mutation', async
 test('rich artifact previews use direct browser URLs instead of blob hydration', () => {
   assert.equal(desktopV3ArtifactDirectContentURL({ sessionId: 'session one', artifactId: 'video/1', sourceRef: '' }), '/v3/sessions/session%20one/artifacts/video%2F1')
   assert.equal(
+    desktopV3ArtifactDirectContentURL({ sessionId: 'session one', artifactId: 'video/1', sourceRef: '', eventSeq: 5 }),
+    '/v3/sessions/session%20one/artifacts/video%2F1?revision=5',
+  )
+  assert.equal(
     desktopV3ArtifactDirectContentURL({ sessionId: 'session one', artifactId: 'ignored', sourceRef: 'source ref' }),
     '/v3/sessions/session%20one/video/sources/media?source_ref=source+ref',
   )
+})
+
+test('artifact catalog normalizes model, aspect ratio, resolution, duration and video provenance', () => {
+  const entry = normalizeDesktopV3ArtifactCatalogEntry({
+    ...managedCatalogWire,
+    model: 'veo-3.1-generate-preview',
+    aspect_ratio: '16:9',
+    resolution: '720p',
+    duration_seconds: 8,
+    video_provenance: {
+      account_scope_id: 'acc-1',
+      provider: 'google',
+      model: 'veo-3.1-generate-preview',
+      transport: 'google_predict_long_running',
+      operation: 'create',
+      created_at: 1000,
+      observed_width: 1280,
+      observed_height: 720,
+      observed_duration_ms: 8000,
+    },
+  })
+  assert.equal(entry?.model, 'veo-3.1-generate-preview')
+  assert.equal(entry?.aspectRatio, '16:9')
+  assert.equal(entry?.resolution, '720p')
+  assert.equal(entry?.durationSeconds, 8)
+  assert.ok(entry?.videoProvenance)
+  assert.equal(entry?.videoProvenance?.provider, 'google')
+  assert.equal(entry?.videoProvenance?.model, 'veo-3.1-generate-preview')
 })
 
 test('protected direct previews preflight with HEAD before browser assignment', async () => {

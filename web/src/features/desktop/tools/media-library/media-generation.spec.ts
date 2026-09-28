@@ -2,14 +2,26 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   calculateGenerationCost,
+  evaluateVideoActionSupport,
   extractBillingLines,
+  extractGenerationDurationSeconds,
   getLineResolution,
+  getSupportedDurationsForResolution,
+  isOmniModel,
+  isStableOmniModel,
+  isVeo31Model,
+  isVeoLiteModel,
+  isVeoModel,
   normalizeResKey,
   resolveAudioContext,
   resolveInitialModel,
   resolveInitialSetting,
+  resolveVideoContinuationModel,
+  validateMediaGenerationRequest,
 } from './media-generation'
 import type { MediaCatalogModelOption } from '../../settings/media/queries/get-media-settings'
+import type { MediaLibraryItem } from './types'
+import type { VideoProvenance } from '../../session-v3/artifact-api'
 
 test('normalizeResKey normalizes common resolution strings properly', () => {
   assert.equal(normalizeResKey('1024x1024'), '1k')
@@ -836,4 +848,533 @@ test('resolveInitialModel preselects source model if available in model list, el
   // Source model absent / not available falls back to default
   const fallback = resolveInitialModel('unknown-model', available, 'veo-3.1-generate-preview')
   assert.equal(fallback, 'veo-3.1-generate-preview')
+})
+
+test('media provenance integrity: Veo Lite rejects extension and fine-tuning with clear reasons', () => {
+  // Requirement: Videos created with Veo Lite must NOT allow Next Scene (extend) or Fine-Tune (edit),
+  // and must never silently replace the model with Gemini Omni.
+  const veoLiteItem: MediaLibraryItem = {
+    id: 'vid-lite-1',
+    title: 'Veo Lite Clip',
+    filename: 'clip.mp4',
+    mediaType: 'video/mp4',
+    kind: 'video',
+    createdAt: 1000,
+    formattedDate: 'Sep 20, 2026',
+    formattedTime: '10:00 AM',
+    dayKey: '2026-09-20',
+    dayLabel: 'Today',
+    sessionId: 'sess-1',
+    sessionTitle: 'Session',
+    workspacePath: '/ws',
+    workspaceName: 'demo',
+    model: 'veo-3.1-lite-generate-preview',
+    aspectRatio: '16:9',
+    resolution: '720p',
+    durationSeconds: 8,
+    directUrl: '/v3/sessions/sess-1/artifacts/art-1?revision=1',
+    artifact: { artifactId: 'art-1', sessionId: 'sess-1', label: 'Clip', filename: 'clip.mp4', mediaType: 'video/mp4', kind: 'video', previewable: true, category: 'visual', updatedAt: 1000 } as any,
+    videoProvenance: {
+      account_scope_id: 'acc-1',
+      provider: 'google',
+      model: 'veo-3.1-lite-generate-preview',
+      transport: 'google_predict_long_running',
+      operation: 'create',
+      created_at: 1000,
+      expires_at: 1000 + 48 * 3600 * 1000,
+      observed_width: 1280,
+      observed_height: 720,
+      observed_duration_ms: 8000,
+      aspect_ratio: '16:9',
+      resolution: '720p',
+    },
+  }
+
+  const veoLiteModelOption: MediaCatalogModelOption = {
+    id: 'veo-3.1-lite-generate-preview',
+    provider: 'google',
+    model: 'veo-3.1-lite-generate-preview',
+    display_name: 'Google Veo 3.1 Lite',
+    kind: 'video_generation',
+    ready: true,
+    constraints: {
+      model: 'veo-3.1-lite-generate-preview',
+      provider: 'google',
+      create: { supported: true },
+      edit: { supported: false, reason: 'Veo models do not support video editing; select an iteration model such as Gemini Omni' },
+      extend: { supported: false, reason: 'Veo extension is only supported on Veo 3.1 standard or fast models; "veo-3.1-lite-generate-preview" is not eligible' },
+    },
+  }
+
+  // 1. Next Scene extension is blocked
+  const extendSupport = evaluateVideoActionSupport('next_scene', veoLiteItem, veoLiteModelOption)
+  assert.equal(extendSupport.supported, false)
+  assert.match(extendSupport.reason || '', /Veo Lite/i)
+
+  // 2. Fine-tune is blocked
+  const editSupport = evaluateVideoActionSupport('fine_tune', veoLiteItem, veoLiteModelOption)
+  assert.equal(editSupport.supported, false)
+  assert.match(editSupport.reason || '', /Veo models do not support video editing/i)
+
+  // 3. Validation before callback blocks submission
+  const validation = validateMediaGenerationRequest({
+    action: 'next_scene',
+    item: veoLiteItem,
+    model: 'veo-3.1-lite-generate-preview',
+    modelOption: veoLiteModelOption,
+    prompt: 'Add more action',
+    settings: { durationSeconds: 8, resolution: '720p', aspectRatio: '16:9' },
+  })
+  assert.equal(validation.valid, false)
+  assert.match(validation.error || '', /Veo Lite/i)
+})
+
+test('media provenance integrity: Veo 3.1 standard locks duration to 8s, resolution to 720p, and source AR', () => {
+  // Requirement: Standard Veo 3.1 videos allow Next Scene but enforce 8s duration, 720p, matching source AR
+  const veoStandardItem: MediaLibraryItem = {
+    id: 'vid-std-1',
+    title: 'Veo Standard Clip',
+    filename: 'clip.mp4',
+    mediaType: 'video/mp4',
+    kind: 'video',
+    createdAt: 1000,
+    formattedDate: 'Sep 20, 2026',
+    formattedTime: '10:00 AM',
+    dayKey: '2026-09-20',
+    dayLabel: 'Today',
+    sessionId: 'sess-1',
+    sessionTitle: 'Session',
+    workspacePath: '/ws',
+    workspaceName: 'demo',
+    model: 'veo-3.1-generate-preview',
+    aspectRatio: '16:9',
+    resolution: '720p',
+    durationSeconds: 8,
+    directUrl: '/v3/sessions/sess-1/artifacts/art-2?revision=1',
+    artifact: { artifactId: 'art-2', sessionId: 'sess-1', label: 'Clip', filename: 'clip.mp4', mediaType: 'video/mp4', kind: 'video', previewable: true, category: 'visual', updatedAt: 1000 } as any,
+    videoProvenance: {
+      account_scope_id: 'acc-1',
+      provider: 'google',
+      model: 'veo-3.1-generate-preview',
+      transport: 'google_predict_long_running',
+      operation: 'create',
+      created_at: 1000,
+      expires_at: 1000 + 48 * 3600 * 1000,
+      observed_width: 1280,
+      observed_height: 720,
+      observed_duration_ms: 8000,
+      extension_count: 0,
+      extension_count_known: true,
+      aspect_ratio: '16:9',
+      resolution: '720p',
+    },
+  }
+
+  const veoStandardModelOption: MediaCatalogModelOption = {
+    id: 'veo-3.1-generate-preview',
+    provider: 'google',
+    model: 'veo-3.1-generate-preview',
+    display_name: 'Google Veo 3.1',
+    kind: 'video_generation',
+    ready: true,
+    constraints: {
+      model: 'veo-3.1-generate-preview',
+      provider: 'google',
+      create: { supported: true },
+      edit: { supported: false, reason: 'Veo models do not support video editing' },
+      extend: {
+        supported: true,
+        locked_duration_seconds: 8,
+        locked_resolution: '720p',
+        locked_aspect_ratio_matches_source: true,
+        supported_aspect_ratios: ['16:9', '9:16'],
+        requires_veo_source: true,
+      },
+    },
+  }
+
+  const extendSupport = evaluateVideoActionSupport('next_scene', veoStandardItem, veoStandardModelOption, { nowMs: 2000 })
+  assert.equal(extendSupport.supported, true)
+  assert.equal(extendSupport.lockedOptions?.durationSeconds, 8)
+  assert.equal(extendSupport.lockedOptions?.resolution, '720p')
+  assert.equal(extendSupport.lockedOptions?.aspectRatio, '16:9')
+
+  // Validation accepts exact locked settings
+  const validReq = validateMediaGenerationRequest({
+    action: 'next_scene',
+    item: veoStandardItem,
+    model: 'veo-3.1-generate-preview',
+    modelOption: veoStandardModelOption,
+    prompt: 'A car passes by',
+    settings: { durationSeconds: 8, resolution: '720p', aspectRatio: '16:9' },
+    nowMs: 2000,
+  })
+  assert.equal(validReq.valid, true)
+
+  // Validation rejects wrong duration (e.g. 5s or 10s)
+  const invalidDur = validateMediaGenerationRequest({
+    action: 'next_scene',
+    item: veoStandardItem,
+    model: 'veo-3.1-generate-preview',
+    modelOption: veoStandardModelOption,
+    prompt: 'A car passes by',
+    settings: { durationSeconds: 5, resolution: '720p', aspectRatio: '16:9' },
+    nowMs: 2000,
+  })
+  assert.equal(invalidDur.valid, false)
+  assert.match(invalidDur.error || '', /only supports 8s duration/i)
+})
+
+test('media provenance integrity: stable Gemini Omni allows extension and editing with automatic duration', () => {
+  // Requirement: Gemini Omni supports conversational editing and extension when interaction handle exists; duration must be automatic
+  const omniItem: MediaLibraryItem = {
+    id: 'vid-omni-1',
+    title: 'Omni Video',
+    filename: 'clip.mp4',
+    mediaType: 'video/mp4',
+    kind: 'video',
+    createdAt: 1000,
+    formattedDate: 'Sep 20, 2026',
+    formattedTime: '10:00 AM',
+    dayKey: '2026-09-20',
+    dayLabel: 'Today',
+    sessionId: 'sess-1',
+    sessionTitle: 'Session',
+    workspacePath: '/ws',
+    workspaceName: 'demo',
+    model: 'gemini-omni-1.1-flash',
+    aspectRatio: '16:9',
+    resolution: '720p',
+    directUrl: '/v3/sessions/sess-1/artifacts/art-3?revision=1',
+    artifact: { artifactId: 'art-3', sessionId: 'sess-1', label: 'Clip', filename: 'clip.mp4', mediaType: 'video/mp4', kind: 'video', previewable: true, category: 'visual', updatedAt: 1000 } as any,
+    videoProvenance: {
+      account_scope_id: 'acc-1',
+      provider: 'google',
+      model: 'gemini-omni-1.1-flash',
+      transport: 'google_interactions',
+      operation: 'create',
+      created_at: 1000,
+      interaction_id: 'interactions/omni-handle-123',
+      observed_width: 1280,
+      observed_height: 720,
+      observed_duration_ms: 10000,
+      aspect_ratio: '16:9',
+      resolution: '720p',
+    },
+  }
+
+  const omniModelOption: MediaCatalogModelOption = {
+    id: 'gemini-omni-1.1-flash',
+    provider: 'google',
+    model: 'gemini-omni-1.1-flash',
+    display_name: 'Gemini Omni 1.1 Flash',
+    kind: 'video_iteration',
+    ready: true,
+    constraints: {
+      model: 'gemini-omni-1.1-flash',
+      provider: 'google',
+      create: { supported: true, supports_duration: false },
+      edit: { supported: true, supports_duration: false, requires_handle_match: true },
+      extend: { supported: true, supports_duration: false, requires_omni_source: true },
+    },
+  }
+
+  // Next scene supported
+  const extSupport = evaluateVideoActionSupport('next_scene', omniItem, omniModelOption)
+  assert.equal(extSupport.supported, true)
+  assert.equal(extSupport.lockedOptions?.supportsDuration, false)
+
+  // Fine-tune supported
+  const editSupport = evaluateVideoActionSupport('fine_tune', omniItem, omniModelOption)
+  assert.equal(editSupport.supported, true)
+  assert.equal(editSupport.lockedOptions?.supportsDuration, false)
+
+  // Validation rejects manual duration selection on Omni
+  const invalidDur = validateMediaGenerationRequest({
+    action: 'next_scene',
+    item: omniItem,
+    model: 'gemini-omni-1.1-flash',
+    modelOption: omniModelOption,
+    prompt: 'Add trees',
+    settings: { durationSeconds: 8, resolution: '720p', aspectRatio: '16:9' },
+  })
+  assert.equal(invalidDur.valid, false)
+  assert.match(invalidDur.error || '', /does not accept duration selection/i)
+})
+
+test('media provenance integrity: Preview Omni rejects extension and fine-tuning', () => {
+  // Requirement: Only stable Gemini Omni is eligible for extension/editing; experimental/preview Omni models are blocked
+  const previewOmniItem: MediaLibraryItem = {
+    id: 'vid-preview-1',
+    title: 'Preview Omni Video',
+    filename: 'clip.mp4',
+    mediaType: 'video/mp4',
+    kind: 'video',
+    createdAt: 1000,
+    formattedDate: 'Sep 20, 2026',
+    formattedTime: '10:00 AM',
+    dayKey: '2026-09-20',
+    dayLabel: 'Today',
+    sessionId: 'sess-1',
+    sessionTitle: 'Session',
+    workspacePath: '/ws',
+    workspaceName: 'demo',
+    model: 'gemini-omni-preview',
+    aspectRatio: '16:9',
+    resolution: '720p',
+    directUrl: '/v3/sessions/sess-1/artifacts/art-preview?revision=1',
+    artifact: { artifactId: 'art-preview', sessionId: 'sess-1', label: 'Clip', filename: 'clip.mp4', mediaType: 'video/mp4', kind: 'video', previewable: true, category: 'visual', updatedAt: 1000 } as any,
+    videoProvenance: {
+      account_scope_id: 'acc-1',
+      provider: 'google',
+      model: 'gemini-omni-preview',
+      transport: 'google_interactions',
+      operation: 'create',
+      created_at: 1000,
+      interaction_id: 'interactions/preview-handle',
+      observed_width: 1280,
+      observed_height: 720,
+      observed_duration_ms: 10000,
+    },
+  }
+
+  const extSupport = evaluateVideoActionSupport('next_scene', previewOmniItem, undefined)
+  assert.equal(extSupport.supported, false)
+  assert.match(extSupport.reason || '', /stable model \(gemini-omni-1.1-flash\)/i)
+
+  const editSupport = evaluateVideoActionSupport('fine_tune', previewOmniItem, undefined)
+  assert.equal(editSupport.supported, false)
+  assert.match(editSupport.reason || '', /stable Gemini Omni/i)
+})
+
+test('media provenance integrity: missing or expired provenance blocks next scene', () => {
+  // Requirement: Missing videoProvenance or expired timestamps fail-closed with actionable reasons
+  const missingProvItem: MediaLibraryItem = {
+    id: 'vid-no-prov',
+    title: 'No Prov Video',
+    filename: 'clip.mp4',
+    mediaType: 'video/mp4',
+    kind: 'video',
+    createdAt: 1000,
+    formattedDate: 'Sep 20, 2026',
+    formattedTime: '10:00 AM',
+    dayKey: '2026-09-20',
+    dayLabel: 'Today',
+    sessionId: 'sess-1',
+    sessionTitle: 'Session',
+    workspacePath: '/ws',
+    workspaceName: 'demo',
+    model: 'veo-3.1-generate-preview',
+    directUrl: '/v3/sessions/sess-1/artifacts/art-noprov?revision=1',
+    artifact: { artifactId: 'art-noprov', sessionId: 'sess-1', label: 'Clip', filename: 'clip.mp4', mediaType: 'video/mp4', kind: 'video', previewable: true, category: 'visual', updatedAt: 1000 } as any,
+    videoProvenance: null,
+  }
+
+  const missingResult = evaluateVideoActionSupport('next_scene', missingProvItem, undefined)
+  assert.equal(missingResult.supported, false)
+  assert.match(missingResult.reason || '', /requires verified source provenance/i)
+
+  // Expired provenance (expires_at in past)
+  const expiredItem: MediaLibraryItem = {
+    ...missingProvItem,
+    videoProvenance: {
+      account_scope_id: 'acc-1',
+      provider: 'google',
+      model: 'veo-3.1-generate-preview',
+      transport: 'google_predict_long_running',
+      operation: 'create',
+      created_at: 1000,
+      expires_at: 5000,
+    },
+  }
+  const expiredResult = evaluateVideoActionSupport('next_scene', expiredItem, undefined, { nowMs: 6000 })
+  assert.equal(expiredResult.supported, false)
+  assert.match(expiredResult.reason || '', /has expired/i)
+
+  // Expired provenance (> 48h from creation for Veo)
+  const oldItem: MediaLibraryItem = {
+    ...missingProvItem,
+    videoProvenance: {
+      account_scope_id: 'acc-1',
+      provider: 'google',
+      model: 'veo-3.1-generate-preview',
+      transport: 'google_predict_long_running',
+      operation: 'create',
+      created_at: 1000,
+      expires_at: 1000 + 100 * 3600 * 1000,
+    },
+  }
+  const oldResult = evaluateVideoActionSupport('next_scene', oldItem, undefined, { nowMs: 1000 + 49 * 3600 * 1000 })
+  assert.equal(oldResult.supported, false)
+  assert.match(oldResult.reason || '', /has expired \(exceeds 48-hour validity period\)/i)
+})
+
+test('media provenance integrity: non-720p observed dimensions reject Veo extension', () => {
+  // Requirement: Veo extension requires observed 720p dimensions (1280x720 or 720x1280)
+  const hdItem: MediaLibraryItem = {
+    id: 'vid-hd-1',
+    title: '1080p Video',
+    filename: 'clip.mp4',
+    mediaType: 'video/mp4',
+    kind: 'video',
+    createdAt: 1000,
+    formattedDate: 'Sep 20, 2026',
+    formattedTime: '10:00 AM',
+    dayKey: '2026-09-20',
+    dayLabel: 'Today',
+    sessionId: 'sess-1',
+    sessionTitle: 'Session',
+    workspacePath: '/ws',
+    workspaceName: 'demo',
+    model: 'veo-3.1-generate-preview',
+    resolution: '1080p',
+    directUrl: '/v3/sessions/sess-1/artifacts/art-hd?revision=1',
+    artifact: { artifactId: 'art-hd', sessionId: 'sess-1', label: 'Clip', filename: 'clip.mp4', mediaType: 'video/mp4', kind: 'video', previewable: true, category: 'visual', updatedAt: 1000 } as any,
+    videoProvenance: {
+      account_scope_id: 'acc-1',
+      provider: 'google',
+      model: 'veo-3.1-generate-preview',
+      transport: 'google_predict_long_running',
+      operation: 'create',
+      created_at: 1000,
+      expires_at: 1000 + 48 * 3600 * 1000,
+      observed_width: 1920,
+      observed_height: 1080,
+      resolution: '1080p',
+    },
+  }
+
+  const result = evaluateVideoActionSupport('next_scene', hdItem, undefined, { nowMs: 2000 })
+  assert.equal(result.supported, false)
+  assert.match(result.reason || '', /requires observed 720p dimensions/i)
+})
+
+test('media provenance integrity: resolveVideoContinuationModel never silently replaces known source model', () => {
+  // Requirement: Veo Lite stays Veo Lite; unknown stays unknown. No silent substitution with default iteration model.
+  const videoCatalog: MediaCatalogModelOption[] = [
+    { id: 'veo-3.1-generate-preview', provider: 'google', model: 'veo-3.1-generate-preview', display_name: 'Veo 3.1', kind: 'video_generation', ready: true },
+    { id: 'veo-3.1-lite-generate-preview', provider: 'google', model: 'veo-3.1-lite-generate-preview', display_name: 'Veo 3.1 Lite', kind: 'video_generation', ready: true },
+    { id: 'gemini-omni-1.1-flash', provider: 'google', model: 'gemini-omni-1.1-flash', display_name: 'Gemini Omni', kind: 'video_iteration', ready: true },
+  ]
+
+  // Known Veo Lite matches exactly
+  const liteRes = resolveVideoContinuationModel('veo-3.1-lite-generate-preview', videoCatalog)
+  assert.equal(liteRes.modelId, 'veo-3.1-lite-generate-preview')
+  assert.equal(liteRes.isUnknown, false)
+  assert.equal(liteRes.modelOption?.display_name, 'Veo 3.1 Lite')
+
+  // Unknown source model stays explicitly unknown without defaulting to Omni
+  const unknownRes = resolveVideoContinuationModel('', videoCatalog)
+  assert.equal(unknownRes.modelId, '')
+  assert.equal(unknownRes.isUnknown, true)
+  assert.equal(unknownRes.modelOption, undefined)
+
+  // Unconfigured source string preserves original identifier
+  const customRes = resolveVideoContinuationModel('custom-model-id', videoCatalog)
+  assert.equal(customRes.modelId, 'custom-model-id')
+  assert.equal(customRes.isUnknown, false)
+})
+
+test('media provenance integrity: extractGenerationDurationSeconds never derives generation duration from extended combined output', () => {
+  // Requirement: Do not infer generation duration from total extended output
+  // An extended video has total observed length 16s, but generation duration was 8s
+  const extendedItem = {
+    durationSeconds: 8,
+    videoProvenance: {
+      account_scope_id: 'acc-1',
+      provider: 'google',
+      model: 'veo-3.1-generate-preview',
+      transport: 'google_predict_long_running',
+      operation: 'extend',
+      created_at: 1000,
+      observed_duration_ms: 16000, // 16 seconds total video
+      is_combined_output: true,    // output includes previous segments!
+    } as VideoProvenance,
+  }
+
+  const dur = extractGenerationDurationSeconds(extendedItem)
+  assert.equal(dur, 8, 'Must return saved generation duration (8s), NOT total extended output (16s)')
+
+  // If durationSeconds was missing and is_combined_output is true, do NOT infer 16s
+  const missingSavedDur = {
+    durationSeconds: undefined,
+    videoProvenance: {
+      account_scope_id: 'acc-1',
+      provider: 'google',
+      model: 'veo-3.1-generate-preview',
+      transport: 'google_predict_long_running',
+      operation: 'extend',
+      created_at: 1000,
+      observed_duration_ms: 16000,
+      is_combined_output: true,
+    } as VideoProvenance,
+  }
+  const durAbsent = extractGenerationDurationSeconds(missingSavedDur)
+  assert.equal(durAbsent, undefined, 'Must not infer generation duration from combined output')
+})
+
+test('media provenance integrity: resolution-duration dependencies and initial-image support', () => {
+  // Requirement: Resolution-duration dependency restricts durations; initial-image support is verified for to_video
+  const modelWithResDur: MediaCatalogModelOption = {
+    id: 'test-video-model',
+    provider: 'google',
+    model: 'test-video-model',
+    display_name: 'Test Video Model',
+    kind: 'video_generation',
+    ready: true,
+    generation_options: {
+      resolutions: ['720p', '1080p'],
+      durations: [4, 6, 8],
+      resolution_durations: {
+        '720p': [4, 6, 8],
+        '1080p': [4], // 1080p only supports 4s
+      },
+      initial_image: {
+        supported: true,
+        max_inputs: 1,
+      },
+    },
+  }
+
+  const durs720 = getSupportedDurationsForResolution(modelWithResDur, '720p')
+  assert.deepEqual(durs720, [4, 6, 8])
+
+  const durs1080 = getSupportedDurationsForResolution(modelWithResDur, '1080p')
+  assert.deepEqual(durs1080, [4])
+
+  // Model without initial image support
+  const modelNoInitialImage: MediaCatalogModelOption = {
+    id: 'text-to-video-only',
+    provider: 'google',
+    model: 'text-to-video-only',
+    display_name: 'Text-to-Video Only',
+    kind: 'video_generation',
+    ready: true,
+    generation_options: {
+      initial_image: { supported: false },
+    },
+  }
+
+  const imageItem: MediaLibraryItem = {
+    id: 'img-1',
+    title: 'Keyframe',
+    filename: 'frame.png',
+    mediaType: 'image/png',
+    kind: 'image',
+    createdAt: 1000,
+    formattedDate: 'Sep 20, 2026',
+    formattedTime: '10:00 AM',
+    dayKey: '2026-09-20',
+    dayLabel: 'Today',
+    sessionId: 'sess-1',
+    sessionTitle: 'Session',
+    workspacePath: '/ws',
+    workspaceName: 'demo',
+    directUrl: '/v3/sessions/sess-1/artifacts/img-1?revision=1',
+    artifact: { artifactId: 'img-1', sessionId: 'sess-1', label: 'Frame', filename: 'frame.png', mediaType: 'image/png', kind: 'image', previewable: true, category: 'visual', updatedAt: 1000 } as any,
+  }
+
+  const support = evaluateVideoActionSupport('to_video', imageItem, modelNoInitialImage)
+  assert.equal(support.supported, false)
+  assert.match(support.reason || '', /does not support initial image/i)
 })

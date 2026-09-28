@@ -292,7 +292,28 @@ function deliverableToMediaItem(
   const formattedTime = createdDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
   const dayKey = safeIsoDayKey(createdDate)
 
-  return {
+    const prov = (d as any).videoProvenance || (d as any).video_provenance || null
+    const model = prov?.model || (d as any).model || parentTask?.model || undefined
+    const aspectRatio = prov?.aspect_ratio || (d as any).aspectRatio || (d as any).aspect_ratio || d.videoAspect || parentTask?.aspectRatio || undefined
+    const resolution = prov?.resolution || (d as any).resolution || parentTask?.resolution || undefined
+    let durationSeconds: number | undefined = undefined
+    if (typeof (d as any).durationSeconds === 'number' && (d as any).durationSeconds > 0) {
+      durationSeconds = (d as any).durationSeconds
+    } else if (typeof (d as any).duration_seconds === 'number' && (d as any).duration_seconds > 0) {
+      durationSeconds = (d as any).duration_seconds
+    } else if (prov?.observed_duration_ms && prov.observed_duration_ms > 0 && !prov.is_combined_output) {
+      durationSeconds = Math.round((prov.observed_duration_ms + 500) / 1000)
+    } else if (typeof parentTask?.durationSeconds === 'number' && parentTask.durationSeconds > 0) {
+      durationSeconds = parentTask.durationSeconds
+    }
+
+    const durationMs = prov?.observed_duration_ms && prov.observed_duration_ms > 0
+      ? prov.observed_duration_ms
+      : (typeof (d as any).durationMs === 'number' && (d as any).durationMs > 0
+      ? (d as any).durationMs
+      : (durationSeconds ? durationSeconds * 1000 : undefined))
+
+    return {
     id: d.id,
     title: d.title,
     filename: `${d.title.replace(/[^a-zA-Z0-9_-]/g, '_')}.${kind === 'image' ? 'png' : 'mp4'}`,
@@ -310,13 +331,15 @@ function deliverableToMediaItem(
     iterationGroupId: parentTask?.id,
     iterationGroupTitle: parentTask?.title,
     dimensions: d.videoAspect || '1:1',
+    durationMs,
     directUrl: d.previewUrl || d.mediaUrl || '',
     parentId: d.parentDeliverableId || (d as any).parent_deliverable_id,
     sourceMediaRef: d.sourceMediaRef || (d as any).source_media_ref,
-    model: parentTask?.model,
-    aspectRatio: parentTask?.aspectRatio || d.videoAspect,
-    resolution: parentTask?.resolution,
-    durationSeconds: parentTask?.durationSeconds,
+    model,
+    aspectRatio,
+    resolution,
+    durationSeconds,
+    videoProvenance: prov,
     artifact: {
       artifactId: d.id,
       sessionId: parentTask?.sessionId || '',
@@ -325,6 +348,11 @@ function deliverableToMediaItem(
       kind,
       mediaType: kind === 'image' ? 'image/png' : 'video/mp4',
       description: d.prompt || d.title,
+      model,
+      aspectRatio,
+      resolution,
+      durationSeconds,
+      videoProvenance: prov,
       createdAt: createdDate.getTime(),
       updatedAt: createdDate.getTime(),
     } as any,
@@ -2659,8 +2687,13 @@ export function OrchestrateView({
             previewUrl: d.media_url || d.preview_url || (d.thumbnail && (d.thumbnail.startsWith('data:') || d.thumbnail.startsWith('http') || d.thumbnail.startsWith('/')) ? d.thumbnail : undefined),
             mediaUrl: d.media_url,
             thumbnailType: (d.thumbnail || 'cyber_lattice') as any,
-            videoAspect: t.aspect_ratio || '16:9',
+            videoAspect: d.aspect_ratio || d.aspectRatio || t.aspect_ratio || '16:9',
             prompt: t.subtitle || t.title,
+            model: d.model || t.model,
+            aspectRatio: d.aspect_ratio || d.aspectRatio || t.aspect_ratio,
+            resolution: d.resolution || t.resolution,
+            durationSeconds: d.duration_seconds || d.durationSeconds || t.duration_seconds || t.durationSeconds,
+            videoProvenance: d.video_provenance || d.videoProvenance,
             createdAt: d.created_at ? (isNaN(new Date(d.created_at).getTime()) ? new Date().toISOString() : new Date(d.created_at).toISOString()) : (d.createdAt || new Date().toISOString()),
             author: t.worker_name || 'Orchestrator',
             parentDeliverableId: d.parent_deliverable_id || d.parentDeliverableId,
@@ -3120,7 +3153,11 @@ export function OrchestrateView({
     const rawKind = (item as any).kind || (item as any).type || 'image'
     const isVideo = rawKind === 'video' || (item as any).mediaType?.startsWith('video/')
     const itemTitle = item.title || (item as any).filename || 'Media Item'
-    const directUrl = (item as any).directUrl || (item as any).url || (item as any).previewUrl || (item as any).mediaUrl || ''
+    let directUrl = (item as any).directUrl || (item as any).url || (item as any).previewUrl || (item as any).mediaUrl || ''
+    if ((item as any).artifact?.eventSeq && directUrl && !directUrl.includes('revision=') && !directUrl.includes('event_seq=') && !directUrl.startsWith('data:')) {
+      const sep = directUrl.includes('?') ? '&' : '?'
+      directUrl = `${directUrl}${sep}revision=${(item as any).artifact.eventSeq}`
+    }
     const mediaType = (item as any).mediaType || (isVideo ? 'video/mp4' : 'image/png')
 
     const mediaRef: ProjectTaskMediaRef = {

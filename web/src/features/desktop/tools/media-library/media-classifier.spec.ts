@@ -212,3 +212,54 @@ test('filterAndSearchMedia filters by kind, search query, and sorts properly', (
   assert.equal(sortedOldest[0].id, 'img-1')
   assert.equal(sortedOldest[2].id, 'aud-1')
 })
+
+test('toMediaLibraryItem extracts immutable videoProvenance and per-result settings without silent replacement', () => {
+  // Requirement: Opening any media must prefer verified per-result provenance and settings over parent task,
+  // unknown model stays explicitly undefined, and combined output duration is never inferred from observed total.
+  const artifactWithProv = mockArtifact({
+    artifactId: 'vid-prov-1',
+    kind: 'video',
+    mediaType: 'video/mp4',
+    filename: 'veo_scene.mp4',
+    model: 'veo-3.1-generate-preview',
+    aspectRatio: '16:9',
+    resolution: '720p',
+    durationSeconds: 8,
+    videoProvenance: {
+      account_scope_id: 'acc-scope-1',
+      provider: 'google',
+      model: 'veo-3.1-generate-preview',
+      transport: 'google_predict_long_running',
+      operation: 'extend',
+      observed_duration_ms: 16000,
+      observed_width: 1280,
+      observed_height: 720,
+      is_combined_output: true,
+      created_at: 1000,
+      aspect_ratio: '16:9',
+      resolution: '720p',
+    },
+  })
+
+  const item = toMediaLibraryItem(artifactWithProv)
+  assert.ok(item, 'Item must be created')
+  assert.equal(item.model, 'veo-3.1-generate-preview')
+  assert.equal(item.aspectRatio, '16:9')
+  assert.equal(item.resolution, '720p')
+  assert.equal(item.durationSeconds, 8, 'Must preserve 8s generation duration, not 16s total duration')
+  assert.equal(item.durationMs, 16000, 'Must expose full playback durationMs')
+  assert.ok(item.videoProvenance, 'Must expose typed videoProvenance')
+  assert.equal(item.videoProvenance?.operation, 'extend')
+
+  // Unknown model stays undefined
+  const artifactNoModel = mockArtifact({
+    artifactId: 'vid-nomodel',
+    kind: 'video',
+    mediaType: 'video/mp4',
+    filename: 'clip.mp4',
+    model: undefined,
+  })
+  const itemNoModel = toMediaLibraryItem(artifactNoModel)
+  assert.ok(itemNoModel)
+  assert.equal(itemNoModel.model, undefined, 'Unknown model must stay undefined')
+})
