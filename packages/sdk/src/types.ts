@@ -998,6 +998,26 @@ export interface WorkerAutomationDefinition {
   id: string;
   worker_id: string;
   name: string;
+  description?: string | null;
+  activation_mode: 'manual' | 'interval' | 'cron' | 'external_trigger' | string;
+  schedule?: {
+    kind: 'interval' | 'cron' | 'trigger';
+    interval_seconds?: number;
+    cron?: string;
+    timezone?: string;
+  } | null;
+  trigger?: WorkerTriggerConfig | null;
+  enabled: boolean;
+  plan_document: SessionPlanDocument;
+  input_requirements?: WorkerInputRequirement[] | null;
+  deliverable_requirements?: WorkerDeliverableRequirement[] | null;
+  revision: number;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface WorkerAutomationInput {
+  name: string;
   description?: string;
   activation_mode: 'manual' | 'interval' | 'cron' | 'external_trigger' | string;
   schedule?: {
@@ -1007,29 +1027,26 @@ export interface WorkerAutomationDefinition {
     timezone?: string;
   };
   trigger?: WorkerTriggerConfig;
-  enabled: boolean;
+  enabled?: boolean;
   plan_document: SessionPlanDocument;
   input_requirements?: WorkerInputRequirement[];
   deliverable_requirements?: WorkerDeliverableRequirement[];
-  revision: number;
-  created_at: number;
-  updated_at: number;
 }
 
 export interface WorkerRecord {
   id: string;
   account_scope_id: string;
   name: string;
-  description?: string;
+  description?: string | null;
   instructions: string;
   lifecycle_state: WorkerLifecycleState;
   revision: number;
-  requested_capabilities?: WorkerCapabilityRequest[];
-  workspace_requirements?: WorkerWorkspaceRequirement[];
-  local_bindings?: Record<string, string>;
-  automations?: WorkerAutomationDefinition[];
-  metadata?: Record<string, unknown>;
-  provenance?: WorkerProvenance;
+  requested_capabilities?: WorkerCapabilityRequest[] | null;
+  workspace_requirements?: WorkerWorkspaceRequirement[] | null;
+  local_bindings?: Record<string, string> | null;
+  automations?: WorkerAutomationDefinition[] | null;
+  metadata?: Record<string, unknown> | null;
+  provenance?: WorkerProvenance | null;
   created_at: number;
   updated_at: number;
 }
@@ -1064,7 +1081,6 @@ export interface WorkerRunRecord {
 }
 
 export interface PortableAutomationDefinition {
-  id?: string;
   name: string;
   description?: string;
   activation_mode: 'manual' | 'interval' | 'cron' | 'external_trigger' | string;
@@ -1084,26 +1100,24 @@ export interface PortableAutomationDefinition {
 export interface PortableWorkerDefinition {
   schema_version: 1;
   name: string;
-  description?: string;
+  description?: string | null;
   instructions: string;
-  metadata?: Record<string, unknown>;
-  capabilities?: WorkerCapabilityRequest[];
-  workspace_requirements?: WorkerWorkspaceRequirement[];
-  automations?: PortableAutomationDefinition[];
-  provenance?: WorkerProvenance;
+  metadata?: Record<string, unknown> | null;
+  capabilities?: WorkerCapabilityRequest[] | null;
+  workspace_requirements?: WorkerWorkspaceRequirement[] | null;
+  automations?: PortableAutomationDefinition[] | null;
+  provenance?: WorkerProvenance | null;
 }
 
 export interface CreateWorkerParams {
-  id?: string;
   name: string;
   description?: string;
   instructions: string;
   requested_capabilities?: WorkerCapabilityRequest[];
   workspace_requirements?: WorkerWorkspaceRequirement[];
-  local_bindings?: Record<string, string>;
-  automations?: WorkerAutomationDefinition[];
+  automations?: WorkerAutomationInput[];
   metadata?: Record<string, unknown>;
-  idempotency_key?: string;
+  idempotency_key: string;
 }
 
 export interface UpdateWorkerParams {
@@ -1112,15 +1126,14 @@ export interface UpdateWorkerParams {
   instructions?: string;
   requested_capabilities?: WorkerCapabilityRequest[];
   workspace_requirements?: WorkerWorkspaceRequirement[];
-  local_bindings?: Record<string, string>;
-  automations?: WorkerAutomationDefinition[];
+  automations?: WorkerAutomationInput[];
   metadata?: Record<string, unknown>;
   change_summary?: string;
 }
 
 export interface ListWorkersParams {
   limit?: number;
-  after?: string;
+  cursor?: string;
   lifecycle_state?: WorkerLifecycleState;
   include_deleted?: boolean;
 }
@@ -1128,20 +1141,19 @@ export interface ListWorkersParams {
 export interface ListWorkersResult {
   workers: WorkerRecord[];
   next_cursor?: string;
-  total_count: number;
 }
 
 export interface AttachWorkerAutomationParams {
   worker_id: string;
   expected_worker_revision: number;
-  automation: WorkerAutomationDefinition;
+  automation: WorkerAutomationInput;
 }
 
 export interface UpdateWorkerAutomationParams {
   worker_id: string;
   automation_id: string;
   expected_worker_revision: number;
-  automation: WorkerAutomationDefinition;
+  automation: WorkerAutomationInput;
 }
 
 export interface RemoveWorkerAutomationParams {
@@ -1151,14 +1163,17 @@ export interface RemoveWorkerAutomationParams {
 }
 
 export interface WorkerValidateResult {
-  ok: boolean;
-  definition?: PortableWorkerDefinition;
-  error?: string;
+  valid: boolean;
+  worker: PortableWorkerDefinition;
 }
 
 export interface WorkerExportResult {
-  ok: boolean;
-  worker_id: string;
-  definition: PortableWorkerDefinition;
-  raw_json: string;
+  worker: PortableWorkerDefinition;
+}
+
+export interface ImportWorkerOptions {
+  mode?: 'new' | 'update';
+  idempotencyKey?: string;
+  targetWorkerId?: string;
+  expectedRevision?: number;
 }

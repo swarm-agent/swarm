@@ -9,11 +9,12 @@ import type {
   PortableWorkerDefinition,
   CreateWorkerParams,
   WorkerAutomationDefinition,
+  WorkerAutomationInput,
 } from '../types.js';
 
 // Invariant: SDK provides typed /v3/workers client matching backend authority.
-// Threat: Protocol divergence, lost pagination, silent mutations, lack of revision CAS guards.
-// Boundary: SwarmWorkersNamespace create, get, list, update, validate, export, import, automations.
+// Threat: Wire protocol divergence, lost cursor pagination, lack of revision CAS guards, malformed envelope acceptance.
+// Boundary: SwarmWorkersNamespace create, get, list, update, delete, validate, export, import, automations.
 
 function sampleWorkerRecord(overrides?: Partial<WorkerRecord>): WorkerRecord {
   return {
@@ -62,23 +63,24 @@ function samplePortableDefinition(): PortableWorkerDefinition {
   };
 }
 
-test('SwarmWorkersNamespace: create worker sends correct envelope and parses response', async () => {
+test('SwarmWorkersNamespace: create worker sends required idempotency_key, excludes caller id/bindings, parses envelope', async () => {
   let receivedMethod = '';
   let receivedPath = '';
+  let receivedHeaders: http.IncomingHttpHeaders = {};
   let receivedBody: any = null;
 
   const server = http.createServer((req, res) => {
     receivedMethod = req.method || '';
     receivedPath = req.url || '';
+    receivedHeaders = req.headers;
     if (req.method === 'POST' && req.url === '/v3/workers') {
       const chunks: Buffer[] = [];
       req.on('data', (c) => chunks.push(c));
       req.on('end', () => {
         receivedBody = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.writeHead(201, { 'Content-Type': 'application/json' });
         res.end(
           JSON.stringify({
-            ok: true,
             worker: sampleWorkerRecord({
               name: receivedBody.name,
               instructions: receivedBody.instructions,
@@ -104,6 +106,24 @@ test('SwarmWorkersNamespace: create worker sends correct envelope and parses res
     });
     const workers = new SwarmWorkersNamespace(transport);
 
+    // Validation: missing idempotency_key rejected
+    await assert.rejects(async () => {
+      await workers.create({
+        name: 'DevOps Specialist',
+        instructions: 'Do work',
+        idempotency_key: '',
+      });
+    }, SwarmValidationError);
+
+    // Validation: missing name rejected
+    await assert.rejects(async () => {
+      await workers.create({
+        name: '   ',
+        instructions: 'Do work',
+        idempotency_key: 'idemp-1',
+      });
+    }, SwarmValidationError);
+
     const params: CreateWorkerParams = {
       name: 'DevOps Specialist',
       instructions: '# DevOps Specialist\nExecute infrastructure scripts safely.',
@@ -113,8 +133,11 @@ test('SwarmWorkersNamespace: create worker sends correct envelope and parses res
     const record = await workers.create(params);
     assert.equal(receivedMethod, 'POST');
     assert.equal(receivedPath, '/v3/workers');
+    assert.equal(receivedHeaders['idempotency-key'], 'idemp-1234');
     assert.equal(receivedBody.name, 'DevOps Specialist');
     assert.equal(receivedBody.idempotency_key, 'idemp-1234');
+    assert.equal(receivedBody.id, undefined);
+    assert.equal(receivedBody.local_bindings, undefined);
     assert.equal(record.id, 'worker_1234567890abcdef');
     assert.equal(record.lifecycle_state, 'idle');
     assert.equal(record.revision, 1);
@@ -123,14 +146,44 @@ test('SwarmWorkersNamespace: create worker sends correct envelope and parses res
   }
 });
 
-test('SwarmWorkersNamespace: get worker returns record or null on 404', async () => {
+test('SwarmWorkersNamespace: create worker rejects malformed response envelope', async () => {
+  const server = http.createServer((_req, res) => {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true })); // missing worker field
+  });
+
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+  const port = (server.address() as any).port;
+
+  try {
+    const transport = new SwarmTransport({
+      baseUrl: `http://127.0.0.1:${port}`,
+      token: 'swk_test_auth',
+      defaultHeaders: {},
+      timeoutMs: 5000,
+    });
+    const workers = new SwarmWorkersNamespace(transport);
+
+    await assert.rejects(async () => {
+      await workers.create({
+        name: 'DevOps Specialist',
+        instructions: 'Do work',
+        idempotency_key: 'idemp-1234',
+      });
+    }, SwarmValidationError);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test('SwarmWorkersNamespace: get worker returns record or null on 404, rejects blank id', async () => {
   const server = http.createServer((req, res) => {
     if (req.method === 'GET' && req.url === '/v3/workers/worker_existing') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, worker: sampleWorkerRecord({ id: 'worker_existing' }) }));
+      res.end(JSON.stringify({ worker: sampleWorkerRecord({ id: 'worker_existing' }) }));
     } else if (req.method === 'GET' && req.url === '/v3/workers/worker_nonexistent') {
       res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: false, error: 'worker not found' }));
+      res.end(JSON.stringify({ error: 'worker not found' }));
     } else {
       res.writeHead(500);
       res.end();
@@ -157,14 +210,14 @@ test('SwarmWorkersNamespace: get worker returns record or null on 404', async ()
     assert.equal(notFound, null);
 
     await assert.rejects(async () => {
-      await workers.get('');
+      await workers.get('   ');
     }, SwarmValidationError);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 });
 
-test('SwarmWorkersNamespace: list workers serializes params and preserves next_cursor and total_count', async () => {
+test('SwarmWorkersNamespace: list workers uses cursor parameter and returns no total_count', async () => {
   let requestedUrl = '';
   const server = http.createServer((req, res) => {
     requestedUrl = req.url || '';
@@ -174,7 +227,6 @@ test('SwarmWorkersNamespace: list workers serializes params and preserves next_c
         JSON.stringify({
           workers: [sampleWorkerRecord({ id: 'w1' }), sampleWorkerRecord({ id: 'w2' })],
           next_cursor: 'cursor_offset_2',
-          total_count: 5,
         })
       );
     } else {
@@ -197,25 +249,26 @@ test('SwarmWorkersNamespace: list workers serializes params and preserves next_c
 
     const res = await workers.list({
       limit: 2,
-      after: 'prev_cursor',
+      cursor: 'cursor_offset_1',
       lifecycle_state: 'idle',
       include_deleted: true,
     });
 
     assert.ok(requestedUrl.includes('limit=2'));
-    assert.ok(requestedUrl.includes('after=prev_cursor'));
+    assert.ok(requestedUrl.includes('cursor=cursor_offset_1'));
+    assert.ok(!requestedUrl.includes('after='));
     assert.ok(requestedUrl.includes('lifecycle_state=idle'));
     assert.ok(requestedUrl.includes('include_deleted=true'));
 
     assert.equal(res.workers.length, 2);
     assert.equal(res.next_cursor, 'cursor_offset_2');
-    assert.equal(res.total_count, 5);
+    assert.equal((res as any).total_count, undefined);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 });
 
-test('SwarmWorkersNamespace: update worker requires explicit revision CAS guard', async () => {
+test('SwarmWorkersNamespace: update worker sends expected_revision in body only and no local_bindings', async () => {
   let receivedMethod = '';
   let receivedPath = '';
   let receivedBody: any = null;
@@ -232,7 +285,6 @@ test('SwarmWorkersNamespace: update worker requires explicit revision CAS guard'
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(
             JSON.stringify({
-              ok: true,
               worker: sampleWorkerRecord({
                 id: 'worker_target',
                 revision: 3,
@@ -242,7 +294,7 @@ test('SwarmWorkersNamespace: update worker requires explicit revision CAS guard'
           );
         } else {
           res.writeHead(409, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ ok: false, error: 'revision conflict' }));
+          res.end(JSON.stringify({ error: 'revision conflict' }));
         }
       });
     } else {
@@ -263,9 +315,13 @@ test('SwarmWorkersNamespace: update worker requires explicit revision CAS guard'
     });
     const workers = new SwarmWorkersNamespace(transport);
 
-    // Reject non-numeric revision
+    // Reject non-numeric or non-safe-integer revision
     await assert.rejects(async () => {
       await workers.update('worker_target', 0, { name: 'New Name' });
+    }, SwarmValidationError);
+
+    await assert.rejects(async () => {
+      await workers.update('worker_target', 1.5, { name: 'New Name' });
     }, SwarmValidationError);
 
     const updated = await workers.update('worker_target', 2, {
@@ -274,7 +330,9 @@ test('SwarmWorkersNamespace: update worker requires explicit revision CAS guard'
     });
     assert.equal(receivedMethod, 'PUT');
     assert.equal(receivedPath, '/v3/workers/worker_target');
+    assert.ok(!receivedPath.includes('expected_revision'));
     assert.equal(receivedBody.expected_revision, 2);
+    assert.equal(receivedBody.local_bindings, undefined);
     assert.equal(receivedBody.name, 'Updated DevOps Specialist');
     assert.equal(updated.revision, 3);
   } finally {
@@ -282,47 +340,159 @@ test('SwarmWorkersNamespace: update worker requires explicit revision CAS guard'
   }
 });
 
-test('SwarmWorkersNamespace: validate, export and import round-trip', async () => {
+test('SwarmWorkersNamespace: delete worker sends expected_revision and validates nonblank ID', async () => {
+  let receivedMethod = '';
+  let receivedPath = '';
+
+  const server = http.createServer((req, res) => {
+    receivedMethod = req.method || '';
+    receivedPath = req.url || '';
+    if (req.method === 'DELETE' && req.url === '/v3/workers/worker_del?expected_revision=3') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    } else {
+      res.writeHead(404);
+      res.end();
+    }
+  });
+
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+  const port = (server.address() as any).port;
+
+  try {
+    const transport = new SwarmTransport({
+      baseUrl: `http://127.0.0.1:${port}`,
+      token: 'swk_test_auth',
+      defaultHeaders: {},
+      timeoutMs: 5000,
+    });
+    const workers = new SwarmWorkersNamespace(transport);
+
+    await assert.rejects(async () => {
+      await workers.delete('', 1);
+    }, SwarmValidationError);
+
+    await assert.rejects(async () => {
+      await workers.delete('worker_del', 0);
+    }, SwarmValidationError);
+
+    const ok = await workers.delete('worker_del', 3);
+    assert.equal(ok, true);
+    assert.equal(receivedMethod, 'DELETE');
+    assert.equal(receivedPath, '/v3/workers/worker_del?expected_revision=3');
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test('SwarmWorkersNamespace: validate sends raw PortableWorkerDefinition and parses { valid: true, worker: doc }', async () => {
   const portableDef = samplePortableDefinition();
-  let importBody: any = null;
+  let receivedBody: any = null;
 
   const server = http.createServer((req, res) => {
     if (req.method === 'POST' && req.url === '/v3/workers/validate') {
       const chunks: Buffer[] = [];
       req.on('data', (c) => chunks.push(c));
       req.on('end', () => {
-        const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-        if (body.schema_version === 1 && body.name) {
+        receivedBody = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        if (receivedBody.schema_version === 1 && receivedBody.name) {
           res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ ok: true, definition: body }));
+          res.end(JSON.stringify({ valid: true, worker: receivedBody }));
         } else {
           res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ ok: false, error: 'invalid schema' }));
+          res.end(JSON.stringify({ error: 'invalid schema' }));
         }
       });
-    } else if (req.method === 'GET' && req.url === '/v3/workers/worker_1/export') {
+    } else {
+      res.writeHead(404);
+      res.end();
+    }
+  });
+
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+  const port = (server.address() as any).port;
+
+  try {
+    const transport = new SwarmTransport({
+      baseUrl: `http://127.0.0.1:${port}`,
+      token: 'swk_test_auth',
+      defaultHeaders: {},
+      timeoutMs: 5000,
+    });
+    const workers = new SwarmWorkersNamespace(transport);
+
+    const valRes = await workers.validate(portableDef);
+    assert.equal(valRes.valid, true);
+    assert.equal(valRes.worker.name, 'DevOps Specialist');
+    assert.equal(receivedBody.schema_version, 1);
+    assert.equal(receivedBody.definition, undefined); // verified raw body, not wrapped
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test('SwarmWorkersNamespace: export worker returns { worker: doc } and rejects malformed envelope', async () => {
+  const portableDef = samplePortableDefinition();
+
+  const server = http.createServer((req, res) => {
+    if (req.method === 'GET' && req.url === '/v3/workers/worker_1/export') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(
-        JSON.stringify({
-          ok: true,
-          worker_id: 'worker_1',
-          definition: portableDef,
-          raw_json: JSON.stringify(portableDef, null, 2),
-        })
-      );
-    } else if (req.method === 'POST' && req.url === '/v3/workers/import') {
+      res.end(JSON.stringify({ worker: portableDef }));
+    } else {
+      res.writeHead(404);
+      res.end();
+    }
+  });
+
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+  const port = (server.address() as any).port;
+
+  try {
+    const transport = new SwarmTransport({
+      baseUrl: `http://127.0.0.1:${port}`,
+      token: 'swk_test_auth',
+      defaultHeaders: {},
+      timeoutMs: 5000,
+    });
+    const workers = new SwarmWorkersNamespace(transport);
+
+    await assert.rejects(async () => {
+      await workers.export('   ');
+    }, SwarmValidationError);
+
+    const expRes = await workers.export('worker_1');
+    assert.equal(expRes.worker.name, 'DevOps Specialist');
+    assert.equal(expRes.worker.schema_version, 1);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test('SwarmWorkersNamespace: import sends raw doc body with mode and idempotency query parameters', async () => {
+  const portableDef = samplePortableDefinition();
+  let receivedUrl = '';
+  let receivedHeaders: http.IncomingHttpHeaders = {};
+  let receivedBody: any = null;
+
+  const server = http.createServer((req, res) => {
+    receivedUrl = req.url || '';
+    receivedHeaders = req.headers;
+    if (req.method === 'POST' && req.url?.startsWith('/v3/workers/import')) {
       const chunks: Buffer[] = [];
       req.on('data', (c) => chunks.push(c));
       req.on('end', () => {
-        importBody = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-        res.writeHead(200, { 'Content-Type': 'application/json' });
+        receivedBody = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        const u = new URL(req.url!, 'http://127.0.0.1');
+        const mode = u.searchParams.get('mode');
+        const workerId = u.searchParams.get('worker_id') || 'worker_imported_new';
+        const rev = u.searchParams.get('expected_revision');
+        res.writeHead(mode === 'new' ? 201 : 200, { 'Content-Type': 'application/json' });
         res.end(
           JSON.stringify({
-            ok: true,
             worker: sampleWorkerRecord({
-              id: importBody.target_worker_id || 'worker_newly_imported',
-              revision: importBody.expected_revision ? importBody.expected_revision + 1 : 1,
-              name: importBody.definition.name,
+              id: workerId,
+              revision: rev ? Number(rev) + 1 : 1,
+              name: receivedBody.name,
             }),
           })
         );
@@ -345,42 +515,57 @@ test('SwarmWorkersNamespace: validate, export and import round-trip', async () =
     });
     const workers = new SwarmWorkersNamespace(transport);
 
-    // 1. Validate
-    const valRes = await workers.validate(portableDef);
-    assert.equal(valRes.ok, true);
-    assert.equal(valRes.definition?.name, 'DevOps Specialist');
-
-    // 2. Export
-    const expRes = await workers.export('worker_1');
-    assert.equal(expRes.ok, true);
-    assert.equal(expRes.worker_id, 'worker_1');
-    assert.equal(expRes.definition.name, 'DevOps Specialist');
-    assert.ok(expRes.raw_json.includes('DevOps Specialist'));
-
-    // 3. Import as new identity
-    const importedNew = await workers.import(portableDef);
-    assert.equal(importedNew.id, 'worker_newly_imported');
-    assert.equal(importBody.target_worker_id, undefined);
-
-    // 4. Import as update to existing target requires explicit revision
+    // 1. New import requires idempotencyKey option
     await assert.rejects(async () => {
-      await workers.import(portableDef, { targetWorkerId: 'worker_existing' });
+      await workers.import(portableDef, {} as any);
+    }, SwarmValidationError);
+
+    // 2. New import sends raw body, query mode=new&idempotency_key=...
+    const importedNew = await workers.import(portableDef, {
+      mode: 'new',
+      idempotencyKey: 'idemp-import-1',
+    });
+    assert.equal(importedNew.id, 'worker_imported_new');
+    assert.equal(importedNew.revision, 1);
+    assert.ok(receivedUrl.includes('mode=new'));
+    assert.ok(receivedUrl.includes('idempotency_key=idemp-import-1'));
+    assert.equal(receivedHeaders['idempotency-key'], 'idemp-import-1');
+    assert.equal(receivedBody.name, 'DevOps Specialist');
+    assert.equal(receivedBody.definition, undefined); // verified raw body
+
+    // 3. Update import requires targetWorkerId and expectedRevision >= 1
+    await assert.rejects(async () => {
+      await workers.import(portableDef, {
+        mode: 'update',
+        targetWorkerId: '',
+        expectedRevision: 1,
+      });
+    }, SwarmValidationError);
+
+    await assert.rejects(async () => {
+      await workers.import(portableDef, {
+        mode: 'update',
+        targetWorkerId: 'worker_target',
+        expectedRevision: 0,
+      });
     }, SwarmValidationError);
 
     const importedUpdate = await workers.import(portableDef, {
-      targetWorkerId: 'worker_existing',
-      expectedRevision: 3,
+      mode: 'update',
+      targetWorkerId: 'worker_target',
+      expectedRevision: 4,
     });
-    assert.equal(importedUpdate.id, 'worker_existing');
-    assert.equal(importedUpdate.revision, 4);
-    assert.equal(importBody.target_worker_id, 'worker_existing');
-    assert.equal(importBody.expected_revision, 3);
+    assert.equal(importedUpdate.id, 'worker_target');
+    assert.equal(importedUpdate.revision, 5);
+    assert.ok(receivedUrl.includes('mode=update'));
+    assert.ok(receivedUrl.includes('worker_id=worker_target'));
+    assert.ok(receivedUrl.includes('expected_revision=4'));
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 });
 
-test('SwarmWorkersNamespace: attach, update, and remove automation definitions', async () => {
+test('SwarmWorkersNamespace: attach and update send body {expected_worker_revision,automation} without query params', async () => {
   let lastMethod = '';
   let lastUrl = '';
   let lastBody: any = null;
@@ -395,7 +580,7 @@ test('SwarmWorkersNamespace: attach, update, and remove automation definitions',
         lastBody = JSON.parse(Buffer.concat(chunks).toString('utf8'));
       }
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, worker: sampleWorkerRecord({ revision: 2 }) }));
+      res.end(JSON.stringify({ worker: sampleWorkerRecord({ revision: 2 }) }));
     });
   });
 
@@ -411,9 +596,7 @@ test('SwarmWorkersNamespace: attach, update, and remove automation definitions',
     });
     const workers = new SwarmWorkersNamespace(transport);
 
-    const autoDef: WorkerAutomationDefinition = {
-      id: 'wauto_abc123',
-      worker_id: 'worker_1',
+    const autoInput: WorkerAutomationInput = {
       name: 'Hourly Heartbeat',
       activation_mode: 'interval',
       schedule: { kind: 'interval', interval_seconds: 3600 },
@@ -422,34 +605,34 @@ test('SwarmWorkersNamespace: attach, update, and remove automation definitions',
         title: 'Heartbeat Plan',
         checkpoints: [{ id: 'cp-1', title: 'Heartbeat', status: 'pending' }],
       },
-      revision: 1,
-      created_at: 1789990000000,
-      updated_at: 1789990000000,
     };
 
-    // Attach
+    // 1. Attach automation
     await workers.attachAutomation({
       worker_id: 'worker_1',
       expected_worker_revision: 1,
-      automation: autoDef,
+      automation: autoInput,
     });
     assert.equal(lastMethod, 'POST');
     assert.equal(lastUrl, '/v3/workers/worker_1/automations');
+    assert.ok(!lastUrl.includes('expected_worker_revision'));
     assert.equal(lastBody.expected_worker_revision, 1);
-    assert.equal(lastBody.automation.id, 'wauto_abc123');
+    assert.equal(lastBody.automation.name, 'Hourly Heartbeat');
 
-    // Update
+    // 2. Update automation
     await workers.updateAutomation({
       worker_id: 'worker_1',
       automation_id: 'wauto_abc123',
       expected_worker_revision: 2,
-      automation: autoDef,
+      automation: autoInput,
     });
     assert.equal(lastMethod, 'PUT');
     assert.equal(lastUrl, '/v3/workers/worker_1/automations/wauto_abc123');
+    assert.ok(!lastUrl.includes('expected_worker_revision'));
     assert.equal(lastBody.expected_worker_revision, 2);
+    assert.equal(lastBody.automation.name, 'Hourly Heartbeat');
 
-    // Remove
+    // 3. Remove automation sends expected_worker_revision query
     await workers.removeAutomation({
       worker_id: 'worker_1',
       automation_id: 'wauto_abc123',
