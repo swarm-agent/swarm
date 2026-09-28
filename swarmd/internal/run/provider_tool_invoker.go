@@ -671,12 +671,11 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 	if workerDocumentInPlanCall(call) {
 		return tool.Result{CallID: call.CallID, Name: call.Name, Error: "Worker proposals require manage_workers action=propose; session-plan tools cannot author workers"}, 0, nil
 	}
-	if workerProposalCall(call) {
-		isOrchestrator := strings.EqualFold(config.agentProfile.Name, agentruntime.SwarmOrchestratorAgentID) ||
-			strings.EqualFold(config.agentProfile.Name, "orchestrator") ||
-			strings.EqualFold(config.agentProfile.Name, "system-orchestrator")
+	toolName := canonicalToolName(call.Name)
+	if toolName == "manage_workers" || toolName == "manage_automation" {
+		isOrchestrator := agentruntime.IsOrchestratorAgentName(config.agentProfile.Name)
 		if permissionSessionID != config.sessionID || !isOrchestrator {
-			return tool.Result{CallID: call.CallID, Name: call.Name, Error: "Worker proposal authoring is exclusive to Swarm Orchestrator in Swarm mode"}, 0, nil
+			return tool.Result{CallID: call.CallID, Name: call.Name, Error: "Worker and automation management is exclusive to Swarm Orchestrator in Swarm mode"}, 0, nil
 		}
 		current, _, err := s.automationV2ToolSession(config.sessionID)
 		if err != nil {
@@ -684,7 +683,7 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 		}
 		principal := providerManagedExecutionPrincipal(ctx, config)
 		if !principal.Valid() || principal.AccountScopeID != current.AccountScopeID || principal.UserID != current.UserID {
-			return tool.Result{CallID: call.CallID, Name: call.Name, Error: "Automation proposal principal mismatch"}, 0, nil
+			return tool.Result{CallID: call.CallID, Name: call.Name, Error: "Worker and automation management principal mismatch"}, 0, nil
 		}
 	}
 	if canonicalToolName(call.Name) != mediaInspectToolName {
