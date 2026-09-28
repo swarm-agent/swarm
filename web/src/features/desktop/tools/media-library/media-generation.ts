@@ -1,5 +1,4 @@
 import type { MediaCatalogModelOption } from '../../settings/media/queries/get-media-settings'
-import type { VideoProvenance } from '../../session-v3/artifact-api'
 import type { MediaLibraryItem } from './types'
 
 export interface MediaGenerationSettings {

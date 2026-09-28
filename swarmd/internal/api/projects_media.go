@@ -1020,15 +1020,15 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 								t.Deliverables[slotIndex].Model = usedModel
 								t.Deliverables[slotIndex].AspectRatio = resolvedAR
 								t.Deliverables[slotIndex].Resolution = resolvedRes
-								desc := fmt.Sprintf("Autonomous deliverable for %s in aspect ratio %s", t.Title, descAR)
+								desc := fmt.Sprintf("Autonomous deliverable for %s in aspect ratio %s", t.Title, resolvedAR)
 								if resolvedRes != "" {
-									desc = fmt.Sprintf("Autonomous deliverable for %s in aspect ratio %s (%s)", t.Title, descAR, resolvedRes)
+									desc = fmt.Sprintf("Autonomous deliverable for %s in aspect ratio %s (%s)", t.Title, resolvedAR, resolvedRes)
 								}
 								if usedModel != "" {
 									if resolvedRes != "" {
-										desc = fmt.Sprintf("Autonomous deliverable for %s in aspect ratio %s (%s) using %s", t.Title, descAR, resolvedRes, usedModel)
+										desc = fmt.Sprintf("Autonomous deliverable for %s in aspect ratio %s (%s) using %s", t.Title, resolvedAR, resolvedRes, usedModel)
 									} else {
-										desc = fmt.Sprintf("Autonomous deliverable for %s in aspect ratio %s using %s", t.Title, descAR, usedModel)
+										desc = fmt.Sprintf("Autonomous deliverable for %s in aspect ratio %s using %s", t.Title, resolvedAR, usedModel)
 									}
 								}
 								t.Deliverables[slotIndex].Description = desc
