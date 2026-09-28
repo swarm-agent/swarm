@@ -2593,7 +2593,6 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 		}
 		generated, err := r.videoGeneration.GenerateManagedVideo(identity.ContextWithPrincipal(ctx, scope.Principal), videogen.ManagedVideoRequest{
 			Operation:       op,
-			Model:           model,
 			Prompt:          prompt,
 			AspectRatio:     aspectRatio,
 			Resolution:      resolution,
