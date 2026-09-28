@@ -2844,9 +2844,11 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 
-			if err := db.PutProjectTask(p.AccountScopeID, &task); err != nil {
-				writeError(w, http.StatusBadRequest, err)
-				return
+			if !isDirectMediaTask(&task) || !req.AutoApprove {
+				if err := db.PutProjectTask(p.AccountScopeID, &task); err != nil {
+					writeError(w, http.StatusBadRequest, err)
+					return
+				}
 			}
 
 			// Add task ID to project.ActiveTaskIDs

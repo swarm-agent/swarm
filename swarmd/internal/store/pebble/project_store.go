@@ -416,7 +416,7 @@ func (t *ProjectTaskRecord) Validate() error {
 		case "image":
 			t.OutcomeType = "media_bundle"
 		case "video":
-			if t.VariantCount <= 1 && len(t.Scenes) <= 1 {
+			if len(t.Scenes) <= 1 {
 				t.OutcomeType = "video_clip"
 			} else {
 				t.OutcomeType = "video_story"

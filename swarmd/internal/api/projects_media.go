@@ -1629,6 +1629,8 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 			return nil
 		})
 	} else if task.Agent == "sound" || task.Agent == "audio" {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		defer cancel()
 		soundModel := strings.TrimSpace(task.Model)
 		if soundModel == "" && s.uiSettings != nil && strings.TrimSpace(p.AccountScopeID) != "" {
 			if uiSet, err := s.uiSettings.GetForAccount(p.AccountScopeID); err == nil {

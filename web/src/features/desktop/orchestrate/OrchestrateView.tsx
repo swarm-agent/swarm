@@ -1,6 +1,5 @@
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
 import { useVideoTaskDefault } from './use-video-task-default'
-import { useQuery } from '@tanstack/react-query'
 import { getUISettings } from '../settings/swarm/queries/get-ui-settings'
 import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
 import { isSwarmSection, swarmPageLink, type SwarmPage } from './swarm-navigation'
@@ -3892,7 +3891,7 @@ export function OrchestrateView({
     }
   }, [tasks, selectedTaskId])
 
-  const [mediaSyncError, setMediaSyncError] = useState<string | null>(null)
+  const mediaSyncError = projectTasksError
   const handleUpdateTaskModel = useCallback(
     async (taskId: string, newModel: string, scopeInput?: AgentModelControlTaskOverrideInput | null) => {
       if (!selectedProject?.id) return
@@ -5040,9 +5039,11 @@ export function OrchestrateView({
     handleClearTaskError(taskId)
     try {
       const task = tasks.find(item => item.id === taskId)
-      const action = task?.deliverables?.some(item => item.type === 'video' || item.type === 'image') ? 'accept' : 'complete'
+      const endpoint = task?.deliverables?.some(item => item.type === 'video' || item.type === 'image')
+        ? `/v3/projects/${selectedProject.id}/tasks/${taskId}/accept`
+        : `/v3/projects/${selectedProject.id}/tasks/${taskId}/complete`
       const res = await requestJson<{ status?: string; task?: any }>(
-        `/v3/projects/${selectedProject.id}/tasks/${taskId}/${action}`,
+        endpoint,
         {
           method: 'POST',
         }
@@ -8697,7 +8698,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
               <X size={16} />
             </button>
           </div>
-          {mediaSyncError && <p role="alert" className="px-5 py-2 text-xs text-amber-300">Live updates interrupted: {mediaSyncError}. Retrying automatically; do not resubmit.</p>}
+          {mediaSyncError && <p role="alert" className="px-5 py-2 text-xs text-amber-300">Live updates interrupted: {mediaSyncError}. Refresh project state before resubmitting.</p>}
           <div className="flex-1 min-h-0">
             <HistoricalMediaLibrary
               onClose={() => setShowFullMediaCenter(false)}

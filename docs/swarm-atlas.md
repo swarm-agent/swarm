@@ -3359,3 +3359,9 @@ was current while old rejected criteria disabled approval. `orchestrate-plan-aut
 now compares plan identity/revision before overlaying session execution documents on
 new task definitions. Its regression passes; the strengthened real-browser check
 requires current criteria, no rejected banner, and enabled approval, and passes.
+
+### 2026-09-28 — Task and media integration reconciliation
+
+Reconciled task lifecycle changes with direct-media admission, explicit video operations, provider provenance and response sanitization. Code-task creation keeps `CreateProjectTask`; direct media retains its preflight path and avoids stale post-dispatch writes. `ProjectTaskRecord.Validate` classifies independent video variants as clips, with explicit scenes determining stories. `executeDirectMediaTask` retains real audio dispatch with a bounded context and incoming video-service injection. Desktop realtime hydration in `mapBackendTask` now retains result-owned model/settings/provenance without substituting requested task settings; media errors consume canonical project state. No new routes or provider settings changes.
+
+Daemon compilation and Desktop TypeScript checking passed during integration. Focused media service checks passed; added classification and result-mapping regressions and reconciled source-only media wiring assertions with event-driven refresh and separate small/big task intents. Broader exploratory checks exposed inherited source-assertion failures and an existing store-test reference to undefined `EqualArtifactLineage`; these are not live qualification evidence. Exact final push-gate results belong to the revision-bound handoff. No provider-backed execution or deployment was performed.

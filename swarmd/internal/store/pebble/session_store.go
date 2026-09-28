@@ -160,27 +160,27 @@ type SessionCodexConfig struct {
 }
 
 type SessionPlanSnapshot struct {
-	ID                  string               `json:"id"`
-	SessionID           string               `json:"session_id"`
-	UserID              string               `json:"user_id,omitempty"`
-	AccountScopeID      string               `json:"account_scope_id,omitempty"`
-	Title               string               `json:"title"`
-	Plan                string               `json:"plan"`
-	Document            *SessionPlanDocument `json:"document,omitempty"`
-	Status              string               `json:"status"`
-	ApprovalState       string               `json:"approval_state"`
-	Active              bool                 `json:"active"`
-	CreatedAt           int64                `json:"created_at"`
-	UpdatedAt           int64                `json:"updated_at"`
-	PriorTitle          string               `json:"prior_title,omitempty"`
-	PriorPlan           string               `json:"prior_plan,omitempty"`
-	DiffLines           []string             `json:"diff_lines,omitempty"`
-	UpdateSummary       string               `json:"update_summary,omitempty"`
-	UpdateScope         string               `json:"update_scope,omitempty"`
-	UpdateKind          string               `json:"update_kind,omitempty"`
-	RevisionKind        string               `json:"revision_kind,omitempty"`
-	RestoredFromVersion int                  `json:"restored_from_version,omitempty"`
-	Version             int                  `json:"version,omitempty"`
+	ID                        string               `json:"id"`
+	SessionID                 string               `json:"session_id"`
+	UserID                    string               `json:"user_id,omitempty"`
+	AccountScopeID            string               `json:"account_scope_id,omitempty"`
+	Title                     string               `json:"title"`
+	Plan                      string               `json:"plan"`
+	Document                  *SessionPlanDocument `json:"document,omitempty"`
+	Status                    string               `json:"status"`
+	ApprovalState             string               `json:"approval_state"`
+	Active                    bool                 `json:"active"`
+	CreatedAt                 int64                `json:"created_at"`
+	UpdatedAt                 int64                `json:"updated_at"`
+	PriorTitle                string               `json:"prior_title,omitempty"`
+	PriorPlan                 string               `json:"prior_plan,omitempty"`
+	DiffLines                 []string             `json:"diff_lines,omitempty"`
+	UpdateSummary             string               `json:"update_summary,omitempty"`
+	UpdateScope               string               `json:"update_scope,omitempty"`
+	UpdateKind                string               `json:"update_kind,omitempty"`
+	RevisionKind              string               `json:"revision_kind,omitempty"`
+	RestoredFromVersion       int                  `json:"restored_from_version,omitempty"`
+	Version                   int                  `json:"version,omitempty"`
 	ParentRevision            int                  `json:"parent_revision,omitempty"`
 	Checkpoint                bool                 `json:"checkpoint,omitempty"`
 	AcceptedDefinitionReceipt string               `json:"accepted_definition_receipt,omitempty"`

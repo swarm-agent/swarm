@@ -56,7 +56,6 @@ import (
 	topologyruntime "swarm/packages/swarmd/internal/topology"
 	"swarm/packages/swarmd/internal/uisettings"
 	"swarm/packages/swarmd/internal/update"
-	"swarm/packages/swarmd/internal/videogen"
 	"swarm/packages/swarmd/internal/videoproject"
 	"swarm/packages/swarmd/internal/videorender"
 	"swarm/packages/swarmd/internal/videotranscription"

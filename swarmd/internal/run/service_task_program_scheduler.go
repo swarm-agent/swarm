@@ -1187,4 +1187,3 @@ func (p *taskProgramScheduler) syncProjectTask(status, actionNeeded string, what
 		return nil
 	})
 }
-

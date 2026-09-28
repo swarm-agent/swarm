@@ -238,15 +238,15 @@ func TestProjectTaskApprove_IdempotentRetryAfterPlanLifecycleIncrements(t *testi
 		t.Fatalf("put plan %q: %v", planID, err)
 	}
 	task := &pebblestore.ProjectTaskRecord{
-		ID:             taskID,
-		ProjectID:      projID,
-		AccountID:      f.accountID,
-		Title:          "Idempotent plan task",
-		Description:    "Idempotent prompt",
-		Agent:          "swarm",
-		Status:         "pending_approval",
-		SessionID:      sessID,
-		WorkspacePath:  "/repo/root",
+		ID:            taskID,
+		ProjectID:     projID,
+		AccountID:     f.accountID,
+		Title:         "Idempotent plan task",
+		Description:   "Idempotent prompt",
+		Agent:         "swarm",
+		Status:        "pending_approval",
+		SessionID:     sessID,
+		WorkspacePath: "/repo/root",
 		PlanBinding: &pebblestore.ProjectTaskPlanBinding{
 			SessionID:          sessID,
 			PlanID:             planID,
@@ -394,15 +394,15 @@ func TestProjectTaskApprove_GuardedCanonicalRevision(t *testing.T) {
 		t.Fatalf("put plan %q: %v", planID, err)
 	}
 	task := &pebblestore.ProjectTaskRecord{
-		ID:             taskID,
-		ProjectID:      projID,
-		AccountID:      f.accountID,
-		Title:          "Guarded plan task",
-		Description:    "Auth plan",
-		Agent:          "swarm",
-		Status:         "pending_approval",
-		SessionID:      sessID,
-		WorkspacePath:  "/repo/root",
+		ID:            taskID,
+		ProjectID:     projID,
+		AccountID:     f.accountID,
+		Title:         "Guarded plan task",
+		Description:   "Auth plan",
+		Agent:         "swarm",
+		Status:        "pending_approval",
+		SessionID:     sessID,
+		WorkspacePath: "/repo/root",
 		PlanBinding: &pebblestore.ProjectTaskPlanBinding{
 			SessionID:          sessID,
 			PlanID:             planID,
@@ -575,15 +575,15 @@ func TestProjectTaskReject_NoPartialFailureOnBoundPlanError(t *testing.T) {
 		t.Fatalf("put plan %q: %v", planID, err)
 	}
 	task := &pebblestore.ProjectTaskRecord{
-		ID:             taskID,
-		ProjectID:      projID,
-		AccountID:      f.accountID,
-		Title:          "Atomic rejection task",
-		Description:    "Verify atomic reject",
-		Agent:          "swarm",
-		Status:         "pending_approval",
-		SessionID:      sessID,
-		WorkspacePath:  "/repo/root",
+		ID:            taskID,
+		ProjectID:     projID,
+		AccountID:     f.accountID,
+		Title:         "Atomic rejection task",
+		Description:   "Verify atomic reject",
+		Agent:         "swarm",
+		Status:        "pending_approval",
+		SessionID:     sessID,
+		WorkspacePath: "/repo/root",
 		PlanBinding: &pebblestore.ProjectTaskPlanBinding{
 			SessionID:          sessID,
 			PlanID:             planID,
@@ -693,15 +693,15 @@ func TestProjectTaskReject_TaskUpdateFailureReconcilesBoundPlan(t *testing.T) {
 		t.Fatalf("put plan %q: %v", planID, err)
 	}
 	task := &pebblestore.ProjectTaskRecord{
-		ID:             taskID,
-		ProjectID:      projID,
-		AccountID:      f.accountID,
-		Title:          "Reconcile rejection task",
-		Description:    "Verify reconcile reject",
-		Agent:          "swarm",
-		Status:         "pending_approval",
-		SessionID:      sessID,
-		WorkspacePath:  "/repo/root",
+		ID:            taskID,
+		ProjectID:     projID,
+		AccountID:     f.accountID,
+		Title:         "Reconcile rejection task",
+		Description:   "Verify reconcile reject",
+		Agent:         "swarm",
+		Status:        "pending_approval",
+		SessionID:     sessID,
+		WorkspacePath: "/repo/root",
 		PlanBinding: &pebblestore.ProjectTaskPlanBinding{
 			SessionID:          sessID,
 			PlanID:             planID,
@@ -834,15 +834,15 @@ func TestProjectTaskReject_MalformedJSONAndRevisionGuards(t *testing.T) {
 		t.Fatalf("put plan %q: %v", planID, err)
 	}
 	task := &pebblestore.ProjectTaskRecord{
-		ID:             taskID,
-		ProjectID:      projID,
-		AccountID:      f.accountID,
-		Title:          "Guarded reject task",
-		Description:    "Guard test",
-		Agent:          "swarm",
-		Status:         "pending_approval",
-		SessionID:      sessID,
-		WorkspacePath:  "/repo/root",
+		ID:            taskID,
+		ProjectID:     projID,
+		AccountID:     f.accountID,
+		Title:         "Guarded reject task",
+		Description:   "Guard test",
+		Agent:         "swarm",
+		Status:        "pending_approval",
+		SessionID:     sessID,
+		WorkspacePath: "/repo/root",
 		PlanBinding: &pebblestore.ProjectTaskPlanBinding{
 			SessionID:          sessID,
 			PlanID:             planID,

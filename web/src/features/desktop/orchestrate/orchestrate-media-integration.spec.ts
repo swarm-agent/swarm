@@ -172,18 +172,20 @@ test('OrchestrateView renders Image and Video model dropdowns with availability 
   assert.ok(source.includes('const handleSetVideoAsDefault = videoDefaults.save'), 'Must persist video choice through canonical settings')
 
   // 5. Task creation passes selected model
-  assert.ok(source.includes("model: taskIntent === 'image' ? (selectedImageModel || undefined)"), 'Deploy modal submit must pass selected model')
+  assert.ok(source.includes('model: qualifiedModel'), 'Deploy payload must pass the selected provider-qualified model')
+  assert.ok(source.includes('(selectedImageModel || undefined)'), 'Image selection must feed the qualified model')
   assert.ok(source.includes("model: model || (targetIntent === 'image'"), 'Quick route media must honor the explicitly selected model first')
 })
 
-test('OrchestrateView implements compact 5-tab layout (Feature, Image, Video, Sounds, Audit) fitting in one line', () => {
+test('OrchestrateView implements compact 6-tab layout (Small Feature/Fix, Big Feature, Image, Video, Sounds, Audit) fitting in one line', () => {
   // Invariant: The Deploy Task Modal must replace long tab labels ('Code / Feature' -> 'Feature',
-  // 'Audit / Finder' -> 'Audit', 'Video Story' -> 'Video') and add a dedicated 'Sounds' tab in a 5-column grid.
+  // 'Audit / Finder' -> 'Audit', 'Video Story' -> 'Video') and retain distinct small/big feature intents plus 'Sounds' in a 6-column grid.
   const sourcePath = path.join(__dirname, 'OrchestrateView.tsx')
   const source = fs.readFileSync(sourcePath, 'utf8')
 
-  assert.ok(source.includes('grid-cols-5'), 'Must render 5-column tab layout')
-  assert.ok(source.includes('<span>Feature</span>'), 'Must label code tab as "Feature"')
+  assert.ok(source.includes('grid-cols-6'), 'Must render the combined six-intent layout')
+  assert.ok(source.includes('<span>Small Feature/Fix</span>'), 'Must retain the explicit small-task intent')
+  assert.ok(source.includes('<span>Big Feature</span>'), 'Must retain the explicit planning intent')
   assert.ok(!source.includes('<span>Code / Feature</span>'), 'Must eliminate old "Code / Feature" text')
   assert.ok(source.includes('<span>Image</span>'), 'Must label image tab as "Image"')
   assert.ok(source.includes('<span>Video</span>'), 'Must label video tab as "Video"')
@@ -557,19 +559,14 @@ test('Legacy quick action buttons open configured composer modal rather than run
   assert.ok(source.includes("handleOpenDeliverableInMediaCenter(d, tasks.find((t) => t.deliverables?.some((entry) => entry.id === d.id)), 'iterate')"), 'Card Iterate button must open configured composer in iterate mode')
 })
 
-// Authority: OrchestrateView.hasActiveTasks and project polling effect. This
-// source-level wiring check guards accidental removal of task-ID reconciliation;
-// it does not establish runtime timing or browser auto-follow behavior.
-test('OrchestrateView implements starvation-free real-time task polling covering queued, pending, and generating states', () => {
-  // Invariant: Task polling must not reset interval timers on every tasks change (avoiding starvation),
-  // must guard against overlapping network calls with inFlight, and must cover queued, pending, and generating deliverables.
-  const sourcePath = path.join(__dirname, 'OrchestrateView.tsx')
-  const source = fs.readFileSync(sourcePath, 'utf8')
-
-  assert.ok(source.includes("t.status === 'queued' ||"), 'Polling trigger must include queued tasks')
-  assert.ok(source.includes("t.status === 'pending' ||"), 'Polling trigger must include pending tasks')
-  assert.ok(source.includes("d.status === 'generating' || d.status === 'pending'"), 'Polling trigger must include generating/pending deliverables')
-  assert.ok(source.includes("!tasks.some((t) => t.id === j.taskId) && ['submitting', 'queued', 'in_progress', 'running'].includes(j.status)"), 'Polling trigger must include in-flight local generation jobs')
-  assert.ok(source.includes('inFlight = true'), 'Polling loop must prevent overlapping fetch requests')
-  assert.ok(source.includes('hasActiveTasks'), 'Polling effect must depend on stable hasActiveTasks boolean rather than raw tasks array')
+// Requirement: media uses the canonical event-driven project cache without
+// restoring task polling. Authority: useDesktopProject/DesktopProjectsRuntime.
+// Source wiring only; runtime coalescing is tested in desktop-projects.spec.ts.
+test('OrchestrateView reconciles media through event-driven project state', () => {
+  const source = fs.readFileSync(path.join(__dirname, 'OrchestrateView.tsx'), 'utf8')
+  assert.ok(source.includes('useDesktopProject(selectedProjectId)'))
+  assert.ok(source.includes('desktopProjects.invalidate(selectedProject.id)'))
+  assert.ok(source.includes('job.taskId === t.id && job.sourceId === am.id'))
+  assert.ok(!source.includes('const hasActiveTasks ='), 'Do not restore a task polling trigger')
+  assert.ok(!source.includes('void poll()'), 'Do not restore task polling')
 })

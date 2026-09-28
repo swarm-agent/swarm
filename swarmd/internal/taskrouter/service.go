@@ -17,9 +17,9 @@ type LLMInvoker func(ctx context.Context, instructions string, input string) (st
 type TaskRouteOptions struct {
 	Prompt             string                            `json:"prompt"`
 	RequestedWorkspace string                            `json:"requested_workspace,omitempty"`
-	Intent             string                            `json:"intent,omitempty"`     // "code", "image", "video", "audit", "sound"
+	Intent             string                            `json:"intent,omitempty"`       // "code", "image", "video", "audit", "sound"
 	FeatureSize        string                            `json:"feature_size,omitempty"` // "small", "big"
-	Agent              string                            `json:"agent,omitempty"`      // explicit agent
+	Agent              string                            `json:"agent,omitempty"`        // explicit agent
 	OutcomeType        string                            `json:"outcome_type,omitempty"`
 	Tier               string                            `json:"tier,omitempty"`
 	VideoType          string                            `json:"video_type,omitempty"` // "single", "multipart"

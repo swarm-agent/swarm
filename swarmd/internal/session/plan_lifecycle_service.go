@@ -673,7 +673,6 @@ func (s *PlanLifecycleService) SubmitProjectTaskStructuredPlan(input ProjectTask
 	}, nil
 }
 
-
 func (s *PlanLifecycleService) RequestFollowupCheckpoint(input PlanLifecycleFollowupCheckpointInput) (PlanLifecycleResult, error) {
 	if err := s.requireConfigured(); err != nil {
 		return PlanLifecycleResult{}, err
