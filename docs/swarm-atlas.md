@@ -3338,3 +3338,10 @@ same-prompt tasks do not collide; explicit caller branch names still fail on rea
 conflicts. `TestIdenticalTaskPromptsGetDistinctOwnedWorktrees` validates the requested
 allocation paths with no provider execution. Live browser tests exposed the collision
 before this repair. No existing worktree is overwritten or taken over.
+
+The actual Orchestrate Refine Plan button now sends binding-derived exact revision
+guards and displays errors on the task rather than only logging them. Live browser
+interaction verified the persisted replacement plan becomes visible without refresh.
+A sampled submitted-plan event-to-render interval was 63 ms, separate from 4.9 s
+planning wall time; three new-card samples were 69/62/93 ms. These are individual
+local-client samples, not population percentiles or a guarantee for every workload.

@@ -4972,18 +4972,23 @@ export function OrchestrateView({
   // Refine task with router or re-plan error
   const handleRefineTask = async (taskId: string, feedback?: string, errorSummary?: string) => {
     if (!selectedProject?.id) return
+    const targetTask = tasks.find(task => task.id === taskId)
+    if (!targetTask) return
+    const guards = buildTaskAcceptancePayload(targetTask)
+    handleClearTaskError(taskId)
     try {
       await requestJson(`/v3/projects/${selectedProject.id}/tasks/${taskId}/refine`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          ...guards,
           feedback: feedback?.trim() || undefined,
           error_summary: errorSummary?.trim() || undefined,
         }),
       })
       desktopProjects.invalidate(selectedProject.id)
     } catch (err) {
-      console.warn('Refine task failed:', err)
+      setTaskActionErrors(prev => ({...prev, [taskId]: err instanceof Error ? err.message : 'Plan refinement failed'}))
     }
   }
 
