@@ -314,8 +314,8 @@ func TestReserveProjectTaskIfAbsentConcurrentDoesNotOverwrite(t *testing.T) {
  if err != nil { t.Fatal(err) }
  defer db.Close()
  store := NewSessionStore(db)
- first := &ProjectTaskRecord{ID:"task-one", ProjectID:"project", Title:"Implement", Status:"pending_approval", SourceWorkspace:ProjectTaskSource{WorkspaceID:"one", Path:"/repo/one", WorkspaceGeneration:1}}
- second := &ProjectTaskRecord{ID:"task-one", ProjectID:"project", Title:"Implement", Status:"pending_approval", SourceWorkspace:ProjectTaskSource{WorkspaceID:"two", Path:"/repo/two", WorkspaceGeneration:1}}
+ first := &ProjectTaskRecord{ID:"task-one", ProjectID:"project", Title:"Implement", Agent:"coder", Status:"pending_approval", WorkspacePath:"/repo/one", SessionID:"session-one", SourceWorkspace:ProjectTaskSource{WorkspaceID:"one", Path:"/repo/one", WorkspaceGeneration:1, Provenance:"explicit"}}
+ second := &ProjectTaskRecord{ID:"task-one", ProjectID:"project", Title:"Implement", Agent:"coder", Status:"pending_approval", WorkspacePath:"/repo/two", SessionID:"session-two", SourceWorkspace:ProjectTaskSource{WorkspaceID:"two", Path:"/repo/two", WorkspaceGeneration:1, Provenance:"explicit"}}
  var wg sync.WaitGroup
  results := make(chan bool, 2)
  for _, task := range []*ProjectTaskRecord{first, second} {

@@ -106,13 +106,8 @@ func (s *Server) recoverProjectTaskReservation(ctx context.Context, p identity.P
   if owned.ID != task.SessionID || owned.AccountScopeID != p.AccountScopeID || owned.UserID != p.UserID || owned.WorkspacePath != task.SourceWorkspace.Path || owned.Metadata["project_id"] != task.ProjectID || owned.Metadata["task_id"] != task.ID || owned.Metadata["task_program_id"] != task.TaskProgram.ID || owned.Metadata["swarm_v3_source_workspace_id"] != task.SourceWorkspace.WorkspaceID || fmt.Sprint(owned.Metadata["swarm_v3_source_workspace_generation"]) != fmt.Sprint(task.SourceWorkspace.WorkspaceGeneration) { return errors.New("task program coordinator ownership mismatch") }
   if task.Status == "in_progress" { if err := s.deployProjectTaskProgram(p, proj, task); err != nil { return err } }
  } else if err := s.reconcileProjectTaskSession(p, proj, task, owned, status); err != nil { return err }
- if err := db.PutProjectTask(p.AccountScopeID, task); err != nil { return err }
- _, err = db.UpdateProject(p.AccountScopeID, task.ProjectID, func(pr *pebblestore.ProjectRecord) error {
-  for _, id := range pr.ActiveTaskIDs { if id == task.ID { return nil } }
-  pr.ActiveTaskIDs = append(pr.ActiveTaskIDs, task.ID)
-  return nil
- })
- if err != nil { return err }
+ // Verify the durable plan link before publishing the recovered task and active
+ // project reference. A mismatched plan must not leave a partially completed card.
  if task.PlanBinding != nil {
   if task.PlanBinding.PlanID == "" || task.PlanBinding.SessionID != task.SessionID { return errors.New("task plan binding session mismatch") }
   plan, ok, err := db.GetPlan(task.SessionID, task.PlanBinding.PlanID)
@@ -121,8 +116,15 @@ func (s *Server) recoverProjectTaskReservation(ctx context.Context, p identity.P
   if plan.ApprovalState == "approved" {
    if task.PlanBinding.Receipt == "" || task.PlanBinding.Receipt != plan.AcceptedDefinitionReceipt { return errors.New("task plan accepted receipt does not match binding") }
   } else if plan.Version != task.PlanBinding.DefinitionRevision { return errors.New("task plan definition revision changed") }
-  return nil
  }
+ if err := db.PutProjectTask(p.AccountScopeID, task); err != nil { return err }
+ _, err = db.UpdateProject(p.AccountScopeID, task.ProjectID, func(pr *pebblestore.ProjectRecord) error {
+  for _, id := range pr.ActiveTaskIDs { if id == task.ID { return nil } }
+  pr.ActiveTaskIDs = append(pr.ActiveTaskIDs, task.ID)
+  return nil
+ })
+ if err != nil { return err }
+ if task.PlanBinding != nil { return nil }
  doc := input.Document
  if doc == nil { doc = input.PlanDocument }
  if doc == nil && task.TaskProgram != nil {
@@ -131,7 +133,7 @@ func (s *Server) recoverProjectTaskReservation(ctx context.Context, p identity.P
  if doc != nil {
   result, err := s.SubmitProjectTaskPlan(ctx, sessionruntime.ProjectTaskPlanSubmissionInput{AccountScopeID:p.AccountScopeID, UserID:p.UserID, ProjectID:task.ProjectID, TaskID:task.ID, Document:doc, PlanText:task.FullPlanMarkdown, Title:task.Title, WorkspacePath:task.WorkspacePath, ParentSessionID:proj.PrimarySessionID})
   if err != nil { return err }
-  *task = *result.Task
+  *task = result.Task
  }
  return nil
 }
