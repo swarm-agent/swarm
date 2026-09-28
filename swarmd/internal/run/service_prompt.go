@@ -69,7 +69,7 @@ func masterHarnessPromptWithScopeAndAgent(scope tool.WorkspaceScope, isOrchestra
 	if !isOrchestrator {
 		workerStrategy = "- Background Workers & Automations: Worker and automation deployment is exclusively handled by Swarm Orchestrator in Swarm mode (@orchestrator). Chat sessions cannot deploy or manage workers; direct the user to Swarm Orchestrate mode or switch to @orchestrator."
 	}
-	return strings.TrimSpace(strings.Join([]string{
+	lines := []string{
 		"Master harness prompt (applies to every agent run):",
 		"- This prompt is global and mandatory; agent profile prompts are additive and must not override it.",
 		"You are Swarm's coding assistant running in a local workspace. Use tools when needed to inspect files or execute commands.",
@@ -154,7 +154,20 @@ func masterHarnessPromptWithScopeAndAgent(scope tool.WorkspaceScope, isOrchestra
 		"- If the user explicitly asks about a path outside the current workspace scope, call the relevant path-based tool on that exact path anyway. The backend can request temporary access for this chat session. For durable access, the user must add that folder as its own new workspace from the workspace picker. Never describe this as adding or linking the folder to the current workspace or a workspace group. Do not refuse solely because the path is outside the current scope.",
 		"- For bash, avoid destructive commands unless explicitly requested.",
 		"Respond with concrete, concise results.",
-	}, "\n"))
+	}
+	if isOrchestrator {
+		// Session checkpoint guidance must not leak into the task-card agent.
+		filtered := make([]string, 0, len(lines)+1)
+		for _, line := range lines {
+			if strings.Contains(line, "plan_manage") || strings.Contains(line, "exit_plan_mode") || strings.Contains(line, "- Plan & Checkpoint Lifecycle Management:") || strings.Contains(line, "- Recovery ownership:") {
+				continue
+			}
+			filtered = append(filtered, line)
+		}
+		filtered = append(filtered, "- Orchestrator planning uses manage_projects task cards only: propose small Coder tasks directly, or submit structured plans on the exact project task card for explicit user acceptance. Do not create session checkpoints or session-plan approvals. The dedicated Plan agent may author big exploratory plans for task-card review.")
+		lines = filtered
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
 
 func defaultInstructions(workspacePath string) string {
@@ -379,9 +392,10 @@ func executionCapacityInstructions(snap executioncapacity.Snapshot) string {
 
 func (s *Service) composeInstructionsForScopeWithDiscoveryRoots(scope tool.WorkspaceScope, discoveryRoots []string, agentProfile pebblestore.AgentProfile, userInstructions string) string {
 	blocks := make([]string, 0, 7)
-	isOrchestrator := strings.EqualFold(strings.TrimSpace(agentProfile.Name), agentruntime.SwarmOrchestratorAgentID) ||
-		strings.EqualFold(strings.TrimSpace(agentProfile.Name), "orchestrator") ||
-		strings.EqualFold(strings.TrimSpace(agentProfile.Name), "system-orchestrator")
+	isOrchestrator := agentruntime.IsSwarmOrchestratorAgentName(agentProfile.Name)
+	if isOrchestrator {
+		agentProfile = agentruntime.SwarmOrchestratorAgentProfileForContext(agentProfile)
+	}
 	blocks = append(blocks, masterHarnessPromptWithScopeAndAgent(scope, isOrchestrator))
 	if s.permissions != nil {
 		if policy, err := s.permissions.CurrentPolicyForAccount(scope.Principal.AccountScopeID); err == nil {
@@ -733,6 +747,10 @@ func composeModeAwareInstructions(baseInstructions, mode string, bypassPermissio
 }
 
 func modeCapabilityInstructions(mode string, bypassPermissions bool, agentProfile pebblestore.AgentProfile) string {
+	if agentruntime.IsSwarmOrchestratorAgentName(agentProfile.Name) {
+		agentProfile = agentruntime.SwarmOrchestratorAgentProfileForContext(agentProfile)
+		mode = sessionruntime.ModeAuto
+	}
 	setting, hasExecutionSetting := pebblestore.AgentExecutionSetting(agentProfile)
 	executionSetting := setting
 	exitPlanModeEnabled := pebblestore.AgentExitPlanModeEnabled(agentProfile)

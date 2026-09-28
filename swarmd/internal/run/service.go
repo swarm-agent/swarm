@@ -347,6 +347,12 @@ type RunResult struct {
 
 func (s *Service) resolveExecutionMode(requestMode string, agentProfile pebblestore.AgentProfile) (string, string, error) {
 	requestMode = sessionruntime.NormalizeMode(requestMode)
+	if agentruntime.IsSwarmOrchestratorAgentName(agentProfile.Name) {
+		if requestMode != sessionruntime.ModeAuto {
+			return sessionruntime.ModeAuto, "Orchestrator session plan mode is disabled; using auto mode for project task cards", nil
+		}
+		return sessionruntime.ModeAuto, "", nil
+	}
 	if pebblestore.AgentExitPlanModeEnabled(agentProfile) {
 		return requestMode, "", nil
 	}

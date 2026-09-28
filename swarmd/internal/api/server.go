@@ -2825,7 +2825,14 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 			}
 			requestedMode := sessionruntime.NormalizeMode(req.Mode)
 			modeWarning := ""
-			if !pebblestore.AgentExitPlanModeEnabled(profile) {
+			if agentruntime.IsSwarmOrchestratorAgentName(profile.Name) {
+				if requestedMode != sessionruntime.ModeAuto {
+					modeWarning = "Orchestrator session plan mode is disabled; using auto mode for project task cards"
+				}
+				req.Mode = sessionruntime.ModeAuto
+				requestedMode = sessionruntime.ModeAuto
+			}
+			if !agentruntime.IsSwarmOrchestratorAgentName(profile.Name) && !pebblestore.AgentExitPlanModeEnabled(profile) {
 				setting := pebblestore.AgentProfileRuntimeMode(profile)
 				if setting == "" || setting == pebblestore.AgentRuntimeModePlanAuto {
 					agentName := strings.TrimSpace(profile.Name)

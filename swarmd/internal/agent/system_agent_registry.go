@@ -372,6 +372,10 @@ func SwarmAgentToolContract() *pebblestore.AgentToolContract {
 	}
 }
 
+func IsSwarmOrchestratorAgentName(name string) bool {
+	return strings.EqualFold(strings.TrimSpace(name), SwarmOrchestratorAgentID) || strings.EqualFold(strings.TrimSpace(name), "orchestrator")
+}
+
 func SwarmOrchestratorAgentPrompt() string {
 	return strings.TrimSpace(`You are Swarm Orchestrator, the executive project management and coordination agent.
 
@@ -402,9 +406,9 @@ func SwarmOrchestratorAgentToolContract() *pebblestore.AgentToolContract {
 			"manage_projects":   {Enabled: pebblestore.BoolPtr(true)},
 			"manage_workers":    {Enabled: pebblestore.BoolPtr(true)},
 			"manage_automation": {Enabled: pebblestore.BoolPtr(true)},
-			"plan_manage":       {Enabled: pebblestore.BoolPtr(true)},
+			"plan_manage":       {Enabled: pebblestore.BoolPtr(false)},
 			"ask_user":          {Enabled: pebblestore.BoolPtr(true)},
-			"exit_plan_mode":    {Enabled: pebblestore.BoolPtr(true)},
+			"exit_plan_mode":    {Enabled: pebblestore.BoolPtr(false)},
 		},
 	}
 }
@@ -412,8 +416,8 @@ func SwarmOrchestratorAgentToolContract() *pebblestore.AgentToolContract {
 func SwarmOrchestratorAgentProfileForContext(context pebblestore.AgentProfile) pebblestore.AgentProfile {
 	profile := pebblestore.NormalizeAgentProfile(pebblestore.AgentProfile{
 		Name: SwarmOrchestratorAgentID, Mode: ModePrimary, Description: "Executive project orchestrator",
-		Prompt: SwarmOrchestratorAgentPrompt(), RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, DefaultSessionMode: firstNonEmptyProfileValue(pebblestore.NormalizeAgentDefaultSessionMode(context.DefaultSessionMode), pebblestore.AgentDefaultSessionModeAuto),
-		ExitPlanModeEnabled: pebblestore.BoolPtr(true), ToolContract: SwarmOrchestratorAgentToolContract(), Enabled: true, Protected: true, UpdatedAt: context.UpdatedAt,
+		Prompt: SwarmOrchestratorAgentPrompt(), RuntimeMode: pebblestore.AgentRuntimeModeReadWrite, DefaultSessionMode: pebblestore.AgentDefaultSessionModeAuto,
+		ExitPlanModeEnabled: pebblestore.BoolPtr(false), ToolContract: SwarmOrchestratorAgentToolContract(), Enabled: true, Protected: true, UpdatedAt: context.UpdatedAt,
 	})
 	profile.Protected = true
 	return profile
@@ -423,9 +427,8 @@ func reconcileSwarmOrchestratorAgentProfile(snapshot pebblestore.AgentProfile) p
 	profile := SwarmOrchestratorAgentProfileForContext(snapshot)
 	profile.Provider, profile.Model, profile.Thinking = snapshot.Provider, snapshot.Model, snapshot.Thinking
 	profile.AutoServiceTier = strings.TrimSpace(snapshot.AutoServiceTier)
-	if strings.TrimSpace(snapshot.Prompt) != "" {
-		profile.Prompt = strings.TrimSpace(snapshot.Prompt)
-	}
+	// Older persisted Orchestrator prompts may instruct session-plan authoring.
+	// Keep the compiled task-card contract while preserving model preferences.
 	return profile
 }
 

@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 
+	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/permission"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
@@ -214,6 +215,12 @@ func (s *Service) compileResolvedAgentToolContract(accountScopeID string, profil
 		return ResolvedAgentToolContract{}, nil, nil, err
 	}
 	applyExplicitAgentTools(resolved.Tools, contract.Tools, "tool_contract")
+	if agentruntime.IsSwarmOrchestratorAgentName(profile.Name) {
+		// A persisted or forged snapshot cannot re-enable session-plan tools.
+		for _, name := range []string{"plan_manage", "exit_plan_mode"} {
+			resolved.Tools[name] = ResolvedAgentTool{Enabled: false, Source: "runtime.orchestrator_task_cards"}
+		}
+	}
 	workspaceOnboarding := strings.EqualFold(strings.TrimSpace(profile.Name), "system-workspace-onboarding")
 	if workspaceOnboarding {
 		// This compiled agent must never inherit account allow rules: its

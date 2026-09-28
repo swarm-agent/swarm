@@ -668,6 +668,10 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 	// media_inspect has no permission prompt: its provider-visible schema exists
 	// only after the current model/media intersection admits it, and the handler
 	// below revalidates that contract plus ownership, scope, type, and size.
+	if agentruntime.IsSwarmOrchestratorAgentName(config.agentProfile.Name) &&
+		(canonicalToolName(call.Name) == "plan_manage" || canonicalToolName(call.Name) == "exit_plan_mode") {
+		return tool.Result{CallID: call.CallID, Name: call.Name, Error: "Orchestrator session planning is disabled; submit plans through manage_projects task cards"}, 0, nil
+	}
 	if workerDocumentInPlanCall(call) {
 		return tool.Result{CallID: call.CallID, Name: call.Name, Error: "Worker proposals require manage_workers action=propose; session-plan tools cannot author workers"}, 0, nil
 	}
