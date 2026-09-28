@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -505,7 +504,7 @@ func validateUnexecutedPlanDocument(doc *SessionPlanDocument, validate func(*Ses
 	return nil
 }
 
-func validateTaskProgramUnexecuted(prog *TaskProgramSpec) error {
+func validateTaskProgramUnexecuted(prog *TaskProgramDefinition) error {
 	if prog == nil {
 		return nil
 	}

@@ -198,12 +198,12 @@ func TestSessionArtifactLineage_ModelAndSettings(t *testing.T) {
 	}
 
 	l2 := lineage
-	if !EqualArtifactLineage(lineage, l2) {
-		t.Errorf("EqualArtifactLineage should be true for identical lineage")
+	if !equalArtifactLineage(lineage, l2) {
+		t.Errorf("equalArtifactLineage should be true for identical lineage")
 	}
 
 	l2.Model = "other-model"
-	if EqualArtifactLineage(lineage, l2) {
-		t.Errorf("EqualArtifactLineage should be false after model change")
+	if equalArtifactLineage(lineage, l2) {
+		t.Errorf("equalArtifactLineage should be false after model change")
 	}
 }

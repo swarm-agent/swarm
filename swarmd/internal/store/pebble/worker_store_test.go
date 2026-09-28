@@ -617,7 +617,7 @@ func TestWorkerRunsLinkageAndRevisionPinning(t *testing.T) {
 		RequestSource:      "manual",
 		Status:             "succeeded",
 		Deliverables: []SessionPlanArtifactReference{
-			{Type: "workspace_file", Path: "output.txt"},
+			{Role: "workspace_file", Path: "output.txt"},
 		},
 	})
 	if err != nil {
@@ -731,7 +731,7 @@ func TestLegacyAutomationV2Migration(t *testing.T) {
 		RunID:      "run-1",
 		State:      "succeeded",
 		Deliverables: []SessionPlanArtifactReference{
-			{Type: "workspace_file", Path: "migrated_output.json"},
+			{Role: "workspace_file", Path: "migrated_output.json"},
 		},
 	}
 	bOcc, _ := json.Marshal(occ)

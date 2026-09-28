@@ -347,7 +347,7 @@ func TestWorkerAPI_CRUDLifecycleAndOptimisticConcurrency(t *testing.T) {
 	}
 
 	// Verify database state: worker was NOT modified!
-	ws := db.WorkerStore()
+	ws := store.NewWorkerStore(db)
 	persisted, found, err := ws.GetWorker("acct-test", workerID)
 	if err != nil || !found {
 		t.Fatalf("failed fetching persisted worker: %v", err)
@@ -902,6 +902,10 @@ func TestWorkerAPI_MigrateLegacyAutomations(t *testing.T) {
 	account := "acct-test"
 	legacyKey := fmt.Sprintf("automation/v2/accepted/%x/%x", account, "legacy_worker_1")
 	legacyRecord := store.AutomationV2Record{
+		AutomationID: "legacy_worker_1",
+		Generation: 1,
+		AutomationV2Proposal: store.AutomationV2Proposal{
+		AccountID: account,
 		SessionID:   "session_leg_1",
 		WorkspaceID: "ws_leg_1",
 		Document: store.SessionPlanDocument{
@@ -916,7 +920,7 @@ func TestWorkerAPI_MigrateLegacyAutomations(t *testing.T) {
 				},
 			},
 		},
-		Status: store.AutomationV2Accepted,
+		},
 	}
 	if err := db.PutJSON(legacyKey, legacyRecord); err != nil {
 		t.Fatalf("failed seeding legacy automation: %v", err)
@@ -1001,7 +1005,7 @@ func TestWorkerAPI_RevisionHistoryAndRuns(t *testing.T) {
 	}
 
 	// Seed a worker run record
-	ws := db.WorkerStore()
+	ws := store.NewWorkerStore(db)
 	runRec := store.WorkerRunRecord{
 		ID:             store.GenerateWorkerRunID(),
 		AccountScopeID: "acct-test",
