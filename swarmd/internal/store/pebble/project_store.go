@@ -215,6 +215,10 @@ type ProjectTaskDeliverable struct {
 	ParentDeliverableID string           `json:"parent_deliverable_id,omitempty"`
 	SourceMediaRef      string           `json:"source_media_ref,omitempty"`
 	VideoProvenance     *VideoProvenance `json:"video_provenance,omitempty"`
+	Model               string           `json:"model,omitempty"`
+	AspectRatio         string           `json:"aspect_ratio,omitempty"`
+	Resolution          string           `json:"resolution,omitempty"`
+	DurationSeconds     int              `json:"duration_seconds,omitempty"`
 }
 
 // ProjectTaskScene represents a single scene in a compiled multi-scene video story.
@@ -339,6 +343,18 @@ func (t *ProjectTaskRecord) Validate() error {
 			if err := d.VideoProvenance.Validate(); err != nil {
 				return fmt.Errorf("task deliverable %d video provenance invalid: %w", i, err)
 			}
+		}
+		if len(d.Model) > 128 {
+			return fmt.Errorf("task deliverable %d model exceeds 128 characters", i)
+		}
+		if len(d.AspectRatio) > 32 {
+			return fmt.Errorf("task deliverable %d aspect_ratio exceeds 32 characters", i)
+		}
+		if len(d.Resolution) > 32 {
+			return fmt.Errorf("task deliverable %d resolution exceeds 32 characters", i)
+		}
+		if d.DurationSeconds < 0 || d.DurationSeconds > 3600 {
+			return fmt.Errorf("task deliverable %d duration_seconds is invalid", i)
 		}
 	}
 	for i, m := range t.AttachedMedia {

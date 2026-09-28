@@ -77,6 +77,10 @@ type SessionArtifactLineage struct {
 	VideoRevisionID         string           `json:"video_revision_id,omitempty"`
 	VideoRevisionEventSeq   uint64           `json:"video_revision_event_seq,omitempty"`
 	VideoProvenance         *VideoProvenance `json:"video_provenance,omitempty"`
+	Model                   string           `json:"model,omitempty"`
+	AspectRatio             string           `json:"aspect_ratio,omitempty"`
+	Resolution              string           `json:"resolution,omitempty"`
+	DurationSeconds         int              `json:"duration_seconds,omitempty"`
 }
 
 // SessionArtifactPresentation contains bounded client display hints. It is
@@ -1255,6 +1259,9 @@ func normalizeArtifactLineage(lineage *SessionArtifactLineage) {
 	lineage.PlanID = strings.TrimSpace(lineage.PlanID)
 	lineage.CheckpointID = strings.TrimSpace(lineage.CheckpointID)
 	lineage.AttemptID = strings.TrimSpace(lineage.AttemptID)
+	lineage.Model = strings.TrimSpace(lineage.Model)
+	lineage.AspectRatio = strings.TrimSpace(lineage.AspectRatio)
+	lineage.Resolution = strings.TrimSpace(lineage.Resolution)
 	if lineage.VideoProvenance != nil {
 		lineage.VideoProvenance.Normalize()
 	}
@@ -1554,6 +1561,18 @@ func validateArtifactLineage(lineage SessionArtifactLineage) error {
 		if err := lineage.VideoProvenance.Validate(); err != nil {
 			return fmt.Errorf("artifact video provenance invalid: %w", err)
 		}
+	}
+	if len(lineage.Model) > 128 {
+		return errors.New("artifact model exceeds 128 characters")
+	}
+	if len(lineage.AspectRatio) > 32 {
+		return errors.New("artifact aspect_ratio exceeds 32 characters")
+	}
+	if len(lineage.Resolution) > 32 {
+		return errors.New("artifact resolution exceeds 32 characters")
+	}
+	if lineage.DurationSeconds < 0 || lineage.DurationSeconds > 3600 {
+		return errors.New("artifact duration_seconds is invalid")
 	}
 	return nil
 }
@@ -2411,7 +2430,11 @@ func equalArtifactLineage(a, b SessionArtifactLineage) bool {
 		a.AttemptID != b.AttemptID ||
 		a.VideoProjectID != b.VideoProjectID ||
 		a.VideoRevisionID != b.VideoRevisionID ||
-		a.VideoRevisionEventSeq != b.VideoRevisionEventSeq {
+		a.VideoRevisionEventSeq != b.VideoRevisionEventSeq ||
+		a.Model != b.Model ||
+		a.AspectRatio != b.AspectRatio ||
+		a.Resolution != b.Resolution ||
+		a.DurationSeconds != b.DurationSeconds {
 		return false
 	}
 	return EqualVideoProvenance(a.VideoProvenance, b.VideoProvenance)

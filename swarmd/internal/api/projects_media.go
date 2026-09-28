@@ -50,9 +50,9 @@ func (s *Server) generateImageMedia(
 	modelOverride string,
 	resolution string,
 	sourceImage *imagegen.ManagedImageSource,
-) (string, string, error) {
+) (string, string, string, string, error) {
 	if s == nil || s.imageGen == nil {
-		return "", "", errors.New("image generation service is not configured")
+		return "", "", "", "", errors.New("image generation service is not configured")
 	}
 
 	usedModel := strings.TrimSpace(modelOverride)
@@ -62,7 +62,7 @@ func (s *Server) generateImageMedia(
 		}
 	}
 	if usedModel == "" {
-		return "", "", errors.New("configure a default image model or select a model for this generation")
+		return "", "", "", "", errors.New("configure a default image model or select a model for this generation")
 	}
 
 	ar := strings.TrimSpace(aspectRatio)
@@ -77,8 +77,24 @@ func (s *Server) generateImageMedia(
 	}
 
 	var capabilityToken string
-	if caps, err := s.imageGen.ManagedImageCapabilities(usedModel); err == nil && caps.CapabilityToken != "" {
-		capabilityToken = caps.CapabilityToken
+	if caps, err := s.imageGen.ManagedImageCapabilities(usedModel); err == nil {
+		if caps.CapabilityToken != "" {
+			capabilityToken = caps.CapabilityToken
+		}
+		if ar == "" && caps.Settings != nil {
+			if arSet, ok := caps.Settings["aspect_ratio"]; ok {
+				if defVal, ok := arSet.DefaultValue.(string); ok && strings.TrimSpace(defVal) != "" {
+					ar = strings.TrimSpace(defVal)
+				}
+			}
+		}
+		if resTag == "" && caps.Settings != nil {
+			if resSet, ok := caps.Settings["image_size"]; ok {
+				if defVal, ok := resSet.DefaultValue.(string); ok && strings.TrimSpace(defVal) != "" {
+					resTag = strings.TrimSpace(defVal)
+				}
+			}
+		}
 	}
 
 	genReq := imagegen.ManagedGenerateRequest{
@@ -93,10 +109,10 @@ func (s *Server) generateImageMedia(
 
 	res, err := s.imageGen.GenerateManagedImage(ctx, genReq)
 	if err != nil {
-		return "", usedModel, err
+		return "", usedModel, ar, resTag, err
 	}
 	if len(res.Bytes) == 0 {
-		return "", usedModel, errors.New("image generation returned empty image data")
+		return "", usedModel, ar, resTag, errors.New("image generation returned empty image data")
 	}
 
 	mime := res.MediaType
@@ -104,7 +120,7 @@ func (s *Server) generateImageMedia(
 		mime = "image/png"
 	}
 	mediaURL := fmt.Sprintf("data:%s;base64,%s", mime, base64.StdEncoding.EncodeToString(res.Bytes))
-	return mediaURL, usedModel, nil
+	return mediaURL, usedModel, ar, resTag, nil
 }
 
 func isSupportedImageModel(s *Server, modelID string) bool {
@@ -974,7 +990,7 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 					if sourceTitle != "" {
 						reqPrompt = fmt.Sprintf("%s (iteration based on %s)", prompt, sourceTitle)
 					}
-					mediaURL, usedModel, err := s.generateImageMedia(ctx, p, reqPrompt, ar, variantIdx, task.Model, task.Resolution, sourceImage)
+					mediaURL, usedModel, resolvedAR, resolvedRes, err := s.generateImageMedia(ctx, p, reqPrompt, ar, variantIdx, task.Model, task.Resolution, sourceImage)
 					slotIndex := i
 					_, _ = updateProjectTaskWithRetry(db, p.AccountScopeID, task.ProjectID, task.ID, func(t *pebblestore.ProjectTaskRecord) error {
 						if slotIndex < len(t.Deliverables) {
@@ -991,13 +1007,20 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 								t.Deliverables[slotIndex].Thumbnail = mediaURL
 								t.Deliverables[slotIndex].ParentDeliverableID = sourceMediaID
 								t.Deliverables[slotIndex].SourceMediaRef = sourceMediaID
-								resTag := strings.TrimSpace(task.Resolution)
+								t.Deliverables[slotIndex].Model = usedModel
+								t.Deliverables[slotIndex].AspectRatio = resolvedAR
+								t.Deliverables[slotIndex].Resolution = resolvedRes
+								resTag := resolvedRes
 								if resTag == "" {
 									resTag = "1K"
 								}
-								desc := fmt.Sprintf("Autonomous deliverable for %s in aspect ratio %s (%s)", t.Title, ar, resTag)
+								descAR := resolvedAR
+								if descAR == "" {
+									descAR = ar
+								}
+								desc := fmt.Sprintf("Autonomous deliverable for %s in aspect ratio %s (%s)", t.Title, descAR, resTag)
 								if usedModel != "" {
-									desc = fmt.Sprintf("Autonomous deliverable for %s in aspect ratio %s (%s) using %s", t.Title, ar, resTag, usedModel)
+									desc = fmt.Sprintf("Autonomous deliverable for %s in aspect ratio %s (%s) using %s", t.Title, descAR, resTag, usedModel)
 								}
 								t.Deliverables[slotIndex].Description = desc
 							}
@@ -1421,6 +1444,30 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 								t.Deliverables[slotIndex].ParentDeliverableID = sourceMediaID
 								t.Deliverables[slotIndex].SourceMediaRef = sourceMediaID
 								t.Deliverables[slotIndex].VideoProvenance = vRes.Provenance
+								t.Deliverables[slotIndex].Model = usedModel
+								if vRes.Provenance != nil && vRes.Provenance.Model != "" {
+									t.Deliverables[slotIndex].Model = videoExecutionIdentity(vRes.Provenance.Provider, vRes.Provenance.Model)
+								}
+								t.Deliverables[slotIndex].AspectRatio = vRes.AspectRatio
+								if t.Deliverables[slotIndex].AspectRatio == "" {
+									t.Deliverables[slotIndex].AspectRatio = ar
+								}
+								t.Deliverables[slotIndex].Resolution = vRes.Resolution
+								if t.Deliverables[slotIndex].Resolution == "" {
+									t.Deliverables[slotIndex].Resolution = resTag
+								}
+								t.Deliverables[slotIndex].DurationSeconds = vRes.DurationSeconds
+								if t.Deliverables[slotIndex].DurationSeconds <= 0 {
+									t.Deliverables[slotIndex].DurationSeconds = durSec
+								}
+								if vRes.Provenance != nil {
+									if vRes.Provenance.AspectRatio == "" {
+										vRes.Provenance.AspectRatio = t.Deliverables[slotIndex].AspectRatio
+									}
+									if vRes.Provenance.Resolution == "" {
+										vRes.Provenance.Resolution = t.Deliverables[slotIndex].Resolution
+									}
+								}
 								t.VideoProvenance = vRes.Provenance
 
 								if count > 1 {
@@ -1600,6 +1647,8 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 				t.Deliverables[0].Duration = fmt.Sprintf("%ds", durSeconds)
 				t.Deliverables[0].Title = fmt.Sprintf("%s (%ds Audio Clip)", t.Title, durSeconds)
 				t.Deliverables[0].Description = fmt.Sprintf("Generated %ds audio soundtrack using %s: %s", durSeconds, soundModel, prompt)
+				t.Deliverables[0].Model = soundModel
+				t.Deliverables[0].DurationSeconds = durSeconds
 			}
 			t.Status = "needs_review"
 			t.WhatDidDo = []string{

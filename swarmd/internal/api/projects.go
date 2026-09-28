@@ -2385,9 +2385,25 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 						var delivs []pebblestore.ProjectTaskDeliverable
 						if err := json.Unmarshal(rawBytes, &delivs); err == nil {
 							existingProv := make(map[string]*pebblestore.VideoProvenance)
+							existingModel := make(map[string]string)
+							existingAR := make(map[string]string)
+							existingRes := make(map[string]string)
+							existingDur := make(map[string]int)
 							for _, oldDeliv := range t.Deliverables {
 								if oldDeliv.VideoProvenance != nil {
 									existingProv[oldDeliv.ID] = oldDeliv.VideoProvenance
+								}
+								if oldDeliv.Model != "" {
+									existingModel[oldDeliv.ID] = oldDeliv.Model
+								}
+								if oldDeliv.AspectRatio != "" {
+									existingAR[oldDeliv.ID] = oldDeliv.AspectRatio
+								}
+								if oldDeliv.Resolution != "" {
+									existingRes[oldDeliv.ID] = oldDeliv.Resolution
+								}
+								if oldDeliv.DurationSeconds > 0 {
+									existingDur[oldDeliv.ID] = oldDeliv.DurationSeconds
 								}
 							}
 							for i := range delivs {
@@ -2395,6 +2411,18 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 									delivs[i].VideoProvenance = oldP
 								} else {
 									delivs[i].VideoProvenance = nil
+								}
+								if delivs[i].Model == "" {
+									delivs[i].Model = existingModel[delivs[i].ID]
+								}
+								if delivs[i].AspectRatio == "" {
+									delivs[i].AspectRatio = existingAR[delivs[i].ID]
+								}
+								if delivs[i].Resolution == "" {
+									delivs[i].Resolution = existingRes[delivs[i].ID]
+								}
+								if delivs[i].DurationSeconds <= 0 {
+									delivs[i].DurationSeconds = existingDur[delivs[i].ID]
 								}
 							}
 							t.Deliverables = delivs
@@ -3175,6 +3203,18 @@ func sanitizeProjectTaskForClient(t *pebblestore.ProjectTaskRecord) *pebblestore
 			dels[i] = d
 			if dels[i].VideoProvenance != nil {
 				dels[i].VideoProvenance = dels[i].VideoProvenance.ClientSafeCopy()
+				if dels[i].VideoProvenance.Model != "" {
+					dels[i].Model = dels[i].VideoProvenance.Model
+				}
+				if dels[i].VideoProvenance.AspectRatio != "" {
+					dels[i].AspectRatio = dels[i].VideoProvenance.AspectRatio
+				}
+				if dels[i].VideoProvenance.Resolution != "" {
+					dels[i].Resolution = dels[i].VideoProvenance.Resolution
+				}
+				if dels[i].VideoProvenance.ObservedDurationMs > 0 {
+					dels[i].DurationSeconds = int((dels[i].VideoProvenance.ObservedDurationMs + 500) / 1000)
+				}
 			}
 		}
 		cp.Deliverables = dels

@@ -107,6 +107,8 @@ type VideoProvenance struct {
 	ExtensionCount      int              `json:"extension_count,omitempty"`
 	ExtensionCountKnown bool             `json:"extension_count_known,omitempty"`
 	IsCombinedOutput    bool             `json:"is_combined_output,omitempty"` // true if output already includes full video (e.g. Veo extension)
+	AspectRatio         string           `json:"aspect_ratio,omitempty"`
+	Resolution          string           `json:"resolution,omitempty"`
 }
 
 // Validate checks field constraints and verifies that no raw secrets are stored.
@@ -149,6 +151,12 @@ func (p *VideoProvenance) Validate() error {
 	if len(p.ProviderResource) > 2048 {
 		return errors.New("video provenance provider_resource exceeds 2048 characters")
 	}
+	if len(p.AspectRatio) > 32 {
+		return errors.New("video provenance aspect_ratio exceeds 32 characters")
+	}
+	if len(p.Resolution) > 32 {
+		return errors.New("video provenance resolution exceeds 32 characters")
+	}
 	if p.OutputDigestSHA256 != "" {
 		if len(p.OutputDigestSHA256) != 64 {
 			return errors.New("video provenance output digest must be a 64-character sha256 hex string")
@@ -186,6 +194,8 @@ func (p *VideoProvenance) Normalize() {
 	p.OutputDigestSHA256 = strings.ToLower(strings.TrimSpace(p.OutputDigestSHA256))
 	p.InteractionID = strings.TrimSpace(p.InteractionID)
 	p.ProviderResource = strings.TrimSpace(p.ProviderResource)
+	p.AspectRatio = strings.TrimSpace(p.AspectRatio)
+	p.Resolution = strings.TrimSpace(p.Resolution)
 	if p.SourceLink != nil {
 		p.SourceLink.Normalize()
 	}
@@ -229,7 +239,9 @@ func EqualVideoProvenance(a, b *VideoProvenance) bool {
 		a.ObservedHeight != b.ObservedHeight ||
 		a.ExtensionCount != b.ExtensionCount ||
 		a.ExtensionCountKnown != b.ExtensionCountKnown ||
-		a.IsCombinedOutput != b.IsCombinedOutput {
+		a.IsCombinedOutput != b.IsCombinedOutput ||
+		a.AspectRatio != b.AspectRatio ||
+		a.Resolution != b.Resolution {
 		return false
 	}
 	return EqualVideoSourceLink(a.SourceLink, b.SourceLink)

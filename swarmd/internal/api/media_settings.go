@@ -66,20 +66,22 @@ type mediaCatalogGenerationOptions struct {
 	MaxOutputs          int                           `json:"max_outputs,omitempty"`
 	ResolutionDurations map[string][]int              `json:"resolution_durations,omitempty"`
 	InitialImage        *MediaInitialImageOption      `json:"initial_image,omitempty"`
-	Settings            map[string]MediaOptionSetting `json:"settings,omitempty"`
-	Features            map[string]MediaFeatureOption `json:"features,omitempty"`
+	Settings            map[string]MediaOptionSetting       `json:"settings,omitempty"`
+	Features            map[string]MediaFeatureOption       `json:"features,omitempty"`
+	Constraints         *videogen.VideoOperationConstraints `json:"constraints,omitempty"`
 }
 
 type mediaCatalogOption struct {
-	ID                string                         `json:"id"`
-	Provider          string                         `json:"provider"`
-	Model             string                         `json:"model"`
-	DisplayName       string                         `json:"display_name"`
-	Kind              string                         `json:"kind"`
-	Ready             bool                           `json:"ready"`
-	Reason            string                         `json:"reason,omitempty"`
-	Pricing           json.RawMessage                `json:"pricing,omitempty"`
-	GenerationOptions *mediaCatalogGenerationOptions `json:"generation_options,omitempty"`
+	ID                string                              `json:"id"`
+	Provider          string                              `json:"provider"`
+	Model             string                              `json:"model"`
+	DisplayName       string                              `json:"display_name"`
+	Kind              string                              `json:"kind"`
+	Ready             bool                                `json:"ready"`
+	Reason            string                              `json:"reason,omitempty"`
+	Pricing           json.RawMessage                     `json:"pricing,omitempty"`
+	GenerationOptions *mediaCatalogGenerationOptions      `json:"generation_options,omitempty"`
+	Constraints       *videogen.VideoOperationConstraints `json:"constraints,omitempty"`
 }
 
 type mediaCatalogResponse struct {
@@ -263,6 +265,10 @@ func (s *Server) mediaCatalogResponse(caps imagegen.Capabilities, extraStatuses 
 				Reason:            googleStatus.Reason,
 				Pricing:           cloneMediaPricing(record.Pricing),
 				GenerationOptions: extractModelGenerationOptions(record),
+				Constraints:       videogen.BuildVideoOperationConstraints("google", record.Model, record),
+			}
+			if baseOption.GenerationOptions != nil && baseOption.Constraints != nil {
+				baseOption.GenerationOptions.Constraints = baseOption.Constraints
 			}
 			if isVideoGenerationCatalogRecord(record) {
 				genOption := baseOption
@@ -307,6 +313,10 @@ func (s *Server) mediaCatalogResponse(caps imagegen.Capabilities, extraStatuses 
 				Reason:            openRouterStatus.Reason,
 				Pricing:           cloneMediaPricing(record.Pricing),
 				GenerationOptions: extractModelGenerationOptions(record),
+				Constraints:       videogen.BuildVideoOperationConstraints("openrouter", record.Model, record),
+			}
+			if baseOption.GenerationOptions != nil && baseOption.Constraints != nil {
+				baseOption.GenerationOptions.Constraints = baseOption.Constraints
 			}
 			if isVideoGenerationCatalogRecord(record) {
 				genOption := baseOption
@@ -467,28 +477,9 @@ func isVideoIterationCatalogRecord(record pebblestore.ModelCatalogRecord) bool {
 	if !isVideoOutputCatalogRecord(record) {
 		return false
 	}
-	if strings.EqualFold(strings.TrimSpace(record.Provider), "google") {
-		if strings.Contains(strings.ToLower(record.Model), "omni") {
-			return true
-		}
-		var ps struct {
-			Google struct {
-				VideoGeneration struct {
-					Features struct {
-						ConversationalEditing struct {
-							Supported bool `json:"supported"`
-						} `json:"conversational_editing"`
-					} `json:"features"`
-				} `json:"video_generation"`
-			} `json:"google"`
-		}
-		if err := json.Unmarshal(record.ProviderSpecific, &ps); err == nil {
-			if ps.Google.VideoGeneration.Features.ConversationalEditing.Supported {
-				return true
-			}
-		}
-	}
-	return false
+	providerID := strings.ToLower(strings.TrimSpace(record.Provider))
+	vOpts := videogen.ExtractVideoOptions(record)
+	return videogen.SupportsVideoIteration(providerID, record.Model, vOpts)
 }
 
 func isGoogleVideoTranscriptionCatalogRecord(record pebblestore.ModelCatalogRecord) bool {
@@ -686,6 +677,7 @@ func extractModelGenerationOptions(record pebblestore.ModelCatalogRecord) *media
 				SupportedMimeTypes: []string{"image/png", "image/jpeg"},
 			}
 		}
+		constraints := videogen.BuildVideoOperationConstraints(record.Provider, record.Model, record)
 		return &mediaCatalogGenerationOptions{
 			AspectRatios:        vOpts.AspectRatios,
 			Resolutions:         vOpts.Resolutions,
@@ -698,6 +690,7 @@ func extractModelGenerationOptions(record pebblestore.ModelCatalogRecord) *media
 			InitialImage:        initialImage,
 			Settings:            outSettings,
 			Features:            outFeatures,
+			Constraints:         constraints,
 		}
 	}
 

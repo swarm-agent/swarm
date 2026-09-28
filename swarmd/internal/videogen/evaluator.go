@@ -304,20 +304,8 @@ func (s *Service) PreflightVideoOperation(ctx context.Context, req VideoPrefligh
 	// 9. Operation-Specific Routing & Invariants
 	switch op {
 	case pebblestore.VideoOperationEdit:
-		if IsVeoModel(targetModel) {
-			return nil, errors.New("Veo models do not support video editing; select an iteration model such as Gemini Omni")
-		}
-		if !IsOmniModel(targetModel) {
-			return nil, fmt.Errorf("selected model %q cannot edit a source video; select a video iteration model", targetModel)
-		}
-		if providerID != ProviderGoogleGemini {
-			return nil, fmt.Errorf("video editing is not supported on provider %q; use Google Gemini Omni", providerID)
-		}
-		if !IsStableOmniModel(targetModel) {
-			return nil, fmt.Errorf("video editing is only supported on stable Gemini Omni (%s); %q is not supported", DefaultVideoIterationModel, targetModel)
-		}
-		if opts == nil || !opts.ConversationalEditingSupported {
-			return nil, fmt.Errorf("model %q does not support conversational video editing", targetModel)
+		if err := CheckVideoEditSupport(providerID, targetModel, opts); err != nil {
+			return nil, err
 		}
 
 		if req.DurationSeconds > 0 {
@@ -343,16 +331,10 @@ func (s *Service) PreflightVideoOperation(ctx context.Context, req VideoPrefligh
 		}
 
 	case pebblestore.VideoOperationExtend:
+		if err := CheckVideoExtendSupport(providerID, targetModel, opts); err != nil {
+			return nil, err
+		}
 		if IsVeoModel(targetModel) {
-			if providerID != ProviderGoogleGemini {
-				return nil, errors.New("Veo native extension is only supported directly via Google Gemini, not OpenRouter")
-			}
-			if !IsVeo31Model(targetModel) || IsVeoLiteModel(targetModel) {
-				return nil, fmt.Errorf("Veo extension is only supported on Veo 3.1 standard or fast models; %q is not eligible", targetModel)
-			}
-			if opts == nil || !opts.VideoExtensionSupported {
-				return nil, fmt.Errorf("model %q does not support video extension in catalog metadata", targetModel)
-			}
 			if srcProv == nil {
 				return nil, errors.New("Veo video extension requires trusted source provenance from a previous Veo generation")
 			}
@@ -433,15 +415,6 @@ func (s *Service) PreflightVideoOperation(ctx context.Context, req VideoPrefligh
 			}
 
 		} else if IsOmniModel(targetModel) {
-			if !IsStableOmniModel(targetModel) {
-				return nil, fmt.Errorf("Omni video extension is only supported on stable model %s; %q is not eligible", DefaultVideoIterationModel, targetModel)
-			}
-			if providerID != ProviderGoogleGemini {
-				return nil, fmt.Errorf("video extension is not supported on provider %q; use Google Gemini Omni", providerID)
-			}
-			if opts == nil || !opts.VideoExtensionSupported {
-				return nil, fmt.Errorf("model %q does not support video extension in catalog metadata", targetModel)
-			}
 			if req.DurationSeconds > 0 {
 				return nil, fmt.Errorf("model %q does not accept duration selection", targetModel)
 			}
