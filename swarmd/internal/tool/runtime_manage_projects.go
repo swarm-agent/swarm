@@ -198,13 +198,13 @@ func manageProjectsDefinition() Definition {
 	return Definition{
 		Type:        "function",
 		Name:        "manage_projects",
-		Description: "Inspect and manage Projects aggregating workspaces, context (project.md), and ongoing tasks. Supported actions: list, get, create, update, delete, synthesize_context, propose_task, approve_task, accept_task, deploy_task, refine_task, create_task, list_tasks, update_task.",
+		Description: "Inspect and manage Projects aggregating workspaces, context (project.md), and ongoing tasks. Supported actions: list, get, create, update, delete, synthesize_context, propose_task, approve_task, accept_task, deploy_task, refine_task, create_task, list_tasks, get_task, update_task, archive_task, delete_task, reconcile_tasks. Task edits never transition execution status; delete_task only removes an archived, unlaunched task.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"action": map[string]any{
 					"type":        "string",
-					"description": "Action: list|get|create|update|delete|synthesize_context|propose_task|approve_task|accept_task|deploy_task|refine_task|create_task|list_tasks|update_task",
+					"description": "Action: list|get|create|update|delete|synthesize_context|propose_task|approve_task|accept_task|deploy_task|refine_task|create_task|list_tasks|get_task|update_task|archive_task|delete_task|reconcile_tasks",
 				},
 				"id": map[string]any{
 					"type":        "string",
@@ -264,8 +264,16 @@ func manageProjectsDefinition() Definition {
 				},
 				"status": map[string]any{
 					"type":        "string",
-					"description": "Optional task status (pending_approval, in_progress, completed, etc.)",
+					"description": "Read-only task status filter for list_tasks; status changes require canonical lifecycle actions",
 				},
+				"expected_revision": map[string]any{"type": "integer", "description": "Required exact task revision for update_task, archive_task and delete_task"},
+				"priority": map[string]any{"type": "string", "description": "Task organization: low|medium|high|urgent"},
+				"group": map[string]any{"type": "string", "description": "Task grouping label (empty clears)"},
+				"order": map[string]any{"type": "integer", "description": "Nonnegative task order within group"},
+				"include_archived": map[string]any{"type": "boolean", "description": "Include archived task records in list_tasks"},
+				"query": map[string]any{"type": "string", "description": "Case-insensitive title/description search"},
+				"limit": map[string]any{"type": "integer", "description": "Page size, maximum 100"},
+				"cursor": map[string]any{"type": "integer", "description": "Zero-based result offset"},
 				"auto_approve": map[string]any{
 					"type":        "boolean",
 					"description": "Set true to automatically deploy the task immediately upon creation for small tasks or Task Programs; structured plans require explicit user review in the task card",
@@ -782,70 +790,8 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 		}
 		response["proposal"] = proposal
 
-	case "list_tasks":
-		projectID := strings.TrimSpace(asString(args["project_id"]))
-		if projectID == "" {
-			projectID = strings.TrimSpace(asString(args["id"]))
-		}
-		if projectID == "" {
-			return "", errors.New("manage_projects list_tasks requires project_id")
-		}
-		limit := 100
-		if l, ok := args["limit"].(float64); ok && l > 0 {
-			limit = int(l)
-		}
-		tasks, err := r.projects.ListProjectTasks(accountScopeID, projectID, limit)
-		if err != nil {
-			return "", err
-		}
-		response["tasks"] = tasks
-		response["count"] = len(tasks)
-
-	case "update_task":
-		projectID := strings.TrimSpace(asString(args["project_id"]))
-		if projectID == "" {
-			projectID = strings.TrimSpace(asString(args["id"]))
-		}
-		taskID := strings.TrimSpace(asString(args["task_id"]))
-		if projectID == "" || taskID == "" {
-			return "", errors.New("manage_projects update_task requires project_id and task_id")
-		}
-		updated, err := r.projects.UpdateProjectTask(accountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
-			if v := strings.TrimSpace(asString(args["title"])); v != "" {
-				t.Title = v
-			}
-			if v := strings.TrimSpace(asString(args["description"])); v != "" {
-				t.Description = v
-			}
-			if v := strings.TrimSpace(asString(args["status"])); v != "" {
-				t.Status = v
-			}
-			if v := strings.TrimSpace(asString(args["worker_name"])); v != "" {
-				t.WorkerName = v
-			}
-			if stage, ok := args["current_stage_index"].(float64); ok {
-				t.CurrentStageIndex = int(stage)
-			}
-			if rawProg, ok := args["task_program"]; ok && rawProg != nil {
-				parsed, err := parseTaskProgram(rawProg)
-				if err != nil {
-					return err
-				}
-				t.TaskProgram = parsed
-				if parsed.ID != "" {
-					t.TaskProgramID = parsed.ID
-				}
-			}
-			return nil
-		})
-		if err != nil {
-			return "", err
-		}
-		freshTask, found, err := r.projects.GetProjectTask(accountScopeID, projectID, taskID)
-		if err == nil && found && freshTask != nil {
-			updated = freshTask
-		}
-		response["task"] = updated
+	case "list_tasks", "get_task", "update_task", "archive_task", "delete_task", "reconcile_tasks":
+		return r.executeManageProjectTasks(scope, actionName, args)
 
 	case "approve_task", "accept_task":
 		projectID := strings.TrimSpace(asString(args["project_id"]))

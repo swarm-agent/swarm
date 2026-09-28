@@ -124,9 +124,11 @@ func (m *mockProjectStore) UpdateProjectTask(accountScopeID, projectID, taskID s
 	if !ok || t.AccountID != accountScopeID || t.ProjectID != projectID {
 		return nil, nil
 	}
-	if err := mutate(t); err != nil {
+	copyTask := *t
+	if err := mutate(&copyTask); err != nil {
 		return nil, err
 	}
+	*t = copyTask
 	return t, nil
 }
 
@@ -545,23 +547,10 @@ func TestManageProjectsToolExecutionAndIsolation(t *testing.T) {
 		t.Fatalf("expected at least 1 task, got %v", listTasksResp["count"])
 	}
 
-	// 7. Update task
-	updateTaskOut, err := execTool(scope, "call-7", fmt.Sprintf(`{
-		"action": "update_task",
-		"project_id": "proj_test_1",
-		"task_id": %q,
-		"status": "needs_review"
-	}`, progTaskID))
-	if err != nil {
-		t.Fatalf("update_task failed: %v", err)
-	}
-	var updateTaskResp map[string]any
-	if err := json.Unmarshal([]byte(updateTaskOut), &updateTaskResp); err != nil {
-		t.Fatal(err)
-	}
-	taskObj, _ := updateTaskResp["task"].(map[string]any)
-	if taskObj["status"] != "needs_review" {
-		t.Fatalf("expected updated status needs_review, got %v", taskObj["status"])
+	// 7. Definition editing cannot forge an execution transition.
+	_, err = execTool(scope, "call-7", fmt.Sprintf(`{"action":"update_task","project_id":"proj_test_1","task_id":%q,"expected_revision":1,"status":"needs_review"}`, progTaskID))
+	if err == nil {
+		t.Fatal("expected status forgery to be rejected")
 	}
 
 	// 7b. Refine task (Router refinement loop)

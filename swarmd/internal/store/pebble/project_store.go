@@ -350,6 +350,10 @@ type ProjectTaskRecord struct {
 	Tier                string                   `json:"tier,omitempty"`         // "direct" | "discovery" | "complex"
 	FeatureSize         string                   `json:"feature_size,omitempty"` // "small" | "big"
 	Revision            int                      `json:"revision,omitempty"`
+	Priority            string                   `json:"priority,omitempty"` // low | medium | high | urgent
+	Group               string                   `json:"group,omitempty"`
+	Order               int                      `json:"order,omitempty"`
+	Archived            bool                     `json:"archived,omitempty"`
 	LastError           string                   `json:"last_error,omitempty"`
 	FeedbackHistory     []string                 `json:"feedback_history,omitempty"`
 	AspectRatio         string                   `json:"aspect_ratio,omitempty"`
@@ -392,6 +396,17 @@ func (t *ProjectTaskRecord) Validate() error {
 	}
 	if t.SourceWorkspace.Path != "" && (t.SourceWorkspace.WorkspaceID == "" || t.SourceWorkspace.WorkspaceGeneration <= 0 || t.SourceWorkspace.Provenance == "") {
 		return errors.New("source workspace binding is incomplete")
+	}
+	switch t.Priority {
+	case "", "low", "medium", "high", "urgent":
+	default:
+		return fmt.Errorf("invalid task priority %q", t.Priority)
+	}
+	if len(t.Group) > 128 {
+		return errors.New("task group exceeds 128 characters")
+	}
+	if t.Order < 0 {
+		return errors.New("task order cannot be negative")
 	}
 	if t.Revision <= 0 {
 		t.Revision = 1
@@ -809,6 +824,35 @@ func (s *SessionStore) UpdateProjectTask(accountScopeID, projectID, taskID strin
 	}
 	s.store.publishProjectRealtime(mut)
 	return record, nil
+}
+
+// DeleteProjectTaskIfRevision deletes a task only if its exact revision and
+// safe lifecycle state still match. It never removes sessions, branches or code.
+func (s *SessionStore) DeleteProjectTaskIfRevision(accountScopeID, projectID, taskID string, revision int) error {
+	if s == nil || s.store == nil || s.store.db == nil {
+		return errors.New("database not available")
+	}
+	s.store.projectsMu.Lock()
+	record, found, err := s.GetProjectTask(accountScopeID, projectID, taskID)
+	if err == nil && (!found || record == nil) {
+		err = errors.New("project task not found")
+	}
+	if err == nil && record.Revision != revision {
+		err = fmt.Errorf("stale task revision: expected %d, current %d", revision, record.Revision)
+	}
+	if err == nil && (!record.Archived || record.SessionID != "" || record.WorktreeBranch != "" || record.WorktreeName != "" || record.TaskProgramID != "" || record.PlanBinding != nil || record.Status == "in_progress" || record.Status == "planning") {
+		err = errors.New("task has retained execution or is not archived; deletion would orphan work")
+	}
+	var mut *projectRealtimeMutation
+	if err == nil {
+		mut, err = s.deleteProjectTaskLocked(accountScopeID, projectID, taskID)
+	}
+	s.store.projectsMu.Unlock()
+	if err != nil {
+		return err
+	}
+	s.store.publishProjectRealtime(mut)
+	return nil
 }
 
 // DeleteProjectTask deletes a task record.
