@@ -1,11 +1,17 @@
 package api
 
 import (
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"swarm/packages/swarmd/internal/identity"
+
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
+	"swarm/packages/swarmd/internal/workspace"
 )
 
 // Purpose: submission identity is scoped to the project and exact source binding;
@@ -51,4 +57,48 @@ func TestVerifyProjectTaskSessionRejectsMismatchedLineage(t *testing.T) {
 			if err := verifyProjectTaskSession(task, copy, "account"); err == nil || !strings.Contains(err.Error(), "reservation") { t.Fatalf("accepted unrelated session: %v", err) }
 		})
 	}
+}
+
+// Purpose: task preview and submission must bind the same account-scoped catalog
+// root and generation, never infer the first of multiple repositories. Threat:
+// stale identity, an ambiguous omission, or a symlink escapes source authority.
+// resolveProjectTaskSource is the narrowest pre-allocation boundary.
+func TestResolveProjectTaskSourceRejectsAmbiguousAndStaleCatalog(t *testing.T) {
+ f := setupMatrixTestFixture(t)
+ defer f.db.Close()
+ root := t.TempDir()
+ one, two := filepath.Join(root,"one"), filepath.Join(root,"two")
+ for _, path := range []string{one,two} {
+  if err := os.Mkdir(path,0700); err != nil { t.Fatal(err) }
+  for _, args := range [][]string{{"init"},{"-c","user.name=Test", "-c","user.email=test@example.invalid", "commit", "--allow-empty", "-m","base"}} {
+   cmd := exec.Command("git",args...); cmd.Dir = path
+   if out,err := cmd.CombinedOutput(); err != nil { t.Fatalf("git %v: %v %s",args,err,out) }
+  }
+ }
+ catalog := pebblestore.NewWorkspaceStore(f.db)
+ first, err := catalog.AddForAccount(f.accountID,one,"one")
+ if err != nil { t.Fatal(err) }
+ second, err := catalog.AddForAccount(f.accountID,two,"two")
+ if err != nil { t.Fatal(err) }
+ f.server.workspace = workspace.NewService(catalog)
+ proj := &pebblestore.ProjectRecord{ID:"project",Name:"Project", Workspaces:[]pebblestore.ProjectWorkspaceRef{{WorkspaceID:first.WorkspaceID,Path:one},{WorkspaceID:second.WorkspaceID,Path:two}}}
+ p := identity.Principal{Type:identity.PrincipalTypeUser, UserID:f.userID, AccountScopeID:f.accountID}
+ if _,err := f.server.resolveProjectTaskSource(p,proj,"","",0,true); err == nil { t.Fatal("ambiguous omission selected a workspace") }
+ source,err := f.server.resolveProjectTaskSource(p,proj,two,second.WorkspaceID,0,true)
+ if err != nil { t.Fatal(err) }
+ if source.Path != two || source.WorkspaceID != second.WorkspaceID || source.WorkspaceGeneration <= 0 { t.Fatalf("wrong target: %+v",source) }
+ for name, candidate := range map[string]struct{path,id string; generation int64}{
+  "stale id":{two,first.WorkspaceID,0}, "stale generation":{two,second.WorkspaceID,source.WorkspaceGeneration+1}, "unknown":{filepath.Join(root,"other"),"",0},
+ } {
+  t.Run(name,func(t *testing.T){ if _,err := f.server.resolveProjectTaskSource(p,proj,candidate.path,candidate.id,candidate.generation,true); err == nil { t.Fatal("invalid target accepted") } })
+ }
+ other := p; other.AccountScopeID = "other-account"
+ if _,err := f.server.resolveProjectTaskSource(other,proj,two,second.WorkspaceID,0,true); err == nil { t.Fatal("cross-account target accepted") }
+ link := filepath.Join(root,"link")
+ if err := os.Symlink(two,link); err != nil { t.Fatal(err) }
+ if _,err := f.server.resolveProjectTaskSource(p,proj,link,"",0,true); err == nil { t.Fatal("symlink alias accepted") }
+ // Preview must reject the same stale generation before a plan is shown.
+ if err := f.server.sessions.Store().PutProject(f.accountID,proj); err != nil { t.Fatal(err) }
+ w := f.callAPI("POST", "/project/tasks:preview", map[string]any{"prompt":"Implement", "agent":"coder", "workspace_path":two, "workspace_id":second.WorkspaceID, "workspace_generation":source.WorkspaceGeneration+1}, p)
+ if w.Code != 400 { t.Fatalf("stale preview accepted: %d %s",w.Code,w.Body.String()) }
 }

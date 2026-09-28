@@ -7,6 +7,9 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -22,6 +25,7 @@ import (
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
+	"swarm/packages/swarmd/internal/workspace"
 	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
 
@@ -65,11 +69,11 @@ func (m *testMockWorktreeService) AllocateDetachedWorkspaceRequestedForPrincipal
 	}
 	res := m.allocResult
 	if res.WorkspacePath == "" {
-		res.WorkspacePath = "/mock/worktrees/agent-ws"
-		res.BranchName = "agent/test-task"
+		res.WorkspacePath = filepath.Join(workspacePath, "worktree-"+nameSeed)
+		res.BranchName = branchName
 		res.BaseBranch = "dev"
 		res.BaseCommit = "base-commit-sha-001"
-		res.RepoRoot = "/mock/repo"
+		res.RepoRoot = workspacePath
 	}
 	return res, nil
 }
@@ -247,6 +251,7 @@ func setupMatrixTestFixture(t *testing.T) *matrixTestFixture {
 		model:              modelSvc,
 		agentModelSettings: modelSettingsSvc,
 		worktrees:          mockWT,
+		workspace:          workspace.NewService(pebblestore.NewWorkspaceStore(db)),
 		runner:             mockRun,
 	}
 	s.runCtx, s.runCancel = context.WithCancel(context.Background())
@@ -305,10 +310,18 @@ func (f *matrixTestFixture) callAPI(method, path string, body any, p identity.Pr
 
 func (f *matrixTestFixture) createProject(t *testing.T) string {
 	p := identity.Principal{Type: "user", UserID: f.userID, AccountScopeID: f.accountID}
+	repo := filepath.Join(f.dir, "repo")
+	if err := os.Mkdir(repo, 0700); err != nil { t.Fatal(err) }
+	for _, args := range [][]string{{"init"}, {"-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "base"}} {
+		cmd := exec.Command("git", args...); cmd.Dir = repo
+		if out, err := cmd.CombinedOutput(); err != nil { t.Fatalf("git %v: %v %s", args, err, out) }
+	}
+	entry, err := pebblestore.NewWorkspaceStore(f.db).AddForAccount(f.accountID, repo, "repo")
+	if err != nil { t.Fatal(err) }
 	w := f.callAPI(http.MethodPost, "", map[string]any{
 		"name": "Matrix Test Project",
 		"workspaces": []map[string]string{
-			{"path": "/repo/root", "role": "primary_code"},
+			{"workspace_id": entry.WorkspaceID, "path": repo, "role": "primary_code"},
 		},
 	}, p)
 	if w.Code != http.StatusCreated {
@@ -1329,6 +1342,7 @@ func TestTaskMatrix_Case10_ReopenStoreRecoveryExactReceiptLinksNoReplay(t *testi
 		auth:               authSvc2,
 		agents:             agents2,
 		model:              modelSvc2,
+		workspace:          workspace.NewService(pebblestore.NewWorkspaceStore(db2)),
 		agentModelSettings: modelSettingsSvc2,
 	}
 	server2.v3SessionExecutor = newSessionV3Executor(server2)
@@ -1464,12 +1478,13 @@ func TestTaskMatrix_ApproveCoderPersistsAllocatedWorktreeMetadata(t *testing.T) 
 	p := identity.Principal{Type: "user", UserID: f.userID, AccountScopeID: f.accountID}
 
 	// Create small Coder task
+	project, _, _ := f.server.sessions.Store().GetProject(f.accountID, projID)
 	w := f.callAPI(http.MethodPost, "/"+projID+"/tasks", map[string]any{
 		"title":          "Refactor auth logic",
 		"prompt":         "Refactor token validation",
 		"agent":          "coder",
 		"feature_size":   "small",
-		"workspace_path": "/mock/repo",
+		"workspace_path": project.Workspaces[0].Path,
 	}, p)
 	if w.Code != http.StatusCreated {
 		t.Fatalf("create task failed %d: %s", w.Code, w.Body.String())
@@ -1480,13 +1495,16 @@ func TestTaskMatrix_ApproveCoderPersistsAllocatedWorktreeMetadata(t *testing.T) 
 	taskID := taskMap["id"].(string)
 
 	// Configure mock worktree allocation result
+	allocated := filepath.Join(f.dir, "agent-auth-refactor")
+	proj, found, err := f.server.sessions.Store().GetProject(f.accountID, projID)
+	if err != nil || !found { t.Fatalf("project source: %v", err) }
 	f.wt.mu.Lock()
 	f.wt.allocResult = worktreeruntime.Allocation{
-		WorkspacePath: "/mock/worktrees/agent-auth-refactor",
+		WorkspacePath: allocated,
 		BranchName:    "agent/auth-refactor",
 		BaseBranch:    "dev",
 		BaseCommit:    "commit-sha-abc-123",
-		RepoRoot:      "/mock/repo",
+		RepoRoot:      proj.Workspaces[0].Path,
 	}
 	f.wt.mu.Unlock()
 
@@ -1497,8 +1515,8 @@ func TestTaskMatrix_ApproveCoderPersistsAllocatedWorktreeMetadata(t *testing.T) 
 	}
 
 	// Invariant: Returned and persisted task record must have allocated worktree metadata
-	if approvedTask.WorkspacePath != "/mock/worktrees/agent-auth-refactor" {
-		t.Fatalf("expected task WorkspacePath %q, got %q", "/mock/worktrees/agent-auth-refactor", approvedTask.WorkspacePath)
+	if approvedTask.WorkspacePath != allocated {
+		t.Fatalf("expected task WorkspacePath %q, got %q", allocated, approvedTask.WorkspacePath)
 	}
 	if approvedTask.WorktreeBranch != "agent/auth-refactor" {
 		t.Fatalf("expected task WorktreeBranch %q, got %q", "agent/auth-refactor", approvedTask.WorktreeBranch)
@@ -1512,7 +1530,7 @@ func TestTaskMatrix_ApproveCoderPersistsAllocatedWorktreeMetadata(t *testing.T) 
 	if err != nil || !found || freshTask == nil {
 		t.Fatalf("task not found in store: %v", err)
 	}
-	if freshTask.WorkspacePath != "/mock/worktrees/agent-auth-refactor" {
+	if freshTask.WorkspacePath != allocated {
 		t.Fatalf("persisted task WorkspacePath mismatch: %q", freshTask.WorkspacePath)
 	}
 	if freshTask.WorktreeBranch != "agent/auth-refactor" {
@@ -1534,11 +1552,16 @@ func TestTaskMatrix_DeployProjectTaskProgram_DurableWithoutRunner(t *testing.T) 
 	defer f.db.Close()
 	projID := f.createProject(t)
 	p := identity.Principal{Type: "user", UserID: f.userID, AccountScopeID: f.accountID}
+	project, _, _ := f.server.sessions.Store().GetProject(f.accountID, projID)
+	projectRoot := project.Workspaces[0].Path
+	binding, err := f.server.resolveProjectTaskSource(p, project, projectRoot, project.Workspaces[0].WorkspaceID, 0, true)
+	if err != nil { t.Fatal(err) }
 
 	// Construct server with nil runner
 	sNoRunner := &Server{
 		sessions:           f.server.sessions,
 		worktrees:          f.wt,
+		workspace:          f.server.workspace,
 		agentModelSettings: f.server.agentModelSettings,
 		model:              f.server.model,
 		agents:             f.server.agents,
@@ -1569,14 +1592,16 @@ func TestTaskMatrix_DeployProjectTaskProgram_DurableWithoutRunner(t *testing.T) 
 		Title:         "Task Program without runner",
 		Agent:         "coder",
 		Status:        "pending_approval",
-		WorkspacePath: "/mock/repo",
+		WorkspacePath: projectRoot,
+		SourceWorkspace: binding,
+		SessionID: "task-no-runner-session",
 		TaskProgram:   tpDef,
 	}
 	_ = f.server.sessions.Store().PutProjectTask(f.accountID, task)
 	proj, _, _ := f.server.sessions.Store().GetProject(f.accountID, projID)
 
 	// Deploy must fail closed with runner-unavailable error when runner is not configured
-	err := sNoRunner.deployProjectTaskProgram(p, proj, task)
+	err = sNoRunner.deployProjectTaskProgram(p, proj, task)
 	if err == nil || !strings.Contains(err.Error(), "runner service is not configured") {
 		t.Fatalf("expected runner service is not configured error, got: %v", err)
 	}

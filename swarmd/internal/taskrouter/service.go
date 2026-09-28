@@ -97,7 +97,7 @@ func (s *Service) RouteTask(ctx context.Context, opts TaskRouteOptions) (pebbles
 	}
 
 	if s.invoker != nil {
-		aiResult, err := s.invokeAIRouter(ctx, opts, planOpts)
+		aiResult, err := s.invokeAIRouter(ctx, opts, planOpts, baseContract)
 		if err != nil {
 			return pebblestore.TaskRouteResult{}, fmt.Errorf("router agent failed: %w", err)
 		}
@@ -137,7 +137,7 @@ func (s *Service) RefineTask(ctx context.Context, opts TaskRouteOptions) (pebble
 	return s.RouteTask(ctx, opts)
 }
 
-func (s *Service) invokeAIRouter(ctx context.Context, opts TaskRouteOptions, planOpts pebblestore.TaskPlanOptions) (pebblestore.TaskRouteResult, error) {
+func (s *Service) invokeAIRouter(ctx context.Context, opts TaskRouteOptions, planOpts pebblestore.TaskPlanOptions, baseContract pebblestore.TaskRouteResult) (pebblestore.TaskRouteResult, error) {
 	instructions := strings.TrimSpace(`You are the Swarm AI Task Router. Your role is to analyze user requests, attached media references, project guidelines (PROJECT.md), and project workspaces to produce an authoritative, high-context execution plan and routing contract.
 
 CRITICAL INSTRUCTIONS:

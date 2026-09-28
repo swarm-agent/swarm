@@ -663,6 +663,24 @@ func (s *SessionStore) putProjectTaskLocked(accountScopeID string, task *Project
 	return mutation, nil
 }
 
+// ReserveProjectTaskIfAbsent atomically claims an exact account/project/task ID.
+// A concurrent creator must read and reconcile the existing reservation rather
+// than overwrite a durable target or allocate a second execution.
+func (s *SessionStore) ReserveProjectTaskIfAbsent(accountScopeID string, task *ProjectTaskRecord) (bool, error) {
+	if s == nil || s.store == nil || s.store.db == nil { return false, errors.New("database not available") }
+	if task == nil || strings.TrimSpace(task.ID) == "" || strings.TrimSpace(task.ProjectID) == "" { return false, errors.New("task ID and project ID are required") }
+	s.store.projectsMu.Lock()
+	key := []byte(KeyProjectTask(accountScopeID, task.ProjectID, task.ID))
+	_, closer, err := s.store.db.Get(key)
+	if err == nil { closer.Close(); s.store.projectsMu.Unlock(); return false, nil }
+	if !errors.Is(err, pebble.ErrNotFound) { s.store.projectsMu.Unlock(); return false, err }
+	mut, err := s.putProjectTaskLocked(accountScopeID, task)
+	s.store.projectsMu.Unlock()
+	if err != nil { return false, err }
+	s.store.publishProjectRealtime(mut)
+	return true, nil
+}
+
 // GetProjectTask fetches a project task by ID.
 func (s *SessionStore) GetProjectTask(accountScopeID, projectID, taskID string) (*ProjectTaskRecord, bool, error) {
 	if s == nil || s.store == nil || s.store.db == nil {

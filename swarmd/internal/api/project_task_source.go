@@ -33,7 +33,7 @@ func projectTaskSubmissionHash(projectID string, input tool.ProjectTaskCreateInp
 
 // resolveProjectTaskSource binds execution to an exact catalog root, not a project
 // description, a linked subdirectory, or the first workspace in a list.
-func (s *Server) resolveProjectTaskSource(p identity.Principal, proj *pebblestore.ProjectRecord, requestedPath, requestedID string, requestedGeneration int64) (pebblestore.ProjectTaskSource, error) {
+func (s *Server) resolveProjectTaskSource(p identity.Principal, proj *pebblestore.ProjectRecord, requestedPath, requestedID string, requestedGeneration int64, requireRepository bool) (pebblestore.ProjectTaskSource, error) {
 	if proj == nil || s.workspace == nil {
 		return pebblestore.ProjectTaskSource{}, errors.New("project workspace catalog is unavailable")
 	}
@@ -68,11 +68,14 @@ func (s *Server) resolveProjectTaskSource(p identity.Principal, proj *pebblestor
 		if requestedGeneration > 0 && requestedGeneration != scope.WorkspaceGeneration {
 			return pebblestore.ProjectTaskSource{}, errors.New("source workspace generation is stale")
 		}
-		if state, err := s.workspace.InspectRepositoryForPrincipal(p, root); err != nil || state.State != workspace.RepositoryStateReady || state.Repository != root {
-			if path == root || id == scope.WorkspaceID {
-				return pebblestore.ProjectTaskSource{}, fmt.Errorf("project workspace %q requires a committed repository: %v", root, err)
+		if requireRepository {
+			state, err := s.workspace.InspectRepositoryForPrincipal(p, root)
+			if err != nil || state.State != workspace.RepositoryStateReady || state.Repository != root {
+				if path == root || id == scope.WorkspaceID {
+					return pebblestore.ProjectTaskSource{}, fmt.Errorf("project workspace %q requires a committed repository: %v", root, err)
+				}
+				continue
 			}
-			continue
 		}
 		provenance := "unique_project_workspace"
 		if path != "" || id != "" {
@@ -81,7 +84,7 @@ func (s *Server) resolveProjectTaskSource(p identity.Principal, proj *pebblestor
 		candidates = append(candidates, pebblestore.ProjectTaskSource{WorkspaceID: scope.WorkspaceID, WorkspaceGeneration: scope.WorkspaceGeneration, Path: root, Provenance: provenance})
 	}
 	if len(candidates) != 1 {
-		return pebblestore.ProjectTaskSource{}, fmt.Errorf("execution target unresolved: expected one authorized project repository, found %d; specify workspace_id or workspace_path", len(candidates))
+		return pebblestore.ProjectTaskSource{}, fmt.Errorf("execution target unresolved: expected one authorized project workspace, found %d; specify workspace_id or workspace_path", len(candidates))
 	}
 	return candidates[0], nil
 }
@@ -90,7 +93,7 @@ func (s *Server) revalidateProjectTaskSource(p identity.Principal, proj *pebbles
 	if task.SourceWorkspace.WorkspaceID == "" || task.SourceWorkspace.Path == "" || task.SourceWorkspace.WorkspaceGeneration <= 0 {
 		return errors.New("task has no durable source workspace binding")
 	}
-	bound, err := s.resolveProjectTaskSource(p, proj, task.SourceWorkspace.Path, task.SourceWorkspace.WorkspaceID, task.SourceWorkspace.WorkspaceGeneration)
+	bound, err := s.resolveProjectTaskSource(p, proj, task.SourceWorkspace.Path, task.SourceWorkspace.WorkspaceID, task.SourceWorkspace.WorkspaceGeneration, !isDirectMediaTask(task))
 	if err != nil {
 		return err
 	}

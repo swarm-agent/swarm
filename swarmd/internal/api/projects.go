@@ -1034,8 +1034,7 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 	if existing, ok, err := s.sessions.Store().GetSession(task.SessionID); err != nil {
 		return err
 	} else if ok {
-		if err := verifyProjectTaskSession(task, existing, p.AccountScopeID); err != nil { return err }
-		return errors.New("task session already reserved; reconcile existing seed and run intent before redeployment")
+		return s.reconcileProjectTaskSession(p, proj, task, existing, taskStatus)
 	}
 
 	mode := sessionruntime.ModeAuto
@@ -1944,9 +1943,17 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			ServiceTier   string `json:"service_tier"`
 			ContextMode   string `json:"context_mode"`
 			WorkspacePath string `json:"workspace_path"`
+			WorkspaceID string `json:"workspace_id"`
+			WorkspaceGeneration int64 `json:"workspace_generation"`
 		}
-		_ = json.Unmarshal(body, &previewReq)
-		proj, _, _ := db.GetProject(p.AccountScopeID, projectID)
+		if err := json.Unmarshal(body, &previewReq); err != nil { writeError(w, http.StatusBadRequest, err); return }
+		proj, found, err := db.GetProject(p.AccountScopeID, projectID)
+		if err != nil { writeError(w, http.StatusInternalServerError, err); return }
+		if !found || proj == nil { writeError(w, http.StatusNotFound, errors.New("project not found")); return }
+		if proj.AccountID != "" && proj.AccountID != p.AccountScopeID { writeError(w, http.StatusForbidden, errors.New("cross-account project preview forbidden")); return }
+		requiresRepo := previewReq.Agent != "image" && previewReq.Agent != "video" && previewReq.Agent != "sound" && previewReq.Agent != "audio"
+		source, err := s.resolveProjectTaskSource(p, proj, previewReq.WorkspacePath, previewReq.WorkspaceID, previewReq.WorkspaceGeneration, requiresRepo)
+		if err != nil { writeError(w, http.StatusBadRequest, err); return }
 		var projectContext string
 		var workspaces []pebblestore.ProjectWorkspaceRef
 		if proj != nil {
@@ -1959,7 +1966,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		}
 		routed, rErr := pebblestore.RouteAndPlanProjectTaskWithOptions(pebblestore.TaskPlanOptions{
 			Prompt:             prompt,
-			RequestedWorkspace: previewReq.WorkspacePath,
+			RequestedWorkspace: source.Path,
 			ProjectContext:     projectContext,
 			Workspaces:         workspaces,
 			Intent:             previewReq.Intent,
@@ -1985,6 +1992,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		modelPrev := s.buildTaskModelPreview(p, dummyTask)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"task_plan":     routed,
+			"source_workspace": source,
 			"model_preview": modelPrev,
 		})
 		return
