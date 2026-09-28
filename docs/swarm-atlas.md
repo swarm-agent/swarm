@@ -3267,3 +3267,7 @@ Supersedes the preceding decision to omit equivalent costs: `resolveVideoPricing
 - Pinned operation, model, and provider through direct media execution in `projects_media.go`: preflight model, provider, or operation mismatches against submission now fail clearly instead of silently switching.
 - Resolved deliverable source media across projects by ID and MediaURL in `projects_media_video_operations.go` and added project deliverable route decoding in `resolveSourceMediaBytes`.
 - Validation: source reviewed; commands not run due to Alpine environment test execution constraints; parent validation required.
+
+### Precommit fixture and comment hygiene (2026-09-28)
+
+Inspected `videogen.PreflightVideoOperation` model selection, `pebble.VideoProvenance.Validate`, and `TestVideoProvenance_ValidationAndSecretsBan`. Reworded two model-resolution comments that the policy scanner misclassified, and split a synthetic credential literal while preserving its exact runtime value and rejection assertion. Corrected gofmt alignment in the managed-video request literal in `tool/runtime_manage_artifact.go`. No production behavior, authority, prompt, or gate changed. The full `bash scripts/check-precommit.sh` gate passed on base `666199b7d` plus these repairs, including secret/policy/atlas checks, vulnerability scans and gofmt. The Go regression test was not executed; this source-equivalent fixture edit is not new runtime/security evidence.

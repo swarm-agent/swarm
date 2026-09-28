@@ -2605,7 +2605,7 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 				}
 				return nil
 			}(),
-			Image:           videoImage,
+			Image: videoImage,
 		})
 		if err != nil {
 			return managedVideoArtifactResult{}, fmt.Errorf("generate managed video: %w", err)

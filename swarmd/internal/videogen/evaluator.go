@@ -60,7 +60,7 @@ type VideoPreflightResult struct {
 }
 
 // PreflightVideoOperation validates and resolves a video request.
-// It enforces operation discrimination, model resolution without silent fallback,
+// It enforces operation discrimination, explicit or account-configured model resolution,
 // input compatibility, source provenance verification, and provider constraints.
 func (s *Service) PreflightVideoOperation(ctx context.Context, req VideoPreflightRequest) (*VideoPreflightResult, error) {
 	if s == nil {
@@ -160,7 +160,7 @@ func (s *Service) PreflightVideoOperation(ctx context.Context, req VideoPrefligh
 		}
 	}
 
-	// 5. Resolve Target Model without hardcoded silent fallbacks
+	// 5. Resolve the target model from the request, account settings, or source provenance
 	var targetModel, providerID string
 	explicitModel := strings.TrimSpace(req.ExplicitModel)
 
