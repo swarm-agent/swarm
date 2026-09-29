@@ -6,21 +6,22 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"swarm/packages/swarmd/internal/identity"
 	"testing"
 	"time"
 
-	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
 // Requirement: Project tasks API must expose precise worker attribution, worker-only filtering,
 // and reject client-forged worker identities on POST and PATCH.
 // Invariant:
-// 1. GET /v3/projects/{id}/tasks?worker_only=true returns ONLY tasks with non-empty WorkerID (generic WorkerName without WorkerID excluded).
-// 2. GET /v3/projects/{id}/tasks?worker_id={id} returns exact matching worker tasks. Aliases like filter=workers or workers_only are not supported.
-// 3. POST /v3/projects/{id}/tasks rejects client-supplied worker identity fields (worker_id, worker_run_id, automation_id) with 400.
-// 4. PATCH /v3/projects/{id}/tasks/{taskId} rejects client attempts to modify worker_id, worker_run_id, automation_id, session_id, project_id,
-//    and rejects modifying worker_name on worker-attributed tasks, while preserving generic worker_name edits on ordinary tasks.
+//  1. GET /v3/projects/{id}/tasks?worker_only=true returns ONLY tasks with non-empty WorkerID (generic WorkerName without WorkerID excluded).
+//  2. GET /v3/projects/{id}/tasks?worker_id={id} returns exact matching worker tasks. Aliases like filter=workers or workers_only are not supported.
+//  3. POST /v3/projects/{id}/tasks rejects client-supplied worker identity fields (worker_id, worker_run_id, automation_id) with 400.
+//  4. PATCH /v3/projects/{id}/tasks/{taskId} rejects client attempts to modify worker_id, worker_run_id, automation_id, session_id, project_id,
+//     and rejects modifying worker_name on worker-attributed tasks, while preserving generic worker_name edits on ordinary tasks.
+//
 // Boundary: projects.go (GET/POST /v3/projects/{id}/tasks, PATCH /v3/projects/{id}/tasks/{taskId}).
 func TestProjectsAPI_WorkerTaskAttributionAndFilter(t *testing.T) {
 	t.Setenv("SWARM_API_NO_AUTH", "1")
@@ -237,27 +238,18 @@ func TestProjectsAPI_WorkerTaskAttributionAndFilter(t *testing.T) {
 		t.Fatalf("expected 400 when client specifies automation_id in POST, got %d: %s", wPostAuto.Code, wPostAuto.Body.String())
 	}
 
-	// Ordinary task POST with generic worker_name is allowed
-	postOrdinary, _ := json.Marshal(map[string]any{
-		"title":       "Ordinary generic task",
-		"agent":       "coder",
-		"worker_name": "Generic Assistant",
-	})
-	rPostOrd := httptest.NewRequest(http.MethodPost, ProjectsPath+"/"+proj.ID+"/tasks", bytes.NewReader(postOrdinary)).WithContext(ctx)
-	wPostOrd := httptest.NewRecorder()
-	h.ServeHTTP(wPostOrd, rPostOrd)
-	if wPostOrd.Code != http.StatusCreated {
-		t.Fatalf("expected 201 for ordinary task with generic worker_name, got %d: %s", wPostOrd.Code, wPostOrd.Body.String())
+	// Forged POSTs must leave the original task collection unchanged.
+	afterPosts, err := sessionStore.ListProjectTasks(accountID, proj.ID, 20)
+	if err != nil || len(afterPosts) != 4 {
+		t.Fatalf("forged POST mutated collection: count=%d err=%v", len(afterPosts), err)
 	}
-	var postOrdResp struct {
-		Task pebblestore.ProjectTaskRecord `json:"task"`
-	}
-	if err := json.Unmarshal(wPostOrd.Body.Bytes(), &postOrdResp); err != nil {
+	// Use an existing ordinary queued task for PATCH compatibility checks; this
+	// handler fixture intentionally has no session/worktree deployment authority.
+	taskGenericWorker.Status = "queued"
+	if err := sessionStore.PutProjectTask(accountID, taskGenericWorker); err != nil {
 		t.Fatal(err)
 	}
-	if postOrdResp.Task.WorkerName != "Generic Assistant" || postOrdResp.Task.WorkerID != "" {
-		t.Fatalf("unexpected worker fields on ordinary task: %+v", postOrdResp.Task)
-	}
+	postOrdResp := struct{ Task pebblestore.ProjectTaskRecord }{Task: *taskGenericWorker}
 
 	// (F) Negative PATCH: client cannot modify worker_id, worker_run_id, automation_id, session_id, project_id
 	patchWorkerID, _ := json.Marshal(map[string]any{"worker_id": "malicious_id"})
@@ -297,6 +289,10 @@ func TestProjectsAPI_WorkerTaskAttributionAndFilter(t *testing.T) {
 	if wPatchAttr.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 on PATCH worker_name of attributed task, got %d: %s", wPatchAttr.Code, wPatchAttr.Body.String())
 	}
+	unchanged, found, err := sessionStore.GetProjectTask(accountID, proj.ID, taskWorkerA.ID)
+	if err != nil || !found || unchanged.WorkerName != "Alpha Worker" || unchanged.WorkerID != "worker_alpha" || unchanged.WorkerRunID != "run_alpha_1" {
+		t.Fatalf("rejected attribution edit changed stored identity: %+v %v", unchanged, err)
+	}
 
 	// Client CAN rewrite generic worker_name on ordinary task
 	patchOrdWorkerName, _ := json.Marshal(map[string]any{"worker_name": "Updated Generic Assistant"})
@@ -314,5 +310,57 @@ func TestProjectsAPI_WorkerTaskAttributionAndFilter(t *testing.T) {
 	}
 	if patchResp.Task.WorkerName != "Updated Generic Assistant" {
 		t.Errorf("expected updated generic worker_name, got %q", patchResp.Task.WorkerName)
+	}
+}
+
+// Requirement: the real worker HTTP dispatch must create the same project task
+// returned by the existing project Tasks endpoint, with exact identity and one
+// task per run on retry. Threat: disconnected stores or API-only fixture proof.
+// Boundary: HTTP worker service -> isolated Git/V3 session -> Pebble project
+// task -> HTTP project listing. Enqueue is stubbed; no provider execution claimed.
+func TestWorkerGeneratedTaskDispatchToProjectAPI(t *testing.T) {
+	s, db, h := setupWorkerAPITestServer(t)
+	workspaceID := setupWorkerAPIExecution(t, s, db)
+	w, err := s.sessions.Store().WorkerStore().CreateWorker("acct-test", "user-test", pebblestore.CreateWorkerRequest{Name: "Exact Worker", WorkspaceRequirements: []pebblestore.WorkerWorkspaceRequirement{{Role: "primary", Required: true}}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w = activateWorkerAPIFixture(t, s, w, workspaceID)
+	body := `{"prompt":"Inspect repository","idempotency_key":"project-bridge"}`
+	for i := 0; i < 2; i++ {
+		response := executeWorkerAPI(h, http.MethodPost, "/"+w.ID+"/direct", body, workerAPICallOptions{scopes: []string{"automations:write"}})
+		if response.Code != http.StatusCreated {
+			t.Fatalf("dispatch %d: %d %s", i, response.Code, response.Body.String())
+		}
+	}
+	p := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "acct-test", UserID: "user-test"}
+	request := httptest.NewRequest(http.MethodGet, ProjectsPath+"/project_workers/tasks?worker_only=true", nil)
+	ctx := context.WithValue(request.Context(), productPrincipalRequestContextKey, p)
+	ctx = context.WithValue(ctx, productScopedTokenRequestContextKey, &pebblestore.ScopedTokenRecord{AccountScopeID: p.AccountScopeID, UserID: p.UserID, Scopes: []string{"projects:read", "sessions:read"}})
+	response := httptest.NewRecorder()
+	h.ServeHTTP(response, request.WithContext(ctx))
+	if response.Code != http.StatusOK {
+		t.Fatalf("tasks: %d %s", response.Code, response.Body.String())
+	}
+	var result struct {
+		Tasks []pebblestore.ProjectTaskRecord `json:"tasks"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Tasks) != 1 {
+		t.Fatalf("expected exactly one generated task: %+v", result.Tasks)
+	}
+	task := result.Tasks[0]
+	runs, _, err := s.sessions.ListWorkerRuns(p.AccountScopeID, w.ID, 10, "")
+	if err != nil || len(runs) != 1 {
+		t.Fatalf("runs: %+v %v", runs, err)
+	}
+	if task.ProjectID != "project_workers" || task.WorkerID != w.ID || task.WorkerName != w.Name || task.WorkerRunID != runs[0].ID || task.SessionID != runs[0].SessionID || task.Status != "in_progress" {
+		t.Fatalf("disconnected task: %+v run=%+v", task, runs[0])
+	}
+	session, found, err := s.sessions.GetSession(task.SessionID)
+	if err != nil || !found || session.Metadata["task_id"] != task.ID || session.Metadata["project_id"] != task.ProjectID {
+		t.Fatalf("session/task link: %+v %v", session, err)
 	}
 }

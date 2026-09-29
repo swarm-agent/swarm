@@ -303,7 +303,11 @@ func syncTaskSessionState(task *pebblestore.ProjectTaskRecord, db *pebblestore.S
 	if task == nil || db == nil {
 		return
 	}
-	// Do not override tasks awaiting user approval or planning
+	// Preserve manual task approval/planning and queue ownership. Generated tasks
+	// alone may reconcile their queue state from the worker execution session.
+	if task.Status == "pending_approval" || task.Status == "planning" || (task.Status == "queued" && task.WorkerID == "") {
+		return
+	}
 
 	// 1. If task is already integrated, it is completed
 	if task.IsIntegrated {

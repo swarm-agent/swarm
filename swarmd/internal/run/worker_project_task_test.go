@@ -167,31 +167,20 @@ func TestWorkerProjectTask_ProjectAssociationHierarchyAndAmbiguity(t *testing.T)
 		t.Fatalf("expected proj_explicit, got %q", resolvedProj.ID)
 	}
 
-	// 2. Automation plan project_id
+	// 2. Nested worker settings cannot be used to redirect project ownership.
 	planWithProj := store.SessionPlanDocument{
 		Title:    "Plan with project",
 		WorkerV2: &store.AutomationV2Settings{ProjectID: "proj_explicit"},
 	}
-	w2, err := ws.CreateWorker("account", "owner", store.CreateWorkerRequest{
+	_, err = ws.CreateWorker("account", "owner", store.CreateWorkerRequest{
 		Name:                  "Worker Plan Proj",
 		WorkspaceRequirements: []store.WorkerWorkspaceRequirement{{Role: "primary", Required: true}},
 		Automations: []store.WorkerAutomationDefinition{
 			{Name: "auto-plan", ActivationMode: "manual", Enabled: true, PlanDocument: planWithProj},
 		},
 	}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	w2, err = execution.Activate("account", "owner", w2.ID, w2.Revision, map[string]string{"primary": workspaceID})
-	if err != nil {
-		t.Fatal(err)
-	}
-	resolvedProj2, err := execution.resolveWorkerProject(store.WorkerRunRecord{AccountScopeID: "account", WorkerID: w2.ID, AutomationID: w2.Automations[0].ID}, w2)
-	if err != nil {
-		t.Fatalf("resolveWorkerProject plan: %v", err)
-	}
-	if resolvedProj2.ID != "proj_explicit" {
-		t.Fatalf("expected proj_explicit from plan, got %q", resolvedProj2.ID)
+	if err == nil || !strings.Contains(err.Error(), "cannot contain nested") {
+		t.Fatalf("expected nested settings rejection, got %v", err)
 	}
 
 	// 3. Ambiguous workspace association: 2 projects share the same workspace
@@ -200,7 +189,7 @@ func TestWorkerProjectTask_ProjectAssociationHierarchyAndAmbiguity(t *testing.T)
 		AccountID: "account",
 		Name:      "Second Project sharing workspace",
 		Workspaces: []store.ProjectWorkspaceRef{
-			{WorkspaceID: workspaceID, Path: "/tmp/fake", Name: "shared"},
+			{WorkspaceID: workspaceID, Path: t.TempDir()},
 		},
 	}
 	if err := db.PutProject("account", ambigProj); err != nil {
@@ -229,7 +218,6 @@ func TestWorkerProjectTask_ProjectAssociationHierarchyAndAmbiguity(t *testing.T)
 	wOrphan, err := ws.CreateWorker("account", "owner", store.CreateWorkerRequest{
 		Name:                  "Worker Orphan",
 		WorkspaceRequirements: []store.WorkerWorkspaceRequirement{{Role: "primary", Required: true}},
-		LocalBindings:         map[string]string{"primary": "ws_nonexistent"},
 	}, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -570,6 +558,7 @@ func TestWorkerProjectTask_AdversarialExistingTaskCollision(t *testing.T) {
 		IdempotencyKey: "collision-idemp-1",
 	}
 
+	req.UserID = "owner"
 	admitted, err := ws.AdmitWorkerRun("account", req)
 	if err != nil {
 		t.Fatal(err)
@@ -867,12 +856,14 @@ func TestWorkerProjectTask_ProjectAssociationHardening(t *testing.T) {
 		AccountScopeID: "account",
 		UserID:         "owner",
 		Mode:           "auto",
-		Metadata:       map[string]any{"project_id": "proj_pinned"},
+		Metadata:       map[string]any{"project_id": "proj_pinned", "worker_id": wAccepted.ID, "worker_execution_run_id": "pinned_run"},
 	}
 	if err := db.CreateSession(sessSnapshot); err != nil {
 		t.Fatal(err)
 	}
 	runWithPinnedSess := store.WorkerRunRecord{
+		ID:             "pinned_run",
+		UserID:         "owner",
 		AccountScopeID: "account",
 		WorkerID:       wAccepted.ID,
 		SessionID:      "execution_session_pinned",
@@ -885,4 +876,3 @@ func TestWorkerProjectTask_ProjectAssociationHardening(t *testing.T) {
 		t.Fatalf("expected pinned project proj_pinned, got %q", resPinned.ID)
 	}
 }
-

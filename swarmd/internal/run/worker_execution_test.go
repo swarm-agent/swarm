@@ -47,7 +47,7 @@ func testWorkerStopAcknowledgement(t *testing.T, later bool) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = ss.Store().CreateSession(store.SessionSnapshot{ID: r.SessionID, AccountScopeID: "account", UserID: "owner", Mode: "auto"}); err != nil {
+	if err = ss.Store().CreateSession(store.SessionSnapshot{ID: r.SessionID, AccountScopeID: "account", UserID: "owner", Mode: "auto", Metadata: map[string]any{"worker_id": w.ID, "worker_execution_run_id": r.ID}}); err != nil {
 		t.Fatal(err)
 	}
 	executionID := r.ID
@@ -159,7 +159,7 @@ func setupWorkerExecutionFixture(t *testing.T, enqueue func(identity.Principal, 
 		AccountID: "account",
 		Name:      "Fixture Project",
 		Workspaces: []store.ProjectWorkspaceRef{
-			{WorkspaceID: entry.WorkspaceID, Path: repo, Name: "fixture"},
+			{WorkspaceID: entry.WorkspaceID, Path: repo},
 		},
 	}
 	if err := repository.PutProject("account", proj); err != nil {

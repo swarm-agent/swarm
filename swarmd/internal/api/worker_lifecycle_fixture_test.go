@@ -43,6 +43,10 @@ func setupWorkerAPIExecution(t *testing.T, s *Server, db *store.Store) string {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Worker dispatch now requires an unambiguous project for generated tasks.
+	if err := ss.PutProject("acct-test", &store.ProjectRecord{ID: "project_workers", Name: "Worker tasks", Workspaces: []store.ProjectWorkspaceRef{{WorkspaceID: entry.WorkspaceID, Path: repo}}}); err != nil {
+		t.Fatal(err)
+	}
 	agents := agent.NewService(store.NewAgentStore(db), nil)
 	if err = agents.EnsureDefaults(); err != nil {
 		t.Fatal(err)

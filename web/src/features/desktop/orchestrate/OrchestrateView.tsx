@@ -90,7 +90,6 @@ import {
   OrchestrateThemeId,
   ProjectSummary,
   ProjectTaskMediaRef,
-  RunningAutomation,
   RunningTask,
   RunningTaskPlanCheckpoint,
 } from './orchestrate-types'
@@ -735,6 +734,7 @@ function MinimalTaskCard({
   const handleWorkerClick = (e: React.MouseEvent) => {
     e.stopPropagation()
     if (onOpenWorkerDetail && workerTargetId) {
+      e.preventDefault()
       onOpenWorkerDetail(workerTargetId)
     }
   }
@@ -3390,9 +3390,6 @@ export function OrchestrateView({
   const [activeSessionId, setActiveSessionId] = useState<string>('')
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null)
 
-  // Automations State
-  const [automations, setAutomations] = useState<RunningAutomation[]>([])
-
   // Middle canvas layout variant state
   const [middleVariant] = useState<MiddleCanvasVariant>('matrix')
 
@@ -3821,24 +3818,6 @@ export function OrchestrateView({
             selected: true,
           }))
           setOnboardingWorkspaces(detected)
-        }
-      } catch {}
-
-      // 3. Automations
-      try {
-        const autoRes = await requestJson<{ records?: any[] }>('/v3/automations/v2')
-        if (autoRes?.records && !cancelled) {
-          const mapped: RunningAutomation[] = autoRes.records.map((r: any) => ({
-            id: r.id || 'automation',
-            name: r.worker_v2?.name || r.name || 'Worker Automation',
-            kind: (r.worker_v2?.kind || r.schedule?.kind || 'trigger') as any,
-            status: (r.status || (r.paused ? 'idle' : 'running')) as any,
-            nextRun: r.schedule?.cron || r.schedule?.interval || 'On demand',
-            lastRun: r.last_run_at && !isNaN(new Date(r.last_run_at).getTime()) ? new Date(r.last_run_at).toLocaleTimeString() : 'Never',
-            outputSummary: r.description || r.worker_v2?.definition?.goal || 'Automated background task',
-            totalRuns: r.run_count || 0,
-          }))
-          setAutomations(mapped)
         }
       } catch {}
 
@@ -6550,6 +6529,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                       type="button"
                       onClick={() => setTaskSourceFilter('all')}
                       data-testid="filter-all-tasks"
+                      aria-pressed={taskSourceFilter === 'all'}
                       className={`px-2.5 py-1 rounded text-[11px] font-medium transition-all ${
                         taskSourceFilter === 'all'
                           ? 'bg-blue-600 text-white shadow-sm'
@@ -6562,6 +6542,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                       type="button"
                       onClick={() => setTaskSourceFilter('worker')}
                       data-testid="filter-worker-tasks"
+                      aria-pressed={taskSourceFilter === 'worker'}
                       className={`px-2.5 py-1 rounded text-[11px] font-medium transition-all ${
                         taskSourceFilter === 'worker'
                           ? 'bg-blue-600 text-white shadow-sm'
@@ -6643,16 +6624,6 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                                     {t.outcomeType.replace('_', ' ')}
                                   </span>
                                 )}
-                                {Boolean(t.workerId?.trim() || t.worker_id?.trim()) && (
-                                  <span
-                                    className="inline-flex items-center gap-1 font-mono text-[9px] px-1.5 py-0.5 rounded bg-indigo-950/70 text-indigo-300 border border-indigo-500/30 font-semibold"
-                                    title={`Worker: ${t.worker_name || (t.workerName && !t.workerName.startsWith('@') ? t.workerName : undefined) || t.workerId || t.worker_id}`}
-                                    data-testid="worker-tag"
-                                  >
-                                    <Bot size={9} className="text-indigo-400" />
-                                    <span>{t.worker_name || (t.workerName && !t.workerName.startsWith('@') ? t.workerName : undefined) || t.workerId || t.worker_id}</span>
-                                  </span>
-                                )}
                               </div>
 
                               <div className="flex items-center gap-3 flex-shrink-0">
@@ -6666,14 +6637,15 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                                     href={swarmWorkerHref(workspaceSlug, (t.workerId?.trim() || t.worker_id?.trim())!)}
                                     onClick={(e) => {
                                       e.stopPropagation()
+                                      e.preventDefault()
                                       void navigate(swarmWorkerLink(workspaceSlug, (t.workerId?.trim() || t.worker_id?.trim())!))
                                     }}
-                                    className="text-[10px] font-mono px-2 py-0.5 rounded bg-indigo-950/60 text-indigo-300 border border-indigo-500/40 hover:bg-indigo-900/60 hover:text-white flex items-center gap-1 transition-colors cursor-pointer"
+                                    className="max-w-40 text-[10px] font-mono px-2 py-0.5 rounded bg-indigo-950/60 text-indigo-300 border border-indigo-500/40 hover:bg-indigo-900/60 hover:text-white flex items-center gap-1 transition-colors cursor-pointer"
                                     title={`View Worker: ${t.worker_name || (t.workerName && !t.workerName.startsWith('@') ? t.workerName : undefined) || t.workerId || t.worker_id}`}
                                     data-testid="worker-link"
                                   >
                                     <Bot size={10} className="text-indigo-400" />
-                                    <span>{t.worker_name || (t.workerName && !t.workerName.startsWith('@') ? t.workerName : undefined) || t.workerId || t.worker_id}</span>
+                                    <span className="truncate">{t.worker_name || t.workerName || t.workerId || t.worker_id}</span>
                                   </a>
                                 ) : (
                                   <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-300">

@@ -322,11 +322,11 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 	}
 	taskDesc := firstNonEmptyString(doc.Info.Goal, w.Description, taskTitle)
 	if taskFound {
-		if (taskRecord.AccountID != "" && taskRecord.AccountID != r.AccountScopeID) ||
-			(taskRecord.ProjectID != "" && taskRecord.ProjectID != proj.ID) ||
-			(taskRecord.WorkerID != "" && taskRecord.WorkerID != w.ID) ||
-			(taskRecord.WorkerRunID != "" && taskRecord.WorkerRunID != r.ID) ||
-			(taskRecord.AutomationID != "" && taskRecord.AutomationID != r.AutomationID) ||
+		if taskRecord.AccountID != r.AccountScopeID ||
+			taskRecord.ProjectID != proj.ID ||
+			taskRecord.WorkerID != w.ID ||
+			taskRecord.WorkerRunID != r.ID ||
+			taskRecord.AutomationID != r.AutomationID ||
 			(taskRecord.SessionID != "" && r.SessionID != "" && taskRecord.SessionID != r.SessionID) {
 			return fmt.Errorf("%w: existing task %q identity mismatch", store.ErrWorkerConflict, taskID)
 		}
@@ -347,7 +347,7 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 			AutomationID: r.AutomationID,
 			Tier:         "complex",
 			OutcomeType:  "general",
-			PlanBinding:  &store.ProjectTaskPlanBinding{PlanID: r.ID, PlanTitle: taskTitle},
+			PlanBinding:  &store.ProjectTaskPlanBinding{PlanID: r.ID, SessionID: r.SessionID},
 			CreatedAt:    r.CreatedAt,
 			UpdatedAt:    r.CreatedAt,
 		}
@@ -362,11 +362,11 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 			taskRecord.PlanBinding == nil
 		if needsUpdate {
 			taskRecord, err = h.runs.sessions.Store().UpdateProjectTask(r.AccountScopeID, proj.ID, taskID, func(t *store.ProjectTaskRecord) error {
-				if (t.AccountID != "" && t.AccountID != r.AccountScopeID) ||
-					(t.ProjectID != "" && t.ProjectID != proj.ID) ||
-					(t.WorkerID != "" && t.WorkerID != w.ID) ||
-					(t.WorkerRunID != "" && t.WorkerRunID != r.ID) ||
-					(t.AutomationID != "" && t.AutomationID != r.AutomationID) ||
+				if t.AccountID != r.AccountScopeID ||
+					t.ProjectID != proj.ID ||
+					t.WorkerID != w.ID ||
+					t.WorkerRunID != r.ID ||
+					t.AutomationID != r.AutomationID ||
 					(t.SessionID != "" && r.SessionID != "" && t.SessionID != r.SessionID) {
 					return fmt.Errorf("%w: existing task %q identity mismatch in update", store.ErrWorkerConflict, taskID)
 				}
@@ -375,7 +375,7 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 				t.WorkerRunID = r.ID
 				t.AutomationID = r.AutomationID
 				if t.PlanBinding == nil {
-					t.PlanBinding = &store.ProjectTaskPlanBinding{PlanID: r.ID, PlanTitle: taskTitle}
+					t.PlanBinding = &store.ProjectTaskPlanBinding{PlanID: r.ID, SessionID: r.SessionID}
 				}
 				return nil
 			})
@@ -530,6 +530,7 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 		newMeta["project_task_id"] = taskID
 		newMeta["worker_run_id"] = r.ID
 		newMeta["automation_id"] = r.AutomationID
+		snapshot.Metadata = newMeta
 		clientReq := "worker-meta:" + r.ID
 		_, err = h.apply(sessions.SessionMutationInput{
 			SessionID:       r.SessionID,
@@ -541,7 +542,7 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 			PayloadHash:     clientReq,
 			RequestHash:     clientReq,
 			EventType:       "session.metadata.updated",
-			Metadata:        newMeta,
+			Session:         &snapshot,
 			NowUnixMs:       time.Now().UnixMilli(),
 		})
 		if err != nil {
@@ -1304,6 +1305,8 @@ func (s *WorkerExecutionService) authorizeWorkerOwner(account, user string) erro
 	return nil
 }
 
+var errWorkerProjectNotAssociated = errors.New("project association required")
+
 func (s *WorkerExecutionService) resolveWorkerProject(r store.WorkerRunRecord, w store.WorkerRecord) (*store.ProjectRecord, error) {
 	if s == nil || s.host == nil || s.host.runs == nil || s.host.runs.sessions == nil {
 		return nil, errors.New("sessions service unavailable")
@@ -1329,7 +1332,10 @@ func (s *WorkerExecutionService) resolveWorkerProject(r store.WorkerRunRecord, w
 		if err != nil {
 			return nil, err
 		}
-		if found && sess.Metadata != nil {
+		if found {
+			if sess.AccountScopeID != accountScopeID || sess.UserID != r.UserID || sess.Metadata["worker_id"] != r.WorkerID || sess.Metadata["worker_execution_run_id"] != r.ID {
+				return nil, fmt.Errorf("%w: execution session identity mismatch", store.ErrWorkerConflict)
+			}
 			if sessPID := strings.TrimSpace(mapString(sess.Metadata, "project_id")); sessPID != "" {
 				proj, found, err := db.GetProject(accountScopeID, sessPID)
 				if err != nil {
@@ -1349,18 +1355,6 @@ func (s *WorkerExecutionService) resolveWorkerProject(r store.WorkerRunRecord, w
 	// 1. Inspect explicit project_id in worker metadata or automation plan.
 	// Untrusted run Input project_id must not override accepted worker/project association.
 	explicitPID := strings.TrimSpace(mapString(w.Metadata, "project_id"))
-	if explicitPID == "" && r.AutomationID != "" {
-		for _, a := range w.Automations {
-			if a.ID == r.AutomationID {
-				if a.PlanDocument.WorkerV2 != nil && strings.TrimSpace(a.PlanDocument.WorkerV2.ProjectID) != "" {
-					explicitPID = strings.TrimSpace(a.PlanDocument.WorkerV2.ProjectID)
-				} else if a.PlanDocument.AutomationV2 != nil && strings.TrimSpace(a.PlanDocument.AutomationV2.ProjectID) != "" {
-					explicitPID = strings.TrimSpace(a.PlanDocument.AutomationV2.ProjectID)
-				}
-				break
-			}
-		}
-	}
 	if explicitPID != "" {
 		proj, found, err := db.GetProject(accountScopeID, explicitPID)
 		if err != nil {
@@ -1504,7 +1498,7 @@ func (s *WorkerExecutionService) resolveWorkerProject(r store.WorkerRunRecord, w
 		}
 	}
 
-	return nil, fmt.Errorf("project association required: worker %q has no associated project in account %q", w.ID, accountScopeID)
+	return nil, fmt.Errorf("%w: worker %q has no associated project in account %q", errWorkerProjectNotAssociated, w.ID, accountScopeID)
 }
 
 func (s *WorkerExecutionService) reconcileRunTask(r store.WorkerRunRecord, status, reason string) error {
@@ -1556,17 +1550,13 @@ func (s *WorkerExecutionService) reconcileRunTask(r store.WorkerRunRecord, statu
 			}
 		}
 		if w.ID == "" {
-			var found bool
-			var err error
-			w, found, err = db.WorkerStore().GetWorker(r.AccountScopeID, r.WorkerID)
-			if err != nil {
-				return err
-			}
-			if !found {
-				return fmt.Errorf("%w: worker %q not found", store.ErrWorkerNotFound, r.WorkerID)
-			}
+			return fmt.Errorf("%w: pinned worker revision unavailable", store.ErrWorkerConflict)
 		}
 		p, err := s.resolveWorkerProject(r, w)
+		// A cancelled admission may never have reached task preparation.
+		if errors.Is(err, errWorkerProjectNotAssociated) {
+			return nil
+		}
 		if err != nil {
 			return err
 		}
@@ -1590,13 +1580,14 @@ func (s *WorkerExecutionService) reconcileWorkerTaskTerminal(accountScopeID, pro
 		return err
 	}
 	if !found || taskRecord == nil {
-		return fmt.Errorf("task %q not found", taskID)
+		// No task exists for pre-bridge runs or admissions stopped before preparation.
+		return nil
 	}
 	// Don't mutate unrelated task
-	if taskRecord.WorkerRunID != "" && r.ID != "" && taskRecord.WorkerRunID != r.ID {
+	if taskRecord.WorkerRunID != r.ID {
 		return fmt.Errorf("%w: task %q worker_run_id %q does not match run %q", store.ErrWorkerConflict, taskID, taskRecord.WorkerRunID, r.ID)
 	}
-	if taskRecord.WorkerID != "" && r.WorkerID != "" && taskRecord.WorkerID != r.WorkerID {
+	if taskRecord.WorkerID != r.WorkerID {
 		return fmt.Errorf("%w: task %q worker_id %q does not match run worker %q", store.ErrWorkerConflict, taskID, taskRecord.WorkerID, r.WorkerID)
 	}
 	if taskRecord.Status == "completed" {
@@ -1622,10 +1613,10 @@ func (s *WorkerExecutionService) reconcileWorkerTaskTerminal(accountScopeID, pro
 		}
 	}
 	_, err = db.UpdateProjectTask(accountScopeID, projectID, taskID, func(t *store.ProjectTaskRecord) error {
-		if t.WorkerRunID != "" && r.ID != "" && t.WorkerRunID != r.ID {
+		if t.WorkerRunID != r.ID {
 			return fmt.Errorf("%w: task %q worker_run_id %q does not match run %q", store.ErrWorkerConflict, taskID, t.WorkerRunID, r.ID)
 		}
-		if t.WorkerID != "" && r.WorkerID != "" && t.WorkerID != r.WorkerID {
+		if t.WorkerID != r.WorkerID {
 			return fmt.Errorf("%w: task %q worker_id %q does not match run worker %q", store.ErrWorkerConflict, taskID, t.WorkerID, r.WorkerID)
 		}
 		if t.Status == "completed" {
