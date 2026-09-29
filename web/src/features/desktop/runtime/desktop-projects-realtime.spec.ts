@@ -60,3 +60,31 @@ test('task Git refresh reuses scoped session events and coalesces without collec
   assert.equal(state.project, undefined)
   assert.equal(reads.length, 4)
 })
+
+test('desktop projects runtime subscribes to cache mutations on demand and unsubscribes when released', () => {
+  let subscriptions = 0
+  let unsubscriptions = 0
+  const runtime = new DesktopProjectsRuntime({
+    getState: () => ({}),
+    dispatch: () => {},
+    fetchTasks: async () => ({ tasks: [] }),
+    fetchMedia: async () => ({ media: [] }),
+    fetchTask: async () => ({ task: null }),
+    subscribe: () => {
+      subscriptions++
+      return () => {
+        unsubscriptions++
+      }
+    },
+  })
+  assert.equal(subscriptions, 0)
+  const lease1 = runtime.acquire('project1')
+  assert.equal(subscriptions, 1)
+  const lease2 = runtime.acquire('project2')
+  assert.equal(subscriptions, 1)
+  lease1.release()
+  assert.equal(subscriptions, 1)
+  assert.equal(unsubscriptions, 0)
+  lease2.release()
+  assert.equal(unsubscriptions, 1)
+})

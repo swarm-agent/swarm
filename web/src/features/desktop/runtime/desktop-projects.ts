@@ -27,6 +27,7 @@ export interface DesktopProjectsRuntimeDeps {
   fetchMedia: (projectId: string) => Promise<{ media?: ProjectTaskMediaRef[] }>
   getState: () => DesktopProjectsState
   dispatch: (action: DesktopProjectsAction) => void
+  subscribe?: (listener: (mutation?: DesktopV3CacheMutation) => void) => () => void
 }
 
 export class DesktopProjectsRuntime {
@@ -41,6 +42,13 @@ export class DesktopProjectsRuntime {
   private readonly taskQueue = new Map<string, { projectId: string; task: RunningTask; epoch: number }>()
   private readonly taskReads = new Set<string>()
   private taskEpoch = 0
+  private unsubscribeCache: (() => void) | null = null
+
+  private ensureSubscribed(): void {
+    if (this.unsubscribeCache) return
+    const subscribe = this.deps.subscribe ?? subscribeDesktopV3Cache
+    this.unsubscribeCache = subscribe((mutation) => this.acceptSessionMutation(mutation))
+  }
 
   acceptSessionMutation(mutation?: DesktopV3CacheMutation): void {
     for (const { projectId } of this.demand.values()) {
@@ -102,11 +110,13 @@ export class DesktopProjectsRuntime {
           requestJson<{ media?: ProjectTaskMediaRef[] }>(`/v3/projects/${encodeURIComponent(projectId)}/media`)),
       getState: deps?.getState ?? (() => getDesktopV3CacheSnapshot().projectsState ?? {}),
       dispatch: deps?.dispatch ?? ((action: DesktopProjectsAction) => dispatchDesktopV3Cache(action as any)),
+      subscribe: deps?.subscribe ?? subscribeDesktopV3Cache,
     }
   }
 
   acquire(projectId: string): { ready: Promise<void>; release: () => void } {
     if (!projectId) return { ready: Promise.resolve(), release: () => {} }
+    this.ensureSubscribed()
     const current = this.demand.get(projectId)
     if (current) current.count++
     else this.demand.set(projectId, { projectId, count: 1 })
@@ -122,6 +132,10 @@ export class DesktopProjectsRuntime {
           for (const [key, entry] of this.taskQueue) if (entry.projectId === projectId) this.taskQueue.delete(key)
           this.inFlight.delete(projectId)
           this.deps.dispatch({ type: 'projects.evict', projectId })
+          if (this.demand.size === 0) {
+            this.unsubscribeCache?.()
+            this.unsubscribeCache = null
+          }
         }
       },
     }
@@ -133,6 +147,10 @@ export class DesktopProjectsRuntime {
     for (const [key, entry] of this.taskQueue) if (entry.projectId === projectId) this.taskQueue.delete(key)
     this.inFlight.delete(projectId)
     this.deps.dispatch({ type: 'projects.evict', projectId })
+    if (this.demand.size === 0) {
+      this.unsubscribeCache?.()
+      this.unsubscribeCache = null
+    }
   }
 
   reset(): void {
@@ -140,6 +158,8 @@ export class DesktopProjectsRuntime {
     this.taskQueue.clear()
     this.demand.clear()
     this.inFlight.clear()
+    this.unsubscribeCache?.()
+    this.unsubscribeCache = null
   }
 
   refresh(projectId: string): Promise<void> {
@@ -244,7 +264,6 @@ export class DesktopProjectsRuntime {
 }
 
 export const desktopProjects = new DesktopProjectsRuntime()
-subscribeDesktopV3Cache(mutation => desktopProjects.acceptSessionMutation(mutation))
 
 export function useDesktopProject(projectId: string): DesktopProjectState | undefined {
   useEffect(() => {
