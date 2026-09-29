@@ -130,7 +130,8 @@ export async function mutateWorker(input: WorkerMutation): Promise<WorkerMutatio
       path += action === 'direct' ? '/direct' : '/test'
       if (action === 'direct' && !input.prompt?.trim() && !input.input) throw new Error('Direct request needs a prompt or input')
       body = { prompt: input.prompt, input: input.input, idempotency_key: input.idempotency_key, ...(action === 'test' ? { automation_id: input.automationId } : {}) }
-    } else { path += `/runs/${encodeURIComponent(required(input.runId, 'Run ID'))}/cancel` }
+    } else if (input.action === 'cancelRun') { path += `/runs/${encodeURIComponent(required(input.runId, 'Run ID'))}/cancel` }
+    else { throw new Error('Unsupported worker action') }
   }
   const raw = await requestJson<WorkerMutationResult>(path, { method, headers: body === undefined ? undefined : { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) })
   if (action === 'delete') {

@@ -19,13 +19,13 @@ type selectedWorkerReference struct {
 }
 
 type resolvedWorkerMessageContext struct {
-	WorkerID       string                         `json:"worker_id"`
-	Revision       uint64                         `json:"revision"`
-	Name           string                         `json:"name"`
-	Description    string                         `json:"description,omitempty"`
-	Instructions   string                         `json:"instructions,omitempty"`
+	WorkerID       string                           `json:"worker_id"`
+	Revision       uint64                           `json:"revision"`
+	Name           string                           `json:"name"`
+	Description    string                           `json:"description,omitempty"`
+	Instructions   string                           `json:"instructions,omitempty"`
 	LifecycleState pebblestore.WorkerLifecycleState `json:"lifecycle_state"`
-	Automations    []resolvedWorkerAutomation     `json:"automations"`
+	Automations    []resolvedWorkerAutomation       `json:"automations"`
 }
 
 type resolvedWorkerAutomation struct {
