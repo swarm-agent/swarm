@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { getDesktopSessionIdentitySnapshot } from '../../../app/api'
 import { desktopWorkers, useWorkerPage } from '../runtime/desktop-workers'
 import type { WorkerAutomation, WorkerAutomationInput, WorkerMutation, WorkerMutationResult, WorkerRecord, WorkerRun, WorkerSummary } from '../state/desktop-workers-api'
@@ -43,6 +43,7 @@ function WorkerHubAccount({ accountScopeId, onSelectWorker, workspaceSlug, initi
   accountScopeId: string; onSelectWorker: (selection: SelectedWorker) => void; workspaceSlug?: string; initialWorkerId?: string
 }) {
   const [selectedId, setSelectedId] = useState(initialWorkerId || '')
+  useEffect(() => { setSelectedId(initialWorkerId || '') }, [initialWorkerId])
   const [cursor, setCursor] = useState<string | undefined>()
   const [name, setName] = useState('')
   const [instructions, setInstructions] = useState('')
@@ -54,7 +55,7 @@ function WorkerHubAccount({ accountScopeId, onSelectWorker, workspaceSlug, initi
   const workers = page?.data && 'workers' in page.data ? page.data.workers : []
   const next = page?.data && 'workers' in page.data ? page.data.next_cursor : undefined
   return <section className="flex-1 min-h-0 overflow-y-auto p-6 space-y-4 w-full max-w-5xl mx-auto" aria-label="Durable workers" data-testid="durable-worker-hub">
-    <header className="flex items-center justify-between gap-3 border-b border-slate-800 pb-3"><div><h2 className="text-base font-bold text-white">Workers</h2><p>Account-owned durable workers. Select one to inspect or give the Orchestrator one-message context.</p></div><button type="button" className={button} onClick={() => void desktopWorkers.refresh({ kind: 'list', accountScopeId, cursor, limit: 25 })}>Refresh</button></header>
+    <header className="flex items-center justify-between gap-3 border-b border-slate-800 pb-3"><div><h2 className="text-base font-bold text-white">Workers</h2><p>Account-owned durable workers. Select one to inspect or give the Orchestrator one-message context.</p></div><button type="button" className={button} onClick={() => desktopWorkers.invalidate(undefined, accountScopeId)}>Refresh</button></header>
     <form className={box} onSubmit={async e => {
       e.preventDefault(); if (busy) return
       setBusy(true); setError(''); setNotice('')
@@ -118,8 +119,8 @@ export function WorkerDetail({ accountScopeId, workerId, workspaceSlug, onSelect
   const summaryPage = useWorkerPage({ kind: 'summary', accountScopeId, workerId, timezone: zone, date: today() })
   const summary = summaryPage?.data && 'worker_id' in summaryPage.data ? summaryPage.data : undefined
   const worker = detail?.data && 'worker' in detail.data ? detail.data.worker : undefined
-  const runs = runsPage?.data && 'runs' in runsPage.data ? runsPage.data.runs : []
-  const nextRuns = runsPage?.data && 'runs' in runsPage.data ? runsPage.data.next_cursor : undefined
+  const runs = runsPage?.data && 'runs' in runsPage.data && Array.isArray(runsPage.data.runs) ? runsPage.data.runs : []
+  const nextRuns = runsPage?.data && 'next_cursor' in runsPage.data ? runsPage.data.next_cursor : undefined
   const revisions = historyPage?.data && 'revisions' in historyPage.data ? historyPage.data.revisions : []
   const nextHistory = historyPage?.data && 'revisions' in historyPage.data ? historyPage.data.next_cursor : undefined
   const readOnly = Boolean(worker?.provenance?.migrated_at)
@@ -128,7 +129,8 @@ export function WorkerDetail({ accountScopeId, workerId, workspaceSlug, onSelect
     setBusy(true); setError(''); setNotice('')
     try {
       const result = await desktopWorkers.mutate(make(worker), accountScopeId)
-      if (message) setNotice(message)
+      if ('worker' in result && result.worker.lifecycle_state === 'stopping') setNotice('Stopping: cancellation is awaiting acknowledgement; the requested lifecycle change is not complete.')
+      else if (message) setNotice(message)
       return result
     } catch (cause) { setError(failure(cause)) } finally { setBusy(false) }
   }
@@ -185,7 +187,7 @@ export function WorkerDetail({ accountScopeId, workerId, workspaceSlug, onSelect
         {!readOnly && <form className="space-y-2" onSubmit={e => { e.preventDefault(); let plan: WorkerAutomation['plan_document']; try { plan = JSON.parse(planText); if (!plan || typeof plan.title !== 'string' || !Array.isArray(plan.checkpoints)) throw new Error('Plan needs title and checkpoints') } catch (cause) { setError(`Invalid plan JSON: ${failure(cause)}`); return }
           const scheduleValue: WorkerAutomationInput['schedule'] = mode === 'interval' ? { kind: 'interval', interval_seconds: Number(interval), timezone } : mode === 'cron' ? { kind: 'cron', cron, timezone } : mode === 'external_trigger' ? { kind: 'trigger' } : undefined
           const old = worker.automations?.find(auto => auto.id === editAutomation)
-          const automation: WorkerAutomationInput = { name: automationName, activation_mode: mode, schedule: scheduleValue, trigger: mode === 'external_trigger' ? { trigger_kind: triggerKind, format: triggerFormat } : undefined, plan_document: plan, input_requirements: old?.input_requirements, deliverable_requirements: old?.deliverable_requirements, description: old?.description }
+          const automation: WorkerAutomationInput = { name: automationName, activation_mode: mode, schedule: scheduleValue, trigger: mode === 'external_trigger' ? { ...old?.trigger, trigger_kind: triggerKind, format: triggerFormat } : undefined, plan_document: plan, input_requirements: old?.input_requirements, deliverable_requirements: old?.deliverable_requirements, description: old?.description }
           void mutate(w => editAutomation ? { action: 'updateAutomation', workerId: w.id, automationId: editAutomation, expected_revision: w.revision, automation } : { action: 'attachAutomation', workerId: w.id, expected_revision: w.revision, automation }, editAutomation ? 'Automation updated.' : 'Automation attached.').then(result => { if (result) { setEditAutomation(null); setAutomationName(''); setPlanText('') } })
         }}><strong>{editAutomation ? 'Edit automation template' : 'Attach a plan template (does not run it)'}</strong><input required aria-label="Automation name" className={input} value={automationName} onChange={e => setAutomationName(e.target.value)} /><select aria-label="Activation mode" className={input} value={mode} onChange={e => setMode(e.target.value as typeof mode)}><option value="manual">Manual</option><option value="interval">Interval</option><option value="cron">Cron</option><option value="external_trigger">External trigger</option></select>
           {mode === 'interval' && <input aria-label="Interval seconds" type="number" min="60" className={input} value={interval} onChange={e => setInterval(e.target.value)} />}{mode === 'cron' && <input aria-label="Cron expression" className={input} value={cron} onChange={e => setCron(e.target.value)} />}{(mode === 'interval' || mode === 'cron') && <input aria-label="Schedule timezone" className={input} value={timezone} onChange={e => setTimezone(e.target.value)} />}

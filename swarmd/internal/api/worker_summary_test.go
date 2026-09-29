@@ -87,10 +87,10 @@ func TestWorkerAPI_SummaryReceiptsAndAuthorization(t *testing.T) {
 		{path, workerAPICallOptions{account: "acct-2", user: "user-2", scopes: []string{"automations:read"}}, http.StatusNotFound},
 		{path, workerAPICallOptions{scopes: []string{"sessions:read"}}, http.StatusForbidden},
 		{path, workerAPICallOptions{scopes: []string{"automations:trigger"}}, http.StatusForbidden},
-		{"/"+worker.ID+"/summary?timezone=Bad%2FZone&date=2025-03-09", opts, http.StatusBadRequest},
-		{"/"+worker.ID+"/summary?timezone=America%2FNew_York&date=2025-02-30", opts, http.StatusBadRequest},
-		{path+"&date=2025-03-08", opts, http.StatusBadRequest},
-		{path+"&unexpected=1", opts, http.StatusBadRequest},
+		{"/" + worker.ID + "/summary?timezone=Bad%2FZone&date=2025-03-09", opts, http.StatusBadRequest},
+		{"/" + worker.ID + "/summary?timezone=America%2FNew_York&date=2025-02-30", opts, http.StatusBadRequest},
+		{path + "&date=2025-03-08", opts, http.StatusBadRequest},
+		{path + "&unexpected=1", opts, http.StatusBadRequest},
 		{path, workerAPICallOptions{agentOrigin: true, scopes: []string{"automations:read"}}, http.StatusForbidden},
 	} {
 		got := executeWorkerAPI(h, http.MethodGet, tc.path, "", tc.opts)

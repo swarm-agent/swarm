@@ -25,7 +25,7 @@ export function workerPageKey(input: WorkerRead): string {
 export function workerReadRecords(data: WorkerReadResult): { workers: WorkerRecord[]; runs: WorkerRun[] } {
   if ('workers' in data) return { workers: data.workers, runs: [] }
   if ('worker' in data) return { workers: [data.worker], runs: [] }
-  if ('runs' in data) return { workers: [], runs: data.runs }
+  if ('runs' in data && Array.isArray(data.runs)) return { workers: [], runs: data.runs }
   if ('run' in data) return { workers: [], runs: [data.run] }
   if ('revisions' in data) return { workers: data.revisions.map(revision => revision.worker), runs: [] }
   return { workers: [], runs: [] }

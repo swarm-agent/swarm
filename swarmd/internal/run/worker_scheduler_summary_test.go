@@ -15,8 +15,8 @@ import (
 func TestNextWorkerScheduledAtEligibility(t *testing.T) {
 	now := time.UnixMilli(1_700_000_000_000)
 	w := store.WorkerRecord{LifecycleState: store.WorkerLifecycleStateActive, Automations: []store.WorkerAutomationDefinition{
-		{ActivationMode: "interval", Enabled: true, CreatedAt: now.Add(-20*time.Second).UnixMilli(), Schedule: &store.AutomationV2Schedule{Kind: "interval", IntervalSeconds: 60}},
-		{ActivationMode: "interval", Enabled: false, CreatedAt: now.Add(-59*time.Second).UnixMilli(), Schedule: &store.AutomationV2Schedule{Kind: "interval", IntervalSeconds: 60}},
+		{ActivationMode: "interval", Enabled: true, CreatedAt: now.Add(-20 * time.Second).UnixMilli(), Schedule: &store.AutomationV2Schedule{Kind: "interval", IntervalSeconds: 60}},
+		{ActivationMode: "interval", Enabled: false, CreatedAt: now.Add(-59 * time.Second).UnixMilli(), Schedule: &store.AutomationV2Schedule{Kind: "interval", IntervalSeconds: 60}},
 	}}
 	got, err := NextWorkerScheduledAt(w, now)
 	if err != nil || got != now.Add(40*time.Second).UnixMilli() {

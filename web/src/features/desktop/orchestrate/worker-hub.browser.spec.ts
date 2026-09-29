@@ -23,7 +23,7 @@ test('durable worker detail renders runs and failures; controls require confirma
     feed({kind:'detail',accountScopeId:'acct',workerId:'worker_123'},{worker});feed({kind:'runs',accountScopeId:'acct',workerId:'worker_123',limit:25},{runs:[run],next_cursor:'opaque'});feed({kind:'history',accountScopeId:'acct',workerId:'worker_123',limit:10},{revisions:[{worker_id:worker.id,account_scope_id:'acct',revision:2,worker,committed_at:Date.now(),change_summary:'Edited'}]});
     feed({kind:'summary',accountScopeId:'acct',workerId:'worker_123',timezone:'UTC',date:new Date().toISOString().slice(0,10)},{worker_id:'worker_123',next_scheduled_at:0,runs:{active:[],active_runs:2,active_truncated:false,timezone:'UTC',date:new Date().toISOString().slice(0,10),daily_runs:42,daily_success:39,daily_failed:2,daily_cancelled:1,scanned_runs:42,truncated:false,day_start_at:0,day_end_at:0}});
     desktopWorkers.acquire=()=>({ready:Promise.resolve(),release:()=>{}});
-    desktopWorkers.mutate=async (input)=>{window.calls.push(input);throw new Error('stop barrier failed')};
+    desktopWorkers.mutate=async (input)=>{window.calls.push(input);if(window.stopping)return {worker:{...worker,lifecycle_state:'stopping'}};throw new Error('stop barrier failed')};
     createRoot(document.getElementById('root')).render(<WorkerDetail workerId='worker_123' accountScopeId='acct' workspaceSlug='demo' onSelectWorker={w=>window.selected.push(w)} onClose={()=>{}}/>);`
   const bundle = await build({ stdin: { contents: fixture, resolveDir: process.cwd(), loader: 'tsx' }, bundle: true, write: false, format: 'iife', platform: 'browser', jsx: 'automatic', logLevel: 'silent' })
   const browser = await chromium.launch({ headless: true, channel: process.env.SWARM_TEST_BROWSER_CHANNEL || 'chrome' })
@@ -38,7 +38,8 @@ test('durable worker detail renders runs and failures; controls require confirma
     await page.getByText(/Total 42 runs · 39 succeeded · 2 failed/).first().waitFor()
     await page.getByText(/Next eligible schedule: none reported/).first().waitFor()
     await page.getByText('Deliverable reference:').waitFor()
-    assert.equal(await page.locator('a[href="/demo/session_1"]').count(), 1)
+    assert.equal(await page.getByTestId('durable-worker-run').getByRole('link', { name: 'Open execution session session_1', exact: true }).getAttribute('href'), '/demo/session_1')
+    assert.equal(await page.getByTestId('durable-worker-run').getByRole('link', { name: 'Open source session', exact: true }).getAttribute('href'), '/demo/session_1')
     await page.getByRole('button', { name: 'Archive…' }).click()
     assert.deepEqual(await page.evaluate(() => (window as any).calls), [])
     await page.getByRole('button', { name: 'Keep worker' }).click()
@@ -57,6 +58,23 @@ test('durable worker detail renders runs and failures; controls require confirma
     assert.deepEqual((await page.evaluate(() => (window as any).calls))[2], { action: 'cancelRun', workerId: 'worker_123', runId: 'run_1' })
     await page.getByRole('button', { name: 'Select for next Orchestrator message' }).click()
     assert.deepEqual(await page.evaluate(() => (window as any).selected), [{ id: 'worker_123', revision: 2, name: 'Daily audit' }])
+    // A transport failure keeps the admission key for an identical retry; edits create a new intent.
+    await page.getByLabel('Explicit task prompt').fill('Review this change')
+    await page.getByRole('button', { name: 'Send task (starts a run)', exact: true }).click()
+    await page.getByRole('button', { name: 'Send task (starts a run)', exact: true }).click()
+    let calls = await page.evaluate(() => (window as any).calls)
+    const direct = calls.filter((call: any) => call.action === 'direct')
+    assert.equal(direct.length, 2)
+    assert.equal(direct[0].idempotency_key, direct[1].idempotency_key)
+    await page.getByLabel('Explicit task prompt').fill('Review a different change')
+    await page.getByRole('button', { name: 'Send task (starts a run)', exact: true }).click()
+    calls = await page.evaluate(() => (window as any).calls)
+    assert.notEqual(calls.at(-1).idempotency_key, direct[0].idempotency_key)
+    // Accepted stop requests must not be presented as acknowledged completion.
+    await page.evaluate(() => { (window as any).stopping = true })
+    await page.getByRole('button', { name: 'Pause', exact: true }).click()
+    await page.getByRole('status').getByText(/Stopping: cancellation is awaiting acknowledgement/).waitFor()
+    assert.equal(await page.getByText('Lifecycle change confirmed.', { exact: true }).count(), 0)
     await page.evaluate(() => (window as any).invalidate())
     await page.getByText('Detail refreshing; do not act on stale revisions.').waitFor()
     assert.equal(await page.getByRole('button', { name: 'Select for next Orchestrator message' }).isDisabled(), true)
