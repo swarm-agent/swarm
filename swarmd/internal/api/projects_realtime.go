@@ -110,7 +110,7 @@ func (s *Server) reconcileProjectTaskRunLifecycle(job sessionV3ExecutorJob, stat
 						if !t.IsIntegrated {
 							t.Status = "needs_review"
 							if t.ActionNeeded == "" || strings.HasPrefix(t.ActionNeeded, "Action Needed: 0") {
-								t.ActionNeeded = "Action Needed: All task program jobs finished and integrated. Ready to integrate into dev/main."
+								t.ActionNeeded = "Action Needed: All task program jobs finished. Verify promotion into the captured target."
 							}
 						} else {
 							t.Status = "completed"
@@ -197,7 +197,7 @@ func (s *Server) reconcileProjectTaskRunLifecycle(job sessionV3ExecutorJob, stat
 			if t.Status != "in_progress" {
 				return nil
 			}
-			if gitState.unintegratedCommits > 0 {
+			if gitState.gitStatus != "unknown" {
 				t.UnintegratedCommits = gitState.unintegratedCommits
 				t.GitStatus = gitState.gitStatus
 				t.IsIntegrated = gitState.isIntegrated
@@ -220,7 +220,7 @@ func (s *Server) reconcileProjectTaskRunLifecycle(job sessionV3ExecutorJob, stat
 					if t.UnintegratedCommits > 0 {
 						baseBranch := t.BaseBranch
 						if baseBranch == "" {
-							baseBranch = "dev/main"
+							baseBranch = "captured target"
 						}
 						t.ActionNeeded = fmt.Sprintf("Action Needed: Review changes and integrate %d commit(s) into %s", t.UnintegratedCommits, baseBranch)
 					} else {

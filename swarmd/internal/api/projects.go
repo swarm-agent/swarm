@@ -59,8 +59,9 @@ type taskGitState struct {
 	syncWarning         string
 }
 
-// inspectTaskGitState probes a workspace/worktree path for dirty status and unintegrated commits.
-func inspectTaskGitState(task pebblestore.ProjectTaskRecord, db *pebblestore.SessionStore) taskGitState {
+// inspectTaskGitStateLegacy is retained only for historical reference; task reads use
+// the captured-checkout classifier in projects_task_git.go.
+func inspectTaskGitStateLegacy(task pebblestore.ProjectTaskRecord, db *pebblestore.SessionStore) taskGitState {
 	res := taskGitState{
 		worktreeBranch: task.WorktreeBranch,
 		worktreeName:   task.WorktreeName,
@@ -395,7 +396,7 @@ func syncTaskSessionState(task *pebblestore.ProjectTaskRecord, db *pebblestore.S
 					if !task.IsIntegrated {
 						task.Status = "needs_review"
 						if task.ActionNeeded == "" || strings.HasPrefix(task.ActionNeeded, "Action Needed: 0") {
-							task.ActionNeeded = "Action Needed: All task program jobs finished and integrated. Ready to integrate into dev/main."
+							task.ActionNeeded = "Action Needed: All task program jobs finished. Verify promotion into the captured target."
 						}
 					} else {
 						task.Status = "completed"
@@ -521,7 +522,7 @@ func syncTaskSessionState(task *pebblestore.ProjectTaskRecord, db *pebblestore.S
 						if task.UnintegratedCommits > 0 {
 							baseBranch := task.BaseBranch
 							if baseBranch == "" {
-								baseBranch = "dev/main"
+								baseBranch = "captured target"
 							}
 							task.ActionNeeded = fmt.Sprintf("Action Needed: Review changes and integrate %d commit(s) into %s", task.UnintegratedCommits, baseBranch)
 						} else {
@@ -570,7 +571,7 @@ func syncTaskSessionState(task *pebblestore.ProjectTaskRecord, db *pebblestore.S
 					if task.UnintegratedCommits > 0 {
 						baseBranch := task.BaseBranch
 						if baseBranch == "" {
-							baseBranch = "dev/main"
+							baseBranch = "captured target"
 						}
 						task.ActionNeeded = fmt.Sprintf("Action Needed: Review changes and integrate %d commit(s) into %s", task.UnintegratedCommits, baseBranch)
 					} else {
@@ -2119,9 +2120,6 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 					tasks[i].WorktreeName = strings.TrimPrefix(tasks[i].WorktreeBranch, "agent/")
 					tasks[i].WorktreeName = strings.TrimPrefix(tasks[i].WorktreeName, "worktree/")
 				}
-				if archiveView != "archived" && tasks[i].BaseBranch == "" {
-					tasks[i].BaseBranch = "main"
-				}
 				// Collection GET does not run expensive git subprocesses to avoid CPU churn.
 				// Mark Git status as explicit "unknown" (or "stale" if previously recorded)
 				// so callers know git state has not been freshly verified, without disabling operations.
@@ -2132,6 +2130,10 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 					} else {
 						tasks[i].GitStatus = "stale"
 					}
+				}
+				if err := reconcileTaskGitState(db, &tasks[i]); err != nil {
+					writeError(w, http.StatusInternalServerError, err)
+					return
 				}
 				syncTaskSessionState(&tasks[i], db)
 				hydrateTaskProgramStatus(&tasks[i], db)
@@ -3055,20 +3057,9 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusNotFound, errors.New("project task not found"))
 				return
 			}
-			gitState := inspectTaskGitState(*task, db)
-			task.WorktreeBranch = gitState.worktreeBranch
-			task.WorktreeName = gitState.worktreeName
-			task.BaseBranch = gitState.baseBranch
-			task.GitStatus = gitState.gitStatus
-			task.UnintegratedCommits = gitState.unintegratedCommits
-			task.BehindCommits = gitState.behindCommits
-			task.IsIntegrated = gitState.isIntegrated
-			task.DiffSummary = gitState.diffSummary
-			task.IsDirty = gitState.isDirty
-			task.DirtyCount = gitState.dirtyCount
-			task.SyncWarning = gitState.syncWarning
-			if gitState.actionNeeded != "" {
-				task.ActionNeeded = gitState.actionNeeded
+			if err := reconcileTaskGitState(db, task); err != nil {
+				writeError(w, http.StatusInternalServerError, err)
+				return
 			}
 			syncTaskSessionState(task, db)
 			hydrateTaskProgramStatus(task, db)
@@ -3486,6 +3477,10 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				updated, updateErr := db.UpdateProjectTask(p.AccountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
 					t.IsIntegrated = true
 					t.Integration = receipt
+					t.Status = "completed"
+					t.UnintegratedCommits = 0
+					t.GitStatus = "clean"
+					t.ActionNeeded = fmt.Sprintf("No Action Required: Integrated into %s", selection.TargetBranch)
 					return nil
 				})
 				if updateErr != nil {
@@ -3616,6 +3611,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		updated, err := db.UpdateProjectTask(p.AccountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
 			t.IsIntegrated = true
 			t.Integration = receipt
+			t.Status = "completed"
 			t.GitStatus = "clean"
 			t.UnintegratedCommits = 0
 			t.ActionNeeded = fmt.Sprintf("No Action Required: Integrated into %s", parentState.BranchName)

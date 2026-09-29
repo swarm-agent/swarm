@@ -751,7 +751,7 @@ function MinimalTaskCard({
   const isCompleted = task.status === 'completed'
   const isFailed = task.status === 'failed'
   const isRejected = task.status === 'rejected'
-  const hasUnintegrated = (task.unintegratedCommits ?? 0) > 0
+  const hasUnintegrated = task.gitStatus === 'diverged' && !task.isIntegrated && (task.unintegratedCommits ?? 0) > 0
 
   const isWorker = Boolean(task.workerId?.trim() || task.worker_id?.trim())
   const workerTargetId = (task.workerId?.trim() || task.worker_id?.trim()) || ''
@@ -1436,7 +1436,7 @@ function MinimalTaskCard({
               <span>•</span>
               <span className="text-emerald-400 font-semibold">Verified Local Tests</span>
               <span>•</span>
-              <span className="text-slate-400">Target Integration: <strong className="text-white">{task.baseBranch || 'main'}</strong></span>
+              <span className="text-slate-400">Target Integration: <strong className="text-white">{task.baseBranch || 'Target unavailable'}</strong></span>
             </div>
           )}
           {/* Plan Spec - for big features / plan mode tasks */}
@@ -2342,7 +2342,7 @@ function MinimalTaskCard({
             <AlertTriangle size={12} className="text-rose-400 flex-shrink-0" />
             <span className="font-bold text-rose-400 flex-shrink-0">Out of Sync Warning:</span>
             <span className="truncate">
-              {task.syncWarning || `${task.baseBranch || 'main'} branch could be out of sync (${task.behindCommits} commits behind). Rebase or synchronization recommended.`}
+              {task.syncWarning || `${task.baseBranch || 'Target unavailable'} branch could be out of sync (${task.behindCommits} commits behind). Rebase or synchronization recommended.`}
             </span>
           </div>
         </div>
@@ -2356,7 +2356,7 @@ function MinimalTaskCard({
             <CheckCircle2 size={12} className="text-emerald-400 flex-shrink-0" />
             <span className="font-bold text-emerald-400 flex-shrink-0">Integrated:</span>
             <span className="truncate">
-              Changes on {task.worktreeBranch || 'worktree'} have been successfully integrated into {task.baseBranch || 'main'}.
+              Changes on {task.worktreeBranch || 'worktree'} have been successfully integrated into {task.baseBranch || 'Target unavailable'}.
             </span>
           </div>
           <div className="flex items-center gap-2 flex-shrink-0">
