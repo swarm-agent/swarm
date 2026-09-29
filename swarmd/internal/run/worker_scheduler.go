@@ -9,6 +9,29 @@ import (
 	store "swarm/packages/swarmd/internal/store/pebble"
 )
 
+// NextWorkerScheduledAt reports the earliest future eligible schedule slot. It is
+// an estimate, not a dispatch guarantee: TickWorker uses a process-local sweep
+// cursor, skips missed slots, and still checks ownership/admission at dispatch.
+func NextWorkerScheduledAt(w store.WorkerRecord, now time.Time) (int64, error) {
+	if w.LifecycleState != store.WorkerLifecycleStateActive {
+		return 0, nil
+	}
+	var earliest int64
+	for _, a := range w.Automations {
+		if !a.Enabled || a.Schedule == nil || (a.ActivationMode != "interval" && a.ActivationMode != "cron") {
+			continue
+		}
+		next, err := store.AutomationV2NextDue(store.AutomationV2Settings{SchemaVersion: 2, Schedule: *a.Schedule, Missed: "skip", Overlap: "independent", ActivateOnAccept: true}, a.CreatedAt, now.UnixMilli())
+		if err != nil {
+			return 0, err
+		}
+		if next > 0 && (earliest == 0 || next < earliest) {
+			earliest = next
+		}
+	}
+	return earliest, nil
+}
+
 // TickWorker admits at most one due slot per automation. Worker admission owns
 // deduplication; missed slots are skipped rather than replayed after restart.
 func (s *WorkerExecutionService) TickWorker(ctx context.Context, account, id string, now time.Time) error {

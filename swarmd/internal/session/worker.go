@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"time"
 
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
@@ -205,6 +206,15 @@ func (s *Service) ListWorkerRuns(account, workerID string, limit int, after stri
 		return nil, "", errors.New("worker store not configured")
 	}
 	return ws.ListWorkerRuns(account, workerID, limit, after)
+}
+
+// SummarizeWorkerRuns reads all available account-scoped receipts independent of
+// history pagination. A truncated response has partial counts, not totals.
+func (s *Service) SummarizeWorkerRuns(account, workerID string, day time.Time, zone string) (pebblestore.WorkerRunSummary, error) {
+	if s == nil || s.store == nil {
+		return pebblestore.WorkerRunSummary{}, errors.New("session service not configured")
+	}
+	return s.store.WorkerStore().SummarizeWorkerRuns(account, workerID, day, zone)
 }
 
 // MigrateLegacyAutomationsV2 idempotently migrates accepted legacy AutomationV2Records into durable WorkerRecords.

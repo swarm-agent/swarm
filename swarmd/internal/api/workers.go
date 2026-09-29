@@ -17,6 +17,7 @@ import (
 
 	"swarm/packages/swarmd/internal/automation"
 	"swarm/packages/swarmd/internal/identity"
+	runruntime "swarm/packages/swarmd/internal/run"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -308,6 +309,12 @@ func (s *Server) handleWorkers(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.handleWorkerRevisionByNumber(w, r, p, workerID, parts[2])
+	case "summary":
+		if len(parts) != 2 {
+			writeError(w, http.StatusNotFound, errors.New("not found"))
+			return
+		}
+		s.handleWorkerSummary(w, r, p, workerID)
 	case "runs":
 		if len(parts) == 2 {
 			s.handleWorkerRuns(w, r, p, workerID)
@@ -1037,6 +1044,69 @@ func (s *Server) handleWorkerRevisionByNumber(w http.ResponseWriter, r *http.Req
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"revision": revRecord,
+	})
+}
+
+// Summary is a read-only aggregate of durable receipts; next_scheduled_at is
+// the earliest future eligible schedule slot (not a promise of dispatch).
+func (s *Server) handleWorkerSummary(w http.ResponseWriter, r *http.Request, p identity.Principal, workerID string) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	if !s.requireScope(w, r, "automations:read") {
+		return
+	}
+	if scoped, ok := ScopedTokenFromRequest(r); ok && scoped != nil && scoped.WorkerID != "" && scoped.WorkerID != workerID {
+		writeError(w, http.StatusForbidden, errors.New("scoped token cannot read foreign worker"))
+		return
+	}
+	q, err := parseAndValidateQuery(r, "timezone", "date")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	zone := q.Get("timezone")
+	if len(zone) > 128 || (zone != "UTC" && !strings.Contains(zone, "/")) || strings.TrimSpace(zone) != zone || strings.Contains(zone, "..") || strings.Contains(zone, "\\") || strings.HasPrefix(zone, "/") {
+		writeError(w, http.StatusBadRequest, errors.New("valid IANA timezone required"))
+		return
+	}
+	loc, err := time.LoadLocation(zone)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, errors.New("invalid IANA timezone"))
+		return
+	}
+	date := q.Get("date")
+	if len(date) != 10 || date[4] != '-' || date[7] != '-' {
+		writeError(w, http.StatusBadRequest, errors.New("date must be YYYY-MM-DD"))
+		return
+	}
+	day, err := time.ParseInLocation("2006-01-02", date, loc)
+	if err != nil || day.Format("2006-01-02") != date {
+		writeError(w, http.StatusBadRequest, errors.New("invalid date"))
+		return
+	}
+	worker, found, err := s.sessions.GetWorker(p.AccountScopeID, workerID)
+	if err != nil {
+		workerHTTPError(w, err)
+		return
+	}
+	if !found || worker.LifecycleState == pebblestore.WorkerLifecycleStateDeleted {
+		writeError(w, http.StatusNotFound, pebblestore.ErrWorkerNotFound)
+		return
+	}
+	counts, err := s.sessions.SummarizeWorkerRuns(p.AccountScopeID, worker.ID, day, zone)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	next, err := runruntime.NextWorkerScheduledAt(worker, time.Now())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"worker_id": worker.ID, "runs": counts, "next_scheduled_at": next,
 	})
 }
 
