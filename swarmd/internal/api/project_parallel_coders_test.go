@@ -99,3 +99,44 @@ func TestProjectSmallParallelCodersRejectsOverlapAndPreservesSingleCoder(t *test
 		t.Fatalf("single Coder contract changed: %+v", task)
 	}
 }
+
+// Purpose: exercise the HTTP ingress used by project task creation, not only a
+// direct service call. Both explicit approval and auto-approval must retain the
+// grouped assignments and admit a primary Swarm parent rather than a Coder.
+func TestProjectSmallParallelCodersHTTP(t *testing.T) {
+	for _, autoApprove := range []bool{false, true} {
+		name := "manual_approval"
+		if autoApprove {
+			name = "auto_approval"
+		}
+		t.Run(name, func(t *testing.T) {
+			f := setupMatrixTestFixture(t)
+			defer f.db.Close()
+			projectID := f.createProject(t)
+			p := identity.Principal{Type: "user", UserID: f.userID, AccountScopeID: f.accountID}
+			w := f.callAPI(http.MethodPost, "/"+projectID+"/tasks", map[string]any{
+				"title": "Two tiny edits", "auto_approve": autoApprove,
+				"coder_assignments": []pebblestore.ProjectTaskCoderAssignment{
+					{Title: "Alpha", MetaPrompt: "Add alpha to alpha.txt", Deliverable: "Committed alpha.txt", OwnedScope: []string{"alpha.txt"}, AcceptanceCriteria: []string{"alpha.txt contains alpha"}},
+					{Title: "Beta", MetaPrompt: "Add beta to beta.txt", Deliverable: "Committed beta.txt", OwnedScope: []string{"beta.txt"}, AcceptanceCriteria: []string{"beta.txt contains beta"}},
+				},
+			}, p)
+			response := requireMatrixTaskResponse(t, w, http.StatusCreated)
+			stored, found, err := f.server.sessions.Store().GetProjectTask(f.accountID, projectID, response["id"].(string))
+			if err != nil || !found || len(stored.CoderAssignments) != 2 || stored.Agent != "swarm" || stored.PlanBinding != nil || stored.TaskProgram != nil {
+				t.Fatalf("HTTP ingress lost grouped task: %+v, %v", stored, err)
+			}
+			intents, err := f.server.sessions.Store().ListRunIntents(stored.SessionID, 10)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if autoApprove {
+				if stored.Status != "in_progress" || len(intents) != 1 || intents[0].ParentSessionID != "" {
+					t.Fatalf("auto-approved task did not admit one primary parent: %+v, %+v", stored, intents)
+				}
+			} else if stored.Status != "pending_approval" || len(intents) != 0 {
+				t.Fatalf("unapproved HTTP task executed: %+v, %+v", stored, intents)
+			}
+		})
+	}
+}

@@ -1297,7 +1297,7 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 			OwnerSessionID:       sessionID,
 			Branch:               alloc.BranchName,
 			DelegatedCoder:       targetAgent == "coder",
-			AllocatedRuntimeRoot: mode == sessionruntime.ModePlan,
+			AllocatedRuntimeRoot: mode == sessionruntime.ModePlan || len(task.CoderAssignments) > 0,
 		}
 	}
 
@@ -2139,64 +2139,64 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			var req struct {
-				ID                  string                               `json:"id,omitempty"`
-				Title               string                               `json:"title"`
-				Description         string                               `json:"description,omitempty"`
-				Status              string                               `json:"status,omitempty"`
-				Agent               string                               `json:"agent,omitempty"`
-				WorkerID            string                               `json:"worker_id,omitempty"`
-				WorkerName          string                               `json:"worker_name,omitempty"`
-				WorkerRunID         string                               `json:"worker_run_id,omitempty"`
-				AutomationID        string                               `json:"automation_id,omitempty"`
-				OutcomeType         string                               `json:"outcome_type,omitempty"`
-				Operation           string                               `json:"operation,omitempty"`
-				WorkspacePath       string                               `json:"workspace_path,omitempty"`
-				WorkspaceID         string                               `json:"workspace_id,omitempty"`
-				WorkspaceGeneration int64                                `json:"workspace_generation,omitempty"`
-				ClientRequestID     string                               `json:"client_request_id,omitempty"`
-				WorktreeBranch      string                               `json:"worktree_branch,omitempty"`
-				GitStatus           string                               `json:"git_status,omitempty"`
-				UnintegratedCommits int                                  `json:"unintegrated_commits,omitempty"`
-				DiffSummary         string                               `json:"diff_summary,omitempty"`
-				IsDirty             bool                                 `json:"is_dirty,omitempty"`
-				ActionNeeded        string                               `json:"action_needed,omitempty"`
-				WhatDidDo           []string                             `json:"what_did_do,omitempty"`
-				WhatNotDone         []string                             `json:"what_not_done,omitempty"`
-				PipelineStages      []string                             `json:"pipeline_stages,omitempty"`
-				CurrentStageIndex   int                                  `json:"current_stage_index,omitempty"`
-				Deliverables        []pebblestore.ProjectTaskDeliverable `json:"deliverables,omitempty"`
-				WorkspacesInvolved  []string                             `json:"workspaces_involved,omitempty"`
-				PlanSummary         string                               `json:"plan_summary,omitempty"`
-				FullPlanMarkdown    string                               `json:"full_plan_markdown,omitempty"`
-				Tier                string                               `json:"tier,omitempty"`
-				Revision            int                                  `json:"revision,omitempty"`
-				LastError           string                               `json:"last_error,omitempty"`
-				DeploySession       bool                                 `json:"deploy_session,omitempty"`
-				Prompt              string                               `json:"prompt,omitempty"`
-				Intent              string                               `json:"intent,omitempty"`
-				FeatureSize         string                               `json:"feature_size,omitempty"`
-				VideoType           string                               `json:"video_type,omitempty"`
-				EnhancePrompt       *bool                                `json:"enhance_prompt,omitempty"`
-				AspectRatio         string                               `json:"aspect_ratio,omitempty"`
-				Resolution          string                               `json:"resolution,omitempty"`
-				Model               string                               `json:"model,omitempty"`
-				Provider            string                               `json:"provider,omitempty"`
-				Thinking            string                               `json:"thinking,omitempty"`
-				ServiceTier         string                               `json:"service_tier,omitempty"`
-				ContextMode         string                               `json:"context_mode,omitempty"`
-				VariantCount        int                                  `json:"variant_count,omitempty"`
-				DeliverableCount    int                                  `json:"deliverable_count,omitempty"`
-				ScenesCount         int                                  `json:"scenes_count,omitempty"`
-				Scenes              []pebblestore.ProjectTaskScene       `json:"scenes,omitempty"`
-				Soundtrack          string                               `json:"soundtrack,omitempty"`
-				DurationSeconds     int                                  `json:"duration_seconds,omitempty"`
-				AutoApprove         bool                                 `json:"auto_approve,omitempty"`
-				AttachedMedia       []pebblestore.ProjectTaskMediaRef    `json:"attached_media,omitempty"`
+				ID                  string                                   `json:"id,omitempty"`
+				Title               string                                   `json:"title"`
+				Description         string                                   `json:"description,omitempty"`
+				Status              string                                   `json:"status,omitempty"`
+				Agent               string                                   `json:"agent,omitempty"`
+				WorkerID            string                                   `json:"worker_id,omitempty"`
+				WorkerName          string                                   `json:"worker_name,omitempty"`
+				WorkerRunID         string                                   `json:"worker_run_id,omitempty"`
+				AutomationID        string                                   `json:"automation_id,omitempty"`
+				OutcomeType         string                                   `json:"outcome_type,omitempty"`
+				Operation           string                                   `json:"operation,omitempty"`
+				WorkspacePath       string                                   `json:"workspace_path,omitempty"`
+				WorkspaceID         string                                   `json:"workspace_id,omitempty"`
+				WorkspaceGeneration int64                                    `json:"workspace_generation,omitempty"`
+				ClientRequestID     string                                   `json:"client_request_id,omitempty"`
+				WorktreeBranch      string                                   `json:"worktree_branch,omitempty"`
+				GitStatus           string                                   `json:"git_status,omitempty"`
+				UnintegratedCommits int                                      `json:"unintegrated_commits,omitempty"`
+				DiffSummary         string                                   `json:"diff_summary,omitempty"`
+				IsDirty             bool                                     `json:"is_dirty,omitempty"`
+				ActionNeeded        string                                   `json:"action_needed,omitempty"`
+				WhatDidDo           []string                                 `json:"what_did_do,omitempty"`
+				WhatNotDone         []string                                 `json:"what_not_done,omitempty"`
+				PipelineStages      []string                                 `json:"pipeline_stages,omitempty"`
+				CurrentStageIndex   int                                      `json:"current_stage_index,omitempty"`
+				Deliverables        []pebblestore.ProjectTaskDeliverable     `json:"deliverables,omitempty"`
+				WorkspacesInvolved  []string                                 `json:"workspaces_involved,omitempty"`
+				PlanSummary         string                                   `json:"plan_summary,omitempty"`
+				FullPlanMarkdown    string                                   `json:"full_plan_markdown,omitempty"`
+				Tier                string                                   `json:"tier,omitempty"`
+				Revision            int                                      `json:"revision,omitempty"`
+				LastError           string                                   `json:"last_error,omitempty"`
+				DeploySession       bool                                     `json:"deploy_session,omitempty"`
+				Prompt              string                                   `json:"prompt,omitempty"`
+				Intent              string                                   `json:"intent,omitempty"`
+				FeatureSize         string                                   `json:"feature_size,omitempty"`
+				VideoType           string                                   `json:"video_type,omitempty"`
+				EnhancePrompt       *bool                                    `json:"enhance_prompt,omitempty"`
+				AspectRatio         string                                   `json:"aspect_ratio,omitempty"`
+				Resolution          string                                   `json:"resolution,omitempty"`
+				Model               string                                   `json:"model,omitempty"`
+				Provider            string                                   `json:"provider,omitempty"`
+				Thinking            string                                   `json:"thinking,omitempty"`
+				ServiceTier         string                                   `json:"service_tier,omitempty"`
+				ContextMode         string                                   `json:"context_mode,omitempty"`
+				VariantCount        int                                      `json:"variant_count,omitempty"`
+				DeliverableCount    int                                      `json:"deliverable_count,omitempty"`
+				ScenesCount         int                                      `json:"scenes_count,omitempty"`
+				Scenes              []pebblestore.ProjectTaskScene           `json:"scenes,omitempty"`
+				Soundtrack          string                                   `json:"soundtrack,omitempty"`
+				DurationSeconds     int                                      `json:"duration_seconds,omitempty"`
+				AutoApprove         bool                                     `json:"auto_approve,omitempty"`
+				AttachedMedia       []pebblestore.ProjectTaskMediaRef        `json:"attached_media,omitempty"`
 				CoderAssignments    []pebblestore.ProjectTaskCoderAssignment `json:"coder_assignments,omitempty"`
-			TaskProgram         *pebblestore.TaskProgramDefinition   `json:"task_program,omitempty"`
-				TaskProgramID       string                               `json:"task_program_id,omitempty"`
-				Document            *pebblestore.SessionPlanDocument     `json:"document,omitempty"`
-				PlanDocument        *pebblestore.SessionPlanDocument     `json:"plan_document,omitempty"`
+				TaskProgram         *pebblestore.TaskProgramDefinition       `json:"task_program,omitempty"`
+				TaskProgramID       string                                   `json:"task_program_id,omitempty"`
+				Document            *pebblestore.SessionPlanDocument         `json:"document,omitempty"`
+				PlanDocument        *pebblestore.SessionPlanDocument         `json:"plan_document,omitempty"`
 			}
 			if err := json.Unmarshal(body, &req); err != nil {
 				writeError(w, http.StatusBadRequest, errors.New("invalid JSON payload"))
