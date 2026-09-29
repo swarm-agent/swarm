@@ -3413,7 +3413,7 @@ function OrchestratorChatSidebar({
   return (
     <aside
       aria-label="Swarm Orchestrator AI Chat"
-      className="swarm-ai-sidebar relative flex w-[440px] flex-shrink-0 flex-col overflow-hidden rounded-3xl border border-slate-800/80 shadow-[var(--shadow-panel)]"
+      className="swarm-ai-sidebar relative flex min-h-0 w-[440px] flex-1 flex-col overflow-hidden rounded-3xl border border-slate-800/80 shadow-[var(--shadow-panel)]"
     >
       {/* Top Header: Task Navigation vs Orchestrator Header */}
       {activeTask ? (
@@ -7368,8 +7368,9 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
          ───────────────────────────────────────────────────────────── */}
       {workerChatOpen && workerChatError && <div role="alert" className="max-w-sm p-4 text-sm text-red-300">{workerChatError}<button className="ml-2 underline" onClick={() => setWorkerChatError('')}>Dismiss</button></div>}
       {(activeNavTab !== 'workers' || workerChatOpen) && (activeSessionId ? (
-        <div className="flex min-h-0 flex-col">
-        {activeNavTab === 'workers' && <div className="flex max-w-[440px] items-center justify-between gap-3 p-3 text-xs text-slate-300"><span>{workerCreationRequested ? 'Add worker: describe its job to Orchestrator below. Nothing runs until you approve.' : 'Discuss this worker with Orchestrator'}</span><button onClick={() => { setWorkerChatOpen(false); setWorkerCreationRequested(false) }}>Close</button></div>}
+        // Keep the chat bounded to the page, below the optional worker header.
+        <div className="flex min-h-0 shrink-0 flex-col">
+        {activeNavTab === 'workers' && <div className="flex max-w-[440px] shrink-0 items-center justify-between gap-3 p-3 text-xs text-slate-300"><span>{workerCreationRequested ? 'Add worker: describe its job to Orchestrator below. Nothing runs until you approve.' : 'Discuss this worker with Orchestrator'}</span><button onClick={() => { setWorkerChatOpen(false); setWorkerCreationRequested(false) }}>Close</button></div>}
         <OrchestratorChatSidebar
           key={activeSessionId}
           sessionId={activeSessionId}
