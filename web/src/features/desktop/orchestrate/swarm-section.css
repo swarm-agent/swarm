@@ -125,7 +125,8 @@
 .swarm-section .bg-black\/92 { background-color: var(--swarm-background); }
 .swarm-task-fact dd { flex-wrap: wrap; }
 
-/* New Task stays outlined using the project/inherited palette in either color scheme. */
+/* Quiet actions share New Task's project/inherited palette in either color scheme. */
+.swarm-section .swarm-outline-action,
 .swarm-section .swarm-new-task-cta {
   border: 1px solid currentColor;
   color: var(--swarm-text-accent);
@@ -133,6 +134,16 @@
   box-shadow: none;
   transition: background-color 150ms ease;
 }
+.swarm-section .swarm-outline-action:not(:disabled):hover,
 .swarm-section .swarm-new-task-cta:hover { background-color: var(--swarm-surface-hover); }
+.swarm-section .swarm-outline-action:not(:disabled):active,
 .swarm-section .swarm-new-task-cta:active { background-color: var(--swarm-surface-subtle); }
+.swarm-section .swarm-outline-action:focus-visible,
 .swarm-section .swarm-new-task-cta:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
+
+.swarm-section .swarm-outline-action:disabled { opacity: 0.4; cursor: not-allowed; }
+/* Reserve the same border width in both states: selection never moves the labels. */
+.swarm-section .swarm-task-source-filter[aria-pressed="false"] {
+  border-color: transparent;
+  color: var(--swarm-text-muted);
+}

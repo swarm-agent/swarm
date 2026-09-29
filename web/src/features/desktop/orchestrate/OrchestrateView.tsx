@@ -1792,11 +1792,7 @@ export function MinimalTaskCard({
                         onApprove()
                       }
                     }}
-                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded font-bold text-xs shadow-md transition-all ${
-                      isApproving || isPlanRejected || isPlanTaskWithoutStructuredPlan || isPlanBindingMissingRevision
-                        ? 'bg-slate-800 text-slate-500 cursor-not-allowed opacity-80'
-                        : 'bg-blue-600 hover:bg-blue-500 text-white active:scale-95'
-                    }`}
+                    className="swarm-outline-action flex items-center gap-1.5 px-3 py-1.5 rounded font-medium text-xs"
                     data-testid="approve-task-btn"
                     title={
                       isPlanRejected
@@ -1810,7 +1806,7 @@ export function MinimalTaskCard({
                   >
                     {isApproving ? (
                       <>
-                        <Loader2 size={11} className="animate-spin text-blue-300" />
+                        <Loader2 size={11} className="animate-spin" />
                         <span>Approving & Starting...</span>
                       </>
                     ) : (
@@ -6890,11 +6886,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                       onClick={() => setTaskSourceFilter('all')}
                       data-testid="filter-all-tasks"
                       aria-pressed={taskSourceFilter === 'all'}
-                      className={`px-2.5 py-1 rounded text-[11px] font-medium transition-all ${
-                        taskSourceFilter === 'all'
-                          ? 'bg-blue-600 text-white shadow-sm'
-                          : 'text-slate-400 hover:text-slate-200'
-                      }`}
+                      className="swarm-outline-action swarm-task-source-filter px-2.5 py-1 rounded text-[11px] font-medium"
                     >
                       All tasks ({liveTasks.length})
                     </button>
@@ -6903,11 +6895,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                       onClick={() => setTaskSourceFilter('worker')}
                       data-testid="filter-worker-tasks"
                       aria-pressed={taskSourceFilter === 'worker'}
-                      className={`px-2.5 py-1 rounded text-[11px] font-medium transition-all ${
-                        taskSourceFilter === 'worker'
-                          ? 'bg-blue-600 text-white shadow-sm'
-                          : 'text-slate-400 hover:text-slate-200'
-                      }`}
+                      className="swarm-outline-action swarm-task-source-filter px-2.5 py-1 rounded text-[11px] font-medium"
                     >
                       Worker tasks ({workerTasksCount})
                     </button>
@@ -6937,7 +6925,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                 <div className="flex items-center gap-1.5 flex-wrap ml-auto">
                   <button type="button" disabled={managementBusy || filteredTasks.length === 0} onClick={() => setMarkedTaskIds(new Set(filteredTasks.map(row => row.id)))} className="px-2.5 py-1 rounded-lg border border-slate-700/80 bg-slate-800/60 hover:bg-slate-700/70 text-slate-300 hover:text-white disabled:opacity-40 transition-colors cursor-pointer disabled:cursor-not-allowed">Select all matching</button>
                   <button type="button" disabled={managementBusy || markedRows.length === 0} onClick={() => setMarkedTaskIds(new Set())} className="px-2.5 py-1 rounded-lg border border-slate-700/80 bg-slate-800/60 hover:bg-slate-700/70 text-slate-300 hover:text-white disabled:opacity-40 transition-colors cursor-pointer disabled:cursor-not-allowed">Clear selection</button>
-                  <button type="button" disabled={managementBusy || markedRows.length === 0} onClick={() => void manageTasks(markedRows, 'archive')} className="px-2.5 py-1 rounded-lg bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-40 transition-colors font-medium shadow-sm cursor-pointer disabled:cursor-not-allowed">Archive selected</button>
+                  <button type="button" disabled={managementBusy || markedRows.length === 0} onClick={() => void manageTasks(markedRows, 'archive')} className="swarm-outline-action px-2.5 py-1 rounded-lg font-medium cursor-pointer">Archive selected</button>
                   <button type="button" disabled={managementBusy || markedRows.length === 0} onClick={() => void manageTasks(markedRows, 'delete')} title="Only unlaunched tasks may be deleted; archive launched tasks instead" className="px-2.5 py-1 rounded-lg border border-rose-700/80 bg-rose-950/30 hover:bg-rose-900/40 text-rose-300 disabled:opacity-40 transition-colors cursor-pointer disabled:cursor-not-allowed">Delete selected</button>
                   <button type="button" ref={archivedTriggerRef} onClick={() => setArchivedOpen(true)} className="px-2.5 py-1 rounded-lg border border-slate-700/80 bg-slate-800/60 hover:bg-slate-700/70 text-slate-300 hover:text-white transition-colors cursor-pointer">Archived tasks</button>
                 </div>
