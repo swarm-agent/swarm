@@ -309,6 +309,8 @@ export interface RunningTask {
   currentFocus?: string
   currentTool?: string
   toolActivitySummary?: string
+  activeTodo?: string
+  metadata?: Record<string, any>
   /** Resolved identity from the active session view, not the task's requested agent/model. */
   activeAgent?: string
   activeProvider?: string

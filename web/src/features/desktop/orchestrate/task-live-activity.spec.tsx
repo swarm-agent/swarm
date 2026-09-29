@@ -4,6 +4,7 @@
 // server-rendered markup is the narrowest assertion for its presentation contract.
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { TaskLiveActivity } from './task-live-activity'
 import type { RunningTask } from './orchestrate-types'
@@ -22,6 +23,10 @@ test('compact task activity starts before tokens, shows tool-only work and bound
   assert.match(tool, /Reading files/)
   const text = renderToStaticMarkup(<TaskLiveActivity task={task('in_progress', { liveAssistantText: 'Writing a focused test' })} />)
   assert.match(text, /Writing a focused test/)
+  const todo = renderToStaticMarkup(<TaskLiveActivity task={task('running', { activeTodo: 'Fix compiler errors' })} />)
+  assert.match(todo, /Focus: Fix compiler errors/)
+  const metaTodo = renderToStaticMarkup(<TaskLiveActivity task={task('running', { metadata: { agent_todo_summary: { active_todo: { title: 'Inspect types' } } } })} />)
+  assert.match(metaTodo, /Focus: Inspect types/)
   const longText = renderToStaticMarkup(<TaskLiveActivity task={task('running', { liveAssistantText: 'x'.repeat(500) })} />)
   assert.doesNotMatch(longText, /x{161}/)
   assert.equal(renderToStaticMarkup(<TaskLiveActivity task={task('needs_review', { liveAssistantText: 'Old text' })} />), '')
