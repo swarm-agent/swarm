@@ -669,3 +669,17 @@ test('verified current-job handoff wins over stale running child projection', ()
     assert.equal(result.sessionSummary?.sessionStates[0].status, expected)
   }
 })
+
+// An unlaunched task with no session and no task program cannot be actively running.
+test('unlinked task with no session and no task program is marked failed instead of fake running', () => {
+  const unlinkedTask = {
+    id: 'unlinked',
+    title: 'Failed router task',
+    agentType: 'coder',
+    status: 'in_progress',
+    worktreeBranch: 'agent/mission-failed-router',
+    routerAlert: 'Router agent failed or unavailable',
+  } as unknown as RunningTask
+  const result = aggregateTaskLiveState(unlinkedTask, {})
+  assert.equal(result.status, 'failed')
+})

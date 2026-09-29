@@ -420,6 +420,15 @@ func syncTaskSessionState(task *pebblestore.ProjectTaskRecord, db *pebblestore.S
 	}
 
 	if task.SessionID == "" {
+		if (task.TaskProgramID == "" && task.TaskProgram == nil) && (task.Status == "in_progress" || task.Status == "planning") {
+			if task.RouterAlert != "" {
+				task.Status = "failed"
+				if task.LastError == "" {
+					task.LastError = task.RouterAlert
+				}
+				task.ActionNeeded = fmt.Sprintf("Action Needed: Task routing failed (%s). Retry or archive task.", task.RouterAlert)
+			}
+		}
 		return
 	}
 	sess, found, err := db.GetSession(task.SessionID)

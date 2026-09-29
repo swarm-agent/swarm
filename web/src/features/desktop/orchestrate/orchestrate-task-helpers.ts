@@ -1114,6 +1114,8 @@ export function aggregateTaskLiveState(
         } else {
           status = 'needs_review'
         }
+      } else if (!primarySessionId && !hasTaskProgram && (status === 'in_progress' || status === 'running')) {
+        status = 'failed'
       }
     }
   }

@@ -45,3 +45,93 @@ func TestProjectTaskManagementHTTPGuards(t *testing.T) {
  check(http.MethodDelete, "?revision=2", "", http.StatusOK)
  if _, found, err := f.server.sessions.Store().GetProjectTask(f.accountID,projectID,task.ID); err != nil || found { t.Fatalf("deletion not durable: %v %v",found,err) }
 }
+
+func TestProjectTaskArchiveLivenessGuards(t *testing.T) {
+	f := setupMatrixTestFixture(t)
+	defer func() {
+		f.server.BeginShutdown()
+		f.server.CancelInFlightRuns()
+		if !f.server.WaitForInFlightRuns(5 * time.Second) {
+			t.Error("runs not stopped")
+		}
+		f.db.Close()
+	}()
+	projectID := f.createProject(t)
+	p := identity.Principal{Type: "user", UserID: f.userID, AccountScopeID: f.accountID}
+	store := f.server.sessions.Store()
+
+	// 1. Task with WorktreeBranch and in_progress status but NO session: MUST be archivable!
+	unlinkedTask := &pebblestore.ProjectTaskRecord{
+		ID:             "unlinked-task",
+		ProjectID:      projectID,
+		Title:          "Unlinked task",
+		Agent:          "coder",
+		Status:         "in_progress",
+		WorktreeBranch: "agent/unlinked-branch",
+		Revision:       1,
+	}
+	if err := store.PutProjectTask(f.accountID, unlinkedTask); err != nil {
+		t.Fatal(err)
+	}
+	res := f.callAPI(http.MethodPost, "/"+projectID+"/tasks/"+unlinkedTask.ID+"/archive", `{"revision":1}`, p)
+	if res.Code != http.StatusOK {
+		t.Fatalf("expected 200 archiving task without session, got %d: %s", res.Code, res.Body.String())
+	}
+
+	// 2. Task with active running session: MUST be protected from archiving (409 Conflict)!
+	activeSessID := "session-running-123"
+	if err := store.CreateSession(pebblestore.SessionSnapshot{
+		ID:             activeSessID,
+		AccountScopeID: f.accountID,
+		Lifecycle:      &pebblestore.SessionLifecycleSnapshot{Active: true, Phase: "running"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	activeTask := &pebblestore.ProjectTaskRecord{
+		ID:             "active-task",
+		ProjectID:      projectID,
+		Title:          "Active task",
+		Agent:          "coder",
+		Status:         "in_progress",
+		SessionID:      activeSessID,
+		WorktreeBranch: "agent/active-branch",
+		Revision:       1,
+	}
+	if err := store.PutProjectTask(f.accountID, activeTask); err != nil {
+		t.Fatal(err)
+	}
+	resActive := f.callAPI(http.MethodPost, "/"+projectID+"/tasks/"+activeTask.ID+"/archive", `{"revision":1}`, p)
+	if resActive.Code != http.StatusConflict {
+		t.Fatalf("expected 409 archiving actively running task, got %d: %s", resActive.Code, resActive.Body.String())
+	}
+	if !strings.Contains(resActive.Body.String(), "active run") {
+		t.Fatalf("expected active run error message, got: %s", resActive.Body.String())
+	}
+
+	// 3. Task with terminated/inactive session: MUST be archivable!
+	doneSessID := "session-done-456"
+	if err := store.CreateSession(pebblestore.SessionSnapshot{
+		ID:             doneSessID,
+		AccountScopeID: f.accountID,
+		Lifecycle:      &pebblestore.SessionLifecycleSnapshot{Active: false, Phase: "completed"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	doneTask := &pebblestore.ProjectTaskRecord{
+		ID:             "done-task",
+		ProjectID:      projectID,
+		Title:          "Done task",
+		Agent:          "coder",
+		Status:         "in_progress",
+		SessionID:      doneSessID,
+		WorktreeBranch: "agent/done-branch",
+		Revision:       1,
+	}
+	if err := store.PutProjectTask(f.accountID, doneTask); err != nil {
+		t.Fatal(err)
+	}
+	resDone := f.callAPI(http.MethodPost, "/"+projectID+"/tasks/"+doneTask.ID+"/archive", `{"revision":1}`, p)
+	if resDone.Code != http.StatusOK {
+		t.Fatalf("expected 200 archiving terminated session task, got %d: %s", resDone.Code, resDone.Body.String())
+	}
+}

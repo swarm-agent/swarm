@@ -62,6 +62,13 @@ func TestArchiveHistoricalProjectTask(t *testing.T) {
 	if _, err := s.ArchiveProjectTaskIfRevision("account-a", project.ID, legacy.ID, 2); err == nil {
 		t.Fatal("duplicate archival succeeded")
 	}
+	if err := s.CreateSession(SessionSnapshot{
+		ID:             "session-running",
+		AccountScopeID: "account-a",
+		Lifecycle:      &SessionLifecycleSnapshot{Active: true, Phase: "running"},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	active := &ProjectTaskRecord{ID: "active", ProjectID: project.ID, Title: "Active", Agent: "coder", Status: "in_progress", SessionID: "session-running", Revision: 1}
 	if err := s.PutProjectTask("account-a", active); err != nil {
 		t.Fatal(err)
@@ -80,5 +87,52 @@ func TestArchiveHistoricalProjectTask(t *testing.T) {
 	got, err = s.ArchiveProjectTaskIfRevision("account-a", project.ID, stale.ID, 1)
 	if err != nil || !got.Archived || got.Status != "in_progress" {
 		t.Fatalf("orphaned historical task archive: %+v %v", got, err)
+	}
+
+	// Task with execution linkage (worktree branch) but NO session must be archivable:
+	unlinked := &ProjectTaskRecord{ID: "unlinked", ProjectID: project.ID, Title: "Unlinked with branch", Agent: "coder", Status: "in_progress", WorktreeBranch: "agent/mission-test", Revision: 1}
+	if err := s.PutProjectTask("account-a", unlinked); err != nil {
+		t.Fatal(err)
+	}
+	gotUnlinked, err := s.ArchiveProjectTaskIfRevision("account-a", project.ID, unlinked.ID, 1)
+	if err != nil || !gotUnlinked.Archived || gotUnlinked.Revision != 2 {
+		t.Fatalf("task with execution linkage but no session must archive: %+v %v", gotUnlinked, err)
+	}
+
+	// Task with dead / nonexistent session must be archivable:
+	deadSess := &ProjectTaskRecord{ID: "dead-sess", ProjectID: project.ID, Title: "Dead session", Agent: "coder", Status: "in_progress", SessionID: "session-does-not-exist", WorktreeBranch: "agent/dead", Revision: 1}
+	if err := s.PutProjectTask("account-a", deadSess); err != nil {
+		t.Fatal(err)
+	}
+	gotDead, err := s.ArchiveProjectTaskIfRevision("account-a", project.ID, deadSess.ID, 1)
+	if err != nil || !gotDead.Archived || gotDead.Revision != 2 {
+		t.Fatalf("task with nonexistent session must archive: %+v %v", gotDead, err)
+	}
+
+	// Task with completed/terminated session must be archivable:
+	if err := s.CreateSession(SessionSnapshot{
+		ID:             "session-completed",
+		AccountScopeID: "account-a",
+		Lifecycle:      &SessionLifecycleSnapshot{Active: false, Phase: "completed"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	completedTask := &ProjectTaskRecord{ID: "completed-task", ProjectID: project.ID, Title: "Completed session task", Agent: "coder", Status: "in_progress", SessionID: "session-completed", Revision: 1}
+	if err := s.PutProjectTask("account-a", completedTask); err != nil {
+		t.Fatal(err)
+	}
+	gotCompleted, err := s.ArchiveProjectTaskIfRevision("account-a", project.ID, completedTask.ID, 1)
+	if err != nil || !gotCompleted.Archived || gotCompleted.Revision != 2 {
+		t.Fatalf("task with terminated session must archive: %+v %v", gotCompleted, err)
+	}
+
+	// Queued task must be archivable:
+	queuedTask := &ProjectTaskRecord{ID: "queued-task", ProjectID: project.ID, Title: "Queued task", Agent: "coder", Status: "queued", Revision: 1}
+	if err := s.PutProjectTask("account-a", queuedTask); err != nil {
+		t.Fatal(err)
+	}
+	gotQueued, err := s.ArchiveProjectTaskIfRevision("account-a", project.ID, queuedTask.ID, 1)
+	if err != nil || !gotQueued.Archived || gotQueued.Revision != 2 {
+		t.Fatalf("queued task must archive: %+v %v", gotQueued, err)
 	}
 }

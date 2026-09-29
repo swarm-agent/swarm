@@ -959,29 +959,49 @@ func (s *SessionStore) ArchiveProjectTaskIfRevision(accountScopeID, projectID, t
 		err = errors.New("task already archived")
 	}
 	if err == nil && record.SessionID != "" {
-		active, found, runErr := s.GetV3SessionActiveRunIntent(record.SessionID)
-		if runErr != nil {
-			err = runErr
-		} else if found && active.AccountScopeID == accountScopeID && (active.Status == V3RunIntentRunning || active.Status == V3RunIntentPendingExecutor) {
-			err = errors.New("task session has an active run; wait for its terminal lifecycle before archiving")
-		} else if found {
-			err = errors.New("task session has an unrelated active run; resolve its lifecycle before archiving")
+		sess, sessFound, sessErr := s.GetSession(record.SessionID)
+		if sessErr != nil {
+			err = sessErr
+		} else if sessFound {
+			if sess.AccountScopeID != "" && accountScopeID != "" && sess.AccountScopeID != accountScopeID {
+				err = errors.New("task session has an unrelated active run; resolve its lifecycle before archiving")
+			}
 		}
-		// A linked reservation can still be picked up by recovery even when no
-		// executor is currently attached. Refuse ambiguous work rather than
-		// treating a missing active run as a terminal lifecycle event.
-		if err == nil && (record.Status == "in_progress" || record.Status == "planning" || record.Status == "queued") {
-			err = errors.New("task has a linked session in an active or recoverable state; resolve its lifecycle before archiving")
+		if err == nil {
+			active, activeFound, runErr := s.GetV3SessionActiveRunIntent(record.SessionID)
+			if runErr != nil {
+				err = runErr
+			} else if activeFound {
+				if active.AccountScopeID != "" && accountScopeID != "" && active.AccountScopeID != accountScopeID {
+					err = errors.New("task session has an unrelated active run; resolve its lifecycle before archiving")
+				} else if active.Status == V3RunIntentRunning || active.Status == V3RunIntentPendingExecutor {
+					err = errors.New("task session has an active run; wait for its terminal lifecycle before archiving")
+				}
+			}
+		}
+		if err == nil {
+			if runState, runFound, runStateErr := s.GetV3SessionRunState(record.SessionID); runStateErr != nil {
+				err = runStateErr
+			} else if runFound && runState.Active && (runState.Status == V3RunIntentRunning || runState.Status == V3RunIntentPendingExecutor) {
+				if runState.AccountScopeID != "" && accountScopeID != "" && runState.AccountScopeID != accountScopeID {
+					err = errors.New("task session has an unrelated active run; resolve its lifecycle before archiving")
+				} else {
+					err = errors.New("task session has an active run; wait for its terminal lifecycle before archiving")
+				}
+			}
+		}
+		if err == nil && sessFound && sess.Lifecycle != nil && sess.Lifecycle.Active {
+			if sess.Lifecycle.Phase == "running" || sess.Lifecycle.Phase == "preparing" || sess.Lifecycle.Phase == "pending_executor" {
+				err = errors.New("task session has an active run; wait for its terminal lifecycle before archiving")
+			}
 		}
 	}
-	if err == nil && record.Status == "queued" {
-		err = errors.New("queued task may still be deployed; resolve its lifecycle before archiving")
-	}
-	if err == nil && record.TaskProgramID != "" && (record.Status == "in_progress" || record.Status == "planning") {
-		err = errors.New("task program may still be active; resolve its lifecycle before archiving")
-	}
-	if err == nil && record.SessionID == "" && record.TaskProgramID == "" && (record.Status == "in_progress" || record.Status == "planning") && (record.WorktreeBranch != "" || record.PlanBinding != nil) {
-		err = errors.New("task has execution linkage but no session; reconcile its lifecycle before archiving")
+	if err == nil && record.TaskProgramID != "" && record.SessionID != "" {
+		if prog, progFound, progErr := s.GetTaskProgram(record.SessionID, record.TaskProgramID); progErr != nil {
+			err = progErr
+		} else if progFound && (prog.State == TaskProgramStateRunning || prog.State == TaskProgramStateDeclared) {
+			err = errors.New("task program may still be active; resolve its lifecycle before archiving")
+		}
 	}
 	var mut *projectRealtimeMutation
 	if err == nil {
