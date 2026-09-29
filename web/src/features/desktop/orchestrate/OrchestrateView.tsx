@@ -64,6 +64,7 @@ import { swarmWorkerLink } from './swarm-navigation'
 import { useDesktopV3CacheSelector, getDesktopV3CacheSnapshot } from '../state/desktop-v3-cache-store'
 import { selectPendingWorkerSidebarReviews } from '../state/desktop-automation-v2-state'
 import { desktopAutomationV2 } from '../runtime/desktop-automation-v2'
+import { LegacyAutomations } from './legacy-automations'
 import { decidePendingWorkerReview } from '../tools/automations/pending-worker-sidebar-reviews'
 import { DesktopV3ExistingConversationPane, resolveDesktopV3StopRunRequest } from '../chat/components/desktop-v3-existing-conversation-pane'
 import {
@@ -91,7 +92,6 @@ import {
   OrchestrateThemeId,
   ProjectSummary,
   ProjectTaskMediaRef,
-  RunningAutomation,
   RunningTask,
   RunningTaskPlanCheckpoint,
 } from './orchestrate-types'
@@ -3362,8 +3362,6 @@ export function OrchestrateView({
   const [activeSessionId, setActiveSessionId] = useState<string>('')
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null)
 
-  // Automations State
-  const [automations, setAutomations] = useState<RunningAutomation[]>([])
 
   // Middle canvas layout variant state
   const [middleVariant] = useState<MiddleCanvasVariant>('matrix')
@@ -3796,24 +3794,6 @@ export function OrchestrateView({
             selected: true,
           }))
           setOnboardingWorkspaces(detected)
-        }
-      } catch {}
-
-      // 3. Automations
-      try {
-        const autoRes = await requestJson<{ records?: any[] }>('/v3/automations/v2')
-        if (autoRes?.records && !cancelled) {
-          const mapped: RunningAutomation[] = autoRes.records.map((r: any) => ({
-            id: r.id || 'automation',
-            name: r.worker_v2?.name || r.name || 'Worker Automation',
-            kind: (r.worker_v2?.kind || r.schedule?.kind || 'trigger') as any,
-            status: (r.status || (r.paused ? 'idle' : 'running')) as any,
-            nextRun: r.schedule?.cron || r.schedule?.interval || 'On demand',
-            lastRun: r.last_run_at && !isNaN(new Date(r.last_run_at).getTime()) ? new Date(r.last_run_at).toLocaleTimeString() : 'Never',
-            outputSummary: r.description || r.worker_v2?.definition?.goal || 'Automated background task',
-            totalRuns: r.run_count || 0,
-          }))
-          setAutomations(mapped)
         }
       } catch {}
 
@@ -5559,7 +5539,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                   {pendingReviews.length} pending
                 </span>
               ) : (
-                <span className="text-[10px] font-mono text-slate-500">{automations.length}</span>
+                <ArrowRight size={12} className="text-slate-500" />
               )}
             </div>
           </Link>
@@ -6429,77 +6409,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
               />
             )}
 
-            {/* ACTIVE RUNNING AUTOMATIONS TICKER / CARDS AT TOP OF PROJECT */}
-            {automations.length > 0 ? (
-              <div className="mx-3.5 mt-2 mb-1.5 p-3 rounded-2xl border border-slate-800/90 bg-slate-900/60 shadow-lg">
-                <div className="flex items-center justify-between pb-2 mb-2 border-b border-slate-800/60">
-                  <div className="flex items-center gap-2">
-                    <div className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
-                    <span className="text-xs font-bold text-white tracking-tight">Active Project Automations ({automations.length})</span>
-                    <span className="text-[10px] text-slate-400">Autonomous workers running for {selectedProject?.name || 'this project'}</span>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setActiveNavTab('workers')}
-                    className="flex items-center gap-1 text-[11px] font-medium text-blue-400 hover:text-blue-300 transition-colors"
-                  >
-                    <span>Manage Fleet in Workers Hub</span>
-                    <ArrowRight size={12} />
-                  </button>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
-                  {automations.map((a) => {
-                    const isTrigger = a.kind === 'trigger'
-                    return (
-                      <div
-                        key={a.id}
-                        onClick={() => setActiveNavTab('workers')}
-                        className="group cursor-pointer rounded-xl border border-slate-800 bg-[#090e1a]/80 p-2.5 hover:border-blue-500/50 hover:bg-slate-800/60 transition-all flex items-start justify-between gap-2 shadow-sm"
-                        title="Click to view in Workers Hub"
-                      >
-                        <div className="flex items-start gap-2 min-w-0">
-                          <div className="h-7 w-7 rounded-lg bg-blue-600/15 text-blue-400 border border-blue-500/25 flex items-center justify-center shrink-0 text-xs">
-                            🤖
-                          </div>
-                          <div className="min-w-0">
-                            <h4 className="text-xs font-semibold text-white truncate group-hover:text-blue-300 transition-colors">
-                              {a.name}
-                            </h4>
-                            <p className="text-[10px] text-slate-400 truncate mt-0.5">
-                              {isTrigger ? '⚡ On-Demand Trigger' : `🕒 ${a.nextRun || a.kind}`}
-                            </p>
-                          </div>
-                        </div>
-                        <div className="flex flex-col items-end shrink-0 gap-1">
-                          <span className="rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-1.5 py-0.2 text-[9px] font-semibold">
-                            ● {a.status}
-                          </span>
-                          <span className="text-[9px] font-mono text-slate-500">
-                            {a.totalRuns !== undefined ? `${a.totalRuns} run${a.totalRuns === 1 ? '' : 's'}` : ''}
-                          </span>
-                        </div>
-                      </div>
-                    )
-                  })}
-                </div>
-              </div>
-            ) : (
-              <div className="mx-3.5 mt-2 mb-1 px-3.5 py-2 rounded-xl border border-dashed border-slate-800 bg-slate-900/30 flex items-center justify-between gap-3 text-xs">
-                <div className="flex items-center gap-2 text-slate-400">
-                  <Bot size={14} className="text-slate-500" />
-                  <span className="text-[11px]">No background automations running for this project yet.</span>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setActiveNavTab('workers')}
-                  className="text-[11px] font-semibold text-blue-400 hover:text-blue-300 flex items-center gap-1"
-                >
-                  <span>Explore Workers Hub</span>
-                  <ArrowRight size={11} />
-                </button>
-              </div>
-            )}
+            <LegacyAutomations />
 
             {/* MAIN BODY: 5 DISTINCT VARIANTS */}
             <div className="flex-1 overflow-hidden flex flex-col">

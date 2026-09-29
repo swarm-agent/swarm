@@ -1,7 +1,7 @@
 import { useEffect, useMemo } from 'react'
 import { buildDesktopV3ChildCardHydrateInput, postDesktopV3SyncHydrate } from '../state/desktop-v3-sync-api'
 import { hydrateResponseToAction } from '../state/desktop-v3-cache-wire'
-import { readAutomationV2, mutateAutomationV2, triggerAutomationV2, type AutomationV2Read, type AutomationV2Mutation, type AutomationV2TriggerRequest, type AutomationV2TriggerResponse } from '../state/desktop-automation-v2-api'
+import { readAutomationV2, mutateAutomationV2, triggerAutomationV2, type AutomationV2Record, type AutomationV2Read, type AutomationV2Mutation, type AutomationV2TriggerRequest, type AutomationV2TriggerResponse } from '../state/desktop-automation-v2-api'
 import { automationV2PageKey, type AutomationV2Pages, type AutomationV2CacheAction } from '../state/desktop-automation-v2-state'
 import { dispatchDesktopV3Cache, getDesktopV3CacheSnapshot, useDesktopV3CacheSelector } from '../state/desktop-v3-cache-store'
 export class DesktopAutomationV2Runtime {
@@ -89,6 +89,21 @@ export class DesktopAutomationV2Runtime {
       if (input.action === 'accept_automation' || input.action === 'propose_automation' || input.action === 'decline_automation') await this.reconcileSession(input.session_id)
       return result
     } finally { this.invalidate(input.workspace_id, input.session_id) }
+  }
+  async deleteRecord(record: AutomationV2Record) {
+    if (!record.workspace_id || !record.session_id || !Number.isSafeInteger(record.generation) || record.generation < 1) {
+      throw new Error('Exact automation identity unavailable. Refresh the list before deleting.')
+    }
+    // Delete only the reviewed automation generation, never its author conversation.
+    // Invalidate all demanded lists, including secondary-workspace and account views.
+    try {
+      return await this.deps.mutate({
+        action: 'delete_automation',
+        workspace_id: record.workspace_id,
+        session_id: record.session_id,
+        generation: record.generation,
+      })
+    } finally { this.invalidate() }
   }
   async trigger(input: AutomationV2TriggerRequest): Promise<AutomationV2TriggerResponse> {
     try {

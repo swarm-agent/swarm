@@ -90,7 +90,7 @@ export type AutomationV2Mutation = { workspace_id: string; session_id: string } 
   | { action: 'propose_automation'; document: AutomationV2Document; review: AutomationV2Review }
   | { action: 'accept_automation'; review: AutomationV2Review }
   | { action: 'decline_automation'; review: AutomationV2Review }
-  | { action: 'pause' | 'resume' | 'cancel_future' | 'cancel_all'; generation: number }
+  | { action: 'pause' | 'resume' | 'cancel_future' | 'cancel_all' | 'delete_automation'; generation: number }
 )
 export function automationV2Review(value: AutomationV2Review): AutomationV2Review {
   if (!value?.proposal_id || !Number.isSafeInteger(value.revision) || value.revision < 1 || !/^[a-f0-9]{64}$/.test(value.digest)) throw new Error('Exact automation review unavailable. Refresh the proposal.')
