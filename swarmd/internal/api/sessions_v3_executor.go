@@ -5088,11 +5088,11 @@ func sessionsV3ProviderInputWithOptions(messages []pebblestore.MessageSnapshot, 
 
 func sessionsV3ProviderUserText(message pebblestore.MessageSnapshot) string {
 	content := strings.TrimSpace(message.Content)
-	if len(message.ArtifactSelections) == 0 {
-		return content
-	}
 	if artifactContext := runruntime.AttachedArtifactSelectionsForProvider(message.ArtifactSelections); artifactContext != "" {
 		content = strings.TrimSpace(content + "\n\n" + artifactContext)
+	}
+	if workerContext := selectedWorkerProviderContext(message.Metadata["resolved_worker_context"]); workerContext != "" {
+		content = strings.TrimSpace(content + "\n\n" + workerContext)
 	}
 	return content
 }

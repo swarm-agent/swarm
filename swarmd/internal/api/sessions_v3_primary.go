@@ -1594,6 +1594,9 @@ func (s *Server) acceptSessionsV3Message(principal identity.Principal, sessionID
 	if err := validateSessionsV3CreateMetadata(req.Metadata); err != nil {
 		return sessionruntime.SessionMutationResult{}, nil, err
 	}
+	if err := validateSelectedWorkerMessageMetadata(req.Metadata); err != nil {
+		return sessionruntime.SessionMutationResult{}, nil, err
+	}
 	message := pebblestore.MessageSnapshot{
 		ID: strings.TrimSpace(req.MessageID), Role: strings.TrimSpace(req.Role), Content: req.Content,
 		Metadata: cloneSessionsV3Metadata(req.Metadata), Media: append([]pebblestore.SessionMediaReference(nil), req.Media...),
@@ -1633,6 +1636,24 @@ func (s *Server) acceptSessionsV3Message(principal identity.Principal, sessionID
 	payloadHash, err := sessionsV3MessagePayloadHash(sessionID, req, message, runIntent.Status, runIntent.BlockedReason)
 	if err != nil {
 		return sessionruntime.SessionMutationResult{}, nil, err
+	}
+	// Hash the client request before enriching the message. A retry must retain
+	// its original payload hash even if the worker has since been revised.
+	if _, selected := req.Metadata["selected_worker"]; selected {
+		existing, replay, err := s.sessions.Store().GetV3SessionOperationIdempotencyRecord(principal.AccountScopeID, sessionID, sessionruntime.SessionMutationAppendMessage, clientRequestID)
+		if err != nil {
+			return sessionruntime.SessionMutationResult{}, nil, err
+		}
+		if replay && existing.PayloadHash != payloadHash {
+			return sessionruntime.SessionMutationResult{}, nil, sessionruntime.ErrSessionIdempotencyConflict
+		}
+		if !replay {
+			context, err := s.resolveSelectedWorkerMessage(principal, session, message.Role, req.Metadata["selected_worker"])
+			if err != nil {
+				return sessionruntime.SessionMutationResult{}, nil, err
+			}
+			message.Metadata["resolved_worker_context"] = context
+		}
 	}
 	var reactivatedPlanSave *sessionruntime.PreparedPlanSave
 	if plan, ok, planErr := s.sessions.GetActivePlan(sessionID); planErr != nil {
@@ -4248,6 +4269,7 @@ func isProtectedSessionsV3MetadataKey(key string) bool {
 		pebblestore.SessionPurposeWorkspaceMetadataKey,
 		"agent_name",
 		"agent_profile",
+		"resolved_worker_context",
 		"model_profile",
 		"resolved_agent_name",
 		"agent_mode",
