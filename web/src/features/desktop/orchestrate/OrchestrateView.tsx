@@ -912,9 +912,30 @@ function MinimalTaskCard({
       data-task-state={task.status}
       className={`swarm-task-card relative flex flex-col transition-all cursor-pointer ${isSelected ? 'swarm-task-card-selected' : ''}`}
     >
-      {onToggleMarked && <label className="relative z-10 flex items-center gap-1.5 px-3 pt-2 text-[11px] text-slate-300" onClick={(e) => e.stopPropagation()}>
-        <input type="checkbox" checked={Boolean(isMarked)} onChange={onToggleMarked} aria-label={`Select task ${task.title}`} /> Select for management
-      </label>}
+      {onToggleMarked && (
+        <div
+          className="absolute top-3.5 right-3.5 z-20"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <label
+            className={`group flex items-center justify-center w-5 h-5 rounded-md border transition-all cursor-pointer ${
+              isMarked
+                ? 'bg-blue-600 border-blue-500 text-white shadow-sm'
+                : 'border-slate-700/60 bg-slate-900/40 hover:border-slate-500 hover:bg-slate-800/80 text-transparent hover:text-slate-400'
+            }`}
+            title={`Select task ${task.title}`}
+          >
+            <input
+              type="checkbox"
+              checked={Boolean(isMarked)}
+              onChange={onToggleMarked}
+              aria-label={`Select task ${task.title}`}
+              className="sr-only"
+            />
+            <Check size={12} strokeWidth={2.5} className={isMarked ? 'opacity-100' : 'opacity-0 group-hover:opacity-40'} />
+          </label>
+        </div>
+      )}
       <TaskCardSummary task={task} onPreview={onPreviewDeliverable} />
       <div className="swarm-task-actions">
       {/* Existing guarded actions remain connected to their original handlers. */}
@@ -1112,37 +1133,6 @@ function MinimalTaskCard({
             >
               {isApproving ? <Loader2 size={10} className="animate-spin text-blue-200" /> : <Sparkles size={10} />}
               <span>Approve</span>
-            </button>
-          )}
-
-          {isNeedsReview && hasUnintegrated && onIntegrate && (
-            <button
-              type="button"
-              disabled={isIntegrating || !task.baseBranch}
-              onClick={(e) => {
-                e.stopPropagation()
-                onIntegrate()
-              }}
-              className="flex items-center gap-1 px-2.5 py-1 rounded bg-amber-500 hover:bg-amber-400 text-slate-950 text-[10px] font-bold transition-all shadow"
-              title={task.baseBranch ? `Integrate changes into ${task.baseBranch}` : 'Target branch unavailable; refresh task lineage'}
-            >
-              <GitPullRequest size={10} />
-              <span>Integrate</span>
-            </button>
-          )}
-
-          {isNeedsReview && !hasUnintegrated && onComplete && (
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation()
-                onComplete()
-              }}
-              className="flex items-center gap-1 px-2.5 py-1 rounded bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-bold transition-all shadow"
-              title="Accept & Complete Task"
-            >
-              <Check size={10} />
-              <span>Complete</span>
             </button>
           )}
         </div>
@@ -2199,117 +2189,150 @@ function MinimalTaskCard({
         </div>
       )}
 
-      {/* 2c. NEEDS REVIEW COMPLETION BANNER & ACTIONS */}
-      {isNeedsReview && (
-        <div className="flex flex-col p-3 rounded-lg bg-amber-950/20 border border-amber-500/40 space-y-2.5 text-xs">
-          <div className="flex items-center justify-between gap-2 flex-wrap">
-            <div className="flex items-center gap-2">
-              <CheckCircle2 size={14} className="text-amber-400 flex-shrink-0" />
-              <div className="flex flex-col">
-                <span className="font-bold text-amber-300 font-mono text-[10px] uppercase">
-                  Mission Execution Completed — Awaiting Review
-                </span>
-                <span className="text-[11px] text-slate-300">
-                  Agent finished execution. Verify changes and integrate or reopen for revisions.
-                </span>
-              </div>
+      {/* 2c. PENDING WORKTREE READY TO INTEGRATE (Minimal, aesthetic, single Integrate action) */}
+      {!isPendingApproval && !isMediaTask && hasUnintegrated && (
+        <div
+          className="flex items-center justify-between p-3 rounded-xl bg-slate-900/60 hover:bg-slate-900/90 border border-slate-800/80 hover:border-slate-700/80 transition-all text-xs gap-3 shadow-sm"
+          data-testid="task-pending-worktree-bar"
+          title="Mission Execution Completed — Awaiting Review"
+        >
+          <div className="flex items-center gap-2.5 min-w-0 flex-1">
+            <div className="flex items-center justify-center w-7 h-7 rounded-lg bg-amber-500/10 text-amber-400 border border-amber-500/20 flex-shrink-0">
+              <GitBranch size={13} />
             </div>
-            <span className="font-mono text-[9px] px-1.5 py-0.5 rounded bg-amber-900/40 text-amber-300 border border-amber-500/30 font-bold uppercase">
-              Needs Review
-            </span>
-          </div>
-
-          {/* Plan Summary if available */}
-          {task.planSummary && (
-            <div className="p-2 rounded bg-slate-900/80 border border-slate-800 text-[11px] font-mono text-slate-300 leading-relaxed">
-              <span className="text-amber-400 font-bold block text-[9px] uppercase tracking-wider mb-0.5">Execution Summary</span>
-              {task.planSummary}
-            </div>
-          )}
-
-          {/* Actions: Integrate, Complete, Reopen */}
-          <div className="flex items-center justify-between pt-1 border-t border-amber-500/20 gap-2 flex-wrap">
-            <div className="flex items-center gap-2">
-              {onReopen && (
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    setIsReopenOpen(!isReopenOpen)
-                  }}
-                  className="flex items-center gap-1 px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-[10px] font-medium transition-colors border border-slate-700/60"
-                  title="Reopen task to add instructions and continue work"
-                >
-                  <RotateCcw size={10} className="text-amber-400" />
-                  <span>{isReopenOpen ? 'Cancel' : 'Reopen Task'}</span>
-                </button>
-              )}
-            </div>
-
-            <div className="flex items-center gap-2">
-              {onComplete && !hasUnintegrated && (
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    onComplete()
-                  }}
-                  className="flex items-center gap-1.5 px-3 py-1 rounded bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow transition-all active:scale-95"
-                >
-                  <Check size={11} />
-                  <span>Accept & Complete</span>
-                </button>
-              )}
-              {hasUnintegrated && onIntegrate && (
-                <button
-                  type="button"
-                  disabled={isIntegrating || !task.baseBranch}
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    onIntegrate()
-                  }}
-                  className="flex items-center gap-1.5 px-3 py-1 rounded bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs shadow transition-all active:scale-95"
-                >
-                  <GitPullRequest size={11} />
-                  <span>{isIntegrating ? 'Integrating…' : task.baseBranch ? `Integrate into ${task.baseBranch}` : 'Target unavailable'}</span>
-                </button>
-              )}
+            <div className="flex items-center gap-2 min-w-0 flex-wrap">
+              <span className="font-semibold text-slate-100 text-xs">
+                Pending worktree ready to integrate
+              </span>
+              <span className="text-[11px] font-mono text-slate-400 flex items-center gap-1.5 truncate">
+                <span className="text-indigo-400 font-medium">{task.worktreeBranch || (task.worktreeName ? `agent/${task.worktreeName}` : 'agent/worktree')}</span>
+                <span className="text-slate-600">→</span>
+                <span className="text-slate-300">{task.baseBranch || 'target'}</span>
+                {task.unintegratedCommits ? (
+                  <span className="text-slate-500">({task.unintegratedCommits} {task.unintegratedCommits === 1 ? 'commit' : 'commits'})</span>
+                ) : null}
+              </span>
+              <span className="sr-only">Mission Execution Completed — Awaiting Review</span>
             </div>
           </div>
-
-          {/* Inline Reopen Feedback Input */}
-          {isReopenOpen && onReopen && (
-            <div className="flex items-center gap-2 p-2 rounded bg-slate-900 border border-slate-800 animate-in fade-in duration-200">
-              <input
-                type="text"
-                value={reopenFeedback}
-                onClick={(e) => e.stopPropagation()}
-                onChange={(e) => setReopenFeedback(e.target.value)}
-                placeholder="Instructions for the agent to resume work..."
-                className="flex-1 bg-slate-950 border border-slate-800 rounded px-2.5 py-1 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-amber-500 font-mono"
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    e.stopPropagation()
-                    onReopen(reopenFeedback.trim() || undefined)
-                    setReopenFeedback('')
-                    setIsReopenOpen(false)
-                  }
-                }}
-              />
+          <div className="flex items-center gap-2 flex-shrink-0">
+            {isNeedsReview && onReopen && (
               <button
                 type="button"
                 onClick={(e) => {
                   e.stopPropagation()
-                  onReopen(reopenFeedback.trim() || undefined)
-                  setReopenFeedback('')
-                  setIsReopenOpen(false)
+                  setIsReopenOpen(!isReopenOpen)
                 }}
-                className="px-3 py-1 rounded bg-amber-600 hover:bg-amber-500 text-white font-bold text-[10px] transition-colors flex-shrink-0"
+                className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-xs font-medium transition-colors border border-slate-700/60 cursor-pointer"
+                title="Reopen Task to add instructions and continue work"
               >
-                Resume Run
+                <RotateCcw size={11} className="text-slate-400" />
+                <span>{isReopenOpen ? 'Cancel' : 'Reopen Task'}</span>
               </button>
-            </div>
-          )}
+            )}
+            {onIntegrate && (
+              <button
+                type="button"
+                disabled={isIntegrating || !task.baseBranch}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onIntegrate()
+                }}
+                className="flex items-center gap-1.5 px-3 py-1 rounded-lg bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-slate-950 font-bold text-xs transition-all shadow-sm active:scale-95 cursor-pointer disabled:cursor-not-allowed"
+                title={task.baseBranch ? `Integrate changes into ${task.baseBranch}` : 'Target branch unavailable; refresh task lineage'}
+              >
+                <GitPullRequest size={12} />
+                <span>{isIntegrating ? 'Integrating…' : task.baseBranch ? `Integrate into ${task.baseBranch}` : 'Target unavailable'}</span>
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* 2c-alt. Review Bar (When execution completed without pending unintegrated worktree) */}
+      {isNeedsReview && !hasUnintegrated && (
+        <div
+          className="flex items-center justify-between p-3 rounded-xl bg-slate-900/60 border border-slate-800 text-xs gap-3 shadow-sm"
+          title="Mission Execution Completed — Awaiting Review"
+        >
+          <div className="flex items-center gap-2 min-w-0">
+            <CheckCircle2 size={14} className="text-emerald-400 flex-shrink-0" />
+            <span className="font-semibold text-slate-200 text-xs">
+              Execution completed — awaiting review
+            </span>
+            <span className="sr-only">Mission Execution Completed — Awaiting Review</span>
+          </div>
+          <div className="flex items-center gap-2 flex-shrink-0">
+            {onReopen && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  setIsReopenOpen(!isReopenOpen)
+                }}
+                className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-xs font-medium transition-colors border border-slate-700/60 cursor-pointer"
+                title="Reopen Task to add instructions and continue work"
+              >
+                <RotateCcw size={11} className="text-slate-400" />
+                <span>{isReopenOpen ? 'Cancel' : 'Reopen Task'}</span>
+              </button>
+            )}
+            {onComplete && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onComplete()
+                }}
+                className="flex items-center gap-1.5 px-3 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow-sm transition-all active:scale-95 cursor-pointer"
+              >
+                <Check size={12} />
+                <span>Complete</span>
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Execution Summary if available (visible when expanded) */}
+      {expanded && task.planSummary && (
+        <div className="p-2.5 rounded-xl bg-slate-900/60 border border-slate-800 text-[11px] font-mono text-slate-300 leading-relaxed">
+          <span className="text-amber-400 font-bold block text-[9px] uppercase tracking-wider mb-0.5">Execution Summary</span>
+          {task.planSummary}
+        </div>
+      )}
+
+      {/* Inline Reopen Feedback Input */}
+      {isReopenOpen && onReopen && (
+        <div className="flex items-center gap-2 p-2.5 rounded-xl bg-slate-900/90 border border-slate-800 animate-in fade-in duration-200">
+          <input
+            type="text"
+            value={reopenFeedback}
+            onClick={(e) => e.stopPropagation()}
+            onChange={(e) => setReopenFeedback(e.target.value)}
+            placeholder="Instructions for the agent to resume work..."
+            className="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-amber-500 font-mono"
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.stopPropagation()
+                onReopen(reopenFeedback.trim() || undefined)
+                setReopenFeedback('')
+                setIsReopenOpen(false)
+              }
+            }}
+          />
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation()
+              onReopen(reopenFeedback.trim() || undefined)
+              setReopenFeedback('')
+              setIsReopenOpen(false)
+            }}
+            className="px-3 py-1 rounded-lg bg-amber-600 hover:bg-amber-500 text-white font-bold text-xs transition-colors flex-shrink-0 cursor-pointer"
+          >
+            Resume Run
+          </button>
         </div>
       )}
 
@@ -2395,31 +2418,6 @@ function MinimalTaskCard({
         </div>
       )}
 
-      {/* 4. Action Needed / Not Integrated Banner (if unintegrated commits ready to land) */}
-      {!isPendingApproval && !isMediaTask && hasUnintegrated && (
-        <div className="flex items-center justify-between p-2 rounded-lg bg-amber-950/25 border border-amber-500/40 text-amber-200 text-[11px] gap-2">
-          <div className="flex items-center gap-2 min-w-0">
-            <GitPullRequest size={12} className="text-amber-400 flex-shrink-0" />
-            <span className="font-bold text-amber-400 flex-shrink-0">Not Integrated:</span>
-            <span className="truncate">
-              {task.unintegratedCommits} commit(s) on {task.worktreeBranch || 'worktree'} ready to integrate into {task.baseBranch || 'an unavailable target'}.
-            </span>
-          </div>
-          {onIntegrate && (
-            <button
-              type="button"
-              disabled={isIntegrating || !task.baseBranch}
-              onClick={(e) => {
-                e.stopPropagation()
-                onIntegrate()
-              }}
-              className="flex-shrink-0 px-2.5 py-0.5 rounded bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-[10px] transition-colors"
-            >
-              {isIntegrating ? 'Integrating…' : task.baseBranch ? `Integrate into ${task.baseBranch}` : 'Target unavailable'}
-            </button>
-          )}
-        </div>
-      )}
 
       {/* 5. Already Integrated Banner */}
       {!isPendingApproval && !isMediaTask && task.isIntegrated && (
@@ -6905,15 +6903,26 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                 </div>
               </div>
 
-              <div className="px-3.5 py-2 flex flex-wrap items-center gap-2 border-b border-slate-800/60 text-xs text-slate-300" aria-label="Task management">
-                <span>{markedRows.length} selected of {filteredTasks.length} matching tasks in this project</span>
-                <button type="button" disabled={managementBusy || filteredTasks.length === 0} onClick={() => setMarkedTaskIds(new Set(filteredTasks.map(row => row.id)))} className="px-2 py-1 rounded border border-slate-700 disabled:opacity-40">Select all matching</button>
-                <button type="button" disabled={managementBusy || markedRows.length === 0} onClick={() => setMarkedTaskIds(new Set())} className="px-2 py-1 rounded border border-slate-700 disabled:opacity-40">Clear selection</button>
-                <button type="button" disabled={managementBusy || markedRows.length === 0} onClick={() => void manageTasks(markedRows, 'archive')} className="px-2 py-1 rounded bg-blue-700 disabled:opacity-40">Archive selected</button>
-                <button type="button" disabled={managementBusy || markedRows.length === 0} onClick={() => void manageTasks(markedRows, 'delete')} title="Only unlaunched tasks may be deleted; archive launched tasks instead" className="px-2 py-1 rounded border border-rose-700 text-rose-300 disabled:opacity-40">Delete selected</button>
-                <button type="button" ref={archivedTriggerRef} onClick={() => setArchivedOpen(true)} className="px-2 py-1 rounded border border-slate-700">Archived tasks</button>
-                {managementBusy && <span role="status">Updating tasks…</span>}
-                {managementMessage && <span role="status" className="w-full text-amber-300">{managementMessage}</span>}
+              <div className="px-4 py-2 flex flex-wrap items-center gap-2 border-b border-slate-800/60 bg-slate-900/30 text-xs text-slate-300" aria-label="Task management">
+                <span className="flex items-center gap-1.5 text-xs mr-1">
+                  {markedRows.length > 0 && (
+                    <span className="font-semibold text-blue-400 bg-blue-950/60 border border-blue-500/30 px-2 py-0.5 rounded-md text-[11px]">
+                      {markedRows.length} selected
+                    </span>
+                  )}
+                  <span className="text-slate-400 text-[11px]">
+                    {markedRows.length} selected of {filteredTasks.length} matching tasks in this project
+                  </span>
+                </span>
+                <div className="flex items-center gap-1.5 flex-wrap ml-auto">
+                  <button type="button" disabled={managementBusy || filteredTasks.length === 0} onClick={() => setMarkedTaskIds(new Set(filteredTasks.map(row => row.id)))} className="px-2.5 py-1 rounded-lg border border-slate-700/80 bg-slate-800/60 hover:bg-slate-700/70 text-slate-300 hover:text-white disabled:opacity-40 transition-colors cursor-pointer disabled:cursor-not-allowed">Select all matching</button>
+                  <button type="button" disabled={managementBusy || markedRows.length === 0} onClick={() => setMarkedTaskIds(new Set())} className="px-2.5 py-1 rounded-lg border border-slate-700/80 bg-slate-800/60 hover:bg-slate-700/70 text-slate-300 hover:text-white disabled:opacity-40 transition-colors cursor-pointer disabled:cursor-not-allowed">Clear selection</button>
+                  <button type="button" disabled={managementBusy || markedRows.length === 0} onClick={() => void manageTasks(markedRows, 'archive')} className="px-2.5 py-1 rounded-lg bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-40 transition-colors font-medium shadow-sm cursor-pointer disabled:cursor-not-allowed">Archive selected</button>
+                  <button type="button" disabled={managementBusy || markedRows.length === 0} onClick={() => void manageTasks(markedRows, 'delete')} title="Only unlaunched tasks may be deleted; archive launched tasks instead" className="px-2.5 py-1 rounded-lg border border-rose-700/80 bg-rose-950/30 hover:bg-rose-900/40 text-rose-300 disabled:opacity-40 transition-colors cursor-pointer disabled:cursor-not-allowed">Delete selected</button>
+                  <button type="button" ref={archivedTriggerRef} onClick={() => setArchivedOpen(true)} className="px-2.5 py-1 rounded-lg border border-slate-700/80 bg-slate-800/60 hover:bg-slate-700/70 text-slate-300 hover:text-white transition-colors cursor-pointer">Archived tasks</button>
+                </div>
+                {managementBusy && <span role="status" className="text-slate-400 text-[11px] animate-pulse">Updating tasks…</span>}
+                {managementMessage && <span role="status" className="w-full text-amber-300 text-[11px]">{managementMessage}</span>}
               </div>
               {archivedOpen && <div className="fixed inset-0 z-[100] bg-black/70 flex items-center justify-center p-4" onMouseDown={e => { if (e.target === e.currentTarget) { setArchivedOpen(false); archivedTriggerRef.current?.focus() } }}>
                 <section role="dialog" aria-modal="true" aria-labelledby="archived-tasks-title" className="w-full max-w-xl max-h-[85vh] overflow-hidden flex flex-col rounded-xl border border-slate-700 bg-[#0a101e] p-4 text-white shadow-2xl">
