@@ -35,7 +35,12 @@ export function taskCardFacts(task: RunningTask) {
 }
 
 function Fact({ label, children }: { label: string; children: ReactNode }) {
-  return <span className="swarm-task-fact"><span>{label}: </span>{children}</span>
+  return (
+    <span className="inline-flex items-center gap-1 whitespace-nowrap min-w-0">
+      <span className="text-slate-400/80 font-normal">{label}:</span>
+      {children}
+    </span>
+  )
 }
 
 export function TaskCardSummary({
@@ -90,9 +95,9 @@ export function TaskCardSummary({
         <div className="swarm-task-header-row flex items-center justify-between gap-3">
           <div className="flex items-center gap-2 min-w-0 flex-1">
             <span
-              className={`font-mono text-[9px] uppercase font-bold px-1.5 py-0.5 rounded border shrink-0 ${
+              className={`text-[11px] font-medium px-2 py-0.5 rounded-md border shrink-0 ${
                 task.agentType === 'swarm'
-                  ? 'bg-amber-500/10 text-amber-300 border-amber-500/30'
+                  ? 'bg-amber-500/10 text-amber-300 border-amber-500/25'
                   : task.agentType === 'designer' || task.agentType === 'video'
                   ? 'bg-blue-500/10 text-blue-400 border-blue-500/25'
                   : 'bg-indigo-500/10 text-indigo-300 border-indigo-500/25'
@@ -100,7 +105,7 @@ export function TaskCardSummary({
             >
               @{facts.identity || `${task.agentType} requested`}
             </span>
-            <h3 className="truncate font-semibold text-slate-100 text-[13px] tracking-tight" title={task.title}>
+            <h3 className="truncate font-semibold text-slate-100 text-[13px] tracking-tight leading-snug" title={task.title}>
               {task.title}
             </h3>
           </div>
@@ -109,24 +114,25 @@ export function TaskCardSummary({
             {statusBadge ? (
               statusBadge
             ) : (
-              <span className="font-mono text-[10px] font-bold uppercase px-2 py-0.5 rounded-full border bg-slate-800 text-slate-300 border-slate-700">
-                {task.status.replace(/_/g, ' ')}
+              <span className="text-[11px] font-medium capitalize px-2.5 py-0.5 rounded-full border bg-slate-800/80 text-slate-300 border-slate-700/60 flex items-center gap-1.5">
+                <span className="h-1.5 w-1.5 rounded-full bg-slate-400 shrink-0" />
+                <span>{task.status.replace(/_/g, ' ')}</span>
               </span>
             )}
             {timer ? (
               timer
             ) : task.elapsed ? (
-              <span className="font-mono text-[10px] text-slate-400">{task.elapsed}</span>
+              <span className="text-[11px] text-slate-400 font-normal">{task.elapsed}</span>
             ) : null}
             {actions}
           </div>
         </div>
 
         {/* Row 2: Compact, consolidated metadata strip: Model, Branch, Progress, Verified Git, Extra Badges */}
-        <div className="swarm-task-metadata-strip flex items-center gap-1.5 flex-wrap mt-1 text-[10px] font-mono">
+        <div className="swarm-task-metadata-strip flex items-center gap-1.5 flex-wrap mt-1 text-[11px]">
           {(facts.provider || facts.model) && (
             <span
-              className="swarm-task-model px-1.5 py-0.5 rounded bg-slate-800/80 text-slate-300 border border-slate-700/60 flex items-center gap-1 font-medium"
+              className="swarm-task-model px-2 py-0.5 rounded-md bg-slate-800/70 text-slate-300 border border-slate-700/50 flex items-center gap-1 font-normal text-[11px]"
               aria-label="Active session model"
             >
               <span>{facts.provider ? `${facts.provider} / ` : ''}{facts.model}</span>
@@ -135,22 +141,22 @@ export function TaskCardSummary({
 
           {(facts.branch || facts.worktree) && (
             <span
-              className="px-1.5 py-0.5 rounded bg-indigo-950/60 text-indigo-300 border border-indigo-500/30 flex items-center gap-1 font-semibold truncate max-w-[260px]"
+              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-indigo-500/10 text-indigo-300 border border-indigo-500/25 text-[11px] font-normal whitespace-nowrap shrink-0 max-w-[280px]"
               title={`Branch: ${facts.branch || facts.worktree}`}
             >
               <Fact label="Branch">
-                <GitBranch size={10} className="text-indigo-400 shrink-0 inline mr-0.5" aria-hidden="true" />
-                <span className="truncate">{facts.branch || facts.worktree}</span>
+                <GitBranch size={11} className="text-indigo-400 shrink-0 inline" aria-hidden="true" />
+                <span className="truncate font-medium text-indigo-200">{facts.branch || facts.worktree}</span>
               </Fact>
             </span>
           )}
 
           {facts.progress && (
             <span
-              className={`px-1.5 py-0.5 rounded border flex items-center gap-1 font-semibold ${
+              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md border text-[11px] font-medium whitespace-nowrap ${
                 isAllStepsDone
-                  ? 'bg-emerald-950/60 text-emerald-300 border-emerald-500/40'
-                  : 'bg-blue-950/40 text-blue-300 border-blue-500/30'
+                  ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/25'
+                  : 'bg-blue-500/10 text-blue-300 border-blue-500/25'
               }`}
             >
               {isAllStepsDone && <span className="text-emerald-400 font-bold">✓</span>}
@@ -161,12 +167,12 @@ export function TaskCardSummary({
           {/* Omit noisy "Git: last known state" / "Git: not inspected"; only render real verified statuses */}
           {facts.git && !facts.git.startsWith('Git:') && (
             <span
-              className={`px-1.5 py-0.5 rounded border flex items-center gap-1 font-semibold ${
+              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md border text-[11px] font-medium whitespace-nowrap ${
                 facts.git === 'Integrated'
-                  ? 'bg-emerald-950/60 text-emerald-300 border-emerald-500/40'
+                  ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/25'
                   : facts.git.includes('Out of sync')
-                  ? 'bg-rose-950/60 text-rose-300 border-rose-500/40'
-                  : 'bg-amber-950/60 text-amber-300 border-amber-500/40'
+                  ? 'bg-rose-500/10 text-rose-300 border-rose-500/25'
+                  : 'bg-amber-500/10 text-amber-300 border-amber-500/25'
               }`}
             >
               <span>{facts.git}</span>
@@ -174,7 +180,7 @@ export function TaskCardSummary({
           )}
 
           {facts.validation && (
-            <span className="px-1.5 py-0.5 rounded bg-emerald-950/40 text-emerald-300 border border-emerald-500/30">
+            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-500/10 text-emerald-300 border border-emerald-500/25 text-[11px] font-medium whitespace-nowrap">
               {facts.validation}
             </span>
           )}
@@ -184,7 +190,7 @@ export function TaskCardSummary({
 
         {/* Row 3: Live activity (only when actively running) */}
         {facts.activity && (
-          <div className="swarm-task-activity text-[10px] font-mono text-blue-300 mt-1 flex items-center gap-1.5 truncate" aria-label="Live session activity">
+          <div className="swarm-task-activity text-[11px] text-blue-300/90 mt-1 flex items-center gap-1.5 truncate font-normal" aria-label="Live session activity">
             <span className="h-1.5 w-1.5 rounded-full bg-blue-400 animate-pulse shrink-0" />
             <span className="truncate">{facts.activity}</span>
           </div>

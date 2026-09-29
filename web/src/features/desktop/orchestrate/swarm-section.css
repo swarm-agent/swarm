@@ -85,8 +85,9 @@
 .swarm-task-evidence span:not(:first-child)::before { content: '·'; margin-right: 12px; color: var(--swarm-text-subtle); }
 .swarm-task-action-row { display: flex; align-items: center; justify-content: space-between; width: 100%; }
 .swarm-task-action-buttons { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 6px; }
-.swarm-task-action-buttons [data-testid="task-card-chat-btn"] { order: 2; background: transparent; border-color: var(--swarm-border); color: var(--swarm-text-muted); }
-.swarm-task-action-buttons > button:not([data-testid="task-card-chat-btn"]) { order: 1; border-radius: 6px; padding: 4px 8px; font-size: 10.5px; }
+.swarm-task-action-buttons [data-testid="task-card-chat-btn"] { background: transparent; border-color: var(--swarm-border-muted); color: var(--swarm-text-muted); }
+.swarm-task-action-buttons [data-testid="task-card-chat-btn"]:hover { background: var(--swarm-surface-hover); color: var(--swarm-text); border-color: var(--swarm-border); }
+.swarm-task-action-buttons > button:not([data-testid="task-card-chat-btn"]) { border-radius: 6px; padding: 4px 8px; font-size: 10.5px; }
 .swarm-task-details-toggle { display: flex; align-items: center; justify-content: space-between; width: 100%; border-top: 1px solid var(--swarm-border-muted); padding: 6px 0 0; text-align: left; font-size: 10.5px; color: var(--swarm-text-muted); transition: color 0.15s ease; }
 .swarm-task-details-toggle:hover { color: var(--swarm-text); }
 @container (max-width: 460px) { .swarm-task-visual { width: 32px; height: 32px; } }

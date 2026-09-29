@@ -916,32 +916,32 @@ function MinimalTaskCard({
         onPreview={onPreviewDeliverable}
         statusBadge={
           <div
-            className={`font-mono text-[10px] font-bold uppercase px-2.5 py-0.5 rounded-full border flex items-center gap-1.5 shadow-sm ${
+            className={`text-[11px] font-medium capitalize px-2.5 py-0.5 rounded-full border flex items-center gap-1.5 shrink-0 transition-colors ${
               isPlanning
-                ? 'bg-indigo-950/60 text-indigo-300 border-indigo-500/40'
+                ? 'bg-indigo-500/10 text-indigo-300 border-indigo-500/25'
                 : isPendingApproval
-                ? 'bg-amber-950/60 text-amber-300 border-amber-500/40'
+                ? 'bg-amber-500/10 text-amber-300 border-amber-500/25'
                 : isRunning
-                ? 'bg-blue-950/60 text-blue-400 border-blue-500/40'
+                ? 'bg-sky-500/10 text-sky-300 border-sky-500/25'
                 : isNeedsReview
-                ? 'bg-amber-500/15 text-amber-300 border-amber-500/50 shadow-[0_0_8px_rgba(245,158,11,0.25)]'
+                ? 'bg-amber-500/10 text-amber-300 border-amber-500/25'
                 : isCompleted
-                ? 'bg-emerald-950/60 text-emerald-300 border-emerald-500/40'
+                ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/25'
                 : isFailed || isRejected
-                ? 'bg-rose-950/60 text-rose-300 border-rose-500/40'
-                : 'bg-slate-800 text-slate-400 border-slate-700'
+                ? 'bg-rose-500/10 text-rose-300 border-rose-500/25'
+                : 'bg-slate-800/80 text-slate-300 border-slate-700/60'
             }`}
           >
             <span
-              className={`h-1.5 w-1.5 rounded-full ${
+              className={`h-1.5 w-1.5 rounded-full shrink-0 ${
                 isPlanning
-                  ? 'bg-indigo-400 animate-spin'
+                  ? 'bg-indigo-400'
                   : isPendingApproval
                   ? 'bg-amber-400'
                   : isRunning
-                  ? 'bg-blue-400 animate-pulse'
+                  ? 'bg-sky-400 animate-pulse'
                   : isNeedsReview
-                  ? 'bg-amber-400 animate-pulse'
+                  ? 'bg-amber-400'
                   : isCompleted
                   ? 'bg-emerald-400'
                   : isFailed || isRejected
@@ -949,12 +949,12 @@ function MinimalTaskCard({
                   : 'bg-slate-500'
               }`}
             />
-            <span>{task.status === 'in_progress' ? 'in progress' : task.status.replace('_', ' ')}</span>
+            <span>{task.status === 'in_progress' ? 'in progress' : task.status.replace(/_/g, ' ')}</span>
           </div>
         }
         timer={
-          <span className="font-mono text-[10px] text-slate-400 flex items-center gap-1">
-            {isRunning && <Timer size={10} className="text-blue-400 animate-spin" />}
+          <span className="text-[11px] text-slate-400 flex items-center gap-1 shrink-0 font-normal">
+            {isRunning && <Timer size={11} className="text-blue-400 animate-spin" />}
             <TaskElapsedTimer
               isRunning={isRunning}
               startedAt={task.startedAt}
@@ -965,21 +965,6 @@ function MinimalTaskCard({
         }
         actions={
           <div className="flex items-center gap-1.5">
-            {onOpenChat && (
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation()
-                  onOpenChat()
-                }}
-                className="flex items-center gap-1 px-2.5 py-0.5 rounded-md bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-[10px] font-medium transition-colors border border-slate-700/60 cursor-pointer"
-                title={taskSessionId ? 'Open session chat with this worker' : 'Discuss this task in orchestrator chat'}
-                data-testid="task-card-chat-btn"
-              >
-                <MessageSquare size={11} />
-                <span>Chat</span>
-              </button>
-            )}
             {isPendingApproval && onApprove && (
               <button
                 type="button"
@@ -990,20 +975,35 @@ function MinimalTaskCard({
                     onApprove()
                   }
                 }}
-                className="flex items-center gap-1 px-2.5 py-0.5 rounded-md bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-[10px] font-bold transition-all shadow cursor-pointer"
+                className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-[11px] font-semibold transition-all shadow-sm cursor-pointer"
                 title={
                   isPlanBindingMissingRevision
                     ? 'Plan definition revision guard is missing or unverified'
                     : 'Approve and start task execution'
                 }
               >
-                {isApproving ? <Loader2 size={10} className="animate-spin text-blue-200" /> : <Sparkles size={10} />}
+                {isApproving ? <Loader2 size={11} className="animate-spin text-blue-200" /> : <Sparkles size={11} />}
                 <span>Approve</span>
+              </button>
+            )}
+            {onOpenChat && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onOpenChat()
+                }}
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-slate-800/80 hover:bg-slate-700/80 text-slate-300 hover:text-white text-[11px] font-medium transition-colors border border-slate-700/60 cursor-pointer shadow-sm"
+                title={taskSessionId ? 'Open session chat with this worker' : 'Discuss this task in orchestrator chat'}
+                data-testid="task-card-chat-btn"
+              >
+                <MessageSquare size={12} className="text-slate-400" />
+                <span>Chat</span>
               </button>
             )}
             {onToggleMarked && (
               <label
-                className={`group flex items-center justify-center w-5 h-5 rounded-md border transition-all cursor-pointer ${
+                className={`group flex items-center justify-center w-5 h-5 rounded-md border transition-all cursor-pointer shrink-0 ${
                   isMarked
                     ? 'bg-blue-600 border-blue-500 text-white shadow-sm'
                     : 'border-slate-700/60 bg-slate-900/40 hover:border-slate-500 hover:bg-slate-800/80 text-transparent hover:text-slate-400'
@@ -1026,25 +1026,25 @@ function MinimalTaskCard({
         extraBadges={
           <>
             {task.outcomeType && (
-              <span className="font-mono text-[9px] uppercase px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700/50">
-                {task.outcomeType === 'video_clip' ? 'SINGLE VIDEO' : task.outcomeType.replace('_', ' ')}
+              <span className="text-[11px] capitalize px-2 py-0.5 rounded-md bg-slate-800/70 text-slate-300 border border-slate-700/50 font-normal">
+                {task.outcomeType === 'video_clip' ? 'Single Video' : task.outcomeType.replace(/_/g, ' ')}
               </span>
             )}
             {isWorker && (
               <a
                 href={swarmWorkerHref(workspaceSlug, workerTargetId)}
                 onClick={handleWorkerClick}
-                className="font-mono text-[9px] px-1.5 py-0.5 rounded bg-indigo-950/80 text-indigo-300 border border-indigo-500/40 hover:bg-indigo-900/80 hover:text-white flex items-center gap-1 font-semibold transition-colors cursor-pointer"
+                className="text-[11px] px-2 py-0.5 rounded-md bg-indigo-500/10 text-indigo-300 border border-indigo-500/25 hover:bg-indigo-500/20 hover:text-white flex items-center gap-1 font-medium transition-colors cursor-pointer"
                 title={`Worker: ${workerDisplayName}`}
                 data-testid="worker-tag"
               >
-                <Bot size={9} className="text-indigo-400" />
+                <Bot size={11} className="text-indigo-400" />
                 <span>Worker: {workerDisplayName}</span>
               </a>
             )}
             {(task.routerAlert || (task as any).router_alert) && (
-              <span className="font-mono text-[9px] uppercase px-1.5 py-0.5 rounded bg-amber-950/80 text-amber-300 border border-amber-500/50 flex items-center gap-1 font-bold">
-                <AlertTriangle size={9} />
+              <span className="text-[11px] px-2 py-0.5 rounded-md bg-amber-500/10 text-amber-300 border border-amber-500/25 flex items-center gap-1 font-medium">
+                <AlertTriangle size={11} className="text-amber-400" />
                 <span>Router Alert</span>
               </span>
             )}
@@ -2163,6 +2163,7 @@ function MinimalTaskCard({
                 ) : null}
               </span>
               <span className="sr-only">Mission Execution Completed — Awaiting Review</span>
+              <span className="sr-only">Not Integrated:</span>
             </div>
           </div>
           <div className="flex items-center gap-2 flex-shrink-0">
