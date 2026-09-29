@@ -38,6 +38,23 @@ test('activity uses resolved identity and normalized tools without historical or
   }
 })
 
+// Purpose: activityLabel must only resolve own toolLabels entries, preserving
+// unknown-tool formatting instead of rendering inherited functions/objects.
+// SSR is the narrowest observable TaskCardActivity boundary; the existing ES2020
+// TypeScript build separately guards against unsupported standard-library APIs.
+test('activity labels ignore inherited properties while preserving known and unknown tools', () => {
+  for (const [tool, label] of [
+    ['git_status', 'Checking Git status'],
+    ['custom-tool', 'Custom tool'],
+    ['constructor', 'Constructor'],
+    ['__proto__', ' proto '],
+    ['hasOwnProperty', 'HasOwnProperty'],
+  ]) {
+    const html = markup({ currentTool: tool })
+    assert.ok(html.includes(`>Coder: ${label}</span>`), `unexpected activity label for ${tool}: ${html}`)
+  }
+})
+
 test('running card wires the activity once outside expansion and suppresses summary duplication', () => {
   const source = readFileSync(new URL('./OrchestrateView.tsx', import.meta.url), 'utf8')
   assert.equal(source.split('<TaskCardActivity task={task} />').length - 1, 1)

@@ -14,7 +14,7 @@ function activityLabel(tool?: string): string {
   const name = tool?.trim().replace(/^tool:\s*/i, '').replace(/^functions\./i, '')
   if (!name || name === '-') return 'Thinking'
   const key = name.toLowerCase()
-  return Object.hasOwn(toolLabels, key) ? toolLabels[key] : name.replace(/[_-]+/g, ' ').replace(/^./, c => c.toUpperCase())
+  return Object.prototype.hasOwnProperty.call(toolLabels, key) ? toolLabels[key] : name.replace(/[_-]+/g, ' ').replace(/^./, c => c.toUpperCase())
 }
 
 // Only semantic values cross the memo boundary: token deltas, elapsed time and
