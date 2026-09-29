@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import React, { useState } from 'react'
 import { desktopAutomationV2, useAutomationV2Page } from '../runtime/desktop-automation-v2'
 import type { AutomationV2Record } from '../state/desktop-automation-v2-api'
 import { DeleteAutomationDialog } from '../tools/automations/delete-automation-dialog'
