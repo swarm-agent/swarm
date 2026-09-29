@@ -49,15 +49,14 @@ test('card uses active session identity and activity but omits orchestration pro
     planSummary: 'Assigned Agent @coder', activeAgent: 'finder', activeProvider: 'anthropic', activeModel: 'model-x',
     model: 'requested-model', toolActivitySummary: 'Searching source', currentFocus: 'Internal mission plan' }
   const html = renderToStaticMarkup(<TaskCardSummary task={running} />)
-  assert.match(html, /finder/)
-  assert.match(html, /model-x.*anthropic/)
+  assert.match(html, /finder.*running/)
+  assert.match(html, /anthropic \/ model-x/)
   assert.match(html, /Searching source/)
   assert.doesNotMatch(html, /Execution Pipeline|Assigned Agent|requested-model|Internal mission plan/)
   assert.equal(taskCardFacts({ ...running, status: 'completed' }).activity, null)
   const unavailable = renderToStaticMarkup(<TaskCardSummary task={{ ...task, model: 'requested-model' }} />)
   assert.match(unavailable, /coder requested/)
-  assert.doesNotMatch(unavailable, /requested-model/)
-  assert.match(unavailable, /Model unavailable/)
+  assert.doesNotMatch(unavailable, /requested-model|Active session model/)
 })
 
 // Purpose: selection persists only a canonical project reference, never a new global theme
@@ -108,19 +107,4 @@ test('every inherited preset provides nonempty semantic colors', async () => {
     }
     assert.equal(style['--swarm-accent'], ORCHESTRATE_THEMES[id].accentColor)
   }
-})
-
-// Requirement: collapsed cards retain worktree names, all deployed identities/models,
-// attachment previews and live assistant feed. Boundary: TaskCardSummary SSR is the
-// narrowest render layer; it does not prove pixel geometry or browser interaction.
-test('compact summary retains cohort, worktree and media with assistant feed', () => {
-  const html = renderToStaticMarkup(<TaskCardSummary task={{ ...task, status: 'running', executionActive: true,
-    liveAssistantText: 'Reviewing the final changes',
-    attachedMedia: [{ id: 'ref', kind: 'image', url: '/media/reference.png', title: 'Reference' }],
-    sessionSummary: { totalSessions: 2, runningSessions: 1, completedSessions: 1, failedSessions: 0, reviewSessions: 0,
-      sessionStates: [{ sessionId: 'one', role: 'finder', model: 'model-a', status: 'completed' },
-        { sessionId: 'two', role: 'coder', model: 'model-b', status: 'running' }] },
-  }} />)
-  for (const text of ['finder', 'model-a', 'coder', 'model-b', 'Worktree', 'repair', 'Reviewing the final changes', '/media/reference.png']) assert.ok(html.includes(text), text)
-  assert.equal(taskCardFacts({ ...task, status: 'running', executionActive: false, liveAssistantText: 'Old feed' }).activity, null)
 })

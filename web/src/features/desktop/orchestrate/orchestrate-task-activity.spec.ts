@@ -40,21 +40,3 @@ test('terminal intent reconciles direct and multi-session task activity', () => 
   assert.equal(allDone.sessionSummary?.runningSessions, 0)
   assert.equal(allDone.sessionSummary?.completedSessions, 2)
 })
-
-// Requirement: a finished turn stops timing even with unfinished checkpoints or no
-// active intent. Boundary: aggregateTaskLiveState reads current_run_state and duration.
-// Pure selector assertions prevent creation-age drift and preserve zero durations.
-test('terminal current run stops an unfinished plan timer and preserves zero duration', () => {
-  const task = { id: 'unfinished', sessionId: 'session', status: 'running', createdAt: 1,
-    planDocument: { checkpoints: [{ id: 'next', status: 'pending' }] } } as RunningTask
-  const result = aggregateTaskLiveState(task, { session: {
-    view: { current_run_state: { status: 'completed', started_at: 100, completed_at: 100, duration_ms: 0 } },
-  } })
-  assert.equal(result.executionActive, false)
-  assert.equal(result.elapsedMs, 0)
-  assert.equal(aggregateTaskLiveState(task, {}).elapsedMs, undefined)
-  const live = aggregateTaskLiveState(task, { session: {
-    intent: { status: 'running', started_at: Date.now() },
-  } })
-  assert.equal(live.executionActive, true)
-})

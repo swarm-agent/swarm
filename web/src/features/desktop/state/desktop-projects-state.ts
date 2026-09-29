@@ -85,7 +85,7 @@ export function mapBackendTask(t: any): RunningTask {
     sourceWorkspaceProvenance: t.source_workspace?.provenance,
     worktreeBranch: t.worktree_branch,
     worktreeName: t.worktree_name || (t.worktree_branch ? t.worktree_branch.replace(/^agent\//, '').replace(/^worktree\//, '') : undefined),
-    baseBranch: t.base_branch || undefined,
+    baseBranch: t.base_branch || 'main',
     unintegratedCommits: t.unintegrated_commits ?? 0,
     behindCommits: t.behind_commits ?? 0,
     gitStatus: t.git_status,
@@ -116,8 +116,7 @@ export function mapBackendTask(t: any): RunningTask {
     soundtrack: t.soundtrack,
     autoApprove: t.auto_approve,
     routerAlert: t.router_alert,
-    // Creation age is not execution duration, especially after completion.
-    elapsed: '',
+    elapsed: t.created_at ? `${Math.max(1, Math.round((Date.now() - t.created_at) / 60000))}m` : 'Just now',
     workerId: t.worker_id || t.workerId || undefined,
     worker_id: t.worker_id || t.workerId || undefined,
     workerRunId: t.worker_run_id || t.workerRunId || undefined,
@@ -142,7 +141,7 @@ export function mapBackendTask(t: any): RunningTask {
       type: d.kind || (t.agent === 'coder' || t.outcome_type === 'code_pr' || t.outcome_type === 'bug_patch' ? 'code' : t.agent === 'finder' || t.outcome_type === 'audit_report' ? 'report' : t.agent === 'video' ? 'video' : t.agent === 'audio' || t.agent === 'sound' ? 'audio' : 'image'),
       status: d.status || 'pending',
       duration: d.duration || '0:15',
-      previewUrl: d.preview_url || (d.thumbnail && (d.thumbnail.startsWith('data:') || d.thumbnail.startsWith('http') || d.thumbnail.startsWith('/')) ? d.thumbnail : undefined),
+      previewUrl: d.media_url || d.preview_url || (d.thumbnail && (d.thumbnail.startsWith('data:') || d.thumbnail.startsWith('http') || d.thumbnail.startsWith('/')) ? d.thumbnail : undefined),
       mediaUrl: d.media_url,
       thumbnailType: (d.thumbnail || (t.agent === 'coder' || t.outcome_type === 'code_pr' || t.outcome_type === 'bug_patch' ? 'default' : 'cyber_lattice')) as any,
       videoAspect: d.aspect_ratio || d.aspectRatio || undefined,
@@ -194,8 +193,7 @@ export function reduceDesktopProjectsState(
     for (const [id, proj] of Object.entries(state)) {
       if (!action.projectId || proj.projectId === action.projectId) {
         changed = true
-        next[id] = { ...proj, generation: proj.generation + 1, stale: true,
-          tasks: proj.tasks.map(task => task.worktreeBranch ? { ...task, gitStatus: 'stale' } : task) }
+        next[id] = { ...proj, generation: proj.generation + 1, stale: true }
       } else {
         next[id] = proj
       }

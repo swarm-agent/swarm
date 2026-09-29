@@ -18,7 +18,7 @@ export function taskCardFacts(task: RunningTask) {
   const deliverable = task.deliverables?.find((item) =>
     (item.status === 'ready' || item.status === 'accepted') &&
     (item.type === 'image' || item.type === 'video') && Boolean(item.previewUrl || item.mediaUrl))
-  const running = task.executionActive ?? (task.status === 'running' || task.status === 'in_progress' || task.status === 'planning')
+  const running = task.status === 'running' || task.status === 'in_progress' || task.status === 'planning'
   return {
     worktree: task.worktreeName || null,
     branch: task.worktreeBranch || null,
@@ -27,7 +27,7 @@ export function taskCardFacts(task: RunningTask) {
     git,
     deliverable,
     // A completed task's last tool/focus is history, not current activity.
-    activity: running ? task.toolActivitySummary?.trim() || task.liveAssistantText?.trim().slice(-240) || task.currentFocus?.trim() || null : null,
+    activity: running ? task.toolActivitySummary?.trim() || null : null,
     identity: task.activeAgent?.trim() || null,
     model: task.activeModel?.trim() || null,
     provider: task.activeProvider?.trim() || null,
@@ -47,32 +47,25 @@ export function TaskCardSummary({ task, onPreview }: {
     : task.agentType === 'audio' || task.agentType === 'sound' ? Music
     : task.agentType === 'swarm' ? Layers : Code2
   const preview = facts.deliverable
-  const attached = task.attachedMedia?.find((item) => (item.kind === 'image' || item.kind === 'video' || item.mediaType?.startsWith('image/')) && (item.url || item.data))
-  const agents = task.sessionSummary?.sessionStates || []
   return <div className="swarm-task-summary" data-testid="task-card-summary">
     {preview ? <button type="button" className="swarm-task-visual" aria-label={`Preview ${preview.title}`}
       onClick={(event) => { event.stopPropagation(); onPreview?.(preview) }} disabled={!onPreview}>
       {preview.type === 'video' && preview.mediaUrl
         ? <video src={preview.mediaUrl} poster={preview.previewUrl} muted playsInline preload="metadata" aria-label={preview.title} />
         : <img src={preview.previewUrl || preview.mediaUrl} alt={preview.title} />}
-    </button> : attached ? <div className="swarm-task-visual">
-      {attached.kind === 'video' ? <video src={attached.url || attached.data} muted playsInline preload="metadata" aria-label={attached.title || 'Attached video'} />
-        : <img src={attached.url || attached.data} alt={attached.title || attached.filename || 'Attached image'} loading="lazy" />}
-    </div> : <div className="swarm-task-visual swarm-task-visual-icon" aria-label={`${task.agentType} task`}>
+    </button> : <div className="swarm-task-visual swarm-task-visual-icon" aria-label={`${task.agentType} task`}>
       <Icon size={20} strokeWidth={1.5} />
     </div>}
     <div className="swarm-task-summary-content">
       <h3>{task.title}</h3>
-      <div className="swarm-task-byline" aria-label="Deployed agents and models">
-        {agents.length > 1 ? agents.map((agent) => <span key={agent.sessionId} title={`${agent.title || agent.role || 'Agent'} · ${agent.status}`}>
-          {agent.role || 'Agent'} · {agent.model || 'Model unavailable'} <span className="swarm-task-agent-state">{agent.status.replace(/_/g, ' ')}</span>
-        </span>) : <><span>{facts.identity || `${task.agentType} requested`}</span><span className="swarm-task-model" aria-label="Active session model">{facts.model || 'Model unavailable'}{facts.provider ? ` · ${facts.provider}` : ''}</span></>}
-      </div>
-      {facts.activity && <div className="swarm-task-activity" aria-label="Live session activity" title={facts.activity}>{facts.activity}{task.toolActivitySummary && task.liveAssistantText ? ` · ${task.liveAssistantText.trim().slice(-240)}` : ''}</div>}
+      <div className="swarm-task-byline"><span>{facts.identity || `${task.agentType} requested`}</span><span aria-hidden="true">·</span><span>{task.status.replace(/_/g, ' ')}</span>{task.elapsed && <><span aria-hidden="true">·</span><span>{task.elapsed}</span></>}</div>
+      {(facts.provider || facts.model) && <div className="swarm-task-model" aria-label="Active session model">{facts.provider || 'Provider unavailable'} / {facts.model || 'Model unavailable'}</div>}
+      {facts.activity && <div className="swarm-task-activity" aria-label="Live session activity">{facts.activity}</div>}
       <div className="swarm-task-evidence" aria-label="Task evidence">
         {facts.progress && <span>{facts.progress}</span>}
         {facts.branch && <Fact label="Branch"><GitBranch size={12} aria-hidden="true" /> {facts.branch}</Fact>}
-        {facts.worktree && <Fact label="Worktree">{facts.worktree}</Fact>}
+        {facts.worktree && !facts.branch && <Fact label="Worktree">{facts.worktree}</Fact>}
+        {facts.validation && <span>{facts.validation}</span>}
         <span>{facts.git}</span>
       </div>
     </div>
