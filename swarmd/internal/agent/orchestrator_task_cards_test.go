@@ -12,10 +12,12 @@ import (
 // registry reconciliation is the narrowest owner of compiled agent identity.
 func TestOrchestratorTaskCardProfileReconcilesLegacyPlanSnapshot(t *testing.T) {
 	registry, err := BuiltinSystemAgentRegistry()
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	legacy := pebblestore.AgentProfile{
 		Name: SwarmOrchestratorAgentID, RuntimeMode: pebblestore.AgentRuntimeModePlanAuto,
-		DefaultSessionMode: pebblestore.AgentDefaultSessionModePlan,
+		DefaultSessionMode:  pebblestore.AgentDefaultSessionModePlan,
 		ExitPlanModeEnabled: pebblestore.BoolPtr(true), Prompt: "Create session checkpoints via plan_manage and exit_plan_mode",
 		Provider: "test-provider", Model: "test-model",
 		ToolContract: &pebblestore.AgentToolContract{Preset: "read_write", Tools: map[string]pebblestore.AgentToolConfig{
@@ -23,7 +25,9 @@ func TestOrchestratorTaskCardProfileReconcilesLegacyPlanSnapshot(t *testing.T) {
 		}},
 	}
 	profile, err := registry.ReconcileSnapshot(SwarmOrchestratorAgentID, legacy)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	if profile.RuntimeMode != pebblestore.AgentRuntimeModeReadWrite || profile.DefaultSessionMode != pebblestore.AgentDefaultSessionModeAuto || pebblestore.AgentExitPlanModeEnabled(profile) {
 		t.Fatalf("legacy plan mode survived reconciliation: %+v", profile)
 	}

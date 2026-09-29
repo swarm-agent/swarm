@@ -1,9 +1,9 @@
 package run
 
 import (
+	"slices"
 	"strings"
 	"testing"
-	"slices"
 
 	"swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/session"
@@ -23,7 +23,9 @@ func TestOrchestratorLegacySessionModeUsesAuto(t *testing.T) {
 	}
 	other := pebblestore.AgentProfile{Name: "swarm", RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, ExitPlanModeEnabled: pebblestore.BoolPtr(true)}
 	mode, _, err = svc.resolveExecutionMode(session.ModePlan, other)
-	if err != nil || mode != session.ModePlan { t.Fatalf("ordinary plan mode=%q err=%v", mode, err) }
+	if err != nil || mode != session.ModePlan {
+		t.Fatalf("ordinary plan mode=%q err=%v", mode, err)
+	}
 }
 
 // Requirement: the effective Orchestrator harness only describes project-card
@@ -38,7 +40,9 @@ func TestOrchestratorResolvedToolsDenyForgedSessionPlanning(t *testing.T) {
 	profile.ToolContract.Tools["plan_manage"] = pebblestore.AgentToolConfig{Enabled: pebblestore.BoolPtr(true)}
 	profile.ToolContract.Tools["exit_plan_mode"] = pebblestore.AgentToolConfig{Enabled: pebblestore.BoolPtr(true)}
 	resolved, _, disabled, err := svc.ResolveAgentToolContract(profile)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, name := range []string{"plan_manage", "exit_plan_mode"} {
 		if resolved.Tools[name].Enabled || !disabled[name] || slices.Contains(resolved.AvailableTools, name) {
 			t.Fatalf("forged %s exposed: %+v", name, resolved)
@@ -53,10 +57,16 @@ func TestOrchestratorMasterHarnessExcludesSessionPlanning(t *testing.T) {
 	scope := tool.WorkspaceScope{PrimaryPath: ".", Roots: []string{"."}}
 	prompt := masterHarnessPromptWithScopeAndAgent(scope, true)
 	for _, forbidden := range []string{"plan_manage", "exit_plan_mode", "start_session_checkpoint", "request_new_plan", "Plan & Checkpoint Lifecycle Management:"} {
-		if strings.Contains(prompt, forbidden) { t.Errorf("Orchestrator harness contains %q", forbidden) }
+		if strings.Contains(prompt, forbidden) {
+			t.Errorf("Orchestrator harness contains %q", forbidden)
+		}
 	}
-	if !strings.Contains(prompt, "manage_projects task cards only") { t.Fatal("project-card planning missing") }
-	if !strings.Contains(masterHarnessPromptWithScopeAndAgent(scope, false), "start_session_checkpoint") { t.Fatal("ordinary session planning removed") }
+	if !strings.Contains(prompt, "manage_projects task cards only") {
+		t.Fatal("project-card planning missing")
+	}
+	if !strings.Contains(masterHarnessPromptWithScopeAndAgent(scope, false), "start_session_checkpoint") {
+		t.Fatal("ordinary session planning removed")
+	}
 	legacy := pebblestore.AgentProfile{Name: agent.SwarmOrchestratorAgentID, RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, ExitPlanModeEnabled: pebblestore.BoolPtr(true)}
 	capabilities := modeCapabilityInstructions(session.ModePlan, false, legacy)
 	if strings.Contains(capabilities, "plan_manage") || strings.Contains(capabilities, "exit_plan_mode") || strings.Contains(capabilities, "Current session mode: plan") {
