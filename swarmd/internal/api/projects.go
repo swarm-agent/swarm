@@ -303,10 +303,7 @@ func syncTaskSessionState(task *pebblestore.ProjectTaskRecord, db *pebblestore.S
 	if task == nil || db == nil {
 		return
 	}
-	// Do not override tasks awaiting user approval, planning, or queued (unless worker task with active/terminal run)
-	if task.Status == "pending_approval" || task.Status == "planning" || (task.Status == "queued" && task.WorkerID == "") {
-		return
-	}
+	// Do not override tasks awaiting user approval or planning
 
 	// 1. If task is already integrated, it is completed
 	if task.IsIntegrated {
@@ -420,8 +417,10 @@ func syncTaskSessionState(task *pebblestore.ProjectTaskRecord, db *pebblestore.S
 	}
 
 	if runFound && strings.TrimSpace(runState.RunID) != "" {
-		if runState.Active || runState.Status == pebblestore.V3RunIntentPendingExecutor || runState.Status == pebblestore.V3RunIntentRunning {
+		if runState.Status == pebblestore.V3RunIntentRunning || (runState.Active && runState.Status != pebblestore.V3RunIntentPendingExecutor && task.Status != "queued") {
 			task.Status = "in_progress"
+		} else if runState.Status == pebblestore.V3RunIntentPendingExecutor {
+			// In queued preparation; keep task queued without prematurely setting in_progress.
 		} else {
 			// Run concluded:
 			switch runState.Status {
@@ -476,8 +475,10 @@ func syncTaskSessionState(task *pebblestore.ProjectTaskRecord, db *pebblestore.S
 		}
 	} else if sess.Lifecycle != nil {
 		// Legacy session lifecycle fallback
-		if sess.Lifecycle.Active {
+		if sess.Lifecycle.Active && (sess.Lifecycle.Phase == "running" || (sess.Lifecycle.Phase != "queued" && sess.Lifecycle.Phase != "preparing" && task.Status != "queued")) {
 			task.Status = "in_progress"
+		} else if sess.Lifecycle.Active {
+			// In queued preparation; keep task queued.
 		} else if sess.Lifecycle.Phase == "failed" || sess.Lifecycle.Phase == "error" {
 			if task.Status == "in_progress" {
 				task.Status = "failed"
@@ -1963,12 +1964,12 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			if tasks == nil {
 				tasks = []pebblestore.ProjectTaskRecord{}
 			}
-			workerOnly := r.URL.Query().Get("worker_only") == "true" || r.URL.Query().Get("workers_only") == "true" || r.URL.Query().Get("filter") == "workers"
+			workerOnly := r.URL.Query().Get("worker_only") == "true"
 			targetWorkerID := strings.TrimSpace(r.URL.Query().Get("worker_id"))
 			if workerOnly || targetWorkerID != "" {
 				filtered := make([]pebblestore.ProjectTaskRecord, 0, len(tasks))
 				for _, t := range tasks {
-					if t.WorkerID == "" && t.WorkerName == "" {
+					if t.WorkerID == "" {
 						continue
 					}
 					if targetWorkerID != "" && t.WorkerID != targetWorkerID {
@@ -2081,6 +2082,10 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			}
 			if err := json.Unmarshal(body, &req); err != nil {
 				writeError(w, http.StatusBadRequest, errors.New("invalid JSON payload"))
+				return
+			}
+			if strings.TrimSpace(req.WorkerID) != "" || strings.TrimSpace(req.WorkerRunID) != "" || strings.TrimSpace(req.AutomationID) != "" {
+				writeError(w, http.StatusBadRequest, errors.New("worker identity fields (worker_id, worker_run_id, automation_id) are server-managed receipts and cannot be specified by client"))
 				return
 			}
 
@@ -2645,10 +2650,10 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				Description:         description,
 				Status:              taskStatus,
 				Agent:               agentName,
-				WorkerID:            strings.TrimSpace(req.WorkerID),
+				WorkerID:            "",
 				WorkerName:          workerName,
-				WorkerRunID:         strings.TrimSpace(req.WorkerRunID),
-				AutomationID:        strings.TrimSpace(req.AutomationID),
+				WorkerRunID:         "",
+				AutomationID:        "",
 				OutcomeType:         outcomeType,
 				Operation:           reqOp,
 				WorkspacePath:       strings.TrimSpace(req.WorkspacePath),
@@ -2965,17 +2970,26 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				if v, ok := patch["agent"].(string); ok {
 					t.Agent = strings.TrimSpace(v)
 				}
-				if v, ok := patch["worker_id"].(string); ok {
-					t.WorkerID = strings.TrimSpace(v)
+				if _, ok := patch["worker_id"]; ok {
+					return errors.New("worker_id is a server-managed receipt and cannot be modified")
+				}
+				if _, ok := patch["worker_run_id"]; ok {
+					return errors.New("worker_run_id is a server-managed receipt and cannot be modified")
+				}
+				if _, ok := patch["automation_id"]; ok {
+					return errors.New("automation_id is a server-managed receipt and cannot be modified")
+				}
+				if _, ok := patch["session_id"]; ok {
+					return errors.New("session_id is server-managed and cannot be modified")
+				}
+				if _, ok := patch["project_id"]; ok {
+					return errors.New("project_id is immutable and cannot be modified")
 				}
 				if v, ok := patch["worker_name"].(string); ok {
+					if t.WorkerID != "" {
+						return errors.New("cannot modify worker_name on worker-attributed task")
+					}
 					t.WorkerName = strings.TrimSpace(v)
-				}
-				if v, ok := patch["worker_run_id"].(string); ok {
-					t.WorkerRunID = strings.TrimSpace(v)
-				}
-				if v, ok := patch["automation_id"].(string); ok {
-					t.AutomationID = strings.TrimSpace(v)
 				}
 				if v, ok := patch["current_stage_index"].(float64); ok {
 					t.CurrentStageIndex = int(v)

@@ -159,7 +159,7 @@ func TestWorkerProjectTask_ProjectAssociationHierarchyAndAmbiguity(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolvedProj, err := execution.ResolveWorkerProject(store.WorkerRunRecord{AccountScopeID: "account", WorkerID: w1.ID}, w1)
+	resolvedProj, err := execution.resolveWorkerProject(store.WorkerRunRecord{AccountScopeID: "account", WorkerID: w1.ID}, w1)
 	if err != nil {
 		t.Fatalf("resolveWorkerProject explicit: %v", err)
 	}
@@ -186,7 +186,7 @@ func TestWorkerProjectTask_ProjectAssociationHierarchyAndAmbiguity(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolvedProj2, err := execution.ResolveWorkerProject(store.WorkerRunRecord{AccountScopeID: "account", WorkerID: w2.ID, AutomationID: w2.Automations[0].ID}, w2)
+	resolvedProj2, err := execution.resolveWorkerProject(store.WorkerRunRecord{AccountScopeID: "account", WorkerID: w2.ID, AutomationID: w2.Automations[0].ID}, w2)
 	if err != nil {
 		t.Fatalf("resolveWorkerProject plan: %v", err)
 	}
@@ -220,7 +220,7 @@ func TestWorkerProjectTask_ProjectAssociationHierarchyAndAmbiguity(t *testing.T)
 	}
 
 	// Should reject with unambiguous error explaining that workspace belongs to multiple projects
-	_, err = execution.ResolveWorkerProject(store.WorkerRunRecord{AccountScopeID: "account", WorkerID: wAmbig.ID}, wAmbig)
+	_, err = execution.resolveWorkerProject(store.WorkerRunRecord{AccountScopeID: "account", WorkerID: wAmbig.ID}, wAmbig)
 	if err == nil || !strings.Contains(err.Error(), "ambiguous project association") {
 		t.Fatalf("expected ambiguous project association error, got: %v", err)
 	}
@@ -234,7 +234,7 @@ func TestWorkerProjectTask_ProjectAssociationHierarchyAndAmbiguity(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = execution.ResolveWorkerProject(store.WorkerRunRecord{AccountScopeID: "account", WorkerID: wOrphan.ID}, wOrphan)
+	_, err = execution.resolveWorkerProject(store.WorkerRunRecord{AccountScopeID: "account", WorkerID: wOrphan.ID}, wOrphan)
 	if err == nil || !strings.Contains(err.Error(), "project association required") {
 		t.Fatalf("expected project association required error, got: %v", err)
 	}
@@ -272,7 +272,7 @@ func TestWorkerProjectTask_CrossAccountIsolation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = execution.ResolveWorkerProject(store.WorkerRunRecord{AccountScopeID: "account", WorkerID: wForeign.ID}, wForeign)
+	_, err = execution.resolveWorkerProject(store.WorkerRunRecord{AccountScopeID: "account", WorkerID: wForeign.ID}, wForeign)
 	if err == nil {
 		t.Fatal("expected cross-account project association rejection, got nil")
 	}
@@ -302,7 +302,7 @@ func TestWorkerProjectTask_CrossAccountIsolation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = execution.ResolveWorkerProject(store.WorkerRunRecord{AccountScopeID: "account", WorkerID: wProv.ID}, wProv)
+	_, err = execution.resolveWorkerProject(store.WorkerRunRecord{AccountScopeID: "account", WorkerID: wProv.ID}, wProv)
 	if err == nil || !strings.Contains(err.Error(), "cross-account") {
 		t.Fatalf("expected cross-account provenance error, got: %v", err)
 	}
@@ -530,3 +530,359 @@ func TestWorkerProjectTask_RunningAndTerminalLifecycle(t *testing.T) {
 		t.Errorf("taskB.ActionNeeded = %q, want cancellation message", taskBAfter.ActionNeeded)
 	}
 }
+
+// Requirement: Existing task collision with conflicting identity must fail closed.
+// Invariant: startPlan refuses to overwrite a project task if worker_id, worker_run_id, automation_id,
+// project_id, or account_id mismatch.
+// Boundary: WorkerExecutionService.startPlan.
+func TestWorkerProjectTask_AdversarialExistingTaskCollision(t *testing.T) {
+	_, ss, execution, workspaceID := setupWorkerExecutionFixture(t, func(identity.Principal, store.V3SessionRunIntent) bool { return true })
+	ws := ss.Store().WorkerStore()
+	db := ss.Store()
+
+	doc := store.SessionPlanDocument{
+		Title: "Collision Test Worker",
+		Info:  store.SessionPlanInfo{Goal: "Collision test"},
+		Checkpoints: []store.SessionPlanCheckpoint{
+			{ID: "cp-1", Order: 1, Title: "Step 1", Tasks: []string{"Work"}, AcceptanceCriteria: []string{"Done"}, Status: "pending"},
+		},
+	}
+	w, err := ws.CreateWorker("account", "owner", store.CreateWorkerRequest{
+		Name:                  "Collision Worker",
+		WorkspaceRequirements: []store.WorkerWorkspaceRequirement{{Role: "primary", Required: true}},
+		Automations: []store.WorkerAutomationDefinition{
+			{Name: "collision-step", ActivationMode: "manual", Enabled: true, PlanDocument: doc},
+		},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err = execution.Activate("account", "owner", w.ID, w.Revision, map[string]string{"primary": workspaceID})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := store.WorkerRunAdmission{
+		WorkerID:       w.ID,
+		AutomationID:   w.Automations[0].ID,
+		RequestSource:  "test_run",
+		Input:          map[string]any{"prompt": "Run collision"},
+		IdempotencyKey: "collision-idemp-1",
+	}
+
+	admitted, err := ws.AdmitWorkerRun("account", req)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Pre-create conflicting task at task_{runID} with mismatched WorkerID
+	taskID := "task_" + admitted.ID
+	conflictingTask := &store.ProjectTaskRecord{
+		ID:           taskID,
+		ProjectID:    "proj_fixture",
+		AccountID:    "account",
+		Title:        "Adversarial pre-existing task",
+		Status:       "queued",
+		Agent:        "swarm",
+		WorkerID:     "foreign_worker_id",
+		WorkerName:   "Foreign Worker",
+		WorkerRunID:  admitted.ID,
+		AutomationID: "foreign_auto_id",
+	}
+	if err := db.PutProjectTask("account", conflictingTask); err != nil {
+		t.Fatal(err)
+	}
+
+	// Calling startPlan directly with mismatched worker/task identity must return ErrWorkerConflict
+	err = execution.startPlan(context.Background(), admitted, w, doc)
+	if err == nil || !errors.Is(err, store.ErrWorkerConflict) {
+		t.Fatalf("expected ErrWorkerConflict on adversarial task collision, got: %v", err)
+	}
+
+	// Verify the pre-existing task was NOT mutated or overwritten
+	loadedTask, found, err := db.GetProjectTask("account", "proj_fixture", taskID)
+	if err != nil || !found {
+		t.Fatalf("failed to reload task: %v", err)
+	}
+	if loadedTask.WorkerID != "foreign_worker_id" || loadedTask.Title != "Adversarial pre-existing task" {
+		t.Fatalf("conflicting task was mutated: %+v", loadedTask)
+	}
+}
+
+// Requirement: cancelRun must not prematurely mark project task terminal before acknowledgement.
+// Invariant: The project task remains in_progress until the executor acknowledges cancellation (observeRun).
+// Boundary: WorkerExecutionService.cancelRun and observeRun.
+func TestWorkerProjectTask_CancellationAckRequiredBeforeTaskTerminal(t *testing.T) {
+	_, ss, execution, workspaceID := setupWorkerExecutionFixture(t, func(identity.Principal, store.V3SessionRunIntent) bool { return true })
+	ws := ss.Store().WorkerStore()
+
+	doc := store.SessionPlanDocument{
+		Title: "Cancel Ack Worker",
+		Info:  store.SessionPlanInfo{Goal: "Cancel ack"},
+		Checkpoints: []store.SessionPlanCheckpoint{
+			{ID: "cp-1", Order: 1, Title: "Step 1", Tasks: []string{"Work"}, AcceptanceCriteria: []string{"Done"}, Status: "pending"},
+		},
+	}
+	w, err := ws.CreateWorker("account", "owner", store.CreateWorkerRequest{
+		Name:                  "Cancel Ack Worker",
+		WorkspaceRequirements: []store.WorkerWorkspaceRequirement{{Role: "primary", Required: true}},
+		Automations: []store.WorkerAutomationDefinition{
+			{Name: "cancel-step", ActivationMode: "manual", Enabled: true, PlanDocument: doc},
+		},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err = execution.Activate("account", "owner", w.ID, w.Revision, map[string]string{"primary": workspaceID})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := store.WorkerRunAdmission{
+		WorkerID:       w.ID,
+		AutomationID:   w.Automations[0].ID,
+		RequestSource:  "test_run",
+		Input:          map[string]any{"prompt": "Run to cancel"},
+		IdempotencyKey: "cancel-ack-test-1",
+	}
+	r, err := execution.Dispatch(context.Background(), "account", "owner", req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskID := "task_" + r.ID
+
+	// Verify task is in_progress
+	tk, found, err := ss.Store().GetProjectTask("account", "proj_fixture", taskID)
+	if err != nil || !found {
+		t.Fatalf("task not found: %v", err)
+	}
+	if tk.Status != "in_progress" {
+		t.Fatalf("expected in_progress, got %q", tk.Status)
+	}
+
+	// Call cancelRun directly (cancellation requested but not yet acknowledged by observeRun)
+	if err := execution.cancelRun(r, "testing unacknowledged cancel"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify task has NOT been marked terminal prematurely: it must still be in_progress
+	tkAfterCancelRun, _, err := ss.Store().GetProjectTask("account", "proj_fixture", taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tkAfterCancelRun.Status != "in_progress" {
+		t.Fatalf("task was prematurely marked %q before cancellation acknowledgement", tkAfterCancelRun.Status)
+	}
+
+	// Now observe the run to acknowledge cancellation
+	if err := execution.observeRun(r); err != nil {
+		t.Fatalf("observeRun: %v", err)
+	}
+
+	// Now task must transition to terminal status (failed)
+	tkTerminal, _, err := ss.Store().GetProjectTask("account", "proj_fixture", taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tkTerminal.Status != "failed" {
+		t.Fatalf("expected task status failed after acknowledged cancellation, got %q", tkTerminal.Status)
+	}
+}
+
+// Requirement: Terminal receipts on restart must repair prior failed task projection updates.
+// Invariant: ReconcileWorker inspects terminal runs and repairs tasks left in non-terminal states.
+// Boundary: WorkerExecutionService.ReconcileWorker.
+func TestWorkerProjectTask_TerminalReceiptRepairOnRestart(t *testing.T) {
+	_, ss, execution, workspaceID := setupWorkerExecutionFixture(t, func(identity.Principal, store.V3SessionRunIntent) bool { return true })
+	ws := ss.Store().WorkerStore()
+	db := ss.Store()
+
+	doc := store.SessionPlanDocument{
+		Title: "Terminal Repair Worker",
+		Info:  store.SessionPlanInfo{Goal: "Terminal repair"},
+		Checkpoints: []store.SessionPlanCheckpoint{
+			{ID: "cp-1", Order: 1, Title: "Step 1", Tasks: []string{"Work"}, AcceptanceCriteria: []string{"Done"}, Status: "pending"},
+		},
+	}
+	w, err := ws.CreateWorker("account", "owner", store.CreateWorkerRequest{
+		Name:                  "Terminal Repair Worker",
+		WorkspaceRequirements: []store.WorkerWorkspaceRequirement{{Role: "primary", Required: true}},
+		Automations: []store.WorkerAutomationDefinition{
+			{Name: "repair-step", ActivationMode: "manual", Enabled: true, PlanDocument: doc},
+		},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err = execution.Activate("account", "owner", w.ID, w.Revision, map[string]string{"primary": workspaceID})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := store.WorkerRunAdmission{
+		WorkerID:       w.ID,
+		AutomationID:   w.Automations[0].ID,
+		RequestSource:  "test_run",
+		Input:          map[string]any{"prompt": "Run repair"},
+		IdempotencyKey: "terminal-repair-1",
+	}
+	r, err := execution.Dispatch(context.Background(), "account", "owner", req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskID := "task_" + r.ID
+
+	// Simulate crash: WorkerRunRecord was recorded as succeeded, but task was left in_progress
+	r.Status = "succeeded"
+	r.CompletedAt = time.Now().UnixMilli()
+	if _, err := ws.RecordWorkerRun("account", r); err != nil {
+		t.Fatal(err)
+	}
+
+	// Task in Pebble is still in_progress
+	tkBefore, _, err := db.GetProjectTask("account", "proj_fixture", taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tkBefore.Status != "in_progress" {
+		t.Fatalf("expected in_progress, got %q", tkBefore.Status)
+	}
+
+	// ReconcileWorker runs on daemon restart
+	if err := execution.ReconcileWorker(context.Background(), "account", w.ID); err != nil {
+		t.Fatalf("ReconcileWorker: %v", err)
+	}
+
+	// Task must now be repaired to needs_review
+	tkAfter, _, err := db.GetProjectTask("account", "proj_fixture", taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tkAfter.Status != "needs_review" {
+		t.Fatalf("expected task repaired to needs_review, got %q", tkAfter.Status)
+	}
+}
+
+// Requirement: resolveWorkerProject must reject dangling references, truncated project scans,
+// and untrusted run input overrides.
+// Invariant:
+// 1. Untrusted run Input project_id cannot override accepted worker/project association.
+// 2. Dangling explicit project or source session project fails explicitly rather than fallback.
+// 3. Truncated project list (>=200) fails explicit rather than guessing.
+// 4. Session pinned project takes precedence.
+// Boundary: WorkerExecutionService.resolveWorkerProject.
+func TestWorkerProjectTask_ProjectAssociationHardening(t *testing.T) {
+	_, ss, execution, workspaceID := setupWorkerExecutionFixture(t, func(identity.Principal, store.V3SessionRunIntent) bool { return true })
+	ws := ss.Store().WorkerStore()
+	db := ss.Store()
+
+	// 1. Untrusted run input project_id conflicting with accepted worker project
+	wAccepted, err := ws.CreateWorker("account", "owner", store.CreateWorkerRequest{
+		Name:                  "Accepted Worker",
+		WorkspaceRequirements: []store.WorkerWorkspaceRequirement{{Role: "primary", Required: true}},
+		Metadata:              map[string]any{"project_id": "proj_fixture"},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wAccepted, err = execution.Activate("account", "owner", wAccepted.ID, wAccepted.Revision, map[string]string{"primary": workspaceID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conflictRun := store.WorkerRunRecord{
+		AccountScopeID: "account",
+		WorkerID:       wAccepted.ID,
+		Input:          map[string]any{"project_id": "malicious_override_project"},
+	}
+	_, err = execution.resolveWorkerProject(conflictRun, wAccepted)
+	if err == nil || !errors.Is(err, store.ErrWorkerConflict) {
+		t.Fatalf("expected ErrWorkerConflict when run Input overrides accepted project, got: %v", err)
+	}
+
+	// 2. Dangling explicit project in metadata
+	wDangling, err := ws.CreateWorker("account", "owner", store.CreateWorkerRequest{
+		Name:                  "Dangling Worker",
+		WorkspaceRequirements: []store.WorkerWorkspaceRequirement{{Role: "primary", Required: true}},
+		Metadata:              map[string]any{"project_id": "proj_does_not_exist"},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wDangling, err = execution.Activate("account", "owner", wDangling.ID, wDangling.Revision, map[string]string{"primary": workspaceID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = execution.resolveWorkerProject(store.WorkerRunRecord{AccountScopeID: "account", WorkerID: wDangling.ID}, wDangling)
+	if err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("expected explicit not found error for dangling project, got: %v", err)
+	}
+
+	// 3. Dangling source session reference
+	wDanglingSess, err := ws.CreateWorker("account", "owner", store.CreateWorkerRequest{
+		Name:                  "Dangling Session Worker",
+		WorkspaceRequirements: []store.WorkerWorkspaceRequirement{{Role: "primary", Required: true}},
+		Metadata:              map[string]any{"source_session_id": "sess_nonexistent"},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = execution.resolveWorkerProject(store.WorkerRunRecord{AccountScopeID: "account", WorkerID: wDanglingSess.ID}, wDanglingSess)
+	if err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("expected explicit not found error for dangling source session, got: %v", err)
+	}
+
+	// 4. Truncated project list (>=200 projects) fails explicitly
+	for i := 0; i < 205; i++ {
+		p := &store.ProjectRecord{
+			ID:        "bulk_proj_" + string(rune('a'+i/26)) + string(rune('a'+i%26)),
+			AccountID: "acct_large",
+			Name:      "Bulk Project",
+		}
+		if err := db.PutProject("acct_large", p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	wLarge, err := ws.CreateWorker("acct_large", "owner", store.CreateWorkerRequest{
+		Name: "Large Acct Worker",
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = execution.resolveWorkerProject(store.WorkerRunRecord{AccountScopeID: "acct_large", WorkerID: wLarge.ID}, wLarge)
+	if err == nil || !strings.Contains(err.Error(), "truncated list") {
+		t.Fatalf("expected truncated list error for >=200 projects, got: %v", err)
+	}
+
+	// 5. Existing execution session pinned project takes precedence
+	pinnedProj := &store.ProjectRecord{
+		ID:        "proj_pinned",
+		AccountID: "account",
+		Name:      "Pinned Project",
+	}
+	if err := db.PutProject("account", pinnedProj); err != nil {
+		t.Fatal(err)
+	}
+	sessSnapshot := store.SessionSnapshot{
+		ID:             "execution_session_pinned",
+		AccountScopeID: "account",
+		UserID:         "owner",
+		Mode:           "auto",
+		Metadata:       map[string]any{"project_id": "proj_pinned"},
+	}
+	if err := db.CreateSession(sessSnapshot); err != nil {
+		t.Fatal(err)
+	}
+	runWithPinnedSess := store.WorkerRunRecord{
+		AccountScopeID: "account",
+		WorkerID:       wAccepted.ID,
+		SessionID:      "execution_session_pinned",
+	}
+	resPinned, err := execution.resolveWorkerProject(runWithPinnedSess, wAccepted)
+	if err != nil {
+		t.Fatalf("resolveWorkerProject with pinned session: %v", err)
+	}
+	if resPinned.ID != "proj_pinned" {
+		t.Fatalf("expected pinned project proj_pinned, got %q", resPinned.ID)
+	}
+}
+
