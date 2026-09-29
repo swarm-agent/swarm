@@ -1,7 +1,9 @@
 /* Orchestrate owns this boundary, including its in-tree dialogs and imported panels.
    These selectors enumerate known palette utilities, not arbitrary class substrings;
    media pixels, charts, transparent overlays and status controls keep their meaning. */
-.swarm-section { background: var(--swarm-background); color: var(--swarm-text); }
+.swarm-section { background: var(--swarm-background); color: var(--swarm-text); user-select: text; }
+.swarm-section ::selection { background: var(--swarm-accent); color: var(--swarm-accent-text); }
+.swarm-section .swarm-ai-sidebar { background: var(--swarm-surface); color: var(--swarm-text); border-color: var(--swarm-border-muted); }
 .swarm-section :focus-visible { outline: 2px solid var(--swarm-accent); outline-offset: 2px; }
 .swarm-section :is(aside, main) { border-color: var(--swarm-border-muted); }
 .swarm-section :is(aside, main):where([class*="rounded-3xl"]) { background-color: var(--swarm-surface); }

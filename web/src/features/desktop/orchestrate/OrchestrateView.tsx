@@ -3413,15 +3413,7 @@ function OrchestratorChatSidebar({
   return (
     <aside
       aria-label="Swarm Orchestrator AI Chat"
-      className="relative flex w-[440px] flex-shrink-0 flex-col overflow-hidden rounded-3xl border border-slate-800/80 bg-[#0d121f] shadow-[inset_0_1px_1px_rgba(255,255,255,0.06),0_18px_40px_rgba(0,0,0,0.65)]"
-      style={{
-        '--app-bg': '#0d121f',
-        '--app-bg-alt': '#090d16',
-        '--app-surface': '#111728',
-        '--app-surface-subtle': '#0a0f1d',
-        '--app-border': 'rgba(255, 255, 255, 0.08)',
-        '--app-border-muted': 'rgba(255, 255, 255, 0.05)',
-      } as React.CSSProperties}
+      className="swarm-ai-sidebar relative flex w-[440px] flex-shrink-0 flex-col overflow-hidden rounded-3xl border border-slate-800/80 shadow-[var(--shadow-panel)]"
     >
       {/* Top Header: Task Navigation vs Orchestrator Header */}
       {activeTask ? (
@@ -5880,7 +5872,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
   return (
     <div
       ref={setThemeRoot}
-      className="swarm-section relative flex h-screen w-screen overflow-hidden p-3 gap-3 font-sans select-none"
+      className="swarm-section relative flex h-screen w-screen overflow-hidden p-3 gap-3 font-sans"
       data-project-theme={projectTheme.state}
       style={{ ...theme.customVars, ...inheritedSwarmThemeStyle(initialThemeId), ...projectTheme.style, ...(projectTheme.colorScheme ? { colorScheme: projectTheme.colorScheme } : {}) } as React.CSSProperties}
     >
