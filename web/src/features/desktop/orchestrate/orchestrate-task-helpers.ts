@@ -832,11 +832,9 @@ export function aggregateTaskLiveState(
   const primaryPhase = primaryLifecycle?.phase?.trim().toLowerCase()
 
   const isPrimaryActive = Boolean(
-    primaryLifecycle?.active === true ||
+    (primaryLifecycle?.active === true && !['completed', 'failed', 'cancelled', 'interrupted', 'expired'].includes(primaryIntentStatus || '')) ||
     primaryIntentStatus === 'running' ||
-    primaryIntentStatus === 'pending_executor' ||
-    primaryRunStatus === 'running' ||
-    primaryRunStatus === 'pending_executor'
+    primaryRunStatus === 'running' && !['completed', 'failed', 'cancelled', 'interrupted', 'expired'].includes(primaryIntentStatus || '')
   )
   const isPrimaryReview = Boolean(
     primaryPlanRecord?.status === 'waiting_review' ||
@@ -895,9 +893,9 @@ export function aggregateTaskLiveState(
     const isAct = Boolean(
       intentStatus === 'running' ||
       intentStatus === 'pending_executor' ||
-      currentRunStatus === 'running' ||
-      currentRunStatus === 'pending_executor' ||
-      isLifecycleActiveFlag
+      (currentRunStatus === 'running' && !['completed', 'failed', 'cancelled', 'interrupted', 'expired'].includes(intentStatus || '')) ||
+      (currentRunStatus === 'pending_executor' && !['completed', 'failed', 'cancelled', 'interrupted', 'expired'].includes(intentStatus || '')) ||
+      (isLifecycleActiveFlag && !['completed', 'failed', 'cancelled', 'interrupted', 'expired'].includes(intentStatus || ''))
     )
     const isRev = Boolean(
       sPlan?.status === 'waiting_review' ||
@@ -940,7 +938,7 @@ export function aggregateTaskLiveState(
         itemStatus = 'blocked'
       } else if (lifecyclePhase === 'paused') {
         itemStatus = 'paused'
-      } else if (intentStatus === 'pending_executor' || currentRunStatus === 'pending_executor') {
+      } else if (intentStatus === 'pending_executor' || (currentRunStatus === 'pending_executor' && !['completed', 'failed', 'cancelled', 'interrupted', 'expired'].includes(intentStatus || ''))) {
         itemStatus = 'queued'
       } else if (isFail) {
         itemStatus = 'failed'
@@ -957,7 +955,9 @@ export function aggregateTaskLiveState(
       } else if (isAct) {
         itemStatus = 'running'
       } else if (matchingJob) {
-        if (matchingJob.state === 'running') itemStatus = 'running'
+        // A scheduler job may lag the session. A hydrated, inactive attempt is
+        // not running merely because its job still says running.
+        if (matchingJob.state === 'running') itemStatus = 'unknown'
         else if (matchingJob.state === 'conflict' || matchingJob.state === 'failed') itemStatus = 'failed'
         else if (matchingJob.state === 'handoff_ready') itemStatus = 'needs_review'
         else if (matchingJob.state === 'integrated' || matchingJob.state === 'completed') itemStatus = 'completed'
@@ -1079,6 +1079,11 @@ export function aggregateTaskLiveState(
     // In execution (in_progress, running, needs_review, failed)
     const tpRecordState = (task.taskProgramStatus?.state || (task as any).task_program_status?.state)?.trim().toLowerCase()
     if (tpRecordState) {
+      // The program owns scheduling/integration, but a lagging running program
+      // must not keep an inactive, fully finished cohort's timer alive.
+      const allJobsFinished = programJobs.length > 0 && unallocatedJobsCount === 0 &&
+        completedSessions + reviewSessions === programJobs.length &&
+        relevantSessionStates.every((s) => s.status === 'completed' || s.status === 'needs_review')
       // Backend TaskProgram record is authoritative
       if (tpRecordState === 'completed') {
         status = task.isIntegrated ? 'completed' : 'needs_review'
@@ -1087,7 +1092,7 @@ export function aggregateTaskLiveState(
       } else if (tpRecordState === 'blocked') {
         status = 'needs_review'
       } else if (tpRecordState === 'running') {
-        status = 'running'
+        status = allJobsFinished && !isPrimaryActive ? 'needs_review' : 'running'
       }
     } else {
       // Live session aggregation
