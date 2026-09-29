@@ -703,6 +703,8 @@ run and remains pending executed validation.
 
 ## 14. Revision ledger and update template
 
+- 2026-09-29 — Worker precommit guard repair: inspected `WorkerExecutionService.Dispatch`, `startLocked`, and `Service.validateWorkerExecution`. Their existing provenance predicates reject legacy worker execution, not migrate filesystem storage. `check-daemon-storage-paths.sh` now exempts only those three byte-exact, path-bound predicates. Its self-test accepts each reviewed line and rejects changed predicates, appended rename operations, and other files; home/workspace storage checks remain intact. Full precommit passed, including scanner self-tests and dependency audits. No worker runtime, prompt, or tool schema change in this repair.
+
 ### 2026-09-29 — Generated worker tasks in the existing project list
 
 Inspected worker dispatch/scheduler, V3 session/plan preparation, project store/outbox, registered project routes, task lifecycle reconciliation and Desktop project runtime/rendering. Added the missing one-run/one-project-task bridge with exact server-owned attribution and replay checks; removed separate worker/automation overview panels from Tasks and added source filtering to the existing list. `GET /v3/projects/{id}/tasks` additionally accepts `worker_only=true` or an exact `worker_id` within the existing bounded project page; no new route or tool/prompt contract. POST/PATCH reject forged worker identity. Existing Workers detail remains separate.
