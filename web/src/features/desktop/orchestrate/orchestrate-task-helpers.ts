@@ -1182,7 +1182,7 @@ export function aggregateTaskLiveState(
     (activeData?.view?.current_run_state?.run_id ? activeData.view.current_run_state.status : activeData?.intent?.status)
   const effectiveLiveRun = activeRunId && (!activeData?.liveRun?.runId || activeData.liveRun.runId === activeRunId) &&
     activeRunStatus === 'running'
-    ? activeData.liveRun : undefined
+    ? activeData?.liveRun : undefined
 
   const toolCalls = effectiveLiveRun ? Object.values((effectiveLiveRun.toolCallsByCallId || {}) as Record<string, any>) : []
   const currentTool = [...toolCalls]

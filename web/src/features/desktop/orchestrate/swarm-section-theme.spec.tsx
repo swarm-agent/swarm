@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { TaskCardSummary, taskCardFacts } from './task-card-summary'
+import { TaskCardSummary, taskCardFacts, formatElapsedString, formatElapsedSeconds } from './task-card-summary'
 import { inheritedSwarmThemeStyle, projectThemePatch, resolveSwarmProjectTheme } from './swarm-section-theme'
 import { setWorkspaceThemeCatalog } from '../../workspaces/launcher/services/workspace-theme'
 import type { RunningTask } from './orchestrate-types'
@@ -107,4 +107,58 @@ test('every inherited preset provides nonempty semantic colors', async () => {
     }
     assert.equal(style['--swarm-accent'], ORCHESTRATE_THEMES[id].accentColor)
   }
+})
+
+test('formatElapsedString and formatElapsedSeconds turn minutes into hours or days when >= 60m', () => {
+  // Static string durations
+  assert.equal(formatElapsedString('5m'), '5m')
+  assert.equal(formatElapsedString('45m'), '45m')
+  assert.equal(formatElapsedString('60m'), '1h')
+  assert.equal(formatElapsedString('90m'), '1h 30m')
+  assert.equal(formatElapsedString('120m'), '2h')
+  assert.equal(formatElapsedString('150m'), '2h 30m')
+  assert.equal(formatElapsedString('1440m'), '1d')
+  assert.equal(formatElapsedString('1500m'), '1d 1h')
+  assert.equal(formatElapsedString('2880m'), '2d')
+  assert.equal(formatElapsedString('3000m'), '2d 2h')
+  assert.equal(formatElapsedString('10s'), '10s')
+
+  // Dynamic seconds duration
+  assert.equal(formatElapsedSeconds(30), '0:30')
+  assert.equal(formatElapsedSeconds(125), '2:05')
+  assert.equal(formatElapsedSeconds(3600), '1h')
+  assert.equal(formatElapsedSeconds(5400), '1h 30m')
+  assert.equal(formatElapsedSeconds(86400), '1d')
+  assert.equal(formatElapsedSeconds(90000), '1d 1h')
+})
+
+test('card formats coder agent identity cleanly without system prefix', () => {
+  const taskWithSystemCoder: RunningTask = {
+    ...task,
+    activeAgent: 'system-coder',
+  }
+  const html = renderToStaticMarkup(<TaskCardSummary task={taskWithSystemCoder} />)
+  assert.match(html, />coder</)
+  assert.doesNotMatch(html, />system-coder<|>system coder<|@system-coder/)
+})
+
+test('user account HUD omits raw acct_ ID and MoreHorizontal dots and provides inline name change', async () => {
+  const fs = await import('node:fs')
+  const path = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const dir = path.dirname(fileURLToPath(import.meta.url))
+  const source = fs.readFileSync(path.join(dir, 'OrchestrateView.tsx'), 'utf8')
+
+  // Verifies MoreHorizontal dots menu is removed from sidebar footer
+  assert.ok(!source.includes('<MoreHorizontal'), 'MoreHorizontal dots menu must be removed from the sidebar footer')
+
+  // Verifies raw email/acct_ display is omitted from user HUD
+  assert.ok(!source.includes('{userProfile.email}'), 'userProfile.email / acct_ ID must not be displayed under the account name')
+
+  // Verifies account name is an interactive trigger to change name
+  assert.ok(source.includes('data-testid="account-name-button"'), 'Must render account-name-button to allow clicking name to change it')
+  assert.ok(source.includes('data-testid="account-name-input"'), 'Must render account-name-input for editing username')
+  assert.ok(source.includes('/v1/account/username'), 'Must call /v1/account/username API to save updated account username')
+  assert.ok(source.includes("method: 'PUT'"), 'Must call /v1/account/username with PUT method')
+  assert.ok(source.includes('updateDesktopSessionUsername'), 'Must sync session username via updateDesktopSessionUsername')
 })

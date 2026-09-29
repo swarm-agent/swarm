@@ -2,6 +2,47 @@ import type { ReactNode } from 'react'
 import { Code2, Film, GitBranch, Image as ImageIcon, Layers, Music } from 'lucide-react'
 import type { RunningTask, MediaDeliverable } from './orchestrate-types'
 
+/** Formats an elapsed minute or duration string into mins, hours, or days (e.g. "5m", "2h 15m", "1d 4h") */
+export function formatElapsedString(elapsed?: string): string {
+  if (!elapsed) return ''
+  const trimmed = elapsed.trim()
+  const match = trimmed.match(/^(\d+)\s*(?:m|min|mins|minute|minutes)?$/i)
+  if (match) {
+    const totalMins = parseInt(match[1], 10)
+    if (isNaN(totalMins)) return trimmed
+    if (totalMins >= 1440) {
+      const days = Math.floor(totalMins / 1440)
+      const remHours = Math.floor((totalMins % 1440) / 60)
+      return remHours > 0 ? `${days}d ${remHours}h` : `${days}d`
+    }
+    if (totalMins >= 60) {
+      const hours = Math.floor(totalMins / 60)
+      const remMins = totalMins % 60
+      return remMins > 0 ? `${hours}h ${remMins}m` : `${hours}h`
+    }
+    return `${totalMins}m`
+  }
+  return trimmed
+}
+
+/** Formats dynamic elapsed seconds into running clock (mm:ss) or hours/days when >= 60 mins */
+export function formatElapsedSeconds(totalSec: number): string {
+  if (totalSec < 0) totalSec = 0
+  const totalMins = Math.floor(totalSec / 60)
+  if (totalMins >= 1440) {
+    const days = Math.floor(totalMins / 1440)
+    const remHours = Math.floor((totalMins % 1440) / 60)
+    return remHours > 0 ? `${days}d ${remHours}h` : `${days}d`
+  }
+  if (totalMins >= 60) {
+    const hours = Math.floor(totalMins / 60)
+    const remMins = totalMins % 60
+    return remMins > 0 ? `${hours}h ${remMins}m` : `${hours}h`
+  }
+  const secs = totalSec % 60
+  return `${totalMins}:${secs.toString().padStart(2, '0')}`
+}
+
 /** Summary is deliberately evidence-only: absence of Git or validation evidence is not success. */
 export function taskCardFacts(task: RunningTask) {
   const completed = task.subtasksCount?.completed ?? task.subtasks?.filter((step) => step.completed).length ?? 0
@@ -64,6 +105,9 @@ export function TaskCardSummary({
     : task.agentType === 'swarm' ? Layers : Code2
   const preview = facts.deliverable
   const isAllStepsDone = facts.progress && /^\d+\/\d+ steps$/.test(facts.progress) && facts.progress.split('/')[0] === facts.progress.split('/')[1].split(' ')[0]
+  const displayAgent = facts.identity
+    ? facts.identity.replace(/^system[-_ ]?/i, '')
+    : `${task.agentType} requested`
 
   return (
     <div className="swarm-task-summary" data-testid="task-card-summary">
@@ -103,7 +147,7 @@ export function TaskCardSummary({
                   : 'bg-indigo-500/10 text-indigo-300 border-indigo-500/25'
               }`}
             >
-              @{facts.identity || `${task.agentType} requested`}
+              {displayAgent}
             </span>
             <h3 className="truncate font-semibold text-slate-100 text-[13px] tracking-tight leading-snug" title={task.title}>
               {task.title}
@@ -114,7 +158,7 @@ export function TaskCardSummary({
             {statusBadge ? (
               statusBadge
             ) : (
-              <span className="text-[11px] font-medium capitalize px-2.5 py-0.5 rounded-full border bg-slate-800/80 text-slate-300 border-slate-700/60 flex items-center gap-1.5">
+              <span className="text-[11px] font-medium capitalize px-2 py-0.5 rounded-md border bg-slate-800/80 text-slate-300 border-slate-700/60 flex items-center gap-1.5">
                 <span className="h-1.5 w-1.5 rounded-full bg-slate-400 shrink-0" />
                 <span>{task.status.replace(/_/g, ' ')}</span>
               </span>
@@ -122,7 +166,7 @@ export function TaskCardSummary({
             {timer ? (
               timer
             ) : task.elapsed ? (
-              <span className="text-[11px] text-slate-400 font-normal">{task.elapsed}</span>
+              <span className="text-[11px] text-slate-400 font-normal">{formatElapsedString(task.elapsed)}</span>
             ) : null}
             {actions}
           </div>
@@ -141,7 +185,7 @@ export function TaskCardSummary({
 
           {(facts.branch || facts.worktree) && (
             <span
-              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-indigo-500/10 text-indigo-300 border border-indigo-500/25 text-[11px] font-normal whitespace-nowrap shrink-0 max-w-[280px]"
+              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-indigo-500/10 text-indigo-300 border border-indigo-500/25 text-[11px] font-normal whitespace-nowrap shrink min-w-0 max-w-[650px]"
               title={`Branch: ${facts.branch || facts.worktree}`}
             >
               <Fact label="Branch">

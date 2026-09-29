@@ -30,7 +30,6 @@ import {
   ListChecks,
   Loader2,
   MessageSquare,
-  MoreHorizontal,
   Music,
   Palette,
   Paperclip,
@@ -54,7 +53,7 @@ import {
   Zap,
 } from 'lucide-react'
 import { formatContextWindow } from '../chat/services/model-options'
-import { requestJson, getDesktopSessionIdentitySnapshot } from '../../../app/api'
+import { requestJson, getDesktopSessionIdentitySnapshot, updateDesktopSessionUsername } from '../../../app/api'
 import { WorkerHub, type SelectedWorker } from './worker-hub'
 import { submitWithWorkerSelection } from './worker-message-context'
 import { DurableWorkerCount } from '../layout/durable-worker-sidebar'
@@ -74,7 +73,7 @@ import { HistoricalMediaLibrary, MediaViewerModal, type MediaLibraryItem } from 
 import type { MediaGenerationJob, MediaGenerationRequest, MediaGenerationSettings } from '../tools/media-library/media-generation'
 import type { QuickRouteMode } from '../tools/media-library/media-viewer-modal'
 import { ORCHESTRATE_THEMES } from './orchestrate-themes'
-import { TaskCardSummary } from './task-card-summary'
+import { TaskCardSummary, formatElapsedString, formatElapsedSeconds } from './task-card-summary'
 import { TaskLiveActivity } from './task-live-activity'
 import { inheritedSwarmThemeStyle, projectThemePatch, resolveSwarmProjectTheme } from './swarm-section-theme'
 import { createProjectThemeRefresh } from './project-theme-refresh'
@@ -624,14 +623,12 @@ function TaskElapsedTimer({
 
   if (isRunning) {
     const start = startedAt || createdAt
-    if (!start) return <span>{fallbackElapsed || 'Running...'}</span>
+    if (!start) return <span>{formatElapsedString(fallbackElapsed) || 'Running...'}</span>
     const totalSec = Math.max(0, Math.floor((now - start) / 1000))
-    const mins = Math.floor(totalSec / 60)
-    const secs = totalSec % 60
-    return <span>{`${mins}:${secs.toString().padStart(2, '0')}`}</span>
+    return <span>{formatElapsedSeconds(totalSec)}</span>
   }
 
-  return <span>{fallbackElapsed || 'Just now'}</span>
+  return <span>{formatElapsedString(fallbackElapsed) || 'Just now'}</span>
 }
 
 /**
@@ -916,7 +913,7 @@ function MinimalTaskCard({
         onPreview={onPreviewDeliverable}
         statusBadge={
           <div
-            className={`text-[11px] font-medium capitalize px-2.5 py-0.5 rounded-full border flex items-center gap-1.5 shrink-0 transition-colors ${
+            className={`text-[11px] font-medium capitalize px-2 py-0.5 rounded-md border flex items-center gap-1.5 shrink-0 transition-colors ${
               isPlanning
                 ? 'bg-indigo-500/10 text-indigo-300 border-indigo-500/25'
                 : isPendingApproval
@@ -924,7 +921,7 @@ function MinimalTaskCard({
                 : isRunning
                 ? 'bg-sky-500/10 text-sky-300 border-sky-500/25'
                 : isNeedsReview
-                ? 'bg-amber-500/10 text-amber-300 border-amber-500/25'
+                ? 'bg-amber-500/[0.08] text-amber-200 border-amber-500/20'
                 : isCompleted
                 ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/25'
                 : isFailed || isRejected
@@ -941,7 +938,7 @@ function MinimalTaskCard({
                   : isRunning
                   ? 'bg-sky-400 animate-pulse'
                   : isNeedsReview
-                  ? 'bg-amber-400'
+                  ? 'bg-amber-400/80'
                   : isCompleted
                   ? 'bg-emerald-400'
                   : isFailed || isRejected
@@ -986,21 +983,6 @@ function MinimalTaskCard({
                 <span>Approve</span>
               </button>
             )}
-            {onOpenChat && (
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation()
-                  onOpenChat()
-                }}
-                className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-slate-800/80 hover:bg-slate-700/80 text-slate-300 hover:text-white text-[11px] font-medium transition-colors border border-slate-700/60 cursor-pointer shadow-sm"
-                title={taskSessionId ? 'Open session chat with this worker' : 'Discuss this task in orchestrator chat'}
-                data-testid="task-card-chat-btn"
-              >
-                <MessageSquare size={12} className="text-slate-400" />
-                <span>Chat</span>
-              </button>
-            )}
             {onToggleMarked && (
               <label
                 className={`group flex items-center justify-center w-5 h-5 rounded-md border transition-all cursor-pointer shrink-0 ${
@@ -1025,7 +1007,7 @@ function MinimalTaskCard({
         }
         extraBadges={
           <>
-            {task.outcomeType && (
+            {task.outcomeType && task.outcomeType !== 'code_pr' && (
               <span className="text-[11px] capitalize px-2 py-0.5 rounded-md bg-slate-800/70 text-slate-300 border border-slate-700/50 font-normal">
                 {task.outcomeType === 'video_clip' ? 'Single Video' : task.outcomeType.replace(/_/g, ' ')}
               </span>
@@ -2627,6 +2609,28 @@ function MinimalTaskCard({
 
       {expanded && (
         <>
+          {/* Header toolbar inside expanded full plan, subtasks & activity logs */}
+          <div className="flex items-center justify-between px-2.5 py-1.5 rounded-lg bg-slate-900/60 border border-slate-800/80 text-[11px]">
+            <span className="text-slate-400 font-medium flex items-center gap-1.5">
+              <MessageSquare size={12} className="text-blue-400" />
+              <span>Full Plan, Subtasks & Activity Logs</span>
+            </span>
+            {onOpenChat && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onOpenChat()
+                }}
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-slate-800/90 hover:bg-slate-700 text-slate-200 hover:text-white text-[11px] font-medium transition-colors border border-slate-700/80 cursor-pointer shadow-sm"
+                title={taskSessionId ? 'Open session chat with this worker' : 'Discuss this task in orchestrator chat'}
+                data-testid="task-card-chat-btn"
+              >
+                <MessageSquare size={12} className="text-blue-400" />
+                <span>Chat</span>
+              </button>
+            )}
+          </div>
       {/* 6. Worktree & Git Changes Bar (ONLY show when there are changes waiting to be committed or unintegrated commits) */}
       {!isPendingApproval && !isMediaTask && task.gitStatus !== 'unknown' && task.gitStatus !== 'stale' && (task.isDirty || hasUnintegrated) && (
         <div className="flex items-center justify-between p-2 rounded-lg bg-[#070b14] border border-slate-800/80 text-[10px] font-mono text-slate-400">
@@ -3005,7 +3009,11 @@ export function OrchestratorChatComposer({
 
       await submitWithWorkerSelection(!effectiveTaskId ? selectedWorker || null : null, async (workerMetadata) => {
         operation.request.metadata = { ...operation.request.metadata, ...workerMetadata }
-        await submitMessage(operation)
+        if (submitMessage) {
+          await submitMessage(operation)
+        } else {
+          await continueDesktopV3Conversation(operation)
+        }
       }, currentSelectedWorker || (() => selectedWorker || null), () => onDeselectWorker?.(selectedWorker || null))
       setDraft('')
       setAttachments([])
@@ -3549,11 +3557,14 @@ export function OrchestrateView({
   const theme = ORCHESTRATE_THEMES[initialThemeId] || ORCHESTRATE_THEMES.modern_navy
 
   // Real user profile from /v1/auth/desktop/session
-  const [userProfile, setUserProfile] = useState<{ id: string; name: string; email: string }>({
+  const [userProfile, setUserProfile] = useState<{ id: string; name: string }>({
     id: '',
     name: 'Operator',
-    email: 'local operator',
   })
+  const [isEditingAccountName, setIsEditingAccountName] = useState(false)
+  const [editingAccountName, setEditingAccountName] = useState('')
+  const [isUpdatingAccountName, setIsUpdatingAccountName] = useState(false)
+  const [accountNameError, setAccountNameError] = useState<string | null>(null)
 
   // Projects State
   const [projects, setProjects] = useState<ProjectSummary[]>([])
@@ -3787,6 +3798,37 @@ export function OrchestrateView({
 
   // Deploy Task Modal State
   const queryClient = useQueryClient()
+
+  const handleSaveAccountName = async () => {
+    const trimmed = editingAccountName.trim()
+    if (!trimmed || trimmed === userProfile.name || isUpdatingAccountName) {
+      setIsEditingAccountName(false)
+      setAccountNameError(null)
+      return
+    }
+    setIsUpdatingAccountName(true)
+    setAccountNameError(null)
+    try {
+      const updated = await requestJson<{ userID?: string; user_id?: string; username?: string }>('/v1/account/username', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: trimmed }),
+      })
+      const nextName = String(updated?.username ?? trimmed).trim()
+      if (nextName) {
+        updateDesktopSessionUsername(nextName)
+        setUserProfile((prev) => ({ ...prev, name: nextName }))
+        queryClient.setQueryData<any>(['desktop-account-context'], (current: any) =>
+          current ? { ...current, username: nextName } : current
+        )
+      }
+      setIsEditingAccountName(false)
+    } catch (err: any) {
+      setAccountNameError(err?.message || 'Failed to update username')
+    } finally {
+      setIsUpdatingAccountName(false)
+    }
+  }
   const [isDeployModalOpen, setIsDeployModalOpen] = useState(false)
   const [taskIntent, setTaskIntent] = useState<'code' | 'image' | 'video' | 'sound' | 'audit'>('code')
   const [videoResolution, setVideoResolution] = useState<string>('')
@@ -4097,7 +4139,6 @@ export function OrchestrateView({
           setUserProfile({
             id: rawId,
             name: displayName,
-            email: auth.account_scope_id || 'authenticated session',
           })
         }
       } catch {}
@@ -4461,9 +4502,9 @@ export function OrchestrateView({
   }
 
   const handleBackToOrchestrator = () => {
-    setWorkerCreationRequested(false)
     setActiveTaskId(null)
     setSelectedTaskId('')
+    setWorkerCreationRequested(false)
     if (selectedProject?.primarySessionId) {
       setActiveSessionId(selectedProject.primarySessionId)
     }
@@ -6164,19 +6205,88 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
 
 
         {/* Real User HUD */}
-        <div className="p-3 border-t border-slate-800/80 flex items-center justify-between bg-[#0a0f1d]/50">
-          <div className="flex items-center gap-2.5 min-w-0">
+        <div className="p-3 border-t border-slate-800/80 flex items-center bg-[#0a0f1d]/50">
+          <div className="flex items-center gap-2.5 min-w-0 w-full">
             <div className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full bg-blue-600/20 text-blue-400 font-bold text-[10px] border border-blue-500/30">
               {userProfile.name.slice(0, 2).toUpperCase()}
             </div>
-            <div className="flex flex-col min-w-0">
-              <span className="text-xs font-semibold text-slate-200 truncate">{userProfile.name}</span>
-              <span className="text-[10px] text-slate-500 truncate">{userProfile.email}</span>
-            </div>
+            {isEditingAccountName ? (
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault()
+                  void handleSaveAccountName()
+                }}
+                className="flex items-center gap-1.5 min-w-0 flex-1"
+              >
+                <input
+                  type="text"
+                  value={editingAccountName}
+                  onChange={(e) => {
+                    setEditingAccountName(e.target.value)
+                    if (accountNameError) setAccountNameError(null)
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Escape') {
+                      setIsEditingAccountName(false)
+                      setEditingAccountName(userProfile.name)
+                      setAccountNameError(null)
+                    }
+                  }}
+                  disabled={isUpdatingAccountName}
+                  autoFocus
+                  placeholder="Username"
+                  aria-label="Account username"
+                  className="h-6 w-full min-w-0 rounded bg-slate-900 px-1.5 text-xs font-medium text-slate-200 border border-blue-500/50 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  data-testid="account-name-input"
+                />
+                <button
+                  type="submit"
+                  disabled={isUpdatingAccountName || !editingAccountName.trim() || editingAccountName.trim() === userProfile.name}
+                  className="p-1 rounded text-slate-400 hover:text-emerald-400 disabled:opacity-30 transition-colors shrink-0"
+                  title="Save name"
+                  aria-label="Save name"
+                  data-testid="account-name-save-btn"
+                >
+                  {isUpdatingAccountName ? <Loader2 size={12} className="animate-spin text-blue-400" /> : <Check size={12} />}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsEditingAccountName(false)
+                    setEditingAccountName(userProfile.name)
+                    setAccountNameError(null)
+                  }}
+                  disabled={isUpdatingAccountName}
+                  className="p-1 rounded text-slate-400 hover:text-rose-400 disabled:opacity-30 transition-colors shrink-0"
+                  title="Cancel"
+                  aria-label="Cancel"
+                  data-testid="account-name-cancel-btn"
+                >
+                  <X size={12} />
+                </button>
+              </form>
+            ) : (
+              <div className="flex items-center min-w-0 flex-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditingAccountName(userProfile.name)
+                    setIsEditingAccountName(true)
+                    setAccountNameError(null)
+                  }}
+                  className="group/acc flex items-center gap-1.5 min-w-0 text-left rounded px-1.5 py-1 -mx-1.5 hover:bg-slate-800/60 transition-colors"
+                  title="Click to change account name"
+                  aria-label={`Change account name (current: ${userProfile.name})`}
+                  data-testid="account-name-button"
+                >
+                  <span className="text-xs font-semibold text-slate-200 truncate group-hover/acc:text-blue-300">
+                    {userProfile.name}
+                  </span>
+                  <Edit3 size={11} className="text-slate-500 opacity-0 group-hover/acc:opacity-100 transition-opacity shrink-0" />
+                </button>
+              </div>
+            )}
           </div>
-          <button className="text-slate-400 hover:text-slate-200 p-1 rounded-lg hover:bg-slate-800/60 transition-colors">
-            <MoreHorizontal size={14} />
-          </button>
         </div>
       </aside>
 
