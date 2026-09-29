@@ -74,7 +74,7 @@ import type { MediaGenerationJob, MediaGenerationRequest, MediaGenerationSetting
 import type { QuickRouteMode } from '../tools/media-library/media-viewer-modal'
 import { ORCHESTRATE_THEMES } from './orchestrate-themes'
 import { TaskCardSummary, formatElapsedString, formatElapsedSeconds } from './task-card-summary'
-import { TaskLiveActivity } from './task-live-activity'
+import { TaskCardActivity } from './task-card-activity'
 import { inheritedSwarmThemeStyle, projectThemePatch, resolveSwarmProjectTheme } from './swarm-section-theme'
 import { createProjectThemeRefresh } from './project-theme-refresh'
 import { WORKSPACE_THEME_OPTIONS, setWorkspaceThemeCatalog, formatWorkspaceThemeLabel } from '../../workspaces/launcher/services/workspace-theme'
@@ -906,10 +906,11 @@ function MinimalTaskCard({
       data-testid="orchestrate-task-card"
       data-task-id={task.id}
       data-task-state={task.status}
-      className={`swarm-task-card relative flex flex-col transition-all cursor-pointer ${isSelected ? 'swarm-task-card-selected' : ''}`}
+      className={`swarm-task-card relative flex min-w-0 flex-col transition-colors cursor-pointer ${isSelected ? 'swarm-task-card-selected' : ''}`}
     >
       <TaskCardSummary
-        task={task}
+        // The dedicated row below owns live activity; the summary owns task facts.
+        task={isRunning ? { ...task, toolActivitySummary: undefined } : task}
         onPreview={onPreviewDeliverable}
         statusBadge={
           <div
@@ -1865,35 +1866,7 @@ function MinimalTaskCard({
       {/* 2b. IN PROGRESS / RUNNING LIVE EXECUTION SECTION */}
       {isRunning && (
         <div className="flex flex-col p-3 rounded-lg bg-[#070d1e]/90 border border-blue-500/40 space-y-2.5 text-xs">
-          {/* Current Focus Banner */}
-          <div className="flex items-center justify-between p-2 rounded-lg bg-blue-950/50 border border-blue-500/30 gap-2">
-            <div className="flex items-center gap-2 min-w-0">
-              <span className="flex h-2 w-2 relative flex-shrink-0">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500"></span>
-              </span>
-              <div className="flex flex-col min-w-0">
-                <div className="flex items-center gap-1.5 flex-wrap">
-                  <span className="font-mono text-[9px] uppercase font-bold text-blue-300 tracking-wider">
-                    🎯 Current Focus
-                  </span>
-                  {task.currentTool && (
-                    <span className="font-mono text-[8px] uppercase px-1.5 py-0.2 rounded bg-indigo-900/60 text-indigo-300 border border-indigo-500/30">
-                      tool: {task.currentTool}
-                    </span>
-                  )}
-                </div>
-                <span className="font-semibold text-white truncate text-[11px]">
-                  {task.currentFocus || 'Executing autonomous mission...'}
-                </span>
-              </div>
-            </div>
-            {task.planProgressPercent !== undefined && task.planProgressPercent > 0 && (
-              <div className="flex items-center gap-1 font-mono text-[10px] text-blue-300 font-bold flex-shrink-0 bg-blue-900/40 px-2 py-0.5 rounded border border-blue-500/30">
-                <span>{task.planProgressPercent}%</span>
-              </div>
-            )}
-          </div>
+          <TaskCardActivity task={task} />
 
           {/* Agent's Created Execution Plan with Subtasks Checklist OR Compact Task Program Multi-Coder Grid */}
           {expanded && (
@@ -2094,7 +2067,6 @@ function MinimalTaskCard({
             </div>
           ) : null}
 
-          <TaskLiveActivity task={task} />
             </>
           )}
         </div>
