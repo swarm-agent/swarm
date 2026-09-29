@@ -13,6 +13,7 @@ const (
 	lifecyclePhaseStarting    = "starting"
 	lifecyclePhaseRunning     = "running"
 	lifecyclePhaseBlocked     = "blocked"
+	lifecyclePhaseNeedsReview = "needs_review"
 	lifecyclePhaseCompleted   = "completed"
 	lifecyclePhaseCancelled   = "cancelled"
 	lifecyclePhaseErrored     = "errored"
@@ -25,11 +26,13 @@ var (
 )
 
 type activeSessionRun struct {
-	runID      string
-	generation uint64
-	cancel     context.CancelFunc
-	stopReason string
-	userStop   bool
+	runID          string
+	generation     uint64
+	cancel         context.CancelFunc
+	stopReason     string
+	userStop       bool
+	requestedPhase string
+	summary        string
 }
 
 func (s *Service) GetSessionLifecycle(sessionID string) (pebblestore.SessionLifecycleSnapshot, bool, error) {
@@ -37,6 +40,48 @@ func (s *Service) GetSessionLifecycle(sessionID string) (pebblestore.SessionLife
 		return pebblestore.SessionLifecycleSnapshot{}, false, errors.New("session service is not configured")
 	}
 	return s.sessions.GetLifecycle(sessionID)
+}
+
+func (s *Service) GetActiveRunID(sessionID string) (string, bool) {
+	if s == nil {
+		return "", false
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return "", false
+	}
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	active := s.activeRuns[sessionID]
+	if active != nil && strings.TrimSpace(active.runID) != "" {
+		return strings.TrimSpace(active.runID), true
+	}
+	return "", false
+}
+
+func (s *Service) SetSessionRunLifecyclePhase(sessionID, runID, phase, reason string) error {
+	if s == nil {
+		return errors.New("run service is not configured")
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	runID = strings.TrimSpace(runID)
+	phase = strings.TrimSpace(phase)
+	reason = strings.TrimSpace(reason)
+	if sessionID == "" {
+		return errors.New("session id is required")
+	}
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	active := s.activeRuns[sessionID]
+	if active != nil {
+		if runID == "" || strings.EqualFold(strings.TrimSpace(active.runID), runID) {
+			active.requestedPhase = phase
+			if reason != "" {
+				active.stopReason = reason
+			}
+		}
+	}
+	return nil
 }
 
 func (s *Service) ReconcileActiveLifecycles(reason string) error {
@@ -308,6 +353,9 @@ func (s *Service) finishSessionLifecycle(sessionID, runID string, runErr error) 
 func classifyLifecycleFinish(runErr error, active *activeSessionRun) (phase, stopReason, errorText string) {
 	switch {
 	case runErr == nil:
+		if active != nil && strings.TrimSpace(active.requestedPhase) != "" {
+			return strings.TrimSpace(active.requestedPhase), strings.TrimSpace(active.stopReason), ""
+		}
 		return lifecyclePhaseCompleted, "", ""
 	case errors.Is(runErr, context.Canceled):
 		if active != nil && active.userStop {

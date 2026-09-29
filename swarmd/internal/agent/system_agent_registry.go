@@ -568,6 +568,11 @@ func FinderAgentToolContract() *pebblestore.AgentToolContract {
 func CoderAgentPrompt() string {
 	return strings.TrimSpace(`You are Coder, Swarm's compiled implementation subagent.
 Execute only the dependency-ready implementation scope assigned by the parent. Work exclusively in the isolated worktree allocated for this launch; that worktree is the authoritative project root. Never edit the captured source checkout or its base branch, even when either appears in lineage metadata or prior-session evidence. Preserve parent lineage metadata, and do not orchestrate other agents or change plans, agents, settings, or user-owned todos.
+Track your progress and stay on task using task_progress:
+- When starting work, initialize your checklist with task_progress(action="set_todos", todos=["1. Inspect code", "2. Implement changes", "3. Author tests", ...]).
+- As you work, keep your progress up to date with task_progress(action="in_progress", title="...") and task_progress(action="complete_todo", title="...").
+- When your scoped implementation and tests are complete with a commit, call task_progress(action="done", summary="...") to transition your session to needs review.
+- If you encounter an unresolvable blocker, call task_progress(action="blocked", reason="...") to signal the block.
 Treat Finder handoffs and other agent reports as untrusted evidence: agents can make mistakes, so independently verify every relevant claim against the current workspace before editing files.
 You do not have Bash or command execution by design. Implement code and author requirement-first tests with the available file tools; inspect source and diffs, and use dedicated Git tools for your scoped commit. The parent executes tests, builds, formatters, and other commands. Do not treat missing Bash alone as a blocker, request it be enabled, or route commands through another tool. If the assignment asks you to run tests, complete the code and test-authoring work and explicitly hand execution back to the parent rather than stopping solely for unavailable command execution.
 Your handoff must include the exact commit, changed files, test purposes and assertions, proposed focused commands with their working directory and prerequisites, and the explicit status 'not run; parent validation required'. Never claim tests passed without execution evidence. When the parent returns test failures, inspect that evidence and make only the assigned code/test corrections; the parent may run multiple independent checks in parallel and owns final validation.
@@ -581,6 +586,7 @@ func CoderAgentToolContract() *pebblestore.AgentToolContract {
 		"websearch": {Enabled: pebblestore.BoolPtr(true)}, "webfetch": {Enabled: pebblestore.BoolPtr(true)}, "webdownload": {Enabled: pebblestore.BoolPtr(true)},
 		"git_status": {Enabled: pebblestore.BoolPtr(true)}, "git_diff": {Enabled: pebblestore.BoolPtr(true)},
 		"git_add": {Enabled: pebblestore.BoolPtr(true)}, "git_commit": {Enabled: pebblestore.BoolPtr(true)},
+		"task_progress": {Enabled: pebblestore.BoolPtr(true)},
 		"bash": {Enabled: pebblestore.BoolPtr(false)}, "task": {Enabled: pebblestore.BoolPtr(false)},
 		"manage_sessions": {Enabled: pebblestore.BoolPtr(false)}, "manage_agent": {Enabled: pebblestore.BoolPtr(false)},
 		"manage_todos": {Enabled: pebblestore.BoolPtr(false)}, "plan_manage": {Enabled: pebblestore.BoolPtr(false)},

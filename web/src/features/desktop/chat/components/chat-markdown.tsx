@@ -696,7 +696,15 @@ const TASK_CARD_HOVER_DEBOUNCE_MS = 180;
 function taskChildModelsEqual(left: DesktopV3TaskChildViewModel | null, right: DesktopV3TaskChildViewModel | null): boolean {
   if (left === right) return true;
   if (!left || !right) return false;
-  return Object.keys(left).every((key) => left[key as keyof DesktopV3TaskChildViewModel] === right[key as keyof DesktopV3TaskChildViewModel]);
+  return Object.keys(left).every((key) => {
+    const lVal = left[key as keyof DesktopV3TaskChildViewModel];
+    const rVal = right[key as keyof DesktopV3TaskChildViewModel];
+    if (lVal === rVal) return true;
+    if (key === 'todos' || key === 'todosCount') {
+      return JSON.stringify(lVal) === JSON.stringify(rVal);
+    }
+    return false;
+  });
 }
 
 function taskRowWithChildState(row: TaskToolRow, child: DesktopV3TaskChildViewModel | null): TaskToolRow {
@@ -720,6 +728,7 @@ function taskRowWithChildState(row: TaskToolRow, child: DesktopV3TaskChildViewMo
 export function taskActivityLabel(row: TaskToolRow): string {
   const kind = taskStatusKind(row);
   if (kind === 'running' && row.toolActivitySummary?.trim()) return row.toolActivitySummary.trim();
+  if (kind === 'running' && (row as any).activeTodo?.trim()) return `Focus: ${(row as any).activeTodo.trim()}`;
   if (row.tool && row.tool !== '-') return row.tool;
   return taskStatusText(kind);
 }
@@ -856,6 +865,51 @@ function TaskChildInteractiveRow({
       data-child-session-id={row.childSessionId || undefined}
     >
       {children(effectiveRow, child)}
+      {child?.todos && child.todos.length > 0 ? (
+        <div className="task-card-todos px-3 pb-2 pt-0.5 space-y-1 font-mono text-[11px]" data-testid="task-card-todos">
+          <div className="flex items-center justify-between text-[10px] text-[var(--app-text-muted)] font-semibold uppercase tracking-wider mb-1">
+            <span className="flex items-center gap-1">
+              <span>Checklist</span>
+              {child.todosCount ? (
+                <span className="text-[var(--app-text-subtle)] font-normal">
+                  ({child.todosCount.completed}/{child.todosCount.total})
+                </span>
+              ) : null}
+            </span>
+          </div>
+          <div className="space-y-1 max-h-36 overflow-y-auto pr-1">
+            {child.todos.map((todo) => {
+              const isDone = todo.status === 'completed';
+              const isInProgress = todo.status === 'in_progress';
+              return (
+                <div
+                  key={todo.id || todo.title}
+                  className={cn(
+                    "flex items-start gap-1.5 rounded px-1.5 py-0.5 text-[11px] leading-tight transition-colors",
+                    isInProgress
+                      ? "bg-[color-mix(in_srgb,var(--app-primary)_12%,transparent)] text-[var(--app-primary)] font-medium"
+                      : isDone
+                      ? "text-[var(--app-text-subtle)] line-through"
+                      : "text-[var(--app-text-muted)]"
+                  )}
+                >
+                  <span className={cn(
+                    "shrink-0 font-bold select-none",
+                    isDone
+                      ? "text-[var(--app-success,theme(colors.emerald.400))]"
+                      : isInProgress
+                      ? "text-[var(--app-primary,theme(colors.blue-400))] motion-safe:animate-pulse"
+                      : "text-[var(--app-text-subtle)]"
+                  )}>
+                    {isDone ? '✓' : isInProgress ? '●' : '○'}
+                  </span>
+                  <span className="min-w-0 break-words [overflow-wrap:anywhere]">{todo.title}</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
       {row.childSessionId && showContext ? (
         <div className="task-card-child-context flex min-w-0 items-center gap-2 px-3 pb-2 text-[10px] text-[var(--app-text-subtle)]">
           <span className="min-w-0 truncate" title={taskContextLabel(child)}>{child?.loading ? 'Loading live state…' : child?.unavailable ? 'Session unavailable' : child?.stale ? 'Live state stale' : taskContextLabel(child)}</span>

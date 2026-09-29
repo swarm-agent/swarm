@@ -124,6 +124,8 @@ func agentToolCanonicalName(name string) string {
 		return "manage_video"
 	case "manage-todos", "manage_todos":
 		return "manage_todos"
+	case "task-progress", "task_progress":
+		return "task_progress"
 	default:
 		return strings.ToLower(strings.TrimSpace(name))
 	}
@@ -135,7 +137,7 @@ func agentToolGroup(name string) string {
 		return "read"
 	case "write", "edit", "bash", "git_init", "git_status", "git_diff", "git_add", "git_commit", "git_commit_initial":
 		return "write"
-	case "task", "ask_user", "exit_plan_mode", "plan_manage", "skill_use":
+	case "task", "ask_user", "exit_plan_mode", "plan_manage", "skill_use", "task_progress":
 		return "control"
 	case "manage_actions", "manage_agent", "manage_skill", "manage_video", "manage_todos", "manage_worktree", "manage_theme", "manage_connections", "manage_environments":
 		return "management"

@@ -1171,6 +1171,21 @@ func v3SessionAttentionFromReader(reader pebble.Reader, sessionID string) (V3Ses
 	summary := V3SessionAttentionSummary{State: "inactive"}
 	active, ok, err := getActivePlanFromReader(reader, sessionID)
 	if err != nil || !ok {
+		if lifecycle, lOk, lErr := getSessionLifecycleFromReader(reader, sessionID); lErr == nil && lOk {
+			phase := strings.ToLower(strings.TrimSpace(lifecycle.Phase))
+			switch {
+			case phase == "needs_review" || phase == "review" || phase == "final_review":
+				summary.State = "needs_review"
+			case phase == "blocked":
+				summary.State = "blocked"
+			case phase == "failed" || phase == "errored":
+				summary.State = "failed"
+			case lifecycle.Active || phase == "running" || phase == "in_progress":
+				summary.State = "in_progress"
+			case phase == "pending" || phase == "starting":
+				summary.State = "pending"
+			}
+		}
 		return summary, err
 	}
 	plan, ok, err := getPlanFromReader(reader, sessionID, active.PlanID)

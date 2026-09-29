@@ -4,8 +4,9 @@ import type { RunningTask } from './orchestrate-types'
 export function TaskLiveActivity({ task }: { task: RunningTask }) {
   if (task.status !== 'running' && task.status !== 'in_progress') return null
   const action = task.toolActivitySummary?.trim()
+  const activeTodo = (task as any).activeTodo?.trim() || (task.metadata as any)?.agent_todo_summary?.active_todo?.title || (task.metadata as any)?.agent_todo_summary?.active_todo?.text || ''
   const text = task.liveAssistantText?.trim().replace(/\s+/g, ' ')
-  const detail = action || text?.slice(-160) || 'Starting session…'
+  const detail = (activeTodo ? `Focus: ${activeTodo}` : undefined) || action || text?.slice(-160) || 'Starting session…'
 
   return (
     <div data-testid="task-live-activity" role="status" aria-live="polite" aria-label={`Agent working: ${detail}`}

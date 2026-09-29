@@ -332,6 +332,7 @@ func agentToolContractEnablesMutatingTools(contract *AgentToolContract) bool {
 		"read":            {},
 		"search":          {},
 		"skill_use":       {},
+		"task_progress":   {},
 		"webfetch":        {},
 		"websearch":       {},
 	}
@@ -445,6 +446,8 @@ func normalizeAgentToolScopeKey(value string) string {
 		return "manage_environments"
 	case "manage-todos", "manage_todos":
 		return "manage_todos"
+	case "task-progress", "task_progress":
+		return "task_progress"
 	default:
 		return value
 	}

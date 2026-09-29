@@ -1514,6 +1514,7 @@ func (r *Runtime) Definitions() []Definition {
 		artifactV3AuthorDefinition(),
 		manageArtifactDefinition(),
 		manageVideoDefinition(),
+		taskProgressDefinition(),
 		{
 			Type:        "function",
 			Name:        "manage_todos",
@@ -2109,7 +2110,7 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 		return r.executeManageVideo(ctx, scope, args)
 	case "manage-todos", "manage_todos":
 		return r.executeManageTodos(scope, args)
-	case "ask-user", "ask_user", "exit_plan_mode", "exit-plan-mode", "plan_manage", "plan-manage":
+	case "ask-user", "ask_user", "exit_plan_mode", "exit-plan-mode", "plan_manage", "plan-manage", "task_progress", "task-progress":
 		return executeStubTool(name, args)
 	case "task":
 		return "", errors.New("task must be handled by run-service control-plane")
@@ -6308,6 +6309,9 @@ func executeStubTool(rawName string, args map[string]any) (string, error) {
 	case "plan_manage":
 		reason = "plan_manage is handled by run-service control-plane, not standalone runtime"
 		nextAction = "Use plan_manage through the shared run pipeline or session plan APIs."
+	case "task_progress":
+		reason = "task_progress is handled by run-service control-plane, not standalone runtime"
+		nextAction = "Use task_progress through the active subagent run pipeline."
 	}
 	summary := fmt.Sprintf("%s is not active in this session", strings.ReplaceAll(name, "_", "-"))
 	response := map[string]any{
@@ -10027,6 +10031,8 @@ func canonicalStubToolName(raw string) string {
 		return "exit_plan_mode"
 	case "plan-manage", "plan_manage":
 		return "plan_manage"
+	case "task-progress", "task_progress":
+		return "task_progress"
 	default:
 		return strings.ReplaceAll(name, "-", "_")
 	}
@@ -10050,6 +10056,8 @@ func stubToolPathID(name string) string {
 		return "tool.stub.exit-plan-mode.v3"
 	case "plan_manage":
 		return "tool.stub.plan-manage.v3"
+	case "task_progress":
+		return "tool.task-progress.v1"
 	default:
 		return "tool.stub.unknown.v3"
 	}
@@ -10559,6 +10567,8 @@ func toolPathID(name string) string {
 		return "tool.manage-todos.v1"
 	case "skill-use", "skill_use":
 		return "tool.skill-use.v3"
+	case "task-progress", "task_progress":
+		return "tool.task-progress.v1"
 	default:
 		return "tool.unknown.v3"
 	}
