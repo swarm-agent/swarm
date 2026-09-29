@@ -1,5 +1,6 @@
 import { reduceDesktopEnvironmentsState } from './desktop-environments-state'
 import { reduceAutomationV2Pages } from './desktop-automation-v2-state'
+import { reduceWorkerPages } from './desktop-workers-state'
 import { reduceAutomationPages } from './desktop-automation-state'
 import { reduceDesktopProjectsState } from './desktop-projects-state'
 import type {
@@ -66,6 +67,7 @@ export function createEmptyDesktopV3CacheState(surface = 'desktop'): DesktopV3Ca
     version: 1,
     automationPages: {},
     automationV2Pages: {},
+    workerPages: {},
     environmentsByWorkspace: {},
     projectsState: {},
     syncScopesById: {},
@@ -130,6 +132,12 @@ export function desktopV3CacheReducer(state: DesktopV3CacheState, action: Deskto
     case 'environments.operationUpdated':
     case 'environments.evict':
       return { ...state, environmentsByWorkspace: reduceDesktopEnvironmentsState(state.environmentsByWorkspace, action) }
+    case 'workers.begin':
+    case 'workers.finish':
+    case 'workers.invalidate':
+    case 'workers.mutationError':
+    case 'workers.evict':
+      return { ...state, workerPages: reduceWorkerPages(state.workerPages, action) }
     case 'automationV2.begin':
     case 'automationV2.finish':
     case 'automationV2.invalidate':
@@ -804,6 +812,10 @@ export function applyRealtimeFrame(
   const frame = action.frame
   assertDesktopV3RealtimeFrame(frame)
   switch (frame.kind) {
+    case 'worker.updated':
+      state.realtime.endpointCursor = frame.endpoint_cursor
+      return state
+
     case 'hello':
       state.realtime.status = 'open'
       state.realtime.endpointCursor = frame.endpoint_cursor

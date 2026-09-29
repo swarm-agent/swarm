@@ -34,6 +34,7 @@ const SUPPORTED_REALTIME_KINDS = new Set([
   'task.lifecycle.updated',
   'workspace.catalog.updated',
   'automation.updated',
+  'worker.updated',
   'auth.credentials.updated',
   'project.updated',
 ])
@@ -49,6 +50,10 @@ export function assertDesktopV3RealtimeFrame(frame: RealtimeMessage): void {
   const type = stringValue(frame.type)
   if (type && type !== kind) {
     throw new Error(`protocol invalid: realtime kind/type mismatch ${kind}/${type}`)
+  }
+  if (kind === 'worker.updated') {
+    if (!stringValue(frame.endpoint_cursor) || frame.event || frame.session) throw new Error('protocol invalid: worker update must carry only an endpoint cursor')
+    return
   }
   if (kind === 'automation.updated' || kind === 'workspace.catalog.updated' || kind === 'notification.resource.updated' || kind === 'task.lifecycle.updated' || kind === 'auth.credentials.updated' || kind === 'project.updated') return
 
@@ -238,6 +243,7 @@ export function realtimeFrameToActions(frame: RealtimeMessage): DesktopV3CacheAc
       return [{ type: 'realtime.applyAITaskResource', frame }]
 
     case 'automation.updated':
+    case 'worker.updated':
     case 'workspace.catalog.updated':
     case 'auth.credentials.updated':
     case 'project.updated':

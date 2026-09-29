@@ -1,5 +1,6 @@
 import { ensureDesktopSession } from '../../../app/api'
 import { desktopAutomationV2 } from '../runtime/desktop-automation-v2'
+import { desktopWorkers } from '../runtime/desktop-workers'
 import { desktopAutomations } from '../runtime/desktop-automations'
 import { desktopProjects } from '../runtime/desktop-projects'
 import {
@@ -135,6 +136,7 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
           this.clientEffectRunner.refreshWorkspaceCatalog()
           desktopAutomations.invalidate()
           desktopAutomationV2.invalidate()
+          desktopWorkers.invalidate()
           getDesktopEnvironments().invalidate()
           desktopProjects.invalidate()
         }
@@ -155,6 +157,7 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
       onRehydrateRequested: async (_reason, frame) => {
         desktopAutomations.invalidate()
         desktopAutomationV2.invalidate()
+        desktopWorkers.invalidate()
         getDesktopEnvironments().invalidate()
         desktopProjects.invalidate()
         if ((frame as { bootstrap_required?: boolean } | null)?.bootstrap_required) {
@@ -435,6 +438,7 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
       this.clientEffectRunner.accept(frame)
       desktopAutomations.acceptFrame(frame)
       desktopAutomationV2.acceptFrame(frame)
+      desktopWorkers.acceptFrame(frame)
       getDesktopEnvironments().acceptFrame(frame)
       desktopProjects.acceptFrame(frame)
       if (frame.kind === 'event' || frame.kind === 'workset.session.discovered' || frame.kind === 'workset.session.updated' || frame.kind === 'workset.session.removed') {
