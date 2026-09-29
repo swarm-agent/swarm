@@ -137,21 +137,9 @@ func ValidatePlanTaskProgramDefinition(program *pebblestore.TaskProgramDefinitio
 			return fmt.Errorf("stages[%d] %q has no jobs", i, stage.ID)
 		}
 	}
-	coderWorkspacePath := ""
-	coderWorkspaceFound := false
-	for _, job := range program.Jobs {
-		if !strings.EqualFold(strings.TrimSpace(job.AgentType), "coder") {
-			continue
-		}
-		workspacePath := strings.TrimSpace(job.WorkspacePath)
-		if !coderWorkspaceFound {
-			coderWorkspacePath, coderWorkspaceFound = workspacePath, true
-			continue
-		}
-		if workspacePath != coderWorkspacePath {
-			return fmt.Errorf("Coder jobs must target one workspace so staged integration has one durable parent Git history")
-		}
-	}
+	// Repository identity is resolved at admission. The scheduler maintains a
+	// separate durable integration lane for every authorized source; unrelated
+	// repositories must not be forced into one parent Git history.
 	for i := range program.Jobs {
 		for j := i + 1; j < len(program.Jobs); j++ {
 			left, right := program.Jobs[i], program.Jobs[j]

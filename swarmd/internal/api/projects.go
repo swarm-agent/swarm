@@ -1229,8 +1229,11 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 		{Kind: pebblestore.WorkspaceGrantPrimary, WorkspaceID: taskWsID, WorkspaceGeneration: task.SourceWorkspace.WorkspaceGeneration, Path: wsPath, Name: filepath.Base(wsPath), Available: &avail},
 	}
 	seenSources := map[string]bool{wsPath: true}
+	sources := append([]pebblestore.ProjectTaskSource(nil), task.ProgramSources...)
 	for _, assignment := range task.CoderAssignments {
-		source := assignment.SourceWorkspace
+		sources = append(sources, assignment.SourceWorkspace)
+	}
+	for _, source := range sources {
 		if !seenSources[source.Path] {
 			grants = append(grants, pebblestore.WorkspaceGrant{Kind: pebblestore.WorkspaceGrantAdditional, WorkspaceID: source.WorkspaceID, WorkspaceGeneration: source.WorkspaceGeneration, Path: source.Path, Name: filepath.Base(source.Path), Available: &avail})
 			seenSources[source.Path] = true

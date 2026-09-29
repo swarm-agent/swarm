@@ -405,6 +405,7 @@ type ProjectTaskRecord struct {
 	PlanBinding         *ProjectTaskPlanBinding      `json:"plan_binding,omitempty"`
 	PlanDocument        *SessionPlanDocument         `json:"plan_document,omitempty"`
 	CoderAssignments    []ProjectTaskCoderAssignment `json:"coder_assignments,omitempty"`
+	ProgramSources      []ProjectTaskSource          `json:"program_sources,omitempty"`
 	TaskProgram         *TaskProgramDefinition       `json:"task_program,omitempty"`
 	TaskProgramID       string                       `json:"task_program_id,omitempty"`
 	TaskProgramStatus   *TaskProgramRecord           `json:"task_program_status,omitempty"`

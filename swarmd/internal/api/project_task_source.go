@@ -102,6 +102,29 @@ func (s *Server) revalidateProjectTaskSource(p identity.Principal, proj *pebbles
 	if bound.Path != task.SourceWorkspace.Path || bound.WorkspaceID != task.SourceWorkspace.WorkspaceID {
 		return errors.New("task source workspace changed")
 	}
+	for _, source := range task.ProgramSources {
+		if source.WorkspaceID == "" || source.WorkspaceGeneration <= 0 || source.Path == "" {
+			return errors.New("program has no durable source binding")
+		}
+		if _, err := s.resolveProjectTaskSource(p, proj, source.Path, source.WorkspaceID, source.WorkspaceGeneration, true); err != nil {
+			return fmt.Errorf("program source: %w", err)
+		}
+	}
+	if task.PlanDocument != nil {
+		resolved, err := s.resolveProjectPlanSources(p, proj, task.PlanDocument, task.SourceWorkspace)
+		if err != nil {
+			return err
+		}
+		for _, source := range resolved {
+			found := source.Path == task.SourceWorkspace.Path && source.WorkspaceID == task.SourceWorkspace.WorkspaceID && source.WorkspaceGeneration == task.SourceWorkspace.WorkspaceGeneration
+			for _, bound := range task.ProgramSources {
+				found = found || source == bound
+			}
+			if !found {
+				return errors.New("plan program source differs from durable admission binding")
+			}
+		}
+	}
 	for i, a := range task.CoderAssignments {
 		if a.SourceWorkspace.WorkspaceID == "" || a.SourceWorkspace.WorkspaceGeneration <= 0 || a.SourceWorkspace.Path == "" {
 			return fmt.Errorf("coder assignment %d has no durable source binding", i+1)
@@ -134,4 +157,38 @@ func verifyProjectTaskSession(task *pebblestore.ProjectTaskRecord, session pebbl
 		return errors.New("coding or plan task session has no isolated worktree")
 	}
 	return nil
+}
+
+// resolveProjectPlanSources resolves only declared Coder/Finder sources before
+// task reservation. Project membership alone never grants filesystem authority.
+func (s *Server) resolveProjectPlanSources(p identity.Principal, proj *pebblestore.ProjectRecord, doc *pebblestore.SessionPlanDocument, primary pebblestore.ProjectTaskSource) ([]pebblestore.ProjectTaskSource, error) {
+	var sources []pebblestore.ProjectTaskSource
+	if doc == nil {
+		return sources, nil
+	}
+	seen := map[string]bool{}
+	for _, checkpoint := range doc.Checkpoints {
+		if checkpoint.TaskProgram == nil {
+			continue
+		}
+		for _, job := range checkpoint.TaskProgram.Jobs {
+			if job.AgentType != "coder" && job.AgentType != "finder" {
+				continue
+			}
+			path := strings.TrimSpace(job.WorkspacePath)
+			if path == "" {
+				path = primary.Path
+			}
+			if seen[path] {
+				continue
+			}
+			source, err := s.resolveProjectTaskSource(p, proj, path, "", 0, true)
+			if err != nil {
+				return nil, fmt.Errorf("program job %q: %w", job.ID, err)
+			}
+			seen[path] = true
+			sources = append(sources, source)
+		}
+	}
+	return sources, nil
 }

@@ -199,6 +199,10 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 		}
 		structDoc = &pebblestore.SessionPlanDocument{Title: title, Info: pebblestore.SessionPlanInfo{Goal: prompt}, Checkpoints: []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Order: 1, Title: title, Tasks: []string{"Execute the proposed task program and verify its deliverables"}, AcceptanceCriteria: []string{"All declared jobs deliver their accepted committed outputs"}, TaskProgram: taskProg}}}
 	}
+	programSources, err := s.resolveProjectPlanSources(p, proj, structDoc, source)
+	if err != nil {
+		return nil, err
+	}
 	featureSize := strings.TrimSpace(input.FeatureSize)
 	outcomeType := strings.TrimSpace(input.OutcomeType)
 	tier := strings.TrimSpace(input.Tier)
@@ -372,6 +376,7 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 		OutcomeType:        outcomeType,
 		WorkspacePath:      wsPath,
 		SourceWorkspace:    source,
+		ProgramSources:     programSources,
 		ClientRequestID:    strings.TrimSpace(input.ClientRequestID),
 		SubmissionHash:     submissionHash,
 		WorktreeBranch:     worktreeBranch,
