@@ -154,7 +154,7 @@ func TestOrdinaryChatAndSubagentsCannotManageWorkers(t *testing.T) {
 
 			for _, args := range actionsToTest {
 				// 1. Check provider invoker denial
-				res, err := invoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{
+				res, err := svc.newProviderToolInvoker(invoker.(*providerToolInvoker).config).ExecuteTool(context.Background(), provideriface.ToolInvocation{
 					Name:      "manage_workers",
 					CallID:    "call-test",
 					Arguments: args,
@@ -167,7 +167,7 @@ func TestOrdinaryChatAndSubagentsCannotManageWorkers(t *testing.T) {
 				}
 
 				// Check manage_automation alias also denied
-				resAuto, err := invoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{
+				resAuto, err := svc.newProviderToolInvoker(invoker.(*providerToolInvoker).config).ExecuteTool(context.Background(), provideriface.ToolInvocation{
 					Name:      "manage_automation",
 					CallID:    "call-test-auto",
 					Arguments: args,
@@ -225,7 +225,7 @@ func TestWorkerActivationAISelfApprovalDenied(t *testing.T) {
 
 	for _, act := range []string{"activate", "approve"} {
 		t.Run(act, func(t *testing.T) {
-			res, err := invoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{
+			res, err := svc.newProviderToolInvoker(invoker.(*providerToolInvoker).config).ExecuteTool(context.Background(), provideriface.ToolInvocation{
 				Name:      "manage_workers",
 				CallID:    "call-act-" + act,
 				Arguments: fmt.Sprintf(`{"action":%q,"worker_id":"worker_123"}`, act),
@@ -260,7 +260,7 @@ func TestOrchestratorWorkerLifecycleActions(t *testing.T) {
 		t.Helper()
 		callNumber++
 		raw, _ := json.Marshal(args)
-		res, err := invoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{
+		res, err := svc.newProviderToolInvoker(invoker.(*providerToolInvoker).config).ExecuteTool(context.Background(), provideriface.ToolInvocation{
 			Name:      "manage_workers",
 			CallID:    fmt.Sprintf("call-step-%d", callNumber),
 			Arguments: string(raw),
@@ -357,7 +357,7 @@ func TestOrchestratorWorkerLifecycleActions(t *testing.T) {
 		"expected_revision": 1, // stale!
 		"name":              "Conflict Name",
 	})
-	staleRes, err := invoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{
+	staleRes, err := svc.newProviderToolInvoker(invoker.(*providerToolInvoker).config).ExecuteTool(context.Background(), provideriface.ToolInvocation{
 		Name:      "manage_workers",
 		CallID:    "call-stale",
 		Arguments: string(staleArgs),
@@ -472,7 +472,7 @@ func TestOrchestratorWorkerLifecycleActions(t *testing.T) {
 		"prompt":          "Cannot run while paused",
 		"idempotency_key": "paused-request",
 	})
-	pausedReqRes, err := invoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{
+	pausedReqRes, err := svc.newProviderToolInvoker(invoker.(*providerToolInvoker).config).ExecuteTool(context.Background(), provideriface.ToolInvocation{
 		Name:      "manage_workers",
 		CallID:    "call-paused-req",
 		Arguments: string(pausedReqArgs),
@@ -524,7 +524,7 @@ func TestOrchestratorWorkerLifecycleActions(t *testing.T) {
 		"action":    "inspect",
 		"worker_id": workerID,
 	})
-	delInspectRes, err := invoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{
+	delInspectRes, err := svc.newProviderToolInvoker(invoker.(*providerToolInvoker).config).ExecuteTool(context.Background(), provideriface.ToolInvocation{
 		Name:      "manage_workers",
 		CallID:    "call-del-inspect",
 		Arguments: string(delInspectArgs),
@@ -562,7 +562,7 @@ func TestScopedAutomationDisableDoesNotStopUnrelatedRuns(t *testing.T) {
 		t.Helper()
 		callNumber++
 		raw, _ := json.Marshal(args)
-		res, err := invoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{
+		res, err := svc.newProviderToolInvoker(invoker.(*providerToolInvoker).config).ExecuteTool(context.Background(), provideriface.ToolInvocation{
 			Name:      "manage_workers",
 			CallID:    fmt.Sprintf("call-step-%d", callNumber),
 			Arguments: string(raw),

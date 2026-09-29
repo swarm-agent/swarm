@@ -86,7 +86,7 @@ func (s *Service) automationV2ToolSession(id string) (store.SessionSnapshot, str
 			return current, wsID, nil
 		}
 	}
-	principal := identity.Principal{UserID: current.UserID, AccountScopeID: current.AccountScopeID}
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: current.UserID, AccountScopeID: current.AccountScopeID, AccountScopeSource: identity.AccountScopeSourceServerState}
 	if current.Metadata != nil && s.sessions != nil {
 		if pid := mapString(current.Metadata, "project_id"); pid != "" {
 			if db := s.sessions.Store(); db != nil {
@@ -142,12 +142,16 @@ func (s *Service) authorizeProposedWorkspace(current store.SessionSnapshot, work
 			return nil
 		}
 	}
-	principal := identity.Principal{UserID: current.UserID, AccountScopeID: current.AccountScopeID}
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: current.UserID, AccountScopeID: current.AccountScopeID, AccountScopeSource: identity.AccountScopeSourceServerState}
 	if s.workspace != nil {
 		entry, found, err := s.workspace.GetByWorkspaceIDForPrincipal(principal, workspaceID)
-		if err == nil && found && strings.TrimSpace(entry.WorkspaceID) != "" {
+		if err != nil {
+			return err
+		}
+		if found && strings.EqualFold(entry.State, "active") {
 			return nil
 		}
+		return fmt.Errorf("workspace %q not found or not accessible in account scope", workspaceID)
 	}
 	if s.sessions != nil && s.sessions.Store() != nil && s.sessions.Store().Underlying() != nil {
 		wsStore := store.NewWorkspaceStore(s.sessions.Store().Underlying())
@@ -250,7 +254,11 @@ func (s *Service) executeCreateOrProposePendingWorker(id string, args map[string
 			if v2.Overlap != "" && v2.Overlap != "serialize" {
 				return "", fmt.Errorf("unsupported overlap policy %q; durable workers require serialize", v2.Overlap)
 			}
-			if rawDoc, ok := args["document"].(map[string]any); ok {
+			var rawDoc map[string]any
+			if err := unmarshalJSONArg(args["document"], &rawDoc); err != nil {
+				return "", err
+			}
+			if rawDoc != nil {
 				for _, k := range []string{"worker_v2", "automation_v2"} {
 					if v2Raw, ok := rawDoc[k].(map[string]any); ok {
 						if act, exists := v2Raw["activate_on_accept"]; exists {
@@ -485,7 +493,7 @@ func workerProposalToolOutput(w store.WorkerRecord) (string, error) {
 			"worker_id": w.ID,
 			"revision":  w.Revision,
 		},
-		"instruction": "Stop authoring. Only explicit user Accept worker creates and activates this schedule; no ordinary plan execution or immediate run.",
+		"instruction": "The durable worker is saved and pending. Stop and let the user review it in Tasks > Workers or its worker detail page. Only explicit Accept worker approves this exact revision and workspace. No immediate run; workers without a job wait for a task. Edit using worker_id and expected_revision.",
 	})
 	return string(raw), err
 }

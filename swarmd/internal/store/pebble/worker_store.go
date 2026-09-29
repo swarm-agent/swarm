@@ -1157,7 +1157,7 @@ func (ws *WorkerStore) UpdateWorker(account, user, workerID string, expectedRevi
 		return WorkerRecord{}, ErrActiveScheduleUpdateRejected
 	}
 	for _, auto := range current.Automations {
-		if auto.Enabled && (auto.ActivationMode == "interval" || auto.ActivationMode == "cron" || auto.ActivationMode == "external_trigger") {
+		if current.LifecycleState != WorkerLifecycleStatePending && auto.Enabled && (auto.ActivationMode == "interval" || auto.ActivationMode == "cron" || auto.ActivationMode == "external_trigger") {
 			return WorkerRecord{}, ErrActiveScheduleUpdateRejected
 		}
 	}
@@ -1504,7 +1504,7 @@ func (ws *WorkerStore) AttachWorkerAutomation(account, user, workerID string, ex
 		return WorkerRecord{}, ErrActiveScheduleUpdateRejected
 	}
 	for _, a := range current.Automations {
-		if a.Enabled && (a.ActivationMode == "interval" || a.ActivationMode == "cron" || a.ActivationMode == "external_trigger") {
+		if current.LifecycleState != WorkerLifecycleStatePending && a.Enabled && (a.ActivationMode == "interval" || a.ActivationMode == "cron" || a.ActivationMode == "external_trigger") {
 			return WorkerRecord{}, ErrActiveScheduleUpdateRejected
 		}
 	}
@@ -1613,7 +1613,7 @@ func (ws *WorkerStore) UpdateWorkerAutomation(account, user, workerID, automatio
 		return WorkerRecord{}, ErrActiveScheduleUpdateRejected
 	}
 	for _, a := range current.Automations {
-		if a.Enabled && (a.ActivationMode == "interval" || a.ActivationMode == "cron" || a.ActivationMode == "external_trigger") {
+		if current.LifecycleState != WorkerLifecycleStatePending && a.Enabled && (a.ActivationMode == "interval" || a.ActivationMode == "cron" || a.ActivationMode == "external_trigger") {
 			return WorkerRecord{}, ErrActiveScheduleUpdateRejected
 		}
 	}
@@ -1732,7 +1732,7 @@ func (ws *WorkerStore) RemoveWorkerAutomation(account, user, workerID, automatio
 		return WorkerRecord{}, ErrActiveScheduleUpdateRejected
 	}
 	for _, a := range current.Automations {
-		if a.Enabled && (a.ActivationMode == "interval" || a.ActivationMode == "cron" || a.ActivationMode == "external_trigger") {
+		if current.LifecycleState != WorkerLifecycleStatePending && a.Enabled && (a.ActivationMode == "interval" || a.ActivationMode == "cron" || a.ActivationMode == "external_trigger") {
 			return WorkerRecord{}, ErrActiveScheduleUpdateRejected
 		}
 	}
@@ -2050,7 +2050,7 @@ func (ws *WorkerStore) ImportWorkerUpdate(account, user, workerID string, expect
 		return WorkerRecord{}, ErrActiveScheduleUpdateRejected
 	}
 	for _, a := range current.Automations {
-		if a.Enabled && (a.ActivationMode == "interval" || a.ActivationMode == "cron" || a.ActivationMode == "external_trigger") {
+		if current.LifecycleState != WorkerLifecycleStatePending && a.Enabled && (a.ActivationMode == "interval" || a.ActivationMode == "cron" || a.ActivationMode == "external_trigger") {
 			return WorkerRecord{}, ErrActiveScheduleUpdateRejected
 		}
 	}

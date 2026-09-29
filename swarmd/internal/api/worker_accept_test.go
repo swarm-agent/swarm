@@ -137,14 +137,14 @@ func TestWorkerAPI_AcceptRejections(t *testing.T) {
 		t.Fatalf("expected 403 for agent origin, got %d: %s", recAgent.Code, recAgent.Body.String())
 	}
 
-	// 5. Explicit agent principal -> 403 Forbidden
+	// 5. An unsupported principal type is not a valid authenticated identity -> 401.
 	agentPrincipal := identity.Principal{Type: "agent", UserID: "subagent-1", AccountScopeID: "acct-test"}
 	recAgentP := executeWorkerAPI(h, http.MethodPost, "/"+w.ID+"/accept", fmt.Sprintf(`{"expected_revision": %d}`, w.Revision), workerAPICallOptions{
 		principal: &agentPrincipal,
 		scopes:    []string{"automations:write"},
 	})
-	if recAgentP.Code != http.StatusForbidden {
-		t.Fatalf("expected 403 for agent principal, got %d: %s", recAgentP.Code, recAgentP.Body.String())
+	if recAgentP.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for invalid agent principal, got %d: %s", recAgentP.Code, recAgentP.Body.String())
 	}
 
 	// 6. Scoped trigger token -> 403 Forbidden

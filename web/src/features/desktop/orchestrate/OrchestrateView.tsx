@@ -3227,11 +3227,13 @@ export function TasksDurableWorkersSection({
   workspaceSlug?: string
   onOpenWorkerDetail?: (workerId: string) => void
 }) {
-  const page = useWorkerPage(useMemo(() => ({ kind: 'list', accountScopeId, limit: 50 }), [accountScopeId]))
+  const [cursor, setCursor] = useState<string | undefined>()
+  const page = useWorkerPage({ kind: 'list', accountScopeId, limit: 50, lifecycleState: 'pending', cursor })
   const workers = page?.data && 'workers' in page.data ? page.data.workers : []
   const pendingWorkers = workers.filter((w) => w.lifecycle_state === 'pending')
 
-  if (pendingWorkers.length === 0) return null
+  const nextCursor = page?.data && 'workers' in page.data ? page.data.next_cursor : undefined
+  if (pendingWorkers.length === 0 && !page?.error && !page?.loading && !cursor) return null
 
   return (
     <div className="mx-3.5 mt-2 mb-1.5 space-y-2" data-testid="tasks-pending-workers-section">
@@ -3246,19 +3248,23 @@ export function TasksDurableWorkersSection({
           </span>
         </div>
       </div>
+      {page?.error && <p role="alert">Worker proposals: {page.error}</p>}
+      {page?.loading && !page.data && <p role="status">Loading pending workers…</p>}
       <div className="space-y-2">
         {pendingWorkers.map((worker) => (
           <PendingWorkerCard
-            key={worker.id}
+            key={`${worker.id}:${worker.revision}`}
             worker={worker}
             accountScopeId={accountScopeId}
             workspaceSlug={workspaceSlug}
-            stale={page?.stale}
+            stale={!!page?.stale || !!page?.error}
             mutationError={page?.mutationError}
             onOpenDetail={onOpenWorkerDetail}
           />
         ))}
       </div>
+      {nextCursor && <button type="button" onClick={() => setCursor(nextCursor)}>Next pending workers</button>}
+      {cursor && <button type="button" onClick={() => setCursor(undefined)}>First pending workers</button>}
     </div>
   )
 }
@@ -6414,6 +6420,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
             {/* TASKS VIEW DURABLE WORKERS SECTION (PENDING WORKERS AWAITING ACCEPTANCE) */}
             {accountScopeId && (
               <TasksDurableWorkersSection
+                key={accountScopeId}
                 accountScopeId={accountScopeId}
                 workspaceSlug={workspaceSlug}
                 onOpenWorkerDetail={(workerId) => {

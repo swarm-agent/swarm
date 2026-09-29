@@ -3,7 +3,7 @@ import { Bot, ChevronDown, ChevronUp, CheckCircle2, ExternalLink } from 'lucide-
 import { desktopWorkers } from '../runtime/desktop-workers'
 import type { WorkerAutomation, WorkerRecord } from '../state/desktop-workers-api'
 import { swarmWorkerHref } from './swarm-navigation'
-import { formatWorkerSchedule } from './worker-hub'
+import { formatWorkerSchedule } from './worker-schedule'
 
 export interface PendingWorkerCardProps {
   worker: WorkerRecord
@@ -114,7 +114,7 @@ export function PendingWorkerCard({
           {/* Standing instructions */}
           <div className="space-y-1" data-testid="pending-worker-instructions">
             <h4 className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Standing Instructions</h4>
-            <p className="text-xs text-slate-200 whitespace-pre-wrap rounded-lg bg-slate-950/80 p-2.5 border border-slate-800 leading-relaxed font-mono">
+            <p className="text-xs text-slate-200 whitespace-pre-wrap break-words rounded-lg bg-slate-950/80 p-2.5 border border-slate-800 leading-relaxed font-mono">
               {worker.instructions || 'No instructions'}
             </p>
           </div>
@@ -287,6 +287,8 @@ export function PendingWorkerCard({
                         )}
                       </div>
                     </div>
+                    <p>{auto.enabled ? 'Enabled after acceptance' : 'Disabled; will not run'} · {auto.activation_mode === 'manual' ? 'Waits for an explicit task; acceptance does not run this job.' : 'Follows the disclosed schedule or trigger after acceptance.'}</p>
+                    <details><summary>Complete job definition</summary><pre className="whitespace-pre-wrap break-words max-h-80 overflow-auto">{JSON.stringify(auto, null, 2)}</pre></details>
                   </div>
                 ))}
               </div>
@@ -298,7 +300,7 @@ export function PendingWorkerCard({
             className="p-2.5 rounded-xl bg-slate-950/60 border border-slate-800 text-[11px] text-slate-400 italic"
             data-testid="pending-worker-execution-blocked"
           >
-            Execution controls are blocked while worker is pending human acceptance. Direct and scheduled runs will only activate after acceptance.
+            Nothing runs while this worker is pending. Acceptance enables the disclosed schedules; manual jobs and workers without jobs wait for an explicit task.
           </div>
 
           {/* Actions & Granular URL */}
@@ -318,7 +320,7 @@ export function PendingWorkerCard({
               <a
                 href={detailHref}
                 onClick={(e) => {
-                  if (onOpenDetail) {
+                  if (onOpenDetail && !e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey && e.button === 0) {
                     e.preventDefault()
                     onOpenDetail(worker.id)
                   }

@@ -2,6 +2,7 @@ package run
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -47,7 +48,7 @@ func TestWorkerPendingProposal_ZeroJobsAndAutomations(t *testing.T) {
 		"workspace_id": %q
 	}`, workspaceID)
 
-	res, err := invoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{
+	res, err := svc.newProviderToolInvoker(invoker.(*providerToolInvoker).config).ExecuteTool(context.Background(), provideriface.ToolInvocation{
 		Name:      "manage_workers",
 		CallID:    "call-zero-job",
 		Arguments: zeroJobArgs,
@@ -116,6 +117,8 @@ func TestWorkerPendingProposal_ZeroJobsAndAutomations(t *testing.T) {
 		"checkpoints": []map[string]any{
 			{
 				"id":                  "cp-1",
+				"order":               1,
+				"status":              "pending",
 				"title":               "Inspect PRs",
 				"tasks":               []string{"Fetch diff", "Check invariants"},
 				"acceptance_criteria": []string{"Report produced"},
@@ -125,7 +128,7 @@ func TestWorkerPendingProposal_ZeroJobsAndAutomations(t *testing.T) {
 	docBytes, _ := json.Marshal(doc)
 	jobProposalArgs := fmt.Sprintf(`{"action":"propose","document":%s}`, string(docBytes))
 
-	res2, err := invoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{
+	res2, err := svc.newProviderToolInvoker(invoker.(*providerToolInvoker).config).ExecuteTool(context.Background(), provideriface.ToolInvocation{
 		Name:      "manage_workers",
 		CallID:    "call-job-proposal",
 		Arguments: jobProposalArgs,
@@ -171,7 +174,7 @@ func TestWorkerPendingProposal_NoRunCreatedPreAccept(t *testing.T) {
 		terminalPlanState:    &terminalPlanToolState{},
 	})
 
-	res, err := invoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{
+	res, err := svc.newProviderToolInvoker(invoker.(*providerToolInvoker).config).ExecuteTool(context.Background(), provideriface.ToolInvocation{
 		Name:      "manage_workers",
 		CallID:    "call-prop",
 		Arguments: fmt.Sprintf(`{"action":"propose","name":"Pending Worker","instructions":"Do tasks","workspace_id":%q}`, workspaceID),
@@ -243,7 +246,7 @@ func TestWorkerPendingProposal_AcceptanceTransitionsToActive(t *testing.T) {
 		terminalPlanState:    &terminalPlanToolState{},
 	})
 
-	res, err := invoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{
+	res, err := svc.newProviderToolInvoker(invoker.(*providerToolInvoker).config).ExecuteTool(context.Background(), provideriface.ToolInvocation{
 		Name:      "manage_workers",
 		CallID:    "call-prop-accept",
 		Arguments: fmt.Sprintf(`{"action":"propose","name":"Acceptance Worker","instructions":"Standing instructions","workspace_id":%q}`, workspaceID),
@@ -313,7 +316,7 @@ func TestWorkerPendingProposal_RejectionCases(t *testing.T) {
 		terminalPlanState:    &terminalPlanToolState{},
 	})
 
-	res, err := invoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{
+	res, err := svc.newProviderToolInvoker(invoker.(*providerToolInvoker).config).ExecuteTool(context.Background(), provideriface.ToolInvocation{
 		Name:      "manage_workers",
 		CallID:    "call-rejections",
 		Arguments: fmt.Sprintf(`{"action":"propose","name":"Rejection Worker","instructions":"Tasks","workspace_id":%q}`, workspaceID),
@@ -343,7 +346,7 @@ func TestWorkerPendingProposal_RejectionCases(t *testing.T) {
 
 	// 3. AI self-approval rejection
 	for _, act := range []string{"accept", "activate", "approve"} {
-		aiRes, aiErr := invoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{
+		aiRes, aiErr := svc.newProviderToolInvoker(invoker.(*providerToolInvoker).config).ExecuteTool(context.Background(), provideriface.ToolInvocation{
 			Name:      "manage_workers",
 			CallID:    "call-ai-" + act,
 			Arguments: fmt.Sprintf(`{"action":%q,"worker_id":%q,"expected_revision":1}`, act, workerID),
@@ -382,7 +385,7 @@ func TestWorkerPendingProposal_ReproposalAndUpdates(t *testing.T) {
 	})
 
 	// 1. Initial proposal
-	res, err := invoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{
+	res, err := svc.newProviderToolInvoker(invoker.(*providerToolInvoker).config).ExecuteTool(context.Background(), provideriface.ToolInvocation{
 		Name:      "manage_workers",
 		CallID:    "call-init",
 		Arguments: fmt.Sprintf(`{"action":"propose","name":"Draft Specialist","instructions":"Initial instructions","workspace_id":%q}`, workspaceID),
@@ -404,7 +407,7 @@ func TestWorkerPendingProposal_ReproposalAndUpdates(t *testing.T) {
 		"workspace_id": %q
 	}`, workerID, workspaceID)
 
-	res2, err := invoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{
+	res2, err := svc.newProviderToolInvoker(invoker.(*providerToolInvoker).config).ExecuteTool(context.Background(), provideriface.ToolInvocation{
 		Name:      "manage_workers",
 		CallID:    "call-reprop",
 		Arguments: repropArgs,
@@ -432,10 +435,11 @@ func TestWorkerPendingProposal_ReproposalAndUpdates(t *testing.T) {
 		"action": "propose",
 		"worker_id": %q,
 		"expected_revision": 1,
-		"name": "Stale Attempt"
+		"name": "Stale Attempt",
+		"instructions": "Do tasks"
 	}`, workerID)
 
-	resStale, err := invoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{
+	resStale, err := svc.newProviderToolInvoker(invoker.(*providerToolInvoker).config).ExecuteTool(context.Background(), provideriface.ToolInvocation{
 		Name:      "manage_workers",
 		CallID:    "call-stale-reprop",
 		Arguments: staleArgs,
@@ -470,7 +474,7 @@ func TestWorkerOrchestratorCreate_CannotBypassPending(t *testing.T) {
 		"workspace_id": %q
 	}`, workspaceID)
 
-	res, err := invoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{
+	res, err := svc.newProviderToolInvoker(invoker.(*providerToolInvoker).config).ExecuteTool(context.Background(), provideriface.ToolInvocation{
 		Name:      "manage_workers",
 		CallID:    "call-create",
 		Arguments: createArgs,
@@ -617,9 +621,9 @@ func TestWorkerPendingProposal_LegacyDocumentValidationAndNormalization(t *testi
 			agentProfile:         orchProfile,
 			terminalPlanState:    &terminalPlanToolState{},
 		})
-		res, err := invoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{
+		res, err := svc.newProviderToolInvoker(invoker.(*providerToolInvoker).config).ExecuteTool(context.Background(), provideriface.ToolInvocation{
 			Name:      "manage_workers",
-			CallID:    "call-doc-test",
+			CallID:    fmt.Sprintf("call-doc-test-%x", sha256.Sum256([]byte(args))),
 			Arguments: args,
 		})
 		if err != nil {
@@ -648,6 +652,8 @@ func TestWorkerPendingProposal_LegacyDocumentValidationAndNormalization(t *testi
 			"checkpoints": []map[string]any{
 				{
 					"id":                  "cp-1",
+					"order":               1,
+					"status":              "pending",
 					"title":               "Run check",
 					"tasks":               []string{"Verify status"},
 					"acceptance_criteria": []string{"Verified"},
@@ -770,7 +776,7 @@ func TestWorkerPendingProposal_ReproposalRequiresExpectedRevisionAndCanRemoveAut
 		]
 	}`, workspaceID)
 
-	resInit, err := invoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{
+	resInit, err := svc.newProviderToolInvoker(invoker.(*providerToolInvoker).config).ExecuteTool(context.Background(), provideriface.ToolInvocation{
 		Name:      "manage_workers",
 		CallID:    "call-init-auto",
 		Arguments: initArgs,
@@ -796,7 +802,7 @@ func TestWorkerPendingProposal_ReproposalRequiresExpectedRevisionAndCanRemoveAut
 		"worker_id": %q,
 		"name": "Missing Revision Rename"
 	}`, workerID)
-	resMissingRev, err := invoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{
+	resMissingRev, err := svc.newProviderToolInvoker(invoker.(*providerToolInvoker).config).ExecuteTool(context.Background(), provideriface.ToolInvocation{
 		Name:      "manage_workers",
 		CallID:    "call-missing-rev",
 		Arguments: missingRevArgs,
@@ -823,7 +829,7 @@ func TestWorkerPendingProposal_ReproposalRequiresExpectedRevisionAndCanRemoveAut
 		"instructions": "Now a job-free specialist",
 		"automations": []
 	}`, workerID)
-	resClear, err := invoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{
+	resClear, err := svc.newProviderToolInvoker(invoker.(*providerToolInvoker).config).ExecuteTool(context.Background(), provideriface.ToolInvocation{
 		Name:      "manage_workers",
 		CallID:    "call-clear-autos",
 		Arguments: clearAutosArgs,

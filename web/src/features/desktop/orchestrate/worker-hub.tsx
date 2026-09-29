@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
+import { PendingWorkerCard } from './pending-worker-card'
+import { formatWorkerSchedule } from './worker-schedule'
 import { getDesktopSessionIdentitySnapshot } from '../../../app/api'
 import { desktopWorkers, useWorkerPage } from '../runtime/desktop-workers'
 import type { WorkerAutomation, WorkerAutomationInput, WorkerMutation, WorkerMutationResult, WorkerRecord, WorkerRun, WorkerSummary } from '../state/desktop-workers-api'
@@ -16,13 +18,6 @@ function summaryText(summary?: WorkerSummary): string {
   if (!summary) return 'Summary unavailable.'
   const r = summary.runs
   return `${r.date} (${r.timezone}): ${r.truncated ? 'Partial counts' : 'Total'} ${r.daily_runs} runs · ${r.daily_success} succeeded · ${r.daily_failed} failed · ${r.daily_cancelled} cancelled · ${r.active_runs} active/admitted${r.active_truncated ? ' (active list truncated)' : ''}. Next eligible schedule: ${summary.next_scheduled_at ? date(summary.next_scheduled_at) : 'none reported'} (not a dispatch promise).`
-}
-export function formatWorkerSchedule(auto: WorkerAutomation): string {
-  const s = auto.schedule
-  if (!s) return auto.activation_mode === 'manual' ? 'Manual' : `${auto.activation_mode} (schedule unavailable)`
-  if (s.kind === 'interval') return `Every ${s.interval_seconds ?? '?'} seconds (${s.timezone || 'timezone not specified'})`
-  if (s.kind === 'cron') return `${s.cron || 'Cron not specified'} (${s.timezone || 'timezone not specified'})`
-  return `External trigger (${auto.trigger?.trigger_kind || 'configuration unavailable'})`
 }
 /** Never regenerate an idempotency key on a transport failure. A changed draft starts a new intent. */
 export function useWorkerIntentKeys() {
@@ -157,6 +152,7 @@ export function WorkerDetail({ accountScopeId, workerId, workspaceSlug, onSelect
     <div className="flex justify-between"><h3 className="text-white font-bold">{worker?.name || workerId}</h3><button className={button} onClick={onClose}>Close detail</button></div>
     {detail?.error && <p role="alert">Worker detail: {detail.error}. This worker may have been removed.</p>}{detail?.mutationError && <p role="alert">Worker change: {detail.mutationError}</p>}
     {detail?.stale && <p className="text-amber-300">Detail refreshing; do not act on stale revisions.</p>}
+    {worker?.lifecycle_state === 'pending' && <PendingWorkerCard key={`${worker.id}:${worker.revision}`} worker={worker} accountScopeId={accountScopeId} workspaceSlug={workspaceSlug} initialExpanded stale={!!detail?.stale || !!detail?.error} mutationError={detail?.mutationError} />}
     {worker && <>
       <p className="font-mono">ID: {worker.id} · revision {worker.revision} · {worker.lifecycle_state}</p>
       {worker.lifecycle_state === 'stopping' && <p role="status">Stopping: awaiting active run acknowledgement. Refresh for the final lifecycle state.</p>}
@@ -167,7 +163,6 @@ export function WorkerDetail({ accountScopeId, workerId, workspaceSlug, onSelect
       <section><h4 className="font-bold text-white">Capabilities</h4><p>Requested (not a grant): {(worker.requested_capabilities || []).map(cap => `${cap.type}/${cap.name}`).join(', ') || 'None'}</p><p>Approved grants are not reported by this API; activation rejects unsupported grants.</p></section>
       {!readOnly && <div className="flex flex-wrap gap-2">
         <button className={button} disabled={busy || !!detail?.stale} onClick={() => { setName(worker.name); setInstructions(worker.instructions); setEditing(!editing) }}>Edit definition</button>
-        {worker.lifecycle_state === 'pending' && <button className="rounded-lg border border-emerald-600 bg-emerald-600/90 px-3 py-1.5 text-xs font-bold text-white hover:bg-emerald-500 disabled:opacity-50" disabled={busy || !!detail?.stale} onClick={() => void mutate(w => ({ action: 'accept', workerId: w.id, expected_revision: w.revision }), 'Worker accepted and activated.')} data-testid="accept-worker-hub-button">Accept worker</button>}
         {worker.lifecycle_state === 'idle' && <><button className={button} disabled={busy || !!detail?.stale || !binding.trim()} onClick={() => void mutate(w => ({ action: 'activate', workerId: w.id, expected_revision: w.revision, local_bindings: { primary: binding.trim() }, activate: false }), 'Binding approved; worker remains idle. Test before activation.')}>Approve binding (remain idle)</button><button className={button} disabled={busy || !!detail?.stale || !(binding.trim() || worker.local_bindings?.primary)} onClick={() => void mutate(w => ({ action: 'activate', workerId: w.id, expected_revision: w.revision, local_bindings: { primary: binding.trim() || worker.local_bindings!.primary }, activate: true }), 'Local activation accepted.')}>Activate locally</button></>}
         {(worker.lifecycle_state === 'paused' || worker.lifecycle_state === 'active') && <button className={button} disabled={busy || !!detail?.stale} onClick={() => void mutate(w => ({ action: w.lifecycle_state === 'active' ? 'pause' : 'resume', workerId: w.id, expected_revision: w.revision }), 'Lifecycle change confirmed.')}>{worker.lifecycle_state === 'active' ? 'Pause' : 'Resume'}</button>}
         {worker.lifecycle_state !== 'archived' && worker.lifecycle_state !== 'deleted' && worker.lifecycle_state !== 'stopping' && <button className={button} disabled={busy || !!detail?.stale} onClick={() => setConfirm('archive')}>Archive…</button>}

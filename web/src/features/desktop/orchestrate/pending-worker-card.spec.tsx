@@ -132,8 +132,8 @@ test('PendingWorkerCard expanded view surfaces instructions, workspaces, capabil
   // Capabilities: Requests, not grants
   assert.match(html, /Requested Capabilities/)
   assert.match(html, /Capabilities are requests, not grants/)
-  assert.match(html, /fs\/read\(required\)/)
-  assert.match(html, /git\/status\(required\)/)
+  assert.match(html, /fs\/read \(required\)/)
+  assert.match(html, /git\/status \(required\)/)
 
   // Job intent: Clear no-job statement
   assert.match(html, /data-testid="pending-worker-no-job"/)
@@ -141,7 +141,7 @@ test('PendingWorkerCard expanded view surfaces instructions, workspaces, capabil
 
   // Blocked execution controls
   assert.match(html, /data-testid="pending-worker-execution-blocked"/)
-  assert.match(html, /Execution controls are blocked while worker is pending human acceptance/)
+  assert.match(html, /Nothing runs while this worker is pending/)
 
   // Actions: Accept worker button & Granular URL
   assert.match(html, /data-testid="accept-pending-worker"/)
@@ -167,7 +167,7 @@ test('PendingWorkerCard expanded view surfaces complete job intent with checkpoi
   assert.match(html, /Nightly CVE Audit/)
   assert.match(html, /Check dependencies for known CVEs/)
   assert.match(html, /Timing:\s*Every 86400 seconds \(UTC\)/)
-  assert.match(html, /Plan:\s*CVE Audit Execution/)
+  assert.match(html.replace(/<[^>]+>/g, ' '), /Plan:\s*CVE Audit Execution/)
   assert.match(html, /Goal: Identify and report known vulnerabilities in dependencies/)
 
   // Complete Checkpoints, tasks & acceptance criteria

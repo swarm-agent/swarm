@@ -463,6 +463,7 @@ func TestAutomationV2ManageWorkersHelpAndProjectWorkspaceResolution(t *testing.T
 		Metadata: map[string]any{
 			"project_id": projID,
 			"role":       "project_orchestrator",
+			"agent_name": "orchestrator",
 		},
 	}
 	if err := ss.CreateSession(orchSession); err != nil {
@@ -549,6 +550,7 @@ func TestProjectScopedWorkerProposalAndChatRejection(t *testing.T) {
 		Metadata: map[string]any{
 			"project_id": projID,
 			"role":       "project_orchestrator",
+			"agent_name": "orchestrator",
 		},
 	}
 	if err := ss.CreateSession(orchSession); err != nil {
@@ -566,6 +568,8 @@ func TestProjectScopedWorkerProposalAndChatRejection(t *testing.T) {
 		"checkpoints": []map[string]any{
 			{
 				"id":                  "cp-1",
+				"order":               1,
+				"status":              "pending",
 				"title":               "Run check",
 				"tasks":               []string{"Verify health"},
 				"acceptance_criteria": []string{"Audit passes"},
