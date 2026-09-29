@@ -20,7 +20,6 @@ import {
   FileText,
   Film,
   Folder,
-  FolderTree,
   FolderGit2,
   FolderPlus,
   GitBranch,
@@ -56,12 +55,13 @@ import {
   Zap,
 } from 'lucide-react'
 import { formatContextWindow } from '../chat/services/model-options'
-import { requestJson } from '../../../app/api'
+import { requestJson, getDesktopSessionIdentitySnapshot } from '../../../app/api'
+import { WorkerHub, type SelectedWorker } from './worker-hub'
+import { submitWithWorkerSelection } from './worker-message-context'
 import { useDesktopV3CacheSelector, getDesktopV3CacheSnapshot } from '../state/desktop-v3-cache-store'
 import { selectPendingWorkerSidebarReviews } from '../state/desktop-automation-v2-state'
 import { desktopAutomationV2 } from '../runtime/desktop-automation-v2'
 import { decidePendingWorkerReview } from '../tools/automations/pending-worker-sidebar-reviews'
-import type { AutomationV2Proposal } from '../state/desktop-automation-v2-api'
 import { DesktopV3ExistingConversationPane, resolveDesktopV3StopRunRequest } from '../chat/components/desktop-v3-existing-conversation-pane'
 import {
   isDesktopV3SessionTailReady,
@@ -74,8 +74,6 @@ import { HistoricalMediaLibrary, MediaViewerModal, type MediaLibraryItem } from 
 import type { MediaGenerationJob, MediaGenerationRequest, MediaGenerationSettings } from '../tools/media-library/media-generation'
 import type { QuickRouteMode } from '../tools/media-library/media-viewer-modal'
 import { ORCHESTRATE_THEMES } from './orchestrate-themes'
-import { listStorageWorkers, activateStorageWorker } from '../storage/api'
-import type { StorageDiscoveredWorker } from '../storage/types'
 import {
   desktopProjects,
   useDesktopProject,
@@ -2512,7 +2510,7 @@ function MinimalTaskCard({
  * validation, and rejects stale, missing, or cross-project tasks.
  * Includes attachments, running states (active run stop/busy), and pending permissions.
  */
-function OrchestratorChatComposer({
+export function OrchestratorChatComposer({
   sessionId,
   session,
   project,
@@ -2520,8 +2518,17 @@ function OrchestratorChatComposer({
   selectedTaskId,
   allTasks: _allTasks,
   onDeselectTask,
+  selectedWorker,
+  currentSelectedWorker,
+  onDeselectWorker,
+  submitMessage = continueDesktopV3Conversation,
 }: {
   sessionId: string
+  /** Replace only the network submission boundary in rendered tests. */
+  submitMessage?: typeof continueDesktopV3Conversation
+  selectedWorker?: SelectedWorker | null
+  currentSelectedWorker?: () => SelectedWorker | null
+  onDeselectWorker?: (consumed: SelectedWorker | null) => void
   session?: DesktopSessionRecord | SessionSnapshot | null
   project?: ProjectSummary
   targetTask?: RunningTask | null
@@ -2681,7 +2688,10 @@ function OrchestratorChatComposer({
         media: attachments.length > 0 ? attachments : undefined,
       })
 
-      await continueDesktopV3Conversation(operation)
+      await submitWithWorkerSelection(!effectiveTaskId ? selectedWorker || null : null, async (workerMetadata) => {
+        operation.request.metadata = { ...operation.request.metadata, ...workerMetadata }
+        await submitMessage(operation)
+      }, currentSelectedWorker || (() => selectedWorker || null), () => onDeselectWorker?.(selectedWorker || null))
       setDraft('')
       setAttachments([])
     } catch (err: any) {
@@ -2740,6 +2750,12 @@ function OrchestratorChatComposer({
         </div>
       )}
 
+      {selectedWorker && !targetTask && !selectedTaskId && (
+        <div className="flex items-center justify-between rounded-lg border border-indigo-500/30 bg-indigo-950/40 px-2.5 py-1 text-indigo-200" data-testid="composer-worker-context-chip">
+          <span>Next message only: {selectedWorker.name} (r{selectedWorker.revision}) · no task dispatched</span>
+          <button type="button" aria-label="Remove selected worker" onClick={() => onDeselectWorker?.(selectedWorker)}><X size={12} /></button>
+        </div>
+      )}
       {/* Attachments preview list */}
       {attachments.length > 0 && (
         <div className="flex flex-wrap gap-1.5 pb-1">
@@ -2863,8 +2879,14 @@ function OrchestratorChatSidebar({
   onBackToOrchestrator,
   onOrchestratorSessionReset,
   onDeselectTask,
+  selectedWorker,
+  currentSelectedWorker,
+  onDeselectWorker,
 }: {
   sessionId: string
+  selectedWorker?: SelectedWorker | null
+  currentSelectedWorker?: () => SelectedWorker | null
+  onDeselectWorker?: (consumed: SelectedWorker | null) => void
   project?: ProjectSummary
   activeTask?: RunningTask
   selectedTask?: RunningTask | null
@@ -3135,6 +3157,9 @@ function OrchestratorChatSidebar({
             selectedTaskId={selectedTaskId}
             allTasks={allTasks}
             onDeselectTask={onDeselectTask}
+            selectedWorker={activeTask ? null : selectedWorker}
+            currentSelectedWorker={currentSelectedWorker}
+            onDeselectWorker={onDeselectWorker}
           />
         }
         contextChip={
@@ -3299,6 +3324,24 @@ export function OrchestrateView({
 
   // Split Studio selected task state
   const [selectedTaskId, setSelectedTaskId] = useState<string>('')
+  const [selectedWorker, setSelectedWorker] = useState<SelectedWorker | null>(null)
+  const selectedWorkerRef = useRef<SelectedWorker | null>(null)
+  const selectWorker = (worker: SelectedWorker | null) => {
+    selectedWorkerRef.current = worker
+    setSelectedWorker(worker)
+    if (worker) {
+      setActiveTaskId(null)
+      setSelectedTaskId('')
+      const primary = selectedProject?.primarySessionId
+      if (primary) {
+        previousWorkerContextScope.current = `${getDesktopSessionIdentitySnapshot()?.accountScopeId || ''}:${workspaceSlug || ''}:${selectedProject?.id || ''}:${primary}`
+        setActiveSessionId(primary)
+      }
+    }
+  }
+  const clearConsumedWorker = (worker: SelectedWorker | null) => {
+    if (selectedWorkerRef.current === worker) { selectedWorkerRef.current = null; setSelectedWorker(null) }
+  }
 
   // Only the asset viewer is transient; the library itself is a routed page.
   const [activeMediaViewerItem, setActiveMediaViewerItem] = useState<MediaLibraryItem | null>(null)
@@ -3317,7 +3360,21 @@ export function OrchestrateView({
     select: (state) => state.matches[state.matches.length - 1]?.params as { workspaceSlug?: string; swarmSection?: string } | undefined,
   }) ?? {}
   const navigate = useNavigate()
+  const routeWorkerId = useRouterState({ select: state => {
+    const search = state.location.search as { workerId?: unknown }
+    return typeof search?.workerId === 'string' && search.workerId.startsWith('worker_') ? search.workerId : undefined
+  } })
   const workspaceSlug = routeParams.workspaceSlug ?? workspaceSlugProp
+  // Worker context belongs to one account, workspace, project and session only.
+  const workerContextScope = `${getDesktopSessionIdentitySnapshot()?.accountScopeId || ''}:${workspaceSlug || ''}:${selectedProject?.id || ''}:${activeSessionId}`
+  const previousWorkerContextScope = useRef(workerContextScope)
+  useEffect(() => {
+    if (previousWorkerContextScope.current !== workerContextScope) {
+      previousWorkerContextScope.current = workerContextScope
+      selectedWorkerRef.current = null
+      setSelectedWorker(null)
+    }
+  }, [workerContextScope])
   const activeNavTab: SwarmPage = isSwarmSection(routeParams.swarmSection) ? routeParams.swarmSection : 'home'
   const showFullMediaCenter = activeNavTab === 'media'
   const setActiveNavTab = (page: SwarmPage) => { void navigate(swarmPageLink(workspaceSlug, page)) }
@@ -3333,50 +3390,7 @@ export function OrchestrateView({
     )
   )
   const [reviewBusyId, setReviewBusyId] = useState<string | null>(null)
-  const [reviewError, setReviewError] = useState<{ id: string; message: string } | null>(null)
-  const [editingScopePermissionId, setEditingScopePermissionId] = useState<string | null>(null)
-  const [editedWorkspaceIds, setEditedWorkspaceIds] = useState<string[]>([])
-  const [savingScope, setSavingScope] = useState(false)
-
-  const handleUpdateWorkerWorkspaceScope = async (permissionId: string, proposal: AutomationV2Proposal, newWorkspaceIds: string[]) => {
-    if (savingScope || newWorkspaceIds.length === 0) return
-    setSavingScope(true)
-    setReviewError(null)
-    try {
-      const primaryWs = newWorkspaceIds[0] || proposal.workspace_id
-      const currentDoc = proposal.document
-      const baseSettings = ((currentDoc as any)?.worker_v2 || currentDoc.automation_v2 || {}) as Record<string, unknown>
-      const updatedDoc = {
-        ...currentDoc,
-        worker_v2: {
-          ...baseSettings,
-          workspace_id: primaryWs,
-          workspace_ids: newWorkspaceIds,
-        },
-        automation_v2: {
-          ...baseSettings,
-          workspace_id: primaryWs,
-          workspace_ids: newWorkspaceIds,
-        },
-      }
-      await desktopAutomationV2.mutate({
-        action: 'propose_automation',
-        workspace_id: proposal.workspace_id,
-        session_id: proposal.session_id,
-        document: updatedDoc as any,
-        review: {
-          proposal_id: proposal.proposal_id,
-          revision: proposal.revision,
-          digest: proposal.digest,
-        },
-      })
-      setEditingScopePermissionId(null)
-    } catch (cause) {
-      setReviewError({ id: permissionId, message: cause instanceof Error ? cause.message : 'Failed to update workspace scope.' })
-    } finally {
-      setSavingScope(false)
-    }
-  }
+  const [reviewError, setReviewError] = useState<string | null>(null)
 
   const handleDecideReview = async (id: string, revision: number, digest: string, action: 'accept_automation' | 'decline_automation') => {
     if (reviewBusyId) return
@@ -3385,40 +3399,9 @@ export function OrchestrateView({
     try {
       await decidePendingWorkerReview(getDesktopV3CacheSnapshot(), id, revision, digest, action, (input) => desktopAutomationV2.mutate(input))
     } catch (cause) {
-      setReviewError({ id, message: cause instanceof Error ? cause.message : 'Worker decision failed.' })
+      setReviewError(cause instanceof Error ? cause.message : 'Worker decision failed.')
     } finally {
       setReviewBusyId(null)
-    }
-  }
-
-  const [cloudWorkers, setCloudWorkers] = useState<StorageDiscoveredWorker[]>([])
-  const [cloudWorkersError, setCloudWorkersError] = useState<string | null>(null)
-  const [activatingWorkerId, setActivatingWorkerId] = useState<string | null>(null)
-
-  const fetchCloudWorkers = useCallback(async () => {
-    try {
-      setCloudWorkersError(null)
-      const workers = await listStorageWorkers()
-      setCloudWorkers(workers)
-    } catch (err) {
-      setCloudWorkersError(err instanceof Error ? err.message : 'Failed to discover storage workers')
-    }
-  }, [])
-
-  useEffect(() => {
-    void fetchCloudWorkers()
-  }, [fetchCloudWorkers])
-
-  const handleActivateCloudWorker = async (workerId: string) => {
-    setActivatingWorkerId(workerId)
-    try {
-      await activateStorageWorker(workerId)
-      await fetchCloudWorkers()
-    } catch (err) {
-      console.error('Failed to activate cloud worker', err)
-      setCloudWorkersError(err instanceof Error ? err.message : 'Failed to activate cloud worker')
-    } finally {
-      setActivatingWorkerId(null)
     }
   }
 
@@ -4067,6 +4050,8 @@ export function OrchestrateView({
 
   // Task selection & Per-Task Session Switching
   const handleSelectTask = (task: RunningTask) => {
+    selectedWorkerRef.current = null
+    setSelectedWorker(null)
     setSelectedTaskId(task.id)
     if (task.sessionId) {
       setActiveSessionId(task.sessionId)
@@ -6040,556 +6025,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
             </div>
           </div>
         ) : activeNavTab === 'workers' ? (
-          /* WORKERS HUB TAB */
-          <div className="flex-1 flex flex-col min-h-0 overflow-y-auto p-6 space-y-6 max-w-5xl mx-auto w-full">
-            <div className="flex items-center justify-between pb-4 border-b border-slate-800">
-              <div className="flex items-center gap-3">
-                <div className="h-9 w-9 rounded-xl bg-blue-600/20 text-blue-400 flex items-center justify-center border border-blue-500/30">
-                  <Bot size={18} />
-                </div>
-                <div>
-                  <h2 className="text-base font-bold text-white tracking-tight">Workers & Autonomous Fleet</h2>
-                  <p className="text-xs text-slate-400 mt-0.5">
-                    Autonomous workers, on-demand trigger endpoints, and cloud deployments
-                  </p>
-                </div>
-              </div>
-              <div className="flex items-center gap-2">
-                {pendingReviews.length > 0 && (
-                  <span className="rounded-full bg-amber-500/15 text-amber-400 border border-amber-500/30 px-2.5 py-1 text-xs font-semibold flex items-center gap-1.5 animate-pulse">
-                    <span className="h-1.5 w-1.5 rounded-full bg-amber-400" />
-                    {pendingReviews.length} Proposal Pending Review
-                  </span>
-                )}
-                <span className="rounded-lg bg-slate-900 border border-slate-800 px-2.5 py-1 text-xs text-slate-400 font-mono">
-                  {automations.length} Registered
-                </span>
-                <button
-                  type="button"
-                  onClick={() => void fetchCloudWorkers()}
-                  className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-800 text-xs text-slate-300 font-medium transition-colors"
-                  title="Refresh workers"
-                >
-                  <RefreshCw size={11} />
-                  <span>Refresh</span>
-                </button>
-              </div>
-            </div>
-
-            {/* PENDING WORKER PROPOSALS SECTION */}
-            {pendingReviews.length > 0 && (
-              <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <span className="text-[11px] font-bold uppercase tracking-wider text-amber-400 flex items-center gap-1.5">
-                    <Sparkles size={13} />
-                    Pending Worker Proposals Awaiting Acceptance
-                  </span>
-                </div>
-
-                {pendingReviews.map(({ permission, proposal }) => {
-                  const doc = proposal.document
-                  const schedule = doc?.automation_v2?.schedule
-                  const isTrigger = schedule?.kind === 'trigger'
-                  const isInterval = schedule?.kind === 'interval'
-                  const isCron = schedule?.kind === 'cron'
-                  const scheduleText = isTrigger
-                    ? 'On-Demand Trigger'
-                    : isInterval
-                      ? `Every ${Math.round((schedule?.interval_seconds || 60) / 60)}m`
-                      : isCron
-                        ? `Cron (${schedule?.cron})`
-                        : 'On-Demand'
-
-                  const goalLower = (doc?.info?.goal || '').toLowerCase()
-                  const titleLower = (doc?.title || '').toLowerCase()
-                  const isCloudTarget =
-                    goalLower.includes('cloud') ||
-                    goalLower.includes('gcs') ||
-                    goalLower.includes('gcp') ||
-                    titleLower.includes('cloud')
-                  const hasTwitter =
-                    goalLower.includes('tweet') ||
-                    goalLower.includes('twitter') ||
-                    goalLower.includes('social') ||
-                    titleLower.includes('social')
-
-                  return (
-                    <div
-                      key={permission.id}
-                      className="rounded-2xl border border-amber-500/30 bg-gradient-to-b from-amber-500/[0.06] to-slate-950/80 p-5 shadow-xl space-y-4"
-                    >
-                      <div className="flex items-start justify-between gap-4">
-                        <div className="flex items-start gap-3">
-                          <div className="h-10 w-10 rounded-xl bg-amber-500/20 text-amber-400 flex items-center justify-center border border-amber-500/40 shrink-0 font-bold text-base">
-                            🤖
-                          </div>
-                          <div>
-                            <div className="flex items-center gap-2">
-                              <h3 className="text-base font-bold text-white">{doc?.title || 'Autonomous Worker'}</h3>
-                              <span className="rounded-md bg-amber-500/20 px-2 py-0.5 text-[10px] font-semibold text-amber-300 border border-amber-500/30">
-                                Revision {proposal.revision}
-                              </span>
-                            </div>
-                            <p className="text-xs text-slate-300 mt-1 leading-relaxed">
-                              {doc?.info?.goal || 'No description provided.'}
-                            </p>
-                          </div>
-                        </div>
-                      </div>
-
-                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5 pt-1">
-                        <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-3">
-                          <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 block mb-1">
-                            Execution Mode
-                          </span>
-                          <div className="flex items-center gap-1.5 text-xs font-semibold text-blue-400">
-                            <Zap size={13} />
-                            <span>{scheduleText}</span>
-                          </div>
-                        </div>
-
-                        <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-3">
-                          <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 block mb-1">
-                            Target Environment
-                          </span>
-                          <div className="flex items-center gap-1.5 text-xs font-semibold text-emerald-400">
-                            <span>{isCloudTarget ? '☁️ Cloud Run (GCP)' : '💻 Local Workstation'}</span>
-                          </div>
-                        </div>
-
-                        <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-3">
-                          <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 block mb-1">
-                            Required Secrets
-                          </span>
-                          <div
-                            className="flex items-center gap-1.5 text-xs font-mono text-purple-400 truncate"
-                            title={hasTwitter ? 'twitter-api-key, twitter-access-token' : 'Standard environment'}
-                          >
-                            <span>{hasTwitter ? '🔑 twitter-api-key...' : '🔒 Default machine identity'}</span>
-                          </div>
-                        </div>
-
-                        <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-3">
-                          <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 block mb-1">
-                            Bound Project / Repo
-                          </span>
-                          <div
-                            className="flex items-center gap-1.5 text-xs font-mono text-slate-300 truncate"
-                            title={selectedProject?.name || proposal.workspace_id}
-                          >
-                            <Folder size={12} className="text-slate-500 shrink-0" />
-                            <span className="truncate">{selectedProject?.name || 'Assigned workspace'}</span>
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* SCOPED PROJECT WORKSPACES & WORKSPACE SCOPE REVIEW */}
-                      {(() => {
-                        const projectWorkspaces = selectedProject?.workspaces || []
-                        const scopedWsIds = proposal.workspace_ids && proposal.workspace_ids.length > 0
-                          ? proposal.workspace_ids
-                          : (proposal.workspace_id ? [proposal.workspace_id] : [])
-                        const isEditingScope = editingScopePermissionId === permission.id
-
-                        return (
-                          <div className="rounded-xl border border-slate-800 bg-slate-900/70 p-3.5 space-y-3">
-                            <div className="flex items-center justify-between">
-                              <div className="flex items-center gap-2">
-                                <FolderTree size={14} className="text-blue-400" />
-                                <span className="text-xs font-bold text-slate-200">
-                                  Scoped Project Workspaces ({scopedWsIds.length} of {Math.max(projectWorkspaces.length, scopedWsIds.length)} Active)
-                                </span>
-                              </div>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  if (isEditingScope) {
-                                    setEditingScopePermissionId(null)
-                                  } else {
-                                    setEditingScopePermissionId(permission.id)
-                                    setEditedWorkspaceIds(scopedWsIds)
-                                  }
-                                }}
-                                className="px-2.5 py-1 rounded-lg border border-slate-700 bg-slate-800 hover:bg-slate-700 text-[11px] font-semibold text-slate-300 hover:text-white transition-all flex items-center gap-1.5"
-                              >
-                                <Edit3 size={11} />
-                                <span>{isEditingScope ? 'Cancel Scoping' : 'Suggest Changes / Edit Workspaces'}</span>
-                              </button>
-                            </div>
-
-                            <p className="text-[11px] text-slate-400 leading-relaxed">
-                              The orchestrator scoped this worker to specific directories within project{' '}
-                              <strong className="text-slate-200">{selectedProject?.name || 'current project'}</strong>.
-                              Not all workspaces are required. You can customize the included workspaces below before registering.
-                            </p>
-
-                            {isEditingScope ? (
-                              <div className="space-y-2.5 pt-1">
-                                <div className="space-y-1.5">
-                                  {projectWorkspaces.length > 0 ? (
-                                    projectWorkspaces.map((ws) => {
-                                      const wsId = ws.workspace_id || ws.path
-                                      const isChecked = editedWorkspaceIds.includes(wsId)
-                                      return (
-                                        <label
-                                          key={wsId}
-                                          className={`flex items-center justify-between p-2.5 rounded-xl border text-xs cursor-pointer transition-all ${
-                                            isChecked
-                                              ? 'border-blue-500/50 bg-blue-500/10 text-white'
-                                              : 'border-slate-800 bg-slate-950/60 text-slate-400 hover:border-slate-700'
-                                          }`}
-                                        >
-                                          <div className="flex items-center gap-2.5">
-                                            <input
-                                              type="checkbox"
-                                              checked={isChecked}
-                                              onChange={(e) => {
-                                                if (e.target.checked) {
-                                                  setEditedWorkspaceIds((prev) => [...prev, wsId])
-                                                } else {
-                                                  setEditedWorkspaceIds((prev) => prev.filter((id) => id !== wsId))
-                                                }
-                                              }}
-                                              className="rounded border-slate-700 bg-slate-900 text-blue-600 focus:ring-0"
-                                            />
-                                            <span className="font-mono text-xs">{ws.path}</span>
-                                            {ws.role && (
-                                              <span className="px-1.5 py-0.5 rounded text-[10px] uppercase font-mono bg-slate-800 text-slate-400">
-                                                {ws.role}
-                                              </span>
-                                            )}
-                                          </div>
-                                          <span className="text-[10px] font-semibold">
-                                            {isChecked ? (
-                                              <span className="text-emerald-400">Included</span>
-                                            ) : (
-                                              <span className="text-slate-500">Excluded</span>
-                                            )}
-                                          </span>
-                                        </label>
-                                      )
-                                    })
-                                  ) : (
-                                    <div className="text-xs text-slate-500">No additional project workspaces discovered.</div>
-                                  )}
-                                </div>
-                                <div className="flex items-center justify-end gap-2 pt-1">
-                                  <button
-                                    type="button"
-                                    disabled={savingScope || editedWorkspaceIds.length === 0}
-                                    onClick={() => handleUpdateWorkerWorkspaceScope(permission.id, proposal, editedWorkspaceIds)}
-                                    className="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold transition-all disabled:opacity-50 flex items-center gap-1.5"
-                                  >
-                                    {savingScope ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}
-                                    <span>Apply Workspace Scope</span>
-                                  </button>
-                                </div>
-                              </div>
-                            ) : (
-                              <div className="flex flex-wrap gap-2 pt-1">
-                                {projectWorkspaces.length > 0 ? (
-                                  projectWorkspaces.map((ws) => {
-                                    const wsId = ws.workspace_id || ws.path
-                                    const isIncluded = scopedWsIds.includes(wsId) || (!proposal.workspace_ids && ws.workspace_id === proposal.workspace_id)
-                                    return (
-                                      <div
-                                        key={wsId}
-                                        className={`flex items-center gap-2 px-2.5 py-1.5 rounded-xl border text-xs font-mono transition-all ${
-                                          isIncluded
-                                            ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300'
-                                            : 'border-slate-800 bg-slate-900/40 text-slate-500 line-through opacity-60'
-                                        }`}
-                                        title={ws.path}
-                                      >
-                                        <Folder size={12} className={isIncluded ? 'text-emerald-400' : 'text-slate-600'} />
-                                        <span className="truncate max-w-[220px]">{ws.label || ws.path.split('/').pop() || ws.path}</span>
-                                        <span className={`text-[10px] px-1.5 py-0.5 rounded font-sans font-semibold ${
-                                          isIncluded ? 'bg-emerald-500/20 text-emerald-300' : 'bg-slate-800 text-slate-500'
-                                        }`}>
-                                          {isIncluded ? 'Scoped' : 'Excluded'}
-                                        </span>
-                                      </div>
-                                    )
-                                  })
-                                ) : (
-                                  <div className="flex items-center gap-2 px-2.5 py-1.5 rounded-xl border border-emerald-500/40 bg-emerald-500/10 text-emerald-300 text-xs font-mono">
-                                    <Folder size={12} className="text-emerald-400" />
-                                    <span>{proposal.workspace_id}</span>
-                                    <span className="text-[10px] px-1.5 py-0.5 rounded font-sans font-semibold bg-emerald-500/20 text-emerald-300">
-                                      Scoped
-                                    </span>
-                                  </div>
-                                )}
-                              </div>
-                            )}
-                          </div>
-                        )
-                      })()}
-
-                      {/* PLANNED PIPELINE TASKS / LONG TERM TASK CONTRACT */}
-                      {doc?.checkpoints && doc.checkpoints.length > 0 && (
-                        <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-3 text-xs space-y-2">
-                          <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 block">
-                            📌 Pre-Configured Worker Pipeline ({doc.checkpoints.length} Step{doc.checkpoints.length === 1 ? '' : 's'})
-                          </span>
-                          <div className="space-y-1.5">
-                            {doc.checkpoints.map((cp, idx) => (
-                              <div key={cp.id || idx} className="rounded-lg border border-slate-800/80 bg-slate-950/60 p-2 text-xs">
-                                <div className="font-semibold text-slate-200">
-                                  {idx + 1}. {cp.title}
-                                </div>
-                                {cp.tasks && cp.tasks.length > 0 && (
-                                  <ul className="mt-1 space-y-0.5 text-[11px] text-slate-400 list-disc list-inside">
-                                    {cp.tasks.map((task, tIdx) => (
-                                      <li key={tIdx}>{task}</li>
-                                    ))}
-                                  </ul>
-                                )}
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-
-                      <div className="rounded-xl border border-slate-800/80 bg-[#070b14] p-3 text-xs space-y-1.5">
-                        <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 block">
-                          📋 Execution Pipeline Upon Acceptance
-                        </span>
-                        <ul className="space-y-1 text-slate-300 text-[11px] list-disc list-inside">
-                          <li>Worker registers permanently to your project fleet.</li>
-                          {isTrigger && (
-                            <li>
-                              Swarm automatically mints an isolated trigger key and writes it securely to{' '}
-                              <code className="text-amber-300 bg-amber-500/10 px-1 py-0.5 rounded">
-                                ~/.config/swarm/secrets.env
-                              </code>{' '}
-                              (mode 0600).
-                            </li>
-                          )}
-                          {hasTwitter && (
-                            <li>
-                              Worker will authenticate with Twitter API v2 using your configured GCP Secret Manager credentials.
-                            </li>
-                          )}
-                          <li>
-                            Future worker tasks will pend deliverables with full tweet previews and interactive approval before publishing.
-                          </li>
-                        </ul>
-                      </div>
-
-                      {reviewError?.id === permission.id && (
-                        <div className="rounded-lg bg-red-500/10 border border-red-500/30 p-2.5 text-xs text-red-400">
-                          {reviewError.message}
-                        </div>
-                      )}
-
-                      <div className="flex items-center justify-end gap-3 pt-2">
-                        <button
-                          type="button"
-                          disabled={!!reviewBusyId}
-                          onClick={() =>
-                            handleDecideReview(permission.id, proposal.revision, proposal.digest, 'decline_automation')
-                          }
-                          className="px-3.5 py-1.5 rounded-xl border border-slate-700 bg-slate-800 text-slate-300 hover:text-white hover:bg-slate-700 text-xs font-semibold transition-all disabled:opacity-50"
-                        >
-                          Decline Proposal
-                        </button>
-                        <button
-                          type="button"
-                          disabled={!!reviewBusyId}
-                          onClick={() =>
-                            handleDecideReview(permission.id, proposal.revision, proposal.digest, 'accept_automation')
-                          }
-                          className="px-4 py-1.5 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white text-xs font-bold shadow-lg shadow-blue-500/20 transition-all flex items-center gap-1.5 disabled:opacity-50"
-                        >
-                          {reviewBusyId === permission.id ? (
-                            <>
-                              <Loader2 size={13} className="animate-spin" />
-                              <span>Registering...</span>
-                            </>
-                          ) : (
-                            <>
-                              <Check size={14} />
-                              <span>Accept & Register Worker</span>
-                            </>
-                          )}
-                        </button>
-                      </div>
-                    </div>
-                  )
-                })}
-              </div>
-            )}
-
-            {/* ACTIVE REGISTERED WORKERS SECTION */}
-            <div className="space-y-3">
-              {cloudWorkersError && (
-                <div className="p-3 bg-red-950/60 border border-red-500/40 rounded-xl text-xs text-red-300 flex items-center justify-between">
-                  <span>Storage workers error: {cloudWorkersError}</span>
-                  <button
-                    type="button"
-                    onClick={() => void fetchCloudWorkers()}
-                    className="px-2.5 py-1 bg-red-800/60 hover:bg-red-700/60 rounded text-red-100 font-medium transition-colors"
-                  >
-                    Retry
-                  </button>
-                </div>
-              )}
-              <div className="flex items-center justify-between">
-                <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
-                  Registered Workers Fleet ({automations.length + cloudWorkers.length})
-                </span>
-                <button
-                  type="button"
-                  onClick={() => void fetchCloudWorkers()}
-                  className="flex items-center gap-1 text-[11px] text-slate-400 hover:text-slate-200 transition-colors"
-                  title="Refresh storage workers"
-                >
-                  <RefreshCw size={11} />
-                  <span>Refresh</span>
-                </button>
-              </div>
-
-              {automations.length > 0 || cloudWorkers.length > 0 ? (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  {automations.map((a) => {
-                    const isTrigger = a.kind === 'trigger'
-                    return (
-                      <div
-                        key={a.id}
-                        className="rounded-2xl border border-slate-800 bg-slate-900/40 p-4 hover:border-slate-700/80 transition-all space-y-3"
-                      >
-                        <div className="flex items-start justify-between">
-                          <div className="flex items-center gap-2.5">
-                            <div className="h-8 w-8 rounded-xl bg-blue-600/15 text-blue-400 flex items-center justify-center border border-blue-500/20 font-bold text-xs">
-                              🤖
-                            </div>
-                            <div>
-                              <h3 className="text-xs font-bold text-white">{a.name}</h3>
-                              <span className="text-[10px] text-slate-400 font-mono">ID: {a.id}</span>
-                            </div>
-                          </div>
-                          <span className="rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 text-[10px] font-semibold">
-                            ● {a.status}
-                          </span>
-                        </div>
-
-                        <div className="grid grid-cols-2 gap-2 text-[11px]">
-                          <div className="rounded-lg bg-slate-950/60 p-2 border border-slate-800/60">
-                            <span className="text-[10px] text-slate-500 block">Schedule</span>
-                            <span className="text-slate-300 font-mono text-[10px]">{a.kind}</span>
-                          </div>
-                          <div className="rounded-lg bg-slate-950/60 p-2 border border-slate-800/60">
-                            <span className="text-[10px] text-slate-500 block">Trigger Mode</span>
-                            <span className="text-blue-400 font-semibold">
-                              {isTrigger ? 'On-Demand API' : 'Background Run'}
-                            </span>
-                          </div>
-                        </div>
-
-                        <div className="flex items-center justify-between pt-1 border-t border-slate-800/60 text-[10px]">
-                          <span className="text-slate-500">
-                            {a.lastRun ? `Last run: ${new Date(a.lastRun).toLocaleTimeString()}` : 'Never executed'}
-                          </span>
-                          <span className="text-slate-400 font-mono">
-                            {a.totalRuns !== undefined ? `${a.totalRuns} total runs` : `Target: ${a.id.slice(0, 14)}...`}
-                          </span>
-                        </div>
-                      </div>
-                    )
-                  })}
-                  {cloudWorkers.map((cw) => {
-                    const isPending = cw.status === 'pending_approval'
-                    const spendFormatted = cw.total_spend_usd !== undefined ? `$${cw.total_spend_usd.toFixed(4)}` : '$0.0000'
-                    const tokensFormatted = cw.total_tokens ? `${(cw.total_tokens / 1000).toFixed(1)}k` : '0k'
-
-                    return (
-                      <div
-                        key={cw.worker_id}
-                        className={`rounded-2xl border p-4 transition-all space-y-3 ${
-                          isPending
-                            ? 'border-amber-500/40 bg-gradient-to-b from-amber-500/[0.08] to-slate-900/60'
-                            : 'border-slate-800 bg-slate-900/40 hover:border-slate-700/80'
-                        }`}
-                      >
-                        <div className="flex items-start justify-between">
-                          <div className="flex items-center gap-2.5">
-                            <div
-                              className={`h-8 w-8 rounded-xl flex items-center justify-center border font-bold text-xs ${
-                                isPending
-                                  ? 'bg-amber-500/20 text-amber-400 border-amber-500/30'
-                                  : 'bg-blue-600/15 text-blue-400 border-blue-500/20'
-                              }`}
-                            >
-                              ☁️
-                            </div>
-                            <div>
-                              <div className="flex items-center gap-2">
-                                <h3 className="text-xs font-bold text-white">{cw.name}</h3>
-                                <span className="rounded bg-blue-900/40 text-blue-300 border border-blue-500/30 px-1.5 py-0.2 text-[9px] font-mono">
-                                  GCP Cloud Run
-                                </span>
-                              </div>
-                              <span className="text-[10px] text-slate-400 font-mono">ID: {cw.worker_id}</span>
-                            </div>
-                          </div>
-                          <span
-                            className={`rounded-full px-2 py-0.5 text-[10px] font-semibold border ${
-                              isPending
-                                ? 'bg-amber-500/20 text-amber-300 border-amber-500/30 animate-pulse'
-                                : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
-                            }`}
-                          >
-                            ● {cw.status || 'active'}
-                          </span>
-                        </div>
-
-                        {/* Granular Telemetry Strip */}
-                        <div className="grid grid-cols-3 gap-2 text-[11px]">
-                          <div className="rounded-lg bg-slate-950/60 p-2 border border-slate-800/60">
-                            <span className="text-[10px] text-slate-500 block">Total Spend</span>
-                            <span className="text-emerald-400 font-mono font-semibold text-[11px]">{spendFormatted}</span>
-                          </div>
-                          <div className="rounded-lg bg-slate-950/60 p-2 border border-slate-800/60">
-                            <span className="text-[10px] text-slate-500 block">Total Tokens</span>
-                            <span className="text-purple-400 font-mono font-semibold text-[11px]">{tokensFormatted}</span>
-                          </div>
-                          <div className="rounded-lg bg-slate-950/60 p-2 border border-slate-800/60">
-                            <span className="text-[10px] text-slate-500 block">Jobs Executed</span>
-                            <span className="text-blue-400 font-mono font-semibold text-[11px]">{cw.total_jobs_count || 0}</span>
-                          </div>
-                        </div>
-
-                        {/* Action Bar for Cloud Worker */}
-                        {isPending && (
-                          <div className="flex items-center justify-between pt-2 border-t border-slate-800/60">
-                            <span className="text-[10px] text-amber-300 font-medium">Awaiting operator acceptance</span>
-                            <button
-                              type="button"
-                              disabled={activatingWorkerId === cw.worker_id}
-                              onClick={() => handleActivateCloudWorker(cw.worker_id)}
-                              className="px-3 py-1 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-bold shadow-md transition-all flex items-center gap-1.5"
-                            >
-                              <CheckCircle2 size={12} />
-                              <span>{activatingWorkerId === cw.worker_id ? 'Activating...' : 'Activate Worker'}</span>
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    )
-                  })}
-                </div>
-              ) : (
-                <div className="rounded-2xl border border-slate-800/80 bg-slate-900/20 p-8 text-center space-y-2">
-                  <Bot className="h-8 w-8 text-slate-600 mx-auto" />
-                  <h4 className="text-xs font-bold text-slate-300">No active workers registered yet</h4>
-                  <p className="text-[11px] text-slate-500 max-w-sm mx-auto">
-                    Propose a worker or ask Swarm in the AI sidebar to configure a dedicated specialist for this project.
-                  </p>
-                </div>
-              )}
-            </div>
-          </div>
+          <WorkerHub workspaceSlug={workspaceSlug} initialWorkerId={routeWorkerId} onSelectWorker={selectWorker} />
         ) : activeNavTab === 'deliverables' ? (
           /* DELIVERABLES TAB */
           <div className="flex-1 flex flex-col min-h-0 overflow-y-auto p-6 space-y-4">
@@ -6922,6 +6358,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                     Decline
                   </button>
                 </div>
+                {reviewError && <div role="alert" className="text-xs text-red-300">{reviewError}</div>}
               </div>
             )}
 
@@ -7514,6 +6951,9 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
           onBackToOrchestrator={handleBackToOrchestrator}
           onOrchestratorSessionReset={handleOrchestratorSessionReset}
           onDeselectTask={handleDeselectTask}
+          selectedWorker={selectedWorker}
+          currentSelectedWorker={() => selectedWorkerRef.current}
+          onDeselectWorker={clearConsumedWorker}
         />
       ) : (
         <aside className="relative flex w-[440px] flex-shrink-0 flex-col items-center justify-center p-6 text-center rounded-3xl border border-slate-800/80 bg-[#0d121f] text-xs text-slate-400 shadow-[inset_0_1px_1px_rgba(255,255,255,0.06),0_18px_40px_rgba(0,0,0,0.65)]">

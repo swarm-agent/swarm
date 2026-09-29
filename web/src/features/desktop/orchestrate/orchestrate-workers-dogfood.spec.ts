@@ -18,8 +18,10 @@ test('OrchestrateView displays active running automations at top of project with
   // Invariant 2: Clicking an automation or link switches to Workers Hub
   assert.ok(source.includes("setActiveNavTab('workers')"), 'OrchestrateView must support 1-click navigation to Workers Hub')
 
-  // Invariant 3: Workers Hub tab renders registered automations fleet
-  assert.ok(source.includes('Registered Workers Fleet'), 'OrchestrateView must render Registered Workers Fleet in Workers Hub')
+  // Invariant 3: Workers Hub tab has a single canonical render path, not the retired fleet.
+  assert.ok(source.includes('<WorkerHub workspaceSlug={workspaceSlug} initialWorkerId={routeWorkerId} onSelectWorker={selectWorker} />'))
+  assert.ok(!source.includes("false && activeNavTab === 'workers'"))
+  assert.ok(!source.includes('Registered Workers Fleet'))
 })
 
 // Requirement: Desktop navigation must target the canonical Swarm page and
@@ -54,20 +56,15 @@ test('Router redirects legacy workers routes to Swarm Workers', () => {
   assert.ok(source.includes("params: { workspaceSlug: params.workspaceSlug, swarmSection: 'workers' }"))
 })
 
-test('OrchestrateView renders Scoped Project Workspaces for pending worker proposals with suggest changes capability', () => {
-  const orchestrateSourcePath = path.join(__dirname, 'OrchestrateView.tsx')
-  const source = fs.readFileSync(orchestrateSourcePath, 'utf8')
-
-  // Invariant 1: Pending worker proposals display Scoped Project Workspaces
-  assert.ok(source.includes('Scoped Project Workspaces'), 'Must render Scoped Project Workspaces section')
-
-  // Invariant 2: Displays Suggest Changes / Edit Workspaces button
-  assert.ok(source.includes('Suggest Changes / Edit Workspaces'), 'Must provide Suggest Changes / Edit Workspaces button')
-
-  // Invariant 3: Interactive workspace selection allows updating workspace scope via mutation
-  assert.ok(source.includes('handleUpdateWorkerWorkspaceScope'), 'Must implement handleUpdateWorkerWorkspaceScope handler')
-  assert.ok(source.includes('Apply Workspace Scope'), 'Must provide Apply Workspace Scope button')
-
-  // Invariant 4: Displays pre-configured worker pipeline checkpoints if present
-  assert.ok(source.includes('Pre-Configured Worker Pipeline'), 'Must display planned pipeline checkpoints')
+// Requirement: pending legacy automation reviews retain an explicit decision path
+// on the project page while the worker hub itself has only the durable authority.
+// Threat: removal of dead fleet JSX accidentally hiding pending permissions.
+// This checks caller wiring; rendered actions require a browser fixture.
+test('project page retains pending review actions outside canonical worker hub', () => {
+  const source = fs.readFileSync(path.join(__dirname, 'OrchestrateView.tsx'), 'utf8')
+  assert.ok(source.includes('Pending Worker Proposal for'))
+  assert.ok(source.includes('decidePendingWorkerReview(getDesktopV3CacheSnapshot()'))
+  assert.ok(source.includes('role="alert" className="text-xs text-red-300"'))
+  assert.ok(!source.includes('listStorageWorkers'))
+  assert.ok(!source.includes('handleUpdateWorkerWorkspaceScope'))
 })

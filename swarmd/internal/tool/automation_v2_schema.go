@@ -35,7 +35,131 @@ func automationV2ReviewSchema() map[string]any {
 }
 
 func manageWorkersV2Definition() Definition {
-	return Definition{Type: "function", Name: "manage_workers", Description: "Inspect Worker V2 state or submit a dedicated pending worker review with action='propose' and document (in Plan or Auto). Proposal does not change session mode or create an active plan; only user acceptance activates it. Call action='help' for scheduling, trigger workers, SDK token minting, and review syntax.", Parameters: map[string]any{"type": "object", "additionalProperties": false, "required": []string{"action"}, "properties": map[string]any{"action": map[string]any{"type": "string", "enum": []string{"review", "context", "list", "progress", "propose", "help"}}, "cursor": map[string]any{"type": "string"}, "timezone": map[string]any{"type": "string"}, "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 50}, "document": map[string]any{"description": "Complete executable Worker V2 document, as an object or JSON-encoded string; required for propose."}, "worker_review": map[string]any{"description": "Exact current review for editing a pending proposal; omit on first proposal."}}}}
+	return Definition{
+		Type:        "function",
+		Name:        "manage_workers",
+		Description: "Manage durable background workers using stable worker IDs. Inspect, create, update, attach automations, run tests, dispatch requests, pause, resume, archive, delete workers, and disable automations. Deployment and activation require explicit user acceptance; AI cannot self-approve activation or capabilities. Exclusive to Swarm Orchestrator in Swarm mode. Call action='help' for syntax and lifecycle workflows.",
+		Parameters: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"required":             []string{"action"},
+			"properties": map[string]any{
+				"action": map[string]any{
+					"type": "string",
+					"enum": []string{
+						"help",
+						"list",
+						"inspect",
+						"create",
+						"update",
+						"attach",
+						"disable_automation",
+						"delete",
+						"test",
+						"request",
+						"activate",
+						"pause",
+						"resume",
+						"archive",
+						"propose",
+						"review",
+						"context",
+						"progress",
+					},
+				},
+				"worker_id": map[string]any{
+					"type":        "string",
+					"description": "Stable durable worker ID (e.g. worker_...).",
+				},
+				"automation_id": map[string]any{
+					"type":        "string",
+					"description": "Attached automation ID for attach, disable_automation, or scoped test run.",
+				},
+				"expected_revision": map[string]any{
+					"type":        "integer",
+					"minimum":     1,
+					"description": "Expected worker revision for optimistic concurrency guards on update, attach, disable, pause, resume, archive, or delete.",
+				},
+				"name": map[string]any{
+					"type":        "string",
+					"description": "Human-readable name for worker or automation.",
+				},
+				"description": map[string]any{
+					"type":        "string",
+					"description": "Description of worker purpose or automation responsibility.",
+				},
+				"instructions": map[string]any{
+					"type":        "string",
+					"description": "Standing worker instructions.",
+				},
+				"requested_capabilities": map[string]any{
+					"type":        "array",
+					"description": "List of capability requests (tool, permission, network, environment).",
+					"items": map[string]any{
+						"type": "object",
+					},
+				},
+				"workspace_requirements": map[string]any{
+					"type":        "array",
+					"description": "List of required named workspace roles.",
+					"items": map[string]any{
+						"type": "object",
+					},
+				},
+				"local_bindings": map[string]any{
+					"type":        "object",
+					"description": "Map of named workspace roles to local workspace IDs.",
+				},
+				"automations": map[string]any{
+					"type":        "array",
+					"description": "List of attached automation definitions for create or update.",
+					"items": map[string]any{
+						"type": "object",
+					},
+				},
+				"automation": map[string]any{
+					"type":        "object",
+					"description": "Single automation definition to attach.",
+				},
+				"prompt": map[string]any{
+					"type":        "string",
+					"description": "Task prompt for test run or direct request.",
+				},
+				"input": map[string]any{
+					"type":        "object",
+					"description": "Structured input payload for test run or direct request.",
+				},
+				"change_summary": map[string]any{
+					"type":        "string",
+					"description": "Summary of changes for worker revision history.",
+				},
+				"cursor": map[string]any{
+					"type":        "string",
+					"description": "Pagination cursor for list or runs.",
+				},
+				"limit": map[string]any{
+					"type":        "integer",
+					"minimum":     1,
+					"maximum":     50,
+					"description": "Maximum number of records to return (1-50).",
+				},
+				"timezone": map[string]any{
+					"type":        "string",
+					"description": "Timezone for scheduling or progress calculations.",
+				},
+				"include_deleted": map[string]any{
+					"type":        "boolean",
+					"description": "Include soft-deleted/tombstoned workers in list.",
+				},
+				"document": map[string]any{
+					"description": "Complete executable Worker V2 document; required for propose.",
+				},
+				"worker_review": map[string]any{
+					"description": "Exact current review for editing a pending proposal; omit on first proposal.",
+				},
+			},
+		},
+	}
 }
 
 func manageAutomationV2Definition() Definition {

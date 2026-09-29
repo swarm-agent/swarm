@@ -577,6 +577,7 @@ export type RealtimeKind =
   | 'workspace.catalog.updated'
   | 'auth.credentials.updated'
   | 'project.updated'
+  | 'worker.updated'
 
 export interface RealtimeMessage {
   protocol?: 'v3.realtime' | string
@@ -1007,6 +1008,7 @@ export interface DesktopInitialHydrateState {
 export interface DesktopV3CacheState {
   automationPages: import('./desktop-automation-state').AutomationPages
   automationV2Pages: import('./desktop-automation-v2-state').AutomationV2Pages
+  workerPages: import('./desktop-workers-state').WorkerPages
   environmentsByWorkspace?: Record<string, import('./desktop-environments-state').DesktopEnvironmentWorkspaceState>
   projectsState?: import('./desktop-projects-state').DesktopProjectsState
   version: 1
@@ -1064,6 +1066,7 @@ export interface CacheEvent {
 export type DesktopV3CacheAction =
   | import('./desktop-automation-state').AutomationCacheAction
   | import('./desktop-automation-v2-state').AutomationV2CacheAction
+  | import('./desktop-workers-state').WorkerCacheAction
   | import('./desktop-environments-state').DesktopEnvironmentsAction
   | import('./desktop-projects-state').DesktopProjectsAction
   | { type: 'desktopV3Cache.applyHydrationPlan'; reusedSessionIds: string[]; hydrateSessionIds: string[] }

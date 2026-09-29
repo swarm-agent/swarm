@@ -57,8 +57,8 @@ const tokens = await client.auth.listScopedTokens();
 ### 3. Trigger Workers On-Demand with Runtime Context
 
 ```typescript
-// Trigger a worker with webhook/CI context
-const result = await client.workers.trigger({
+// Trigger an automation with webhook/CI context
+const result = await client.automations.trigger({
   worker_id: 'ci_test_analyzer',
   context: {
     event: 'push',

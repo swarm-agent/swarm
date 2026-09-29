@@ -204,6 +204,15 @@ export interface WorkerJobExecutionLog {
   error?: string;
 }
 
+/**
+ * Legacy storage WorkerActorSpec used by external cloud deployers and bucket runners.
+ *
+ * NOTE ON BOUNDARY RECONCILIATION:
+ * This legacy spec is NOT the daemon's canonical WorkerDocument / PortableWorkerDefinition.
+ * It cannot be silently converted or accepted as a canonical daemon worker document because
+ * doing so would silently drop cloud configuration, mutable task queues, and non-canonical schedules.
+ * Use canonical PortableWorkerDefinition with SwarmWorkersNamespace for daemon worker persistence.
+ */
 export interface WorkerActorSpec {
   $schema?: string;
   id: string;

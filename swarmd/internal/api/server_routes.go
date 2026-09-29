@@ -215,6 +215,8 @@ func (s *Server) registerRuntimeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc(AutomationsV2Path+"/webhooks/", s.handleAutomationsV2Webhooks)
 	mux.HandleFunc(DeliverablesPath, s.handleDeliverables)
 	mux.HandleFunc(DeliverablesPath+"/", s.handleDeliverables)
+	mux.HandleFunc(WorkersPath, s.handleWorkers)
+	mux.HandleFunc(WorkersPath+"/", s.handleWorkers)
 	mux.HandleFunc(ProjectsPath, s.handleProjects)
 	mux.HandleFunc(ProjectsPath+"/", s.handleProjects)
 	mux.HandleFunc("/v3/auth/tokens", s.handleAuthTokens)

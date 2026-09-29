@@ -2222,7 +2222,11 @@ func (s *Service) executeControlPlaneToolWithLifecycleRunContext(ctx context.Con
 		result.Output = fmt.Sprintf("Plan context compact handoff accepted (%d characters).", len([]rune(handoff)))
 		return true, result, nil
 	case "manage_automation", "manage_workers":
-		output, err := s.executeManageAutomationV2Tool(sessionID, call.Arguments)
+		if !agentruntime.IsOrchestratorAgentName(agentProfile.Name) {
+			result.Error = "Worker and automation management is exclusive to Swarm Orchestrator in Swarm mode"
+			return true, result, errors.New("Worker and automation management is exclusive to Swarm Orchestrator in Swarm mode")
+		}
+		output, err := s.executeManageWorkersTool(sessionID, call.Arguments, agentProfile)
 		result.Output = output
 		return true, result, err
 	case "exit_plan_mode":

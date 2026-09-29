@@ -111,13 +111,14 @@ function validateSettingsSearch(search: Record<string, unknown>): { tab?: string
   }
 }
 
-function validateWorkspaceSessionSearch(search: Record<string, unknown>): ReturnType<typeof validateSettingsSearch> & { artifactSession?: string; artifact?: string; collection?: string; sessionId?: string; automationId?: string } {
+function validateWorkspaceSessionSearch(search: Record<string, unknown>): ReturnType<typeof validateSettingsSearch> & { artifactSession?: string; artifact?: string; collection?: string; sessionId?: string; automationId?: string; workerId?: string } {
   const settingsSearch = validateSettingsSearch(search)
   const artifactSession = typeof search.artifactSession === 'string' ? search.artifactSession.trim() : ''
   const artifact = typeof search.artifact === 'string' ? search.artifact.trim() : ''
   const collection = typeof search.collection === 'string' ? search.collection.trim() : ''
   const sessionId = typeof search.sessionId === 'string' ? search.sessionId.trim() : ''
   const automationId = typeof search.automationId === 'string' ? search.automationId.trim() : ''
+  const workerId = typeof search.workerId === 'string' ? search.workerId.trim() : ''
   return {
     ...settingsSearch,
     ...(artifactSession ? { artifactSession } : {}),
@@ -125,6 +126,7 @@ function validateWorkspaceSessionSearch(search: Record<string, unknown>): Return
     ...(collection ? { collection } : {}),
     ...(sessionId ? { sessionId } : {}),
     ...(automationId ? { automationId } : {}),
+    ...(workerId ? { workerId } : {}),
   }
 }
 
@@ -301,6 +303,12 @@ const workspaceWorkersDetailRoute = createRoute({
   path: '/$workspaceSlug/workers/$workerId',
   parseParams: validateWorkspaceWorkerParams,
   validateSearch: validateWorkspaceSessionSearch,
+  beforeLoad: ({ params }) => {
+    if (params.workerId.startsWith('worker_')) throw redirect({
+      to: '/$workspaceSlug/swarm/$swarmSection', params: { workspaceSlug: params.workspaceSlug, swarmSection: 'workers' },
+      search: { workerId: params.workerId }, replace: true,
+    })
+  },
   component: AutomationToolPage,
 })
 
@@ -309,6 +317,12 @@ const workspaceWorkerDetailRoute = createRoute({
   path: '/$workspaceSlug/worker/$workerId',
   parseParams: validateWorkspaceWorkerParams,
   validateSearch: validateWorkspaceSessionSearch,
+  beforeLoad: ({ params }) => {
+    if (params.workerId.startsWith('worker_')) throw redirect({
+      to: '/$workspaceSlug/swarm/$swarmSection', params: { workspaceSlug: params.workspaceSlug, swarmSection: 'workers' },
+      search: { workerId: params.workerId }, replace: true,
+    })
+  },
   component: AutomationToolPage,
 })
 
@@ -346,6 +360,12 @@ const globalWorkersDetailRoute = createRoute({
   getParentRoute: () => conversationRoute,
   path: '/workers/$workerId',
   validateSearch: validateWorkspaceSessionSearch,
+  beforeLoad: ({ params }) => {
+    if (params.workerId.startsWith('worker_')) throw redirect({
+      to: '/swarm/$swarmSection', params: { swarmSection: 'workers' },
+      search: { workerId: params.workerId }, replace: true,
+    })
+  },
   component: AutomationToolPage,
 })
 

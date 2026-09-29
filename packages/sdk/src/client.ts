@@ -1,5 +1,6 @@
 import { SwarmAuthNamespace } from './auth.js';
 import { SwarmAutomationsNamespace } from './automations.js';
+import { SwarmWorkersNamespace } from './workers.js';
 import { SwarmDeliverablesNamespace } from './deliverables.js';
 import { SwarmDeployNamespace } from './deploy/index.js';
 import { SwarmNotificationsNamespace } from './notifications.js';
@@ -17,9 +18,16 @@ export class SwarmClient {
   readonly config: ResolvedSwarmClientConfig;
   readonly transport: SwarmTransport;
   readonly auth: SwarmAuthNamespace;
+  /**
+   * Legacy automations namespace targeting /v3/automations/v2.
+   * Note: This is legacy automation API, not the canonical durable worker identity authority.
+   */
   readonly automations: SwarmAutomationsNamespace;
-  /** Convenient alias for automations namespace */
-  readonly workers: SwarmAutomationsNamespace;
+  /**
+   * Canonical durable worker namespace managing account-owned workers,
+   * revisions, attached automations, and portable import/export definitions over /v3/workers.
+   */
+  readonly workers: SwarmWorkersNamespace;
   readonly deliverables: SwarmDeliverablesNamespace;
   /** Convenient alias for deliverables namespace: mailbox */
   readonly mailbox: SwarmDeliverablesNamespace;
@@ -63,7 +71,7 @@ export class SwarmClient {
       this.config.token = token;
     });
     this.automations = new SwarmAutomationsNamespace(this.transport);
-    this.workers = this.automations;
+    this.workers = new SwarmWorkersNamespace(this.transport);
     this.deliverables = new SwarmDeliverablesNamespace(this.transport);
     this.mailbox = this.deliverables;
     this.workspaces = new SwarmWorkspacesNamespace(this.transport);

@@ -597,7 +597,7 @@ func (s *Server) v3RealtimeProcessOutboxRecord(conn *transportws.Conn, principal
 		advanced.LastSentEndpointSeq = record.EndpointSeq
 		return advanced, true, true
 	}
-	if record.Event.EventType == pebblestore.WorkspaceCatalogEventType || record.Event.EventType == pebblestore.AutomationChangedEventType || record.Event.EventType == pebblestore.EnvironmentChangedEventType || record.Event.EventType == pebblestore.ProjectUpdatedEventType {
+	if record.Event.EventType == pebblestore.WorkspaceCatalogEventType || record.Event.EventType == pebblestore.AutomationChangedEventType || record.Event.EventType == pebblestore.WorkerUpdatedEventType || record.Event.EventType == pebblestore.EnvironmentChangedEventType || record.Event.EventType == pebblestore.ProjectUpdatedEventType {
 		// Catalog membership and workspace environments are account-wide or workspace-scoped, independent of the selected session.
 		if len(worksets) == 0 {
 			return advanced, true, false
@@ -1306,7 +1306,7 @@ func v3RealtimeRecordVisibleToPrincipal(principal identity.Principal, record ses
 		payload, ok := sessionsV3AITaskLifecyclePayloadFromRecord(record)
 		return ok && payload.UserID == strings.TrimSpace(principal.UserID)
 	}
-	if strings.TrimSpace(record.Event.EventType) == v3AuthResourceEventType || (record.Event.EventType == pebblestore.WorkspaceCatalogEventType || record.Event.EventType == pebblestore.AutomationChangedEventType || record.Event.EventType == pebblestore.EnvironmentChangedEventType || record.Event.EventType == pebblestore.ProjectUpdatedEventType) {
+	if strings.TrimSpace(record.Event.EventType) == v3AuthResourceEventType || (record.Event.EventType == pebblestore.WorkspaceCatalogEventType || record.Event.EventType == pebblestore.AutomationChangedEventType || record.Event.EventType == pebblestore.WorkerUpdatedEventType || record.Event.EventType == pebblestore.EnvironmentChangedEventType || record.Event.EventType == pebblestore.ProjectUpdatedEventType) {
 		return true
 	}
 	if strings.TrimSpace(record.UserID) == "" || strings.TrimSpace(record.UserID) != strings.TrimSpace(principal.UserID) {
