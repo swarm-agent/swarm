@@ -309,6 +309,10 @@ export interface RunningTask {
   currentFocus?: string
   currentTool?: string
   toolActivitySummary?: string
+  /** Resolved identity from the active session view, not the task's requested agent/model. */
+  activeAgent?: string
+  activeProvider?: string
+  activeModel?: string
   liveAssistantText?: string
   liveToolCalls?: string
   activePlanCheckpoints?: RunningTaskPlanCheckpoint[]

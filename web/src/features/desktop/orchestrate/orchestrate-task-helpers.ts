@@ -1168,6 +1168,8 @@ export function aggregateTaskLiveState(
   // Tool calls & live streaming text: prioritize running session
   const activeSid = sessionStates.find((s) => s.status === 'running')?.sessionId || primarySessionId
   const activeData = activeSid ? liveTaskSessionsData[activeSid] : primaryData
+  const activeSettings = activeData?.view?.agentic_settings
+  const activePreference = activeSettings?.effective_preference as { provider?: string; model?: string } | undefined
   const effectiveLiveRun = activeData?.liveRun || primaryLiveRun
 
   const toolCalls = effectiveLiveRun ? Object.values((effectiveLiveRun.toolCallsByCallId || {}) as Record<string, any>) : []
@@ -1175,7 +1177,8 @@ export function aggregateTaskLiveState(
     .sort((a, b) => b.updatedAt - a.updatedAt)
     .map((t) => t.toolDisplay?.trim() || t.toolName?.trim() || '')
     .find(Boolean) || ''
-  const toolActivitySummary = summarizeDesktopV3TaskToolActivity(toolCalls as any)
+  const toolActivitySummary = summarizeDesktopV3TaskToolActivity(toolCalls.filter((call: any) =>
+    ['running', 'in_progress', 'pending', 'started'].includes((call.status || '').trim().toLowerCase())) as any)
   const liveAssistantText = [
     ...(effectiveLiveRun?.assistantSegments ?? []),
     ...(effectiveLiveRun?.assistantDraft ? [effectiveLiveRun.assistantDraft] : []),
@@ -1217,6 +1220,9 @@ export function aggregateTaskLiveState(
   return {
     ...task,
     status,
+    activeAgent: activeSettings?.resolved_agent_name?.trim() || activeSettings?.agent_name?.trim() || undefined,
+    activeProvider: activePreference?.provider?.trim() || undefined,
+    activeModel: activePreference?.model?.trim() || undefined,
     planDocument: effectivePlanDoc,
     planBinding:
       task.planBinding ||
@@ -1226,7 +1232,7 @@ export function aggregateTaskLiveState(
     currentTool: currentTool || task.currentTool,
     liveAssistantText: liveAssistantText || task.liveAssistantText,
     liveToolCalls: liveToolCalls || task.liveToolCalls,
-    toolActivitySummary: toolActivitySummary || task.toolActivitySummary,
+    toolActivitySummary: toolActivitySummary || undefined,
     activePlanCheckpoints:
       activePlanCheckpoints && activePlanCheckpoints.length > 0 ? activePlanCheckpoints : task.activePlanCheckpoints,
     activeSubtaskId: activeSubtaskId || task.activeSubtaskId,

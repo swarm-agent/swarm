@@ -17,14 +17,12 @@ const task: RunningTask = {
   baseBranch: 'dev', gitStatus: 'unknown', unintegratedCommits: 3,
 }
 
-test('card summary renders real branch and target, unknown Git, and no invented validation', () => {
+test('compact card retains verified branch and unknown Git without inventing validation', () => {
   const html = renderToStaticMarkup(<TaskCardSummary task={task} />)
   assert.match(html, /Fix session recovery/)
-  assert.match(html, /Workspace.*project/)
-  assert.match(html, /Worktree.*repair/)
-  assert.match(html, /agent\/repair.*dev/)
+  assert.match(html, /Branch.*agent\/repair/)
   assert.match(html, /1\/1 steps/)
-  assert.match(html, /Validation not reported/)
+  assert.doesNotMatch(html, /\/source\/project|Validation not reported|agent\/repair.*dev/)
   assert.match(html, /Git: not inspected/)
   assert.doesNotMatch(html, /unintegrated commit\(s\)|>Integrated</)
 })
@@ -33,7 +31,6 @@ test('stale Git is not presented as integrated even if cached integrated flag is
   assert.equal(taskCardFacts({ ...task, gitStatus: 'stale', isIntegrated: true }).git, 'Git: last known state')
   assert.match(taskCardFacts({ ...task, gitStatus: 'clean', isIntegrated: true }).git, /3 unintegrated commit\(s\)/)
   assert.equal(taskCardFacts({ ...task, gitStatus: 'clean', isIntegrated: true, unintegratedCommits: 0 }).git, 'Integrated')
-  assert.equal(taskCardFacts({ ...task, gitStatus: 'clean', baseBranch: undefined }).target, null)
 })
 
 test('ready output image becomes preview action; pending output never becomes a preview', () => {
@@ -42,6 +39,24 @@ test('ready output image becomes preview action; pending output never becomes a 
   assert.match(html, /Preview Cover/)
   assert.match(html, /src="\/media\/cover.png"/)
   assert.equal(taskCardFacts({ ...withOutput, deliverables: [{ ...withOutput.deliverables![0], status: 'pending' }] }).deliverable, undefined)
+})
+
+// Purpose: the compact card must show resolved session identity/model and real live tool
+// activity, not a requested agent/model or orchestrator prompt. Boundary: aggregateTaskLiveState
+// supplies active session fields; TaskCardSummary hides stale activity after termination.
+test('card uses active session identity and activity but omits orchestration prompt noise', () => {
+  const running: RunningTask = { ...task, status: 'running', description: 'Execution Pipeline Stages: internal prompt',
+    planSummary: 'Assigned Agent @coder', activeAgent: 'finder', activeProvider: 'anthropic', activeModel: 'model-x',
+    model: 'requested-model', toolActivitySummary: 'Searching source', currentFocus: 'Internal mission plan' }
+  const html = renderToStaticMarkup(<TaskCardSummary task={running} />)
+  assert.match(html, /finder.*running/)
+  assert.match(html, /anthropic \/ model-x/)
+  assert.match(html, /Searching source/)
+  assert.doesNotMatch(html, /Execution Pipeline|Assigned Agent|requested-model|Internal mission plan/)
+  assert.equal(taskCardFacts({ ...running, status: 'completed' }).activity, null)
+  const unavailable = renderToStaticMarkup(<TaskCardSummary task={{ ...task, model: 'requested-model' }} />)
+  assert.match(unavailable, /coder requested/)
+  assert.doesNotMatch(unavailable, /requested-model|Active session model/)
 })
 
 // Purpose: selection persists only a canonical project reference, never a new global theme

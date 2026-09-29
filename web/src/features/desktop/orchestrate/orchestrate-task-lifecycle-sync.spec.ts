@@ -646,6 +646,31 @@ test('Missing, queued and blocked sessions remain distinguishable without invent
   assert.equal(blocked.sessionSummary?.completedSessions, 0)
 })
 
+// Requirement: card identity is the resolved active session, not the task's requested
+// agent/model; unavailable session preferences must not be filled from task defaults.
+// Authority: aggregateTaskLiveState reads canonical hydrated session view; this selector
+// test is the narrowest layer for active-session selection across a child cohort.
+test('active child session supplies resolved agent and provider/model without task fallback', () => {
+  const task = { id: 'identity-task', title: 'Identity task', agentType: 'coder', model: 'requested',
+    status: 'in_progress', sessionId: 'parent', taskProgramStatus: { jobs: [{ job_id: 'child-job', child_session_id: 'child', state: 'running' }] }, subtasks: [] } as unknown as RunningTask
+  const live = aggregateTaskLiveState(task, {
+    parent: { view: { agentic_settings: { resolved_agent_name: 'swarm', effective_preference: { provider: 'other', model: 'parent-model' } } } },
+    child: { intent: { status: 'running' }, view: { agentic_settings: { resolved_agent_name: 'finder',
+      effective_preference: { provider: 'provider-a', model: 'model-a' } } } },
+  })
+  assert.equal(live.activeAgent, 'finder')
+  assert.equal(live.activeProvider, 'provider-a')
+  assert.equal(live.activeModel, 'model-a')
+  const history = aggregateTaskLiveState(task, { parent: { liveRun: { toolCallsByCallId: {
+    one: { callId: 'one', toolName: 'read', status: 'done', updatedAt: 1 },
+  } } } })
+  assert.equal(history.toolActivitySummary, undefined, 'finished tool calls cannot masquerade as live activity')
+  const missing = aggregateTaskLiveState(task, {})
+  assert.equal(missing.activeAgent, undefined)
+  assert.equal(missing.activeProvider, undefined)
+  assert.equal(missing.activeModel, undefined)
+})
+
 // A real direct-session hydration can omit both lifecycle and active intent after
 // completion. aggregateTaskLiveState must preserve its authoritative task result,
 // but must not project one aggregate result onto multiple unknown sessions.
