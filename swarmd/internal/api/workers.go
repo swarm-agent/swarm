@@ -1303,6 +1303,20 @@ func (s *Server) handleWorkerActivate(w http.ResponseWriter, r *http.Request, p 
 		return
 	}
 
+	workerRecord, found, err := s.sessions.GetWorker(p.AccountScopeID, workerID)
+	if err != nil {
+		workerHTTPError(w, err)
+		return
+	}
+	if !found || workerRecord.LifecycleState == pebblestore.WorkerLifecycleStateDeleted {
+		writeError(w, http.StatusNotFound, pebblestore.ErrWorkerNotFound)
+		return
+	}
+	if workerRecord.LifecycleState == pebblestore.WorkerLifecycleStatePending {
+		writeError(w, http.StatusConflict, fmt.Errorf("%w: cannot activate pending worker: explicit user acceptance via /accept required", pebblestore.ErrWorkerConflict))
+		return
+	}
+
 	execution, err := s.workerExecutionService()
 	if err != nil {
 		workerHTTPError(w, err)
@@ -1377,6 +1391,20 @@ func (s *Server) handleWorkerResume(w http.ResponseWriter, r *http.Request, p id
 	}
 	if req.ExpectedRevision == 0 {
 		writeError(w, http.StatusBadRequest, errors.New("expected_revision in body is required"))
+		return
+	}
+
+	workerRecord, found, err := s.sessions.GetWorker(p.AccountScopeID, workerID)
+	if err != nil {
+		workerHTTPError(w, err)
+		return
+	}
+	if !found || workerRecord.LifecycleState == pebblestore.WorkerLifecycleStateDeleted {
+		writeError(w, http.StatusNotFound, pebblestore.ErrWorkerNotFound)
+		return
+	}
+	if workerRecord.LifecycleState == pebblestore.WorkerLifecycleStatePending {
+		writeError(w, http.StatusConflict, fmt.Errorf("%w: cannot resume pending worker: explicit user acceptance via /accept required", pebblestore.ErrWorkerConflict))
 		return
 	}
 
@@ -1597,7 +1625,7 @@ func (s *Server) handleWorkerDirectRequest(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusNotFound, pebblestore.ErrWorkerNotFound)
 		return
 	}
-	if worker.LifecycleState == pebblestore.WorkerLifecycleStatePaused || worker.LifecycleState == pebblestore.WorkerLifecycleStateArchived {
+	if worker.LifecycleState == pebblestore.WorkerLifecycleStatePending || worker.LifecycleState == pebblestore.WorkerLifecycleStatePaused || worker.LifecycleState == pebblestore.WorkerLifecycleStateArchived {
 		writeError(w, http.StatusConflict, fmt.Errorf("cannot admit direct request: worker is %s", worker.LifecycleState))
 		return
 	}
@@ -1660,6 +1688,10 @@ func (s *Server) handleWorkerTestRun(w http.ResponseWriter, r *http.Request, p i
 	}
 	if worker.LifecycleState == pebblestore.WorkerLifecycleStateArchived {
 		writeError(w, http.StatusBadRequest, errors.New("cannot run test on archived worker"))
+		return
+	}
+	if worker.LifecycleState == pebblestore.WorkerLifecycleStatePending {
+		writeError(w, http.StatusConflict, fmt.Errorf("%w: cannot run test on pending worker: explicit user acceptance required", pebblestore.ErrWorkerConflict))
 		return
 	}
 
@@ -1753,7 +1785,7 @@ func (s *Server) handleWorkerTrigger(w http.ResponseWriter, r *http.Request, p i
 		writeError(w, http.StatusNotFound, pebblestore.ErrWorkerNotFound)
 		return
 	}
-	if worker.LifecycleState == pebblestore.WorkerLifecycleStatePaused || worker.LifecycleState == pebblestore.WorkerLifecycleStateArchived {
+	if worker.LifecycleState == pebblestore.WorkerLifecycleStatePending || worker.LifecycleState == pebblestore.WorkerLifecycleStatePaused || worker.LifecycleState == pebblestore.WorkerLifecycleStateArchived {
 		writeError(w, http.StatusConflict, fmt.Errorf("cannot trigger worker: worker is %s", worker.LifecycleState))
 		return
 	}

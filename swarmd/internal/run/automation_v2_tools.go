@@ -122,6 +122,47 @@ func (s *Service) automationV2ToolSession(id string) (store.SessionSnapshot, str
 }
 
 func (s *Service) executeWorkerProposalTool(id string, call tool.Call, profile ...store.AgentProfile) (string, error) {
+	var args map[string]any
+	if err := json.Unmarshal([]byte(call.Arguments), &args); err != nil {
+		return "", err
+	}
+	if action := strings.TrimSpace(mapString(args, "action")); action != "propose" {
+		return "", errors.New("manage_workers action=propose required")
+	}
+	return s.executeCreateOrProposePendingWorker(id, args, call.Name, false, profile...)
+}
+
+func (s *Service) authorizeProposedWorkspace(current store.SessionSnapshot, workspaceID string) error {
+	workspaceID = strings.TrimSpace(workspaceID)
+	if workspaceID == "" {
+		return errors.New("target workspace required")
+	}
+	for _, g := range current.WorkspaceGrants {
+		if (g.Available == nil || *g.Available) && strings.TrimSpace(g.WorkspaceID) == workspaceID {
+			return nil
+		}
+	}
+	principal := identity.Principal{UserID: current.UserID, AccountScopeID: current.AccountScopeID}
+	if s.workspace != nil {
+		entry, found, err := s.workspace.GetByWorkspaceIDForPrincipal(principal, workspaceID)
+		if err == nil && found && strings.TrimSpace(entry.WorkspaceID) != "" {
+			return nil
+		}
+	}
+	if s.sessions != nil && s.sessions.Store() != nil && s.sessions.Store().Underlying() != nil {
+		wsStore := store.NewWorkspaceStore(s.sessions.Store().Underlying())
+		entry, found, err := wsStore.GetByWorkspaceIDForAccount(current.AccountScopeID, workspaceID)
+		if err != nil {
+			return err
+		}
+		if found && strings.TrimSpace(entry.WorkspaceID) != "" {
+			return nil
+		}
+	}
+	return fmt.Errorf("workspace %q not found or not accessible in account scope", workspaceID)
+}
+
+func (s *Service) executeCreateOrProposePendingWorker(id string, args map[string]any, toolName string, isCreate bool, profile ...store.AgentProfile) (string, error) {
 	if s.sessions == nil {
 		return "", errors.New("session service required")
 	}
@@ -138,17 +179,14 @@ func (s *Service) executeWorkerProposalTool(id string, call tool.Call, profile .
 			mapString(current.Metadata, "resolved_agent_name"),
 			mapString(current.Metadata, "agent_name"),
 		))
+		if sessionAgent == "" && current.Metadata != nil {
+			if prof, pErr := sessionV3AgentProfileFromMetadataMap(current.Metadata); pErr == nil {
+				sessionAgent = strings.TrimSpace(prof.Name)
+			}
+		}
 		if !agentruntime.IsOrchestratorAgentName(sessionAgent) {
 			return "", errors.New("Worker and automation management is exclusive to Swarm Orchestrator in Swarm mode")
 		}
-	}
-
-	var args map[string]any
-	if err := json.Unmarshal([]byte(call.Arguments), &args); err != nil {
-		return "", err
-	}
-	if action := strings.TrimSpace(mapString(args, "action")); action != "propose" {
-		return "", errors.New("manage_workers action=propose required")
 	}
 
 	var name, description, instructions string
@@ -160,21 +198,71 @@ func (s *Service) executeWorkerProposalTool(id string, call tool.Call, profile .
 	workerID := strings.TrimSpace(firstNonEmptyString(mapString(args, "worker_id"), mapString(args, "id")))
 	expectedRevision, hasExpectedRevision := parseUint64Arg(args, "expected_revision")
 
+	if isCreate && workerID != "" {
+		return "", errors.New("worker_id cannot be specified for action=create; use action=propose or action=update")
+	}
+	if !isCreate && workerID != "" && (!hasExpectedRevision || expectedRevision == 0) {
+		return "", errors.New("expected_revision is required when reproposing worker")
+	}
+
+	// Workspace binding from args
+	if pb, ok := args["proposed_bindings"].(map[string]any); ok && mapString(pb, "primary") != "" {
+		proposedPrimary = strings.TrimSpace(mapString(pb, "primary"))
+	} else if lb, ok := args["local_bindings"].(map[string]any); ok && mapString(lb, "primary") != "" {
+		proposedPrimary = strings.TrimSpace(mapString(lb, "primary"))
+	} else if wsID := strings.TrimSpace(mapString(args, "workspace_id")); wsID != "" {
+		proposedPrimary = wsID
+	}
+
 	// Support legacy document format
-	doc, err := planDocumentFromArgsForTool(args, call.Name)
+	doc, err := planDocumentFromArgsForTool(args, toolName)
 	if err != nil {
 		return "", err
 	}
 	if doc != nil {
+		var v2 *store.AutomationV2Settings
 		if doc.WorkerV2 != nil {
-			exp := doc.WorkerV2.Expiration
-			if exp.Kind != "" && exp.Kind != "never" {
+			v2 = doc.WorkerV2
+		} else if doc.AutomationV2 != nil {
+			v2 = doc.AutomationV2
+		}
+		if v2 != nil {
+			exp := v2.Expiration
+			if exp.Kind != "" && exp.Kind != "never" && exp.Kind != "indefinite" {
 				return "", fmt.Errorf("worker automation expiration %q is unrepresentable in durable workers", exp.Kind)
 			}
-			if doc.WorkerV2.WorkspaceID != "" {
-				proposedPrimary = strings.TrimSpace(doc.WorkerV2.WorkspaceID)
-			} else if len(doc.WorkerV2.WorkspaceIDs) > 0 {
-				proposedPrimary = strings.TrimSpace(doc.WorkerV2.WorkspaceIDs[0])
+			if len(v2.WorkspaceIDs) > 1 {
+				return "", fmt.Errorf("multiple workspace_ids in worker_v2 is unsupported: %v", v2.WorkspaceIDs)
+			}
+			if v2.WorkspaceID != "" && len(v2.WorkspaceIDs) == 1 && strings.TrimSpace(v2.WorkspaceIDs[0]) != strings.TrimSpace(v2.WorkspaceID) {
+				return "", errors.New("conflicting workspace_id and workspace_ids in worker_v2")
+			}
+			if proposedPrimary == "" {
+				if v2.WorkspaceID != "" {
+					proposedPrimary = strings.TrimSpace(v2.WorkspaceID)
+				} else if len(v2.WorkspaceIDs) == 1 {
+					proposedPrimary = strings.TrimSpace(v2.WorkspaceIDs[0])
+				}
+			}
+			if v2.Missed != "" && v2.Missed != "skip" {
+				return "", fmt.Errorf("unsupported missed policy %q; durable workers require skip", v2.Missed)
+			}
+			if v2.Overlap != "" && v2.Overlap != "serialize" {
+				return "", fmt.Errorf("unsupported overlap policy %q; durable workers require serialize", v2.Overlap)
+			}
+			if rawDoc, ok := args["document"].(map[string]any); ok {
+				for _, k := range []string{"worker_v2", "automation_v2"} {
+					if v2Raw, ok := rawDoc[k].(map[string]any); ok {
+						if act, exists := v2Raw["activate_on_accept"]; exists {
+							if actBool, ok := act.(bool); ok && !actBool {
+								return "", errors.New("unsupported activate_on_accept=false; durable workers require activate_on_accept")
+							}
+						}
+					}
+				}
+			}
+			if (v2.Schedule.Kind == "interval" || v2.Schedule.Kind == "cron") && len(doc.Checkpoints) == 0 {
+				return "", fmt.Errorf("scheduled %s worker requires checkpoints; cannot discard schedule", v2.Schedule.Kind)
 			}
 		}
 		if n := strings.TrimSpace(doc.Title); n != "" {
@@ -196,15 +284,15 @@ func (s *Service) executeWorkerProposalTool(id string, call tool.Call, profile .
 			actMode := "manual"
 			var sched *store.AutomationV2Schedule
 			var trig *store.WorkerTriggerConfig
-			if doc.WorkerV2 != nil {
-				switch doc.WorkerV2.Schedule.Kind {
+			if v2 != nil {
+				switch v2.Schedule.Kind {
 				case "interval":
 					actMode = "interval"
-					sCopy := doc.WorkerV2.Schedule
+					sCopy := v2.Schedule
 					sched = &sCopy
 				case "cron":
 					actMode = "cron"
-					sCopy := doc.WorkerV2.Schedule
+					sCopy := v2.Schedule
 					sched = &sCopy
 				case "trigger":
 					actMode = "external_trigger"
@@ -212,7 +300,20 @@ func (s *Service) executeWorkerProposalTool(id string, call tool.Call, profile .
 				case "manual", "":
 					actMode = "manual"
 				default:
-					return "", fmt.Errorf("unsupported schedule kind %q", doc.WorkerV2.Schedule.Kind)
+					return "", fmt.Errorf("unsupported schedule kind %q", v2.Schedule.Kind)
+				}
+			}
+			planCopy := *doc
+			planCopy.WorkerV2 = nil
+			planCopy.AutomationV2 = nil
+			planCopy.Automation = nil
+			if strings.TrimSpace(planCopy.Title) == "" {
+				planCopy.Title = autoName
+			}
+			if strings.TrimSpace(planCopy.Info.Goal) == "" {
+				planCopy.Info.Goal = description
+				if planCopy.Info.Goal == "" {
+					planCopy.Info.Goal = autoName
 				}
 			}
 			automations = append(automations, store.WorkerAutomationDefinition{
@@ -222,7 +323,7 @@ func (s *Service) executeWorkerProposalTool(id string, call tool.Call, profile .
 				Schedule:       sched,
 				Trigger:        trig,
 				Enabled:        true,
-				PlanDocument:   *doc,
+				PlanDocument:   planCopy,
 			})
 		}
 	}
@@ -247,25 +348,26 @@ func (s *Service) executeWorkerProposalTool(id string, call tool.Call, profile .
 			return "", err
 		}
 	}
+	hasExplicitAutomations := false
 	if autosRaw, ok := args["automations"]; ok {
+		hasExplicitAutomations = true
 		var flatAutos []store.WorkerAutomationDefinition
 		if err := unmarshalJSONArg(autosRaw, &flatAutos); err != nil {
 			return "", err
 		}
-		if len(flatAutos) > 0 {
-			automations = flatAutos
-		}
+		automations = flatAutos
 	}
 
-	if pb, ok := args["proposed_bindings"].(map[string]any); ok && mapString(pb, "primary") != "" {
-		proposedPrimary = mapString(pb, "primary")
-	} else if lb, ok := args["local_bindings"].(map[string]any); ok && mapString(lb, "primary") != "" {
-		proposedPrimary = mapString(lb, "primary")
-	} else if wsID := mapString(args, "workspace_id"); wsID != "" {
-		proposedPrimary = wsID
-	}
 	if proposedPrimary == "" && defaultWorkspace != "" {
 		proposedPrimary = defaultWorkspace
+	}
+	if proposedPrimary == "" {
+		return "", errors.New("target workspace required")
+	}
+
+	// Authorize workspace before persistence
+	if err := s.authorizeProposedWorkspace(current, proposedPrimary); err != nil {
+		return "", err
 	}
 
 	if name == "" {
@@ -292,7 +394,7 @@ func (s *Service) executeWorkerProposalTool(id string, call tool.Call, profile .
 		if !found {
 			return "", store.ErrWorkerNotFound
 		}
-		if hasExpectedRevision && existing.Revision != expectedRevision {
+		if existing.Revision != expectedRevision {
 			return "", store.ErrWorkerConflict
 		}
 		if existing.LifecycleState != store.WorkerLifecycleStatePending {
@@ -305,8 +407,10 @@ func (s *Service) executeWorkerProposalTool(id string, call tool.Call, profile .
 			RequestedCapabilities: requestedCaps,
 			WorkspaceRequirements: workspaceReqs,
 			ProposedBindings:      proposedBindings,
-			Automations:           automations,
 			ChangeSummary:         "updated worker proposal",
+		}
+		if hasExplicitAutomations || len(automations) > 0 {
+			updateReq.Automations = automations
 		}
 		if metaRaw, ok := args["metadata"].(map[string]any); ok {
 			updateReq.Metadata = metaRaw
@@ -336,7 +440,34 @@ func (s *Service) executeWorkerProposalTool(id string, call tool.Call, profile .
 	if createErr != nil {
 		return "", createErr
 	}
+	if isCreate {
+		raw, err := json.Marshal(map[string]any{
+			"status":            "created",
+			"lifecycle_state":   w.LifecycleState,
+			"worker":            w,
+			"next_action":       "await_worker_acceptance",
+			"proposed_bindings": w.ProposedBindings,
+		})
+		return string(raw), err
+	}
 	return workerProposalToolOutput(w)
+}
+
+func automationV2ToolOutput(proposal store.AutomationV2Proposal) (string, error) {
+	raw, err := json.Marshal(map[string]any{
+		"ok":                true,
+		"status":            "pending_review",
+		"review_kind":       "automation_v2",
+		"title":             proposal.Document.Title,
+		"proposal_id":       proposal.ProposalID,
+		"proposal_revision": proposal.Revision,
+		"proposal":          proposal,
+		"worker_review":     proposal.AutomationV2Review,
+		"automation_review": proposal.AutomationV2Review,
+		"next_action":       "await_automation_acceptance",
+		"instruction":       "Stop authoring. Only explicit user Accept worker creates and activates this schedule; no ordinary plan execution or immediate run.",
+	})
+	return string(raw), err
 }
 
 func workerProposalToolOutput(w store.WorkerRecord) (string, error) {
@@ -574,71 +705,7 @@ func (s *Service) executeManageWorkersTool(id, arguments string, profile ...stor
 		return string(raw), err
 
 	case "create":
-		name := strings.TrimSpace(mapString(args, "name"))
-		if name == "" {
-			return "", errors.New("worker name is required")
-		}
-		instructions := strings.TrimSpace(mapString(args, "instructions"))
-		if instructions == "" {
-			return "", errors.New("worker instructions are required")
-		}
-		proposedPrimary := ""
-		if pb, ok := args["proposed_bindings"].(map[string]any); ok && mapString(pb, "primary") != "" {
-			proposedPrimary = mapString(pb, "primary")
-		} else if lb, ok := args["local_bindings"].(map[string]any); ok && mapString(lb, "primary") != "" {
-			proposedPrimary = mapString(lb, "primary")
-		} else if wsID := mapString(args, "workspace_id"); wsID != "" {
-			proposedPrimary = wsID
-		} else if defaultWorkspace != "" {
-			proposedPrimary = defaultWorkspace
-		}
-		var proposedBindings map[string]string
-		if proposedPrimary != "" {
-			proposedBindings = map[string]string{"primary": proposedPrimary}
-		}
-		req := store.CreateWorkerRequest{
-			Name:                  name,
-			Description:           strings.TrimSpace(mapString(args, "description")),
-			Instructions:          instructions,
-			IdempotencyKey:        strings.TrimSpace(mapString(args, "idempotency_key")),
-			InitialLifecycleState: store.WorkerLifecycleStatePending,
-			ProposedBindings:      proposedBindings,
-		}
-		if capsRaw, ok := args["requested_capabilities"]; ok {
-			if err := unmarshalJSONArg(capsRaw, &req.RequestedCapabilities); err != nil {
-				return "", err
-			}
-		}
-		if wsReqsRaw, ok := args["workspace_requirements"]; ok {
-			if err := unmarshalJSONArg(wsReqsRaw, &req.WorkspaceRequirements); err != nil {
-				return "", err
-			}
-		}
-		if len(req.WorkspaceRequirements) == 0 && proposedPrimary != "" {
-			req.WorkspaceRequirements = []store.WorkerWorkspaceRequirement{
-				{Role: "primary", Description: "Primary workspace", Required: true},
-			}
-		}
-		if autosRaw, ok := args["automations"]; ok {
-			if err := unmarshalJSONArg(autosRaw, &req.Automations); err != nil {
-				return "", err
-			}
-		}
-		if metaRaw, ok := args["metadata"].(map[string]any); ok {
-			req.Metadata = metaRaw
-		}
-		w, err := s.sessions.CreateWorker(context.Background(), current.AccountScopeID, current.UserID, req)
-		if err != nil {
-			return "", err
-		}
-		raw, err := json.Marshal(map[string]any{
-			"status":            "created",
-			"lifecycle_state":   w.LifecycleState,
-			"worker":            w,
-			"next_action":       "await_worker_acceptance",
-			"proposed_bindings": w.ProposedBindings,
-		})
-		return string(raw), err
+		return s.executeCreateOrProposePendingWorker(readID, args, "manage_workers", true, profile...)
 
 	case "update":
 		workerID := strings.TrimSpace(firstNonEmptyString(mapString(args, "worker_id"), mapString(args, "id")))

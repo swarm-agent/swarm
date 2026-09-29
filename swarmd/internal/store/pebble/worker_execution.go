@@ -486,6 +486,17 @@ func (ws *WorkerStore) AcceptWorker(account, user, id string, revision uint64, b
 	if len(bindings) != 1 || strings.TrimSpace(bindings["primary"]) == "" {
 		return WorkerRecord{}, fmt.Errorf("%w: one required primary workspace role must be bound", ErrWorkerConflict)
 	}
+	if w.ProposedBindings == nil || len(w.ProposedBindings) == 0 {
+		return WorkerRecord{}, fmt.Errorf("%w: worker proposal has no proposed bindings", ErrWorkerConflict)
+	}
+	if len(bindings) != len(w.ProposedBindings) {
+		return WorkerRecord{}, fmt.Errorf("%w: accepted bindings must match exact proposed bindings", ErrWorkerConflict)
+	}
+	for k, v := range w.ProposedBindings {
+		if strings.TrimSpace(bindings[k]) != strings.TrimSpace(v) {
+			return WorkerRecord{}, fmt.Errorf("%w: accepted bindings must match exact proposed bindings", ErrWorkerConflict)
+		}
+	}
 	now := time.Now().UnixMilli()
 	w.LocalBindings = map[string]string{"primary": strings.TrimSpace(bindings["primary"])}
 	w.LifecycleState = WorkerLifecycleStateActive

@@ -222,3 +222,97 @@ func TestWorkerAPI_ListPendingLifecycleFilter(t *testing.T) {
 		t.Fatalf("expected lifecycle_state pending, got %v", w0["lifecycle_state"])
 	}
 }
+
+func TestWorkerAPI_PendingWorkerCannotBypassViaOtherEndpoints(t *testing.T) {
+	s, db, h := setupWorkerAPITestServer(t)
+	workspaceID := setupWorkerAPIExecution(t, s, db)
+
+	// Create a pending worker with proposed bindings
+	w, err := s.sessions.CreateWorker(context.Background(), "acct-test", "user-test", store.CreateWorkerRequest{
+		Name:                  "Pending Shield",
+		Description:           "Cannot be bypassed",
+		Instructions:          "Wait for explicit accept",
+		InitialLifecycleState: store.WorkerLifecycleStatePending,
+		ProposedBindings:      map[string]string{"primary": workspaceID},
+		WorkspaceRequirements: []store.WorkerWorkspaceRequirement{
+			{Role: "primary", Description: "Primary workspace", Required: true},
+		},
+		Automations: []store.WorkerAutomationDefinition{
+			{
+				Name:           "Trigger Job",
+				ActivationMode: "external_trigger",
+				Trigger:        &store.WorkerTriggerConfig{TriggerKind: "event"},
+				Enabled:        true,
+				PlanDocument: store.SessionPlanDocument{
+					Title: "Trigger Plan",
+					Info:  store.SessionPlanInfo{Goal: "Run on trigger"},
+					Checkpoints: []store.SessionPlanCheckpoint{
+						{ID: "cp-1", Title: "Step", Status: "pending", Order: 1, Tasks: []string{"Task 1"}, AcceptanceCriteria: []string{"Done"}},
+					},
+				},
+			},
+		},
+		IdempotencyKey: "test-pending-bypass-guard",
+	})
+	if err != nil {
+		t.Fatalf("create pending worker failed: %v", err)
+	}
+
+	// 1. POST /{id}/activate -> 409 Conflict
+	recActivate := executeWorkerAPI(h, http.MethodPost, "/"+w.ID+"/activate", fmt.Sprintf(`{"expected_revision": %d, "local_bindings": {"primary": %q}}`, w.Revision, workspaceID), workerAPICallOptions{
+		scopes: []string{"automations:write"},
+	})
+	if recActivate.Code != http.StatusConflict {
+		t.Fatalf("expected 409 Conflict for activate on pending worker, got %d: %s", recActivate.Code, recActivate.Body.String())
+	}
+
+	// 2. POST /{id}/resume -> 409 Conflict
+	recResume := executeWorkerAPI(h, http.MethodPost, "/"+w.ID+"/resume", fmt.Sprintf(`{"expected_revision": %d}`, w.Revision), workerAPICallOptions{
+		scopes: []string{"automations:write"},
+	})
+	if recResume.Code != http.StatusConflict {
+		t.Fatalf("expected 409 Conflict for resume on pending worker, got %d: %s", recResume.Code, recResume.Body.String())
+	}
+
+	// 3. POST /{id}/test -> 409 Conflict
+	recTest := executeWorkerAPI(h, http.MethodPost, "/"+w.ID+"/test", `{"prompt": "Run test directly"}`, workerAPICallOptions{
+		scopes: []string{"automations:write"},
+	})
+	if recTest.Code != http.StatusConflict {
+		t.Fatalf("expected 409 Conflict for test on pending worker, got %d: %s", recTest.Code, recTest.Body.String())
+	}
+
+	// 4. POST /{id}/direct -> 409 Conflict
+	recDirect := executeWorkerAPI(h, http.MethodPost, "/"+w.ID+"/direct", `{"prompt": "Run direct task"}`, workerAPICallOptions{
+		scopes: []string{"automations:write"},
+	})
+	if recDirect.Code != http.StatusConflict {
+		t.Fatalf("expected 409 Conflict for direct on pending worker, got %d: %s", recDirect.Code, recDirect.Body.String())
+	}
+
+	// 5. POST /{id}/trigger -> 409 Conflict
+	recTrigger := executeWorkerAPI(h, http.MethodPost, "/"+w.ID+"/trigger", `{"automation_id": "trigger-job"}`, workerAPICallOptions{
+		scopes: []string{"automations:write"},
+	})
+	if recTrigger.Code != http.StatusConflict {
+		t.Fatalf("expected 409 Conflict for trigger on pending worker, got %d: %s", recTrigger.Code, recTrigger.Body.String())
+	}
+
+	// 6. Verify worker state is completely unmutated
+	loaded, found, err := s.sessions.GetWorker("acct-test", w.ID)
+	if err != nil || !found {
+		t.Fatalf("get worker failed: %v", err)
+	}
+	if loaded.LifecycleState != store.WorkerLifecycleStatePending || loaded.Revision != 1 || len(loaded.LocalBindings) != 0 {
+		t.Fatalf("worker state mutated after rejected bypass attempts: %+v", loaded)
+	}
+
+	// 7. Verify zero runs were created
+	runs, _, err := s.sessions.ListWorkerRuns("acct-test", w.ID, 10, "")
+	if err != nil {
+		t.Fatalf("list worker runs failed: %v", err)
+	}
+	if len(runs) != 0 {
+		t.Fatalf("expected 0 runs on pending worker, got %d", len(runs))
+	}
+}

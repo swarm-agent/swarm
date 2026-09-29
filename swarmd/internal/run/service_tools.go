@@ -1650,7 +1650,7 @@ func (s *Service) prepareDelegatedSubagentLaunch(parentSession pebblestore.Sessi
 	return s.prepareDelegatedSubagentLaunchWithProfile(parentSession, sessionMode, launch, description, targetedSubagentName, nil, "", applySessionMutation)
 }
 
-func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, step int, sessionMode string, toolCalls []tool.Call, emit StreamHandler, overlay *permission.Policy) ([]tool.Result, []tool.Call, []int, []bool, []PermissionFeedback, error) {
+func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, step int, sessionMode string, toolCalls []tool.Call, emit StreamHandler, overlay *permission.Policy, profile ...pebblestore.AgentProfile) ([]tool.Result, []tool.Call, []int, []bool, []PermissionFeedback, error) {
 	results := make([]tool.Result, len(toolCalls))
 	approvedCalls := make([]tool.Call, 0, len(toolCalls))
 	approvedIndexes := make([]int, 0, len(toolCalls))
@@ -1723,7 +1723,7 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 				decisions[i].Result.Error = explain.Reason
 				continue
 			}
-			output, err := s.executeWorkerProposalTool(sessionID, toolCalls[i])
+			output, err := s.executeWorkerProposalTool(sessionID, toolCalls[i], profile...)
 			decisions[i].Result.Output = output
 			if err != nil {
 				decisions[i].Err = err

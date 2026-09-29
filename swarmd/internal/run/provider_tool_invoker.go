@@ -697,6 +697,7 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 			[]tool.Call{call},
 			config.emit,
 			config.policy,
+			config.agentProfile,
 		)
 		if err != nil {
 			return tool.Result{}, 0, err

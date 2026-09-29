@@ -3,6 +3,7 @@ package run
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -505,5 +506,415 @@ func TestWorkerOrchestratorCreate_CannotBypassPending(t *testing.T) {
 	}
 	if accepted.LifecycleState != store.WorkerLifecycleStateActive {
 		t.Fatalf("expected active state after accept, got %s", accepted.LifecycleState)
+	}
+}
+
+func TestWorkerPendingProposal_InterceptionGateToolCalls(t *testing.T) {
+	svc, sessionsSvc, _, workspaceID := setupWorkerExecutionFixture(t, func(identity.Principal, store.V3SessionRunIntent) bool { return true })
+	orchProfile := agent.SwarmOrchestratorAgentProfileForContext(store.AgentProfile{})
+	chatProfile := agent.SwarmAgentProfileForContext(store.AgentProfile{})
+
+	// 1. Orchestrator proposal intercepted at gateToolCalls level succeeds and creates pending worker
+	call := tool.Call{
+		CallID:    "call-gate-prop",
+		Name:      "manage_workers",
+		Arguments: fmt.Sprintf(`{"action":"propose","name":"Intercepted Worker","instructions":"Gate check","workspace_id":%q}`, workspaceID),
+	}
+	results, approvedCalls, _, approvedMask, _, err := svc.gateToolCalls(
+		context.Background(),
+		"orch-session",
+		"run-gate-test",
+		1,
+		"auto",
+		[]tool.Call{call},
+		nil,
+		nil,
+		orchProfile,
+	)
+	if err != nil {
+		t.Fatalf("gateToolCalls error: %v", err)
+	}
+	if len(approvedCalls) != 0 || approvedMask[0] {
+		t.Fatal("expected proposal call to NOT be approved for immediate execution")
+	}
+	if results[0].Error != "" {
+		t.Fatalf("expected no error in result, got: %s", results[0].Error)
+	}
+	var out map[string]any
+	if err := json.Unmarshal([]byte(results[0].Output), &out); err != nil {
+		t.Fatalf("unmarshal gate result: %v", err)
+	}
+	if out["status"] != "pending_review" || out["next_action"] != "await_worker_acceptance" {
+		t.Fatalf("unexpected gate output payload: %v", out)
+	}
+	workerID := fmt.Sprint(out["worker_id"])
+	w, found, err := sessionsSvc.GetWorker("account", workerID)
+	if err != nil || !found {
+		t.Fatalf("worker not found in store: %v, found=%v", err, found)
+	}
+	if w.LifecycleState != store.WorkerLifecycleStatePending {
+		t.Fatalf("expected pending lifecycle state, got %s", w.LifecycleState)
+	}
+
+	// 2. Chat session (non-orchestrator) intercepted at gateToolCalls is rejected with NO state change
+	chatCall := tool.Call{
+		CallID:    "call-gate-chat",
+		Name:      "manage_workers",
+		Arguments: fmt.Sprintf(`{"action":"propose","name":"Chat Forgery","instructions":"Forbidden","workspace_id":%q}`, workspaceID),
+	}
+	resultsChat, approvedChat, _, _, _, errChat := svc.gateToolCalls(
+		context.Background(),
+		"chat-session",
+		"run-gate-chat",
+		1,
+		"auto",
+		[]tool.Call{chatCall},
+		nil,
+		nil,
+		chatProfile,
+	)
+	if errChat != nil {
+		t.Fatalf("unexpected gateToolCalls hard error: %v", errChat)
+	}
+	if len(approvedChat) != 0 {
+		t.Fatal("expected no approved calls for chat session")
+	}
+	if !strings.Contains(resultsChat[0].Error, "exclusive to Swarm Orchestrator") {
+		t.Fatalf("expected orchestrator exclusivity error, got: %s", resultsChat[0].Error)
+	}
+
+	// 3. Orchestrator session called with explicit chat profile is rejected
+	resultsProf, _, _, _, _, _ := svc.gateToolCalls(
+		context.Background(),
+		"orch-session",
+		"run-gate-prof",
+		1,
+		"auto",
+		[]tool.Call{chatCall},
+		nil,
+		nil,
+		chatProfile,
+	)
+	if !strings.Contains(resultsProf[0].Error, "exclusive to Swarm Orchestrator") {
+		t.Fatalf("expected profile rejection, got: %s", resultsProf[0].Error)
+	}
+}
+
+func TestWorkerPendingProposal_LegacyDocumentValidationAndNormalization(t *testing.T) {
+	svc, sessionsSvc, _, workspaceID := setupWorkerExecutionFixture(t, func(identity.Principal, store.V3SessionRunIntent) bool { return true })
+	orchProfile := agent.SwarmOrchestratorAgentProfileForContext(store.AgentProfile{})
+
+	proposeDoc := func(doc map[string]any) (map[string]any, string, error) {
+		rawDoc, _ := json.Marshal(doc)
+		args := fmt.Sprintf(`{"action":"propose","document":%s}`, string(rawDoc))
+		invoker := svc.newProviderToolInvoker(providerToolInvokerConfig{
+			sessionID:            "orch-session",
+			principal:            identity.Principal{Type: identity.PrincipalTypeUser, UserID: "owner", AccountScopeID: "account"},
+			sessionMode:          "auto",
+			runID:                "run-doc-norm",
+			providerManagedV3:    true,
+			applySessionMutation: sessionsSvc.ApplySessionMutation,
+			agentProfile:         orchProfile,
+			terminalPlanState:    &terminalPlanToolState{},
+		})
+		res, err := invoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{
+			Name:      "manage_workers",
+			CallID:    "call-doc-test",
+			Arguments: args,
+		})
+		if err != nil {
+			return nil, "", err
+		}
+		if res.Error != "" {
+			return nil, res.Error, nil
+		}
+		var out map[string]any
+		_ = json.Unmarshal([]byte(res.Output), &out)
+		return out, "", nil
+	}
+
+	baseDoc := func() map[string]any {
+		return map[string]any{
+			"title": "Normalized Worker",
+			"info":  map[string]any{"goal": "Check invariants"},
+			"worker_v2": map[string]any{
+				"schema_version": 2,
+				"workspace_id":   workspaceID,
+				"schedule":       map[string]any{"kind": "interval", "interval_seconds": 3600},
+				"missed":         "skip",
+				"overlap":        "serialize",
+				"expiration":     map[string]any{"kind": "indefinite"},
+			},
+			"checkpoints": []map[string]any{
+				{
+					"id":                  "cp-1",
+					"title":               "Run check",
+					"tasks":               []string{"Verify status"},
+					"acceptance_criteria": []string{"Verified"},
+				},
+			},
+		}
+	}
+
+	// 1. Expiration "indefinite" succeeds and normalizes planCopy (WorkerV2 and AutomationV2 stripped)
+	out, errStr, err := proposeDoc(baseDoc())
+	if err != nil || errStr != "" {
+		t.Fatalf("indefinite expiration failed: %v / %s", err, errStr)
+	}
+	workerID := fmt.Sprint(out["worker_id"])
+	w, found, err := sessionsSvc.GetWorker("account", workerID)
+	if err != nil || !found {
+		t.Fatalf("worker not found: %v", err)
+	}
+	if len(w.Automations) != 1 {
+		t.Fatalf("expected 1 automation, got %d", len(w.Automations))
+	}
+	// Attached PlanDocument MUST have WorkerV2 and AutomationV2 stripped
+	if w.Automations[0].PlanDocument.WorkerV2 != nil || w.Automations[0].PlanDocument.AutomationV2 != nil {
+		t.Fatal("attached plan document retained nested worker_v2 or automation_v2 settings")
+	}
+
+	// 2. Expiration "never" succeeds
+	neverDoc := baseDoc()
+	neverDoc["worker_v2"].(map[string]any)["expiration"] = map[string]any{"kind": "never"}
+	outNever, errNever, _ := proposeDoc(neverDoc)
+	if errNever != "" {
+		t.Fatalf("never expiration failed: %s", errNever)
+	}
+	if outNever["status"] != "pending_review" {
+		t.Fatalf("expected pending_review, got %v", outNever["status"])
+	}
+
+	// 3. Finite expiration "at" is rejected with clear error
+	finiteDoc := baseDoc()
+	finiteDoc["worker_v2"].(map[string]any)["expiration"] = map[string]any{"kind": "at", "expires_at": 9999999999}
+	_, errFinite, _ := proposeDoc(finiteDoc)
+	if !strings.Contains(errFinite, "unrepresentable in durable workers") {
+		t.Fatalf("expected unrepresentable expiration error, got: %s", errFinite)
+	}
+
+	// 4. Multiple workspace_ids rejected
+	multiWsDoc := baseDoc()
+	multiWsDoc["worker_v2"].(map[string]any)["workspace_ids"] = []string{workspaceID, "ws_other"}
+	delete(multiWsDoc["worker_v2"].(map[string]any), "workspace_id")
+	_, errMultiWs, _ := proposeDoc(multiWsDoc)
+	if !strings.Contains(errMultiWs, "multiple workspace_ids in worker_v2 is unsupported") {
+		t.Fatalf("expected multiple workspace_ids rejection, got: %s", errMultiWs)
+	}
+
+	// 5. Unsupported missed policy rejected
+	coalesceDoc := baseDoc()
+	coalesceDoc["worker_v2"].(map[string]any)["missed"] = "coalesce"
+	_, errCoalesce, _ := proposeDoc(coalesceDoc)
+	if !strings.Contains(errCoalesce, "unsupported missed policy") {
+		t.Fatalf("expected unsupported missed policy error, got: %s", errCoalesce)
+	}
+
+	// 6. Unsupported overlap policy rejected
+	indepDoc := baseDoc()
+	indepDoc["worker_v2"].(map[string]any)["overlap"] = "independent"
+	_, errIndep, _ := proposeDoc(indepDoc)
+	if !strings.Contains(errIndep, "unsupported overlap policy") {
+		t.Fatalf("expected unsupported overlap policy error, got: %s", errIndep)
+	}
+
+	// 7. Unsupported activate_on_accept=false rejected
+	noActDoc := baseDoc()
+	noActDoc["worker_v2"].(map[string]any)["activate_on_accept"] = false
+	_, errNoAct, _ := proposeDoc(noActDoc)
+	if !strings.Contains(errNoAct, "unsupported activate_on_accept=false") {
+		t.Fatalf("expected unsupported activate_on_accept=false error, got: %s", errNoAct)
+	}
+
+	// 8. Schedule without checkpoints rejected
+	noCheckpointsDoc := baseDoc()
+	noCheckpointsDoc["checkpoints"] = []any{}
+	_, errNoCheckpoints, _ := proposeDoc(noCheckpointsDoc)
+	if !strings.Contains(errNoCheckpoints, "requires checkpoints") {
+		t.Fatalf("expected schedule requires checkpoints error, got: %s", errNoCheckpoints)
+	}
+}
+
+func TestWorkerPendingProposal_ReproposalRequiresExpectedRevisionAndCanRemoveAutomations(t *testing.T) {
+	svc, sessionsSvc, _, workspaceID := setupWorkerExecutionFixture(t, func(identity.Principal, store.V3SessionRunIntent) bool { return true })
+	orchProfile := agent.SwarmOrchestratorAgentProfileForContext(store.AgentProfile{})
+
+	invoker := svc.newProviderToolInvoker(providerToolInvokerConfig{
+		sessionID:            "orch-session",
+		principal:            identity.Principal{Type: identity.PrincipalTypeUser, UserID: "owner", AccountScopeID: "account"},
+		sessionMode:          "auto",
+		runID:                "run-reprop-advanced",
+		providerManagedV3:    true,
+		applySessionMutation: sessionsSvc.ApplySessionMutation,
+		agentProfile:         orchProfile,
+		terminalPlanState:    &terminalPlanToolState{},
+	})
+
+	// 1. Create worker with 1 automation
+	initArgs := fmt.Sprintf(`{
+		"action": "propose",
+		"name": "Automation Holder",
+		"instructions": "Run periodic tasks",
+		"workspace_id": %q,
+		"automations": [
+			{
+				"name": "Periodic Check",
+				"activation_mode": "manual",
+				"enabled": true,
+				"plan_document": {
+					"title": "Check",
+					"info": {"goal": "Check"},
+					"checkpoints": [{"id": "c1", "title": "Check", "status": "pending", "order": 1, "tasks": ["T1"], "acceptance_criteria": ["A1"]}]
+				}
+			}
+		]
+	}`, workspaceID)
+
+	resInit, err := invoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{
+		Name:      "manage_workers",
+		CallID:    "call-init-auto",
+		Arguments: initArgs,
+	})
+	if err != nil || resInit.Error != "" {
+		t.Fatalf("init proposal failed: %v / %s", err, resInit.Error)
+	}
+	var outInit map[string]any
+	_ = json.Unmarshal([]byte(resInit.Output), &outInit)
+	workerID := fmt.Sprint(outInit["worker_id"])
+
+	wInit, found, err := sessionsSvc.GetWorker("account", workerID)
+	if err != nil || !found {
+		t.Fatalf("worker not found: %v", err)
+	}
+	if len(wInit.Automations) != 1 {
+		t.Fatalf("expected 1 automation, got %d", len(wInit.Automations))
+	}
+
+	// 2. Reproposal without expected_revision must be rejected
+	missingRevArgs := fmt.Sprintf(`{
+		"action": "propose",
+		"worker_id": %q,
+		"name": "Missing Revision Rename"
+	}`, workerID)
+	resMissingRev, err := invoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{
+		Name:      "manage_workers",
+		CallID:    "call-missing-rev",
+		Arguments: missingRevArgs,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(resMissingRev.Error, "expected_revision is required") {
+		t.Fatalf("expected required expected_revision error, got: %s", resMissingRev.Error)
+	}
+
+	// Verify worker state is unmutated
+	wUnmutated, _, _ := sessionsSvc.GetWorker("account", workerID)
+	if wUnmutated.Revision != 1 || wUnmutated.Name != "Automation Holder" || len(wUnmutated.Automations) != 1 {
+		t.Fatalf("worker state mutated after failed reproposal: %+v", wUnmutated)
+	}
+
+	// 3. Reproposal with empty automations removes all jobs
+	clearAutosArgs := fmt.Sprintf(`{
+		"action": "propose",
+		"worker_id": %q,
+		"expected_revision": 1,
+		"name": "Automation Free Specialist",
+		"instructions": "Now a job-free specialist",
+		"automations": []
+	}`, workerID)
+	resClear, err := invoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{
+		Name:      "manage_workers",
+		CallID:    "call-clear-autos",
+		Arguments: clearAutosArgs,
+	})
+	if err != nil || resClear.Error != "" {
+		t.Fatalf("clear automations reproposal failed: %v / %s", err, resClear.Error)
+	}
+
+	wCleared, found, err := sessionsSvc.GetWorker("account", workerID)
+	if err != nil || !found {
+		t.Fatalf("worker not found: %v", err)
+	}
+	if wCleared.Revision != 2 {
+		t.Fatalf("expected revision 2, got %d", wCleared.Revision)
+	}
+	if len(wCleared.Automations) != 0 {
+		t.Fatalf("expected 0 automations after explicit empty automations, got %d", len(wCleared.Automations))
+	}
+	if wCleared.Name != "Automation Free Specialist" {
+		t.Fatalf("expected updated name, got %s", wCleared.Name)
+	}
+}
+
+func TestWorkerPendingProposal_TargetWorkspaceRequiredAndAuthorized(t *testing.T) {
+	svc, sessionsSvc, _, _ := setupWorkerExecutionFixture(t, func(identity.Principal, store.V3SessionRunIntent) bool { return true })
+
+	// 1. Session with no workspace grants attempting proposal without workspace_id
+	noWsSession := store.SessionSnapshot{
+		ID:             "no-ws-test-session",
+		AccountScopeID: "account",
+		UserID:         "owner",
+		Mode:           "auto",
+		Metadata: map[string]any{
+			"agent_name":          "system-orchestrator",
+			"resolved_agent_name": "system-orchestrator",
+		},
+	}
+	if err := sessionsSvc.Store().CreateSession(noWsSession); err != nil {
+		t.Fatal(err)
+	}
+
+	callNoWs := tool.Call{
+		Name:      "manage_workers",
+		Arguments: `{"action":"propose","name":"Unbound Worker","instructions":"No workspace"}`,
+	}
+	_, errNoWs := svc.executeWorkerProposalTool("no-ws-test-session", callNoWs)
+	if errNoWs == nil || !strings.Contains(errNoWs.Error(), "target workspace required") {
+		t.Fatalf("expected target workspace required error, got: %v", errNoWs)
+	}
+
+	// 2. Proposal with unauthorized/non-existent workspace ID
+	callInvalidWs := tool.Call{
+		Name:      "manage_workers",
+		Arguments: `{"action":"propose","name":"Invalid Workspace Worker","instructions":"Do work","workspace_id":"ws_does_not_exist_12345"}`,
+	}
+	_, errInvalidWs := svc.executeWorkerProposalTool("no-ws-test-session", callInvalidWs)
+	if errInvalidWs == nil || !strings.Contains(errInvalidWs.Error(), "not found or not accessible") {
+		t.Fatalf("expected workspace not accessible error, got: %v", errInvalidWs)
+	}
+}
+
+func TestWorkerPendingProposal_AcceptBindingIntegrityUnderMutex(t *testing.T) {
+	_, sessionsSvc, _, workspaceID := setupWorkerExecutionFixture(t, func(identity.Principal, store.V3SessionRunIntent) bool { return true })
+
+	w, err := sessionsSvc.CreateWorker(context.Background(), "account", "owner", store.CreateWorkerRequest{
+		Name:                  "Binding Guard Worker",
+		Instructions:          "Strict bindings",
+		InitialLifecycleState: store.WorkerLifecycleStatePending,
+		ProposedBindings:      map[string]string{"primary": workspaceID},
+		WorkspaceRequirements: []store.WorkerWorkspaceRequirement{
+			{Role: "primary", Description: "Primary workspace", Required: true},
+		},
+		IdempotencyKey: "test-binding-integrity",
+	})
+	if err != nil {
+		t.Fatalf("create worker failed: %v", err)
+	}
+
+	// Direct call to ws.AcceptWorker with altered bindings must fail under mutex
+	ws := sessionsSvc.Store().WorkerStore()
+	_, err = ws.AcceptWorker("account", "owner", w.ID, 1, map[string]string{"primary": "ws_forged_different"})
+	if err == nil || !errors.Is(err, store.ErrWorkerConflict) || !strings.Contains(err.Error(), "accepted bindings must match exact proposed bindings") {
+		t.Fatalf("expected ErrWorkerConflict for altered bindings, got: %v", err)
+	}
+
+	// Verify worker state is unchanged
+	loaded, found, err := sessionsSvc.GetWorker("account", w.ID)
+	if err != nil || !found {
+		t.Fatalf("get worker: %v", err)
+	}
+	if loaded.LifecycleState != store.WorkerLifecycleStatePending || loaded.Revision != 1 || len(loaded.LocalBindings) != 0 {
+		t.Fatalf("worker state mutated after failed accept: %+v", loaded)
 	}
 }

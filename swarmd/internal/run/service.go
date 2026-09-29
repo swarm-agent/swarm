@@ -2738,7 +2738,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			permissionIndexes = append(permissionIndexes, i)
 		}
 		if len(permissionCalls) > 0 {
-			permissionResults, _, _, permissionApprovedMask, feedback, gateErr := s.gateToolCalls(ctx, permissionSessionID, runID, step, executionMode, permissionCalls, emit, compiledPolicy)
+			permissionResults, _, _, permissionApprovedMask, feedback, gateErr := s.gateToolCalls(ctx, permissionSessionID, runID, step, executionMode, permissionCalls, emit, compiledPolicy, agentProfile)
 			if gateErr != nil {
 				return RunResult{}, gateErr
 			}

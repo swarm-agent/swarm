@@ -166,6 +166,9 @@ func (s *WorkerExecutionService) Dispatch(ctx context.Context, account, user str
 	if !found || w.ID != req.WorkerID {
 		return store.WorkerRunRecord{}, store.ErrWorkerNotFound
 	}
+	if w.LifecycleState == store.WorkerLifecycleStatePending {
+		return store.WorkerRunRecord{}, fmt.Errorf("%w: pending worker cannot be dispatched before human acceptance", store.ErrWorkerConflict)
+	}
 	if w.Provenance != nil && (w.Provenance.MigratedAt != 0 || w.Provenance.SourceProposalID != "") {
 		return store.WorkerRunRecord{}, store.ErrWorkerConflict
 	}
