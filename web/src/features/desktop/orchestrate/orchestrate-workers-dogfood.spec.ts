@@ -19,7 +19,8 @@ test('OrchestrateView displays active running automations at top of project with
   assert.ok(source.includes("setActiveNavTab('workers')"), 'OrchestrateView must support 1-click navigation to Workers Hub')
 
   // Invariant 3: Workers Hub tab has a single canonical render path, not the retired fleet.
-  assert.ok(source.includes('<WorkerHub workspaceSlug={workspaceSlug} initialWorkerId={routeWorkerId} onSelectWorker={selectWorker} />'))
+  assert.ok(source.includes('<WorkerHub workspaceSlug={workspaceSlug} initialWorkerId={workerDetailId || routeWorkerId}'))
+  assert.ok(source.includes('onAddWorker={() =>'))
   assert.ok(!source.includes("false && activeNavTab === 'workers'"))
   assert.ok(!source.includes('Registered Workers Fleet'))
 })
@@ -75,8 +76,10 @@ test('project page retains pending review actions outside canonical worker hub',
 test('OrchestrateView integrates TasksDurableWorkersSection and PendingWorkerCard in Tasks view', () => {
   const source = fs.readFileSync(path.join(__dirname, 'OrchestrateView.tsx'), 'utf8')
   assert.ok(source.includes('TasksDurableWorkersSection'), 'OrchestrateView must define and render TasksDurableWorkersSection')
-  assert.ok(source.includes('PendingWorkerCard'), 'OrchestrateView must render PendingWorkerCard for pending durable workers')
-  assert.ok(source.includes('data-testid="tasks-pending-workers-section"'), 'Tasks view must have testable pending workers section')
-  assert.ok(source.includes('Pending Workers Awaiting Acceptance'), 'Tasks view must clearly identify pending workers awaiting acceptance')
+  const activity = fs.readFileSync(path.join(__dirname, 'worker-task-activity.tsx'), 'utf8')
+  assert.ok(source.includes('<WorkerTaskActivity'))
+  assert.ok(activity.includes('<PendingWorkerCard'), 'Pending proposals retain human acceptance')
+  assert.ok(activity.includes('<WorkerRunHistory'), 'Accepted workers expose actual runs')
+  assert.ok(!activity.includes("lifecycleState: 'pending'"), 'Accepted workers must not disappear')
   assert.ok(source.includes('swarmWorkerLink'), 'OrchestrateView must link to worker detail via canonical route')
 })

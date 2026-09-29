@@ -4,12 +4,12 @@ import { build } from 'esbuild'
 import { chromium } from 'playwright'
 
 // Requirement: The V3 hub reads the canonical worker cache and exposes revision-guarded
-// actions and paged runs. Threat: stale list/status, invented success on failed stop,
-// silent loss of run errors/links, or unconfirmed destructive actions.
+// actions and paged runs without configuration forms. Threat: stale status,
+// invented success on failed stop, lost run links or accidental direct dispatch.
 // Boundary: WorkerHub/WorkerDetail -> desktopWorkers runtime -> V3 cache. A real
 // rendered component is the narrowest layer for the interactive states; server tests
 // separately prove account isolation, mutation effects, and stop barriers.
-test('durable worker detail renders runs and failures; controls require confirmation and preserve server errors', { timeout: 30000 }, async () => {
+test('operational worker detail categorizes runs, forwards context and preserves failed stop errors', { timeout: 30000 }, async () => {
   const fixture = `import React from 'react'; import {createRoot} from 'react-dom/client';
     import {WorkerDetail} from './src/features/desktop/orchestrate/worker-hub';
     import {desktopWorkers} from './src/features/desktop/runtime/desktop-workers';
@@ -32,52 +32,36 @@ test('durable worker detail renders runs and failures; controls require confirma
     await page.route('**/*', route => route.fulfill({ contentType: 'text/html', body: '<div id="root"></div>' }))
     await page.goto('https://worker.test/')
     await page.addScriptTag({ content: bundle.outputFiles[0].text })
-    await page.getByText('Daily audit').waitFor()
-    await page.getByText('Inspect daily').waitFor()
+    await page.getByRole('heading', { name: 'Daily audit', exact: true }).waitFor()
+    await page.getByText('Inspect daily').first().waitFor()
     await page.getByText('0 9 * * * (UTC)').waitFor()
-    await page.getByText(/Total 42 runs · 39 succeeded · 2 failed/).first().waitFor()
-    await page.getByText(/Next eligible schedule: none reported/).first().waitFor()
-    await page.getByText('Deliverable reference:').waitFor()
-    assert.equal(await page.getByTestId('durable-worker-run').getByRole('link', { name: 'Open execution session session_1', exact: true }).getAttribute('href'), '/demo/session_1')
-    assert.equal(await page.getByTestId('durable-worker-run').getByRole('link', { name: 'Open source session', exact: true }).getAttribute('href'), '/demo/session_1')
-    await page.getByRole('button', { name: 'Archive…' }).click()
+    await page.getByText(/42 runs today \(UTC\) · 39 succeeded · 2 failed/).waitFor()
+    await page.getByText(/Next eligible schedule: None reported/).waitFor()
+    await page.getByText(/1 deliverable\(s\)/).waitFor()
+    assert.equal(await page.getByTestId('durable-worker-run').getByRole('link', { name: 'Open execution session', exact: true }).getAttribute('href'), '/demo/session_1')
+    assert.equal(await page.locator('form, input, textarea, select').count(), 0)
+    await page.getByRole('button', { name: 'Failed', exact: true }).click()
+    assert.equal(await page.getByTestId('durable-worker-run').count(), 0)
+    await page.getByRole('button', { name: 'In progress', exact: true }).click()
+    assert.equal(await page.getByTestId('durable-worker-run').count(), 1)
     assert.deepEqual(await page.evaluate(() => (window as any).calls), [])
-    await page.getByRole('button', { name: 'Keep worker' }).click()
-    assert.deepEqual(await page.evaluate(() => (window as any).calls), [])
-    await page.getByRole('button', { name: 'Pause' }).click()
+    await page.getByRole('button', { name: 'Pause worker' }).click()
     await page.getByRole('alert').getByText('stop barrier failed').waitFor()
     assert.deepEqual((await page.evaluate(() => (window as any).calls))[0], { action: 'pause', workerId: 'worker_123', expected_revision: 2 })
-    await page.getByRole('button', { name: 'Delete…' }).click()
-    assert.equal((await page.evaluate(() => (window as any).calls)).length, 1)
-    await page.getByRole('button', { name: 'Confirm delete' }).click()
-    await page.getByRole('alert').getByText('stop barrier failed').waitFor()
-    assert.deepEqual((await page.evaluate(() => (window as any).calls))[1], { action: 'delete', workerId: 'worker_123', expected_revision: 2 })
-    await page.getByRole('group', { name: 'Confirm delete worker' }).waitFor()
-    await page.getByRole('button', { name: 'Request run cancellation' }).click()
-    await page.getByRole('alert').getByText('stop barrier failed').waitFor()
-    assert.deepEqual((await page.evaluate(() => (window as any).calls))[2], { action: 'cancelRun', workerId: 'worker_123', runId: 'run_1' })
-    await page.getByRole('button', { name: 'Select for next Orchestrator message' }).click()
+    await page.getByRole('button', { name: 'Stop run' }).click()
+    await page.getByTestId('durable-worker-run').getByRole('alert').waitFor()
+    assert.deepEqual((await page.evaluate(() => (window as any).calls))[1], { action: 'cancelRun', workerId: 'worker_123', runId: 'run_1' })
+    await page.getByRole('button', { name: 'Ask Orchestrator' }).click()
     assert.deepEqual(await page.evaluate(() => (window as any).selected), [{ id: 'worker_123', revision: 2, name: 'Daily audit' }])
-    // A transport failure keeps the admission key for an identical retry; edits create a new intent.
-    await page.getByLabel('Explicit task prompt').fill('Review this change')
-    await page.getByRole('button', { name: 'Send task (starts a run)', exact: true }).click()
-    await page.getByRole('button', { name: 'Send task (starts a run)', exact: true }).click()
-    let calls = await page.evaluate(() => (window as any).calls)
-    const direct = calls.filter((call: any) => call.action === 'direct')
-    assert.equal(direct.length, 2)
-    assert.equal(direct[0].idempotency_key, direct[1].idempotency_key)
-    await page.getByLabel('Explicit task prompt').fill('Review a different change')
-    await page.getByRole('button', { name: 'Send task (starts a run)', exact: true }).click()
-    calls = await page.evaluate(() => (window as any).calls)
-    assert.notEqual(calls.at(-1).idempotency_key, direct[0].idempotency_key)
+    assert.equal((await page.evaluate(() => (window as any).calls)).some((call: any) => call.action === 'direct' || call.action === 'create'), false)
     // Accepted stop requests must not be presented as acknowledged completion.
     await page.evaluate(() => { (window as any).stopping = true })
-    await page.getByRole('button', { name: 'Pause', exact: true }).click()
-    await page.getByRole('status').getByText(/Stopping: cancellation is awaiting acknowledgement/).waitFor()
+    await page.getByRole('button', { name: 'Pause worker', exact: true }).click()
+    await page.getByRole('status').getByText(/Stopping: awaiting active run acknowledgement/).waitFor()
     assert.equal(await page.getByText('Lifecycle change confirmed.', { exact: true }).count(), 0)
     await page.evaluate(() => (window as any).invalidate())
-    await page.getByText('Detail refreshing; do not act on stale revisions.').waitFor()
-    assert.equal(await page.getByRole('button', { name: 'Select for next Orchestrator message' }).isDisabled(), true)
-    assert.equal(await page.getByRole('button', { name: 'Pause' }).isDisabled(), true)
+    await page.getByText('Updating details; actions are unavailable until the current revision is loaded.').waitFor()
+    assert.equal(await page.getByRole('button', { name: 'Ask Orchestrator' }).isDisabled(), true)
+    assert.equal(await page.getByRole('button', { name: 'Pause worker' }).isDisabled(), true)
   } finally { await browser.close() }
 })

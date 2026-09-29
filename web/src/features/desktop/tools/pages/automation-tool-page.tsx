@@ -2,6 +2,7 @@ import { useNavigate, useParams, useSearch } from '@tanstack/react-router'
 import { useWorkspaceLauncher } from '../../../workspaces/launcher/state/use-workspace-launcher'
 import { resolveWorkspaceBySlug } from '../../../workspaces/launcher/services/workspace-route'
 import { AutomationV2Workspace as AutomationWorkspace } from '../automations/automation-v2-workspace'
+import { OrchestrateView } from '../../orchestrate/OrchestrateView'
 
 export function AutomationToolPage() {
   const params = useParams({ strict: false }) as { workspaceSlug?: string; workerId?: string }
@@ -11,6 +12,9 @@ export function AutomationToolPage() {
   if (loading) return <main role="status" className="p-6">Loading workspace…</main>
   const workspace = params.workspaceSlug ? resolveWorkspaceBySlug(workspaces, params.workspaceSlug) : undefined
   const targetWorkerId = (params.workerId || search?.workerId || search?.automationId || '').trim()
+  if (targetWorkerId.startsWith('worker_') || targetWorkerId.startsWith('worker-')) {
+    return <div className="flex h-full min-h-0 flex-col"><OrchestrateView workspaceSlug={params.workspaceSlug} workerDetailId={targetWorkerId} /></div>
+  }
   return (
     <AutomationWorkspace
       key={workspace?.workspaceId ?? 'global-workers'}

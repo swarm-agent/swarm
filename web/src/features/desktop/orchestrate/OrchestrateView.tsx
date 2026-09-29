@@ -58,8 +58,8 @@ import { formatContextWindow } from '../chat/services/model-options'
 import { requestJson, getDesktopSessionIdentitySnapshot } from '../../../app/api'
 import { WorkerHub, type SelectedWorker } from './worker-hub'
 import { submitWithWorkerSelection } from './worker-message-context'
-import { useWorkerPage } from '../runtime/desktop-workers'
-import { PendingWorkerCard } from './pending-worker-card'
+import { WorkerTaskActivity } from './worker-task-activity'
+import { DurableWorkerCount } from '../layout/durable-worker-sidebar'
 import { swarmWorkerLink } from './swarm-navigation'
 import { useDesktopV3CacheSelector, getDesktopV3CacheSnapshot } from '../state/desktop-v3-cache-store'
 import { selectPendingWorkerSidebarReviews } from '../state/desktop-automation-v2-state'
@@ -138,6 +138,7 @@ import type { BackendTaskModelPreview } from './orchestrate-types'
 import { selectTaskPlanDocument } from './orchestrate-plan-authority'
 
 export interface OrchestrateViewProps {
+  workerDetailId?: string
   workspaceSlug?: string
   onNavigateHome?: () => void
   initialThemeId?: OrchestrateThemeId
@@ -2524,9 +2525,13 @@ export function OrchestratorChatComposer({
   selectedWorker,
   currentSelectedWorker,
   onDeselectWorker,
+  creatingWorker = false,
+  onWorkerCreationSent,
   submitMessage = continueDesktopV3Conversation,
 }: {
   sessionId: string
+  creatingWorker?: boolean
+  onWorkerCreationSent?: () => void
   /** Replace only the network submission boundary in rendered tests. */
   submitMessage?: typeof continueDesktopV3Conversation
   selectedWorker?: SelectedWorker | null
@@ -2630,7 +2635,7 @@ export function OrchestratorChatComposer({
     setSendError(null)
 
     try {
-      let finalContent = text
+      let finalContent = creatingWorker ? `Please propose a new worker for human approval. Here is the job I want it to do:\n\n${text}` : text
       let finalMetadata: Record<string, unknown> = {
         orchestrate_view: true,
         ...(project ? { project_id: project.id } : {}),
@@ -2697,6 +2702,7 @@ export function OrchestratorChatComposer({
       }, currentSelectedWorker || (() => selectedWorker || null), () => onDeselectWorker?.(selectedWorker || null))
       setDraft('')
       setAttachments([])
+      if (creatingWorker) onWorkerCreationSent?.()
     } catch (err: any) {
       setSendError(err?.message || String(err))
     } finally {
@@ -2873,6 +2879,8 @@ export function OrchestratorChatComposer({
  * and individual Task Worker sessions with a back-button navigation bar.
  */
 function OrchestratorChatSidebar({
+  creatingWorker,
+  onWorkerCreationSent,
   sessionId,
   project,
   activeTask,
@@ -2887,6 +2895,8 @@ function OrchestratorChatSidebar({
   onDeselectWorker,
 }: {
   sessionId: string
+  creatingWorker?: boolean
+  onWorkerCreationSent?: () => void
   selectedWorker?: SelectedWorker | null
   currentSelectedWorker?: () => SelectedWorker | null
   onDeselectWorker?: (consumed: SelectedWorker | null) => void
@@ -3163,6 +3173,8 @@ function OrchestratorChatSidebar({
             selectedWorker={activeTask ? null : selectedWorker}
             currentSelectedWorker={currentSelectedWorker}
             onDeselectWorker={onDeselectWorker}
+            creatingWorker={creatingWorker}
+            onWorkerCreationSent={onWorkerCreationSent}
           />
         }
         contextChip={
@@ -3227,49 +3239,11 @@ export function TasksDurableWorkersSection({
   workspaceSlug?: string
   onOpenWorkerDetail?: (workerId: string) => void
 }) {
-  const [cursor, setCursor] = useState<string | undefined>()
-  const page = useWorkerPage({ kind: 'list', accountScopeId, limit: 50, lifecycleState: 'pending', cursor })
-  const workers = page?.data && 'workers' in page.data ? page.data.workers : []
-  const pendingWorkers = workers.filter((w) => w.lifecycle_state === 'pending')
-
-  const nextCursor = page?.data && 'workers' in page.data ? page.data.next_cursor : undefined
-  if (pendingWorkers.length === 0 && !page?.error && !page?.loading && !cursor) return null
-
-  return (
-    <div className="mx-3.5 mt-2 mb-1.5 space-y-2" data-testid="tasks-pending-workers-section">
-      <div className="flex items-center justify-between pb-1">
-        <div className="flex items-center gap-2">
-          <div className="h-2 w-2 rounded-full bg-amber-400 animate-pulse" />
-          <span className="text-xs font-bold text-white tracking-tight">
-            Pending Workers Awaiting Acceptance ({pendingWorkers.length})
-          </span>
-          <span className="text-[10px] text-slate-400">
-            Durable workers proposed by Orchestrator awaiting your review
-          </span>
-        </div>
-      </div>
-      {page?.error && <p role="alert">Worker proposals: {page.error}</p>}
-      {page?.loading && !page.data && <p role="status">Loading pending workers…</p>}
-      <div className="space-y-2">
-        {pendingWorkers.map((worker) => (
-          <PendingWorkerCard
-            key={`${worker.id}:${worker.revision}`}
-            worker={worker}
-            accountScopeId={accountScopeId}
-            workspaceSlug={workspaceSlug}
-            stale={!!page?.stale || !!page?.error}
-            mutationError={page?.mutationError}
-            onOpenDetail={onOpenWorkerDetail}
-          />
-        ))}
-      </div>
-      {nextCursor && <button type="button" onClick={() => setCursor(nextCursor)}>Next pending workers</button>}
-      {cursor && <button type="button" onClick={() => setCursor(undefined)}>First pending workers</button>}
-    </div>
-  )
+  return <WorkerTaskActivity accountScopeId={accountScopeId} workspaceSlug={workspaceSlug} onOpenWorkerDetail={onOpenWorkerDetail} />
 }
 
 export function OrchestrateView({
+  workerDetailId,
   workspaceSlug: workspaceSlugProp,
   onNavigateHome,
   initialThemeId = 'modern_navy',
@@ -3379,20 +3353,12 @@ export function OrchestrateView({
   // Split Studio selected task state
   const [selectedTaskId, setSelectedTaskId] = useState<string>('')
   const [selectedWorker, setSelectedWorker] = useState<SelectedWorker | null>(null)
+  const [workerChatOpen, setWorkerChatOpen] = useState(false)
+  const [workerCreationRequested, setWorkerCreationRequested] = useState(false)
+  const [workerChatError, setWorkerChatError] = useState('')
+  const workerChatStarting = useRef(false)
+  const workerChatRequestId = useRef<string | null>(null)
   const selectedWorkerRef = useRef<SelectedWorker | null>(null)
-  const selectWorker = (worker: SelectedWorker | null) => {
-    selectedWorkerRef.current = worker
-    setSelectedWorker(worker)
-    if (worker) {
-      setActiveTaskId(null)
-      setSelectedTaskId('')
-      const primary = selectedProject?.primarySessionId
-      if (primary) {
-        previousWorkerContextScope.current = `${getDesktopSessionIdentitySnapshot()?.accountScopeId || ''}:${workspaceSlug || ''}:${selectedProject?.id || ''}:${primary}`
-        setActiveSessionId(primary)
-      }
-    }
-  }
   const clearConsumedWorker = (worker: SelectedWorker | null) => {
     if (selectedWorkerRef.current === worker) { selectedWorkerRef.current = null; setSelectedWorker(null) }
   }
@@ -3423,6 +3389,10 @@ export function OrchestrateView({
   // Worker context belongs to one account, workspace, project and session only.
   const workerContextScope = `${accountScopeId || ''}:${workspaceSlug || ''}:${selectedProject?.id || ''}:${activeSessionId}`
   const previousWorkerContextScope = useRef(workerContextScope)
+  const workerConversationScope = `${accountScopeId || ''}:${workspaceSlug || ''}:${selectedProject?.id || ''}`
+  const workerConversationScopeRef = useRef(workerConversationScope)
+  workerConversationScopeRef.current = workerConversationScope
+  useEffect(() => { workerChatRequestId.current = null; setWorkerCreationRequested(false); setWorkerChatOpen(false); setWorkerChatError('') }, [workerConversationScope])
   useEffect(() => {
     if (previousWorkerContextScope.current !== workerContextScope) {
       previousWorkerContextScope.current = workerContextScope
@@ -3430,7 +3400,7 @@ export function OrchestrateView({
       setSelectedWorker(null)
     }
   }, [workerContextScope])
-  const activeNavTab: SwarmPage = isSwarmSection(routeParams.swarmSection) ? routeParams.swarmSection : 'home'
+  const activeNavTab: SwarmPage = workerDetailId ? 'workers' : isSwarmSection(routeParams.swarmSection) ? routeParams.swarmSection : 'home'
   const showFullMediaCenter = activeNavTab === 'media'
   const setActiveNavTab = (page: SwarmPage) => { void navigate(swarmPageLink(workspaceSlug, page)) }
   const setShowFullMediaCenter = (open: boolean) => {
@@ -4097,6 +4067,42 @@ export function OrchestrateView({
     return null
   }, [])
 
+  const openWorkerConversation = async (worker: SelectedWorker | null) => {
+    if (workerChatStarting.current) return
+    workerChatStarting.current = true
+    const scope = workerConversationScopeRef.current
+    setActiveSessionId('')
+    selectedWorkerRef.current = null
+    setSelectedWorker(null)
+    setWorkerChatError('')
+    setWorkerChatOpen(true)
+    setWorkerCreationRequested(!worker)
+    setActiveTaskId(null)
+    setSelectedTaskId('')
+    try {
+      let sessionId: string | null = null
+      if (selectedProject) {
+        sessionId = await ensureOrchestratorSession(selectedProject)
+      } else {
+        // The server resolves the account's default workspace; never guess a local path.
+        workerChatRequestId.current ||= `desktop-v3-create:${crypto.randomUUID()}`
+        const response = await requestJson<{ session: { id: string } }>('/v3/sessions', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ client_request_id: workerChatRequestId.current, title: 'Worker Orchestrator', agent_name: 'system-orchestrator' }),
+        })
+        sessionId = response?.session?.id || null
+      }
+      if (workerConversationScopeRef.current !== scope) return
+      if (!sessionId) throw new Error('Could not open Orchestrator. Check your workspace connection and try again.')
+      previousWorkerContextScope.current = `${accountScopeId || ''}:${workspaceSlug || ''}:${selectedProject?.id || ''}:${sessionId}`
+      setActiveSessionId(sessionId)
+      selectedWorkerRef.current = worker
+      setSelectedWorker(worker)
+    } catch (cause) {
+      if (workerConversationScopeRef.current === scope) setWorkerChatError(cause instanceof Error ? cause.message : 'Could not open Orchestrator')
+    } finally { workerChatStarting.current = false }
+  }
+
   // Synchronize active orchestrator session with selected project
   useEffect(() => {
     if (!selectedProject || isOnboardingActive) return
@@ -4105,6 +4111,7 @@ export function OrchestrateView({
 
   // Task selection & Per-Task Session Switching
   const handleSelectTask = (task: RunningTask) => {
+    setWorkerCreationRequested(false)
     selectedWorkerRef.current = null
     setSelectedWorker(null)
     setSelectedTaskId(task.id)
@@ -4120,6 +4127,7 @@ export function OrchestrateView({
   }
 
   const handleBackToOrchestrator = () => {
+    setWorkerCreationRequested(false)
     setActiveTaskId(null)
     setSelectedTaskId('')
     if (selectedProject?.primarySessionId) {
@@ -5554,13 +5562,8 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
               <span>Workers</span>
             </div>
             <div className="flex items-center gap-1.5">
-              {pendingReviews.length > 0 ? (
-                <span className="rounded-full bg-amber-500/20 text-amber-400 border border-amber-500/40 px-1.5 py-0.5 text-[10px] font-bold animate-pulse">
-                  {pendingReviews.length} pending
-                </span>
-              ) : (
-                <span className="text-[10px] font-mono text-slate-500">{automations.length}</span>
-              )}
+              <span className="text-[10px] font-mono text-slate-500">{accountScopeId ? <DurableWorkerCount accountScopeId={accountScopeId} /> : '…'}</span>
+              {pendingReviews.length > 0 && <span className="text-[10px] text-amber-400">{pendingReviews.length} pending reviews</span>}
             </div>
           </Link>
           <Link
@@ -6080,7 +6083,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
             </div>
           </div>
         ) : activeNavTab === 'workers' ? (
-          <WorkerHub workspaceSlug={workspaceSlug} initialWorkerId={routeWorkerId} onSelectWorker={selectWorker} />
+          <WorkerHub workspaceSlug={workspaceSlug} initialWorkerId={workerDetailId || routeWorkerId} onInspectWorker={id => { if (id) void navigate(swarmWorkerLink(workspaceSlug, id)); else setActiveNavTab('workers') }} onSelectWorker={worker => { void openWorkerConversation(worker) }} onAddWorker={() => { void openWorkerConversation(null) }} />
         ) : activeNavTab === 'deliverables' ? (
           /* DELIVERABLES TAB */
           <div className="flex-1 flex flex-col min-h-0 overflow-y-auto p-6 space-y-4">
@@ -6417,7 +6420,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
               </div>
             )}
 
-            {/* TASKS VIEW DURABLE WORKERS SECTION (PENDING WORKERS AWAITING ACCEPTANCE) */}
+            {/* DURABLE WORKER TASKS AND PENDING APPROVALS */}
             {accountScopeId && (
               <TasksDurableWorkersSection
                 key={accountScopeId}
@@ -7006,7 +7009,10 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
       {/* ─────────────────────────────────────────────────────────────
           PANEL 3: RIGHT PANEL (CANONICAL DESKTOP V3 AI CHAT SIDEBAR)
          ───────────────────────────────────────────────────────────── */}
-      {activeSessionId ? (
+      {workerChatOpen && workerChatError && <div role="alert" className="max-w-sm p-4 text-sm text-red-300">{workerChatError}<button className="ml-2 underline" onClick={() => setWorkerChatError('')}>Dismiss</button></div>}
+      {(activeNavTab !== 'workers' || workerChatOpen) && (activeSessionId ? (
+        <div className="flex min-h-0 flex-col">
+        {activeNavTab === 'workers' && <div className="flex max-w-[440px] items-center justify-between gap-3 p-3 text-xs text-slate-300"><span>{workerCreationRequested ? 'Add worker: describe its job to Orchestrator below. Nothing runs until you approve.' : 'Discuss this worker with Orchestrator'}</span><button onClick={() => { setWorkerChatOpen(false); setWorkerCreationRequested(false) }}>Close</button></div>}
         <OrchestratorChatSidebar
           key={activeSessionId}
           sessionId={activeSessionId}
@@ -7021,7 +7027,10 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
           selectedWorker={selectedWorker}
           currentSelectedWorker={() => selectedWorkerRef.current}
           onDeselectWorker={clearConsumedWorker}
+          creatingWorker={workerCreationRequested}
+          onWorkerCreationSent={() => setWorkerCreationRequested(false)}
         />
+        </div>
       ) : (
         <aside className="relative flex w-[440px] flex-shrink-0 flex-col items-center justify-center p-6 text-center rounded-3xl border border-slate-800/80 bg-[#0d121f] text-xs text-slate-400 shadow-[inset_0_1px_1px_rgba(255,255,255,0.06),0_18px_40px_rgba(0,0,0,0.65)]">
           <div className="h-12 w-12 rounded-2xl bg-blue-600/20 border border-blue-500/30 flex items-center justify-center text-blue-400 mb-3 shadow-lg shadow-blue-600/10">
@@ -7029,10 +7038,10 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
           </div>
           <h3 className="font-bold text-sm text-white mb-1">Swarm Project Orchestrator</h3>
           <p className="text-slate-400 text-xs max-w-xs leading-relaxed">
-            {selectedProject ? 'Connecting executive orchestrator session...' : 'Select or create a project to activate the executive AI orchestrator.'}
+            {workerChatOpen ? 'Opening Worker Orchestrator… If the connection fails, retry Add worker or Ask Orchestrator.' : selectedProject ? 'Connecting executive orchestrator session...' : 'Select or create a project to activate the executive AI orchestrator.'}
           </p>
         </aside>
-      )}
+      ))}
 
       {/* ─────────────────────────────────────────────────────────────
           MODAL: NEW TASK (VISUAL INTENT, MEDIA & AUTO-APPROVE)

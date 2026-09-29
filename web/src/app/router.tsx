@@ -303,12 +303,6 @@ const workspaceWorkersDetailRoute = createRoute({
   path: '/$workspaceSlug/workers/$workerId',
   parseParams: validateWorkspaceWorkerParams,
   validateSearch: validateWorkspaceSessionSearch,
-  beforeLoad: ({ params }) => {
-    if (params.workerId.startsWith('worker_')) throw redirect({
-      to: '/$workspaceSlug/swarm/$swarmSection', params: { workspaceSlug: params.workspaceSlug, swarmSection: 'workers' },
-      search: { workerId: params.workerId }, replace: true,
-    })
-  },
   component: AutomationToolPage,
 })
 
@@ -317,12 +311,6 @@ const workspaceWorkerDetailRoute = createRoute({
   path: '/$workspaceSlug/worker/$workerId',
   parseParams: validateWorkspaceWorkerParams,
   validateSearch: validateWorkspaceSessionSearch,
-  beforeLoad: ({ params }) => {
-    if (params.workerId.startsWith('worker_')) throw redirect({
-      to: '/$workspaceSlug/swarm/$swarmSection', params: { workspaceSlug: params.workspaceSlug, swarmSection: 'workers' },
-      search: { workerId: params.workerId }, replace: true,
-    })
-  },
   component: AutomationToolPage,
 })
 
@@ -360,12 +348,6 @@ const globalWorkersDetailRoute = createRoute({
   getParentRoute: () => conversationRoute,
   path: '/workers/$workerId',
   validateSearch: validateWorkspaceSessionSearch,
-  beforeLoad: ({ params }) => {
-    if (params.workerId.startsWith('worker_')) throw redirect({
-      to: '/swarm/$swarmSection', params: { swarmSection: 'workers' },
-      search: { workerId: params.workerId }, replace: true,
-    })
-  },
   component: AutomationToolPage,
 })
 

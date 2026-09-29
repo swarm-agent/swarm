@@ -72,6 +72,7 @@ import { createBlockerTransitionTracker } from '../runtime/blocker-transitions'
 import { AutomationProgressView } from '../tools/automations/automation-progress'
 import { AutomationSidebarCompactCard, AutomationSidebarExpandedContainer, AutomationV2SidebarMetadata, selectAutomationSummaryCounts } from '../tools/automations/automation-v2-sidebar-metadata'
 import { selectPendingWorkerSidebarReviews } from '../state/desktop-automation-v2-state'
+import { DurableWorkerSidebar } from './durable-worker-sidebar'
 // Delisted from sidebar; workers and automations managed exclusively in Swarm Orchestrate mode
 import { desktopAutomationV2 } from '../runtime/desktop-automation-v2'
 import { dispatchDesktopV3Cache, getDesktopV3CacheSnapshot, useDesktopV3CacheSelector } from '../state/desktop-v3-cache-store'
@@ -2473,7 +2474,7 @@ export function sidebarShouldShowReviewAction(group: SidebarSessionGroupID, sele
 
 export const SIDEBAR_SESSION_GROUPS = [
   { id: 'blocked', label: 'Blocked', showInactiveThreshold: false },
-  { id: 'automation', label: 'Workers', showInactiveThreshold: false },
+  { id: 'automation', label: 'Legacy worker runs', showInactiveThreshold: false },
   { id: 'needs_review', label: 'Needs Review', showInactiveThreshold: false },
   { id: 'in_progress', label: 'In Progress', showInactiveThreshold: false },
   { id: 'pinned', label: 'Pinned', showInactiveThreshold: false },
@@ -2506,7 +2507,6 @@ export function sidebarVisibleGroupNodes(
 function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX.Element[] | null {
   const automationCounts = selectAutomationSummaryCounts(getDesktopV3CacheSnapshot(), input.workspaceId)
   const hasAutomationWork = Boolean(automationCounts && automationCounts.total > 0)
-  if (input.nodes.length === 0 && !hasAutomationWork) return null
   const grouped = new Map<SidebarSessionGroupID, SidebarSessionNode[]>()
   for (const group of SIDEBAR_SESSION_GROUPS) {
     grouped.set(group.id, [])
@@ -2518,9 +2518,9 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
     }
     grouped.get(currentRootGroup)?.push(node)
   }
-  return SIDEBAR_SESSION_GROUPS.flatMap((group) => {
-    const nodes = grouped.get(group.id) ?? []
+  return [<DurableWorkerSidebar key="durable-workers" workspaceSlug={typeof input.workspaceSlug === 'string' ? input.workspaceSlug : undefined} onOpen={input.onOpenAutomations} />, ...SIDEBAR_SESSION_GROUPS.flatMap((group) => {
     const isAutomationGroup = group.id === 'automation'
+    const nodes = grouped.get(group.id) ?? []
     if (nodes.length === 0 && (!isAutomationGroup || !hasAutomationWork)) return []
     const collapsed = input.collapsedGroups[group.id]
     const overflowExpanded = input.expandedOverflowGroups[group.id] ?? false
@@ -2792,7 +2792,7 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
         )}
       </section>
     )]
-  })
+  })]
 }
 
 export function DesktopAppPage() {
