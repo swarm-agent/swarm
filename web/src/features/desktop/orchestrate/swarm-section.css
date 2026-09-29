@@ -166,8 +166,7 @@
 .swarm-section .swarm-task-proposal [data-testid="task-plan-reader"] { max-height: none; overflow: visible; font-family: inherit; }
 .swarm-section .swarm-task-proposal [data-testid="task-plan-reader"] :is(div, span, p, ul, li) { font-family: inherit; font-size: 13px; line-height: 1.55; white-space: normal; overflow-wrap: anywhere; }
 .swarm-plan-step { border-top: .5px solid var(--swarm-border-muted); padding: 10px 0; }
-.swarm-plan-step summary > div { display: inline-flex; }
-.swarm-plan-step summary > span { display: none; }
+.swarm-section .swarm-task-proposal [data-testid="task-plan-reader"] .swarm-plan-step-title-collapsed { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .swarm-section .swarm-task-proposal span { background: none; border: 0; }
 .swarm-section .swarm-task-proposal button:not(.bg-blue-600) { color: var(--swarm-text-muted); background: none; border-color: var(--swarm-border-muted); }
 .swarm-section .swarm-task-proposal button.bg-blue-600 :is(span, svg) { color: var(--swarm-accent-text); }

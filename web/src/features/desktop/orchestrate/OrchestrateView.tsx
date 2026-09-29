@@ -715,7 +715,7 @@ export function MinimalTaskCard({
   const agentModelSettingsQuery = useQuery(agentModelSettingsQueryOptions())
   const isPlanning = task.status === 'planning'
   const isPendingApproval = task.status === 'pending_approval' || task.status === 'queued'
-  const [isFullPlanOpen, setIsFullPlanOpen] = useState(isPendingApproval)
+  const [isFullPlanOpen, setIsFullPlanOpen] = useState(false)
   const [isModelChangerOpen, setIsModelChangerOpen] = useState(false)
   const [selectedTaskModel, setSelectedTaskModel] = useState(task.model || '')
   useEffect(() => {
@@ -985,7 +985,7 @@ export function MinimalTaskCard({
         }
         extraBadges={
           <>
-            {task.outcomeType && task.outcomeType !== 'code_pr' && (
+            {task.outcomeType && task.outcomeType !== 'code_pr' && !(isPendingApproval && task.outcomeType === 'plan_spec') && (
               <span className="text-[11px] capitalize px-2 py-0.5 rounded-md bg-slate-800/70 text-slate-300 border border-slate-700/50 font-normal">
                 {task.outcomeType === 'video_clip' ? 'Single Video' : task.outcomeType.replace(/_/g, ' ')}
               </span>
@@ -1108,12 +1108,10 @@ export function MinimalTaskCard({
         <div className="swarm-task-proposal flex flex-col space-y-2.5">
           <div className="flex items-center justify-between gap-2 flex-wrap">
             <div className="flex items-center gap-2">
-              <span className="font-bold text-blue-400 flex items-center gap-1.5 font-mono text-[10px] uppercase">
-                <Sparkles size={12} />
-                <span>AI Mission Proposal</span>
-              </span>
-              <span className="font-mono text-[9px] uppercase px-1.5 py-0.5 rounded bg-blue-900/40 text-blue-300 border border-blue-500/30">
-                {task.tier === 'discovery' ? 'Tier 2: Discovery' : task.tier === 'complex' ? 'Tier 3: Complex Plan' : 'Tier 1: Direct'}
+              <span className="text-[13px] text-slate-400">
+                {task.tier === 'complex' || task.agentType === 'plan' || task.outcomeType === 'plan_spec'
+                  ? 'Tier 3 plan · review before launch'
+                  : task.tier === 'discovery' ? 'Tier 2 discovery · review before launch' : 'Tier 1 direct · review before launch'}
               </span>
               {task.revision && task.revision > 1 && (
                 <span className="font-mono text-[9px] px-1.5 py-0.5 rounded bg-indigo-900/50 text-indigo-300 border border-indigo-500/30 font-bold">
@@ -1127,15 +1125,7 @@ export function MinimalTaskCard({
                 </span>
               )}
             </div>
-            {!isMediaTask && (task.worktreeBranch || task.worktreeName) && (
-              <span className="text-[10px] font-mono text-slate-400 flex items-center gap-1.5">
-                <span>Worktree:</span>
-                <span className="text-indigo-300 font-semibold flex items-center gap-1">
-                  <GitBranch size={10} />
-                  <span>{task.worktreeBranch || (task.worktreeName ? `agent/${task.worktreeName}` : 'agent/worktree')}</span>
-                </span>
-              </span>
-            )}
+
           </div>
 
           {/* Impending Execution Agents & Resolved Models */}
@@ -1392,20 +1382,9 @@ export function MinimalTaskCard({
           {(task.agentType === 'coder' || task.outcomeType === 'code_pr' || task.outcomeType === 'bug_patch') && (
             <div className="flex items-center gap-2 p-2 rounded bg-slate-900/80 border border-slate-800 text-[10px] font-mono text-slate-300 flex-wrap">
               <Code2 size={11} className="text-indigo-400 flex-shrink-0" />
-              <span>Target Worktree: <strong className="text-indigo-300 font-semibold">{task.worktreeBranch || (task.worktreeName ? `agent/${task.worktreeName}` : 'agent/worktree')}</strong></span>
-              <span>•</span>
               <span className="text-emerald-400 font-semibold">Verified Local Tests</span>
               <span>•</span>
               <span className="text-slate-400">Target Integration: <strong className="text-white">{task.baseBranch || 'Target unavailable'}</strong></span>
-            </div>
-          )}
-          {/* Plan Spec - for big features / plan mode tasks */}
-          {(task.agentType === 'plan' || task.outcomeType === 'plan_spec') && (
-            <div className="flex items-center gap-2 p-2 rounded bg-purple-950/30 border border-purple-500/40 text-[10px] font-mono text-purple-200 flex-wrap">
-              <Sparkles size={11} className="text-purple-400 flex-shrink-0" />
-              <span>Execution Mode: <strong className="text-purple-300 font-semibold">Plan-Mode Orchestration</strong></span>
-              <span>•</span>
-              <span className="text-purple-300">Requires User Plan Review Before Launch</span>
             </div>
           )}
           {/* Audit Spec - for finder audit tasks */}
@@ -1492,24 +1471,25 @@ export function MinimalTaskCard({
                   setIsFullPlanOpen(!isFullPlanOpen)
                 }}
                 className="w-full flex items-center justify-between px-2.5 py-1.5 text-[10px] font-mono text-slate-400 hover:text-slate-200 transition-colors"
+                aria-expanded={isFullPlanOpen}
                 data-testid="toggle-plan-spec-btn"
               >
                 <span className="flex items-center gap-1.5 font-semibold">
                   <FileText size={11} className="text-blue-400" />
                   <span>
                     {hasStructuredPlan
-                      ? (isFullPlanOpen ? 'Hide Structured Plan & Criteria' : 'Review Structured Plan & Acceptance Criteria')
+                      ? (isFullPlanOpen ? 'Hide tasks and acceptance criteria' : 'Review structured plan and acceptance criteria')
                       : (isFullPlanOpen ? 'Hide Full Plan Spec' : 'Read Full Plan Spec & Criteria')}
                   </span>
                 </span>
                 {isFullPlanOpen ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
               </button>
-              {isFullPlanOpen && (
-                <div data-testid="task-plan-reader" className="min-w-0 p-3 border-t border-slate-800 text-[11px] text-slate-300 font-mono leading-relaxed max-h-80 overflow-y-auto bg-slate-950/60 space-y-3">
+              {(isFullPlanOpen || planCheckpointsToRender.length > 0) && (
+                <div data-testid="task-plan-reader" className="min-w-0 p-3 border-t border-slate-800 text-[11px] text-slate-300 font-mono leading-relaxed whitespace-normal [overflow-wrap:anywhere] space-y-3">
                   {/* Render Structured Plan Document Checkpoints */}
                   {planCheckpointsToRender.length > 0 && (
                     <div className="space-y-2">
-                      {(planDocTitle || planDocGoal) && (
+                      {isFullPlanOpen && (planDocTitle || planDocGoal) && (
                         <div className="min-w-0 text-xs font-bold text-white space-y-1 border-b border-slate-800/80 pb-1">
                           {planDocTitle && <div>{planDocTitle}</div>}
                           {planDocGoal && (
@@ -1528,16 +1508,12 @@ export function MinimalTaskCard({
                             ? cp.acceptance_criteria
                             : (cp.criteria && Array.isArray(cp.criteria) ? cp.criteria : [])
                           return (
-                            <details key={cp.id || idx} open={idx === 0} className="swarm-plan-step space-y-1.5" onClick={e => e.stopPropagation()} data-testid={`plan-checkpoint-${cp.id || idx}`}>
-                              <summary className="font-semibold cursor-pointer">
-                                <div className="min-w-0 flex items-start gap-1.5">
-                                  <span className="text-blue-400 font-mono shrink-0">{idx + 1}.</span>
-                                  <span className="min-w-0">{cp.title}</span>
-                                </div>
-                                <span className="text-[9px] uppercase font-mono px-1.5 py-0.2 rounded bg-slate-800 text-slate-400">
-                                  {cp.status || 'pending'}
-                                </span>
-                              </summary>
+                            <section key={cp.id || idx} className="swarm-plan-step space-y-1.5" data-testid={`plan-checkpoint-${cp.id || idx}`}>
+                              <div className="swarm-plan-step-title min-w-0 flex items-start gap-1.5 font-semibold">
+                                <span className="text-blue-400 font-mono shrink-0">{idx + 1}.</span>
+                                <span className={isFullPlanOpen ? 'min-w-0' : 'swarm-plan-step-title-collapsed min-w-0'} title={cp.title}>{cp.title}</span>
+                              </div>
+                              {isFullPlanOpen && <>
                               {cp.objective && (
                                 <p className="text-[10px] text-slate-400 leading-snug">{cp.objective}</p>
                               )}
@@ -1573,7 +1549,8 @@ export function MinimalTaskCard({
                               {cp.notes && (
                                 <div className="text-[9px] text-slate-500 italic pt-0.5">Note: {cp.notes}</div>
                               )}
-                            </details>
+                              </>}
+                            </section>
                           )
                         })}
                       </div>
@@ -1581,7 +1558,7 @@ export function MinimalTaskCard({
                   )}
 
                   {/* Render Structured Task Program Spec */}
-                  {taskProgramDef && (taskProgramDef.stages?.length > 0 || taskProgramDef.jobs?.length > 0) && (
+                  {isFullPlanOpen && taskProgramDef && (taskProgramDef.stages?.length > 0 || taskProgramDef.jobs?.length > 0) && (
                     <div className="space-y-2 border-t border-slate-800/80 pt-2" data-testid="task-program-spec">
                       <div className="text-xs font-bold text-indigo-300 flex flex-wrap items-start gap-1.5 justify-between">
                         <span className="flex items-center gap-1.5">
@@ -1727,7 +1704,7 @@ export function MinimalTaskCard({
                       ? 'Regression Test & Fix Diff'
                       : task.outcomeType === 'audit_report'
                       ? 'Findings Ledger Report'
-                      : '1 Branch PR + Test Suite'}
+                      : '1 branch PR + test suite'}
                   </strong>
                 </span>
                 {onRefine && (
