@@ -858,6 +858,9 @@ test('SwarmWorkersNamespace: directRequest, testRun, trigger dispatch and parse 
   }
 });
 
+// Requirement: getHistory consumes handleWorkerHistory's `revisions` envelope while preserving
+// the SDK's history return value; reject an incompatible envelope instead of inventing empty history.
+// This transport test is the narrowest wire-contract regression, not daemon/provider acceptance.
 test('SwarmWorkersNamespace: mintTriggerToken, listRuns, getRun, cancelRun, getHistory, getRevision work as specified', async () => {
   let lastUrl = '';
   let lastMethod = '';
@@ -892,7 +895,7 @@ test('SwarmWorkersNamespace: mintTriggerToken, listRuns, getRun, cancelRun, getH
     }
     if (req.method === 'GET' && req.url?.startsWith('/v3/workers/w1/history')) {
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ history: [{ worker_id: 'w1', revision: 1, committed_at: 1000 }], next_cursor: '' }));
+      res.end(JSON.stringify(req.url.includes('cursor=bad') ? { history: [] } : { revisions: [{ worker_id: 'w1', revision: 1, committed_at: 1000 }], next_cursor: 'revision-cursor' }));
       return;
     }
     if (req.method === 'GET' && req.url === '/v3/workers/w1/revisions/1') {
@@ -939,6 +942,9 @@ test('SwarmWorkersNamespace: mintTriggerToken, listRuns, getRun, cancelRun, getH
     // 6. History
     const historyResult = await workers.getHistory({ worker_id: 'w1' });
     assert.equal(historyResult.history.length, 1);
+    assert.equal(historyResult.history[0].revision, 1);
+    assert.equal(historyResult.next_cursor, 'revision-cursor');
+    await assert.rejects(workers.getHistory({ worker_id: 'w1', cursor: 'bad' }), SwarmValidationError);
 
     // 7. Revision
     const revRecord = await workers.getRevision({ worker_id: 'w1', revision: 1 });

@@ -1,4 +1,15 @@
 # Swarm repository test audit ledger v1
+# 2026-09-29 Worker hub inventory: supersedes earlier digests for listed files. Authority: V3 selected-worker message admission, WorkerStore.SummarizeWorkerRuns, existing scheduler eligibility, canonical Desktop cache/runtime and /v3/workers HTTP/SDK. Four backend regressions passed twice; 19 Desktop checks (including rendered composer/detail interactions) and 15 SDK worker wire tests passed; both TypeScript checks passed. Rejections assert no append/intent, reads assert DST/page-independent receipts and no mutation, UI asserts failed-stop/send truth, idempotency-key retention, stale/account/event repair and selection consumption. Dogfood source assertions are wiring checks only. Independent P1/P2 review remains unreviewed; no curated-runner promotion or live/provider qualification.
+# SHA256 562143241c98424d70c1a836a967a27a1fe5b5a14a129f2e1a8e3d9035668dd2 swarmd/internal/api/selected_worker_message_test.go
+# SHA256 8981763b91311102bae76525ae35923ee4fd800949d981f7260d94ac20aa7745 swarmd/internal/api/worker_summary_test.go
+# SHA256 d0601cb2be788aced2d9a93fc99fec67d4fe5e6a3d505f271698664eea0e8390 swarmd/internal/run/worker_scheduler_summary_test.go
+# SHA256 d365694881eaad7f0e3f50d97e6bf53111eec197668a36846302a1762f9e1489 web/src/features/desktop/runtime/desktop-workers.spec.ts
+# SHA256 3c5388b6d8d5fa127ab21468a06d91c827a29ca2d5ace7e35d5db1f3e5544490 web/src/features/desktop/state/desktop-workers-api.spec.ts
+# SHA256 4b1057091d1a1559d46fe61c76e87f944762943eb7d28dbaa71aa9b7be31e47a web/src/features/desktop/orchestrate/worker-message-context.spec.ts
+# SHA256 1f3606d8715eeefdf9caff4fe38161426d51ddec86dc72d6fe8951a01875c774 web/src/features/desktop/orchestrate/worker-hub.browser.spec.ts
+# SHA256 70e9d71e1777505df283e7e706bc2a303f0ff4c0fd8814fc645aaedecc7b7396 web/src/features/desktop/orchestrate/orchestrator-worker-composer.browser.spec.ts
+# SHA256 438494484bfe19fba22452e85da132602ad42d98ac407457d4e12c09ac5d45c1 web/src/features/desktop/orchestrate/orchestrate-workers-dogfood.spec.ts
+# SHA256 a0edd985e8754f6d1bae170f5af0f10d3aac582d0768763bef56ea08639198ac packages/sdk/src/__tests__/workers.spec.ts
 # 2026-09-28 Worker lifecycle completion reinventory: supersedes earlier listed digests/verdicts. Authorities: WorkerExecutionService, WorkerStore admission/cancellation/outbox, V3 session/plan/intent, authenticated HTTP lifecycle and SDK wire contract. Focused worker/portable/migration/authority tests passed twice in store, session, run and API; 15 SDK tests and typecheck passed. Tests assert later-checkpoint stop acknowledgement/completion, idle test nonactivation, preparation failure recovery/stop, interval/cron deduplication, HTTP stop barriers and Orchestrator-only management. Independent P1/P2 review remains unreviewed; no critical-runner promotion or live provider evidence.
 # SHA256 3d7fdc068607fbba9ad1ea017275d25b3073a3a08d164404b083e156a5173546 swarmd/internal/run/worker_execution_test.go
 # SHA256 997811bfccdbb54542f0445a06b2c4069d4000a2a84305dc9ae6c963f50effab swarmd/internal/run/worker_orchestrator_cutover_test.go

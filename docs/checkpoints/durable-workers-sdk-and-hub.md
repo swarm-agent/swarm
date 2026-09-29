@@ -1,6 +1,6 @@
 # Durable workers: local lifecycle, SDK and canonical hub
 
-Status: checkpoints 1–2 implemented for the bounded local contract with focused deterministic verification. Hub work (checkpoint 3) and all live E01–E15 acceptance (checkpoint 4) remain unverified. Unsupported grants and legacy executor cutover remain explicit gaps below.
+Status: checkpoints 1–3 implemented for the bounded local contract with focused deterministic verification. All live E01–E15 acceptance (checkpoint 4) remains unverified. Unsupported grants and legacy executor cutover remain explicit gaps below.
 
 ## Goal and scope lock
 
@@ -138,10 +138,27 @@ Remaining milestone gaps: activation intentionally supports one required primary
 
 ### 3. Functional hub and one-message context
 
-- [ ] Wire hub cards, worker detail, daily history, sessions, deliverables, lifecycle controls and one-time chat selection to canonical state/actions.
-- [ ] Keep Orchestrator chat available; reconcile old worker views without maintaining a second authority.
-- [ ] Add focused behavior tests including failed stop, failed send, stale selection and refresh/reconnect.
+- [x] Wire hub cards, worker detail, daily history, sessions, deliverables, lifecycle controls and one-time chat selection to canonical state/actions.
+- [x] Keep Orchestrator chat available; reconcile old worker views without maintaining a second authority.
+- [x] Add focused behavior tests including failed stop, failed send, stale selection and refresh/reconnect.
 - Exit: a user can oversee and control the full lifecycle from the hub, not merely view cards.
+
+#### Step 3 implementation and verification
+
+`worker-hub.tsx` now renders the canonical middle-panel hub through `desktop-workers` cache/runtime/actions. Worker updates and reconnect repair demanded pages without polling. Cards/detail expose durable lifecycle, definition revisions, approved primary bindings, attached plans and scoped controls, direct/test requests, receipt history and source-session links for deliverables. Idle binding approval is separate from activation; retrying an unchanged failed direct/test/create request retains its admission key. Stop requests remain visibly pending until acknowledged. The unreachable cloud/legacy fleet branch was removed; existing legacy detail routes and proposal review remain explicitly separate, not migrated execution.
+
+`GET /v3/workers/{id}/summary?timezone=IANA&date=YYYY-MM-DD` computes daily admission/status counts and current work from durable receipts independently of history pagination. Desktop uses explicit UTC. Reads cap at 10,000 receipts/32 MiB with explicit partial-count reporting; active links cap at 100. Next scheduled time is an eligible slot from the existing scheduler calculation, not a dispatch guarantee.
+
+The composer sends only `metadata.selected_worker: {worker_id, expected_revision}`. V3 message ingress resolves account authorization, compiled Orchestrator identity and current worker revision; foreign/stale/deleted/malformed references reject before append/run-intent mutation. Resolved context belongs to that message, not session instructions or worker dispatch. Failed sends retain selection; successful sends consume only the submitted reference. SDK history now consumes the backend `revisions` envelope while preserving its public `history` return value.
+
+Observed focused checks: four backend regressions pass twice (selected-worker rejection/nonmutation/replay, receipt aggregation across pages and DST boundaries, scheduler eligibility); 19 Desktop checks pass including actual rendered composer/detail interactions, failed stops, stable retry keys, stale state and event/reconnect repair; 15 SDK worker transport tests pass. Desktop and SDK TypeScript checks pass. Styled component fixture screenshots were inspected, not the installed full routed application. No provider-backed run or live E01–E15 result is claimed. Representative commands:
+
+```sh
+(cd swarmd && GOMAXPROCS=2 go test -count=2 -p 1 -timeout 90s ./internal/api ./internal/run -run '^(TestSelectedWorkerMessageIngressAuthorizationAndReplay|TestWorkerAPI_SummaryReceiptsAndAuthorization|TestWorkerRunSummaryFallBackDay|TestNextWorkerScheduledAtEligibility)$')
+(cd web && node --import tsx --test --test-concurrency=1 --test-timeout=30000 src/features/desktop/runtime/desktop-workers.spec.ts src/features/desktop/state/desktop-workers-api.spec.ts src/features/desktop/orchestrate/worker-message-context.spec.ts src/features/desktop/orchestrate/worker-hub.browser.spec.ts src/features/desktop/orchestrate/orchestrator-worker-composer.browser.spec.ts src/features/desktop/orchestrate/orchestrate-workers-dogfood.spec.ts)
+```
+
+Full routed UI/live provider acceptance, capability/multiple-workspace support and legacy executor cutover remain checkpoint 4 gaps, not implied by these deterministic checks. Deliverable links open retained source sessions; external trigger credential provisioning remains through the existing authorized SDK/Orchestrator contract. No push, host deployment or cloud work.
 
 ### 4. Real local testbench acceptance and repair
 

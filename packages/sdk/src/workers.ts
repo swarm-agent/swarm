@@ -934,15 +934,15 @@ export class SwarmWorkersNamespace {
     if (params.cursor !== undefined && params.cursor.trim() !== '') q.set('cursor', params.cursor.trim());
     const qs = q.toString() ? `?${q.toString()}` : '';
 
-    const res = await this.transport.request<{ history?: WorkerRevisionRecord[]; next_cursor?: string }>(
+    const res = await this.transport.request<{ revisions?: WorkerRevisionRecord[]; next_cursor?: string }>(
       `/v3/workers/${encodeURIComponent(params.worker_id.trim())}/history${qs}`,
       { method: 'GET' }
     );
-    if (!res.data || typeof res.data !== 'object' || !Array.isArray(res.data.history)) {
-      throw new SwarmValidationError('Malformed response envelope: expected { history: WorkerRevisionRecord[] }');
+    if (!res.data || typeof res.data !== 'object' || !Array.isArray(res.data.revisions)) {
+      throw new SwarmValidationError('Malformed response envelope: expected { revisions: WorkerRevisionRecord[] }');
     }
     return {
-      history: res.data.history,
+      history: res.data.revisions,
       next_cursor: res.data.next_cursor,
     };
   }
