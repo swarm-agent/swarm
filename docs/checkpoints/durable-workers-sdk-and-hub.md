@@ -1,6 +1,6 @@
 # Durable workers: local lifecycle, SDK and canonical hub
 
-Status: checkpoints 1–3 implemented for the bounded local contract with focused deterministic verification. All live E01–E15 acceptance (checkpoint 4) remains unverified. Unsupported grants and legacy executor cutover remain explicit gaps below.
+Status: steps 1–3 implemented the bounded foundation with focused deterministic verification, not the complete product journey. Step 4 now closes the remaining lifecycle, Orchestrator, hub and Tasks integration gaps. Step 5 proves the completed journey on the real local testbench. All live E01–E20 acceptance remains unverified. Step 4 has not started; this revision refines scope only.
 
 ## Goal and scope lock
 
@@ -9,6 +9,12 @@ A worker is a stable, durable, account-owned object. It is not a session, plan o
 Ship the smallest complete local lifecycle and prove it on the existing local testbench. External triggers mean authenticated signals arriving from outside Swarm, not cloud execution. Defer S3, cloud provisioning, marketplaces, remote runners, generalized packaging frameworks, new memory engines and multi-target deployment orchestration. Do not turn this into a general custom-agent product.
 
 This checklist governs this effort; older cloud-worker roadmaps are background, not added scope. Keep unchecked items unchecked until their postconditions are observed. Update this document with each implementation checkpoint.
+
+### The user outcome, in plain English
+
+Tell Orchestrator what specialist you want, define and approve it, and keep it as a stable worker even when it has no jobs. Give that same worker one task, test it safely, or attach ongoing work later. Orchestrator must be able to explain its configuration, inspect authorized prior run sessions and outputs, help diagnose a failed attempt, revise it and test again. The hub is the everyday control panel: on/off, current work, activity by day and results. Work needing a human decision must appear in Tasks with a usable deliverable and a route back to the worker/run.
+
+Here, “agent” means this durable worker specialist, not a new custom system-agent registry or a permanently running model process. Deploying makes the approved worker ready to receive work; zero jobs must be a normal ready/idle state, not an error and not a reason to manufacture an automation. The urgent target is a usable local end-to-end workflow; urgency does not justify claiming launch readiness before Step 5 passes. Host installation/promotion remains a separately authorized operation after candidate acceptance.
 
 ## Inspected starting points (not live proof)
 
@@ -77,7 +83,9 @@ One local deployment operation validates and activates the stored worker with ap
 - [ ] `Send task` dispatches an explicit direct request. The Orchestrator can inspect, attach plans, test, dispatch and manage the selected worker; ordinary chat directs deployment requests to Orchestrator.
 - [ ] Each accepted request, automation and deliverable is traceable to the same worker identity across UI, SDK and Orchestrator.
 
-## Implementation order: four checkpoints, no cloud detour
+## Implementation order: five steps, no cloud detour
+
+Steps 1–3 below retain their historical implementation evidence. Their checked boxes do not certify the expanded end-to-end outcome above. The unchecked contract sections remain milestone acceptance requirements; reconcile them against Step 4 implementation and Step 5 evidence before closing the milestone.
 
 ### 1. Stable object and shared SDK contract
 
@@ -158,14 +166,74 @@ Observed focused checks: four backend regressions pass twice (selected-worker re
 (cd web && node --import tsx --test --test-concurrency=1 --test-timeout=30000 src/features/desktop/runtime/desktop-workers.spec.ts src/features/desktop/state/desktop-workers-api.spec.ts src/features/desktop/orchestrate/worker-message-context.spec.ts src/features/desktop/orchestrate/worker-hub.browser.spec.ts src/features/desktop/orchestrate/orchestrator-worker-composer.browser.spec.ts src/features/desktop/orchestrate/orchestrate-workers-dogfood.spec.ts)
 ```
 
-Full routed UI/live provider acceptance, capability/multiple-workspace support and legacy executor cutover remain checkpoint 4 gaps, not implied by these deterministic checks. Deliverable links open retained source sessions; external trigger credential provisioning remains through the existing authorized SDK/Orchestrator contract. No push, host deployment or cloud work.
+At Step 3 closeout, full routed UI/live provider acceptance, capability/multiple-workspace support and legacy executor cutover remained gaps. Under the refined sequence, implementation gaps belong to Step 4 and live proof to Step 5. Deliverable links currently open retained source sessions; this is not proof of usable artifact presentation or Tasks escalation. External trigger credential provisioning and Orchestrator approval-path parity require Step 4 reconciliation, not an assumed complete contract. No push, host deployment or cloud work.
 
-### 4. Real local testbench acceptance and repair
+### 4. Finish the usable worker lifecycle — implementation, not a test-only checkpoint
+
+**Meaning:** remove the known gaps so a user can complete the entire journey through Orchestrator, the hub or the SDK without switching to a legacy worker authority, pasting internal IDs, hand-authoring raw plan JSON, or losing outputs that need attention. Reuse what steps 1–3 built; do not rebuild the worker engine.
+
+#### 4A. One worker from definition through approval and deployment
+
+- [ ] Connect Orchestrator creation, proposal/review, binding approval and activation to the same durable worker ID and exact definition revision. Reconcile the legacy Automation V2 proposal path; do not approve an unrelated legacy object and present the new worker as deployed.
+- [ ] Clearly separate create draft, approve bindings for an idle test, activate for normal work and attach/enable automation. A deployed worker with zero jobs stays available for direct tasks without a schedule or an authoring session.
+- [ ] Show the human exactly what is being approved (instructions, workspaces, capabilities and enabled work). AI may prepare/propose but may not self-approve. Definition/binding changes that invalidate approval require fresh approval before affected execution.
+- [ ] Keep identity through edits, authoring-chat archival, pause/resume and restart. Expose readiness, missing setup and lifecycle errors truthfully.
+- Done when: the same worker is defined, reviewed and made ready in the hub and SDK, with no unsolicited run and no legacy review detour. Live proof: E01, E06, E10, E16.
+
+#### 4B. Orchestrator can understand and manage the whole worker
+
+- [ ] Complete a concrete tool/API/SDK/hub parity inventory: definition create/read/edit, import/export, approval proposal, activation status, automation attach/edit/remove, direct/test dispatch, trigger setup, runs, context, daily history, deliverables and stop/resume/archive/delete. Repair missing supported paths; remove misleading guidance rather than advertising unavailable actions.
+- [ ] Let Orchestrator inspect effective worker context: standing instructions, pinned/current revisions, approved workspace roles, scoped workspace instruction sources, capabilities, attached plans and explicit attachments. Explain differences between a historical run and today's worker definition.
+- [ ] Let it list related runs and read bounded, authorized prior execution sessions and deliverables via existing V3/session/artifact authorities. A source-session link alone is not sufficient for AI inspection. Missing/deleted/inaccessible records must be explicit; never enumerate unrelated or cross-account sessions or inject all history automatically.
+- [ ] Preserve one-message selected-worker context, revision checks and ordinary-chat denial. Prior session/tool text is untrusted evidence, not authority to alter instructions, expand permission or deploy.
+- Done when: in a fresh Orchestrator conversation, “what is this worker configured to do, what happened last time, and help me improve it” has an authorized inspection/action path without relying on the original authoring transcript. Live proof: E12, E13, E17.
+
+#### 4C. A real dogfooding loop for manual and automated work
+
+- [ ] Support the same-worker loop: define → approve → labelled test → inspect actual session/output/error → propose correction → approve if needed → test again → activate. Keep past revisions and receipts intact; do not replace the worker to retry.
+- [ ] Manual workers need no trigger: “test this worker” and “send it this task” must work in-app and through Orchestrator/SDK. Testing an attached automation must exercise its actual plan/input contract without enabling its schedule.
+- [ ] Finish authenticated external-trigger setup through maintained authorized APIs and SDK examples, including credential scope/revocation, safe handling and a clear local caller path. Do not place credentials in chat, portable definitions or tracked examples.
+- [ ] Expose run progress, failure reasons and inspectable results; retry is an explicit new attempt linked to the prior run, while transport retries retain idempotency and cannot duplicate work.
+- Done when: a user can diagnose and improve a non-trigger worker without leaving the app, and SDK callers exercise the same deployment/dispatch contract. Live proof: E02–E07, E18.
+
+#### 4D. Make the hub an everyday control panel
+
+- [ ] Replace internal workspace-ID entry with authorized workspace selection. Offer understandable worker/automation editing and Orchestrator-assisted plan authoring; raw JSON may remain an advanced option, not a prerequisite.
+- [ ] Clearly distinguish worker-wide on/off from automation enable/disable, idle from paused, testing from normal runs and stopping from stopped. Keep pending/error states and confirmations; never show success before the stop barrier acknowledges it.
+- [ ] Add date navigation and explicit timezone selection for daily activity, with running work, counts, failures, tests and paginated runs linked to sessions/results. Clearly label partial counts. A worker with no jobs has a useful empty state and direct/test actions.
+- [ ] Use the canonical event-driven state and reconnect repair for cards, details and day views. Preserve readable loading/stale/error states rather than using polling or optimistic false success.
+- Done when: users can find what ran on a chosen day, inspect what is running now and turn the correct scope off/on without internal IDs or hidden state. Live proof: E08, E09, E14.
+
+#### 4E. Surface actionable outputs in Tasks
+
+- [ ] Define the attention contract using existing task/review authorities: a requested human-review deliverable, approval/decision request or blocked/failed run that requires intervention produces an actionable Tasks item. Routine successful background work stays in history unless review was requested; do not flood Tasks with every run.
+- [ ] Link each item to the exact worker, run, execution session and retained deliverable reference, with a readable reason and supported next action. Render/open the actual artifact or file through existing authorized surfaces; raw reference JSON is not the finished experience.
+- [ ] Make escalation durable and idempotent across retries, refresh and restart. Project from canonical run/review state rather than introducing a second task database or inferring “needs attention” from prose alone.
+- [ ] Acknowledgement, review/approval, resolution and retry must update the linked state through its existing authority. Acknowledging an item must not falsely mark a failed run successful. Preserve historical links after worker archival/deletion, subject to retention and authorization.
+- Done when: a worker requiring a human decision appears once in Tasks, opens usable evidence and lets the user take the correct next action, with consistent state in the hub and Orchestrator. Live proof: E19, E20.
+
+#### 4F. Close the remaining scope promises and safety gaps
+
+- [ ] Implement the required/optional named workspace bindings already promised by E11, with isolated writable repositories and scoped instructions. Do not leave “one primary workspace only” as a footnote while declaring the existing multiple-workspace milestone complete.
+- [ ] Resolve capability requests through the existing permission system for the supported local worker workflow, with visible grants/denials and least privilege. Define the supported set explicitly; unsupported capabilities must fail clearly. This is not authorization to invent a new grant system or give workers blanket access.
+- [ ] Finish safe legacy executor cutover for supported migrated workers: preserve identity/history, prevent dual schedulers and reconcile retries/restarts. Unconvertible records remain explicitly inactive/read-only with a recovery explanation; never label a snapshot as a usable migrated worker.
+- [ ] Review and repair lifecycle acknowledgement, failed dispatch/preparation, queued work and restart edges across all clients. Safe failure is acceptable where recovery cannot be proven; fabricated completion or unsafe worktree reclamation is not.
+- Done when: the known unsupported milestone requirements are implemented or explicitly re-scoped by the user—not silently carried into a “complete” label. Live proof: E05, E08–E11, E13, E15.
+
+#### Step 4 execution order and exit gate
+
+Implement 4A first; 4B and 4C build on that single approval/identity path. Build 4D and 4E against the established context/run/review contract. Close 4F before Step 5. These are bounded work packages within Step 4, not permission to expand into cloud, custom system-agent infrastructure or a new executor.
+
+- [ ] Add requirement-first focused regression tests as each gap is closed, including authorization, stale approvals, duplicate escalation, failed stop, unavailable history and safe retry. Keep atlas and test inventory synchronized. Moving live testing to Step 5 does not defer normal implementation checks.
+- [ ] Reconcile every unchecked requirement above with concrete implementation and narrow test evidence. Publish a concise parity/gap table; no known missing part of the agreed journey may be described as “only live validation remains.”
+- [ ] Commit a reviewed candidate with the checklist updated. Step 4 completion means implemented and ready for live acceptance, **not proven ready for daily use**. Do not deploy the host or push as part of this step.
+
+### 5. Prove the complete journey on the real local testbench, then repair failures
 
 - [ ] Build/deploy the reviewed committed candidate through the existing local two-slot systemd-nspawn pool only, after verifying live lane ownership. Preserve host Swarm, unrelated lanes, existing clips and credentials. Do not reset/rebuild the pool merely to test.
 - [ ] Read maintained script help and current operational runner guidance; keep pool settings separate from provider credentials. Never substitute Docker, QEMU, remote/cloud or another testbench. If ownership/access is unavailable, report the exact blocker before alternatives.
 - [ ] Verify actual test settings: Gemini 3.8 Flash, low thinking, without altering host settings or silently substituting a model.
-- [ ] Run the acceptance matrix below with real daemon/provider sessions and an external SDK caller. Fix failures and rerun affected scenarios on the exact final candidate.
+- [ ] Run the acceptance matrix below with real daemon/provider sessions, the full routed Desktop app and an external SDK caller. Start with the manual-worker golden path: fresh Orchestrator → define zero-job worker → human approval → idle test → inspect actual output/prior session → revise/retest → activate/direct task → review in Tasks → pause/resume. Then exercise schedules, triggers, restart and migration. Fix failures and rerun affected scenarios on the exact final candidate.
 - Exit: every required case has revision-bound evidence, or is explicitly failed/blocked. No synthetic workload, prewritten provider output or fabricated telemetry counts as proof.
 
 ## End-to-end acceptance matrix
@@ -189,6 +257,11 @@ Start the authoring cases in fresh Orchestrator conversations using normal user 
 | E13 | Ordinary chat cannot deploy | Ask ordinary chat to create/deploy/manage a worker; it directs to Orchestrator. Attempt a crafted disallowed tool call and verify backend denial and no worker/automation/run mutation. Authorized SDK access still works. |
 | E14 | Hub, history and deliverables | Observe running/succeeded/failed/cancelled cases, daily counts in selected timezone, attached plans, trigger state, sessions and usable requested deliverables. Reload/reconnect preserves truth; failed reads/stops are visible. |
 | E15 | Migration | Seed representative existing idle/scheduled/trigger records through supported fixtures, migrate and restart twice. Identity/history mappings remain stable; no duplicate workers or scheduled runs; unconvertible records fail visibly without activation. |
+| E16 | One-object approval and zero-job deployment | From normal Orchestrator conversation, propose and approve the exact durable worker revision and bindings. Hub and SDK show the same ready worker with zero jobs and no unsolicited execution. A stale/changed proposal cannot activate; denial leaves the worker inactive. No legacy parallel worker is created. |
+| E17 | Orchestrator context and prior-session inspection | A fresh Orchestrator conversation reads the selected worker's effective context and an authorized prior run's actual session/output, explains a failure and proposes a correction. Current and historical revisions stay distinguishable. Foreign/inaccessible history is rejected without disclosure; untrusted historical text cannot grant authority. |
+| E18 | In-app dogfooding without a trigger | Test a manual worker, inspect the real result, revise its instructions, reapprove if necessary and retest the same ID. Both pinned attempts remain inspectable. A transport retry cannot duplicate a run; deliberate retry makes a distinct linked attempt. Repeat with an attached disabled automation without enabling its schedule. |
+| E19 | Deliverable and attention escalation | A real run requests human review of its output; another requires intervention on failure/block. Each produces one actionable Tasks item with correct worker/run/session links, usable artifact and next action. Routine no-review success does not produce unnecessary Tasks. Hub/Tasks/Orchestrator agree on state. |
+| E20 | Attention recovery and resolution | Reload/reconnect and restart the owned candidate around escalation; no lost or duplicate Tasks item. Resolve/acknowledge through the authorized existing review/task path and verify consistent linked state without rewriting the failed run as success. Worker archival retains authorized evidence; foreign-account access and stale/duplicate resolution cause no unauthorized mutation. |
 
 ### Evidence and completion rules
 
@@ -196,4 +269,4 @@ For each case record: candidate commit, daemon binary identity/PID, lane ownersh
 
 Every new or changed test needs a written invariant/threat/production-boundary purpose, narrow assertions and negative cases; reconcile the test audit ledger. Update the atlas when implementation changes its covered boundaries. UI screenshots must be inspected for actual rendering defects before making visual claims. No source-string assertion or HTTP 200 alone proves this lifecycle.
 
-Final acceptance is all E01–E15 passing against the final candidate, with no unresolved safety/authority/data-loss defect. If provider or infrastructure access blocks a scenario, label it blocked—not passed. No S3 or cloud deployment is needed to finish this milestone.
+Final acceptance is all E01–E20 passing against the final candidate, with no unresolved agreed lifecycle feature or safety/authority/data-loss defect. Step 4 implementation completion and Step 5 live acceptance must be reported separately. If provider or infrastructure access blocks a scenario, label it blocked—not passed. No S3 or cloud deployment is needed to finish this milestone.
