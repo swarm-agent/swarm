@@ -293,7 +293,7 @@ test('SwarmProjectsNamespace: Project Tasks CRUD and previews', async () => {
       return;
     }
 
-    if (method === 'DELETE' && url === '/v3/projects/proj_1/tasks/task_created') {
+    if (method === 'DELETE' && url === '/v3/projects/proj_1/tasks/task_created?revision=2') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ status: 'deleted', task_id: 'task_created' }));
       return;
@@ -361,7 +361,7 @@ test('SwarmProjectsNamespace: Project Tasks CRUD and previews', async () => {
     assert.equal(modelPrev.model_preview.resolved_model, 'gemini-3.8-flash:low');
 
     // 7. Delete task
-    const delRes = await ctx.projects.deleteTask('proj_1', 'task_created');
+    const delRes = await ctx.projects.deleteTask('proj_1', 'task_created', 2);
     assert.equal(delRes.status, 'deleted');
     assert.equal(delRes.task_id, 'task_created');
   } finally {

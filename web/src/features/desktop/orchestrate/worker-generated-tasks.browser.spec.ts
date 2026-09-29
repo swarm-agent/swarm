@@ -26,7 +26,7 @@ test('project task list renders generated tasks, exact worker links and source f
     createRoot(document.getElementById('root')).render(<RouterProvider router={router}/>);`
   const bundle = await build({ stdin: { contents: fixture, resolveDir: process.cwd(), loader: 'tsx' }, bundle: true, write: false, format: 'iife', platform: 'browser', jsx: 'automatic', logLevel: 'silent' })
   const tasks: Record<string, unknown>[] = [
-    { id: 'task_human', title: 'Manual review', agent: 'coder', worker_name: '@Coder Worker', status: 'completed', created_at: Date.now() - 120000 },
+    { id: 'task_human', title: 'Manual review', agent: 'coder', worker_name: '@Coder Worker', status: 'completed', revision: 1, created_at: Date.now() - 120000 },
     { id: 'task_generated', title: 'Scheduled audit', agent: 'swarm', worker_id: 'worker_alpha', worker_name: 'Daily Audit', worker_run_id: 'run_alpha', automation_id: 'automation_a', status: 'in_progress', created_at: Date.now() - 60000 },
     { id: 'task_generated_2', title: 'Scheduled backup', agent: 'swarm', worker_id: 'worker_beta', worker_name: 'Daily Audit', worker_run_id: 'run_beta', status: 'queued', created_at: Date.now() - 10000 },
   ]
@@ -43,7 +43,12 @@ test('project task list renders generated tasks, exact worker links and source f
       let body: unknown = {}
       if (path === '/') return route.fulfill({ contentType: 'text/html', body: '<div id="root"></div>' })
       if (path.endsWith('/projects')) body = { projects: [{ id: 'project_demo', name: 'Demo', workspaces: [] }] }
-      else if (path.endsWith('/projects/project_demo/tasks')) body = { tasks }
+      else if (path.endsWith('/projects/project_demo/tasks')) body = { tasks: tasks.filter(task => route.request().url().includes('view=archived') ? task.archived : !task.archived) }
+      else if (path.endsWith('/projects/project_demo/tasks/task_human/archive') && route.request().method() === 'POST') {
+        const row = tasks.find(task => task.id === 'task_human')!
+        if (route.request().postDataJSON().revision !== row.revision) return route.fulfill({ status: 409, contentType: 'application/json', body: JSON.stringify({ message: 'stale revision' }) })
+        row.archived = true; row.revision = 2; body = { task: row }
+      }
       else if (path.endsWith('/projects/project_demo/media')) body = { media: [] }
       else if (path.endsWith('/auth/desktop/session')) body = { ok: true, user_id: 'operator', account_scope_id: 'account_demo' }
       else if (path.endsWith('/me')) body = { username: 'Operator' }
@@ -75,16 +80,29 @@ test('project task list renders generated tasks, exact worker links and source f
     await page.getByTestId('filter-all-tasks').evaluate(node => node.getAnimations().forEach(animation => animation.finish()))
     await page.getByTestId('filter-worker-tasks').evaluate(node => node.getAnimations().forEach(animation => animation.finish()))
     if (process.env.SWARM_TEST_SCREENSHOT_DIR) await page.screenshot({ path: path.join(process.env.SWARM_TEST_SCREENSHOT_DIR, 'worker-tasks-filtered.png'), fullPage: true })
-    await page.getByPlaceholder('Search tasks by title, worker, or tag...').fill('worker_alpha')
+    await page.getByRole('textbox', { name: 'Search tasks by title, worker, or tag' }).fill('worker_alpha')
     assert.equal(await page.getByText('Scheduled backup', { exact: true }).count(), 0)
     assert.equal(await page.getByText('Scheduled audit', { exact: true }).count(), 1)
-    await page.getByPlaceholder('Search tasks by title, worker, or tag...').fill('')
+    await page.getByRole('textbox', { name: 'Search tasks by title, worker, or tag' }).fill('')
     tasks.push({ id: 'task_new', title: 'New generated task', agent: 'swarm', worker_id: 'worker_alpha', worker_name: 'Daily Audit', worker_run_id: 'run_new', status: 'queued', created_at: 4 })
     await page.evaluate(() => (window as any).refreshTasks())
     await page.getByText('New generated task', { exact: true }).waitFor()
     await page.getByTestId('filter-all-tasks').click()
     assert.equal(await page.getByText('Manual review', { exact: true }).count(), 1)
     assert.equal(await page.getByText(/Active Project Automations|Manage Fleet in Workers Hub|No background automations running/).count(), 0)
+    // Requirement: selecting a card is separate from viewing it; archiving a selected
+    // active row persists, removes it from the board, and makes it available in the modal.
+    await page.getByRole('checkbox', { name: 'Select task Manual review' }).check()
+    assert.equal(await page.getByText(/1 selected of \d+ matching tasks in this project/).count(), 1)
+    await page.getByRole('button', { name: 'Archive selected' }).click()
+    await page.getByText('1 archived, 0 failed.').waitFor()
+    await page.evaluate(() => (window as any).refreshTasks())
+    await page.getByText('Manual review', { exact: true }).waitFor({ state: 'hidden' })
+    await page.getByRole('button', { name: 'Archived tasks' }).click()
+    const modal = page.getByRole('dialog', { name: 'Archived tasks' })
+    await modal.getByText('Manual review').waitFor()
+    await page.keyboard.press('Escape')
+    assert.equal(await modal.count(), 0)
     assert.deepEqual(errors, [])
   } finally { await browser.close() }
 })

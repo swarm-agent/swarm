@@ -239,10 +239,10 @@ export class SwarmProjectsNamespace {
   /**
    * Lists tasks associated with a project.
    */
-  async listTasks(projectId: string, options?: RequestOptions): Promise<ProjectTaskRecord[]> {
+  async listTasks(projectId: string, options?: RequestOptions, view: 'active' | 'archived' = 'active'): Promise<ProjectTaskRecord[]> {
     const id = encodeURIComponent(projectId.trim());
     const res = await this.transport.request<{ tasks?: ProjectTaskRecord[]; count?: number } | ProjectTaskRecord[]>(
-      `/v3/projects/${id}/tasks`,
+      `/v3/projects/${id}/tasks${view === 'archived' ? '?view=archived' : ''}`,
       { method: 'GET', ...options }
     );
     if (Array.isArray(res.data)) {
@@ -336,14 +336,20 @@ export class SwarmProjectsNamespace {
     throw new SwarmApiError('Malformed response: missing task record', { status: res.status, details: data });
   }
 
-  /**
-   * Deletes a task from a project.
-   */
-  async deleteTask(projectId: string, taskId: string, options?: RequestOptions): Promise<DeleteProjectTaskResult> {
+  /** Archives a task only at the supplied revision. */
+  async archiveTask(projectId: string, taskId: string, revision: number, options?: RequestOptions): Promise<ProjectTaskRecord> {
+    const path = `/v3/projects/${encodeURIComponent(projectId.trim())}/tasks/${encodeURIComponent(taskId.trim())}/archive`;
+    const res = await this.transport.request<{ task: ProjectTaskRecord }>(path, { method: 'POST', body: { revision }, ...options });
+    if (!res.data?.task) throw new SwarmApiError('Malformed response: missing archived task', { status: res.status, details: res.data });
+    return res.data.task;
+  }
+
+  /** Deletes only an archived, unlaunched task at the supplied revision. */
+  async deleteTask(projectId: string, taskId: string, revision: number, options?: RequestOptions): Promise<DeleteProjectTaskResult> {
     const pId = encodeURIComponent(projectId.trim());
     const tId = encodeURIComponent(taskId.trim());
     const res = await this.transport.request<DeleteProjectTaskResult>(
-      `/v3/projects/${pId}/tasks/${tId}`,
+      `/v3/projects/${pId}/tasks/${tId}?revision=${encodeURIComponent(String(revision))}`,
       { method: 'DELETE', ...options }
     );
     return res.data ?? { status: 'deleted', task_id: taskId.trim() };

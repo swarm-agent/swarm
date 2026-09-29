@@ -101,7 +101,7 @@ export function mapBackendTask(t: any): RunningTask {
     planSummary: t.plan_summary,
     fullPlanMarkdown: t.full_plan_markdown,
     tier: t.tier || 'direct',
-    revision: t.revision || 1,
+    revision: t.revision,
     lastError: t.last_error,
     feedbackHistory: t.feedback_history,
     aspectRatio: t.aspect_ratio,

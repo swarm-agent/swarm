@@ -643,6 +643,8 @@ function TaskElapsedTimer({
 function MinimalTaskCard({
   task,
   isSelected,
+  isMarked,
+  onToggleMarked,
   isExpanded,
   onToggleExpand,
   onSelect,
@@ -674,6 +676,8 @@ function MinimalTaskCard({
 }: {
   task: RunningTask
   isSelected?: boolean
+  isMarked?: boolean
+  onToggleMarked?: () => void
   isExpanded?: boolean
   onToggleExpand?: () => void
   onSelect?: () => void
@@ -908,6 +912,9 @@ function MinimalTaskCard({
       data-task-state={task.status}
       className={`swarm-task-card relative flex flex-col transition-all cursor-pointer ${isSelected ? 'swarm-task-card-selected' : ''}`}
     >
+      {onToggleMarked && <label className="relative z-10 flex items-center gap-1.5 px-3 pt-2 text-[11px] text-slate-300" onClick={(e) => e.stopPropagation()}>
+        <input type="checkbox" checked={Boolean(isMarked)} onChange={onToggleMarked} aria-label={`Select task ${task.title}`} /> Select for management
+      </label>}
       <TaskCardSummary task={task} onPreview={onPreviewDeliverable} />
       <div className="swarm-task-actions">
       {/* Existing guarded actions remain connected to their original handlers. */}
@@ -3760,6 +3767,16 @@ export function OrchestrateView({
   const [taskSourceFilter, setTaskSourceFilter] = useState<'all' | 'worker'>('all')
   const [statusFilter, setStatusFilter] = useState<'all' | 'running' | 'needs_review' | 'queued' | 'completed'>('all')
   const [selectedTag] = useState<string>('all')
+  const [markedTaskIds, setMarkedTaskIds] = useState<Set<string>>(() => new Set())
+  const [managementBusy, setManagementBusy] = useState(false)
+  const managementBusyRef = useRef(false)
+  const [managementMessage, setManagementMessage] = useState('')
+  const [archivedOpen, setArchivedOpen] = useState(false)
+  const [archivedTasks, setArchivedTasks] = useState<RunningTask[]>([])
+  const [archivedLoading, setArchivedLoading] = useState(false)
+  const [archivedError, setArchivedError] = useState('')
+  const archivedCloseRef = useRef<HTMLButtonElement>(null)
+  const archivedTriggerRef = useRef<HTMLButtonElement>(null)
 
   // Matrix expandable drawer state
   const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null)
@@ -5386,24 +5403,53 @@ export function OrchestrateView({
     }
   }
 
-  // Delete/discard task
-  const handleDeleteTask = async (taskId: string) => {
-    if (!selectedProject?.id) return
-    try {
-      desktopProjects.setOptimisticTasks(selectedProject.id, (prev) => prev.filter((t) => t.id !== taskId))
-      await requestJson(`/v3/projects/${selectedProject.id}/tasks/${taskId}`, {
-        method: 'DELETE',
-      })
-      desktopProjects.invalidate(selectedProject.id)
-      if (activeTaskId === taskId) {
-        handleBackToOrchestrator()
+  // Every management mutation is guarded by the stored revision. Never remove a task optimistically.
+  const manageTasks = async (rows: RunningTask[], action: 'archive' | 'delete') => {
+    const projectId = selectedProject?.id
+    if (!projectId || managementBusyRef.current || rows.length === 0) return
+    if (action === 'delete' && !window.confirm(`Permanently delete ${rows.length} selected task${rows.length === 1 ? '' : 's'}? This cannot be undone. Only archived, unlaunched tasks can be deleted; launched tasks and their work are retained.`)) return
+    managementBusyRef.current = true
+    setManagementBusy(true)
+    setManagementMessage('')
+    const failures: string[] = []
+    const succeeded: string[] = []
+    // Sequential requests bound fan-out and retain a per-record failure receipt.
+    for (const row of rows) {
+      try {
+        let revision = row.revision
+        if (typeof revision !== 'number' || revision <= 0) throw new Error('Missing task revision; refresh and retry')
+        if (action === 'delete') {
+          if (row.sessionId || row.taskProgramId || row.planBinding) {
+            throw new Error('Launched task has retained execution; archive instead of deleting')
+          }
+          const archived = await requestJson<{ task: { revision: number } }>(`/v3/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(row.id)}/archive`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ revision }),
+          })
+          revision = archived.task.revision
+          await requestJson(`/v3/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(row.id)}?revision=${revision}`, { method: 'DELETE' })
+        } else {
+          await requestJson(`/v3/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(row.id)}/archive`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ revision }),
+          })
+        }
+        succeeded.push(row.id)
+      } catch (err) {
+        failures.push(`${row.title}: ${err instanceof Error ? err.message : String(err)}`)
       }
-      if (selectedTaskId === taskId) {
-        setSelectedTaskId('')
-      }
-    } catch (err) {
-      console.warn('Delete task failed:', err)
     }
+    setManagementMessage(`${succeeded.length} ${action === 'archive' ? 'archived' : 'deleted'}, ${failures.length} failed.${failures.length ? ` Retry after refresh: ${failures.join('; ')}` : ''}`)
+    setMarkedTaskIds(prev => new Set([...prev].filter(id => !succeeded.includes(id))))
+    desktopProjects.invalidate(projectId)
+    if (archivedOpen) void loadArchivedTasks(projectId)
+    if (action === 'archive' && activeTaskId && succeeded.includes(activeTaskId)) handleBackToOrchestrator()
+    if (selectedTaskId && succeeded.includes(selectedTaskId)) setSelectedTaskId('')
+    managementBusyRef.current = false
+    setManagementBusy(false)
+  }
+
+  const handleDeleteTask = async (taskId: string) => {
+    const task = tasks.find(row => row.id === taskId)
+    if (task) await manageTasks([task], 'delete')
   }
 
   // Integrate / Promote task commits into target branch
@@ -5579,12 +5625,16 @@ export function OrchestrateView({
           Boolean(task.workerId?.toLowerCase().includes(q)) ||
           Boolean(task.worker_id?.toLowerCase().includes(q)) ||
           Boolean(task.workerName?.toLowerCase().includes(q)) ||
-          Boolean(task.worker_name?.toLowerCase().includes(q))
+          Boolean(task.worker_name?.toLowerCase().includes(q)) ||
+          Boolean(task.tags?.some(tag => tag.toLowerCase().includes(q)))
         if (!matchesSearch) return false
       }
 
-      if (statusFilter !== 'all' && task.status !== statusFilter) {
-        return false
+      if (statusFilter !== 'all') {
+        const match = statusFilter === 'running' ? ['running', 'in_progress'].includes(task.status)
+          : statusFilter === 'queued' ? ['queued', 'pending_approval', 'planning'].includes(task.status)
+          : task.status === statusFilter
+        if (!match) return false
       }
 
       if (selectedTag !== 'all' && !task.tags?.includes(selectedTag)) {
@@ -5594,6 +5644,52 @@ export function OrchestrateView({
       return true
     })
   }, [filteredBySourceTasks, searchQuery, statusFilter, selectedTag])
+
+  const markedRows = filteredTasks.filter(row => markedTaskIds.has(row.id))
+  useEffect(() => { setMarkedTaskIds(new Set()); setManagementMessage(''); setArchivedOpen(false) }, [selectedProjectId, searchQuery, taskSourceFilter, statusFilter])
+  useEffect(() => {
+    setMarkedTaskIds(prev => {
+      const valid = new Set(filteredTasks.map(row => row.id))
+      return [...prev].every(id => valid.has(id)) ? prev : new Set([...prev].filter(id => valid.has(id)))
+    })
+  }, [filteredTasks])
+  const loadArchivedTasks = async (projectId: string) => {
+    setArchivedLoading(true)
+    setArchivedError('')
+    try {
+      const result = await requestJson<{ tasks: any[] }>(`/v3/projects/${encodeURIComponent(projectId)}/tasks?view=archived`)
+      setArchivedTasks(mapBackendTasks(result.tasks || []))
+    } catch (err) {
+      setArchivedError(err instanceof Error ? err.message : 'Failed to load archived tasks')
+    } finally { setArchivedLoading(false) }
+  }
+  useEffect(() => {
+    if (!archivedOpen || !selectedProjectId) return
+    archivedCloseRef.current?.focus()
+    void loadArchivedTasks(selectedProjectId)
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') { setArchivedOpen(false); archivedTriggerRef.current?.focus() }
+      if (event.key === 'Tab') {
+        const dialog = archivedCloseRef.current?.closest('[role="dialog"]')
+        const controls = dialog?.querySelectorAll<HTMLElement>('button:not(:disabled), a[href], input:not(:disabled)')
+        if (!controls?.length) return
+        const first = controls[0], last = controls[controls.length - 1]
+        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus() }
+        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus() }
+      }
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [archivedOpen, selectedProjectId])
+
+  const toggleMarked = (id: string) => setMarkedTaskIds(prev => {
+    const next = new Set(prev)
+    if (next.has(id)) next.delete(id); else next.add(id)
+    return next
+  })
+  const selectionProps = (row: RunningTask) => ({
+    isMarked: markedTaskIds.has(row.id), onToggleMarked: () => toggleMarked(row.id),
+  })
 
   const selectedTaskForSplit = useMemo(() => {
     return selectedTaskId ? liveTasks.find((t) => t.id === selectedTaskId) || null : null
@@ -6764,13 +6860,14 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
 
               {/* Common Search & Filter Bar */}
               <div className="px-3.5 pt-3 pb-2 flex flex-wrap items-center justify-between gap-3 border-b border-slate-800/60 bg-[#080d19]/40 flex-shrink-0">
-                <div className="flex-1 min-w-[200px] relative">
+                <div className="w-full sm:w-48 relative">
                   <Search size={13} className="absolute left-3 top-2.5 text-slate-500" />
                   <input
                     type="text"
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="Search tasks by title, worker, or tag..."
+                    placeholder="Search tasks…"
+                    aria-label="Search tasks by title, worker, or tag"
                     className="w-full bg-[#080c16] border border-slate-800 rounded-lg pl-8 pr-3 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500/40"
                   />
                 </div>
@@ -6806,33 +6903,33 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                     </button>
                   </div>
 
-                  {/* Status Filters */}
-                  <div className="flex items-center gap-1">
-                    {(['all', 'running', 'needs_review', 'queued', 'completed'] as const).map((st) => (
-                      <button
-                        key={st}
-                        type="button"
-                        onClick={() => setStatusFilter(st)}
-                        className={`px-2 py-1 rounded text-[10px] font-semibold uppercase tracking-wider transition-all ${
-                          statusFilter === st
-                            ? 'bg-slate-700 text-white shadow-sm'
-                            : 'bg-slate-800/60 text-slate-400 hover:text-slate-200'
-                        }`}
-                      >
-                        {st === 'all'
-                          ? `All (${filteredBySourceTasks.length})`
-                          : st === 'running'
-                          ? `Running (${filteredBySourceRunningCount})`
-                          : st === 'needs_review'
-                          ? `Review (${filteredBySourceReviewCount})`
-                          : st === 'queued'
-                          ? `Queued (${filteredBySourceQueuedCount})`
-                          : `Done (${filteredBySourceCompletedCount})`}
-                      </button>
-                    ))}
-                  </div>
+                  <select aria-label="Task status filter" value={statusFilter} onChange={e => setStatusFilter(e.target.value as typeof statusFilter)} className="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-xs text-slate-200">
+                    <option value="all">All statuses ({filteredBySourceTasks.length})</option>
+                    <option value="running">Running ({filteredBySourceRunningCount})</option>
+                    <option value="needs_review">Review ({filteredBySourceReviewCount})</option>
+                    <option value="queued">Queued ({filteredBySourceQueuedCount})</option>
+                    <option value="completed">Done ({filteredBySourceCompletedCount})</option>
+                  </select>
                 </div>
               </div>
+
+              <div className="px-3.5 py-2 flex flex-wrap items-center gap-2 border-b border-slate-800/60 text-xs text-slate-300" aria-label="Task management">
+                <span>{markedRows.length} selected of {filteredTasks.length} matching tasks in this project</span>
+                <button type="button" disabled={managementBusy || filteredTasks.length === 0} onClick={() => setMarkedTaskIds(new Set(filteredTasks.map(row => row.id)))} className="px-2 py-1 rounded border border-slate-700 disabled:opacity-40">Select all matching</button>
+                <button type="button" disabled={managementBusy || markedRows.length === 0} onClick={() => setMarkedTaskIds(new Set())} className="px-2 py-1 rounded border border-slate-700 disabled:opacity-40">Clear selection</button>
+                <button type="button" disabled={managementBusy || markedRows.length === 0} onClick={() => void manageTasks(markedRows, 'archive')} className="px-2 py-1 rounded bg-blue-700 disabled:opacity-40">Archive selected</button>
+                <button type="button" disabled={managementBusy || markedRows.length === 0} onClick={() => void manageTasks(markedRows, 'delete')} title="Only unlaunched tasks may be deleted; archive launched tasks instead" className="px-2 py-1 rounded border border-rose-700 text-rose-300 disabled:opacity-40">Delete selected</button>
+                <button type="button" ref={archivedTriggerRef} onClick={() => setArchivedOpen(true)} className="px-2 py-1 rounded border border-slate-700">Archived tasks</button>
+                {managementBusy && <span role="status">Updating tasks…</span>}
+                {managementMessage && <span role="status" className="w-full text-amber-300">{managementMessage}</span>}
+              </div>
+              {archivedOpen && <div className="fixed inset-0 z-[100] bg-black/70 flex items-center justify-center p-4" onMouseDown={e => { if (e.target === e.currentTarget) { setArchivedOpen(false); archivedTriggerRef.current?.focus() } }}>
+                <section role="dialog" aria-modal="true" aria-labelledby="archived-tasks-title" className="w-full max-w-xl max-h-[85vh] overflow-hidden flex flex-col rounded-xl border border-slate-700 bg-[#0a101e] p-4 text-white shadow-2xl">
+                  <div className="flex items-center justify-between gap-3"><h2 id="archived-tasks-title" className="text-base font-semibold">Archived tasks</h2><button type="button" ref={archivedCloseRef} onClick={() => { setArchivedOpen(false); archivedTriggerRef.current?.focus() }} aria-label="Close archived tasks">Close</button></div>
+                  <p className="text-xs text-slate-400 my-2">Archived tasks in this project are read-only. Their sessions, branches and code remain untouched.</p>
+                  {archivedLoading ? <p role="status">Loading archived tasks…</p> : archivedError ? <div role="alert">{archivedError} <button type="button" onClick={() => selectedProjectId && void loadArchivedTasks(selectedProjectId)}>Retry</button></div> : archivedTasks.length === 0 ? <p>No archived tasks.</p> : <ul className="overflow-y-auto min-h-0 space-y-2">{archivedTasks.map(row => <li key={row.id} className="p-3 rounded border border-slate-700"><strong className="block text-sm">{row.title}</strong><span className="text-xs text-slate-400">{row.status} · {row.workerName || 'Task'}</span></li>)}</ul>}
+                </section>
+              </div>}
 
               {/* ─────────────────────────────────────────────────────────────
                   VARIANT 1: COMPACT MATRIX & EXPANDABLE DRAWER
@@ -6848,6 +6945,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                           key={t.id}
                           task={t}
                           isSelected={selectedTaskId === t.id}
+                          {...selectionProps(t)}
                           isExpanded={expandedTaskId === t.id}
                           workspaceSlug={workspaceSlug}
                           onOpenWorkerDetail={(workerId) => {
@@ -6955,6 +7053,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                               key={t.id}
                               task={t}
                               isSelected={selectedTaskId === t.id}
+                          {...selectionProps(t)}
                               workspaceSlug={workspaceSlug}
                               onOpenWorkerDetail={(workerId) => {
                                 void navigate(swarmWorkerLink(workspaceSlug, workerId))
@@ -7071,6 +7170,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                           key={task.id}
                           task={task}
                           isSelected={selectedTaskId === task.id}
+                          {...selectionProps(task)}
                           workspaceSlug={workspaceSlug}
                           onOpenWorkerDetail={(workerId) => {
                             void navigate(swarmWorkerLink(workspaceSlug, workerId))
@@ -7134,6 +7234,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                           }`}
                         >
                           <div className="flex items-center justify-between gap-2">
+                            <label className="flex items-center gap-1" onClick={e => e.stopPropagation()}><input type="checkbox" checked={markedTaskIds.has(t.id)} onChange={() => toggleMarked(t.id)} aria-label={`Select task ${t.title}`} /></label>
                             <span className="text-xs font-semibold leading-snug truncate">{t.title}</span>
                             {isWorker && (
                               <span className="font-mono text-[9px] px-1.5 py-0.5 rounded bg-indigo-950/70 text-indigo-300 border border-indigo-500/30 font-semibold shrink-0" data-testid="worker-tag">
@@ -7176,6 +7277,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                       <MinimalTaskCard
                         task={selectedTaskForSplit}
                         isSelected={true}
+                        {...selectionProps(selectedTaskForSplit)}
                         workspaceSlug={workspaceSlug}
                         onOpenWorkerDetail={(workerId) => {
                           void navigate(swarmWorkerLink(workspaceSlug, workerId))

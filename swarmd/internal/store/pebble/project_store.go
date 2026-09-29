@@ -814,7 +814,7 @@ func (s *SessionStore) GetProjectTask(accountScopeID, projectID, taskID string) 
 	return &rec, true, nil
 }
 
-// ListProjectTasks lists all tasks for a project.
+// ListProjectTasks lists tasks for a project. Use ListProjectTasksByArchive for a complete board/archive view.
 func (s *SessionStore) ListProjectTasks(accountScopeID, projectID string, limit int) ([]ProjectTaskRecord, error) {
 	if s == nil || s.store == nil || s.store.db == nil {
 		return nil, errors.New("database not available")
@@ -850,6 +850,43 @@ func (s *SessionStore) ListProjectTasks(accountScopeID, projectID string, limit 
 	if len(tasks) > limit {
 		tasks = tasks[:limit]
 	}
+	return tasks, nil
+}
+
+// ListProjectTasksByArchive returns the complete bounded project view before filtering.
+// Refuse oversized projects rather than silently omitting selectable tasks.
+func (s *SessionStore) ListProjectTasksByArchive(accountScopeID, projectID string, archived bool) ([]ProjectTaskRecord, error) {
+	if s == nil || s.store == nil || s.store.db == nil {
+		return nil, errors.New("database not available")
+	}
+	accountScopeID, projectID = strings.TrimSpace(accountScopeID), strings.TrimSpace(projectID)
+	if accountScopeID == "" || projectID == "" {
+		return nil, errors.New("account scope id and project id are required")
+	}
+	var tasks []ProjectTaskRecord
+	var scanned int
+	err := s.store.IteratePrefix(ProjectTaskPrefix(accountScopeID, projectID), 10001, func(_ string, value []byte) error {
+		scanned++
+		var rec ProjectTaskRecord
+		if err := json.Unmarshal(value, &rec); err != nil {
+			return err
+		}
+		if rec.AccountID == accountScopeID && rec.ProjectID == projectID && rec.Archived == archived {
+			s.hydrateProjectTaskPlanDocument(&rec)
+			tasks = append(tasks, rec)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if scanned > 10000 {
+		return nil, errors.New("project task view exceeds 10000 records")
+	}
+	sort.Slice(tasks, func(i, j int) bool {
+		if tasks[i].CreatedAt == tasks[j].CreatedAt { return tasks[i].ID < tasks[j].ID }
+		return tasks[i].CreatedAt < tasks[j].CreatedAt
+	})
 	return tasks, nil
 }
 

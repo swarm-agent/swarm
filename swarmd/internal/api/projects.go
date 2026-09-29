@@ -2077,18 +2077,16 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			if !s.requireScopeAny(w, r, "projects:read", "sessions:read") {
 				return
 			}
-			tasks, err := db.ListProjectTasks(p.AccountScopeID, projectID, 100)
+			archiveView := r.URL.Query().Get("view")
+			if archiveView != "" && archiveView != "archived" {
+				writeError(w, http.StatusBadRequest, errors.New("unsupported task view"))
+				return
+			}
+			tasks, err := db.ListProjectTasksByArchive(p.AccountScopeID, projectID, archiveView == "archived")
 			if err != nil {
 				writeError(w, http.StatusInternalServerError, err)
 				return
 			}
-			visible := make([]pebblestore.ProjectTaskRecord, 0, len(tasks))
-			for _, task := range tasks {
-				if !task.Archived {
-					visible = append(visible, task)
-				}
-			}
-			tasks = visible
 			workerOnly := r.URL.Query().Get("worker_only") == "true"
 			targetWorkerID := strings.TrimSpace(r.URL.Query().Get("worker_id"))
 			if workerOnly || targetWorkerID != "" {
@@ -2105,14 +2103,14 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				tasks = filtered
 			}
 			for i := range tasks {
-				if tasks[i].WorktreeBranch == "" || tasks[i].WorktreeBranch == "main" || tasks[i].WorktreeBranch == "dev" || tasks[i].WorktreeBranch == "master" {
+				if archiveView != "archived" && (tasks[i].WorktreeBranch == "" || tasks[i].WorktreeBranch == "main" || tasks[i].WorktreeBranch == "dev" || tasks[i].WorktreeBranch == "master") {
 					tasks[i].WorktreeBranch, tasks[i].WorktreeName = pebblestore.MakeWorktreeBranch(tasks[i].Title, tasks[i].Description)
 				}
-				if tasks[i].WorktreeName == "" {
+				if archiveView != "archived" && tasks[i].WorktreeName == "" {
 					tasks[i].WorktreeName = strings.TrimPrefix(tasks[i].WorktreeBranch, "agent/")
 					tasks[i].WorktreeName = strings.TrimPrefix(tasks[i].WorktreeName, "worktree/")
 				}
-				if tasks[i].BaseBranch == "" {
+				if archiveView != "archived" && tasks[i].BaseBranch == "" {
 					tasks[i].BaseBranch = "main"
 				}
 				// Collection GET does not run expensive git subprocesses to avoid CPU churn.
@@ -3319,8 +3317,13 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			if !s.requireScopeAny(w, r, "projects:write", "sessions:write") {
 				return
 			}
-			if err := db.DeleteProjectTask(p.AccountScopeID, projectID, taskID); err != nil {
-				writeError(w, http.StatusInternalServerError, err)
+			revision, err := strconv.Atoi(r.URL.Query().Get("revision"))
+			if err != nil || revision <= 0 {
+				writeError(w, http.StatusBadRequest, errors.New("positive task revision required"))
+				return
+			}
+			if err := db.DeleteProjectTaskIfRevision(p.AccountScopeID, projectID, taskID, revision); err != nil {
+				writeError(w, http.StatusConflict, err)
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]any{
@@ -3331,6 +3334,28 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		}
 
 		writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
+		return
+	}
+
+	// Archive a project task using its exact revision; no execution state is changed.
+	if len(segments) == 4 && segments[1] == "tasks" && segments[3] == "archive" {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
+			return
+		}
+		if !s.requireScopeAny(w, r, "projects:write", "sessions:write") { return }
+		var req struct { Revision int `json:"revision"` }
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 4096))
+		if err != nil || json.Unmarshal(body, &req) != nil || req.Revision <= 0 {
+			writeError(w, http.StatusBadRequest, errors.New("positive task revision required"))
+			return
+		}
+		archived, err := db.ArchiveProjectTaskIfRevision(p.AccountScopeID, projectID, segments[2], req.Revision)
+		if err != nil {
+			writeError(w, http.StatusConflict, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"task": sanitizeProjectTaskForClient(archived)})
 		return
 	}
 
