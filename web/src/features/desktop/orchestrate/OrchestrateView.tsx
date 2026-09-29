@@ -1,4 +1,7 @@
-import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
+import { useState, useMemo, useEffect, useCallback, useRef, useSyncExternalStore } from 'react'
+import { integrationFailure, repairUnavailable, redactIntegrationDiagnostic, orchestratorDrafts, type IntegrationFailure } from './integration-recovery'
+import { createDesktopV3NewSessionOperation, startNewDesktopV3Session, type DesktopV3NewSessionOperation } from '../session-v3/new-session-flow'
+import { resolveDesktopChatRouteFromSession } from '../chat/services/chat-routing'
 import { useVideoTaskDefault } from './use-video-task-default'
 import { getUISettings } from '../settings/swarm/queries/get-ui-settings'
 import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
@@ -667,6 +670,7 @@ export function MinimalTaskCard({
   audioModelOptions,
   isApproving,
   taskError,
+  integrationRecovery,
   onClearError,
 }: {
   task: RunningTask
@@ -700,6 +704,7 @@ export function MinimalTaskCard({
   videoModelOptions?: TaskModalModelOption[]
   audioModelOptions?: TaskModalModelOption[]
   isApproving?: boolean
+  integrationRecovery?: React.ReactNode
   taskError?: string
   onClearError?: () => void
 }) {
@@ -1104,6 +1109,7 @@ export function MinimalTaskCard({
       )}
 
       {/* 2. PENDING APPROVAL MISSION PROPOSAL BANNER */}
+      {integrationRecovery}
       {isPendingApproval && (
         <div className="swarm-task-proposal flex flex-col space-y-2.5">
           <div className="flex items-center justify-between gap-2 flex-wrap">
@@ -2803,7 +2809,12 @@ export function OrchestratorChatComposer({
   allTasks?: RunningTask[]
   onDeselectTask?: () => void
 }) {
-  const [draft, setDraft] = useState('')
+  const draftKey = `${project?.id || ''}:${sessionId}`
+  const draftState = useSyncExternalStore(orchestratorDrafts.subscribe, () => orchestratorDrafts.get(draftKey), () => orchestratorDrafts.get(draftKey))
+  const draft = draftState.text
+  const setDraft = (value: string | ((previous: string) => string)) => orchestratorDrafts.set(draftKey, typeof value === 'function' ? value(orchestratorDrafts.get(draftKey).text) : value)
+  const composerRef = useRef<HTMLTextAreaElement>(null)
+  useEffect(() => { if (draftState.focus) composerRef.current?.focus() }, [draftKey, draftState.focus])
   const [sending, setSending] = useState(false)
   const [sendError, setSendError] = useState<string | null>(null)
   const [attachments, setAttachments] = useState<DesktopV3MediaReference[]>([])
@@ -2963,7 +2974,8 @@ export function OrchestratorChatComposer({
           await continueDesktopV3Conversation(operation)
         }
       }, currentSelectedWorker || (() => selectedWorker || null), () => onDeselectWorker?.(selectedWorker || null))
-      setDraft('')
+      // Do not erase recovery context appended while an earlier message was sending.
+      if (orchestratorDrafts.get(draftKey).text === draft) setDraft('')
       setAttachments([])
       if (creatingWorker) onWorkerCreationSent?.()
     } catch (err: any) {
@@ -3069,6 +3081,7 @@ export function OrchestratorChatComposer({
           onChange={handleFileSelected}
         />
         <textarea
+          ref={composerRef}
           value={draft}
           onChange={(e) => {
             setDraft(e.target.value)
@@ -3142,6 +3155,7 @@ export function OrchestratorChatComposer({
  * and individual Task Worker sessions with a back-button navigation bar.
  */
 function OrchestratorChatSidebar({
+  repairSession = false,
   creatingWorker,
   onWorkerCreationSent,
   sessionId,
@@ -3158,6 +3172,7 @@ function OrchestratorChatSidebar({
   onDeselectWorker,
 }: {
   sessionId: string
+  repairSession?: boolean
   creatingWorker?: boolean
   onWorkerCreationSent?: () => void
   selectedWorker?: SelectedWorker | null
@@ -3338,13 +3353,14 @@ function OrchestratorChatSidebar({
           <div className="flex items-center justify-between p-3 pb-2">
             <div className="flex items-center gap-2">
               <div className="h-2 w-2 rounded-full bg-emerald-400" />
-              <span className="font-bold text-white">Project Orchestrator</span>
+              <span className="font-bold text-white">{repairSession ? 'Integration repair session' : 'Project Orchestrator'}</span>
               <span className="text-[10px] text-slate-400 font-mono">({project?.name})</span>
             </div>
             <span className="text-[9px] font-mono uppercase px-2 py-0.5 rounded bg-slate-800 text-slate-300 font-bold">
-              Executive
+              {repairSession ? 'Swarm' : 'Executive'}
             </span>
           </div>
+          {repairSession && <button type="button" className="p-2 underline" onClick={onBackToOrchestrator}>Back to Project Orchestrator</button>}
           {/* Orchestrator Context Status & Clear Context Action */}
           <div className="flex items-center justify-between px-3 py-1.5 bg-[#080d19]/90 border-t border-slate-800/60 text-[11px]">
             <div className="flex items-center gap-2 min-w-0">
@@ -3365,7 +3381,7 @@ function OrchestratorChatSidebar({
             </div>
             <button
               onClick={handleClearContext}
-              disabled={clearingContext}
+              disabled={clearingContext || repairSession}
               title="Clear orchestrator conversation context and start fresh"
               data-testid="clear-orchestrator-context-btn"
               className="flex items-center gap-1.5 px-2 py-0.5 rounded bg-slate-800 hover:bg-red-950/70 hover:text-red-200 hover:border-red-500/50 text-slate-300 transition-colors border border-slate-700/80 font-medium text-[10px] flex-shrink-0 disabled:opacity-50"
@@ -5171,6 +5187,12 @@ export function OrchestrateView({
   // Track in-flight task approvals to prevent duplicate clicks and premature execution
   const [approvingTaskIds, setApprovingTaskIds] = useState<Set<string>>(new Set())
   const [taskActionErrors, setTaskActionErrors] = useState<Record<string, string>>({})
+  const [integrationFailures, setIntegrationFailures] = useState<Record<string, IntegrationFailure>>({})
+  const recoveryProjectRef = useRef(selectedProject?.id)
+  recoveryProjectRef.current = selectedProject?.id
+  const repairFlights = useRef(new Set<string>())
+  const repairOperations = useRef(new Map<string, DesktopV3NewSessionOperation>())
+  const [repairStates, setRepairStates] = useState<Record<string, { loading?: boolean; error?: string; sessionId?: string }>>({})
   const [integratingTaskIds, setIntegratingTaskIds] = useState<Set<string>>(new Set())
   const integratingTaskFlights = useRef(new Set<string>())
 
@@ -5364,6 +5386,88 @@ export function OrchestrateView({
     if (task) await manageTasks([task], 'delete')
   }
 
+  const renderIntegrationRecovery = (task: RunningTask) => {
+    const failure = integrationFailures[task.id]
+    if (!selectedProject || !failure || failure.projectId !== selectedProject.id) return null
+    const state = repairStates[task.id]
+    const unavailable = repairUnavailable(failure.task)
+    return <div className="integration-recovery" role="alert" onClick={event => event.stopPropagation()}>
+      <strong>Integration failed</strong>
+      <pre>{failure.error}</pre>
+      <div className="flex flex-wrap gap-2">
+        <button type="button" disabled={Boolean(unavailable) || state?.loading} onClick={() => void launchIntegrationRepair(failure)}>
+          {state?.loading ? 'Launching…' : state?.sessionId ? 'Open repair session' : 'Launch repair session'}
+        </button>
+        <button type="button" disabled={!selectedProject.primarySessionId} onClick={() => {
+          const sessionId = selectedProject.primarySessionId
+          if (!sessionId) return
+          orchestratorDrafts.append(`${failure.projectId}:${sessionId}`, failure.brief)
+          selectedWorkerRef.current = null
+          setSelectedWorker(null)
+          setWorkerChatOpen(true)
+          handleBackToOrchestrator()
+        }}>Copy into Orchestrator chat</button>
+        <button type="button" aria-label="Dismiss integration error" onClick={() => setIntegrationFailures(previous => {
+          const next = { ...previous }; delete next[task.id]; return next
+        })}>Dismiss</button>
+      </div>
+      {unavailable && <p>{unavailable}</p>}
+      {!selectedProject.primarySessionId && <p>Project Orchestrator session is unavailable. Refresh the project before copying.</p>}
+      {state?.error && <p>{state.error}</p>}
+    </div>
+  }
+
+  const launchIntegrationRepair = async (failure: IntegrationFailure) => {
+    const task = failure.task
+    if (repairFlights.current.has(task.id) || repairUnavailable(task)) return
+    if (repairStates[task.id]?.sessionId) {
+      setActiveTaskId(null)
+      setActiveSessionId(repairStates[task.id].sessionId!)
+      setSelectedTaskId('')
+      setWorkerChatOpen(true)
+      selectedWorkerRef.current = null
+      setSelectedWorker(null)
+      return
+    }
+    repairFlights.current.add(task.id)
+    setRepairStates(previous => ({ ...previous, [task.id]: { loading: true } }))
+    try {
+      let operation = repairOperations.current.get(task.id)
+      if (!operation) {
+        await hydrateDesktopV3ChildCard(task.sessionId!)
+        const record = getDesktopV3CacheSnapshot().sessionsById[task.sessionId!]
+        const route = resolveDesktopChatRouteFromSession(record?.kind === 'full' ? record.session : null, [])
+        if (!route || route.hostWorkspacePath !== task.sourceWorkspacePath) {
+          throw new Error('Originating session does not resolve the captured source workspace. Copy into Orchestrator chat to investigate.')
+        }
+        operation = createDesktopV3NewSessionOperation({
+          workspacePath: task.sourceWorkspacePath!, workspaceName: '',
+          // The origin's runtime path is its old worktree, not a new deployment binding.
+          // Omit it so the backend resolves the authorized binding destination.
+          route: { ...route, runtimeWorkspacePath: '' },
+          agentName: 'swarm', mode: 'auto', title: `Repair integration: ${task.title}`,
+          prompt: failure.brief,
+          worktree: { mode: 'on', useCurrentBranch: false, baseBranch: task.baseBranch, branchName: `repair-${crypto.randomUUID().slice(0, 8)}` },
+        })
+        // Retain exact idempotency identities after partial create/send failures.
+        repairOperations.current.set(task.id, operation)
+      }
+      const result = await startNewDesktopV3Session({ operation, shouldSelectSession: () => false })
+      setRepairStates(previous => ({ ...previous, [task.id]: { sessionId: result.sessionId } }))
+      if (recoveryProjectRef.current !== failure.projectId) return
+      setActiveTaskId(null)
+      setSelectedTaskId('')
+      setActiveSessionId(result.sessionId)
+      setWorkerChatOpen(true)
+      selectedWorkerRef.current = null
+      setSelectedWorker(null)
+    } catch (error) {
+      setRepairStates(previous => ({ ...previous, [task.id]: { error: `Repair launch failed: ${redactIntegrationDiagnostic(error instanceof Error ? error.message : String(error))}. Retry reuses the same session request.` } }))
+    } finally {
+      repairFlights.current.delete(task.id)
+    }
+  }
+
   // Integrate / Promote task commits into target branch
   const handleIntegrateTask = async (taskId: string) => {
     if (integratingTaskFlights.current.has(taskId)) return
@@ -5376,6 +5480,7 @@ export function OrchestrateView({
     integratingTaskFlights.current.add(taskId)
     setIntegratingTaskIds(prev => new Set(prev).add(taskId))
     setTaskActionErrors(prev => ({ ...prev, [taskId]: '' }))
+    setIntegrationFailures(previous => { const next = { ...previous }; delete next[taskId]; return next })
     try {
       await requestJson(`/v3/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(taskId)}/integrate`, {
         method: 'POST',
@@ -5384,7 +5489,7 @@ export function OrchestrateView({
       })
       desktopProjects.invalidate(projectId)
     } catch (err) {
-      setTaskActionErrors(prev => ({ ...prev, [taskId]: err instanceof Error ? err.message : 'Integration failed; inspect Git and retry.' }))
+      setIntegrationFailures(previous => ({ ...previous, [taskId]: integrationFailure(selectedProject!, task, err) }))
       desktopProjects.invalidate(projectId)
     } finally {
       integratingTaskFlights.current.delete(taskId)
@@ -6960,6 +7065,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                           onOpenTaskModelChanger={handleOpenTaskModelChanger}
                           projectId={selectedProject?.id}
                           isApproving={approvingTaskIds.has(t.id)}
+                          integrationRecovery={renderIntegrationRecovery(t)}
                           taskError={taskActionErrors[t.id]}
                           onClearError={() => handleClearTaskError(t.id)}
                           modelOptions={modelOptions}
@@ -7066,6 +7172,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                               onOpenTaskModelChanger={handleOpenTaskModelChanger}
                               projectId={selectedProject?.id}
                               isApproving={approvingTaskIds.has(t.id)}
+                              integrationRecovery={renderIntegrationRecovery(t)}
                               taskError={taskActionErrors[t.id]}
                               onClearError={() => handleClearTaskError(t.id)}
                               modelOptions={modelOptions}
@@ -7183,6 +7290,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                           onOpenTaskModelChanger={handleOpenTaskModelChanger}
                           projectId={selectedProject?.id}
                           isApproving={approvingTaskIds.has(task.id)}
+                          integrationRecovery={renderIntegrationRecovery(task)}
                           taskError={taskActionErrors[task.id]}
                           onClearError={() => handleClearTaskError(task.id)}
                           modelOptions={modelOptions}
@@ -7290,6 +7398,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                         onOpenTaskModelChanger={handleOpenTaskModelChanger}
                         projectId={selectedProject?.id}
                         isApproving={approvingTaskIds.has(selectedTaskForSplit.id)}
+                        integrationRecovery={renderIntegrationRecovery(selectedTaskForSplit)}
                         taskError={taskActionErrors[selectedTaskForSplit.id]}
                         onClearError={() => handleClearTaskError(selectedTaskForSplit.id)}
                         modelOptions={modelOptions}
@@ -7340,6 +7449,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                       onOpenTaskModelChanger={handleOpenTaskModelChanger}
                       projectId={selectedProject?.id}
                       isApproving={approvingTaskIds.has(t.id)}
+                      integrationRecovery={renderIntegrationRecovery(t)}
                       taskError={taskActionErrors[t.id]}
                       onClearError={() => handleClearTaskError(t.id)}
                       modelOptions={modelOptions}
@@ -7373,6 +7483,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
         {activeNavTab === 'workers' && <div className="flex max-w-[440px] shrink-0 items-center justify-between gap-3 p-3 text-xs text-slate-300"><span>{workerCreationRequested ? 'Add worker: describe its job to Orchestrator below. Nothing runs until you approve.' : 'Discuss this worker with Orchestrator'}</span><button onClick={() => { setWorkerChatOpen(false); setWorkerCreationRequested(false) }}>Close</button></div>}
         <OrchestratorChatSidebar
           key={activeSessionId}
+          repairSession={Object.values(repairStates).some(state => state.sessionId === activeSessionId)}
           sessionId={activeSessionId}
           project={selectedProject}
           activeTask={activeTask}

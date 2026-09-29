@@ -12,7 +12,7 @@ test('task integration sends selected lineage and renders errors without a branc
   const handler = source.slice(source.indexOf('const handleIntegrateTask ='), source.indexOf('// Refine task with router'))
   assert.match(handler, /tasks\.find\(row => row\.id === taskId\)/)
   assert.match(handler, /session_id: task\.sessionId, source_branch: task\.worktreeBranch, target_branch: task\.baseBranch/)
-  assert.match(handler, /setTaskActionErrors\(prev => \(\{ \.\.\.prev, \[taskId\]: err instanceof Error/)
+  assert.match(handler, /setIntegrationFailures\(previous => \(\{ \.\.\.previous, \[taskId\]: integrationFailure\(selectedProject!, task, err\)/)
   assert.match(handler, /integratingTaskFlights\.current\.has\(taskId\)/)
   assert.match(source, /disabled=\{isIntegrating \|\| !task\.baseBranch\}/)
   assert.doesNotMatch(source, /Integrate into \{task\.baseBranch \|\| 'main'\}/)
