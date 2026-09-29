@@ -296,6 +296,8 @@ export interface RunningTask {
   stageIndex?: number
   totalStages?: number
   subtasks: { id: string; title: string; completed: boolean }[]
+  taskTodos?: import('../state/task-progress').TaskTodo[]
+  handoffSummary?: string
   stepTimeline?: TaskStep[]
   diffPreview?: string
   diffLines?: DiffLine[]

@@ -201,15 +201,7 @@ export function selectDesktopV3TaskChildViewModel(
   const error = intent?.blocked_reason?.trim() || (status === 'failed' ? row.previewText.trim() : '')
   const startedAt = intent?.started_at || view?.current_run_state?.started_at || row.launchStartedAtMs || row.currentToolStartedAtMs || 0
   const elapsedMs = intent?.duration_ms || intent?.cumulative_duration_ms || view?.current_run_state?.duration_ms || row.elapsedMs || row.currentToolMs || 0
-  const rawTodos = Array.isArray(metadata?.task_todos) ? metadata?.task_todos : undefined
-  const todos = rawTodos
-    ?.filter((item): item is Record<string, unknown> => item !== null && typeof item === 'object')
-    .map((item) => ({
-      id: stringValue(item.id),
-      title: stringValue(item.title || item.text),
-      status: (stringValue(item.status).toLowerCase() || 'pending') as 'pending' | 'in_progress' | 'completed',
-    }))
-    .filter((item) => item.title.length > 0)
+  const todos = sessionTaskTodos(metadata)
   const activeTodoItem = todos?.find((item) => item.status === 'in_progress')
   const agentSummary = objectRecord(metadata?.agent_todo_summary)
   const activeTodo = activeTodoItem?.title || stringValue(objectRecord(agentSummary?.active_todo)?.title || objectRecord(agentSummary?.active_todo)?.text) || ''
@@ -246,6 +238,8 @@ export function selectDesktopV3TaskChildViewModel(
     ...(lifecyclePhase ? { lifecyclePhase } : {}),
   }
 }
+
+import { sessionTaskTodos } from './task-progress'
 
 function objectRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null

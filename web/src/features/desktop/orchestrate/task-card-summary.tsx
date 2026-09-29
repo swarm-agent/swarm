@@ -68,7 +68,7 @@ export function taskCardFacts(task: RunningTask) {
     git,
     deliverable,
     // A completed task's last tool/focus is history, not current activity.
-    activity: running ? task.toolActivitySummary?.trim() || null : null,
+    activity: running ? task.activeTodo?.trim() || task.toolActivitySummary?.trim() || null : null,
     identity: task.activeAgent?.trim() || null,
     model: task.activeModel?.trim() || null,
     provider: task.activeProvider?.trim() || null,
@@ -231,6 +231,25 @@ export function TaskCardSummary({
 
           {extraBadges}
         </div>
+
+        {task.taskTodos && task.taskTodos.length > 0 && (
+          <details className="mt-1 text-[11px] text-slate-400">
+            <summary>Agent checklist</summary>
+            <ul aria-label="Agent checklist">
+              {task.taskTodos.map((todo) => (
+                <li key={todo.id} className="break-words" data-status={todo.status}>
+                  {todo.status === 'completed' ? '✓' : todo.status === 'in_progress' ? '→' : '○'} {todo.title}
+                  <span className="sr-only"> — {todo.status.replace(/_/g, ' ')}</span>
+                </li>
+              ))}
+            </ul>
+          </details>
+        )}
+        {task.handoffSummary && task.status === 'needs_review' && (
+          <p className="mt-1 text-[11px] text-slate-300 break-words" aria-label="Implementation handoff">
+            Ready for review: {task.handoffSummary}
+          </p>
+        )}
 
         {/* Row 3: Live activity (only when actively running) */}
         {facts.activity && (
