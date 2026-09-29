@@ -76,8 +76,8 @@ func inspectTaskGitState(task pebblestore.ProjectTaskRecord, db *pebblestore.Ses
 	return res
 }
 
-// reconcileTaskGitState persists only verified, changed observations. Project task
-// updates publish durable project.updated invalidations to connected clients.
+// reconcileTaskGitState projects verified Git observations into the response only.
+// Reads must never publish project.updated and invalidate their own consumers.
 func reconcileTaskGitState(db *pebblestore.SessionStore, task *pebblestore.ProjectTaskRecord) error {
 	if task == nil || db == nil || task.SessionID == "" || task.Archived || task.Status == "pending_approval" || task.Status == "planning" || task.Status == "queued" || task.Agent == "image" || task.Agent == "video" || task.Agent == "sound" || task.Agent == "audio" {
 		return nil
@@ -116,29 +116,6 @@ func reconcileTaskGitState(db *pebblestore.SessionStore, task *pebblestore.Proje
 			t.Status = "needs_review"
 		}
 	}
-	if task.GitStatus == state.gitStatus && task.UnintegratedCommits == state.unintegratedCommits && task.IsIntegrated == state.isIntegrated && task.IsDirty == state.isDirty && task.BaseBranch == state.baseBranch && task.BaseCommit == state.baseCommit && task.WorktreeBranch == state.worktreeBranch && (state.actionNeeded == "" || task.ActionNeeded == state.actionNeeded) && (!state.isIntegrated || task.Status == "completed" || task.Status == "in_progress" || task.Status == "rejected") {
-		apply(task)
-		return nil
-	}
-	observedSessionID := task.SessionID
-	applied := false
-	updated, err := db.UpdateProjectTask(task.AccountID, task.ProjectID, task.ID, func(t *pebblestore.ProjectTaskRecord) error {
-		if t.SessionID != task.SessionID || t.AccountID != task.AccountID || t.Revision != task.Revision || (t.Status == "in_progress" && task.Status != "in_progress") {
-			return nil
-		}
-		apply(t)
-		applied = true
-		return nil
-	})
-	if err == nil && updated != nil {
-		if !applied || updated.SessionID != observedSessionID {
-			*task = *updated
-			task.GitStatus = "unknown"
-			task.IsIntegrated = false
-			task.UnintegratedCommits = 0
-		} else {
-			*task = *updated
-		}
-	}
-	return err
+	apply(task)
+	return nil
 }

@@ -2113,9 +2113,6 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				tasks = filtered
 			}
 			for i := range tasks {
-				if archiveView != "archived" && (tasks[i].WorktreeBranch == "" || tasks[i].WorktreeBranch == "main" || tasks[i].WorktreeBranch == "dev" || tasks[i].WorktreeBranch == "master") {
-					tasks[i].WorktreeBranch, tasks[i].WorktreeName = pebblestore.MakeWorktreeBranch(tasks[i].Title, tasks[i].Description)
-				}
 				if archiveView != "archived" && tasks[i].WorktreeName == "" {
 					tasks[i].WorktreeName = strings.TrimPrefix(tasks[i].WorktreeBranch, "agent/")
 					tasks[i].WorktreeName = strings.TrimPrefix(tasks[i].WorktreeName, "worktree/")
@@ -2130,10 +2127,6 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 					} else {
 						tasks[i].GitStatus = "stale"
 					}
-				}
-				if err := reconcileTaskGitState(db, &tasks[i]); err != nil {
-					writeError(w, http.StatusInternalServerError, err)
-					return
 				}
 				syncTaskSessionState(&tasks[i], db)
 				hydrateTaskProgramStatus(&tasks[i], db)
