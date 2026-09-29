@@ -97,6 +97,7 @@ import {
   ProjectSummary,
   ProjectTaskMediaRef,
   RunningTask,
+  RunningTaskPlanCheckpoint,
 } from './orchestrate-types'
 import {
   resolveVideoPricing,
@@ -607,24 +608,27 @@ function DeliverableThumbnail({
 function TaskElapsedTimer({
   isRunning,
   startedAt,
-  createdAt,
   fallbackElapsed,
+  elapsedMs,
+  finished,
 }: {
   isRunning: boolean
   startedAt?: number
-  createdAt?: number
   fallbackElapsed?: string
+  elapsedMs?: number
+  finished?: boolean
 }) {
   const [now, setNow] = useState(() => Date.now())
 
   useEffect(() => {
     if (!isRunning) return
+    setNow(Date.now())
     const interval = setInterval(() => setNow(Date.now()), 1000)
     return () => clearInterval(interval)
   }, [isRunning])
 
   if (isRunning) {
-    const start = startedAt || createdAt
+    const start = startedAt
     if (!start) return <span>{fallbackElapsed || 'Running...'}</span>
     const totalSec = Math.max(0, Math.floor((now - start) / 1000))
     const mins = Math.floor(totalSec / 60)
@@ -632,7 +636,9 @@ function TaskElapsedTimer({
     return <span>{`${mins}:${secs.toString().padStart(2, '0')}`}</span>
   }
 
-  return <span>{fallbackElapsed || 'Just now'}</span>
+  const seconds = elapsedMs === undefined ? undefined : Math.max(0, Math.floor(elapsedMs / 1000))
+  const label = finished ? 'Done' : 'Stopped'
+  return <span>{seconds === undefined ? fallbackElapsed || label : `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')} · ${label.toLowerCase()}`}</span>
 }
 
 /**
@@ -747,12 +753,14 @@ function MinimalTaskCard({
   const [refineFeedback, setRefineFeedback] = useState('')
   const [isReopenOpen, setIsReopenOpen] = useState(false)
   const [reopenFeedback, setReopenFeedback] = useState('')
-  const isRunning = task.status === 'running' || task.status === 'in_progress'
+  const isRunning = task.executionActive ?? (task.status === 'running' || task.status === 'in_progress')
   const isNeedsReview = task.status === 'needs_review'
   const isCompleted = task.status === 'completed'
   const isFailed = task.status === 'failed'
   const isRejected = task.status === 'rejected'
-  const hasUnintegrated = (task.unintegratedCommits ?? 0) > 0
+  const gitVerified = ['clean', 'dirty', 'diverged'].includes(task.gitStatus || '')
+  const hasUnintegrated = gitVerified && !task.isIntegrated && (task.unintegratedCommits ?? 0) > 0
+  const canIntegrate = hasUnintegrated && task.gitStatus === 'clean' && !task.isDirty && !isRunning && ['needs_review', 'completed', 'failed', 'blocked'].includes(task.status) && Boolean(task.baseBranch && task.worktreeBranch && task.sessionId)
 
   const isWorker = Boolean(task.workerId?.trim() || task.worker_id?.trim())
   const workerTargetId = (task.workerId?.trim() || task.worker_id?.trim()) || ''
@@ -912,8 +920,8 @@ function MinimalTaskCard({
       data-task-state={task.status}
       className={`swarm-task-card relative flex flex-col transition-all cursor-pointer ${isSelected ? 'swarm-task-card-selected' : ''}`}
     >
-      {onToggleMarked && <label className="relative z-10 flex items-center gap-1.5 px-3 pt-2 text-[11px] text-slate-300" onClick={(e) => e.stopPropagation()}>
-        <input type="checkbox" checked={Boolean(isMarked)} onChange={onToggleMarked} aria-label={`Select task ${task.title}`} /> Select for management
+      {onToggleMarked && <label className="swarm-task-select" onClick={(e) => e.stopPropagation()}>
+        <input type="checkbox" checked={Boolean(isMarked)} onChange={onToggleMarked} aria-label={`Select task ${task.title}`} /> <span className="sr-only">Select for management</span>
       </label>}
       <TaskCardSummary task={task} onPreview={onPreviewDeliverable} />
       <div className="swarm-task-actions">
@@ -1064,18 +1072,19 @@ function MinimalTaskCard({
                   : 'bg-slate-500'
               }`}
             />
-            <span>{task.status === 'in_progress' ? 'in progress' : task.status.replace('_', ' ')}</span>
+            <span>{!isRunning && taskSessionId && (task.status === 'running' || task.status === 'in_progress') ? 'Awaiting continuation' : task.status.replace(/_/g, ' ')}</span>
           </div>
 
-          <span className="font-mono text-[10px] text-slate-400 flex items-center gap-1">
+          {(isRunning || task.elapsedMs !== undefined || task.sessionId) && <span className="font-mono text-[10px] text-slate-400 flex items-center gap-1">
             {isRunning && <Timer size={10} className="text-blue-400 animate-spin" />}
             <TaskElapsedTimer
               isRunning={isRunning}
               startedAt={task.startedAt}
-              createdAt={task.createdAt}
               fallbackElapsed={task.elapsed}
+              elapsedMs={task.elapsedMs}
+              finished={isNeedsReview || isCompleted}
             />
-          </span>
+          </span>}
 
           {onOpenChat && (
             <button
@@ -1089,7 +1098,7 @@ function MinimalTaskCard({
               data-testid="task-card-chat-btn"
             >
               <MessageSquare size={11} />
-              <span>Chat</span>
+              <span>{taskSessionId ? 'Open session' : 'Discuss'}</span>
             </button>
           )}
 
@@ -1115,7 +1124,12 @@ function MinimalTaskCard({
             </button>
           )}
 
-          {isNeedsReview && hasUnintegrated && onIntegrate && (
+          {!isMediaTask && task.worktreeBranch && projectId && !isRunning && (
+            <button type="button" className="flex items-center gap-1 text-[11px] text-slate-400"
+              onClick={(event) => { event.stopPropagation(); desktopProjects.invalidate(projectId) }}
+              title="Refresh verified worktree state"><RefreshCw size={12} /><span>Refresh Git</span></button>
+          )}
+          {canIntegrate && onIntegrate && (
             <button
               type="button"
               disabled={isIntegrating || !task.baseBranch}
@@ -1127,11 +1141,11 @@ function MinimalTaskCard({
               title={task.baseBranch ? `Integrate changes into ${task.baseBranch}` : 'Target branch unavailable; refresh task lineage'}
             >
               <GitPullRequest size={10} />
-              <span>Integrate</span>
+              <span>{isIntegrating ? 'Integrating…' : `Integrate into ${task.baseBranch}`}</span>
             </button>
           )}
 
-          {isNeedsReview && !hasUnintegrated && onComplete && (
+          {isNeedsReview && (isMediaTask || (!task.worktreeBranch && !task.worktreeName) || (gitVerified && !task.isDirty && (task.unintegratedCommits ?? 0) === 0)) && onComplete && (
             <button
               type="button"
               onClick={(e) => {
@@ -1149,6 +1163,9 @@ function MinimalTaskCard({
       </div>
 
       </div>
+      {taskError && (!isPendingApproval || !expanded) && <div role="alert" className="text-xs text-rose-300">{taskError}</div>}
+      {!expanded && (task.lastError || task.routerAlert || (task.status === 'blocked' && task.actionNeeded)) && <div className="text-xs text-amber-300 line-clamp-2">{task.lastError || task.routerAlert || task.actionNeeded}</div>}
+      {expanded && <div className="swarm-task-expanded">
       {/* ROUTER AGENT FAILURE ALERT BANNER */}
       {(task.routerAlert || (task as any).router_alert) && (
         <div className="flex items-start gap-2.5 p-3 rounded-lg bg-amber-950/40 border border-amber-500/60 text-amber-200 text-xs">
@@ -1496,7 +1513,7 @@ function MinimalTaskCard({
               <span>•</span>
               <span className="text-emerald-400 font-semibold">Verified Local Tests</span>
               <span>•</span>
-              <span className="text-slate-400">Target Integration: <strong className="text-white">{task.baseBranch || 'main'}</strong></span>
+              <span className="text-slate-400">Target Integration: <strong className="text-white">{task.baseBranch || 'target unavailable'}</strong></span>
             </div>
           )}
           {/* Plan Spec - for big features / plan mode tasks */}
@@ -1940,11 +1957,12 @@ function MinimalTaskCard({
         </div>
       )}
 
+      {!isPendingApproval && !hasStructuredPlan && task.fullPlanMarkdown && <div className="text-xs whitespace-pre-wrap">{task.fullPlanMarkdown}</div>}
       {/* 2b. IN PROGRESS / RUNNING LIVE EXECUTION SECTION */}
-      {isRunning && (
+      {!isPendingApproval && (isRunning || hasStructuredPlan || task.liveAssistantText || task.toolActivitySummary) && (
         <div className="flex flex-col p-3 rounded-lg bg-[#070d1e]/90 border border-blue-500/40 space-y-2.5 text-xs">
-          {/* Current Focus Banner */}
-          <div className="flex items-center justify-between p-2 rounded-lg bg-blue-950/50 border border-blue-500/30 gap-2">
+          {/* Current focus is live only while the session is executing. */}
+          {isRunning && <div className="flex items-center justify-between p-2 rounded-lg bg-blue-950/50 border border-blue-500/30 gap-2">
             <div className="flex items-center gap-2 min-w-0">
               <span className="flex h-2 w-2 relative flex-shrink-0">
                 <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
@@ -1971,7 +1989,7 @@ function MinimalTaskCard({
                 <span>{task.planProgressPercent}%</span>
               </div>
             )}
-          </div>
+          </div>}
 
           {/* Agent's Created Execution Plan with Subtasks Checklist OR Compact Task Program Multi-Coder Grid */}
           {expanded && (
@@ -2112,7 +2130,7 @@ function MinimalTaskCard({
                 })}
               </div>
             </div>
-          ) : task.activePlanCheckpoints && task.activePlanCheckpoints.length > 0 ? (
+          ) : planCheckpointsToRender.length > 0 ? (
             <div className="flex flex-col p-2.5 rounded-lg bg-slate-900/80 border border-slate-800 space-y-2">
               <div className="flex items-center justify-between text-[10px] font-mono text-slate-400">
                 <span className="font-bold uppercase tracking-wider text-slate-300 flex items-center gap-1.5">
@@ -2134,7 +2152,7 @@ function MinimalTaskCard({
                 </div>
               )}
               <div className="space-y-1.5 max-h-44 overflow-y-auto font-mono text-[10px] pr-1">
-                {task.activePlanCheckpoints.map((cp) => (
+                {planCheckpointsToRender.map((cp: RunningTaskPlanCheckpoint) => (
                   <div key={cp.id} className="space-y-1">
                     <div className="flex items-center justify-between font-bold text-slate-200">
                       <div className="flex items-center gap-1.5">
@@ -2177,8 +2195,8 @@ function MinimalTaskCard({
             <div className="flex flex-col p-2.5 rounded-lg bg-[#050811] border border-blue-500/25 space-y-1.5 font-mono text-[10px]">
               <div className="flex items-center justify-between text-slate-400">
                 <span className="flex items-center gap-1.5 text-blue-400 font-bold uppercase tracking-wider text-[9px]">
-                  <Radio size={10} className="animate-pulse text-emerald-400" />
-                  <span>Live Streaming Activity</span>
+                  <Radio size={10} className={isRunning ? 'animate-pulse text-emerald-400' : 'text-slate-400'} />
+                  <span>{isRunning ? 'Live Streaming Activity' : 'Last activity'}</span>
                 </span>
                 {task.toolActivitySummary && (
                   <span className="text-slate-400 truncate max-w-[200px]" title={task.toolActivitySummary}>
@@ -2189,7 +2207,7 @@ function MinimalTaskCard({
               {task.liveAssistantText && (
                 <div className="p-2 rounded bg-black/70 border border-slate-900 text-slate-300 whitespace-pre-wrap leading-relaxed max-h-24 overflow-y-auto">
                   {task.liveAssistantText.slice(-300)}
-                  <span className="inline-block w-1.5 h-3 bg-blue-400 ml-0.5 animate-pulse" />
+                  {isRunning && <span className="inline-block w-1.5 h-3 bg-blue-400 ml-0.5 animate-pulse" />}
                 </div>
               )}
             </div>
@@ -2246,35 +2264,7 @@ function MinimalTaskCard({
               )}
             </div>
 
-            <div className="flex items-center gap-2">
-              {onComplete && !hasUnintegrated && (
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    onComplete()
-                  }}
-                  className="flex items-center gap-1.5 px-3 py-1 rounded bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow transition-all active:scale-95"
-                >
-                  <Check size={11} />
-                  <span>Accept & Complete</span>
-                </button>
-              )}
-              {hasUnintegrated && onIntegrate && (
-                <button
-                  type="button"
-                  disabled={isIntegrating || !task.baseBranch}
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    onIntegrate()
-                  }}
-                  className="flex items-center gap-1.5 px-3 py-1 rounded bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs shadow transition-all active:scale-95"
-                >
-                  <GitPullRequest size={11} />
-                  <span>{isIntegrating ? 'Integrating…' : task.baseBranch ? `Integrate into ${task.baseBranch}` : 'Target unavailable'}</span>
-                </button>
-              )}
-            </div>
+
           </div>
 
           {/* Inline Reopen Feedback Input */}
@@ -2389,46 +2379,21 @@ function MinimalTaskCard({
             <AlertTriangle size={12} className="text-rose-400 flex-shrink-0" />
             <span className="font-bold text-rose-400 flex-shrink-0">Out of Sync Warning:</span>
             <span className="truncate">
-              {task.syncWarning || `${task.baseBranch || 'main'} branch could be out of sync (${task.behindCommits} commits behind). Rebase or synchronization recommended.`}
+              {task.syncWarning || `${task.baseBranch || 'target unavailable'} branch could be out of sync (${task.behindCommits} commits behind). Rebase or synchronization recommended.`}
             </span>
           </div>
         </div>
       )}
 
-      {/* 4. Action Needed / Not Integrated Banner (if unintegrated commits ready to land) */}
-      {!isPendingApproval && !isMediaTask && hasUnintegrated && (
-        <div className="flex items-center justify-between p-2 rounded-lg bg-amber-950/25 border border-amber-500/40 text-amber-200 text-[11px] gap-2">
-          <div className="flex items-center gap-2 min-w-0">
-            <GitPullRequest size={12} className="text-amber-400 flex-shrink-0" />
-            <span className="font-bold text-amber-400 flex-shrink-0">Not Integrated:</span>
-            <span className="truncate">
-              {task.unintegratedCommits} commit(s) on {task.worktreeBranch || 'worktree'} ready to integrate into {task.baseBranch || 'an unavailable target'}.
-            </span>
-          </div>
-          {onIntegrate && (
-            <button
-              type="button"
-              disabled={isIntegrating || !task.baseBranch}
-              onClick={(e) => {
-                e.stopPropagation()
-                onIntegrate()
-              }}
-              className="flex-shrink-0 px-2.5 py-0.5 rounded bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-[10px] transition-colors"
-            >
-              {isIntegrating ? 'Integrating…' : task.baseBranch ? `Integrate into ${task.baseBranch}` : 'Target unavailable'}
-            </button>
-          )}
-        </div>
-      )}
 
       {/* 5. Already Integrated Banner */}
-      {!isPendingApproval && !isMediaTask && task.isIntegrated && (
+      {!isPendingApproval && !isMediaTask && gitVerified && task.isIntegrated && (
         <div className="flex items-center justify-between p-2 rounded-lg bg-emerald-950/20 border border-emerald-500/30 text-emerald-200 text-[11px] gap-2">
           <div className="flex items-center gap-2 min-w-0">
             <CheckCircle2 size={12} className="text-emerald-400 flex-shrink-0" />
             <span className="font-bold text-emerald-400 flex-shrink-0">Integrated:</span>
             <span className="truncate">
-              Changes on {task.worktreeBranch || 'worktree'} have been successfully integrated into {task.baseBranch || 'main'}.
+              Changes on {task.worktreeBranch || 'worktree'} have been successfully integrated into {task.baseBranch || 'target unavailable'}.
             </span>
           </div>
           <div className="flex items-center gap-2 flex-shrink-0">
@@ -2669,6 +2634,7 @@ function MinimalTaskCard({
         </div>
       )}
 
+      </div>}
       {/* 2g. Expand / Collapse Deep Details Toggle Bar */}
       <div className="pt-1">
         <button
@@ -2683,7 +2649,7 @@ function MinimalTaskCard({
         >
           <span className="flex items-center gap-1.5 font-semibold">
             {expanded ? <ChevronUp size={11} className="text-blue-400" /> : <ChevronDown size={11} className="text-blue-400" />}
-            <span>{expanded ? 'Hide Deep Plan, Subtasks & Activity Logs' : 'Expand Full Plan, Subtasks & Activity Logs'}</span>
+            <span>{expanded ? 'Less detail' : 'Plan & details'}</span>
           </span>
           <span className="text-[9px] text-slate-500 font-normal">
             {task.activePlanCheckpoints?.length

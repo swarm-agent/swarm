@@ -249,6 +249,8 @@ export interface TaskSessionStateItem {
   sessionId: string
   title?: string
   role?: string
+  model?: string
+  provider?: string
   status: 'running' | 'needs_review' | 'completed' | 'failed' | 'queued' | 'blocked' | 'paused' | 'unknown'
   lastError?: string
 }
@@ -304,6 +306,8 @@ export interface RunningTask {
   createdAt?: number
   startedAt?: number
   elapsedMs?: number
+  /** Actual execution, independent of an unfinished task/plan. */
+  executionActive?: boolean
 
   // Live session sync, plan & streaming fields
   currentFocus?: string

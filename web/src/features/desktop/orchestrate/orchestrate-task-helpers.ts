@@ -821,7 +821,7 @@ export function aggregateTaskLiveState(
   const primaryRecord = primaryData?.sessionRecord
   const primarySess = primaryRecord?.kind === 'full' ? primaryRecord.session : undefined
   const primaryView = primaryData?.view
-  const primaryIntent = primaryData?.intent
+  const primaryIntent = primaryData?.intent || primaryView?.current_run_state
   const primaryLiveRun = primaryData?.liveRun
   const primaryPlanRecord = primaryData?.planRecord as any
   const primaryPlanDoc = selectTaskPlanDocument(task, primaryPlanRecord)
@@ -870,8 +870,8 @@ export function aggregateTaskLiveState(
     const sData = liveTaskSessionsData[sid]
     const sRecord = sData?.sessionRecord
     const sSess = sRecord?.kind === 'full' ? sRecord.session : undefined
-    const sIntent = sData?.intent
     const sView = sData?.view
+    const sIntent = sData?.intent || sView?.current_run_state
     const sLifecycle = sSess?.lifecycle as any
     const sPlan = sData?.planRecord as any
 
@@ -990,7 +990,9 @@ export function aggregateTaskLiveState(
     return {
       sessionId: sid,
       title: jobDef?.title || matchingJob?.job_id || sSess?.title || `Session ${sid.slice(0, 8)}`,
-      role: (sSess?.metadata?.role as string) || (matchingJob ? 'coder' : undefined),
+      role: sView?.agentic_settings?.resolved_agent_name || sView?.agentic_settings?.agent_name || jobDef?.agent_type || (sSess?.metadata?.role as string),
+      model: sView?.agentic_settings?.effective_preference?.model,
+      provider: sView?.agentic_settings?.effective_preference?.provider,
       status: itemStatus,
       lastError: matchingJob?.blocker?.message || sIntent?.blocked_reason || sLifecycle?.last_error || undefined,
     }
@@ -1050,7 +1052,7 @@ export function aggregateTaskLiveState(
   const hasReviewRequired = isPrimaryReview || reviewSessions > 0
   const isAnyFailed = isPrimaryFailed || failedSessions > 0
 
-  if (task.status === 'completed' || task.isIntegrated) {
+  if (task.status === 'completed') {
     status = 'completed'
   } else if (task.status === 'rejected') {
     status = 'rejected'
@@ -1215,12 +1217,20 @@ export function aggregateTaskLiveState(
     planProgressPercent = task.planProgressPercent
   }
 
+  const timingIntent = activeData?.intent || activeData?.view?.current_run_state || primaryIntent
   const startedAt =
-    primaryIntent?.started_at ||
+    timingIntent?.started_at ||
     primaryLifecycle?.started_at ||
-    task.createdAt ||
-    (primarySess ? primarySess.created_at : undefined)
-  const elapsedMs = primaryIntent?.duration_ms || (startedAt ? Date.now() - startedAt : 0)
+    task.startedAt
+  // An unfinished plan or lagging program is not evidence of an executing run.
+  const hydrated = associatedSids.some((sid) => Boolean(liveTaskSessionsData[sid]?.view || liveTaskSessionsData[sid]?.intent || liveTaskSessionsData[sid]?.sessionRecord))
+  const executionActive = ['running', 'in_progress', 'planning'].includes(status) &&
+    (hydrated ? isPrimaryActive || runningSessions > 0 : associatedSids.length === 0 && ['image', 'video', 'audio', 'sound'].includes(task.agentType))
+  const finishedAt = timingIntent?.completed_at
+  const elapsedMs = executionActive
+    ? (startedAt ? Math.max(0, Date.now() - startedAt) : task.elapsedMs)
+    : typeof timingIntent?.duration_ms === 'number' ? timingIntent.duration_ms
+    : finishedAt && startedAt ? Math.max(0, finishedAt - startedAt) : task.elapsedMs
 
   return {
     ...task,
@@ -1250,6 +1260,7 @@ export function aggregateTaskLiveState(
         : task.subtasksCount,
     startedAt,
     elapsedMs,
+    executionActive,
     sessionSummary,
     associatedSessionIds: associatedSids,
   }

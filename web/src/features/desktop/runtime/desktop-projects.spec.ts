@@ -614,3 +614,39 @@ test('Requirement 8: reduceDesktopProjectsState preserves reference identity whe
   assert.equal(afterMatchingInvalidate['proj-1'].generation, 2)
   assert.equal(afterMatchingInvalidate['proj-1'].stale, true)
 })
+
+// Requirement: task-card Git actions use inspected single-task state, never stale
+// collection hints. Boundary: DesktopProjectsRuntime and the canonical project reducer.
+// This hermetic runtime test covers inspection failure and irrelevant-event rejection.
+test('settled cards inspect Git and invalidate only relevant terminal/worktree events', async () => {
+  let state: DesktopProjectsState = {}
+  let inspections = 0
+  let fail = false
+  const row = { id: 'task', session_id: 'session', status: 'needs_review', worktree_branch: 'agent/change', git_status: 'stale', is_integrated: false }
+  const runtime = new DesktopProjectsRuntime({
+    getState: () => state,
+    dispatch: action => { state = reduceDesktopProjectsState(state, action) },
+    fetchTasks: async () => ({ tasks: [row] }),
+    fetchMedia: async () => ({ media: [] }),
+    fetchTask: async () => {
+      inspections++
+      if (fail) throw new Error('Git unavailable')
+      return { task: { ...row, git_status: 'clean', is_integrated: true } }
+    },
+  })
+  const lease = runtime.acquire('project')
+  await lease.ready
+  assert.equal(state.project.tasks[0].isIntegrated, true)
+  assert.equal(state.project.tasks[0].gitStatus, 'clean')
+  runtime.acceptFrame({ kind: 'event', event: { session_id: 'unrelated', event_type: 'session.run.completed' } })
+  runtime.acceptFrame({ kind: 'event', event: { session_id: 'session', event_type: 'session.usage.updated' } })
+  assert.equal(inspections, 1)
+  fail = true
+  runtime.acceptFrame({ kind: 'event', event: { session_id: 'session', event_type: 'session.worktree.promoted' } })
+  assert.equal(state.project.tasks[0].gitStatus, 'stale')
+  await runtime.refresh('project')
+  assert.equal(inspections, 2)
+  assert.equal(state.project.tasks[0].gitStatus, 'stale')
+  assert.equal(state.project.tasks[0].syncWarning, 'Git unavailable')
+  lease.release()
+})
