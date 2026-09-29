@@ -39,6 +39,9 @@ func (s *Server) reconcileProjectTaskRunLifecycle(job sessionV3ExecutorJob, stat
 	}
 	projectID := sessionsV3MetadataString(session.Metadata, "project_id")
 	taskID := sessionsV3MetadataString(session.Metadata, "task_id")
+	if taskID == "" {
+		taskID = sessionsV3MetadataString(session.Metadata, "project_task_id")
+	}
 	if projectID == "" || taskID == "" {
 		return nil
 	}
@@ -64,7 +67,7 @@ func (s *Server) reconcileProjectTaskRunLifecycle(job sessionV3ExecutorJob, stat
 	if task.Agent == "image" || task.Agent == "video" || task.Agent == "sound" || task.Agent == "audio" {
 		return nil
 	}
-	if task.IsIntegrated || task.Status == "completed" || task.Status == "pending_approval" || task.Status == "planning" || task.Status == "queued" {
+	if task.IsIntegrated || task.Status == "completed" || task.Status == "pending_approval" || task.Status == "planning" || (task.Status == "queued" && status == sessionruntime.RunIntentCompleted) {
 		return nil
 	}
 

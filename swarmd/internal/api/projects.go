@@ -303,8 +303,8 @@ func syncTaskSessionState(task *pebblestore.ProjectTaskRecord, db *pebblestore.S
 	if task == nil || db == nil {
 		return
 	}
-	// Do not override tasks awaiting user approval, planning, or queued
-	if task.Status == "pending_approval" || task.Status == "planning" || task.Status == "queued" {
+	// Do not override tasks awaiting user approval, planning, or queued (unless worker task with active/terminal run)
+	if task.Status == "pending_approval" || task.Status == "planning" || (task.Status == "queued" && task.WorkerID == "") {
 		return
 	}
 
@@ -1963,6 +1963,21 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			if tasks == nil {
 				tasks = []pebblestore.ProjectTaskRecord{}
 			}
+			workerOnly := r.URL.Query().Get("worker_only") == "true" || r.URL.Query().Get("workers_only") == "true" || r.URL.Query().Get("filter") == "workers"
+			targetWorkerID := strings.TrimSpace(r.URL.Query().Get("worker_id"))
+			if workerOnly || targetWorkerID != "" {
+				filtered := make([]pebblestore.ProjectTaskRecord, 0, len(tasks))
+				for _, t := range tasks {
+					if t.WorkerID == "" && t.WorkerName == "" {
+						continue
+					}
+					if targetWorkerID != "" && t.WorkerID != targetWorkerID {
+						continue
+					}
+					filtered = append(filtered, t)
+				}
+				tasks = filtered
+			}
 			for i := range tasks {
 				if tasks[i].WorktreeBranch == "" || tasks[i].WorktreeBranch == "main" || tasks[i].WorktreeBranch == "dev" || tasks[i].WorktreeBranch == "master" {
 					tasks[i].WorktreeBranch, tasks[i].WorktreeName = pebblestore.MakeWorktreeBranch(tasks[i].Title, tasks[i].Description)
@@ -2014,7 +2029,10 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				Description         string                               `json:"description,omitempty"`
 				Status              string                               `json:"status,omitempty"`
 				Agent               string                               `json:"agent,omitempty"`
+				WorkerID            string                               `json:"worker_id,omitempty"`
 				WorkerName          string                               `json:"worker_name,omitempty"`
+				WorkerRunID         string                               `json:"worker_run_id,omitempty"`
+				AutomationID        string                               `json:"automation_id,omitempty"`
 				OutcomeType         string                               `json:"outcome_type,omitempty"`
 				Operation           string                               `json:"operation,omitempty"`
 				WorkspacePath       string                               `json:"workspace_path,omitempty"`
@@ -2627,7 +2645,10 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				Description:         description,
 				Status:              taskStatus,
 				Agent:               agentName,
+				WorkerID:            strings.TrimSpace(req.WorkerID),
 				WorkerName:          workerName,
+				WorkerRunID:         strings.TrimSpace(req.WorkerRunID),
+				AutomationID:        strings.TrimSpace(req.AutomationID),
 				OutcomeType:         outcomeType,
 				Operation:           reqOp,
 				WorkspacePath:       strings.TrimSpace(req.WorkspacePath),
@@ -2944,8 +2965,17 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				if v, ok := patch["agent"].(string); ok {
 					t.Agent = strings.TrimSpace(v)
 				}
+				if v, ok := patch["worker_id"].(string); ok {
+					t.WorkerID = strings.TrimSpace(v)
+				}
 				if v, ok := patch["worker_name"].(string); ok {
 					t.WorkerName = strings.TrimSpace(v)
+				}
+				if v, ok := patch["worker_run_id"].(string); ok {
+					t.WorkerRunID = strings.TrimSpace(v)
+				}
+				if v, ok := patch["automation_id"].(string); ok {
+					t.AutomationID = strings.TrimSpace(v)
 				}
 				if v, ok := patch["current_stage_index"].(float64); ok {
 					t.CurrentStageIndex = int(v)

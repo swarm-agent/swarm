@@ -307,7 +307,10 @@ type ProjectTaskRecord struct {
 	Status              string                   `json:"status"` // "queued" | "in_progress" | "needs_review" | "completed" | "failed" | "pending_approval" | "planning"
 	SessionID           string                   `json:"session_id,omitempty"`
 	Agent               string                   `json:"agent,omitempty"`
+	WorkerID            string                   `json:"worker_id,omitempty"`
 	WorkerName          string                   `json:"worker_name,omitempty"`
+	WorkerRunID         string                   `json:"worker_run_id,omitempty"`
+	AutomationID        string                   `json:"automation_id,omitempty"`
 	OutcomeType         string                   `json:"outcome_type,omitempty"` // "code_pr" | "media_bundle" | "bug_patch" | "audit_report" | "video_story"
 	WorkspacePath       string                   `json:"workspace_path,omitempty"`
 	WorktreeBranch      string                   `json:"worktree_branch,omitempty"`
@@ -378,6 +381,10 @@ func (t *ProjectTaskRecord) Validate() error {
 	if t.Revision <= 0 {
 		t.Revision = 1
 	}
+	t.WorkerID = strings.TrimSpace(t.WorkerID)
+	t.WorkerName = strings.TrimSpace(t.WorkerName)
+	t.WorkerRunID = strings.TrimSpace(t.WorkerRunID)
+	t.AutomationID = strings.TrimSpace(t.AutomationID)
 	if t.Tier == "" {
 		t.Tier = "direct"
 	}

@@ -154,6 +154,17 @@ func setupWorkerExecutionFixture(t *testing.T, enqueue func(identity.Principal, 
 	if err != nil {
 		t.Fatal(err)
 	}
+	proj := &store.ProjectRecord{
+		ID:        "proj_fixture",
+		AccountID: "account",
+		Name:      "Fixture Project",
+		Workspaces: []store.ProjectWorkspaceRef{
+			{WorkspaceID: entry.WorkspaceID, Path: repo, Name: "fixture"},
+		},
+	}
+	if err := repository.PutProject("account", proj); err != nil {
+		t.Fatal(err)
+	}
 	agents := agent.NewService(store.NewAgentStore(db), nil)
 	if err = agents.EnsureDefaults(); err != nil {
 		t.Fatal(err)

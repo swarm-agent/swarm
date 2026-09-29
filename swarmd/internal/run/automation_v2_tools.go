@@ -423,6 +423,17 @@ func (s *Service) executeCreateOrProposePendingWorker(id string, args map[string
 		if metaRaw, ok := args["metadata"].(map[string]any); ok {
 			updateReq.Metadata = metaRaw
 		}
+		if updateReq.Metadata != nil && mapString(updateReq.Metadata, "project_id") == "" {
+			if pid := strings.TrimSpace(mapString(args, "project_id")); pid != "" {
+				updateReq.Metadata["project_id"] = pid
+			} else if pid := strings.TrimSpace(mapString(existing.Metadata, "project_id")); pid != "" {
+				updateReq.Metadata["project_id"] = pid
+			} else if current.Metadata != nil {
+				if pid := strings.TrimSpace(mapString(current.Metadata, "project_id")); pid != "" {
+					updateReq.Metadata["project_id"] = pid
+				}
+			}
+		}
 		updated, updErr := s.sessions.UpdateWorker(current.AccountScopeID, current.UserID, workerID, existing.Revision, updateReq)
 		if updErr != nil {
 			return "", updErr
@@ -443,6 +454,21 @@ func (s *Service) executeCreateOrProposePendingWorker(id string, args map[string
 	}
 	if metaRaw, ok := args["metadata"].(map[string]any); ok {
 		createReq.Metadata = metaRaw
+	}
+	if createReq.Metadata == nil {
+		createReq.Metadata = make(map[string]any)
+	}
+	if mapString(createReq.Metadata, "project_id") == "" {
+		if pid := strings.TrimSpace(mapString(args, "project_id")); pid != "" {
+			createReq.Metadata["project_id"] = pid
+		} else if current.Metadata != nil {
+			if pid := strings.TrimSpace(mapString(current.Metadata, "project_id")); pid != "" {
+				createReq.Metadata["project_id"] = pid
+			}
+		}
+	}
+	if mapString(createReq.Metadata, "source_session_id") == "" && current.ID != "" {
+		createReq.Metadata["source_session_id"] = current.ID
 	}
 	w, createErr := s.sessions.CreateWorker(context.Background(), current.AccountScopeID, current.UserID, createReq)
 	if createErr != nil {

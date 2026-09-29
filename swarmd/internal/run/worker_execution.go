@@ -307,6 +307,70 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	proj, err := s.resolveWorkerProject(r, w)
+	if err != nil {
+		return err
+	}
+	taskID := "task_" + r.ID
+	taskRecord, taskFound, err := h.runs.sessions.Store().GetProjectTask(r.AccountScopeID, proj.ID, taskID)
+	if err != nil {
+		return err
+	}
+	taskTitle := doc.Title
+	if strings.TrimSpace(taskTitle) == "" {
+		taskTitle = w.Name
+	}
+	taskDesc := firstNonEmptyString(doc.Info.Goal, w.Description, taskTitle)
+	if !taskFound {
+		taskRecord = &store.ProjectTaskRecord{
+			ID:           taskID,
+			ProjectID:    proj.ID,
+			AccountID:    r.AccountScopeID,
+			Title:        taskTitle,
+			Description:  taskDesc,
+			Status:       "queued",
+			SessionID:    r.SessionID,
+			Agent:        "swarm",
+			WorkerID:     w.ID,
+			WorkerName:   w.Name,
+			WorkerRunID:  r.ID,
+			AutomationID: r.AutomationID,
+			Tier:         "complex",
+			OutcomeType:  "general",
+			PlanBinding:  &store.ProjectTaskPlanBinding{PlanID: r.ID, PlanTitle: taskTitle},
+			CreatedAt:    r.CreatedAt,
+			UpdatedAt:    r.CreatedAt,
+		}
+		if err := h.runs.sessions.Store().PutProjectTask(r.AccountScopeID, taskRecord); err != nil {
+			return err
+		}
+		_, _ = h.runs.sessions.Store().UpdateProject(r.AccountScopeID, proj.ID, func(p *store.ProjectRecord) error {
+			for _, tid := range p.ActiveTaskIDs {
+				if tid == taskID {
+					return nil
+				}
+			}
+			p.ActiveTaskIDs = append(p.ActiveTaskIDs, taskID)
+			return nil
+		})
+	} else {
+		taskRecord, err = h.runs.sessions.Store().UpdateProjectTask(r.AccountScopeID, proj.ID, taskID, func(t *store.ProjectTaskRecord) error {
+			t.WorkerID = w.ID
+			t.WorkerName = w.Name
+			t.WorkerRunID = r.ID
+			t.AutomationID = r.AutomationID
+			if t.SessionID == "" {
+				t.SessionID = r.SessionID
+			}
+			if t.PlanBinding == nil {
+				t.PlanBinding = &store.ProjectTaskPlanBinding{PlanID: r.ID, PlanTitle: taskTitle}
+			}
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+	}
 	snapshot, found, err := h.runs.sessions.GetSession(r.SessionID)
 	if err != nil {
 		return err
@@ -368,10 +432,23 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 		meta["swarm_v3_worktree_base_commit"] = allocation.BaseCommit
 		meta["swarm_v3_source_workspace_path"] = canonical.SourceWorkspacePath
 		meta["swarm_v3_runtime_workspace_path"] = allocation.WorkspacePath
+		meta["project_id"] = proj.ID
+		meta["task_id"] = taskID
+		meta["project_task_id"] = taskID
+		meta["worker_run_id"] = r.ID
+		meta["automation_id"] = r.AutomationID
 		snapshot = store.SessionSnapshot{ID: r.SessionID, UserID: r.UserID, AccountScopeID: r.AccountScopeID, WorkspacePath: canonical.SourceWorkspacePath, WorkspaceName: canonical.SourceWorkspaceName, Title: doc.Title, Mode: sessions.ModePlan, Preference: pref, ModelProfile: model, Metadata: meta, WorkspaceGrants: grants, WorkspaceUsage: store.WorkspaceUsageFromGrants(grants), WorktreeEnabled: true, WorktreeRootPath: allocation.WorkspacePath, WorktreeBaseBranch: allocation.BaseBranch, WorktreeBranch: allocation.BranchName, CreatedAt: r.CreatedAt, UpdatedAt: r.CreatedAt}
 		if err = h.trees.ValidateSessionRepositoryLaneForRead(snapshot.WorkspacePath, snapshot.WorktreeRootPath, r.SessionID, snapshot.WorktreeBranch); err != nil {
 			return err
 		}
+		_, _ = h.runs.sessions.Store().UpdateProjectTask(r.AccountScopeID, proj.ID, taskID, func(t *store.ProjectTaskRecord) error {
+			t.WorkspacePath = allocation.WorkspacePath
+			t.WorktreeBranch = allocation.BranchName
+			t.WorktreeName = allocation.BranchName
+			t.BaseBranch = allocation.BaseBranch
+			t.BaseCommit = allocation.BaseCommit
+			return nil
+		})
 		request := "worker-create:" + r.ID
 		_, err = h.apply(sessions.SessionMutationInput{SessionID: r.SessionID, UserID: r.UserID, AccountScopeID: r.AccountScopeID, Kind: sessions.SessionMutationCreateSession, ClientRequestID: request, IdempotencyKey: request, PayloadHash: request, RequestHash: request, Session: &snapshot, WorktreeAdmission: &store.WorktreeAdmissionEvidence{Kind: "allocated", Path: snapshot.WorktreeRootPath, SourcePath: snapshot.WorkspacePath, OwnerSessionID: r.SessionID, Branch: snapshot.WorktreeBranch}, NowUnixMs: r.CreatedAt})
 		if err != nil {
@@ -387,6 +464,48 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 	}
 	if snapshot.AccountScopeID != r.AccountScopeID || snapshot.UserID != r.UserID || snapshot.Metadata["worker_execution_run_id"] != r.ID || snapshot.Metadata["worker_id"] != r.WorkerID || !snapshot.WorktreeEnabled {
 		return store.ErrWorkerConflict
+	}
+	if snapshot.WorktreeEnabled {
+		_, _ = h.runs.sessions.Store().UpdateProjectTask(r.AccountScopeID, proj.ID, taskID, func(t *store.ProjectTaskRecord) error {
+			if t.WorkspacePath == "" {
+				t.WorkspacePath = snapshot.WorktreeRootPath
+			}
+			if t.WorktreeBranch == "" {
+				t.WorktreeBranch = snapshot.WorktreeBranch
+			}
+			if t.WorktreeName == "" {
+				t.WorktreeName = snapshot.WorktreeBranch
+			}
+			if t.BaseBranch == "" {
+				t.BaseBranch = snapshot.WorktreeBaseBranch
+			}
+			return nil
+		})
+	}
+	if snapshot.Metadata == nil || snapshot.Metadata["project_id"] != proj.ID || snapshot.Metadata["task_id"] != taskID {
+		newMeta := snapshot.Metadata
+		if newMeta == nil {
+			newMeta = make(map[string]any)
+		}
+		newMeta["project_id"] = proj.ID
+		newMeta["task_id"] = taskID
+		newMeta["project_task_id"] = taskID
+		newMeta["worker_run_id"] = r.ID
+		newMeta["automation_id"] = r.AutomationID
+		clientReq := "worker-meta:" + r.ID
+		_, _ = h.apply(sessions.SessionMutationInput{
+			SessionID:       r.SessionID,
+			UserID:          r.UserID,
+			AccountScopeID:  r.AccountScopeID,
+			Kind:            sessions.SessionMutationUpdateMetadata,
+			ClientRequestID: clientReq,
+			IdempotencyKey:  clientReq,
+			PayloadHash:     clientReq,
+			RequestHash:     clientReq,
+			EventType:       "session.metadata.updated",
+			Metadata:        newMeta,
+			NowUnixMs:       time.Now().UnixMilli(),
+		})
 	}
 	if err := h.runs.validateWorkerExecution(snapshot); err != nil {
 		return err
@@ -464,7 +583,16 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 	r.Status = "running"
 	r.StartedAt = time.Now().UnixMilli()
 	_, err = h.runs.sessions.RecordWorkerRun(r.AccountScopeID, r)
-	return err
+	if err != nil {
+		return err
+	}
+	_, _ = h.runs.sessions.Store().UpdateProjectTask(r.AccountScopeID, proj.ID, taskID, func(t *store.ProjectTaskRecord) error {
+		if t.Status == "queued" {
+			t.Status = "in_progress"
+		}
+		return nil
+	})
+	return nil
 }
 
 // Stop closes admission first. A queued run is cancelled only after verifying
@@ -545,6 +673,7 @@ func (s *WorkerExecutionService) cancelRun(r store.WorkerRunRecord, reason strin
 	if _, err = ws.RecordWorkerRun(r.AccountScopeID, r); err != nil {
 		return err
 	}
+	s.reconcileRunTask(r, "cancelled", reason)
 	intent, found, err := s.workerRunIntent(r)
 	if err != nil {
 		return err
@@ -668,6 +797,9 @@ func (s *WorkerExecutionService) observeRun(r store.WorkerRunRecord) error {
 			current.Status = "cancelled"
 			current.CompletedAt = time.Now().UnixMilli()
 			_, err = ws.RecordWorkerRun(r.AccountScopeID, current)
+			if err == nil {
+				s.reconcileRunTask(current, "cancelled", "worker run cancelled")
+			}
 			return err
 		}
 		return fmt.Errorf("%w: run has no acknowledged intent", store.ErrWorkerConflict)
@@ -719,6 +851,9 @@ func (s *WorkerExecutionService) observeRun(r store.WorkerRunRecord) error {
 		}
 	}
 	_, err = ws.RecordWorkerRun(r.AccountScopeID, current)
+	if err == nil {
+		s.reconcileRunTask(current, current.Status, current.Error)
+	}
 	return err
 }
 
@@ -809,6 +944,7 @@ func (s *WorkerExecutionService) ReconcileWorker(ctx context.Context, account, i
 					if _, recordErr := ws.RecordWorkerRun(account, r); recordErr != nil {
 						failures = append(failures, recordErr)
 					}
+					s.reconcileRunTask(r, "failed", r.Error)
 				}
 				failures = append(failures, e)
 			}
@@ -1104,4 +1240,245 @@ func (s *WorkerExecutionService) authorizeWorkerOwner(account, user string) erro
 		return fmt.Errorf("%w: active worker owner membership required", store.ErrWorkerConflict)
 	}
 	return nil
+}
+
+// ResolveWorkerProject resolves the authoritative project for a worker automation run.
+func (s *WorkerExecutionService) ResolveWorkerProject(r store.WorkerRunRecord, w store.WorkerRecord) (*store.ProjectRecord, error) {
+	return s.resolveWorkerProject(r, w)
+}
+
+func (s *WorkerExecutionService) resolveWorkerProject(r store.WorkerRunRecord, w store.WorkerRecord) (*store.ProjectRecord, error) {
+	if s == nil || s.host == nil || s.host.runs == nil || s.host.runs.sessions == nil {
+		return nil, errors.New("sessions service unavailable")
+	}
+	db := s.host.runs.sessions.Store()
+	if db == nil {
+		return nil, errors.New("database not available")
+	}
+	accountScopeID := strings.TrimSpace(r.AccountScopeID)
+	if accountScopeID == "" {
+		accountScopeID = strings.TrimSpace(w.AccountScopeID)
+	}
+	if accountScopeID == "" {
+		return nil, errors.New("account scope id is required")
+	}
+	if w.AccountScopeID != "" && w.AccountScopeID != accountScopeID {
+		return nil, fmt.Errorf("cross-account access rejected: worker %q belongs to account %q, not %q", w.ID, w.AccountScopeID, accountScopeID)
+	}
+
+	// 1. Inspect explicit project_id in worker metadata or run input or automation plan
+	explicitPID := strings.TrimSpace(mapString(w.Metadata, "project_id"))
+	if explicitPID == "" {
+		explicitPID = strings.TrimSpace(mapString(r.Input, "project_id"))
+	}
+	if explicitPID == "" && r.AutomationID != "" {
+		for _, a := range w.Automations {
+			if a.ID == r.AutomationID {
+				if a.PlanDocument.WorkerV2 != nil && strings.TrimSpace(a.PlanDocument.WorkerV2.ProjectID) != "" {
+					explicitPID = strings.TrimSpace(a.PlanDocument.WorkerV2.ProjectID)
+				} else if a.PlanDocument.AutomationV2 != nil && strings.TrimSpace(a.PlanDocument.AutomationV2.ProjectID) != "" {
+					explicitPID = strings.TrimSpace(a.PlanDocument.AutomationV2.ProjectID)
+				}
+				break
+			}
+		}
+	}
+	if explicitPID != "" {
+		proj, found, err := db.GetProject(accountScopeID, explicitPID)
+		if err != nil {
+			return nil, err
+		}
+		if !found || proj == nil {
+			return nil, fmt.Errorf("project %q referenced by worker %q not found in account %q", explicitPID, w.ID, accountScopeID)
+		}
+		if proj.AccountID != "" && proj.AccountID != accountScopeID {
+			return nil, fmt.Errorf("cross-account access rejected: project %q belongs to account %q, not %q", explicitPID, proj.AccountID, accountScopeID)
+		}
+		return proj, nil
+	}
+
+	// 2. Inspect provenance or metadata source session
+	var sourceSessionID string
+	if w.Provenance != nil && strings.TrimSpace(w.Provenance.SourceSessionID) != "" {
+		sourceSessionID = strings.TrimSpace(w.Provenance.SourceSessionID)
+	} else if sid := strings.TrimSpace(mapString(w.Metadata, "source_session_id")); sid != "" {
+		sourceSessionID = sid
+	}
+	if sourceSessionID != "" {
+		sess, ok, err := s.host.runs.sessions.GetSession(sourceSessionID)
+		if err == nil && ok {
+			if sess.AccountScopeID != "" && sess.AccountScopeID != accountScopeID {
+				return nil, fmt.Errorf("cross-account provenance leak: source session %q belongs to account %q, not %q", sourceSessionID, sess.AccountScopeID, accountScopeID)
+			}
+			if sessPID := strings.TrimSpace(mapString(sess.Metadata, "project_id")); sessPID != "" {
+				proj, found, err := db.GetProject(accountScopeID, sessPID)
+				if err != nil {
+					return nil, err
+				}
+				if found && proj != nil {
+					if proj.AccountID != "" && proj.AccountID != accountScopeID {
+						return nil, fmt.Errorf("cross-account access rejected: project %q belongs to account %q, not %q", sessPID, proj.AccountID, accountScopeID)
+					}
+					return proj, nil
+				}
+			}
+		}
+	}
+
+	// 3. List projects in the account scope
+	projects, err := db.ListProjects(accountScopeID, 200)
+	if err != nil {
+		return nil, err
+	}
+
+	// 3a. Check if any project explicitly lists this automation ID or worker ID
+	var matchedByAuto []*store.ProjectRecord
+	for i := range projects {
+		p := &projects[i]
+		for _, aid := range p.AutomationIDs {
+			if (r.AutomationID != "" && aid == r.AutomationID) || aid == w.ID {
+				matchedByAuto = append(matchedByAuto, p)
+				break
+			}
+		}
+	}
+	if len(matchedByAuto) == 1 {
+		return matchedByAuto[0], nil
+	} else if len(matchedByAuto) > 1 {
+		var pids []string
+		for _, p := range matchedByAuto {
+			pids = append(pids, p.ID)
+		}
+		return nil, fmt.Errorf("ambiguous project association: automation %q matches multiple projects (%s)", r.AutomationID, strings.Join(pids, ", "))
+	}
+
+	// 3b. Check if source session matches PrimarySessionID of a project
+	if sourceSessionID != "" {
+		var matchedByPrimarySess []*store.ProjectRecord
+		for i := range projects {
+			if projects[i].PrimarySessionID == sourceSessionID {
+				matchedByPrimarySess = append(matchedByPrimarySess, &projects[i])
+			}
+		}
+		if len(matchedByPrimarySess) == 1 {
+			return matchedByPrimarySess[0], nil
+		} else if len(matchedByPrimarySess) > 1 {
+			var pids []string
+			for _, p := range matchedByPrimarySess {
+				pids = append(pids, p.ID)
+			}
+			return nil, fmt.Errorf("ambiguous project association: source session %q matches multiple projects (%s)", sourceSessionID, strings.Join(pids, ", "))
+		}
+	}
+
+	// 3c. Workspace association: worker's primary workspace binding
+	primaryWS := strings.TrimSpace(w.LocalBindings["primary"])
+	if primaryWS == "" {
+		primaryWS = strings.TrimSpace(w.ProposedBindings["primary"])
+	}
+	if primaryWS != "" {
+		var matchedByWS []*store.ProjectRecord
+		for i := range projects {
+			p := &projects[i]
+			for _, pws := range p.Workspaces {
+				if strings.TrimSpace(pws.WorkspaceID) == primaryWS {
+					matchedByWS = append(matchedByWS, p)
+					break
+				}
+			}
+		}
+		if len(matchedByWS) == 1 {
+			return matchedByWS[0], nil
+		} else if len(matchedByWS) > 1 {
+			var pids []string
+			for _, p := range matchedByWS {
+				pids = append(pids, p.ID)
+			}
+			return nil, fmt.Errorf("ambiguous project association: workspace %q belongs to multiple projects (%s)", primaryWS, strings.Join(pids, ", "))
+		}
+	}
+
+	return nil, fmt.Errorf("project association required: worker %q has no associated project in account %q", w.ID, accountScopeID)
+}
+
+func (s *WorkerExecutionService) reconcileRunTask(r store.WorkerRunRecord, status, reason string) {
+	if s == nil || s.host == nil || s.host.runs == nil || s.host.runs.sessions == nil {
+		return
+	}
+	db := s.host.runs.sessions.Store()
+	if db == nil {
+		return
+	}
+	projectID := ""
+	taskID := "task_" + r.ID
+	if r.SessionID != "" {
+		if sess, found, _ := s.host.runs.sessions.GetSession(r.SessionID); found {
+			if pid := mapString(sess.Metadata, "project_id"); pid != "" {
+				projectID = pid
+			}
+			if tid := mapString(sess.Metadata, "task_id"); tid != "" {
+				taskID = tid
+			}
+		}
+	}
+	if projectID == "" {
+		if w, found, err := db.WorkerStore().GetWorker(r.AccountScopeID, r.WorkerID); err == nil && found {
+			if p, err := s.resolveWorkerProject(r, w); err == nil && p != nil {
+				projectID = p.ID
+			}
+		}
+	}
+	if projectID != "" && taskID != "" {
+		_ = s.reconcileWorkerTaskTerminal(r.AccountScopeID, projectID, taskID, status, reason)
+	}
+}
+
+func (s *WorkerExecutionService) reconcileWorkerTaskTerminal(accountScopeID, projectID, taskID, runStatus, runError string) error {
+	db := s.host.runs.sessions.Store()
+	if db == nil {
+		return nil
+	}
+	_, err := db.UpdateProjectTask(accountScopeID, projectID, taskID, func(t *store.ProjectTaskRecord) error {
+		if t.Status == "completed" {
+			return nil
+		}
+		switch runStatus {
+		case "succeeded":
+			if t.IsIntegrated {
+				t.Status = "completed"
+			} else {
+				t.Status = "needs_review"
+				if t.ActionNeeded == "" || strings.HasPrefix(t.ActionNeeded, "Action Needed: 0") || t.ActionNeeded == "Executing reopened task" {
+					if t.UnintegratedCommits > 0 {
+						baseBranch := t.BaseBranch
+						if baseBranch == "" {
+							baseBranch = "dev/main"
+						}
+						t.ActionNeeded = fmt.Sprintf("Action Needed: Review changes and integrate %d commit(s) into %s", t.UnintegratedCommits, baseBranch)
+					} else {
+						t.ActionNeeded = "Action Needed: Review agent deliverables and verify outcomes"
+					}
+				}
+			}
+			t.LastError = ""
+		case "failed":
+			t.Status = "failed"
+			if runError != "" {
+				t.LastError = runError
+				t.ActionNeeded = "Action Needed: Worker run failed (" + runError + "). Retry or reassign task."
+			} else {
+				t.ActionNeeded = "Action Needed: Worker run failed. Retry or reassign task."
+			}
+		case "cancelled":
+			t.Status = "failed"
+			if runError != "" {
+				t.LastError = runError
+			} else {
+				t.LastError = "worker run cancelled"
+			}
+			t.ActionNeeded = "Action Needed: Run was cancelled. Retry or reassign task."
+		}
+		return nil
+	})
+	return err
 }
