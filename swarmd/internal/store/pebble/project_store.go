@@ -320,6 +320,16 @@ type ProjectTaskIntegration struct {
 	Error              string `json:"error,omitempty"`
 }
 
+// ProjectTaskCoderAssignment is one independent, same-repository Coder launch in a
+// small task. It is not a Task Program job or a dependency edge.
+type ProjectTaskCoderAssignment struct {
+	Title              string   `json:"title"`
+	MetaPrompt         string   `json:"meta_prompt"`
+	Deliverable        string   `json:"deliverable"`
+	OwnedScope         []string `json:"owned_scope"`
+	AcceptanceCriteria []string `json:"acceptance_criteria"`
+}
+
 // ProjectTaskRecord represents an autonomous task unit in a project.
 type ProjectTaskRecord struct {
 	ID                  string                   `json:"id"`
@@ -390,6 +400,7 @@ type ProjectTaskRecord struct {
 	AttachedMedia       []ProjectTaskMediaRef    `json:"attached_media,omitempty"`
 	PlanBinding         *ProjectTaskPlanBinding  `json:"plan_binding,omitempty"`
 	PlanDocument        *SessionPlanDocument     `json:"plan_document,omitempty"`
+	CoderAssignments    []ProjectTaskCoderAssignment `json:"coder_assignments,omitempty"`
 	TaskProgram         *TaskProgramDefinition   `json:"task_program,omitempty"`
 	TaskProgramID       string                   `json:"task_program_id,omitempty"`
 	TaskProgramStatus   *TaskProgramRecord       `json:"task_program_status,omitempty"`
@@ -546,6 +557,33 @@ func (t *ProjectTaskRecord) Validate() error {
 		}
 	}
 
+	if len(t.CoderAssignments) > 0 {
+		if len(t.CoderAssignments) < 2 || len(t.CoderAssignments) > 8 || agent != "swarm" || featSize != "small" || (outcome != "code_pr" && outcome != "bug_patch" && outcome != "code") || t.TaskProgram != nil || t.TaskProgramID != "" || t.PlanBinding != nil || t.PlanDocument != nil {
+			return errors.New("parallel coder assignments require a small Swarm coding task without a plan or task program (2-8 assignments)")
+		}
+		var scopes []string
+		for _, assignment := range t.CoderAssignments {
+			if strings.TrimSpace(assignment.Title) == "" || strings.TrimSpace(assignment.MetaPrompt) == "" || strings.TrimSpace(assignment.Deliverable) == "" || len(assignment.AcceptanceCriteria) == 0 || len(assignment.OwnedScope) == 0 || len(assignment.Title) > 256 || len(assignment.MetaPrompt) > 16000 || len(assignment.Deliverable) > 2000 || len(assignment.OwnedScope) > 32 || len(assignment.AcceptanceCriteria) > 32 {
+				return errors.New("each coder assignment requires title, meta_prompt, deliverable, acceptance_criteria and owned_scope")
+			}
+			for _, criterion := range assignment.AcceptanceCriteria {
+				if strings.TrimSpace(criterion) == "" || len(criterion) > 2000 {
+					return errors.New("coder assignment acceptance criteria must be nonempty and bounded")
+				}
+			}
+			for _, scope := range assignment.OwnedScope {
+				if len(scope) > 512 || scope == "" || strings.HasPrefix(scope, "/") || (strings.HasSuffix(scope, "/") && !strings.HasSuffix(scope, "/**")) || scope == "." || strings.Contains(scope, "\\") || strings.Contains(scope, "//") || strings.Contains(scope, "../") || strings.HasPrefix(scope, "..") || strings.Contains(scope, "/./") || strings.HasSuffix(scope, "/.") || strings.HasPrefix(scope, "./") || strings.ContainsAny(scope, "?[]{}") || (strings.Contains(scope, "*") && !strings.HasSuffix(scope, "/**")) || strings.Count(scope, "*") > 2 {
+					return errors.New("coder assignments require workspace-relative file or directory scopes")
+				}
+				for _, prior := range scopes {
+					if scope == prior || (strings.HasSuffix(prior, "/**") && strings.HasPrefix(scope, strings.TrimSuffix(prior, "**"))) || (strings.HasSuffix(scope, "/**") && strings.HasPrefix(prior, strings.TrimSuffix(scope, "**"))) || strings.TrimSuffix(scope, "/**") == prior || strings.TrimSuffix(prior, "/**") == scope {
+						return errors.New("coder assignments require non-overlapping owned scopes")
+					}
+				}
+				scopes = append(scopes, scope)
+			}
+		}
+	}
 	if t.TaskProgram != nil {
 		if err := ValidateTaskProgramDefinition(t.TaskProgram); err != nil {
 			return fmt.Errorf("invalid task_program: %w", err)

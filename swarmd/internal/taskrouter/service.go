@@ -523,6 +523,13 @@ func (s *Service) BuildAgentSeedPrompt(task *pebblestore.ProjectTaskRecord, proj
 		sb.WriteString(fmt.Sprintf("### Soundtrack Specification\n%s\n\n", task.Soundtrack))
 	}
 
+	if len(task.CoderAssignments) > 0 {
+		sb.WriteString("\n## Small-task parallel Coder assignments (execute only after task-card approval)\n")
+		for i, assignment := range task.CoderAssignments {
+			sb.WriteString(fmt.Sprintf("%d. %s\n   Scope: %s\n   Objective: %s\n   Deliverable: %s\n   Acceptance criteria: %s\n", i+1, assignment.Title, strings.Join(assignment.OwnedScope, ", "), assignment.MetaPrompt, assignment.Deliverable, strings.Join(assignment.AcceptanceCriteria, "; ")))
+		}
+		sb.WriteString("Use one regular task launch with all Coder assignments in parallel, each in an isolated sibling worktree of the source repository. These are independent small changes, not a plan or task program. Do not edit their files yourself or create separate project cards. Supervise each child, inspect committed handoffs, run focused validation, integrate valid changes into the parent worktree, and report any failure honestly. Resolve Coder models through the configured system-agent assignment; never choose a hardcoded model.\n")
+	}
 	if strings.TrimSpace(task.FullPlanMarkdown) != "" {
 		sb.WriteString("\n## Execution Plan & Verification Criteria\n")
 		sb.WriteString(strings.TrimSpace(task.FullPlanMarkdown))

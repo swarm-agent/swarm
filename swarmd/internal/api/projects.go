@@ -1226,7 +1226,7 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 	metadata["swarm_v3_source_workspace_path"] = wsPath
 	metadata["swarm_v3_source_workspace_provenance"] = task.SourceWorkspace.Provenance
 	grants := []pebblestore.WorkspaceGrant{
-		{Kind: pebblestore.WorkspaceGrantPrimary, WorkspaceID: taskWsID, Path: wsPath, Name: filepath.Base(wsPath), Available: &avail},
+		{Kind: pebblestore.WorkspaceGrantPrimary, WorkspaceID: taskWsID, WorkspaceGeneration: task.SourceWorkspace.WorkspaceGeneration, Path: wsPath, Name: filepath.Base(wsPath), Available: &avail},
 	}
 	projName := "Project"
 	if proj != nil && proj.Name != "" {
@@ -1287,7 +1287,7 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 		sessionSnapshot.Metadata = metadata
 		available := true
 		sessionSnapshot.WorkspaceGrants = append(sessionSnapshot.WorkspaceGrants, pebblestore.WorkspaceGrant{
-			Kind: pebblestore.WorkspaceGrantWorktree, Path: alloc.WorkspacePath, Available: &available,
+			Kind: pebblestore.WorkspaceGrantWorktree, WorkspaceID: taskWsID, WorkspaceGeneration: task.SourceWorkspace.WorkspaceGeneration, Path: alloc.WorkspacePath, Available: &available,
 		})
 		sessionSnapshot.WorkspaceUsage = pebblestore.WorkspaceUsageFromGrants(sessionSnapshot.WorkspaceGrants)
 		admission = &pebblestore.WorktreeAdmissionEvidence{
@@ -1347,7 +1347,7 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 	if taskStatus == "in_progress" {
 		runID = fmt.Sprintf("desktop-v3-run:task-%s", task.ID)
 		parentSessionID := ""
-		if proj != nil {
+		if proj != nil && len(task.CoderAssignments) == 0 {
 			parentSessionID = proj.PrimarySessionID
 		}
 		runIntent = &pebblestore.V3SessionRunIntent{
@@ -1384,7 +1384,7 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 
 	if taskStatus == "in_progress" && runIntent != nil {
 		parentSessionID := ""
-		if proj != nil {
+		if proj != nil && len(task.CoderAssignments) == 0 {
 			parentSessionID = proj.PrimarySessionID
 		}
 		s.EnqueueSessionRun(p, sessionID, runID, parentSessionID)
@@ -2192,7 +2192,8 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				DurationSeconds     int                                  `json:"duration_seconds,omitempty"`
 				AutoApprove         bool                                 `json:"auto_approve,omitempty"`
 				AttachedMedia       []pebblestore.ProjectTaskMediaRef    `json:"attached_media,omitempty"`
-				TaskProgram         *pebblestore.TaskProgramDefinition   `json:"task_program,omitempty"`
+				CoderAssignments    []pebblestore.ProjectTaskCoderAssignment `json:"coder_assignments,omitempty"`
+			TaskProgram         *pebblestore.TaskProgramDefinition   `json:"task_program,omitempty"`
 				TaskProgramID       string                               `json:"task_program_id,omitempty"`
 				Document            *pebblestore.SessionPlanDocument     `json:"document,omitempty"`
 				PlanDocument        *pebblestore.SessionPlanDocument     `json:"plan_document,omitempty"`
@@ -2241,6 +2242,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 					AttachedMedia:       req.AttachedMedia,
 					Document:            req.Document,
 					PlanDocument:        req.PlanDocument,
+					CoderAssignments:    req.CoderAssignments,
 					TaskProgram:         req.TaskProgram,
 					TaskProgramID:       req.TaskProgramID,
 					PlanSummary:         req.PlanSummary,

@@ -100,7 +100,7 @@ func (s *Server) reconcileProjectTaskSession(p identity.Principal, proj *pebbles
 		}
 		now := time.Now().UnixMilli()
 		parent := ""
-		if proj != nil {
+		if proj != nil && len(task.CoderAssignments) == 0 {
 			parent = proj.PrimarySessionID
 		}
 		run := &pebblestore.V3SessionRunIntent{SessionID: owned.ID, RunID: runID, EpochID: "epoch-00000000000000000001", UserID: p.UserID, AccountScopeID: p.AccountScopeID, ParentSessionID: parent, Status: pebblestore.V3RunIntentPendingExecutor, CreatedAt: now, UpdatedAt: now}

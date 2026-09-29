@@ -143,6 +143,21 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 	if prompt == "" {
 		prompt = title
 	}
+	// Preserve the caller's exact proposal for idempotent replay; routing below
+	// supplies the small-task parent identity without changing submission bytes.
+	submittedInput := input
+	if len(input.CoderAssignments) > 0 {
+		if input.Document != nil || input.PlanDocument != nil || input.TaskProgram != nil || input.TaskProgramID != "" || (input.Agent != "" && input.Agent != "swarm") || (input.FeatureSize != "" && input.FeatureSize != "small") || (input.OutcomeType != "" && input.OutcomeType != "code_pr" && input.OutcomeType != "bug_patch" && input.OutcomeType != "code") {
+			return nil, errors.New("coder_assignments require a small Swarm coding task without a plan or task program")
+		}
+		input.Agent, input.FeatureSize = "swarm", "small"
+		if strings.TrimSpace(input.Description) == "" {
+			input.Description = prompt
+		}
+		if input.OutcomeType == "" {
+			input.OutcomeType = "code_pr"
+		}
+	}
 	// Source identity is resolved before any reservation. Only direct media can use a non-repository catalog root.
 	requiresRepo := input.Document != nil || input.PlanDocument != nil || input.TaskProgram != nil || (input.Agent != "image" && input.Agent != "video" && input.Agent != "sound" && input.Agent != "audio")
 	source, err := s.resolveProjectTaskSource(p, proj, input.WorkspacePath, input.WorkspaceID, input.WorkspaceGeneration, requiresRepo)
@@ -156,9 +171,6 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 	if structDoc == nil && input.PlanDocument != nil {
 		structDoc = input.PlanDocument
 	}
-	// Keep the submitted payload immutable for replay identity even when the
-	// generated plan needs a server-owned program ID.
-	submittedInput := input
 	taskProg := input.TaskProgram
 	// Program-only proposals use the same executable-plan coordinator authority.
 	// The legacy bare coordinator lacks an agent profile and owned integration lane.
@@ -367,10 +379,18 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 		AutoApprove:        input.AutoApprove,
 		RouterAlert:        routed.RouterAlert,
 		AttachedMedia:      input.AttachedMedia,
+		CoderAssignments:   input.CoderAssignments,
 		TaskProgram:        taskProg,
 		TaskProgramID:      taskProgID,
 		CreatedAt:          time.Now().UnixMilli(),
 		UpdatedAt:          time.Now().UnixMilli(),
+	}
+	if len(task.CoderAssignments) > 0 {
+		// The assignment list, not router boilerplate, is the executable small-task
+		// contract; keep the visible card from presenting a generic plan.
+		task.PlanSummary = fmt.Sprintf("One small task: %d parallel Coders supervised by Swarm", len(task.CoderAssignments))
+		task.FullPlanMarkdown = ""
+		task.PipelineStages = []string{"Parallel Coder implementation", "Parent validation and integration"}
 	}
 	if len(task.AttachedMedia) == 0 && len(routed.AttachedMedia) > 0 {
 		task.AttachedMedia = routed.AttachedMedia
@@ -387,12 +407,18 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 		task.Status = "planning"
 		task.ActionNeeded = "Plan agent investigating and authoring structured plan..."
 		task.WhatDidDo = []string{"Started planning investigation"}
-	} else if task.TaskProgram == nil && (task.Agent == "coder" || task.OutcomeType == "code_pr" || task.OutcomeType == "bug_patch") {
+	} else if task.TaskProgram == nil && (task.Agent == "coder" || (len(task.CoderAssignments) == 0 && (task.OutcomeType == "code_pr" || task.OutcomeType == "bug_patch"))) {
 		task.Status = "pending_approval"
 		task.ActionNeeded = "Review task and click Approve to start Coder execution"
 		if input.AutoApprove {
 			task.Status = "in_progress"
 			task.ActionNeeded = ""
+		}
+	} else if len(task.CoderAssignments) > 0 {
+		task.Status = "pending_approval"
+		task.ActionNeeded = "Review parallel Coder assignments and click Approve"
+		if input.AutoApprove {
+			task.Status, task.ActionNeeded = "in_progress", ""
 		}
 	} else if task.TaskProgram != nil {
 		if input.AutoApprove {
@@ -473,7 +499,7 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 		if err := db.PutProjectTask(p.AccountScopeID, &task); err != nil {
 			return nil, err
 		}
-	} else if task.TaskProgram == nil && (task.Agent == "coder" || task.OutcomeType == "code_pr" || task.OutcomeType == "bug_patch") {
+	} else if task.TaskProgram == nil && (task.Agent == "coder" || task.OutcomeType == "code_pr" || task.OutcomeType == "bug_patch" || len(task.CoderAssignments) > 0) {
 		if err := s.deployProjectTaskExecution(p, proj, &task, task.Status, prompt); err != nil {
 			return nil, fmt.Errorf("deploy coder session: %w", err)
 		}
@@ -1253,6 +1279,9 @@ func (s *Server) ApproveProjectTask(ctx context.Context, p identity.Principal, p
 	now := time.Now().UnixMilli()
 	runID := fmt.Sprintf("desktop-v3-run:task-%s", existingTask.ID)
 	parentSessionID := proj.PrimarySessionID
+	if len(existingTask.CoderAssignments) > 0 {
+		parentSessionID = "" // This Swarm session is the delegation parent, not a delegated child.
+	}
 	runIntent := &pebblestore.V3SessionRunIntent{
 		SessionID:       existingTask.SessionID,
 		RunID:           runID,

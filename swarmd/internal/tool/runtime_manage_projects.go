@@ -64,6 +64,7 @@ type ProjectTaskCreateInput struct {
 	AttachedMedia       []pebblestore.ProjectTaskMediaRef    `json:"attached_media,omitempty"`
 	Document            *pebblestore.SessionPlanDocument     `json:"document,omitempty"`
 	PlanDocument        *pebblestore.SessionPlanDocument     `json:"plan_document,omitempty"`
+	CoderAssignments    []pebblestore.ProjectTaskCoderAssignment `json:"coder_assignments,omitempty"`
 	TaskProgram         *pebblestore.TaskProgramDefinition   `json:"task_program,omitempty"`
 	TaskProgramID       string                               `json:"task_program_id,omitempty"`
 	PlanSummary         string                               `json:"plan_summary,omitempty"`
@@ -288,6 +289,7 @@ func manageProjectsDefinition() Definition {
 					"type":        "object",
 					"description": "Alias for plan_document.",
 				},
+				"coder_assignments": map[string]any{"type": "array", "description": "For one small same-workspace task with two independent parallel Coders: [{title, meta_prompt, deliverable, owned_scope, acceptance_criteria}]. One user-approved task card starts a Swarm parent which launches both via one regular task call; no plan or task program. Distinct non-overlapping workspace-relative owned scopes are required.", "items": map[string]any{"type": "object"}},
 				"task_program": map[string]any{
 					"type":        "object",
 					"description": "Optional Task Program for dependent/staged work: {id, stages: [{id, depends_on, dependency_evidence}], jobs: [{id, stage_id, agent_type, title, meta_prompt, deliverable, workspace_path, owned_scope, acceptance_criteria, dependency_evidence}]}. For dependent cross-repository changes set workspace_path on every Coder job to its exact authorized source; integration remains per repository. Independent cross-repository changes use parallel workspace-specific tasks/Coders instead.",
@@ -675,6 +677,14 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 			}
 		}
 
+		var coderAssignments []pebblestore.ProjectTaskCoderAssignment
+		if raw, ok := args["coder_assignments"]; ok && raw != nil {
+			data, err := json.Marshal(raw)
+			if err != nil || json.Unmarshal(data, &coderAssignments) != nil {
+				return "", errors.New("invalid coder_assignments")
+			}
+		}
+
 		workerName := strings.TrimSpace(asString(args["worker_name"]))
 		worktreeBranch := strings.TrimSpace(asString(args["worktree_branch"]))
 		description := strings.TrimSpace(asString(args["description"]))
@@ -762,6 +772,7 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 			WhatNotDone:         whatNot,
 			AttachedMedia:       attachedMedia,
 			PlanDocument:        planDoc,
+			CoderAssignments:    coderAssignments,
 			TaskProgram:         taskProg,
 			PlanSummary:         planSummary,
 			FullPlanMarkdown:    fullPlanMarkdown,
