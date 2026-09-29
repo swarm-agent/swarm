@@ -1303,8 +1303,8 @@ func validateTaskProgramCoderWorkspaceTargets(jobs []taskProgramJob) error {
 			target, found = jobTarget, true
 			continue
 		}
-		if jobTarget != target {
-			return errors.New("task program Coder jobs must target one workspace so staged integration has one durable parent Git history")
+		if jobTarget != target && (jobTarget == "" || target == "") {
+			return errors.New("multi-repository task program Coder jobs require explicit workspace_path for every Coder")
 		}
 	}
 	return nil
