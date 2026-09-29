@@ -17,13 +17,13 @@ const task: RunningTask = {
   baseBranch: 'dev', gitStatus: 'unknown', unintegratedCommits: 3,
 }
 
-test('compact card retains verified branch and unknown Git without inventing validation', () => {
+test('compact card retains verified branch and omits noisy uninspected git telemetry', () => {
   const html = renderToStaticMarkup(<TaskCardSummary task={task} />)
   assert.match(html, /Fix session recovery/)
   assert.match(html, /Branch.*agent\/repair/)
   assert.match(html, /1\/1 steps/)
   assert.doesNotMatch(html, /\/source\/project|Validation not reported|agent\/repair.*dev/)
-  assert.match(html, /Git: not inspected/)
+  assert.doesNotMatch(html, /Git: last known state|Git: not inspected/)
   assert.doesNotMatch(html, /unintegrated commit\(s\)|>Integrated</)
 })
 

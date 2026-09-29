@@ -79,7 +79,6 @@ import { TaskCardSummary } from './task-card-summary'
 import { inheritedSwarmThemeStyle, projectThemePatch, resolveSwarmProjectTheme } from './swarm-section-theme'
 import { createProjectThemeRefresh } from './project-theme-refresh'
 import { WORKSPACE_THEME_OPTIONS, setWorkspaceThemeCatalog, formatWorkspaceThemeLabel } from '../../workspaces/launcher/services/workspace-theme'
-import './swarm-section.css'
 import {
   desktopProjects,
   useDesktopProject,
@@ -912,58 +911,130 @@ function MinimalTaskCard({
       data-task-state={task.status}
       className={`swarm-task-card relative flex flex-col transition-all cursor-pointer ${isSelected ? 'swarm-task-card-selected' : ''}`}
     >
-      {onToggleMarked && (
-        <div
-          className="absolute top-3.5 right-3.5 z-20"
-          onClick={(e) => e.stopPropagation()}
-        >
-          <label
-            className={`group flex items-center justify-center w-5 h-5 rounded-md border transition-all cursor-pointer ${
-              isMarked
-                ? 'bg-blue-600 border-blue-500 text-white shadow-sm'
-                : 'border-slate-700/60 bg-slate-900/40 hover:border-slate-500 hover:bg-slate-800/80 text-transparent hover:text-slate-400'
+      <TaskCardSummary
+        task={task}
+        onPreview={onPreviewDeliverable}
+        statusBadge={
+          <div
+            className={`font-mono text-[10px] font-bold uppercase px-2.5 py-0.5 rounded-full border flex items-center gap-1.5 shadow-sm ${
+              isPlanning
+                ? 'bg-indigo-950/60 text-indigo-300 border-indigo-500/40'
+                : isPendingApproval
+                ? 'bg-amber-950/60 text-amber-300 border-amber-500/40'
+                : isRunning
+                ? 'bg-blue-950/60 text-blue-400 border-blue-500/40'
+                : isNeedsReview
+                ? 'bg-amber-500/15 text-amber-300 border-amber-500/50 shadow-[0_0_8px_rgba(245,158,11,0.25)]'
+                : isCompleted
+                ? 'bg-emerald-950/60 text-emerald-300 border-emerald-500/40'
+                : isFailed || isRejected
+                ? 'bg-rose-950/60 text-rose-300 border-rose-500/40'
+                : 'bg-slate-800 text-slate-400 border-slate-700'
             }`}
-            title={`Select task ${task.title}`}
           >
-            <input
-              type="checkbox"
-              checked={Boolean(isMarked)}
-              onChange={onToggleMarked}
-              aria-label={`Select task ${task.title}`}
-              className="sr-only"
-            />
-            <Check size={12} strokeWidth={2.5} className={isMarked ? 'opacity-100' : 'opacity-0 group-hover:opacity-40'} />
-          </label>
-        </div>
-      )}
-      <TaskCardSummary task={task} onPreview={onPreviewDeliverable} />
-      <div className="swarm-task-actions">
-      {/* Existing guarded actions remain connected to their original handlers. */}
-      <div className="swarm-task-action-row flex items-start justify-between gap-3">
-        {expanded && <div className="swarm-task-context flex flex-col gap-1 min-w-0 flex-1">
-          <div className="flex items-center gap-2">
             <span
-              className={`font-mono text-[9px] uppercase font-bold px-2 py-0.5 rounded border ${
-                task.agentType === 'swarm'
-                  ? 'bg-amber-500/10 text-amber-300 border-amber-500/30'
-                  : task.agentType === 'designer' || task.agentType === 'video'
-                  ? 'bg-blue-500/10 text-blue-400 border-blue-500/25'
-                  : 'bg-indigo-500/10 text-indigo-300 border-indigo-500/25'
+              className={`h-1.5 w-1.5 rounded-full ${
+                isPlanning
+                  ? 'bg-indigo-400 animate-spin'
+                  : isPendingApproval
+                  ? 'bg-amber-400'
+                  : isRunning
+                  ? 'bg-blue-400 animate-pulse'
+                  : isNeedsReview
+                  ? 'bg-amber-400 animate-pulse'
+                  : isCompleted
+                  ? 'bg-emerald-400'
+                  : isFailed || isRejected
+                  ? 'bg-rose-400'
+                  : 'bg-slate-500'
               }`}
-            >
-              {task.agentType.toUpperCase()} • {task.workspacePath ? task.workspacePath.split('/').filter(Boolean).pop() : 'WORKSPACE'}
-            </span>
+            />
+            <span>{task.status === 'in_progress' ? 'in progress' : task.status.replace('_', ' ')}</span>
+          </div>
+        }
+        timer={
+          <span className="font-mono text-[10px] text-slate-400 flex items-center gap-1">
+            {isRunning && <Timer size={10} className="text-blue-400 animate-spin" />}
+            <TaskElapsedTimer
+              isRunning={isRunning}
+              startedAt={task.startedAt}
+              createdAt={task.createdAt}
+              fallbackElapsed={task.elapsed}
+            />
+          </span>
+        }
+        actions={
+          <div className="flex items-center gap-1.5">
+            {onOpenChat && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onOpenChat()
+                }}
+                className="flex items-center gap-1 px-2.5 py-0.5 rounded-md bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-[10px] font-medium transition-colors border border-slate-700/60 cursor-pointer"
+                title={taskSessionId ? 'Open session chat with this worker' : 'Discuss this task in orchestrator chat'}
+                data-testid="task-card-chat-btn"
+              >
+                <MessageSquare size={11} />
+                <span>Chat</span>
+              </button>
+            )}
+            {isPendingApproval && onApprove && (
+              <button
+                type="button"
+                disabled={isApproving || isPlanRejected || isPlanTaskWithoutStructuredPlan || isPlanBindingMissingRevision}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  if (!isApproving && !isPlanRejected && !isPlanTaskWithoutStructuredPlan && !isPlanBindingMissingRevision) {
+                    onApprove()
+                  }
+                }}
+                className="flex items-center gap-1 px-2.5 py-0.5 rounded-md bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-[10px] font-bold transition-all shadow cursor-pointer"
+                title={
+                  isPlanBindingMissingRevision
+                    ? 'Plan definition revision guard is missing or unverified'
+                    : 'Approve and start task execution'
+                }
+              >
+                {isApproving ? <Loader2 size={10} className="animate-spin text-blue-200" /> : <Sparkles size={10} />}
+                <span>Approve</span>
+              </button>
+            )}
+            {onToggleMarked && (
+              <label
+                className={`group flex items-center justify-center w-5 h-5 rounded-md border transition-all cursor-pointer ${
+                  isMarked
+                    ? 'bg-blue-600 border-blue-500 text-white shadow-sm'
+                    : 'border-slate-700/60 bg-slate-900/40 hover:border-slate-500 hover:bg-slate-800/80 text-transparent hover:text-slate-400'
+                }`}
+                title={`Select task ${task.title}`}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <input
+                  type="checkbox"
+                  checked={Boolean(isMarked)}
+                  onChange={onToggleMarked}
+                  aria-label={`Select task ${task.title}`}
+                  className="sr-only"
+                />
+                <Check size={12} strokeWidth={2.5} className={isMarked ? 'opacity-100' : 'opacity-0 group-hover:opacity-40'} />
+              </label>
+            )}
+          </div>
+        }
+        extraBadges={
+          <>
             {task.outcomeType && (
               <span className="font-mono text-[9px] uppercase px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700/50">
                 {task.outcomeType === 'video_clip' ? 'SINGLE VIDEO' : task.outcomeType.replace('_', ' ')}
               </span>
             )}
-            {/* Show exact worker tag if worker-generated automation task */}
             {isWorker && (
               <a
                 href={swarmWorkerHref(workspaceSlug, workerTargetId)}
                 onClick={handleWorkerClick}
-                className="font-mono text-[9px] px-2 py-0.5 rounded bg-indigo-950/80 text-indigo-300 border border-indigo-500/40 hover:bg-indigo-900/80 hover:text-white flex items-center gap-1 font-semibold transition-colors cursor-pointer"
+                className="font-mono text-[9px] px-1.5 py-0.5 rounded bg-indigo-950/80 text-indigo-300 border border-indigo-500/40 hover:bg-indigo-900/80 hover:text-white flex items-center gap-1 font-semibold transition-colors cursor-pointer"
                 title={`Worker: ${workerDisplayName}`}
                 data-testid="worker-tag"
               >
@@ -971,49 +1042,17 @@ function MinimalTaskCard({
                 <span>Worker: {workerDisplayName}</span>
               </a>
             )}
-            {/* Show worktree name right away for non-media tasks */}
-            {!isMediaTask && (task.worktreeBranch || task.worktreeName) && (
-              <span
-                className="font-mono text-[9px] px-1.5 py-0.5 rounded bg-indigo-950/70 text-indigo-300 border border-indigo-500/30 flex items-center gap-1 font-semibold"
-                title={`Worktree: ${task.worktreeBranch || (task.worktreeName ? `agent/${task.worktreeName}` : 'agent/worktree')}`}
-              >
-                <GitBranch size={9} />
-                <span>{task.worktreeBranch || (task.worktreeName ? `agent/${task.worktreeName}` : 'agent/worktree')}</span>
-              </span>
-            )}
-            {/* Show integration status right away for non-media tasks */}
-            {!isMediaTask && (
-              task.gitStatus === 'unknown' || task.gitStatus === 'stale' ? (
-                <span className="font-mono text-[9px] text-slate-400" title="Git is verified when performing repository operations; task list refreshes do not scan repositories.">
-                  {task.gitStatus === 'stale' ? 'Git: last known state' : 'Git: not inspected'}
-                </span>
-              ) : task.isIntegrated ? (
-                <span className="font-mono text-[9px] px-1.5 py-0.5 rounded bg-emerald-950/80 text-emerald-300 border border-emerald-500/40 flex items-center gap-1 font-semibold">
-                  <CheckCircle2 size={9} />
-                  <span>Integrated</span>
-                </span>
-              ) : hasUnintegrated ? (
-                <span className="font-mono text-[9px] px-1.5 py-0.5 rounded bg-amber-950/80 text-amber-300 border border-amber-500/40 flex items-center gap-1 font-semibold">
-                  <span>Not Integrated ({task.unintegratedCommits})</span>
-                </span>
-              ) : task.isDirty ? (
-                <span className="font-mono text-[9px] px-1.5 py-0.5 rounded bg-amber-950/50 text-amber-300 border border-amber-500/30 flex items-center gap-1 font-semibold">
-                  <span>Changes Pending Commit</span>
-                </span>
-              ) : task.syncWarning || (task.behindCommits && task.behindCommits > 0) ? (
-                <span className="font-mono text-[9px] px-1.5 py-0.5 rounded bg-rose-950/80 text-rose-300 border border-rose-500/40 flex items-center gap-1 font-semibold">
-                  <AlertTriangle size={9} />
-                  <span>Out of Sync</span>
-                </span>
-              ) : null
-            )}
             {(task.routerAlert || (task as any).router_alert) && (
               <span className="font-mono text-[9px] uppercase px-1.5 py-0.5 rounded bg-amber-950/80 text-amber-300 border border-amber-500/50 flex items-center gap-1 font-bold">
                 <AlertTriangle size={9} />
                 <span>Router Alert</span>
               </span>
             )}
-          </div>
+          </>
+        }
+      />
+      {expanded && (Boolean(task.workspacesInvolved?.length) || Boolean(task.contextPoolSummary)) && (
+        <div className="flex flex-col gap-1 pt-1.5 border-t border-slate-800/60 min-w-0">
           {!isMediaTask && task.workspacesInvolved && task.workspacesInvolved.length > 0 && (
             <div className="flex items-center gap-1.5 flex-wrap pt-0.5">
               <span className="font-mono text-[9px] uppercase tracking-wider text-slate-500 font-semibold">Workspaces:</span>
@@ -1048,97 +1087,8 @@ function MinimalTaskCard({
               </span>
             </div>
           )}
-        </div>}
-
-        <div className="swarm-task-action-buttons flex items-center gap-2 flex-shrink-0">
-          <div
-            className={`font-mono text-[10px] font-bold uppercase px-2 py-0.5 rounded border flex items-center gap-1.5 ${
-              isPlanning
-                ? 'bg-indigo-950/40 text-indigo-300 border-indigo-500/40'
-                : isPendingApproval
-                ? 'bg-amber-950/40 text-amber-300 border-amber-500/40'
-                : isRunning
-                ? 'bg-blue-950/40 text-blue-400 border-blue-500/40'
-                : isNeedsReview
-                ? 'bg-amber-950/40 text-amber-300 border-amber-500/40'
-                : isCompleted
-                ? 'bg-emerald-950/40 text-emerald-300 border-emerald-500/40'
-                : isFailed || isRejected
-                ? 'bg-rose-950/40 text-rose-300 border-rose-500/40'
-                : 'bg-slate-800 text-slate-400 border-slate-700'
-            }`}
-          >
-            <span
-              className={`h-1.5 w-1.5 rounded-sm ${
-                isPlanning
-                  ? 'bg-indigo-400 animate-spin'
-                  : isPendingApproval
-                  ? 'bg-amber-400'
-                  : isRunning
-                  ? 'bg-blue-400 animate-pulse'
-                  : isNeedsReview
-                  ? 'bg-amber-400'
-                  : isCompleted
-                  ? 'bg-emerald-400'
-                  : isFailed || isRejected
-                  ? 'bg-rose-400'
-                  : 'bg-slate-500'
-              }`}
-            />
-            <span>{task.status === 'in_progress' ? 'in progress' : task.status.replace('_', ' ')}</span>
-          </div>
-
-          <span className="font-mono text-[10px] text-slate-400 flex items-center gap-1">
-            {isRunning && <Timer size={10} className="text-blue-400 animate-spin" />}
-            <TaskElapsedTimer
-              isRunning={isRunning}
-              startedAt={task.startedAt}
-              createdAt={task.createdAt}
-              fallbackElapsed={task.elapsed}
-            />
-          </span>
-
-          {onOpenChat && (
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation()
-                onOpenChat()
-              }}
-              className="flex items-center gap-1 px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-[10px] font-medium transition-colors border border-slate-700/60"
-              title={taskSessionId ? 'Open session chat with this worker' : 'Discuss this task in orchestrator chat'}
-              data-testid="task-card-chat-btn"
-            >
-              <MessageSquare size={11} />
-              <span>Chat</span>
-            </button>
-          )}
-
-          {isPendingApproval && onApprove && (
-            <button
-              type="button"
-              disabled={isApproving || isPlanRejected || isPlanTaskWithoutStructuredPlan || isPlanBindingMissingRevision}
-              onClick={(e) => {
-                e.stopPropagation()
-                if (!isApproving && !isPlanRejected && !isPlanTaskWithoutStructuredPlan && !isPlanBindingMissingRevision) {
-                  onApprove()
-                }
-              }}
-              className="flex items-center gap-1 px-2.5 py-1 rounded bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-[10px] font-bold transition-all shadow"
-              title={
-                isPlanBindingMissingRevision
-                  ? 'Plan definition revision guard is missing or unverified'
-                  : 'Approve and start task execution'
-              }
-            >
-              {isApproving ? <Loader2 size={10} className="animate-spin text-blue-200" /> : <Sparkles size={10} />}
-              <span>Approve</span>
-            </button>
-          )}
         </div>
-      </div>
-
-      </div>
+      )}
       {/* ROUTER AGENT FAILURE ALERT BANNER */}
       {(task.routerAlert || (task as any).router_alert) && (
         <div className="flex items-start gap-2.5 p-3 rounded-lg bg-amber-950/40 border border-amber-500/60 text-amber-200 text-xs">
