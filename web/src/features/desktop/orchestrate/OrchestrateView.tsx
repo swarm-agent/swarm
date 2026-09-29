@@ -57,6 +57,8 @@ import {
 } from 'lucide-react'
 import { formatContextWindow } from '../chat/services/model-options'
 import { requestJson } from '../../../app/api'
+import { WorkerHub, type SelectedWorker } from './worker-hub'
+import { submitWithWorkerSelection } from './worker-message-context'
 import { useDesktopV3CacheSelector, getDesktopV3CacheSnapshot } from '../state/desktop-v3-cache-store'
 import { selectPendingWorkerSidebarReviews } from '../state/desktop-automation-v2-state'
 import { desktopAutomationV2 } from '../runtime/desktop-automation-v2'
@@ -2520,8 +2522,14 @@ function OrchestratorChatComposer({
   selectedTaskId,
   allTasks: _allTasks,
   onDeselectTask,
+  selectedWorker,
+  currentSelectedWorker,
+  onDeselectWorker,
 }: {
   sessionId: string
+  selectedWorker?: SelectedWorker | null
+  currentSelectedWorker?: () => SelectedWorker | null
+  onDeselectWorker?: (consumed: SelectedWorker | null) => void
   session?: DesktopSessionRecord | SessionSnapshot | null
   project?: ProjectSummary
   targetTask?: RunningTask | null
@@ -2681,7 +2689,10 @@ function OrchestratorChatComposer({
         media: attachments.length > 0 ? attachments : undefined,
       })
 
-      await continueDesktopV3Conversation(operation)
+      await submitWithWorkerSelection(selectedWorker || null, async (workerMetadata) => {
+        operation.request.metadata = { ...operation.request.metadata, ...workerMetadata }
+        await continueDesktopV3Conversation(operation)
+      }, currentSelectedWorker || (() => selectedWorker || null), () => onDeselectWorker?.(selectedWorker || null))
       setDraft('')
       setAttachments([])
     } catch (err: any) {
@@ -2740,6 +2751,12 @@ function OrchestratorChatComposer({
         </div>
       )}
 
+      {selectedWorker && !targetTask && (
+        <div className="flex items-center justify-between rounded-lg border border-indigo-500/30 bg-indigo-950/40 px-2.5 py-1 text-indigo-200" data-testid="composer-worker-context-chip">
+          <span>Next message only: {selectedWorker.name} (r{selectedWorker.revision}) · no task dispatched</span>
+          <button type="button" aria-label="Remove selected worker" onClick={() => onDeselectWorker?.(selectedWorker)}><X size={12} /></button>
+        </div>
+      )}
       {/* Attachments preview list */}
       {attachments.length > 0 && (
         <div className="flex flex-wrap gap-1.5 pb-1">
@@ -2863,8 +2880,14 @@ function OrchestratorChatSidebar({
   onBackToOrchestrator,
   onOrchestratorSessionReset,
   onDeselectTask,
+  selectedWorker,
+  currentSelectedWorker,
+  onDeselectWorker,
 }: {
   sessionId: string
+  selectedWorker?: SelectedWorker | null
+  currentSelectedWorker?: () => SelectedWorker | null
+  onDeselectWorker?: (consumed: SelectedWorker | null) => void
   project?: ProjectSummary
   activeTask?: RunningTask
   selectedTask?: RunningTask | null
@@ -3135,6 +3158,9 @@ function OrchestratorChatSidebar({
             selectedTaskId={selectedTaskId}
             allTasks={allTasks}
             onDeselectTask={onDeselectTask}
+            selectedWorker={activeTask ? null : selectedWorker}
+            currentSelectedWorker={currentSelectedWorker}
+            onDeselectWorker={onDeselectWorker}
           />
         }
         contextChip={
@@ -3299,6 +3325,12 @@ export function OrchestrateView({
 
   // Split Studio selected task state
   const [selectedTaskId, setSelectedTaskId] = useState<string>('')
+  const [selectedWorker, setSelectedWorker] = useState<SelectedWorker | null>(null)
+  const selectedWorkerRef = useRef<SelectedWorker | null>(null)
+  const selectWorker = (worker: SelectedWorker | null) => { selectedWorkerRef.current = worker; setSelectedWorker(worker) }
+  const clearConsumedWorker = (worker: SelectedWorker | null) => {
+    if (selectedWorkerRef.current === worker) selectWorker(null)
+  }
 
   // Only the asset viewer is transient; the library itself is a routed page.
   const [activeMediaViewerItem, setActiveMediaViewerItem] = useState<MediaLibraryItem | null>(null)
@@ -3317,6 +3349,10 @@ export function OrchestrateView({
     select: (state) => state.matches[state.matches.length - 1]?.params as { workspaceSlug?: string; swarmSection?: string } | undefined,
   }) ?? {}
   const navigate = useNavigate()
+  const routeWorkerId = useRouterState({ select: state => {
+    const search = state.location.search as { workerId?: unknown }
+    return typeof search?.workerId === 'string' && search.workerId.startsWith('worker_') ? search.workerId : undefined
+  } })
   const workspaceSlug = routeParams.workspaceSlug ?? workspaceSlugProp
   const activeNavTab: SwarmPage = isSwarmSection(routeParams.swarmSection) ? routeParams.swarmSection : 'home'
   const showFullMediaCenter = activeNavTab === 'media'
@@ -3405,9 +3441,8 @@ export function OrchestrateView({
     }
   }, [])
 
-  useEffect(() => {
-    void fetchCloudWorkers()
-  }, [fetchCloudWorkers])
+  // Storage discovery is not a durable-worker authority. The legacy view below is unreachable
+  // during the migration window; do not fetch or activate storage workers from this hub.
 
   const handleActivateCloudWorker = async (workerId: string) => {
     setActivatingWorkerId(workerId)
@@ -6040,7 +6075,9 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
             </div>
           </div>
         ) : activeNavTab === 'workers' ? (
-          /* WORKERS HUB TAB */
+          <WorkerHub workspaceSlug={workspaceSlug} initialWorkerId={routeWorkerId} onSelectWorker={selectWorker} />
+        ) : false && activeNavTab === 'workers' ? (
+          /* Legacy proposal/automation view retained temporarily for explicit migration, never rendered by the durable hub. */
           <div className="flex-1 flex flex-col min-h-0 overflow-y-auto p-6 space-y-6 max-w-5xl mx-auto w-full">
             <div className="flex items-center justify-between pb-4 border-b border-slate-800">
               <div className="flex items-center gap-3">
@@ -7514,6 +7551,9 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
           onBackToOrchestrator={handleBackToOrchestrator}
           onOrchestratorSessionReset={handleOrchestratorSessionReset}
           onDeselectTask={handleDeselectTask}
+          selectedWorker={selectedWorker}
+          currentSelectedWorker={() => selectedWorkerRef.current}
+          onDeselectWorker={clearConsumedWorker}
         />
       ) : (
         <aside className="relative flex w-[440px] flex-shrink-0 flex-col items-center justify-center p-6 text-center rounded-3xl border border-slate-800/80 bg-[#0d121f] text-xs text-slate-400 shadow-[inset_0_1px_1px_rgba(255,255,255,0.06),0_18px_40px_rgba(0,0,0,0.65)]">
