@@ -978,6 +978,19 @@ func (p *taskProgramScheduler) coderSourceForJob(def pebblestore.TaskProgramJobS
 			return source, nil
 		}
 	}
+	// The launch resolver authenticates the owned parent worktree and redirects
+	// its captured source there. Source identity must still name the catalog
+	// repository, not mint a second identity for that runtime worktree.
+	if p.parentSession.WorktreeEnabled && sameTaskProgramPath(path, p.parentSession.WorktreeRootPath) {
+		source := strings.TrimSpace(mapString(p.parentSession.Metadata, "swarm_v3_source_workspace_path"))
+		if source == "" {
+			return "", errors.New("Task Program parent worktree has no captured source")
+		}
+		if _, _, err := p.canonicalRepositorySource(source); err != nil {
+			return "", err
+		}
+		return source, nil
+	}
 	return path, nil
 }
 

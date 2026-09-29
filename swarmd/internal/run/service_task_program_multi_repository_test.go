@@ -91,6 +91,20 @@ func multiRepoProgramFixture(t *testing.T, dependent bool) (*taskProgramSchedule
 		return SessionWorkspaceCanonicalization{}, errors.New("unknown canonical workspace")
 	})
 	svc.worktrees = &worktree.Service{}
+	// Production accepted-plan parents already own a worktree of repository A.
+	// Exercise source resolution through that authenticated runtime redirect.
+	base, err := svc.worktrees.ResolveTaskBase(sources[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	owned, err := svc.worktrees.AllocateTaskWorkspace(sources[0], base, "accepted-parent", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent.WorktreeEnabled = true
+	parent.WorktreeRootPath, parent.WorkspacePath = owned.WorkspacePath, owned.WorkspacePath
+	parent.WorktreeBranch, parent.WorktreeBaseBranch = owned.BranchName, base.ParentBranch
+	parent.Metadata = map[string]any{"swarm_v3_source_workspace_path": sources[0], "swarm_v3_runtime_workspace_path": owned.WorkspacePath, "swarm_v3_worktree_base_commit": base.BaseCommit}
 	stages := []pebblestore.TaskProgramStageSpec{{ID: "build", DependencyEvidence: "ready"}}
 	jobs := []pebblestore.TaskProgramJobSpec{{ID: "job-a", StageID: "build", AgentType: "coder", WorkspacePath: sources[0], OwnedScope: []string{"a.txt"}}, {ID: "job-b", StageID: "build", AgentType: "coder", WorkspacePath: sources[1], OwnedScope: []string{"b.txt"}}}
 	if dependent {

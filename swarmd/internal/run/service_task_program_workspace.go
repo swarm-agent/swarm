@@ -48,7 +48,7 @@ func (p *taskProgramScheduler) repositoryLaneForSource(requested string, multi b
 		path, _, err := p.service.resolveTaskTargetWorkspace(p.parentSession, p.req.Principal, &taskLaunchSpec{RequestedSubagentType: "coder", ProgramRepositoryLane: lane})
 		return path, err
 	}
-	target, _, err := p.service.resolveTaskTargetWorkspace(p.parentSession, p.req.Principal, &taskLaunchSpec{RequestedSubagentType: "coder", TargetWorkspacePath: requested})
+	target, err := p.coderSourceForJob(pebblestore.TaskProgramJobSpec{ID: "repository-lane", WorkspacePath: requested})
 	if err != nil {
 		return "", err
 	}
