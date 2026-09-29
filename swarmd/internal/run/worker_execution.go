@@ -101,6 +101,50 @@ func (s *WorkerExecutionService) ConfigureBindings(account, user, id string, rev
 	return ws.ConfigureWorkerBindings(account, user, id, revision, bindings, activate)
 }
 
+// Accept validates exact revision, proposed bindings and workspace authorization,
+// transitioning a pending worker into an active worker without dispatching unsolicited work.
+func (s *WorkerExecutionService) Accept(account, user, id string, revision uint64) (store.WorkerRecord, error) {
+	if err := s.authorizeWorkerOwner(account, user); err != nil {
+		return store.WorkerRecord{}, err
+	}
+	ws, err := s.workerStore()
+	if err != nil {
+		return store.WorkerRecord{}, err
+	}
+	w, found, err := ws.GetWorker(account, id)
+	if err != nil {
+		return store.WorkerRecord{}, err
+	}
+	if !found || w.AccountScopeID != account {
+		return store.WorkerRecord{}, store.ErrWorkerNotFound
+	}
+	if revision == 0 || w.Revision != revision {
+		return store.WorkerRecord{}, store.ErrWorkerConflict
+	}
+	if w.LifecycleState != store.WorkerLifecycleStatePending {
+		return store.WorkerRecord{}, fmt.Errorf("%w: worker is not pending review", store.ErrWorkerConflict)
+	}
+	primaryWS := ""
+	if w.ProposedBindings != nil {
+		primaryWS = strings.TrimSpace(w.ProposedBindings["primary"])
+	}
+	if primaryWS == "" {
+		return store.WorkerRecord{}, fmt.Errorf("%w: proposed primary workspace binding is required", store.ErrWorkerConflict)
+	}
+	if s.host.runs.workspace == nil {
+		return store.WorkerRecord{}, errors.New("workspace authority unavailable")
+	}
+	p := identity.Principal{Type: identity.PrincipalTypeUser, UserID: user, AccountScopeID: account, AccountScopeSource: identity.AccountScopeSourceServerState}
+	entry, found, err := s.host.runs.workspace.GetByWorkspaceIDForPrincipal(p, primaryWS)
+	if err != nil {
+		return store.WorkerRecord{}, err
+	}
+	if !found || !strings.EqualFold(entry.State, "active") {
+		return store.WorkerRecord{}, store.ErrWorkerConflict
+	}
+	return ws.AcceptWorker(account, user, id, revision, map[string]string{"primary": primaryWS})
+}
+
 // Dispatch admits once. The pinned receipt survives wake failure and can be
 // retried with the same key. Dispatch of a newly created receipt is not allowed
 // to bypass workspace, capability or legacy-cutover checks.

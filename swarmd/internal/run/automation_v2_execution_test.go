@@ -1001,22 +1001,11 @@ func TestAutomationV2MultiWorkspaceScoping(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	call := tool.Call{
-		Name:      "manage_workers",
-		Arguments: fmt.Sprintf(`{"action":"propose","document":%s}`, string(mustJSON(t, doc))),
-	}
-	out, err := authoring.executeWorkerProposalTool("author", call)
+	prop, err := service.ProposeAutomationV2("account", "owner", wPrimary.WorkspaceID, "author", &doc, store.AutomationV2Review{})
 	if err != nil {
 		t.Fatalf("proposal failed: %v", err)
 	}
-	var propResult struct {
-		WorkerReview store.AutomationV2Review `json:"worker_review"`
-	}
-	if err = json.Unmarshal([]byte(out), &propResult); err != nil {
-		t.Fatalf("unmarshal proposal result: %v", err)
-	}
-
-	accepted, err := service.AcceptAutomationV2("account", "owner", wPrimary.WorkspaceID, "author", propResult.WorkerReview)
+	accepted, err := service.AcceptAutomationV2("account", "owner", wPrimary.WorkspaceID, "author", prop.AutomationV2Review)
 	if err != nil {
 		t.Fatalf("accept failed: %v", err)
 	}

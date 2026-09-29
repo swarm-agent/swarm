@@ -555,13 +555,21 @@ func TestProjectScopedWorkerProposalAndChatRejection(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 1. Propose worker from orchestrator session: auto-suggests project workspaces
+	// 1. Propose worker from orchestrator session: creates pending durable worker
 	doc := map[string]any{
 		"title": "Health Auditor",
 		"info":  map[string]any{"goal": "Check project health"},
 		"worker_v2": map[string]any{
 			"schema_version": 2,
 			"schedule":       map[string]any{"kind": "trigger"},
+		},
+		"checkpoints": []map[string]any{
+			{
+				"id":                  "cp-1",
+				"title":               "Run check",
+				"tasks":               []string{"Verify health"},
+				"acceptance_criteria": []string{"Audit passes"},
+			},
 		},
 	}
 	rawDoc, _ := json.Marshal(doc)
@@ -577,47 +585,93 @@ func TestProjectScopedWorkerProposalAndChatRejection(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &propResult); err != nil {
 		t.Fatal(err)
 	}
-	if propResult["project_id"] != projID {
-		t.Fatalf("expected project_id %q, got %v", projID, propResult["project_id"])
+	if propResult["status"] != "pending_review" {
+		t.Fatalf("expected status pending_review, got %v", propResult["status"])
 	}
-	wsIDs, _ := propResult["workspace_ids"].([]any)
-	if len(wsIDs) != 2 {
-		t.Fatalf("expected 2 suggested workspace_ids, got %v", wsIDs)
+	if propResult["lifecycle_state"] != "pending" {
+		t.Fatalf("expected lifecycle_state pending, got %v", propResult["lifecycle_state"])
+	}
+	if propResult["next_action"] != "await_worker_acceptance" {
+		t.Fatalf("expected next_action await_worker_acceptance, got %v", propResult["next_action"])
+	}
+	workerID, _ := propResult["worker_id"].(string)
+	if workerID == "" || !strings.HasPrefix(workerID, "worker_") {
+		t.Fatalf("expected worker_id with prefix worker_, got %v", workerID)
+	}
+	// Verify durable worker record was persisted in Pebble
+	durableWorker, found, err := sessions.GetWorker("account", workerID)
+	if err != nil || !found {
+		t.Fatalf("failed to retrieve durable worker: %v, found=%v", err, found)
+	}
+	if durableWorker.LifecycleState != store.WorkerLifecycleStatePending {
+		t.Fatalf("expected pending lifecycle state, got %s", durableWorker.LifecycleState)
+	}
+	if durableWorker.ProposedBindings == nil || durableWorker.ProposedBindings["primary"] != wA.WorkspaceID {
+		t.Fatalf("expected proposed primary binding %s, got %v", wA.WorkspaceID, durableWorker.ProposedBindings)
+	}
+	if len(durableWorker.Automations) != 1 {
+		t.Fatalf("expected 1 automation, got %d", len(durableWorker.Automations))
 	}
 
-	// 2. Reject proposal with workspace not belonging to the project
-	badDoc := map[string]any{
-		"title": "Health Auditor",
-		"info":  map[string]any{"goal": "Check project health"},
-		"worker_v2": map[string]any{
-			"schema_version": 2,
-			"workspace_ids":  []string{"ws-unrelated"},
-			"schedule":       map[string]any{"kind": "trigger"},
-		},
-	}
-	rawBad, _ := json.Marshal(badDoc)
-	badCall := tool.Call{
-		Name:      "manage_workers",
-		Arguments: fmt.Sprintf(`{"action":"propose","document":%s}`, string(rawBad)),
-	}
-	if _, err := svc.executeWorkerProposalTool("orch-session", badCall); err == nil || !strings.Contains(err.Error(), "not part of project") {
-		t.Fatalf("expected 'not part of project' error, got %v", err)
-	}
-
-	// 3. Reject proposal without a project
+	// 2. Propose worker without a project: succeeds and creates pending worker
 	noProjSession := store.SessionSnapshot{
 		ID:             "no-proj-session",
 		AccountScopeID: "account",
 		UserID:         "owner",
 		Mode:           "auto",
-		WorkspacePath:  "/path/a",
+		WorkspacePath:  wA.Path,
 		WorkspaceGrants: []store.WorkspaceGrant{
-			{Kind: store.WorkspaceGrantPrimary, Path: "/path/a", WorkspaceID: "ws-a", Available: &avail},
+			{Kind: store.WorkspaceGrantPrimary, Path: wA.Path, WorkspaceID: wA.WorkspaceID, Available: &avail},
+		},
+		Metadata: map[string]any{
+			"agent_name":          "system-orchestrator",
+			"resolved_agent_name": "system-orchestrator",
 		},
 	}
 	_ = ss.CreateSession(noProjSession)
-	if _, err := svc.executeWorkerProposalTool("no-proj-session", call); err == nil || !strings.Contains(err.Error(), "workers must be deployed in a project") {
-		t.Fatalf("expected project requirement error, got %v", err)
+	zeroJobCall := tool.Call{
+		Name:      "manage_workers",
+		Arguments: `{"action":"propose","name":"Zero Job Specialist","instructions":"Wait for manual instructions"}`,
+	}
+	zeroJobOut, err := svc.executeWorkerProposalTool("no-proj-session", zeroJobCall)
+	if err != nil {
+		t.Fatalf("expected proposal without project to succeed, got %v", err)
+	}
+	var zeroJobResult map[string]any
+	if err := json.Unmarshal([]byte(zeroJobOut), &zeroJobResult); err != nil {
+		t.Fatal(err)
+	}
+	zeroJobID, _ := zeroJobResult["worker_id"].(string)
+	zeroJobWorker, found, err := sessions.GetWorker("account", zeroJobID)
+	if err != nil || !found {
+		t.Fatalf("failed to retrieve zero job worker: %v, found=%v", err, found)
+	}
+	if len(zeroJobWorker.Automations) != 0 {
+		t.Fatalf("expected 0 automations for zero job worker, got %d", len(zeroJobWorker.Automations))
+	}
+	if zeroJobWorker.LifecycleState != store.WorkerLifecycleStatePending {
+		t.Fatalf("expected pending lifecycle state, got %s", zeroJobWorker.LifecycleState)
+	}
+
+	// 3. Reproposing existing pending worker updates definition
+	repropCall := tool.Call{
+		Name:      "manage_workers",
+		Arguments: fmt.Sprintf(`{"action":"propose","worker_id":%q,"expected_revision":1,"name":"Zero Job Specialist Renamed","instructions":"Updated instructions"}`, zeroJobID),
+	}
+	repropOut, err := svc.executeWorkerProposalTool("no-proj-session", repropCall)
+	if err != nil {
+		t.Fatalf("reproposal failed: %v", err)
+	}
+	var repropResult map[string]any
+	if err := json.Unmarshal([]byte(repropOut), &repropResult); err != nil {
+		t.Fatal(err)
+	}
+	repropWorker, found, err := sessions.GetWorker("account", zeroJobID)
+	if err != nil || !found {
+		t.Fatalf("failed to retrieve reproposed worker: %v, found=%v", err, found)
+	}
+	if repropWorker.Name != "Zero Job Specialist Renamed" || repropWorker.Revision != 2 {
+		t.Fatalf("expected updated name and revision 2, got %q r%d", repropWorker.Name, repropWorker.Revision)
 	}
 
 	// 4. Invariant: Chat sessions invoking workerProposalCall are rejected
@@ -642,28 +696,5 @@ func TestProjectScopedWorkerProposalAndChatRejection(t *testing.T) {
 	}
 	if !strings.Contains(chatResult.Error, "exclusive to Swarm Orchestrator") {
 		t.Fatalf("expected chat session rejection, got: %s", chatResult.Error)
-	}
-
-	// 5. Accept proposal and verify ProjectRecord.AutomationIDs registration
-	reviewRaw, _ := json.Marshal(propResult["worker_review"])
-	var review store.AutomationV2Review
-	_ = json.Unmarshal(reviewRaw, &review)
-	accepted, err := sessions.AcceptAutomationV2("account", "owner", wA.WorkspaceID, "orch-session", review)
-	if err != nil {
-		t.Fatalf("accept failed: %v", err)
-	}
-	projAfter, found, err := ss.GetProject("account", projID)
-	if err != nil || !found || projAfter == nil {
-		t.Fatalf("failed to retrieve project: %v", err)
-	}
-	registered := false
-	for _, aid := range projAfter.AutomationIDs {
-		if aid == accepted.AutomationID {
-			registered = true
-			break
-		}
-	}
-	if !registered {
-		t.Fatalf("accepted worker %q not registered in ProjectRecord.AutomationIDs: %v", accepted.AutomationID, projAfter.AutomationIDs)
 	}
 }

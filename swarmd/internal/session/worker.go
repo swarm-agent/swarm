@@ -59,6 +59,18 @@ func (s *Service) UpdateWorker(account, user, workerID string, expectedRevision 
 	return ws.UpdateWorker(account, user, workerID, expectedRevision, req, ValidateExecutablePlanDocument)
 }
 
+// AcceptWorker accepts a pending worker proposal with approved local bindings.
+func (s *Service) AcceptWorker(account, user, workerID string, expectedRevision uint64, bindings map[string]string) (pebblestore.WorkerRecord, error) {
+	if s == nil || s.store == nil {
+		return pebblestore.WorkerRecord{}, errors.New("session service not configured")
+	}
+	ws := s.store.WorkerStore()
+	if ws == nil {
+		return pebblestore.WorkerRecord{}, errors.New("worker store not configured")
+	}
+	return ws.AcceptWorker(account, user, workerID, expectedRevision, bindings)
+}
+
 // DeleteWorker tombstones a worker, recording the event and revision in history.
 func (s *Service) DeleteWorker(account, user, workerID string, expectedRevision uint64) error {
 	if s == nil || s.store == nil {

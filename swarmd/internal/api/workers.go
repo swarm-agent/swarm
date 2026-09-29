@@ -235,6 +235,12 @@ func (s *Server) handleWorkers(w http.ResponseWriter, r *http.Request) {
 
 	sub := parts[1]
 	switch sub {
+	case "accept":
+		if len(parts) != 2 {
+			writeError(w, http.StatusNotFound, errors.New("not found"))
+			return
+		}
+		s.handleWorkerAccept(w, r, p, workerID)
 	case "activate", "deploy":
 		if len(parts) != 2 {
 			writeError(w, http.StatusNotFound, errors.New("not found"))
@@ -380,7 +386,8 @@ func (s *Server) handleWorkerCollection(w http.ResponseWriter, r *http.Request, 
 		if q.Has("lifecycle_state") {
 			val := strings.TrimSpace(q.Get("lifecycle_state"))
 			switch pebblestore.WorkerLifecycleState(val) {
-			case pebblestore.WorkerLifecycleStateIdle,
+			case pebblestore.WorkerLifecycleStatePending,
+				pebblestore.WorkerLifecycleStateIdle,
 				pebblestore.WorkerLifecycleStateActive,
 				pebblestore.WorkerLifecycleStateStopping,
 				pebblestore.WorkerLifecycleStatePaused,
@@ -1223,6 +1230,51 @@ type triggerWorkerRequestBody struct {
 type mintWorkerTokenRequestBody struct {
 	Name          string `json:"name,omitempty"`
 	SaveToSecrets *bool  `json:"save_to_secrets,omitempty"`
+}
+
+type acceptWorkerRequestBody struct {
+	ExpectedRevision uint64 `json:"expected_revision"`
+}
+
+func (s *Server) handleWorkerAccept(w http.ResponseWriter, r *http.Request, p identity.Principal, workerID string) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	if !s.requireScope(w, r, "automations:write") {
+		return
+	}
+	if p.Type != identity.PrincipalTypeUser && p.Type != "user" {
+		writeError(w, http.StatusForbidden, errors.New("explicit human user required to accept worker proposal; AI cannot self-approve"))
+		return
+	}
+	if _, err := parseAndValidateQuery(r); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	var req acceptWorkerRequestBody
+	if err := decodeJSONStrict(w, r, 512*1024, &req); err != nil {
+		workerHTTPError(w, err)
+		return
+	}
+	if req.ExpectedRevision == 0 {
+		writeError(w, http.StatusBadRequest, errors.New("expected_revision in body is required"))
+		return
+	}
+
+	execution, err := s.workerExecutionService()
+	if err != nil {
+		workerHTTPError(w, err)
+		return
+	}
+	worker, err := execution.Accept(p.AccountScopeID, p.UserID, workerID, req.ExpectedRevision)
+	if err != nil {
+		workerHTTPError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"worker": worker,
+	})
 }
 
 func (s *Server) handleWorkerActivate(w http.ResponseWriter, r *http.Request, p identity.Principal, workerID string) {

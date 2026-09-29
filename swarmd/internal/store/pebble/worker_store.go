@@ -28,6 +28,7 @@ var workerIDRegexp = regexp.MustCompile(`^[a-zA-Z0-9_\-\.]{3,128}$`)
 type WorkerLifecycleState string
 
 const (
+	WorkerLifecycleStatePending  WorkerLifecycleState = "pending"
 	WorkerLifecycleStateIdle     WorkerLifecycleState = "idle"
 	WorkerLifecycleStateActive   WorkerLifecycleState = "active"
 	WorkerLifecycleStateStopping WorkerLifecycleState = "stopping"
@@ -110,6 +111,7 @@ type WorkerRecord struct {
 	RequestedCapabilities []WorkerCapabilityRequest    `json:"requested_capabilities,omitempty"`
 	WorkspaceRequirements []WorkerWorkspaceRequirement `json:"workspace_requirements,omitempty"`
 	LocalBindings         map[string]string            `json:"local_bindings,omitempty"`
+	ProposedBindings      map[string]string            `json:"proposed_bindings,omitempty"`
 	Automations           []WorkerAutomationDefinition `json:"automations,omitempty"`
 	Metadata              map[string]any               `json:"metadata,omitempty"`
 	Provenance            *WorkerProvenance            `json:"provenance,omitempty"`
@@ -207,6 +209,8 @@ type CreateWorkerRequest struct {
 	RequestedCapabilities []WorkerCapabilityRequest    `json:"requested_capabilities,omitempty"`
 	WorkspaceRequirements []WorkerWorkspaceRequirement `json:"workspace_requirements,omitempty"`
 	LocalBindings         map[string]string            `json:"local_bindings,omitempty"`
+	ProposedBindings      map[string]string            `json:"proposed_bindings,omitempty"`
+	InitialLifecycleState WorkerLifecycleState         `json:"initial_lifecycle_state,omitempty"`
 	Automations           []WorkerAutomationDefinition `json:"automations,omitempty"`
 	Metadata              map[string]any               `json:"metadata,omitempty"`
 	IdempotencyKey        string                       `json:"idempotency_key,omitempty"`
@@ -219,6 +223,7 @@ type UpdateWorkerRequest struct {
 	RequestedCapabilities []WorkerCapabilityRequest    `json:"requested_capabilities,omitempty"`
 	WorkspaceRequirements []WorkerWorkspaceRequirement `json:"workspace_requirements,omitempty"`
 	LocalBindings         map[string]string            `json:"local_bindings,omitempty"`
+	ProposedBindings      map[string]string            `json:"proposed_bindings,omitempty"`
 	Automations           []WorkerAutomationDefinition `json:"automations,omitempty"`
 	Metadata              map[string]any               `json:"metadata,omitempty"`
 	ChangeSummary         string                       `json:"change_summary,omitempty"`
@@ -342,7 +347,7 @@ func ValidateWorkerRecord(w *WorkerRecord, validate func(*SessionPlanDocument) e
 		return errors.New("worker instructions exceed 128 KiB")
 	}
 	switch w.LifecycleState {
-	case WorkerLifecycleStateIdle, WorkerLifecycleStateActive, WorkerLifecycleStateStopping, WorkerLifecycleStatePaused, WorkerLifecycleStateArchived, WorkerLifecycleStateDeleted:
+	case WorkerLifecycleStatePending, WorkerLifecycleStateIdle, WorkerLifecycleStateActive, WorkerLifecycleStateStopping, WorkerLifecycleStatePaused, WorkerLifecycleStateArchived, WorkerLifecycleStateDeleted:
 	default:
 		return fmt.Errorf("invalid worker lifecycle state: %q", w.LifecycleState)
 	}
@@ -911,16 +916,25 @@ func (ws *WorkerStore) CreateWorker(account, user string, req CreateWorkerReques
 		wsReqs = []WorkerWorkspaceRequirement{}
 	}
 
+	state := WorkerLifecycleStateIdle
+	if req.InitialLifecycleState != "" {
+		if req.InitialLifecycleState != WorkerLifecycleStateIdle && req.InitialLifecycleState != WorkerLifecycleStatePending {
+			return WorkerRecord{}, fmt.Errorf("invalid initial lifecycle state: %q", req.InitialLifecycleState)
+		}
+		state = req.InitialLifecycleState
+	}
+
 	w := WorkerRecord{
 		ID:                    workerID,
 		AccountScopeID:        account,
 		Name:                  strings.TrimSpace(req.Name),
 		Description:           strings.TrimSpace(req.Description),
 		Instructions:          req.Instructions,
-		LifecycleState:        WorkerLifecycleStateIdle, // Create/import always idle
+		LifecycleState:        state,
 		Revision:              1,
 		RequestedCapabilities: reqCaps,
 		WorkspaceRequirements: wsReqs,
+		ProposedBindings:      req.ProposedBindings,
 		Automations:           automations,
 		Metadata:              req.Metadata,
 		CreatedAt:             now,
@@ -1139,7 +1153,7 @@ func (ws *WorkerStore) UpdateWorker(account, user, workerID string, expectedRevi
 	if current.Revision != expectedRevision {
 		return WorkerRecord{}, ErrWorkerConflict
 	}
-	if current.LifecycleState != WorkerLifecycleStateIdle {
+	if current.LifecycleState != WorkerLifecycleStateIdle && current.LifecycleState != WorkerLifecycleStatePending {
 		return WorkerRecord{}, ErrActiveScheduleUpdateRejected
 	}
 	for _, auto := range current.Automations {
@@ -1167,6 +1181,9 @@ func (ws *WorkerStore) UpdateWorker(account, user, workerID string, expectedRevi
 	}
 	if req.Metadata != nil {
 		updated.Metadata = req.Metadata
+	}
+	if req.ProposedBindings != nil {
+		updated.ProposedBindings = req.ProposedBindings
 	}
 	if req.Automations != nil {
 		automations := make([]WorkerAutomationDefinition, len(req.Automations))
@@ -1305,7 +1322,7 @@ func (ws *WorkerStore) DeleteWorker(account, user, workerID string, expectedRevi
 	if current.Revision != expectedRevision {
 		return ErrWorkerConflict
 	}
-	if current.LifecycleState != WorkerLifecycleStateIdle {
+	if current.LifecycleState != WorkerLifecycleStateIdle && current.LifecycleState != WorkerLifecycleStatePending {
 		return errors.New("cannot delete non-idle worker")
 	}
 
@@ -1483,7 +1500,7 @@ func (ws *WorkerStore) AttachWorkerAutomation(account, user, workerID string, ex
 	if current.Revision != expectedWorkerRevision {
 		return WorkerRecord{}, ErrWorkerConflict
 	}
-	if current.LifecycleState != WorkerLifecycleStateIdle {
+	if current.LifecycleState != WorkerLifecycleStateIdle && current.LifecycleState != WorkerLifecycleStatePending {
 		return WorkerRecord{}, ErrActiveScheduleUpdateRejected
 	}
 	for _, a := range current.Automations {
@@ -1592,7 +1609,7 @@ func (ws *WorkerStore) UpdateWorkerAutomation(account, user, workerID, automatio
 	if current.Revision != expectedWorkerRevision {
 		return WorkerRecord{}, ErrWorkerConflict
 	}
-	if current.LifecycleState != WorkerLifecycleStateIdle {
+	if current.LifecycleState != WorkerLifecycleStateIdle && current.LifecycleState != WorkerLifecycleStatePending {
 		return WorkerRecord{}, ErrActiveScheduleUpdateRejected
 	}
 	for _, a := range current.Automations {
@@ -1711,7 +1728,7 @@ func (ws *WorkerStore) RemoveWorkerAutomation(account, user, workerID, automatio
 	if current.Revision != expectedWorkerRevision {
 		return WorkerRecord{}, ErrWorkerConflict
 	}
-	if current.LifecycleState != WorkerLifecycleStateIdle {
+	if current.LifecycleState != WorkerLifecycleStateIdle && current.LifecycleState != WorkerLifecycleStatePending {
 		return WorkerRecord{}, ErrActiveScheduleUpdateRejected
 	}
 	for _, a := range current.Automations {
@@ -2029,7 +2046,7 @@ func (ws *WorkerStore) ImportWorkerUpdate(account, user, workerID string, expect
 	if current.Revision != expectedRevision {
 		return WorkerRecord{}, ErrWorkerConflict
 	}
-	if current.LifecycleState != WorkerLifecycleStateIdle {
+	if current.LifecycleState != WorkerLifecycleStateIdle && current.LifecycleState != WorkerLifecycleStatePending {
 		return WorkerRecord{}, ErrActiveScheduleUpdateRejected
 	}
 	for _, a := range current.Automations {

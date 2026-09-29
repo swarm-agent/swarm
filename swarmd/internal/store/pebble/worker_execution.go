@@ -291,7 +291,7 @@ func (ws *WorkerStore) SetWorkerLifecycle(account, user, id string, revision uin
 	case WorkerLifecycleStateActive:
 		allowed = w.LifecycleState == WorkerLifecycleStateIdle || w.LifecycleState == WorkerLifecycleStatePaused
 	case WorkerLifecycleStateStopping:
-		allowed = w.LifecycleState == WorkerLifecycleStateActive || w.LifecycleState == WorkerLifecycleStateIdle || w.LifecycleState == WorkerLifecycleStatePaused || (w.LifecycleState == WorkerLifecycleStateArchived && len(stopTarget) == 1 && stopTarget[0] == WorkerLifecycleStateDeleted)
+		allowed = w.LifecycleState == WorkerLifecycleStateActive || w.LifecycleState == WorkerLifecycleStateIdle || w.LifecycleState == WorkerLifecycleStatePaused || (w.LifecycleState == WorkerLifecycleStateArchived && len(stopTarget) == 1 && stopTarget[0] == WorkerLifecycleStateDeleted) || (w.LifecycleState == WorkerLifecycleStatePending && len(stopTarget) == 1 && (stopTarget[0] == WorkerLifecycleStateDeleted || stopTarget[0] == WorkerLifecycleStateArchived))
 	case WorkerLifecycleStatePaused, WorkerLifecycleStateArchived, WorkerLifecycleStateDeleted:
 		allowed = w.LifecycleState == WorkerLifecycleStateStopping
 	}
@@ -448,6 +448,78 @@ func (ws *WorkerStore) UnfinishedWorkerRuns(account, id, autoID string) ([]Worke
 	ws.store.workersMu.Lock()
 	defer ws.store.workersMu.Unlock()
 	return ws.unfinishedWorkerRuns(account, id, autoID)
+}
+
+// AcceptWorker accepts a pending worker proposal with its exact revision and approved bindings.
+// Authenticated user ingress owns approval; AI tools cannot self-approve.
+func (ws *WorkerStore) AcceptWorker(account, user, id string, revision uint64, bindings map[string]string) (WorkerRecord, error) {
+	if ws == nil || ws.store == nil || ws.store.db == nil {
+		return WorkerRecord{}, errors.New("store is not open")
+	}
+	account = strings.TrimSpace(account)
+	id = strings.TrimSpace(id)
+	if account == "" || id == "" {
+		return WorkerRecord{}, errors.New("account and worker id are required")
+	}
+	ws.store.workersMu.Lock()
+	var published *workerRealtimeMutation
+	defer func() {
+		ws.store.workersMu.Unlock()
+		if published != nil {
+			ws.store.publishWorkerRealtime(published)
+		}
+	}()
+	var w WorkerRecord
+	found, err := ws.store.GetJSON(KeyWorker(account, id), &w)
+	if err != nil {
+		return WorkerRecord{}, err
+	}
+	if !found || w.AccountScopeID != account {
+		return WorkerRecord{}, ErrWorkerNotFound
+	}
+	if revision == 0 || w.Revision != revision || w.LifecycleState != WorkerLifecycleStatePending || (w.Provenance != nil && (w.Provenance.MigratedAt != 0 || w.Provenance.SourceProposalID != "")) {
+		return WorkerRecord{}, ErrWorkerConflict
+	}
+	if len(w.RequestedCapabilities) != 0 {
+		return WorkerRecord{}, fmt.Errorf("%w: capability approvals unsupported", ErrWorkerConflict)
+	}
+	if len(bindings) != 1 || strings.TrimSpace(bindings["primary"]) == "" {
+		return WorkerRecord{}, fmt.Errorf("%w: one required primary workspace role must be bound", ErrWorkerConflict)
+	}
+	now := time.Now().UnixMilli()
+	w.LocalBindings = map[string]string{"primary": strings.TrimSpace(bindings["primary"])}
+	w.LifecycleState = WorkerLifecycleStateActive
+	w.Revision++
+	w.UpdatedAt = now
+	hist := WorkerRevisionRecord{
+		WorkerID:       id,
+		AccountScopeID: account,
+		Revision:       w.Revision,
+		Worker:         w,
+		CommittedAt:    now,
+		CommittedBy:    user,
+		ChangeSummary:  "accepted worker proposal",
+	}
+	m := &workerRealtimeMutation{accountScopeID: account, userID: user, workerID: id}
+	if err = m.put(KeyWorker(account, id), w); err != nil {
+		return WorkerRecord{}, err
+	}
+	if err = m.put(KeyWorkerHistory(account, id, w.Revision), hist); err != nil {
+		return WorkerRecord{}, err
+	}
+	if err = m.setPayload(WorkerRealtimePayload{
+		WorkerID:       id,
+		Revision:       w.Revision,
+		LifecycleState: w.LifecycleState,
+		ChangeSummary:  hist.ChangeSummary,
+	}); err != nil {
+		return WorkerRecord{}, err
+	}
+	if err = ws.store.commitWorkerRealtime(m); err != nil {
+		return WorkerRecord{}, err
+	}
+	published = m
+	return w, nil
 }
 
 // ActivateWorker commits approved local roles and admission state together.

@@ -290,6 +290,7 @@ func TestOrchestratorWorkerLifecycleActions(t *testing.T) {
 		"name":         "Code Reviewer",
 		"description":  "Performs automated reviews",
 		"instructions": "Review PR diffs thoroughly",
+		"workspace_id": workspaceID,
 
 		"workspace_requirements": []map[string]any{
 			{"role": "primary", "required": true},
@@ -303,8 +304,8 @@ func TestOrchestratorWorkerLifecycleActions(t *testing.T) {
 	if workerID == "" || !strings.HasPrefix(workerID, "worker_") {
 		t.Fatalf("expected stable worker ID prefix worker_, got %q", workerID)
 	}
-	if workerData["lifecycle_state"] != "idle" {
-		t.Fatalf("expected idle lifecycle state on create, got %v", workerData["lifecycle_state"])
+	if workerData["lifecycle_state"] != "pending" {
+		t.Fatalf("expected pending lifecycle state on create, got %v", workerData["lifecycle_state"])
 	}
 	if uint64(workerData["revision"].(float64)) != 1 {
 		t.Fatalf("expected revision 1, got %v", workerData["revision"])
@@ -395,8 +396,8 @@ func TestOrchestratorWorkerLifecycleActions(t *testing.T) {
 		t.Fatalf("expected revision 3, got %v", attachedWorker["revision"])
 	}
 
-	// User approval activates bindings; AI cannot self-approve.
-	if _, err := execution.Activate("account", "owner", workerID, 3, map[string]string{"primary": workspaceID}); err != nil {
+	// User approval accepts and activates bindings; AI cannot self-approve.
+	if _, err := execution.Accept("account", "owner", workerID, 3); err != nil {
 		t.Fatal(err)
 	}
 	// 8. action=test (labelled test run)
