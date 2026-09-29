@@ -636,7 +636,7 @@ function TaskElapsedTimer({
  * Free of highlight gradients and pill badges. Displays "Action Needed",
  * worktree/unmerged git status, and "What did it do?" vs "What's not done yet?".
  */
-function MinimalTaskCard({
+export function MinimalTaskCard({
   task,
   isSelected,
   isMarked,
@@ -1316,7 +1316,7 @@ function MinimalTaskCard({
 
           {/* Plan Summary */}
           {expanded && task.planSummary && (
-            <div className="p-2.5 rounded bg-slate-900/80 border border-slate-800 text-[11px] font-mono text-slate-300 whitespace-pre-line leading-relaxed">
+            <div data-testid="task-execution-overview" className="min-w-0 max-w-full [overflow-wrap:anywhere] p-2.5 rounded bg-slate-900/80 border border-slate-800 text-[11px] font-mono text-slate-300 whitespace-pre-line leading-relaxed">
               <div className="text-[9px] uppercase tracking-wider text-blue-400 font-bold mb-1">
                 Execution Overview
               </div>
@@ -1507,7 +1507,7 @@ function MinimalTaskCard({
 
           {/* Expandable Structured Plan or Task Program or Fallback Markdown */}
           {(hasStructuredPlan || task.fullPlanMarkdown) && (
-            <div className="border border-slate-800/80 rounded bg-[#070b14]/90 overflow-hidden" data-testid="task-plan-spec">
+            <div className="min-w-0 max-w-full whitespace-normal [overflow-wrap:anywhere] border border-slate-800/80 rounded bg-[#070b14]/90" data-testid="task-plan-spec">
               <button
                 type="button"
                 onClick={(e) => {
@@ -1528,15 +1528,15 @@ function MinimalTaskCard({
                 {isFullPlanOpen ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
               </button>
               {isFullPlanOpen && (
-                <div className="p-3 border-t border-slate-800 text-[11px] text-slate-300 font-mono leading-relaxed max-h-80 overflow-y-auto bg-slate-950/60 space-y-3">
+                <div data-testid="task-plan-reader" className="min-w-0 p-3 border-t border-slate-800 text-[11px] text-slate-300 font-mono leading-relaxed max-h-80 overflow-y-auto bg-slate-950/60 space-y-3">
                   {/* Render Structured Plan Document Checkpoints */}
                   {planCheckpointsToRender.length > 0 && (
                     <div className="space-y-2">
-                      {planDocTitle && (
-                        <div className="text-xs font-bold text-white flex items-center justify-between border-b border-slate-800/80 pb-1">
-                          <span>{planDocTitle}</span>
+                      {(planDocTitle || planDocGoal) && (
+                        <div className="min-w-0 text-xs font-bold text-white space-y-1 border-b border-slate-800/80 pb-1">
+                          {planDocTitle && <div>{planDocTitle}</div>}
                           {planDocGoal && (
-                            <span className="text-[10px] text-slate-400 font-normal truncate max-w-[60%]" title={planDocGoal}>{planDocGoal}</span>
+                            <div className="text-[10px] text-slate-400 font-normal">{planDocGoal}</div>
                           )}
                         </div>
                       )}
@@ -1552,10 +1552,10 @@ function MinimalTaskCard({
                             : (cp.criteria && Array.isArray(cp.criteria) ? cp.criteria : [])
                           return (
                             <div key={cp.id || idx} className="p-2 rounded bg-slate-900/70 border border-slate-800/60 space-y-1.5" data-testid={`plan-checkpoint-${cp.id || idx}`}>
-                              <div className="flex items-center justify-between font-bold text-slate-200">
-                                <div className="flex items-center gap-1.5">
-                                  <span className="text-blue-400 font-mono">{idx + 1}.</span>
-                                  <span>{cp.title}</span>
+                              <div className="flex flex-wrap items-start gap-1.5 justify-between font-bold text-slate-200">
+                                <div className="min-w-0 flex items-start gap-1.5">
+                                  <span className="text-blue-400 font-mono shrink-0">{idx + 1}.</span>
+                                  <span className="min-w-0">{cp.title}</span>
                                 </div>
                                 <span className="text-[9px] uppercase font-mono px-1.5 py-0.2 rounded bg-slate-800 text-slate-400">
                                   {cp.status || 'pending'}
@@ -1571,7 +1571,7 @@ function MinimalTaskCard({
                                     {tasksList.map((tText: any, tIdx: number) => {
                                       const label = typeof tText === 'string' ? tText : (tText?.title || tText?.text || JSON.stringify(tText))
                                       return (
-                                        <li key={tIdx} className="truncate">{label}</li>
+                                        <li key={tIdx}>{label}</li>
                                       )
                                     })}
                                   </ul>
@@ -1586,7 +1586,7 @@ function MinimalTaskCard({
                                       return (
                                         <li key={cIdx} className="flex items-start gap-1">
                                           <span className="text-emerald-400 font-bold">✓</span>
-                                          <span className="truncate">{label}</span>
+                                          <span className="min-w-0">{label}</span>
                                         </li>
                                       )
                                     })}
@@ -1606,7 +1606,7 @@ function MinimalTaskCard({
                   {/* Render Structured Task Program Spec */}
                   {taskProgramDef && (taskProgramDef.stages?.length > 0 || taskProgramDef.jobs?.length > 0) && (
                     <div className="space-y-2 border-t border-slate-800/80 pt-2" data-testid="task-program-spec">
-                      <div className="text-xs font-bold text-indigo-300 flex items-center justify-between">
+                      <div className="text-xs font-bold text-indigo-300 flex flex-wrap items-start gap-1.5 justify-between">
                         <span className="flex items-center gap-1.5">
                           <Layers size={12} className="text-indigo-400" />
                           <span>Task Program Specification ({taskProgramDef.jobs?.length || 0} Jobs across {taskProgramDef.stages?.length || 1} Stages)</span>
@@ -1620,7 +1620,7 @@ function MinimalTaskCard({
                           const stageJobs = (taskProgramDef.jobs || []).filter((j: any) => j.stage_id === stage.id || (!j.stage_id && sIdx === 0))
                           return (
                             <div key={stage.id || sIdx} className="p-2 rounded bg-slate-900/60 border border-slate-800/80 space-y-1.5" data-testid={`program-stage-${stage.id || sIdx}`}>
-                              <div className="flex items-center justify-between font-mono text-[10px]">
+                              <div className="flex flex-wrap items-start gap-1.5 justify-between font-mono text-[10px]">
                                 <span className="font-bold text-slate-200">
                                   Stage {sIdx + 1}: {stage.id}
                                 </span>
@@ -1633,26 +1633,31 @@ function MinimalTaskCard({
                               )}
                               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1 font-mono text-[10px]">
                                 {stageJobs.map((job: any) => (
-                                  <div key={job.id} className="p-1.5 rounded bg-slate-950/80 border border-slate-800 space-y-1">
-                                    <div className="flex items-center justify-between">
+                                  <div key={job.id} className="min-w-0 p-1.5 rounded bg-slate-950/80 border border-slate-800 space-y-1">
+                                    <div className="flex flex-wrap items-start gap-1.5 justify-between">
                                       <span className="text-[9px] uppercase font-bold px-1 py-0.2 rounded bg-indigo-900/60 text-indigo-300 border border-indigo-500/30">
                                         @{job.agent_type || 'coder'}
                                       </span>
-                                      <span className="font-bold text-white text-[10px] truncate max-w-[120px]">{job.title || job.id}</span>
+                                      <span className="min-w-0 font-bold text-white text-[10px]">{job.title || job.id}</span>
                                     </div>
                                     {job.owned_scope && job.owned_scope.length > 0 && (
-                                      <div className="text-[9px] text-slate-400 truncate">
+                                      <div className="text-[9px] text-slate-400">
                                         <span className="text-slate-500">scope:</span> {job.owned_scope.join(', ')}
                                       </div>
                                     )}
                                     {job.deliverable && (
-                                      <div className="text-[9px] text-slate-400 truncate">
+                                      <div className="text-[9px] text-slate-400">
                                         <span className="text-slate-500">deliverable:</span> {job.deliverable}
                                       </div>
                                     )}
                                     {job.acceptance_criteria && job.acceptance_criteria.length > 0 && (
-                                      <div className="text-[9px] text-emerald-400/90 pt-0.5 truncate">
-                                        <span>Criteria: {job.acceptance_criteria[0]}</span>
+                                      <div className="text-[9px] text-emerald-400/90 pt-0.5">
+                                        <span>Acceptance Criteria:</span>
+                                        <ul className="list-disc list-inside space-y-0.5">
+                                          {job.acceptance_criteria.map((criterion: string, criterionIdx: number) => (
+                                            <li key={criterionIdx}>{criterion}</li>
+                                          ))}
+                                        </ul>
                                       </div>
                                     )}
                                   </div>
