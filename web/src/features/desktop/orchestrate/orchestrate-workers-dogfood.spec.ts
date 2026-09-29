@@ -7,18 +7,15 @@ import { fileURLToPath } from 'node:url'
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 
-test('OrchestrateView displays active running automations at top of project with click-through to Workers Hub', () => {
+test('OrchestrateView excludes legacy Active Project Automations panel and links to canonical Workers Hub', () => {
   const orchestrateSourcePath = path.join(__dirname, 'OrchestrateView.tsx')
   const source = fs.readFileSync(orchestrateSourcePath, 'utf8')
 
-  // Invariant 1: Top of project must render active project automations
-  assert.ok(source.includes('Active Project Automations'), 'OrchestrateView must show Active Project Automations ticker at top of project')
-  assert.ok(source.includes('Manage Fleet in Workers Hub') || source.includes('Explore Workers Hub'), 'OrchestrateView must link to Workers Hub from top ticker')
+  // Invariant 1: Top of project must NOT render legacy Active Project Automations ticker/cards
+  assert.ok(!source.includes('Active Project Automations'), 'OrchestrateView must NOT show Active Project Automations ticker at top of project')
+  assert.ok(!source.includes('Manage Fleet in Workers Hub'), 'OrchestrateView must not link to legacy fleet from top ticker')
 
-  // Invariant 2: Clicking an automation or link switches to Workers Hub
-  assert.ok(source.includes("setActiveNavTab('workers')"), 'OrchestrateView must support 1-click navigation to Workers Hub')
-
-  // Invariant 3: Workers Hub tab has a single canonical render path, not the retired fleet.
+  // Invariant 2: Workers Hub tab has a single canonical render path, not the retired fleet.
   assert.ok(source.includes('<WorkerHub workspaceSlug={workspaceSlug} initialWorkerId={workerDetailId || routeWorkerId}'))
   assert.ok(source.includes('onAddWorker={() =>'))
   assert.ok(!source.includes("false && activeNavTab === 'workers'"))
@@ -70,16 +67,24 @@ test('project page retains pending review actions outside canonical worker hub',
   assert.ok(!source.includes('handleUpdateWorkerWorkspaceScope'))
 })
 
-// Requirement: Orchestrator proposed durable workers appear in regular Tasks view worker section
-// as an expandable PendingWorkerCard with exact intent and granular worker detail navigation.
-// Threat: durable workers only appear in the standalone hub, stranding human acceptance in regular view.
-test('OrchestrateView integrates TasksDurableWorkersSection and PendingWorkerCard in Tasks view', () => {
+// Requirement: Tasks view shows worker-generated automation tasks as ordinary
+// entries in the SAME project task list without separate worker overview panels.
+// Standalone TasksDurableWorkersSection and WorkerTaskActivity in Tasks view are removed.
+test('OrchestrateView excludes separate worker overview panels and renders All tasks / Worker tasks filter', () => {
   const source = fs.readFileSync(path.join(__dirname, 'OrchestrateView.tsx'), 'utf8')
-  assert.ok(source.includes('TasksDurableWorkersSection'), 'OrchestrateView must define and render TasksDurableWorkersSection')
-  const activity = fs.readFileSync(path.join(__dirname, 'worker-task-activity.tsx'), 'utf8')
-  assert.ok(source.includes('<WorkerTaskActivity'))
-  assert.ok(activity.includes('<PendingWorkerCard'), 'Pending proposals retain human acceptance')
-  assert.ok(activity.includes('<WorkerRunHistory'), 'Accepted workers expose actual runs')
-  assert.ok(!activity.includes("lifecycleState: 'pending'"), 'Accepted workers must not disappear')
+  // Invariant 1: No standalone worker overview boxes/panels in Tasks view
+  assert.ok(!source.includes('TasksDurableWorkersSection'), 'OrchestrateView must NOT define or render TasksDurableWorkersSection')
+  assert.ok(!source.includes('<WorkerTaskActivity'), 'OrchestrateView must NOT render WorkerTaskActivity in Tasks view')
+
+  // Invariant 2: Tasks view has All tasks vs Worker tasks filter based on durable worker_id
+  assert.ok(source.includes('data-testid="filter-all-tasks"'), 'OrchestrateView must provide All tasks filter')
+  assert.ok(source.includes('data-testid="filter-worker-tasks"'), 'OrchestrateView must provide Worker tasks filter')
+  assert.ok(source.includes('Worker tasks'), 'OrchestrateView must render Worker tasks filter button')
+
+  // Invariant 3: Worker-generated tasks render exact worker tag and canonical link
+  assert.ok(source.includes('data-testid="worker-tag"'), 'OrchestrateView must render worker-tag for worker-generated tasks')
+  assert.ok(source.includes('data-testid="worker-link"'), 'OrchestrateView must render worker-link for worker-generated tasks')
+  assert.ok(source.includes('data-testid="worker-task-spec"'), 'OrchestrateView must render worker-task-spec for task details')
   assert.ok(source.includes('swarmWorkerLink'), 'OrchestrateView must link to worker detail via canonical route')
+  assert.ok(source.includes('swarmWorkerHref'), 'OrchestrateView must use canonical worker href')
 })

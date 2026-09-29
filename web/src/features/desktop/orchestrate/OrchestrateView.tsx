@@ -58,9 +58,8 @@ import { formatContextWindow } from '../chat/services/model-options'
 import { requestJson, getDesktopSessionIdentitySnapshot } from '../../../app/api'
 import { WorkerHub, type SelectedWorker } from './worker-hub'
 import { submitWithWorkerSelection } from './worker-message-context'
-import { WorkerTaskActivity } from './worker-task-activity'
 import { DurableWorkerCount } from '../layout/durable-worker-sidebar'
-import { swarmWorkerLink } from './swarm-navigation'
+import { swarmWorkerLink, swarmWorkerHref } from './swarm-navigation'
 import { useDesktopV3CacheSelector, getDesktopV3CacheSnapshot } from '../state/desktop-v3-cache-store'
 import { selectPendingWorkerSidebarReviews } from '../state/desktop-automation-v2-state'
 import { desktopAutomationV2 } from '../runtime/desktop-automation-v2'
@@ -652,6 +651,8 @@ function MinimalTaskCard({
   onOpenAgentSettings,
   onOpenTaskModelChanger,
   projectId,
+  workspaceSlug,
+  onOpenWorkerDetail,
   defaultImageModel,
   defaultVideoModel,
   defaultAudioModel,
@@ -678,6 +679,8 @@ function MinimalTaskCard({
   onOpenAgentSettings?: (agentName: string) => void
   onOpenTaskModelChanger?: (task: RunningTask) => void
   projectId?: string
+  workspaceSlug?: string
+  onOpenWorkerDetail?: (workerId: string) => void
   modelOptions?: ModelOptionRecord[]
   defaultImageModel?: string
   defaultVideoModel?: string
@@ -725,6 +728,16 @@ function MinimalTaskCard({
   const isFailed = task.status === 'failed'
   const isRejected = task.status === 'rejected'
   const hasUnintegrated = (task.unintegratedCommits ?? 0) > 0
+
+  const isWorker = Boolean(task.workerId?.trim() || task.worker_id?.trim())
+  const workerTargetId = (task.workerId?.trim() || task.worker_id?.trim()) || ''
+  const workerDisplayName = task.worker_name || (task.workerName && !task.workerName.startsWith('@') ? task.workerName : undefined) || workerTargetId || 'Worker'
+  const handleWorkerClick = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (onOpenWorkerDetail && workerTargetId) {
+      onOpenWorkerDetail(workerTargetId)
+    }
+  }
 
   const taskProgramStatus = task.taskProgramStatus || (task as any).task_program_status
   const taskProgramDef = task.taskProgram || (task as any).task_program || taskProgramStatus?.definition
@@ -879,6 +892,19 @@ function MinimalTaskCard({
               <span className="font-mono text-[9px] uppercase px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700/50">
                 {task.outcomeType === 'video_clip' ? 'SINGLE VIDEO' : task.outcomeType.replace('_', ' ')}
               </span>
+            )}
+            {/* Show exact worker tag if worker-generated automation task */}
+            {isWorker && (
+              <a
+                href={swarmWorkerHref(workspaceSlug, workerTargetId)}
+                onClick={handleWorkerClick}
+                className="font-mono text-[9px] px-2 py-0.5 rounded bg-indigo-950/80 text-indigo-300 border border-indigo-500/40 hover:bg-indigo-900/80 hover:text-white flex items-center gap-1 font-semibold transition-colors cursor-pointer"
+                title={`Worker: ${workerDisplayName}`}
+                data-testid="worker-tag"
+              >
+                <Bot size={9} className="text-indigo-400" />
+                <span>Worker: {workerDisplayName}</span>
+              </a>
             )}
             {/* Show worktree name right away for non-media tasks */}
             {!isMediaTask && (task.worktreeBranch || task.worktreeName) && (
@@ -1394,6 +1420,35 @@ function MinimalTaskCard({
               <span>Execution Mode: <strong className="text-cyan-300 font-semibold">Read-Only Architectural Audit (@finder)</strong></span>
               <span>•</span>
               <span className="text-cyan-300">Delivers Findings Ledger Report</span>
+            </div>
+          )}
+          {/* Worker Spec - for worker-generated tasks */}
+          {isWorker && (
+            <div className="flex items-center gap-2 p-2 rounded bg-indigo-950/30 border border-indigo-500/40 text-[10px] font-mono text-indigo-200 flex-wrap" data-testid="worker-task-spec">
+              <Bot size={11} className="text-indigo-400 flex-shrink-0" />
+              <span>Automated Worker: <strong className="text-indigo-300 font-semibold">{workerDisplayName}</strong></span>
+              <span>•</span>
+              <span className="text-slate-400">Worker ID: <span className="text-slate-300 font-semibold">{workerTargetId}</span></span>
+              {(task.workerRunId || task.worker_run_id) && (
+                <>
+                  <span>•</span>
+                  <span className="text-slate-400">Run: <span className="text-slate-300">{task.workerRunId || task.worker_run_id}</span></span>
+                </>
+              )}
+              {(task.automationId || task.automation_id) && (
+                <>
+                  <span>•</span>
+                  <span className="text-slate-400">Automation: <span className="text-slate-300">{task.automationId || task.automation_id}</span></span>
+                </>
+              )}
+              <a
+                href={swarmWorkerHref(workspaceSlug, workerTargetId)}
+                onClick={handleWorkerClick}
+                className="ml-auto inline-flex items-center gap-1 text-[10px] text-blue-400 hover:text-blue-300 underline font-sans cursor-pointer"
+              >
+                <span>View Worker in Hub</span>
+                <ArrowRight size={10} />
+              </a>
             </div>
           )}
 
@@ -3058,8 +3113,19 @@ function OrchestratorChatSidebar({
             </button>
             <div className="flex flex-col min-w-0">
               <span className="font-bold text-white truncate">{activeTask.title}</span>
-              <span className="text-[10px] text-slate-400 font-mono">
-                {activeTask.workerName || '@Worker'} • {activeTask.status} • {activeTask.elapsed}
+              <span className="text-[10px] text-slate-400 font-mono flex items-center gap-1.5 flex-wrap">
+                {Boolean(activeTask.workerId?.trim() || activeTask.worker_id?.trim()) ? (
+                  <span className="inline-flex items-center gap-1 text-indigo-300 font-semibold" data-testid="active-task-worker-tag">
+                    <Bot size={10} className="text-indigo-400" />
+                    <span>{activeTask.worker_name || (activeTask.workerName && !activeTask.workerName.startsWith('@') ? activeTask.workerName : undefined) || activeTask.workerId || activeTask.worker_id}</span>
+                  </span>
+                ) : (
+                  <span>{activeTask.workerName || '@Worker'}</span>
+                )}
+                <span>•</span>
+                <span>{activeTask.status}</span>
+                <span>•</span>
+                <span>{activeTask.elapsed}</span>
               </span>
             </div>
           </div>
@@ -3230,18 +3296,6 @@ function OrchestratorChatSidebar({
   )
 }
 
-export function TasksDurableWorkersSection({
-  accountScopeId,
-  workspaceSlug,
-  onOpenWorkerDetail,
-}: {
-  accountScopeId: string
-  workspaceSlug?: string
-  onOpenWorkerDetail?: (workerId: string) => void
-}) {
-  return <WorkerTaskActivity accountScopeId={accountScopeId} workspaceSlug={workspaceSlug} onOpenWorkerDetail={onOpenWorkerDetail} />
-}
-
 export function OrchestrateView({
   workerDetailId,
   workspaceSlug: workspaceSlugProp,
@@ -3344,6 +3398,7 @@ export function OrchestrateView({
 
   // Search & Filters
   const [searchQuery, setSearchQuery] = useState('')
+  const [taskSourceFilter, setTaskSourceFilter] = useState<'all' | 'worker'>('all')
   const [statusFilter, setStatusFilter] = useState<'all' | 'running' | 'needs_review' | 'queued' | 'completed'>('all')
   const [selectedTag] = useState<string>('all')
 
@@ -5267,21 +5322,59 @@ export function OrchestrateView({
     })
   }, [tasks, liveTaskSessionsData])
 
-  // Filtered tasks
+  // Task counts by source and status
+  const workerTasksCount = useMemo(() => {
+    return liveTasks.filter((t) => Boolean(t.workerId?.trim() || t.worker_id?.trim())).length
+  }, [liveTasks])
+
+  const filteredBySourceTasks = useMemo(() => {
+    if (taskSourceFilter === 'all') return liveTasks
+    return liveTasks.filter((t) => Boolean(t.workerId?.trim() || t.worker_id?.trim()))
+  }, [liveTasks, taskSourceFilter])
+
+  const filteredBySourceRunningCount = useMemo(() => {
+    return filteredBySourceTasks.filter((t) => t.status === 'running' || t.status === 'in_progress').length
+  }, [filteredBySourceTasks])
+
+  const filteredBySourceReviewCount = useMemo(() => {
+    return filteredBySourceTasks.filter((t) => t.status === 'needs_review').length
+  }, [filteredBySourceTasks])
+
+  const filteredBySourceQueuedCount = useMemo(() => {
+    return filteredBySourceTasks.filter((t) => t.status === 'queued' || t.status === 'pending_approval' || t.status === 'planning').length
+  }, [filteredBySourceTasks])
+
+  const filteredBySourceCompletedCount = useMemo(() => {
+    return filteredBySourceTasks.filter((t) => t.status === 'completed').length
+  }, [filteredBySourceTasks])
+
+  // Filtered tasks for all layouts, search, and status
   const filteredTasks = useMemo(() => {
-    return liveTasks.filter((task) => {
-      const matchesSearch =
-        searchQuery === '' ||
-        task.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        task.subtitle?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        task.id.toLowerCase().includes(searchQuery.toLowerCase())
+    const q = searchQuery.trim().toLowerCase()
+    return filteredBySourceTasks.filter((task) => {
+      if (q) {
+        const matchesSearch =
+          task.title.toLowerCase().includes(q) ||
+          Boolean(task.subtitle?.toLowerCase().includes(q)) ||
+          task.id.toLowerCase().includes(q) ||
+          Boolean(task.workerId?.toLowerCase().includes(q)) ||
+          Boolean(task.worker_id?.toLowerCase().includes(q)) ||
+          Boolean(task.workerName?.toLowerCase().includes(q)) ||
+          Boolean(task.worker_name?.toLowerCase().includes(q))
+        if (!matchesSearch) return false
+      }
 
-      const matchesStatus = statusFilter === 'all' || task.status === statusFilter
-      const matchesTag = selectedTag === 'all' || task.tags?.includes(selectedTag)
+      if (statusFilter !== 'all' && task.status !== statusFilter) {
+        return false
+      }
 
-      return matchesSearch && matchesStatus && matchesTag
+      if (selectedTag !== 'all' && !task.tags?.includes(selectedTag)) {
+        return false
+      }
+
+      return true
     })
-  }, [liveTasks, searchQuery, statusFilter, selectedTag])
+  }, [filteredBySourceTasks, searchQuery, statusFilter, selectedTag])
 
   const selectedTaskForSplit = useMemo(() => {
     return selectedTaskId ? liveTasks.find((t) => t.id === selectedTaskId) || null : null
@@ -6420,90 +6513,6 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
               </div>
             )}
 
-            {/* DURABLE WORKER TASKS AND PENDING APPROVALS */}
-            {accountScopeId && (
-              <TasksDurableWorkersSection
-                key={accountScopeId}
-                accountScopeId={accountScopeId}
-                workspaceSlug={workspaceSlug}
-                onOpenWorkerDetail={(workerId) => {
-                  void navigate(swarmWorkerLink(workspaceSlug, workerId))
-                }}
-              />
-            )}
-
-            {/* ACTIVE RUNNING AUTOMATIONS TICKER / CARDS AT TOP OF PROJECT */}
-            {automations.length > 0 ? (
-              <div className="mx-3.5 mt-2 mb-1.5 p-3 rounded-2xl border border-slate-800/90 bg-slate-900/60 shadow-lg">
-                <div className="flex items-center justify-between pb-2 mb-2 border-b border-slate-800/60">
-                  <div className="flex items-center gap-2">
-                    <div className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
-                    <span className="text-xs font-bold text-white tracking-tight">Active Project Automations ({automations.length})</span>
-                    <span className="text-[10px] text-slate-400">Autonomous workers running for {selectedProject?.name || 'this project'}</span>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setActiveNavTab('workers')}
-                    className="flex items-center gap-1 text-[11px] font-medium text-blue-400 hover:text-blue-300 transition-colors"
-                  >
-                    <span>Manage Fleet in Workers Hub</span>
-                    <ArrowRight size={12} />
-                  </button>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
-                  {automations.map((a) => {
-                    const isTrigger = a.kind === 'trigger'
-                    return (
-                      <div
-                        key={a.id}
-                        onClick={() => setActiveNavTab('workers')}
-                        className="group cursor-pointer rounded-xl border border-slate-800 bg-[#090e1a]/80 p-2.5 hover:border-blue-500/50 hover:bg-slate-800/60 transition-all flex items-start justify-between gap-2 shadow-sm"
-                        title="Click to view in Workers Hub"
-                      >
-                        <div className="flex items-start gap-2 min-w-0">
-                          <div className="h-7 w-7 rounded-lg bg-blue-600/15 text-blue-400 border border-blue-500/25 flex items-center justify-center shrink-0 text-xs">
-                            🤖
-                          </div>
-                          <div className="min-w-0">
-                            <h4 className="text-xs font-semibold text-white truncate group-hover:text-blue-300 transition-colors">
-                              {a.name}
-                            </h4>
-                            <p className="text-[10px] text-slate-400 truncate mt-0.5">
-                              {isTrigger ? '⚡ On-Demand Trigger' : `🕒 ${a.nextRun || a.kind}`}
-                            </p>
-                          </div>
-                        </div>
-                        <div className="flex flex-col items-end shrink-0 gap-1">
-                          <span className="rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-1.5 py-0.2 text-[9px] font-semibold">
-                            ● {a.status}
-                          </span>
-                          <span className="text-[9px] font-mono text-slate-500">
-                            {a.totalRuns !== undefined ? `${a.totalRuns} run${a.totalRuns === 1 ? '' : 's'}` : ''}
-                          </span>
-                        </div>
-                      </div>
-                    )
-                  })}
-                </div>
-              </div>
-            ) : (
-              <div className="mx-3.5 mt-2 mb-1 px-3.5 py-2 rounded-xl border border-dashed border-slate-800 bg-slate-900/30 flex items-center justify-between gap-3 text-xs">
-                <div className="flex items-center gap-2 text-slate-400">
-                  <Bot size={14} className="text-slate-500" />
-                  <span className="text-[11px]">No background automations running for this project yet.</span>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setActiveNavTab('workers')}
-                  className="text-[11px] font-semibold text-blue-400 hover:text-blue-300 flex items-center gap-1"
-                >
-                  <span>Explore Workers Hub</span>
-                  <ArrowRight size={11} />
-                </button>
-              </div>
-            )}
-
             {/* MAIN BODY: 5 DISTINCT VARIANTS */}
             <div className="flex-1 overflow-hidden flex flex-col">
               {projectTasksError && (
@@ -6520,48 +6529,82 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                   </button>
                 </div>
               )}
+
+              {/* Common Search & Filter Bar */}
+              <div className="px-3.5 pt-3 pb-2 flex flex-wrap items-center justify-between gap-3 border-b border-slate-800/60 bg-[#080d19]/40 flex-shrink-0">
+                <div className="flex-1 min-w-[200px] relative">
+                  <Search size={13} className="absolute left-3 top-2.5 text-slate-500" />
+                  <input
+                    type="text"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder="Search tasks by title, worker, or tag..."
+                    className="w-full bg-[#080c16] border border-slate-800 rounded-lg pl-8 pr-3 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500/40"
+                  />
+                </div>
+
+                <div className="flex items-center gap-2 flex-wrap">
+                  {/* Task Source Filter: All tasks vs Worker tasks */}
+                  <div className="flex items-center rounded-lg bg-slate-900/80 p-0.5 border border-slate-800" role="group" aria-label="Task source filter">
+                    <button
+                      type="button"
+                      onClick={() => setTaskSourceFilter('all')}
+                      data-testid="filter-all-tasks"
+                      className={`px-2.5 py-1 rounded text-[11px] font-medium transition-all ${
+                        taskSourceFilter === 'all'
+                          ? 'bg-blue-600 text-white shadow-sm'
+                          : 'text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      All tasks ({liveTasks.length})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setTaskSourceFilter('worker')}
+                      data-testid="filter-worker-tasks"
+                      className={`px-2.5 py-1 rounded text-[11px] font-medium transition-all ${
+                        taskSourceFilter === 'worker'
+                          ? 'bg-blue-600 text-white shadow-sm'
+                          : 'text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      Worker tasks ({workerTasksCount})
+                    </button>
+                  </div>
+
+                  {/* Status Filters */}
+                  <div className="flex items-center gap-1">
+                    {(['all', 'running', 'needs_review', 'queued', 'completed'] as const).map((st) => (
+                      <button
+                        key={st}
+                        type="button"
+                        onClick={() => setStatusFilter(st)}
+                        className={`px-2 py-1 rounded text-[10px] font-semibold uppercase tracking-wider transition-all ${
+                          statusFilter === st
+                            ? 'bg-slate-700 text-white shadow-sm'
+                            : 'bg-slate-800/60 text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        {st === 'all'
+                          ? `All (${filteredBySourceTasks.length})`
+                          : st === 'running'
+                          ? `Running (${filteredBySourceRunningCount})`
+                          : st === 'needs_review'
+                          ? `Review (${filteredBySourceReviewCount})`
+                          : st === 'queued'
+                          ? `Queued (${filteredBySourceQueuedCount})`
+                          : `Done (${filteredBySourceCompletedCount})`}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
               {/* ─────────────────────────────────────────────────────────────
                   VARIANT 1: COMPACT MATRIX & EXPANDABLE DRAWER
                  ───────────────────────────────────────────────────────────── */}
               {middleVariant === 'matrix' && (
                 <div className="flex-1 flex flex-col overflow-hidden p-3.5 space-y-3">
-                  {/* Search & Filter bar */}
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="flex-1 relative">
-                      <Search size={13} className="absolute left-3 top-2.5 text-slate-500" />
-                      <input
-                        type="text"
-                        value={searchQuery}
-                        onChange={(e) => setSearchQuery(e.target.value)}
-                        placeholder="Search tasks by title, worker, or tag..."
-                        className="w-full bg-[#080c16] border border-slate-800 rounded-lg pl-8 pr-3 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500/40"
-                      />
-                    </div>
-
-                    <div className="flex items-center gap-1.5">
-                      {(['all', 'running', 'needs_review', 'queued', 'completed'] as const).map((st) => (
-                        <button
-                          key={st}
-                          onClick={() => setStatusFilter(st)}
-                          className={`px-2.5 py-1 rounded text-[10px] font-semibold uppercase tracking-wider transition-all ${
-                            statusFilter === st
-                              ? 'bg-slate-700 text-white shadow-sm'
-                              : 'bg-slate-800/60 text-slate-400 hover:text-slate-200'
-                          }`}
-                        >
-                          {st === 'all'
-                            ? `All (${liveTasks.length})`
-                            : st === 'running'
-                            ? `Running (${runningCount})`
-                            : st === 'needs_review'
-                            ? `Review (${reviewCount})`
-                            : st === 'queued'
-                            ? `Queued (${queuedCount})`
-                            : `Done (${completedCount})`}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
 
                   {/* Task rows */}
                   <div className="flex-1 overflow-y-auto space-y-2 pr-1">
@@ -6600,6 +6643,16 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                                     {t.outcomeType.replace('_', ' ')}
                                   </span>
                                 )}
+                                {Boolean(t.workerId?.trim() || t.worker_id?.trim()) && (
+                                  <span
+                                    className="inline-flex items-center gap-1 font-mono text-[9px] px-1.5 py-0.5 rounded bg-indigo-950/70 text-indigo-300 border border-indigo-500/30 font-semibold"
+                                    title={`Worker: ${t.worker_name || (t.workerName && !t.workerName.startsWith('@') ? t.workerName : undefined) || t.workerId || t.worker_id}`}
+                                    data-testid="worker-tag"
+                                  >
+                                    <Bot size={9} className="text-indigo-400" />
+                                    <span>{t.worker_name || (t.workerName && !t.workerName.startsWith('@') ? t.workerName : undefined) || t.workerId || t.worker_id}</span>
+                                  </span>
+                                )}
                               </div>
 
                               <div className="flex items-center gap-3 flex-shrink-0">
@@ -6608,9 +6661,25 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                                     {t.unintegratedCommits} unmerged
                                   </span>
                                 )}
-                                <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-300">
-                                  {t.workerName}
-                                </span>
+                                {Boolean(t.workerId?.trim() || t.worker_id?.trim()) ? (
+                                  <a
+                                    href={swarmWorkerHref(workspaceSlug, (t.workerId?.trim() || t.worker_id?.trim())!)}
+                                    onClick={(e) => {
+                                      e.stopPropagation()
+                                      void navigate(swarmWorkerLink(workspaceSlug, (t.workerId?.trim() || t.worker_id?.trim())!))
+                                    }}
+                                    className="text-[10px] font-mono px-2 py-0.5 rounded bg-indigo-950/60 text-indigo-300 border border-indigo-500/40 hover:bg-indigo-900/60 hover:text-white flex items-center gap-1 transition-colors cursor-pointer"
+                                    title={`View Worker: ${t.worker_name || (t.workerName && !t.workerName.startsWith('@') ? t.workerName : undefined) || t.workerId || t.worker_id}`}
+                                    data-testid="worker-link"
+                                  >
+                                    <Bot size={10} className="text-indigo-400" />
+                                    <span>{t.worker_name || (t.workerName && !t.workerName.startsWith('@') ? t.workerName : undefined) || t.workerId || t.worker_id}</span>
+                                  </a>
+                                ) : (
+                                  <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-300">
+                                    {t.workerName}
+                                  </span>
+                                )}
                                 <span className="text-[10px] text-slate-500 font-mono">{t.elapsed}</span>
                                 <button
                                   type="button"
@@ -6637,6 +6706,10 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                                 <MinimalTaskCard
                                   task={t}
                                   isSelected={selectedTaskId === t.id}
+                                  workspaceSlug={workspaceSlug}
+                                  onOpenWorkerDetail={(workerId) => {
+                                    void navigate(swarmWorkerLink(workspaceSlug, workerId))
+                                  }}
                                   onSelect={() => handleSelectTask(t)}
                                   onOpenChat={() => handleSelectTask(t)}
                                   onApprove={() => handleApproveTask(t.id)}
@@ -6701,7 +6774,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                       { key: 'failed', label: 'Failed', color: 'rose' },
                     ] as const
                   ).map((col) => {
-                    const colTasks = liveTasks.filter((t) => {
+                    const colTasks = filteredTasks.filter((t) => {
                       if (col.key === 'queued') return t.status === 'queued' || t.status === 'pending_approval' || t.status === 'planning'
                       if (col.key === 'running') return t.status === 'running' || t.status === 'in_progress'
                       if (col.key === 'failed') return t.status === 'failed' || t.status === 'rejected'
@@ -6740,6 +6813,10 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                               key={t.id}
                               task={t}
                               isSelected={selectedTaskId === t.id}
+                              workspaceSlug={workspaceSlug}
+                              onOpenWorkerDetail={(workerId) => {
+                                void navigate(swarmWorkerLink(workspaceSlug, workerId))
+                              }}
                               onSelect={() => handleSelectTask(t)}
                               onOpenChat={() => handleSelectTask(t)}
                               onApprove={() => handleApproveTask(t.id)}
@@ -6844,13 +6921,17 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
 
                   {/* Tasks List in Fleet */}
                   <div className="pt-2 space-y-3">
-                    <h4 className="text-xs font-bold text-white">Project Tasks ({liveTasks.length})</h4>
+                    <h4 className="text-xs font-bold text-white">Project Tasks ({filteredTasks.length})</h4>
                     <div className="space-y-2.5">
-                      {liveTasks.map((task) => (
+                      {filteredTasks.map((task) => (
                         <MinimalTaskCard
                           key={task.id}
                           task={task}
                           isSelected={selectedTaskId === task.id}
+                          workspaceSlug={workspaceSlug}
+                          onOpenWorkerDetail={(workerId) => {
+                            void navigate(swarmWorkerLink(workspaceSlug, workerId))
+                          }}
                           onSelect={() => handleSelectTask(task)}
                           onOpenChat={() => handleSelectTask(task)}
                           onApprove={() => handleApproveTask(task.id)}
@@ -6877,6 +6958,11 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                           audioModelOptions={audioModelOptions}
                         />
                       ))}
+                      {filteredTasks.length === 0 && (
+                        <div className="p-6 text-center text-xs text-slate-500 border border-dashed border-slate-800 rounded-lg">
+                          No tasks found.
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -6889,9 +6975,10 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                 <div className="flex-1 flex overflow-hidden">
                   {/* Left Column: Tasks List */}
                   <div className="w-1/2 border-r border-slate-800/80 flex flex-col p-3 overflow-y-auto space-y-2">
-                    <div className="text-xs font-bold text-white pb-1">Tasks ({liveTasks.length})</div>
-                    {liveTasks.map((t) => {
+                    <div className="text-xs font-bold text-white pb-1">Tasks ({filteredTasks.length})</div>
+                    {filteredTasks.map((t) => {
                       const isSel = selectedTaskId === t.id
+                      const isWorker = Boolean(t.workerId?.trim() || t.worker_id?.trim())
                       return (
                         <div
                           key={t.id}
@@ -6902,15 +6989,37 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                               : 'bg-[#0a0f1d] border-slate-800/80 hover:border-slate-700 text-slate-300'
                           }`}
                         >
-                          <div className="text-xs font-semibold leading-snug">{t.title}</div>
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-xs font-semibold leading-snug truncate">{t.title}</span>
+                            {isWorker && (
+                              <span className="font-mono text-[9px] px-1.5 py-0.5 rounded bg-indigo-950/70 text-indigo-300 border border-indigo-500/30 font-semibold shrink-0" data-testid="worker-tag">
+                                Worker
+                              </span>
+                            )}
+                          </div>
                           <div className="flex items-center justify-between text-[10px] font-mono text-slate-500 mt-2">
-                            <span>{t.workerName}</span>
+                            {isWorker ? (
+                              <a
+                                href={swarmWorkerHref(workspaceSlug, (t.workerId?.trim() || t.worker_id?.trim())!)}
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  void navigate(swarmWorkerLink(workspaceSlug, (t.workerId?.trim() || t.worker_id?.trim())!))
+                                }}
+                                className="text-indigo-400 hover:text-indigo-300 underline flex items-center gap-1 cursor-pointer"
+                                data-testid="worker-link"
+                              >
+                                <Bot size={10} />
+                                <span>{t.worker_name || (t.workerName && !t.workerName.startsWith('@') ? t.workerName : undefined) || t.workerId || t.worker_id}</span>
+                              </a>
+                            ) : (
+                              <span>{t.workerName}</span>
+                            )}
                             <span className="text-blue-400 font-bold">{t.status}</span>
                           </div>
                         </div>
                       )
                     })}
-                    {liveTasks.length === 0 && (
+                    {filteredTasks.length === 0 && (
                       <div className="p-6 text-center text-xs text-slate-500 border border-dashed border-slate-800 rounded-lg">
                         No tasks found.
                       </div>
@@ -6923,6 +7032,10 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                       <MinimalTaskCard
                         task={selectedTaskForSplit}
                         isSelected={true}
+                        workspaceSlug={workspaceSlug}
+                        onOpenWorkerDetail={(workerId) => {
+                          void navigate(swarmWorkerLink(workspaceSlug, workerId))
+                        }}
                         onSelect={() => handleSelectTask(selectedTaskForSplit)}
                         onOpenChat={() => handleSelectTask(selectedTaskForSplit)}
                         onApprove={() => handleApproveTask(selectedTaskForSplit.id)}
@@ -6962,12 +7075,16 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                  ───────────────────────────────────────────────────────────── */}
               {middleVariant === 'timeline' && (
                 <div className="flex-1 overflow-y-auto p-4 space-y-3">
-                  <div className="text-xs font-bold text-white pb-1">Activity Stream</div>
-                  {liveTasks.map((t) => (
+                  <div className="text-xs font-bold text-white pb-1">Activity Stream ({filteredTasks.length})</div>
+                  {filteredTasks.map((t) => (
                     <MinimalTaskCard
                       key={t.id}
                       task={t}
                       isSelected={selectedTaskId === t.id}
+                      workspaceSlug={workspaceSlug}
+                      onOpenWorkerDetail={(workerId) => {
+                        void navigate(swarmWorkerLink(workspaceSlug, workerId))
+                      }}
                       onSelect={() => handleSelectTask(t)}
                       onOpenChat={() => handleSelectTask(t)}
                       onApprove={() => handleApproveTask(t.id)}
@@ -6994,7 +7111,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                       audioModelOptions={audioModelOptions}
                     />
                   ))}
-                  {liveTasks.length === 0 && (
+                  {filteredTasks.length === 0 && (
                     <div className="p-8 text-center border border-dashed border-slate-800 rounded-xl text-xs text-slate-500">
                       No task activity recorded yet.
                     </div>

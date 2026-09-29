@@ -266,7 +266,13 @@ export interface RunningTask {
   workspaceTarget: string
   elapsed: string
   workerId?: string
+  worker_id?: string
+  workerRunId?: string
+  worker_run_id?: string
+  automationId?: string
+  automation_id?: string
   workerName?: string
+  worker_name?: string
   priority?: 'critical' | 'high' | 'medium' | 'low'
   tags?: string[]
   stageIndex?: number
