@@ -310,6 +310,9 @@ export interface RunningTask {
   // Live session sync, plan & streaming fields
   currentFocus?: string
   currentTool?: string
+  currentToolName?: string
+  currentToolEventKey?: string
+  toolCallCount?: number
   toolActivitySummary?: string
   activeTodo?: string
   metadata?: Record<string, any>

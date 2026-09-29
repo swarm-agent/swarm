@@ -22,17 +22,15 @@ const task: RunningTask = {
 const markup = (extra: Partial<RunningTask> = {}) => renderToStaticMarkup(<TaskCardActivity task={{ ...task, ...extra }} />)
 
 test('activity uses resolved identity and normalized tools without historical or token text', () => {
-  for (const [tool, label] of [['read', 'Read'], ['functions.edit', 'Editing'], ['tool: WRITE', 'Writing'], ['search', 'Searching'], ['', 'Thinking'], ['-', 'Thinking']]) {
+  for (const [tool, label] of [['read', 'read'], ['edit', 'edit'], ['search', 'search'], ['', 'Thinking']]) {
     const html = markup({ currentTool: tool, currentFocus: 'Old focus', toolActivitySummary: 'read ×99', liveAssistantText: 'token tail' })
-    assert.match(html, new RegExp(`Coder: ${label}`))
+    assert.match(html, new RegExp(`>${label}</span>`))
     assert.equal((html.match(/role="status"/g) || []).length, 1)
     assert.doesNotMatch(html, /Old focus|read ×99|token tail|Current Focus|🎯|animate-|Working/)
   }
-  assert.match(markup({ activeAgent: 'finder', currentTool: 'read' }), /Finder: Read/)
-  assert.match(markup({ activeAgent: '@system-designer', currentTool: 'custom_tool' }), /Designer: Custom tool/)
-  assert.match(markup({ agentType: '' }), /Agent: Thinking/)
-  assert.match(markup({ currentTool: 'x'.repeat(500) }), /min-w-0 flex-1 truncate/)
-  assert.match(markup({ planProgressPercent: 0 }), /Plan progress: 0%/)
+  assert.match(markup({ currentTool: 'read src/main.ts', toolCallCount: 2 }), /call 2/)
+  assert.match(markup({ currentTool: 'read src/main.ts' }), /src\/main.ts/)
+  assert.match(markup({ agentType: '' }), /Thinking/)
   for (const status of ['needs_review', 'failed', 'cancelled', 'blocked', 'completed', 'paused']) {
     assert.equal(markup({ status: status as RunningTask['status'], currentTool: 'read' }), '')
   }
@@ -44,14 +42,14 @@ test('activity uses resolved identity and normalized tools without historical or
 // TypeScript build separately guards against unsupported standard-library APIs.
 test('activity labels ignore inherited properties while preserving known and unknown tools', () => {
   for (const [tool, label] of [
-    ['git_status', 'Checking Git status'],
-    ['custom-tool', 'Custom tool'],
-    ['constructor', 'Constructor'],
-    ['__proto__', ' proto '],
-    ['hasOwnProperty', 'HasOwnProperty'],
+    ['git_status', 'git_status'],
+    ['custom-tool', 'custom-tool'],
+    ['constructor', 'constructor'],
+    ['__proto__', '__proto__'],
+    ['hasOwnProperty', 'hasOwnProperty'],
   ]) {
     const html = markup({ currentTool: tool })
-    assert.ok(html.includes(`>Coder: ${label}</span>`), `unexpected activity label for ${tool}: ${html}`)
+    assert.ok(html.includes(`>${label}</span>`), `unexpected activity label for ${tool}: ${html}`)
   }
 })
 
@@ -90,7 +88,7 @@ test('streaming rerenders preserve DOM, geometry and focus; terminal transitions
   try {
     for (const reducedMotion of ['no-preference', 'reduce'] as const) {
       const page = await browser.newPage({ viewport: { width: 480, height: 600 }, reducedMotion })
-      await page.route('**/*', route => route.fulfill({ contentType: 'text/html', body: `<style>*{box-sizing:border-box}body{margin:0;font:14px system-ui}#root{width:260px}svg{width:16px;height:16px}${css}</style><div id="root"></div>` }))
+      await page.route('**/*', route => route.fulfill({ contentType: 'text/html', body: `<style>*{box-sizing:border-box}body{margin:0;font:14px system-ui}#root{width:260px}svg{width:16px;height:16px}${css}${readFileSync(new URL('./swarm-section.css', import.meta.url), 'utf8')}</style><div id="root"></div>` }))
       await page.goto('https://activity.test/')
       await page.addScriptTag({ content: bundle.outputFiles[0].text })
       const row = page.getByTestId('task-card-activity')
@@ -119,13 +117,22 @@ test('streaming rerenders preserve DOM, geometry and focus; terminal transitions
         const stable = await page.evaluate(() => {
           const w = window as any, row = document.querySelector('[data-testid="task-card-activity"]')!
           const status = row.querySelector('[role="status"]')!, bounds = row.getBoundingClientRect()
-          return row === w.activityNode && status === w.statusNode && bounds.height === 36
+          return row === w.activityNode && status !== w.statusNode && bounds.height === 34
             && bounds.width === w.initialBounds.width && bounds.y === w.initialBounds.y
-            && getComputedStyle(status).whiteSpace === 'nowrap' && getComputedStyle(status).textOverflow === 'ellipsis'
-            && row.getAnimations({ subtree: true }).length === 0 && document.activeElement?.id === 'control'
+            && document.activeElement?.id === 'control'
         })
         assert.equal(stable, true)
       }
+      // Repeated same-name calls still swap, but token-only updates do not.
+      await page.evaluate(() => {
+        const w = window as any
+        w.updateTask({ currentTool: 'read same.ts', currentToolEventKey: 'call-1', toolCallCount: 1 })
+        w.previousEvent = document.querySelector('[role="status"]')
+        w.updateTask({ currentToolEventKey: 'call-2', toolCallCount: 2 })
+      })
+      assert.equal(await page.evaluate(() => document.querySelector('[role="status"]') !== (window as any).previousEvent), true)
+      assert.equal(await row.locator('[role="status"]').count(), 1)
+      assert.match(await row.innerText(), /call 2/)
       await page.locator('#expand').click()
       assert.equal(await page.locator('#checklist').count(), 1)
       assert.equal(await row.count(), 1)

@@ -33,7 +33,7 @@ test('durable progress renders checklist and final review without stale activity
   assert.equal(card().taskTodos?.[0].status, 'pending')
   update(12, 'in_progress')
   assert.equal(card().activeTodo, 'Implement fix')
-  assert.match(renderToStaticMarkup(<TaskCardSummary task={card()} />), /Implement fix/)
+  assert.match(renderToStaticMarkup(<TaskCardSummary task={card()} />), /0\/1 steps/)
   update(13, 'completed')
   assert.equal(card().subtasks[0].completed, true)
   assert.equal(card().status, 'running', 'checklist completion is not run completion')
@@ -55,7 +55,7 @@ test('durable progress renders checklist and final review without stale activity
   assert.equal(card().status, 'needs_review')
   assert.equal(card().activeTodo, undefined)
   const html = renderToStaticMarkup(<TaskCardSummary task={card()} />)
-  assert.match(html, /Agent checklist/)
+  assert.match(html, /1\/1 steps/) // Checklist details live behind the card footer.
   assert.doesNotMatch(html, /Live session activity|Working/)
   assert.notEqual(card().status, 'completed')
 })

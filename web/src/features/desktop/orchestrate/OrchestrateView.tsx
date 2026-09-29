@@ -43,7 +43,6 @@ import {
   Sparkles,
   Tag,
   Target,
-  Timer,
   Trash2,
   Upload,
   Volume2,
@@ -914,7 +913,7 @@ export function MinimalTaskCard({
         onPreview={onPreviewDeliverable}
         statusBadge={
           <div
-            className={`text-[11px] font-medium capitalize px-2 py-0.5 rounded-md border flex items-center gap-1.5 shrink-0 transition-colors ${
+            className={`swarm-task-state ${isPendingApproval ? 'swarm-task-approval-pill' : ''} text-[11px] capitalize flex items-center gap-1.5 shrink-0 ${
               isPlanning
                 ? 'bg-indigo-500/10 text-indigo-300 border-indigo-500/25'
                 : isPendingApproval
@@ -952,7 +951,6 @@ export function MinimalTaskCard({
         }
         timer={
           <span className="text-[11px] text-slate-400 flex items-center gap-1 shrink-0 font-normal">
-            {isRunning && <Timer size={11} className="text-blue-400 animate-spin" />}
             <TaskElapsedTimer
               isRunning={isRunning}
               startedAt={task.startedAt}
@@ -963,27 +961,6 @@ export function MinimalTaskCard({
         }
         actions={
           <div className="flex items-center gap-1.5">
-            {isPendingApproval && onApprove && (
-              <button
-                type="button"
-                disabled={isApproving || isPlanRejected || isPlanTaskWithoutStructuredPlan || isPlanBindingMissingRevision}
-                onClick={(e) => {
-                  e.stopPropagation()
-                  if (!isApproving && !isPlanRejected && !isPlanTaskWithoutStructuredPlan && !isPlanBindingMissingRevision) {
-                    onApprove()
-                  }
-                }}
-                className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-[11px] font-semibold transition-all shadow-sm cursor-pointer"
-                title={
-                  isPlanBindingMissingRevision
-                    ? 'Plan definition revision guard is missing or unverified'
-                    : 'Approve and start task execution'
-                }
-              >
-                {isApproving ? <Loader2 size={11} className="animate-spin text-blue-200" /> : <Sparkles size={11} />}
-                <span>Approve</span>
-              </button>
-            )}
             {onToggleMarked && (
               <label
                 className={`group flex items-center justify-center w-5 h-5 rounded-md border transition-all cursor-pointer shrink-0 ${
@@ -1128,7 +1105,7 @@ export function MinimalTaskCard({
 
       {/* 2. PENDING APPROVAL MISSION PROPOSAL BANNER */}
       {isPendingApproval && (
-        <div className="flex flex-col p-3 rounded-lg bg-blue-950/20 border border-blue-500/40 space-y-2.5 text-xs">
+        <div className="swarm-task-proposal flex flex-col space-y-2.5">
           <div className="flex items-center justify-between gap-2 flex-wrap">
             <div className="flex items-center gap-2">
               <span className="font-bold text-blue-400 flex items-center gap-1.5 font-mono text-[10px] uppercase">
@@ -1551,8 +1528,8 @@ export function MinimalTaskCard({
                             ? cp.acceptance_criteria
                             : (cp.criteria && Array.isArray(cp.criteria) ? cp.criteria : [])
                           return (
-                            <div key={cp.id || idx} className="p-2 rounded bg-slate-900/70 border border-slate-800/60 space-y-1.5" data-testid={`plan-checkpoint-${cp.id || idx}`}>
-                              <div className="flex flex-wrap items-start gap-1.5 justify-between font-bold text-slate-200">
+                            <details key={cp.id || idx} open={idx === 0} className="swarm-plan-step space-y-1.5" onClick={e => e.stopPropagation()} data-testid={`plan-checkpoint-${cp.id || idx}`}>
+                              <summary className="font-semibold cursor-pointer">
                                 <div className="min-w-0 flex items-start gap-1.5">
                                   <span className="text-blue-400 font-mono shrink-0">{idx + 1}.</span>
                                   <span className="min-w-0">{cp.title}</span>
@@ -1560,7 +1537,7 @@ export function MinimalTaskCard({
                                 <span className="text-[9px] uppercase font-mono px-1.5 py-0.2 rounded bg-slate-800 text-slate-400">
                                   {cp.status || 'pending'}
                                 </span>
-                              </div>
+                              </summary>
                               {cp.objective && (
                                 <p className="text-[10px] text-slate-400 leading-snug">{cp.objective}</p>
                               )}
@@ -1596,7 +1573,7 @@ export function MinimalTaskCard({
                               {cp.notes && (
                                 <div className="text-[9px] text-slate-500 italic pt-0.5">Note: {cp.notes}</div>
                               )}
-                            </div>
+                            </details>
                           )
                         })}
                       </div>
@@ -1819,7 +1796,7 @@ export function MinimalTaskCard({
                         <span>
                           {task.agentType === 'image' || task.agentType === 'video' || task.outcomeType === 'media_bundle' || task.outcomeType === 'video_story' || task.outcomeType === 'video_clip'
                             ? `Approve & Generate (${variantSlots.length} ${variantSlots.length === 1 ? (task.agentType === 'video' ? 'Clip' : 'Variant') : 'Variants'})`
-                            : 'Approve & Start Session'}
+                            : 'Approve and start session'}
                         </span>
                       </>
                     )}
@@ -1870,7 +1847,7 @@ export function MinimalTaskCard({
 
       {/* 2b. IN PROGRESS / RUNNING LIVE EXECUTION SECTION */}
       {isRunning && (
-        <div className="flex flex-col p-3 rounded-lg bg-[#070d1e]/90 border border-blue-500/40 space-y-2.5 text-xs">
+        <div className="swarm-task-running flex min-w-0 flex-col space-y-2.5 text-xs">
           <TaskCardActivity task={task} />
 
           {/* Agent's Created Execution Plan with Subtasks Checklist OR Compact Task Program Multi-Coder Grid */}
@@ -2570,16 +2547,10 @@ export function MinimalTaskCard({
         >
           <span className="flex items-center gap-1.5 font-semibold">
             {expanded ? <ChevronUp size={11} className="text-blue-400" /> : <ChevronDown size={11} className="text-blue-400" />}
-            <span>{expanded ? 'Hide Deep Plan, Subtasks & Activity Logs' : 'Expand Full Plan, Subtasks & Activity Logs'}</span>
+            <span>Plan, subtasks, logs</span>
           </span>
           <span className="text-[9px] text-slate-500 font-normal">
-            {task.activePlanCheckpoints?.length
-              ? `${task.activePlanCheckpoints.length} Checkpoints`
-              : task.subtasksCount
-              ? `${task.subtasksCount.completed}/${task.subtasksCount.total} Subtasks`
-              : isTaskProgram
-              ? `${programJobs.length} Jobs`
-              : 'Details'}
+            Details
           </span>
         </button>
       </div>

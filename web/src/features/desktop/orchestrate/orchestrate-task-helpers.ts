@@ -1193,10 +1193,8 @@ export function aggregateTaskLiveState(
     ? activeData?.liveRun : undefined
 
   const toolCalls = effectiveLiveRun ? Object.values((effectiveLiveRun.toolCallsByCallId || {}) as Record<string, any>) : []
-  const currentTool = [...toolCalls]
-    .sort((a, b) => b.updatedAt - a.updatedAt)
-    .map((t) => t.toolDisplay?.trim() || t.toolName?.trim() || '')
-    .find(Boolean) || ''
+  const latestTool = [...toolCalls].sort((a, b) => b.updatedAt - a.updatedAt)[0]
+  const currentTool = latestTool?.toolDisplay?.trim() || latestTool?.toolName?.trim() || ''
   const toolActivitySummary = summarizeDesktopV3TaskToolActivity(toolCalls.filter((call: any) =>
     ['running', 'in_progress', 'pending', 'started'].includes((call.status || '').trim().toLowerCase())) as any)
   const liveAssistantText = [
@@ -1255,6 +1253,10 @@ export function aggregateTaskLiveState(
       (primaryPlanRecord?.id ? { planId: primaryPlanRecord.id, sessionId: primarySessionId } : undefined),
     currentFocus: currentFocus || task.currentFocus,
     currentTool: status === 'running' ? (currentTool || undefined) : undefined,
+    currentToolName: status === 'running' ? latestTool?.toolName : undefined,
+    currentToolEventKey: status === 'running' && latestTool
+      ? `${activeRunId}:${latestTool.callId}:${latestTool.updatedAt}:${latestTool.status}` : undefined,
+    toolCallCount: status === 'running' ? toolCalls.length : undefined,
     liveAssistantText: liveAssistantText || undefined,
     liveToolCalls: liveToolCalls || undefined,
     toolActivitySummary: toolActivitySummary || undefined,
