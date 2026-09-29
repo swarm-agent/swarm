@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { mutateWorker, readWorkers } from './desktop-workers-api'
+import { mutateWorker, readWorkers, type WorkerRecord } from './desktop-workers-api'
 import { realtimeFrameToActions } from './desktop-v3-cache-wire'
 
 // Requirement: Desktop uses the canonical /v3/workers contracts and revision guards.
@@ -54,4 +54,55 @@ test('bounded paginated worker read rejects malformed envelope', async () => {
   }) as typeof fetch
   try { await assert.rejects(readWorkers({ kind: 'list', accountScopeId: 'account', cursor: 'opaque', limit: 20 }), /Invalid worker page/) }
   finally { globalThis.fetch = previous }
+})
+
+// Requirement: human acceptance POST /v3/workers/:id/accept with exact expected_revision.
+// Threat: forged approval, missing revision guard, or unconfirmed transition compromises worker authority.
+test('worker accept mutation requires positive revision and POSTs expected_revision', async () => {
+  await assert.rejects(mutateWorker({ action: 'accept', workerId: 'worker-accept', expected_revision: 0 }), /revision/)
+  const previous = globalThis.fetch
+  const calls: Array<{ url: string; init: RequestInit }> = []
+  globalThis.fetch = (async (url: RequestInfo | URL, init?: RequestInit) => {
+    calls.push({ url: String(url), init: init ?? {} })
+    if (String(url).includes('/v1/auth/desktop/session')) return new Response(JSON.stringify({ user_id: 'user', account_scope_id: 'account' }), { status: 200 })
+    return new Response(JSON.stringify({
+      worker: {
+        id: 'worker-accept',
+        account_scope_id: 'account',
+        name: 'Accepted Worker',
+        instructions: 'Run safely',
+        lifecycle_state: 'active',
+        revision: 2,
+        created_at: 1,
+        updated_at: 2,
+        proposed_bindings: { primary: 'ws-main' },
+        local_bindings: { primary: 'ws-main' },
+      } satisfies WorkerRecord,
+    }), { status: 200 })
+  }) as typeof fetch
+  try {
+    const result = await mutateWorker({ action: 'accept', workerId: 'worker-accept', expected_revision: 1 })
+    assert.ok('worker' in result)
+    assert.equal(result.worker.id, 'worker-accept')
+    assert.equal(result.worker.lifecycle_state, 'active')
+    assert.equal(calls.at(-1)?.url, '/v3/workers/worker-accept/accept')
+    assert.equal(calls.at(-1)?.init.method, 'POST')
+    assert.deepEqual(JSON.parse(String(calls.at(-1)?.init.body)), { expected_revision: 1 })
+  } finally { globalThis.fetch = previous }
+})
+
+test('worker record accepts pending lifecycle state and proposed bindings', () => {
+  const pendingWorker: WorkerRecord = {
+    id: 'worker-pending',
+    account_scope_id: 'account-1',
+    name: 'Pending Worker',
+    instructions: 'Stand by',
+    lifecycle_state: 'pending',
+    revision: 1,
+    created_at: 100,
+    updated_at: 100,
+    proposed_bindings: { primary: 'ws-proposed' },
+  }
+  assert.equal(pendingWorker.lifecycle_state, 'pending')
+  assert.equal(pendingWorker.proposed_bindings?.primary, 'ws-proposed')
 })

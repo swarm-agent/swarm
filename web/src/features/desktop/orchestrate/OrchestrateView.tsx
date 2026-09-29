@@ -58,6 +58,9 @@ import { formatContextWindow } from '../chat/services/model-options'
 import { requestJson, getDesktopSessionIdentitySnapshot } from '../../../app/api'
 import { WorkerHub, type SelectedWorker } from './worker-hub'
 import { submitWithWorkerSelection } from './worker-message-context'
+import { useWorkerPage } from '../runtime/desktop-workers'
+import { PendingWorkerCard } from './pending-worker-card'
+import { swarmWorkerLink } from './swarm-navigation'
 import { useDesktopV3CacheSelector, getDesktopV3CacheSnapshot } from '../state/desktop-v3-cache-store'
 import { selectPendingWorkerSidebarReviews } from '../state/desktop-automation-v2-state'
 import { desktopAutomationV2 } from '../runtime/desktop-automation-v2'
@@ -3215,6 +3218,51 @@ function OrchestratorChatSidebar({
   )
 }
 
+export function TasksDurableWorkersSection({
+  accountScopeId,
+  workspaceSlug,
+  onOpenWorkerDetail,
+}: {
+  accountScopeId: string
+  workspaceSlug?: string
+  onOpenWorkerDetail?: (workerId: string) => void
+}) {
+  const page = useWorkerPage(useMemo(() => ({ kind: 'list', accountScopeId, limit: 50 }), [accountScopeId]))
+  const workers = page?.data && 'workers' in page.data ? page.data.workers : []
+  const pendingWorkers = workers.filter((w) => w.lifecycle_state === 'pending')
+
+  if (pendingWorkers.length === 0) return null
+
+  return (
+    <div className="mx-3.5 mt-2 mb-1.5 space-y-2" data-testid="tasks-pending-workers-section">
+      <div className="flex items-center justify-between pb-1">
+        <div className="flex items-center gap-2">
+          <div className="h-2 w-2 rounded-full bg-amber-400 animate-pulse" />
+          <span className="text-xs font-bold text-white tracking-tight">
+            Pending Workers Awaiting Acceptance ({pendingWorkers.length})
+          </span>
+          <span className="text-[10px] text-slate-400">
+            Durable workers proposed by Orchestrator awaiting your review
+          </span>
+        </div>
+      </div>
+      <div className="space-y-2">
+        {pendingWorkers.map((worker) => (
+          <PendingWorkerCard
+            key={worker.id}
+            worker={worker}
+            accountScopeId={accountScopeId}
+            workspaceSlug={workspaceSlug}
+            stale={page?.stale}
+            mutationError={page?.mutationError}
+            onOpenDetail={onOpenWorkerDetail}
+          />
+        ))}
+      </div>
+    </div>
+  )
+}
+
 export function OrchestrateView({
   workspaceSlug: workspaceSlugProp,
   onNavigateHome,
@@ -3362,11 +3410,12 @@ export function OrchestrateView({
   const navigate = useNavigate()
   const routeWorkerId = useRouterState({ select: state => {
     const search = state.location.search as { workerId?: unknown }
-    return typeof search?.workerId === 'string' && search.workerId.startsWith('worker_') ? search.workerId : undefined
+    return typeof search?.workerId === 'string' && (search.workerId.startsWith('worker_') || search.workerId.startsWith('worker-')) ? search.workerId : undefined
   } })
   const workspaceSlug = routeParams.workspaceSlug ?? workspaceSlugProp
+  const accountScopeId = getDesktopSessionIdentitySnapshot()?.accountScopeId
   // Worker context belongs to one account, workspace, project and session only.
-  const workerContextScope = `${getDesktopSessionIdentitySnapshot()?.accountScopeId || ''}:${workspaceSlug || ''}:${selectedProject?.id || ''}:${activeSessionId}`
+  const workerContextScope = `${accountScopeId || ''}:${workspaceSlug || ''}:${selectedProject?.id || ''}:${activeSessionId}`
   const previousWorkerContextScope = useRef(workerContextScope)
   useEffect(() => {
     if (previousWorkerContextScope.current !== workerContextScope) {
@@ -6360,6 +6409,17 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                 </div>
                 {reviewError && <div role="alert" className="text-xs text-red-300">{reviewError}</div>}
               </div>
+            )}
+
+            {/* TASKS VIEW DURABLE WORKERS SECTION (PENDING WORKERS AWAITING ACCEPTANCE) */}
+            {accountScopeId && (
+              <TasksDurableWorkersSection
+                accountScopeId={accountScopeId}
+                workspaceSlug={workspaceSlug}
+                onOpenWorkerDetail={(workerId) => {
+                  void navigate(swarmWorkerLink(workspaceSlug, workerId))
+                }}
+              />
             )}
 
             {/* ACTIVE RUNNING AUTOMATIONS TICKER / CARDS AT TOP OF PROJECT */}

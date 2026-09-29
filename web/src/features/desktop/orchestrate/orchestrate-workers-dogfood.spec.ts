@@ -68,3 +68,15 @@ test('project page retains pending review actions outside canonical worker hub',
   assert.ok(!source.includes('listStorageWorkers'))
   assert.ok(!source.includes('handleUpdateWorkerWorkspaceScope'))
 })
+
+// Requirement: Orchestrator proposed durable workers appear in regular Tasks view worker section
+// as an expandable PendingWorkerCard with exact intent and granular worker detail navigation.
+// Threat: durable workers only appear in the standalone hub, stranding human acceptance in regular view.
+test('OrchestrateView integrates TasksDurableWorkersSection and PendingWorkerCard in Tasks view', () => {
+  const source = fs.readFileSync(path.join(__dirname, 'OrchestrateView.tsx'), 'utf8')
+  assert.ok(source.includes('TasksDurableWorkersSection'), 'OrchestrateView must define and render TasksDurableWorkersSection')
+  assert.ok(source.includes('PendingWorkerCard'), 'OrchestrateView must render PendingWorkerCard for pending durable workers')
+  assert.ok(source.includes('data-testid="tasks-pending-workers-section"'), 'Tasks view must have testable pending workers section')
+  assert.ok(source.includes('Pending Workers Awaiting Acceptance'), 'Tasks view must clearly identify pending workers awaiting acceptance')
+  assert.ok(source.includes('swarmWorkerLink'), 'OrchestrateView must link to worker detail via canonical route')
+})

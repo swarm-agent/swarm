@@ -156,3 +156,36 @@ test('released response cannot overwrite remounted page with matching generation
   assert.equal((h.pages()[workerPageKey(detail)].data as { worker: WorkerRecord }).worker.revision, 2)
   next.release()
 })
+
+// Requirement: worker accept mutation enforces account isolation, invalidates cache upon success,
+// and records mutationError on stale revision conflict without forging active state.
+test('worker accept mutation requires matching account and invalidates on confirmed transition', { timeout: 1000 }, async () => {
+  const h = harness()
+  const detailLease = h.runtime.acquire(detail)
+  await Promise.resolve()
+  h.reads[0].resolve({ worker: worker(1, 'pending') })
+  await detailLease.ready
+  assert.equal((h.pages()[workerPageKey(detail)].data as { worker: WorkerRecord }).worker.lifecycle_state, 'pending')
+
+  // Threat: foreign account attempts acceptance
+  await assert.rejects(
+    h.runtime.mutate({ action: 'accept', workerId: 'worker-1', expected_revision: 1 }, 'other-account'),
+    /Worker account scope changed/
+  )
+
+  // Success: confirmed acceptance transitions to active
+  h.setMutate(async () => ({ worker: worker(2, 'active') }))
+  const res = await h.runtime.mutate({ action: 'accept', workerId: 'worker-1', expected_revision: 1 }, 'account-1')
+  assert.ok('worker' in res)
+  assert.equal(res.worker.lifecycle_state, 'active')
+  assert.equal(h.pages()[workerPageKey(detail)].stale, true, 'detail cache must be invalidated')
+
+  // Threat: stale revision conflict records error and does not forge active state
+  h.setMutate(async () => { throw new Error('stale revision: expected 1, current is 2') })
+  await assert.rejects(
+    h.runtime.mutate({ action: 'accept', workerId: 'worker-1', expected_revision: 1 }, 'account-1'),
+    /stale revision/
+  )
+  assert.equal(h.pages()[workerPageKey(detail)].mutationError, 'stale revision: expected 1, current is 2')
+  detailLease.release()
+})

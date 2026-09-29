@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { isSwarmSection, swarmPageLink, SWARM_SECTIONS } from './swarm-navigation'
+import { isSwarmSection, swarmPageLink, swarmWorkerHref, swarmWorkerLink, SWARM_SECTIONS } from './swarm-navigation'
 import { composeDesktopDocumentTitle } from '../runtime/desktop-document-title'
 
 // Requirement: every Swarm sidebar page has one global/workspace-scoped
@@ -46,4 +46,18 @@ test('Swarm page titles cannot be replaced by colliding session titles', () => {
   for (const pathname of ['/swarm/media', '/example-workspace/swarm/media']) {
     assert.equal(composeDesktopDocumentTitle({ pathname, unreadCount: 2, sessionsById }), '(2) Swarm · Media')
   }
+})
+
+// Requirement: granular worker URL preserves workspace scope when provided and targets registered routes.
+test('granular worker navigation preserves workspace scope', () => {
+  assert.deepEqual(swarmWorkerLink(undefined, 'worker-1'), {
+    to: '/workers/$workerId',
+    params: { workerId: 'worker-1' },
+  })
+  assert.deepEqual(swarmWorkerLink('my-workspace', 'worker-1'), {
+    to: '/$workspaceSlug/workers/$workerId',
+    params: { workspaceSlug: 'my-workspace', workerId: 'worker-1' },
+  })
+  assert.equal(swarmWorkerHref(undefined, 'worker-1'), '/workers/worker-1')
+  assert.equal(swarmWorkerHref('my-workspace', 'worker-1'), '/my-workspace/workers/worker-1')
 })
