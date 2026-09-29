@@ -120,6 +120,27 @@ test('confirmed mutation invalidates list and detail only after acknowledgement'
   detailLease.release()
 })
 
+// Requirement: an account-scoped summary is independent of paged history and must
+// reject a wrong worker/date/zone rather than rendering foreign or stale counts.
+// Boundary: DesktopWorkersRuntime.verify and the canonical worker page reducer.
+test('summary accepts exact scope and rejects foreign worker or day', { timeout: 1000 }, async () => {
+  const h = harness()
+  const input = { kind: 'summary' as const, accountScopeId: 'account-1', workerId: 'worker-1', date: '2025-03-09', timezone: 'UTC' }
+  const lease = h.runtime.acquire(input)
+  await Promise.resolve()
+  const runs = { active: [], active_truncated: false, date: input.date, timezone: input.timezone, day_start_at: 0, day_end_at: 1, daily_runs: 17, daily_success: 16, daily_failed: 1, daily_cancelled: 0, active_runs: 2, scanned_runs: 17, truncated: false }
+  h.reads[0].resolve({ worker_id: 'worker-2', runs, next_scheduled_at: 0 })
+  await lease.ready
+  assert.equal(h.pages()[workerPageKey(input)].error, 'Worker response kind mismatch')
+  const pending = h.runtime.refresh(input)
+  await Promise.resolve()
+  h.reads[1].resolve({ worker_id: 'worker-1', runs, next_scheduled_at: 0 })
+  await pending
+  assert.equal(h.pages()[workerPageKey(input)].error, undefined)
+  assert.equal((h.pages()[workerPageKey(input)].data as { runs: typeof runs }).runs.daily_runs, 17)
+  lease.release()
+})
+
 test('released response cannot overwrite remounted page with matching generation', { timeout: 1000 }, async () => {
   const h = harness()
   const first = h.runtime.acquire(detail)

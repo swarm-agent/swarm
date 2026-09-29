@@ -56,7 +56,8 @@ export class DesktopWorkersRuntime {
     }
     if ((input.kind === 'list' && !('workers' in data)) || (input.kind === 'detail' && !('worker' in data))
       || (input.kind === 'runs' && !('runs' in data)) || (input.kind === 'history' && !('revisions' in data))
-      || (input.kind === 'run' && (!('run' in data) || data.run.id !== input.runId))) throw new Error('Worker response kind mismatch')
+      || (input.kind === 'run' && (!('run' in data) || data.run.id !== input.runId))
+      || (input.kind === 'summary' && (!('worker_id' in data) || data.worker_id !== input.workerId || data.runs?.date !== input.date || data.runs?.timezone !== input.timezone))) throw new Error('Worker response kind mismatch')
     if (input.kind === 'history' && 'revisions' in data && data.revisions.some(h => h.account_scope_id !== input.accountScopeId || h.worker_id !== input.workerId || h.worker.id !== input.workerId)) throw new Error('Worker history scope mismatch')
   }
   refresh(input: WorkerRead): Promise<void> {

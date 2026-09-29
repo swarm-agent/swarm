@@ -33,6 +33,13 @@ export interface WorkerRun {
   cancel_requested?: boolean; error?: string; deliverables?: Array<Record<string, unknown>>
   started_at?: number; completed_at?: number; created_at: number
 }
+export interface WorkerRunSummary {
+  active: Array<{ id: string; session_id?: string; status: string; created_at: number }>
+  active_truncated: boolean; date: string; timezone: string; day_start_at: number; day_end_at: number
+  daily_runs: number; daily_success: number; daily_failed: number; daily_cancelled: number
+  active_runs: number; scanned_runs: number; truncated: boolean
+}
+export interface WorkerSummary { worker_id: string; runs: WorkerRunSummary; next_scheduled_at: number }
 export interface WorkerRevision {
   worker_id: string; account_scope_id: string; revision: number; worker: WorkerRecord
   committed_at: number; committed_by?: string; change_summary?: string
@@ -43,12 +50,14 @@ export type WorkerRead =
   | { kind: 'runs'; accountScopeId: string; workerId: string; cursor?: string; limit?: number }
   | { kind: 'history'; accountScopeId: string; workerId: string; cursor?: string; limit?: number }
   | { kind: 'run'; accountScopeId: string; workerId: string; runId: string }
+  | { kind: 'summary'; accountScopeId: string; workerId: string; timezone: string; date: string }
 export type WorkerReadResult =
   | { workers: WorkerRecord[]; next_cursor?: string }
   | { worker: WorkerRecord }
   | { runs: WorkerRun[]; next_cursor?: string }
   | { revisions: WorkerRevision[]; next_cursor?: string }
   | { run: WorkerRun }
+  | WorkerSummary
 export type WorkerMutation =
   | { action: 'create'; name: string; instructions?: string; description?: string; idempotency_key: string; requested_capabilities?: WorkerCapabilityRequest[]; workspace_requirements?: WorkerWorkspaceRequirement[]; metadata?: Record<string, unknown> }
   | { action: 'update'; workerId: string; expected_revision: number; changes: { name?: string; description?: string; instructions?: string; change_summary?: string; requested_capabilities?: WorkerCapabilityRequest[]; workspace_requirements?: WorkerWorkspaceRequirement[]; metadata?: Record<string, unknown> } }
@@ -96,6 +105,13 @@ function envelope<T>(raw: T | null, field: keyof T): T {
 export async function readWorkers(input: WorkerRead): Promise<WorkerReadResult> {
   const path = input.kind === 'list' ? '/v3/workers' : workerPath(input.workerId)
   if (input.kind === 'detail') return envelope(await requestJson<{ worker: WorkerRecord }>(path), 'worker')
+  if (input.kind === 'summary') {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(input.date) || !input.timezone) throw new Error('Worker summary needs date and timezone')
+    const query = new URLSearchParams({ timezone: input.timezone, date: input.date })
+    const raw = await requestJson<WorkerSummary>(`${path}/summary?${query}`)
+    if (!raw || raw.worker_id !== input.workerId || raw.runs?.date !== input.date || raw.runs?.timezone !== input.timezone || typeof raw.runs?.daily_runs !== 'number' || typeof raw.next_scheduled_at !== 'number') throw new Error('Invalid worker summary response')
+    return raw
+  }
   if (input.kind === 'run') return envelope(await requestJson<{ run: WorkerRun }>(`${path}/runs/${encodeURIComponent(required(input.runId, 'Run ID'))}`), 'run')
   const query = paging(input)
   if (input.kind === 'list') {

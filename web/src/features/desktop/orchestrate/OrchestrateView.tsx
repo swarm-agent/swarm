@@ -56,8 +56,10 @@ import {
   Zap,
 } from 'lucide-react'
 import { formatContextWindow } from '../chat/services/model-options'
-import { requestJson } from '../../../app/api'
+import { requestJson, getDesktopSessionIdentitySnapshot } from '../../../app/api'
 import { WorkerHub, type SelectedWorker } from './worker-hub'
+import { listStorageWorkers, activateStorageWorker } from '../storage/api'
+import type { StorageDiscoveredWorker } from '../storage/types'
 import { submitWithWorkerSelection } from './worker-message-context'
 import { useDesktopV3CacheSelector, getDesktopV3CacheSnapshot } from '../state/desktop-v3-cache-store'
 import { selectPendingWorkerSidebarReviews } from '../state/desktop-automation-v2-state'
@@ -76,8 +78,6 @@ import { HistoricalMediaLibrary, MediaViewerModal, type MediaLibraryItem } from 
 import type { MediaGenerationJob, MediaGenerationRequest, MediaGenerationSettings } from '../tools/media-library/media-generation'
 import type { QuickRouteMode } from '../tools/media-library/media-viewer-modal'
 import { ORCHESTRATE_THEMES } from './orchestrate-themes'
-import { listStorageWorkers, activateStorageWorker } from '../storage/api'
-import type { StorageDiscoveredWorker } from '../storage/types'
 import {
   desktopProjects,
   useDesktopProject,
@@ -2689,7 +2689,7 @@ function OrchestratorChatComposer({
         media: attachments.length > 0 ? attachments : undefined,
       })
 
-      await submitWithWorkerSelection(selectedWorker || null, async (workerMetadata) => {
+      await submitWithWorkerSelection(!effectiveTaskId ? selectedWorker || null : null, async (workerMetadata) => {
         operation.request.metadata = { ...operation.request.metadata, ...workerMetadata }
         await continueDesktopV3Conversation(operation)
       }, currentSelectedWorker || (() => selectedWorker || null), () => onDeselectWorker?.(selectedWorker || null))
@@ -2751,7 +2751,7 @@ function OrchestratorChatComposer({
         </div>
       )}
 
-      {selectedWorker && !targetTask && (
+      {selectedWorker && !targetTask && !selectedTaskId && (
         <div className="flex items-center justify-between rounded-lg border border-indigo-500/30 bg-indigo-950/40 px-2.5 py-1 text-indigo-200" data-testid="composer-worker-context-chip">
           <span>Next message only: {selectedWorker.name} (r{selectedWorker.revision}) · no task dispatched</span>
           <button type="button" aria-label="Remove selected worker" onClick={() => onDeselectWorker?.(selectedWorker)}><X size={12} /></button>
@@ -3327,9 +3327,21 @@ export function OrchestrateView({
   const [selectedTaskId, setSelectedTaskId] = useState<string>('')
   const [selectedWorker, setSelectedWorker] = useState<SelectedWorker | null>(null)
   const selectedWorkerRef = useRef<SelectedWorker | null>(null)
-  const selectWorker = (worker: SelectedWorker | null) => { selectedWorkerRef.current = worker; setSelectedWorker(worker) }
+  const selectWorker = (worker: SelectedWorker | null) => {
+    selectedWorkerRef.current = worker
+    setSelectedWorker(worker)
+    if (worker) {
+      setActiveTaskId(null)
+      setSelectedTaskId('')
+      const primary = selectedProject?.primarySessionId
+      if (primary) {
+        previousWorkerContextScope.current = `${getDesktopSessionIdentitySnapshot()?.accountScopeId || ''}:${workspaceSlug || ''}:${selectedProject?.id || ''}:${primary}`
+        setActiveSessionId(primary)
+      }
+    }
+  }
   const clearConsumedWorker = (worker: SelectedWorker | null) => {
-    if (selectedWorkerRef.current === worker) selectWorker(null)
+    if (selectedWorkerRef.current === worker) { selectedWorkerRef.current = null; setSelectedWorker(null) }
   }
 
   // Only the asset viewer is transient; the library itself is a routed page.
@@ -3354,6 +3366,16 @@ export function OrchestrateView({
     return typeof search?.workerId === 'string' && search.workerId.startsWith('worker_') ? search.workerId : undefined
   } })
   const workspaceSlug = routeParams.workspaceSlug ?? workspaceSlugProp
+  // Worker context belongs to one account, workspace, project and session only.
+  const workerContextScope = `${getDesktopSessionIdentitySnapshot()?.accountScopeId || ''}:${workspaceSlug || ''}:${selectedProject?.id || ''}:${activeSessionId}`
+  const previousWorkerContextScope = useRef(workerContextScope)
+  useEffect(() => {
+    if (previousWorkerContextScope.current !== workerContextScope) {
+      previousWorkerContextScope.current = workerContextScope
+      selectedWorkerRef.current = null
+      setSelectedWorker(null)
+    }
+  }, [workerContextScope])
   const activeNavTab: SwarmPage = isSwarmSection(routeParams.swarmSection) ? routeParams.swarmSection : 'home'
   const showFullMediaCenter = activeNavTab === 'media'
   const setActiveNavTab = (page: SwarmPage) => { void navigate(swarmPageLink(workspaceSlug, page)) }
@@ -3427,34 +3449,20 @@ export function OrchestrateView({
     }
   }
 
+  // Unreachable legacy branch below still references these bindings. No storage discovery
+  // runs on the durable hub; remove the branch and bindings together in follow-up cleanup.
   const [cloudWorkers, setCloudWorkers] = useState<StorageDiscoveredWorker[]>([])
   const [cloudWorkersError, setCloudWorkersError] = useState<string | null>(null)
   const [activatingWorkerId, setActivatingWorkerId] = useState<string | null>(null)
-
   const fetchCloudWorkers = useCallback(async () => {
-    try {
-      setCloudWorkersError(null)
-      const workers = await listStorageWorkers()
-      setCloudWorkers(workers)
-    } catch (err) {
-      setCloudWorkersError(err instanceof Error ? err.message : 'Failed to discover storage workers')
-    }
+    try { setCloudWorkersError(null); setCloudWorkers(await listStorageWorkers()) }
+    catch (err) { setCloudWorkersError(err instanceof Error ? err.message : 'Storage discovery failed') }
   }, [])
-
-  // Storage discovery is not a durable-worker authority. The legacy view below is unreachable
-  // during the migration window; do not fetch or activate storage workers from this hub.
-
   const handleActivateCloudWorker = async (workerId: string) => {
     setActivatingWorkerId(workerId)
-    try {
-      await activateStorageWorker(workerId)
-      await fetchCloudWorkers()
-    } catch (err) {
-      console.error('Failed to activate cloud worker', err)
-      setCloudWorkersError(err instanceof Error ? err.message : 'Failed to activate cloud worker')
-    } finally {
-      setActivatingWorkerId(null)
-    }
+    try { await activateStorageWorker(workerId); await fetchCloudWorkers() }
+    catch (err) { setCloudWorkersError(err instanceof Error ? err.message : 'Storage activation failed') }
+    finally { setActivatingWorkerId(null) }
   }
 
   // Deploy Task Modal State
@@ -4102,6 +4110,8 @@ export function OrchestrateView({
 
   // Task selection & Per-Task Session Switching
   const handleSelectTask = (task: RunningTask) => {
+    selectedWorkerRef.current = null
+    setSelectedWorker(null)
     setSelectedTaskId(task.id)
     if (task.sessionId) {
       setActiveSessionId(task.sessionId)

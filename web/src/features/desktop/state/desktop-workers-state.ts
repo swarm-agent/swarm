@@ -27,7 +27,8 @@ export function workerReadRecords(data: WorkerReadResult): { workers: WorkerReco
   if ('worker' in data) return { workers: [data.worker], runs: [] }
   if ('runs' in data) return { workers: [], runs: data.runs }
   if ('run' in data) return { workers: [], runs: [data.run] }
-  return { workers: data.revisions.map(revision => revision.worker), runs: [] }
+  if ('revisions' in data) return { workers: data.revisions.map(revision => revision.worker), runs: [] }
+  return { workers: [], runs: [] }
 }
 function affected(input: WorkerRead, accountScopeId?: string, workerId?: string): boolean {
   return (!accountScopeId || input.accountScopeId === accountScopeId)

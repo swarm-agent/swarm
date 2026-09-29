@@ -29,6 +29,22 @@ test('revision and malformed acknowledgement prevent worker mutations from appea
     assert.deepEqual(JSON.parse(String(calls.at(-1)?.init.body)), { expected_revision: 2 })
   } finally { globalThis.fetch = previous }
 })
+// Requirement: the summary endpoint is read with explicit date and zone, and an
+// invalid scope envelope fails closed. Boundary: readWorkers -> /v3/workers/:id/summary.
+test('worker summary requires exact worker, day and timezone', async () => {
+  const previous = globalThis.fetch
+  const seen: string[] = []
+  globalThis.fetch = (async (url: RequestInfo | URL) => {
+    seen.push(String(url))
+    if (String(url).includes('/v1/auth/desktop/session')) return new Response(JSON.stringify({ user_id: 'user', account_scope_id: 'account' }), { status: 200 })
+    return new Response(JSON.stringify({ worker_id: 'foreign', runs: { date: '2025-03-09', timezone: 'UTC', daily_runs: 3 }, next_scheduled_at: 0 }), { status: 200 })
+  }) as typeof fetch
+  try {
+    await assert.rejects(readWorkers({ kind: 'summary', accountScopeId: 'account', workerId: 'worker', timezone: 'UTC', date: '2025-03-09' }), /Invalid worker summary/)
+    assert.ok(seen.some(url => url.includes('/v3/workers/worker/summary?timezone=UTC&date=2025-03-09')))
+  } finally { globalThis.fetch = previous }
+})
+
 test('bounded paginated worker read rejects malformed envelope', async () => {
   const previous = globalThis.fetch
   globalThis.fetch = (async (url: RequestInfo | URL) => {

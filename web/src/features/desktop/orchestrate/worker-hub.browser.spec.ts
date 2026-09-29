@@ -16,11 +16,12 @@ test('durable worker detail renders runs and failures; controls require confirma
     import {dispatchDesktopV3Cache} from './src/features/desktop/state/desktop-v3-cache-store';
     import {workerPageKey} from './src/features/desktop/state/desktop-workers-state';
     window.calls=[]; window.selected=[];
-    const worker={id:'worker_123', account_scope_id:'acct',name:'Daily audit',instructions:'Inspect daily',revision:2,lifecycle_state:'active',created_at:1,updated_at:2,automations:[{id:'wauto_1',worker_id:'worker_123',name:'Review',revision:1,enabled:true,activation_mode:'cron',schedule:{kind:'cron',cron:'0 9 * * *',timezone:'UTC'},plan_document:{title:'Audit',checkpoints:[{id:'cp-1',title:'Check'}]}}]};
+    const worker={id:'worker_123', account_scope_id:'acct',name:'Daily audit',instructions:'Inspect daily',revision:2,lifecycle_state:'active',created_at:1,updated_at:2,local_bindings:{primary:'workspace_1'},automations:[{id:'wauto_1',worker_id:'worker_123',name:'Review',revision:1,enabled:true,activation_mode:'cron',schedule:{kind:'cron',cron:'0 9 * * *',timezone:'UTC'},plan_document:{title:'Audit',checkpoints:[{id:'cp-1',title:'Check'}]}}]};
     const run={id:'run_1',worker_id:'worker_123',account_scope_id:'acct',worker_revision:2,request_source:'schedule',status:'running',session_id:'session_1',created_at:Date.now(),error:'warning',deliverables:[{label:'report'}]};
     const feed=(input,data)=>{const key=workerPageKey(input); dispatchDesktopV3Cache({type:'workers.begin',key,input,requestId:'req-'+input.kind});dispatchDesktopV3Cache({type:'workers.finish',key,requestId:'req-'+input.kind,generation:0,data})};
     window.invalidate=()=>dispatchDesktopV3Cache({type:'workers.invalidate',workerId:'worker_123',accountScopeId:'acct'});
     feed({kind:'detail',accountScopeId:'acct',workerId:'worker_123'},{worker});feed({kind:'runs',accountScopeId:'acct',workerId:'worker_123',limit:25},{runs:[run],next_cursor:'opaque'});feed({kind:'history',accountScopeId:'acct',workerId:'worker_123',limit:10},{revisions:[{worker_id:worker.id,account_scope_id:'acct',revision:2,worker,committed_at:Date.now(),change_summary:'Edited'}]});
+    feed({kind:'summary',accountScopeId:'acct',workerId:'worker_123',timezone:'UTC',date:new Date().toISOString().slice(0,10)},{worker_id:'worker_123',next_scheduled_at:0,runs:{active:[],active_runs:2,active_truncated:false,timezone:'UTC',date:new Date().toISOString().slice(0,10),daily_runs:42,daily_success:39,daily_failed:2,daily_cancelled:1,scanned_runs:42,truncated:false,day_start_at:0,day_end_at:0}});
     desktopWorkers.acquire=()=>({ready:Promise.resolve(),release:()=>{}});
     desktopWorkers.mutate=async (input)=>{window.calls.push(input);throw new Error('stop barrier failed')};
     createRoot(document.getElementById('root')).render(<WorkerDetail workerId='worker_123' accountScopeId='acct' workspaceSlug='demo' onSelectWorker={w=>window.selected.push(w)} onClose={()=>{}}/>);`
@@ -34,8 +35,8 @@ test('durable worker detail renders runs and failures; controls require confirma
     await page.getByText('Daily audit').waitFor()
     await page.getByText('Inspect daily').waitFor()
     await page.getByText('0 9 * * * (UTC)').waitFor()
-    await page.getByText(/Today .*1 run\(s\) on this page/).waitFor()
-    await page.getByText(/Next scheduled run: not reported by the durable worker API/).waitFor()
+    await page.getByText(/Total 42 runs · 39 succeeded · 2 failed/).first().waitFor()
+    await page.getByText(/Next eligible schedule: none reported/).first().waitFor()
     await page.getByText('Deliverable reference:').waitFor()
     assert.equal(await page.locator('a[href="/demo/session_1"]').count(), 1)
     await page.getByRole('button', { name: 'Archive…' }).click()
