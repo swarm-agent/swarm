@@ -289,7 +289,7 @@ func manageProjectsDefinition() Definition {
 					"type":        "object",
 					"description": "Alias for plan_document.",
 				},
-				"coder_assignments": map[string]any{"type": "array", "description": "For one small same-workspace task with two independent parallel Coders: [{title, meta_prompt, deliverable, owned_scope, acceptance_criteria}]. One user-approved task card starts a Swarm parent which launches both via one regular task call; no plan or task program. Distinct non-overlapping workspace-relative owned scopes are required.", "items": map[string]any{"type": "object"}},
+				"coder_assignments": map[string]any{"type": "array", "description": "For one small task with independent parallel Coders: [{title, meta_prompt, deliverable, owned_scope, acceptance_criteria, workspace_path}]. Each assignment may target its own authorized project repository; specify its exact workspace_path (or workspace_id). Omitted assignment source inherits the explicit task source. One approved card starts a Swarm parent and one regular parallel task call; no plan or task program. Owned scopes must not overlap within the same repository.", "items": map[string]any{"type": "object"}},
 				"task_program": map[string]any{
 					"type":        "object",
 					"description": "Optional Task Program for dependent/staged work: {id, stages: [{id, depends_on, dependency_evidence}], jobs: [{id, stage_id, agent_type, title, meta_prompt, deliverable, workspace_path, owned_scope, acceptance_criteria, dependency_evidence}]}. For dependent cross-repository changes set workspace_path on every Coder job to its exact authorized source; integration remains per repository. Independent cross-repository changes use parallel workspace-specific tasks/Coders instead.",

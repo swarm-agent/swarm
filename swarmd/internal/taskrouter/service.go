@@ -526,9 +526,10 @@ func (s *Service) BuildAgentSeedPrompt(task *pebblestore.ProjectTaskRecord, proj
 	if len(task.CoderAssignments) > 0 {
 		sb.WriteString("\n## Small-task parallel Coder assignments (execute only after task-card approval)\n")
 		for i, assignment := range task.CoderAssignments {
+			sb.WriteString(fmt.Sprintf("Authorized source: %s (workspace %s, generation %d). Pass this exact workspace_path on this Coder launch.\n", assignment.SourceWorkspace.Path, assignment.SourceWorkspace.WorkspaceID, assignment.SourceWorkspace.WorkspaceGeneration))
 			sb.WriteString(fmt.Sprintf("%d. %s\n   Scope: %s\n   Objective: %s\n   Deliverable: %s\n   Acceptance criteria: %s\n", i+1, assignment.Title, strings.Join(assignment.OwnedScope, ", "), assignment.MetaPrompt, assignment.Deliverable, strings.Join(assignment.AcceptanceCriteria, "; ")))
 		}
-		sb.WriteString("Use one regular task launch with all Coder assignments in parallel, each in an isolated sibling worktree of the source repository. These are independent small changes, not a plan or task program. Do not edit their files yourself or create separate project cards. Supervise each child, inspect committed handoffs, run focused validation, integrate valid changes into the parent worktree, and report any failure honestly. Resolve Coder models through the configured system-agent assignment; never choose a hardcoded model.\n")
+		sb.WriteString("Use one regular task launch with all Coder assignments in parallel, each in an isolated worktree of its own bound source repository. Preserve each assignment's exact workspace_path; never substitute the parent or first repository. These are independent small changes, not a plan or task program. Do not edit their files yourself or create separate project cards. Supervise each child, inspect committed handoffs, run focused validation, integrate only when requested and only through the authorized per-repository destination, and report any failure honestly. Resolve Coder models through the configured system-agent assignment; never choose a hardcoded model.\n")
 	}
 	if strings.TrimSpace(task.FullPlanMarkdown) != "" {
 		sb.WriteString("\n## Execution Plan & Verification Criteria\n")

@@ -164,6 +164,25 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 	if err != nil {
 		return nil, err
 	}
+	// Resolve every assignment before reserving any task/session. Never trust a
+	// client-supplied source binding or infer a different repository from prose.
+	input.CoderAssignments = append([]pebblestore.ProjectTaskCoderAssignment(nil), input.CoderAssignments...)
+	for i := range input.CoderAssignments {
+		a := &input.CoderAssignments[i]
+		path, id, generation := a.WorkspacePath, a.WorkspaceID, a.WorkspaceGeneration
+		if strings.TrimSpace(path) == "" && strings.TrimSpace(id) == "" {
+			path, id = source.Path, source.WorkspaceID
+			if generation == 0 {
+				generation = source.WorkspaceGeneration
+			}
+		}
+		bound, err := s.resolveProjectTaskSource(p, proj, path, id, generation, true)
+		if err != nil {
+			return nil, fmt.Errorf("coder assignment %d: %w", i+1, err)
+		}
+		a.WorkspacePath, a.WorkspaceID, a.WorkspaceGeneration = bound.Path, bound.WorkspaceID, bound.WorkspaceGeneration
+		a.SourceWorkspace = bound
+	}
 	wsPath := source.Path
 	agentName := strings.TrimSpace(input.Agent)
 

@@ -102,6 +102,18 @@ func (s *Server) revalidateProjectTaskSource(p identity.Principal, proj *pebbles
 	if bound.Path != task.SourceWorkspace.Path || bound.WorkspaceID != task.SourceWorkspace.WorkspaceID {
 		return errors.New("task source workspace changed")
 	}
+	for i, a := range task.CoderAssignments {
+		if a.SourceWorkspace.WorkspaceID == "" || a.SourceWorkspace.WorkspaceGeneration <= 0 || a.SourceWorkspace.Path == "" {
+			return fmt.Errorf("coder assignment %d has no durable source binding", i+1)
+		}
+		bound, err := s.resolveProjectTaskSource(p, proj, a.SourceWorkspace.Path, a.SourceWorkspace.WorkspaceID, a.SourceWorkspace.WorkspaceGeneration, true)
+		if err != nil {
+			return fmt.Errorf("coder assignment %d: %w", i+1, err)
+		}
+		if bound.Path != a.WorkspacePath || bound.WorkspaceID != a.WorkspaceID || bound.WorkspaceGeneration != a.WorkspaceGeneration {
+			return fmt.Errorf("coder assignment %d source changed", i+1)
+		}
+	}
 	return nil
 }
 

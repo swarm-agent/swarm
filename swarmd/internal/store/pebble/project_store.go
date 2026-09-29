@@ -320,14 +320,18 @@ type ProjectTaskIntegration struct {
 	Error               string `json:"error,omitempty"`
 }
 
-// ProjectTaskCoderAssignment is one independent, same-repository Coder launch in a
+// ProjectTaskCoderAssignment is one independent, source-bound Coder launch in a
 // small task. It is not a Task Program job or a dependency edge.
 type ProjectTaskCoderAssignment struct {
-	Title              string   `json:"title"`
-	MetaPrompt         string   `json:"meta_prompt"`
-	Deliverable        string   `json:"deliverable"`
-	OwnedScope         []string `json:"owned_scope"`
-	AcceptanceCriteria []string `json:"acceptance_criteria"`
+	WorkspacePath       string            `json:"workspace_path,omitempty"`
+	WorkspaceID         string            `json:"workspace_id,omitempty"`
+	WorkspaceGeneration int64             `json:"workspace_generation,omitempty"`
+	SourceWorkspace     ProjectTaskSource `json:"source_workspace,omitempty"`
+	Title               string            `json:"title"`
+	MetaPrompt          string            `json:"meta_prompt"`
+	Deliverable         string            `json:"deliverable"`
+	OwnedScope          []string          `json:"owned_scope"`
+	AcceptanceCriteria  []string          `json:"acceptance_criteria"`
 }
 
 // ProjectTaskRecord represents an autonomous task unit in a project.
@@ -561,8 +565,16 @@ func (t *ProjectTaskRecord) Validate() error {
 		if len(t.CoderAssignments) < 2 || len(t.CoderAssignments) > 8 || agent != "swarm" || featSize != "small" || (outcome != "code_pr" && outcome != "bug_patch" && outcome != "code") || t.TaskProgram != nil || t.TaskProgramID != "" || t.PlanBinding != nil || t.PlanDocument != nil {
 			return errors.New("parallel coder assignments require a small Swarm coding task without a plan or task program (2-8 assignments)")
 		}
-		var scopes []string
+		scopesBySource := make(map[string][]string)
 		for _, assignment := range t.CoderAssignments {
+			sourcePath := assignment.SourceWorkspace.Path
+			if sourcePath == "" {
+				sourcePath = assignment.WorkspacePath
+			}
+			if sourcePath == "" {
+				sourcePath = t.SourceWorkspace.Path
+			}
+			scopes := scopesBySource[sourcePath]
 			if strings.TrimSpace(assignment.Title) == "" || strings.TrimSpace(assignment.MetaPrompt) == "" || strings.TrimSpace(assignment.Deliverable) == "" || len(assignment.AcceptanceCriteria) == 0 || len(assignment.OwnedScope) == 0 || len(assignment.Title) > 256 || len(assignment.MetaPrompt) > 16000 || len(assignment.Deliverable) > 2000 || len(assignment.OwnedScope) > 32 || len(assignment.AcceptanceCriteria) > 32 {
 				return errors.New("each coder assignment requires title, meta_prompt, deliverable, acceptance_criteria and owned_scope")
 			}
@@ -582,6 +594,7 @@ func (t *ProjectTaskRecord) Validate() error {
 				}
 				scopes = append(scopes, scope)
 			}
+			scopesBySource[sourcePath] = scopes
 		}
 	}
 	if t.TaskProgram != nil {
