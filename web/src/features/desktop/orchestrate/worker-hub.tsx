@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
 import { PendingWorkerCard } from './pending-worker-card'
-import { LegacyAutomations } from './legacy-automations'
 import { formatWorkerSchedule } from './worker-schedule'
 import { getDesktopSessionIdentitySnapshot } from '../../../app/api'
 import { desktopWorkers, useWorkerPage } from '../runtime/desktop-workers'
@@ -72,7 +71,6 @@ function WorkerHubAccount({ accountScopeId, onSelectWorker, workspaceSlug, initi
     {!page?.loading && !page?.error && !workers.length && <p>No durable workers on this page. Legacy automations are not automatically migrated.</p>}
     {next && <button className={button} onClick={() => setCursor(next)}>Next workers page</button>}{cursor && <button className={button} onClick={() => setCursor(undefined)}>First page</button>}
     {selectedId && <WorkerDetail key={selectedId} accountScopeId={accountScopeId} workerId={selectedId} workspaceSlug={workspaceSlug} onSelectWorker={onSelectWorker} onClose={() => setSelectedId('')} />}
-    <LegacyAutomations />
   </section>
 }
 function WorkerCard({ worker, accountScopeId, selected, onClick }: { worker: WorkerRecord; accountScopeId: string; selected: boolean; onClick: () => void }) {

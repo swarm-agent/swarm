@@ -53,7 +53,7 @@ import { normalizeDesktopPermission } from '../../permissions/services/desktop-p
 import { resolveSessionV3Permission } from '../../session-v3/api'
 import { archiveDesktopV3Sessions } from '../../session-v3/plan-execution-api'
 import { unarchiveDesktopV3ReviewSessions } from '../../session-v3/review-worktrees-api'
-import { DeleteAutomationDialog } from './delete-automation-dialog'
+import { deleteDesktopSessions } from '../../session-search/session-search-api'
 import { loadAutomationConversations } from '../../state/desktop-automation-conversations'
 import { getDesktopV3CacheSnapshot, useDesktopV3CacheSelector } from '../../state/desktop-v3-cache-store'
 import { AutomationV2PlanReview } from './automation-v2-plan-review'
@@ -879,6 +879,7 @@ export function AutomationV2Workspace({
   const [organizationMode, setOrganizationMode] = useState<'flat' | 'by_workspace'>('flat')
   const [actionLoadingId, setActionLoadingId] = useState<string | null>(null)
   const [deleteConfirmRecord, setDeleteConfirmRecord] = useState<AutomationV2Record | null>(null)
+  const [deleteBusy, setDeleteBusy] = useState(false)
   const [suggestionsCollapsed, setSuggestionsCollapsed] = useState(false)
   const [workspaceMode, setWorkspaceMode] = useState<'workers' | 'inbox' | 'split'>('workers')
   const [inboxWorkerFilter, setInboxWorkerFilter] = useState<string>('all')
@@ -1156,6 +1157,40 @@ export function AutomationV2Workspace({
 
   const handleDeleteRecord = (record: AutomationV2Record) => {
     setDeleteConfirmRecord(record)
+  }
+
+  const confirmDeleteRecord = async () => {
+    if (!deleteConfirmRecord || deleteBusy) return
+    const rec = deleteConfirmRecord
+    setDeleteBusy(true)
+    try {
+      if (!rec.cancelled) {
+        try {
+          await desktopAutomationV2.mutate({
+            workspace_id: workspaceId,
+            session_id: rec.session_id,
+            generation: rec.generation,
+            action: 'cancel_all',
+          } as AutomationV2Mutation)
+        } catch {
+          // ignore
+        }
+      }
+      const preview = await deleteDesktopSessions({ session_ids: [rec.session_id], archived_mode: 'include', global: true, dry_run: true })
+      await deleteDesktopSessions({
+        session_ids: [rec.session_id],
+        archived_mode: 'include',
+        global: true,
+        confirmation_token: preview.confirmation_token,
+        confirm_recent: preview.recent_75_overlap_count > 0,
+      })
+      desktopAutomationV2.invalidate(workspaceId)
+      setDeleteConfirmRecord(null)
+    } catch (err) {
+      console.error('Failed to delete automation', err)
+    } finally {
+      setDeleteBusy(false)
+    }
   }
 
   const filteredPendingProposals = useMemo(() => {
@@ -2257,13 +2292,38 @@ export function AutomationV2Workspace({
 
       {/* Delete Automation Confirmation Modal */}
       {deleteConfirmRecord && (
-        <DeleteAutomationDialog
-          record={deleteConfirmRecord}
-          onClose={() => setDeleteConfirmRecord(null)}
-          onDeleted={() => {
-            if (selected === deleteConfirmRecord.session_id || selected === deleteConfirmRecord.automation_id) setSelected('')
-          }}
-        />
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="delete-automation-title"
+        >
+          <div className="w-full max-w-md rounded-2xl border border-[var(--app-border-strong)] bg-[var(--app-surface-elevated)] p-6 shadow-2xl space-y-4">
+            <div className="flex items-center gap-3 text-[var(--app-danger)]">
+              <Trash2 size={20} />
+              <h3 id="delete-automation-title" className="text-base font-semibold text-[var(--app-text)]">
+                Delete worker?
+              </h3>
+            </div>
+            <p className="text-xs leading-relaxed text-[var(--app-text-muted)]">
+              Are you sure you want to delete <strong className="text-[var(--app-text)]">“{deleteConfirmRecord.document.title}”</strong>? This will cancel all future recurring runs and permanently delete the worker session.
+            </p>
+            <div className="flex justify-end gap-2 pt-2">
+              <Button variant="outline" size="sm" disabled={deleteBusy} onClick={() => setDeleteConfirmRecord(null)}>
+                Cancel
+              </Button>
+              <Button
+                size="sm"
+                className="bg-[var(--app-danger)] text-white hover:bg-[var(--app-danger)]/90 gap-1.5"
+                disabled={deleteBusy}
+                onClick={() => void confirmDeleteRecord()}
+              >
+                {deleteBusy ? <LoaderCircle size={13} className="animate-spin" /> : null}
+                <span>{deleteBusy ? 'Deleting…' : 'Delete worker'}</span>
+              </Button>
+            </div>
+          </div>
+        </div>
       )}
 
       <AutomationV2SendRequestModal
