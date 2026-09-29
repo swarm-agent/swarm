@@ -416,6 +416,8 @@ func SwarmOrchestratorAgentToolContract() *pebblestore.AgentToolContract {
 			"list":              {Enabled: pebblestore.BoolPtr(true)},
 			"bash":              {Enabled: pebblestore.BoolPtr(true)},
 			"manage_projects":   {Enabled: pebblestore.BoolPtr(true)},
+			"manage_sessions":   {Enabled: pebblestore.BoolPtr(true)},
+			"manage_worktree":   {Enabled: pebblestore.BoolPtr(true)},
 			"manage-theme":      {Enabled: pebblestore.BoolPtr(true)},
 			"manage_workers":    {Enabled: pebblestore.BoolPtr(true)},
 			"manage_automation": {Enabled: pebblestore.BoolPtr(true)},

@@ -447,3 +447,55 @@ func TestDesignerManifestGuidanceUsesCanonicalVersion(t *testing.T) {
 		}
 	}
 }
+
+// Requirement: the compiled Orchestrator alone may deploy/commit sessions and
+// promote selected work through the canonical tools. Threat: a persisted old
+// profile silently removes these capabilities or a forged snapshot widens a
+// restricted agent. The registry materialization/reconciliation layer is the
+// narrowest authority for the code-owned tool contract; runtime filtering is
+// checked separately in run.
+func TestOrchestratorSessionIntegrationToolContractReconcilesSnapshot(t *testing.T) {
+	registry, err := BuiltinSystemAgentRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	compiled := SwarmOrchestratorAgentProfileForContext(pebblestore.AgentProfile{})
+	stale := compiled
+	stale.ToolContract = &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{
+		"manage_sessions": {Enabled: pebblestore.BoolPtr(false)},
+		"manage_worktree": {Enabled: pebblestore.BoolPtr(false)},
+		"plan_manage":     {Enabled: pebblestore.BoolPtr(true)},
+	}}
+	stale.Provider, stale.Model, stale.Thinking = "test-provider", "test-model", "high"
+	reconciled, err := registry.ReconcileSnapshot(SwarmOrchestratorAgentID, stale)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, profile := range []pebblestore.AgentProfile{compiled, reconciled} {
+		if profile.Mode != ModePrimary || profile.RuntimeMode != pebblestore.AgentRuntimeModeReadWrite || profile.DefaultSessionMode != pebblestore.AgentDefaultSessionModeAuto {
+			t.Fatalf("Orchestrator mode changed: %+v", profile)
+		}
+		for _, name := range []string{"manage_sessions", "manage_worktree"} {
+			cfg, ok := profile.ToolContract.Tools[name]
+			if !ok || cfg.Enabled == nil || !*cfg.Enabled {
+				t.Fatalf("%s missing from compiled Orchestrator contract: %+v", name, profile.ToolContract)
+			}
+		}
+		for _, name := range []string{"plan_manage", "exit_plan_mode"} {
+			cfg := profile.ToolContract.Tools[name]
+			if cfg.Enabled == nil || *cfg.Enabled {
+				t.Fatalf("session planning %s enabled: %+v", name, profile.ToolContract)
+			}
+		}
+	}
+	if reconciled.Provider != stale.Provider || reconciled.Model != stale.Model || reconciled.Thinking != stale.Thinking {
+		t.Fatalf("model preference changed during reconciliation: %+v", reconciled)
+	}
+	for _, profile := range []pebblestore.AgentProfile{CoderAgentProfileForParent(pebblestore.AgentProfile{}), FinderAgentProfileForParent(pebblestore.AgentProfile{})} {
+		for _, name := range []string{"manage_sessions", "manage_worktree"} {
+			if cfg := profile.ToolContract.Tools[name]; cfg.Enabled != nil && *cfg.Enabled {
+				t.Fatalf("restricted agent %s acquired %s", profile.Name, name)
+			}
+		}
+	}
+}
