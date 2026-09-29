@@ -150,6 +150,7 @@ export class TaskSessionLeaseManager {
     // 1. Release leases for sessions no longer active
     for (const [sid, lease] of this.activeLeases.entries()) {
       if (!desiredSet.has(sid)) {
+        this.hydratedSessions.delete(sid)
         try {
           lease.release()
         } catch {
@@ -159,32 +160,34 @@ export class TaskSessionLeaseManager {
       }
     }
 
+    for (const sid of this.hydratedSessions) {
+      if (!desiredSet.has(sid)) this.hydratedSessions.delete(sid)
+    }
+
     // 2. Identify new sessions that need hydration and leases
     const newSessionIds: string[] = []
     for (const sid of desiredSet) {
-      if (!this.activeLeases.has(sid)) {
-        newSessionIds.push(sid)
-      }
+      if (!this.activeLeases.has(sid)) newSessionIds.push(sid)
     }
 
-    if (newSessionIds.length === 0) {
-      return { cancel: () => {} }
-    }
-
-    // 3. Hydrate NEW sessions only
-    for (const sid of newSessionIds) {
-      if (!this.hydratedSessions.has(sid)) {
-        this.hydratedSessions.add(sid)
-        try {
-          void this.deps.hydrate?.(sid)
-        } catch {
-          // ignore
-        }
+    // 3. Hydrate each desired session once, retrying failures on the next reconciliation.
+    // A card can be mounted before the session exists in sync; failed hydration must
+    // never permanently mark its ID as ready.
+    for (const sid of desiredSet) {
+      if (this.hydratedSessions.has(sid)) continue
+      this.hydratedSessions.add(sid)
+      try {
+        const pending = this.deps.hydrate?.(sid)
+        void Promise.resolve(pending).catch(() => {
+          if (this.hydratedSessions.has(sid)) this.hydratedSessions.delete(sid)
+        })
+      } catch {
+        this.hydratedSessions.delete(sid)
       }
     }
 
     // 4. Acquire realtime demand leases so live events stream for NEW sessions
-    if (!this.deps.getControllerReady) {
+    if (newSessionIds.length === 0 || !this.deps.getControllerReady) {
       return { cancel: () => {} }
     }
 

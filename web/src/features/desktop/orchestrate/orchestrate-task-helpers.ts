@@ -822,31 +822,29 @@ export function aggregateTaskLiveState(
   const primarySess = primaryRecord?.kind === 'full' ? primaryRecord.session : undefined
   const primaryView = primaryData?.view
   const primaryIntent = primaryData?.intent
-  const primaryLiveRun = primaryData?.liveRun
   const primaryPlanRecord = primaryData?.planRecord as any
   const primaryPlanDoc = selectTaskPlanDocument(task, primaryPlanRecord)
   const primaryLifecycle = primarySess?.lifecycle as any
 
   const primaryIntentStatus = primaryIntent?.status?.trim().toLowerCase()
-  const primaryRunStatus = primaryView?.current_run_state?.status?.trim().toLowerCase()
+  const primaryRunId = primaryView?.current_run_state?.run_id
+  const primaryRunStatus = (primaryIntent?.run_id && primaryRunId && primaryIntent.run_id !== primaryRunId)
+    ? primaryIntentStatus : (primaryRunId ? primaryView?.current_run_state?.status?.trim().toLowerCase() : undefined) || primaryIntentStatus
+  const primaryIntentIsCurrent = !primaryRunId || !primaryIntent?.run_id || primaryIntent.run_id === primaryRunId
   const primaryPhase = primaryLifecycle?.phase?.trim().toLowerCase()
 
+  const primaryTerminal = ['completed', 'failed', 'cancelled', 'interrupted', 'expired', 'dispatch_blocked'].includes(primaryRunStatus || '')
   const isPrimaryActive = Boolean(
-    (primaryLifecycle?.active === true && !['completed', 'failed', 'cancelled', 'interrupted', 'expired'].includes(primaryIntentStatus || '')) ||
-    primaryIntentStatus === 'running' ||
-    primaryRunStatus === 'running' && !['completed', 'failed', 'cancelled', 'interrupted', 'expired'].includes(primaryIntentStatus || '')
+    !primaryTerminal && (primaryLifecycle?.active === true || (primaryIntentIsCurrent && primaryIntentStatus === 'running') || primaryRunStatus === 'running')
   )
   const isPrimaryReview = Boolean(
     primaryPlanRecord?.status === 'waiting_review' ||
-    primaryPhase === 'needs_review' ||
+    (primaryPhase === 'needs_review' && !isPrimaryActive) ||
     primaryPlanDoc?.executionState?.status === 'waiting_review' ||
     primaryPlanDoc?.checkpoints?.some((cp: any) => cp.status === 'needs_review')
   )
   const isPrimaryFailed = Boolean(
-    primaryIntentStatus === 'failed' ||
-    primaryIntentStatus === 'cancelled' ||
-    primaryIntentStatus === 'interrupted' ||
-    primaryIntentStatus === 'expired' ||
+    ['failed', 'cancelled', 'interrupted', 'expired'].includes(primaryRunStatus || '') ||
     primaryPhase === 'failed' ||
     primaryPhase === 'cancelled'
   )
@@ -886,28 +884,29 @@ export function aggregateTaskLiveState(
     const sPlanDoc = isPlanOwner ? selectTaskPlanDocument(task, sPlan) : sPlan?.document
 
     const intentStatus = sIntent?.status?.trim().toLowerCase()
-    const currentRunStatus = sView?.current_run_state?.status?.trim().toLowerCase()
+    const currentRunId = sView?.current_run_state?.run_id
+    const currentRunStatus = (sIntent?.run_id && currentRunId && sIntent.run_id !== currentRunId)
+      ? intentStatus : (currentRunId ? sView?.current_run_state?.status?.trim().toLowerCase() : undefined)
+    const intentIsCurrent = !currentRunId || !sIntent?.run_id || sIntent.run_id === currentRunId
     const lifecyclePhase = sLifecycle?.phase?.trim().toLowerCase()
     const isLifecycleActiveFlag = Boolean(sLifecycle?.active === true)
+    // Child-card hydration supplies current_run_state but not run_intents. A
+    // terminal run state outranks an older active lifecycle projection.
+    const effectiveRunStatus = currentRunStatus || (intentIsCurrent ? intentStatus : undefined)
+    const isTerminalRun = ['completed', 'failed', 'cancelled', 'interrupted', 'expired', 'dispatch_blocked'].includes(effectiveRunStatus || '')
 
     const isAct = Boolean(
-      intentStatus === 'running' ||
-      intentStatus === 'pending_executor' ||
-      (currentRunStatus === 'running' && !['completed', 'failed', 'cancelled', 'interrupted', 'expired'].includes(intentStatus || '')) ||
-      (currentRunStatus === 'pending_executor' && !['completed', 'failed', 'cancelled', 'interrupted', 'expired'].includes(intentStatus || '')) ||
-      (isLifecycleActiveFlag && !['completed', 'failed', 'cancelled', 'interrupted', 'expired'].includes(intentStatus || ''))
+      (!isTerminalRun && intentIsCurrent && (intentStatus === 'running' || intentStatus === 'pending_executor')) ||
+      (!isTerminalRun && (currentRunStatus === 'running' || currentRunStatus === 'pending_executor' || isLifecycleActiveFlag))
     )
     const isRev = Boolean(
       sPlan?.status === 'waiting_review' ||
-      lifecyclePhase === 'needs_review' ||
+      (lifecyclePhase === 'needs_review' && !isAct) ||
       sPlanDoc?.executionState?.status === 'waiting_review' ||
       sPlanDoc?.checkpoints?.some((cp: any) => cp.status === 'needs_review')
     )
     const isFail = Boolean(
-      intentStatus === 'failed' ||
-      intentStatus === 'cancelled' ||
-      intentStatus === 'interrupted' ||
-      intentStatus === 'expired' ||
+      ['failed', 'cancelled', 'interrupted', 'expired'].includes(effectiveRunStatus || '') ||
       lifecyclePhase === 'failed' ||
       lifecyclePhase === 'cancelled'
     )
@@ -921,7 +920,7 @@ export function aggregateTaskLiveState(
     }
 
     const hasCompletedIntent = Boolean(
-      (intentStatus === 'completed' || lifecyclePhase === 'completed') && !isRev && !isFail
+      (effectiveRunStatus === 'completed' || (!effectiveRunStatus && lifecyclePhase === 'completed')) && !isRev && !isFail
     )
     const isComp = hasCompletedIntent && !isPlanUnfinished
 
@@ -934,11 +933,11 @@ export function aggregateTaskLiveState(
     let itemStatus: TaskSessionStateItem['status'] = 'unknown'
     if (isHydrated) {
       // Runtime session terminal/active evidence is authoritative over stale job state
-      if (intentStatus === 'dispatch_blocked' || lifecyclePhase === 'blocked') {
+      if (effectiveRunStatus === 'dispatch_blocked' || lifecyclePhase === 'blocked') {
         itemStatus = 'blocked'
       } else if (lifecyclePhase === 'paused') {
         itemStatus = 'paused'
-      } else if (intentStatus === 'pending_executor' || (currentRunStatus === 'pending_executor' && !['completed', 'failed', 'cancelled', 'interrupted', 'expired'].includes(intentStatus || ''))) {
+      } else if (effectiveRunStatus === 'pending_executor') {
         itemStatus = 'queued'
       } else if (isFail) {
         itemStatus = 'failed'
@@ -1175,7 +1174,15 @@ export function aggregateTaskLiveState(
   const activeData = activeSid ? liveTaskSessionsData[activeSid] : primaryData
   const activeSettings = activeData?.view?.agentic_settings
   const activePreference = activeSettings?.effective_preference as { provider?: string; model?: string } | undefined
-  const effectiveLiveRun = activeData?.liveRun || primaryLiveRun
+  // Never display the previous run's text while the latest run starts or after it ends.
+  const activeRunId = activeData?.intent?.status === 'running' && activeData.intent.run_id !== activeData.view?.current_run_state?.run_id
+    ? activeData.intent.run_id : (activeData?.view?.current_run_state?.run_id || activeData?.intent?.run_id)
+  const activeRunStatus = activeData?.intent?.status === 'running' &&
+    activeData.intent.run_id !== activeData.view?.current_run_state?.run_id ? 'running' :
+    (activeData?.view?.current_run_state?.run_id ? activeData.view.current_run_state.status : activeData?.intent?.status)
+  const effectiveLiveRun = activeRunId && (!activeData?.liveRun?.runId || activeData.liveRun.runId === activeRunId) &&
+    activeRunStatus === 'running'
+    ? activeData.liveRun : undefined
 
   const toolCalls = effectiveLiveRun ? Object.values((effectiveLiveRun.toolCallsByCallId || {}) as Record<string, any>) : []
   const currentTool = [...toolCalls]
@@ -1234,9 +1241,9 @@ export function aggregateTaskLiveState(
       (task as any).plan_binding ||
       (primaryPlanRecord?.id ? { planId: primaryPlanRecord.id, sessionId: primarySessionId } : undefined),
     currentFocus: currentFocus || task.currentFocus,
-    currentTool: currentTool || task.currentTool,
-    liveAssistantText: liveAssistantText || task.liveAssistantText,
-    liveToolCalls: liveToolCalls || task.liveToolCalls,
+    currentTool: status === 'running' ? (currentTool || undefined) : undefined,
+    liveAssistantText: liveAssistantText || undefined,
+    liveToolCalls: liveToolCalls || undefined,
     toolActivitySummary: toolActivitySummary || undefined,
     activePlanCheckpoints:
       activePlanCheckpoints && activePlanCheckpoints.length > 0 ? activePlanCheckpoints : task.activePlanCheckpoints,

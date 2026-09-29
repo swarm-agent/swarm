@@ -36,7 +36,6 @@ import {
   Paperclip,
   Play,
   Plus,
-  Radio,
   RefreshCw,
   RotateCcw,
   Search,
@@ -76,6 +75,7 @@ import type { MediaGenerationJob, MediaGenerationRequest, MediaGenerationSetting
 import type { QuickRouteMode } from '../tools/media-library/media-viewer-modal'
 import { ORCHESTRATE_THEMES } from './orchestrate-themes'
 import { TaskCardSummary } from './task-card-summary'
+import { TaskLiveActivity } from './task-live-activity'
 import { inheritedSwarmThemeStyle, projectThemePatch, resolveSwarmProjectTheme } from './swarm-section-theme'
 import { createProjectThemeRefresh } from './project-theme-refresh'
 import { WORKSPACE_THEME_OPTIONS, setWorkspaceThemeCatalog, formatWorkspaceThemeLabel } from '../../workspaces/launcher/services/workspace-theme'
@@ -2112,28 +2112,7 @@ function MinimalTaskCard({
             </div>
           ) : null}
 
-          {/* Live Streaming Activity Box */}
-          {(task.liveAssistantText || task.toolActivitySummary) && (
-            <div className="flex flex-col p-2.5 rounded-lg bg-[#050811] border border-blue-500/25 space-y-1.5 font-mono text-[10px]">
-              <div className="flex items-center justify-between text-slate-400">
-                <span className="flex items-center gap-1.5 text-blue-400 font-bold uppercase tracking-wider text-[9px]">
-                  <Radio size={10} className="animate-pulse text-emerald-400" />
-                  <span>Live Streaming Activity</span>
-                </span>
-                {task.toolActivitySummary && (
-                  <span className="text-slate-400 truncate max-w-[200px]" title={task.toolActivitySummary}>
-                    {task.toolActivitySummary}
-                  </span>
-                )}
-              </div>
-              {task.liveAssistantText && (
-                <div className="p-2 rounded bg-black/70 border border-slate-900 text-slate-300 whitespace-pre-wrap leading-relaxed max-h-24 overflow-y-auto">
-                  {task.liveAssistantText.slice(-300)}
-                  <span className="inline-block w-1.5 h-3 bg-blue-400 ml-0.5 animate-pulse" />
-                </div>
-              )}
-            </div>
-          )}
+          <TaskLiveActivity task={task} />
             </>
           )}
         </div>
@@ -3668,11 +3647,15 @@ export function OrchestrateView({
       > = {}
       for (const sid of ids) {
         const intent = state.currentRunIntentBySession?.[sid]
+        const view = state.sessionViewsById?.[sid]
+        const runState = view?.current_run_state
+        const runId = intent?.status === 'running' && intent.run_id !== runState?.run_id
+          ? intent.run_id : (runState?.run_id || intent?.run_id)
         result[sid] = {
           sessionRecord: state.sessionsById[sid],
-          view: state.sessionViewsById?.[sid],
+          view,
           intent,
-          liveRun: intent?.run_id ? state.liveRunsBySession?.[sid]?.[intent.run_id] : undefined,
+          liveRun: runId ? state.liveRunsBySession?.[sid]?.[runId] : undefined,
           planRecord: state.plansBySession?.[sid],
         }
       }
@@ -4349,8 +4332,7 @@ export function OrchestrateView({
   if (!leaseManagerRef.current) {
     leaseManagerRef.current = new TaskSessionLeaseManager({
       getControllerReady: requireDesktopV3RealtimeControllerReady,
-      hydrate: (sid) =>
-        void hydrateDesktopV3ChildCard(sid, { activePlan: true, permissionSummary: true }).catch(() => undefined),
+      hydrate: (sid) => hydrateDesktopV3ChildCard(sid, { activePlan: true, permissionSummary: true }),
       ownerKeyPrefix: 'orchestrate-task',
     })
   }
