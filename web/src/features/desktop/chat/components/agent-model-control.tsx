@@ -34,6 +34,8 @@ export type AgentModelControlTaskOverrideInput = {
 }
 
 interface AgentModelControlProps {
+  /** Optional local theme boundary for section-owned dialogs. */
+  portalContainer?: HTMLElement | null
   currentAgent: string
   selectedPrimaryAgent: string
   agents: AgentProfileRecord[]
@@ -270,6 +272,7 @@ export function AgentModelControl({
   hasTaskOverride = false,
   onApplyTaskModel,
   onResetTaskModel,
+  portalContainer,
 }: AgentModelControlProps) {
   const queryClient = useQueryClient()
   const agentModelSettingsQuery = useQuery(agentModelSettingsQueryOptions())
@@ -1625,7 +1628,7 @@ export function AgentModelControl({
         )}
       </div>
     </div>,
-    document.body,
+    portalContainer ?? document.body,
   ) : null
 
   return (

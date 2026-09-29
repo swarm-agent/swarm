@@ -150,6 +150,7 @@ export class DesktopProjectsRuntime {
       frame.kind === 'auth.credentials.updated'
     ) {
       this.invalidate()
+      for (const listener of this.projectUpdateListeners) listener()
     }
   }
 

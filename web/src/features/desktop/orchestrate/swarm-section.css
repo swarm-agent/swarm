@@ -67,3 +67,37 @@
 .swarm-task-details-toggle:hover { color: var(--swarm-text); }
 @container (max-width: 460px) { .swarm-task-summary { grid-template-columns: 1fr; } .swarm-task-visual { width: 100%; height: 125px; } }
 @media (max-width: 640px) { .swarm-task-summary { grid-template-columns: 1fr; } .swarm-task-visual { width: 100%; height: 125px; } }
+
+/* Shared Desktop controls inherit these aliases only inside Swarm, including the
+   section-owned model-settings portal. No document/root theme is mutated. */
+.swarm-section {
+  --app-bg: var(--swarm-background); --app-bg-alt: var(--swarm-surface-subtle);
+  --app-bg-panel: var(--swarm-surface); --app-bg-inset: var(--swarm-background-inset);
+  --app-bg-overlay: var(--swarm-surface); --app-surface: var(--swarm-surface);
+  --app-surface-subtle: var(--swarm-surface-subtle); --app-surface-elevated: var(--swarm-surface);
+  --app-surface-hover: var(--swarm-surface-hover); --app-surface-active: var(--swarm-surface-hover);
+  --app-border: var(--swarm-border); --app-border-muted: var(--swarm-border-muted);
+  --app-border-strong: var(--swarm-border-accent); --app-border-accent: var(--swarm-border-accent);
+  --app-text: var(--swarm-text); --app-text-muted: var(--swarm-text-muted);
+  --app-text-subtle: var(--swarm-text-subtle); --app-text-accent: var(--swarm-text-accent);
+  --app-primary: var(--swarm-accent); --app-primary-hover: var(--swarm-accent-hover);
+  --app-primary-active: var(--swarm-accent); --app-primary-text: var(--swarm-accent-text);
+  --app-focus-ring: var(--swarm-accent); --app-selection: var(--swarm-surface-hover);
+  --app-warning: var(--swarm-warning); --app-warning-bg: var(--swarm-warning-bg);
+  --app-warning-border: var(--swarm-warning-border); --app-success: var(--swarm-success);
+  --app-success-bg: var(--swarm-success-bg); --app-success-border: var(--swarm-success-border);
+  --app-danger: var(--swarm-danger); --app-danger-bg: var(--swarm-danger-bg);
+  --app-danger-border: var(--swarm-danger-border); --app-info: var(--swarm-info);
+  --app-info-bg: var(--swarm-info-bg); --app-info-border: var(--swarm-border-accent);
+}
+.swarm-section :is(.bg-\[\#080c16\], .bg-\[\#080c16\]\/50, .bg-\[\#080d19\]\/80, .bg-\[\#080d19\]\/90, .bg-\[\#090d16\]\/70, .bg-\[\#090e1a\]\/80, .bg-\[\#0a0f1d\]\/50) { background-color: var(--swarm-surface-subtle); }
+.swarm-section .bg-\[\#091512\] { background-color: var(--swarm-success-bg); }
+.swarm-section :is(.from-\[\#0a1226\], .from-\[\#0c162d\]) { --tw-gradient-from: var(--swarm-surface); }
+.swarm-section :is(.via-\[\#070d1e\], .via-\[\#091024\]) { --tw-gradient-via: var(--swarm-surface-subtle); }
+.swarm-section :is(.to-\[\#040711\], .to-\[\#040814\]) { --tw-gradient-to: var(--swarm-background); }
+.swarm-section :is(.bg-emerald-600, .bg-amber-500, .bg-rose-600) { background-color: var(--swarm-accent); color: var(--swarm-accent-text); }
+.swarm-section :is(.bg-emerald-600, .bg-amber-500, .bg-rose-600):hover { background-color: var(--swarm-accent-hover); }
+.swarm-section :is(.hover\:bg-slate-700, .hover\:bg-slate-800, .hover\:bg-slate-900):hover { background-color: var(--swarm-surface-hover); }
+.swarm-section :is(.hover\:text-white, .hover\:text-slate-200, .hover\:text-slate-300):hover { color: var(--swarm-text); }
+.swarm-section .bg-black\/92 { background-color: var(--swarm-background); }
+.swarm-task-fact dd { flex-wrap: wrap; }

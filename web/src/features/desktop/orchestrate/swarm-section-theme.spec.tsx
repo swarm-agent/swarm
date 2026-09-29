@@ -78,3 +78,18 @@ test('project theme selects canonical palette, resets to inherited, and exposes 
     assert.deepEqual(projectThemePatch('nord'), { theme_id: 'nord' })
   } finally { setWorkspaceThemeCatalog(null) }
 })
+
+// Requirement: all retained orchestration presets, including aliases, provide a
+// complete scoped palette. Missing optional colors must not break CSS or TS builds.
+test('every inherited preset provides nonempty semantic colors', async () => {
+  const { inheritedSwarmThemeStyle } = await import('./swarm-section-theme')
+  const { ORCHESTRATE_THEMES } = await import('./orchestrate-themes')
+  for (const id of Object.keys(ORCHESTRATE_THEMES) as Array<keyof typeof ORCHESTRATE_THEMES>) {
+    const style = inheritedSwarmThemeStyle(id)
+    for (const [name, value] of Object.entries(style)) {
+      assert.equal(typeof value, 'string', `${id}: ${name}`)
+      assert.ok(value.length > 0, `${id}: ${name}`)
+    }
+    assert.equal(style['--swarm-accent'], ORCHESTRATE_THEMES[id].accentColor)
+  }
+})

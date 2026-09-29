@@ -3633,6 +3633,7 @@ export function OrchestrateView({
   const [selectedProjectId, setSelectedProjectId] = useState<string>('')
   const [, setIsLoadingProjects] = useState<boolean>(true)
   const selectedProject = projects.find((p) => p.id === selectedProjectId) ?? projects[0]
+  const [themeRoot, setThemeRoot] = useState<HTMLDivElement | null>(null)
   const [themeCatalogRevision, setThemeCatalogRevision] = useState(0)
   const [themeSaving, setThemeSaving] = useState(false)
   const [themeError, setThemeError] = useState('')
@@ -5782,6 +5783,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
 
   return (
     <div
+      ref={setThemeRoot}
       className="swarm-section relative flex h-screen w-screen overflow-hidden p-3 gap-3 font-sans select-none"
       data-project-theme={projectTheme.state}
       style={{ ...theme.customVars, ...inheritedSwarmThemeStyle(initialThemeId), ...projectTheme.style, ...(projectTheme.colorScheme ? { colorScheme: projectTheme.colorScheme } : {}) } as React.CSSProperties}
@@ -8510,6 +8512,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
 
       {/* Reused Agent Setup & Model Control (/agents authority) */}
       <AgentModelControl
+        portalContainer={themeRoot}
         currentAgent="swarm"
         selectedPrimaryAgent="swarm"
         agents={[]}

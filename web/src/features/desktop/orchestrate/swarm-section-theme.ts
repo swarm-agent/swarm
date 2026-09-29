@@ -5,7 +5,8 @@ import type { OrchestrateThemeId } from './orchestrate-types'
 /** Map the inherited Orchestrate palette to the same semantic boundary as saved themes. */
 export function inheritedSwarmThemeStyle(themeId: OrchestrateThemeId): Record<string, string> {
   const theme = ORCHESTRATE_THEMES[themeId] || ORCHESTRATE_THEMES.modern_navy
-  const vars = theme.customVars as Record<string, string>
+  const vars = { ...ORCHESTRATE_THEMES.modern_navy.customVars, ...theme.customVars } as Record<string, string>
+  const secondary = theme.secondaryColor || theme.accentColor
   return {
     '--swarm-background': vars['--orch-bg'],
     '--swarm-surface': vars['--orch-panel'],
@@ -18,14 +19,14 @@ export function inheritedSwarmThemeStyle(themeId: OrchestrateThemeId): Record<st
     '--swarm-text': '#f1f5f9',
     '--swarm-text-muted': '#a1afc4',
     '--swarm-text-subtle': '#8290a5',
-    '--swarm-text-accent': theme.secondaryColor,
+    '--swarm-text-accent': secondary,
     '--swarm-accent': theme.accentColor,
-    '--swarm-accent-hover': theme.secondaryColor,
+    '--swarm-accent-hover': secondary,
     '--swarm-accent-text': '#fff',
     '--swarm-warning': '#e9ba65', '--swarm-warning-bg': '#33271b', '--swarm-warning-border': '#8e6a36',
-    '--swarm-success': '#65c5a0', '--swarm-success-bg': '#15372e',
-    '--swarm-danger': '#e17784', '--swarm-danger-bg': '#40212c',
-    '--swarm-info': theme.secondaryColor, '--swarm-info-bg': vars['--orch-card'],
+    '--swarm-success': '#65c5a0', '--swarm-success-bg': '#15372e', '--swarm-success-border': '#408c70',
+    '--swarm-danger': '#e17784', '--swarm-danger-bg': '#40212c', '--swarm-danger-border': '#a25365',
+    '--swarm-info': secondary, '--swarm-info-bg': vars['--orch-card'],
   }
 }
 

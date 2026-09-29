@@ -20,9 +20,9 @@ import (
 	"swarm/packages/swarmd/internal/identity"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
-	"swarm/packages/swarmd/internal/uisettings"
 	taskrouter "swarm/packages/swarmd/internal/taskrouter"
 	"swarm/packages/swarmd/internal/tool"
+	"swarm/packages/swarmd/internal/uisettings"
 	"swarm/packages/swarmd/internal/videogen"
 	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
@@ -3441,10 +3441,13 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 					t.Integration = receipt
 					return nil
 				})
-				if updateErr != nil { writeError(w, http.StatusInternalServerError, updateErr); return }
+				if updateErr != nil {
+					writeError(w, http.StatusInternalServerError, updateErr)
+					return
+				}
 				writeJSON(w, http.StatusOK, map[string]any{
-					"status":  "already_integrated",
-					"task":    sanitizeProjectTaskForClient(updated),
+					"status": "already_integrated",
+					"task":   sanitizeProjectTaskForClient(updated),
 				})
 				return
 			}
