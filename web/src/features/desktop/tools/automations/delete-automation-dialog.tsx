@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react'
+import { useRef, useState } from 'react'
 import { desktopAutomationV2 } from '../../runtime/desktop-automation-v2'
 import type { AutomationV2Record } from '../../state/desktop-automation-v2-api'
 
