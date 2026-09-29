@@ -6726,10 +6726,10 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                 <div className="flex items-center gap-2">
                   <button
                     onClick={() => setIsDeployModalOpen(true)}
-                    className="flex items-center gap-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-medium text-xs px-3 py-1.5 shadow-[0_2px_10px_rgba(37,99,235,0.3)] transition-all active:scale-95"
+                    className="swarm-new-task-cta flex items-center gap-1.5 rounded-lg font-medium text-xs px-3 py-1.5"
                   >
-                    <Plus size={13} />
-                    <span>+ New Task</span>
+                    <Plus size={13} aria-hidden="true" />
+                    <span>New Task</span>
                   </button>
                   <button
                     onClick={() => {
@@ -7004,10 +7004,10 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                         </p>
                         <button
                           onClick={() => setIsDeployModalOpen(true)}
-                          className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold shadow-md shadow-blue-600/20 transition-all flex items-center gap-1.5"
+                          className="swarm-new-task-cta px-4 py-2 rounded-lg text-xs font-semibold flex items-center gap-1.5"
                         >
-                          <Plus size={13} />
-                          <span>+ New Task</span>
+                          <Plus size={13} aria-hidden="true" />
+                          <span>New Task</span>
                         </button>
                       </div>
                     )}
@@ -7127,10 +7127,10 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                     </div>
                     <button
                       onClick={() => setIsDeployModalOpen(true)}
-                      className="flex items-center gap-1.5 px-3 py-1 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium"
+                      className="swarm-new-task-cta flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-medium"
                     >
-                      <Plus size={12} />
-                      <span>+ New Task</span>
+                      <Plus size={12} aria-hidden="true" />
+                      <span>New Task</span>
                     </button>
                   </div>
 

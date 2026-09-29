@@ -124,3 +124,15 @@
 .swarm-section :is(.hover\:text-white, .hover\:text-slate-200, .hover\:text-slate-300):hover { color: var(--swarm-text); }
 .swarm-section .bg-black\/92 { background-color: var(--swarm-background); }
 .swarm-task-fact dd { flex-wrap: wrap; }
+
+/* New Task stays outlined using the project/inherited palette in either color scheme. */
+.swarm-section .swarm-new-task-cta {
+  border: 1px solid currentColor;
+  color: var(--swarm-text-accent);
+  background-color: transparent;
+  box-shadow: none;
+  transition: background-color 150ms ease;
+}
+.swarm-section .swarm-new-task-cta:hover { background-color: var(--swarm-surface-hover); }
+.swarm-section .swarm-new-task-cta:active { background-color: var(--swarm-surface-subtle); }
+.swarm-section .swarm-new-task-cta:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
