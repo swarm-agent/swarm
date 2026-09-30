@@ -200,7 +200,9 @@ func ValidateV3RealtimeSchemaMessage(message V3RealtimeMessage) error {
 		}
 		return nil
 	case V3RealtimeKindUsageScopeUpdated:
-		if strings.TrimSpace(message.EndpointCursor) == "" || message.Event == nil || message.Event.EventType != V3RealtimeKindUsageScopeUpdated { return errors.New("usage scope update requires cursor and scope event") }
+		if strings.TrimSpace(message.EndpointCursor) == "" || message.Event == nil || message.Event.EventType != V3RealtimeKindUsageScopeUpdated {
+			return errors.New("usage scope update requires cursor and scope event")
+		}
 		return nil
 	case V3RealtimeKindProjectUpdated:
 		if strings.TrimSpace(message.EndpointCursor) == "" {

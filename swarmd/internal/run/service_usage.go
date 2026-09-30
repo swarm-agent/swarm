@@ -263,8 +263,12 @@ func (s *Service) recordProviderUsageSnapshot(sessionID, runID, providerID, mode
 		if _, reported := usage.APIUsageRaw["estimated_cost_usd"]; reported {
 			turnUsage.CostProvenance = "provider_estimate"
 			turnUsage.PriceStatus = "known"
-		} else { turnUsage.PriceStatus = "subscription" }
-	} else if usage.EstimatedCostUSD > 0 { turnUsage.CostProvenance = "catalog" }
+		} else {
+			turnUsage.PriceStatus = "subscription"
+		}
+	} else if usage.EstimatedCostUSD > 0 {
+		turnUsage.CostProvenance = "catalog"
+	}
 	if s.sessions != nil && s.sessions.Store() != nil {
 		if turnUsage.EstimatedCostUSD == 0 && turnUsage.PriceStatus == "" && !strings.EqualFold(turnUsage.Provider, "codex") {
 			cost, status := s.sessions.Store().CalculateCostWithStatus(turnUsage.Provider, turnUsage.Model, turnUsage.BilledInputTokens, turnUsage.BilledOutputTokens, turnUsage.BilledCacheReadTokens, turnUsage.BilledThinkingTokens)

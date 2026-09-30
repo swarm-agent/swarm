@@ -641,14 +641,20 @@ func (s *Server) v3RealtimeProcessOutboxRecord(conn *transportws.Conn, principal
 	// projections, not the private child event/transcript.
 	if totals := s.usageScopesForRealtimeSubscriptions(principal, record, subs, worksets); len(totals) > 0 {
 		cursor, err := s.signV3SyncEndpointCursor(scope, record.EndpointSeq)
-		if err != nil { return advanced, false, false }
+		if err != nil {
+			return advanced, false, false
+		}
 		payload, err := json.Marshal(map[string]any{"scope_totals": totals})
-		if err != nil { return advanced, false, false }
+		if err != nil {
+			return advanced, false, false
+		}
 		event := pebblestore.V3SessionEvent{Seq: record.Event.Seq, TsUnixMs: record.Event.TsUnixMs}
 		event.EventType = "usage.scope.updated"
 		event.Payload = payload
 		msg := V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: "usage.scope.updated", EndpointCursor: cursor, Event: &event}
-		if err := s.sendV3RealtimeMessage(conn, msg); err != nil { return advanced, false, false }
+		if err := s.sendV3RealtimeMessage(conn, msg); err != nil {
+			return advanced, false, false
+		}
 		advanced.LastSentEndpointSeq = record.EndpointSeq
 		usageScopeDelivered = true
 	}

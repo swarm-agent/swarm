@@ -80,13 +80,23 @@ func setProjectRealtimeMutationInBatch(batch *pebble.Batch, account string, m *p
 		}
 		if strings.HasPrefix(key, KeyProjectTaskAccountPrefix+keyPart(account)+"/") {
 			var task ProjectTaskRecord
-			if err := json.Unmarshal(data, &task); err != nil { return err }
+			if err := json.Unmarshal(data, &task); err != nil {
+				return err
+			}
 			if len(repositories) > 0 {
 				repository := repositories[0]
 				prior, found, err := repository.GetProjectTask(account, task.ProjectID, task.ID)
-				if err != nil { return err }
-				if found { if err := repository.bindTaskUsageInBatch(batch, account, *prior); err != nil { return err } }
-				if err := repository.bindTaskUsageInBatch(batch, account, task); err != nil { return err }
+				if err != nil {
+					return err
+				}
+				if found {
+					if err := repository.bindTaskUsageInBatch(batch, account, *prior); err != nil {
+						return err
+					}
+				}
+				if err := repository.bindTaskUsageInBatch(batch, account, task); err != nil {
+					return err
+				}
 			}
 		}
 		if err := batch.Set([]byte(key), data, nil); err != nil {

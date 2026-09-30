@@ -79,7 +79,7 @@ type V3CheckpointBoundaryMutation struct {
 }
 
 type V3SessionMutationInput struct {
-	usageScopeRepair *pebble.Batch // Private canonical projection repair participant.
+	usageScopeRepair             *pebble.Batch // Private canonical projection repair participant.
 	automationV2                 *automationV2Mutation
 	AutomationBinding            *SessionAutomationBinding  `json:"automation_binding,omitempty"`
 	AutomationDefinitionRevision uint64                     `json:"automation_definition_revision,omitempty"`
@@ -974,26 +974,42 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 		if turnUsage.EstimatedCostUSD == 0 && turnUsage.PriceStatus == "" && turnUsage.CostProvenance != "provider" && !strings.EqualFold(turnUsage.Provider, "codex") {
 			cost, status := s.calculateReceiptCost(turnUsage)
 			turnUsage.EstimatedCostUSD = cost
-			if turnUsage.PriceStatus == "" { turnUsage.PriceStatus = status }
+			if turnUsage.PriceStatus == "" {
+				turnUsage.PriceStatus = status
+			}
 		} else if turnUsage.PriceStatus == "" {
 			_, turnUsage.PriceStatus = s.calculateReceiptCost(turnUsage)
 		}
 		turnUsage.ScopeProjectionVersion = 3
 		turnUsage.ScopeTotals, err = s.prepareUsageScopeTotals(turnUsage, previousTurnUsage)
-		if err != nil { return V3SessionMutationResult{}, err }
+		if err != nil {
+			return V3SessionMutationResult{}, err
+		}
 	}
 	if input.MediaUsage != nil {
-		if usageProvided { return V3SessionMutationResult{}, errors.New("token and media receipts require separate mutations") }
+		if usageProvided {
+			return V3SessionMutationResult{}, errors.New("token and media receipts require separate mutations")
+		}
 		media := *input.MediaUsage
-		if strings.TrimSpace(media.ID) == "" { return V3SessionMutationResult{}, errors.New("media receipt id required") }
+		if strings.TrimSpace(media.ID) == "" {
+			return V3SessionMutationResult{}, errors.New("media receipt id required")
+		}
 		media.SessionID, media.AccountScopeID = input.SessionID, input.AccountScopeID
-		if media.CreatedAt <= 0 { media.CreatedAt = now }
+		if media.CreatedAt <= 0 {
+			media.CreatedAt = now
+		}
 		var existing SessionMediaUsageRecord
 		found, err := s.store.GetJSON(KeySessionMediaUsage(media.AccountScopeID, media.ID), &existing)
-		if err != nil { return V3SessionMutationResult{}, err }
-		if found { return V3SessionMutationResult{}, errors.New("media usage receipt already exists") }
+		if err != nil {
+			return V3SessionMutationResult{}, err
+		}
+		if found {
+			return V3SessionMutationResult{}, errors.New("media usage receipt already exists")
+		}
 		media.ScopeTotals, err = s.prepareMediaScopeTotals(media)
-		if err != nil { return V3SessionMutationResult{}, err }
+		if err != nil {
+			return V3SessionMutationResult{}, err
+		}
 		input.MediaUsage = &media
 	}
 	payload, err := input.v3EventPayload(seq, session, message, lifecycle, runIntent, turnUsage, usageSummary, artifact.Projection, artifactV2.Projection, artifactV3.Projection, transcription.Projection, videoProject.Projection)
@@ -1127,8 +1143,12 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 		}
 	}
 	if input.usageScopeRepair != nil {
-		if input.EventType != "usage.scope.updated" { return V3SessionMutationResult{}, errors.New("invalid usage repair event") }
-		if err := batch.Apply(input.usageScopeRepair, nil); err != nil { return V3SessionMutationResult{}, err }
+		if input.EventType != "usage.scope.updated" {
+			return V3SessionMutationResult{}, errors.New("invalid usage repair event")
+		}
+		if err := batch.Apply(input.usageScopeRepair, nil); err != nil {
+			return V3SessionMutationResult{}, err
+		}
 	}
 	if input.projectRealtime != nil {
 		if err := setProjectRealtimeMutationInBatch(batch, input.AccountScopeID, input.projectRealtime, s); err != nil {
@@ -1277,9 +1297,15 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 			_, status := s.calculateReceiptCost(turnUsage)
 			turnUsage.PriceStatus = status
 		}
-		if err := s.setUsageDays(batch, turnUsage, previousTurnUsage); err != nil { return V3SessionMutationResult{}, err }
-		if err := setUsageBinding(batch, turnUsage.AccountScopeID, turnUsage.SessionID, turnUsage.ScopeTotals); err != nil { return V3SessionMutationResult{}, err }
-		if err := setUsageScopeTotals(batch, turnUsage.AccountScopeID, turnUsage.ScopeTotals); err != nil { return V3SessionMutationResult{}, err }
+		if err := s.setUsageDays(batch, turnUsage, previousTurnUsage); err != nil {
+			return V3SessionMutationResult{}, err
+		}
+		if err := setUsageBinding(batch, turnUsage.AccountScopeID, turnUsage.SessionID, turnUsage.ScopeTotals); err != nil {
+			return V3SessionMutationResult{}, err
+		}
+		if err := setUsageScopeTotals(batch, turnUsage.AccountScopeID, turnUsage.ScopeTotals); err != nil {
+			return V3SessionMutationResult{}, err
+		}
 		usagePayload, err := json.Marshal(turnUsage)
 		if err != nil {
 			return V3SessionMutationResult{}, fmt.Errorf("marshal v3 turn usage %q/%q: %w", turnUsage.SessionID, turnUsage.RunID, err)
@@ -1367,7 +1393,9 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 				turnsDelta = 1
 			}
 			unknownDelta := usageUnknownCount(turnUsage)
-			if hadPreviousTurnUsage { unknownDelta -= usageUnknownCount(previousTurnUsage) }
+			if hadPreviousTurnUsage {
+				unknownDelta -= usageUnknownCount(previousTurnUsage)
+			}
 			codexNominalDelta := 0.0
 			if strings.EqualFold(turnUsage.Provider, "codex") {
 				codexNominalDelta = nominalUsageCost(turnUsage)
@@ -1378,8 +1406,12 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 			}
 			acc.CodexNominalCostUSD += codexNominalDelta
 			accPayload, err = json.Marshal(acc)
-			if err != nil { return V3SessionMutationResult{}, err }
-			if err := batch.Set([]byte(KeyDailyUsageAccumulator(acc.AccountScopeID, acc.Date)), accPayload, nil); err != nil { return V3SessionMutationResult{}, err }
+			if err != nil {
+				return V3SessionMutationResult{}, err
+			}
+			if err := batch.Set([]byte(KeyDailyUsageAccumulator(acc.AccountScopeID, acc.Date)), accPayload, nil); err != nil {
+				return V3SessionMutationResult{}, err
+			}
 			if err := s.updateAccountUsageRollupInBatch(batch, turnUsage.AccountScopeID, dateStr, turnUsage.SessionID, turnUsage.Provider, turnUsage.Model, costDelta, codexNominalDelta, 0.0, tokensDelta, inputDelta, outputDelta, cachedDelta, thinkingDelta, turnsDelta, 0, 0, 0, 0, unknownDelta, ts, now); err != nil {
 				return V3SessionMutationResult{}, err
 			}
@@ -1393,9 +1425,15 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 		if media.CreatedAt <= 0 {
 			media.CreatedAt = now
 		}
-		if err := s.setMediaUsageDays(batch, media); err != nil { return V3SessionMutationResult{}, err }
-		if err := setUsageBinding(batch, media.AccountScopeID, media.SessionID, media.ScopeTotals); err != nil { return V3SessionMutationResult{}, err }
-		if err := setUsageScopeTotals(batch, media.AccountScopeID, media.ScopeTotals); err != nil { return V3SessionMutationResult{}, err }
+		if err := s.setMediaUsageDays(batch, media); err != nil {
+			return V3SessionMutationResult{}, err
+		}
+		if err := setUsageBinding(batch, media.AccountScopeID, media.SessionID, media.ScopeTotals); err != nil {
+			return V3SessionMutationResult{}, err
+		}
+		if err := setUsageScopeTotals(batch, media.AccountScopeID, media.ScopeTotals); err != nil {
+			return V3SessionMutationResult{}, err
+		}
 		mediaKey := KeySessionMediaUsage(media.AccountScopeID, media.ID)
 		mediaPayload, err := json.Marshal(media)
 		if err != nil {
@@ -2941,7 +2979,9 @@ func (s *SessionStore) prepareV3UsageForMutation(input V3SessionMutationInput, n
 	usage.UserID = firstNonEmpty(usage.UserID, input.UserID, session.UserID)
 	usage.AccountScopeID = firstNonEmpty(usage.AccountScopeID, input.AccountScopeID, session.AccountScopeID)
 	if hadPrevious {
-		if usage.Provider != previous.Provider || usage.Model != previous.Model { return SessionTurnUsageSnapshot{}, SessionUsageSummary{}, SessionTurnUsageSnapshot{}, false, false, errors.New("usage receipt provider and model cannot change") }
+		if usage.Provider != previous.Provider || usage.Model != previous.Model {
+			return SessionTurnUsageSnapshot{}, SessionUsageSummary{}, SessionTurnUsageSnapshot{}, false, false, errors.New("usage receipt provider and model cannot change")
+		}
 		usage.CreatedAt = previous.CreatedAt
 	}
 	if usage.CreatedAt <= 0 {
