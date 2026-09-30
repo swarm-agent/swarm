@@ -211,3 +211,19 @@
   .swarm-section .swarm-conversation-panel { width: 100%; max-width: none; min-height: 55dvh; flex-shrink: 0; }
   .swarm-section .swarm-conversation-panel .swarm-ai-sidebar { width: 100%; min-height: 55dvh; }
 }
+
+/* Settings and role selection are local presentation of router/query authority. */
+.swarm-section :is(.swarm-settings-section, .swarm-agent-role) { border: 1px solid var(--swarm-border-muted); border-radius: 8px; background: var(--swarm-surface); color: var(--swarm-text-muted); padding: 8px 12px; text-decoration: none; }
+.swarm-section :is(.swarm-settings-section, .swarm-agent-role):hover { background: var(--swarm-surface-hover); color: var(--swarm-text); }
+.swarm-section :is(.swarm-settings-section[aria-current="page"], .swarm-agent-role[aria-pressed="true"]) { background: var(--swarm-surface-hover); border-color: var(--swarm-border-accent); color: var(--swarm-text); box-shadow: inset 3px 0 0 var(--swarm-accent); }
+.swarm-section :is(.swarm-settings-section, .swarm-agent-role):focus-visible { outline: 2px solid var(--swarm-accent); outline-offset: 3px; }
+.swarm-agents-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; min-width: 0; }
+.swarm-agent-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; align-content: start; min-width: 0; }
+.swarm-agent-role { min-width: 0; text-align: left; cursor: pointer; }
+.swarm-agent-name { display: block; font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+.swarm-agent-model { display: block; margin-top: 3px; font-size: 11px; line-height: 1.4; color: var(--swarm-text-muted); overflow-wrap: anywhere; }
+.swarm-agent-editor { padding: 16px; border: 1px solid var(--swarm-border-muted); border-radius: 12px; background: var(--swarm-surface-subtle); overflow-wrap: anywhere; }
+@media (min-width: 900px) { .swarm-agents-layout { grid-template-columns: minmax(180px, 240px) minmax(0, 1fr); } .swarm-agent-list { grid-template-columns: minmax(0, 1fr); } }
+.swarm-settings-nav { display: flex; flex-wrap: wrap; gap: 8px; }
+.swarm-agent-editor fieldset { min-width: 0; }
+.swarm-agent-editor select { max-width: 100%; min-width: 0; }

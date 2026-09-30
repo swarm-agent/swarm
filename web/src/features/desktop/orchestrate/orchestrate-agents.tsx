@@ -15,11 +15,14 @@ export function OrchestrateAgents() {
   const client = useQueryClient()
   const query = useQuery(agentModelSettingsQueryOptions())
   const options = useQuery(modelOptionsQueryOptions())
-  const [selected, setSelected] = useState('swarm')
+  const [selected, setSelected] = useState<string | null>(null)
   const [drafts, setDrafts] = useState<Record<string, AgentModelAssignment>>({})
   const [statuses, setStatuses] = useState<Record<string, string>>({})
   const [saving, setSaving] = useState<string | null>(null)
-  const role = query.data?.roles?.find((item) => item.id === selected) ?? query.data?.roles?.[0]
+  // Derive presentation order without changing the account query cache.
+  const roles = query.data?.roles ?? []
+  const orderedRoles = [...roles.filter((item) => item.id === 'system-orchestrator'), ...roles.filter((item) => item.id !== 'system-orchestrator')]
+  const role = orderedRoles.find((item) => item.id === selected) ?? orderedRoles[0]
   const settings = query.data
   const save = async () => {
     if (!role || !settings || saving) return
@@ -38,21 +41,21 @@ export function OrchestrateAgents() {
     } finally { setSaving(null) }
   }
   return <section className="min-h-0 min-w-0 overflow-y-auto space-y-5 p-4 text-[var(--app-text)]">
-    <header><h1 className="text-xl font-semibold">Agents</h1><p className="text-sm text-[var(--app-text-muted)]">Account-wide compiled system roles — not workers or running sessions.</p></header>
+    <header><h1 className="text-xl font-semibold">Agents</h1><p className="text-sm text-[var(--app-text-muted)]">Choose the models used by each agent. Changes apply account-wide to future executions.</p></header>
     {(query.isPending || options.isPending) && <p role="status">Loading assignments and supported models…</p>}
     {(query.error || options.error) && <div role="alert"><p>{String(query.error || options.error)}</p><button type="button" onClick={() => { void query.refetch(); void options.refetch() }}>Retry</button></div>}
     {query.data && !query.data.roles?.length && <p role="alert">System roles are unconfigured or unavailable. Update the daemon and retry. <button type="button" onClick={() => void query.refetch()}>Retry</button></p>}
-    {query.data?.roles && <div className="grid min-w-0 gap-4 lg:grid-cols-[minmax(140px,200px)_minmax(0,1fr)]">
-      <nav aria-label="System roles" className="flex flex-wrap gap-2 lg:flex-col">
-        {query.data.roles.map((item) => {
+    {query.data?.roles && <div className="swarm-agents-layout">
+      <nav aria-label="System roles" className="swarm-agent-list">
+        {orderedRoles.map((item) => {
           const assigned = assignmentFor(query.data!, item)
-          return <button key={item.id} type="button" aria-pressed={role?.id === item.id} onClick={() => setSelected(item.id)} className="min-w-0 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3 text-left">
-            <strong className="block">{item.label}</strong><span className="block break-words text-xs text-[var(--app-text-muted)]">{assigned?.provider && assigned?.model ? `${assigned.provider} / ${assigned.model}` : 'Unconfigured'}</span>
+          return <button key={item.id} type="button" aria-pressed={role?.id === item.id} onClick={() => setSelected(item.id)} className="swarm-agent-role">
+            <strong className="swarm-agent-name">{item.label}</strong><span className="swarm-agent-model">{assigned?.provider && assigned?.model ? `${assigned.provider} / ${assigned.model}` : 'Unconfigured'}</span>
           </button>
         })}
       </nav>
-      {role && settings && <div className="min-w-0 space-y-4">
-        {role.slot === 'plan' && <p className="text-sm">Orchestrator and Plan share this account-wide assignment. Changing it affects both; this does not create a separate Orchestrator model slot.</p>}
+      {role && settings && <div className="swarm-agent-editor min-w-0 space-y-4">
+        {role.slot === 'plan' && <p className="text-sm">Orchestrator and Plan share this assignment. Changes affect both.</p>}
         <DirectModelEditor label={role.label} value={drafts[role.id] ?? assignmentFor(settings, role)} modelOptions={toFlatModelOptions(options.data ?? [])} disabled={Boolean(saving) || !options.data?.length} onChange={(value) => { setDrafts((previous) => ({ ...previous, [role.id]: value })); setStatuses((previous) => ({ ...previous, [role.id]: '' })) }} />
         <button type="button" disabled={Boolean(saving) || !options.data?.length} onClick={() => void save()} className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-2">{saving === role.id ? 'Saving…' : `Save ${role.label}`}</button>
         {statuses[role.id] && <p role="status">{statuses[role.id]}</p>}
