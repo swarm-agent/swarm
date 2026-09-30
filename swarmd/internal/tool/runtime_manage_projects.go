@@ -77,6 +77,19 @@ type ProjectTaskCreateInput struct {
 	Status              string                                   `json:"status,omitempty"`
 }
 
+// ProjectTaskFollowupInput uses the same revision and retry identity as the task card.
+type ProjectTaskFollowupInput struct {
+	Feedback        string
+	ClientRequestID string
+	Revision        int
+	Repair          bool
+}
+
+// ProjectTaskFollowupService is optional so legacy lifecycle adapters fail closed.
+type ProjectTaskFollowupService interface {
+	ReopenProjectTask(context.Context, identity.Principal, string, string, ProjectTaskFollowupInput) (*pebblestore.ProjectTaskRecord, error)
+}
+
 // ProjectTaskApprovalGuards specifies caller-provided guards for task approval.
 type ProjectTaskApprovalGuards struct {
 	SessionID          string `json:"session_id,omitempty"`
@@ -292,13 +305,13 @@ func manageProjectsDefinition() Definition {
 	return Definition{
 		Type:        "function",
 		Name:        "manage_projects",
-		Description: "Inspect and manage Projects aggregating workspaces, context (project.md), and ongoing tasks. Supported actions: list, get, create, update, delete, synthesize_context, list_media, get_media, propose_task, approve_task, accept_task, deploy_task, refine_task, create_task, list_tasks, get_task, update_task, archive_task, delete_task, reconcile_tasks. Task edits never transition execution status; delete_task only removes an archived, unlaunched task.",
+		Description: "Inspect and manage Projects aggregating workspaces, context (project.md), and ongoing tasks. Supported actions: list, get, create, update, delete, synthesize_context, list_media, get_media, propose_task, approve_task, accept_task, deploy_task, refine_task, create_task, reopen_task, list_tasks, get_task, update_task, archive_task, delete_task, reconcile_tasks. Task edits never transition execution status; delete_task only removes an archived, unlaunched task.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"action": map[string]any{
 					"type":        "string",
-					"description": "Action: list|get|create|update|delete|synthesize_context|list_media|get_media|propose_task|approve_task|accept_task|deploy_task|refine_task|create_task|list_tasks|get_task|update_task|archive_task|delete_task|reconcile_tasks",
+					"description": "Action: list|get|create|update|delete|synthesize_context|list_media|get_media|propose_task|approve_task|accept_task|deploy_task|refine_task|create_task|reopen_task|list_tasks|get_task|update_task|archive_task|delete_task|reconcile_tasks",
 				},
 				"id": map[string]any{
 					"type":        "string",
@@ -365,7 +378,8 @@ func manageProjectsDefinition() Definition {
 					"type":        "string",
 					"description": "Read-only task status filter for list_tasks; status changes require canonical lifecycle actions",
 				},
-				"expected_revision": map[string]any{"type": "integer", "description": "Required exact task revision for update_task, archive_task and delete_task"},
+				"repair": map[string]any{"type": "boolean", "description": "reopen_task only: use authenticated originating failed integration source; never silently merge unintegrated work."},
+				"expected_revision": map[string]any{"type": "integer", "description": "Required exact task revision for reopen_task, update_task, archive_task and delete_task"},
 				"priority":          map[string]any{"type": "string", "description": "Task organization: low|medium|high|urgent"},
 				"group":             map[string]any{"type": "string", "description": "Task grouping label (empty clears)"},
 				"order":             map[string]any{"type": "integer", "description": "Nonnegative task order within group"},
@@ -425,7 +439,7 @@ func manageProjectsDefinition() Definition {
 				},
 				"workspace_id":         map[string]any{"type": "string", "description": "Exact account workspace catalog ID for the execution source; if supplied with workspace_path, both must identify the same authorized root"},
 				"workspace_generation": map[string]any{"type": "integer", "description": "Optional expected catalog generation for that source; stale bindings are rejected"},
-				"client_request_id":    map[string]any{"type": "string", "description": "Stable submission identity reused only for retries of the identical payload and resolved source target; it does not authorize deployment"},
+				"client_request_id":    map[string]any{"type": "string", "description": "Stable submission identity reused only for identical payload/target retries. Required for reopen_task: reuse key, feedback, revision and repair unchanged after launch failure; it does not bypass source admission"},
 				"workspaces": map[string]any{
 					"type":        "array",
 					"description": "Project workspace references [{path, role, label}]; membership is not an execution grant or default source target",
@@ -437,7 +451,7 @@ func manageProjectsDefinition() Definition {
 				},
 				"feedback": map[string]any{
 					"type":        "string",
-					"description": "User or operator feedback for refine_task",
+					"description": "User or operator feedback for refine_task; required full follow-up request for reopen_task (1-32000 bytes). Continue tasks here, never by starting a retained task session",
 				},
 				"error_summary": map[string]any{
 					"type":        "string",
@@ -1056,8 +1070,8 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 		}
 		response["proposal"] = proposal
 
-	case "list_tasks", "get_task", "update_task", "archive_task", "delete_task", "reconcile_tasks":
-		return r.executeManageProjectTasks(scope, actionName, args)
+	case "reopen_task", "list_tasks", "get_task", "update_task", "archive_task", "delete_task", "reconcile_tasks":
+		return r.executeManageProjectTasksContext(ctx, scope, actionName, args)
 
 	case "approve_task", "accept_task":
 		projectID := strings.TrimSpace(asString(args["project_id"]))

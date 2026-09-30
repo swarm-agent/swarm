@@ -193,6 +193,16 @@ func TestProjectTaskRepairCommittedSourceProvenance(t *testing.T) {
 	if err := f.server.sessions.Store().PutProjectTask(f.accountID, task); err != nil {
 		t.Fatal(err)
 	}
+	// Purpose: an ordinary AI continuation cannot abandon retained committed work;
+	// shared service admission must reject before reservation/session/run writes.
+	beforeOrdinary, _, _ := f.server.sessions.Store().GetProjectTask(f.accountID, "project", "task")
+	if _, err := f.server.ReopenProjectTask(context.Background(), p, "project", "task", tool.ProjectTaskFollowupInput{Feedback: "continue", ClientRequestID: "ordinary", Revision: 1}); err == nil || !strings.Contains(err.Error(), "unintegrated commits") {
+		t.Fatalf("ordinary follow-up abandoned source: %v", err)
+	}
+	afterOrdinary, _, _ := f.server.sessions.Store().GetProjectTask(f.accountID, "project", "task")
+	if !reflect.DeepEqual(beforeOrdinary, afterOrdinary) || git(repo, "rev-parse", "HEAD") != base || git(alloc.WorkspacePath, "rev-parse", "HEAD") != head {
+		t.Fatal("rejected continuation changed task or retained Git")
+	}
 	body := map[string]any{"client_request_id": "repair-binding", "revision": task.Revision, "feedback": "Repair retained source", "repair": true}
 	path := "/project/tasks/task/reopen"
 	response := f.callAPI("POST", path, body, p)
@@ -476,5 +486,36 @@ func TestProjectTaskFollowupSummaryRunProvenance(t *testing.T) {
 	stored, _, err = db.GetProjectTask(p.AccountScopeID, "project", "task")
 	if err != nil || stored.ActiveAttempt().Summary != "New result; validation pending" || stored.ActiveAttempt().SummaryRunID != "new-run" {
 		t.Fatal("matching ready summary missing provenance")
+	}
+}
+
+// Purpose: shared AI continuation admission rejects archived and foreign tasks
+// before source inspection, reservation or V3 writes. Real temporary store is
+// the narrow account/archive authority and exact snapshots prove no partial write.
+func TestProjectTaskReopenServiceAdmissionNoWrites(t *testing.T) {
+	server, _, store := newWorkspaceOverviewTopologyTestServer(t)
+	db := pebblestore.NewSessionStore(store)
+	p := testPrincipal()
+	if err := db.PutProject(p.AccountScopeID, &pebblestore.ProjectRecord{ID: "project", Name: "Project"}); err != nil {
+		t.Fatal(err)
+	}
+	task := &pebblestore.ProjectTaskRecord{ID: "task", ProjectID: "project", Title: "Retained", Agent: "swarm", Status: "completed", SessionID: "retained", Revision: 1, Archived: true}
+	if err := db.PutProjectTask(p.AccountScopeID, task); err != nil {
+		t.Fatal(err)
+	}
+	before, _, _ := db.GetProjectTask(p.AccountScopeID, "project", "task")
+	foreign := p
+	foreign.AccountScopeID = "foreign"
+	for _, principal := range []identity.Principal{p, foreign} {
+		if _, err := server.ReopenProjectTask(context.Background(), principal, "project", "task", tool.ProjectTaskFollowupInput{Feedback: "continue", ClientRequestID: "key", Revision: 1}); err == nil {
+			t.Fatal("inadmissible continuation accepted")
+		}
+	}
+	after, _, _ := db.GetProjectTask(p.AccountScopeID, "project", "task")
+	if !reflect.DeepEqual(before, after) {
+		t.Fatal("rejected admission changed task")
+	}
+	if intents, err := db.ListRunIntents("retained", 10); err != nil || len(intents) != 0 {
+		t.Fatal("rejected admission created intent")
 	}
 }

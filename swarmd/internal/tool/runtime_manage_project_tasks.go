@@ -18,6 +18,10 @@ import (
 // Project task organization is metadata only. Execution state is owned by the
 // lifecycle service; the task's source binding and Git lane are never editable here.
 func (r *Runtime) executeManageProjectTasks(scope WorkspaceScope, action string, args map[string]any) (string, error) {
+	return r.executeManageProjectTasksContext(context.Background(), scope, action, args)
+}
+
+func (r *Runtime) executeManageProjectTasksContext(ctx context.Context, scope WorkspaceScope, action string, args map[string]any) (string, error) {
 	account := scope.Principal.AccountScopeID
 	if !scope.Principal.Valid() || scope.Principal.UserID == "" || account == "" || scope.Principal.Type != "user" {
 		return "", errors.New("project tasks require an authenticated user identity")
@@ -39,6 +43,29 @@ func (r *Runtime) executeManageProjectTasks(scope WorkspaceScope, action string,
 	result := map[string]any{"tool": "manage_projects", "action": action, "project_id": projectID, "status": "ok"}
 	taskID := strings.TrimSpace(asString(args["task_id"]))
 	switch action {
+	case "reopen_task":
+		if taskID == "" {
+			return "", errors.New("task_id is required")
+		}
+		revision, err := projectTaskInteger(args, "expected_revision", 1, 1<<30)
+		if err != nil {
+			return "", err
+		}
+		feedback, key := asString(args["feedback"]), strings.TrimSpace(asString(args["client_request_id"]))
+		if strings.TrimSpace(feedback) == "" || len(feedback) > 32000 || key == "" || len(key) > 128 {
+			return "", errors.New("reopen_task requires feedback (1-32000 bytes) and client_request_id (1-128 bytes)")
+		}
+		service, ok := r.projectTaskLifecycle.(ProjectTaskFollowupService)
+		if !ok {
+			return "", errors.New("canonical task follow-up service unavailable")
+		}
+		task, err := service.ReopenProjectTask(ctx, scope.Principal, projectID, taskID, ProjectTaskFollowupInput{Feedback: feedback, ClientRequestID: key, Revision: revision, Repair: asBool(args["repair"])})
+		if err != nil {
+			return "", err
+		}
+		result["task"] = projectTaskSummary(*task)
+		result["active_attempt_id"], result["session_id"], result["run_id"] = task.ActiveAttemptID, task.SessionID, task.ExecutionRunID()
+		result["status"] = "reopened"
 	case "get_task":
 		if taskID == "" {
 			return "", errors.New("task_id is required")

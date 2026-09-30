@@ -20,6 +20,7 @@ import (
 	"swarm/packages/swarmd/internal/model"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/tool"
 	"swarm/packages/swarmd/internal/workspace"
 	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
@@ -170,12 +171,31 @@ func TestProjectTaskFollowupJoinedRestart(t *testing.T) {
 		if result.SessionID != reserved.SessionID || result.ExecutionRunID() != reserved.ExecutionRunID() || len(result.Attempts) != len(reserved.Attempts) || result.Revision != reserved.Revision {
 			t.Fatal("successful retry changed reserved identity or revision")
 		}
-		if response := f.callAPI(http.MethodPost, path+"/reopen", body, p); response.Code != 200 {
-			t.Fatalf("retry: %d %s", response.Code, response.Body)
+		// Purpose: AI and HTTP retries share the exact reservation/launch authority;
+		// concurrent duplicate tool continuations must retain one attempt and intent.
+		results := make(chan error, 2)
+		for i := 0; i < 2; i++ {
+			go func() {
+				_, err := f.server.ReopenProjectTask(context.Background(), p, project.ID, task.ID, tool.ProjectTaskFollowupInput{Feedback: request, ClientRequestID: key, Revision: current.Revision})
+				results <- err
+			}()
+		}
+		for i := 0; i < 2; i++ {
+			select {
+			case err := <-results:
+				if err != nil { t.Fatalf("shared service retry: %v", err) }
+			case <-time.After(10 * time.Second):
+				t.Fatal("shared service retry timed out")
+			}
 		}
 		retried, _, err := f.server.sessions.Store().GetProjectTask(p.AccountScopeID, project.ID, task.ID)
 		if err != nil || retried == nil || retried.SessionID != result.SessionID || retried.ExecutionRunID() != result.ExecutionRunID() || retried.Revision != result.Revision || len(retried.Attempts) != len(result.Attempts) || retried.ActionNeeded != result.ActionNeeded || retried.LastError != result.LastError {
 			t.Fatalf("launched retry changed identity or guidance: task=%+v err=%v", retried, err)
+		}
+		intents, intentErr := f.server.sessions.Store().ListRunIntents(retried.SessionID, 10)
+		messages, messageErr := f.server.sessions.Store().ListMessages(retried.SessionID, 0, 10)
+		if intentErr != nil || len(intents) != 1 || intents[0].RunID != retried.ExecutionRunID() || messageErr != nil || len(messages) != 1 {
+			t.Fatal("concurrent shared retries duplicated seed or run intent")
 		}
 		// Idempotency preserves every task field except the write timestamp;
 		// retain the unmodified post-retry timestamp for stale-completion checks.

@@ -34,7 +34,7 @@ const (
 )
 
 func manageSessionsDefinition() Definition {
-	return Definition{Type: "function", Name: "manage-sessions", Description: "Durable V3 session manager (deploy, list, commit, archive, unarchive, search). Card results render automatically.", Parameters: map[string]any{
+	return Definition{Type: "function", Name: "manage-sessions", Description: "Durable V3 session manager (deploy, list, commit, archive, unarchive, search). Card results render automatically. To continue a task, use manage_projects get_task then reopen_task with its exact revision and a stable retry key; triggering send_message to any task-linked session is rejected before writes. Non-triggering notes do not reopen tasks.", Parameters: map[string]any{
 		"type": "object", "required": []string{"action"}, "additionalProperties": true,
 		"properties": map[string]any{
 			"action":                    map[string]any{"type": "string", "description": "inspect|list|list_by_state|review_worktrees|search|get|read_messages|git_status|commit|archive|unarchive|deploy|create|stop|pause|send_message|compact"},
@@ -2236,6 +2236,15 @@ func (r *Runtime) manageSessionsSendMessage(ctx context.Context, scope Workspace
 
 func (r *Runtime) sendSessionMessageInternal(ctx context.Context, scope WorkspaceScope, sessionID, prompt, role string, triggerRun bool, waitSeconds int) (map[string]any, error) {
 	if triggerRun {
+		// Task continuations must reserve ownership through the task lifecycle before
+		// any message or run intent is written. Retained sessions are evidence only.
+		session, _, err := r.ownedManageSession(scope, sessionID)
+		if err != nil {
+			return nil, err
+		}
+		if err := r.rejectTaskSessionContinuation(scope, session); err != nil {
+			return nil, err
+		}
 		if runState, ok, _ := r.getSessionRunState(sessionID); ok && runState.Active {
 			return nil, fmt.Errorf("session %s is currently running (run_id: %s); wait for completion or stop it first", sessionID, runState.RunID)
 		}

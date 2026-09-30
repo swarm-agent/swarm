@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 
 	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/tool"
 )
 
 func projectTaskFollowupContext(task *pebblestore.ProjectTaskRecord) string {
@@ -137,34 +139,78 @@ func (s *Server) handleProjectTaskFollowup(w http.ResponseWriter, r *http.Reques
 		writeError(w, 400, errors.New("client_request_id, revision and feedback (1-32000 bytes) required"))
 		return
 	}
+	task, err := s.ReopenProjectTask(r.Context(), p, projectID, taskID, tool.ProjectTaskFollowupInput{Feedback: req.Feedback, ClientRequestID: req.ClientRequestID, Revision: req.Revision, Repair: req.Repair})
+	if err != nil {
+		var failure *projectTaskFollowupError
+		if errors.As(err, &failure) {
+			writeError(w, failure.status, failure.err)
+		} else {
+			writeError(w, 500, err)
+		}
+		return
+	}
+	writeJSON(w, 200, map[string]any{"status": "reopened", "task": sanitizeProjectTaskForClient(task)})
+}
+
+type projectTaskFollowupError struct {
+	status int
+	err error
+}
+
+func (e *projectTaskFollowupError) Error() string { return e.err.Error() }
+func (e *projectTaskFollowupError) Unwrap() error { return e.err }
+
+// ReopenProjectTask is the shared task lifecycle authority for HTTP and AI tools.
+// Reservation, allocation and launch retain the same guarded, retryable identity.
+func (s *Server) ReopenProjectTask(ctx context.Context, p identity.Principal, projectID, taskID string, req tool.ProjectTaskFollowupInput) (*pebblestore.ProjectTaskRecord, error) {
+	if !p.Valid() || p.Type != "user" || p.UserID == "" {
+		return nil, &projectTaskFollowupError{403, errors.New("authenticated user required")}
+	}
+	if strings.TrimSpace(req.ClientRequestID) == "" || req.Revision <= 0 || strings.TrimSpace(req.Feedback) == "" || len(req.Feedback) > 32000 {
+		return nil, &projectTaskFollowupError{400, errors.New("client_request_id, revision and feedback (1-32000 bytes) required")}
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	db := s.sessions.Store()
 	s.projectTaskCreateMu.Lock()
 	defer s.projectTaskCreateMu.Unlock()
 	proj, found, err := db.GetProject(p.AccountScopeID, projectID)
 	if err != nil || !found {
-		writeError(w, 404, errors.New("project not found"))
-		return
+		return nil, &projectTaskFollowupError{404, errors.New("project not found")}
 	}
 	task, found, err := db.GetProjectTask(p.AccountScopeID, projectID, taskID)
 	if err != nil || !found {
-		writeError(w, 404, errors.New("task not found"))
-		return
+		return nil, &projectTaskFollowupError{404, errors.New("task not found")}
+	}
+	if task.Archived {
+		return nil, &projectTaskFollowupError{409, errors.New("archived task cannot be reopened")}
 	}
 	if err := s.revalidateProjectTaskSource(p, proj, task); err != nil {
-		writeError(w, 403, err)
-		return
+		return nil, &projectTaskFollowupError{403, err}
 	}
 	if s.runner == nil {
-		writeError(w, 503, errors.New("runner service unavailable"))
-		return
+		return nil, &projectTaskFollowupError{503, errors.New("runner service unavailable")}
 	}
 	if s.worktrees == nil {
-		writeError(w, 503, errors.New("worktree service unavailable"))
-		return
+		return nil, &projectTaskFollowupError{503, errors.New("worktree service unavailable")}
 	}
 	state, err := s.worktrees.InspectTaskWorkspace(task.SourceWorkspace.Path)
 	if err != nil || !state.Clean || state.HeadCommit == "" {
-		writeError(w, 409, errors.New("follow-up source must be clean and committed"))
-		return
+		return nil, &projectTaskFollowupError{409, errors.New("follow-up source must be clean and committed")}
+	}
+	// A new ordinary follow-up may not strand committed work in a retained lane.
+	// Retries already own a pinned reservation; repairs validate exact provenance below.
+	active := task.ActiveAttempt()
+	retry := active != nil && active.ClientRequestID == req.ClientRequestID
+	if !req.Repair && !retry && task.WorkspacePath != "" && task.WorkspacePath != task.SourceWorkspace.Path {
+		origin, inspectErr := s.worktrees.InspectTaskWorkspace(task.WorkspacePath)
+		if inspectErr != nil || !origin.Clean {
+			return nil, &projectTaskFollowupError{409, errors.New("retained task worktree unavailable or dirty; preserve and commit its work before reopening")}
+		}
+		if origin.HeadCommit != task.BaseCommit && (task.Integration == nil || (task.Integration.State != "integrated" && task.Integration.State != "already_integrated") || task.Integration.SessionID != task.SessionID || task.Integration.SourceHead != origin.HeadCommit) {
+			return nil, &projectTaskFollowupError{409, errors.New("retained task has unintegrated commits; integrate its current owned attempt first, or use repair=true for an originating failed integration receipt")}
+		}
 	}
 	var recovery *pebblestore.ProjectTaskRecoverySource
 	if req.Repair {
@@ -174,56 +220,46 @@ func (s *Server) handleProjectTaskFollowup(w http.ResponseWriter, r *http.Reques
 		}
 		if recovery == nil {
 			if task.Integration == nil || (task.Integration.State != "failed" && task.Integration.State != "conflict") || task.Integration.SessionID != task.SessionID {
-				writeError(w, 409, errors.New("repair requires originating failed integration receipt"))
-				return
+				return nil, &projectTaskFollowupError{409, errors.New("repair requires originating failed integration receipt")}
 			}
 			if task.Integration.SourceHead == "" || task.Integration.PreviousTargetHead == "" {
-				writeError(w, 409, errors.New("integration receipt is missing verified provenance; retry integration for the original task session before launching repair"))
-				return
+				return nil, &projectTaskFollowupError{409, errors.New("integration receipt is missing verified provenance; retry integration for the original task session before launching repair")}
 			}
 			recovery = &pebblestore.ProjectTaskRecoverySource{SessionID: task.SessionID, WorkspacePath: task.WorkspacePath, Branch: task.WorktreeBranch, BaseCommit: task.BaseCommit, TargetBranch: task.BaseBranch, TargetHead: task.Integration.PreviousTargetHead}
 			originState, inspectErr := s.worktrees.InspectTaskWorkspace(task.WorkspacePath)
 			if inspectErr != nil || !originState.Clean {
-				writeError(w, 409, errors.New("repair source is unavailable or dirty"))
-				return
+				return nil, &projectTaskFollowupError{409, errors.New("repair source is unavailable or dirty")}
 			}
 			recovery.HeadCommit = originState.HeadCommit
 			if task.Integration.SourceHead != recovery.HeadCommit || task.Integration.SourceBranch != recovery.Branch || task.Integration.TargetBranch != recovery.TargetBranch || state.HeadCommit != recovery.TargetHead || state.BranchName != recovery.TargetBranch {
-				writeError(w, 409, errors.New("integration receipt does not match current committed source/captured target"))
-				return
+				return nil, &projectTaskFollowupError{409, errors.New("integration receipt does not match current committed source/captured target")}
 			}
 		}
 		if err := s.validateProjectTaskRecovery(p, task, recovery); err != nil {
-			writeError(w, 403, err)
-			return
+			return nil, &projectTaskFollowupError{403, err}
 		}
 	}
 	if active := task.ActiveAttempt(); !req.Repair && active != nil && active.Recovery != nil && active.ClientRequestID == req.ClientRequestID {
-		writeError(w, 409, errors.New("retry repair flag mismatch"))
-		return
+		return nil, &projectTaskFollowupError{409, errors.New("retry repair flag mismatch")}
 	}
 	// A repair grants exactly the originating retained committed source. Ordinary
 	// follow-ups use the current clean catalog checkout, not another session's lane.
 	task, err = db.ReserveTaskFollowupWithRecovery(p.AccountScopeID, projectID, taskID, p.UserID, req.ClientRequestID, req.Feedback, req.Revision, time.Now().UnixMilli(), recovery)
 	if err != nil {
-		writeError(w, 409, err)
-		return
+		return nil, &projectTaskFollowupError{409, err}
 	}
 	a := task.ActiveAttempt()
 	if a == nil {
-		writeError(w, 500, errors.New("missing durable attempt reservation"))
-		return
+		return nil, &projectTaskFollowupError{500, errors.New("missing durable attempt reservation")}
 	}
 	if a.BaseCommit != "" && task.BaseBranch != state.BranchName {
-		writeError(w, http.StatusConflict, errors.New("captured follow-up target branch changed; restore the captured checkout before retry"))
-		return
+		return nil, &projectTaskFollowupError{409, errors.New("captured follow-up target branch changed; restore the captured checkout before retry")}
 	}
 	if a.Recovery != nil && a.BaseCommit != "" {
 		task.BaseCommit = a.Recovery.BaseCommit
 	}
 	if a.LaunchState == "launched" {
-		writeJSON(w, 200, map[string]any{"status": "reopened", "task": sanitizeProjectTaskForClient(task)})
-		return
+		return task, nil
 	}
 	// Pin allocation source before the external allocator runs. Retry never adopts
 	// whatever branch/HEAD the source happens to have after a crash.
@@ -244,8 +280,7 @@ func (s *Server) handleProjectTaskFollowup(w http.ResponseWriter, r *http.Reques
 			return nil
 		})
 		if err != nil {
-			writeError(w, 500, err)
-			return
+			return nil, &projectTaskFollowupError{500, err}
 		}
 	}
 	err = s.deployProjectTaskExecution(p, proj, task, "in_progress", a.Request)
@@ -275,14 +310,12 @@ func (s *Server) handleProjectTaskFollowup(w http.ResponseWriter, r *http.Reques
 		return nil
 	})
 	if persistErr != nil {
-		writeError(w, 500, persistErr)
-		return
+		return nil, &projectTaskFollowupError{500, persistErr}
 	}
 	if launchErr != nil {
-		writeError(w, 503, launchErr)
-		return
+		return nil, &projectTaskFollowupError{503, launchErr}
 	}
-	writeJSON(w, 200, map[string]any{"status": "reopened", "task": sanitizeProjectTaskForClient(updated)})
+	return updated, nil
 }
 
 // History pages retain all attempts; board sanitization bounds only its preview.
