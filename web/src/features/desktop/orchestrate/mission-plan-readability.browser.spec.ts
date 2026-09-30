@@ -57,8 +57,8 @@ test('mission proposal wraps full structured and fallback plans without changing
     const original=${JSON.stringify(task)};
     const task={...original,...mapBackendTask({id:original.id,title:original.title,tier:original.tier,status:original.status,agent:original.agentType,outcome_type:original.outcomeType,plan_summary:original.planSummary,session_id:'session',plan_binding:{plan_id:'plan',session_id:'session',definition_revision:1},plan_document:original.planDocument,task_program:original.taskProgram,auto_approve:true})};
     window.calls=[];
-    window.renderProposal=(fallback=false, rejected=false, busy=false, error='')=>root.render(<QueryClientProvider client={client}>
-      <MinimalTaskCard key={String(fallback)+String(rejected)} isExpanded task={fallback ? {...task,agentType:'coder',outcomeType:'code_pr',planDocument:null,taskProgram:null,fullPlanMarkdown:${JSON.stringify(fields.markdown)}} : {...task,planDocument:{...task.planDocument,status:rejected?'rejected':'pending'}}}
+    window.renderProposal=(fallback=false, rejected=false, busy=false, error='', revision=1, id=task.id, status='pending_approval')=>root.render(<QueryClientProvider client={client}>
+      <MinimalTaskCard key={String(fallback)+String(rejected)} isExpanded task={fallback ? {...task,agentType:'coder',outcomeType:'code_pr',planDocument:null,taskProgram:null,fullPlanMarkdown:${JSON.stringify(fields.markdown)}} : {...task,id,status,planBinding:{...task.planBinding,definitionRevision:revision},planDocument:{...task.planDocument,status:rejected?'rejected':'pending'}}}
         isApproving={busy} taskError={error} onSelect={()=>window.calls.push('select')} onApprove={()=>window.calls.push('approve')} onRefine={feedback=>window.calls.push(feedback)}/>
     </QueryClientProvider>);
     window.renderProposal();
@@ -124,6 +124,25 @@ test('mission proposal wraps full structured and fallback plans without changing
     assert.equal(await reader.getByText('Verify changes', { exact: true }).count(), 1)
     await page.getByTestId('toggle-plan-spec-btn').click()
     await reader.waitFor()
+    // Same-card definition/task changes close details; status changes are not approval.
+    await page.evaluate(() => (window as any).renderProposal(false, false, false, '', 2))
+    await page.waitForFunction(() => document.querySelector('[data-testid="toggle-plan-spec-btn"]')?.getAttribute('aria-expanded') === 'false')
+    assert.equal(await reader.getByText(fields.task, { exact: true }).count(), 0)
+    await toggle.click()
+    await page.evaluate(() => (window as any).renderProposal(false, false, false, '', 2, 'another-proposal'))
+    await page.waitForFunction(() => document.querySelector('[data-testid="toggle-plan-spec-btn"]')?.getAttribute('aria-expanded') === 'false')
+    await page.evaluate(() => (window as any).renderProposal(false, false, false, '', 2, 'another-proposal', 'queued'))
+    await page.waitForFunction(() => !document.querySelector('[data-testid="approve-task-btn"]'))
+    assert.equal(await page.getByTestId('approve-task-btn').count(), 0, 'queued is not pending approval')
+    await page.evaluate(() => (window as any).renderProposal())
+    await page.getByTestId('approve-task-btn').waitFor()
+    assert.equal(await toggle.getAttribute('aria-expanded'), 'false')
+    await toggle.click()
+    await page.evaluate(() => (window as any).renderProposal(false, false, true))
+    await page.waitForFunction(() => (document.querySelector('[data-testid="approve-task-btn"]') as HTMLButtonElement)?.disabled)
+    assert.equal(await toggle.getAttribute('aria-expanded'), 'true', 'same-definition busy updates retain the user disclosure')
+    await page.evaluate(() => (window as any).renderProposal())
+    await page.waitForFunction(() => !(document.querySelector('[data-testid="approve-task-btn"]') as HTMLButtonElement)?.disabled)
     await page.getByRole('button', { name: 'Refine Plan', exact: true }).click()
     await page.getByPlaceholder("e.g. Keep in web workspace only, don't touch daemon API...").fill('Keep every criterion')
     await page.getByPlaceholder("e.g. Keep in web workspace only, don't touch daemon API...").press('Enter')

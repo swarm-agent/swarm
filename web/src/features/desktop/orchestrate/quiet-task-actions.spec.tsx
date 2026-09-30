@@ -1,5 +1,5 @@
 // Purpose: soften Orchestrate actions without losing approval guards, source selection,
-// or archive eligibility. Boundary: actual OrchestrateView leaf JSX and scoped CSS.
+// or archive eligibility. Boundary: OrchestrateView approval JSX, TaskListToolbar and scoped CSS.
 // Extracting leaf elements is the narrowest layer for callback/disabled/label contracts;
 // token assertions do not prove browser contrast, layout, or backend authorization.
 import test from 'node:test'
@@ -9,6 +9,7 @@ import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { Loader2, Sparkles } from 'lucide-react'
 import ts from 'typescript'
+import { TaskListToolbar } from './task-list-toolbar'
 
 const source = readFileSync(new URL('./OrchestrateView.tsx', import.meta.url), 'utf8')
 const css = readFileSync(new URL('./swarm-section.css', import.meta.url), 'utf8')
@@ -49,7 +50,7 @@ test('approval retains each disabled guard, propagation, busy state and media la
     assert.equal(stopped, 1)
     assert.equal(calls, guard ? 0 : 1)
     const html = renderToStaticMarkup(element)
-    assert.match(html, guard === 'isApproving' ? /Approving &amp; Starting/ : /Approve &amp; Start Session/)
+    assert.match(html, guard === 'isApproving' ? /Approving &amp; Starting/ : /Approve and start session/)
     if (guard === 'isApproving') assert.match(html, /animate-spin/)
   }
   for (const task of [{ agentType: 'image' }, { agentType: 'video' }, { outcomeType: 'media_bundle' }, { outcomeType: 'video_story' }, { outcomeType: 'video_clip' }]) {
@@ -58,19 +59,34 @@ test('approval retains each disabled guard, propagation, busy state and media la
   }
 })
 
-test('source filters retain mutually exclusive pressed state, counts and actions', () => {
-  for (const selected of ['all', 'worker']) {
+const toolbarDefaults = {
+  search: '', onSearch: () => {}, source: 'all' as const, onSource: (_value: string) => {},
+  status: 'all' as const, onStatus: () => {}, counts: { all: 3, running: 0, needs_review: 2, queued: 0, completed: 1 },
+  total: 3, selected: 0, busy: false, onSelectAll: () => {}, onClear: () => {},
+  onArchive: () => {}, onDelete: () => {}, onArchived: () => {},
+}
+function elements(node: React.ReactNode): React.ReactElement<any>[] {
+  if (Array.isArray(node)) return node.flatMap(elements)
+  if (!React.isValidElement<{ children?: React.ReactNode }>(node)) return []
+  return [node, ...elements(node.props.children)]
+}
+function assertQuiet(element: React.ReactElement<any>) {
+  assert.match(element.props.className, /\bswarm-outline-action\b/)
+  assert.doesNotMatch(element.props.className, /bg-|text-white|shadow|scale-|font-bold/)
+}
+test('source filters retain mutually exclusive pressed state and actions; counts belong to status chips', () => {
+  for (const selected of ['all', 'worker'] as const) {
     const calls: string[] = []
+    const tree = TaskListToolbar({ ...toolbarDefaults, source: selected, onSource: value => calls.push(value) })
     for (const target of ['all', 'worker']) {
-      const element = button(`data-testid="filter-${target}-tasks"`, {
-        taskSourceFilter: selected, liveTasks: [{}, {}, {}], workerTasksCount: 2,
-        setTaskSourceFilter: (value: string) => calls.push(value),
-      })
+      const element = elements(tree).find(node => node.props['data-testid'] === `filter-${target}-tasks`)!
+      assertQuiet(element)
       assert.equal(element.props['aria-pressed'], selected === target)
       assert.match(element.props.className, /swarm-task-source-filter/)
-      assert.match(renderToStaticMarkup(element), target === 'all' ? /All tasks \(3\)/ : /Worker tasks \(2\)/)
+      assert.equal(element.props.children, target === 'all' ? 'All' : 'Workers')
       element.props.onClick()
     }
+    assert.match(renderToStaticMarkup(tree), /Review<span[^>]*>2<\/span>/)
     assert.deepEqual(calls, ['all', 'worker'])
   }
 })
@@ -79,10 +95,17 @@ test('archive retains native disabled guards and archives only the selected rows
   for (const managementBusy of [false, true]) {
     for (const markedRows of [[], [{ id: 'selected-task' }]]) {
       const calls: unknown[][] = []
-      const element = button('Archive selected</button>', {
-        managementBusy, markedRows, manageTasks: (...args: unknown[]) => calls.push(args),
+      const tree = TaskListToolbar({ ...toolbarDefaults, busy: managementBusy, selected: markedRows.length,
+        onArchive: () => calls.push([markedRows, 'archive']),
       })
-      const disabled = managementBusy || markedRows.length === 0
+      const element = elements(tree).find(node => node.type === 'button' && node.props.children === 'Archive')
+      if (!markedRows.length) {
+        assert.equal(element, undefined, 'bulk archive is absent without selected rows')
+        continue
+      }
+      assert.ok(element)
+      assertQuiet(element)
+      const disabled = managementBusy
       assert.equal(element.props.disabled, disabled)
       assert.equal(renderToStaticMarkup(element).includes('disabled=""'), disabled)
       // Native disabled buttons suppress clicks; do not invoke their handler artificially.
@@ -90,6 +113,7 @@ test('archive retains native disabled guards and archives only the selected rows
       assert.deepEqual(calls, disabled ? [] : [[markedRows, 'archive']])
     }
   }
+  assert.match(source, /onArchive=\{\(\) => void manageTasks\(markedRows, 'archive'\)\}/, 'view forwards only selected rows')
 })
 
 test('quiet actions share semantic New Task outline, focus and enabled-only interactions', () => {

@@ -733,11 +733,14 @@ export function MinimalTaskCard({
   useEffect(() => {
     setSelectedTaskModel(task.model || '')
   }, [task.model])
+  const disclosureBinding = task.planBinding || task.plan_binding
+  const disclosurePlanId = disclosureBinding?.planId || disclosureBinding?.plan_id
+  const disclosureRevision = disclosureBinding?.definitionRevision ?? disclosureBinding?.definition_revision
+  // New tasks and durable definition revisions start with titles only. Status
+  // chatter must not reopen details or discard the user's current expansion.
   useEffect(() => {
-    if (isPendingApproval) {
-      setIsFullPlanOpen(true)
-    }
-  }, [isPendingApproval])
+    setIsFullPlanOpen(false)
+  }, [task.id, disclosurePlanId, disclosureRevision])
 
   const modelPreviewQuery = useQuery({
     queryKey: ['projects', projectId, 'tasks', task.id, 'model-preview'],

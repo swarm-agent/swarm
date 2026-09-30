@@ -47,7 +47,7 @@ export function TaskListToolbar({ search, onSearch, source, onSource, status, on
     { value: 'queued', label: 'Queued', dot: 'bg-slate-500' },
     { value: 'completed', label: 'Done', dot: 'bg-emerald-400' },
   ] as const
-  const outline = 'flex items-center gap-1.5 rounded border border-slate-700 px-2.5 py-1 text-xs text-slate-300 hover:border-slate-500 hover:text-white disabled:opacity-40'
+  const outline = 'swarm-outline-action flex items-center gap-1.5 rounded px-2.5 py-1 text-xs'
   return <div className="shrink-0 px-4">
     <div className="flex items-center gap-3 py-2">
       <div className="relative flex-1 min-w-0">
@@ -55,7 +55,7 @@ export function TaskListToolbar({ search, onSearch, source, onSource, status, on
         <input type="search" value={search} onChange={event => onSearch(event.target.value)} placeholder="Search tasks" aria-label="Search tasks" className="w-full bg-transparent border border-slate-800 rounded pl-8 pr-3 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-[var(--swarm-accent)]" />
       </div>
       <div role="group" aria-label="Task scope" className="flex shrink-0 rounded border border-slate-800 p-0.5">
-        {([{ value: 'all', label: 'All' }, { value: 'worker', label: 'Workers' }] as const).map(item => <button key={item.value} type="button" data-testid={item.value === 'all' ? 'filter-all-tasks' : 'filter-worker-tasks'} aria-pressed={source === item.value} onClick={() => onSource(item.value)} className={`rounded px-2.5 py-1 text-[11px] ${source === item.value ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white'}`}>{item.label}</button>)}
+        {([{ value: 'all', label: 'All' }, { value: 'worker', label: 'Workers' }] as const).map(item => <button key={item.value} type="button" data-testid={item.value === 'all' ? 'filter-all-tasks' : 'filter-worker-tasks'} aria-pressed={source === item.value} onClick={() => onSource(item.value)} className="swarm-outline-action swarm-task-source-filter rounded px-2.5 py-1 text-[11px]">{item.label}</button>)}
       </div>
     </div>
     <div className="flex flex-wrap items-center gap-1.5 py-2 border-b-[0.5px] border-slate-800" role="group" aria-label="Task status filter">

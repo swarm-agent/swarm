@@ -5,6 +5,13 @@ import { chromium } from 'playwright'
 import { build as buildStyles } from 'vite'
 import tailwindcss from '@tailwindcss/vite'
 import path from 'node:path'
+import type { RunningTask } from './orchestrate-types'
+
+const integrationTask = {
+  id: 'task-a', title: 'Integration task', status: 'needs_review', agentType: 'coder', outcomeType: 'code_pr',
+  subtasks: [], workspaceTarget: 'local', elapsed: '0s', sourceWorkspaceId: 'workspace-a', sourceWorkspacePath: '/repo',
+  sessionId: 'session-a', worktreeBranch: 'agent/a', baseBranch: 'dev', gitStatus: 'diverged', unintegratedCommits: 2,
+} satisfies RunningTask
 
 // Purpose: MinimalTaskCard must visibly retain one disabled operation across
 // deferred requests, stale task snapshots and remounts, without changing button
@@ -17,9 +24,9 @@ test('integration card stays stable through pending, failure, retry and stale su
     import {MinimalTaskCard} from './src/features/desktop/orchestrate/OrchestrateView';
     import {createTaskIntegrationController,taskIntegrationKey} from './src/features/desktop/orchestrate/task-integration-operation';
     const controller=createTaskIntegrationController(); const project={id:'project-a',name:'Project'};
-    const task={id:'task-a',title:'Integration task',status:'needs_review',agentType:'coder',outcomeType:'code_pr',agents:[],sessionId:'session-a',worktreeBranch:'agent/a',baseBranch:'dev',gitStatus:'diverged',unintegratedCommits:2};
-    const client=new QueryClient({defaultOptions:{queries:{retry:false}}}); window.calls=0;
-    window.submit=()=>controller.run(project,task,()=>{window.calls++;return new Promise((resolve,reject)=>{window.finish=()=>resolve({status:'integrated',task:{id:task.id,session_id:task.sessionId,is_integrated:true}});window.fail=()=>reject(new Error('Git conflict'));});},()=>{});
+    const task=${JSON.stringify(integrationTask)};
+    const client=new QueryClient({defaultOptions:{queries:{retry:false}}}); window.calls=0;window.lineage=[];
+    window.submit=()=>controller.run(project,task,()=>{window.calls++;window.lineage.push({sessionId:task.sessionId,sourceBranch:task.worktreeBranch,targetBranch:task.baseBranch});return new Promise((resolve,reject)=>{window.finish=()=>resolve({status:'integrated',task:{id:task.id,session_id:task.sessionId,is_integrated:true}});window.fail=()=>reject(new Error('Git conflict'));});},()=>{});
     function App(){const [mount,setMount]=useState(true);const [snapshot,setSnapshot]=useState(task);
       window.mount=setMount;window.snapshot=setSnapshot;
       useSyncExternalStore(controller.subscribe,controller.getSnapshot,controller.getSnapshot);
@@ -32,13 +39,25 @@ test('integration card stays stable through pending, failure, retry and stale su
   const browser = await chromium.launch({ headless: true, channel: process.env.SWARM_TEST_BROWSER_CHANNEL || 'chrome' })
   try {
     const page = await browser.newPage({ reducedMotion: 'reduce' })
+    page.setDefaultTimeout(5000)
+    const errors: string[] = []
+    page.on('pageerror', error => errors.push(error.message))
     await page.route('**/*', route => route.fulfill({ contentType: 'text/html', body: '<div id="root" style="width:760px"></div>' }))
     await page.goto('https://integration.test/')
     await page.addStyleTag({ content: css })
     await page.addScriptTag({ content: bundle.outputFiles[0].text })
     const bar = page.getByTestId('task-pending-worktree-bar')
     const initial = page.getByRole('button', { name: 'Integrate into dev', exact: true })
+    try {
+      await page.getByTestId('orchestrate-task-card').waitFor()
+      await initial.waitFor()
+    } catch (error) {
+      assert.fail(`Integration fixture readiness failed: ${String(error)}; page errors: ${JSON.stringify(errors)}; rendered text: ${(await page.locator('#root').textContent())?.slice(0, 2000)}`)
+    }
+    assert.deepEqual(errors, [], 'complete RunningTask fixture renders without page errors')
+    assert.equal(await initial.isEnabled(), true)
     const bounds = await initial.boundingBox()
+    assert.ok(bounds, 'initial operation has measurable dimensions')
     await initial.click()
     await page.evaluate(() => { void (window as any).submit() }) // second click before a transport response
     const pending = page.getByRole('button', { name: 'Integrating…', exact: true })
@@ -71,5 +90,10 @@ test('integration card stays stable through pending, failure, retry and stale su
     assert.equal(await page.evaluate(() => (window as any).calls), 2)
     assert.equal(await pending.count(), 0)
     assert.equal(await bar.count(), 1)
+    assert.deepEqual(await page.evaluate(() => (window as any).lineage), [
+      { sessionId: 'session-a', sourceBranch: 'agent/a', targetBranch: 'dev' },
+      { sessionId: 'session-a', sourceBranch: 'agent/a', targetBranch: 'dev' },
+    ], 'retry retains exact captured lineage')
+    assert.deepEqual(errors, [])
   } finally { await browser.close() }
 })
