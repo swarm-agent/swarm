@@ -1,3 +1,4 @@
+import { ScopeUsage, WorkerBudget } from './scope-usage'
 import { useState } from 'react'
 import { useWorkerNavigationPreferences } from '../layout/worker-navigation-preferences'
 import { WorkerSettingsReview } from './worker-settings-review'
@@ -85,6 +86,8 @@ export function WorkerDetail({ accountScopeId, workerId, workspaceSlug, onSelect
         {(worker.lifecycle_state === 'pending' || worker.pending_review) && <PendingWorkerCard acceptanceBlocked={acceptanceBlocked} showModelControls={false} key={`${worker.id}:${worker.revision}`} worker={worker} accountScopeId={accountScopeId} workspaceSlug={workspaceSlug} stale={!!detail?.stale || !!detail?.error} mutationError={detail?.mutationError} />}
       </header>
       {worker.lifecycle_state !== 'pending' && <>
+      <ScopeUsage input={{ accountScopeId, scope: { kind: 'worker', id: workerId } }} />
+      <WorkerBudget key={`${accountScopeId}:${workerId}`} accountScopeId={accountScopeId} workerId={workerId} disabled={readOnly || !!detail?.stale || !!detail?.error} />
       <section className={box}><h4 className="font-semibold text-white">Now</h4>
         {summaryPage?.error && <p role="alert">Activity unavailable: {summaryPage.error}</p>}
         {summaryPage?.stale && summary && <p className="text-amber-300">Activity is refreshing; these are last-known results.</p>}
@@ -144,6 +147,7 @@ export function WorkerRunRow({ run, worker, accountScopeId, workspaceSlug, stale
   const job = worker.automations?.find(item => item.id === run.automation_id)
   return <article className={box} data-testid="durable-worker-run">
     <div className="flex flex-wrap items-center gap-2"><span className="rounded bg-blue-500/10 px-2 py-1 text-blue-300">{worker.name}</span><strong className="break-words text-white">{job?.name || (run.automation_id ? 'Prior job' : 'One-off request')}</strong><span className="ml-auto text-slate-400">{run.status}{run.cancel_requested ? ' · cancellation requested' : ''}</span></div>
+    <ScopeUsage input={{ accountScopeId, scope: { kind: 'worker_run', id: run.id, project_id: worker.id } }} label="Run observed usage" />
     <p>Worker revision {run.worker_revision}{run.automation_revision ? ` · job revision ${run.automation_revision}` : ''}</p>
     <p className="text-slate-400">{date(run.started_at || run.created_at)} · {run.request_source}{run.completed_at ? ` · finished ${date(run.completed_at)}` : ''}</p>
     {run.error && <p className="break-words text-red-300">{run.error}</p>}

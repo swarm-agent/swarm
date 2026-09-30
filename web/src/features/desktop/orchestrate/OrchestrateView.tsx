@@ -977,6 +977,7 @@ export function MinimalTaskCard({
       className={`swarm-task-card relative flex min-w-0 flex-col transition-colors cursor-pointer ${isSelected ? 'swarm-task-card-selected' : ''}`}
     >
       <TaskCardSummary
+        projectId={projectId}
         expanded={expanded}
         // The dedicated row below owns live activity; the summary owns task facts.
         task={isRunning ? { ...task, toolActivitySummary: undefined } : task}

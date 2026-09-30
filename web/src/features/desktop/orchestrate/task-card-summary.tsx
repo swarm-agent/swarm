@@ -1,3 +1,5 @@
+import { ScopeUsage } from './scope-usage'
+import { getDesktopSessionIdentitySnapshot } from '../../../app/api'
 import type { ReactNode } from 'react'
 import { Code2, Film, Image as ImageIcon, Layers, Music } from 'lucide-react'
 import type { RunningTask, MediaDeliverable } from './orchestrate-types'
@@ -46,7 +48,8 @@ export function taskCardFacts(task: RunningTask) {
   }
 }
 
-export function TaskCardSummary({ task, onPreview, statusBadge, timer, actions, extraBadges }: {
+export function TaskCardSummary({ task, projectId, onPreview, statusBadge, timer, actions, extraBadges }: {
+  projectId?: string
   expanded?: boolean
   task: RunningTask
   onPreview?: (deliverable: MediaDeliverable) => void
@@ -103,6 +106,7 @@ export function TaskCardSummary({ task, onPreview, statusBadge, timer, actions, 
           {task.status === 'blocked' && <span className="swarm-task-state">Action required · open details</span>}
           {facts.progress && <span className="swarm-task-progress">{facts.progress}</span>}
         </div>
+        {projectId && getDesktopSessionIdentitySnapshot()?.accountScopeId && <ScopeUsage input={{ accountScopeId: getDesktopSessionIdentitySnapshot()!.accountScopeId!, scope: { kind: 'task', id: task.id, project_id: projectId } }} />}
         {extraBadges && <div className="swarm-task-extra">{extraBadges}</div>}
       </div>
     </div>

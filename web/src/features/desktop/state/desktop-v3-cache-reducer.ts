@@ -1,5 +1,6 @@
 import { reduceDesktopEnvironmentsState } from './desktop-environments-state'
 import { reduceAutomationV2Pages } from './desktop-automation-v2-state'
+import { reduceUsagePages } from './desktop-usage-state'
 import { reduceWorkerPages } from './desktop-workers-state'
 import { reduceAutomationPages } from './desktop-automation-state'
 import { reduceDesktopProjectsState } from './desktop-projects-state'
@@ -67,6 +68,7 @@ export function createEmptyDesktopV3CacheState(surface = 'desktop'): DesktopV3Ca
     version: 1,
     automationPages: {},
     automationV2Pages: {},
+    usagePages: {},
     workerPages: {},
     environmentsByWorkspace: {},
     projectsState: {},
@@ -132,6 +134,12 @@ export function desktopV3CacheReducer(state: DesktopV3CacheState, action: Deskto
     case 'environments.operationUpdated':
     case 'environments.evict':
       return { ...state, environmentsByWorkspace: reduceDesktopEnvironmentsState(state.environmentsByWorkspace, action) }
+    case 'usage.begin':
+    case 'usage.finish':
+    case 'usage.invalidate':
+    case 'usage.snapshot':
+    case 'usage.evict':
+      return { ...state, usagePages: reduceUsagePages(state.usagePages, action) }
     case 'workers.begin':
     case 'workers.finish':
     case 'workers.invalidate':
@@ -813,6 +821,7 @@ export function applyRealtimeFrame(
   const frame = action.frame
   assertDesktopV3RealtimeFrame(frame)
   switch (frame.kind) {
+    case 'usage.scope.updated':
     case 'worker.updated':
       state.realtime.endpointCursor = frame.endpoint_cursor
       return state

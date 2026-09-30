@@ -1,5 +1,6 @@
 import { ensureDesktopSession } from '../../../app/api'
 import { desktopAutomationV2 } from '../runtime/desktop-automation-v2'
+import { desktopUsage } from '../runtime/desktop-usage'
 import { desktopWorkers } from '../runtime/desktop-workers'
 import { desktopAutomations } from '../runtime/desktop-automations'
 import { desktopProjects } from '../runtime/desktop-projects'
@@ -137,6 +138,7 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
           desktopAutomations.invalidate()
           desktopAutomationV2.invalidate()
           desktopWorkers.invalidate()
+          desktopUsage.invalidate()
           getDesktopEnvironments().invalidate()
           desktopProjects.invalidate()
         }
@@ -158,6 +160,7 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
         desktopAutomations.invalidate()
         desktopAutomationV2.invalidate()
         desktopWorkers.invalidate()
+        desktopUsage.invalidate()
         getDesktopEnvironments().invalidate()
         desktopProjects.invalidate()
         if ((frame as { bootstrap_required?: boolean } | null)?.bootstrap_required) {
@@ -439,6 +442,7 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
       desktopAutomations.acceptFrame(frame)
       desktopAutomationV2.acceptFrame(frame)
       desktopWorkers.acceptFrame(frame)
+      desktopUsage.acceptFrame(frame)
       getDesktopEnvironments().acceptFrame(frame)
       desktopProjects.acceptFrame(frame)
       if (frame.kind === 'event' || frame.kind === 'workset.session.discovered' || frame.kind === 'workset.session.updated' || frame.kind === 'workset.session.removed') {

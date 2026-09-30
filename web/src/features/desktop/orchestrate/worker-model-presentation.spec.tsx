@@ -25,8 +25,8 @@ test('worker identity and pinned model review remain scoped to workers', () => {
   const review = renderToStaticMarkup(<PendingWorkerCard worker={worker} accountScopeId="account" workspaceCatalog={{ accountScopeId: 'account', workspaces: [] }} />)
   assert.match(review, /title="action"/)
   assert.match(review, /title="planning"/)
-  assert.equal((review.match(/aria-label="Action model"/g) || []).length, 1)
-  assert.equal((review.match(/aria-label="Plan model"/g) || []).length, 1)
+  assert.equal((review.match(/aria-label="Execution model"/g) || []).length, 1)
+  assert.equal((review.match(/aria-label="Planning model"/g) || []).length, 1)
   assert.match(review, /Nothing runs while this worker is pending/)
 })
 
@@ -68,12 +68,12 @@ test('active worker update review discloses candidates, approved work and author
 test('legacy captured Swarm settings remain explicit until reset', async () => {
   const { WorkerModelPicker } = await import('./worker-model-picker')
   const html = renderToStaticMarkup(<WorkerModelPicker accountScopeId="account" profile={{ source: 'swarm_settings', action: { provider: 'fixture', model: 'action' }, plan: { provider: 'fixture', model: 'plan' } }} disabled onChange={() => { throw new Error('render changed selection') }} />)
-  assert.match(html, /aria-label="Action model"/)
-  assert.match(html, /aria-label="Plan model"/)
-  assert.equal((html.match(/Pinned to worker/g) || []).length, 2)
+  assert.match(html, /aria-label="Execution model"/)
+  assert.match(html, /aria-label="Planning model"/)
+  assert.equal((html.match(/Worker override/g) || []).length, 2)
   assert.match(html, /title="action"/)
   assert.match(html, /title="plan"/)
-  assert.equal((html.match(/aria-pressed="true"[^>]*>Custom/g) || []).length, 2)
+  assert.equal((html.match(/aria-label="Change (Execution|Planning) model"/g) || []).length, 2)
   assert.doesNotMatch(html, /Select model/)
 })
 
@@ -92,10 +92,10 @@ test('inherited slots survive overrides and reset independently', async () => {
   assert.equal(profile.use_account_default, true)
   assert.equal(profile.action.model, 'old')
   const html = renderToStaticMarkup(<WorkerModelPicker accountScopeId="account" disabled onChange={() => assert.fail('render mutated')} />)
-  assert.equal((html.match(/Follows account/g) || []).length, 2)
-  assert.equal((html.match(/Loading model…/g) || []).length, 2)
-  assert.match(html, /aria-label="Action model"/)
-  assert.match(html, /aria-label="Plan model"/)
+  assert.equal((html.match(/Account default/g) || []).length, 2)
+  assert.equal((html.match(/Loading…/g) || []).length, 2)
+  assert.match(html, /aria-label="Execution model"/)
+  assert.match(html, /aria-label="Planning model"/)
 })
 
 // Requirement: top-level settings show pending draft separately from approval;
@@ -105,7 +105,7 @@ test('execution and models are visible without disclosure and pending acceptance
   const { WorkerSettingsReview } = await import('./worker-settings-review')
   const worker: WorkerRecord = { id: 'worker_fixture', account_scope_id: 'account', name: 'Fixture', instructions: 'Review', lifecycle_state: 'active', revision: 2, created_at: 1, updated_at: 2 }
   const html = renderToStaticMarkup(<WorkerSettingsReview worker={{ ...worker, pending_review: { ...worker, execution_mode: 'plan' } }} accountScopeId="account" disabled />)
-  assert.doesNotMatch(html, /<details|<summary/)
+  assert.match(html, /Planning model · plans first/)
   assert.match(html, />Swarm</)
   assert.match(html, />Plan</)
   assert.match(html, /Pending approval · approved settings remain in effect/)
@@ -118,7 +118,7 @@ test('execution and models are visible without disclosure and pending acceptance
 // opening redundant selectors; approved and pending values cannot look live at
 // the same time. WorkerSettingsReview/WorkerModelPicker SSR is the narrowest
 // hierarchy/consent layer; it does not claim pixel or browser-interaction proof.
-test('dashboard presents two compact model cards and distinguishes approved from pending', async () => {
+test('dashboard presents compact execution and secondary planning and distinguishes approved from pending', async () => {
   const { WorkerSettingsReview } = await import('./worker-settings-review')
   const profile = { source: 'temporary', action: { provider: 'fixture', model: 'identifiable-long-action-model-name', thinking: 'high', service_tier: 'priority', context_mode: 'extended' }, plan: { provider: 'fixture', model: 'planning-model', thinking: 'low' } }
   const base: WorkerRecord = { id: 'dashboard', account_scope_id: 'account', name: 'Fixture', instructions: 'Work', lifecycle_state: 'active', revision: 2, created_at: 1, updated_at: 2, model_profile: profile }
@@ -131,9 +131,9 @@ test('dashboard presents two compact model cards and distinguishes approved from
   assert.match(approved, /Thinking · high/)
   assert.match(approved, /Tier · priority/)
   assert.match(approved, /Context · extended/)
-  assert.match(approved, /Optional · used in Plan mode/)
-  assert.match(approved, /aria-label="Change Action model"/)
-  assert.equal((approved.match(/Pinned to worker/g) || []).length, 2)
+  assert.match(approved, /only used in Plan mode/)
+  assert.match(approved, /aria-label="Change Execution model"/)
+  assert.equal((approved.match(/Worker override/g) || []).length, 2)
   assert.doesNotMatch(approved, /Select model|Propose changes|Approved model policy|Pending approval/)
   const candidate = { ...base, execution_mode: 'plan' as const, model_profile: { ...profile, action: { ...profile.action, model: 'proposed-action' } } }
   const pending = renderToStaticMarkup(<WorkerSettingsReview worker={{ ...base, revision: 3, pending_review: candidate }} accountScopeId="account" disabled />)

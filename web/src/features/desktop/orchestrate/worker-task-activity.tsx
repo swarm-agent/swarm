@@ -1,3 +1,4 @@
+import { ScopeUsage } from './scope-usage'
 import { useState } from 'react'
 import { useWorkerPage } from '../runtime/desktop-workers'
 import { PendingWorkerCard } from './pending-worker-card'
@@ -19,6 +20,7 @@ export function WorkerTaskActivity({ accountScopeId, workspaceSlug, onOpenWorker
     {page?.loading && !page.data && <p role="status">Loading worker activity…</p>}
     {workers.map(worker => <section key={worker.id} className="rounded-xl border border-slate-800 p-3 space-y-3">
       <header className="flex flex-wrap items-center justify-between gap-2"><a href={workerDetailHref(worker.id, workspaceSlug)} onClick={onOpenWorkerDetail ? event => { event.preventDefault(); onOpenWorkerDetail(worker.id) } : undefined} className="font-semibold text-blue-300 hover:underline">{worker.name}</a><span className="text-slate-400">{workerLifecycleLabel(worker.lifecycle_state)} · {worker.automations?.length || 0} jobs</span></header>
+      <ScopeUsage input={{ accountScopeId, scope: { kind: 'worker', id: worker.id } }} />
       <p className="break-words text-slate-400">{worker.description || worker.instructions}</p>
       {(worker.lifecycle_state === 'pending' || worker.pending_review) ? <PendingWorkerCard key={`${accountScopeId}:${worker.id}`} worker={worker} accountScopeId={accountScopeId} workspaceSlug={workspaceSlug} stale={!!page?.stale || !!page?.error} mutationError={page?.mutationError} onOpenDetail={onOpenWorkerDetail} /> : <WorkerRunHistory accountScopeId={accountScopeId} worker={worker} workspaceSlug={workspaceSlug} />}
     </section>)}

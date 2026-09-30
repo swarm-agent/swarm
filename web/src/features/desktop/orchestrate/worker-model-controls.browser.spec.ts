@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { build } from 'esbuild'
 import { chromium } from 'playwright'
 
-// Requirement: visible Action/Plan slots show canonical account defaults after
+// Requirement: compact Execution and disclosed Planning slots show canonical account defaults after
 // slot-local reset, and settings edits stage revision-guarded proposals only.
 // Threat: cosmetic default labels over pinned models, account writes or implicit
 // acceptance. WorkerSettingsReview/WorkerModelPicker rendered with read API fixtures
@@ -34,16 +34,19 @@ test('worker reset shows actual defaults and only proposes a pending settings re
     })
     await page.goto('https://worker.test/')
     await page.addScriptTag({ content: bundle.outputFiles[0].text })
-    const action = page.getByRole('region', { name: 'Action model', exact: true })
-    const plan = page.getByRole('region', { name: 'Plan model', exact: true })
-    await action.getByText('action-override', { exact: true }).waitFor()
-    await plan.getByText('plan-override', { exact: true }).waitFor()
-    await action.getByRole('button', { name: 'Reset Action to account default' }).click()
-    await action.getByText('account-action', { exact: true }).waitFor()
-    await action.getByRole('button', { name: 'Edit Action thinking' }).getByText('Thinking · high').waitFor()
-    await plan.getByText('plan-override', { exact: true }).waitFor()
-    await plan.getByRole('button', { name: 'Reset Plan to account default' }).click()
-    await plan.getByText('account-plan', { exact: true }).waitFor()
+    const action = page.getByRole('region', { name: 'Execution model', exact: true })
+    const plan = page.getByRole('region', { name: 'Planning model', exact: true })
+    await action.getByText(/action-override/).waitFor()
+    await page.locator('summary').filter({ hasText: 'Planning model ·' }).click()
+    await plan.getByText(/plan-override/).waitFor()
+    await action.getByRole('button', { name: 'Change Execution model' }).click()
+    await action.getByRole('button', { name: /Account default ·/ }).click()
+    await action.getByText(/account-action/).waitFor()
+    await action.getByText('Thinking · high').waitFor()
+    await plan.getByText(/plan-override/).waitFor()
+    await plan.getByRole('button', { name: 'Change Planning model' }).click()
+    await plan.getByRole('button', { name: /Account default ·/ }).click()
+    await plan.getByText(/account-plan/).waitFor()
     assert.deepEqual(await page.evaluate(() => (window as any).mutations), [])
     await page.getByRole('group', { name: 'Execution mode', exact: true }).getByRole('button', { name: 'Plan', exact: true }).click()
     await page.getByRole('button', { name: 'Propose changes' }).click()
@@ -92,9 +95,9 @@ test('pending dashboard proposes before accepting and reflects approved candidat
     })
     await page.goto('https://worker.test/')
     await page.addScriptTag({ content: bundle.outputFiles[0].text })
-    const action = page.getByRole('region', { name: 'Action model', exact: true })
-    await action.getByText('candidate-action', { exact: true }).waitFor()
-    await action.getByRole('button', { name: 'Edit Action thinking' }).getByText('Thinking · medium').waitFor()
+    const action = page.getByRole('region', { name: 'Execution model', exact: true })
+    await action.getByText(/candidate-action/).waitFor()
+    await action.getByText(/Thinking · medium/).waitFor()
     await page.getByRole('group', { name: 'Execution mode', exact: true }).getByRole('button', { name: 'Plan', exact: true }).click()
     await page.waitForFunction(() => (document.querySelector('[data-testid="accept-pending-worker"]') as HTMLButtonElement)?.disabled)
     assert.deepEqual(await page.evaluate(() => (window as any).mutations), [])
@@ -102,7 +105,7 @@ test('pending dashboard proposes before accepting and reflects approved candidat
     await page.waitForFunction(() => !(document.querySelector('[data-testid="accept-pending-worker"]') as HTMLButtonElement)?.disabled)
     await page.getByRole('button', { name: 'Accept changes', exact: true }).click()
     await page.getByText('Approved', { exact: true }).waitFor()
-    await action.getByText('candidate-action', { exact: true }).waitFor()
+    await action.getByText(/candidate-action/).waitFor()
     const mutations = await page.evaluate(() => (window as any).mutations)
     assert.equal(mutations.length, 2)
     assert.equal(mutations[0].action, 'update')

@@ -35,6 +35,7 @@ const SUPPORTED_REALTIME_KINDS = new Set([
   'workspace.catalog.updated',
   'automation.updated',
   'worker.updated',
+  'usage.scope.updated',
   'auth.credentials.updated',
   'project.updated',
 ])
@@ -50,6 +51,11 @@ export function assertDesktopV3RealtimeFrame(frame: RealtimeMessage): void {
   const type = stringValue(frame.type)
   if (type && type !== kind) {
     throw new Error(`protocol invalid: realtime kind/type mismatch ${kind}/${type}`)
+  }
+  if (kind === 'usage.scope.updated') {
+    const payload = frame.event ? eventPayloadRecord(frame.event) : undefined
+    if (!stringValue(frame.endpoint_cursor) || frame.session || frame.session_id || frame.event?.session_id || frame.event?.event_type !== 'usage.scope.updated' || !Array.isArray(payload?.scope_totals) || payload.scope_totals.length > 320) throw new Error('protocol invalid: usage update requires bounded scope snapshots and endpoint cursor')
+    return
   }
   if (kind === 'worker.updated') {
     if (!stringValue(frame.endpoint_cursor) || frame.event || frame.session) throw new Error('protocol invalid: worker update must carry only an endpoint cursor')
@@ -242,6 +248,7 @@ export function realtimeFrameToActions(frame: RealtimeMessage): DesktopV3CacheAc
     case 'task.lifecycle.updated':
       return [{ type: 'realtime.applyAITaskResource', frame }]
 
+    case 'usage.scope.updated':
     case 'automation.updated':
     case 'worker.updated':
     case 'workspace.catalog.updated':

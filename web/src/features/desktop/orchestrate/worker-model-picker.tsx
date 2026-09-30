@@ -1,7 +1,5 @@
 import { useContext, useEffect, useState } from 'react'
 import { QueryClientContext } from '@tanstack/react-query'
-import { Cpu, Workflow } from 'lucide-react'
-import { ModelPicker } from '../chat/components/model-picker'
 import { displayModelName, modelProviderLabel } from '../chat/services/model-options'
 import { fetchModelOptions } from '../chat/queries/chat-queries'
 import type { ModelOptionRecord } from '../chat/types/chat'
@@ -32,6 +30,14 @@ export function workerModelOptionSelection(option: ModelOptionRecord, current?: 
   if (current?.provider === option.provider && current.model === option.model && (current.context_mode || '') === option.contextMode) return { ...current }
   return { provider: option.provider, model: option.model, thinking: option.defaultThinking, service_tier: option.defaultServiceTier, context_mode: option.contextMode }
 }
+export function workerCatalogPrice(option: ModelOptionRecord): string {
+  const price = option.pricing
+  if (price?.is_free) return 'Catalog: free'
+  const input = price?.input_price_per_million_tokens, output = price?.output_price_per_million_tokens
+  return typeof input === 'number' && typeof output === 'number'
+    ? `Catalog estimate: ${price?.currency || 'USD'} ${input} input / ${output} output per million tokens`
+    : 'Catalog price unknown · not a billing quote'
+}
 const control = 'rounded-lg px-2.5 py-1.5 text-xs transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--app-text)] disabled:opacity-40'
 const muted = 'text-[var(--app-text-muted)]'
 
@@ -42,10 +48,11 @@ export function WorkerModelPicker({ accountScopeId, profile, disabled, onChange,
   const [error, setError] = useState('')
   const [retry, setRetry] = useState(0)
   const [editing, setEditing] = useState<'action' | 'plan' | null>(null)
+  const [search, setSearch] = useState('')
   const authorized = getDesktopSessionIdentitySnapshot()?.accountScopeId === accountScopeId
   useEffect(() => {
     let alive = true
-    setLoaded(undefined); setError(''); setEditing(null)
+    setLoaded(undefined); setError(''); setEditing(null); setSearch('')
     if (!authorized) return
     const defaults = (settings: AgentModelSettings): WorkerModelProfile => {
       const selection = (value: typeof settings.swarm.action): WorkerModelSelection => ({ provider: value.provider, model: value.model, thinking: value.thinking, service_tier: value.serviceTier, context_mode: value.contextMode })
@@ -73,50 +80,44 @@ export function WorkerModelPicker({ accountScopeId, profile, disabled, onChange,
   const data = authorized && loaded?.account === accountScopeId ? loaded : undefined
   const options = data?.options || []
   const blocked = disabled || !authorized
-  return <section aria-label="Worker models" className="space-y-3">
-    <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 230px), 1fr))' }}>
-      {(['action', 'plan'] as const).map(slot => {
-        const label = slot === 'action' ? 'Action' : 'Plan'
-        const Icon = slot === 'action' ? Cpu : Workflow
-        const inherited = workerSlotInherited(profile, slot)
-        const selection = inherited ? data?.defaults[slot] : profile?.[slot]
-        const selected = options.find(option => option.provider === selection?.provider && option.model === selection?.model && option.contextMode === (selection?.context_mode || ''))
-        const pin = (value: WorkerModelSelection) => { if (!blocked && data) onChange(selectWorkerModelSlot(profile, slot, value, data.defaults.action)) }
-        return <section key={slot} aria-label={`${label} model`} className="min-w-0 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <h4 className="flex items-center gap-2 text-sm font-semibold"><Icon size={15} aria-hidden="true" />{label}</h4>
-            <div role="group" aria-label={`${label} model source`} title="Default follows account settings. Custom pins this worker only." className="flex rounded-lg border border-[var(--app-border)] p-0.5">
-              <button type="button" aria-pressed={inherited} disabled={blocked || inherited} className={`${control} ${inherited ? 'bg-[var(--app-border)] font-semibold' : muted}`} onClick={() => onChange(resetWorkerModelSlot(profile, slot))}>Default</button>
-              <button type="button" aria-pressed={!inherited} disabled={blocked || !selection || !data} className={`${control} ${!inherited ? 'bg-[var(--app-border)] font-semibold' : muted}`} onClick={() => { if (inherited && selection) pin({ ...selection }); setEditing(slot) }}>Custom</button>
-            </div>
-          </div>
-          <p className={`mt-1 text-xs ${muted}`}>{slot === 'action' ? 'Does the work' : mode === 'plan' ? 'Plans first' : 'Optional · used in Plan mode'}</p>
-          <div className="my-4 min-h-[64px]">
-            <p className="break-words text-lg font-semibold leading-snug [overflow-wrap:anywhere]" title={selection?.model}>{selection ? displayModelName(selection.provider, selection.model, selection.context_mode || '') : !inherited ? 'Model not configured' : error ? 'Model unavailable' : 'Loading model…'}</p>
-            <p className={`mt-1 break-words text-xs ${muted}`}>{selection ? modelProviderLabel(selection.provider) : 'Account default'}</p>
-          </div>
-          <div className="flex flex-wrap items-center gap-2 text-xs">
-            <button type="button" aria-label={`Edit ${label} thinking`} aria-expanded={editing === slot} disabled={blocked || !selected?.thinkingOptions.length} onClick={() => setEditing(editing === slot ? null : slot)} className={`${control} border border-[var(--app-border)]`}>Thinking · {selection?.thinking || 'Default'}</button>
-            {selection?.service_tier && <span className={muted}>Tier · {selection.service_tier}</span>}
-            {selection?.context_mode && <span className={muted}>Context · {selection.context_mode}</span>}
-          </div>
-          <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
-            <span className={`text-[11px] ${muted}`}>{inherited ? 'Follows account' : 'Pinned to worker'}</span>
-            {!inherited && <button type="button" aria-label={`Reset ${label} to account default`} disabled={blocked} className={`${control} ${muted}`} onClick={() => onChange(resetWorkerModelSlot(profile, slot))}>Reset</button>}
-            <button type="button" aria-label={`${inherited ? 'Customize' : 'Change'} ${label} model`} aria-expanded={editing === slot} disabled={blocked || !options.length} className={`${control} border border-[var(--app-border)] hover:bg-[var(--app-border)]`} onClick={() => setEditing(editing === slot ? null : slot)}>{editing === slot ? 'Done' : inherited ? 'Customize' : 'Change'}</button>
-          </div>
-          {editing === slot && <div className="mt-3 space-y-3 border-t border-[var(--app-border)] pt-3" aria-label={`${label} model editor`}>
-            <ModelPicker options={options} selectedKey={selected?.key || ''} disabled={blocked || !options.length} onSelect={key => { const option = options.find(item => item.key === key); if (option) pin(workerModelOptionSelection(option, selection)) }} />
-            {!!selected?.thinkingOptions.length && selection && <label className={`flex flex-wrap items-center gap-2 text-xs ${muted}`}>Thinking
-              <select aria-label={`${label} thinking`} value={selection.thinking || ''} disabled={blocked} className="min-w-0 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-2 text-[var(--app-text)]" onChange={event => pin({ ...selection, thinking: event.target.value })}>
-                {!selected.thinkingOptions.includes(selection.thinking || '') && <option value={selection.thinking || ''}>{selection.thinking || 'Default'}</option>}
-                {selected.thinkingOptions.map(value => <option key={value} value={value}>{value}</option>)}
-              </select>
-            </label>}
-          </div>}
-        </section>
-      })}
-    </div>
+  const renderSlot = (slot: 'action' | 'plan') => {
+    const label = slot === 'action' ? 'Execution' : 'Planning'
+    const inherited = workerSlotInherited(profile, slot)
+    const selection = inherited ? data?.defaults[slot] : profile?.[slot]
+    const selected = options.find(option => option.provider === selection?.provider && option.model === selection?.model && option.contextMode === (selection?.context_mode || ''))
+    const pin = (value: WorkerModelSelection) => { if (!blocked && data) onChange(selectWorkerModelSlot(profile, slot, value, data.defaults.action)) }
+    const close = () => { setEditing(null); setSearch('') }
+    return <section aria-label={`${label} model`} className="min-w-0 space-y-2">
+      <div className="flex flex-wrap items-center gap-2 text-xs">
+        <strong>{label} model</strong><span title={selection?.model} className="min-w-0 flex-1 break-words">{selection ? displayModelName(selection.provider, selection.model, selection.context_mode || '') : error ? 'Unavailable' : data ? 'Not configured' : 'Loading…'} · {inherited ? 'Account default' : 'Worker override'}</span>
+        <button type="button" className={`${control} border border-[var(--app-border)]`} disabled={blocked || !data} aria-expanded={editing === slot} aria-label={`Change ${label} model`} onClick={() => { setEditing(editing === slot ? null : slot); setSearch('') }}>Choose</button>
+      </div>
+      {editing === slot && <div aria-label={`${label} model chooser`} className="space-y-2 rounded-lg border border-[var(--app-border)] p-3" onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); close(); event.currentTarget.parentElement?.querySelector<HTMLButtonElement>('button')?.focus() } }}>
+        <label className="block text-xs">Search provider or model<input autoFocus aria-label={`Search ${label} models`} value={search} onChange={event => setSearch(event.target.value)} className="mt-1 w-full min-w-0 rounded border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-2" /></label>
+        <button type="button" className={`${control} w-full text-left`} disabled={blocked} aria-pressed={inherited} onClick={() => { onChange(resetWorkerModelSlot(profile, slot)); close() }}>Account default · follows account settings</button>
+        <div className="max-h-64 space-y-1 overflow-y-auto" role="group" aria-label={`${label} catalog models`}>
+          {options.filter(option => `${option.provider} ${option.model} ${option.label}`.toLowerCase().includes(search.toLowerCase().trim())).map(option => <button type="button" key={option.key} disabled={blocked} aria-pressed={!inherited && selected?.key === option.key} className={`${control} block w-full text-left hover:bg-[var(--app-border)]`} onClick={() => { pin(workerModelOptionSelection(option, selection)); close() }}>
+            <span className="block break-words">{option.label} · {modelProviderLabel(option.provider)}</span><span className={`block ${muted}`}>{workerCatalogPrice(option)}</span>
+          </button>)}
+          {!options.length && <p>No catalog models available.</p>}
+          {!!options.length && !options.some(option => `${option.provider} ${option.model} ${option.label}`.toLowerCase().includes(search.toLowerCase().trim())) && <p>No matching models.</p>}
+        </div>
+        <button type="button" className={control} onClick={close}>Close chooser</button>
+      </div>}
+      {selection && <p className={`text-xs ${muted}`}>Thinking · {selection.thinking || 'Default'}{selection.service_tier ? ` · Tier · ${selection.service_tier}` : ''}{selection.context_mode ? ` · Context · ${selection.context_mode}` : ''}</p>}
+      {selected && selection && <details className="text-xs"><summary className={`cursor-pointer ${muted}`}>Advanced · thinking, tier and context</summary>
+        <div className="mt-2 flex flex-wrap gap-3">
+          {!!selected.thinkingOptions.length && <label>Thinking<select aria-label={`${label} thinking`} disabled={blocked} value={selection.thinking || ''} onChange={e => pin({ ...selection, thinking: e.target.value })}><option value="">Default</option>{selected.thinkingOptions.map(value => <option key={value}>{value}</option>)}</select></label>}
+          {!!selected.serviceTiers.length && <label>Tier<select aria-label={`${label} tier`} disabled={blocked} value={selection.service_tier || ''} onChange={e => pin({ ...selection, service_tier: e.target.value })}><option value="">Default</option>{selected.serviceTiers.map(value => <option key={value}>{value}</option>)}</select></label>}
+          {!!selected.contextModes.length && <label>Context<select aria-label={`${label} context`} disabled={blocked} value={selection.context_mode || ''} onChange={e => { const option = options.find(item => item.provider === selected.provider && item.model === selected.model && item.contextMode === e.target.value); if (option) pin(workerModelOptionSelection(option, selection)) }}><option value="">Default</option>{selected.contextModes.filter(value => !value.default).map(value => <option key={value.mode} value={value.mode}>{value.label || value.mode}</option>)}</select></label>}
+        </div>
+      </details>}
+    </section>
+  }
+  return <section aria-label="Worker models" className="min-w-0 space-y-3">
+    {renderSlot('action')}
+    <details open={mode === 'plan' ? true : undefined}><summary className={`cursor-pointer text-xs ${muted}`}>Planning model · {mode === 'plan' ? 'plans first' : 'only used in Plan mode'}</summary><div className="mt-2">{renderSlot('plan')}</div></details>
+    <p className={`text-xs ${muted}`}>Worker-only draft. Review and save below; admitted runs retain their captured model.</p>
     {authorized && !data && !error && <p role="status" className={`text-xs ${muted}`}>Loading account models…</p>}
     {!authorized && <p role="alert" className={`text-xs ${muted}`}>Reconnect to this account to change models.</p>}
     {profile?.resolution_warning && <p role="alert">{profile.resolution_warning}</p>}
