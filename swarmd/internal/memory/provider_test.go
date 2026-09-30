@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"swarm/packages/swarmd/internal/identity"
 	"path/filepath"
+	"swarm/packages/swarmd/internal/identity"
 	iface "swarm/packages/swarmd/internal/provider/interfaces"
 	store "swarm/packages/swarmd/internal/store/pebble"
 	"testing"
@@ -49,17 +49,25 @@ func TestMemoryProviderAuthorityAndPricing(t *testing.T) {
 	}
 	r := &testRunner{response: iface.Response{Text: "null", Usage: iface.TokenUsage{OutputTokens: 1}}}
 	p := RuntimeProvider{Catalog: catalog, Runners: testRunners{r}, Sessions: store.NewSessionStore(db)}
-	ctx := identity.ContextWithPrincipal(context.Background(), identity.Principal{Type:identity.PrincipalTypeUser, AccountScopeID:"account", UserID:"user"})
+	ctx := identity.ContextWithPrincipal(context.Background(), identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "account", UserID: "user"})
 	m := store.AgentModelAssignment{Provider: "codex", Model: "model", Thinking: "medium"}
 	_, err = p.Generate(ctx, Request{Model: m, Input: []byte("[]"), Instructions: "bounded", OutputTokens: 100})
 	if err != nil {
 		t.Fatal(err)
 	}
 	before := r.calls
-	if _, err := p.Generate(context.Background(), Request{Model:m}); !errors.Is(err, identity.ErrPrincipalRequired) || r.calls != before { t.Fatalf("missing principal dispatched: %v", err) }
-	if err := p.Sessions.PutUsageLimit(store.UsageLimitRecord{AccountScopeID:"account", Enabled:true, DailyTokensLimit:100}); err != nil { t.Fatal(err) }
-	if _, err := p.Generate(ctx, Request{Model:m}); !errors.Is(err, store.ErrWorkerBudget) || r.calls != before { t.Fatalf("account-capped extraction dispatched: %v", err) }
-	if err := p.Sessions.PutUsageLimit(store.UsageLimitRecord{AccountScopeID:"account"}); err != nil { t.Fatal(err) }
+	if _, err := p.Generate(context.Background(), Request{Model: m}); !errors.Is(err, identity.ErrPrincipalRequired) || r.calls != before {
+		t.Fatalf("missing principal dispatched: %v", err)
+	}
+	if err := p.Sessions.PutUsageLimit(store.UsageLimitRecord{AccountScopeID: "account", Enabled: true, DailyTokensLimit: 100}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Generate(ctx, Request{Model: m}); !errors.Is(err, store.ErrWorkerBudget) || r.calls != before {
+		t.Fatalf("account-capped extraction dispatched: %v", err)
+	}
+	if err := p.Sessions.PutUsageLimit(store.UsageLimitRecord{AccountScopeID: "account"}); err != nil {
+		t.Fatal(err)
+	}
 	got := r.request
 	if len(got.Tools) != 0 || got.ToolInvoker != nil || got.WorkspacePath != "" || got.AllowContinuation || !got.StartNewChain || got.MaxOutputTokens != 0 || got.Model != "model" {
 		t.Fatal("provider authority leaked")

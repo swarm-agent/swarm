@@ -4975,6 +4975,10 @@ func TestSessionsV3ProviderToolLoopRecordsCodexUsagePerProviderStep(t *testing.T
 	}
 }
 
+// Purpose: the in-process V3 provider loop must persist each recorded provider
+// step once, independent of captured account model defaults. Canonical session
+// profile mutations select recording fixtures; assertions inspect actual durable
+// receipts, events and context summaries. This is not live provider qualification.
 func TestSessionsV3ProviderUsageAccountingE2E(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 
@@ -5081,6 +5085,13 @@ func TestSessionsV3ProviderUsageAccountingE2E(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			created := createSessionsV3PrimaryTestSessionWithPreference(t, server, tc.createID, tc.name+" usage accounting", pebblestore.ModelPreference{Provider: tc.provider, Model: tc.model, Thinking: "high"})
+			// Seed the fixture's session-only snapshot through its canonical mutation.
+			// Creation captures account defaults, not the old preference override.
+			created.ModelProfile = &pebblestore.SessionModelProfileSnapshot{Source: pebblestore.SessionModelProfileSourceTemporary, Action: pebblestore.ModelProfileSelection{Provider: tc.provider, Model: tc.model, Thinking: "high"}}
+			key := tc.createID + "-profile"
+			if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{SessionID: created.ID, UserID: created.UserID, AccountScopeID: created.AccountScopeID, ClientRequestID: key, IdempotencyKey: key, PayloadHash: key, RequestHash: key, Kind: sessionruntime.SessionMutationUpdateModelProfile, Session: &created}); err != nil {
+				t.Fatal(err)
+			}
 			postSessionsV3PrimaryTestMessage(t, server, created.ID, tc.messageID, "check "+tc.name+" usage cadence")
 			waitForSessionsV3MessageCount(t, sessionSvc, created.ID, 2)
 			if tc.runner.callCount != len(tc.expectedTurns) {
@@ -5098,6 +5109,10 @@ func TestSessionsV3ProviderUsageAccountingE2E(t *testing.T) {
 	}
 }
 
+// Purpose: changing a fixture session's canonical model snapshot must preserve
+// earlier billing receipts while updating current context provenance. The V3
+// mutation/executor seam proves accounting across providers without changing
+// account assignments, starting listeners or invoking external providers.
 func TestSessionsV3ProviderUsageAccountingTransitionE2E(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	codexRunner := &sessionsV3RecordingProviderRunner{
@@ -5147,12 +5162,16 @@ func TestSessionsV3ProviderUsageAccountingTransitionE2E(t *testing.T) {
 	waitForSessionsV3MessageCount(t, sessionSvc, created.ID, 2)
 	sessionsV3AssertUsageAccounting(t, sessionSvc, created.ID, []sessionsV3UsageExpectation{{clientRequestID: "usage-transition-codex-message", provider: "codex", model: "gpt-5.5", step: 1, inputTokens: 500, outputTokens: 10, totalTokens: 510, summaryTotalTokens: 510, summaryInputTokens: 500, summaryOutputTokens: 10}})
 
-	prefReq := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/preference", bytes.NewBufferString(`{"provider":"fireworks","model":"accounts/fireworks/models/glm-5p2","thinking":"high"}`))
-	prefReq.Header.Set("Content-Type", "application/json")
-	prefRec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(prefRec, withTestPrincipal(prefReq))
-	if prefRec.Code != http.StatusOK {
-		t.Fatalf("preference status = %d, want %d, body=%s", prefRec.Code, http.StatusOK, prefRec.Body.String())
+	// Transition this fixture session's model snapshot through canonical mutation;
+	// captured Swarm defaults cannot be changed by the retired preference write.
+	current, found, err := sessionSvc.GetSession(created.ID)
+	if err != nil || !found {
+		t.Fatalf("transition session: %v", err)
+	}
+	current.ModelProfile = &pebblestore.SessionModelProfileSnapshot{Source: pebblestore.SessionModelProfileSourceTemporary, Action: pebblestore.ModelProfileSelection{Provider: "fireworks", Model: "accounts/fireworks/models/glm-5p2", Thinking: "high"}}
+	key := "usage-transition-profile"
+	if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{SessionID: current.ID, UserID: current.UserID, AccountScopeID: current.AccountScopeID, ClientRequestID: key, IdempotencyKey: key, PayloadHash: key, RequestHash: key, Kind: sessionruntime.SessionMutationUpdateModelProfile, Session: &current}); err != nil {
+		t.Fatal(err)
 	}
 
 	postSessionsV3PrimaryTestMessage(t, server, created.ID, "usage-transition-fireworks-message", "now use fireworks")

@@ -108,6 +108,9 @@ test('worker budget retains legacy pricing coverage', async () => {
     date: '2026-01-01', usage: { coverage: 'no_records' }, blocked: true,
     inflight: false, account_inflight: false, limitations: 'unknown pricing is not free',
     account_coverage: 'legacy_pricing_incomplete',
+    account_policy: { account_scope_id: 'account', enabled: true, daily_cost_limit_usd: 1 },
+    remaining_cost_usd: null, remaining_tokens: null,
+    account_remaining_cost_usd: 1, account_remaining_tokens: null,
     account_usage: { total_tokens: 7, pricing_coverage_version: 0, pricing_coverage_incomplete: true } };
   const transport = { request: async () => ({ data }) } as unknown as SwarmTransport;
   assert.deepEqual(await new SwarmUsageNamespace(transport).workerBudget('worker'), data);

@@ -23,29 +23,29 @@ type UsageLimitRecord struct {
 
 // DailyUsageAccumulator tracks aggregated daily spending and token counts in O(1) storage.
 type DailyUsageAccumulator struct {
-	PricingCoverageVersion    int  `json:"pricing_coverage_version,omitempty"`
-	PricingCoverageIncomplete bool `json:"pricing_coverage_incomplete,omitempty"`
-	UnknownReceipts     int64            `json:"unknown_receipts,omitempty"`
-	AccountScopeID      string           `json:"account_scope_id"`
-	Date                string           `json:"date"` // Format: YYYY-MM-DD (UTC)
-	TotalCostUSD        float64          `json:"total_cost_usd"`
-	CodexNominalCostUSD float64          `json:"codex_nominal_cost_usd,omitempty"`
-	TotalTokens         int64            `json:"total_tokens"`
-	InputTokens         int64            `json:"input_tokens,omitempty"`
-	OutputTokens        int64            `json:"output_tokens,omitempty"`
-	CachedTokens        int64            `json:"cached_tokens,omitempty"`
-	ThinkingTokens      int64            `json:"thinking_tokens,omitempty"`
-	TurnCount           int              `json:"turn_count"`
-	MediaCalls          int              `json:"media_calls,omitempty"`
-	MediaCostUSD        float64          `json:"media_cost_usd,omitempty"`
-	ImageCount          int              `json:"image_count,omitempty"`
-	ImageCostUSD        float64          `json:"image_cost_usd,omitempty"`
-	VideoCount          int              `json:"video_count,omitempty"`
-	VideoCostUSD        float64          `json:"video_cost_usd,omitempty"`
-	AudioCount          int              `json:"audio_count,omitempty"`
-	AudioCostUSD        float64          `json:"audio_cost_usd,omitempty"`
-	ModelsUsed          map[string]int64 `json:"models_used,omitempty"`
-	UpdatedAt           int64            `json:"updated_at"`
+	PricingCoverageVersion    int              `json:"pricing_coverage_version,omitempty"`
+	PricingCoverageIncomplete bool             `json:"pricing_coverage_incomplete,omitempty"`
+	UnknownReceipts           int64            `json:"unknown_receipts,omitempty"`
+	AccountScopeID            string           `json:"account_scope_id"`
+	Date                      string           `json:"date"` // Format: YYYY-MM-DD (UTC)
+	TotalCostUSD              float64          `json:"total_cost_usd"`
+	CodexNominalCostUSD       float64          `json:"codex_nominal_cost_usd,omitempty"`
+	TotalTokens               int64            `json:"total_tokens"`
+	InputTokens               int64            `json:"input_tokens,omitempty"`
+	OutputTokens              int64            `json:"output_tokens,omitempty"`
+	CachedTokens              int64            `json:"cached_tokens,omitempty"`
+	ThinkingTokens            int64            `json:"thinking_tokens,omitempty"`
+	TurnCount                 int              `json:"turn_count"`
+	MediaCalls                int              `json:"media_calls,omitempty"`
+	MediaCostUSD              float64          `json:"media_cost_usd,omitempty"`
+	ImageCount                int              `json:"image_count,omitempty"`
+	ImageCostUSD              float64          `json:"image_cost_usd,omitempty"`
+	VideoCount                int              `json:"video_count,omitempty"`
+	VideoCostUSD              float64          `json:"video_cost_usd,omitempty"`
+	AudioCount                int              `json:"audio_count,omitempty"`
+	AudioCostUSD              float64          `json:"audio_cost_usd,omitempty"`
+	ModelsUsed                map[string]int64 `json:"models_used,omitempty"`
+	UpdatedAt                 int64            `json:"updated_at"`
 }
 
 // ModelBaselinePricing holds standard per-million token rates for usage estimation.

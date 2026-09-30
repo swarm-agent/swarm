@@ -178,8 +178,14 @@ func TestWorkerBudgetDirectTitleBoundary(t *testing.T) {
 	runner := &principalCapturingAITaskRunner{}
 	svc.providers = registry.New()
 	svc.providers.RegisterRunner(runner)
-	principal := identity.Principal{Type:identity.PrincipalTypeUser, UserID:"test-user", AccountScopeID:"test-account"}
-	if err := svc.sessions.Store().PutUsageLimit(store.UsageLimitRecord{AccountScopeID:principal.AccountScopeID, Enabled:true, DailyTokensLimit:100}); err != nil { t.Fatal(err) }
-	if _, err := svc.generateMemorySessionTitle("context", "provisional", 2, 4, store.ModelPreference{}, store.AgentProfile{}, principal); !errors.Is(err, store.ErrWorkerBudget) { t.Fatalf("direct title bypass: %v", err) }
-	if runner.request.Model != "" { t.Fatal("capped title dispatched") }
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "test-user", AccountScopeID: "test-account"}
+	if err := svc.sessions.Store().PutUsageLimit(store.UsageLimitRecord{AccountScopeID: principal.AccountScopeID, Enabled: true, DailyTokensLimit: 100}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.generateMemorySessionTitle("context", "provisional", 2, 4, store.ModelPreference{}, store.AgentProfile{}, principal); !errors.Is(err, store.ErrWorkerBudget) {
+		t.Fatalf("direct title bypass: %v", err)
+	}
+	if runner.request.Model != "" {
+		t.Fatal("capped title dispatched")
+	}
 }

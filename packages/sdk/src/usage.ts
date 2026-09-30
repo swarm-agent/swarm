@@ -47,7 +47,7 @@ export class SwarmUsageNamespace {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(status.date) || !status.usage ||
         typeof status.blocked !== 'boolean' || typeof status.inflight !== 'boolean' ||
         !status.account_policy || !status.account_usage || typeof status.account_inflight !== 'boolean' ||
-        typeof status.limitations !== 'string' || !['no_records', 'observed_receipts_only'].includes(status.account_coverage) ||
+        typeof status.limitations !== 'string' || !['no_records', 'observed_receipts_only', 'legacy_pricing_incomplete'].includes(status.account_coverage) ||
         ![status.remaining_cost_usd, status.remaining_tokens, status.account_remaining_cost_usd, status.account_remaining_tokens]
           .every(value => value === null || (typeof value === 'number' && Number.isFinite(value) && value >= 0))) {
       throw new SwarmValidationError('Malformed worker budget status');
