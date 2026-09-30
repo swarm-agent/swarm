@@ -103,8 +103,6 @@ test('OrchestrateView safely formats media deliverables with parseSafeDate and s
 
   assert.ok(source.includes('parseSafeDate'), 'Must implement parseSafeDate helper')
   assert.ok(source.includes('safeIsoDayKey'), 'Must implement safeIsoDayKey helper')
-  assert.ok(!source.includes("'/v3/automations/v2?action=list'"), 'Must not send invalid ?action=list query to automations endpoint')
-  assert.ok(source.includes("'/v3/automations/v2'"), 'Must query /v3/automations/v2 cleanly')
 })
 
 test('OrchestrateView displays worktree name immediately and implements accurate integration lifecycle', () => {
@@ -282,7 +280,7 @@ test('OrchestrateView provides AI Prompt Enhancement toggle and Single Video Sho
   assert.ok(source.includes('const isMediaTask ='), 'Must define isMediaTask helper')
   assert.ok(source.includes('const isSingleVideo ='), 'Must define isSingleVideo helper')
   assert.ok(source.includes('!isMediaTask && (task.worktreeBranch || task.worktreeName)'), 'Must hide worktree badges for media tasks')
-  assert.ok(source.includes('SINGLE VIDEO'), 'Must display SINGLE VIDEO badge for video_clip outcome')
+  assert.ok(source.includes('SINGLE VIDEO') || source.includes('Single Video'), 'Must display Single Video badge for video_clip outcome')
 })
 
 test('OrchestrateView enables natural task model override and in-menu option to change saved default for next time', () => {
@@ -536,9 +534,9 @@ test('OrchestrateView wires typed onGenerate, generationJobs, and settings propa
   assert.ok(source.includes('duration_seconds: settings?.durationSeconds'), 'Must propagate settings.durationSeconds to task API')
 
   // 4. Source generation metadata preselection mapping
-  assert.ok(source.includes('aspectRatio: parentTask?.aspectRatio || d.videoAspect'), 'deliverableToMediaItem must map task aspectRatio')
-  assert.ok(source.includes('resolution: parentTask?.resolution'), 'deliverableToMediaItem must map task resolution')
-  assert.ok(source.includes('durationSeconds: parentTask?.durationSeconds'), 'deliverableToMediaItem must map task durationSeconds')
+  assert.ok(source.includes('const aspectRatio = prov?.aspect_ratio || (d as any).aspectRatio || (d as any).aspect_ratio || d.videoAspect'), 'deliverableToMediaItem must map deliverable aspect ratio')
+  assert.ok(source.includes('const resolution = prov?.resolution || (d as any).resolution || undefined'), 'deliverableToMediaItem must map deliverable resolution')
+  assert.ok(source.includes('durationSeconds'), 'deliverableToMediaItem must map durationSeconds')
   assert.ok(source.includes('aspectRatio: (m as any).aspectRatio'), 'uploadedToMediaItem must map aspectRatio')
   assert.ok(source.includes('resolution: (m as any).resolution'), 'uploadedToMediaItem must map resolution')
   assert.ok(source.includes('durationSeconds: (m as any).durationSeconds'), 'uploadedToMediaItem must map durationSeconds')

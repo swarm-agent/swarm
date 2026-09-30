@@ -587,7 +587,7 @@ func CoderAgentToolContract() *pebblestore.AgentToolContract {
 		"git_status": {Enabled: pebblestore.BoolPtr(true)}, "git_diff": {Enabled: pebblestore.BoolPtr(true)},
 		"git_add": {Enabled: pebblestore.BoolPtr(true)}, "git_commit": {Enabled: pebblestore.BoolPtr(true)},
 		"task_progress": {Enabled: pebblestore.BoolPtr(true)},
-		"bash": {Enabled: pebblestore.BoolPtr(false)}, "task": {Enabled: pebblestore.BoolPtr(false)},
+		"bash":          {Enabled: pebblestore.BoolPtr(false)}, "task": {Enabled: pebblestore.BoolPtr(false)},
 		"manage_sessions": {Enabled: pebblestore.BoolPtr(false)}, "manage_agent": {Enabled: pebblestore.BoolPtr(false)},
 		"manage_todos": {Enabled: pebblestore.BoolPtr(false)}, "plan_manage": {Enabled: pebblestore.BoolPtr(false)},
 		"ask_user": {Enabled: pebblestore.BoolPtr(false)}, "exit_plan_mode": {Enabled: pebblestore.BoolPtr(false)},
@@ -661,7 +661,7 @@ func DesignerWorkspaceAgentToolContract() *pebblestore.AgentToolContract {
 
 func designerAgentToolContract(managed bool) *pebblestore.AgentToolContract {
 	return &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{
-		"read": {Enabled: pebblestore.BoolPtr(true)}, "media_inspect": {Enabled: pebblestore.BoolPtr(false)}, "search": {Enabled: pebblestore.BoolPtr(true)}, "find": {Enabled: pebblestore.BoolPtr(true)}, "list": {Enabled: pebblestore.BoolPtr(true)},
+		"read": {Enabled: pebblestore.BoolPtr(true)}, "media_inspect": {Enabled: pebblestore.BoolPtr(managed)}, "search": {Enabled: pebblestore.BoolPtr(true)}, "find": {Enabled: pebblestore.BoolPtr(true)}, "list": {Enabled: pebblestore.BoolPtr(true)},
 		"write": {Enabled: pebblestore.BoolPtr(!managed)}, "edit": {Enabled: pebblestore.BoolPtr(!managed)}, "artifact_v3_author": {Enabled: pebblestore.BoolPtr(managed)}, "artifact_v2_author": {Enabled: pebblestore.BoolPtr(false)}, "manage_artifact": {Enabled: pebblestore.BoolPtr(false)},
 		"bash": {Enabled: pebblestore.BoolPtr(false)}, "git_status": {Enabled: pebblestore.BoolPtr(false)}, "git_diff": {Enabled: pebblestore.BoolPtr(false)}, "git_add": {Enabled: pebblestore.BoolPtr(false)}, "git_commit": {Enabled: pebblestore.BoolPtr(false)},
 		"task": {Enabled: pebblestore.BoolPtr(false)}, "skill_use": {Enabled: pebblestore.BoolPtr(false)}, "manage_skill": {Enabled: pebblestore.BoolPtr(false)}, "manage_agent": {Enabled: pebblestore.BoolPtr(false)}, "manage_theme": {Enabled: pebblestore.BoolPtr(false)},

@@ -343,6 +343,48 @@ func (s *Server) resolveSourceMediaRecord(ctx context.Context, p identity.Princi
 		}, nil
 	}
 
+	// Case 4b: Session media asset lookup
+	isSessionMedia := strings.HasPrefix(m.ID, "asset_") || strings.HasPrefix(m.ID, "media_") || (strings.Contains(trimmedURL, "/v3/sessions/") && strings.Contains(trimmedURL, "/media/"))
+	if isSessionMedia {
+		bytes, mType, err := s.resolveSourceMediaBytes(ctx, p, m, expectedKind)
+		if err != nil {
+			return nil, fmt.Errorf("session media not found: %w", err)
+		}
+		h := sha256.Sum256(bytes)
+		digest := hex.EncodeToString(h[:])
+		srcLink := &pebblestore.VideoSourceLink{
+			DigestSHA256: digest,
+			MediaRefID:   m.ID,
+		}
+		return &resolvedSourceMedia{
+			Bytes:      bytes,
+			MediaType:  mType,
+			Provenance: nil,
+			SourceLink: srcLink,
+		}, nil
+	}
+
+	// Case 4c: Project media asset lookup (/v3/projects/{projectID}/media/{mediaID})
+	isProjectMedia := strings.Contains(trimmedURL, "/v3/projects/") && strings.Contains(trimmedURL, "/media/") && !strings.Contains(trimmedURL, "/tasks/")
+	if isProjectMedia {
+		bytes, mType, err := s.resolveSourceMediaBytes(ctx, p, m, expectedKind)
+		if err != nil {
+			return nil, fmt.Errorf("project media not found: %w", err)
+		}
+		h := sha256.Sum256(bytes)
+		digest := hex.EncodeToString(h[:])
+		srcLink := &pebblestore.VideoSourceLink{
+			DigestSHA256: digest,
+			MediaRefID:   m.ID,
+		}
+		return &resolvedSourceMedia{
+			Bytes:      bytes,
+			MediaType:  mType,
+			Provenance: nil,
+			SourceLink: srcLink,
+		}, nil
+	}
+
 	// Case 5: Data URL or raw base64 data
 	if strings.HasPrefix(trimmedURL, "data:") || strings.HasPrefix(m.Data, "data:") || len(m.Data) > 0 {
 		bytes, mType, err := s.resolveSourceMediaBytes(ctx, p, m, expectedKind)

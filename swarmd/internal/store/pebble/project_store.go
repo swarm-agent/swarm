@@ -884,7 +884,9 @@ func (s *SessionStore) ListProjectTasksByArchive(accountScopeID, projectID strin
 		return nil, errors.New("project task view exceeds 10000 records")
 	}
 	sort.Slice(tasks, func(i, j int) bool {
-		if tasks[i].CreatedAt == tasks[j].CreatedAt { return tasks[i].ID < tasks[j].ID }
+		if tasks[i].CreatedAt == tasks[j].CreatedAt {
+			return tasks[i].ID < tasks[j].ID
+		}
 		return tasks[i].CreatedAt < tasks[j].CreatedAt
 	})
 	return tasks, nil

@@ -133,6 +133,9 @@ func TestMediaInspectInvocationRejectsForgedStaleAndDeniedCalls(t *testing.T) {
 	if _, err := decodeMediaInspectArguments(`{"artifact_v3_reference":{"session_id":"s","artifact_id":"artifact"}}`); err == nil || !strings.Contains(err.Error(), "requires session_id, artifact_id, and revision_ref") {
 		t.Fatalf("incomplete Artifact V3 reference error = %v", err)
 	}
+	if args, err := decodeMediaInspectArguments(`{"asset_id":" media_123 ","session_id":" sess_other "}`); err != nil || args.AssetID != "media_123" || args.SessionID != "sess_other" {
+		t.Fatalf("asset_id with session_id rejected or not normalized: args=%+v err=%v", args, err)
+	}
 	if args, err := decodeMediaInspectArguments(`{"path":"web/public/pwa-icon-512.png"}`); err != nil || args.Path == "" {
 		t.Fatalf("workspace media path rejected: args=%+v err=%v", args, err)
 	}

@@ -1,11 +1,14 @@
 package api
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"mime"
 	"net/http"
 	"sort"
 	"strings"
+	"time"
 
 	"swarm/packages/swarmd/internal/identity"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
@@ -100,38 +103,65 @@ func (s *Server) handleSessionV3MediaUpload(w http.ResponseWriter, r *http.Reque
 	}
 	modality := strings.ToLower(strings.TrimSpace(r.Header.Get("X-Swarm-Media-Modality")))
 	fileType := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(r.Header.Get("X-Swarm-Media-File-Type")), "."))
+	filename := strings.TrimSpace(r.Header.Get("X-Swarm-Media-Filename"))
+	if filename == "" {
+		if _, params, err := mime.ParseMediaType(r.Header.Get("Content-Disposition")); err == nil {
+			filename = params["filename"]
+		}
+	}
 	declaredMIME := strings.TrimSpace(r.Header.Get("Content-Type"))
 	requestedContract := strings.TrimSpace(r.Header.Get("X-Swarm-Media-Contract"))
+
+	contractHash := ""
+	providerID := ""
+	model := ""
+	maxBytes := pebblestore.SessionMediaDefaultMaxBytes
+	maxCount := pebblestore.SessionMediaDefaultMaxCount
+
 	contract, err := s.sessionsV3MediaContract(principal, session)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
+	if err == nil && strings.TrimSpace(contract.Hash) != "" {
+		if requestedContract != "" && requestedContract != contract.Hash {
+			writeError(w, http.StatusConflict, errors.New("media capability changed; refresh attachment support before uploading"))
+			return
+		}
+		if capability, ok := sessionMediaAllowedCapability(contract, modality, declaredMIME, fileType); ok {
+			contractHash = contract.Hash
+			providerID = contract.ProviderID
+			model = contract.Model
+			if capability.MaxBytes > 0 && capability.MaxBytes <= pebblestore.SessionMediaDefaultMaxBytes {
+				maxBytes = capability.MaxBytes
+			}
+			if capability.MaxCount > 0 {
+				maxCount = capability.MaxCount
+			}
+		}
 	}
-	if requestedContract == "" || requestedContract != contract.Hash {
-		writeError(w, http.StatusConflict, errors.New("media capability changed; refresh attachment support before uploading"))
-		return
-	}
-	capability, ok := sessionMediaAllowedCapability(contract, modality, declaredMIME, fileType)
-	if !ok || strings.TrimSpace(contract.Hash) == "" {
-		writeError(w, http.StatusBadRequest, errors.New("current session media contract does not admit this upload"))
-		return
-	}
-	maxBytes := capability.MaxBytes
-	if maxBytes <= 0 || maxBytes > pebblestore.SessionMediaDefaultMaxBytes {
-		maxBytes = pebblestore.SessionMediaDefaultMaxBytes
-	}
+
 	r.Body = http.MaxBytesReader(w, r.Body, maxBytes+1)
 	asset, replayed, err := s.sessions.PutSessionMediaAsset(pebblestore.PutSessionMediaAssetInput{
-		AccountScopeID: principal.AccountScopeID, SessionID: sessionID, Modality: modality,
-		DeclaredMIMEType: declaredMIME, FileType: fileType, ContractHash: contract.Hash,
-		ProviderID: contract.ProviderID, Model: contract.Model, MaxBytes: maxBytes, MaxCount: capability.MaxCount,
-		Reader: r.Body,
+		AccountScopeID:   principal.AccountScopeID,
+		SessionID:        sessionID,
+		Modality:         modality,
+		DeclaredMIMEType: declaredMIME,
+		FileType:         fileType,
+		FileName:         filename,
+		ContractHash:     contractHash,
+		ProviderID:       providerID,
+		Model:            model,
+		MaxBytes:         maxBytes,
+		MaxCount:         maxCount,
+		Reader:           r.Body,
 	})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{"asset": asset, "replayed": replayed})
+	status := http.StatusCreated
+	if replayed {
+		status = http.StatusOK
+		w.Header().Set("Idempotent-Replayed", "true")
+	}
+	writeJSON(w, status, map[string]any{"ok": true, "asset": asset, "replayed": replayed})
 }
 
 func (s *Server) validateSessionsV3MessageMedia(principal identity.Principal, session pebblestore.SessionSnapshot, references []pebblestore.SessionMediaReference) error {
@@ -141,29 +171,111 @@ func (s *Server) validateSessionsV3MessageMedia(principal identity.Principal, se
 	if len(references) > pebblestore.SessionMediaDefaultMaxCount {
 		return errors.New("message media reference count limit exceeded")
 	}
-	contract, err := s.sessionsV3MediaContract(principal, session)
-	if err != nil {
-		return err
-	}
-	if strings.TrimSpace(contract.Hash) == "" {
-		return errors.New("current session media contract is empty")
-	}
 	for index, reference := range references {
-		asset, ok, err := s.sessions.GetSessionMediaAsset(principal.AccountScopeID, session.ID, strings.TrimSpace(reference.AssetID))
+		assetID := strings.TrimSpace(reference.AssetID)
+		if assetID == "" {
+			return fmt.Errorf("media reference %d is missing asset_id", index)
+		}
+		asset, ok, err := s.sessions.GetSessionMediaAsset(principal.AccountScopeID, session.ID, assetID)
 		if err != nil {
 			return err
 		}
 		if !ok {
 			return fmt.Errorf("media reference %d is outside the authenticated session scope", index)
 		}
-		if asset.ContractHash != contract.Hash || reference.ContractHash != contract.Hash {
-			return fmt.Errorf("media reference %d was admitted under a stale or mismatched contract", index)
-		}
-		if !runruntime.SessionMediaContractAllows(contract, asset.Modality, asset.DetectedMIMEType, asset.FileType) {
-			return fmt.Errorf("media reference %d is not admitted by the current contract", index)
+		if asset.DigestSHA256 != reference.DigestSHA256 || asset.Size != reference.Size {
+			return fmt.Errorf("media reference %d does not match stored asset", index)
 		}
 	}
 	return nil
+}
+
+func (s *Server) handleSessionV3MediaAsset(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID, assetID string) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodDelete {
+		methodNotAllowed(w)
+		return
+	}
+	session, found, err := s.requireSessionV3Access(principal, sessionID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if !found {
+		writeSessionNotFound(w)
+		return
+	}
+	_ = session
+	assetID = strings.TrimSpace(assetID)
+	if assetID == "" {
+		writeError(w, http.StatusBadRequest, errors.New("asset id is required"))
+		return
+	}
+
+	if r.Method == http.MethodDelete {
+		if !s.requireScope(w, r, "sessions:write") {
+			return
+		}
+		deleted, err := s.sessions.Store().DeleteUnreferencedSessionMediaAsset(principal.AccountScopeID, sessionID, assetID)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if !deleted {
+			writeError(w, http.StatusNotFound, errors.New("media asset not found or cannot be deleted"))
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": true, "asset_id": assetID})
+		return
+	}
+
+	if !s.requireScope(w, r, "sessions:read") {
+		return
+	}
+	asset, payload, err := s.sessions.ReadSessionMediaAsset(principal.AccountScopeID, sessionID, assetID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, errors.New("media asset not found"))
+		return
+	}
+	if len(payload) == 0 {
+		writeError(w, http.StatusNotFound, errors.New("media asset is empty"))
+		return
+	}
+
+	mediaType := asset.DetectedMIMEType
+	if mediaType == "" {
+		mediaType = asset.DeclaredMIMEType
+	}
+	if mediaType == "" {
+		mediaType = "application/octet-stream"
+	}
+	filename := asset.FileName
+	if filename == "" {
+		if asset.FileType != "" {
+			filename = fmt.Sprintf("%s.%s", asset.ID, asset.FileType)
+		} else {
+			filename = asset.ID
+		}
+	}
+
+	disposition := mime.FormatMediaType("inline", map[string]string{"filename": filename})
+	if disposition == "" {
+		disposition = "inline"
+	}
+
+	w.Header().Set("Content-Type", mediaType)
+	w.Header().Set("Content-Disposition", disposition)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Accept-Ranges", "bytes")
+	w.Header().Set("Content-Security-Policy", "sandbox; default-src 'none'; img-src data: blob:; media-src 'self' data: blob:; style-src 'unsafe-inline'; font-src data:; frame-ancestors 'self'")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	w.Header().Set("ETag", fmt.Sprintf("%q", asset.DigestSHA256))
+	w.Header().Set("Cache-Control", "private, max-age=86400, immutable")
+
+	modTime := time.UnixMilli(asset.CreatedAt)
+	if asset.CreatedAt == 0 {
+		modTime = time.Now()
+	}
+	http.ServeContent(w, r, filename, modTime, bytes.NewReader(payload))
 }
 
 func (s *Server) sessionsV3MediaContract(principal identity.Principal, session pebblestore.SessionSnapshot) (provideriface.SessionMediaContract, error) {

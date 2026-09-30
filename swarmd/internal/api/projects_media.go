@@ -621,6 +621,55 @@ func (s *Server) resolveSourceMediaBytes(ctx context.Context, p identity.Princip
 		return nil, "", errors.New("direct filesystem paths are not permitted")
 	}
 
+	// Session media asset URL: /v3/sessions/{sessionID}/media/{assetID}
+	if strings.Contains(trimmedURL, "/media/asset_") || strings.Contains(trimmedURL, "/media/media_") || (strings.HasPrefix(trimmedURL, "/v3/sessions/") && strings.Contains(trimmedURL, "/media/")) {
+		u, parseErr := url.Parse(trimmedURL)
+		if parseErr == nil {
+			parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+			if len(parts) == 5 && parts[0] == "v3" && parts[1] == "sessions" && parts[3] == "media" {
+				sessionID := strings.TrimSpace(parts[2])
+				assetID := strings.TrimSpace(parts[4])
+				if s != nil && s.sessions != nil {
+					asset, payload, readErr := s.sessions.ReadSessionMediaAsset(p.AccountScopeID, sessionID, assetID)
+					if readErr == nil && len(payload) > 0 {
+						mediaType := asset.DetectedMIMEType
+						if mediaType == "" {
+							mediaType = m.MediaType
+						}
+						if expectedKind != "" {
+							if err := validateSourceKindMIME(expectedKind, mediaType, payload); err != nil {
+								return nil, "", err
+							}
+						}
+						return payload, mediaType, nil
+					}
+				}
+			}
+		}
+	}
+
+	// Project media asset URL: /v3/projects/{projectID}/media/{mediaID}
+	if strings.Contains(trimmedURL, "/v3/projects/") && strings.Contains(trimmedURL, "/media/") && !strings.Contains(trimmedURL, "/tasks/") {
+		u, parseErr := url.Parse(trimmedURL)
+		if parseErr == nil {
+			parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+			if len(parts) == 5 && parts[0] == "v3" && parts[1] == "projects" && parts[3] == "media" {
+				projID := strings.TrimSpace(parts[2])
+				mediaID := strings.TrimSpace(parts[4])
+				if s != nil && s.sessions != nil && s.sessions.Store() != nil {
+					proj, found, err := s.sessions.Store().GetProject(p.AccountScopeID, projID)
+					if err == nil && found && proj != nil {
+						for _, up := range proj.UploadedMedia {
+							if up.ID == mediaID {
+								return s.resolveSourceMediaBytes(ctx, p, up, expectedKind)
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
 	// 1. Data URI in URL or Data
 	dataURL := ""
 	if strings.HasPrefix(trimmedURL, "data:") {
@@ -706,7 +755,14 @@ func (s *Server) resolveSourceMediaBytes(ctx context.Context, p identity.Princip
 		if s == nil || s.mediaStaging == nil {
 			return nil, "", errors.New("media staging service is not configured")
 		}
-		_, payload, readErr := s.mediaStaging.Read(p.AccountScopeID, stagingID, time.Now().UnixMilli())
+		var payload []byte
+		var readErr error
+		stgRecord, found, getErr := s.mediaStaging.Get(p.AccountScopeID, stagingID)
+		if getErr == nil && found && stgRecord.State == pebblestore.MediaStagingStateBound && stgRecord.AuthorityAssetID != "" && stgRecord.BoundSessionID != "" && s.sessions != nil {
+			_, payload, readErr = s.sessions.ReadSessionMediaAsset(p.AccountScopeID, stgRecord.BoundSessionID, stgRecord.AuthorityAssetID)
+		} else {
+			_, payload, readErr = s.mediaStaging.Read(p.AccountScopeID, stagingID, time.Now().UnixMilli())
+		}
 		if readErr != nil {
 			return nil, "", fmt.Errorf("staged upload %q not found or expired: %w", stagingID, readErr)
 		}
