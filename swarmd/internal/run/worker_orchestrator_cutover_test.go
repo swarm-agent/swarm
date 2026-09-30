@@ -9,8 +9,8 @@ import (
 
 	"swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/agentmodelsettings"
-	"swarm/packages/swarmd/internal/model"
 	"swarm/packages/swarmd/internal/identity"
+	"swarm/packages/swarmd/internal/model"
 	"swarm/packages/swarmd/internal/permission"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	"swarm/packages/swarmd/internal/session"

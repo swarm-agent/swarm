@@ -1233,8 +1233,8 @@ type mintWorkerTokenRequestBody struct {
 }
 
 type acceptWorkerRequestBody struct {
-	ModelProfile *pebblestore.SessionModelProfileSnapshot `json:"model_profile,omitempty"`
-	ExpectedRevision uint64 `json:"expected_revision"`
+	ModelProfile     *pebblestore.SessionModelProfileSnapshot `json:"model_profile,omitempty"`
+	ExpectedRevision uint64                                   `json:"expected_revision"`
 }
 
 func (s *Server) handleWorkerAccept(w http.ResponseWriter, r *http.Request, p identity.Principal, workerID string) {

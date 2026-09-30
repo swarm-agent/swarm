@@ -63,8 +63,8 @@ func TestWorkerProposalJSONContract(t *testing.T) {
 					t.Fatal(err)
 				}
 				invoker := svc.newProviderToolInvoker(providerToolInvokerConfig{
-					sessionID: "orch-session",
-					principal: identity.Principal{Type: identity.PrincipalTypeUser, UserID: "owner", AccountScopeID: "account"},
+					sessionID:   "orch-session",
+					principal:   identity.Principal{Type: identity.PrincipalTypeUser, UserID: "owner", AccountScopeID: "account"},
 					sessionMode: "auto", runID: "proposal-json-test", providerManagedV3: true,
 					applySessionMutation: ss.ApplySessionMutation,
 					agentProfile:         agent.SwarmOrchestratorAgentProfileForContext(store.AgentProfile{}),

@@ -1,4 +1,3 @@
-import React from 'react'
 import { redactIntegrationDiagnostic } from './integration-recovery'
 import type { RunningTask } from './orchestrate-types'
 

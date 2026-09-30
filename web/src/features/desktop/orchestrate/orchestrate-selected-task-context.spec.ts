@@ -286,21 +286,35 @@ test('buildSelectedTaskMessageMetadata generates exact tracking metadata without
   assert.equal(meta.task_session_id, 'sess-1')
 })
 
-test('OrchestrateView wires selected-task context forwarding into OrchestratorChatSidebar and composer', () => {
+test('OrchestrateView forwards explicit task attachments independently of detail selection', () => {
   // Written test purpose:
-  // - Requirement: OrchestrateView.tsx must forward selectedTask to OrchestratorChatSidebar,
-  //   provide OrchestratorChatComposer via composerOverride, show context badge/banner,
-  //   and preserve canonical approval/revision/reopen/complete paths.
-  // - Threat/regression prevented: selectedTaskId only highlighting in UI without chat forwarding.
+  // - Requirement: only explicitly attached tasks reach OrchestratorChatSidebar context;
+  //   detail selection must not attach context or open execution chat.
+  //   Preserve canonical approval/revision/reopen/complete paths.
+  // - Threat/regression prevented: selecting details silently changes conversation context.
   // - Symbols: OrchestrateView.tsx, OrchestratorChatSidebar, OrchestratorChatComposer.
   const sourcePath = path.join(__dirname, 'OrchestrateView.tsx')
   const source = fs.readFileSync(sourcePath, 'utf8')
 
-  // Selected task derivation and deselection
-  assert.ok(
-    source.includes('selectedTask = useMemo('),
-    'OrchestrateView must derive selectedTask from selectedTaskId'
-  )
+  // Detail selection remains separate from explicit conversation attachments.
+  assert.ok(source.includes('selectedTask={null}'), 'Detail selection must not become composer context')
+  const ast = ts.createSourceFile('OrchestrateView.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
+  const view = ast.statements.find((node): node is ts.FunctionDeclaration =>
+    ts.isFunctionDeclaration(node) && node.name?.text === 'OrchestrateView')
+  assert.ok(view?.body)
+  const selection = view.body.statements.flatMap(node =>
+    ts.isVariableStatement(node) ? [...node.declarationList.declarations] : [])
+    .find(node => node.name.getText(ast) === 'handleSelectTask')
+  assert.ok(selection?.initializer)
+  const compiled = ts.transpileModule(`const select = ${selection.initializer.getText(ast)};`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.None },
+  }).outputText
+  const selected: string[] = []
+  const forbidden = () => assert.fail('Detail selection must not change session or attached context')
+  new Function('setSelectedTaskId', 'setActiveSessionId', 'setActiveTaskId', 'setAttachedTaskIds',
+    `${compiled}; select({ id: 'details-only', sessionId: 'execution-session' });`)(
+    (id: string) => selected.push(id), forbidden, forbidden, forbidden)
+  assert.deepEqual(selected, ['details-only'])
   assert.ok(
     source.includes('handleDeselectTask = useCallback('),
     'OrchestrateView must provide handleDeselectTask callback'
@@ -382,15 +396,17 @@ test('OrchestrateView wires selected-task context forwarding into OrchestratorCh
     'Sidebar header must render clear context button'
   )
 
-  // MinimalTaskCard chat button works even without child session
+  // Execution chat requires a linked session; task context is a separate action.
   assert.ok(
     source.includes('data-testid="task-card-chat-btn"'),
     'Task card must have task-card-chat-btn'
   )
   assert.ok(
-    source.includes("title={taskSessionId ? 'Open session chat with this worker' : 'Discuss this task in orchestrator chat'}"),
-    'Task card chat button must support discussing task in orchestrator chat'
+    source.includes('title="Open execution session"') && source.includes('taskSessionId && onOpenChat && ('),
+    'Execution chat must be explicitly labeled and require a linked session'
   )
+
+  assert.ok(source.includes('onAskOrchestrator'), 'Task context retains its separate Orchestrator action')
 
   // Canonical task action paths are preserved
   assert.ok(source.includes('handleApproveTask'), 'handleApproveTask must be preserved')
@@ -931,7 +947,18 @@ test('OrchestratorChatComposer stops the session-derived runtime with cached fal
   const cache = declarations.find((node) => node.name.getText(ast) === 'cacheSession')
   assert.ok(cache?.initializer)
   assert.match(cache.initializer.getText(ast), /useDesktopV3CacheSelector\(/)
-  assert.match(cache.initializer.getText(ast), /state\.sessionsById\[sessionId\] \?\? null/)
+  // Execute the canonical selector: only full cache records expose session routing.
+  const selectorCode = ts.transpileModule(`const cached = ${cache.initializer.getText(ast)};`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.None },
+  }).outputText
+  const selectCache = (record: unknown) => new Function('useDesktopV3CacheSelector', 'useCallback', 'sessionId',
+    `${selectorCode}; return cached;`)(
+    (selector: (state: unknown) => unknown) => selector({ sessionsById: { fixture: record } }),
+    (callback: unknown) => callback, 'fixture')
+  const fullSession = { id: 'fixture', metadata: { swarm_v3_runtime_swarm_id: 'runtime' } }
+  assert.equal(selectCache({ kind: 'full', session: fullSession }), fullSession)
+  assert.equal(selectCache({ kind: 'summary', session: fullSession }), null)
+  assert.equal(selectCache(undefined), null)
   const stop = declarations.find((node) => node.name.getText(ast) === 'handleStopRun')
   assert.ok(stop?.initializer)
   assert.doesNotMatch(stop.initializer.getText(ast), /targetSwarmId\s*:/)

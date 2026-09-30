@@ -110,7 +110,7 @@ type TaskIntegrationChild struct {
 }
 
 type TaskIntegrationEntry struct {
-	PreserveAncestry          bool     `json:"preserve_ancestry,omitempty"`
+	PreserveAncestry         bool     `json:"preserve_ancestry,omitempty"`
 	OwnedScopes              []string `json:"owned_scopes,omitempty"`
 	SessionID                string   `json:"session_id"`
 	BaseCommit               string   `json:"base_commit"`
@@ -600,7 +600,7 @@ func (s *Service) PrepareTaskIntegration(parentPath, expectedParentBranch, expec
 			}
 		}
 		plan.Entries = append(plan.Entries, TaskIntegrationEntry{
-			PreserveAncestry:          child.PreserveAncestry,
+			PreserveAncestry:         child.PreserveAncestry,
 			OwnedScopes:              append([]string(nil), child.OwnedScopes...),
 			SessionID:                child.SessionID,
 			BaseCommit:               child.BaseCommit,
