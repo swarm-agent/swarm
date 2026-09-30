@@ -270,6 +270,10 @@ func (s *SessionStore) hydrateTaskAttemptOutcome(task *ProjectTaskRecord) {
 			}
 		}
 	}
+	if summary, ok := s.completedTaskRunSummary(state); ok {
+		a.Summary, a.SummaryRunID = summary, state.RunID
+		return
+	}
 	if !state.Active && owned.Metadata["lifecycle_summary_run_id"] == state.RunID && owned.Metadata["lifecycle_signal"] == "needs_review" {
 		if summary, ok := owned.Metadata["lifecycle_summary"].(string); ok && len(summary) <= 4000 {
 			a.Summary, a.SummaryRunID = summary, state.RunID

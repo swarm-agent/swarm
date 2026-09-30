@@ -775,7 +775,9 @@ func (s *SessionStore) persistProjectTaskLocked(accountScopeID string, task *Pro
 			if err != nil {
 				return nil, err
 			}
-			if !state.Active && exists && owned.AccountScopeID == accountScopeID && owned.Metadata["lifecycle_signal"] == "needs_review" && owned.Metadata["lifecycle_summary_run_id"] == state.RunID {
+			if summary, ok := s.completedTaskRunSummary(state); ok {
+				a.Summary, a.SummaryRunID = summary, state.RunID
+			} else if !state.Active && exists && owned.AccountScopeID == accountScopeID && owned.Metadata["lifecycle_signal"] == "needs_review" && owned.Metadata["lifecycle_summary_run_id"] == state.RunID {
 				if summary, ok := owned.Metadata["lifecycle_summary"].(string); ok && len(summary) <= 4000 {
 					a.Summary, a.SummaryRunID = summary, state.RunID
 				}

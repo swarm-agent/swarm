@@ -515,10 +515,12 @@ func syncTaskSessionState(task *pebblestore.ProjectTaskRecord, db *pebblestore.S
 				// transitions to needs_review for user review and git integration,
 				// NEVER directly to completed! A successful explicit retry may finish
 				// before a reader observes its intermediate in_progress state.
-				if task.Status == "in_progress" || task.Status == "failed" || task.Status == "blocked" {
-					task.LastError = ""
+				if task.Status == "in_progress" || task.Status == "failed" || task.Status == "blocked" || (task.Status == "needs_review" && task.ActionNeeded == "Launching task-linked Swarm follow-up") {
+					if task.Integration == nil || task.Integration.Error == "" {
+						task.LastError = ""
+					}
 					task.Status = "needs_review"
-					if task.ActionNeeded == "" || strings.HasPrefix(task.ActionNeeded, "Action Needed: 0") || task.ActionNeeded == "Executing reopened task" {
+					if task.ActionNeeded == "" || strings.HasPrefix(task.ActionNeeded, "Action Needed: 0") || task.ActionNeeded == "Executing reopened task" || task.ActionNeeded == "Launching task-linked Swarm follow-up" {
 						if task.UnintegratedCommits > 0 {
 							baseBranch := task.BaseBranch
 							if baseBranch == "" {
@@ -536,7 +538,7 @@ func syncTaskSessionState(task *pebblestore.ProjectTaskRecord, db *pebblestore.S
 					if runState.BlockedReason != "" && task.LastError == "" {
 						task.LastError = runState.BlockedReason
 					}
-					if task.ActionNeeded == "" || strings.HasPrefix(task.ActionNeeded, "Action Needed: 0") || task.ActionNeeded == "Executing reopened task" {
+					if task.ActionNeeded == "" || strings.HasPrefix(task.ActionNeeded, "Action Needed: 0") || task.ActionNeeded == "Executing reopened task" || task.ActionNeeded == "Launching task-linked Swarm follow-up" {
 						if runState.Status == pebblestore.V3RunIntentCancelled {
 							task.ActionNeeded = "Action Needed: Run was cancelled. Retry or reassign task."
 						} else if runState.BlockedReason != "" {
@@ -560,14 +562,14 @@ func syncTaskSessionState(task *pebblestore.ProjectTaskRecord, db *pebblestore.S
 				if sess.Lifecycle.Error != "" && task.LastError == "" {
 					task.LastError = sess.Lifecycle.Error
 				}
-				if task.ActionNeeded == "" || strings.HasPrefix(task.ActionNeeded, "Action Needed: 0") || task.ActionNeeded == "Executing reopened task" {
+				if task.ActionNeeded == "" || strings.HasPrefix(task.ActionNeeded, "Action Needed: 0") || task.ActionNeeded == "Executing reopened task" || task.ActionNeeded == "Launching task-linked Swarm follow-up" {
 					task.ActionNeeded = "Action Needed: Run failed. Review error and retry task."
 				}
 			}
 		} else if sess.Lifecycle.Phase == "completed" || sess.Lifecycle.EndedAt > 0 || (!sess.Lifecycle.Active && sess.Lifecycle.Phase != "failed" && sess.Lifecycle.Phase != "error" && sess.MessageCount > 1) {
 			if task.Status == "in_progress" {
 				task.Status = "needs_review"
-				if task.ActionNeeded == "" || strings.HasPrefix(task.ActionNeeded, "Action Needed: 0") || task.ActionNeeded == "Executing reopened task" {
+				if task.ActionNeeded == "" || strings.HasPrefix(task.ActionNeeded, "Action Needed: 0") || task.ActionNeeded == "Executing reopened task" || task.ActionNeeded == "Launching task-linked Swarm follow-up" {
 					if task.UnintegratedCommits > 0 {
 						baseBranch := task.BaseBranch
 						if baseBranch == "" {

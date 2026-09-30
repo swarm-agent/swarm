@@ -206,6 +206,15 @@ func (s *Server) reconcileProjectTaskRunLifecycle(job sessionV3ExecutorJob, stat
 			if t.Status != "in_progress" {
 				return nil
 			}
+			if t.ActiveAttemptID != "" && t.ActiveAttemptID != "initial" {
+				state, found, stateErr := db.GetV3SessionRunState(job.SessionID)
+				if stateErr != nil {
+					return stateErr
+				}
+				if !found || state.Active || state.AccountScopeID != accountScopeID || state.RunID != job.RunID || state.Status != sessionruntime.RunIntentCompleted {
+					return nil
+				}
+			}
 			if gitState.gitStatus != "unknown" {
 				t.UnintegratedCommits = gitState.unintegratedCommits
 				t.GitStatus = gitState.gitStatus
@@ -225,7 +234,7 @@ func (s *Server) reconcileProjectTaskRunLifecycle(job sessionV3ExecutorJob, stat
 			}
 			if !t.IsIntegrated {
 				t.Status = "needs_review"
-				if t.ActionNeeded == "" || strings.HasPrefix(t.ActionNeeded, "Action Needed: 0") || t.ActionNeeded == "Executing reopened task" {
+				if t.ActionNeeded == "" || strings.HasPrefix(t.ActionNeeded, "Action Needed: 0") || t.ActionNeeded == "Executing reopened task" || t.ActionNeeded == "Launching task-linked Swarm follow-up" {
 					if t.UnintegratedCommits > 0 {
 						baseBranch := t.BaseBranch
 						if baseBranch == "" {

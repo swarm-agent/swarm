@@ -88,7 +88,7 @@ func (s *Server) handleProjectTaskFollowup(w http.ResponseWriter, r *http.Reques
 			if !ok || state.AccountScopeID != p.AccountScopeID {
 				continue
 			}
-			if rows[i].RunID != "" && rows[i].RunID != state.RunID {
+			if state.Active || (rows[i].RunID != "" && rows[i].RunID != state.RunID) {
 				rows[i].Summary, rows[i].SummaryRunID = "", ""
 			}
 			rows[i].RunID, rows[i].Status = state.RunID, state.Status
@@ -97,7 +97,7 @@ func (s *Server) handleProjectTaskFollowup(w http.ResponseWriter, r *http.Reques
 				writeError(w, 500, err)
 				return
 			}
-			if owned && sess.AccountScopeID == p.AccountScopeID && sess.Metadata["lifecycle_signal"] == "needs_review" && sess.Metadata["lifecycle_summary_run_id"] == state.RunID && !state.Active {
+			if rows[i].Summary == "" && owned && sess.AccountScopeID == p.AccountScopeID && sess.Metadata["lifecycle_signal"] == "needs_review" && sess.Metadata["lifecycle_summary_run_id"] == state.RunID && !state.Active {
 				if rows[i].ID == task.ActiveAttemptID {
 					if summary := sessionsV3MetadataString(sess.Metadata, "lifecycle_summary"); len(summary) <= 4000 {
 						rows[i].Summary, rows[i].SummaryRunID = summary, state.RunID

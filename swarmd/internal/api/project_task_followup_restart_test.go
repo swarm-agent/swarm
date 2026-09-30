@@ -26,7 +26,8 @@ import (
 // original request, summaries, sessions and integration evidence through two
 // follow-ups and a real store reopen. Threat: isolated happy paths miss loss at
 // reservation/hydration/restart boundaries. API + temporary Pebble + real Git is
-// the narrow joined layer. Executor receipts are fixtures; no provider executes.
+// the narrow joined layer. completeRun persists real final messages and run
+// metadata, not lifecycle summary fixtures; no provider executes.
 func TestProjectTaskFollowupJoinedRestart(t *testing.T) {
 	f := setupMatrixTestFixture(t)
 	defer func() { f.db.Close() }()
@@ -87,7 +88,7 @@ func TestProjectTaskFollowupJoinedRestart(t *testing.T) {
 	}
 	original := pebblestore.SessionSnapshot{ID: "original", UserID: p.UserID, AccountScopeID: p.AccountScopeID, Mode: "auto", Metadata: map[string]any{"project_id": project.ID, "task_id": "task"}}
 	mutate(original.ID, "original-create", sessionruntime.SessionMutationCreateSession, &original, nil)
-	task := &pebblestore.ProjectTaskRecord{ID: "task", ProjectID: project.ID, Title: "Task", Description: "Original requirements", Agent: "swarm", Status: "in_progress", SessionID: original.ID, Revision: 1, WorkspacePath: repo, SourceWorkspace: pebblestore.ProjectTaskSource{WorkspaceID: entry.WorkspaceID, WorkspaceGeneration: entry.WorkspaceGeneration, Path: repo, Provenance: "explicit"}, Integration: &pebblestore.ProjectTaskIntegration{State: "failed", SessionID: original.ID, SourceHead: base, TargetBranch: "dev", Error: "Fixture receipt; no promotion claimed"}, Deliverables: []pebblestore.ProjectTaskDeliverable{{ID: "original-output", Title: "Original output", Kind: "report", Status: "ready"}}}
+	task := &pebblestore.ProjectTaskRecord{ID: "task", ProjectID: project.ID, Title: "Task", Description: "Original requirements", Agent: "swarm", Status: "in_progress", SessionID: original.ID, Revision: 1, LastError: "Integration requires repair", ActionNeeded: "Review integration error before promotion", WorkspacePath: repo, SourceWorkspace: pebblestore.ProjectTaskSource{WorkspaceID: entry.WorkspaceID, WorkspaceGeneration: entry.WorkspaceGeneration, Path: repo, Provenance: "explicit"}, Integration: &pebblestore.ProjectTaskIntegration{State: "failed", SessionID: original.ID, SourceHead: base, TargetBranch: "dev", Error: "Fixture receipt; no promotion claimed"}, Deliverables: []pebblestore.ProjectTaskDeliverable{{ID: "original-output", Title: "Original output", Kind: "report", Status: "ready"}}}
 	if err := db.PutProjectTask(p.AccountScopeID, task); err != nil {
 		t.Fatal(err)
 	}
@@ -101,20 +102,16 @@ func TestProjectTaskFollowupJoinedRestart(t *testing.T) {
 			pending.Status = pebblestore.V3RunIntentPendingExecutor
 			mutate(sessionID, runID+":pending", sessionruntime.SessionMutationRecordRunIntent, nil, &pending)
 		}
-		mutate(sessionID, runID+":completed", sessionruntime.SessionMutationRecordRunIntent, nil, run)
-		sess, ok, err := f.server.sessions.Store().GetSession(sessionID)
-		if err != nil || !ok {
-			t.Fatalf("session missing: %v", err)
-		}
-		sess.Metadata["lifecycle_signal"], sess.Metadata["lifecycle_summary"], sess.Metadata["lifecycle_summary_run_id"] = "needs_review", summary, runID
-		mutate(sessionID, runID+":summary", sessionruntime.SessionMutationUpdateMetadata, &sess, nil)
-		if err := f.server.reconcileProjectTaskRunLifecycle(sessionV3ExecutorJob{SessionID: sessionID, RunID: runID, Principal: p}, pebblestore.V3RunIntentCompleted, ""); err != nil {
+		// Exercise the ordinary Auto final-message + terminal-intent boundary,
+		// without lifecycle tools or pre-seeded lifecycle summary metadata.
+		executor := newSessionV3Executor(f.server)
+		if _, err := executor.completeRun(sessionV3ExecutorJob{SessionID: sessionID, RunID: runID, Principal: p}, sessionV3AssistantResponse{Content: summary, StopReason: "stop"}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	complete(original.ID, "original-run", "Original outcome; integration pending")
 	before, _, err := db.GetProjectTask(p.AccountScopeID, project.ID, task.ID)
-	if err != nil || before.Status != "needs_review" || before.ActiveAttempt().Summary == "" {
+	if err != nil || before.Status != "needs_review" || before.ActiveAttempt().Summary == "" || before.Integration.Error != task.Integration.Error || before.LastError != task.LastError || before.ActionNeeded != task.ActionNeeded {
 		t.Fatalf("original not ready: %+v %v", before, err)
 	}
 	path := "/" + project.ID + "/tasks/task"
@@ -158,7 +155,7 @@ func TestProjectTaskFollowupJoinedRestart(t *testing.T) {
 	}
 	complete(first.SessionID, first.ExecutionRunID(), "First follow-up outcome; validation pending")
 	firstReady, _, err := db.GetProjectTask(p.AccountScopeID, project.ID, task.ID)
-	if err != nil || firstReady.Status != "needs_review" || firstReady.ActiveAttempt().SummaryRunID != first.ExecutionRunID() {
+	if err != nil || firstReady.Status != "needs_review" || firstReady.ActiveAttempt().SummaryRunID != first.ExecutionRunID() || strings.Contains(firstReady.ActionNeeded, "Launching") || !strings.Contains(firstReady.ActionNeeded, "Review") || firstReady.IsIntegrated {
 		t.Fatal("follow-up summary missing")
 	}
 	if err := f.db.Close(); err != nil {
@@ -178,12 +175,23 @@ func TestProjectTaskFollowupJoinedRestart(t *testing.T) {
 	if len(second.Attempts) != 3 || second.SessionID == first.SessionID || second.SessionID == original.ID || second.Attempts[0].Integration == nil || second.Attempts[0].Integration.Error != before.Integration.Error || len(second.Attempts[0].Deliverables) != 1 || second.Attempts[1].Summary != firstReady.ActiveAttempt().Summary || second.ActiveAttempt().Summary != "" {
 		t.Fatalf("lost original/first evidence: %+v", second)
 	}
+	// A late previous-attempt completion cannot mutate the new active attempt.
+	if err := f.server.reconcileProjectTaskRunLifecycle(sessionV3ExecutorJob{SessionID: first.SessionID, RunID: first.ExecutionRunID(), Principal: p}, pebblestore.V3RunIntentCompleted, ""); err != nil {
+		t.Fatal(err)
+	}
+	afterLate, _, err := db.GetProjectTask(p.AccountScopeID, project.ID, task.ID)
+	if err != nil || !reflect.DeepEqual(second, afterLate) {
+		t.Fatal("late completion changed active attempt")
+	}
+	if response := f.callAPI(http.MethodGet, path+"/history", nil, identity.Principal{Type: "user", UserID: "other-user", AccountScopeID: "other-account"}); response.Code != http.StatusNotFound {
+		t.Fatal("cross-account history exposed outcome")
+	}
 	history := f.callAPI(http.MethodGet, path+"/history?cursor=0&limit=2", nil, p)
 	var page struct {
 		Attempts []pebblestore.ProjectTaskAttempt `json:"attempts"`
 		Next     int                              `json:"next_cursor"`
 	}
-	if history.Code != 200 || json.Unmarshal(history.Body.Bytes(), &page) != nil || len(page.Attempts) != 2 || page.Next != 2 || page.Attempts[1].Request != first.ActiveAttempt().Request {
+	if history.Code != 200 || json.Unmarshal(history.Body.Bytes(), &page) != nil || len(page.Attempts) != 2 || page.Next != 2 || page.Attempts[1].Request != first.ActiveAttempt().Request || page.Attempts[1].Summary != firstReady.ActiveAttempt().Summary || page.Attempts[1].SummaryRunID != first.ExecutionRunID() {
 		t.Fatalf("history: %d %s", history.Code, history.Body)
 	}
 	complete(second.SessionID, second.ExecutionRunID(), "Second follow-up outcome; not promoted")
