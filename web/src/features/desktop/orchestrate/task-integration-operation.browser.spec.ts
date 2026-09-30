@@ -17,6 +17,8 @@ const integrationTask = {
 // deferred requests, stale task snapshots and remounts, without changing button
 // geometry. Real production JSX/CSS is the narrowest proof of accessibility and
 // layout; injected promises prove UI ordering, not backend Git integration.
+// The operation's explicit accessible name must exclude its hidden retry-width
+// reserve and live status semantics while preserving the same fixed geometry.
 test('integration card stays stable through pending, failure, retry and stale success snapshots', { timeout: 60000 }, async () => {
   const bundle = await build({ stdin: { resolveDir: process.cwd(), loader: 'tsx', contents: `
     import React,{useSyncExternalStore,useState} from 'react'; import {createRoot} from 'react-dom/client';
@@ -56,6 +58,8 @@ test('integration card stays stable through pending, failure, retry and stale su
     }
     assert.deepEqual(errors, [], 'complete RunningTask fixture renders without page errors')
     assert.equal(await initial.isEnabled(), true)
+    assert.equal(await initial.getAttribute('aria-label'), 'Integrate into dev')
+    assert.equal(await initial.locator('[aria-hidden="true"]').first().getAttribute('aria-hidden'), 'true')
     // Collapsed summary owns lineage/count; the action row must not duplicate it.
     assert.equal(await page.getByTestId('orchestrate-task-card').getAttribute('data-expanded'), 'false')
     assert.match(await page.getByTestId('task-card-summary').innerText(), /2 unintegrated commits/)
@@ -81,6 +85,7 @@ test('integration card stays stable through pending, failure, retry and stale su
     const retry = page.getByRole('button', { name: 'Retry integrate into dev', exact: true })
     await retry.waitFor()
     assert.equal(await retry.isDisabled(), false)
+    assert.equal(await retry.getAttribute('aria-label'), 'Retry integrate into dev')
     assert.equal((await retry.boundingBox())?.width, bounds?.width)
     await retry.click()
     await pending.waitFor()

@@ -2129,6 +2129,7 @@ export function MinimalTaskCard({
                 type="button"
                 disabled={isIntegrating || integrationPhase === 'success' || !task.baseBranch}
                 aria-busy={isIntegrating}
+                aria-label={isIntegrating ? 'Integrating…' : integrationPhase === 'success' ? 'Integrated' : task.baseBranch ? `${integrationPhase === 'error' ? 'Retry integrate' : 'Integrate'} into ${task.baseBranch}` : 'Target unavailable'}
                 onClick={(e) => {
                   e.stopPropagation()
                   onIntegrate()
