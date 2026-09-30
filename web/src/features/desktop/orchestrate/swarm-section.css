@@ -214,7 +214,7 @@
 .swarm-responsive-shell .swarm-ai-sidebar { width: 100%; min-width: 0; }
 .swarm-layout-controls, .swarm-navigation-close { display: none; }
 .swarm-responsive-shell[data-layout="rail"] { grid-template-columns: 68px minmax(0, 1fr) minmax(360px, 440px); }
-.swarm-responsive-shell[data-layout="rail"] > .swarm-navigation-sidebar > div { display: none; }
+.swarm-responsive-shell[data-layout="rail"]:not([data-navigation-open="true"]) > .swarm-navigation-sidebar > div { display: none; }
 .swarm-responsive-shell[data-layout="rail"] .swarm-route-navigation { padding: 6px; border: 0; }
 .swarm-responsive-shell[data-layout="rail"]:not([data-navigation-open="true"]) .swarm-route-navigation a { position: relative; justify-content: center; padding: 0; min-height: 44px; }
 .swarm-responsive-shell[data-layout="rail"]:not([data-navigation-open="true"]) .swarm-route-navigation a span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
@@ -238,7 +238,6 @@
 .swarm-layout-controls button, .swarm-navigation-close { min-height: 44px; min-width: 44px; border: 1px solid var(--swarm-border); border-radius: 10px; padding: 8px 12px; background: var(--swarm-surface); color: var(--swarm-text); }
 .swarm-navigation-backdrop { position: absolute; inset: 0; z-index: 40; background: #0009; }
 .swarm-responsive-shell[data-navigation-open="true"] > .swarm-navigation-sidebar { display: flex; position: absolute; inset: 6px auto 6px 6px; width: min(320px, calc(100% - 12px)); z-index: 41; overflow-y: auto; }
-.swarm-responsive-shell[data-navigation-open="true"] > .swarm-navigation-sidebar > div { display: block; }
 .swarm-responsive-shell[data-navigation-open="true"] .swarm-navigation-close { display: block; flex-shrink: 0; }
 .swarm-route-navigation { flex-shrink: 0; }
 .swarm-route-navigation a, .swarm-navigation-sidebar :is(button, select, input, [role="button"]), .swarm-settings-section, .swarm-agent-role { min-height: 44px; }
@@ -301,3 +300,26 @@
 }
 /* Match the transcript's stable both-edge scrollport reservations. */
 .swarm-chat-composer-lane { scrollbar-gutter: stable both-edges; }
+
+/* Long project/route labels and management actions must fit their own lane. */
+.swarm-task-list-header h1 { overflow-wrap: anywhere; }
+.swarm-task-list-header > div > div { flex: 1 1 180px; }
+.swarm-task-list-header .swarm-task-list-new-task { min-height: 44px; }
+.swarm-task-list-toolbar :is(button, input) { min-height: 44px; }
+.swarm-task-search-row > div:first-child { flex: 1 1 180px; }
+.swarm-task-management > div { max-width: 100%; }
+.swarm-route-navigation a { min-width: 0; overflow-wrap: anywhere; }
+.swarm-local-dialog { min-width: 0; max-width: min(36rem, 100%); }
+.swarm-local-dialog :is(input, textarea, select) { max-width: 100%; min-width: 0; min-height: 44px; }
+.swarm-local-dialog :is(h3, strong, span) { overflow-wrap: anywhere; }
+.swarm-local-dialog > div { flex-shrink: 0; min-width: 0; }
+.swarm-local-dialog > div:first-child { gap: 8px; }
+.swarm-local-dialog button { min-width: 44px; white-space: normal; }
+.swarm-local-dialog .swarm-dialog-intents { grid-template-columns: repeat(auto-fit, minmax(min(100%, 100px), 1fr)); }
+.swarm-local-dialog [data-testid="deploy-modal-impending-preview"] div { flex-wrap: wrap; min-width: 0; }
+.swarm-section .agent-model-dialog-surface { max-width: min(72rem, 100%, 100cqw); overflow-wrap: anywhere; }
+.swarm-section .agent-model-dialog-surface :is(button, input, select) { min-height: 44px; }
+.swarm-section .agent-model-dialog-surface :is(fieldset, section, select, input) { min-width: 0; max-width: 100%; }
+@container swarm-main (max-width: 450px) {
+  .swarm-task-search-row > div:first-child { flex-basis: 100%; }
+}

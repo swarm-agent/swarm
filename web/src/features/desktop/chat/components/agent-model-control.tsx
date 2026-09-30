@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
 import { createPortal } from 'react-dom'
+import { useSwarmModalFocus } from '../../orchestrate/swarm-responsive-layout'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Check, ChevronDown, GitBranch, Info, Lightbulb, Lock, MoreHorizontal, Pencil, Plus, Settings2, Star, Trash2, Zap, ZapOff } from 'lucide-react'
 import type { ActiveModelProfileState, AgentProfileRecord, ModelOptionRecord, ModelProfileInput, ModelProfileRecord } from '../types/chat'
@@ -371,6 +372,8 @@ export function AgentModelControl({
   const [editingFavoriteDraft, setEditingFavoriteDraft] = useState<ModelDraft | null>(null)
   const [error, setError] = useState<string | null>(null)
   const favoritesPopoverRef = useRef<HTMLDivElement | null>(null)
+  const setupDialogRef = useRef<HTMLDivElement | null>(null)
+  useSwarmModalFocus(setupDialogRef, open && screen === 'setup', () => setOpen(false))
   const [favoritesPosition, setFavoritesPosition] = useState<{ top?: number; bottom?: number; left: number; width: number; maxHeight: number } | null>(null)
   const initializedOpenRef = useRef(false)
   const selectableAgents = useMemo(() => [...agents.filter((agent) => agent.enabled !== false && agent.name !== 'finder' && !isCompiledSystemAgent(agent.name)), compactProfile, finderProfile, coderProfile, designerProfile, routerProfile], [agents, coderProfile, compactProfile, designerProfile, finderProfile, routerProfile])
@@ -887,7 +890,9 @@ export function AgentModelControl({
 
   const modal = open && (screen === 'setup' || favoritesPosition) ? createPortal(
     <div
-      ref={screen === 'favorites' ? favoritesPopoverRef : undefined}
+      ref={screen === 'favorites' ? favoritesPopoverRef : setupDialogRef}
+      tabIndex={screen === 'setup' ? -1 : undefined}
+      onClick={event => { if (screen === 'setup' && event.target === event.currentTarget) setOpen(false) }}
       className={screen === 'favorites'
         ? 'fixed z-[9999] max-w-[calc(100vw-1rem)] overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] shadow-xl shadow-black/30'
         : 'fixed inset-0 z-[9999] flex items-stretch justify-center overflow-hidden bg-black/50 pt-[var(--app-safe-area-top)] pr-[var(--app-safe-area-right)] pb-[var(--app-safe-area-bottom)] pl-[var(--app-safe-area-left)] sm:items-center sm:pt-[calc(var(--app-safe-area-top)+0.75rem)] sm:pr-[calc(var(--app-safe-area-right)+0.75rem)] sm:pb-[calc(var(--app-safe-area-bottom)+0.75rem)] sm:pl-[calc(var(--app-safe-area-left)+0.75rem)]'}
@@ -902,7 +907,7 @@ export function AgentModelControl({
       aria-modal={screen === 'setup' ? true : undefined}
       aria-label={screen === 'favorites' ? 'Model favorites' : 'Agent and model settings'}
     >
-      <div className={`flex w-full flex-col overflow-hidden bg-[var(--app-surface)] ${screen === 'favorites' ? 'max-h-[inherit]' : 'h-full max-h-full max-w-6xl shadow-xl sm:h-auto sm:max-h-[min(94dvh,880px)] sm:rounded-xl sm:border sm:border-[var(--app-border)]'}`}>
+      <div className={`agent-model-dialog-surface @container flex min-w-0 w-full flex-col overflow-hidden bg-[var(--app-surface)] ${screen === 'favorites' ? 'max-h-[inherit]' : 'h-full max-h-full max-w-6xl shadow-xl sm:h-auto sm:max-h-[min(94dvh,880px)] sm:rounded-xl sm:border sm:border-[var(--app-border)]'}`}>
         {screen === 'favorites' ? (
           <>
             <div className="flex min-w-0 items-start justify-between gap-4 border-b border-[var(--app-border)] px-4 py-4 sm:px-5">
@@ -1007,7 +1012,7 @@ export function AgentModelControl({
                   setSetupSection('favorites')
                   setScreen('setup')
                 }}
-                className="inline-flex min-h-10 items-center gap-1.5 rounded-lg border border-[var(--app-border)] px-3 py-2 text-xs font-semibold text-[var(--app-text)] hover:bg-[var(--app-surface-hover)]"
+                className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-[var(--app-border)] px-3 py-2 text-xs font-semibold text-[var(--app-text)] hover:bg-[var(--app-surface-hover)]"
               >
                 <Star size={14} className="text-[var(--app-primary)]" />
                 <span>Manage favorites</span>
@@ -1021,7 +1026,7 @@ export function AgentModelControl({
                   setSetupSection('agent')
                   setScreen('setup')
                 }}
-                className="inline-flex min-h-10 items-center gap-2 rounded-lg border border-[var(--app-primary)] bg-[var(--app-primary)] px-4 py-2 text-xs font-semibold text-[var(--app-primary-text)] hover:bg-[var(--app-primary-hover)]"
+                className="inline-flex min-h-11 items-center gap-2 rounded-lg border border-[var(--app-primary)] bg-[var(--app-primary)] px-4 py-2 text-xs font-semibold text-[var(--app-primary-text)] hover:bg-[var(--app-primary-hover)]"
               >
                 <Settings2 size={14} /> Agent Setup
               </button>
@@ -1043,26 +1048,26 @@ export function AgentModelControl({
                 : 'Configure each agent directly. System-agent models are not saved profiles.'}
             </div>
           </div>
-          <div className="grid w-full shrink-0 grid-cols-2 gap-2 sm:flex sm:w-auto sm:items-center">
+          <div className="flex min-w-0 shrink-0 flex-wrap items-center gap-2">
             {setupSection === 'agent' && onOpenAgentSettings && draftProfile && !isCompiledSystemAgent(draftProfile.name) ? (
-              <button type="button" onClick={() => { setOpen(false); onOpenAgentSettings() }} className="inline-flex min-h-10 items-center justify-center gap-1.5 rounded-lg border border-[var(--app-border)] px-3 py-2 text-[11px] font-medium text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] sm:min-h-0 sm:py-1">
+              <button type="button" onClick={() => { setOpen(false); onOpenAgentSettings() }} className="inline-flex min-h-11 items-center justify-center gap-1.5 rounded-lg border border-[var(--app-border)] px-3 py-2 text-[11px] font-medium text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] sm:py-1">
                 <Settings2 size={12} /> Manage agent
               </button>
             ) : null}
-            <button type="button" onClick={() => setOpen(false)} className="min-h-10 rounded-lg border border-[var(--app-border)] px-3 py-2 text-[11px] font-semibold text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] sm:min-h-0 sm:py-1">Close</button>
+            <button type="button" onClick={() => setOpen(false)} className="min-h-11 rounded-lg border border-[var(--app-border)] px-3 py-2 text-[11px] font-semibold text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] sm:py-1">Close</button>
           </div>
         </div>
 
-        <div aria-label="Agent setup sections" className="min-h-0 flex-1 overflow-y-auto min-[900px]:grid min-[900px]:grid-cols-[240px_minmax(0,1fr)] min-[900px]:overflow-hidden">
-          <aside aria-label="Agents" className="flex min-h-0 flex-col border-b border-[var(--app-border)] bg-[var(--app-bg-alt)] min-[900px]:border-b-0 min-[900px]:border-r">
+        <div aria-label="Agent setup sections" className="min-h-0 flex-1 overflow-y-auto @min-[900px]:grid @min-[900px]:grid-cols-[240px_minmax(0,1fr)] @min-[900px]:overflow-hidden">
+          <aside aria-label="Agents" className="flex min-h-0 flex-col border-b border-[var(--app-border)] bg-[var(--app-bg-alt)] @min-[900px]:border-b-0 @min-[900px]:border-r">
             <div className="border-b border-[var(--app-border)] px-4 py-3">
               <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Navigation</div>
               <div className="mt-1 text-[11px] text-[var(--app-text-muted)]">Configure agents or manage favorites.</div>
             </div>
-            <div className="max-h-44 space-y-3 overflow-y-auto p-3 min-[480px]:max-h-56 min-[900px]:max-h-none min-[900px]:flex-1">
+            <div className="max-h-44 space-y-3 overflow-y-auto p-3 @min-[480px]:max-h-56 @min-[900px]:max-h-none @min-[900px]:flex-1">
               <section key="favorites-nav-section">
                 <div className="mb-1.5 px-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Favorites</div>
-                <div className="grid gap-1 min-[480px]:grid-cols-2 min-[900px]:grid-cols-1">
+                <div className="grid gap-1 @min-[480px]:grid-cols-2 @min-[900px]:grid-cols-1">
                   <button
                     type="button"
                     onClick={() => {
@@ -1085,7 +1090,7 @@ export function AgentModelControl({
               {agentSections.map((section) => (
                 <section key={section.label}>
                   <div className="mb-1.5 px-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">{section.label}</div>
-                  <div className="grid gap-1 min-[480px]:grid-cols-2 min-[900px]:grid-cols-1">
+                  <div className="grid gap-1 @min-[480px]:grid-cols-2 @min-[900px]:grid-cols-1">
                     {section.items.map(({ name, profile }) => {
                       const selected = setupSection === 'agent' && name === draftAgentName
                       const assignment = name === SWARM_AGENT_NAME
@@ -1142,7 +1147,7 @@ export function AgentModelControl({
             </div>
           </aside>
 
-          <section aria-label={setupSection === 'favorites' ? 'Model favorites' : 'Agent model settings'} className="min-h-0 p-4 min-[900px]:overflow-y-auto min-[900px]:p-5">
+          <section aria-label={setupSection === 'favorites' ? 'Model favorites' : 'Agent model settings'} className="min-h-0 p-4 @min-[900px]:overflow-y-auto @min-[900px]:p-5">
             {setupSection === 'favorites' ? (
               <div className="grid gap-5">
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between border-b border-[var(--app-border)] pb-4">
@@ -1522,15 +1527,15 @@ export function AgentModelControl({
           </section>
         </div>
 
-        <div className="flex shrink-0 items-center justify-end gap-2 border-t border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-3 sm:px-5 sm:py-4">
+        <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 border-t border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-3 sm:px-5 sm:py-4">
           {setupSection === 'favorites' ? (
             <>
-              <button type="button" onClick={() => { setError(null); setSetupSection('agent') }} className="mr-auto min-h-10 rounded-lg border border-[var(--app-border)] px-3 py-2 text-[11px] font-semibold text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] sm:min-h-0 sm:py-1.5">Agent Setup</button>
-              <button type="button" onClick={() => setOpen(false)} className="min-h-10 rounded-lg border border-[var(--app-border)] px-3 py-2 text-[11px] font-semibold text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] sm:min-h-0 sm:py-1.5">Close</button>
+              <button type="button" onClick={() => { setError(null); setSetupSection('agent') }} className="mr-auto min-h-11 rounded-lg border border-[var(--app-border)] px-3 py-2 text-[11px] font-semibold text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] sm:py-1.5">Agent Setup</button>
+              <button type="button" onClick={() => setOpen(false)} className="min-h-11 rounded-lg border border-[var(--app-border)] px-3 py-2 text-[11px] font-semibold text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] sm:py-1.5">Close</button>
             </>
           ) : taskScoped ? (
             <>
-              <button type="button" onClick={() => setOpen(false)} className="min-h-10 rounded-lg border border-[var(--app-border)] px-3 py-2 text-[11px] font-semibold text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] sm:min-h-0 sm:py-1.5">Cancel</button>
+              <button type="button" onClick={() => setOpen(false)} className="min-h-11 rounded-lg border border-[var(--app-border)] px-3 py-2 text-[11px] font-semibold text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] sm:py-1.5">Cancel</button>
               {hasTaskOverride && onResetTaskModel ? (
                 <button
                   type="button"
@@ -1546,7 +1551,7 @@ export function AgentModelControl({
                       setSaving(false)
                     }
                   }}
-                  className="min-h-10 rounded-lg border border-amber-500/40 bg-amber-950/20 px-3 py-2 text-[11px] font-semibold text-amber-300 hover:bg-amber-950/40 sm:min-h-0 sm:py-1.5"
+                  className="min-h-11 rounded-lg border border-amber-500/40 bg-amber-950/20 px-3 py-2 text-[11px] font-semibold text-amber-300 hover:bg-amber-950/40 sm:py-1.5"
                   data-testid="task-model-reset-default-btn"
                 >
                   Reset Task Override
@@ -1572,7 +1577,7 @@ export function AgentModelControl({
                   }
                   setOpen(false)
                 }}
-                className="min-h-10 rounded-lg border border-[var(--app-border)] px-3 py-2 text-[11px] font-semibold text-[var(--app-text)] hover:bg-[var(--app-surface-hover)] disabled:opacity-60 sm:min-h-0 sm:py-1.5"
+                className="min-h-11 rounded-lg border border-[var(--app-border)] px-3 py-2 text-[11px] font-semibold text-[var(--app-text)] hover:bg-[var(--app-surface-hover)] disabled:opacity-60 sm:py-1.5"
                 data-testid="task-model-open-agents-btn"
                 title="Save selected model as the account-wide default for this agent"
               >
@@ -1605,7 +1610,7 @@ export function AgentModelControl({
                     }
                   }
                 }}
-                className="min-h-10 rounded-lg border border-[var(--app-primary)] bg-[var(--app-primary)] px-4 py-2 text-[11px] font-semibold text-[var(--app-primary-text)] hover:bg-[var(--app-primary-hover)] disabled:opacity-60 sm:min-h-0 sm:py-1.5"
+                className="min-h-11 rounded-lg border border-[var(--app-primary)] bg-[var(--app-primary)] px-4 py-2 text-[11px] font-semibold text-[var(--app-primary-text)] hover:bg-[var(--app-primary-hover)] disabled:opacity-60 sm:py-1.5"
                 data-testid="task-model-apply-override-btn"
               >
                 {saving ? 'Applying…' : 'Apply to Task'}
@@ -1613,12 +1618,12 @@ export function AgentModelControl({
             </>
           ) : (
             <>
-              <button type="button" onClick={() => { setError(null); setSetupSection('favorites') }} className="mr-auto min-h-10 rounded-lg border border-[var(--app-border)] px-3 py-2 text-[11px] font-semibold text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] sm:min-h-0 sm:py-1.5">Favorites</button>
-              <button type="button" onClick={() => setOpen(false)} className="min-h-10 rounded-lg border border-[var(--app-border)] px-3 py-2 text-[11px] font-semibold text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] sm:min-h-0 sm:py-1.5">Cancel</button>
-              <button type="button" disabled={busy || saving || (draftAgentName !== SWARM_AGENT_NAME && !draftProfile)} onClick={() => { void confirm(false) }} className="min-h-10 rounded-lg border border-[var(--app-primary)] px-4 py-2 text-[11px] font-semibold text-[var(--app-primary)] hover:bg-[var(--app-surface-hover)] disabled:opacity-60 sm:min-h-0 sm:py-1.5">
+              <button type="button" onClick={() => { setError(null); setSetupSection('favorites') }} className="mr-auto min-h-11 rounded-lg border border-[var(--app-border)] px-3 py-2 text-[11px] font-semibold text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] sm:py-1.5">Favorites</button>
+              <button type="button" onClick={() => setOpen(false)} className="min-h-11 rounded-lg border border-[var(--app-border)] px-3 py-2 text-[11px] font-semibold text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] sm:py-1.5">Cancel</button>
+              <button type="button" disabled={busy || saving || (draftAgentName !== SWARM_AGENT_NAME && !draftProfile)} onClick={() => { void confirm(false) }} className="min-h-11 rounded-lg border border-[var(--app-primary)] px-4 py-2 text-[11px] font-semibold text-[var(--app-primary)] hover:bg-[var(--app-surface-hover)] disabled:opacity-60 sm:py-1.5">
                 {saving || busy ? 'Saving…' : 'Save & Continue'}
               </button>
-              <button type="button" disabled={busy || saving || (draftAgentName !== SWARM_AGENT_NAME && !draftProfile)} onClick={() => { void confirm(true) }} className="min-h-10 rounded-lg border border-[var(--app-primary)] bg-[var(--app-primary)] px-4 py-2 text-[11px] font-semibold text-[var(--app-primary-text)] hover:bg-[var(--app-primary-hover)] disabled:opacity-60 sm:min-h-0 sm:py-1.5">
+              <button type="button" disabled={busy || saving || (draftAgentName !== SWARM_AGENT_NAME && !draftProfile)} onClick={() => { void confirm(true) }} className="min-h-11 rounded-lg border border-[var(--app-primary)] bg-[var(--app-primary)] px-4 py-2 text-[11px] font-semibold text-[var(--app-primary-text)] hover:bg-[var(--app-primary-hover)] disabled:opacity-60 sm:py-1.5">
                 {saving || busy ? 'Saving…' : 'Save & Exit'}
               </button>
             </>
@@ -1700,7 +1705,7 @@ function ModelDraftEditor({
         <GitBranch size={14} />
         <span>{title}</span>
       </div>
-      <div className={`grid gap-3 sm:grid-cols-2 ${compact ? '' : 'min-[1100px]:grid-cols-[minmax(130px,0.7fr)_minmax(220px,1.4fr)_minmax(130px,0.7fr)_minmax(130px,0.7fr)]'}`}>
+      <div className={`grid min-w-0 gap-3 @min-[640px]:grid-cols-2 ${compact ? '' : '@min-[1100px]:grid-cols-[minmax(130px,0.7fr)_minmax(220px,1.4fr)_minmax(130px,0.7fr)_minmax(130px,0.7fr)]'}`}>
         <SelectField label="Provider" value={selectedProviderChoice} onChange={onProviderChange} options={providers.map((provider) => ({ label: provider.label, value: provider.key }))} placeholder="Choose provider route" />
         <ModelSelectField label="Model" value={selectedOption ? modelOptionKey(selectedOption) : ''} onChange={onModelChange} options={choices} placeholder="Choose model" disabled={!draft.provider.trim()} />
         <SelectField label="Thinking" value={normalizedThinking} onChange={onThinkingChange} options={thinkingOptions.map((option) => ({ label: option, value: option }))} disabled={!selectedOption || thinkingOptions.length <= 1} />

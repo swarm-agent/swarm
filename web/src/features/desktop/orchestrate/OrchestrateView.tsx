@@ -14,7 +14,7 @@ import { getUISettings } from '../settings/swarm/queries/get-ui-settings'
 import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
 import { swarmPageLink, type SwarmPage } from './swarm-navigation'
 import { filterOrchestrateCommands, parseOrchestrateCommand, ORCHESTRATE_TIPS, type OrchestrateCommand } from './orchestrate-commands'
-import { SwarmLayoutControls, useSwarmResponsiveLayout } from './swarm-responsive-layout'
+import { SwarmLayoutControls, useSwarmResponsiveLayout, useSwarmModalFocus } from './swarm-responsive-layout'
 import { OrchestrateSettings } from './orchestrate-settings'
 import { OrchestrateAgents } from './orchestrate-agents'
 import {
@@ -3551,6 +3551,8 @@ export function OrchestrateView({
     }
   }
   const [isDeployModalOpen, setIsDeployModalOpen] = useState(false)
+  const deployDialogRef = useRef<HTMLDivElement>(null)
+  useSwarmModalFocus(deployDialogRef, isDeployModalOpen, () => setIsDeployModalOpen(false))
   const [taskIntent, setTaskIntent] = useState<'code' | 'image' | 'video' | 'sound' | 'audit'>('code')
   const [videoResolution, setVideoResolution] = useState<string>('')
   const [videoDuration, setVideoDuration] = useState<number>(0)
@@ -7200,8 +7202,8 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
           MODAL: NEW TASK (VISUAL INTENT, MEDIA & AUTO-APPROVE)
          ───────────────────────────────────────────────────────────── */}
       {isDeployModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-6 backdrop-blur-md">
-          <div role="dialog" aria-modal="true" aria-label="Deploy Autonomous Task" className="swarm-local-dialog relative flex max-w-xl w-full flex-col p-6 rounded-2xl border border-slate-800 bg-[#0d121f] shadow-2xl space-y-4">
+        <div className="swarm-deploy-backdrop fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-3 backdrop-blur-md" onClick={event => { if (event.target === event.currentTarget) setIsDeployModalOpen(false) }}>
+          <div ref={deployDialogRef} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Deploy Autonomous Task" className="swarm-local-dialog relative flex max-w-xl w-full flex-col p-6 rounded-2xl border border-slate-800 bg-[#0d121f] shadow-2xl space-y-4">
             {/* Header */}
             <div className="flex items-center justify-between pb-3 border-b border-slate-800">
               <div className="flex items-center gap-2">
@@ -7209,6 +7211,8 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                 <h3 className="text-sm font-bold text-white">Deploy Autonomous Task</h3>
               </div>
               <button
+                type="button"
+                aria-label="Close deploy task dialog"
                 onClick={() => setIsDeployModalOpen(false)}
                 className="rounded-full p-1 text-slate-400 hover:bg-slate-800 hover:text-white transition-colors"
               >
