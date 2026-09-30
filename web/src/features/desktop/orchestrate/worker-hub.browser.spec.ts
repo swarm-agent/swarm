@@ -40,7 +40,7 @@ test('operational worker detail categorizes runs, forwards context and preserves
     await page.getByText(/1 deliverable\(s\)/).waitFor()
     assert.equal(await page.getByTestId('durable-worker-run').getByRole('link', { name: 'Open execution session', exact: true }).getAttribute('href'), '/demo/session_1')
     assert.equal(await page.locator('form, input, textarea').count(), 0)
-    await page.getByRole('combobox', { name: 'Execution mode' }).waitFor()
+    await page.getByRole('group', { name: 'Execution mode', exact: true }).waitFor()
     assert.equal(await page.getByRole('region', { name: 'Action model', exact: true }).count(), 1)
     assert.equal(await page.getByRole('region', { name: 'Plan model', exact: true }).count(), 1)
     await page.getByRole('button', { name: 'Failed', exact: true }).click()

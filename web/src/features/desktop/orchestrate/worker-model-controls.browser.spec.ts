@@ -36,16 +36,17 @@ test('worker reset shows actual defaults and only proposes a pending settings re
     await page.addScriptTag({ content: bundle.outputFiles[0].text })
     const action = page.getByRole('region', { name: 'Action model', exact: true })
     const plan = page.getByRole('region', { name: 'Plan model', exact: true })
-    await action.getByText('Explicit worker override: fixture/action-override', { exact: true }).waitFor()
-    await plan.getByText('Explicit worker override: fixture/plan-override', { exact: true }).waitFor()
-    await page.getByRole('button', { name: 'Use account default for Action' }).click()
-    await action.getByText('Account default (follows future changes): fixture/account-action · high', { exact: true }).waitFor()
-    await plan.getByText('Explicit worker override: fixture/plan-override', { exact: true }).waitFor()
-    await page.getByRole('button', { name: 'Use account default for Plan' }).click()
-    await plan.getByText('Account default (follows future changes): fixture/account-plan · high', { exact: true }).waitFor()
+    await action.getByText('action-override', { exact: true }).waitFor()
+    await plan.getByText('plan-override', { exact: true }).waitFor()
+    await action.getByRole('button', { name: 'Reset Action to account default' }).click()
+    await action.getByText('account-action', { exact: true }).waitFor()
+    await action.getByRole('button', { name: 'Edit Action thinking' }).getByText('Thinking · high').waitFor()
+    await plan.getByText('plan-override', { exact: true }).waitFor()
+    await plan.getByRole('button', { name: 'Reset Plan to account default' }).click()
+    await plan.getByText('account-plan', { exact: true }).waitFor()
     assert.deepEqual(await page.evaluate(() => (window as any).mutations), [])
-    await page.getByRole('combobox', { name: 'Execution mode' }).selectOption('plan')
-    await page.getByRole('button', { name: 'Propose settings changes' }).click()
+    await page.getByRole('group', { name: 'Execution mode', exact: true }).getByRole('button', { name: 'Plan', exact: true }).click()
+    await page.getByRole('button', { name: 'Propose changes' }).click()
     const mutations = await page.evaluate(() => (window as any).mutations)
     assert.equal(mutations.length, 1)
     assert.equal(mutations[0].action, 'update')
@@ -55,5 +56,59 @@ test('worker reset shows actual defaults and only proposes a pending settings re
     assert.equal(mutations[0].changes.model_profile.plan_use_account_default, true)
     assert.deepEqual(writes, [])
     assert.equal(await page.getByRole('button', { name: /Accept|Activate/ }).count(), 0)
+  } finally { await browser.close() }
+})
+
+// Requirement: the actual PendingWorkerCard entry point uses the shared dashboard,
+// never accepts unsaved edits and accepts the server candidate by revision only.
+// Threat: hidden/local model copies replace a saved candidate, or refresh makes
+// acceptance appear approved before persistence. This component interaction is
+// the narrowest UI proof; Go tests independently prove the durable boundary.
+test('pending dashboard proposes before accepting and reflects approved candidate', { timeout: 30000 }, async () => {
+  const bundle = await build({ stdin: { resolveDir: process.cwd(), loader: 'tsx', contents: `
+    import React,{useState} from 'react';import {createRoot} from 'react-dom/client';
+    import {ensureDesktopSession} from './src/app/api';
+    import {PendingWorkerCard} from './src/features/desktop/orchestrate/pending-worker-card';
+    import {WorkerSettingsReview} from './src/features/desktop/orchestrate/worker-settings-review';
+    import {desktopWorkers} from './src/features/desktop/runtime/desktop-workers';
+    window.mutations=[];
+    const oldProfile={source:'temporary',action:{provider:'fixture',model:'old-action',thinking:'high'},plan:{provider:'fixture',model:'plan-model',thinking:'low'}};
+    const base={id:'review-fixture',account_scope_id:'acct',name:'Review',instructions:'Review',revision:4,lifecycle_state:'paused',created_at:1,updated_at:1,execution_mode:'auto',model_profile:oldProfile};
+    const candidate={...base,lifecycle_state:'pending',model_profile:{...oldProfile,action:{provider:'fixture',model:'candidate-action',thinking:'medium',service_tier:'standard',context_mode:'extended'}}};
+    function App(){const [worker,setWorker]=useState({...base,pending_review:candidate});
+      desktopWorkers.mutate=async input=>{window.mutations.push(input);
+        const result=input.action==='update'?{...worker,revision:worker.revision+1,pending_review:{...worker.pending_review,...input.changes}}:{...worker.pending_review,id:worker.id,revision:worker.revision+1,lifecycle_state:'paused',pending_review:undefined};
+        setWorker(result);return {worker:result};};
+      return worker.pending_review?<PendingWorkerCard worker={worker} accountScopeId='acct' workspaceCatalog={{accountScopeId:'acct',workspaces:[]}}/>:<WorkerSettingsReview worker={worker} accountScopeId='acct' disabled={false}/>;}
+    ensureDesktopSession().then(()=>createRoot(document.getElementById('root')).render(<App/>));
+  ` }, bundle: true, write: false, format: 'iife', platform: 'browser', jsx: 'automatic', logLevel: 'silent' })
+  const browser = await chromium.launch({ headless: true, channel: process.env.SWARM_TEST_BROWSER_CHANNEL || 'chrome' })
+  try {
+    const page = await browser.newPage()
+    await page.route('**/*', route => {
+      if (route.request().url().endsWith('/v1/auth/desktop/session')) return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ user_id: 'owner', account_scope_id: 'acct' }) })
+      if (route.request().url().includes('/v1/')) return route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'Unavailable fixture catalog' }) })
+      return route.fulfill({ contentType: 'text/html', body: '<div id="root"></div>' })
+    })
+    await page.goto('https://worker.test/')
+    await page.addScriptTag({ content: bundle.outputFiles[0].text })
+    const action = page.getByRole('region', { name: 'Action model', exact: true })
+    await action.getByText('candidate-action', { exact: true }).waitFor()
+    await action.getByRole('button', { name: 'Edit Action thinking' }).getByText('Thinking · medium').waitFor()
+    await page.getByRole('group', { name: 'Execution mode', exact: true }).getByRole('button', { name: 'Plan', exact: true }).click()
+    await page.waitForFunction(() => (document.querySelector('[data-testid="accept-pending-worker"]') as HTMLButtonElement)?.disabled)
+    assert.deepEqual(await page.evaluate(() => (window as any).mutations), [])
+    await page.getByRole('button', { name: 'Propose changes' }).click()
+    await page.waitForFunction(() => !(document.querySelector('[data-testid="accept-pending-worker"]') as HTMLButtonElement)?.disabled)
+    await page.getByRole('button', { name: 'Accept changes', exact: true }).click()
+    await page.getByText('Approved', { exact: true }).waitFor()
+    await action.getByText('candidate-action', { exact: true }).waitFor()
+    const mutations = await page.evaluate(() => (window as any).mutations)
+    assert.equal(mutations.length, 2)
+    assert.equal(mutations[0].action, 'update')
+    assert.equal(mutations[0].expected_revision, 4)
+    assert.deepEqual(mutations[0].changes.model_profile.action, { provider: 'fixture', model: 'candidate-action', thinking: 'medium', service_tier: 'standard', context_mode: 'extended' })
+    assert.deepEqual(mutations[1], { action: 'accept', workerId: 'review-fixture', expected_revision: 5 })
+    assert.equal(await page.getByRole('button', { name: 'Accept changes', exact: true }).count(), 0)
   } finally { await browser.close() }
 })

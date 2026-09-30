@@ -189,3 +189,69 @@ func TestWorkerModelResetRequiresAcceptance(t *testing.T) {
 	approved, err := ws.AcceptWorker("account", "owner", w.ID, staged.Revision, w.LocalBindings, reset)
 	if err != nil || !approved.ModelProfile.UseAccountDefault || approved.PendingReview != nil { t.Fatalf("reset not accepted: %+v %v", approved, err) }
 }
+
+// Requirement: update -> accept without a client override -> read -> future
+// admission preserves the full explicit tuple. Threat: old approved/default
+// models win, medium thinking is dropped, or already admitted runs are mutated.
+// WorkerStore is the narrowest durable review and immutable receipt boundary.
+func TestWorkerModelCandidateFutureAdmission(t *testing.T) {
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ws := NewWorkerStore(db)
+	old := ModelProfileSelection{Provider: "fixture", Model: "old", Thinking: "high"}
+	profile := &SessionModelProfileSnapshot{Source: SessionModelProfileSourceTemporary, Action: old, Plan: &old}
+	w, err := ws.CreateWorker("account", "owner", CreateWorkerRequest{Name: "Review", Instructions: "Review", InitialLifecycleState: WorkerLifecycleStatePending, ProposedBindings: map[string]string{"primary": "workspace"}, WorkspaceRequirements: []WorkerWorkspaceRequirement{{Role: "primary", Required: true}}, ModelProfile: profile}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err = ws.AcceptWorker("account", "owner", w.ID, w.Revision, w.ProposedBindings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := WorkerRunAdmission{WorkerID: w.ID, UserID: "owner", RequestSource: "direct", IdempotencyKey: "before", Input: map[string]any{"prompt": "Review"}, ResolvedModelProfile: profile, ExpectedWorkerRevision: w.Revision}
+	first, err := ws.AdmitWorkerRun("account", req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := CloneSessionModelProfileSnapshot(profile)
+	candidate.Action = ModelProfileSelection{Provider: "other-fixture", Model: "new", Thinking: "medium", ServiceTier: "standard", ContextMode: "extended"}
+	staged, err := ws.UpdateWorker("account", "owner", w.ID, w.Revision, UpdateWorkerRequest{ModelProfile: candidate}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if staged.PendingReview == nil || !reflect.DeepEqual(staged.ModelProfile, profile) {
+		t.Fatal("pending model applied early")
+	}
+	req.IdempotencyKey = "pending"
+	req.ExpectedWorkerRevision = staged.Revision
+	pending, err := ws.AdmitWorkerRun("account", req)
+	if err != nil || !reflect.DeepEqual(pending.ModelProfile, first.ModelProfile) {
+		t.Fatalf("pending proposal changed admission: %+v %v", pending, err)
+	}
+	approved, err := ws.AcceptWorker("account", "owner", w.ID, staged.Revision, w.LocalBindings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, found, err := ws.GetWorker("account", w.ID)
+	if err != nil || !found || loaded.PendingReview != nil || !reflect.DeepEqual(loaded.ModelProfile, candidate) || loaded.Revision != approved.Revision {
+		t.Fatalf("accept/read lost tuple: %+v %v", loaded, err)
+	}
+	req.IdempotencyKey = "future"
+	req.ExpectedWorkerRevision = approved.Revision
+	req.ResolvedModelProfile = loaded.ModelProfile
+	future, err := ws.AdmitWorkerRun("account", req)
+	if err != nil || !reflect.DeepEqual(future.ModelProfile, candidate) {
+		t.Fatalf("future admission lost tuple: %+v %v", future, err)
+	}
+	req.IdempotencyKey = "before"
+	replay, err := ws.AdmitWorkerRun("account", req)
+	if err != nil || replay.ID != first.ID || !reflect.DeepEqual(replay.ModelProfile, profile) {
+		t.Fatalf("old receipt changed: %+v %v", replay, err)
+	}
+	if !reflect.DeepEqual(future.ModelProfile.Plan, profile.Plan) {
+		t.Fatal("action edit changed plan policies")
+	}
+}

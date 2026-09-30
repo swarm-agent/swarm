@@ -16,7 +16,7 @@ function AccountReviews({ accountScopeId }: { accountScopeId: string }) {
   if (!reviews.length && !data?.next_cursor && !cursor && !page?.error) return null
   return <details className="max-h-80 overflow-y-auto rounded-lg border border-amber-500/30 p-2 text-xs" data-testid="chat-durable-worker-reviews"><summary>Worker reviews · {reviews.length} on this page · account-wide</summary>
     {page?.error && <p role="alert">Worker reviews unavailable: {page.error}</p>}
-    {reviews.map(worker => <PendingWorkerCard key={`${worker.id}:${worker.revision}`} worker={worker} accountScopeId={accountScopeId} stale={!!page?.stale || !!page?.error} mutationError={page?.mutationError} />)}
+    {reviews.map(worker => <PendingWorkerCard key={`${accountScopeId}:${worker.id}`} worker={worker} accountScopeId={accountScopeId} stale={!!page?.stale || !!page?.error} mutationError={page?.mutationError} />)}
     {data?.next_cursor && <button type="button" onClick={() => setCursor(data.next_cursor)}>More workers to review</button>}{cursor && <button type="button" onClick={() => setCursor(undefined)}>Latest workers</button>}
   </details>
 }

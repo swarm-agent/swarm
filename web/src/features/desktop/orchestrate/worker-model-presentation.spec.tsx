@@ -131,7 +131,7 @@ test('dashboard presents two compact model cards and distinguishes approved from
   assert.match(approved, /Thinking · high/)
   assert.match(approved, /Tier · priority/)
   assert.match(approved, /Context · extended/)
-  assert.match(approved, /Used in Plan mode/)
+  assert.match(approved, /Optional · used in Plan mode/)
   assert.match(approved, /aria-label="Change Action model"/)
   assert.equal((approved.match(/Pinned to worker/g) || []).length, 2)
   assert.doesNotMatch(approved, /Select model|Propose changes|Approved model policy|Pending approval/)
@@ -145,4 +145,25 @@ test('dashboard presents two compact model cards and distinguishes approved from
   const unaccepted = renderToStaticMarkup(<WorkerSettingsReview worker={{ ...base, lifecycle_state: 'pending' }} accountScopeId="account" disabled />)
   assert.match(unaccepted, /Not yet accepted · nothing runs/)
   assert.doesNotMatch(unaccepted, />Approved</)
+})
+
+// Requirement: all pending review entry points reuse the model-first dashboard;
+// hidden detail controls must not permit acceptance of unsaved external edits.
+// Threat: the old picker remains on review cards or consent bypasses draft state.
+// PendingWorkerCard SSR is the narrowest component wiring/disabled-state proof;
+// interactive and server tests separately own payload and persistence assertions.
+test('pending review shares execution dashboard and honors external draft guard', () => {
+  const worker: WorkerRecord = { id: 'review-fixture', account_scope_id: 'account', name: 'Review', instructions: 'Review', lifecycle_state: 'paused', execution_mode: 'auto', revision: 3, created_at: 1, updated_at: 1, model_profile: { source: 'temporary', action: { provider: 'fixture', model: 'approved', thinking: 'high' }, plan: { provider: 'fixture', model: 'planning' } } }
+  worker.pending_review = { ...worker, lifecycle_state: 'pending', execution_mode: 'plan', model_profile: { ...worker.model_profile!, action: { provider: 'fixture', model: 'candidate', thinking: 'medium' } } }
+  const props = { worker, accountScopeId: 'account', workspaceCatalog: { accountScopeId: 'account', workspaces: [] } }
+  const review = renderToStaticMarkup(<PendingWorkerCard {...props} />)
+  assert.equal((review.match(/aria-label="Execution and model settings"/g) || []).length, 1)
+  assert.match(review, /aria-pressed="true"[^>]*>Plan</)
+  assert.match(review, /approved.*→.*candidate/)
+  assert.match(review, /Thinking · medium/)
+  assert.match(review, />Accept changes</)
+  const detail = renderToStaticMarkup(<PendingWorkerCard {...props} showModelControls={false} acceptanceBlocked />)
+  assert.doesNotMatch(detail, /aria-label="Worker models"/)
+  assert.match(detail, /disabled=""[^>]*data-testid="accept-pending-worker"/)
+  assert.match(detail, /Propose or discard your local model edits/)
 })

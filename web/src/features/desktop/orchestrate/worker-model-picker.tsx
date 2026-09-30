@@ -90,18 +90,19 @@ export function WorkerModelPicker({ accountScopeId, profile, disabled, onChange,
               <button type="button" aria-pressed={!inherited} disabled={blocked || !selection || !data} className={`${control} ${!inherited ? 'bg-[var(--app-border)] font-semibold' : muted}`} onClick={() => { if (inherited && selection) pin({ ...selection }); setEditing(slot) }}>Custom</button>
             </div>
           </div>
-          <p className={`mt-1 text-xs ${muted}`}>{slot === 'action' ? 'Does the work' : mode === 'plan' ? 'Plans first' : 'Used in Plan mode'}</p>
+          <p className={`mt-1 text-xs ${muted}`}>{slot === 'action' ? 'Does the work' : mode === 'plan' ? 'Plans first' : 'Optional · used in Plan mode'}</p>
           <div className="my-4 min-h-[64px]">
             <p className="break-words text-lg font-semibold leading-snug [overflow-wrap:anywhere]" title={selection?.model}>{selection ? displayModelName(selection.provider, selection.model, selection.context_mode || '') : !inherited ? 'Model not configured' : error ? 'Model unavailable' : 'Loading model…'}</p>
             <p className={`mt-1 break-words text-xs ${muted}`}>{selection ? modelProviderLabel(selection.provider) : 'Account default'}</p>
           </div>
           <div className="flex flex-wrap items-center gap-2 text-xs">
-            <span className="rounded-md border border-[var(--app-border)] px-2 py-1">Thinking · {selection?.thinking || 'Default'}</span>
+            <button type="button" aria-label={`Edit ${label} thinking`} aria-expanded={editing === slot} disabled={blocked || !selected?.thinkingOptions.length} onClick={() => setEditing(editing === slot ? null : slot)} className={`${control} border border-[var(--app-border)]`}>Thinking · {selection?.thinking || 'Default'}</button>
             {selection?.service_tier && <span className={muted}>Tier · {selection.service_tier}</span>}
             {selection?.context_mode && <span className={muted}>Context · {selection.context_mode}</span>}
           </div>
           <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
             <span className={`text-[11px] ${muted}`}>{inherited ? 'Follows account' : 'Pinned to worker'}</span>
+            {!inherited && <button type="button" aria-label={`Reset ${label} to account default`} disabled={blocked} className={`${control} ${muted}`} onClick={() => onChange(resetWorkerModelSlot(profile, slot))}>Reset</button>
             <button type="button" aria-label={`${inherited ? 'Customize' : 'Change'} ${label} model`} aria-expanded={editing === slot} disabled={blocked || !options.length} className={`${control} border border-[var(--app-border)] hover:bg-[var(--app-border)]`} onClick={() => setEditing(editing === slot ? null : slot)}>{editing === slot ? 'Done' : inherited ? 'Customize' : 'Change'}</button>
           </div>
           {editing === slot && <div className="mt-3 space-y-3 border-t border-[var(--app-border)] pt-3" aria-label={`${label} model editor`}>

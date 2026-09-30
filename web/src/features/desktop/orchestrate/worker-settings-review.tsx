@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { WorkerRecord } from '../state/desktop-workers-api'
 import { desktopWorkers } from '../runtime/desktop-workers'
 import { displayModelName } from '../chat/services/model-options'
@@ -9,17 +9,19 @@ const button = 'rounded-lg border border-[var(--app-border)] px-3 py-2 text-xs f
 function settingLabel(value: WorkerSettingsValue, field: string) {
   if (field === 'Execution') return value.mode === 'plan' ? 'Plan' : 'Swarm'
   const slot = field === 'Action model' ? 'action' : 'plan'
-  if (workerSlotInherited(value.profile, slot)) return 'Account default'
+  const inherited = workerSlotInherited(value.profile, slot)
   const model = value.profile?.[slot]
-  return model ? `${model.provider} / ${displayModelName(model.provider, model.model, model.context_mode || '')}${model.thinking ? ` · ${model.thinking}` : ''}${model.service_tier ? ` · ${model.service_tier}` : ''}${model.context_mode ? ` · ${model.context_mode}` : ''} · Custom` : 'Unconfigured'
+  return model?.model ? `${model.provider} / ${displayModelName(model.provider, model.model, model.context_mode || '')}${model.thinking ? ` · ${model.thinking}` : ''}${model.service_tier ? ` · ${model.service_tier}` : ''}${model.context_mode ? ` · ${model.context_mode}` : ''} · ${inherited ? 'Default (resolved at save)' : 'Custom'}` : inherited ? 'Account default (resolve from account settings)' : 'Unconfigured'
 }
 
 /** Editing stages a revision; only the separate acceptance control authorizes it. */
-export function WorkerSettingsReview({ worker, accountScopeId, disabled }: { worker: WorkerRecord; accountScopeId: string; disabled: boolean }) {
+interface WorkerSettingsReviewProps { worker: WorkerRecord; accountScopeId: string; disabled: boolean; onAcceptanceBlockedChange?: (blocked: boolean) => void }
+export function WorkerSettingsReview(props: WorkerSettingsReviewProps) {
+  const { worker, accountScopeId } = props
   // Identity changes reset synchronously, before another worker's draft can render.
-  return <WorkerSettingsEditor key={`${accountScopeId}:${worker.account_scope_id}:${worker.id}`} worker={worker} accountScopeId={accountScopeId} disabled={disabled} />
+  return <WorkerSettingsEditor key={`${accountScopeId}:${worker.account_scope_id}:${worker.id}`} {...props} />
 }
-function WorkerSettingsEditor({ worker, accountScopeId, disabled }: { worker: WorkerRecord; accountScopeId: string; disabled: boolean }) {
+function WorkerSettingsEditor({ worker, accountScopeId, disabled, onAcceptanceBlockedChange }: WorkerSettingsReviewProps) {
   const [stored, setDraft] = useState(() => createWorkerSettingsDraft(worker))
   const draft = reconcileWorkerSettingsDraft(stored, worker)
   if (draft !== stored) setDraft(draft)
@@ -31,6 +33,8 @@ function WorkerSettingsEditor({ worker, accountScopeId, disabled }: { worker: Wo
   const [error, setError] = useState('')
   const pending = !!worker.pending_review || worker.lifecycle_state === 'pending' || draft.saved
   const blocked = disabled || busy || worker.account_scope_id !== accountScopeId
+  const acceptanceBlocked = dirty || conflict || busy || draft.revision !== worker.revision
+  useEffect(() => { onAcceptanceBlockedChange?.(acceptanceBlocked) }, [acceptanceBlocked, onAcceptanceBlockedChange])
   const approved: WorkerSettingsValue = { mode: worker.execution_mode || 'auto', profile: worker.model_profile }
   const savedCandidate = workerSettingsValue(worker)
   const pendingChanges = worker.pending_review ? workerSettingsChanges(approved, savedCandidate) : []
@@ -55,7 +59,7 @@ function WorkerSettingsEditor({ worker, accountScopeId, disabled }: { worker: Wo
     <p className="text-xs text-[var(--app-text-muted)]">{draft.value.mode === 'plan' ? 'Plan first, then carry out the approved work.' : 'Work directly with the Action model.'}</p>
     <WorkerModelPicker accountScopeId={accountScopeId} profile={draft.value.profile} mode={draft.value.mode} disabled={blocked} onChange={profile => setDraft({ ...draft, saved: false, value: { ...draft.value, profile } })} />
     {pending && <div className="space-y-2 rounded-lg border border-[var(--app-border)] px-3 py-2 text-xs" aria-label="Pending model changes">
-      <p className="font-medium">{worker.lifecycle_state === 'pending' ? 'Not yet accepted · nothing runs' : 'Pending approval · approved settings remain in effect'}</p>
+      <p className="font-medium">{worker.lifecycle_state === 'pending' ? 'Not yet accepted · nothing runs' : 'Pending approval · approved settings remain in effect. Accept changes below.'}</p>
       {!!pendingChanges.length && <ul className="space-y-1 text-[var(--app-text-muted)]">{pendingChanges.map(field => <li key={field} className="break-words [overflow-wrap:anywhere]"><span className="font-medium">{field}</span>: {settingLabel(approved, field)} → {settingLabel(savedCandidate, field)}</li>)}</ul>}
     </div>}
     {conflict && <p role="alert" className="text-xs">This worker changed while you were editing. Your draft is kept; discard it to load the latest revision before proposing.</p>}

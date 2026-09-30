@@ -154,12 +154,10 @@ func (s *WorkerExecutionService) Accept(account, user, id string, revision uint6
 	if len(models) == 1 {
 		model = models[0]
 	}
-	if model == nil || len(models) == 1 {
-		model, err = s.ResolveModelProfile(account, model)
-		if err != nil {
-			return store.WorkerRecord{}, err
-		}
-	} else if err := store.ValidateWorkerModelProfile(model); err != nil {
+	// Revalidate the saved candidate too: catalog support may have changed since
+	// proposal. Resolve inherited slots without replacing explicit slot policies.
+	model, err = s.ResolveModelProfile(account, model)
+	if err != nil {
 		return store.WorkerRecord{}, err
 	}
 	return ws.AcceptWorker(account, user, id, revision, map[string]string{"primary": primaryWS}, model)

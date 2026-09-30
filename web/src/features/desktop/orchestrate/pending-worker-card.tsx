@@ -1,10 +1,10 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { getDesktopSessionIdentitySnapshot } from '../../../app/api'
 import { workspaceOverviewQueryOptions } from '../../queries/query-options'
 import { desktopWorkers } from '../runtime/desktop-workers'
-import { WorkerModelPicker } from './worker-model-picker'
-import type { WorkerModelProfile, WorkerRecord } from '../state/desktop-workers-api'
+import { WorkerSettingsReview } from './worker-settings-review'
+import type { WorkerRecord } from '../state/desktop-workers-api'
 import { swarmWorkerHref } from './swarm-navigation'
 import { proposalJobTiming } from './worker-schedule'
 import { proposalGoal, proposalWorkspaces, type ProposalWorkspaceCatalog } from './worker-proposal-presentation'
@@ -21,12 +21,13 @@ export interface PendingWorkerCardProps {
   onOpenDetail?: (workerId: string) => void
   approvedWorker?: WorkerRecord
   showModelControls?: boolean
+  acceptanceBlocked?: boolean
 }
 
 export function PendingWorkerCard(props: PendingWorkerCardProps) {
   const candidate = props.worker.pending_review
   const reviewProps = candidate ? { ...props, approvedWorker: props.worker, worker: { ...candidate, id: props.worker.id, account_scope_id: props.worker.account_scope_id, revision: props.worker.revision, local_bindings: props.worker.local_bindings, authorized_workspaces: props.worker.authorized_workspaces } } : props
-  return reviewProps.workspaceCatalog ? <PendingWorkerPresentation {...reviewProps} /> : <CatalogProposal {...reviewProps} />
+  return reviewProps.workspaceCatalog ? <PendingWorkerPresentation key={`${props.accountScopeId}:${props.worker.id}`} {...reviewProps} /> : <CatalogProposal key={`${props.accountScopeId}:${props.worker.id}`} {...reviewProps} />
 }
 
 /** Reuse the authorized overview reader, never the active chat workspace. */
@@ -52,10 +53,9 @@ function AuthorizedCatalogProposal(props: PendingWorkerCardProps) {
   </>
 }
 
-function PendingWorkerPresentation({ worker, accountScopeId, workspaceSlug, workspaceCatalog, stale = false, mutationError, initialExpanded = false, onAccepted, onOpenDetail, approvedWorker, showModelControls = true }: PendingWorkerCardProps) {
-  const [model, setModel] = useState<WorkerModelProfile | null | undefined>(worker.model_profile)
+function PendingWorkerPresentation({ worker, accountScopeId, workspaceSlug, workspaceCatalog, stale = false, mutationError, initialExpanded = false, onAccepted, onOpenDetail, approvedWorker, showModelControls = true, acceptanceBlocked = false }: PendingWorkerCardProps) {
+  const [settingsBlocked, setSettingsBlocked] = useState(false)
   const [expanded, setExpanded] = useState(initialExpanded)
-  useEffect(() => { setModel(worker.model_profile) }, [worker.id, worker.revision, worker.model_profile])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const wrongAccount = worker.account_scope_id !== accountScopeId
@@ -63,12 +63,13 @@ function PendingWorkerPresentation({ worker, accountScopeId, workspaceSlug, work
   const jobs = worker.automations
   const activeError = error || mutationError
   const handleAccept = async () => {
-    if (busy || stale || wrongAccount) return
+    if (busy || stale || wrongAccount || settingsBlocked || acceptanceBlocked) return
     setBusy(true)
     setError('')
     try {
-      const result = await desktopWorkers.mutate({ action: 'accept', workerId: worker.id, expected_revision: worker.revision, ...(model ? { model_profile: model } : {}) }, accountScopeId)
-      if ('worker' in result) onAccepted?.(result.worker)
+      const result = await desktopWorkers.mutate({ action: 'accept', workerId: worker.id, expected_revision: worker.revision }, accountScopeId)
+      if (!('worker' in result) || result.worker.pending_review || result.worker.lifecycle_state === 'pending') throw new Error('Acceptance did not return an approved worker. Refresh to check the saved revision.')
+      onAccepted?.(result.worker)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Worker acceptance failed')
     } finally {
@@ -88,8 +89,7 @@ function PendingWorkerPresentation({ worker, accountScopeId, workspaceSlug, work
       <h4 className="font-semibold text-slate-400">{targets.length > 1 ? 'Workspaces' : 'Workspace'} · Runs locally</h4>
       {targets.length ? targets.map(target => <p key={target.role} className={target.unresolved ? 'text-amber-300' : 'text-slate-200'}>{target.label} <span className="text-slate-400">· {target.status}{target.approvedTarget && target.approvedTarget !== target.target ? ` · replaces ${target.approvedName || 'unresolved previously approved workspace'}` : ''}</span></p>) : <p className="text-amber-300">No workspace target specified</p>}
     </section>
-    <p>Execution: {worker.execution_mode === 'plan' ? 'Plan (explicit planning before execution)' : 'Swarm (default)'}</p>
-    {showModelControls && <WorkerModelPicker accountScopeId={accountScopeId} profile={model} disabled={busy || stale || wrongAccount} onChange={setModel} />}
+    {showModelControls && <WorkerSettingsReview worker={approvedWorker || worker} accountScopeId={accountScopeId} disabled={busy || stale || wrongAccount} onAcceptanceBlockedChange={setSettingsBlocked} />}
     <section className="space-y-2 break-words" aria-label="Jobs and timing" data-testid="pending-worker-job-intent">
       {approvedWorker && <p>Previously approved timing: {approvedWorker.automations?.map(job => `${job.name}: ${proposalJobTiming(job)}`).join('; ') || 'No jobs'}</p>}
       {noJobs ? <p data-testid="pending-worker-no-job">No job attached; waits for a task after acceptance</p> : jobs?.map(job => <div key={job.id}>
@@ -131,10 +131,11 @@ function PendingWorkerPresentation({ worker, accountScopeId, workspaceSlug, work
       </details>
     </div>}
     <footer className="flex flex-wrap items-center gap-3 border-t border-slate-800 pt-3">
-      <button type="button" disabled={busy || stale || wrongAccount} onClick={handleAccept} className="rounded-lg bg-emerald-600 px-4 py-2 font-semibold text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50" data-testid="accept-pending-worker">{busy ? 'Accepting…' : approvedWorker ? 'Accept changes' : 'Accept worker'}</button>
+      <button type="button" disabled={busy || stale || wrongAccount || settingsBlocked || acceptanceBlocked} onClick={handleAccept} className="rounded-lg bg-emerald-600 px-4 py-2 font-semibold text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50" data-testid="accept-pending-worker">{busy ? 'Accepting…' : approvedWorker ? 'Accept changes' : 'Accept worker'}</button>
       <a href={swarmWorkerHref(workspaceSlug, worker.id)} onClick={e => { if (onOpenDetail && !e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey && e.button === 0) { e.preventDefault(); onOpenDetail(worker.id) } }} className="text-blue-300 hover:underline" data-testid="pending-worker-detail-link">Open worker detail</a>
       {stale && <p role="alert" className="text-amber-300">Worker definition is refreshing. Acceptance is blocked on stale revisions.</p>}
       {wrongAccount && <p role="alert">Worker account does not match the current account. Acceptance is blocked.</p>}
+      {(settingsBlocked || acceptanceBlocked) && <p role="status">Propose or discard your local model edits before accepting the saved revision.</p>}
       {activeError && <p role="alert" className="text-red-300">{activeError}</p>}
     </footer>
   </article>
