@@ -1,5 +1,8 @@
 # Artifact V3 launch closure
 
+Bookkeeping retirement note: retained Atlas/checker results below are historical
+execution reports, not current gates. Atlas and the TSV audit ledger are retired.
+
 Assessment date: 2026-09-05 UTC. Source reviewed: `d2ee6d63` (clean isolated implementation checkout before this document).
 
 ## Verdict
@@ -8,7 +11,7 @@ Assessment date: 2026-09-05 UTC. Source reviewed: `d2ee6d63` (clean isolated imp
 
 The required outcome is: a user creates an artifact with animated HTML Parts, revises it turn by turn, compares and explicitly selects alternatives (including Designer swarm candidates), combines selected animation with stills and recorded video in Video Studio, and explicitly accepts and renders a usable final video. Earlier revisions remain usable after later edits and restart.
 
-This document is the current closure checklist. The restoration audit remains historical evidence; its conflicting opening status and older inventory must not be treated as current acceptance. The structured approved session plan owns execution. Reconcile the historical audit and Atlas during closure rather than accumulating contradictory status notes.
+This document is the current closure checklist. The restoration audit remains historical evidence; its conflicting opening status and older inventory must not be treated as current acceptance. The structured approved session plan owns execution. Reconcile the historical audit during closure rather than accumulating contradictory status notes.
 
 ## What is known, and what is not
 
@@ -34,7 +37,7 @@ This document is the current closure checklist. The restoration audit remains hi
 4. **Storyboard/Part semantics.** `assemble` returns exactly one ready animation part with generic filming requirements. The runtime render request does not consume `PartID` or `CaptureStateID`. Implement and prove explicit ordered temporal sections/state renders; distinguish spatial HTML Parts from timeline sections. Do not imply each DOM Part automatically becomes a shot. Preserve stable section identity, exact source lineage, pending filming requirements and replacement semantics.
 5. **Proof is too shallow.** The current `video-conversion` runner requires one pending part and verifies reference metadata plus PNG/MP4 prefixes and sizes. It does not prove decoded MP4 frames, visible Video Studio playback, acceptance, mixed-media composition or the final exported cut. Extend the maintained runner in bounded stages; headers alone cannot pass visual/video acceptance.
 6. **Designer contract parity.** Audit the actual model-visible tool schema, injected grants, regular/swarm parsing, source targets and returned native references. Primary success is not Designer success. Prove one regular author plus follow-up before a small two-candidate swarm. Preserve all successful candidates when another slot fails; selection must be explicit and later turns must use the selected commit.
-7. **Evidence reconciliation.** Inspect actual test assertions and retained bounded reports before preserving any GREEN label. Reconcile new/changed test inventory with the audit ledger; no automatic promotion into curated security suites. Remove stale current-status prose from the restoration audit and update affected Atlas authorities and gaps.
+7. **Evidence reconciliation.** Inspect actual test assertions and retained bounded reports before preserving any GREEN label. Independently review new/changed tests; no automatic promotion into curated security suites. Remove stale current-status prose from the restoration audit and report remaining evidence gaps.
 
 ## Ordered execution gates
 
@@ -93,7 +96,7 @@ A separate operational continuity gap surfaced: persistent rebuild retains encry
 - Freeze a clean candidate. Run the complete bounded journey twice on that same source and runtime, including one prescribed restart/reconnect recovery.
 - Verify shipped-runtime encoder/browser availability, not only the testbench helper, and run required focused/security/build/publication gates for the intended release operation.
 - Any correction changes the candidate and invalidates affected evidence. No evidence borrowing from an older head.
-- Reconcile this checklist, historical audit, Atlas and test ledger. Report GO only when every required gate passes; otherwise list the exact remaining RED items.
+- Reconcile this checklist and historical audit. Report GO only when every required gate passes; otherwise list the exact remaining RED items.
 - Integration, push, PR and release remain separately authorized operations. A testbench GO is not a release or a promotion to the main checkout.
 
 ## Today / tomorrow window
@@ -133,8 +136,6 @@ The credible planning target is **tomorrow**, with a same-day result as an upsid
 - `web/src/features/desktop/chat/components/desktop-v3-artifact-v3-studio.tsx`
 - `web/src/features/desktop/tools/video-studio/video-studio-surface.tsx`
 - `docs/checkpoints/artifact-v3-restoration-gap-audit.md`
-- `docs/swarm-atlas.md`
-- `docs/testing/test-audit-ledger.tsv`
 
 The fixed testbench provisioning helper belongs to its separate operational workspace; its private deployment procedure and evidence must not be copied into this public source document.
 

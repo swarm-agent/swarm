@@ -22,7 +22,6 @@ parent identity or repin executable instructions. It forces paused/fresh approva
 and preserves old occurrence pins. It is a domain capability, not a public HTTP
 route and not permission to relax existing sidechat tool allowlists.
 
-Parent integration still needs tool/run and Desktop consumption. Parent-owned
-atlas and test audit ledger updates are outside this child scope. All new tests
+Parent integration still needs tool/run and Desktop consumption. All new tests
 are authored only: not run; parent validation required. Format changed Go files
 and run focused tests before integrating consumers.

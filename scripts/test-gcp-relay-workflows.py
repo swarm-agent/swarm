@@ -4,7 +4,7 @@ Threat: candidate checkout, skipped matrix checks, or local compute bypass GCP.
 Authority: five workflow job/step definitions and gcp-result-relay.poll.
 YAML structure is the narrowest wiring test, NOT proof of authentication or live
 Actions identity. Fake API failures exercise the actual relay without networking.
-Requires PyYAML; parent must execute and reconcile the test audit ledger/atlas.
+Requires PyYAML; parent must execute and review the test evidence.
 """
 import importlib.util
 import json

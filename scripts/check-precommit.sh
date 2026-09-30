@@ -57,7 +57,6 @@ fi
 "${SCRIPT_DIR}/check-secrets.sh"
 "${SCRIPT_DIR}/check-hidden-text.sh"
 bash "${SCRIPT_DIR}/check-policy-guardrails.sh"
-bash "${SCRIPT_DIR}/check-atlas-sync.sh"
 bash "${SCRIPT_DIR}/check-changelog.sh" --self-test
 bash "${SCRIPT_DIR}/check-vulns.sh"
 

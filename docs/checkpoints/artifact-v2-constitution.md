@@ -487,7 +487,7 @@ Cutover occurs only when one reviewed revision proves:
 7. that adapter cannot write, validate, select, publish, derive, convert, delete, or mutate selection/official refs;
 8. Video Conversion creates one pending proposal without model-authored arrays and cannot accept/render it;
 9. deterministic golden, provider-backed single-candidate, bounded three-candidate, pixel, reconnect, failure, and structural anti-derivation proofs pass at the exact revision; and
-10. Atlas, public tool/agent contracts, prompts, route catalog, critical matrix, and test ledger are synchronized.
+10. Public tool/agent contracts, prompts, and the critical test matrix agree with the implementation and inspected evidence.
 
 There is no dual-write or shadow-write period. Before cutover, V1 is current implementation and V2 routes are unavailable. At cutover, new write registration switches atomically to V2 and V1 write registrations are removed in the same change. Historical V1 reads remain available only through the adapter.
 
@@ -570,7 +570,7 @@ The final cutover revision must include:
 - focused Desktop interaction proof for immediate sidebar visibility, real part navigation, diagnostics, candidate comparison, selection, locks, publication, and conversion;
 - cross-account, stale-reference, idempotency, concurrency, cancellation, restart, and injected-failure tests for every §9 boundary;
 - structural proof of zero V1 managed-write registration/dependency and a behavior proof that legacy reads cause zero mutations; and
-- synchronized Atlas, test audit ledger, curated gate decisions, public prompt/tool contracts, and deletion evidence at the exact candidate revision.
+- reviewed curated gate decisions, public prompt/tool contracts, and deletion evidence at the exact candidate revision.
 
 ## 13. Relevant implementation evidence inspected for this freeze
 
@@ -602,6 +602,5 @@ Current code was inspected only to define quarantine, retained primitives, and a
 - `web/src/features/desktop/session-v3/artifact-studio-model.ts`
 - `web/src/features/desktop/chat/components/desktop-v3-artifact-sidebar.tsx`
 - `web/src/features/desktop/chat/components/desktop-v3-artifact-gallery.tsx`
-- `docs/swarm-atlas.md`
 
 This evidence does not make any V1 write component an implementation baseline or allowlisted V2 dependency.

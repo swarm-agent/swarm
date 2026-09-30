@@ -177,7 +177,7 @@ func TestManageWorktreePromoteReportsDirtyTargetBeforeApply(t *testing.T) {
 	source.Metadata["swarm_v3_source_workspace_path"] = "/captured"
 	source.Metadata["base_commit"] = "captured-head"
 	sessions.parent = source
-	worktrees.states["/captured"] = worktreeruntime.TaskWorkspaceState{WorkspacePath: "/captured", BranchName: "dev", HeadCommit: "captured-head", Status: " M docs/swarm-atlas.md", Clean: false}
+	worktrees.states["/captured"] = worktreeruntime.TaskWorkspaceState{WorkspacePath: "/captured", BranchName: "dev", HeadCommit: "captured-head", Status: " M README.md", Clean: false}
 
 	_, err := runtime.manageWorktreePromote(scope, map[string]any{
 		"source_session_id": source.ID, "source_branch": source.WorktreeBranch, "source_head": "parent-head",

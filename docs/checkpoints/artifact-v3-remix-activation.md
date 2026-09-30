@@ -1,5 +1,8 @@
 # Native remix review and activation prerequisites
 
+The Atlas synchronization result below is historical; that checker is retired
+and is not a current activation prerequisite.
+
 ## Reviewable source and evidence
 
 Implementation HEAD: `deb7bcf6b5b95fe5dc6a3542e642d7e5382461b2`.

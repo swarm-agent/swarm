@@ -94,5 +94,6 @@ postconditions, and synthetic full-stack tool delivery. Store restart recall and
 fresh corrective execution are separate fixtures; no complete daemon-restart,
 provider-backed correction, UI delivery, or GCP E2E result is claimed. The original
 incident source is neither a fixture nor changed by this workflow documentation.
-See the atlas revision ledger and `test-audit-ledger.tsv` for exact execution and
-digest evidence; independent P1/P2 audit remains pending.
+Independent first- and second-pass test review remains pending. Historical
+execution and digest bookkeeping referenced the now-retired Atlas and audit ledger;
+that bookkeeping is not a current validation requirement.

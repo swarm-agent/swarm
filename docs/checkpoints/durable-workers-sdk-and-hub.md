@@ -91,7 +91,7 @@ Steps 1–3 below retain their historical implementation evidence. Their checked
 
 - [x] Implement worker record/revisions, automation ownership, run linkage, migration and portable JSON validation/import/export.
 - [x] Expose canonical worker definition APIs and SDK methods together; distinguish legacy SDK actor types.
-- [x] Add focused requirements-first persistence, round-trip, ownership, stale-update and migration tests; update atlas and test inventory.
+- [x] Add focused requirements-first persistence, round-trip, ownership, stale-update and migration tests; review test evidence.
 - Exit: an idle worker is independently durable; SDK reads/edits the same object after restart and round-trips its definition without enabling work.
 
 #### Checkpoint 1 implementation and verification
@@ -267,6 +267,6 @@ Start the authoring cases in fresh Orchestrator conversations using normal user 
 
 For each case record: candidate commit, daemon binary identity/PID, lane ownership, effective model, scenario/input, exact worker/automation/run/session links, observed postconditions, provider receipts where execution occurs, deliverable references and pass/fail/block reason. Keep private IDs, paths, logs and credentials outside public tracked documentation. Commit only sanitized result summaries and exact reproducible test commands.
 
-Every new or changed test needs a written invariant/threat/production-boundary purpose, narrow assertions and negative cases; reconcile the test audit ledger. Update the atlas when implementation changes its covered boundaries. UI screenshots must be inspected for actual rendering defects before making visual claims. No source-string assertion or HTTP 200 alone proves this lifecycle.
+Every new or changed test needs a written invariant/threat/production-boundary purpose, narrow assertions and negative cases. Report affected boundaries and validation evidence in the change handoff. UI screenshots must be inspected for actual rendering defects before making visual claims. No source-string assertion or HTTP 200 alone proves this lifecycle.
 
 Final acceptance is all E01–E20 passing against the final candidate, with no unresolved agreed lifecycle feature or safety/authority/data-loss defect. Step 4 implementation completion and Step 5 live acceptance must be reported separately. If provider or infrastructure access blocks a scenario, label it blocked—not passed. No S3 or cloud deployment is needed to finish this milestone.
