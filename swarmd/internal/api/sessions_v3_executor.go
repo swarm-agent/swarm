@@ -3503,6 +3503,9 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 			if strings.TrimSpace(response.StopReason) == "" && strings.TrimSpace(stepText) != "" {
 				response.StopReason = "stop"
 			}
+			if sessionruntime.NormalizeMode(resolved.Session.Mode) == sessionruntime.ModePlan && sessionsV3MapString(resolved.Session.Metadata, "task_id") != "" {
+				return sessionV3ProviderLoopResult{}, errors.New("Planning run ended without publishing a durable task plan; retry planning")
+			}
 			return sessionV3ProviderLoopResult{Response: response, FinalContent: stepText, FinalRequest: baseReq, DurableFlushCount: sink.AssistantFlushCount(), FinalStreamID: streamState.StreamID(), FinalStep: streamState.Step(), FinalOffsetEnd: streamState.OffsetEnd(), FinalStartSeq: sink.AssistantStartSeq(streamState.StreamID())}, nil
 		}
 		if finalizingPlanTerminal && len(response.FunctionCalls) > 0 {
@@ -3731,7 +3734,7 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 		if len(input) == 0 {
 			return sessionV3ProviderLoopResult{}, errors.New("v3 provider continuation input is empty after tool execution")
 		}
-		if _, ok := sessionsV3ProviderTerminalPlanToolResult(toolResults); ok {
+		if terminal, ok := sessionsV3ProviderTerminalPlanToolResult(toolResults); ok && e.sessionV3TerminalPlanPublished(job, terminal) {
 			return sessionV3ProviderLoopResult{Response: provideriface.Response{StopReason: "stop"}, FinalRequest: baseReq, DurableFlushCount: sink.AssistantFlushCount(), FinalStreamID: streamState.StreamID(), FinalStep: streamState.Step(), FinalOffsetEnd: streamState.OffsetEnd(), FinalStartSeq: sink.AssistantStartSeq(streamState.StreamID()), TerminalPlanHandled: true}, nil
 		}
 		if sessionsV3ProviderCheckpointRunToolResult(toolResults) {
@@ -3808,6 +3811,8 @@ type sessionV3ProviderTerminalPlanResult struct {
 	CheckpointID     string
 	NextCheckpointID string
 	PlanID           string
+	Revision         string
+	Receipt          string
 	PlanTitle        string
 	Summary          string
 }
@@ -3824,11 +3829,14 @@ func sessionV3ProviderCheckpointRunNextAction(nextAction string) bool {
 func sessionsV3ProviderCheckpointRunToolResult(results []provideriface.ToolExecutionResult) bool {
 	for i := len(results) - 1; i >= 0; i-- {
 		result := results[i]
+		if strings.TrimSpace(result.Error) != "" {
+			continue
+		}
 		toolName := strings.TrimSpace(result.Name)
 		if !strings.EqualFold(toolName, "plan_manage") && !strings.EqualFold(toolName, "exit_plan_mode") {
 			continue
 		}
-		payload := sessionsV3DecodeToolPayload(strings.TrimSpace(firstNonEmpty(result.Output, result.TextForModel, result.Error)))
+		payload := sessionsV3DecodeToolPayload(strings.TrimSpace(firstNonEmpty(result.Output, result.TextForModel)))
 		if sessionV3ProviderCheckpointRunNextAction(sessionsV3MapString(payload, "next_action")) {
 			return true
 		}
@@ -3836,24 +3844,67 @@ func sessionsV3ProviderCheckpointRunToolResult(results []provideriface.ToolExecu
 	return false
 }
 
+// A tool envelope is only a candidate; task review termination requires the
+// exact canonical binding created by publication, never an active-plan fallback.
+func (e *sessionV3Executor) sessionV3TerminalPlanPublished(job sessionV3ExecutorJob, terminal sessionV3ProviderTerminalPlanResult) bool {
+	if e == nil || e.server == nil || e.server.sessions == nil {
+		return false
+	}
+	current, found, err := e.server.sessions.GetSession(job.SessionID)
+	if err != nil || !found || current.AccountScopeID != job.Principal.AccountScopeID || current.UserID != job.Principal.UserID {
+		return false
+	}
+	if terminal.Action != "exit_plan_mode" && (current.Mode != sessionruntime.ModePlan || sessionsV3MapString(current.Metadata, "task_id") == "") {
+		return true
+	}
+	db := e.server.sessions.Store()
+	plan, found, err := db.GetPlan(job.SessionID, terminal.PlanID)
+	if err != nil || !found || plan.Document == nil {
+		return false
+	}
+	projectID, taskID := sessionsV3MapString(current.Metadata, "project_id"), sessionsV3MapString(current.Metadata, "task_id")
+	if projectID == "" && taskID == "" {
+		return plan.ApprovalState == "approved" && current.Mode == sessionruntime.ModeAuto // Standalone acceptance remains permission-gated.
+	}
+	task, found, err := db.GetProjectTask(current.AccountScopeID, projectID, taskID)
+	if err != nil || !found || task == nil || task.SessionID != job.SessionID || task.ExecutionRunID() != job.RunID || task.Status != "pending_approval" || task.PlanBinding == nil {
+		return false
+	}
+	task.EnsureTaskAttempts()
+	attempt := task.ActiveAttempt()
+	if attempt == nil || attempt.SessionID != job.SessionID || (sessionsV3MapString(current.Metadata, "task_attempt_id") != "" && sessionsV3MapString(current.Metadata, "task_attempt_id") != attempt.ID) {
+		return false
+	}
+	binding := task.PlanBinding
+	if current.Mode != sessionruntime.ModePlan || plan.ApprovalState != "pending" || plan.Status != "pending_approval" || binding.SessionID != job.SessionID || binding.PlanID != plan.ID || binding.DefinitionRevision != plan.Version || binding.Receipt == "" {
+		return false
+	}
+	return terminal.Action != "exit_plan_mode" || (terminal.Revision == fmt.Sprint(plan.Version) && terminal.Receipt == binding.Receipt)
+}
+
 func sessionsV3ProviderTerminalPlanToolResult(results []provideriface.ToolExecutionResult) (sessionV3ProviderTerminalPlanResult, bool) {
 	for i := len(results) - 1; i >= 0; i-- {
 		result := results[i]
+		if strings.TrimSpace(result.Error) != "" {
+			continue
+		}
 		if strings.EqualFold(strings.TrimSpace(result.Name), "plan_manage") {
-			payload := sessionsV3DecodeToolPayload(strings.TrimSpace(firstNonEmpty(result.Output, result.TextForModel, result.Error)))
+			payload := sessionsV3DecodeToolPayload(strings.TrimSpace(firstNonEmpty(result.Output, result.TextForModel)))
 			if terminal, ok := sessionsV3ProviderTerminalPlanPayload(payload); ok {
 				return terminal, true
 			}
 		}
 		if strings.EqualFold(strings.TrimSpace(result.Name), "exit_plan_mode") {
-			payload := sessionsV3DecodeToolPayload(strings.TrimSpace(firstNonEmpty(result.Output, result.TextForModel, result.Error)))
-			if payload != nil {
+			payload := sessionsV3DecodeToolPayload(strings.TrimSpace(firstNonEmpty(result.Output, result.TextForModel)))
+			if payload != nil && payload["truncated_for_model"] != true && payload["details_truncated"] != true {
 				status := strings.TrimSpace(sessionsV3MapString(payload, "status"))
-				if status == "plan_submitted_for_review" || status == "plan_submitted" || strings.TrimSpace(sessionsV3MapString(payload, "tool")) == "exit_plan_mode" {
+				if (status == "plan_submitted_for_review" || status == "plan_submitted" || status == "approved") && sessionsV3MapString(payload, "error") == "" && sessionsV3MapString(payload, "plan_id") != "" {
 					return sessionV3ProviderTerminalPlanResult{
 						Action:           "exit_plan_mode",
 						NextAction:       "await_user_approval",
 						PlanID:           strings.TrimSpace(sessionsV3MapString(payload, "plan_id")),
+						Revision:         fmt.Sprint(payload["revision"]),
+						Receipt:          sessionsV3MapString(payload, "receipt"),
 						NextCheckpointID: strings.TrimSpace(sessionsV3MapString(payload, "checkpoint_id")),
 						Summary:          strings.TrimSpace(sessionsV3MapString(payload, "message")),
 					}, true
@@ -3865,7 +3916,7 @@ func sessionsV3ProviderTerminalPlanToolResult(results []provideriface.ToolExecut
 }
 
 func sessionsV3ProviderTerminalPlanPayload(payload map[string]any) (sessionV3ProviderTerminalPlanResult, bool) {
-	if payload == nil {
+	if payload == nil || sessionsV3MapString(payload, "error") != "" {
 		return sessionV3ProviderTerminalPlanResult{}, false
 	}
 	nextAction := strings.TrimSpace(sessionsV3MapString(payload, "next_action"))
@@ -4216,7 +4267,8 @@ func (e *sessionV3Executor) sessionV3LatestCheckpointRunToolPayload(job sessionV
 
 func (e *sessionV3Executor) sessionV3LatestTerminalPlanToolPayload(job sessionV3ExecutorJob) (sessionV3ProviderTerminalPlanResult, bool) {
 	payload := e.sessionV3LatestPlanManageToolPayload(job)
-	return sessionsV3ProviderTerminalPlanPayload(payload)
+	terminal, ok := sessionsV3ProviderTerminalPlanPayload(payload)
+	return terminal, ok && e.sessionV3TerminalPlanPublished(job, terminal)
 }
 
 func (e *sessionV3Executor) sessionV3LatestPlanManageToolPayload(job sessionV3ExecutorJob) map[string]any {
@@ -4237,6 +4289,9 @@ func (e *sessionV3Executor) sessionV3LatestPlanManageToolPayload(job sessionV3Ex
 			toolName := strings.TrimSpace(record.ToolName)
 			if !strings.EqualFold(toolName, "plan_manage") && !strings.EqualFold(toolName, "exit_plan_mode") {
 				continue
+			}
+			if strings.TrimSpace(record.Error) != "" {
+				return nil
 			}
 			payload = sessionsV3DecodeToolPayload(strings.TrimSpace(record.CompletedOutput))
 			if payload == nil {
@@ -4676,14 +4731,18 @@ func (e *sessionV3Executor) resolveSessionV3Runtime(job sessionV3ExecutorJob) (s
 	if strings.TrimSpace(scope.PrimaryPath) == "" {
 		return sessionV3ResolvedRuntime{}, errors.New("session workspace path is empty")
 	}
+	tools, err := e.resolveSessionV3ProviderTools(session.AccountScopeID, agentProfile)
+	if err != nil {
+		return sessionV3ResolvedRuntime{}, err
+	}
+	agentProfile, tools, err = e.resolveSessionV3TaskHistoryTools(scope, agentProfile, tools)
+	if err != nil {
+		return sessionV3ResolvedRuntime{}, err
+	}
 	instructions := strings.TrimSpace(e.composeSessionV3Instructions(scope, session.Mode, agentProfile))
 	instructions = runruntime.AppendResolvedModelPolicyInstructions(instructions, session.Mode, pref)
 	if instructions == "" {
 		return sessionV3ResolvedRuntime{}, errors.New("resolved v3 instructions are empty")
-	}
-	tools, err := e.resolveSessionV3ProviderTools(session.AccountScopeID, agentProfile)
-	if err != nil {
-		return sessionV3ResolvedRuntime{}, err
 	}
 	providerID := strings.ToLower(strings.TrimSpace(pref.Provider))
 	providerRunner, _ := e.server.providers.GetRunner(providerID)
@@ -4876,6 +4935,15 @@ func (e *sessionV3Executor) composeSessionV3InstructionsLegacy(scope tool.Worksp
 		"Workspace scope primary path: " + strings.TrimSpace(scope.PrimaryPath),
 	}
 	return strings.TrimSpace(strings.Join(lines, "\n"))
+}
+
+func (e *sessionV3Executor) resolveSessionV3TaskHistoryTools(scope tool.WorkspaceScope, profile pebblestore.AgentProfile, definitions []provideriface.ToolDefinition) (pebblestore.AgentProfile, []provideriface.ToolDefinition, error) {
+	if resolver, ok := e.server.runner.(interface {
+		ResolveTaskHistoryTools(tool.WorkspaceScope, pebblestore.AgentProfile, []provideriface.ToolDefinition) (pebblestore.AgentProfile, []provideriface.ToolDefinition, error)
+	}); ok {
+		return resolver.ResolveTaskHistoryTools(scope, profile, definitions)
+	}
+	return profile, definitions, nil
 }
 
 func (e *sessionV3Executor) resolveSessionV3ProviderTools(accountScopeID string, agentProfile pebblestore.AgentProfile) ([]provideriface.ToolDefinition, error) {

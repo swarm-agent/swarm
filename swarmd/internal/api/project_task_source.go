@@ -149,6 +149,9 @@ func verifyProjectTaskSession(task *pebblestore.ProjectTaskRecord, session pebbl
 			return errors.New("task session source binding does not match reservation")
 		}
 	}
+	if task.ActiveAttemptID != "" && task.ActiveAttemptID != "initial" && session.Metadata["task_attempt_id"] != task.ActiveAttemptID {
+		return errors.New("task attempt provenance mismatch")
+	}
 	if session.WorktreeEnabled {
 		if session.WorktreeRootPath == "" || session.WorkspacePath != session.WorktreeRootPath || session.Metadata["swarm_v3_worktree_owner_session_id"] != session.ID || session.Metadata["swarm_v3_runtime_workspace_path"] != session.WorktreeRootPath || task.WorkspacePath != session.WorktreeRootPath {
 			return errors.New("task session worktree owner or runtime path does not match reservation")

@@ -1790,6 +1790,8 @@ export function upsertCommittedMessage(
   finalizeLiveRunForCommittedMessage(state, sessionId, message, sourceRunId, sourceRunStatus)
 }
 
+import { preferRunEvidence } from './task-progress'
+
 export function upsertRunIntent(
   state: DesktopV3CacheState,
   sessionId: string,
@@ -1797,7 +1799,7 @@ export function upsertRunIntent(
 ): void {
   const byRunId = state.runIntentsBySession[sessionId] ?? {}
   const existing = byRunId[runIntent.run_id]
-  if (existing && runIntent.event_seq < existing.event_seq) {
+  if (existing && preferRunEvidence(existing, runIntent) === existing) {
     return
   }
 
@@ -1819,7 +1821,19 @@ export function upsertRunIntent(
   byRunId[runIntent.run_id] = enrichedRunIntent
   state.runIntentsBySession[sessionId] = byRunId
 
-  if (ACTIVE_RUN_INTENT_STATUSES.has(enrichedRunIntent.status)) {
+  const view = state.sessionViewsById[sessionId]
+  const current = view?.current_run_state
+  const selected = preferRunEvidence(current ?? undefined, enrichedRunIntent)
+  const isLatest = selected === enrichedRunIntent
+    && preferRunEvidence(state.currentRunIntentBySession[sessionId], enrichedRunIntent) === enrichedRunIntent
+  if (isLatest) {
+    state.sessionViewsById[sessionId] = {
+      ...view,
+      current_run_state: { ...enrichedRunIntent, active: ACTIVE_RUN_INTENT_STATUSES.has(enrichedRunIntent.status) },
+    }
+  }
+
+  if (isLatest && ACTIVE_RUN_INTENT_STATUSES.has(enrichedRunIntent.status)) {
     state.currentRunIntentBySession[sessionId] = enrichedRunIntent
     const record = state.sessionsById[sessionId]
     if (record?.kind === 'full' && isAutomationExecutionSession(record.session)) {
@@ -2463,25 +2477,7 @@ function applyCurrentRunStateFrame(
       updated_at: runState.updated_at,
       event_seq: runState.event_seq ?? 0,
     }
-    const byRunId = state.runIntentsBySession[sessionId] ?? {}
-    byRunId[runIntent.run_id] = {
-      ...byRunId[runIntent.run_id],
-      ...runIntent,
-    }
-    state.runIntentsBySession[sessionId] = byRunId
-    if (runState.active) {
-      state.currentRunIntentBySession[sessionId] = runIntent
-      const record = state.sessionsById[sessionId]
-      if (record?.kind === 'full' && isAutomationExecutionSession(record.session)) {
-        restoreSessionToSidebar(state, sessionId)
-      }
-    } else {
-      delete state.currentRunIntentBySession[sessionId]
-      const record = state.sessionsById[sessionId]
-      if (record?.kind === 'full' && isAutomationExecutionSession(record.session)) {
-        removeSessionFromNavigationMembership(state, sessionId)
-      }
-    }
+    upsertRunIntent(state, sessionId, runIntent)
   } else {
     delete state.currentRunIntentBySession[sessionId]
     const record = state.sessionsById[sessionId]
@@ -2565,7 +2561,12 @@ function applySessionViews(
       continue
     }
 
-    state.sessionViewsById[sessionId] = { ...state.sessionViewsById[sessionId], ...view }
+    const retainedRun = state.sessionViewsById[sessionId]?.current_run_state
+    state.sessionViewsById[sessionId] = {
+      ...state.sessionViewsById[sessionId], ...view,
+      current_run_state: preferRunEvidence(retainedRun ?? undefined, view.current_run_state ?? undefined),
+    }
+    if (view.current_run_state) applyCurrentRunStateFrame(state, sessionId, view.current_run_state)
     if (view.current_execution_epoch) {
       mergeCurrentExecutionEpoch(state, sessionId, view.current_execution_epoch)
     }

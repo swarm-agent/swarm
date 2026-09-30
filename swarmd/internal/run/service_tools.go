@@ -1703,6 +1703,17 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 			decisions[i].Result.Error = message
 			continue
 		}
+		if canonicalToolName(toolCalls[i].Name) == "manage_projects" {
+			principal, _ := identity.PrincipalFromContext(ctx)
+			var agentProfile pebblestore.AgentProfile
+			if len(profile) > 0 {
+				agentProfile = profile[0]
+			}
+			if err := s.authorizeProjectHistoryInvocation(tool.WorkspaceScope{SessionID: sessionID, Principal: principal}, agentProfile, toolCalls[i].Arguments); err != nil {
+				decisions[i].Result.Error = err.Error()
+				continue
+			}
+		}
 		if workerDocumentInPlanCall(toolCalls[i]) {
 			decisions[i].Result.Error = "Worker proposals require manage_workers action=propose; session-plan tools cannot author workers"
 			continue
@@ -2966,6 +2977,11 @@ func (s *Service) executeTaskProgressTool(sessionID string, call tool.Call, appl
 		}
 		if summaryText != "" {
 			metadata["lifecycle_summary"] = summaryText
+			if state, found, err := s.sessions.Store().GetV3SessionRunState(sessionID); err == nil && found && state.AccountScopeID == session.AccountScopeID {
+				metadata["lifecycle_summary_run_id"] = state.RunID
+			} else {
+				delete(metadata, "lifecycle_summary_run_id")
+			}
 		}
 
 		nowMS := time.Now().UnixMilli()

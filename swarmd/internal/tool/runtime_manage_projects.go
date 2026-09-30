@@ -473,6 +473,21 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 	if r == nil || r.projects == nil {
 		return "", errors.New("manage_projects service is not configured")
 	}
+	historyOnly := scope.TaskHistoryOnly
+	if r.sessions != nil && scope.SessionID != "" {
+		current, found, err := r.sessions.GetSession(scope.SessionID)
+		if err != nil {
+			return "", err
+		}
+		if found && current.Metadata["resolved_agent_name"] == "swarm" {
+			historyOnly = true
+		}
+	}
+	if historyOnly {
+		if err := r.authorizeTaskHistoryCall(scope, args); err != nil {
+			return "", err
+		}
+	}
 	p := scope.Principal
 	accountScopeID := strings.TrimSpace(p.AccountScopeID)
 	userID := strings.TrimSpace(p.UserID)
@@ -756,11 +771,8 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 		}
 		taskID := strings.TrimSpace(asString(args["task_id"]))
 		title := strings.TrimSpace(asString(args["title"]))
-		if title == "" {
-			title = strings.TrimSpace(asString(args["prompt"]))
-		}
-		if title == "" {
-			return "", errors.New("manage_projects propose_task requires title")
+		if title == "" && strings.TrimSpace(asString(args["prompt"])) == "" && strings.TrimSpace(asString(args["description"])) == "" {
+			return "", errors.New("manage_projects propose_task requires title or prompt")
 		}
 
 		proj, found, err := r.projects.GetProject(accountScopeID, projectID)

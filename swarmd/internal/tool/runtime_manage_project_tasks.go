@@ -50,7 +50,33 @@ func (r *Runtime) executeManageProjectTasks(scope WorkspaceScope, action string,
 		if !found || task == nil {
 			return "", errors.New("task not found")
 		}
-		result["task"] = task
+		task.EnsureTaskAttempts()
+		cursor, limit := 0, 25
+		if _, ok := args["cursor"]; ok {
+			cursor, err = projectTaskInteger(args, "cursor", 0, 1000000)
+			if err != nil {
+				return "", err
+			}
+		}
+		if _, ok := args["limit"]; ok {
+			limit, err = projectTaskInteger(args, "limit", 1, 50)
+			if err != nil {
+				return "", err
+			}
+		}
+		rows, next, err := task.TaskAttemptPage(cursor, limit)
+		if err != nil {
+			return "", err
+		}
+		copyTask := *task
+		for i := range rows {
+			rows[i].Deliverables = append([]pebblestore.ProjectTaskDeliverable(nil), rows[i].Deliverables...)
+			for j := range rows[i].Deliverables {
+				rows[i].Deliverables[j].VideoProvenance = rows[i].Deliverables[j].VideoProvenance.ClientSafeCopy()
+			}
+		}
+		copyTask.Attempts = rows
+		result["task"], result["next_cursor"] = &copyTask, next
 	case "update_task", "archive_task", "delete_task":
 		if taskID == "" {
 			return "", errors.New("task_id is required")

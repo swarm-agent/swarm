@@ -20,7 +20,7 @@ const task: RunningTask = {
 test('compact card retains verified branch and omits noisy uninspected git telemetry', () => {
   const html = renderToStaticMarkup(<TaskCardSummary task={task} />)
   assert.match(html, /Fix session recovery/)
-  assert.match(html, /Branch.*agent\/repair/)
+  assert.match(html, /coder · agent\/repair/)
   assert.match(html, /1\/1 steps/)
   assert.doesNotMatch(html, /\/source\/project|Validation not reported|agent\/repair.*dev/)
   assert.doesNotMatch(html, /Git: last known state|Git: not inspected/)
@@ -51,11 +51,11 @@ test('card uses active session identity and activity but omits orchestration pro
   const html = renderToStaticMarkup(<TaskCardSummary task={running} />)
   assert.match(html, /finder.*running/)
   assert.match(html, /anthropic \/ model-x/)
-  assert.match(html, /Searching source/)
+  assert.doesNotMatch(html, /Searching source/) // Dedicated focus slot owns live tools.
   assert.doesNotMatch(html, /Execution Pipeline|Assigned Agent|requested-model|Internal mission plan/)
   assert.equal(taskCardFacts({ ...running, status: 'completed' }).activity, null)
   const unavailable = renderToStaticMarkup(<TaskCardSummary task={{ ...task, model: 'requested-model' }} />)
-  assert.match(unavailable, /coder requested/)
+  assert.match(unavailable, /coder · agent\/repair/)
   assert.doesNotMatch(unavailable, /requested-model|Active session model/)
 })
 
@@ -138,7 +138,7 @@ test('card formats coder agent identity cleanly without system prefix', () => {
     activeAgent: 'system-coder',
   }
   const html = renderToStaticMarkup(<TaskCardSummary task={taskWithSystemCoder} />)
-  assert.match(html, />coder</)
+  assert.match(html, />coder · agent\/repair</)
   assert.doesNotMatch(html, />system-coder<|>system coder<|@system-coder/)
 })
 

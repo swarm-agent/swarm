@@ -58,6 +58,15 @@ func (s *Server) reconcileProjectTaskRunLifecycle(job sessionV3ExecutorJob, stat
 		return err
 	}
 	isPrimarySession := task.SessionID == job.SessionID
+	if isPrimarySession && task.ActiveAttemptID != "" && task.ActiveAttemptID != "initial" {
+		state, found, err := db.GetV3SessionRunState(job.SessionID)
+		if err != nil {
+			return err
+		}
+		if !found || state.AccountScopeID != accountScopeID || state.RunID != job.RunID {
+			return nil
+		}
+	}
 	isTaskProgramSession := false
 	progID := task.TaskProgramID
 	if progID == "" && task.TaskProgram != nil {
@@ -138,35 +147,15 @@ func (s *Server) reconcileProjectTaskRunLifecycle(job sessionV3ExecutorJob, stat
 	switch status {
 	case sessionruntime.RunIntentCompleted:
 		if task.Status == "planning" {
-			active, hasActive, planErr := db.GetActivePlan(task.SessionID)
-			if planErr == nil && hasActive && active.PlanID != "" {
-				plan, found, pErr := db.GetPlan(task.SessionID, active.PlanID)
-				if pErr == nil && found && plan.Document != nil && len(plan.Document.Checkpoints) > 0 {
-					_, err = db.UpdateProjectTask(accountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
-						if t.SessionID != job.SessionID || t.Status != "planning" {
-							return nil
-						}
-						t.Status = "pending_approval"
-						t.PlanBinding = &pebblestore.ProjectTaskPlanBinding{
-							PlanID:             plan.ID,
-							SessionID:          task.SessionID,
-							DefinitionRevision: plan.Version,
-						}
-						t.PlanDocument = plan.Document
-						t.ActionNeeded = "Review plan in task card and click Approve"
-						t.WhatDidDo = append(t.WhatDidDo, "Plan agent authored structured plan")
-						return nil
-					})
-					return err
-				}
-			}
+			// Canonical publication already transitions the task with its receipt.
+			// A merely active session plan is not evidence of task publication.
 			_, err = db.UpdateProjectTask(accountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
 				if t.SessionID != job.SessionID || t.Status != "planning" {
 					return nil
 				}
-				t.Status = "needs_review"
-				t.ActionNeeded = "Action Needed: Plan agent finished investigation. Review session findings."
-				t.WhatDidDo = append(t.WhatDidDo, "Completed planning investigation")
+				t.Status = "failed"
+				t.LastError = "Planning run ended without publishing a durable task plan"
+				t.ActionNeeded = "Action Needed: Planning run ended without a published plan. Retry planning."
 				return nil
 			})
 			return err
@@ -197,6 +186,15 @@ func (s *Server) reconcileProjectTaskRunLifecycle(job sessionV3ExecutorJob, stat
 			if t.Status != "in_progress" {
 				return nil
 			}
+			if t.ActiveAttemptID != "" && t.ActiveAttemptID != "initial" {
+				state, found, stateErr := db.GetV3SessionRunState(job.SessionID)
+				if stateErr != nil {
+					return stateErr
+				}
+				if !found || state.Active || state.AccountScopeID != accountScopeID || state.RunID != job.RunID || state.Status != sessionruntime.RunIntentCompleted {
+					return nil
+				}
+			}
 			if gitState.gitStatus != "unknown" {
 				t.UnintegratedCommits = gitState.unintegratedCommits
 				t.GitStatus = gitState.gitStatus
@@ -216,7 +214,7 @@ func (s *Server) reconcileProjectTaskRunLifecycle(job sessionV3ExecutorJob, stat
 			}
 			if !t.IsIntegrated {
 				t.Status = "needs_review"
-				if t.ActionNeeded == "" || strings.HasPrefix(t.ActionNeeded, "Action Needed: 0") || t.ActionNeeded == "Executing reopened task" {
+				if t.ActionNeeded == "" || strings.HasPrefix(t.ActionNeeded, "Action Needed: 0") || t.ActionNeeded == "Executing reopened task" || t.ActionNeeded == "Launching task-linked Swarm follow-up" {
 					if t.UnintegratedCommits > 0 {
 						baseBranch := t.BaseBranch
 						if baseBranch == "" {

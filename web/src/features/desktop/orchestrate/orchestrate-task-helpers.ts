@@ -1,3 +1,4 @@
+import { preferRunEvidence, sessionTaskTodos } from '../state/task-progress'
 import type {
   RunningTask,
   RunningTaskPlanCheckpoint,
@@ -828,8 +829,7 @@ export function aggregateTaskLiveState(
 
   const primaryIntentStatus = primaryIntent?.status?.trim().toLowerCase()
   const primaryRunId = primaryView?.current_run_state?.run_id
-  const primaryRunStatus = (primaryIntent?.run_id && primaryRunId && primaryIntent.run_id !== primaryRunId)
-    ? primaryIntentStatus : (primaryRunId ? primaryView?.current_run_state?.status?.trim().toLowerCase() : undefined) || primaryIntentStatus
+  const primaryRunStatus = preferRunEvidence(primaryView?.current_run_state, primaryIntent)?.status?.trim().toLowerCase()
   const primaryIntentIsCurrent = !primaryRunId || !primaryIntent?.run_id || primaryIntent.run_id === primaryRunId
   const primaryPhase = primaryLifecycle?.phase?.trim().toLowerCase()
 
@@ -885,8 +885,7 @@ export function aggregateTaskLiveState(
 
     const intentStatus = sIntent?.status?.trim().toLowerCase()
     const currentRunId = sView?.current_run_state?.run_id
-    const currentRunStatus = (sIntent?.run_id && currentRunId && sIntent.run_id !== currentRunId)
-      ? intentStatus : (currentRunId ? sView?.current_run_state?.status?.trim().toLowerCase() : undefined)
+    const currentRunStatus = preferRunEvidence(sView?.current_run_state, sIntent)?.status?.trim().toLowerCase()
     const intentIsCurrent = !currentRunId || !sIntent?.run_id || sIntent.run_id === currentRunId
     const lifecyclePhase = sLifecycle?.phase?.trim().toLowerCase()
     const isLifecycleActiveFlag = Boolean(sLifecycle?.active === true)
@@ -1097,6 +1096,8 @@ export function aggregateTaskLiveState(
       // Live session aggregation
       if (sessionStates.some((s) => s.status === 'blocked' || s.status === 'paused') && runningSessions === 0) {
         status = 'blocked'
+      } else if (primaryRunStatus === 'pending_executor' && runningSessions === 0) {
+        status = 'queued'
       } else if (isLifecycleActive) {
         status = 'running'
       } else if (isAnyFailed) {
@@ -1169,26 +1170,33 @@ export function aggregateTaskLiveState(
     })
   }
 
+  // Direct Coder checklists are session metadata, not synthetic pipeline stages.
+  const taskTodos = !hasTaskProgram && associatedSids.length === 1
+    ? sessionTaskTodos(primarySess?.metadata) : undefined
+  if (taskTodos && !activePlanCheckpoints?.length) {
+    totalSubtasks = taskTodos.length
+    completedSubtasks = taskTodos.filter((todo) => todo.status === 'completed').length
+    const active = taskTodos.find((todo) => todo.status === 'in_progress')
+    activeSubtaskId = active?.id || ''
+    activeSubtaskTitle = active?.title || ''
+  }
+
   // Tool calls & live streaming text: prioritize running session
   const activeSid = sessionStates.find((s) => s.status === 'running')?.sessionId || primarySessionId
   const activeData = activeSid ? liveTaskSessionsData[activeSid] : primaryData
   const activeSettings = activeData?.view?.agentic_settings
   const activePreference = activeSettings?.effective_preference as { provider?: string; model?: string } | undefined
   // Never display the previous run's text while the latest run starts or after it ends.
-  const activeRunId = activeData?.intent?.status === 'running' && activeData.intent.run_id !== activeData.view?.current_run_state?.run_id
-    ? activeData.intent.run_id : (activeData?.view?.current_run_state?.run_id || activeData?.intent?.run_id)
-  const activeRunStatus = activeData?.intent?.status === 'running' &&
-    activeData.intent.run_id !== activeData.view?.current_run_state?.run_id ? 'running' :
-    (activeData?.view?.current_run_state?.run_id ? activeData.view.current_run_state.status : activeData?.intent?.status)
+  const activeRun = preferRunEvidence(activeData?.view?.current_run_state, activeData?.intent)
+  const activeRunId = activeRun?.run_id
+  const activeRunStatus = activeRun?.status
   const effectiveLiveRun = activeRunId && (!activeData?.liveRun?.runId || activeData.liveRun.runId === activeRunId) &&
     activeRunStatus === 'running'
     ? activeData?.liveRun : undefined
 
   const toolCalls = effectiveLiveRun ? Object.values((effectiveLiveRun.toolCallsByCallId || {}) as Record<string, any>) : []
-  const currentTool = [...toolCalls]
-    .sort((a, b) => b.updatedAt - a.updatedAt)
-    .map((t) => t.toolDisplay?.trim() || t.toolName?.trim() || '')
-    .find(Boolean) || ''
+  const latestTool = [...toolCalls].sort((a, b) => b.updatedAt - a.updatedAt)[0]
+  const currentTool = latestTool?.toolDisplay?.trim() || latestTool?.toolName?.trim() || ''
   const toolActivitySummary = summarizeDesktopV3TaskToolActivity(toolCalls.filter((call: any) =>
     ['running', 'in_progress', 'pending', 'started'].includes((call.status || '').trim().toLowerCase())) as any)
   const liveAssistantText = [
@@ -1232,6 +1240,13 @@ export function aggregateTaskLiveState(
   return {
     ...task,
     status,
+    taskTodos,
+    activeTodo: status === 'running' ? activeSubtaskTitle || undefined : undefined,
+    subtasks: taskTodos ? taskTodos.map((todo) => ({ ...todo, completed: todo.status === 'completed' })) : task.subtasks,
+    handoffSummary: status === 'needs_review'
+      ? task.activeAttemptId ? task.handoffSummary
+        : primarySess?.metadata?.lifecycle_signal === 'needs_review' ? primarySess.metadata.lifecycle_summary : task.handoffSummary
+      : undefined,
     activeAgent: activeSettings?.resolved_agent_name?.trim() || activeSettings?.agent_name?.trim() || undefined,
     activeProvider: activePreference?.provider?.trim() || undefined,
     activeModel: activePreference?.model?.trim() || undefined,
@@ -1242,6 +1257,10 @@ export function aggregateTaskLiveState(
       (primaryPlanRecord?.id ? { planId: primaryPlanRecord.id, sessionId: primarySessionId } : undefined),
     currentFocus: currentFocus || task.currentFocus,
     currentTool: status === 'running' ? (currentTool || undefined) : undefined,
+    currentToolName: status === 'running' ? latestTool?.toolName : undefined,
+    currentToolEventKey: status === 'running' && latestTool
+      ? `${activeRunId}:${latestTool.callId}:${latestTool.updatedAt}:${latestTool.status}` : undefined,
+    toolCallCount: status === 'running' ? toolCalls.length : undefined,
     liveAssistantText: liveAssistantText || undefined,
     liveToolCalls: liveToolCalls || undefined,
     toolActivitySummary: toolActivitySummary || undefined,

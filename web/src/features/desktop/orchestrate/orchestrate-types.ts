@@ -274,7 +274,28 @@ export interface RunningTaskPlanCheckpoint {
   }>
 }
 
+export interface TaskAttempt {
+  id: string
+  session_id: string
+  run_id?: string
+  request?: string
+  request_revision?: number
+  client_request_id?: string
+  recovery?: { session_id: string }
+  role: string
+  created_at?: number
+  status: string
+  last_error?: string
+  launch_state?: string
+  summary?: string
+  integration?: { state: string; error?: string }
+}
+
 export interface RunningTask {
+  activeAttemptId?: string
+  attempts?: TaskAttempt[]
+  integration?: { state: string; error?: string }
+
   id: string
   title: string
   subtitle?: string
@@ -296,6 +317,8 @@ export interface RunningTask {
   stageIndex?: number
   totalStages?: number
   subtasks: { id: string; title: string; completed: boolean }[]
+  taskTodos?: import('../state/task-progress').TaskTodo[]
+  handoffSummary?: string
   stepTimeline?: TaskStep[]
   diffPreview?: string
   diffLines?: DiffLine[]
@@ -308,6 +331,9 @@ export interface RunningTask {
   // Live session sync, plan & streaming fields
   currentFocus?: string
   currentTool?: string
+  currentToolName?: string
+  currentToolEventKey?: string
+  toolCallCount?: number
   toolActivitySummary?: string
   activeTodo?: string
   metadata?: Record<string, any>

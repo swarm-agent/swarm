@@ -124,3 +124,90 @@
 .swarm-section :is(.hover\:text-white, .hover\:text-slate-200, .hover\:text-slate-300):hover { color: var(--swarm-text); }
 .swarm-section .bg-black\/92 { background-color: var(--swarm-background); }
 .swarm-task-fact dd { flex-wrap: wrap; }
+
+/* Quiet actions share New Task's project/inherited palette in either color scheme. */
+.swarm-section .swarm-outline-action,
+.swarm-section .swarm-new-task-cta {
+  border: 1px solid currentColor;
+  color: var(--swarm-text-accent);
+  background-color: transparent;
+  box-shadow: none;
+  transition: background-color 150ms ease;
+}
+.swarm-section .swarm-outline-action:not(:disabled):hover,
+.swarm-section .swarm-new-task-cta:hover { background-color: var(--swarm-surface-hover); }
+.swarm-section .swarm-outline-action:not(:disabled):active,
+.swarm-section .swarm-new-task-cta:active { background-color: var(--swarm-surface-subtle); }
+.swarm-section .swarm-outline-action:focus-visible,
+.swarm-section .swarm-new-task-cta:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
+
+/* Task hierarchy uses the section's existing palette, including rose themes. */
+.swarm-task-icon { flex: none; margin-top: 2px; color: var(--swarm-text-muted); }
+.swarm-task-header-row { align-items: flex-start; }
+.swarm-task-meta { margin-top: 5px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font: 11px/1.5 var(--font-mono, monospace); color: var(--swarm-text-muted); }
+.swarm-task-status-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-top: 7px; font-size: 11px; color: var(--swarm-text-muted); }
+.swarm-section .swarm-task-state { display: inline-flex; align-items: center; gap: 6px; background: none; border: 0; color: var(--swarm-text-muted); }
+.swarm-task-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--swarm-info); flex: none; }
+.swarm-task-dot.is-warning { background: var(--swarm-warning); }
+.swarm-task-dot.is-success { background: var(--swarm-success); }
+.swarm-section .swarm-task-approval-pill { padding: 2px 6px; border-radius: 5px; background: var(--swarm-warning-bg); color: var(--swarm-warning); }
+.swarm-task-progress { margin-left: auto; font-family: var(--font-mono, monospace); }
+.swarm-task-extra { display: flex; gap: 8px; color: var(--swarm-text-muted); }
+.swarm-section .swarm-task-extra :is(span, a) { background: none; border: 0; padding: 0; color: inherit; }
+.swarm-task-focus { display: flex; align-items: center; gap: 10px; min-width: 0; height: 34px; border-top: .5px solid var(--swarm-border-muted); font-size: 11px; color: var(--swarm-text-muted); }
+.swarm-task-focus-event { display: flex; align-items: center; gap: 6px; min-width: 0; flex: 1; animation: swarm-focus-swap 200ms ease-out; }
+.swarm-task-focus-tool, .swarm-task-focus-target, .swarm-task-focus-count { font-family: var(--font-mono, monospace); }
+.swarm-task-focus-tool { color: var(--swarm-text); max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.swarm-task-focus-target { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.swarm-task-focus-count { flex: none; margin-left: auto; }
+@keyframes swarm-focus-swap { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: translateY(0); } }
+@media (prefers-reduced-motion: reduce) { .swarm-task-focus-event { animation: none; } }
+.swarm-section .swarm-task-details-toggle, .swarm-section .swarm-task-details-toggle * { color: var(--swarm-text-muted); background: none; border: 0; font-weight: normal; }
+.swarm-section .swarm-task-proposal { font-size: 13px; line-height: 1.55; }
+.swarm-section .swarm-task-proposal :is(div, span, p, ul, li, strong, svg, summary) { color: var(--swarm-text-muted); }
+.swarm-section .swarm-task-proposal div { background: none; border: 0; border-radius: 0; }
+.swarm-section .swarm-task-proposal [data-testid="task-plan-spec"] { background: var(--swarm-surface-subtle); border-radius: 6px; }
+.swarm-section .swarm-task-proposal [data-testid="task-plan-reader"] { max-height: none; overflow: visible; font-family: inherit; }
+.swarm-section .swarm-task-proposal [data-testid="task-plan-reader"] :is(div, span, p, ul, li) { font-family: inherit; font-size: 13px; line-height: 1.55; white-space: normal; overflow-wrap: anywhere; }
+.swarm-plan-step { border-top: .5px solid var(--swarm-border-muted); padding: 10px 0; }
+.swarm-section .swarm-task-proposal [data-testid="task-plan-reader"] .swarm-plan-step-title-collapsed { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.swarm-section .swarm-task-proposal span { background: none; border: 0; }
+.swarm-section .swarm-task-proposal button:not(.bg-blue-600) { color: var(--swarm-text-muted); background: none; border-color: var(--swarm-border-muted); }
+.swarm-section .swarm-task-proposal button.bg-blue-600 :is(span, svg) { color: var(--swarm-accent-text); }
+.swarm-section .swarm-task-card:is([data-task-state="running"], [data-task-state="in_progress"]) .swarm-task-status-row .swarm-task-state > span:first-child:not(:last-child) { background: var(--swarm-info); }
+.swarm-section .swarm-task-status-row .swarm-task-approval-pill > span:first-child { background: var(--swarm-warning); }
+.swarm-section .swarm-task-running div.border { border: 0; border-radius: 0; background: none; }
+.swarm-section .swarm-task-running .swarm-task-focus { border-top: .5px solid var(--swarm-border-muted); }
+
+.swarm-section .integration-recovery { padding: 12px; border: 1px solid var(--swarm-danger-border); border-radius: 10px; color: var(--swarm-text); background: var(--swarm-surface); font-size: 12px; min-width: 0; }
+.swarm-section .integration-recovery pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; margin: 8px 0; }
+.swarm-section .integration-recovery p { overflow-wrap: anywhere; margin-top: 8px; }
+.swarm-section .integration-recovery button { border: 1px solid var(--swarm-border); border-radius: 8px; padding: 6px 10px; color: var(--swarm-text); background: transparent; }
+.swarm-section .integration-recovery button:hover:not(:disabled) { background: var(--swarm-surface-hover); border-color: var(--swarm-border-accent); }
+.swarm-section .integration-recovery button:disabled { opacity: .6; cursor: not-allowed; }
+.swarm-section .swarm-outline-action:disabled { opacity: 0.4; cursor: not-allowed; }
+/* Reserve the same border width in both states: selection never moves the labels. */
+.swarm-section .swarm-task-source-filter[aria-pressed="false"] {
+  border-color: transparent;
+  color: var(--swarm-text-muted);
+}
+
+/* The task-list header is the sole filled primary action in this view. */
+.swarm-section .swarm-task-list-new-task { background: var(--swarm-accent); color: var(--swarm-accent-text); border: 1px solid var(--swarm-accent); }
+.swarm-section .swarm-task-list-new-task:hover { background: var(--swarm-accent-hover); }
+
+/* Narrow Orchestrate keeps navigation, the route panel and the mounted
+   conversation reachable rather than squeezing three fixed-width columns. */
+.swarm-section .swarm-navigation-sidebar > div:nth-child(2) { overflow-y: auto; flex-shrink: 0; max-height: 55vh; }
+.swarm-section .swarm-conversation-panel { max-width: 40vw; }
+.swarm-section .swarm-conversation-panel .swarm-ai-sidebar { width: min(440px, 40vw); }
+.swarm-section [aria-current="page"], .swarm-section [aria-pressed="true"] { border-color: var(--swarm-border-accent); background-color: var(--swarm-surface-hover); }
+@media (max-width: 1000px) {
+  .swarm-section { flex-direction: column; overflow-y: auto; height: 100dvh; }
+  .swarm-section .swarm-navigation-sidebar { width: 100%; max-height: 42dvh; flex-shrink: 0; }
+  .swarm-section .swarm-navigation-sidebar > div:nth-child(2) { display: flex; flex-wrap: wrap; max-height: 24dvh; }
+  .swarm-section .swarm-navigation-sidebar > div:nth-child(2) > a { width: auto; flex: 1 1 130px; }
+  .swarm-section .swarm-main-panel { min-height: 45dvh; flex: 1 0 45dvh; }
+  .swarm-section .swarm-conversation-panel { width: 100%; max-width: none; min-height: 55dvh; flex-shrink: 0; }
+  .swarm-section .swarm-conversation-panel .swarm-ai-sidebar { width: 100%; min-height: 55dvh; }
+}

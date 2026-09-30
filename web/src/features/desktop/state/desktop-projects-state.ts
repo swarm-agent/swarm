@@ -127,6 +127,12 @@ export function mapBackendTask(t: any): RunningTask {
     worker_name: t.worker_name || t.workerName || undefined,
     priority: 'high',
     sessionId: t.session_id,
+    activeAttemptId: t.active_attempt_id,
+    attempts: t.attempts,
+    integration: t.integration,
+    handoffSummary: t.status === 'needs_review' && t.active_attempt_id
+      ? t.attempts?.find((attempt: any) => attempt.id === t.active_attempt_id && attempt.session_id === t.session_id)?.summary || 'No ready summary recorded for this attempt. Validation and integration remain unverified.'
+      : undefined,
     createdAt: t.created_at,
     stageIndex: t.current_stage_index,
     totalStages: t.pipeline_stages?.length || 4,
@@ -171,10 +177,7 @@ export function mapBackendTask(t: any): RunningTask {
     plan_document: typeof (t.plan_document || t.planDocument || t.document) === 'string'
       ? (() => { try { return JSON.parse(t.plan_document || t.planDocument || t.document) } catch { return t.plan_document || t.planDocument || t.document } })()
       : (t.plan_document || t.planDocument || t.document),
-    subtasks: [
-      { id: '1', title: 'Verify task scope', completed: true },
-      { id: '2', title: 'Execute implementation', completed: t.status === 'completed' || t.status === 'needs_review' },
-    ],
+    subtasks: [],
   }
 }
 
