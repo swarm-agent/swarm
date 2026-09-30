@@ -614,3 +614,52 @@ test('Requirement 8: reduceDesktopProjectsState preserves reference identity whe
   assert.equal(afterMatchingInvalidate['proj-1'].generation, 2)
   assert.equal(afterMatchingInvalidate['proj-1'].stale, true)
 })
+
+// Purpose: external promotion receipts must reach active task state through
+// project.updated/reconnect, without a local click or refresh. Runtime + reducer
+// is the narrowest authority for event-driven reads and stale-response rejection.
+test('external promotion moves canonical tasks to Done and reconnect cannot regress it', async () => {
+  const { taskIntegrationPhase } = await import('../orchestrate/task-integration-operation')
+  let state: DesktopProjectsState = {}
+  let record: any = { id: 'task', title: 'Task', session_id: 'source', status: 'needs_review', revision: 1 }
+  let reads = 0
+  let taskResponse: ((response: { task: any }) => void) | undefined
+  const runtime = new DesktopProjectsRuntime({
+    getState: () => state,
+    dispatch: action => { state = reduceDesktopProjectsState(state, action) },
+    subscribe: () => () => {},
+    fetchTasks: async () => { reads++; return { tasks: [{ ...record }] } },
+    fetchMedia: async () => ({ media: [] }),
+    fetchTask: () => new Promise(resolve => { taskResponse = resolve }),
+  })
+  const lease = runtime.acquire('project')
+  await lease.ready
+  record = { ...record, revision: 2, integration: { state: 'in_progress' } }
+  runtime.acceptFrame({ kind: 'project.updated', project_id: 'project' })
+  await runtime.refresh('project')
+  assert.equal(taskIntegrationPhase(state.project.tasks[0]), 'pending')
+  assert.equal(state.project.tasks.filter(task => task.status === 'completed').length, 0)
+  record = { ...record, revision: 3, status: 'completed', is_integrated: true, integration: { state: 'integrated' } }
+  runtime.acceptFrame({ kind: 'project.updated', project_id: 'project' })
+  runtime.acceptFrame({ kind: 'project.updated', project_id: 'project' })
+  await runtime.refresh('project')
+  await runtime.refresh('project')
+  assert.equal(taskIntegrationPhase(state.project.tasks[0]), 'success')
+  assert.equal(state.project.tasks.filter(task => task.status === 'completed').length, 1)
+  taskResponse?.({ task: { ...record, revision: 1, status: 'needs_review', is_integrated: false } })
+  await Promise.resolve()
+  assert.equal(state.project.tasks[0].status, 'completed', 'old per-task read cannot undo completion')
+  // A reordered server/cache response is also guarded by durable revision.
+  record = { ...record, revision: 2, status: 'needs_review', is_integrated: false, integration: { state: 'in_progress' } }
+  runtime.acceptFrame({ kind: 'project.updated', project_id: 'project' })
+  await runtime.refresh('project')
+  assert.equal(state.project.tasks[0].status, 'completed')
+  record = { ...record, revision: 4, status: 'completed', is_integrated: true, integration: { state: 'integrated' } }
+  runtime.acceptFrame({ kind: 'rehydrate.required' })
+  await runtime.refresh('project')
+  assert.equal(state.project.tasks[0].revision, 4)
+  const settledReads = reads
+  await Promise.resolve()
+  assert.equal(reads, settledReads, 'no recurring polling')
+  lease.release()
+})

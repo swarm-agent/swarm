@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect, useCallback, useRef, useSyncExternalStore } from 'react'
-import { taskIntegrationOperations, taskIntegrationKey, type TaskIntegrationOperation, type TaskIntegrationResult } from './task-integration-operation'
+import { taskIntegrationOperations, taskIntegrationKey, taskIntegrationPhase, type TaskIntegrationOperation, type TaskIntegrationResult } from './task-integration-operation'
 import { projectTaskFollowupPayload } from '../runtime/project-task-followup'
 import { TaskAttemptHistory } from './task-attempt-history'
 import { integrationFailure, repairUnavailable, redactIntegrationDiagnostic, orchestratorDrafts, type IntegrationFailure } from './integration-recovery'
@@ -762,7 +762,7 @@ export function MinimalTaskCard({
   const isCompleted = task.status === 'completed'
   const isFailed = task.status === 'failed'
   const isRejected = task.status === 'rejected'
-  const integrationPhase = integrationOperation?.phase || 'ready'
+  const integrationPhase = taskIntegrationPhase(task, integrationOperation)
   const isIntegrating = integrationPhase === 'pending'
   const hasIntegrationReceipt = integrationPhase !== 'ready'
   const hasUnintegrated = task.gitStatus === 'diverged' && !task.isIntegrated && (task.unintegratedCommits ?? 0) > 0

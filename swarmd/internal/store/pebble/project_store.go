@@ -310,6 +310,9 @@ type ProjectTaskSource struct {
 // ProjectTaskIntegration is the last explicit promotion attempt and its Git receipt.
 // A success is valid only for the recorded source HEAD and target branch/HEAD.
 type ProjectTaskIntegration struct {
+	OperationID         string `json:"operation_id,omitempty"`
+	AttemptID           string `json:"attempt_id,omitempty"`
+	TargetWorkspacePath string `json:"target_workspace_path,omitempty"`
 	State               string `json:"state"` // in_progress | integrated | already_integrated | failed | conflict
 	SessionID           string `json:"session_id"`
 	SourceBranch        string `json:"source_branch"`
