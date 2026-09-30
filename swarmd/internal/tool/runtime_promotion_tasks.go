@@ -8,7 +8,7 @@ import (
 )
 
 type promotionTaskReceipt struct {
-	task *pebblestore.ProjectTaskRecord
+	task    *pebblestore.ProjectTaskRecord
 	receipt *pebblestore.ProjectTaskIntegration
 }
 

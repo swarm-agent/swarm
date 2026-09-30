@@ -11,7 +11,7 @@ import (
 type observingPromotionWorktrees struct {
 	*coderLineageWorktreeService
 	beforePrepare func()
-	applyErr error
+	applyErr      error
 }
 
 func (s *observingPromotionWorktrees) PrepareTaskIntegration(path, branch, head string, children []worktreeruntime.TaskIntegrationChild) (worktreeruntime.TaskIntegrationPlan, error) {
@@ -20,7 +20,9 @@ func (s *observingPromotionWorktrees) PrepareTaskIntegration(path, branch, head 
 }
 
 func (s *observingPromotionWorktrees) ApplyTaskIntegration(path string, plan worktreeruntime.TaskIntegrationPlan) (worktreeruntime.TaskIntegrationResult, error) {
-	if s.applyErr != nil { return worktreeruntime.TaskIntegrationResult{}, s.applyErr }
+	if s.applyErr != nil {
+		return worktreeruntime.TaskIntegrationResult{}, s.applyErr
+	}
 	return s.coderLineageWorktreeService.ApplyTaskIntegration(path, plan)
 }
 
@@ -42,7 +44,9 @@ func TestManageWorktreePromoteTaskLifecycle(t *testing.T) {
 			sessions.parent = source
 			worktrees.states["/captured"] = worktreeruntime.TaskWorkspaceState{BranchName: "dev", HeadCommit: "target-head", Clean: true}
 			db, err := pebblestore.Open(t.TempDir())
-			if err != nil { t.Fatal(err) }
+			if err != nil {
+				t.Fatal(err)
+			}
 			defer db.Close()
 			store := pebblestore.NewSessionStore(db)
 			runtime.projects = store
@@ -58,34 +62,62 @@ func TestManageWorktreePromoteTaskLifecycle(t *testing.T) {
 			}
 			for i, id := range taskIDs {
 				sessionID := ids[i].(string)
-				if mode == "stale-source" { sessionID = "replacement" }
-				if err := store.PutProjectTask(scope.Principal.AccountScopeID, &pebblestore.ProjectTaskRecord{ID: id, ProjectID: "project", Title: "Task", SessionID: sessionID, Status: "needs_review", Revision: 1}); err != nil { t.Fatal(err) }
+				if mode == "stale-source" {
+					sessionID = "replacement"
+				}
+				if err := store.PutProjectTask(scope.Principal.AccountScopeID, &pebblestore.ProjectTaskRecord{ID: id, ProjectID: "project", Title: "Task", SessionID: sessionID, Status: "needs_review", Revision: 1}); err != nil {
+					t.Fatal(err)
+				}
 			}
 			wakeups := 0
 			db.SetProjectPublisher(func(_ pebblestore.V3RealtimeOutboxRecord) { wakeups++ })
 			observed := &observingPromotionWorktrees{coderLineageWorktreeService: worktrees, beforePrepare: func() {
 				for _, id := range taskIDs {
 					task, _, err := store.GetProjectTask(scope.Principal.AccountScopeID, "project", id)
-					if err != nil || task.Integration == nil || task.Integration.State != "in_progress" || task.Integration.SourceHead != "parent-head" || task.IsIntegrated { t.Fatalf("Git started without progress: %+v %v", task, err) }
+					if err != nil || task.Integration == nil || task.Integration.State != "in_progress" || task.Integration.SourceHead != "parent-head" || task.IsIntegrated {
+						t.Fatalf("Git started without progress: %+v %v", task, err)
+					}
 				}
-				if mode == "persistence-failure" { store.SetProjectTaskUpdateHookForTest(func(string) error { return errors.New("injected write failure") }) }
+				if mode == "persistence-failure" {
+					store.SetProjectTaskUpdateHookForTest(func(string) error { return errors.New("injected write failure") })
+				}
 			}}
-			if mode == "prepare-failure" { worktrees.prepareErr = errors.New("merge conflict") }
-			if mode == "apply-failure" { observed.applyErr = errors.New("apply failed") }
+			if mode == "prepare-failure" {
+				worktrees.prepareErr = errors.New("merge conflict")
+			}
+			if mode == "apply-failure" {
+				observed.applyErr = errors.New("apply failed")
+			}
 			runtime.worktrees = observed
 			_, err = runtime.manageWorktreePromote(scope, map[string]any{"source_session_ids": ids, "target_branch": "dev"})
 			success := mode == "single" || mode == "batch"
-			if success && err != nil { t.Fatal(err) }
-			if !success && err == nil { t.Fatal("failure reported success") }
+			if success && err != nil {
+				t.Fatal(err)
+			}
+			if !success && err == nil {
+				t.Fatal("failure reported success")
+			}
 			for _, id := range taskIDs {
 				task, _, readErr := store.GetProjectTask(scope.Principal.AccountScopeID, "project", id)
-				if readErr != nil { t.Fatal(readErr) }
-				if task.IsIntegrated != success || (task.Status == "completed") != success { t.Fatalf("wrong completion: %+v", task) }
-				if success && (task.Integration.State != "integrated" || task.Integration.ResultingTargetHead == "") { t.Fatalf("missing verification receipt: %+v", task) }
-				if mode == "prepare-failure" && (task.Integration.State != "conflict" || task.Integration.Error == "") { t.Fatalf("lost repair receipt: %+v", task) }
+				if readErr != nil {
+					t.Fatal(readErr)
+				}
+				if task.IsIntegrated != success || (task.Status == "completed") != success {
+					t.Fatalf("wrong completion: %+v", task)
+				}
+				if success && (task.Integration.State != "integrated" || task.Integration.ResultingTargetHead == "") {
+					t.Fatalf("missing verification receipt: %+v", task)
+				}
+				if mode == "prepare-failure" && (task.Integration.State != "conflict" || task.Integration.Error == "") {
+					t.Fatalf("lost repair receipt: %+v", task)
+				}
 			}
-			if success && wakeups != 2*len(taskIDs) { t.Fatalf("wakeups = %d", wakeups) }
-			if mode == "stale-source" && (wakeups != 0 || worktrees.applyCalls != 0) { t.Fatal("stale source mutated state") }
+			if success && wakeups != 2*len(taskIDs) {
+				t.Fatalf("wakeups = %d", wakeups)
+			}
+			if mode == "stale-source" && (wakeups != 0 || worktrees.applyCalls != 0) {
+				t.Fatal("stale source mutated state")
+			}
 		})
 	}
 }

@@ -17,10 +17,10 @@ func TestManualTaskNamingValidation(t *testing.T) {
 	for name, raw := range map[string]string{
 		"empty": `{"title":" "}`, "malformed": `not json`,
 		"multiline": `{"title":"Fix sidebar\njumps"}`,
-		"overlong": `{"title":"` + strings.Repeat("界", 81) + `"}`,
-		"filler": `{"title":"Can you fix the sidebar"}`,
-		"echo": `{"title":"ok can you fix the sidebar jumping"}`,
-		"missing": `{}`, "wrong type": `{"title":123}`,
+		"overlong":  `{"title":"` + strings.Repeat("界", 81) + `"}`,
+		"filler":    `{"title":"Can you fix the sidebar"}`,
+		"echo":      `{"title":"ok can you fix the sidebar jumping"}`,
+		"missing":   `{}`, "wrong type": `{"title":123}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			calls := 0
@@ -51,9 +51,15 @@ func TestManualTaskNamingValidation(t *testing.T) {
 	}
 	failure := errors.New("Router unavailable")
 	s := NewService(func(context.Context, string, string) (string, error) { return "", failure })
-	if _, err := s.NameTask(context.Background(), prompt, ""); !errors.Is(err, failure) { t.Fatal(err) }
-	if got, err := s.NameTask(context.Background(), prompt, "My custom title"); err != nil || got != "My custom title" { t.Fatalf("custom: %q %v", got, err) }
-	if _, err := NewService().NameTask(context.Background(), prompt, ""); err == nil { t.Fatal("missing Router silently accepted") }
+	if _, err := s.NameTask(context.Background(), prompt, ""); !errors.Is(err, failure) {
+		t.Fatal(err)
+	}
+	if got, err := s.NameTask(context.Background(), prompt, "My custom title"); err != nil || got != "My custom title" {
+		t.Fatalf("custom: %q %v", got, err)
+	}
+	if _, err := NewService().NameTask(context.Background(), prompt, ""); err == nil {
+		t.Fatal("missing Router silently accepted")
+	}
 }
 
 // Purpose: naming direct media must make exactly one invocation and change only
@@ -64,16 +70,22 @@ func TestManualTaskNamingDirectMediaPreservesContract(t *testing.T) {
 		{Prompt: "Please generate a continuous shot of a misty forest at sunrise", Intent: "video", VideoType: "single"},
 	} {
 		base, err := NewService().RouteTask(context.Background(), opts)
-		if err != nil { t.Fatal(err) }
+		if err != nil {
+			t.Fatal(err)
+		}
 		calls := 0
 		s := NewService(func(context.Context, string, string) (string, error) {
 			calls++
 			return `{"title":"Create calming nature media","agent":"coder","mission":"rewritten","scenes":[{}],"soundtrack":"changed"}`, nil
 		})
 		got, err := s.RouteTask(context.Background(), opts)
-		if err != nil || calls != 1 { t.Fatalf("calls=%d err=%v", calls, err) }
+		if err != nil || calls != 1 {
+			t.Fatalf("calls=%d err=%v", calls, err)
+		}
 		base.Title = "Create calming nature media"
-		if !reflect.DeepEqual(got, base) { t.Fatalf("naming changed contract: %+v want %+v", got, base) }
+		if !reflect.DeepEqual(got, base) {
+			t.Fatalf("naming changed contract: %+v want %+v", got, base)
+		}
 	}
 }
 
@@ -88,9 +100,15 @@ func TestManualTaskNamingFullRouter(t *testing.T) {
 		})
 		opts := TaskRouteOptions{Title: custom, Prompt: "ok please fix the sidebar layout jumping on resize while preserving keyboard shortcuts", Agent: "coder"}
 		got, err := s.RouteTask(context.Background(), opts)
-		if err != nil || calls != 1 { t.Fatalf("%v calls=%d", err, calls) }
+		if err != nil || calls != 1 {
+			t.Fatalf("%v calls=%d", err, calls)
+		}
 		want := "Fix sidebar layout jumps"
-		if custom != "" { want = custom }
-		if got.Title != want || got.Agent != "coder" || got.OutcomeType != "code_pr" { t.Fatalf("%+v", got) }
+		if custom != "" {
+			want = custom
+		}
+		if got.Title != want || got.Agent != "coder" || got.OutcomeType != "code_pr" {
+			t.Fatalf("%+v", got)
+		}
 	}
 }

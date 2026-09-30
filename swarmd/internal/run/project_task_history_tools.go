@@ -38,11 +38,11 @@ func taskHistoryToolDefinitions(definitions []provideriface.ToolDefinition) []pr
 			"type": "object", "additionalProperties": false,
 			"required": []string{"action", "project_id", "task_id"},
 			"properties": map[string]any{
-				"action": map[string]any{"type": "string", "enum": []string{"get_task"}},
+				"action":     map[string]any{"type": "string", "enum": []string{"get_task"}},
 				"project_id": map[string]any{"type": "string"},
-				"task_id": map[string]any{"type": "string"},
-				"cursor": map[string]any{"type": "integer", "minimum": 0, "maximum": 1000000},
-				"limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 50},
+				"task_id":    map[string]any{"type": "string"},
+				"cursor":     map[string]any{"type": "integer", "minimum": 0, "maximum": 1000000},
+				"limit":      map[string]any{"type": "integer", "minimum": 1, "maximum": 50},
 			},
 		}
 	}
