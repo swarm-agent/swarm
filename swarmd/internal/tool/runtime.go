@@ -2855,6 +2855,12 @@ func selectResidentSearchScope(scope WorkspaceScope, target searchTarget) (strin
 			continue
 		}
 		authorized = filepath.Clean(authorized)
+		// Coordination workspaces may authorize HOME without registering each
+		// nested project. Never use that broad authority as an index root;
+		// fall back to the already-authorized requested directory instead.
+		if isBroadSearchRoot(authorized) {
+			continue
+		}
 		rel, err := filepath.Rel(authorized, targetPath)
 		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 			continue

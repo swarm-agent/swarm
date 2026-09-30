@@ -450,7 +450,8 @@ func TestDesignerManifestGuidanceUsesCanonicalVersion(t *testing.T) {
 
 // Requirement: the compiled Orchestrator alone may deploy/commit sessions and
 // promote selected work through the canonical tools. Threat: a persisted old
-// profile silently removes these capabilities or a forged snapshot widens a
+// profile silently removes these or native filesystem discovery capabilities,
+// or a forged snapshot widens a
 // restricted agent. The registry materialization/reconciliation layer is the
 // narrowest authority for the code-owned tool contract; runtime filtering is
 // checked separately in run.
@@ -464,6 +465,10 @@ func TestOrchestratorSessionIntegrationToolContractReconcilesSnapshot(t *testing
 	stale.ToolContract = &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{
 		"manage_sessions": {Enabled: pebblestore.BoolPtr(false)},
 		"manage_worktree": {Enabled: pebblestore.BoolPtr(false)},
+		"search":          {Enabled: pebblestore.BoolPtr(false)},
+		"find":            {Enabled: pebblestore.BoolPtr(false)},
+		"read":            {Enabled: pebblestore.BoolPtr(false)},
+		"list":            {Enabled: pebblestore.BoolPtr(false)},
 		"plan_manage":     {Enabled: pebblestore.BoolPtr(true)},
 	}}
 	stale.Provider, stale.Model, stale.Thinking = "test-provider", "test-model", "high"
@@ -475,7 +480,7 @@ func TestOrchestratorSessionIntegrationToolContractReconcilesSnapshot(t *testing
 		if profile.Mode != ModePrimary || profile.RuntimeMode != pebblestore.AgentRuntimeModeReadWrite || profile.DefaultSessionMode != pebblestore.AgentDefaultSessionModeAuto {
 			t.Fatalf("Orchestrator mode changed: %+v", profile)
 		}
-		for _, name := range []string{"manage_sessions", "manage_worktree"} {
+		for _, name := range []string{"manage_sessions", "manage_worktree", "search", "find", "read", "list"} {
 			cfg, ok := profile.ToolContract.Tools[name]
 			if !ok || cfg.Enabled == nil || !*cfg.Enabled {
 				t.Fatalf("%s missing from compiled Orchestrator contract: %+v", name, profile.ToolContract)

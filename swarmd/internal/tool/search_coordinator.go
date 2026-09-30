@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -451,6 +452,9 @@ func canonicalSearchScope(req searchipc.Request) (string, string, error) {
 	if root, err = canonical(root); err != nil {
 		return "", "", fmt.Errorf("resolve FFF index root: %w", err)
 	}
+	if isBroadSearchRoot(root) {
+		return "", "", errors.New("FFF cannot index a home directory or filesystem root; specify a narrower project directory or file with path")
+	}
 	if target, err = canonical(target); err != nil {
 		return "", "", fmt.Errorf("resolve FFF target path: %w", err)
 	}
@@ -459,4 +463,26 @@ func canonicalSearchScope(req searchipc.Request) (string, string, error) {
 		return "", "", fmt.Errorf("FFF target %q is outside index root %q", target, root)
 	}
 	return root, target, nil
+}
+
+// isBroadSearchRoot mirrors the broad-root safety boundary without disabling
+// FFF's own guard. Resolve aliases too, so a symlink to HOME cannot cause the
+// selector to widen an otherwise narrow request.
+func isBroadSearchRoot(path string) bool {
+	canonical := func(path string) string {
+		abs, err := filepath.Abs(path)
+		if err != nil {
+			return filepath.Clean(path)
+		}
+		if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+			abs = resolved
+		}
+		return filepath.Clean(abs)
+	}
+	path = canonical(path)
+	if filepath.Dir(path) == path {
+		return true
+	}
+	home, err := os.UserHomeDir()
+	return err == nil && home != "" && path == canonical(home)
 }
