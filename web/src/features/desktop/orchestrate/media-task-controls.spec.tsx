@@ -161,3 +161,52 @@ test('production compact selects preserve image and video draft values', () => {
   }
   assert.deepEqual(draft, { imageResolution: '2k', imageAspectRatio: '9:16', imageVariants: 25, videoResolution: '1080p', videoAspectRatio: '9:16', videoDuration: 8, videoClipCount: 4 })
 })
+
+// Purpose: the image default control must render from its declared saving state and
+// disable repeat saves while pending. Threat: a discarded useState value leaves JSX
+// referencing an undeclared name, breaking compilation and rendering. Authority:
+// OrchestrateView's saving-state declaration and image MediaTaskDefault wiring.
+// Narrow layer: execute those production expressions together in idle/pending states.
+test('image default control binds its saving state and disables pending saves', () => {
+  const source = readFileSync(new URL('./OrchestrateView.tsx', import.meta.url), 'utf8')
+  const file = ts.createSourceFile('view.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
+  let state: ts.VariableDeclaration | undefined
+  let control: ts.JsxSelfClosingElement | undefined
+  function visit(node: ts.Node) {
+    if (ts.isVariableDeclaration(node) && ts.isArrayBindingPattern(node.name)
+      && node.name.elements.some(element => ts.isBindingElement(element) && element.name.getText(file) === 'setIsSavingModelChoice')) {
+      state = node
+    }
+    if (ts.isJsxSelfClosingElement(node) && node.tagName.getText(file) === 'MediaTaskDefault'
+      && node.getText(file).includes('handleSetImageAsDefault')) {
+      control = node
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(file)
+  assert.ok(state)
+  assert.ok(control)
+  const js = ts.transpileModule(`const ${state.getText(file)}; return (${control.getText(file)})`, {
+    fileName: 'image-default.tsx',
+    compilerOptions: { jsx: ts.JsxEmit.React, target: ts.ScriptTarget.ES2020 },
+  }).outputText
+  for (const saving of [false, true]) {
+    let saves = 0
+    const context = {
+      React, MediaTaskDefault,
+      useState: (initial: boolean) => {
+        assert.equal(initial, false)
+        return [saving, () => {}]
+      },
+      selectedImageModel: 'chosen-model', defaultImageModel: 'prior-model',
+      selectedImageOption: { ready: true },
+      handleSetImageAsDefault: () => { saves++ },
+    }
+    const element = new Function(...Object.keys(context), js)(...Object.values(context)) as React.ReactElement<any>
+    assert.equal(element.props.saving, saving)
+    const button = elements(MediaTaskDefault(element.props), 'button')[0]
+    assert.equal(button.props.disabled, saving)
+    assert.equal(button.props.children, saving ? 'Saving…' : 'Set default')
+    assert.equal(saves, 0, 'rendering must not persist settings')
+  }
+})

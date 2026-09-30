@@ -4060,7 +4060,7 @@ export function OrchestrateView({
   const [localGenerationJobs, setLocalGenerationJobs] = useState<MediaGenerationJob[]>([])
   const [mediaViewerInitialMode, setMediaViewerInitialMode] = useState<QuickRouteMode | null>(null)
   const [mediaCatalogLoaded, setMediaCatalogLoaded] = useState<boolean>(false)
-  const [, setIsSavingModelChoice] = useState<boolean>(false)
+  const [isSavingModelChoice, setIsSavingModelChoice] = useState<boolean>(false)
 
   const deployPreviewQuery = useQuery({
     queryKey: ['projects', selectedProject?.id, 'tasks:preview', {
