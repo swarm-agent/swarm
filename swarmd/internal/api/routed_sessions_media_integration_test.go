@@ -306,17 +306,6 @@ func TestRoutedSessionStagedMediaFailuresArePreMutationAndSafelyCleaned(t *testi
 		fixture.assertNoRoutedSession(t, "workspace-failure")
 	})
 
-	t.Run("capability failure abandons staging before materialization", func(t *testing.T) {
-		fixture := newRoutedMediaTestFixture(t)
-		staged := fixture.stage(t, fixture.principal.AccountScopeID, "capability-failure")
-		response := fixture.post(t, fixture.principal.AccountScopeID, "capability-failure", staged.ID, map[string]string{"modality": "audio"})
-		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "not admitted") {
-			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
-		}
-		assertRoutedMediaStagingState(t, fixture, fixture.principal.AccountScopeID, staged.ID, pebblestore.MediaStagingStateDeleted)
-		fixture.assertNoRoutedSession(t, "capability-failure")
-	})
-
 	t.Run("integrity failure abandons staging before materialization", func(t *testing.T) {
 		fixture := newRoutedMediaTestFixture(t)
 		staged := fixture.stage(t, fixture.principal.AccountScopeID, "integrity-failure")
@@ -381,5 +370,65 @@ func assertRoutedMediaStagingState(t *testing.T, fixture *routedMediaTestFixture
 	record, found, err := fixture.staging.Get(account, stagingID)
 	if err != nil || !found || record.State != want {
 		t.Fatalf("staging state found=%t err=%v got=%q want=%q record=%+v", found, err, record.State, want, record)
+	}
+}
+
+// Requirement: upload retention is independent of model perception, including
+// a declared modality not supported for the detected MIME type. The retention
+// fallback in prepareRoutedSessionMedia must bind exact durable references, but
+// sessionsV3ProviderInputWithMedia must never interpret retention as permission
+// to send bytes. This routed API-to-executor test is the narrowest layer proving
+// both halves of that contract; it prevents false perception and lost uploads.
+func TestRoutedSessionStagedMediaUnsupportedPerceptionRetainsMetadataOnly(t *testing.T) {
+	fixture := newRoutedMediaTestFixture(t)
+	staged := fixture.stage(t, fixture.principal.AccountScopeID, "unsupported-perception")
+	response := fixture.post(t, fixture.principal.AccountScopeID, "unsupported-perception", staged.ID, map[string]string{"modality": "audio"})
+	if response.Code != http.StatusOK {
+		t.Fatalf("retention status=%d body=%s", response.Code, response.Body.String())
+	}
+	var body struct {
+		SessionID string `json:"session_id"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	session, found, err := fixture.sessions.GetSession(body.SessionID)
+	if err != nil || !found || session.AccountScopeID != fixture.principal.AccountScopeID {
+		t.Fatalf("retained session found=%t err=%v session=%+v", found, err, session)
+	}
+	messages, err := fixture.sessions.ListSessionMessages(session.ID, 0, 10)
+	if err != nil || len(messages) != 1 || len(messages[0].Media) != 1 {
+		t.Fatalf("durable retained message: %+v err=%v", messages, err)
+	}
+	reference := messages[0].Media[0]
+	if reference.AssetID == "" || reference.Modality != "audio" || reference.MIMEType != "image/png" || reference.DigestSHA256 != staged.DigestSHA256 || reference.Size != staged.Size {
+		t.Fatalf("retained reference changed: %+v", reference)
+	}
+	bound, found, err := fixture.staging.Get(fixture.principal.AccountScopeID, staged.ID)
+	if err != nil || !found || bound.State != pebblestore.MediaStagingStateBound || bound.BoundSessionID != session.ID || bound.AuthorityAssetID != reference.AssetID {
+		t.Fatalf("retained staging bind found=%t err=%v record=%+v", found, err, bound)
+	}
+	asset, payload, err := fixture.sessions.ReadSessionMediaAsset(session.AccountScopeID, session.ID, reference.AssetID)
+	if err != nil || asset.ReferenceCount != 1 || asset.DigestSHA256 != reference.DigestSHA256 || !bytes.Equal(payload, mediaStagingAPIPNG) {
+		t.Fatalf("retained asset err=%v asset=%+v", err, asset)
+	}
+	contract, err := fixture.server.routedSessionMediaContract(context.Background(), fixture.principal, session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runruntime.SessionMediaContractAllows(contract, reference.Modality, reference.MIMEType, reference.FileType) {
+		t.Fatal("unsupported audio/image MIME pair gained perception authorization")
+	}
+	input, err := fixture.server.v3SessionExecutor.sessionsV3ProviderInputWithMedia(sessionV3ResolvedRuntime{Session: session, MediaContract: contract}, messages, sessionsV3ProviderInputOptions{})
+	if err != nil || len(input) != 1 {
+		t.Fatalf("metadata-only assembly: %+v err=%v", input, err)
+	}
+	encoded := string(mustJSON(t, input))
+	if strings.Contains(encoded, `"type":"session_media"`) || !strings.Contains(encoded, "Attached media input (retained, model perception not supported)") || !strings.Contains(encoded, reference.AssetID) || !strings.Contains(encoded, "inspect this image") {
+		t.Fatalf("unsupported media must convey user text and exact reference, not payload: %s", encoded)
+	}
+	after, err := fixture.sessions.ListSessionMessages(session.ID, 0, 10)
+	if err != nil || !bytes.Equal(mustJSON(t, messages), mustJSON(t, after)) {
+		t.Fatalf("metadata assembly mutated durable references: %+v err=%v", after, err)
 	}
 }
