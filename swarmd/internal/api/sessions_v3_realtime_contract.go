@@ -35,6 +35,7 @@ const (
 	V3RealtimeKindWorkerChanged            = "worker.updated"
 	V3RealtimeKindEnvironmentChanged       = "environment.updated"
 	V3RealtimeKindProjectUpdated           = "project.updated"
+	V3RealtimeKindUsageScopeUpdated        = "usage.scope.updated"
 	V3RealtimeKindAuthResource             = "auth.credentials.updated"
 	V3RealtimeKindAuthDenied               = "auth.denied"
 	V3RealtimeKindSlowConsumer             = "slow_consumer.reconnect_required"
@@ -198,6 +199,9 @@ func ValidateV3RealtimeSchemaMessage(message V3RealtimeMessage) error {
 			return errors.New("environment update requires endpoint_cursor")
 		}
 		return nil
+	case V3RealtimeKindUsageScopeUpdated:
+		if strings.TrimSpace(message.EndpointCursor) == "" || message.Event == nil || message.Event.EventType != V3RealtimeKindUsageScopeUpdated { return errors.New("usage scope update requires cursor and scope event") }
+		return nil
 	case V3RealtimeKindProjectUpdated:
 		if strings.TrimSpace(message.EndpointCursor) == "" {
 			return errors.New("project update requires endpoint_cursor")
@@ -343,7 +347,7 @@ func ValidateV3RealtimeOutboundServerMessage(message V3RealtimeMessage) error {
 		V3RealtimeKindWorksetSessionRemoved,
 		V3RealtimeKindNotificationResource,
 		V3RealtimeKindAITaskResource,
-		V3RealtimeKindWorkspaceCatalog, V3RealtimeKindAutomationChanged, V3RealtimeKindWorkerChanged, V3RealtimeKindEnvironmentChanged, V3RealtimeKindProjectUpdated,
+		V3RealtimeKindWorkspaceCatalog, V3RealtimeKindAutomationChanged, V3RealtimeKindWorkerChanged, V3RealtimeKindEnvironmentChanged, V3RealtimeKindProjectUpdated, V3RealtimeKindUsageScopeUpdated,
 		V3RealtimeKindAuthResource,
 		V3RealtimeKindAuthDenied,
 		V3RealtimeKindSlowConsumer:
@@ -355,7 +359,7 @@ func ValidateV3RealtimeOutboundServerMessage(message V3RealtimeMessage) error {
 
 func v3RealtimeKindAllowed(kind string) bool {
 	switch kind {
-	case V3RealtimeKindHello, V3RealtimeKindEvent, V3RealtimeKindReplayStart, V3RealtimeKindReplayDone, V3RealtimeKindCursorError, V3RealtimeKindKeepalive, V3RealtimeKindEndpointWatermark, V3RealtimeKindHighWater, V3RealtimeKindSubscribe, V3RealtimeKindUnsubscribe, V3RealtimeKindResume, V3RealtimeKindWorksetSessionDiscovered, V3RealtimeKindWorksetSessionUpdated, V3RealtimeKindWorksetSessionRemoved, V3RealtimeKindNotificationResource, V3RealtimeKindAITaskResource, V3RealtimeKindWorkspaceCatalog, V3RealtimeKindAutomationChanged, V3RealtimeKindWorkerChanged, V3RealtimeKindEnvironmentChanged, V3RealtimeKindProjectUpdated, V3RealtimeKindAuthResource, V3RealtimeKindAuthDenied, V3RealtimeKindSlowConsumer:
+	case V3RealtimeKindHello, V3RealtimeKindEvent, V3RealtimeKindReplayStart, V3RealtimeKindReplayDone, V3RealtimeKindCursorError, V3RealtimeKindKeepalive, V3RealtimeKindEndpointWatermark, V3RealtimeKindHighWater, V3RealtimeKindSubscribe, V3RealtimeKindUnsubscribe, V3RealtimeKindResume, V3RealtimeKindWorksetSessionDiscovered, V3RealtimeKindWorksetSessionUpdated, V3RealtimeKindWorksetSessionRemoved, V3RealtimeKindNotificationResource, V3RealtimeKindAITaskResource, V3RealtimeKindWorkspaceCatalog, V3RealtimeKindAutomationChanged, V3RealtimeKindWorkerChanged, V3RealtimeKindEnvironmentChanged, V3RealtimeKindProjectUpdated, V3RealtimeKindUsageScopeUpdated, V3RealtimeKindAuthResource, V3RealtimeKindAuthDenied, V3RealtimeKindSlowConsumer:
 		return true
 	default:
 		return false

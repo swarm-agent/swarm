@@ -14,6 +14,7 @@ import (
 )
 
 type SessionTurnUsageSnapshot struct {
+	ScopeProjectionVersion int              `json:"scope_projection_version,omitempty"`
 	ScopeTotals            []UsageScopeTotal `json:"scope_totals,omitempty"`
 	CostProvenance         string `json:"cost_provenance,omitempty"`
 	SessionID              string           `json:"session_id"`
@@ -33,6 +34,7 @@ type SessionTurnUsageSnapshot struct {
 	CacheReadTokens        int64            `json:"cache_read_tokens"`
 	CacheWriteTokens       int64            `json:"cache_write_tokens"`
 	TotalTokens            int64            `json:"total_tokens"`
+	BilledUsagePresent     bool             `json:"billed_usage_present,omitempty"`
 	BilledTokens           int64            `json:"billed_tokens,omitempty"`
 	BilledInputTokens      int64            `json:"billed_input_tokens,omitempty"`
 	BilledOutputTokens     int64            `json:"billed_output_tokens,omitempty"`
@@ -77,6 +79,7 @@ type SessionUsageSummary struct {
 }
 
 type SessionMediaUsageRecord struct {
+	ScopeTotals []UsageScopeTotal `json:"scope_totals,omitempty"`
 	ID              string  `json:"id"`
 	SessionID       string  `json:"session_id"`
 	AccountScopeID  string  `json:"account_scope_id"`
@@ -226,6 +229,9 @@ func formatProviderDisplayName(provider string) string {
 }
 
 func billedComponents(u SessionTurnUsageSnapshot) (total, input, output, cacheRead, cacheWrite, thinking int64) {
+	if u.BilledUsagePresent {
+		return u.BilledTokens, u.BilledInputTokens, u.BilledOutputTokens, u.BilledCacheReadTokens, u.BilledCacheWriteTokens, u.BilledThinkingTokens
+	}
 	total = u.TotalTokens
 	if u.BilledTokens > 0 {
 		total = u.BilledTokens
@@ -267,14 +273,14 @@ func (s *SessionStore) PutTurnUsage(record SessionTurnUsageSnapshot) error {
 	if record.UserID == "" {
 		record.UserID = "default"
 	}
-	if record.EstimatedCostUSD <= 0 && !strings.EqualFold(record.Provider, "codex") {
-		cost, status := s.CalculateCostWithStatus(record.Provider, record.Model, record.InputTokens, record.OutputTokens, record.CacheReadTokens, record.ThinkingTokens)
+	if record.EstimatedCostUSD == 0 && record.PriceStatus == "" && record.CostProvenance != "provider" && !strings.EqualFold(record.Provider, "codex") {
+		cost, status := s.calculateReceiptCost(record)
 		record.EstimatedCostUSD = cost
 		if record.PriceStatus == "" {
 			record.PriceStatus = status
 		}
 	} else if record.PriceStatus == "" {
-		_, status := s.CalculateCostWithStatus(record.Provider, record.Model, record.InputTokens, record.OutputTokens, record.CacheReadTokens, record.ThinkingTokens)
+		_, status := s.calculateReceiptCost(record)
 		record.PriceStatus = status
 	}
 
@@ -289,6 +295,12 @@ func (s *SessionStore) PutTurnUsage(record SessionTurnUsageSnapshot) error {
 	if hadPrevious && previous.AccountScopeID != record.AccountScopeID {
 		return errors.New("usage receipt account cannot change")
 	}
+	if hadPrevious {
+		if previous.Provider != record.Provider || previous.Model != record.Model { return errors.New("usage receipt provider and model cannot change") }
+		record.CreatedAt = previous.CreatedAt
+	}
+	if record.CreatedAt <= 0 { record.CreatedAt = time.Now().UnixMilli() }
+	record.ScopeProjectionVersion = 2
 	record.ScopeTotals, err = s.prepareUsageScopeTotals(record, previous)
 	if err != nil { return err }
 	currTot, currIn, currOut, currCache, _, currThink := billedComponents(record)
@@ -300,30 +312,12 @@ func (s *SessionStore) PutTurnUsage(record SessionTurnUsageSnapshot) error {
 	deltaThinkingTokens := currThink
 	if hadPrevious {
 		deltaCost = record.EstimatedCostUSD - previous.EstimatedCostUSD
-		if deltaCost < 0 {
-			deltaCost = 0
-		}
 		prevTot, prevIn, prevOut, prevCache, _, prevThink := billedComponents(previous)
 		deltaTokens = currTot - prevTot
-		if deltaTokens < 0 {
-			deltaTokens = 0
-		}
 		deltaInputTokens = currIn - prevIn
-		if deltaInputTokens < 0 {
-			deltaInputTokens = 0
-		}
 		deltaOutputTokens = currOut - prevOut
-		if deltaOutputTokens < 0 {
-			deltaOutputTokens = 0
-		}
 		deltaCachedTokens = currCache - prevCache
-		if deltaCachedTokens < 0 {
-			deltaCachedTokens = 0
-		}
 		deltaThinkingTokens = currThink - prevThink
-		if deltaThinkingTokens < 0 {
-			deltaThinkingTokens = 0
-		}
 	}
 
 	payload, err := json.Marshal(record)
@@ -334,6 +328,8 @@ func (s *SessionStore) PutTurnUsage(record SessionTurnUsageSnapshot) error {
 	batch := s.store.NewBatch()
 	defer batch.Close()
 
+	if err := s.setUsageDays(batch, record, previous); err != nil { return err }
+	if err := setUsageBinding(batch, record.AccountScopeID, record.SessionID, record.ScopeTotals); err != nil { return err }
 	if err := setUsageScopeTotals(batch, record.AccountScopeID, record.ScopeTotals); err != nil { return err }
 	if err := batch.Set([]byte(KeySessionTurnUsage(record.SessionID, record.RunID)), payload, nil); err != nil {
 		return err
@@ -350,7 +346,7 @@ func (s *SessionStore) PutTurnUsage(record SessionTurnUsageSnapshot) error {
 		ts = time.Now().UnixMilli()
 	}
 	dateStr := time.UnixMilli(ts).UTC().Format("2006-01-02")
-	if deltaCost > 0 || deltaTokens > 0 || !hadPrevious {
+	{
 		acc, _, err := s.GetDailyUsageAccumulator(record.AccountScopeID, dateStr)
 		if err != nil {
 			return fmt.Errorf("get daily usage accumulator: %w", err)
@@ -362,9 +358,9 @@ func (s *SessionStore) PutTurnUsage(record SessionTurnUsageSnapshot) error {
 		acc.TotalCostUSD += deltaCost
 		codexNominalDelta := 0.0
 		if strings.EqualFold(record.Provider, "codex") {
-			codexNominalDelta = CalculateBaselineCost("openai", record.Model, record.InputTokens, record.OutputTokens, record.CacheReadTokens, record.ThinkingTokens)
+			codexNominalDelta = nominalUsageCost(record)
 			if hadPrevious {
-				prevNominal := CalculateBaselineCost("openai", previous.Model, previous.InputTokens, previous.OutputTokens, previous.CacheReadTokens, previous.ThinkingTokens)
+				prevNominal := nominalUsageCost(previous)
 				codexNominalDelta -= prevNominal
 			}
 			acc.CodexNominalCostUSD += codexNominalDelta
@@ -397,10 +393,8 @@ func (s *SessionStore) PutTurnUsage(record SessionTurnUsageSnapshot) error {
 		if !hadPrevious {
 			turnsDelta = 1
 		}
-		unknownDelta := 0
-		if strings.EqualFold(record.PriceStatus, "unknown") || strings.EqualFold(record.ServiceTierStatus, "unknown") {
-			unknownDelta = 1
-		}
+		unknownDelta := usageUnknownCount(record)
+		if hadPrevious { unknownDelta -= usageUnknownCount(previous) }
 		if err := s.updateAccountUsageRollupInBatch(batch, record.AccountScopeID, dateStr, record.SessionID, record.Provider, record.Model, deltaCost, codexNominalDelta, 0.0, deltaTokens, deltaInputTokens, deltaOutputTokens, deltaCachedTokens, deltaThinkingTokens, turnsDelta, 0, 0, 0, 0, unknownDelta, ts, time.Now().UnixMilli()); err != nil {
 			return err
 		}
@@ -648,9 +642,6 @@ func sanitizeTurnUsageSnapshot(record SessionTurnUsageSnapshot) SessionTurnUsage
 	record.RequestedServiceTier = strings.ToLower(strings.TrimSpace(record.RequestedServiceTier))
 	record.ServiceTier = strings.ToLower(strings.TrimSpace(record.ServiceTier))
 	record.ServiceTierStatus = strings.ToLower(strings.TrimSpace(record.ServiceTierStatus))
-	if record.EstimatedCostUSD < 0 {
-		record.EstimatedCostUSD = 0
-	}
 	return record
 }
 

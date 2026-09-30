@@ -635,6 +635,21 @@ func (s *Server) v3RealtimeProcessOutboxRecord(conn *transportws.Conn, principal
 		return advanced, true, true
 	}
 
+	// Usage scope invalidations are independent of selected child sessions.
+	// Reuse the durable receipt outbox/cursor and send only its bounded scope
+	// projections, not the private child event/transcript.
+	if totals := usageScopesFromRealtimeRecord(record); len(totals) > 0 && len(worksets) > 0 {
+		cursor, err := s.signV3SyncEndpointCursor(scope, record.EndpointSeq)
+		if err != nil { return advanced, false, false }
+		payload, err := json.Marshal(map[string]any{"scope_totals": totals})
+		if err != nil { return advanced, false, false }
+		event := pebblestore.V3SessionEvent{Seq: record.Event.Seq, TsUnixMs: record.Event.TsUnixMs}
+		event.EventType = "usage.scope.updated"
+		event.Payload = payload
+		msg := V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: "usage.scope.updated", EndpointCursor: cursor, Event: &event}
+		if err := s.sendV3RealtimeMessage(conn, msg); err != nil { return advanced, false, false }
+		advanced.LastSentEndpointSeq = record.EndpointSeq
+	}
 	subscription, subscribed := advanced.Subscriptions[record.SessionID]
 	removeAutoSubscriptionAfterDelivery := false
 	if !subscribed {

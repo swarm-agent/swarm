@@ -264,3 +264,27 @@ func TestNormalizeCumulativeProviderTokens(t *testing.T) {
 		t.Fatalf("expected 3500 billed tokens for anthropic cumulative, got %d", anthropicBilled)
 	}
 }
+
+// Purpose: runtime billing zeros must not become context occupancy, and local
+// estimates must never be labeled provider-reported cost. Owners:
+// recordProviderUsageSnapshot and canonical usage mutation; a temporary store
+// exercises real persistence without provider requests.
+func TestRecordProviderUsageExplicitZeroAndCostProvenance(t *testing.T) {
+	db, err := pebblestore.Open(t.TempDir())
+	if err != nil { t.Fatal(err) }
+	t.Cleanup(func() { _ = db.Close() })
+	store := pebblestore.NewSessionStore(db)
+	_, err = store.ApplyV3SessionMutation(pebblestore.V3SessionMutationInput{SessionID: "usage-zero", UserID: "user", AccountScopeID: "account", Kind: pebblestore.V3SessionMutationCreateSession, IdempotencyKey: "create", PayloadHash: "create", Session: &pebblestore.SessionSnapshot{ID: "usage-zero"}, NowUnixMs: 1000})
+	if err != nil { t.Fatal(err) }
+	events, err := pebblestore.NewEventLog(db)
+	if err != nil { t.Fatal(err) }
+	sessions := sessionruntime.NewService(store, events)
+	svc := NewService(sessions, nil, nil, nil, nil, nil, nil, events)
+	principal := identity.Principal{UserID: "user", AccountScopeID: "account"}
+	turn, summary, _, err := svc.recordProviderUsageSnapshot("usage-zero", "zero", "codex", "fixture", 1000, 1, provideriface.TokenUsage{Source: "codex_api_usage", Transport: "websocket", InputTokens: 800, TotalTokens: 900, APIUsageRaw: map[string]any{"estimated_cost_usd": 0}}, principal, sessions.ApplySessionMutation, 0, 0, 0, 0, 0, 0)
+	if err != nil { t.Fatal(err) }
+	if !turn.BilledUsagePresent || turn.BilledTokens != 0 || turn.BilledInputTokens != 0 || summary.TotalTokens != 900 || turn.CostProvenance != "provider" || turn.PriceStatus != "known" { t.Fatalf("zero/provenance: %+v %+v", turn, summary) }
+	turn, _, _, err = svc.recordProviderUsageSnapshot("usage-zero", "estimate", "fireworks", "fixture", 1000, 1, provideriface.TokenUsage{Source: "fireworks_api_usage", TotalTokens: 10, EstimatedCostUSD: 2}, principal, sessions.ApplySessionMutation)
+	if err != nil { t.Fatal(err) }
+	if turn.CostProvenance != "catalog" { t.Fatalf("estimate labeled provider: %+v", turn) }
+}

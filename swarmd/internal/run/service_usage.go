@@ -210,22 +210,22 @@ func (s *Service) recordProviderUsageSnapshot(sessionID, runID, providerID, mode
 	var cumulativeBilledCacheRead int64 = usage.CacheReadTokens
 	var cumulativeBilledCacheWrite int64 = usage.CacheWriteTokens
 	var cumulativeBilledThinking int64 = usage.ThinkingTokens
-	if len(billedTokens) > 0 && billedTokens[0] > 0 {
+	if len(billedTokens) > 0 {
 		cumulativeBilled = billedTokens[0]
 	}
-	if len(billedTokens) > 1 && billedTokens[1] > 0 {
+	if len(billedTokens) > 1 {
 		cumulativeBilledInput = billedTokens[1]
 	}
-	if len(billedTokens) > 2 && billedTokens[2] > 0 {
+	if len(billedTokens) > 2 {
 		cumulativeBilledOutput = billedTokens[2]
 	}
-	if len(billedTokens) > 3 && billedTokens[3] > 0 {
+	if len(billedTokens) > 3 {
 		cumulativeBilledCacheRead = billedTokens[3]
 	}
-	if len(billedTokens) > 4 && billedTokens[4] > 0 {
+	if len(billedTokens) > 4 {
 		cumulativeBilledCacheWrite = billedTokens[4]
 	}
-	if len(billedTokens) > 5 && billedTokens[5] > 0 {
+	if len(billedTokens) > 5 {
 		cumulativeBilledThinking = billedTokens[5]
 	}
 	turnUsage := pebblestore.SessionTurnUsageSnapshot{
@@ -247,6 +247,7 @@ func (s *Service) recordProviderUsageSnapshot(sessionID, runID, providerID, mode
 		CacheReadTokens:        usage.CacheReadTokens,
 		CacheWriteTokens:       usage.CacheWriteTokens,
 		TotalTokens:            usage.TotalTokens,
+		BilledUsagePresent:     true,
 		BilledTokens:           cumulativeBilled,
 		BilledInputTokens:      cumulativeBilledInput,
 		BilledOutputTokens:     cumulativeBilledOutput,
@@ -256,13 +257,22 @@ func (s *Service) recordProviderUsageSnapshot(sessionID, runID, providerID, mode
 		ServiceTier:            strings.ToLower(strings.TrimSpace(usage.ServiceTier)),
 		EstimatedCostUSD:       usage.EstimatedCostUSD,
 	}
+	// Fireworks computes EstimatedCostUSD locally; Codex alone currently maps
+	// this field directly from an explicit provider response field.
+	if providerID == "codex" {
+		if _, reported := usage.APIUsageRaw["estimated_cost_usd"]; reported {
+			turnUsage.CostProvenance = "provider"
+			turnUsage.PriceStatus = "known"
+		} else { turnUsage.PriceStatus = "subscription" }
+	} else if usage.EstimatedCostUSD > 0 { turnUsage.CostProvenance = "catalog" }
 	if s.sessions != nil && s.sessions.Store() != nil {
-		if turnUsage.EstimatedCostUSD <= 0 && !strings.EqualFold(turnUsage.Provider, "codex") {
-			cost, status := s.sessions.Store().CalculateCostWithStatus(turnUsage.Provider, turnUsage.Model, turnUsage.InputTokens, turnUsage.OutputTokens, turnUsage.CacheReadTokens, turnUsage.ThinkingTokens)
+		if turnUsage.EstimatedCostUSD == 0 && turnUsage.PriceStatus == "" && !strings.EqualFold(turnUsage.Provider, "codex") {
+			cost, status := s.sessions.Store().CalculateCostWithStatus(turnUsage.Provider, turnUsage.Model, turnUsage.BilledInputTokens, turnUsage.BilledOutputTokens, turnUsage.BilledCacheReadTokens, turnUsage.BilledThinkingTokens)
+			turnUsage.CostProvenance = "catalog"
 			turnUsage.EstimatedCostUSD = cost
 			turnUsage.PriceStatus = status
 		} else if turnUsage.PriceStatus == "" {
-			_, status := s.sessions.Store().CalculateCostWithStatus(turnUsage.Provider, turnUsage.Model, turnUsage.InputTokens, turnUsage.OutputTokens, turnUsage.CacheReadTokens, turnUsage.ThinkingTokens)
+			_, status := s.sessions.Store().CalculateCostWithStatus(turnUsage.Provider, turnUsage.Model, turnUsage.BilledInputTokens, turnUsage.BilledOutputTokens, turnUsage.BilledCacheReadTokens, turnUsage.BilledThinkingTokens)
 			turnUsage.PriceStatus = status
 		}
 	}
