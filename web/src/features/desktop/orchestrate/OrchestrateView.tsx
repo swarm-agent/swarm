@@ -1,6 +1,6 @@
 import { useState, useReducer, useMemo, useEffect, useCallback, useRef, useSyncExternalStore } from 'react'
 import { MediaTaskSelect, MediaTaskDefault, MediaTaskHelp, MediaTaskScenes, MediaTaskCost } from './media-task-controls'
-import { ImagePromptControls, imagePromptReducer, initialImagePromptState, imagePromptEnhancement, imageExecutionLabel } from './image-task-prompt'
+import { ImagePromptControls, imagePromptReducer, initialImagePromptState, imagePromptEnhancement } from './image-task-prompt'
 import { taskIntegrationOperations, taskIntegrationKey, taskIntegrationPhase, type TaskIntegrationOperation, type TaskIntegrationResult } from './task-integration-operation'
 import { projectTaskFollowupPayload } from '../runtime/project-task-followup'
 import { TaskAttemptHistory } from './task-attempt-history'
@@ -7720,24 +7720,19 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
               </button>
             </div>
 
-            {/* Impending Execution & Model Banner */}
+            {/* Agent preview belongs to code/audit only; media settings own their model selection. */}
+            {(taskIntent === 'code' || taskIntent === 'audit') && (
             <div className="flex flex-col gap-2 p-3 rounded-xl bg-slate-950/80 border border-slate-800 text-[11px] font-mono" data-testid="deploy-modal-impending-preview">
               <div className="flex items-center justify-between gap-2 flex-wrap">
                 <div className="flex items-center gap-2">
                   <span className="text-[10px] uppercase font-bold text-slate-400 tracking-wider flex items-center gap-1">
                     <Bot size={12} className="text-blue-400" />
-                    <span>{taskIntent === 'image' ? 'Execution:' : 'Impending Agent:'}</span>
+                    <span>Impending Agent:</span>
                   </span>
                   <span className="font-bold text-white px-2 py-0.5 rounded bg-slate-900 border border-slate-700">
                     {taskIntent === 'code'
                       ? (featureSize === 'big' ? '@plan (Orchestrator Plan Mode)' : '@coder (Coder)')
-                      : taskIntent === 'audit'
-                        ? '@finder (Finder)'
-                        : taskIntent === 'image'
-                          ? imageExecutionLabel(imageVariants, imagePromptState.aiVariants)
-                          : taskIntent === 'video'
-                            ? '@video (Video)'
-                            : '@sound (Audio)'}
+                      : '@finder (Finder)'}
                   </span>
                 </div>
                 <div className="flex items-center gap-2">
@@ -7804,11 +7799,9 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                 {taskIntent === 'code' && featureSize === 'small' && 'Direct autonomous code generation and tests on an isolated worktree branch via @coder.'}
                 {taskIntent === 'code' && featureSize === 'big' && 'Plan-mode orchestration: builds a structured proposed plan and criteria awaiting user approval before launching worker agents.'}
                 {taskIntent === 'audit' && 'Read-only architectural audit and code exploration via @finder, producing an audit report.'}
-                {taskIntent === 'image' && 'Image media generation with selected media model.'}
-                {taskIntent === 'video' && 'Video shot/storyline generation with selected video model.'}
-                {taskIntent === 'sound' && 'Audio sound clip synthesis with selected audio model.'}
               </p>
             </div>
+            )}
 
             {/* Tagged / Attached Media Bar */}
             {taggedMedia.length > 0 && (

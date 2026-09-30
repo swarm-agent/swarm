@@ -210,3 +210,36 @@ test('image default control binds its saving state and disables pending saves', 
     assert.equal(saves, 0, 'rendering must not persist settings')
   }
 })
+
+// Purpose: manual image/video/sound must have no top agent/execution box, while
+// code/audit retain their existing preview. Threat: removing only copy, leaving a
+// redundant empty box, or accidentally hiding non-media agent controls. Authority:
+// OrchestrateView's actual JSX guard around deploy-modal-impending-preview.
+// Narrow layer: evaluate the production render guard for every supported intent;
+// no daemon, media provider, or complete application fixture is required.
+test('top agent preview renders only for code and audit, never manual media', () => {
+  const source = readFileSync(new URL('./OrchestrateView.tsx', import.meta.url), 'utf8')
+  const file = ts.createSourceFile('view.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
+  let preview: ts.JsxElement | undefined
+  function visit(node: ts.Node) {
+    if (ts.isJsxElement(node) && node.openingElement.attributes.properties.some(attribute =>
+      ts.isJsxAttribute(attribute) && attribute.name.getText(file) === 'data-testid' &&
+      attribute.initializer && ts.isStringLiteral(attribute.initializer) && attribute.initializer.text === 'deploy-modal-impending-preview')) preview = node
+    ts.forEachChild(node, visit)
+  }
+  visit(file)
+  assert.ok(preview)
+  const wrapped = ts.isParenthesizedExpression(preview.parent) ? preview.parent : preview
+  const guard = wrapped.parent
+  assert.ok(ts.isBinaryExpression(guard))
+  assert.equal(guard.operatorToken.kind, ts.SyntaxKind.AmpersandAmpersandToken)
+  assert.equal(guard.right, wrapped, 'guard removes the entire box, not its text')
+  const js = ts.transpileModule(`return (${guard.left.getText(file)})`, { compilerOptions: { target: ts.ScriptTarget.ES2020 } }).outputText
+  const shouldRender = new Function('taskIntent', js)
+  for (const intent of ['image', 'video', 'sound']) assert.equal(shouldRender(intent), false, intent)
+  for (const intent of ['code', 'audit']) assert.equal(shouldRender(intent), true, intent)
+  const content = preview.getText(file)
+  assert.match(content, /deploy-modal-change-model-btn/)
+  assert.match(content, /deploy-modal-preview-error/)
+  assert.match(content, /deploy-modal-reset-override-btn/)
+})
