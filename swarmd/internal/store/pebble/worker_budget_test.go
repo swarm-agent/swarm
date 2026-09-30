@@ -281,13 +281,22 @@ func TestWorkerBudgetAdmissionAndSettlement(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, source := range []string{"direct", "schedule", "trigger"} {
-		request := WorkerRunAdmission{WorkerID: "worker", UserID: "user-1", ExpectedWorkerRevision: 1, RequestSource: source, IdempotencyKey: "budget-denied-"+source, Input: map[string]any{"prompt": "work"}}
-		if source != "direct" { request.AutomationID = "automation" }
-		if source == "schedule" { request.OccurrenceID = "occurrence" }
+		request := WorkerRunAdmission{WorkerID: "worker", UserID: "user-1", ExpectedWorkerRevision: 1, RequestSource: source, IdempotencyKey: "budget-denied-" + source, Input: map[string]any{"prompt": "work"}}
+		if source != "direct" {
+			request.AutomationID = "automation"
+		}
+		if source == "schedule" {
+			request.OccurrenceID = "occurrence"
+			request.IdempotencyKey = ""
+		}
 		_, err = s.WorkerStore().AdmitWorkerRun("account-1", request)
-		if !errors.Is(err, ErrWorkerBudget) { t.Fatalf("%s admission: %v", source, err) }
+		if !errors.Is(err, ErrWorkerBudget) {
+			t.Fatalf("%s admission: %v", source, err)
+		}
 		var prior workerRunIdempotency
-		if found, err := db.GetJSON(KeyWorkerRunIdempotency("account-1", request.IdempotencyKey), &prior); err != nil || found { t.Fatalf("denied %s persisted: %+v %v", source, prior, err) }
+		if found, err := db.GetJSON(KeyWorkerRunIdempotency("account-1", request.IdempotencyKey), &prior); err != nil || found {
+			t.Fatalf("denied %s persisted: %+v %v", source, prior, err)
+		}
 	}
 	// Clear only fixture projection, then persist one real canonical receipt.
 	if err := db.PutJSON(usageScopeDayKey("account-1", total, date), UsageScopeTotal{Kind: "worker", ID: "worker"}); err != nil {

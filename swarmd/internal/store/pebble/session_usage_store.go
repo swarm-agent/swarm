@@ -15,7 +15,7 @@ import (
 )
 
 type SessionTurnUsageSnapshot struct {
-	BudgetOperationID string `json:"budget_operation_id,omitempty"`
+	BudgetOperationID      string            `json:"budget_operation_id,omitempty"`
 	ScopeProjectionVersion int               `json:"scope_projection_version,omitempty"`
 	ScopeTotals            []UsageScopeTotal `json:"scope_totals,omitempty"`
 	CostProvenance         string            `json:"cost_provenance,omitempty"`
@@ -81,25 +81,25 @@ type SessionUsageSummary struct {
 }
 
 type SessionMediaUsageRecord struct {
-	BudgetOperationID string `json:"budget_operation_id,omitempty"`
-	ScopeTotals     []UsageScopeTotal `json:"scope_totals,omitempty"`
-	ID              string            `json:"id"`
-	SessionID       string            `json:"session_id"`
-	AccountScopeID  string            `json:"account_scope_id"`
-	UserID          string            `json:"user_id,omitempty"`
-	MediaType       string            `json:"media_type"`
-	Kind            string            `json:"kind"` // "image", "video", "audio"
-	Provider        string            `json:"provider,omitempty"`
-	Model           string            `json:"model,omitempty"`
-	Filename        string            `json:"filename"`
-	Label           string            `json:"label"`
-	Size            int64             `json:"size"`
-	CostUSD         float64           `json:"cost_usd"`
-	PriceStatus     string            `json:"price_status,omitempty"`     // "known", "unknown", "subscription", "free"
-	PricingSummary  string            `json:"pricing_summary,omitempty"`  // human-scannable pricing provenance
-	SnapshotID      string            `json:"snapshot_id,omitempty"`      // catalog snapshot ID
-	SnapshotVersion string            `json:"snapshot_version,omitempty"` // catalog snapshot version
-	CreatedAt       int64             `json:"created_at"`
+	BudgetOperationID string            `json:"budget_operation_id,omitempty"`
+	ScopeTotals       []UsageScopeTotal `json:"scope_totals,omitempty"`
+	ID                string            `json:"id"`
+	SessionID         string            `json:"session_id"`
+	AccountScopeID    string            `json:"account_scope_id"`
+	UserID            string            `json:"user_id,omitempty"`
+	MediaType         string            `json:"media_type"`
+	Kind              string            `json:"kind"` // "image", "video", "audio"
+	Provider          string            `json:"provider,omitempty"`
+	Model             string            `json:"model,omitempty"`
+	Filename          string            `json:"filename"`
+	Label             string            `json:"label"`
+	Size              int64             `json:"size"`
+	CostUSD           float64           `json:"cost_usd"`
+	PriceStatus       string            `json:"price_status,omitempty"`     // "known", "unknown", "subscription", "free"
+	PricingSummary    string            `json:"pricing_summary,omitempty"`  // human-scannable pricing provenance
+	SnapshotID        string            `json:"snapshot_id,omitempty"`      // catalog snapshot ID
+	SnapshotVersion   string            `json:"snapshot_version,omitempty"` // catalog snapshot version
+	CreatedAt         int64             `json:"created_at"`
 }
 
 func ApplyProviderUsageSnapshotToSummary(summary SessionUsageSummary, usage SessionTurnUsageSnapshot) SessionUsageSummary {
@@ -372,8 +372,12 @@ func (s *SessionStore) PutTurnUsage(record SessionTurnUsageSnapshot) error {
 		}
 		acc.TotalCostUSD += deltaCost
 		acc.UnknownReceipts += unknownBudgetReceipt(record.PriceStatus)
-		if hadPrevious { acc.UnknownReceipts -= unknownBudgetReceipt(previous.PriceStatus) }
-		if acc.UnknownReceipts < 0 { acc.UnknownReceipts = 0 }
+		if hadPrevious {
+			acc.UnknownReceipts -= unknownBudgetReceipt(previous.PriceStatus)
+		}
+		if acc.UnknownReceipts < 0 {
+			acc.UnknownReceipts = 0
+		}
 		codexNominalDelta := 0.0
 		if strings.EqualFold(record.Provider, "codex") {
 			codexNominalDelta = nominalUsageCost(record)

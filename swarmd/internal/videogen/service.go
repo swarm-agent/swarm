@@ -1,7 +1,6 @@
 package videogen
 
 import (
-	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -10,6 +9,7 @@ import (
 	"math"
 	"net/http"
 	"strings"
+	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	"sync"
 	"time"
 
@@ -345,7 +345,9 @@ func (s *Service) GenerateManagedVideo(ctx context.Context, req ManagedVideoRequ
 		if err != nil {
 			return ManagedVideoResult{}, err
 		}
-		if err := provideriface.CheckBillableDispatch(ctx); err != nil { return ManagedVideoResult{}, err }
+		if err := provideriface.CheckBillableDispatch(ctx); err != nil {
+			return ManagedVideoResult{}, err
+		}
 		if IsOmniModel(modelID) {
 			result, genErr = s.generateGoogleOmni(ctx, apiKey, modelID, prompt, aspectRatio, resolution, operation, req.Source, req.Image)
 		} else {
@@ -356,7 +358,9 @@ func (s *Service) GenerateManagedVideo(ctx context.Context, req ManagedVideoRequ
 		if err != nil {
 			return ManagedVideoResult{}, err
 		}
-		if err := provideriface.CheckBillableDispatch(ctx); err != nil { return ManagedVideoResult{}, err }
+		if err := provideriface.CheckBillableDispatch(ctx); err != nil {
+			return ManagedVideoResult{}, err
+		}
 		result, genErr = s.generateOpenRouter(ctx, apiKey, modelID, prompt, aspectRatio, resolution, durationSeconds, req.Image)
 	default:
 		return ManagedVideoResult{}, fmt.Errorf("unsupported video provider %q", providerID)

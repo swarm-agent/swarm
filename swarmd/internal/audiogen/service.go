@@ -1,7 +1,6 @@
 package audiogen
 
 import (
-	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -9,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	"sync"
 	"time"
 
@@ -140,7 +140,9 @@ func (s *Service) GenerateManagedAudio(ctx context.Context, req ManagedAudioRequ
 		if err != nil {
 			return ManagedAudioResult{}, err
 		}
-		if err := provideriface.CheckBillableDispatch(ctx); err != nil { return ManagedAudioResult{}, err }
+		if err := provideriface.CheckBillableDispatch(ctx); err != nil {
+			return ManagedAudioResult{}, err
+		}
 		result, genErr = s.generateGoogleLyria(ctx, apiKey, modelID, shapedPrompt, durationSeconds, req)
 	default:
 		return ManagedAudioResult{}, fmt.Errorf("unsupported audio provider %q", providerID)

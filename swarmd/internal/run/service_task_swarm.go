@@ -238,7 +238,7 @@ func (r *configuredTaskSwarmRouter) taskSwarmRouterOutput(ctx context.Context, r
 		}
 		uniqueRouterRunID := fmt.Sprintf("router:%s:%d:%d", r.callID, attempt, time.Now().UnixNano())
 		routerUsage := pebblestore.SessionTurnUsageSnapshot{
-			BudgetOperationID: providerBudgetOperation(callCtx),
+			BudgetOperationID:      providerBudgetOperation(callCtx),
 			SessionID:              r.parentID,
 			AccountScopeID:         r.principal.AccountScopeID,
 			UserID:                 r.principal.UserID,

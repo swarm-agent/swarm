@@ -16,7 +16,7 @@ const WorkerUpdatedEventType = "worker.updated"
 
 // WorkerRealtimePayload conveys invalidation metadata for live worker updates.
 type WorkerRealtimePayload struct {
-	BudgetRevision uint64 `json:"budget_revision,omitempty"`
+	BudgetRevision uint64               `json:"budget_revision,omitempty"`
 	WorkerID       string               `json:"worker_id"`
 	Revision       uint64               `json:"revision,omitempty"`
 	LifecycleState WorkerLifecycleState `json:"lifecycle_state,omitempty"`
@@ -107,7 +107,7 @@ func setWorkerRealtimeMutationInBatch(batch *pebble.Batch, account string, m *wo
 	sort.Strings(keys)
 	for _, key := range keys {
 		data := m.writes[key]
-		if !isAllowedWorkerKey(account, key) || !json.Valid(data) {
+		if (!isAllowedWorkerKey(account, key) && key != workerBudgetKey(account, m.workerID)) || !json.Valid(data) {
 			return ErrWorkerInvalid
 		}
 		if err := batch.Set([]byte(key), data, nil); err != nil {

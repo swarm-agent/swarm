@@ -23,7 +23,7 @@ type UsageLimitRecord struct {
 
 // DailyUsageAccumulator tracks aggregated daily spending and token counts in O(1) storage.
 type DailyUsageAccumulator struct {
-	UnknownReceipts int64 `json:"unknown_receipts,omitempty"`
+	UnknownReceipts     int64            `json:"unknown_receipts,omitempty"`
 	AccountScopeID      string           `json:"account_scope_id"`
 	Date                string           `json:"date"` // Format: YYYY-MM-DD (UTC)
 	TotalCostUSD        float64          `json:"total_cost_usd"`

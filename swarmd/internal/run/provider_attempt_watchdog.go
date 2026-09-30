@@ -204,7 +204,9 @@ func runProviderAttempt(
 // Beyond this window the durable reservation remains unresolved, never refunded.
 func retainLateProviderReceipt(ctx context.Context, results <-chan providerAttemptResult) {
 	callback, ok := ctx.Value(lateProviderReceiptKey{}).(lateProviderReceiptCallback)
-	if !ok { return }
+	if !ok {
+		return
+	}
 	go func() {
 		timer := time.NewTimer(providerAttemptActivityTimeout)
 		defer timer.Stop()
@@ -212,7 +214,9 @@ func retainLateProviderReceipt(ctx context.Context, results <-chan providerAttem
 		case result := <-results:
 			if hasConcreteUsageSnapshot(result.response.Usage) {
 				// Persistence errors leave the reservation blocked; never acknowledge settlement.
-				if err := callback(result.response); err != nil { log.Print("late provider receipt persistence failed; budget reservation remains unresolved") }
+				if err := callback(result.response); err != nil {
+					log.Print("late provider receipt persistence failed; budget reservation remains unresolved")
+				}
 			}
 		case <-timer.C:
 		}

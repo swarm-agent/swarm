@@ -35,7 +35,10 @@ func (s *Server) handleWorkerBudget(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		status, err := s.sessions.Store().GetWorkerBudgetStatus(p.AccountScopeID, worker)
-		if err != nil { writeError(w, http.StatusInternalServerError, err); return }
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
 		writeJSON(w, http.StatusOK, status)
 	case http.MethodPut:
 		var request struct {

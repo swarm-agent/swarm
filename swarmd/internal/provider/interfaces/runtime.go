@@ -352,7 +352,7 @@ const (
 
 type TokenUsage struct {
 	// Local durable budget identity; never supplied by a provider or sent to one.
-	BudgetOperationID string `json:"-"`
+	BudgetOperationID    string           `json:"-"`
 	InputTokens          int64            `json:"input_tokens,omitempty"`
 	OutputTokens         int64            `json:"output_tokens,omitempty"`
 	ThinkingTokens       int64            `json:"thinking_tokens,omitempty"`
@@ -497,7 +497,11 @@ func WithBillableDispatchGuard(ctx context.Context, guard BillableDispatchGuard)
 }
 
 func CheckBillableDispatch(ctx context.Context) error {
-	if err := ctx.Err(); err != nil { return err }
-	if guard, ok := ctx.Value(billableDispatchGuardKey{}).(BillableDispatchGuard); ok { return guard() }
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if guard, ok := ctx.Value(billableDispatchGuardKey{}).(BillableDispatchGuard); ok {
+		return guard()
+	}
 	return nil
 }

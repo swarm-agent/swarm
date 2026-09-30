@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"swarm/packages/swarmd/internal/identity"
-	"swarm/packages/swarmd/internal/provider/registry"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
+	"swarm/packages/swarmd/internal/provider/registry"
 	store "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -79,19 +79,25 @@ func TestWorkerBudgetProviderBoundary(t *testing.T) {
 // checkProviderWorkerBudget/retainLateProviderReceipt; deterministic channels
 // exercise the narrow provider boundary without provider/network billing.
 func TestWorkerBudgetCancelledAndLateReceipt(t *testing.T) {
- ctx, cancel := context.WithCancel(context.Background()); cancel()
- runner := &budgetBoundaryRunner{}
- if _, err := runProviderAttempt(ctx, runner, provideriface.Request{}, 0, nil); !errors.Is(err, context.Canceled) || runner.calls != 0 { t.Fatalf("cancel dispatch: %d %v", runner.calls, err) }
- results := make(chan providerAttemptResult, 1)
- received := make(chan provideriface.Response, 1)
- ctx = withLateProviderReceipt(context.Background(), func(response provideriface.Response) error { received <- response; return nil })
- retainLateProviderReceipt(ctx, results)
- results <- providerAttemptResult{response:provideriface.Response{Usage:provideriface.TokenUsage{BudgetOperationID:"exact-attempt", TotalTokens:7}}}
- select {
- case response := <-received:
-  if response.Usage.BudgetOperationID != "exact-attempt" || response.Usage.TotalTokens != 7 { t.Fatalf("late evidence: %+v", response.Usage) }
- case <-time.After(time.Second): t.Fatal("late receipt callback not invoked")
- }
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	runner := &budgetBoundaryRunner{}
+	if _, err := runProviderAttempt(ctx, runner, provideriface.Request{}, 0, nil); !errors.Is(err, context.Canceled) || runner.calls != 0 {
+		t.Fatalf("cancel dispatch: %d %v", runner.calls, err)
+	}
+	results := make(chan providerAttemptResult, 1)
+	received := make(chan provideriface.Response, 1)
+	ctx = withLateProviderReceipt(context.Background(), func(response provideriface.Response) error { received <- response; return nil })
+	retainLateProviderReceipt(ctx, results)
+	results <- providerAttemptResult{response: provideriface.Response{Usage: provideriface.TokenUsage{BudgetOperationID: "exact-attempt", TotalTokens: 7}}}
+	select {
+	case response := <-received:
+		if response.Usage.BudgetOperationID != "exact-attempt" || response.Usage.TotalTokens != 7 {
+			t.Fatalf("late evidence: %+v", response.Usage)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("late receipt callback not invoked")
+	}
 }
 
 // Purpose: metadata preparation is an actual unmetered utility dispatch and
@@ -99,15 +105,25 @@ func TestWorkerBudgetCancelledAndLateReceipt(t *testing.T) {
 // Owners PrepareAITaskMetadata/CheckWorkerUnmeteredOperation; existing compiled
 // model fixture plus a counting provider is the narrowest no-dispatch proof.
 func TestWorkerBudgetAITaskMetadataAccountBoundary(t *testing.T) {
- svc, _, cleanup := newTaskLaunchPermissionTestService(t); defer cleanup()
- runner := &principalCapturingAITaskRunner{}
- svc.providers = registry.New(); svc.providers.RegisterRunner(runner)
- principal := identity.Principal{Type:identity.PrincipalTypeUser, UserID:"test-user", AccountScopeID:"test-account"}
- ctx := identity.ContextWithPrincipal(context.Background(), principal)
- if _, err := svc.agentModelSettings.UpdateSystemAgent(ctx, store.SystemAgentCompact, store.AgentModelAssignment{Provider:"codex", Model:"gpt-5.4", Thinking:"medium", ServiceTier:"fast"}); err != nil { t.Fatal(err) }
- if err := svc.sessions.Store().PutUsageLimit(store.UsageLimitRecord{AccountScopeID:principal.AccountScopeID, Enabled:true, DailyTokensLimit:100}); err != nil { t.Fatal(err) }
- if _, err := svc.PrepareAITaskMetadata(context.Background(), "task", "request", store.ModelPreference{Provider:"codex", Model:"gpt-5.4"}, principal); !errors.Is(err, store.ErrWorkerBudget) { t.Fatalf("metadata bypass: %v", err) }
- if runner.request.Model != "" { t.Fatal("capped metadata dispatched") }
+	svc, _, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+	runner := &principalCapturingAITaskRunner{}
+	svc.providers = registry.New()
+	svc.providers.RegisterRunner(runner)
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "test-user", AccountScopeID: "test-account"}
+	ctx := identity.ContextWithPrincipal(context.Background(), principal)
+	if _, err := svc.agentModelSettings.UpdateSystemAgent(ctx, store.SystemAgentCompact, store.AgentModelAssignment{Provider: "codex", Model: "gpt-5.4", Thinking: "medium", ServiceTier: "fast"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.sessions.Store().PutUsageLimit(store.UsageLimitRecord{AccountScopeID: principal.AccountScopeID, Enabled: true, DailyTokensLimit: 100}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.PrepareAITaskMetadata(context.Background(), "task", "request", store.ModelPreference{Provider: "codex", Model: "gpt-5.4"}, principal); !errors.Is(err, store.ErrWorkerBudget) {
+		t.Fatalf("metadata bypass: %v", err)
+	}
+	if runner.request.Model != "" {
+		t.Fatal("capped metadata dispatched")
+	}
 }
 
 // Purpose: actual worker dispatch must create corroborated ownership before any
@@ -116,20 +132,39 @@ func TestWorkerBudgetAITaskMetadataAccountBoundary(t *testing.T) {
 // canonical budget store; real temporary Git/Pebble fixture is the narrowest
 // preparation-boundary test, with a bounded fake enqueue (not live telemetry).
 func TestWorkerBudgetDispatchBindingBeforeProvider(t *testing.T) {
- wake := false
- _, ss, execution, workspaceID := setupWorkerExecutionFixture(t, func(identity.Principal, store.V3SessionRunIntent) bool { return wake })
- ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second); defer cancel()
- worker, err := ss.Store().WorkerStore().CreateWorker("account", "owner", store.CreateWorkerRequest{Name:"budget", Instructions:"Review", WorkspaceRequirements:[]store.WorkerWorkspaceRequirement{{Role:"primary", Required:true}}}, nil)
- if err != nil { t.Fatal(err) }
- worker, err = execution.Activate("account", "owner", worker.ID, worker.Revision, map[string]string{"primary":workspaceID}); if err != nil { t.Fatal(err) }
- if _, err := ss.Store().SetWorkerBudget("account", worker.ID, 0, 1, 100); err != nil { t.Fatal(err) }
- request := store.WorkerRunAdmission{WorkerID:worker.ID, RequestSource:"direct", Input:map[string]any{"prompt":"Review"}, IdempotencyKey:"budget-dispatch"}
- receipt, err := execution.Dispatch(ctx, "account", "owner", request); if err == nil { t.Fatal("wake failure hidden") }
- snapshot, found, err := ss.GetSession(receipt.SessionID)
- if err != nil || !found || snapshot.Metadata["worker_id"] != worker.ID || snapshot.Metadata["worker_run_id"] != receipt.ID { t.Fatalf("unbound dispatch: %+v %v", snapshot, err) }
- if err := ss.Store().CheckWorkerSessionBudgetWithPrice("account", receipt.SessionID, "unknown", "first"); !errors.Is(err, store.ErrWorkerBudget) { t.Fatalf("prepared budget bypass: %v", err) }
- wake = true
- replay, err := execution.Dispatch(ctx, "account", "owner", request)
- if err != nil || replay.ID != receipt.ID { t.Fatalf("retry: %+v %v", replay, err) }
- if err := ss.Store().CheckWorkerSessionBudgetWithPrice("account", replay.SessionID, "unknown", "retry"); !errors.Is(err, store.ErrWorkerBudget) { t.Fatalf("retry budget bypass: %v", err) }
+	wake := false
+	_, ss, execution, workspaceID := setupWorkerExecutionFixture(t, func(identity.Principal, store.V3SessionRunIntent) bool { return wake })
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	worker, err := ss.Store().WorkerStore().CreateWorker("account", "owner", store.CreateWorkerRequest{Name: "budget", Instructions: "Review", WorkspaceRequirements: []store.WorkerWorkspaceRequirement{{Role: "primary", Required: true}}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker, err = execution.Activate("account", "owner", worker.ID, worker.Revision, map[string]string{"primary": workspaceID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ss.Store().SetWorkerBudget("account", worker.ID, 0, 1, 100); err != nil {
+		t.Fatal(err)
+	}
+	request := store.WorkerRunAdmission{WorkerID: worker.ID, RequestSource: "direct", Input: map[string]any{"prompt": "Review"}, IdempotencyKey: "budget-dispatch"}
+	receipt, err := execution.Dispatch(ctx, "account", "owner", request)
+	if err == nil {
+		t.Fatal("wake failure hidden")
+	}
+	snapshot, found, err := ss.GetSession(receipt.SessionID)
+	if err != nil || !found || snapshot.Metadata["worker_id"] != worker.ID || snapshot.Metadata["worker_run_id"] != receipt.ID {
+		t.Fatalf("unbound dispatch: %+v %v", snapshot, err)
+	}
+	if err := ss.Store().CheckWorkerSessionBudgetWithPrice("account", receipt.SessionID, "unknown", "first"); !errors.Is(err, store.ErrWorkerBudget) {
+		t.Fatalf("prepared budget bypass: %v", err)
+	}
+	wake = true
+	replay, err := execution.Dispatch(ctx, "account", "owner", request)
+	if err != nil || replay.ID != receipt.ID {
+		t.Fatalf("retry: %+v %v", replay, err)
+	}
+	if err := ss.Store().CheckWorkerSessionBudgetWithPrice("account", replay.SessionID, "unknown", "retry"); !errors.Is(err, store.ErrWorkerBudget) {
+		t.Fatalf("retry budget bypass: %v", err)
+	}
 }

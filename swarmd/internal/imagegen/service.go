@@ -624,7 +624,9 @@ func (s *Service) GenerateManagedImage(ctx context.Context, req ManagedGenerateR
 		if !ok || strings.TrimSpace(record.AccessToken) == "" || strings.TrimSpace(record.RefreshToken) == "" {
 			return ManagedImage{}, errors.New("connect Codex with OAuth to enable image generation")
 		}
-		if err := provideriface.CheckBillableDispatch(ctx); err != nil { return ManagedImage{}, err }
+		if err := provideriface.CheckBillableDispatch(ctx); err != nil {
+			return ManagedImage{}, err
+		}
 		generated, err := s.codexClient.GenerateImage(identity.ContextWithPrincipal(ctx, req.Principal), codex.ImageGenerationRequest{
 			Model: selection.Model, Prompt: prompt, Size: managedCodexImageSize(req), Count: 1,
 		})
@@ -647,7 +649,9 @@ func (s *Service) GenerateManagedImage(ctx context.Context, req ManagedGenerateR
 		if !ok || strings.TrimSpace(record.APIKey) == "" {
 			return ManagedImage{}, errors.New("connect a Google API key to enable Gemini image generation")
 		}
-		if err := provideriface.CheckBillableDispatch(ctx); err != nil { return ManagedImage{}, err }
+		if err := provideriface.CheckBillableDispatch(ctx); err != nil {
+			return ManagedImage{}, err
+		}
 		generated, err := s.geminiImageClient.GenerateImage(identity.ContextWithPrincipal(ctx, req.Principal), GeminiImageGenerationRequest{
 			APIKey: record.APIKey, Model: selection.Model, Prompt: prompt,
 			AspectRatio: googleAspectRatio, ImageSize: googleImageSize, Source: cloneManagedImageSource(req.Source),

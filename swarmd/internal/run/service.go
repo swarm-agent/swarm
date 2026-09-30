@@ -2430,7 +2430,9 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		attemptCtx := withLateProviderReceipt(runnerCtx, func(late provideriface.Response) error {
 			usage := late.Usage
 			cost := usage.EstimatedCostUSD
-			if cost == 0 && s.sessions.Store() != nil { cost = s.sessions.Store().CalculateCost(receiptProvider, receiptModel, usage.InputTokens, usage.OutputTokens, usage.CacheReadTokens, usage.ThinkingTokens) }
+			if cost == 0 && s.sessions.Store() != nil {
+				cost = s.sessions.Store().CalculateCost(receiptProvider, receiptModel, usage.InputTokens, usage.OutputTokens, usage.CacheReadTokens, usage.ThinkingTokens)
+			}
 			usage.EstimatedCostUSD = priorCost + cost
 			baseTokens, baseInput, baseOutput := priorTokens, priorInput, priorOutput
 			baseRead, baseWrite, baseThinking := priorRead, priorWrite, priorThinking
@@ -2439,7 +2441,9 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 				baseRead, baseWrite, baseThinking = 0, 0, 0
 			}
 			_, _, _, receiptErr := s.recordProviderUsageSnapshot(sessionID, receiptRunID, receiptProvider, receiptModel, receiptWindow, receiptStep, usage, receiptPrincipal, receiptApply, baseTokens+usage.TotalTokens, baseInput+usage.InputTokens, baseOutput+usage.OutputTokens, baseRead+usage.CacheReadTokens, baseWrite+usage.CacheWriteTokens, baseThinking+usage.ThinkingTokens)
-			if receiptErr != nil { return receiptErr }
+			if receiptErr != nil {
+				return receiptErr
+			}
 			return s.sessions.Store().ReleaseWorkerBudgetReservation(acctScope, sessionID, usage.BudgetOperationID)
 		})
 		response, err := runProviderAttempt(attemptCtx, providerRunner, stepRequest, providerAttemptActivityTimeout, func(event provideriface.StreamEvent) {
@@ -4418,22 +4422,22 @@ func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, ru
 			uniqueCompactRunID := fmt.Sprintf("compact:%s:%s:%d:%d:%d", sessionID, strings.TrimSpace(runID), compactIndex, attempt, time.Now().UnixNano())
 			compactTurn := pebblestore.SessionTurnUsageSnapshot{
 				BudgetOperationID: oneShotResult.Usage.BudgetOperationID,
-				SessionID:        sessionID,
-				AccountScopeID:   accountScopeID,
-				RunID:            uniqueCompactRunID,
-				Provider:         compactModel.ProviderID,
-				Model:            compactModel.Preference.Model,
-				Source:           "compaction",
-				InputTokens:      oneShotResult.Usage.InputTokens,
-				OutputTokens:     oneShotResult.Usage.OutputTokens,
-				ThinkingTokens:   oneShotResult.Usage.ThinkingTokens,
-				CacheReadTokens:  oneShotResult.Usage.CacheReadTokens,
-				CacheWriteTokens: oneShotResult.Usage.CacheWriteTokens,
-				TotalTokens:      oneShotResult.Usage.TotalTokens,
-				BilledTokens:     oneShotResult.Usage.TotalTokens,
-				EstimatedCostUSD: compactCost,
-				CreatedAt:        time.Now().UnixMilli(),
-				UpdatedAt:        time.Now().UnixMilli(),
+				SessionID:         sessionID,
+				AccountScopeID:    accountScopeID,
+				RunID:             uniqueCompactRunID,
+				Provider:          compactModel.ProviderID,
+				Model:             compactModel.Preference.Model,
+				Source:            "compaction",
+				InputTokens:       oneShotResult.Usage.InputTokens,
+				OutputTokens:      oneShotResult.Usage.OutputTokens,
+				ThinkingTokens:    oneShotResult.Usage.ThinkingTokens,
+				CacheReadTokens:   oneShotResult.Usage.CacheReadTokens,
+				CacheWriteTokens:  oneShotResult.Usage.CacheWriteTokens,
+				TotalTokens:       oneShotResult.Usage.TotalTokens,
+				BilledTokens:      oneShotResult.Usage.TotalTokens,
+				EstimatedCostUSD:  compactCost,
+				CreatedAt:         time.Now().UnixMilli(),
+				UpdatedAt:         time.Now().UnixMilli(),
 			}
 			if _, _, _, recErr := s.sessions.RecordTurnUsage(sessionID, compactTurn); recErr != nil {
 				finishFailure(recErr)
@@ -5476,16 +5480,19 @@ func runCompactProviderCall(ctx context.Context, runner provideriface.Runner, re
 		}
 		resultCh <- struct {
 			response provideriface.Response
-			err error
+			err      error
 		}{response: response, err: err}
 	}()
 	if emitHeartbeat == nil || memoryCompactionHeartbeatInterval <= 0 {
 		select {
-		case out := <-resultCh: return out.response, out.err
+		case out := <-resultCh:
+			return out.response, out.err
 		case <-ctx.Done():
 			select {
-			case out := <-resultCh: return out.response, ctx.Err()
-			case <-time.After(providerAttemptTerminationTimeout): return provideriface.Response{}, ctx.Err()
+			case out := <-resultCh:
+				return out.response, ctx.Err()
+			case <-time.After(providerAttemptTerminationTimeout):
+				return provideriface.Response{}, ctx.Err()
 			}
 		}
 	}
@@ -5495,8 +5502,10 @@ func runCompactProviderCall(ctx context.Context, runner provideriface.Runner, re
 		select {
 		case <-ctx.Done():
 			select {
-			case out := <-resultCh: return out.response, ctx.Err()
-			case <-time.After(providerAttemptTerminationTimeout): return provideriface.Response{}, ctx.Err()
+			case out := <-resultCh:
+				return out.response, ctx.Err()
+			case <-time.After(providerAttemptTerminationTimeout):
+				return provideriface.Response{}, ctx.Err()
 			}
 		case out := <-resultCh:
 			return out.response, out.err
