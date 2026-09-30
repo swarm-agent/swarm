@@ -59,3 +59,12 @@ test('active worker update review discloses candidates, approved work and author
   assert.doesNotMatch(foreign, /Project — \/projects\/example/)
   assert.match(foreign, /Acceptance is blocked/)
 })
+
+// Requirement: canonical swarm_settings profiles are visibly account defaults.
+// Threat: the UI invents a source discriminator and mislabels default execution.
+// WorkerModelPicker SSR is the narrowest presentation layer for this label.
+test('canonical Swarm settings profile displays Swarm Default', async () => {
+  const { WorkerModelPicker } = await import('./worker-model-picker')
+  const html = renderToStaticMarkup(<WorkerModelPicker accountScopeId="account" profile={{ source: 'swarm_settings', action: { provider: 'fixture', model: 'action' }, plan: { provider: 'fixture', model: 'plan' } }} disabled onChange={() => { throw new Error('render changed selection') }} />)
+  assert.match(html, /Model source: Swarm Default/)
+})

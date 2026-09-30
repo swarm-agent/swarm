@@ -434,7 +434,7 @@ func (s *Server) handleWorkerCollection(w http.ResponseWriter, r *http.Request, 
 			workspaceViews[worker.ID] = views
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"workspaces": workspaceViews,
+			"workspaces":  workspaceViews,
 			"workers":     res.Workers,
 			"next_cursor": res.NextCursor,
 		})
@@ -569,7 +569,7 @@ func (s *Server) handleWorkerByID(w http.ResponseWriter, r *http.Request, p iden
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"worker": record,
+			"worker":     record,
 			"workspaces": workspaces,
 		})
 
@@ -2007,7 +2007,7 @@ func (s *Server) workerWorkspaceViews(p identity.Principal, worker pebblestore.W
 				return nil, err
 			}
 			if found && strings.EqualFold(entry.State, "active") {
-				view["available"], view["name"], view["path"] = true, entry.WorkspaceName, entry.Path
+				view["available"], view["name"], view["path"] = true, entry.Name, entry.Path
 			}
 		}
 		views[role] = view

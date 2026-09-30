@@ -3,6 +3,7 @@ package run
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -29,7 +30,11 @@ func TestWorkerDispatchKeyProviderContract(t *testing.T) {
 					return true
 				})
 				ws := ss.Store().WorkerStore()
-				worker, err := ws.CreateWorker("account", "owner", store.CreateWorkerRequest{Name: "summary", Instructions: "Read only", WorkspaceRequirements: []store.WorkerWorkspaceRequirement{{Role: "primary", Required: true}}}, nil)
+				profile, err := svc.ResolveWorkerModelProfile("account", nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				worker, err := ws.CreateWorker("account", "owner", store.CreateWorkerRequest{Name: "summary", Instructions: "Read only", ModelProfile: profile, WorkspaceRequirements: []store.WorkerWorkspaceRequirement{{Role: "primary", Required: true}}}, nil)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -39,7 +44,9 @@ func TestWorkerDispatchKeyProviderContract(t *testing.T) {
 				}
 				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer cancel()
+				invocations := 0
 				invoke := func(key any, prompt string, profile store.AgentProfile) (string, string) {
+					invocations++
 					t.Helper()
 					args := map[string]any{"action": action, "worker_id": worker.ID, "prompt": prompt}
 					if key != nil {
@@ -54,7 +61,7 @@ func TestWorkerDispatchKeyProviderContract(t *testing.T) {
 						sessionMode: "auto", runID: "dispatch-key-test", providerManagedV3: true,
 						applySessionMutation: ss.ApplySessionMutation, agentProfile: profile, terminalPlanState: &terminalPlanToolState{},
 					})
-					result, err := invoker.ExecuteTool(ctx, provideriface.ToolInvocation{Name: name, CallID: "dispatch-key", Arguments: string(raw)})
+					result, err := invoker.ExecuteTool(ctx, provideriface.ToolInvocation{Name: name, CallID: fmt.Sprintf("dispatch-key-%d", invocations), Arguments: string(raw)})
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -126,7 +133,7 @@ func TestWorkerDispatchKeyProviderContract(t *testing.T) {
 				var keyRecord struct {
 					RunID string `json:"run_id"`
 				}
-				if found, err := ss.Store().GetJSON(store.KeyWorkerRunIdempotency("account", "summary-job-1"), &keyRecord); err != nil || !found || keyRecord.RunID != first.ID {
+				if found, err := ss.Store().Underlying().GetJSON(store.KeyWorkerRunIdempotency("account", "summary-job-1"), &keyRecord); err != nil || !found || keyRecord.RunID != first.ID {
 					t.Fatalf("caller key not retained unchanged: %+v %v", keyRecord, err)
 				}
 				assertRuns(1, 1)

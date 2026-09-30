@@ -36,7 +36,7 @@ export function WorkerModelPicker({ accountScopeId, profile, disabled, onChange 
       const option = options.find(item => item.key === key)
       if (option) onChange({ ...profile, source: 'temporary', use_account_default: false, plan: { provider: option.provider, model: option.model, thinking: option.defaultThinking, service_tier: option.defaultServiceTier, context_mode: option.contextMode } })
     }} /></>}
-    {profile && <p>Model source: {profile.source === 'account_default' || profile.use_account_default ? 'Swarm Default / account action settings' : 'Worker-specific selection'}</p>}
+    {profile && <p>Model source: {profile.source === 'swarm_settings' || profile.use_account_default ? 'Swarm Default / account action settings' : 'Worker-specific selection'}</p>}
     <p className="text-slate-400">Action model only; the optional Plan model is preserved. Swarm is the default execution mode.</p>
     {profile?.resolution_warning && <p role="alert">{profile.resolution_warning}</p>}
     {error && <p role="alert">{error}</p>}

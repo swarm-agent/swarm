@@ -113,7 +113,7 @@ export function WorkerDetail({ accountScopeId, workerId, workspaceSlug, onSelect
           try { await desktopWorkers.mutate({ action: job.enabled ? 'disableAutomation' : 'enableAutomation', workerId, automationId: job.id, expected_revision: worker.revision }, accountScopeId) }
           catch (cause) { setError(cause instanceof Error ? cause.message : 'Job change failed') }
           finally { setBusy(false) }
-        }}>{job.enabled ? 'Disable job' : 'Propose enabling job'}</button>}<p>Job revision {job.revision} · created {date(job.created_at)} · updated {date(job.updated_at)}</p><p className="text-slate-400">Expected outputs: {job.deliverable_requirements?.map(item => item.name).join(', ') || 'Not specified'}</p></div>)}
+        }}>{job.enabled ? 'Disable job' : 'Enable approved job'}</button>}<p>Job revision {job.revision} · created {date(job.created_at)} · updated {date(job.updated_at)}</p><p className="text-slate-400">Expected outputs: {job.deliverable_requirements?.map(item => item.name).join(', ') || 'Not specified'}</p></div>)}
         {!worker.automations?.length && <p className={box}>No jobs attached. Ask Orchestrator to add a job or give this worker a one-off request.</p>}
       </section>
       <WorkerChangeHistory accountScopeId={accountScopeId} worker={worker} />
@@ -170,11 +170,11 @@ export function WorkerChangeHistory({ accountScopeId, worker }: { accountScopeId
   const [cursor, setCursor] = useState<string | undefined>()
   const page = useWorkerPage({ kind: 'history', accountScopeId, workerId: worker.id, limit: 25, cursor })
   const data = page?.data && 'revisions' in page.data ? page.data : undefined
-  return <section className="space-y-3" aria-label="Worker change history"><h4 className="font-semibold text-white">Change history</h4><p>Newest first · durable worker revisions</p>
+  return <section className="space-y-3" aria-label="Worker change history"><h4 className="font-semibold text-white">Change history</h4><p>Oldest first · durable worker revisions</p>
     {page?.error && <p role="alert">Change history: {page.error}</p>}
     {page?.stale && <p className="text-amber-300">Refreshing; last-known revisions.</p>}
     {page?.loading && !data && <p role="status">Loading revisions…</p>}
     {data?.revisions.map(revision => <details key={revision.revision} className={box}><summary>Revision {revision.revision} · {date(revision.committed_at)} · {revision.change_summary || 'Worker changed'}</summary><p>{revision.worker.pending_review ? 'Proposal pending approval' : 'Recorded worker definition'} · {revision.worker.execution_mode === 'plan' ? 'Plan' : 'Swarm'}</p><p>Jobs: {revision.worker.automations?.map(job => `${job.name} (revision ${job.revision})`).join(', ') || 'None'}</p><pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words">{JSON.stringify(revision.worker, null, 2)}</pre></details>)}
-    {cursor && <button className={button} onClick={() => setCursor(undefined)}>Latest changes</button>}{data?.next_cursor && <button className={button} onClick={() => setCursor(data.next_cursor)}>Older changes</button>}
+    {cursor && <button className={button} onClick={() => setCursor(undefined)}>First changes</button>}{data?.next_cursor && <button className={button} onClick={() => setCursor(data.next_cursor)}>Later changes</button>}
   </section>
 }
