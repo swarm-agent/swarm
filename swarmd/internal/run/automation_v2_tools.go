@@ -255,7 +255,7 @@ func (s *Service) executeCreateOrProposePendingWorker(id string, args map[string
 				return "", fmt.Errorf("unsupported overlap policy %q; durable workers require serialize", v2.Overlap)
 			}
 			var rawDoc map[string]any
-			if err := unmarshalJSONArg(args["document"], &rawDoc); err != nil {
+			if err := unmarshalPlanToolArg(args["document"], &rawDoc, fmt.Sprintf("%s document", toolName)); err != nil {
 				return "", err
 			}
 			if rawDoc != nil {
