@@ -37,3 +37,19 @@ test('usage scope UTC day validates dates and preserves billed breakdown', async
   }
   assert.equal(calls.length, 1);
 });
+
+// Purpose: explicit repair must preserve bounded cursors/incomplete coverage and
+// reject unbounded requests before transport. Owner SwarmUsageNamespace.repair;
+// this transport seam proves SDK/API parity, not historical completeness.
+test('usage repair is bounded explicit maintenance', async () => {
+  const calls: unknown[] = [];
+  const data = { scanned: 1, repaired: 1, unresolved: 0, next_cursor: 'opaque', history_complete: false };
+  const transport = { request: async (path: string, options: unknown) => {
+    calls.push([path, options]); return { data };
+  } } as unknown as SwarmTransport;
+  const usage = new SwarmUsageNamespace(transport);
+  assert.deepEqual(await usage.repair('opaque', 1), data);
+  assert.deepEqual(calls, [['/v3/usage/scopes/repair', { method: 'POST', body: { cursor: 'opaque', limit: 1 } }]]);
+  for (const limit of [0, 101, 1.5, NaN]) await assert.rejects(usage.repair('', limit));
+  assert.equal(calls.length, 1);
+});

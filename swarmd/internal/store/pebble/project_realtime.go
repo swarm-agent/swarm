@@ -61,7 +61,7 @@ func isAllowedProjectKey(accountScopeID string, key string) bool {
 	return strings.HasPrefix(key, projectPrefix) || strings.HasPrefix(key, taskPrefix)
 }
 
-func setProjectRealtimeMutationInBatch(batch *pebble.Batch, account string, m *projectRealtimeMutation) error {
+func setProjectRealtimeMutationInBatch(batch *pebble.Batch, account string, m *projectRealtimeMutation, repositories ...*SessionStore) error {
 	if m == nil || m.accountScopeID == "" || m.accountScopeID != account || strings.TrimSpace(m.projectID) == "" {
 		return ErrProjectInvalid
 	}
@@ -77,6 +77,17 @@ func setProjectRealtimeMutationInBatch(batch *pebble.Batch, account string, m *p
 		data := m.writes[key]
 		if !isAllowedProjectKey(account, key) || !json.Valid(data) {
 			return ErrProjectInvalid
+		}
+		if strings.HasPrefix(key, KeyProjectTaskAccountPrefix+keyPart(account)+"/") {
+			var task ProjectTaskRecord
+			if err := json.Unmarshal(data, &task); err != nil { return err }
+			if len(repositories) > 0 {
+				repository := repositories[0]
+				prior, found, err := repository.GetProjectTask(account, task.ProjectID, task.ID)
+				if err != nil { return err }
+				if found { if err := repository.bindTaskUsageInBatch(batch, account, *prior); err != nil { return err } }
+				if err := repository.bindTaskUsageInBatch(batch, account, task); err != nil { return err }
+			}
 		}
 		if err := batch.Set([]byte(key), data, nil); err != nil {
 			return err

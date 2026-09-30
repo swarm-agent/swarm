@@ -300,7 +300,7 @@ func (s *SessionStore) PutTurnUsage(record SessionTurnUsageSnapshot) error {
 		record.CreatedAt = previous.CreatedAt
 	}
 	if record.CreatedAt <= 0 { record.CreatedAt = time.Now().UnixMilli() }
-	record.ScopeProjectionVersion = 2
+	record.ScopeProjectionVersion = 3
 	record.ScopeTotals, err = s.prepareUsageScopeTotals(record, previous)
 	if err != nil { return err }
 	currTot, currIn, currOut, currCache, _, currThink := billedComponents(record)

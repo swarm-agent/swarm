@@ -28,6 +28,7 @@ type UsageScopeTotal struct {
 	Coverage string `json:"coverage"`
 	CatalogCostUSD float64 `json:"catalog_cost_usd"`
 	ProviderCostUSD float64 `json:"provider_cost_usd"`
+	ProviderEstimateCostUSD float64 `json:"provider_estimate_cost_usd"`
 	NominalSubscriptionCostUSD float64 `json:"nominal_subscription_cost_usd"`
 	UnknownReceipts int64 `json:"unknown_receipts"`
 	FreeReceipts int64 `json:"free_receipts"`
@@ -42,7 +43,7 @@ func usageScopeKey(account string, scope UsageScopeTotal) string {
 }
 
 func (s *SessionStore) GetUsageScope(account, kind, project, id string) (UsageScopeTotal, bool, error) {
-	total := UsageScopeTotal{Kind: kind, ID: id, ProjectID: project}
+	total := UsageScopeTotal{Kind: kind, ID: id, ProjectID: project, Coverage: "no_records"}
 	if strings.TrimSpace(account) == "" || strings.TrimSpace(id) == "" {
 		return total, false, errors.New("usage scope account and id are required")
 	}
@@ -97,16 +98,37 @@ func (s *SessionStore) resolveUsageScopes(account, sessionID string) ([]UsageSco
 		if err != nil { return nil, err }
 		if found {
 			if generation.AccountScopeID != account || generation.SessionID != sessionID { return nil, errors.New("invalid usage lineage receipt") }
+			parentSnapshot, parentFound, err := s.GetSession(generation.ParentSessionID)
+			if err != nil { return nil, err }
+			if !parentFound || parentSnapshot.AccountScopeID != account || parentSnapshot.UserID != snapshot.UserID { return nil, errors.New("usage generation ownership mismatch") }
 			sessionID = generation.ParentSessionID
 			continue
 		}
 		// Metadata only locates a durable program receipt; it grants no lineage.
 		parent, programID := text("parent_session_id"), text("task_program_id")
-		if parent == "" || programID == "" { return scopes, nil }
+		if parent == "" { return scopes, nil }
+		parentSnapshot, parentFound, err := s.GetSession(parent)
+		if err != nil { return nil, err }
+		if !parentFound { return scopes, nil }
+		if parentSnapshot.AccountScopeID != account || parentSnapshot.UserID != snapshot.UserID { return nil, errors.New("usage parent ownership mismatch") }
+		if calls, ok := parentSnapshot.Metadata["task_launches"].(map[string]any); ok {
+			if call, ok := calls[text("parent_task_call_id")].(map[string]any); ok {
+				if rows, ok := call["launches"].([]any); ok && len(rows) <= 50 {
+					for _, raw := range rows {
+						if row, ok := raw.(map[string]any); ok && (row["child_session_id"] == sessionID || row["session_id"] == sessionID) {
+							sessionID = parent
+							break
+						}
+					}
+				}
+			}
+		}
+		if sessionID == parent { continue }
+		if programID == "" { return scopes, nil }
 		program, found, err := s.GetTaskProgram(parent, programID)
 		if err != nil { return nil, err }
 		linked := false
-		if found && program.ParentSessionID == parent && program.ProgramID == programID { for _, job := range program.Jobs { linked = linked || job.ChildSessionID == sessionID || job.CurrentSessionID == sessionID } }
+		if found && program.ParentSessionID == parent && program.ProgramID == programID { for _, job := range program.Jobs { linked = linked || job.ChildSessionID == sessionID || job.CurrentSessionID == sessionID; for _, generation := range job.GenerationHistory { linked = linked || generation.SessionID == sessionID } } }
 		if !linked { return scopes, nil }
 		sessionID = parent
 	}
@@ -133,7 +155,7 @@ func (s *SessionStore) prepareUsageScopeTotals(current, previous SessionTurnUsag
 		if err != nil { return nil, err }
 		if previous.ScopeTotals != nil { applyScopeReceipt(&total, previous, -1) }
 		applyScopeReceipt(&total, current, 1)
-		total.Coverage = "observed_receipts_only"
+		if total.Coverage != "repaired_receipts_incomplete" { total.Coverage = "observed_receipts_only" }
 		total.Revision++
 		out = append(out, total)
 	}
@@ -151,6 +173,12 @@ func applyScopeReceipt(total *UsageScopeTotal, receipt SessionTurnUsageSnapshot,
 		total.ThinkingTokens += sign * clampUsageTokenCount(thinking)
 	}
 	total.ReceiptCount += sign
+	unknown := usageUnknownCount(receipt)
+	if sign < 0 && receipt.ScopeProjectionVersion < 3 {
+		unknown = 0
+		if receipt.PriceStatus != "known" && receipt.PriceStatus != "free" && receipt.PriceStatus != "subscription" { unknown = 1 }
+	}
+	if unknown > 0 { total.UnknownReceipts += sign }
 	cost := float64(sign) * receipt.EstimatedCostUSD
 	switch strings.ToLower(receipt.PriceStatus) {
 	case "free": total.FreeReceipts += sign
@@ -162,8 +190,8 @@ func applyScopeReceipt(total *UsageScopeTotal, receipt SessionTurnUsageSnapshot,
 			total.NominalSubscriptionCostUSD += float64(sign) * nominal
 		}
 	case "known":
-		if receipt.CostProvenance == "provider" { total.ProviderCostUSD += cost } else { total.CatalogCostUSD += cost }
-	default: total.UnknownReceipts += sign
+		if receipt.CostProvenance == "provider" { total.ProviderCostUSD += cost } else if receipt.CostProvenance == "provider_estimate" { total.ProviderEstimateCostUSD += cost } else { total.CatalogCostUSD += cost }
+	default: // Unknown/partial pricing is counted independently above.
 	}
 }
 
@@ -210,7 +238,7 @@ func (s *SessionStore) prepareMediaScopeTotals(media SessionMediaUsageRecord) ([
 		case "subscription": total.SubscriptionReceipts++
 		default: total.UnknownReceipts++
 		}
-		total.Coverage = "observed_receipts_only"
+		if total.Coverage != "repaired_receipts_incomplete" { total.Coverage = "observed_receipts_only" }
 		total.Revision++
 		scopes[i] = total
 	}

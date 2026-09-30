@@ -18,9 +18,10 @@ export interface UsageScopeTotal extends UsageScope {
   media_cost_usd: number;
   media_receipts: number;
   /** Only observed receipts; this is not proof of complete historical coverage. */
-  coverage: 'observed_receipts_only' | '';
+  coverage: 'observed_receipts_only' | 'repaired_receipts_incomplete' | 'no_records' | '';
   catalog_cost_usd: number;
   provider_cost_usd: number;
+  provider_estimate_cost_usd: number;
   nominal_subscription_cost_usd: number;
   unknown_receipts: number;
   free_receipts: number;
@@ -30,8 +31,31 @@ export interface UsageScopeTotal extends UsageScope {
   revision: number;
 }
 
+export interface UsageScopeRepairResult {
+  scanned: number;
+  repaired: number;
+  unresolved: number;
+  next_cursor?: string;
+  history_complete: boolean;
+}
+
 export class SwarmUsageNamespace {
   constructor(private readonly transport: SwarmTransport) {}
+
+  /** Explicit bounded maintenance; no account charges are replayed. A finished
+   * cursor does not certify unavailable historic lineage or receipt indexes. */
+  async repair(cursor = '', limit = 100): Promise<UsageScopeRepairResult> {
+    if (typeof cursor !== 'string' || cursor.length > 3072 || !Number.isInteger(limit) || limit < 1 || limit > 100) {
+      throw new SwarmValidationError('Valid bounded usage repair request is required');
+    }
+    const result = await this.transport.request<UsageScopeRepairResult>('/v3/usage/scopes/repair', {
+      method: 'POST', body: { cursor, limit },
+    });
+    if (!result.data || typeof result.data.history_complete !== 'boolean') {
+      throw new SwarmValidationError('Malformed usage repair response');
+    }
+    return result.data;
+  }
 
   /** Indexed cumulative receipt projection, not current context occupancy.
    * recorded=false means no projection, not proof of free/zero historical usage.

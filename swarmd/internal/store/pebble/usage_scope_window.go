@@ -15,7 +15,7 @@ func usageScopeDayKey(account string, scope UsageScopeTotal, date string) string
 }
 
 func (s *SessionStore) GetUsageScopeDay(account, kind, project, id, date string) (UsageScopeTotal, bool, error) {
-	total := UsageScopeTotal{Kind: kind, ProjectID: project, ID: id}
+	total := UsageScopeTotal{Kind: kind, ProjectID: project, ID: id, Coverage: "no_records"}
 	parsed, err := time.Parse("2006-01-02", date)
 	if err != nil || parsed.Format("2006-01-02") != date || account == "" || id == "" { return total, false, errors.New("invalid usage day scope") }
 	found, err := s.store.GetJSON(usageScopeDayKey(account, total, date), &total)
@@ -29,7 +29,10 @@ func (s *SessionStore) setUsageDays(batch *pebble.Batch, current, previous Sessi
 		if err != nil { return err }
 		if previous.ScopeTotals != nil && previous.ScopeProjectionVersion >= 2 { applyScopeReceipt(&total, previous, -1) }
 		applyScopeReceipt(&total, current, 1)
-		total.Coverage = "observed_receipts_only"
+		if total.Coverage != "repaired_receipts_incomplete" {
+			total.Coverage = scope.Coverage
+			if total.Coverage != "repaired_receipts_incomplete" { total.Coverage = "observed_receipts_only" }
+		}
 		total.Revision++
 		payload, err := json.Marshal(total)
 		if err != nil { return err }
@@ -52,7 +55,10 @@ func (s *SessionStore) setMediaUsageDays(batch *pebble.Batch, media SessionMedia
 		case "subscription": total.SubscriptionReceipts++
 		default: total.UnknownReceipts++
 		}
-		total.Coverage = "observed_receipts_only"
+		if total.Coverage != "repaired_receipts_incomplete" {
+			total.Coverage = scope.Coverage
+			if total.Coverage != "repaired_receipts_incomplete" { total.Coverage = "observed_receipts_only" }
+		}
 		total.Revision++
 		payload, err := json.Marshal(total)
 		if err != nil { return err }

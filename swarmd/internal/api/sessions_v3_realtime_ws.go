@@ -635,10 +635,11 @@ func (s *Server) v3RealtimeProcessOutboxRecord(conn *transportws.Conn, principal
 		return advanced, true, true
 	}
 
+	usageScopeDelivered := false
 	// Usage scope invalidations are independent of selected child sessions.
 	// Reuse the durable receipt outbox/cursor and send only its bounded scope
 	// projections, not the private child event/transcript.
-	if totals := usageScopesFromRealtimeRecord(record); len(totals) > 0 && len(worksets) > 0 {
+	if totals := s.usageScopesForRealtimeSubscriptions(principal, record, subs, worksets); len(totals) > 0 {
 		cursor, err := s.signV3SyncEndpointCursor(scope, record.EndpointSeq)
 		if err != nil { return advanced, false, false }
 		payload, err := json.Marshal(map[string]any{"scope_totals": totals})
@@ -649,6 +650,7 @@ func (s *Server) v3RealtimeProcessOutboxRecord(conn *transportws.Conn, principal
 		msg := V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: "usage.scope.updated", EndpointCursor: cursor, Event: &event}
 		if err := s.sendV3RealtimeMessage(conn, msg); err != nil { return advanced, false, false }
 		advanced.LastSentEndpointSeq = record.EndpointSeq
+		usageScopeDelivered = true
 	}
 	subscription, subscribed := advanced.Subscriptions[record.SessionID]
 	removeAutoSubscriptionAfterDelivery := false
@@ -673,7 +675,7 @@ func (s *Server) v3RealtimeProcessOutboxRecord(conn *transportws.Conn, principal
 		}
 		match, ok := s.v3RealtimeMatchRecordWorkset(principal, record, worksets)
 		if !ok {
-			return advanced, true, false
+			return advanced, true, usageScopeDelivered
 		}
 		if !match.AutoSubscribeSessions {
 			if !s.sendV3RealtimeWorksetSessionFrame(conn, V3RealtimeKindWorksetSessionUpdated, match, v3RealtimeSubscription{}, record, scope) {

@@ -257,11 +257,11 @@ func (s *Service) recordProviderUsageSnapshot(sessionID, runID, providerID, mode
 		ServiceTier:            strings.ToLower(strings.TrimSpace(usage.ServiceTier)),
 		EstimatedCostUSD:       usage.EstimatedCostUSD,
 	}
-	// Fireworks computes EstimatedCostUSD locally; Codex alone currently maps
-	// this field directly from an explicit provider response field.
+	// An explicitly reported estimate is not an invoice. Preserve the recorded
+	// account amount, but keep provenance distinct from provider-reported bills.
 	if providerID == "codex" {
 		if _, reported := usage.APIUsageRaw["estimated_cost_usd"]; reported {
-			turnUsage.CostProvenance = "provider"
+			turnUsage.CostProvenance = "provider_estimate"
 			turnUsage.PriceStatus = "known"
 		} else { turnUsage.PriceStatus = "subscription" }
 	} else if usage.EstimatedCostUSD > 0 { turnUsage.CostProvenance = "catalog" }

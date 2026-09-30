@@ -49,6 +49,9 @@ func TestUsageScopeV3ReplacementReplayRestart(t *testing.T) {
 	apply("correction", 60, "known", 2)
 	restarted, _, err := s.GetUsageScope("account-1", "task", "project", "task")
 	if err != nil || restarted != total { t.Fatalf("restart changed projection: %+v %v", restarted, err) }
+	var durable V3RealtimeOutboxRecord
+	found, err = db.GetJSON(KeyV3RealtimeOutbox(result.RealtimeOutbox.EndpointSeq), &durable)
+	if err != nil || !found || durable.EndpointSeq != result.RealtimeOutbox.EndpointSeq || string(durable.Event.Payload) != string(result.RealtimeOutbox.Event.Payload) { t.Fatalf("restart lost replay projection: %+v %v", durable, err) }
 }
 
 // Purpose: concurrent receipt writes for a shared task cannot lose deltas, and

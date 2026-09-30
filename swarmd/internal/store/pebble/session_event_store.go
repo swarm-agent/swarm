@@ -79,6 +79,7 @@ type V3CheckpointBoundaryMutation struct {
 }
 
 type V3SessionMutationInput struct {
+	usageScopeRepair *pebble.Batch // Private canonical projection repair participant.
 	automationV2                 *automationV2Mutation
 	AutomationBinding            *SessionAutomationBinding  `json:"automation_binding,omitempty"`
 	AutomationDefinitionRevision uint64                     `json:"automation_definition_revision,omitempty"`
@@ -977,7 +978,7 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 		} else if turnUsage.PriceStatus == "" {
 			_, turnUsage.PriceStatus = s.calculateReceiptCost(turnUsage)
 		}
-		turnUsage.ScopeProjectionVersion = 2
+		turnUsage.ScopeProjectionVersion = 3
 		turnUsage.ScopeTotals, err = s.prepareUsageScopeTotals(turnUsage, previousTurnUsage)
 		if err != nil { return V3SessionMutationResult{}, err }
 	}
@@ -1125,8 +1126,12 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 			return V3SessionMutationResult{}, err
 		}
 	}
+	if input.usageScopeRepair != nil {
+		if input.EventType != "usage.scope.updated" { return V3SessionMutationResult{}, errors.New("invalid usage repair event") }
+		if err := batch.Apply(input.usageScopeRepair, nil); err != nil { return V3SessionMutationResult{}, err }
+	}
 	if input.projectRealtime != nil {
-		if err := setProjectRealtimeMutationInBatch(batch, input.AccountScopeID, input.projectRealtime); err != nil {
+		if err := setProjectRealtimeMutationInBatch(batch, input.AccountScopeID, input.projectRealtime, s); err != nil {
 			return V3SessionMutationResult{}, err
 		}
 	}

@@ -15,4 +15,4 @@ export * from './types.js';
 export * from './storage/index.js';
 
 export { SwarmUsageNamespace } from './usage.js';
-export type { UsageScope, UsageScopeTotal, UsageScopeUpdatedPayload } from './usage.js';
+export type { UsageScope, UsageScopeTotal, UsageScopeUpdatedPayload, UsageScopeRepairResult } from './usage.js';
