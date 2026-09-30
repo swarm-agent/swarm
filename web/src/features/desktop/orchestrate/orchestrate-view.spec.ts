@@ -126,7 +126,7 @@ test('OrchestrateView forwards selected-task context to orchestrator chat with e
 
   // Selected task state and chat sidebar wiring
   assert.ok(source.includes('selectedTask = useMemo('), 'Must derive selectedTask from selectedTaskId')
-  assert.ok(source.includes('selectedTask={selectedTask}'), 'Must pass selectedTask to OrchestratorChatSidebar')
+  assert.ok(source.includes('attachedTasks={tasks.filter(task => attachedTaskIds.includes(task.id))}'), 'Must pass explicit task attachments, not card detail selection, to OrchestratorChatSidebar')
   assert.ok(source.includes('allTasks={tasks}'), 'Must pass allTasks to OrchestratorChatSidebar')
   assert.ok(source.includes('onDeselectTask={handleDeselectTask}'), 'Must pass onDeselectTask callback')
 

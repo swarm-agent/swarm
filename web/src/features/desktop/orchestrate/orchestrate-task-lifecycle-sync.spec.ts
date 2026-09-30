@@ -708,3 +708,24 @@ test('unlinked task with no session and no task program is marked failed instead
   const result = aggregateTaskLiveState(unlinkedTask, {})
   assert.equal(result.status, 'failed')
 })
+
+// Requirement: current durable run errors bubble up without stale retry failures.
+// Threat: prior attempt intent/lifecycle failure poisons a new running attempt.
+// Authority: aggregateTaskLiveState/preferRunEvidence. Pure aggregation is the
+// narrowest layer proving current-run precedence; it cannot dispatch a planner.
+test('current attempt error summary is exposed and running retry clears old errors', () => {
+  const task = { id: 'task_fixture', title: 'Task', status: 'running', agentType: 'coder', sessionId: 'session_fixture' } as RunningTask
+  const failed = aggregateTaskLiveState(task, {
+    session_fixture: { view: { current_run_state: { session_id: 'session_fixture', run_id: 'current', active: false, status: 'failed', blocked_reason: 'Permission denied' } } } as SessionDataLookup,
+  })
+  assert.equal(failed.sessionSummary?.sessionStates[0].lastError, 'Permission denied')
+  const retry = aggregateTaskLiveState(task, {
+    session_fixture: {
+      view: { current_run_state: { session_id: 'session_fixture', run_id: 'new', created_at: 2, active: true, status: 'running' } },
+      intent: { run_id: 'old', created_at: 1, status: 'failed', blocked_reason: 'Old failure' },
+      sessionRecord: { kind: 'full', session: { lifecycle: { phase: 'failed', last_error: 'Old lifecycle failure' } } },
+    } as unknown as SessionDataLookup,
+  })
+  assert.equal(retry.sessionSummary?.sessionStates[0].status, 'running')
+  assert.equal(retry.sessionSummary?.sessionStates[0].lastError, undefined)
+})

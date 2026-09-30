@@ -845,8 +845,7 @@ export function aggregateTaskLiveState(
   )
   const isPrimaryFailed = Boolean(
     ['failed', 'cancelled', 'interrupted', 'expired'].includes(primaryRunStatus || '') ||
-    primaryPhase === 'failed' ||
-    primaryPhase === 'cancelled'
+    (!primaryRunStatus && (primaryPhase === 'failed' || primaryPhase === 'cancelled'))
   )
 
   const programJobs =
@@ -906,8 +905,7 @@ export function aggregateTaskLiveState(
     )
     const isFail = Boolean(
       ['failed', 'cancelled', 'interrupted', 'expired'].includes(effectiveRunStatus || '') ||
-      lifecyclePhase === 'failed' ||
-      lifecyclePhase === 'cancelled'
+      (!effectiveRunStatus && (lifecyclePhase === 'failed' || lifecyclePhase === 'cancelled'))
     )
 
     // CRITICAL: An approved plan with unfinished checkpoints does NOT complete on provider turn completion!
@@ -990,7 +988,13 @@ export function aggregateTaskLiveState(
       title: jobDef?.title || matchingJob?.job_id || sSess?.title || `Session ${sid.slice(0, 8)}`,
       role: (sSess?.metadata?.role as string) || (matchingJob ? 'coder' : undefined),
       status: itemStatus,
-      lastError: matchingJob?.blocker?.message || sIntent?.blocked_reason || sLifecycle?.last_error || undefined,
+      // Only failed/blocked current attempts expose errors; a running retry must
+      // not inherit a previous intent or lifecycle's failure.
+      lastError: ['failed', 'blocked', 'paused'].includes(itemStatus)
+        ? (intentIsCurrent || sView?.current_run_state ? preferRunEvidence(sView?.current_run_state, sIntent)?.blocked_reason : undefined) ||
+          (!effectiveRunStatus ? sLifecycle?.last_error : undefined) ||
+          (['failed', 'conflict', 'blocked'].includes(matchingJob?.state) ? matchingJob?.blocker?.message : undefined)
+        : undefined,
     }
   })
 

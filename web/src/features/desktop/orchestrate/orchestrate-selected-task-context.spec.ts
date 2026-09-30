@@ -312,8 +312,8 @@ test('OrchestrateView wires selected-task context forwarding into OrchestratorCh
 
   // OrchestratorChatSidebar receives selectedTask and allTasks
   assert.ok(
-    source.includes('selectedTask={selectedTask}'),
-    'OrchestratorChatSidebar must receive selectedTask'
+    source.includes('attachedTasks={tasks.filter(task => attachedTaskIds.includes(task.id))}'),
+    'OrchestratorChatSidebar receives only explicitly attached task context, not detail selection'
   )
   assert.ok(
     source.includes('allTasks={tasks}'),

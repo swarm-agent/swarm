@@ -3,6 +3,7 @@ import { taskIntegrationOperations, taskIntegrationKey, taskIntegrationPhase, ty
 import { projectTaskFollowupPayload } from '../runtime/project-task-followup'
 import { TaskAttemptHistory } from './task-attempt-history'
 import { useOrchestratorDictation } from './use-orchestrator-dictation'
+import { TaskSessionErrors } from './task-session-error'
 import { integrationFailure, repairUnavailable, redactIntegrationDiagnostic, orchestratorDrafts, type IntegrationFailure } from './integration-recovery'
 import { useVideoTaskDefault } from './use-video-task-default'
 import { getUISettings } from '../settings/swarm/queries/get-ui-settings'
@@ -659,6 +660,9 @@ export function MinimalTaskCard({
   onToggleExpand,
   onSelect,
   onOpenChat,
+  onAskOrchestrator,
+  onArchiveTask,
+  onInvestigateSession,
   onApprove,
   onIntegrate,
   integrationOperation,
@@ -693,6 +697,9 @@ export function MinimalTaskCard({
   onToggleExpand?: () => void
   onSelect?: () => void
   onOpenChat?: () => void
+  onArchiveTask?: () => void
+  onAskOrchestrator?: () => void
+  onInvestigateSession?: (sessionId: string) => void
   onApprove?: () => void
   onIntegrate?: () => void
   integrationOperation?: TaskIntegrationOperation
@@ -924,12 +931,17 @@ export function MinimalTaskCard({
 
   return (
     <div
-      onClick={onSelect}
+      onClick={() => { onSelect?.(); if (!expanded) handleToggleExpand() }}
+      onKeyDown={event => { if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); onSelect?.(); if (!expanded) handleToggleExpand() } }}
+      tabIndex={0}
+      aria-label={`Task details ${task.title}`}
       data-testid="orchestrate-task-card"
       data-task-id={task.id}
       data-task-state={task.status}
       className={`swarm-task-card relative flex min-w-0 flex-col transition-colors cursor-pointer ${isSelected ? 'swarm-task-card-selected' : ''}`}
     >
+      {onArchiveTask && <button type="button" className="self-end px-2 py-1 text-xs text-slate-300" onClick={e => { e.stopPropagation(); onArchiveTask() }}>Archive task</button>}
+      {onAskOrchestrator && <button type="button" className="self-end px-2 py-1 text-xs text-blue-300" onClick={e => { e.stopPropagation(); onAskOrchestrator() }}>Ask Orchestrator</button>}
       <TaskCardSummary
         // The dedicated row below owns live activity; the summary owns task facts.
         task={isRunning ? { ...task, toolActivitySummary: undefined } : task}
@@ -1034,6 +1046,7 @@ export function MinimalTaskCard({
           </>
         }
       />
+      {onInvestigateSession && <TaskSessionErrors task={task} onInvestigate={onInvestigateSession} />}
       {expanded && (Boolean(task.workspacesInvolved?.length) || Boolean(task.contextPoolSummary)) && (
         <div className="flex flex-col gap-1 pt-1.5 border-t border-slate-800/60 min-w-0">
           {!isMediaTask && task.workspacesInvolved && task.workspacesInvolved.length > 0 && (
@@ -1105,7 +1118,7 @@ export function MinimalTaskCard({
                 Plan Mode (Read-Only)
               </span>
             </div>
-            {taskSessionId && onOpenChat && (
+            {expanded && taskSessionId && onOpenChat && (
               <button
                 type="button"
                 onClick={(e) => {
@@ -1115,7 +1128,7 @@ export function MinimalTaskCard({
                 className="flex items-center gap-1 px-2 py-0.5 rounded bg-indigo-900/50 hover:bg-indigo-800 text-indigo-200 text-[10px] font-mono border border-indigo-500/40 transition-colors"
                 data-testid="view-planning-session-btn"
               >
-                <span>View Session</span>
+                <span>Open execution session</span>
                 <ExternalLink size={9} />
               </button>
             )}
@@ -1966,7 +1979,7 @@ export function MinimalTaskCard({
                           </button>
                         )}
 
-                        {job.child_session_id && onOpenChat && !isConflict && (
+                        {expanded && job.child_session_id && onOpenChat && !isConflict && (
                           <button
                             type="button"
                             onClick={(e) => {
@@ -2206,7 +2219,7 @@ export function MinimalTaskCard({
       {/* 2d. FAILED / REJECTED BANNER */}
       {task.status === 'blocked' && (
         <div role="status" className="rounded-lg border border-amber-500/30 bg-amber-950/20 p-3 text-xs text-amber-200">
-          {task.actionNeeded || task.lastError || 'Execution is blocked or paused. Open the session to inspect the required action.'}
+          {redactIntegrationDiagnostic(task.actionNeeded || task.lastError || 'Execution is blocked or paused. Open the session to inspect the required action.')}
         </div>
       )}
       {(isFailed || isRejected) && (
@@ -2219,7 +2232,7 @@ export function MinimalTaskCard({
                   {isRejected ? 'Task Rejected' : 'Task Failed'}
                 </span>
                 <span className="text-[11px] text-slate-300">
-                  {task.lastError || (isRejected ? 'This task proposal was rejected.' : 'Execution failed. Review session logs or reopen with new instructions.')}
+                  {redactIntegrationDiagnostic(task.lastError || (isRejected ? 'This task proposal was rejected.' : 'Execution failed. Review session logs or reopen with new instructions.'))}
                 </span>
               </div>
             </div>
@@ -2246,27 +2259,27 @@ export function MinimalTaskCard({
       )}
 
       {/* Execution Error Recovery Banner */}
-      {task.lastError && (
+      {task.lastError && ['failed', 'blocked', 'paused'].includes(task.status) && !task.sessionSummary?.sessionStates.some(state => state.lastError) && (
         <div className="flex items-start justify-between p-2.5 rounded-lg bg-rose-950/30 border border-rose-500/40 text-[11px] gap-2">
           <div className="flex items-start gap-2 min-w-0">
             <AlertTriangle size={13} className="text-rose-400 flex-shrink-0 mt-0.5" />
             <div className="space-y-0.5 min-w-0">
               <span className="font-bold text-rose-300 block">Execution Error / Test Failure:</span>
-              <span className="font-mono text-slate-300 text-[10px] break-all block">{task.lastError}</span>
+              <span className="font-mono text-slate-300 text-[10px] break-all block">{redactIntegrationDiagnostic(task.lastError)}</span>
             </div>
           </div>
-          {onRefine && (
+          {onOpenChat && (
             <button
               type="button"
               onClick={(e) => {
                 e.stopPropagation()
-                onRefine(undefined, task.lastError)
+                onOpenChat()
               }}
               className="flex-shrink-0 px-2.5 py-1 rounded bg-rose-600 hover:bg-rose-500 text-white font-bold text-[10px] transition-colors flex items-center gap-1 shadow"
-              title="Send this failure log to Plan Agent to generate an error recovery fix strategy"
+              title="Investigate execution session"
             >
               <Sparkles size={10} />
-              <span>Re-Plan with Plan Agent</span>
+              <span>Investigate session</span>
             </button>
           )}
         </div>
@@ -2403,7 +2416,7 @@ export function MinimalTaskCard({
                     ? 'bg-emerald-950/30 text-emerald-300 border-emerald-500/30'
                     : 'bg-slate-900 text-slate-400 border-slate-800'
                 }`}
-                title={st.lastError ? `Session Error: ${st.lastError}` : `Session ID: ${st.sessionId}`}
+                title={st.lastError ? `Session Error: ${redactIntegrationDiagnostic(st.lastError)}` : `Session ID: ${st.sessionId}`}
               >
                 <span
                   className={`h-1.5 w-1.5 rounded-full ${
@@ -2564,7 +2577,7 @@ export function MinimalTaskCard({
               <MessageSquare size={12} className="text-blue-400" />
               <span>Full Plan, Subtasks & Activity Logs</span>
             </span>
-            {onOpenChat && (
+            {taskSessionId && onOpenChat && (
               <button
                 type="button"
                 onClick={(e) => {
@@ -2572,11 +2585,11 @@ export function MinimalTaskCard({
                   onOpenChat()
                 }}
                 className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-slate-800/90 hover:bg-slate-700 text-slate-200 hover:text-white text-[11px] font-medium transition-colors border border-slate-700/80 cursor-pointer shadow-sm"
-                title={taskSessionId ? 'Open session chat with this worker' : 'Discuss this task in orchestrator chat'}
+                title="Open execution session"
                 data-testid="task-card-chat-btn"
               >
                 <MessageSquare size={12} className="text-blue-400" />
-                <span>Chat</span>
+                <span>Open execution session</span>
               </button>
             )}
           </div>
@@ -2781,6 +2794,8 @@ export function OrchestratorChatComposer({
   project,
   targetTask,
   selectedTaskId,
+  attachedTasks = [],
+  onRemoveAttachedTask,
   allTasks: _allTasks,
   onDeselectTask,
   selectedWorker,
@@ -2803,6 +2818,8 @@ export function OrchestratorChatComposer({
   project?: ProjectSummary
   targetTask?: RunningTask | null
   selectedTaskId?: string
+  attachedTasks?: RunningTask[]
+  onRemoveAttachedTask?: (id: string) => void
   allTasks?: RunningTask[]
   onDeselectTask?: () => void
 }) {
@@ -2950,9 +2967,12 @@ export function OrchestratorChatComposer({
       }
 
       // Check if task context was intended (either targetTask or selectedTaskId is present)
-      const effectiveTaskId = targetTask?.id || selectedTaskId
-
-      if (effectiveTaskId) {
+      const contextTasks = targetTask ? [targetTask] : attachedTasks
+      const effectiveTaskIds = contextTasks.length ? contextTasks.map(task => task.id) : selectedTaskId ? [selectedTaskId] : []
+      const effectiveTaskId = effectiveTaskIds[0]
+      const envelopes: string[] = []
+      const contextMetadata: Record<string, unknown>[] = []
+      for (const effectiveTaskId of effectiveTaskIds) {
         if (!project || !project.id || !project.id.trim()) {
           throw new Error('No active project selected for task context forwarding')
         }
@@ -2981,7 +3001,7 @@ export function OrchestratorChatComposer({
 
         // Validate selected task context against authoritative task:
         // compares revision, project, session, and plan
-        const candidateTask = targetTask || authoritativeTask
+        const candidateTask = contextTasks.find(task => task.id === effectiveTaskId) || authoritativeTask
         const validation = validateSelectedTaskForContext(project, candidateTask, authoritativeTask)
         if (!validation.valid) {
           throw new Error(validation.error || 'Selected task context is invalid or stale')
@@ -2991,10 +3011,14 @@ export function OrchestratorChatComposer({
         const snapshot = validation.snapshot!
 
         // Format explicit user-message envelope in content (no system prompt/schema changes)
-        finalContent = buildSelectedTaskMessageEnvelope(snapshot, text)
+        envelopes.push(buildSelectedTaskMessageEnvelope(snapshot, effectiveTaskIds.length === 1 ? text : ''))
 
         // Set metadata for tracking without relying on invented backend ignored metadata
-        finalMetadata = buildSelectedTaskMessageMetadata(snapshot, finalMetadata)
+        contextMetadata.push(buildSelectedTaskMessageMetadata(snapshot, {}))
+      }
+      if (envelopes.length) {
+        finalContent = envelopes.length === 1 ? envelopes[0] : `${envelopes.join('\n\n')}\n\n${text}`
+        finalMetadata = { ...finalMetadata, ...contextMetadata[0], ...(contextMetadata.length > 1 ? { selected_task_contexts: contextMetadata } : {}) }
       }
 
       const operation = createDesktopV3ExistingMessageOperation({
@@ -3049,6 +3073,7 @@ export function OrchestratorChatComposer({
         </div>
       )}
 
+      {attachedTasks.map(task => <div key={task.id} data-testid="composer-attached-task" className="flex items-center justify-between text-blue-200"><span>{task.title} · r{task.revision || 1}</span><button type="button" aria-label={`Remove task context ${task.title}`} onClick={() => onRemoveAttachedTask?.(task.id)}><X size={12} /></button></div>)}
       {/* Task Context Badge */}
       {effectiveTask && (
         <div
@@ -3079,7 +3104,7 @@ export function OrchestratorChatComposer({
         </div>
       )}
 
-      {selectedWorker && !targetTask && !selectedTaskId && (
+      {selectedWorker && !targetTask && !selectedTaskId && attachedTasks.length === 0 && (
         <div className="flex items-center justify-between rounded-lg border border-indigo-500/30 bg-indigo-950/40 px-2.5 py-1 text-indigo-200" data-testid="composer-worker-context-chip">
           <span>Next message only: {selectedWorker.name} (r{selectedWorker.revision}) · no task dispatched</span>
           <button type="button" aria-label="Remove selected worker" onClick={() => onDeselectWorker?.(selectedWorker)}><X size={12} /></button>
@@ -3293,6 +3318,8 @@ function OrchestratorChatSidebar({
   activeTask,
   selectedTask,
   selectedTaskId,
+  attachedTasks,
+  onRemoveAttachedTask,
   allTasks,
   onBackToOrchestrator,
   onOrchestratorSessionReset,
@@ -3313,6 +3340,8 @@ function OrchestratorChatSidebar({
   activeTask?: RunningTask
   selectedTask?: RunningTask | null
   selectedTaskId?: string
+  attachedTasks?: RunningTask[]
+  onRemoveAttachedTask?: (id: string) => void
   allTasks?: RunningTask[]
   onBackToOrchestrator?: () => void
   onOrchestratorSessionReset?: (newSessionId: string) => void
@@ -3456,7 +3485,7 @@ function OrchestratorChatSidebar({
               title="Return to Executive Project Orchestrator"
             >
               <ArrowLeft size={12} />
-              <span>Orchestrator</span>
+              <span>Back to Orchestrator</span>
             </button>
             <div className="flex flex-col min-w-0">
               <span className="font-bold text-white truncate">{activeTask.title}</span>
@@ -3583,6 +3612,8 @@ function OrchestratorChatSidebar({
             project={project}
             targetTask={targetTask}
             selectedTaskId={selectedTaskId}
+            attachedTasks={activeTask ? [] : attachedTasks}
+            onRemoveAttachedTask={onRemoveAttachedTask}
             allTasks={allTasks}
             onDeselectTask={onDeselectTask}
             selectedWorker={activeTask ? null : selectedWorker}
@@ -3831,6 +3862,7 @@ export function OrchestrateView({
 
   // Split Studio selected task state
   const [selectedTaskId, setSelectedTaskId] = useState<string>('')
+  const [attachedTaskIds, setAttachedTaskIds] = useState<string[]>([])
   const [selectedWorker, setSelectedWorker] = useState<SelectedWorker | null>(null)
   const [workerChatOpen, setWorkerChatOpen] = useState(false)
   const [workerCreationRequested, setWorkerCreationRequested] = useState(false)
@@ -3865,6 +3897,7 @@ export function OrchestrateView({
   } })
   const workspaceSlug = routeParams.workspaceSlug ?? workspaceSlugProp
   const accountScopeId = getDesktopSessionIdentitySnapshot()?.accountScopeId
+  useEffect(() => { setAttachedTaskIds([]) }, [selectedProjectId, accountScopeId])
   // Worker context belongs to one account, workspace, project and session only.
   const workerContextScope = `${accountScopeId || ''}:${workspaceSlug || ''}:${selectedProject?.id || ''}:${activeSessionId}`
   const previousWorkerContextScope = useRef(workerContextScope)
@@ -4222,11 +4255,6 @@ export function OrchestrateView({
   // Active task object derived from activeTaskId (task whose child session is open in chat)
   const activeTask = useMemo(() => tasks.find((t) => t.id === activeTaskId), [tasks, activeTaskId])
 
-  // Selected task object derived from selectedTaskId (canvas selection)
-  const selectedTask = useMemo(
-    () => (selectedTaskId ? tasks.find((t) => t.id === selectedTaskId) || null : null),
-    [tasks, selectedTaskId]
-  )
 
   const handleDeselectTask = useCallback(() => {
     setSelectedTaskId('')
@@ -4515,6 +4543,7 @@ export function OrchestrateView({
 
   // Helper to ensure an active orchestrator session exists for a project
   const ensureOrchestratorSession = useCallback(async (project: ProjectSummary): Promise<string | null> => {
+    const scope = workerConversationScopeRef.current
     if (project.primarySessionId) {
       setActiveSessionId(project.primarySessionId)
       return project.primarySessionId
@@ -4538,7 +4567,7 @@ export function OrchestrateView({
       })
       if (sessRes?.session?.id) {
         const sid = sessRes.session.id
-        setActiveSessionId(sid)
+        if (workerConversationScopeRef.current === scope) setActiveSessionId(sid)
         await requestJson(`/v3/projects/${project.id}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
@@ -4597,21 +4626,19 @@ export function OrchestrateView({
     void ensureOrchestratorSession(selectedProject)
   }, [selectedProject?.id, isOnboardingActive, ensureOrchestratorSession])
 
-  // Task selection & Per-Task Session Switching
+  // Selecting task details is not consent to leave the current conversation.
   const handleSelectTask = (task: RunningTask) => {
-    setWorkerCreationRequested(false)
-    selectedWorkerRef.current = null
-    setSelectedWorker(null)
     setSelectedTaskId(task.id)
-    if (task.sessionId) {
-      setActiveSessionId(task.sessionId)
-      setActiveTaskId(task.id)
-    } else {
-      setActiveTaskId(null)
-      if (selectedProject?.primarySessionId) {
-        setActiveSessionId(selectedProject.primarySessionId)
-      }
-    }
+  }
+
+  // Only the secondary action inside task details opens execution chat.
+  const handleOpenTaskSession = (task: RunningTask) => {
+    const currentTask = tasks.find(row => row.id === task.id)
+    const sessionId = currentTask?.sessionId || currentTask?.planBinding?.sessionId || currentTask?.planBinding?.session_id
+    if (!currentTask || !sessionId) return
+    handleSelectTask(currentTask)
+    setActiveTaskId(currentTask.id)
+    setActiveSessionId(sessionId)
   }
 
   const handleBackToOrchestrator = () => {
@@ -5038,10 +5065,6 @@ export function OrchestrateView({
             )
           )
           desktopProjects.invalidate(selectedProject.id)
-          if (!activeMediaViewerItem && !showFullMediaCenter && res.task.session_id) {
-            setActiveSessionId(res.task.session_id)
-            setActiveTaskId(res.task.id)
-          }
         }
       } catch (err: any) {
         const errMsg = err instanceof Error ? err.message : 'Generation request failed'
@@ -5344,10 +5367,6 @@ export function OrchestrateView({
       // Reset stable request identity only upon successful response
       pendingDeployRequestRef.current = null
       desktopProjects.invalidate(selectedProject.id)
-      if (res.task.session_id) {
-        setActiveSessionId(res.task.session_id)
-        setActiveTaskId(res.task.id)
-      }
       setIsDeployModalOpen(false)
       setNewTaskPrompt('')
       setNewTaskModelOverride('')
@@ -5491,11 +5510,9 @@ export function OrchestrateView({
       )
       desktopProjects.invalidate(selectedProject.id)
 
-      // Wait for authoritative backend response and open returned linked session
+      // Hydrate task details without selecting/attaching the execution conversation.
       const linkedSessionId = res.task.session_id || res.task.sessionId || res.task.plan_binding?.session_id || res.task.planBinding?.session_id
       if (linkedSessionId) {
-        setActiveSessionId(linkedSessionId)
-        setActiveTaskId(res.task.id || taskId)
         setSelectedTaskId(taskId)
         void hydrateDesktopV3ChildCard(linkedSessionId, { activePlan: true, permissionSummary: true }).catch(() => undefined)
       }
@@ -5704,8 +5721,6 @@ export function OrchestrateView({
       desktopProjects.invalidate(selectedProject.id)
       const linkedSessionId = res.task.session_id || res.task.sessionId
       if (linkedSessionId) {
-        setActiveSessionId(linkedSessionId)
-        setActiveTaskId(res.task.id || taskId)
         setSelectedTaskId(taskId)
         void hydrateDesktopV3ChildCard(linkedSessionId, { activePlan: true, permissionSummary: true }).catch(() => undefined)
       }
@@ -5864,6 +5879,20 @@ export function OrchestrateView({
   })
   const selectionProps = (row: RunningTask) => ({
     isMarked: markedTaskIds.has(row.id), onToggleMarked: () => toggleMarked(row.id),
+    onArchiveTask: () => { void manageTasks([row], 'archive') },
+    onInvestigateSession: (sessionId: string) => {
+      const current = liveTasks.find(task => task.id === row.id)
+      if (!current || !extractTaskSessionIds(current as TaskSessionCandidate).includes(sessionId)) return
+      setActiveTaskId(current.id)
+      setActiveSessionId(sessionId)
+    },
+    onAskOrchestrator: () => {
+      if (!tasks.some(task => task.id === row.id)) return
+      selectedWorkerRef.current = null
+      setSelectedWorker(null)
+      setWorkerCreationRequested(false)
+      setAttachedTaskIds(ids => ids.includes(row.id) ? ids : [...ids, row.id])
+    },
   })
 
   const selectedTaskForSplit = useMemo(() => {
@@ -7106,7 +7135,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                           }}
                           onToggleExpand={() => setExpandedTaskId(expandedTaskId === t.id ? null : t.id)}
                           onSelect={() => handleSelectTask(t)}
-                          onOpenChat={() => handleSelectTask(t)}
+                          onOpenChat={() => handleOpenTaskSession(t)}
                           onApprove={() => handleApproveTask(t.id)}
                           onIntegrate={() => handleIntegrateTask(t.id)}
                           integrationOperation={integrationForTask(t)}
@@ -7213,7 +7242,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                                 void navigate(swarmWorkerLink(workspaceSlug, workerId))
                               }}
                               onSelect={() => handleSelectTask(t)}
-                              onOpenChat={() => handleSelectTask(t)}
+                              onOpenChat={() => handleOpenTaskSession(t)}
                               onApprove={() => handleApproveTask(t.id)}
                               onIntegrate={() => handleIntegrateTask(t.id)}
                               integrationOperation={integrationForTask(t)}
@@ -7331,7 +7360,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                             void navigate(swarmWorkerLink(workspaceSlug, workerId))
                           }}
                           onSelect={() => handleSelectTask(task)}
-                          onOpenChat={() => handleSelectTask(task)}
+                          onOpenChat={() => handleOpenTaskSession(task)}
                           onApprove={() => handleApproveTask(task.id)}
                           onIntegrate={() => handleIntegrateTask(task.id)}
                           integrationOperation={integrationForTask(task)}
@@ -7439,7 +7468,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                           void navigate(swarmWorkerLink(workspaceSlug, workerId))
                         }}
                         onSelect={() => handleSelectTask(selectedTaskForSplit)}
-                        onOpenChat={() => handleSelectTask(selectedTaskForSplit)}
+                        onOpenChat={() => handleOpenTaskSession(selectedTaskForSplit)}
                         onApprove={() => handleApproveTask(selectedTaskForSplit.id)}
                         onIntegrate={() => handleIntegrateTask(selectedTaskForSplit.id)}
                         integrationOperation={integrationForTask(selectedTaskForSplit)}
@@ -7490,7 +7519,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                         void navigate(swarmWorkerLink(workspaceSlug, workerId))
                       }}
                       onSelect={() => handleSelectTask(t)}
-                      onOpenChat={() => handleSelectTask(t)}
+                      onOpenChat={() => handleOpenTaskSession(t)}
                       onApprove={() => handleApproveTask(t.id)}
                       onIntegrate={() => handleIntegrateTask(t.id)}
                       integrationOperation={integrationForTask(t)}
@@ -7544,8 +7573,9 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
           sessionId={activeSessionId}
           project={selectedProject}
           activeTask={activeTask}
-          selectedTask={selectedTask}
-          selectedTaskId={selectedTaskId}
+          selectedTask={null}
+          attachedTasks={tasks.filter(task => attachedTaskIds.includes(task.id))}
+          onRemoveAttachedTask={id => setAttachedTaskIds(ids => ids.filter(value => value !== id))}
           allTasks={tasks}
           onBackToOrchestrator={handleBackToOrchestrator}
           onOrchestratorSessionReset={handleOrchestratorSessionReset}
