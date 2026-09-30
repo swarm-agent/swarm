@@ -1,4 +1,5 @@
-import { requestJson } from '../../../../app/api'
+import { desktopUsage } from '../../runtime/desktop-usage'
+import { requestJson, getDesktopSessionIdentitySnapshot } from '../../../../app/api'
 
 export interface SessionUsageDashboardResponse {
   ok: boolean
@@ -174,12 +175,18 @@ export async function updateUsageLimits(
   req: UpdateUsageLimitsRequest,
   signal?: AbortSignal,
 ): Promise<UsageLimitsResponse> {
-  return requestJson<UsageLimitsResponse>('/v3/usage/limits', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(req),
-    signal,
-  })
+  const account = getDesktopSessionIdentitySnapshot()?.accountScopeId
+  try {
+    return await requestJson<UsageLimitsResponse>('/v3/usage/limits', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req),
+      signal,
+    })
+  } finally {
+    // Reconcile a possible committed policy even if the response was lost.
+    if (account && getDesktopSessionIdentitySnapshot()?.accountScopeId === account) desktopUsage.invalidate(account, undefined, true)
+  }
 }
 
 export async function fetchSessionUsageDashboard(

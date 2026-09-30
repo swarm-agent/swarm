@@ -21,6 +21,11 @@ test('worker identity and pinned model review remain scoped to workers', () => {
   assert.match(linked, /Named worker/)
   assert.match(linked, />Worker/)
   assert.doesNotMatch(linked, />Swarm/)
+  const nameOnly = renderToStaticMarkup(<TaskCardSummary task={{ ...task, worker_name: 'Unlinked name' }} />)
+  assert.match(nameOnly, /Job title/)
+  assert.match(nameOnly, />Swarm/)
+  assert.doesNotMatch(nameOnly, />Worker|Unlinked name/)
+  assert.equal(task.activeAgent, 'Swarm') // presentation never changes runtime identity
   const worker: WorkerRecord = { id: 'worker', account_scope_id: 'account', name: 'Named worker', instructions: 'Review', lifecycle_state: 'pending', revision: 1, created_at: 1, updated_at: 1, model_profile: { source: 'temporary', action: { provider: 'fixture', model: 'action', thinking: 'high' }, plan: { provider: 'fixture', model: 'planning' } } }
   const review = renderToStaticMarkup(<PendingWorkerCard worker={worker} accountScopeId="account" workspaceCatalog={{ accountScopeId: 'account', workspaces: [] }} />)
   assert.match(review, /title="action"/)

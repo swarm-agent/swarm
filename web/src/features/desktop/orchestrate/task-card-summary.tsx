@@ -68,7 +68,7 @@ export function TaskCardSummary({ task, projectId, onPreview, statusBadge, timer
   const preview = facts.deliverable
   const workerLinked = Boolean(task.workerId?.trim() || task.worker_id?.trim())
   const pending = task.status === 'pending_approval'
-  const role = (pending ? task.agentType : facts.identity || task.agentType).replace(/^@/, '').replace(/^system[-_ ]?/i, '')
+  const role = (workerLinked ? 'Worker' : pending ? task.agentType : facts.identity || task.agentType).replace(/^@/, '').replace(/^system[-_ ]?/i, '')
   const workspace = task.sourceWorkspacePath?.trim()
   const workspaceLabel = workspace?.split('/').filter(Boolean).pop() || 'Workspace unavailable'
   const worktree = facts.branch || facts.worktree

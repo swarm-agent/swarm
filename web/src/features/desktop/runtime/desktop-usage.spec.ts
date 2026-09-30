@@ -58,7 +58,7 @@ test('budget writes require loaded exact revision and never occur on acquire', {
   await Promise.resolve()
   assert.equal(h.saves(), 0)
   await assert.rejects(h.runtime.save(budgetInput, { expected_revision: 1, daily_cost_limit_usd: 2, daily_tokens_limit: 0 }), /stale/)
-  const budget = { account_scope_id: 'acct', worker_id: input.scope.id, revision: 2, usage: usage(), daily_cost_limit_usd: 0, daily_tokens_limit: 0 } as WorkerBudgetStatus
+  const budget = budgetStatus()
   h.reads[0]({ usage: usage(), recorded: true, budget }); await h.runtime.refresh(budgetInput)
   await assert.rejects(h.runtime.save(budgetInput, { expected_revision: 1, daily_cost_limit_usd: 2, daily_tokens_limit: 0 }), /stale/)
   assert.equal(h.saves(), 0)
@@ -76,5 +76,82 @@ test('durable replacement updates demanded worker once without lifetime reread',
   assert.equal(h.reads.length, 1)
   assert.equal(h.pages()[usageKey(input)].usage?.revision, 3)
   assert.equal(h.pages()[usageKey(input)].usage?.total_tokens, 10)
+  release()
+})
+
+function budgetStatus(): WorkerBudgetStatus {
+  return { account_scope_id: 'acct', worker_id: input.scope.id, revision: 2, updated_at: 0, usage: usage(), daily_cost_limit_usd: 0, daily_tokens_limit: 0, date: '2026-01-01', remaining_cost_usd: null, remaining_tokens: null, account_remaining_cost_usd: null, account_remaining_tokens: null, blocked: false, inflight: false, account_inflight: false, account_coverage: 'observed_receipts_only', account_policy: { account_scope_id: 'acct', enabled: false, daily_cost_limit_usd: 0, updated_at: 0 }, account_usage: { account_scope_id: 'acct', date: '2026-01-01', total_cost_usd: 1, total_tokens: 10 }, limitations: 'Observed receipts only.' }
+}
+// Purpose: authenticated hydration must reject incomplete/foreign/malformed cost
+// and policy snapshots before UI or CAS writes. Runtime is the narrowest boundary
+// that can assert rejection AND absence of published budget/usage and writes.
+test('malformed usage and budget snapshots never publish or authorize saves', { timeout: 2000 }, async () => {
+  const invalid = [
+    { usage: { ...usage(), cache_read_tokens: undefined } },
+    { usage: { ...usage(), coverage: 'free' } },
+    { usage: { ...usage(), history_complete: undefined } },
+    { usage: { ...usage(), receipt_count: 0 } },
+    { budget: { ...budgetStatus(), date: '2026-02-30' } },
+    { budget: { ...budgetStatus(), remaining_tokens: undefined } },
+    { budget: { ...budgetStatus(), account_usage: { ...budgetStatus().account_usage, account_scope_id: 'foreign' } } },
+    { budget: { ...budgetStatus(), account_policy: null } },
+    { budget: { ...budgetStatus(), revision: -1 } },
+    { budget: { ...budgetStatus(), blocked: 'false' } },
+  ]
+  for (const patch of invalid) {
+    const h = harness(), i = { ...input, budget: true }, release = h.runtime.acquire(i)
+    await Promise.resolve()
+    h.reads[0]({ usage: usage(), recorded: true, budget: budgetStatus(), ...patch } as any)
+    await h.runtime.refresh(i)
+    assert.ok(h.pages()[usageKey(i)].error)
+    assert.equal(h.pages()[usageKey(i)].usage, undefined)
+    assert.equal(h.pages()[usageKey(i)].budget, undefined)
+    await assert.rejects(h.runtime.save(i, { expected_revision: 2, daily_cost_limit_usd: 1, daily_tokens_limit: 0 }), /stale/)
+    assert.equal(h.saves(), 0); release()
+  }
+})
+// Purpose: durable replay is idempotent, but another worker's receipt still changes
+// shared allowance. Metadata-free worker events must conservatively repair caps;
+// exact cursor replays do not repeat the read. Policy bursts
+// repair once after in-flight completion. Runtime proves actual read counts.
+test('budget replay is deduped and other workers still repair account allowance', { timeout: 2000 }, async () => {
+  const h = harness(), i = { ...input, budget: true }, release = h.runtime.acquire(i)
+  await Promise.resolve()
+  h.reads[0]({ usage: usage(), recorded: true, budget: budgetStatus() }); await h.runtime.refresh(i)
+  h.runtime.acceptFrame({ kind: 'event', event: { payload: { revision: 8 } } } as any)
+  assert.equal(h.reads.length, 1)
+  const frame = { kind: 'usage.scope.updated', event: { payload: { scope_totals: [{ ...usage(3), id: 'other-worker' }] } } } as any
+  h.runtime.acceptFrame(frame); h.runtime.acceptFrame(frame)
+  await Promise.resolve(); assert.equal(h.reads.length, 2)
+  h.reads[1]({ usage: usage(), recorded: true, budget: budgetStatus() }); await h.runtime.refresh(i)
+  await Promise.resolve(); assert.equal(h.reads.length, 2)
+  const policy = { kind: 'worker.updated', worker_id: input.scope.id, event: { payload: { budget_revision: 3 } } } as any
+  h.runtime.acceptFrame(policy); h.runtime.acceptFrame(policy)
+  await Promise.resolve(); assert.equal(h.reads.length, 3)
+  h.reads[2]({ usage: usage(), recorded: true, budget: { ...budgetStatus(), revision: 3 } }); await h.runtime.refresh(i)
+  await Promise.resolve(); assert.equal(h.reads.length, 3)
+  const stripped = { kind: 'worker.updated', endpoint_cursor: 'opaque-policy-event' }
+  h.runtime.acceptFrame(stripped); h.runtime.acceptFrame(stripped)
+  await Promise.resolve(); assert.equal(h.reads.length, 4)
+  h.reads[3]({ usage: usage(), recorded: true, budget: { ...budgetStatus(), revision: 4 } }); await h.runtime.refresh(i)
+  await Promise.resolve(); assert.equal(h.reads.length, 4)
+  release()
+})
+
+// Purpose: no-record hydration is absence of evidence, not a free receipt.
+// validUsageTotal/refresh reject nonzero no-record snapshots and preserve the
+// explicit recorded=false contract; runtime assertions prevent UI invention.
+test('no records accepts only an empty snapshot and keeps recorded false', { timeout: 1000 }, async () => {
+  const h = harness(), release = h.runtime.acquire(input)
+  await Promise.resolve()
+  const empty: UsageScopeTotal = { ...usage(0), total_tokens: 0, input_tokens: 0, provider_cost_usd: 0, receipt_count: 0, coverage: 'no_records' }
+  h.reads[0]({ usage: empty, recorded: false }); await h.runtime.refresh(input)
+  assert.equal(h.pages()[usageKey(input)].recorded, false)
+  assert.equal(h.pages()[usageKey(input)].error, undefined)
+  const flight = h.runtime.refresh(input); await Promise.resolve()
+  h.reads[1]({ usage: { ...empty, total_tokens: 1 }, recorded: false }); await flight
+  assert.ok(h.pages()[usageKey(input)].error)
+  assert.equal(h.pages()[usageKey(input)].usage?.total_tokens, 0)
+  assert.equal(h.pages()[usageKey(input)].stale, true)
   release()
 })

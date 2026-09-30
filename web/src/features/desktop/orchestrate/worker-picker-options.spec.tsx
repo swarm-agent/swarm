@@ -10,6 +10,8 @@ test('same model preserves options, different model uses catalog defaults withou
   const option = { provider: 'fixture', model: 'one', contextMode: '', defaultThinking: 'low', defaultServiceTier: 'standard', pricing: null } as ModelOptionRecord
   const current = { provider: 'fixture', model: 'one', thinking: 'high', service_tier: 'priority', context_mode: '' }
   assert.deepEqual(workerModelOptionSelection(option, current), current)
+  const unsupported = { ...current, context_mode: 'saved-extended', thinking: 'saved-unsupported' }
+  assert.deepEqual(workerModelOptionSelection(option, unsupported), unsupported)
   const plan = { provider: 'fixture', model: 'planner' }
   const profile = { source: 'temporary', action: current, plan }
   const next = selectWorkerModelSlot(profile, 'action', workerModelOptionSelection({ ...option, model: 'two' }, current), current)

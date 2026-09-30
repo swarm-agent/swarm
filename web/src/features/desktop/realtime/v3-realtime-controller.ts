@@ -1,6 +1,7 @@
-import { ensureDesktopSession } from '../../../app/api'
+import { ensureDesktopSession, getDesktopSessionIdentitySnapshot } from '../../../app/api'
 import { desktopAutomationV2 } from '../runtime/desktop-automation-v2'
 import { desktopUsage } from '../runtime/desktop-usage'
+import { workerReadRecords } from '../state/desktop-workers-state'
 import { desktopWorkers } from '../runtime/desktop-workers'
 import { desktopAutomations } from '../runtime/desktop-automations'
 import { desktopProjects } from '../runtime/desktop-projects'
@@ -98,6 +99,7 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
   private unsubscribeCache?: () => void
   private startPromise?: Promise<void>
   private stopped = false
+  private usageWorksets = new Map<string, string>()
 
   constructor(deps: DesktopV3RealtimeControllerDeps = {}) {
     this.getSnapshot = deps.getSnapshot ?? getDesktopV3CacheSnapshot
@@ -334,8 +336,11 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
     this.transport.setWorksets(normalizeTransportWorksets(initial.worksets), { replace: true })
     this.transport.setSessions(initial.subscriptions, { replace: true })
 
+    this.usageWorksets = new Map(buildDesktopUsageWorksets(this.getSnapshot(), DESKTOP_V3_CLIENT_ID).map(w => [w.workset_id, JSON.stringify(w)]))
     this.unsubscribeCache?.()
     this.unsubscribeCache = this.subscribe(() => {
+      const state = this.getSnapshot()
+      this.reconcileUsageWorksets(state)
       this.scheduleDesiredSessionReconciliation()
     })
 
@@ -343,6 +348,15 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
     await this.waitForFirstResumeSent()
     this.assertNotStopped()
 
+  }
+
+  private reconcileUsageWorksets(state: DesktopV3CacheState) {
+    const requested = buildDesktopUsageWorksets(state, DESKTOP_V3_CLIENT_ID)
+    const next = new Map(requested.map(w => [w.workset_id, JSON.stringify(w)]))
+    const previous = this.usageWorksets
+    this.usageWorksets = next // transport status dispatch can synchronously reenter
+    for (const id of previous.keys()) if (!next.has(id)) this.transport.unregisterWorkset(id)
+    for (const w of requested) if (previous.get(w.workset_id) !== next.get(w.workset_id)) this.transport.registerWorkset(normalizeTransportWorksets([w])[0])
   }
 
   private async waitForSidebarBootstrap(preferredSessionId?: string | null, bootstrapReady?: Promise<unknown>): Promise<void> {
@@ -419,6 +433,9 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
     }
 
     resume.subscriptions = Array.from(subscriptions.values())
+    const usage = buildDesktopUsageWorksets(state, DESKTOP_V3_CLIENT_ID)
+    resume.worksets = [...(resume.worksets || []).filter(w => !w.workset_id.startsWith('usage:')).map(w => ({ ...w, resources: [...new Set([...(w.resources || []), 'projects'])] })), ...usage]
+    this.usageWorksets = new Map(usage.map(w => [w.workset_id, JSON.stringify(w)]))
     return resume
   }
 
@@ -665,9 +682,10 @@ export function buildDesktopV3InitialRealtimeResume(
     subscription_id: `${clientId}:workset:${sidebarScopeId}`,
     surface: 'desktop',
     selector: cloneDesktopV3SyncSelector(sidebarScope.selector),
-    resources: ['membership', 'projections', 'current_run_state', 'permission_summaries', 'notifications', 'notification_summary', 'tasks', 'auth', 'sessions', 'tombstones'],
+    resources: ['membership', 'projections', 'current_run_state', 'permission_summaries', 'notifications', 'notification_summary', 'tasks', 'projects', 'auth', 'sessions', 'tombstones'],
     auto_subscribe_sessions: false,
   }]
+  worksets.push(...buildDesktopUsageWorksets(state, clientId))
   const resume: RealtimeMessage = {
     protocol: 'v3.realtime',
     protocol_version: 1,
@@ -678,6 +696,39 @@ export function buildDesktopV3InitialRealtimeResume(
   }
 
   return { endpointCursor, subscriptions, worksets, resume }
+}
+
+/** Resource-only demand uses workspace selectors, never recent-navigation limits.
+ * This includes hidden and historical worker chats without subscribing transcripts. */
+export function buildDesktopUsageWorksets(state: DesktopV3CacheState, clientId: string, account = getDesktopSessionIdentitySnapshot()?.accountScopeId): RealtimeWorksetSubscriptionRequest[] {
+  const paths = new Set<string>(), sessions = new Set<string>()
+  const workers = Object.values(state.workerPages).filter(p => p.input.accountScopeId === account && p.data).flatMap(p => workerReadRecords(p.data!).workers)
+  for (const page of Object.values(state.usagePages)) {
+    if (page.input.accountScopeId !== account) continue
+    const scope = page.input.scope
+    if (scope.kind === 'task') {
+      const task = state.projectsState?.[scope.project_id || '']?.tasks.find(t => t.id === scope.id)
+      if (task?.sourceWorkspacePath) paths.add(task.sourceWorkspacePath)
+      else if (task?.sessionId) sessions.add(task.sessionId)
+    } else {
+      const workerId = scope.kind === 'worker' ? scope.id : scope.project_id
+      const worker = workers.find(w => w.id === workerId && w.account_scope_id === account)
+      for (const workspace of Object.values(worker?.authorized_workspaces || {})) if (workspace.available && workspace.path) paths.add(workspace.path)
+      for (const p of Object.values(state.workerPages)) {
+        if (p.input.accountScopeId !== account || !p.data) continue
+        for (const run of workerReadRecords(p.data).runs) if (run.worker_id === workerId && run.session_id) sessions.add(run.session_id)
+      }
+    }
+  }
+  const requests: RealtimeWorksetSubscriptionRequest[] = []
+  // Shared account remaining can change from another workspace/worker. This
+  // account-owned resource subscription requests no chat/session projections;
+  // backend resource selection remains the authority for frames it emits.
+  if (Object.values(state.usagePages).some(p => p.input.accountScopeId === account && p.input.budget)) requests.push({ workset_id: 'usage:account-allowance', subscription_id: `${clientId}:usage:account-allowance`, surface: 'desktop', selector: { kind: 'global', global: true }, resources: ['projects'], auto_subscribe_sessions: false })
+  // A bounded workspace resource workset avoids a recent-N cutoff.
+  if (paths.size) requests.push({ workset_id: 'usage:workspaces', subscription_id: `${clientId}:usage:workspaces`, surface: 'desktop', selector: { kind: 'workspace', workspace_paths: [...paths].sort().slice(0, 320) }, resources: ['projects'], auto_subscribe_sessions: false })
+  if (sessions.size) requests.push({ workset_id: 'usage:sessions', subscription_id: `${clientId}:usage:sessions`, surface: 'desktop', selector: { kind: 'session_ids', session_ids: [...sessions].sort().slice(0, 320) }, resources: ['projects'], auto_subscribe_sessions: false })
+  return requests
 }
 
 export function activeRealtimeSessionIds(state: DesktopV3CacheState): Set<string> {

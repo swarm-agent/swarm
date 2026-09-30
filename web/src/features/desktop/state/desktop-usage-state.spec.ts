@@ -26,3 +26,23 @@ test('foreign identity and invalidated reads leave old data untouched', () => {
   assert.equal(pages[usageKey(input)].usage, undefined)
   assert.equal(pages[usageKey(input)].stale, true)
 })
+
+// Purpose: budget policy revisions are monotonic, but daily usage revisions reset
+// at UTC rollover. reduceUsagePages must reject regressed policy without keeping
+// yesterday's usage inside today's status; pure cache transitions prove both.
+test('budget policy cannot regress and UTC rollover replaces daily usage', () => {
+  const budgetInput = { accountScopeId: 'account-a', scope: { kind: 'worker' as const, id: 'worker' }, budget: true }
+  const usage = { ...total(9), kind: 'worker' as const, id: 'worker', project_id: undefined }
+  const budget = { account_scope_id: 'account-a', worker_id: 'worker', revision: 4, date: '2026-01-01', usage } as any
+  let pages = reduceUsagePages({}, { type: 'usage.begin', input: budgetInput, requestId: 'first' })
+  pages = reduceUsagePages(pages, { type: 'usage.finish', input: budgetInput, requestId: 'first', generation: 0, usage, recorded: true, budget })
+  pages = reduceUsagePages(pages, { type: 'usage.begin', input: budgetInput, requestId: 'regressed' })
+  pages = reduceUsagePages(pages, { type: 'usage.finish', input: budgetInput, requestId: 'regressed', generation: 0, usage, recorded: true, budget: { ...budget, revision: 3 } })
+  assert.equal(pages[usageKey(budgetInput)].budget?.revision, 4)
+  assert.equal(pages[usageKey(budgetInput)].stale, true)
+  pages = reduceUsagePages(pages, { type: 'usage.begin', input: budgetInput, requestId: 'today' })
+  const today = { ...usage, revision: 1, total_tokens: 1 }
+  pages = reduceUsagePages(pages, { type: 'usage.finish', input: budgetInput, requestId: 'today', generation: 0, usage: today, recorded: true, budget: { ...budget, date: '2026-01-02', usage: today } })
+  assert.equal(pages[usageKey(budgetInput)].usage?.total_tokens, 1)
+  assert.equal(pages[usageKey(budgetInput)].budget?.date, '2026-01-02')
+})

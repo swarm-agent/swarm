@@ -3,15 +3,24 @@ import { getDesktopSessionIdentitySnapshot, requestJson } from '../../../app/api
 import { dispatchDesktopV3Cache, getDesktopV3CacheSnapshot, useDesktopV3CacheSelector } from '../state/desktop-v3-cache-store'
 import type { RealtimeMessage } from '../state/desktop-v3-cache-types'
 import { sameUsageScope, usageKey, type UsageAction, type UsageInput, type UsagePages, type UsageScopeTotal, type WorkerBudgetStatus, type WorkerBudgetUpdate } from '../state/desktop-usage-state'
+import { validUsageTotal, validWorkerBudget } from './desktop-usage-validation'
 export interface UsageDeps { account: () => string | undefined; pages: () => UsagePages; dispatch: (a: UsageAction) => void; read: (i: UsageInput) => Promise<{ usage: UsageScopeTotal; recorded: boolean; budget?: WorkerBudgetStatus }>; save: (id: string, policy: WorkerBudgetUpdate) => Promise<unknown> }
-function validUsageTotal(t: UsageScopeTotal): boolean {
-  return !!t && ['task', 'worker', 'worker_run'].includes(t.kind) && typeof t.id === 'string' && !!t.id && Number.isSafeInteger(t.revision) && t.revision >= 0
-    && ['total_tokens', 'input_tokens', 'output_tokens', 'catalog_cost_usd', 'provider_cost_usd', 'provider_estimate_cost_usd', 'nominal_subscription_cost_usd', 'media_cost_usd', 'receipt_count', 'unknown_receipts', 'free_receipts', 'subscription_receipts'].every(key => { const value = t[key as keyof UsageScopeTotal]; return typeof value === 'number' && Number.isFinite(value) && value >= 0 })
-}
 const budgetPath = (id: string) => `/v3/usage/worker-budget?${new URLSearchParams({ worker_id: id })}`
 export class DesktopUsageRuntime {
   private demands = new Map<string, { input: UsageInput; count: number }>()
   private flights = new Map<string, Promise<void>>()
+  // Bounded replay memory includes receipts outside demanded workers: those still
+  // change the shared account allowance. Never dedupe by selected chat session.
+  private revisions = new Map<string, number>()
+  private revisionAccount?: string
+  private advanced(key: string, revision: number) {
+    const account = this.deps.account()
+    if (account !== this.revisionAccount) { this.revisions.clear(); this.revisionAccount = account }
+    if ((this.revisions.get(key) ?? -1) >= revision) return false
+    this.revisions.delete(key); this.revisions.set(key, revision)
+    if (this.revisions.size > 2048) this.revisions.delete(this.revisions.keys().next().value!)
+    return true
+  }
   private activeReads = 0
   private readWaiters: Array<() => void> = []
   private async boundedRead(input: UsageInput) {
@@ -40,7 +49,7 @@ export class DesktopUsageRuntime {
     const flight: Promise<void> = Promise.resolve().then(() => { this.assertAccount(input); return this.boundedRead(input) }).then(data => {
       if (this.flights.get(key) !== flight) return
       this.assertAccount(input)
-      if (!validUsageTotal(data.usage) || !sameUsageScope(data.usage, input.scope) || !Number.isSafeInteger(data.usage.revision) || data.usage.revision < 0 || typeof data.recorded !== 'boolean' || (input.budget && (!data.budget || data.budget.account_scope_id !== input.accountScopeId || data.budget.worker_id !== input.scope.id))) throw new Error('Usage response scope mismatch')
+      if (!validUsageTotal(data.usage) || !sameUsageScope(data.usage, input.scope) || !Number.isSafeInteger(data.usage.revision) || data.usage.revision < 0 || typeof data.recorded !== 'boolean' || data.recorded !== (data.usage.receipt_count > 0) || (input.budget && (!data.budget || !validWorkerBudget(data.budget, input) || Object.keys(data.usage).some(key => data.budget!.usage[key as keyof UsageScopeTotal] !== data.usage[key as keyof UsageScopeTotal])))) throw new Error('Usage response scope mismatch')
       this.deps.dispatch({ type: 'usage.finish', input, requestId, generation, ...data })
     }).catch(error => { if (this.flights.get(key) === flight) this.deps.dispatch({ type: 'usage.finish', input, requestId, generation, error: error instanceof Error ? error.message : 'Usage unavailable' }) }).finally(() => {
       if (this.flights.get(key) !== flight) return
@@ -54,17 +63,36 @@ export class DesktopUsageRuntime {
     for (const { input } of this.demands.values()) if (this.deps.account() === input.accountScopeId && (!accountScopeId || input.accountScopeId === accountScopeId) && (!budgetOnly || input.budget) && (!workerId || input.scope.kind === 'worker' && input.scope.id === workerId || input.scope.kind === 'worker_run' && input.scope.project_id === workerId) && this.deps.pages()[usageKey(input)]?.stale) void this.refresh(input)
   }
   acceptFrame(frame: RealtimeMessage) {
+    if (frame.account_scope_id && frame.account_scope_id !== this.deps.account()) return
     if (frame.kind === 'usage.scope.updated' && this.deps.account()) {
       const account = this.deps.account()!
       let payload: unknown = frame.event?.payload
       if (typeof payload === 'string') { try { payload = JSON.parse(payload) } catch { this.invalidate(account); return } }
       const totals = (payload as { scope_totals?: UsageScopeTotal[] } | undefined)?.scope_totals
       if (!Array.isArray(totals) || totals.length > 320 || totals.some(t => !validUsageTotal(t))) { this.invalidate(account); return }
-      this.deps.dispatch({ type: 'usage.snapshot', accountScopeId: account, totals })
-      // Any receipt may change the shared account allowance shown on a worker.
+      const changed = totals.filter(t => this.advanced(JSON.stringify(['usage', t.kind, t.project_id || '', t.id]), t.revision))
+      if (!changed.length) return
+      this.deps.dispatch({ type: 'usage.snapshot', accountScopeId: account, totals: changed })
+      // Even a receipt for another worker changes the shared allowance.
       this.invalidate(account, undefined, true)
-    } else if (frame.kind === 'worker.updated') this.invalidate(typeof frame.account_scope_id === 'string' ? frame.account_scope_id : undefined, typeof frame.worker_id === 'string' ? frame.worker_id : undefined)
-    else if (frame.kind === 'cursor.error' || frame.kind === 'rehydrate.required') this.invalidate()
+    } else if (frame.kind === 'worker.updated') {
+      let payload: unknown = frame.event?.payload
+      if (typeof payload === 'string') { try { payload = JSON.parse(payload) } catch { this.invalidate(this.deps.account(), undefined, true); return } }
+      const policy = payload as { budget_revision?: number; worker_id?: string } | undefined
+      const revision = policy?.budget_revision
+      const worker = frame.worker_id || policy?.worker_id
+      // The durable policy metadata is available in storage but not yet on all
+      // transmitted worker frames. Use revision precision when provided.
+      if (revision === undefined) {
+        // Current backend strips worker payload metadata. Do not miss cap edits:
+        // repair budgets only (not lifetime/history), deduping exact opaque replay.
+        const cursor = frame.endpoint_cursor
+        if (!cursor || this.advanced(JSON.stringify(['worker-cursor', cursor]), 1)) this.invalidate(this.deps.account(), undefined, true)
+        return
+      }
+      if (!Number.isSafeInteger(revision) || revision < 1 || typeof worker !== 'string' || !worker) { this.invalidate(this.deps.account(), undefined, true); return }
+      if (this.advanced(JSON.stringify(['budget', worker]), revision)) this.invalidate(this.deps.account(), worker, true)
+    } else if (frame.kind === 'cursor.error' || frame.kind === 'rehydrate.required') this.invalidate()
   }
   async save(input: UsageInput, policy: WorkerBudgetUpdate) {
     this.assertAccount(input)
@@ -78,7 +106,7 @@ export class DesktopUsageRuntime {
 export const desktopUsage = new DesktopUsageRuntime({
   account: () => getDesktopSessionIdentitySnapshot()?.accountScopeId, pages: () => getDesktopV3CacheSnapshot().usagePages, dispatch: dispatchDesktopV3Cache,
   read: async input => {
-    if (input.budget) { const budget = await requestJson<WorkerBudgetStatus>(budgetPath(input.scope.id)); return { usage: budget.usage, recorded: budget.usage.receipt_count > 0, budget } }
+    if (input.budget) { const budget = await requestJson<WorkerBudgetStatus>(budgetPath(input.scope.id)); return { usage: budget.usage, recorded: budget?.usage?.receipt_count > 0, budget } }
     return requestJson(`/v3/usage/scope?${new URLSearchParams({ kind: input.scope.kind, id: input.scope.id, ...(input.scope.project_id ? { project_id: input.scope.project_id } : {}) })}`)
   },
   save: async (id, policy) => {

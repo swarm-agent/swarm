@@ -31,7 +31,9 @@ export function reduceUsagePages(pages: UsagePages, action: UsageAction): UsageP
   if (!old || old.requestId !== action.requestId) return pages
   if (old.generation !== action.generation) return { ...pages, [key]: { ...old, loading: false } }
   // A delayed hydration must never overwrite a newer durable replacement snapshot.
-  const newer = old.usage && action.usage && old.usage.revision > action.usage.revision
+  // A lower policy revision is never allowed to authorize a later CAS write.
+  if (old.budget && action.budget && action.budget.revision < old.budget.revision) return { ...pages, [key]: { ...old, loading: false, requestId: undefined, stale: true, error: 'Budget policy response regressed; reload current policy' } }
+  const newer = !old.input.budget && old.usage && action.usage && old.usage.revision > action.usage.revision
   return { ...pages, [key]: { ...old, loading: false, requestId: undefined, stale: !!action.error, error: action.error,
     usage: newer ? old.usage : action.usage ?? old.usage, recorded: newer ? old.recorded : action.recorded ?? old.recorded, budget: action.budget ?? old.budget } }
 }
