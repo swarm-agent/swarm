@@ -698,9 +698,12 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 	}
 	publication, publicationErr := s.authorizeTaskPlanPublication(ctx, config, call)
 	if publicationErr != nil {
-		return tool.Result{CallID: call.CallID, Name: call.Name, Error: publicationErr.Error()}, 0, nil
+		// Rejected publication is a recoverable tool outcome, not an invocation
+		// escape hatch. Use the same completion/event/message path as execution.
+		gatedResults[0].Error = publicationErr.Error()
+		approvedCalls = nil
 	}
-	if canonicalToolName(call.Name) != mediaInspectToolName && !publication {
+	if publicationErr == nil && canonicalToolName(call.Name) != mediaInspectToolName && !publication {
 		if toolName == "manage_projects" {
 			ctx = identity.ContextWithPrincipal(ctx, providerManagedExecutionPrincipal(ctx, config))
 		}

@@ -147,35 +147,15 @@ func (s *Server) reconcileProjectTaskRunLifecycle(job sessionV3ExecutorJob, stat
 	switch status {
 	case sessionruntime.RunIntentCompleted:
 		if task.Status == "planning" {
-			active, hasActive, planErr := db.GetActivePlan(task.SessionID)
-			if planErr == nil && hasActive && active.PlanID != "" {
-				plan, found, pErr := db.GetPlan(task.SessionID, active.PlanID)
-				if pErr == nil && found && plan.Document != nil && len(plan.Document.Checkpoints) > 0 {
-					_, err = db.UpdateProjectTask(accountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
-						if t.SessionID != job.SessionID || t.Status != "planning" {
-							return nil
-						}
-						t.Status = "pending_approval"
-						t.PlanBinding = &pebblestore.ProjectTaskPlanBinding{
-							PlanID:             plan.ID,
-							SessionID:          task.SessionID,
-							DefinitionRevision: plan.Version,
-						}
-						t.PlanDocument = plan.Document
-						t.ActionNeeded = "Review plan in task card and click Approve"
-						t.WhatDidDo = append(t.WhatDidDo, "Plan agent authored structured plan")
-						return nil
-					})
-					return err
-				}
-			}
+			// Canonical publication already transitions the task with its receipt.
+			// A merely active session plan is not evidence of task publication.
 			_, err = db.UpdateProjectTask(accountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
 				if t.SessionID != job.SessionID || t.Status != "planning" {
 					return nil
 				}
-				t.Status = "needs_review"
-				t.ActionNeeded = "Action Needed: Plan agent finished investigation. Review session findings."
-				t.WhatDidDo = append(t.WhatDidDo, "Completed planning investigation")
+				t.Status = "failed"
+				t.LastError = "Planning run ended without publishing a durable task plan"
+				t.ActionNeeded = "Action Needed: Planning run ended without a published plan. Retry planning."
 				return nil
 			})
 			return err

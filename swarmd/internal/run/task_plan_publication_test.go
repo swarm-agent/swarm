@@ -29,7 +29,7 @@ func (p taskPlanPublicationProvider) submit(ctx context.Context, invoker provide
 // This invocation layer is the narrowest layer reproducing the former permission
 // wait; durable reads prove the pending review rather than assistant prose.
 func TestProviderManagedTaskPlanPublication(t *testing.T) {
-	for _, scenario := range []string{"publish", "wrong-account", "wrong-session", "stale-run", "stale-attempt", "disabled", "deny"} {
+	for _, scenario := range []string{"publish", "wrong-account", "wrong-session", "stale-run", "stale-attempt", "disabled", "deny", "help", "missing-document", "malformed-document"} {
 		t.Run(scenario, func(t *testing.T) {
 			workspace := t.TempDir()
 			svc, sessionID, permissions, storePath, cleanup := newTaskPlanPublicationTestService(t, workspace)
@@ -73,11 +73,26 @@ func TestProviderManagedTaskPlanPublication(t *testing.T) {
 				t.Fatal(err)
 			}
 			provider := taskPlanPublicationProvider{arguments: `{"document":{"id":"review-plan","title":"Review plan","info":{"goal":"Durable review before implementation"},"checkpoints":[{"id":"cp-1","title":"Implement","order":1,"status":"pending","tasks":["Implement after acceptance"],"acceptance_criteria":["Reviewed"]}]}}`}
+			switch scenario {
+			case "help":
+				provider.arguments = `{"action":"help"}`
+			case "missing-document":
+				provider.arguments = `{}`
+			case "malformed-document":
+				provider.arguments = `{"document":{}}`
+			}
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
 			result, err := provider.submit(ctx, svc.newProviderToolInvoker(config))
-			if err != nil {
+			if err != nil && scenario != "wrong-account" {
 				t.Fatalf("provider invocation: %v", err)
+			}
+			if scenario == "wrong-account" {
+				// The canonical mutation boundary also rejects foreign error writes.
+				if err == nil {
+					t.Fatal("foreign principal persisted a tool outcome")
+				}
+				result.Error = err.Error()
 			}
 			pending, err := permissions.ListPending(sessionID, 10)
 			if err != nil || len(pending) != 0 {
@@ -92,8 +107,29 @@ func TestProviderManagedTaskPlanPublication(t *testing.T) {
 				t.Fatal(err)
 			}
 			if scenario != "publish" {
+				if (scenario == "help" || scenario == "missing-document") && !strings.Contains(result.Error, "requires an explicit structured document") {
+					t.Fatalf("missing recoverable document guidance: %+v", result)
+				}
 				if result.Error == "" || planFound || after.PlanBinding != nil || after.Revision != before.Revision || after.Status != before.Status {
 					t.Fatalf("rejected publication mutated state: result=%+v task=%+v plan=%+v", result, after, plan)
+				}
+				// Rejected validation must remain attributable after the invocation;
+				// a provider continuation and reload read this canonical message.
+				messages, err := svc.sessions.ListSessionMessages(sessionID, 0, 20)
+				if err != nil {
+					t.Fatal(err)
+				}
+				attributed := false
+				for _, message := range messages {
+					if message.Role == "tool" && strings.Contains(message.Content, "publish-plan") && strings.Contains(message.Content, "exit_plan_mode") && strings.Contains(message.Content, "error") {
+						attributed = true
+					}
+				}
+				if scenario == "wrong-account" && attributed {
+					t.Fatal("foreign principal wrote an unauthorized tool outcome")
+				}
+				if !attributed && scenario != "wrong-account" {
+					t.Fatal("rejected publication has no durable attributable outcome")
 				}
 				return
 			}

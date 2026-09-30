@@ -342,20 +342,8 @@ func syncTaskSessionState(task *pebblestore.ProjectTaskRecord, db *pebblestore.S
 	// 2a. Planning task check: check if planning session produced an active plan or concluded with failure
 	if task.Status == "planning" {
 		if task.SessionID != "" {
-			active, hasActive, planErr := db.GetActivePlan(task.SessionID)
-			if planErr == nil && hasActive && active.PlanID != "" {
-				if plan, found, pErr := db.GetPlan(task.SessionID, active.PlanID); pErr == nil && found && plan.Document != nil && len(plan.Document.Checkpoints) > 0 {
-					task.Status = "pending_approval"
-					task.PlanBinding = &pebblestore.ProjectTaskPlanBinding{
-						PlanID:             plan.ID,
-						SessionID:          task.SessionID,
-						DefinitionRevision: plan.Version,
-					}
-					task.PlanDocument = plan.Document
-					task.ActionNeeded = "Review plan in task card and click Approve"
-					return
-				}
-			}
+			// Publication owns pending_approval and its exact receipt binding.
+			// Hydration must not manufacture a review from an unrelated active plan.
 			runState, runFound, _ := db.GetV3SessionRunState(task.SessionID)
 			if runFound && !runState.Active && runState.Status != pebblestore.V3RunIntentPendingExecutor && runState.Status != pebblestore.V3RunIntentRunning {
 				switch runState.Status {
@@ -367,8 +355,9 @@ func syncTaskSessionState(task *pebblestore.ProjectTaskRecord, db *pebblestore.S
 					}
 					return
 				case pebblestore.V3RunIntentCompleted:
-					task.Status = "needs_review"
-					task.ActionNeeded = "Action Needed: Plan agent finished investigation. Review session findings."
+					task.Status = "failed"
+					task.LastError = "Planning run ended without publishing a durable task plan"
+					task.ActionNeeded = "Action Needed: Planning run ended without a published plan. Retry planning."
 					return
 				}
 			}
