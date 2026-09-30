@@ -40,8 +40,11 @@ test('task details, independent context chips and execution errors preserve unse
     createRoot(document.getElementById('root')).render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><App/></QueryClientProvider>);
   ` }, bundle: true, write: false, platform: 'browser', format: 'iife', jsx: 'automatic', logLevel: 'silent' })
   const browser = await chromium.launch({ headless: true, channel: process.env.SWARM_TEST_BROWSER_CHANNEL || 'chrome' })
+  const pageErrors: string[] = []
+  const assertNoPageErrors = () => assert.deepEqual(pageErrors, [], 'task expansion must not throw a browser render error')
   try {
     const page = await browser.newPage()
+    page.on('pageerror', error => pageErrors.push(error.message))
     page.setDefaultTimeout(5000)
     await page.route('**/*', route => route.fulfill({ contentType: 'text/html', body: '<div id="root"></div>' }))
     await page.goto('https://task.test/')
@@ -53,8 +56,18 @@ test('task details, independent context chips and execution errors preserve unse
     await cards.first().getByText('Alpha', { exact: true }).first().click()
     assert.equal(await page.getByTestId('conversation').textContent(), 'orchestrator')
     assert.equal(await page.getByTestId('composer-attached-task').count(), 0)
-    await cards.first().getByRole('button', { name: 'Ask Orchestrator', exact: true }).click()
-    await cards.nth(1).getByRole('button', { name: 'Ask Orchestrator', exact: true }).click()
+    // The title bubbles to the production card handler: select AND expand, not chat.
+    const titleToggle = cards.first().getByTestId('toggle-task-details-btn')
+    assert.equal(await titleToggle.getAttribute('aria-expanded'), 'true')
+    await cards.first().getByText('Keyboard plan checkpoint', { exact: true }).waitFor()
+    assertNoPageErrors()
+    // Deliberately reset so later false -> true assertions exercise a real toggle.
+    await titleToggle.click()
+    assert.equal(await titleToggle.getAttribute('aria-expanded'), 'false')
+    assert.equal(await cards.first().getByText('Keyboard plan checkpoint', { exact: true }).count(), 0)
+    assertNoPageErrors()
+    await cards.first().getByRole('button', { name: 'Ask orchestrator', exact: true }).click()
+    await cards.nth(1).getByRole('button', { name: 'Ask orchestrator', exact: true }).click()
     assert.equal(await page.getByTestId('composer-attached-task').count(), 2)
     await page.getByRole('button', { name: 'Remove task context Alpha', exact: true }).click()
     assert.equal(await page.getByTestId('composer-attached-task').count(), 1)
@@ -70,6 +83,7 @@ test('task details, independent context chips and execution errors preserve unse
     await cards.first().getByText('Keyboard plan checkpoint', { exact: true }).waitFor()
     await cards.first().getByText('Inspect keyboard navigation', { exact: true }).waitFor()
     assert.match(await cards.first().getByTestId('task-card-activity').innerText(), /keyboard.ts/)
+    assertNoPageErrors()
     await runningToggle.click()
     assert.equal(await runningToggle.getAttribute('aria-expanded'), 'false')
     assert.match(await cards.first().getByTestId('task-card-activity').innerText(), /keyboard.ts/, 'collapse keeps the real activity preview')
@@ -85,9 +99,12 @@ test('task details, independent context chips and execution errors preserve unse
     assert.equal(await toggle.getAttribute('aria-expanded'), 'true')
     await alpha.getByText('Full Plan, Subtasks & Activity Logs', { exact: true }).waitFor()
     await alpha.getByText('Implement accessible keyboard navigation', { exact: true }).waitFor()
-    await alpha.getByText('Keyboard plan checkpoint', { exact: true }).waitFor()
-    await alpha.getByText('Inspect keyboard navigation', { exact: true }).waitFor()
+    // The running execution checklist and stream are scoped to running attempts;
+    // failed details retain the execution summary and investigation evidence instead.
+    assert.equal(await alpha.getByText('Keyboard plan checkpoint', { exact: true }).count(), 0)
+    assert.equal(await alpha.getByText('Inspect keyboard navigation', { exact: true }).count(), 0)
     assert.equal(await alpha.getByTestId('task-card-activity').count(), 0, 'failed runs must not present a live stream')
+    assertNoPageErrors()
     await page.getByTestId('task-session-error').waitFor()
     assert.match(await page.getByTestId('task-session-error').textContent() || '', /Permission denied/)
     assert.doesNotMatch(await page.getByTestId('task-session-error').textContent() || '', /fixture-secret/)
@@ -101,13 +118,16 @@ test('task details, independent context chips and execution errors preserve unse
     assert.equal(await alpha.getByText('Inspect keyboard navigation', { exact: true }).count(), 0)
     assert.equal(await input.inputValue(), 'Keep my unsent draft')
     assert.equal(await input.evaluate(node => node === (window as any).originalComposer), true)
-    assert.equal(await alpha.getByRole('button', { name: 'Ask Orchestrator', exact: true }).isEnabled(), true)
+    assert.equal(await alpha.getByRole('button', { name: 'Ask orchestrator', exact: true }).isEnabled(), true)
     assert.equal(await alpha.getByRole('button', { name: 'Archive task', exact: true }).isEnabled(), true)
     await toggle.click()
     assert.equal(await toggle.getAttribute('aria-expanded'), 'true')
-    await alpha.getByText('Keyboard plan checkpoint', { exact: true }).waitFor()
-    await alpha.getByText('Inspect keyboard navigation', { exact: true }).waitFor()
+    // The running execution checklist and stream are scoped to running attempts;
+    // failed details retain the execution summary and investigation evidence instead.
+    assert.equal(await alpha.getByText('Keyboard plan checkpoint', { exact: true }).count(), 0)
+    assert.equal(await alpha.getByText('Inspect keyboard navigation', { exact: true }).count(), 0)
     assert.equal(await alpha.getByTestId('task-card-activity').count(), 0, 'failed runs must not present a live stream')
+    assertNoPageErrors()
     assert.doesNotMatch(await page.getByTestId('task-session-error').textContent() || '', /fixture-secret/)
     await page.getByTestId('task-session-error').getByRole('button', { name: 'Investigate session', exact: true }).click()
     assert.equal(await page.getByTestId('conversation').textContent(), 'session_a')
@@ -120,5 +140,9 @@ test('task details, independent context chips and execution errors preserve unse
     assert.equal(await input.inputValue(), 'Keep my unsent draft')
     assert.equal(await input.evaluate(node => node === (window as any).originalComposer), true)
     assert.deepEqual(await page.evaluate(() => (window as any).sent), [])
+    assertNoPageErrors()
+  } catch (error) {
+    assertNoPageErrors() // Surface render errors instead of a later missing-control timeout.
+    throw error
   } finally { await browser.close() }
 })
