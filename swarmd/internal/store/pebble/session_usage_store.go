@@ -14,6 +14,8 @@ import (
 )
 
 type SessionTurnUsageSnapshot struct {
+	ScopeTotals            []UsageScopeTotal `json:"scope_totals,omitempty"`
+	CostProvenance         string `json:"cost_provenance,omitempty"`
 	SessionID              string           `json:"session_id"`
 	UserID                 string           `json:"user_id,omitempty"`
 	AccountScopeID         string           `json:"account_scope_id,omitempty"`
@@ -284,6 +286,11 @@ func (s *SessionStore) PutTurnUsage(record SessionTurnUsageSnapshot) error {
 		return fmt.Errorf("read previous turn usage: %w", err)
 	}
 
+	if hadPrevious && previous.AccountScopeID != record.AccountScopeID {
+		return errors.New("usage receipt account cannot change")
+	}
+	record.ScopeTotals, err = s.prepareUsageScopeTotals(record, previous)
+	if err != nil { return err }
 	currTot, currIn, currOut, currCache, _, currThink := billedComponents(record)
 	deltaCost := record.EstimatedCostUSD
 	deltaTokens := currTot
@@ -327,6 +334,7 @@ func (s *SessionStore) PutTurnUsage(record SessionTurnUsageSnapshot) error {
 	batch := s.store.NewBatch()
 	defer batch.Close()
 
+	if err := setUsageScopeTotals(batch, record.AccountScopeID, record.ScopeTotals); err != nil { return err }
 	if err := batch.Set([]byte(KeySessionTurnUsage(record.SessionID, record.RunID)), payload, nil); err != nil {
 		return err
 	}

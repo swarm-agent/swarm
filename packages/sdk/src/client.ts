@@ -1,3 +1,4 @@
+import { SwarmUsageNamespace } from './usage.js';
 import { SwarmAuthNamespace } from './auth.js';
 import { SwarmAutomationsNamespace } from './automations.js';
 import { SwarmWorkersNamespace } from './workers.js';
@@ -28,6 +29,7 @@ export class SwarmClient {
    * revisions, attached automations, and portable import/export definitions over /v3/workers.
    */
   readonly workers: SwarmWorkersNamespace;
+  readonly usage: SwarmUsageNamespace;
   readonly deliverables: SwarmDeliverablesNamespace;
   /** Convenient alias for deliverables namespace: mailbox */
   readonly mailbox: SwarmDeliverablesNamespace;
@@ -72,6 +74,7 @@ export class SwarmClient {
     });
     this.automations = new SwarmAutomationsNamespace(this.transport);
     this.workers = new SwarmWorkersNamespace(this.transport);
+    this.usage = new SwarmUsageNamespace(this.transport);
     this.deliverables = new SwarmDeliverablesNamespace(this.transport);
     this.mailbox = this.deliverables;
     this.workspaces = new SwarmWorkspacesNamespace(this.transport);

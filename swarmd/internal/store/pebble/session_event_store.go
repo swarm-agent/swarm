@@ -966,6 +966,20 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 	if err != nil {
 		return V3SessionMutationResult{}, err
 	}
+	if usageProvided {
+		if hadPreviousTurnUsage && previousTurnUsage.AccountScopeID != turnUsage.AccountScopeID {
+			return V3SessionMutationResult{}, errors.New("usage receipt account cannot change")
+		}
+		if turnUsage.EstimatedCostUSD <= 0 && !strings.EqualFold(turnUsage.Provider, "codex") {
+			cost, status := s.CalculateCostWithStatus(turnUsage.Provider, turnUsage.Model, turnUsage.InputTokens, turnUsage.OutputTokens, turnUsage.CacheReadTokens, turnUsage.ThinkingTokens)
+			turnUsage.EstimatedCostUSD = cost
+			if turnUsage.PriceStatus == "" { turnUsage.PriceStatus = status }
+		} else if turnUsage.PriceStatus == "" {
+			_, turnUsage.PriceStatus = s.CalculateCostWithStatus(turnUsage.Provider, turnUsage.Model, turnUsage.InputTokens, turnUsage.OutputTokens, turnUsage.CacheReadTokens, turnUsage.ThinkingTokens)
+		}
+		turnUsage.ScopeTotals, err = s.prepareUsageScopeTotals(turnUsage, previousTurnUsage)
+		if err != nil { return V3SessionMutationResult{}, err }
+	}
 	payload, err := input.v3EventPayload(seq, session, message, lifecycle, runIntent, turnUsage, usageSummary, artifact.Projection, artifactV2.Projection, artifactV3.Projection, transcription.Projection, videoProject.Projection)
 	if err != nil {
 		return V3SessionMutationResult{}, err
@@ -1243,6 +1257,7 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 			_, status := s.CalculateCostWithStatus(turnUsage.Provider, turnUsage.Model, turnUsage.InputTokens, turnUsage.OutputTokens, turnUsage.CacheReadTokens, turnUsage.ThinkingTokens)
 			turnUsage.PriceStatus = status
 		}
+		if err := setUsageScopeTotals(batch, turnUsage.AccountScopeID, turnUsage.ScopeTotals); err != nil { return V3SessionMutationResult{}, err }
 		usagePayload, err := json.Marshal(turnUsage)
 		if err != nil {
 			return V3SessionMutationResult{}, fmt.Errorf("marshal v3 turn usage %q/%q: %w", turnUsage.SessionID, turnUsage.RunID, err)

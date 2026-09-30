@@ -13,3 +13,6 @@ export * from './transport.js';
 export * from './errors.js';
 export * from './types.js';
 export * from './storage/index.js';
+
+export { SwarmUsageNamespace } from './usage.js';
+export type { UsageScope, UsageScopeTotal } from './usage.js';
