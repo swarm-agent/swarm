@@ -90,6 +90,7 @@ import { MediaTaskCard } from './media-task-card'
 import { ORCHESTRATE_THEMES } from './orchestrate-themes'
 import { TaskCardSummary, formatElapsedString, formatElapsedSeconds } from './task-card-summary'
 import { TaskCardActivity } from './task-card-activity'
+import { TaskAttention, useTaskAttention } from './task-attention'
 import { TaskListHeader, TaskListToolbar } from './task-list-toolbar'
 import { useQuery } from '@tanstack/react-query'
 import { fetchGitStatus, gitStatusQueryKey } from '../git/api'
@@ -932,8 +933,11 @@ export function MinimalTaskCard({
     [task.agentType]
   )
 
+  const attention = useTaskAttention(task)
+  const attentionPending = attention.unresolvedCount > 0 || attention.permissions.length > 0
+
   if (['image', 'video', 'audio', 'sound'].includes(task.agentType)) {
-    return <MediaTaskCard task={task} onPreview={onPreviewDeliverable} onApprove={onApprove} onArchive={onArchiveTask} onDelete={onDelete} isApproving={isApproving} error={taskError} />
+    return <MediaTaskCard task={task} onPreview={onPreviewDeliverable} onApprove={onApprove} onArchive={onArchiveTask} onDelete={onDelete} isApproving={isApproving} error={taskError} attention={<TaskAttention attention={attention} />} />
   }
 
   return (
@@ -944,7 +948,7 @@ export function MinimalTaskCard({
       aria-label={`Task details ${task.title}`}
       data-testid="orchestrate-task-card"
       data-task-id={task.id}
-      data-task-state={task.status}
+      data-task-state={attentionPending ? 'waiting_for_input' : task.status}
       className={`swarm-task-card relative flex min-w-0 flex-col transition-colors cursor-pointer ${isSelected ? 'swarm-task-card-selected' : ''}`}
     >
       {onArchiveTask && <button type="button" className="self-end px-2 py-1 text-xs text-slate-300" onClick={e => { e.stopPropagation(); onArchiveTask() }}>Archive task</button>}
@@ -988,7 +992,7 @@ export function MinimalTaskCard({
                   : 'bg-slate-500'
               }`}
             />
-            <span>{task.status === 'needs_review' ? 'Needs review' : task.status === 'in_progress' ? 'In progress' : task.status.replace(/_/g, ' ')}</span>
+            <span>{attentionPending ? `Waiting for you (${attention.unresolvedCount})` : task.status === 'needs_review' ? 'Needs review' : task.status === 'in_progress' ? 'In progress' : task.status.replace(/_/g, ' ')}</span>
           </div>
         }
         timer={
@@ -1092,6 +1096,7 @@ export function MinimalTaskCard({
           )}
         </div>
       )}
+      <TaskAttention attention={attention} />
       {/* ROUTER AGENT FAILURE ALERT BANNER */}
       {(task.routerAlert || (task as any).router_alert) && (
         <div className="flex items-start gap-2.5 p-3 rounded-lg bg-amber-950/40 border border-amber-500/60 text-amber-200 text-xs">

@@ -1,0 +1,35 @@
+import React from 'react'
+import assert from 'node:assert/strict'
+import test from 'node:test'
+import { renderToStaticMarkup } from 'react-dom/server'
+import { TaskAttention } from './task-attention'
+import { DesktopPermissionModal } from '../permissions/components/desktop-permission-modal'
+import type { DesktopPermissionRecord } from '../types/realtime'
+
+// Purpose: the persistent TaskAttention panel must enumerate questions and
+// approvals even before a card is expanded or a chat selected. Server rendering
+// is the narrowest layer proving visible labels/actions without modal side effects.
+test('attention panel shows every question and command with explicit actions, without auto-opening dialogs', () => {
+  const base: DesktopPermissionRecord = { id: 'question', sessionId: 'grandchild', runId: 'run', callId: 'call', toolName: 'ask_user', toolArguments: '{"questions":[{"id":"q","question":"Which direction?","options":[{"label":"One"},{"label":"Two"}]}]}', status: 'pending', decision: '', reason: '', requirement: '', mode: 'auto', createdAt: 1, updatedAt: 1, resolvedAt: 0, permissionRequestedAt: 1 }
+  const html = renderToStaticMarkup(<TaskAttention attention={{ permissions: [base, { ...base, id: 'command', toolName: 'bash', toolArguments: '{"command":"git status"}' }], unresolvedCount: 2, error: '', retry: () => {} }} />)
+  assert.match(html, /Waiting for you/)
+  assert.match(html, /2 pending/)
+  assert.match(html, /Needs your input/)
+  assert.match(html, /Approval required/)
+  assert.match(html, /Which direction/)
+  assert.match(html, /git status/)
+  assert.match(html, />Answer</)
+  assert.match(html, />Review permission</)
+  assert.doesNotMatch(html, /role="dialog"/)
+})
+
+// Purpose: card review delegates to the existing structured multi-question UI,
+// preserving choices and Custom response rather than flattening an answer form.
+test('canonical ask-user review preserves multiple questions and custom response controls', () => {
+  const permission = { id: 'questions', sessionId: 'child', toolName: 'ask_user', mode: 'auto', toolArguments: JSON.stringify({ questions: [
+    { id: 'first', question: 'First question?', options: [{ label: 'Alpha', value: 'alpha' }, { label: 'Beta', value: 'beta' }] },
+    { id: 'second', question: 'Second question?', options: [{ label: 'Gamma', value: 'gamma' }, { label: 'Delta', value: 'delta' }] },
+  ] }) } as DesktopPermissionRecord
+  const html = renderToStaticMarkup(<DesktopPermissionModal dismissWithoutDecision open permission={permission} pendingCount={1} sessionMode="auto" onOpenChange={() => {}} onResolve={async () => { throw new Error('Rendering is not consent') }} />)
+  for (const text of ['First question?', 'Second question?', 'Alpha', 'Beta', 'Gamma', 'Delta', 'Custom response']) assert.ok(html.includes(text), text)
+})

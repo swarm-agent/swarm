@@ -2572,7 +2572,14 @@ function applySessionViews(
     }
     // A null recovery view may race a newer retained boundary. Boundaries are the
     // authoritative way to advance or complete the cached epoch, so do not erase it.
-    if (view.pending_permissions !== undefined) state.permissionsBySession[sessionId] = normalizeDesktopPendingPermissions(view.pending_permissions, sessionId)
+    if (view.pending_permissions !== undefined) {
+      // Retain terminal evidence across detail hydration: a response begun before
+      // a decision must not resurrect its older pending record.
+      const retained = state.permissionsBySession[sessionId] ?? []
+      const incoming = normalizeDesktopPendingPermissions(view.pending_permissions, sessionId)
+      state.permissionsBySession[sessionId] = retained.filter(permission => terminalPermissionRank(permission) > 0)
+      for (const permission of incoming) upsertPermissionRecord(state, permission)
+    }
     if (view.usage_summary !== undefined) state.usageBySession[sessionId] = view.usage_summary
     applyPlanSnapshotFromSessionView(state, sessionId, view)
 

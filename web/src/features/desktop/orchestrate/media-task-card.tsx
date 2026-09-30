@@ -1,8 +1,10 @@
+import type { ReactNode } from 'react'
 import type { MediaDeliverable, RunningTask } from './orchestrate-types'
 import type { QuickRouteMode } from '../tools/media-library/media-viewer-modal'
 
-export function MediaTaskCard({ task, onPreview, onApprove, onArchive, onDelete, isApproving, error }: {
+export function MediaTaskCard({ task, onPreview, onApprove, onArchive, onDelete, isApproving, error, attention }: {
   task: RunningTask
+  attention?: ReactNode
   onPreview?: (output: MediaDeliverable, mode?: QuickRouteMode) => void
   onApprove?: () => void
   onArchive?: () => void
@@ -21,6 +23,7 @@ export function MediaTaskCard({ task, onPreview, onApprove, onArchive, onDelete,
         <div className="min-w-0"><span className="text-xs uppercase text-indigo-300">{task.agentType} studio</span><h3 className="font-semibold text-slate-100 break-words">{task.title}</h3></div>
         <span className="text-xs text-slate-300" role="status">{ready}/{outputs.length} ready · {generating} generating · {queued} queued{failed > 0 ? ` · ${failed} failed` : ''}</span>
       </header>
+      {attention}
       {(error || task.lastError) && <p role="alert" className="text-xs text-rose-300">{error || task.lastError}</p>}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3" data-testid="task-media-thumbnails-strip">
         {outputs.map((output, index) => {
