@@ -2833,6 +2833,9 @@ export function OrchestratorChatComposer({
     }, [sessionId])
   )
   const isRunning = Boolean(activeRun && activeRun.runId)
+  const cacheSession = useDesktopV3CacheSelector(
+    useCallback((state) => state.sessionsById[sessionId] ?? null, [sessionId])
+  )
 
   const pendingPermissions = useDesktopV3CacheSelector(
     useCallback(
@@ -2847,11 +2850,12 @@ export function OrchestratorChatComposer({
   const handleStopRun = async () => {
     if (!activeRun?.runId) return
     try {
+      const activeSession = session ?? cacheSession ?? null
+      const route = resolveDesktopChatRouteFromSession(activeSession, [])
       const stopRequest = resolveDesktopV3StopRunRequest({
-        route: null,
+        route,
         runId: activeRun.runId,
-        session,
-        targetSwarmId: 'host',
+        session: activeSession,
       })
       await stopSessionV3Run(sessionId, stopRequest)
     } catch (err: any) {

@@ -1,4 +1,5 @@
 import test from 'node:test'
+import ts from 'typescript'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -12,6 +13,8 @@ import {
   type SelectedTaskContextSnapshot,
 } from './orchestrate-task-helpers'
 import type { RunningTask, ProjectSummary } from './orchestrate-types'
+import { getDesktopSessionStopTarget, resolveDesktopChatRouteFromSession, sessionMetadataString } from '../chat/services/chat-routing'
+import type { SessionSnapshot } from '../state/desktop-v3-cache-types'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -911,3 +914,67 @@ test('OrchestrateView enforces explicit-only task selection lifecycle and clears
   assert.ok(source.includes('handleRedeployJob'), 'handleRedeployJob must be preserved')
 })
 
+// Requirement: Orchestrator stop uses the same session-derived target as chat, never the UI alias "host".
+// Regression: missing session props or differing runtime/authority IDs must not misroute the stop POST.
+// Authority: OrchestratorChatComposer.handleStopRun, resolveDesktopV3StopRunRequest, and chat-routing.
+// Layer: execute the production handler/resolver extracted from their ASTs, replacing only cache/network
+// boundaries to keep this Node test independent of the full Desktop browser dependency graph.
+// This proves request construction and failure/no-request behavior, not backend authorization or rendering.
+test('OrchestratorChatComposer stops the session-derived runtime with cached fallback and no host alias', async () => {
+  const source = fs.readFileSync(path.join(__dirname, 'OrchestrateView.tsx'), 'utf8')
+  const ast = ts.createSourceFile('OrchestrateView.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
+  const composer = ast.statements.find((node): node is ts.FunctionDeclaration =>
+    ts.isFunctionDeclaration(node) && node.name?.text === 'OrchestratorChatComposer')
+  assert.ok(composer?.body)
+  const declarations = composer.body.statements.flatMap((node) =>
+    ts.isVariableStatement(node) ? [...node.declarationList.declarations] : [])
+  const cache = declarations.find((node) => node.name.getText(ast) === 'cacheSession')
+  assert.ok(cache?.initializer)
+  assert.match(cache.initializer.getText(ast), /useDesktopV3CacheSelector\(/)
+  assert.match(cache.initializer.getText(ast), /state\.sessionsById\[sessionId\] \?\? null/)
+  const stop = declarations.find((node) => node.name.getText(ast) === 'handleStopRun')
+  assert.ok(stop?.initializer)
+  assert.doesNotMatch(stop.initializer.getText(ast), /targetSwarmId\s*:/)
+
+  const paneSource = fs.readFileSync(path.join(__dirname, '../chat/components/desktop-v3-existing-conversation-pane.tsx'), 'utf8')
+  const paneAst = ts.createSourceFile('pane.tsx', paneSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
+  const resolver = paneAst.statements.find((node): node is ts.FunctionDeclaration =>
+    ts.isFunctionDeclaration(node) && node.name?.text === 'resolveDesktopV3StopRunRequest')
+  assert.ok(resolver)
+  const compiled = ts.transpileModule(
+    `${resolver.getText(paneAst).replace(/^export\s+/, '')}\nconst handleStopRun = ${stop.initializer.getText(ast)};`,
+    { compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.None } }
+  ).outputText
+  const calls: unknown[] = []
+  const errors: string[] = []
+  const invoke = new Function(
+    'session', 'cacheSession', 'activeRun', 'sessionId', 'resolveDesktopChatRouteFromSession',
+    'getDesktopSessionStopTarget', 'sessionMetadataString', 'stopSessionV3Run', 'setSendError',
+    `${compiled}\nreturn handleStopRun();`
+  )
+  const session = (metadata: Record<string, unknown>) => ({ metadata } as SessionSnapshot)
+  const passed = session({ swarm_v3_runtime_swarm_id: 'node-runtime', swarm_v3_authority_host_swarm_id: 'node-authority' })
+  const cached = session({ swarm_v3_authority_host_swarm_id: 'node-cached' })
+  const run = async (prop: SessionSnapshot | null | undefined, cache: SessionSnapshot | null, activeRun: { runId: string } | null, fail = false) => {
+    await invoke(prop, cache, activeRun, 'session-stop-fixture', resolveDesktopChatRouteFromSession,
+      getDesktopSessionStopTarget, sessionMetadataString,
+      async (id: string, request: unknown) => {
+        calls.push({ id, request })
+        if (fail) throw new Error('Stop rejected')
+      }, (error: string) => errors.push(error))
+  }
+  await run(passed, cached, { runId: 'run-prop' })
+  await run(undefined, cached, { runId: 'run-cache' })
+  assert.deepEqual(calls, [
+    { id: 'session-stop-fixture', request: { runId: 'run-prop', targetSwarmId: 'node-runtime' } },
+    { id: 'session-stop-fixture', request: { runId: 'run-cache', targetSwarmId: 'node-cached' } },
+  ])
+  await run(null, null, { runId: 'run-missing-target' })
+  assert.equal(calls.length, 2, 'Missing routing metadata must not send a stop request')
+  assert.match(errors[0], /requires a selected primary swarm_id/)
+  await run(passed, cached, null)
+  assert.equal(calls.length, 2, 'No active run must not send a stop request')
+  await run(passed, cached, { runId: 'run-rejected' }, true)
+  assert.equal(calls.length, 3)
+  assert.equal(errors[1], 'Stop rejected', 'Network failures must remain visible')
+})
