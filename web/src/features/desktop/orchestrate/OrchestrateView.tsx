@@ -795,6 +795,16 @@ export function MinimalTaskCard({
   const isIntegrating = integrationPhase === 'pending'
   const hasIntegrationReceipt = integrationPhase !== 'ready'
   const hasUnintegrated = task.gitStatus === 'diverged' && !task.isIntegrated && (task.unintegratedCommits ?? 0) > 0
+  const canReopen = !isPendingApproval && !isRejected && !isRunning && Boolean(onReopen) &&
+    (isNeedsReview || isCompleted || isFailed || task.isIntegrated || integrationPhase === 'success')
+  const showComplete = isNeedsReview && !hasUnintegrated && !hasIntegrationReceipt && !task.isIntegrated && Boolean(onComplete)
+  const isIntegratedAction = integrationPhase === 'success' || Boolean(task.isIntegrated && !hasIntegrationReceipt)
+  const reopenButtonRef = useRef<HTMLButtonElement>(null)
+  const reopenFormId = useId()
+  const closeReopen = () => {
+    setIsReopenOpen(false)
+    reopenButtonRef.current?.focus()
+  }
 
   const isWorker = Boolean(task.workerId?.trim() || task.worker_id?.trim())
   const workerTargetId = (task.workerId?.trim() || task.worker_id?.trim()) || ''
@@ -907,6 +917,7 @@ export function MinimalTaskCard({
     task.outcomeType === 'media_bundle' ||
     task.outcomeType === 'video_story' ||
     task.outcomeType === 'video_clip'
+  const showIntegration = !isPendingApproval && !isMediaTask && (hasUnintegrated || hasIntegrationReceipt || task.isIntegrated)
 
   const isSingleVideo =
     task.agentType === 'video' &&
@@ -1073,6 +1084,52 @@ export function MinimalTaskCard({
         }
       />
       {isRunning && <TaskCardActivity task={task} />}
+      {(showIntegration || canReopen || showComplete) && (
+        <div className="swarm-task-action-row flex items-center flex-wrap gap-2 text-xs" data-testid="task-primary-actions">
+          {showIntegration && <div className="flex items-center flex-wrap gap-2" data-testid="task-pending-worktree-bar">
+            <span role="status" aria-live="polite">
+              {isIntegrating ? 'Integrating worktree' : integrationPhase === 'error' ? 'Integration needs attention' : isIntegratedAction ? 'Integrated:' : task.baseBranch ? 'Ready to integrate' : 'Target unavailable'}
+            </span>
+            {onIntegrate && <button type="button"
+              disabled={isIntegrating || isIntegratedAction || !task.baseBranch}
+              aria-busy={isIntegrating}
+              aria-label={isIntegrating ? 'Integrating…' : isIntegratedAction ? 'Integrated' : task.baseBranch ? `${integrationPhase === 'error' ? 'Retry integrate' : 'Integrate'} into ${task.baseBranch}` : 'Target unavailable'}
+              onClick={event => { event.stopPropagation(); onIntegrate() }}
+              className="swarm-outline-action inline-grid min-h-7 items-center rounded-lg border border-amber-500/50 px-3 py-1 font-medium disabled:opacity-70 disabled:cursor-not-allowed"
+              title={task.baseBranch ? `Integrate changes into ${task.baseBranch}` : 'Target branch unavailable; refresh task lineage'}>
+              <span aria-hidden="true" className="invisible col-start-1 row-start-1 flex items-center gap-1.5"><GitPullRequest size={12} />{task.baseBranch ? `Retry integrate into ${task.baseBranch}` : 'Target unavailable'}</span>
+              <span className="col-start-1 row-start-1 flex items-center justify-center gap-1.5">
+                {isIntegrating ? <Loader2 size={12} className="animate-spin motion-reduce:animate-none" /> : isIntegratedAction ? <Check size={12} /> : <GitPullRequest size={12} />}
+                {isIntegrating ? 'Integrating…' : isIntegratedAction ? 'Integrated' : task.baseBranch ? `${integrationPhase === 'error' ? 'Retry integrate' : 'Integrate'} into ${task.baseBranch}` : 'Target unavailable'}
+              </span>
+            </button>}
+          </div>}
+          {canReopen && <button ref={reopenButtonRef} type="button" disabled={isIntegrating}
+            aria-expanded={isReopenOpen} aria-controls={reopenFormId}
+            onClick={event => { event.stopPropagation(); if (isReopenOpen) closeReopen(); else setIsReopenOpen(true) }}
+            className="swarm-outline-action flex items-center gap-1 rounded border border-slate-700 px-2.5 py-1 disabled:opacity-70">
+            <RotateCcw size={11} />Reopen task
+          </button>}
+          {showComplete && <button type="button" onClick={event => { event.stopPropagation(); onComplete?.() }}
+            className="swarm-outline-action flex items-center gap-1 rounded border border-emerald-500/50 px-3 py-1 text-emerald-400"><Check size={12} />Complete</button>}
+        </div>
+      )}
+      {isReopenOpen && canReopen && <form id={reopenFormId} aria-label="Reopen task instructions"
+        className="flex items-center flex-wrap gap-2 text-xs" onClick={event => event.stopPropagation()}
+        onSubmit={event => {
+          event.preventDefault(); event.stopPropagation()
+          if (isIntegrating) return
+          onReopen?.(reopenFeedback.trim() ? reopenFeedback : undefined)
+          setReopenFeedback(''); closeReopen()
+        }}>
+        <input autoFocus type="text" aria-label="Instructions for the agent to resume work" disabled={isIntegrating}
+          value={reopenFeedback} onChange={event => setReopenFeedback(event.target.value)}
+          placeholder="Instructions for the agent to resume work..."
+          className="min-w-0 flex-1 rounded border border-slate-700 bg-transparent px-2.5 py-1"
+          onKeyDown={event => { event.stopPropagation(); if (event.key === 'Escape') { event.preventDefault(); closeReopen() } }} />
+        <button type="submit" disabled={isIntegrating} className="swarm-outline-action rounded border border-amber-500/50 px-3 py-1">Resume Run</button>
+        <button type="button" onClick={closeReopen} className="swarm-outline-action rounded border border-slate-700 px-3 py-1">Cancel</button>
+      </form>}
       <button ref={detailsToggleRef} type="button" className="swarm-task-details-toggle"
         aria-expanded={expanded} aria-controls={detailsId} data-testid="toggle-task-details-btn"
         onClick={event => { event.stopPropagation(); handleToggleExpand() }}>
@@ -1081,6 +1138,10 @@ export function MinimalTaskCard({
       <div id={detailsId} hidden={!expanded} className="swarm-task-details" onClick={event => event.stopPropagation()}>
       {expanded && <>
       <h4>Result / current work</h4>
+      {showIntegration && <div className="text-xs font-mono" data-testid="task-integration-lineage">
+        {task.worktreeBranch || 'Source unavailable'} → {task.baseBranch || 'Target unavailable'}
+        {task.unintegratedCommits ? ` (${task.unintegratedCommits} ${task.unintegratedCommits === 1 ? 'commit' : 'commits'})` : ''}
+      </div>}
       <TaskCardHandoff task={task} />
       {expanded && onInvestigateSession && <TaskSessionErrors task={task} onInvestigate={onInvestigateSession} />}
       {expanded && (Boolean(task.workspacesInvolved?.length) || Boolean(task.contextPoolSummary)) && (
@@ -2071,149 +2132,11 @@ export function MinimalTaskCard({
         </div>
       )}
 
-      {/* 2c. PENDING WORKTREE READY TO INTEGRATE (Minimal, aesthetic, single Integrate action) */}
-      {!isPendingApproval && !isMediaTask && (hasUnintegrated || hasIntegrationReceipt) && (
-        <div
-          className="swarm-task-action-row flex items-center justify-between p-3 rounded-xl bg-slate-900/60 hover:bg-slate-900/90 border border-slate-800/80 hover:border-slate-700/80 transition-colors duration-150 motion-reduce:transition-none text-xs gap-3 shadow-sm"
-          data-testid="task-pending-worktree-bar"
-          title="Mission Execution Completed — Awaiting Review"
-        >
-          {expanded && <div className="flex items-center gap-2.5 min-w-0 flex-1">
-            <div className="flex items-center justify-center w-7 h-7 rounded-lg bg-amber-500/10 text-amber-400 border border-amber-500/20 flex-shrink-0">
-              <GitBranch size={13} />
-            </div>
-            <div className="flex items-center gap-2 min-w-0 flex-wrap">
-              <span className="font-semibold text-slate-100 text-xs">
-                {isIntegrating ? 'Integrating worktree' : integrationPhase === 'success' ? 'Integration completed' : integrationPhase === 'error' ? 'Integration needs attention' : 'Pending worktree ready to integrate'}
-              </span>
-              <span className="text-[11px] font-mono text-slate-400 flex items-center gap-1.5 truncate">
-                <span className="text-indigo-400 font-medium">{task.worktreeBranch || (task.worktreeName ? `agent/${task.worktreeName}` : 'agent/worktree')}</span>
-                <span className="text-slate-600">→</span>
-                <span className="text-slate-300">{task.baseBranch || 'target'}</span>
-                {task.unintegratedCommits ? (
-                  <span className="text-slate-500">({task.unintegratedCommits} {task.unintegratedCommits === 1 ? 'commit' : 'commits'})</span>
-                ) : null}
-              </span>
-              <span className="sr-only">{integrationPhase === 'success' ? 'Integrated:' : 'Not Integrated:'}</span>
-            </div>
-          </div>}
-          <div className="flex items-center gap-2 flex-shrink-0">
-            {(isNeedsReview || integrationPhase === 'success') && onReopen && (
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation()
-                  setIsReopenOpen(!isReopenOpen)
-                }}
-                className="flex items-center gap-1 px-2.5 py-1 rounded border border-slate-700 bg-transparent hover:border-slate-500 text-slate-300 hover:text-white text-xs font-medium transition-colors cursor-pointer"
-                title="Reopen Task to add instructions and continue work"
-              >
-                <RotateCcw size={11} className="text-slate-400" />
-                <span>{isReopenOpen ? 'Cancel' : 'Reopen task'}</span>
-              </button>
-            )}
-            {onIntegrate && (
-              <button
-                type="button"
-                disabled={isIntegrating || integrationPhase === 'success' || !task.baseBranch}
-                aria-busy={isIntegrating}
-                aria-label={isIntegrating ? 'Integrating…' : integrationPhase === 'success' ? 'Integrated' : task.baseBranch ? `${integrationPhase === 'error' ? 'Retry integrate' : 'Integrate'} into ${task.baseBranch}` : 'Target unavailable'}
-                onClick={(e) => {
-                  e.stopPropagation()
-                  onIntegrate()
-                }}
-                className="inline-grid min-h-7 flex-shrink-0 items-center rounded-lg bg-amber-500 hover:bg-amber-400 disabled:opacity-70 px-3 py-1 text-slate-950 font-bold text-xs transition-colors duration-150 motion-reduce:transition-none shadow-sm cursor-pointer disabled:cursor-not-allowed"
-                title={task.baseBranch ? `Integrate changes into ${task.baseBranch}` : 'Target branch unavailable; refresh task lineage'}
-              >
-                <span aria-hidden="true" className="invisible col-start-1 row-start-1 flex items-center gap-1.5"><GitPullRequest size={12} />{task.baseBranch ? `Retry integrate into ${task.baseBranch}` : 'Target unavailable'}</span>
-                <span className="col-start-1 row-start-1 flex items-center justify-center gap-1.5" role="status" aria-live="polite">
-                  {isIntegrating ? <Loader2 size={12} className="animate-spin motion-reduce:animate-none" /> : integrationPhase === 'success' ? <Check size={12} /> : <GitPullRequest size={12} />}
-                  {isIntegrating ? 'Integrating…' : integrationPhase === 'success' ? 'Integrated' : task.baseBranch ? `${integrationPhase === 'error' ? 'Retry integrate' : 'Integrate'} into ${task.baseBranch}` : 'Target unavailable'}
-                </span>
-              </button>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* 2c-alt. Review Bar (When execution completed without pending unintegrated worktree) */}
-      {isNeedsReview && !hasUnintegrated && !hasIntegrationReceipt && (
-        <div
-          className="swarm-task-action-row flex items-center justify-between p-3 rounded-xl bg-slate-900/60 border border-slate-800 text-xs gap-3 shadow-sm"
-          title="Mission Execution Completed — Awaiting Review"
-        >
-
-          <div className="flex items-center gap-2 flex-shrink-0">
-            {onReopen && (
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation()
-                  setIsReopenOpen(!isReopenOpen)
-                }}
-                className="flex items-center gap-1 px-2.5 py-1 rounded border border-slate-700 bg-transparent hover:border-slate-500 text-slate-300 hover:text-white text-xs font-medium transition-colors cursor-pointer"
-                title="Reopen Task to add instructions and continue work"
-              >
-                <RotateCcw size={11} className="text-slate-400" />
-                <span>{isReopenOpen ? 'Cancel' : 'Reopen task'}</span>
-              </button>
-            )}
-            {onComplete && (
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation()
-                  onComplete()
-                }}
-                className="flex items-center gap-1.5 px-3 py-1 rounded border border-emerald-500/50 bg-transparent hover:border-emerald-400 text-emerald-400 font-medium text-xs transition-colors cursor-pointer"
-              >
-                <Check size={12} />
-                <span>Complete</span>
-              </button>
-            )}
-          </div>
-        </div>
-      )}
-
       {/* Execution Summary if available (visible when expanded) */}
       {expanded && task.planSummary && (
         <div className="p-2.5 rounded-xl bg-slate-900/60 border border-slate-800 text-[11px] font-mono text-slate-300 leading-relaxed">
           <span className="text-amber-400 font-bold block text-[9px] uppercase tracking-wider mb-0.5">Execution Summary</span>
           {task.planSummary}
-        </div>
-      )}
-
-      {/* Inline Reopen Feedback Input */}
-      {isReopenOpen && onReopen && (
-        <div className="flex items-center gap-2 p-2.5 rounded-xl bg-slate-900/90 border border-slate-800 animate-in fade-in duration-200">
-          <input
-            type="text"
-            value={reopenFeedback}
-            onClick={(e) => e.stopPropagation()}
-            onChange={(e) => setReopenFeedback(e.target.value)}
-            placeholder="Instructions for the agent to resume work..."
-            className="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-amber-500 font-mono"
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                e.stopPropagation()
-                onReopen(reopenFeedback.trim() ? reopenFeedback : undefined)
-                setReopenFeedback('')
-                setIsReopenOpen(false)
-              }
-            }}
-          />
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation()
-              onReopen(reopenFeedback.trim() ? reopenFeedback : undefined)
-              setReopenFeedback('')
-              setIsReopenOpen(false)
-            }}
-            className="px-3 py-1 rounded-lg bg-amber-600 hover:bg-amber-500 text-white font-bold text-xs transition-colors flex-shrink-0 cursor-pointer"
-          >
-            Resume Run
-          </button>
         </div>
       )}
 
@@ -2241,21 +2164,6 @@ export function MinimalTaskCard({
               {isRejected ? 'Rejected' : 'Failed'}
             </span>
           </div>
-          {onReopen && !isRejected && (
-            <div className="flex items-center justify-end pt-1 border-t border-rose-500/20 gap-2">
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation()
-                  setIsReopenOpen(!isReopenOpen)
-                }}
-                className="flex items-center gap-1 px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-[10px] font-medium transition-colors border border-slate-700/60"
-              >
-                <RotateCcw size={10} className="text-rose-400" />
-                <span>{isReopenOpen ? 'Cancel' : 'Retry / Reopen Task'}</span>
-              </button>
-            </div>
-          )}
         </div>
       )}
 
@@ -2300,69 +2208,6 @@ export function MinimalTaskCard({
       )}
 
 
-      {/* 5. Already Integrated Banner */}
-      {!isPendingApproval && !isMediaTask && task.isIntegrated && !hasIntegrationReceipt && (
-        <div className="swarm-task-action-row flex items-center justify-between p-2 rounded-lg bg-emerald-950/20 border border-emerald-500/30 text-emerald-200 text-[11px] gap-2">
-          {expanded && <div className="flex items-center gap-2 min-w-0">
-            <CheckCircle2 size={12} className="text-emerald-400 flex-shrink-0" />
-            <span className="font-bold text-emerald-400 flex-shrink-0">Integrated:</span>
-            <span className="truncate">
-              Changes on {task.worktreeBranch || 'worktree'} have been successfully integrated into {task.baseBranch || 'Target unavailable'}.
-            </span>
-          </div>}
-          <div className="flex items-center gap-2 flex-shrink-0">
-            {expanded && <span className="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-mono text-[9px] font-bold border border-emerald-500/30">
-              Up-to-date
-            </span>}
-            {onReopen && (
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation()
-                  setIsReopenOpen(!isReopenOpen)
-                }}
-                className="flex items-center gap-1 px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-[10px] font-medium transition-colors border border-slate-700"
-                title="Reopen task"
-              >
-                <RotateCcw size={10} className="text-indigo-400" />
-                <span>{isReopenOpen ? 'Cancel' : 'Reopen task'}</span>
-              </button>
-            )}
-          </div>
-        </div>
-      )}
-      {!isPendingApproval && task.isIntegrated && !hasIntegrationReceipt && isReopenOpen && onReopen && (
-        <div className="flex items-center gap-2 p-2 rounded bg-slate-900 border border-slate-800 animate-in fade-in duration-200">
-          <input
-            type="text"
-            value={reopenFeedback}
-            onClick={(e) => e.stopPropagation()}
-            onChange={(e) => setReopenFeedback(e.target.value)}
-            placeholder="Instructions for reopening..."
-            className="flex-1 bg-slate-950 border border-slate-800 rounded px-2.5 py-1 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 font-mono"
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                e.stopPropagation()
-                onReopen(reopenFeedback.trim() ? reopenFeedback : undefined)
-                setReopenFeedback('')
-                setIsReopenOpen(false)
-              }
-            }}
-          />
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation()
-              onReopen(reopenFeedback.trim() ? reopenFeedback : undefined)
-              setReopenFeedback('')
-              setIsReopenOpen(false)
-            }}
-            className="px-3 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-[10px] transition-colors flex-shrink-0"
-          >
-            Reopen
-          </button>
-        </div>
-      )}
 
       {expanded && (
         <>

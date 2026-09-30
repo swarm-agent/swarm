@@ -169,8 +169,8 @@
 /* Collapsed task cards are intentionally quiet, including transient action loaders.
    Expanded evidence retains its own motion contract; no global motion override. */
 .swarm-task-card[data-expanded="false"] *, .swarm-task-card[data-expanded="false"] { animation: none !important; transition: none !important; }
-.swarm-task-card[data-expanded="false"] .swarm-task-action-row { justify-content: flex-end; padding: 4px 0; border: 0; background: none; box-shadow: none; }
-.swarm-task-card[data-expanded="false"] .swarm-task-action-row > div { flex-wrap: wrap; min-width: 0; max-width: 100%; }
+.swarm-task-card .swarm-task-action-row { justify-content: flex-start; flex-wrap: wrap; gap: 8px; padding: 4px 0; border: 0; background: none; box-shadow: none; }
+.swarm-task-card .swarm-task-action-row > div { flex-wrap: wrap; min-width: 0; max-width: 100%; }
 .swarm-task-focus-count { min-width: 6ch; text-align: right; font-variant-numeric: tabular-nums; }
 .swarm-section .swarm-task-details-toggle, .swarm-section .swarm-task-details-toggle * { color: var(--swarm-text-muted); background: none; border: 0; font-weight: normal; }
 .swarm-section .swarm-task-proposal { font-size: 13px; line-height: 1.55; }

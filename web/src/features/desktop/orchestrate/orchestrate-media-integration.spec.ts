@@ -141,9 +141,9 @@ test('OrchestrateView displays worktree name immediately and implements accurate
   assert.ok(source.includes('Out of Sync Warning:'), 'Must render out of sync warning banner')
   assert.ok(source.includes('task.syncWarning'), 'Must check task.syncWarning')
 
-  // 6. Integration status
-  assert.ok(source.includes('Integrated:'), 'Must render Integrated banner')
-  assert.ok(source.includes('Not Integrated:'), 'Must render Not Integrated banner')
+  // Compact integration states replace the verbose banners. Pending, error,
+  // retry, verified completion and unavailable lineage are exercised on the real
+  // MinimalTaskCard in task-integration-operation.browser.spec.ts.
 })
 
 test('OrchestrateView renders Image and Video model dropdowns with availability warnings and settings persistence', () => {

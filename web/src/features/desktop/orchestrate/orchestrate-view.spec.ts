@@ -51,14 +51,15 @@ test('OrchestrateView synchronizes task cards with live session reality, plans, 
 
   // Needs review transition (not flipping directly to completed)
   assert.ok(source.includes("status = 'needs_review'"), 'Tasks must transition to needs_review when execution completes')
-  assert.ok(source.includes('Mission Execution Completed — Awaiting Review'), 'Needs review banner must be displayed')
+  // Compact review actions and their disclosure-independent reachability are
+  // asserted on mounted MinimalTaskCard in task-integration-operation.browser.spec.ts.
 
   // Reopen task support for multiple states
   assert.ok(source.includes('handleReopenTask'), 'OrchestrateView must implement handleReopenTask')
   assert.ok(source.includes('/reopen'), 'Must call backend task reopen endpoint')
   assert.ok(source.includes('handleCompleteTask'), 'OrchestrateView must implement handleCompleteTask')
   assert.ok(source.includes('/complete'), 'Must call backend task complete endpoint')
-  assert.ok(source.includes('Reopen Task'), 'Task card must provide Reopen Task action')
+  // Reopen focus, cancellation and exactly-once submit are behavioral browser assertions.
 })
 
 test('OrchestrateView renders Compact Multi-Coder View for Task Programs with in-task redeployment', () => {
