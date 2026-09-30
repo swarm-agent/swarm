@@ -1826,6 +1826,7 @@ func (r *Runtime) generateManagedImageArtifact(ctx context.Context, scope Worksp
 			capabilityToken = capabilities.CapabilityToken
 		}
 	}
+	if err := r.checkMediaWorkerBudget(scope.Principal.AccountScopeID, scope.SessionID); err != nil { return pebblestore.SessionArtifactVariant{}, err }
 	generated, err := r.imageGeneration.GenerateManagedImage(identity.ContextWithPrincipal(ctx, scope.Principal), imagegen.ManagedGenerateRequest{
 		SelectionID: selectionID, Prompt: prompt, Size: size, Settings: settings,
 		CapabilityToken: capabilityToken, Principal: scope.Principal, Source: source,
@@ -1943,6 +1944,7 @@ func (r *Runtime) generateManagedImageArtifact(ctx context.Context, scope Worksp
 		if recErr := r.sessions.RecordMediaUsage(mediaRec); recErr != nil {
 			return pebblestore.SessionArtifactVariant{}, fmt.Errorf("record image media usage: %w", recErr)
 		}
+		if err := r.releaseMediaWorkerBudget(scope.Principal.AccountScopeID, scope.SessionID); err != nil { return pebblestore.SessionArtifactVariant{}, err }
 	}
 
 	published, err := r.artifactAuthority.Create(ctx, principal, create)
@@ -2593,6 +2595,7 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 		} else if source != nil {
 			op = pebblestore.VideoOperationEdit
 		}
+		if err := r.checkMediaWorkerBudget(scope.Principal.AccountScopeID, scope.SessionID); err != nil { return managedVideoArtifactResult{}, err }
 		generated, err := r.videoGeneration.GenerateManagedVideo(identity.ContextWithPrincipal(ctx, scope.Principal), videogen.ManagedVideoRequest{
 			Operation:       op,
 			Prompt:          prompt,
@@ -2756,6 +2759,7 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 			if recErr := r.sessions.RecordMediaUsage(mediaRec); recErr != nil {
 				return managedVideoArtifactResult{}, fmt.Errorf("record video media usage: %w", recErr)
 			}
+			if err := r.releaseMediaWorkerBudget(scope.Principal.AccountScopeID, scope.SessionID); err != nil { return managedVideoArtifactResult{}, err }
 		}
 
 		published, err := r.artifactAuthority.Create(ctx, principal, create)
@@ -3052,6 +3056,7 @@ func (r *Runtime) generateManagedAudioArtifact(
 			currentPrompt = prompts[i]
 		}
 
+		if err := r.checkMediaWorkerBudget(scope.Principal.AccountScopeID, scope.SessionID); err != nil { return managedAudioArtifactResult{}, err }
 		generated, err := r.audioGeneration.GenerateManagedAudio(identity.ContextWithPrincipal(ctx, scope.Principal), audiogen.ManagedAudioRequest{
 			Prompt:          currentPrompt,
 			DurationSeconds: durationSeconds,
@@ -3179,6 +3184,7 @@ func (r *Runtime) generateManagedAudioArtifact(
 			if recErr := r.sessions.RecordMediaUsage(mediaRec); recErr != nil {
 				return managedAudioArtifactResult{}, fmt.Errorf("record audio media usage: %w", recErr)
 			}
+			if err := r.releaseMediaWorkerBudget(scope.Principal.AccountScopeID, scope.SessionID); err != nil { return managedAudioArtifactResult{}, err }
 		}
 
 		published, err := r.artifactAuthority.Create(ctx, principal, create)

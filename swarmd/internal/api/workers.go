@@ -35,7 +35,7 @@ func workerHTTPError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, pebblestore.ErrWorkerNotFound)
 		return
 	}
-	if errors.Is(err, pebblestore.ErrWorkerConflict) || errors.Is(err, pebblestore.ErrActiveScheduleUpdateRejected) {
+	if errors.Is(err, pebblestore.ErrWorkerConflict) || errors.Is(err, pebblestore.ErrActiveScheduleUpdateRejected) || errors.Is(err, pebblestore.ErrWorkerBudget) {
 		writeError(w, http.StatusConflict, err)
 		return
 	}

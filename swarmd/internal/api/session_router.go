@@ -144,6 +144,9 @@ func (s *Server) invokeConfiguredRouterOnce(ctx context.Context, principal ident
 		return configuredRouterResponse{}, fmt.Errorf("Router provider %q is not available", providerID)
 	}
 
+	if principal.SessionID != "" && s.sessions != nil {
+		if err := s.sessions.Store().CheckWorkerUnmeteredOperation(principal.AccountScopeID, principal.SessionID); err != nil { return configuredRouterResponse{}, err }
+	}
 	authorityContext := identity.ContextWithPrincipal(ctx, principal)
 	response, err := runner.CreateResponse(authorityContext, provideriface.Request{
 		Model:        resolvedModel.Preference.Model,

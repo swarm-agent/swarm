@@ -2085,6 +2085,7 @@ func (e *sessionV3Executor) generateSessionV3CompactTitle(session pebblestore.Se
 	})
 	var streamed strings.Builder
 	var reasoning strings.Builder
+	if err := e.server.sessions.Store().CheckWorkerUnmeteredOperation(principal.AccountScopeID, session.ID); err != nil { return "", err }
 	response, err := runner.CreateResponseStreaming(ctx, req, func(event provideriface.StreamEvent) {
 		switch event.Type {
 		case provideriface.StreamEventOutputTextDelta:
@@ -3452,9 +3453,6 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 			"step_flush_count": sink.AssistantFlushCount(),
 			"progress_error":   sessionV3DiagnosticErrorString(stepErr),
 		})
-		if stepErr != nil {
-			return sessionV3ProviderLoopResult{}, stepErr
-		}
 		planGuardArmed := false
 		usageProviderID := strings.TrimSpace(runner.ID())
 		if usageProviderID == "" {
@@ -3468,6 +3466,10 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 		if usageErr != nil {
 			return sessionV3ProviderLoopResult{}, usageErr
 		}
+		if !errors.Is(providerErr, pebblestore.ErrWorkerBudget) && recorded {
+			if err := e.server.sessions.Store().ReleaseWorkerBudgetReservation(job.Principal.AccountScopeID, job.SessionID); err != nil { return sessionV3ProviderLoopResult{}, err }
+		}
+		if stepErr != nil { return sessionV3ProviderLoopResult{}, stepErr }
 		if recorded {
 			e.recordSessionV3Diagnostic(job, "session.diagnostic.provider.usage", "backend.provider", fmt.Sprintf("step-%d-usage-recorded", step), map[string]any{
 				"step":     step,

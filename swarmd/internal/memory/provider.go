@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"swarm/packages/swarmd/internal/identity"
 	iface "swarm/packages/swarmd/internal/provider/interfaces"
 	store "swarm/packages/swarmd/internal/store/pebble"
 )
@@ -19,6 +20,7 @@ type Runners interface {
 type RuntimeProvider struct {
 	Runners Runners
 	Catalog *store.ModelCatalogStore
+	Sessions *store.SessionStore
 }
 
 func (p *RuntimeProvider) Generate(ctx context.Context, r Request) (Result, error) {
@@ -39,6 +41,10 @@ func (p *RuntimeProvider) Generate(ctx context.Context, r Request) (Result, erro
 		if err != nil {
 			return Result{}, err
 		}
+	}
+	if principal, found := identity.PrincipalFromContext(ctx); found && principal.SessionID != "" {
+		if p.Sessions == nil { return Result{}, errors.New("memory worker budget authority unavailable") }
+		if err := p.Sessions.CheckWorkerUnmeteredOperation(principal.AccountScopeID, principal.SessionID); err != nil { return Result{}, err }
 	}
 	response, err := runner.CreateResponse(ctx, iface.Request{Model: r.Model.Model, Thinking: r.Model.Thinking, ServiceTier: r.Model.ServiceTier, ContextMode: r.Model.ContextMode, ModelCatalog: catalog, Instructions: r.Instructions, Input: []map[string]any{{"role": "user", "content": string(r.Input)}}, ToolChoice: "none", StartNewChain: true, ForceFreshProviderContext: true})
 	if err != nil {

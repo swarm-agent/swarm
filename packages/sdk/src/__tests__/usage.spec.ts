@@ -53,3 +53,30 @@ test('usage repair is bounded explicit maintenance', async () => {
   for (const limit of [0, 101, 1.5, NaN]) await assert.rejects(usage.repair('', limit));
   assert.equal(calls.length, 1);
 });
+
+// Purpose: SDK must carry exact user policy revision, reject invalid limits
+// before HTTP and never imply a policy edit resets billing. Owners workerBudget
+// and setWorkerBudget; transport fixture is the narrowest SDK wire layer.
+test('worker budget preserves revision and rejects invalid policies before transport', async () => {
+  const calls: unknown[] = [];
+  const data = { account_scope_id: 'account', worker_id: 'worker', revision: 1,
+    daily_cost_limit_usd: 1, daily_tokens_limit: 100, updated_at: 1 };
+  const transport = { request: async (path: string, options: unknown) => {
+    calls.push([path, options]); return { data };
+  } } as unknown as SwarmTransport;
+  const usage = new SwarmUsageNamespace(transport);
+  assert.deepEqual(await usage.workerBudget('worker'), data);
+  const policy = { expected_revision: 0, daily_cost_limit_usd: 1, daily_tokens_limit: 100 };
+  assert.deepEqual(await usage.setWorkerBudget('worker', policy), data);
+  assert.deepEqual(calls, [
+    ['/v3/usage/worker-budget?worker_id=worker', { method: 'GET' }],
+    ['/v3/usage/worker-budget?worker_id=worker', { method: 'PUT', body: policy }],
+  ]);
+  for (const value of [-1, NaN, Infinity]) {
+    await assert.rejects(usage.setWorkerBudget('worker', { ...policy, daily_cost_limit_usd: value }));
+  }
+  await assert.rejects(usage.setWorkerBudget('worker', { ...policy, expected_revision: -1 }));
+  await assert.rejects(usage.setWorkerBudget('worker', { ...policy, daily_tokens_limit: 1.5 }));
+  await assert.rejects(usage.workerBudget('../worker'));
+  assert.equal(calls.length, 2);
+});

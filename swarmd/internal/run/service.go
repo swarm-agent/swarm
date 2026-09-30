@@ -1441,7 +1441,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 	if s.providers == nil {
 		return RunResult{}, errors.New("provider registry is not configured")
 	}
-	runnerCtx := ctx
+	runnerCtx := withWorkerBudget(ctx, s.sessions.Store(), acctScope, sessionID)
 	if options.Principal.Valid() {
 		runnerCtx = identity.ContextWithPrincipal(runnerCtx, options.Principal)
 		ctx = runnerCtx
@@ -2490,6 +2490,9 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			}
 		}
 
+		if !errors.Is(err, pebblestore.ErrWorkerBudget) && hasConcreteUsageSnapshot(response.Usage) {
+			if releaseErr := releaseProviderWorkerBudget(runnerCtx); releaseErr != nil { return RunResult{}, releaseErr }
+		}
 		if stopErr := ctx.Err(); stopErr != nil {
 			if runErr != nil {
 				return RunResult{}, runErr
@@ -4411,6 +4414,9 @@ func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, ru
 				return "", fmt.Errorf("record compact turn usage: %w", recErr)
 			}
 		}
+		if !errors.Is(reqErr, pebblestore.ErrWorkerBudget) && hasConcreteUsageSnapshot(oneShotResult.Usage) {
+			if err := releaseProviderWorkerBudget(ctx); err != nil { return "", err }
+		}
 		if reqErr == nil {
 			runCompactionDebugEvent("memory_compaction_one_shot_success", map[string]any{
 				"session_id": strings.TrimSpace(sessionID),
@@ -5375,7 +5381,7 @@ func executeMemoryCompactionRequest(ctx context.Context, runner provideriface.Ru
 	req = compactModel.apply(req)
 	response, reqErr := runMemoryCompactionProviderCall(ctx, runner, req, emitHeartbeat)
 	if reqErr != nil {
-		return memoryCompactionResult{}, reqErr
+		return memoryCompactionResult{Usage: response.Usage}, reqErr
 	}
 	summary := strings.TrimSpace(firstNonEmptyString(response.Text, response.ReasoningSummary))
 	if summaryMaxRunes > 0 {
@@ -5405,6 +5411,7 @@ func runMemoryCompactionProviderCall(ctx context.Context, runner provideriface.R
 // Compact cases. Case-specific callers own instructions and response validation;
 // this boundary owns streaming assembly, cancellation, and optional heartbeats.
 func runCompactProviderCall(ctx context.Context, runner provideriface.Runner, req provideriface.Request, emitHeartbeat func(string)) (provideriface.Response, error) {
+	if err := checkProviderWorkerBudget(ctx, runner, req); err != nil { return provideriface.Response{}, err }
 	resultCh := make(chan struct {
 		response provideriface.Response
 		err      error
@@ -5647,6 +5654,11 @@ func (s *Service) generateAndApplySessionTitle(sessionID, promptContext, stage s
 			s.emitSessionTitleWarning(sessionID, stage, errors.New("session title apply panic"), emit)
 		}
 	}()
+	if err := s.sessions.Store().CheckWorkerUnmeteredOperation(principal.AccountScopeID, sessionID); err != nil {
+		s.emitSessionTitleWarning(sessionID, stage, err, emit)
+		return
+	}
+	principal.SessionID = sessionID
 	title, err := s.generateMemorySessionTitle(promptContext, stage, minWords, maxWords, basePreference, memoryProfile, principal)
 	if err != nil {
 		s.emitSessionTitleWarning(sessionID, stage, err, emit)
@@ -5735,6 +5747,9 @@ func (s *Service) generateMemorySessionTitle(promptContext, stage string, minWor
 	bgCtx := context.Background()
 	if principal.Valid() {
 		bgCtx = identity.ContextWithPrincipal(bgCtx, principal)
+	}
+	if principal.SessionID != "" && s.sessions != nil {
+		bgCtx = withWorkerBudget(bgCtx, s.sessions.Store(), principal.AccountScopeID, principal.SessionID)
 	}
 	ctx, cancel := context.WithTimeout(bgCtx, sessionTitleGenerationTimeout)
 	defer cancel()

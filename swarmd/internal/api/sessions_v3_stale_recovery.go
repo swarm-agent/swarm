@@ -200,6 +200,7 @@ func (e *sessionV3Executor) updateStaleRecoveryPhase(job sessionV3ExecutorJob, o
 }
 
 func (e *sessionV3Executor) runStaleSupervisedProviderAttempt(ctx context.Context, job sessionV3ExecutorJob, runner provideriface.Runner, req provideriface.Request, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
+	if err := e.server.sessions.Store().CheckWorkerSessionBudget(job.Principal.AccountScopeID, job.SessionID, runner.ID(), req.Model); err != nil { return provideriface.Response{}, err }
 	if job.activity == nil {
 		return runner.CreateResponseStreaming(ctx, req, onEvent)
 	}
@@ -232,7 +233,8 @@ func (e *sessionV3Executor) runStaleSupervisedProviderAttempt(ctx context.Contex
 		case <-ctx.Done():
 			cancel()
 			select {
-			case <-resultCh:
+			case completed := <-resultCh:
+				return completed.response, ctx.Err()
 			case <-time.After(30 * time.Second):
 			}
 			return provideriface.Response{}, ctx.Err()
@@ -267,8 +269,8 @@ func (e *sessionV3Executor) runStaleSupervisedProviderAttempt(ctx context.Contex
 			}
 			cancel()
 			select {
-			case <-resultCh:
-				return provideriface.Response{}, fmt.Errorf("%w: epoch %s owner %s", errSessionV3StaleProviderAttempt, job.EpochID, ownerRunID)
+			case completed := <-resultCh:
+				return completed.response, fmt.Errorf("%w: epoch %s owner %s", errSessionV3StaleProviderAttempt, job.EpochID, ownerRunID)
 			case <-time.After(30 * time.Second):
 				_, _ = e.server.sessions.FinishExecutionEpochRecovery(job.SessionID, job.EpochID, ownerRunID, pebblestore.ExecutionEpochRecoveryStatusFailed, "expired provider attempt did not terminate", time.Now().UnixMilli())
 				return provideriface.Response{}, errors.New("stale provider attempt did not terminate before recovery")

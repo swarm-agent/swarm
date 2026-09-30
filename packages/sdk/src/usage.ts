@@ -42,6 +42,34 @@ export interface UsageScopeRepairResult {
 export class SwarmUsageNamespace {
   constructor(private readonly transport: SwarmTransport) {}
 
+  async workerBudget(workerId: string): Promise<WorkerBudgetPolicy> {
+    return this.requestWorkerBudget(workerId);
+  }
+
+  /** User-only revision-guarded policy. Zero unsets a cap, never usage. In-flight
+   * provider work may overshoot; this is not an invoice-hard spending guarantee. */
+  async setWorkerBudget(workerId: string, policy: WorkerBudgetUpdate): Promise<WorkerBudgetPolicy> {
+    if (!policy || !Number.isSafeInteger(policy.expected_revision) || policy.expected_revision < 0 ||
+        !Number.isFinite(policy.daily_cost_limit_usd) || policy.daily_cost_limit_usd < 0 ||
+        !Number.isSafeInteger(policy.daily_tokens_limit) || policy.daily_tokens_limit < 0) {
+      throw new SwarmValidationError('Valid worker budget policy is required');
+    }
+    return this.requestWorkerBudget(workerId, policy);
+  }
+
+  private async requestWorkerBudget(workerId: string, policy?: WorkerBudgetUpdate): Promise<WorkerBudgetPolicy> {
+    if (typeof workerId !== 'string' || !/^[a-zA-Z0-9_.-]{3,128}$/.test(workerId)) {
+      throw new SwarmValidationError('Valid worker identity is required');
+    }
+    const result = await this.transport.request<WorkerBudgetPolicy>(
+      `/v3/usage/worker-budget?${new URLSearchParams({ worker_id: workerId })}`,
+      policy ? { method: 'PUT', body: policy } : { method: 'GET' });
+    if (!result.data || result.data.worker_id !== workerId || !Number.isSafeInteger(result.data.revision)) {
+      throw new SwarmValidationError('Malformed worker budget response');
+    }
+    return result.data;
+  }
+
   /** Explicit bounded maintenance; no account charges are replayed. A finished
    * cursor does not certify unavailable historic lineage or receipt indexes. */
   async repair(cursor = '', limit = 100): Promise<UsageScopeRepairResult> {
@@ -91,4 +119,19 @@ export class SwarmUsageNamespace {
  * session subscription or recurring refresh is needed for scope invalidations. */
 export interface UsageScopeUpdatedPayload {
   scope_totals: UsageScopeTotal[];
+}
+
+export interface WorkerBudgetUpdate {
+  expected_revision: number;
+  daily_cost_limit_usd: number;
+  daily_tokens_limit: number;
+}
+
+export interface WorkerBudgetPolicy {
+  account_scope_id: string;
+  worker_id: string;
+  revision: number;
+  daily_cost_limit_usd: number;
+  daily_tokens_limit: number;
+  updated_at: number;
 }

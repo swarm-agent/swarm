@@ -89,6 +89,7 @@ func (s *Service) RunManualCompaction(ctx context.Context, sessionID string, inp
 	if principal.AccountScopeID != sessionSnapshot.AccountScopeID || principal.UserID != sessionSnapshot.UserID {
 		return ManualCompactionResult{}, errors.New("compact principal does not own session")
 	}
+	ctx = withWorkerBudget(ctx, s.sessions.Store(), principal.AccountScopeID, sessionID)
 	if s.permissions != nil {
 		if _, borrowed := executioncapacity.ActiveSessionLeaseFromContext(ctx, principal.AccountScopeID, sessionID); !borrowed {
 			kind := executioncapacity.ExecutionKindOrdinary

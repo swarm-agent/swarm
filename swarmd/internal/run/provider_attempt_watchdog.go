@@ -68,12 +68,14 @@ func runProviderAttempt(
 		ctx = context.Background()
 	}
 	if timeout <= 0 {
+		if err := checkProviderWorkerBudget(ctx, runner, req); err != nil { return provideriface.Response{}, err }
 		return runner.CreateResponseStreaming(ctx, req, onEvent)
 	}
 
 	var acceptedGeneration atomic.Uint64
 	observer := providerAttemptObserverFromContext(ctx)
 	for attempt := 0; attempt <= providerAttemptRetryLimit; attempt++ {
+		if err := checkProviderWorkerBudget(ctx, runner, req); err != nil { return provideriface.Response{}, err }
 		generation := acceptedGeneration.Add(1)
 		attemptCtx, cancelAttempt := context.WithCancel(ctx)
 		activity := make(chan struct{}, 1)
@@ -140,7 +142,9 @@ func runProviderAttempt(
 				acceptedGeneration.CompareAndSwap(generation, generation+1)
 				cancelAttempt()
 				select {
-				case <-resultCh:
+				case completed := <-resultCh:
+					timer.Stop()
+					return completed.response, ctx.Err()
 				case <-time.After(providerAttemptTerminationTimeout):
 				}
 				timer.Stop()
@@ -158,9 +162,14 @@ func runProviderAttempt(
 		if !timedOut {
 			if err := ctx.Err(); err != nil {
 				acceptedGeneration.CompareAndSwap(generation, generation+1)
-				return provideriface.Response{}, err
+				return result.response, err
 			}
 			return result.response, result.err
+		}
+		if budget, ok := ctx.Value(workerBudgetContextKey{}).(workerBudgetContext); ok {
+			if budgetErr := budget.repository.CheckWorkerUnmeteredOperation(budget.account, budget.session); budgetErr != nil {
+				return result.response, fmt.Errorf("%w: capped worker requires receipt settlement before retry", errProviderAttemptActivityTimeout)
+			}
 		}
 		if attempt == providerAttemptRetryLimit {
 			terminalErr := fmt.Errorf("%w after %d attempts", errProviderAttemptActivityTimeout, attempt+1)
@@ -170,7 +179,7 @@ func runProviderAttempt(
 			if observer != nil {
 				observer.AttemptFailed(attempt+1, terminalErr)
 			}
-			return provideriface.Response{}, terminalErr
+			return result.response, terminalErr
 		}
 		if observer != nil {
 			observer.AttemptRetrying(attempt + 2)
