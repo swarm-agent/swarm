@@ -168,13 +168,15 @@ test('durable task updates are card-scoped, coalesced and safe across session re
   assert.equal(state.project.stale, false)
   reads[2].resolve({ task: { ...tasks[0], revision: 2, session_id: 'replacement', title: 'Updated' } })
   await flush()
-  assert.equal(state.project.tasks[0].sessionId, 'replacement')
-  assert.equal(state.project.tasks[0].title, 'Updated')
+  assert.equal(state.project.tasks[0].sessionId, 'one', 'superseded read is not published')
+  assert.equal(state.project.tasks[0].gitStatus, 'stale')
   assert.equal(state.project.tasks[1], unrelated)
   assert.equal(reads.length, 4) // One completion-coalesced trailing read.
-  reads[3].resolve({ task: { ...tasks[0], revision: 1, is_integrated: true } })
+  reads[3].resolve({ task: { ...tasks[0], revision: 2, session_id: 'replacement', title: 'Updated' } })
   await flush()
   assert.equal(state.project.tasks[0].revision, 2)
+  assert.equal(state.project.tasks[0].sessionId, 'replacement')
+  assert.equal(state.project.tasks[0].title, 'Updated')
   assert.equal(state.project.tasks[0].isIntegrated, false)
   emit('queued') // Undeployed cards must also receive durable updates.
   reads[4].resolve({ task: { ...tasks[2], revision: 2, session_id: 'deployed', status: 'in_progress' } })

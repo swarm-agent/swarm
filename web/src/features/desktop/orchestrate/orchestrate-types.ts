@@ -368,6 +368,7 @@ export interface RunningTask {
   associatedSessionIds?: string[]
 
   // Worktree & Outcome Tracking Fields
+  baseCommit?: string
   workspacePath?: string
   sourceWorkspacePath?: string
   sourceWorkspaceId?: string

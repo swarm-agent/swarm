@@ -3,6 +3,7 @@ import { requestJson } from '../../../app/api'
 import type { RunningTask, ProjectTaskMediaRef } from '../orchestrate/orchestrate-types'
 import {
   mapBackendTask,
+  taskGitIdentity,
   mapBackendTasks,
   type DesktopProjectState,
   type DesktopProjectsAction,
@@ -52,7 +53,8 @@ export class DesktopProjectsRuntime {
   private readonly inFlight = new Map<string, Promise<void>>()
   private readonly deps: DesktopProjectsRuntimeDeps
   private readonly taskQueue = new Map<string, { projectId: string; task: RunningTask; epoch: number; authoritative: boolean }>()
-  private readonly taskReads = new Set<string>()
+  private readonly taskReads = new Map<string, { identity: string; demand: unknown; epoch: number }>()
+  private readonly taskVersions = new Map<string, number>()
   private taskEpoch = 0
   private unsubscribeCache: (() => void) | null = null
 
@@ -68,14 +70,18 @@ export class DesktopProjectsRuntime {
         if (!task.sessionId) continue
         const owners = mutation ? repositoryOwnerIds(task.sessionId, [], mutation.nextState) : new Set([task.sessionId])
         for (const id of extractTaskSessionIds(task)) owners.add(id)
-        if (!mutation || repositoryEventInvalidates(mutation.action, owners) || taskPlanEventInvalidates(mutation.action, owners)) this.queueTask(projectId, task)
+        if (!mutation || repositoryEventInvalidates(mutation.action, owners) || taskPlanEventInvalidates(mutation.action, owners)) this.queueTask(projectId, task, false, true)
       }
     }
   }
 
-  private queueTask(projectId: string, task: RunningTask, authoritative = false): void {
+  private queueTask(projectId: string, task: RunningTask, authoritative = false, invalidateGit = false): void {
     if ((!task.sessionId && !authoritative) || !this.demand.has(projectId)) return
     const key = JSON.stringify([projectId, task.id])
+    if (invalidateGit) {
+      this.taskVersions.set(key, (this.taskVersions.get(key) ?? 0) + 1)
+      this.deps.dispatch({ type: 'projects.invalidateGit', projectId, taskId: task.id })
+    }
     authoritative ||= this.taskQueue.get(key)?.authoritative ?? false
     this.taskQueue.set(key, { projectId, task, epoch: this.taskEpoch, authoritative })
     this.drainTasks()
@@ -90,28 +96,38 @@ export class DesktopProjectsRuntime {
       const currentTask = this.deps.getState()[entry.projectId]?.tasks.find(task => task.id === entry.task.id)
       if (!currentTask || (!entry.authoritative && currentTask.sessionId !== entry.task.sessionId)) continue
       entry.task = currentTask
-      this.taskReads.add(key)
+      this.taskReads.set(key, { identity: taskGitIdentity(currentTask), demand: this.demand.get(entry.projectId), epoch: this.taskEpoch })
       const demand = this.demand.get(entry.projectId)
-      const generation = this.deps.getState()[entry.projectId]?.generation
-      const apply = (update: (task: RunningTask) => RunningTask | undefined) => {
-        if (entry.epoch !== this.taskEpoch || this.demand.get(entry.projectId) !== demand || this.deps.getState()[entry.projectId]?.generation !== generation) return
-        this.setOptimisticTasks(entry.projectId, tasks => tasks.flatMap(task => {
-          if (task.id !== entry.task.id || task.sessionId !== entry.task.sessionId || task.revision !== entry.task.revision) return [task]
-          const updated = update(task)
-          return updated ? [updated] : []
-        }))
+      const version = this.taskVersions.get(key)
+      const identity = taskGitIdentity(entry.task)
+      const apply = (update: (task: RunningTask) => RunningTask | undefined, inspected = false) => {
+        if (entry.epoch !== this.taskEpoch || this.demand.get(entry.projectId) !== demand || this.taskVersions.get(key) !== version) return
+        const current = this.deps.getState()[entry.projectId]?.tasks.find(task => task.id === entry.task.id)
+        if (!current || taskGitIdentity(current) !== identity) return
+        this.deps.dispatch({ type: 'projects.updateTasks', projectId: entry.projectId,
+          inspectedTaskId: inspected ? entry.task.id : undefined,
+          tasks: tasks => tasks.flatMap(task => {
+            if (task.id !== entry.task.id || taskGitIdentity(task) !== identity) return [task]
+            const updated = update(task)
+            return updated ? [updated] : []
+          }),
+        })
       }
       void this.deps.fetchTask(entry.projectId, entry.task.id).then(response => {
         if (!response.task || response.task.id !== entry.task.id ||
           (!entry.authoritative && response.task.session_id !== entry.task.sessionId) ||
-          (response.task.revision ?? 0) < (entry.task.revision ?? 0)) return
+          (response.task.revision ?? 0) < (entry.task.revision ?? 0)) {
+          apply(task => ({ ...task, gitStatus: 'unknown', isIntegrated: false, unintegratedCommits: 0,
+            syncWarning: 'Task status response did not match the current execution' }), true)
+          return
+        }
         if (entry.authoritative && response.task.archived) {
           apply(() => undefined)
           return
         }
-        apply(() => mapBackendTask(response.task))
+        apply(() => mapBackendTask(response.task), true)
       }).catch(error => {
-        apply(task => ({ ...task, gitStatus: 'unknown', isIntegrated: false, syncWarning: error instanceof Error ? error.message : 'Task status refresh failed' }))
+        apply(task => ({ ...task, gitStatus: 'unknown', isIntegrated: false, unintegratedCommits: 0, syncWarning: error instanceof Error ? error.message : 'Task status refresh failed' }), true)
       }).finally(() => {
         this.taskReads.delete(key)
         this.drainTasks()
@@ -145,7 +161,7 @@ export class DesktopProjectsRuntime {
     else this.demand.set(projectId, { projectId, count: 1 })
     let released = false
     return {
-      ready: this.refresh(projectId),
+      ready: current ? (this.inFlight.get(projectId) ?? Promise.resolve()) : this.refresh(projectId, false),
       release: () => {
         if (released) return
         released = true
@@ -153,6 +169,7 @@ export class DesktopProjectsRuntime {
         if (entry && --entry.count === 0) {
           this.demand.delete(projectId)
           for (const [key, entry] of this.taskQueue) if (entry.projectId === projectId) this.taskQueue.delete(key)
+          for (const key of this.taskVersions.keys()) if (JSON.parse(key)[0] === projectId) this.taskVersions.delete(key)
           this.inFlight.delete(projectId)
           this.deps.dispatch({ type: 'projects.evict', projectId })
           if (this.demand.size === 0) {
@@ -168,6 +185,7 @@ export class DesktopProjectsRuntime {
     if (!projectId) return
     this.demand.delete(projectId)
     for (const [key, entry] of this.taskQueue) if (entry.projectId === projectId) this.taskQueue.delete(key)
+    for (const key of this.taskVersions.keys()) if (JSON.parse(key)[0] === projectId) this.taskVersions.delete(key)
     this.inFlight.delete(projectId)
     this.deps.dispatch({ type: 'projects.evict', projectId })
     if (this.demand.size === 0) {
@@ -179,14 +197,18 @@ export class DesktopProjectsRuntime {
   reset(): void {
     this.taskEpoch++
     this.taskQueue.clear()
+    this.taskVersions.clear()
     this.demand.clear()
     this.inFlight.clear()
     this.unsubscribeCache?.()
     this.unsubscribeCache = null
   }
 
-  refresh(projectId: string): Promise<void> {
+  refresh(projectId: string, inspectGit = true): Promise<void> {
     if (!projectId) return Promise.resolve()
+    if (inspectGit) {
+      for (const task of this.deps.getState()[projectId]?.tasks ?? []) this.queueTask(projectId, task, false, true)
+    }
     const pending = this.inFlight.get(projectId)
     if (pending) return pending
 
@@ -212,7 +234,19 @@ export class DesktopProjectsRuntime {
           media,
         })
         if (this.deps.getState()[projectId]?.generation === generation) {
-          for (const task of backendTasks) this.queueTask(projectId, task)
+          const project = this.deps.getState()[projectId]
+          for (const task of project?.tasks ?? []) {
+            if (project?.gitObservations?.[task.id] !== taskGitIdentity(task)) {
+              const key = JSON.stringify([projectId, task.id])
+              // An unchanged card already being inspected needs no second read.
+              const read = this.taskReads.get(key)
+              const queued = this.taskQueue.get(key)
+              if (queued ? taskGitIdentity(queued.task) !== taskGitIdentity(task) :
+                (!read || read.identity !== taskGitIdentity(task) || read.demand !== this.demand.get(projectId) || read.epoch !== this.taskEpoch)) {
+                this.queueTask(projectId, task)
+              }
+            }
+          }
         }
       })
       .catch((error: unknown) => {
@@ -231,7 +265,7 @@ export class DesktopProjectsRuntime {
         const current = this.deps.getState()[projectId]
         // Coalesce trailing refresh if generation changed during in-flight fetch
         if (this.demand.has(projectId) && (!current || current.generation !== generation)) {
-          void this.refresh(projectId)
+          void this.refresh(projectId, false)
         }
       })
 
@@ -243,7 +277,7 @@ export class DesktopProjectsRuntime {
     this.deps.dispatch({ type: 'projects.invalidate', projectId })
     for (const { projectId: id } of this.demand.values()) {
       if (!projectId || id === projectId) {
-        void this.refresh(id)
+        void this.refresh(id, false)
       }
     }
   }
@@ -258,8 +292,8 @@ export class DesktopProjectsRuntime {
       // Durable task updates already identify their card. Do not reload the board,
       // media or unrelated Git inspections. Collection/membership changes and
       // older/unknown frames still use the canonical snapshot repair below.
-      if (projectId && task && change?.action === 'task_updated' && !this.inFlight.has(projectId)) {
-        this.queueTask(projectId, task, true)
+      if (projectId && task && change?.action === 'task_updated') {
+        this.queueTask(projectId, task, true, true)
         return
       }
       this.invalidate(projectId)
@@ -269,6 +303,9 @@ export class DesktopProjectsRuntime {
       frame.kind === 'rehydrate.required' ||
       frame.kind === 'auth.credentials.updated'
     ) {
+      for (const { projectId: id } of this.demand.values()) {
+        for (const task of this.deps.getState()[id]?.tasks ?? []) this.queueTask(id, task, false, true)
+      }
       this.invalidate()
       for (const listener of this.projectUpdateListeners) listener()
     }

@@ -3,6 +3,8 @@ import type { RunningTask, ProjectTaskMediaRef, ProjectTaskPlanBinding } from '.
 export interface DesktopProjectState {
   projectId: string
   tasks: RunningTask[]
+  // Detail-read provenance, owned by the canonical cache (never the collection).
+  gitObservations?: Record<string, string>
   media: ProjectTaskMediaRef[]
   loading: boolean
   stale: boolean
@@ -35,12 +37,14 @@ export type DesktopProjectsAction =
       type: 'projects.updateTasks'
       projectId: string
       tasks: RunningTask[] | ((prev: RunningTask[]) => RunningTask[])
+      inspectedTaskId?: string
     }
   | {
       type: 'projects.updateMedia'
       projectId: string
       media: ProjectTaskMediaRef[] | ((prev: ProjectTaskMediaRef[]) => ProjectTaskMediaRef[])
     }
+  | { type: 'projects.invalidateGit'; projectId: string; taskId?: string }
   | { type: 'projects.invalidate'; projectId?: string }
   | { type: 'projects.evict'; projectId: string }
 
@@ -69,6 +73,17 @@ export function normalizePlanBinding(raw: any): ProjectTaskPlanBinding | undefin
   }
 }
 
+// Revision plus execution/repository identity bounds reuse of a detail observation.
+// Git HEAD changes arrive through durable invalidations, not collection freshness.
+export function taskGitIdentity(task: RunningTask): string {
+  return JSON.stringify([task.id, task.revision, task.sessionId, task.activeAttemptId,
+    ['completed', 'needs_review'].includes(task.status) ? 'review' : task.status,
+    task.workspacePath, task.sourceWorkspacePath, task.sourceWorkspaceId,
+    task.sourceWorkspaceGeneration, task.sourceWorkspaceProvenance,
+    task.worktreeBranch, task.baseBranch, task.baseCommit, task.integration, task.taskProgramStatus,
+    task.attempts?.map(attempt => [attempt.id, attempt.session_id, attempt.integration])])
+}
+
 // A late list/read response must not undo a newer durable task revision.
 function retainNewerTasks(incoming: RunningTask[], previous: RunningTask[]): RunningTask[] {
   const byId = new Map(previous.map(task => [task.id, task]))
@@ -95,6 +110,7 @@ export function mapBackendTask(t: any): RunningTask {
     worktreeBranch: t.worktree_branch,
     worktreeName: t.worktree_name || (t.worktree_branch ? t.worktree_branch.replace(/^agent\//, '').replace(/^worktree\//, '') : undefined),
     baseBranch: t.base_branch || 'main',
+    baseCommit: t.base_commit,
     unintegratedCommits: t.unintegrated_commits ?? 0,
     behindCommits: t.behind_commits ?? 0,
     gitStatus: t.git_status,
@@ -227,6 +243,7 @@ export function reduceDesktopProjectsState(
         projectId: action.projectId,
         tasks: previous?.tasks ?? [],
         media: previous?.media ?? [],
+        gitObservations: previous?.gitObservations,
         generation: previous?.generation ?? 0,
         requestId: action.requestId,
         loading: true,
@@ -235,14 +252,30 @@ export function reduceDesktopProjectsState(
       },
     }
   }
+  if (action.type === 'projects.invalidateGit') {
+    if (!previous) return state
+    const gitObservations = { ...previous.gitObservations }
+    const tasks = previous.tasks.map(task => {
+      if (action.taskId && task.id !== action.taskId) return task
+      delete gitObservations[task.id]
+      return { ...task, gitStatus: 'stale' as const }
+    })
+    return { ...state, [action.projectId]: { ...previous, tasks, gitObservations } }
+  }
   if (action.type === 'projects.updateTasks') {
     if (!previous) return state
     const newTasks = typeof action.tasks === 'function' ? action.tasks(previous.tasks) : action.tasks
+    const tasks = retainNewerTasks(newTasks, previous.tasks)
+    const identities = new Map(tasks.map(task => [task.id, taskGitIdentity(task)]))
+    const gitObservations = Object.fromEntries(Object.entries(previous.gitObservations ?? {}).filter(([id, identity]) => identities.get(id) === identity))
+    const inspected = action.inspectedTaskId && tasks.find(task => task.id === action.inspectedTaskId)
+    if (inspected) gitObservations[inspected.id] = taskGitIdentity(inspected)
     return {
       ...state,
       [action.projectId]: {
         ...previous,
-        tasks: retainNewerTasks(newTasks, previous.tasks),
+        tasks,
+        gitObservations,
       },
     }
   }
@@ -270,11 +303,26 @@ export function reduceDesktopProjectsState(
     }
   }
   if (action.type === 'projects.loadSuccess') {
+    const incoming = retainNewerTasks(action.tasks, previous.tasks)
+    const priorById = new Map(previous.tasks.map(task => [task.id, task]))
+    const identities = new Map(incoming.map(task => [task.id, taskGitIdentity(task)]))
     return {
       ...state,
       [action.projectId]: {
         ...previous,
-        tasks: retainNewerTasks(action.tasks, previous.tasks),
+        tasks: incoming.map(task => {
+          const prior = priorById.get(task.id)
+          if (!prior || previous.gitObservations?.[task.id] !== taskGitIdentity(task)) return task
+          // Collection GET deliberately does not inspect Git. Preserve only the
+          // inspected projection, while accepting all other live task fields.
+          return { ...task, gitStatus: prior.gitStatus, isIntegrated: prior.isIntegrated,
+            unintegratedCommits: prior.unintegratedCommits, behindCommits: prior.behindCommits,
+            isDirty: prior.isDirty, dirtyCount: prior.dirtyCount, diffSummary: prior.diffSummary,
+            syncWarning: prior.syncWarning, actionNeeded: prior.actionNeeded,
+            status: task.status === 'needs_review' && prior.isIntegrated ? prior.status : task.status }
+        }),
+        gitObservations: Object.fromEntries(Object.entries(previous.gitObservations ?? {}).filter(([id, identity]) =>
+          identities.get(id) === identity)),
         media: action.media,
         loading: false,
         stale: false,
