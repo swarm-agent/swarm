@@ -19,6 +19,8 @@ const integrationTask = {
 // layout; injected promises prove UI ordering, not backend Git integration.
 // Actions live below the real disclosure control; explicitly reopen after remount
 // so operation persistence is proved independently of local disclosure state.
+// Pending lineage and actions must be absent when collapsed and confined below
+// the controlling toggle when expanded; the compact commit count remains stable.
 // The operation's explicit accessible name must exclude its hidden retry-width
 // reserve and live status semantics while preserving the same fixed geometry.
 test('integration card stays stable through pending, failure, retry and stale success snapshots', { timeout: 60000 }, async () => {
@@ -56,6 +58,7 @@ test('integration card stays stable through pending, failure, retry and stale su
       await page.getByTestId('orchestrate-task-card').waitFor()
       assert.equal(await page.getByTestId('toggle-task-details-btn').getAttribute('aria-expanded'), 'false')
       assert.equal(await initial.count(), 0, 'integration is a detail action, not a collapsed summary action')
+      assert.equal(await bar.count(), 0, 'pending worktree row is absent while collapsed')
       await page.getByTestId('toggle-task-details-btn').click()
       await initial.waitFor()
     } catch (error) {
@@ -65,10 +68,19 @@ test('integration card stays stable through pending, failure, retry and stale su
     assert.equal(await initial.isEnabled(), true)
     assert.equal(await initial.getAttribute('aria-label'), 'Integrate into dev')
     assert.equal(await initial.locator('[aria-hidden="true"]').first().getAttribute('aria-hidden'), 'true')
-    // Compact summary still owns lineage/count; the expanded action row must not duplicate it.
+    // The compact count persists; full pending lineage and its action grow only below the toggle.
     assert.equal(await page.getByTestId('orchestrate-task-card').getAttribute('data-expanded'), 'true')
     assert.match(await page.getByTestId('task-card-summary').innerText(), /2 unintegrated commits/)
-    assert.doesNotMatch(await bar.innerText(), /agent\/a|Pending worktree|2 commits/)
+    assert.match(await bar.innerText(), /Pending worktree ready to integrate/)
+    assert.match(await bar.innerText(), /agent\/a\s*→\s*dev\s*\(2 commits\)/)
+    assert.equal(await bar.getByRole('button', { name: 'Integrate into dev', exact: true }).count(), 1)
+    assert.equal(await bar.evaluate(node => {
+      const toggle = document.querySelector('[data-testid="toggle-task-details-btn"]')!
+      const details = document.getElementById(toggle.getAttribute('aria-controls')!)!
+      return details.contains(node)
+        && !!(toggle.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_FOLLOWING)
+        && node.getBoundingClientRect().top >= toggle.getBoundingClientRect().bottom
+    }), true, 'pending lineage/count and action belong exclusively to details below the controlling toggle')
     assert.equal(await page.getByTestId('orchestrate-task-card').evaluate(node => node.getAnimations({ subtree: true }).length), 0)
     const bounds = await initial.boundingBox()
     assert.ok(bounds, 'initial operation has measurable dimensions')
