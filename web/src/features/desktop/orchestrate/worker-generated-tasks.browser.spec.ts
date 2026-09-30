@@ -94,7 +94,7 @@ test('project task list renders generated tasks, exact worker links and source f
     // active row persists, removes it from the board, and makes it available in the modal.
     await page.getByRole('checkbox', { name: 'Select task Manual review' }).check()
     assert.equal(await page.getByText(/1 selected of \d+ matching tasks in this project/).count(), 1)
-    await page.getByRole('button', { name: 'Archive selected' }).click()
+    await page.getByRole('button', { name: 'Archive', exact: true }).click()
     await page.getByText('1 archived, 0 failed.').waitFor()
     await page.evaluate(() => (window as any).refreshTasks())
     await page.getByText('Manual review', { exact: true }).waitFor({ state: 'hidden' })

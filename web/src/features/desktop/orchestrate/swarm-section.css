@@ -191,3 +191,7 @@
   border-color: transparent;
   color: var(--swarm-text-muted);
 }
+
+/* The task-list header is the sole filled primary action in this view. */
+.swarm-section .swarm-task-list-new-task { background: var(--swarm-accent); color: var(--swarm-accent-text); border: 1px solid var(--swarm-accent); }
+.swarm-section .swarm-task-list-new-task:hover { background: var(--swarm-accent-hover); }

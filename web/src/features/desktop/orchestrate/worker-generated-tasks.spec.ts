@@ -193,9 +193,10 @@ test('OrchestrateView structural invariants: no worker overview panels, unified 
   assert.ok(!source.includes('Manage Fleet in Workers Hub'), 'Manage Fleet in Workers Hub ticker link must NOT be rendered')
 
   // Invariant B: All tasks / Worker tasks filter buttons exist with testids
-  assert.ok(source.includes('data-testid="filter-all-tasks"'), 'Must provide All tasks filter button')
-  assert.ok(source.includes('data-testid="filter-worker-tasks"'), 'Must provide Worker tasks filter button')
-  assert.ok(source.includes('Worker tasks ('), 'Must show Worker tasks filter button with count')
+  const toolbar = fs.readFileSync(path.join(__dirname, 'task-list-toolbar.tsx'), 'utf8')
+  assert.ok(toolbar.includes("'filter-all-tasks'"), 'Must provide All scope filter button')
+  assert.ok(toolbar.includes("'filter-worker-tasks'"), 'Must provide Workers scope filter button')
+  assert.ok(toolbar.includes("label: 'Workers'"), 'Scope labels omit counts; status chips own counts')
   assert.ok(source.includes('taskSourceFilter'), 'Must maintain taskSourceFilter state')
 
   // Invariant C: Filter predicate is based on durable worker_id, not generic workerName
