@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -109,12 +110,22 @@ func TestResidentSearchToolsWithHomeAncestor(t *testing.T) {
 				t.Fatalf("expected one scoped result: %s", output)
 			}
 			paths := searchDecodedResultPaths(results)
-			// Single-directory results are relative to the requested directory.
-			if len(paths) != 1 || paths[0] != "needle.txt" {
+			// Native content paths are index-relative; find normalizes paths
+			// relative to the requested directory (or exact file's parent).
+			wantPath := "needle.txt"
+			if toolName == "search" {
+				wantPath = "src/needle.txt"
+			}
+			if len(paths) != 1 || paths[0] != wantPath {
 				t.Fatalf("unexpected scoped paths %v: %s", paths, output)
 			}
-			if payload["path"] != subdir || payload["total_files"] != float64(2) {
-				t.Fatalf("index widened beyond the two project files: %s", output)
+			// total_files describes the resident index corpus, not the
+			// narrowed target; content metrics separately prove prefiltering.
+			if payload["path"] != subdir || payload["total_files"] != float64(2) || payload["count"] != float64(1) {
+				t.Fatalf("unexpected target, indexed corpus, or result count: %s", output)
+			}
+			if toolName == "search" && (payload["filtered_file_count"] != float64(1) || payload["total_files_searched"] != float64(1)) {
+				t.Fatalf("content search did not filter the project corpus to src: %s", output)
 			}
 		})
 	}
@@ -169,8 +180,21 @@ func TestResidentSearchToolsWithHomeAncestor(t *testing.T) {
 				t.Fatalf("home-only index escaped requested directory: %s", output)
 			}
 			paths := searchDecodedResultPaths(results)
-			if len(paths) != want || !searchPathContains(paths, "needle.txt") || (want == 2 && !searchPathContains(paths, "needle-sibling.txt")) {
-				t.Fatalf("missing requested fixture paths %v: %s", paths, output)
+			wantPaths := []string{"needle.txt"}
+			if target == project {
+				wantPaths = []string{"needle-sibling.txt", "src/needle.txt"}
+			}
+			sort.Strings(paths)
+			if len(paths) != len(wantPaths) {
+				t.Fatalf("unexpected fixture paths %v, want %v: %s", paths, wantPaths, output)
+			}
+			for i, wantPath := range wantPaths {
+				if paths[i] != wantPath {
+					t.Fatalf("unexpected fixture paths %v, want %v: %s", paths, wantPaths, output)
+				}
+			}
+			if payload["count"] != float64(want) || (toolName == "search" && (payload["filtered_file_count"] != float64(want) || payload["total_files_searched"] != float64(want))) {
+				t.Fatalf("unexpected scoped result or filtered content count: %s", output)
 			}
 			if strings.Contains(output, "needle-outside.txt") || (want == 1 && strings.Contains(output, "needle-sibling.txt")) {
 				t.Fatalf("home-only results escaped target: %s", output)
