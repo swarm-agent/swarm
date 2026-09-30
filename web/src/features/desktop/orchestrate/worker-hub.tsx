@@ -80,7 +80,7 @@ export function WorkerDetail({ accountScopeId, workerId, workspaceSlug, onSelect
       {worker.lifecycle_state !== 'pending' && worker.model_profile?.resolution_warning && <p role="alert" className="text-xs text-amber-300">{worker.model_profile.resolution_warning}</p>}
         {readOnly && <p>Migrated snapshot · read-only</p>}
         <section aria-label="Approved workspaces" className="space-y-1">{proposalWorkspaces({ ...worker, proposed_bindings: worker.lifecycle_state === 'pending' ? worker.proposed_bindings : undefined }, accountScopeId).map(target => <p key={target.role} className="break-words">{target.label} · {target.status}</p>)}</section>
-        {!readOnly && <WorkerSettingsReview key={`${worker.id}:${worker.revision}`} worker={worker} accountScopeId={accountScopeId} disabled={!!detail?.stale || !!detail?.error} />}
+        {!readOnly && <WorkerSettingsReview key={worker.id} worker={worker} accountScopeId={accountScopeId} disabled={!!detail?.stale || !!detail?.error} />}
         {(worker.lifecycle_state === 'pending' || worker.pending_review) && <PendingWorkerCard showModelControls={false} key={`${worker.id}:${worker.revision}`} worker={worker} accountScopeId={accountScopeId} workspaceSlug={workspaceSlug} stale={!!detail?.stale || !!detail?.error} mutationError={detail?.mutationError} />}
       </header>
       {worker.lifecycle_state !== 'pending' && <>
