@@ -441,7 +441,12 @@ func (s *Service) executeCreateOrProposePendingWorker(id string, args map[string
 		return workerProposalToolOutput(updated)
 	}
 
+	workerModel, err := s.ResolveWorkerModelProfile(current.AccountScopeID, nil)
+	if err != nil {
+		return "", err
+	}
 	createReq := store.CreateWorkerRequest{
+		ModelProfile:          workerModel,
 		Name:                  name,
 		Description:           description,
 		Instructions:          instructions,

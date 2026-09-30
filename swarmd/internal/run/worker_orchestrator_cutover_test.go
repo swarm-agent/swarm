@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"swarm/packages/swarmd/internal/agent"
+	"swarm/packages/swarmd/internal/agentmodelsettings"
+	"swarm/packages/swarmd/internal/model"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/permission"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
@@ -107,7 +109,21 @@ func setupWorkerOrchestratorTestEnv(t *testing.T) (*Service, *session.Service, *
 	ps := store.NewPermissionStore(db)
 	permissions := permission.NewService(ps, events, nil)
 	permissions.SetBypassPermissions(true)
-	svc := NewService(sessionsSvc, nil, nil, tool.NewRuntime(1), permissions, nil, nil, events)
+	models := model.NewService(store.NewModelStore(db), nil, model.NewCatalogService(store.NewModelCatalogStore(db)))
+	if err := models.EnsureBootDefaults(); err != nil {
+		t.Fatal(err)
+	}
+	_, _, catalog, found, err := models.RecommendedCatalogDefaults("codex")
+	if err != nil || !found {
+		t.Fatalf("model fixture: %v", err)
+	}
+	assignment := store.AgentModelAssignment{Provider: "codex", Model: catalog.Model, Thinking: catalog.DefaultThinking}
+	settings := store.NewAgentModelSettingsStore(db)
+	if _, err := settings.PutForAccount(store.AgentModelSettingsRecord{AccountScopeID: "account", Swarm: store.SwarmAgentModelAssignments{Action: assignment, Plan: assignment}, SystemAgents: store.SystemAgentModelAssignments{Compact: assignment, Finder: assignment, Coder: assignment, Designer: assignment, Router: assignment}}); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(sessionsSvc, models, nil, tool.NewRuntime(1), permissions, nil, nil, events)
+	svc.agentModelSettings = agentmodelsettings.NewService(settings)
 
 	return svc, sessionsSvc, ss
 }

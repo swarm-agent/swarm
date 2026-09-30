@@ -59,7 +59,9 @@ export function TaskCardSummary({ task, onPreview, statusBadge, timer, actions, 
   const Icon = task.agentType === 'image' ? ImageIcon : task.agentType === 'video' ? Film
     : task.agentType === 'audio' || task.agentType === 'sound' ? Music : task.agentType === 'swarm' ? Layers : Code2
   const preview = facts.deliverable
-  const role = (facts.identity || task.agentType).replace(/^@/, '').replace(/^system[-_ ]?/i, '')
+  const workerLinked = Boolean(task.workerId?.trim() || task.worker_id?.trim())
+  const role = workerLinked ? 'Worker' : (facts.identity || task.agentType).replace(/^@/, '').replace(/^system[-_ ]?/i, '')
+  const title = workerLinked ? task.worker_name || task.workerName || task.title : task.title
   return (
     <div className="swarm-task-summary" data-testid="task-card-summary">
       <div className="swarm-task-summary-content">
@@ -70,7 +72,7 @@ export function TaskCardSummary({ task, onPreview, statusBadge, timer, actions, 
               ? <video src={preview.mediaUrl} poster={preview.previewUrl} muted playsInline preload="metadata" aria-label={preview.title} />
               : <img src={preview.previewUrl || preview.mediaUrl} alt={preview.title} />}
           </button> : <Icon size={18} className="swarm-task-icon" aria-label={`${task.agentType} task`} />}
-          <h3 className="min-w-0 flex-1">{task.title}</h3>
+          <h3 className="min-w-0 flex-1">{title}</h3>
           <div className="shrink-0">{actions}</div>
         </div>
         <div className="swarm-task-meta" title={[facts.provider, facts.model].filter(Boolean).join(' / ')}>

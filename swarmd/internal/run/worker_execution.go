@@ -103,7 +103,7 @@ func (s *WorkerExecutionService) ConfigureBindings(account, user, id string, rev
 
 // Accept validates exact revision, proposed bindings and workspace authorization,
 // transitioning a pending worker into an active worker without dispatching unsolicited work.
-func (s *WorkerExecutionService) Accept(account, user, id string, revision uint64) (store.WorkerRecord, error) {
+func (s *WorkerExecutionService) Accept(account, user, id string, revision uint64, models ...*store.SessionModelProfileSnapshot) (store.WorkerRecord, error) {
 	if err := s.authorizeWorkerOwner(account, user); err != nil {
 		return store.WorkerRecord{}, err
 	}
@@ -142,7 +142,22 @@ func (s *WorkerExecutionService) Accept(account, user, id string, revision uint6
 	if !found || !strings.EqualFold(entry.State, "active") {
 		return store.WorkerRecord{}, store.ErrWorkerConflict
 	}
-	return ws.AcceptWorker(account, user, id, revision, map[string]string{"primary": primaryWS})
+	model := w.ModelProfile
+	if len(models) > 1 {
+		return store.WorkerRecord{}, store.ErrWorkerConflict
+	}
+	if len(models) == 1 {
+		model = models[0]
+	}
+	if model == nil || len(models) == 1 {
+		model, err = s.ResolveModelProfile(account, model)
+		if err != nil {
+			return store.WorkerRecord{}, err
+		}
+	} else if err := store.ValidateWorkerModelProfile(model); err != nil {
+		return store.WorkerRecord{}, err
+	}
+	return ws.AcceptWorker(account, user, id, revision, map[string]string{"primary": primaryWS}, model)
 }
 
 // Dispatch admits once. The pinned receipt survives wake failure and can be
@@ -188,6 +203,10 @@ func (s *WorkerExecutionService) Dispatch(ctx context.Context, account, user str
 	}
 	if !found || !strings.EqualFold(entry.State, "active") {
 		return store.WorkerRunRecord{}, store.ErrWorkerConflict
+	}
+	w, err = s.initializeWorkerModel(w, user)
+	if err != nil {
+		return store.WorkerRunRecord{}, err
 	}
 	req.UserID = user
 	rec, err := ws.AdmitWorkerRun(account, req)
@@ -307,6 +326,9 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if err := store.ValidateWorkerModelProfile(w.ModelProfile); err != nil {
+		return fmt.Errorf("worker revision has no pinned model: %w", err)
+	}
 	proj, err := s.resolveWorkerProject(r, w)
 	if err != nil {
 		return err
@@ -316,10 +338,7 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 	if err != nil {
 		return err
 	}
-	taskTitle := doc.Title
-	if strings.TrimSpace(taskTitle) == "" {
-		taskTitle = w.Name
-	}
+	taskTitle := w.Name
 	taskDesc := firstNonEmptyString(doc.Info.Goal, w.Description, taskTitle)
 	if taskFound {
 		if taskRecord.AccountID != r.AccountScopeID ||
@@ -341,6 +360,7 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 			Status:       "queued",
 			SessionID:    "", // Do not set SessionID before session exists in pebble
 			Agent:        "swarm",
+			RouterAlert:  w.ModelProfile.ResolutionWarning,
 			WorkerID:     w.ID,
 			WorkerName:   w.Name,
 			WorkerRunID:  r.ID,
@@ -412,22 +432,18 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 		if !found || !strings.EqualFold(entry.State, "active") {
 			return store.ErrWorkerConflict
 		}
-		profile, err := h.runs.agents.ResolveSystemAgent("swarm", store.AgentProfile{})
+		selection := w.ModelProfile.Action
+		profile, err := h.runs.agents.ResolveSystemAgent("swarm", store.AgentProfile{Provider: selection.Provider, Model: selection.Model, Thinking: selection.Thinking, AutoServiceTier: selection.ServiceTier, ContextMode: selection.ContextMode})
 		if err != nil {
 			return err
 		}
 		if _, _, err = h.runs.CompileStoredV3AgentToolContract(r.AccountScopeID, profile); err != nil {
 			return err
 		}
-		settings, err := h.runs.agentModelSettings.GetForAccount(r.AccountScopeID)
-		if err != nil {
-			return err
+		model := store.CloneSessionModelProfileSnapshot(w.ModelProfile)
+		if err := store.ValidateWorkerModelProfile(model); err != nil {
+			return fmt.Errorf("worker revision has no pinned model: %w", err)
 		}
-		selectModel := func(a store.AgentModelAssignment) store.ModelProfileSelection {
-			return store.ModelProfileSelection{Provider: a.Provider, Model: a.Model, Thinking: a.Thinking, ServiceTier: a.ServiceTier, ContextMode: a.ContextMode}
-		}
-		plan := selectModel(settings.Swarm.Plan)
-		model := &store.SessionModelProfileSnapshot{Source: store.SessionModelProfileSourceSwarmSettings, UseAccountDefault: true, Action: selectModel(settings.Swarm.Action), Plan: &plan, AppliedAt: r.CreatedAt}
 		canonical, err := h.runs.sessionDeployCanonicalize(SessionDeployCanonicalizeInput{Principal: p, WorkspacePath: entry.Path, AgentProfile: profile, ModelProfile: model, RuntimeMode: store.AgentRuntimeModePlanAuto, Metadata: map[string]any{}})
 		if err != nil {
 			return err
@@ -441,13 +457,15 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 		}
 		available := true
 		grants := []store.WorkspaceGrant{{Kind: store.WorkspaceGrantPrimary, WorkspaceID: canonical.SourceWorkspaceID, WorkspaceGeneration: canonical.SourceWorkspaceGeneration, Path: canonical.SourceWorkspacePath, Name: canonical.SourceWorkspaceName, Available: &available}, {Kind: store.WorkspaceGrantWorktree, Path: allocation.WorkspacePath, Available: &available}}
-		pref, err := manageSessionsDeployModelProfilePreference(model, sessions.ModeAuto)
+		pref, err := manageSessionsDeployModelProfilePreference(model, sessions.ModePlan)
 		if err != nil {
 			return err
 		}
 		meta := canonical.Metadata
 		meta["worker_execution_run_id"] = r.ID
 		meta["worker_id"] = r.WorkerID
+		meta["worker_name"] = w.Name
+		meta["worker_job_title"] = doc.Title
 		meta["worker_revision"] = r.WorkerRevision
 		meta["navigation_hidden"] = true
 		meta[store.SessionPurposeMetadataKey] = store.SessionPurposeAutomationExecution
@@ -462,7 +480,7 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 		meta["project_task_id"] = taskID
 		meta["worker_run_id"] = r.ID
 		meta["automation_id"] = r.AutomationID
-		snapshot = store.SessionSnapshot{ID: r.SessionID, UserID: r.UserID, AccountScopeID: r.AccountScopeID, WorkspacePath: canonical.SourceWorkspacePath, WorkspaceName: canonical.SourceWorkspaceName, Title: doc.Title, Mode: sessions.ModePlan, Preference: pref, ModelProfile: model, Metadata: meta, WorkspaceGrants: grants, WorkspaceUsage: store.WorkspaceUsageFromGrants(grants), WorktreeEnabled: true, WorktreeRootPath: allocation.WorkspacePath, WorktreeBaseBranch: allocation.BaseBranch, WorktreeBranch: allocation.BranchName, CreatedAt: r.CreatedAt, UpdatedAt: r.CreatedAt}
+		snapshot = store.SessionSnapshot{ID: r.SessionID, UserID: r.UserID, AccountScopeID: r.AccountScopeID, WorkspacePath: canonical.SourceWorkspacePath, WorkspaceName: canonical.SourceWorkspaceName, Title: w.Name, Mode: sessions.ModePlan, Preference: pref, ModelProfile: model, Metadata: meta, WorkspaceGrants: grants, WorkspaceUsage: store.WorkspaceUsageFromGrants(grants), WorktreeEnabled: true, WorktreeRootPath: allocation.WorkspacePath, WorktreeBaseBranch: allocation.BaseBranch, WorktreeBranch: allocation.BranchName, CreatedAt: r.CreatedAt, UpdatedAt: r.CreatedAt}
 		if err = h.trees.ValidateSessionRepositoryLaneForRead(snapshot.WorkspacePath, snapshot.WorktreeRootPath, r.SessionID, snapshot.WorktreeBranch); err != nil {
 			return err
 		}

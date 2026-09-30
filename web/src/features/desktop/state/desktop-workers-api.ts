@@ -15,7 +15,10 @@ export interface WorkerAutomation {
   plan_document: { title: string; info?: { goal?: string; [key: string]: unknown }; checkpoints?: Array<{ id: string; title?: string; [key: string]: unknown }>; [key: string]: unknown }; revision: number; created_at: number; updated_at: number
   input_requirements?: WorkerInputRequirement[] | null; deliverable_requirements?: WorkerDeliverableRequirement[] | null
 }
+export interface WorkerModelSelection { provider: string; model: string; thinking?: string; service_tier?: string; context_mode?: string }
+export interface WorkerModelProfile { resolution_warning?: string; source: string; use_account_default?: boolean; action: WorkerModelSelection; plan?: WorkerModelSelection | null; applied_at?: number }
 export interface WorkerRecord {
+  model_profile?: WorkerModelProfile | null
   id: string; account_scope_id: string; name: string; description?: string | null; instructions: string
   lifecycle_state: WorkerLifecycleState; revision: number; created_at: number; updated_at: number
   requested_capabilities?: WorkerCapabilityRequest[] | null
@@ -63,7 +66,7 @@ export type WorkerMutation =
   | { action: 'create'; name: string; instructions?: string; description?: string; idempotency_key: string; requested_capabilities?: WorkerCapabilityRequest[]; workspace_requirements?: WorkerWorkspaceRequirement[]; metadata?: Record<string, unknown> }
   | { action: 'update'; workerId: string; expected_revision: number; changes: { name?: string; description?: string; instructions?: string; change_summary?: string; requested_capabilities?: WorkerCapabilityRequest[]; workspace_requirements?: WorkerWorkspaceRequirement[]; metadata?: Record<string, unknown> } }
   | { action: 'activate'; workerId: string; expected_revision: number; local_bindings: Record<string, string>; activate?: boolean }
-  | { action: 'accept'; workerId: string; expected_revision: number }
+  | { action: 'accept'; workerId: string; expected_revision: number; model_profile?: WorkerModelProfile }
   | { action: 'pause' | 'resume' | 'archive' | 'delete'; workerId: string; expected_revision: number }
   | { action: 'attachAutomation'; workerId: string; expected_revision: number; automation: WorkerAutomationInput }
   | { action: 'updateAutomation'; workerId: string; automationId: string; expected_revision: number; automation: WorkerAutomationInput }
@@ -138,7 +141,7 @@ export async function mutateWorker(input: WorkerMutation): Promise<WorkerMutatio
     if ('expected_revision' in input) revision(input.expected_revision)
     if (action === 'update') { method = 'PUT'; body = { ...input.changes, expected_revision: input.expected_revision } }
     else if (action === 'activate') { path += '/activate'; body = { expected_revision: input.expected_revision, local_bindings: input.local_bindings, ...(input.activate === undefined ? {} : { activate: input.activate }) } }
-    else if (action === 'accept') { path += '/accept'; body = { expected_revision: input.expected_revision } }
+    else if (action === 'accept') { path += '/accept'; body = { expected_revision: input.expected_revision, ...(input.model_profile ? { model_profile: input.model_profile } : {}) } }
     else if (action === 'pause' || action === 'resume' || action === 'archive') { path += `/${action}`; body = { expected_revision: input.expected_revision } }
     else if (action === 'delete') { method = 'DELETE'; path += `?expected_revision=${input.expected_revision}` }
     else if (action === 'attachAutomation') { path += '/automations'; body = { expected_worker_revision: input.expected_revision, automation: input.automation } }

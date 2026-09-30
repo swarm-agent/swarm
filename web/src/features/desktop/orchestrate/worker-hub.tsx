@@ -77,6 +77,8 @@ export function WorkerDetail({ accountScopeId, workerId, workspaceSlug, onSelect
       <header className="space-y-3"><div className="flex flex-wrap items-start justify-between gap-3"><div className="min-w-0"><p className="mb-1 text-[10px] uppercase tracking-widest text-slate-500">Worker · {workerLifecycleLabel(worker.lifecycle_state)}</p><h3 className="break-words text-xl font-semibold text-white">{worker.name}</h3></div>
         <button className={button} disabled={!!detail?.stale || !!detail?.error} onClick={() => onSelectWorker({ id: worker.id, revision: worker.revision, name: worker.name })}>Ask Orchestrator</button></div>
         {worker.lifecycle_state !== 'pending' && <p className="break-words text-sm leading-relaxed text-slate-300">{worker.description || worker.instructions || 'Purpose not recorded.'}</p>}
+      {worker.lifecycle_state !== 'pending' && worker.model_profile?.resolution_warning && <p role="alert" className="text-xs text-amber-300">{worker.model_profile.resolution_warning}</p>}
+      {worker.lifecycle_state !== 'pending' && <p className="break-words text-xs text-slate-400">Model: {worker.model_profile ? `${worker.model_profile.action.provider}/${worker.model_profile.action.model} · Planning: ${worker.model_profile.plan?.model || worker.model_profile.action.model}` : 'Not initialized; default will be durably pinned before the next job'}</p>}
         {readOnly && <p>Migrated snapshot · read-only</p>}
         {worker.lifecycle_state === 'pending' && <PendingWorkerCard key={`${worker.id}:${worker.revision}`} worker={worker} accountScopeId={accountScopeId} workspaceSlug={workspaceSlug} stale={!!detail?.stale || !!detail?.error} mutationError={detail?.mutationError} />}
       </header>

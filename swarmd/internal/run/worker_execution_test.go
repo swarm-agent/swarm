@@ -182,6 +182,7 @@ func setupWorkerExecutionFixture(t *testing.T, enqueue func(identity.Principal, 
 	if _, err = settings.PutForAccount(store.AgentModelSettingsRecord{AccountScopeID: "account", Swarm: store.SwarmAgentModelAssignments{Action: assignment, Plan: assignment}, SystemAgents: store.SystemAgentModelAssignments{Compact: assignment, Finder: assignment, Coder: assignment, Designer: assignment, Router: assignment}}); err != nil {
 		t.Fatal(err)
 	}
+	runs.model = models
 	runs.workspace = workspaces
 	runs.agents = agents
 	runs.agentModelSettings = agentmodelsettings.NewService(settings)

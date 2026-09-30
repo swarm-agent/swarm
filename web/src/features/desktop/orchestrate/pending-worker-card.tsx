@@ -1,9 +1,10 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { getDesktopSessionIdentitySnapshot } from '../../../app/api'
 import { workspaceOverviewQueryOptions } from '../../queries/query-options'
 import { desktopWorkers } from '../runtime/desktop-workers'
-import type { WorkerRecord } from '../state/desktop-workers-api'
+import { WorkerModelPicker } from './worker-model-picker'
+import type { WorkerModelProfile, WorkerRecord } from '../state/desktop-workers-api'
 import { swarmWorkerHref } from './swarm-navigation'
 import { proposalJobTiming } from './worker-schedule'
 import { proposalGoal, proposalWorkspaces, type ProposalWorkspaceCatalog } from './worker-proposal-presentation'
@@ -48,7 +49,9 @@ function AuthorizedCatalogProposal(props: PendingWorkerCardProps) {
 }
 
 function PendingWorkerPresentation({ worker, accountScopeId, workspaceSlug, workspaceCatalog, stale = false, mutationError, initialExpanded = false, onAccepted, onOpenDetail }: PendingWorkerCardProps) {
+  const [model, setModel] = useState<WorkerModelProfile | null | undefined>(worker.model_profile)
   const [expanded, setExpanded] = useState(initialExpanded)
+  useEffect(() => { setModel(worker.model_profile) }, [worker.id, worker.revision, worker.model_profile])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const wrongAccount = worker.account_scope_id !== accountScopeId
@@ -60,7 +63,7 @@ function PendingWorkerPresentation({ worker, accountScopeId, workspaceSlug, work
     setBusy(true)
     setError('')
     try {
-      const result = await desktopWorkers.mutate({ action: 'accept', workerId: worker.id, expected_revision: worker.revision }, accountScopeId)
+      const result = await desktopWorkers.mutate({ action: 'accept', workerId: worker.id, expected_revision: worker.revision, ...(model ? { model_profile: model } : {}) }, accountScopeId)
       if ('worker' in result) onAccepted?.(result.worker)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Worker acceptance failed')
@@ -80,6 +83,7 @@ function PendingWorkerPresentation({ worker, accountScopeId, workspaceSlug, work
       <h4 className="font-semibold text-slate-400">{targets.length > 1 ? 'Workspaces' : 'Workspace'} · Runs locally</h4>
       {targets.length ? targets.map(target => <p key={target.role} className={target.unresolved ? 'text-amber-300' : 'text-slate-200'}>{target.label} <span className="text-slate-400">· {target.status}{target.approvedTarget && target.approvedTarget !== target.target ? ` · replaces ${target.approvedName || 'unresolved previously approved workspace'}` : ''}</span></p>) : <p className="text-amber-300">No workspace target specified</p>}
     </section>
+    <WorkerModelPicker accountScopeId={accountScopeId} profile={model} disabled={busy || stale || wrongAccount} onChange={setModel} />
     <section className="space-y-2 break-words" aria-label="Jobs and timing" data-testid="pending-worker-job-intent">
       {noJobs ? <p data-testid="pending-worker-no-job">No job attached; waits for a task after acceptance</p> : jobs?.map(job => <div key={job.id}>
         <h4 className="font-semibold text-white">{job.name || job.plan_document?.title || 'Untitled job'}</h4>

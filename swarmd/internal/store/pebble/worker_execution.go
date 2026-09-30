@@ -452,7 +452,7 @@ func (ws *WorkerStore) UnfinishedWorkerRuns(account, id, autoID string) ([]Worke
 
 // AcceptWorker accepts a pending worker proposal with its exact revision and approved bindings.
 // Authenticated user ingress owns approval; AI tools cannot self-approve.
-func (ws *WorkerStore) AcceptWorker(account, user, id string, revision uint64, bindings map[string]string) (WorkerRecord, error) {
+func (ws *WorkerStore) AcceptWorker(account, user, id string, revision uint64, bindings map[string]string, models ...*SessionModelProfileSnapshot) (WorkerRecord, error) {
 	if ws == nil || ws.store == nil || ws.store.db == nil {
 		return WorkerRecord{}, errors.New("store is not open")
 	}
@@ -498,6 +498,15 @@ func (ws *WorkerStore) AcceptWorker(account, user, id string, revision uint64, b
 		}
 	}
 	now := time.Now().UnixMilli()
+	if len(models) > 1 {
+		return WorkerRecord{}, ErrWorkerConflict
+	}
+	if len(models) == 1 {
+		if err := ValidateWorkerModelProfile(models[0]); err != nil {
+			return WorkerRecord{}, err
+		}
+		w.ModelProfile = CloneSessionModelProfileSnapshot(models[0])
+	}
 	w.LocalBindings = map[string]string{"primary": strings.TrimSpace(bindings["primary"])}
 	w.LifecycleState = WorkerLifecycleStateActive
 	w.Revision++

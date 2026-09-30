@@ -100,6 +100,7 @@ type WorkerAutomationDefinition struct {
 }
 
 type WorkerRecord struct {
+	ModelProfile          *SessionModelProfileSnapshot `json:"model_profile,omitempty"`
 	StopTarget            WorkerLifecycleState         `json:"stop_target,omitempty"`
 	ID                    string                       `json:"id"`
 	AccountScopeID        string                       `json:"account_scope_id"`
@@ -202,6 +203,7 @@ type ListWorkersResult struct {
 }
 
 type CreateWorkerRequest struct {
+	ModelProfile          *SessionModelProfileSnapshot `json:"model_profile,omitempty"`
 	ID                    string                       `json:"id,omitempty"`
 	Name                  string                       `json:"name"`
 	Description           string                       `json:"description,omitempty"`
@@ -866,6 +868,8 @@ func (ws *WorkerStore) CreateWorker(account, user string, req CreateWorkerReques
 	if idempKey != "" {
 		reqForHash := req
 		reqForHash.IdempotencyKey = ""
+		// Server-resolved defaults are not caller input; retries retain the receipt.
+		reqForHash.ModelProfile = nil
 		var err error
 		payloadHash, err = hashWorkerPayload(reqForHash)
 		if err != nil {
@@ -937,6 +941,7 @@ func (ws *WorkerStore) CreateWorker(account, user string, req CreateWorkerReques
 		ProposedBindings:      req.ProposedBindings,
 		Automations:           automations,
 		Metadata:              req.Metadata,
+		ModelProfile:          CloneSessionModelProfileSnapshot(req.ModelProfile),
 		CreatedAt:             now,
 		UpdatedAt:             now,
 	}
