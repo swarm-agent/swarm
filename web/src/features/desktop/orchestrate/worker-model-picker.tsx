@@ -102,7 +102,7 @@ export function WorkerModelPicker({ accountScopeId, profile, disabled, onChange,
           </div>
           <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
             <span className={`text-[11px] ${muted}`}>{inherited ? 'Follows account' : 'Pinned to worker'}</span>
-            {!inherited && <button type="button" aria-label={`Reset ${label} to account default`} disabled={blocked} className={`${control} ${muted}`} onClick={() => onChange(resetWorkerModelSlot(profile, slot))}>Reset</button>
+            {!inherited && <button type="button" aria-label={`Reset ${label} to account default`} disabled={blocked} className={`${control} ${muted}`} onClick={() => onChange(resetWorkerModelSlot(profile, slot))}>Reset</button>}
             <button type="button" aria-label={`${inherited ? 'Customize' : 'Change'} ${label} model`} aria-expanded={editing === slot} disabled={blocked || !options.length} className={`${control} border border-[var(--app-border)] hover:bg-[var(--app-border)]`} onClick={() => setEditing(editing === slot ? null : slot)}>{editing === slot ? 'Done' : inherited ? 'Customize' : 'Change'}</button>
           </div>
           {editing === slot && <div className="mt-3 space-y-3 border-t border-[var(--app-border)] pt-3" aria-label={`${label} model editor`}>
