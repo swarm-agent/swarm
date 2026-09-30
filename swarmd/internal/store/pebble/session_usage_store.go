@@ -568,22 +568,51 @@ func (s *SessionStore) ResetUsage(sessionID string, summary SessionUsageSummary)
 		return fmt.Errorf("session id is required")
 	}
 
-	keys := make([]string, 0, 64)
-	const iterateAll = int(^uint(0) >> 1)
-	if err := s.store.IteratePrefix(SessionTurnUsagePrefix(sessionID), iterateAll, func(key string, _ []byte) error {
-		keys = append(keys, key)
-		return nil
-	}); err != nil {
+	// Compaction resets context occupancy, not billing history. Receipts must
+	// survive so late provider updates replace their original charge.
+	unlock := s.store.sessionMutations.lockSessions(sessionID, "account:"+strings.TrimSpace(summary.AccountScopeID))
+	defer unlock()
+	session, found, err := s.GetSession(sessionID)
+	if err != nil {
 		return err
 	}
+	if !found {
+		return fmt.Errorf("session %q not found", sessionID)
+	}
+	if strings.TrimSpace(summary.AccountScopeID) != strings.TrimSpace(session.AccountScopeID) || strings.TrimSpace(summary.UserID) != strings.TrimSpace(session.UserID) {
+		return errors.New("usage reset principal mismatch")
+	}
+	previous, found, err := s.GetUsageSummary(sessionID)
+	if err != nil {
+		return err
+	}
+	if found {
+		if previous.AccountScopeID != session.AccountScopeID || previous.UserID != session.UserID {
+			return errors.New("usage summary principal mismatch")
+		}
+		summary.TurnCount = previous.TurnCount
+		summary.EstimatedCostUSD = previous.EstimatedCostUSD
+		summary.LastRunID = previous.LastRunID
+		summary.LastTransport = previous.LastTransport
+		summary.LastConnectedViaWS = previous.LastConnectedViaWS
+		summary.ServiceTier = previous.ServiceTier
+	} else {
+		summary.TurnCount = 0
+		summary.EstimatedCostUSD = 0
+	}
+	summary.InputTokens = 0
+	summary.OutputTokens = 0
+	summary.ThinkingTokens = 0
+	summary.CacheReadTokens = 0
+	summary.CacheWriteTokens = 0
+	summary.TotalTokens = 0
+	if summary.ContextWindow < 0 {
+		summary.ContextWindow = 0
+	}
+	summary.RemainingTokens = int64(summary.ContextWindow)
 
 	batch := s.store.NewBatch()
 	defer batch.Close()
-	for _, key := range keys {
-		if err := batch.Delete([]byte(key), nil); err != nil {
-			return fmt.Errorf("delete turn usage key %q: %w", key, err)
-		}
-	}
 
 	summaryKey := KeySessionUsageSummary(sessionID)
 	summary.SessionID = sessionID

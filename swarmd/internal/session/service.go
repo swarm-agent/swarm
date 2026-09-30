@@ -1657,6 +1657,15 @@ func (s *Service) ResetUsage(sessionID string, contextWindow int, provider, mode
 	if err := s.store.ResetUsage(sessionID, summary); err != nil {
 		return pebblestore.SessionUsageSummary{}, nil, err
 	}
+	// ResetUsage retains cumulative billing metadata. Return and publish the
+	// persisted context-only reset rather than the zero-cost request payload.
+	summary, ok, err = s.store.GetUsageSummary(sessionID)
+	if err != nil {
+		return pebblestore.SessionUsageSummary{}, nil, err
+	}
+	if !ok {
+		return pebblestore.SessionUsageSummary{}, nil, errors.New("usage summary missing after reset")
+	}
 
 	if s.events == nil {
 		return summary, nil, nil
