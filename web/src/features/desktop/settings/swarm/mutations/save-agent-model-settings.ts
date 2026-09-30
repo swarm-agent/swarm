@@ -39,6 +39,10 @@ export function saveSwarmAgentModelSettings(input: SwarmAgentModelSettingsPatch)
   })
 }
 
+export function saveSwarmModelSlot(slot: 'action' | 'plan', assignment: AgentModelAssignment): Promise<AgentModelSettings> {
+  return patchAgentModelSettings({ swarm: { [slot]: assignmentWire(assignment, slot) } })
+}
+
 export function saveSystemAgentModelSettings(input: SystemAgentModelSettingsPatch): Promise<AgentModelSettings> {
   return patchAgentModelSettings({
     system_agents: {

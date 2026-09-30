@@ -7,6 +7,9 @@ import { useVideoTaskDefault } from './use-video-task-default'
 import { getUISettings } from '../settings/swarm/queries/get-ui-settings'
 import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
 import { isSwarmSection, swarmPageLink, type SwarmPage } from './swarm-navigation'
+import { filterOrchestrateCommands, parseOrchestrateCommand, ORCHESTRATE_TIPS, type OrchestrateCommand } from './orchestrate-commands'
+import { OrchestrateSettings } from './orchestrate-settings'
+import { OrchestrateAgents } from './orchestrate-agents'
 import {
   AlertTriangle,
   ArrowLeft,
@@ -2764,6 +2767,7 @@ export function MinimalTaskCard({
  * Includes attachments, running states (active run stop/busy), and pending permissions.
  */
 export function OrchestratorChatComposer({
+  onCommandNavigate,
   sessionId,
   session,
   project,
@@ -2781,6 +2785,7 @@ export function OrchestratorChatComposer({
   sessionId: string
   creatingWorker?: boolean
   onWorkerCreationSent?: () => void
+  onCommandNavigate?: (page: SwarmPage) => void
   /** Replace only the network submission boundary in rendered tests. */
   submitMessage?: typeof continueDesktopV3Conversation
   selectedWorker?: SelectedWorker | null
@@ -2798,6 +2803,18 @@ export function OrchestratorChatComposer({
   const draft = draftState.text
   const setDraft = (value: string | ((previous: string) => string)) => orchestratorDrafts.set(draftKey, typeof value === 'function' ? value(orchestratorDrafts.get(draftKey).text) : value)
   const composerRef = useRef<HTMLTextAreaElement>(null)
+  const [commandsOpen, setCommandsOpen] = useState(false)
+  const [commandQuery, setCommandQuery] = useState('')
+  const [commandIndex, setCommandIndex] = useState(0)
+  const composingRef = useRef(false)
+  const commands = filterOrchestrateCommands(commandQuery)
+  const selectCommand = (command: OrchestrateCommand) => {
+    setCommandsOpen(false)
+    setSendError(null)
+    if (onCommandNavigate) onCommandNavigate(command.page)
+    else setSendError('Navigation is unavailable. Return to the Orchestrate workspace to use commands.')
+    composerRef.current?.focus()
+  }
   useEffect(() => { if (draftState.focus) composerRef.current?.focus() }, [draftKey, draftState.focus])
   const [sending, setSending] = useState(false)
   const [sendError, setSendError] = useState<string | null>(null)
@@ -2882,7 +2899,16 @@ export function OrchestratorChatComposer({
   }
 
   const handleSend = async () => {
+    if (composingRef.current) return
     const text = draft.trim()
+    const parsed = parseOrchestrateCommand(text)
+    if (parsed.kind === 'command') { selectCommand(parsed.command); return }
+    if (parsed.kind === 'unsupported') {
+      setSendError(`Unsupported Orchestrate command ${parsed.token}. Use / Commands for navigation; chat commands and command arguments are not supported.`)
+      setCommandsOpen(false)
+      return
+    }
+    if (text === '/') { setCommandsOpen(true); setCommandQuery(''); return }
     if ((!text && attachments.length === 0) || sending || isRunning) return
 
     setSending(true)
@@ -2976,6 +3002,13 @@ export function OrchestratorChatComposer({
       className="border-t border-slate-800 bg-[#0a0f1d] p-3 text-xs space-y-2 flex-shrink-0"
       data-testid="orchestrator-chat-composer"
     >
+      <button type="button" aria-expanded={commandsOpen} aria-controls="orchestrate-command-list" onClick={() => { setCommandsOpen(!commandsOpen); setCommandQuery(''); setCommandIndex(0); composerRef.current?.focus() }} className="rounded px-2 py-1 text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)]">/ Commands</button>
+      {commandsOpen && <div id="orchestrate-command-list" onKeyDown={(event) => { if (event.key === 'Escape') { event.preventDefault(); setCommandsOpen(false); composerRef.current?.focus() } }} role="listbox" aria-label="Orchestrate commands" className="max-h-64 overflow-y-auto rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-1">
+        {commands.map((command, index) => <button key={command.name} id={`orchestrate-command-${command.name}`} type="button" role="option" aria-selected={index === commandIndex} onClick={() => selectCommand(command)} className={`block w-full rounded-lg p-2 text-left text-[var(--app-text)] ${index === commandIndex ? 'bg-[var(--app-surface-hover)]' : ''}`}>
+          <strong>/{command.name}</strong> <span className="text-[var(--app-text-muted)]">{command.description}</span>
+        </button>)}
+        {!commands.length && <p className="p-2 text-[var(--app-text-muted)]">No matching commands. Escape returns to your draft.</p>}
+      </div>}
       {/* Pending permissions indicator if any requests are awaiting approval */}
       {pendingPermissions.length > 0 && (
         <div
@@ -3069,9 +3102,27 @@ export function OrchestratorChatComposer({
           value={draft}
           onChange={(e) => {
             setDraft(e.target.value)
+            const slash = /^\s*\/([a-z-]*)$/i.exec(e.target.value)
+            setCommandsOpen(Boolean(slash))
+            setCommandQuery(slash?.[1] || '')
+            setCommandIndex(0)
             if (sendError) setSendError(null)
           }}
+          onCompositionStart={() => { composingRef.current = true }}
+          onCompositionEnd={() => { composingRef.current = false }}
+          aria-controls={commandsOpen ? 'orchestrate-command-list' : undefined}
+          aria-activedescendant={commandsOpen && commands[commandIndex] ? `orchestrate-command-${commands[commandIndex].name}` : undefined}
           onKeyDown={(e) => {
+            if (composingRef.current || e.nativeEvent.isComposing || e.keyCode === 229) return
+            if (commandsOpen && e.key === 'Escape') { e.preventDefault(); setCommandsOpen(false); return }
+            if (commandsOpen && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+              e.preventDefault()
+              setCommandIndex((index) => commands.length ? (index + (e.key === 'ArrowDown' ? 1 : commands.length - 1)) % commands.length : 0)
+              return
+            }
+            if (commandsOpen && e.key === 'Enter' && !e.shiftKey && commands[commandIndex]) {
+              e.preventDefault(); selectCommand(commands[commandIndex]); return
+            }
             if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault()
               void handleSend()
@@ -3139,6 +3190,7 @@ export function OrchestratorChatComposer({
  * and individual Task Worker sessions with a back-button navigation bar.
  */
 function OrchestratorChatSidebar({
+  workspaceSlug,
   repairSession = false,
   creatingWorker,
   onWorkerCreationSent,
@@ -3156,6 +3208,7 @@ function OrchestratorChatSidebar({
   onDeselectWorker,
 }: {
   sessionId: string
+  workspaceSlug?: string
   repairSession?: boolean
   creatingWorker?: boolean
   onWorkerCreationSent?: () => void
@@ -3173,6 +3226,7 @@ function OrchestratorChatSidebar({
 }) {
   const [error, setError] = useState(false)
   const [attempt, setAttempt] = useState(0)
+  const navigate = useNavigate()
   const [clearingContext, setClearingContext] = useState(false)
   const [clearSuccess, setClearSuccess] = useState(false)
 
@@ -3429,6 +3483,7 @@ function OrchestratorChatSidebar({
         loadedMessageCount={count}
         composerOverride={
           <OrchestratorChatComposer
+            onCommandNavigate={(page) => { void navigate(swarmPageLink(workspaceSlug, page)) }}
             sessionId={sessionId}
             session={currentSession}
             project={project}
@@ -5876,7 +5931,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
       {/* ─────────────────────────────────────────────────────────────
           PANEL 1: LEFT SIDEBAR (NAVIGATION, PROJECTS & USER HUD)
          ───────────────────────────────────────────────────────────── */}
-      <aside className="relative order-first flex w-72 flex-shrink-0 flex-col overflow-hidden rounded-3xl border bg-[#0d121f]/95 border-slate-800/80 shadow-[inset_0_1px_1px_rgba(255,255,255,0.06),0_18px_40px_rgba(0,0,0,0.65)]">
+      <aside className="swarm-navigation-sidebar relative order-first flex w-72 flex-shrink-0 flex-col overflow-hidden rounded-3xl border bg-[#0d121f]/95 border-slate-800/80 shadow-[inset_0_1px_1px_rgba(255,255,255,0.06),0_18px_40px_rgba(0,0,0,0.65)]">
         {/* App Branding & Header */}
         <div className="p-3.5 border-b border-slate-800/80">
           <div className="flex items-center justify-between pb-2">
@@ -6004,10 +6059,10 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
             )}
           </Link>
           <Link
-            {...swarmPageLink(workspaceSlug, 'settings')}
-            aria-current={activeNavTab === 'settings' ? 'page' : undefined}
+            {...swarmPageLink(workspaceSlug, 'charter')}
+            aria-current={activeNavTab === 'charter' ? 'page' : undefined}
             className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium transition-all ${
-              activeNavTab === 'settings'
+              activeNavTab === 'charter'
                 ? 'bg-white/[0.08] text-white shadow-sm font-semibold'
                 : 'text-slate-400 hover:text-slate-200 hover:bg-white/[0.04]'
             }`}
@@ -6015,6 +6070,9 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
             <Settings size={15} />
             <span>Project Charter</span>
           </Link>
+          {(['agents', 'settings', 'help'] as const).map((page) => <Link key={page} {...swarmPageLink(workspaceSlug, page)} aria-current={activeNavTab === page ? 'page' : undefined} className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-xs font-medium text-slate-300 hover:bg-white/[0.08]">
+            {page === 'agents' ? <Bot size={15} /> : <Settings size={15} />}<span>{page === 'help' ? 'Orchestrate tips' : page === 'agents' ? 'Agents' : 'Settings'}</span>
+          </Link>)}
         </div>
 
         {/* Projects Switcher Section */}
@@ -6318,7 +6376,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
       {/* ─────────────────────────────────────────────────────────────
           PANEL 2: MIDDLE SECTION (CANVAS / TASKS / VIEWS)
          ───────────────────────────────────────────────────────────── */}
-      {!showFullMediaCenter && <main className="relative flex flex-1 flex-col overflow-hidden rounded-3xl border bg-[#0d121f]/95 border-slate-800/80 shadow-[inset_0_1px_1px_rgba(255,255,255,0.06),0_18px_40px_rgba(0,0,0,0.65)]">
+      {!showFullMediaCenter && <main className="swarm-main-panel relative min-w-0 flex flex-1 flex-col overflow-hidden rounded-3xl border bg-[#0d121f]/95 border-slate-800/80 shadow-[inset_0_1px_1px_rgba(255,255,255,0.06),0_18px_40px_rgba(0,0,0,0.65)]">
         {isOnboardingActive && (activeNavTab === 'home' || activeNavTab === 'projects') ? (
           <div className="flex-1 flex flex-col min-h-0 overflow-y-auto p-6 space-y-6">
             {/* Onboarding Header */}
@@ -6690,7 +6748,13 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
               </div>
             )}
           </div>
+        ) : activeNavTab === 'agents' ? (
+          <OrchestrateAgents />
         ) : activeNavTab === 'settings' ? (
+          <OrchestrateSettings workspaceSlug={workspaceSlug} />
+        ) : activeNavTab === 'help' ? (
+          <section className="min-h-0 overflow-y-auto p-6 space-y-4 text-[var(--app-text)]"><h1 className="text-xl font-semibold">Orchestrate tips</h1><ul className="list-disc space-y-3 pl-5">{ORCHESTRATE_TIPS.map((tip) => <li key={tip}>{tip}</li>)}</ul></section>
+        ) : activeNavTab === 'charter' ? (
           /* PROJECT CHARTER / SETTINGS TAB */
           <div className="flex-1 flex flex-col min-h-0 overflow-y-auto p-6 space-y-4">
             <div className="flex items-center justify-between pb-3 border-b border-slate-800">
@@ -7309,11 +7373,12 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
           PANEL 3: RIGHT PANEL (CANONICAL DESKTOP V3 AI CHAT SIDEBAR)
          ───────────────────────────────────────────────────────────── */}
       {workerChatOpen && workerChatError && <div role="alert" className="max-w-sm p-4 text-sm text-red-300">{workerChatError}<button className="ml-2 underline" onClick={() => setWorkerChatError('')}>Dismiss</button></div>}
-      {(activeNavTab !== 'workers' || workerChatOpen) && (activeSessionId ? (
+      {activeSessionId ? (
         // Keep the chat bounded to the page, below the optional worker header.
-        <div className="flex min-h-0 shrink-0 flex-col">
+        <div className={`swarm-conversation-panel min-h-0 shrink-0 flex-col ${activeNavTab === 'workers' && !workerChatOpen ? 'hidden' : 'flex'}`}>
         {activeNavTab === 'workers' && <div className="flex max-w-[440px] shrink-0 items-center justify-between gap-3 p-3 text-xs text-slate-300"><span>{workerCreationRequested ? 'Add worker: describe its job to Orchestrator below. Nothing runs until you approve.' : 'Discuss this worker with Orchestrator'}</span><button onClick={() => { setWorkerChatOpen(false); setWorkerCreationRequested(false) }}>Close</button></div>}
         <OrchestratorChatSidebar
+          workspaceSlug={workspaceSlug}
           key={activeSessionId}
           repairSession={Object.values(repairStates).some(state => state.sessionId === activeSessionId)}
           sessionId={activeSessionId}
@@ -7342,7 +7407,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
             {workerChatOpen ? 'Opening Worker Orchestrator… If the connection fails, retry Add worker or Ask Orchestrator.' : selectedProject ? 'Connecting executive orchestrator session...' : 'Select or create a project to activate the executive AI orchestrator.'}
           </p>
         </aside>
-      ))}
+      )}
 
       {/* ─────────────────────────────────────────────────────────────
           MODAL: NEW TASK (VISUAL INTENT, MEDIA & AUTO-APPROVE)

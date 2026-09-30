@@ -81,6 +81,22 @@ func (s *Service) ReplaceSwarm(ctx context.Context, input SwarmInput) (Settings,
 	return s.store.UpdateSwarmForAccount(principal.AccountScopeID, action, plan, s.now().UnixMilli())
 }
 
+// UpdateSwarmSlot changes one account-wide Swarm assignment without stale sibling writes.
+func (s *Service) UpdateSwarmSlot(ctx context.Context, slot string, assignment Assignment) (Settings, error) {
+	principal, err := requirePrincipal(ctx)
+	if err != nil {
+		return Settings{}, err
+	}
+	if s == nil || s.store == nil {
+		return Settings{}, ErrNotConfigured
+	}
+	assignment, err = validateAssignment("swarm."+slot, assignment)
+	if err != nil {
+		return Settings{}, err
+	}
+	return s.store.UpdateSwarmSlotForAccount(principal.AccountScopeID, slot, assignment, s.now().UnixMilli())
+}
+
 // UpdateSystemAgent changes one named assignment without replacing its siblings.
 func (s *Service) UpdateSystemAgent(ctx context.Context, name string, assignment Assignment) (Settings, error) {
 	principal, err := requirePrincipal(ctx)

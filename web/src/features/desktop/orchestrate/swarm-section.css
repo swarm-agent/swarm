@@ -195,3 +195,19 @@
 /* The task-list header is the sole filled primary action in this view. */
 .swarm-section .swarm-task-list-new-task { background: var(--swarm-accent); color: var(--swarm-accent-text); border: 1px solid var(--swarm-accent); }
 .swarm-section .swarm-task-list-new-task:hover { background: var(--swarm-accent-hover); }
+
+/* Narrow Orchestrate keeps navigation, the route panel and the mounted
+   conversation reachable rather than squeezing three fixed-width columns. */
+.swarm-section .swarm-navigation-sidebar > div:nth-child(2) { overflow-y: auto; flex-shrink: 0; max-height: 55vh; }
+.swarm-section .swarm-conversation-panel { max-width: 40vw; }
+.swarm-section .swarm-conversation-panel .swarm-ai-sidebar { width: min(440px, 40vw); }
+.swarm-section [aria-current="page"], .swarm-section [aria-pressed="true"] { border-color: var(--swarm-border-accent); background-color: var(--swarm-surface-hover); }
+@media (max-width: 1000px) {
+  .swarm-section { flex-direction: column; overflow-y: auto; height: 100dvh; }
+  .swarm-section .swarm-navigation-sidebar { width: 100%; max-height: 42dvh; flex-shrink: 0; }
+  .swarm-section .swarm-navigation-sidebar > div:nth-child(2) { display: flex; flex-wrap: wrap; max-height: 24dvh; }
+  .swarm-section .swarm-navigation-sidebar > div:nth-child(2) > a { width: auto; flex: 1 1 130px; }
+  .swarm-section .swarm-main-panel { min-height: 45dvh; flex: 1 0 45dvh; }
+  .swarm-section .swarm-conversation-panel { width: 100%; max-width: none; min-height: 55dvh; flex-shrink: 0; }
+  .swarm-section .swarm-conversation-panel .swarm-ai-sidebar { width: 100%; min-height: 55dvh; }
+}
