@@ -1,5 +1,3 @@
-import React from 'react'
-
 export type ImagePromptState = { count: number; aiVariants: boolean }
 export type ImagePromptAction =
   | { type: 'count'; count: number }
