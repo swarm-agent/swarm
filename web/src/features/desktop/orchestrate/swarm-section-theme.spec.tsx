@@ -10,6 +10,9 @@ import type { RunningTask } from './orchestrate-types'
 // Purpose: task cards must display actual workspace/worktree/Git/progress and never imply
 // success from absent evidence. Boundary: TaskCardSummary receives mapped RunningTask;
 // the backend owns Git verification and guarded actions remain in MinimalTaskCard.
+// SSR is the narrowest boundary for separate metadata, tooltip-only full paths and
+// truthful unknown/stale Git labels; no cached flag or requested model implies success.
+const visibleText = (html: string) => html.replace(/<[^>]*>/g, '')
 const task: RunningTask = {
   id: 'task-a', title: 'Fix session recovery', agentType: 'coder', status: 'needs_review',
   workspaceTarget: 'repository', elapsed: '2m', subtasks: [{ id: 'one', title: 'Repair', completed: true }],
@@ -17,19 +20,27 @@ const task: RunningTask = {
   baseBranch: 'dev', gitStatus: 'unknown', unintegratedCommits: 3,
 }
 
-test('compact card retains verified branch and omits noisy uninspected git telemetry', () => {
+test('compact card separates identity and lineage and reports uninspected Git truthfully', () => {
   const html = renderToStaticMarkup(<TaskCardSummary task={task} />)
   assert.match(html, /Fix session recovery/)
-  assert.match(html, /coder · agent\/repair/)
-  assert.match(html, /1\/1 steps/)
-  assert.doesNotMatch(html, /\/source\/project|Validation not reported|agent\/repair.*dev/)
-  assert.doesNotMatch(html, /Git: last known state|Git: not inspected/)
-  assert.doesNotMatch(html, /unintegrated commit\(s\)|>Integrated</)
+  assert.match(html, /class="swarm-task-meta-agent" title="Agent: coder">coder<\/span>/)
+  assert.match(html, /title="\/source\/project">project<\/span>/)
+  assert.match(html, /title="Worktree: agent\/repair">agent\/repair<\/span>/)
+  const visible = visibleText(html)
+  assert.equal((visible.match(/agent\/repair/g) || []).length, 1)
+  assert.match(visible, /1\/1 steps/)
+  assert.doesNotMatch(visible, /\/source\/project|Validation not reported|agent\/repair.*dev/)
+  assert.match(visible, /Git: not inspected/)
+  assert.doesNotMatch(visible, /Git: last known state|unintegrated commit|Integrated/)
 })
 
 test('stale Git is not presented as integrated even if cached integrated flag is true', () => {
   assert.equal(taskCardFacts({ ...task, gitStatus: 'stale', isIntegrated: true }).git, 'Git: last known state')
-  assert.match(taskCardFacts({ ...task, gitStatus: 'clean', isIntegrated: true }).git, /3 unintegrated commit\(s\)/)
+  assert.equal(taskCardFacts({ ...task, gitStatus: 'clean', isIntegrated: true }).git, '3 unintegrated commits')
+  assert.equal(taskCardFacts({ ...task, gitStatus: 'clean', unintegratedCommits: 1 }).git, '1 unintegrated commit')
+  const stale = visibleText(renderToStaticMarkup(<TaskCardSummary task={{ ...task, gitStatus: 'stale', isIntegrated: true }} />))
+  assert.match(stale, /Git: last known state/)
+  assert.doesNotMatch(stale, /Integrated|unintegrated commit/)
   assert.equal(taskCardFacts({ ...task, gitStatus: 'clean', isIntegrated: true, unintegratedCommits: 0 }).git, 'Integrated')
 })
 
@@ -55,7 +66,9 @@ test('card uses active session identity and activity but omits orchestration pro
   assert.doesNotMatch(html, /Execution Pipeline|Assigned Agent|requested-model|Internal mission plan/)
   assert.equal(taskCardFacts({ ...running, status: 'completed' }).activity, null)
   const unavailable = renderToStaticMarkup(<TaskCardSummary task={{ ...task, model: 'requested-model' }} />)
-  assert.match(unavailable, /coder · agent\/repair/)
+  assert.match(unavailable, /title="Agent: coder">coder<\/span>/)
+  assert.match(unavailable, /title="\/source\/project">project<\/span>/)
+  assert.match(unavailable, /title="Worktree: agent\/repair">agent\/repair<\/span>/)
   assert.doesNotMatch(unavailable, /requested-model|Active session model/)
 })
 
@@ -138,7 +151,9 @@ test('card formats coder agent identity cleanly without system prefix', () => {
     activeAgent: 'system-coder',
   }
   const html = renderToStaticMarkup(<TaskCardSummary task={taskWithSystemCoder} />)
-  assert.match(html, />coder · agent\/repair</)
+  assert.match(html, /title="Agent: coder">coder<\/span>/)
+  assert.match(html, /title="\/source\/project">project<\/span>/)
+  assert.match(html, /title="Worktree: agent\/repair">agent\/repair<\/span>/)
   assert.doesNotMatch(html, />system-coder<|>system coder<|@system-coder/)
 })
 

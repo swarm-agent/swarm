@@ -98,7 +98,11 @@ test('task details, independent context chips and execution errors preserve unse
     await toggle.click()
     assert.equal(await toggle.getAttribute('aria-expanded'), 'true')
     await alpha.getByText('Full Plan, Subtasks & Activity Logs', { exact: true }).waitFor()
-    await alpha.getByText('Implement accessible keyboard navigation', { exact: true }).waitFor()
+    // Execution Summary is a labeled container, not an exact-text summary leaf.
+    // MinimalTaskCard shows it for expanded tasks with planSummary, including failed.
+    const executionSummary = alpha.getByText('Execution Summary', { exact: true }).locator('..')
+    await executionSummary.waitFor()
+    assert.match(await executionSummary.innerText(), /Implement accessible keyboard navigation/)
     // The running execution checklist and stream are scoped to running attempts;
     // failed details retain the execution summary and investigation evidence instead.
     assert.equal(await alpha.getByText('Keyboard plan checkpoint', { exact: true }).count(), 0)
