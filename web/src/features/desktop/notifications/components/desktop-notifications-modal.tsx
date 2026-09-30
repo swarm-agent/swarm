@@ -21,6 +21,9 @@ import { Badge } from '../../../../components/ui/badge'
 import { Button } from '../../../../components/ui/button'
 import { Card } from '../../../../components/ui/card'
 import { cn } from '../../../../lib/cn'
+import { WorkerApprovalAttention } from './worker-approval-attention'
+import { swarmWorkerLink, swarmPageLink } from '../../orchestrate/swarm-navigation'
+import { getDesktopSessionIdentitySnapshot } from '../../../../app/api'
 import { requestJson } from '../../../../app/api'
 import { DesktopStorageBucketsModal } from '../../storage/components/desktop-storage-buckets-modal'
 import { listStorageBuckets, scanStorageBucket } from '../../storage/api'
@@ -217,7 +220,9 @@ export function DesktopNotificationsModal({
   onAcknowledge,
   onMute,
   onClearAll,
+  workspaceSlug,
 }: {
+  workspaceSlug?: string
   open: boolean
   onOpenChange: (open: boolean) => void
   notifications: DesktopNotificationCenterRecord[]
@@ -501,6 +506,7 @@ export function DesktopNotificationsModal({
           )}
 
           <div className="min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
+            {open && getDesktopSessionIdentitySnapshot()?.accountScopeId && <WorkerApprovalAttention accountScopeId={getDesktopSessionIdentitySnapshot()!.accountScopeId!} onInspect={id => { onOpenChange(false); void navigate(swarmWorkerLink(workspaceSlug, id)) }} onBrowse={() => { onOpenChange(false); void navigate(swarmPageLink(workspaceSlug, 'workers')) }} />}
             {loading ? (
               <Card className="p-4 text-sm text-[var(--app-text-muted)]">Loading notifications…</Card>
             ) : displayedNotifications.length === 0 ? (

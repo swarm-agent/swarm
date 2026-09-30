@@ -39,5 +39,7 @@ function WorkerSidebarAccount({ accountScopeId, workspaceSlug, collapsed, onTogg
 export function DurableWorkerCount({ accountScopeId }: { accountScopeId: string }) {
   const page = useWorkerPage({ kind: 'list', accountScopeId, limit: 100 })
   const data = page?.data && 'workers' in page.data ? page.data : undefined
-  return <span title={page?.error ? `Workers unavailable: ${page.error}` : 'Account-wide workers; + indicates more pages'}>{data ? `${data.workers.length}${data.next_cursor ? '+' : ''}${page?.stale ? ' ·' : ''}` : '…'}</span>
+  const pendingPage = useWorkerPage({ kind: 'list', accountScopeId, limit: 100, lifecycleState: 'pending' })
+  const pending = pendingPage?.data && 'workers' in pendingPage.data ? pendingPage.data : undefined
+  return <span title={page?.error ? `Workers unavailable: ${page.error}` : 'Account-wide workers; + indicates more pages'}>{data ? `${data.workers.length}${data.next_cursor ? '+' : ''}${page?.stale ? ' ·' : ''}` : '…'}{pending && pending.workers.length > 0 ? ` · ${pending.workers.length}${pending.next_cursor ? '+' : ''} pending approval` : ''}{pendingPage?.error ? ' · approvals unavailable' : ''}</span>
 }

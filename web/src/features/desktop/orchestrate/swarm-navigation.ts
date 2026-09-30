@@ -19,18 +19,9 @@ export function swarmPageLink(workspaceSlug: string | undefined, page: SwarmPage
     : { to: '/swarm/$swarmSection' as const, params: { swarmSection: page } }
 }
 
-// Granular worker navigation targeting existing registered routes
+// Keep inspection under the persistent Swarm owner; legacy detail URLs redirect here.
 export function swarmWorkerLink(workspaceSlug: string | undefined, workerId: string) {
-  if (workspaceSlug) {
-    return {
-      to: '/$workspaceSlug/workers/$workerId' as const,
-      params: { workspaceSlug, workerId },
-    }
-  }
-  return {
-    to: '/workers/$workerId' as const,
-    params: { workerId },
-  }
+  return { ...swarmPageLink(workspaceSlug, 'workers'), search: { workerId } }
 }
 
 export function swarmWorkerHref(workspaceSlug: string | undefined, workerId: string): string {

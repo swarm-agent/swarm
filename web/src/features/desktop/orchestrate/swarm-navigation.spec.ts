@@ -48,15 +48,19 @@ test('Swarm page titles cannot be replaced by colliding session titles', () => {
   }
 })
 
-// Requirement: granular worker URL preserves workspace scope when provided and targets registered routes.
+// Requirement: worker inspection stays under the persistent swarm-layout owner.
+// Threat: moving to the conversation layout remounts Orchestrator and loses drafts.
+// Boundary: swarmWorkerLink; narrow unit assertions prove destination/scope, not live chat preservation.
 test('granular worker navigation preserves workspace scope', () => {
   assert.deepEqual(swarmWorkerLink(undefined, 'worker-1'), {
-    to: '/workers/$workerId',
-    params: { workerId: 'worker-1' },
+    to: '/swarm/$swarmSection',
+    params: { swarmSection: 'workers' },
+    search: { workerId: 'worker-1' },
   })
   assert.deepEqual(swarmWorkerLink('my-workspace', 'worker-1'), {
-    to: '/$workspaceSlug/workers/$workerId',
-    params: { workspaceSlug: 'my-workspace', workerId: 'worker-1' },
+    to: '/$workspaceSlug/swarm/$swarmSection',
+    params: { workspaceSlug: 'my-workspace', swarmSection: 'workers' },
+    search: { workerId: 'worker-1' },
   })
   assert.equal(swarmWorkerHref(undefined, 'worker-1'), '/workers/worker-1')
   assert.equal(swarmWorkerHref('my-workspace', 'worker-1'), '/my-workspace/workers/worker-1')

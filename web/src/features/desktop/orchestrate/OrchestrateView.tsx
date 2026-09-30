@@ -66,6 +66,8 @@ import { requestJson, getDesktopSessionIdentitySnapshot, updateDesktopSessionUse
 import { WorkerHub, type SelectedWorker } from './worker-hub'
 import { submitWithWorkerSelection } from './worker-message-context'
 import { DurableWorkerCount } from '../layout/durable-worker-sidebar'
+import { ProjectWorkerSidebar } from '../layout/project-worker-sidebar'
+import { OrchestratorNotifications } from '../notifications/components/orchestrator-notifications'
 import { swarmWorkerLink, swarmWorkerHref } from './swarm-navigation'
 import { useDesktopV3CacheSelector, getDesktopV3CacheSnapshot } from '../state/desktop-v3-cache-store'
 import { selectPendingWorkerSidebarReviews } from '../state/desktop-automation-v2-state'
@@ -4557,7 +4559,7 @@ export function OrchestrateView({
     if (workerChatStarting.current) return
     workerChatStarting.current = true
     const scope = workerConversationScopeRef.current
-    setActiveSessionId('')
+    // Keep the mounted chat and its draft while attaching worker context.
     selectedWorkerRef.current = null
     setSelectedWorker(null)
     setWorkerChatError('')
@@ -4566,10 +4568,10 @@ export function OrchestrateView({
     setActiveTaskId(null)
     setSelectedTaskId('')
     try {
-      let sessionId: string | null = null
-      if (selectedProject) {
+      let sessionId: string | null = activeSessionId || null
+      if (!sessionId && selectedProject) {
         sessionId = await ensureOrchestratorSession(selectedProject)
-      } else {
+      } else if (!sessionId) {
         // The server resolves the account's default workspace; never guess a local path.
         workerChatRequestId.current ||= `desktop-v3-create:${crypto.randomUUID()}`
         const response = await requestJson<{ session: { id: string } }>('/v3/sessions', {
@@ -6046,7 +6048,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
   return (
     <div
       ref={setThemeRoot}
-      className="swarm-section relative flex h-screen w-screen overflow-hidden p-3 gap-3 font-sans"
+      className="swarm-section relative flex h-screen w-screen overflow-x-auto overflow-y-hidden p-3 gap-3 font-sans"
       data-project-theme={projectTheme.state}
       style={{ ...theme.customVars, ...inheritedSwarmThemeStyle(initialThemeId), ...projectTheme.style, ...(projectTheme.colorScheme ? { colorScheme: projectTheme.colorScheme } : {}) } as React.CSSProperties}
     >
@@ -6067,6 +6069,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
               </div>
             </div>
 
+            {accountScopeId && <OrchestratorNotifications accountScopeId={accountScopeId} workspaceSlug={workspaceSlug} />}
             <Link
               {...(workspaceSlug ? { to: '/$workspaceSlug' as const, params: { workspaceSlug } } : { to: '/' as const })}
               onClick={onNavigateHome}
@@ -6078,6 +6081,10 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
             </Link>
           </div>
 
+          <nav aria-label="Chat and Swarm mode" className="mb-2 grid grid-cols-2 gap-1 rounded-lg border border-slate-700 p-0.5 text-center text-[11px] font-semibold">
+            <Link {...(workspaceSlug ? { to: '/$workspaceSlug' as const, params: { workspaceSlug } } : { to: '/' as const })} onClick={onNavigateHome} aria-label="Switch to Chat Mode" className="rounded-md p-1 text-slate-300 hover:bg-slate-800">Chat</Link>
+            <Link {...swarmPageLink(workspaceSlug, 'home')} aria-label="Switch to Swarm Orchestrate Mode" aria-current="page" className="rounded-md border border-cyan-800 bg-cyan-950/80 p-1 text-cyan-300">Swarm</Link>
+          </nav>
           <div className="swarm-theme-picker">
             <label htmlFor="swarm-project-theme">Project theme</label>
             <select id="swarm-project-theme" aria-label="Project theme" disabled={!selectedProject || themeSaving}
@@ -6236,13 +6243,14 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
             {projects.map((proj) => {
               const isSelected = !isOnboardingActive && proj.id === selectedProjectId
               return (
+                <div key={proj.id}>
                 <div
-                  key={proj.id}
                   onClick={() => {
                     setSelectedProjectId(proj.id)
                     setIsOnboardingActive(false)
                     setActiveTaskId(null)
                   }}
+                  role="button" tabIndex={0} onKeyDown={event => { if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); setSelectedProjectId(proj.id); setIsOnboardingActive(false); setActiveTaskId(null) } }}
                   className={`group flex items-center justify-between p-2 text-left rounded-xl transition-all cursor-pointer ${
                     isSelected
                       ? 'bg-slate-800/90 border border-slate-700/80 text-white shadow-sm'
@@ -6279,6 +6287,8 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                       <Trash2 size={12} />
                     </button>
                   </div>
+                </div>
+                {accountScopeId && <ProjectWorkerSidebar accountScopeId={accountScopeId} projectId={proj.id} showActivity={isSelected} onBrowse={() => setActiveNavTab('workers')} onInspect={id => { void navigate(swarmWorkerLink(workspaceSlug, id)) }} />}
                 </div>
               )
             })}
@@ -6523,6 +6533,10 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
           PANEL 2: MIDDLE SECTION (CANVAS / TASKS / VIEWS)
          ───────────────────────────────────────────────────────────── */}
       {!showFullMediaCenter && <main className="swarm-main-panel relative min-w-0 flex flex-1 flex-col overflow-hidden rounded-3xl border bg-[#0d121f]/95 border-slate-800/80 shadow-[inset_0_1px_1px_rgba(255,255,255,0.06),0_18px_40px_rgba(0,0,0,0.65)]">
+        <nav aria-label="Tasks and Workers views" className="flex shrink-0 gap-2 border-b border-slate-800 p-3 text-xs">
+          <Link {...swarmPageLink(workspaceSlug, 'home')} aria-current={activeNavTab === 'home' ? 'page' : undefined} className="rounded-lg border border-slate-700 px-3 py-2">Tasks</Link>
+          <Link {...swarmPageLink(workspaceSlug, 'workers')} aria-current={activeNavTab === 'workers' ? 'page' : undefined} className="rounded-lg border border-slate-700 px-3 py-2">Workers</Link>
+        </nav>
         {isOnboardingActive && (activeNavTab === 'home' || activeNavTab === 'projects') ? (
           <div className="flex-1 flex flex-col min-h-0 overflow-y-auto p-6 space-y-6">
             {/* Onboarding Header */}
@@ -7521,8 +7535,8 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
       {workerChatOpen && workerChatError && <div role="alert" className="max-w-sm p-4 text-sm text-red-300">{workerChatError}<button className="ml-2 underline" onClick={() => setWorkerChatError('')}>Dismiss</button></div>}
       {activeSessionId ? (
         // Keep the chat bounded to the page, below the optional worker header.
-        <div className={`swarm-conversation-panel min-h-0 shrink-0 flex-col ${activeNavTab === 'workers' && !workerChatOpen ? 'hidden' : 'flex'}`}>
-        {activeNavTab === 'workers' && <div className="flex max-w-[440px] shrink-0 items-center justify-between gap-3 p-3 text-xs text-slate-300"><span>{workerCreationRequested ? 'Add worker: describe its job to Orchestrator below. Nothing runs until you approve.' : 'Discuss this worker with Orchestrator'}</span><button onClick={() => { setWorkerChatOpen(false); setWorkerCreationRequested(false) }}>Close</button></div>}
+        <div className="swarm-conversation-panel flex min-h-0 shrink-0 flex-col">
+        {activeNavTab === 'workers' && workerChatOpen && <div className="flex max-w-[440px] shrink-0 items-center justify-between gap-3 p-3 text-xs text-slate-300"><span>{workerCreationRequested ? 'Add worker: describe its job to Orchestrator below. Nothing runs until you approve.' : 'Discuss this worker with Orchestrator'}</span><button onClick={() => { setWorkerChatOpen(false); setWorkerCreationRequested(false) }}>Close</button></div>}
         <OrchestratorChatSidebar
           workspaceSlug={workspaceSlug}
           key={activeSessionId}

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useWorkerNavigationPreferences } from '../layout/worker-navigation-preferences'
 import { PendingWorkerCard } from './pending-worker-card'
 import { formatWorkerSchedule } from './worker-schedule'
 import { getDesktopSessionIdentitySnapshot } from '../../../app/api'
@@ -25,25 +26,26 @@ export function WorkerHub(props: HubProps) {
 function WorkerHubAccount({ accountScopeId, onSelectWorker, onAddWorker, onInspectWorker, workspaceSlug, initialWorkerId }: HubProps & { accountScopeId: string }) {
   const [selectedId, setSelectedId] = useState(initialWorkerId || '')
   const [cursor, setCursor] = useState<string | undefined>()
+  const [pendingOnly, setPendingOnly] = useState(false)
   useEffect(() => { setSelectedId(initialWorkerId || '') }, [initialWorkerId])
-  const page = useWorkerPage({ kind: 'list', accountScopeId, cursor, limit: 100 })
+  const page = useWorkerPage({ kind: 'list', accountScopeId, cursor, limit: 100, ...(pendingOnly ? { lifecycleState: 'pending' as const } : {}) })
   const workers = page?.data && 'workers' in page.data ? page.data.workers : []
   const next = page?.data && 'workers' in page.data ? page.data.next_cursor : undefined
   const inspected = selectedId || workers[0]?.id
   return <section className="flex min-h-0 min-w-0 flex-1 flex-col text-slate-300" aria-label="Durable workers" data-testid="durable-worker-hub">
     <header className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 p-5">
       <div><h2 className="text-lg font-bold text-white">Workers</h2><p className="text-xs text-slate-400">Your standing team · {workers.length}{next ? '+' : ''} on this page · account-wide</p></div>
-      <div className="flex gap-2"><button className={button} onClick={() => desktopWorkers.invalidate(undefined, accountScopeId)}>Refresh</button><button className="rounded-lg bg-blue-600 px-4 py-2 text-xs font-semibold text-white hover:bg-blue-500" onClick={onAddWorker}>+ Add worker</button></div>
+      <div className="flex flex-wrap gap-2"><button className={button} aria-pressed={pendingOnly} onClick={() => { setPendingOnly(!pendingOnly); setCursor(undefined) }}>{pendingOnly ? 'Show all workers' : 'Pending approvals'}</button><button className={button} onClick={() => desktopWorkers.invalidate(undefined, accountScopeId)}>Refresh</button><button className="rounded-lg bg-blue-600 px-4 py-2 text-xs font-semibold text-white hover:bg-blue-500" onClick={onAddWorker}>+ Add worker</button></div>
     </header>
     {page?.error && <p role="alert" className="px-5 py-2 text-red-300">Worker list: {page.error}</p>}
     {page?.stale && page.data && <p className="px-5 py-2 text-xs text-amber-300">Refreshing workers; displayed entries may be out of date.</p>}
     <div className="grid min-h-0 flex-1 grid-cols-1 overflow-y-auto lg:grid-cols-[minmax(210px,28%)_minmax(0,1fr)] lg:overflow-hidden">
       <nav aria-label="Worker list" className="space-y-2 border-b border-slate-800 p-3 lg:overflow-y-auto lg:border-b-0 lg:border-r">
-        {workers.map(worker => <button key={worker.id} type="button" aria-label={`Inspect ${worker.name}`} aria-pressed={inspected === worker.id} onClick={() => { setSelectedId(worker.id); onInspectWorker?.(worker.id) }} className={`w-full rounded-xl border p-3 text-left text-xs ${inspected === worker.id ? 'border-blue-500/60 bg-blue-500/10' : 'border-slate-800 hover:bg-slate-800/60'}`}>
+        {workers.map(worker => <div key={worker.id}><WorkerSidebarRestore accountScopeId={accountScopeId} worker={worker} /><button type="button" aria-label={`Inspect ${worker.name}`} aria-pressed={inspected === worker.id} onClick={() => { setSelectedId(worker.id); onInspectWorker?.(worker.id) }} className={`w-full rounded-xl border p-3 text-left text-xs ${inspected === worker.id ? 'border-blue-500/60 bg-blue-500/10' : 'border-slate-800 hover:bg-slate-800/60'}`}>
           <span className="block break-words font-semibold text-white">{worker.name}</span>
           <span className="mt-1 block text-[10px] text-slate-400">{workerLifecycleLabel(worker.lifecycle_state)} · {worker.automations?.length || 0} jobs</span>
           <span className="mt-2 line-clamp-2 break-words text-slate-400">{worker.description || worker.instructions || 'Purpose not recorded'}</span>
-        </button>)}
+        </button></div>)}
         {page?.loading && !page.data && <p role="status">Loading workers…</p>}
         {!page?.loading && !page?.error && !workers.length && <p className="p-3 text-xs">No workers here yet. Ask Orchestrator to build one for you.</p>}
         {next && <button className={button} onClick={() => setCursor(next)}>Next workers</button>}
@@ -141,4 +143,10 @@ export function WorkerRunRow({ run, worker, accountScopeId, workspaceSlug, stale
     }}>Stop run</button>}
     {error && <p role="alert">{error}</p>}{notice && <p role="status">{notice}</p>}
   </article>
+}
+
+function WorkerSidebarRestore({ accountScopeId, worker }: { accountScopeId: string; worker: WorkerRecord }) {
+  const projectId = typeof worker.metadata?.project_id === 'string' ? worker.metadata.project_id : ''
+  const preferences = useWorkerNavigationPreferences(accountScopeId, projectId)
+  return projectId && preferences.hidden?.includes(worker.id) ? <button type="button" className={`${button} mb-1`} onClick={() => preferences.restore(worker.id)}>Restore {worker.name} in project sidebar</button> : null
 }

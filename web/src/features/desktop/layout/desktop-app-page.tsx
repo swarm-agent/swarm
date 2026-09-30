@@ -91,6 +91,7 @@ import { normalizeDesktopV3RoutedSessionStartResponse, postDesktopV3BackgroundRo
 import { isDesktopV3NavigationHiddenRecord, isDesktopV3VideoStudioMetadata, isDesktopV3VideoStudioRecord } from '../state/desktop-v3-session-visibility'
 import { isAutomationExecutionSession } from '../state/desktop-automation-purpose'
 import { clearNotifications, updateNotification } from '../notifications/api'
+import { AccountWorkerApprovalBadge } from '../notifications/components/worker-approval-attention'
 import { DesktopNotificationsModal } from '../notifications/components/desktop-notifications-modal'
 import { DESKTOP_V3_RUN_TIMER_TOOLTIP } from '../chat/components/desktop-v3-run-status'
 import { SearchChatsModal } from '../session-search/search-chats-modal'
@@ -5630,7 +5631,7 @@ export function DesktopAppPage() {
                         aria-label="Open notifications"
                         title={notificationUnreadCount > 0 ? `${notificationUnreadCount} unread notification${notificationUnreadCount === 1 ? '' : 's'}` : 'Notifications'}
                       >
-                        <Bell size={14} strokeWidth={1.8} className="shrink-0" />
+                        <Bell size={14} strokeWidth={1.8} className="shrink-0" /><AccountWorkerApprovalBadge />
                         {notificationUnreadCount > 0 ? <span aria-hidden="true" className="absolute right-0.5 top-0.5 grid h-3 min-w-3 place-items-center rounded-full bg-[var(--app-primary)] px-0.5 text-[7px] font-semibold leading-none text-[var(--app-primary-text)]">{notificationUnreadCount > 9 ? '9+' : notificationUnreadCount}</span> : null}
                       </button>
                     ) : null}
@@ -6281,6 +6282,7 @@ export function DesktopAppPage() {
       {memoryOpen && <MemoryModal onClose={() => setMemoryOpen(false)} />}
 
       <DesktopNotificationsModal
+        workspaceSlug={topWorkspaceSlug || undefined}
         open={notificationsOpen}
         onOpenChange={(open) => {
           setNotificationsOpen(open)
