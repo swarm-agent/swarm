@@ -748,6 +748,7 @@ func TestTaskMatrix_Case4_ManualPlanningPendingThenExactAcceptModelTransition(t 
 		"prompt":       "Design complete billing flow",
 		"agent":        "plan",
 		"feature_size": "big",
+		"auto_approve": true,
 	}, p)
 	if w.Code != http.StatusCreated {
 		t.Fatalf("create big task failed %d: %s", w.Code, w.Body.String())
@@ -804,7 +805,7 @@ func TestTaskMatrix_Case4_ManualPlanningPendingThenExactAcceptModelTransition(t 
 	// Missing or partial guards must not change the pending document or its mode.
 	// The shared approval boundary is the narrowest layer proving both REST and
 	// tool callers cannot accept an unseen definition by omitting its identity.
-	for _, guards := range []tool.ProjectTaskApprovalGuards{{}, {SessionID: sessID}, {SessionID: sessID, PlanID: doc.ID}} {
+	for _, guards := range []tool.ProjectTaskApprovalGuards{{}, {SessionID: sessID}, {SessionID: sessID, PlanID: doc.ID}, {SessionID: sessID, PlanID: doc.ID, DefinitionRevision: 2}, {SessionID: "other-session", PlanID: doc.ID, DefinitionRevision: 1}, {SessionID: sessID, PlanID: "other-plan", DefinitionRevision: 1}} {
 		if _, err := f.server.ApproveProjectTask(context.Background(), p, projID, taskID, guards); err == nil {
 			t.Fatal("accepted a plan without complete exact-definition guards")
 		}
@@ -816,6 +817,19 @@ func TestTaskMatrix_Case4_ManualPlanningPendingThenExactAcceptModelTransition(t 
 		if err != nil || pending.Status != "pending_approval" || pending.PlanBinding.Receipt != subResult.Receipt {
 			t.Fatalf("rejected acceptance changed task binding: %#v, %v", pending, err)
 		}
+	}
+
+	// List and detail must both return the full two-checkpoint review document,
+	// not the intentionally title-only summary supplied by the planning tool.
+	for _, route := range []string{"/" + projID + "/tasks", "/" + projID + "/tasks/" + taskID} {
+		response := f.callAPI(http.MethodGet, route, nil, p)
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Handler validates webhooks") || !strings.Contains(response.Body.String(), "Models persist subscriptions") {
+			t.Fatalf("review document missing from %s: %d %s", route, response.Code, response.Body.String())
+		}
+	}
+	before, err := f.server.sessions.Store().ListRunIntents(sessID, 10)
+	if err != nil || len(before) != 1 || before[0].PlanID != "" {
+		t.Fatalf("submission executed an unaccepted plan: %+v %v", before, err)
 	}
 
 	// The planning executor finishes before the separately approved run is admitted.
@@ -860,6 +874,36 @@ func TestTaskMatrix_Case4_ManualPlanningPendingThenExactAcceptModelTransition(t 
 	}
 	if sessAfterApprove.Preference.Model != "gemini-2.5-action" {
 		t.Fatalf("expected Swarm Action model 'gemini-2.5-action', got %v", sessAfterApprove.Preference.Model)
+	}
+	// A lost task-update receipt after intent commit is recoverable: retry must
+	// reconcile the original durable owner rather than admit a second attempt.
+	if _, err := f.server.sessions.Store().UpdateProjectTask(f.accountID, projID, taskID, func(task *pebblestore.ProjectTaskRecord) error {
+		task.Status, task.Agent = "pending_approval", "plan"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	guards := tool.ProjectTaskApprovalGuards{SessionID: sessID, PlanID: doc.ID, DefinitionRevision: 1}
+	for i := 0; i < 2; i++ {
+		if _, err := f.server.ApproveProjectTask(context.Background(), p, projID, taskID, guards); err != nil {
+			t.Fatalf("retry accepted definition: %v", err)
+		}
+	}
+	intents, err := f.server.sessions.Store().ListRunIntents(sessID, 10)
+	if err != nil || len(intents) != 2 {
+		t.Fatalf("expected planning plus one continuation owner: %+v %v", intents, err)
+	}
+	continuations := 0
+	for _, intent := range intents {
+		if intent.PlanID == doc.ID {
+			continuations++
+			if intent.RunID != boundPlan.Document.Checkpoints[0].RunID || intent.CheckpointID != "cp-1" || intent.AttemptID == "" || intent.AccountScopeID != f.accountID {
+				t.Fatalf("continuation lost exact linkage: %+v", intent)
+			}
+		}
+	}
+	if continuations != 1 {
+		t.Fatalf("duplicate continuations: %d", continuations)
 	}
 }
 

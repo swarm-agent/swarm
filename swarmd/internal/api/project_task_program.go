@@ -76,10 +76,13 @@ func hydrateTaskPlanDocument(task *pebblestore.ProjectTaskRecord, db *pebblestor
 	if sessID == "" {
 		sessID = task.SessionID
 	}
-	if sessID == "" {
+	if sessID == "" || (task.SessionID != "" && sessID != task.SessionID) {
 		return
 	}
 	if plan, ok, _ := db.GetPlan(sessID, task.PlanBinding.PlanID); ok && plan.Document != nil {
+		if plan.AccountScopeID != task.AccountID || plan.SessionID != sessID {
+			return
+		}
 		if task.PlanBinding.DefinitionRevision > 0 {
 			if plan.ApprovalState == "approved" {
 				if task.PlanBinding.Receipt != "" && plan.AcceptedDefinitionReceipt != "" && plan.AcceptedDefinitionReceipt != task.PlanBinding.Receipt {
@@ -949,6 +952,11 @@ func (s *Server) ApproveProjectTask(ctx context.Context, p identity.Principal, p
 	if err := s.revalidateProjectTaskSource(p, proj, existingTask); err != nil {
 		return nil, err
 	}
+	// Plan outcomes must never fall through to direct-agent dispatch when their
+	// durable definition binding is absent (including damaged/recovered records).
+	if (existingTask.Agent == "plan" || existingTask.OutcomeType == "plan_spec") && (existingTask.PlanBinding == nil || existingTask.PlanBinding.PlanID == "") {
+		return nil, errors.New("cannot approve plan task without a submitted structured plan binding")
+	}
 	if existingTask.SessionID != "" {
 		if owned, ok, err := db.GetSession(existingTask.SessionID); err != nil {
 			return nil, err
@@ -1159,6 +1167,11 @@ func (s *Server) ApproveProjectTask(ctx context.Context, p identity.Principal, p
 		if active, ok, err := db.GetV3SessionActiveRunIntent(existingTask.SessionID); err != nil {
 			return nil, err
 		} else if ok && active.PlanID == plan.ID && (active.Status == pebblestore.V3RunIntentPendingExecutor || active.Status == pebblestore.V3RunIntentRunning) {
+			// A prior attempt may have committed the intent but lost its scheduler
+			// wakeup or task update. Re-enqueue the same durable owner, never a new run.
+			if active.Status == pebblestore.V3RunIntentPendingExecutor {
+				s.EnqueueSessionRun(p, existingTask.SessionID, active.RunID, active.ParentSessionID)
+			}
 			reconciled, err := db.UpdateProjectTask(p.AccountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
 				t.Status, t.Agent, t.ActionNeeded = "in_progress", "swarm", ""
 				return nil

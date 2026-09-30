@@ -1096,6 +1096,8 @@ export function aggregateTaskLiveState(
       // Live session aggregation
       if (sessionStates.some((s) => s.status === 'blocked' || s.status === 'paused') && runningSessions === 0) {
         status = 'blocked'
+      } else if (primaryRunStatus === 'pending_executor' && runningSessions === 0) {
+        status = 'queued'
       } else if (isLifecycleActive) {
         status = 'running'
       } else if (isAnyFailed) {

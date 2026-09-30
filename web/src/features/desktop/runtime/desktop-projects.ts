@@ -30,6 +30,18 @@ export interface DesktopProjectsRuntimeDeps {
   subscribe?: (listener: (mutation?: DesktopV3CacheMutation) => void) => () => void
 }
 
+// Plan definitions are task-card authority too, not just Git invalidations.
+function taskPlanEventInvalidates(action: DesktopV3CacheMutation['action'], owners: ReadonlySet<string>): boolean {
+  const relevant = (event: { sessionId: string; eventType: string }) =>
+    owners.has(event.sessionId) && event.eventType.startsWith('session.plan.')
+  switch (action.type) {
+    case 'realtime.applyEvent': return relevant(action.event)
+    case 'syncStream.applyBatch':
+    case 'liveRun.mergeRepairEvents': return action.events.some(relevant)
+    default: return false
+  }
+}
+
 export class DesktopProjectsRuntime {
   private readonly projectUpdateListeners = new Set<(projectId?: string) => void>()
   onProjectUpdate(listener: (projectId?: string) => void): () => void {
@@ -56,7 +68,7 @@ export class DesktopProjectsRuntime {
         if (!task.sessionId) continue
         const owners = mutation ? repositoryOwnerIds(task.sessionId, [], mutation.nextState) : new Set([task.sessionId])
         for (const id of extractTaskSessionIds(task)) owners.add(id)
-        if (!mutation || repositoryEventInvalidates(mutation.action, owners)) this.queueTask(projectId, task)
+        if (!mutation || repositoryEventInvalidates(mutation.action, owners) || taskPlanEventInvalidates(mutation.action, owners)) this.queueTask(projectId, task)
       }
     }
   }
