@@ -1475,7 +1475,11 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		agentDisabled map[string]bool
 		scopeErr      error
 	)
-	if options.TrustedAgentProfile != nil {
+	historyProfile, taskHistoryOnly := s.taskHistoryProfile(tool.WorkspaceScope{SessionID: sessionID, Principal: options.Principal}, agentProfile)
+	if taskHistoryOnly {
+		agentProfile = historyProfile
+	}
+	if options.TrustedAgentProfile != nil || taskHistoryOnly {
 		// Delegated compiled agents carry an immutable, launch-specific snapshot.
 		// Compile that exact contract so workspace Designer write/edit authority is
 		// not replaced by the same named agent's fail-closed managed default.
@@ -1752,6 +1756,9 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 	rawToolDefinitions := convertToolDefinitions(s.ListAgentToolDefinitionsForAccount(options.Principal.AccountScopeID))
 	rawCustomToolDefinitions := convertToolDefinitions(s.customAgentToolDefinitionsForAccount(options.Principal.AccountScopeID))
 	toolDefinitions := filterToolDefinitions(rawToolDefinitions, effectiveDisabledTools)
+	if taskHistoryOnly {
+		toolDefinitions = taskHistoryToolDefinitions(toolDefinitions)
+	}
 	runRequestDebugEvent("tool_inventory", map[string]any{
 		"session_id":            sessionID,
 		"run_id":                runID,

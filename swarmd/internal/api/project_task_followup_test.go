@@ -14,9 +14,12 @@ import (
 	"testing"
 	"time"
 
+	"swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/identity"
+	runruntime "swarm/packages/swarmd/internal/run"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/tool"
 	"swarm/packages/swarmd/internal/workspace"
 	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
@@ -299,6 +302,34 @@ func TestProjectTaskFollowupCreatesNewAutoSwarm(t *testing.T) {
 	session, found, err := db.GetSession(task.SessionID)
 	if err != nil || !found || session.Mode != "auto" || !session.WorktreeEnabled || session.WorktreeRootPath == repo || session.Metadata["resolved_agent_name"] != "swarm" || session.Metadata["task_attempt_id"] != task.ActiveAttemptID {
 		t.Fatalf("invalid coordinator: %+v %v", session, err)
+	}
+	// Purpose: the actual reopen-created metadata must resolve provider-visible
+	// history through the same session-bound overlay used by the V3 executor.
+	// This closes the launch-to-inventory gap without starting a provider run.
+	runtime := tool.NewRuntime(1)
+	runtime.SetManageProjectStore(db)
+	realRunner := runruntime.NewService(f.server.sessions, nil, nil, runtime, nil, nil, nil, nil)
+	oldRunner := f.server.runner
+	f.server.runner = realRunner
+	executor := newSessionV3Executor(f.server)
+	baseProfile := agent.SwarmAgentProfileForContext(pebblestore.AgentProfile{})
+	definitions, toolErr := executor.resolveSessionV3ProviderTools(p.AccountScopeID, baseProfile)
+	if toolErr != nil {
+		t.Fatal(toolErr)
+	}
+	_, definitions, toolErr = executor.resolveSessionV3TaskHistoryTools(tool.WorkspaceScope{SessionID: session.ID, Principal: p}, baseProfile, definitions)
+	f.server.runner = oldRunner
+	if toolErr != nil {
+		t.Fatal(toolErr)
+	}
+	historyExposed := false
+	for _, definition := range definitions {
+		if definition.Name == "manage_projects" {
+			historyExposed = true
+		}
+	}
+	if !historyExposed {
+		t.Fatal("actual follow-up session lacks provider history tool")
 	}
 	if response := f.callAPI("POST", path, body, p); response.Code != 200 {
 		t.Fatalf("retry: %d %s", response.Code, response.Body)

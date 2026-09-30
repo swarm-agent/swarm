@@ -379,6 +379,21 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 	if r == nil || r.projects == nil {
 		return "", errors.New("manage_projects service is not configured")
 	}
+	historyOnly := scope.TaskHistoryOnly
+	if r.sessions != nil && scope.SessionID != "" {
+		current, found, err := r.sessions.GetSession(scope.SessionID)
+		if err != nil {
+			return "", err
+		}
+		if found && current.Metadata["resolved_agent_name"] == "swarm" {
+			historyOnly = true
+		}
+	}
+	if historyOnly {
+		if err := r.authorizeTaskHistoryCall(scope, args); err != nil {
+			return "", err
+		}
+	}
 	p := scope.Principal
 	accountScopeID := strings.TrimSpace(p.AccountScopeID)
 	userID := strings.TrimSpace(p.UserID)

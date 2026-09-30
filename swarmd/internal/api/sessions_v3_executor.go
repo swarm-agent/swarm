@@ -4676,14 +4676,18 @@ func (e *sessionV3Executor) resolveSessionV3Runtime(job sessionV3ExecutorJob) (s
 	if strings.TrimSpace(scope.PrimaryPath) == "" {
 		return sessionV3ResolvedRuntime{}, errors.New("session workspace path is empty")
 	}
+	tools, err := e.resolveSessionV3ProviderTools(session.AccountScopeID, agentProfile)
+	if err != nil {
+		return sessionV3ResolvedRuntime{}, err
+	}
+	agentProfile, tools, err = e.resolveSessionV3TaskHistoryTools(scope, agentProfile, tools)
+	if err != nil {
+		return sessionV3ResolvedRuntime{}, err
+	}
 	instructions := strings.TrimSpace(e.composeSessionV3Instructions(scope, session.Mode, agentProfile))
 	instructions = runruntime.AppendResolvedModelPolicyInstructions(instructions, session.Mode, pref)
 	if instructions == "" {
 		return sessionV3ResolvedRuntime{}, errors.New("resolved v3 instructions are empty")
-	}
-	tools, err := e.resolveSessionV3ProviderTools(session.AccountScopeID, agentProfile)
-	if err != nil {
-		return sessionV3ResolvedRuntime{}, err
 	}
 	providerID := strings.ToLower(strings.TrimSpace(pref.Provider))
 	providerRunner, _ := e.server.providers.GetRunner(providerID)
@@ -4876,6 +4880,15 @@ func (e *sessionV3Executor) composeSessionV3InstructionsLegacy(scope tool.Worksp
 		"Workspace scope primary path: " + strings.TrimSpace(scope.PrimaryPath),
 	}
 	return strings.TrimSpace(strings.Join(lines, "\n"))
+}
+
+func (e *sessionV3Executor) resolveSessionV3TaskHistoryTools(scope tool.WorkspaceScope, profile pebblestore.AgentProfile, definitions []provideriface.ToolDefinition) (pebblestore.AgentProfile, []provideriface.ToolDefinition, error) {
+	if resolver, ok := e.server.runner.(interface {
+		ResolveTaskHistoryTools(tool.WorkspaceScope, pebblestore.AgentProfile, []provideriface.ToolDefinition) (pebblestore.AgentProfile, []provideriface.ToolDefinition, error)
+	}); ok {
+		return resolver.ResolveTaskHistoryTools(scope, profile, definitions)
+	}
+	return profile, definitions, nil
 }
 
 func (e *sessionV3Executor) resolveSessionV3ProviderTools(accountScopeID string, agentProfile pebblestore.AgentProfile) ([]provideriface.ToolDefinition, error) {

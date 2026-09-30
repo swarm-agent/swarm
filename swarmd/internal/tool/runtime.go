@@ -243,6 +243,7 @@ type WorkspaceScope struct {
 	// are immutable for the run. Calls outside those roots fail before the
 	// workspace permission subsystem can create a user-facing request.
 	RejectScopeExpansion bool
+	TaskHistoryOnly      bool
 	SessionID            string
 	Principal            identity.Principal
 	WorktreeEnabled      bool
@@ -455,6 +456,7 @@ func WithWorkspaceScope(parent context.Context, scope WorkspaceScope) context.Co
 	normalized := normalizeWorkspaceScope(scope.PrimaryPath, scope.Roots)
 	normalized.ReadOnlyRoots = append([]string(nil), scope.ReadOnlyRoots...)
 	normalized.MutationScopes = append([]string(nil), scope.MutationScopes...)
+	normalized.TaskHistoryOnly = scope.TaskHistoryOnly
 	normalized.SessionID = strings.TrimSpace(scope.SessionID)
 	normalized.Principal = scope.Principal
 	normalized.WorktreeEnabled = scope.WorktreeEnabled
@@ -507,6 +509,7 @@ func workspaceScopeFromContext(ctx context.Context, workspacePath string) Worksp
 		// Some control-plane tools deliberately omit path roots and authorize from
 		// the durable principal/session identity instead. Preserve that identity
 		// while retaining the caller's normalized path scope.
+		scope.TaskHistoryOnly = override.TaskHistoryOnly
 		scope.SessionID = strings.TrimSpace(override.SessionID)
 		scope.Principal = override.Principal
 		return scope
@@ -514,6 +517,7 @@ func workspaceScopeFromContext(ctx context.Context, workspacePath string) Worksp
 	normalized := normalizeWorkspaceScope(override.PrimaryPath, override.Roots)
 	normalized.ReadOnlyRoots = append([]string(nil), override.ReadOnlyRoots...)
 	normalized.MutationScopes = append([]string(nil), override.MutationScopes...)
+	normalized.TaskHistoryOnly = override.TaskHistoryOnly
 	normalized.SessionID = strings.TrimSpace(override.SessionID)
 	normalized.Principal = override.Principal
 	normalized.WorktreeEnabled = override.WorktreeEnabled

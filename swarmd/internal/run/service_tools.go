@@ -1703,6 +1703,17 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 			decisions[i].Result.Error = message
 			continue
 		}
+		if canonicalToolName(toolCalls[i].Name) == "manage_projects" {
+			principal, _ := identity.PrincipalFromContext(ctx)
+			var agentProfile pebblestore.AgentProfile
+			if len(profile) > 0 {
+				agentProfile = profile[0]
+			}
+			if err := s.authorizeProjectHistoryInvocation(tool.WorkspaceScope{SessionID: sessionID, Principal: principal}, agentProfile, toolCalls[i].Arguments); err != nil {
+				decisions[i].Result.Error = err.Error()
+				continue
+			}
+		}
 		if workerDocumentInPlanCall(toolCalls[i]) {
 			decisions[i].Result.Error = "Worker proposals require manage_workers action=propose; session-plan tools cannot author workers"
 			continue

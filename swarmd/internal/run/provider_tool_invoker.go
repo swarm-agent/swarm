@@ -676,6 +676,12 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 		return tool.Result{CallID: call.CallID, Name: call.Name, Error: "Worker proposals require manage_workers action=propose; session-plan tools cannot author workers"}, 0, nil
 	}
 	toolName := canonicalToolName(call.Name)
+	if toolName == "manage_projects" {
+		scope := tool.WorkspaceScope{SessionID: config.sessionID, Principal: providerManagedExecutionPrincipal(ctx, config)}
+		if err := s.authorizeProjectHistoryInvocation(scope, config.agentProfile, call.Arguments); err != nil {
+			return tool.Result{CallID: call.CallID, Name: call.Name, Error: err.Error()}, 0, nil
+		}
+	}
 	if toolName == "manage_workers" || toolName == "manage_automation" {
 		isOrchestrator := agentruntime.IsOrchestratorAgentName(config.agentProfile.Name)
 		if permissionSessionID != config.sessionID || !isOrchestrator {
@@ -691,6 +697,9 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 		}
 	}
 	if canonicalToolName(call.Name) != mediaInspectToolName {
+		if toolName == "manage_projects" {
+			ctx = identity.ContextWithPrincipal(ctx, providerManagedExecutionPrincipal(ctx, config))
+		}
 		var err error
 		gatedResults, approvedCalls, _, _, permissionFeedback, err = s.gateToolCalls(
 			ctx,
@@ -839,6 +848,7 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 						})
 					}
 					runtimeScope := workspaceCtx.Scope
+					runtimeScope.TaskHistoryOnly = canonicalToolName(call.Name) == "manage_projects" && !agentruntime.IsSwarmOrchestratorAgentName(config.agentProfile.Name)
 					runtimeScope.PrimaryPath = workspaceCtx.WorkspacePath
 					runtimeScope.Roots = append([]string(nil), workspaceCtx.WorkspaceRoots...)
 					runtimeScope.Principal = principal
