@@ -1,4 +1,4 @@
-export const SWARM_SECTIONS = ['projects', 'workers', 'deliverables', 'media', 'settings'] as const
+export const SWARM_SECTIONS = ['projects', 'workers', 'deliverables', 'media', 'agents', 'settings', 'charter', 'help'] as const
 export type SwarmSection = typeof SWARM_SECTIONS[number]
 export type SwarmPage = 'home' | SwarmSection
 

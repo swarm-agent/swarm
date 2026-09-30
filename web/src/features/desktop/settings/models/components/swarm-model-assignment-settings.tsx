@@ -62,7 +62,7 @@ function modelKey(provider: string, model: string): string {
   return `${encodeURIComponent(provider)}:${encodeURIComponent(model)}`
 }
 
-function DirectModelEditor({
+export function DirectModelEditor({
   label,
   value,
   modelOptions,

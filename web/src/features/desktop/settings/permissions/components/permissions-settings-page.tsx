@@ -195,7 +195,7 @@ async function resetPermissionPolicy(): Promise<PermissionPolicy> {
   return { ...policy, bash_profile: normalizeBashApprovalProfile(policy.bash_profile) }
 }
 
-export function PermissionsSettingsPage() {
+export function PermissionsSettingsPage({ orchestrate = false }: { orchestrate?: boolean } = {}) {
   const [policy, setPolicy] = useState<PermissionPolicy>({ version: 0, bash_profile: 'current_rules', rules: [] })
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -275,13 +275,13 @@ export function PermissionsSettingsPage() {
     try {
       const saved = await saveCapabilityPolicies({
         session_deploy: sessionDeployPolicy,
-        plan_acceptance: planAcceptancePolicy,
+        ...(!orchestrate ? { plan_acceptance: planAcceptancePolicy } : {}),
         active_execution_limit: activeExecutionLimit,
       })
       setSessionDeployPolicy(saved.session_deploy)
       setPlanAcceptancePolicy(saved.plan_acceptance)
       setActiveExecutionLimit(saved.active_execution_limit)
-      setStatus('Session deployment, plan acceptance, and execution limit policies saved')
+      setStatus(orchestrate ? 'Session deployment and execution limit policies saved' : 'Session deployment, plan acceptance, and execution limit policies saved')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save capability policies')
     } finally {
@@ -553,10 +553,10 @@ export function PermissionsSettingsPage() {
               <label className="mt-3 grid gap-2"><span className="text-xs text-[var(--app-text-muted)]">Automatic deployments per parent run</span><Input aria-label="Automatic deployments per parent run" type="number" min={0} max={256} disabled={sessionDeployPolicy.mode !== 'bounded'} value={sessionDeployPolicy.automatic_deployments_per_parent_run} onChange={(event) => setSessionDeployPolicy((current) => ({ ...current, automatic_deployments_per_parent_run: Number(event.target.value) }))} /></label>
               <label className="mt-3 grid gap-2"><span className="text-xs text-[var(--app-text-muted)]">When the limit is reached</span><select aria-label="Deployment over-limit action" disabled={sessionDeployPolicy.mode !== 'bounded'} value={sessionDeployPolicy.over_limit_action} onChange={(event) => setSessionDeployPolicy((current) => ({ ...current, over_limit_action: event.target.value as SessionDeployPolicy['over_limit_action'] }))} className="h-10 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] px-3 text-sm disabled:opacity-50"><option value="ask">Ask</option><option value="deny">Deny</option></select></label>
             </div>
-            <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-4">
+            {!orchestrate && <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-4">
               <div className="text-sm font-medium text-[var(--app-text)]">Plan acceptance</div><div className="mt-1 text-xs text-[var(--app-text-muted)]">Controls validated structured-plan acceptance only; continuation choices remain per plan.</div>
               <label className="mt-3 grid gap-2"><span className="text-xs text-[var(--app-text-muted)]">Policy</span><select aria-label="Plan acceptance policy" value={planAcceptancePolicy.mode} onChange={(event) => setPlanAcceptancePolicy({ mode: event.target.value as PlanAcceptancePolicy['mode'] })} className="h-10 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] px-3 text-sm"><option value="ask">Ask every time</option><option value="always_allow">Always allow</option></select></label>
-            </div>
+            </div>}
           </div>
         </section>
 

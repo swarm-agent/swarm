@@ -177,6 +177,25 @@ func (s *AgentModelSettingsStore) UpdateSwarmForAccount(accountScopeID string, a
 	})
 }
 
+// UpdateSwarmSlotForAccount preserves the sibling under the canonical store lock.
+func (s *AgentModelSettingsStore) UpdateSwarmSlotForAccount(accountScopeID, slot string, assignment AgentModelAssignment, updatedAt int64) (AgentModelSettingsRecord, error) {
+	if slot != "action" && slot != "plan" {
+		return AgentModelSettingsRecord{}, ErrAgentModelSettingsAgentUnknown
+	}
+	assignment = NormalizeAgentModelAssignment(assignment)
+	if err := ValidateAgentModelAssignment(assignment); err != nil {
+		return AgentModelSettingsRecord{}, err
+	}
+	return s.updateForAccount(NormalizeAgentModelAccountScopeID(accountScopeID), func(record *AgentModelSettingsRecord) {
+		if slot == "action" {
+			record.Swarm.Action = assignment
+		} else {
+			record.Swarm.Plan = assignment
+		}
+		record.UpdatedAt = updatedAt
+	})
+}
+
 // UpdateSystemAgentForAccount changes exactly one compiled system-agent assignment.
 func (s *AgentModelSettingsStore) UpdateSystemAgentForAccount(accountScopeID, name string, assignment AgentModelAssignment, updatedAt int64) (AgentModelSettingsRecord, error) {
 	canonicalName, err := NormalizeSystemAgentName(name)

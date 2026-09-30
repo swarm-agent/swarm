@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { getAgentModelSettings } from './get-agent-model-settings'
-import { restoreAgentModelDefaults, saveSwarmAgentModelSettings, saveSystemAgentModelSettings } from '../mutations/save-agent-model-settings'
+import { restoreAgentModelDefaults, saveSwarmModelSlot, saveSwarmAgentModelSettings, saveSystemAgentModelSettings } from '../mutations/save-agent-model-settings'
 
 const originalFetch = globalThis.fetch
 const assignment = (model: string) => ({ provider: 'codex', model, thinking: 'high', service_tier: 'fast', context_mode: '' })
@@ -97,4 +97,31 @@ test('restore uses explicit endpoint and rejects failures', async () => {
   assert.equal(calls, 1)
   globalThis.fetch = async () => new Response(JSON.stringify({ error: 'catalog unavailable' }), { status: 502 })
   await assert.rejects(restoreAgentModelDefaults(42))
+})
+
+// Purpose: role editor mutations must send one Swarm slot, never a cached pair.
+// The canonical mutation wire layer proves sibling omission and fail-before-fetch.
+test('single Swarm slot PATCH omits siblings and invalid selections never fetch', async () => {
+  let calls = 0
+  globalThis.fetch = async (_input, init) => {
+    calls++
+    assert.deepEqual(JSON.parse(String(init?.body)), { swarm: { plan: assignment('gpt-plan') } })
+    return new Response(JSON.stringify({ agent_model_settings: responseRecord() }), { status: 200 })
+  }
+  const value = { provider: 'codex', model: 'gpt-plan', thinking: 'high', serviceTier: 'fast', contextMode: '' }
+  await saveSwarmModelSlot('plan', value)
+  assert.throws(() => saveSwarmModelSlot('action', { ...value, model: '' }), /required/)
+  assert.equal(calls, 1)
+})
+
+// Purpose: canonical GET descriptors must reject malformed assignment targets
+// instead of routing a role save to an arbitrary group/slot; old GET stays valid.
+test('role descriptors are retained and malformed or duplicate targets reject', async () => {
+  const role = { id: 'system-orchestrator', label: 'Swarm Orchestrator', group: 'swarm', slot: 'plan' }
+  globalThis.fetch = async () => new Response(JSON.stringify({ roles: [role], agent_model_settings: responseRecord() }), { status: 200 })
+  assert.deepEqual((await getAgentModelSettings()).roles, [role])
+  for (const roles of [[{ ...role, slot: 'unknown' }], [{ ...role, group: 'custom' }], [role, role]]) {
+    globalThis.fetch = async () => new Response(JSON.stringify({ roles, agent_model_settings: responseRecord() }), { status: 200 })
+    await assert.rejects(getAgentModelSettings(), /descriptor is invalid/)
+  }
 })

@@ -1,6 +1,7 @@
 import { requestJson } from '../../../../../app/api'
 import type {
   AgentModelAssignment,
+  AgentModelRole,
   AgentModelSettings,
   SystemAgentModelName,
 } from '../types/agent-model-settings'
@@ -56,7 +57,23 @@ export function parseAgentModelSettings(response: unknown): AgentModelSettings {
   }
   const swarmRecord = swarm as Record<string, unknown>
   const systemAgentRecord = systemAgents as Record<string, unknown>
+  const descriptors = (response as Record<string, unknown>).roles
+  const roles: AgentModelRole[] | undefined = descriptors === undefined ? undefined : (() => {
+    if (!Array.isArray(descriptors)) throw new Error('System role descriptors are malformed')
+    const ids = new Set<string>()
+    return descriptors.map((value) => {
+      if (!value || typeof value !== 'object') throw new Error('System role descriptor is malformed')
+      const role = value as AgentModelRole
+      if (typeof role.id !== 'string' || !role.id.trim() || ids.has(role.id) || typeof role.label !== 'string' || !role.label.trim()
+        || !(role.group === 'swarm' ? ['action', 'plan'].includes(role.slot) : role.group === 'system_agents' && systemAgentNames.includes(role.slot as SystemAgentModelName))) {
+        throw new Error('System role descriptor is invalid')
+      }
+      ids.add(role.id)
+      return { id: role.id, label: role.label, group: role.group, slot: role.slot }
+    })
+  })()
   return {
+    ...(roles ? { roles } : {}),
     swarm: {
       action: parseAssignment(swarmRecord.action, 'swarm.action'),
       plan: parseAssignment(swarmRecord.plan, 'swarm.plan'),

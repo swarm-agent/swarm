@@ -11,7 +11,15 @@ export interface SwarmAgentModelAssignments {
 
 export type SystemAgentModelAssignments = Record<SystemAgentModelName, AgentModelAssignment>
 
+export interface AgentModelRole {
+  id: string
+  label: string
+  group: 'swarm' | 'system_agents'
+  slot: 'action' | 'plan' | SystemAgentModelName
+}
+
 export interface AgentModelSettings {
+  roles?: AgentModelRole[]
   swarm: SwarmAgentModelAssignments
   systemAgents: SystemAgentModelAssignments
   updatedAt: number
