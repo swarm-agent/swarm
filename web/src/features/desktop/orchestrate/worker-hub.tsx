@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { useWorkerNavigationPreferences } from '../layout/worker-navigation-preferences'
 import { WorkerSettingsReview } from './worker-settings-review'
 import { proposalWorkspaces } from './worker-proposal-presentation'
