@@ -76,10 +76,11 @@ export function WorkerDetail({ accountScopeId, workerId, workspaceSlug, onSelect
     {worker && <>
       <header className="space-y-3"><div className="flex flex-wrap items-start justify-between gap-3"><div className="min-w-0"><p className="mb-1 text-[10px] uppercase tracking-widest text-slate-500">Worker · {workerLifecycleLabel(worker.lifecycle_state)}</p><h3 className="break-words text-xl font-semibold text-white">{worker.name}</h3></div>
         <button className={button} disabled={!!detail?.stale || !!detail?.error} onClick={() => onSelectWorker({ id: worker.id, revision: worker.revision, name: worker.name })}>Ask Orchestrator</button></div>
-        <p className="break-words text-sm leading-relaxed text-slate-300">{worker.description || worker.instructions || 'Purpose not recorded.'}</p>
+        {worker.lifecycle_state !== 'pending' && <p className="break-words text-sm leading-relaxed text-slate-300">{worker.description || worker.instructions || 'Purpose not recorded.'}</p>}
         {readOnly && <p>Migrated snapshot · read-only</p>}
-        {worker.lifecycle_state === 'pending' && <PendingWorkerCard key={`${worker.id}:${worker.revision}`} worker={worker} accountScopeId={accountScopeId} workspaceSlug={workspaceSlug} initialExpanded stale={!!detail?.stale || !!detail?.error} mutationError={detail?.mutationError} />}
+        {worker.lifecycle_state === 'pending' && <PendingWorkerCard key={`${worker.id}:${worker.revision}`} worker={worker} accountScopeId={accountScopeId} workspaceSlug={workspaceSlug} stale={!!detail?.stale || !!detail?.error} mutationError={detail?.mutationError} />}
       </header>
+      {worker.lifecycle_state !== 'pending' && <>
       <section className={box}><h4 className="font-semibold text-white">Now</h4>
         {summaryPage?.error && <p role="alert">Activity unavailable: {summaryPage.error}</p>}
         {summaryPage?.stale && summary && <p className="text-amber-300">Activity is refreshing; these are last-known results.</p>}
@@ -106,6 +107,7 @@ export function WorkerDetail({ accountScopeId, workerId, workspaceSlug, onSelect
       </section>
       <WorkerRunHistory key={worker.id} accountScopeId={accountScopeId} worker={worker} workspaceSlug={workspaceSlug} />
       <details className={box}><summary className="cursor-pointer text-slate-400">Standing instructions &amp; identity</summary><p className="whitespace-pre-wrap break-words">{worker.instructions || 'No instructions recorded.'}</p><p className="break-all text-slate-500">{worker.id} · revision {worker.revision}</p><p>Workspace roles: {worker.workspace_requirements?.map(item => item.description || item.role).join(', ') || 'None specified'}</p></details>
+      </>}
     </>}
   </article>
 }
