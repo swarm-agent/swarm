@@ -11,6 +11,7 @@ import (
 	"swarm/packages/swarmd/internal/privacy"
 
 	"github.com/cockroachdb/pebble"
+	"github.com/google/uuid"
 )
 
 type SessionTurnUsageSnapshot struct {
@@ -568,27 +569,34 @@ func (s *SessionStore) ResetUsage(sessionID string, summary SessionUsageSummary)
 		return fmt.Errorf("session id is required")
 	}
 
-	// Compaction resets context occupancy, not billing history. Receipts must
-	// survive so late provider updates replace their original charge.
-	unlock := s.store.sessionMutations.lockSessions(sessionID, "account:"+strings.TrimSpace(summary.AccountScopeID))
-	defer unlock()
+	request := uuid.NewString()
+	_, err := s.ApplyV3SessionMutation(V3SessionMutationInput{
+		SessionID: sessionID, AccountScopeID: summary.AccountScopeID, UserID: summary.UserID,
+		Kind: "session.usage.reset", EventType: "session.usage.reset", UsageReset: &summary,
+		ClientRequestID: request, IdempotencyKey: request, PayloadHash: request, NowUnixMs: summary.UpdatedAt,
+	})
+	return err
+}
+
+// Called under the canonical mutation lock: compaction changes occupancy only.
+func (s *SessionStore) prepareUsageReset(sessionID string, summary SessionUsageSummary) (SessionUsageSummary, error) {
 	session, found, err := s.GetSession(sessionID)
 	if err != nil {
-		return err
+		return summary, err
 	}
 	if !found {
-		return fmt.Errorf("session %q not found", sessionID)
+		return summary, fmt.Errorf("session %q not found", sessionID)
 	}
 	if strings.TrimSpace(summary.AccountScopeID) != strings.TrimSpace(session.AccountScopeID) || strings.TrimSpace(summary.UserID) != strings.TrimSpace(session.UserID) {
-		return errors.New("usage reset principal mismatch")
+		return summary, errors.New("usage reset principal mismatch")
 	}
 	previous, found, err := s.GetUsageSummary(sessionID)
 	if err != nil {
-		return err
+		return summary, err
 	}
 	if found {
 		if previous.AccountScopeID != session.AccountScopeID || previous.UserID != session.UserID {
-			return errors.New("usage summary principal mismatch")
+			return summary, errors.New("usage summary principal mismatch")
 		}
 		summary.TurnCount = previous.TurnCount
 		summary.EstimatedCostUSD = previous.EstimatedCostUSD
@@ -611,30 +619,10 @@ func (s *SessionStore) ResetUsage(sessionID string, summary SessionUsageSummary)
 	}
 	summary.RemainingTokens = int64(summary.ContextWindow)
 
-	batch := s.store.NewBatch()
-	defer batch.Close()
-
-	summaryKey := KeySessionUsageSummary(sessionID)
 	summary.SessionID = sessionID
 	summary.UserID = strings.TrimSpace(summary.UserID)
 	summary.AccountScopeID = strings.TrimSpace(summary.AccountScopeID)
-	payload, err := json.Marshal(summary)
-	if err != nil {
-		return fmt.Errorf("marshal usage summary reset payload: %w", err)
-	}
-	if err := batch.Set([]byte(summaryKey), payload, nil); err != nil {
-		return fmt.Errorf("set usage summary reset key %q: %w", summaryKey, err)
-	}
-	if summary.AccountScopeID != "" {
-		accountKey := KeySessionUsageSummaryByAccount(summary.AccountScopeID, sessionID)
-		if err := batch.Set([]byte(accountKey), payload, nil); err != nil {
-			return fmt.Errorf("set usage summary account key %q: %w", accountKey, err)
-		}
-	}
-	if err := batch.Commit(pebble.Sync); err != nil {
-		return fmt.Errorf("commit usage reset batch: %w", err)
-	}
-	return nil
+	return summary, nil
 }
 
 func sanitizeUsageHistory(history []map[string]any) []map[string]any {

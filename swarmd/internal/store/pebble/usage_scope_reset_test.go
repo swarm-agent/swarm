@@ -2,9 +2,11 @@ package pebblestore
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -78,11 +80,15 @@ func TestUsageScopeResetPreservesBillingReceipts(t *testing.T) {
 	readState := func() map[string][]byte {
 		t.Helper()
 		out := map[string][]byte{}
-		if err := db.IteratePrefix("", 1000, func(key string, value []byte) error {
-			out[key] = append([]byte(nil), value...)
-			return nil
-		}); err != nil {
-			t.Fatal(err)
+		// Observe the exact state families touched by reset and accounting;
+		// the store intentionally rejects an unbounded empty-prefix scan.
+		for _, prefix := range []string{"session", "usage_scope", "daily_usage", "account_usage", "v3"} {
+			if err := db.IteratePrefix(prefix, 1000, func(key string, value []byte) error {
+				out[key] = append([]byte(nil), value...)
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
 		}
 		return out
 	}
@@ -94,10 +100,49 @@ func TestUsageScopeResetPreservesBillingReceipts(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertBills(100)
+	projection, found, err := s.GetV3SessionProjection(snapshot.ID)
+	if err != nil || !found {
+		t.Fatalf("reset projection: %v", err)
+	}
+	var resetEvent V3SessionEvent
+	found, err = db.GetJSON(KeyV3SessionEvent(snapshot.ID, projection.LastEventSeq), &resetEvent)
+	if err != nil || !found || resetEvent.EventType != "session.usage.reset" {
+		t.Fatalf("canonical reset event: %+v %v", resetEvent, err)
+	}
+	var resetPayload struct {
+		Summary SessionUsageSummary `json:"usage_summary"`
+	}
+	if err := json.Unmarshal(resetEvent.Payload, &resetPayload); err != nil || resetPayload.Summary.TotalTokens != 0 || resetPayload.Summary.EstimatedCostUSD != 1 {
+		t.Fatalf("reset payload: %+v %v", resetPayload, err)
+	}
+	outboxFound := false
+	if err := db.IteratePrefix(V3RealtimeOutboxPrefix(), 20, func(_ string, data []byte) error {
+		var outbox V3RealtimeOutboxRecord
+		if err := json.Unmarshal(data, &outbox); err != nil {
+			return err
+		}
+		if outbox.Event.EventType == "session.usage.reset" && outbox.Event.Seq == resetEvent.Seq {
+			outboxFound = true
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !outboxFound {
+		t.Fatal("reset missing atomic durable outbox")
+	}
 	after := readState()
-	for _, key := range []string{KeySessionUsageSummary(snapshot.ID), KeySessionUsageSummaryByAccount("account-1", snapshot.ID)} {
-		delete(before, key)
-		delete(after, key)
+	// Canonical reset changes session projection/events/outbox/idempotency,
+	// but none of the billing or binding records.
+	for key := range before {
+		if strings.HasPrefix(key, "v3") || key == KeySession(snapshot.ID) || key == KeySessionUsageSummary(snapshot.ID) || key == KeySessionUsageSummaryByAccount("account-1", snapshot.ID) {
+			delete(before, key)
+		}
+	}
+	for key := range after {
+		if strings.HasPrefix(key, "v3") || key == KeySession(snapshot.ID) || key == KeySessionUsageSummary(snapshot.ID) || key == KeySessionUsageSummaryByAccount("account-1", snapshot.ID) {
+			delete(after, key)
+		}
 	}
 	if !reflect.DeepEqual(before, after) {
 		t.Fatal("context reset changed receipt, index, attribution or billing records")

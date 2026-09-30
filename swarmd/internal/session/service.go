@@ -13,6 +13,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
+
 	modelruntime "swarm/packages/swarmd/internal/model"
 	codexruntime "swarm/packages/swarmd/internal/provider/codex"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -1490,16 +1492,7 @@ func (s *Service) RecordTurnUsage(sessionID string, usage pebblestore.SessionTur
 	usage.Model = strings.TrimSpace(usage.Model)
 	usage.Source = strings.TrimSpace(usage.Source)
 	normalizeTurnUsage(&usage)
-	if usage.EstimatedCostUSD <= 0 {
-		cost, status := s.store.CalculateCostWithStatus(usage.Provider, usage.Model, usage.InputTokens, usage.OutputTokens, usage.CacheReadTokens, usage.ThinkingTokens)
-		usage.EstimatedCostUSD = cost
-		if usage.PriceStatus == "" {
-			usage.PriceStatus = status
-		}
-	} else if usage.PriceStatus == "" {
-		_, status := s.store.CalculateCostWithStatus(usage.Provider, usage.Model, usage.InputTokens, usage.OutputTokens, usage.CacheReadTokens, usage.ThinkingTokens)
-		usage.PriceStatus = status
-	}
+	// Canonical receipt mutation owns billed-component pricing and summary state.
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1513,22 +1506,6 @@ func (s *Service) RecordTurnUsage(sessionID string, usage pebblestore.SessionTur
 	}
 
 	now := time.Now().UnixMilli()
-	previous, hadPrevious, err := s.store.GetTurnUsage(sessionID, usage.RunID)
-	if err != nil {
-		return pebblestore.SessionTurnUsageSnapshot{}, pebblestore.SessionUsageSummary{}, nil, err
-	}
-	summary, hasSummary, err := s.store.GetUsageSummary(sessionID)
-	if err != nil {
-		return pebblestore.SessionTurnUsageSnapshot{}, pebblestore.SessionUsageSummary{}, nil, err
-	}
-	if !hasSummary {
-		summary = pebblestore.SessionUsageSummary{SessionID: sessionID}
-	}
-
-	if !hadPrevious {
-		summary.TurnCount++
-	}
-
 	usage.SessionID = sessionID
 	if strings.TrimSpace(usage.UserID) == "" {
 		usage.UserID = session.UserID
@@ -1536,86 +1513,20 @@ func (s *Service) RecordTurnUsage(sessionID string, usage pebblestore.SessionTur
 	if strings.TrimSpace(usage.AccountScopeID) == "" {
 		usage.AccountScopeID = session.AccountScopeID
 	}
-	if usage.CreatedAt <= 0 {
-		if hadPrevious && previous.CreatedAt > 0 {
-			usage.CreatedAt = previous.CreatedAt
-		} else {
-			usage.CreatedAt = now
-		}
-	}
-	usage.UpdatedAt = now
 
-	if usage.ContextWindow > 0 {
-		summary.ContextWindow = usage.ContextWindow
-	} else if summary.ContextWindow > 0 {
-		usage.ContextWindow = summary.ContextWindow
-	}
-	summary.SessionID = sessionID
-	if strings.TrimSpace(summary.UserID) == "" {
-		summary.UserID = usage.UserID
-	}
-	if strings.TrimSpace(summary.AccountScopeID) == "" {
-		summary.AccountScopeID = usage.AccountScopeID
-	}
-	if usage.Provider != "" {
-		summary.Provider = usage.Provider
-	}
-	if usage.Model != "" {
-		summary.Model = usage.Model
-	}
-	if usage.Source != "" {
-		summary.Source = usage.Source
-	}
-	if usage.ServiceTier != "" {
-		summary.ServiceTier = usage.ServiceTier
-	}
-	summary.EstimatedCostUSD += usage.EstimatedCostUSD
-	if hadPrevious {
-		summary.EstimatedCostUSD -= previous.EstimatedCostUSD
-		if summary.EstimatedCostUSD < 0 {
-			summary.EstimatedCostUSD = 0
-		}
-	}
-	summary.LastTransport = usage.Transport
-	if usage.ConnectedViaWS != nil {
-		summary.LastConnectedViaWS = boolPointer(*usage.ConnectedViaWS)
-	} else {
-		summary.LastConnectedViaWS = nil
-	}
-	summary.LastRunID = usage.RunID
-	summary.UpdatedAt = now
-	if hadPrevious {
-		summary = pebblestore.ApplyProviderUsageSnapshotReplacementToSummary(summary, previous, usage)
-	} else {
-		summary = pebblestore.ApplyProviderUsageSnapshotToSummary(summary, usage)
-	}
-	normalizeUsageSummary(&summary)
-
-	if err := s.store.PutTurnUsage(usage); err != nil {
-		return pebblestore.SessionTurnUsageSnapshot{}, pebblestore.SessionUsageSummary{}, nil, err
-	}
-	if err := s.store.PutUsageSummary(summary); err != nil {
-		return pebblestore.SessionTurnUsageSnapshot{}, pebblestore.SessionUsageSummary{}, nil, err
-	}
-
-	if s.events == nil {
-		return usage, summary, nil, nil
-	}
-	payload, err := json.Marshal(map[string]any{
-		"session_id":  sessionID,
-		"run_id":      usage.RunID,
-		"turn_usage":  usage,
-		"usage_state": summary,
+	request := uuid.NewString()
+	result, err := s.ApplySessionMutation(SessionMutationInput{
+		SessionID: sessionID, AccountScopeID: usage.AccountScopeID, UserID: usage.UserID,
+		Kind: SessionMutationRecordUsage, EventType: "run.usage.updated", TurnUsage: &usage,
+		ClientRequestID: request, IdempotencyKey: request, PayloadHash: request, NowUnixMs: now,
 	})
 	if err != nil {
 		return pebblestore.SessionTurnUsageSnapshot{}, pebblestore.SessionUsageSummary{}, nil, err
 	}
-	stream := "session:" + sessionID
-	env, err := s.events.Append(stream, "session.usage.recorded", sessionID, payload, "", "")
-	if err != nil {
-		return pebblestore.SessionTurnUsageSnapshot{}, pebblestore.SessionUsageSummary{}, nil, err
+	if result.TurnUsage == nil || result.UsageSummary == nil {
+		return pebblestore.SessionTurnUsageSnapshot{}, pebblestore.SessionUsageSummary{}, nil, errors.New("committed usage state missing")
 	}
-	return usage, summary, &env, nil
+	return *result.TurnUsage, *result.UsageSummary, nil, nil
 }
 
 func (s *Service) ResetUsage(sessionID string, contextWindow int, provider, model, source string) (pebblestore.SessionUsageSummary, *pebblestore.EventEnvelope, error) {
@@ -1667,23 +1578,9 @@ func (s *Service) ResetUsage(sessionID string, contextWindow int, provider, mode
 		return pebblestore.SessionUsageSummary{}, nil, errors.New("usage summary missing after reset")
 	}
 
-	if s.events == nil {
-		return summary, nil, nil
-	}
-	payload, err := json.Marshal(map[string]any{
-		"session_id":  sessionID,
-		"usage_state": summary,
-		"updated_at":  now,
-	})
-	if err != nil {
-		return pebblestore.SessionUsageSummary{}, nil, err
-	}
-	stream := "session:" + sessionID
-	env, err := s.events.Append(stream, "session.usage.reset", sessionID, payload, "", "")
-	if err != nil {
-		return pebblestore.SessionUsageSummary{}, nil, err
-	}
-	return summary, &env, nil
+	// ResetUsage commits its summary and reset event through V3 atomically.
+	// Realtime publication is owned by the durable canonical outbox.
+	return summary, nil, nil
 }
 
 func (s *Service) GetUsageSummary(sessionID string) (pebblestore.SessionUsageSummary, bool, error) {

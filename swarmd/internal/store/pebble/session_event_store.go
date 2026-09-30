@@ -119,6 +119,7 @@ type V3SessionMutationInput struct {
 	VideoProject                 *V3VideoProjectMutation       `json:"video_project,omitempty"`
 	MediaStagingBindings         []MediaStagingBinding         `json:"media_staging_bindings,omitempty"`
 	EpochID                      string                        `json:"epoch_id,omitempty"`
+	UsageReset                   *SessionUsageSummary          `json:"usage_reset,omitempty"`
 	TurnUsage                    *SessionTurnUsageSnapshot     `json:"turn_usage,omitempty"`
 	MediaUsage                   *SessionMediaUsageRecord      `json:"media_usage,omitempty"`
 	ExpectedLastEventSeq         *uint64                       `json:"expected_last_event_seq,omitempty"`
@@ -967,6 +968,15 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 	if err != nil {
 		return V3SessionMutationResult{}, err
 	}
+	if input.UsageReset != nil {
+		if usageProvided || input.MediaUsage != nil || input.EventType != "session.usage.reset" {
+			return V3SessionMutationResult{}, errors.New("context reset requires a separate usage reset mutation")
+		}
+		usageSummary, err = s.prepareUsageReset(input.SessionID, *input.UsageReset)
+		if err != nil {
+			return V3SessionMutationResult{}, err
+		}
+	}
 	if usageProvided {
 		if hadPreviousTurnUsage && previousTurnUsage.AccountScopeID != turnUsage.AccountScopeID {
 			return V3SessionMutationResult{}, errors.New("usage receipt account cannot change")
@@ -1284,6 +1294,18 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 			if err := batch.Set([]byte(KeySessionLifecycleByAccount(lifecycle.AccountScopeID, lifecycle.SessionID)), []byte(lifecycle.SessionID), nil); err != nil {
 				return V3SessionMutationResult{}, err
 			}
+		}
+	}
+	if input.UsageReset != nil {
+		payload, err := json.Marshal(usageSummary)
+		if err != nil {
+			return V3SessionMutationResult{}, err
+		}
+		if err := batch.Set([]byte(KeySessionUsageSummary(usageSummary.SessionID)), payload, nil); err != nil {
+			return V3SessionMutationResult{}, err
+		}
+		if err := batch.Set([]byte(KeySessionUsageSummaryByAccount(usageSummary.AccountScopeID, usageSummary.SessionID)), payload, nil); err != nil {
+			return V3SessionMutationResult{}, err
 		}
 	}
 	if usageProvided {
@@ -1624,6 +1646,8 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 	}
 	if usageProvided {
 		result.TurnUsage = &turnUsage
+	}
+	if usageProvided || input.UsageReset != nil {
 		result.UsageSummary = &usageSummary
 	}
 	if input.MediaUsage != nil {
@@ -3672,6 +3696,11 @@ func (input V3SessionMutationInput) v3EventPayload(seq uint64, session SessionSn
 	if usageSummary.SessionID != "" {
 		summary := usageSummary
 		payload.UsageSummary = &summary
+	}
+	if input.UsageReset != nil {
+		// Keep the established context-reset payload while using canonical V3
+		// projection, replay and realtime outbox authority.
+		return json.Marshal(map[string]any{"session_id": input.SessionID, "usage_state": usageSummary, "usage_summary": usageSummary, "updated_at": usageSummary.UpdatedAt})
 	}
 	if input.PlanSave != nil {
 		plan := input.PlanSave.Plan
