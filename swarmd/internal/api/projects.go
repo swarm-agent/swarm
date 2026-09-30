@@ -3748,9 +3748,10 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		}
 		plan, err := integrator.PrepareTaskIntegration(parentWs, parentState.BranchName, parentState.HeadCommit, []worktreeruntime.TaskIntegrationChild{
 			{
-				SessionID:  selection.SessionID,
-				BaseCommit: baseCommit,
-				HeadCommit: childState.HeadCommit,
+				SessionID:        selection.SessionID,
+				BaseCommit:       baseCommit,
+				HeadCommit:       childState.HeadCommit,
+				PreserveAncestry: true,
 			},
 		})
 		if err != nil {
