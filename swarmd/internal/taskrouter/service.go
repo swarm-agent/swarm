@@ -15,6 +15,7 @@ type LLMInvoker func(ctx context.Context, instructions string, input string) (st
 
 // TaskRouteOptions encapsulates user request, explicit intent, aspect ratios, and project context.
 type TaskRouteOptions struct {
+	Title              string                            `json:"title,omitempty"`
 	Prompt             string                            `json:"prompt"`
 	RequestedWorkspace string                            `json:"requested_workspace,omitempty"`
 	Intent             string                            `json:"intent,omitempty"`       // "code", "image", "video", "audit", "sound"
@@ -93,6 +94,12 @@ func (s *Service) RouteTask(ctx context.Context, opts TaskRouteOptions) (pebbles
 	isDirectSound := opts.Intent == "sound" || opts.Intent == "audio" || opts.Agent == "sound" || opts.Agent == "audio"
 	isDirectVideo := (opts.Intent == "video" || opts.Agent == "video") && !opts.EnhancePrompt && (opts.VideoType == "single" || opts.ScenesCount <= 1)
 	if isDirectSound || isDirectVideo {
+		if s.invoker != nil || strings.TrimSpace(opts.Title) != "" {
+			baseContract.Title, err = s.NameTask(ctx, opts.Prompt, opts.Title)
+			if err != nil {
+				return pebblestore.TaskRouteResult{}, fmt.Errorf("router agent failed: %w", err)
+			}
+		}
 		return baseContract, nil
 	}
 
@@ -125,10 +132,16 @@ func (s *Service) RouteTask(ctx context.Context, opts TaskRouteOptions) (pebbles
 		if aiResult.Soundtrack != "" && (baseContract.Agent == "video" || baseContract.Agent == "sound") {
 			res.Soundtrack = aiResult.Soundtrack
 		}
+		if strings.TrimSpace(opts.Title) != "" {
+			res.Title = strings.TrimSpace(opts.Title)
+		}
 		return res, nil
 	}
 
 	// Deterministic compilation without AI invoker
+	if strings.TrimSpace(opts.Title) != "" {
+		baseContract.Title = strings.TrimSpace(opts.Title)
+	}
 	return baseContract, nil
 }
 
@@ -141,6 +154,7 @@ func (s *Service) invokeAIRouter(ctx context.Context, opts TaskRouteOptions, pla
 	instructions := strings.TrimSpace(`You are the Swarm AI Task Router. Your role is to analyze user requests, attached media references, project guidelines (PROJECT.md), and project workspaces to produce an authoritative, high-context execution plan and routing contract.
 
 CRITICAL INSTRUCTIONS:
+- "title": Generate a brief action/subject task-card label, normally 3–8 words and at most 80 Unicode characters. Summarize the actual requested change or deliverable, not the opening conversational text. For example, "ok can you look into why the sidebar keeps jumping ..." becomes "Fix sidebar layout jumps". Never echo the entire request or mechanically clip its prefix. No conversational filler, explanations, Markdown, or line breaks. Keep full user instructions in the mission, not in the title.
 - You are a routing coordinator, NOT a vision/image processing agent. Do NOT attempt image clipping, pixel viewing, or computer vision operations. You only inspect metadata (filename, title, kind, media_type, doc text snippet) and forward the media references to downstream specialist agents or generative engines.
 - If attached_media contains a document (pasted text, markdown, doc, pdf) and the user asks a question, analysis, or inquiry:
   Route to agent="finder" (or agent="swarm"), tier="discovery" (or tier="direct"), outcome_type="audit_report". The finder will read and inspect the attached document.
@@ -269,8 +283,16 @@ IMPORTANT TASK PROPERTIES:
 		return pebblestore.TaskRouteResult{}, err
 	}
 
-	if output.Title == "" || output.Agent == "" {
+	if output.Agent == "" {
 		return pebblestore.TaskRouteResult{}, fmt.Errorf("invalid AI router response")
+	}
+	if strings.TrimSpace(opts.Title) != "" {
+		output.Title = strings.TrimSpace(opts.Title)
+	} else {
+		output.Title, err = validateTaskTitle(output.Title, opts.Prompt)
+		if err != nil {
+			return pebblestore.TaskRouteResult{}, err
+		}
 	}
 
 	isMedia := output.Agent == "image" || output.Agent == "video" || output.Agent == "sound" || output.Agent == "audio" || output.OutcomeType == "media_bundle" || output.OutcomeType == "video_story" || output.OutcomeType == "video_clip"

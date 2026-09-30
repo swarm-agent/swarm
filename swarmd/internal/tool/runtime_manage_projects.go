@@ -606,11 +606,8 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 		}
 		taskID := strings.TrimSpace(asString(args["task_id"]))
 		title := strings.TrimSpace(asString(args["title"]))
-		if title == "" {
-			title = strings.TrimSpace(asString(args["prompt"]))
-		}
-		if title == "" {
-			return "", errors.New("manage_projects propose_task requires title")
+		if title == "" && strings.TrimSpace(asString(args["prompt"])) == "" && strings.TrimSpace(asString(args["description"])) == "" {
+			return "", errors.New("manage_projects propose_task requires title or prompt")
 		}
 
 		proj, found, err := r.projects.GetProject(accountScopeID, projectID)
