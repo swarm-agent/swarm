@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mapBackendTask } from './desktop-projects-state'
+import { mapBackendTask, reduceDesktopProjectsState } from './desktop-projects-state'
 
 // Requirement: realtime project hydration retains result-owned media identity.
 // Regression: moving hydration out of OrchestrateView must not drop provenance
@@ -25,4 +25,18 @@ test('project hydration preserves deliverable provenance without task-setting su
   assert.equal(historical.aspectRatio, undefined)
   assert.equal(historical.videoAspect, undefined)
   assert.equal(historical.videoProvenance, undefined)
+})
+
+// Requirement: slot count, prompt and ready state survive reconnect hydration;
+// an older project response cannot replace a newer image task revision.
+// Authority: reduceDesktopProjectsState, tested directly without transport timers.
+test('ten durable image slots survive stale hydration and retain original prompts', () => {
+  const task = mapBackendTask({ id: 'images', agent: 'image', revision: 4, variant_count: 10, description: 'original café',
+    deliverables: Array.from({ length: 10 }, (_, i) => ({ id: `slot-${i}`, kind: 'image', status: i === 0 ? 'ready' : 'queued', media_url: i === 0 ? 'data:image/png;base64,result' : undefined })) })
+  const state = { project: { projectId: 'project', tasks: [task], media: [], loading: false, stale: false, generation: 0 } }
+  const stale = mapBackendTask({ id: 'images', agent: 'image', revision: 1, deliverables: [{ id: 'slot-0', status: 'pending' }] })
+  const next = reduceDesktopProjectsState(state, { type: 'projects.updateTasks', projectId: 'project', tasks: [stale] })
+  assert.equal(next.project.tasks[0].deliverables!.length, 10)
+  assert.equal(next.project.tasks[0].deliverables![0].status, 'ready')
+  assert.equal(next.project.tasks[0].deliverables![0].prompt, 'original café')
 })

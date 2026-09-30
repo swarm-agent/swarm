@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"sort"
 	"sync"
@@ -175,5 +176,64 @@ func TestProjectImageDirectProviderPrompt(t *testing.T) {
 				t.Fatalf("provider prompt changed: %q", got)
 			}
 		}
+	}
+}
+
+// Purpose: a ten-image request reserves ten stable slots before execution;
+// replay must not collapse count or replace slot identities. This canonical
+// creation/store test is narrower than a provider-backed UI run.
+func TestProjectImageTenStableSlots(t *testing.T) {
+	s, db, p := setupDirectMediaTestServer(t)
+	project := &pebblestore.ProjectRecord{ID: "images", AccountID: p.AccountScopeID, Name: "Images"}
+	if err := db.PutProject(p.AccountScopeID, project); err != nil {
+		t.Fatal(err)
+	}
+	input := tool.ProjectTaskCreateInput{ID: "ten-images", Prompt: "editorial image of changing seasons", Agent: "image", Model: "snapshot-image", VariantCount: 10}
+	first, err := s.CreateProjectTask(context.Background(), p, project.ID, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.VariantCount != 10 || len(first.Deliverables) != 10 || len(first.ImagePrompts) != 10 {
+		t.Fatalf("collapsed image count: %+v", first)
+	}
+	seen := make(map[string]bool)
+	for i, slot := range first.Deliverables {
+		if slot.ID == "" || seen[slot.ID] || first.ImagePrompts[i] != input.Prompt {
+			t.Fatalf("invalid slot or changed prompt: %+v", slot)
+		}
+		seen[slot.ID] = true
+	}
+	again, err := s.CreateProjectTask(context.Background(), p, project.ID, input)
+	if err != nil || !reflect.DeepEqual(first.Deliverables, again.Deliverables) {
+		t.Fatalf("replay replaced slots: %v", err)
+	}
+}
+
+// Purpose: failed slot persistence must dispatch zero provider calls and must
+// not turn queued outputs into a spurious failed bundle. The store failure seam
+// at executeDirectMediaTask is the narrowest layer proving both postconditions.
+func TestProjectImagePersistenceFailureNotGenerationFailure(t *testing.T) {
+	s, db, p := setupDirectMediaTestServer(t)
+	recorder := &imagePromptRecorder{}
+	svc := imagegen.NewService(nil, pebblestore.NewAuthStore(db.Underlying()), pebblestore.NewImageThreadStore(db.Underlying()), s.model)
+	svc.SetGeminiImageClient(recorder)
+	s.SetImageGenerationService(svc)
+	project := &pebblestore.ProjectRecord{ID: "images", AccountID: p.AccountScopeID, Name: "Images"}
+	if err := db.PutProject(p.AccountScopeID, project); err != nil {
+		t.Fatal(err)
+	}
+	task := &pebblestore.ProjectTaskRecord{ID: "task", ProjectID: project.ID, AccountID: p.AccountScopeID, Title: "Images", Description: "editorial image of changing seasons", Agent: "image", Model: "snapshot-image", Status: "in_progress", VariantCount: 1, Deliverables: []pebblestore.ProjectTaskDeliverable{{ID: "slot", Kind: "image", Status: "queued"}}}
+	if err := db.PutProjectTask(p.AccountScopeID, task); err != nil {
+		t.Fatal(err)
+	}
+	restore := db.SetProjectTaskUpdateHookForTest(func(string) error { return errors.New("injected store failure") })
+	defer restore()
+	s.executeDirectMediaTask(p, project, task)
+	fresh, found, err := db.GetProjectTask(p.AccountScopeID, project.ID, task.ID)
+	if err != nil || !found {
+		t.Fatalf("missing task: %v", err)
+	}
+	if len(recorder.prompts) != 0 || fresh.Status != "in_progress" || fresh.Deliverables[0].Status != "queued" || fresh.LastError != "" {
+		t.Fatalf("persistence failure fabricated generation: %+v prompts=%v", fresh, recorder.prompts)
 	}
 }

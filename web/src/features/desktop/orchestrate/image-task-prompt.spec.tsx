@@ -11,6 +11,7 @@ import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import ts from 'typescript'
 import { ImagePromptControls, imagePromptReducer, initialImagePromptState, imagePromptEnhancement, imageExecutionLabel } from './image-task-prompt'
+import { mapBackendTask } from '../state/desktop-projects-state'
 import { resolveTaskImpendingAgents } from './orchestrate-task-helpers'
 
 const source = readFileSync(new URL('./OrchestrateView.tsx', import.meta.url), 'utf8')
@@ -100,7 +101,8 @@ test('actual submit POST preserves image prompt/settings/attachments and suppres
       taskDeployRequestIdentity: () => ({ clientTaskId: 'request' }),
       taskWorkspaceSelection: () => { throw new Error('image must not resolve repository') },
       requestJson: async (url: string, options: { body: string }) => { requests.push({ url, body: JSON.parse(options.body) }); return { task: { id: 'request' } } },
-      desktopProjects: { invalidate: noop }, dispatchImagePrompt: (action: unknown) => actions.push(action),
+      mapBackendTask,
+      desktopProjects: { invalidate: noop, setOptimisticTasks: (_project: string, update: (tasks: any[]) => any[]) => { assert.equal(update([])[0].id, 'request') } }, dispatchImagePrompt: (action: unknown) => actions.push(action),
       setIsDeployingTask: noop, setDeployError: noop, setIsDeployModalOpen: noop, setNewTaskPrompt: noop, setNewTaskModelOverride: noop, setTaggedMedia: noop,
     }
     await compile(submit.getText(file), context)()

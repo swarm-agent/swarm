@@ -908,7 +908,7 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 						ID:          fmt.Sprintf("deliv_img_%d_%d", now, i),
 						Title:       fmt.Sprintf("%s (Variant %d, %s)", task.Title, i, ar),
 						Kind:        "image",
-						Status:      "generating",
+						Status:      "queued",
 						Description: fmt.Sprintf("Autonomous deliverable for %s in aspect ratio %s", task.Title, ar),
 					})
 				}
@@ -917,6 +917,12 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 				} else if len(task.Deliverables) != count {
 					return errors.New("image deliverable count does not match variant count")
 				}
+				for i := range task.Deliverables {
+					if task.Deliverables[i].Status != "ready" && task.Deliverables[i].Status != "accepted" {
+						task.Deliverables[i].Status = "queued"
+					}
+				}
+				task.VariantCount = count
 				if err := validateProjectMediaTaskSettings(s, task, p); err != nil {
 					return err
 				}
@@ -1022,8 +1028,11 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 			}
 
 			// Persist task before starting execution goroutine to eliminate the persistence vs goroutine race.
-			if s.sessions != nil && s.sessions.Store() != nil {
-				_ = s.sessions.Store().PutProjectTask(p.AccountScopeID, task)
+			if s.sessions == nil || s.sessions.Store() == nil {
+				return errors.New("media task store is unavailable")
+			}
+			if err := s.sessions.Store().PutProjectTask(p.AccountScopeID, task); err != nil {
+				return fmt.Errorf("persist media task slots: %w", err)
 			}
 
 			taskCopy := *task
