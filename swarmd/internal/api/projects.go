@@ -3611,8 +3611,13 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if receipt.State == "in_progress" {
 				receipt.State = "conflict"
-				receipt.Error = "Integration did not complete. Inspect the source and target Git state before retrying."
+				if receipt.Error == "" {
+					receipt.Error = "Integration did not complete. Inspect the source and target Git state before retrying."
+				}
 				_, _ = db.UpdateProjectTask(p.AccountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
+					if t.SessionID != selection.SessionID {
+						return errors.New("task attempt changed during integration")
+					}
 					t.Integration = receipt
 					return nil
 				})
@@ -3737,6 +3742,20 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		if ti, ok := s.worktrees.(taskIntegrator); ok {
 			integrator = ti
 		}
+		// Persist inspected provenance before preparation: a merge conflict (or a
+		// restart during preparation) must retain the exact committed repair base.
+		receipt.SourceHead = childState.HeadCommit
+		receipt.PreviousTargetHead = parentState.HeadCommit
+		if _, err := db.UpdateProjectTask(p.AccountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
+			if t.SessionID != selection.SessionID {
+				return errors.New("task attempt changed before integration preparation")
+			}
+			t.Integration = receipt
+			return nil
+		}); err != nil {
+			writeError(w, http.StatusConflict, err)
+			return
+		}
 		plan, err := integrator.PrepareTaskIntegration(parentWs, parentState.BranchName, parentState.HeadCommit, []worktreeruntime.TaskIntegrationChild{
 			{
 				SessionID:  selection.SessionID,
@@ -3745,15 +3764,15 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			},
 		})
 		if err != nil {
-			writeError(w, http.StatusBadRequest, fmt.Errorf("prepare integration failed: %w", err))
+			receipt.Error = fmt.Sprintf("prepare integration failed: %v", err)
+			writeError(w, http.StatusBadRequest, errors.New(receipt.Error))
 			return
 		}
 
-		receipt.SourceHead = childState.HeadCommit
-		receipt.PreviousTargetHead = parentState.HeadCommit
 		result, err := integrator.ApplyTaskIntegration(parentWs, plan)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, fmt.Errorf("apply integration failed: %w", err))
+			receipt.Error = fmt.Sprintf("apply integration failed: %v", err)
+			writeError(w, http.StatusInternalServerError, errors.New(receipt.Error))
 			return
 		}
 
@@ -3762,13 +3781,15 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		// authoritative only after verifying the actual checked-out target ancestry.
 		verified, verifyErr := inspector.InspectTaskWorkspace(parentWs)
 		if verifyErr != nil || verified.BranchName != selection.TargetBranch || verified.HeadCommit != result.ResultingParentHead {
-			writeError(w, http.StatusConflict, errors.New("target changed after promotion; inspect Git before retrying"))
+			receipt.Error = "target changed after promotion; inspect Git before retrying"
+			writeError(w, http.StatusConflict, errors.New(receipt.Error))
 			return
 		}
 		verifyCtx, verifyCancel := context.WithTimeout(r.Context(), 3*time.Second)
 		defer verifyCancel()
 		if err := exec.CommandContext(verifyCtx, "git", "-C", parentWs, "merge-base", "--is-ancestor", childState.HeadCommit, verified.HeadCommit).Run(); err != nil {
-			writeError(w, http.StatusConflict, errors.New("source commit ancestry on target could not be verified; inspect Git before retrying"))
+			receipt.Error = "source commit ancestry on target could not be verified; inspect Git before retrying"
+			writeError(w, http.StatusConflict, errors.New(receipt.Error))
 			return
 		}
 		headDisplay := result.ResultingParentHead

@@ -177,14 +177,18 @@ func (s *Server) handleProjectTaskFollowup(w http.ResponseWriter, r *http.Reques
 				writeError(w, 409, errors.New("repair requires originating failed integration receipt"))
 				return
 			}
-			recovery = &pebblestore.ProjectTaskRecoverySource{SessionID: task.SessionID, WorkspacePath: task.WorkspacePath, Branch: task.WorktreeBranch, BaseCommit: task.BaseCommit, TargetBranch: task.BaseBranch, TargetHead: state.HeadCommit}
+			if task.Integration.SourceHead == "" || task.Integration.PreviousTargetHead == "" {
+				writeError(w, 409, errors.New("integration receipt is missing verified provenance; retry integration for the original task session before launching repair"))
+				return
+			}
+			recovery = &pebblestore.ProjectTaskRecoverySource{SessionID: task.SessionID, WorkspacePath: task.WorkspacePath, Branch: task.WorktreeBranch, BaseCommit: task.BaseCommit, TargetBranch: task.BaseBranch, TargetHead: task.Integration.PreviousTargetHead}
 			originState, inspectErr := s.worktrees.InspectTaskWorkspace(task.WorkspacePath)
 			if inspectErr != nil || !originState.Clean {
 				writeError(w, 409, errors.New("repair source is unavailable or dirty"))
 				return
 			}
 			recovery.HeadCommit = originState.HeadCommit
-			if task.Integration.SourceHead != recovery.HeadCommit || task.Integration.SourceBranch != recovery.Branch || task.Integration.TargetBranch != recovery.TargetBranch {
+			if task.Integration.SourceHead != recovery.HeadCommit || task.Integration.SourceBranch != recovery.Branch || task.Integration.TargetBranch != recovery.TargetBranch || state.HeadCommit != recovery.TargetHead || state.BranchName != recovery.TargetBranch {
 				writeError(w, 409, errors.New("integration receipt does not match current committed source/captured target"))
 				return
 			}
