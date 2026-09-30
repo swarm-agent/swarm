@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 import { Code2, Film, Image as ImageIcon, Layers, Music } from 'lucide-react'
 import type { RunningTask, MediaDeliverable } from './orchestrate-types'
+import { taskReviewMessage } from './task-review-message'
 
 export function formatElapsedString(elapsed?: string): string {
   if (!elapsed) return ''
@@ -54,6 +55,7 @@ export function TaskCardSummary({ task, onPreview, statusBadge, timer, actions, 
   extraBadges?: ReactNode
 }) {
   const facts = taskCardFacts(task)
+  const review = task.status === 'needs_review' ? taskReviewMessage(task) : null
   const Icon = task.agentType === 'image' ? ImageIcon : task.agentType === 'video' ? Film
     : task.agentType === 'audio' || task.agentType === 'sound' ? Music : task.agentType === 'swarm' ? Layers : Code2
   const preview = facts.deliverable
@@ -81,7 +83,15 @@ export function TaskCardSummary({ task, onPreview, statusBadge, timer, actions, 
           {facts.progress && <span className="swarm-task-progress">{facts.progress}</span>}
         </div>
         {extraBadges && <div className="swarm-task-extra">{extraBadges}</div>}
-        {task.handoffSummary && task.status === 'needs_review' && <p aria-label="Implementation handoff">Ready for review: {task.handoffSummary}</p>}
+        {review && <section aria-label="Ready for review">
+          <p>{review.outcome}{review.hasOutcome && ' Review the changes.'}</p>
+          {review.warnings.length > 0 && <p aria-label="Review warnings">{review.warnings.join(' ')}</p>}
+          {review.raw && <details key={`${task.id}:${task.activeAttemptId || ''}:${review.raw}`}
+            onClick={event => event.stopPropagation()} onKeyDown={event => event.stopPropagation()}>
+            <summary>Details — full implementation handoff</summary>
+            <pre className="whitespace-pre-wrap break-words" style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{review.raw}</pre>
+          </details>}
+        </section>}
       </div>
     </div>
   )
