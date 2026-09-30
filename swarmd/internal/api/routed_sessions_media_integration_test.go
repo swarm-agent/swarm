@@ -120,7 +120,14 @@ func newRoutedMediaTestFixture(t *testing.T) *routedMediaTestFixture {
 	providers := registry.New()
 	providers.RegisterRunner(runner)
 
-	sessions := sessionruntime.NewService(pebblestore.NewSessionStore(store), events)
+	sessionStore := pebblestore.NewSessionStore(store)
+	// Requirement: allocated-lane admission must reject unknown historical
+	// ownership. Complete the canonical bounded backfill before POST;
+	// never seed a ready flag or skip history validation.
+	// This fixture setup is the narrowest layer that enables the existing
+	// routed media ownership, replay, and atomicity assertions to reach admission.
+	requireMatrixRepositoryHistoryReady(t, sessionStore)
+	sessions := sessionruntime.NewService(sessionStore, events)
 	runService := runruntime.NewService(sessions, modelService, providers, tool.NewRuntime(1), nil, agentService, nil, events)
 	server := NewServer(nil, agentService, modelService, runService, sessions, workspace.NewService(workspaceStore), nil, nil, providers, nil, nil, events, stream.NewHub(events))
 	server.SetModelProfileService(favoriteService)
