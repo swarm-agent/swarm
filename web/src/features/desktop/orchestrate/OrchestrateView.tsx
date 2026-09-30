@@ -2,6 +2,7 @@ import { useState, useMemo, useEffect, useCallback, useRef, useSyncExternalStore
 import { taskIntegrationOperations, taskIntegrationKey, taskIntegrationPhase, type TaskIntegrationOperation, type TaskIntegrationResult } from './task-integration-operation'
 import { projectTaskFollowupPayload } from '../runtime/project-task-followup'
 import { TaskAttemptHistory } from './task-attempt-history'
+import { useOrchestratorDictation } from './use-orchestrator-dictation'
 import { integrationFailure, repairUnavailable, redactIntegrationDiagnostic, orchestratorDrafts, type IntegrationFailure } from './integration-recovery'
 import { useVideoTaskDefault } from './use-video-task-default'
 import { getUISettings } from '../settings/swarm/queries/get-ui-settings'
@@ -37,6 +38,8 @@ import {
   ListChecks,
   Loader2,
   MessageSquare,
+  Mic,
+  MicOff,
   Music,
   Palette,
   Paperclip,
@@ -2833,6 +2836,7 @@ export function OrchestratorChatComposer({
     }, [sessionId])
   )
   const isRunning = Boolean(activeRun && activeRun.runId)
+  const dictation = useOrchestratorDictation(draftKey, sending || isRunning, setDraft)
   const cacheSession = useDesktopV3CacheSelector(
     useCallback((state) => {
       const record = state.sessionsById[sessionId]
@@ -2931,6 +2935,8 @@ export function OrchestratorChatComposer({
     if (text === '/') { setCommandsOpen(true); setCommandQuery(''); return }
     if ((!text && attachments.length === 0) || sending || isRunning || uploadingAttachment) return
 
+    // Invalidate capture synchronously before submission snapshots can be reused.
+    dictation.cancel()
     setSending(true)
     setSendError(null)
 
@@ -3136,6 +3142,17 @@ export function OrchestratorChatComposer({
         </div>
       )}
 
+      {dictation.error && (
+        <div role="alert" className="p-2 rounded bg-red-950/40 border border-red-500/30 text-red-200 text-[11px]">
+          {dictation.error}
+        </div>
+      )}
+      {dictation.active && (
+        <div role="status" className="text-[11px] text-blue-300">
+          {dictation.listening ? 'Listening…' : 'Starting microphone…'}
+        </div>
+      )}
+
       <div className="relative flex items-end gap-2">
         <input
           ref={fileInputRef}
@@ -3215,6 +3232,18 @@ export function OrchestratorChatComposer({
           data-testid="orchestrator-chat-attach-btn"
         >
           <Paperclip size={14} className={uploadingAttachment ? 'animate-pulse text-blue-400' : ''} />
+        </button>
+
+        <button
+          type="button"
+          onClick={() => { dictation.toggle(); composerRef.current?.focus() }}
+          disabled={sending || isRunning}
+          aria-pressed={dictation.active}
+          aria-label={dictation.active ? 'Stop dictation' : 'Start dictation'}
+          title={dictation.active ? 'Stop dictation' : 'Start dictation'}
+          className={`flex items-center justify-center p-2.5 rounded-xl disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex-shrink-0 ${dictation.active ? 'bg-red-600/80 hover:bg-red-500 text-white' : 'bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white'}`}
+        >
+          {dictation.active ? <MicOff size={14} /> : <Mic size={14} />}
         </button>
 
         {/* Stop button when agent is running */}
