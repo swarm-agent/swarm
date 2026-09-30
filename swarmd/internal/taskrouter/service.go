@@ -90,6 +90,10 @@ func (s *Service) RouteTask(ctx context.Context, opts TaskRouteOptions) (pebbles
 		return pebblestore.TaskRouteResult{}, fmt.Errorf("task configuration invalid: %w", err)
 	}
 
+	if baseContract.Agent == "image" {
+		return s.routeImages(ctx, opts, baseContract)
+	}
+
 	// Direct media (sound, single video without prompt enhancement) does not require AI routing
 	isDirectSound := opts.Intent == "sound" || opts.Intent == "audio" || opts.Agent == "sound" || opts.Agent == "audio"
 	isDirectVideo := (opts.Intent == "video" || opts.Agent == "video") && !opts.EnhancePrompt && (opts.VideoType == "single" || opts.ScenesCount <= 1)

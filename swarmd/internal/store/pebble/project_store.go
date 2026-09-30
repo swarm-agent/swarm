@@ -393,6 +393,8 @@ type ProjectTaskRecord struct {
 	AspectRatio         string                       `json:"aspect_ratio,omitempty"`
 	Resolution          string                       `json:"resolution,omitempty"`
 	VariantCount        int                          `json:"variant_count,omitempty"`
+	EnhancePrompt       bool                         `json:"enhance_prompt,omitempty"`
+	ImagePrompts        []string                     `json:"image_prompts,omitempty"`
 	DurationSeconds     int                          `json:"duration_seconds,omitempty"`
 	Model               string                       `json:"model,omitempty"`
 	Provider            string                       `json:"provider,omitempty"`

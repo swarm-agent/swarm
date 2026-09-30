@@ -150,6 +150,9 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 	// Preserve the caller's exact proposal for idempotent replay; routing below
 	// supplies the small-task parent identity without changing submission bytes.
 	submittedInput := input
+	if (input.Agent == "image" || input.Intent == "image") && strings.TrimSpace(input.Prompt) != "" {
+		prompt = input.Prompt
+	}
 	if len(input.CoderAssignments) > 0 {
 		if input.Document != nil || input.PlanDocument != nil || input.TaskProgram != nil || input.TaskProgramID != "" || (input.Agent != "" && input.Agent != "swarm") || (input.FeatureSize != "" && input.FeatureSize != "small") || (input.OutcomeType != "" && input.OutcomeType != "code_pr" && input.OutcomeType != "bug_patch" && input.OutcomeType != "code") {
 			return nil, errors.New("coder_assignments require a small Swarm coding task without a plan or task program")
@@ -166,9 +169,20 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 	reqOp := strings.ToLower(strings.TrimSpace(input.Operation))
 	isDirectVideo := input.Agent == "video" || reqOp == pebblestore.VideoOperationEdit || reqOp == pebblestore.VideoOperationExtend || (reqOp == pebblestore.VideoOperationCreate && input.Agent == "video")
 	requiresRepo := input.Document != nil || input.PlanDocument != nil || input.TaskProgram != nil || (!isDirectVideo && input.Agent != "image" && input.Agent != "video" && input.Agent != "sound" && input.Agent != "audio")
-	source, err := s.resolveProjectTaskSource(p, proj, input.WorkspacePath, input.WorkspaceID, input.WorkspaceGeneration, requiresRepo)
-	if err != nil {
-		return nil, err
+	isImage := input.Agent == "image" || input.Intent == "image"
+	var source pebblestore.ProjectTaskSource
+	if isImage {
+		if input.Document != nil || input.PlanDocument != nil || input.TaskProgram != nil || input.TaskProgramID != "" || len(input.CoderAssignments) > 0 || input.SessionID != "" || input.Operation != "" {
+			return nil, errors.New("image tasks cannot carry source execution, sessions, plans, or task programs")
+		}
+		if _, err := pebblestore.RouteAndPlanProjectTaskWithOptions(pebblestore.TaskPlanOptions{Prompt: prompt, Agent: input.Agent, Intent: input.Intent, OutcomeType: input.OutcomeType, Tier: input.Tier, FeatureSize: input.FeatureSize, VariantCount: input.VariantCount}); err != nil {
+			return nil, err
+		}
+	} else {
+		source, err = s.resolveProjectTaskSource(p, proj, input.WorkspacePath, input.WorkspaceID, input.WorkspaceGeneration, requiresRepo)
+		if err != nil {
+			return nil, err
+		}
 	}
 	// Resolve every assignment before reserving any task/session. Never trust a
 	// client-supplied source binding or infer a different repository from prose.
@@ -254,6 +268,7 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 		Workspaces:         proj.Workspaces,
 		FeatureSize:        featureSize,
 		Agent:              agentName,
+		Intent:             input.Intent,
 		OutcomeType:        outcomeType,
 		Tier:               tier,
 		AspectRatio:        input.AspectRatio,
@@ -371,7 +386,35 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 
 	// Name only after idempotent replay and source checks. The deterministic
 	// execution contract and full original prompt must not be elaborated here.
-	if strings.TrimSpace(input.Title) == "" {
+	if isImage {
+		preflight := pebblestore.ProjectTaskRecord{Agent: "image", Model: input.Model, AspectRatio: aspectRatio, Resolution: input.Resolution, VariantCount: variantCount, Deliverables: routed.Deliverables}
+		if err := validateProjectMediaTaskSettings(s, &preflight, p); err != nil {
+			return nil, err
+		}
+		for _, attachment := range input.AttachedMedia {
+			if hasConflictingMediaDeclaration(attachment) {
+				return nil, errors.New("conflicting image attachment declarations")
+			}
+			if _, _, err := s.resolveSourceMediaBytes(ctx, p, attachment, "image"); err != nil {
+				return nil, fmt.Errorf("image attachment: %w", err)
+			}
+		}
+		router := taskrouter.NewService(func(ctx context.Context, instructions, input string) (string, error) {
+			res, err := s.invokeConfiguredRouterOnce(ctx, p, instructions, input, 64<<10)
+			return res.Text, err
+		})
+		routed, err = router.RouteTask(ctx, taskrouter.TaskRouteOptions{Prompt: prompt, Title: input.Title, Agent: agentName, Intent: input.Intent, OutcomeType: outcomeType, Tier: tier, AspectRatio: aspectRatio, VariantCount: variantCount, EnhancePrompt: input.EnhancePrompt})
+		if err != nil {
+			return nil, err
+		}
+		title = routed.Title
+		description = prompt
+		deliverables = routed.Deliverables
+		stages = routed.Stages
+		planSummary = routed.PlanSummary
+		fullPlanMarkdown = routed.FullPlanMarkdown
+		worktreeBranch = ""
+	} else if strings.TrimSpace(input.Title) == "" {
 		router := taskrouter.NewService(func(ctx context.Context, instructions, input string) (string, error) {
 			res, err := s.invokeConfiguredRouterOnce(ctx, p, instructions, input, 4<<10)
 			return res.Text, err
@@ -417,6 +460,8 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 		AspectRatio:        aspectRatio,
 		Resolution:         input.Resolution,
 		VariantCount:       variantCount,
+		EnhancePrompt:      routed.EnhancePrompt,
+		ImagePrompts:       routed.ImagePrompts,
 		DurationSeconds:    input.DurationSeconds,
 		Model:              strings.TrimSpace(input.Model),
 		Provider:           strings.TrimSpace(input.Provider),

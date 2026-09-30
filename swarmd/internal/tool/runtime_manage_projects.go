@@ -37,6 +37,7 @@ type ProjectTaskCreateInput struct {
 	Description         string                                   `json:"description,omitempty"`
 	Prompt              string                                   `json:"prompt,omitempty"`
 	Agent               string                                   `json:"agent,omitempty"`
+	Intent              string                                   `json:"intent,omitempty"`
 	Operation           string                                   `json:"operation,omitempty"`
 	WorkerName          string                                   `json:"worker_name,omitempty"`
 	FeatureSize         string                                   `json:"feature_size,omitempty"`
@@ -49,6 +50,7 @@ type ProjectTaskCreateInput struct {
 	AspectRatio         string                                   `json:"aspect_ratio,omitempty"`
 	Resolution          string                                   `json:"resolution,omitempty"`
 	VariantCount        int                                      `json:"variant_count,omitempty"`
+	EnhancePrompt       bool                                     `json:"enhance_prompt,omitempty"`
 	DurationSeconds     int                                      `json:"duration_seconds,omitempty"`
 	Model               string                                   `json:"model,omitempty"`
 	Provider            string                                   `json:"provider,omitempty"`
@@ -951,6 +953,8 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 			Description:         description,
 			Prompt:              prompt,
 			Agent:               agentName,
+			Intent:              strings.TrimSpace(asString(args["intent"])),
+			EnhancePrompt:       asBool(args["enhance_prompt"]),
 			WorkerName:          workerName,
 			FeatureSize:         featureSize,
 			WorkspacePath:       wsPath,

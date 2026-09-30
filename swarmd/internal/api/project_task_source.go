@@ -92,6 +92,10 @@ func (s *Server) resolveProjectTaskSource(p identity.Principal, proj *pebblestor
 }
 
 func (s *Server) revalidateProjectTaskSource(p identity.Principal, proj *pebblestore.ProjectRecord, task *pebblestore.ProjectTaskRecord) error {
+	if task.Agent == "image" && task.SessionID == "" && task.TaskProgram == nil && task.TaskProgramID == "" && task.PlanBinding == nil && len(task.CoderAssignments) == 0 && len(task.ProgramSources) == 0 && task.SourceWorkspace.Path == "" {
+		_, err := pebblestore.RouteAndPlanProjectTaskWithOptions(pebblestore.TaskPlanOptions{Agent: task.Agent, OutcomeType: task.OutcomeType, Tier: task.Tier, VariantCount: task.VariantCount})
+		return err
+	}
 	if task.SourceWorkspace.WorkspaceID == "" || task.SourceWorkspace.Path == "" || task.SourceWorkspace.WorkspaceGeneration <= 0 {
 		return errors.New("task has no durable source workspace binding")
 	}

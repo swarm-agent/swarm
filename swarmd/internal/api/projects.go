@@ -912,7 +912,14 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 						Description: fmt.Sprintf("Autonomous deliverable for %s in aspect ratio %s", task.Title, ar),
 					})
 				}
-				task.Deliverables = delivs
+				if len(task.Deliverables) == 0 {
+					task.Deliverables = delivs
+				} else if len(task.Deliverables) != count {
+					return errors.New("image deliverable count does not match variant count")
+				}
+				if err := validateProjectMediaTaskSettings(s, task, p); err != nil {
+					return err
+				}
 				task.Status = "in_progress"
 				task.ActionNeeded = fmt.Sprintf("Generating %d deliverable variant(s)...", count)
 				task.WhatDidDo = []string{"Approved mission", "Generating media assets"}
@@ -2232,7 +2239,10 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		requiresRepo := previewReq.Agent != "image" && previewReq.Agent != "video" && previewReq.Agent != "sound" && previewReq.Agent != "audio"
-		source, err := s.resolveProjectTaskSource(p, proj, previewReq.WorkspacePath, previewReq.WorkspaceID, previewReq.WorkspaceGeneration, requiresRepo)
+		var source pebblestore.ProjectTaskSource
+		if previewReq.Agent != "image" && previewReq.Intent != "image" {
+			source, err = s.resolveProjectTaskSource(p, proj, previewReq.WorkspacePath, previewReq.WorkspaceID, previewReq.WorkspaceGeneration, requiresRepo)
+		}
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
@@ -2421,13 +2431,15 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			}
 
 			isMediaRequest := req.Agent == "image" || req.Agent == "video" || req.Agent == "sound" || req.Agent == "audio" || req.Intent == "image" || req.Intent == "video" || req.Intent == "sound" || req.Intent == "audio" || req.Operation != ""
-			if !isMediaRequest {
+			if !isMediaRequest || req.Agent == "image" || req.Intent == "image" {
 				input := tool.ProjectTaskCreateInput{
 					ID:                  req.ID,
 					Title:               req.Title,
 					Description:         req.Description,
 					Prompt:              req.Prompt,
 					Agent:               req.Agent,
+					Intent:              req.Intent,
+					EnhancePrompt:       req.EnhancePrompt != nil && *req.EnhancePrompt,
 					WorkerName:          req.WorkerName,
 					FeatureSize:         req.FeatureSize,
 					WorkspacePath:       req.WorkspacePath,

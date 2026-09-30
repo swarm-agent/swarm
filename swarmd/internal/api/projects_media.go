@@ -571,6 +571,20 @@ func validateProjectMediaTaskSettings(s *Server, task *pebblestore.ProjectTaskRe
 		if task.VariantCount > 25 {
 			return fmt.Errorf("image variant count %d exceeds maximum allowed (25)", task.VariantCount)
 		}
+		if agent == "image" {
+			count := task.VariantCount
+			if count == 0 {
+				count = max(1, len(task.Deliverables))
+			}
+			if len(task.Deliverables) > 0 && len(task.Deliverables) != count {
+				return errors.New("image deliverable count does not match variant count")
+			}
+			if len(task.ImagePrompts) > 0 || task.EnhancePrompt {
+				if err := pebblestore.ValidateImagePrompts(task.ImagePrompts, count); err != nil {
+					return err
+				}
+			}
+		}
 		return nil
 	}
 
@@ -1064,9 +1078,12 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 				defer wg.Done()
 				for i := range jobs {
 					variantIdx := i + 1
+					if i < len(task.Deliverables) && (task.Deliverables[i].Status == "ready" || task.Deliverables[i].Status == "accepted") {
+						continue
+					}
 					reqPrompt := prompt
-					if sourceTitle != "" {
-						reqPrompt = fmt.Sprintf("%s (iteration based on %s)", prompt, sourceTitle)
+					if len(task.ImagePrompts) > 0 {
+						reqPrompt = task.ImagePrompts[i]
 					}
 					mediaURL, usedModel, resolvedAR, resolvedRes, err := s.generateImageMedia(ctx, p, reqPrompt, ar, variantIdx, task.Model, task.Resolution, sourceImage)
 					slotIndex := i

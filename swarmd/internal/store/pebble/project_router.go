@@ -24,6 +24,8 @@ type TaskRouteResult struct {
 	Tier               string                   `json:"tier"`
 	AspectRatio        string                   `json:"aspect_ratio,omitempty"`
 	VariantCount       int                      `json:"variant_count,omitempty"`
+	EnhancePrompt      bool                     `json:"enhance_prompt,omitempty"`
+	ImagePrompts       []string                 `json:"image_prompts,omitempty"`
 	Scenes             []ProjectTaskScene       `json:"scenes,omitempty"`
 	Soundtrack         string                   `json:"soundtrack,omitempty"`
 	RouterAlert        string                   `json:"router_alert,omitempty"`
@@ -103,24 +105,6 @@ func RouteAndPlanProjectTaskWithOptions(opts TaskPlanOptions) (TaskRouteResult, 
 	feedback := strings.TrimSpace(opts.Feedback)
 	lastError := strings.TrimSpace(opts.LastError)
 
-	// Routing describes an already selected target; project ordering is not authority.
-	heroWorkspace := strings.TrimSpace(opts.RequestedWorkspace)
-	if heroWorkspace == "" && len(opts.Workspaces) == 1 {
-		heroWorkspace = strings.TrimSpace(opts.Workspaces[0].Path)
-	}
-	if len(opts.Workspaces) > 1 && heroWorkspace == "" {
-		return TaskRouteResult{}, errors.New("execution target is ambiguous; select a project workspace explicitly")
-	}
-	// A catalog-free route can produce media previews, but cannot authorize a
-	// repository allocation. The project task creation boundary validates roots.
-	if heroWorkspace == "" {
-		heroWorkspace = "."
-	}
-	if heroWorkspace != "." && !filepath.IsAbs(heroWorkspace) {
-		return TaskRouteResult{}, errors.New("execution target requires an absolute workspace root")
-	}
-	detected := []string{heroWorkspace}
-
 	explicitAgent := strings.ToLower(strings.TrimSpace(opts.Agent))
 	explicitOutcome := strings.ToLower(strings.TrimSpace(opts.OutcomeType))
 	explicitTier := strings.ToLower(strings.TrimSpace(opts.Tier))
@@ -178,9 +162,6 @@ func RouteAndPlanProjectTaskWithOptions(opts TaskPlanOptions) (TaskRouteResult, 
 			agent = "image"
 			tier = "direct"
 			outcomeType = "media_bundle"
-			if opts.VariantCount >= 5 {
-				tier = "swarm"
-			}
 		case "video":
 			if intent != "" && intent != "video" {
 				return TaskRouteResult{}, fmt.Errorf("conflicting task configuration: intent %q cannot use video agent", opts.Intent)
@@ -207,6 +188,9 @@ func RouteAndPlanProjectTaskWithOptions(opts TaskPlanOptions) (TaskRouteResult, 
 			tier = "direct"
 			outcomeType = "artifact"
 		case "swarm":
+			if intent == "image" {
+				return TaskRouteResult{}, errors.New("conflicting task configuration: image intent requires image generation")
+			}
 			agent = "swarm"
 			tier = "direct"
 			outcomeType = "general"
@@ -234,9 +218,6 @@ func RouteAndPlanProjectTaskWithOptions(opts TaskPlanOptions) (TaskRouteResult, 
 			agent = "image"
 			tier = "direct"
 			outcomeType = "media_bundle"
-			if opts.VariantCount >= 5 {
-				tier = "swarm"
-			}
 		case "video":
 			agent = "video"
 			tier = "direct"
@@ -297,6 +278,33 @@ func RouteAndPlanProjectTaskWithOptions(opts TaskPlanOptions) (TaskRouteResult, 
 	}
 	if explicitTier != "" {
 		tier = explicitTier
+	}
+
+	// Exempt only the validated managed-image contract, never source execution.
+	heroWorkspace := ""
+	var detected []string
+	if agent == "image" {
+		if opts.VariantCount < 0 || opts.VariantCount > 25 {
+			return TaskRouteResult{}, errors.New("image variant count must be between 1 and 25 (or zero for default)")
+		}
+		if explicitTier != "" && explicitTier != "direct" {
+			return TaskRouteResult{}, errors.New("image generation requires direct tier")
+		}
+	} else {
+		heroWorkspace = strings.TrimSpace(opts.RequestedWorkspace)
+		if heroWorkspace == "" && len(opts.Workspaces) == 1 {
+			heroWorkspace = strings.TrimSpace(opts.Workspaces[0].Path)
+		}
+		if len(opts.Workspaces) > 1 && heroWorkspace == "" {
+			return TaskRouteResult{}, errors.New("execution target is ambiguous; select a project workspace explicitly")
+		}
+		if heroWorkspace == "" {
+			heroWorkspace = "."
+		}
+		if heroWorkspace != "." && !filepath.IsAbs(heroWorkspace) {
+			return TaskRouteResult{}, errors.New("execution target requires an absolute workspace root")
+		}
+		detected = []string{heroWorkspace}
 	}
 
 	isVisualMedia := agent == "image" || agent == "video"
@@ -590,4 +598,17 @@ func MakeWorktreeBranch(title, prompt string) (string, string) {
 		slug = fmt.Sprintf("task-%d", time.Now().Unix()%10000)
 	}
 	return fmt.Sprintf("agent/%s", slug), slug
+}
+
+// ValidateImagePrompts verifies the entire slot mapping before any provider work.
+func ValidateImagePrompts(prompts []string, count int) error {
+	if count < 1 || count > 25 || len(prompts) != count {
+		return errors.New("image prompt count must match output count (1..25)")
+	}
+	for _, prompt := range prompts {
+		if strings.TrimSpace(prompt) == "" {
+			return errors.New("image prompts must not be empty")
+		}
+	}
+	return nil
 }
