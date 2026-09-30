@@ -638,8 +638,12 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 				return nil, fmt.Errorf("deploy task execution: %w", err)
 			}
 		}
-		if err := db.PutProjectTask(p.AccountScopeID, &task); err != nil {
-			return nil, err
+		// Direct media deployment already persisted the slots before launching
+		// workers. Never overwrite their live results with this reservation.
+		if !isDirectMedia || task.Status != "in_progress" {
+			if err := db.PutProjectTask(p.AccountScopeID, &task); err != nil {
+				return nil, err
+			}
 		}
 	}
 
@@ -1357,12 +1361,16 @@ func (s *Server) ApproveProjectTask(ctx context.Context, p identity.Principal, p
 		if err := s.deployProjectTaskExecution(p, proj, existingTask, "in_progress", ""); err != nil {
 			return nil, fmt.Errorf("deploy media execution: %w", err)
 		}
-		existingTask.Status, existingTask.ActionNeeded = "in_progress", ""
-		if err := db.PutProjectTask(p.AccountScopeID, existingTask); err != nil {
+		// Deployment persisted before dispatch. Read, rather than overwrite,
+		// the result: workers may already have completed individual images.
+		fresh, found, err := db.GetProjectTask(p.AccountScopeID, projectID, taskID)
+		if err != nil {
 			return nil, err
 		}
-		hydrateTaskPlanDocument(existingTask, db)
-		return existingTask, nil
+		if !found {
+			return nil, errors.New("deployed media task not found")
+		}
+		return fresh, nil
 	}
 
 	// A reserved session ID does not prove that creation succeeded.

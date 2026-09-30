@@ -123,10 +123,16 @@ export interface MediaDeliverable {
   thumbnailType?: DeliverableThumbnailType
   videoAspect?: '16:9' | '9:16' | '1:1'
   duration?: string
-  status: 'ready' | 'generating' | 'pending' | 'accepted' | 'rejected'
+  status: 'ready' | 'generating' | 'queued' | 'pending' | 'failed' | 'accepted' | 'rejected'
+  description?: string
   createdAt: string | number
   author: string
   prompt?: string
+  model?: string
+  aspectRatio?: string
+  resolution?: string
+  durationSeconds?: number
+  videoProvenance?: unknown
   metrics?: { views?: string; tokens?: string; renderTime?: string }
   parentDeliverableId?: string
   sourceMediaRef?: string

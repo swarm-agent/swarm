@@ -86,6 +86,7 @@ import { requireDesktopV3RealtimeControllerReady } from '../realtime/v3-realtime
 import { HistoricalMediaLibrary, MediaViewerModal, type MediaLibraryItem } from '../tools/media-library'
 import type { MediaGenerationJob, MediaGenerationRequest, MediaGenerationSettings } from '../tools/media-library/media-generation'
 import type { QuickRouteMode } from '../tools/media-library/media-viewer-modal'
+import { MediaTaskCard } from './media-task-card'
 import { ORCHESTRATE_THEMES } from './orchestrate-themes'
 import { TaskCardSummary, formatElapsedString, formatElapsedSeconds } from './task-card-summary'
 import { TaskCardActivity } from './task-card-activity'
@@ -341,7 +342,7 @@ function deliverableToMediaItem(
   parentTask?: RunningTask,
   project?: ProjectSummary | null,
 ): MediaLibraryItem {
-  const isVideo = d.type === 'video' || (d.previewUrl && !d.previewUrl.startsWith('data:image'))
+  const isVideo = d.type === 'video'
   const isImage = d.type === 'image' || (d.previewUrl && d.previewUrl.startsWith('data:image'))
   const kind: 'image' | 'video' | 'audio' | 'animation' = isVideo ? 'video' : isImage ? 'image' : d.type === 'audio' ? 'audio' : 'image'
   const createdDate = parseSafeDate(d.createdAt)
@@ -388,7 +389,7 @@ function deliverableToMediaItem(
     iterationGroupTitle: parentTask?.title,
     dimensions: d.videoAspect || aspectRatio || undefined,
     durationMs,
-    directUrl: d.previewUrl || d.mediaUrl || '',
+    directUrl: d.mediaUrl || d.previewUrl || '',
     parentId: d.parentDeliverableId || (d as any).parent_deliverable_id,
     sourceMediaRef: d.sourceMediaRef || (d as any).source_media_ref,
     model,
@@ -707,7 +708,7 @@ export function MinimalTaskCard({
   integrationOperation?: TaskIntegrationOperation
   onDelete?: () => void
   onRefine?: (feedback?: string, errorSummary?: string) => void
-  onPreviewDeliverable?: (d: MediaDeliverable) => void
+  onPreviewDeliverable?: (d: MediaDeliverable, mode?: QuickRouteMode) => void
   onReopen?: (feedback?: string) => void
   onComplete?: () => void
   onRedeployJob?: (taskId: string, jobId: string, feedback?: string) => void
@@ -930,6 +931,10 @@ export function MinimalTaskCard({
     () => getPrimarySystemAgentName(task.agentType),
     [task.agentType]
   )
+
+  if (['image', 'video', 'audio', 'sound'].includes(task.agentType)) {
+    return <MediaTaskCard task={task} onPreview={onPreviewDeliverable} onApprove={onApprove} onArchive={onArchiveTask} onDelete={onDelete} isApproving={isApproving} error={taskError} />
+  }
 
   return (
     <div
@@ -5034,7 +5039,7 @@ export function OrchestrateView({
       setLocalGenerationJobs((prev) => [optimisticJob, ...prev])
 
       try {
-        const finalVariantCount = action === 'iterate' ? (variantCount || 1) : 1
+        const finalVariantCount = jobCount
         const finalScenesCount = targetIntent === 'video' ? (scenesCount || 1) : undefined
         const finalSoundtrack = targetIntent === 'video' ? (soundtrack || undefined) : undefined
 
@@ -5375,6 +5380,11 @@ export function OrchestrateView({
       }
       // Reset stable request identity only upon successful response
       pendingDeployRequestRef.current = null
+      // Use the returned durable slots immediately; hydration is a repair, not
+      // a prerequisite for displaying the requested output count.
+      desktopProjects.setOptimisticTasks(selectedProject.id, previous => [
+        ...previous.filter(task => task.id !== res.task.id), mapBackendTask(res.task),
+      ])
       desktopProjects.invalidate(selectedProject.id)
       setIsDeployModalOpen(false)
       setNewTaskPrompt('')
@@ -7151,7 +7161,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                           integrationOperation={integrationForTask(t)}
                           onDelete={() => handleDeleteTask(t.id)}
                           onRefine={(fb, err) => handleRefineTask(t.id, fb, err)}
-                          onPreviewDeliverable={(d) => handleOpenDeliverableInMediaCenter(d)}
+                          onPreviewDeliverable={(d, mode) => handleOpenDeliverableInMediaCenter(d, t, mode)}
                           onReopen={(fb) => handleReopenTask(t.id, fb)}
                           onComplete={() => handleCompleteTask(t.id)}
                           onRedeployJob={(tId, jId, fb) => handleRedeployJob(tId, jId, fb)}
@@ -7258,7 +7268,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                               integrationOperation={integrationForTask(t)}
                               onDelete={() => handleDeleteTask(t.id)}
                               onRefine={(fb, err) => handleRefineTask(t.id, fb, err)}
-                              onPreviewDeliverable={(d) => handleOpenDeliverableInMediaCenter(d)}
+                              onPreviewDeliverable={(d, mode) => handleOpenDeliverableInMediaCenter(d, t, mode)}
                               onReopen={(fb) => handleReopenTask(t.id, fb)}
                               onComplete={() => handleCompleteTask(t.id)}
                               onRedeployJob={(tId, jId, fb) => handleRedeployJob(tId, jId, fb)}
@@ -7376,7 +7386,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                           integrationOperation={integrationForTask(task)}
                           onDelete={() => handleDeleteTask(task.id)}
                           onRefine={(fb, err) => handleRefineTask(task.id, fb, err)}
-                          onPreviewDeliverable={(d) => handleOpenDeliverableInMediaCenter(d)}
+                          onPreviewDeliverable={(d, mode) => handleOpenDeliverableInMediaCenter(d, task, mode)}
                           onReopen={(fb) => handleReopenTask(task.id, fb)}
                           onComplete={() => handleCompleteTask(task.id)}
                           onRedeployJob={(tId, jId, fb) => handleRedeployJob(tId, jId, fb)}
@@ -7484,7 +7494,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                         integrationOperation={integrationForTask(selectedTaskForSplit)}
                         onDelete={() => handleDeleteTask(selectedTaskForSplit.id)}
                         onRefine={(fb, err) => handleRefineTask(selectedTaskForSplit.id, fb, err)}
-                        onPreviewDeliverable={(d) => handleOpenDeliverableInMediaCenter(d)}
+                        onPreviewDeliverable={(d, mode) => handleOpenDeliverableInMediaCenter(d, selectedTaskForSplit, mode)}
                         onReopen={(fb) => handleReopenTask(selectedTaskForSplit.id, fb)}
                         onComplete={() => handleCompleteTask(selectedTaskForSplit.id)}
                         onRedeployJob={(tId, jId, fb) => handleRedeployJob(tId, jId, fb)}
@@ -7535,7 +7545,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                       integrationOperation={integrationForTask(t)}
                       onDelete={() => handleDeleteTask(t.id)}
                       onRefine={(fb, err) => handleRefineTask(t.id, fb, err)}
-                      onPreviewDeliverable={(d) => handleOpenDeliverableInMediaCenter(d)}
+                      onPreviewDeliverable={(d, mode) => handleOpenDeliverableInMediaCenter(d, t, mode)}
                       onReopen={(fb) => handleReopenTask(t.id, fb)}
                       onComplete={() => handleCompleteTask(t.id)}
                       onRedeployJob={(tId, jId, fb) => handleRedeployJob(tId, jId, fb)}

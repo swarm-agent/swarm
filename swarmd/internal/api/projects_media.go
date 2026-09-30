@@ -10,6 +10,7 @@ import (
 	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -606,15 +607,23 @@ func updateProjectTaskWithRetry(db *pebblestore.SessionStore, accountScopeID, pr
 	var rec *pebblestore.ProjectTaskRecord
 	var err error
 	for attempt := 0; attempt < 10; attempt++ {
-		rec, err = db.UpdateProjectTask(accountScopeID, projectID, taskID, mutate)
+		rec, err = db.UpdateProjectTask(accountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
+			if err := mutate(t); err != nil {
+				return err
+			}
+			t.Revision++
+			return nil
+		})
 		if err == nil {
 			return rec, nil
 		}
 		if !strings.Contains(err.Error(), "not found") {
+			log.Print("media task durable update failed")
 			return nil, err
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+	log.Print("media task durable update exhausted retries")
 	return nil, err
 }
 
@@ -973,6 +982,9 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 			t.ActionNeeded = fmt.Sprintf("Action Needed: %v", valErr)
 			t.WhatNotDone = []string{valErr.Error()}
 			for i := range t.Deliverables {
+				if t.Deliverables[i].Status == "ready" || t.Deliverables[i].Status == "accepted" {
+					continue
+				}
 				t.Deliverables[i].Status = "failed"
 				t.Deliverables[i].Description = fmt.Sprintf("Settings error: %v", valErr)
 			}
@@ -989,9 +1001,9 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 		if ar == "" {
 			ar = "1:1"
 		}
-		count := len(task.Deliverables)
+		count := task.VariantCount
 		if count == 0 {
-			count = task.VariantCount
+			count = len(task.Deliverables)
 		}
 		if count <= 0 {
 			count = 1
@@ -1027,8 +1039,9 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 			}
 		}
 
-		lowerPrompt := strings.ToLower(prompt)
-		isFineTune := strings.Contains(lowerPrompt, "change") || strings.Contains(lowerPrompt, "modify") || strings.Contains(lowerPrompt, "edit") || strings.Contains(lowerPrompt, "tweak") || strings.Contains(lowerPrompt, "replace") || strings.Contains(lowerPrompt, "fine-tune")
+		// Prompt vocabulary (e.g. "editorial") is not an edit-operation
+		// contract. Only an explicit edit or attached source requires editing.
+		isFineTune := task.Operation == "edit" || sourceImage != nil
 		if sourceErr == nil && sourceImage == nil {
 			if len(task.AttachedMedia) > 0 {
 				sourceErr = errors.New("attached source image could not be resolved")
@@ -1043,6 +1056,9 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 				t.ActionNeeded = fmt.Sprintf("Action Needed: %v", sourceErr)
 				t.WhatNotDone = []string{sourceErr.Error()}
 				for i := range t.Deliverables {
+					if t.Deliverables[i].Status == "ready" || t.Deliverables[i].Status == "accepted" {
+						continue
+					}
 					t.Deliverables[i].Status = "failed"
 					t.Deliverables[i].Description = fmt.Sprintf("Source image error: %v", sourceErr)
 				}
@@ -1060,6 +1076,9 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 				t.ActionNeeded = fmt.Sprintf("Action Needed: %v", modelErr)
 				t.WhatNotDone = []string{modelErr.Error()}
 				for i := range t.Deliverables {
+					if t.Deliverables[i].Status == "ready" || t.Deliverables[i].Status == "accepted" {
+						continue
+					}
 					t.Deliverables[i].Status = "failed"
 					t.Deliverables[i].Description = fmt.Sprintf("Model error: %v", modelErr)
 				}
@@ -1088,14 +1107,31 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 					if i < len(task.Deliverables) && (task.Deliverables[i].Status == "ready" || task.Deliverables[i].Status == "accepted") {
 						continue
 					}
+					// A slot is generating only once a worker actually owns it.
+					if _, err := updateProjectTaskWithRetry(db, p.AccountScopeID, task.ProjectID, task.ID, func(t *pebblestore.ProjectTaskRecord) error {
+						if i >= len(t.Deliverables) {
+							return errors.New("image output slot is missing")
+						}
+						if t.Deliverables[i].Status == "ready" || t.Deliverables[i].Status == "accepted" {
+							return errors.New("image output slot is already ready")
+						}
+						t.Deliverables[i].Status = "generating"
+						return nil
+					}); err != nil {
+						log.Print("image task slot persistence failed before dispatch")
+						return // Never dispatch work whose state cannot be persisted.
+					}
 					reqPrompt := prompt
 					if len(task.ImagePrompts) > 0 {
 						reqPrompt = task.ImagePrompts[i]
 					}
 					mediaURL, usedModel, resolvedAR, resolvedRes, err := s.generateImageMedia(ctx, p, reqPrompt, ar, variantIdx, task.Model, task.Resolution, sourceImage)
 					slotIndex := i
-					_, _ = updateProjectTaskWithRetry(db, p.AccountScopeID, task.ProjectID, task.ID, func(t *pebblestore.ProjectTaskRecord) error {
+					_, persistErr := updateProjectTaskWithRetry(db, p.AccountScopeID, task.ProjectID, task.ID, func(t *pebblestore.ProjectTaskRecord) error {
 						if slotIndex < len(t.Deliverables) {
+							if t.Deliverables[slotIndex].Status == "ready" || t.Deliverables[slotIndex].Status == "accepted" {
+								return nil
+							}
 							if err != nil || mediaURL == "" {
 								t.Deliverables[slotIndex].Status = "failed"
 								errMsg := "Image generation failed"
@@ -1128,6 +1164,10 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 						}
 						return nil
 					})
+					if persistErr != nil {
+						log.Print("image task result persistence failed; durable output remains nonterminal")
+						return // Leave durable nonterminal state intact; do not report a bundle failure.
+					}
 				}
 			}()
 		}
@@ -1151,7 +1191,11 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 				t.Model = task.Model
 			}
 
-			if readyCount == 0 && len(t.Deliverables) > 0 {
+			if readyCount+failedCount != len(t.Deliverables) {
+				// Missing/pending output is not evidence that generation failed.
+				return nil
+			}
+			if readyCount == 0 && failedCount > 0 {
 				t.Status = "failed"
 				t.LastError = "all image variants failed generation"
 				t.ActionNeeded = "Action Needed: All image deliverables failed generation. Check provider settings and prompt."
@@ -1322,6 +1366,9 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 				t.ActionNeeded = fmt.Sprintf("Action Needed: %v", modelErr)
 				t.WhatNotDone = []string{modelErr.Error()}
 				for i := range t.Deliverables {
+					if t.Deliverables[i].Status == "ready" || t.Deliverables[i].Status == "accepted" {
+						continue
+					}
 					t.Deliverables[i].Status = "failed"
 					t.Deliverables[i].Description = fmt.Sprintf("Model error: %v", modelErr)
 				}
