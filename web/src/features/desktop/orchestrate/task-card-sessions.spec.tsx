@@ -78,8 +78,10 @@ test('program retry supersedes historical/duplicate entries and updates count', 
 })
 
 // Purpose: TaskCardActionButtons must render only recognizable icons, retaining exact
-// accessible names/tooltips, keyboard focus and usable targets. Server markup and
-// element props are the narrowest layer proving this without a browser/layout claim.
+// accessible names/tooltips and keyboard focus while matching MinimalTaskCard's
+// 20px checkbox and 12px checkmark, preventing oversized adjacent actions.
+// Server markup and element props are the narrowest layer proving the component
+// sizing contract without claiming computed browser layout.
 test('archive and ask render icon-only outlined buttons with accessible names', () => {
   const tree = TaskCardActionButtons({ onArchiveTask: () => {}, onAskOrchestrator: () => {} })
   const controls = buttons(tree)
@@ -88,12 +90,14 @@ test('archive and ask render icon-only outlined buttons with accessible names', 
     assert.equal(button.props.type, 'button')
     assert.equal(button.props.title, button.props['aria-label'])
     assert.match(button.props.className, /border/)
-    assert.match(button.props.className, /\bh-8 w-8\b/)
+    assert.match(button.props.className, /\bh-5 w-5\b/)
     assert.match(button.props.className, /focus-visible:outline-2/)
     assert.match(button.props.className, /focus-visible:outline-sky-400/)
     const markup = renderToStaticMarkup(button)
     assert.match(markup, index === 0 ? /lucide-archive/ : /lucide-message-circle/)
     assert.match(markup, /<svg[^>]*aria-hidden="true"/)
+    assert.match(markup, /<svg[^>]*width="12"/)
+    assert.match(markup, /<svg[^>]*height="12"/)
     assert.equal(markup.replace(/<[^>]*>/g, ''), '', 'no visible text inside the button')
   }
 })
@@ -130,12 +134,15 @@ test('archive and ask preserve optional callbacks and stop click propagation fir
 
 // Purpose: MinimalTaskCard retains the existing inline action slot immediately before
 // the separate checkbox label. This wiring check supplements the rendered/handler
-// contracts above; it does not claim browser-level selection or layout verification.
+// contracts above and checks the checkbox sizing authority used by those controls;
+// it does not claim browser-level selection or layout verification.
 test('task action icons remain inline immediately before checkbox wiring', () => {
   const source = readFileSync(new URL('./OrchestrateView.tsx', import.meta.url), 'utf8')
   const actionRow = source.slice(source.indexOf('        actions={'), source.indexOf('        extraBadges={'))
   assert.match(actionRow, /flex items-center gap-1\.5/)
   assert.match(actionRow, /<TaskCardActionButtons onArchiveTask=\{onArchiveTask\} onAskOrchestrator=\{onAskOrchestrator\} \/>\s*\{onToggleMarked && \(/)
   assert.ok(actionRow.indexOf('<TaskCardActionButtons') < actionRow.indexOf('type="checkbox"'))
+  assert.match(actionRow, /w-5 h-5/)
+  assert.match(actionRow, /<Check size=\{12\}/)
   assert.doesNotMatch(source, /self-end[^\n]*Archive task/)
 })
