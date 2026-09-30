@@ -200,7 +200,9 @@ func (e *sessionV3Executor) updateStaleRecoveryPhase(job sessionV3ExecutorJob, o
 }
 
 func (e *sessionV3Executor) runStaleSupervisedProviderAttempt(ctx context.Context, job sessionV3ExecutorJob, runner provideriface.Runner, req provideriface.Request, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
-	if err := e.server.sessions.Store().CheckWorkerSessionBudget(job.Principal.AccountScopeID, job.SessionID, runner.ID(), req.Model); err != nil { return provideriface.Response{}, err }
+	if err := e.server.sessions.Store().CheckWorkerSessionBudget(job.Principal.AccountScopeID, job.SessionID, runner.ID(), req.Model); err != nil {
+		return provideriface.Response{}, err
+	}
 	if job.activity == nil {
 		return runner.CreateResponseStreaming(ctx, req, onEvent)
 	}

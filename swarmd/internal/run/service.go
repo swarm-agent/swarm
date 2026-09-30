@@ -2491,7 +2491,9 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		}
 
 		if !errors.Is(err, pebblestore.ErrWorkerBudget) && hasConcreteUsageSnapshot(response.Usage) {
-			if releaseErr := releaseProviderWorkerBudget(runnerCtx); releaseErr != nil { return RunResult{}, releaseErr }
+			if releaseErr := releaseProviderWorkerBudget(runnerCtx); releaseErr != nil {
+				return RunResult{}, releaseErr
+			}
 		}
 		if stopErr := ctx.Err(); stopErr != nil {
 			if runErr != nil {
@@ -4415,7 +4417,9 @@ func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, ru
 			}
 		}
 		if !errors.Is(reqErr, pebblestore.ErrWorkerBudget) && hasConcreteUsageSnapshot(oneShotResult.Usage) {
-			if err := releaseProviderWorkerBudget(ctx); err != nil { return "", err }
+			if err := releaseProviderWorkerBudget(ctx); err != nil {
+				return "", err
+			}
 		}
 		if reqErr == nil {
 			runCompactionDebugEvent("memory_compaction_one_shot_success", map[string]any{
@@ -5411,7 +5415,9 @@ func runMemoryCompactionProviderCall(ctx context.Context, runner provideriface.R
 // Compact cases. Case-specific callers own instructions and response validation;
 // this boundary owns streaming assembly, cancellation, and optional heartbeats.
 func runCompactProviderCall(ctx context.Context, runner provideriface.Runner, req provideriface.Request, emitHeartbeat func(string)) (provideriface.Response, error) {
-	if err := checkProviderWorkerBudget(ctx, runner, req); err != nil { return provideriface.Response{}, err }
+	if err := checkProviderWorkerBudget(ctx, runner, req); err != nil {
+		return provideriface.Response{}, err
+	}
 	resultCh := make(chan struct {
 		response provideriface.Response
 		err      error

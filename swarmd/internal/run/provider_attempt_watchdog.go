@@ -68,14 +68,18 @@ func runProviderAttempt(
 		ctx = context.Background()
 	}
 	if timeout <= 0 {
-		if err := checkProviderWorkerBudget(ctx, runner, req); err != nil { return provideriface.Response{}, err }
+		if err := checkProviderWorkerBudget(ctx, runner, req); err != nil {
+			return provideriface.Response{}, err
+		}
 		return runner.CreateResponseStreaming(ctx, req, onEvent)
 	}
 
 	var acceptedGeneration atomic.Uint64
 	observer := providerAttemptObserverFromContext(ctx)
 	for attempt := 0; attempt <= providerAttemptRetryLimit; attempt++ {
-		if err := checkProviderWorkerBudget(ctx, runner, req); err != nil { return provideriface.Response{}, err }
+		if err := checkProviderWorkerBudget(ctx, runner, req); err != nil {
+			return provideriface.Response{}, err
+		}
 		generation := acceptedGeneration.Add(1)
 		attemptCtx, cancelAttempt := context.WithCancel(ctx)
 		activity := make(chan struct{}, 1)

@@ -145,7 +145,9 @@ func (s *Server) invokeConfiguredRouterOnce(ctx context.Context, principal ident
 	}
 
 	if principal.SessionID != "" && s.sessions != nil {
-		if err := s.sessions.Store().CheckWorkerUnmeteredOperation(principal.AccountScopeID, principal.SessionID); err != nil { return configuredRouterResponse{}, err }
+		if err := s.sessions.Store().CheckWorkerUnmeteredOperation(principal.AccountScopeID, principal.SessionID); err != nil {
+			return configuredRouterResponse{}, err
+		}
 	}
 	authorityContext := identity.ContextWithPrincipal(ctx, principal)
 	response, err := runner.CreateResponse(authorityContext, provideriface.Request{

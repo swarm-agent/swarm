@@ -18,8 +18,8 @@ type Runners interface {
 // RuntimeProvider uses account-authenticated runners, with no tools or continuation.
 // Pricing and catalog output ceilings are not admission requirements.
 type RuntimeProvider struct {
-	Runners Runners
-	Catalog *store.ModelCatalogStore
+	Runners  Runners
+	Catalog  *store.ModelCatalogStore
 	Sessions *store.SessionStore
 }
 
@@ -43,8 +43,12 @@ func (p *RuntimeProvider) Generate(ctx context.Context, r Request) (Result, erro
 		}
 	}
 	if principal, found := identity.PrincipalFromContext(ctx); found && principal.SessionID != "" {
-		if p.Sessions == nil { return Result{}, errors.New("memory worker budget authority unavailable") }
-		if err := p.Sessions.CheckWorkerUnmeteredOperation(principal.AccountScopeID, principal.SessionID); err != nil { return Result{}, err }
+		if p.Sessions == nil {
+			return Result{}, errors.New("memory worker budget authority unavailable")
+		}
+		if err := p.Sessions.CheckWorkerUnmeteredOperation(principal.AccountScopeID, principal.SessionID); err != nil {
+			return Result{}, err
+		}
 	}
 	response, err := runner.CreateResponse(ctx, iface.Request{Model: r.Model.Model, Thinking: r.Model.Thinking, ServiceTier: r.Model.ServiceTier, ContextMode: r.Model.ContextMode, ModelCatalog: catalog, Instructions: r.Instructions, Input: []map[string]any{{"role": "user", "content": string(r.Input)}}, ToolChoice: "none", StartNewChain: true, ForceFreshProviderContext: true})
 	if err != nil {
