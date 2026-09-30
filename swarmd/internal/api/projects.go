@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"os"
 	"os/exec"
@@ -1916,21 +1917,137 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				if !s.requireScopeAny(w, r, "projects:write", "sessions:write") {
 					return
 				}
-				body, err := io.ReadAll(io.LimitReader(r.Body, 10*1024*1024))
-				if err != nil {
-					writeError(w, http.StatusBadRequest, errors.New("cannot read request body"))
-					return
+				targetSessionID := strings.TrimSpace(proj.PrimarySessionID)
+				if targetSessionID == "" {
+					targetSessionID = projectID
 				}
 				var item pebblestore.ProjectTaskMediaRef
-				if err := json.Unmarshal(body, &item); err != nil {
-					writeError(w, http.StatusBadRequest, errors.New("invalid JSON payload"))
-					return
+				ct := strings.ToLower(r.Header.Get("Content-Type"))
+				if strings.Contains(ct, "application/json") {
+					body, err := io.ReadAll(io.LimitReader(r.Body, 64*1024*1024))
+					if err != nil {
+						writeError(w, http.StatusBadRequest, errors.New("cannot read request body"))
+						return
+					}
+					if err := json.Unmarshal(body, &item); err != nil {
+						writeError(w, http.StatusBadRequest, errors.New("invalid JSON payload"))
+						return
+					}
+					trimmedURL := strings.TrimSpace(item.URL)
+					stagingID := ""
+					if strings.HasPrefix(item.ID, "stg_") {
+						stagingID = item.ID
+					} else if idx := strings.Index(trimmedURL, "/media/staging/stg_"); idx >= 0 {
+						sub := trimmedURL[idx+len("/media/staging/"):]
+						if end := strings.IndexAny(sub, "/?#"); end >= 0 {
+							stagingID = sub[:end]
+						} else {
+							stagingID = sub
+						}
+					} else if idx := strings.Index(trimmedURL, "/v3/media-staging/stg_"); idx >= 0 {
+						sub := trimmedURL[idx+len("/v3/media-staging/"):]
+						if end := strings.IndexAny(sub, "/?#"); end >= 0 {
+							stagingID = sub[:end]
+						} else {
+							stagingID = sub
+						}
+					}
+					if stagingID != "" && s.mediaStaging != nil {
+						stgRecord, stgBytes, readErr := s.mediaStaging.Read(p.AccountScopeID, stagingID, time.Now().UnixMilli())
+						if readErr == nil && len(stgBytes) > 0 {
+							asset, _, putErr := s.sessions.PutSessionMediaAsset(pebblestore.PutSessionMediaAssetInput{
+								AccountScopeID:   p.AccountScopeID,
+								SessionID:        targetSessionID,
+								Modality:         routedSessionModality(stgRecord.DetectedMIMEType),
+								DeclaredMIMEType: stgRecord.DeclaredMIMEType,
+								FileType:         stgRecord.DetectedMIMEType,
+								FileName:         stgRecord.FileName,
+								Reader:           bytes.NewReader(stgBytes),
+							})
+							if putErr == nil {
+								_, _, _ = s.mediaStaging.Bind(pebblestore.BindMediaStagingInput{
+									AccountScopeID: p.AccountScopeID,
+									SessionID:      targetSessionID,
+									Bindings: []pebblestore.MediaStagingBinding{{
+										StagingID:        stgRecord.ID,
+										AuthorityAssetID: asset.ID,
+										DigestSHA256:     asset.DigestSHA256,
+									}},
+								})
+								item.URL = fmt.Sprintf("/v3/sessions/%s/media/%s", targetSessionID, asset.ID)
+								item.ID = asset.ID
+								item.DigestSHA256 = asset.DigestSHA256
+								item.SizeBytes = asset.Size
+								item.MediaType = asset.DetectedMIMEType
+								item.Kind = asset.Modality
+								item.Filename = asset.FileName
+								item.Data = ""
+							}
+						}
+					} else if strings.HasPrefix(trimmedURL, "data:") || strings.HasPrefix(item.Data, "data:") || len(item.Data) > 0 {
+						dataPayload, dataMIME, decodeErr := s.resolveSourceMediaBytes(r.Context(), p, item, "")
+						if decodeErr == nil && len(dataPayload) > 0 && s.sessions != nil {
+							asset, _, putErr := s.sessions.PutSessionMediaAsset(pebblestore.PutSessionMediaAssetInput{
+								AccountScopeID:   p.AccountScopeID,
+								SessionID:        targetSessionID,
+								DeclaredMIMEType: dataMIME,
+								FileName:         item.Filename,
+								Reader:           bytes.NewReader(dataPayload),
+							})
+							if putErr == nil {
+								item.URL = fmt.Sprintf("/v3/sessions/%s/media/%s", targetSessionID, asset.ID)
+								item.ID = asset.ID
+								item.DigestSHA256 = asset.DigestSHA256
+								item.SizeBytes = asset.Size
+								item.MediaType = asset.DetectedMIMEType
+								item.Kind = asset.Modality
+								item.Filename = asset.FileName
+								item.Data = ""
+							}
+						}
+					}
+				} else {
+					fn := strings.TrimSpace(r.Header.Get("X-Swarm-Media-Filename"))
+					if fn == "" {
+						if _, params, err := mime.ParseMediaType(r.Header.Get("Content-Disposition")); err == nil {
+							fn = params["filename"]
+						}
+					}
+					declMIME := strings.TrimSpace(r.Header.Get("Content-Type"))
+					asset, _, putErr := s.sessions.PutSessionMediaAsset(pebblestore.PutSessionMediaAssetInput{
+						AccountScopeID:   p.AccountScopeID,
+						SessionID:        targetSessionID,
+						DeclaredMIMEType: declMIME,
+						FileName:         fn,
+						Reader:           r.Body,
+					})
+					if putErr != nil {
+						writeError(w, http.StatusBadRequest, putErr)
+						return
+					}
+					item = pebblestore.ProjectTaskMediaRef{
+						ID:           asset.ID,
+						Title:        asset.FileName,
+						Filename:     asset.FileName,
+						Kind:         asset.Modality,
+						MediaType:    asset.DetectedMIMEType,
+						URL:          fmt.Sprintf("/v3/sessions/%s/media/%s", targetSessionID, asset.ID),
+						SizeBytes:    asset.Size,
+						DigestSHA256: asset.DigestSHA256,
+						CreatedAt:    time.Now().UnixMilli(),
+					}
 				}
 				if strings.TrimSpace(item.ID) == "" {
 					item.ID = fmt.Sprintf("med_%d", time.Now().UnixNano())
 				}
 				if item.CreatedAt == 0 {
 					item.CreatedAt = time.Now().UnixMilli()
+				}
+				if item.Title == "" {
+					item.Title = item.Filename
+				}
+				if item.Filename != "" {
+					item.Filename = pebblestore.SanitizeMediaFilename(item.Filename, item.ID, "")
 				}
 				updatedList := []pebblestore.ProjectTaskMediaRef{}
 				_, err = db.UpdateProject(p.AccountScopeID, projectID, func(p *pebblestore.ProjectRecord) error {
@@ -1954,6 +2071,57 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 
 		if len(segments) == 3 {
 			mediaID := segments[2]
+			if r.Method == http.MethodGet || r.Method == http.MethodHead {
+				if !s.requireScopeAny(w, r, "projects:read", "sessions:read") {
+					return
+				}
+				var targetMedia *pebblestore.ProjectTaskMediaRef
+				for _, m := range proj.UploadedMedia {
+					if m.ID == mediaID {
+						item := m
+						targetMedia = &item
+						break
+					}
+				}
+				if targetMedia == nil {
+					writeError(w, http.StatusNotFound, errors.New("media not found"))
+					return
+				}
+				bytesPayload, mediaType, err := s.resolveSourceMediaBytes(r.Context(), p, *targetMedia, "")
+				if err != nil || len(bytesPayload) == 0 {
+					writeError(w, http.StatusNotFound, errors.New("media file is unavailable"))
+					return
+				}
+				if mediaType == "" {
+					mediaType = targetMedia.MediaType
+				}
+				if mediaType == "" {
+					mediaType = "application/octet-stream"
+				}
+				filename := targetMedia.Filename
+				if filename == "" {
+					filename = targetMedia.Title
+				}
+				if filename == "" {
+					filename = targetMedia.ID
+				}
+				disposition := mime.FormatMediaType("inline", map[string]string{"filename": filename})
+				if disposition == "" {
+					disposition = "inline"
+				}
+				w.Header().Set("Content-Type", mediaType)
+				w.Header().Set("Content-Disposition", disposition)
+				w.Header().Set("X-Content-Type-Options", "nosniff")
+				w.Header().Set("Accept-Ranges", "bytes")
+				w.Header().Set("Content-Security-Policy", "sandbox; default-src 'none'; img-src data: blob:; media-src 'self' data: blob:; style-src 'unsafe-inline'; font-src data:; frame-ancestors 'self'")
+				w.Header().Set("Referrer-Policy", "no-referrer")
+				modTime := time.UnixMilli(targetMedia.CreatedAt)
+				if targetMedia.CreatedAt == 0 {
+					modTime = time.Now()
+				}
+				http.ServeContent(w, r, filename, modTime, bytes.NewReader(bytesPayload))
+				return
+			}
 			if r.Method == http.MethodDelete {
 				if !s.requireScopeAny(w, r, "projects:write", "sessions:write") {
 					return
@@ -2236,6 +2404,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 					ClientRequestID:     req.ClientRequestID,
 					WorktreeBranch:      req.WorktreeBranch,
 					OutcomeType:         req.OutcomeType,
+					Operation:           req.Operation,
 					Tier:                req.Tier,
 					AspectRatio:         req.AspectRatio,
 					Resolution:          req.Resolution,
@@ -3336,8 +3505,12 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
 			return
 		}
-		if !s.requireScopeAny(w, r, "projects:write", "sessions:write") { return }
-		var req struct { Revision int `json:"revision"` }
+		if !s.requireScopeAny(w, r, "projects:write", "sessions:write") {
+			return
+		}
+		var req struct {
+			Revision int `json:"revision"`
+		}
 		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 4096))
 		if err != nil || json.Unmarshal(body, &req) != nil || req.Revision <= 0 {
 			writeError(w, http.StatusBadRequest, errors.New("positive task revision required"))

@@ -2383,7 +2383,7 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 		case "action", "prompt", "title", "aspect_ratio", "resolution", "duration_seconds", "count",
 			"collection_id", "collection_name", "collection_description", "variant_id", "filename", "presentation",
 			"source_session_id", "source_collection_id", "source_variant_id", "source_event_seq",
-			"image", "image_path", "chain_from", "chain", "includes_audio":
+			"image", "image_path", "chain_from", "chain", "includes_audio", "operation":
 		default:
 			return managedVideoArtifactResult{}, fmt.Errorf("manage_artifact generate_video contains unsupported field %q", key)
 		}
@@ -2522,6 +2522,8 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 					source.InteractionID = srcProv.InteractionID
 					source.URI = srcProv.ProviderResource
 					source.Model = srcProv.Model
+				} else if variant.Lineage.IterationID != "" {
+					source.InteractionID = variant.Lineage.IterationID
 				}
 			}
 		} else {
@@ -2586,10 +2588,10 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 			currentVariantID = fmt.Sprintf("%s-%d", variantID, i+1)
 		}
 		op := pebblestore.VideoOperationCreate
-		if source != nil {
-			op = pebblestore.VideoOperationEdit
-		} else if opArg := strings.ToLower(strings.TrimSpace(asString(args["operation"]))); opArg != "" {
+		if opArg := strings.ToLower(strings.TrimSpace(asString(args["operation"]))); opArg != "" {
 			op = opArg
+		} else if source != nil {
+			op = pebblestore.VideoOperationEdit
 		}
 		generated, err := r.videoGeneration.GenerateManagedVideo(identity.ContextWithPrincipal(ctx, scope.Principal), videogen.ManagedVideoRequest{
 			Operation:       op,
@@ -2653,6 +2655,9 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 		iterationID := ""
 		if run, ok := ctx.Value(artifactRunContextKey{}).(ArtifactRunContext); ok {
 			iterationID = strings.TrimSpace(run.IterationID)
+		}
+		if iterationID == "" && strings.TrimSpace(generated.InteractionID) != "" {
+			iterationID = strings.TrimSpace(generated.InteractionID)
 		}
 		create := artifact.CreateInput{
 			RequestID:             fmt.Sprintf("%s-%d", requestID, i),
