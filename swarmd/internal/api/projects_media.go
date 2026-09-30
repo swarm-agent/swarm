@@ -541,6 +541,13 @@ func validateProjectMediaTaskSettings(s *Server, task *pebblestore.ProjectTaskRe
 
 	if agent == "image" || (agent == "designer" && (task.Tier == "swarm" || len(task.Deliverables) > 1 || task.OutcomeType == "media_bundle")) {
 		model := strings.TrimSpace(task.Model)
+		if model == "" && s.uiSettings != nil && len(p) > 0 && p[0].AccountScopeID != "" {
+			settings, err := s.uiSettings.GetForAccount(p[0].AccountScopeID)
+			if err != nil {
+				return fmt.Errorf("read image model settings: %w", err)
+			}
+			model = strings.TrimSpace(settings.Tools.Image.DefaultModel)
+		}
 		if model != "" {
 			if !isSupportedImageModel(s, model) {
 				return fmt.Errorf("unsupported image model %q", model)

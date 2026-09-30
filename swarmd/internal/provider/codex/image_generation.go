@@ -188,12 +188,13 @@ func buildImageGenerationPayload(req ImageGenerationRequest) ([]byte, error) {
 	if modelID == "" {
 		return nil, errors.New("model is required")
 	}
-	prompt := strings.TrimSpace(req.Prompt)
-	if prompt == "" {
+	prompt := req.Prompt
+	if strings.TrimSpace(prompt) == "" {
 		return nil, errors.New("prompt is required")
 	}
+	sizeInstruction := ""
 	if size := strings.TrimSpace(req.Size); size != "" && !strings.EqualFold(size, "auto") {
-		prompt = prompt + "\n\nRequested output size: " + size + "."
+		sizeInstruction = "\n\nRequested output size: " + size + "."
 	}
 	count := normalizedImageRequestCount(req.Count)
 	if count < 1 || count > 3 {
@@ -220,7 +221,7 @@ func buildImageGenerationPayload(req ImageGenerationRequest) ([]byte, error) {
 		"tools":               []map[string]any{imageTool},
 		"tool_choice":         map[string]any{"type": "image_generation"},
 		"parallel_tool_calls": count > 1,
-		"instructions":        fmt.Sprintf("Generate exactly %d completed image%s that satisfy the user's prompt. Use the image_generation tool and return exactly %d completed image_generation_call result%s. Do not answer with text only.", count, pluralSuffix(count), count, pluralSuffix(count)),
+		"instructions":        fmt.Sprintf("Generate exactly %d completed image%s that satisfy the user's prompt. Use the image_generation tool and return exactly %d completed image_generation_call result%s. Do not answer with text only.", count, pluralSuffix(count), count, pluralSuffix(count)) + sizeInstruction,
 	}
 	encoded, err := json.Marshal(body)
 	if err != nil {

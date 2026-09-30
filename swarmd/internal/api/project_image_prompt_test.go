@@ -10,6 +10,7 @@ import (
 	"swarm/packages/swarmd/internal/imagegen"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
+	"swarm/packages/swarmd/internal/uisettings"
 )
 
 // Purpose: CreateProjectTask must reserve workspace-free images with original
@@ -84,7 +85,7 @@ func TestProjectImageExecutionPromptSlots(t *testing.T) {
 		if err := db.PutProject(p.AccountScopeID, project); err != nil {
 			t.Fatal(err)
 		}
-		task := &pebblestore.ProjectTaskRecord{ID: "task", ProjectID: project.ID, AccountID: p.AccountScopeID, Title: "Images", Description: "original", Agent: "image", Model: "snapshot-image", VariantCount: 2, EnhancePrompt: true, ImagePrompts: []string{"red café", "blue café"}, Deliverables: []pebblestore.ProjectTaskDeliverable{{ID: "one", Kind: "image", Status: "pending"}, {ID: "two", Kind: "image", Status: "pending"}}}
+		task := &pebblestore.ProjectTaskRecord{ID: "task", ProjectID: project.ID, AccountID: p.AccountScopeID, Title: "Images", Description: "original", Agent: "image", Model: "snapshot-image", VariantCount: 2, EnhancePrompt: true, ImagePrompts: []string{"  red café\n", " blue café  "}, Deliverables: []pebblestore.ProjectTaskDeliverable{{ID: "one", Kind: "image", Status: "pending"}, {ID: "two", Kind: "image", Status: "pending"}}}
 		if malformed {
 			task.ImagePrompts = []string{"only one"}
 		}
@@ -102,13 +103,76 @@ func TestProjectImageExecutionPromptSlots(t *testing.T) {
 			}
 		} else {
 			sort.Strings(recorder.prompts)
-			if !reflect.DeepEqual(recorder.prompts, []string{"blue café", "red café"}) || fresh.Deliverables[0].Status != "ready" || fresh.Deliverables[1].Status != "ready" {
+			if !reflect.DeepEqual(recorder.prompts, []string{"  red café\n", " blue café  "}) || fresh.Deliverables[0].Status != "ready" || fresh.Deliverables[1].Status != "ready" {
 				t.Fatalf("provider slot prompts: %+v task=%+v", recorder.prompts, fresh)
 			}
 			recorder.prompts = nil
 			s.executeDirectMediaTask(p, project, fresh)
 			if len(recorder.prompts) != 0 {
 				t.Fatal("recovery regenerated ready outputs")
+			}
+		}
+	}
+}
+
+// Purpose: image preflight must validate against the same account default used
+// by generation, without persisting an invented override or borrowing another
+// account's default. The settings boundary is the narrowest deterministic layer.
+func TestProjectImagePreflightAccountDefault(t *testing.T) {
+	s, db, p := setupDirectMediaTestServer(t)
+	s.uiSettings = uisettings.NewService(pebblestore.NewUISettingsStore(db.Underlying()))
+	settings := uisettings.UISettings{}
+	settings.Tools.Image.DefaultModel = "snapshot-image"
+	if _, err := s.uiSettings.SetForAccount(p.AccountScopeID, settings); err != nil {
+		t.Fatal(err)
+	}
+	task := &pebblestore.ProjectTaskRecord{Agent: "image", AspectRatio: "1:1", Resolution: "1K", VariantCount: 1}
+	if err := validateProjectMediaTaskSettings(s, task, p); err != nil {
+		t.Fatal(err)
+	}
+	if task.Model != "" {
+		t.Fatal("preflight invented an explicit model override")
+	}
+	foreign := p
+	foreign.AccountScopeID = "unconfigured-account"
+	if err := validateProjectMediaTaskSettings(s, task, foreign); err == nil {
+		t.Fatal("preflight borrowed another account's image default")
+	}
+	task.Model = "invalid-image-model"
+	if err := validateProjectMediaTaskSettings(s, task, p); err == nil {
+		t.Fatal("invalid explicit model silently fell back to default")
+	}
+}
+
+// Purpose: canonical creation through actual image execution must preserve the
+// original prompt for single/default multi-image requests, including stale
+// single-image opt-in. No Router is configured, so any incidental call fails.
+func TestProjectImageDirectProviderPrompt(t *testing.T) {
+	for _, count := range []int{1, 2} {
+		s, db, p := setupDirectMediaTestServer(t)
+		recorder := &imagePromptRecorder{}
+		svc := imagegen.NewService(nil, pebblestore.NewAuthStore(db.Underlying()), pebblestore.NewImageThreadStore(db.Underlying()), s.model)
+		svc.SetGeminiImageClient(recorder)
+		s.SetImageGenerationService(svc)
+		project := &pebblestore.ProjectRecord{ID: "direct-images", AccountID: p.AccountScopeID, Name: "Images"}
+		if err := db.PutProject(p.AccountScopeID, project); err != nil {
+			t.Fatal(err)
+		}
+		prompt := "  café\nwith blue chairs  "
+		task, err := s.CreateProjectTask(context.Background(), p, project.ID, tool.ProjectTaskCreateInput{ID: "direct", Prompt: prompt, Agent: "image", Model: "snapshot-image", VariantCount: count, EnhancePrompt: count == 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if task.EnhancePrompt || task.SessionID != "" {
+			t.Fatal("direct image acquired enhancement or session")
+		}
+		s.executeDirectMediaTask(p, project, task)
+		if len(recorder.prompts) != count {
+			t.Fatalf("provider calls = %d, want %d", len(recorder.prompts), count)
+		}
+		for _, got := range recorder.prompts {
+			if got != prompt {
+				t.Fatalf("provider prompt changed: %q", got)
 			}
 		}
 	}

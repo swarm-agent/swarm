@@ -573,8 +573,8 @@ func (s *Service) GenerateManagedImage(ctx context.Context, req ManagedGenerateR
 	if !req.Principal.Valid() {
 		return ManagedImage{}, identity.ErrPrincipalRequired
 	}
-	prompt := strings.TrimSpace(req.Prompt)
-	if prompt == "" {
+	prompt := req.Prompt
+	if strings.TrimSpace(prompt) == "" {
 		return ManagedImage{}, errors.New("prompt is required")
 	}
 	if req.Source != nil {
