@@ -5529,7 +5529,7 @@ export function OrchestrateView({
     const operation = integrationForTask(task)
     const retryAttempt = task.attempts?.find(attempt => attempt.id === task.activeAttemptId && attempt.launch_state === 'launch_failed')
     const failure = (retryAttempt?.recovery && selectedProject
-      ? integrationFailure(selectedProject, task, new Error(retryAttempt.last_error || 'Repair launch incomplete; retry retained request')) : undefined) || (operation.phase === 'error' ? operation.failure : undefined) || (operation.phase === 'ready' && selectedProject && task.integration && ['failed', 'conflict'].includes(task.integration.state)
+      ? integrationFailure(selectedProject, task, new Error(retryAttempt.last_error || 'Repair launch incomplete; retry retained request')) : undefined) || (operation.phase === 'error' ? { ...operation.failure, task } : undefined) || (operation.phase === 'ready' && selectedProject && task.integration && ['failed', 'conflict'].includes(task.integration.state)
       ? integrationFailure(selectedProject, task, new Error(task.integration.error || 'Integration failed; retained backend receipt')) : undefined)
     if (!selectedProject) return null
     const history = <TaskAttemptHistory key={`${selectedProject.id}:${task.id}:${task.activeAttemptId || 'initial'}`} projectId={selectedProject.id} taskId={task.id} onOpen={sessionId => {

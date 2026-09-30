@@ -3628,14 +3628,17 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				// claiming this task was integrated into the requested target.
 				checkout, checkoutErr := s.worktrees.InspectTaskWorkspace(capturedPath)
 				sourceState, sourceErr := s.worktrees.InspectTaskWorkspace(selectedSession.WorktreeRootPath)
-				if checkoutErr != nil || sourceErr != nil || checkout.BranchName != selection.TargetBranch || !checkout.Clean || !sourceState.Clean || sourceState.HeadCommit == capturedBase {
+				if checkoutErr != nil || sourceErr != nil || checkout.BranchName != selection.TargetBranch || sourceState.BranchName != selection.SourceBranch || checkout.HeadCommit == "" || sourceState.HeadCommit == "" || !checkout.Clean || !sourceState.Clean || sourceState.HeadCommit == capturedBase {
 					writeError(w, http.StatusConflict, errors.New("captured target or committed source is unavailable; inspect Git before retrying"))
 					return
 				}
+				receipt.SourceHead = sourceState.HeadCommit
+				receipt.PreviousTargetHead = checkout.HeadCommit
 				ancestorCtx, ancestorCancel := context.WithTimeout(r.Context(), 3*time.Second)
 				defer ancestorCancel()
 				if err := exec.CommandContext(ancestorCtx, "git", "-C", capturedPath, "merge-base", "--is-ancestor", sourceState.HeadCommit, checkout.HeadCommit).Run(); err != nil {
-					writeError(w, http.StatusConflict, errors.New("source commit is not an ancestor of captured target HEAD"))
+					receipt.Error = "Integration ancestry changed during verification; inspect the retained source and target before launching repair."
+					writeError(w, http.StatusConflict, errors.New(receipt.Error))
 					return
 				}
 				receipt.SourceHead = sourceState.HeadCommit
@@ -3753,6 +3756,15 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			receipt.Error = fmt.Sprintf("prepare integration failed: %v", err)
 			writeError(w, http.StatusBadRequest, errors.New(receipt.Error))
+			return
+		}
+
+		// Patch equivalence can eliminate every replay candidate without landing
+		// the original history. Do not apply a no-op and then claim integration;
+		// retain the inspected receipt so repair can merge in an isolated lane.
+		if len(plan.Commits) == 0 && plan.FastForwardHead == "" {
+			receipt.Error = "Integration requires original commit ancestry: equivalent patches exist on the captured target, but the source history is unmerged. Launch repair to reconcile history in a new isolated worktree, then explicitly integrate."
+			writeError(w, http.StatusConflict, errors.New(receipt.Error))
 			return
 		}
 

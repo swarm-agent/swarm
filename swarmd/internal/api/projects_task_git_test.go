@@ -1,27 +1,30 @@
 package api
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
-// Purpose: Task Git inspection must use the captured checkout and the sidebar's
-// patch-equivalence classifier, not a guessed dev/main branch or a zero-ahead
-// heuristic. Boundary: inspectTaskGitState/sessionreview.ClassifySnapshotAgainstTarget.
-// Threat: stale cards remaining actionable after cherry-pick or marking a clean
-// no-commit worktree Done. This temporary real Git repository is the narrowest
-// behavioral layer that exercises both classification and captured lineage.
+// Purpose: inspectTaskGitState/reconcileTaskGitState require source ancestry on
+// the captured checkout; identical patches are not integration evidence.
+// Threat: patch-equivalent histories fabricate Done and block repair, or a
+// zero-commit lane is marked integrated. Real temporary Git is the narrowest
+// layer proving commit identity, classification and response reconciliation.
 func TestInspectTaskGitStateCapturedTargetAndPatchEquivalentPromotion(t *testing.T) {
 	root := t.TempDir()
 	run := func(dir string, args ...string) string {
 		t.Helper()
-		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
 		cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+filepath.Join(root, "empty-config"), "GIT_AUTHOR_NAME=Test", "GIT_AUTHOR_EMAIL=test@example.invalid", "GIT_COMMITTER_NAME=Test", "GIT_COMMITTER_EMAIL=test@example.invalid")
 		out, err := cmd.CombinedOutput()
 		if err != nil {
@@ -59,7 +62,18 @@ func TestInspectTaskGitStateCapturedTargetAndPatchEquivalentPromotion(t *testing
 	if pending.isIntegrated || pending.unintegratedCommits != 1 || pending.gitStatus != "diverged" {
 		t.Fatalf("missing commit not actionable: %+v", pending)
 	}
+	// Force divergent history; an immediate cherry-pick can preserve the same OID.
+	run(root, "commit", "--allow-empty", "-m", "target advance")
 	run(root, "cherry-pick", trimGit(run(child, "rev-parse", "HEAD")))
+	equivalent := inspectTaskGitState(task, db)
+	if equivalent.isIntegrated || equivalent.unintegratedCommits != 1 || equivalent.gitStatus != "diverged" {
+		t.Fatalf("patch equivalence fabricated integration: %+v", equivalent)
+	}
+	task.Status, task.IsIntegrated = "completed", true // Historical patch-only Done must be repaired on reads.
+	if err := reconcileTaskGitState(db, &task); err != nil || task.IsIntegrated || task.Status != "needs_review" {
+		t.Fatalf("patch equivalence fabricated Done: %+v %v", task, err)
+	}
+	run(root, "merge", "--no-edit", "agent/task")
 	integrated := inspectTaskGitState(task, db)
 	if !integrated.isIntegrated || integrated.unintegratedCommits != 0 || integrated.baseBranch != "release" {
 		t.Fatalf("landed source not reconciled: %+v", integrated)
