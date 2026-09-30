@@ -587,7 +587,7 @@ func CoderAgentToolContract() *pebblestore.AgentToolContract {
 		"git_status": {Enabled: pebblestore.BoolPtr(true)}, "git_diff": {Enabled: pebblestore.BoolPtr(true)},
 		"git_add": {Enabled: pebblestore.BoolPtr(true)}, "git_commit": {Enabled: pebblestore.BoolPtr(true)},
 		"task_progress": {Enabled: pebblestore.BoolPtr(true)},
-		"bash": {Enabled: pebblestore.BoolPtr(false)}, "task": {Enabled: pebblestore.BoolPtr(false)},
+		"bash":          {Enabled: pebblestore.BoolPtr(false)}, "task": {Enabled: pebblestore.BoolPtr(false)},
 		"manage_sessions": {Enabled: pebblestore.BoolPtr(false)}, "manage_agent": {Enabled: pebblestore.BoolPtr(false)},
 		"manage_todos": {Enabled: pebblestore.BoolPtr(false)}, "plan_manage": {Enabled: pebblestore.BoolPtr(false)},
 		"ask_user": {Enabled: pebblestore.BoolPtr(false)}, "exit_plan_mode": {Enabled: pebblestore.BoolPtr(false)},

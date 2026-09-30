@@ -3336,8 +3336,12 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
 			return
 		}
-		if !s.requireScopeAny(w, r, "projects:write", "sessions:write") { return }
-		var req struct { Revision int `json:"revision"` }
+		if !s.requireScopeAny(w, r, "projects:write", "sessions:write") {
+			return
+		}
+		var req struct {
+			Revision int `json:"revision"`
+		}
 		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 4096))
 		if err != nil || json.Unmarshal(body, &req) != nil || req.Revision <= 0 {
 			writeError(w, http.StatusBadRequest, errors.New("positive task revision required"))
