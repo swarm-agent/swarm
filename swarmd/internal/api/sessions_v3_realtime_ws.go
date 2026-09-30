@@ -777,7 +777,7 @@ func v3RealtimeMatchedWorksetIDsForSnapshot(principal identity.Principal, sessio
 	matched := map[string]struct{}{}
 	auto := false
 	for _, workset := range orderedV3RealtimeWorksets(worksets) {
-		if !v3RealtimeSessionMatchesWorksetSelector(principal, session, workset.Selector) {
+		if !v3RealtimeWorksetIncludesSessionResources(workset) || !v3RealtimeSessionMatchesWorksetSelector(principal, session, workset.Selector) {
 			continue
 		}
 		matched[workset.WorksetID] = struct{}{}
@@ -1064,8 +1064,23 @@ func v3RealtimeWorksetIncludesRecordResource(workset v3RealtimeWorksetSubscripti
 	case v3AuthResourceEventType:
 		return v3RealtimeWorksetIncludesResource(workset, "auth")
 	default:
+		return v3RealtimeWorksetIncludesSessionResources(workset)
+	}
+}
+
+// Omitted resources retain legacy session/sidebar subscriptions. An explicit
+// resource-only workset must never discover, prime or receive unrelated chat.
+func v3RealtimeWorksetIncludesSessionResources(workset v3RealtimeWorksetSubscription) bool {
+	if len(workset.Resources) == 0 {
 		return true
 	}
+	for _, resource := range workset.Resources {
+		switch strings.TrimSpace(resource) {
+		case "sessions", "projections", "events", "messages", "run_intents", "current_run_state", "active_plan", "plan_revisions", "membership", "tombstones":
+			return true
+		}
+	}
+	return false
 }
 
 func v3RealtimeWorksetIncludesResource(workset v3RealtimeWorksetSubscription, resource string) bool {
