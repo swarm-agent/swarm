@@ -57,7 +57,11 @@ func (s *Service) routeImages(ctx context.Context, opts TaskRouteOptions, res pe
 	var output struct {
 		ImagePrompts []string `json:"image_prompts"`
 	}
-	if err := json.Unmarshal([]byte(raw), &output); err != nil {
+	cleaned, err := imageVariantJSON(raw)
+	if err != nil {
+		return pebblestore.TaskRouteResult{}, fmt.Errorf("invalid image variant response: %w", err)
+	}
+	if err := json.Unmarshal([]byte(cleaned), &output); err != nil {
 		return pebblestore.TaskRouteResult{}, fmt.Errorf("invalid image variant response: %w", err)
 	}
 	if err := pebblestore.ValidateImagePrompts(output.ImagePrompts, res.VariantCount); err != nil {
@@ -73,4 +77,28 @@ func (s *Service) routeImages(ctx context.Context, opts TaskRouteOptions, res pe
 	}
 	res.ImagePrompts = output.ImagePrompts
 	return res, nil
+}
+
+// imageVariantJSON removes only one complete surrounding JSON or unlabelled
+// Markdown fence. The caller still unmarshals the entire body: no prose or
+// trailing payload is discarded, and backticks inside JSON strings are data.
+func imageVariantJSON(raw string) (string, error) {
+	cleaned := strings.TrimSpace(raw)
+	if !strings.HasPrefix(cleaned, "```") {
+		return cleaned, nil
+	}
+	firstNL := strings.IndexByte(cleaned, '\n')
+	if firstNL < 0 {
+		return "", fmt.Errorf("incomplete JSON code fence")
+	}
+	opener := strings.TrimSpace(cleaned[:firstNL])
+	if opener != "```" && opener != "```json" {
+		return "", fmt.Errorf("expected JSON or unlabelled code fence")
+	}
+	body := cleaned[firstNL+1:]
+	lastNL := strings.LastIndexByte(body, '\n')
+	if lastNL < 0 || strings.TrimSpace(body[lastNL+1:]) != "```" {
+		return "", fmt.Errorf("incomplete or trailing JSON code fence")
+	}
+	return strings.TrimSpace(body[:lastNL]), nil
 }
