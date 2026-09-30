@@ -42,8 +42,10 @@ test('accessible explicit choices never enable Router by count and clear consent
   assert.equal(state.aiVariants, false)
   const render = () => ImagePromptControls({ count: state.count, aiVariants: state.aiVariants,
     onChange: aiVariants => { state = imagePromptReducer(state, { type: 'choice', aiVariants }) } })
-  assert.match(renderToStaticMarkup(render()), /Should AI create different variant prompts/)
-  assert.match(renderToStaticMarkup(render()), /Same prompt \(default\)/)
+  assert.match(renderToStaticMarkup(render()), /Image prompt mode/)
+  assert.match(renderToStaticMarkup(render()), /Same prompt/)
+  assert.match(renderToStaticMarkup(render()), /AI variants/)
+  assert.doesNotMatch(renderToStaticMarkup(render()), /Router prompt-generation step/)
   let radios = inputs(render())
   assert.equal(radios[0].props.checked, true)
   assert.equal(radios[1].props.disabled, false)

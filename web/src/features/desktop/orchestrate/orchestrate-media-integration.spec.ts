@@ -1,9 +1,17 @@
+// Compact-form regression purpose: keep model/capability/default/prompt wiring while
+// moving redundant copy to media-task-controls help. Updated form-only assertions
+// follow the new contract; unrelated payload, pricing and completed-card checks remain.
+// Authority: OrchestrateView New Task JSX and MediaTaskSelect/Default leaf markup.
+// Layer: source wiring plus rendered leaves, not browser/pixel or live media proof.
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { resolveImagePricing, resolveVideoPricing, resolveAudioPricing } from './OrchestrateView'
+import React from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
+import { MediaTaskSelect, MediaTaskDefault } from './media-task-controls'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -200,14 +208,16 @@ test('OrchestrateView supports single video clips with independent 1-8 clip coun
   const sourcePath = path.join(__dirname, 'OrchestrateView.tsx')
   const source = fs.readFileSync(sourcePath, 'utf8')
 
-  assert.ok(source.includes('Single Video Shot (1 Prompt · Direct Model Execution)'), 'Must describe direct single video shot mode')
-  assert.ok(source.includes('Timeline editing and audio mixing are handled in Video Studio'), 'Must clarify Video Studio separation')
-  assert.ok(source.includes('Clip Count (1..8)'), 'Must provide independent clip count 1..8 selector')
+  // Compact rendering delegates explanatory prose and optional scenes to accessible help.
+  const controls = fs.readFileSync(path.join(__dirname, 'media-task-controls.tsx'), 'utf8')
+  assert.ok(source.includes('your prompt goes directly to the selected model'), 'Help must describe direct mode')
+  assert.ok(controls.includes('Timeline editing and audio mixing are available in Video Studio'), 'Help must clarify Studio separation')
+  assert.ok(source.includes('label="Clips" value={videoClipCount} values={[1, 2, 4, 8]}'), 'Must retain independent clip choices')
   assert.ok(source.includes('videoClipCount'), 'Must manage independent videoClipCount state')
   assert.ok(source.includes('supportedVideoDurations'), 'Must enforce model-supported durations')
   assert.ok(source.includes('supportedVideoResolutions'), 'Must enforce model-supported resolutions')
   assert.ok(source.includes('supportedVideoAspectRatios'), 'Must enforce model-supported aspect ratios')
-  assert.ok(source.includes('video-scene-prompts'), 'Must expose explicit scene prompts for bounded multipart assembly')
+  assert.ok(source.includes('<MediaTaskScenes value={videoScenePrompts} onChange={setVideoScenePrompts}'), 'Must retain controlled scenes for bounded multipart assembly')
   assert.ok(!source.includes('Add Dedicated Soundtrack Clip'), 'Must eliminate soundtrack clip controls from project modal')
 })
 
@@ -217,10 +227,10 @@ test('OrchestrateView provides video resolution selection with model-supported t
   const sourcePath = path.join(__dirname, 'OrchestrateView.tsx')
   const source = fs.readFileSync(sourcePath, 'utf8')
 
-  assert.ok(source.includes("setVideoResolution(res)"), 'Must allow switching video resolution')
+  assert.ok(source.includes('values={supportedVideoResolutions} onChange={setVideoResolution}'), 'Must allow switching supported video resolution')
   assert.ok(source.includes('supportedVideoResolutions'), 'Must enforce model-supported resolutions')
   assert.ok(source.includes('resolveVideoPricing'), 'Must implement resolveVideoPricing helper')
-  assert.ok(source.includes('Estimated Model Cost:'), 'Must display Estimated Model Cost summary')
+  assert.ok(source.includes('<MediaTaskCost total={videoPricingInfo.totalPrice}'), 'Must display a consolidated video estimate')
   assert.ok(source.includes('videoPricingInfo.formattedSummary'), 'Must render formatted model pricing summary')
   assert.ok(source.includes("taskIntent === 'video'"), 'Must pass resolution in task payload')
 })
@@ -235,7 +245,7 @@ test('OrchestrateView restricts video reference inputs to supported images and p
   assert.ok(source.includes('Text stays in prompt for video task flow'), 'Must keep text/doc content in prompt input')
   assert.ok(source.includes('videoAttachmentError'), 'Must track and surface video attachment errors')
   assert.ok(source.includes("'image/png,image/jpeg,.png,.jpg,.jpeg'"), 'Must enforce supported video image extensions')
-  assert.ok(source.includes('Optional Starting Frame (1 Image)'), 'Must guide user that at most 1 image reference is supported')
+  assert.ok(source.includes('paste one PNG/JPEG image'), 'Help must retain the one-image input limit')
 })
 
 test('OrchestrateView provides dedicated Sounds tab with audio model dropdown, duration selector, and settings persistence', () => {
@@ -263,9 +273,9 @@ test('OrchestrateView provides AI Prompt Enhancement toggle and Single Video Sho
 
   // 1. AI Prompt Enhancement toggle
   assert.ok(source.includes('enhanceVideoPrompt'), 'Must manage enhanceVideoPrompt state')
-  assert.ok(source.includes('Enhance prompt with AI'), 'Must render Enhance prompt with AI toggle')
-  assert.ok(source.includes('Direct to Video Model (No router rewrite)'), 'Must describe direct mode when toggle is unchecked')
-  assert.ok(source.includes('Uses Router to polish prompt'), 'Must describe router enhancement when toggle is checked')
+  assert.ok(source.includes('Enhance prompt'), 'Must render explicit enhancement choice')
+  assert.ok(source.includes('Without enhancement, your prompt goes directly to the selected model'), 'Help must describe unchanged direct mode')
+  assert.ok(source.includes('Enhancement uses Router to refine lighting and camera motion'), 'Help must describe Router enhancement')
   assert.ok(source.includes("video_type: taskIntent === 'video' ? (scenePrompts.length ? 'multipart' : 'single') : undefined"), 'Must pass video_type in task payload')
   assert.ok(source.includes(": taskIntent === 'video' ? enhanceVideoPrompt : undefined"), 'Video enhancement remains independent of the image opt-in branch; image POST behavior is exercised in image-task-prompt.spec.tsx')
 
@@ -301,13 +311,18 @@ test('OrchestrateView enables natural task model override and in-menu option to 
   assert.ok(source.includes("opt.id === defaultVideoModel ? ' (Default)' : ''"), 'Must label default video model in dropdown')
 
   // 3. Task override and Change Default actions in the same menu
-  assert.ok(source.includes('Override for this task'), 'Must indicate when selected model is a task override')
-  assert.ok(source.includes('Set as default for next time'), 'Must offer button to update default for next time')
-  assert.ok(source.includes('Change default in this menu for next time'), 'Must offer checkbox to change default for future tasks')
+  // Purpose: the new contract permits ONE explicit save gesture, never a sticky checkbox.
+  // Leaf rendering is the narrow observable layer; production selection callbacks are
+  // exercised in media-task-controls.spec.tsx.
+  const override = renderToStaticMarkup(React.createElement(MediaTaskDefault, { isDefault: false, onSave: () => {} }))
+  assert.match(override, /This task only/)
+  assert.match(override, /Set default/)
+  assert.equal((override.match(/<button/g) || []).length, 1)
+  assert.doesNotMatch(override, /checkbox/)
   assert.ok(source.includes('handleSetImageAsDefault'), 'Must provide handleSetImageAsDefault')
   assert.ok(source.includes('handleSetVideoAsDefault'), 'Must provide handleSetVideoAsDefault')
-  assert.ok(source.includes('Default image model'), 'Must show default model indicator')
-  assert.ok(source.includes('Default video model'), 'Must show default video model indicator')
+  assert.ok(source.includes('isDefault={selectedImageModel === defaultImageModel}'), 'Must show image default status')
+  assert.ok(source.includes('isDefault={selectedVideoModel === defaultVideoModel}'), 'Must show video default status')
 })
 
 test('OrchestrateView provides 1k, 2k, and 4k image resolution options with per-resolution pricing transparency', () => {
@@ -325,9 +340,10 @@ test('OrchestrateView provides 1k, 2k, and 4k image resolution options with per-
   assert.ok(source.includes("taskIntent === 'image' ? imageResolution"), 'Must pass image resolution in task payload')
 })
 
-test('OrchestrateView renders visual aspect ratio box wireframe cues for both image and video selectors', () => {
-  // Invariant: Aspect ratio selectors for both image and video must not only display raw numbers (16:9, 1:1, etc.),
-  // but also render visual proportional box wireframe cues illustrating landscape, square, portrait, and standard shapes.
+test('compact aspect selectors retain explicit image and catalog video ratio choices', () => {
+  // Purpose: compacting removes decorative boxes, not supported ratio values.
+  // Boundary: MediaTaskSelect and OrchestrateView capability wiring; narrow leaf markup
+  // proves selectable values, not visual layout or upstream capability correctness.
   const sourcePath = path.join(__dirname, 'OrchestrateView.tsx')
   const source = fs.readFileSync(sourcePath, 'utf8')
 
@@ -338,11 +354,12 @@ test('OrchestrateView renders visual aspect ratio box wireframe cues for both im
   assert.ok(source.includes('Portrait'), 'Must include Portrait label')
   assert.ok(source.includes('Square'), 'Must include Square label')
 
-  // 2. Wireframe rectangular visual boxes in rendered buttons
-  assert.ok(source.includes('ar.widthClass'), 'Must apply widthClass to visual ratio box')
-  assert.ok(source.includes('ar.heightClass'), 'Must apply heightClass to visual ratio box')
-  assert.ok(source.includes('w-5'), 'Must use landscape width')
-  assert.ok(source.includes('h-5'), 'Must use portrait height')
+  assert.ok(source.includes('values={supportedVideoAspectRatios} onChange={setVideoAspectRatio}'), 'Video ratios must remain catalog constrained')
+  const values = ['16:9', '9:16', '1:1', '4:3']
+  const html = renderToStaticMarkup(React.createElement(MediaTaskSelect, { label: 'Ratio', value: '9:16', values, onChange: () => {} }))
+  for (const value of values) assert.ok(html.includes(`value="${value}"`))
+  assert.match(html, /value="9:16" selected=""/)
+  assert.match(html, /aria-label="Ratio"/)
 })
 
 test('resolveImagePricing dynamically scales total cost across variant count, resolution, and catalog lines', () => {

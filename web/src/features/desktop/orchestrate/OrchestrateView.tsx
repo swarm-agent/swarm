@@ -1,4 +1,5 @@
 import { useState, useReducer, useMemo, useEffect, useCallback, useRef, useSyncExternalStore } from 'react'
+import { MediaTaskSelect, MediaTaskDefault, MediaTaskHelp, MediaTaskScenes, MediaTaskCost } from './media-task-controls'
 import { ImagePromptControls, imagePromptReducer, initialImagePromptState, imagePromptEnhancement, imageExecutionLabel } from './image-task-prompt'
 import { taskIntegrationOperations, taskIntegrationKey, taskIntegrationPhase, type TaskIntegrationOperation, type TaskIntegrationResult } from './task-integration-operation'
 import { projectTaskFollowupPayload } from '../runtime/project-task-followup'
@@ -4053,9 +4054,9 @@ export function OrchestrateView({
   const defaultVideoModel = videoDefaults.defaultModel
   const [selectedAudioModel, setSelectedAudioModel] = useState<string>('')
   const [defaultImageModel, setDefaultImageModel] = useState<string>('')
+  const [imageDefaultError, setImageDefaultError] = useState<string | null>(null)
   const [defaultAudioModel, setDefaultAudioModel] = useState<string>('')
-  const [saveImageAsDefault, setSaveImageAsDefault] = useState<boolean>(false)
-  const [saveVideoAsDefault, setSaveVideoAsDefault] = useState<boolean>(false)
+
   const [localGenerationJobs, setLocalGenerationJobs] = useState<MediaGenerationJob[]>([])
   const [mediaViewerInitialMode, setMediaViewerInitialMode] = useState<QuickRouteMode | null>(null)
   const [mediaCatalogLoaded, setMediaCatalogLoaded] = useState<boolean>(false)
@@ -4167,14 +4168,6 @@ export function OrchestrateView({
   const selectedAudioOption = useMemo(
     () => audioModelOptions.find((opt) => opt.id === selectedAudioModel),
     [audioModelOptions, selectedAudioModel]
-  )
-  const defaultImageOption = useMemo(
-    () => imageModelOptions.find((opt) => opt.id === defaultImageModel),
-    [imageModelOptions, defaultImageModel]
-  )
-  const defaultVideoOption = useMemo(
-    () => videoModelOptions.find((opt) => opt.id === defaultVideoModel),
-    [videoModelOptions, defaultVideoModel]
   )
 
   const selectedVideoGenOptions = useMemo(
@@ -5218,7 +5211,7 @@ export function OrchestrateView({
 
   // Model Change Handlers with UI Settings Persistence & Task Override
   const handleSetImageAsDefault = async (newModel: string) => {
-    setDefaultImageModel(newModel)
+    setImageDefaultError(null)
     setIsSavingModelChoice(true)
     try {
       await requestJson('/v1/ui/settings', {
@@ -5226,27 +5219,22 @@ export function OrchestrateView({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ tools: { image: { default_model: newModel } } }),
       })
+      setDefaultImageModel(newModel)
     } catch (err) {
-      console.warn('Failed to save default image model:', err)
+      setImageDefaultError(err instanceof Error ? err.message : 'Unable to save image default. Try Set default again.')
     } finally {
       setIsSavingModelChoice(false)
     }
   }
 
-  const handleImageModelChange = async (newModel: string, alsoSetDefault = false) => {
+  const handleImageModelChange = (newModel: string) => {
     setSelectedImageModel(newModel)
-    if (alsoSetDefault || saveImageAsDefault) {
-      await handleSetImageAsDefault(newModel)
-    }
   }
 
   const handleSetVideoAsDefault = videoDefaults.save
 
-  const handleVideoModelChange = async (newModel: string, alsoSetDefault = false) => {
+  const handleVideoModelChange = (newModel: string) => {
     videoDefaults.select(newModel)
-    if (alsoSetDefault || saveVideoAsDefault) {
-      await handleSetVideoAsDefault(newModel)
-    }
   }
 
   const handleAudioModelChange = async (newModel: string) => {
@@ -7861,8 +7849,8 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
               <div>
                 <label className="block text-[11px] text-slate-400 font-medium mb-1">
                   {taskIntent === 'code' && (featureSize === 'big' ? 'Big Feature Architecture & Requirements' : 'Small Feature / Fix Instructions')}
-                  {taskIntent === 'image' && 'Visual Concept & Composition Details'}
-                  {taskIntent === 'video' && 'Single Video Shot Concept (1 Prompt · Visuals & Audio)'}
+                  {taskIntent === 'image' && 'Image prompt'}
+                  {taskIntent === 'video' && 'Video prompt'}
                   {taskIntent === 'sound' && 'Audio Soundtrack / Mood Prompt'}
                   {taskIntent === 'audit' && 'Investigation Objective & Target Questions'}
                 </label>
@@ -7898,27 +7886,28 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                     }
                   }}
                 />
-                <div className="mt-1.5 flex items-center justify-between text-[11px]">
+                <div className={taskIntent === 'image' || taskIntent === 'video' ? 'mt-1.5 flex flex-wrap items-center justify-between gap-2 text-xs' : 'mt-1.5 flex items-center justify-between text-[11px]'}>
                   <div className="flex items-center gap-1.5 text-slate-400">
                     <Paperclip size={12} className="text-blue-400" />
-                    <span>Attach media from project shelf or upload:</span>
+                    <span>{taskIntent === 'image' || taskIntent === 'video' ? 'Attach' : 'Attach media from project shelf or upload:'}</span>
                   </div>
                   <div className="flex items-center gap-1.5">
-                    <label className="flex items-center gap-1 px-2 py-0.5 rounded bg-blue-600/20 text-blue-300 hover:bg-blue-600/30 border border-blue-500/30 cursor-pointer font-semibold transition">
+                    <label className={`flex items-center gap-1 px-2 rounded bg-blue-600/20 text-blue-300 hover:bg-blue-600/30 border border-blue-500/30 cursor-pointer font-semibold transition focus-within:outline focus-within:outline-blue-400 ${taskIntent === 'image' || taskIntent === 'video' ? 'min-h-9' : 'py-0.5'}`}>
                       <Upload size={10} />
                       <span>{isUploadingMedia ? 'Uploading...' : 'Upload'}</span>
                       <input
                         type="file"
                         multiple
                         accept={taskIntent === 'video' ? 'image/png,image/jpeg,.png,.jpg,.jpeg' : undefined}
-                        className="hidden"
+                        aria-label="Upload attachment"
+                        className={taskIntent === 'image' || taskIntent === 'video' ? 'sr-only' : 'hidden'}
                         onChange={(e) => void handleFileUpload(e.target.files)}
                       />
                     </label>
                     <button
                       type="button"
                       onClick={() => setIsPasteDocOpen(true)}
-                      className="flex items-center gap-1 px-2 py-0.5 rounded bg-slate-800 text-slate-300 hover:text-white border border-slate-700 font-semibold transition"
+                      className={`flex items-center gap-1 px-2 rounded bg-slate-800 text-slate-300 hover:text-white border border-slate-700 font-semibold transition ${taskIntent === 'image' || taskIntent === 'video' ? 'min-h-9' : 'py-0.5'}`}
                     >
                       <FileText size={10} />
                       <span>Paste Doc</span>
@@ -7926,7 +7915,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                     <button
                       type="button"
                       onClick={() => setShowFullMediaCenter(true)}
-                      className="flex items-center gap-1 px-2 py-0.5 rounded bg-slate-800 text-slate-300 hover:text-white border border-slate-700 font-semibold transition"
+                      className={`flex items-center gap-1 px-2 rounded bg-slate-800 text-slate-300 hover:text-white border border-slate-700 font-semibold transition ${taskIntent === 'image' || taskIntent === 'video' ? 'min-h-9' : 'py-0.5'}`}
                     >
                       <Film size={10} />
                       <span>Browse Media</span>
@@ -7941,7 +7930,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                   {/* Image Model Selector */}
                   <div>
                     <div className="flex items-center justify-between mb-1">
-                      <label className="block text-[10px] text-slate-400 font-mono uppercase font-bold">Image Model</label>
+                      <label className="block text-xs text-slate-400">Model</label>
                       <div className="flex items-center gap-2">
                         {selectedImageOption && !selectedImageOption.ready ? (
                           <span className="text-[10px] text-amber-400 flex items-center gap-1 font-mono">
@@ -7964,7 +7953,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                         aria-label="Image Model"
                         value={selectedImageModel}
                         onChange={(e) => handleImageModelChange(e.target.value)}
-                        className="w-full rounded bg-slate-900 border border-slate-800 px-2.5 py-1.5 text-white text-[11px] font-mono focus:outline-none focus:border-blue-500"
+                        className="min-h-9 w-full min-w-0 rounded bg-slate-900 border border-slate-700 px-2.5 py-1.5 text-white text-sm focus:outline-none focus:border-blue-500"
                       >
                         {imageModelOptions.map((opt) => (
                           <option key={opt.id} value={opt.id} disabled={!opt.ready}>
@@ -7974,146 +7963,14 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                       </select>
                     )}
 
-                    {/* Override vs Default Controls */}
-                    {selectedImageModel && defaultImageModel && (
-                      <div className="mt-1.5 pt-1.5 border-t border-slate-800/40 space-y-1 text-[10px] font-mono">
-                        <div className="flex flex-wrap items-center justify-between gap-1">
-                          {selectedImageModel !== defaultImageModel ? (
-                            <>
-                              <span className="text-amber-400 flex items-center gap-1">
-                                <span>Override for this task</span>
-                                <span className="text-slate-500">(Default: {defaultImageOption?.label || defaultImageModel})</span>
-                              </span>
-                              <button
-                                type="button"
-                                onClick={() => handleSetImageAsDefault(selectedImageModel)}
-                                className="text-blue-400 hover:text-blue-300 font-semibold underline underline-offset-2 transition"
-                              >
-                                Set as default for next time
-                              </button>
-                            </>
-                          ) : (
-                            <span className="text-slate-400 flex items-center gap-1">
-                              <span className="text-emerald-400 font-bold">✓ Default image model</span>
-                              <span className="text-slate-500">· Saved for future tasks</span>
-                            </span>
-                          )}
-                        </div>
-                        {selectedImageModel !== defaultImageModel && (
-                          <label className="flex items-center gap-1.5 text-slate-400 cursor-pointer pt-0.5">
-                            <input
-                              type="checkbox"
-                              checked={saveImageAsDefault}
-                              onChange={(e) => {
-                                setSaveImageAsDefault(e.target.checked)
-                                if (e.target.checked) {
-                                  void handleSetImageAsDefault(selectedImageModel)
-                                }
-                              }}
-                              className="rounded border-slate-700 bg-slate-900 text-blue-500 focus:ring-0 w-3 h-3"
-                            />
-                            <span className="font-sans text-[10px]">Change default in this menu for next time</span>
-                          </label>
-                        )}
-                      </div>
-                    )}
+                    {imageDefaultError && <p role="alert" className="text-xs text-amber-300">{imageDefaultError}</p>}
+                    {selectedImageModel && <MediaTaskDefault isDefault={selectedImageModel === defaultImageModel} disabled={isSavingModelChoice || !selectedImageOption?.ready} saving={isSavingModelChoice} onSave={() => void handleSetImageAsDefault(selectedImageModel)} />}
                   </div>
 
-                  {/* Resolution Selector (4K, 2K, 1K) */}
-                  <div className="pt-2 border-t border-slate-800/60">
-                    <div className="flex items-center justify-between mb-1.5">
-                      <label className="block text-[10px] text-slate-400 font-mono uppercase font-bold">Resolution & Quality</label>
-                      <span className="text-[10px] text-slate-500 font-mono">
-                        {imageResolution === '1k' ? '1024×1024 (Standard)' : imageResolution === '2k' ? '2048×2048 (HD)' : '4096×4096 (Ultra HD)'}
-                      </span>
-                    </div>
-                    <div className="grid grid-cols-3 gap-1.5 font-mono text-[10px]">
-                      {(['1k', '2k', '4k'] as const).map((res) => {
-                        const unitRate = imagePricingInfo.unitRatesByResolution?.[res] ?? (res === '1k' ? 0.03 : res === '2k' ? 0.06 : 0.12)
-                        const totalForRes = imagePricingInfo.totalsByResolution?.[res] ?? (unitRate * imageVariants)
-                        const isSelected = imageResolution === res
-                        return (
-                          <button
-                            key={res}
-                            type="button"
-                            onClick={() => setImageResolution(res)}
-                            className={`py-1.5 px-2 rounded border text-center transition-all flex flex-col items-center justify-center ${
-                              isSelected
-                                ? 'bg-blue-600 border-blue-400 text-white shadow-sm'
-                                : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white'
-                            }`}
-                          >
-                            <div className="font-bold uppercase leading-tight">{res}</div>
-                            <div className={`text-[10px] font-semibold mt-0.5 leading-tight ${isSelected ? 'text-white' : 'text-slate-200'}`}>
-                              ${totalForRes.toFixed(2)}
-                            </div>
-                            <div className={`text-[8px] leading-tight ${isSelected ? 'text-blue-100 opacity-90' : 'text-slate-500'}`}>
-                              {imageVariants > 1 ? `${imageVariants}x at $${unitRate.toFixed(2)}/ea` : `$${unitRate.toFixed(2)}/img`}
-                            </div>
-                          </button>
-                        )
-                      })}
-                    </div>
-                  </div>
-
-                  {/* Aspect Ratio with visual cues & Variants Count */}
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-slate-800/60">
-                    <div>
-                      <label className="block text-[10px] text-slate-400 font-mono uppercase font-bold mb-1.5">Aspect Ratio</label>
-                      <div className="grid grid-cols-4 gap-1 font-mono text-[10px]">
-                        {IMAGE_ASPECT_RATIOS.map((ar) => (
-                          <button
-                            key={ar.ratio}
-                            type="button"
-                            onClick={() => setImageAspectRatio(ar.ratio)}
-                            className={`py-1.5 px-0.5 rounded border text-center font-bold flex flex-col items-center justify-center gap-1 transition-all ${
-                              imageAspectRatio === ar.ratio
-                                ? 'bg-blue-600 border-blue-400 text-white shadow'
-                                : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white'
-                            }`}
-                          >
-                            <div
-                              className={`border rounded-[1.5px] transition-colors ${ar.widthClass} ${ar.heightClass} ${
-                                imageAspectRatio === ar.ratio ? 'border-white bg-white/20' : 'border-slate-500 bg-slate-800/40'
-                              }`}
-                            />
-                            <span className="leading-none">{ar.ratio}</span>
-                            <span className="text-[8px] font-sans font-normal opacity-75 leading-none">{ar.label}</span>
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                    <div>
-                      <div className="flex items-center justify-between mb-1.5">
-                        <label className="block text-[10px] text-slate-400 font-mono uppercase font-bold">Variants Count</label>
-                        <span className="text-[9px] text-slate-500 font-mono">
-                          {imageVariants} {imageVariants === 1 ? 'image' : 'images'}
-                        </span>
-                      </div>
-                      <div className="grid grid-cols-6 gap-1 font-mono text-[10px]">
-                        {[1, 2, 4, 5, 10, 25].map((v) => {
-                          const costForV = (imagePricingInfo.ratePerImage * v).toFixed(2)
-                          const isSelected = imageVariants === v
-                          return (
-                            <button
-                              key={v}
-                              type="button"
-                              onClick={() => setImageVariants(v)}
-                              className={`py-1 rounded border text-center font-bold flex flex-col items-center justify-center transition-all ${
-                                isSelected
-                                  ? 'bg-blue-600 border-blue-400 text-white'
-                                  : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white'
-                              }`}
-                            >
-                              <span className="leading-tight">{v}{v >= 5 ? 'x' : ''}</span>
-                              <span className={`text-[8px] font-normal leading-tight mt-0.5 ${isSelected ? 'text-blue-100 font-semibold' : 'text-slate-400'}`}>
-                                ${costForV}
-                              </span>
-                            </button>
-                          )
-                        })}
-                      </div>
-                    </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                    <MediaTaskSelect label="Size" value={imageResolution} values={['1k', '2k', '4k']} onChange={value => setImageResolution(value as '1k' | '2k' | '4k')} />
+                    <MediaTaskSelect label="Ratio" value={imageAspectRatio} values={IMAGE_ASPECT_RATIOS.map(option => option.ratio)} onChange={value => setImageAspectRatio(value as typeof imageAspectRatio)} />
+                    <MediaTaskSelect label="Images" value={imageVariants} values={[1, 2, 4, 5, 10, 25]} onChange={value => setImageVariants(Number(value))} />
                   </div>
 
                   <ImagePromptControls
@@ -8122,18 +7979,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                     onChange={(aiVariants) => dispatchImagePrompt({ type: 'choice', aiVariants })}
                   />
 
-                  {/* Estimated Model Cost Banner for Images */}
-                  <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-2.5 flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <Sparkles size={13} className="text-blue-400 shrink-0" />
-                      <span className="text-[11px] font-mono text-slate-300">
-                        Estimated Model Cost: <strong className="text-white font-semibold">{imagePricingInfo.formattedSummary}</strong>
-                      </span>
-                    </div>
-                    <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-slate-800 text-blue-300 border border-slate-700 font-semibold shrink-0">
-                      ${imagePricingInfo.totalPrice.toFixed(2)} Total · {imageVariants} {imageVariants === 1 ? 'image' : 'images'} · {imageResolution.toUpperCase()}
-                    </span>
-                  </div>
+                  <MediaTaskCost total={imagePricingInfo.totalPrice} approximate={!imagePricingInfo.isVerified} details={imagePricingInfo.formattedSummary} />
                 </div>
               )}
 
@@ -8147,7 +7993,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                   {/* Video Model Selector */}
                   <div>
                     <div className="flex items-center justify-between mb-1">
-                      <label className="block text-[10px] text-slate-400 font-mono uppercase font-bold">Video Model</label>
+                      <label className="block text-xs text-slate-400">Model</label>
                       {selectedVideoOption && !selectedVideoOption.ready && (
                         <span className="text-[10px] text-amber-400 flex items-center gap-1 font-mono">
                           <AlertTriangle size={10} /> {selectedVideoOption.reason || 'Not configured'}
@@ -8165,7 +8011,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                         disabled={videoDefaults.loading || videoDefaults.saving || videoDefaults.loadFailed || videoCatalog.isFetching || videoCatalog.isError}
                         value={selectedVideoModel}
                         onChange={(e) => handleVideoModelChange(e.target.value)}
-                        className="w-full rounded bg-slate-900 border border-slate-800 px-2.5 py-1.5 text-white text-[11px] font-mono focus:outline-none focus:border-blue-500"
+                        className="min-h-9 w-full min-w-0 rounded bg-slate-900 border border-slate-700 px-2.5 py-1.5 text-white text-sm focus:outline-none focus:border-blue-500"
                       >
                         <option value="">Select a video model</option>
                         {videoModelOptions.map((opt) => (
@@ -8176,263 +8022,24 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                       </select>
                     )}
 
-                    {/* Override vs Default Controls for Video */}
-                    {selectedVideoModel && (
-                      <div className="mt-1.5 pt-1.5 border-t border-slate-800/40 space-y-1 text-[10px] font-mono">
-                        <div className="flex flex-wrap items-center justify-between gap-1">
-                          {selectedVideoModel !== defaultVideoModel ? (
-                            <>
-                              <span className="text-amber-400 flex items-center gap-1">
-                                <span>Override for this task</span>
-                                <span className="text-slate-500">(Default: {defaultVideoOption?.label || defaultVideoModel})</span>
-                              </span>
-                              <button
-                                type="button"
-                                disabled={videoDefaults.saving}
-                                onClick={() => handleSetVideoAsDefault(selectedVideoModel)}
-                                className="text-blue-400 hover:text-blue-300 font-semibold underline underline-offset-2 transition"
-                              >
-                                Set as default for next time
-                              </button>
-                            </>
-                          ) : (
-                            <span className="text-slate-400 flex items-center gap-1">
-                              <span className="text-emerald-400 font-bold">✓ Default video model</span>
-                              <span className="text-slate-500">· Saved for future tasks</span>
-                            </span>
-                          )}
-                        </div>
-                        {selectedVideoModel !== defaultVideoModel && (
-                          <label className="flex items-center gap-1.5 text-slate-400 cursor-pointer pt-0.5">
-                            <input
-                              type="checkbox"
-                              checked={saveVideoAsDefault}
-                              disabled={videoDefaults.saving}
-                              onChange={(e) => {
-                                setSaveVideoAsDefault(e.target.checked)
-                                if (e.target.checked) {
-                                  void handleSetVideoAsDefault(selectedVideoModel)
-                                }
-                              }}
-                              className="rounded border-slate-700 bg-slate-900 text-blue-500 focus:ring-0 w-3 h-3"
-                            />
-                            <span className="font-sans text-[10px]">Change default in this menu for next time</span>
-                          </label>
-                        )}
-                      </div>
-                    )}
+                    {selectedVideoModel && <MediaTaskDefault isDefault={selectedVideoModel === defaultVideoModel} disabled={videoDefaults.loading || videoDefaults.saving || videoDefaults.loadFailed || videoCatalog.isFetching || videoCatalog.isError || !selectedVideoOption?.ready} saving={videoDefaults.saving} onSave={() => void handleSetVideoAsDefault(selectedVideoModel)} />}
                   </div>
 
-                  {/* Direct Single Video Execution Banner */}
-                  <div className="p-2.5 rounded-lg bg-blue-950/20 border border-blue-500/20 text-[11px] text-slate-300 space-y-1 font-sans leading-relaxed">
-                    <div className="flex items-center gap-1.5 font-bold text-blue-400 text-[10px] font-mono uppercase">
-                      <Sparkles size={11} />
-                      <span>Single Video Shot (1 Prompt · Direct Model Execution)</span>
-                    </div>
-                    <p className="text-[11px] text-slate-300">
-                      Generates video directly with the selected model; audio availability depends on its catalog capabilities. Optional scene prompts create an ordered assembled cut. Timeline editing and audio mixing are handled in Video Studio.
-                    </p>
-                  </div>
-
-                  {/* AI Prompt Enhancement Toggle */}
-                  <div className="pt-2 border-t border-slate-800/60">
-                    <label className="flex items-center justify-between cursor-pointer select-none">
-                      <div className="flex items-center gap-2">
-                        <input
-                          type="checkbox"
-                          checked={enhanceVideoPrompt}
-                          onChange={(e) => setEnhanceVideoPrompt(e.target.checked)}
-                          className="rounded border-slate-700 bg-slate-900 text-blue-600 focus:ring-0 focus:ring-offset-0 h-3.5 w-3.5"
-                        />
-                        <span className="font-mono text-[10px] uppercase font-bold text-slate-300 flex items-center gap-1.5">
-                          <Sparkles size={11} className={enhanceVideoPrompt ? 'text-indigo-400' : 'text-slate-500'} />
-                          <span>Enhance prompt with AI</span>
-                        </span>
-                      </div>
-                      <span className="text-[10px] font-mono text-slate-500">
-                        {enhanceVideoPrompt ? 'Uses Router to polish prompt' : 'Direct to Video Model (No router rewrite)'}
-                      </span>
+                  <div className="flex flex-wrap items-start gap-2">
+                    <label className="flex min-h-9 items-center gap-2 text-sm text-slate-300 cursor-pointer">
+                      <input type="checkbox" checked={enhanceVideoPrompt} onChange={event => setEnhanceVideoPrompt(event.target.checked)} />
+                      Enhance prompt
                     </label>
-                    {enhanceVideoPrompt ? (
-                      <p className="mt-1 text-[10px] text-slate-400 pl-5 leading-relaxed font-sans">
-                        The AI router will refine your prompt for visual lighting and camera motion without decomposing your single shot into multiple scenes.
-                      </p>
-                    ) : (
-                      <p className="mt-1 text-[10px] text-slate-500 pl-5 leading-relaxed font-sans">
-                        Your prompt is sent directly to the video model without AI prompt modification or router planning.
-                      </p>
-                    )}
+                    <MediaTaskHelp label="About video generation">Without enhancement, your prompt goes directly to the selected model. Enhancement uses Router to refine lighting and camera motion, not to split scenes. Audio depends on model capabilities.</MediaTaskHelp>
                   </div>
 
-                  {/* Resolution Selector & Aspect Ratio */}
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-slate-800/60">
-                    <div>
-                      <div className="flex items-center justify-between mb-1.5">
-                        <label className="block text-[10px] text-slate-400 font-mono uppercase font-bold">Resolution & Quality</label>
-                        <span className="text-[9px] text-slate-500 font-mono">
-                          {videoDuration > 0 ? `${videoDuration}s · ` : ''}{videoClipCount} {videoClipCount === 1 ? 'clip' : 'clips'}
-                        </span>
-                      </div>
-                      {supportedVideoResolutions.length > 0 ? (
-                        <div className="grid grid-cols-[repeat(auto-fit,minmax(5rem,1fr))] auto-rows-fr gap-1 font-mono text-[10px]">
-                          {supportedVideoResolutions.map((res) => {
-                            const durations = resolveAllowedVideoDurations(selectedVideoGenOptions, res)
-                            const estimateDuration = durations.includes(videoDuration) ? videoDuration : (durations[durations.length - 1] || 0)
-                            const estimate = resolveVideoPricing(selectedVideoOption, res, estimateDuration, videoClipCount)
-                            const totalForRes = estimate.totalPrice
-                            const isSelected = videoResolution === res
-                            return (
-                              <button
-                                key={res}
-                                type="button"
-                                onClick={() => setVideoResolution(res)}
-                                className={`py-1.5 px-1 rounded border text-center font-bold flex flex-col items-center justify-center transition-all ${
-                                  isSelected
-                                    ? 'bg-blue-600 border-blue-400 text-white shadow'
-                                    : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white'
-                                }`}
-                              >
-                                <span className="leading-tight">{res}</span>
-                                <span className={`text-[9px] font-semibold mt-0.5 leading-tight ${isSelected ? 'text-white' : 'text-slate-200'}`}>
-                                  {totalForRes !== undefined
-                                    ? `${estimate.approximate ? '≈' : ''}$${totalForRes.toFixed(2)}`
-                                    : estimate.ratesByResolution?.[normalizeVideoResKey(res)] || 'No pricing'}
-                                </span>
-                                <span className={`text-[8px] font-normal leading-tight ${isSelected ? 'text-blue-100 opacity-90' : 'text-slate-500'}`}>
-                                  {totalForRes !== undefined ? estimate.ratesByResolution?.[normalizeVideoResKey(res)] || 'No pricing' : estimate.approximate ? 'Approx. video output' : 'Catalog rate'}
-                                  {estimateDuration > 0 ? ` · ${estimateDuration}s` : ''}
-                                </span>
-                              </button>
-                            )
-                          })}
-                        </div>
-                      ) : (
-                        <div className="p-2 rounded bg-slate-900/60 border border-slate-800 text-[10px] font-mono text-slate-500">
-                          Resolution not configurable for this model
-                        </div>
-                      )}
-                    </div>
-
-                    <div>
-                      <label className="block text-[10px] text-slate-400 font-mono uppercase font-bold mb-1.5">Aspect Ratio</label>
-                      {supportedVideoAspectRatios.length > 0 ? (
-                        <div className="grid grid-cols-[repeat(auto-fit,minmax(5rem,1fr))] auto-rows-fr gap-1 font-mono text-[10px]">
-                          {VIDEO_ASPECT_RATIOS.filter((ar) => supportedVideoAspectRatios.includes(ar.ratio)).map((ar) => {
-                            const isSelected = videoAspectRatio === ar.ratio
-                            return (
-                              <button
-                                key={ar.ratio}
-                                type="button"
-                                onClick={() => setVideoAspectRatio(ar.ratio)}
-                                className={`py-1.5 px-1 rounded border text-center font-bold flex flex-col items-center justify-center gap-1 transition-all ${
-                                  isSelected
-                                    ? 'bg-blue-600 border-blue-400 text-white shadow'
-                                    : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white'
-                                }`}
-                              >
-                                <div
-                                  className={`border rounded-[1.5px] transition-colors ${ar.widthClass} ${ar.heightClass} ${
-                                    isSelected ? 'border-white bg-white/20' : 'border-slate-500 bg-slate-800/40'
-                                  }`}
-                                />
-                                <span className="leading-none">{ar.ratio}</span>
-                                <span className="text-[8px] font-sans font-normal opacity-75 leading-none">{ar.label}</span>
-                              </button>
-                            )
-                          })}
-                        </div>
-                      ) : (
-                        <div className="p-2 rounded bg-slate-900/60 border border-slate-800 text-[10px] font-mono text-slate-500">
-                          Aspect ratio not configurable for this model
-                        </div>
-                      )}
-                    </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                    <MediaTaskSelect label="Size" value={videoResolution} values={supportedVideoResolutions} onChange={setVideoResolution} />
+                    <MediaTaskSelect label="Ratio" value={videoAspectRatio} values={supportedVideoAspectRatios} onChange={setVideoAspectRatio} />
+                    <MediaTaskSelect label="Duration" value={videoDuration} values={supportedVideoDurations} suffix="s" onChange={value => setVideoDuration(Number(value))} />
+                    <MediaTaskSelect label="Clips" value={videoClipCount} values={[1, 2, 4, 8]} onChange={value => setVideoClipCount(Number(value))} />
                   </div>
-
-                  <div>
-                    <label htmlFor="video-scene-prompts" className="block text-[10px] text-slate-400 font-mono uppercase font-bold mb-1.5">Multipart scene prompts (optional)</label>
-                    <textarea id="video-scene-prompts" value={videoScenePrompts} onChange={event => setVideoScenePrompts(event.target.value)} rows={3} className="w-full rounded border border-slate-700 bg-slate-900 p-2 text-sm text-slate-100" placeholder="One scene per line, 2–8 scenes. Leave empty for a single shot." />
-                    <p className="text-[10px] text-slate-400">Scenes generate sequentially and assemble in order. Select one clip. Each scene is billed separately; generated scene audio is retained.</p>
-                  </div>
-                  {/* Duration & Clip Count Selectors */}
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-slate-800/60">
-                    <div>
-                      <div className="flex items-center justify-between mb-1.5">
-                        <label className="block text-[10px] text-slate-400 font-mono uppercase font-bold">Duration (Seconds)</label>
-                        <span className="text-[9px] text-slate-500 font-mono">
-                          {supportedVideoDurations.length === 1
-                            ? `Fixed for ${videoResolution || 'model'}`
-                            : supportedVideoDurations.length > 0
-                            ? 'Model constrained'
-                            : 'Not configurable'}
-                        </span>
-                      </div>
-                      {supportedVideoDurations.length > 0 ? (
-                        <div className="grid grid-cols-[repeat(auto-fit,minmax(5rem,1fr))] auto-rows-fr gap-1 font-mono text-[10px]">
-                          {supportedVideoDurations.map((dur) => {
-                            const isSelected = videoDuration === dur
-                            return (
-                              <button
-                                key={dur}
-                                type="button"
-                                onClick={() => setVideoDuration(dur)}
-                                className={`py-1.5 px-1 rounded border text-center font-bold flex flex-col items-center justify-center transition-all ${
-                                  isSelected
-                                    ? 'bg-blue-600 border-blue-400 text-white shadow'
-                                    : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white'
-                                }`}
-                              >
-                                <span className="leading-tight">{dur}s</span>
-                                <span className={`text-[8px] font-normal leading-tight mt-0.5 ${isSelected ? 'text-blue-100 font-semibold' : 'text-slate-500'}`}>
-                                  {videoPricingInfo.ratePerSec !== undefined
-                                    ? `$${(videoPricingInfo.ratePerSec * dur).toFixed(2)}/clip`
-                                    : `${dur} Seconds`}
-                                </span>
-                              </button>
-                            )
-                          })}
-                        </div>
-                      ) : (
-                        <div className="p-2 rounded bg-slate-900/60 border border-slate-800 text-[10px] font-mono text-slate-500">
-                          Duration not configurable for this model
-                        </div>
-                      )}
-                    </div>
-
-                    <div>
-                      <div className="flex items-center justify-between mb-1.5">
-                        <label className="block text-[10px] text-slate-400 font-mono uppercase font-bold">Clip Count (1..8)</label>
-                        <span className="text-[9px] text-slate-500 font-mono">
-                          Application limit (max 8)
-                        </span>
-                      </div>
-                      <div className="grid grid-cols-4 gap-1 font-mono text-[10px]">
-                        {[1, 2, 4, 8].map((c) => {
-                          const isSelected = videoClipCount === c
-                          const costForC = videoPricingInfo.rateForClip !== undefined
-                            ? `$${(videoPricingInfo.rateForClip * c).toFixed(2)}`
-                            : 'Unavailable'
-                          return (
-                            <button
-                              key={c}
-                              type="button"
-                              onClick={() => setVideoClipCount(c)}
-                              className={`py-1.5 px-1 rounded border text-center font-bold flex flex-col items-center justify-center transition-all ${
-                                isSelected
-                                  ? 'bg-blue-600 border-blue-400 text-white shadow'
-                                  : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white'
-                              }`}
-                            >
-                              <span className="leading-tight">{c}{c === 1 ? ' Clip' : 'x'}</span>
-                              <span className={`text-[8px] font-normal leading-tight mt-0.5 ${isSelected ? 'text-blue-100 font-semibold' : 'text-slate-400'}`}>
-                                {costForC}
-                              </span>
-                            </button>
-                          )
-                        })}
-                      </div>
-                    </div>
-                  </div>
+                  <MediaTaskScenes value={videoScenePrompts} onChange={setVideoScenePrompts} />
 
                   {/* Video Attachment Error Banner */}
                   {videoAttachmentError && (
@@ -8458,29 +8065,13 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                       <span>Initial image support is unavailable or unverified for this model. Use a text prompt.</span>
                     </div>
                   ) : (
-                    <div className="p-2 rounded bg-slate-900/60 border border-slate-800 text-[10px] font-mono text-slate-400 flex items-center justify-between">
-                      <span className="flex items-center gap-1.5">
-                        <Paperclip size={11} className="text-blue-400" />
-                        <span>Optional Starting Frame (1 Image): Drop or tag an image reference. Text stays in prompt.</span>
-                      </span>
-                      {taggedMedia.length > 0 && (
-                        <span className="text-emerald-400 font-semibold">1 image attached</span>
-                      )}
+                    <div className="flex flex-wrap items-start gap-1 text-xs text-slate-400">
+                      <span className="py-1">{taggedMedia.length > 0 ? '1 image attached' : 'Starting frame optional'}</span>
+                      <MediaTaskHelp label="About starting frames">Attach, upload, browse, drop or paste one PNG/JPEG image. Text stays in the prompt. Model restrictions still apply.</MediaTaskHelp>
                     </div>
                   )}
 
-                  {/* Pricing Transparency Summary */}
-                  <div className="p-2.5 rounded-lg bg-slate-900/90 border border-slate-800 text-[11px] font-mono flex flex-wrap items-center justify-between gap-2">
-                    <span className="text-slate-300 flex items-center gap-1.5">
-                      <Tag size={12} className="text-blue-400" />
-                      <span>Estimated Model Cost: <strong className="text-white font-semibold">{videoPricingInfo.formattedSummary}</strong></span>
-                    </span>
-                    <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-slate-800 text-blue-300 border border-slate-700 font-semibold shrink-0">
-                      {videoPricingInfo.totalPrice !== undefined
-                        ? `$${videoPricingInfo.totalPrice.toFixed(2)} Total${videoResolution ? ` · ${videoResolution.toUpperCase()}` : ''}${videoDuration > 0 ? ` · ${videoDuration}s` : ''} · ${videoClipCount} ${videoClipCount === 1 ? 'clip' : 'clips'}`
-                        : `Pricing Unavailable${videoResolution ? ` · ${videoResolution.toUpperCase()}` : ''}${videoDuration > 0 ? ` · ${videoDuration}s` : ''}`}
-                    </span>
-                  </div>
+                  <MediaTaskCost total={videoPricingInfo.totalPrice} approximate={videoPricingInfo.approximate} details={videoPricingInfo.formattedSummary} scenes={Boolean(videoScenePrompts.trim())} />
                 </div>
               )}
 

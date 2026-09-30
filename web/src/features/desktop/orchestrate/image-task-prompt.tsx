@@ -1,3 +1,5 @@
+import { MediaTaskHelp } from './media-task-controls'
+
 export type ImagePromptState = { count: number; aiVariants: boolean }
 export type ImagePromptAction =
   | { type: 'count'; count: number }
@@ -29,23 +31,23 @@ export function ImagePromptControls({ count, aiVariants, onChange }: {
   const enabled = count > 1
   const selected = imagePromptEnhancement(count, aiVariants)
   return (
-    <fieldset className="space-y-2 pt-2 border-t border-slate-800/60 text-xs" aria-describedby="image-prompt-help">
-      <legend className="text-slate-300">Should AI create different variant prompts?</legend>
-      <div className="flex flex-wrap gap-3">
-        <label className="flex items-center gap-1.5 text-slate-300">
+    <fieldset className="text-xs">
+      <legend className="sr-only">Image prompt mode</legend>
+      <div className="flex flex-wrap items-start gap-2">
+        <label className="flex min-h-9 items-center gap-1.5 rounded border border-slate-700 px-2 text-sm text-slate-300 cursor-pointer">
           <input type="radio" name="image-prompt-mode" checked={!selected} onChange={() => onChange(false)} />
-          Same prompt (default)
+          Same prompt
         </label>
-        <label className="flex items-center gap-1.5 text-slate-300">
+        <label className="flex min-h-9 items-center gap-1.5 rounded border border-slate-700 px-2 text-sm text-slate-300 cursor-pointer">
           <input type="radio" name="image-prompt-mode" checked={selected} disabled={!enabled} onChange={() => onChange(true)} />
-          AI-created different prompts
+          AI variants
         </label>
+        <MediaTaskHelp label="About AI variants">
+          {enabled
+            ? 'Same prompt sends your unchanged prompt independently to the image model. AI variants add a Router prompt-generation step. Only enabled by your explicit choice.'
+            : 'One image goes directly to the image model. Select multiple images to enable AI variants.'}
+        </MediaTaskHelp>
       </div>
-      <p id="image-prompt-help" className="text-[10px] text-slate-400">
-        {enabled
-          ? 'Same prompt sends your unchanged prompt independently to the image model. AI-created prompts add a Router prompt-generation step before images are generated.'
-          : 'One image sends your prompt directly to the image model, with no Router or Designer session. Select multiple images to enable AI-created prompts.'}
-      </p>
     </fieldset>
   )
 }
