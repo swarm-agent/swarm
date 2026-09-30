@@ -58,6 +58,15 @@ func (s *Server) reconcileProjectTaskRunLifecycle(job sessionV3ExecutorJob, stat
 		return err
 	}
 	isPrimarySession := task.SessionID == job.SessionID
+	if isPrimarySession && task.ActiveAttemptID != "" && task.ActiveAttemptID != "initial" {
+		state, found, err := db.GetV3SessionRunState(job.SessionID)
+		if err != nil {
+			return err
+		}
+		if !found || state.AccountScopeID != accountScopeID || state.RunID != job.RunID {
+			return nil
+		}
+	}
 	isTaskProgramSession := false
 	progID := task.TaskProgramID
 	if progID == "" && task.TaskProgram != nil {

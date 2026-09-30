@@ -21,6 +21,9 @@ func (s *Server) reconcileProjectTaskSession(p identity.Principal, proj *pebbles
 	if owned.ID != task.SessionID || owned.AccountScopeID != p.AccountScopeID || owned.UserID != p.UserID || owned.Metadata == nil || owned.Metadata["project_id"] != task.ProjectID || owned.Metadata["task_id"] != task.ID || owned.Metadata["swarm_v3_source_workspace_path"] != task.SourceWorkspace.Path || owned.Metadata["swarm_v3_source_workspace_id"] != task.SourceWorkspace.WorkspaceID || fmt.Sprint(owned.Metadata["swarm_v3_source_workspace_generation"]) != fmt.Sprint(task.SourceWorkspace.WorkspaceGeneration) {
 		return errors.New("task session ownership does not match reservation")
 	}
+	if task.ActiveAttemptID != "" && task.ActiveAttemptID != "initial" && owned.Metadata["task_attempt_id"] != task.ActiveAttemptID {
+		return errors.New("task session attempt does not match reservation")
+	}
 	if owned.WorktreeEnabled {
 		if owned.WorktreeRootPath == "" || owned.WorkspacePath != owned.WorktreeRootPath || owned.Metadata["swarm_v3_runtime_workspace_path"] != owned.WorktreeRootPath || owned.Metadata["swarm_v3_worktree_owner_session_id"] != owned.ID {
 			return errors.New("task session worktree owner does not match reservation")
@@ -87,10 +90,20 @@ func (s *Server) reconcileProjectTaskSession(p identity.Principal, proj *pebbles
 				return errors.New("task session has unrelated active run")
 			}
 			if active.Status == pebblestore.V3RunIntentPendingExecutor || active.Status == pebblestore.V3RunIntentRunning {
-				if active.Status == pebblestore.V3RunIntentPendingExecutor { s.EnqueueSessionRun(p, owned.ID, runID, active.ParentSessionID) }
+				if active.Status == pebblestore.V3RunIntentPendingExecutor {
+					if task.ActiveAttemptID != "" && task.ActiveAttemptID != "initial" {
+						if err := s.enqueueProjectTaskFollowup(p, owned.ID, runID, active.ParentSessionID); err != nil {
+							return err
+						}
+					} else {
+						s.EnqueueSessionRun(p, owned.ID, runID, active.ParentSessionID)
+					}
+				}
 				return nil
 			}
-			if task.ActiveAttemptID != "" && task.ActiveAttemptID != "initial" { return nil }
+			if task.ActiveAttemptID != "" && task.ActiveAttemptID != "initial" {
+				return nil
+			}
 			return errors.New("task initial run already recorded; use explicit retry lifecycle")
 		}
 		intents, err := db.ListRunIntents(task.SessionID, 1000)
@@ -98,7 +111,9 @@ func (s *Server) reconcileProjectTaskSession(p identity.Principal, proj *pebbles
 			return err
 		}
 		if len(intents) != 0 {
-			if task.ActiveAttemptID != "" && task.ActiveAttemptID != "initial" && len(intents) == 1 && intents[0].RunID == runID && intents[0].AccountScopeID == p.AccountScopeID { return nil }
+			if task.ActiveAttemptID != "" && task.ActiveAttemptID != "initial" && len(intents) == 1 && intents[0].RunID == runID && intents[0].AccountScopeID == p.AccountScopeID {
+				return nil
+			}
 			return errors.New("task session already has run history; use explicit retry lifecycle")
 		}
 		now := time.Now().UnixMilli()
@@ -115,7 +130,13 @@ func (s *Server) reconcileProjectTaskSession(p identity.Principal, proj *pebbles
 		if s.runner == nil {
 			return errors.New("runner service is not configured")
 		}
-		s.EnqueueSessionRun(p, owned.ID, runID, parent)
+		if task.ActiveAttemptID != "" && task.ActiveAttemptID != "initial" {
+			if err := s.enqueueProjectTaskFollowup(p, owned.ID, runID, parent); err != nil {
+				return err
+			}
+		} else {
+			s.EnqueueSessionRun(p, owned.ID, runID, parent)
+		}
 	}
 	return nil
 }

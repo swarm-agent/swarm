@@ -708,7 +708,9 @@ func (s *SessionStore) persistProjectTaskLocked(accountScopeID string, task *Pro
 		return nil, errors.New("account scope id is required")
 	}
 	if validate {
-		if task.AccountID != "" && task.AccountID != accountScopeID { return nil, errors.New("cross-account task write forbidden") }
+		if task.AccountID != "" && task.AccountID != accountScopeID {
+			return nil, errors.New("cross-account task write forbidden")
+		}
 		task.AccountID = accountScopeID
 		if err := task.Validate(); err != nil {
 			return nil, err
@@ -729,34 +731,54 @@ func (s *SessionStore) persistProjectTaskLocked(accountScopeID string, task *Pro
 	}
 	if task.ID != "" {
 		prior, found, err := s.GetProjectTask(accountScopeID, task.ProjectID, task.ID)
-		if err != nil { return nil, err }
+		if err != nil {
+			return nil, err
+		}
 		if found && prior.ActiveAttemptID != "" && prior.ActiveAttemptID != "initial" && prior.SessionID != task.SessionID && task.Revision <= prior.Revision {
 			return nil, errors.New("stale task session cannot replace active attempt")
 		}
 		if found && len(prior.Attempts) > 0 && prior.ActiveAttemptID != "initial" {
-			if len(task.Attempts) < len(prior.Attempts) { return nil, errors.New("task attempt history cannot be removed") }
+			if len(task.Attempts) < len(prior.Attempts) {
+				return nil, errors.New("task attempt history cannot be removed")
+			}
 			for i, a := range prior.Attempts {
 				b := task.Attempts[i]
-				if a.ID != b.ID || a.SessionID != b.SessionID || a.Request != b.Request || a.CreatedAt != b.CreatedAt || a.PayloadHash != b.PayloadHash || a.ClientRequestID != b.ClientRequestID || a.RequestRevision != b.RequestRevision || a.UserID != b.UserID { return nil, errors.New("task attempt history cannot be rewritten") }
-				if a.ID != prior.ActiveAttemptID { left, _ := json.Marshal(a); right, _ := json.Marshal(b); if string(left) != string(right) { return nil, errors.New("historical task outcome cannot be rewritten") } }
+				if a.ID != b.ID || a.SessionID != b.SessionID || a.Request != b.Request || a.CreatedAt != b.CreatedAt || a.PayloadHash != b.PayloadHash || a.ClientRequestID != b.ClientRequestID || a.RequestRevision != b.RequestRevision || a.UserID != b.UserID {
+					return nil, errors.New("task attempt history cannot be rewritten")
+				}
+				if a.ID != prior.ActiveAttemptID {
+					left, _ := json.Marshal(a)
+					right, _ := json.Marshal(b)
+					if string(left) != string(right) {
+						return nil, errors.New("historical task outcome cannot be rewritten")
+					}
+				}
 			}
 		}
 	}
 	task.EnsureTaskAttempts()
 	if task.ActiveAttemptID != "" && task.ActiveAttemptID != "initial" {
 		a := task.ActiveAttempt()
-		if a == nil || a.SessionID != task.SessionID { return nil, errors.New("active task attempt/session mismatch") }
+		if a == nil || a.SessionID != task.SessionID {
+			return nil, errors.New("active task attempt/session mismatch")
+		}
 	}
 	task.CaptureActiveAttempt()
 	if a := task.ActiveAttempt(); a != nil {
 		state, found, err := s.GetV3SessionRunState(task.SessionID)
-		if err != nil { return nil, err }
+		if err != nil {
+			return nil, err
+		}
 		if found && state.AccountScopeID == accountScopeID {
 			a.RunID = state.RunID
 			owned, exists, err := s.GetSession(task.SessionID)
-			if err != nil { return nil, err }
-			if exists && owned.AccountScopeID == accountScopeID && owned.Metadata["lifecycle_signal"] == "needs_review" && owned.Metadata["lifecycle_summary_run_id"] == state.RunID {
-				if summary, ok := owned.Metadata["lifecycle_summary"].(string); ok && len(summary) <= 4000 { a.Summary, a.SummaryRunID = summary, state.RunID }
+			if err != nil {
+				return nil, err
+			}
+			if !state.Active && exists && owned.AccountScopeID == accountScopeID && owned.Metadata["lifecycle_signal"] == "needs_review" && owned.Metadata["lifecycle_summary_run_id"] == state.RunID {
+				if summary, ok := owned.Metadata["lifecycle_summary"].(string); ok && len(summary) <= 4000 {
+					a.Summary, a.SummaryRunID = summary, state.RunID
+				}
 			}
 		}
 	}

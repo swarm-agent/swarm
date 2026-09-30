@@ -1059,7 +1059,9 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 		return s.reconcileProjectTaskSession(p, proj, task, existing, taskStatus)
 	}
 
-	if task.WorkspacePath != wsPath { return errors.New("reserved source differs from execution path without an owned session") }
+	if task.WorkspacePath != wsPath {
+		return errors.New("reserved source differs from execution path without an owned session")
+	}
 	mode := sessionruntime.ModeAuto
 	targetAgent := strings.TrimSpace(task.Agent)
 	if targetAgent == "plan" || task.Status == "planning" || task.TaskProgram != nil || task.OutcomeType == "plan_spec" || (targetAgent == "swarm" && strings.EqualFold(task.FeatureSize, "big")) {
@@ -1070,7 +1072,9 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 		targetAgent = "swarm"
 	}
 
-	if task.ActiveAttemptID != "" && task.ActiveAttemptID != "initial" { mode, targetAgent = sessionruntime.ModeAuto, "swarm" }
+	if task.ActiveAttemptID != "" && task.ActiveAttemptID != "initial" {
+		mode, targetAgent = sessionruntime.ModeAuto, "swarm"
+	}
 
 	// Resolve canonical default Swarm preference for fallback or primary Swarm task
 	var defaultSwarmPref pebblestore.ModelPreference
@@ -1284,12 +1288,20 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 		var alloc worktreeruntime.Allocation
 		var err error
 		if task.ActiveAttemptID != "" && task.ActiveAttemptID != "initial" {
-			allocator, ok := s.worktrees.(interface { AllocateProjectTaskFollowup(identity.Principal, string, string, string, string, string) (worktreeruntime.Allocation, error) })
-			if !ok { return errors.New("durable follow-up allocator unavailable") }
+			allocator, ok := s.worktrees.(interface {
+				AllocateProjectTaskFollowup(identity.Principal, string, string, string, string, string) (worktreeruntime.Allocation, error)
+			})
+			if !ok {
+				return errors.New("durable follow-up allocator unavailable")
+			}
 			head := task.ActiveAttempt().AllocationHead
-			if head == "" { head = task.BaseCommit }
+			if head == "" {
+				head = task.BaseCommit
+			}
 			alloc, err = allocator.AllocateProjectTaskFollowup(p, wsPath, sessionID, worktreeBranch, head, task.BaseBranch)
-			if err == nil && task.ActiveAttempt().Recovery != nil { alloc.BaseCommit = task.ActiveAttempt().Recovery.BaseCommit }
+			if err == nil && task.ActiveAttempt().Recovery != nil {
+				alloc.BaseCommit = task.ActiveAttempt().Recovery.BaseCommit
+			}
 		} else {
 			alloc, err = s.worktrees.AllocateDetachedWorkspaceRequestedForPrincipal(p, wsPath, sessionID, "", worktreeBranch)
 		}
@@ -1421,7 +1433,13 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 		if proj != nil && len(task.CoderAssignments) == 0 {
 			parentSessionID = proj.PrimarySessionID
 		}
-		s.EnqueueSessionRun(p, sessionID, runID, parentSessionID)
+		if task.ActiveAttemptID != "" && task.ActiveAttemptID != "initial" {
+			if err := s.enqueueProjectTaskFollowup(p, sessionID, runID, parentSessionID); err != nil {
+				return err
+			}
+		} else {
+			s.EnqueueSessionRun(p, sessionID, runID, parentSessionID)
+		}
 	}
 
 	return nil
@@ -4271,7 +4289,9 @@ func sanitizeProjectTaskForClient(t *pebblestore.ProjectTaskRecord) *pebblestore
 	cp := *t
 	cp.Attempts = append([]pebblestore.ProjectTaskAttempt(nil), t.Attempts...)
 	// Board responses carry bounded references; full chronological requests use /history.
-	if len(cp.Attempts) > 10 { cp.Attempts = cp.Attempts[len(cp.Attempts)-10:] }
+	if len(cp.Attempts) > 10 {
+		cp.Attempts = cp.Attempts[len(cp.Attempts)-10:]
+	}
 	for i := range cp.Attempts {
 		cp.Attempts[i].Deliverables = append([]pebblestore.ProjectTaskDeliverable(nil), cp.Attempts[i].Deliverables...)
 		for j := range cp.Attempts[i].Deliverables {

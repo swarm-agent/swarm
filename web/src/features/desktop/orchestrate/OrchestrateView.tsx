@@ -2187,7 +2187,7 @@ export function MinimalTaskCard({
             onKeyDown={(e) => {
               if (e.key === 'Enter') {
                 e.stopPropagation()
-                onReopen(reopenFeedback.trim() || undefined)
+                onReopen(reopenFeedback.trim() ? reopenFeedback : undefined)
                 setReopenFeedback('')
                 setIsReopenOpen(false)
               }
@@ -2197,7 +2197,7 @@ export function MinimalTaskCard({
             type="button"
             onClick={(e) => {
               e.stopPropagation()
-              onReopen(reopenFeedback.trim() || undefined)
+              onReopen(reopenFeedback.trim() ? reopenFeedback : undefined)
               setReopenFeedback('')
               setIsReopenOpen(false)
             }}
@@ -2334,7 +2334,7 @@ export function MinimalTaskCard({
             onKeyDown={(e) => {
               if (e.key === 'Enter') {
                 e.stopPropagation()
-                onReopen(reopenFeedback.trim() || undefined)
+                onReopen(reopenFeedback.trim() ? reopenFeedback : undefined)
                 setReopenFeedback('')
                 setIsReopenOpen(false)
               }
@@ -2344,7 +2344,7 @@ export function MinimalTaskCard({
             type="button"
             onClick={(e) => {
               e.stopPropagation()
-              onReopen(reopenFeedback.trim() || undefined)
+              onReopen(reopenFeedback.trim() ? reopenFeedback : undefined)
               setReopenFeedback('')
               setIsReopenOpen(false)
             }}
@@ -5387,14 +5387,16 @@ export function OrchestrateView({
   }
 
   const renderIntegrationRecovery = (task: RunningTask) => {
-    const failure = integrationFailures[task.id] || (selectedProject && task.integration && ['failed', 'conflict'].includes(task.integration.state)
+    const retryAttempt = task.attempts?.find(attempt => attempt.id === task.activeAttemptId && attempt.launch_state === 'launch_failed')
+    const failure = (retryAttempt?.recovery && selectedProject
+      ? integrationFailure(selectedProject, task, new Error(retryAttempt.last_error || 'Repair launch incomplete; retry retained request')) : undefined) || integrationFailures[task.id] || (selectedProject && task.integration && ['failed', 'conflict'].includes(task.integration.state)
       ? integrationFailure(selectedProject, task, new Error(task.integration.error || 'Integration failed; retained backend receipt')) : undefined)
     if (!selectedProject) return null
     const history = <TaskAttemptHistory key={`${selectedProject.id}:${task.id}:${task.activeAttemptId || 'initial'}`} projectId={selectedProject.id} taskId={task.id} onOpen={sessionId => {
       setSelectedTaskId(task.id); setActiveTaskId(task.id); setActiveSessionId(sessionId); setWorkerChatOpen(true)
       void hydrateDesktopV3ChildCard(sessionId, { activePlan: true, permissionSummary: true }).catch(() => undefined)
     }} />
-    if (!failure || failure.projectId !== selectedProject.id) return history
+    if (!failure || failure.projectId !== selectedProject.id) return <>{history}{retryAttempt?.request && <button type="button" onClick={() => void handleReopenTask(task.id, retryAttempt.request)}>Retry incomplete follow-up</button>}</>
     const state = repairStates[task.id]
     const unavailable = repairUnavailable(failure.task)
     return <div className="integration-recovery" role="alert" onClick={event => event.stopPropagation()}>
@@ -5430,7 +5432,9 @@ export function OrchestrateView({
     setRepairStates(previous => ({ ...previous, [task.id]: { loading: true } }))
     try {
       const active = task.attempts?.find(attempt => attempt.id === task.activeAttemptId && attempt.launch_state !== 'launched')
-      const body = await projectTaskFollowupPayload(failure.projectId, task.id, active?.request_revision ?? task.revision ?? 0, 'Repair the failed integration for this task. Preserve the captured target, inspect the retained integration receipt, and coordinate the repair without automatic promotion.', true)
+      const body = active?.recovery && active.client_request_id
+        ? { client_request_id: active.client_request_id, revision: active.request_revision, feedback: active.request, repair: true }
+        : await projectTaskFollowupPayload(failure.projectId, task.id, task.revision ?? 0, 'Repair the failed integration for this task. Preserve the captured target, inspect the retained integration receipt, and coordinate the repair without automatic promotion.', true)
       const result = await requestJson<{ task: any }>(`/v3/projects/${encodeURIComponent(failure.projectId)}/tasks/${encodeURIComponent(task.id)}/reopen`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
       })

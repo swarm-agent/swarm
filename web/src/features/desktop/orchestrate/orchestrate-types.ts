@@ -280,6 +280,8 @@ export interface TaskAttempt {
   run_id?: string
   request?: string
   request_revision?: number
+  client_request_id?: string
+  recovery?: { session_id: string }
   role: string
   created_at?: number
   status: string
