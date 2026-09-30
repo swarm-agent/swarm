@@ -411,6 +411,7 @@ func SwarmOrchestratorAgentToolContract() *pebblestore.AgentToolContract {
 		Preset: "custom",
 		Tools: map[string]pebblestore.AgentToolConfig{
 			"read":              {Enabled: pebblestore.BoolPtr(true)},
+			"media_inspect":     {Enabled: pebblestore.BoolPtr(true)},
 			"search":            {Enabled: pebblestore.BoolPtr(true)},
 			"find":              {Enabled: pebblestore.BoolPtr(true)},
 			"list":              {Enabled: pebblestore.BoolPtr(true)},
