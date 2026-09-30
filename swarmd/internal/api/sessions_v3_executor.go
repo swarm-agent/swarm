@@ -5078,15 +5078,19 @@ func (e *sessionV3Executor) sessionsV3ProviderInputWithMedia(resolved sessionV3R
 		if text != "" {
 			content = append(content, map[string]any{"type": "input_text", "text": text})
 		}
+		var unperceived []pebblestore.SessionMediaReference
 		for _, reference := range message.Media {
 			if !runruntime.SessionMediaContractAllows(resolved.MediaContract, reference.Modality, reference.MIMEType, reference.FileType) {
-				return nil, fmt.Errorf("media asset %q is denied by the current run contract", reference.AssetID)
+				// Provider input limits apply at invocation: the conversational model cannot directly perceive this modality/media.
+				// Do not send unsupported media to the provider, but preserve session run execution and convey exact references.
+				unperceived = append(unperceived, reference)
+				continue
 			}
 			asset, bytes, err := e.server.sessions.ReadSessionMediaAsset(resolved.Session.AccountScopeID, resolved.Session.ID, reference.AssetID)
 			if err != nil {
 				return nil, err
 			}
-			if asset.ContractHash != reference.ContractHash || asset.DigestSHA256 != reference.DigestSHA256 || asset.Size != reference.Size || asset.Modality != reference.Modality || asset.DetectedMIMEType != reference.MIMEType || asset.FileType != reference.FileType {
+			if asset.DigestSHA256 != reference.DigestSHA256 || asset.Size != reference.Size || asset.Modality != reference.Modality || asset.DetectedMIMEType != reference.MIMEType {
 				return nil, fmt.Errorf("media asset %q does not match its durable reference", reference.AssetID)
 			}
 			content = append(content, map[string]any{
@@ -5094,7 +5098,26 @@ func (e *sessionV3Executor) sessionsV3ProviderInputWithMedia(resolved sessionV3R
 				"media": provideriface.SessionMediaPayload{AssetID: asset.ID, Modality: asset.Modality, MIMEType: asset.DetectedMIMEType, FileType: asset.FileType, DigestSHA256: asset.DigestSHA256, Size: asset.Size, Bytes: bytes},
 			})
 		}
-		mediaInput = append(mediaInput, map[string]any{"role": "user", "content": content})
+		if len(unperceived) > 0 {
+			var descs []string
+			for _, ref := range unperceived {
+				name := ref.FileName
+				if name == "" {
+					name = ref.AssetID
+				}
+				descs = append(descs, fmt.Sprintf("%s (asset_id: %s, modality: %s, mime: %s)", name, ref.AssetID, ref.Modality, ref.MIMEType))
+			}
+			content = append(content, map[string]any{
+				"type": "input_text",
+				"text": fmt.Sprintf("[Attached media input (retained, model perception not supported): %s]", strings.Join(descs, ", ")),
+			})
+		}
+		if len(content) == 0 && text == "" {
+			content = append(content, map[string]any{"type": "input_text", "text": fmt.Sprintf("[Attached media: %d item(s)]", len(message.Media))})
+		}
+		if len(content) > 0 {
+			mediaInput = append(mediaInput, map[string]any{"role": "user", "content": content})
+		}
 	}
 	if len(mediaInput) == 0 {
 		return input, nil

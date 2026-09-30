@@ -3138,7 +3138,7 @@ func (s *SessionStore) prepareV3MessageMediaAssets(input V3SessionMutationInput,
 	seen := make(map[string]struct{}, len(message.Media))
 	assets := make([]SessionMediaAsset, 0, len(message.Media))
 	for index, reference := range message.Media {
-		if reference.AssetID == "" || reference.ContractHash == "" || reference.Modality == "" || reference.MIMEType == "" {
+		if reference.AssetID == "" || reference.Modality == "" || reference.MIMEType == "" {
 			return nil, fmt.Errorf("media reference %d is incomplete", index)
 		}
 		if _, duplicate := seen[reference.AssetID]; duplicate {
@@ -3152,7 +3152,7 @@ func (s *SessionStore) prepareV3MessageMediaAssets(input V3SessionMutationInput,
 		if !ok {
 			return nil, fmt.Errorf("media asset %q not found in message scope", reference.AssetID)
 		}
-		if asset.ContractHash != reference.ContractHash || asset.Modality != reference.Modality || asset.DetectedMIMEType != reference.MIMEType || asset.FileType != reference.FileType || asset.Size != reference.Size || asset.DigestSHA256 != reference.DigestSHA256 {
+		if asset.ContractHash != reference.ContractHash || asset.Modality != reference.Modality || asset.DetectedMIMEType != reference.MIMEType || (reference.FileType != "" && asset.FileType != reference.FileType) || asset.Size != reference.Size || asset.DigestSHA256 != reference.DigestSHA256 {
 			return nil, fmt.Errorf("media reference %q does not match immutable asset metadata", reference.AssetID)
 		}
 		assets = append(assets, asset)

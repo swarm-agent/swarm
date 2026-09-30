@@ -62,6 +62,9 @@ test('all task cards receive recovery, only integration catches create it, launc
   const controller = readFileSync(new URL('./task-integration-operation.ts', import.meta.url), 'utf8')
   assert.equal((controller.match(/integrationFailure\(project, capturedTask, error\)/g) || []).length, 1)
   assert.doesNotMatch(source, /setIntegrationFailures/)
+  // Legacy receipt recovery is an explicit integration retry, not a second
+  // reopen that invents missing provenance; joined API/Git tests prove admission.
+  assert.match(source, /onClick=\{\(\) => void handleIntegrateTask\(task\.id\)\}>Retry integration to refresh verified receipt/)
   const launch = source.slice(source.indexOf('const launchIntegrationRepair'), source.indexOf('// Integrate / Promote'))
   assert.match(launch, /repairFlights.current.has/)
   assert.match(launch, /repairFlights.current.add/)

@@ -10,6 +10,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -37,6 +38,7 @@ type SessionMediaAsset struct {
 	DeclaredMIMEType string `json:"declared_mime_type"`
 	DetectedMIMEType string `json:"detected_mime_type"`
 	FileType         string `json:"file_type,omitempty"`
+	FileName         string `json:"file_name,omitempty"`
 	Size             int64  `json:"size"`
 	CreatedAt        int64  `json:"created_at"`
 	ContractHash     string `json:"contract_hash"`
@@ -52,6 +54,7 @@ type SessionMediaReference struct {
 	Modality     string `json:"modality"`
 	MIMEType     string `json:"mime_type"`
 	FileType     string `json:"file_type,omitempty"`
+	FileName     string `json:"file_name,omitempty"`
 	Size         int64  `json:"size"`
 	DigestSHA256 string `json:"digest_sha256"`
 	ContractHash string `json:"contract_hash"`
@@ -63,6 +66,7 @@ type PutSessionMediaAssetInput struct {
 	Modality         string
 	DeclaredMIMEType string
 	FileType         string
+	FileName         string
 	ContractHash     string
 	ProviderID       string
 	Model            string
@@ -110,16 +114,14 @@ func (s *SessionStore) PutSessionMediaAsset(input PutSessionMediaAssetInput) (Se
 	input.Modality = strings.ToLower(strings.TrimSpace(input.Modality))
 	input.DeclaredMIMEType = normalizeSessionMediaMIME(input.DeclaredMIMEType)
 	input.FileType = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(input.FileType), "."))
+	input.FileName = strings.TrimSpace(input.FileName)
 	input.ContractHash = strings.TrimSpace(input.ContractHash)
 	input.ProviderID = strings.ToLower(strings.TrimSpace(input.ProviderID))
 	input.Model = strings.TrimSpace(input.Model)
 	if input.AccountScopeID == "" || input.SessionID == "" {
 		return SessionMediaAsset{}, false, errors.New("media asset account and session scope are required")
 	}
-	if input.Modality == "" || input.DeclaredMIMEType == "" || input.ContractHash == "" {
-		return SessionMediaAsset{}, false, errors.New("media asset modality, declared MIME type, and contract hash are required")
-	}
-	if !sessionMediaAssetProviderEnabled(input.ProviderID) {
+	if input.ProviderID != "" && !sessionMediaAssetProviderEnabled(input.ProviderID) {
 		return SessionMediaAsset{}, false, errors.New("media assets are restricted to reviewed conversational provider surfaces")
 	}
 	if input.Reader == nil {
@@ -149,20 +151,51 @@ func (s *SessionStore) PutSessionMediaAsset(input PutSessionMediaAssetInput) (Se
 		return SessionMediaAsset{}, false, fmt.Errorf("media asset exceeds %d byte limit", input.MaxBytes)
 	}
 	detected := detectSessionMediaMIME(payload)
+	if input.DeclaredMIMEType == "" || input.DeclaredMIMEType == "application/octet-stream" || input.DeclaredMIMEType == "binary/octet-stream" {
+		input.DeclaredMIMEType = detected
+	}
 	if detected != input.DeclaredMIMEType {
 		return SessionMediaAsset{}, false, fmt.Errorf("declared MIME type %q does not match detected MIME type %q", input.DeclaredMIMEType, detected)
+	}
+	if input.Modality == "" {
+		if strings.HasPrefix(detected, "image/") {
+			input.Modality = "image"
+		} else if strings.HasPrefix(detected, "video/") {
+			input.Modality = "video"
+		} else if strings.HasPrefix(detected, "audio/") {
+			input.Modality = "audio"
+		} else {
+			input.Modality = "document"
+		}
+	}
+	if input.FileType == "" {
+		if ext := filepath.Ext(input.FileName); ext != "" {
+			input.FileType = strings.ToLower(strings.TrimPrefix(ext, "."))
+		} else if extensions, _ := mime.ExtensionsByType(detected); len(extensions) > 0 {
+			input.FileType = strings.ToLower(strings.TrimPrefix(extensions[0], "."))
+		}
+	}
+	if input.Modality == "" || input.DeclaredMIMEType == "" {
+		return SessionMediaAsset{}, false, errors.New("media asset modality and declared MIME type are required")
 	}
 	sum := sha256.Sum256(payload)
 	digest := hex.EncodeToString(sum[:])
 	// A refreshed contract is a new immutable admission domain. Include it in
 	// identity so identical bytes can be re-admitted without mutating an older,
 	// now-stale asset while the full content digest remains explicit metadata.
-	identitySum := sha256.Sum256([]byte(digest + "\x00" + input.ContractHash))
+	// When contract hash is empty, content digest uniquely identifies the retained media.
+	var identitySum [32]byte
+	if input.ContractHash != "" {
+		identitySum = sha256.Sum256([]byte(digest + "\x00" + input.ContractHash))
+	} else {
+		identitySum = sha256.Sum256([]byte(digest + "\x00"))
+	}
 	assetID := "media_" + hex.EncodeToString(identitySum[:])
+	safeFilename := SanitizeMediaFilename(input.FileName, assetID, input.FileType)
 	asset := SessionMediaAsset{
 		Version: SessionMediaAssetVersion, ID: assetID, AccountScopeID: input.AccountScopeID, SessionID: input.SessionID,
 		DigestSHA256: digest, Modality: input.Modality, DeclaredMIMEType: input.DeclaredMIMEType, DetectedMIMEType: detected,
-		FileType: input.FileType, Size: int64(len(payload)), ContractHash: input.ContractHash,
+		FileType: input.FileType, FileName: safeFilename, Size: int64(len(payload)), ContractHash: input.ContractHash,
 		ProviderID: input.ProviderID, Model: input.Model, CreatedAt: input.NowUnixMs,
 	}
 	if asset.CreatedAt == 0 {
@@ -205,6 +238,32 @@ func (s *SessionStore) PutSessionMediaAsset(input PutSessionMediaAssetInput) (Se
 		return SessionMediaAsset{}, false, err
 	}
 	return asset, false, nil
+}
+
+// SanitizeMediaFilename safely strips directory paths, null bytes, newlines,
+// and enforces path containment and bounded length.
+func SanitizeMediaFilename(raw, assetID, fileType string) string {
+	raw = strings.TrimSpace(raw)
+	if strings.ContainsAny(raw, "\x00\r\n") {
+		raw = ""
+	}
+	raw = strings.ReplaceAll(raw, "\\", "/")
+	base := filepath.Base(raw)
+	if base == "." || base == "/" || base == "\\" || base == ".." || base == "" {
+		if fileType != "" {
+			return fmt.Sprintf("media-%s.%s", assetID, fileType)
+		}
+		return fmt.Sprintf("media-%s", assetID)
+	}
+	if len(base) > 255 {
+		ext := filepath.Ext(base)
+		if len(ext) < 16 && len(ext) > 0 {
+			base = base[:255-len(ext)] + ext
+		} else {
+			base = base[:255]
+		}
+	}
+	return base
 }
 
 func detectSessionMediaMIME(payload []byte) string {
@@ -305,6 +364,7 @@ func normalizeSessionMediaReferences(references []SessionMediaReference) []Sessi
 		reference.Modality = strings.ToLower(strings.TrimSpace(reference.Modality))
 		reference.MIMEType = normalizeSessionMediaMIME(reference.MIMEType)
 		reference.FileType = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(reference.FileType), "."))
+		reference.FileName = strings.TrimSpace(reference.FileName)
 		reference.DigestSHA256 = strings.ToLower(strings.TrimSpace(reference.DigestSHA256))
 		reference.ContractHash = strings.TrimSpace(reference.ContractHash)
 		out = append(out, reference)
@@ -315,10 +375,20 @@ func normalizeSessionMediaReferences(references []SessionMediaReference) []Sessi
 func normalizeSessionMediaMIME(value string) string {
 	value = strings.ToLower(strings.TrimSpace(value))
 	if parsed, _, err := mime.ParseMediaType(value); err == nil {
-		return strings.ToLower(strings.TrimSpace(parsed))
-	}
-	if index := strings.IndexByte(value, ';'); index >= 0 {
+		value = strings.ToLower(strings.TrimSpace(parsed))
+	} else if index := strings.IndexByte(value, ';'); index >= 0 {
 		value = strings.TrimSpace(value[:index])
 	}
-	return value
+	switch value {
+	case "audio/wave", "audio/x-wav":
+		return "audio/wav"
+	case "audio/mp3", "audio/x-mp3":
+		return "audio/mpeg"
+	case "image/jpg", "image/pjpeg":
+		return "image/jpeg"
+	case "video/x-mp4":
+		return "video/mp4"
+	default:
+		return value
+	}
 }

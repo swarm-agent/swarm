@@ -37,13 +37,24 @@ export function composerFileType(file: Pick<File, 'name'>): string | undefined {
 
 export function composerFileMIME(file: Pick<File, 'name' | 'type'>): string {
   const browserMIME = file.type.trim().toLowerCase()
-  if (browserMIME) return browserMIME
+  if (browserMIME && browserMIME !== 'application/octet-stream') return browserMIME
   switch (composerFileType(file)) {
     case 'gif': return 'image/gif'
     case 'jpeg':
     case 'jpg': return 'image/jpeg'
     case 'png': return 'image/png'
     case 'webp': return 'image/webp'
+    case 'heic': return 'image/heic'
+    case 'heif': return 'image/heif'
+    case 'mp4': return 'video/mp4'
+    case 'webm': return 'video/webm'
+    case 'mov': return 'video/quicktime'
+    case 'm4v': return 'video/x-m4v'
+    case 'mp3': return 'audio/mpeg'
+    case 'wav': return 'audio/wav'
+    case 'ogg': return 'audio/ogg'
+    case 'm4a': return 'audio/mp4'
+    case 'aac': return 'audio/aac'
     case 'md':
     case 'mdx': return 'text/markdown'
     case 'json': return 'application/json'
@@ -53,8 +64,34 @@ export function composerFileMIME(file: Pick<File, 'name' | 'type'>): string {
     case 'yaml':
     case 'yml': return 'application/x-yaml'
     case 'txt': return 'text/plain'
-    default: return ''
+    default: return browserMIME || ''
   }
+}
+
+export function isComposerMediaFile(file: Pick<File, 'name' | 'type'>): boolean {
+  const mimeType = composerFileMIME(file)
+  if (mimeType.startsWith('image/') || mimeType.startsWith('video/') || mimeType.startsWith('audio/')) return true
+  const ext = composerFileType(file)
+  if (!ext) return false
+  return (
+    ['png', 'jpg', 'jpeg', 'webp', 'gif', 'heic', 'heif'].includes(ext) ||
+    ['mp4', 'webm', 'mov', 'm4v'].includes(ext) ||
+    ['mp3', 'wav', 'ogg', 'm4a', 'aac'].includes(ext)
+  )
+}
+
+export function composerMediaModality(file: Pick<File, 'name' | 'type'>): 'image' | 'video' | 'audio' {
+  const mimeType = composerFileMIME(file)
+  if (mimeType.startsWith('image/')) return 'image'
+  if (mimeType.startsWith('video/')) return 'video'
+  if (mimeType.startsWith('audio/')) return 'audio'
+  const ext = composerFileType(file)
+  if (ext) {
+    if (['png', 'jpg', 'jpeg', 'webp', 'gif', 'heic', 'heif'].includes(ext)) return 'image'
+    if (['mp4', 'webm', 'mov', 'm4v'].includes(ext)) return 'video'
+    if (['mp3', 'wav', 'ogg', 'm4a', 'aac'].includes(ext)) return 'audio'
+  }
+  return 'image'
 }
 
 export function isComposerTextFile(file: Pick<File, 'name' | 'type'>): boolean {
@@ -93,26 +130,41 @@ export function admitComposerFile(
 ): DesktopComposerFileAdmission {
   const fileType = composerFileType(file)
   const mimeType = composerFileMIME(file)
-  const media = capability?.status === 'available'
-    ? capability.capabilities.find((candidate) => {
-        const acceptsMIME = Boolean(mimeType && (candidate.mime_types ?? []).some((value) => value.toLowerCase() === mimeType))
-        const acceptsFileType = Boolean(fileType && (candidate.file_types ?? []).some((value) => value.replace(/^\./, '').toLowerCase() === fileType))
-        return acceptsMIME || acceptsFileType
-      })
-    : undefined
-  if (media) {
-    if (media.max_bytes > 0 && file.size > media.max_bytes) {
-      return { kind: 'rejected', reason: `${file.name} exceeds the ${Math.ceil(media.max_bytes / (1024 * 1024))} MB attachment limit.` }
+  const isMedia = isComposerMediaFile(file)
+
+  if (isMedia) {
+    const modality = composerMediaModality(file)
+    const matchingCap = capability?.status === 'available'
+      ? capability.capabilities.find((candidate) => {
+          const acceptsMIME = Boolean(mimeType && (candidate.mime_types ?? []).some((value) => value.toLowerCase() === mimeType))
+          const acceptsFileType = Boolean(fileType && (candidate.file_types ?? []).some((value) => value.replace(/^\./, '').toLowerCase() === fileType))
+          return acceptsMIME || acceptsFileType
+        })
+      : undefined
+    const maxBytes = matchingCap?.max_bytes || DESKTOP_V3_MEDIA_STAGING_MAX_BYTES
+    if (file.size > maxBytes) {
+      return { kind: 'rejected', reason: `${file.name} exceeds the ${Math.ceil(maxBytes / (1024 * 1024))} MB attachment limit.` }
     }
-    return { kind: 'media', capability: media, mimeType, fileType }
+    const effectiveMIME = mimeType || (modality === 'image' ? 'image/png' : modality === 'video' ? 'video/mp4' : 'audio/mpeg')
+    const admittedCap: DesktopV3MediaCapabilityEntry = matchingCap || {
+      modality,
+      mime_types: [effectiveMIME],
+      file_types: fileType ? [fileType] : undefined,
+      max_bytes: DESKTOP_V3_MEDIA_STAGING_MAX_BYTES,
+      max_count: DESKTOP_V3_MEDIA_STAGING_MAX_COUNT,
+      provenance: ['retained_upload'],
+    }
+    return { kind: 'media', capability: admittedCap, mimeType: effectiveMIME, fileType }
   }
-  if (!isComposerTextFile(file)) {
-    return { kind: 'rejected', reason: `${file.name} is not a supported image, Markdown, or code/text file.` }
+
+  if (isComposerTextFile(file)) {
+    if (file.size > DESKTOP_COMPOSER_TEXT_FILE_MAX_BYTES) {
+      return { kind: 'rejected', reason: `${file.name} exceeds the 1 MB text-file limit.` }
+    }
+    return { kind: 'text', fileType }
   }
-  if (file.size > DESKTOP_COMPOSER_TEXT_FILE_MAX_BYTES) {
-    return { kind: 'rejected', reason: `${file.name} exceeds the 1 MB text-file limit.` }
-  }
-  return { kind: 'text', fileType }
+
+  return { kind: 'rejected', reason: `${file.name} is not a supported media or text/code file.` }
 }
 
 export function appendComposerTextFile(draft: string, fileName: string, fileType: string | undefined, content: string): string {

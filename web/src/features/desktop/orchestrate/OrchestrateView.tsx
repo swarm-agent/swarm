@@ -2823,6 +2823,7 @@ export function OrchestratorChatComposer({
   const [sendError, setSendError] = useState<string | null>(null)
   const [attachments, setAttachments] = useState<DesktopV3MediaReference[]>([])
   const [uploadingAttachment, setUploadingAttachment] = useState(false)
+  const [attachmentFailedFiles, setAttachmentFailedFiles] = useState<File[]>([])
   const fileInputRef = useRef<HTMLInputElement | null>(null)
 
   const activeRun = useDesktopV3CacheSelector(
@@ -2858,47 +2859,56 @@ export function OrchestratorChatComposer({
     }
   }
 
-  const handleFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files
-    if (!files || files.length === 0) return
+  const handleProcessComposerFiles = async (files: FileList | File[] | null) => {
+    if (!files || files.length === 0 || !sessionId) return
+    const fileArray = Array.from(files)
     setUploadingAttachment(true)
     setSendError(null)
-    try {
-      const capability = await getDesktopV3MediaCapability(sessionId).catch(() => null)
-      for (const file of Array.from(files)) {
-        if (capability) {
-          const admission = admitComposerFile(file, capability)
-          if (admission.kind === 'rejected') {
-            throw new Error(admission.reason)
-          }
-          if (admission.kind === 'media' && capability.contract_token) {
-            const uploaded = await uploadDesktopV3MediaAsset({
-              sessionId,
-              file,
-              mimeType: admission.mimeType || file.type || 'application/octet-stream',
-              modality: admission.capability.modality,
-              fileType: admission.fileType,
-              contractToken: capability.contract_token,
-            })
-            setAttachments((prev) => [...prev, uploaded])
-            continue
-          }
+    setAttachmentFailedFiles([])
+    const failed: File[] = []
+    const capability = await getDesktopV3MediaCapability(sessionId).catch(() => null)
+    for (const file of fileArray) {
+      try {
+        const admission = admitComposerFile(file, capability)
+        if (admission.kind === 'rejected') {
+          throw new Error(admission.reason)
         }
-        if (file.size <= 1024 * 1024) {
+        if (admission.kind === 'media') {
+          const uploaded = await uploadDesktopV3MediaAsset({
+            sessionId,
+            file,
+            mimeType: admission.mimeType || file.type || 'application/octet-stream',
+            modality: admission.capability.modality,
+            fileType: admission.fileType,
+            contractToken: capability?.contract_token,
+          })
+          setAttachments((prev) => {
+            if (prev.some((p) => p.asset_id === uploaded.asset_id)) return prev
+            return [...prev, uploaded]
+          })
+          continue
+        }
+        if (admission.kind === 'text') {
           const text = await file.text()
           setDraft((prev) => (prev.trim() ? `${prev}\n\n[File: ${file.name}]\n${text}` : `[File: ${file.name}]\n${text}`))
-        } else {
-          throw new Error(`File ${file.name} exceeds attachment limit and cannot be uploaded.`)
+          continue
         }
-      }
-    } catch (err: any) {
-      setSendError(err?.message || 'Failed to attach file')
-    } finally {
-      setUploadingAttachment(false)
-      if (fileInputRef.current) {
-        fileInputRef.current.value = ''
+      } catch (err: any) {
+        failed.push(file)
+        setSendError(err?.message || `Failed to attach "${file.name}"`)
       }
     }
+    if (failed.length > 0) {
+      setAttachmentFailedFiles(failed)
+    }
+    setUploadingAttachment(false)
+    if (fileInputRef.current) {
+      fileInputRef.current.value = ''
+    }
+  }
+
+  const handleFileSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
+    void handleProcessComposerFiles(e.target.files)
   }
 
   const handleSend = async () => {
@@ -2912,7 +2922,7 @@ export function OrchestratorChatComposer({
       return
     }
     if (text === '/') { setCommandsOpen(true); setCommandQuery(''); return }
-    if ((!text && attachments.length === 0) || sending || isRunning) return
+    if ((!text && attachments.length === 0) || sending || isRunning || uploadingAttachment) return
 
     setSending(true)
     setSendError(null)
@@ -3066,15 +3076,33 @@ export function OrchestratorChatComposer({
           {attachments.map((att, idx) => (
             <div
               key={att.asset_id || idx}
-              className="flex items-center gap-1 px-2 py-0.5 rounded bg-slate-800 text-[11px] text-slate-200 border border-slate-700"
+              className="flex items-center gap-1.5 px-2 py-0.5 rounded-lg bg-slate-800 text-[11px] text-slate-200 border border-slate-700 shadow-sm"
             >
-              <Paperclip size={10} className="text-slate-400" />
-              <span className="truncate max-w-[120px]">{`${att.modality} attachment ${idx + 1}`}</span>
+              {att.modality === 'image' ? (
+                <img
+                  src={`/v3/sessions/${encodeURIComponent(sessionId)}/media/${encodeURIComponent(att.asset_id)}`}
+                  alt={att.file_name || 'image'}
+                  className="w-4 h-4 rounded object-cover border border-slate-600 shrink-0"
+                />
+              ) : att.modality === 'video' ? (
+                <Film size={11} className="text-purple-400 shrink-0" />
+              ) : att.modality === 'audio' ? (
+                <Music size={11} className="text-amber-400 shrink-0" />
+              ) : (
+                <Paperclip size={11} className="text-blue-400 shrink-0" />
+              )}
+              <span className="truncate max-w-[130px]" title={att.file_name || `${att.modality} attachment ${idx + 1}`}>
+                {att.file_name || `${att.modality} attachment ${idx + 1}`}
+              </span>
+              <span className="text-[9px] text-slate-400 font-mono">
+                {att.size > 1024 * 1024 ? `${(att.size / (1024 * 1024)).toFixed(1)} MB` : `${Math.ceil(att.size / 1024)} KB`}
+              </span>
               <button
                 type="button"
                 onClick={() => setAttachments((prev) => prev.filter((_, i) => i !== idx))}
-                className="text-slate-400 hover:text-red-300 p-0.5"
-                title="Remove attachment"
+                className="text-slate-400 hover:text-red-300 p-0.5 transition"
+                title="Remove attachment from composer (preserves retained media)"
+                aria-label="Remove attachment"
               >
                 <X size={10} />
               </button>
@@ -3085,10 +3113,19 @@ export function OrchestratorChatComposer({
 
       {sendError && (
         <div
-          className="p-2 rounded bg-red-950/40 border border-red-500/30 text-red-200 text-[11px]"
+          className="p-2 rounded bg-red-950/40 border border-red-500/30 text-red-200 text-[11px] flex items-center justify-between gap-2"
           data-testid="chat-send-error"
         >
-          {sendError}
+          <span className="truncate flex-1">{sendError}</span>
+          {attachmentFailedFiles.length > 0 && (
+            <button
+              type="button"
+              onClick={() => void handleProcessComposerFiles(attachmentFailedFiles)}
+              className="px-2 py-0.5 rounded bg-red-600/30 hover:bg-red-600/50 text-red-100 border border-red-500/40 font-semibold text-[10px] shrink-0 transition"
+            >
+              Retry
+            </button>
+          )}
         </div>
       )}
 
@@ -3127,14 +3164,30 @@ export function OrchestratorChatComposer({
               e.preventDefault(); selectCommand(commands[commandIndex]); return
             }
             if (e.key === 'Enter' && !e.shiftKey) {
+              if (uploadingAttachment) return
               e.preventDefault()
               void handleSend()
+            }
+          }}
+          onDragOver={(e) => e.preventDefault()}
+          onDrop={(e) => {
+            e.preventDefault()
+            if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+              void handleProcessComposerFiles(e.dataTransfer.files)
+            }
+          }}
+          onPaste={(e) => {
+            if (e.clipboardData.files && e.clipboardData.files.length > 0) {
+              e.preventDefault()
+              void handleProcessComposerFiles(e.clipboardData.files)
             }
           }}
           disabled={sending || isRunning}
           rows={2}
           placeholder={
-            isRunning
+            uploadingAttachment
+              ? 'Uploading attachment...'
+              : isRunning
               ? 'Agent is actively executing...'
               : effectiveTask
               ? `Message about "${effectiveTask.title}"...`
@@ -3175,7 +3228,7 @@ export function OrchestratorChatComposer({
         <button
           type="button"
           onClick={() => void handleSend()}
-          disabled={sending || isRunning || (!draft.trim() && attachments.length === 0)}
+          disabled={sending || isRunning || uploadingAttachment || (!draft.trim() && attachments.length === 0)}
           className="flex items-center justify-center p-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex-shrink-0"
           title="Send message"
           aria-label="Send message"
@@ -4544,75 +4597,104 @@ export function OrchestrateView({
   }, [selectedProject?.id])
 
   // Media handling: file uploads, pasted docs, tagging, and studio library integration
-  const handleFileUpload = async (files: FileList | null) => {
-    if (!files || !selectedProject?.id) return
-    setIsUploadingMedia(true)
-    try {
-      for (const file of Array.from(files)) {
-        const isImage = file.type.startsWith('image/')
-        const isVideo = file.type.startsWith('video/')
-        const isAudio = file.type.startsWith('audio/')
-        const kind = isImage ? 'image' : isVideo ? 'video' : isAudio ? 'audio' : 'doc'
+  const [shelfFailedFiles, setShelfFailedFiles] = useState<File[]>([])
+  const [shelfUploadError, setShelfUploadError] = useState<string | null>(null)
 
-        let dataUrl = ''
-        let textData = ''
-        if (kind === 'doc' || file.type.includes('text') || file.name.endsWith('.md') || file.name.endsWith('.txt')) {
-          textData = await file.text()
-          if (taskIntent === 'video') {
-            // Text stays in prompt for video task flow
-            setNewTaskPrompt((prev) => (prev.trim() ? `${prev.trim()}\n\n${textData.trim()}` : textData.trim()))
-            continue
+  const handleFileUpload = async (files: FileList | File[] | null) => {
+    if (!files || files.length === 0 || !selectedProject?.id) return
+    setIsUploadingMedia(true)
+    setShelfUploadError(null)
+    setShelfFailedFiles([])
+    const fileArray = Array.from(files)
+    const failed: File[] = []
+
+    try {
+      for (const file of fileArray) {
+        try {
+          const isImage = file.type.startsWith('image/') || ['png', 'jpg', 'jpeg', 'webp', 'gif', 'heic', 'heif'].some((ext) => file.name.toLowerCase().endsWith('.' + ext))
+          const isVideo = file.type.startsWith('video/') || ['mp4', 'webm', 'mov', 'm4v'].some((ext) => file.name.toLowerCase().endsWith('.' + ext))
+          const isAudio = file.type.startsWith('audio/') || ['mp3', 'wav', 'ogg', 'm4a', 'aac'].some((ext) => file.name.toLowerCase().endsWith('.' + ext))
+          const isDoc = file.type.includes('text') || file.name.endsWith('.md') || file.name.endsWith('.txt') || file.name.endsWith('.json')
+          const kind = isImage ? 'image' : isVideo ? 'video' : isAudio ? 'audio' : 'doc'
+
+          if (!isImage && !isVideo && !isAudio && !isDoc) {
+            throw new Error(`File ${file.name} is not a supported media or document file.`)
           }
-        } else {
-          if (taskIntent === 'video') {
-            const validation = validateVideoAttachment(file, selectedVideoOption?.generationOptions)
-            if (!validation.valid) {
-              setVideoAttachmentError(validation.error || 'Invalid video reference image')
+
+          let dataUrl = ''
+          let textData = ''
+          if (kind === 'doc' && isDoc) {
+            textData = await file.text()
+            if (taskIntent === 'video') {
+              // Text stays in prompt for video task flow
+              setNewTaskPrompt((prev) => (prev.trim() ? `${prev.trim()}\n\n${textData.trim()}` : textData.trim()))
               continue
             }
-            setVideoAttachmentError(null)
+          } else {
+            if (taskIntent === 'video') {
+              const validation = validateVideoAttachment(file, selectedVideoOption?.generationOptions)
+              if (!validation.valid) {
+                setVideoAttachmentError(validation.error || 'Invalid video reference image')
+                continue
+              }
+              setVideoAttachmentError(null)
+            }
+            dataUrl = await new Promise<string>((resolve) => {
+              const reader = new FileReader()
+              reader.onload = () => resolve(reader.result as string)
+              reader.readAsDataURL(file)
+            })
           }
-          dataUrl = await new Promise<string>((resolve) => {
-            const reader = new FileReader()
-            reader.onload = () => resolve(reader.result as string)
-            reader.readAsDataURL(file)
+
+          const newMedia: ProjectTaskMediaRef = {
+            id: `med_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+            title: file.name,
+            filename: file.name,
+            kind,
+            mediaType: file.type || (kind === 'doc' ? 'text/plain' : isImage ? 'image/png' : isVideo ? 'video/mp4' : isAudio ? 'audio/mpeg' : 'application/octet-stream'),
+            url: dataUrl,
+            data: textData,
+            sizeBytes: file.size,
+            createdAt: Date.now(),
+          }
+
+          const res = await requestJson<{ media: ProjectTaskMediaRef; uploaded_media: ProjectTaskMediaRef[] }>(
+            `/v3/projects/${selectedProject.id}/media`,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(newMedia),
+            }
+          )
+
+          const savedMedia = res?.media || newMedia
+          desktopProjects.setOptimisticMedia(selectedProject.id, (prev) => {
+            if (prev.some((m) => m.id === savedMedia.id)) return prev
+            return [...prev, savedMedia]
           })
-        }
-
-        const newMedia: ProjectTaskMediaRef = {
-          id: `med_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-          title: file.name,
-          filename: file.name,
-          kind,
-          mediaType: file.type || (kind === 'doc' ? 'text/plain' : 'application/octet-stream'),
-          url: dataUrl,
-          data: textData,
-          sizeBytes: file.size,
-          createdAt: Date.now(),
-        }
-
-        const res = await requestJson<{ media: ProjectTaskMediaRef; uploaded_media: ProjectTaskMediaRef[] }>(
-          `/v3/projects/${selectedProject.id}/media`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(newMedia),
+          if (taskIntent === 'video') {
+            // Exactly one initial image reference for video generation
+            setTaggedMedia([savedMedia])
+          } else {
+            setTaggedMedia((prev) => {
+              if (prev.some((m) => m.id === savedMedia.id)) return prev
+              return [...prev, savedMedia]
+            })
           }
-        )
-
-        const savedMedia = res?.media || newMedia
-        desktopProjects.setOptimisticMedia(selectedProject.id, (prev) => [...prev, savedMedia])
-        if (taskIntent === 'video') {
-          // Exactly one initial image reference for video generation
-          setTaggedMedia([savedMedia])
-        } else {
-          setTaggedMedia((prev) => [...prev, savedMedia])
+          desktopProjects.invalidate(selectedProject.id)
+        } catch (fileErr: any) {
+          console.warn('Failed to upload media item:', fileErr)
+          failed.push(file)
+          setShelfUploadError(fileErr?.message || `Failed to upload "${file.name}"`)
         }
-        desktopProjects.invalidate(selectedProject.id)
       }
-    } catch (err) {
+    } catch (err: any) {
       console.warn('Failed to upload media:', err)
+      setShelfUploadError(err?.message || 'Failed to upload media')
     } finally {
+      if (failed.length > 0) {
+        setShelfFailedFiles(failed)
+      }
       setIsUploadingMedia(false)
     }
   }
@@ -5466,6 +5548,7 @@ export function OrchestrateView({
         <button type="button" disabled={Boolean(unavailable) || state?.loading} onClick={() => void launchIntegrationRepair(failure)}>
           {state?.loading ? 'Launching…' : state?.sessionId ? 'Open repair session' : 'Launch repair session'}
         </button>
+        <button type="button" disabled={state?.loading} onClick={() => void handleIntegrateTask(task.id)}>Retry integration to refresh verified receipt</button>
         <button type="button" aria-label="Dismiss integration error" onClick={() => taskIntegrationOperations.dismiss(taskIntegrationKey(selectedProject.id, task))}>Dismiss</button>
       </div>
       {unavailable && <p>{unavailable}</p>}
@@ -6172,7 +6255,16 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
         </div>
 
         {/* Uploaded Media & Documents Shelf */}
-        <div className="p-3 border-b border-slate-800/80">
+        <div
+          className="p-3 border-b border-slate-800/80"
+          onDragOver={(e) => e.preventDefault()}
+          onDrop={(e) => {
+            e.preventDefault()
+            if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+              void handleFileUpload(e.dataTransfer.files)
+            }
+          }}
+        >
           <div className="flex items-center justify-between pb-1.5">
             <div className="flex items-center gap-1.5">
               <button
@@ -6212,6 +6304,21 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
               </button>
             </div>
           </div>
+
+          {shelfUploadError && (
+            <div className="mb-1.5 p-1.5 rounded bg-red-950/40 border border-red-500/30 text-red-200 text-[10px] flex items-center justify-between gap-1.5">
+              <span className="truncate flex-1">{shelfUploadError}</span>
+              {shelfFailedFiles.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => void handleFileUpload(shelfFailedFiles)}
+                  className="px-1.5 py-0.5 rounded bg-red-600/30 hover:bg-red-600/50 text-red-100 border border-red-500/40 font-semibold text-[9px] shrink-0 transition"
+                >
+                  Retry
+                </button>
+              )}
+            </div>
+          )}
 
           {isUploadedMediaExpanded && (uploadedMedia.length > 0 ? (
             <div className="max-h-36 overflow-y-auto space-y-1.5 pt-1">

@@ -37,6 +37,7 @@ type ProjectTaskCreateInput struct {
 	Description         string                                   `json:"description,omitempty"`
 	Prompt              string                                   `json:"prompt,omitempty"`
 	Agent               string                                   `json:"agent,omitempty"`
+	Operation           string                                   `json:"operation,omitempty"`
 	WorkerName          string                                   `json:"worker_name,omitempty"`
 	FeatureSize         string                                   `json:"feature_size,omitempty"`
 	WorkspacePath       string                                   `json:"workspace_path,omitempty"`
@@ -98,7 +99,96 @@ type legacyDeployerLifecycleAdapter struct {
 }
 
 func (a *legacyDeployerLifecycleAdapter) CreateProjectTask(ctx context.Context, p identity.Principal, projectID string, input ProjectTaskCreateInput) (*pebblestore.ProjectTaskRecord, error) {
-	return nil, errors.New("create task requires canonical project task lifecycle service")
+	if a.store == nil {
+		return nil, errors.New("project store is not configured")
+	}
+	taskID := input.ID
+	if taskID == "" {
+		taskID = fmt.Sprintf("task_%d", time.Now().UnixNano())
+	}
+	agentName := input.Agent
+	outcomeType := input.OutcomeType
+	tier := input.Tier
+	if input.FeatureSize == "small" && (agentName == "" || agentName == "coder") {
+		agentName = "coder"
+		outcomeType = "code_pr"
+	} else if input.FeatureSize == "big" && (agentName == "" || agentName == "swarm" || agentName == "plan") {
+		agentName = "plan"
+		outcomeType = "plan_spec"
+		if tier == "" {
+			tier = "complex"
+		}
+	} else if agentName == "coder" && outcomeType == "" {
+		outcomeType = "code_pr"
+	}
+	if agentName == "" {
+		agentName = "swarm"
+	}
+	if tier == "" {
+		tier = "direct"
+	}
+	task := &pebblestore.ProjectTaskRecord{
+		ID:               taskID,
+		ProjectID:        projectID,
+		AccountID:        p.AccountScopeID,
+		Title:            input.Title,
+		Description:      input.Description,
+		Agent:            agentName,
+		WorkerName:       input.WorkerName,
+		OutcomeType:      outcomeType,
+		WorkspacePath:    input.WorkspacePath,
+		WorktreeBranch:   input.WorktreeBranch,
+		Operation:        input.Operation,
+		Tier:             tier,
+		AspectRatio:      input.AspectRatio,
+		Resolution:       input.Resolution,
+		VariantCount:     input.VariantCount,
+		DurationSeconds:  input.DurationSeconds,
+		Model:            input.Model,
+		Provider:         input.Provider,
+		Thinking:         input.Thinking,
+		AutoApprove:      input.AutoApprove,
+		PipelineStages:   input.PipelineStages,
+		Deliverables:     input.Deliverables,
+		WhatDidDo:        input.WhatDidDo,
+		WhatNotDone:      input.WhatNotDone,
+		AttachedMedia:    input.AttachedMedia,
+		PlanDocument:     input.PlanDocument,
+		TaskProgram:      input.TaskProgram,
+		TaskProgramID:    input.TaskProgramID,
+		PlanSummary:      input.PlanSummary,
+		FullPlanMarkdown: input.FullPlanMarkdown,
+		DiffSummary:      input.DiffSummary,
+		Status:           "pending_approval",
+		ActionNeeded:     "Review plan and click Approve",
+		CreatedAt:        time.Now().UnixMilli(),
+		UpdatedAt:        time.Now().UnixMilli(),
+	}
+	if task.Agent == "coder" || task.OutcomeType == "code_pr" || task.OutcomeType == "bug_patch" {
+		task.ActionNeeded = "Review task and click Approve to start Coder execution"
+	}
+	if len(task.Deliverables) == 0 {
+		if task.Agent == "coder" || task.OutcomeType == "code_pr" || task.OutcomeType == "bug_patch" {
+			task.Deliverables = []pebblestore.ProjectTaskDeliverable{
+				{ID: "deliv_code", Title: task.Title, Kind: "code_pr", Status: "pending"},
+			}
+		}
+	}
+	if task.TaskProgram != nil && task.TaskProgramID == "" && task.TaskProgram.ID != "" {
+		task.TaskProgramID = task.TaskProgram.ID
+	}
+	if input.AutoApprove && task.PlanDocument == nil {
+		if a.deployer == nil {
+			return nil, errors.New("project task deployer is not configured")
+		}
+		task.Status = "in_progress"
+		task.ActionNeeded = ""
+		_ = a.deployer(p.AccountScopeID, projectID, task.ID)
+	}
+	if err := a.store.PutProjectTask(p.AccountScopeID, task); err != nil {
+		return nil, err
+	}
+	return task, nil
 }
 
 func (a *legacyDeployerLifecycleAdapter) DeployProjectTask(ctx context.Context, p identity.Principal, projectID, taskID string) error {
@@ -190,7 +280,7 @@ func (r *Runtime) getProjectTaskLifecycleService() ProjectTaskLifecycleService {
 	if r.projectTaskLifecycle != nil {
 		return r.projectTaskLifecycle
 	}
-	if r.projectTaskDeployer != nil {
+	if r.projects != nil || r.projectTaskDeployer != nil {
 		return &legacyDeployerLifecycleAdapter{deployer: r.projectTaskDeployer, store: r.projects}
 	}
 	return nil
@@ -200,13 +290,13 @@ func manageProjectsDefinition() Definition {
 	return Definition{
 		Type:        "function",
 		Name:        "manage_projects",
-		Description: "Inspect and manage Projects aggregating workspaces, context (project.md), and ongoing tasks. Supported actions: list, get, create, update, delete, synthesize_context, propose_task, approve_task, accept_task, deploy_task, refine_task, create_task, list_tasks, get_task, update_task, archive_task, delete_task, reconcile_tasks. Task edits never transition execution status; delete_task only removes an archived, unlaunched task.",
+		Description: "Inspect and manage Projects aggregating workspaces, context (project.md), and ongoing tasks. Supported actions: list, get, create, update, delete, synthesize_context, list_media, get_media, propose_task, approve_task, accept_task, deploy_task, refine_task, create_task, list_tasks, get_task, update_task, archive_task, delete_task, reconcile_tasks. Task edits never transition execution status; delete_task only removes an archived, unlaunched task.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"action": map[string]any{
 					"type":        "string",
-					"description": "Action: list|get|create|update|delete|synthesize_context|propose_task|approve_task|accept_task|deploy_task|refine_task|create_task|list_tasks|get_task|update_task|archive_task|delete_task|reconcile_tasks",
+					"description": "Action: list|get|create|update|delete|synthesize_context|list_media|get_media|propose_task|approve_task|accept_task|deploy_task|refine_task|create_task|list_tasks|get_task|update_task|archive_task|delete_task|reconcile_tasks",
 				},
 				"id": map[string]any{
 					"type":        "string",
@@ -214,7 +304,11 @@ func manageProjectsDefinition() Definition {
 				},
 				"project_id": map[string]any{
 					"type":        "string",
-					"description": "Project ID for task operations (propose_task, approve_task, accept_task, deploy_task, refine_task, list_tasks, update_task)",
+					"description": "Project ID for task and media operations (list_media, get_media, propose_task, approve_task, accept_task, deploy_task, refine_task, list_tasks, update_task)",
+				},
+				"media_id": map[string]any{
+					"type":        "string",
+					"description": "Media ID for get_media",
 				},
 				"task_id": map[string]any{
 					"type":        "string",
@@ -440,6 +534,77 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 		}
 		response["project"] = proj
 
+	case "list_media":
+		projectID := strings.TrimSpace(asString(args["project_id"]))
+		if projectID == "" {
+			projectID = strings.TrimSpace(asString(args["id"]))
+		}
+		if projectID == "" {
+			return "", errors.New("project_id is required for list_media")
+		}
+		proj, found, err := r.projects.GetProject(accountScopeID, projectID)
+		if err != nil {
+			return "", err
+		}
+		if !found || proj == nil {
+			return "", fmt.Errorf("project %q not found", projectID)
+		}
+		limit := 50
+		if l, ok := args["limit"].(float64); ok && int(l) > 0 {
+			limit = int(l)
+			if limit > 100 {
+				limit = 100
+			}
+		} else if l, ok := args["limit"].(int); ok && l > 0 {
+			limit = l
+			if limit > 100 {
+				limit = 100
+			}
+		}
+		list := proj.UploadedMedia
+		if list == nil {
+			list = []pebblestore.ProjectTaskMediaRef{}
+		}
+		if len(list) > limit {
+			list = list[:limit]
+		}
+		response["project_id"] = projectID
+		response["media"] = list
+		response["count"] = len(list)
+
+	case "get_media":
+		projectID := strings.TrimSpace(asString(args["project_id"]))
+		if projectID == "" {
+			projectID = strings.TrimSpace(asString(args["id"]))
+		}
+		mediaID := strings.TrimSpace(asString(args["media_id"]))
+		if mediaID == "" {
+			mediaID = strings.TrimSpace(asString(args["id"]))
+		}
+		if projectID == "" || mediaID == "" {
+			return "", errors.New("project_id and media_id are required for get_media")
+		}
+		proj, found, err := r.projects.GetProject(accountScopeID, projectID)
+		if err != nil {
+			return "", err
+		}
+		if !found || proj == nil {
+			return "", fmt.Errorf("project %q not found", projectID)
+		}
+		var target *pebblestore.ProjectTaskMediaRef
+		for _, m := range proj.UploadedMedia {
+			if m.ID == mediaID {
+				item := m
+				target = &item
+				break
+			}
+		}
+		if target == nil {
+			return "", fmt.Errorf("media %q not found in project %q", mediaID, projectID)
+		}
+		response["project_id"] = projectID
+		response["media"] = target
+
 	case "create":
 		name := strings.TrimSpace(asString(args["name"]))
 		if name == "" {
@@ -627,8 +792,15 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 		}
 		wsPath := strings.TrimSpace(asString(args["workspace_path"]))
 		agentName := strings.TrimSpace(asString(args["agent"]))
+		operation := strings.ToLower(strings.TrimSpace(asString(args["operation"])))
+		if agentName == "" && (operation == "create" || operation == "edit" || operation == "extend") {
+			agentName = "video"
+		}
 		featureSize := strings.TrimSpace(asString(args["feature_size"]))
 		outcomeType := strings.TrimSpace(asString(args["outcome_type"]))
+		if outcomeType == "" && agentName == "video" {
+			outcomeType = "video_clip"
+		}
 		tier := strings.TrimSpace(asString(args["tier"]))
 		aspectRatio := strings.TrimSpace(asString(args["aspect_ratio"]))
 		resolution := strings.TrimSpace(asString(args["resolution"]))
@@ -662,6 +834,27 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 					}
 				}
 			}
+		} else if rawMedia, ok := args["attached_media"].([]map[string]any); ok {
+			for _, m := range rawMedia {
+				mediaURL := asString(m["url"])
+				if mediaURL == "" {
+					mediaURL = asString(m["media_url"])
+				}
+				ref := pebblestore.ProjectTaskMediaRef{
+					ID:        asString(m["id"]),
+					Kind:      asString(m["kind"]),
+					Title:     asString(m["title"]),
+					URL:       mediaURL,
+					Filename:  asString(m["filename"]),
+					MediaType: asString(m["media_type"]),
+					Data:      asString(m["data"]),
+				}
+				if ref.ID != "" || ref.Title != "" || ref.URL != "" {
+					attachedMedia = append(attachedMedia, ref)
+				}
+			}
+		} else if rawMedia, ok := args["attached_media"].([]pebblestore.ProjectTaskMediaRef); ok {
+			attachedMedia = append(attachedMedia, rawMedia...)
 		}
 
 		// Direct structured plan document argument support
@@ -766,6 +959,7 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 			ClientRequestID:     strings.TrimSpace(asString(args["client_request_id"])),
 			WorktreeBranch:      worktreeBranch,
 			OutcomeType:         outcomeType,
+			Operation:           operation,
 			Tier:                tier,
 			AspectRatio:         aspectRatio,
 			Resolution:          resolution,
@@ -798,7 +992,7 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 		response["task"] = task
 		response["task_id"] = task.ID
 		response["project_id"] = projectID
-		response["status"] = task.Status
+		response["task_status"] = task.Status
 		if task.PlanDocument != nil {
 			response["plan_document"] = task.PlanDocument
 		}
@@ -881,7 +1075,7 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 			guards.DefinitionRevision = rev
 		}
 		lifecycle := r.getProjectTaskLifecycleService()
-		if lifecycle == nil {
+		if a, ok := lifecycle.(*legacyDeployerLifecycleAdapter); (ok && a.deployer == nil) || lifecycle == nil {
 			return "", errors.New("project task lifecycle service is not configured")
 		}
 		approvedTask, err := lifecycle.ApproveProjectTask(ctx, p, projectID, taskID, guards)
@@ -930,7 +1124,7 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 			return "", errors.New("manage_projects deploy_task requires project_id and task_id")
 		}
 		lifecycle := r.getProjectTaskLifecycleService()
-		if lifecycle == nil {
+		if a, ok := lifecycle.(*legacyDeployerLifecycleAdapter); (ok && a.deployer == nil) || lifecycle == nil {
 			return "", errors.New("project task deployer service is not configured")
 		}
 		existingTask, found, err := r.projects.GetProjectTask(accountScopeID, projectID, taskID)
@@ -964,7 +1158,7 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 		}
 		response["task"] = freshTask
 		response["task_id"] = freshTask.ID
-		response["status"] = freshTask.Status
+		response["task_status"] = freshTask.Status
 		if freshTask.SessionID != "" {
 			response["session_id"] = freshTask.SessionID
 		}
@@ -1134,37 +1328,43 @@ func parseSessionPlanDocument(rawDoc any) (*pebblestore.SessionPlanDocument, err
 	if rawDoc == nil {
 		return nil, nil
 	}
-	var docBytes []byte
+	var doc pebblestore.SessionPlanDocument
 	switch v := rawDoc.(type) {
 	case string:
 		v = strings.TrimSpace(v)
 		if v == "" {
 			return nil, nil
 		}
-		docBytes = []byte(v)
+		if err := json.Unmarshal([]byte(v), &doc); err != nil {
+			return nil, fmt.Errorf("invalid plan document: %w", err)
+		}
 	case *pebblestore.SessionPlanDocument:
 		if v == nil {
 			return nil, nil
 		}
-		if err := sessionruntime.ValidateExecutablePlanDocument(v); err != nil {
-			return nil, err
-		}
-		return v, nil
+		doc = *v
 	case pebblestore.SessionPlanDocument:
-		if err := sessionruntime.ValidateExecutablePlanDocument(&v); err != nil {
-			return nil, err
-		}
-		return &v, nil
+		doc = v
 	default:
-		var err error
-		docBytes, err = json.Marshal(rawDoc)
+		docBytes, err := json.Marshal(rawDoc)
 		if err != nil {
 			return nil, fmt.Errorf("marshal plan document: %w", err)
 		}
+		if err := json.Unmarshal(docBytes, &doc); err != nil {
+			return nil, fmt.Errorf("invalid plan document: %w", err)
+		}
 	}
-	var doc pebblestore.SessionPlanDocument
-	if err := json.Unmarshal(docBytes, &doc); err != nil {
-		return nil, fmt.Errorf("invalid plan document: %w", err)
+	for i := range doc.Checkpoints {
+		if doc.Checkpoints[i].Order <= 0 {
+			doc.Checkpoints[i].Order = i + 1
+		}
+		if len(doc.Checkpoints[i].AcceptanceCriteria) == 0 {
+			if len(doc.Checkpoints[i].Tasks) > 0 {
+				doc.Checkpoints[i].AcceptanceCriteria = []string{fmt.Sprintf("Completed %s", doc.Checkpoints[i].Title)}
+			} else {
+				doc.Checkpoints[i].AcceptanceCriteria = []string{"Done"}
+			}
+		}
 	}
 	if err := sessionruntime.ValidateExecutablePlanDocument(&doc); err != nil {
 		return nil, fmt.Errorf("invalid plan document: %w", err)

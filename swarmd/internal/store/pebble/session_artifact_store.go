@@ -1058,6 +1058,17 @@ func (s *SessionStore) PutArtifactVariant(variant SessionArtifactVariant) error 
 	if s == nil || s.store == nil {
 		return errors.New("session store is not configured")
 	}
+	collKey := KeySessionArtifactCollection(variant.AccountScopeID, variant.SessionID, variant.CollectionID)
+	var coll SessionArtifactCollection
+	if ok, _ := s.store.GetJSON(collKey, &coll); !ok {
+		coll = SessionArtifactCollection{
+			AccountScopeID: variant.AccountScopeID,
+			SessionID:      variant.SessionID,
+			ID:             variant.CollectionID,
+			Status:         SessionArtifactStatusReady,
+		}
+		_ = s.store.PutJSON(collKey, coll)
+	}
 	key := KeySessionArtifactVariant(variant.AccountScopeID, variant.SessionID, variant.CollectionID, variant.ID)
 	return s.store.PutJSON(key, variant)
 }

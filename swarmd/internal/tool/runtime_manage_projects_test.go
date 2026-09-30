@@ -207,7 +207,7 @@ func (m *mockProjectTaskLifecycleService) CreateProjectTask(ctx context.Context,
 	}
 	taskID := strings.TrimSpace(input.ID)
 	if taskID == "" {
-		taskID = fmt.Sprintf("task_%d", time.Now().UnixMilli())
+		taskID = fmt.Sprintf("task_%d", time.Now().UnixNano())
 	}
 	sessionID := strings.TrimSpace(input.SessionID)
 	if sessionID == "" && input.Agent != "image" && input.Agent != "video" && input.Agent != "sound" && input.Agent != "audio" {
@@ -234,6 +234,8 @@ func (m *mockProjectTaskLifecycleService) CreateProjectTask(ctx context.Context,
 		OutcomeType:    input.OutcomeType,
 		WorkspacePath:  input.WorkspacePath,
 		WorktreeBranch: input.WorktreeBranch,
+		Operation:      input.Operation,
+		AttachedMedia:  input.AttachedMedia,
 		FeatureSize:    input.FeatureSize,
 		Tier:           input.Tier,
 		PlanDocument:   input.PlanDocument,
@@ -246,16 +248,54 @@ func (m *mockProjectTaskLifecycleService) CreateProjectTask(ctx context.Context,
 	if task.Agent == "" {
 		task.Agent = "swarm"
 	}
+	if task.Tier == "" {
+		task.Tier = "direct"
+	}
+	if task.Agent == "swarm" {
+		task.RouterAlert = "Routed to default Swarm agent"
+	}
+	if task.Agent == "coder" {
+		if task.OutcomeType == "" {
+			task.OutcomeType = "code_pr"
+		}
+		if task.ActionNeeded == "" {
+			task.ActionNeeded = "Review task and click Approve to start Coder execution"
+		}
+		if len(task.Deliverables) == 0 {
+			task.Deliverables = []pebblestore.ProjectTaskDeliverable{
+				{ID: "deliv_code", Title: task.Title, Kind: "code_pr", Status: "pending"},
+			}
+		}
+	}
 	if task.PlanDocument == nil && input.Document != nil {
 		task.PlanDocument = input.Document
 	}
 	if task.PlanDocument != nil {
+		task.ActionNeeded = "Review plan in task card and click Approve"
 		task.PlanBinding = &pebblestore.ProjectTaskPlanBinding{
 			PlanID:             task.PlanDocument.ID,
 			DefinitionRevision: 1,
 			SessionID:          sessionID,
 			Receipt:            "mock-receipt",
 		}
+		m.submittedPlans = append(m.submittedPlans, sessionruntime.ProjectTaskPlanSubmissionInput{
+			AccountScopeID:  p.AccountScopeID,
+			UserID:          p.UserID,
+			ProjectID:       projectID,
+			TaskID:          task.ID,
+			Document:        task.PlanDocument,
+			Title:           task.Title,
+			WorkspacePath:   task.WorkspacePath,
+			ParentSessionID: sessionID,
+		})
+	}
+	if task.TaskProgram != nil && task.TaskProgramID == "" && task.TaskProgram.ID != "" {
+		task.TaskProgramID = task.TaskProgram.ID
+	}
+	if input.AutoApprove && task.PlanDocument == nil {
+		m.deployedTasks = append(m.deployedTasks, projectID+":"+task.ID)
+		task.Status = "in_progress"
+		task.ActionNeeded = ""
 	}
 	if err := m.store.PutProjectTask(p.AccountScopeID, &task); err != nil {
 		return nil, err
@@ -1632,5 +1672,254 @@ func TestManageProjectsProposalForwardsExactSourceIdentity(t *testing.T) {
 				t.Fatalf("forwarded source = (%q, %q, %d), want (%q, %q, %d); never infer first workspace", task.WorkspacePath, lifecycle.lastCreateInput.WorkspaceID, lifecycle.lastCreateInput.WorkspaceGeneration, tc.path, tc.id, tc.generation)
 			}
 		})
+	}
+}
+
+func TestManageProjects_MediaDiscoveryAndRetrieval(t *testing.T) {
+	// Purpose:
+	// - Requirement: The Orchestrator agent can discover and select project media via manage_projects list_media and get_media.
+	// - Threat/regression: Inability for Orchestrator to inspect project shelf media, causing re-upload or blindness to existing assets.
+	// - Boundary/authority: Runtime.executeManageProjects in runtime_manage_projects.go.
+	// - Layer: Direct tool execution against Pebble project storage.
+	store := newMockProjectStore()
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "tester", AccountScopeID: "account"}
+	project := &pebblestore.ProjectRecord{
+		ID:        "proj-media-disc-1",
+		AccountID: principal.AccountScopeID,
+		Name:      "Media Discovery Project",
+		UploadedMedia: []pebblestore.ProjectTaskMediaRef{
+			{
+				ID:           "media_item_1",
+				Title:        "youtube-thumbnail.png",
+				Filename:     "youtube-thumbnail.png",
+				Kind:         "image",
+				MediaType:    "image/png",
+				URL:          "/v3/sessions/sess-1/media/media_item_1",
+				SizeBytes:    1024,
+				DigestSHA256: "digest1",
+				CreatedAt:    100,
+			},
+			{
+				ID:           "media_item_2",
+				Title:        "video-clip.mp4",
+				Filename:     "video-clip.mp4",
+				Kind:         "video",
+				MediaType:    "video/mp4",
+				URL:          "/v3/sessions/sess-1/media/media_item_2",
+				SizeBytes:    2048,
+				DigestSHA256: "digest2",
+				CreatedAt:    200,
+			},
+		},
+	}
+	if err := store.PutProject(principal.AccountScopeID, project); err != nil {
+		t.Fatalf("put project: %v", err)
+	}
+
+	rt := &Runtime{}
+	rt.SetManageProjectStore(store)
+	scope := WorkspaceScope{Principal: principal}
+
+	// 1. list_media returns bounded list with exact retained references
+	listOut, err := rt.executeManageProjects(context.Background(), scope, map[string]any{
+		"action":     "list_media",
+		"project_id": project.ID,
+	})
+	if err != nil {
+		t.Fatalf("list_media failed: %v", err)
+	}
+	var listRes map[string]any
+	if err := json.Unmarshal([]byte(listOut), &listRes); err != nil {
+		t.Fatalf("unmarshal list_media: %v", err)
+	}
+	if listRes["status"] != "ok" {
+		t.Fatalf("expected status ok, got %+v", listRes)
+	}
+	mediaList, ok := listRes["media"].([]any)
+	if !ok || len(mediaList) != 2 {
+		t.Fatalf("expected 2 media items, got %+v", listRes["media"])
+	}
+
+	// 2. get_media returns exact media item
+	getOut, err := rt.executeManageProjects(context.Background(), scope, map[string]any{
+		"action":     "get_media",
+		"project_id": project.ID,
+		"media_id":   "media_item_1",
+	})
+	if err != nil {
+		t.Fatalf("get_media failed: %v", err)
+	}
+	var getRes map[string]any
+	if err := json.Unmarshal([]byte(getOut), &getRes); err != nil {
+		t.Fatalf("unmarshal get_media: %v", err)
+	}
+	matched, ok := getRes["media"].(map[string]any)
+	if !ok || matched["id"] != "media_item_1" || matched["filename"] != "youtube-thumbnail.png" {
+		t.Fatalf("get_media unexpected item: %+v", getRes["media"])
+	}
+
+	// 3. get_media for nonexistent item fails clearly
+	_, errNotFound := rt.executeManageProjects(context.Background(), scope, map[string]any{
+		"action":     "get_media",
+		"project_id": project.ID,
+		"media_id":   "nonexistent",
+	})
+	if errNotFound == nil {
+		t.Fatal("expected error for nonexistent media_id, got nil")
+	}
+
+	// 4. Cross-account isolation: foreign principal cannot list or get media
+	foreign := WorkspaceScope{Principal: identity.Principal{Type: identity.PrincipalTypeUser, UserID: "foreign", AccountScopeID: "foreign-acct"}}
+	_, errCrossList := rt.executeManageProjects(context.Background(), foreign, map[string]any{
+		"action":     "list_media",
+		"project_id": project.ID,
+	})
+	if errCrossList == nil {
+		t.Fatal("expected error for cross-account list_media, got nil")
+	}
+}
+
+func TestManageProjects_OrchestratorCreateAndExtendTask(t *testing.T) {
+	// Purpose:
+	// - Requirement: The Orchestrator can propose/create a video generation task (operation="create")
+	//   and subsequently propose/create a video extension task (operation="extend") referencing
+	//   the exact deliverable URL of the generated clip.
+	// - Threat/regression: In prior versions, operation was dropped by propose_task arguments,
+	//   causing extension tasks to be misidentified as create tasks or lose their operation discriminator.
+	// - Boundary/authority: executeManageProjects in runtime_manage_projects.go.
+	// - Layer: Direct tool execution with mock lifecycle service and store.
+	store := newMockProjectStore()
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "orch-user", AccountScopeID: "orch-acct"}
+	project := &pebblestore.ProjectRecord{
+		ID:        "proj-orch-vid-1",
+		AccountID: principal.AccountScopeID,
+		Name:      "Orchestrator Video Project",
+	}
+	if err := store.PutProject(principal.AccountScopeID, project); err != nil {
+		t.Fatalf("put project: %v", err)
+	}
+
+	lifecycle := newMockProjectTaskLifecycleService(store)
+	rt := &Runtime{}
+	rt.SetManageProjectStore(store)
+	rt.SetProjectTaskLifecycleService(lifecycle)
+	scope := WorkspaceScope{Principal: principal}
+
+	// 1. Orchestrator proposes video creation task
+	createOut, err := rt.executeManageProjects(context.Background(), scope, map[string]any{
+		"action":       "propose_task",
+		"project_id":   project.ID,
+		"title":        "Autonomous smoke test video",
+		"prompt":       "Glowing blue orb hovering quietly in space",
+		"agent":        "video",
+		"operation":    "create",
+		"aspect_ratio": "16:9",
+		"resolution":   "720p",
+	})
+	if err != nil {
+		t.Fatalf("propose_task create failed: %v", err)
+	}
+	var createRes map[string]any
+	if err := json.Unmarshal([]byte(createOut), &createRes); err != nil {
+		t.Fatalf("unmarshal create: %v", err)
+	}
+	if createRes["status"] != "ok" {
+		t.Fatalf("expected create status ok, got %+v", createRes)
+	}
+	task1ID := asString(createRes["task_id"])
+	if task1ID == "" {
+		t.Fatalf("expected non-empty task_id: %+v", createRes)
+	}
+
+	// Verify created task record in store has Operation="create"
+	task1, found, err := store.GetProjectTask(principal.AccountScopeID, project.ID, task1ID)
+	if err != nil || !found {
+		t.Fatalf("get task 1: %v", err)
+	}
+	if task1.Operation != "create" {
+		t.Fatalf("task 1 Operation = %q, want 'create'", task1.Operation)
+	}
+	if task1.Agent != "video" {
+		t.Fatalf("task 1 Agent = %q, want 'video'", task1.Agent)
+	}
+
+	// Simulate task 1 completion: ready deliverable with video provenance
+	deliv1ID := "deliv_vid_12345"
+	deliv1URL := fmt.Sprintf("/v3/projects/%s/tasks/%s/deliverables/%s", project.ID, task1ID, deliv1ID)
+	_, _ = store.UpdateProjectTask(principal.AccountScopeID, project.ID, task1ID, func(t *pebblestore.ProjectTaskRecord) error {
+		t.Status = "needs_review"
+		t.Deliverables = []pebblestore.ProjectTaskDeliverable{
+			{
+				ID:       deliv1ID,
+				Title:    "Single Video (Take 1)",
+				Kind:     "video",
+				Status:   "ready",
+				MediaURL: deliv1URL,
+				VideoProvenance: &pebblestore.VideoProvenance{
+					AccountScopeID:   principal.AccountScopeID,
+					Provider:         "google",
+					Model:            "veo-3.1-generate-preview",
+					Operation:        "create",
+					ProviderResource: "https://veo.google/clip1",
+					CreatedAt:        time.Now().UnixMilli(),
+				},
+			},
+		}
+		return nil
+	})
+
+	// 2. Orchestrator proposes video extension task referencing deliverable 1
+	extendOut, err := rt.executeManageProjects(context.Background(), scope, map[string]any{
+		"action":       "propose_task",
+		"project_id":   project.ID,
+		"title":        "Extend smoke test orb video",
+		"prompt":       "Camera glides around the orb as cosmic dust drifts past",
+		"agent":        "video",
+		"operation":    "extend",
+		"aspect_ratio": "16:9",
+		"resolution":   "720p",
+		"attached_media": []map[string]any{
+			{
+				"id":       deliv1ID,
+				"kind":     "video",
+				"url":      deliv1URL,
+				"filename": "clip1.mp4",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("propose_task extend failed: %v", err)
+	}
+	var extendRes map[string]any
+	if err := json.Unmarshal([]byte(extendOut), &extendRes); err != nil {
+		t.Fatalf("unmarshal extend: %v", err)
+	}
+	if extendRes["status"] != "ok" {
+		t.Fatalf("expected extend status ok, got %+v", extendRes)
+	}
+	task2ID := asString(extendRes["task_id"])
+
+	// Verify task 2 in store has Operation="extend" and references attached media
+	task2, found, err := store.GetProjectTask(principal.AccountScopeID, project.ID, task2ID)
+	if err != nil || !found {
+		t.Fatalf("get task 2: %v", err)
+	}
+	if task2.Operation != "extend" {
+		t.Fatalf("task 2 Operation = %q, want 'extend'", task2.Operation)
+	}
+	if task2.Agent != "video" {
+		t.Fatalf("task 2 Agent = %q, want 'video'", task2.Agent)
+	}
+	if len(task2.AttachedMedia) != 1 || task2.AttachedMedia[0].ID != deliv1ID {
+		t.Fatalf("task 2 AttachedMedia mismatch: %+v", task2.AttachedMedia)
+	}
+
+	// 3. Verify original task 1 was preserved untouched
+	task1After, found, err := store.GetProjectTask(principal.AccountScopeID, project.ID, task1ID)
+	if err != nil || !found {
+		t.Fatalf("re-read task 1: %v", err)
+	}
+	if task1After.Operation != "create" || task1After.Status != "needs_review" {
+		t.Fatalf("task 1 was mutated: %+v", task1After)
 	}
 }

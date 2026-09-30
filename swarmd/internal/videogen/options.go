@@ -159,19 +159,38 @@ func ExtractVideoOptions(rec pebblestore.ModelCatalogRecord) *ParsedVideoOptions
 
 	var parsed struct {
 		VideoGeneration *struct {
-			Status   string                `json:"status"`
-			Settings map[string]rawSetting `json:"settings"`
-			Features map[string]rawFeature `json:"features"`
+			Status   string                     `json:"status"`
+			Settings map[string]rawSetting      `json:"settings"`
+			Features map[string]json.RawMessage `json:"features"`
 		} `json:"video_generation"`
-		Settings map[string]rawSetting `json:"settings"`
-		Features map[string]rawFeature `json:"features"`
+		Settings map[string]rawSetting      `json:"settings"`
+		Features map[string]json.RawMessage `json:"features"`
 	}
 	if err := json.Unmarshal(provData, &parsed); err != nil {
 		return opts
 	}
 
+	parseFeatures := func(rawMap map[string]json.RawMessage) map[string]rawFeature {
+		if rawMap == nil {
+			return nil
+		}
+		res := make(map[string]rawFeature, len(rawMap))
+		for k, v := range rawMap {
+			var b bool
+			if err := json.Unmarshal(v, &b); err == nil {
+				res[k] = rawFeature{Supported: b}
+				continue
+			}
+			var f rawFeature
+			if err := json.Unmarshal(v, &f); err == nil {
+				res[k] = f
+			}
+		}
+		return res
+	}
+
 	settingsMap := parsed.Settings
-	featuresMap := parsed.Features
+	featuresMap := parseFeatures(parsed.Features)
 	if parsed.VideoGeneration != nil {
 		if parsed.VideoGeneration.Status != "" {
 			opts.Status = parsed.VideoGeneration.Status
@@ -180,7 +199,7 @@ func ExtractVideoOptions(rec pebblestore.ModelCatalogRecord) *ParsedVideoOptions
 			settingsMap = parsed.VideoGeneration.Settings
 		}
 		if len(parsed.VideoGeneration.Features) > 0 {
-			featuresMap = parsed.VideoGeneration.Features
+			featuresMap = parseFeatures(parsed.VideoGeneration.Features)
 		}
 	}
 

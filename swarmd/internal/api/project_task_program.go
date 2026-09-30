@@ -163,7 +163,9 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 		}
 	}
 	// Source identity is resolved before any reservation. Only direct media can use a non-repository catalog root.
-	requiresRepo := input.Document != nil || input.PlanDocument != nil || input.TaskProgram != nil || (input.Agent != "image" && input.Agent != "video" && input.Agent != "sound" && input.Agent != "audio")
+	reqOp := strings.ToLower(strings.TrimSpace(input.Operation))
+	isDirectVideo := input.Agent == "video" || reqOp == pebblestore.VideoOperationEdit || reqOp == pebblestore.VideoOperationExtend || (reqOp == pebblestore.VideoOperationCreate && input.Agent == "video")
+	requiresRepo := input.Document != nil || input.PlanDocument != nil || input.TaskProgram != nil || (!isDirectVideo && input.Agent != "image" && input.Agent != "video" && input.Agent != "sound" && input.Agent != "audio")
 	source, err := s.resolveProjectTaskSource(p, proj, input.WorkspacePath, input.WorkspaceID, input.WorkspaceGeneration, requiresRepo)
 	if err != nil {
 		return nil, err
@@ -189,6 +191,9 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 	}
 	wsPath := source.Path
 	agentName := strings.TrimSpace(input.Agent)
+	if isDirectVideo {
+		agentName = "video"
+	}
 
 	structDoc := input.Document
 	if structDoc == nil && input.PlanDocument != nil {
@@ -209,6 +214,9 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 	}
 	featureSize := strings.TrimSpace(input.FeatureSize)
 	outcomeType := strings.TrimSpace(input.OutcomeType)
+	if isDirectVideo && outcomeType == "" {
+		outcomeType = "video_clip"
+	}
 	tier := strings.TrimSpace(input.Tier)
 	if structDoc != nil {
 		if err := sessionruntime.ValidateExecutablePlanDocument(structDoc); err != nil {
@@ -415,6 +423,7 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 		Thinking:           strings.TrimSpace(input.Thinking),
 		ServiceTier:        strings.TrimSpace(input.ServiceTier),
 		ContextMode:        strings.TrimSpace(input.ContextMode),
+		Operation:          reqOp,
 		Scenes:             routed.Scenes,
 		Soundtrack:         soundtrack,
 		AutoApprove:        input.AutoApprove,
@@ -435,6 +444,19 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 	}
 	if len(task.AttachedMedia) == 0 && len(routed.AttachedMedia) > 0 {
 		task.AttachedMedia = routed.AttachedMedia
+	}
+	if isDirectVideo && len(task.AttachedMedia) > 0 {
+		srcRec, err := s.resolveSourceMediaRecord(ctx, p, task.AttachedMedia[0], "video", projectID)
+		if err == nil && srcRec != nil && srcRec.SourceLink != nil {
+			task.SourceDigestSHA256 = srcRec.SourceLink.DigestSHA256
+			task.AttachedMedia[0].DigestSHA256 = srcRec.SourceLink.DigestSHA256
+			task.AttachedMedia[0].SourceLink = srcRec.SourceLink
+		}
+	}
+	if isDirectMediaTask(&task) {
+		if err := validateProjectMediaTaskSettings(s, &task, p); err != nil {
+			return nil, err
+		}
 	}
 	if task.Agent == "coder" || task.OutcomeType == "code_pr" || task.OutcomeType == "bug_patch" {
 		task.AspectRatio = ""

@@ -104,6 +104,7 @@ export interface DesktopV3MediaReference {
   modality: string
   mime_type: string
   file_type?: string
+  file_name?: string
   size: number
   digest_sha256: string
   contract_hash: string

@@ -506,18 +506,25 @@ func TestVideoOperations_ServerProvenanceBindingNotClientHandles(t *testing.T) {
 
 	server.artifacts = artifact.NewRegistry(server.sessions, artifact.Limits{})
 	auth := artifact.NewAuthority(server.artifacts, server.sessions)
+	_ = ss.CreateSession(pebblestore.SessionSnapshot{
+		ID:             sessionID,
+		AccountScopeID: p.AccountScopeID,
+		UserID:         p.UserID,
+		Mode:           "auto",
+	})
 	createdVariant, err := auth.Create(context.Background(), artifact.Principal{
 		SessionID:      sessionID,
 		AccountScopeID: p.AccountScopeID,
 		UserID:         p.UserID,
 	}, artifact.CreateInput{
-		RequestID:    "req-test-prov",
-		CollectionID: collectionID,
-		VariantID:    variantID,
-		Filename:     "generated-clip.mp4",
-		MediaType:    "video/mp4",
-		Body:         testVideoBytes,
-		AutoAccept:   true,
+		RequestID:      "req-test-prov",
+		CollectionID:   collectionID,
+		CollectionName: "Provenance Test Collection",
+		VariantID:      variantID,
+		Filename:       "generated-clip.mp4",
+		MediaType:      "video/mp4",
+		Body:           testVideoBytes,
+		AutoAccept:     true,
 	})
 	if err != nil {
 		t.Fatalf("create artifact variant: %v", err)
@@ -810,5 +817,296 @@ func TestVideoOperations_ExecutionRejectsChangedSourceDigest(t *testing.T) {
 	}
 	if !strings.Contains(updatedTask.LastError, "source media digest changed since submission") {
 		t.Errorf("expected LastError mentioning digest changed, got: %s", updatedTask.LastError)
+	}
+}
+
+func TestVideoOperations_OrchestratorCreateThenExtendEndToEnd(t *testing.T) {
+	// Purpose:
+	// - Product invariant: Orchestrator creates one video task with a harmless brief, retaining
+	//   ready output, exact deliverable reference, parameters, and server-verified provenance.
+	//   A follow-up request performs native API extension using that exact reference, producing a distinct
+	//   derived output with source lineage pointing to the first clip, while preserving the original.
+	// - Threat/regression: In prior versions, extension requests were either not discriminated (defaulted
+	//   to create/edit), lost provenance on round-trip, failed on Veo edit mismatch, or mutated the original.
+	// - Boundary/authority: Server.handleProjectTasks, resolveSourceMediaRecord, executeDirectMediaTask.
+	// - Layer: Direct API execution against temporary Pebble store and mock video service.
+	server, ss, p := setupDirectMediaTestServer(t)
+
+	// Seed Veo 3.1 model in catalog
+	catStore := pebblestore.NewModelCatalogStore(ss.Underlying())
+	veoRecord := pebblestore.ModelCatalogRecord{
+		Provider:          "google",
+		Model:             "veo-3.1-generate-preview",
+		DisplayName:       "Google Veo 3.1",
+		CatalogModalities: pebblestore.ModelCatalogModalities{Inputs: []string{"text", "image", "video"}, Outputs: []string{"video"}},
+		Media: &pebblestore.ModelCatalogMediaCapabilities{
+			State:           pebblestore.ModelCatalogMediaStateSupported,
+			ProviderSurface: "predict",
+		},
+		ProviderSpecific: json.RawMessage(`{"google":{"model_api_surface":"predict","video_generation":{"status":"verified","settings":{"aspect_ratio":{"status":"verified","default_value":"16:9","supported_values":["16:9","9:16"]},"resolution":{"status":"verified","default_value":"720p","supported_values":["720p"]},"duration_seconds":{"status":"verified","default_value":8,"supported_values":[4,6,8]}},"features":{"video_extension":true,"initial_image":{"status":"verified","supported":true,"max_inputs":1}}}}}`),
+		Pricing:          json.RawMessage(`{"input_per_million":1.0,"output_per_million":4.0}`),
+	}
+	if err := catStore.SetRecord(veoRecord); err != nil {
+		t.Fatalf("seed veo catalog record: %v", err)
+	}
+
+	uiChatStore := pebblestore.NewUISettingsStore(ss.Underlying())
+	uiSvc := uisettings.NewService(uiChatStore)
+	_, _ = uiSvc.SetForAccount(p.AccountScopeID, uisettings.UISettings{
+		Tools: uisettings.ToolSettings{
+			Video: uisettings.ToolVideoSettings{
+				DefaultModel: "veo-3.1-generate-preview",
+			},
+		},
+	})
+	server.uiSettings = uiSvc
+
+	proj := &pebblestore.ProjectRecord{
+		ID:        "proj-orch-extend-test",
+		AccountID: p.AccountScopeID,
+		Name:      "Orchestrator Video Extension Project",
+	}
+	if err := ss.PutProject(p.AccountScopeID, proj); err != nil {
+		t.Fatalf("put project: %v", err)
+	}
+
+	clip1Bytes := []byte("clip-1-mp4-payload-veo-original-8s")
+	h1 := sha256.Sum256(clip1Bytes)
+	clip1Digest := hex.EncodeToString(h1[:])
+	clip1URI := "https://generativelanguage.googleapis.com/v1beta/files/veo-video-11111"
+
+	clip2Bytes := []byte("clip-2-mp4-payload-veo-extended-16s-combined")
+	h2 := sha256.Sum256(clip2Bytes)
+	clip2Digest := hex.EncodeToString(h2[:])
+	clip2URI := "https://generativelanguage.googleapis.com/v1beta/files/veo-video-22222"
+
+	prov1 := &pebblestore.VideoProvenance{
+		AccountScopeID:     p.AccountScopeID,
+		Provider:           "google",
+		Model:              "veo-3.1-generate-preview",
+		Operation:          "create",
+		OutputDigestSHA256: clip1Digest,
+		ProviderResource:   clip1URI,
+		CreatedAt:          time.Now().UnixMilli(),
+		ExpiresAt:          time.Now().Add(48 * time.Hour).UnixMilli(),
+		ObservedWidth:      1280,
+		ObservedHeight:     720,
+		ObservedDurationMs: 8000,
+	}
+
+	prov2 := &pebblestore.VideoProvenance{
+		AccountScopeID:      p.AccountScopeID,
+		Provider:            "google",
+		Model:               "veo-3.1-generate-preview",
+		Operation:           "extend",
+		OutputDigestSHA256:  clip2Digest,
+		ProviderResource:    clip2URI,
+		IsCombinedOutput:    true,
+		ExtensionCount:      1,
+		ExtensionCountKnown: true,
+		CreatedAt:           time.Now().UnixMilli(),
+		ExpiresAt:           time.Now().Add(48 * time.Hour).UnixMilli(),
+		ObservedWidth:       1280,
+		ObservedHeight:      720,
+		ObservedDurationMs:  16000,
+	}
+
+	mockVideo := &mockPreflightVideoService{
+		genResult: videogen.ManagedVideoResult{
+			Bytes:           clip1Bytes,
+			MediaType:       "video/mp4",
+			Model:           "veo-3.1-generate-preview",
+			Provider:        "google",
+			DurationSeconds: 8,
+			Resolution:      "720p",
+			Provenance:      prov1,
+		},
+		uiSettings: uiSvc,
+	}
+	server.SetVideoGenerationService(mockVideo)
+
+	// Step 1: Orchestrator creates video 1 with a harmless brief
+	body1, _ := json.Marshal(map[string]any{
+		"title":        "Harmless smoke test blue orb",
+		"prompt":       "A gentle glowing blue orb floating smoothly in a tranquil dark cosmos",
+		"agent":        "video",
+		"operation":    "create",
+		"aspect_ratio": "16:9",
+		"resolution":   "720p",
+		"auto_approve": false,
+	})
+	req1 := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/v3/projects/%s/tasks", proj.ID), bytes.NewReader(body1))
+	req1.Header.Set("Content-Type", "application/json")
+	req1 = req1.WithContext(identity.ContextWithPrincipal(req1.Context(), p))
+	rec1 := httptest.NewRecorder()
+	server.handleProjects(rec1, req1)
+	if rec1.Code != http.StatusCreated {
+		t.Fatalf("task 1 creation failed (%d): %s", rec1.Code, rec1.Body.String())
+	}
+	var resp1 struct {
+		Task pebblestore.ProjectTaskRecord `json:"task"`
+	}
+	if err := json.Unmarshal(rec1.Body.Bytes(), &resp1); err != nil {
+		t.Fatalf("unmarshal task 1 response: %v", err)
+	}
+	task1ID := resp1.Task.ID
+
+	// Execute task 1 directly
+	task1, found, err := ss.GetProjectTask(p.AccountScopeID, proj.ID, task1ID)
+	if err != nil || !found {
+		t.Fatalf("get task 1: %v", err)
+	}
+	server.executeDirectMediaTask(p, proj, task1)
+
+	// Verify task 1 output
+	task1Updated, found, err := ss.GetProjectTask(p.AccountScopeID, proj.ID, task1ID)
+	if err != nil || !found {
+		t.Fatalf("get task 1 after exec: %v", err)
+	}
+	if task1Updated.Status != "needs_review" {
+		t.Fatalf("expected task 1 status needs_review, got %s", task1Updated.Status)
+	}
+	if len(task1Updated.Deliverables) == 0 || task1Updated.Deliverables[0].Status != "ready" {
+		t.Fatalf("task 1 deliverable not ready: %+v", task1Updated.Deliverables)
+	}
+	deliv1 := task1Updated.Deliverables[0]
+	if deliv1.VideoProvenance == nil || deliv1.VideoProvenance.ProviderResource != clip1URI {
+		t.Fatalf("task 1 deliverable missing expected provenance: %+v", deliv1.VideoProvenance)
+	}
+
+	// Step 2: Orchestrator requests native extension of video 1 using its exact deliverable URL
+	deliv1URL := fmt.Sprintf("/v3/projects/%s/tasks/%s/deliverables/%s", proj.ID, task1ID, deliv1.ID)
+
+	// Update mock to return extended video 2
+	mockVideo.genResult = videogen.ManagedVideoResult{
+		Bytes:            clip2Bytes,
+		MediaType:        "video/mp4",
+		Model:            "veo-3.1-generate-preview",
+		Provider:         "google",
+		DurationSeconds:  16,
+		Resolution:       "720p",
+		Operation:        "extend",
+		IsCombinedOutput: true,
+		ExtensionCount:   1,
+		Provenance:       prov2,
+	}
+
+	body2, _ := json.Marshal(map[string]any{
+		"title":        "Extend smoke test blue orb scene",
+		"prompt":       "Camera drifts forward as subtle starlight particles appear around the orb",
+		"agent":        "video",
+		"operation":    "extend",
+		"aspect_ratio": "16:9",
+		"resolution":   "720p",
+		"attached_media": []map[string]any{
+			{
+				"id":       deliv1.ID,
+				"kind":     "video",
+				"url":      deliv1URL,
+				"filename": "clip1.mp4",
+			},
+		},
+		"auto_approve": false,
+	})
+	req2 := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/v3/projects/%s/tasks", proj.ID), bytes.NewReader(body2))
+	req2.Header.Set("Content-Type", "application/json")
+	req2 = req2.WithContext(identity.ContextWithPrincipal(req2.Context(), p))
+	rec2 := httptest.NewRecorder()
+	server.handleProjects(rec2, req2)
+	if rec2.Code != http.StatusCreated {
+		t.Fatalf("task 2 creation failed (%d): %s", rec2.Code, rec2.Body.String())
+	}
+	var resp2 struct {
+		Task pebblestore.ProjectTaskRecord `json:"task"`
+	}
+	if err := json.Unmarshal(rec2.Body.Bytes(), &resp2); err != nil {
+		t.Fatalf("unmarshal task 2 response: %v", err)
+	}
+	task2ID := resp2.Task.ID
+
+	// Verify task 2 was created with operation=extend and pinned SourceDigestSHA256
+	task2, found, err := ss.GetProjectTask(p.AccountScopeID, proj.ID, task2ID)
+	if err != nil || !found {
+		t.Fatalf("get task 2: %v", err)
+	}
+	if task2.Operation != "extend" {
+		t.Fatalf("expected task 2 operation 'extend', got %q", task2.Operation)
+	}
+	if task2.SourceDigestSHA256 != clip1Digest {
+		t.Fatalf("expected task 2 SourceDigestSHA256 %q, got %q", clip1Digest, task2.SourceDigestSHA256)
+	}
+
+	// Execute task 2
+	server.executeDirectMediaTask(p, proj, task2)
+
+	// Verify mock received Operation="extend" and Source with Provenance
+	if mockVideo.lastReq.Operation != "extend" {
+		t.Fatalf("mock expected Operation 'extend', got %q", mockVideo.lastReq.Operation)
+	}
+	if mockVideo.lastReq.Source == nil || mockVideo.lastReq.Source.Provenance == nil {
+		t.Fatal("mock expected Source and SourceProvenance on extend request")
+	}
+	if mockVideo.lastReq.Source.Provenance.ProviderResource != clip1URI {
+		t.Fatalf("expected source resource %q, got %q", clip1URI, mockVideo.lastReq.Source.Provenance.ProviderResource)
+	}
+
+	// Verify task 2 updated state
+	task2Updated, found, err := ss.GetProjectTask(p.AccountScopeID, proj.ID, task2ID)
+	if err != nil || !found {
+		t.Fatalf("get task 2 after exec: %v", err)
+	}
+	if task2Updated.Status != "needs_review" {
+		t.Fatalf("expected task 2 status needs_review, got %s", task2Updated.Status)
+	}
+	if len(task2Updated.Deliverables) == 0 || task2Updated.Deliverables[0].Status != "ready" {
+		t.Fatalf("task 2 deliverable not ready: %+v", task2Updated.Deliverables)
+	}
+	deliv2 := task2Updated.Deliverables[0]
+	if deliv2.ParentDeliverableID != deliv1.ID {
+		t.Fatalf("expected ParentDeliverableID %q, got %q", deliv1.ID, deliv2.ParentDeliverableID)
+	}
+	if deliv2.VideoProvenance == nil {
+		t.Fatal("expected non-nil VideoProvenance on extended deliverable")
+	}
+	if deliv2.VideoProvenance.Operation != "extend" {
+		t.Fatalf("expected extended provenance operation 'extend', got %q", deliv2.VideoProvenance.Operation)
+	}
+	if !deliv2.VideoProvenance.IsCombinedOutput {
+		t.Fatal("expected IsCombinedOutput true on extended deliverable")
+	}
+	if deliv2.VideoProvenance.ExtensionCount != 1 {
+		t.Fatalf("expected ExtensionCount 1, got %d", deliv2.VideoProvenance.ExtensionCount)
+	}
+
+	// Step 3: Invariant - original task 1 and deliverable 1 are completely preserved intact
+	task1After, found, err := ss.GetProjectTask(p.AccountScopeID, proj.ID, task1ID)
+	if err != nil || !found {
+		t.Fatalf("re-read task 1: %v", err)
+	}
+	if task1After.Status != "needs_review" || len(task1After.Deliverables) != 1 || task1After.Deliverables[0].Status != "ready" {
+		t.Fatalf("original task 1 mutated: %+v", task1After)
+	}
+	if task1After.Deliverables[0].VideoProvenance.Operation != "create" {
+		t.Fatalf("original task 1 provenance mutated: %+v", task1After.Deliverables[0].VideoProvenance)
+	}
+
+	// Step 4: Verify reload and persistence of both clips
+	reloadedTask1, found, err := ss.GetProjectTask(p.AccountScopeID, proj.ID, task1ID)
+	if err != nil || !found {
+		t.Fatalf("reload task 1 from store: %v", err)
+	}
+	if reloadedTask1.Deliverables[0].VideoProvenance.OutputDigestSHA256 != clip1Digest {
+		t.Fatalf("reloaded task 1 digest mismatch: %q vs %q", reloadedTask1.Deliverables[0].VideoProvenance.OutputDigestSHA256, clip1Digest)
+	}
+
+	reloadedTask2, found, err := ss.GetProjectTask(p.AccountScopeID, proj.ID, task2ID)
+	if err != nil || !found {
+		t.Fatalf("reload task 2 from store: %v", err)
+	}
+	if reloadedTask2.Deliverables[0].VideoProvenance.OutputDigestSHA256 != clip2Digest {
+		t.Fatalf("reloaded task 2 digest mismatch: %q vs %q", reloadedTask2.Deliverables[0].VideoProvenance.OutputDigestSHA256, clip2Digest)
+	}
+	if reloadedTask2.Deliverables[0].ParentDeliverableID != deliv1.ID {
+		t.Fatalf("reloaded task 2 parent deliverable link lost: %q vs %q", reloadedTask2.Deliverables[0].ParentDeliverableID, deliv1.ID)
 	}
 }

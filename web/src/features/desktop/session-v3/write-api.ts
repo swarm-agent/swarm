@@ -243,6 +243,7 @@ export interface DesktopV3MediaAssetWire {
   modality: string
   detected_mime_type: string
   file_type?: string
+  file_name?: string
   size: number
   digest_sha256: string
   contract_hash: string
@@ -264,19 +265,25 @@ export async function uploadDesktopV3MediaAsset(input: {
   mimeType: string
   modality: string
   fileType?: string
-  contractToken: string
+  contractToken?: string
   signal?: AbortSignal
 }): Promise<DesktopV3MediaReference> {
   const sessionId = input.sessionId.trim()
-  if (!sessionId || !input.contractToken.trim()) throw new Error('Desktop V3 media upload requires session and current capability')
+  if (!sessionId) throw new Error('Desktop V3 media upload requires session_id')
+  const headers = new Headers({
+    'Content-Type': input.mimeType.trim().toLowerCase(),
+    'X-Swarm-Media-Modality': input.modality,
+    'X-Swarm-Media-File-Type': input.fileType?.trim() ?? '',
+  })
+  if (input.file.name) {
+    headers.set('X-Swarm-Media-Filename', input.file.name)
+  }
+  if (input.contractToken?.trim()) {
+    headers.set('X-Swarm-Media-Contract', input.contractToken.trim())
+  }
   const response = await apiFetch(`/v3/sessions/${encodeURIComponent(sessionId)}/media`, {
     method: 'POST',
-    headers: {
-      'Content-Type': input.mimeType.trim().toLowerCase(),
-      'X-Swarm-Media-Modality': input.modality,
-      'X-Swarm-Media-File-Type': input.fileType?.trim() ?? '',
-      'X-Swarm-Media-Contract': input.contractToken,
-    },
+    headers,
     body: input.file,
     signal: input.signal,
   })
@@ -288,6 +295,7 @@ export async function uploadDesktopV3MediaAsset(input: {
     modality: asset.modality,
     mime_type: asset.detected_mime_type,
     file_type: asset.file_type,
+    file_name: asset.file_name || input.file.name,
     size: asset.size,
     digest_sha256: asset.digest_sha256,
     contract_hash: asset.contract_hash,

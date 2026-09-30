@@ -991,12 +991,20 @@ func (s *Service) executeProviderManagedMediaInspect(ctx context.Context, config
 	var asset pebblestore.SessionMediaAsset
 	var payload []byte
 	if args.AssetID != "" {
-		asset, payload, err = s.sessions.ReadSessionMediaAsset(principal.AccountScopeID, config.sessionID, args.AssetID)
+		targetSessionID := strings.TrimSpace(args.SessionID)
+		if targetSessionID == "" {
+			targetSessionID = config.sessionID
+		}
+		asset, payload, err = s.sessions.ReadSessionMediaAsset(principal.AccountScopeID, targetSessionID, args.AssetID)
 		if err != nil {
 			return result, err
 		}
-		if asset.ContractHash != currentContract.Hash || asset.ProviderID != providerID || asset.Model != modelID {
-			return result, errors.New("media asset admission contract does not match the current run")
+		capability, err := validateMediaInspectInvocation(currentContract, asset.Modality, asset.DetectedMIMEType, asset.FileType)
+		if err != nil {
+			return result, err
+		}
+		if capability.MaxBytes > 0 && asset.Size > capability.MaxBytes {
+			return result, fmt.Errorf("media_inspect asset exceeds current run byte limit (%d > %d)", asset.Size, capability.MaxBytes)
 		}
 	} else if args.ArtifactV3Reference != nil {
 		if s.tools == nil || s.tools.ArtifactV3AuthorService() == nil {

@@ -3659,15 +3659,14 @@ export function DesktopV3ExistingConversationPane({
             onArtifactSelectionRequestHandled={handleGalleryArtifactSelectionRequest}
             mediaCapability={mediaCapability}
             onUploadAttachment={async (file, signal) => {
-              const capability = await getDesktopV3MediaCapability(normalizedSessionId);
+              const capability = await getDesktopV3MediaCapability(normalizedSessionId).catch(() => null);
               const admission = admitComposerFile(file, capability);
-              if (admission.kind !== 'media' || !capability.contract_token) throw new Error('This file type is not supported as media by the current model and credential.');
+              if (admission.kind !== 'media') throw new Error(admission.kind === 'rejected' ? admission.reason : 'This file type is not supported as media.');
               const admitted = admission.capability;
               const fileType = admission.fileType;
               const mimeType = admission.mimeType;
-              const declaredMIME = mimeType || (fileType ? (admitted.mime_types ?? []).find((value) => value.toLowerCase().endsWith(`/${fileType === 'jpg' ? 'jpeg' : fileType}`)) : undefined);
-              if (!declaredMIME) throw new Error('The browser could not determine a supported media type for this attachment.');
-              return uploadDesktopV3MediaAsset({ sessionId: normalizedSessionId, file, mimeType: declaredMIME, modality: admitted.modality, fileType, contractToken: capability.contract_token, signal });
+              const declaredMIME = mimeType || (fileType ? (admitted.mime_types ?? []).find((value) => value.toLowerCase().endsWith(`/${fileType === 'jpg' ? 'jpeg' : fileType}`)) : undefined) || 'application/octet-stream';
+              return uploadDesktopV3MediaAsset({ sessionId: normalizedSessionId, file, mimeType: declaredMIME, modality: admitted.modality, fileType, contractToken: capability?.contract_token, signal });
             }}
             onSubmit={stableSubmit}
             onStop={handleStop}

@@ -914,10 +914,7 @@ func (s *Server) prepareRoutedSessionMedia(principal identity.Principal, session
 	if s == nil || s.mediaStaging == nil {
 		return runruntime.PreSessionMediaBindingPlan{}, nil, errors.New("media staging service is not configured")
 	}
-	contract, err := s.routedSessionMediaContract(context.Background(), principal, session)
-	if err != nil {
-		return runruntime.PreSessionMediaBindingPlan{}, nil, err
-	}
+	contract, contractErr := s.routedSessionMediaContract(context.Background(), principal, session)
 	staged := make([]runruntime.PreSessionMediaStagedMetadata, 0, len(requests))
 	payloads := make(map[string][]byte, len(requests))
 	for _, request := range requests {
@@ -938,8 +935,44 @@ func (s *Server) prepareRoutedSessionMedia(principal identity.Principal, session
 		staged = append(staged, runruntime.PreSessionMediaStagedMetadata{StagingID: record.ID, AccountScopeID: record.AccountScopeID, Modality: modality, DeclaredMIMEType: record.DeclaredMIMEType, DetectedMIMEType: record.DetectedMIMEType, FileType: fileType, Size: record.Size, DigestSHA256: record.DigestSHA256})
 		payloads[record.ID] = payload
 	}
-	plan, err := runruntime.PreparePreSessionMediaBindings(runruntime.PreSessionMediaBindingInput{AccountScopeID: principal.AccountScopeID, SessionID: session.ID, WorkspaceScope: firstNonEmpty(session.WorktreeRootPath, session.WorkspacePath), Contract: contract, Staged: staged})
-	return plan, payloads, err
+	var plan runruntime.PreSessionMediaBindingPlan
+	var planErr error
+	if contractErr == nil {
+		plan, planErr = runruntime.PreparePreSessionMediaBindings(runruntime.PreSessionMediaBindingInput{AccountScopeID: principal.AccountScopeID, SessionID: session.ID, WorkspaceScope: firstNonEmpty(session.WorktreeRootPath, session.WorkspacePath), Contract: contract, Staged: staged})
+	}
+	if contractErr != nil || planErr != nil {
+		plan = runruntime.PreSessionMediaBindingPlan{
+			AccountScopeID: principal.AccountScopeID, SessionID: session.ID, WorkspaceScope: firstNonEmpty(session.WorktreeRootPath, session.WorkspacePath),
+			ContractVersion: 1,
+			Bindings:        make([]runruntime.PreSessionMediaBinding, 0, len(staged)),
+		}
+		for index, item := range staged {
+			if item.Size > pebblestore.SessionMediaDefaultMaxBytes {
+				return runruntime.PreSessionMediaBindingPlan{}, nil, fmt.Errorf("staged media item %d exceeds maximum media byte limit", index)
+			}
+			h := sha256.Sum256([]byte(item.DigestSHA256 + "\x00"))
+			assetID := "media_" + hex.EncodeToString(h[:])
+			ref := pebblestore.SessionMediaReference{
+				AssetID:      assetID,
+				Modality:     item.Modality,
+				MIMEType:     item.DetectedMIMEType,
+				FileType:     item.FileType,
+				Size:         item.Size,
+				DigestSHA256: item.DigestSHA256,
+			}
+			plan.Bindings = append(plan.Bindings, runruntime.PreSessionMediaBinding{
+				StagingID:    item.StagingID,
+				AssetID:      assetID,
+				Metadata:     item,
+				Semantics:    pebblestore.ModelCatalogMediaSemanticsNative,
+				ContentTypes: []string{item.DetectedMIMEType},
+				Provenance:   []string{"retained_upload"},
+				Reference:    ref,
+			})
+			plan.TotalBytes += item.Size
+		}
+	}
+	return plan, payloads, nil
 }
 
 func routedSessionModality(mimeType string) string {

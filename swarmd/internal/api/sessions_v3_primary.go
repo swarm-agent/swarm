@@ -361,6 +361,10 @@ func (s *Server) handleSessionV3PrimaryByID(w http.ResponseWriter, r *http.Reque
 	case "video/projects":
 		s.handleSessionV3VideoProjects(w, r, principal, sessionID)
 	default:
+		if strings.HasPrefix(subpath, "media/") {
+			s.handleSessionV3MediaAsset(w, r, principal, sessionID, strings.TrimPrefix(subpath, "media/"))
+			return
+		}
 		if strings.HasPrefix(subpath, "video/") {
 			s.handleSessionV3VideoSubpath(w, r, principal, sessionID, strings.TrimPrefix(subpath, "video/"))
 			return

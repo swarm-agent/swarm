@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/videogen"
@@ -19,6 +20,7 @@ type fakeVideoGenerationService struct {
 	lastReq videogen.ManagedVideoRequest
 	calls   int
 	result  videogen.ManagedVideoResult
+	results []videogen.ManagedVideoResult
 	err     error
 }
 
@@ -43,6 +45,9 @@ func (f *fakeVideoGenerationService) GenerateManagedVideo(ctx context.Context, r
 		return videogen.ManagedVideoResult{}, f.err
 	}
 	res := f.result
+	if len(f.results) > 0 && f.calls-1 < len(f.results) {
+		res = f.results[f.calls-1]
+	}
 	if len(res.Bytes) == 0 {
 		res.Bytes = []byte("fake-generated-video-mp4")
 		res.MediaType = "video/mp4"
@@ -275,6 +280,139 @@ func TestManageArtifactGenerateVideoIterationWithSource(t *testing.T) {
 	}
 	if authority.created.IterationID != "v1_omni_turn2" {
 		t.Fatalf("expected iteration id v1_omni_turn2, got %q", authority.created.IterationID)
+	}
+}
+
+func TestManageArtifactGenerateVideoExtensionWithSource(t *testing.T) {
+	// Purpose:
+	// - Product invariant: Native video extension via manage_artifact must pass operation="extend"
+	//   and server-verified VideoProvenance to the generator, produce a combined extended deliverable
+	//   with source lineage pointing to the parent variant, and preserve the original video intact.
+	// - Threat/regression: In prior versions, operation was rejected as an unsupported field or
+	//   overwritten to "edit" (which Veo models reject), and source lineage/provenance was dropped.
+	// - Boundary/authority: executeManagedVideoGeneration in runtime_manage_artifact.go.
+	// - Layer: Direct tool execution against artifact authority and mock generator.
+	runtime := NewRuntime(1)
+	originalProv := &pebblestore.VideoProvenance{
+		AccountScopeID:   "account-1",
+		Provider:         "google",
+		Model:            "veo-3.1-generate-preview",
+		Operation:        "create",
+		ProviderResource: "https://generativelanguage.googleapis.com/v1beta/files/veo-video-original",
+		CreatedAt:        time.Now().UnixMilli(),
+		ExpiresAt:        time.Now().Add(48 * time.Hour).UnixMilli(),
+		ObservedWidth:    1280,
+		ObservedHeight:   720,
+	}
+	originalVariant := pebblestore.SessionArtifactVariant{
+		ID:           "source-veo-var-1",
+		CollectionID: "coll-veo-1",
+		SessionID:    "session-veo-1",
+		EventSeq:     42,
+		Status:       pebblestore.SessionArtifactStatusReady,
+		MediaType:    "video/mp4",
+		Lineage: pebblestore.SessionArtifactLineage{
+			VideoProvenance: originalProv,
+		},
+	}
+	originalBytes := []byte("original-veo-video-bytes-8s")
+	authority := &fakeArtifactAuthority{
+		variant:  originalVariant,
+		readBody: originalBytes,
+	}
+	runtime.SetArtifactAuthority(authority)
+
+	extendedProv := &pebblestore.VideoProvenance{
+		AccountScopeID:   "account-1",
+		Provider:         "google",
+		Model:            "veo-3.1-generate-preview",
+		Operation:        "extend",
+		ProviderResource: "https://generativelanguage.googleapis.com/v1beta/files/veo-video-extended",
+		IsCombinedOutput: true,
+		ExtensionCount:   1,
+		CreatedAt:        time.Now().UnixMilli(),
+		ExpiresAt:        time.Now().Add(48 * time.Hour).UnixMilli(),
+		ObservedWidth:    1280,
+		ObservedHeight:   720,
+	}
+	generator := &fakeVideoGenerationService{
+		result: videogen.ManagedVideoResult{
+			Bytes:            []byte("extended-veo-video-bytes-16s"),
+			MediaType:        "video/mp4",
+			Model:            "veo-3.1-generate-preview",
+			Provider:         "google",
+			Operation:        "extend",
+			IsCombinedOutput: true,
+			ExtensionCount:   1,
+			ProviderResource: "https://generativelanguage.googleapis.com/v1beta/files/veo-video-extended",
+			Provenance:       extendedProv,
+			DurationSeconds:  16,
+			Resolution:       "720p",
+		},
+	}
+	runtime.SetManagedVideoGenerationService(generator)
+
+	ctx, scope := artifactToolContext()
+	call := Call{
+		CallID: "video-extend-call",
+		Name:   "manage_artifact",
+		Arguments: `{
+			"action": "generate_video",
+			"operation": "extend",
+			"prompt": "Camera drifts through dense nebula dust revealing starlight",
+			"source_session_id": "session-veo-1",
+			"source_collection_id": "coll-veo-1",
+			"source_variant_id": "source-veo-var-1",
+			"source_event_seq": 42
+		}`,
+	}
+
+	output, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, call)
+	if err != nil {
+		t.Fatalf("execute generate_video extend: %v", err)
+	}
+
+	var res map[string]any
+	if err := json.Unmarshal([]byte(output), &res); err != nil {
+		t.Fatalf("decode output: %v", err)
+	}
+
+	// 1. Verify generator received operation="extend" and original source provenance
+	if generator.lastReq.Operation != pebblestore.VideoOperationExtend {
+		t.Fatalf("expected Operation %q, got %q", pebblestore.VideoOperationExtend, generator.lastReq.Operation)
+	}
+	if generator.lastReq.Source == nil {
+		t.Fatal("expected non-nil Source in generator request")
+	}
+	if generator.lastReq.Source.Provenance == nil || generator.lastReq.Source.Provenance.ProviderResource != originalProv.ProviderResource {
+		t.Fatalf("expected source provenance resource %q, got %+v", originalProv.ProviderResource, generator.lastReq.Source.Provenance)
+	}
+
+	// 2. Verify authority received created input with source lineage pointing to original
+	if authority.created.SourceSessionID != "session-veo-1" || authority.created.SourceVariantID != "source-veo-var-1" || authority.created.SourceEventSeq != 42 {
+		t.Fatalf("lineage not passed to create: %+v", authority.created)
+	}
+
+	// 3. Verify created variant carries extended VideoProvenance
+	if authority.created.VideoProvenance == nil {
+		t.Fatal("expected non-nil VideoProvenance on created extended variant")
+	}
+	if authority.created.VideoProvenance.Operation != pebblestore.VideoOperationExtend {
+		t.Fatalf("expected VideoProvenance.Operation 'extend', got %q", authority.created.VideoProvenance.Operation)
+	}
+	if !authority.created.VideoProvenance.IsCombinedOutput {
+		t.Fatal("expected IsCombinedOutput true on extended provenance")
+	}
+	if authority.created.VideoProvenance.ExtensionCount != 1 {
+		t.Fatalf("expected ExtensionCount 1, got %d", authority.created.VideoProvenance.ExtensionCount)
+	}
+
+	// 4. Verify created variant returned from authority
+	if authority.variant.Status != pebblestore.SessionArtifactStatusReady {
+		t.Fatalf("expected created variant status ready, got: %+v", authority.variant)
+	}
+	if authority.variant.Lineage.SourceVariantID != "source-veo-var-1" {
+		t.Fatalf("expected lineage source variant id source-veo-var-1, got %q", authority.variant.Lineage.SourceVariantID)
 	}
 }
 

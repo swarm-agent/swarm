@@ -81,6 +81,18 @@ func TestManageArtifactGenerateVideoStoryEndToEndOneCall(t *testing.T) {
 		t.Fatalf("read clip 1: %v", err)
 	}
 
+	clip2Path := filepath.Join(tmpDir, "clip2.mp4")
+	cmd2 := exec.Command("ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "color=c=green:s=320x240:r=24:d=1.0",
+		"-f", "lavfi", "-i", "sine=frequency=550:sample_rate=44100:duration=1.0",
+		"-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", clip2Path)
+	if out, err := cmd2.CombinedOutput(); err != nil {
+		t.Fatalf("create test clip 2 failed: %v, out: %s", err, string(out))
+	}
+	clip2Bytes, err := os.ReadFile(clip2Path)
+	if err != nil {
+		t.Fatalf("read clip 2: %v", err)
+	}
+
 	audioPath := filepath.Join(tmpDir, "soundtrack.mp3")
 	cmdAud := exec.Command("ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "sine=frequency=550:sample_rate=44100:duration=2.0",
 		"-c:a", "libmp3lame", audioPath)
@@ -97,12 +109,21 @@ func TestManageArtifactGenerateVideoStoryEndToEndOneCall(t *testing.T) {
 
 	// Video generation mock that returns synthetic clips
 	videoService := &fakeVideoGenerationService{
-		result: videogen.ManagedVideoResult{
-			Bytes:         clip1Bytes,
-			MediaType:     "video/mp4",
-			Model:         "veo-3.1-generate-preview",
-			Provider:      "google",
-			InteractionID: "interaction-test",
+		results: []videogen.ManagedVideoResult{
+			{
+				Bytes:         clip1Bytes,
+				MediaType:     "video/mp4",
+				Model:         "veo-3.1-generate-preview",
+				Provider:      "google",
+				InteractionID: "interaction-test-1",
+			},
+			{
+				Bytes:         clip2Bytes,
+				MediaType:     "video/mp4",
+				Model:         "veo-3.1-generate-preview",
+				Provider:      "google",
+				InteractionID: "interaction-test-2",
+			},
 		},
 	}
 
@@ -190,15 +211,35 @@ func TestManageArtifactGenerateVideoAliasRoutesToStory(t *testing.T) {
 		t.Fatalf("read clip: %v", err)
 	}
 
+	clip2Path := filepath.Join(tmpDir, "clip-alias-2.mp4")
+	cmd2 := exec.Command("ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "color=c=green:s=320x240:r=24:d=1.0",
+		"-f", "lavfi", "-i", "sine=frequency=550:sample_rate=44100:duration=1.0",
+		"-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", clip2Path)
+	if out, err := cmd2.CombinedOutput(); err != nil {
+		t.Fatalf("create test clip 2 failed: %v, out: %s", err, string(out))
+	}
+	clip2Bytes, err := os.ReadFile(clip2Path)
+	if err != nil {
+		t.Fatalf("read clip 2: %v", err)
+	}
+
 	runtime := NewRuntime(1)
 	authority := newVideoChainFakeArtifactAuthority()
 
 	videoService := &fakeVideoGenerationService{
-		result: videogen.ManagedVideoResult{
-			Bytes:     clipBytes,
-			MediaType: "video/mp4",
-			Model:     "veo-3.1-generate-preview",
-			Provider:  "google",
+		results: []videogen.ManagedVideoResult{
+			{
+				Bytes:     clipBytes,
+				MediaType: "video/mp4",
+				Model:     "veo-3.1-generate-preview",
+				Provider:  "google",
+			},
+			{
+				Bytes:     clip2Bytes,
+				MediaType: "video/mp4",
+				Model:     "veo-3.1-generate-preview",
+				Provider:  "google",
+			},
 		},
 	}
 
