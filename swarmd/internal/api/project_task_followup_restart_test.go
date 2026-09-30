@@ -1,8 +1,10 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
@@ -27,6 +29,9 @@ import (
 // follow-ups and two real store reopens. Threat: isolated happy paths miss loss at
 // reservation/hydration/restart boundaries and stale failed-launch guidance after
 // handleProjectTaskFollowup accepts a retry. Only launch-owned guidance may clear.
+// reconcileProjectTaskRunLifecycle must leave both raw durable bytes and the full
+// hydrated task unchanged for a prior attempt; compare snapshots from the same
+// boundary, after all retries, rather than attributing retry UpdatedAt to completion.
 // API + temporary Pebble + real Git is the narrow joined layer. completeRun persists real final messages and run
 // metadata, not lifecycle summary fixtures; no provider executes.
 func TestProjectTaskFollowupJoinedRestart(t *testing.T) {
@@ -171,7 +176,15 @@ func TestProjectTaskFollowupJoinedRestart(t *testing.T) {
 		if err != nil || retried == nil || retried.SessionID != result.SessionID || retried.ExecutionRunID() != result.ExecutionRunID() || retried.Revision != result.Revision || len(retried.Attempts) != len(result.Attempts) || retried.ActionNeeded != result.ActionNeeded || retried.LastError != result.LastError {
 			t.Fatalf("launched retry changed identity or guidance: task=%+v err=%v", retried, err)
 		}
-		return result
+		// Idempotency preserves every task field except the write timestamp;
+		// retain the unmodified post-retry timestamp for stale-completion checks.
+		retryBaseline := *result
+		retryBaseline.UpdatedAt = retried.UpdatedAt
+		assertFollowupTaskEqual(t, "launched retry changed more than UpdatedAt", &retryBaseline, retried)
+		// The duplicate launched retry still crosses UpdateProjectTask during
+		// reservation and persists UpdatedAt. Return its actual post-retry snapshot
+		// so later no-op assertions do not compare against an earlier write.
+		return retried
 	}
 	first := reopen("first", "  First follow-up\n", "")
 	messages, err := db.ListMessages(first.SessionID, 0, 10)
@@ -208,21 +221,53 @@ func TestProjectTaskFollowupJoinedRestart(t *testing.T) {
 	wire()
 	db = f.server.sessions.Store()
 	restored, _, err := db.GetProjectTask(p.AccountScopeID, project.ID, task.ID)
-	if err != nil || !reflect.DeepEqual(firstReady, restored) {
-		t.Fatal("restart changed task lineage")
+	if err != nil {
+		t.Fatal(err)
 	}
+	assertFollowupTaskEqual(t, "restart changed task lineage", firstReady, restored)
 	secondGuidance := "Review integration error before promotion"
 	second := reopen("second", "Second day follow-up", secondGuidance)
 	if len(second.Attempts) != 3 || second.SessionID == first.SessionID || second.SessionID == original.ID || second.Attempts[0].Integration == nil || second.Attempts[0].Integration.Error != before.Integration.Error || len(second.Attempts[0].Deliverables) != 1 || second.Attempts[1].Summary != firstReady.ActiveAttempt().Summary || second.ActiveAttempt().Summary != "" {
 		t.Fatalf("lost original/first evidence: %+v", second)
 	}
+	// Require a stable full read before the callback as well as byte-identical
+	// durable state after it: neither read hydration nor a timestamp-only write
+	// may masquerade as a stale-completion mutation or be ignored by the test.
+	beforeLate, found, err := db.GetProjectTask(p.AccountScopeID, project.ID, task.ID)
+	if err != nil || !found {
+		t.Fatalf("pre-completion read: found=%v err=%v", found, err)
+	}
+	assertFollowupTaskEqual(t, "post-retry read changed task", second, beforeLate)
+	taskKey := pebblestore.KeyProjectTask(p.AccountScopeID, project.ID, task.ID)
+	rawBeforeLate, found, err := f.db.GetBytes(taskKey)
+	if err != nil || !found {
+		t.Fatalf("pre-completion durable read: found=%v err=%v", found, err)
+	}
+	updates := 0
+	restoreUpdateHook := db.SetProjectTaskUpdateHookForTest(func(string) error {
+		updates++
+		return nil
+	})
+	defer restoreUpdateHook()
 	// A late previous-attempt completion cannot mutate the new active attempt.
 	if err := f.server.reconcileProjectTaskRunLifecycle(sessionV3ExecutorJob{SessionID: first.SessionID, RunID: first.ExecutionRunID(), Principal: p}, pebblestore.V3RunIntentCompleted, ""); err != nil {
 		t.Fatal(err)
 	}
+	restoreUpdateHook()
+	if updates != 0 {
+		t.Fatalf("late completion entered task mutation boundary %d time(s)", updates)
+	}
 	afterLate, _, err := db.GetProjectTask(p.AccountScopeID, project.ID, task.ID)
-	if err != nil || !reflect.DeepEqual(second, afterLate) {
-		t.Fatal("late completion changed active attempt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertFollowupTaskEqual(t, "late completion changed active attempt", beforeLate, afterLate)
+	rawAfterLate, found, err := f.db.GetBytes(taskKey)
+	if err != nil || !found {
+		t.Fatalf("post-completion durable read: found=%v err=%v", found, err)
+	}
+	if !bytes.Equal(rawBeforeLate, rawAfterLate) {
+		t.Fatalf("late completion changed durable task bytes: before=%s after=%s", rawBeforeLate, rawAfterLate)
 	}
 	if response := f.callAPI(http.MethodGet, path+"/history", nil, identity.Principal{Type: "user", UserID: "other-user", AccountScopeID: "other-account"}); response.Code != http.StatusNotFound {
 		t.Fatal("cross-account history exposed outcome")
@@ -250,9 +295,10 @@ func TestProjectTaskFollowupJoinedRestart(t *testing.T) {
 	wire()
 	db = f.server.sessions.Store()
 	final, _, err := db.GetProjectTask(p.AccountScopeID, project.ID, task.ID)
-	if err != nil || !reflect.DeepEqual(secondReady, final) {
-		t.Fatal("second restart changed retained outcomes")
+	if err != nil {
+		t.Fatal(err)
 	}
+	assertFollowupTaskEqual(t, "second restart changed retained outcomes", secondReady, final)
 	history = f.callAPI(http.MethodGet, path+"/history?cursor=2&limit=2", nil, p)
 	if history.Code != 200 || json.Unmarshal(history.Body.Bytes(), &page) != nil || len(page.Attempts) != 1 || page.Next != 0 || page.Attempts[0].Summary != final.ActiveAttempt().Summary || page.Attempts[0].Request != "Second day follow-up" {
 		t.Fatalf("trailing history: %d %s", history.Code, history.Body)
@@ -265,4 +311,49 @@ func TestProjectTaskFollowupJoinedRestart(t *testing.T) {
 	if git("rev-parse", "HEAD") != base || git("status", "--porcelain") != "" {
 		t.Fatal("follow-ups modified captured target")
 	}
+}
+
+// Keep full DeepEqual semantics (including nil versus empty slices and all
+// timestamps), but name nested attempt fields instead of hiding the difference
+// behind a generic lifecycle failure.
+func assertFollowupTaskEqual(t *testing.T, label string, want, got *pebblestore.ProjectTaskRecord) {
+	t.Helper()
+	if reflect.DeepEqual(want, got) {
+		return
+	}
+	var differences []string
+	var compare func(string, reflect.Value, reflect.Value)
+	compare = func(path string, left, right reflect.Value) {
+		if reflect.DeepEqual(left.Interface(), right.Interface()) {
+			return
+		}
+		switch left.Kind() {
+		case reflect.Pointer:
+			if !left.IsNil() && !right.IsNil() {
+				compare(path, left.Elem(), right.Elem())
+				return
+			}
+		case reflect.Struct:
+			for i := 0; i < left.NumField(); i++ {
+				if !left.Field(i).CanInterface() {
+					differences = append(differences, fmt.Sprintf("%s: before=%#v after=%#v", path, left.Interface(), right.Interface()))
+					return
+				}
+			}
+			for i := 0; i < left.NumField(); i++ {
+				compare(path+"."+left.Type().Field(i).Name, left.Field(i), right.Field(i))
+			}
+			return
+		case reflect.Slice:
+			if left.IsNil() == right.IsNil() && left.Len() == right.Len() {
+				for i := 0; i < left.Len(); i++ {
+					compare(fmt.Sprintf("%s[%d]", path, i), left.Index(i), right.Index(i))
+				}
+				return
+			}
+		}
+		differences = append(differences, fmt.Sprintf("%s: before=%#v after=%#v", path, left.Interface(), right.Interface()))
+	}
+	compare("task", reflect.ValueOf(want), reflect.ValueOf(got))
+	t.Fatalf("%s:\n%s", label, strings.Join(differences, "\n"))
 }
