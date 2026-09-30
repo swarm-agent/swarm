@@ -141,7 +141,7 @@ import {
 } from './orchestrate-task-helpers'
 import type { DesktopSessionRecord } from '../types/realtime'
 import type { SessionSnapshot } from '../state/desktop-v3-cache-types'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQueryClient } from '@tanstack/react-query'
 import { agentModelSettingsQueryOptions } from '../settings/swarm/queries/get-agent-model-settings'
 import { AgentModelControl, type AgentModelControlTaskOverrideInput } from '../chat/components/agent-model-control'
 import { modelOptionsQueryOptions } from '../../queries/query-options'
