@@ -11,6 +11,7 @@ import (
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	runruntime "swarm/packages/swarmd/internal/run"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
 
 // Requirement: Orchestrator's explicit media grant admits image bytes only at
@@ -34,6 +35,15 @@ func TestOrchestratorProviderInputUsesCapabilityGatedDurableImages(t *testing.T)
 	session, found, err := fixture.sessions.GetSession(body.SessionID)
 	if err != nil || !found {
 		t.Fatalf("get session: found=%v err=%v", found, err)
+	}
+	// Retention must follow real isolated-lane admission, never a fixture-only
+	// bypass of Git provenance or the durable session owner/account binding.
+	if !session.WorktreeEnabled || session.AccountScopeID != fixture.principal.AccountScopeID || session.UserID != fixture.principal.UserID || session.Metadata["swarm_v3_worktree_owner_session_id"] != session.ID {
+		t.Fatalf("invalid owned session binding: %+v", session)
+	}
+	base, _ := session.Metadata["base_commit"].(string)
+	if err := worktreeruntime.ValidateOwnedIdentity(session.WorkspacePath, session.WorktreeRootPath, session.WorktreeBranch, base); err != nil {
+		t.Fatalf("invalid isolated Git lane: %v", err)
 	}
 	messages, err := fixture.sessions.ListSessionMessages(body.SessionID, 0, 10)
 	if err != nil || len(messages) != 1 || len(messages[0].Media) != 1 {

@@ -7,7 +7,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -159,10 +158,10 @@ func newRoutedMediaTestFixture(t *testing.T) *routedMediaTestFixture {
 	server.SetTopologyService(topologyruntime.NewService(topologyStore, swarmStore))
 	server.SetSwarmStore(swarmStore)
 	managedWorktreePath := filepath.Join(t.TempDir(), "managed-worktree")
-	if err := os.MkdirAll(managedWorktreePath, 0o755); err != nil {
-		t.Fatalf("create managed worktree fixture: %v", err)
-	}
-	server.SetWorktreeService(&routedWorktreeServiceStub{fakeWorktreeService: fakeWorktreeService{
+	// Let the existing provisioner create a source-linked Git worktree on the
+	// requested branch and capture HEAD as BaseCommit. A plain directory (or
+	// independent repository) cannot satisfy ValidateOwnedIdentity admission.
+	server.SetWorktreeService(&routedWorktreeServiceStub{repositoryFixture: t, fakeWorktreeService: fakeWorktreeService{
 		config:     worktreeruntime.Config{UseCurrentBranch: true, BranchName: "agent/<id>"},
 		allocation: worktreeruntime.Allocation{WorkspacePath: managedWorktreePath, RepoRoot: workspacePath, BranchName: "agent/session", WorkspaceID: "session-worktree"},
 	}})
