@@ -102,13 +102,15 @@ type TaskWorkspaceState struct {
 }
 
 type TaskIntegrationChild struct {
-	SessionID   string   `json:"session_id"`
-	BaseCommit  string   `json:"base_commit"`
-	HeadCommit  string   `json:"head_commit"`
-	OwnedScopes []string `json:"owned_scopes,omitempty"`
+	SessionID        string   `json:"session_id"`
+	BaseCommit       string   `json:"base_commit"`
+	HeadCommit       string   `json:"head_commit"`
+	OwnedScopes      []string `json:"owned_scopes,omitempty"`
+	PreserveAncestry bool     `json:"preserve_ancestry,omitempty"`
 }
 
 type TaskIntegrationEntry struct {
+	PreserveAncestry          bool     `json:"preserve_ancestry,omitempty"`
 	OwnedScopes              []string `json:"owned_scopes,omitempty"`
 	SessionID                string   `json:"session_id"`
 	BaseCommit               string   `json:"base_commit"`
@@ -119,6 +121,7 @@ type TaskIntegrationEntry struct {
 }
 
 type TaskIntegrationPlan struct {
+	MergeHead                string                 `json:"merge_head,omitempty"`
 	FastForwardHead          string                 `json:"fast_forward_head,omitempty"`
 	ParentBranch             string                 `json:"parent_branch"`
 	ParentHead               string                 `json:"parent_head"`
@@ -597,6 +600,7 @@ func (s *Service) PrepareTaskIntegration(parentPath, expectedParentBranch, expec
 			}
 		}
 		plan.Entries = append(plan.Entries, TaskIntegrationEntry{
+			PreserveAncestry:          child.PreserveAncestry,
 			OwnedScopes:              append([]string(nil), child.OwnedScopes...),
 			SessionID:                child.SessionID,
 			BaseCommit:               child.BaseCommit,
@@ -606,6 +610,21 @@ func (s *Service) PrepareTaskIntegration(parentPath, expectedParentBranch, expec
 			Files:                    files,
 		})
 		plan.Commits = append(plan.Commits, commits...)
+	}
+	// Project integration verifies original source ancestry. A replay changes
+	// commit IDs, so this explicit whole-lane mode must merge the source instead.
+	for _, entry := range plan.Entries {
+		if !entry.PreserveAncestry {
+			continue
+		}
+		if len(plan.Entries) != 1 || len(entry.OwnedScopes) != 0 {
+			return TaskIntegrationPlan{}, errors.New("ancestry-preserving integration requires one whole-worktree source")
+		}
+		if _, err := runGit(parentPath, "merge-tree", "--write-tree", plan.ParentHead, entry.HeadCommit); err != nil {
+			return TaskIntegrationPlan{}, fmt.Errorf("preflight source merge: %w", err)
+		}
+		plan.MergeHead = entry.HeadCommit
+		return plan, nil
 	}
 	// Whole-lane promotion may already contain the target, including an explicit
 	// conflict-resolution merge. Replaying its earlier patches would discard that
@@ -644,8 +663,24 @@ func (s *Service) ApplyTaskIntegration(parentPath string, plan TaskIntegrationPl
 	if err != nil {
 		return TaskIntegrationResult{}, err
 	}
-	if current.FastForwardHead != plan.FastForwardHead || strings.Join(current.Commits, "\x00") != strings.Join(plan.Commits, "\x00") {
+	if current.MergeHead != plan.MergeHead || current.FastForwardHead != plan.FastForwardHead || strings.Join(current.Commits, "\x00") != strings.Join(plan.Commits, "\x00") {
 		return TaskIntegrationResult{}, errors.New("integration manifest became stale")
+	}
+	if current.MergeHead != "" {
+		if _, err := runGitWithEnv(parentPath, gitenv.FilterIdentityOverrides(os.Environ()), "merge", "--ff", "--no-edit", current.MergeHead); err != nil {
+			// Abort only an active merge; do not reset unrelated user work.
+			if _, inspectErr := runGit(parentPath, "rev-parse", "--verify", "MERGE_HEAD"); inspectErr == nil {
+				if _, abortErr := runGit(parentPath, "merge", "--abort"); abortErr != nil {
+					return TaskIntegrationResult{TaskIntegrationPlan: current}, fmt.Errorf("source merge failed: %w; abort failed: %v", err, abortErr)
+				}
+			}
+			return TaskIntegrationResult{TaskIntegrationPlan: current}, fmt.Errorf("source merge failed: %w", err)
+		}
+		head, err := runGit(parentPath, "rev-parse", "--verify", "HEAD^{commit}")
+		if err != nil {
+			return TaskIntegrationResult{TaskIntegrationPlan: current}, fmt.Errorf("resolve merged HEAD: %w", err)
+		}
+		return TaskIntegrationResult{TaskIntegrationPlan: current, ResultingParentHead: head}, nil
 	}
 	if current.FastForwardHead != "" {
 		if _, err := runGitWithEnv(parentPath, gitenv.FilterIdentityOverrides(os.Environ()), "merge", "--ff-only", "--no-edit", current.FastForwardHead); err != nil {
@@ -886,7 +921,7 @@ func acquireIntegrationLock(parentPath string) (*lock.FileLock, error) {
 func integrationChildrenFromPlan(plan TaskIntegrationPlan) []TaskIntegrationChild {
 	out := make([]TaskIntegrationChild, 0, len(plan.Entries))
 	for _, entry := range plan.Entries {
-		out = append(out, TaskIntegrationChild{SessionID: entry.SessionID, BaseCommit: entry.BaseCommit, HeadCommit: entry.HeadCommit, OwnedScopes: append([]string(nil), entry.OwnedScopes...)})
+		out = append(out, TaskIntegrationChild{SessionID: entry.SessionID, BaseCommit: entry.BaseCommit, HeadCommit: entry.HeadCommit, OwnedScopes: append([]string(nil), entry.OwnedScopes...), PreserveAncestry: entry.PreserveAncestry})
 	}
 	return out
 }
