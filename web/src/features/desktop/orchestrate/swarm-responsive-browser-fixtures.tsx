@@ -1,4 +1,5 @@
 import React from 'react'
+import { buildStructuredToolMessage } from '../chat/services/tool-message'
 import { ensureDesktopSession } from '../../../app/api'
 import { createRoot } from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -13,12 +14,22 @@ export const sessionId = 'responsive-session-fixture'
 export const taskTitle = `Review ${'long-unbroken-label-'.repeat(8)}`
 export const project = { id: 'responsive-project', name: `Responsive ${'project-label-'.repeat(6)}`, description: 'Browser acceptance fixture', workspaces: [], primary_session_id: sessionId, project_context: '# Charter\n\n' + 'Long context '.repeat(40) }
 export const task = { id: 'responsive-task', title: taskTitle, description: 'Inspect responsive presentation', tier: 'simple', status: 'running', agent: 'system-coder', session_id: sessionId, revision: 1, agents: [], created_at: 1, updated_at: 1 }
-export const worker = { id: 'worker_responsive', account_scope_id: 'fixture-account', name: 'Responsive worker detail', instructions: 'Inspect responsive UI', lifecycle_state: 'idle', revision: 1, created_at: 1, updated_at: 1, metadata: { project_id: project.id } }
+export const worker = { id: 'worker_responsive', account_scope_id: 'fixture-account', name: 'Responsive worker detail ' + 'worker-label-'.repeat(8), instructions: 'Inspect responsive UI', lifecycle_state: 'idle', revision: 1, created_at: 1, updated_at: 1, metadata: { project_id: project.id } }
 export const media = { artifact_id: 'responsive-image', session_id: sessionId, collection_id: 'responsive-collection', variant_id: 'responsive-image', event_seq: 1, category: 'visual', kind: 'image', status: 'ready', label: 'Responsive image fixture', filename: 'responsive.png', media_type: 'image/png', updated_at: 1 }
-export const markdown = 'Responsive transcript\n\n```text\n' + 'unbroken-code-'.repeat(80) + '\n```\n\n| Column | Wide value |\n| --- | --- |\n| value | ' + 'table-value-'.repeat(60) + ' |'
+// ChatMarkdown does not support semantic tables. Exercise its supported fenced
+// table-shaped code representation; never inject a surrogate <table> renderer.
+export const markdown = 'Responsive transcript\n\n```text\n' + 'unbroken-code-'.repeat(80) + '\n```\n\n```text\n| Column | Wide value |\n| --- | --- |\n| value | ' + 'table-value-'.repeat(60) + ' |\n```'
+const bashOutput = Array.from({ length: 240 }, (_, n) => `${n}: ${'wide-output-'.repeat(20)}`).join('\n')
 const messages = [
   { id: 'responsive-assistant', session_id: sessionId, global_seq: 1, role: 'assistant', content: markdown, created_at: 1 },
-  ...['bash', 'read'].map((tool, index) => ({ id: `responsive-${tool}`, session_id: sessionId, global_seq: index + 2, role: 'tool', created_at: index + 2, content: JSON.stringify({ path_id: 'run.tool-history.v2', tool, call_id: `responsive-call-${tool}`, arguments: JSON.stringify(tool === 'bash' ? { command: 'printf bounded-output' } : { path: 'src/fixture.ts' }), output: 'bounded-output\n' + Array.from({ length: 24 }, (_, n) => `${n}: ${'wide-output-'.repeat(70)}`).join('\n'), summary: `${tool} bounded fixture`, state: 'done' }) })),
+  ...['bash', 'read'].map((tool, index) => {
+    const argumentsText = JSON.stringify(tool === 'bash' ? { command: 'printf bounded-output', explanation: 'Inspect fixture output', category: 'read', critical: false } : { path: 'src/fixture.ts' })
+    const outputText = tool === 'bash' ? bashOutput : JSON.stringify({ path: 'src/fixture.ts', lines: [{ line: 1, text: 'wide-read-'.repeat(80) }], line_start: 1, total_lines: 1 })
+    return { id: `responsive-${tool}`, session_id: sessionId, global_seq: index + 2, role: 'tool', created_at: index + 2,
+      toolMessage: buildStructuredToolMessage({ tool, callId: `responsive-call-${tool}`, argumentsText, outputText, state: 'done' }),
+      // Canonical cache hydration parses this wire payload through the same builder.
+      content: JSON.stringify({ path_id: 'run.tool-history.v2', tool, call_id: `responsive-call-${tool}`, arguments: argumentsText, output: outputText }) }
+  }),
 ]
 export function snapshot(state: FixtureState = 'populated') {
   const items = state === 'empty' ? [] : messages
@@ -39,13 +50,20 @@ export function fixtureRead(url: URL, state: FixtureState): unknown | undefined 
   if (p === '/v1/auth/desktop/session') return { ok: true, user_id: 'fixture-operator', account_scope_id: 'fixture-account', username: 'Operator' }
   if (p === '/v1/me') return { userID: 'fixture-operator', username: 'Operator' }
   if (p === '/v1/workspace/list') return { workspaces: [] }
+  if (p === '/v1/workspace/overview') return { workspaces: [], discovered: [], has_more: false, next_cursor: 0 }
+  if (p === '/v1/model-profiles') return { model_profiles: [], default_profile_id: '' }
+  if (p === '/v1/model') return { preference: { provider: '', model: '', thinking: '' }, context_window: 0, max_output_tokens: 0 }
+  if (p === '/v2/agents') return { state: { profiles: [], active_name: '' } }
+  if (p === '/v1/notifications/push') return { status: { enabled: false, public_key: '', subscription_count: 0 } }
+  if (p === '/v1/workspace/source-media/directories') return { ok: true, source_media_directories: [] }
   if (p === '/v3/projects') return { projects: state === 'empty' ? [] : [project] }
   if (p === `/v3/projects/${project.id}`) return { project }
   if (p === `/v3/projects/${project.id}/tasks`) return { tasks: state === 'empty' || url.searchParams.has('archived') ? [] : [task] }
   if (p === `/v3/projects/${project.id}/tasks/${task.id}`) return { task }
+  if (p === `/v3/projects/${project.id}/tasks/${task.id}/history`) return { attempts: [{ id: 'responsive-history', session_id: sessionId, role: 'execution', created_at: 1, status: 'completed', request: 'Historical responsive request ' + 'history-label-'.repeat(60), summary: 'Retained historical summary ' + 'summary-'.repeat(40) }], next_cursor: 0 }
   if (p === `/v3/projects/${project.id}/media`) return { media: [] }
   if (p === '/v1/ui/settings') return { theme: {}, swarm: {}, permissions: {}, notifications: {} }
-  if (p === '/v1/media/settings/catalog') return { image_models: [], video_generation_models: [], audio_models: [] }
+  if (p === '/v1/media/settings/catalog') return { image_models: [], video_generation_models: [], audio_models: [], video_ready: false, video_status: 'Fixture media generation unconfigured', audio_ready: false, audio_status: 'Fixture media generation unconfigured' }
   if (p === '/v1/providers') return { providers: [] }
   if (p === '/v1/auth/credentials') return { credentials: [] }
   if (p === '/v3/auth/tokens') return { ok: true, tokens: [] }
@@ -55,7 +73,7 @@ export function fixtureRead(url: URL, state: FixtureState): unknown | undefined 
   if (p === `/v3/workers/${worker.id}/history`) return { revisions: [] }
   if (p === `/v3/workers/${worker.id}/summary`) return { worker_id: worker.id, next_scheduled_at: 0, runs: { active: [], active_runs: 0, active_truncated: false, date: url.searchParams.get('date'), timezone: url.searchParams.get('timezone'), daily_runs: 0, daily_success: 0, daily_failed: 0, daily_cancelled: 0, scanned_runs: 0, truncated: false, day_start_at: 0, day_end_at: 0 } }
   if (p === '/v3/artifacts') return { ok: true, artifacts: state === 'empty' ? [] : [media] }
-  if (p === '/v1/vault') return { enabled: false, locked: true, key_count: 0 }
+  if (p === '/v1/vault') return { enabled: false, unlocked: true, unlock_required: false, storage_mode: 'memory' }
   if (p === '/v1/permissions') return { ok: true, policy: { version: 1, rules: [], bash_profile: 'current_rules' }, bypass_permissions: false }
   if (p === '/v1/permissions/capabilities') return { session_deploy: { mode: 'ask', automatic_deployments_per_parent_run: 0, over_limit_action: 'ask' }, plan_acceptance: { mode: 'ask' }, active_execution_limit: 100 }
   if (p === `/v3/sessions/${sessionId}/media-capability`) return { media_capability: { status: 'available', contract_version: 1, contract_token: 'fixture-only', capabilities: [{ modality: 'image', mime_types: ['image/png'], max_bytes: 1024, max_count: 1 }] } }
@@ -71,7 +89,7 @@ export async function mountResponsiveFixture(state: FixtureState) {
   const { modelOptionsQueryOptions } = await import('../../queries/query-options')
   const { agentModelSettingsQueryKey } = await import('../settings/swarm/queries/get-agent-model-settings')
   const win = window as any
-  win.responsive = { acquired: [], released: [], connected: [], rejectSend: true }
+  win.responsive = { acquired: [], released: [], connected: [] }
   setDesktopV3RealtimeControllerFactoryForTests(() => ({
     start: async () => {}, stop: () => {}, diagnostics: () => ({}),
     ensureSessionConnected: async (id: string) => { win.responsive.connected.push(id) },
