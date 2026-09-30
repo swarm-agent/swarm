@@ -66,7 +66,7 @@ func TestTaskAttentionBootstrapRecoversAuthorizedAncestors(t *testing.T) {
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 	var payload struct {
-		Sessions  map[string]pebblestore.SessionSnapshot  `json:"sessions_by_id"`
+		Sessions  map[string]pebblestore.SessionSnapshot `json:"sessions_by_id"`
 		Summaries map[string]sessionsV3PermissionSummary `json:"permission_summaries_by_session"`
 	}
 	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {

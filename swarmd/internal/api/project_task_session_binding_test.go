@@ -28,7 +28,7 @@ func seedTaskSessionBinding(t *testing.T, f *matrixTestFixture, source pebblesto
 		SourceWorkspacePath: source.Path, SourceWorkspaceName: "Repo",
 		DestinationRuntimeSwarmID: "task-host", DestinationAuthorityHostSwarmID: "task-host", DestinationHostSwarmID: "task-host",
 		DestinationRuntimeKind: pebblestore.TopologyRuntimeKindHost, DestinationWorkspacePath: source.Path,
-		PlacementGeneration: placement.PlacementGeneration, BindingGeneration: 1,
+		PlacementGeneration:    placement.PlacementGeneration, BindingGeneration: 1,
 		State: pebblestore.TopologyWorkspaceBindingStateBound, AccessMode: pebblestore.TopologyWorkspaceBindingAccessModeReadWrite,
 		MaterializationKind: pebblestore.TopologyWorkspaceBindingMaterializationSource, AttestedByHostSwarmID: "task-host", Writable: true,
 	})

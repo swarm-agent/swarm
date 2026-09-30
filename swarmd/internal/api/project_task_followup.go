@@ -154,7 +154,7 @@ func (s *Server) handleProjectTaskFollowup(w http.ResponseWriter, r *http.Reques
 
 type projectTaskFollowupError struct {
 	status int
-	err error
+	err    error
 }
 
 func (e *projectTaskFollowupError) Error() string { return e.err.Error() }
