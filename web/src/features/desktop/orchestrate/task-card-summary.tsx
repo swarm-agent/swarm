@@ -72,7 +72,7 @@ export function TaskCardSummary({ task, onPreview, statusBadge, timer, actions, 
           <div className="shrink-0">{actions}</div>
         </div>
         <div className="swarm-task-meta" title={[facts.provider, facts.model].filter(Boolean).join(' / ')}>
-          {role}{(facts.branch || facts.worktree) && <> · {facts.branch || facts.worktree}</>}
+          {facts.branch ? <span className="font-mono">{task.workspacePath?.split('/').filter(Boolean).pop() || task.workspacesInvolved?.[0]?.split('/').filter(Boolean).pop() || 'Repository unavailable'} · {facts.branch}</span> : role}
         </div>
         <div className="swarm-task-status-row">
           {statusBadge || <span className="swarm-task-state"><i className="swarm-task-dot" />{task.status.replace(/_/g, ' ')}</span>}

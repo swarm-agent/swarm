@@ -182,3 +182,7 @@
 .swarm-section .integration-recovery button { border: 1px solid var(--swarm-border); border-radius: 8px; padding: 6px 10px; color: var(--swarm-text); background: transparent; }
 .swarm-section .integration-recovery button:hover:not(:disabled) { background: var(--swarm-surface-hover); border-color: var(--swarm-border-accent); }
 .swarm-section .integration-recovery button:disabled { opacity: .6; cursor: not-allowed; }
+
+/* The task-list header is the sole filled primary action in this view. */
+.swarm-section .swarm-task-list-new-task { background: var(--swarm-accent); color: var(--swarm-accent-text); border: 1px solid var(--swarm-accent); }
+.swarm-section .swarm-task-list-new-task:hover { background: var(--swarm-accent-hover); }

@@ -77,6 +77,9 @@ import type { QuickRouteMode } from '../tools/media-library/media-viewer-modal'
 import { ORCHESTRATE_THEMES } from './orchestrate-themes'
 import { TaskCardSummary, formatElapsedString, formatElapsedSeconds } from './task-card-summary'
 import { TaskCardActivity } from './task-card-activity'
+import { TaskListHeader, TaskListToolbar } from './task-list-toolbar'
+import { useQuery } from '@tanstack/react-query'
+import { fetchGitStatus, gitStatusQueryKey } from '../git/api'
 import { inheritedSwarmThemeStyle, projectThemePatch, resolveSwarmProjectTheme } from './swarm-section-theme'
 import { createProjectThemeRefresh } from './project-theme-refresh'
 import { WORKSPACE_THEME_OPTIONS, setWorkspaceThemeCatalog, formatWorkspaceThemeLabel } from '../../workspaces/launcher/services/workspace-theme'
@@ -918,7 +921,7 @@ export function MinimalTaskCard({
         onPreview={onPreviewDeliverable}
         statusBadge={
           <div
-            className={`swarm-task-state ${isPendingApproval ? 'swarm-task-approval-pill' : ''} text-[11px] capitalize flex items-center gap-1.5 shrink-0 ${
+            className={`swarm-task-state ${isPendingApproval ? 'swarm-task-approval-pill' : ''} text-[11px] flex items-center gap-1.5 shrink-0 ${
               isPlanning
                 ? 'bg-indigo-500/10 text-indigo-300 border-indigo-500/25'
                 : isPendingApproval
@@ -951,7 +954,7 @@ export function MinimalTaskCard({
                   : 'bg-slate-500'
               }`}
             />
-            <span>{task.status === 'in_progress' ? 'in progress' : task.status.replace(/_/g, ' ')}</span>
+            <span>{task.status === 'needs_review' ? 'Needs review' : task.status === 'in_progress' ? 'In progress' : task.status.replace(/_/g, ' ')}</span>
           </div>
         }
         timer={
@@ -2095,11 +2098,11 @@ export function MinimalTaskCard({
                   e.stopPropagation()
                   setIsReopenOpen(!isReopenOpen)
                 }}
-                className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-xs font-medium transition-colors border border-slate-700/60 cursor-pointer"
+                className="flex items-center gap-1 px-2.5 py-1 rounded border border-slate-700 bg-transparent hover:border-slate-500 text-slate-300 hover:text-white text-xs font-medium transition-colors cursor-pointer"
                 title="Reopen Task to add instructions and continue work"
               >
                 <RotateCcw size={11} className="text-slate-400" />
-                <span>{isReopenOpen ? 'Cancel' : 'Reopen Task'}</span>
+                <span>{isReopenOpen ? 'Cancel' : 'Reopen task'}</span>
               </button>
             )}
             {onIntegrate && (
@@ -2142,11 +2145,11 @@ export function MinimalTaskCard({
                   e.stopPropagation()
                   setIsReopenOpen(!isReopenOpen)
                 }}
-                className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-xs font-medium transition-colors border border-slate-700/60 cursor-pointer"
+                className="flex items-center gap-1 px-2.5 py-1 rounded border border-slate-700 bg-transparent hover:border-slate-500 text-slate-300 hover:text-white text-xs font-medium transition-colors cursor-pointer"
                 title="Reopen Task to add instructions and continue work"
               >
                 <RotateCcw size={11} className="text-slate-400" />
-                <span>{isReopenOpen ? 'Cancel' : 'Reopen Task'}</span>
+                <span>{isReopenOpen ? 'Cancel' : 'Reopen task'}</span>
               </button>
             )}
             {onComplete && (
@@ -2156,7 +2159,7 @@ export function MinimalTaskCard({
                   e.stopPropagation()
                   onComplete()
                 }}
-                className="flex items-center gap-1.5 px-3 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow-sm transition-all active:scale-95 cursor-pointer"
+                className="flex items-center gap-1.5 px-3 py-1 rounded border border-emerald-500/50 bg-transparent hover:border-emerald-400 text-emerald-400 font-medium text-xs transition-colors cursor-pointer"
               >
                 <Check size={12} />
                 <span>Complete</span>
@@ -2316,7 +2319,7 @@ export function MinimalTaskCard({
                 title="Reopen task"
               >
                 <RotateCcw size={10} className="text-indigo-400" />
-                <span>{isReopenOpen ? 'Cancel' : 'Reopen Task'}</span>
+                <span>{isReopenOpen ? 'Cancel' : 'Reopen task'}</span>
               </button>
             )}
           </div>
@@ -3596,6 +3599,22 @@ export function OrchestrateView({
   const tasks = projectState?.tasks ?? []
   const uploadedMedia = projectState?.media ?? []
   const projectTasksError = projectState?.error
+  const projectGitPath = selectedProject?.repoPath || ''
+  const projectGit = useQuery({
+    queryKey: gitStatusQueryKey(projectGitPath),
+    queryFn: ({ signal }) => fetchGitStatus(projectGitPath, 0, '', signal),
+    enabled: Boolean(projectGitPath && projectGitPath !== '.'),
+    refetchOnWindowFocus: false,
+    refetchInterval: false,
+  })
+  const orchestratorState = useDesktopV3CacheSelector(state => {
+    const id = selectedProject?.primarySessionId
+    if (!id) return 'inactive' as const
+    const run = state.sessionViewsById[id]?.current_run_state
+    const intent = state.currentRunIntentBySession[id]
+    if (intent) return intent.status === 'running' ? 'active' as const : 'inactive' as const
+    return run ? run.active ? 'active' as const : 'inactive' as const : 'unknown' as const
+  })
 
   const taskSessionIdsKey = useMemo(() => {
     const set = new Set<string>()
@@ -5605,10 +5624,6 @@ export function OrchestrateView({
   }, [tasks, liveTaskSessionsData])
 
   // Task counts by source and status
-  const workerTasksCount = useMemo(() => {
-    return liveTasks.filter((t) => Boolean(t.workerId?.trim() || t.worker_id?.trim())).length
-  }, [liveTasks])
-
   const filteredBySourceTasks = useMemo(() => {
     if (taskSourceFilter === 'all') return liveTasks
     return liveTasks.filter((t) => Boolean(t.workerId?.trim() || t.worker_id?.trim()))
@@ -5886,13 +5901,6 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
     setIsOnboardingActive(false)
     setIsActivating(false)
   }
-
-  // Count summaries
-  const runningCount = liveTasks.filter((t) => t.status === 'running' || t.status === 'in_progress').length
-  const reviewCount = liveTasks.filter((t) => t.status === 'needs_review').length
-  const queuedCount = liveTasks.filter((t) => t.status === 'queued' || t.status === 'pending_approval' || t.status === 'planning').length
-  const completedCount = liveTasks.filter((t) => t.status === 'completed').length
-  const failedCount = liveTasks.filter((t) => t.status === 'failed' || t.status === 'rejected').length
 
   return (
     <div
@@ -6784,83 +6792,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
         ) : (
           /* HOME: 5-VARIANT TASK MANAGEMENT CANVAS */
           <>
-            {/* TOP TOOLBAR: AUTOMATION OVERVIEW & 5-VARIANT SWITCHER DOCK */}
-            <div className="flex flex-col border-b border-slate-800/80 bg-[#0a0f1d]/60">
-              <div className="flex items-center justify-between p-3.5 pb-2.5">
-                <div className="flex items-center gap-3">
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <h1 className="text-base font-bold tracking-tight text-white">
-                        {selectedProject?.name || 'Project Overview'}
-                      </h1>
-                      <span className="rounded bg-blue-500/10 border border-blue-500/30 px-2 py-0.5 text-[10px] font-semibold text-blue-400 font-mono">
-                        {liveTasks.length} {liveTasks.length === 1 ? 'Task' : 'Tasks'}
-                      </span>
-                    </div>
-                    <p className="text-[11px] text-slate-400 mt-0.5">
-                      Autonomous worker sessions executing across {selectedProject?.name || 'workspace'}
-                    </p>
-                  </div>
-                </div>
-
-                {/* Quick Action buttons */}
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => setIsDeployModalOpen(true)}
-                    className="swarm-new-task-cta flex items-center gap-1.5 rounded-lg font-medium text-xs px-3 py-1.5"
-                  >
-                    <Plus size={13} aria-hidden="true" />
-                    <span>New Task</span>
-                  </button>
-                  <button
-                    onClick={() => {
-                      setNewTaskPrompt('Run local testbench suite: verify critical test gates and check repository stability')
-                      setIsDeployModalOpen(true)
-                    }}
-                    className="flex items-center gap-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs px-3 py-1.5 transition-all active:scale-95"
-                  >
-                    <Play size={11} fill="currentColor" />
-                    <span>Run Testbench</span>
-                  </button>
-                </div>
-              </div>
-
-              {/* Clean Status Pipeline Header */}
-              <div className="px-4 py-2.5 flex items-center justify-between border-t border-slate-800/50 text-xs">
-                <div className="flex items-center gap-2">
-                  <span className="text-xs font-semibold text-white">Project Pipeline</span>
-                  <span className="text-[11px] text-slate-400">({liveTasks.length} tasks)</span>
-                </div>
-                {/* Status counter summary */}
-                <div className="flex items-center gap-2 font-mono text-[10px]">
-                  <span className="text-blue-400">● {runningCount} Running</span>
-                  <span className="text-amber-400">● {reviewCount} Review</span>
-                  <span className="text-slate-500">● {queuedCount} Queued</span>
-                  <span className="text-emerald-400">● {completedCount} Done</span>
-                  {failedCount > 0 && <span className="text-rose-400">● {failedCount} Failed</span>}
-                </div>
-              </div>
-            </div>
-
-            {/* STATUS / AUTOMATION TICKER */}
-            <div className="px-4 py-2 border-b border-slate-800/80 bg-[#080d19]/80 flex items-center justify-between gap-4 text-xs">
-              <div className="flex items-center gap-2.5 min-w-0">
-                <span className="flex h-2 w-2 rounded-sm bg-emerald-400 flex-shrink-0" />
-                <div className="flex items-center gap-2 min-w-0">
-                  <span className="font-semibold text-white truncate text-[11px]">
-                    {selectedProject?.name || 'Project Orchestrator'}
-                  </span>
-                  <span className="text-[10px] text-slate-400 truncate">
-                    • System Orchestrator Active • {selectedProject?.linkedWorkspaces?.length || 0} Bound Workspace{selectedProject?.linkedWorkspaces?.length === 1 ? '' : 's'}
-                  </span>
-                </div>
-              </div>
-              <div className="flex items-center gap-2 text-[10px] font-mono text-slate-400">
-                <span>Branch: {selectedProject?.branch || 'dev'}</span>
-                <span>•</span>
-                <span className="text-emerald-400">Pebble DB Synced</span>
-              </div>
-            </div>
+            <TaskListHeader title={selectedProject?.name || 'Swarm Local'} branch={projectGit.data?.status.branch} workspaceCount={selectedProject?.linkedWorkspaces?.length ?? 0} orchestratorState={orchestratorState} onNewTask={() => setIsDeployModalOpen(true)} />
 
             {/* PROJECT-TOP PENDING WORKER BANNER (SURFACES PROPOSALS FOR ASSIGNED PROJECT) */}
             {pendingReviews.length > 0 && (
@@ -6944,82 +6876,18 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                 </div>
               )}
 
-              {/* Common Search & Filter Bar */}
-              <div className="px-3.5 pt-3 pb-2 flex flex-wrap items-center justify-between gap-3 border-b border-slate-800/60 bg-[#080d19]/40 flex-shrink-0">
-                <div className="w-full sm:w-48 relative">
-                  <Search size={13} className="absolute left-3 top-2.5 text-slate-500" />
-                  <input
-                    type="text"
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="Search tasks…"
-                    aria-label="Search tasks by title, worker, or tag"
-                    className="w-full bg-[#080c16] border border-slate-800 rounded-lg pl-8 pr-3 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500/40"
-                  />
-                </div>
-
-                <div className="flex items-center gap-2 flex-wrap">
-                  {/* Task Source Filter: All tasks vs Worker tasks */}
-                  <div className="flex items-center rounded-lg bg-slate-900/80 p-0.5 border border-slate-800" role="group" aria-label="Task source filter">
-                    <button
-                      type="button"
-                      onClick={() => setTaskSourceFilter('all')}
-                      data-testid="filter-all-tasks"
-                      aria-pressed={taskSourceFilter === 'all'}
-                      className={`px-2.5 py-1 rounded text-[11px] font-medium transition-all ${
-                        taskSourceFilter === 'all'
-                          ? 'bg-blue-600 text-white shadow-sm'
-                          : 'text-slate-400 hover:text-slate-200'
-                      }`}
-                    >
-                      All tasks ({liveTasks.length})
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setTaskSourceFilter('worker')}
-                      data-testid="filter-worker-tasks"
-                      aria-pressed={taskSourceFilter === 'worker'}
-                      className={`px-2.5 py-1 rounded text-[11px] font-medium transition-all ${
-                        taskSourceFilter === 'worker'
-                          ? 'bg-blue-600 text-white shadow-sm'
-                          : 'text-slate-400 hover:text-slate-200'
-                      }`}
-                    >
-                      Worker tasks ({workerTasksCount})
-                    </button>
-                  </div>
-
-                  <select aria-label="Task status filter" value={statusFilter} onChange={e => setStatusFilter(e.target.value as typeof statusFilter)} className="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-xs text-slate-200">
-                    <option value="all">All statuses ({filteredBySourceTasks.length})</option>
-                    <option value="running">Running ({filteredBySourceRunningCount})</option>
-                    <option value="needs_review">Review ({filteredBySourceReviewCount})</option>
-                    <option value="queued">Queued ({filteredBySourceQueuedCount})</option>
-                    <option value="completed">Done ({filteredBySourceCompletedCount})</option>
-                  </select>
-                </div>
-              </div>
-
-              <div className="px-4 py-2 flex flex-wrap items-center gap-2 border-b border-slate-800/60 bg-slate-900/30 text-xs text-slate-300" aria-label="Task management">
-                <span className="flex items-center gap-1.5 text-xs mr-1">
-                  {markedRows.length > 0 && (
-                    <span className="font-semibold text-blue-400 bg-blue-950/60 border border-blue-500/30 px-2 py-0.5 rounded-md text-[11px]">
-                      {markedRows.length} selected
-                    </span>
-                  )}
-                  <span className="text-slate-400 text-[11px]">
-                    {markedRows.length} selected of {filteredTasks.length} matching tasks in this project
-                  </span>
-                </span>
-                <div className="flex items-center gap-1.5 flex-wrap ml-auto">
-                  <button type="button" disabled={managementBusy || filteredTasks.length === 0} onClick={() => setMarkedTaskIds(new Set(filteredTasks.map(row => row.id)))} className="px-2.5 py-1 rounded-lg border border-slate-700/80 bg-slate-800/60 hover:bg-slate-700/70 text-slate-300 hover:text-white disabled:opacity-40 transition-colors cursor-pointer disabled:cursor-not-allowed">Select all matching</button>
-                  <button type="button" disabled={managementBusy || markedRows.length === 0} onClick={() => setMarkedTaskIds(new Set())} className="px-2.5 py-1 rounded-lg border border-slate-700/80 bg-slate-800/60 hover:bg-slate-700/70 text-slate-300 hover:text-white disabled:opacity-40 transition-colors cursor-pointer disabled:cursor-not-allowed">Clear selection</button>
-                  <button type="button" disabled={managementBusy || markedRows.length === 0} onClick={() => void manageTasks(markedRows, 'archive')} className="px-2.5 py-1 rounded-lg bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-40 transition-colors font-medium shadow-sm cursor-pointer disabled:cursor-not-allowed">Archive selected</button>
-                  <button type="button" disabled={managementBusy || markedRows.length === 0} onClick={() => void manageTasks(markedRows, 'delete')} title="Only unlaunched tasks may be deleted; archive launched tasks instead" className="px-2.5 py-1 rounded-lg border border-rose-700/80 bg-rose-950/30 hover:bg-rose-900/40 text-rose-300 disabled:opacity-40 transition-colors cursor-pointer disabled:cursor-not-allowed">Delete selected</button>
-                  <button type="button" ref={archivedTriggerRef} onClick={() => setArchivedOpen(true)} className="px-2.5 py-1 rounded-lg border border-slate-700/80 bg-slate-800/60 hover:bg-slate-700/70 text-slate-300 hover:text-white transition-colors cursor-pointer">Archived tasks</button>
-                </div>
-                {managementBusy && <span role="status" className="text-slate-400 text-[11px] animate-pulse">Updating tasks…</span>}
-                {managementMessage && <span role="status" className="w-full text-amber-300 text-[11px]">{managementMessage}</span>}
-              </div>
+              <TaskListToolbar
+                search={searchQuery} onSearch={setSearchQuery} source={taskSourceFilter} onSource={setTaskSourceFilter}
+                status={statusFilter} onStatus={setStatusFilter}
+                counts={{ all: filteredBySourceTasks.length, running: filteredBySourceRunningCount, needs_review: filteredBySourceReviewCount, queued: filteredBySourceQueuedCount, completed: filteredBySourceCompletedCount }}
+                total={filteredTasks.length} selected={markedRows.length} busy={managementBusy}
+                onSelectAll={() => setMarkedTaskIds(new Set(filteredTasks.map(row => row.id)))}
+                onClear={() => setMarkedTaskIds(new Set())}
+                onArchive={() => void manageTasks(markedRows, 'archive')} onDelete={() => void manageTasks(markedRows, 'delete')}
+                onArchived={() => setArchivedOpen(true)} archivedRef={archivedTriggerRef}
+              />
+              {managementBusy && <span role="status" className="px-4 text-slate-400 text-[11px]">Updating tasks…</span>}
+              {managementMessage && <span role="status" className="px-4 text-amber-300 text-[11px]">{managementMessage}</span>}
               {archivedOpen && <div className="fixed inset-0 z-[100] bg-black/70 flex items-center justify-center p-4" onMouseDown={e => { if (e.target === e.currentTarget) { setArchivedOpen(false); archivedTriggerRef.current?.focus() } }}>
                 <section role="dialog" aria-modal="true" aria-labelledby="archived-tasks-title" className="w-full max-w-xl max-h-[85vh] overflow-hidden flex flex-col rounded-xl border border-slate-700 bg-[#0a101e] p-4 text-white shadow-2xl">
                   <div className="flex items-center justify-between gap-3"><h2 id="archived-tasks-title" className="text-base font-semibold">Archived tasks</h2><button type="button" ref={archivedCloseRef} onClick={() => { setArchivedOpen(false); archivedTriggerRef.current?.focus() }} aria-label="Close archived tasks">Close</button></div>

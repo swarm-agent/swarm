@@ -1,4 +1,4 @@
-// Purpose: all three OrchestrateView New Task entry points must retain one decorative
+// Purpose: the two supplemental OrchestrateView New Task entry points retain one decorative
 // plus, a clean accessible label, and the deploy-dialog action without a filled CTA.
 // Boundary: the actual button JSX and scoped swarm-section.css. Extracting these
 // leaf elements avoids mounting unrelated orchestration runtimes; CSS assertions
@@ -22,8 +22,8 @@ function visit(node: ts.Node) {
 }
 visit(file)
 
-test('all New Task entry points render one decorative plus and open the deploy dialog', () => {
-  assert.equal(buttons.length, 3)
+test('supplemental New Task entry points render one decorative plus and open the deploy dialog', () => {
+  assert.equal(buttons.length, 2)
   for (const button of buttons) {
     const calls: boolean[] = []
     const compiled = ts.transpileModule(`return (${button.getText(file)})`, {

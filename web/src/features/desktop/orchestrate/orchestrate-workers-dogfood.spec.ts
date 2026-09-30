@@ -77,9 +77,10 @@ test('OrchestrateView excludes separate worker overview panels and renders All t
   assert.ok(!source.includes('<WorkerTaskActivity'), 'OrchestrateView must NOT render WorkerTaskActivity in Tasks view')
 
   // Invariant 2: Tasks view has All tasks vs Worker tasks filter based on durable worker_id
-  assert.ok(source.includes('data-testid="filter-all-tasks"'), 'OrchestrateView must provide All tasks filter')
-  assert.ok(source.includes('data-testid="filter-worker-tasks"'), 'OrchestrateView must provide Worker tasks filter')
-  assert.ok(source.includes('Worker tasks'), 'OrchestrateView must render Worker tasks filter button')
+  const toolbar = fs.readFileSync(path.join(__dirname, 'task-list-toolbar.tsx'), 'utf8')
+  assert.ok(source.includes('<TaskListToolbar'), 'OrchestrateView must render the scope toolbar')
+  assert.ok(toolbar.includes("'filter-all-tasks'"), 'Toolbar must provide All scope filter')
+  assert.ok(toolbar.includes("'filter-worker-tasks'"), 'Toolbar must provide Workers scope filter')
 
   // Invariant 3: Worker-generated tasks render exact worker tag and canonical link
   assert.ok(source.includes('data-testid="worker-tag"'), 'OrchestrateView must render worker-tag for worker-generated tasks')
