@@ -1029,11 +1029,13 @@ func (s *SessionStore) ArchiveProjectTaskIfRevision(accountScopeID, projectID, t
 	if err == nil && record.Archived {
 		err = errors.New("task already archived")
 	}
+	sessionActive := false
 	if err == nil && record.SessionID != "" {
 		sess, sessFound, sessErr := s.GetSession(record.SessionID)
 		if sessErr != nil {
 			err = sessErr
 		} else if sessFound {
+			sessionActive = sess.Lifecycle != nil && sess.Lifecycle.Active
 			if sess.AccountScopeID != "" && accountScopeID != "" && sess.AccountScopeID != accountScopeID {
 				err = errors.New("task session has an unrelated active run; resolve its lifecycle before archiving")
 			}
@@ -1067,7 +1069,9 @@ func (s *SessionStore) ArchiveProjectTaskIfRevision(accountScopeID, projectID, t
 			}
 		}
 	}
-	if err == nil && record.TaskProgramID != "" && record.SessionID != "" {
+	// Retained program state alone is not evidence of live execution when its
+	// parent session is missing or inactive. Active run guards above still apply.
+	if err == nil && sessionActive && record.TaskProgramID != "" {
 		if prog, progFound, progErr := s.GetTaskProgram(record.SessionID, record.TaskProgramID); progErr != nil {
 			err = progErr
 		} else if progFound && (prog.State == TaskProgramStateRunning || prog.State == TaskProgramStateDeclared) {
