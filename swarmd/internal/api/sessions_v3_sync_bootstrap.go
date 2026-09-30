@@ -703,7 +703,22 @@ func (s *Server) sessionsV3SyncSnapshotResponse(ctx context.Context, options ses
 		}
 		if options.IncludePermissionSummaryAttention {
 			for sessionID := range permissionSummaries {
-				options.Snapshot.SessionIDs = append(options.Snapshot.SessionIDs, sessionID)
+				// Recover authorized ancestry as compact shells too. A pending nested
+				// child outside the recent window must still map to its task card.
+				seen := make(map[string]bool)
+				for sessionID != "" && !seen[sessionID] {
+					seen[sessionID] = true
+					session, found, err := s.sessions.GetSession(sessionID)
+					if err != nil {
+						return sessionsV3SyncSnapshotResponseBody{}, err
+					}
+					if !found || session.AccountScopeID != options.Principal.AccountScopeID || session.UserID != options.Principal.UserID {
+						break
+					}
+					options.Snapshot.SessionIDs = append(options.Snapshot.SessionIDs, sessionID)
+					sessionID, _ = session.Metadata["parent_session_id"].(string)
+					sessionID = strings.TrimSpace(sessionID)
+				}
 			}
 		}
 	}
