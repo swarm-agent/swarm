@@ -78,8 +78,8 @@ test('program retry supersedes historical/duplicate entries and updates count', 
 })
 
 // Purpose: TaskCardActionButtons must render only recognizable icons, retaining exact
-// accessible names/tooltips and keyboard focus while matching MinimalTaskCard's
-// 20px checkbox and 12px checkmark, preventing oversized adjacent actions.
+// accessible names/tooltips and keyboard focus while scaling their previous 20px
+// buttons and 12px icons by 30%, preventing inconsistent action sizing.
 // Server markup and element props are the narrowest layer proving the component
 // sizing contract without claiming computed browser layout.
 test('archive and ask render icon-only outlined buttons with accessible names', () => {
@@ -90,14 +90,15 @@ test('archive and ask render icon-only outlined buttons with accessible names', 
     assert.equal(button.props.type, 'button')
     assert.equal(button.props.title, button.props['aria-label'])
     assert.match(button.props.className, /border/)
-    assert.match(button.props.className, /\bh-5 w-5\b/)
+    assert.ok(button.props.className.split(' ').includes('h-[26px]'))
+    assert.ok(button.props.className.split(' ').includes('w-[26px]'))
     assert.match(button.props.className, /focus-visible:outline-2/)
     assert.match(button.props.className, /focus-visible:outline-sky-400/)
     const markup = renderToStaticMarkup(button)
     assert.match(markup, index === 0 ? /lucide-archive/ : /lucide-message-circle/)
     assert.match(markup, /<svg[^>]*aria-hidden="true"/)
-    assert.match(markup, /<svg[^>]*width="12"/)
-    assert.match(markup, /<svg[^>]*height="12"/)
+    assert.match(markup, /<svg[^>]*width="15\.6"/)
+    assert.match(markup, /<svg[^>]*height="15\.6"/)
     assert.equal(markup.replace(/<[^>]*>/g, ''), '', 'no visible text inside the button')
   }
 })
@@ -134,7 +135,7 @@ test('archive and ask preserve optional callbacks and stop click propagation fir
 
 // Purpose: MinimalTaskCard retains the existing inline action slot immediately before
 // the separate checkbox label. This wiring check supplements the rendered/handler
-// contracts above and checks the checkbox sizing authority used by those controls;
+// contracts above and checks that the separate checkbox sizing is unchanged;
 // it does not claim browser-level selection or layout verification.
 test('task action icons remain inline immediately before checkbox wiring', () => {
   const source = readFileSync(new URL('./OrchestrateView.tsx', import.meta.url), 'utf8')
