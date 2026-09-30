@@ -1100,8 +1100,10 @@ func (s *Service) dispatchWorkerTool(current store.SessionSnapshot, args map[str
 	if source == "orchestrator" && prompt == "" {
 		return "", errors.New("prompt required")
 	}
-	req := store.WorkerRunAdmission{WorkerID: workerID, AutomationID: strings.TrimSpace(mapString(args, "automation_id")), RequestSource: source, Input: input, IdempotencyKey: strings.TrimSpace(mapString(args, "idempotency_key"))}
-	if req.IdempotencyKey == "" {
+	// Keys are opaque caller identity; leave canonical validation to admission.
+	idempotencyKey, _ := args["idempotency_key"].(string)
+	req := store.WorkerRunAdmission{WorkerID: workerID, AutomationID: strings.TrimSpace(mapString(args, "automation_id")), RequestSource: source, Input: input, IdempotencyKey: idempotencyKey}
+	if strings.TrimSpace(req.IdempotencyKey) == "" {
 		return "", errors.New("idempotency_key required")
 	}
 	receipt, err := execution.Dispatch(context.Background(), current.AccountScopeID, current.UserID, req)

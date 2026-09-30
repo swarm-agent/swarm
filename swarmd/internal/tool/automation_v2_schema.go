@@ -121,6 +121,10 @@ func manageWorkersV2Definition() Definition {
 					"type":        "object",
 					"description": "Single automation definition to attach.",
 				},
+				"idempotency_key": map[string]any{
+					"type":        "string",
+					"description": "Required for action=request or test: caller-supplied stable key for one logical job. Reuse the same key across retries; use a new key for a different job. Optional for unrelated actions.",
+				},
 				"prompt": map[string]any{
 					"type":        "string",
 					"description": "Task prompt for test run or direct request.",
