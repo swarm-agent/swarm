@@ -24,7 +24,9 @@ test('worker identity and pinned model review remain scoped to workers', () => {
   const worker: WorkerRecord = { id: 'worker', account_scope_id: 'account', name: 'Named worker', instructions: 'Review', lifecycle_state: 'pending', revision: 1, created_at: 1, updated_at: 1, model_profile: { source: 'temporary', action: { provider: 'fixture', model: 'action', thinking: 'high' }, plan: { provider: 'fixture', model: 'planning' } } }
   const review = renderToStaticMarkup(<PendingWorkerCard worker={worker} accountScopeId="account" workspaceCatalog={{ accountScopeId: 'account', workspaces: [] }} />)
   assert.match(review, /fixture\/action/)
-  assert.match(review, /Planning: fixture\/planning/)
+  assert.match(review, /fixture\/planning/)
+  assert.equal((review.match(/aria-label="Action model"/g) || []).length, 1)
+  assert.equal((review.match(/aria-label="Plan model"/g) || []).length, 1)
   assert.match(review, /Nothing runs while this worker is pending/)
 })
 
@@ -60,11 +62,49 @@ test('active worker update review discloses candidates, approved work and author
   assert.match(foreign, /Acceptance is blocked/)
 })
 
-// Requirement: canonical swarm_settings profiles are visibly account defaults.
-// Threat: the UI invents a source discriminator and mislabels default execution.
-// WorkerModelPicker SSR is the narrowest presentation layer for this label.
-test('canonical Swarm settings profile displays Swarm Default', async () => {
+// Requirement: inherited slots stay visible, while legacy pinned settings must
+// not be mislabeled as following defaults. WorkerModelPicker SSR is the narrowest
+// observable layer proving both roles and truthful policy labels.
+test('legacy captured Swarm settings remain explicit until reset', async () => {
   const { WorkerModelPicker } = await import('./worker-model-picker')
   const html = renderToStaticMarkup(<WorkerModelPicker accountScopeId="account" profile={{ source: 'swarm_settings', action: { provider: 'fixture', model: 'action' }, plan: { provider: 'fixture', model: 'plan' } }} disabled onChange={() => { throw new Error('render changed selection') }} />)
-  assert.match(html, /Model source: Swarm Default/)
+  assert.match(html, /aria-label="Action model"/)
+  assert.match(html, /aria-label="Plan model"/)
+  assert.equal((html.match(/Explicit worker override/g) || []).length, 2)
+  assert.match(html, /fixture\/action/)
+  assert.match(html, /fixture\/plan/)
+})
+
+// Requirement: override/reset is slot-local and does not edit account settings.
+// Threat: selecting one role pins the other inherited role; reset leaves stale
+// overrides active. Pure picker transformations are the narrowest policy layer.
+test('inherited slots survive overrides and reset independently', async () => {
+  const { selectWorkerActionModel, resetWorkerModelSlot, workerSlotInherited, WorkerModelPicker } = await import('./worker-model-picker')
+  const profile = { source: 'swarm_settings', use_account_default: true, action: { provider: 'fixture', model: 'old' }, plan: { provider: 'fixture', model: 'old-plan' } }
+  const override = selectWorkerActionModel(profile, { provider: 'fixture', model: 'override' })
+  assert.equal(workerSlotInherited(override, 'action'), false)
+  assert.equal(workerSlotInherited(override, 'plan'), true)
+  const reset = resetWorkerModelSlot(override, 'action')
+  assert.equal(workerSlotInherited(reset, 'action'), true)
+  assert.equal(workerSlotInherited(reset, 'plan'), true)
+  assert.equal(profile.use_account_default, true)
+  assert.equal(profile.action.model, 'old')
+  const html = renderToStaticMarkup(<WorkerModelPicker accountScopeId="account" disabled onChange={() => assert.fail('render mutated')} />)
+  assert.equal((html.match(/Account default \(follows future changes\)/g) || []).length, 2)
+  assert.match(html, /aria-label="Action model"/)
+  assert.match(html, /aria-label="Plan model"/)
+})
+
+// Requirement: top-level settings show pending draft separately from approval;
+// rendering must neither authorize nor activate a worker. SSR is the narrowest
+// WorkerSettingsReview consent/presentation boundary (backend tests own CAS).
+test('execution and models are visible without disclosure and pending acceptance stays explicit', async () => {
+  const { WorkerSettingsReview } = await import('./worker-settings-review')
+  const worker: WorkerRecord = { id: 'worker_fixture', account_scope_id: 'account', name: 'Fixture', instructions: 'Review', lifecycle_state: 'active', revision: 2, created_at: 1, updated_at: 2 }
+  const html = renderToStaticMarkup(<WorkerSettingsReview worker={{ ...worker, pending_review: { ...worker, execution_mode: 'plan' } }} accountScopeId="account" disabled />)
+  assert.doesNotMatch(html, /<details|<summary/)
+  assert.match(html, /Swarm \(default\)/)
+  assert.match(html, /Pending settings are shown below; approved settings remain in effect/)
+  assert.match(html, /Propose settings changes/)
+  assert.doesNotMatch(html, />Accept|>Activate/)
 })

@@ -93,11 +93,11 @@ test('canonical proposal arrival, scoped presentation, bounded activity and in-p
 test('worker inspection and browser history retain the mounted Orchestrator composer', { timeout: 30000 }, async () => {
   const bundle = await build({ stdin: { resolveDir: process.cwd(), loader: 'tsx', contents: `
     import React from 'react';import {createRoot} from 'react-dom/client';
-    import {createRootRoute,createRoute,createRouter,RouterProvider,Outlet,useNavigate,useRouterState} from '@tanstack/react-router';
-    import {swarmWorkerLink,swarmPageLink} from './src/features/desktop/orchestrate/swarm-navigation';
+    import {createRootRoute,createRoute,createRouter,RouterProvider,Outlet,Link,useNavigate,useRouterState} from '@tanstack/react-router';
+    import {swarmWorkerLink,swarmPageLink,swarmActivePage} from './src/features/desktop/orchestrate/swarm-navigation';
     import {OrchestratorChatComposer} from './src/features/desktop/orchestrate/OrchestrateView';
     window.sent=[];
-    function Layout(){const navigate=useNavigate();const worker=useRouterState({select:s=>s.location.search.workerId});return <><button onClick={()=>navigate(swarmWorkerLink('demo','worker_review'))}>Inspect worker</button><button onClick={()=>navigate(swarmPageLink('demo','home'))}>Tasks</button><p>{worker||'Tasks center'}</p><OrchestratorChatComposer sessionId='session_fixture' submitMessage={async operation=>window.sent.push(operation)}/><Outlet/></>}
+    function Layout(){const navigate=useNavigate();const worker=useRouterState({select:s=>s.location.search.workerId});const section=useRouterState({select:s=>s.matches.at(-1)?.params.swarmSection});const active=swarmActivePage(section,worker);return <><button onClick={()=>navigate(swarmWorkerLink('demo','worker_review'))}>Inspect worker</button><button onClick={()=>navigate(swarmWorkerLink('demo','worker_second'))}>Inspect second</button><button onClick={()=>navigate(swarmPageLink('demo','home'))}>Tasks</button><nav><Link {...swarmPageLink('demo','home')} activeOptions={{exact:true,includeSearch:false}} aria-current={active==='home'?'page':undefined}>Tasks tab</Link><Link {...swarmPageLink('demo','workers')} activeOptions={{exact:true,includeSearch:false}} aria-current={active==='workers'?'page':undefined}>Workers tab</Link></nav><p>{worker||'Tasks center'}</p><OrchestratorChatComposer sessionId='session_fixture' submitMessage={async operation=>window.sent.push(operation)}/><Outlet/></>}
     const root=createRootRoute({component:Outlet});const layout=createRoute({getParentRoute:()=>root,id:'swarm-layout',component:Layout,validateSearch:s=>({workerId:typeof s.workerId==='string'?s.workerId:undefined})});
     const home=createRoute({getParentRoute:()=>layout,path:'/$workspaceSlug/swarm'});const section=createRoute({getParentRoute:()=>layout,path:'/$workspaceSlug/swarm/$swarmSection'});
     const router=createRouter({routeTree:root.addChildren([layout.addChildren([home,section])])});
@@ -115,6 +115,12 @@ test('worker inspection and browser history retain the mounted Orchestrator comp
     await page.getByText('worker_review', { exact: true }).waitFor()
     assert.match(page.url(), /demo\/swarm\/workers\?workerId=worker_review/)
     assert.equal(await input.inputValue(), 'Keep this unsent draft')
+    assert.equal(await page.getByRole('link', { name: 'Workers tab' }).getAttribute('aria-current'), 'page')
+    assert.equal(await page.getByRole('link', { name: 'Tasks tab' }).getAttribute('aria-current'), null)
+    await page.getByRole('button', { name: 'Inspect second', exact: true }).click()
+    await page.getByText('worker_second', { exact: true }).waitFor()
+    await page.goBack()
+    await page.getByText('worker_review', { exact: true }).waitFor()
     await page.getByRole('button', { name: 'Tasks', exact: true }).click()
     await page.getByText('Tasks center', { exact: true }).waitFor()
     await page.goBack()
@@ -124,5 +130,13 @@ test('worker inspection and browser history retain the mounted Orchestrator comp
     await page.getByText('Tasks center', { exact: true }).waitFor()
     assert.equal(await input.inputValue(), 'Keep this unsent draft')
     assert.deepEqual(await page.evaluate(() => (window as any).sent), [])
+    await page.goto('https://worker.test/demo/swarm/workers?workerId=worker_second')
+    await page.addScriptTag({ content: bundle.outputFiles[0].text })
+    await page.getByText('worker_second', { exact: true }).waitFor()
+    await page.reload()
+    await page.addScriptTag({ content: bundle.outputFiles[0].text })
+    await page.getByText('worker_second', { exact: true }).waitFor()
+    assert.equal(await page.getByRole('link', { name: 'Workers tab' }).getAttribute('aria-current'), 'page')
+    assert.equal(await page.getByRole('link', { name: 'Tasks tab' }).getAttribute('aria-current'), null)
   } finally { await browser.close() }
 })

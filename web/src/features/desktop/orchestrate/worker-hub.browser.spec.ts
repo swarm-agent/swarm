@@ -4,7 +4,7 @@ import { build } from 'esbuild'
 import { chromium } from 'playwright'
 
 // Requirement: The V3 hub reads the canonical worker cache and exposes revision-guarded
-// actions and paged runs without configuration forms. Threat: stale status,
+// actions, visible model/execution controls and paged runs. Threat: stale status,
 // invented success on failed stop, lost run links or accidental direct dispatch.
 // Boundary: WorkerHub/WorkerDetail -> desktopWorkers runtime -> V3 cache. A real
 // rendered component is the narrowest layer for the interactive states; server tests
@@ -39,7 +39,10 @@ test('operational worker detail categorizes runs, forwards context and preserves
     await page.getByText(/Next eligible schedule: None reported/).waitFor()
     await page.getByText(/1 deliverable\(s\)/).waitFor()
     assert.equal(await page.getByTestId('durable-worker-run').getByRole('link', { name: 'Open execution session', exact: true }).getAttribute('href'), '/demo/session_1')
-    assert.equal(await page.locator('form, input, textarea, select').count(), 0)
+    assert.equal(await page.locator('form, input, textarea').count(), 0)
+    await page.getByRole('combobox', { name: 'Execution mode' }).waitFor()
+    assert.equal(await page.getByRole('region', { name: 'Action model', exact: true }).count(), 1)
+    assert.equal(await page.getByRole('region', { name: 'Plan model', exact: true }).count(), 1)
     await page.getByRole('button', { name: 'Failed', exact: true }).click()
     assert.equal(await page.getByTestId('durable-worker-run').count(), 0)
     await page.getByRole('button', { name: 'In progress', exact: true }).click()
@@ -63,5 +66,45 @@ test('operational worker detail categorizes runs, forwards context and preserves
     await page.getByText('Updating details; actions are unavailable until the current revision is loaded.').waitFor()
     assert.equal(await page.getByRole('button', { name: 'Ask Orchestrator' }).isDisabled(), true)
     assert.equal(await page.getByRole('button', { name: 'Pause worker' }).isDisabled(), true)
+  } finally { await browser.close() }
+})
+
+// Requirement: list arrival alone never opens an anonymous first-worker detail;
+// only route-provided identity renders details, including history changes.
+// WorkerHub and canonical V3 cache are the narrowest rendered selection boundary.
+test('worker hub requires URL identity before displaying a detail', { timeout: 30000 }, async () => {
+  const bundle = await build({ stdin: { resolveDir: process.cwd(), loader: 'tsx', contents: `
+    import React,{useState} from 'react';import {createRoot} from 'react-dom/client';
+    import {WorkerHub} from './src/features/desktop/orchestrate/worker-hub';
+    import {ensureDesktopSession} from './src/app/api';
+    import {desktopWorkers} from './src/features/desktop/runtime/desktop-workers';
+    import {dispatchDesktopV3Cache,getDesktopV3CacheSnapshot} from './src/features/desktop/state/desktop-v3-cache-store';
+    import {workerPageKey} from './src/features/desktop/state/desktop-workers-state';
+    const worker={id:'worker_first',account_scope_id:'acct',name:'First',instructions:'Review',revision:1,lifecycle_state:'active',created_at:1,updated_at:1};
+    const feed=(input,data)=>{const key=workerPageKey(input),requestId=crypto.randomUUID();dispatchDesktopV3Cache({type:'workers.begin',key,input,requestId});dispatchDesktopV3Cache({type:'workers.finish',key,requestId,generation:getDesktopV3CacheSnapshot().workerPages[key].generation,data})};
+    feed({kind:'list',accountScopeId:'acct',limit:100},{workers:[worker]});
+    desktopWorkers.acquire=()=>({ready:Promise.resolve(),release:()=>{}});
+    window.inspected=[];
+    function App(){const [id,setId]=useState();window.route=setId;return <WorkerHub initialWorkerId={id} onInspectWorker={id=>window.inspected.push(id)} onSelectWorker={()=>{}} onAddWorker={()=>{}}/>}
+    ensureDesktopSession().then(()=>createRoot(document.getElementById('root')).render(<App/>));
+  ` }, bundle: true, write: false, format: 'iife', platform: 'browser', jsx: 'automatic', logLevel: 'silent' })
+  const browser = await chromium.launch({ headless: true, channel: process.env.SWARM_TEST_BROWSER_CHANNEL || 'chrome' })
+  try {
+    const page = await browser.newPage()
+    await page.route('**/*', route => route.request().url().endsWith('/v1/auth/desktop/session')
+      ? route.fulfill({ contentType: 'application/json', body: JSON.stringify({ user_id: 'owner', account_scope_id: 'acct' }) })
+      : route.fulfill({ contentType: 'text/html', body: '<div id="root"></div>' }))
+    await page.goto('https://worker.test/')
+    await page.addScriptTag({ content: bundle.outputFiles[0].text })
+    await page.getByRole('button', { name: 'Inspect First' }).waitFor()
+    assert.equal(await page.getByTestId('durable-worker-detail').count(), 0)
+    await page.getByRole('button', { name: 'Inspect First' }).click()
+    assert.deepEqual(await page.evaluate(() => (window as any).inspected), ['worker_first'])
+    assert.equal(await page.getByTestId('durable-worker-detail').count(), 0)
+    await page.evaluate(() => (window as any).route('worker_first'))
+    await page.getByTestId('durable-worker-detail').waitFor()
+    await page.evaluate(() => (window as any).route(undefined))
+    await page.getByRole('heading', { name: 'A worker for the work that repeats' }).waitFor()
+    assert.equal(await page.getByTestId('durable-worker-detail').count(), 0)
   } finally { await browser.close() }
 })

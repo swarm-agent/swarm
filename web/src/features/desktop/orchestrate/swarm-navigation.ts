@@ -11,12 +11,12 @@ export function isSwarmSection(value: unknown): value is SwarmSection {
 export function swarmPageLink(workspaceSlug: string | undefined, page: SwarmPage) {
   if (workspaceSlug) {
     return page === 'home'
-      ? { to: '/$workspaceSlug/swarm' as const, params: { workspaceSlug } }
-      : { to: '/$workspaceSlug/swarm/$swarmSection' as const, params: { workspaceSlug, swarmSection: page } }
+      ? { to: '/$workspaceSlug/swarm' as const, params: { workspaceSlug }, search: {} }
+      : { to: '/$workspaceSlug/swarm/$swarmSection' as const, params: { workspaceSlug, swarmSection: page }, search: {} }
   }
   return page === 'home'
-    ? { to: '/swarm' as const }
-    : { to: '/swarm/$swarmSection' as const, params: { swarmSection: page } }
+    ? { to: '/swarm' as const, search: {} }
+    : { to: '/swarm/$swarmSection' as const, params: { swarmSection: page }, search: {} }
 }
 
 // Keep inspection under the persistent Swarm owner; legacy detail URLs redirect here.
@@ -28,4 +28,9 @@ export function swarmWorkerHref(workspaceSlug: string | undefined, workerId: str
   return workspaceSlug
     ? `/${encodeURIComponent(workspaceSlug)}/workers/${encodeURIComponent(workerId)}`
     : `/workers/${encodeURIComponent(workerId)}`
+}
+
+/** Route-derived selection only: worker deep links never select Tasks. */
+export function swarmActivePage(section: unknown, workerId?: string): SwarmPage {
+  return workerId ? 'workers' : isSwarmSection(section) ? section : 'home'
 }

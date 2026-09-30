@@ -16,7 +16,7 @@ export interface WorkerAutomation {
   input_requirements?: WorkerInputRequirement[] | null; deliverable_requirements?: WorkerDeliverableRequirement[] | null
 }
 export interface WorkerModelSelection { provider: string; model: string; thinking?: string; service_tier?: string; context_mode?: string }
-export interface WorkerModelProfile { resolution_warning?: string; source: string; use_account_default?: boolean; action: WorkerModelSelection; plan?: WorkerModelSelection | null; applied_at?: number }
+export interface WorkerModelProfile { resolution_warning?: string; source: string; use_account_default?: boolean; action_use_account_default?: boolean; plan_use_account_default?: boolean; action: WorkerModelSelection; plan?: WorkerModelSelection | null; applied_at?: number }
 export interface WorkerRecord {
   pending_review?: WorkerRecord | null
   execution_mode?: 'auto' | 'plan'

@@ -20,6 +20,7 @@ export interface PendingWorkerCardProps {
   onAccepted?: (worker: WorkerRecord) => void
   onOpenDetail?: (workerId: string) => void
   approvedWorker?: WorkerRecord
+  showModelControls?: boolean
 }
 
 export function PendingWorkerCard(props: PendingWorkerCardProps) {
@@ -51,7 +52,7 @@ function AuthorizedCatalogProposal(props: PendingWorkerCardProps) {
   </>
 }
 
-function PendingWorkerPresentation({ worker, accountScopeId, workspaceSlug, workspaceCatalog, stale = false, mutationError, initialExpanded = false, onAccepted, onOpenDetail, approvedWorker }: PendingWorkerCardProps) {
+function PendingWorkerPresentation({ worker, accountScopeId, workspaceSlug, workspaceCatalog, stale = false, mutationError, initialExpanded = false, onAccepted, onOpenDetail, approvedWorker, showModelControls = true }: PendingWorkerCardProps) {
   const [model, setModel] = useState<WorkerModelProfile | null | undefined>(worker.model_profile)
   const [expanded, setExpanded] = useState(initialExpanded)
   useEffect(() => { setModel(worker.model_profile) }, [worker.id, worker.revision, worker.model_profile])
@@ -88,7 +89,7 @@ function PendingWorkerPresentation({ worker, accountScopeId, workspaceSlug, work
       {targets.length ? targets.map(target => <p key={target.role} className={target.unresolved ? 'text-amber-300' : 'text-slate-200'}>{target.label} <span className="text-slate-400">· {target.status}{target.approvedTarget && target.approvedTarget !== target.target ? ` · replaces ${target.approvedName || 'unresolved previously approved workspace'}` : ''}</span></p>) : <p className="text-amber-300">No workspace target specified</p>}
     </section>
     <p>Execution: {worker.execution_mode === 'plan' ? 'Plan (explicit planning before execution)' : 'Swarm (default)'}</p>
-    <WorkerModelPicker accountScopeId={accountScopeId} profile={model} disabled={busy || stale || wrongAccount} onChange={setModel} />
+    {showModelControls && <WorkerModelPicker accountScopeId={accountScopeId} profile={model} disabled={busy || stale || wrongAccount} onChange={setModel} />}
     <section className="space-y-2 break-words" aria-label="Jobs and timing" data-testid="pending-worker-job-intent">
       {approvedWorker && <p>Previously approved timing: {approvedWorker.automations?.map(job => `${job.name}: ${proposalJobTiming(job)}`).join('; ') || 'No jobs'}</p>}
       {noJobs ? <p data-testid="pending-worker-no-job">No job attached; waits for a task after acceptance</p> : jobs?.map(job => <div key={job.id}>

@@ -26,16 +26,19 @@ const (
 // Explicit favorite identity is copied when applicable. Swarm defaults instead
 // carry direct Action/Plan selections with source "swarm_settings".
 type SessionModelProfileSnapshot struct {
-	ResolutionWarning  string                 `json:"resolution_warning,omitempty"`
-	Source             string                 `json:"source"`
-	UseAccountDefault  bool                   `json:"use_account_default,omitempty"`
-	ActionFavoriteID   string                 `json:"action_favorite_id,omitempty"`
-	ActionFavoriteName string                 `json:"action_favorite_name,omitempty"`
-	Action             ModelProfileSelection  `json:"action"`
-	PlanFavoriteID     string                 `json:"plan_favorite_id,omitempty"`
-	PlanFavoriteName   string                 `json:"plan_favorite_name,omitempty"`
-	Plan               *ModelProfileSelection `json:"plan,omitempty"`
-	AppliedAt          int64                  `json:"applied_at"`
+	ResolutionWarning       string                 `json:"resolution_warning,omitempty"`
+	Source                  string                 `json:"source"`
+	UseAccountDefault       bool                   `json:"use_account_default,omitempty"`
+	// Worker policy only; cleared before binding an admitted run/session snapshot.
+	ActionUseAccountDefault bool                   `json:"action_use_account_default,omitempty"`
+	PlanUseAccountDefault   bool                   `json:"plan_use_account_default,omitempty"`
+	ActionFavoriteID        string                 `json:"action_favorite_id,omitempty"`
+	ActionFavoriteName      string                 `json:"action_favorite_name,omitempty"`
+	Action                  ModelProfileSelection  `json:"action"`
+	PlanFavoriteID          string                 `json:"plan_favorite_id,omitempty"`
+	PlanFavoriteName        string                 `json:"plan_favorite_name,omitempty"`
+	Plan                    *ModelProfileSelection `json:"plan,omitempty"`
+	AppliedAt               int64                  `json:"applied_at"`
 }
 
 // CloneSessionModelProfileSnapshot returns a deep copy suitable for crossing a

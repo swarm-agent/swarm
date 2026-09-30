@@ -12,7 +12,7 @@ import { integrationFailure, repairUnavailable, redactIntegrationDiagnostic, orc
 import { useVideoTaskDefault } from './use-video-task-default'
 import { getUISettings } from '../settings/swarm/queries/get-ui-settings'
 import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
-import { isSwarmSection, swarmPageLink, type SwarmPage } from './swarm-navigation'
+import { swarmPageLink, type SwarmPage } from './swarm-navigation'
 import { filterOrchestrateCommands, parseOrchestrateCommand, ORCHESTRATE_TIPS, type OrchestrateCommand } from './orchestrate-commands'
 import { OrchestrateSettings } from './orchestrate-settings'
 import { OrchestrateAgents } from './orchestrate-agents'
@@ -73,7 +73,7 @@ import { submitWithWorkerSelection } from './worker-message-context'
 import { DurableWorkerCount } from '../layout/durable-worker-sidebar'
 import { ProjectWorkerSidebar } from '../layout/project-worker-sidebar'
 import { OrchestratorNotifications } from '../notifications/components/orchestrator-notifications'
-import { swarmWorkerLink, swarmWorkerHref } from './swarm-navigation'
+import { swarmWorkerLink, swarmWorkerHref, swarmActivePage } from './swarm-navigation'
 import { useDesktopV3CacheSelector, getDesktopV3CacheSnapshot } from '../state/desktop-v3-cache-store'
 import { selectPendingWorkerSidebarReviews } from '../state/desktop-automation-v2-state'
 import { desktopAutomationV2 } from '../runtime/desktop-automation-v2'
@@ -3912,7 +3912,7 @@ export function OrchestrateView({
   // The router is the sole authority for section selection, including reloads
   // and browser back/forward. The shared layout retains project and chat state.
   const routeParams = useRouterState({
-    select: (state) => state.matches[state.matches.length - 1]?.params as { workspaceSlug?: string; swarmSection?: string } | undefined,
+    select: (state) => state.matches[state.matches.length - 1]?.params as { workspaceSlug?: string; swarmSection?: string; workerId?: string } | undefined,
   }) ?? {}
   const navigate = useNavigate()
   const routeWorkerId = useRouterState({ select: state => {
@@ -3936,7 +3936,8 @@ export function OrchestrateView({
       setSelectedWorker(null)
     }
   }, [workerContextScope])
-  const activeNavTab: SwarmPage = workerDetailId ? 'workers' : isSwarmSection(routeParams.swarmSection) ? routeParams.swarmSection : 'home'
+  const inspectedWorkerId = routeParams.workerId || workerDetailId || (routeParams.swarmSection === 'workers' ? routeWorkerId : undefined)
+  const activeNavTab: SwarmPage = swarmActivePage(routeParams.swarmSection, inspectedWorkerId)
   const showFullMediaCenter = activeNavTab === 'media'
   const setActiveNavTab = (page: SwarmPage) => { void navigate(swarmPageLink(workspaceSlug, page)) }
   const setShowFullMediaCenter = (open: boolean) => {
@@ -6175,6 +6176,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
         <div className="p-3 border-b border-slate-800/80 space-y-1" onClick={() => setIsOnboardingActive(false)}>
           <Link
             {...swarmPageLink(workspaceSlug, 'home')}
+            activeOptions={{ exact: true, includeSearch: false }}
             aria-current={activeNavTab === 'home' ? 'page' : undefined}
             className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium transition-all ${
               activeNavTab === 'home'
@@ -6199,6 +6201,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
           </Link>
           <Link
             {...swarmPageLink(workspaceSlug, 'workers')}
+            activeOptions={{ exact: true, includeSearch: false }}
             aria-current={activeNavTab === 'workers' ? 'page' : undefined}
             className={`w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs font-medium transition-all ${
               activeNavTab === 'workers'
@@ -6589,8 +6592,8 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
          ───────────────────────────────────────────────────────────── */}
       {!showFullMediaCenter && <main className="swarm-main-panel relative min-w-0 flex flex-1 flex-col overflow-hidden rounded-3xl border bg-[#0d121f]/95 border-slate-800/80 shadow-[inset_0_1px_1px_rgba(255,255,255,0.06),0_18px_40px_rgba(0,0,0,0.65)]">
         <nav aria-label="Tasks and Workers views" className="flex shrink-0 gap-2 border-b border-slate-800 p-3 text-xs">
-          <Link {...swarmPageLink(workspaceSlug, 'home')} aria-current={activeNavTab === 'home' ? 'page' : undefined} className="rounded-lg border border-slate-700 px-3 py-2">Tasks</Link>
-          <Link {...swarmPageLink(workspaceSlug, 'workers')} aria-current={activeNavTab === 'workers' ? 'page' : undefined} className="rounded-lg border border-slate-700 px-3 py-2">Workers</Link>
+          <Link {...swarmPageLink(workspaceSlug, 'home')} activeOptions={{ exact: true, includeSearch: false }} aria-current={activeNavTab === 'home' ? 'page' : undefined} className="rounded-lg border border-slate-700 px-3 py-2">Tasks</Link>
+          <Link {...swarmPageLink(workspaceSlug, 'workers')} activeOptions={{ exact: true, includeSearch: false }} aria-current={activeNavTab === 'workers' ? 'page' : undefined} className="rounded-lg border border-slate-700 px-3 py-2">Workers</Link>
         </nav>
         {isOnboardingActive && (activeNavTab === 'home' || activeNavTab === 'projects') ? (
           <div className="flex-1 flex flex-col min-h-0 overflow-y-auto p-6 space-y-6">
@@ -6835,7 +6838,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
             </div>
           </div>
         ) : activeNavTab === 'workers' ? (
-          <WorkerHub workspaceSlug={workspaceSlug} initialWorkerId={workerDetailId || routeWorkerId} onInspectWorker={id => { if (id) void navigate(swarmWorkerLink(workspaceSlug, id)); else setActiveNavTab('workers') }} onSelectWorker={worker => { void openWorkerConversation(worker) }} onAddWorker={() => { void openWorkerConversation(null) }} />
+          <WorkerHub workspaceSlug={workspaceSlug} initialWorkerId={inspectedWorkerId} onInspectWorker={id => { if (id) void navigate(swarmWorkerLink(workspaceSlug, id)); else setActiveNavTab('workers') }} onSelectWorker={worker => { void openWorkerConversation(worker) }} onAddWorker={() => { void openWorkerConversation(null) }} />
         ) : activeNavTab === 'deliverables' ? (
           /* DELIVERABLES TAB */
           <div className="flex-1 flex flex-col min-h-0 overflow-y-auto p-6 space-y-4">

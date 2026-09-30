@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { isSwarmSection, swarmPageLink, swarmWorkerHref, swarmWorkerLink, SWARM_SECTIONS } from './swarm-navigation'
+import { isSwarmSection, swarmPageLink, swarmWorkerHref, swarmWorkerLink, swarmActivePage, SWARM_SECTIONS } from './swarm-navigation'
 import { composeDesktopDocumentTitle } from '../runtime/desktop-document-title'
 
 // Requirement: every Swarm sidebar page has one global/workspace-scoped
@@ -8,17 +8,17 @@ import { composeDesktopDocumentTitle } from '../runtime/desktop-document-title'
 // This narrow unit layer prevents scope loss and missing section destinations;
 // it does not claim browser reload, history, or rendered anchor verification.
 test('Swarm page destinations preserve workspace scope for every section', () => {
-  assert.deepEqual(swarmPageLink(undefined, 'home'), { to: '/swarm' })
+  assert.deepEqual(swarmPageLink(undefined, 'home'), { to: '/swarm', search: {} })
   assert.deepEqual(swarmPageLink('example-workspace', 'home'), {
-    to: '/$workspaceSlug/swarm', params: { workspaceSlug: 'example-workspace' },
+    to: '/$workspaceSlug/swarm', params: { workspaceSlug: 'example-workspace' }, search: {},
   })
   for (const page of SWARM_SECTIONS) {
     assert.deepEqual(swarmPageLink(undefined, page), {
-      to: '/swarm/$swarmSection', params: { swarmSection: page },
+      to: '/swarm/$swarmSection', params: { swarmSection: page }, search: {},
     })
     assert.deepEqual(swarmPageLink('example-workspace', page), {
       to: '/$workspaceSlug/swarm/$swarmSection',
-      params: { workspaceSlug: 'example-workspace', swarmSection: page },
+      params: { workspaceSlug: 'example-workspace', swarmSection: page }, search: {},
     })
   }
 })
@@ -64,4 +64,18 @@ test('granular worker navigation preserves workspace scope', () => {
   })
   assert.equal(swarmWorkerHref(undefined, 'worker-1'), '/workers/worker-1')
   assert.equal(swarmWorkerHref('my-workspace', 'worker-1'), '/my-workspace/workers/worker-1')
+})
+
+// Requirement: tab selection has one router-derived owner; stale worker query
+// state must be cleared when leaving Workers. swarmActivePage/swarmPageLink are
+// the narrowest selection/destination layer; rendered history is tested separately.
+test('worker detail selects Workers exclusively and page changes clear detail identity', () => {
+  for (const section of [undefined, 'workers', 'home']) assert.equal(swarmActivePage(section, 'worker_fixture'), 'workers')
+  assert.equal(swarmActivePage(undefined), 'home')
+  assert.equal(swarmActivePage('workers'), 'workers')
+  for (const workspace of [undefined, 'demo']) {
+    assert.deepEqual(swarmPageLink(workspace, 'home').search, {})
+    assert.deepEqual(swarmPageLink(workspace, 'workers').search, {})
+    assert.deepEqual(swarmWorkerLink(workspace, 'worker_fixture').search, { workerId: 'worker_fixture' })
+  }
 })

@@ -6,17 +6,18 @@ import (
 	"time"
 )
 
-// ValidateWorkerModelProfile rejects unresolved profiles: workers never follow a
-// mutable account default after the initial selection has been captured.
+// ValidateWorkerModelProfile validates worker policy. Inherited slots resolve at
+// admission; explicit slots and admitted run snapshots must be fully selected.
 func ValidateWorkerModelProfile(p *SessionModelProfileSnapshot) error {
-	if p == nil || p.UseAccountDefault || p.Plan == nil {
-		return fmt.Errorf("worker requires a pinned model profile")
+	if p == nil {
+		return fmt.Errorf("worker requires a model profile")
 	}
 	if p.Source != SessionModelProfileSourceTemporary && p.Source != SessionModelProfileSourceSwarmSettings && p.Source != SessionModelProfileSourceSaved {
 		return fmt.Errorf("worker model profile source is invalid")
 	}
-	for _, selection := range []*ModelProfileSelection{&p.Action, p.Plan} {
-		if selection != nil && (strings.TrimSpace(selection.Provider) == "" || strings.TrimSpace(selection.Model) == "") {
+	for i, selection := range []*ModelProfileSelection{&p.Action, p.Plan} {
+		inherited := p.UseAccountDefault || (i == 0 && p.ActionUseAccountDefault) || (i == 1 && p.PlanUseAccountDefault)
+		if !inherited && (selection == nil || strings.TrimSpace(selection.Provider) == "" || strings.TrimSpace(selection.Model) == "") {
 			return fmt.Errorf("worker model provider and model are required")
 		}
 	}

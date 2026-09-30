@@ -14,14 +14,16 @@ import (
 // SessionID is allocated by the store with the run identity and never supplied
 // by callers. Dispatch must use the returned receipt only.
 type WorkerRunAdmission struct {
-	WorkerID       string
-	AutomationID   string
-	UserID         string
-	RequestSource  string
-	Input          map[string]any
-	IdempotencyKey string
-	OccurrenceID   string
-	SessionID      string
+	ExpectedWorkerRevision uint64
+	ResolvedModelProfile   *SessionModelProfileSnapshot
+	WorkerID               string
+	AutomationID           string
+	UserID                 string
+	RequestSource          string
+	Input                  map[string]any
+	IdempotencyKey         string
+	OccurrenceID           string
+	SessionID              string
 }
 
 type workerRunIdempotency struct {
@@ -184,10 +186,21 @@ func (ws *WorkerStore) AdmitWorkerRun(account string, req WorkerRunAdmission) (W
 			return WorkerRunRecord{}, ErrWorkerNotFound
 		}
 	}
+	model := CloneSessionModelProfileSnapshot(req.ResolvedModelProfile)
+	if model != nil {
+		if req.ExpectedWorkerRevision != worker.Revision || model.UseAccountDefault || model.ActionUseAccountDefault || model.PlanUseAccountDefault {
+			return WorkerRunRecord{}, ErrWorkerConflict
+		}
+		if err := ValidateWorkerModelProfile(model); err != nil {
+			return WorkerRunRecord{}, err
+		}
+	} else if worker.ModelProfile != nil && (worker.ModelProfile.UseAccountDefault || worker.ModelProfile.ActionUseAccountDefault || worker.ModelProfile.PlanUseAccountDefault) {
+		return WorkerRunRecord{}, fmt.Errorf("%w: inherited worker models must resolve before admission", ErrWorkerConflict)
+	}
 	now := time.Now().UnixMilli()
 	runID := GenerateWorkerRunID()
 	req.SessionID = "worker-execution-" + runID
-	receipt := WorkerRunRecord{ID: runID, AccountScopeID: account, UserID: req.UserID, WorkerID: worker.ID, WorkerRevision: worker.Revision, AutomationID: req.AutomationID, AutomationRevision: automationRevision, OccurrenceID: req.OccurrenceID, SessionID: req.SessionID, RequestSource: req.RequestSource, Input: acceptedInput, Status: "admitted", CreatedAt: now}
+	receipt := WorkerRunRecord{ModelProfile: model, ID: runID, AccountScopeID: account, UserID: req.UserID, WorkerID: worker.ID, WorkerRevision: worker.Revision, AutomationID: req.AutomationID, AutomationRevision: automationRevision, OccurrenceID: req.OccurrenceID, SessionID: req.SessionID, RequestSource: req.RequestSource, Input: acceptedInput, Status: "admitted", CreatedAt: now}
 	m := &workerRealtimeMutation{accountScopeID: account, userID: req.UserID, workerID: worker.ID}
 	if err := m.put(KeyWorkerRun(account, worker.ID, receipt.ID), receipt); err != nil {
 		return WorkerRunRecord{}, err

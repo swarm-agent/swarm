@@ -134,6 +134,7 @@ type WorkerRevisionRecord struct {
 }
 
 type WorkerRunRecord struct {
+	ModelProfile *SessionModelProfileSnapshot `json:"model_profile,omitempty"`
 	CancelRequested    bool                           `json:"cancel_requested,omitempty"`
 	UserID             string                         `json:"user_id,omitempty"`
 	ID                 string                         `json:"id"`

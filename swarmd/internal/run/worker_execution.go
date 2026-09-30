@@ -213,6 +213,15 @@ func (s *WorkerExecutionService) Dispatch(ctx context.Context, account, user str
 	if err != nil {
 		return store.WorkerRunRecord{}, err
 	}
+	req.ResolvedModelProfile, err = s.ResolveModelProfile(account, w.ModelProfile)
+	if err != nil {
+		return store.WorkerRunRecord{}, err
+	}
+	// Admission pins resolved values, never a mutable default policy.
+	req.ResolvedModelProfile.UseAccountDefault = false
+	req.ResolvedModelProfile.ActionUseAccountDefault = false
+	req.ResolvedModelProfile.PlanUseAccountDefault = false
+	req.ExpectedWorkerRevision = w.Revision
 	req.UserID = user
 	rec, err := ws.AdmitWorkerRun(account, req)
 	if err != nil {
@@ -300,6 +309,9 @@ func (s *WorkerExecutionService) startLocked(ctx context.Context, receipt store.
 		return store.ErrWorkerConflict
 	}
 	w := history.Worker
+	if actual.ModelProfile != nil {
+		w.ModelProfile = store.CloneSessionModelProfileSnapshot(actual.ModelProfile)
+	}
 	var doc store.SessionPlanDocument
 	if actual.AutomationID != "" {
 		found = false
@@ -330,6 +342,9 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 	h := s.host
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if w.ModelProfile != nil && (w.ModelProfile.UseAccountDefault || w.ModelProfile.ActionUseAccountDefault || w.ModelProfile.PlanUseAccountDefault) {
+		return errors.New("admitted worker run has unresolved model policy")
 	}
 	if err := store.ValidateWorkerModelProfile(w.ModelProfile); err != nil {
 		return fmt.Errorf("worker revision has no pinned model: %w", err)

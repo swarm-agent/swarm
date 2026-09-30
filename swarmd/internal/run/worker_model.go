@@ -23,6 +23,22 @@ func (s *Service) ResolveWorkerModelProfile(account string, selected *store.Sess
 		return nil, errors.New("worker model catalog unavailable")
 	}
 	p := store.CloneSessionModelProfileSnapshot(selected)
+	if p != nil && (p.UseAccountDefault || p.ActionUseAccountDefault || p.PlanUseAccountDefault) {
+		if err := store.ValidateWorkerModelProfile(p); err != nil {
+			return nil, err
+		}
+		defaults, err := s.ResolveWorkerModelProfile(account, nil)
+		if err != nil {
+			return nil, err
+		}
+		if p.UseAccountDefault || p.ActionUseAccountDefault {
+			p.Action = defaults.Action
+		}
+		if p.UseAccountDefault || p.PlanUseAccountDefault {
+			p.Plan = store.CloneModelProfileSelection(defaults.Plan)
+		}
+		p.ResolutionWarning = defaults.ResolutionWarning
+	}
 	if p == nil {
 		if s.agentModelSettings == nil {
 			return nil, errors.New("worker default model settings unavailable")
@@ -39,7 +55,7 @@ func (s *Service) ResolveWorkerModelProfile(account string, selected *store.Sess
 	} else if err := store.ValidateWorkerModelProfile(p); err != nil {
 		return nil, err
 	}
-	for _, sel := range []*store.ModelProfileSelection{&p.Action, p.Plan} {
+	for slot, sel := range []*store.ModelProfileSelection{&p.Action, p.Plan} {
 		if sel == nil {
 			continue
 		}
@@ -57,12 +73,12 @@ func (s *Service) ResolveWorkerModelProfile(account string, selected *store.Sess
 			return nil, fmt.Errorf("worker model %s/%s is not in the authorized model catalog", sel.Provider, sel.Model)
 		}
 		pref := resolved.Preference
-		if selected != nil && (pref.Provider != sel.Provider || pref.Model != sel.Model || pref.Thinking != sel.Thinking || pref.ServiceTier != sel.ServiceTier || pref.ContextMode != sel.ContextMode) {
+		if selected != nil && !selected.UseAccountDefault && !(slot == 0 && selected.ActionUseAccountDefault) && !(slot == 1 && selected.PlanUseAccountDefault) && (pref.Provider != sel.Provider || pref.Model != sel.Model || pref.Thinking != sel.Thinking || pref.ServiceTier != sel.ServiceTier || pref.ContextMode != sel.ContextMode) {
 			return nil, errors.New("worker model options are invalid; select supported thinking, service tier and context options")
 		}
 		*sel = store.ModelProfileSelection{Provider: pref.Provider, Model: pref.Model, Thinking: pref.Thinking, ServiceTier: pref.ServiceTier, ContextMode: pref.ContextMode}
 	}
-	p.UseAccountDefault = false
+	p.UseAccountDefault = selected == nil || selected.UseAccountDefault
 	if p.AppliedAt == 0 {
 		p.AppliedAt = time.Now().UnixMilli()
 	}
@@ -89,7 +105,7 @@ func (s *WorkerExecutionService) initializeWorkerModel(w store.WorkerRecord, use
 }
 
 // Fallback is only for initialization, never an explicit review override. The
-// warning travels with the pinned profile into review and generated task alerts.
+// warning travels with the resolved profile into review and generated task alerts.
 func (s *Service) workerDefaultFallback(account string, cause error) (*store.SessionModelProfileSnapshot, error) {
 	resolved, err := s.model.GetResolvedPreferenceForAccount(account)
 	if err != nil {
@@ -100,6 +116,6 @@ func (s *Service) workerDefaultFallback(account string, cause error) (*store.Ses
 	}
 	pref := resolved.Preference
 	selection := store.ModelProfileSelection{Provider: pref.Provider, Model: pref.Model, Thinking: pref.Thinking, ServiceTier: pref.ServiceTier, ContextMode: pref.ContextMode}
-	p := &store.SessionModelProfileSnapshot{Source: store.SessionModelProfileSourceSwarmSettings, Action: selection, Plan: &selection, AppliedAt: time.Now().UnixMilli(), ResolutionWarning: fmt.Sprintf("Worker model settings resolution failed (%v); captured account default %s/%s for planning and action.", cause, pref.Provider, pref.Model)}
+	p := &store.SessionModelProfileSnapshot{Source: store.SessionModelProfileSourceSwarmSettings, UseAccountDefault: true, Action: selection, Plan: &selection, AppliedAt: time.Now().UnixMilli(), ResolutionWarning: fmt.Sprintf("Worker model settings resolution failed (%v); captured account default %s/%s for planning and action.", cause, pref.Provider, pref.Model)}
 	return p, store.ValidateWorkerModelProfile(p)
 }

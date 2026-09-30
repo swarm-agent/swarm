@@ -36,9 +36,9 @@ func TestWorkerModelAcceptancePersistenceAndGuards(t *testing.T) {
 		}
 	}
 	invalid := CloneSessionModelProfileSnapshot(original)
-	invalid.UseAccountDefault = true
+	invalid.Plan = nil
 	if _, err = ws.AcceptWorker("account", "owner", w.ID, w.Revision, w.ProposedBindings, invalid); err == nil {
-		t.Fatal("mutable default accepted")
+		t.Fatal("incomplete explicit profile accepted")
 	}
 	before, _, err := ws.GetWorker("account", w.ID)
 	if err != nil || before.Revision != w.Revision || before.LifecycleState != WorkerLifecycleStatePending || !reflect.DeepEqual(before.ModelProfile, original) {
@@ -112,4 +112,80 @@ func TestWorkerModelLegacyInitializationOnce(t *testing.T) {
 	if after.Revision != initialized.Revision || after.ModelProfile.Action.Model != "default" {
 		t.Fatal("saved model replaced by new default")
 	}
+}
+
+// Requirement: inherited policy is accepted only by human revision review; each
+// admission atomically stores resolved models. Threat: unresolved, stale or foreign
+// admission creates a receipt, or replay replaces its snapshot after defaults change.
+// WorkerStore is the narrowest durable admission/CAS/replay boundary.
+func TestWorkerModelInheritedAdmissionSnapshotsAndGuards(t *testing.T) {
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ws := NewWorkerStore(db)
+	policy := &SessionModelProfileSnapshot{Source: SessionModelProfileSourceSwarmSettings, UseAccountDefault: true}
+	w, err := ws.CreateWorker("account", "owner", CreateWorkerRequest{Name: "Defaults", Instructions: "Review", InitialLifecycleState: WorkerLifecycleStatePending, ProposedBindings: map[string]string{"primary": "workspace"}, WorkspaceRequirements: []WorkerWorkspaceRequirement{{Role: "primary", Required: true}}, ModelProfile: policy}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err = ws.AcceptWorker("account", "owner", w.ID, w.Revision, w.ProposedBindings, policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sel := ModelProfileSelection{Provider: "fixture", Model: "first"}
+	resolved := &SessionModelProfileSnapshot{Source: SessionModelProfileSourceSwarmSettings, Action: sel, Plan: &sel}
+	req := WorkerRunAdmission{WorkerID: w.ID, UserID: "owner", RequestSource: "direct", IdempotencyKey: "job", Input: map[string]any{"prompt": "Review"}}
+	if _, err = ws.AdmitWorkerRun("account", req); err == nil { t.Fatal("unresolved admission succeeded") }
+	req.ResolvedModelProfile = resolved
+	req.ExpectedWorkerRevision = w.Revision + 1
+	if _, err = ws.AdmitWorkerRun("account", req); !errors.Is(err, ErrWorkerConflict) { t.Fatalf("stale admission: %v", err) }
+	req.ExpectedWorkerRevision = w.Revision
+	if _, err = ws.AdmitWorkerRun("foreign", req); !errors.Is(err, ErrWorkerNotFound) { t.Fatalf("foreign admission: %v", err) }
+	first, err := ws.AdmitWorkerRun("account", req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved.Action.Model = "second"
+	*resolved.Plan = resolved.Action
+	replay, err := ws.AdmitWorkerRun("account", req)
+	if err != nil || replay.ID != first.ID || replay.ModelProfile.Action.Model != "first" { t.Fatalf("replay changed snapshot: %+v %v", replay, err) }
+	req.IdempotencyKey = "next-job"
+	next, err := ws.AdmitWorkerRun("account", req)
+	if err != nil || next.ModelProfile.Action.Model != "second" { t.Fatalf("future job did not capture new defaults: %+v %v", next, err) }
+	loaded, _, err := ws.GetWorker("account", w.ID)
+	if err != nil || loaded.Revision != w.Revision || !loaded.ModelProfile.UseAccountDefault { t.Fatalf("admission changed worker policy: %+v %v", loaded, err) }
+}
+
+// Requirement: resetting an explicit worker to defaults remains a pending edit,
+// not authority to change approved jobs. Threat: reset silently self-accepts.
+// UpdateWorker/AcceptWorker are the narrowest durable human-review boundary.
+func TestWorkerModelResetRequiresAcceptance(t *testing.T) {
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ws := NewWorkerStore(db)
+	sel := ModelProfileSelection{Provider: "fixture", Model: "override"}
+	explicit := &SessionModelProfileSnapshot{Source: SessionModelProfileSourceTemporary, Action: sel, Plan: &sel}
+	w, err := ws.CreateWorker("account", "owner", CreateWorkerRequest{Name: "Review", Instructions: "Review", InitialLifecycleState: WorkerLifecycleStatePending, ProposedBindings: map[string]string{"primary": "workspace"}, WorkspaceRequirements: []WorkerWorkspaceRequirement{{Role: "primary", Required: true}}, ModelProfile: explicit}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err = ws.AcceptWorker("account", "owner", w.ID, w.Revision, w.ProposedBindings, explicit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reset := CloneSessionModelProfileSnapshot(explicit)
+	reset.UseAccountDefault = true
+	staged, err := ws.UpdateWorker("account", "owner", w.ID, w.Revision, UpdateWorkerRequest{ModelProfile: reset}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if staged.ModelProfile.UseAccountDefault || staged.PendingReview == nil || !staged.PendingReview.ModelProfile.UseAccountDefault { t.Fatalf("reset bypassed review: %+v", staged) }
+	if _, err = ws.AcceptWorker("account", "owner", w.ID, w.Revision, w.LocalBindings, reset); !errors.Is(err, ErrWorkerConflict) { t.Fatalf("stale reset accepted: %v", err) }
+	approved, err := ws.AcceptWorker("account", "owner", w.ID, staged.Revision, w.LocalBindings, reset)
+	if err != nil || !approved.ModelProfile.UseAccountDefault || approved.PendingReview != nil { t.Fatalf("reset not accepted: %+v %v", approved, err) }
 }
