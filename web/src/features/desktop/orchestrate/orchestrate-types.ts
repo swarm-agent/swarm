@@ -253,6 +253,7 @@ export interface TaskProgramRecord {
 
 export interface TaskSessionStateItem {
   sessionId: string
+  hydrated?: boolean
   title?: string
   role?: string
   status: 'running' | 'needs_review' | 'completed' | 'failed' | 'queued' | 'blocked' | 'paused' | 'unknown'
@@ -353,6 +354,7 @@ export interface RunningTask {
   activeSubtaskId?: string
   planProgressPercent?: number
   subtasksCount?: { completed: number; total: number }
+  sessionIds?: string[]
   sessionSummary?: TaskSessionSummary
   associatedSessionIds?: string[]
 

@@ -811,7 +811,7 @@ export function aggregateTaskLiveState(
   task: RunningTask,
   liveTaskSessionsData: Record<string, SessionDataLookup | undefined>,
 ): RunningTask {
-  const associatedSids = extractTaskSessionIds(task as TaskSessionCandidate)
+  const associatedSids = task.sessionIds || extractTaskSessionIds(task as TaskSessionCandidate)
   const primarySessionId =
     task.sessionId ||
     task.planBinding?.sessionId ||
@@ -987,8 +987,10 @@ export function aggregateTaskLiveState(
 
     return {
       sessionId: sid,
+      hydrated: isHydrated,
       title: jobDef?.title || matchingJob?.job_id || sSess?.title || `Session ${sid.slice(0, 8)}`,
-      role: (sSess?.metadata?.role as string) || (matchingJob ? 'coder' : undefined),
+      role: (sSess?.metadata?.resolved_agent_name as string) || (sSess?.metadata?.subagent as string) ||
+        (sSess?.metadata?.requested_subagent as string) || (sSess?.metadata?.role as string) || jobDef?.agent_type,
       status: itemStatus,
       // Only failed/blocked current attempts expose errors; a running retry must
       // not inherit a previous intent or lifecycle's failure.

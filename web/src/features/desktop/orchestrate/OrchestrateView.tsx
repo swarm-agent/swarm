@@ -91,6 +91,8 @@ import type { QuickRouteMode } from '../tools/media-library/media-viewer-modal'
 import { MediaTaskCard } from './media-task-card'
 import { ORCHESTRATE_THEMES } from './orchestrate-themes'
 import { TaskCardSummary, formatElapsedString, formatElapsedSeconds } from './task-card-summary'
+import { taskWithCurrentSessions } from './task-card-sessions'
+import { TaskCardActionButtons } from './task-card-action-buttons'
 import { TaskCardActivity } from './task-card-activity'
 import { TaskAttention, useTaskAttention } from './task-attention'
 import { TaskListHeader, TaskListToolbar } from './task-list-toolbar'
@@ -953,12 +955,11 @@ export function MinimalTaskCard({
       data-task-state={attentionPending ? 'waiting_for_input' : task.status}
       className={`swarm-task-card relative flex min-w-0 flex-col transition-colors cursor-pointer ${isSelected ? 'swarm-task-card-selected' : ''}`}
     >
-      {onArchiveTask && <button type="button" className="self-end px-2 py-1 text-xs text-slate-300" onClick={e => { e.stopPropagation(); onArchiveTask() }}>Archive task</button>}
-      {onAskOrchestrator && <button type="button" className="self-end px-2 py-1 text-xs text-blue-300" onClick={e => { e.stopPropagation(); onAskOrchestrator() }}>Ask Orchestrator</button>}
       <TaskCardSummary
         // The dedicated row below owns live activity; the summary owns task facts.
         task={isRunning ? { ...task, toolActivitySummary: undefined } : task}
         onPreview={onPreviewDeliverable}
+        onOpenSession={onInvestigateSession}
         statusBadge={
           <div
             className={`swarm-task-state ${isPendingApproval ? 'swarm-task-approval-pill' : ''} text-[11px] flex items-center gap-1.5 shrink-0 ${
@@ -1009,6 +1010,7 @@ export function MinimalTaskCard({
         }
         actions={
           <div className="flex items-center gap-1.5">
+            <TaskCardActionButtons onArchiveTask={onArchiveTask} onAskOrchestrator={onAskOrchestrator} />
             {onToggleMarked && (
               <label
                 className={`group flex items-center justify-center w-5 h-5 rounded-md border transition-all cursor-pointer shrink-0 ${
@@ -3792,15 +3794,22 @@ export function OrchestrateView({
     return run ? run.active ? 'active' as const : 'inactive' as const : 'unknown' as const
   })
 
+  const taskSessionCohort = useDesktopV3CacheSelector(
+    state => ({ source: tasks, tasks: tasks.map(task => taskWithCurrentSessions(task, state)) }),
+    (prev, next) => prev.source === next.source && prev.tasks.every((task, index) =>
+      task.sessionIds?.join(',') === next.tasks[index]?.sessionIds?.join(',')),
+  )
+  const tasksWithSessions = taskSessionCohort.tasks
+
   const taskSessionIdsKey = useMemo(() => {
     const set = new Set<string>()
-    for (const t of tasks) {
+    for (const t of tasksWithSessions) {
       for (const sid of extractTaskSessionIds(t as TaskSessionCandidate)) {
         set.add(sid)
       }
     }
     return Array.from(set).sort().join(',')
-  }, [tasks])
+  }, [tasksWithSessions])
 
   const liveTaskSessionsData = useDesktopV3CacheSelector(
     (state) => {
@@ -4532,8 +4541,8 @@ export function OrchestrateView({
   }
 
   const activeTaskSessionIds = useMemo(() => {
-    return computeActiveTaskSessionIds(tasks, selectedTaskId)
-  }, [tasks, selectedTaskId])
+    return computeActiveTaskSessionIds(tasksWithSessions, selectedTaskId)
+  }, [tasksWithSessions, selectedTaskId])
 
   const activeTaskSessionIdsKey = useMemo(() => activeTaskSessionIds.join(','), [activeTaskSessionIds])
 
@@ -5793,8 +5802,8 @@ export function OrchestrateView({
 
   // Real-time status transitions linked to V3 session lifecycles: status = 'needs_review' when execution completes
   const liveTasks = useMemo(() => {
-    return tasks.map((task) => aggregateTaskLiveState(task, liveTaskSessionsData))
-  }, [tasks, liveTaskSessionsData])
+    return tasksWithSessions.map((task) => aggregateTaskLiveState(task, liveTaskSessionsData))
+  }, [tasksWithSessions, liveTaskSessionsData])
 
   // Task counts by source and status
   const filteredBySourceTasks = useMemo(() => {

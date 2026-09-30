@@ -991,7 +991,7 @@ test('OrchestrateView source contracts: no premature execution, duplicate-click 
   // The memo delegates reconciliation to the helper; terminal precedence lives there.
   const helperSource = fs.readFileSync(path.join(__dirname, 'orchestrate-task-helpers.ts'), 'utf8')
   assert.ok(
-    source.includes('tasks.map((task) => aggregateTaskLiveState(task, liveTaskSessionsData))'),
+    source.includes('tasksWithSessions.map((task) => aggregateTaskLiveState(task, liveTaskSessionsData))'),
     'liveTasks memo must use the canonical session-state aggregator'
   )
   assert.ok(

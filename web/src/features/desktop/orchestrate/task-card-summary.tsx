@@ -2,6 +2,7 @@ import type { ReactNode } from 'react'
 import { Code2, Film, Image as ImageIcon, Layers, Music } from 'lucide-react'
 import type { RunningTask, MediaDeliverable } from './orchestrate-types'
 import { taskReviewMessage } from './task-review-message'
+import { taskCardSessions } from './task-card-sessions'
 
 export function formatElapsedString(elapsed?: string): string {
   if (!elapsed) return ''
@@ -46,15 +47,19 @@ export function taskCardFacts(task: RunningTask) {
   }
 }
 
-export function TaskCardSummary({ task, onPreview, statusBadge, timer, actions, extraBadges }: {
+export function TaskCardSummary({ task, onPreview, onOpenSession, statusBadge, timer, actions, extraBadges }: {
   task: RunningTask
   onPreview?: (deliverable: MediaDeliverable) => void
+  onOpenSession?: (sessionId: string) => void
   statusBadge?: ReactNode
   timer?: ReactNode
   actions?: ReactNode
   extraBadges?: ReactNode
 }) {
   const facts = taskCardFacts(task)
+  const sessions = taskCardSessions(task)
+  const working = sessions.filter(session => session.status === 'running').length
+  const unknown = sessions.filter(session => session.status === 'unknown').length
   const review = task.status === 'needs_review' ? taskReviewMessage(task) : null
   const Icon = task.agentType === 'image' ? ImageIcon : task.agentType === 'video' ? Film
     : task.agentType === 'audio' || task.agentType === 'sound' ? Music : task.agentType === 'swarm' ? Layers : Code2
@@ -65,7 +70,7 @@ export function TaskCardSummary({ task, onPreview, statusBadge, timer, actions, 
   return (
     <div className="swarm-task-summary" data-testid="task-card-summary">
       <div className="swarm-task-summary-content">
-        <div className="swarm-task-header-row">
+        <div className="swarm-task-header-row flex-wrap">
           {preview ? <button type="button" className="swarm-task-visual" aria-label={`Preview ${preview.title}`}
             disabled={!onPreview} onClick={event => { event.stopPropagation(); onPreview?.(preview) }}>
             {preview.type === 'video' && preview.mediaUrl
@@ -84,6 +89,19 @@ export function TaskCardSummary({ task, onPreview, statusBadge, timer, actions, 
           {!facts.git.startsWith('Git:') && <span className="swarm-task-state"><i className={`swarm-task-dot ${facts.git === 'Integrated' ? 'is-success' : 'is-warning'}`} />{facts.git}</span>}
           {facts.progress && <span className="swarm-task-progress">{facts.progress}</span>}
         </div>
+        {task.sessionSummary && <section aria-label="Task AI sessions" className="min-w-0 text-xs">
+          <span className="swarm-task-state">{working} {working === 1 ? 'AI' : 'AIs'} working{unknown > 0 ? ' confirmed · Some session state unavailable' : ''}</span>
+          <div className="flex flex-wrap gap-1.5 mt-1 min-w-0">
+            {sessions.map(session => <button type="button" key={session.sessionId}
+              data-session-id={session.sessionId} data-session-state={session.status}
+              className="max-w-full min-w-0 rounded border border-slate-600 px-2 py-1 text-left text-slate-300 hover:bg-slate-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-400"
+              disabled={!onOpenSession} aria-label={`View ${session.role || 'AI'} session ${session.title || session.sessionId}`}
+              onClick={event => { event.stopPropagation(); onOpenSession?.(session.sessionId) }}>
+              <span className="break-words">{session.role ? `${session.role} · ` : ''}{session.title || session.sessionId.slice(0, 8)}</span>
+              <span> · {session.status === 'unknown' ? 'State unavailable' : session.status.replace(/_/g, ' ')}</span>
+            </button>)}
+          </div>
+        </section>}
         {extraBadges && <div className="swarm-task-extra">{extraBadges}</div>}
         {review && <section aria-label="Ready for review">
           <p>{review.outcome}{review.hasOutcome && ' Review the changes.'}</p>
