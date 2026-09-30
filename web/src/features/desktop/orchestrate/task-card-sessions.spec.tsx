@@ -1,4 +1,4 @@
-// Purpose: collapsed task cards expose every current AI session, count only running
+// Purpose: collapsed cards expose accurate counts; expanded cards expose current AI sessions, counting only running
 // executions, and keep archive/ask controls inline before selection. Regression:
 // planned jobs, duplicate coordinator entries and prior generations inflate counts
 // or route both controls to one session. Authority: taskWithCurrentSessions,
@@ -39,7 +39,7 @@ test('two delegated children count separately and open exact targets without car
   assert.deepEqual(current.sessionIds, ['one', 'parent', 'two'])
   const live = aggregateTaskLiveState(current, { parent: data('running'), one: data('running'), two: data('running') })
   const opened: string[] = []
-  const tree = TaskCardSummary({ task: live, onOpenSession: id => opened.push(id) })
+  const tree = TaskCardSummary({ task: live, expanded: true, onOpenSession: id => opened.push(id) })
   assert.match(renderToStaticMarkup(tree), /2 AIs working/)
   const controls = buttons(tree).filter(button => button.props['data-session-id'])
   assert.deepEqual(controls.map(button => button.props['data-session-id']), ['one', 'two'])

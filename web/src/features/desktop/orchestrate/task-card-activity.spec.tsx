@@ -112,27 +112,29 @@ test('streaming rerenders preserve DOM, geometry and focus; terminal transitions
       assert.equal(await page.evaluate(() => (window as any).mutations), 0)
       await page.locator('#control').focus()
       for (const currentTool of ['read', 'edit', 'long_tool_'.repeat(80), '', 'search']) {
-        await page.evaluate(currentTool => (window as any).updateTask({ currentTool, planProgressPercent: currentTool ? 100 : undefined }), currentTool)
+        await page.evaluate(currentTool => (window as any).updateTask({ currentTool }), currentTool)
         assert.equal(await row.count(), 1)
         const stable = await page.evaluate(() => {
           const w = window as any, row = document.querySelector('[data-testid="task-card-activity"]')!
           const status = row.querySelector('[role="status"]')!, bounds = row.getBoundingClientRect()
-          return row === w.activityNode && status !== w.statusNode && bounds.height === 34
+          return row === w.activityNode && status === w.statusNode && bounds.height === 34
             && bounds.width === w.initialBounds.width && bounds.y === w.initialBounds.y
             && document.activeElement?.id === 'control'
         })
         assert.equal(stable, true)
       }
-      // Repeated same-name calls still swap, but token-only updates do not.
+      // Repeated same-name calls update their exact event and count without remounting.
       await page.evaluate(() => {
         const w = window as any
         w.updateTask({ currentTool: 'read same.ts', currentToolEventKey: 'call-1', toolCallCount: 1 })
         w.previousEvent = document.querySelector('[role="status"]')
         w.updateTask({ currentToolEventKey: 'call-2', toolCallCount: 2 })
       })
-      assert.equal(await page.evaluate(() => document.querySelector('[role="status"]') !== (window as any).previousEvent), true)
+      assert.equal(await page.evaluate(() => document.querySelector('[role="status"]') === (window as any).previousEvent), true)
       assert.equal(await row.locator('[role="status"]').count(), 1)
       assert.match(await row.innerText(), /call 2/)
+      assert.equal(await row.locator('[role="status"]').getAttribute('data-event-key'), 'call-2')
+      assert.equal(await row.locator('[role="status"]').evaluate(node => getComputedStyle(node).animationName), 'none')
       await page.locator('#expand').click()
       assert.equal(await page.locator('#checklist').count(), 1)
       assert.equal(await row.count(), 1)

@@ -144,7 +144,13 @@
 /* Task hierarchy uses the section's existing palette, including rose themes. */
 .swarm-task-icon { flex: none; margin-top: 2px; color: var(--swarm-text-muted); }
 .swarm-task-header-row { align-items: flex-start; }
-.swarm-task-meta { margin-top: 5px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font: 11px/1.5 var(--font-mono, monospace); color: var(--swarm-text-muted); }
+.swarm-task-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 3px 10px; min-width: 0; margin-top: 5px; font: 11px/1.5 var(--font-mono, monospace); color: var(--swarm-text-muted); }
+.swarm-task-meta > span { min-width: 0; max-width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.swarm-task-meta-agent { color: var(--swarm-text); }
+.swarm-task-header-row h3 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.swarm-task-agent-count { flex: none; font-variant-numeric: tabular-nums; }
+.swarm-task-status-row > span { min-width: 0; max-width: 100%; }
+.swarm-task-elapsed { flex: 0 0 7ch; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .swarm-task-status-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-top: 7px; font-size: 11px; color: var(--swarm-text-muted); }
 .swarm-section .swarm-task-state { display: inline-flex; align-items: center; gap: 6px; background: none; border: 0; color: var(--swarm-text-muted); }
 .swarm-task-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--swarm-info); flex: none; }
@@ -155,13 +161,17 @@
 .swarm-task-extra { display: flex; gap: 8px; color: var(--swarm-text-muted); }
 .swarm-section .swarm-task-extra :is(span, a) { background: none; border: 0; padding: 0; color: inherit; }
 .swarm-task-focus { display: flex; align-items: center; gap: 10px; min-width: 0; height: 34px; border-top: .5px solid var(--swarm-border-muted); font-size: 11px; color: var(--swarm-text-muted); }
-.swarm-task-focus-event { display: flex; align-items: center; gap: 6px; min-width: 0; flex: 1; animation: swarm-focus-swap 200ms ease-out; }
+.swarm-task-focus-event { display: flex; align-items: center; gap: 6px; min-width: 0; flex: 1; animation: none; }
 .swarm-task-focus-tool, .swarm-task-focus-target, .swarm-task-focus-count { font-family: var(--font-mono, monospace); }
 .swarm-task-focus-tool { color: var(--swarm-text); max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .swarm-task-focus-target { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .swarm-task-focus-count { flex: none; margin-left: auto; }
-@keyframes swarm-focus-swap { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: translateY(0); } }
-@media (prefers-reduced-motion: reduce) { .swarm-task-focus-event { animation: none; } }
+/* Collapsed task cards are intentionally quiet, including transient action loaders.
+   Expanded evidence retains its own motion contract; no global motion override. */
+.swarm-task-card[data-expanded="false"] *, .swarm-task-card[data-expanded="false"] { animation: none !important; transition: none !important; }
+.swarm-task-card[data-expanded="false"] .swarm-task-action-row { justify-content: flex-end; padding: 4px 0; border: 0; background: none; box-shadow: none; }
+.swarm-task-card[data-expanded="false"] .swarm-task-action-row > div { flex-wrap: wrap; min-width: 0; max-width: 100%; }
+.swarm-task-focus-count { min-width: 6ch; text-align: right; font-variant-numeric: tabular-nums; }
 .swarm-section .swarm-task-details-toggle, .swarm-section .swarm-task-details-toggle * { color: var(--swarm-text-muted); background: none; border: 0; font-weight: normal; }
 .swarm-section .swarm-task-proposal { font-size: 13px; line-height: 1.55; }
 .swarm-section .swarm-task-proposal :is(div, span, p, ul, li, strong, svg, summary) { color: var(--swarm-text-muted); }

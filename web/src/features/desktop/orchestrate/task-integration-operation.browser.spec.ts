@@ -56,6 +56,11 @@ test('integration card stays stable through pending, failure, retry and stale su
     }
     assert.deepEqual(errors, [], 'complete RunningTask fixture renders without page errors')
     assert.equal(await initial.isEnabled(), true)
+    // Collapsed summary owns lineage/count; the action row must not duplicate it.
+    assert.equal(await page.getByTestId('orchestrate-task-card').getAttribute('data-expanded'), 'false')
+    assert.match(await page.getByTestId('task-card-summary').innerText(), /2 unintegrated commits/)
+    assert.doesNotMatch(await bar.innerText(), /agent\/a|Pending worktree|2 commits/)
+    assert.equal(await page.getByTestId('orchestrate-task-card').evaluate(node => node.getAnimations({ subtree: true }).length), 0)
     const bounds = await initial.boundingBox()
     assert.ok(bounds, 'initial operation has measurable dimensions')
     await initial.click()
@@ -63,6 +68,7 @@ test('integration card stays stable through pending, failure, retry and stale su
     const pending = page.getByRole('button', { name: 'Integrating…', exact: true })
     assert.equal(await pending.isDisabled(), true)
     assert.equal(await pending.getAttribute('aria-busy'), 'true')
+    assert.equal(await pending.evaluate(node => node.getAnimations({ subtree: true }).length), 0)
     assert.equal(await page.evaluate(() => (window as any).calls), 1)
     await page.evaluate(() => (window as any).snapshot({ ...(window as any).task, isIntegrated: true, gitStatus: 'clean', unintegratedCommits: 0 }))
     assert.equal(await bar.count(), 1)

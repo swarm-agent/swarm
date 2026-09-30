@@ -953,9 +953,11 @@ export function MinimalTaskCard({
       data-testid="orchestrate-task-card"
       data-task-id={task.id}
       data-task-state={attentionPending ? 'waiting_for_input' : task.status}
+      data-expanded={expanded}
       className={`swarm-task-card relative flex min-w-0 flex-col transition-colors cursor-pointer ${isSelected ? 'swarm-task-card-selected' : ''}`}
     >
       <TaskCardSummary
+        expanded={expanded}
         // The dedicated row below owns live activity; the summary owns task facts.
         task={isRunning ? { ...task, toolActivitySummary: undefined } : task}
         onPreview={onPreviewDeliverable}
@@ -985,7 +987,7 @@ export function MinimalTaskCard({
                   : isPendingApproval
                   ? 'bg-amber-400'
                   : isRunning
-                  ? 'bg-sky-400 animate-pulse'
+                  ? 'bg-sky-400'
                   : isNeedsReview
                   ? 'bg-amber-400/80'
                   : isCompleted
@@ -1061,7 +1063,7 @@ export function MinimalTaskCard({
           </>
         }
       />
-      {onInvestigateSession && <TaskSessionErrors task={task} onInvestigate={onInvestigateSession} />}
+      {expanded && onInvestigateSession && <TaskSessionErrors task={task} onInvestigate={onInvestigateSession} />}
       {expanded && (Boolean(task.workspacesInvolved?.length) || Boolean(task.contextPoolSummary)) && (
         <div className="flex flex-col gap-1 pt-1.5 border-t border-slate-800/60 min-w-0">
           {!isMediaTask && task.workspacesInvolved && task.workspacesInvolved.length > 0 && (
@@ -1102,7 +1104,7 @@ export function MinimalTaskCard({
       )}
       <TaskAttention attention={attention} />
       {/* ROUTER AGENT FAILURE ALERT BANNER */}
-      {(task.routerAlert || (task as any).router_alert) && (
+      {expanded && (task.routerAlert || (task as any).router_alert) && (
         <div className="flex items-start gap-2.5 p-3 rounded-lg bg-amber-950/40 border border-amber-500/60 text-amber-200 text-xs">
           <AlertTriangle size={15} className="text-amber-400 flex-shrink-0 mt-0.5" />
           <div className="flex flex-col gap-1 min-w-0 flex-1">
@@ -1122,7 +1124,7 @@ export function MinimalTaskCard({
       )}
 
       {/* PLANNING STATE BANNER */}
-      {isPlanning && (
+      {expanded && isPlanning && (
         <div className="flex flex-col p-3 rounded-lg bg-indigo-950/30 border border-indigo-500/40 space-y-2 text-xs" data-testid="task-planning-banner">
           <div className="flex items-center justify-between gap-2 flex-wrap">
             <div className="flex items-center gap-2">
@@ -2083,11 +2085,11 @@ export function MinimalTaskCard({
       {/* 2c. PENDING WORKTREE READY TO INTEGRATE (Minimal, aesthetic, single Integrate action) */}
       {!isPendingApproval && !isMediaTask && (hasUnintegrated || hasIntegrationReceipt) && (
         <div
-          className="flex items-center justify-between p-3 rounded-xl bg-slate-900/60 hover:bg-slate-900/90 border border-slate-800/80 hover:border-slate-700/80 transition-colors duration-150 motion-reduce:transition-none text-xs gap-3 shadow-sm"
+          className="swarm-task-action-row flex items-center justify-between p-3 rounded-xl bg-slate-900/60 hover:bg-slate-900/90 border border-slate-800/80 hover:border-slate-700/80 transition-colors duration-150 motion-reduce:transition-none text-xs gap-3 shadow-sm"
           data-testid="task-pending-worktree-bar"
           title="Mission Execution Completed — Awaiting Review"
         >
-          <div className="flex items-center gap-2.5 min-w-0 flex-1">
+          {expanded && <div className="flex items-center gap-2.5 min-w-0 flex-1">
             <div className="flex items-center justify-center w-7 h-7 rounded-lg bg-amber-500/10 text-amber-400 border border-amber-500/20 flex-shrink-0">
               <GitBranch size={13} />
             </div>
@@ -2106,7 +2108,7 @@ export function MinimalTaskCard({
               <span className="sr-only">Mission Execution Completed — Awaiting Review</span>
               <span className="sr-only">{integrationPhase === 'success' ? 'Integrated:' : 'Not Integrated:'}</span>
             </div>
-          </div>
+          </div>}
           <div className="flex items-center gap-2 flex-shrink-0">
             {(isNeedsReview || integrationPhase === 'success') && onReopen && (
               <button
@@ -2148,16 +2150,16 @@ export function MinimalTaskCard({
       {/* 2c-alt. Review Bar (When execution completed without pending unintegrated worktree) */}
       {isNeedsReview && !hasUnintegrated && !hasIntegrationReceipt && (
         <div
-          className="flex items-center justify-between p-3 rounded-xl bg-slate-900/60 border border-slate-800 text-xs gap-3 shadow-sm"
+          className="swarm-task-action-row flex items-center justify-between p-3 rounded-xl bg-slate-900/60 border border-slate-800 text-xs gap-3 shadow-sm"
           title="Mission Execution Completed — Awaiting Review"
         >
-          <div className="flex items-center gap-2 min-w-0">
+          {expanded && <div className="flex items-center gap-2 min-w-0">
             <CheckCircle2 size={14} className="text-emerald-400 flex-shrink-0" />
             <span className="font-semibold text-slate-200 text-xs">
               Execution completed — awaiting review
             </span>
             <span className="sr-only">Mission Execution Completed — Awaiting Review</span>
-          </div>
+          </div>}
           <div className="flex items-center gap-2 flex-shrink-0">
             {onReopen && (
               <button
@@ -2233,7 +2235,7 @@ export function MinimalTaskCard({
       )}
 
       {/* 2d. FAILED / REJECTED BANNER */}
-      {task.status === 'blocked' && (
+      {expanded && task.status === 'blocked' && (
         <div role="status" className="rounded-lg border border-amber-500/30 bg-amber-950/20 p-3 text-xs text-amber-200">
           {redactIntegrationDiagnostic(task.actionNeeded || task.lastError || 'Execution is blocked or paused. Open the session to inspect the required action.')}
         </div>
@@ -2248,7 +2250,7 @@ export function MinimalTaskCard({
                   {isRejected ? 'Task Rejected' : 'Task Failed'}
                 </span>
                 <span className="text-[11px] text-slate-300">
-                  {redactIntegrationDiagnostic(task.lastError || (isRejected ? 'This task proposal was rejected.' : 'Execution failed. Review session logs or reopen with new instructions.'))}
+                  {expanded ? redactIntegrationDiagnostic(task.lastError || (isRejected ? 'This task proposal was rejected.' : 'Execution failed. Review session logs or reopen with new instructions.')) : 'Open details to inspect the error.'}
                 </span>
               </div>
             </div>
@@ -2275,7 +2277,7 @@ export function MinimalTaskCard({
       )}
 
       {/* Execution Error Recovery Banner */}
-      {task.lastError && ['failed', 'blocked', 'paused'].includes(task.status) && !task.sessionSummary?.sessionStates.some(state => state.lastError) && (
+      {expanded && task.lastError && ['failed', 'blocked', 'paused'].includes(task.status) && !task.sessionSummary?.sessionStates.some(state => state.lastError) && (
         <div className="flex items-start justify-between p-2.5 rounded-lg bg-rose-950/30 border border-rose-500/40 text-[11px] gap-2">
           <div className="flex items-start gap-2 min-w-0">
             <AlertTriangle size={13} className="text-rose-400 flex-shrink-0 mt-0.5" />
@@ -2302,7 +2304,7 @@ export function MinimalTaskCard({
       )}
 
       {/* 3. Out of Sync Warning Banner */}
-      {!isPendingApproval && (Boolean(task.syncWarning) || (task.behindCommits ?? 0) > 0) && (
+      {expanded && !isPendingApproval && (Boolean(task.syncWarning) || (task.behindCommits ?? 0) > 0) && (
         <div className="flex items-center justify-between p-2 rounded-lg bg-rose-950/30 border border-rose-500/50 text-rose-200 text-[11px] gap-2">
           <div className="flex items-center gap-2 min-w-0">
             <AlertTriangle size={12} className="text-rose-400 flex-shrink-0" />
@@ -2317,18 +2319,18 @@ export function MinimalTaskCard({
 
       {/* 5. Already Integrated Banner */}
       {!isPendingApproval && !isMediaTask && task.isIntegrated && !hasIntegrationReceipt && (
-        <div className="flex items-center justify-between p-2 rounded-lg bg-emerald-950/20 border border-emerald-500/30 text-emerald-200 text-[11px] gap-2">
-          <div className="flex items-center gap-2 min-w-0">
+        <div className="swarm-task-action-row flex items-center justify-between p-2 rounded-lg bg-emerald-950/20 border border-emerald-500/30 text-emerald-200 text-[11px] gap-2">
+          {expanded && <div className="flex items-center gap-2 min-w-0">
             <CheckCircle2 size={12} className="text-emerald-400 flex-shrink-0" />
             <span className="font-bold text-emerald-400 flex-shrink-0">Integrated:</span>
             <span className="truncate">
               Changes on {task.worktreeBranch || 'worktree'} have been successfully integrated into {task.baseBranch || 'Target unavailable'}.
             </span>
-          </div>
+          </div>}
           <div className="flex items-center gap-2 flex-shrink-0">
-            <span className="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-mono text-[9px] font-bold border border-emerald-500/30">
+            {expanded && <span className="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-mono text-[9px] font-bold border border-emerald-500/30">
               Up-to-date
-            </span>
+            </span>}
             {onReopen && (
               <button
                 type="button"

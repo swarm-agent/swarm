@@ -1,7 +1,7 @@
 import { Terminal } from 'lucide-react'
 import type { RunningTask } from './orchestrate-types'
 
-/** One event-backed slot; no transcript cache or polling. Keying remounts even repeated tools. */
+/** One event-backed slot; no transcript cache or polling. Event attributes update repeated tools without remount motion. */
 export function TaskCardActivity({ task }: { task: RunningTask }) {
   if (task.status !== 'running' && task.status !== 'in_progress') return null
   const display = task.currentTool?.trim() || ''
@@ -10,7 +10,7 @@ export function TaskCardActivity({ task }: { task: RunningTask }) {
   return (
     <div data-testid="task-card-activity" className="swarm-task-focus">
       <span className="shrink-0">▸ Focus</span>
-      <span key={task.currentToolEventKey || display} data-event-key={task.currentToolEventKey}
+      <span data-event-key={task.currentToolEventKey}
         className="swarm-task-focus-event" role="status" aria-live="polite" aria-atomic="true">
         <Terminal size={12} className="shrink-0" aria-hidden="true" />
         <span className="swarm-task-focus-tool">{tool}</span>

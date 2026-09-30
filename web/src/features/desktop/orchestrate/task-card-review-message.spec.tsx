@@ -1,4 +1,4 @@
-// Purpose: TaskCardSummary shows a compact outcome with visible limitations and
+// Purpose: expanded TaskCardSummary shows substantive outcomes with visible limitations and
 // preserves the exact handoff behind native, keyboard-accessible collapsed details.
 // Threat: raw recaps overwhelm cards, hidden warnings imply success, or expansion
 // bubbles into card actions and stale attempt text persists. The real-browser
@@ -34,7 +34,7 @@ test('review copy, native details, warning visibility and attempt replacement', 
     window.cardActions=0; window.cardKeys=0;
     const root=createRoot(document.getElementById('root'));
     function render(){flushSync(()=>root.render(<article onClick={()=>window.cardActions++} onKeyDown={()=>window.cardKeys++}>
-      <TaskCardSummary task={task}/></article>))}
+      <TaskCardSummary task={task} expanded/></article>))}
     window.updateTask=patch=>{task={...task,...patch};render()};render();
   ` }, bundle: true, write: false, format: 'iife', platform: 'browser', jsx: 'automatic', logLevel: 'silent' })
   const browser = await chromium.launch({ headless: true, channel: process.env.SWARM_TEST_BROWSER_CHANNEL || 'chrome' })
@@ -46,7 +46,7 @@ test('review copy, native details, warning visibility and attempt replacement', 
     const review = page.getByRole('region', { name: 'Ready for review' })
     const details = review.locator('details')
     const summary = review.locator('summary')
-    assert.match(await review.innerText(), /Fixed the sidebar so project names stay visible\. Review the changes\./)
+    assert.match(await review.innerText(), /Fixed the sidebar so project names stay visible\./)
     assert.match(await review.innerText(), /Validation still needs to be run\./)
     assert.match(await review.innerText(), /Integration has not been verified\./)
     assert.doesNotMatch(await review.innerText(), /abc123|pnpm|\/worktrees|I inspected|##/)
@@ -66,12 +66,12 @@ test('review copy, native details, warning visibility and attempt replacement', 
     await summary.click()
     await page.evaluate(() => (window as any).updateTask({ activeAttemptId: 'attempt-two', handoffSummary: 'Added keyboard navigation.' }))
     assert.equal(await details.getAttribute('open'), null)
-    assert.match(await review.innerText(), /Added keyboard navigation\. Review the changes\./)
+    assert.match(await review.innerText(), /Added keyboard navigation\./)
     assert.doesNotMatch(await review.innerText(), /project names|Validation still/)
     assert.equal(await review.locator('pre').textContent(), 'Added keyboard navigation.')
     await page.evaluate(() => (window as any).updateTask({ id: 'new-task', handoffSummary: '' }))
     assert.equal(await details.count(), 0)
-    assert.equal(await review.innerText(), 'Review the task to see what changed.')
+    assert.doesNotMatch(await review.innerText(), /Review the task|Review the changes/)
     await page.evaluate(() => (window as any).updateTask({ status: 'running', handoffSummary: 'Fixed another feature.' }))
     assert.equal(await review.count(), 0)
     // Media preview remains an independent action, not a review/Accept mutation.
