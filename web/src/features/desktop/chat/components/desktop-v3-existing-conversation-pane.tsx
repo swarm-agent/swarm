@@ -3445,16 +3445,10 @@ export function DesktopV3ExistingConversationPane({
               data-testid="desktop-chat-scroller"
               tabIndex={0}
             >
-              {/* Match the composer's 70rem frame, then double its 16/24px frame padding so both message edges sit exactly 16/24px inside the outlined composer. */}
-              <div
-                ref={contentRef}
-                className={cn(
-                  "mx-auto flex min-h-full w-full min-w-0 max-w-[70rem] flex-col gap-5 [&>*:not(:last-child)]:[overflow-anchor:none]",
-                  presentation === "sidebar" ? "px-4" : "px-8 sm:px-12",
-                  // The mobile workspace list owns its padding and scroll area;
-                  // message gutters otherwise squeeze its workspace/Task row.
-                  Boolean(emptyPresentation) && "max-sm:h-full max-sm:min-h-0 max-sm:max-w-none max-sm:gap-0 max-sm:px-0",
-                )}
+              <DesktopV3ChatContentLane
+                contentRef={contentRef}
+                presentation={presentation}
+                emptyPresentation={Boolean(emptyPresentation)}
               >
                 {emptyPresentation}
                 {showConversationLoading && !startPresentation ? (
@@ -3539,7 +3533,7 @@ export function DesktopV3ExistingConversationPane({
                   data-testid="desktop-chat-tail-anchor"
                   className="h-px shrink-0 [overflow-anchor:auto]"
                 />
-              </div>
+              </DesktopV3ChatContentLane>
             </div>
             {!isAtBottom ? (
               <button
@@ -4932,6 +4926,38 @@ function DesktopV3CompactPendingState() {
   );
 }
 
+export function DesktopV3ChatContentLane({
+  children,
+  contentRef,
+  presentation = "page",
+  emptyPresentation = false,
+}: {
+  children: ReactNode;
+  contentRef?: MutableRefObject<HTMLDivElement | null>;
+  presentation?: "page" | "sidebar";
+  emptyPresentation?: boolean;
+}) {
+  return (
+    <div
+      ref={contentRef}
+      data-testid="desktop-chat-content-lane"
+      data-chat-presentation={presentation}
+      className={cn(
+        "mx-auto flex min-h-full w-full min-w-0 max-w-[70rem] flex-col gap-5 [&>*:not(:last-child)]:[overflow-anchor:none]",
+        // Padding is relative to the actual scrollport (including its symmetric
+        // scrollbar gutter), never the viewport. The shell composer can use the
+        // same variable and frame contract without compensating individual tools.
+        presentation === "sidebar"
+          ? "px-[var(--swarm-chat-gutter,16px)] [overflow-wrap:anywhere] [&_[data-chat-tool-message]]:translate-x-0 [&_[data-chat-assistant-body]]:w-full [&_[data-chat-assistant-body]]:max-w-full [&_.chat-markdown_pre]:overflow-x-auto [&_.chat-markdown_pre]:whitespace-pre [&_.chat-markdown_pre_code]:whitespace-pre"
+          : "px-8 sm:px-12",
+        emptyPresentation && "max-sm:h-full max-sm:min-h-0 max-sm:max-w-none max-sm:gap-0 max-sm:px-0",
+      )}
+    >
+      {children}
+    </div>
+  );
+}
+
 function DesktopV3AssistantMessage({
   content,
   role,
@@ -4941,7 +4967,7 @@ function DesktopV3AssistantMessage({
 }) {
   return (
     <div className="flex justify-start">
-      <div className="min-w-0 max-w-[calc(100%-2rem)] text-sm leading-6 text-[var(--app-text)]">
+      <div data-chat-assistant-body className="min-w-0 max-w-[calc(100%-2rem)] text-sm leading-6 text-[var(--app-text)]">
         {role === "reasoning" ? (
           <div className="mb-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--app-text-subtle)]">
             reasoning
@@ -4975,6 +5001,7 @@ function DesktopV3ToolMessage({
   const toolName = toolMessage?.tool.trim().toLowerCase();
   return (
     <div
+      data-chat-tool-message
       className={cn(
         "flex w-full min-w-0 justify-start",
         toolName === "bash" && "translate-x-[5px]",
