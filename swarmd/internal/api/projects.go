@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"mime"
 	"net/http"
 	"os"
@@ -3599,12 +3600,8 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, errors.New("captured source repository or fork commit is missing or differs from the task; refresh its lineage"))
 			return
 		}
-		receipt := &pebblestore.ProjectTaskIntegration{State: "in_progress", SessionID: selection.SessionID, SourceBranch: selection.SourceBranch, TargetBranch: selection.TargetBranch}
-		if _, err := db.UpdateProjectTask(p.AccountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
-			t.IsIntegrated = false
-			t.Integration = receipt
-			return nil
-		}); err != nil {
+		receipt := &pebblestore.ProjectTaskIntegration{State: "in_progress", SessionID: selection.SessionID, SourceBranch: selection.SourceBranch, TargetBranch: selection.TargetBranch, TargetWorkspacePath: capturedPath}
+		if err := pebblestore.BeginProjectTaskIntegration(db, p.AccountScopeID, task, receipt); err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
@@ -3614,13 +3611,9 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				if receipt.Error == "" {
 					receipt.Error = "Integration did not complete. Inspect the source and target Git state before retrying."
 				}
-				_, _ = db.UpdateProjectTask(p.AccountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
-					if t.SessionID != selection.SessionID {
-						return errors.New("task attempt changed during integration")
-					}
-					t.Integration = receipt
-					return nil
-				})
+				if _, err := pebblestore.FinishProjectTaskIntegration(db, p.AccountScopeID, task, receipt); err != nil {
+					log.Printf("persist terminal integration receipt failed: %v", err)
+				}
 			}
 		}()
 		// Inspect git state first
@@ -3648,17 +3641,9 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				receipt.SourceHead = sourceState.HeadCommit
 				receipt.ResultingTargetHead = checkout.HeadCommit
 				receipt.State = "already_integrated"
-				updated, updateErr := db.UpdateProjectTask(p.AccountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
-					t.IsIntegrated = true
-					t.Integration = receipt
-					t.Status = "completed"
-					t.UnintegratedCommits = 0
-					t.GitStatus = "clean"
-					t.ActionNeeded = fmt.Sprintf("No Action Required: Integrated into %s", selection.TargetBranch)
-					return nil
-				})
+				updated, updateErr := pebblestore.FinishProjectTaskIntegration(db, p.AccountScopeID, task, receipt)
 				if updateErr != nil {
-					writeError(w, http.StatusInternalServerError, updateErr)
+					writeError(w, http.StatusInternalServerError, fmt.Errorf("Git integration verified at %s but task receipt persistence failed; reconcile task state without rerunning Git: %w", receipt.ResultingTargetHead, updateErr))
 					return
 				}
 				writeJSON(w, http.StatusOK, map[string]any{
@@ -3747,10 +3732,12 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		receipt.SourceHead = childState.HeadCommit
 		receipt.PreviousTargetHead = parentState.HeadCommit
 		if _, err := db.UpdateProjectTask(p.AccountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
-			if t.SessionID != selection.SessionID {
-				return errors.New("task attempt changed before integration preparation")
+			if err := pebblestore.CheckProjectTaskIntegration(t, receipt); err != nil {
+				return err
 			}
-			t.Integration = receipt
+			copy := *receipt
+			t.Integration = &copy
+			t.Revision++
 			return nil
 		}); err != nil {
 			writeError(w, http.StatusConflict, err)
@@ -3792,24 +3779,10 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, errors.New(receipt.Error))
 			return
 		}
-		headDisplay := result.ResultingParentHead
-		if len(headDisplay) > 8 {
-			headDisplay = headDisplay[:8]
-		}
-
 		receipt.State = "integrated"
-		updated, err := db.UpdateProjectTask(p.AccountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
-			t.IsIntegrated = true
-			t.Integration = receipt
-			t.Status = "completed"
-			t.GitStatus = "clean"
-			t.UnintegratedCommits = 0
-			t.ActionNeeded = fmt.Sprintf("No Action Required: Integrated into %s", parentState.BranchName)
-			t.WhatDidDo = append(t.WhatDidDo, fmt.Sprintf("Integrated commits into %s (HEAD: %s)", parentState.BranchName, headDisplay))
-			return nil
-		})
+		updated, err := pebblestore.FinishProjectTaskIntegration(db, p.AccountScopeID, task, receipt)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err)
+			writeError(w, http.StatusInternalServerError, fmt.Errorf("Git integration verified at %s but task receipt persistence failed; reconcile task state without rerunning Git: %w", receipt.ResultingTargetHead, err))
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{

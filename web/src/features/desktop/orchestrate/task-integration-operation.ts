@@ -12,11 +12,20 @@ export type TaskIntegrationOperation =
   | { phase: 'success'; refreshError?: string }
   | { phase: 'error'; failure: IntegrationFailure }
 
+// Canonical receipts also describe promotions initiated outside this card.
+export function taskIntegrationPhase(task: RunningTask, local?: TaskIntegrationOperation): TaskIntegrationOperation['phase'] {
+  if (task.isIntegrated && task.status === 'completed') return 'success'
+  if (task.integration?.state === 'in_progress') return 'pending'
+  if (local?.phase === 'pending') return 'pending'
+  if (task.integration?.state === 'failed' || task.integration?.state === 'conflict') return 'error'
+  return local?.phase || 'ready'
+}
+
 const ready: TaskIntegrationOperation = Object.freeze({ phase: 'ready' })
 
 // Exact captured lineage, not the currently selected card or a mutable snapshot revision.
 export function taskIntegrationKey(projectId: string, task: RunningTask): string {
-  return JSON.stringify([projectId, task.id, task.sessionId, task.sourceWorkspaceId, task.sourceWorkspacePath, task.worktreeBranch, task.baseBranch])
+  return JSON.stringify([projectId, task.id, task.sessionId, task.activeAttemptId, task.sourceWorkspaceId, task.sourceWorkspacePath, task.worktreeBranch, task.baseBranch])
 }
 
 // Interaction receipts only. Never changes task.isIntegrated or claims Git ancestry.
@@ -46,7 +55,7 @@ export function createTaskIntegrationController() {
     async run(project: ProjectSummary, task: RunningTask, mutate: () => Promise<TaskIntegrationResult>, refresh: () => unknown) {
       const key = taskIntegrationKey(project.id, task)
       const current = get(key)
-      if (current.phase === 'pending' || current.phase === 'success') return
+      if (current.phase === 'pending' || current.phase === 'success' || task.integration?.state === 'in_progress' || (task.isIntegrated && task.status === 'completed')) return
       // Lock and notify synchronously, before invoking the transport or yielding.
       publish(key, { phase: 'pending' })
       const capturedTask = { ...task }

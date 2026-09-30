@@ -69,6 +69,15 @@ export function normalizePlanBinding(raw: any): ProjectTaskPlanBinding | undefin
   }
 }
 
+// A late list/read response must not undo a newer durable task revision.
+function retainNewerTasks(incoming: RunningTask[], previous: RunningTask[]): RunningTask[] {
+  const byId = new Map(previous.map(task => [task.id, task]))
+  return incoming.map(task => {
+    const prior = byId.get(task.id)
+    return prior && (prior.revision ?? 0) > (task.revision ?? 0) ? prior : task
+  })
+}
+
 export function mapBackendTask(t: any): RunningTask {
   return {
     id: t.id,
@@ -232,7 +241,7 @@ export function reduceDesktopProjectsState(
       ...state,
       [action.projectId]: {
         ...previous,
-        tasks: newTasks,
+        tasks: retainNewerTasks(newTasks, previous.tasks),
       },
     }
   }
@@ -264,7 +273,7 @@ export function reduceDesktopProjectsState(
       ...state,
       [action.projectId]: {
         ...previous,
-        tasks: action.tasks,
+        tasks: retainNewerTasks(action.tasks, previous.tasks),
         media: action.media,
         loading: false,
         stale: false,

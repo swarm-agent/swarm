@@ -6815,6 +6815,7 @@ func (r *Runtime) manageWorktreePromote(scope WorkspaceScope, args map[string]an
 	var primaryTargetBranch string
 	var children []worktreeruntime.TaskIntegrationChild
 	resolvedBranches := make([]string, 0, len(candidates))
+	var taskReceipts []*promotionTaskReceipt
 
 	for _, c := range candidates {
 		source, found, err := r.sessions.GetSession(c.sessionID)
@@ -6922,28 +6923,64 @@ func (r *Runtime) manageWorktreePromote(scope WorkspaceScope, args map[string]an
 			HeadCommit: sourceState.HeadCommit,
 		})
 		resolvedBranches = append(resolvedBranches, branch)
+		entry, err := r.promotionTask(scope, source, branch, sourceState.HeadCommit, resolvedTarget, expectedTargetBranch, "")
+		if err != nil {
+			return "", err
+		}
+		if entry != nil {
+			taskReceipts = append(taskReceipts, entry)
+		}
 	}
 
 	targetState, err := r.worktrees.InspectTaskWorkspace(primaryResolvedTarget)
 	if err != nil {
 		return "", fmt.Errorf("inspect promotion target checkout: %w", err)
 	}
+	var started []*promotionTaskReceipt
+	for _, entry := range taskReceipts {
+		entry.receipt.PreviousTargetHead = targetState.HeadCommit
+		if err := pebblestore.BeginProjectTaskIntegration(r.projects, scope.Principal.AccountScopeID, entry.task, entry.receipt); err != nil {
+			return "", errors.Join(err, r.finishPromotionTasks(scope, started, "failed", "", err))
+		}
+		started = append(started, entry)
+	}
 	if !targetState.Clean {
-		return "", fmt.Errorf("promotion target checkout is dirty at branch %q full HEAD %q; preserve or finish those changes before promotion, then refresh target_branch and target_head", targetState.BranchName, targetState.HeadCommit)
+		err := fmt.Errorf("promotion target checkout is dirty at branch %q full HEAD %q; preserve or finish those changes before promotion, then refresh target_branch and target_head", targetState.BranchName, targetState.HeadCommit)
+		return "", errors.Join(err, r.finishPromotionTasks(scope, started, "failed", "", err))
 	}
 	if (primaryTargetBranch != "" && targetState.BranchName != primaryTargetBranch) || (targetHead != "" && targetState.HeadCommit != targetHead) {
-		return "", fmt.Errorf("promotion target branch or HEAD changed; expected branch %q at full HEAD %q, found branch %q at full HEAD %q; refresh both values from the captured checkout before retrying", primaryTargetBranch, targetHead, targetState.BranchName, targetState.HeadCommit)
+		err := fmt.Errorf("promotion target branch or HEAD changed; expected branch %q at full HEAD %q, found branch %q at full HEAD %q; refresh both values from the captured checkout before retrying", primaryTargetBranch, targetHead, targetState.BranchName, targetState.HeadCommit)
+		return "", errors.Join(err, r.finishPromotionTasks(scope, started, "failed", "", err))
 	}
 	targetBranchName := targetState.BranchName
 	resolvedTargetHead := targetState.HeadCommit
 
 	plan, err := r.worktrees.PrepareTaskIntegration(primaryResolvedTarget, targetBranchName, resolvedTargetHead, children)
 	if err != nil {
-		return "", err
+		return "", errors.Join(err, r.finishPromotionTasks(scope, started, "conflict", "", err))
 	}
 	result, err := r.worktrees.ApplyTaskIntegration(primaryResolvedTarget, plan)
 	if err != nil {
-		return "", err
+		return "", errors.Join(err, r.finishPromotionTasks(scope, started, "failed", "", err))
+	}
+	// Reconcile against the canonical Git service, never the tool JSON alone.
+	verified, verifyErr := r.worktrees.InspectTaskWorkspace(primaryResolvedTarget)
+	if verifyErr != nil || !verified.Clean || verified.BranchName != targetBranchName || verified.HeadCommit != result.ResultingParentHead {
+		err = errors.New("promotion applied but captured target changed; inspect Git before retrying")
+		return "", errors.Join(err, r.finishPromotionTasks(scope, started, "failed", result.ResultingParentHead, err))
+	}
+	for _, child := range children {
+		integrated, verifyErr := r.worktrees.TaskCommitDescendsFrom(primaryResolvedTarget, child.HeadCommit, verified.HeadCommit)
+		if child.HeadCommit == child.BaseCommit {
+			integrated = false
+		}
+		if verifyErr != nil || !integrated {
+			err = fmt.Errorf("promotion applied but source ancestry could not be verified: %v; inspect Git before retrying", verifyErr)
+			return "", errors.Join(err, r.finishPromotionTasks(scope, started, "failed", result.ResultingParentHead, err))
+		}
+	}
+	if err := r.finishPromotionTasks(scope, started, "integrated", result.ResultingParentHead, nil); err != nil {
+		return "", fmt.Errorf("Git promotion succeeded at %s but task receipt persistence failed; reconcile task state without rerunning Git: %w", result.ResultingParentHead, err)
 	}
 	sourceSessionIDs := make([]string, len(children))
 	for i, ch := range children {

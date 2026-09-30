@@ -94,6 +94,15 @@ test('integration card stays stable through pending, failure, retry and stale su
       { sessionId: 'session-a', sourceBranch: 'agent/a', targetBranch: 'dev' },
       { sessionId: 'session-a', sourceBranch: 'agent/a', targetBranch: 'dev' },
     ], 'retry retains exact captured lineage')
+    // Requirement: a promotion from another session uses canonical pending and
+    // verified completion, not this controller's click receipt. Same mounted card.
+    await page.evaluate(() => (window as any).snapshot({ ...(window as any).task, activeAttemptId: 'external-attempt', integration: { state: 'in_progress' } }))
+    await pending.waitFor()
+    assert.equal(await pending.isDisabled(), true)
+    await page.evaluate(() => (window as any).snapshot({ ...(window as any).task, activeAttemptId: 'external-attempt', status: 'completed', isIntegrated: true, gitStatus: 'clean', unintegratedCommits: 0, integration: { state: 'integrated' } }))
+    await integrated.waitFor()
+    assert.equal(await pending.count(), 0)
+    assert.equal(await page.evaluate(() => (window as any).calls), 2, 'external promotion never invokes a click mutation')
     assert.deepEqual(errors, [])
   } finally { await browser.close() }
 })
