@@ -19,10 +19,13 @@ export interface PendingWorkerCardProps {
   initialExpanded?: boolean
   onAccepted?: (worker: WorkerRecord) => void
   onOpenDetail?: (workerId: string) => void
+  approvedWorker?: WorkerRecord
 }
 
 export function PendingWorkerCard(props: PendingWorkerCardProps) {
-  return props.workspaceCatalog ? <PendingWorkerPresentation {...props} /> : <CatalogProposal {...props} />
+  const candidate = props.worker.pending_review
+  const reviewProps = candidate ? { ...props, approvedWorker: props.worker, worker: { ...candidate, id: props.worker.id, account_scope_id: props.worker.account_scope_id, revision: props.worker.revision, local_bindings: props.worker.local_bindings, authorized_workspaces: props.worker.authorized_workspaces } } : props
+  return reviewProps.workspaceCatalog ? <PendingWorkerPresentation {...reviewProps} /> : <CatalogProposal {...reviewProps} />
 }
 
 /** Reuse the authorized overview reader, never the active chat workspace. */
@@ -48,7 +51,7 @@ function AuthorizedCatalogProposal(props: PendingWorkerCardProps) {
   </>
 }
 
-function PendingWorkerPresentation({ worker, accountScopeId, workspaceSlug, workspaceCatalog, stale = false, mutationError, initialExpanded = false, onAccepted, onOpenDetail }: PendingWorkerCardProps) {
+function PendingWorkerPresentation({ worker, accountScopeId, workspaceSlug, workspaceCatalog, stale = false, mutationError, initialExpanded = false, onAccepted, onOpenDetail, approvedWorker }: PendingWorkerCardProps) {
   const [model, setModel] = useState<WorkerModelProfile | null | undefined>(worker.model_profile)
   const [expanded, setExpanded] = useState(initialExpanded)
   useEffect(() => { setModel(worker.model_profile) }, [worker.id, worker.revision, worker.model_profile])
@@ -78,13 +81,16 @@ function PendingWorkerPresentation({ worker, accountScopeId, workspaceSlug, work
       <h3 className="min-w-0 break-words font-bold text-white">{worker.name}</h3>
       <span className="rounded-full bg-amber-500/15 px-2 py-1 text-amber-300">Pending approval</span>
     </header>
+    {approvedWorker && <section aria-label="Proposed changes" className="space-y-1"><p>Update to the same worker · review revision {approvedWorker.revision} · proposed {new Date(worker.updated_at).toLocaleString()}</p><p>Approved jobs: {approvedWorker.automations?.map(job => `${job.name} (revision ${job.revision})`).join(', ') || 'None'}</p><p>Proposed jobs: {worker.automations?.map(job => `${job.name} (revision ${job.revision})`).join(', ') || 'None'}</p><p>Approved execution: {approvedWorker.execution_mode === 'plan' ? 'Plan' : 'Swarm'} · Proposed execution: {worker.execution_mode === 'plan' ? 'Plan' : 'Swarm'}</p><p>Approved model: {approvedWorker.model_profile?.action.model || 'Swarm Default'}</p></section>}
     <p className="break-words leading-relaxed" data-testid="pending-worker-goal">{proposalGoal(worker)}</p>
     <section className="space-y-1 break-words" data-testid="pending-worker-workspaces" aria-label="Target workspaces">
       <h4 className="font-semibold text-slate-400">{targets.length > 1 ? 'Workspaces' : 'Workspace'} · Runs locally</h4>
       {targets.length ? targets.map(target => <p key={target.role} className={target.unresolved ? 'text-amber-300' : 'text-slate-200'}>{target.label} <span className="text-slate-400">· {target.status}{target.approvedTarget && target.approvedTarget !== target.target ? ` · replaces ${target.approvedName || 'unresolved previously approved workspace'}` : ''}</span></p>) : <p className="text-amber-300">No workspace target specified</p>}
     </section>
+    <p>Execution: {worker.execution_mode === 'plan' ? 'Plan (explicit planning before execution)' : 'Swarm (default)'}</p>
     <WorkerModelPicker accountScopeId={accountScopeId} profile={model} disabled={busy || stale || wrongAccount} onChange={setModel} />
     <section className="space-y-2 break-words" aria-label="Jobs and timing" data-testid="pending-worker-job-intent">
+      {approvedWorker && <p>Previously approved timing: {approvedWorker.automations?.map(job => `${job.name}: ${proposalJobTiming(job)}`).join('; ') || 'No jobs'}</p>}
       {noJobs ? <p data-testid="pending-worker-no-job">No job attached; waits for a task after acceptance</p> : jobs?.map(job => <div key={job.id}>
         <h4 className="font-semibold text-white">{job.name || job.plan_document?.title || 'Untitled job'}</h4>
         <p className="line-clamp-2">{job.description || job.plan_document?.info?.goal || job.plan_document?.title}</p>
@@ -96,7 +102,7 @@ function PendingWorkerPresentation({ worker, accountScopeId, workspaceSlug, work
       <p className="text-slate-400">These are requests, not permission grants. The server checks authorization and workspace requirements on approval.</p>
       {targets.some(target => target.unresolved) && <p className="text-amber-300">Workspace requirements remain unresolved. Approval may be rejected until targets are available.</p>}
       {!!jobs?.some(job => job.input_requirements?.some(input => input.required)) && <p className="text-amber-300">Jobs require inputs; review the job plan for required values before approval.</p>}
-      <p data-testid="pending-worker-execution-blocked">Nothing runs while this worker is pending. Acceptance enables disclosed schedules and triggers for enabled jobs; manual jobs and workers without jobs wait for an explicit task.</p>
+      <p data-testid="pending-worker-execution-blocked">{approvedWorker ? 'Proposed changes cannot run before acceptance. Previously approved jobs remain under existing worker controls.' : 'Nothing runs while this worker is pending.'} Acceptance enables disclosed schedules and triggers for enabled jobs; manual jobs and workers without jobs wait for an explicit task.</p>
     </section>
     <button type="button" aria-expanded={expanded} onClick={() => setExpanded(!expanded)} className="rounded-lg border border-slate-700 px-3 py-2 text-blue-300 hover:bg-slate-800" data-testid="pending-worker-expand-toggle">{expanded ? 'Hide instructions and job plan' : 'View instructions and job plan'}</button>
     {expanded && <div className="space-y-3 border-t border-slate-800 pt-3" data-testid="pending-worker-expanded">
@@ -124,7 +130,7 @@ function PendingWorkerPresentation({ worker, accountScopeId, workspaceSlug, work
       </details>
     </div>}
     <footer className="flex flex-wrap items-center gap-3 border-t border-slate-800 pt-3">
-      <button type="button" disabled={busy || stale || wrongAccount} onClick={handleAccept} className="rounded-lg bg-emerald-600 px-4 py-2 font-semibold text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50" data-testid="accept-pending-worker">{busy ? 'Accepting…' : 'Accept worker'}</button>
+      <button type="button" disabled={busy || stale || wrongAccount} onClick={handleAccept} className="rounded-lg bg-emerald-600 px-4 py-2 font-semibold text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50" data-testid="accept-pending-worker">{busy ? 'Accepting…' : approvedWorker ? 'Accept changes' : 'Accept worker'}</button>
       <a href={swarmWorkerHref(workspaceSlug, worker.id)} onClick={e => { if (onOpenDetail && !e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey && e.button === 0) { e.preventDefault(); onOpenDetail(worker.id) } }} className="text-blue-300 hover:underline" data-testid="pending-worker-detail-link">Open worker detail</a>
       {stale && <p role="alert" className="text-amber-300">Worker definition is refreshing. Acceptance is blocked on stale revisions.</p>}
       {wrongAccount && <p role="alert">Worker account does not match the current account. Acceptance is blocked.</p>}

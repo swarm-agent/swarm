@@ -49,7 +49,7 @@ export class DesktopWorkersRuntime {
   }
   private verify(input: WorkerRead, data: WorkerReadResult): void {
     const { workers, runs } = workerReadRecords(data)
-    if (workers.some(w => w.account_scope_id !== input.accountScopeId || (input.kind !== 'list' && w.id !== input.workerId))
+    if (workers.some(w => w.account_scope_id !== input.accountScopeId || (input.kind !== 'list' && w.id !== input.workerId) || (w.pending_review && (w.pending_review.account_scope_id !== input.accountScopeId || w.pending_review.id !== w.id)))
       || runs.some(run => run.account_scope_id !== input.accountScopeId || (input.kind !== 'list' && run.worker_id !== input.workerId))
       || (input.kind === 'list' && 'workers' in data && data.workers.some(w => input.lifecycleState && w.lifecycle_state !== input.lifecycleState))) {
       throw new Error('Worker response scope mismatch')
@@ -58,7 +58,7 @@ export class DesktopWorkersRuntime {
       || (input.kind === 'runs' && !('runs' in data)) || (input.kind === 'history' && !('revisions' in data))
       || (input.kind === 'run' && (!('run' in data) || data.run.id !== input.runId))
       || (input.kind === 'summary' && (!('worker_id' in data) || data.worker_id !== input.workerId || data.runs?.date !== input.date || data.runs?.timezone !== input.timezone))) throw new Error('Worker response kind mismatch')
-    if (input.kind === 'history' && 'revisions' in data && data.revisions.some(h => h.account_scope_id !== input.accountScopeId || h.worker_id !== input.workerId || h.worker.id !== input.workerId)) throw new Error('Worker history scope mismatch')
+    if (input.kind === 'history' && 'revisions' in data && data.revisions.some(h => h.account_scope_id !== input.accountScopeId || h.worker_id !== input.workerId || h.worker.id !== input.workerId || h.worker.account_scope_id !== input.accountScopeId)) throw new Error('Worker history scope mismatch')
   }
   refresh(input: WorkerRead): Promise<void> {
     const key = workerPageKey(input)

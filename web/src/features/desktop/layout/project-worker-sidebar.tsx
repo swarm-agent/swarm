@@ -22,8 +22,8 @@ export function ProjectWorkerSidebar({ accountScopeId, projectId, onInspect, onB
   const [showHidden, setShowHidden] = useState(false)
   const records = new Map((data?.workers || []).map(worker => [worker.id, worker]))
   for (const worker of pendingData?.workers || []) records.set(worker.id, worker)
-  const workers = [...records.values()].filter(worker => worker.account_scope_id === accountScopeId && worker.metadata?.project_id === projectId).sort((a, b) => Number(b.lifecycle_state === 'pending') - Number(a.lifecycle_state === 'pending') || b.created_at - a.created_at)
-  const pending = workers.filter(worker => worker.lifecycle_state === 'pending')
+  const workers = [...records.values()].filter(worker => worker.account_scope_id === accountScopeId && worker.metadata?.project_id === projectId).sort((a, b) => Number(b.lifecycle_state === 'pending' || !!b.pending_review) - Number(a.lifecycle_state === 'pending' || !!a.pending_review) || b.created_at - a.created_at)
+  const pending = workers.filter(worker => worker.lifecycle_state === 'pending' || worker.pending_review)
   const visible = workers.filter(worker => showHidden || !preferences.hidden?.includes(worker.id))
   const hiddenCount = workers.length - workers.filter(worker => !preferences.hidden?.includes(worker.id)).length
   return <section aria-label="Project workers" className="min-w-0 space-y-1 px-2 py-2 text-xs text-slate-300">
@@ -37,7 +37,7 @@ export function ProjectWorkerSidebar({ accountScopeId, projectId, onInspect, onB
       {visible.slice(0, 5).map(worker => <div key={worker.id} className="flex min-w-0 items-start gap-1">
         <button type="button" onClick={() => onInspect(worker.id)} className="min-w-0 flex-1 rounded-lg p-2 text-left hover:bg-slate-800 focus-visible:ring-2 focus-visible:ring-blue-400">
           <span className="block break-words font-semibold">{worker.name}</span>
-          <span className="block text-[10px] text-slate-400">{worker.lifecycle_state === 'pending' ? 'Pending approval' : workerLifecycleLabel(worker.lifecycle_state)} · {workerType(worker)}</span>
+          <span className="block text-[10px] text-slate-400">{(worker.lifecycle_state === 'pending' || worker.pending_review) ? 'Pending approval' : workerLifecycleLabel(worker.lifecycle_state)} · {workerType(worker)}</span>
           {showActivity ? <WorkerRowActivity accountScopeId={accountScopeId} workerId={worker.id} /> : <span className="block text-[10px] text-slate-400">Select project to load activity</span>}
         </button>
         <button type="button" className="shrink-0 rounded p-1 text-[10px] hover:bg-slate-800" aria-label={`${preferences.hidden?.includes(worker.id) ? 'Restore' : 'Hide'} ${worker.name} in sidebar`} onClick={() => { if (preferences.hidden?.includes(worker.id)) preferences.restore(worker.id); else { preferences.hide(worker.id); setShowHidden(false) } }}>{preferences.hidden?.includes(worker.id) ? 'Restore' : 'Hide'}</button>

@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useWorkerNavigationPreferences } from '../layout/worker-navigation-preferences'
+import { WorkerSettingsReview } from './worker-settings-review'
+import { proposalWorkspaces } from './worker-proposal-presentation'
 import { PendingWorkerCard } from './pending-worker-card'
 import { formatWorkerSchedule } from './worker-schedule'
 import { getDesktopSessionIdentitySnapshot } from '../../../app/api'
@@ -28,8 +30,8 @@ function WorkerHubAccount({ accountScopeId, onSelectWorker, onAddWorker, onInspe
   const [cursor, setCursor] = useState<string | undefined>()
   const [pendingOnly, setPendingOnly] = useState(false)
   useEffect(() => { setSelectedId(initialWorkerId || '') }, [initialWorkerId])
-  const page = useWorkerPage({ kind: 'list', accountScopeId, cursor, limit: 100, ...(pendingOnly ? { lifecycleState: 'pending' as const } : {}) })
-  const workers = page?.data && 'workers' in page.data ? page.data.workers : []
+  const page = useWorkerPage({ kind: 'list', accountScopeId, cursor, limit: 100 })
+  const workers = page?.data && 'workers' in page.data ? page.data.workers.filter(worker => !pendingOnly || worker.lifecycle_state === 'pending' || worker.pending_review) : []
   const next = page?.data && 'workers' in page.data ? page.data.next_cursor : undefined
   const inspected = selectedId || workers[0]?.id
   return <section className="flex min-h-0 min-w-0 flex-1 flex-col text-slate-300" aria-label="Durable workers" data-testid="durable-worker-hub">
@@ -43,7 +45,7 @@ function WorkerHubAccount({ accountScopeId, onSelectWorker, onAddWorker, onInspe
       <nav aria-label="Worker list" className="space-y-2 border-b border-slate-800 p-3 lg:overflow-y-auto lg:border-b-0 lg:border-r">
         {workers.map(worker => <div key={worker.id}><WorkerSidebarRestore accountScopeId={accountScopeId} worker={worker} /><button type="button" aria-label={`Inspect ${worker.name}`} aria-pressed={inspected === worker.id} onClick={() => { setSelectedId(worker.id); onInspectWorker?.(worker.id) }} className={`w-full rounded-xl border p-3 text-left text-xs ${inspected === worker.id ? 'border-blue-500/60 bg-blue-500/10' : 'border-slate-800 hover:bg-slate-800/60'}`}>
           <span className="block break-words font-semibold text-white">{worker.name}</span>
-          <span className="mt-1 block text-[10px] text-slate-400">{workerLifecycleLabel(worker.lifecycle_state)} · {worker.automations?.length || 0} jobs</span>
+          <span className="mt-1 block text-[10px] text-slate-400">{workerLifecycleLabel(worker.lifecycle_state)}{worker.pending_review ? ' · Changes pending approval' : ''} · {worker.automations?.length || 0} jobs</span>
           <span className="mt-2 line-clamp-2 break-words text-slate-400">{worker.description || worker.instructions || 'Purpose not recorded'}</span>
         </button></div>)}
         {page?.loading && !page.data && <p role="status">Loading workers…</p>}
@@ -78,9 +80,11 @@ export function WorkerDetail({ accountScopeId, workerId, workspaceSlug, onSelect
         <button className={button} disabled={!!detail?.stale || !!detail?.error} onClick={() => onSelectWorker({ id: worker.id, revision: worker.revision, name: worker.name })}>Ask Orchestrator</button></div>
         {worker.lifecycle_state !== 'pending' && <p className="break-words text-sm leading-relaxed text-slate-300">{worker.description || worker.instructions || 'Purpose not recorded.'}</p>}
       {worker.lifecycle_state !== 'pending' && worker.model_profile?.resolution_warning && <p role="alert" className="text-xs text-amber-300">{worker.model_profile.resolution_warning}</p>}
-      {worker.lifecycle_state !== 'pending' && <p className="break-words text-xs text-slate-400">Model: {worker.model_profile ? `${worker.model_profile.action.provider}/${worker.model_profile.action.model} · Planning: ${worker.model_profile.plan?.model || worker.model_profile.action.model}` : 'Not initialized; default will be durably pinned before the next job'}</p>}
+      {worker.lifecycle_state !== 'pending' && <p className="break-words text-xs text-slate-400">Execution: {worker.execution_mode === 'plan' ? 'Plan (explicit)' : 'Swarm (default)'} · Model: {worker.model_profile ? `${worker.model_profile.action.provider}/${worker.model_profile.action.model}${worker.execution_mode === 'plan' ? ` · Planning: ${worker.model_profile.plan?.model || worker.model_profile.action.model}` : ''}` : 'Not initialized; default will be durably pinned before the next job'}</p>}
         {readOnly && <p>Migrated snapshot · read-only</p>}
-        {worker.lifecycle_state === 'pending' && <PendingWorkerCard key={`${worker.id}:${worker.revision}`} worker={worker} accountScopeId={accountScopeId} workspaceSlug={workspaceSlug} stale={!!detail?.stale || !!detail?.error} mutationError={detail?.mutationError} />}
+        <section aria-label="Approved workspaces" className="space-y-1">{proposalWorkspaces({ ...worker, proposed_bindings: worker.lifecycle_state === 'pending' ? worker.proposed_bindings : undefined }, accountScopeId).map(target => <p key={target.role} className="break-words">{target.label} · {target.status}</p>)}</section>
+        {!readOnly && <WorkerSettingsReview key={`${worker.id}:${worker.revision}`} worker={worker} accountScopeId={accountScopeId} disabled={!!detail?.stale || !!detail?.error} />}
+        {(worker.lifecycle_state === 'pending' || worker.pending_review) && <PendingWorkerCard key={`${worker.id}:${worker.revision}`} worker={worker} accountScopeId={accountScopeId} workspaceSlug={workspaceSlug} stale={!!detail?.stale || !!detail?.error} mutationError={detail?.mutationError} />}
       </header>
       {worker.lifecycle_state !== 'pending' && <>
       <section className={box}><h4 className="font-semibold text-white">Now</h4>
@@ -104,9 +108,15 @@ export function WorkerDetail({ accountScopeId, workerId, workspaceSlug, onSelect
         {error && <p role="alert" className="text-red-300">{error}</p>}{notice && <p role="status">{notice}</p>}
       </section>
       <section className="space-y-3"><h4 className="font-semibold text-white">Jobs <span className="text-slate-500">{worker.automations?.length || 0}</span></h4>
-        {(worker.automations || []).map(job => <div key={job.id} className={box}><div className="flex flex-wrap justify-between gap-2"><h5 className="font-semibold text-white">{job.name}</h5><span className="text-slate-400">{job.enabled ? 'Enabled' : 'Disabled'}</span></div><p>{job.description || job.plan_document.info?.goal || job.plan_document.title}</p><p className="text-blue-300">{formatWorkerSchedule(job)}</p><ol className="list-inside list-decimal space-y-1">{job.plan_document.checkpoints?.map(cp => <li key={cp.id}>{cp.title || cp.id}</li>)}</ol><p className="text-slate-400">Expected outputs: {job.deliverable_requirements?.map(item => item.name).join(', ') || 'Not specified'}</p></div>)}
+        {(worker.automations || []).map(job => <div key={job.id} className={box}><div className="flex flex-wrap justify-between gap-2"><h5 className="font-semibold text-white">{job.name}</h5><span className="text-slate-400">{job.enabled ? 'Enabled' : 'Disabled'}</span></div><p>{job.description || job.plan_document.info?.goal || job.plan_document.title}</p><p className="text-blue-300">{formatWorkerSchedule(job)}</p><ol className="list-inside list-decimal space-y-1">{job.plan_document.checkpoints?.map(cp => <li key={cp.id}>{cp.title || cp.id}</li>)}</ol>{!readOnly && <button type="button" className={button} disabled={busy || !!detail?.stale || !!detail?.error} onClick={async () => {
+          setBusy(true); setError('')
+          try { await desktopWorkers.mutate({ action: job.enabled ? 'disableAutomation' : 'enableAutomation', workerId, automationId: job.id, expected_revision: worker.revision }, accountScopeId) }
+          catch (cause) { setError(cause instanceof Error ? cause.message : 'Job change failed') }
+          finally { setBusy(false) }
+        }}>{job.enabled ? 'Disable job' : 'Propose enabling job'}</button>}<p>Job revision {job.revision} · created {date(job.created_at)} · updated {date(job.updated_at)}</p><p className="text-slate-400">Expected outputs: {job.deliverable_requirements?.map(item => item.name).join(', ') || 'Not specified'}</p></div>)}
         {!worker.automations?.length && <p className={box}>No jobs attached. Ask Orchestrator to add a job or give this worker a one-off request.</p>}
       </section>
+      <WorkerChangeHistory accountScopeId={accountScopeId} worker={worker} />
       <WorkerRunHistory key={worker.id} accountScopeId={accountScopeId} worker={worker} workspaceSlug={workspaceSlug} />
       <details className={box}><summary className="cursor-pointer text-slate-400">Standing instructions &amp; identity</summary><p className="whitespace-pre-wrap break-words">{worker.instructions || 'No instructions recorded.'}</p><p className="break-all text-slate-500">{worker.id} · revision {worker.revision}</p><p>Workspace roles: {worker.workspace_requirements?.map(item => item.description || item.role).join(', ') || 'None specified'}</p></details>
       </>}
@@ -136,6 +146,7 @@ export function WorkerRunRow({ run, worker, accountScopeId, workspaceSlug, stale
   const job = worker.automations?.find(item => item.id === run.automation_id)
   return <article className={box} data-testid="durable-worker-run">
     <div className="flex flex-wrap items-center gap-2"><span className="rounded bg-blue-500/10 px-2 py-1 text-blue-300">{worker.name}</span><strong className="break-words text-white">{job?.name || (run.automation_id ? 'Prior job' : 'One-off request')}</strong><span className="ml-auto text-slate-400">{run.status}{run.cancel_requested ? ' · cancellation requested' : ''}</span></div>
+    <p>Worker revision {run.worker_revision}{run.automation_revision ? ` · job revision ${run.automation_revision}` : ''}</p>
     <p className="text-slate-400">{date(run.started_at || run.created_at)} · {run.request_source}{run.completed_at ? ` · finished ${date(run.completed_at)}` : ''}</p>
     {run.error && <p className="break-words text-red-300">{run.error}</p>}
     {!!run.deliverables?.length && <p>{run.deliverables.length} deliverable(s) · {run.session_id ? 'open the session to review outputs' : 'no execution session linked'}</p>}
@@ -153,4 +164,17 @@ function WorkerSidebarRestore({ accountScopeId, worker }: { accountScopeId: stri
   const projectId = typeof worker.metadata?.project_id === 'string' ? worker.metadata.project_id : ''
   const preferences = useWorkerNavigationPreferences(accountScopeId, projectId)
   return projectId && preferences.hidden?.includes(worker.id) ? <button type="button" className={`${button} mb-1`} onClick={() => preferences.restore(worker.id)}>Restore {worker.name} in project sidebar</button> : null
+}
+
+export function WorkerChangeHistory({ accountScopeId, worker }: { accountScopeId: string; worker: WorkerRecord }) {
+  const [cursor, setCursor] = useState<string | undefined>()
+  const page = useWorkerPage({ kind: 'history', accountScopeId, workerId: worker.id, limit: 25, cursor })
+  const data = page?.data && 'revisions' in page.data ? page.data : undefined
+  return <section className="space-y-3" aria-label="Worker change history"><h4 className="font-semibold text-white">Change history</h4><p>Newest first · durable worker revisions</p>
+    {page?.error && <p role="alert">Change history: {page.error}</p>}
+    {page?.stale && <p className="text-amber-300">Refreshing; last-known revisions.</p>}
+    {page?.loading && !data && <p role="status">Loading revisions…</p>}
+    {data?.revisions.map(revision => <details key={revision.revision} className={box}><summary>Revision {revision.revision} · {date(revision.committed_at)} · {revision.change_summary || 'Worker changed'}</summary><p>{revision.worker.pending_review ? 'Proposal pending approval' : 'Recorded worker definition'} · {revision.worker.execution_mode === 'plan' ? 'Plan' : 'Swarm'}</p><p>Jobs: {revision.worker.automations?.map(job => `${job.name} (revision ${job.revision})`).join(', ') || 'None'}</p><pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words">{JSON.stringify(revision.worker, null, 2)}</pre></details>)}
+    {cursor && <button className={button} onClick={() => setCursor(undefined)}>Latest changes</button>}{data?.next_cursor && <button className={button} onClick={() => setCursor(data.next_cursor)}>Older changes</button>}
+  </section>
 }

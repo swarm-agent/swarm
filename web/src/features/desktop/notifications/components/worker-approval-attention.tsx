@@ -3,9 +3,9 @@ import { useWorkerPage } from '../../runtime/desktop-workers'
 
 // Derived attention, not a notification record. Opening/clearing the inbox cannot approve a worker.
 export function useWorkerApprovalAttention(accountScopeId: string) {
-  const page = useWorkerPage({ kind: 'list', accountScopeId, limit: 100, lifecycleState: 'pending' })
+  const page = useWorkerPage({ kind: 'list', accountScopeId, limit: 100 })
   const data = page?.data && 'workers' in page.data ? page.data : undefined
-  return { page, workers: (data?.workers || []).filter(worker => worker.account_scope_id === accountScopeId && worker.lifecycle_state === 'pending'), partial: !!data?.next_cursor }
+  return { page, workers: (data?.workers || []).filter(worker => worker.account_scope_id === accountScopeId && (worker.lifecycle_state === 'pending' || worker.pending_review)), partial: !!data?.next_cursor }
 }
 export function WorkerApprovalAttention({ accountScopeId, onInspect, onBrowse }: {
   accountScopeId: string; onInspect: (id: string) => void; onBrowse: () => void

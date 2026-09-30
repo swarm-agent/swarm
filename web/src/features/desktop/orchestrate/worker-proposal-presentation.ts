@@ -13,7 +13,8 @@ export function proposalGoal(worker: WorkerRecord): string {
 }
 
 export function proposalWorkspaces(worker: WorkerRecord, accountScopeId: string, catalog?: ProposalWorkspaceCatalog) {
-  const entries = catalog?.accountScopeId === accountScopeId && worker.account_scope_id === accountScopeId ? catalog.workspaces : []
+  const authorized = worker.account_scope_id === accountScopeId
+  const entries = authorized ? [...(catalog?.accountScopeId === accountScopeId ? catalog.workspaces : []), ...Object.values(worker.authorized_workspaces || {}).filter(view => view.available && view.path && view.name).map(view => ({ workspaceId: view.workspace_id, path: view.path!, workspaceName: view.name! }))] : []
   const proposed = worker.proposed_bindings || {}
   const approved = worker.local_bindings || {}
   const roles = [...new Set([...Object.keys(proposed), ...Object.keys(approved), ...(worker.workspace_requirements || []).filter(req => req.required).map(req => req.role)])]
@@ -22,11 +23,10 @@ export function proposalWorkspaces(worker: WorkerRecord, accountScopeId: string,
     const workspace = target ? entries.find(entry => entry.workspaceId === target || entry.path === target) : undefined
     const approvedWorkspace = approved[role] ? entries.find(entry => entry.workspaceId === approved[role] || entry.path === approved[role]) : undefined
     const name = workspace?.workspaceName.trim() || workspace?.path
-    const duplicate = name && entries.filter(entry => (entry.workspaceName.trim() || entry.path) === name).length > 1
     return {
       role, target, path: workspace?.path,
       approvedTarget: approved[role], approvedPath: approvedWorkspace?.path, approvedName: approvedWorkspace?.workspaceName || approvedWorkspace?.path,
-      label: workspace ? `${name}${duplicate ? ` — ${workspace.path}` : ''}` : target ? `Unresolved workspace (${role})` : `Workspace required (${role}) — not assigned`,
+      label: workspace ? `${name} — ${workspace.path}` : target ? `Unresolved workspace (${role})` : `Workspace required (${role}) — not assigned`,
       unresolved: !workspace,
       status: proposed[role] ? (approved[role] === proposed[role] ? 'Previously approved; proposal pending' : 'Proposed; not approved') : approved[role] ? 'Previously approved' : 'Unresolved requirement',
     }

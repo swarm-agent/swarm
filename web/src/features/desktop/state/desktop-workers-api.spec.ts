@@ -106,3 +106,33 @@ test('worker record accepts pending lifecycle state and proposed bindings', () =
   assert.equal(pendingWorker.lifecycle_state, 'pending')
   assert.equal(pendingWorker.proposed_bindings?.primary, 'ws-proposed')
 })
+
+// Requirement: authorized workspace metadata survives canonical detail/list
+// hydration and model edits are PUT proposals, never direct dispatch. Threat:
+// dropping paths or saving a model via an execution endpoint. API transport is
+// the narrowest layer proving the exact request/response contract.
+test('worker workspace hydration and settings proposal use canonical records', async () => {
+  const previous = globalThis.fetch
+  const worker: WorkerRecord = { id: 'stable', account_scope_id: 'account', name: 'Stable', instructions: '', lifecycle_state: 'active', revision: 3, created_at: 1, updated_at: 3 }
+  const views = { primary: { workspace_id: 'workspace', available: true, name: 'Project', path: '/projects/example' } }
+  const calls: Array<{ url: string; init?: RequestInit }> = []
+  globalThis.fetch = (async (url: RequestInfo | URL, init?: RequestInit) => {
+    calls.push({ url: String(url), init })
+    if (String(url).includes('/v1/auth/desktop/session')) return new Response(JSON.stringify({ user_id: 'user', account_scope_id: 'account' }))
+    return new Response(JSON.stringify(String(url) === '/v3/workers?limit=25' ? { workers: [worker], workspaces: { stable: views } } : { worker, workspaces: views }))
+  }) as typeof fetch
+  try {
+    const detail = await readWorkers({ kind: 'detail', accountScopeId: 'account', workerId: worker.id })
+    assert.ok('worker' in detail)
+    assert.deepEqual(detail.worker.authorized_workspaces, views)
+    const list = await readWorkers({ kind: 'list', accountScopeId: 'account', limit: 25 })
+    assert.ok('workers' in list)
+    assert.deepEqual(list.workers[0].authorized_workspaces, views)
+    const profile = { source: 'temporary', action: { provider: 'fixture', model: 'action' }, plan: { provider: 'fixture', model: 'plan' } }
+    await mutateWorker({ action: 'update', workerId: worker.id, expected_revision: 3, changes: { model_profile: profile, execution_mode: 'plan' } })
+    assert.equal(calls.at(-1)?.url, '/v3/workers/stable')
+    assert.equal(calls.at(-1)?.init?.method, 'PUT')
+    assert.deepEqual(JSON.parse(String(calls.at(-1)?.init?.body)), { model_profile: profile, execution_mode: 'plan', expected_revision: 3 })
+    assert.ok(calls.every(call => !/\/(direct|test|activate)$/.test(call.url)))
+  } finally { globalThis.fetch = previous }
+})

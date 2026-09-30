@@ -28,7 +28,7 @@ function WorkerSidebarAccount({ accountScopeId, workspaceSlug, collapsed, onTogg
     {page?.error && <p role="alert" className="px-2 text-[10px] text-[var(--app-warning)]">Workers unavailable: {page.error}</p>}
     {page?.stale && page.data && <p className="px-2 text-[10px] text-[var(--app-text-muted)]">Refreshing · last-known list</p>}
     {!collapsed && <>
-      {(expanded ? workers : workers.slice(0, 5)).map(worker => <a key={worker.id} href={workerDetailHref(worker.id, workspaceSlug)} className="grid min-w-0 gap-1 rounded-lg px-2 py-2 text-xs hover:bg-[var(--app-surface-hover)]"><span className="truncate font-medium text-[var(--app-text)]">{worker.name}</span><span className="text-[10px] text-[var(--app-text-muted)]">{workerLifecycleLabel(worker.lifecycle_state)} · {worker.automations?.length || 0} jobs</span></a>)}
+      {(expanded ? workers : workers.slice(0, 5)).map(worker => <a key={worker.id} href={workerDetailHref(worker.id, workspaceSlug)} className="grid min-w-0 gap-1 rounded-lg px-2 py-2 text-xs hover:bg-[var(--app-surface-hover)]"><span className="truncate font-medium text-[var(--app-text)]">{worker.name}</span><span className="text-[10px] text-[var(--app-text-muted)]">{workerLifecycleLabel(worker.lifecycle_state)}{worker.pending_review ? ' · Changes pending approval' : ''} · {worker.automations?.length || 0} jobs</span></a>)}
       {!page?.loading && !page?.error && !workers.length && <p className="px-2 text-[10px] text-[var(--app-text-muted)]">No workers yet</p>}
       {workers.length > 5 && <button className="text-[10px] text-[var(--app-text-muted)]" onClick={() => setExpanded(!expanded)}>{expanded ? 'Show fewer' : `Show ${workers.length - 5} more`}</button>}
       {more && onOpen && <button className="text-[10px] text-[var(--app-text-muted)]" onClick={onOpen}>Browse all workers</button>}
@@ -39,7 +39,7 @@ function WorkerSidebarAccount({ accountScopeId, workspaceSlug, collapsed, onTogg
 export function DurableWorkerCount({ accountScopeId }: { accountScopeId: string }) {
   const page = useWorkerPage({ kind: 'list', accountScopeId, limit: 100 })
   const data = page?.data && 'workers' in page.data ? page.data : undefined
-  const pendingPage = useWorkerPage({ kind: 'list', accountScopeId, limit: 100, lifecycleState: 'pending' })
+  const pendingPage = useWorkerPage({ kind: 'list', accountScopeId, limit: 100 })
   const pending = pendingPage?.data && 'workers' in pendingPage.data ? pendingPage.data : undefined
-  return <span title={page?.error ? `Workers unavailable: ${page.error}` : 'Account-wide workers; + indicates more pages'}>{data ? `${data.workers.length}${data.next_cursor ? '+' : ''}${page?.stale ? ' ·' : ''}` : '…'}{pending && pending.workers.length > 0 ? ` · ${pending.workers.length}${pending.next_cursor ? '+' : ''} pending approval` : ''}{pendingPage?.error ? ' · approvals unavailable' : ''}</span>
+  return <span title={page?.error ? `Workers unavailable: ${page.error}` : 'Account-wide workers; + indicates more pages'}>{data ? `${data.workers.length}${data.next_cursor ? '+' : ''}${page?.stale ? ' ·' : ''}` : '…'}{pending && pending.workers.filter(worker => worker.lifecycle_state === 'pending' || worker.pending_review).length > 0 ? ` · ${pending.workers.filter(worker => worker.lifecycle_state === 'pending' || worker.pending_review).length}${pending.next_cursor ? '+' : ''} pending approval` : ''}{pendingPage?.error ? ' · approvals unavailable' : ''}</span>
 }

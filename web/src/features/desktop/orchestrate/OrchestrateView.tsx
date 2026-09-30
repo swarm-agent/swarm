@@ -1,6 +1,7 @@
 import { useState, useReducer, useMemo, useEffect, useCallback, useRef, useSyncExternalStore } from 'react'
 import { MediaTaskSelect, MediaTaskDefault, MediaTaskHelp, MediaTaskScenes, MediaTaskCost } from './media-task-controls'
 import { ImagePromptControls, imagePromptReducer, initialImagePromptState, imagePromptEnhancement } from './image-task-prompt'
+import { DurableWorkerReviews } from '../chat/components/durable-worker-reviews'
 import { taskIntegrationOperations, taskIntegrationKey, taskIntegrationPhase, type TaskIntegrationOperation, type TaskIntegrationResult } from './task-integration-operation'
 import { projectTaskFollowupPayload } from '../runtime/project-task-followup'
 import { TaskAttemptHistory } from './task-attempt-history'
@@ -3123,6 +3124,7 @@ export function OrchestratorChatComposer({
           <button type="button" aria-label="Remove selected worker" onClick={() => onDeselectWorker?.(selectedWorker)}><X size={12} /></button>
         </div>
       )}
+      <DurableWorkerReviews />
       {/* Attachments preview list */}
       {attachments.length > 0 && (
         <div className="flex flex-wrap gap-1.5 pb-1">

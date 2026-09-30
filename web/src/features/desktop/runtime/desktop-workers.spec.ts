@@ -189,3 +189,24 @@ test('worker accept mutation requires matching account and invalidates on confir
   assert.equal(h.pages()[workerPageKey(detail)].mutationError, 'stale revision: expected 1, current is 2')
   detailLease.release()
 })
+
+// Requirement: nested pending candidates cannot cross account or stable identity.
+// Threat: a valid outer worker wraps foreign review content. Runtime verification
+// is the narrowest boundary before canonical cache admission; rejection must leave
+// approved data intact and explicitly stale, not admit the nested record.
+test('foreign pending review is rejected without replacing approved data', { timeout: 1000 }, async () => {
+  const h = harness()
+  const lease = h.runtime.acquire(detail)
+  await Promise.resolve()
+  h.reads[0].resolve({ worker: worker(1) })
+  await lease.ready
+  const refresh = h.runtime.refresh(detail)
+  await Promise.resolve()
+  h.reads[1].resolve({ worker: { ...worker(2), pending_review: { ...worker(2), account_scope_id: 'foreign' } } })
+  await refresh
+  const page = h.pages()[workerPageKey(detail)]
+  assert.match(page.error || '', /scope mismatch/)
+  assert.equal((page.data as { worker: WorkerRecord }).worker.revision, 1)
+  assert.equal(page.stale, true)
+  lease.release()
+})

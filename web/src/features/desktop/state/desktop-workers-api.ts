@@ -18,6 +18,9 @@ export interface WorkerAutomation {
 export interface WorkerModelSelection { provider: string; model: string; thinking?: string; service_tier?: string; context_mode?: string }
 export interface WorkerModelProfile { resolution_warning?: string; source: string; use_account_default?: boolean; action: WorkerModelSelection; plan?: WorkerModelSelection | null; applied_at?: number }
 export interface WorkerRecord {
+  pending_review?: WorkerRecord | null
+  execution_mode?: 'auto' | 'plan'
+  authorized_workspaces?: Record<string, { workspace_id: string; available: boolean; name?: string; path?: string }>
   model_profile?: WorkerModelProfile | null
   id: string; account_scope_id: string; name: string; description?: string | null; instructions: string
   lifecycle_state: WorkerLifecycleState; revision: number; created_at: number; updated_at: number
@@ -64,7 +67,7 @@ export type WorkerReadResult =
   | WorkerSummary
 export type WorkerMutation =
   | { action: 'create'; name: string; instructions?: string; description?: string; idempotency_key: string; requested_capabilities?: WorkerCapabilityRequest[]; workspace_requirements?: WorkerWorkspaceRequirement[]; metadata?: Record<string, unknown> }
-  | { action: 'update'; workerId: string; expected_revision: number; changes: { name?: string; description?: string; instructions?: string; change_summary?: string; requested_capabilities?: WorkerCapabilityRequest[]; workspace_requirements?: WorkerWorkspaceRequirement[]; metadata?: Record<string, unknown> } }
+  | { action: 'update'; workerId: string; expected_revision: number; changes: { model_profile?: WorkerModelProfile; execution_mode?: 'auto' | 'plan'; name?: string; description?: string; instructions?: string; change_summary?: string; requested_capabilities?: WorkerCapabilityRequest[]; workspace_requirements?: WorkerWorkspaceRequirement[]; metadata?: Record<string, unknown> } }
   | { action: 'activate'; workerId: string; expected_revision: number; local_bindings: Record<string, string>; activate?: boolean }
   | { action: 'accept'; workerId: string; expected_revision: number; model_profile?: WorkerModelProfile }
   | { action: 'pause' | 'resume' | 'archive' | 'delete'; workerId: string; expected_revision: number }
@@ -109,7 +112,10 @@ function envelope<T>(raw: T | null, field: keyof T): T {
 }
 export async function readWorkers(input: WorkerRead): Promise<WorkerReadResult> {
   const path = input.kind === 'list' ? '/v3/workers' : workerPath(input.workerId)
-  if (input.kind === 'detail') return envelope(await requestJson<{ worker: WorkerRecord }>(path), 'worker')
+  if (input.kind === 'detail') {
+    const result = envelope(await requestJson<{ worker: WorkerRecord; workspaces?: WorkerRecord['authorized_workspaces'] }>(path), 'worker')
+    return { worker: { ...result.worker, authorized_workspaces: result.workspaces } }
+  }
   if (input.kind === 'summary') {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(input.date) || !input.timezone) throw new Error('Worker summary needs date and timezone')
     const query = new URLSearchParams({ timezone: input.timezone, date: input.date })
@@ -128,6 +134,10 @@ export async function readWorkers(input: WorkerRead): Promise<WorkerReadResult> 
   const field = input.kind === 'list' ? 'workers' : input.kind === 'runs' ? 'runs' : 'revisions'
   if (!raw || typeof raw !== 'object' || !Array.isArray((raw as Record<string, unknown>)[field])
     || ('next_cursor' in raw && (raw as { next_cursor?: unknown }).next_cursor !== undefined && typeof (raw as { next_cursor?: unknown }).next_cursor !== 'string')) throw new Error('Invalid worker page response')
+  if (input.kind === 'list') {
+    const page = raw as { workers: WorkerRecord[]; next_cursor?: string; workspaces?: Record<string, WorkerRecord['authorized_workspaces']> }
+    return { workers: page.workers.map(worker => ({ ...worker, authorized_workspaces: page.workspaces?.[worker.id] })), next_cursor: page.next_cursor }
+  }
   return raw as WorkerReadResult
 }
 export async function mutateWorker(input: WorkerMutation): Promise<WorkerMutationResult> {
