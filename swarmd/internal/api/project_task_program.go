@@ -16,6 +16,7 @@ import (
 	runruntime "swarm/packages/swarmd/internal/run"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/taskrouter"
 	"swarm/packages/swarmd/internal/tool"
 )
 
@@ -283,7 +284,7 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 	}
 	description := strings.TrimSpace(input.Description)
 	if description == "" {
-		description = routed.Mission
+		description = prompt
 	}
 	stages := input.PipelineStages
 	if len(stages) == 0 {
@@ -355,6 +356,19 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 		hydrateTaskPlanDocument(existing, db)
 		hydrateTaskProgramStatus(existing, db)
 		return existing, nil
+	}
+
+	// Name only after idempotent replay and source checks. The deterministic
+	// execution contract and full original prompt must not be elaborated here.
+	if strings.TrimSpace(input.Title) == "" {
+		router := taskrouter.NewService(func(ctx context.Context, instructions, input string) (string, error) {
+			res, err := s.invokeConfiguredRouterOnce(ctx, p, instructions, input, 4<<10)
+			return res.Text, err
+		})
+		title, err = router.NameTask(ctx, prompt, "")
+		if err != nil {
+			return nil, fmt.Errorf("task router naming: %w", err)
+		}
 	}
 
 	isDirectMedia := agentName == "image" || agentName == "video" || agentName == "sound" || agentName == "audio"

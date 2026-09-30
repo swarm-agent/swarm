@@ -2492,6 +2492,13 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			isDirectSound := req.Intent == "sound" || req.Intent == "audio"
 			enhancePrompt := req.EnhancePrompt != nil && *req.EnhancePrompt
 
+			taskRouter := taskrouter.NewService(func(ctx context.Context, instructions, input string) (string, error) {
+				res, err := s.invokeConfiguredRouterOnce(ctx, p, instructions, input, 64<<10)
+				if err != nil {
+					return "", err
+				}
+				return res.Text, nil
+			})
 			var routed pebblestore.TaskRouteResult
 			if isDirectSound {
 				soundModel := strings.TrimSpace(req.Model)
@@ -2509,20 +2516,11 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				if durSeconds <= 0 {
 					durSeconds = 30
 				}
-				cleanTitle := prompt
-				if len(cleanTitle) > 60 {
-					cleanTitle = cleanTitle[:60]
-					if idx := strings.LastIndex(cleanTitle, " "); idx > 30 {
-						cleanTitle = cleanTitle[:idx]
-					}
+				taskTitle, err := taskRouter.NameTask(r.Context(), prompt, req.Title)
+				if err != nil {
+					writeError(w, http.StatusBadRequest, fmt.Errorf("task router naming: %w", err))
+					return
 				}
-				cleanTitle = strings.TrimSpace(cleanTitle)
-				if len(cleanTitle) > 0 {
-					cleanTitle = strings.ToUpper(cleanTitle[:1]) + cleanTitle[1:]
-				} else {
-					cleanTitle = "Audio Soundtrack"
-				}
-				taskTitle := fmt.Sprintf("%s (%ds Audio Clip)", cleanTitle, durSeconds)
 				routed = pebblestore.TaskRouteResult{
 					Title:            taskTitle,
 					Agent:            "sound",
@@ -2551,23 +2549,12 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 					durStr = fmt.Sprintf("%ds", normDur)
 				}
 
-				cleanTitle := prompt
-				if len(cleanTitle) > 60 {
-					cleanTitle = cleanTitle[:60]
-					if idx := strings.LastIndex(cleanTitle, " "); idx > 30 {
-						cleanTitle = cleanTitle[:idx]
-					}
+				taskTitle, err := taskRouter.NameTask(r.Context(), prompt, req.Title)
+				if err != nil {
+					writeError(w, http.StatusBadRequest, fmt.Errorf("task router naming: %w", err))
+					return
 				}
-				cleanTitle = strings.TrimSpace(cleanTitle)
-				if len(cleanTitle) > 0 {
-					cleanTitle = strings.ToUpper(cleanTitle[:1]) + cleanTitle[1:]
-				} else {
-					cleanTitle = "Single Video Shot"
-				}
-				taskTitle := fmt.Sprintf("Single clip of %s", cleanTitle)
-				if vidClipCount > 1 {
-					taskTitle = fmt.Sprintf("%d clips of %s", vidClipCount, cleanTitle)
-				}
+				cleanTitle := taskTitle
 
 				var deliverables []pebblestore.ProjectTaskDeliverable
 				if vidClipCount > 1 {
@@ -2609,18 +2596,12 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 					AttachedMedia:    req.AttachedMedia,
 				}
 			} else {
-				taskRouter := taskrouter.NewService(func(ctx context.Context, instructions, input string) (string, error) {
-					res, err := s.invokeConfiguredRouterOnce(ctx, p, instructions, input, 64<<10)
-					if err != nil {
-						return "", err
-					}
-					return res.Text, nil
-				})
 				if req.VariantCount <= 0 && req.DeliverableCount > 0 {
 					req.VariantCount = req.DeliverableCount
 				}
 				var rErr error
 				routed, rErr = taskRouter.RouteTask(r.Context(), taskrouter.TaskRouteOptions{
+					Title:              req.Title,
 					Prompt:             prompt,
 					RequestedWorkspace: req.WorkspacePath,
 					Intent:             req.Intent,
