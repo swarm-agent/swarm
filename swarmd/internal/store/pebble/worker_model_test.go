@@ -137,12 +137,18 @@ func TestWorkerModelInheritedAdmissionSnapshotsAndGuards(t *testing.T) {
 	sel := ModelProfileSelection{Provider: "fixture", Model: "first"}
 	resolved := &SessionModelProfileSnapshot{Source: SessionModelProfileSourceSwarmSettings, Action: sel, Plan: &sel}
 	req := WorkerRunAdmission{WorkerID: w.ID, UserID: "owner", RequestSource: "direct", IdempotencyKey: "job", Input: map[string]any{"prompt": "Review"}}
-	if _, err = ws.AdmitWorkerRun("account", req); err == nil { t.Fatal("unresolved admission succeeded") }
+	if _, err = ws.AdmitWorkerRun("account", req); err == nil {
+		t.Fatal("unresolved admission succeeded")
+	}
 	req.ResolvedModelProfile = resolved
 	req.ExpectedWorkerRevision = w.Revision + 1
-	if _, err = ws.AdmitWorkerRun("account", req); !errors.Is(err, ErrWorkerConflict) { t.Fatalf("stale admission: %v", err) }
+	if _, err = ws.AdmitWorkerRun("account", req); !errors.Is(err, ErrWorkerConflict) {
+		t.Fatalf("stale admission: %v", err)
+	}
 	req.ExpectedWorkerRevision = w.Revision
-	if _, err = ws.AdmitWorkerRun("foreign", req); !errors.Is(err, ErrWorkerNotFound) { t.Fatalf("foreign admission: %v", err) }
+	if _, err = ws.AdmitWorkerRun("foreign", req); !errors.Is(err, ErrWorkerNotFound) {
+		t.Fatalf("foreign admission: %v", err)
+	}
 	first, err := ws.AdmitWorkerRun("account", req)
 	if err != nil {
 		t.Fatal(err)
@@ -150,12 +156,18 @@ func TestWorkerModelInheritedAdmissionSnapshotsAndGuards(t *testing.T) {
 	resolved.Action.Model = "second"
 	*resolved.Plan = resolved.Action
 	replay, err := ws.AdmitWorkerRun("account", req)
-	if err != nil || replay.ID != first.ID || replay.ModelProfile.Action.Model != "first" { t.Fatalf("replay changed snapshot: %+v %v", replay, err) }
+	if err != nil || replay.ID != first.ID || replay.ModelProfile.Action.Model != "first" {
+		t.Fatalf("replay changed snapshot: %+v %v", replay, err)
+	}
 	req.IdempotencyKey = "next-job"
 	next, err := ws.AdmitWorkerRun("account", req)
-	if err != nil || next.ModelProfile.Action.Model != "second" { t.Fatalf("future job did not capture new defaults: %+v %v", next, err) }
+	if err != nil || next.ModelProfile.Action.Model != "second" {
+		t.Fatalf("future job did not capture new defaults: %+v %v", next, err)
+	}
 	loaded, _, err := ws.GetWorker("account", w.ID)
-	if err != nil || loaded.Revision != w.Revision || !loaded.ModelProfile.UseAccountDefault { t.Fatalf("admission changed worker policy: %+v %v", loaded, err) }
+	if err != nil || loaded.Revision != w.Revision || !loaded.ModelProfile.UseAccountDefault {
+		t.Fatalf("admission changed worker policy: %+v %v", loaded, err)
+	}
 }
 
 // Requirement: resetting an explicit worker to defaults remains a pending edit,
@@ -184,10 +196,16 @@ func TestWorkerModelResetRequiresAcceptance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if staged.ModelProfile.UseAccountDefault || staged.PendingReview == nil || !staged.PendingReview.ModelProfile.UseAccountDefault { t.Fatalf("reset bypassed review: %+v", staged) }
-	if _, err = ws.AcceptWorker("account", "owner", w.ID, w.Revision, w.LocalBindings, reset); !errors.Is(err, ErrWorkerConflict) { t.Fatalf("stale reset accepted: %v", err) }
+	if staged.ModelProfile.UseAccountDefault || staged.PendingReview == nil || !staged.PendingReview.ModelProfile.UseAccountDefault {
+		t.Fatalf("reset bypassed review: %+v", staged)
+	}
+	if _, err = ws.AcceptWorker("account", "owner", w.ID, w.Revision, w.LocalBindings, reset); !errors.Is(err, ErrWorkerConflict) {
+		t.Fatalf("stale reset accepted: %v", err)
+	}
 	approved, err := ws.AcceptWorker("account", "owner", w.ID, staged.Revision, w.LocalBindings, reset)
-	if err != nil || !approved.ModelProfile.UseAccountDefault || approved.PendingReview != nil { t.Fatalf("reset not accepted: %+v %v", approved, err) }
+	if err != nil || !approved.ModelProfile.UseAccountDefault || approved.PendingReview != nil {
+		t.Fatalf("reset not accepted: %+v %v", approved, err)
+	}
 }
 
 // Requirement: update -> accept without a client override -> read -> future

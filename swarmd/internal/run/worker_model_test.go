@@ -80,7 +80,9 @@ func TestWorkerModelDefaultOverrideAndPinnedJobs(t *testing.T) {
 		t.Fatal("workers lost independent choices")
 	}
 	before, err := execution.Dispatch(ctx, "account", "owner", store.WorkerRunAdmission{WorkerID: two.ID, RequestSource: "direct", Input: map[string]any{"prompt": "Review"}, IdempotencyKey: "before-default-change"})
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	// Change account defaults directly in this isolated fixture; product code must not.
 	record, _, err := store.NewAgentModelSettingsStore(ss.Store().Underlying()).GetForAccount("account")
 	if err != nil {
@@ -106,20 +108,30 @@ func TestWorkerModelDefaultOverrideAndPinnedJobs(t *testing.T) {
 		}
 	}
 	prior, found, err := ss.GetSession(before.SessionID)
-	if err != nil || !found || prior.ModelProfile.Action != initial.Action { t.Fatalf("admitted snapshot changed: %+v %v", prior, err) }
+	if err != nil || !found || prior.ModelProfile.Action != initial.Action {
+		t.Fatalf("admitted snapshot changed: %+v %v", prior, err)
+	}
 	record.Swarm.Action = store.AgentModelAssignment{Provider: initial.Action.Provider, Model: initial.Action.Model, Thinking: initial.Action.Thinking, ServiceTier: initial.Action.ServiceTier, ContextMode: initial.Action.ContextMode}
 	record.Swarm.Plan = record.Swarm.Action
-	if _, err = store.NewAgentModelSettingsStore(ss.Store().Underlying()).PutForAccount(record); err != nil { t.Fatal(err) }
+	if _, err = store.NewAgentModelSettingsStore(ss.Store().Underlying()).PutForAccount(record); err != nil {
+		t.Fatal(err)
+	}
 	pinned, err := runs.ResolveWorkerModelProfile("account", one.ModelProfile)
-	if err != nil || pinned.Action != override.Action { t.Fatalf("account changes replaced explicit override: %+v %v", pinned, err) }
+	if err != nil || pinned.Action != override.Action {
+		t.Fatalf("account changes replaced explicit override: %+v %v", pinned, err)
+	}
 	partial := store.CloneSessionModelProfileSnapshot(one.ModelProfile)
 	partial.ActionUseAccountDefault = true
 	mixed, err := runs.ResolveWorkerModelProfile("account", partial)
-	if err != nil || mixed.Action != initial.Action || *mixed.Plan != override.Action || !mixed.ActionUseAccountDefault || mixed.PlanUseAccountDefault { t.Fatalf("slot reset replaced independent override: %+v %v", mixed, err) }
+	if err != nil || mixed.Action != initial.Action || *mixed.Plan != override.Action || !mixed.ActionUseAccountDefault || mixed.PlanUseAccountDefault {
+		t.Fatalf("slot reset replaced independent override: %+v %v", mixed, err)
+	}
 	reset := store.CloneSessionModelProfileSnapshot(one.ModelProfile)
 	reset.UseAccountDefault = true
 	resolved, err := runs.ResolveWorkerModelProfile("account", reset)
-	if err != nil || resolved.Action != initial.Action || !resolved.UseAccountDefault { t.Fatalf("reset did not follow defaults: %+v %v", resolved, err) }
+	if err != nil || resolved.Action != initial.Action || !resolved.UseAccountDefault {
+		t.Fatalf("reset did not follow defaults: %+v %v", resolved, err)
+	}
 }
 
 // Requirement: unavailable initial settings use only the resolved account

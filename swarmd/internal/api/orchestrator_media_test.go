@@ -96,7 +96,7 @@ func TestOrchestratorProviderInputUsesCapabilityGatedDurableImages(t *testing.T)
 			contract := runruntime.CompileSessionMediaContract(runruntime.SessionMediaContractInput{
 				ProviderID: adapter.ProviderID, Model: "fixture-model", Catalog: catalog,
 				CatalogMeta: &pebblestore.ModelCatalogMeta{SnapshotID: "snapshot", SnapshotVersion: "v1"},
-				Adapter: adapter, AgentAuthorized: authorized, ExecutionMode: "auto", WorkspaceScope: session.WorkspacePath, SessionScope: session.ID,
+				Adapter:     adapter, AgentAuthorized: authorized, ExecutionMode: "auto", WorkspaceScope: session.WorkspacePath, SessionScope: session.ID,
 			})
 			resolved := sessionV3ResolvedRuntime{Session: session, AgentProfile: profile, MediaContract: contract}
 			input, err := fixture.server.v3SessionExecutor.sessionsV3ProviderInputWithMedia(resolved, messages, sessionsV3ProviderInputOptions{})

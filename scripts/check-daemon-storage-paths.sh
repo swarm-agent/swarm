@@ -57,14 +57,17 @@ filter_allowed() {
   # filesystem path. Keep both exceptions byte-exact after line normalization.
   # Worker provenance predicates reject legacy worker execution; they neither
   # migrate storage nor choose storage paths. Exempt only these complete lines.
+  # Search broad-root rejection reads the home path only to refuse indexing it;
+  # exempt the exact lookup, not other home defaults or appended operations.
   # Setup recovery atomically publishes a synced record in the same trusted
   # directory; this exact call is not a storage migration.
   grep -vFx -f <(printf '%s\n' \
+    'swarmd/internal/tool/search_coordinator.go:	home, err := os.UserHomeDir()' \
     'swarmd/internal/run/worker_execution.go:	if w.Provenance != nil && (w.Provenance.MigratedAt != 0 || w.Provenance.SourceProposalID != "") {' \
     'swarmd/internal/run/worker_execution.go:	if current.Provenance != nil && (current.Provenance.MigratedAt != 0 || current.Provenance.SourceProposalID != "") {' \
     'swarmd/internal/run/worker_execution.go:	if !found || !workerRunAdmissionOpen(w, r) || len(w.RequestedCapabilities) != 0 || r.SessionID != "worker-execution-"+r.ID || (w.Provenance != nil && (w.Provenance.MigratedAt != 0 || w.Provenance.SourceProposalID != "")) {' \
     'internal/launcher/system_paths.go:	return filepath.IsAbs(home) && filepath.Clean(home) != "/" && filepath.Clean(home) != "/root" && !strings.ContainsAny(home, "\n\r\"%")' \
-    'cmd/swarmsetup/main.go:	fmt.Fprintln(os.Stderr, "OS installation identity is not Swarm authentication. Open Swarm and complete its authenticated account setup or sign in; existing Swarm account/provider/workspace state is retained on retry.")') < <(sed -E 's/^(internal\/launcher\/system_paths\.go|cmd\/swarmsetup\/main\.go|swarmd\/internal\/run\/worker_execution\.go):[0-9]+:/\1:/') | grep -Ev \
+    'cmd/swarmsetup/main.go:	fmt.Fprintln(os.Stderr, "OS installation identity is not Swarm authentication. Open Swarm and complete its authenticated account setup or sign in; existing Swarm account/provider/workspace state is retained on retry.")') < <(sed -E 's/^(internal\/launcher\/system_paths\.go|cmd\/swarmsetup\/main\.go|swarmd\/internal\/run\/worker_execution\.go|swarmd\/internal\/tool\/search_coordinator\.go):[0-9]+:/\1:/') | grep -Ev \
     -e '^internal/launcher/onboarding_recovery\.go:[0-9]+:[[:blank:]]*if err := os\.Rename\(f\.Name\(\), filepath\.Join\(dir, "onboarding\.json"\)\); err != nil \{$' \
     -e '^pkg/storagecontract/storagecontract\.go:.*(HOME|XDG_|\.local|\.config|Library|Desktop|Documents|Downloads|forbidden|reject|~|home-relative|WorkspaceRoots)' \
     -e '^internal/launcher/launcher\.go:.*(legacy|Legacy|XDG_STATE_HOME|XDG_DATA_HOME|UserHomeDir|UserConfigDir|\.local|\.config|resolve legacy|stat legacy|startupCWD|Getwd)' \
@@ -168,6 +171,14 @@ if [[ "${self_test}" == "1" ]]; then
     for rejected_hit in "${worker_hit/MigratedAt !=/MigratedAt ==}" "${worker_hit} os.Rename(a, b)" "${worker_hit/worker_execution.go/other.go}"; do
       [[ -n "$(printf '%s\n' "${rejected_hit}" | filter_allowed)" ]] || exit 1
     done
+  done
+  # Requirement: the reviewed search lookup rejects a broad index root, not
+  # daemon storage. Different bindings, extra operations and other files must
+  # remain visible to the lexical gate; only the exact lookup is exempt.
+  search_home_hit=$'swarmd/internal/tool/search_coordinator.go:486:\thome, err := os.UserHomeDir()'
+  [[ -z "$(printf '%s\n' "${search_home_hit}" | filter_allowed)" ]] || exit 1
+  for rejected_hit in "${search_home_hit/home, err/storageRoot, err}" "${search_home_hit} os.MkdirAll(home, 0700)" "${search_home_hit/search_coordinator.go/other.go}"; do
+    [[ -n "$(printf '%s\n' "${rejected_hit}" | filter_allowed)" ]] || exit 1
   done
   tmp_dir="$(mktemp -d -t swarm-storage-gate.XXXXXX)"
   trap 'rm -rf "${tmp_dir}"' EXIT

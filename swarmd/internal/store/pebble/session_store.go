@@ -26,9 +26,9 @@ const (
 // Explicit favorite identity is copied when applicable. Swarm defaults instead
 // carry direct Action/Plan selections with source "swarm_settings".
 type SessionModelProfileSnapshot struct {
-	ResolutionWarning       string                 `json:"resolution_warning,omitempty"`
-	Source                  string                 `json:"source"`
-	UseAccountDefault       bool                   `json:"use_account_default,omitempty"`
+	ResolutionWarning string `json:"resolution_warning,omitempty"`
+	Source            string `json:"source"`
+	UseAccountDefault bool   `json:"use_account_default,omitempty"`
 	// Worker policy only; cleared before binding an admitted run/session snapshot.
 	ActionUseAccountDefault bool                   `json:"action_use_account_default,omitempty"`
 	PlanUseAccountDefault   bool                   `json:"plan_use_account_default,omitempty"`
