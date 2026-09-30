@@ -35,7 +35,7 @@ test('integration card stays stable through pending, failure, retry and stale su
     function App(){const [mount,setMount]=useState(true);const [snapshot,setSnapshot]=useState(task);
       window.mount=setMount;window.snapshot=setSnapshot;
       useSyncExternalStore(controller.subscribe,controller.getSnapshot,controller.getSnapshot);
-      return <QueryClientProvider client={client}>{mount && <MinimalTaskCard task={snapshot} onSelect={()=>{window.selected++}} onReopen={feedback=>window.reopened.push(feedback ?? null)} onComplete={()=>{window.completed++}} onIntegrate={window.submit} integrationOperation={controller.get(taskIntegrationKey(project.id,snapshot))}/>}</QueryClientProvider>;}
+      return <QueryClientProvider client={client}>{mount && <MinimalTaskCard task={snapshot} onSelect={()=>{window.selected++}} onReopen={async feedback=>{window.reopened.push(feedback ?? null);return {ok:true};}} onComplete={()=>{window.completed++}} onIntegrate={window.submit} integrationOperation={controller.get(taskIntegrationKey(project.id,snapshot))}/>}</QueryClientProvider>;}
     window.task=task;createRoot(document.getElementById('root')).render(<App/>);
   ` }, bundle: true, write: false, format: 'iife', platform: 'browser', jsx: 'automatic', logLevel: 'silent' })
   const styles = await buildStyles({ configFile: false, logLevel: 'silent', publicDir: false, plugins: [tailwindcss()], build: { write: false, rollupOptions: { input: path.resolve('src/theme.css') } } })
@@ -133,7 +133,7 @@ test('integration card stays stable through pending, failure, retry and stale su
     await reopen.click()
     await instructions.fill('   ')
     await page.getByRole('button', { name: 'Resume Run', exact: true }).click()
-    assert.deepEqual(await page.evaluate(() => (window as any).reopened), ['Keep the existing layout', null])
+    assert.deepEqual(await page.evaluate(() => (window as any).reopened), ['Keep the existing layout', '   '])
     assert.equal(await page.evaluate(() => (window as any).selected), 0)
     assert.equal(await toggle.getAttribute('aria-expanded'), 'false')
     await initial.click()
