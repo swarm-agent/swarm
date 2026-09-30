@@ -1,4 +1,4 @@
-import { useState, useReducer, useMemo, useEffect, useCallback, useRef, useSyncExternalStore } from 'react'
+import { useState, useReducer, useMemo, useEffect, useCallback, useRef, useSyncExternalStore, useId } from 'react'
 import { MediaTaskSelect, MediaTaskDefault, MediaTaskHelp, MediaTaskScenes, MediaTaskCost } from './media-task-controls'
 import { ImagePromptControls, imagePromptReducer, initialImagePromptState, imagePromptEnhancement } from './image-task-prompt'
 import { DurableWorkerReviews } from '../chat/components/durable-worker-reviews'
@@ -28,7 +28,6 @@ import {
   Code,
   Code2,
   Edit3,
-  Eye,
   ExternalLink,
   FileText,
   Film,
@@ -46,7 +45,6 @@ import {
   Mic,
   MicOff,
   Music,
-  Palette,
   Paperclip,
   Play,
   Plus,
@@ -741,7 +739,7 @@ export function MinimalTaskCard({
   const [internalExpanded, setInternalExpanded] = useState(false)
   const expanded = isExpanded !== undefined ? isExpanded : internalExpanded
   const detailsToggleRef = useRef<HTMLButtonElement>(null)
-  const detailsId = React.useId()
+  const detailsId = useId()
   const handleToggleExpand = () => {
     if (expanded) {
       requestAnimationFrame(() => {

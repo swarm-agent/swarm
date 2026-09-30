@@ -29,10 +29,10 @@ test('actual task toggle preserves summary geometry, output targets and delibera
     </QueryClientProvider>);
   ` }, bundle: true, write: false, format: 'iife', platform: 'browser', jsx: 'automatic', logLevel: 'silent' })
   const browser = await chromium.launch({ headless: true, channel: process.env.SWARM_TEST_BROWSER_CHANNEL || 'chrome' })
+  const errors: string[] = []
   try {
     const page = await browser.newPage({ viewport: { width: 360, height: 640 } })
     page.setDefaultTimeout(5000)
-    const errors: string[] = []
     let historyRequests = 0
     page.on('pageerror', error => errors.push(error.message))
     await page.route('**/*', route => {
@@ -90,5 +90,8 @@ test('actual task toggle preserves summary geometry, output targets and delibera
     await page.getByRole('heading', { name: 'Sidebar', exact: true }).click()
     assert.equal(await toggle.getAttribute('aria-expanded'), 'true')
     assert.deepEqual(errors, [])
+  } catch (error) {
+    assert.deepEqual(errors, [], 'task disclosure must render without browser errors')
+    throw error
   } finally { await browser.close() }
 })

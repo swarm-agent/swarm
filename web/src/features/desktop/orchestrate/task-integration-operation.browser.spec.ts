@@ -17,6 +17,8 @@ const integrationTask = {
 // deferred requests, stale task snapshots and remounts, without changing button
 // geometry. Real production JSX/CSS is the narrowest proof of accessibility and
 // layout; injected promises prove UI ordering, not backend Git integration.
+// Actions live below the real disclosure control; explicitly reopen after remount
+// so operation persistence is proved independently of local disclosure state.
 // The operation's explicit accessible name must exclude its hidden retry-width
 // reserve and live status semantics while preserving the same fixed geometry.
 test('integration card stays stable through pending, failure, retry and stale success snapshots', { timeout: 60000 }, async () => {
@@ -52,6 +54,9 @@ test('integration card stays stable through pending, failure, retry and stale su
     const initial = page.getByRole('button', { name: 'Integrate into dev', exact: true })
     try {
       await page.getByTestId('orchestrate-task-card').waitFor()
+      assert.equal(await page.getByTestId('toggle-task-details-btn').getAttribute('aria-expanded'), 'false')
+      assert.equal(await initial.count(), 0, 'integration is a detail action, not a collapsed summary action')
+      await page.getByTestId('toggle-task-details-btn').click()
       await initial.waitFor()
     } catch (error) {
       assert.fail(`Integration fixture readiness failed: ${String(error)}; page errors: ${JSON.stringify(errors)}; rendered text: ${(await page.locator('#root').textContent())?.slice(0, 2000)}`)
@@ -60,8 +65,8 @@ test('integration card stays stable through pending, failure, retry and stale su
     assert.equal(await initial.isEnabled(), true)
     assert.equal(await initial.getAttribute('aria-label'), 'Integrate into dev')
     assert.equal(await initial.locator('[aria-hidden="true"]').first().getAttribute('aria-hidden'), 'true')
-    // Collapsed summary owns lineage/count; the action row must not duplicate it.
-    assert.equal(await page.getByTestId('orchestrate-task-card').getAttribute('data-expanded'), 'false')
+    // Compact summary still owns lineage/count; the expanded action row must not duplicate it.
+    assert.equal(await page.getByTestId('orchestrate-task-card').getAttribute('data-expanded'), 'true')
     assert.match(await page.getByTestId('task-card-summary').innerText(), /2 unintegrated commits/)
     assert.doesNotMatch(await bar.innerText(), /agent\/a|Pending worktree|2 commits/)
     assert.equal(await page.getByTestId('orchestrate-task-card').evaluate(node => node.getAnimations({ subtree: true }).length), 0)
@@ -80,6 +85,7 @@ test('integration card stays stable through pending, failure, retry and stale su
     await page.evaluate(() => (window as any).mount(false))
     await page.waitForFunction(() => !document.querySelector('[data-testid="task-pending-worktree-bar"]'))
     await page.evaluate(() => (window as any).mount(true))
+    await page.getByTestId('toggle-task-details-btn').click()
     await pending.waitFor()
     await page.evaluate(() => (window as any).fail())
     const retry = page.getByRole('button', { name: 'Retry integrate into dev', exact: true })
