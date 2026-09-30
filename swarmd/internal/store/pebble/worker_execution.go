@@ -319,6 +319,7 @@ func (ws *WorkerStore) SetWorkerLifecycle(account, user, id string, revision uin
 		w.StopTarget = ""
 	}
 	now := time.Now().UnixMilli()
+	w.PendingReview = nil // a stop/resume invalidates previously proposed changes
 	w.LifecycleState = next
 	w.Revision++
 	w.UpdatedAt = now
@@ -384,6 +385,7 @@ func (ws *WorkerStore) DisableWorkerAutomation(account, user, id, autoID string,
 			return WorkerRecord{}, nil, ErrWorkerConflict
 		}
 	}
+	w.PendingReview = nil // never resurrect a disabled job through stale review
 	w.Automations[index].Enabled = false
 	w.Automations[index].Revision++
 	now := time.Now().UnixMilli()
@@ -477,7 +479,23 @@ func (ws *WorkerStore) AcceptWorker(account, user, id string, revision uint64, b
 	if !found || w.AccountScopeID != account {
 		return WorkerRecord{}, ErrWorkerNotFound
 	}
-	if revision == 0 || w.Revision != revision || w.LifecycleState != WorkerLifecycleStatePending || (w.Provenance != nil && (w.Provenance.MigratedAt != 0 || w.Provenance.SourceProposalID != "")) {
+	if revision == 0 || w.Revision != revision || (w.LifecycleState != WorkerLifecycleStatePending && w.PendingReview == nil) || (w.Provenance != nil && (w.Provenance.MigratedAt != 0 || w.Provenance.SourceProposalID != "")) {
+		return WorkerRecord{}, ErrWorkerConflict
+	}
+	resumeState := WorkerLifecycleStateActive
+	if w.PendingReview != nil {
+		if w.LifecycleState != WorkerLifecycleStateActive && w.LifecycleState != WorkerLifecycleStateIdle && w.LifecycleState != WorkerLifecycleStatePaused {
+			return WorkerRecord{}, ErrWorkerConflict
+		}
+		if w.LifecycleState == WorkerLifecycleStatePaused {
+			resumeState = WorkerLifecycleStatePaused
+		}
+		candidate := *w.PendingReview
+		candidate.Revision = w.Revision
+		w = candidate
+		w.PendingReview = nil
+	}
+	if len(w.WorkspaceRequirements) != 1 || w.WorkspaceRequirements[0].Role != "primary" || !w.WorkspaceRequirements[0].Required {
 		return WorkerRecord{}, ErrWorkerConflict
 	}
 	if len(w.RequestedCapabilities) != 0 {
@@ -508,7 +526,7 @@ func (ws *WorkerStore) AcceptWorker(account, user, id string, revision uint64, b
 		w.ModelProfile = CloneSessionModelProfileSnapshot(models[0])
 	}
 	w.LocalBindings = map[string]string{"primary": strings.TrimSpace(bindings["primary"])}
-	w.LifecycleState = WorkerLifecycleStateActive
+	w.LifecycleState = resumeState
 	w.Revision++
 	w.UpdatedAt = now
 	hist := WorkerRevisionRecord{
@@ -521,6 +539,11 @@ func (ws *WorkerStore) AcceptWorker(account, user, id string, revision uint64, b
 		ChangeSummary:  "accepted worker proposal",
 	}
 	m := &workerRealtimeMutation{accountScopeID: account, userID: user, workerID: id}
+	for _, a := range w.Automations {
+		if err = m.put(KeyWorkerByAutomation(account, a.ID), id); err != nil {
+			return WorkerRecord{}, err
+		}
+	}
 	if err = m.put(KeyWorker(account, id), w); err != nil {
 		return WorkerRecord{}, err
 	}
@@ -660,6 +683,7 @@ func (ws *WorkerStore) EnableWorkerAutomation(account, user, id, autoID string, 
 		return w, ErrWorkerConflict
 	}
 	now := time.Now().UnixMilli()
+	w.PendingReview = nil
 	w.Automations[index].Enabled = true
 	w.Automations[index].Revision++
 	w.Automations[index].UpdatedAt = now

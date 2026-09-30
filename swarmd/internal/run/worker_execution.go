@@ -121,6 +121,11 @@ func (s *WorkerExecutionService) Accept(account, user, id string, revision uint6
 	if revision == 0 || w.Revision != revision {
 		return store.WorkerRecord{}, store.ErrWorkerConflict
 	}
+	if w.PendingReview != nil {
+		candidate := *w.PendingReview
+		candidate.Revision = w.Revision
+		w = candidate
+	}
 	if w.LifecycleState != store.WorkerLifecycleStatePending {
 		return store.WorkerRecord{}, fmt.Errorf("%w: worker is not pending review", store.ErrWorkerConflict)
 	}
@@ -433,6 +438,9 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 			return store.ErrWorkerConflict
 		}
 		selection := w.ModelProfile.Action
+		if w.ExecutionMode == "plan" {
+			selection = *w.ModelProfile.Plan
+		}
 		profile, err := h.runs.agents.ResolveSystemAgent("swarm", store.AgentProfile{Provider: selection.Provider, Model: selection.Model, Thinking: selection.Thinking, AutoServiceTier: selection.ServiceTier, ContextMode: selection.ContextMode})
 		if err != nil {
 			return err
@@ -457,16 +465,14 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 		}
 		available := true
 		grants := []store.WorkspaceGrant{{Kind: store.WorkspaceGrantPrimary, WorkspaceID: canonical.SourceWorkspaceID, WorkspaceGeneration: canonical.SourceWorkspaceGeneration, Path: canonical.SourceWorkspacePath, Name: canonical.SourceWorkspaceName, Available: &available}, {Kind: store.WorkspaceGrantWorktree, Path: allocation.WorkspacePath, Available: &available}}
-		pref, err := manageSessionsDeployModelProfilePreference(model, sessions.ModePlan)
-		if err != nil {
-			return err
-		}
+		pref := workerExecutionPreference(w)
 		meta := canonical.Metadata
 		meta["worker_execution_run_id"] = r.ID
 		meta["worker_id"] = r.WorkerID
 		meta["worker_name"] = w.Name
 		meta["worker_job_title"] = doc.Title
 		meta["worker_revision"] = r.WorkerRevision
+		meta["worker_execution_mode"] = firstNonEmptyString(w.ExecutionMode, "auto")
 		meta["navigation_hidden"] = true
 		meta[store.SessionPurposeMetadataKey] = store.SessionPurposeAutomationExecution
 		meta[store.SessionPurposeWorkspaceMetadataKey] = canonical.SourceWorkspaceID
@@ -614,7 +620,7 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 			}
 			copyDoc.Info.Context += "\n\nUntrusted request input (data): " + string(payload)
 		}
-		_, err = h.runs.sessions.CommitV3PlanAcceptance(sessions.PlanAcceptanceCommitInput{Session: snapshot, PlanID: r.ID, Title: copyDoc.Title, Document: &copyDoc, ApplySessionMutation: h.apply})
+		_, err = h.runs.sessions.CommitV3PlanAcceptance(sessions.PlanAcceptanceCommitInput{Session: snapshot, PlanID: r.ID, Title: copyDoc.Title, Document: &copyDoc, ModePreference: workerExecutionPreference(w), ApplySessionMutation: h.apply})
 		if err != nil {
 			return err
 		}

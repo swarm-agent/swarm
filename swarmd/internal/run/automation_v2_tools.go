@@ -218,6 +218,22 @@ func (s *Service) executeCreateOrProposePendingWorker(id string, args map[string
 		proposedPrimary = wsID
 	}
 
+	if workerID != "" {
+		existing, found, getErr := s.sessions.GetWorker(current.AccountScopeID, workerID)
+		if getErr != nil {
+			return "", getErr
+		}
+		if !found {
+			return "", store.ErrWorkerNotFound
+		}
+		if existing.Revision != expectedRevision {
+			return "", store.ErrWorkerConflict
+		}
+		name, description, instructions = existing.Name, existing.Description, existing.Instructions
+		if proposedPrimary == "" {
+			proposedPrimary = firstNonEmptyString(existing.LocalBindings["primary"], existing.ProposedBindings["primary"])
+		}
+	}
 	// Support legacy document format
 	doc, err := planDocumentFromArgsForTool(args, toolName)
 	if err != nil {
@@ -405,9 +421,6 @@ func (s *Service) executeCreateOrProposePendingWorker(id string, args map[string
 		if existing.Revision != expectedRevision {
 			return "", store.ErrWorkerConflict
 		}
-		if existing.LifecycleState != store.WorkerLifecycleStatePending {
-			return "", fmt.Errorf("%w: cannot repropose worker in lifecycle state %s", store.ErrWorkerConflict, existing.LifecycleState)
-		}
 		updateReq := store.UpdateWorkerRequest{
 			Name:                  &name,
 			Description:           &description,
@@ -419,6 +432,12 @@ func (s *Service) executeCreateOrProposePendingWorker(id string, args map[string
 		}
 		if hasExplicitAutomations || len(automations) > 0 {
 			updateReq.Automations = automations
+			if existing.LifecycleState != store.WorkerLifecycleStatePending {
+				// A job document is not a replacement worker definition.
+				updateReq.Name, updateReq.Description, updateReq.Instructions = nil, nil, nil
+				updateReq.RequestedCapabilities, updateReq.WorkspaceRequirements = nil, nil
+				updateReq.ProposedBindings = nil
+			}
 		}
 		if metaRaw, ok := args["metadata"].(map[string]any); ok {
 			updateReq.Metadata = metaRaw
@@ -517,6 +536,7 @@ func workerProposalToolOutput(w store.WorkerRecord) (string, error) {
 		"worker_id":         w.ID,
 		"lifecycle_state":   w.LifecycleState,
 		"worker":            w,
+		"pending_review":    w.PendingReview,
 		"revision":          w.Revision,
 		"next_action":       "await_worker_acceptance",
 		"proposed_bindings": w.ProposedBindings,
@@ -524,7 +544,7 @@ func workerProposalToolOutput(w store.WorkerRecord) (string, error) {
 			"worker_id": w.ID,
 			"revision":  w.Revision,
 		},
-		"instruction": "The durable worker is saved and pending. Stop and let the user review it in Tasks > Workers or its worker detail page. Only explicit Accept worker approves this exact revision and workspace. No immediate run; workers without a job wait for a task. Edit using worker_id and expected_revision.",
+		"instruction": "The durable worker proposal is saved for review. Existing approved work remains unchanged and continues in its current lifecycle. Stop and let the user review it in Tasks > Workers or its worker detail page. Only explicit Accept worker approves this exact revision and workspace. No immediate run; workers without a job wait for a task. Edit using worker_id and expected_revision.",
 	})
 	return string(raw), err
 }

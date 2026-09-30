@@ -8,6 +8,14 @@ import (
 	store "swarm/packages/swarmd/internal/store/pebble"
 )
 
+func workerExecutionPreference(w store.WorkerRecord) store.ModelPreference {
+	a := w.ModelProfile.Action
+	if w.ExecutionMode == "plan" {
+		a = *w.ModelProfile.Plan
+	}
+	return store.ModelPreference{Provider: a.Provider, Model: a.Model, Thinking: a.Thinking, ServiceTier: a.ServiceTier, ContextMode: a.ContextMode}
+}
+
 // ResolveWorkerModelProfile captures account-owned Swarm plan/action settings or
 // validates an explicit review selection without writing any account settings.
 func (s *Service) ResolveWorkerModelProfile(account string, selected *store.SessionModelProfileSnapshot) (*store.SessionModelProfileSnapshot, error) {

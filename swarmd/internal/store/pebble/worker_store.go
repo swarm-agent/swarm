@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -100,6 +101,8 @@ type WorkerAutomationDefinition struct {
 }
 
 type WorkerRecord struct {
+	ExecutionMode         string                       `json:"execution_mode,omitempty"`
+	PendingReview         *WorkerRecord                `json:"pending_review,omitempty"`
 	ModelProfile          *SessionModelProfileSnapshot `json:"model_profile,omitempty"`
 	StopTarget            WorkerLifecycleState         `json:"stop_target,omitempty"`
 	ID                    string                       `json:"id"`
@@ -219,6 +222,8 @@ type CreateWorkerRequest struct {
 }
 
 type UpdateWorkerRequest struct {
+	ExecutionMode         *string                      `json:"execution_mode,omitempty"`
+	ModelProfile          *SessionModelProfileSnapshot `json:"model_profile,omitempty"`
 	Name                  *string                      `json:"name,omitempty"`
 	Description           *string                      `json:"description,omitempty"`
 	Instructions          *string                      `json:"instructions,omitempty"`
@@ -1158,17 +1163,30 @@ func (ws *WorkerStore) UpdateWorker(account, user, workerID string, expectedRevi
 	if current.Revision != expectedRevision {
 		return WorkerRecord{}, ErrWorkerConflict
 	}
-	if current.LifecycleState != WorkerLifecycleStateIdle && current.LifecycleState != WorkerLifecycleStatePending {
+	if current.LifecycleState != WorkerLifecycleStateIdle && current.LifecycleState != WorkerLifecycleStatePending && current.LifecycleState != WorkerLifecycleStateActive && current.LifecycleState != WorkerLifecycleStatePaused {
 		return WorkerRecord{}, ErrActiveScheduleUpdateRejected
 	}
-	for _, auto := range current.Automations {
-		if current.LifecycleState != WorkerLifecycleStatePending && auto.Enabled && (auto.ActivationMode == "interval" || auto.ActivationMode == "cron" || auto.ActivationMode == "external_trigger") {
-			return WorkerRecord{}, ErrActiveScheduleUpdateRejected
-		}
+	staged := current.LifecycleState != WorkerLifecycleStatePending
+	approved := current
+	if current.PendingReview != nil {
+		current = *current.PendingReview
 	}
+	current.PendingReview = nil
 
 	now := time.Now().UnixMilli()
 	updated := current
+	if req.ExecutionMode != nil {
+		if *req.ExecutionMode != "auto" && *req.ExecutionMode != "plan" {
+			return WorkerRecord{}, errors.New("execution_mode must be auto or plan")
+		}
+		updated.ExecutionMode = *req.ExecutionMode
+	}
+	if req.ModelProfile != nil {
+		if err := ValidateWorkerModelProfile(req.ModelProfile); err != nil {
+			return WorkerRecord{}, err
+		}
+		updated.ModelProfile = CloneSessionModelProfileSnapshot(req.ModelProfile)
+	}
 	if req.Name != nil {
 		updated.Name = strings.TrimSpace(*req.Name)
 	}
@@ -1206,6 +1224,14 @@ func (ws *WorkerStore) UpdateWorker(account, user, workerID string, expectedRevi
 			aCopy := a
 			autoID := strings.TrimSpace(aCopy.ID)
 			var prior *WorkerAutomationDefinition
+			if autoID == "" && staged {
+				for _, priorAuto := range current.Automations {
+					if strings.TrimSpace(priorAuto.Name) == name {
+						autoID = priorAuto.ID
+						break
+					}
+				}
+			}
 			if autoID != "" {
 				for j := range current.Automations {
 					if current.Automations[j].ID == autoID {
@@ -1233,16 +1259,64 @@ func (ws *WorkerStore) UpdateWorker(account, user, workerID string, expectedRevi
 				aCopy.CreatedAt = now
 			}
 			aCopy.UpdatedAt = now
+			if staged && prior != nil {
+				comparison := aCopy
+				comparison.Revision, comparison.UpdatedAt = prior.Revision, prior.UpdatedAt
+				if reflect.DeepEqual(comparison, *prior) {
+					aCopy = *prior
+				}
+			}
 			automations[i] = aCopy
+		}
+		if staged {
+			merged := append([]WorkerAutomationDefinition(nil), current.Automations...)
+			for _, a := range automations {
+				replaced := false
+				for i, prior := range merged {
+					if prior.ID == a.ID {
+						merged[i], replaced = a, true
+						break
+					}
+				}
+				if !replaced {
+					merged = append(merged, a)
+				}
+			}
+			automations = merged
 		}
 		updated.Automations = automations
 	}
 
-	updated.Revision++
+	updated.Revision = approved.Revision + 1
 	updated.UpdatedAt = now
-
-	if err := ValidateWorkerRecord(&updated, validate); err != nil {
+	validation := updated
+	validation.LocalBindings = nil
+	if err := ValidateWorkerRecord(&validation, validate); err != nil {
 		return WorkerRecord{}, err
+	}
+	if staged {
+		if len(updated.ProposedBindings) == 0 {
+			updated.ProposedBindings = approved.LocalBindings
+		}
+		if len(approved.LocalBindings) != 0 && !reflect.DeepEqual(updated.ProposedBindings, approved.LocalBindings) {
+			return WorkerRecord{}, fmt.Errorf("%w: changing approved workspace requires explicit rebind", ErrWorkerConflict)
+		}
+		updated.LocalBindings = nil
+		updated.LifecycleState = WorkerLifecycleStatePending
+		candidate := updated
+		updated = approved
+		updated.Revision, updated.UpdatedAt = candidate.Revision, now
+		updated.PendingReview = &candidate
+		encoded, err := json.Marshal(updated)
+		if err != nil {
+			return WorkerRecord{}, err
+		}
+		if len(encoded) > 1024*1024 {
+			return WorkerRecord{}, errors.New("worker and pending review exceed maximum size of 1 MiB")
+		}
+		if req.ChangeSummary == "" {
+			req.ChangeSummary = "proposed worker changes; approved work unchanged"
+		}
 	}
 
 	hist := WorkerRevisionRecord{
@@ -1473,6 +1547,16 @@ func (ws *WorkerStore) ListWorkerRevisions(account, workerID string, limit int, 
 }
 
 func (ws *WorkerStore) AttachWorkerAutomation(account, user, workerID string, expectedWorkerRevision uint64, auto WorkerAutomationDefinition, validate func(*SessionPlanDocument) error) (WorkerRecord, error) {
+	w, found, err := ws.GetWorker(account, workerID)
+	if err != nil {
+		return WorkerRecord{}, err
+	}
+	if found && w.LifecycleState != WorkerLifecycleStatePending {
+		if auto.ID != "" {
+			return WorkerRecord{}, ErrWorkerConflict
+		}
+		return ws.UpdateWorker(account, user, workerID, expectedWorkerRevision, UpdateWorkerRequest{Automations: []WorkerAutomationDefinition{auto}, ChangeSummary: "proposed attached job"}, validate)
+	}
 	if ws == nil || ws.store == nil || ws.store.db == nil {
 		return WorkerRecord{}, errors.New("store is not open")
 	}

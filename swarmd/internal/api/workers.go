@@ -424,7 +424,17 @@ func (s *Server) handleWorkerCollection(w http.ResponseWriter, r *http.Request, 
 			res.Workers = []pebblestore.WorkerRecord{}
 		}
 
+		workspaceViews := make(map[string]any, len(res.Workers))
+		for _, worker := range res.Workers {
+			views, err := s.workerWorkspaceViews(p, worker)
+			if err != nil {
+				workerHTTPError(w, err)
+				return
+			}
+			workspaceViews[worker.ID] = views
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
+			"workspaces": workspaceViews,
 			"workers":     res.Workers,
 			"next_cursor": res.NextCursor,
 		})
@@ -512,6 +522,8 @@ func (s *Server) handleWorkerCollection(w http.ResponseWriter, r *http.Request, 
 }
 
 type updateWorkerRequestBody struct {
+	ExecutionMode         *string                                  `json:"execution_mode,omitempty"`
+	ModelProfile          *pebblestore.SessionModelProfileSnapshot `json:"model_profile,omitempty"`
 	ExpectedRevision      uint64                                   `json:"expected_revision"`
 	Name                  *string                                  `json:"name,omitempty"`
 	Description           *string                                  `json:"description,omitempty"`
@@ -551,8 +563,14 @@ func (s *Server) handleWorkerByID(w http.ResponseWriter, r *http.Request, p iden
 			return
 		}
 
+		workspaces, err := s.workerWorkspaceViews(p, record)
+		if err != nil {
+			workerHTTPError(w, err)
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"worker": record,
+			"workspaces": workspaces,
 		})
 
 	case http.MethodPut:
@@ -575,7 +593,22 @@ func (s *Server) handleWorkerByID(w http.ResponseWriter, r *http.Request, p iden
 			return
 		}
 
+		if req.ModelProfile != nil {
+			execution, err := s.workerExecutionService()
+			if err != nil {
+				workerHTTPError(w, err)
+				return
+			}
+			resolved, err := execution.ResolveModelProfile(p.AccountScopeID, req.ModelProfile)
+			if err != nil {
+				workerHTTPError(w, err)
+				return
+			}
+			req.ModelProfile = resolved
+		}
 		updated, err := s.sessions.UpdateWorker(p.AccountScopeID, p.UserID, workerID, req.ExpectedRevision, pebblestore.UpdateWorkerRequest{
+			ExecutionMode:         req.ExecutionMode,
+			ModelProfile:          req.ModelProfile,
 			Name:                  req.Name,
 			Description:           req.Description,
 			Instructions:          req.Instructions,
@@ -1955,4 +1988,29 @@ func (s *Server) handleWorkerRunCancel(w http.ResponseWriter, r *http.Request, p
 		"ok":  true,
 		"run": recorded,
 	})
+}
+
+// workerWorkspaceViews returns catalog-derived labels only after principal
+// authorization. Missing/revoked bindings remain explicit unavailable entries;
+// no untrusted worker metadata is used as a path or name authority.
+func (s *Server) workerWorkspaceViews(p identity.Principal, worker pebblestore.WorkerRecord) (map[string]any, error) {
+	bindings := worker.ProposedBindings
+	if len(worker.LocalBindings) != 0 {
+		bindings = worker.LocalBindings
+	}
+	views := make(map[string]any, len(bindings))
+	for role, id := range bindings {
+		view := map[string]any{"workspace_id": id, "available": false}
+		if s.workspace != nil {
+			entry, found, err := s.workspace.GetByWorkspaceIDForPrincipal(p, id)
+			if err != nil {
+				return nil, err
+			}
+			if found && strings.EqualFold(entry.State, "active") {
+				view["available"], view["name"], view["path"] = true, entry.WorkspaceName, entry.Path
+			}
+		}
+		views[role] = view
+	}
+	return views, nil
 }
