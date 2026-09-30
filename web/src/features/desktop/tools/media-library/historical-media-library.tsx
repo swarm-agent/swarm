@@ -169,9 +169,29 @@ export function HistoricalMediaLibrary({
   }
 
   return (
-    <div className="flex h-full w-full flex-col overflow-hidden bg-[var(--app-bg)] text-[var(--app-text)]">
+    <div className="media-library flex h-full min-h-0 min-w-0 w-full flex-col overflow-hidden bg-[var(--app-bg)] text-[var(--app-text)]" style={{ containerType: 'inline-size' }}>
+      <style>{`
+        .media-library button, .media-library select, .media-library input { min-height: 44px; }
+        .media-library button { min-width: 44px; }
+        .media-library :is(button, select):focus-visible { outline: 2px solid var(--app-primary); outline-offset: -2px; }
+        .media-library-toolbar { max-height: 50%; overflow-y: auto; }
+        .media-library-toolbar > div > div { min-width: 0; max-width: 100%; flex-wrap: wrap; }
+        .media-library-toolbar .inline-flex { max-width: 100%; flex-wrap: wrap; }
+        .media-library-toolbar [role="tablist"] button { flex-shrink: 0; }
+        .media-library-toolbar input { padding-right: 44px; }
+        .media-library-content { overflow-wrap: anywhere; }
+        .media-library-content .grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)); }
+        .media-library-content[data-thumbnail-size="sm"] .grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 120px), 1fr)); }
+        .media-library-content[data-thumbnail-size="lg"] .grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); }
+        @container (max-width: 600px) {
+          .media-library-toolbar { padding: 12px; }
+          .media-library-content { padding: 16px; }
+          .media-library-content section > div:first-child { flex-wrap: wrap; gap: 8px; }
+          .media-library-content table { min-width: 640px; }
+        }
+      `}</style>
       {/* Explorer Toolbar */}
-      <div className="flex shrink-0 flex-col gap-2.5 border-b border-[var(--app-border)] bg-[var(--app-surface)] p-3 sm:px-5 sm:py-3 shadow-xs">
+      <div className="media-library-toolbar flex shrink-0 flex-col gap-2.5 border-b border-[var(--app-border)] bg-[var(--app-surface)] p-3 sm:px-5 sm:py-3 shadow-xs">
         {/* Top Row: Type Pills & Search Box */}
         <div className="flex flex-wrap items-center justify-between gap-3">
           {/* Type Filter Pills */}
@@ -283,7 +303,7 @@ export function HistoricalMediaLibrary({
           </div>
 
           {/* Search Box */}
-          <div className="relative flex-1 sm:max-w-xs min-w-[200px]">
+          <div className="relative min-w-0 basis-64 flex-1 max-w-full">
             <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--app-text-subtle)] pointer-events-none" />
             <input
               type="text"
@@ -298,7 +318,7 @@ export function HistoricalMediaLibrary({
                 type="button"
                 onClick={() => setSearchQuery('')}
                 aria-label="Clear search"
-                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[var(--app-text-subtle)] hover:text-[var(--app-text)]"
+                className="absolute right-0 top-1/2 -translate-y-1/2 flex items-center justify-center text-[var(--app-text-subtle)] hover:text-[var(--app-text)]"
               >
                 <X size={13} />
               </button>
@@ -459,7 +479,7 @@ export function HistoricalMediaLibrary({
       {generationJobs && generationJobs.length > 0 && (
         <div role="status" aria-live="polite" className="flex shrink-0 gap-3 overflow-x-auto border-b border-[var(--app-border)] p-3">
           {generationJobs.map((job) => (
-            <div key={job.id} className="min-w-48 max-w-80 rounded-lg border border-[var(--app-border)] p-3 text-xs">
+            <div key={job.id} className="min-w-48 max-w-80 shrink-0 break-words rounded-lg border border-[var(--app-border)] p-3 text-xs">
               <p className="font-semibold truncate">{job.title}</p>
               <p className="mt-1">{job.count} outputs · {job.status.split('_').join(' ')}</p>
               {job.error && <p className="mt-1 text-red-400">{job.error}</p>}
@@ -468,7 +488,7 @@ export function HistoricalMediaLibrary({
         </div>
       )}
       {/* Main Content Area */}
-      <div className="flex-1 min-h-0 overflow-y-auto px-4 py-6 sm:px-8">
+      <div className="media-library-content flex-1 min-h-0 min-w-0 overflow-y-auto px-4 py-6 sm:px-8" data-thumbnail-size={thumbnailSize}>
         {loading ? (
           <div className="flex h-64 flex-col items-center justify-center gap-3 text-[var(--app-text-muted)]">
             <Loader2 className="size-6 animate-spin text-[var(--app-primary)]" />
@@ -540,7 +560,6 @@ export function HistoricalMediaLibrary({
       {/* Modal Media Viewer */}
       {currentActiveItem && (
         <MediaViewerModal
-          key={currentActiveItem.id}
           item={currentActiveItem}
           items={filteredItems}
           threadItems={items}
