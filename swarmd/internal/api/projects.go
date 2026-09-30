@@ -1273,6 +1273,15 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 		UpdatedAt:       now,
 	}
 
+	if isProjectTaskFollowup(task) {
+		binding, err := s.projectTaskSessionBinding(p, task)
+		if err != nil {
+			return err
+		}
+		metadata = projectTaskBindingMetadata(metadata, binding)
+		sessionSnapshot.Metadata = metadata
+	}
+
 	var admission *pebblestore.WorktreeAdmissionEvidence
 	if targetAgent == "coder" || mode == sessionruntime.ModePlan || task.OutcomeType == "code_pr" || task.OutcomeType == "bug_patch" || task.ActiveAttemptID != "" && task.ActiveAttemptID != "initial" {
 		if s.worktrees == nil {

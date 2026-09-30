@@ -86,6 +86,7 @@ func TestProjectTaskRepairPrepareConflictReceipt(t *testing.T) {
 				f.server.model = model.NewService(pebblestore.NewModelStore(f.db), el, nil)
 				service := worktreeruntime.NewService(pebblestore.NewWorktreeStore(f.db), f.server.workspace, nil)
 				f.server.worktrees = service
+				seedTaskSessionBinding(t, f, pebblestore.ProjectTaskSource{WorkspaceID: entry.WorkspaceID, WorkspaceGeneration: entry.WorkspaceGeneration, Path: repo})
 				return service
 			}
 			service := wire()

@@ -49,6 +49,11 @@ func (s *Server) reconcileProjectTaskSession(p identity.Principal, proj *pebbles
 	if err := verifyProjectTaskSession(task, owned, p.AccountScopeID); err != nil {
 		return err
 	}
+	if isProjectTaskFollowup(task) {
+		if err := s.reconcileProjectTaskSessionBinding(p, task, &owned); err != nil {
+			return err
+		}
+	}
 	messages, err := db.ListMessages(owned.ID, 0, 1000)
 	if err != nil {
 		return err

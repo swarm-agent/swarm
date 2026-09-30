@@ -184,6 +184,53 @@ func TestProjectTaskRepairCommittedSourceProvenance(t *testing.T) {
 	if git(repo, "worktree", "list", "--porcelain") != before || git(repo, "rev-parse", "HEAD") != base {
 		t.Fatal("rejection mutated Git")
 	}
+	// Requirement: a previously failed reserved repair retries the same session
+	// across real binding validation and Git allocation, retaining exact recovery.
+	task.Title = "Repair task"
+	task.Revision = 1
+	task.Status = "needs_review"
+	task.Integration = &pebblestore.ProjectTaskIntegration{State: "failed", SessionID: "origin", SourceHead: head, SourceBranch: alloc.BranchName, TargetBranch: "dev", PreviousTargetHead: base}
+	if err := f.server.sessions.Store().PutProjectTask(f.accountID, task); err != nil {
+		t.Fatal(err)
+	}
+	body := map[string]any{"client_request_id": "repair-binding", "revision": task.Revision, "feedback": "Repair retained source", "repair": true}
+	path := "/project/tasks/task/reopen"
+	response := f.callAPI("POST", path, body, p)
+	if response.Code != 503 {
+		t.Fatalf("missing binding: %d %s", response.Code, response.Body)
+	}
+	reserved, _, err := f.server.sessions.Store().GetProjectTask(f.accountID, "project", "task")
+	if err != nil || reserved.ActiveAttempt().LaunchState != "launch_failed" || !reflect.DeepEqual(reserved.ActiveAttempt().Recovery, source) {
+		t.Fatalf("lost repair reservation: %+v %v", reserved, err)
+	}
+	if _, found, _ := f.server.sessions.Store().GetSession(reserved.SessionID); found {
+		t.Fatal("missing binding created session")
+	}
+	seedTaskSessionBinding(t, f, binding)
+	f.server.v3SessionExecutor = newSessionV3Executor(f.server)
+	f.server.v3SessionExecutor.inFlightRuns[sessionV3ExecutorRunKey(reserved.SessionID, reserved.ExecutionRunID())] = true
+	for i := 0; i < 2; i++ {
+		response = f.callAPI("POST", path, body, p)
+		if response.Code != 200 {
+			t.Fatalf("repair retry: %d %s", response.Code, response.Body)
+		}
+	}
+	launched, _, _ := f.server.sessions.Store().GetProjectTask(f.accountID, "project", "task")
+	sess, found, err := f.server.sessions.Store().GetSession(reserved.SessionID)
+	if err != nil || !found || !sess.WorktreeEnabled || sess.WorkspacePath == repo || sess.WorkspacePath == alloc.WorkspacePath || sess.Metadata["swarm_v3_workspace_binding_id"] != "task-binding" || sess.Metadata["swarm_v3_runtime_workspace_path"] != sess.WorktreeRootPath || git(sess.WorkspacePath, "rev-parse", "HEAD") != head {
+		t.Fatalf("repair binding/isolation: %+v %v", sess, err)
+	}
+	if launched.SessionID != reserved.SessionID || len(launched.Attempts) != 2 || launched.ActiveAttempt().LaunchState != "launched" || launched.ActiveAttempt().Request != "Repair retained source" || !reflect.DeepEqual(launched.ActiveAttempt().Recovery, source) || launched.BaseBranch != "dev" || launched.BaseCommit != base || git(repo, "rev-parse", "HEAD") != base {
+		t.Fatal("retry changed retained request/source/target")
+	}
+	intents, err := f.server.sessions.Store().ListRunIntents(sess.ID, 10)
+	if err != nil || len(intents) != 1 || intents[0].RunID != reserved.ExecutionRunID() {
+		t.Fatal("repair retry duplicated run")
+	}
+	messages, err := f.server.sessions.Store().ListMessages(sess.ID, 0, 10)
+	if err != nil || len(messages) != 1 || !strings.Contains(messages[0].Content, "Repair retained source") {
+		t.Fatal("repair retry lost or duplicated feedback")
+	}
 }
 
 type failOnceFollowupAllocator struct {
@@ -242,6 +289,7 @@ func TestProjectTaskFollowupCreatesNewAutoSwarm(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := identity.Principal{Type: "user", UserID: f.userID, AccountScopeID: f.accountID}
+	seedTaskSessionBinding(t, f, original.SourceWorkspace)
 	body := map[string]any{"client_request_id": "followup", "revision": 1, "feedback": "Additional request"}
 	path := "/" + project.ID + "/tasks/task/reopen"
 	response := f.callAPI("POST", path, body, p)
@@ -284,6 +332,28 @@ func TestProjectTaskFollowupCreatesNewAutoSwarm(t *testing.T) {
 	if pending.ActiveAttempt().LaunchState != "launch_failed" {
 		t.Fatal("enqueue failure falsely marked launched")
 	}
+	// A pre-fix failed reservation may already own the isolated session. Remove
+	// only the missing route fields through V3, then require same-session repair.
+	legacy, found, err := db.GetSession(pending.SessionID)
+	if err != nil || !found {
+		t.Fatal("missing pending session")
+	}
+	forged := legacy
+	forged.Metadata = cloneSessionsV3Metadata(legacy.Metadata)
+	forged.Metadata["swarm_v3_workspace_binding_id"] = "foreign-binding"
+	if err := f.server.reconcileProjectTaskSessionBinding(p, pending, &forged); err == nil {
+		t.Fatal("conflicting retained binding accepted")
+	}
+	unchanged, _, err := db.GetSession(legacy.ID)
+	if err != nil || !reflect.DeepEqual(unchanged, legacy) {
+		t.Fatal("binding rejection mutated owned session")
+	}
+	delete(legacy.Metadata, "swarm_v3_workspace_binding_id")
+	delete(legacy.Metadata, "local_workspace_binding_id")
+	key := "legacy-missing-binding"
+	if _, err := f.server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{SessionID: legacy.ID, UserID: p.UserID, AccountScopeID: p.AccountScopeID, ClientRequestID: key, IdempotencyKey: key, PayloadHash: key, RequestHash: key, Kind: sessionruntime.SessionMutationUpdateMetadata, Session: &legacy}); err != nil {
+		t.Fatal(err)
+	}
 	// Hermetic executor receipt fixture: an already accepted wake is deduplicated.
 	// No executor goroutine or provider run is started by this deterministic test.
 	f.server.v3SessionExecutor = newSessionV3Executor(f.server)
@@ -302,6 +372,9 @@ func TestProjectTaskFollowupCreatesNewAutoSwarm(t *testing.T) {
 	session, found, err := db.GetSession(task.SessionID)
 	if err != nil || !found || session.Mode != "auto" || !session.WorktreeEnabled || session.WorktreeRootPath == repo || session.Metadata["resolved_agent_name"] != "swarm" || session.Metadata["task_attempt_id"] != task.ActiveAttemptID {
 		t.Fatalf("invalid coordinator: %+v %v", session, err)
+	}
+	if session.Metadata["swarm_v3_workspace_binding_id"] != "task-binding" || session.Metadata["swarm_v3_runtime_swarm_id"] != "task-host" || session.Metadata["swarm_v3_runtime_workspace_path"] != session.WorktreeRootPath || session.Metadata["swarm_v3_source_workspace_path"] != repo {
+		t.Fatal("follow-up lost canonical binding or isolated runtime")
 	}
 	// Purpose: the actual reopen-created metadata must resolve provider-visible
 	// history through the same session-bound overlay used by the V3 executor.

@@ -78,6 +78,7 @@ func TestProjectTaskFollowupJoinedRestart(t *testing.T) {
 		f.server.agents = agentruntime.NewService(pebblestore.NewAgentStore(f.db), el)
 		f.server.model = model.NewService(pebblestore.NewModelStore(f.db), el, nil)
 		f.server.v3SessionExecutor = newSessionV3Executor(f.server)
+		seedTaskSessionBinding(t, f, pebblestore.ProjectTaskSource{WorkspaceID: entry.WorkspaceID, WorkspaceGeneration: entry.WorkspaceGeneration, Path: repo})
 	}
 	wire()
 	db := f.server.sessions.Store()
