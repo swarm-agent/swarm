@@ -152,9 +152,11 @@ func manageWorkersV2Definition() Definition {
 					"description": "Include soft-deleted/tombstoned workers in list.",
 				},
 				"document": map[string]any{
-					"description": "Complete executable Worker V2 document; required for propose.",
+					"type":        "object",
+					"description": "Complete executable Worker V2 document for document-based proposals; omit for flat name/instructions proposals.",
 				},
 				"worker_review": map[string]any{
+					"type":        "object",
 					"description": "Exact current review for editing a pending proposal; omit on first proposal.",
 				},
 			},
