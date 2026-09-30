@@ -59,7 +59,9 @@ test('draft append preserves content, does not repeat on read, and stays scoped'
 test('all task cards receive recovery, only integration catches create it, launch is guarded', () => {
   const source = readFileSync(new URL('./OrchestrateView.tsx', import.meta.url), 'utf8')
   assert.equal((source.match(/integrationRecovery=\{renderIntegrationRecovery\(/g) || []).length, 5)
-  assert.equal((source.match(/integrationFailure\(selectedProject!, task, err\)/g) || []).length, 1)
+  const controller = readFileSync(new URL('./task-integration-operation.ts', import.meta.url), 'utf8')
+  assert.equal((controller.match(/integrationFailure\(project, capturedTask, error\)/g) || []).length, 1)
+  assert.doesNotMatch(source, /setIntegrationFailures/)
   const launch = source.slice(source.indexOf('const launchIntegrationRepair'), source.indexOf('// Integrate / Promote'))
   assert.match(launch, /repairFlights.current.has/)
   assert.match(launch, /repairFlights.current.add/)
