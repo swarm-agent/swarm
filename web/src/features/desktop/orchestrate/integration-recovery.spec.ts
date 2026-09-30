@@ -148,3 +148,71 @@ test('task-linked repair retries retained identity and isolates duplicate flight
   assert.ok(navigation.includes('active:task-a'))
   assert.equal(flights.current.size, 0)
 })
+
+// Requirement: patch-equivalent but unmerged integration failures launch through
+// the actual UI closure and canonical payload function, never integration retry or
+// generic session creation. This runtime test proves transport ordering/identity;
+// the joined real-Git API test proves receipt admission and exact-source allocation.
+test('unmerged equivalent-patch failure launches repair with canonical fresh payload', { timeout: 5000 }, async () => {
+  const source = readFileSync(new URL('./OrchestrateView.tsx', import.meta.url), 'utf8')
+  const closure = source.slice(source.indexOf('const launchIntegrationRepair'), source.indexOf('// Integrate / Promote'))
+  const payloadSource = readFileSync(new URL('../runtime/project-task-followup.ts', import.meta.url), 'utf8')
+  const payloadFunction = payloadSource.slice(payloadSource.indexOf('export async function projectTaskFollowupPayload'), payloadSource.indexOf('export async function reopenProjectTask')).replace('export ', '')
+  const ts = await import('typescript')
+  const compiled = ts.default.transpileModule(`${payloadFunction}\n${closure}; return launchIntegrationRepair`, {
+    compilerOptions: { target: ts.default.ScriptTarget.ES2020 },
+  }).outputText
+  const freshTask = { ...task, revision: 12, isIntegrated: false, unintegratedCommits: 1, integration: {
+    state: 'conflict', source_head: 'original-head', previous_target_head: 'captured-head',
+  } } as RunningTask
+  const failure = integrationFailure(project, freshTask, new Error('Integration requires original commit ancestry: equivalent patches exist on the captured target, but the source history is unmerged. Launch repair.'))
+  const requests: Array<{ url: string; body: any }> = []
+  const navigation: string[] = []
+  let state: Record<string, any> = {}
+  const scope = {
+    repairFlights: { current: new Set<string>() }, repairUnavailable, repairStates: state,
+    setRepairStates: (update: (previous: typeof state) => typeof state) => { state = update(state) },
+    requestJson: async (url: string, options: { body: string }) => {
+      requests.push({ url, body: JSON.parse(options.body) })
+      return { task: { session_id: 'owned-repair' } }
+    },
+    desktopProjects: { invalidate: (id: string) => navigation.push(`invalidate:${id}`) },
+    recoveryProjectRef: { current: project.id }, selectedWorkerRef: { current: null },
+    setActiveTaskId: () => {}, setSelectedTaskId: () => {},
+    setActiveSessionId: (id: string) => navigation.push(id),
+    setWorkerChatOpen: () => {}, setSelectedWorker: () => {},
+    redactIntegrationDiagnostic: (message: string) => message,
+  }
+  const launch = new Function(...Object.keys(scope), compiled)(...Object.values(scope)) as (failure: ReturnType<typeof integrationFailure>) => Promise<void>
+  await launch(failure)
+  assert.equal(requests.length, 1)
+  assert.equal(requests[0].url, '/v3/projects/project-a/tasks/task-a/reopen')
+  assert.equal(requests[0].body.repair, true)
+  assert.equal(requests[0].body.revision, 12)
+  assert.match(requests[0].body.client_request_id, /^task-followup-[a-f0-9]{64}$/)
+  assert.equal(state[task.id].sessionId, 'owned-repair')
+  assert.ok(navigation.includes('owned-repair'))
+  await launch(failure)
+  assert.deepEqual(requests[1], requests[0], 'same selected revision retains deterministic request identity')
+})
+
+// Requirement: a failed integration increments the durable task revision; repair
+// must select the freshly hydrated row rather than the pre-mutation diagnostic
+// snapshot. Execute the actual render-time selection expression without JSX.
+test('integration diagnostics retain error but repair uses current task revision', async () => {
+  const source = readFileSync(new URL('./OrchestrateView.tsx', import.meta.url), 'utf8')
+  const selection = source.slice(source.indexOf('const failure = (retryAttempt?.recovery'), source.indexOf('if (!selectedProject) return null', source.indexOf('const failure = (retryAttempt?.recovery')))
+  const ts = await import('typescript')
+  const compiled = ts.default.transpileModule(`${selection}; return failure`, {
+    compilerOptions: { target: ts.default.ScriptTarget.ES2020 },
+  }).outputText
+  const staleTask = { ...task, revision: 3 } as RunningTask
+  const currentTask = { ...task, revision: 6, integration: { state: 'conflict', source_head: 'original-head', previous_target_head: 'captured-head' } } as RunningTask
+  const diagnostic = integrationFailure(project, staleTask, new Error('Integration requires original commit ancestry'))
+  const select = new Function('retryAttempt', 'selectedProject', 'task', 'operation', 'integrationFailure', compiled)
+  const selected = select(undefined, project, currentTask, { phase: 'error', failure: diagnostic }, integrationFailure)
+  assert.equal(selected.task, currentTask)
+  assert.equal(selected.task.revision, 6)
+  assert.equal(selected.error, diagnostic.error)
+  assert.equal(selected.projectId, diagnostic.projectId)
+})

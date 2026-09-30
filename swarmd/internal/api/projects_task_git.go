@@ -3,16 +3,17 @@ package api
 import (
 	"context"
 	"fmt"
+	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
 	"swarm/packages/swarmd/internal/gitstatus"
-	"swarm/packages/swarmd/internal/sessionreview"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
-// inspectTaskGitState shares the sidebar's patch-equivalence and resolved-integration
-// classification. Only the captured source checkout is an admissible destination.
+// inspectTaskGitState requires actual source ancestry, matching integration receipts.
+// Patch-equivalent commits remain pending until their history reaches the captured target.
 func inspectTaskGitState(task pebblestore.ProjectTaskRecord, db *pebblestore.SessionStore) taskGitState {
 	res := taskGitState{worktreeBranch: task.WorktreeBranch, worktreeName: task.WorktreeName, gitStatus: "unknown"}
 	if db == nil || task.SessionID == "" || task.Archived || task.Status == "pending_approval" || task.Status == "planning" || task.Status == "queued" || task.Agent == "image" || task.Agent == "video" || task.Agent == "sound" || task.Agent == "audio" {
@@ -34,7 +35,7 @@ func inspectTaskGitState(task pebblestore.ProjectTaskRecord, db *pebblestore.Ses
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	checkout, err := gitstatus.SnapshotForPath(ctx, source, gitstatus.Options{})
-	if err != nil || !checkout.HasGit || checkout.Branch != res.baseBranch || checkout.HeadOID == "" {
+	if err != nil || !checkout.HasGit || !checkout.Clean || checkout.Branch != res.baseBranch || checkout.HeadOID == "" {
 		return res
 	}
 	sourceWatch, err := gitstatus.ResolveWatchPaths(ctx, source)
@@ -59,19 +60,32 @@ func inspectTaskGitState(task pebblestore.ProjectTaskRecord, db *pebblestore.Ses
 		}
 		return res
 	}
-	classification := sessionreview.ClassifySnapshotAgainstTarget(ctx, sessionreview.ExecGitRunner{}, session, child, time.Now(), sessionreview.DefaultGracePeriod, res.baseBranch)
-	switch classification.Reason {
-	case "clean_and_integrated":
+	if res.isDirty {
+		res.gitStatus = "dirty"
+		res.actionNeeded = fmt.Sprintf("Action Needed: %d modified file(s) waiting to be committed.", res.dirtyCount)
+		return res
+	}
+	if err := exec.CommandContext(ctx, "git", "-C", source, "merge-base", "--is-ancestor", base, child.HeadOID).Run(); err != nil {
+		return res
+	}
+	// Count actual missing commits against the inspected checkout HEAD, not a
+	// patch-equivalence classifier or a mutable branch/remote-tracking ref.
+	output, err := exec.CommandContext(ctx, "git", "-C", source, "rev-list", "--count", checkout.HeadOID+".."+child.HeadOID).Output()
+	if err != nil {
+		return res
+	}
+	missing, err := strconv.Atoi(strings.TrimSpace(string(output)))
+	if err != nil || missing < 0 {
+		return res
+	}
+	if missing == 0 {
 		res.gitStatus = "clean"
 		res.isIntegrated = true
 		res.actionNeeded = fmt.Sprintf("No Action Required: Integrated into %s", res.baseBranch)
-	case "commits_missing_from_target":
+	} else {
 		res.gitStatus = "diverged"
-		res.unintegratedCommits = classification.MissingCommits
+		res.unintegratedCommits = missing
 		res.actionNeeded = fmt.Sprintf("Action Needed: %d unintegrated commit(s) on %s ready to integrate.", res.unintegratedCommits, res.worktreeBranch)
-	case "uncommitted_work":
-		res.gitStatus = "dirty"
-		res.actionNeeded = fmt.Sprintf("Action Needed: %d modified file(s) waiting to be committed.", res.dirtyCount)
 	}
 	return res
 }
@@ -112,7 +126,7 @@ func reconcileTaskGitState(db *pebblestore.SessionStore, task *pebblestore.Proje
 		}
 		if t.IsIntegrated && t.Status != "rejected" && t.Status != "in_progress" && task.Status != "in_progress" {
 			t.Status = "completed"
-		} else if !t.IsIntegrated && t.Status == "completed" && t.Integration != nil {
+		} else if !t.IsIntegrated && t.Status == "completed" && (t.Integration != nil || state.gitStatus == "diverged" || state.gitStatus == "dirty") {
 			t.Status = "needs_review"
 		}
 	}
