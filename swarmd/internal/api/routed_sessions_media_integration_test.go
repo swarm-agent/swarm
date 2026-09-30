@@ -62,6 +62,11 @@ func newRoutedMediaTestFixture(t *testing.T) *routedMediaTestFixture {
 	}
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "routed-user", AccountScopeID: "routed-account", AccountScopeSource: identity.AccountScopeSourceServerState}
 	workspacePath := t.TempDir()
+	// The deployment bridge verifies source Git identity before retaining media.
+	// Use a real committed source, registered below for this account, so tests
+	// reach the durable media boundary without bypassing repository authority.
+	runGitCommitTestCommand(t, workspacePath, "init", "-b", "dev")
+	runGitCommitTestCommand(t, workspacePath, "-c", "user.name=Swarm Test", "-c", "user.email=swarm-test@example.invalid", "commit", "--allow-empty", "-m", "fixture")
 
 	workspaceStore := pebblestore.NewWorkspaceStore(store)
 	entry, err := workspaceStore.AddForAccount(principal.AccountScopeID, workspacePath, "routed-workspace")
