@@ -88,3 +88,38 @@ test('desktop projects runtime subscribes to cache mutations on demand and unsub
   lease2.release()
   assert.equal(unsubscriptions, 1)
 })
+
+// Purpose: a visible terminal card must adopt a canonical follow-up's new session
+// from project.updated, even though no event belongs to its retained old session.
+// Rehydrate must repair a missed event. The runtime/reducer layer is the narrow
+// task-card cache authority; no manual reload or alternate session cache is used.
+test('completed card refreshes to follow-up and repairs missed reopen on reconnect', async () => {
+  let state: DesktopProjectsState = {}
+  let task = { id: 'task', session_id: 'old-session', title: 'Work', revision: 1, agent: 'swarm', status: 'completed' }
+  const runtime = new DesktopProjectsRuntime({
+    getState: () => state,
+    dispatch: action => { state = reduceDesktopProjectsState(state, action) },
+    fetchTasks: async () => ({ tasks: [task] }),
+    fetchMedia: async () => ({ media: [] }),
+    fetchTask: async () => ({ task }),
+  })
+  const flush = async () => { for (let i = 0; i < 20; i++) await Promise.resolve() }
+  const lease = runtime.acquire('project')
+  await lease.ready
+  await flush()
+  assert.equal(state.project.tasks[0].status, 'completed')
+  task = { ...task, revision: 2, status: 'in_progress', session_id: 'follow-up' }
+  runtime.acceptFrame({ kind: 'project.updated', project_id: 'project' })
+  await flush()
+  assert.equal(state.project.tasks[0].status, 'in_progress')
+  assert.equal(state.project.tasks[0].sessionId, 'follow-up')
+  task = { ...task, revision: 3, status: 'completed' }
+  runtime.acceptFrame({ kind: 'project.updated', project_id: 'project' })
+  await flush()
+  task = { ...task, revision: 4, status: 'in_progress', session_id: 'reconnected-follow-up' }
+  runtime.acceptFrame({ kind: 'rehydrate.required' })
+  await flush()
+  assert.equal(state.project.tasks[0].status, 'in_progress')
+  assert.equal(state.project.tasks[0].sessionId, 'reconnected-follow-up')
+  lease.release()
+})
