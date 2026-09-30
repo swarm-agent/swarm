@@ -281,6 +281,15 @@ export interface RunningTaskPlanCheckpoint {
   }>
 }
 
+export interface TaskIntegrationReceipt {
+  state: string
+  error?: string
+  operation_id?: string
+  attempt_id?: string
+  source_head?: string
+  previous_target_head?: string
+}
+
 export interface TaskAttempt {
   id: string
   session_id: string
@@ -295,13 +304,13 @@ export interface TaskAttempt {
   last_error?: string
   launch_state?: string
   summary?: string
-  integration?: { state: string; error?: string }
+  integration?: TaskIntegrationReceipt
 }
 
 export interface RunningTask {
   activeAttemptId?: string
   attempts?: TaskAttempt[]
-  integration?: { state: string; error?: string }
+  integration?: TaskIntegrationReceipt
 
   id: string
   title: string

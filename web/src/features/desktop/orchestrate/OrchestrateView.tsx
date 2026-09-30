@@ -2,7 +2,7 @@ import { useState, useReducer, useMemo, useEffect, useCallback, useRef, useSyncE
 import { MediaTaskSelect, MediaTaskDefault, MediaTaskHelp, MediaTaskScenes, MediaTaskCost } from './media-task-controls'
 import { ImagePromptControls, imagePromptReducer, initialImagePromptState, imagePromptEnhancement } from './image-task-prompt'
 import { DurableWorkerReviews } from '../chat/components/durable-worker-reviews'
-import { taskIntegrationOperations, taskIntegrationKey, taskIntegrationPhase, type TaskIntegrationOperation, type TaskIntegrationResult } from './task-integration-operation'
+import { taskIntegrationOperations, taskIntegrationKey, taskIntegrationFailureIdentity, taskIntegrationPhase, type TaskIntegrationOperation, type TaskIntegrationResult } from './task-integration-operation'
 import { projectTaskFollowupPayload } from '../runtime/project-task-followup'
 import { TaskAttemptHistory } from './task-attempt-history'
 import { useOrchestratorDictation } from './use-orchestrator-dictation'
@@ -5616,7 +5616,9 @@ export function OrchestrateView({
       void hydrateDesktopV3ChildCard(sessionId, { activePlan: true, permissionSummary: true }).catch(() => undefined)
     }} />
     if (operation.phase === 'success' && operation.refreshError) return <>{history}<p role="status">{operation.refreshError}</p></>
-    if (!failure || failure.projectId !== selectedProject.id) return <>{history}{retryAttempt?.request && <button type="button" onClick={() => void handleReopenTask(task.id, retryAttempt.request)}>Retry incomplete follow-up</button>}</>
+    const failureKey = taskIntegrationKey(selectedProject.id, task)
+    const failureIdentity = taskIntegrationFailureIdentity(task, operation)
+    if (!failure || failure.projectId !== selectedProject.id || taskIntegrationOperations.isDismissed(failureKey, failureIdentity)) return <>{history}{retryAttempt?.request && <button type="button" onClick={event => { event.stopPropagation(); void handleReopenTask(task.id, retryAttempt.request) }}>Retry incomplete follow-up</button>}</>
     const state = repairStates[task.id]
     const unavailable = repairUnavailable(failure.task)
     return <div className="integration-recovery" role="alert" onClick={event => event.stopPropagation()}>
@@ -5628,7 +5630,7 @@ export function OrchestrateView({
           {state?.loading ? 'Launching…' : state?.sessionId ? 'Open repair session' : 'Launch repair session'}
         </button>
         <button type="button" disabled={state?.loading} onClick={() => void handleIntegrateTask(task.id)}>Retry integration to refresh verified receipt</button>
-        <button type="button" aria-label="Dismiss integration error" onClick={() => taskIntegrationOperations.dismiss(taskIntegrationKey(selectedProject.id, task))}>Dismiss</button>
+        <button type="button" aria-label="Dismiss integration error" onClick={event => { event.stopPropagation(); taskIntegrationOperations.dismiss(failureKey, failureIdentity) }}>Dismiss</button>
       </div>
       {unavailable && <p>{unavailable}</p>}
       {state?.error && <p>{state.error}</p>}

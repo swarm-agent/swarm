@@ -10,7 +10,7 @@ export type TaskIntegrationOperation =
   | { phase: 'ready' }
   | { phase: 'pending' }
   | { phase: 'success'; refreshError?: string }
-  | { phase: 'error'; failure: IntegrationFailure }
+  | { phase: 'error'; failure: IntegrationFailure; failureId?: number }
 
 // Canonical receipts also describe promotions initiated outside this card.
 export function taskIntegrationPhase(task: RunningTask, local?: TaskIntegrationOperation): TaskIntegrationOperation['phase'] {
@@ -28,11 +28,26 @@ export function taskIntegrationKey(projectId: string, task: RunningTask): string
   return JSON.stringify([projectId, task.id, task.sessionId, task.activeAttemptId, task.sourceWorkspaceId, task.sourceWorkspacePath, task.worktreeBranch, task.baseBranch])
 }
 
+// Identify retained receipts, not unrelated task revisions or render-time object identity.
+// Include every failure source so acknowledging a local error cannot reveal its fallback.
+export function taskIntegrationFailureIdentity(task: RunningTask, operation: TaskIntegrationOperation): string {
+  const repair = task.attempts?.find(attempt => attempt.id === task.activeAttemptId && attempt.launch_state === 'launch_failed' && attempt.recovery)
+  const receipt = task.integration
+  return JSON.stringify([
+    repair ? [repair.id, repair.client_request_id, repair.request_revision, repair.last_error] : null,
+    operation.phase === 'error' ? [operation.failureId, operation.failure.error] : null,
+    receipt && ['failed', 'conflict'].includes(receipt.state)
+      ? [receipt.operation_id, receipt.attempt_id, receipt.state, receipt.error, receipt.source_head, receipt.previous_target_head] : null,
+  ])
+}
+
 // Interaction receipts only. Never changes task.isIntegrated or claims Git ancestry.
 // Retained outside React so navigation/remount cannot unlock an in-flight mutation.
 export function createTaskIntegrationController() {
   let snapshot: ReadonlyMap<string, TaskIntegrationOperation> = new Map()
   const listeners = new Set<() => void>()
+  const dismissedFailures = new Map<string, string>()
+  let failureId = 0
   const publish = (key: string, operation: TaskIntegrationOperation) => {
     snapshot = new Map(snapshot).set(key, operation)
     listeners.forEach(listener => listener())
@@ -49,14 +64,21 @@ export function createTaskIntegrationController() {
     reopened(key: string) {
       if (get(key).phase !== 'pending') publish(key, ready)
     },
-    dismiss(key: string) {
-      if (get(key).phase === 'error') publish(key, ready)
+    isDismissed(key: string, identity: string) {
+      return dismissedFailures.get(key) === identity
+    },
+    dismiss(key: string, identity?: string) {
+      if (!identity || dismissedFailures.get(key) === identity) return
+      dismissedFailures.set(key, identity)
+      // Presentation-only: retain diagnostics and the retry phase, and notify React.
+      publish(key, get(key))
     },
     async run(project: ProjectSummary, task: RunningTask, mutate: () => Promise<TaskIntegrationResult>, refresh: () => unknown) {
       const key = taskIntegrationKey(project.id, task)
       const current = get(key)
       if (current.phase === 'pending' || current.phase === 'success' || task.integration?.state === 'in_progress' || (task.isIntegrated && task.status === 'completed')) return
       // Lock and notify synchronously, before invoking the transport or yielding.
+      dismissedFailures.delete(key)
       publish(key, { phase: 'pending' })
       const capturedTask = { ...task }
       try {
@@ -69,7 +91,7 @@ export function createTaskIntegrationController() {
           throw new Error('Integration returned no confirmed result for this task. Refresh Git details before retrying.')
         }
       } catch (error) {
-        publish(key, { phase: 'error', failure: integrationFailure(project, capturedTask, error) })
+        publish(key, { phase: 'error', failure: integrationFailure(project, capturedTask, error), failureId: ++failureId })
         return
       }
       // A successful mutation receipt is independent of later cache repair failure.
