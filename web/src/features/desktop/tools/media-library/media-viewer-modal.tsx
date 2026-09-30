@@ -68,6 +68,12 @@ export interface MediaViewerModalProps {
   isGenerating?: boolean
 }
 
+function modalTabStops(dialog: HTMLElement): HTMLElement[] {
+  return Array.from(dialog.querySelectorAll<HTMLElement>('button, input, select, textarea, a[href], video[controls], audio[controls], iframe, [tabindex], [contenteditable="true"]'))
+    .filter(node => node.tabIndex >= 0 && !node.matches(':disabled') && !node.closest('[inert]') && node.getClientRects().length > 0 && getComputedStyle(node).visibility !== 'hidden')
+    .sort((a, b) => (a.tabIndex || Number.MAX_SAFE_INTEGER) - (b.tabIndex || Number.MAX_SAFE_INTEGER))
+}
+
 export function MediaViewerModal({
   item,
   items,
@@ -86,9 +92,39 @@ export function MediaViewerModal({
   const isOpen = Boolean(item)
   useEffect(() => {
     if (!isOpen) return
+    const dialog = dialogRef.current
+    if (!dialog) return
     const trigger = document.activeElement instanceof HTMLElement ? document.activeElement : null
-    dialogRef.current?.querySelector<HTMLButtonElement>('[aria-label="Close viewer"]')?.focus()
-    return () => { if (trigger?.isConnected) trigger.focus() }
+    const background = new Map<HTMLElement, boolean>()
+    const isolate = () => {
+      // The viewer is nested in the library, so inert siblings at every ancestor,
+      // never an ancestor containing the dialog itself.
+      for (let branch: HTMLElement = dialog; branch.parentElement; branch = branch.parentElement) {
+        for (const sibling of Array.from(branch.parentElement.children)) {
+          if (sibling instanceof HTMLElement && sibling !== branch && !background.has(sibling)) {
+            background.set(sibling, sibling.inert)
+            sibling.inert = true
+          }
+        }
+      }
+    }
+    isolate()
+    const observer = new MutationObserver(isolate)
+    for (let ancestor = dialog.parentElement; ancestor; ancestor = ancestor.parentElement) {
+      observer.observe(ancestor, { childList: true })
+    }
+    const focusInside = () => (dialog.querySelector<HTMLElement>('[aria-label="Close viewer"]') || dialog).focus()
+    const containFocus = (event: FocusEvent) => {
+      if (event.target instanceof Node && !dialog.contains(event.target)) focusInside()
+    }
+    document.addEventListener('focusin', containFocus)
+    focusInside()
+    return () => {
+      observer.disconnect()
+      document.removeEventListener('focusin', containFocus)
+      for (const [node, wasInert] of background) node.inert = wasInert
+      if (trigger?.isConnected) trigger.focus()
+    }
   }, [isOpen])
 
   const [zoomLevel, setZoomLevel] = useState(1)
@@ -768,14 +804,16 @@ export function MediaViewerModal({
       ref={dialogRef}
       role="dialog"
       aria-modal="true"
+      tabIndex={-1}
       onClick={(event) => { if (event.target === event.currentTarget) onClose() }}
       onKeyDown={(event) => {
         if (event.key !== 'Tab') return
-        const controls = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('button:not(:disabled), select:not(:disabled), textarea:not(:disabled), a[href], video[controls], audio[controls], iframe, [tabindex="0"]')).filter(node => node.getClientRects().length > 0)
-        const first = controls[0]
-        const last = controls[controls.length - 1]
-        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus() }
-        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus() }
+        const controls = modalTabStops(event.currentTarget)
+        const index = controls.indexOf(document.activeElement as HTMLElement)
+        event.preventDefault()
+        if (controls.length === 0) { event.currentTarget.focus(); return }
+        const next = index < 0 ? (event.shiftKey ? controls.length - 1 : 0) : (index + (event.shiftKey ? -1 : 1) + controls.length) % controls.length
+        controls[next].focus()
       }}
       aria-label={`Media viewer: ${item.title}`}
       style={{ containerType: 'inline-size' }}
@@ -784,7 +822,7 @@ export function MediaViewerModal({
       <style>{`
         .media-viewer { height: 100dvh; padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
         .media-viewer button, .media-viewer select { min-height: 44px; min-width: 44px; }
-        .media-viewer :is(button, select, textarea, [tabindex]):focus-visible { outline: 2px solid #60a5fa; outline-offset: -2px; }
+        .media-viewer :is(button, input, select, textarea, [tabindex]):focus-visible { outline: 2px solid #60a5fa; outline-offset: -2px; }
         .media-viewer header { height: auto; min-height: 56px; max-height: 35%; overflow-y: auto; flex-wrap: wrap; gap: 8px; padding-block: 8px; }
         .media-viewer header > div:first-child { flex: 1 1 240px; }
         .media-viewer header > div:last-child { flex-wrap: wrap; max-width: 100%; }
@@ -809,8 +847,9 @@ export function MediaViewerModal({
           .media-viewer-prompt { flex-direction: column; align-items: stretch; }
           .media-viewer aside { width: 100%; border-left: 0; border-top: 1px solid #ffffff1a; }
           .media-viewer header .hidden { display: none; }
-          .media-viewer-nav { position: sticky; top: 8px; transform: none; float: left; margin: 8px; }
-          .media-viewer-nav[aria-label="Next item"] { float: right; }
+          .media-viewer-nav { position: absolute; top: 8px; left: 8px; right: auto; transform: none; margin: 0; }
+          .media-viewer-nav[aria-label="Next item"] { left: auto; right: 8px; }
+          .media-viewer main { padding-inline: 60px; }
         }
       `}</style>
       {/* Top Header Bar */}

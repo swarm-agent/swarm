@@ -560,6 +560,7 @@ export function HistoricalMediaLibrary({
       {/* Modal Media Viewer */}
       {currentActiveItem && (
         <MediaViewerModal
+          key={currentActiveItem.id}
           item={currentActiveItem}
           items={filteredItems}
           threadItems={items}

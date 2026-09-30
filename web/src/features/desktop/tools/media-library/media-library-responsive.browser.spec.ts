@@ -13,6 +13,9 @@ import { chromium, type Locator } from 'playwright'
 // Authority: the real library/grid/list/viewer components, production theme CSS,
 // container rules and modal keyboard boundary. Browser geometry is the narrowest
 // layer proving sizing, local scrolling, focus restoration and resize continuity.
+// Asset-key resets must clear drafts and panel/zoom state on item switches, not
+// width changes. Inert background and input/positive-tabindex containment prevent
+// keyboard or programmatic focus escaping the modal; media clicks must not close.
 // Catalog/settings are deterministic read-boundary fixtures, not live-provider
 // evidence. Generation is never executed; its callback must remain untouched.
 async function fits(region: Locator) {
@@ -48,7 +51,7 @@ test('media library and viewer fit phone lanes, landscape, tablet and desktop wi
       const client=new QueryClient({defaultOptions:{queries:{retry:false}}});
       window.catalogError=false; window.generateCalls=0; window.tagCalls=0;
       window.renderLibrary=(populated=false)=>root.render(<QueryClientProvider client={client}>
-        <HistoricalMediaLibrary extraItems={populated?[${JSON.stringify(item)}]:[]} onGenerate={async()=>{window.generateCalls++}}
+        <HistoricalMediaLibrary extraItems={populated?[${JSON.stringify(item)}, {...${JSON.stringify(item)}, id:'fixture-second', title:'Second retained image', createdAt:1799999999000}]:[]} onGenerate={async()=>{window.generateCalls++}}
           onTagMedia={()=>{window.tagCalls++}} taggedMediaIds={new Set(['fixture-image'])} onOpenSession={()=>{}} />
       </QueryClientProvider>);
       window.renderLibrary();
@@ -116,14 +119,25 @@ test('media library and viewer fit phone lanes, landscape, tablet and desktop wi
     const dialog = page.getByRole('dialog')
     await dialog.waitFor()
     assert.equal(await page.getByRole('button', { name: 'Close viewer', exact: true }).evaluate(node => node === document.activeElement), true)
+    const generate = page.getByRole('button', { name: /Generate revision/ })
+    assert.equal(await generate.isDisabled(), true, 'empty prompt cannot generate')
     await page.getByRole('textbox', { name: 'Generation instructions' }).fill('Keep this draft across resize')
+    await page.waitForFunction(() => {
+      const button = Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find(node => node.textContent?.includes('Generate revision'))
+      return Boolean(button && !button.disabled)
+    })
+    assert.equal(await generate.isEnabled(), true, 'ready image catalog options and draft allow revision without executing it')
+    await page.evaluate(() => (window as any).renderLibrary(true))
+    assert.equal(await page.getByRole('textbox', { name: 'Generation instructions' }).inputValue(), 'Keep this draft across resize', 'same asset refresh preserves draft')
     for (const viewport of [{ width: 360, height: 800 }, { width: 390, height: 844 }, { width: 844, height: 390 }, { width: 768, height: 900 }, { width: 1280, height: 900 }]) {
       await page.setViewportSize(viewport)
       await fits(dialog)
       await reachable(page.getByRole('button', { name: 'Close viewer', exact: true }))
       await reachable(page.getByRole('button', { name: 'Tag media for task', exact: true }))
       await reachable(page.getByRole('button', { name: 'Download media file', exact: true }))
-      await reachable(page.getByRole('button', { name: /Generate revision/ }))
+      await reachable(generate)
+      assert.equal(await generate.isEnabled(), true)
+      await reachable(page.getByRole('button', { name: 'Next item', exact: true }))
       assert.equal(await page.getByRole('textbox', { name: 'Generation instructions' }).inputValue(), 'Keep this draft across resize')
       await page.locator('aside').getByText('Metadata & Details', { exact: true }).scrollIntoViewIfNeeded()
       await fits(page.locator('aside'))
@@ -132,6 +146,20 @@ test('media library and viewer fit phone lanes, landscape, tablet and desktop wi
       assert.equal(await preview.evaluate(node => { const r = node.getBoundingClientRect(); const p = node.closest('main')!.getBoundingClientRect(); return r.width > 0 && r.height > 0 && r.width <= p.width && r.height <= p.height }), true, 'preview fits available canvas')
     }
     assert.equal(await page.getByRole('textbox', { name: 'Generation instructions' }).inputValue(), 'Keep this draft across resize')
+    await page.locator('main img').click()
+    assert.equal(await dialog.count(), 1, 'media click does not dismiss overlay')
+    await page.getByRole('button', { name: 'Zoom in', exact: true }).click()
+    await page.getByRole('button', { name: 'Toggle details panel', exact: true }).click()
+    await page.getByRole('button', { name: 'Next item', exact: true }).click()
+    await page.getByRole('dialog', { name: 'Media viewer: Second retained image', exact: true }).waitFor()
+    assert.equal(await page.getByRole('textbox', { name: 'Generation instructions' }).inputValue(), '', 'draft does not leak to another asset')
+    assert.equal(await generate.isDisabled(), true)
+    assert.equal(await page.getByRole('button', { name: 'Toggle details panel', exact: true }).getAttribute('aria-expanded'), 'true', 'asset switch restores default details state')
+    assert.equal(await page.locator('header').getByText('100%', { exact: true }).count(), 1, 'asset switch restores zoom')
+    await page.getByRole('textbox', { name: 'Generation instructions' }).fill('Second asset only')
+    await page.getByRole('button', { name: 'Previous item', exact: true }).click()
+    await page.getByRole('dialog', { name: `Media viewer: ${label}`, exact: true }).waitFor()
+    assert.equal(await page.getByRole('textbox', { name: 'Generation instructions' }).inputValue(), '', 'returning asset starts a fresh draft as before')
     await page.getByRole('button', { name: 'Tag media for task' }).click()
     assert.equal(await page.evaluate(() => (window as any).tagCalls), 1)
     await page.keyboard.press('Escape')
@@ -139,15 +167,42 @@ test('media library and viewer fit phone lanes, landscape, tablet and desktop wi
     assert.equal(await card.evaluate(node => node === document.activeElement), true, 'focus returns to retained card')
     await card.click()
     await dialog.waitFor()
+    // Inject ordinary input and positive tabindex probes into the real modal:
+    // no generation/settings callback or production authority is replaced.
     await dialog.evaluate(node => {
-      const controls = Array.from(node.querySelectorAll<HTMLElement>('button:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex="0"]')).filter(control => control.getClientRects().length > 0)
-      controls[controls.length - 1].focus()
+      const input = document.createElement('input')
+      input.setAttribute('aria-label', 'Modal focus input')
+      const positive = document.createElement('button')
+      positive.textContent = 'Positive tab stop'
+      positive.tabIndex = 2
+      const disabled = document.createElement('input')
+      disabled.disabled = true
+      const hidden = document.createElement('input')
+      hidden.hidden = true
+      const excluded = document.createElement('button')
+      excluded.tabIndex = -1
+      node.querySelector('footer')!.append(input, positive, disabled, hidden, excluded)
+      input.focus()
     })
     await page.keyboard.press('Tab')
-    assert.equal(await dialog.evaluate(node => document.activeElement === node.querySelector('button:not(:disabled)')), true, 'Tab stays within dialog')
+    assert.equal(await page.getByRole('button', { name: 'Positive tab stop' }).evaluate(node => node === document.activeElement), true, 'last input wraps to positive tabindex first')
+    await page.keyboard.press('Shift+Tab')
+    assert.equal(await page.getByRole('textbox', { name: 'Modal focus input' }).evaluate(node => node === document.activeElement), true, 'reverse Tab includes input')
+    assert.equal(await card.evaluate(node => Boolean(node.closest('[inert]'))), true, 'library behind viewer is inert')
+    await card.evaluate(node => node.focus())
+    assert.equal(await dialog.evaluate(node => node.contains(document.activeElement)), true, 'background cannot take programmatic focus')
+    await dialog.evaluate(() => {
+      const outside = document.createElement('button')
+      outside.id = 'outside-focus-probe'
+      document.body.append(outside)
+      outside.focus()
+    })
+    assert.equal(await dialog.evaluate(node => node.contains(document.activeElement)), true, 'focusin redirects even a newly inserted outside control')
     await page.locator('main').click({ position: { x: 2, y: 2 } })
     await dialog.waitFor({ state: 'detached' })
     assert.equal(await card.evaluate(node => node === document.activeElement), true, 'overlay close restores focus')
+    assert.equal(await card.evaluate(node => Boolean(node.closest('[inert]'))), false, 'closing reactivates library')
+    assert.equal(await page.locator('#outside-focus-probe').evaluate(node => (node as HTMLElement).inert), false, 'closing restores dynamically isolated sibling')
     assert.equal(await page.evaluate(() => (window as any).generateCalls), 0, 'layout interactions never generate media')
     assert.deepEqual(errors, [])
   } finally {
