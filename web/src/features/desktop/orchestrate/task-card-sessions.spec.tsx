@@ -76,23 +76,65 @@ test('program retry supersedes historical/duplicate entries and updates count', 
   assert.match(renderToStaticMarkup(<TaskCardSummary task={single} />), /1 AI working/)
 })
 
-test('archive and ask are real outlined buttons, preserve callbacks and precede checkbox wiring', () => {
-  const calls: string[] = []
-  const tree = TaskCardActionButtons({ onArchiveTask: () => calls.push('archive'), onAskOrchestrator: () => calls.push('ask') })
+// Purpose: TaskCardActionButtons must render only recognizable icons, retaining exact
+// accessible names/tooltips, keyboard focus and usable targets. Server markup and
+// element props are the narrowest layer proving this without a browser/layout claim.
+test('archive and ask render icon-only outlined buttons with accessible names', () => {
+  const tree = TaskCardActionButtons({ onArchiveTask: () => {}, onAskOrchestrator: () => {} })
   const controls = buttons(tree)
-  assert.deepEqual(controls.map(button => button.props.children), ['Archive task', 'Ask orchestrator'])
-  let stopped = 0
-  for (const button of controls) {
+  assert.deepEqual(controls.map(button => button.props['aria-label']), ['Archive task', 'Ask orchestrator'])
+  for (const [index, button] of controls.entries()) {
     assert.equal(button.props.type, 'button')
+    assert.equal(button.props.title, button.props['aria-label'])
     assert.match(button.props.className, /border/)
-    button.props.onClick({ stopPropagation: () => stopped++ })
+    assert.match(button.props.className, /\bh-8 w-8\b/)
+    assert.match(button.props.className, /focus-visible:outline-2/)
+    assert.match(button.props.className, /focus-visible:outline-sky-400/)
+    const markup = renderToStaticMarkup(button)
+    assert.match(markup, index === 0 ? /lucide-archive/ : /lucide-message-circle/)
+    assert.match(markup, /<svg[^>]*aria-hidden="true"/)
+    assert.equal(markup.replace(/<[^>]*>/g, ''), '', 'no visible text inside the button')
   }
-  assert.deepEqual(calls, ['archive', 'ask'])
-  assert.equal(stopped, 2)
-  assert.equal(buttons(TaskCardActionButtons({})).length, 0)
+})
+
+// Purpose: optional callbacks control availability, and each action stops bubbling
+// before invoking only its own callback. TaskCardActionButtons owns this boundary;
+// direct event props prove it for both/single/missing callbacks without live jobs.
+test('archive and ask preserve optional callbacks and stop click propagation first', () => {
+  for (const available of [['archive', 'ask'], ['archive'], ['ask'], []]) {
+    const calls: string[] = []
+    let propagationStopped = false
+    const callback = (action: string) => () => {
+      assert.equal(propagationStopped, true, 'stop before invoking the action')
+      calls.push(action)
+    }
+    const tree = TaskCardActionButtons({
+      onArchiveTask: available.includes('archive') ? callback('archive') : undefined,
+      onAskOrchestrator: available.includes('ask') ? callback('ask') : undefined,
+    })
+    const controls = buttons(tree)
+    assert.deepEqual(controls.map(button => button.props['aria-label']),
+      available.map(action => action === 'archive' ? 'Archive task' : 'Ask orchestrator'))
+    let stopped = 0
+    for (const button of controls) {
+      propagationStopped = false
+      button.props.onClick({ stopPropagation: () => { propagationStopped = true; stopped++ } })
+      assert.equal(propagationStopped, true, 'card selection/expansion must not receive the click')
+    }
+    assert.deepEqual(calls, available)
+    assert.equal(stopped, available.length)
+    if (available.length === 0) assert.equal(renderToStaticMarkup(tree), '')
+  }
+})
+
+// Purpose: MinimalTaskCard retains the existing inline action slot immediately before
+// the separate checkbox label. This wiring check supplements the rendered/handler
+// contracts above; it does not claim browser-level selection or layout verification.
+test('task action icons remain inline immediately before checkbox wiring', () => {
   const source = readFileSync(new URL('./OrchestrateView.tsx', import.meta.url), 'utf8')
   const actionRow = source.slice(source.indexOf('        actions={'), source.indexOf('        extraBadges={'))
   assert.match(actionRow, /flex items-center gap-1\.5/)
+  assert.match(actionRow, /<TaskCardActionButtons onArchiveTask=\{onArchiveTask\} onAskOrchestrator=\{onAskOrchestrator\} \/>\s*\{onToggleMarked && \(/)
   assert.ok(actionRow.indexOf('<TaskCardActionButtons') < actionRow.indexOf('type="checkbox"'))
   assert.doesNotMatch(source, /self-end[^\n]*Archive task/)
 })
