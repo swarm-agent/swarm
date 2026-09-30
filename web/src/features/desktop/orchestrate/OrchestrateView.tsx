@@ -5548,6 +5548,7 @@ export function OrchestrateView({
         <button type="button" disabled={Boolean(unavailable) || state?.loading} onClick={() => void launchIntegrationRepair(failure)}>
           {state?.loading ? 'Launching…' : state?.sessionId ? 'Open repair session' : 'Launch repair session'}
         </button>
+        <button type="button" disabled={state?.loading} onClick={() => void handleIntegrateTask(task.id)}>Retry integration to refresh verified receipt</button>
         <button type="button" aria-label="Dismiss integration error" onClick={() => taskIntegrationOperations.dismiss(taskIntegrationKey(selectedProject.id, task))}>Dismiss</button>
       </div>
       {unavailable && <p>{unavailable}</p>}
