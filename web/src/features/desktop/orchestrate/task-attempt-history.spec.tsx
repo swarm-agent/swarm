@@ -10,6 +10,6 @@ import { TaskAttemptHistory } from './task-attempt-history'
 test('history initially offers explicit bounded retrieval without invented outcomes', () => {
   const html = renderToStaticMarkup(<TaskAttemptHistory projectId="project" taskId="task" onOpen={() => { throw new Error('initial render must not navigate') }} />)
   assert.match(html, /Task session history/)
-  assert.match(html, /View task history/)
+  assert.match(html, /View previous runs/)
   assert.doesNotMatch(html, /No ready summary|Open swarm session/)
 })

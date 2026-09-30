@@ -26,7 +26,7 @@ test('task history reload, pagination and retained-session navigation', { timeou
     const mount = async () => { await page.goto('https://task-history.test/'); await page.addScriptTag({ content: bundle.outputFiles[0].text }) }
     await mount()
     assert.equal(requests, 0)
-    await page.getByRole('button', { name: 'View task history' }).click()
+    await page.getByRole('button', { name: 'View previous runs' }).click()
     await page.getByText('Original outcome').waitFor()
     await page.getByRole('button', { name: 'More history' }).click()
     await page.getByText('Full follow-up request').waitFor()
@@ -34,7 +34,7 @@ test('task history reload, pagination and retained-session navigation', { timeou
     assert.deepEqual(await page.evaluate(() => (window as any).opened), ['new-session'])
     assert.equal(requests, 2)
     await mount()
-    await page.getByRole('button', { name: 'View task history' }).click()
+    await page.getByRole('button', { name: 'View previous runs' }).click()
     await page.getByText('Original outcome').waitFor()
     await page.getByRole('button', { name: 'Open coder session' }).click()
     assert.deepEqual(await page.evaluate(() => (window as any).opened), ['original'])

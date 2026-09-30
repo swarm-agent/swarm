@@ -40,10 +40,7 @@ test('collapsed metadata shows each source identity once and leaves evidence beh
   assert.match(html, /title="\/source\/repository"/)
   assert.match(html, /title="Worktree: agent\/task-copy"/)
   const expanded = markup({}, true)
-  assert.match(expanded, /data-session-id="one"/)
-  assert.match(expanded, /Implemented keyboard navigation/)
-  assert.match(expanded, /Tests not run; parent validation required/)
-  assert.match(expanded, /Validation still needs to be run/)
+  assert.equal(expanded, markup(), 'expansion never inserts sessions or handoff into compact summary')
 })
 
 test('unknown, zero, pending and stale facts never imply deployment or verification', () => {

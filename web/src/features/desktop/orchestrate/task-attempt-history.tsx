@@ -3,6 +3,8 @@ import { requestJson } from '../../../app/api'
 import type { TaskAttempt } from './orchestrate-types'
 
 export function TaskAttemptHistory({ projectId, taskId, onOpen }: { projectId: string; taskId: string; onOpen: (sessionId: string) => void }) {
+  const [open, setOpen] = React.useState(false)
+  const id = React.useId()
   const [rows, setRows] = React.useState<TaskAttempt[]>([])
   const [cursor, setCursor] = React.useState(0)
   const [loaded, setLoaded] = React.useState(false)
@@ -22,8 +24,11 @@ export function TaskAttemptHistory({ projectId, taskId, onOpen }: { projectId: s
     } catch (failure) { setError(failure instanceof Error ? failure.message : String(failure)) }
     finally { inFlight.current = false; setBusy(false) }
   }
-  return <section aria-label="Task session history" onClick={event => event.stopPropagation()}>
-    {(!loaded || cursor > 0) && <button type="button" disabled={busy} onClick={() => void load()}>{busy ? 'Loading history…' : loaded ? 'More history' : 'View task history'}</button>}
+  return <section aria-label="Previous runs" onClick={event => event.stopPropagation()}>
+    <h4>Previous runs</h4>
+    <button type="button" aria-expanded={open} aria-controls={id} onClick={() => { setOpen(!open); if (!open && !loaded) void load() }}>{open ? 'Hide previous runs' : 'View previous runs'}</button>
+    <div id={id} hidden={!open}>
+    {(!loaded || cursor > 0) && <button type="button" disabled={busy} onClick={() => void load()}>{busy ? 'Loading history…' : loaded ? 'More history' : 'Retry history'}</button>}
     {loaded && <button type="button" disabled={busy} onClick={() => void load(true)}>Refresh history</button>}
     {error && <p role="alert">{error}</p>}
     <ol>{rows.map(attempt => <li key={attempt.id}>
@@ -35,5 +40,6 @@ export function TaskAttemptHistory({ projectId, taskId, onOpen }: { projectId: s
       {attempt.last_error && <p>{attempt.last_error}</p>}
       {attempt.integration && <p>Integration: {attempt.integration.state} {attempt.integration.error}</p>}
     </li>)}</ol>
+    </div>
   </section>
 }

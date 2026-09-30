@@ -1,7 +1,6 @@
 import type { ReactNode } from 'react'
 import { Code2, Film, Image as ImageIcon, Layers, Music } from 'lucide-react'
 import type { RunningTask, MediaDeliverable } from './orchestrate-types'
-import { taskReviewMessage } from './task-review-message'
 import { taskCardSessions } from './task-card-sessions'
 
 export function formatElapsedString(elapsed?: string): string {
@@ -47,7 +46,7 @@ export function taskCardFacts(task: RunningTask) {
   }
 }
 
-export function TaskCardSummary({ task, expanded = false, onPreview, onOpenSession, statusBadge, timer, actions, extraBadges }: {
+export function TaskCardSummary({ task, onPreview, statusBadge, timer, actions, extraBadges }: {
   expanded?: boolean
   task: RunningTask
   onPreview?: (deliverable: MediaDeliverable) => void
@@ -61,7 +60,6 @@ export function TaskCardSummary({ task, expanded = false, onPreview, onOpenSessi
   const sessions = taskCardSessions(task)
   const working = sessions.filter(session => session.status === 'running').length
   const unknown = sessions.filter(session => session.status === 'unknown').length
-  const review = task.status === 'needs_review' ? taskReviewMessage(task) : null
   const Icon = task.agentType === 'image' ? ImageIcon : task.agentType === 'video' ? Film
     : task.agentType === 'audio' || task.agentType === 'sound' ? Music : task.agentType === 'swarm' ? Layers : Code2
   const preview = facts.deliverable
@@ -105,28 +103,7 @@ export function TaskCardSummary({ task, expanded = false, onPreview, onOpenSessi
           {task.status === 'blocked' && <span className="swarm-task-state">Action required · open details</span>}
           {facts.progress && <span className="swarm-task-progress">{facts.progress}</span>}
         </div>
-        {expanded && task.sessionSummary && <section aria-label="Task AI sessions" className="min-w-0 text-xs">
-          <div className="flex flex-wrap gap-1.5 mt-1 min-w-0">
-            {sessions.map(session => <button type="button" key={session.sessionId}
-              data-session-id={session.sessionId} data-session-state={session.status}
-              className="max-w-full min-w-0 rounded border border-slate-600 px-2 py-1 text-left text-slate-300 hover:bg-slate-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-400"
-              disabled={!onOpenSession} aria-label={`View ${session.role || 'AI'} session ${session.title || session.sessionId}`}
-              onClick={event => { event.stopPropagation(); onOpenSession?.(session.sessionId) }}>
-              <span className="break-words">{session.role ? `${session.role} · ` : ''}{session.title || session.sessionId.slice(0, 8)}</span>
-              <span> · {session.status === 'unknown' ? 'State unavailable' : session.status.replace(/_/g, ' ')}</span>
-            </button>)}
-          </div>
-        </section>}
         {extraBadges && <div className="swarm-task-extra">{extraBadges}</div>}
-        {expanded && review && <section aria-label="Ready for review">
-          {review.hasOutcome && <p>{review.outcome}</p>}
-          {review.warnings.length > 0 && <p aria-label="Review warnings">{review.warnings.join(' ')}</p>}
-          {review.raw && <details key={`${task.id}:${task.activeAttemptId || ''}:${review.raw}`}
-            onClick={event => event.stopPropagation()} onKeyDown={event => event.stopPropagation()}>
-            <summary>Details — full implementation handoff</summary>
-            <pre className="whitespace-pre-wrap break-words" style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{review.raw}</pre>
-          </details>}
-        </section>}
       </div>
     </div>
   )

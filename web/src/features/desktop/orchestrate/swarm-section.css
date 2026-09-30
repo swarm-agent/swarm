@@ -237,3 +237,21 @@
 .swarm-settings-nav { display: flex; flex-wrap: wrap; gap: 8px; }
 .swarm-agent-editor fieldset { min-width: 0; }
 .swarm-agent-editor select { max-width: 100%; min-width: 0; }
+
+/* Task disclosure is one downward-growing surface, never a second card stack. */
+.swarm-task-details { min-width: 0; font-size: 0.8125rem; overflow-wrap: anywhere; }
+.swarm-task-details h4 { margin: 1rem 0 .5rem; padding-top: .75rem; border-top: 1px solid var(--swarm-border-muted); font-weight: 600; color: var(--swarm-text); }
+.swarm-task-details > h4:first-child { margin-top: .5rem; }
+.swarm-task-details :is(div, section, pre) { min-width: 0; max-width: 100%; }
+.swarm-task-details :is(div, section)[class*="rounded"] { border-radius: 0; box-shadow: none; background: transparent; border-left: 0; border-right: 0; }
+.swarm-task-details :is(.animate-pulse, .animate-ping) { animation: none; }
+.swarm-task-details .truncate { white-space: normal; overflow: visible; text-overflow: clip; }
+.swarm-task-details pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+.swarm-task-details [class*="max-h-"] { max-height: none; overflow-y: visible; }
+.swarm-task-agent-row, .swarm-task-output-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: .5rem; width: 100%; padding: .4rem 0; text-align: left; border-bottom: 1px solid var(--swarm-border-muted); }
+.swarm-task-agent-row span:last-child, .swarm-task-output-row span { color: var(--swarm-text-secondary); }
+.swarm-task-handoff { margin: .5rem 0; font: inherit; }
+.swarm-task-details button:focus-visible, .swarm-task-details-toggle:focus-visible { outline: 2px solid var(--swarm-accent); outline-offset: 2px; }
+.swarm-task-details[hidden] { display: none; }
+.swarm-task-details .swarm-task-action-row { flex-wrap: wrap; }
+.swarm-task-details .swarm-task-action-row > div { min-width: 0; flex-wrap: wrap; }

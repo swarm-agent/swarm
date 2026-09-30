@@ -13,6 +13,7 @@ import { readFileSync } from 'node:fs'
 import { taskWithCurrentSessions, taskCardSessions } from './task-card-sessions'
 import { aggregateTaskLiveState } from './orchestrate-task-helpers'
 import { TaskCardSummary } from './task-card-summary'
+import { TaskCardAgents } from './task-card-details'
 import { TaskCardActionButtons } from './task-card-action-buttons'
 import type { RunningTask } from './orchestrate-types'
 import type { DesktopV3CacheState } from '../state/desktop-v3-cache-types'
@@ -39,8 +40,8 @@ test('two delegated children count separately and open exact targets without car
   assert.deepEqual(current.sessionIds, ['one', 'parent', 'two'])
   const live = aggregateTaskLiveState(current, { parent: data('running'), one: data('running'), two: data('running') })
   const opened: string[] = []
-  const tree = TaskCardSummary({ task: live, expanded: true, onOpenSession: id => opened.push(id) })
-  assert.match(renderToStaticMarkup(tree), /2 AIs working/)
+  const tree = TaskCardAgents({ task: live, onOpen: id => opened.push(id) })
+  assert.match(renderToStaticMarkup(<TaskCardSummary task={live} />), /2 AIs working/)
   const controls = buttons(tree).filter(button => button.props['data-session-id'])
   assert.deepEqual(controls.map(button => button.props['data-session-id']), ['one', 'two'])
   let stopped = 0

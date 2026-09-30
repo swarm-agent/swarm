@@ -90,6 +90,7 @@ import type { MediaGenerationJob, MediaGenerationRequest, MediaGenerationSetting
 import type { QuickRouteMode } from '../tools/media-library/media-viewer-modal'
 import { MediaTaskCard } from './media-task-card'
 import { ORCHESTRATE_THEMES } from './orchestrate-themes'
+import { TaskCardHandoff, TaskCardAgents, TaskCardOutputs, TaskExpectedOutputs } from './task-card-details'
 import { TaskCardSummary, formatElapsedString, formatElapsedSeconds } from './task-card-summary'
 import { taskWithCurrentSessions } from './task-card-sessions'
 import { TaskCardActionButtons } from './task-card-action-buttons'
@@ -695,6 +696,7 @@ export function MinimalTaskCard({
   isApproving,
   taskError,
   integrationRecovery,
+  previousRuns,
   onClearError,
 }: {
   task: RunningTask
@@ -731,13 +733,22 @@ export function MinimalTaskCard({
   videoModelOptions?: TaskModalModelOption[]
   audioModelOptions?: TaskModalModelOption[]
   isApproving?: boolean
+  previousRuns?: React.ReactNode
   integrationRecovery?: React.ReactNode
   taskError?: string
   onClearError?: () => void
 }) {
   const [internalExpanded, setInternalExpanded] = useState(false)
   const expanded = isExpanded !== undefined ? isExpanded : internalExpanded
+  const detailsToggleRef = useRef<HTMLButtonElement>(null)
+  const detailsId = React.useId()
   const handleToggleExpand = () => {
+    if (expanded) {
+      requestAnimationFrame(() => {
+        detailsToggleRef.current?.focus({ preventScroll: true })
+        detailsToggleRef.current?.scrollIntoView({ block: 'nearest', behavior: 'instant' })
+      })
+    }
     if (onToggleExpand) {
       onToggleExpand()
     } else {
@@ -1063,6 +1074,16 @@ export function MinimalTaskCard({
           </>
         }
       />
+      {isRunning && <TaskCardActivity task={task} />}
+      <button ref={detailsToggleRef} type="button" className="swarm-task-details-toggle"
+        aria-expanded={expanded} aria-controls={detailsId} data-testid="toggle-task-details-btn"
+        onClick={event => { event.stopPropagation(); handleToggleExpand() }}>
+        {expanded ? 'Hide details' : 'Show details'}
+      </button>
+      <div id={detailsId} hidden={!expanded} className="swarm-task-details" onClick={event => event.stopPropagation()}>
+      {expanded && <>
+      <h4>Result / current work</h4>
+      <TaskCardHandoff task={task} />
       {expanded && onInvestigateSession && <TaskSessionErrors task={task} onInvestigate={onInvestigateSession} />}
       {expanded && (Boolean(task.workspacesInvolved?.length) || Boolean(task.contextPoolSummary)) && (
         <div className="flex flex-col gap-1 pt-1.5 border-t border-slate-800/60 min-w-0">
@@ -1157,7 +1178,7 @@ export function MinimalTaskCard({
         </div>
       )}
 
-      {/* 2. PENDING APPROVAL MISSION PROPOSAL BANNER */}
+      {/* Actionable recovery is independent of previous-run history. */}
       {integrationRecovery}
       {isPendingApproval && (
         <div className="swarm-task-proposal flex flex-col space-y-2.5">
@@ -1481,40 +1502,7 @@ export function MinimalTaskCard({
             </div>
           )}
 
-          {/* Visual Deliverable Blueprint / Placeholders (Empty boxes before acceptance) */}
-          {(task.agentType === 'image' || task.agentType === 'video' || task.outcomeType === 'media_bundle' || task.outcomeType === 'video_story' || task.outcomeType === 'video_clip') && (
-            <div className="flex flex-col space-y-2 pt-2 pb-1 border-t border-blue-500/20">
-              <div className="flex items-center justify-between text-[10px] font-mono text-slate-400">
-                <span className="font-bold uppercase tracking-wider text-blue-400 flex items-center gap-1.5">
-                  <Sparkles size={11} />
-                  <span>Deliverable Blueprint ({variantSlots.length} {variantSlots.length === 1 ? 'Slot' : 'Slots'})</span>
-                </span>
-                <span className="text-slate-500">Empty placeholder until accepted</span>
-              </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5">
-                {variantSlots.map((slotNum) => (
-                  <div
-                    key={slotNum}
-                    className={`relative flex flex-col items-center justify-center p-4 rounded-xl border-2 border-dashed border-blue-500/30 bg-blue-950/10 hover:border-blue-500/50 transition-colors ${
-                      task.aspectRatio === '1:1' ? 'aspect-square' : task.aspectRatio === '9:16' ? 'aspect-[9/16]' : 'aspect-video'
-                    }`}
-                  >
-                    <div className="flex flex-col items-center text-center space-y-1.5">
-                      <div className="w-8 h-8 rounded-lg bg-blue-500/10 border border-blue-500/20 flex items-center justify-center text-blue-400">
-                        {task.agentType === 'video' ? <Film size={16} /> : <ImageIcon size={16} />}
-                      </div>
-                      <span className="text-[11px] font-mono font-bold text-slate-200">
-                        Slot {slotNum}: {task.aspectRatio || (task.agentType === 'video' ? '16:9' : '1:1')} {task.agentType === 'video' ? (isSingleVideo ? 'Single Video' : 'Video Story') : 'Image'}
-                      </span>
-                      <span className="text-[9px] font-mono text-blue-400/80 bg-blue-950/40 px-2 py-0.5 rounded border border-blue-500/20">
-                        Pending Acceptance
-                      </span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
+          {isMediaTask && <p>Planned: {variantSlots.length} {task.agentType} output(s) · {task.aspectRatio || 'aspect ratio unspecified'}</p>}
 
           {/* Expandable Structured Plan or Task Program or Fallback Markdown */}
           {(hasStructuredPlan || task.fullPlanMarkdown) && (
@@ -1873,10 +1861,13 @@ export function MinimalTaskCard({
         </div>
       )}
 
-      {/* 2b. IN PROGRESS / RUNNING LIVE EXECUTION SECTION */}
+      <h4>Agents &amp; plan</h4>
+      <TaskCardAgents task={task} onOpen={onInvestigateSession} />
+      <TaskExpectedOutputs task={task} />
+      {/* IN PROGRESS / RUNNING LIVE EXECUTION SECTION */}
       {isRunning && (
         <div className="swarm-task-running flex min-w-0 flex-col space-y-2.5 text-xs">
-          <TaskCardActivity task={task} />
+
 
           {/* Agent's Created Execution Plan with Subtasks Checklist OR Compact Task Program Multi-Coder Grid */}
           {expanded && (
@@ -1963,7 +1954,7 @@ export function MinimalTaskCard({
                           ) : isDone ? (
                             <span className="text-emerald-400 font-bold flex items-center gap-1">
                               <CheckCircle2 size={10} />
-                              <span>Integrated</span>
+                              <span>{job.state === 'integrated' ? 'Integrated' : 'Completed'}</span>
                             </span>
                           ) : isHandoffReady ? (
                             <span className="text-indigo-300 font-semibold flex items-center gap-1">
@@ -2105,7 +2096,6 @@ export function MinimalTaskCard({
                   <span className="text-slate-500">({task.unintegratedCommits} {task.unintegratedCommits === 1 ? 'commit' : 'commits'})</span>
                 ) : null}
               </span>
-              <span className="sr-only">Mission Execution Completed — Awaiting Review</span>
               <span className="sr-only">{integrationPhase === 'success' ? 'Integrated:' : 'Not Integrated:'}</span>
             </div>
           </div>}
@@ -2154,13 +2144,7 @@ export function MinimalTaskCard({
           className="swarm-task-action-row flex items-center justify-between p-3 rounded-xl bg-slate-900/60 border border-slate-800 text-xs gap-3 shadow-sm"
           title="Mission Execution Completed — Awaiting Review"
         >
-          {expanded && <div className="flex items-center gap-2 min-w-0">
-            <CheckCircle2 size={14} className="text-emerald-400 flex-shrink-0" />
-            <span className="font-semibold text-slate-200 text-xs">
-              Execution completed — awaiting review
-            </span>
-            <span className="sr-only">Mission Execution Completed — Awaiting Review</span>
-          </div>}
+
           <div className="flex items-center gap-2 flex-shrink-0">
             {onReopen && (
               <button
@@ -2382,212 +2366,6 @@ export function MinimalTaskCard({
         </div>
       )}
 
-      {/* 2e. Multi-Session Cohort / Parallel Sessions Strip */}
-      {expanded && task.sessionSummary && task.sessionSummary.totalSessions > 0 && (
-        <div className="flex flex-col p-2.5 rounded-lg bg-slate-900/80 border border-slate-800 space-y-2 text-xs" data-testid="task-multi-session-strip">
-          <div className="flex items-center justify-between text-[10px] font-mono">
-            <span className="font-bold uppercase tracking-wider text-slate-300 flex items-center gap-1.5">
-              <Layers size={11} className="text-blue-400" />
-              <span>Sessions ({task.sessionSummary.totalSessions})</span>
-            </span>
-            <div className="flex items-center gap-2">
-              {task.sessionSummary.runningSessions > 0 && (
-                <span className="text-blue-400 font-bold flex items-center gap-1">
-                  <span className="h-1.5 w-1.5 rounded-full bg-blue-400 animate-pulse" />
-                  <span>{task.sessionSummary.runningSessions} Running</span>
-                </span>
-              )}
-              {task.sessionSummary.reviewSessions > 0 && (
-                <span className="text-amber-300 font-semibold flex items-center gap-1">
-                  <span className="h-1.5 w-1.5 rounded-full bg-amber-400" />
-                  <span>{task.sessionSummary.reviewSessions} Review</span>
-                </span>
-              )}
-              {task.sessionSummary.failedSessions > 0 && (
-                <span className="text-rose-400 font-bold flex items-center gap-1">
-                  <span className="h-1.5 w-1.5 rounded-full bg-rose-400" />
-                  <span>{task.sessionSummary.failedSessions} Failed</span>
-                </span>
-              )}
-              {task.sessionSummary.completedSessions > 0 && (
-                <span className="text-emerald-400 font-semibold flex items-center gap-1">
-                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
-                  <span>{task.sessionSummary.completedSessions} Done</span>
-                </span>
-              )}
-            </div>
-          </div>
-          {/* Horizontal session chips */}
-          <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5 pt-0.5 font-mono text-[9px]">
-            {task.sessionSummary.sessionStates.map((st) => (
-              <div
-                key={st.sessionId}
-                data-session-id={st.sessionId}
-                data-session-state={st.status}
-                className={`flex items-center gap-1.5 px-2 py-1 rounded border flex-shrink-0 ${
-                  st.status === 'running'
-                    ? 'bg-blue-950/40 text-blue-300 border-blue-500/40'
-                    : st.status === 'needs_review'
-                    ? 'bg-amber-950/40 text-amber-300 border-amber-500/40'
-                    : st.status === 'failed'
-                    ? 'bg-rose-950/40 text-rose-300 border-rose-500/40'
-                    : st.status === 'completed'
-                    ? 'bg-emerald-950/30 text-emerald-300 border-emerald-500/30'
-                    : 'bg-slate-900 text-slate-400 border-slate-800'
-                }`}
-                title={st.lastError ? `Session Error: ${redactIntegrationDiagnostic(st.lastError)}` : `Session ID: ${st.sessionId}`}
-              >
-                <span
-                  className={`h-1.5 w-1.5 rounded-full ${
-                    st.status === 'running'
-                      ? 'bg-blue-400 animate-ping'
-                      : st.status === 'needs_review'
-                      ? 'bg-amber-400'
-                      : st.status === 'failed'
-                      ? 'bg-rose-400'
-                      : st.status === 'completed'
-                      ? 'bg-emerald-400'
-                      : 'bg-slate-500'
-                  }`}
-                />
-                <span className="font-bold truncate max-w-[120px]">{st.title || st.sessionId.slice(0, 8)}</span>
-                <span className="opacity-75 uppercase text-[8px]">{st.status.replace('_', ' ')}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* 2f. Media & Deliverables Preview Strip (secondary details) */}
-      {expanded && ((task.deliverables && task.deliverables.length > 0) || (task.attachedMedia && task.attachedMedia.length > 0)) && (
-        <div className="flex flex-col p-2.5 rounded-lg bg-slate-900/60 border border-slate-800/80 space-y-1.5 text-xs" data-testid="task-media-thumbnails-strip">
-          <div className="flex items-center justify-between text-[10px] font-mono text-slate-400">
-            <span className="font-bold uppercase tracking-wider text-slate-300 flex items-center gap-1.5">
-              <Sparkles size={11} className="text-blue-400" />
-              <span>Media Previews & Deliverables ({(task.deliverables?.length || 0) + (task.attachedMedia?.length || 0)})</span>
-            </span>
-            {task.outcomeType && (
-              <span className="text-[9px] uppercase px-1.5 py-0.2 rounded bg-slate-800 text-slate-400 font-mono">
-                {task.outcomeType.replace('_', ' ')}
-              </span>
-            )}
-          </div>
-          <div className="flex items-center gap-2 overflow-x-auto pb-1 pt-0.5">
-            {/* Attached Media previews */}
-            {task.attachedMedia?.map((m, mIdx) => (
-              <div
-                key={`att-${m.id || mIdx}`}
-                className="relative h-16 w-24 flex-shrink-0 rounded-lg overflow-hidden border border-slate-700 bg-black flex items-center justify-center group"
-                title={`Attached: ${m.title || m.filename || 'source media'}`}
-              >
-                {m.kind === 'video' && m.url ? (
-                  <video src={m.url} preload="metadata" muted playsInline aria-label={m.title || 'Attached video'} className="h-full w-full object-contain" />
-                ) : m.kind === 'image' && (m.url || (m.data && m.data.startsWith('data:'))) ? (
-                  <img src={m.url || m.data} alt={m.title || 'media'} className="h-full w-full object-cover" />
-                ) : (
-                  <div className="flex flex-col items-center justify-center text-slate-500 text-[9px] font-mono">
-                    <Film size={14} className="text-slate-400" />
-                    <span>Attached</span>
-                  </div>
-                )}
-                <span className="absolute bottom-1 left-1 px-1 py-0.2 rounded bg-black/80 text-[8px] font-mono text-slate-300">
-                  {m.kind || 'media'}
-                </span>
-              </div>
-            ))}
-            {/* Deliverable Previews */}
-            {task.deliverables?.map((d) => {
-              const hasThumb = Boolean(d.previewUrl || (d.type === 'image' && d.mediaUrl))
-              const isGenerating = d.status === 'generating'
-              const isReady = d.status === 'ready' || d.status === 'accepted'
-              return (
-                <div
-                  key={d.id}
-                  onClick={(e) => {
-                    if (isReady && onPreviewDeliverable) {
-                      e.stopPropagation()
-                      onPreviewDeliverable(d)
-                    }
-                  }}
-                  className={`relative h-16 w-24 flex-shrink-0 rounded-lg overflow-hidden border transition-all ${
-                    isGenerating
-                      ? 'border-blue-500/50 bg-blue-950/20 animate-pulse'
-                      : isReady
-                      ? 'border-slate-700 hover:border-blue-500 cursor-pointer shadow-sm bg-black'
-                      : 'border-dashed border-slate-800 bg-slate-950/40'
-                  }`}
-                  title={`${d.title} (${d.status})`}
-                >
-                  {isGenerating ? (
-                    <div className="h-full w-full flex flex-col items-center justify-center p-1 text-center">
-                      <Loader2 size={13} className="animate-spin text-blue-400" />
-                      <span className="text-[8px] font-mono text-blue-300 mt-1 truncate max-w-full">Generating</span>
-                    </div>
-                  ) : d.type === 'video' && d.mediaUrl ? (
-                    <video src={d.mediaUrl} poster={d.previewUrl} preload="metadata" muted playsInline aria-label={d.title} className="h-full w-full object-contain" />
-                  ) : hasThumb ? (
-                    <img
-                      src={d.previewUrl || d.mediaUrl || d.thumbnailType}
-                      alt={d.title}
-                      className="h-full w-full object-cover group-hover:scale-105 transition-transform"
-                    />
-                  ) : (
-                    <div className="h-full w-full flex flex-col items-center justify-center text-center p-1">
-                      {d.type === 'video' ? (
-                        <Film size={14} className="text-indigo-400" />
-                      ) : d.type === 'pr' || d.type === 'code' ? (
-                        <GitPullRequest size={14} className="text-emerald-400" />
-                      ) : (
-                        <ImageIcon size={14} className="text-slate-400" />
-                      )}
-                      <span className="text-[8px] font-mono text-slate-400 mt-0.5 truncate max-w-full">{d.title}</span>
-                    </div>
-                  )}
-                  <span
-                    className={`absolute top-0.5 right-0.5 px-1 py-0.2 rounded font-mono text-[7px] font-bold uppercase ${
-                      isReady
-                        ? 'bg-emerald-950/90 text-emerald-300 border border-emerald-500/40'
-                        : isGenerating
-                        ? 'bg-blue-950/90 text-blue-300 border border-blue-500/40'
-                        : 'bg-slate-900/90 text-slate-400 border border-slate-700/50'
-                    }`}
-                  >
-                    {d.status}
-                  </span>
-                  {d.duration && (
-                    <span className="absolute bottom-0.5 left-0.5 px-1 py-0.2 rounded bg-black/80 text-[7px] font-mono text-slate-300">
-                      {d.duration}
-                    </span>
-                  )}
-                </div>
-              )
-            })}
-          </div>
-        </div>
-      )}
-
-      {/* 2g. Expand / Collapse Deep Details Toggle Bar */}
-      <div className="pt-1">
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation()
-            handleToggleExpand()
-          }}
-          className="swarm-task-details-toggle"
-          aria-expanded={expanded}
-          data-testid="toggle-task-details-btn"
-        >
-          <span className="flex items-center gap-1.5 font-semibold">
-            {expanded ? <ChevronUp size={11} className="text-blue-400" /> : <ChevronDown size={11} className="text-blue-400" />}
-            <span>Plan, subtasks, logs</span>
-          </span>
-          <span className="text-[9px] text-slate-500 font-normal">
-            Details
-          </span>
-        </button>
-      </div>
-
       {expanded && (
         <>
           {/* Header toolbar inside expanded full plan, subtasks & activity logs */}
@@ -2652,7 +2430,7 @@ export function MinimalTaskCard({
             </span>
             {(task.whatDidDo && task.whatDidDo.length > 0
               ? task.whatDidDo
-              : ['Verified scope and authored changes']
+              : []
             ).map((item, idx) => (
               <div key={idx} className="flex items-start gap-1.5 text-slate-300 leading-tight">
                 <span className="text-emerald-400 font-bold">✓</span>
@@ -2666,7 +2444,7 @@ export function MinimalTaskCard({
             </span>
             {(task.whatNotDone && task.whatNotDone.length > 0
               ? task.whatNotDone
-              : ['Awaiting code review and merge']
+              : []
             ).map((item, idx) => (
               <div key={idx} className="flex items-start gap-1.5 text-slate-400 leading-tight">
                 <span className="text-amber-400">⋯</span>
@@ -2677,90 +2455,7 @@ export function MinimalTaskCard({
         </div>
       )}
 
-      {/* 6. Expected Deliverables Slot Rendering */}
-      {task.deliverables && task.deliverables.length > 0 && (
-        <div className="space-y-1.5">
-          <div className="flex items-center justify-between text-[10px] font-semibold text-slate-500">
-            <span className="uppercase font-mono tracking-wider">
-              Deliverables ({task.deliverables.length})
-            </span>
-            <span className="font-mono text-[9px]">Contract: {task.outcomeType || 'media'}</span>
-          </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2">
-            {task.deliverables.map((d) => (
-              <div
-                key={d.id}
-                onClick={(e) => {
-                  e.stopPropagation()
-                  if (d.status === 'ready' || d.status === 'accepted') {
-                    onPreviewDeliverable?.(d)
-                  }
-                }}
-                className={`p-2 rounded-xl border transition-all ${
-                  d.status === 'generating'
-                    ? 'border-blue-500/40 bg-blue-950/20 animate-pulse'
-                    : d.status === 'pending'
-                    ? 'border-dashed border-slate-800 bg-slate-950/40'
-                    : 'border-slate-800 bg-[#070b14] hover:border-blue-500/50 cursor-pointer shadow-sm hover:shadow-md'
-                }`}
-              >
-                {d.status === 'generating' ? (
-                  <div className="flex flex-col items-center justify-center p-3 text-center space-y-1.5 min-h-[90px]">
-                    <Loader2 size={16} className="animate-spin text-blue-400" />
-                    <span className="text-[11px] font-mono font-semibold text-blue-200 truncate w-full px-1">{d.title}</span>
-                    <span className="text-[9px] font-mono text-blue-400/80 uppercase tracking-wider">Generating media...</span>
-                  </div>
-                ) : d.status === 'pending' ? (
-                  <div className="flex flex-col items-center justify-center p-3 text-center space-y-1 min-h-[90px]">
-                    {d.type === 'video' ? (
-                      <Film size={16} className="text-indigo-400" />
-                    ) : d.type === 'pr' || d.type === 'code' ? (
-                      <GitPullRequest size={16} className="text-emerald-400" />
-                    ) : d.type === 'report' ? (
-                      <FileText size={16} className="text-amber-400" />
-                    ) : d.type === 'artifact' ? (
-                      <Palette size={16} className="text-purple-400" />
-                    ) : (
-                      <ImageIcon size={16} className="text-slate-500" />
-                    )}
-                    <span className="text-[11px] font-mono font-semibold text-slate-300 truncate w-full px-1">{d.title}</span>
-                    <span className="text-[9px] font-mono text-slate-500">
-                      {d.type === 'pr' || d.type === 'code' ? 'Pending Acceptance • Code PR' : 'Pending Acceptance'}
-                    </span>
-                  </div>
-                ) : (
-                  <div className="space-y-1.5">
-                    <div className="relative aspect-video w-full overflow-hidden rounded-lg bg-black/80 flex items-center justify-center">
-                      {d.previewUrl || d.mediaUrl || (d.thumbnailType && d.thumbnailType.startsWith('data:')) ? (
-                        <img
-                          src={d.previewUrl || d.mediaUrl || d.thumbnailType}
-                          alt={d.title}
-                          className="w-full h-full object-cover transition-transform group-hover:scale-105 duration-300"
-                        />
-                      ) : (
-                        <DeliverableThumbnail type={d.thumbnailType} deliverableType={d.type} duration={d.duration} />
-                      )}
-                      <div className="absolute inset-0 bg-black/40 opacity-0 hover:opacity-100 flex items-center justify-center transition-opacity">
-                        <span className="flex items-center gap-1 px-2 py-0.5 rounded bg-black/80 text-[10px] font-mono font-bold text-white border border-white/20">
-                          <Eye size={10} /> Preview
-                        </span>
-                      </div>
-                      <span className="absolute top-1 right-1 z-10 px-1 py-0.5 rounded bg-emerald-950/80 border border-emerald-500/40 text-emerald-300 text-[8px] font-mono uppercase font-bold">
-                        Ready
-                      </span>
-                    </div>
-                    <div className="text-[11px] font-semibold text-white truncate px-0.5" title={d.title}>{d.title}</div>
-                    <div className="flex items-center justify-between text-[9px] text-slate-400 font-mono px-0.5">
-                      <span className="text-blue-400 uppercase">{d.type}</span>
-                      <span className="text-slate-500 group-hover:text-slate-300">Click to view</span>
-                    </div>
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
+      <TaskCardOutputs task={task} onPreview={onPreviewDeliverable} />
 
       {/* 7. Pipeline Stepper & Footer */}
       <div className="flex items-center justify-between pt-1 border-t border-slate-800/60 text-[10px] font-mono text-slate-500">
@@ -2796,6 +2491,12 @@ export function MinimalTaskCard({
       </div>
         </>
       )}
+      {expanded && previousRuns}
+      <button type="button" className="swarm-task-details-toggle" data-testid="collapse-task-details-btn"
+        aria-expanded={expanded} aria-controls={detailsId}
+        onClick={event => { event.stopPropagation(); handleToggleExpand() }}>Hide details · return to summary</button>
+      </>}
+      </div>
     </div>
   )
 }
@@ -5608,6 +5309,13 @@ export function OrchestrateView({
     if (task) await manageTasks([task], 'delete')
   }
 
+  const renderPreviousRuns = (task: RunningTask) => selectedProject ? <TaskAttemptHistory
+    key={`${selectedProject.id}:${task.id}:${task.activeAttemptId || 'initial'}`}
+    projectId={selectedProject.id} taskId={task.id} onOpen={sessionId => {
+      setSelectedTaskId(task.id); setActiveTaskId(task.id); setActiveSessionId(sessionId); setWorkerChatOpen(true)
+      void hydrateDesktopV3ChildCard(sessionId, { activePlan: true, permissionSummary: true }).catch(() => undefined)
+    }} /> : null
+
   const renderIntegrationRecovery = (task: RunningTask) => {
     const operation = integrationForTask(task)
     const retryAttempt = task.attempts?.find(attempt => attempt.id === task.activeAttemptId && attempt.launch_state === 'launch_failed')
@@ -5615,18 +5323,13 @@ export function OrchestrateView({
       ? integrationFailure(selectedProject, task, new Error(retryAttempt.last_error || 'Repair launch incomplete; retry retained request')) : undefined) || (operation.phase === 'error' ? { ...operation.failure, task } : undefined) || (operation.phase === 'ready' && selectedProject && task.integration && ['failed', 'conflict'].includes(task.integration.state)
       ? integrationFailure(selectedProject, task, new Error(task.integration.error || 'Integration failed; retained backend receipt')) : undefined)
     if (!selectedProject) return null
-    const history = <TaskAttemptHistory key={`${selectedProject.id}:${task.id}:${task.activeAttemptId || 'initial'}`} projectId={selectedProject.id} taskId={task.id} onOpen={sessionId => {
-      setSelectedTaskId(task.id); setActiveTaskId(task.id); setActiveSessionId(sessionId); setWorkerChatOpen(true)
-      void hydrateDesktopV3ChildCard(sessionId, { activePlan: true, permissionSummary: true }).catch(() => undefined)
-    }} />
-    if (operation.phase === 'success' && operation.refreshError) return <>{history}<p role="status">{operation.refreshError}</p></>
+    if (operation.phase === 'success' && operation.refreshError) return <><p role="status">{operation.refreshError}</p></>
     const failureKey = taskIntegrationKey(selectedProject.id, task)
     const failureIdentity = taskIntegrationFailureIdentity(task, operation)
-    if (!failure || failure.projectId !== selectedProject.id || taskIntegrationOperations.isDismissed(failureKey, failureIdentity)) return <>{history}{retryAttempt?.request && <button type="button" onClick={event => { event.stopPropagation(); void handleReopenTask(task.id, retryAttempt.request) }}>Retry incomplete follow-up</button>}</>
+    if (!failure || failure.projectId !== selectedProject.id || taskIntegrationOperations.isDismissed(failureKey, failureIdentity)) return <>{retryAttempt?.request && <button type="button" onClick={event => { event.stopPropagation(); void handleReopenTask(task.id, retryAttempt.request) }}>Retry incomplete follow-up</button>}</>
     const state = repairStates[task.id]
     const unavailable = repairUnavailable(failure.task)
     return <div className="integration-recovery" role="alert" onClick={event => event.stopPropagation()}>
-      {history}
       <strong>Integration failed</strong>
       <pre>{failure.error}</pre>
       <div className="flex flex-wrap gap-2">
@@ -7182,7 +6885,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                           onOpenTaskModelChanger={handleOpenTaskModelChanger}
                           projectId={selectedProject?.id}
                           isApproving={approvingTaskIds.has(t.id)}
-                          integrationRecovery={renderIntegrationRecovery(t)}
+                          previousRuns={renderPreviousRuns(t)} integrationRecovery={renderIntegrationRecovery(t)}
                           taskError={taskActionErrors[t.id]}
                           onClearError={() => handleClearTaskError(t.id)}
                           modelOptions={modelOptions}
@@ -7289,7 +6992,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                               onOpenTaskModelChanger={handleOpenTaskModelChanger}
                               projectId={selectedProject?.id}
                               isApproving={approvingTaskIds.has(t.id)}
-                              integrationRecovery={renderIntegrationRecovery(t)}
+                              previousRuns={renderPreviousRuns(t)} integrationRecovery={renderIntegrationRecovery(t)}
                               taskError={taskActionErrors[t.id]}
                               onClearError={() => handleClearTaskError(t.id)}
                               modelOptions={modelOptions}
@@ -7407,7 +7110,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                           onOpenTaskModelChanger={handleOpenTaskModelChanger}
                           projectId={selectedProject?.id}
                           isApproving={approvingTaskIds.has(task.id)}
-                          integrationRecovery={renderIntegrationRecovery(task)}
+                          previousRuns={renderPreviousRuns(task)} integrationRecovery={renderIntegrationRecovery(task)}
                           taskError={taskActionErrors[task.id]}
                           onClearError={() => handleClearTaskError(task.id)}
                           modelOptions={modelOptions}
@@ -7515,7 +7218,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                         onOpenTaskModelChanger={handleOpenTaskModelChanger}
                         projectId={selectedProject?.id}
                         isApproving={approvingTaskIds.has(selectedTaskForSplit.id)}
-                        integrationRecovery={renderIntegrationRecovery(selectedTaskForSplit)}
+                        previousRuns={renderPreviousRuns(selectedTaskForSplit)} integrationRecovery={renderIntegrationRecovery(selectedTaskForSplit)}
                         taskError={taskActionErrors[selectedTaskForSplit.id]}
                         onClearError={() => handleClearTaskError(selectedTaskForSplit.id)}
                         modelOptions={modelOptions}
@@ -7566,7 +7269,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                       onOpenTaskModelChanger={handleOpenTaskModelChanger}
                       projectId={selectedProject?.id}
                       isApproving={approvingTaskIds.has(t.id)}
-                      integrationRecovery={renderIntegrationRecovery(t)}
+                      previousRuns={renderPreviousRuns(t)} integrationRecovery={renderIntegrationRecovery(t)}
                       taskError={taskActionErrors[t.id]}
                       onClearError={() => handleClearTaskError(t.id)}
                       modelOptions={modelOptions}

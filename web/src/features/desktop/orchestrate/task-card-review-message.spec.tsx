@@ -1,82 +1,94 @@
-// Purpose: expanded TaskCardSummary shows substantive outcomes with visible limitations and
-// preserves the exact handoff behind native, keyboard-accessible collapsed details.
-// Threat: raw recaps overwhelm cards, hidden warnings imply success, or expansion
-// bubbles into card actions and stale attempt text persists. The real-browser
-// component fixture is the narrowest boundary proving visibility, focus and updates;
-// no provider/daemon calls or pixel/aesthetic verification are claimed.
+// Purpose: MinimalTaskCard disclosure grows strictly below its stable compact summary.
+// Threat: expanded evidence shifts the toggle/header, duplicates sessions/outputs or
+// invents successful validation. Authority: MinimalTaskCard, TaskCardSummary,
+// TaskCardOutputs, TaskAttemptHistory. Browser geometry, focus and real handlers are
+// the narrowest layer proving this UI contract; provider and pixel review are separate.
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { readFileSync } from 'node:fs'
 import { build } from 'esbuild'
 import { chromium } from 'playwright'
-import type { RunningTask } from './orchestrate-types'
 
-const raw = `## Implementation handoff
-I inspected source and authored local tests.
-- **Fixed the sidebar so project names stay visible.**
-Commit: abc123456789
-Workspace: /worktrees/review
-\`\`\`sh
-pnpm test
-\`\`\`
-Tests not run; parent validation required.
-Integration not verified.`
-const task: RunningTask = {
-  id: 'review-task', activeAttemptId: 'attempt-one', title: 'Sidebar', agentType: 'coder',
-  status: 'needs_review', workspaceTarget: 'repository', elapsed: '', subtasks: [],
-  handoffSummary: raw, gitStatus: 'clean', isIntegrated: false,
-}
-
-test('review copy, native details, warning visibility and attempt replacement', { timeout: 30000 }, async () => {
+test('actual task toggle preserves summary geometry, output targets and deliberate history', { timeout: 30000 }, async () => {
   const bundle = await build({ stdin: { resolveDir: process.cwd(), loader: 'tsx', contents: `
-    import React from 'react'; import {createRoot} from 'react-dom/client'; import {flushSync} from 'react-dom';
-    import {TaskCardSummary} from './src/features/desktop/orchestrate/task-card-summary';
-    let task=${JSON.stringify(task)};
-    window.cardActions=0; window.cardKeys=0;
-    const root=createRoot(document.getElementById('root'));
-    function render(){flushSync(()=>root.render(<article onClick={()=>window.cardActions++} onKeyDown={()=>window.cardKeys++}>
-      <TaskCardSummary task={task} expanded/></article>))}
-    window.updateTask=patch=>{task={...task,...patch};render()};render();
+    import React from 'react';import {createRoot} from 'react-dom/client';
+    import {QueryClient,QueryClientProvider} from '@tanstack/react-query';
+    import {MinimalTaskCard} from './src/features/desktop/orchestrate/OrchestrateView';
+    import {TaskAttemptHistory} from './src/features/desktop/orchestrate/task-attempt-history';
+    window.opened=[];window.previewed=[];
+    const task={id:'task',title:'Sidebar',status:'needs_review',agentType:'coder',workspaceTarget:'local',elapsed:'',subtasks:[],
+      sessionId:'child',gitStatus:'clean',isIntegrated:false,handoffSummary:'Fixed sidebar. Tests not run; parent validation required.',
+      sessionSummary:{totalSessions:1,sessionStates:[{sessionId:'child',title:'Implementation',role:'coder',status:'needs_review',hydrated:true}]},
+      deliverables:[{id:'pending',type:'code',title:'Code PR & Verified Tests',status:'pending'},
+        {id:'report',type:'report',title:'Actual report',status:'ready',mediaUrl:'/reports/result'},
+        {id:'image',type:'image',title:'Actual image',status:'ready',mediaUrl:'/media/result'},
+        {id:'missing',type:'code',title:'No target',status:'ready'}]};
+    createRoot(document.getElementById('root')).render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}>
+      <div className='swarm-section'><MinimalTaskCard task={task} onInvestigateSession={id=>window.opened.push(id)} onPreviewDeliverable={d=>window.previewed.push(d.id)}
+        previousRuns={<TaskAttemptHistory projectId='project' taskId='task' onOpen={id=>window.opened.push(id)}/>}/></div>
+    </QueryClientProvider>);
   ` }, bundle: true, write: false, format: 'iife', platform: 'browser', jsx: 'automatic', logLevel: 'silent' })
   const browser = await chromium.launch({ headless: true, channel: process.env.SWARM_TEST_BROWSER_CHANNEL || 'chrome' })
   try {
-    const page = await browser.newPage()
-    await page.route('**/*', route => route.fulfill({ contentType: 'text/html', body: '<div id="root"></div>' }))
-    await page.goto('https://review.test/')
+    const page = await browser.newPage({ viewport: { width: 360, height: 640 } })
+    page.setDefaultTimeout(5000)
+    const errors: string[] = []
+    let historyRequests = 0
+    page.on('pageerror', error => errors.push(error.message))
+    await page.route('**/*', route => {
+      if (route.request().url().includes('/history?')) {
+        historyRequests++
+        return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ attempts: [], next_cursor: 0 }) })
+      }
+      return route.fulfill({ contentType: 'text/html', body: '<div id="root"></div>' })
+    })
+    await page.goto('https://task.test/')
+    await page.addStyleTag({ content: readFileSync('src/features/desktop/orchestrate/swarm-section.css', 'utf8') })
     await page.addScriptTag({ content: bundle.outputFiles[0].text })
-    const review = page.getByRole('region', { name: 'Ready for review' })
-    const details = review.locator('details')
-    const summary = review.locator('summary')
-    assert.match(await review.innerText(), /Fixed the sidebar so project names stay visible\./)
-    assert.match(await review.innerText(), /Validation still needs to be run\./)
-    assert.match(await review.innerText(), /Integration has not been verified\./)
-    assert.doesNotMatch(await review.innerText(), /abc123|pnpm|\/worktrees|I inspected|##/)
-    assert.equal(await details.getAttribute('open'), null)
-    assert.equal(await review.locator('pre').isVisible(), false)
-    assert.match(await page.getByTestId('task-card-summary').innerText(), /Integration not verified/)
-    assert.doesNotMatch(await page.getByTestId('task-card-summary').innerText(), /Tests passed|Integrated/)
-    await summary.focus()
+    const summary = page.getByTestId('task-card-summary')
+    const toggle = page.getByTestId('toggle-task-details-btn')
+    const before = await summary.innerHTML()
+    const headerY = (await summary.boundingBox())!.y
+    const toggleY = (await toggle.boundingBox())!.y
+    await toggle.focus()
     await page.keyboard.press('Enter')
-    assert.equal(await review.locator('pre').isVisible(), true)
-    assert.equal(await review.locator('pre').textContent(), raw)
-    assert.equal(await page.evaluate(() => (window as any).cardActions), 0)
-    assert.equal(await page.evaluate(() => (window as any).cardKeys), 0)
-    await summary.click()
-    assert.equal(await details.getAttribute('open'), null)
-    assert.equal(await page.evaluate(() => (window as any).cardActions), 0)
-    await summary.click()
-    await page.evaluate(() => (window as any).updateTask({ activeAttemptId: 'attempt-two', handoffSummary: 'Added keyboard navigation.' }))
-    assert.equal(await details.getAttribute('open'), null)
-    assert.match(await review.innerText(), /Added keyboard navigation\./)
-    assert.doesNotMatch(await review.innerText(), /project names|Validation still/)
-    assert.equal(await review.locator('pre').textContent(), 'Added keyboard navigation.')
-    await page.evaluate(() => (window as any).updateTask({ id: 'new-task', handoffSummary: '' }))
-    assert.equal(await details.count(), 0)
-    assert.doesNotMatch(await review.innerText(), /Review the task|Review the changes/)
-    await page.evaluate(() => (window as any).updateTask({ status: 'running', handoffSummary: 'Fixed another feature.' }))
-    assert.equal(await review.count(), 0)
-    // Media preview remains an independent action, not a review/Accept mutation.
-    await page.evaluate(() => (window as any).updateTask({ agentType: 'image', status: 'needs_review',
-      deliverables: [{ id: 'image-result', type: 'image', title: 'Preview result', status: 'ready', previewUrl: 'data:image/png;base64,' }] }))
-    assert.equal(await page.getByRole('button', { name: 'Preview Preview result' }).count(), 1)
+    assert.equal(await toggle.getAttribute('aria-expanded'), 'true')
+    assert.equal(await summary.innerHTML(), before)
+    assert.equal((await summary.boundingBox())!.y, headerY)
+    assert.equal((await toggle.boundingBox())!.y, toggleY)
+    const detailsId = await toggle.getAttribute('aria-controls')
+    assert.equal(await page.evaluate(id => {
+      const details = document.getElementById(id!)!
+      const toggle = document.querySelector('[data-testid="toggle-task-details-btn"]')!
+      return details.getBoundingClientRect().top >= toggle.getBoundingClientRect().bottom
+    }, detailsId), true)
+    assert.equal(await page.locator('[data-session-id="child"]').count(), 1)
+    await page.getByRole('button', { name: 'View coder session Implementation' }).click()
+    assert.deepEqual(await page.evaluate(() => (window as any).opened), ['child'])
+    assert.equal(await page.getByRole('link', { name: 'Actual report' }).getAttribute('href'), '/reports/result')
+    await page.getByRole('button', { name: 'Actual image', exact: true }).click()
+    assert.deepEqual(await page.evaluate(() => (window as any).previewed), ['image'])
+    assert.equal(await page.getByRole('button', { name: 'No target', exact: true }).count(), 0)
+    assert.equal(await page.getByRole('link', { name: 'Code PR & Verified Tests' }).count(), 0)
+    assert.match(await page.locator('.swarm-task-handoff').innerText(), /Tests not run/)
+    assert.equal(historyRequests, 0)
+    assert.equal(await page.evaluate(() => {
+      const outputs = document.querySelector('[aria-label="Outputs"]')!
+      const history = document.querySelector('[aria-label="Previous runs"]')!
+      return Boolean(outputs.compareDocumentPosition(history) & Node.DOCUMENT_POSITION_FOLLOWING)
+    }), true)
+    await page.getByRole('button', { name: 'View previous runs' }).click()
+    await page.getByRole('button', { name: 'Refresh history' }).waitFor()
+    assert.equal(historyRequests, 1)
+    await page.getByRole('button', { name: 'Hide previous runs' }).click()
+    assert.equal(historyRequests, 1)
+    await page.getByTestId('collapse-task-details-btn').click()
+    assert.equal(await toggle.getAttribute('aria-expanded'), 'false')
+    await page.waitForFunction(() => document.activeElement?.getAttribute('data-testid') === 'toggle-task-details-btn')
+    assert.equal(await toggle.evaluate(node => node === document.activeElement), true)
+    assert.equal(await summary.innerHTML(), before)
+    await page.getByRole('heading', { name: 'Sidebar', exact: true }).click()
+    assert.equal(await toggle.getAttribute('aria-expanded'), 'true')
+    assert.deepEqual(errors, [])
   } finally { await browser.close() }
 })
