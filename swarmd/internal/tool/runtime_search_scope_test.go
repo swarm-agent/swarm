@@ -110,8 +110,9 @@ func TestResidentSearchToolsWithHomeAncestor(t *testing.T) {
 				t.Fatalf("expected one scoped result: %s", output)
 			}
 			paths := searchDecodedResultPaths(results)
-			// Native content paths are index-relative; find normalizes paths
-			// relative to the requested directory (or exact file's parent).
+			// The helper normalizes to the target, then executeSearch always
+			// rewrites to PrimaryPath. Single-directory find keeps target-relative
+			// paths because rewriteFindResultsForDisplay does not force rewriting.
 			wantPath := "needle.txt"
 			if toolName == "search" {
 				wantPath = "src/needle.txt"
@@ -181,8 +182,17 @@ func TestResidentSearchToolsWithHomeAncestor(t *testing.T) {
 			}
 			paths := searchDecodedResultPaths(results)
 			wantPaths := []string{"needle.txt"}
+			// Helper filtering first produces target-relative paths. Runtime
+			// search always rewrites to homeScope.PrimaryPath (HOME), whereas
+			// find rewrites only for exact-file or multi-root requests. Assert
+			// the final serialized contract, independently of the index root.
 			if target == project {
 				wantPaths = []string{"needle-sibling.txt", "src/needle.txt"}
+				if toolName == "search" {
+					wantPaths = []string{"project/needle-sibling.txt", "project/src/needle.txt"}
+				}
+			} else {
+				wantPaths = []string{"project/src/needle.txt"}
 			}
 			sort.Strings(paths)
 			if len(paths) != len(wantPaths) {
