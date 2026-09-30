@@ -267,7 +267,7 @@ test('OrchestrateView provides AI Prompt Enhancement toggle and Single Video Sho
   assert.ok(source.includes('Direct to Video Model (No router rewrite)'), 'Must describe direct mode when toggle is unchecked')
   assert.ok(source.includes('Uses Router to polish prompt'), 'Must describe router enhancement when toggle is checked')
   assert.ok(source.includes("video_type: taskIntent === 'video' ? (scenePrompts.length ? 'multipart' : 'single') : undefined"), 'Must pass video_type in task payload')
-  assert.ok(source.includes('enhance_prompt: taskIntent === \'video\' ? enhanceVideoPrompt : undefined'), 'Must pass enhance_prompt in task payload')
+  assert.ok(source.includes(": taskIntent === 'video' ? enhanceVideoPrompt : undefined"), 'Video enhancement remains independent of the image opt-in branch; image POST behavior is exercised in image-task-prompt.spec.tsx')
 
   // 2. Single Video Shot Spec
   assert.ok(source.includes('Single Video Shot Spec'), 'Must render Single Video Shot Spec for single video tasks')

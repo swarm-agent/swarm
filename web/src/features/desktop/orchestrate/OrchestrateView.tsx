@@ -1,4 +1,5 @@
-import { useState, useMemo, useEffect, useCallback, useRef, useSyncExternalStore } from 'react'
+import { useState, useReducer, useMemo, useEffect, useCallback, useRef, useSyncExternalStore } from 'react'
+import { ImagePromptControls, imagePromptReducer, initialImagePromptState, imagePromptEnhancement, imageExecutionLabel } from './image-task-prompt'
 import { taskIntegrationOperations, taskIntegrationKey, taskIntegrationPhase, type TaskIntegrationOperation, type TaskIntegrationResult } from './task-integration-operation'
 import { projectTaskFollowupPayload } from '../runtime/project-task-followup'
 import { TaskAttemptHistory } from './task-attempt-history'
@@ -4011,7 +4012,12 @@ export function OrchestrateView({
   const [newTaskPrompt, setNewTaskPrompt] = useState('')
   const [newTaskWorkspace, setNewTaskWorkspace] = useState('')
   const [imageAspectRatio, setImageAspectRatio] = useState<'1:1' | '16:9' | '9:16' | '4:3'>('16:9')
-  const [imageVariants, setImageVariants] = useState<number>(1)
+  const [imagePromptState, dispatchImagePrompt] = useReducer(imagePromptReducer, initialImagePromptState)
+  const imageVariants = imagePromptState.count
+  const setImageVariants = (count: number) => dispatchImagePrompt({ type: 'count', count })
+  useEffect(() => {
+    dispatchImagePrompt({ type: 'reset' })
+  }, [taskIntent, isDeployModalOpen])
   const [imageResolution, setImageResolution] = useState<'1k' | '2k' | '4k'>('1k')
   const [soundDuration, setSoundDuration] = useState<number>(30)
   const [autoApproveTask, setAutoApproveTask] = useState<boolean>(false)
@@ -5252,8 +5258,8 @@ export function OrchestrateView({
   // Submit Task Proposal with Intent, Visual Controls & Auto-Approve Policy
   const handleDeployModalSubmit = async () => {
     if (isDeployingTaskRef.current) return
-    const prompt = newTaskPrompt.trim()
-    if (!prompt || !selectedProject?.id) return
+    const prompt = taskIntent === 'image' ? newTaskPrompt : newTaskPrompt.trim()
+    if (!prompt.trim() || !selectedProject?.id) return
     const scenePrompts = taskIntent === 'video' ? videoScenePrompts.split('\n').map(value => value.trim()).filter(Boolean) : []
 
     if (taskIntent === 'video') {
@@ -5333,7 +5339,9 @@ export function OrchestrateView({
         operation: taskIntent === 'video' ? 'create' : undefined,
         scenes: scenePrompts.length ? scenePrompts.map((scenePrompt, index) => ({ scene_number: index + 1, title: `Scene ${index + 1}`, prompt: scenePrompt })) : undefined,
         scenes_count: scenePrompts.length || undefined,
-        enhance_prompt: taskIntent === 'video' ? enhanceVideoPrompt : undefined,
+        enhance_prompt: taskIntent === 'image'
+          ? imagePromptEnhancement(imageVariants, imagePromptState.aiVariants)
+          : taskIntent === 'video' ? enhanceVideoPrompt : undefined,
         aspect_ratio: taskIntent === 'image' ? imageAspectRatio : taskIntent === 'video' ? (videoAspectRatio && supportedVideoAspectRatios.includes(videoAspectRatio) ? videoAspectRatio : undefined) : undefined,
         resolution: taskIntent === 'image' ? imageResolution : taskIntent === 'video' ? (videoResolution && supportedVideoResolutions.includes(videoResolution) ? videoResolution : undefined) : undefined,
         variant_count: taskIntent === 'image' ? imageVariants : taskIntent === 'video' ? videoClipCount : undefined,
@@ -5370,6 +5378,7 @@ export function OrchestrateView({
       desktopProjects.invalidate(selectedProject.id)
       setIsDeployModalOpen(false)
       setNewTaskPrompt('')
+      dispatchImagePrompt({ type: 'reset' })
       setNewTaskModelOverride('')
       setTaggedMedia([])
       setDeployError(null)
@@ -7714,7 +7723,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                 <div className="flex items-center gap-2">
                   <span className="text-[10px] uppercase font-bold text-slate-400 tracking-wider flex items-center gap-1">
                     <Bot size={12} className="text-blue-400" />
-                    <span>Impending Agent:</span>
+                    <span>{taskIntent === 'image' ? 'Execution:' : 'Impending Agent:'}</span>
                   </span>
                   <span className="font-bold text-white px-2 py-0.5 rounded bg-slate-900 border border-slate-700">
                     {taskIntent === 'code'
@@ -7722,7 +7731,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                       : taskIntent === 'audit'
                         ? '@finder (Finder)'
                         : taskIntent === 'image'
-                          ? '@image (Designer)'
+                          ? imageExecutionLabel(imageVariants, imagePromptState.aiVariants)
                           : taskIntent === 'video'
                             ? '@video (Video)'
                             : '@sound (Audio)'}
@@ -8091,6 +8100,12 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                       </div>
                     </div>
                   </div>
+
+                  <ImagePromptControls
+                    count={imageVariants}
+                    aiVariants={imagePromptState.aiVariants}
+                    onChange={(aiVariants) => dispatchImagePrompt({ type: 'choice', aiVariants })}
+                  />
 
                   {/* Estimated Model Cost Banner for Images */}
                   <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-2.5 flex items-center justify-between">

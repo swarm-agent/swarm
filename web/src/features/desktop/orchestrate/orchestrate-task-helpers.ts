@@ -199,7 +199,9 @@ export function resolveTaskImpendingAgents(
       provider = agentModelSettings?.systemAgents?.finder?.provider
       thinking = agentModelSettings?.systemAgents?.finder?.thinking
       serviceTier = agentModelSettings?.systemAgents?.finder?.serviceTier
-    } else if (agent === 'designer' || agent === 'image') {
+    } else if (agent === 'image') {
+      resolvedModel = defaultMediaModels?.image || 'Account default'
+    } else if (agent === 'designer') {
       resolvedModel = defaultMediaModels?.image || agentModelSettings?.systemAgents?.designer?.model || 'Account default'
     } else if (agent === 'video') {
       resolvedModel = defaultMediaModels?.video || 'Account default'
@@ -222,7 +224,7 @@ export function resolveTaskImpendingAgents(
   if (agent === 'coder') label = '@coder (Coder)'
   else if (agent === 'finder') label = '@finder (Finder)'
   else if (agent === 'plan') label = '@plan (Plan Mode)'
-  else if (agent === 'image') label = '@image (Designer)'
+  else if (agent === 'image') label = 'Image model generation'
   else if (agent === 'video') label = '@video (Video)'
   else if (agent === 'sound' || agent === 'audio') label = '@sound (Audio)'
 
