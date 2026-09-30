@@ -42,13 +42,17 @@ func (p *RuntimeProvider) Generate(ctx context.Context, r Request) (Result, erro
 			return Result{}, err
 		}
 	}
-	if principal, found := identity.PrincipalFromContext(ctx); found {
-		if p.Sessions == nil {
-			return Result{}, errors.New("memory worker budget authority unavailable")
-		}
-		if err := p.Sessions.CheckWorkerUnmeteredOperation(principal.AccountScopeID, principal.SessionID); err != nil {
-			return Result{}, err
-		}
+	principal, found := identity.PrincipalFromContext(ctx)
+	if !found || !principal.Valid() {
+		return Result{}, identity.ErrPrincipalRequired
+	}
+	if p.Sessions == nil {
+		return Result{}, errors.New("memory worker budget authority unavailable")
+	}
+	// Background extraction is account-owned; do not invent a worker/session
+	// owner from extracted sources. Account caps reject this unmetered boundary.
+	if err := p.Sessions.CheckWorkerUnmeteredOperation(principal.AccountScopeID, principal.SessionID); err != nil {
+		return Result{}, err
 	}
 	response, err := runner.CreateResponse(ctx, iface.Request{Model: r.Model.Model, Thinking: r.Model.Thinking, ServiceTier: r.Model.ServiceTier, ContextMode: r.Model.ContextMode, ModelCatalog: catalog, Instructions: r.Instructions, Input: []map[string]any{{"role": "user", "content": string(r.Input)}}, ToolChoice: "none", StartNewChain: true, ForceFreshProviderContext: true})
 	if err != nil {

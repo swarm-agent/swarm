@@ -67,12 +67,20 @@ func (s *SessionStore) SetWorkerBudget(account, worker string, expected uint64, 
 		return WorkerBudgetPolicy{}, errors.New("store is not configured")
 	}
 	unlock := s.store.sessionMutations.lockSessions("account:" + account)
-	defer unlock()
+	locked := true
+	defer func() {
+		if locked {
+			unlock()
+		}
+	}()
 	policy, err := s.GetWorkerBudget(account, worker)
 	if err != nil {
 		return policy, err
 	}
 	if policy.Revision != expected {
+		return policy, ErrWorkerConflict
+	}
+	if policy.Revision == ^uint64(0) {
 		return policy, ErrWorkerConflict
 	}
 	policy.Revision++
@@ -91,6 +99,8 @@ func (s *SessionStore) SetWorkerBudget(account, worker string, expected uint64, 
 	if err := s.store.commitWorkerRealtime(mutation); err != nil {
 		return policy, err
 	}
+	unlock()
+	locked = false
 	s.store.publishWorkerRealtime(mutation)
 	return policy, nil
 }
@@ -128,7 +138,7 @@ func (s *SessionStore) checkWorkerBudgetLocked(account, worker, date string) (Wo
 		if err != nil {
 			return policy, total, err
 		}
-		if accountPolicy.DailyCostLimitUSD > 0 && usage.UnknownReceipts > 0 {
+		if accountPolicy.DailyCostLimitUSD > 0 && (usage.UnknownReceipts > 0 || usage.PricingCoverageIncomplete) {
 			return policy, total, fmt.Errorf("%w: unresolved account pricing", ErrWorkerBudget)
 		}
 		if (accountPolicy.DailyCostLimitUSD > 0 && usage.TotalCostUSD >= accountPolicy.DailyCostLimitUSD) || (accountPolicy.DailyTokensLimit > 0 && usage.TotalTokens >= accountPolicy.DailyTokensLimit) {
@@ -212,7 +222,7 @@ func (s *SessionStore) CheckWorkerSessionBudgetWithPrice(account, sessionID, pri
 		if (accountPolicy.DailyCostLimitUSD > 0 && usage.TotalCostUSD >= accountPolicy.DailyCostLimitUSD) || (accountPolicy.DailyTokensLimit > 0 && usage.TotalTokens >= accountPolicy.DailyTokensLimit) {
 			return fmt.Errorf("%w: daily account usage limit exceeded", ErrWorkerBudget)
 		}
-		if accountPolicy.DailyCostLimitUSD > 0 && usage.UnknownReceipts > 0 {
+		if accountPolicy.DailyCostLimitUSD > 0 && (usage.UnknownReceipts > 0 || usage.PricingCoverageIncomplete) {
 			return fmt.Errorf("%w: unresolved account pricing", ErrWorkerBudget)
 		}
 		if accountPolicy.DailyCostLimitUSD > 0 && priceStatus != "known" && priceStatus != "free" && priceStatus != "subscription" {

@@ -5207,6 +5207,10 @@ type sessionsV3UsageExpectation struct {
 	summaryTotalTokens     int64
 }
 
+// Purpose: canonical V3 provider-loop receipts must retain exact per-operation
+// identity, step counters, and projected summary postconditions. The executor's
+// temp-service usage events and stored receipts are the narrowest integration
+// evidence; duplicate step identities or missing operation lineage must fail.
 func sessionsV3AssertUsageAccounting(t *testing.T, sessionSvc *sessionruntime.Service, sessionID string, expected []sessionsV3UsageExpectation) {
 	t.Helper()
 	turns, err := sessionSvc.ListTurnUsage(sessionID, 20)
@@ -5246,7 +5250,17 @@ func sessionsV3AssertUsageAccounting(t *testing.T, sessionSvc *sessionruntime.Se
 	}
 	for index, want := range expected {
 		baseRunID := stableSessionsV3PrimaryRunID(sessionID, want.clientRequestID)
-		wantRunID := sessionV3ProviderUsageRunID(baseRunID, want.step)
+		// Receipt identity is per provider operation; step remains observable
+		// metadata. Require exactly one matching step and its exact operation ID.
+		wantRunID := ""
+		for _, turn := range turns {
+			if turn.Steps == want.step && strings.HasPrefix(turn.RunID, baseRunID+"/operation/") {
+				if wantRunID != "" || turn.BudgetOperationID == "" || turn.RunID != baseRunID+"/operation/"+turn.BudgetOperationID {
+					t.Fatalf("ambiguous or invalid operation receipt for step %d: %+v", want.step, turns)
+				}
+				wantRunID = turn.RunID
+			}
+		}
 		if !runIDs[wantRunID] {
 			t.Fatalf("missing turn usage run_id %q in %+v", wantRunID, turns)
 		}

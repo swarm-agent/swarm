@@ -98,3 +98,17 @@ test('worker budget rejects missing canonical status', async () => {
   } }) } as unknown as SwarmTransport;
   await assert.rejects(new SwarmUsageNamespace(transport).workerBudget('worker'));
 });
+
+// Purpose: legacy pricing uncertainty is not proof of zero-dollar history.
+// workerBudget must preserve the server's explicit incomplete coverage and
+// blocked status. Transport seam proves wire fidelity, not billing telemetry.
+test('worker budget retains legacy pricing coverage', async () => {
+  const data = { account_scope_id: 'account', worker_id: 'worker', revision: 1,
+    daily_cost_limit_usd: 0, daily_tokens_limit: 0, updated_at: 1,
+    date: '2026-01-01', usage: { coverage: 'no_records' }, blocked: true,
+    inflight: false, account_inflight: false, limitations: 'unknown pricing is not free',
+    account_coverage: 'legacy_pricing_incomplete',
+    account_usage: { total_tokens: 7, pricing_coverage_version: 0, pricing_coverage_incomplete: true } };
+  const transport = { request: async () => ({ data }) } as unknown as SwarmTransport;
+  assert.deepEqual(await new SwarmUsageNamespace(transport).workerBudget('worker'), data);
+});

@@ -39,7 +39,7 @@ func checkProviderWorkerBudget(ctx context.Context, runner provideriface.Runner,
 		if err != nil {
 			return err
 		}
-		if !exists || principal.AccountScopeID != budget.account || principal.UserID != snapshot.UserID {
+		if !exists || snapshot.AccountScopeID != budget.account || principal.AccountScopeID != budget.account || principal.UserID != snapshot.UserID {
 			return errors.New("worker budget principal mismatch")
 		}
 	}

@@ -2429,6 +2429,9 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		receiptPrincipal, receiptApply := options.Principal, options.ApplySessionMutation
 		attemptCtx := withLateProviderReceipt(runnerCtx, func(late provideriface.Response) error {
 			usage := late.Usage
+			if !hasConcreteUsageSnapshot(usage) {
+				return s.sessions.Store().ReleaseWorkerBudgetReservation(acctScope, sessionID, usage.BudgetOperationID)
+			}
 			cost := usage.EstimatedCostUSD
 			if cost == 0 && s.sessions.Store() != nil {
 				cost = s.sessions.Store().CalculateCost(receiptProvider, receiptModel, usage.InputTokens, usage.OutputTokens, usage.CacheReadTokens, usage.ThinkingTokens)
@@ -4304,7 +4307,7 @@ func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, ru
 			accountScopeID = strings.TrimSpace(sessionSnapshot.AccountScopeID)
 		}
 	}
-	_ = accountScopeID
+	ctx = withWorkerBudget(ctx, s.sessions.Store(), accountScopeID, sessionID)
 	resolvedCompact, compactProfile, err := s.resolveCompactPreference(accountScopeID, basePreference)
 	if err != nil {
 		finishFailure(err)
@@ -4410,43 +4413,25 @@ func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, ru
 	{
 		oneShotStatus := fmt.Sprintf("compacting bounded chat with Compact (one shot, attempt %d)", attempt)
 		emitProgress(oneShotStatus)
-		oneShotResult, reqErr := executeMemoryCompactionRequest(ctx, runner, compactModel, instructions, oneShotPrompt, contextWindow, summaryMaxRunes, func(message string) {
+		persistReceipt := func(response provideriface.Response) error {
+			if hasConcreteUsageSnapshot(response.Usage) {
+				principal, _ := identity.PrincipalFromContext(ctx)
+				_, _, _, err := s.recordProviderUsageSnapshot(sessionID, "compact/operation/"+response.Usage.BudgetOperationID, compactModel.ProviderID, compactModel.Preference.Model, contextWindow, step, response.Usage, principal, nil)
+				if err != nil {
+					return err
+				}
+			}
+			return s.sessions.Store().ReleaseWorkerBudgetReservation(accountScopeID, sessionID, response.Usage.BudgetOperationID)
+		}
+		compactCtx := withLateProviderReceipt(ctx, persistReceipt)
+		oneShotResult, reqErr := executeMemoryCompactionRequest(compactCtx, runner, compactModel, instructions, oneShotPrompt, contextWindow, summaryMaxRunes, func(message string) {
 			emitProgress(oneShotStatus + "; " + strings.TrimSpace(message))
 		})
 		// Account compaction response usage before downstream validation or error handling
-		if s.sessions != nil && hasConcreteUsageSnapshot(oneShotResult.Usage) {
-			compactCost := 0.0
-			if s.sessions.Store() != nil {
-				compactCost = s.sessions.Store().CalculateCost(compactModel.ProviderID, compactModel.Preference.Model, oneShotResult.Usage.InputTokens, oneShotResult.Usage.OutputTokens, oneShotResult.Usage.CacheReadTokens, oneShotResult.Usage.ThinkingTokens)
-			}
-			uniqueCompactRunID := fmt.Sprintf("compact:%s:%s:%d:%d:%d", sessionID, strings.TrimSpace(runID), compactIndex, attempt, time.Now().UnixNano())
-			compactTurn := pebblestore.SessionTurnUsageSnapshot{
-				BudgetOperationID: oneShotResult.Usage.BudgetOperationID,
-				SessionID:         sessionID,
-				AccountScopeID:    accountScopeID,
-				RunID:             uniqueCompactRunID,
-				Provider:          compactModel.ProviderID,
-				Model:             compactModel.Preference.Model,
-				Source:            "compaction",
-				InputTokens:       oneShotResult.Usage.InputTokens,
-				OutputTokens:      oneShotResult.Usage.OutputTokens,
-				ThinkingTokens:    oneShotResult.Usage.ThinkingTokens,
-				CacheReadTokens:   oneShotResult.Usage.CacheReadTokens,
-				CacheWriteTokens:  oneShotResult.Usage.CacheWriteTokens,
-				TotalTokens:       oneShotResult.Usage.TotalTokens,
-				BilledTokens:      oneShotResult.Usage.TotalTokens,
-				EstimatedCostUSD:  compactCost,
-				CreatedAt:         time.Now().UnixMilli(),
-				UpdatedAt:         time.Now().UnixMilli(),
-			}
-			if _, _, _, recErr := s.sessions.RecordTurnUsage(sessionID, compactTurn); recErr != nil {
-				finishFailure(recErr)
-				return "", fmt.Errorf("record compact turn usage: %w", recErr)
-			}
-		}
-		if !errors.Is(reqErr, pebblestore.ErrWorkerBudget) && hasConcreteUsageSnapshot(oneShotResult.Usage) {
-			if err := s.sessions.Store().ReleaseWorkerBudgetReservation(accountScopeID, sessionID, oneShotResult.Usage.BudgetOperationID); err != nil {
-				return "", err
+		if oneShotResult.Usage.BudgetOperationID != "" {
+			if err := persistReceipt(provideriface.Response{Usage: oneShotResult.Usage}); err != nil {
+				finishFailure(err)
+				return "", fmt.Errorf("record compact turn usage: %w", err)
 			}
 		}
 		if reqErr == nil {
@@ -5443,14 +5428,19 @@ func runMemoryCompactionProviderCall(ctx context.Context, runner provideriface.R
 // Compact cases. Case-specific callers own instructions and response validation;
 // this boundary owns streaming assembly, cancellation, and optional heartbeats.
 func runCompactProviderCall(ctx context.Context, runner provideriface.Runner, req provideriface.Request, emitHeartbeat func(string)) (provideriface.Response, error) {
+	return runCompactProviderCallWithTerminationTimeout(ctx, runner, req, emitHeartbeat, providerAttemptTerminationTimeout)
+}
+
+func runCompactProviderCallWithTerminationTimeout(ctx context.Context, runner provideriface.Runner, req provideriface.Request, emitHeartbeat func(string), terminationTimeout time.Duration) (provideriface.Response, error) {
+	// Each Compact call owns an immutable operation slot, even with a shared parent.
+	if budget, ok := ctx.Value(workerBudgetContextKey{}).(*workerBudgetContext); ok {
+		ctx = withWorkerBudget(ctx, budget.repository, budget.account, budget.session)
+	}
 	if err := checkProviderWorkerBudget(ctx, runner, req); err != nil {
 		return provideriface.Response{}, err
 	}
 	operation := providerBudgetOperation(ctx)
-	resultCh := make(chan struct {
-		response provideriface.Response
-		err      error
-	}, 1)
+	resultCh := make(chan providerAttemptResult, 1)
 	go func() {
 		var output, reasoning strings.Builder
 		response, err := runner.CreateResponseStreaming(ctx, req, func(event provideriface.StreamEvent) {
@@ -5458,7 +5448,7 @@ func runCompactProviderCall(ctx context.Context, runner provideriface.Runner, re
 			switch event.Type {
 			case provideriface.StreamEventOutputTextDelta:
 				output.WriteString(event.Delta)
-				if emitHeartbeat != nil && delta != "" {
+				if ctx.Err() == nil && emitHeartbeat != nil && delta != "" {
 					emitHeartbeat("receiving compact summary: " + truncateRunes(delta, 160))
 				}
 			case provideriface.StreamEventReasoningSummaryDelta:
@@ -5466,7 +5456,7 @@ func runCompactProviderCall(ctx context.Context, runner provideriface.Runner, re
 					reasoning.Reset()
 				}
 				reasoning.WriteString(event.Delta)
-				if emitHeartbeat != nil && delta != "" {
+				if ctx.Err() == nil && emitHeartbeat != nil && delta != "" {
 					emitHeartbeat("compact reasoning: " + truncateRunes(delta, 160))
 				}
 			}
@@ -5478,10 +5468,7 @@ func runCompactProviderCall(ctx context.Context, runner provideriface.Runner, re
 		if strings.TrimSpace(response.ReasoningSummary) == "" {
 			response.ReasoningSummary = strings.TrimSpace(reasoning.String())
 		}
-		resultCh <- struct {
-			response provideriface.Response
-			err      error
-		}{response: response, err: err}
+		resultCh <- providerAttemptResult{response: response, err: err}
 	}()
 	if emitHeartbeat == nil || memoryCompactionHeartbeatInterval <= 0 {
 		select {
@@ -5491,7 +5478,8 @@ func runCompactProviderCall(ctx context.Context, runner provideriface.Runner, re
 			select {
 			case out := <-resultCh:
 				return out.response, ctx.Err()
-			case <-time.After(providerAttemptTerminationTimeout):
+			case <-time.After(terminationTimeout):
+				retainLateProviderReceipt(ctx, resultCh)
 				return provideriface.Response{}, ctx.Err()
 			}
 		}
@@ -5504,7 +5492,8 @@ func runCompactProviderCall(ctx context.Context, runner provideriface.Runner, re
 			select {
 			case out := <-resultCh:
 				return out.response, ctx.Err()
-			case <-time.After(providerAttemptTerminationTimeout):
+			case <-time.After(terminationTimeout):
+				retainLateProviderReceipt(ctx, resultCh)
 				return provideriface.Response{}, ctx.Err()
 			}
 		case out := <-resultCh:
@@ -5717,6 +5706,11 @@ func (s *Service) generateAndApplySessionTitle(sessionID, promptContext, stage s
 func (s *Service) generateMemorySessionTitle(promptContext, stage string, minWords, maxWords int, basePreference pebblestore.ModelPreference, compactProfile pebblestore.AgentProfile, principal identity.Principal) (string, error) {
 	if s == nil || s.providers == nil {
 		return "", errors.New("provider registry is not configured")
+	}
+	if s.sessions != nil {
+		if err := s.sessions.Store().CheckWorkerUnmeteredOperation(principal.AccountScopeID, principal.SessionID); err != nil {
+			return "", err
+		}
 	}
 	stage = strings.ToLower(strings.TrimSpace(stage))
 	if minWords <= 0 {

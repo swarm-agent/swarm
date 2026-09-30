@@ -22,7 +22,8 @@ func sessionV3ProviderUsageRecord(providerID string, modelName string, contextWi
 		step = 0
 	}
 	return pebblestore.SessionTurnUsageSnapshot{
-		RunID:                sessionV3ProviderUsageRunID(runID, step),
+		BudgetOperationID:    usage.BudgetOperationID,
+		RunID:                sessionV3ProviderReceiptRunID(runID, step, usage),
 		Provider:             providerID,
 		Model:                strings.TrimSpace(modelName),
 		Source:               strings.TrimSpace(usage.Source),
@@ -45,6 +46,13 @@ func sessionV3ProviderUsageRecord(providerID string, modelName string, contextWi
 		APIUsageHistory:      cloneSessionV3UsageHistory(usage.APIUsageHistory),
 		APIUsagePaths:        append([]string(nil), usage.APIUsagePaths...),
 	}, true
+}
+
+func sessionV3ProviderReceiptRunID(runID string, step int, usage provideriface.TokenUsage) string {
+	if usage.BudgetOperationID != "" {
+		return strings.TrimSpace(runID) + "/operation/" + usage.BudgetOperationID
+	}
+	return sessionV3ProviderUsageRunID(runID, step)
 }
 
 func sessionV3ProviderUsageRunID(runID string, step int) string {
@@ -96,6 +104,9 @@ func (e *sessionV3Executor) recordProviderUsage(job sessionV3ExecutorJob, resolv
 		return sessionruntime.SessionMutationResult{}, false, err
 	}
 	clientRequestID := sessionV3ExecutorJobStepClientRequestID("run.usage.updated", job, step)
+	if usage.BudgetOperationID != "" {
+		clientRequestID = "run.usage.updated/" + usage.BudgetOperationID + "/" + payloadHash
+	}
 	result, err := e.server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
 		SessionID:       job.SessionID,
 		UserID:          job.Principal.UserID,

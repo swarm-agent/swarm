@@ -155,10 +155,10 @@ export interface WorkerBudgetStatus extends WorkerBudgetPolicy {
   blocked_reason?: string;
   inflight: boolean;
   account_policy: { account_scope_id: string; enabled: boolean; daily_cost_limit_usd: number; daily_tokens_limit?: number; updated_at: number };
-  account_usage: { account_scope_id: string; date: string; total_cost_usd: number; total_tokens: number; unknown_receipts?: number };
+  account_usage: { account_scope_id: string; date: string; total_cost_usd: number; total_tokens: number; unknown_receipts?: number; pricing_coverage_version?: number; pricing_coverage_incomplete?: boolean };
   account_remaining_cost_usd: number | null;
   account_remaining_tokens: number | null;
   account_inflight: boolean;
-  account_coverage: 'no_records' | 'observed_receipts_only';
+  account_coverage: 'no_records' | 'observed_receipts_only' | 'legacy_pricing_incomplete';
   limitations: string;
 }

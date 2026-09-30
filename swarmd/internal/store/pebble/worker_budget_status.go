@@ -76,6 +76,9 @@ func (s *SessionStore) GetWorkerBudgetStatus(account, worker string) (WorkerBudg
 	status.AccountCoverage = "no_records"
 	if accountRecorded {
 		status.AccountCoverage = "observed_receipts_only"
+		if status.AccountUsage.PricingCoverageIncomplete {
+			status.AccountCoverage = "legacy_pricing_incomplete"
+		}
 	}
 	if status.AccountUsage.AccountScopeID == "" {
 		status.AccountUsage.AccountScopeID, status.AccountUsage.Date = account, status.Date

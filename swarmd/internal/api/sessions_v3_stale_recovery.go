@@ -10,6 +10,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
+
+	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/privacy"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	runruntime "swarm/packages/swarmd/internal/run"
@@ -200,11 +203,29 @@ func (e *sessionV3Executor) updateStaleRecoveryPhase(job sessionV3ExecutorJob, o
 }
 
 func (e *sessionV3Executor) runStaleSupervisedProviderAttempt(ctx context.Context, job sessionV3ExecutorJob, runner provideriface.Runner, req provideriface.Request, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
-	if err := e.server.sessions.Store().CheckWorkerSessionBudget(job.Principal.AccountScopeID, job.SessionID, runner.ID(), req.Model); err != nil {
+	return e.runStaleSupervisedProviderAttemptWithTerminationTimeout(ctx, job, runner, req, onEvent, 30*time.Second)
+}
+
+func (e *sessionV3Executor) runStaleSupervisedProviderAttemptWithTerminationTimeout(ctx context.Context, job sessionV3ExecutorJob, runner provideriface.Runner, req provideriface.Request, onEvent func(provideriface.StreamEvent), terminationTimeout time.Duration) (provideriface.Response, error) {
+	if err := ctx.Err(); err != nil {
+		return provideriface.Response{}, err
+	}
+	snapshot, exists, err := e.server.sessions.GetSession(job.SessionID)
+	if err != nil {
+		return provideriface.Response{}, err
+	}
+	if !exists || snapshot.AccountScopeID != job.Principal.AccountScopeID || snapshot.UserID != job.Principal.UserID {
+		return provideriface.Response{}, errors.New("V3 provider budget principal mismatch")
+	}
+	principal := job.Principal
+	principal.SessionID = job.SessionID
+	ctx = identity.ContextWithPrincipal(ctx, principal)
+	operation := uuid.NewString()
+	if err := e.server.sessions.Store().CheckWorkerSessionBudget(job.Principal.AccountScopeID, job.SessionID, runner.ID(), req.Model, operation); err != nil {
 		return provideriface.Response{}, err
 	}
 	if job.activity == nil {
-		return runner.CreateResponseStreaming(ctx, req, onEvent)
+		job.activity = newSessionV3RunActivity()
 	}
 	attemptCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -222,11 +243,29 @@ func (e *sessionV3Executor) runStaleSupervisedProviderAttempt(ctx context.Contex
 				onEvent(event)
 			}
 		})
+		response.Usage.BudgetOperationID = operation
 		resultCh <- result{response: response, err: err}
 	}()
 
 	ticker := time.NewTicker(sessionV3StaleRecoveryConfirmInterval)
 	defer ticker.Stop()
+	retainLate := func() {
+		go func() {
+			timer := time.NewTimer(5 * time.Minute)
+			defer timer.Stop()
+			select {
+			case completed := <-resultCh:
+				_, _, err := e.recordProviderUsage(job, sessionV3ResolvedRuntime{}, runner.ID(), req.Model, 0, completed.response.Usage, time.Now().UnixMilli())
+				if err == nil {
+					err = e.server.sessions.Store().ReleaseWorkerBudgetReservation(job.Principal.AccountScopeID, job.SessionID, operation)
+				}
+				if err != nil {
+					log.Print("late V3 receipt persistence failed; budget reservation remains unresolved")
+				}
+			case <-timer.C:
+			}
+		}()
+	}
 	confirmedAt := time.Time{}
 	for {
 		select {
@@ -237,7 +276,8 @@ func (e *sessionV3Executor) runStaleSupervisedProviderAttempt(ctx context.Contex
 			select {
 			case completed := <-resultCh:
 				return completed.response, ctx.Err()
-			case <-time.After(30 * time.Second):
+			case <-time.After(terminationTimeout):
+				retainLate()
 			}
 			return provideriface.Response{}, ctx.Err()
 		case <-job.activity.forceRecovery:
@@ -262,10 +302,14 @@ func (e *sessionV3Executor) runStaleSupervisedProviderAttempt(ctx context.Contex
 				continue
 			}
 			if eventErr := e.recordStaleRecoveryEvent(job, sessionV3RecoveryDetected, "provider_inactive_high_context"); eventErr != nil {
+				cancel()
+				retainLate()
 				_, _ = e.server.sessions.FinishExecutionEpochRecovery(job.SessionID, job.EpochID, ownerRunID, pebblestore.ExecutionEpochRecoveryStatusFailed, "recovery detection event failed", time.Now().UnixMilli())
 				return provideriface.Response{}, fmt.Errorf("persist stale recovery detection: %w", eventErr)
 			}
 			if phaseErr := e.updateStaleRecoveryPhase(job, ownerRunID, sessionV3RecoveryCancelling, "provider_inactive_high_context"); phaseErr != nil {
+				cancel()
+				retainLate()
 				_, _ = e.server.sessions.FinishExecutionEpochRecovery(job.SessionID, job.EpochID, ownerRunID, pebblestore.ExecutionEpochRecoveryStatusFailed, "recovery cancellation event failed", time.Now().UnixMilli())
 				return provideriface.Response{}, fmt.Errorf("persist stale recovery cancellation: %w", phaseErr)
 			}
@@ -273,7 +317,8 @@ func (e *sessionV3Executor) runStaleSupervisedProviderAttempt(ctx context.Contex
 			select {
 			case completed := <-resultCh:
 				return completed.response, fmt.Errorf("%w: epoch %s owner %s", errSessionV3StaleProviderAttempt, job.EpochID, ownerRunID)
-			case <-time.After(30 * time.Second):
+			case <-time.After(terminationTimeout):
+				retainLate()
 				_, _ = e.server.sessions.FinishExecutionEpochRecovery(job.SessionID, job.EpochID, ownerRunID, pebblestore.ExecutionEpochRecoveryStatusFailed, "expired provider attempt did not terminate", time.Now().UnixMilli())
 				return provideriface.Response{}, errors.New("stale provider attempt did not terminate before recovery")
 			}

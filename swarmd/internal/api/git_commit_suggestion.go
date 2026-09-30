@@ -118,6 +118,7 @@ func (s *Server) handleGitCommitSuggestion(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusInternalServerError, fmt.Errorf("encode Git changes for commit suggestion: %w", err))
 		return
 	}
+	principal.SessionID = sessionID // resolved and authorized above
 	configuredResponse, err := s.invokeConfiguredRouterOnce(r.Context(), principal, workspaceGitCommitSuggestionInstructions(), string(input), maxWorkspaceGitSuggestionOutputBytes)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, fmt.Errorf("generate commit message suggestion: %w", err))

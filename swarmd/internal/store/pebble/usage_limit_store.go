@@ -23,6 +23,8 @@ type UsageLimitRecord struct {
 
 // DailyUsageAccumulator tracks aggregated daily spending and token counts in O(1) storage.
 type DailyUsageAccumulator struct {
+	PricingCoverageVersion    int  `json:"pricing_coverage_version,omitempty"`
+	PricingCoverageIncomplete bool `json:"pricing_coverage_incomplete,omitempty"`
 	UnknownReceipts     int64            `json:"unknown_receipts,omitempty"`
 	AccountScopeID      string           `json:"account_scope_id"`
 	Date                string           `json:"date"` // Format: YYYY-MM-DD (UTC)
@@ -817,7 +819,12 @@ func (s *SessionStore) GetDailyUsageAccumulator(accountScopeID, date string) (Da
 		return DailyUsageAccumulator{}, false, err
 	}
 	if !ok {
-		return DailyUsageAccumulator{}, false, nil
+		return DailyUsageAccumulator{PricingCoverageVersion: 1}, false, nil
+	}
+	// A legacy aggregate lacks pricing evidence. Incremental writes must carry
+	// this uncertainty forward, not certify old receipts from a new receipt.
+	if acc.PricingCoverageVersion == 0 {
+		acc.PricingCoverageIncomplete = true
 	}
 	return acc, true, nil
 }

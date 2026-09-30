@@ -3468,8 +3468,8 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 		if usageErr != nil {
 			return sessionV3ProviderLoopResult{}, usageErr
 		}
-		if !errors.Is(providerErr, pebblestore.ErrWorkerBudget) && recorded {
-			if err := e.server.sessions.Store().ReleaseWorkerBudgetReservation(job.Principal.AccountScopeID, job.SessionID); err != nil {
+		if response.Usage.BudgetOperationID != "" {
+			if err := e.server.sessions.Store().ReleaseWorkerBudgetReservation(job.Principal.AccountScopeID, job.SessionID, response.Usage.BudgetOperationID); err != nil {
 				return sessionV3ProviderLoopResult{}, err
 			}
 		}

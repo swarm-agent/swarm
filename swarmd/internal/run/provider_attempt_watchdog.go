@@ -212,11 +212,10 @@ func retainLateProviderReceipt(ctx context.Context, results <-chan providerAttem
 		defer timer.Stop()
 		select {
 		case result := <-results:
-			if hasConcreteUsageSnapshot(result.response.Usage) {
-				// Persistence errors leave the reservation blocked; never acknowledge settlement.
-				if err := callback(result.response); err != nil {
-					log.Print("late provider receipt persistence failed; budget reservation remains unresolved")
-				}
+			// The callback also records termination without usage; missing usage
+			// never creates a receipt or releases unresolved allowance.
+			if err := callback(result.response); err != nil {
+				log.Print("late provider receipt persistence failed; budget reservation remains unresolved")
 			}
 		case <-timer.C:
 		}

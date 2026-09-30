@@ -168,3 +168,18 @@ func TestWorkerBudgetDispatchBindingBeforeProvider(t *testing.T) {
 		t.Fatalf("retry budget bypass: %v", err)
 	}
 }
+
+// Purpose: directly invoking the title utility must not bypass its outer
+// generateAndApply guard. generateMemorySessionTitle owns dispatch; the existing
+// model/service fixture proves account-only caps deny before provider access.
+func TestWorkerBudgetDirectTitleBoundary(t *testing.T) {
+	svc, _, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+	runner := &principalCapturingAITaskRunner{}
+	svc.providers = registry.New()
+	svc.providers.RegisterRunner(runner)
+	principal := identity.Principal{Type:identity.PrincipalTypeUser, UserID:"test-user", AccountScopeID:"test-account"}
+	if err := svc.sessions.Store().PutUsageLimit(store.UsageLimitRecord{AccountScopeID:principal.AccountScopeID, Enabled:true, DailyTokensLimit:100}); err != nil { t.Fatal(err) }
+	if _, err := svc.generateMemorySessionTitle("context", "provisional", 2, 4, store.ModelPreference{}, store.AgentProfile{}, principal); !errors.Is(err, store.ErrWorkerBudget) { t.Fatalf("direct title bypass: %v", err) }
+	if runner.request.Model != "" { t.Fatal("capped title dispatched") }
+}
