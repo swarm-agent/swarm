@@ -298,7 +298,7 @@ func TestProjectTaskFollowupJoinedRestart(t *testing.T) {
 	history := f.callAPI(http.MethodGet, path+"/history?cursor=0&limit=2", nil, p)
 	var page struct {
 		Attempts []pebblestore.ProjectTaskAttempt `json:"attempts"`
-		Next     int                            `json:"next_cursor"`
+		Next     int                              `json:"next_cursor"`
 	}
 	if history.Code != 200 || json.Unmarshal(history.Body.Bytes(), &page) != nil || len(page.Attempts) != 2 || page.Next != 2 || page.Attempts[1].Request != first.ActiveAttempt().Request || page.Attempts[1].Summary != firstReady.ActiveAttempt().Summary || page.Attempts[1].SummaryRunID != first.ExecutionRunID() {
 		t.Fatalf("history: %d %s", history.Code, history.Body)

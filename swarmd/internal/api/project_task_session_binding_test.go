@@ -28,7 +28,7 @@ func seedTaskSessionBinding(t *testing.T, f *matrixTestFixture, source pebblesto
 		SourceWorkspacePath: source.Path, SourceWorkspaceName: "Repo",
 		DestinationRuntimeSwarmID: "task-host", DestinationAuthorityHostSwarmID: "task-host", DestinationHostSwarmID: "task-host",
 		DestinationRuntimeKind: pebblestore.TopologyRuntimeKindHost, DestinationWorkspacePath: source.Path,
-		PlacementGeneration:    placement.PlacementGeneration, BindingGeneration: 1,
+		PlacementGeneration: placement.PlacementGeneration, BindingGeneration: 1,
 		State: pebblestore.TopologyWorkspaceBindingStateBound, AccessMode: pebblestore.TopologyWorkspaceBindingAccessModeReadWrite,
 		MaterializationKind: pebblestore.TopologyWorkspaceBindingMaterializationSource, AttestedByHostSwarmID: "task-host", Writable: true,
 	})
@@ -60,8 +60,12 @@ func TestProjectTaskSessionBindingRejectsUnauthorizedAndStale(t *testing.T) {
 	for _, mutate := range []func(*identity.Principal, *pebblestore.ProjectTaskRecord){
 		func(p *identity.Principal, task *pebblestore.ProjectTaskRecord) { p.AccountScopeID = "foreign" },
 		func(p *identity.Principal, task *pebblestore.ProjectTaskRecord) { p.UserID = "foreign-user" },
-		func(p *identity.Principal, task *pebblestore.ProjectTaskRecord) { task.SourceWorkspace.WorkspaceGeneration++ },
-		func(p *identity.Principal, task *pebblestore.ProjectTaskRecord) { task.SourceWorkspace.Path = t.TempDir() },
+		func(p *identity.Principal, task *pebblestore.ProjectTaskRecord) {
+			task.SourceWorkspace.WorkspaceGeneration++
+		},
+		func(p *identity.Principal, task *pebblestore.ProjectTaskRecord) {
+			task.SourceWorkspace.Path = t.TempDir()
+		},
 	} {
 		principal, changed := p, *task
 		mutate(&principal, &changed)
