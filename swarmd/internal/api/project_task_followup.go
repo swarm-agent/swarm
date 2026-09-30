@@ -262,6 +262,11 @@ func (s *Server) handleProjectTaskFollowup(w http.ResponseWriter, r *http.Reques
 			}
 			attempt.LaunchState, attempt.LastError = "launched", ""
 			current.LastError = ""
+			// A successful wake resolves only this launch-failure guidance. Do not
+			// overwrite review/integration guidance or a concurrent completion.
+			if current.Status == "in_progress" && current.ActionNeeded == "Follow-up launch incomplete; retry the same request" {
+				current.ActionNeeded = "Launching task-linked Swarm follow-up"
+			}
 		}
 		return nil
 	})

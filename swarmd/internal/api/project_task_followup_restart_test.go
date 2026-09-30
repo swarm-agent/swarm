@@ -24,9 +24,10 @@ import (
 
 // Purpose: registered reopen/history and canonical V3 completion must retain the
 // original request, summaries, sessions and integration evidence through two
-// follow-ups and a real store reopen. Threat: isolated happy paths miss loss at
-// reservation/hydration/restart boundaries. API + temporary Pebble + real Git is
-// the narrow joined layer. completeRun persists real final messages and run
+// follow-ups and two real store reopens. Threat: isolated happy paths miss loss at
+// reservation/hydration/restart boundaries and stale failed-launch guidance after
+// handleProjectTaskFollowup accepts a retry. Only launch-owned guidance may clear.
+// API + temporary Pebble + real Git is the narrow joined layer. completeRun persists real final messages and run
 // metadata, not lifecycle summary fixtures; no provider executes.
 func TestProjectTaskFollowupJoinedRestart(t *testing.T) {
 	f := setupMatrixTestFixture(t)
@@ -115,7 +116,7 @@ func TestProjectTaskFollowupJoinedRestart(t *testing.T) {
 		t.Fatalf("original not ready: %+v %v", before, err)
 	}
 	path := "/" + project.ID + "/tasks/task"
-	reopen := func(key, request string) *pebblestore.ProjectTaskRecord {
+	reopen := func(key, request, guidance string) *pebblestore.ProjectTaskRecord {
 		t.Helper()
 		current, _, err := f.server.sessions.Store().GetProjectTask(p.AccountScopeID, project.ID, task.ID)
 		if err != nil {
@@ -130,8 +131,22 @@ func TestProjectTaskFollowupJoinedRestart(t *testing.T) {
 			t.Fatalf("expected absent executor: %d %s", response.Code, response.Body)
 		}
 		reserved, _, err := f.server.sessions.Store().GetProjectTask(p.AccountScopeID, project.ID, task.ID)
-		if err != nil {
-			t.Fatal(err)
+		if err != nil || reserved == nil || reserved.ActiveAttempt() == nil {
+			t.Fatalf("failed launch reservation: task=%+v err=%v", reserved, err)
+		}
+		if reserved.ActiveAttempt().LaunchState != "launch_failed" || reserved.LastError == "" || reserved.ActionNeeded != "Follow-up launch incomplete; retry the same request" {
+			t.Fatalf("failed launch not truthfully retained: attempt=%+v error=%q guidance=%q", reserved.ActiveAttempt(), reserved.LastError, reserved.ActionNeeded)
+		}
+		expectedGuidance := "Launching task-linked Swarm follow-up"
+		if guidance != "" {
+			// Independent review guidance arriving before a retry must survive it.
+			if _, err := f.server.sessions.Store().UpdateProjectTask(p.AccountScopeID, project.ID, task.ID, func(current *pebblestore.ProjectTaskRecord) error {
+				current.ActionNeeded = guidance
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			expectedGuidance = guidance
 		}
 		f.server.v3SessionExecutor = newSessionV3Executor(f.server)
 		f.server.v3SessionExecutor.inFlightRuns[sessionV3ExecutorRunKey(reserved.SessionID, reserved.ExecutionRunID())] = true
@@ -143,20 +158,45 @@ func TestProjectTaskFollowupJoinedRestart(t *testing.T) {
 		if err != nil || result.ActiveAttempt().LaunchState != "launched" {
 			t.Fatalf("launch state: %+v %v", result, err)
 		}
+		if result.LastError != "" || result.ActiveAttempt().LastError != "" || result.ActionNeeded != expectedGuidance {
+			t.Fatalf("successful retry guidance/error: guidance=%q want=%q error=%q attempt=%+v", result.ActionNeeded, expectedGuidance, result.LastError, result.ActiveAttempt())
+		}
+		if result.SessionID != reserved.SessionID || result.ExecutionRunID() != reserved.ExecutionRunID() || len(result.Attempts) != len(reserved.Attempts) || result.Revision != reserved.Revision {
+			t.Fatal("successful retry changed reserved identity or revision")
+		}
 		if response := f.callAPI(http.MethodPost, path+"/reopen", body, p); response.Code != 200 {
 			t.Fatalf("retry: %d %s", response.Code, response.Body)
 		}
+		retried, _, err := f.server.sessions.Store().GetProjectTask(p.AccountScopeID, project.ID, task.ID)
+		if err != nil || retried == nil || retried.SessionID != result.SessionID || retried.ExecutionRunID() != result.ExecutionRunID() || retried.Revision != result.Revision || len(retried.Attempts) != len(result.Attempts) || retried.ActionNeeded != result.ActionNeeded || retried.LastError != result.LastError {
+			t.Fatalf("launched retry changed identity or guidance: task=%+v err=%v", retried, err)
+		}
 		return result
 	}
-	first := reopen("first", "  First follow-up\n")
+	first := reopen("first", "  First follow-up\n", "")
 	messages, err := db.ListMessages(first.SessionID, 0, 10)
 	if err != nil || len(messages) != 1 || !strings.Contains(messages[0].Content, before.ActiveAttempt().Summary) || !strings.Contains(messages[0].Content, "manage_projects get_task") || !strings.Contains(messages[0].Content, first.ActiveAttempt().Request) {
 		t.Fatal("seed lost prior context/request")
 	}
 	complete(first.SessionID, first.ExecutionRunID(), "First follow-up outcome; validation pending")
 	firstReady, _, err := db.GetProjectTask(p.AccountScopeID, project.ID, task.ID)
-	if err != nil || firstReady.Status != "needs_review" || firstReady.ActiveAttempt().SummaryRunID != first.ExecutionRunID() || strings.Contains(firstReady.ActionNeeded, "Launching") || !strings.Contains(firstReady.ActionNeeded, "Review") || firstReady.IsIntegrated {
-		t.Fatal("follow-up summary missing")
+	if err != nil || firstReady == nil || firstReady.ActiveAttempt() == nil {
+		t.Fatalf("follow-up read: task=%+v err=%v", firstReady, err)
+	}
+	if firstReady.Status != "needs_review" {
+		t.Errorf("follow-up status=%q want needs_review", firstReady.Status)
+	}
+	if firstReady.ActiveAttempt().Summary != "First follow-up outcome; validation pending" || firstReady.ActiveAttempt().SummaryRunID != first.ExecutionRunID() {
+		t.Errorf("follow-up outcome=%q run=%q want run=%q", firstReady.ActiveAttempt().Summary, firstReady.ActiveAttempt().SummaryRunID, first.ExecutionRunID())
+	}
+	if strings.Contains(firstReady.ActionNeeded, "Launching") || !strings.Contains(firstReady.ActionNeeded, "Review") {
+		t.Errorf("follow-up action_needed=%q want review guidance", firstReady.ActionNeeded)
+	}
+	if firstReady.IsIntegrated {
+		t.Error("follow-up with no new commits claimed integration")
+	}
+	if t.Failed() {
+		t.FailNow()
 	}
 	if err := f.db.Close(); err != nil {
 		t.Fatal(err)
@@ -171,7 +211,8 @@ func TestProjectTaskFollowupJoinedRestart(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(firstReady, restored) {
 		t.Fatal("restart changed task lineage")
 	}
-	second := reopen("second", "Second day follow-up")
+	secondGuidance := "Review integration error before promotion"
+	second := reopen("second", "Second day follow-up", secondGuidance)
 	if len(second.Attempts) != 3 || second.SessionID == first.SessionID || second.SessionID == original.ID || second.Attempts[0].Integration == nil || second.Attempts[0].Integration.Error != before.Integration.Error || len(second.Attempts[0].Deliverables) != 1 || second.Attempts[1].Summary != firstReady.ActiveAttempt().Summary || second.ActiveAttempt().Summary != "" {
 		t.Fatalf("lost original/first evidence: %+v", second)
 	}
@@ -196,8 +237,8 @@ func TestProjectTaskFollowupJoinedRestart(t *testing.T) {
 	}
 	complete(second.SessionID, second.ExecutionRunID(), "Second follow-up outcome; not promoted")
 	secondReady, _, err := db.GetProjectTask(p.AccountScopeID, project.ID, task.ID)
-	if err != nil || secondReady.Status != "needs_review" || secondReady.ActiveAttempt().Summary != "Second follow-up outcome; not promoted" || secondReady.Description != "Original requirements" {
-		t.Fatal("second completion lost summary or original requirements")
+	if err != nil || secondReady.Status != "needs_review" || secondReady.ActiveAttempt().Summary != "Second follow-up outcome; not promoted" || secondReady.ActiveAttempt().SummaryRunID != second.ExecutionRunID() || secondReady.Description != "Original requirements" || secondReady.ActionNeeded != secondGuidance || secondReady.IsIntegrated {
+		t.Fatalf("second completion lost outcome/requirements/guidance or claimed integration: task=%+v err=%v", secondReady, err)
 	}
 	if err := f.db.Close(); err != nil {
 		t.Fatal(err)
