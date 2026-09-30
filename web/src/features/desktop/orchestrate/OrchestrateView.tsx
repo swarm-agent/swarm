@@ -2834,7 +2834,10 @@ export function OrchestratorChatComposer({
   )
   const isRunning = Boolean(activeRun && activeRun.runId)
   const cacheSession = useDesktopV3CacheSelector(
-    useCallback((state) => state.sessionsById[sessionId] ?? null, [sessionId])
+    useCallback((state) => {
+      const record = state.sessionsById[sessionId]
+      return record?.kind === 'full' ? record.session : null
+    }, [sessionId])
   )
 
   const pendingPermissions = useDesktopV3CacheSelector(
