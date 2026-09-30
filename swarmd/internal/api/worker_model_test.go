@@ -88,6 +88,8 @@ func mustWorkerProfileJSON(t *testing.T, profile *store.SessionModelProfileSnaps
 // even when the client sends only revision CAS. Threat: a formerly valid proposal
 // bypasses validation or an approved profile replaces its candidate. HTTP handlers
 // plus the real execution/store boundary are the narrowest transport proof.
+// Picker standard tiers must survive canonicalization without permitting invalid
+// tiers or changing account defaults through ResolveWorkerModelProfile/Accept.
 func TestWorkerModelSavedCandidateAcceptanceValidation(t *testing.T) {
 	s, db, handler := setupWorkerAPITestServer(t)
 	workspaceID := setupWorkerAPIExecution(t, s, db)
@@ -142,12 +144,32 @@ func TestWorkerModelSavedCandidateAcceptanceValidation(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(unchanged, staged) {
 		t.Fatal("unsupported thinking partially mutated worker")
 	}
+	unsupportedTier := store.CloneSessionModelProfileSnapshot(profile)
+	unsupportedTier.UseAccountDefault = false
+	unsupportedTier.ActionUseAccountDefault = false
+	unsupportedTier.PlanUseAccountDefault = false
+	unsupportedTier.Action.ServiceTier = "unsupported-fixture-tier"
+	response = executeWorkerAPI(handler, http.MethodPut, "/"+w.ID, fmt.Sprintf(`{"expected_revision":%d,"model_profile":%s}`, staged.Revision, mustWorkerProfileJSON(t, unsupportedTier)), workerAPICallOptions{})
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("unsupported tier accepted: %d %s", response.Code, response.Body.String())
+	}
+	unchanged, _, err = ws.GetWorker("acct-test", w.ID)
+	if err != nil || !reflect.DeepEqual(unchanged, staged) {
+		t.Fatal("unsupported tier partially mutated worker")
+	}
+	settings := store.NewAgentModelSettingsStore(db)
+	before, _, err := settings.GetForAccount("acct-test")
+	if err != nil {
+		t.Fatal(err)
+	}
 	// Repair through the canonical HTTP proposal route, then accept by revision
 	// alone. No client model copy is required to persist the reviewed candidate.
 	candidate = store.CloneSessionModelProfileSnapshot(profile)
 	candidate.UseAccountDefault = false
 	candidate.ActionUseAccountDefault = false
 	candidate.PlanUseAccountDefault = false
+	candidate.Action.ServiceTier = "standard"
+	candidate.Plan.ServiceTier = "standard"
 	response = executeWorkerAPI(handler, http.MethodPut, "/"+w.ID, fmt.Sprintf(`{"expected_revision":%d,"model_profile":%s}`, staged.Revision, mustWorkerProfileJSON(t, candidate)), workerAPICallOptions{})
 	if response.Code != http.StatusOK {
 		t.Fatalf("proposal: %d %s", response.Code, response.Body.String())
@@ -161,6 +183,14 @@ func TestWorkerModelSavedCandidateAcceptanceValidation(t *testing.T) {
 	staged = result.Worker
 	if staged.PendingReview == nil || !reflect.DeepEqual(staged.ModelProfile, w.ModelProfile) {
 		t.Fatal("proposal applied before acceptance")
+	}
+	if staged.PendingReview.ModelProfile.Action.ServiceTier != "" || staged.PendingReview.ModelProfile.Plan.ServiceTier != "" {
+		t.Fatal("picker standard tier was not canonicalized")
+	}
+	candidate.Action.ServiceTier = ""
+	candidate.Plan.ServiceTier = ""
+	if !reflect.DeepEqual(staged.PendingReview.ModelProfile, candidate) {
+		t.Fatal("proposal changed reviewed selection beyond standard tier canonicalization")
 	}
 	for _, options := range []workerAPICallOptions{{account: "foreign-account", user: "foreign-owner"}, {}} {
 		revision := staged.Revision
@@ -192,5 +222,9 @@ func TestWorkerModelSavedCandidateAcceptanceValidation(t *testing.T) {
 	}
 	if result.Worker.PendingReview != nil || !reflect.DeepEqual(result.Worker.ModelProfile, staged.PendingReview.ModelProfile) {
 		t.Fatalf("read lost candidate: %+v", result.Worker)
+	}
+	after, _, err := settings.GetForAccount("acct-test")
+	if err != nil || !reflect.DeepEqual(before, after) {
+		t.Fatal("proposal or acceptance changed account settings")
 	}
 }

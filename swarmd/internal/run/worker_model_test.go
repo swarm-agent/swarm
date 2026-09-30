@@ -161,6 +161,8 @@ func TestWorkerModelDefaultFallbackIsVisibleAndExplicitInvalidDoesNotFallback(t 
 // Threat: pending policies apply early or account defaults replace the candidate.
 // Real WorkerExecutionService preparation with isolated Git/Pebble and enqueue
 // receipts is the narrowest session-boundary proof; no provider is invoked.
+// ResolveWorkerModelProfile must accept picker standard tiers, persist their
+// canonical policy, and leave account settings and pre-review snapshots intact.
 func TestWorkerModelSavedUpdateReachesFutureSession(t *testing.T) {
 	runs, ss, execution, workspaceID := setupWorkerExecutionFixture(t, func(identity.Principal, store.V3SessionRunIntent) bool { return true })
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -185,10 +187,18 @@ func TestWorkerModelSavedUpdateReachesFutureSession(t *testing.T) {
 	candidate := store.CloneSessionModelProfileSnapshot(initial)
 	candidate.UseAccountDefault = false
 	candidate.PlanUseAccountDefault = true
-	candidate.Action = store.ModelProfileSelection{Provider: "google", Model: catalog.Model, Thinking: catalog.DefaultThinking}
+	candidate.Action = store.ModelProfileSelection{Provider: "google", Model: catalog.Model, Thinking: catalog.DefaultThinking, ServiceTier: "standard"}
+	picker := store.CloneSessionModelProfileSnapshot(candidate)
+	settingsBefore, err := runs.agentModelSettings.GetForAccount("account")
+	if err != nil {
+		t.Fatal(err)
+	}
 	candidate, err = runs.ResolveWorkerModelProfile("account", candidate)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if picker.Action.ServiceTier != "standard" || candidate.Action.ServiceTier != "" || candidate.Action.Provider != picker.Action.Provider || candidate.Action.Model != picker.Action.Model || candidate.Action.Thinking != picker.Action.Thinking || !candidate.PlanUseAccountDefault {
+		t.Fatal("resolution did not preserve picker policy with canonical standard tier")
 	}
 	staged, err := ws.UpdateWorker("account", "owner", w.ID, w.Revision, store.UpdateWorkerRequest{ModelProfile: candidate}, nil)
 	if err != nil {
@@ -206,10 +216,22 @@ func TestWorkerModelSavedUpdateReachesFutureSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	subsequent, err := execution.Dispatch(ctx, "account", "owner", store.WorkerRunAdmission{WorkerID: w.ID, RequestSource: "direct", Input: map[string]any{"prompt": "Review"}, IdempotencyKey: "subsequent-accepted-model"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, found, err := ws.GetWorker("account", w.ID)
+	if err != nil || !found || saved.PendingReview != nil || !reflect.DeepEqual(saved.ModelProfile, candidate) {
+		t.Fatalf("future runs changed approved policy: %+v %v", saved, err)
+	}
+	settingsAfter, err := runs.agentModelSettings.GetForAccount("account")
+	if err != nil || !reflect.DeepEqual(settingsBefore, settingsAfter) {
+		t.Fatal("worker override changed account defaults")
+	}
 	for _, check := range []struct {
 		run       store.WorkerRunRecord
 		selection store.ModelProfileSelection
-	}{{before, initial.Action}, {after, candidate.Action}} {
+	}{{before, initial.Action}, {after, candidate.Action}, {subsequent, candidate.Action}} {
 		snapshot, found, err := ss.GetSession(check.run.SessionID)
 		if err != nil || !found || snapshot.ModelProfile == nil || snapshot.ModelProfile.Action != check.selection || snapshot.Preference.Provider != check.selection.Provider || snapshot.Preference.Model != check.selection.Model || snapshot.Preference.Thinking != check.selection.Thinking || snapshot.Preference.ServiceTier != check.selection.ServiceTier || snapshot.Preference.ContextMode != check.selection.ContextMode {
 			t.Fatalf("session tuple changed: %+v %v", snapshot, err)

@@ -73,7 +73,14 @@ func (s *Service) ResolveWorkerModelProfile(account string, selected *store.Sess
 			return nil, fmt.Errorf("worker model %s/%s is not in the authorized model catalog", sel.Provider, sel.Model)
 		}
 		pref := resolved.Preference
-		if selected != nil && !selected.UseAccountDefault && !(slot == 0 && selected.ActionUseAccountDefault) && !(slot == 1 && selected.PlanUseAccountDefault) && (pref.Provider != sel.Provider || pref.Model != sel.Model || pref.Thinking != sel.Thinking || pref.ServiceTier != sel.ServiceTier || pref.ContextMode != sel.ContextMode) {
+		requested := *sel
+		// The picker names the standard tier explicitly; model resolution stores
+		// it as empty. Accept only this known equivalent, not arbitrary options
+		// that resolution may silently discard as unsupported.
+		if requested.ServiceTier == "standard" {
+			requested.ServiceTier = ""
+		}
+		if selected != nil && !selected.UseAccountDefault && !(slot == 0 && selected.ActionUseAccountDefault) && !(slot == 1 && selected.PlanUseAccountDefault) && (pref.Provider != requested.Provider || pref.Model != requested.Model || pref.Thinking != requested.Thinking || pref.ServiceTier != requested.ServiceTier || pref.ContextMode != requested.ContextMode) {
 			return nil, errors.New("worker model options are invalid; select supported thinking, service tier and context options")
 		}
 		*sel = store.ModelProfileSelection{Provider: pref.Provider, Model: pref.Model, Thinking: pref.Thinking, ServiceTier: pref.ServiceTier, ContextMode: pref.ContextMode}
