@@ -42,7 +42,7 @@ func (p *RuntimeProvider) Generate(ctx context.Context, r Request) (Result, erro
 			return Result{}, err
 		}
 	}
-	if principal, found := identity.PrincipalFromContext(ctx); found && principal.SessionID != "" {
+	if principal, found := identity.PrincipalFromContext(ctx); found {
 		if p.Sessions == nil {
 			return Result{}, errors.New("memory worker budget authority unavailable")
 		}

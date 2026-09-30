@@ -25,10 +25,18 @@ type WorkerBudgetPolicy struct {
 }
 
 type workerBudgetReservation struct {
-	SessionID       string `json:"session_id"`
-	Date            string `json:"date"`
-	UsageRevision   uint64 `json:"usage_revision"`
-	ReceiptRevision uint64 `json:"receipt_revision"`
+	SessionID string `json:"session_id"`
+	Date string `json:"date"`
+	OperationID string `json:"operation_id,omitempty"`
+}
+
+func accountBudgetReservationKey(account string) string {
+	return "worker_budget_account/" + keyPart(account) + "/reservation"
+}
+
+func (s *SessionStore) accountBudgetActive(account string) (UsageLimitRecord, bool, error) {
+	policy, found, err := s.GetUsageLimit(account)
+	return policy, found && policy.Enabled && (policy.DailyCostLimitUSD > 0 || policy.DailyTokensLimit > 0), err
 }
 
 func workerBudgetKey(account, worker string) string {
@@ -51,7 +59,7 @@ func (s *SessionStore) GetWorkerBudget(account, worker string) (WorkerBudgetPoli
 
 // SetWorkerBudget is an internal persistence boundary; authenticated user-only
 // ingress must authorize it. Neither AI definitions nor triggers call this API.
-func (s *SessionStore) SetWorkerBudget(account, worker string, expected uint64, cost float64, tokens int64) (WorkerBudgetPolicy, error) {
+func (s *SessionStore) SetWorkerBudget(account, worker string, expected uint64, cost float64, tokens int64, users ...string) (WorkerBudgetPolicy, error) {
 	if math.IsNaN(cost) || math.IsInf(cost, 0) || cost < 0 || tokens < 0 {
 		return WorkerBudgetPolicy{}, errors.New("invalid worker budget limits")
 	}
@@ -69,16 +77,14 @@ func (s *SessionStore) SetWorkerBudget(account, worker string, expected uint64, 
 	}
 	policy.Revision++
 	policy.DailyCostLimitUSD, policy.DailyTokensLimit, policy.UpdatedAt = cost, tokens, time.Now().UnixMilli()
-	payload, err := json.Marshal(policy)
-	if err != nil {
-		return policy, err
-	}
-	batch := s.store.NewBatch()
-	defer batch.Close()
-	if err := batch.Set([]byte(workerBudgetKey(account, worker)), payload, nil); err != nil {
-		return policy, err
-	}
-	return policy, batch.Commit(pebble.Sync)
+	user := ""
+	if len(users) == 1 { user = users[0] }
+	mutation := &workerRealtimeMutation{accountScopeID: account, userID: user, workerID: worker}
+	if err := mutation.put(workerBudgetKey(account, worker), policy); err != nil { return policy, err }
+	if err := mutation.setPayload(WorkerRealtimePayload{WorkerID: worker, BudgetRevision: policy.Revision, ChangeSummary: "budget policy updated"}); err != nil { return policy, err }
+	if err := s.store.commitWorkerRealtime(mutation); err != nil { return policy, err }
+	s.store.publishWorkerRealtime(mutation)
+	return policy, nil
 }
 
 // checkWorkerBudgetLocked reads the canonical indexed UTC day, not context
@@ -114,6 +120,7 @@ func (s *SessionStore) checkWorkerBudgetLocked(account, worker, date string) (Wo
 		if err != nil {
 			return policy, total, err
 		}
+		if accountPolicy.DailyCostLimitUSD > 0 && usage.UnknownReceipts > 0 { return policy, total, fmt.Errorf("%w: unresolved account pricing", ErrWorkerBudget) }
 		if (accountPolicy.DailyCostLimitUSD > 0 && usage.TotalCostUSD >= accountPolicy.DailyCostLimitUSD) || (accountPolicy.DailyTokensLimit > 0 && usage.TotalTokens >= accountPolicy.DailyTokensLimit) {
 			return policy, total, fmt.Errorf("%w: daily account usage limit exceeded", ErrWorkerBudget)
 		}
@@ -127,19 +134,21 @@ func (s *SessionStore) CheckWorkerBudgetAdmission(account, worker string) error 
 	}
 	unlock := s.store.sessionMutations.lockSessions("account:" + account)
 	defer unlock()
-	policy, _, err := s.checkWorkerBudgetLocked(account, worker, time.Now().UTC().Format("2006-01-02"))
+	return s.checkWorkerBudgetAdmissionLocked(account, worker)
+}
+
+func (s *SessionStore) checkWorkerBudgetAdmissionLocked(account, worker string) error {
+	_, _, err := s.checkWorkerBudgetLocked(account, worker, time.Now().UTC().Format("2006-01-02"))
 	if err != nil {
 		return err
 	}
-	if policy.DailyCostLimitUSD > 0 || policy.DailyTokensLimit > 0 {
-		var reservation workerBudgetReservation
-		found, err := s.store.GetJSON(workerBudgetKey(account, worker)+"/reservation", &reservation)
-		if err != nil {
-			return err
-		}
-		if found {
-			return fmt.Errorf("%w: worker allowance reserved by an unsettled operation", ErrWorkerBudget)
-		}
+	var reservation workerBudgetReservation
+	found, err := s.store.GetJSON(workerBudgetKey(account, worker)+"/reservation", &reservation)
+	if err != nil { return err }
+	if found { return fmt.Errorf("%w: worker allowance reserved by an unsettled operation", ErrWorkerBudget) }
+	var accountReservation workerBudgetReservation
+	if found, err := s.store.GetJSON(accountBudgetReservationKey(account), &accountReservation); err != nil { return err } else if found {
+		return fmt.Errorf("%w: account allowance reserved by an unsettled operation", ErrWorkerBudget)
 	}
 	return nil
 }
@@ -151,13 +160,13 @@ func (s *SessionStore) CheckWorkerBudgetAdmission(account, worker string) error 
 // another session rather than silently expiring its potentially billable work.
 // This is a stop-before-next-call control, not an invoice-hard cap: an already
 // admitted provider operation can overshoot before its genuine receipt arrives.
-func (s *SessionStore) CheckWorkerSessionBudget(account, sessionID, provider, model string) error {
+func (s *SessionStore) CheckWorkerSessionBudget(account, sessionID, provider, model string, operationIDs ...string) error {
 	_, status := s.CalculateCostWithStatus(provider, model, 1, 1, 0, 0)
-	return s.CheckWorkerSessionBudgetWithPrice(account, sessionID, status)
+	return s.CheckWorkerSessionBudgetWithPrice(account, sessionID, status, operationIDs...)
 }
 
 // Media callers supply the canonical dimension-specific pricing status.
-func (s *SessionStore) CheckWorkerSessionBudgetWithPrice(account, sessionID, priceStatus string) error {
+func (s *SessionStore) CheckWorkerSessionBudgetWithPrice(account, sessionID, priceStatus string, operationIDs ...string) error {
 	if s == nil || s.store == nil {
 		return errors.New("store is not configured")
 	}
@@ -168,6 +177,23 @@ func (s *SessionStore) CheckWorkerSessionBudgetWithPrice(account, sessionID, pri
 		return err
 	}
 	date := time.Now().UTC().Format("2006-01-02")
+	keys := []string{}
+	var existing workerBudgetReservation
+	if found, err := s.store.GetJSON(accountBudgetReservationKey(account), &existing); err != nil { return err } else if found { return fmt.Errorf("%w: account operation remains unsettled", ErrWorkerBudget) }
+	accountPolicy, accountActive, err := s.accountBudgetActive(account)
+	if err != nil { return err }
+	if accountActive {
+		usage, _, err := s.GetDailyUsageAccumulator(account, date)
+		if err != nil { return err }
+		if (accountPolicy.DailyCostLimitUSD > 0 && usage.TotalCostUSD >= accountPolicy.DailyCostLimitUSD) || (accountPolicy.DailyTokensLimit > 0 && usage.TotalTokens >= accountPolicy.DailyTokensLimit) {
+			return fmt.Errorf("%w: daily account usage limit exceeded", ErrWorkerBudget)
+		}
+		if accountPolicy.DailyCostLimitUSD > 0 && usage.UnknownReceipts > 0 { return fmt.Errorf("%w: unresolved account pricing", ErrWorkerBudget) }
+		if accountPolicy.DailyCostLimitUSD > 0 && priceStatus != "known" && priceStatus != "free" && priceStatus != "subscription" {
+			return fmt.Errorf("%w: account-capped provider pricing is unknown", ErrWorkerBudget)
+		}
+		keys = append(keys, accountBudgetReservationKey(account))
+	}
 	for _, scope := range scopes {
 		if scope.Kind != "worker" {
 			continue
@@ -176,6 +202,7 @@ func (s *SessionStore) CheckWorkerSessionBudgetWithPrice(account, sessionID, pri
 		if err != nil {
 			return err
 		}
+		if found, err := s.store.GetJSON(workerBudgetKey(account, scope.ID)+"/reservation", &existing); err != nil { return err } else if found { return fmt.Errorf("%w: worker operation remains unsettled", ErrWorkerBudget) }
 		if policy.DailyCostLimitUSD == 0 && policy.DailyTokensLimit == 0 {
 			continue
 		}
@@ -187,43 +214,29 @@ func (s *SessionStore) CheckWorkerSessionBudgetWithPrice(account, sessionID, pri
 				return fmt.Errorf("%w: provider pricing is unknown", ErrWorkerBudget)
 			}
 		}
-		key := workerBudgetKey(account, scope.ID) + "/reservation"
-		var reservation workerBudgetReservation
-		found, err := s.store.GetJSON(key, &reservation)
-		if err != nil {
-			return err
-		}
-		if found {
-			return fmt.Errorf("%w: worker allowance reserved by an unsettled operation", ErrWorkerBudget)
-		}
-		if !found {
-			revision, err := s.workerBudgetReceiptRevision(account, sessionID)
-			if err != nil {
-				return err
-			}
-			payload, err := json.Marshal(workerBudgetReservation{SessionID: sessionID, Date: date, UsageRevision: total.Revision, ReceiptRevision: revision})
-			if err != nil {
-				return err
-			}
-			batch := s.store.NewBatch()
-			if err := batch.Set([]byte(key), payload, nil); err != nil {
-				batch.Close()
-				return err
-			}
-			err = batch.Commit(pebble.Sync)
-			batch.Close()
-			if err != nil {
-				return err
-			}
-		}
+		keys = append(keys, workerBudgetKey(account, scope.ID)+"/reservation")
 	}
-	return nil
+	if len(keys) == 0 { return nil }
+	operation := ""
+	if len(operationIDs) == 1 { operation = strings.TrimSpace(operationIDs[0]) }
+	if operation != "" {
+		var received bool
+		if found, err := s.store.GetJSON(workerBudgetOperationReceiptKey(account, sessionID, operation), &received); err != nil { return err } else if found { return fmt.Errorf("%w: operation identity already has a receipt", ErrWorkerBudget) }
+	}
+	payload, err := json.Marshal(workerBudgetReservation{SessionID: sessionID, Date: date, OperationID: operation})
+	if err != nil { return err }
+	batch := s.store.NewBatch()
+	defer batch.Close()
+	for _, key := range keys {
+		if err := batch.Set([]byte(key), payload, nil); err != nil { return err }
+	}
+	return batch.Commit(pebble.Sync)
 }
 
 // ReleaseWorkerBudgetReservation is used only after a run has terminated and
 // genuine receipts have been persisted. A run without observed receipts retains
 // its reservation, including cancellation and restart; there is no timed reset.
-func (s *SessionStore) ReleaseWorkerBudgetReservation(account, sessionID string) error {
+func (s *SessionStore) ReleaseWorkerBudgetReservation(account, sessionID string, operationIDs ...string) error {
 	if s == nil || s.store == nil {
 		return errors.New("store is not configured")
 	}
@@ -233,11 +246,15 @@ func (s *SessionStore) ReleaseWorkerBudgetReservation(account, sessionID string)
 	if err != nil {
 		return err
 	}
+	keys := []string{accountBudgetReservationKey(account)}
 	for _, scope := range scopes {
-		if scope.Kind != "worker" {
-			continue
-		}
-		key := workerBudgetKey(account, scope.ID) + "/reservation"
+		if scope.Kind == "worker" { keys = append(keys, workerBudgetKey(account, scope.ID)+"/reservation") }
+	}
+	operation := ""
+	if len(operationIDs) == 1 { operation = strings.TrimSpace(operationIDs[0]) }
+	batch := s.store.NewBatch()
+	defer batch.Close()
+	for _, key := range keys {
 		var reservation workerBudgetReservation
 		found, err := s.store.GetJSON(key, &reservation)
 		if err != nil {
@@ -246,53 +263,40 @@ func (s *SessionStore) ReleaseWorkerBudgetReservation(account, sessionID string)
 		if !found || reservation.SessionID != sessionID {
 			continue
 		}
-		total, _, err := s.GetUsageScopeDay(account, "worker", "", scope.ID, reservation.Date)
-		if err != nil {
-			return err
-		}
-		revision, err := s.workerBudgetReceiptRevision(account, sessionID)
-		if err != nil {
-			return err
-		}
-		if total.Revision <= reservation.UsageRevision || revision <= reservation.ReceiptRevision {
-			continue
-		}
-		batch := s.store.NewBatch()
-		if err := batch.Delete([]byte(key), nil); err != nil {
-			batch.Close()
-			return err
-		}
-		err = batch.Commit(pebble.Sync)
-		batch.Close()
-		if err != nil {
-			return err
+		// Legacy/unidentified calls stay blocked: a newer unrelated receipt is not settlement.
+		if operation == "" || reservation.OperationID != operation { continue }
+		if err := batch.Set([]byte(workerBudgetOperationReceiptKey(account, sessionID, operation)+"/terminated"), []byte("true"), nil); err != nil { return err }
+		var received bool
+		if _, err := s.store.GetJSON(workerBudgetOperationReceiptKey(account, sessionID, operation), &received); err != nil { return err }
+		if !received { continue }
+		if err := batch.Delete([]byte(key), nil); err != nil { return err }
+	}
+	return batch.Commit(pebble.Sync)
+}
+
+func workerBudgetOperationReceiptKey(account, session, operation string) string {
+	return "worker_budget_operation_receipt/" + keyPart(account) + "/" + keyPart(session) + "/" + keyPart(operation)
+}
+
+func (s *SessionStore) setWorkerBudgetOperationReceipt(batch *pebble.Batch, account, session, operation string) error {
+	if operation == "" { return nil }
+	if err := batch.Set([]byte(workerBudgetOperationReceiptKey(account, session, operation)), []byte("true"), nil); err != nil { return err }
+	var terminated bool
+	if _, err := s.store.GetJSON(workerBudgetOperationReceiptKey(account, session, operation)+"/terminated", &terminated); err != nil { return err }
+	if !terminated { return nil }
+	scopes, err := s.resolveUsageScopes(account, session)
+	if err != nil { return err }
+	keys := []string{accountBudgetReservationKey(account)}
+	for _, scope := range scopes { if scope.Kind == "worker" { keys = append(keys, workerBudgetKey(account, scope.ID)+"/reservation") } }
+	for _, key := range keys {
+		var reservation workerBudgetReservation
+		found, err := s.store.GetJSON(key, &reservation)
+		if err != nil { return err }
+		if found && reservation.SessionID == session && reservation.OperationID == operation {
+			if err := batch.Delete([]byte(key), nil); err != nil { return err }
 		}
 	}
 	return nil
-}
-
-func workerBudgetReceiptKey(account, session string) string {
-	return "worker_budget_receipt_revision/" + keyPart(account) + "/" + keyPart(session)
-}
-
-func (s *SessionStore) workerBudgetReceiptRevision(account, session string) (uint64, error) {
-	var revision uint64
-	_, err := s.store.GetJSON(workerBudgetReceiptKey(account, session), &revision)
-	return revision, err
-}
-
-// Canonical receipt batches own this settlement marker, under the same account
-// lock as reservations. Context resets, metadata and AI operations cannot set it.
-func (s *SessionStore) setWorkerBudgetReceiptRevision(batch *pebble.Batch, account, session string) error {
-	revision, err := s.workerBudgetReceiptRevision(account, session)
-	if err != nil {
-		return err
-	}
-	payload, err := json.Marshal(revision + 1)
-	if err != nil {
-		return err
-	}
-	return batch.Set([]byte(workerBudgetReceiptKey(account, session)), payload, nil)
 }
 
 // CheckWorkerUnmeteredOperation rejects optional internal operations whose
@@ -308,6 +312,9 @@ func (s *SessionStore) CheckWorkerUnmeteredOperation(account, session string) er
 	if err != nil {
 		return err
 	}
+	_, active, err := s.accountBudgetActive(account)
+	if err != nil { return err }
+	if active { return fmt.Errorf("%w: account-capped internal operation has no canonical receipt boundary", ErrWorkerBudget) }
 	for _, scope := range scopes {
 		if scope.Kind != "worker" {
 			continue
@@ -321,4 +328,9 @@ func (s *SessionStore) CheckWorkerUnmeteredOperation(account, session string) er
 		}
 	}
 	return nil
+}
+
+func unknownBudgetReceipt(status string) int64 {
+	switch status { case "known", "free", "subscription": return 0 }
+	return 1
 }

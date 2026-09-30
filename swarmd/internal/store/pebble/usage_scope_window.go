@@ -25,9 +25,7 @@ func (s *SessionStore) GetUsageScopeDay(account, kind, project, id, date string)
 }
 
 func (s *SessionStore) setUsageDays(batch *pebble.Batch, current, previous SessionTurnUsageSnapshot) error {
-	if err := s.setWorkerBudgetReceiptRevision(batch, current.AccountScopeID, current.SessionID); err != nil {
-		return err
-	}
+	if err := s.setWorkerBudgetOperationReceipt(batch, current.AccountScopeID, current.SessionID, current.BudgetOperationID); err != nil { return err }
 	date := time.UnixMilli(current.CreatedAt).UTC().Format("2006-01-02")
 	for _, scope := range current.ScopeTotals {
 		total, _, err := s.GetUsageScopeDay(current.AccountScopeID, scope.Kind, scope.ProjectID, scope.ID, date)
@@ -57,9 +55,7 @@ func (s *SessionStore) setUsageDays(batch *pebble.Batch, current, previous Sessi
 }
 
 func (s *SessionStore) setMediaUsageDays(batch *pebble.Batch, media SessionMediaUsageRecord) error {
-	if err := s.setWorkerBudgetReceiptRevision(batch, media.AccountScopeID, media.SessionID); err != nil {
-		return err
-	}
+	if err := s.setWorkerBudgetOperationReceipt(batch, media.AccountScopeID, media.SessionID, media.BudgetOperationID); err != nil { return err }
 	date := time.UnixMilli(media.CreatedAt).UTC().Format("2006-01-02")
 	for _, scope := range media.ScopeTotals {
 		total, _, err := s.GetUsageScopeDay(media.AccountScopeID, scope.Kind, scope.ProjectID, scope.ID, date)

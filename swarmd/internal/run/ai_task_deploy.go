@@ -201,7 +201,10 @@ func (s *Service) prepareAITaskMetadata(ctx context.Context, taskID, request str
 	trustedCtx := identity.ContextWithPrincipal(ctx, principal)
 	callCtx, cancel := context.WithTimeout(trustedCtx, 30*time.Second)
 	defer cancel()
-	if budget, ok := ctx.Value(workerBudgetContextKey{}).(workerBudgetContext); ok {
+	if s.sessions != nil {
+		if err := s.sessions.Store().CheckWorkerUnmeteredOperation(principal.AccountScopeID, principal.SessionID); err != nil { return AITaskPreparation{}, err }
+	}
+	if budget, ok := ctx.Value(workerBudgetContextKey{}).(*workerBudgetContext); ok {
 		if err := budget.repository.CheckWorkerUnmeteredOperation(budget.account, budget.session); err != nil {
 			return AITaskPreparation{}, err
 		}

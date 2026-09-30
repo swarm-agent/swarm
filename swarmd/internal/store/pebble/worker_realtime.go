@@ -16,6 +16,7 @@ const WorkerUpdatedEventType = "worker.updated"
 
 // WorkerRealtimePayload conveys invalidation metadata for live worker updates.
 type WorkerRealtimePayload struct {
+	BudgetRevision uint64 `json:"budget_revision,omitempty"`
 	WorkerID       string               `json:"worker_id"`
 	Revision       uint64               `json:"revision,omitempty"`
 	LifecycleState WorkerLifecycleState `json:"lifecycle_state,omitempty"`

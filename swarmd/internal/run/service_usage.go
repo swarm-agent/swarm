@@ -229,6 +229,7 @@ func (s *Service) recordProviderUsageSnapshot(sessionID, runID, providerID, mode
 		cumulativeBilledThinking = billedTokens[5]
 	}
 	turnUsage := pebblestore.SessionTurnUsageSnapshot{
+		BudgetOperationID: usage.BudgetOperationID,
 		RunID:                  runID,
 		Provider:               providerID,
 		Model:                  modelName,

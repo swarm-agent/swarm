@@ -1388,6 +1388,9 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 				acc.Date = dateStr
 			}
 			acc.TotalCostUSD += costDelta
+			acc.UnknownReceipts += unknownBudgetReceipt(turnUsage.PriceStatus)
+			if hadPreviousTurnUsage { acc.UnknownReceipts -= unknownBudgetReceipt(previousTurnUsage.PriceStatus) }
+			if acc.UnknownReceipts < 0 { acc.UnknownReceipts = 0 }
 			acc.TotalTokens += tokensDelta
 			acc.InputTokens += inputDelta
 			acc.OutputTokens += outputDelta
@@ -1479,6 +1482,7 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 			acc.Date = dateStr
 		}
 		acc.TotalCostUSD += media.CostUSD
+		acc.UnknownReceipts += unknownBudgetReceipt(media.PriceStatus)
 		acc.MediaCostUSD += media.CostUSD
 		acc.MediaCalls++
 		switch strings.ToLower(media.Kind) {

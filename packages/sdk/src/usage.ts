@@ -42,8 +42,17 @@ export interface UsageScopeRepairResult {
 export class SwarmUsageNamespace {
   constructor(private readonly transport: SwarmTransport) {}
 
-  async workerBudget(workerId: string): Promise<WorkerBudgetPolicy> {
-    return this.requestWorkerBudget(workerId);
+  async workerBudget(workerId: string): Promise<WorkerBudgetStatus> {
+    const status = await this.requestWorkerBudget(workerId) as WorkerBudgetStatus;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(status.date) || !status.usage ||
+        typeof status.blocked !== 'boolean' || typeof status.inflight !== 'boolean' ||
+        !status.account_policy || !status.account_usage || typeof status.account_inflight !== 'boolean' ||
+        typeof status.limitations !== 'string' || !['no_records', 'observed_receipts_only'].includes(status.account_coverage) ||
+        ![status.remaining_cost_usd, status.remaining_tokens, status.account_remaining_cost_usd, status.account_remaining_tokens]
+          .every(value => value === null || (typeof value === 'number' && Number.isFinite(value) && value >= 0))) {
+      throw new SwarmValidationError('Malformed worker budget status');
+    }
+    return status;
   }
 
   /** User-only revision-guarded policy. Zero unsets a cap, never usage. In-flight
@@ -134,4 +143,22 @@ export interface WorkerBudgetPolicy {
   daily_cost_limit_usd: number;
   daily_tokens_limit: number;
   updated_at: number;
+}
+
+/** Indexed observed receipts, never an invoice-hard guarantee. Null remaining is unset. */
+export interface WorkerBudgetStatus extends WorkerBudgetPolicy {
+  date: string;
+  usage: UsageScopeTotal;
+  remaining_cost_usd: number | null;
+  remaining_tokens: number | null;
+  blocked: boolean;
+  blocked_reason?: string;
+  inflight: boolean;
+  account_policy: { account_scope_id: string; enabled: boolean; daily_cost_limit_usd: number; daily_tokens_limit?: number; updated_at: number };
+  account_usage: { account_scope_id: string; date: string; total_cost_usd: number; total_tokens: number; unknown_receipts?: number };
+  account_remaining_cost_usd: number | null;
+  account_remaining_tokens: number | null;
+  account_inflight: boolean;
+  account_coverage: 'no_records' | 'observed_receipts_only';
+  limitations: string;
 }

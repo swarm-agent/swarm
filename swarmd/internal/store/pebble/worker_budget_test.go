@@ -100,7 +100,7 @@ func TestWorkerBudgetConcurrentRestartLateReceipt(t *testing.T) {
 		wg.Add(1)
 		go func(id string) {
 			defer wg.Done()
-			results <- result{id, s.CheckWorkerSessionBudgetWithPrice("account-1", id, "known")}
+			results <- result{id, s.CheckWorkerSessionBudgetWithPrice("account-1", id, "known", "current")}
 		}(id)
 	}
 	wg.Wait()
@@ -119,7 +119,7 @@ func TestWorkerBudgetConcurrentRestartLateReceipt(t *testing.T) {
 		t.Fatalf("exclusive reservation: %q %q", winner, loser)
 	}
 	// A cancelled call with no receipt is not silently refunded.
-	if err := s.ReleaseWorkerBudgetReservation("account-1", winner); err != nil {
+	if err := s.ReleaseWorkerBudgetReservation("account-1", winner, "current"); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Close(); err != nil {
@@ -135,11 +135,11 @@ func TestWorkerBudgetConcurrentRestartLateReceipt(t *testing.T) {
 		t.Fatalf("restart reservation: %v", err)
 	}
 	now := time.Now().UnixMilli()
-	turn := SessionTurnUsageSnapshot{RunID: "late-receipt", Provider: "fixture", Model: "fixture", BilledUsagePresent: true, BilledTokens: 100, BilledInputTokens: 100, PriceStatus: "known", EstimatedCostUSD: 1, CreatedAt: now}
+	turn := SessionTurnUsageSnapshot{BudgetOperationID: "current", RunID: "late-receipt", Provider: "fixture", Model: "fixture", BilledUsagePresent: true, BilledTokens: 100, BilledInputTokens: 100, PriceStatus: "known", EstimatedCostUSD: 1, CreatedAt: now}
 	if _, err := s.ApplyV3SessionMutation(V3SessionMutationInput{SessionID: winner, UserID: "user-1", AccountScopeID: "account-1", Kind: V3SessionMutationRecordUsage, EventType: "run.usage.updated", IdempotencyKey: "late", PayloadHash: "late", TurnUsage: &turn, NowUnixMs: now}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.ReleaseWorkerBudgetReservation("account-1", winner); err != nil {
+	if err := s.ReleaseWorkerBudgetReservation("account-1", winner, "current"); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.CheckWorkerSessionBudgetWithPrice("account-1", loser, "known"); !errors.Is(err, ErrWorkerBudget) {
@@ -280,27 +280,28 @@ func TestWorkerBudgetAdmissionAndSettlement(t *testing.T) {
 	if err := db.PutJSON(usageScopeDayKey("account-1", total, date), total); err != nil {
 		t.Fatal(err)
 	}
-	_, err = s.WorkerStore().AdmitWorkerRun("account-1", WorkerRunAdmission{WorkerID: "worker", UserID: "user-1", ExpectedWorkerRevision: 1, RequestSource: "direct", IdempotencyKey: "budget-denied", Input: map[string]any{"prompt": "work"}})
-	if !errors.Is(err, ErrWorkerBudget) {
-		t.Fatalf("admission: %v", err)
-	}
-	var prior workerRunIdempotency
-	if found, err := db.GetJSON(KeyWorkerRunIdempotency("account-1", "budget-denied"), &prior); err != nil || found {
-		t.Fatalf("denied run persisted: %+v %v", prior, err)
+	for _, source := range []string{"direct", "schedule", "trigger"} {
+		request := WorkerRunAdmission{WorkerID: "worker", UserID: "user-1", ExpectedWorkerRevision: 1, RequestSource: source, IdempotencyKey: "budget-denied-"+source, Input: map[string]any{"prompt": "work"}}
+		if source != "direct" { request.AutomationID = "automation" }
+		if source == "schedule" { request.OccurrenceID = "occurrence" }
+		_, err = s.WorkerStore().AdmitWorkerRun("account-1", request)
+		if !errors.Is(err, ErrWorkerBudget) { t.Fatalf("%s admission: %v", source, err) }
+		var prior workerRunIdempotency
+		if found, err := db.GetJSON(KeyWorkerRunIdempotency("account-1", request.IdempotencyKey), &prior); err != nil || found { t.Fatalf("denied %s persisted: %+v %v", source, prior, err) }
 	}
 	// Clear only fixture projection, then persist one real canonical receipt.
 	if err := db.PutJSON(usageScopeDayKey("account-1", total, date), UsageScopeTotal{Kind: "worker", ID: "worker"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.CheckWorkerSessionBudgetWithPrice("account-1", "budget-one", "known"); err != nil {
+	if err := s.CheckWorkerSessionBudgetWithPrice("account-1", "budget-one", "known", "settled"); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now().UnixMilli()
-	turn := SessionTurnUsageSnapshot{RunID: "settled", Provider: "fixture", Model: "fixture", BilledUsagePresent: true, BilledTokens: 10, BilledInputTokens: 10, PriceStatus: "known", EstimatedCostUSD: 0.25, CreatedAt: now}
+	turn := SessionTurnUsageSnapshot{BudgetOperationID: "settled", RunID: "settled", Provider: "fixture", Model: "fixture", BilledUsagePresent: true, BilledTokens: 10, BilledInputTokens: 10, PriceStatus: "known", EstimatedCostUSD: 0.25, CreatedAt: now}
 	if _, err := s.ApplyV3SessionMutation(V3SessionMutationInput{SessionID: "budget-one", UserID: "user-1", AccountScopeID: "account-1", Kind: V3SessionMutationRecordUsage, EventType: "run.usage.updated", IdempotencyKey: "settled", PayloadHash: "settled", TurnUsage: &turn, NowUnixMs: now}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.ReleaseWorkerBudgetReservation("account-1", "budget-one"); err != nil {
+	if err := s.ReleaseWorkerBudgetReservation("account-1", "budget-one", "settled"); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.CheckWorkerSessionBudgetWithPrice("account-1", "budget-two", "known"); err != nil {

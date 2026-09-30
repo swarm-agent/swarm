@@ -2420,7 +2420,29 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 				apply:     options.ApplySessionMutation,
 			})
 		}
-		response, err := runProviderAttempt(runnerCtx, providerRunner, stepRequest, providerAttemptActivityTimeout, func(event provideriface.StreamEvent) {
+		// Capture immutable pre-attempt counters: an abandoned transport may return
+		// after the run has stopped. Its genuine receipt still belongs to this attempt.
+		priorTokens, priorInput, priorOutput := cumulativeBilledTokens, cumulativeBilledInputTokens, cumulativeBilledOutputTokens
+		priorRead, priorWrite, priorThinking := cumulativeBilledCacheReadTokens, cumulativeBilledCacheWriteTokens, cumulativeBilledThinkingTokens
+		priorCost, receiptRunID, receiptStep := cumulativeTurnCost, runID, step
+		receiptProvider, receiptModel, receiptWindow := providerID, resolvedPreference.Preference.Model, resolvedPreference.ContextWindow
+		receiptPrincipal, receiptApply := options.Principal, options.ApplySessionMutation
+		attemptCtx := withLateProviderReceipt(runnerCtx, func(late provideriface.Response) error {
+			usage := late.Usage
+			cost := usage.EstimatedCostUSD
+			if cost == 0 && s.sessions.Store() != nil { cost = s.sessions.Store().CalculateCost(receiptProvider, receiptModel, usage.InputTokens, usage.OutputTokens, usage.CacheReadTokens, usage.ThinkingTokens) }
+			usage.EstimatedCostUSD = priorCost + cost
+			baseTokens, baseInput, baseOutput := priorTokens, priorInput, priorOutput
+			baseRead, baseWrite, baseThinking := priorRead, priorWrite, priorThinking
+			if strings.EqualFold(usage.Source, "copilot_session_usage") {
+				baseTokens, baseInput, baseOutput = 0, 0, 0
+				baseRead, baseWrite, baseThinking = 0, 0, 0
+			}
+			_, _, _, receiptErr := s.recordProviderUsageSnapshot(sessionID, receiptRunID, receiptProvider, receiptModel, receiptWindow, receiptStep, usage, receiptPrincipal, receiptApply, baseTokens+usage.TotalTokens, baseInput+usage.InputTokens, baseOutput+usage.OutputTokens, baseRead+usage.CacheReadTokens, baseWrite+usage.CacheWriteTokens, baseThinking+usage.ThinkingTokens)
+			if receiptErr != nil { return receiptErr }
+			return s.sessions.Store().ReleaseWorkerBudgetReservation(acctScope, sessionID, usage.BudgetOperationID)
+		})
+		response, err := runProviderAttempt(attemptCtx, providerRunner, stepRequest, providerAttemptActivityTimeout, func(event provideriface.StreamEvent) {
 			if ctx.Err() != nil {
 				return
 			}
@@ -2468,6 +2490,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 				cumulativeBilledThinkingTokens += response.Usage.ThinkingTokens
 			}
 			accumulatedUsage = mergeTokenUsage(accumulatedUsage, response.Usage)
+			accumulatedUsage.BudgetOperationID = response.Usage.BudgetOperationID
 			accumulatedUsage.EstimatedCostUSD = cumulativeTurnCost
 			if shouldPersistProviderUsage(providerID, accumulatedUsage) {
 				turnUsage, usageSummary, usageEvent, usageErr := s.recordProviderUsageSnapshot(sessionID, runID, providerID, resolvedPreference.Preference.Model, resolvedPreference.ContextWindow, stepsCompleted, accumulatedUsage, options.Principal, options.ApplySessionMutation, cumulativeBilledTokens, cumulativeBilledInputTokens, cumulativeBilledOutputTokens, cumulativeBilledCacheReadTokens, cumulativeBilledCacheWriteTokens, cumulativeBilledThinkingTokens)
@@ -2490,8 +2513,8 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			}
 		}
 
-		if !errors.Is(err, pebblestore.ErrWorkerBudget) && hasConcreteUsageSnapshot(response.Usage) {
-			if releaseErr := releaseProviderWorkerBudget(runnerCtx); releaseErr != nil {
+		if !errors.Is(err, pebblestore.ErrWorkerBudget) && s.sessions != nil && s.sessions.Store() != nil {
+			if releaseErr := s.sessions.Store().ReleaseWorkerBudgetReservation(acctScope, sessionID, response.Usage.BudgetOperationID); releaseErr != nil {
 				return RunResult{}, releaseErr
 			}
 		}
@@ -4394,6 +4417,7 @@ func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, ru
 			}
 			uniqueCompactRunID := fmt.Sprintf("compact:%s:%s:%d:%d:%d", sessionID, strings.TrimSpace(runID), compactIndex, attempt, time.Now().UnixNano())
 			compactTurn := pebblestore.SessionTurnUsageSnapshot{
+				BudgetOperationID: oneShotResult.Usage.BudgetOperationID,
 				SessionID:        sessionID,
 				AccountScopeID:   accountScopeID,
 				RunID:            uniqueCompactRunID,
@@ -4417,7 +4441,7 @@ func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, ru
 			}
 		}
 		if !errors.Is(reqErr, pebblestore.ErrWorkerBudget) && hasConcreteUsageSnapshot(oneShotResult.Usage) {
-			if err := releaseProviderWorkerBudget(ctx); err != nil {
+			if err := s.sessions.Store().ReleaseWorkerBudgetReservation(accountScopeID, sessionID, oneShotResult.Usage.BudgetOperationID); err != nil {
 				return "", err
 			}
 		}
@@ -5418,6 +5442,7 @@ func runCompactProviderCall(ctx context.Context, runner provideriface.Runner, re
 	if err := checkProviderWorkerBudget(ctx, runner, req); err != nil {
 		return provideriface.Response{}, err
 	}
+	operation := providerBudgetOperation(ctx)
 	resultCh := make(chan struct {
 		response provideriface.Response
 		err      error
@@ -5442,30 +5467,37 @@ func runCompactProviderCall(ctx context.Context, runner provideriface.Runner, re
 				}
 			}
 		})
+		response.Usage.BudgetOperationID = operation
 		if strings.TrimSpace(response.Text) == "" {
 			response.Text = strings.TrimSpace(output.String())
 		}
 		if strings.TrimSpace(response.ReasoningSummary) == "" {
 			response.ReasoningSummary = strings.TrimSpace(reasoning.String())
 		}
-		select {
-		case resultCh <- struct {
+		resultCh <- struct {
 			response provideriface.Response
-			err      error
-		}{response: response, err: err}:
-		case <-ctx.Done():
-		}
+			err error
+		}{response: response, err: err}
 	}()
 	if emitHeartbeat == nil || memoryCompactionHeartbeatInterval <= 0 {
-		out := <-resultCh
-		return out.response, out.err
+		select {
+		case out := <-resultCh: return out.response, out.err
+		case <-ctx.Done():
+			select {
+			case out := <-resultCh: return out.response, ctx.Err()
+			case <-time.After(providerAttemptTerminationTimeout): return provideriface.Response{}, ctx.Err()
+			}
+		}
 	}
 	ticker := time.NewTicker(memoryCompactionHeartbeatInterval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
-			return provideriface.Response{}, ctx.Err()
+			select {
+			case out := <-resultCh: return out.response, ctx.Err()
+			case <-time.After(providerAttemptTerminationTimeout): return provideriface.Response{}, ctx.Err()
+			}
 		case out := <-resultCh:
 			return out.response, out.err
 		case <-ticker.C:

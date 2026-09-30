@@ -165,7 +165,9 @@ func (ws *WorkerStore) AdmitWorkerRun(account string, req WorkerRunAdmission) (W
 	if len(worker.RequestedCapabilities) != 0 || len(worker.WorkspaceRequirements) != 1 || worker.WorkspaceRequirements[0].Role != "primary" || !worker.WorkspaceRequirements[0].Required || len(worker.LocalBindings) != 1 || worker.LocalBindings["primary"] == "" {
 		return WorkerRunRecord{}, fmt.Errorf("%w: an approved primary workspace binding and no unapproved capabilities are required", ErrWorkerConflict)
 	}
-	if err := NewSessionStore(ws.store).CheckWorkerBudgetAdmission(account, req.WorkerID); err != nil {
+	unlockBudget := ws.store.sessionMutations.lockSessions("account:" + account)
+	defer unlockBudget()
+	if err := NewSessionStore(ws.store).checkWorkerBudgetAdmissionLocked(account, req.WorkerID); err != nil {
 		return WorkerRunRecord{}, err
 	}
 	var automationRevision uint64

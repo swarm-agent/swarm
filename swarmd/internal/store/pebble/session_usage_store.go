@@ -15,6 +15,7 @@ import (
 )
 
 type SessionTurnUsageSnapshot struct {
+	BudgetOperationID string `json:"budget_operation_id,omitempty"`
 	ScopeProjectionVersion int               `json:"scope_projection_version,omitempty"`
 	ScopeTotals            []UsageScopeTotal `json:"scope_totals,omitempty"`
 	CostProvenance         string            `json:"cost_provenance,omitempty"`
@@ -80,6 +81,7 @@ type SessionUsageSummary struct {
 }
 
 type SessionMediaUsageRecord struct {
+	BudgetOperationID string `json:"budget_operation_id,omitempty"`
 	ScopeTotals     []UsageScopeTotal `json:"scope_totals,omitempty"`
 	ID              string            `json:"id"`
 	SessionID       string            `json:"session_id"`
@@ -369,6 +371,9 @@ func (s *SessionStore) PutTurnUsage(record SessionTurnUsageSnapshot) error {
 			acc.Date = dateStr
 		}
 		acc.TotalCostUSD += deltaCost
+		acc.UnknownReceipts += unknownBudgetReceipt(record.PriceStatus)
+		if hadPrevious { acc.UnknownReceipts -= unknownBudgetReceipt(previous.PriceStatus) }
+		if acc.UnknownReceipts < 0 { acc.UnknownReceipts = 0 }
 		codexNominalDelta := 0.0
 		if strings.EqualFold(record.Provider, "codex") {
 			codexNominalDelta = nominalUsageCost(record)

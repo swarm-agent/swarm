@@ -1,6 +1,7 @@
 package tool
 
 import (
+	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -1826,10 +1827,9 @@ func (r *Runtime) generateManagedImageArtifact(ctx context.Context, scope Worksp
 			capabilityToken = capabilities.CapabilityToken
 		}
 	}
-	if err := r.checkMediaWorkerBudget(scope.Principal.AccountScopeID, scope.SessionID); err != nil {
-		return pebblestore.SessionArtifactVariant{}, err
-	}
-	generated, err := r.imageGeneration.GenerateManagedImage(identity.ContextWithPrincipal(ctx, scope.Principal), imagegen.ManagedGenerateRequest{
+	budgetOperation := newMediaBudgetOperation()
+	budgetCtx := provideriface.WithBillableDispatchGuard(identity.ContextWithPrincipal(ctx, scope.Principal), func() error { return r.checkMediaWorkerBudget(scope.Principal.AccountScopeID, scope.SessionID, budgetOperation) })
+	generated, err := r.imageGeneration.GenerateManagedImage(budgetCtx, imagegen.ManagedGenerateRequest{
 		SelectionID: selectionID, Prompt: prompt, Size: size, Settings: settings,
 		CapabilityToken: capabilityToken, Principal: scope.Principal, Source: source,
 	})
@@ -1924,6 +1924,7 @@ func (r *Runtime) generateManagedImageArtifact(ctx context.Context, scope Worksp
 		mediaID = fmt.Sprintf("media_%s_%s", callID, requestID)
 	}
 	mediaRec := pebblestore.SessionMediaUsageRecord{
+		BudgetOperationID: budgetOperation,
 		ID:              mediaID,
 		SessionID:       principal.SessionID,
 		AccountScopeID:  principal.AccountScopeID,
@@ -1946,7 +1947,7 @@ func (r *Runtime) generateManagedImageArtifact(ctx context.Context, scope Worksp
 		if recErr := r.sessions.RecordMediaUsage(mediaRec); recErr != nil {
 			return pebblestore.SessionArtifactVariant{}, fmt.Errorf("record image media usage: %w", recErr)
 		}
-		if err := r.releaseMediaWorkerBudget(scope.Principal.AccountScopeID, scope.SessionID); err != nil {
+		if err := r.releaseMediaWorkerBudget(scope.Principal.AccountScopeID, scope.SessionID, budgetOperation); err != nil {
 			return pebblestore.SessionArtifactVariant{}, err
 		}
 	}
@@ -2599,10 +2600,9 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 		} else if source != nil {
 			op = pebblestore.VideoOperationEdit
 		}
-		if err := r.checkMediaWorkerBudget(scope.Principal.AccountScopeID, scope.SessionID); err != nil {
-			return managedVideoArtifactResult{}, err
-		}
-		generated, err := r.videoGeneration.GenerateManagedVideo(identity.ContextWithPrincipal(ctx, scope.Principal), videogen.ManagedVideoRequest{
+		budgetOperation := newMediaBudgetOperation()
+		budgetCtx := provideriface.WithBillableDispatchGuard(identity.ContextWithPrincipal(ctx, scope.Principal), func() error { return r.checkMediaWorkerBudget(scope.Principal.AccountScopeID, scope.SessionID, budgetOperation) })
+		generated, err := r.videoGeneration.GenerateManagedVideo(budgetCtx, videogen.ManagedVideoRequest{
 			Operation:       op,
 			Prompt:          prompt,
 			AspectRatio:     aspectRatio,
@@ -2743,6 +2743,7 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 			}
 		}
 		mediaRec := pebblestore.SessionMediaUsageRecord{
+		BudgetOperationID: budgetOperation,
 			ID:              currentVariantID,
 			SessionID:       principal.SessionID,
 			AccountScopeID:  principal.AccountScopeID,
@@ -2765,7 +2766,7 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 			if recErr := r.sessions.RecordMediaUsage(mediaRec); recErr != nil {
 				return managedVideoArtifactResult{}, fmt.Errorf("record video media usage: %w", recErr)
 			}
-			if err := r.releaseMediaWorkerBudget(scope.Principal.AccountScopeID, scope.SessionID); err != nil {
+			if err := r.releaseMediaWorkerBudget(scope.Principal.AccountScopeID, scope.SessionID, budgetOperation); err != nil {
 				return managedVideoArtifactResult{}, err
 			}
 		}
@@ -3064,10 +3065,9 @@ func (r *Runtime) generateManagedAudioArtifact(
 			currentPrompt = prompts[i]
 		}
 
-		if err := r.checkMediaWorkerBudget(scope.Principal.AccountScopeID, scope.SessionID); err != nil {
-			return managedAudioArtifactResult{}, err
-		}
-		generated, err := r.audioGeneration.GenerateManagedAudio(identity.ContextWithPrincipal(ctx, scope.Principal), audiogen.ManagedAudioRequest{
+		budgetOperation := newMediaBudgetOperation()
+		budgetCtx := provideriface.WithBillableDispatchGuard(identity.ContextWithPrincipal(ctx, scope.Principal), func() error { return r.checkMediaWorkerBudget(scope.Principal.AccountScopeID, scope.SessionID, budgetOperation) })
+		generated, err := r.audioGeneration.GenerateManagedAudio(budgetCtx, audiogen.ManagedAudioRequest{
 			Prompt:          currentPrompt,
 			DurationSeconds: durationSeconds,
 			Principal:       scope.Principal,
@@ -3172,6 +3172,7 @@ func (r *Runtime) generateManagedAudioArtifact(
 			})
 		}
 		mediaRec := pebblestore.SessionMediaUsageRecord{
+		BudgetOperationID: budgetOperation,
 			ID:              currentVariantID,
 			SessionID:       principal.SessionID,
 			AccountScopeID:  principal.AccountScopeID,
@@ -3194,7 +3195,7 @@ func (r *Runtime) generateManagedAudioArtifact(
 			if recErr := r.sessions.RecordMediaUsage(mediaRec); recErr != nil {
 				return managedAudioArtifactResult{}, fmt.Errorf("record audio media usage: %w", recErr)
 			}
-			if err := r.releaseMediaWorkerBudget(scope.Principal.AccountScopeID, scope.SessionID); err != nil {
+			if err := r.releaseMediaWorkerBudget(scope.Principal.AccountScopeID, scope.SessionID, budgetOperation); err != nil {
 				return managedAudioArtifactResult{}, err
 			}
 		}

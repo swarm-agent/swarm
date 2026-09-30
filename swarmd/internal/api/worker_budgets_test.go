@@ -1,6 +1,10 @@
 package api
 
 import (
+	"context"
+	"errors"
+	"encoding/json"
+	"time"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -38,6 +42,13 @@ func TestWorkerBudgetUserAuthorizationRevision(t *testing.T) {
 	if w := invoke(body, true, account); w.Code != http.StatusForbidden {
 		t.Fatalf("scoped: %d", w.Code)
 	}
+	service := testPrincipal()
+	service.Type = "service"
+	serviceRequest := httptest.NewRequest(http.MethodPut, "/v3/usage/worker-budget?worker_id=worker", strings.NewReader(body))
+	serviceRequest = serviceRequest.WithContext(context.WithValue(serviceRequest.Context(), productPrincipalRequestContextKey, service))
+	serviceResponse := httptest.NewRecorder()
+	server.handleWorkerBudget(serviceResponse, serviceRequest)
+	if serviceResponse.Code != http.StatusUnauthorized && serviceResponse.Code != http.StatusForbidden { t.Fatalf("service principal accepted: %d", serviceResponse.Code) }
 	if w := invoke(body, false, "other-account"); w.Code != http.StatusNotFound {
 		t.Fatalf("foreign: %d", w.Code)
 	}
@@ -56,4 +67,35 @@ func TestWorkerBudgetUserAuthorizationRevision(t *testing.T) {
 	if err != nil || policy.Revision != 1 || policy.DailyCostLimitUSD != 1 || policy.DailyTokensLimit != 100 {
 		t.Fatalf("rejections mutated: %+v %v", policy, err)
 	}
+}
+
+// Purpose: user budget GET exposes canonical indexed status rather than policy
+// alone. Owner handleWorkerBudget/GetWorkerBudgetStatus; store-backed HTTP is
+// the narrowest wire layer that proves unset caps, coverage and UTC semantics.
+func TestWorkerBudgetStatusHTTP(t *testing.T) {
+ server, _, db := newWorkspaceOverviewTopologyTestServer(t)
+ account := testPrincipal().AccountScopeID
+ if err := db.PutJSON(store.KeyWorker(account, "worker"), store.WorkerRecord{ID:"worker", AccountScopeID:account}); err != nil { t.Fatal(err) }
+ r := requestWithTestPrincipalForAccount(httptest.NewRequest(http.MethodGet, "/v3/usage/worker-budget?worker_id=worker", nil), testPrincipal().UserID, account)
+ w := httptest.NewRecorder(); server.handleWorkerBudget(w, r)
+ var status store.WorkerBudgetStatus
+ if err := json.Unmarshal(w.Body.Bytes(), &status); err != nil { t.Fatal(err) }
+ if w.Code != http.StatusOK || status.WorkerID != "worker" || status.Date != time.Now().UTC().Format("2006-01-02") || status.Usage.Coverage != "no_records" || status.RemainingTokens != nil || status.Blocked || status.Limitations == "" { t.Fatalf("status: %d %+v", w.Code, status) }
+}
+
+// Purpose: a missing session identity cannot bypass account caps on unmetered
+// internal Router calls. Owners invokeConfiguredRouterOnce and canonical
+// CheckWorkerUnmeteredOperation; existing account-model fixture proves zero
+// dispatch and unchanged user policy without a live provider.
+func TestWorkerBudgetRouterAccountWithoutSession(t *testing.T) {
+ runner := &sessionRouterRecordingRunner{id:"recording"}
+ server, principal, _ := newSessionRouterTestServer(t, runner, []sessionRouterWorkspace{{"/workspace/sole", "Sole", "Git workspace"}})
+ budgetServer, _, _ := newWorkspaceOverviewTopologyTestServer(t)
+ server.sessions = budgetServer.sessions
+ principal.SessionID = ""
+ if err := server.sessions.Store().PutUsageLimit(store.UsageLimitRecord{AccountScopeID:principal.AccountScopeID, Enabled:true, DailyCostLimitUSD:1}); err != nil { t.Fatal(err) }
+ if _, err := server.invokeConfiguredRouterOnce(context.Background(), principal, "instructions", "input", 1024); !errors.Is(err, store.ErrWorkerBudget) { t.Fatalf("router cap: %v", err) }
+ if runner.createCalls != 0 || runner.streamingCalls != 0 { t.Fatal("capped Router dispatched") }
+ policy, _, err := server.sessions.Store().GetUsageLimit(principal.AccountScopeID)
+ if err != nil || !policy.Enabled || policy.DailyCostLimitUSD != 1 { t.Fatalf("policy mutated: %+v %v", policy, err) }
 }

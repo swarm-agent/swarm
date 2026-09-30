@@ -23,6 +23,7 @@ type UsageLimitRecord struct {
 
 // DailyUsageAccumulator tracks aggregated daily spending and token counts in O(1) storage.
 type DailyUsageAccumulator struct {
+	UnknownReceipts int64 `json:"unknown_receipts,omitempty"`
 	AccountScopeID      string           `json:"account_scope_id"`
 	Date                string           `json:"date"` // Format: YYYY-MM-DD (UTC)
 	TotalCostUSD        float64          `json:"total_cost_usd"`
@@ -784,6 +785,8 @@ func (s *SessionStore) PutUsageLimit(record UsageLimitRecord) error {
 		return errors.New("store is not configured")
 	}
 	record.AccountScopeID = strings.TrimSpace(record.AccountScopeID)
+	unlock := s.store.sessionMutations.lockSessions("account:" + record.AccountScopeID)
+	defer unlock()
 	if record.UpdatedAt <= 0 {
 		record.UpdatedAt = time.Now().UnixMilli()
 	}

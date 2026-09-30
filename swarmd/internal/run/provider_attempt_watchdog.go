@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"sync/atomic"
 	"time"
 
@@ -71,7 +72,10 @@ func runProviderAttempt(
 		if err := checkProviderWorkerBudget(ctx, runner, req); err != nil {
 			return provideriface.Response{}, err
 		}
-		return runner.CreateResponseStreaming(ctx, req, onEvent)
+		operation := providerBudgetOperation(ctx)
+		response, err := runner.CreateResponseStreaming(ctx, req, onEvent)
+		response.Usage.BudgetOperationID = operation
+		return response, err
 	}
 
 	var acceptedGeneration atomic.Uint64
@@ -80,6 +84,7 @@ func runProviderAttempt(
 		if err := checkProviderWorkerBudget(ctx, runner, req); err != nil {
 			return provideriface.Response{}, err
 		}
+		operation := providerBudgetOperation(ctx)
 		generation := acceptedGeneration.Add(1)
 		attemptCtx, cancelAttempt := context.WithCancel(ctx)
 		activity := make(chan struct{}, 1)
@@ -104,6 +109,7 @@ func runProviderAttempt(
 				}
 				onEvent(event)
 			})
+			response.Usage.BudgetOperationID = operation
 			resultCh <- providerAttemptResult{response: response, err: err}
 		}()
 
@@ -140,6 +146,7 @@ func runProviderAttempt(
 					break waitAttempt
 				case <-time.After(providerAttemptTerminationTimeout):
 					timer.Stop()
+					retainLateProviderReceipt(ctx, resultCh)
 					return provideriface.Response{}, fmt.Errorf("%w: expired attempt did not terminate within %s", errProviderAttemptActivityTimeout, providerAttemptTerminationTimeout)
 				}
 			case <-ctx.Done():
@@ -150,6 +157,7 @@ func runProviderAttempt(
 					timer.Stop()
 					return completed.response, ctx.Err()
 				case <-time.After(providerAttemptTerminationTimeout):
+					retainLateProviderReceipt(ctx, resultCh)
 				}
 				timer.Stop()
 				return provideriface.Response{}, ctx.Err()
@@ -170,7 +178,7 @@ func runProviderAttempt(
 			}
 			return result.response, result.err
 		}
-		if budget, ok := ctx.Value(workerBudgetContextKey{}).(workerBudgetContext); ok {
+		if budget, ok := ctx.Value(workerBudgetContextKey{}).(*workerBudgetContext); ok {
 			if budgetErr := budget.repository.CheckWorkerUnmeteredOperation(budget.account, budget.session); budgetErr != nil {
 				return result.response, fmt.Errorf("%w: capped worker requires receipt settlement before retry", errProviderAttemptActivityTimeout)
 			}
@@ -190,4 +198,23 @@ func runProviderAttempt(
 		}
 	}
 	return provideriface.Response{}, errProviderAttemptActivityTimeout
+}
+
+// One bounded collector per abandoned attempt preserves genuinely late usage.
+// Beyond this window the durable reservation remains unresolved, never refunded.
+func retainLateProviderReceipt(ctx context.Context, results <-chan providerAttemptResult) {
+	callback, ok := ctx.Value(lateProviderReceiptKey{}).(lateProviderReceiptCallback)
+	if !ok { return }
+	go func() {
+		timer := time.NewTimer(providerAttemptActivityTimeout)
+		defer timer.Stop()
+		select {
+		case result := <-results:
+			if hasConcreteUsageSnapshot(result.response.Usage) {
+				// Persistence errors leave the reservation blocked; never acknowledge settlement.
+				if err := callback(result.response); err != nil { log.Print("late provider receipt persistence failed; budget reservation remains unresolved") }
+			}
+		case <-timer.C:
+		}
+	}()
 }

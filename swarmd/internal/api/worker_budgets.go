@@ -34,7 +34,9 @@ func (s *Server) handleWorkerBudget(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case http.MethodGet:
-		writeJSON(w, http.StatusOK, policy)
+		status, err := s.sessions.Store().GetWorkerBudgetStatus(p.AccountScopeID, worker)
+		if err != nil { writeError(w, http.StatusInternalServerError, err); return }
+		writeJSON(w, http.StatusOK, status)
 	case http.MethodPut:
 		var request struct {
 			ExpectedRevision  *uint64 `json:"expected_revision"`
@@ -55,7 +57,7 @@ func (s *Server) handleWorkerBudget(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, errors.New("exactly one budget request required"))
 			return
 		}
-		policy, err = s.sessions.Store().SetWorkerBudget(p.AccountScopeID, worker, *request.ExpectedRevision, request.DailyCostLimitUSD, request.DailyTokensLimit)
+		policy, err = s.sessions.Store().SetWorkerBudget(p.AccountScopeID, worker, *request.ExpectedRevision, request.DailyCostLimitUSD, request.DailyTokensLimit, p.UserID)
 		if err != nil {
 			status := http.StatusBadRequest
 			if errors.Is(err, store.ErrWorkerConflict) {
