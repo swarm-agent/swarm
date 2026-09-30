@@ -51,7 +51,7 @@ export class DesktopProjectsRuntime {
   private readonly demand = new Map<string, { projectId: string; count: number }>()
   private readonly inFlight = new Map<string, Promise<void>>()
   private readonly deps: DesktopProjectsRuntimeDeps
-  private readonly taskQueue = new Map<string, { projectId: string; task: RunningTask; epoch: number }>()
+  private readonly taskQueue = new Map<string, { projectId: string; task: RunningTask; epoch: number; authoritative: boolean }>()
   private readonly taskReads = new Set<string>()
   private taskEpoch = 0
   private unsubscribeCache: (() => void) | null = null
@@ -73,9 +73,11 @@ export class DesktopProjectsRuntime {
     }
   }
 
-  private queueTask(projectId: string, task: RunningTask): void {
-    if (!task.sessionId || !this.demand.has(projectId)) return
-    this.taskQueue.set(JSON.stringify([projectId, task.id]), { projectId, task, epoch: this.taskEpoch })
+  private queueTask(projectId: string, task: RunningTask, authoritative = false): void {
+    if ((!task.sessionId && !authoritative) || !this.demand.has(projectId)) return
+    const key = JSON.stringify([projectId, task.id])
+    authoritative ||= this.taskQueue.get(key)?.authoritative ?? false
+    this.taskQueue.set(key, { projectId, task, epoch: this.taskEpoch, authoritative })
     this.drainTasks()
   }
 
@@ -86,18 +88,27 @@ export class DesktopProjectsRuntime {
       this.taskQueue.delete(key)
       if (!this.demand.has(entry.projectId)) continue
       const currentTask = this.deps.getState()[entry.projectId]?.tasks.find(task => task.id === entry.task.id)
-      if (!currentTask || currentTask.sessionId !== entry.task.sessionId) continue
+      if (!currentTask || (!entry.authoritative && currentTask.sessionId !== entry.task.sessionId)) continue
       entry.task = currentTask
       this.taskReads.add(key)
       const demand = this.demand.get(entry.projectId)
       const generation = this.deps.getState()[entry.projectId]?.generation
-      const apply = (update: (task: RunningTask) => RunningTask) => {
+      const apply = (update: (task: RunningTask) => RunningTask | undefined) => {
         if (entry.epoch !== this.taskEpoch || this.demand.get(entry.projectId) !== demand || this.deps.getState()[entry.projectId]?.generation !== generation) return
-        this.setOptimisticTasks(entry.projectId, tasks => tasks.map(task =>
-          task.id === entry.task.id && task.sessionId === entry.task.sessionId && task.revision === entry.task.revision ? update(task) : task))
+        this.setOptimisticTasks(entry.projectId, tasks => tasks.flatMap(task => {
+          if (task.id !== entry.task.id || task.sessionId !== entry.task.sessionId || task.revision !== entry.task.revision) return [task]
+          const updated = update(task)
+          return updated ? [updated] : []
+        }))
       }
       void this.deps.fetchTask(entry.projectId, entry.task.id).then(response => {
-        if (!response.task || response.task.id !== entry.task.id || response.task.session_id !== entry.task.sessionId) return
+        if (!response.task || response.task.id !== entry.task.id ||
+          (!entry.authoritative && response.task.session_id !== entry.task.sessionId) ||
+          (response.task.revision ?? 0) < (entry.task.revision ?? 0)) return
+        if (entry.authoritative && response.task.archived) {
+          apply(() => undefined)
+          return
+        }
         apply(() => mapBackendTask(response.task))
       }).catch(error => {
         apply(task => ({ ...task, gitStatus: 'unknown', isIntegrated: false, syncWarning: error instanceof Error ? error.message : 'Task status refresh failed' }))
@@ -237,9 +248,20 @@ export class DesktopProjectsRuntime {
     }
   }
 
-  acceptFrame(frame: { kind: string; project_id?: string; projectId?: string }): void {
+  acceptFrame(frame: { kind: string; project_id?: string; projectId?: string; event?: { payload?: unknown } }): void {
     const projectId = frame.project_id || frame.projectId
     if (frame.kind === 'project.updated') {
+      const payload = frame.event?.payload
+      const change = payload && typeof payload === 'object' ? payload as Record<string, unknown> : undefined
+      const taskId = typeof change?.task_id === 'string' ? change.task_id : undefined
+      const task = projectId && taskId ? this.deps.getState()[projectId]?.tasks.find(task => task.id === taskId) : undefined
+      // Durable task updates already identify their card. Do not reload the board,
+      // media or unrelated Git inspections. Collection/membership changes and
+      // older/unknown frames still use the canonical snapshot repair below.
+      if (projectId && task && change?.action === 'task_updated' && !this.inFlight.has(projectId)) {
+        this.queueTask(projectId, task, true)
+        return
+      }
       this.invalidate(projectId)
       for (const listener of this.projectUpdateListeners) listener(projectId)
     } else if (

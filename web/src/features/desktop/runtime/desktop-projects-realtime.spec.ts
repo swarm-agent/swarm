@@ -123,3 +123,95 @@ test('completed card refreshes to follow-up and repairs missed reopen on reconne
   assert.equal(state.project.tasks[0].sessionId, 'reconnected-follow-up')
   lease.release()
 })
+
+// Purpose: durable project task_updated frames must refresh only their named card,
+// not reload tasks/media and rerun unrelated Git reads. DesktopProjectsRuntime's
+// frame/queue boundary is the narrowest layer proving request counts, coalescing,
+// revision/session safety, visible failures, membership repair and reconnect repair.
+test('durable task updates are card-scoped, coalesced and safe across session replacement', { timeout: 5000 }, async () => {
+  let state: DesktopProjectsState = {}
+  let collections = 0
+  let mediaReads = 0
+  let notifications = 0
+  const tasks = [
+    { id: 'first', session_id: 'one', revision: 1, title: 'First', agent: 'coder', status: 'needs_review' },
+    { id: 'second', session_id: 'two', revision: 1, title: 'Second', agent: 'coder', status: 'needs_review' },
+    { id: 'queued', revision: 1, title: 'Queued', agent: 'coder', status: 'queued' },
+  ]
+  const reads: Array<{ id: string; resolve: (value: { task: any }) => void; reject: (error: Error) => void }> = []
+  const runtime = new DesktopProjectsRuntime({
+    getState: () => state,
+    dispatch: action => { state = reduceDesktopProjectsState(state, action) },
+    subscribe: () => () => {},
+    fetchTasks: async () => { collections++; return { tasks } },
+    fetchMedia: async () => { mediaReads++; return { media: [] } },
+    fetchTask: (_project, id) => new Promise((resolve, reject) => reads.push({ id, resolve, reject })),
+  })
+  const unsubscribe = runtime.onProjectUpdate(() => { notifications++ })
+  const emit = (id: string, action = 'task_updated', project = 'project') => runtime.acceptFrame({
+    kind: 'project.updated', project_id: project, event: { payload: { project_id: project, task_id: id, action } },
+  })
+  const flush = async () => { for (let i = 0; i < 16; i++) await Promise.resolve() }
+  const lease = runtime.acquire('project')
+  await lease.ready
+  assert.deepEqual(reads.map(read => read.id), ['first', 'second'])
+  reads[0].resolve({ task: tasks[0] })
+  reads[1].resolve({ task: tasks[1] })
+  await flush()
+  const unrelated = state.project.tasks[1]
+  emit('first')
+  for (let i = 0; i < 20; i++) emit('first')
+  assert.deepEqual(reads.map(read => read.id), ['first', 'second', 'first'])
+  assert.equal(collections, 1)
+  assert.equal(mediaReads, 1)
+  assert.equal(state.project.loading, false)
+  assert.equal(state.project.stale, false)
+  reads[2].resolve({ task: { ...tasks[0], revision: 2, session_id: 'replacement', title: 'Updated' } })
+  await flush()
+  assert.equal(state.project.tasks[0].sessionId, 'replacement')
+  assert.equal(state.project.tasks[0].title, 'Updated')
+  assert.equal(state.project.tasks[1], unrelated)
+  assert.equal(reads.length, 4) // One completion-coalesced trailing read.
+  reads[3].resolve({ task: { ...tasks[0], revision: 1, is_integrated: true } })
+  await flush()
+  assert.equal(state.project.tasks[0].revision, 2)
+  assert.equal(state.project.tasks[0].isIntegrated, false)
+  emit('queued') // Undeployed cards must also receive durable updates.
+  reads[4].resolve({ task: { ...tasks[2], revision: 2, session_id: 'deployed', status: 'in_progress' } })
+  await flush()
+  assert.equal(state.project.tasks[2].sessionId, 'deployed')
+  assert.equal(state.project.tasks[2].status, 'running')
+  emit('first')
+  reads[5].reject(new Error('inspection unavailable'))
+  await flush()
+  assert.equal(state.project.tasks[0].gitStatus, 'unknown')
+  assert.equal(state.project.tasks[0].isIntegrated, false)
+  assert.equal(state.project.tasks[0].syncWarning, 'inspection unavailable')
+  emit('queued')
+  reads[6].resolve({ task: { ...tasks[2], revision: 3, session_id: 'deployed', archived: true } })
+  await flush()
+  assert.deepEqual(state.project.tasks.map(task => task.id), ['first', 'second'])
+  const idleReads = reads.length
+  emit('first', 'task_updated', 'foreign')
+  await flush()
+  assert.equal(reads.length, idleReads)
+  assert.equal(collections, 1)
+  assert.equal(mediaReads, 1)
+  assert.equal(notifications, 1) // Foreign fallback only; no task-update theme churn.
+  emit('second', 'task_deleted')
+  await flush()
+  assert.equal(collections, 2)
+  assert.equal(mediaReads, 2)
+  // Resolve the collection's Git observations before triggering reconnect repair.
+  for (const read of reads.slice(idleReads)) read.resolve({ task: tasks.find(task => task.id === read.id) })
+  await flush()
+  runtime.acceptFrame({ kind: 'rehydrate.required' })
+  await flush()
+  assert.equal(collections, 3)
+  assert.equal(mediaReads, 3)
+  lease.release()
+  for (const read of reads.slice(idleReads)) read.resolve({ task: tasks.find(task => task.id === read.id) })
+  await flush()
+  assert.equal(state.project, undefined)
+  unsubscribe()
+})
