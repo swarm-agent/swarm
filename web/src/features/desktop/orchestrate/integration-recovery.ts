@@ -38,7 +38,7 @@ export function integrationFailure(project: ProjectSummary, task: RunningTask, e
 
 export function repairUnavailable(task: RunningTask): string | undefined {
   if (!task.sessionId || !task.sourceWorkspacePath || !task.sourceWorkspaceId || !task.baseBranch || !task.worktreeBranch) {
-    return 'Repair launch requires the originating session, authenticated source workspace and captured source/target branches. Copy the context to Orchestrator for investigation.'
+    return 'Repair launch requires the originating session, authenticated source workspace and captured source/target branches. Refresh the task and inspect its retained history before retrying.'
   }
 }
 

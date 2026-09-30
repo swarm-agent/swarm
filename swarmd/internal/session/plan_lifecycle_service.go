@@ -633,6 +633,7 @@ func (s *PlanLifecycleService) SubmitProjectTaskStructuredPlan(input ProjectTask
 	}
 
 	updatedTask, err := s.sessions.store.UpdateProjectTask(input.AccountScopeID, input.ProjectID, input.TaskID, func(t *pebblestore.ProjectTaskRecord) error {
+		if t.ActiveAttemptID != "" && t.ActiveAttemptID != "initial" && t.SessionID != sessionID { return errors.New("historical session cannot replace active task plan") }
 		t.SessionID = sessionID
 		t.WorkspacePath = wsPath
 		t.PlanBinding = &pebblestore.ProjectTaskPlanBinding{

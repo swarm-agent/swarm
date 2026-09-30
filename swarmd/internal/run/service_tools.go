@@ -2966,6 +2966,9 @@ func (s *Service) executeTaskProgressTool(sessionID string, call tool.Call, appl
 		}
 		if summaryText != "" {
 			metadata["lifecycle_summary"] = summaryText
+			if state, found, err := s.sessions.Store().GetV3SessionRunState(sessionID); err == nil && found && state.AccountScopeID == session.AccountScopeID {
+				metadata["lifecycle_summary_run_id"] = state.RunID
+			} else { delete(metadata, "lifecycle_summary_run_id") }
 		}
 
 		nowMS := time.Now().UnixMilli()

@@ -1241,8 +1241,10 @@ export function aggregateTaskLiveState(
     taskTodos,
     activeTodo: status === 'running' ? activeSubtaskTitle || undefined : undefined,
     subtasks: taskTodos ? taskTodos.map((todo) => ({ ...todo, completed: todo.status === 'completed' })) : task.subtasks,
-    handoffSummary: status === 'needs_review' && primarySess?.metadata?.lifecycle_signal === 'needs_review'
-      ? primarySess.metadata.lifecycle_summary : undefined,
+    handoffSummary: status === 'needs_review'
+      ? task.activeAttemptId ? task.handoffSummary
+        : primarySess?.metadata?.lifecycle_signal === 'needs_review' ? primarySess.metadata.lifecycle_summary : task.handoffSummary
+      : undefined,
     activeAgent: activeSettings?.resolved_agent_name?.trim() || activeSettings?.agent_name?.trim() || undefined,
     activeProvider: activePreference?.provider?.trim() || undefined,
     activeModel: activePreference?.model?.trim() || undefined,

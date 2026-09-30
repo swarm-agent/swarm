@@ -1053,15 +1053,13 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 		return err
 	}
 	wsPath := task.SourceWorkspace.Path
-	if task.WorkspacePath != wsPath {
-		return errors.New("task execution source differs from reserved workspace; reconcile existing session")
-	}
 	if existing, ok, err := s.sessions.Store().GetSession(task.SessionID); err != nil {
 		return err
 	} else if ok {
 		return s.reconcileProjectTaskSession(p, proj, task, existing, taskStatus)
 	}
 
+	if task.WorkspacePath != wsPath { return errors.New("reserved source differs from execution path without an owned session") }
 	mode := sessionruntime.ModeAuto
 	targetAgent := strings.TrimSpace(task.Agent)
 	if targetAgent == "plan" || task.Status == "planning" || task.TaskProgram != nil || task.OutcomeType == "plan_spec" || (targetAgent == "swarm" && strings.EqualFold(task.FeatureSize, "big")) {
@@ -1071,6 +1069,8 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 	if targetAgent == "" {
 		targetAgent = "swarm"
 	}
+
+	if task.ActiveAttemptID != "" && task.ActiveAttemptID != "initial" { mode, targetAgent = sessionruntime.ModeAuto, "swarm" }
 
 	// Resolve canonical default Swarm preference for fallback or primary Swarm task
 	var defaultSwarmPref pebblestore.ModelPreference
@@ -1196,6 +1196,7 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 		"project_id":           task.ProjectID,
 		"task_id":              task.ID,
 		"task_title":           task.Title,
+		"task_attempt_id":      task.ActiveAttemptID,
 		"agent_name":           agentProfile.Name,
 		"resolved_agent_name":  agentProfile.Name,
 		"agent_mode":           agentProfile.Mode,
@@ -1276,11 +1277,22 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 	}
 
 	var admission *pebblestore.WorktreeAdmissionEvidence
-	if targetAgent == "coder" || mode == sessionruntime.ModePlan || task.OutcomeType == "code_pr" || task.OutcomeType == "bug_patch" {
+	if targetAgent == "coder" || mode == sessionruntime.ModePlan || task.OutcomeType == "code_pr" || task.OutcomeType == "bug_patch" || task.ActiveAttemptID != "" && task.ActiveAttemptID != "initial" {
 		if s.worktrees == nil {
 			return errors.New("worktree service is not configured; coding task requires worktree isolation")
 		}
-		alloc, err := s.worktrees.AllocateDetachedWorkspaceRequestedForPrincipal(p, wsPath, sessionID, "", worktreeBranch)
+		var alloc worktreeruntime.Allocation
+		var err error
+		if task.ActiveAttemptID != "" && task.ActiveAttemptID != "initial" {
+			allocator, ok := s.worktrees.(interface { AllocateProjectTaskFollowup(identity.Principal, string, string, string, string, string) (worktreeruntime.Allocation, error) })
+			if !ok { return errors.New("durable follow-up allocator unavailable") }
+			head := task.ActiveAttempt().AllocationHead
+			if head == "" { head = task.BaseCommit }
+			alloc, err = allocator.AllocateProjectTaskFollowup(p, wsPath, sessionID, worktreeBranch, head, task.BaseBranch)
+			if err == nil && task.ActiveAttempt().Recovery != nil { alloc.BaseCommit = task.ActiveAttempt().Recovery.BaseCommit }
+		} else {
+			alloc, err = s.worktrees.AllocateDetachedWorkspaceRequestedForPrincipal(p, wsPath, sessionID, "", worktreeBranch)
+		}
 		if err != nil {
 			return fmt.Errorf("worktree allocation failed for coder task: %w", err)
 		}
@@ -1318,11 +1330,11 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 			OwnerSessionID:       sessionID,
 			Branch:               alloc.BranchName,
 			DelegatedCoder:       targetAgent == "coder",
-			AllocatedRuntimeRoot: mode == sessionruntime.ModePlan || len(task.CoderAssignments) > 0,
+			AllocatedRuntimeRoot: mode == sessionruntime.ModePlan || len(task.CoderAssignments) > 0 || task.ActiveAttemptID != "" && task.ActiveAttemptID != "initial",
 		}
 	}
 
-	createKey := fmt.Sprintf("project-task:create:%s:%s", task.ProjectID, task.ID)
+	createKey := fmt.Sprintf("project-task:create:%s:%s:%s", task.ProjectID, task.ID, task.SessionID)
 	_, createErr := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
 		WorktreeAdmission: admission,
 		SessionID:         sessionID,
@@ -1346,7 +1358,8 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 	if mode == sessionruntime.ModePlan {
 		seedMsg += "\n\n## Planning phase\nInvestigate only as needed, then submit a complete executable structured plan using exit_plan_mode. Include ordered checkpoints, concrete tasks and acceptance criteria. This project task must show the submitted plan for user approval before any implementation. Do not write implementation files or execute the task in this phase. For coding deliverables, include a checkpoint task_program with a Coder job, explicit workspace-relative owned_scope, implementation instructions, deliverable, acceptance_criteria and dependency_evidence. The approved checkpoint must launch that program rather than implementing directly in the planner workspace. Preserve every user requirement, including committing changes. Complete the checkpoint through the plan lifecycle only after verifying the returned deliverable; completing subtasks alone is not checkpoint completion."
 	}
-	msgID := fmt.Sprintf("msg_%s_%d", sessionID, now)
+	msgID := fmt.Sprintf("msg_%s_seed", sessionID)
+	seedMsg += projectTaskFollowupContext(task)
 	msg := pebblestore.MessageSnapshot{
 		ID:             msgID,
 		SessionID:      sessionID,
@@ -1366,7 +1379,7 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 	var runIntent *pebblestore.V3SessionRunIntent
 	runID := ""
 	if taskStatus == "in_progress" {
-		runID = fmt.Sprintf("desktop-v3-run:task-%s", task.ID)
+		runID = task.ExecutionRunID()
 		parentSessionID := ""
 		if proj != nil && len(task.CoderAssignments) == 0 {
 			parentSessionID = proj.PrimarySessionID
@@ -1385,7 +1398,7 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 		}
 	}
 
-	msgKey := fmt.Sprintf("project-task:seed:%s:%s", task.ProjectID, task.ID)
+	msgKey := fmt.Sprintf("project-task:seed:%s:%s:%s", task.ProjectID, task.ID, task.SessionID)
 	_, appendErr := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
 		SessionID:       sessionID,
 		UserID:          p.UserID,
@@ -3872,136 +3885,10 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 7b. Reopen task session: POST /v3/projects/{id}/tasks/{taskId}/reopen
-	if len(segments) == 4 && segments[1] == "tasks" && segments[3] == "reopen" {
-		taskID := segments[2]
-		if r.Method != http.MethodPost {
-			writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
-			return
-		}
-		if !s.requireScopeAny(w, r, "projects:write", "sessions:write") {
-			return
-		}
-		var req struct {
-			Feedback           string `json:"feedback,omitempty"`
-			DefinitionRevision int    `json:"definition_revision,omitempty"`
-			SessionID          string `json:"session_id,omitempty"`
-			PlanID             string `json:"plan_id,omitempty"`
-		}
-		if !readProjectTaskJSON(w, r, &req) {
-			return
-		}
-		fb := strings.TrimSpace(req.Feedback)
-
-		existing, found, err := db.GetProjectTask(p.AccountScopeID, projectID, taskID)
-		if err != nil || !found || existing == nil {
-			writeError(w, http.StatusNotFound, errors.New("task not found"))
-			return
-		}
-		if existing.AccountID != "" && existing.AccountID != p.AccountScopeID {
-			writeError(w, http.StatusForbidden, errors.New("cross-account task reopen forbidden"))
-			return
-		}
-		if existing.ProjectID != "" && existing.ProjectID != projectID {
-			writeError(w, http.StatusForbidden, errors.New("cross-project task reopen forbidden"))
-			return
-		}
-		if req.SessionID != "" && existing.SessionID != "" && req.SessionID != existing.SessionID {
-			writeError(w, http.StatusBadRequest, fmt.Errorf("session ID mismatch: expected %q, got %q", existing.SessionID, req.SessionID))
-			return
-		}
-		if req.PlanID != "" && (existing.PlanBinding == nil || req.PlanID != existing.PlanBinding.PlanID) {
-			writeError(w, http.StatusBadRequest, fmt.Errorf("plan ID mismatch: expected %q, got %q", existing.PlanBinding.PlanID, req.PlanID))
-			return
-		}
-		if req.DefinitionRevision > 0 {
-			if existing.PlanBinding != nil && existing.PlanBinding.DefinitionRevision > 0 && req.DefinitionRevision != existing.PlanBinding.DefinitionRevision {
-				writeError(w, http.StatusBadRequest, fmt.Errorf("plan definition is stale (guarded revision %d, current %d)", req.DefinitionRevision, existing.PlanBinding.DefinitionRevision))
-				return
-			}
-			if existing.Revision > 0 && req.DefinitionRevision != existing.Revision {
-				writeError(w, http.StatusBadRequest, fmt.Errorf("task revision is stale (guarded revision %d, current %d)", req.DefinitionRevision, existing.Revision))
-				return
-			}
-		}
-		if existing.PlanBinding != nil || existing.Status == "pending_approval" || existing.Status == "planning" || existing.Status == "rejected" {
-			writeError(w, http.StatusConflict, errors.New("task requires structured plan review or revision; reopen cannot bypass approval"))
-			return
-		}
-
-		updated, err := db.UpdateProjectTask(p.AccountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
-			t.Status = "in_progress"
-			t.IsIntegrated = false
-			t.GitStatus = "unknown"
-			t.ActionNeeded = "Task reopened by user"
-			if fb != "" {
-				t.FeedbackHistory = append(t.FeedbackHistory, fb)
-				t.WhatDidDo = append(t.WhatDidDo, fmt.Sprintf("Reopened with instructions: %s", truncateString(fb, 50)))
-			} else {
-				t.WhatDidDo = append(t.WhatDidDo, "Task reopened for further execution")
-			}
-			return nil
-		})
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, err)
-			return
-		}
-		if updated != nil && updated.SessionID != "" {
-			proj, _, _ := db.GetProject(p.AccountScopeID, projectID)
-			now := time.Now().UnixMilli()
-			runID := fmt.Sprintf("desktop-v3-run:%s", sessionruntime.NewSessionID())
-			msgID := fmt.Sprintf("msg_%s_%d", updated.SessionID, now)
-			promptMsg := "Task reopened by user. Please continue execution and complete all requirements."
-			if fb != "" {
-				promptMsg = fmt.Sprintf("Task reopened by user with feedback: %s\nPlease resume execution and address this.", fb)
-			}
-			msg := pebblestore.MessageSnapshot{
-				ID:             msgID,
-				SessionID:      updated.SessionID,
-				UserID:         p.UserID,
-				AccountScopeID: p.AccountScopeID,
-				Role:           "user",
-				Content:        promptMsg,
-				CreatedAt:      now,
-			}
-			parentSessionID := ""
-			if proj != nil {
-				parentSessionID = proj.PrimarySessionID
-			}
-			runIntent := &pebblestore.V3SessionRunIntent{
-				SessionID:       updated.SessionID,
-				RunID:           runID,
-				EpochID:         "epoch-00000000000000000001",
-				UserID:          p.UserID,
-				AccountScopeID:  p.AccountScopeID,
-				ParentSessionID: parentSessionID,
-				SourceMessageID: msgID,
-				Status:          pebblestore.V3RunIntentPendingExecutor,
-				CreatedAt:       now,
-				UpdatedAt:       now,
-			}
-			reopenKey := fmt.Sprintf("project-task:reopen:%s:%d", updated.SessionID, now)
-			_, _ = s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
-				SessionID:       updated.SessionID,
-				UserID:          p.UserID,
-				AccountScopeID:  p.AccountScopeID,
-				ClientRequestID: reopenKey,
-				IdempotencyKey:  reopenKey,
-				PayloadHash:     reopenKey,
-				RequestHash:     reopenKey,
-				Kind:            pebblestore.V3SessionMutationAppendMessage,
-				Message:         &msg,
-				RunIntent:       runIntent,
-				NowUnixMs:       now,
-			})
-			s.EnqueueSessionRun(p, updated.SessionID, runID, parentSessionID)
-		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"status": "reopened",
-			"task":   sanitizeProjectTaskForClient(updated),
-		})
+	if len(segments) == 4 && segments[1] == "tasks" && (segments[3] == "reopen" || segments[3] == "history") {
+		s.handleProjectTaskFollowup(w, r, p, projectID, segments[2])
 		return
 	}
-
 	// 7c. Complete task: POST /v3/projects/{id}/tasks/{taskId}/complete
 	if len(segments) == 4 && segments[1] == "tasks" && segments[3] == "complete" {
 		taskID := segments[2]
@@ -4034,7 +3921,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if guards.PlanID != "" && (existing.PlanBinding == nil || guards.PlanID != existing.PlanBinding.PlanID) {
-			writeError(w, http.StatusBadRequest, fmt.Errorf("plan ID mismatch: expected %q, got %q", existing.PlanBinding.PlanID, guards.PlanID))
+			writeError(w, http.StatusBadRequest, errors.New("plan ID mismatch"))
 			return
 		}
 		if guards.DefinitionRevision > 0 {
@@ -4382,6 +4269,15 @@ func sanitizeProjectTaskForClient(t *pebblestore.ProjectTaskRecord) *pebblestore
 		return nil
 	}
 	cp := *t
+	cp.Attempts = append([]pebblestore.ProjectTaskAttempt(nil), t.Attempts...)
+	// Board responses carry bounded references; full chronological requests use /history.
+	if len(cp.Attempts) > 10 { cp.Attempts = cp.Attempts[len(cp.Attempts)-10:] }
+	for i := range cp.Attempts {
+		cp.Attempts[i].Deliverables = append([]pebblestore.ProjectTaskDeliverable(nil), cp.Attempts[i].Deliverables...)
+		for j := range cp.Attempts[i].Deliverables {
+			cp.Attempts[i].Deliverables[j].VideoProvenance = cp.Attempts[i].Deliverables[j].VideoProvenance.ClientSafeCopy()
+		}
+	}
 	if cp.VideoProvenance != nil {
 		cp.VideoProvenance = cp.VideoProvenance.ClientSafeCopy()
 	}

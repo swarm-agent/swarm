@@ -1,7 +1,7 @@
 import { useState, useMemo, useEffect, useCallback, useRef, useSyncExternalStore } from 'react'
+import { projectTaskFollowupPayload } from '../runtime/project-task-followup'
+import { TaskAttemptHistory } from './task-attempt-history'
 import { integrationFailure, repairUnavailable, redactIntegrationDiagnostic, orchestratorDrafts, type IntegrationFailure } from './integration-recovery'
-import { createDesktopV3NewSessionOperation, startNewDesktopV3Session, type DesktopV3NewSessionOperation } from '../session-v3/new-session-flow'
-import { resolveDesktopChatRouteFromSession } from '../chat/services/chat-routing'
 import { useVideoTaskDefault } from './use-video-task-default'
 import { getUISettings } from '../settings/swarm/queries/get-ui-settings'
 import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
@@ -5191,7 +5191,6 @@ export function OrchestrateView({
   const recoveryProjectRef = useRef(selectedProject?.id)
   recoveryProjectRef.current = selectedProject?.id
   const repairFlights = useRef(new Set<string>())
-  const repairOperations = useRef(new Map<string, DesktopV3NewSessionOperation>())
   const [repairStates, setRepairStates] = useState<Record<string, { loading?: boolean; error?: string; sessionId?: string }>>({})
   const [integratingTaskIds, setIntegratingTaskIds] = useState<Set<string>>(new Set())
   const integratingTaskFlights = useRef(new Set<string>())
@@ -5320,6 +5319,7 @@ export function OrchestrateView({
       if (linkedSessionId) {
         setActiveSessionId(linkedSessionId)
         setActiveTaskId(res.task.id || taskId)
+        setSelectedTaskId(taskId)
         void hydrateDesktopV3ChildCard(linkedSessionId, { activePlan: true, permissionSummary: true }).catch(() => undefined)
       }
     } catch (err: any) {
@@ -5387,32 +5387,29 @@ export function OrchestrateView({
   }
 
   const renderIntegrationRecovery = (task: RunningTask) => {
-    const failure = integrationFailures[task.id]
-    if (!selectedProject || !failure || failure.projectId !== selectedProject.id) return null
+    const failure = integrationFailures[task.id] || (selectedProject && task.integration && ['failed', 'conflict'].includes(task.integration.state)
+      ? integrationFailure(selectedProject, task, new Error(task.integration.error || 'Integration failed; retained backend receipt')) : undefined)
+    if (!selectedProject) return null
+    const history = <TaskAttemptHistory key={`${selectedProject.id}:${task.id}:${task.activeAttemptId || 'initial'}`} projectId={selectedProject.id} taskId={task.id} onOpen={sessionId => {
+      setSelectedTaskId(task.id); setActiveTaskId(task.id); setActiveSessionId(sessionId); setWorkerChatOpen(true)
+      void hydrateDesktopV3ChildCard(sessionId, { activePlan: true, permissionSummary: true }).catch(() => undefined)
+    }} />
+    if (!failure || failure.projectId !== selectedProject.id) return history
     const state = repairStates[task.id]
     const unavailable = repairUnavailable(failure.task)
     return <div className="integration-recovery" role="alert" onClick={event => event.stopPropagation()}>
+      {history}
       <strong>Integration failed</strong>
       <pre>{failure.error}</pre>
       <div className="flex flex-wrap gap-2">
         <button type="button" disabled={Boolean(unavailable) || state?.loading} onClick={() => void launchIntegrationRepair(failure)}>
           {state?.loading ? 'Launching…' : state?.sessionId ? 'Open repair session' : 'Launch repair session'}
         </button>
-        <button type="button" disabled={!selectedProject.primarySessionId} onClick={() => {
-          const sessionId = selectedProject.primarySessionId
-          if (!sessionId) return
-          orchestratorDrafts.append(`${failure.projectId}:${sessionId}`, failure.brief)
-          selectedWorkerRef.current = null
-          setSelectedWorker(null)
-          setWorkerChatOpen(true)
-          handleBackToOrchestrator()
-        }}>Copy into Orchestrator chat</button>
         <button type="button" aria-label="Dismiss integration error" onClick={() => setIntegrationFailures(previous => {
           const next = { ...previous }; delete next[task.id]; return next
         })}>Dismiss</button>
       </div>
       {unavailable && <p>{unavailable}</p>}
-      {!selectedProject.primarySessionId && <p>Project Orchestrator session is unavailable. Refresh the project before copying.</p>}
       {state?.error && <p>{state.error}</p>}
     </div>
   }
@@ -5421,9 +5418,9 @@ export function OrchestrateView({
     const task = failure.task
     if (repairFlights.current.has(task.id) || repairUnavailable(task)) return
     if (repairStates[task.id]?.sessionId) {
-      setActiveTaskId(null)
+      setActiveTaskId(task.id)
       setActiveSessionId(repairStates[task.id].sessionId!)
-      setSelectedTaskId('')
+      setSelectedTaskId(task.id)
       setWorkerChatOpen(true)
       selectedWorkerRef.current = null
       setSelectedWorker(null)
@@ -5432,32 +5429,18 @@ export function OrchestrateView({
     repairFlights.current.add(task.id)
     setRepairStates(previous => ({ ...previous, [task.id]: { loading: true } }))
     try {
-      let operation = repairOperations.current.get(task.id)
-      if (!operation) {
-        await hydrateDesktopV3ChildCard(task.sessionId!)
-        const record = getDesktopV3CacheSnapshot().sessionsById[task.sessionId!]
-        const route = resolveDesktopChatRouteFromSession(record?.kind === 'full' ? record.session : null, [])
-        if (!route || route.hostWorkspacePath !== task.sourceWorkspacePath) {
-          throw new Error('Originating session does not resolve the captured source workspace. Copy into Orchestrator chat to investigate.')
-        }
-        operation = createDesktopV3NewSessionOperation({
-          workspacePath: task.sourceWorkspacePath!, workspaceName: '',
-          // The origin's runtime path is its old worktree, not a new deployment binding.
-          // Omit it so the backend resolves the authorized binding destination.
-          route: { ...route, runtimeWorkspacePath: '' },
-          agentName: 'swarm', mode: 'auto', title: `Repair integration: ${task.title}`,
-          prompt: failure.brief,
-          worktree: { mode: 'on', useCurrentBranch: false, baseBranch: task.baseBranch, branchName: `repair-${crypto.randomUUID().slice(0, 8)}` },
-        })
-        // Retain exact idempotency identities after partial create/send failures.
-        repairOperations.current.set(task.id, operation)
-      }
-      const result = await startNewDesktopV3Session({ operation, shouldSelectSession: () => false })
-      setRepairStates(previous => ({ ...previous, [task.id]: { sessionId: result.sessionId } }))
+      const active = task.attempts?.find(attempt => attempt.id === task.activeAttemptId && attempt.launch_state !== 'launched')
+      const body = await projectTaskFollowupPayload(failure.projectId, task.id, active?.request_revision ?? task.revision ?? 0, 'Repair the failed integration for this task. Preserve the captured target, inspect the retained integration receipt, and coordinate the repair without automatic promotion.', true)
+      const result = await requestJson<{ task: any }>(`/v3/projects/${encodeURIComponent(failure.projectId)}/tasks/${encodeURIComponent(task.id)}/reopen`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      })
+      if (!result.task?.session_id) throw new Error('Missing task-linked repair session')
+      desktopProjects.invalidate(failure.projectId)
+      setRepairStates(previous => ({ ...previous, [task.id]: { sessionId: result.task.session_id } }))
       if (recoveryProjectRef.current !== failure.projectId) return
-      setActiveTaskId(null)
-      setSelectedTaskId('')
-      setActiveSessionId(result.sessionId)
+      setActiveTaskId(task.id)
+      setSelectedTaskId(task.id)
+      setActiveSessionId(result.task.session_id)
       setWorkerChatOpen(true)
       selectedWorkerRef.current = null
       setSelectedWorker(null)
@@ -5525,12 +5508,17 @@ export function OrchestrateView({
     if (!selectedProject?.id) return
     handleClearTaskError(taskId)
     try {
+      const targetTask = tasks.find(task => task.id === taskId)
+      const request = feedback || 'Continue this task and address remaining requirements.'
+      const active = targetTask?.attempts?.find(attempt => attempt.id === targetTask.activeAttemptId)
+      const revision = active && active.launch_state !== 'launched' && active.request === request
+        ? active.request_revision ?? 0 : targetTask?.revision ?? 0
       const res = await requestJson<{ status: string; task: any }>(
         `/v3/projects/${selectedProject.id}/tasks/${taskId}/reopen`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ feedback }),
+          body: JSON.stringify(await projectTaskFollowupPayload(selectedProject.id, taskId, revision, request)),
         }
       )
       if (!res?.task) {
@@ -5545,6 +5533,7 @@ export function OrchestrateView({
       if (linkedSessionId) {
         setActiveSessionId(linkedSessionId)
         setActiveTaskId(res.task.id || taskId)
+        setSelectedTaskId(taskId)
         void hydrateDesktopV3ChildCard(linkedSessionId, { activePlan: true, permissionSummary: true }).catch(() => undefined)
       }
     } catch (err: any) {
