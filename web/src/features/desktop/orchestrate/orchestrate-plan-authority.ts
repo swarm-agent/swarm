@@ -7,6 +7,9 @@ export function selectTaskPlanDocument(task: any, sessionPlan: any): any {
  const revision=binding?.definitionRevision ?? binding?.definition_revision
  if(!taskDoc)return sessionPlan?.document
  if(!sessionPlan?.document)return taskDoc
+ // Pending review must display exactly the definition sent by the task API.
+ // A session execution version is not an acceptance revision.
+ if(task.status==='pending_approval' || task.status==='planning')return taskDoc
  const sessionId=sessionPlan.id || sessionPlan.plan_id || sessionPlan.document.id
  const version=sessionPlan.definition_revision ?? sessionPlan.version
  if(sessionId!==id || typeof version!=='number' || typeof revision!=='number' || version<revision)return taskDoc

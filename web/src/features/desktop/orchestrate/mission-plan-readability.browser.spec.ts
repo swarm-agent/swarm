@@ -41,20 +41,22 @@ test('mission proposal wraps full structured and fallback plans without changing
   const task = {
     id: 'proposal', title: 'Tier 3 proposal', tier: 'complex', status: 'pending_approval', agentType: 'plan', outcomeType: 'plan_spec',
     planSummary: fields.overview, agents: [],
-    planDocument: { title: fields.title, info: { goal: fields.goal }, checkpoints: [{ id: 'cp-1', title: fields.checkpoint, objective: fields.objective, tasks: [fields.task], acceptance_criteria: [fields.criterion], notes: fields.notes }] },
+    planDocument: { title: fields.title, info: { goal: fields.goal }, checkpoints: [{ id: 'cp-1', title: fields.checkpoint, objective: fields.objective, tasks: [fields.task], acceptance_criteria: [fields.criterion], notes: fields.notes }, { id: 'cp-2', title: 'Recovery', tasks: ['Test restart'], acceptance_criteria: ['No duplicate continuation'] }] },
     taskProgram: { id: 'program', stages: [{ id: fields.stage, depends_on: [fields.dependency], dependency_evidence: fields.evidence }], jobs: [{ id: 'job', stage_id: fields.stage, agent_type: 'coder', title: fields.job, owned_scope: [fields.scope], deliverable: fields.deliverable, acceptance_criteria: [fields.first, fields.second, fields.third] }] },
   }
   const bundle = await build({ stdin: { resolveDir: process.cwd(), loader: 'tsx', contents: `
     import React from 'react'; import {createRoot} from 'react-dom/client';
     import {QueryClient,QueryClientProvider} from '@tanstack/react-query';
     import {MinimalTaskCard} from './src/features/desktop/orchestrate/OrchestrateView';
+    import {mapBackendTask} from './src/features/desktop/state/desktop-projects-state';
     const client=new QueryClient({defaultOptions:{queries:{retry:false}}});
     const root=createRoot(document.getElementById('root'));
-    const task=${JSON.stringify(task)};
+    const original=${JSON.stringify(task)};
+    const task={...original,...mapBackendTask({id:original.id,title:original.title,tier:original.tier,status:original.status,agent:original.agentType,outcome_type:original.outcomeType,plan_summary:original.planSummary,session_id:'session',plan_binding:{plan_id:'plan',session_id:'session',definition_revision:1},plan_document:original.planDocument,task_program:original.taskProgram,auto_approve:true})};
     window.calls=[];
-    window.renderProposal=(fallback=false, rejected=false)=>root.render(<QueryClientProvider client={client}>
+    window.renderProposal=(fallback=false, rejected=false, busy=false, error='')=>root.render(<QueryClientProvider client={client}>
       <MinimalTaskCard key={String(fallback)+String(rejected)} isExpanded task={fallback ? {...task,agentType:'coder',outcomeType:'code_pr',planDocument:null,taskProgram:null,fullPlanMarkdown:${JSON.stringify(fields.markdown)}} : {...task,planDocument:{...task.planDocument,status:rejected?'rejected':'pending'}}}
-        onSelect={()=>window.calls.push('select')} onApprove={()=>window.calls.push('approve')} onRefine={feedback=>window.calls.push(feedback)}/>
+        isApproving={busy} taskError={error} onSelect={()=>window.calls.push('select')} onApprove={()=>window.calls.push('approve')} onRefine={feedback=>window.calls.push(feedback)}/>
     </QueryClientProvider>);
     window.renderProposal();
   ` }, bundle: true, write: false, format: 'iife', platform: 'browser', jsx: 'automatic', logLevel: 'silent' })
@@ -72,6 +74,10 @@ test('mission proposal wraps full structured and fallback plans without changing
     await page.addScriptTag({ content: bundle.outputFiles[0].text })
     const reader = page.getByTestId('task-plan-reader')
     await reader.waitFor()
+    assert.equal(await page.getByText('Auto-Approved', { exact: true }).count(), 0)
+    assert.equal(await page.getByTestId('plan-checkpoint-cp-2').evaluate(node => (node as HTMLDetailsElement).open), true)
+    assert.ok((await reader.textContent())?.includes('Test restart'))
+    assert.ok((await reader.textContent())?.includes('No duplicate continuation'))
     for (const [viewport, width] of [[390, 320], [1100, 320], [1100, 760]]) {
       await page.setViewportSize({ width: viewport, height: 900 })
       await page.locator('#root').evaluate((root, width) => { root.style.width = `${width}px` }, width)
@@ -105,6 +111,15 @@ test('mission proposal wraps full structured and fallback plans without changing
     await page.getByPlaceholder("e.g. Keep in web workspace only, don't touch daemon API...").press('Enter')
     await page.getByTestId('approve-task-btn').click()
     assert.deepEqual(await page.evaluate(() => (window as any).calls), ['Keep every criterion', 'approve'])
+    await page.evaluate(() => (window as any).renderProposal(false, false, true))
+    assert.equal(await page.getByTestId('approve-task-btn').isDisabled(), true)
+    assert.ok((await reader.textContent())?.includes('No duplicate continuation'))
+    await page.evaluate(() => (window as any).renderProposal(false, false, false, 'Scheduling unavailable'))
+    await page.getByTestId('task-error-banner').waitFor()
+    assert.ok((await page.getByTestId('task-error-banner').textContent())?.includes('Scheduling unavailable'))
+    assert.equal(await page.getByTestId('retry-approve-btn').isDisabled(), false)
+    await page.getByTestId('retry-approve-btn').click()
+    assert.deepEqual(await page.evaluate(() => (window as any).calls), ['Keep every criterion', 'approve', 'approve'])
     await page.evaluate(() => (window as any).renderProposal(false, true))
     await page.getByTestId('task-plan-rejected-banner').waitFor()
     assert.equal(await page.getByTestId('approve-task-btn').isDisabled(), true)

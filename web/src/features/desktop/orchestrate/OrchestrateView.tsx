@@ -719,7 +719,7 @@ export function MinimalTaskCard({
   }
   const agentModelSettingsQuery = useQuery(agentModelSettingsQueryOptions())
   const isPlanning = task.status === 'planning'
-  const isPendingApproval = task.status === 'pending_approval' || task.status === 'queued'
+  const isPendingApproval = task.status === 'pending_approval'
   const [isFullPlanOpen, setIsFullPlanOpen] = useState(isPendingApproval)
   const [isModelChangerOpen, setIsModelChangerOpen] = useState(false)
   const [selectedTaskModel, setSelectedTaskModel] = useState(task.model || '')
@@ -1126,7 +1126,7 @@ export function MinimalTaskCard({
                   Rev {task.revision}
                 </span>
               )}
-              {task.autoApprove && (
+              {task.autoApprove && !hasPlanBinding && task.agentType !== 'plan' && task.outcomeType !== 'plan_spec' && (
                 <span className="font-mono text-[9px] px-1.5 py-0.5 rounded bg-emerald-950/60 text-emerald-300 border border-emerald-500/30 flex items-center gap-1 font-bold">
                   <Zap size={9} />
                   <span>Auto-Approved</span>
@@ -1534,7 +1534,7 @@ export function MinimalTaskCard({
                             ? cp.acceptance_criteria
                             : (cp.criteria && Array.isArray(cp.criteria) ? cp.criteria : [])
                           return (
-                            <details key={cp.id || idx} open={idx === 0} className="swarm-plan-step space-y-1.5" onClick={e => e.stopPropagation()} data-testid={`plan-checkpoint-${cp.id || idx}`}>
+                            <details key={cp.id || idx} open={isPendingApproval || idx === 0} className="swarm-plan-step space-y-1.5" onClick={e => e.stopPropagation()} data-testid={`plan-checkpoint-${cp.id || idx}`}>
                               <summary className="font-semibold cursor-pointer">
                                 <div className="min-w-0 flex items-start gap-1.5">
                                   <span className="text-blue-400 font-mono shrink-0">{idx + 1}.</span>
@@ -5261,7 +5261,7 @@ export function OrchestrateView({
       (targetTask as any).plan_binding?.planId ||
       (targetTask as any).plan_binding?.plan_id
     )
-    if ((isPlanTask || hasBinding) && (!acceptanceBody.plan_id || acceptanceBody.definition_revision == null || acceptanceBody.definition_revision <= 0)) {
+    if ((isPlanTask || hasBinding) && (!acceptanceBody.session_id || (targetTask.sessionId && acceptanceBody.session_id !== targetTask.sessionId) || !acceptanceBody.plan_id || acceptanceBody.definition_revision == null || acceptanceBody.definition_revision <= 0)) {
       setTaskActionErrors((prev) => ({
         ...prev,
         [taskId]: 'Plan definition revision guard is missing or stale. Cannot execute without verified plan revision.',
@@ -5278,7 +5278,7 @@ export function OrchestrateView({
     let approveRequestId: string
     if (acceptanceBody.plan_id && typeof acceptanceBody.definition_revision === 'number') {
       // Deterministic exact binding-derived request identity
-      approveRequestId = `approve:${taskId}:${targetTask.revision || 1}:${acceptanceBody.plan_id}:r${acceptanceBody.definition_revision}`
+      approveRequestId = `approve:${taskId}:${acceptanceBody.session_id}:${acceptanceBody.plan_id}:r${acceptanceBody.definition_revision}`
     } else {
       // Retained across retry
       const retainedId = pendingApproveRequestIdsRef.current.get(taskId)
