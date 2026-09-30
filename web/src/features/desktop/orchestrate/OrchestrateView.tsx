@@ -14,6 +14,7 @@ import { getUISettings } from '../settings/swarm/queries/get-ui-settings'
 import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
 import { swarmPageLink, type SwarmPage } from './swarm-navigation'
 import { filterOrchestrateCommands, parseOrchestrateCommand, ORCHESTRATE_TIPS, type OrchestrateCommand } from './orchestrate-commands'
+import { SwarmLayoutControls, useSwarmResponsiveLayout } from './swarm-responsive-layout'
 import { OrchestrateSettings } from './orchestrate-settings'
 import { OrchestrateAgents } from './orchestrate-agents'
 import {
@@ -2614,7 +2615,7 @@ export function OrchestratorChatComposer({
 
   return (
     <div
-      className="border-t border-slate-800 bg-[#0a0f1d] p-3 text-xs space-y-2 flex-shrink-0"
+      className="swarm-chat-composer-lane border-t border-slate-800 bg-[#0a0f1d] text-xs space-y-2 flex-shrink-0"
       data-testid="orchestrator-chat-composer"
     >
       <button type="button" aria-expanded={commandsOpen} aria-controls="orchestrate-command-list" onClick={() => { setCommandsOpen(!commandsOpen); setCommandQuery(''); setCommandIndex(0); composerRef.current?.focus() }} className="rounded px-2 py-1 text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)]">/ Commands</button>
@@ -3037,6 +3038,7 @@ function OrchestratorChatSidebar({
   return (
     <aside
       aria-label="Swarm Orchestrator AI Chat"
+      data-swarm-transcript-lane="sidebar"
       className="swarm-ai-sidebar relative flex min-h-0 w-[440px] flex-1 flex-col overflow-hidden rounded-3xl border border-slate-800/80 shadow-[var(--shadow-panel)]"
     >
       {/* Top Header: Task Navigation vs Orchestrator Header */}
@@ -3264,6 +3266,7 @@ export function OrchestrateView({
   const [, setIsLoadingProjects] = useState<boolean>(true)
   const selectedProject = projects.find((p) => p.id === selectedProjectId) ?? projects[0]
   const [themeRoot, setThemeRoot] = useState<HTMLDivElement | null>(null)
+  const responsiveLayout = useSwarmResponsiveLayout(themeRoot)
   const [themeCatalogRevision, setThemeCatalogRevision] = useState(0)
   const [themeSaving, setThemeSaving] = useState(false)
   const [themeError, setThemeError] = useState('')
@@ -5650,17 +5653,27 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
     setIsActivating(false)
   }
 
+  useEffect(() => {
+    if (activeTask || workerChatOpen) responsiveLayout.setPanel('chat')
+  }, [activeTask?.id, workerChatOpen])
+
   return (
     <div
       ref={setThemeRoot}
-      className="swarm-section relative flex h-screen w-screen overflow-x-auto overflow-y-hidden p-3 gap-3 font-sans"
+      className="swarm-section swarm-responsive-shell relative font-sans"
+      data-layout={responsiveLayout.mode}
+      data-split={responsiveLayout.split}
+      data-panel={responsiveLayout.panel}
+      data-navigation-open={responsiveLayout.navigationOpen}
       data-project-theme={projectTheme.state}
       style={{ ...theme.customVars, ...inheritedSwarmThemeStyle(initialThemeId), ...projectTheme.style, ...(projectTheme.colorScheme ? { colorScheme: projectTheme.colorScheme } : {}) } as React.CSSProperties}
     >
+      <SwarmLayoutControls layout={responsiveLayout} />
       {/* ─────────────────────────────────────────────────────────────
           PANEL 1: LEFT SIDEBAR (NAVIGATION, PROJECTS & USER HUD)
          ───────────────────────────────────────────────────────────── */}
-      <aside className="swarm-navigation-sidebar relative order-first flex w-72 flex-shrink-0 flex-col overflow-hidden rounded-3xl border bg-[#0d121f]/95 border-slate-800/80 shadow-[inset_0_1px_1px_rgba(255,255,255,0.06),0_18px_40px_rgba(0,0,0,0.65)]">
+      <aside id={responsiveLayout.navigationId} aria-label="Swarm navigation" role={responsiveLayout.navigationOpen ? 'dialog' : undefined} aria-modal={responsiveLayout.navigationOpen ? true : undefined} tabIndex={-1} className="swarm-navigation-sidebar relative order-first flex w-72 flex-shrink-0 flex-col overflow-hidden rounded-3xl border bg-[#0d121f]/95 border-slate-800/80 shadow-[inset_0_1px_1px_rgba(255,255,255,0.06),0_18px_40px_rgba(0,0,0,0.65)]">
+        <button type="button" className="swarm-navigation-close" aria-label="Close Swarm navigation" onClick={() => responsiveLayout.setNavigationOpen(false)}>Close navigation</button>
         {/* App Branding & Header */}
         <div className="p-3.5 border-b border-slate-800/80">
           <div className="flex items-center justify-between pb-2">
@@ -5722,9 +5735,10 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
         </div>
 
         {/* Navigation Menu Links */}
-        <div className="p-3 border-b border-slate-800/80 space-y-1" onClick={() => setIsOnboardingActive(false)}>
+        <nav aria-label="Swarm destinations" className="swarm-route-navigation p-3 border-b border-slate-800/80 space-y-1" onClick={() => { setIsOnboardingActive(false); responsiveLayout.setPanel('main'); responsiveLayout.setNavigationOpen(false) }}>
           <Link
             {...swarmPageLink(workspaceSlug, 'home')}
+            aria-label="Tasks and Canvas"
             activeOptions={{ exact: true, includeSearch: false }}
             aria-current={activeNavTab === 'home' ? 'page' : undefined}
             className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium transition-all ${
@@ -5738,6 +5752,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
           </Link>
           <Link
             {...swarmPageLink(workspaceSlug, 'projects')}
+            aria-label="Projects"
             aria-current={activeNavTab === 'projects' ? 'page' : undefined}
             className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium transition-all ${
               activeNavTab === 'projects'
@@ -5750,6 +5765,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
           </Link>
           <Link
             {...swarmPageLink(workspaceSlug, 'workers')}
+            aria-label="Workers"
             activeOptions={{ exact: true, includeSearch: false }}
             aria-current={activeNavTab === 'workers' ? 'page' : undefined}
             className={`w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs font-medium transition-all ${
@@ -5769,6 +5785,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
           </Link>
           <Link
             {...swarmPageLink(workspaceSlug, 'deliverables')}
+            aria-label="Deliverables"
             aria-current={activeNavTab === 'deliverables' ? 'page' : undefined}
             className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium transition-all ${
               activeNavTab === 'deliverables'
@@ -5781,6 +5798,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
           </Link>
           <Link
             {...swarmPageLink(workspaceSlug, 'media')}
+            aria-label="Media Studio and Library"
             aria-current={activeNavTab === 'media' ? 'page' : undefined}
             className={`w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs font-medium transition-all ${activeNavTab === 'media' ? 'bg-white/[0.08] text-white shadow-sm font-semibold' : 'text-slate-400 hover:text-slate-200 hover:bg-white/[0.04]'}`}
           >
@@ -5796,6 +5814,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
           </Link>
           <Link
             {...swarmPageLink(workspaceSlug, 'charter')}
+            aria-label="Project Charter"
             aria-current={activeNavTab === 'charter' ? 'page' : undefined}
             className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium transition-all ${
               activeNavTab === 'charter'
@@ -5806,10 +5825,10 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
             <Settings size={15} />
             <span>Project Charter</span>
           </Link>
-          {(['agents', 'settings', 'help'] as const).map((page) => <Link key={page} {...swarmPageLink(workspaceSlug, page)} aria-current={activeNavTab === page ? 'page' : undefined} className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-xs font-medium text-slate-300 hover:bg-white/[0.08]">
+          {(['agents', 'settings', 'help'] as const).map((page) => <Link key={page} {...swarmPageLink(workspaceSlug, page)} aria-label={page === 'help' ? 'Orchestrate tips' : page === 'agents' ? 'Agents' : 'Settings'} aria-current={activeNavTab === page ? 'page' : undefined} className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-xs font-medium text-slate-300 hover:bg-white/[0.08]">
             {page === 'agents' ? <Bot size={15} /> : <Settings size={15} />}<span>{page === 'help' ? 'Orchestrate tips' : page === 'agents' ? 'Agents' : 'Settings'}</span>
           </Link>)}
-        </div>
+        </nav>
 
         {/* Projects Switcher Section */}
         <div className="p-3 border-b border-slate-800/80 flex-1 overflow-y-auto">
@@ -6171,7 +6190,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
             {/* Project Identity Inputs */}
             <div className="rounded-2xl border border-slate-800/80 bg-slate-900/60 p-4 space-y-3">
               <div className="text-xs font-semibold text-slate-300">Project Identity</div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div className="swarm-content-grid grid grid-cols-1 md:grid-cols-2 gap-3">
                 <div>
                   <label className="text-[11px] text-slate-400 mb-1 block">Project Name</label>
                   <input
@@ -6336,7 +6355,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                 <span>+ New Project</span>
               </button>
             </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="swarm-content-grid grid grid-cols-1 md:grid-cols-2 gap-4">
               {projects.map((p) => (
                 <div
                   key={p.id}
@@ -6406,7 +6425,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
               </button>
             </div>
             {liveTasks.flatMap((t) => t.deliverables || []).length > 0 ? (
-              <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+              <div className="swarm-content-grid grid grid-cols-2 md:grid-cols-3 gap-3">
                 {liveTasks.flatMap((t) => t.deliverables || []).map((d) => (
                   <div
                     key={d.id}
@@ -6684,7 +6703,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
               {managementBusy && <span role="status" className="px-4 text-slate-400 text-[11px]">Updating tasks…</span>}
               {managementMessage && <span role="status" className="px-4 text-amber-300 text-[11px]">{managementMessage}</span>}
               {archivedOpen && <div className="fixed inset-0 z-[100] bg-black/70 flex items-center justify-center p-4" onMouseDown={e => { if (e.target === e.currentTarget) { setArchivedOpen(false); archivedTriggerRef.current?.focus() } }}>
-                <section role="dialog" aria-modal="true" aria-labelledby="archived-tasks-title" className="w-full max-w-xl max-h-[85vh] overflow-hidden flex flex-col rounded-xl border border-slate-700 bg-[#0a101e] p-4 text-white shadow-2xl">
+                <section role="dialog" aria-modal="true" aria-labelledby="archived-tasks-title" className="swarm-local-dialog w-full max-w-xl max-h-[85vh] overflow-hidden flex flex-col rounded-xl border border-slate-700 bg-[#0a101e] p-4 text-white shadow-2xl">
                   <div className="flex items-center justify-between gap-3"><h2 id="archived-tasks-title" className="text-base font-semibold">Archived tasks</h2><button type="button" ref={archivedCloseRef} onClick={() => { setArchivedOpen(false); archivedTriggerRef.current?.focus() }} aria-label="Close archived tasks">Close</button></div>
                   <p className="text-xs text-slate-400 my-2">Archived tasks in this project are read-only. Their sessions, branches and code remain untouched.</p>
                   {archivedLoading ? <p role="status">Loading archived tasks…</p> : archivedError ? <div role="alert">{archivedError} <button type="button" onClick={() => selectedProjectId && void loadArchivedTasks(selectedProjectId)}>Retry</button></div> : archivedTasks.length === 0 ? <p>No archived tasks.</p> : <ul className="overflow-y-auto min-h-0 space-y-2">{archivedTasks.map(row => <li key={row.id} className="p-3 rounded border border-slate-700"><strong className="block text-sm">{row.title}</strong><span className="text-xs text-slate-400">{row.status} · {row.workerName || 'Task'}</span></li>)}</ul>}
@@ -6881,7 +6900,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                   </div>
 
                   {deployedWorkers.length > 0 ? (
-                    <div className="grid grid-cols-2 gap-3">
+                    <div className="swarm-content-grid grid grid-cols-2 gap-3">
                       {deployedWorkers.map((worker) => (
                         <div
                           key={worker.id}
@@ -7166,7 +7185,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
         />
         </div>
       ) : (
-        <aside className="relative flex w-[440px] flex-shrink-0 flex-col items-center justify-center p-6 text-center rounded-3xl border border-slate-800/80 bg-[#0d121f] text-xs text-slate-400 shadow-[inset_0_1px_1px_rgba(255,255,255,0.06),0_18px_40px_rgba(0,0,0,0.65)]">
+        <aside className="swarm-conversation-panel swarm-empty-conversation relative flex w-[440px] flex-shrink-0 flex-col items-center justify-center p-6 text-center rounded-3xl border border-slate-800/80 bg-[#0d121f] text-xs text-slate-400 shadow-[inset_0_1px_1px_rgba(255,255,255,0.06),0_18px_40px_rgba(0,0,0,0.65)]">
           <div className="h-12 w-12 rounded-2xl bg-blue-600/20 border border-blue-500/30 flex items-center justify-center text-blue-400 mb-3 shadow-lg shadow-blue-600/10">
             <Bot size={22} />
           </div>
@@ -7182,7 +7201,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
          ───────────────────────────────────────────────────────────── */}
       {isDeployModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-6 backdrop-blur-md">
-          <div className="relative flex max-w-xl w-full flex-col p-6 rounded-2xl border border-slate-800 bg-[#0d121f] shadow-2xl space-y-4">
+          <div role="dialog" aria-modal="true" aria-label="Deploy Autonomous Task" className="swarm-local-dialog relative flex max-w-xl w-full flex-col p-6 rounded-2xl border border-slate-800 bg-[#0d121f] shadow-2xl space-y-4">
             {/* Header */}
             <div className="flex items-center justify-between pb-3 border-b border-slate-800">
               <div className="flex items-center gap-2">
@@ -7198,7 +7217,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
             </div>
 
             {/* Intent Category Tabs */}
-            <div className="grid grid-cols-6 gap-1 p-1 bg-slate-950 rounded-xl border border-slate-800 text-[11px] font-mono">
+            <div className="swarm-dialog-intents grid grid-cols-6 gap-1 p-1 bg-slate-950 rounded-xl border border-slate-800 text-[11px] font-mono">
               <button
                 type="button"
                 onClick={() => {
@@ -7826,7 +7845,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
          ───────────────────────────────────────────────────────────── */}
       {isPasteDocOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-6 backdrop-blur-md">
-          <div className="relative flex max-w-lg w-full flex-col p-6 rounded-2xl border border-slate-800 bg-[#0d121f] shadow-2xl space-y-4">
+          <div className="swarm-local-dialog relative flex max-w-lg w-full flex-col p-6 rounded-2xl border border-slate-800 bg-[#0d121f] shadow-2xl space-y-4">
             <div className="flex items-center justify-between pb-3 border-b border-slate-800">
               <div className="flex items-center gap-2">
                 <FileText size={16} className="text-emerald-400" />
@@ -7931,7 +7950,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
           ROUTED HISTORICAL MEDIA LIBRARY / STUDIO CENTER
          ───────────────────────────────────────────────────────────── */}
       {showFullMediaCenter && (
-        <main className="relative order-[-1] flex min-w-0 flex-1 flex-col overflow-hidden rounded-3xl border border-slate-800/80 bg-[#0d121f]/95">
+        <main className="swarm-main-panel swarm-media-panel relative flex min-w-0 flex-1 flex-col overflow-hidden rounded-3xl border border-slate-800/80 bg-[#0d121f]/95">
           <div className="flex h-14 items-center justify-between border-b border-slate-800 bg-[#0d121f] px-5">
             <div className="flex items-center gap-3">
               <div className="flex size-8 items-center justify-center rounded-xl bg-blue-600/20 text-blue-400 border border-blue-500/30">
