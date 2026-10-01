@@ -49,3 +49,20 @@ test('preview uses only trusted wrapper, plan reads text, CAS conflict remains a
     assert.deepEqual(calls[3].body, { action: 'download', ref: ref(1) })
   } finally { globalThis.fetch = original }
 })
+
+// Purpose: canonical user-message metadata is only a requested edit, never acceptance.
+// Parse exact base identity and reject assistant/invalid metadata at the API boundary.
+test('durable edit messages retain exact bases without manufacturing accepted state', async () => {
+  const { designEditRequests, fetchProjectDesigns } = await import('./design-api')
+  const message = { id: 'message', session_id: 's', global_seq: 1, role: 'user', content: 'edit', created_at: 1, metadata: { design_edit_request: { state: 'requested', client_request_id: 'key', base: ref(1) } } }
+  assert.deepEqual(designEditRequests([message]), [{ messageId: 'message', clientRequestId: 'key', base: ref(1), brief: 'edit' }])
+  assert.deepEqual(designEditRequests([{ ...message, role: 'assistant' }]), [])
+  const original = globalThis.fetch
+  let url = ''; let cache: RequestCache | undefined
+  globalThis.fetch = async (input, init) => { url = String(input); cache = init?.cache; return Response.json({ designs: [], next_cursor: 'opaque/two' }) }
+  try {
+    assert.equal((await fetchProjectDesigns('p /', 'opaque/one')).next_cursor, 'opaque/two')
+    assert.equal(url, '/v3/projects/p%20%2F/designs?limit=20&after=opaque%2Fone')
+    assert.equal(cache, 'no-store')
+  } finally { globalThis.fetch = original }
+})

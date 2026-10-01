@@ -148,7 +148,8 @@ function MediaThumbnailCard({
           </div>
         )}
 
-        {item.kind === 'animation' && (
+        {item.source === 'independent-design' && <span className="p-3 text-sm">{item.design.revision.kind === 'plan' ? 'Design plan' : 'Design'} · Open revision {item.design.revision.ref.revision}</span>}
+        {item.source !== 'independent-design' && item.kind === 'animation' && (
           <div className="relative size-full flex items-center justify-center bg-zinc-900">
             <iframe
               title={item.title}

@@ -90,6 +90,7 @@ import { HistoricalMediaLibrary, MediaViewerModal, type MediaLibraryItem } from 
 import type { MediaGenerationJob, MediaGenerationRequest, MediaGenerationSettings } from '../tools/media-library/media-generation'
 import type { QuickRouteMode } from '../tools/media-library/media-viewer-modal'
 import { MediaTaskCard } from './media-task-card'
+import { DesignMediaTasks, useProjectDesigns } from '../tools/media-library/design-media'
 import { ORCHESTRATE_THEMES } from './orchestrate-themes'
 import { TaskCardHandoff, TaskCardAgents, TaskCardOutputs, TaskExpectedOutputs } from './task-card-details'
 import { TaskCardSummary, formatElapsedString, formatElapsedSeconds } from './task-card-summary'
@@ -4493,8 +4494,10 @@ export function OrchestrateView({
     })
   }
 
+  const projectDesigns = useProjectDesigns(selectedProject?.id ?? '')
+  useEffect(() => { setActiveMediaViewerItem(null) }, [selectedProject?.id])
   const allMediaLibraryItems = useMemo<MediaLibraryItem[]>(() => {
-    const items: MediaLibraryItem[] = []
+    const items: MediaLibraryItem[] = [...projectDesigns.items]
     const seenIds = new Set<string>()
 
     for (const task of tasks) {
@@ -4514,7 +4517,7 @@ export function OrchestrateView({
     }
 
     return items
-  }, [tasks, uploadedMedia, selectedProject])
+  }, [tasks, uploadedMedia, selectedProject, projectDesigns.items])
 
   const handleOpenDeliverableInMediaCenter = (d: MediaDeliverable, parentTask?: RunningTask, mode?: QuickRouteMode) => {
     const item = deliverableToMediaItem(d, parentTask, selectedProject)
@@ -4543,6 +4546,7 @@ export function OrchestrateView({
   }) => {
     if (!selectedProject?.id) throw new Error('Select a project before generating media.')
     const { item, action, deltaPrompt, variantCount, scenesCount, soundtrack, autoDeploy = true, model, settings } = options
+    if ('source' in item && item.source === 'independent-design') throw new Error('Use the exact design revision edit controls.')
 
     const rawKind = (item as any).kind || (item as any).type || 'image'
     const isVideo = rawKind === 'video' || (item as any).mediaType?.startsWith('video/')
@@ -6732,6 +6736,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
 
                   {/* Task rows */}
                   <div className="flex-1 overflow-y-auto space-y-3 pr-1" data-testid="orchestrate-task-list">
+                    {selectedProject && <DesignMediaTasks projectId={selectedProject.id} onPreview={setActiveMediaViewerItem} />}
                     {filteredTasks.length > 0 ? (
                       filteredTasks.map((t) => (
                         <MinimalTaskCard
@@ -6842,6 +6847,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                         </div>
 
                         <div className="flex-1 overflow-y-auto space-y-2.5 pr-0.5">
+                          {selectedProject && <DesignMediaTasks projectId={selectedProject.id} column={col.key} onPreview={setActiveMediaViewerItem} />}
                           {colTasks.map((t) => (
                             <MinimalTaskCard
                               key={t.id}
@@ -6959,6 +6965,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                   {/* Tasks List in Fleet */}
                   <div className="pt-2 space-y-3">
                     <h4 className="text-xs font-bold text-white">Project Tasks ({filteredTasks.length})</h4>
+                    {selectedProject && <DesignMediaTasks projectId={selectedProject.id} onPreview={setActiveMediaViewerItem} />}
                     <div className="space-y-2.5">
                       {filteredTasks.map((task) => (
                         <MinimalTaskCard
@@ -7016,6 +7023,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                   {/* Left Column: Tasks List */}
                   <div className="w-1/2 border-r border-slate-800/80 flex flex-col p-3 overflow-y-auto space-y-2">
                     <div className="text-xs font-bold text-white pb-1">Tasks ({filteredTasks.length})</div>
+                    {selectedProject && <DesignMediaTasks projectId={selectedProject.id} onPreview={setActiveMediaViewerItem} />}
                     {filteredTasks.map((t) => {
                       const isSel = selectedTaskId === t.id
                       const isWorker = Boolean(t.workerId?.trim() || t.worker_id?.trim())
@@ -7120,6 +7128,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
               {middleVariant === 'timeline' && (
                 <div className="flex-1 overflow-y-auto p-4 space-y-3">
                   <div className="text-xs font-bold text-white pb-1">Activity Stream ({filteredTasks.length})</div>
+                  {selectedProject && <DesignMediaTasks projectId={selectedProject.id} onPreview={setActiveMediaViewerItem} />}
                   {filteredTasks.map((t) => (
                     <MinimalTaskCard
                       key={t.id}
@@ -8006,6 +8015,8 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
           {mediaSyncError && <p role="alert" className="px-5 py-2 text-xs text-amber-300">Live updates interrupted: {mediaSyncError}. Refresh project state before resubmitting.</p>}
           <div className="flex-1 min-h-0">
             <HistoricalMediaLibrary
+              key={selectedProject?.id ?? ''}
+              projectId={selectedProject?.id}
               onClose={() => setShowFullMediaCenter(false)}
               onTagMedia={(item) => {
                 setTaggedMedia((prev) => {

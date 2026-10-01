@@ -42,3 +42,23 @@ test('canonical auth reset clears design data and fences an outstanding response
     assert.deepEqual(resource.getSnapshot(), { loading: false })
   } finally { release(); desktopDesigns.reset(); globalThis.fetch = original }
 })
+
+// Purpose: canonical project.updated frames must refresh the scoped discovery resource
+// while chat is unmounted; unrelated project frames must not read private metadata.
+test('project design invalidation is scoped and reconnect can refresh subscribed discovery', { timeout: 5000 }, async () => {
+  const { acceptDesktopDesignEvent } = await import('./desktop-design-runtime')
+  const original = globalThis.fetch
+  const calls: string[] = []
+  globalThis.fetch = async input => { calls.push(String(input)); return Response.json({ designs: [], next_cursor: '' }) }
+  const resource = desktopDesigns.project('project-fixture'); const release = resource.subscribe(() => {})
+  try {
+    acceptDesktopDesignEvent({ kind: 'project.updated', project_id: 'other' })
+    await Promise.resolve(); assert.deepEqual(calls, [])
+    acceptDesktopDesignEvent({ kind: 'project.updated', project_id: 'project-fixture' })
+    await resource.refresh()
+    assert.equal(calls.length, 1)
+    assert.match(calls[0], /projects\/project-fixture\/designs/)
+    desktopDesigns.invalidate(); await resource.refresh()
+    assert.equal(calls.length, 2)
+  } finally { release(); desktopDesigns.reset(); globalThis.fetch = original }
+})

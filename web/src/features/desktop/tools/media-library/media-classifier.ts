@@ -158,6 +158,7 @@ export function toMediaLibraryItem(entry: DesktopV3ArtifactCatalogEntry, referen
   }
 
   return {
+    source: 'artifact',
     artifact: entry,
     id: entry.artifactId,
     title: entry.label || entry.filename || entry.artifactId,
@@ -308,12 +309,12 @@ export function filterAndSearchMedia(
       const searchHaystack = [
         item.title,
         item.filename,
-        item.artifact.description || '',
+        item.artifact?.description || '',
         item.sessionTitle,
         item.workspaceName,
         item.iterationGroupTitle || '',
-        item.artifact.checkpointTitle || '',
-        item.artifact.planTitle || '',
+        item.artifact?.checkpointTitle || '',
+        item.artifact?.planTitle || '',
         item.kind,
         item.mediaType,
       ]

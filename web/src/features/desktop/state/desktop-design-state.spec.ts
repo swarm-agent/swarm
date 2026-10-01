@@ -190,3 +190,61 @@ test('last subscriber teardown fences deferred failure and remount can reload', 
   assert.deepEqual(resource.getSnapshot(), { loading: false, data: 'fresh' })
   releaseNew()
 })
+
+// Purpose: project discovery owns bounded pagination and reset privacy. Empty membership
+// pages must retain continuation; repeated requests deduplicate by session/request, and
+// reconnect re-traverses from the beginning instead of appending stale snapshots.
+test('project pages include empty continuations, deduplicate and refresh scoped resources', async () => {
+  const calls: string[] = []
+  const row = { project_id: 'p', title: 'Design', request: { id: 'r', parent_session_id: 's', revision: 1, state: 'queued', candidates: [] } }
+  const state = new DesktopDesignState({ catalog: async () => ({ requests: [], next_cursor: '' }), history: async () => history([]), project: async (project, cursor) => {
+    calls.push(`${project}:${cursor}`)
+    if (!cursor) return { designs: [], next_cursor: 'opaque/one' }
+    if (cursor === 'opaque/one') return { designs: [row], next_cursor: 'opaque/two' }
+    return { designs: [{ ...row, request: { ...row.request, revision: 2, state: 'running' } }], next_cursor: '' }
+  } })
+  const resource = state.project('p'); const release = resource.subscribe(() => {})
+  await resource.refresh(); await state.moreProject('p'); await state.moreProject('p')
+  assert.equal(resource.getSnapshot().data!.designs.length, 1)
+  assert.equal(resource.getSnapshot().data!.designs[0].request.state, 'running')
+  state.invalidateProject('other'); await Promise.resolve()
+  assert.equal(calls.length, 6)
+  state.invalidate(); await resource.refresh()
+  assert.deepEqual(calls.slice(-3), ['p:', 'p:opaque/one', 'p:opaque/two'])
+  release(); assert.equal(resource.getSnapshot().data, undefined)
+})
+// Purpose: DesignResource must actively abort transport on identity/last-consumer reset,
+// not only hide its eventual value. A transport ignoring abort still cannot restore data.
+test('reset aborts project transport and fences its late response', async () => {
+  let signal!: AbortSignal; let finish!: (value: string) => void
+  const resource = new DesignResource<string>(input => { signal = input; return new Promise(resolve => { finish = resolve }) })
+  const release = resource.subscribe(() => {})
+  const flight = resource.refresh(); await Promise.resolve()
+  release(); assert.equal(signal.aborted, true)
+  finish('private'); await flight
+  assert.deepEqual(resource.getSnapshot(), { loading: false })
+})
+
+// Purpose: canonical edit request pages must survive reopen/reconnect and retain the
+// message identity needed for acceptance correlation; a non-advancing page fails closed.
+test('older edit requests retain message identity and reset drops all pages', async () => {
+  const calls: number[] = []
+  const state = new DesktopDesignState({ catalog: async () => ({ requests: [], next_cursor: '' }), history: async () => history([]), edits: async (_session, before) => {
+    calls.push(before)
+    return { edits: [{ messageId: before ? 'old' : 'new', clientRequestId: before ? 'old-key' : 'new-key', base: revision(1).ref, brief: 'Edit' }], nextBefore: before ? 0 : 50 }
+  } })
+  const resource = state.editRequests('s')
+  await resource.refresh(); await state.moreEdits('s')
+  assert.deepEqual(calls, [0, 0, 50])
+  assert.deepEqual(resource.getSnapshot().data!.edits.map(edit => edit.messageId), ['new', 'old'])
+  state.reset(); assert.equal(resource.getSnapshot().data, undefined)
+  await resource.refresh(); assert.equal(resource.getSnapshot().data!.edits.length, 1)
+})
+// Purpose: malicious/stale project continuations cannot create infinite traversal or
+// duplicate metadata; the canonical resource rejects cycles and exposes no partial data.
+test('project cursor cycle rejects without publishing partial results', async () => {
+  const state = new DesktopDesignState({ catalog: async () => ({ requests: [], next_cursor: '' }), history: async () => history([]), project: async () => ({ designs: [], next_cursor: 'cycle' }) })
+  const resource = state.project('p'); await resource.refresh(); await state.moreProject('p')
+  assert.match(resource.getSnapshot().error!, /did not advance/)
+  assert.equal(resource.getSnapshot().data, undefined)
+})
