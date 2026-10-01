@@ -40,6 +40,45 @@ func TestV3TerminalPlanRejectsErrors(t *testing.T) {
 	}
 }
 
+// Purpose: accepted standalone plans must reach canonical checkpoint scheduling,
+// while project-task publications remain review boundaries. The result classifiers
+// are the narrowest layer proving runProviderToolLoop's terminal-first ordering
+// cannot swallow either runnable next action; malformed/error/truncated publication
+// envelopes must still not become terminal authority.
+func TestV3TerminalPlanDistinguishesRunnableApproval(t *testing.T) {
+	for _, nextAction := range []string{"run_checkpoint_with_current_context", "run_checkpoint_with_fresh_context"} {
+		t.Run(nextAction, func(t *testing.T) {
+			output := fmt.Sprintf(`{"status":"approved","plan_id":"plan","next_action":%q}`, nextAction)
+			results := []provideriface.ToolExecutionResult{{Name: "exit_plan_mode", Output: output}}
+			if terminal, ok := sessionsV3ProviderTerminalPlanToolResult(results); ok {
+				t.Fatalf("runnable approval became terminal: %+v", terminal)
+			}
+			if !sessionsV3ProviderCheckpointRunToolResult(results) {
+				t.Fatal("runnable approval did not request checkpoint execution")
+			}
+		})
+	}
+	for _, status := range []string{"plan_submitted_for_review", "plan_submitted", "approved"} {
+		t.Run(status, func(t *testing.T) {
+			output := fmt.Sprintf(`{"status":%q,"plan_id":"plan","next_action":"await_user_approval","revision":7,"receipt":"receipt"}`, status)
+			results := []provideriface.ToolExecutionResult{{Name: "exit_plan_mode", Output: output}}
+			terminal, ok := sessionsV3ProviderTerminalPlanToolResult(results)
+			if !ok || terminal.Action != "exit_plan_mode" || terminal.NextAction != "await_user_approval" || terminal.PlanID != "plan" || terminal.Revision != "7" || terminal.Receipt != "receipt" {
+				t.Fatalf("review publication lost identity: %+v, terminal=%t", terminal, ok)
+			}
+			if sessionsV3ProviderCheckpointRunToolResult(results) {
+				t.Fatal("review publication requested execution")
+			}
+		})
+	}
+	for _, suffix := range []string{`,"error":"denied"`, `,"truncated_for_model":true`, `,"details_truncated":true`} {
+		output := `{"status":"approved","plan_id":"plan","next_action":"await_user_approval"` + suffix + `}`
+		if _, ok := sessionsV3ProviderTerminalPlanToolResult([]provideriface.ToolExecutionResult{{Name: "exit_plan_mode", Output: output}}); ok {
+			t.Fatalf("invalid approval became terminal: %s", output)
+		}
+	}
+}
+
 // Purpose: reproduce discovery -> rejected help/missing document -> corrected
 // publication through runProviderToolLoop and the actual run.Service invoker.
 // Durable tool messages, exact plan binding and Plan mode are postconditions;
