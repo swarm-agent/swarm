@@ -18,8 +18,16 @@ Supply `SWARM_SOCKET_PATH` for a private same-host daemon connection, or
 `SWARM_API_URL` and `SWARM_AUTH_TOKEN` for authenticated loopback transport.
 Supply a random `APP_ACCESS_TOKEN` of at least 32 characters through your runtime's
 secret configuration. Never put daemon or provider credentials in browser code.
-The app token is access control, not Codex/provider sign-in. Provider onboarding
-must already be completed in this daemon; this example does not implement it.
+The app token is access control, not Codex/provider sign-in. After unlocking, open
+**Connect Codex** for user-driven device or manual sign-in. Consent is required:
+OAuth completion can initialize account model defaults even though this example
+requests `active: false` and never calls settings/activation APIs. Check status
+explicitly; no background credential polling is used. OAuth IDs stay bound to the
+app cookie, and only allowlisted status/HTTPS links/device codes reach the browser.
+Forgetting a flow or locking the app does not revoke provider authorization already
+granted: the daemon has no OAuth cancel endpoint. Manage shared credentials in
+Swarm account settings. Account/workspace setup and model availability are still
+prerequisites; this example does not silently configure them.
 
 <copy>
 npm --prefix examples/agent-hub start

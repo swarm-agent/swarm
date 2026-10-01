@@ -4,6 +4,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { SwarmClient } from '@swarm/sdk';
 import { operations } from './operations.mjs';
+import { onboarding } from './onboarding.mjs';
 
 export function appHandler(sdk, { origin, accessToken }) {
   const url = new URL(origin);
@@ -44,9 +45,17 @@ export function appHandler(sdk, { origin, accessToken }) {
         return json(200, { csrf });
       }
       const id = /(?:^|;\s*)hub=([a-f0-9]{64})(?:;|$)/.exec(req.headers.cookie ?? '')?.[1], session = sessions.get(id);
-      if (!session || session.expires < Date.now()) return json(401, { error: 'Unlock this app' });
+      if (!session || session.expires <= Date.now()) {
+        if (session) { session.login = undefined; session.loginAttempt = undefined; for (const stop of session.streams) stop(); sessions.delete(id); }
+        return json(401, { error: 'Unlock this app' });
+      }
       if (!equal(req.headers['x-csrf-token'], session.csrf)) return json(403, { error: 'Invalid CSRF token' });
-      if (req.url === '/logout') { for (const stop of session.streams) stop(); sessions.delete(id); res.setHeader('Set-Cookie', 'hub=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0'); return json(200, { ok: true }); }
+      if (req.url === '/logout') { session.login = undefined; session.loginAttempt = undefined; for (const stop of session.streams) stop(); sessions.delete(id); res.setHeader('Set-Cookie', 'hub=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0'); return json(200, { ok: true }); }
+      if (req.url === '/provider') {
+        const result = await onboarding(sdk, session)(b.op, b);
+        if (!sessions.has(id) || session.expires <= Date.now()) return json(401, { error: 'Unlock this app' });
+        return json(200, result);
+      }
       if (req.url === '/stream') {
         if (session.streams.size >= 2 || streams >= 8) return json(429, { error: 'Stream limit reached' });
         if (typeof b.id !== 'string' || !b.id || b.id.length > 128 || (b.session_id !== undefined && (typeof b.session_id !== 'string' || !b.session_id || b.session_id.length > 128))) return json(400, { error: 'Valid agent and conversation required' });

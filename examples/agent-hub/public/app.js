@@ -1,5 +1,5 @@
 const $ = id => document.getElementById(id);
-let csrf = '', selected = null, conversation = '', tab = 'context', cursor = '', selectionVersion = 0;
+let csrf = '', selected = null, conversation = '', tab = 'context', cursor = '', selectionVersion = 0, viewVersion = 0, providerVersion = 0, actionVersion = 0;
 const pendingKeys = new Map();
 const stableKey = (kind, payload) => {
   const key = JSON.stringify([kind, payload]);
@@ -12,7 +12,7 @@ async function api(op, data = {}, path = '/api') {
   if (!response.ok) throw new Error(result.error);
   return result;
 }
-function action(fn) { return async event => { event?.preventDefault(); $('status').textContent = 'Working…'; try { await fn(); $('status').textContent = 'Saved / refreshed.'; } catch (error) { $('status').textContent = error.message; } }; }
+function action(fn) { return async event => { event?.preventDefault(); const version = ++actionVersion; $('status').textContent = 'Working…'; try { await fn(); if (version === actionVersion) $('status').textContent = 'Saved / refreshed.'; } catch (error) { if (version === actionVersion) $('status').textContent = error.message; } }; }
 function button(label, fn) { const el = document.createElement('button'); el.textContent = label; el.onclick = action(fn); return el; }
 function card(target, title, data) { const el = document.createElement('div'); el.className = 'card'; const h = document.createElement('strong'); h.textContent = title; const pre = document.createElement('pre'); pre.textContent = typeof data === 'string' ? data : JSON.stringify(data, null, 2); el.append(h, pre); target.append(el); }
 function requireAgent() { if (!selected) throw new Error('Save or select an agent first.'); return selected.id; }
@@ -24,7 +24,7 @@ async function agents(append = false) {
 }
 async function select(id) {
   stopStream();
-  const version = ++selectionVersion;
+  const version = ++selectionVersion; viewVersion++;
   const next = await api('agent', { id });
   if (version !== selectionVersion) return;
   selected = next; conversation = '';
@@ -36,9 +36,9 @@ async function select(id) {
 }
 async function loadConversation() {
   if (!conversation) return;
-  const id = requireAgent(), session_id = conversation;
+  const id = requireAgent(), session_id = conversation, version = ++viewVersion;
   const state = await api('conversation', { id, session_id });
-  if (selected?.id !== id || conversation !== session_id || tab !== 'conversations') return;
+  if (version !== viewVersion || selected?.id !== id || conversation !== session_id || tab !== 'conversations') return;
   $('conversation-heading').textContent = state.session?.title || 'Conversation';
   $('messages').replaceChildren();
   for (const message of state.messages || []) card($('messages'), message.role, message.content);
@@ -46,13 +46,14 @@ async function loadConversation() {
 }
 async function loadTab() {
   stopStream();
+  const version = ++viewVersion;
   document.querySelectorAll('nav button').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
   for (const id of ['context', 'conversations', 'tasks', 'workers']) $(id).hidden = id !== tab;
   if (!selected || tab === 'context') return;
   const id = selected.id;
   if (tab === 'conversations') {
     const state = await api('conversations', { id });
-    if (selected?.id !== id || tab !== 'conversations') return;
+    if (version !== viewVersion || selected?.id !== id || tab !== 'conversations') return;
     $('history').replaceChildren();
     for (const session of state.sessions) $('history').append(button(session.title || session.id, async () => { conversation = session.id; await loadConversation(); }));
     if (state.scan_limit_reached) card($('history'), 'Recent history', 'Showing a bounded recent view. Older IDs remain accessible through the SDK.');
@@ -62,7 +63,7 @@ async function loadTab() {
     $('task-list').replaceChildren();
     if (!selected.project_id) return card($('task-list'), 'No project linked', 'Link an existing project in Context.');
     const result = await api('tasks', { id });
-    if (selected?.id !== id || tab !== 'tasks') return;
+    if (version !== viewVersion || selected?.id !== id || tab !== 'tasks') return;
     for (const task of result.tasks || []) card($('task-list'), task.title || task.id, task);
   }
   if (tab === 'workers') {
@@ -74,16 +75,16 @@ async function loadTab() {
       const runs = await api('runs', { id, worker_id });
       items.push({ worker, runs: runs.runs });
     }
-    if (selected?.id !== id || tab !== 'workers') return;
+    if (version !== viewVersion || selected?.id !== id || tab !== 'workers') return;
     renderWorkers(items);
   }
   if (tab !== 'conversations') void streamView();
 }
-$('login-form').onsubmit = action(async () => { const token = $('token').value; $('token').value = ''; csrf = (await api('', { token }, '/login')).csrf; $('login').hidden = true; $('hub').hidden = false; $('logout').hidden = false; await discovery(); await agents(); });
-$('logout').onclick = action(async () => { stopStream(); await api('', {}, '/logout'); location.reload(); });
-$('new').onclick = () => { stopStream(); selectionVersion++; selected = null; conversation = ''; $('agent-form').reset(); $('agent-id').readOnly = false; $('revision').textContent = ''; $('heading').textContent = 'New agent'; tab = 'context'; void loadTab(); };
+$('login-form').onsubmit = action(async () => { const token = $('token').value; $('token').value = ''; csrf = (await api('', { token }, '/login')).csrf; $('login').hidden = true; $('hub').hidden = false; $('logout').hidden = false; await agents(); await discovery(); });
+$('logout').onclick = action(async () => { stopStream(); selectionVersion++; viewVersion++; providerVersion++; clearTimeout(providerExpiry); $('provider-callback').value = ''; $('provider-link').hidden = true; $('provider-code').textContent = ''; await api('', {}, '/logout'); location.reload(); });
+$('new').onclick = () => { stopStream(); selectionVersion++; viewVersion++; selected = null; conversation = ''; $('agent-form').reset(); $('agent-id').readOnly = false; $('revision').textContent = ''; $('heading').textContent = 'New agent'; tab = 'context'; void loadTab(); };
 $('more').onclick = action(() => agents(true));
-$('refresh').onclick = action(async () => { await agents(); if (selected) { const saved = conversation; await select(selected.id); conversation = saved; await loadTab(); } });
+$('refresh').onclick = action(async () => { await agents(); await discovery(); if (selected) { const saved = conversation; await select(selected.id); conversation = saved; await loadTab(); } });
 for (const b of document.querySelectorAll('nav button')) b.onclick = action(async () => { tab = b.dataset.tab; await loadTab(); });
 $('agent-form').onsubmit = action(async () => {
   const agent = await api('save', { id: $('agent-id').value, name: $('name').value, instructions: $('instructions').value, context: $('agent-context').value, expected_revision: selected?.revision || 0, project_id: $('project-id').value, worker_ids: [...$('worker-ids').selectedOptions].map(o => o.value) });
@@ -178,13 +179,47 @@ function renderWorkers(items) {
     for (const run of runs || []) card(target, `${run.request_source} · ${run.status}`, run);
   }
 }
-window.addEventListener('pagehide', stopStream);
+window.addEventListener('pagehide', () => { stopStream(); providerVersion++; clearTimeout(providerExpiry); $('provider-callback').value = ''; });
 
 async function discovery() {
+  let failed = false;
   for (const [op, element] of [['projects', 'project-id'], ['workers', 'worker-ids'], ['workspaces', 'workspace-id']]) {
     try {
       const result = await api(op), items = Array.isArray(result) ? result : result.workers;
+      $(element).replaceChildren();
+      if (element === 'project-id') { const empty = document.createElement('option'); empty.value = ''; empty.textContent = 'No project'; $(element).append(empty); }
       for (const item of items || []) { const option = document.createElement('option'); option.value = item.id; option.textContent = item.name || item.title || item.path || item.id; $(element).append(option); }
-    } catch { $('status').textContent = 'Some resources are unavailable. Check account permissions.'; }
+    } catch { failed = true; }
   }
+  if (failed) throw new Error('Some resources are unavailable. Check account permissions.');
 }
+
+let providerExpiry;
+async function providerAction(op, data = {}) {
+  clearTimeout(providerExpiry);
+  const version = ++providerVersion;
+  // Clear links/codes immediately on cancel, expiry or network failure.
+  $('provider-link').hidden = true; $('provider-link').removeAttribute('href');
+  $('provider-code').textContent = ''; $('provider-complete').hidden = true;
+  const state = await api(op, data, '/provider');
+  if (version !== providerVersion) return;
+  const pending = ['waiting', 'authorizing'].includes(state.status);
+  $('provider-state').textContent = `${state.status}${state.defaults_applied ? ' · Account defaults initialized/preserved by Swarm.' : ''}${pending ? ' · Expires ' + new Date(state.expires_at).toLocaleTimeString() : ''}`;
+  $('provider-check').hidden = !pending; $('provider-cancel').hidden = state.status === 'forgotten';
+  $('provider-complete').hidden = !pending || state.method !== 'manual';
+  if (state.url) { $('provider-link').href = state.url; $('provider-link').hidden = false; }
+  $('provider-code').textContent = state.user_code || '';
+  if (pending) providerExpiry = setTimeout(() => {
+    if (version !== providerVersion) return;
+    $('provider-link').hidden = true; $('provider-link').removeAttribute('href');
+    $('provider-code').textContent = ''; $('provider-complete').hidden = true;
+    $('provider-check').hidden = true; $('provider-state').textContent = 'Sign-in expired. Start again.';
+  }, Math.max(0, state.expires_at - Date.now()));
+}
+$('provider-start').onsubmit = action(() => providerAction('start', { method: $('provider-method').value, consent: $('provider-consent').checked }));
+$('provider-check').onclick = action(() => providerAction('status'));
+$('provider-cancel').onclick = action(() => providerAction('cancel'));
+$('provider-complete').onsubmit = action(async () => {
+  const callback = $('provider-callback').value; $('provider-callback').value = '';
+  await providerAction('complete', { callback });
+});

@@ -232,3 +232,80 @@ func TestApplicationWorkerRouteAllowlist(t *testing.T) {
 		}
 	}
 }
+
+// Purpose: registered app configuration must commit a canonical worker revision
+// without activation, emit an actual content-free websocket invalidation, and
+// reject stale/foreign writes without advancing durable state or the outbox.
+// Real HTTP handlers, Pebble and loopback websocket are the narrowest end-to-end
+// boundary; no provider, scheduler or deployed worker is involved.
+func TestApplicationAgentWorkerConfigurationRealtime(t *testing.T) {
+	t.Setenv("SWARM_API_NO_AUTH", "1")
+	s, _, db := newWorkspaceOverviewTopologyTestServer(t)
+	s.ConfigureAutomationRealtime(db)
+	p := testPrincipal()
+	ws := pebblestore.NewWorkerStore(db)
+	worker, err := ws.CreateWorker(p.AccountScopeID, p.UserID, pebblestore.CreateWorkerRequest{Name: "Linked", Instructions: "Draft", IdempotencyKey: "app-config"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.sessions.Store().PutApplicationAgent(p.AccountScopeID, p.UserID, pebblestore.ApplicationAgent{ID: "editor", Name: "Editor", WorkerIDs: []string{worker.ID}}, 0); err != nil {
+		t.Fatal(err)
+	}
+	initial, err := s.sessions.CurrentRealtimeOutboxRevision()
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := newV3RealtimeHTTPTestServer(t, s)
+	conn := dialV3RealtimeStream(t, host.URL)
+	defer conn.Close()
+	writeV3RealtimeMessage(t, conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindResume, EndpointCursor: signedV3RealtimeCursorForTest(t, s, initial), Worksets: []V3RealtimeWorksetSubscriptionRequest{v3RealtimeGlobalWorksetRequestForTest()}})
+	path := "/v3/application-agents/editor/workers/" + worker.ID + "/automations"
+	body := fmt.Sprintf(`{"expected_worker_revision":%d,"automation":{"name":"Draft job","activation_mode":"manual","enabled":true,"plan_document":{"title":"Draft","info":{"goal":"Prepare draft"},"checkpoints":[{"id":"cp-1","title":"Draft","status":"pending","order":1,"tasks":["Prepare draft"],"acceptance_criteria":["Draft exists"]}]}}}`, worker.Revision)
+	request := func(user, account string) *httptest.ResponseRecorder {
+		r := requestWithTestPrincipalForAccount(httptest.NewRequest(http.MethodPost, path, strings.NewReader(body)), user, account)
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		s.Handler().ServeHTTP(w, r)
+		return w
+	}
+	if w := request(p.UserID, p.AccountScopeID); w.Code != http.StatusCreated {
+		t.Fatalf("configuration: %d %s", w.Code, w.Body.String())
+	}
+	after, found, err := ws.GetWorker(p.AccountScopeID, worker.ID)
+	if err != nil || !found || after.Revision != worker.Revision+1 || len(after.Automations) != 1 || after.LifecycleState != pebblestore.WorkerLifecycleStatePending {
+		t.Fatalf("configuration bypassed pending gate: %+v %v", after, err)
+	}
+	head, err := s.sessions.CurrentRealtimeOutboxRevision()
+	if err != nil || head <= initial {
+		t.Fatalf("no durable event: %d %v", head, err)
+	}
+	seen := false
+	for i := 0; i < 12; i++ {
+		frame := readV3RealtimeFrame(t, conn)
+		if frame.Kind == V3RealtimeKindWorkerChanged {
+			if frame.EndpointCursor == "" || frame.Session != nil || frame.Event != nil {
+				t.Fatalf("invalid resource frame: %+v", frame)
+			}
+			seen = true
+			break
+		}
+	}
+	if !seen {
+		t.Fatal("worker resource event missing")
+	}
+	if w := request(p.UserID, p.AccountScopeID); w.Code != http.StatusConflict {
+		t.Fatalf("stale write: %d %s", w.Code, w.Body.String())
+	}
+	for _, principal := range [][2]string{{"foreign-user", p.AccountScopeID}, {p.UserID, "foreign-account"}} {
+		if w := request(principal[0], principal[1]); w.Code != http.StatusNotFound {
+			t.Fatalf("foreign app: %d %s", w.Code, w.Body.String())
+		}
+	}
+	unchanged, _, err := ws.GetWorker(p.AccountScopeID, worker.ID)
+	finalHead, headErr := s.sessions.CurrentRealtimeOutboxRevision()
+	beforeJSON, _ := json.Marshal(after)
+	afterJSON, _ := json.Marshal(unchanged)
+	if err != nil || headErr != nil || finalHead != head || !bytes.Equal(beforeJSON, afterJSON) {
+		t.Fatalf("rejection changed worker/outbox: %v %v %d != %d", err, headErr, finalHead, head)
+	}
+}

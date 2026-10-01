@@ -24,7 +24,9 @@ test('app results use durable resume and authorized refresh without polling', { 
   const watch = client.apps.watchResults('editor', { onChange: state => emitted.push(state), socketFactory: async () => { const s = new Socket(); sockets.push(s); return s; } });
   try {
     await new Promise(setImmediate);
-    sockets[0].frame({ kind: 'hello', endpoint_cursor: 'later' }); await watch.ready;
+    sockets[0].frame({ kind: 'hello', endpoint_cursor: 'later' });
+    assert.equal(emitted.length, 0, 'hello is not resume acceptance');
+    sockets[0].frame({ kind: 'keepalive', endpoint_cursor: 'opaque-1' }); await watch.ready;
     assert.equal(JSON.parse(sockets[0].sent[0]).endpoint_cursor, 'opaque-1');
     assert.deepEqual(JSON.parse(sockets[0].sent[0]).worksets, [{ workset_id: 'scope' }]);
     const before = reads;
@@ -53,4 +55,40 @@ test('app watches fail closed on ownership rejection', { timeout: 1000 }, async 
   await assert.rejects(watch.done, /Denied/);
   await assert.rejects(client.apps.watchConversation('foreign', 'session', options), /Denied/);
   assert.equal(sockets, 0); assert.equal(changes, 0);
+});
+
+// Purpose: a denied resume must not resolve readiness or publish the pre-read
+// snapshot; this socket boundary catches the hello-before-authorization regression.
+test('resume rejection never publishes initial resources', { timeout: 1000 }, async () => {
+  const client = new SwarmClient(), socket = new Socket(); let changes = 0;
+  client.transport.request = (async (path: string) => ({ data: path === '/v3/sync/bootstrap'
+    ? { realtime: { resume: { endpoint_cursor: 'opaque', subscriptions: [] } } }
+    : { id: 'editor', worker_ids: [] } })) as typeof client.transport.request;
+  const watch = client.apps.watchResults('editor', { maxReconnects: 0, onChange: () => { changes++; }, socketFactory: async () => socket });
+  await new Promise(setImmediate);
+  socket.frame({ kind: 'hello' }); socket.frame({ kind: 'auth.denied' });
+  await assert.rejects(watch.ready, /denied/); await assert.rejects(watch.done, /denied/);
+  assert.equal(changes, 0); assert.equal(socket.closed, true);
+});
+
+// Purpose: invalidations during the post-resume snapshot must trigger a second
+// read on completion, closing the bootstrap/read race without polling timers.
+test('resource update during an in-flight read is not lost', { timeout: 1000 }, async () => {
+  const client = new SwarmClient(), socket = new Socket(); let reads = 0, release!: () => void;
+  const updates: string[] = [];
+  client.transport.request = (async (path: string) => {
+    if (path === '/v3/sync/bootstrap') return { data: { realtime: { resume: { endpoint_cursor: 'opaque', subscriptions: [] } } } };
+    if (path.endsWith('/tasks')) {
+      reads++;
+      if (reads === 2) await new Promise<void>(resolve => { release = resolve; });
+      return { data: { tasks: [{ title: String(reads) }] } };
+    }
+    return { data: { id: 'editor', project_id: 'project', worker_ids: [] } };
+  }) as typeof client.transport.request;
+  const watch = client.apps.watchResults('editor', { onChange: state => updates.push(state.tasks[0].title), socketFactory: async () => socket });
+  try {
+    await new Promise(setImmediate); socket.frame({ kind: 'hello' }); socket.frame({ kind: 'keepalive' });
+    await new Promise(setImmediate); socket.frame({ kind: 'project.updated', project_id: 'project' }); release();
+    await new Promise(setImmediate); assert.equal(reads, 3); assert.equal(updates.at(-1), '3');
+  } finally { watch.dispose(); await watch.done; }
 });

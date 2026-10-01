@@ -9,7 +9,26 @@ or authenticated loopback). These routes are deliberately **not** allowed on the
 container SDK listener; do not expose the privileged socket or credentials to a browser.
 The routes require `sessions:read` / `sessions:write`, respectively.
 
+## Minimal private-server quickstart
+
+First construct `new SwarmClient()` in your BFF using its private environment/socket
+transport (never in the browser). If Codex is not connected, after explicit user
+consent call `client.auth.codex.start({method: 'device', active: false})`, display
+only the allowlisted HTTPS verification URL/user code, and call
+`client.auth.codex.status(login.session_id)` on user request until `status === 'success'`.
+Bind the login ID to your authenticated app session. Manual sign-in uses
+`start({method: 'manual', active: false})` then `complete(login.session_id, callback)`.
+Completion saves credentials and **can initialize account model defaults**, even
+with `active: false`; disclose this before starting. The current API has no cancel
+endpoint: abandoning a device flow does not revoke authorization already granted.
+These are user-driven calls, not startup hooks. App access tokens and provider
+sign-in are separate. Use the hub's BFF as a redaction/correlation example.
+
+With a saved workspace and configured account model:
+
 ```ts
+import { SwarmClient } from '@swarm/sdk';
+const client = new SwarmClient();
 const agent = await client.apps.put('editor', {
   name: 'Editor', instructions: 'Prepare drafts; do not publish.',
   context: 'Use our approved style guide.', expected_revision: 0,
@@ -97,3 +116,12 @@ worker invalidation signals; project invalidations are filtered by the linked ID
 It returns bounded task/run lists, not an unlimited event ledger. Disconnects re-read
 durable state, not transient event payloads. Browser apps should stream these selected
 results through their authenticated BFF; never send daemon credentials to the browser.
+
+Resource-only resume currently has no explicit acceptance/replay-done frame.
+`watchResults.ready` waits for a post-hello resource/watermark/keepalive and a fresh
+authorized snapshot (idle connections can take one 15-second keepalive interval).
+This is a liveness fence, not an atomic snapshot of all resources. Read-time
+invalidations coalesce into another read; reconnect bootstraps again.
+Worker signals currently omit worker IDs, so **every account worker invalidation
+requires refreshing linked workers**; unrelated worker events cannot safely be
+filtered client-side. Per-worker invalidation needs a backend protocol change.

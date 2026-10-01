@@ -94,3 +94,34 @@ test('configuration preserves plan and rejects stale writes', async () => {
   assert.equal(writes[0][2], 4); assert.deepEqual(writes[0][3].plan_document, plan);
   assert.deepEqual(writes[0][3].schedule, { kind: 'interval', interval_seconds: 3600 });
 });
+
+// Purpose: provider routes must inherit app auth/CSRF and keep OAuth correlations
+// isolated across app cookies, even though both use one daemon principal. The
+// HTTP handler boundary proves denied requests make no provider calls.
+test('provider BFF binds OAuth to the unlocking session', { timeout: 2000 }, async () => {
+  let starts = 0, statuses = 0;
+  const token = 'c'.repeat(64), origin = 'http://127.0.0.1:8787';
+  const handler = appHandler({ auth: { codex: {
+    start: async () => { starts++; return { session_id: 'daemon-flow', status: 'waiting', auth_url: 'https://auth.openai.com/oauth/authorize', error: 'secret' }; },
+    status: async id => { statuses++; assert.equal(id, 'daemon-flow'); return { status: 'success', credential: { access_token: 'secret' } }; },
+  } } }, { origin, accessToken: token });
+  async function invoke(path, data, headers = {}) {
+    const req = Readable.from([Buffer.from(JSON.stringify(data))]);
+    Object.assign(req, { url: path, method: 'POST', headers: { host: '127.0.0.1:8787', origin, 'content-type': 'application/json', ...headers } });
+    const res = { headers: {}, setHeader(k, v) { this.headers[k] = v; }, writeHead(status, headers) { this.status = status; Object.assign(this.headers, headers); }, end(body) { this.body = JSON.parse(body); } };
+    await handler(req, res); return res;
+  }
+  const login = async () => { const r = await invoke('/login', { token }); return { cookie: r.headers['Set-Cookie'].split(';')[0], 'x-csrf-token': r.body.csrf }; };
+  const first = await login(), other = await login(), input = { op: 'start', method: 'manual', consent: true };
+  assert.equal((await invoke('/provider', input)).status, 401);
+  assert.equal((await invoke('/provider', input, { ...first, 'x-csrf-token': '' })).status, 403);
+  assert.equal(starts, 0);
+  const started = await invoke('/provider', input, first); assert.equal(started.status, 200);
+  assert.doesNotMatch(JSON.stringify(started.body), /secret|daemon-flow/);
+  assert.equal((await invoke('/provider', { op: 'status', session_id: 'daemon-flow' }, other)).status, 400);
+  assert.equal(statuses, 0);
+  const status = await invoke('/provider', { op: 'status' }, first);
+  assert.equal(status.status, 200); assert.doesNotMatch(JSON.stringify(status.body), /secret/);
+  await invoke('/logout', {}, first);
+  assert.equal((await invoke('/provider', { op: 'status' }, first)).status, 401); assert.equal(statuses, 1);
+});

@@ -58,7 +58,7 @@ export function watchApplicationResults(apps: SwarmAppsNamespace, transport: Swa
     if (signal.aborted) { socket.close(); return; }
     await new Promise<void>((resolve, reject) => {
       const requests = new AbortController();
-      let ended = false, hello = false, refreshing = false, dirty = false;
+      let ended = false, hello = false, confirmed = false, refreshing = false, dirty = false;
       const finish = (error?: Error) => {
         if (ended) return;
         ended = true; requests.abort(); clearTimeout(timer); signal.removeEventListener('abort', cancel); socket.close();
@@ -74,7 +74,8 @@ export function watchApplicationResults(apps: SwarmAppsNamespace, transport: Swa
           while (dirty && !ended) {
             dirty = false; const next = await snapshot(requests.signal);
             if (ended) return;
-            state = next; options.onChange(state);
+            state = next;
+            if (confirmed) { options.onChange(state); resolveReady(); }
           }
         } catch (error) { finish(error instanceof Error ? error : new Error('Resource refresh failed')); }
         finally { refreshing = false; }
@@ -93,11 +94,18 @@ export function watchApplicationResults(apps: SwarmAppsNamespace, transport: Swa
           if (['cursor.error', 'slow_consumer.reconnect_required'].includes(frame.kind)) throw new Error('Resource stream requires reauthorization');
           if (frame.kind === 'hello') {
             if (hello) throw new Error('Duplicate hello');
-            hello = true; clearTimeout(timer);
+            hello = true;
             socket.send(JSON.stringify({ ...initial.realtime!.resume, subscriptions: [] }));
-            options.onChange(state); resolveReady(); return;
+            return;
           }
           if (!hello) throw new Error('Resource frame before hello');
+          // Resource-only resumes have no replay.done acknowledgment. The first
+          // resource/watermark/keepalive is a liveness fence, not an atomic snapshot.
+          // Re-read after it while coalescing replay invalidations; hello alone is
+          // not readiness and an immediate resume denial must never emit data.
+          if (!confirmed && ['keepalive', 'endpoint.watermark', 'project.updated', 'worker.updated', 'automation.updated'].includes(frame.kind)) {
+            confirmed = true; clearTimeout(timer); void refresh(); return;
+          }
           if ((frame.kind === 'project.updated' && frame.project_id === state.agent.project_id) ||
               (['worker.updated', 'automation.updated'].includes(frame.kind) && state.workers.length > 0)) void refresh();
         } catch (error) { finish(error instanceof Error ? error : new Error('Invalid resource frame')); }
