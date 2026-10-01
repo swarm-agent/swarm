@@ -183,13 +183,15 @@ test('OrchestrateView renders Image and Video model dropdowns with availability 
   assert.ok(source.includes("model: model || (targetIntent === 'image'"), 'Quick route media must honor the explicitly selected model first')
 })
 
-test('OrchestrateView implements compact 6-tab layout (Small Feature/Fix, Big Feature, Image, Video, Sounds, Audit) fitting in one line', () => {
-  // Invariant: The Deploy Task Modal must replace long tab labels ('Code / Feature' -> 'Feature',
-  // 'Audit / Finder' -> 'Audit', 'Video Story' -> 'Video') and retain distinct small/big feature intents plus 'Sounds' in a 6-column grid.
+test('OrchestrateView retains explicit intents in separate Coding and Media groups', () => {
+  // Requirement: OrchestrateView must distinguish coding from media without losing
+  // any intent. This narrow source-wiring check guards accidental label removal;
+  // rendered grouping, icon removal and selection are proved in the browser test.
   const sourcePath = path.join(__dirname, 'OrchestrateView.tsx')
   const source = fs.readFileSync(sourcePath, 'utf8')
 
-  assert.ok(source.includes('grid-cols-6'), 'Must render the combined six-intent layout')
+  assert.ok(source.includes('>Coding</legend>'), 'Must label the coding group')
+  assert.ok(source.includes('>Media</legend>'), 'Must label the separate media group')
   assert.ok(source.includes('<span>Small Feature/Fix</span>'), 'Must retain the explicit small-task intent')
   assert.ok(source.includes('<span>Big Feature</span>'), 'Must retain the explicit planning intent')
   assert.ok(!source.includes('<span>Code / Feature</span>'), 'Must eliminate old "Code / Feature" text')
