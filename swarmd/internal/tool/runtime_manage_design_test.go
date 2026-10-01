@@ -23,12 +23,22 @@ func TestManageDesignStrictGrammar(t *testing.T) {
 		`{"action":"select","idempotency_key":"k","ref":{},"expected_version":0}`,
 	} {
 		var args map[string]any
-		if err := json.Unmarshal([]byte(raw), &args); err != nil { t.Fatal(err) }
-		if _, err := parseDesignToolArgs(args); err == nil { t.Fatalf("accepted %s", raw) }
+		if err := json.Unmarshal([]byte(raw), &args); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := parseDesignToolArgs(args); err == nil {
+			t.Fatalf("accepted %s", raw)
+		}
 	}
 	found := false
-	for _, def := range NewRuntime(1).Definitions() { if def.Name == "manage_design" { found = true } }
-	if !found { t.Fatal("tool not registered") }
+	for _, def := range NewRuntime(1).Definitions() {
+		if def.Name == "manage_design" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("tool not registered")
+	}
 }
 
 // Purpose: real session mutations and Pebble must retain queued batch identities
@@ -38,43 +48,95 @@ func TestManageDesignStrictGrammar(t *testing.T) {
 func TestManageDesignDurableQueue(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "db")
 	db, err := pebblestore.Open(path)
-	if err != nil { t.Fatal(err) }
-	defer func(){ if db != nil { db.Close() } }()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if db != nil {
+			db.Close()
+		}
+	}()
 	ss := pebblestore.NewSessionStore(db)
 	svc := session.NewService(ss, nil)
 	r := NewRuntime(1)
 	r.sessions = svc
 	ctx, scope := artifactToolContext()
-	p := pebblestore.DesignPrincipal{AccountID:scope.Principal.AccountScopeID, PrincipalID:scope.Principal.UserID}
+	p := pebblestore.DesignPrincipal{AccountID: scope.Principal.AccountScopeID, PrincipalID: scope.Principal.UserID}
 	for _, input := range []pebblestore.V3SessionMutationInput{
-		{SessionID:scope.SessionID, UserID:p.PrincipalID, AccountScopeID:p.AccountID, Kind:pebblestore.V3SessionMutationCreateSession, IdempotencyKey:"create",PayloadHash:"create",Session:&pebblestore.SessionSnapshot{ID:scope.SessionID}},
-		{SessionID:scope.SessionID, UserID:p.PrincipalID, AccountScopeID:p.AccountID, Kind:pebblestore.V3SessionMutationRecordRunIntent, IdempotencyKey:"run",PayloadHash:"run",RunIntent:&pebblestore.V3SessionRunIntent{SessionID:scope.SessionID,RunID:"run-1",Status:pebblestore.V3RunIntentPendingExecutor}},
-	} { if _, err := svc.ApplySessionMutation(input); err != nil { t.Fatal(err) } }
-	args := map[string]any{"action":"submit","idempotency_key":"batch", "candidates":[]map[string]any{{"kind":"html","operation":"generate","brief":"card"},{"kind":"plan","operation":"generate","brief":"plan"}}}
+		{SessionID: scope.SessionID, UserID: p.PrincipalID, AccountScopeID: p.AccountID, Kind: pebblestore.V3SessionMutationCreateSession, IdempotencyKey: "create", PayloadHash: "create", Session: &pebblestore.SessionSnapshot{ID: scope.SessionID}},
+		{SessionID: scope.SessionID, UserID: p.PrincipalID, AccountScopeID: p.AccountID, Kind: pebblestore.V3SessionMutationRecordRunIntent, IdempotencyKey: "run", PayloadHash: "run", RunIntent: &pebblestore.V3SessionRunIntent{SessionID: scope.SessionID, RunID: "run-1", Status: pebblestore.V3RunIntentPendingExecutor}},
+	} {
+		if _, err := svc.ApplySessionMutation(input); err != nil {
+			t.Fatal(err)
+		}
+	}
+	args := map[string]any{"action": "submit", "idempotency_key": "batch", "candidates": []map[string]any{{"kind": "html", "operation": "generate", "brief": "card"}, {"kind": "plan", "operation": "generate", "brief": "plan"}}}
 	out, err := r.executeManageDesign(ctx, scope, args)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	var request pebblestore.DesignRequest
-	if err := json.Unmarshal([]byte(out), &request); err != nil { t.Fatal(err) }
-	if request.State != pebblestore.DesignQueued || len(request.Candidates) != 2 || request.Candidates[0].Spec.ArtifactID == request.Candidates[1].Spec.ArtifactID { t.Fatalf("bad batch %+v",request) }
+	if err := json.Unmarshal([]byte(out), &request); err != nil {
+		t.Fatal(err)
+	}
+	if request.State != pebblestore.DesignQueued || len(request.Candidates) != 2 || request.Candidates[0].Spec.ArtifactID == request.Candidates[1].Spec.ArtifactID {
+		t.Fatalf("bad batch %+v", request)
+	}
+	history, err := r.executeManageDesign(ctx, scope, map[string]any{"action": "history", "artifact_id": request.Candidates[0].Spec.ArtifactID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var historyResult struct {
+		Artifact  pebblestore.DesignArtifact   `json:"artifact"`
+		Revisions []pebblestore.DesignRevision `json:"revisions"`
+	}
+	if err := json.Unmarshal([]byte(history), &historyResult); err != nil {
+		t.Fatal(err)
+	}
+	if historyResult.Artifact.ID != request.Candidates[0].Spec.ArtifactID || historyResult.Artifact.SelectionVersion != 0 || historyResult.Artifact.Selected != nil || len(historyResult.Revisions) != 0 {
+		t.Fatal("history omits selection precondition", history)
+	}
 	replay, err := r.executeManageDesign(ctx, scope, args)
-	if err != nil || replay != out { t.Fatalf("replay %s %v", replay, err) }
-	args["candidates"] = []map[string]any{{"kind":"html","operation":"generate","brief":"changed"}}
-	if _, err := r.executeManageDesign(ctx, scope, args); err == nil { t.Fatal("changed replay accepted") }
+	if err != nil || replay != out {
+		t.Fatalf("replay %s %v", replay, err)
+	}
+	args["candidates"] = []map[string]any{{"kind": "html", "operation": "generate", "brief": "changed"}}
+	if _, err := r.executeManageDesign(ctx, scope, args); err == nil {
+		t.Fatal("changed replay accepted")
+	}
 	foreign := scope
 	foreign.Principal.AccountScopeID = "foreign"
-	if _, err := r.executeManageDesign(ctx, foreign, map[string]any{"action":"status","request_id":request.ID}); !errors.Is(err,pebblestore.ErrDesignNotFound) { t.Fatal("foreign read",err) }
-	if _, err := svc.ApplySessionMutation(pebblestore.V3SessionMutationInput{SessionID:scope.SessionID,UserID:p.PrincipalID,AccountScopeID:p.AccountID,Kind:pebblestore.V3SessionMutationRecordRunIntent,IdempotencyKey:"done",PayloadHash:"done",RunIntent:&pebblestore.V3SessionRunIntent{SessionID:scope.SessionID,RunID:"run-1",Status:pebblestore.V3RunIntentCompleted}}); err != nil { t.Fatal(err) }
-	if err := db.Close(); err != nil { t.Fatal(err) }
+	if _, err := r.executeManageDesign(ctx, foreign, map[string]any{"action": "status", "request_id": request.ID}); !errors.Is(err, pebblestore.ErrDesignNotFound) {
+		t.Fatal("foreign read", err)
+	}
+	if _, err := svc.ApplySessionMutation(pebblestore.V3SessionMutationInput{SessionID: scope.SessionID, UserID: p.PrincipalID, AccountScopeID: p.AccountID, Kind: pebblestore.V3SessionMutationRecordRunIntent, IdempotencyKey: "done", PayloadHash: "done", RunIntent: &pebblestore.V3SessionRunIntent{SessionID: scope.SessionID, RunID: "run-1", Status: pebblestore.V3RunIntentCompleted}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
 	db = nil
 	db, err = pebblestore.Open(path)
-	if err != nil { t.Fatal(err) }
-	r.sessions = session.NewService(pebblestore.NewSessionStore(db),nil)
-	pending, err := db.ListPendingDesignRequests(p,"",50)
-	if err != nil || len(pending) != 1 || pending[0].State != pebblestore.DesignQueued { t.Fatalf("lost work %+v %v",pending,err) }
-	cancel := map[string]any{"action":"cancel","request_id":request.ID,"idempotency_key":"cancel","expected_revision":1,"candidate":0}
-	cancelled, err := r.executeManageDesign(ctx,scope,cancel)
-	if err != nil { t.Fatal(err) }
-	if err := json.Unmarshal([]byte(cancelled),&request); err != nil { t.Fatal(err) }
-	if request.Candidates[0].State != pebblestore.DesignCancelled || request.Candidates[1].State != pebblestore.DesignQueued { t.Fatal("cancellation crossed candidate",request) }
-	if _, err := r.executeManageDesign(ctx,scope,cancel); err != nil { t.Fatal("cancel replay",err) }
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.sessions = session.NewService(pebblestore.NewSessionStore(db), nil)
+	pending, err := db.ListPendingDesignRequests(p, "", 50)
+	if err != nil || len(pending) != 1 || pending[0].State != pebblestore.DesignQueued {
+		t.Fatalf("lost work %+v %v", pending, err)
+	}
+	cancel := map[string]any{"action": "cancel", "request_id": request.ID, "idempotency_key": "cancel", "expected_revision": 1, "candidate": 0}
+	cancelled, err := r.executeManageDesign(ctx, scope, cancel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(cancelled), &request); err != nil {
+		t.Fatal(err)
+	}
+	if request.Candidates[0].State != pebblestore.DesignCancelled || request.Candidates[1].State != pebblestore.DesignQueued {
+		t.Fatal("cancellation crossed candidate", request)
+	}
+	if _, err := r.executeManageDesign(ctx, scope, cancel); err != nil {
+		t.Fatal("cancel replay", err)
+	}
 }

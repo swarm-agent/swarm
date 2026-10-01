@@ -15,17 +15,33 @@ func TestDesignAdmissionBounded(t *testing.T) {
 	p := designTestOwner
 	var first DesignSubmit
 	for i := 0; i < MaxPendingDesignRequests; i++ {
-		in := designTestSubmit(fmt.Sprintf("queue-%d",i),DesignHTML)
-		in.Candidates[0].ArtifactID = fmt.Sprintf("artifact-%d",i)
-		if i == 0 { first = in }
-		if _, err := s.SubmitDesignRequest(p,in); err != nil { t.Fatal(i,err) }
+		in := designTestSubmit(fmt.Sprintf("queue-%d", i), DesignHTML)
+		in.Candidates[0].ArtifactID = fmt.Sprintf("artifact-%d", i)
+		if i == 0 {
+			first = in
+		}
+		if _, err := s.SubmitDesignRequest(p, in); err != nil {
+			t.Fatal(i, err)
+		}
 	}
-	if _, err := s.SubmitDesignRequest(p,first); err != nil { t.Fatal("replay at capacity",err) }
-	overflow := designTestSubmit("overflow",DesignHTML)
+	if _, err := s.SubmitDesignRequest(p, first); err != nil {
+		t.Fatal("replay at capacity", err)
+	}
+	overflow := designTestSubmit("overflow", DesignHTML)
 	overflow.Candidates[0].ArtifactID = "overflow-artifact"
-	if _, err := s.SubmitDesignRequest(p,overflow); !errors.Is(err,ErrDesignConflict) { t.Fatal("admission",err) }
-	if _, err := s.GetDesignRequest(p,overflow.RequestID); !errors.Is(err,ErrDesignNotFound) { t.Fatal("partial request",err) }
-	if _, err := s.GetDesignArtifact(p,"overflow-artifact"); !errors.Is(err,ErrDesignNotFound) { t.Fatal("partial artifact",err) }
-	if _, err := s.RecordDesignAttempt(p,first.RequestID,DesignAttemptMutation{IdempotencyKey:"cancel",ExpectedRevision:1,Candidate:0,State:DesignCancelRequested}); err != nil { t.Fatal(err) }
-	if _, err := s.SubmitDesignRequest(p,overflow); err != nil { t.Fatal("rejected write retained receipt or queue slot",err) }
+	if _, err := s.SubmitDesignRequest(p, overflow); !errors.Is(err, ErrDesignConflict) {
+		t.Fatal("admission", err)
+	}
+	if _, err := s.GetDesignRequest(p, overflow.RequestID); !errors.Is(err, ErrDesignNotFound) {
+		t.Fatal("partial request", err)
+	}
+	if _, err := s.GetDesignArtifact(p, "overflow-artifact"); !errors.Is(err, ErrDesignNotFound) {
+		t.Fatal("partial artifact", err)
+	}
+	if _, err := s.RecordDesignAttempt(p, first.RequestID, DesignAttemptMutation{IdempotencyKey: "cancel", ExpectedRevision: 1, Candidate: 0, State: DesignCancelRequested}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SubmitDesignRequest(p, overflow); err != nil {
+		t.Fatal("rejected write retained receipt or queue slot", err)
+	}
 }

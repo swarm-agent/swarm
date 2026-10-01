@@ -7807,8 +7807,12 @@ func permissionRequirement(mode, toolName, arguments string) (string, bool) {
 		}
 		return toolName, false
 	case "manage_design":
-		var input struct { Action string `json:"action"` }
-		if json.Unmarshal([]byte(arguments), &input) != nil { return "design_change", true }
+		var input struct {
+			Action string `json:"action"`
+		}
+		if json.Unmarshal([]byte(arguments), &input) != nil {
+			return "design_change", true
+		}
 		return "design_change", input.Action != "status" && input.Action != "history" && input.Action != "read"
 	case "manage_actions":
 		if isManageActionsMutation(arguments) {

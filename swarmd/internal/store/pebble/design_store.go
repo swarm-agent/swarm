@@ -83,6 +83,7 @@ type DesignSubmit struct {
 // canonical child state and records outcomes here. Reopen never fabricates success
 // or silently retries; interrupted attempts require an explicit fresh child attempt.
 type DesignAttempt struct {
+	RouterAlert    string     `json:"router_alert,omitempty"`
 	Number         int        `json:"number"`
 	ChildSessionID string     `json:"child_session_id"`
 	RunID          string     `json:"run_id"`
@@ -366,7 +367,9 @@ func (s *Store) submitDesignRequestInBatch(p DesignPrincipal, in DesignSubmit, b
 		}
 		return zero, err
 	}
-	if err := s.admitDesignRequest(p); err != nil { return zero, err }
+	if err := s.admitDesignRequest(p); err != nil {
+		return zero, err
+	}
 	r := DesignRequest{Owner: p, ID: in.RequestID, ParentSessionID: in.ParentSessionID, ParentRunID: in.ParentRunID, Revision: 1, State: DesignQueued}
 	artifacts := make([]DesignArtifact, 0, len(in.Candidates))
 	seen := map[string]bool{}
