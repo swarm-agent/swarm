@@ -14,6 +14,9 @@ import { chromium } from 'playwright'
 // Threat/regression: Opening an existing video (like Veo Lite) defaulted to iteration model (Omni),
 // silently mutating model and generating invalid requests.
 // Authority: MediaViewerModal, validateMediaGenerationRequest, evaluateVideoActionSupport.
+// The API fixture includes the viewer's auth-reset subscription and fails closed on
+// independent-design reads: artifact viewing must not cross that source boundary.
+// This rendered component test is the narrowest layer proving those UI postconditions.
 
 test('MediaViewerModal rendered component behavior with onGenerate spy', { timeout: 30000 }, async () => {
   const now = 1_800_000_000_000
@@ -206,7 +209,12 @@ test('MediaViewerModal rendered component behavior with onGenerate spy', { timeo
             }
             return {
               loader: 'tsx',
-              contents: `export const requestJson = async () => ({});`,
+              contents: `
+                export const requestJson = async () => ({});
+                export const subscribeDesktopSessionReset = () => () => {};
+                export const apiFetch = async () => { throw new Error('Artifact viewer must not fetch independent designs'); };
+                export const readErrorMessage = async response => response.text();
+              `,
             };
           });
         },

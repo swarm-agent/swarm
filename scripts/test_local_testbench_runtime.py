@@ -60,6 +60,34 @@ class RuntimeTests(unittest.TestCase):
         self.commands.units[unit] = 'LoadState=loaded\nActiveState=active\nDescription=' + self.runtime.description(r)
         return r
 
+    def test_prebuild_rejects_uncommitted_and_traversal_before_allocation(self):
+        """NspawnRuntime.deploy must reject untrusted script paths before Pool.claim;
+        this unit boundary proves rejection has no allocation or command side effects.
+        """
+        for path in ('../escape.sh', '/absolute.sh', 'scripts/../escape.sh', 'scripts/run.sh;id'):
+            with self.assertRaisesRegex(PoolError, 'repository-relative'):
+                self.runtime.deploy(self.lane, 'b' * 40, path)
+        self.assertEqual(self.commands.calls, [])
+        with self.assertRaisesRegex(PoolError, 'committed regular'):
+            self.runtime.deploy(self.lane, 'b' * 40, 'scripts/missing.sh')
+        with self.pool._locked():
+            self.assertEqual(self.pool._load(), [])
+
+    def test_prebuild_rejects_symlink_and_accepts_exact_regular_blob(self):
+        """The exact Git tree, not a host file or symlink, authorizes the guest hook;
+        validate_prebuild_script is the narrowest pre-allocation trust boundary.
+        """
+        from local_testbench_runtime import validate_prebuild_script
+        for mode in ('120000', '040000'):
+            with mock.patch.object(self.commands, 'run', return_value=mode + ' blob ' + 'a' * 40 + '\tscripts/check.sh\n'):
+                with self.assertRaisesRegex(PoolError, 'committed regular'):
+                    validate_prebuild_script('scripts/check.sh', self.lane, 'b' * 40, self.commands)
+        with mock.patch.object(self.commands, 'run', return_value='100644 blob ' + 'a' * 40 + '\tscripts/check.sh\n') as command:
+            validate_prebuild_script('scripts/check.sh', self.lane, 'b' * 40, self.commands)
+            self.assertEqual(command.call_args.args[0][-3:], ['b' * 40, '--', 'scripts/check.sh'])
+        with self.pool._locked():
+            self.assertEqual(self.pool._load(), [])
+
     def test_collision_preserves_listener(self):
         """Port-check authority rejects collisions without killing incumbent processes."""
         with socket.socket() as incumbent:
@@ -197,6 +225,10 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(result['provider_egress'], 'disabled')
         self.assertEqual(result['authentication'], 'not configured')
         self.assertEqual(len(self.commands.units), 3)
+        # Even on a Docker-enabled host, the nspawn candidate cannot control its
+        # container manager. Inspect actual constructed deployment argv, not source.
+        launch = next(call for call in self.commands.calls if 'systemd-nspawn' in call)
+        self.assertFalse(any('docker.sock' in arg or '/usr/bin/docker' in arg for arg in launch))
 
     def test_image_copy_deadline_precedes_reads_or_writes(self):
         """Materialization authority rejects expired work without consuming source or changing target."""
