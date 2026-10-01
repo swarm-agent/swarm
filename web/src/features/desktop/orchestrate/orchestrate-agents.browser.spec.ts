@@ -8,6 +8,9 @@ import { readFile } from 'node:fs/promises'
 // success after a canonical PATCH, and never submit stale sibling assignments.
 // Also prove OrchestrateAgents derives immutable Orchestrator-first ordering,
 // visible CSS selection/focus, responsive bounds and absent-role fallback.
+// Role cards and selected-agent guidance must explain the actual job without
+// creating roles or changing assignments. This rendered component test is the
+// narrowest layer proving readable guidance, selection, and zero incidental PATCHes.
 // Rendered editors + intercepted HTTP prove UI/request semantics; real store/API
 // tests prove atomic persistence. No provider or model execution is simulated.
 test('role switching preserves drafts and slow/rejected saves cannot overwrite another editor', { timeout: 30000 }, async () => {
@@ -61,6 +64,11 @@ test('role switching preserves drafts and slow/rejected saves cannot overwrite a
     assert.deepEqual(await roleButtons.locator('strong').allTextContents(), ['Swarm Orchestrator', 'Swarm', 'Coder'])
     assert.deepEqual(await page.evaluate(() => (window as any).client.getQueryData(['agent-model-settings']).roles.map((role: any) => role.id)), ['swarm', 'system-orchestrator', 'system-coder'], 'cache order is unchanged')
     assert.equal(await roleButtons.first().getAttribute('aria-pressed'), 'true')
+    assert.match(await roleButtons.nth(1).innerText(), /Default agent · Big features/)
+    assert.match(await roleButtons.nth(2).innerText(), /Implementation · Small features/)
+    assert.match(await page.locator('.swarm-agent-overview').innerText(), /Orchestrator · Planning/)
+    assert.match(await page.locator('.swarm-agent-use-case').innerText(), /Turning a broad goal into a plan/)
+    assert.equal(await page.evaluate(() => (window as any).requests.length), 0, 'guidance does not mutate assignments')
     assert.equal(await page.getByRole('button', { name: 'Save Swarm Orchestrator', exact: true }).count(), 1)
     const selectedBackground = await roleButtons.first().evaluate(el => getComputedStyle(el).backgroundColor)
     assert.notEqual(selectedBackground, await roleButtons.nth(1).evaluate(el => getComputedStyle(el).backgroundColor))
@@ -77,6 +85,9 @@ test('role switching preserves drafts and slow/rejected saves cannot overwrite a
     await page.getByRole('button', { name: /^Coder/ }).click()
     await page.mouse.move(0, 0)
     assert.equal(await page.locator('.swarm-agent-role[aria-pressed="true"]').count(), 1)
+    assert.match(await page.locator('.swarm-agent-overview').innerText(), /isolated worktree/)
+    assert.match(await page.locator('.swarm-agent-use-case').innerText(), /small feature, fixing a bug/)
+    assert.equal(await page.getByText('Orchestrator and Plan share this assignment. Changes affect both.').count(), 0)
     assert.equal(await page.getByRole('button', { name: /^Coder/ }).evaluate(el => getComputedStyle(el).backgroundColor), selectedBackground)
     assert.notEqual(await roleButtons.first().evaluate(el => getComputedStyle(el).backgroundColor), selectedBackground)
     await page.getByRole('combobox', { name: /^Thinking/ }).selectOption('low')
@@ -120,6 +131,13 @@ test('role switching preserves drafts and slow/rejected saves cannot overwrite a
     await page.getByRole('button', { name: 'Save Coder', exact: true }).waitFor()
     assert.deepEqual(await roleButtons.locator('strong').allTextContents(), ['Coder', 'Swarm'], 'without Orchestrator, server order and first-role default are preserved')
     assert.equal(await roleButtons.first().getAttribute('aria-pressed'), 'true')
+    await page.evaluate(() => { const client = (window as any).client; const current = client.getQueryData(['agent-model-settings']); client.setQueryData(['agent-model-settings'], { ...current, roles: ['finder', 'designer', 'compact', 'router'].map(slot => ({ id: `system-${slot}`, label: slot, group: 'system_agents', slot })) }) })
+    for (const [slot, description] of [['finder', /without changing your files/], ['designer', /visual design iterations/], ['compact', /Condenses conversation context/], ['router', /routing decisions behind the scenes/]] as const) {
+      await roleButtons.filter({ hasText: slot }).click()
+      assert.match(await page.locator('.swarm-agent-overview').innerText(), description)
+      assert.ok((await page.locator('.swarm-agent-use-case').innerText()).length > 30)
+    }
+    assert.equal(await page.evaluate(() => (window as any).requests.length), 2, 'browsing utility roles never saves')
     await page.evaluate(() => { const client = (window as any).client; const current = client.getQueryData(['agent-model-settings']); client.setQueryData(['agent-model-settings'], { ...current, roles: undefined }) })
     await page.getByRole('alert').getByText(/System roles are unconfigured/).waitFor()
     await page.getByRole('button', { name: 'Retry', exact: true }).click()
