@@ -5,6 +5,8 @@ import { desktopDesigns } from './desktop-design-runtime'
 
 // Purpose: exercise the actual app/api auth-reset subscription, not an unreachable reset helper.
 // Forced identity refresh and 401 recovery must clear cached private metadata and fence old reads.
+// This runtime-level test is the narrowest layer proving the lazy facade registers with
+// app/api and retains DesktopDesignState resource identities without weakening reset.
 test('canonical auth reset clears design data and fences an outstanding response', { timeout: 5000 }, async () => {
   const original = globalThis.fetch
   let finish!: (response: Response) => void
@@ -15,13 +17,20 @@ test('canonical auth reset clears design data and fences an outstanding response
     if (blocked) return new Promise(resolve => { finish = resolve })
     return Response.json({ requests: [{ id: 'private', state: 'queued', candidates: [] }], next_cursor: '' })
   }
+  const facade = desktopDesigns
   const resource = desktopDesigns.catalog('auth-fixture')
+  const history = desktopDesigns.history('auth-fixture', 'artifact')
+  assert.equal(desktopDesigns.catalog('auth-fixture'), resource)
+  assert.equal(desktopDesigns.history('auth-fixture', 'artifact'), history)
   const release = resource.subscribe(() => {})
   try {
     await resource.refresh()
     assert.equal(resource.getSnapshot().data!.requests[0].id, 'private')
     await ensureDesktopSession(true)
     assert.equal(resource.getSnapshot().data, undefined)
+    assert.equal(desktopDesigns, facade)
+    assert.equal(desktopDesigns.catalog('auth-fixture'), resource)
+    assert.equal(desktopDesigns.history('auth-fixture', 'artifact'), history)
     blocked = true
     const flight = resource.refresh()
     // Bounded microtask drain gets the deferred transport installed without a timer.
