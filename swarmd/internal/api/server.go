@@ -182,6 +182,8 @@ type Server struct {
 	reviewCommitActive     map[string]string
 	reviewAutoArchiveOnce  sync.Once
 	projectTaskCreateMu    sync.Mutex
+	projectTaskAdmissionMu sync.Mutex
+	projectTaskAdmissions  map[string]*projectTaskAdmissionLock
 	// Test seam before canonical follow-up mutations; production leaves it nil.
 	beforeProjectTaskFollowupMutation func(sessionruntime.SessionMutationInput) error
 	projectTaskApproveMu              sync.Mutex

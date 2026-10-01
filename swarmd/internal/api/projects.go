@@ -2249,19 +2249,16 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		}
 		requiresRepo := previewReq.Agent != "image" && previewReq.Agent != "video" && previewReq.Agent != "sound" && previewReq.Agent != "audio"
 		var source pebblestore.ProjectTaskSource
-		if previewReq.Agent != "image" && previewReq.Intent != "image" {
+		if previewReq.Agent != "image" && previewReq.Intent != "image" && (previewReq.WorkspacePath != "" || previewReq.WorkspaceID != "" || previewReq.WorkspaceGeneration != 0) {
 			source, err = s.resolveProjectTaskSource(p, proj, previewReq.WorkspacePath, previewReq.WorkspaceID, previewReq.WorkspaceGeneration, requiresRepo)
 		}
+		// Workspace readiness is a separate diagnostic, never model authority.
+		workspaceDiagnostic := ""
 		if err != nil {
-			writeError(w, http.StatusBadRequest, err)
-			return
+			workspaceDiagnostic = err.Error()
+			source = pebblestore.ProjectTaskSource{}
 		}
-		var projectContext string
-		var workspaces []pebblestore.ProjectWorkspaceRef
-		if proj != nil {
-			projectContext = proj.ProjectContext
-			workspaces = proj.Workspaces
-		}
+		projectContext := proj.ProjectContext
 		prompt := strings.TrimSpace(previewReq.Prompt)
 		if prompt == "" {
 			prompt = strings.TrimSpace(previewReq.Title)
@@ -2270,7 +2267,8 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			Prompt:             prompt,
 			RequestedWorkspace: source.Path,
 			ProjectContext:     projectContext,
-			Workspaces:         workspaces,
+			// Preview has no authority to infer an execution workspace.
+			Workspaces:         nil,
 			Intent:             previewReq.Intent,
 			FeatureSize:        previewReq.FeatureSize,
 			Agent:              previewReq.Agent,
@@ -2293,9 +2291,10 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		}
 		modelPrev := s.buildTaskModelPreview(p, dummyTask)
 		writeJSON(w, http.StatusOK, map[string]any{
-			"task_plan":        routed,
-			"source_workspace": source,
-			"model_preview":    modelPrev,
+			"task_plan":            routed,
+			"source_workspace":     source,
+			"model_preview":        modelPrev,
+			"workspace_diagnostic": workspaceDiagnostic,
 		})
 		return
 	}
@@ -4526,6 +4525,9 @@ func sanitizeProjectTaskForClient(t *pebblestore.ProjectTaskRecord) *pebblestore
 	}
 	if len(cp.PipelineStages) > 0 {
 		cp.PipelineStages = append([]string(nil), cp.PipelineStages...)
+	}
+	if len(cp.ContextSources) > 0 {
+		cp.ContextSources = append([]pebblestore.ProjectTaskSource(nil), cp.ContextSources...)
 	}
 	if len(cp.WorkspacesInvolved) > 0 {
 		cp.WorkspacesInvolved = append([]string(nil), cp.WorkspacesInvolved...)

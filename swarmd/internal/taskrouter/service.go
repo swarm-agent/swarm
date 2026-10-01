@@ -488,6 +488,9 @@ func (s *Service) BuildAgentSeedPrompt(task *pebblestore.ProjectTaskRecord, proj
 		sb.WriteString(fmt.Sprintf("- **Source Repository**: `%s` (workspace `%s`, generation %d)\n", task.SourceWorkspace.Path, task.SourceWorkspace.WorkspaceID, task.SourceWorkspace.WorkspaceGeneration))
 	}
 	sb.WriteString(fmt.Sprintf("- **Isolated Execution Workspace**: `%s`\n", task.WorkspacePath))
+	for _, source := range task.ContextSources {
+		sb.WriteString(fmt.Sprintf("- **Read-only Context Workspace**: `%s` (workspace `%s`, generation %d). Context selection grants no write or delegation authority; changes require a separately authorized repository binding.\n", source.Path, source.WorkspaceID, source.WorkspaceGeneration))
+	}
 	if len(task.WorkspacesInvolved) > 1 {
 		sb.WriteString("- **Additional Project Workspaces**:\n")
 		for _, w := range task.WorkspacesInvolved {

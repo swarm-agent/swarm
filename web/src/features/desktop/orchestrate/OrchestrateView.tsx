@@ -3685,7 +3685,7 @@ export function OrchestrateView({
         : taskIntent === 'audit'
           ? 'discovery'
           : 'direct'
-      const res = await requestJson<{ task_plan: any; model_preview: BackendTaskModelPreview }>(
+      const res = await requestJson<{ task_plan: any; model_preview: BackendTaskModelPreview; workspace_diagnostic?: string }>(
         `/v3/projects/${selectedProject!.id}/tasks:preview`,
         {
           method: 'POST',
@@ -3702,7 +3702,7 @@ export function OrchestrateView({
           }),
         }
       )
-      return res.model_preview
+      return { ...res.model_preview, workspaceDiagnostic: res.workspace_diagnostic }
     },
     enabled: Boolean(selectedProject?.id && isDeployModalOpen && (taskIntent === 'code' || taskIntent === 'audit')),
     staleTime: 30_000,
@@ -7763,7 +7763,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                   <div className="flex items-center justify-between mb-1">
                     <label className="text-[11px] text-slate-400 font-medium">Target Workspace</label>
                     <span className="text-[10px] text-blue-400 font-mono">
-                      {resolveTaskWorkspace(newTaskWorkspace) || 'Auto-detect (backend validates unique repository)'}
+                      {resolveTaskWorkspace(newTaskWorkspace) || 'Let Router Decide'}
                     </span>
                   </div>
                   {selectedProject?.workspaces && selectedProject.workspaces.length > 0 ? (
@@ -7775,7 +7775,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                       }}
                       className="w-full rounded-lg bg-slate-950 border border-slate-800 px-3 py-2 text-white focus:outline-none focus:border-blue-500/60 text-xs"
                     >
-                      <option value="">✨ Auto-detect (unique authorized repository only)</option>
+                      <option value="">✨ Let Router Decide (automatic)</option>
                       {selectedProject.workspaces.map((ws) => (
                         <option key={ws.workspace_id || ws.path} value={ws.path}>
                           {ws.label ? `${ws.label} — ` : ''}{ws.path}
@@ -7784,8 +7784,12 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                     </select>
                   ) : (
                     <div className="text-[11px] font-mono text-slate-400 px-3 py-1.5 rounded-lg bg-slate-950/60 border border-slate-800/80 truncate">
-                      {resolveTaskWorkspace(newTaskWorkspace) || 'No project repository linked'}
+                      {resolveTaskWorkspace(newTaskWorkspace) || 'Let Router Decide — link a project workspace to enable routing'}
                     </div>
+                  )}
+                  <p className="mt-1 text-[10px] text-slate-400">Router selects an authorized source and read-only context on submission. Your approval setting still controls launch.</p>
+                  {deployPreviewQuery.data?.workspaceDiagnostic && (
+                    <p className="mt-1 text-[10px] text-amber-400" role="status">Workspace: {deployPreviewQuery.data.workspaceDiagnostic}</p>
                   )}
                 </div>
               )}
