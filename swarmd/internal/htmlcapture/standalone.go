@@ -8,7 +8,6 @@ import (
 	"errors"
 	"image/png"
 	"os/exec"
-	"strings"
 	"sync"
 	"syscall"
 	"unicode/utf8"
@@ -150,7 +149,7 @@ func standaloneRequestAllowed(event *fetch.EventRequestPaused, origin, entry, fa
 		*initial = true
 		return true
 	}
-	return url == favicon || strings.HasPrefix(url, origin+"/")
+	return url == favicon
 }
 
 func captureStandaloneViewport(parent context.Context, width, height int) ([]byte, error) {
@@ -160,12 +159,15 @@ func captureStandaloneViewport(parent context.Context, width, height int) ([]byt
 	// No manifest/global API is injected and no authored DOM/style is changed.
 	// A renderer evaluation failure is conservatively infrastructure, not repair.
 	if err := chromedp.Run(ctx, chromedp.Evaluate(`(async()=>{
-		if(document.readyState!=="complete" || !document.body) return false;
+		if(document.readyState!=="complete") await new Promise(resolve=>window.addEventListener("load", resolve, {once:true}));
+		if(!document.body) return false;
 		try { await document.fonts.ready; await Promise.all(Array.from(document.images, img=>img.decode())); }
 		catch (_) { return false; }
 		await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
 		return true;
-	})()`, &ready, func(p *cdpruntime.EvaluateParams) *cdpruntime.EvaluateParams { return p.WithAwaitPromise(true).WithReturnByValue(true) })); err != nil {
+	})()`, &ready, func(p *cdpruntime.EvaluateParams) *cdpruntime.EvaluateParams {
+		return p.WithAwaitPromise(true).WithReturnByValue(true)
+	})); err != nil {
 		return nil, NewError("capture_renderer_failed", "standalone evaluation failed")
 	}
 	if !ready {
@@ -180,4 +182,17 @@ func captureStandaloneViewport(parent context.Context, width, height int) ([]byt
 		return nil, NewError("capture_png_invalid", "invalid viewport PNG")
 	}
 	return data, nil
+}
+
+// captureRequestGate bounds asynchronous CDP commands without blocking its event reader.
+type captureRequestGate chan struct{}
+
+func (g captureRequestGate) dispatch(fn func()) bool {
+	select {
+	case g <- struct{}{}:
+		go func() { defer func() { <-g }(); fn() }()
+		return true
+	default:
+		return false
+	}
 }
