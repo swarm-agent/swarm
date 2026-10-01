@@ -38,14 +38,29 @@ export interface V3ReplayResponse {
   selector: { kind?: string; session_ids?: string[]; [key: string]: unknown };
   replay_instructions: Record<string, unknown>;
 }
+export interface V3Permission {
+  id: string; session_id: string; run_id: string; call_id: string; tool_name: string;
+  tool_arguments: string; requirement: string; mode: string; status: string; decision: string;
+  reason: string; created_at: number; updated_at: number; resolved_at: number;
+  tool_call_arguments?: string; approved_arguments?: string; proposal_revision?: number;
+}
+export interface V3RunState {
+  session_id: string; run_id: string; active: boolean; status: string; blocked_reason?: string;
+  created_at: number; updated_at: number; event_seq: number; started_at?: number; completed_at?: number;
+  epoch_id?: string; plan_id?: string; checkpoint_id?: string; attempt_id?: string;
+}
+export interface V3SessionView {
+  pending_permissions?: V3Permission[]; current_run_state?: V3RunState;
+  active_plan?: Record<string, unknown>; [key: string]: unknown;
+}
 export interface V3SyncSnapshot {
   ok: boolean; rev: number; snapshot_endpoint_cursor: string;
   sessions_by_id: Record<string, Record<string, unknown>>;
   projections_by_session: Record<string, V3Projection>;
   messages_by_session: Record<string, V3Message[]>;
   events_by_session: Record<string, V3Event[]>;
-  current_run_state_by_session?: Record<string, Record<string, unknown>>;
-  session_views_by_id?: Record<string, Record<string, unknown>>;
+  current_run_state_by_session?: Record<string, V3RunState>;
+  session_views_by_id?: Record<string, V3SessionView>;
   realtime?: { stream_path: string; resume: V3Resume };
   omissions: { session_id?: string; reason?: string; [key: string]: unknown }[];
   pagination: Record<string, unknown>; [key: string]: unknown;
@@ -89,8 +104,20 @@ export class V3LiveText {
   }
   durable(events: V3Event[]): void {
     for (const event of events) {
-      if (!['session.assistant.delta', 'session.message.delta'].includes(event.event_type)) continue;
       const p = event.payload;
+      if (event.event_type === 'session.assistant.completed') {
+        const message = p.message as V3Message | undefined;
+        if (message?.role === 'assistant') this.reconcile([message]);
+        const run = p.run_id ?? message?.metadata?.run_id;
+        const stream = p.stream_id ?? message?.metadata?.stream_id;
+        if (typeof run === 'string' && typeof stream === 'string') {
+          const key = JSON.stringify([run, stream]);
+          if (!this.committed.has(key) && this.committed.size >= 4096) throw new Error('Live history limit; reconnect required');
+          this.streams.delete(key); this.committed.add(key);
+        }
+        continue;
+      }
+      if (!['session.assistant.delta', 'session.message.delta'].includes(event.event_type)) continue;
       const run = p.run_id, stream = p.stream_id, start = p.offset_start, end = p.offset_end;
       const text = p.delta ?? p.text_delta ?? p.content_delta;
       if (typeof run !== 'string' || typeof stream !== 'string' || typeof start !== 'number' || typeof end !== 'number' || typeof text !== 'string') continue;
@@ -179,7 +206,7 @@ export class SwarmRealtimeNamespace {
     let attempts = 0;
     while (!signal.aborted) {
       // Every reconnect hydrates fresh durable authority before replay; no timer polling.
-      const snapshot = await this.bootstrap(body, signal);
+      const snapshot = await this.hydrate(body, signal);
       if (signal.aborted) return;
       if (!snapshot.sessions_by_id[id] || !snapshot.realtime?.resume.endpoint_cursor) throw new Error('Session omitted or realtime bootstrap unavailable');
       try {
@@ -199,8 +226,7 @@ export class SwarmRealtimeNamespace {
     return new Promise<void>((resolve, reject) => {
       const requests = new AbortController();
       let snapshot = initial; let ended = false; let replayed = false; let hello = false; let liveNegotiated = false;
-      let refreshing = false; let dirty = false; let lastSeq = snapshot.projections_by_session[id]?.last_event_seq ?? 0;
-      const paused = new Set<string>();
+      let refreshing = false; let dirty = false; let readyPending = false; let lastSeq = snapshot.projections_by_session[id]?.last_event_seq ?? 0;
       const live = new V3LiveText(); live.reconcile(snapshot.messages_by_session[id] ?? []);
       live.durable(snapshot.events_by_session[id] ?? []);
       const subscription = `sdk:session:${id}`;
@@ -227,6 +253,7 @@ export class SwarmRealtimeNamespace {
             live.durable(next.events_by_session[id] ?? []);
             emit();
           }
+          if (readyPending && !ended) { readyPending = false; ready(); }
         } catch (e) { finish(e instanceof Error ? e : new Error(String(e))); }
         finally { refreshing = false; }
       };
@@ -254,12 +281,10 @@ export class SwarmRealtimeNamespace {
           if (!hello) throw new FatalRealtimeError('Realtime frame before hello');
           if (frame.session_id !== id) return;
           if (frame.subscription_id && frame.subscription_id !== subscription) return;
-          if (frame.kind === 'replay.complete') { replayed = true; clearTimeout(timer); ready(); void refresh(); }
+          if (frame.kind === 'replay.complete') { replayed = true; clearTimeout(timer); readyPending = true; void refresh(); }
           else if (frame.kind === 'live.patch' && frame.live?.session_id === id) {
             if (!liveNegotiated || !replayed) return;
-            const key = JSON.stringify([frame.live.run_id, frame.live.stream_id]);
-            if (paused.has(key)) return;
-            if (!live.accept(frame.live)) { paused.add(key); void refresh(); } else emit();
+            if (!live.accept(frame.live)) { finish(new Error('Live stream gap; durable rehydration required')); } else emit();
           } else if (frame.kind === 'event' && frame.event?.session_id === id) {
             if (frame.event.seq <= lastSeq) return;
             lastSeq = frame.event.seq;

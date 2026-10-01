@@ -41,8 +41,12 @@ async function fixture() {
   const transport = new SwarmTransport({ baseUrl: 'http://127.0.0.1', defaultHeaders: {}, timeoutMs: 500 });
   const api = new SwarmRealtimeNamespace(transport);
   let boots = 0, hydrates = 0;
-  api.bootstrap = async () => snapshot(`opaque-${++boots}`);
-  api.hydrate = async () => { hydrates++; return snapshot('hydrate'); };
+  transport.request = async (path, options) => {
+    assert.equal(path, '/v3/sync/hydrate', 'targeted session_view requires hydrate, never bootstrap');
+    assert.equal((options?.body as { resources: { session_view: boolean } }).resources.session_view, true);
+    hydrates++;
+    return { status: 200, headers: {}, rawText: '', data: snapshot(`opaque-${++boots}`) } as never;
+  };
   const sockets: Socket[] = [];
   const states: string[] = [];
   const watcher = api.watchSession('s', { onChange: (s) => states.push(s.live.map((l) => l.text).join('')), socketFactory: async () => { const socket = new Socket(); sockets.push(socket); return socket; } });
@@ -76,9 +80,9 @@ test('watch uses snapshot resume, filters foreign sessions, repairs cursor and d
     socket.frame({ kind: 'cursor.error', error_code: 'endpoint_cursor_gap', bootstrap_required: true });
     await new Promise((resolve) => setTimeout(resolve, 300));
     assert.equal(socket.closed, true);
-    assert.equal(f.counts().boots, 2);
+    assert.equal(f.counts().boots, 3);
     f.sockets[1].frame({ kind: 'hello', endpoint_cursor: 'head' });
-    assert.equal(JSON.parse(f.sockets[1].sent[0]).endpoint_cursor, 'opaque-2');
+    assert.equal(JSON.parse(f.sockets[1].sent[0]).endpoint_cursor, 'opaque-3');
   } finally { f.watcher.dispose(); await f.watcher.done; }
   assert.equal(f.sockets.at(-1)?.closed, true);
 });
@@ -96,7 +100,7 @@ test('watch rejects authentication denial without reconnect', { timeout: 1000 },
 test('pre-aborted watch performs no I/O', async () => {
   const transport = new SwarmTransport({ baseUrl: 'http://127.0.0.1', defaultHeaders: {}, timeoutMs: 500 });
   const api = new SwarmRealtimeNamespace(transport);
-  api.bootstrap = async () => { throw new Error('unexpected I/O'); };
+  api.hydrate = async () => { throw new Error('unexpected I/O'); };
   const abort = new AbortController(); abort.abort();
   const watch = api.watchSession('s', { signal: abort.signal, onChange: () => assert.fail('unexpected update') });
   await watch.done;
@@ -145,4 +149,37 @@ test('Node Unix socket realtime and HTTP cancellation', { timeout: 5000 }, async
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+// Purpose: completed durable events must retire the live draft before asynchronous
+// snapshot refresh; delayed transient frames must not resurrect committed output.
+test('completion event tombstones before snapshot refresh', () => {
+  const text = new V3LiveText(); text.accept(patch);
+  text.durable([{ id: 'completed', session_id: 's', seq: 7, ts_unix_ms: 1,
+    event_type: 'session.assistant.completed', payload: { run_id: 'r', stream_id: 't' } }]);
+  assert.deepEqual(text.values(), []);
+  text.accept({ ...patch, live_seq_start: 2, live_seq_end: 2, offset_start: 2, offset_end: 4 });
+  assert.deepEqual(text.values(), []);
+});
+
+// Purpose: watch.ready must include post-replay authority; sequence gaps must
+// reconnect instead of leaving the stream permanently paused. Socket + transport
+// fixtures isolate this lifecycle without representing provider-backed evidence.
+test('ready waits for replay hydration and live gap reconnects', { timeout: 3000 }, async () => {
+  const f = await fixture();
+  try {
+    let release!: (s: V3SyncSnapshot) => void;
+    f.api.hydrate = () => new Promise(resolve => { release = resolve; });
+    let isReady = false; void f.watcher.ready.then(() => { isReady = true; });
+    f.sockets[0].frame({ kind: 'hello', endpoint_cursor: 'head', capabilities: ['live_patch_v1'] });
+    f.sockets[0].frame({ kind: 'replay.complete', session_id: 's' });
+    await new Promise(setImmediate); assert.equal(isReady, false);
+    release(snapshot('repaired')); await f.watcher.ready;
+    f.api.hydrate = async () => snapshot('reconnected');
+    f.sockets[0].frame({ kind: 'live.patch', session_id: 's', live: patch });
+    f.sockets[0].frame({ kind: 'live.patch', session_id: 's', live: { ...patch, live_seq_start: 4, live_seq_end: 4, offset_start: 4, offset_end: 6 } });
+    assert.equal(f.sockets[0].closed, true);
+    await new Promise(resolve => setTimeout(resolve, 300));
+    assert.equal(f.sockets.length, 2);
+  } finally { f.watcher.dispose(); await f.watcher.done; }
 });

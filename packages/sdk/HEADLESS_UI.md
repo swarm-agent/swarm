@@ -84,9 +84,9 @@ await watch.done; // rejects on terminal transport/protocol/auth errors
 // On app disconnect: watch.dispose() or abort.abort().
 </copy>
 
-The watcher bootstraps one session, waits for `hello` (`v3.realtime`, version 1), and resumes from the **snapshot handoff cursor**, not the newer hello head. The server replays to the subscription before delivering live updates. It advertises `live_patch_v1` only when the server offers it. UTF-8 byte offsets and sequence ranges deduplicate live text; durable checkpoints and committed messages remain authoritative. Foreign-session frames never update the view.
+The watcher hydrates one session (including its session view), waits for `hello` (`v3.realtime`, version 1), and resumes from the **snapshot handoff cursor**, not the newer hello head. The server replays to the subscription before delivering live updates. It advertises `live_patch_v1` only when the server offers it. UTF-8 byte offsets and sequence ranges deduplicate live text; durable checkpoints and committed messages remain authoritative. Foreign-session frames never update the view.
 
-Durable events trigger coalesced `/v3/sync/hydrate` reads, not interval polling. Disconnects, cursor errors and slow consumers start fresh scoped bootstrap/replay with bounded exponential backoff (six retries, 250ms to 8s). Authentication/protocol errors terminate. No cursor is parsed, numerically compared, or persisted across watches/principals. `dispose` cancels HTTP, closes WebSocket, and ends `done`; a disposed-before-ready watcher rejects `ready`.
+Durable events trigger coalesced `/v3/sync/hydrate` reads, not interval polling. Disconnects, cursor errors and slow consumers start fresh scoped hydration/replay with bounded exponential backoff (six retries, 250ms to 8s). Authentication/protocol errors terminate. No cursor is parsed, numerically compared, or persisted across watches/principals. `dispose` cancels HTTP, closes WebSocket, and ends `done`; a disposed-before-ready watcher rejects `ready`.
 
 ### Bounded view and raw access
 
