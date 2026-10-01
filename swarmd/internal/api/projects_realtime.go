@@ -67,12 +67,12 @@ func (s *Server) reconcileProjectTaskRunLifecycle(job sessionV3ExecutorJob, stat
 			return nil
 		}
 	}
-	if isPrimarySession && task.ActiveAttemptID != "" && task.ActiveAttemptID != "initial" {
+	if isPrimarySession {
 		state, found, err := db.GetV3SessionRunState(job.SessionID)
 		if err != nil {
 			return err
 		}
-		if !found || state.AccountScopeID != accountScopeID || state.RunID != job.RunID {
+		if !found || state.AccountScopeID != accountScopeID || state.RunID != job.RunID || state.Status != status {
 			return nil
 		}
 	}
@@ -82,9 +82,9 @@ func (s *Server) reconcileProjectTaskRunLifecycle(job sessionV3ExecutorJob, stat
 		progID = task.TaskProgram.ID
 	}
 	if progID != "" && task.SessionID != "" {
-		if prog, ok, _ := db.GetTaskProgram(task.SessionID, progID); ok {
+		if prog, ok := db.CurrentTaskProgram(task); ok {
 			for _, j := range prog.Jobs {
-				if j.ChildSessionID == job.SessionID || j.CurrentSessionID == job.SessionID {
+				if (j.CurrentSessionID == job.SessionID || (j.CurrentSessionID == "" && j.ChildSessionID == job.SessionID)) && (j.CurrentRunID == "" || j.CurrentRunID == job.RunID) {
 					isTaskProgramSession = true
 					break
 				}
@@ -105,7 +105,7 @@ func (s *Server) reconcileProjectTaskRunLifecycle(job sessionV3ExecutorJob, stat
 	// Task Programs: sync TaskProgramStatus and task status, then emit project invalidation
 	if task.TaskProgramID != "" || task.TaskProgram != nil {
 		if progID != "" && task.SessionID != "" {
-			if prog, ok, _ := db.GetTaskProgram(task.SessionID, progID); ok {
+			if prog, ok := db.CurrentTaskProgram(task); ok {
 				_, err = db.UpdateProjectTask(accountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
 					if t.SessionID != task.SessionID {
 						return nil
@@ -117,40 +117,24 @@ func (s *Server) reconcileProjectTaskRunLifecycle(job sessionV3ExecutorJob, stat
 					if currentProgID != progID {
 						return nil
 					}
+					if t.ActiveAttemptID != task.ActiveAttemptID || !projectTaskCurrentRunEvent(db, accountScopeID, job, status) {
+						return nil
+					}
 					t.TaskProgramStatus = &prog
+					if db.ProjectTaskExecuting(t) {
+						t.Status = "in_progress"
+						return nil
+					}
 					if t.IsIntegrated || t.Status == "completed" || t.Status == "rejected" {
 						return nil
 					}
-					switch prog.State {
-					case pebblestore.TaskProgramStateRunning:
-						t.Status = "in_progress"
-					case pebblestore.TaskProgramStateCompleted:
-						if !t.IsIntegrated {
-							t.Status = "needs_review"
-							if t.ActionNeeded == "" || strings.HasPrefix(t.ActionNeeded, "Action Needed: 0") {
-								t.ActionNeeded = "Action Needed: All task program jobs finished. Verify promotion into the captured target."
-							}
-						} else {
-							t.Status = "completed"
-						}
-					case pebblestore.TaskProgramStateBlocked:
-						t.Status = "needs_review"
-						if prog.Blocker != nil && prog.Blocker.Message != "" {
-							t.ActionNeeded = prog.Blocker.Message
-							t.LastError = prog.Blocker.Message
-						}
-					case pebblestore.TaskProgramStateFailed, pebblestore.TaskProgramStateCancelled:
-						t.Status = "failed"
-						if prog.Blocker != nil && prog.Blocker.Message != "" {
-							t.LastError = prog.Blocker.Message
-						}
-					}
+					syncTaskSessionState(t, db)
 					return nil
 				})
 				return err
 			}
 		}
-		return nil
+		// A stale program cannot own termination of the current parent run.
 	}
 
 	switch status {
@@ -186,7 +170,7 @@ func (s *Server) reconcileProjectTaskRunLifecycle(job sessionV3ExecutorJob, stat
 		}
 		gitState := inspectTaskGitState(*task, db)
 		_, err = db.UpdateProjectTask(accountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
-			if t.SessionID != job.SessionID || (t.Status == "planning" && t.ExecutionRunID() != job.RunID) {
+			if t.SessionID != job.SessionID || t.ActiveAttemptID != task.ActiveAttemptID || !projectTaskCurrentRunEvent(db, accountScopeID, job, status) || (t.Status == "planning" && t.ExecutionRunID() != job.RunID) {
 				return nil
 			}
 			if t.IsIntegrated || t.Status == "completed" || t.Status == "rejected" {
@@ -242,7 +226,7 @@ func (s *Server) reconcileProjectTaskRunLifecycle(job sessionV3ExecutorJob, stat
 		return err
 	case sessionruntime.RunIntentCancelled:
 		_, err = db.UpdateProjectTask(accountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
-			if t.SessionID != job.SessionID || (t.Status == "planning" && t.ExecutionRunID() != job.RunID) {
+			if t.SessionID != job.SessionID || t.ActiveAttemptID != task.ActiveAttemptID || !projectTaskCurrentRunEvent(db, accountScopeID, job, status) || (t.Status == "planning" && t.ExecutionRunID() != job.RunID) {
 				return nil
 			}
 			if t.IsIntegrated || t.Status == "completed" || t.Status == "rejected" {
@@ -261,7 +245,7 @@ func (s *Server) reconcileProjectTaskRunLifecycle(job sessionV3ExecutorJob, stat
 		return err
 	case sessionruntime.RunIntentFailed, sessionruntime.RunIntentExpired, sessionruntime.RunIntentInterrupted, sessionruntime.RunIntentDispatchBlocked:
 		_, err = db.UpdateProjectTask(accountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
-			if t.SessionID != job.SessionID || (t.Status == "planning" && t.ExecutionRunID() != job.RunID) {
+			if t.SessionID != job.SessionID || t.ActiveAttemptID != task.ActiveAttemptID || !projectTaskCurrentRunEvent(db, accountScopeID, job, status) || (t.Status == "planning" && t.ExecutionRunID() != job.RunID) {
 				return nil
 			}
 			if t.IsIntegrated || t.Status == "completed" || t.Status == "rejected" {
@@ -284,4 +268,11 @@ func (s *Server) reconcileProjectTaskRunLifecycle(job sessionV3ExecutorJob, stat
 		return err
 	}
 	return nil
+}
+
+// Validate inside the task update as well as before it: an old terminal callback
+// must not demote a newer run, including retries of the initial attempt.
+func projectTaskCurrentRunEvent(db *pebblestore.SessionStore, account string, job sessionV3ExecutorJob, status string) bool {
+	state, found, err := db.GetV3SessionRunState(job.SessionID)
+	return err == nil && found && state.AccountScopeID == account && state.RunID == job.RunID && state.Status == status
 }

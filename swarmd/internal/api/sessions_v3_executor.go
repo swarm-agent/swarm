@@ -2219,6 +2219,10 @@ func (e *sessionV3Executor) coordinatorTaskProgramResponse(ctx context.Context, 
 	if execErr != nil {
 		if projectID != "" && taskID != "" {
 			_, _ = db.UpdateProjectTask(accountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
+				if t.SessionID != job.SessionID || t.Archived || t.Status == "pending_approval" || t.Status == "rejected" || !projectTaskCurrentRunEvent(db, accountScopeID, job, pebblestore.V3RunIntentRunning) {
+					return nil
+				}
+				defer syncTaskSessionState(t, db)
 				t.Status = "failed"
 				t.LastError = execErr.Error()
 				t.ActionNeeded = fmt.Sprintf("Task program execution failed: %v", execErr)
@@ -2235,6 +2239,10 @@ func (e *sessionV3Executor) coordinatorTaskProgramResponse(ctx context.Context, 
 			if t.SessionID != job.SessionID {
 				return nil
 			}
+			if t.Archived || t.Status == "pending_approval" || t.Status == "rejected" || !projectTaskCurrentRunEvent(db, accountScopeID, job, pebblestore.V3RunIntentRunning) || t.TaskProgramID != taskProgramID {
+				return nil
+			}
+			defer syncTaskSessionState(t, db)
 			t.TaskProgramStatus = &freshRecord
 			if t.IsIntegrated || t.Status == "completed" || t.Status == "rejected" {
 				return nil

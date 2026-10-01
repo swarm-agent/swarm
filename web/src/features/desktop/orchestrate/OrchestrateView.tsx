@@ -155,6 +155,7 @@ import {
   resolveTaskWorkspace,
   taskWorkspaceSelection,
   taskDeployRequestIdentity,
+  isTaskRunning,
 } from './orchestrate-task-helpers'
 import type { DesktopSessionRecord } from '../types/realtime'
 import type { SessionSnapshot } from '../state/desktop-v3-cache-types'
@@ -811,7 +812,7 @@ export function MinimalTaskCard({
     setLocalReopenPending(false); setLocalReopenError(undefined)
     setIsReopenOpen(retained.draft !== undefined); setReopenFeedback(retained.draft ?? '')
   }, [projectId, task.id])
-  const isRunning = task.status === 'running' || task.status === 'in_progress'
+  const isRunning = isTaskRunning(task)
   const isNeedsReview = task.status === 'needs_review'
   const isCompleted = task.status === 'completed'
   const isFailed = task.status === 'failed'
@@ -5389,7 +5390,7 @@ export function OrchestrateView({
       }
 
       if (statusFilter !== 'all') {
-        const match = statusFilter === 'running' ? ['running', 'in_progress'].includes(task.status)
+        const match = statusFilter === 'running' ? isTaskRunning(task)
           : statusFilter === 'queued' ? ['queued', 'pending_approval', 'planning'].includes(task.status)
           : task.status === statusFilter
         if (!match) return false

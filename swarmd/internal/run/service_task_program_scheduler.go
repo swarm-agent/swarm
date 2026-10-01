@@ -1495,16 +1495,29 @@ func (p *taskProgramScheduler) syncProjectTask(status, actionNeeded string, what
 		return
 	}
 	_, _ = db.UpdateProjectTask(p.parentSession.AccountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
-		if t.SessionID != p.parentSession.ID {
+		if t.SessionID != p.parentSession.ID || t.AccountID != p.parentSession.AccountScopeID || t.Archived || t.Status == "pending_approval" || t.Status == "rejected" {
+			return nil
+		}
+		state, found, err := db.GetV3SessionRunState(t.SessionID)
+		if err != nil || (found && state.AccountScopeID != t.AccountID) || (p.req.RunID != "" && (!found || state.RunID != p.req.RunID)) || (p.record.ReservationRunID != "" && (!found || state.RunID != p.record.ReservationRunID)) {
 			return nil
 		}
 		t.TaskProgramID = p.record.ProgramID
 		t.TaskProgramStatus = &p.record
+		defer func() {
+			if db.ProjectTaskExecuting(t) {
+				t.Status = "in_progress"
+			}
+		}()
 		if t.IsIntegrated || t.Status == "completed" || t.Status == "rejected" {
 			return nil
 		}
 		if status != "" {
-			t.Status = status
+			if db.ProjectTaskExecuting(t) {
+				t.Status = "in_progress"
+			} else if status != "needs_review" || p.record.State != pebblestore.TaskProgramStateCompleted || !db.ProjectTaskPlanUnfinished(t) {
+				t.Status = status
+			}
 		}
 		if actionNeeded != "" {
 			t.ActionNeeded = actionNeeded
