@@ -2942,7 +2942,8 @@ export function DesktopAppPage() {
     setExpandedSidebarOverflowGroups((current) => ({ ...current, [group]: !current[group] }))
   }, [])
   const [sidebarThresholdSaving, setSidebarThresholdSaving] = useState(false)
-  const [sidebarNow, setSidebarNow] = useState(() => Date.now())
+  // Sample time when state/events render the sidebar; never tick the entire tree.
+  const sidebarNow = Date.now()
   const [previousChatSessionId, setPreviousChatSessionId] = useState<string | null>(null)
   const activeChatSessionIdRef = useRef<string | null>(null)
   const aiTaskLifecycleByID = useDesktopV3CacheSelector((state) => state.aiTasksById)
@@ -3286,16 +3287,6 @@ export function DesktopAppPage() {
       return await action()
     } finally {
       setTodoSavingWorkspacePath(null)
-    }
-  }, [])
-
-  useEffect(() => {
-    const timer = window.setInterval(() => {
-      setSidebarNow(Date.now())
-    }, 1000)
-
-    return () => {
-      window.clearInterval(timer)
     }
   }, [])
 
