@@ -7337,7 +7337,6 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                   value={newTaskPrompt}
                   onChange={(e) => setNewTaskPrompt(e.target.value)}
                   rows={3}
-                  autoFocus
                   placeholder={
                     taskIntent === 'code'
                       ? (featureSize === 'big'
