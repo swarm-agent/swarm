@@ -1,0 +1,41 @@
+# Default deny. Allow source trees and explicit image support, then reject
+# private/generated inputs below. Review source contents before building.
+**
+!pkg/**
+!theme/**
+!internal/safefile/**
+!swarmd/**
+!go.mod
+!go.sum
+!pkg/**/*.go
+!theme/*.go
+!internal/safefile/*.go
+!swarmd/go.mod
+!swarmd/go.sum
+!swarmd/**/*.go
+!swarmd/internal/fff/include/fff.h
+!swarmd/internal/fff/lib/linux-amd64-gnu/libfff_c.so
+!swarmd/internal/model/snapshotdata/snapshot.json
+!swarmd/internal/model/snapshotdata/snapshot-version.json
+!swarmd/internal/runtime/artifact_v3_preview_selection.js
+!LICENSE
+!THIRD_PARTY_NOTICES.md
+!containers/headless/inspect.sh
+!containers/headless/FFF-LICENSE
+# Rejections must remain last, even below otherwise allowed source directories.
+**/*_test.go
+**/.git
+**/.git/**
+**/.env
+**/.env.*
+**/*.pem
+**/*.key
+**/credentials*
+**/secrets/**
+**/node_modules/**
+**/vendor/**
+**/dist/**
+**/build/**
+**/.cache/**
+**/.swarm/**
+**/testdata/**
