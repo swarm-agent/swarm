@@ -68,6 +68,7 @@ async function setup(page: Page, state: FixtureState = 'populated') {
       return route.fulfill({ status: state === 'error' ? 503 : 200, contentType: 'application/json', body: JSON.stringify(state === 'error' ? { error: 'Fixture hydration unavailable' } : snapshot(state)) })
     }
     if (request.method() === 'GET' && url.pathname === `/v3/sessions/${sessionId}/artifacts/responsive-image`) return route.fulfill({ contentType: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360"><rect width="640" height="360" fill="#245"/></svg>' })
+    if (request.method() === 'GET' && url.pathname === `/v3/sessions/${sessionId}/media/fixture-upload`) return route.fulfill({ contentType: 'image/png', body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j5XkAAAAASUVORK5CYII=', 'base64') })
     // This POST is a read-only planning preview, not task deployment.
     if (request.method() === 'POST' && url.pathname === `/v3/projects/${project.id}/tasks:preview`) return route.fulfill({ json: { task_plan: {}, model_preview: {}, workspace_diagnostic: 'Fixture has no workspace' } })
     if (request.method() !== 'GET') {
