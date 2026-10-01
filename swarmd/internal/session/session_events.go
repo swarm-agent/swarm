@@ -94,7 +94,9 @@ func (s *Service) ApplySessionMutation(input SessionMutationInput) (SessionMutat
 		return SessionMutationResult{}, errors.New("session store is not configured")
 	}
 	result, err := s.store.ApplyV3SessionMutation(input)
-	if err == nil && input.DesignAcceptance != nil { s.store.DesignStore().WakeDesign() }
+	if err == nil && input.DesignAcceptance != nil {
+		s.store.DesignStore().WakeDesign()
+	}
 	return result, err
 }
 

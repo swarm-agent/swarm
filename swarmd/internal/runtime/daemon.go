@@ -173,7 +173,7 @@ type Daemon struct {
 	toolRuntime               *tool.Runtime
 	videoRenderService        *videorender.Service
 	aiTaskDispatcher          *run.AITaskV2Dispatcher
-	designDispatcher *run.DesignDispatcher
+	designDispatcher          *run.DesignDispatcher
 	deploymentMgr             *lifecycle.DeploymentManager
 	localTransportRuntimeName string
 	localTransportBaseURL     string
@@ -807,7 +807,7 @@ func New(cfg config.Config) (*Daemon, error) {
 		toolRuntime:               toolRuntime,
 		videoRenderService:        videoRenderSvc,
 		aiTaskDispatcher:          aiTaskDispatcher,
-		designDispatcher: designDispatcher,
+		designDispatcher:          designDispatcher,
 		workerExecution:           workerExecution,
 		deploymentMgr:             deploymentMgr,
 		localTransportRuntimeName: localTransportRuntimeName,
