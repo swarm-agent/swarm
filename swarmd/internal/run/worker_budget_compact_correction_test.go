@@ -37,7 +37,9 @@ func (r *compactBudgetReceiptRunner) CreateResponseStreaming(context.Context, pr
 // immutable operation identity, settle only after canonical receipts, and gate
 // the next call while unresolved. runCompactProviderCall and the canonical V3
 // store are exercised with channel-controlled provider completion, not billing
-// telemetry. Explicit timeouts bound every wait and avoid mutable global clocks.
+// telemetry. Fixtures bind a real worker record and matching durable run; an
+// account cap alone must never make an ordinary Compact call worker work.
+// Explicit timeouts bound every wait and avoid mutable global clocks.
 func TestWorkerBudgetCompactExactAndLateSettlement(t *testing.T) {
 	db, err := store.Open(filepath.Join(t.TempDir(), "budget.pebble"))
 	if err != nil {
@@ -45,10 +47,16 @@ func TestWorkerBudgetCompactExactAndLateSettlement(t *testing.T) {
 	}
 	defer db.Close()
 	s := store.NewSessionStore(db)
-	if _, err := s.ApplyV3SessionMutation(store.V3SessionMutationInput{SessionID: "compact", UserID: "user", AccountScopeID: "account", Kind: store.V3SessionMutationCreateSession, IdempotencyKey: "create-compact", RequestHash: "create-compact", Session: &store.SessionSnapshot{ID: "compact", WorkspacePath: t.TempDir()}, NowUnixMs: time.Now().UnixMilli()}); err != nil {
+	if _, err := s.ApplyV3SessionMutation(store.V3SessionMutationInput{SessionID: "compact", UserID: "user", AccountScopeID: "account", Kind: store.V3SessionMutationCreateSession, IdempotencyKey: "create-compact", RequestHash: "create-compact", Session: &store.SessionSnapshot{ID: "compact", WorkspacePath: t.TempDir(), Metadata: map[string]any{"worker_id": "worker", "worker_run_id": "run"}}, NowUnixMs: time.Now().UnixMilli()}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.PutUsageLimit(store.UsageLimitRecord{AccountScopeID: "account", Enabled: true, DailyTokensLimit: 100}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.PutJSON(store.KeyWorker("account", "worker"), store.WorkerRecord{ID: "worker", AccountScopeID: "account"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.PutJSON(store.KeyWorkerRun("account", "worker", "run"), store.WorkerRunRecord{ID: "run", WorkerID: "worker", AccountScopeID: "account", SessionID: "compact"}); err != nil {
 		t.Fatal(err)
 	}
 	ctx := withWorkerBudget(context.Background(), s, "account", "compact")
@@ -132,7 +140,8 @@ func TestWorkerBudgetCompactExactAndLateSettlement(t *testing.T) {
 // Purpose: provider termination alone is not a billing receipt. The Compact
 // boundary returns its operation identity even on empty/error responses; exact
 // release records termination but must retain allowance. Narrow store+provider
-// seam proves no guessed zero usage or hidden next-call dispatch.
+// seam with corroborated worker ownership proves no guessed zero usage or
+// hidden next-call dispatch. Ordinary sessions are outside this policy.
 func TestWorkerBudgetCompactMissingReceiptRetainsAllowance(t *testing.T) {
 	db, err := store.Open(filepath.Join(t.TempDir(), "budget.pebble"))
 	if err != nil {
@@ -140,10 +149,16 @@ func TestWorkerBudgetCompactMissingReceiptRetainsAllowance(t *testing.T) {
 	}
 	defer db.Close()
 	s := store.NewSessionStore(db)
-	if err := s.CreateSession(store.SessionSnapshot{ID: "empty", UserID: "user", AccountScopeID: "account"}); err != nil {
+	if err := s.CreateSession(store.SessionSnapshot{ID: "empty", UserID: "user", AccountScopeID: "account", Metadata: map[string]any{"worker_id": "worker", "worker_run_id": "run"}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.PutUsageLimit(store.UsageLimitRecord{AccountScopeID: "account", Enabled: true, DailyTokensLimit: 100}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.PutJSON(store.KeyWorker("account", "worker"), store.WorkerRecord{ID: "worker", AccountScopeID: "account"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.PutJSON(store.KeyWorkerRun("account", "worker", "run"), store.WorkerRunRecord{ID: "run", WorkerID: "worker", AccountScopeID: "account", SessionID: "empty"}); err != nil {
 		t.Fatal(err)
 	}
 	ctx := withWorkerBudget(context.Background(), s, "account", "empty")

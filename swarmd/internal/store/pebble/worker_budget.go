@@ -202,6 +202,18 @@ func (s *SessionStore) CheckWorkerSessionBudgetWithPrice(account, sessionID, pri
 	if err != nil {
 		return err
 	}
+	// Account limits do not make ordinary sessions into worker runs. Resolve
+	// corroborated worker ownership before reading or reserving any allowance.
+	workerOwned := false
+	for _, scope := range scopes {
+		if scope.Kind == "worker" {
+			workerOwned = true
+			break
+		}
+	}
+	if !workerOwned {
+		return nil
+	}
 	date := time.Now().UTC().Format("2006-01-02")
 	keys := []string{}
 	var existing workerBudgetReservation
@@ -384,7 +396,9 @@ func (s *SessionStore) setWorkerBudgetOperationReceipt(batch *pebble.Batch, acco
 }
 
 // CheckWorkerUnmeteredOperation rejects optional internal operations whose
-// existing caller cannot persist a genuine receipt. Do not reserve/guess a cost
+// existing caller cannot persist a genuine receipt, only for explicitly capped
+// workers resolved through durable lineage. Account caps alone do not classify
+// internal operations as worker work. Do not reserve/guess a cost
 // or silently spend outside the worker budget (e.g. background title generation).
 func (s *SessionStore) CheckWorkerUnmeteredOperation(account, session string) error {
 	if s == nil || s.store == nil {
@@ -395,13 +409,6 @@ func (s *SessionStore) CheckWorkerUnmeteredOperation(account, session string) er
 	scopes, err := s.resolveUsageScopes(account, session)
 	if err != nil {
 		return err
-	}
-	_, active, err := s.accountBudgetActive(account)
-	if err != nil {
-		return err
-	}
-	if active {
-		return fmt.Errorf("%w: account-capped internal operation has no canonical receipt boundary", ErrWorkerBudget)
 	}
 	for _, scope := range scopes {
 		if scope.Kind != "worker" {

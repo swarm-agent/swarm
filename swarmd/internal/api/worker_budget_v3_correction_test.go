@@ -35,13 +35,29 @@ func (r *v3BudgetReceiptRunner) CreateResponseStreaming(context.Context, provide
 // settle two consecutive attempts by exact identity, reject dispatch while a
 // cancelled operation is unresolved, and retain late usage. Real temporary
 // session service plus channel-controlled provider is the narrowest V3 boundary
-// proof; no live provider/benchmark claims. Every asynchronous wait is bounded.
+// proof; the fixture includes corroborated worker/run ownership rather than
+// treating account caps as worker identity. No live provider/benchmark claims.
+// Every asynchronous wait is bounded.
 func TestWorkerBudgetV3ExactAndLateSettlement(t *testing.T) {
 	server, svc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	created := createSessionsV3PrimaryTestSession(t, server, "budget-v3", "budget")
 	principal := testPrincipal()
 	job := sessionV3ExecutorJob{Principal: principal, SessionID: created.ID, RunID: "budget-run"}
 	exec := &sessionV3Executor{server: server}
+	if created.Metadata == nil {
+		created.Metadata = map[string]any{}
+	}
+	created.Metadata["worker_id"], created.Metadata["worker_run_id"] = "worker", "run"
+	if _, err := svc.Store().ApplyV3SessionMutation(store.V3SessionMutationInput{SessionID: created.ID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, Kind: store.V3SessionMutationUpdateMetadata, IdempotencyKey: "worker-lineage", RequestHash: "worker-lineage", Session: &created, NowUnixMs: time.Now().UnixMilli()}); err != nil {
+		t.Fatal(err)
+	}
+	db := svc.Store().Underlying()
+	if err := db.PutJSON(store.KeyWorker(principal.AccountScopeID, "worker"), store.WorkerRecord{ID: "worker", AccountScopeID: principal.AccountScopeID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.PutJSON(store.KeyWorkerRun(principal.AccountScopeID, "worker", "run"), store.WorkerRunRecord{ID: "run", WorkerID: "worker", AccountScopeID: principal.AccountScopeID, SessionID: created.ID}); err != nil {
+		t.Fatal(err)
+	}
 	if err := svc.Store().PutUsageLimit(store.UsageLimitRecord{AccountScopeID: principal.AccountScopeID, Enabled: true, DailyTokensLimit: 100}); err != nil {
 		t.Fatal(err)
 	}

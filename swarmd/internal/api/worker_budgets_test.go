@@ -3,13 +3,13 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	store "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -92,12 +92,11 @@ func TestWorkerBudgetStatusHTTP(t *testing.T) {
 	}
 }
 
-// Purpose: a missing session identity cannot bypass account caps on unmetered
-// internal Router calls. Owners invokeConfiguredRouterOnce and canonical
-// CheckWorkerUnmeteredOperation; existing account-model fixture proves zero
-// dispatch and unchanged user policy without a live provider.
+// Purpose: account caps must not classify sessionless Router calls as workers.
+// Owners invokeConfiguredRouterOnce and CheckWorkerUnmeteredOperation; the
+// existing provider seam proves dispatch and unchanged account policy.
 func TestWorkerBudgetRouterAccountWithoutSession(t *testing.T) {
-	runner := &sessionRouterRecordingRunner{id: "recording"}
+	runner := &sessionRouterRecordingRunner{id: "recording", response: provideriface.Response{Text: "ordinary routing result"}}
 	server, principal, _ := newSessionRouterTestServer(t, runner, []sessionRouterWorkspace{{"/workspace/sole", "Sole", "Git workspace"}})
 	budgetServer, _, _ := newWorkspaceOverviewTopologyTestServer(t)
 	server.sessions = budgetServer.sessions
@@ -105,11 +104,11 @@ func TestWorkerBudgetRouterAccountWithoutSession(t *testing.T) {
 	if err := server.sessions.Store().PutUsageLimit(store.UsageLimitRecord{AccountScopeID: principal.AccountScopeID, Enabled: true, DailyCostLimitUSD: 1}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := server.invokeConfiguredRouterOnce(context.Background(), principal, "instructions", "input", 1024); !errors.Is(err, store.ErrWorkerBudget) {
-		t.Fatalf("router cap: %v", err)
+	if response, err := server.invokeConfiguredRouterOnce(context.Background(), principal, "instructions", "input", 1024); err != nil || response.Text != "ordinary routing result" {
+		t.Fatalf("ordinary Router blocked: %+v %v", response, err)
 	}
-	if runner.createCalls != 0 || runner.streamingCalls != 0 {
-		t.Fatal("capped Router dispatched")
+	if runner.createCalls != 1 || runner.streamingCalls != 0 {
+		t.Fatal("ordinary Router was not dispatched once")
 	}
 	policy, _, err := server.sessions.Store().GetUsageLimit(principal.AccountScopeID)
 	if err != nil || !policy.Enabled || policy.DailyCostLimitUSD != 1 {

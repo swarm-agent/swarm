@@ -15,8 +15,8 @@ import (
 // Purpose: verify RuntimeProvider's actual request has no execution authority,
 // rejects tool output but accepts missing pricing/output ceilings. Fake transport
 // is the narrowest layer that observes the complete provider-neutral request.
-// RuntimeProvider.Generate must also reject missing authority and account-capped
-// unmetered extraction without dispatch or policy mutation.
+// RuntimeProvider.Generate must reject missing authority, while account caps
+// alone must not classify ordinary memory extraction as worker work.
 type testRunner struct {
 	request  iface.Request
 	response iface.Response
@@ -62,8 +62,8 @@ func TestMemoryProviderAuthorityAndPricing(t *testing.T) {
 	if err := p.Sessions.PutUsageLimit(store.UsageLimitRecord{AccountScopeID: "account", Enabled: true, DailyTokensLimit: 100}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := p.Generate(ctx, Request{Model: m}); !errors.Is(err, store.ErrWorkerBudget) || r.calls != before {
-		t.Fatalf("account-capped extraction dispatched: %v", err)
+	if _, err := p.Generate(ctx, Request{Model: m}); err != nil || r.calls != before+1 {
+		t.Fatalf("ordinary memory extraction blocked: %v", err)
 	}
 	if err := p.Sessions.PutUsageLimit(store.UsageLimitRecord{AccountScopeID: "account"}); err != nil {
 		t.Fatal(err)

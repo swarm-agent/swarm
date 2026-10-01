@@ -144,8 +144,7 @@ func (s *Server) invokeConfiguredRouterOnce(ctx context.Context, principal ident
 		return configuredRouterResponse{}, fmt.Errorf("Router provider %q is not available", providerID)
 	}
 
-	// Account-capped unmetered routing is rejected even before a session exists;
-	// missing SessionID must not bypass the canonical account policy.
+	// Restrict unmetered routing only when durable lineage identifies a capped worker.
 	if s.sessions != nil {
 		if err := s.sessions.Store().CheckWorkerUnmeteredOperation(principal.AccountScopeID, principal.SessionID); err != nil {
 			return configuredRouterResponse{}, err

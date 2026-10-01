@@ -317,3 +317,70 @@ func TestWorkerBudgetAdmissionAndSettlement(t *testing.T) {
 		t.Fatalf("settlement did not unblock next call: %v", err)
 	}
 }
+
+// Purpose: worker enforcement must not block ordinary sessions or sessionless
+// utilities merely because account limits or old account reservations exist.
+// Owners CheckWorkerSessionBudgetWithPrice, CheckWorkerUnmeteredOperation and
+// resolveUsageScopes; temporary Pebble is the narrowest layer proving no new
+// reservations, unchanged policies, cross-account rejection and worker isolation.
+func TestWorkerBudgetDoesNotClassifyOrdinarySessionsAsWorkers(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "budget.pebble"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	s := workerBudgetFixture(t, db)
+	createV3SessionForTest(t, s, "ordinary")
+	if err := s.PutUsageLimit(UsageLimitRecord{AccountScopeID: "account-1", Enabled: true, DailyCostLimitUSD: 1, DailyTokensLimit: 1}); err != nil {
+		t.Fatal(err)
+	}
+	policy, _, err := s.GetUsageLimit("account-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SetWorkerBudget("account-1", "worker", 0, 1, 1); err != nil {
+		t.Fatal(err)
+	}
+	// Account caps alone must neither reject nor reserve ordinary provider work.
+	for _, session := range []string{"", "ordinary"} {
+		if err := s.CheckWorkerUnmeteredOperation("account-1", session); err != nil {
+			t.Fatalf("ordinary internal operation: %v", err)
+		}
+		if err := s.CheckWorkerSessionBudgetWithPrice("account-1", session, "unknown", "ordinary-call"); err != nil {
+			t.Fatalf("ordinary provider operation: %v", err)
+		}
+	}
+	var reservation workerBudgetReservation
+	if found, err := db.GetJSON(accountBudgetReservationKey("account-1"), &reservation); err != nil || found {
+		t.Fatalf("ordinary operation reserved account: %v %v", found, err)
+	}
+	// A reservation left by the previous implementation cannot strand chat.
+	previous := workerBudgetReservation{SessionID: "budget-one", OperationID: "unsettled"}
+	if err := db.PutJSON(accountBudgetReservationKey("account-1"), previous); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CheckWorkerSessionBudgetWithPrice("account-1", "ordinary", "unknown", "next-call"); err != nil {
+		t.Fatalf("old reservation blocked ordinary session: %v", err)
+	}
+	if err := s.CheckWorkerUnmeteredOperation("account-1", "ordinary"); err != nil {
+		t.Fatalf("old reservation blocked ordinary utility: %v", err)
+	}
+	if err := s.CheckWorkerSessionBudgetWithPrice("foreign", "ordinary", "known", "foreign-call"); err == nil {
+		t.Fatal("cross-account session accepted")
+	}
+	if err := s.CheckWorkerUnmeteredOperation("account-1", "budget-one"); !errors.Is(err, ErrWorkerBudget) {
+		t.Fatalf("actual capped worker bypassed: %v", err)
+	}
+	if err := s.CheckWorkerSessionBudgetWithPrice("account-1", "budget-one", "known", "worker-call"); !errors.Is(err, ErrWorkerBudget) {
+		t.Fatalf("actual worker reservation bypassed: %v", err)
+	}
+	if found, err := db.GetJSON(accountBudgetReservationKey("account-1"), &reservation); err != nil || !found || reservation != previous {
+		t.Fatalf("reservation changed: %+v %v %v", reservation, found, err)
+	}
+	if found, err := db.GetJSON(workerBudgetKey("account-1", "worker")+"/reservation", &reservation); err != nil || found {
+		t.Fatalf("rejected worker acquired reservation: %v %v", found, err)
+	}
+	if current, _, err := s.GetUsageLimit("account-1"); err != nil || current != policy {
+		t.Fatalf("account policy changed: %+v %v", current, err)
+	}
+}

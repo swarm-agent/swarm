@@ -50,7 +50,8 @@ func (p *RuntimeProvider) Generate(ctx context.Context, r Request) (Result, erro
 		return Result{}, errors.New("memory worker budget authority unavailable")
 	}
 	// Background extraction is account-owned; do not invent a worker/session
-	// owner from extracted sources. Account caps reject this unmetered boundary.
+	// owner from extracted sources. Only corroborated capped-worker lineage
+	// restricts this unmetered boundary.
 	if err := p.Sessions.CheckWorkerUnmeteredOperation(principal.AccountScopeID, principal.SessionID); err != nil {
 		return Result{}, err
 	}

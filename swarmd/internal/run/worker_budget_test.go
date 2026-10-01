@@ -100,10 +100,9 @@ func TestWorkerBudgetCancelledAndLateReceipt(t *testing.T) {
 	}
 }
 
-// Purpose: metadata preparation is an actual unmetered utility dispatch and
-// cannot bypass account policy when invoked without a budget context or session.
-// Owners PrepareAITaskMetadata/CheckWorkerUnmeteredOperation; existing compiled
-// model fixture plus a counting provider is the narrowest no-dispatch proof.
+// Purpose: ordinary task metadata must not inherit worker restrictions from an
+// account cap. Owners PrepareAITaskMetadata/CheckWorkerUnmeteredOperation; the
+// existing model/provider seam proves dispatch and parsed output.
 func TestWorkerBudgetAITaskMetadataAccountBoundary(t *testing.T) {
 	svc, _, cleanup := newTaskLaunchPermissionTestService(t)
 	defer cleanup()
@@ -118,11 +117,11 @@ func TestWorkerBudgetAITaskMetadataAccountBoundary(t *testing.T) {
 	if err := svc.sessions.Store().PutUsageLimit(store.UsageLimitRecord{AccountScopeID: principal.AccountScopeID, Enabled: true, DailyTokensLimit: 100}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.PrepareAITaskMetadata(context.Background(), "task", "request", store.ModelPreference{Provider: "codex", Model: "gpt-5.4"}, principal); !errors.Is(err, store.ErrWorkerBudget) {
-		t.Fatalf("metadata bypass: %v", err)
+	if result, err := svc.PrepareAITaskMetadata(context.Background(), "task", "request", store.ModelPreference{Provider: "codex", Model: "gpt-5.4"}, principal); err != nil || result.Title != "Fix trusted task" {
+		t.Fatalf("ordinary metadata blocked: %+v %v", result, err)
 	}
-	if runner.request.Model != "" {
-		t.Fatal("capped metadata dispatched")
+	if runner.calls != 1 {
+		t.Fatal("ordinary metadata was not dispatched once")
 	}
 }
 
@@ -169,23 +168,27 @@ func TestWorkerBudgetDispatchBindingBeforeProvider(t *testing.T) {
 	}
 }
 
-// Purpose: directly invoking the title utility must not bypass its outer
-// generateAndApply guard. generateMemorySessionTitle owns dispatch; the existing
-// model/service fixture proves account-only caps deny before provider access.
+// Purpose: account caps must not block ordinary session titles as worker work.
+// generateMemorySessionTitle owns dispatch; the existing model/provider seam
+// proves a title is returned without requiring a worker receipt boundary.
 func TestWorkerBudgetDirectTitleBoundary(t *testing.T) {
 	svc, _, cleanup := newTaskLaunchPermissionTestService(t)
 	defer cleanup()
-	runner := &principalCapturingAITaskRunner{}
+	runner := &principalCapturingAITaskRunner{responses: []string{"Fix session titles"}}
 	svc.providers = registry.New()
 	svc.providers.RegisterRunner(runner)
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "test-user", AccountScopeID: "test-account"}
 	if err := svc.sessions.Store().PutUsageLimit(store.UsageLimitRecord{AccountScopeID: principal.AccountScopeID, Enabled: true, DailyTokensLimit: 100}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.generateMemorySessionTitle("context", "provisional", 2, 4, store.ModelPreference{}, store.AgentProfile{}, principal); !errors.Is(err, store.ErrWorkerBudget) {
-		t.Fatalf("direct title bypass: %v", err)
+	ctx := identity.ContextWithPrincipal(context.Background(), principal)
+	if _, err := svc.agentModelSettings.UpdateSystemAgent(ctx, store.SystemAgentCompact, store.AgentModelAssignment{Provider: "codex", Model: "gpt-5.4", Thinking: "medium", ServiceTier: "fast"}); err != nil {
+		t.Fatal(err)
 	}
-	if runner.request.Model != "" {
-		t.Fatal("capped title dispatched")
+	if title, err := svc.generateMemorySessionTitle("context", "provisional", 2, 4, store.ModelPreference{}, store.AgentProfile{}, principal); err != nil || title != "Fix session titles" {
+		t.Fatalf("ordinary title blocked: %q %v", title, err)
+	}
+	if runner.calls != 1 {
+		t.Fatal("ordinary title was not dispatched once")
 	}
 }
