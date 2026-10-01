@@ -75,11 +75,11 @@ make that loopback listener reachable from a host SDK.
 
 ## Fresh setup without Desktop
 
-Build the current source using the commands above (an older task-1 image does not
-contain `swarmctl setup`). The following is the implemented setup procedure, not a
-claim of live container/provider qualification. Execute it on your intended runtime
-host. No Desktop, source checkout inside the container, published port or host
-socket mount is required.
+Build the current source using the commands above; older images may not contain
+`swarmctl setup`. The setup sequence below is implemented; the bounded candidate
+qualification and its limits are recorded under **Live qualification**. Execute it
+on your intended runtime host. No Desktop, source checkout inside the container,
+published port or host socket mount is required.
 
 Prerequisites: choose one clean Git repository with at least one commit; it must
 be readable/writable by container UID 10001, including `.git`. Use a normal checkout,
@@ -173,8 +173,9 @@ Keep these same named volumes when replacing the container. Stop the old daemon
 before starting its replacement; never run two daemons against one data volume.
 Do not delete the volumes or persist only the database while dropping the key.
 Container recreation must use the same project mount. Cache and runtime socket
-files are not identity authorities. Live persistence/recreation verification is
-still a separate qualification task.
+files are not identity authorities. The qualified Docker candidate preserved this
+state across container recreation; other engine/platform combinations require
+separate qualification.
 
 ### Focused non-live checks
 
@@ -186,8 +187,7 @@ GOMAXPROCS=2 go test -p 2 ./internal/api -run '^TestHeadlessSetupLocalIdentityBo
 
 These exercise real CLI parsing/Unix transport against isolated HTTP fixtures and
 real backend identity handlers against temporary storage. They are not live daemon,
-provider or SDK runs. **Still not live-qualified:** provider setup in the image,
-SDK connectivity, live agents, restart durability and registry delivery.
+provider or SDK runs and do not replace the separate live qualification below.
 
 ## Authenticated host SDK connection
 
@@ -279,8 +279,25 @@ docker exec swarm-headless swarmctl setup revoke-sdk-token --id "$TOKEN_ID"
 Focused checks: `TestContainerSDKConfig`, `TestContainerSDKAuthenticationAndScopes`,
 `TestSetupSDKToken`, and SDK `headless-session.spec.ts`/`transport.spec.ts`. These
 exercise startup, actual backend auth/permission handlers and SDK request behavior
-with isolated fixtures. **Container networking and a real SDK-driven agent remain
-unverified until the live qualification step.** No image/npm publication is implied.
+with isolated fixtures. Live candidate evidence is summarized below; no image/npm
+publication is implied.
+
+## Live qualification
+
+The unpublished `0.1.0-headless.1` candidate at source
+`2164a303a2ac44ec98ca58995fa724322b0caa89` passed a bounded Linux amd64 Docker
+qualification with Node 22.16.0: fresh tarball installation without install-time
+container startup, Desktop-free setup, rejected invalid credentials and forbidden
+SDK routes, a real provider-backed SDK agent with denied then explicitly approved
+tool execution, and retained identity/settings/session history/project output after
+container recreation. The image's application source is recorded separately in
+`packages/cli/runtime-image.json`.
+
+This evidence covers that exact candidate, not every future rebuild. Live Podman,
+other platforms/providers, public registry installation and broader recovery cases
+remain unverified. Documentation-only release preparation does not change the
+qualified runtime or package bytes. Final registry metadata or package changes
+require repacking and affected checks before publication.
 
 ## Unpublished npm candidates
 

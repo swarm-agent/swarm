@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Add an unpublished Linux amd64 headless distribution: non-root daemon image, Desktop-free setup, scoped-token SDK session access, standalone SDK packaging and an explicit npm container launcher with persistent state. Ordinary host listeners remain loopback-only; npm installation does not start containers. Docs impact: setup, authentication, persistence, candidate image pinning and bounded qualification are documented in `containers/headless/README.md`, `packages/cli/README.md` and `packages/sdk/README.md`. Registry publication remains separate.
+
 - Retire the shared Swarm Atlas, two-pass TSV audit ledger, and atlas synchronization gate; preserve critical tests and independent review. Docs impact: remove mandatory bookkeeping instructions and obsolete links. Earlier Atlas/ledger mentions below describe historical work, not current requirements.
 
 - Accept root-owned sticky world-writable directories (such as `/tmp`) for first-install artifact validation, and prevent root installer lockout by adopting new artifact roots on resume, cleaning up interrupted account creation, and clearing obsolete recovery records upon service install. Docs impact: none.
