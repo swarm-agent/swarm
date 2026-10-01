@@ -46,7 +46,7 @@ func TestProjectDesignCatalogMembershipPaginationAndRestart(t *testing.T) {
 	if err := ss.PutProject(p.AccountID, project); err != nil {
 		t.Fatal(err)
 	}
-	task := &ProjectTaskRecord{ID: "task", ProjectID: project.ID, Title: "Task", SessionID: "foreign", Attempts: []ProjectTaskAttempt{{ID: "old", SessionID: "historical"}}}
+	task := &ProjectTaskRecord{ID: "task", ProjectID: project.ID, Title: "Task", Agent: "swarm", SessionID: "foreign", Attempts: []ProjectTaskAttempt{{ID: "old", SessionID: "historical"}}}
 	if err := ss.PutProjectTask(p.AccountID, task); err != nil {
 		t.Fatal(err)
 	}
@@ -264,7 +264,7 @@ func TestProjectDesignInvalidationMultipleMemberships(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := ss.PutProjectTask(p.AccountID, &ProjectTaskRecord{ID: "duplicate", ProjectID: "one", Title: "Duplicate membership", SessionID: "parent"}); err != nil {
+	if err := ss.PutProjectTask(p.AccountID, &ProjectTaskRecord{ID: "duplicate", ProjectID: "one", Title: "Duplicate membership", Agent: "swarm", SessionID: "parent"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := ss.UpdateProject(p.AccountID, "revoked", func(v *ProjectRecord) error { v.PrimarySessionID = ""; return nil }); err != nil {
