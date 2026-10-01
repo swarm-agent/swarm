@@ -19,14 +19,17 @@ import (
 )
 
 // Setup deliberately uses only the daemon's private Unix transport. Container
-// exec as the daemon UID is the authority; no TCP fallback or token is exported.
+// exec as the daemon UID is the authority; no TCP fallback is used.
 func cmdSetup(args []string) error {
 	return runSetup(args, os.Stdin, os.Stdout)
 }
 
 func runSetup(args []string, input io.Reader, output io.Writer) error {
+	if len(args) > 0 && (args[0] == "sdk-token" || args[0] == "revoke-sdk-token") {
+		return runSetupSDKToken(args, output)
+	}
 	if len(args) == 0 {
-		return errors.New("usage: swarmctl setup <status|identity|credential|model|workspace|complete> --help")
+		return errors.New("usage: swarmctl setup <status|identity|credential|model|workspace|complete|sdk-token|revoke-sdk-token> --help")
 	}
 	fs := flag.NewFlagSet("setup "+args[0], flag.ContinueOnError)
 	// Do not echo unknown arguments: a mistaken --api-key SECRET must not leak.

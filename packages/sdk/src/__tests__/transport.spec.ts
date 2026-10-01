@@ -163,3 +163,20 @@ test('SwarmTransport: enforces request timeout and throws SwarmTimeoutError', as
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 });
+
+// Requirement: SwarmTransport must not replay credential-bearing mutations to a
+// redirected endpoint. A loopback HTTP fixture is the narrow transport boundary;
+// the redirect target must receive zero requests, not merely return an error.
+test('SwarmTransport rejects redirects before forwarding a credential-bearing body', { timeout: 5000 }, async () => {
+  let forwarded = 0;
+  const server = http.createServer((req, res) => {
+    if (req.url === '/redirect') { res.writeHead(307, { Location: '/target' }); res.end(); }
+    else { forwarded++; res.writeHead(200); res.end('{}'); }
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const transport = new SwarmTransport({ baseUrl: `http://127.0.0.1:${(server.address() as any).port}`, token: 'swk_fixture', defaultHeaders: {}, timeoutMs: 1000 });
+    await assert.rejects(transport.request('/redirect', { method: 'POST', body: { content: 'private fixture' } }));
+    assert.equal(forwarded, 0);
+  } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
+});
