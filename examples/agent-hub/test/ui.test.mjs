@@ -49,3 +49,16 @@ test('late action success does not overwrite a newer error', async () => {
   app.run('finish()'); await older;
   assert.equal(app.get('status').textContent, 'New failure');
 });
+
+// Purpose: staged configuration is not active configuration. renderWorkers must
+// show the actual pending proposal without pretending its schedule is running.
+test('pending worker configuration remains visible as awaiting approval', async () => {
+  const app = await ui(async () => response({}));
+  app.run(`renderWorkers([{ worker: { name: 'Editor', lifecycle_state: 'idle', revision: 2, automations: [], pending_review: { automations: [{ name: 'Draft job', activation_mode: 'interval', schedule: { interval_seconds: 3600 } }] } }, runs: [] }])`);
+  const cards = app.get('worker-list').children;
+  assert.equal(cards.length, 3);
+  assert.equal(cards[1].children[0].textContent, 'Changes awaiting approval');
+  assert.match(cards[1].children[1].textContent, /Approved jobs keep running unchanged/);
+  assert.equal(cards[2].children[0].textContent, 'Draft job');
+  assert.match(cards[2].children[1].textContent, /3600/);
+});

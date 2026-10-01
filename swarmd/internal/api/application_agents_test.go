@@ -243,6 +243,16 @@ func TestApplicationAgentWorkerConfigurationRealtime(t *testing.T) {
 	s, _, db := newWorkspaceOverviewTopologyTestServer(t)
 	s.ConfigureAutomationRealtime(db)
 	p := testPrincipal()
+	ids := pebblestore.NewIdentityStore(db)
+	if _, err := ids.PutUser(pebblestore.UserRecord{ID: p.UserID, Username: p.UserID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ids.PutAccountScope(pebblestore.AccountScopeRecord{ID: p.AccountScopeID, Type: pebblestore.AccountScopeTypePersonal, CreatedByUserID: p.UserID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ids.PutAccountUser(pebblestore.AccountUserRecord{ID: "app-member", AccountScopeID: p.AccountScopeID, UserID: p.UserID, Status: pebblestore.AccountUserStatusActive}); err != nil {
+		t.Fatal(err)
+	}
 	ws := pebblestore.NewWorkerStore(db)
 	worker, err := ws.CreateWorker(p.AccountScopeID, p.UserID, pebblestore.CreateWorkerRequest{Name: "Linked", Instructions: "Draft", IdempotencyKey: "app-config"}, nil)
 	if err != nil {
@@ -272,7 +282,7 @@ func TestApplicationAgentWorkerConfigurationRealtime(t *testing.T) {
 		t.Fatalf("configuration: %d %s", w.Code, w.Body.String())
 	}
 	after, found, err := ws.GetWorker(p.AccountScopeID, worker.ID)
-	if err != nil || !found || after.Revision != worker.Revision+1 || len(after.Automations) != 1 || after.LifecycleState != pebblestore.WorkerLifecycleStatePending {
+	if err != nil || !found || after.Revision != worker.Revision+1 || len(after.Automations) != 0 || after.LifecycleState != worker.LifecycleState || after.PendingReview == nil || len(after.PendingReview.Automations) != 1 || after.PendingReview.Automations[0].Name != "Draft job" || after.PendingReview.LifecycleState != pebblestore.WorkerLifecycleStatePending {
 		t.Fatalf("configuration bypassed pending gate: %+v %v", after, err)
 	}
 	head, err := s.sessions.CurrentRealtimeOutboxRevision()

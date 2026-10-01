@@ -146,6 +146,10 @@ function renderWorkers(items) {
   const target = $('worker-list'); target.replaceChildren();
   for (const { worker, runs } of items) {
     card(target, worker.name, `State: ${worker.lifecycle_state} · Revision ${worker.revision}`);
+    if (worker.pending_review) {
+      card(target, 'Changes awaiting approval', 'Your configuration was saved for review in Orchestrator. Approved jobs keep running unchanged.');
+      for (const automation of worker.pending_review.automations || []) card(target, automation.name, { activation: automation.activation_mode, schedule: automation.schedule });
+    }
     for (const automation of worker.automations || []) {
       const form = document.createElement('form');
       const heading = document.createElement('h3'); heading.textContent = automation.name; form.append(heading);
