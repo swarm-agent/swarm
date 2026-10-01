@@ -787,6 +787,9 @@ func New(cfg config.Config) (*Daemon, error) {
 		apiServer.SetTailscaleServePolicy(pebblestore.NewTailscaleServeAllowlistStore(store), detector)
 	}
 
+	if htmlRenderer != nil {
+		runSvc.SetDesignRenderer(htmlRenderer)
+	}
 	designDispatcher := runSvc.StartDesignDispatcher(bgCtx)
 	localTransportRuntimeName := ""
 

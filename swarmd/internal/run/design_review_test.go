@@ -208,6 +208,10 @@ func TestDesignExecutionCompletedWinsLateCancellation(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer lease.Release()
+	// Completion must now be preceded by retained output and browser evidence.
+	if _, err = s.retainAndValidateDesign(context.Background(), p, r.ID, 0, provideriface.Response{Text: "<!doctype html><html></html>"}, nil, false); err != nil {
+		t.Fatal(err)
+	}
 	if err = s.designRunState(p, a, store.V3RunIntentPendingExecutor, store.V3RunIntentCompleted); err != nil {
 		t.Fatal(err)
 	}

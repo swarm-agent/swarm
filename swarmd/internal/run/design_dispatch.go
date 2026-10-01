@@ -164,6 +164,15 @@ func (s *Service) designProviderRequest(p store.DesignPrincipal, r store.DesignR
 		}
 		payload[label] = map[string]any{"ref": ref, "text": string(revision.Content)}
 	}
+	if a.Number > 1 {
+		previous := r.Candidates[candidate].Attempts[a.Number-2]
+		if previous.Output == nil || previous.Validation == nil || previous.Validation.Passed {
+			return provideriface.Request{}, "", store.ErrDesignConflict
+		}
+		failed, err := s.sessions.DesignStore().ReadDesignResponse(p, *previous.Output)
+		if err != nil { return provideriface.Request{}, "", err }
+		payload["repair"] = map[string]any{"failed_output_ref": failed.Ref, "failed_output": string(failed.Content), "diagnostic_code": previous.Validation.Code, "instruction": "Return a complete corrected output for the original objective."}
+	}
 	text, err := json.Marshal(payload)
 	if err != nil {
 		return provideriface.Request{}, "", err
@@ -179,18 +188,25 @@ func (s *Service) designProviderRequest(p store.DesignPrincipal, r store.DesignR
 	req := provideriface.Request{SessionID: a.ChildSessionID, ProviderLineageID: a.RunID, ProviderCacheKey: a.RunID, SessionAffinityKey: a.RunID, BoundaryReason: "independent_design", StartNewChain: true, ForceFreshProviderContext: true, Model: child.Preference.Model, Thinking: normalizeThinkingWithProvider(child.Preference.Provider, child.Preference.Thinking), ServiceTier: resolvedServiceTierForProvider(child.Preference.Provider, child.Preference.ServiceTier), ContextMode: child.Preference.ContextMode, ModelCatalog: *catalog, Instructions: instructions, ToolChoice: "none", MaxOutputTokens: 32768, Input: []map[string]any{{"role": "user", "content": []map[string]any{{"type": "input_text", "text": string(text)}}}}}
 	return req, child.Preference.Provider, nil
 }
-func (s *Service) executeDesign(ctx context.Context, p store.DesignPrincipal, id string, candidate int) {
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+func (s *Service) executeDesignAttempt(ctx context.Context, p store.DesignPrincipal, id string, candidate, attempt int) {
+	if attempt < 1 || attempt > 3 { return }
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
 	db := s.sessions.DesignStore()
 	r, err := db.GetDesignRequest(p, id)
 	if err != nil {
 		return
 	}
-	if candidate < 0 || candidate >= len(r.Candidates) || r.Candidates[candidate].State != store.DesignQueued {
+	if candidate < 0 || candidate >= len(r.Candidates) || (r.Candidates[candidate].State != store.DesignQueued && !(attempt > 1 && r.Candidates[candidate].State == store.DesignFailed)) {
 		return
 	}
-	a, lease, err := s.AllocateDesignChild(ctx, p, id, r.Revision, candidate, 1)
+	a, lease, err := s.AllocateDesignChild(ctx, p, id, r.Revision, candidate, attempt)
+	for retry := 0; errors.Is(err, store.ErrDesignConflict) && retry < 31 && ctx.Err() == nil; retry++ {
+		r, err = db.GetDesignRequest(p, id)
+		if err != nil { break }
+		if len(r.Candidates[candidate].Attempts) != attempt-1 || (r.Candidates[candidate].State != store.DesignQueued && r.Candidates[candidate].State != store.DesignFailed) { return }
+		a, lease, err = s.AllocateDesignChild(ctx, p, id, r.Revision, candidate, attempt)
+	}
 	if err != nil {
 		if errors.Is(err, errDesignModelUnavailable) || errors.Is(err, errDesignAllocationUnavailable) {
 			reason := "allocation_unavailable"
@@ -269,12 +285,10 @@ func (s *Service) executeDesign(ctx context.Context, p store.DesignPrincipal, id
 			cancel()
 		}
 	})
-	state := store.DesignSucceeded
-	if err != nil || len(response.FunctionCalls) > 0 || !validDesignOutput(r.Candidates[candidate].Spec.Kind, response.Text) {
-		state = store.DesignFailed
-	}
-	if ctx.Err() != nil {
-		state = store.DesignInterrupted
+	state, saveErr := s.retainAndValidateDesign(ctx, p, id, candidate, response, err, len(response.FunctionCalls) > 0)
+	if saveErr != nil {
+		_ = s.finishDesign(p, id, candidate, nil, store.DesignInterrupted)
+		return
 	}
 	if err = s.finishDesign(p, id, candidate, []byte(response.Text), state); err != nil {
 		log.Printf("design dispatcher: result reconciliation failed; durable recovery required")
@@ -318,6 +332,12 @@ func (s *Service) finishDesign(p store.DesignPrincipal, id string, candidate int
 		}
 		if !ok {
 			return store.ErrDesignNotFound
+		}
+		// Recovery may publish only exact persisted validation success. No provider replay.
+		if len(content) == 0 && a.Output != nil && a.Validation != nil && a.Validation.Passed && (c.State != store.DesignCancelRequested || intent.Status == store.V3RunIntentCompleted) {
+			retained, readErr := db.ReadDesignResponse(p, *a.Output)
+			if readErr != nil { return readErr }
+			content, state = retained.Content, store.DesignSucceeded
 		}
 		// A canonical terminal outcome wins a later cancellation request. In
 		// particular do not rewrite completed as interrupted after a publication CAS.
