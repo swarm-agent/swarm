@@ -91,7 +91,7 @@ func (s *Server) routeProjectTaskSource(ctx context.Context, p identity.Principa
 		Context    []pebblestore.ProjectTaskSource `json:"context"`
 		Diagnostic string                          `json:"diagnostic"`
 	}
-	if err := json.Unmarshal([]byte(response.Text), &selection); err != nil {
+	if err := unmarshalProjectTaskRoutingJSON(response.Text, &selection); err != nil {
 		return pebblestore.ProjectTaskSource{}, nil, fmt.Errorf("workspace routing returned invalid JSON; select a workspace or retry: %w", err)
 	}
 	if selection.Diagnostic != "" {
@@ -124,6 +124,30 @@ func (s *Server) routeProjectTaskSource(ctx context.Context, p identity.Principa
 		}
 	}
 	return source, contextSources, nil
+}
+
+// unmarshalProjectTaskRoutingJSON accepts only bare JSON or one complete JSON or
+// unlabelled Markdown fence. Unmarshal still consumes the entire body, so prose,
+// multiple responses and trailing payloads cannot silently select a workspace.
+func unmarshalProjectTaskRoutingJSON(raw string, selection any) error {
+	body := strings.TrimSpace(raw)
+	if strings.HasPrefix(body, "```") {
+		firstNL := strings.IndexByte(body, '\n')
+		if firstNL < 0 {
+			return errors.New("incomplete JSON code fence")
+		}
+		opener := strings.TrimSpace(body[:firstNL])
+		if opener != "```" && opener != "```json" {
+			return errors.New("expected JSON or unlabelled code fence")
+		}
+		body = body[firstNL+1:]
+		lastNL := strings.LastIndexByte(body, '\n')
+		if lastNL < 0 || strings.TrimSpace(body[lastNL+1:]) != "```" {
+			return errors.New("incomplete or trailing JSON code fence")
+		}
+		body = strings.TrimSpace(body[:lastNL])
+	}
+	return json.Unmarshal([]byte(body), selection)
 }
 
 // Caller serializes replay with reservation/execution bookkeeping. Always hash
