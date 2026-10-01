@@ -265,6 +265,9 @@ func (s *WorkerExecutionService) startLocked(ctx context.Context, receipt store.
 	if receipt.WorkerRevision != actual.WorkerRevision || receipt.AutomationRevision != actual.AutomationRevision {
 		return store.ErrWorkerConflict
 	}
+	if err := s.host.runs.sessions.Store().CheckWorkerBudgetAdmission(actual.AccountScopeID, actual.WorkerID); err != nil {
+		return err
+	}
 	if actual.CancelRequested {
 		return store.ErrWorkerConflict
 	}
@@ -975,6 +978,9 @@ func (s *WorkerExecutionService) ReconcileWorker(ctx context.Context, account, i
 	if !found {
 		return store.ErrWorkerNotFound
 	}
+	budget, err := s.host.runs.sessions.Store().GetWorkerBudgetStatus(account, id)
+	if err != nil { return err }
+	budgetHeld := budget.Hold != nil
 	pending, err := ws.UnfinishedWorkerRuns(account, id, "")
 	if err != nil {
 		return err
@@ -993,7 +999,7 @@ func (s *WorkerExecutionService) ReconcileWorker(ctx context.Context, account, i
 			failures = append(failures, store.ErrWorkerConflict)
 			continue
 		}
-		if (r.CancelRequested || !workerRunAdmissionOpen(w, r) || !workerRunAutomationEnabled(w, r)) && exists && (intent.Status == sessions.RunIntentPendingExecutor || intent.Status == sessions.RunIntentRunning) {
+		if (budgetHeld || r.CancelRequested || !workerRunAdmissionOpen(w, r) || !workerRunAutomationEnabled(w, r)) && exists && (intent.Status == sessions.RunIntentPendingExecutor || intent.Status == sessions.RunIntentRunning) {
 			e = s.cancelRun(r, "worker admission closed")
 			if e != nil {
 				failures = append(failures, e)
@@ -1001,7 +1007,7 @@ func (s *WorkerExecutionService) ReconcileWorker(ctx context.Context, account, i
 			}
 		}
 		if exists {
-			if !r.CancelRequested && workerRunAdmissionOpen(w, r) && workerRunAutomationEnabled(w, r) && r.Status == "admitted" && intent.Status == sessions.RunIntentPendingExecutor {
+			if !budgetHeld && !r.CancelRequested && workerRunAdmissionOpen(w, r) && workerRunAutomationEnabled(w, r) && r.Status == "admitted" && intent.Status == sessions.RunIntentPendingExecutor {
 				if e = s.startLocked(ctx, r); e != nil {
 					failures = append(failures, e)
 				}
@@ -1012,7 +1018,11 @@ func (s *WorkerExecutionService) ReconcileWorker(ctx context.Context, account, i
 			}
 			continue
 		}
-		if r.CancelRequested || !workerRunAdmissionOpen(w, r) || !workerRunAutomationEnabled(w, r) {
+		if budgetHeld || r.CancelRequested || !workerRunAdmissionOpen(w, r) || !workerRunAutomationEnabled(w, r) {
+			if budgetHeld && !r.CancelRequested {
+				if e = s.cancelRun(r, "daily budget exhausted"); e != nil { failures = append(failures, e); continue }
+				r.CancelRequested = true
+			}
 			if e = s.observeRun(r); e != nil {
 				failures = append(failures, e)
 			}

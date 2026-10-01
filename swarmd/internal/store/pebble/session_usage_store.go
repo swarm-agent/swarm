@@ -407,6 +407,7 @@ func (s *SessionStore) PutTurnUsage(record SessionTurnUsageSnapshot) error {
 		if err != nil {
 			return fmt.Errorf("marshal daily accumulator: %w", err)
 		}
+		if err := s.setAccountWorkerBudgetHolds(batch, acc); err != nil { return err }
 		if err := batch.Set([]byte(KeyDailyUsageAccumulator(acc.AccountScopeID, acc.Date)), accPayload, nil); err != nil {
 			return err
 		}

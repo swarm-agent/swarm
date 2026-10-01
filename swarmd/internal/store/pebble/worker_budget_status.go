@@ -10,6 +10,10 @@ import (
 // Nil remaining means unset; observed coverage is never historical completeness.
 type WorkerBudgetStatus struct {
 	WorkerBudgetPolicy
+	Hold *WorkerBudgetHold `json:"hold,omitempty"`
+	ResetAt int64 `json:"reset_at"`
+	EffectiveCostLimitUSD *float64 `json:"effective_cost_limit_usd"`
+	EffectiveTokensLimit *int64 `json:"effective_tokens_limit"`
 	Date                    string                `json:"date"`
 	Usage                   UsageScopeTotal       `json:"usage"`
 	RemainingCostUSD        *float64              `json:"remaining_cost_usd"`
@@ -101,6 +105,16 @@ func (s *SessionStore) GetWorkerBudgetStatus(account, worker string) (WorkerBudg
 		}
 		status.Blocked, status.BlockedReason = true, err.Error()
 	}
+	var hold WorkerBudgetHold
+	if found, err := s.store.GetJSON(workerBudgetHoldKey(account, worker, status.Date), &hold); err != nil { return status, err } else if found { status.Hold = &hold }
+	day, _ := time.Parse("2006-01-02", status.Date)
+	status.ResetAt = day.AddDate(0, 0, 1).UnixMilli()
+	cost, tokens := policy.DailyCostLimitUSD, policy.DailyTokensLimit
+	if status.AccountPolicy.Enabled {
+		if v := status.AccountPolicy.DailyCostLimitUSD; v > 0 && (cost == 0 || v < cost) { cost = v }
+		if v := status.AccountPolicy.DailyTokensLimit; v > 0 && (tokens == 0 || v < tokens) { tokens = v }
+	}
+	status.EffectiveCostLimitUSD, status.EffectiveTokensLimit = remainingBudget(cost, tokens, 0, 0)
 	status.Limitations = "Stop-before-next-call, not an invoice-hard cap; admitted work may overshoot. Unsettled or unidentified operations survive restart and UTC rollover. Totals reflect observed receipts only; unknown pricing is not free."
 	return status, nil
 }

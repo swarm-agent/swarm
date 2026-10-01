@@ -83,6 +83,11 @@ func (s *SessionStore) SetWorkerBudget(account, worker string, expected uint64, 
 	if policy.Revision == ^uint64(0) {
 		return policy, ErrWorkerConflict
 	}
+	accountPolicy, _, err := s.GetUsageLimit(account)
+	if err != nil { return policy, err }
+	if accountPolicy.Enabled && ((accountPolicy.DailyCostLimitUSD > 0 && !math.IsInf(accountPolicy.DailyCostLimitUSD, 0) && cost > accountPolicy.DailyCostLimitUSD) || (accountPolicy.DailyTokensLimit > 0 && tokens > accountPolicy.DailyTokensLimit)) {
+		return policy, errors.New("worker daily limit cannot exceed the enabled overall daily limit; change the overall limit in Usage")
+	}
 	policy.Revision++
 	policy.DailyCostLimitUSD, policy.DailyTokensLimit, policy.UpdatedAt = cost, tokens, time.Now().UnixMilli()
 	user := ""
@@ -116,6 +121,15 @@ func (s *SessionStore) checkWorkerBudgetLocked(account, worker, date string) (Wo
 	if err != nil {
 		return policy, total, err
 	}
+	var hold WorkerBudgetHold
+	if found, err := s.store.GetJSON(workerBudgetHoldKey(account, worker, date), &hold); err != nil {
+		return policy, total, err
+	} else if found {
+		return policy, total, fmt.Errorf("%w: daily budget hold until %s", ErrWorkerBudget, time.UnixMilli(hold.ResetAt).UTC().Format(time.RFC3339))
+	}
+	if h := workerExhaustion(policy, total, date); h != nil {
+		return policy, total, s.holdWorkerBudgetLocked(account, worker, h)
+	}
 	if policy.DailyCostLimitUSD > 0 {
 		if total.UnknownReceipts > 0 || total.Coverage == "repaired_receipts_incomplete" {
 			return policy, total, fmt.Errorf("%w: unresolved worker pricing or coverage", ErrWorkerBudget)
@@ -138,6 +152,9 @@ func (s *SessionStore) checkWorkerBudgetLocked(account, worker, date string) (Wo
 		if err != nil {
 			return policy, total, err
 		}
+		if h := accountExhaustion(accountPolicy, usage, date); h != nil {
+			return policy, total, s.holdWorkerBudgetLocked(account, worker, h)
+		}
 		if accountPolicy.DailyCostLimitUSD > 0 && (usage.UnknownReceipts > 0 || usage.PricingCoverageIncomplete) {
 			return policy, total, fmt.Errorf("%w: unresolved account pricing", ErrWorkerBudget)
 		}
@@ -153,8 +170,10 @@ func (s *SessionStore) CheckWorkerBudgetAdmission(account, worker string) error 
 		return errors.New("store is not configured")
 	}
 	unlock := s.store.sessionMutations.lockSessions("account:" + account)
-	defer unlock()
-	return s.checkWorkerBudgetAdmissionLocked(account, worker)
+	err := s.checkWorkerBudgetAdmissionLocked(account, worker)
+	unlock()
+	if errors.Is(err, ErrWorkerBudget) { s.publishWorkerBudgetHolds(account) }
+	return err
 }
 
 func (s *SessionStore) checkWorkerBudgetAdmissionLocked(account, worker string) error {
@@ -215,6 +234,12 @@ func (s *SessionStore) CheckWorkerSessionBudgetWithPrice(account, sessionID, pri
 		return nil
 	}
 	date := time.Now().UTC().Format("2006-01-02")
+	// Exhaustion precedes reservations so they cannot hide a genuine day stop.
+	for _, scope := range scopes {
+		if scope.Kind == "worker" {
+			if _, _, err := s.checkWorkerBudgetLocked(account, scope.ID, date); err != nil { return err }
+		}
+	}
 	keys := []string{}
 	var existing workerBudgetReservation
 	if found, err := s.store.GetJSON(accountBudgetReservationKey(account), &existing); err != nil {
@@ -414,11 +439,13 @@ func (s *SessionStore) CheckWorkerUnmeteredOperation(account, session string) er
 		if scope.Kind != "worker" {
 			continue
 		}
-		policy, err := s.GetWorkerBudget(account, scope.ID)
+		policy, _, err := s.checkWorkerBudgetLocked(account, scope.ID, time.Now().UTC().Format("2006-01-02"))
 		if err != nil {
 			return err
 		}
-		if policy.DailyCostLimitUSD > 0 || policy.DailyTokensLimit > 0 {
+		_, accountActive, err := s.accountBudgetActive(account)
+		if err != nil { return err }
+		if accountActive || policy.DailyCostLimitUSD > 0 || policy.DailyTokensLimit > 0 {
 			return fmt.Errorf("%w: internal operation has no canonical receipt boundary", ErrWorkerBudget)
 		}
 	}

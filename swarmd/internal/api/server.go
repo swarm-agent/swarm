@@ -354,6 +354,11 @@ func NewServer(authSvc *auth.Service, agentSvc *agentruntime.Service, modelSvc *
 	}
 	if notificationSvc, ok := notificationSvc.(*notification.Service); ok {
 		notificationSvc.SetRealtimePublisher(server.publishNotificationV3Realtime)
+		if sessionSvc != nil && sessionSvc.Store() != nil && sessionSvc.Store().Underlying() != nil {
+			sessionSvc.Store().Underlying().SetWorkerBudgetPublisher(func(record pebblestore.NotificationRecord) {
+				server.publishNotificationV3Realtime(notification.RealtimeEvent{EventType: notification.EventNotificationCreated, AccountScopeID: record.AccountScopeID, SwarmID: record.SwarmID, Notification: &record, RecordedAt: record.UpdatedAt})
+			})
+		}
 	}
 	if sessionSvc != nil && sessionSvc.Store() != nil && sessionSvc.Store().Underlying() != nil {
 		if notificationSvc != nil {

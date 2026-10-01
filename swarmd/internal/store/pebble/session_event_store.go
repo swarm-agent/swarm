@@ -687,7 +687,11 @@ func (s *SessionStore) ApplyV3SessionMutation(input V3SessionMutationInput) (V3S
 		lockIDs = append(lockIDs, "account:"+input.AccountScopeID)
 	}
 	unlockSession := s.store.sessionMutations.lockSessions(lockIDs...)
-	defer unlockSession()
+	budgetReceiptCommitted := false
+	defer func() {
+		unlockSession()
+		if budgetReceiptCommitted { s.publishWorkerBudgetHolds(input.AccountScopeID) }
+	}()
 	if input.Session != nil || input.WorktreeRecovery != nil || input.AutomationBinding != nil || (input.automationV2 != nil && input.automationV2.accept) {
 		s.store.sessionMutations.worktreeMu.Lock()
 		defer s.store.sessionMutations.worktreeMu.Unlock()
@@ -748,7 +752,9 @@ func (s *SessionStore) ApplyV3SessionMutation(input V3SessionMutationInput) (V3S
 	// lock excludes only the versioned full backfill, not unrelated commits.
 	s.store.sessionMutations.libraryRepairMu.RLock()
 	defer s.store.sessionMutations.libraryRepairMu.RUnlock()
-	return s.applyFreshV3SessionMutation(input, idempotencyKey)
+	result, err := s.applyFreshV3SessionMutation(input, idempotencyKey)
+	budgetReceiptCommitted = err == nil && (input.TurnUsage != nil || input.MediaUsage != nil)
+	return result, err
 }
 
 func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput, idempotencyStoreKey string) (V3SessionMutationResult, error) {
@@ -1438,6 +1444,9 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 			if err != nil {
 				return V3SessionMutationResult{}, err
 			}
+			if err := s.setAccountWorkerBudgetHolds(batch, acc); err != nil {
+				return V3SessionMutationResult{}, err
+			}
 			if err := batch.Set([]byte(KeyDailyUsageAccumulator(acc.AccountScopeID, acc.Date)), accPayload, nil); err != nil {
 				return V3SessionMutationResult{}, err
 			}
@@ -1504,6 +1513,9 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 		accPayload, err := json.Marshal(acc)
 		if err != nil {
 			return V3SessionMutationResult{}, fmt.Errorf("marshal daily accumulator: %w", err)
+		}
+		if err := s.setAccountWorkerBudgetHolds(batch, acc); err != nil {
+			return V3SessionMutationResult{}, err
 		}
 		if err := batch.Set([]byte(KeyDailyUsageAccumulator(acc.AccountScopeID, acc.Date)), accPayload, nil); err != nil {
 			return V3SessionMutationResult{}, err

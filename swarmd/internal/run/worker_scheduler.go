@@ -49,6 +49,9 @@ func (s *WorkerExecutionService) TickWorker(ctx context.Context, account, id str
 	if w.LifecycleState != store.WorkerLifecycleStateActive {
 		return nil
 	}
+	budget, err := s.host.runs.sessions.Store().GetWorkerBudgetStatus(account, id)
+	if err != nil { return err }
+	if budget.Hold != nil { return nil }
 	// The first sweep sets a process-local cursor; restart never catches up
 	// slots that fell due while this process was offline.
 	s.scheduleMu.Lock()

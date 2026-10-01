@@ -49,6 +49,11 @@ func (s *SessionStore) setUsageDays(batch *pebble.Batch, current, previous Sessi
 		if err != nil {
 			return err
 		}
+		if scope.Kind == "worker" {
+			policy, err := s.GetWorkerBudget(current.AccountScopeID, scope.ID)
+			if err != nil && !errors.Is(err, ErrWorkerNotFound) { return err }
+			if err := s.setWorkerBudgetHold(batch, current.AccountScopeID, scope.ID, workerExhaustion(policy, total, date)); err != nil { return err }
+		}
 		if err := batch.Set([]byte(usageScopeDayKey(current.AccountScopeID, total, date)), payload, nil); err != nil {
 			return err
 		}
@@ -89,6 +94,11 @@ func (s *SessionStore) setMediaUsageDays(batch *pebble.Batch, media SessionMedia
 		payload, err := json.Marshal(total)
 		if err != nil {
 			return err
+		}
+		if scope.Kind == "worker" {
+			policy, err := s.GetWorkerBudget(media.AccountScopeID, scope.ID)
+			if err != nil && !errors.Is(err, ErrWorkerNotFound) { return err }
+			if err := s.setWorkerBudgetHold(batch, media.AccountScopeID, scope.ID, workerExhaustion(policy, total, date)); err != nil { return err }
 		}
 		if err := batch.Set([]byte(usageScopeDayKey(media.AccountScopeID, total, date)), payload, nil); err != nil {
 			return err
