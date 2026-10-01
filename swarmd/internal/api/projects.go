@@ -327,6 +327,16 @@ func syncTaskSessionState(task *pebblestore.ProjectTaskRecord, db *pebblestore.S
 		return
 	}
 
+	// Live execution outranks workflow and Git labels, including nested programs.
+	// Keep blocker/review detail available while the owning session repairs it.
+	if prog, ok := db.CurrentTaskProgram(task); ok {
+		task.TaskProgramStatus = &prog
+	}
+	if db.ProjectTaskExecuting(task) {
+		task.Status = "in_progress"
+		return
+	}
+
 	// 1. If task is already integrated, it is completed
 	if task.IsIntegrated {
 		task.Status = "completed"
@@ -370,6 +380,18 @@ func syncTaskSessionState(task *pebblestore.ProjectTaskRecord, db *pebblestore.S
 		return
 	}
 
+	// A terminal owning-run failure outranks a successful or blocked subprogram.
+	if state, found, err := db.GetV3SessionRunState(task.SessionID); err == nil && found && state.AccountScopeID == task.AccountID && (task.TaskProgramID != "" || task.TaskProgram != nil) {
+		switch state.Status {
+		case pebblestore.V3RunIntentFailed, pebblestore.V3RunIntentCancelled, pebblestore.V3RunIntentExpired, pebblestore.V3RunIntentInterrupted, pebblestore.V3RunIntentDispatchBlocked:
+			task.Status = "failed"
+			if state.BlockedReason != "" {
+				task.LastError = state.BlockedReason
+			}
+			return
+		}
+	}
+
 	// 2b. If task has a Task Program, sync status from TaskProgramRecord
 	if task.TaskProgramID != "" || task.TaskProgram != nil {
 		progID := task.TaskProgramID
@@ -377,16 +399,18 @@ func syncTaskSessionState(task *pebblestore.ProjectTaskRecord, db *pebblestore.S
 			progID = task.TaskProgram.ID
 		}
 		if progID != "" && task.SessionID != "" {
-			if prog, ok, _ := db.GetTaskProgram(task.SessionID, progID); ok {
+			if prog, ok := db.CurrentTaskProgram(task); ok {
 				task.TaskProgramStatus = &prog
 				if task.IsIntegrated || task.Status == "completed" || task.Status == "rejected" {
 					return
 				}
 				switch prog.State {
 				case pebblestore.TaskProgramStateRunning:
-					task.Status = "in_progress"
-					return
+					// Scheduling state alone cannot prove a session is executing.
 				case pebblestore.TaskProgramStateCompleted:
+					if db.ProjectTaskPlanUnfinished(task) {
+						break
+					}
 					if !task.IsIntegrated {
 						task.Status = "needs_review"
 						if task.ActionNeeded == "" || strings.HasPrefix(task.ActionNeeded, "Action Needed: 0") {
@@ -486,10 +510,11 @@ func syncTaskSessionState(task *pebblestore.ProjectTaskRecord, db *pebblestore.S
 	}
 
 	if runFound && strings.TrimSpace(runState.RunID) != "" {
-		if runState.Status == pebblestore.V3RunIntentRunning || (runState.Active && runState.Status != pebblestore.V3RunIntentPendingExecutor && task.Status != "queued") {
+		if runState.Status == pebblestore.V3RunIntentRunning {
 			task.Status = "in_progress"
 		} else if runState.Status == pebblestore.V3RunIntentPendingExecutor {
-			// In queued preparation; keep task queued without prematurely setting in_progress.
+			// Preparation is not active execution, even if the previous card was running.
+			task.Status = "queued"
 		} else {
 			// Run concluded:
 			switch runState.Status {
@@ -497,10 +522,16 @@ func syncTaskSessionState(task *pebblestore.ProjectTaskRecord, db *pebblestore.S
 				if task.PlanBinding != nil && task.PlanBinding.PlanID != "" {
 					plan, found, err := db.GetPlan(task.SessionID, task.PlanBinding.PlanID)
 					if err != nil || !found || plan.Document == nil || len(plan.Document.Checkpoints) == 0 {
+						if task.Status == "in_progress" {
+							task.Status = "blocked"
+						}
 						return
 					}
 					for _, checkpoint := range plan.Document.Checkpoints {
 						if checkpoint.Status != "completed" {
+							if task.Status == "in_progress" {
+								task.Status = "blocked"
+							}
 							return
 						}
 					}

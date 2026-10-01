@@ -145,7 +145,8 @@ func TestProjectTask_V3RunAuthority_LifecycleAbsentSuccessfulRun(t *testing.T) {
 	if resp.Task.Status != "needs_review" {
 		t.Fatalf("expected HTTP getTask status 'needs_review', got %q", resp.Task.Status)
 	}
-	// A completed provider turn cannot finish an unfinished approved plan.
+	// Requirement: terminal execution must leave Running without falsely finishing
+	// its unfinished approved plan. syncTaskSessionState is the projection boundary.
 	task.Status = "in_progress"
 	task.PlanBinding = &pebblestore.ProjectTaskPlanBinding{PlanID: "bound-plan", SessionID: sessID}
 	plan := pebblestore.SessionPlanSnapshot{ID: "bound-plan", SessionID: sessID, Document: &pebblestore.SessionPlanDocument{Checkpoints: []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Status: "in_progress"}}}}
@@ -153,8 +154,8 @@ func TestProjectTask_V3RunAuthority_LifecycleAbsentSuccessfulRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	syncTaskSessionState(task, sessionStore)
-	if task.Status != "in_progress" {
-		t.Fatalf("unfinished plan prematurely reviewed: %s", task.Status)
+	if task.Status != "blocked" {
+		t.Fatalf("unfinished plan must not remain executing or become reviewed: %s", task.Status)
 	}
 	plan.Document.Checkpoints[0].Status = "completed"
 	if err := sessionStore.PutPlan(plan); err != nil {
