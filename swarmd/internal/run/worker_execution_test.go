@@ -302,8 +302,10 @@ func TestWorkerIdleTestAndPreparationRecovery(t *testing.T) {
 	}
 }
 
-// Requirement: stopping preparation between session creation and intent creation
-// must settle safely rather than strand the worker in stopping forever.
+// Purpose: Stop/ReconcileStop must safely settle partial preparation without
+// stranding stopping state, while rejecting a stale revision after Dispatch
+// initializes the worker model. The real store/execution fixture is the narrowest
+// layer proving cancellation and no subsequent intent or provider execution.
 func TestWorkerStopDuringPreparation(t *testing.T) {
 	_, ss, execution, workspaceID := setupWorkerExecutionFixture(t, func(identity.Principal, store.V3SessionRunIntent) bool { return true })
 	ws := ss.Store().WorkerStore()
@@ -327,7 +329,21 @@ func TestWorkerStopDuringPreparation(t *testing.T) {
 		t.Fatal("preparation failure hidden")
 	}
 	execution.host.apply = apply
-	w, err = execution.Stop(context.Background(), "account", "owner", w.ID, w.Revision, store.WorkerLifecycleStatePaused)
+	// Dispatch may commit initial model policy; the old UI revision must fail CAS.
+	current, found, err := ws.GetWorker("account", w.ID)
+	if err != nil || !found {
+		t.Fatalf("worker after preparation: %v %v", found, err)
+	}
+	if current.Revision != w.Revision {
+		if _, err := execution.Stop(context.Background(), "account", "owner", w.ID, w.Revision, store.WorkerLifecycleStatePaused); !errors.Is(err, store.ErrWorkerConflict) {
+			t.Fatalf("stale stop accepted: %v", err)
+		}
+		unchanged, _, err := ws.GetWorker("account", w.ID)
+		if err != nil || unchanged.Revision != current.Revision || unchanged.LifecycleState != current.LifecycleState {
+			t.Fatalf("stale stop mutated worker: %+v %v", unchanged, err)
+		}
+	}
+	w, err = execution.Stop(context.Background(), "account", "owner", w.ID, current.Revision, store.WorkerLifecycleStatePaused)
 	if err != nil || w.LifecycleState != store.WorkerLifecycleStatePaused {
 		t.Fatalf("stop preparation: %+v %v", w, err)
 	}

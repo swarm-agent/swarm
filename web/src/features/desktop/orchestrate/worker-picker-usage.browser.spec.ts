@@ -49,7 +49,7 @@ test('compact chooser searches, retains saved options and budget saves exact CAS
     const writes: Array<{ url: string; body: any }> = []
     const assignment = { provider: 'fixture', model: 'catalog-model', thinking: 'low' }
     const usage = { kind: 'worker', id: 'worker-fixture', revision: 1, cache_read_tokens: 0, cache_write_tokens: 0, thinking_tokens: 0, media_receipts: 0, history_complete: false, receipt_count: 1, total_tokens: 9, coverage: 'observed_receipts_only', unknown_receipts: 0, input_tokens: 9, output_tokens: 0, catalog_cost_usd: 1, provider_cost_usd: 0, provider_estimate_cost_usd: 0, nominal_subscription_cost_usd: 0, media_cost_usd: 0, free_receipts: 0, subscription_receipts: 0 }
-    let savedDollars = 0, savedTokens = 900, overallLimit = 3, held = false, failSave = false, overallEnabled = true, noReceipts = false
+    let savedDollars = 0, savedTokens = 900, overallLimit = 3, held = false, failSave = false, overallEnabled = true, noReceipts = false, accountUnknown = false
     let revision = 4, catalog: 'error' | 'ready' | 'empty' = 'error', account = 'acct', blocked = false
     let holdCatalog = false, releaseCatalog: (() => void) | undefined
     let markCatalogRequested: (() => void) | undefined
@@ -70,7 +70,7 @@ test('compact chooser searches, retains saved options and budget saves exact CAS
       if (url.includes('/v3/usage/worker-budget')) {
         if (request.method() === 'PUT' && failSave) return route.fulfill({ status: 409, contentType: 'application/json', body: JSON.stringify({ error: 'Fixture revision conflict' }) })
         if (request.method() === 'PUT') { revision++; savedDollars = request.postDataJSON().daily_cost_limit_usd; savedTokens = request.postDataJSON().daily_tokens_limit; return respond({ account_scope_id: 'acct', worker_id: 'worker-fixture', revision }) }
-        return respond({ account_scope_id: 'acct', worker_id: 'worker-fixture', revision, updated_at: 0, account_policy: { account_scope_id: 'acct', enabled: overallEnabled, daily_cost_limit_usd: overallLimit, updated_at: 0 }, account_usage: { account_scope_id: 'acct', date: '2026-01-01', total_cost_usd: 1, total_tokens: 9 }, daily_cost_limit_usd: savedDollars, daily_tokens_limit: savedTokens, date: '2026-01-01', usage: noReceipts ? { ...usage, revision: 0, total_tokens: 0, input_tokens: 0, receipt_count: 0, catalog_cost_usd: 0, coverage: 'no_records' } : usage, remaining_cost_usd: savedDollars ? Math.max(0, savedDollars - 1) : null, remaining_tokens: Math.max(0, savedTokens - 9), account_remaining_cost_usd: overallEnabled && overallLimit ? Math.max(0, overallLimit - 1) : null, account_remaining_tokens: null, blocked: blocked || held, blocked_reason: held ? 'daily hold' : blocked ? 'Fixture accounting review' : undefined, reset_at: Date.parse('2026-01-02T00:00:00Z'), hold: held ? { date: '2026-01-01', reason: 'daily_budget_exhausted', cap_source: 'worker', dimension: 'usd', limit: 2.5, usage: 2.5, reset_at: Date.parse('2026-01-02T00:00:00Z') } : undefined, inflight: false, account_inflight: false, account_coverage: 'observed_receipts_only', limitations: 'Observed receipts only.' })
+        return respond({ account_scope_id: 'acct', worker_id: 'worker-fixture', revision, updated_at: 0, account_policy: { account_scope_id: 'acct', enabled: overallEnabled, daily_cost_limit_usd: overallLimit, updated_at: 0 }, account_usage: { account_scope_id: 'acct', date: '2026-01-01', total_cost_usd: accountUnknown ? 0 : 1, unknown_receipts: accountUnknown ? 1 : 0, total_tokens: 9 }, daily_cost_limit_usd: savedDollars, daily_tokens_limit: savedTokens, date: '2026-01-01', usage: noReceipts ? { ...usage, revision: 0, total_tokens: 0, input_tokens: 0, receipt_count: 0, catalog_cost_usd: 0, coverage: 'no_records' } : usage, remaining_cost_usd: savedDollars ? Math.max(0, savedDollars - 1) : null, remaining_tokens: Math.max(0, savedTokens - 9), account_remaining_cost_usd: overallEnabled && overallLimit ? Math.max(0, overallLimit - 1) : null, account_remaining_tokens: null, blocked: blocked || held, blocked_reason: held ? 'daily hold' : blocked ? 'Fixture accounting review' : undefined, reset_at: Date.parse('2026-01-02T00:00:00Z'), hold: held ? { date: '2026-01-01', reason: 'daily_budget_exhausted', cap_source: 'worker', dimension: 'usd', limit: 2.5, usage: 2.5, reset_at: Date.parse('2026-01-02T00:00:00Z') } : undefined, inflight: false, account_inflight: false, account_coverage: 'observed_receipts_only', limitations: 'Observed receipts only.' })
       }
       return route.fulfill({ contentType: 'text/html', body: '<meta name="viewport" content="width=device-width,initial-scale=1"><div id="root" class="min-w-0 p-3"></div>' })
     })
@@ -157,6 +157,10 @@ test('compact chooser searches, retains saved options and budget saves exact CAS
     held = true; await page.getByRole('button', { name: 'Reload budget' }).click()
     await page.getByText(/Stopped for today · Worker dollar limit reached/).waitFor()
     await capture('worker-budget-stopped-narrow')
+    accountUnknown = true; await page.getByRole('button', { name: 'Reload budget' }).click()
+    await budgetBox.getByText('Overall today used · Cost unknown · partial pricing · 9 tokens', { exact: true }).waitFor()
+    assert.equal(await budgetBox.getByText(/Overall today used.*\$0/).count(), 0)
+    accountUnknown = false
     overallLimit = 2; await page.getByRole('button', { name: 'Reload budget' }).click()
     await page.getByText(/Saved worker limit exceeds the new overall ceiling/).waitFor()
     assert.equal(writes.length, 1)

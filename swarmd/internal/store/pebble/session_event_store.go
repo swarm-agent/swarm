@@ -690,7 +690,9 @@ func (s *SessionStore) ApplyV3SessionMutation(input V3SessionMutationInput) (V3S
 	budgetReceiptCommitted := false
 	defer func() {
 		unlockSession()
-		if budgetReceiptCommitted { s.publishWorkerBudgetHolds(input.AccountScopeID) }
+		if budgetReceiptCommitted {
+			s.publishWorkerBudgetHolds(input.AccountScopeID)
+		}
 	}()
 	if input.Session != nil || input.WorktreeRecovery != nil || input.AutomationBinding != nil || (input.automationV2 != nil && input.automationV2.accept) {
 		s.store.sessionMutations.worktreeMu.Lock()

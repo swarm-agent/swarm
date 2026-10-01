@@ -979,7 +979,9 @@ func (s *WorkerExecutionService) ReconcileWorker(ctx context.Context, account, i
 		return store.ErrWorkerNotFound
 	}
 	budget, err := s.host.runs.sessions.Store().GetWorkerBudgetStatus(account, id)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	budgetHeld := budget.Hold != nil
 	pending, err := ws.UnfinishedWorkerRuns(account, id, "")
 	if err != nil {
@@ -1020,7 +1022,10 @@ func (s *WorkerExecutionService) ReconcileWorker(ctx context.Context, account, i
 		}
 		if budgetHeld || r.CancelRequested || !workerRunAdmissionOpen(w, r) || !workerRunAutomationEnabled(w, r) {
 			if budgetHeld && !r.CancelRequested {
-				if e = s.cancelRun(r, "daily budget exhausted"); e != nil { failures = append(failures, e); continue }
+				if e = s.cancelRun(r, "daily budget exhausted"); e != nil {
+					failures = append(failures, e)
+					continue
+				}
 				r.CancelRequested = true
 			}
 			if e = s.observeRun(r); e != nil {

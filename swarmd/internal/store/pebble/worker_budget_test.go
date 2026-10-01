@@ -298,8 +298,27 @@ func TestWorkerBudgetAdmissionAndSettlement(t *testing.T) {
 			t.Fatalf("denied %s persisted: %+v %v", source, prior, err)
 		}
 	}
-	// Clear only fixture projection, then persist one real canonical receipt.
+	// Lowering a projection must not bypass the durable day hold.
 	if err := db.PutJSON(usageScopeDayKey("account-1", total, date), UsageScopeTotal{Kind: "worker", ID: "worker"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CheckWorkerSessionBudgetWithPrice("account-1", "budget-one", "known", "settled"); !errors.Is(err, ErrWorkerBudget) {
+		t.Fatalf("projection rewrite bypassed day hold: %v", err)
+	}
+}
+
+// Purpose: a genuinely metered operation below the cap releases its exact
+// reservation without confusing settlement with removal of an exhaustion hold.
+// CheckWorkerSessionBudgetWithPrice/ReleaseWorkerBudgetReservation own the
+// boundary; an independent temporary store proves the durable postconditions.
+func TestWorkerBudgetBelowCapSettlement(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "budget.pebble"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	s := workerBudgetFixture(t, db)
+	if _, err := s.SetWorkerBudget("account-1", "worker", 0, 2, 1000); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.CheckWorkerSessionBudgetWithPrice("account-1", "budget-one", "known", "settled"); err != nil {
