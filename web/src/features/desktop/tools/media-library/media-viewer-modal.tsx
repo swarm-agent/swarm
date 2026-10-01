@@ -68,6 +68,12 @@ export interface MediaViewerModalProps {
   isGenerating?: boolean
 }
 
+function modalTabStops(dialog: HTMLElement): HTMLElement[] {
+  return Array.from(dialog.querySelectorAll<HTMLElement>('button, input, select, textarea, a[href], video[controls], audio[controls], iframe, [tabindex], [contenteditable="true"]'))
+    .filter(node => node.tabIndex >= 0 && !node.matches(':disabled') && !node.closest('[inert]') && node.getClientRects().length > 0 && getComputedStyle(node).visibility !== 'hidden')
+    .sort((a, b) => (a.tabIndex || Number.MAX_SAFE_INTEGER) - (b.tabIndex || Number.MAX_SAFE_INTEGER))
+}
+
 export function MediaViewerModal({
   item,
   items,
@@ -82,6 +88,45 @@ export function MediaViewerModal({
   initialQuickRouteMode,
   isGenerating = false,
 }: MediaViewerModalProps) {
+  const dialogRef = useRef<HTMLDivElement>(null)
+  const isOpen = Boolean(item)
+  useEffect(() => {
+    if (!isOpen) return
+    const dialog = dialogRef.current
+    if (!dialog) return
+    const trigger = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    const background = new Map<HTMLElement, boolean>()
+    const isolate = () => {
+      // The viewer is nested in the library, so inert siblings at every ancestor,
+      // never an ancestor containing the dialog itself.
+      for (let branch: HTMLElement = dialog; branch.parentElement; branch = branch.parentElement) {
+        for (const sibling of Array.from(branch.parentElement.children)) {
+          if (sibling instanceof HTMLElement && sibling !== branch && !background.has(sibling)) {
+            background.set(sibling, sibling.inert)
+            sibling.inert = true
+          }
+        }
+      }
+    }
+    isolate()
+    const observer = new MutationObserver(isolate)
+    for (let ancestor = dialog.parentElement; ancestor; ancestor = ancestor.parentElement) {
+      observer.observe(ancestor, { childList: true })
+    }
+    const focusInside = () => (dialog.querySelector<HTMLElement>('[aria-label="Close viewer"]') || dialog).focus()
+    const containFocus = (event: FocusEvent) => {
+      if (event.target instanceof Node && !dialog.contains(event.target)) focusInside()
+    }
+    document.addEventListener('focusin', containFocus)
+    focusInside()
+    return () => {
+      observer.disconnect()
+      document.removeEventListener('focusin', containFocus)
+      for (const [node, wasInert] of background) node.inert = wasInert
+      if (trigger?.isConnected) trigger.focus()
+    }
+  }, [isOpen])
+
   const [zoomLevel, setZoomLevel] = useState(1)
   const [showInfo, setShowInfo] = useState(true)
   const [copied, setCopied] = useState(false)
@@ -756,11 +801,57 @@ export function MediaViewerModal({
 
   return (
     <div
+      ref={dialogRef}
       role="dialog"
       aria-modal="true"
+      tabIndex={-1}
+      onClick={(event) => { if (event.target === event.currentTarget) onClose() }}
+      onKeyDown={(event) => {
+        if (event.key !== 'Tab') return
+        const controls = modalTabStops(event.currentTarget)
+        const index = controls.indexOf(document.activeElement as HTMLElement)
+        event.preventDefault()
+        if (controls.length === 0) { event.currentTarget.focus(); return }
+        const next = index < 0 ? (event.shiftKey ? controls.length - 1 : 0) : (index + (event.shiftKey ? -1 : 1) + controls.length) % controls.length
+        controls[next].focus()
+      }}
       aria-label={`Media viewer: ${item.title}`}
-      className="fixed inset-0 z-50 flex flex-col bg-black/92 backdrop-blur-xl text-[var(--app-text)] animate-in fade-in duration-150"
+      style={{ containerType: 'inline-size' }}
+      className="media-viewer fixed inset-0 z-50 flex flex-col bg-black/92 backdrop-blur-xl text-[var(--app-text)] animate-in fade-in duration-150"
     >
+      <style>{`
+        .media-viewer { height: 100dvh; padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+        .media-viewer button, .media-viewer select { min-height: 44px; min-width: 44px; }
+        .media-viewer :is(button, input, select, textarea, [tabindex]):focus-visible { outline: 2px solid #60a5fa; outline-offset: -2px; }
+        .media-viewer header { height: auto; min-height: 56px; max-height: 35%; overflow-y: auto; flex-wrap: wrap; gap: 8px; padding-block: 8px; }
+        .media-viewer header > div:first-child { flex: 1 1 240px; }
+        .media-viewer header > div:last-child { flex-wrap: wrap; max-width: 100%; }
+        .media-viewer header button[aria-label="Close viewer"] { order: -1; }
+        .media-viewer footer, .media-viewer aside { overflow-wrap: anywhere; }
+        .media-viewer footer div { min-width: 0; max-width: 100%; }
+        .media-viewer footer select { min-width: 0; max-width: 100%; }
+        .media-viewer footer div:has(> select) { flex-wrap: wrap; }
+        .media-viewer main > div { min-width: 0; max-height: 100%; }
+        .media-viewer main img { max-height: 100%; object-fit: contain; }
+        .media-viewer main video, .media-viewer main iframe { max-height: 100%; }
+        .media-viewer aside :is(p, span) { overflow-wrap: anywhere; }
+        .media-viewer footer .inline-flex { flex-wrap: wrap; }
+        .media-viewer footer textarea { padding-bottom: 32px; }
+        .media-viewer aside { display: block; }
+        @container (max-width: 1000px) {
+          .media-viewer-workspace { display: block; overflow-y: auto; }
+          .media-viewer-center { overflow: visible; }
+          .media-viewer main { flex: none; min-height: 220px; height: 35dvh; padding: 16px; }
+          .media-viewer footer { max-height: none; overflow: visible; padding: 16px; }
+          .media-viewer footer > div > div { flex-wrap: wrap; }
+          .media-viewer-prompt { flex-direction: column; align-items: stretch; }
+          .media-viewer aside { width: 100%; border-left: 0; border-top: 1px solid #ffffff1a; }
+          .media-viewer header .hidden { display: none; }
+          .media-viewer-nav { position: absolute; top: 8px; left: 8px; right: auto; transform: none; margin: 0; }
+          .media-viewer-nav[aria-label="Next item"] { left: auto; right: 8px; }
+          .media-viewer main { padding-inline: 60px; }
+        }
+      `}</style>
       {/* Top Header Bar */}
       <header className="flex h-14 shrink-0 items-center justify-between border-b border-white/10 bg-black/40 px-4 backdrop-blur-md">
         {/* Left: Media Title & Info */}
@@ -913,6 +1004,7 @@ export function MediaViewerModal({
             onClick={() => setShowInfo((open) => !open)}
             title={showInfo ? 'Hide details' : 'Show details'}
             aria-label="Toggle details panel"
+            aria-expanded={showInfo}
             className={`p-2 rounded-lg transition ${showInfo ? 'bg-white/20 text-white' : 'bg-white/10 text-white/70 hover:bg-white/20 hover:text-white'}`}
           >
             <Info size={16} />
@@ -932,14 +1024,14 @@ export function MediaViewerModal({
       </header>
 
       {/* Main Workspace Area */}
-      <div className="relative flex min-h-0 flex-1 overflow-hidden">
+      <div className="media-viewer-workspace relative flex min-h-0 flex-1 overflow-hidden">
         {/* Left Arrow */}
         {hasPrev && (
           <button
             type="button"
             onClick={handlePrev}
             aria-label="Previous item"
-            className="absolute left-4 top-1/2 -translate-y-1/2 z-20 flex size-10 items-center justify-center rounded-full bg-black/60 text-white/80 hover:bg-black/90 hover:text-white border border-white/20 transition backdrop-blur-sm"
+            className="media-viewer-nav absolute left-4 top-1/2 -translate-y-1/2 z-20 flex size-10 items-center justify-center rounded-full bg-black/60 text-white/80 hover:bg-black/90 hover:text-white border border-white/20 transition backdrop-blur-sm"
           >
             <ChevronLeft size={22} />
           </button>
@@ -951,16 +1043,16 @@ export function MediaViewerModal({
             type="button"
             onClick={handleNext}
             aria-label="Next item"
-            className="absolute right-4 top-1/2 -translate-y-1/2 z-20 flex size-10 items-center justify-center rounded-full bg-black/60 text-white/80 hover:bg-black/90 hover:text-white border border-white/20 transition backdrop-blur-sm"
+            className="media-viewer-nav absolute right-4 top-1/2 -translate-y-1/2 z-20 flex size-10 items-center justify-center rounded-full bg-black/60 text-white/80 hover:bg-black/90 hover:text-white border border-white/20 transition backdrop-blur-sm"
           >
             <ChevronRight size={22} />
           </button>
         )}
 
         {/* Center Display & Bottom Dock */}
-        <div className="flex flex-1 flex-col min-w-0 min-h-0 overflow-hidden">
+        <div className="media-viewer-center flex flex-1 flex-col min-w-0 min-h-0 overflow-hidden">
           {/* Media Canvas */}
-          <main className="flex flex-1 items-center justify-center overflow-auto p-4 sm:p-6 min-h-0">
+          <main onClick={(event) => { if (event.target === event.currentTarget) onClose() }} className="flex flex-1 items-center justify-center overflow-auto p-4 sm:p-6 min-h-0">
             {showingRequest && activeJob && (
               <section role="status" aria-live="polite" className="w-full max-w-xl rounded-2xl border border-white/15 bg-white/5 p-6 text-center">
                 {isMediaGenerationPending(activeJob.status)
@@ -974,7 +1066,7 @@ export function MediaViewerModal({
               </section>
             )}
             {!showingRequest && item.kind === 'image' && (
-              <div className="relative flex items-center justify-center max-h-full max-w-full">
+              <div className="relative flex h-full items-center justify-center max-h-full max-w-full">
                 <img
                   src={item.directUrl}
                   alt={item.title}
@@ -982,7 +1074,7 @@ export function MediaViewerModal({
                     transform: `scale(${zoomLevel})`,
                     transition: 'transform 0.15s ease-out',
                   }}
-                  className="max-h-[56vh] max-w-full rounded-lg object-contain shadow-2xl select-none border border-white/10"
+                  className="max-h-full max-w-full rounded-lg object-contain shadow-2xl select-none border border-white/10"
                 />
               </div>
             )}
@@ -1389,9 +1481,10 @@ export function MediaViewerModal({
               </div>
 
               {/* Row 2: Textarea Prompt Box & Action Submission */}
-              <div className="flex flex-col sm:flex-row items-stretch sm:items-end gap-3">
+              <div className="media-viewer-prompt flex flex-col sm:flex-row items-stretch sm:items-end gap-3">
                 <div className="relative flex-1">
                   <textarea
+                    aria-label="Generation instructions"
                     rows={2}
                     value={quickRoutePrompt}
                     onChange={(e) => setQuickRoutePrompt(e.target.value)}
@@ -1499,7 +1592,7 @@ export function MediaViewerModal({
 
         {/* Right Details & Lineage Drawer */}
         {showInfo && (
-          <aside className="hidden lg:block w-84 shrink-0 border-l border-white/10 bg-black/60 p-5 backdrop-blur-xl overflow-y-auto text-xs text-white/80">
+          <aside className="w-84 shrink-0 border-l border-white/10 bg-black/60 p-5 backdrop-blur-xl overflow-y-auto text-xs text-white/80">
             {/* Visual Lineage & History Chain */}
             <div className="mb-6 pb-5 border-b border-white/10">
               <div className="flex items-center gap-2 mb-3">
@@ -1518,6 +1611,9 @@ export function MediaViewerModal({
                       return (
                         <div
                           key={chainItem.id}
+                          role="button"
+                          tabIndex={0}
+                          onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); selectAsset(chainItem) } }}
                           className={`relative flex items-center gap-2.5 p-2 rounded-xl transition ${
                             isCurrent
                               ? 'bg-blue-600/20 border border-blue-500/50 shadow-md ring-1 ring-blue-500/30'

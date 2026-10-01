@@ -3200,7 +3200,7 @@ export function SearchReadToolGroupView({ toolMessages }: { toolMessages: Struct
   const StateIcon = errorCount > 0 ? XCircle : runningCount > 0 ? null : CheckCircle2;
 
   return (
-    <div className="flex justify-start" data-search-read-group>
+    <div className="flex w-full min-w-0 justify-start" data-search-read-group>
       <section className="w-full min-w-0 overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] shadow-[0_1px_2px_color-mix(in_srgb,var(--app-text)_5%,transparent)]">
         <header className="flex min-w-0 items-start gap-2 px-3 py-2.5">
           <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[color-mix(in_srgb,var(--app-primary)_12%,transparent)] text-[var(--app-primary)]"><Search size={13} /></span>
@@ -3495,8 +3495,8 @@ export function ToolMessageView({
           )}>
             <span
               className={cn(
-                "inline-flex shrink-0 items-center justify-center font-semibold",
-                isFileAction || isTask ? "h-7 w-7 rounded-lg" : "h-5 gap-1 rounded-md px-1.5",
+                "inline-flex min-w-0 items-center justify-center break-words [overflow-wrap:anywhere] font-semibold",
+                isFileAction || isTask ? "h-7 w-7 shrink-0 rounded-lg" : "min-h-5 gap-1 rounded-md px-1.5",
               )}
               style={{ color: toolTheme.color, backgroundColor: accentWash }}
             >
@@ -3656,7 +3656,7 @@ function ChatMarkdownInner({
   return (
     <div
       className={cn(
-        "chat-markdown min-w-0 max-w-full break-words text-sm leading-6",
+        "chat-markdown min-w-0 max-w-full break-words [overflow-wrap:anywhere] text-sm leading-6",
         !className?.includes("text-") && "text-[var(--app-text)]",
         className,
       )}

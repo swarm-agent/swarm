@@ -40,8 +40,8 @@ function WorkerHubAccount({ accountScopeId, onSelectWorker, onAddWorker, onInspe
     </header>
     {page?.error && <p role="alert" className="px-5 py-2 text-red-300">Worker list: {page.error}</p>}
     {page?.stale && page.data && <p className="px-5 py-2 text-xs text-amber-300">Refreshing workers; displayed entries may be out of date.</p>}
-    <div className="grid min-h-0 flex-1 grid-cols-1 overflow-y-auto lg:grid-cols-[minmax(210px,28%)_minmax(0,1fr)] lg:overflow-hidden">
-      <nav aria-label="Worker list" className="space-y-2 border-b border-slate-800 p-3 lg:overflow-y-auto lg:border-b-0 lg:border-r">
+    <div className="swarm-workers-layout">
+      <nav aria-label="Worker list" className="swarm-workers-list space-y-2 border-b border-slate-800 p-3">
         {workers.map(worker => <div key={worker.id}><WorkerSidebarRestore accountScopeId={accountScopeId} worker={worker} /><button type="button" aria-label={`Inspect ${worker.name}`} aria-pressed={inspected === worker.id} onClick={() => { onInspectWorker?.(worker.id) }} className={`w-full rounded-xl border p-3 text-left text-xs ${inspected === worker.id ? 'border-blue-500/60 bg-blue-500/10' : 'border-slate-800 hover:bg-slate-800/60'}`}>
           <span className="block break-words font-semibold text-white">{worker.name}</span>
           <span className="mt-1 block text-[10px] text-slate-400">{workerLifecycleLabel(worker.lifecycle_state)}{worker.pending_review ? ' · Changes pending approval' : ''} · {worker.automations?.length || 0} jobs</span>
@@ -52,7 +52,7 @@ function WorkerHubAccount({ accountScopeId, onSelectWorker, onAddWorker, onInspe
         {next && <button className={button} onClick={() => setCursor(next)}>Next workers</button>}
         {cursor && <button className={button} onClick={() => setCursor(undefined)}>First page</button>}
       </nav>
-      <div className="min-w-0 p-4 lg:overflow-y-auto">
+      <div className="swarm-workers-detail min-w-0 p-4">
         {inspected ? <WorkerDetail key={inspected} accountScopeId={accountScopeId} workerId={inspected} workspaceSlug={workspaceSlug} onSelectWorker={onSelectWorker} onClose={() => { onInspectWorker?.('') }} /> : <div className="p-8 text-center"><h3 className="font-semibold text-white">A worker for the work that repeats</h3><p className="mt-2 text-sm text-slate-400">Describe the job to Orchestrator. Review the proposal here before it can run.</p><button className={`${button} mt-4`} onClick={onAddWorker}>Add worker with Orchestrator</button></div>}
       </div>
     </div>
