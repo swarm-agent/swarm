@@ -64,6 +64,7 @@ var ErrV3IdempotencyConflict = errors.New("v3 session idempotency conflict")
 // canonical V3 mutation batch. Plan, revision, active-pointer, event,
 // projection, idempotency, and realtime outbox records commit atomically.
 type V3PlanSaveMutation struct {
+	TaskPublication       *ProjectTaskRecord    `json:"task_publication,omitempty"`
 	Plan                  SessionPlanSnapshot  `json:"plan"`
 	ArchivedRevision      *SessionPlanSnapshot `json:"archived_revision,omitempty"`
 	Activate              bool                 `json:"activate,omitempty"`
@@ -681,7 +682,7 @@ func (s *SessionStore) ApplyV3SessionMutation(input V3SessionMutationInput) (V3S
 
 	// Task chat continuation shares the project lock with reopen/archive. Take it
 	// before session locks, matching project mutation lock ordering.
-	if input.Kind == V3SessionMutationAppendMessage && input.RunIntent != nil && input.Message != nil && strings.EqualFold(input.Message.Role, "user") {
+	if (input.PlanSave != nil && input.PlanSave.TaskPublication != nil) || (input.Kind == V3SessionMutationAppendMessage && input.RunIntent != nil && input.Message != nil && strings.EqualFold(input.Message.Role, "user")) {
 		s.store.projectsMu.Lock()
 		defer s.store.projectsMu.Unlock()
 	}
@@ -924,6 +925,13 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 		if continuation != nil {
 			input.projectRealtime = continuation
 		}
+	}
+	publication, err := s.prepareTaskPlanPublication(input)
+	if err != nil {
+		return V3SessionMutationResult{}, err
+	}
+	if publication != nil {
+		input.projectRealtime = publication
 	}
 	worktreeOwnership, err := s.prepareWorktreeOwnership(input, session)
 	if err != nil {

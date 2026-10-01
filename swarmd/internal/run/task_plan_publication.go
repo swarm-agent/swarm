@@ -3,6 +3,7 @@ package run
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 
 	"swarm/packages/swarmd/internal/permission"
@@ -69,6 +70,38 @@ func (s *Service) authorizeTaskPlanPublication(ctx context.Context, config provi
 	}
 	if err := sessionruntime.ValidateExecutablePlanDocument(input.Document); err != nil {
 		return false, err
+	}
+	if err := pebblestore.ValidateTaskPlanSources(task, input.Document); err != nil {
+		return false, err
+	}
+	for _, checkpoint := range input.Document.Checkpoints {
+		if checkpoint.TaskProgram == nil {
+			continue
+		}
+		for _, job := range checkpoint.TaskProgram.Jobs {
+			if job.AgentType != "coder" && job.AgentType != "finder" {
+				continue
+			}
+			path := strings.TrimSpace(job.WorkspacePath)
+			if path == "" {
+				path = task.SourceWorkspace.Path
+			}
+			if s.workspace == nil {
+				return false, errors.New("plan publication workspace catalog unavailable")
+			}
+			scope, err := s.workspace.ScopeForPathForPrincipal(principal, path)
+			if err != nil || !scope.Matched || scope.WorkspacePath != path || scope.ResolvedPath != path {
+				return false, fmt.Errorf("plan job %q source %q is not an authorized canonical catalog root", job.ID, path)
+			}
+			resolved := pebblestore.ProjectTaskSource{Path: path, WorkspaceID: scope.WorkspaceID, WorkspaceGeneration: scope.WorkspaceGeneration}
+			matched := false
+			for _, admitted := range append([]pebblestore.ProjectTaskSource{task.SourceWorkspace}, task.ProgramSources...) {
+				matched = matched || resolved.SameIdentity(admitted)
+			}
+			if !matched {
+				return false, fmt.Errorf("plan job %q source %q has stale catalog admission; explicitly resubmit the plan as a new task for source review", job.ID, path)
+			}
+		}
 	}
 	if s.permissions == nil {
 		return false, errors.New("permission service is not configured")

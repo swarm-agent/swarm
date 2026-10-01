@@ -2,6 +2,7 @@ package run
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -14,6 +15,7 @@ import (
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
+	workspaceruntime "swarm/packages/swarmd/internal/workspace"
 )
 
 // A deterministic provider emits the actual provider-managed invocation rather
@@ -29,7 +31,7 @@ func (p taskPlanPublicationProvider) submit(ctx context.Context, invoker provide
 // This invocation layer is the narrowest layer reproducing the former permission
 // wait; durable reads prove the pending review rather than assistant prose.
 func TestProviderManagedTaskPlanPublication(t *testing.T) {
-	for _, scenario := range []string{"publish", "wrong-account", "wrong-session", "stale-run", "stale-attempt", "disabled", "deny", "help", "missing-document", "malformed-document"} {
+	for _, scenario := range []string{"publish", "wrong-account", "wrong-session", "stale-run", "stale-attempt", "disabled", "deny", "help", "missing-document", "malformed-document", "source", "secondary-source", "unadmitted-source", "stale-source", "archived"} {
 		t.Run(scenario, func(t *testing.T) {
 			workspace := t.TempDir()
 			svc, sessionID, permissions, storePath, cleanup := newTaskPlanPublicationTestService(t, workspace)
@@ -49,6 +51,13 @@ func TestProviderManagedTaskPlanPublication(t *testing.T) {
 			principal := identity.Principal{Type: identity.PrincipalTypeUser, SessionID: sessionID, AccountScopeID: current.AccountScopeID, UserID: current.UserID}
 			config := providerToolInvokerConfig{sessionID: sessionID, permissionSessionID: sessionID, runID: runID, step: 1, sessionMode: sessionruntime.ModePlan, principal: principal, providerManagedV3: true, applySessionMutation: svc.sessions.ApplySessionMutation, agentProfile: pebblestore.AgentProfile{Name: "swarm", RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, ExitPlanModeEnabled: pebblestore.BoolPtr(true)}}
 			switch scenario {
+			case "archived":
+				if _, err := svc.sessions.Store().UpdateProjectTask(current.AccountScopeID, "project", "task", func(task *pebblestore.ProjectTaskRecord) error {
+					task.Archived = true
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
 			case "wrong-account":
 				config.principal.AccountScopeID = "other-account"
 			case "wrong-session":
@@ -81,6 +90,40 @@ func TestProviderManagedTaskPlanPublication(t *testing.T) {
 			case "malformed-document":
 				provider.arguments = `{"document":{}}`
 			}
+			if scenario == "source" || scenario == "secondary-source" || scenario == "unadmitted-source" || scenario == "stale-source" {
+				scope, err := svc.workspace.ScopeForPathForPrincipal(principal, workspace)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if scenario == "source" || scenario == "secondary-source" || scenario == "stale-source" {
+					if _, err := svc.sessions.Store().UpdateProjectTask(current.AccountScopeID, "project", "task", func(task *pebblestore.ProjectTaskRecord) error {
+						task.SourceWorkspace = pebblestore.ProjectTaskSource{Path: workspace, WorkspaceID: scope.WorkspaceID, WorkspaceGeneration: scope.WorkspaceGeneration, Provenance: "unique_project_workspace"}
+						if scenario == "secondary-source" {
+							task.ProgramSources = []pebblestore.ProjectTaskSource{task.SourceWorkspace}
+							task.SourceWorkspace = pebblestore.ProjectTaskSource{Path: t.TempDir(), WorkspaceID: "primary", WorkspaceGeneration: 1}
+						}
+						if scenario == "stale-source" {
+							task.SourceWorkspace.WorkspaceGeneration++
+						}
+						return nil
+					}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				var args map[string]any
+				if err := json.Unmarshal([]byte(provider.arguments), &args); err != nil {
+					t.Fatal(err)
+				}
+				doc := args["document"].(map[string]any)
+				cp := doc["checkpoints"].([]any)[0].(map[string]any)
+				cp["task_program"] = map[string]any{"id": "program", "stages": []any{map[string]any{"id": "build", "dependency_evidence": "ready"}}, "jobs": []any{map[string]any{"id": "code", "stage_id": "build", "agent_type": "coder", "title": "Code", "meta_prompt": "Implement", "deliverable": "Commit", "acceptance_criteria": []string{"Reviewed"}, "dependency_evidence": "ready", "workspace_path": workspace, "owned_scope": []string{"src/**"}}}}
+				raw, err := json.Marshal(args)
+				if err != nil {
+					t.Fatal(err)
+				}
+				provider.arguments = string(raw)
+				before, _, _ = svc.sessions.Store().GetProjectTask(current.AccountScopeID, "project", "task")
+			}
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
 			result, err := provider.submit(ctx, svc.newProviderToolInvoker(config))
@@ -106,7 +149,7 @@ func TestProviderManagedTaskPlanPublication(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if scenario != "publish" {
+			if scenario != "publish" && scenario != "source" && scenario != "secondary-source" {
 				if (scenario == "help" || scenario == "missing-document") && !strings.Contains(result.Error, "requires an explicit structured document") {
 					t.Fatalf("missing recoverable document guidance: %+v", result)
 				}
@@ -226,5 +269,10 @@ func newTaskPlanPublicationTestService(t *testing.T, workspace string) (*Service
 	}
 	permissions := permission.NewService(pebblestore.NewPermissionStore(store), events, nil)
 	svc := NewService(sessions, nil, nil, tool.NewRuntime(1), permissions, nil, nil, events)
+	catalog := pebblestore.NewWorkspaceStore(store)
+	if _, err := catalog.AddForAccount(current.AccountScopeID, workspace, "source"); err != nil {
+		t.Fatal(err)
+	}
+	svc.workspace = workspaceruntime.NewService(catalog)
 	return svc, current.ID, permissions, storePath, cleanup
 }

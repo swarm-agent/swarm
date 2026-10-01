@@ -130,10 +130,10 @@ func (s *Server) revalidateProjectTaskSource(p identity.Principal, proj *pebbles
 		for _, source := range resolved {
 			found := source.Path == task.SourceWorkspace.Path && source.WorkspaceID == task.SourceWorkspace.WorkspaceID && source.WorkspaceGeneration == task.SourceWorkspace.WorkspaceGeneration
 			for _, bound := range task.ProgramSources {
-				found = found || source == bound
+				found = found || source.SameIdentity(bound)
 			}
 			if !found {
-				return errors.New("plan program source differs from durable admission binding")
+				return fmt.Errorf("plan program source %q differs from durable admission binding; preserve this document and explicitly submit it as a new structured task for source admission and review (archived tasks cannot be accepted)", source.Path)
 			}
 		}
 	}
