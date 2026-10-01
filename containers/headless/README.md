@@ -73,6 +73,118 @@ published/exposed ports, and no permission/authentication bypass. Daemon API
 loopback/auth defaults remain unchanged. Container port publishing alone cannot
 make that loopback listener reachable from a host SDK.
 
-**Not qualified here:** first-time headless setup, provider configuration, SDK
-connectivity, live agents, restart durability, npm delivery or publication. This
-is a build-and-inspect artifact, not a claim that those later tasks work.
+## Fresh setup without Desktop
+
+Build the current source using the commands above (an older task-1 image does not
+contain `swarmctl setup`). The following is the implemented setup procedure, not a
+claim of live container/provider qualification. Execute it on your intended runtime
+host. No Desktop, source checkout inside the container, published port or host
+socket mount is required.
+
+Prerequisites: choose one clean Git repository with at least one commit; it must
+be readable/writable by container UID 10001, including `.git`. Use a normal checkout,
+not a linked worktree whose Git metadata lives outside the single project mount.
+Set `PROJECT_DIR` to its absolute host path. Set `PROVIDER`, `MODEL` and `THINKING`
+to your explicit supported choices; setup has no model defaults. Set
+`PROVIDER_KEY_FILE` to a private (0600), existing API-key file outside the project.
+A secret manager's stdout can instead feed the credential command directly. Do
+not type keys into shell commands or enable shell tracing (`set -x`). Provider
+verification and catalog hydration require outbound HTTPS; no inbound port is opened.
+
+<copy>
+(
+set -eu
+docker run -d --name swarm-headless --cap-drop ALL \
+  --security-opt no-new-privileges \
+  --mount type=volume,src=swarm-headless-config,dst=/etc/swarmd \
+  --mount type=volume,src=swarm-headless-data,dst=/var/lib/swarmd \
+  --mount type=volume,src=swarm-headless-cache,dst=/var/cache/swarmd \
+  --mount type=volume,src=swarm-headless-logs,dst=/var/log/swarmd \
+  --mount "type=bind,src=${PROJECT_DIR:?select a project},dst=/project" \
+  swarm-headless:local
+
+docker exec swarm-headless swarmctl setup status
+docker exec swarm-headless swarmctl setup identity --username owner --name Headless
+
+docker exec -i swarm-headless swarmctl setup credential \
+  --provider "${PROVIDER:?select a provider}" --api-key-stdin \
+  < "${PROVIDER_KEY_FILE:?select a private key file}"
+
+for role in action plan compact finder coder designer router; do
+  docker exec swarm-headless swarmctl setup model --role "$role" \
+    --provider "$PROVIDER" --model "${MODEL:?select a model}" \
+    --thinking "${THINKING:?select a supported thinking level}"
+done
+
+docker exec swarm-headless swarmctl setup workspace --path /project --name Project
+docker exec swarm-headless swarmctl setup complete
+docker exec swarm-headless swarmctl setup status
+)
+</copy>
+
+Run each step only after the preceding step succeeds. On a slow start, retry
+`setup status` after startup completes; a missing socket is an error, never a TCP
+fallback. The loop is an explicit choice to assign the same model to all roles;
+run individual `setup model` commands instead for different role assignments.
+Optional `--service-tier` and `--context-mode` are forwarded without defaults.
+Provider onboarding hydrates canonical catalog-derived recommendations. Most
+providers verify the key first; OpenAI intentionally saves an active **unverified**
+key, with validity determined by the first real request. Saved setup is not proof
+of valid credentials. The explicit model commands override only selected roles.
+This does not modify any host installation or other account's settings.
+
+`setup credential` is the existing **first-provider API-key** onboarding path,
+not a credential-rotation interface. It rejects another credential once configured;
+never retry it blindly after an ambiguous transport failure. `setup status` reports
+saved credential/workspace counts; rerun only the missing steps. Identity creation
+is one-time: a second `setup identity` cannot replace the owner. Existing Codex
+OAuth commands remain available separately, but are not this documented API-key
+sequence. A rejected model or workspace operation remains an error, and workspace
+registration does not initialize Git, commit files or opt into ignoring dirty
+content. Prepare/review the chosen repository first.
+
+`setup complete` checks persisted identity, credentials, workspace and all seven
+canonical model assignments before setting the existing onboarding-complete flag.
+It does not start agents or claim provider reachability after setup. API failures
+show only HTTP status, not potentially secret-bearing response bodies; no API key,
+cookie or product-session token is printed. The CLI accepts no key-valued flag,
+rejects terminal key input and does not follow redirects. Use `docker exec -i`,
+**not `-t`**, for secret input. Keys are not stored in container environment metadata.
+
+### Persistence and authority
+
+Setup calls the existing `/v1/onboarding`, `/v1/onboarding/provider/credential`,
+`/v1/agent-model-settings` and `/v1/workspace/add` handlers through the private
+`/var/lib/swarmd/local-transport/api.sock`. For non-default deployments use
+`--socket` or `SWARMD_LOCAL_TRANSPORT_SOCKET`; default discovery uses the canonical
+storage contract (including an explicit `DATA_DIR` override), not a home-directory
+fallback. Never mount/export that privileged socket to a host SDK or untrusted
+container. Access to container exec and the volumes is administrative authority.
+
+The existing stores own identity, account-scoped credentials, model assignments,
+workspace selection and V3 session state. Startup config is mode 0600 in the config
+volume. Credentials are encrypted by the canonical credential store; its private
+local key and durable database must stay together in the data volume. Local-key
+loading rejects symlinks, unsafe modes and wrong ownership. Volume directories
+are mode 0700 in the image. Encryption does not protect against someone who can
+read both the data and its local key: protect host storage/backups too.
+
+Keep these same named volumes when replacing the container. Stop the old daemon
+before starting its replacement; never run two daemons against one data volume.
+Do not delete the volumes or persist only the database while dropping the key.
+Container recreation must use the same project mount. Cache and runtime socket
+files are not identity authorities. Live persistence/recreation verification is
+still a separate qualification task.
+
+### Focused non-live checks
+
+<copy>
+cd swarmd
+GOMAXPROCS=2 go test -p 2 ./cmd/swarmctl -run '^TestSetup' -count=1 -timeout=60s
+GOMAXPROCS=2 go test -p 2 ./internal/api -run '^TestHeadlessSetupLocalIdentityBoundary$' -count=1 -timeout=90s
+</copy>
+
+These exercise real CLI parsing/Unix transport against isolated HTTP fixtures and
+real backend identity handlers against temporary storage. They are not live daemon,
+provider or SDK runs. **Still not live-qualified:** provider setup in the image,
+SDK connectivity, live agents, restart durability, npm delivery and publication.
