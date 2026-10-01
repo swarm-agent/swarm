@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { DesignArchiveButton } from './design-archive-button'
 import { desktopDesigns } from '../../runtime/desktop-design-runtime'
 import { designDownloadName, designEditBody, designRefKey, designSandbox, designSelectionBody, fetchDesignView, postDesign } from '../../session-v3/design-api'
 import { designMediaItem, designNodeId, designStatus } from '../../orchestrate/design-media-task'
@@ -16,6 +17,7 @@ export function DesignRevisionView({ item, onSelect }: { item: DesignItem; onSel
   const history = useDesignResource(resource)
   const edits = useDesignResource(editsResource)
   const project = useProjectDesigns(projectId)
+  const archivedProject = useProjectDesigns(projectId, 'archived')
   const [content, setContent] = useState<string>()
   const [error, setError] = useState('')
   const [brief, setBrief] = useState('')
@@ -34,7 +36,7 @@ export function DesignRevisionView({ item, onSelect }: { item: DesignItem; onSel
     return () => controller.abort()
   }, [session, revision, retry])
   useEffect(() => () => { if (download) URL.revokeObjectURL(download) }, [download])
-  const rows = project.data?.designs.filter(row => row.request.parent_session_id === session) ?? []
+  const rows = [...new Map([...(project.data?.designs ?? []), ...(archivedProject.data?.designs ?? [])].filter(row => row.request.parent_session_id === session).map(row => [row.request.id, row])).values()]
   const row = rows.find(row => row.request.id === item.design.requestId)
   const acceptedNotice = requestedKey && rows.find(row => row.request.client_request_id === requestedKey && edits.data?.edits.some(edit => edit.messageId === row.request.source_message_id && edit.clientRequestId === requestedKey && row.request.candidates.some(candidate => candidate.spec.base && designRefKey(candidate.spec.base) === designRefKey(edit.base))))
   async function act(action: 'edit' | 'select' | 'download') {
@@ -60,6 +62,7 @@ export function DesignRevisionView({ item, onSelect }: { item: DesignItem; onSel
     } finally { if (!controller.signal.aborted) setBusy(false) }
   }
   return <section className="w-full min-w-0 self-start space-y-3 text-white" aria-label="Design revision turns">
+    {history.data && <DesignArchiveButton key={`${projectId}:${session}:${revision.ref.artifact_id}`} session={session} reference={revision.ref} version={history.data.artifact.archive_version ?? 0} archived={history.data.artifact.archived} />}
     <h3>Viewing revision {revision.ref.revision}</h3>
     <p className="break-all text-xs">SHA256: {revision.ref.sha256}</p>
     <p className="break-all text-xs">{revision.base ? `Base: ${revision.base.artifact_id} revision ${revision.base.revision} SHA256 ${revision.base.sha256}` : 'Original request'}</p>
@@ -71,7 +74,7 @@ export function DesignRevisionView({ item, onSelect }: { item: DesignItem; onSel
       }}>Revision {next.ref.revision}{next.base ? ` ← ${next.base.revision}` : ' · original'}</button>)}
       {history.data && history.data.revisions.length < history.data.artifact.revision_count && <button disabled={history.loading} onClick={() => void desktopDesigns.moreHistory(session, revision.ref.artifact_id)}>More history</button>}
     </nav>
-    {[error, history.error, edits.error, project.error].filter(Boolean).map((value, index) => <p role="alert" key={index}>{value}</p>)}
+    {[error, history.error, edits.error, project.error, archivedProject.error].filter(Boolean).map((value, index) => <p role="alert" key={index}>{value}</p>)}
     {content === undefined ? <button onClick={() => setRetry(value => value + 1)}>Load / retry preview</button> : revision.kind === 'plan' ? <pre className="whitespace-pre-wrap break-words">{content}</pre> : <iframe title={`Design revision ${revision.ref.revision}`} sandbox={designSandbox} referrerPolicy="no-referrer" srcDoc={content} className="h-[50vh] w-full bg-white border-0" />}
     <p>Selected: {history.data?.artifact.selected?.revision ?? 'none'}. Browsing does not select.</p>
     <div className="flex flex-wrap gap-3"><button disabled={busy || !history.data} onClick={() => void act('select')}>Select this revision</button><button disabled={busy} onClick={() => void act('download')}>Prepare {revision.kind === 'plan' ? 'plan' : 'HTML'} download</button>{download && <a href={download} download={designDownloadName(revision)}>Download exact revision</a>}</div>
@@ -83,7 +86,8 @@ export function DesignRevisionView({ item, onSelect }: { item: DesignItem; onSel
       const accepted = rows.find(row => row.request.source_message_id === edit.messageId && row.request.client_request_id === edit.clientRequestId && row.request.candidates.some(candidate => candidate.spec.base && designRefKey(candidate.spec.base) === designRefKey(edit.base)))
       return <section key={edit.messageId}><p role="status">Edit from revision {edit.base.revision}: {accepted ? `accepted · ${designStatus(accepted.request.state)}` : 'edit requested · awaiting parent acceptance'}</p></section>
     })}
-    {rows.filter(row => row.request.candidates.some(candidate => candidate.spec.artifact_id === revision.ref.artifact_id || candidate.spec.base?.artifact_id === revision.ref.artifact_id)).map(row => <MediaTaskCard key={row.request.id} source="independent-design" design={row} onDesignPreview={onSelect} />)}
+    {rows.filter(row => row.request.candidates.some(candidate => candidate.spec.artifact_id === revision.ref.artifact_id || candidate.spec.base?.artifact_id === revision.ref.artifact_id)).map(row => <MediaTaskCard key={row.request.id} source="independent-design" archived={history.data?.artifact.archived} design={row} onDesignPreview={onSelect} />)}
+    {archivedProject.data?.next_cursor && <button disabled={archivedProject.loading} onClick={() => void desktopDesigns.moreProject(projectId, 'archived')}>More archived design requests</button>}
     {project.data?.next_cursor && <button disabled={project.loading} onClick={() => void desktopDesigns.moreProject(projectId)}>More design requests</button>}
   </section>
 }

@@ -1,15 +1,18 @@
 import { subscribeDesktopSessionReset } from '../../../app/api'
-import { fetchDesignCatalog, fetchDesignHistory, fetchProjectDesigns, fetchDesignEdits } from '../session-v3/design-api'
+import { archiveQueue } from './archive-queue'
+import { fetchDesignCatalog, fetchDesignHistory, fetchProjectDesigns, fetchDesignEdits, setDesignArchived, type DesignRef } from '../session-v3/design-api'
 import { DesktopDesignState, designEventSession } from '../state/desktop-design-state'
 import type { RealtimeMessage } from '../state/desktop-v3-cache-types'
 
+let authEpoch = 0
+let archiveController = new AbortController()
 let state: DesktopDesignState | undefined
 function getDesignState(): DesktopDesignState {
   // Production chunks can be cyclic. Do not construct imported classes (or read
   // the auth listener registry) until the module graph has finished evaluating.
   if (!state) {
     const created = new DesktopDesignState({ catalog: fetchDesignCatalog, history: fetchDesignHistory, project: fetchProjectDesigns, edits: fetchDesignEdits })
-    subscribeDesktopSessionReset(() => created.reset())
+    subscribeDesktopSessionReset(() => { authEpoch++; archiveController.abort(); archiveController = new AbortController(); created.reset() })
     state = created
   }
   return state
@@ -20,8 +23,19 @@ function getDesignState(): DesktopDesignState {
 export const desktopDesigns = {
   moreEdits: (session: string) => getDesignState().moreEdits(session),
   editRequests: (session: string) => getDesignState().editRequests(session),
-  project: (project: string) => getDesignState().project(project),
-  moreProject: (project: string) => getDesignState().moreProject(project),
+  archive: async (session: string, ref: DesignRef, version: number, archived: boolean, key: string) => {
+    const current = getDesignState()
+    const epoch = authEpoch
+    const signal = archiveController.signal
+    const receipt = await archiveQueue.run(JSON.stringify([epoch, 'design', session, ref.artifact_id]), () => {
+      if (signal.aborted) throw new Error('Account changed')
+      return setDesignArchived(session, ref, version, archived, key, signal)
+    })
+    if (epoch !== authEpoch) throw new Error('Account changed')
+    current.acceptArchive(session, receipt)
+  },
+  project: (project: string, view: 'active' | 'archived' = 'active') => getDesignState().project(project, view),
+  moreProject: (project: string, view: 'active' | 'archived' = 'active') => getDesignState().moreProject(project, view),
   invalidateProject: (project?: string) => state?.invalidateProject(project),
   catalog: (session: string) => getDesignState().catalog(session),
   history: (session: string, artifact: string) => getDesignState().history(session, artifact),

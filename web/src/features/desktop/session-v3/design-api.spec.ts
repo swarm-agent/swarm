@@ -62,7 +62,34 @@ test('durable edit messages retain exact bases without manufacturing accepted st
   globalThis.fetch = async (input, init) => { url = String(input); cache = init?.cache; return Response.json({ designs: [], next_cursor: 'opaque/two' }) }
   try {
     assert.equal((await fetchProjectDesigns('p /', 'opaque/one')).next_cursor, 'opaque/two')
-    assert.equal(url, '/v3/projects/p%20%2F/designs?limit=20&after=opaque%2Fone')
+    assert.equal(url, '/v3/projects/p%20%2F/designs?view=active&limit=20&after=opaque%2Fone')
     assert.equal(cache, 'no-store')
+  } finally { globalThis.fetch = original }
+})
+
+// Purpose: setDesignArchived is the independent artifact HTTP boundary. Archive CAS
+// must use its own version and exact historical ref; conflict or wrong identity
+// cannot become a success receipt or trigger a parent-session archive.
+test('archive sends exact artifact CAS and rejects conflict and mismatched receipts', async () => {
+  const { setDesignArchived, fetchProjectDesigns } = await import('./design-api')
+  const original = globalThis.fetch
+  const calls: Array<{ url: string; body: any }> = []
+  let status = 200; let id = 'design'
+  globalThis.fetch = async (url, init) => {
+    calls.push({ url: String(url), body: init?.body ? JSON.parse(String(init.body)) : undefined })
+    return status === 409 ? new Response('stale archive', { status }) : Response.json({ artifact: { id, archived: true, archive_version: 8 }, designs: [], next_cursor: '' })
+  }
+  try {
+    await setDesignArchived('origin', ref(1), 7, true, 'stable-key')
+    assert.equal(calls[0].url, '/v3/sessions/origin/designs/artifacts/design')
+    assert.deepEqual(calls[0].body, { action: 'archive', ref: ref(1), expected_version: 7, idempotency_key: 'stable-key' })
+    status = 409
+    await assert.rejects(setDesignArchived('origin', ref(1), 7, true, 'stable-key'), /409/)
+    assert.deepEqual(calls[1], calls[0])
+    status = 200; id = 'wrong'
+    await assert.rejects(setDesignArchived('origin', ref(1), 7, true, 'stable-key'), /Invalid design archive receipt/)
+    await fetchProjectDesigns('p', '', undefined, 'archived')
+    assert.match(calls[3].url, /view=archived/)
+    assert.equal(calls.length, 4)
   } finally { globalThis.fetch = original }
 })

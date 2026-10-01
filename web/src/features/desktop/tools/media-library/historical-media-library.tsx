@@ -504,7 +504,7 @@ export function HistoricalMediaLibrary({
       )}
       {/* Main Content Area */}
       <div className="media-library-content flex-1 min-h-0 min-w-0 overflow-y-auto px-4 py-6 sm:px-8" data-thumbnail-size={thumbnailSize}>
-        {projectId && <div className="space-y-3 mb-4"><DesignMediaTasks projectId={projectId} onPreview={setActiveItem} /></div>}
+        {projectId && <div className="space-y-3 mb-4"><DesignMediaTasks projectId={projectId} onPreview={setActiveItem} /><details><summary>Archived designs</summary><DesignMediaTasks projectId={projectId} archived onPreview={setActiveItem} /></details></div>}
         {loading ? (
           <div className="flex h-64 flex-col items-center justify-center gap-3 text-[var(--app-text-muted)]">
             <Loader2 className="size-6 animate-spin text-[var(--app-primary)]" />

@@ -1,4 +1,4 @@
-import type { DesignCatalog, DesignHistory, ProjectDesignCatalog, DesignEditPage } from '../session-v3/design-api'
+import type { DesignCatalog, DesignHistory, ProjectDesignCatalog, DesignEditPage, DesignArtifact, DesignRequest } from '../session-v3/design-api'
 
 export interface DesignResourceSnapshot<T> { data?: T; loading: boolean; error?: string }
 /** One request at a time; invalidations during reads coalesce at completion, not on a timer. */
@@ -11,6 +11,7 @@ export class DesignResource<T> {
   private disposed = false
   private controller?: AbortController
   constructor(private readonly load: (signal: AbortSignal) => Promise<T>) {}
+  update = (transform: (data: T) => T) => { if (this.snapshot.data) this.publish({ ...this.snapshot, data: transform(this.snapshot.data) }) }
   getSnapshot = () => this.snapshot
   subscribe = (listener: () => void) => {
     this.listeners.add(listener)
@@ -54,12 +55,26 @@ export class DesignResource<T> {
 
 export interface DesignDataAPI {
   edits?: (session: string, before: number, signal?: AbortSignal) => Promise<DesignEditPage>
-  project?: (project: string, after: string, signal?: AbortSignal) => Promise<ProjectDesignCatalog>
+  project?: (project: string, after: string, signal?: AbortSignal, view?: 'active' | 'archived') => Promise<ProjectDesignCatalog>
   catalog: (session: string, after: string, signal?: AbortSignal) => Promise<DesignCatalog>
   history: (session: string, artifact: string, after: number, signal?: AbortSignal) => Promise<DesignHistory>
 }
 /** Canonical design read models. Viewed revisions remain local UI navigation, never selection. */
 export class DesktopDesignState {
+  private archiveReceipts = new Map<string, DesignArtifact>()
+  private applyRequest = (session: string, request: DesignRequest): DesignRequest => ({ ...request, candidates: request.candidates.map(candidate => {
+    const receipt = this.archiveReceipts.get(JSON.stringify([session, candidate.spec.artifact_id]))
+    return receipt && (receipt.archive_version ?? 0) >= (candidate.archive_version ?? 0) ? { ...candidate, archived: receipt.archived, archive_version: receipt.archive_version } : candidate
+  }) })
+  acceptArchive(session: string, artifact: DesignArtifact) {
+    const key = JSON.stringify([session, artifact.id])
+    if ((this.archiveReceipts.get(key)?.archive_version ?? -1) > (artifact.archive_version ?? 0)) return
+    this.archiveReceipts.set(key, artifact)
+    for (const entry of this.projects.values()) entry.resource.update(data => ({ ...data, designs: data.designs.map(row => ({ ...row, request: this.applyRequest(row.request.parent_session_id, row.request) as typeof row.request })) }))
+    this.catalogs.get(session)?.resource.update(data => ({ ...data, requests: data.requests.map(request => this.applyRequest(session, request)) }))
+    for (const [projectKey, entry] of this.projects) if (entry.resource.active && (JSON.parse(projectKey)[1] === 'archived' || !artifact.archived)) void entry.resource.refresh()
+    this.histories.get(key)?.resource.update(data => ({ ...data, artifact: { ...data.artifact, archived: artifact.archived, archive_version: artifact.archive_version } }))
+  }
   private edits = new Map<string, { pages: number; resource: DesignResource<DesignEditPage> }>()
   private projects = new Map<string, { resource: DesignResource<ProjectDesignCatalog>; pages: number }>()
   private catalogs = new Map<string, { resource: DesignResource<DesignCatalog>; pages: number }>()
@@ -67,6 +82,7 @@ export class DesktopDesignState {
   constructor(private readonly api: DesignDataAPI) {}
   /** Auth reset preserves subscribed resource identities, but never their private bytes. */
   reset() {
+    this.archiveReceipts.clear()
     for (const entry of this.edits.values()) { entry.pages = 1; entry.resource.reset() }
     for (const entry of this.projects.values()) { entry.pages = 1; entry.resource.reset() }
     for (const entry of this.catalogs.values()) { entry.pages = 1; entry.resource.reset() }
@@ -103,8 +119,9 @@ export class DesktopDesignState {
     return entry.resource
   }
   moreEdits(session: string) { const resource = this.editRequests(session); this.edits.get(session)!.pages++; return resource.refresh() }
-  project(project: string) {
-    let entry = this.projects.get(project)
+  project(project: string, view: 'active' | 'archived' = 'active') {
+    const key = JSON.stringify([project, view])
+    let entry = this.projects.get(key)
     if (!entry) {
       const created: { pages: number; resource: DesignResource<ProjectDesignCatalog> } = { pages: 1, resource: new DesignResource<ProjectDesignCatalog>(async signal => {
         if (!this.api.project) throw new Error('Project design discovery is unavailable')
@@ -114,7 +131,7 @@ export class DesktopDesignState {
         for (let page = 0; page < created.pages; page++) {
           if (signal.aborted) throw new Error('Design discovery cancelled')
           visited.add(cursor)
-          const result = await this.api.project(project, cursor, signal)
+          const result = await this.api.project(project, cursor, signal, view)
           for (const row of result.designs) {
             const key = JSON.stringify([row.request.parent_session_id, row.request.id])
             const previous = designs.get(key)
@@ -124,17 +141,17 @@ export class DesktopDesignState {
           if (!cursor) break
           if (visited.has(cursor)) throw new Error('Project design cursor did not advance')
         }
-        return { designs: [...designs.values()], next_cursor: cursor }
+        return { designs: [...designs.values()].map(row => ({ ...row, request: this.applyRequest(row.request.parent_session_id, row.request) as typeof row.request })), next_cursor: cursor }
       }) }
       entry = created
-      this.projects.set(project, entry)
+      this.projects.set(key, entry)
       this.prune(this.projects)
     }
     return entry.resource
   }
-  moreProject(project: string) { const resource = this.project(project); this.projects.get(project)!.pages++; return resource.refresh() }
+  moreProject(project: string, view: 'active' | 'archived' = 'active') { const resource = this.project(project, view); this.projects.get(JSON.stringify([project, view]))!.pages++; return resource.refresh() }
   invalidateProject(project?: string) {
-    for (const [id, entry] of this.projects) if ((!project || project === id) && entry.resource.active) {
+    for (const [id, entry] of this.projects) if ((!project || project === JSON.parse(id)[0]) && entry.resource.active) {
       const sessions = new Set(entry.resource.getSnapshot().data?.designs.map(row => row.request.parent_session_id))
       for (const session of sessions) this.invalidate(session)
       void entry.resource.refresh()
@@ -153,7 +170,7 @@ export class DesktopDesignState {
           cursor = result.next_cursor
           if (!cursor) break
         }
-        return { requests: [...new Map(requests.map(row => [row.id, row])).values()], next_cursor: cursor }
+        return { requests: [...new Map(requests.map(row => [row.id, row])).values()].map(row => this.applyRequest(session, row)), next_cursor: cursor }
       }) }
       entry = created
       this.catalogs.set(session, entry)
@@ -176,7 +193,8 @@ export class DesktopDesignState {
           last = next.revisions
           revisions.push(...last)
         }
-        return { artifact: first.artifact, revisions }
+        const receipt = this.archiveReceipts.get(key)
+        return { artifact: receipt && (receipt.archive_version ?? 0) >= (first.artifact.archive_version ?? 0) ? { ...first.artifact, archived: receipt.archived, archive_version: receipt.archive_version } : first.artifact, revisions }
       }) }
       entry = created
       this.histories.set(key, entry)

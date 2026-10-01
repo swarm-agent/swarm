@@ -89,6 +89,8 @@ import { HistoricalMediaLibrary, MediaViewerModal, type MediaLibraryItem } from 
 import type { MediaGenerationJob, MediaGenerationRequest, MediaGenerationSettings } from '../tools/media-library/media-generation'
 import type { QuickRouteMode } from '../tools/media-library/media-viewer-modal'
 import { MediaTaskCard } from './media-task-card'
+import { archiveQueue } from '../runtime/archive-queue'
+import { subscribeDesktopSessionReset } from '../../../app/api'
 import { DesignMediaTasks, useProjectDesigns } from '../tools/media-library/design-media'
 import { ORCHESTRATE_THEMES } from './orchestrate-themes'
 import { TaskCardHandoff, TaskCardAgents, TaskCardOutputs, TaskExpectedOutputs } from './task-card-details'
@@ -3395,7 +3397,11 @@ export function OrchestrateView({
   const [selectedTag] = useState<string>('all')
   const [markedTaskIds, setMarkedTaskIds] = useState<Set<string>>(() => new Set())
   const [managementBusy, setManagementBusy] = useState(false)
-  const managementBusyRef = useRef(false)
+  const managementPending = useRef(new Set<string>())
+  const managementEpoch = useRef(0)
+  useEffect(() => () => { managementEpoch.current++ }, [])
+  useEffect(() => { managementEpoch.current++; managementPending.current.clear(); setManagementBusy(false); setManagementMessage(''); setTaskActionErrors({}) }, [selectedProject?.id])
+  useEffect(() => subscribeDesktopSessionReset(() => { managementEpoch.current++; managementPending.current.clear(); setManagementBusy(false); setManagementMessage(''); setTaskActionErrors({}) }), [])
   const [managementMessage, setManagementMessage] = useState('')
   const [archivedOpen, setArchivedOpen] = useState(false)
   const [archivedTasks, setArchivedTasks] = useState<RunningTask[]>([])
@@ -5108,48 +5114,70 @@ export function OrchestrateView({
     }
   }
 
+  const managementNavigation = useRef({ activeTaskId, selectedTaskId })
+  managementNavigation.current = { activeTaskId, selectedTaskId }
   // Every management mutation is guarded by the stored revision. Never remove a task optimistically.
   const manageTasks = async (rows: RunningTask[], action: 'archive' | 'delete') => {
     const projectId = selectedProject?.id
-    if (!projectId || managementBusyRef.current || rows.length === 0) return
+    if (!projectId || rows.length === 0) return
+    const epoch = managementEpoch.current
+    const current = () => epoch === managementEpoch.current && selectedProjectRef.current === projectId
+    rows = rows.filter(row => !managementPending.current.has(row.id))
+    if (!rows.length) return
     if (action === 'delete' && !window.confirm(`Permanently delete ${rows.length} selected task${rows.length === 1 ? '' : 's'}? This cannot be undone. Only archived, unlaunched tasks can be deleted; launched tasks and their work are retained.`)) return
-    managementBusyRef.current = true
+    rows.forEach(row => managementPending.current.add(row.id))
+    setTaskActionErrors(prev => ({ ...prev, ...Object.fromEntries(rows.map(row => [row.id, action === 'archive' ? 'Archiving…' : 'Deleting…'])) }))
     setManagementBusy(true)
     setManagementMessage('')
     const failures: string[] = []
     const succeeded: string[] = []
-    // Sequential requests bound fan-out and retain a per-record failure receipt.
-    for (const row of rows) {
+    await Promise.all(rows.map(async row => {
       try {
+        await archiveQueue.run(JSON.stringify(['task', epoch, projectId, row.id]), async () => {
+        if (!current()) throw new Error('Project or account changed')
         let revision = row.revision
         if (typeof revision !== 'number' || revision <= 0) throw new Error('Missing task revision; refresh and retry')
         if (action === 'delete') {
           if (row.sessionId || row.taskProgramId || row.planBinding) {
             throw new Error('Launched task has retained execution; archive instead of deleting')
           }
-          const archived = await requestJson<{ task: { revision: number } }>(`/v3/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(row.id)}/archive`, {
+          const archived = await requestJson<{ task: { id: string; revision: number; archived: boolean } }>(`/v3/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(row.id)}/archive`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ revision }),
           })
+          if (!current()) return
+          if (archived.task.id !== row.id) throw new Error('Task archive identity mismatch')
+          desktopProjects.archiveReceipt(projectId, archived.task)
           revision = archived.task.revision
           await requestJson(`/v3/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(row.id)}?revision=${revision}`, { method: 'DELETE' })
         } else {
-          await requestJson(`/v3/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(row.id)}/archive`, {
+          const archived = await requestJson<{ task: { id: string; revision: number; archived: boolean } }>(`/v3/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(row.id)}/archive`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ revision }),
           })
+          if (!current()) return
+          if (archived.task.id !== row.id) throw new Error('Task archive identity mismatch')
+          desktopProjects.archiveReceipt(projectId, archived.task)
         }
+        })
+        if (!current()) return
         succeeded.push(row.id)
+        setTaskActionErrors(prev => ({ ...prev, [row.id]: '' }))
+        setMarkedTaskIds(prev => new Set([...prev].filter(id => id !== row.id)))
+        if (managementNavigation.current.activeTaskId === row.id) handleBackToOrchestrator()
+        if (managementNavigation.current.selectedTaskId === row.id) setSelectedTaskId('')
       } catch (err) {
-        failures.push(`${row.title}: ${err instanceof Error ? err.message : String(err)}`)
+        if (!current()) return
+        const message = err instanceof Error ? err.message : String(err)
+        failures.push(`${row.title}: ${message}`)
+        setTaskActionErrors(prev => ({ ...prev, [row.id]: message }))
+      } finally {
+        if (current()) { managementPending.current.delete(row.id); setManagementBusy(managementPending.current.size > 0) }
       }
-    }
+    }))
+    if (!current()) return
     setManagementMessage(`${succeeded.length} ${action === 'archive' ? 'archived' : 'deleted'}, ${failures.length} failed.${failures.length ? ` Retry after refresh: ${failures.join('; ')}` : ''}`)
     setMarkedTaskIds(prev => new Set([...prev].filter(id => !succeeded.includes(id))))
-    desktopProjects.invalidate(projectId)
     if (archivedOpen) void loadArchivedTasks(projectId)
-    if (action === 'archive' && activeTaskId && succeeded.includes(activeTaskId)) handleBackToOrchestrator()
-    if (selectedTaskId && succeeded.includes(selectedTaskId)) setSelectedTaskId('')
-    managementBusyRef.current = false
-    setManagementBusy(false)
+
   }
 
   const handleDeleteTask = async (taskId: string) => {
@@ -6556,7 +6584,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                 search={searchQuery} onSearch={setSearchQuery} source={taskSourceFilter} onSource={setTaskSourceFilter}
                 status={statusFilter} onStatus={setStatusFilter}
                 counts={{ all: filteredBySourceTasks.length, running: filteredBySourceRunningCount, needs_review: filteredBySourceReviewCount, queued: filteredBySourceQueuedCount, completed: filteredBySourceCompletedCount }}
-                total={filteredTasks.length} selected={markedRows.length} busy={managementBusy}
+                total={filteredTasks.length} selected={markedRows.length} busy={markedRows.length > 0 && markedRows.every(row => managementPending.current.has(row.id))}
                 onSelectAll={() => setMarkedTaskIds(new Set(filteredTasks.map(row => row.id)))}
                 onClear={() => setMarkedTaskIds(new Set())}
                 onArchive={() => void manageTasks(markedRows, 'archive')} onDelete={() => void manageTasks(markedRows, 'delete')}
@@ -6567,6 +6595,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
               {archivedOpen && <div className="fixed inset-0 z-[100] bg-black/70 flex items-center justify-center p-4" onMouseDown={e => { if (e.target === e.currentTarget) { setArchivedOpen(false); archivedTriggerRef.current?.focus() } }}>
                 <section role="dialog" aria-modal="true" aria-labelledby="archived-tasks-title" className="swarm-local-dialog w-full max-w-xl max-h-[85vh] overflow-hidden flex flex-col rounded-xl border border-slate-700 bg-[#0a101e] p-4 text-white shadow-2xl">
                   <div className="flex items-center justify-between gap-3"><h2 id="archived-tasks-title" className="text-base font-semibold">Archived tasks</h2><button type="button" ref={archivedCloseRef} onClick={() => { setArchivedOpen(false); archivedTriggerRef.current?.focus() }} aria-label="Close archived tasks">Close</button></div>
+                  {selectedProject && <div className="overflow-y-auto min-h-0"><DesignMediaTasks projectId={selectedProject.id} archived onPreview={item => { setArchivedOpen(false); setActiveMediaViewerItem(item) }} /></div>}
                   <p className="text-xs text-slate-400 my-2">Archived tasks in this project are read-only. Their sessions, branches and code remain untouched.</p>
                   {archivedLoading ? <p role="status">Loading archived tasks…</p> : archivedError ? <div role="alert">{archivedError} <button type="button" onClick={() => selectedProjectId && void loadArchivedTasks(selectedProjectId)}>Retry</button></div> : archivedTasks.length === 0 ? <p>No archived tasks.</p> : <ul className="overflow-y-auto min-h-0 space-y-2">{archivedTasks.map(row => <li key={row.id} className="p-3 rounded border border-slate-700"><strong className="block text-sm">{row.title}</strong><span className="text-xs text-slate-400">{row.status} · {row.workerName || 'Task'}</span></li>)}</ul>}
                 </section>

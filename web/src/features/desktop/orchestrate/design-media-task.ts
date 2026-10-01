@@ -25,6 +25,7 @@ export function designMediaItem(row: ProjectDesign, candidate: number, revision:
 export function designReadyItems(rows: readonly ProjectDesign[]): MediaLibraryItem[] {
   const items = new Map<string, MediaLibraryItem>()
   for (const row of rows) row.request.candidates.forEach((candidate, index) => {
+    if (candidate.archived) return
     const revision = readyDesignRevision(candidate)
     if (revision) { const item = designMediaItem(row, index, revision); items.set(item.id, item) }
   })

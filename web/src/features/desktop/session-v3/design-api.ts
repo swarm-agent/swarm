@@ -28,13 +28,14 @@ export interface DesignAttempt {
   validation?: { passed: boolean; code: string; preview?: DesignPreviewRef }
 }
 export interface DesignCandidate {
+  archived?: boolean; archive_version?: number
   spec: { artifact_id: string; kind: string; base?: DesignRef; plan_source?: DesignRef }
   state: string; failure_reason?: string; router_alert?: string; attempts?: DesignAttempt[]
 }
 export interface DesignRequest { id: string; parent_session_id?: string; revision?: number; source_message_id?: string; client_request_id?: string; state: string; candidates: DesignCandidate[] }
 export interface ProjectDesign { project_id: string; task_id?: string; attempt_id?: string; title: string; request: DesignRequest & { parent_session_id: string } }
 export interface ProjectDesignCatalog { designs: ProjectDesign[]; next_cursor: string }
-export interface DesignArtifact { id: string; kind: string; revision_count: number; selection_version: number; selected?: DesignRef }
+export interface DesignArtifact { archived?: boolean; archive_version?: number; id: string; kind: string; revision_count: number; selection_version: number; selected?: DesignRef }
 export interface DesignRevision { ref: DesignRef; request_id?: string; candidate?: number; kind: string; base?: DesignRef; plan_source?: DesignRef; attempt: DesignAttempt }
 export interface DesignHistory { artifact: DesignArtifact; revisions: DesignRevision[] }
 export interface DesignCatalog { requests: DesignRequest[]; next_cursor: string }
@@ -48,8 +49,8 @@ async function checked(url: string, init?: RequestInit) {
   if (!response.ok) throw new Error(`${response.status}: ${await readErrorMessage(response)}`)
   return response
 }
-export async function fetchProjectDesigns(project: string, after = '', signal?: AbortSignal): Promise<ProjectDesignCatalog> {
-  const value = await (await checked(`/v3/projects/${encodeURIComponent(project)}/designs?limit=20&after=${encodeURIComponent(after)}`, { signal })).json() as ProjectDesignCatalog
+export async function fetchProjectDesigns(project: string, after = '', signal?: AbortSignal, view: 'active' | 'archived' = 'active'): Promise<ProjectDesignCatalog> {
+  const value = await (await checked(`/v3/projects/${encodeURIComponent(project)}/designs?view=${view}&limit=20&after=${encodeURIComponent(after)}`, { signal })).json() as ProjectDesignCatalog
   return { ...value, designs: value.designs ?? [] }
 }
 export async function fetchDesignCatalog(session: string, after = '', signal?: AbortSignal): Promise<DesignCatalog> {
@@ -68,6 +69,12 @@ export function designSelectionBody(ref: DesignRef, artifact: DesignArtifact, ke
 }
 export async function postDesign(session: string, ref: DesignRef, body: object, signal?: AbortSignal) {
   return checked(artifactURL(session, ref.artifact_id), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal })
+}
+export async function setDesignArchived(session: string, ref: DesignRef, expectedVersion: number, archived: boolean, key: string, signal?: AbortSignal): Promise<DesignArtifact> {
+  const response = await postDesign(session, ref, { action: archived ? 'archive' : 'restore', ref, expected_version: expectedVersion, idempotency_key: key }, signal)
+  const { artifact } = await response.json() as { artifact: DesignArtifact }
+  if (artifact.id !== ref.artifact_id || Boolean(artifact.archived) !== archived || typeof artifact.archive_version !== 'number') throw new Error('Invalid design archive receipt')
+  return artifact
 }
 export async function fetchDesignView(session: string, revision: DesignRevision, signal?: AbortSignal) {
   // Only the server-authored PNG wrapper may enter srcDoc. Authored HTML is download-only.
