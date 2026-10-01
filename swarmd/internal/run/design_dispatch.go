@@ -170,7 +170,9 @@ func (s *Service) designProviderRequest(p store.DesignPrincipal, r store.DesignR
 			return provideriface.Request{}, "", store.ErrDesignConflict
 		}
 		failed, err := s.sessions.DesignStore().ReadDesignResponse(p, *previous.Output)
-		if err != nil { return provideriface.Request{}, "", err }
+		if err != nil {
+			return provideriface.Request{}, "", err
+		}
 		payload["repair"] = map[string]any{"failed_output_ref": failed.Ref, "failed_output": string(failed.Content), "diagnostic_code": previous.Validation.Code, "instruction": "Return a complete corrected output for the original objective."}
 	}
 	text, err := json.Marshal(payload)
@@ -189,7 +191,9 @@ func (s *Service) designProviderRequest(p store.DesignPrincipal, r store.DesignR
 	return req, child.Preference.Provider, nil
 }
 func (s *Service) executeDesignAttempt(ctx context.Context, p store.DesignPrincipal, id string, candidate, attempt int) {
-	if attempt < 1 || attempt > 3 { return }
+	if attempt < 1 || attempt > 3 {
+		return
+	}
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
 	db := s.sessions.DesignStore()
@@ -203,8 +207,12 @@ func (s *Service) executeDesignAttempt(ctx context.Context, p store.DesignPrinci
 	a, lease, err := s.AllocateDesignChild(ctx, p, id, r.Revision, candidate, attempt)
 	for retry := 0; errors.Is(err, store.ErrDesignConflict) && retry < 31 && ctx.Err() == nil; retry++ {
 		r, err = db.GetDesignRequest(p, id)
-		if err != nil { break }
-		if len(r.Candidates[candidate].Attempts) != attempt-1 || (r.Candidates[candidate].State != store.DesignQueued && r.Candidates[candidate].State != store.DesignFailed) { return }
+		if err != nil {
+			break
+		}
+		if len(r.Candidates[candidate].Attempts) != attempt-1 || (r.Candidates[candidate].State != store.DesignQueued && r.Candidates[candidate].State != store.DesignFailed) {
+			return
+		}
 		a, lease, err = s.AllocateDesignChild(ctx, p, id, r.Revision, candidate, attempt)
 	}
 	if err != nil {
@@ -336,7 +344,9 @@ func (s *Service) finishDesign(p store.DesignPrincipal, id string, candidate int
 		// Recovery may publish only exact persisted validation success. No provider replay.
 		if len(content) == 0 && a.Output != nil && a.Validation != nil && a.Validation.Passed && (c.State != store.DesignCancelRequested || intent.Status == store.V3RunIntentCompleted) {
 			retained, readErr := db.ReadDesignResponse(p, *a.Output)
-			if readErr != nil { return readErr }
+			if readErr != nil {
+				return readErr
+			}
 			content, state = retained.Content, store.DesignSucceeded
 		}
 		// A canonical terminal outcome wins a later cancellation request. In

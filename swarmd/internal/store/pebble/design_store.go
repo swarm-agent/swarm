@@ -87,20 +87,20 @@ type DesignSubmit struct {
 // canonical child state and records outcomes here. Reopen never fabricates success
 // or silently retries; interrupted attempts require an explicit fresh child attempt.
 type DesignAttempt struct {
-	EvidenceRequired bool                  `json:"evidence_required,omitempty"`
-	Provider         string                `json:"provider,omitempty"`
-	Model            string                `json:"model,omitempty"`
-	Thinking         string                `json:"thinking,omitempty"`
-	Output           *DesignOutputRef      `json:"output,omitempty"`
-	Usage            *DesignResponseUsage  `json:"usage,omitempty"`
-	Validation       *DesignValidation     `json:"validation,omitempty"`
-	RouterAlert    string     `json:"router_alert,omitempty"`
-	Number         int        `json:"number"`
-	ChildSessionID string     `json:"child_session_id"`
-	RunID          string     `json:"run_id"`
-	State          string     `json:"state"`
-	ReasonCode     string     `json:"reason_code,omitempty"`
-	Result         *DesignRef `json:"result,omitempty"`
+	EvidenceRequired bool                 `json:"evidence_required,omitempty"`
+	Provider         string               `json:"provider,omitempty"`
+	Model            string               `json:"model,omitempty"`
+	Thinking         string               `json:"thinking,omitempty"`
+	Output           *DesignOutputRef     `json:"output,omitempty"`
+	Usage            *DesignResponseUsage `json:"usage,omitempty"`
+	Validation       *DesignValidation    `json:"validation,omitempty"`
+	RouterAlert      string               `json:"router_alert,omitempty"`
+	Number           int                  `json:"number"`
+	ChildSessionID   string               `json:"child_session_id"`
+	RunID            string               `json:"run_id"`
+	State            string               `json:"state"`
+	ReasonCode       string               `json:"reason_code,omitempty"`
+	Result           *DesignRef           `json:"result,omitempty"`
 }
 
 type DesignCandidate struct {
@@ -560,6 +560,22 @@ func (s *Store) RecordDesignAttempt(p DesignPrincipal, requestID string, in Desi
 		}
 		c.Attempts = append(c.Attempts, DesignAttempt{Number: len(c.Attempts) + 1, ChildSessionID: in.ChildSessionID, RunID: in.RunID, State: DesignRunning})
 	case DesignCancelRequested:
+		// A repair may be admitted after a failed attempt. Cancellation in that
+		// gap must fence the next allocation without rewriting failed provenance.
+		if c.State == DesignFailed {
+			if len(c.Attempts) == 0 {
+				if in.ChildSessionID != "" || in.RunID != "" {
+					return zero, ErrDesignInvalid
+				}
+			} else {
+				a := c.Attempts[len(c.Attempts)-1]
+				if a.ChildSessionID != in.ChildSessionID || a.RunID != in.RunID {
+					return zero, ErrDesignConflict
+				}
+			}
+			c.State = DesignCancelled
+			break
+		}
 		if c.State != DesignQueued && c.State != DesignRunning {
 			return zero, ErrDesignConflict
 		}
