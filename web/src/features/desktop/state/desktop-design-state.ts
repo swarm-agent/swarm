@@ -7,22 +7,44 @@ export class DesignResource<T> {
   private listeners = new Set<() => void>()
   private pending = false
   private flight?: Promise<void>
+  private generation = 0
+  private disposed = false
   constructor(private readonly load: () => Promise<T>) {}
   getSnapshot = () => this.snapshot
-  subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener) } }
+  subscribe = (listener: () => void) => {
+    this.listeners.add(listener)
+    return () => {
+      this.listeners.delete(listener)
+      if (!this.active) this.reset()
+    }
+  }
+  /** Fence every outstanding response before dropping private metadata. */
+  reset = () => {
+    this.generation++
+    this.pending = false
+    this.flight = undefined
+    this.publish({ loading: false })
+  }
+  dispose = () => { this.disposed = true; this.reset() }
   get active() { return this.listeners.size > 0 }
   private publish(snapshot: DesignResourceSnapshot<T>) { this.snapshot = snapshot; this.listeners.forEach(listener => listener()) }
   refresh = (): Promise<void> => {
+    if (this.disposed) return Promise.resolve()
     this.pending = true
     if (this.flight) return this.flight
+    const generation = this.generation
     this.flight = Promise.resolve().then(async () => {
-      while (this.pending) {
+      while (generation === this.generation && this.pending) {
         this.pending = false
         this.publish({ ...this.snapshot, loading: true, error: undefined })
-        try { this.publish({ data: await this.load(), loading: false }) }
-        catch (error) { this.publish({ ...this.snapshot, loading: false, error: error instanceof Error ? error.message : String(error) }) }
+        try {
+          const data = await this.load()
+          if (generation === this.generation) this.publish({ data, loading: false })
+        } catch (error) {
+          if (generation === this.generation) this.publish({ loading: false, error: error instanceof Error ? error.message : String(error) })
+        }
       }
-    }).finally(() => { this.flight = undefined })
+    }).finally(() => { if (generation === this.generation) this.flight = undefined })
     return this.flight
   }
 }
@@ -36,6 +58,19 @@ export class DesktopDesignState {
   private catalogs = new Map<string, { resource: DesignResource<DesignCatalog>; pages: number }>()
   private histories = new Map<string, { session: string; resource: DesignResource<DesignHistory>; pages: number }>()
   constructor(private readonly api: DesignDataAPI) {}
+  /** Auth reset preserves subscribed resource identities, but never their private bytes. */
+  reset() {
+    for (const entry of this.catalogs.values()) { entry.pages = 1; entry.resource.reset() }
+    for (const entry of this.histories.values()) { entry.pages = 1; entry.resource.reset() }
+  }
+  private prune<T>(entries: Map<string, { resource: DesignResource<T> }>) {
+    // Active views are never evicted; inactive metadata is bounded independently.
+    const inactive = [...entries].filter(([, entry]) => !entry.resource.active)
+    for (const [key, entry] of inactive.slice(0, Math.max(0, inactive.length - 32))) {
+      entry.resource.dispose()
+      entries.delete(key)
+    }
+  }
   catalog(session: string) {
     let entry = this.catalogs.get(session)
     if (!entry) {
@@ -53,6 +88,7 @@ export class DesktopDesignState {
       }) }
       entry = created
       this.catalogs.set(session, entry)
+      this.prune(this.catalogs)
     }
     return entry.resource
   }
@@ -75,6 +111,7 @@ export class DesktopDesignState {
       }) }
       entry = created
       this.histories.set(key, entry)
+      this.prune(this.histories)
     }
     return entry.resource
   }
