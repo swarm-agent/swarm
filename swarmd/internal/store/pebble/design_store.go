@@ -75,6 +75,7 @@ type DesignCandidateSpec struct {
 // DesignSubmit deliberately has no output/HTML field. Selected source examples
 // are immutable input snapshots; only PublishDesignRevision accepts output bytes.
 type DesignSubmit struct {
+	canonical bool
 	RequestID       string                  `json:"request_id"`
 	IdempotencyKey  string                  `json:"idempotency_key"`
 	ParentSessionID string                  `json:"parent_session_id"`
@@ -112,6 +113,7 @@ type DesignCandidate struct {
 }
 
 type DesignRequest struct {
+	Canonical bool `json:"canonical,omitempty"`
 	Owner           DesignPrincipal   `json:"owner"`
 	ID              string            `json:"id"`
 	ParentSessionID string            `json:"parent_session_id"`
@@ -138,6 +140,7 @@ type DesignRevision struct {
 	Candidate int           `json:"candidate"`
 	Attempt   DesignAttempt `json:"attempt"`
 	Base      *DesignRef    `json:"base,omitempty"`
+	PlanSource *DesignRef   `json:"plan_source,omitempty"`
 	Content   []byte        `json:"content"`
 }
 
@@ -389,7 +392,7 @@ func (s *Store) submitDesignRequestInBatch(p DesignPrincipal, in DesignSubmit, b
 	if err := s.admitDesignRequest(p); err != nil {
 		return zero, err
 	}
-	r := DesignRequest{Owner: p, ID: in.RequestID, ParentSessionID: in.ParentSessionID, ParentRunID: in.ParentRunID, Revision: 1, State: DesignQueued}
+	r := DesignRequest{Canonical: in.canonical, Owner: p, ID: in.RequestID, ParentSessionID: in.ParentSessionID, ParentRunID: in.ParentRunID, Revision: 1, State: DesignQueued}
 	artifacts := make([]DesignArtifact, 0, len(in.Candidates))
 	seen := map[string]bool{}
 	for _, c := range in.Candidates {
@@ -401,6 +404,7 @@ func (s *Store) submitDesignRequestInBatch(p DesignPrincipal, in DesignSubmit, b
 			if c.Kind != DesignHTML || c.Operation != DesignGenerate {
 				return zero, ErrDesignInvalid
 			}
+			if _, err := s.RequireDesignArtifactSession(p, in.ParentSessionID, c.PlanSource.ArtifactID); err != nil { return zero, err }
 			plan, err := s.ReadDesignRevision(p, *c.PlanSource)
 			if err != nil {
 				return zero, err
@@ -425,6 +429,7 @@ func (s *Store) submitDesignRequestInBatch(p DesignPrincipal, in DesignSubmit, b
 			if c.Base == nil || c.Base.ArtifactID != c.ArtifactID {
 				return zero, ErrDesignInvalid
 			}
+			if _, err := s.RequireDesignArtifactSession(p, in.ParentSessionID, c.Base.ArtifactID); err != nil { return zero, err }
 			base, err := s.ReadDesignRevision(p, *c.Base)
 			if err != nil {
 				return zero, err
@@ -445,6 +450,7 @@ func (s *Store) submitDesignRequestInBatch(p DesignPrincipal, in DesignSubmit, b
 	if err := designSet(b, designKey(p, "request", r.ID), r); err != nil {
 		return zero, err
 	}
+	if err := designSet(b, designKey(p, "session", r.ParentSessionID+"/"+r.ID), r.ID); err != nil { return zero, err }
 	if err := designSet(b, designKey(p, "context", r.ID), in.Context); err != nil {
 		return zero, err
 	}
@@ -505,7 +511,7 @@ func (s *Store) designCommitRequest(p DesignPrincipal, r DesignRequest, receipt 
 	} else if err := designSet(b, designKey(p, "pending", r.ID), r.ID); err != nil {
 		return DesignRequest{}, err
 	}
-	if err := b.Commit(pebble.Sync); err != nil {
+	if err := s.commitDesignChange(p, r, receipt, map[string]any{"request_id": r.ID, "revision": r.Revision}, b); err != nil {
 		return DesignRequest{}, err
 	}
 	return r, nil
@@ -689,7 +695,7 @@ func (s *Store) PublishDesignRevision(p DesignPrincipal, requestID string, in De
 	}
 	attempt.State, attempt.Result = DesignSucceeded, &ref
 	c.State = DesignSucceeded
-	rev := DesignRevision{Ref: ref, Kind: in.Kind, RequestID: requestID, Candidate: in.Candidate, Attempt: *attempt, Base: c.Spec.Base, Content: in.Content}
+	rev := DesignRevision{Ref: ref, Kind: in.Kind, RequestID: requestID, Candidate: in.Candidate, Attempt: *attempt, Base: c.Spec.Base, PlanSource: c.Spec.PlanSource, Content: in.Content}
 	b := s.db.NewBatch()
 	defer b.Close()
 	if err := designSet(b, designRevisionKey(p, a.ID, ref.Revision), rev); err != nil {
@@ -740,7 +746,9 @@ func (s *Store) SelectDesignRevision(p DesignPrincipal, in DesignSelection) (Des
 	if err := designSaveReceipt(b, receipt, in, a); err != nil {
 		return zero, err
 	}
-	if err := b.Commit(pebble.Sync); err != nil {
+	r, err := s.GetDesignRequest(p, a.RequestGroupID)
+	if err != nil { return zero, err }
+	if err := s.commitDesignChange(p, r, receipt, map[string]any{"request_id": r.ID, "artifact_id": a.ID, "selection_version": a.SelectionVersion}, b); err != nil {
 		return zero, err
 	}
 	return a, nil

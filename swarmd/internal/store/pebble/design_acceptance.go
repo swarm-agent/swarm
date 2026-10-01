@@ -110,7 +110,9 @@ func (s *SessionStore) setDesignAcceptanceInBatch(batch *pebble.Batch, input V3S
 	if !ok || run.AccountScopeID != p.AccountID || run.UserID != p.PrincipalID {
 		return ErrDesignNotFound
 	}
-	_, err = s.store.submitDesignRequestInBatch(p, input.DesignAcceptance.Submit, batch)
+	submit := input.DesignAcceptance.Submit
+	submit.canonical = true
+	_, err = s.store.submitDesignRequestInBatch(p, submit, batch)
 	return err
 }
 
