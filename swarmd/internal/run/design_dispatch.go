@@ -31,7 +31,8 @@ func (s *Service) StartDesignDispatcher(ctx context.Context) *DesignDispatcher {
 func (s *Service) designDispatchLoop(ctx context.Context) {
  db := s.sessions.DesignStore()
  active := map[string]context.CancelFunc{}
- attempted := map[string]bool{}
+ // Retain continuation across wakes; one bounded page per turn, never a history sweep.
+ cursor := ""
  finished := make(chan string,2)
  var workers sync.WaitGroup
  defer func(){ for _, cancel := range active { cancel() }; workers.Wait() }()
@@ -39,10 +40,9 @@ func (s *Service) designDispatchLoop(ctx context.Context) {
  repair := time.NewTicker(5*time.Second)
  defer repair.Stop()
  for {
-  cursor := ""
-  for ctx.Err() == nil {
+  if ctx.Err() == nil {
    rows, next, err := db.ScanDesignPending(cursor)
-   if err != nil { log.Printf("design dispatcher: durable discovery failed"); break }
+   if err != nil { log.Printf("design dispatcher: durable discovery failed") }
    for _, r := range rows {
     for i,c := range r.Candidates {
      id := store.DesignChildID(r.Owner,r.ID,i,1)
@@ -51,10 +51,9 @@ func (s *Service) designDispatchLoop(ctx context.Context) {
       // A bound attempt not owned by this daemon is uncertain, even if it was
       // pending at crash. Never infer that its provider call did not happen.
       if err:=s.finishDesign(r.Owner,r.ID,i,nil,store.DesignInterrupted);err!=nil { log.Printf("design dispatcher: recovery reconciliation failed") }
-     } else if c.State == store.DesignQueued && len(active)<2 && !attempted[id] {
+     } else if c.State == store.DesignQueued && len(active)<2  {
       workCtx,cancel := context.WithCancel(ctx)
       active[id] = cancel
-      attempted[id] = true
       workers.Add(1)
       go func(p store.DesignPrincipal, request string, candidate int, id string){
        defer workers.Done()
@@ -64,13 +63,13 @@ func (s *Service) designDispatchLoop(ctx context.Context) {
      }
     }
    }
-   if next == "" { break }; cursor=next
+   cursor=next
   }
   select {
   case <-ctx.Done(): return
   case id := <-finished: active[id](); delete(active,id)
   case <-db.DesignWake():
-  case <-repair.C: attempted=map[string]bool{}
+  case <-repair.C:
   }
  }
 }
@@ -124,8 +123,20 @@ func (s *Service) executeDesign(ctx context.Context,p store.DesignPrincipal,id s
  r,err:=db.GetDesignRequest(p,id); if err!=nil { return }
  if candidate<0 || candidate>=len(r.Candidates) || r.Candidates[candidate].State!=store.DesignQueued { return }
  a,lease,err:=s.AllocateDesignChild(ctx,p,id,r.Revision,candidate,1)
- if err!=nil || lease==nil { return }; defer lease.Release()
+ if err!=nil {
+  if errors.Is(err,errDesignModelUnavailable) || errors.Is(err,errDesignAllocationUnavailable) {
+   reason:="allocation_unavailable"; if errors.Is(err,errDesignModelUnavailable) { reason="model_unavailable" }
+   for n:=0;n<32;n++ {
+    current,readErr:=db.GetDesignRequest(p,id); if readErr!=nil || current.Candidates[candidate].State!=store.DesignQueued { break }
+    _,writeErr:=db.FailQueuedDesign(p,id,current.Revision,candidate,reason)
+    if !errors.Is(writeErr,store.ErrDesignConflict) { if writeErr!=nil { log.Printf("design dispatcher: allocation failure persistence failed") }; break }
+   }
+  }
+  return
+ }
+ if lease==nil { return }; defer lease.Release()
  r,err=db.GetDesignRequest(p,id); if err!=nil { return }
+ if r.Candidates[candidate].State==store.DesignCancelRequested { _=s.finishDesign(p,id,candidate,nil,store.DesignCancelled); return }
  req,provider,err:=s.designProviderRequest(p,r,candidate,a)
  if err!=nil { _=s.finishDesign(p,id,candidate,nil,store.DesignFailed); return }
  if err=s.designRunState(p,a,store.V3RunIntentPendingExecutor,store.V3RunIntentRunning); err!=nil { return }
@@ -133,6 +144,11 @@ func (s *Service) executeDesign(ctx context.Context,p store.DesignPrincipal,id s
  if s.providers==nil { _=s.finishDesign(p,id,candidate,nil,store.DesignFailed); return }
  runner,ok:=s.providers.GetRunner(provider)
  if !ok { _=s.finishDesign(p,id,candidate,nil,store.DesignFailed); return }
+ // Check again after claiming and resolving the adapter: cancellation recorded
+ // before submission must not dispatch an already-cancelled request.
+ latest,readErr:=db.GetDesignRequest(p,id)
+ if readErr!=nil { _=s.finishDesign(p,id,candidate,nil,store.DesignFailed); return }
+ if latest.Candidates[candidate].State!=store.DesignRunning || ctx.Err()!=nil { _=s.finishDesign(p,id,candidate,nil,store.DesignInterrupted); return }
  trusted:=identity.ContextWithPrincipal(ctx,identity.Principal{Type:identity.PrincipalTypeUser,AccountScopeID:p.AccountID,UserID:p.PrincipalID,SessionID:a.ChildSessionID})
  // One adapter call, no automatic retry and no publication/tool invoker.
  var outputMu sync.Mutex
@@ -165,13 +181,26 @@ func (s *Service) finishDesign(p store.DesignPrincipal,id string,candidate int,c
   c:=r.Candidates[candidate]
   if c.State!=store.DesignRunning && c.State!=store.DesignCancelRequested { return nil }
   a,err:=s.sessions.Store().VerifyDesignChild(p,r,candidate); if err!=nil { return err }
-  if c.State==store.DesignCancelRequested { state=store.DesignCancelled }
   intent,ok,err:=s.sessions.Store().GetV3SessionRunIntent(a.ChildSessionID,a.RunID); if err!=nil { return err }; if !ok { return store.ErrDesignNotFound }
+  // A canonical terminal outcome wins a later cancellation request. In
+  // particular do not rewrite completed as interrupted after a publication CAS.
+  switch intent.Status {
+  case store.V3RunIntentCompleted:
+   if len(content)==0 { return store.ErrDesignConflict }; state=store.DesignSucceeded
+  case store.V3RunIntentCancelled: state=store.DesignCancelled
+  case store.V3RunIntentFailed: state=store.DesignFailed
+  case store.V3RunIntentInterrupted: state=store.DesignInterrupted
+  default:
+   if c.State==store.DesignCancelRequested { state=store.DesignCancelled }
+  }
   terminal:=store.V3RunIntentFailed
   switch state { case store.DesignSucceeded:terminal=store.V3RunIntentCompleted; case store.DesignCancelled:terminal=store.V3RunIntentCancelled; case store.DesignInterrupted:terminal=store.V3RunIntentInterrupted }
   if intent.Status==store.V3RunIntentPendingExecutor || intent.Status==store.V3RunIntentRunning {
-   if err=s.designRunState(p,a,intent.Status,terminal); err!=nil { return err }
-  } else if intent.Status!=terminal { state=store.DesignInterrupted }
+   if err=s.designRunState(p,a,intent.Status,terminal); err!=nil {
+    if errors.Is(err,store.ErrDesignConflict) { continue }
+    return err
+   }
+  } else if intent.Status!=terminal { return store.ErrDesignConflict }
   key:=fmt.Sprintf("result-%s-%d",a.RunID,r.Revision)
   if state==store.DesignSucceeded {
    _,err=db.PublishDesignRevision(p,id,store.DesignPublication{IdempotencyKey:key,ExpectedRevision:r.Revision,Candidate:candidate,ChildSessionID:a.ChildSessionID,RunID:a.RunID,Kind:c.Spec.Kind,Content:content})

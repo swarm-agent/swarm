@@ -115,8 +115,15 @@ func TestDesignDispatcherParentLifetimeAndCancellation(t *testing.T) {
  d.Close()
  current,_=s.sessions.DesignStore().GetDesignRequest(p,r.ID)
  if current.State!=store.DesignCancelled {t.Fatalf("cancellation not reconciled: %+v",current)}
- d=s.StartDesignDispatcher(ctx);d.Close()
- if len(runner.requests)!=1 {t.Fatal("restart replayed provider")}
+ // A fresh queued probe proves the restarted dispatcher actually ran a
+ // discovery/execution cycle; immediate Close would prove nothing.
+ probe:=acceptDesignFixture(t,s,p,r,"restart-probe",[]store.DesignCandidateSpec{{ArtifactID:"restart-probe-artifact",Kind:store.DesignHTML,Operation:store.DesignGenerate,Brief:"probe"}},nil)
+ runner.call=func(context.Context,provideriface.Request)(provideriface.Response,error){return provideriface.Response{Text:"<!doctype html><html></html>"},nil}
+ d=s.StartDesignDispatcher(ctx)
+ capacityBoundaryAwait(t,func()bool{got,err:=s.sessions.DesignStore().GetDesignRequest(p,probe.ID);return err==nil && got.State==store.DesignSucceeded})
+ d.Close()
+ current,_=s.sessions.DesignStore().GetDesignRequest(p,r.ID)
+ if current.State!=store.DesignCancelled || len(runner.requests)!=2 {t.Fatal("restart replayed cancelled provider")}
 }
 
 // Purpose: a persisted pre-crash claim is uncertain regardless of whether a
