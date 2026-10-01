@@ -37,7 +37,7 @@ export function snapshot(state: FixtureState = 'populated') {
     projections_by_session: { [sessionId]: { session_id: sessionId, last_event_seq: 3, projection_high_watermark_seq: 3, updated_at: 3 } },
     messages_by_session: { [sessionId]: items }, events_by_session: { [sessionId]: [] }, session_views_by_id: { [sessionId]: { pending_permissions: [], has_active_plan: false, active_plan: null } },
     permission_summaries_by_session: { [sessionId]: { session_id: sessionId, pending_approval_count: 0 } },
-    selector: { kind: 'session_ids', session_ids: [sessionId] }, known_sessions: {}, tombstones_by_session: {}, sync_scope: { surface: 'desktop', stream_kind: 'v3.sync.snapshot', selector_filter_hash: 'fixture', resource_set: 'fixture' },
+    selector: { kind: 'session_ids', session_ids: [sessionId] }, known_sessions: {}, tombstones_by_session: {}, sync_scope: { surface: 'desktop', stream_kind: 'v3.sync.snapshot', selector_filter_hash: 'fixture', resource_set: 'messages,events,run_intents,active_plan,permission_summary' },
     replay_instructions: { stream_path: '/v3/sync/stream', transport: 'http_post', after_endpoint_cursor: 'opaque-responsive-cursor', bootstrap_required_on_cursor_error: true },
   }
 }
@@ -49,6 +49,8 @@ export function fixtureRead(url: URL, state: FixtureState): unknown | undefined 
   if (p === '/v1/auth/desktop/session') return { ok: true, user_id: 'fixture-operator', account_scope_id: 'fixture-account', username: 'Operator' }
   if (p === '/v1/me') return { userID: 'fixture-operator', username: 'Operator' }
   if (p === '/v1/workspace/list') return { workspaces: [] }
+  if (p === '/v1/workspace/discover') return { directories: [] }
+  if (p === '/v1/workspace/browse') return { browser: { requested_path: '.', resolved_path: '.', home_path: '.', root_path: '.', entries: [] } }
   if (p === '/v1/workspace/overview') return { workspaces: [], discovered: [], has_more: false, next_cursor: 0 }
   if (p === '/v1/model-profiles') return { model_profiles: [], default_profile_id: '' }
   if (p === '/v1/model') return { preference: { provider: '', model: '', thinking: '' }, context_window: 0, max_output_tokens: 0 }
@@ -61,7 +63,19 @@ export function fixtureRead(url: URL, state: FixtureState): unknown | undefined 
   if (p === `/v3/projects/${project.id}/tasks/${task.id}`) return { task }
   if (p === `/v3/projects/${project.id}/tasks/${task.id}/history`) return { attempts: [{ id: 'responsive-history', session_id: sessionId, role: 'execution', created_at: 1, status: 'completed', request: 'Historical responsive request ' + 'history-label-'.repeat(60), summary: 'Retained historical summary ' + 'summary-'.repeat(40) }], next_cursor: 0 }
   if (p === `/v3/projects/${project.id}/media`) return { media: [] }
-  if (p === '/v1/ui/settings') return { theme: {}, swarm: {}, permissions: {}, notifications: {} }
+  if (p === '/v1/ui/settings') return { theme: { custom_themes: [{ id: 'fixture-theme', name: 'Fixture theme', palette: {} }] }, swarm: {}, permissions: {}, notifications: {} }
+  // Explicit empty catalogs at the current production read boundaries; unknown
+  // routes still fail. The transcript fixture above declares its resource set.
+  if (p === `/v3/sessions/${sessionId}/repositories`) return { repositories: [] }
+  if (p === `/v3/sessions/${sessionId}/artifacts-v3`) return { artifacts: [] }
+  if (p === `/v3/sessions/${sessionId}/artifact-v2`) return { collections: [] }
+  if (p === `/v3/projects/${project.id}/designs`) return { requests: [], next_cursor: '' }
+  if (p === '/v3/usage/scope') return { recorded: false }
+  if (p === '/v3/usage/worker-budget') return { recorded: false }
+  if (p === '/v1/agent-model-settings') {
+    const assignment = { provider: 'fixture', model: 'fixture', thinking: 'low' }
+    return { agent_model_settings: { swarm: { action: assignment, plan: assignment }, system_agents: Object.fromEntries(['compact', 'finder', 'coder', 'designer', 'router'].map(key => [key, assignment])), updated_at: 1 } }
+  }
   if (p === '/v1/media/settings/catalog') return { image_models: [], video_generation_models: [], audio_models: [], video_ready: false, video_status: 'Fixture media generation unconfigured', audio_ready: false, audio_status: 'Fixture media generation unconfigured' }
   if (p === '/v1/providers') return { providers: [] }
   if (p === '/v1/auth/credentials') return { credentials: [] }

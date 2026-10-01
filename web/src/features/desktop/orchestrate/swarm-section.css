@@ -235,8 +235,8 @@
 .swarm-responsive-shell[data-layout="phone"] > :is(.swarm-main-panel, .swarm-conversation-panel) { grid-column: 1; }
 .swarm-responsive-shell[data-split="false"][data-panel="main"] > .swarm-conversation-panel,
 .swarm-responsive-shell[data-split="false"][data-panel="chat"] > .swarm-main-panel { visibility: hidden; pointer-events: none; }
-.swarm-layout-controls { align-items: center; justify-content: space-between; gap: 8px; }
-.swarm-panel-switch { display: flex; gap: 6px; }
+.swarm-layout-controls { align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.swarm-panel-switch { display: flex; gap: 6px; flex-wrap: wrap; min-width: 0; max-width: 100%; }
 .swarm-responsive-shell[data-split="true"] .swarm-panel-switch { display: none; }
 .swarm-layout-controls button, .swarm-navigation-close { min-height: 44px; min-width: 44px; border: 1px solid var(--swarm-border); border-radius: 10px; padding: 8px 12px; background: var(--swarm-surface); color: var(--swarm-text); }
 .swarm-navigation-backdrop { position: absolute; inset: 0; z-index: 40; background: #0009; }

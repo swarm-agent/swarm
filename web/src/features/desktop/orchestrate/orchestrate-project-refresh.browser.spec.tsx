@@ -3,6 +3,9 @@ import assert from 'node:assert/strict'
 import { build } from 'esbuild'
 import { readFile } from 'node:fs/promises'
 import { chromium } from 'playwright'
+import { build as buildStyles } from 'vite'
+import tailwindcss from '@tailwindcss/vite'
+import path from 'node:path'
 import { fixtureRead, project, snapshot } from './swarm-responsive-browser-fixtures'
 
 // Requirement: OrchestrateView owns project-only identity/theme persistence and
@@ -14,6 +17,11 @@ import { fixtureRead, project, snapshot } from './swarm-responsive-browser-fixtu
 // chooser from keyboard activation. Browser DOM is required for these regressions.
 test('project dropdown, settings-only appearance, persisted PNG and authoritative clear', { timeout: 30000 }, async () => {
   const bundle = await build({ stdin: { resolveDir: process.cwd(), loader: 'tsx', contents: `import{mountResponsiveFixture}from'./src/features/desktop/orchestrate/swarm-responsive-browser-fixtures';mountResponsiveFixture('populated');` }, bundle: true, write: false, format: 'iife', platform: 'browser', jsx: 'automatic', logLevel: 'silent' })
+  // Exercise production utility styles too: without them the hydrated transcript
+  // overflows its pane and incorrectly intercepts project control pointer input.
+  const styles = await buildStyles({ configFile: false, logLevel: 'silent', publicDir: false, plugins: [tailwindcss()], build: { write: false, rollupOptions: { input: path.resolve('src/theme.css') } } })
+  const outputs = (Array.isArray(styles) ? styles : [styles]).flatMap(result => 'output' in result ? result.output : [])
+  const css = outputs.filter(asset => asset.type === 'asset' && asset.fileName.endsWith('.css')).map(asset => asset.type === 'asset' ? String(asset.source) : '').join('\n') + await readFile('src/features/desktop/orchestrate/swarm-section.css', 'utf8')
   const browser = await chromium.launch({ headless: true, channel: process.env.SWARM_TEST_BROWSER_CHANNEL || 'chrome' })
   try {
     const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } })
@@ -39,7 +47,7 @@ test('project dropdown, settings-only appearance, persisted PNG and authoritativ
       const data = fixtureRead(url, 'populated')
       return route.fulfill({ status: data === undefined ? 501 : 200, json: data ?? { error: 'Unconfigured fixture read' } })
     })
-    const mount = async () => { await page.goto('https://project.test/fixture/swarm'); await page.addStyleTag({ content: await readFile('src/features/desktop/orchestrate/swarm-section.css', 'utf8') }); await page.addScriptTag({ content: bundle.outputFiles[0].text }); await page.getByLabel('Current project').waitFor() }
+    const mount = async () => { await page.goto('https://project.test/fixture/swarm'); await page.addStyleTag({ content: css }); await page.addScriptTag({ content: bundle.outputFiles[0].text }); await page.getByLabel('Current project').waitFor() }
     await mount()
     const nav = page.getByRole('navigation', { name: 'Swarm destinations' })
     assert.equal(await nav.getByRole('link', { name: 'Project Charter', exact: true }).count(), 0)
@@ -76,9 +84,12 @@ test('project dropdown, settings-only appearance, persisted PNG and authoritativ
     assert.equal(await page.getByRole('link', { name: 'Orchestrate tips' }).count(), 0)
     await page.getByRole('region', { name: 'Project workers', exact: true }).getByRole('button', { name: /^Inspect / }).waitFor()
     assert.equal(await page.getByRole('region', { name: 'Project workers', exact: true }).count(), 1)
+    // Earlier switching to a project without a primary session can legitimately
+    // request one. A rejected clear must not create an additional session.
+    const sessionCreatesBeforeClear = writes.filter(w => w.path === '/v3/sessions').length
     await page.getByTestId('clear-orchestrator-context-btn').click()
     await page.getByRole('alert').getByText(/no authoritative session/).waitFor()
-    assert.equal(writes.filter(w => w.path === '/v3/sessions').length, 0)
+    assert.equal(writes.filter(w => w.path === '/v3/sessions').length, sessionCreatesBeforeClear)
     await page.getByRole('link', { name: 'Settings', exact: true }).click()
     const theme = page.getByLabel('Project theme', { exact: true })
     await theme.waitFor()

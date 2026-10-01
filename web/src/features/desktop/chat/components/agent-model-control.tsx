@@ -537,7 +537,8 @@ export function AgentModelControl({
     if (!open) {
       initializedOpenRef.current = false
       setFavoritesPosition(null)
-      setScreen('favorites')
+      // Opening signals choose their screen. Resetting it here races a setup
+      // signal when parent props change in the same closed render.
       setSetupSection('agent')
       setEditingFavoriteId(null)
       setEditingFavoriteName('')

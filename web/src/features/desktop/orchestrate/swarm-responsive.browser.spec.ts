@@ -25,6 +25,9 @@ const destinations = [
   ['agents', 'Agents'], ['settings', 'Settings'],
 ] as const
 
+// Route assertions track the persistent conversation/task manager, not the
+// independently scoped TaskAttention leases that mount with destination cards.
+// The resize-only matrix still checks ALL leases and unmount checks total cleanup.
 // Compilation is shared, but every scenario gets a fresh browser page/cache/store.
 // No persistent output, listeners, server, recursive workload or live network.
 let assets: Promise<{ js: string; css: string }> | undefined
@@ -58,11 +61,15 @@ async function setup(page: Page, state: FixtureState = 'populated') {
     }
     if (request.isNavigationRequest() && request.method() === 'GET' && url.origin === 'https://responsive.test' && url.pathname.startsWith('/fixture/swarm')) return route.fulfill({ contentType: 'text/html', body: '<!doctype html><html><body style="margin:0"><div id="root" style="height:100dvh;width:100%"></div></body></html>' })
     if (url.pathname === '/v3/sync/hydrate' && request.method() === 'POST') {
-      hydrations++
+      // Metadata-only attention refreshes are separate from the retained chat
+      // transcript. Count only requests that can replace conversation history.
+      if (request.postDataJSON()?.resources?.messages) hydrations++
       if (state === 'loading') await hydrateGate
       return route.fulfill({ status: state === 'error' ? 503 : 200, contentType: 'application/json', body: JSON.stringify(state === 'error' ? { error: 'Fixture hydration unavailable' } : snapshot(state)) })
     }
     if (request.method() === 'GET' && url.pathname === `/v3/sessions/${sessionId}/artifacts/responsive-image`) return route.fulfill({ contentType: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360"><rect width="640" height="360" fill="#245"/></svg>' })
+    // This POST is a read-only planning preview, not task deployment.
+    if (request.method() === 'POST' && url.pathname === `/v3/projects/${project.id}/tasks:preview`) return route.fulfill({ json: { task_plan: {}, model_preview: {}, workspace_diagnostic: 'Fixture has no workspace' } })
     if (request.method() !== 'GET') {
       const body = request.headers()['content-type']?.includes('json') ? request.postDataJSON() : request.postData()
       mutations.push({ path: url.pathname, body })
@@ -119,7 +126,7 @@ async function noOverflow(page: Page, label: string) {
   const result = await page.evaluate(() => {
     const root = document.querySelector('.swarm-responsive-shell')!
     const panes = [...root.querySelectorAll('.swarm-main-panel, .swarm-conversation-panel')].filter(el => getComputedStyle(el).visibility !== 'hidden')
-    return { document: document.documentElement.scrollWidth - document.documentElement.clientWidth, root: root.scrollWidth - root.clientWidth, panes: panes.map(el => el.scrollWidth - el.clientWidth) }
+    return { document: document.documentElement.scrollWidth - document.documentElement.clientWidth, root: root.scrollWidth - root.clientWidth, panes: panes.map(el => el.scrollWidth - el.clientWidth), escaped: [...root.querySelectorAll('*')].filter(el => el.getBoundingClientRect().right > root.getBoundingClientRect().right + 1).slice(0, 8).map(el => ({ class: el.getAttribute('class'), visibility: getComputedStyle(el).visibility, width: el.getBoundingClientRect().width })) }
   })
   assert.ok(result.document <= 1 && result.root <= 1 && result.panes.every(overflow => overflow <= 1), `${label}: horizontal overflow ${JSON.stringify(result)}`)
 }
@@ -195,7 +202,12 @@ for (const state of ['populated', 'empty', 'loading', 'error'] as const) {
       for (const width of widths) {
         await page.setViewportSize({ width, height: 844 })
         const layout = width >= 1280 ? 'expanded' : width >= 640 ? 'rail' : 'phone'
-        await page.waitForFunction(layout => document.querySelector('.swarm-responsive-shell')?.getAttribute('data-layout') === layout, layout)
+        // Rail mode spans both sides of the split threshold; wait for the resize
+        // observation itself instead of accepting the previous rail-mode frame.
+        await page.waitForFunction(({ layout, split }) => {
+          const shell = document.querySelector('.swarm-responsive-shell')
+          return shell?.getAttribute('data-layout') === layout && shell.getAttribute('data-split') === String(split)
+        }, { layout, split: width >= 1100 })
         assert.equal(await page.locator('.swarm-responsive-shell').getAttribute('data-split'), String(width >= 1100))
         await noOverflow(page, `${state}/${width}`)
         if (state !== 'empty') {
@@ -251,7 +263,7 @@ test('production phone drawer traps focus, restores trigger and route history re
     const originalInput = await input.elementHandle()
     const originalConversation = await page.getByTestId('desktop-v3-existing-conversation-pane').elementHandle()
     await stableCounters(page)
-    const routeCounters = await page.evaluate(() => JSON.stringify([(window as any).responsive.acquired, (window as any).responsive.released, (window as any).responsive.connected]))
+    const routeCounters = await page.evaluate(() => JSON.stringify([(window as any).responsive.acquired.filter((entry: string[]) => !entry[0].startsWith('task-attention:')), (window as any).responsive.released.filter((entry: string[]) => !entry[0].startsWith('task-attention:')), (window as any).responsive.connected]))
     const routeReads = fixture.hydrations()
     const trigger = page.locator('button[aria-label="Open Swarm navigation"]')
     await trigger.click()
@@ -280,9 +292,9 @@ test('production phone drawer traps focus, restores trigger and route history re
       await evidence(page, `destination-${section || 'tasks'}`)
       if (section === 'projects') {
         await trigger.click()
-        const projectChoice = page.locator('.swarm-navigation-sidebar [role="button"]').filter({ hasText: project.name }).first()
+        const projectChoice = page.getByLabel('Current project')
         await projectChoice.focus()
-        await page.keyboard.press('Enter')
+        await projectChoice.selectOption(project.id)
         await page.keyboard.press('Escape')
         await navigate(page, 'Tasks')
         assert.equal(await page.getByTestId('orchestrate-task-card').first().getAttribute('data-task-id'), 'responsive-task', 'keyboard project selection keeps its real task collection')
@@ -318,16 +330,18 @@ test('production phone drawer traps focus, restores trigger and route history re
         }
       }
     }
+    // Help is no longer a primary destination. Verify history against the two
+    // real settings subroutes visited immediately above.
     await page.goBack()
-    await page.waitForURL('**/swarm/settings#media')
+    await page.waitForURL('**/swarm/settings#notifications')
     await page.goForward()
-    await page.waitForURL('**/swarm/help')
+    await page.waitForURL('**/swarm/settings#media')
     await pane(page, 'Chat')
     assert.equal(await input.inputValue(), 'History draft')
     assert.equal(await originalInput!.evaluate(el => el === document.querySelector('[data-testid="orchestrator-chat-input"]')), true)
     assert.equal(await originalConversation!.evaluate(el => el === document.querySelector('[data-testid="desktop-v3-existing-conversation-pane"]')), true)
     await stableCounters(page)
-    assert.equal(await page.evaluate(() => JSON.stringify([(window as any).responsive.acquired, (window as any).responsive.released, (window as any).responsive.connected])), routeCounters, 'project selection and route history retain demand')
+    assert.equal(await page.evaluate(() => JSON.stringify([(window as any).responsive.acquired.filter((entry: string[]) => !entry[0].startsWith('task-attention:')), (window as any).responsive.released.filter((entry: string[]) => !entry[0].startsWith('task-attention:')), (window as any).responsive.connected])), routeCounters, 'project selection and route history retain demand')
     assert.equal(fixture.hydrations(), routeReads)
     assert.deepEqual(fixture.mutations, [], 'destination inspection does not mutate')
     // True browser rendering at CSS zoom exercises reflow, not OS browser zoom.
@@ -426,7 +440,7 @@ test('production rail geometry, transcript local scroll, dialogs and rejected-se
     const retainedComposer = await input.elementHandle()
     const retainedConversation = await page.getByTestId('desktop-v3-existing-conversation-pane').elementHandle()
     await stableCounters(page)
-    const sendCounters = await page.evaluate(() => JSON.stringify([(window as any).responsive.acquired, (window as any).responsive.released, (window as any).responsive.connected]))
+    const sendCounters = await page.evaluate(() => JSON.stringify([(window as any).responsive.acquired.filter((entry: string[]) => !entry[0].startsWith('task-attention:')), (window as any).responsive.released.filter((entry: string[]) => !entry[0].startsWith('task-attention:')), (window as any).responsive.connected]))
     const sendReads = fixture.hydrations()
     await page.setViewportSize({ width: 390, height: 844 })
     await settle(page)
@@ -451,14 +465,14 @@ test('production rail geometry, transcript local scroll, dialogs and rejected-se
     assert.equal(await retainedComposer!.evaluate(el => el === document.querySelector('[data-testid="orchestrator-chat-input"]')), true)
     assert.equal(await retainedConversation!.evaluate(el => el === document.querySelector('[data-testid="desktop-v3-existing-conversation-pane"]')), true)
     await stableCounters(page)
-    assert.equal(await page.evaluate(() => JSON.stringify([(window as any).responsive.acquired, (window as any).responsive.released, (window as any).responsive.connected])), sendCounters)
+    assert.equal(await page.evaluate(() => JSON.stringify([(window as any).responsive.acquired.filter((entry: string[]) => !entry[0].startsWith('task-attention:')), (window as any).responsive.released.filter((entry: string[]) => !entry[0].startsWith('task-attention:')), (window as any).responsive.connected])), sendCounters)
     assert.equal(fixture.hydrations(), sendReads)
     assert.equal(fixture.mutations.length, uploadCount + 1, 'route history and resizing never retry a rejected send')
     fixture.acceptSend()
     await page.getByRole('button', { name: 'Send message', exact: true }).click()
     await page.waitForFunction(() => !(document.querySelector('[data-testid="orchestrator-chat-input"]') as HTMLTextAreaElement)?.value)
     assert.equal(fixture.mutations.length, uploadCount + 2, 'one append request for each explicit submit')
-    assert.equal((fixture.mutations[uploadCount + 1].body as any).content, 'Send exactly once')
+    assert.equal((fixture.mutations[uploadCount + 1].body as any).content, `[Task Context: responsive-task]\nproject_id: responsive-project\ntask_id: responsive-task\ntask_title: ${taskTitle}\ntask_status: running\ntask_revision: 1\nagent_type: coder\nsession_id: ${sessionId}\n---\nSend exactly once`)
     assert.equal((fixture.mutations[uploadCount + 1].body as any).media[0].asset_id, 'fixture-upload')
     assert.deepEqual(fixture.mutations.map(mutation => mutation.path), [`/v3/sessions/${sessionId}/media`, `/v3/sessions/${sessionId}/messages`, `/v3/sessions/${sessionId}/messages`], 'only one upload and two explicitly requested appends')
     assert.equal(await page.getByRole('button', { name: 'Remove attachment', exact: true }).count(), 0, 'successful append consumes attachment')
@@ -486,15 +500,16 @@ test('production rail geometry, transcript local scroll, dialogs and rejected-se
     await evidence(page, 'new-task-dialog')
     await deploy.getByTestId('deploy-modal-change-model-btn').click()
     const model = page.getByRole('dialog', { name: 'Agent and model settings', exact: true })
-    await model.waitFor()
+    await model.waitFor().catch(async error => { throw new Error(`${error.message}; dialogs=${JSON.stringify(await page.locator('[role="dialog"]').evaluateAll(nodes => nodes.map(node => ({ label: node.getAttribute('aria-label'), hidden: node.closest('[aria-hidden="true"]')?.className, inert: node.closest('[inert]')?.className }))))}; pageErrors=${JSON.stringify(fixture.errors)}`) })
     await target(model.getByRole('button', { name: 'Close', exact: true }).first(), 'model close')
     await noOverflow(page, 'model dialog')
     await evidence(page, 'model-dialog')
     await model.getByRole('button', { name: 'Close', exact: true }).first().click()
     await page.keyboard.press('Escape')
     await deploy.waitFor({ state: 'hidden' })
+    await page.waitForFunction(() => document.activeElement?.textContent === 'New task')
     assert.equal(await page.getByRole('button', { name: 'New task', exact: true }).evaluate(el => el === document.activeElement), true, 'actual deploy trigger regains focus')
-    assert.equal(fixture.mutations.length, uploadCount + 2, 'dialog inspection never deploys or changes models')
+    assert.equal(fixture.mutations.length, uploadCount + 2, `dialog inspection never deploys or changes models: ${JSON.stringify(fixture.mutations)}`)
     assert.deepEqual(fixture.unexpectedWrites, [], 'unexpected writes cannot be swallowed by production handlers')
     assert.deepEqual([...fixture.missing], [], 'all mounted production surfaces must have explicit HTTP fixture contracts')
     assert.deepEqual(fixture.errors, [])
@@ -525,7 +540,7 @@ for (const state of ['populated', 'empty', 'loading', 'error'] as const) {
       }
       if (state === 'loading' || state === 'error') assert.ok(fixture.hydrations() > 0, 'state must exercise actual canonical hydrate endpoint')
       await stableCounters(page)
-      const before = await page.evaluate(() => JSON.stringify([(window as any).responsive.acquired, (window as any).responsive.released, (window as any).responsive.connected]))
+      const before = await page.evaluate(() => JSON.stringify([(window as any).responsive.acquired.filter((entry: string[]) => !entry[0].startsWith('task-attention:')), (window as any).responsive.released.filter((entry: string[]) => !entry[0].startsWith('task-attention:')), (window as any).responsive.connected]))
       const reads = fixture.hydrations()
       for (const width of [390, 820, 1440]) {
         await page.setViewportSize({ width, height: 900 })
@@ -563,7 +578,7 @@ for (const state of ['populated', 'empty', 'loading', 'error'] as const) {
         }
       }
       await stableCounters(page)
-      assert.equal(await page.evaluate(() => JSON.stringify([(window as any).responsive.acquired, (window as any).responsive.released, (window as any).responsive.connected])), before, 'routes and viewport changes must not churn session demand')
+      assert.equal(await page.evaluate(() => JSON.stringify([(window as any).responsive.acquired.filter((entry: string[]) => !entry[0].startsWith('task-attention:')), (window as any).responsive.released.filter((entry: string[]) => !entry[0].startsWith('task-attention:')), (window as any).responsive.connected])), before, 'routes and viewport changes must not churn session demand')
       assert.equal(fixture.hydrations(), reads, 'routes must not rehydrate the retained conversation')
       assert.deepEqual(fixture.mutations, [], 'inspection and history do not write')
       assert.deepEqual(fixture.unexpectedWrites, [])
