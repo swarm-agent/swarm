@@ -7232,92 +7232,106 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
               </button>
             </div>
 
-            {/* Intent Category Tabs */}
-            <div className="swarm-dialog-intents grid grid-cols-6 gap-1 p-1 bg-slate-950 rounded-xl border border-slate-800 text-[11px] font-mono">
-              <button
-                type="button"
-                onClick={() => {
-                  setTaskIntent('code')
-                  setFeatureSize('small')
-                }}
-                className={`flex items-center justify-center gap-1.5 py-1.5 rounded-lg font-bold transition-all ${
-                  taskIntent === 'code' && featureSize === 'small'
-                    ? 'bg-blue-600 text-white shadow'
-                    : 'text-slate-400 hover:text-white hover:bg-slate-900'
-                }`}
-                data-testid="deploy-tab-small-feature"
-              >
-                <Code size={12} />
-                <span>Small Feature/Fix</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setTaskIntent('code')
-                  setFeatureSize('big')
-                }}
-                className={`flex items-center justify-center gap-1.5 py-1.5 rounded-lg font-bold transition-all ${
-                  taskIntent === 'code' && featureSize === 'big'
-                    ? 'bg-purple-600 text-white shadow'
-                    : 'text-slate-400 hover:text-white hover:bg-slate-900'
-                }`}
-                data-testid="deploy-tab-big-feature"
-              >
-                <Sparkles size={12} />
-                <span>Big Feature</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setTaskIntent('image')}
-                className={`flex items-center justify-center gap-1.5 py-1.5 rounded-lg font-bold transition-all ${
-                  taskIntent === 'image'
-                    ? 'bg-blue-600 text-white shadow'
-                    : 'text-slate-400 hover:text-white hover:bg-slate-900'
-                }`}
-                data-testid="deploy-tab-image"
-              >
-                <ImageIcon size={12} />
-                <span>Image</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setTaskIntent('video')}
-                className={`flex items-center justify-center gap-1.5 py-1.5 rounded-lg font-bold transition-all ${
-                  taskIntent === 'video'
-                    ? 'bg-blue-600 text-white shadow'
-                    : 'text-slate-400 hover:text-white hover:bg-slate-900'
-                }`}
-                data-testid="deploy-tab-video"
-              >
-                <Film size={12} />
-                <span>Video</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setTaskIntent('sound')}
-                className={`flex items-center justify-center gap-1.5 py-1.5 rounded-lg font-bold transition-all ${
-                  taskIntent === 'sound'
-                    ? 'bg-blue-600 text-white shadow'
-                    : 'text-slate-400 hover:text-white hover:bg-slate-900'
-                }`}
-                data-testid="deploy-tab-sound"
-              >
-                <Volume2 size={12} />
-                <span>Sounds</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setTaskIntent('audit')}
-                className={`flex items-center justify-center gap-1.5 py-1.5 rounded-lg font-bold transition-all ${
-                  taskIntent === 'audit'
-                    ? 'bg-blue-600 text-white shadow'
-                    : 'text-slate-400 hover:text-white hover:bg-slate-900'
-                }`}
-                data-testid="deploy-tab-audit"
-              >
-                <Search size={12} />
-                <span>Audit</span>
-              </button>
+            {/* Keep coding work distinct from media generation. */}
+            <div className="space-y-3">
+              <fieldset className="min-w-0 rounded-xl border border-slate-800 bg-slate-950 p-2">
+                <legend className="px-2 text-[11px] font-semibold text-slate-300">Coding</legend>
+                <div className="swarm-dialog-intents grid grid-cols-3 gap-1 text-[11px]">
+                  <button
+                    type="button"
+                    aria-pressed={taskIntent === 'code' && featureSize === 'small'}
+                    onClick={() => {
+                      setTaskIntent('code')
+                      setFeatureSize('small')
+                    }}
+                    className={`flex min-w-0 items-center justify-center px-2 py-2 rounded-lg font-semibold transition-colors ${
+                      taskIntent === 'code' && featureSize === 'small'
+                        ? 'bg-blue-600 text-white shadow'
+                        : 'text-slate-400 hover:text-white hover:bg-slate-900'
+                    }`}
+                    data-testid="deploy-tab-small-feature"
+                  >
+                    <span>Small Feature/Fix</span>
+                  </button>
+                  <button
+                    type="button"
+                    aria-pressed={taskIntent === 'code' && featureSize === 'big'}
+                    onClick={() => {
+                      setTaskIntent('code')
+                      setFeatureSize('big')
+                    }}
+                    className={`flex min-w-0 items-center justify-center px-2 py-2 rounded-lg font-semibold transition-colors ${
+                      taskIntent === 'code' && featureSize === 'big'
+                        ? 'bg-blue-600 text-white shadow'
+                        : 'text-slate-400 hover:text-white hover:bg-slate-900'
+                    }`}
+                    data-testid="deploy-tab-big-feature"
+                  >
+                    <span>Big Feature</span>
+                  </button>
+                  <button
+                    type="button"
+                    aria-pressed={taskIntent === 'audit'}
+                    onClick={() => setTaskIntent('audit')}
+                    className={`flex min-w-0 items-center justify-center gap-1.5 px-2 py-2 rounded-lg font-semibold transition-colors ${
+                      taskIntent === 'audit'
+                        ? 'bg-blue-600 text-white shadow'
+                        : 'text-slate-400 hover:text-white hover:bg-slate-900'
+                    }`}
+                    data-testid="deploy-tab-audit"
+                  >
+                    <Search size={12} aria-hidden="true" className="shrink-0" />
+                    <span>Audit</span>
+                  </button>
+                </div>
+              </fieldset>
+              <fieldset className="min-w-0 rounded-xl border border-slate-800 bg-slate-950 p-2">
+                <legend className="px-2 text-[11px] font-semibold text-slate-300">Media</legend>
+                <div className="swarm-dialog-intents grid grid-cols-3 gap-1 text-[11px]">
+                  <button
+                    type="button"
+                    aria-pressed={taskIntent === 'image'}
+                    onClick={() => setTaskIntent('image')}
+                    className={`flex min-w-0 items-center justify-center gap-1.5 px-2 py-2 rounded-lg font-semibold transition-colors ${
+                      taskIntent === 'image'
+                        ? 'bg-blue-600 text-white shadow'
+                        : 'text-slate-400 hover:text-white hover:bg-slate-900'
+                    }`}
+                    data-testid="deploy-tab-image"
+                  >
+                    <ImageIcon size={12} aria-hidden="true" className="shrink-0" />
+                    <span>Image</span>
+                  </button>
+                  <button
+                    type="button"
+                    aria-pressed={taskIntent === 'video'}
+                    onClick={() => setTaskIntent('video')}
+                    className={`flex min-w-0 items-center justify-center gap-1.5 px-2 py-2 rounded-lg font-semibold transition-colors ${
+                      taskIntent === 'video'
+                        ? 'bg-blue-600 text-white shadow'
+                        : 'text-slate-400 hover:text-white hover:bg-slate-900'
+                    }`}
+                    data-testid="deploy-tab-video"
+                  >
+                    <Film size={12} aria-hidden="true" className="shrink-0" />
+                    <span>Video</span>
+                  </button>
+                  <button
+                    type="button"
+                    aria-pressed={taskIntent === 'sound'}
+                    onClick={() => setTaskIntent('sound')}
+                    className={`flex min-w-0 items-center justify-center gap-1.5 px-2 py-2 rounded-lg font-semibold transition-colors ${
+                      taskIntent === 'sound'
+                        ? 'bg-blue-600 text-white shadow'
+                        : 'text-slate-400 hover:text-white hover:bg-slate-900'
+                    }`}
+                    data-testid="deploy-tab-sound"
+                  >
+                    <Volume2 size={12} aria-hidden="true" className="shrink-0" />
+                    <span>Sounds</span>
+                  </button>
+                </div>
+              </fieldset>
             </div>
 
             {/* Agent preview belongs to code/audit only; media settings own their model selection. */}
