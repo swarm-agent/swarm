@@ -1,4 +1,4 @@
-package pebble
+package pebblestore
 
 // CurrentTaskProgram rejects program evidence from another session or an older
 // owning run. Program workflow state is not evidence that execution has stopped.
