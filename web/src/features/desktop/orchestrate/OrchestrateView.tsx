@@ -59,7 +59,6 @@ import {
   Settings2,
   Sparkles,
   Tag,
-  Target,
   Trash2,
   Upload,
   Volume2,
