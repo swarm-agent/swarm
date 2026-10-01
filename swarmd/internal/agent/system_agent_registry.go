@@ -336,6 +336,7 @@ func SwarmAgentPrompt() string {
 		"Drive the user task to completion with clear progress, explicit decisions, and concrete outputs.\n" +
 		"Match execution depth to request scope: handle narrow asks directly, escalate to deeper investigation/delegation only when scope is broad or unclear.\n" +
 		"Delegate specialized work when needed, then merge results into one coherent answer.\n" +
+		"Use manage_design for delegated standalone HTML designs or design plans, including an ordinary single design or an explicit batch. Submit briefs, never authored output; queued acceptance is not generation. Plans do not execute automatically. Existing artifact read/edit compatibility remains separate.\n" +
 		"Never strand a dependent Coder: before ordinary delegation, integrate prerequisite commits into the user's intended source branch through the authorized workflow and verify Git ancestry plus required files in the actual captured Coder base, not just another parent worktree or task status. Use only explicitly supported, verified integrated Task Program lanes or exact committed_source continuations as alternatives; do not misreport those as promotion.\n" +
 		"Own dependency readiness in the parent. Supply a self-contained assignment and accessible source; task/session IDs, inaccessible handoff references and sibling paths are not substitutes. Resolve missing prerequisites before launch or relaunch; never ask an isolated Coder to retrieve private sessions, reconstruct missing prior work or repair the parent's integration mistake.\n" +
 		"Keep responses concise, factual, and implementation-focused.\n" +
@@ -366,6 +367,7 @@ func SwarmAgentToolContract() *pebblestore.AgentToolContract {
 			"manage_agent":        {Enabled: pebblestore.BoolPtr(false)},
 			"manage_theme":        {Enabled: pebblestore.BoolPtr(true)},
 			"manage_sessions":     {Enabled: pebblestore.BoolPtr(true)},
+			"manage_design":       {Enabled: pebblestore.BoolPtr(true)},
 			"manage_artifact":     {Enabled: pebblestore.BoolPtr(true)},
 			"manage_video":        {Enabled: pebblestore.BoolPtr(true)},
 			"manage_worktree":     {Enabled: pebblestore.BoolPtr(true)},
@@ -400,6 +402,7 @@ Your role is to orchestrate complex multi-workspace software initiatives, manage
   * Direct Orchestrator structured plan: you can author executable structured plans directly (plan_document: {id, title, info: {goal}, checkpoints: [{id, title, tasks, acceptance_criteria}]}) via manage_projects (action="propose_task"). Direct plan submission submits the structured plan directly into the same task-card review and acceptance system without requiring an extra Plan-agent authoring pass.
   * Exact card review and Swarm Default continuation: all structured plans must be reviewed and accepted by the user on the exact task card. Never begin implementation before required user approval. Once the user accepts the plan on the task card, execution automatically transfers to configured Swarm Default (with Swarm Action model, context, and task linkage preserved) to execute the approved checkpoints, without requiring a second redundant approval.
 - Track deliverable progress and worktrees: monitor running tasks, verify dirty/unintegrated worktree commits, review deliverables, and report actionable outcomes to the user.
+- Use manage_design for delegated standalone HTML designs or design plans, including a single design or explicit batch. Submit briefs, never authored output; queued acceptance is not generation. Plans do not execute automatically. Existing artifact read/edit compatibility remains separate.
 - Preserve non-code routes: direct creative requests (image, video, sound, audio) and exploratory research remain available without forced coding workflows.
 - Facilitate project onboarding: help users select workspaces, add folders, and synthesize high-level project architecture without blocking chat interactions.
 - Project visual theme: inspect existing builtin/custom account palettes with manage-theme; when asked to create one, use manage-theme create (with its normal review/confirmation) and assign its saved theme_id using manage_projects create/update. Empty theme_id clears the project selection. Do not use arbitrary CSS or change the account/global theme merely to style a project.
@@ -416,6 +419,7 @@ func SwarmOrchestratorAgentToolContract() *pebblestore.AgentToolContract {
 			"find":              {Enabled: pebblestore.BoolPtr(true)},
 			"list":              {Enabled: pebblestore.BoolPtr(true)},
 			"bash":              {Enabled: pebblestore.BoolPtr(true)},
+			"manage_design":     {Enabled: pebblestore.BoolPtr(true)},
 			"manage_projects":   {Enabled: pebblestore.BoolPtr(true)},
 			"manage_sessions":   {Enabled: pebblestore.BoolPtr(true)},
 			"manage_worktree":   {Enabled: pebblestore.BoolPtr(true)},
