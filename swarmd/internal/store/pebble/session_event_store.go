@@ -93,7 +93,7 @@ type V3SessionMutationInput struct {
 	AutomationPermission         *AutomationPermissionResolution `json:"-"`
 	automationRealtime           *automationRealtimeMutation
 	environmentRealtime          *environmentRealtimeMutation
-	designProjectOutbox          **V3RealtimeOutboxRecord
+	designProjectOutbox          *[]*V3RealtimeOutboxRecord
 	projectRealtime              *projectRealtimeMutation
 	automationAcceptance         *AutomationApproval
 	AutomationProposal           *AutomationPlanReference      `json:"automation_proposal,omitempty"`
@@ -675,10 +675,10 @@ func (s *SessionStore) ApplyV3SessionMutation(input V3SessionMutationInput) (V3S
 	if s == nil || s.store == nil {
 		return V3SessionMutationResult{}, errors.New("session store is not configured")
 	}
-	var designProjectOutbox *V3RealtimeOutboxRecord
+	var designProjectOutbox []*V3RealtimeOutboxRecord
 	defer func() {
-		if designProjectOutbox != nil {
-			s.store.publishProjectRealtime(&projectRealtimeMutation{outbox: designProjectOutbox})
+		for _, outbox := range designProjectOutbox {
+			s.store.publishProjectRealtime(&projectRealtimeMutation{outbox: outbox})
 		}
 	}()
 	input = normalizeV3SessionMutationInput(input)
@@ -868,17 +868,21 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 		designProjectSession = input.SessionID
 	} else if input.DesignAllocation != nil {
 		r, err := s.store.GetDesignRequest(DesignPrincipal{AccountID: input.AccountScopeID, PrincipalID: input.UserID}, input.DesignAllocation.RequestID)
-		if err != nil { return V3SessionMutationResult{}, err }
+		if err != nil {
+			return V3SessionMutationResult{}, err
+		}
 		designProjectSession = r.ParentSessionID
 	}
-	designProjectID := ""
+	var designProjectIDs []string
 	if designProjectSession != "" {
 		var err error
-		designProjectID, err = s.designProjectLocator(DesignPrincipal{AccountID: input.AccountScopeID, PrincipalID: input.UserID}, designProjectSession)
-		if err != nil { return V3SessionMutationResult{}, err }
+		designProjectIDs, err = s.designProjectLocators(DesignPrincipal{AccountID: input.AccountScopeID, PrincipalID: input.UserID}, designProjectSession)
+		if err != nil {
+			return V3SessionMutationResult{}, err
+		}
 	}
 	outboxCount := 1
-	if designProjectID != "" { outboxCount++ }
+	outboxCount += len(designProjectIDs)
 	if input.DesignAllocation != nil {
 		outboxCount++
 	}
@@ -1269,10 +1273,13 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 	if err := s.setDesignAcceptanceInBatch(batch, input); err != nil {
 		return V3SessionMutationResult{}, err
 	}
-	var pendingDesignProjectOutbox *V3RealtimeOutboxRecord
-	if designProjectID != "" {
-		pendingDesignProjectOutbox, err = s.setDesignProjectInvalidation(batch, DesignPrincipal{AccountID: input.AccountScopeID, PrincipalID: input.UserID}, designProjectID, reservedOutbox[len(reservedOutbox)-1], now)
-		if err != nil { return V3SessionMutationResult{}, err }
+	var pendingDesignProjectOutbox []*V3RealtimeOutboxRecord
+	for index, projectID := range designProjectIDs {
+		outbox, err := s.setDesignProjectInvalidation(batch, DesignPrincipal{AccountID: input.AccountScopeID, PrincipalID: input.UserID}, projectID, reservedOutbox[len(reservedOutbox)-len(designProjectIDs)+index], now)
+		if err != nil {
+			return V3SessionMutationResult{}, err
+		}
+		pendingDesignProjectOutbox = append(pendingDesignProjectOutbox, outbox)
 	}
 	if err := setV3ArtifactMutationInBatch(batch, artifact); err != nil {
 		return V3SessionMutationResult{}, err
@@ -1727,7 +1734,9 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 	if err := s.store.sessionMutations.commitOutbox(s.store, reservedOutbox); err != nil {
 		return V3SessionMutationResult{}, err
 	}
-	if input.designProjectOutbox != nil { *input.designProjectOutbox = pendingDesignProjectOutbox }
+	if input.designProjectOutbox != nil {
+		*input.designProjectOutbox = pendingDesignProjectOutbox
+	}
 	v3SuccessfulFreshMutations.Add(1)
 	v3EstimatedLogicalBytes.Add(estimatedSetBytes(KeyV3RealtimeOutbox(endpointSeq), realtimeOutboxPayload) + estimatedSetBytes(KeyV3RealtimeOutboxBySessionEndpoint(input.SessionID, endpointSeq), realtimeOutboxReferencePayload) + estimatedSetBytes(KeyV3RealtimeOutboxBySessionSeq(input.SessionID, seq), realtimeOutboxReferencePayload) + estimatedSetBytes(KeyV3RealtimeOutboxByAuthScope(input.AccountScopeID, input.UserID, endpointSeq), realtimeOutboxReferencePayload))
 

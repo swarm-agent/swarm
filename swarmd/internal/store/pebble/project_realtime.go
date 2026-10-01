@@ -101,14 +101,24 @@ func setProjectRealtimeMutationInBatch(batch *pebble.Batch, account string, m *p
 		}
 		if strings.HasPrefix(key, KeyProjectAccountPrefix+keyPart(account)+"/") {
 			var project ProjectRecord
-			if err := json.Unmarshal(data, &project); err != nil { return err }
-			if err := setDesignMembership(batch, account, project.PrimarySessionID, project.ID, ""); err != nil { return err }
+			if err := json.Unmarshal(data, &project); err != nil {
+				return err
+			}
+			if err := setDesignMembership(batch, account, project.PrimarySessionID, project.ID, ""); err != nil {
+				return err
+			}
 		} else {
 			var task ProjectTaskRecord
-			if err := json.Unmarshal(data, &task); err != nil { return err }
-			if err := setDesignMembership(batch, account, task.SessionID, task.ProjectID, task.ID); err != nil { return err }
+			if err := json.Unmarshal(data, &task); err != nil {
+				return err
+			}
+			if err := setDesignMembership(batch, account, task.SessionID, task.ProjectID, task.ID); err != nil {
+				return err
+			}
 			for _, attempt := range task.Attempts {
-				if err := setDesignMembership(batch, account, attempt.SessionID, task.ProjectID, task.ID); err != nil { return err }
+				if err := setDesignMembership(batch, account, attempt.SessionID, task.ProjectID, task.ID); err != nil {
+					return err
+				}
 			}
 		}
 		if err := batch.Set([]byte(key), data, nil); err != nil {

@@ -53,7 +53,10 @@ There is no global session scan or second progress/history store.
 
 Design acceptance/update/allocation retains its original design.accepted or
 design.updated event and atomically appends a reference-free project.updated
-invalidation (`resource: designs`) in the same V3 batch. Existing project realtime
+invalidation (`resource: designs`) for every distinct validated project membership
+in the same V3 batch. Duplicate task/primary bindings do not duplicate wakeups;
+revoked bindings are ignored. Membership lookup is bounded to 50 locators and
+fails closed on overflow. Existing project realtime
 publication/replay delivers this while chat is unmounted. Listen to project.updated
 and rehydrate the matching project, rather than polling. Pre-index projects acquire
 locators through bounded initial hydration; legacy metadata is only a locator and

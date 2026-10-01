@@ -90,6 +90,16 @@ test('Media Center opens independent designs directly and preserves historical e
     await dialog.getByRole('button', { name: 'Prepare HTML download' }).click()
     await dialog.getByRole('link', { name: 'Download exact revision' }).waitFor()
     assert.equal(await preview.getAttribute('srcdoc'), wrapper)
+    for (const width of [375, 1440]) {
+      await page.setViewportSize({ width, height: 800 })
+      const bounds = await dialog.evaluate(element => {
+        const box = element.getBoundingClientRect()
+        return { left: box.left, right: box.right, bottom: box.bottom, overflow: element.scrollWidth > element.clientWidth }
+      })
+      assert.ok(bounds.left >= 0 && bounds.right <= width && bounds.bottom <= 800)
+      assert.equal(bounds.overflow, false)
+      await dialog.getByRole('button', { name: 'Close viewer' }).scrollIntoViewIfNeeded()
+    }
     await dialog.getByRole('button', { name: 'Close viewer' }).click()
     await page.getByRole('button', { name: 'View Landing page · Candidate 1 · Revision 3', exact: true }).click()
     await page.getByRole('dialog').locator('iframe[title="Design revision 3"]').waitFor()

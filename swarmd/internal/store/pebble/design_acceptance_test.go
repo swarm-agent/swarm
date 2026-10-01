@@ -23,14 +23,18 @@ func TestDesignAcceptanceAtomicRecovery(t *testing.T) {
 	}
 	submit := designTestSubmit("accept", DesignHTML)
 	input := V3SessionMutationInput{SessionID: "parent", UserID: p.PrincipalID, AccountScopeID: p.AccountID, IdempotencyKey: submit.IdempotencyKey, PayloadHash: DesignAcceptanceHash(submit), Kind: V3SessionMutationAcceptDesign, EventType: "design.accepted", DesignAcceptance: &DesignAcceptance{Submit: submit}}
-	if err := ss.PutProject(p.AccountID, &ProjectRecord{ID: "project", Name: "Project", PrimarySessionID: "parent"}); err != nil { t.Fatal(err) }
+	if err := ss.PutProject(p.AccountID, &ProjectRecord{ID: "project", Name: "Project", PrimarySessionID: "parent"}); err != nil {
+		t.Fatal(err)
+	}
 	var notices []V3RealtimeOutboxRecord
 	s.SetProjectPublisher(func(record V3RealtimeOutboxRecord) { notices = append(notices, record) })
 	first, err := ss.ApplyV3SessionMutation(input)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(notices) != 1 { t.Fatal("missing atomic project invalidation", notices) }
+	if len(notices) != 1 {
+		t.Fatal("missing atomic project invalidation", notices)
+	}
 	if first.RealtimeOutbox == nil {
 		t.Fatal("missing canonical outbox")
 	}
