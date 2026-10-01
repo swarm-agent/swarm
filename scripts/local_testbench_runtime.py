@@ -574,9 +574,17 @@ class NspawnRuntime:
             time.sleep(0.5)
         raise PoolError('candidate build/start deadline exceeded')
 
-    def deploy(self, lane, head, prebuild_script=None):
+    def deploy(self, lane, head, prebuild_script=None, browser_directory=None):
         if prebuild_script is not None:
             validate_prebuild_script(prebuild_script, lane, head, self.commands)
+        browser_bind = []
+        if browser_directory is not None:
+            browser = Path(browser_directory).resolve(strict=True)
+            if not browser.is_dir() or not (browser / 'chrome').is_file():
+                raise PoolError('browser directory must contain an installed Chrome executable')
+            if ':' in str(browser) or any(c in str(browser) for c in '\n\r'):
+                raise PoolError('invalid browser directory')
+            browser_bind = ['--bind-ro=' + str(browser) + ':/opt/google/chrome']
         self.doctor(lane)
         with self.exclusive():
             r = self.pool.claim(lane)
@@ -602,7 +610,7 @@ class NspawnRuntime:
                     '--link-journal=no', '--as-pid2', '--console=pipe',
                     '--bind-ro=' + root + '/' + name + '.bundle:/input/source.bundle:idmap',
                     '--setenv=CANDIDATE_HEAD=' + head,
-                    '--bind=' + root + '/' + name + '.exchange:/exchange:idmap'] + prebuild_env + [
+                    '--bind=' + root + '/' + name + '.exchange:/exchange:idmap'] + prebuild_env + browser_bind + [
                     '/bin/bash', '-c', GUEST]
                 self.commands.run(argv)
                 self.wait_ready(r, lane)
@@ -648,9 +656,10 @@ def main(argv=None):
     parser.add_argument('--worktree', default=os.getcwd())
     parser.add_argument('--generation')
     parser.add_argument('--prebuild-script', help='Committed relative shell script; runs only inside the guest before builds')
+    parser.add_argument('--browser-directory', help='Optional installed Chrome program directory, bound read-only into the guest (no profiles)')
     args = parser.parse_args(argv)
     try:
-        if args.prebuild_script and args.action != 'deploy':
+        if (args.prebuild_script or args.browser_directory) and args.action != 'deploy':
             raise PoolError('--prebuild-script requires deploy')
         settings = load_settings(args.env_file)
         commands = Commands()
@@ -661,7 +670,7 @@ def main(argv=None):
             if args.action == 'doctor':
                 result = runtime.doctor(lane)
             elif args.action == 'deploy':
-                result = runtime.deploy(lane, head, args.prebuild_script)
+                result = runtime.deploy(lane, head, args.prebuild_script, args.browser_directory)
             elif args.action == 'supervise':
                 import signal
                 import threading

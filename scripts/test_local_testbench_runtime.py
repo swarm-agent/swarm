@@ -205,7 +205,12 @@ class RuntimeTests(unittest.TestCase):
         self.assertFalse(any('systemd-socket-activate' in call for call in self.commands.calls))
 
     def test_successful_adapter_deployment_requires_owned_units(self):
-        """Only verified build completion plus all owned active units admits ready."""
+        """NspawnRuntime.deploy admits only owned ready units and a read-only program
+        mount; argv assertions at the adapter boundary prevent host write exposure.
+        """
+        browser = self.base / 'browser'
+        browser.mkdir()
+        (browser / 'chrome').write_text('fixture')
         original = self.commands.run
         def run(argv, **kwargs):
             result = original(argv, **kwargs)
@@ -219,7 +224,7 @@ class RuntimeTests(unittest.TestCase):
              mock.patch.object(self.runtime, 'materialize'), \
              mock.patch('local_testbench_runtime.check_ports'), \
              mock.patch.object(self.runtime, 'wait_ready'):
-            result = self.runtime.deploy(self.lane, 'b' * 40)
+            result = self.runtime.deploy(self.lane, 'b' * 40, browser_directory=str(browser))
         self.assertEqual(result['state'], 'ready')
         self.assertEqual(result['head'], 'b' * 40)
         self.assertEqual(result['provider_egress'], 'disabled')
@@ -229,6 +234,8 @@ class RuntimeTests(unittest.TestCase):
         # container manager. Inspect actual constructed deployment argv, not source.
         launch = next(call for call in self.commands.calls if 'systemd-nspawn' in call)
         self.assertFalse(any('docker.sock' in arg or '/usr/bin/docker' in arg for arg in launch))
+        self.assertIn('--bind-ro=' + str(browser) + ':/opt/google/chrome', launch)
+        self.assertFalse(any(arg.startswith('--bind=') and str(browser) in arg for arg in launch))
 
     def test_image_copy_deadline_precedes_reads_or_writes(self):
         """Materialization authority rejects expired work without consuming source or changing target."""

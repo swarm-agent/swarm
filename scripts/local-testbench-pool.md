@@ -53,7 +53,10 @@ a 480-second deadline within the existing deployment deadline; failure prevents
 ready status and uses generation-owned cleanup. No host Docker executable/socket
 is bound into a candidate. This hook does not provide provider credentials or
 claim live-provider validation. It does not change either pool configuration or
-other lane generations.
+other lane generations. When the base lacks a browser, `--browser-directory`
+may explicitly name an installed Chrome **program** directory (never a profile);
+it is mounted read-only at Chrome's standard guest location. No browser download
+or base-image mutation occurs.
 
 ## Focused validation
 
