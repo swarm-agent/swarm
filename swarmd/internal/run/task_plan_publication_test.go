@@ -3,6 +3,7 @@ package run
 import (
 	"context"
 	"encoding/json"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -30,8 +31,10 @@ func (p taskPlanPublicationProvider) submit(ctx context.Context, invoker provide
 // authorizeTaskPlanPublication, SubmitProjectTaskStructuredPlan and V3 mutations.
 // This invocation layer is the narrowest layer reproducing the former permission
 // wait; durable reads prove the pending review rather than assistant prose.
+// A newly declared account/project repository must publish without granting
+// session access; foreign, unbound, and stale sources must leave no partial plan.
 func TestProviderManagedTaskPlanPublication(t *testing.T) {
-	for _, scenario := range []string{"publish", "wrong-account", "wrong-session", "stale-run", "stale-attempt", "disabled", "deny", "help", "missing-document", "malformed-document", "source", "secondary-source", "unadmitted-source", "stale-source", "archived"} {
+	for _, scenario := range []string{"publish", "wrong-account", "wrong-session", "stale-run", "stale-attempt", "disabled", "deny", "help", "missing-document", "malformed-document", "source", "secondary-source", "new-project-source", "foreign-project-source", "unadmitted-source", "stale-source", "archived"} {
 		t.Run(scenario, func(t *testing.T) {
 			workspace := t.TempDir()
 			svc, sessionID, permissions, storePath, cleanup := newTaskPlanPublicationTestService(t, workspace)
@@ -45,7 +48,7 @@ func TestProviderManagedTaskPlanPublication(t *testing.T) {
 				t.Fatal(err)
 			}
 			runID := task.ExecutionRunID()
-			if _, err := svc.sessions.ApplySessionMutation(sessionruntime.SessionMutationInput{SessionID: sessionID, AccountScopeID: current.AccountScopeID, UserID: current.UserID, ClientRequestID: "planning-run", IdempotencyKey: "planning-run", PayloadHash: "planning-run", RequestHash: "planning-run", Kind: sessionruntime.SessionMutationRecordRunIntent, RunIntent: &pebblestore.V3SessionRunIntent{RunID: runID, Status: pebblestore.V3RunIntentRunning}}); err != nil {
+			if _, err := svc.sessions.ApplySessionMutation(sessionruntime.SessionMutationInput{SessionID: sessionID, AccountScopeID: current.AccountScopeID, UserID: current.UserID, ClientRequestID: "planning-run", IdempotencyKey: "planning-run", PayloadHash: "planning-run", RequestHash: "planning-run", Kind: sessionruntime.SessionMutationRecordRunIntent, RunIntent: &pebblestore.V3SessionRunIntent{RunID: runID, Status: pebblestore.V3RunIntentPendingExecutor}}); err != nil {
 				t.Fatal(err)
 			}
 			principal := identity.Principal{Type: identity.PrincipalTypeUser, SessionID: sessionID, AccountScopeID: current.AccountScopeID, UserID: current.UserID}
@@ -90,7 +93,7 @@ func TestProviderManagedTaskPlanPublication(t *testing.T) {
 			case "malformed-document":
 				provider.arguments = `{"document":{}}`
 			}
-			if scenario == "source" || scenario == "secondary-source" || scenario == "unadmitted-source" || scenario == "stale-source" {
+			if scenario == "source" || scenario == "secondary-source" || scenario == "unadmitted-source" || scenario == "new-project-source" || scenario == "foreign-project-source" || scenario == "stale-source" {
 				scope, err := svc.workspace.ScopeForPathForPrincipal(principal, workspace)
 				if err != nil {
 					t.Fatal(err)
@@ -100,13 +103,33 @@ func TestProviderManagedTaskPlanPublication(t *testing.T) {
 						task.SourceWorkspace = pebblestore.ProjectTaskSource{Path: workspace, WorkspaceID: scope.WorkspaceID, WorkspaceGeneration: scope.WorkspaceGeneration, Provenance: "unique_project_workspace"}
 						if scenario == "secondary-source" {
 							task.ProgramSources = []pebblestore.ProjectTaskSource{task.SourceWorkspace}
-							task.SourceWorkspace = pebblestore.ProjectTaskSource{Path: t.TempDir(), WorkspaceID: "primary", WorkspaceGeneration: 1}
+							task.SourceWorkspace = pebblestore.ProjectTaskSource{Path: t.TempDir(), WorkspaceID: "primary", WorkspaceGeneration: 1, Provenance: "explicit"}
 						}
 						if scenario == "stale-source" {
 							task.SourceWorkspace.WorkspaceGeneration++
 						}
 						return nil
 					}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if scenario == "foreign-project-source" {
+					workspace = t.TempDir()
+					for _, args := range [][]string{{"init"}, {"-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "base"}} {
+						cmd := exec.Command("git", args...)
+						cmd.Dir = workspace
+						if out, err := cmd.CombinedOutput(); err != nil {
+							t.Fatalf("git: %v %s", err, out)
+						}
+					}
+					_, entry, _, err := svc.workspace.AddForPrincipalWithEntry(identity.Principal{Type: identity.PrincipalTypeUser, UserID: "foreign-user", AccountScopeID: "foreign-account"}, workspace, "Foreign", "", false)
+					if err != nil {
+						t.Fatal(err)
+					}
+					scope.WorkspaceID = entry.WorkspaceID
+				}
+				if scenario == "new-project-source" || scenario == "foreign-project-source" {
+					if err := svc.sessions.Store().PutProject(current.AccountScopeID, &pebblestore.ProjectRecord{ID: "project", Name: "Project", AccountID: current.AccountScopeID, Workspaces: []pebblestore.ProjectWorkspaceRef{{Path: workspace, WorkspaceID: scope.WorkspaceID}}}); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -127,15 +150,15 @@ func TestProviderManagedTaskPlanPublication(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
 			result, err := provider.submit(ctx, svc.newProviderToolInvoker(config))
-			if err != nil && scenario != "wrong-account" {
+			if err != nil && scenario != "wrong-account" && scenario != "wrong-session" {
 				t.Fatalf("provider invocation: %v", err)
 			}
-			if scenario == "wrong-account" {
-				// The canonical mutation boundary also rejects foreign error writes.
-				if err == nil {
-					t.Fatal("foreign principal persisted a tool outcome")
+			if scenario == "wrong-account" || scenario == "wrong-session" {
+				// Principal rejection may be returned as a tool error or invocation
+				// error; neither may authorize a plan or a foreign outcome write.
+				if err != nil {
+					result.Error = err.Error()
 				}
-				result.Error = err.Error()
 			}
 			pending, err := permissions.ListPending(sessionID, 10)
 			if err != nil || len(pending) != 0 {
@@ -149,7 +172,7 @@ func TestProviderManagedTaskPlanPublication(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if scenario != "publish" && scenario != "source" && scenario != "secondary-source" {
+			if scenario != "publish" && scenario != "source" && scenario != "secondary-source" && scenario != "new-project-source" {
 				if (scenario == "help" || scenario == "missing-document") && !strings.Contains(result.Error, "requires an explicit structured document") {
 					t.Fatalf("missing recoverable document guidance: %+v", result)
 				}
@@ -168,10 +191,10 @@ func TestProviderManagedTaskPlanPublication(t *testing.T) {
 						attributed = true
 					}
 				}
-				if scenario == "wrong-account" && attributed {
+				if (scenario == "wrong-account" || scenario == "wrong-session") && attributed {
 					t.Fatal("foreign principal wrote an unauthorized tool outcome")
 				}
-				if !attributed && scenario != "wrong-account" {
+				if !attributed && scenario != "wrong-account" && scenario != "wrong-session" {
 					t.Fatal("rejected publication has no durable attributable outcome")
 				}
 				return
@@ -180,12 +203,20 @@ func TestProviderManagedTaskPlanPublication(t *testing.T) {
 				t.Fatalf("publication did not complete: result=%+v plan=%+v", result, plan)
 			}
 			binding := after.PlanBinding
-			if after.Status != "pending_approval" || binding == nil || binding.SessionID != sessionID || binding.PlanID != plan.ID || binding.DefinitionRevision != plan.Version || binding.Receipt == "" || after.PlanDocument != nil {
-				t.Fatalf("task must bind canonical plan, not a copied document: %+v", after)
+			if after.Status != "pending_approval" || binding == nil || binding.SessionID != sessionID || binding.PlanID != plan.ID || binding.DefinitionRevision != plan.Version || binding.Receipt == "" || after.PlanDocument == nil || after.PlanDocument.RevisionID != plan.Document.RevisionID {
+				t.Fatalf("task must hydrate its exact canonical plan binding: %+v", after)
 			}
 			reloaded, _, err := svc.sessions.GetSession(sessionID)
 			if err != nil || reloaded.Mode != sessionruntime.ModePlan {
 				t.Fatalf("publication started Auto: %+v err=%v", reloaded, err)
+			}
+			if scenario == "new-project-source" {
+				if len(after.ProgramSources) != 1 || after.ProgramSources[0].Path != workspace || after.ProgramSources[0].WorkspaceID == "" {
+					t.Fatalf("new source not durably bound: %+v", after.ProgramSources)
+				}
+				if len(reloaded.WorkspaceGrants) != len(current.WorkspaceGrants) {
+					t.Fatal("publication granted filesystem access before approval")
+				}
 			}
 			active, found, err := svc.sessions.Store().GetV3SessionActiveRunIntent(sessionID)
 			if err != nil || !found || active.RunID != runID {
@@ -237,10 +268,10 @@ func TestProviderManagedStandalonePlanStillRequiresAcceptance(t *testing.T) {
 	config := providerToolInvokerConfig{sessionID: sessionID, runID: "standalone-plan", sessionMode: sessionruntime.ModePlan, providerManagedV3: true, applySessionMutation: svc.sessions.ApplySessionMutation, principal: identity.Principal{Type: identity.PrincipalTypeUser, SessionID: sessionID, UserID: current.UserID, AccountScopeID: current.AccountScopeID}, agentProfile: pebblestore.AgentProfile{Name: "swarm", ExitPlanModeEnabled: pebblestore.BoolPtr(true)}}
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
-	_, _ = (taskPlanPublicationProvider{arguments: `{"document":{"id":"standalone","title":"Standalone","checkpoints":[{"id":"cp-1","title":"Implement","order":1,"status":"pending"}]}}`}).submit(ctx, svc.newProviderToolInvoker(config))
+	result, invokeErr := (taskPlanPublicationProvider{arguments: `{"document":{"id":"standalone","title":"Standalone","info":{"goal":"Implement after approval"},"checkpoints":[{"id":"cp-1","title":"Implement","order":1,"status":"pending","tasks":["Implement"],"acceptance_criteria":["Reviewed"]}]}}`}).submit(ctx, svc.newProviderToolInvoker(config))
 	pending, err := permissions.ListPending(sessionID, 10)
 	if err != nil || len(pending) != 1 || pending[0].Requirement != "plan_acceptance" || pending[0].Status != pebblestore.PermissionStatusPending {
-		t.Fatalf("standalone acceptance permission missing: %#v err=%v", pending, err)
+		t.Fatalf("standalone acceptance permission missing: %#v err=%v result=%+v invokeErr=%v", pending, err, result, invokeErr)
 	}
 	if _, found, err := svc.sessions.Store().GetPlan(sessionID, "standalone"); err != nil || found {
 		t.Fatalf("unapproved standalone plan persisted: found=%t err=%v", found, err)
@@ -262,7 +293,7 @@ func newTaskPlanPublicationTestService(t *testing.T, workspace string) (*Service
 		t.Fatal(err)
 	}
 	sessions := sessionruntime.NewService(pebblestore.NewSessionStore(store), events)
-	current, _, err := sessions.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{UserID: "review-user", AccountScopeID: "review-account", Title: "Task review", WorkspacePath: workspace, Mode: sessionruntime.ModePlan, Metadata: map[string]any{"project_id": "project", "task_id": "task", "task_attempt_id": "initial"}})
+	current, _, err := sessions.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{UserID: "review-user", AccountScopeID: "review-account", Title: "Task review", WorkspacePath: workspace, Mode: sessionruntime.ModePlan, Preference: &pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "off"}, Metadata: map[string]any{"project_id": "project", "task_id": "task", "task_attempt_id": "initial"}})
 	if err != nil {
 		cleanup()
 		t.Fatal(err)

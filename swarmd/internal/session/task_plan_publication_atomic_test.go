@@ -16,7 +16,7 @@ func TestTaskPlanPublicationAtomic(t *testing.T) {
 		t.Run(scenario, func(t *testing.T) {
 			svc, cleanup := newPlanTestService(t)
 			defer cleanup()
-			current, _, err := svc.CreateSessionWithOptions(CreateSessionOptions{UserID: "user", AccountScopeID: "account", WorkspacePath: t.TempDir(), Mode: ModePlan, Metadata: map[string]any{"project_id": "project", "task_id": "task"}})
+			current, _, err := svc.CreateSessionWithOptions(CreateSessionOptions{UserID: "user", AccountScopeID: "account", WorkspacePath: t.TempDir(), Mode: ModePlan, Preference: &pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "off"}, Metadata: map[string]any{"project_id": "project", "task_id": "task"}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -24,7 +24,7 @@ func TestTaskPlanPublicationAtomic(t *testing.T) {
 			if err := svc.Store().PutProjectTask("account", task); err != nil {
 				t.Fatal(err)
 			}
-			doc := &pebblestore.SessionPlanDocument{ID: "review", Title: "Review", Checkpoints: []pebblestore.SessionPlanCheckpoint{{ID: "cp", Title: "Implement", Order: 1, Status: "pending"}}}
+			doc := &pebblestore.SessionPlanDocument{ID: "review", Title: "Review", Info: pebblestore.SessionPlanInfo{Goal: "Review before implementation"}, Checkpoints: []pebblestore.SessionPlanCheckpoint{{ID: "cp", Title: "Implement", Order: 1, Status: "pending", Tasks: []string{"Implement"}, AcceptanceCriteria: []string{"Reviewed"}}}}
 			input := ProjectTaskPlanSubmissionInput{AccountScopeID: "account", UserID: "user", ProjectID: "project", TaskID: "task", SessionID: current.ID, Document: doc}
 			input.ApplySessionMutation = func(in SessionMutationInput) (SessionMutationResult, error) {
 				if in.PlanSave != nil {
@@ -34,6 +34,10 @@ func TestTaskPlanPublicationAtomic(t *testing.T) {
 					case "archive", "revision":
 						if _, err := svc.Store().UpdateProjectTask("account", "project", "task", func(task *pebblestore.ProjectTaskRecord) error {
 							task.Archived = scenario == "archive"
+							if scenario == "revision" {
+								task.Title = "Concurrent task update"
+								task.Revision++
+							}
 							return nil
 						}); err != nil {
 							t.Fatal(err)

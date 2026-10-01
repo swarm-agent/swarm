@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 )
 
@@ -14,8 +15,69 @@ func (s ProjectTaskSource) SameIdentity(other ProjectTaskSource) bool {
 	return s.Path == other.Path && s.WorkspaceID == other.WorkspaceID && s.WorkspaceGeneration == other.WorkspaceGeneration
 }
 
-// ValidateTaskPlanSources never admits authority from authored prose or project
-// membership. Additional repositories must enter through explicit task admission.
+// ResolveTaskPlanPublicationSources binds explicitly declared program repositories
+// for review. It grants no filesystem access or execution: acceptance revalidates
+// these exact catalog identities before installing session grants.
+func (s *SessionStore) ResolveTaskPlanPublicationSources(task *ProjectTaskRecord, doc *SessionPlanDocument) ([]ProjectTaskSource, error) {
+	sources := append([]ProjectTaskSource(nil), task.ProgramSources...)
+	if doc == nil {
+		return sources, nil
+	}
+	for _, cp := range doc.Checkpoints {
+		if cp.TaskProgram == nil {
+			continue
+		}
+		for _, job := range cp.TaskProgram.Jobs {
+			if job.AgentType != "coder" && job.AgentType != "finder" {
+				continue
+			}
+			path := strings.TrimSpace(job.WorkspacePath)
+			if path == "" {
+				path = task.SourceWorkspace.Path
+			}
+			if !filepath.IsAbs(path) || filepath.Clean(path) != path {
+				return nil, fmt.Errorf("plan job %q requires an exact canonical workspace_path", job.ID)
+			}
+			resolved, err := filepath.EvalSymlinks(path)
+			if err != nil || resolved != path {
+				return nil, fmt.Errorf("plan job %q source is not a canonical workspace root", job.ID)
+			}
+			entry, found, err := NewWorkspaceStore(s.store).GetForAccount(task.AccountID, path)
+			if err != nil || !found || entry.Path != path || entry.WorkspaceID == "" || entry.WorkspaceGeneration <= 0 {
+				return nil, fmt.Errorf("plan job %q source %q is not an authorized account workspace", job.ID, path)
+			}
+			candidate := ProjectTaskSource{Path: path, WorkspaceID: entry.WorkspaceID, WorkspaceGeneration: entry.WorkspaceGeneration, Provenance: "plan_submission"}
+			bound := false
+			for _, prior := range append([]ProjectTaskSource{task.SourceWorkspace}, sources...) {
+				if prior.Path != path {
+					continue
+				}
+				if !candidate.SameIdentity(prior) {
+					return nil, fmt.Errorf("plan job %q source %q has stale catalog admission", job.ID, path)
+				}
+				bound = true
+			}
+			if bound {
+				continue
+			}
+			project, found, err := s.GetProject(task.AccountID, task.ProjectID)
+			if err != nil || !found || project == nil || project.AccountID != task.AccountID {
+				return nil, errors.New("plan source admission requires the owned project")
+			}
+			member := false
+			for _, ref := range project.Workspaces {
+				member = member || (ref.Path == path && (ref.WorkspaceID == "" || ref.WorkspaceID == entry.WorkspaceID))
+			}
+			if !member {
+				return nil, fmt.Errorf("plan job %q source %q is not an authorized project workspace", job.ID, path)
+			}
+			sources = append(sources, candidate)
+		}
+	}
+	return sources, nil
+}
+
+// ValidateTaskPlanSources checks a document against its durable source bindings.
 func ValidateTaskPlanSources(task *ProjectTaskRecord, doc *SessionPlanDocument) error {
 	if doc == nil {
 		return nil
@@ -80,15 +142,19 @@ func (s *SessionStore) prepareTaskPlanPublication(input V3SessionMutationInput) 
 	if binding == nil || binding.SessionID != input.SessionID || binding.PlanID != plan.ID || binding.DefinitionRevision != plan.Version || binding.Receipt != hex.EncodeToString(digest[:]) {
 		return nil, errors.New("task publication must bind the exact plan definition")
 	}
-	if !next.SourceWorkspace.SameIdentity(current.SourceWorkspace) || len(next.ProgramSources) != len(current.ProgramSources) {
-		return nil, errors.New("task publication cannot change admitted sources")
+	sources, err := s.ResolveTaskPlanPublicationSources(current, plan.Document)
+	if err != nil {
+		return nil, err
 	}
-	for i := range current.ProgramSources {
-		if !next.ProgramSources[i].SameIdentity(current.ProgramSources[i]) {
-			return nil, errors.New("task publication cannot change admitted sources")
+	if !next.SourceWorkspace.SameIdentity(current.SourceWorkspace) || len(next.ProgramSources) != len(sources) {
+		return nil, errors.New("task publication sources differ from catalog-resolved plan")
+	}
+	for i := range sources {
+		if !next.ProgramSources[i].SameIdentity(sources[i]) {
+			return nil, errors.New("task publication sources differ from catalog-resolved plan")
 		}
 	}
-	if err := ValidateTaskPlanSources(current, input.PlanSave.Plan.Document); err != nil {
+	if err := ValidateTaskPlanSources(next, plan.Document); err != nil {
 		return nil, err
 	}
 	next.Revision++

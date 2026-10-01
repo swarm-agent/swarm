@@ -491,6 +491,14 @@ func (s *Service) BuildAgentSeedPrompt(task *pebblestore.ProjectTaskRecord, proj
 	for _, source := range task.ContextSources {
 		sb.WriteString(fmt.Sprintf("- **Read-only Context Workspace**: `%s` (workspace `%s`, generation %d). Context selection grants no write or delegation authority; changes require a separately authorized repository binding.\n", source.Path, source.WorkspaceID, source.WorkspaceGeneration))
 	}
+	if task.Agent == "plan" || task.Status == "planning" {
+		sb.WriteString("\n## Task-card plan submission\nCall plan_manage action=help for the structured document schema, then exit_plan_mode with the complete document. This publishes the plan to this existing task card as pending approval; it does not start implementation or require creating another task. Include title, info.goal, ordered checkpoints, tasks and acceptance_criteria. For multi-repository work, declare each Coder/Finder job's exact canonical workspace_path in checkpoint.task_program. Authorized account catalog roots linked to this project may be bound during submission even when they were not known at task creation. Publication does not grant filesystem access; approval revalidates every repository and installs execution grants. Do not substitute the planning worktree for another repository, remove required jobs, or ask the user to recreate the task.\n")
+		if project != nil {
+			for _, ref := range project.Workspaces {
+				sb.WriteString(fmt.Sprintf("- Project source candidate: `%s` (workspace `%s`; catalog authorization is checked on submission).\n", ref.Path, ref.WorkspaceID))
+			}
+		}
+	}
 	if len(task.WorkspacesInvolved) > 1 {
 		sb.WriteString("- **Additional Project Workspaces**:\n")
 		for _, w := range task.WorkspacesInvolved {

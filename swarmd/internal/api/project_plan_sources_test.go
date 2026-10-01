@@ -14,10 +14,12 @@ import (
 // Requirement: a checkpoint program may use separate repository lanes, but every
 // source must be catalog-authorized before reservation and revalidated at exact
 // approval. Threats are foreign grants, source replacement and premature runs.
+// Late discovery exercises AI publication after initial single-repository admission;
+// new grants must appear only at approval, not while the plan awaits review.
 // Authority: CreateProjectTask, resolveProjectPlanSources, revalidateProjectTaskSource
 // and ApproveProjectTask. This hermetic API/store layer proves admission only.
 func TestProjectPlanCrossRepositorySources(t *testing.T) {
-	for _, scenario := range []string{"approved", "provenance", "foreign", "removed", "stale", "missing_binding"} {
+	for _, scenario := range []string{"approved", "provenance", "foreign", "removed", "stale", "missing_binding", "late-discovery", "late-removed"} {
 		t.Run(scenario, func(t *testing.T) {
 			f := setupMatrixTestFixture(t)
 			defer f.db.Close()
@@ -58,7 +60,15 @@ func TestProjectPlanCrossRepositorySources(t *testing.T) {
 				program.Jobs = append(program.Jobs, job)
 			}
 			doc := &pebblestore.SessionPlanDocument{Title: "Cross repository", Info: pebblestore.SessionPlanInfo{Goal: "Consume committed interface"}, Checkpoints: []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Title: "Implement", Tasks: []string{"Run stored program"}, AcceptanceCriteria: []string{"Verified commits"}, Order: 1, TaskProgram: program}}}
-			created, err := f.server.CreateProjectTask(context.Background(), p, projectID, tool.ProjectTaskCreateInput{ID: "cross", Title: "Cross repository", WorkspacePath: first, Document: doc})
+			initialDoc := doc
+			late := scenario == "late-discovery" || scenario == "late-removed"
+			if late {
+				copyDoc := *doc
+				copyDoc.Checkpoints = append([]pebblestore.SessionPlanCheckpoint(nil), doc.Checkpoints...)
+				copyDoc.Checkpoints[0].TaskProgram = nil
+				initialDoc = &copyDoc
+			}
+			created, err := f.server.CreateProjectTask(context.Background(), p, projectID, tool.ProjectTaskCreateInput{ID: "cross", Title: "Cross repository", WorkspacePath: first, Document: initialDoc})
 			if scenario == "foreign" {
 				if err == nil {
 					t.Fatal("foreign source accepted")
@@ -72,7 +82,7 @@ func TestProjectPlanCrossRepositorySources(t *testing.T) {
 				t.Fatal(err)
 			}
 			stored, _, err := db.GetProjectTask(f.accountID, projectID, created.ID)
-			if err != nil || len(stored.ProgramSources) != 2 || stored.PlanBinding == nil {
+			if err != nil || (!late && len(stored.ProgramSources) != 2) || stored.PlanBinding == nil {
 				t.Fatalf("lost bindings: %+v %v", stored, err)
 			}
 			sess, ok, err := db.GetSession(created.SessionID)
@@ -114,7 +124,7 @@ func TestProjectPlanCrossRepositorySources(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if scenario == "approved" || scenario == "provenance" {
+			if scenario == "approved" || scenario == "provenance" || late {
 				// Exercise the same lifecycle used by exit_plan_mode, not only
 				// the direct-plan constructor: a fresh authored revision retains
 				// admitted sources and requires its own exact approval binding.
@@ -123,14 +133,35 @@ func TestProjectPlanCrossRepositorySources(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if submitted.Task.PlanBinding.DefinitionRevision != stored.PlanBinding.DefinitionRevision+1 || len(submitted.Task.ProgramSources) != 2 {
+				expectedSources := 2
+				if late {
+					expectedSources = 1
+				}
+				if submitted.Task.PlanBinding.DefinitionRevision != stored.PlanBinding.DefinitionRevision+1 || len(submitted.Task.ProgramSources) != expectedSources {
 					t.Fatalf("authored revision lost admission: %+v", submitted.Task)
 				}
 				stored = &submitted.Task
+				if late {
+					pendingSession, _, err := db.GetSession(created.SessionID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					for _, grant := range pendingSession.WorkspaceGrants {
+						if grant.Path == second {
+							t.Fatal("publication granted secondary source before approval")
+						}
+					}
+					if scenario == "late-removed" {
+						proj.Workspaces = proj.Workspaces[:1]
+						if err := db.PutProject(f.accountID, proj); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
 			}
 			guards := tool.ProjectTaskApprovalGuards{SessionID: created.SessionID, PlanID: stored.PlanBinding.PlanID, DefinitionRevision: stored.PlanBinding.DefinitionRevision}
 			_, err = f.server.ApproveProjectTask(context.Background(), p, projectID, created.ID, guards)
-			if scenario != "approved" && scenario != "provenance" {
+			if scenario != "approved" && scenario != "provenance" && scenario != "late-discovery" {
 				if err == nil {
 					t.Fatal("invalid source admitted")
 				}
@@ -142,6 +173,21 @@ func TestProjectPlanCrossRepositorySources(t *testing.T) {
 			}
 			if err != nil {
 				t.Fatal(err)
+			}
+			if late {
+				approvedSession, _, err := db.GetSession(created.SessionID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, source := range stored.ProgramSources {
+					matched := false
+					for _, grant := range approvedSession.WorkspaceGrants {
+						matched = matched || (grant.Path == source.Path && grant.WorkspaceID == source.WorkspaceID && grant.WorkspaceGeneration == source.WorkspaceGeneration)
+					}
+					if !matched {
+						t.Fatalf("approval missing exact grant: %+v", source)
+					}
+				}
 			}
 			intents, err = db.ListRunIntents(sess.ID, 10)
 			if err != nil || len(intents) != 1 {

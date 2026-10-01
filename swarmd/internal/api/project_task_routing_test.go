@@ -35,7 +35,7 @@ func routingFixture(t *testing.T) (*matrixTestFixture, identity.Principal, *pebb
 	t.Cleanup(func() { f.db.Close() })
 	projectID := f.createProject(t)
 	p := identity.Principal{Type: identity.PrincipalTypeUser, UserID: f.userID, AccountScopeID: f.accountID}
-	proj, found, err := f.db.GetProject(f.accountID, projectID)
+	proj, found, err := f.server.sessions.Store().GetProject(f.accountID, projectID)
 	if err != nil || !found {
 		t.Fatalf("project: %v", err)
 	}
@@ -48,7 +48,7 @@ func routingFixture(t *testing.T) (*matrixTestFixture, identity.Principal, *pebb
 		t.Fatal(err)
 	}
 	proj.Workspaces = append(proj.Workspaces, pebblestore.ProjectWorkspaceRef{WorkspaceID: entry.WorkspaceID, Path: contextPath})
-	if err := f.db.PutProject(f.accountID, proj); err != nil {
+	if err := f.server.sessions.Store().PutProject(f.accountID, proj); err != nil {
 		t.Fatal(err)
 	}
 	source, err := f.server.resolveProjectTaskSource(p, proj, proj.Workspaces[0].Path, proj.Workspaces[0].WorkspaceID, 0, true)
@@ -89,8 +89,8 @@ func TestAutomaticProjectTaskRoutingAdmissionAndReplay(t *testing.T) {
 		selection["agent"], selection["prompt"] = "coder", "Fix repo error"
 		w := f.callAPI(http.MethodPost, "/"+proj.ID+"/tasks:preview", selection, p)
 		var response struct {
-			Diagnostic string `json:"workspace_diagnostic"`
-			Preview TaskModelPreview `json:"model_preview"`
+			Diagnostic string           `json:"workspace_diagnostic"`
+			Preview    TaskModelPreview `json:"model_preview"`
 		}
 		if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil || w.Code != http.StatusOK || response.Diagnostic == "" || response.Preview.ResolvedModel == nil || response.Preview.ResolvedModel.Model != "router-model" || runner.createCalls != 0 {
 			t.Fatalf("workspace hid configured model: %d %s err=%v", w.Code, w.Body.String(), err)
@@ -106,7 +106,7 @@ func TestAutomaticProjectTaskRoutingAdmissionAndReplay(t *testing.T) {
 	if created["status"] != "pending_approval" || runner.createCalls != 1 {
 		t.Fatalf("confirmation/calls: %+v %d", created, runner.createCalls)
 	}
-	saved, found, err := f.db.GetProjectTask(f.accountID, proj.ID, "automatic-routing")
+	saved, found, err := f.server.sessions.Store().GetProjectTask(f.accountID, proj.ID, "automatic-routing")
 	if err != nil || !found || saved.SourceWorkspace.Path != source.Path || saved.SourceWorkspace.Provenance != "router" || len(saved.ContextSources) != 1 || len(saved.ProgramSources) != 0 || saved.Description != body["prompt"] || saved.Agent != "coder" || saved.FeatureSize != "small" {
 		t.Fatalf("admission: %+v found=%v err=%v", saved, found, err)
 	}
@@ -114,7 +114,7 @@ func TestAutomaticProjectTaskRoutingAdmissionAndReplay(t *testing.T) {
 		t.Fatalf("review omitted involved workspaces: %+v", saved)
 	}
 	if saved.SessionID != "" {
-		intents, err := f.db.ListRunIntents(saved.SessionID, 10)
+		intents, err := f.server.sessions.Store().ListRunIntents(saved.SessionID, 10)
 		if err != nil || len(intents) != 0 {
 			t.Fatalf("unapproved run: %+v %v", intents, err)
 		}
@@ -175,7 +175,7 @@ func TestAutomaticProjectTaskRoutingRejectsInvalidWithoutReservation(t *testing.
 			if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "workspace routing") {
 				t.Fatalf("invalid route: %d %s", w.Code, w.Body.String())
 			}
-			if _, found, err := f.db.GetProjectTask(f.accountID, proj.ID, "invalid-route"); err != nil || found || f.wt.allocCalls != 0 {
+			if _, found, err := f.server.sessions.Store().GetProjectTask(f.accountID, proj.ID, "invalid-route"); err != nil || found || f.wt.allocCalls != 0 {
 				t.Fatalf("partial state: found=%v err=%v allocations=%d", found, err, f.wt.allocCalls)
 			}
 		})
@@ -212,7 +212,7 @@ func TestAutomaticProjectTaskRoutingConcurrentDuplicate(t *testing.T) {
 	if runner.createCalls != 1 {
 		t.Fatalf("duplicate called Router %d times", runner.createCalls)
 	}
-	saved, found, err := f.db.GetProjectTask(f.accountID, proj.ID, "duplicate-routing")
+	saved, found, err := f.server.sessions.Store().GetProjectTask(f.accountID, proj.ID, "duplicate-routing")
 	if err != nil || !found || saved.Status != "pending_approval" {
 		t.Fatalf("durable admission: %+v %v", saved, err)
 	}

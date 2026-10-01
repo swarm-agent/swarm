@@ -697,6 +697,11 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 		}
 	}
 	publication, publicationErr := s.authorizeTaskPlanPublication(ctx, config, call)
+	if errors.Is(publicationErr, errTaskPlanPublicationPrincipal) {
+		// A foreign caller cannot persist even a rejected tool outcome in the
+		// victim session. Legitimate authoring errors remain recoverable below.
+		return tool.Result{}, 0, publicationErr
+	}
 	if publicationErr != nil {
 		// Rejected publication is a recoverable tool outcome, not an invocation
 		// escape hatch. Use the same completion/event/message path as execution.

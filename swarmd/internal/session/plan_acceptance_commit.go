@@ -22,6 +22,7 @@ type PlanAcceptanceCommitInput struct {
 	ModeEventFields           map[string]any
 	ModePreference            pebblestore.ModelPreference
 	ModeAgentProfile          *pebblestore.AgentProfile
+	TaskProgramSources        []pebblestore.ProjectTaskSource
 	BuildLifecycleMessage     func(pebblestore.SessionPlanSnapshot, PlanExecutionSummary) *pebblestore.MessageSnapshot
 	ExpectedBindingRevision   int
 	ExpectedReceipt           string
@@ -164,6 +165,21 @@ func (s *Service) CommitV3PlanAcceptance(input PlanAcceptanceCommitInput) (PlanA
 	}
 	updatedSession := session
 	updatedSession.Mode = ModeAuto
+	// Install API-revalidated task repository grants only with plan acceptance,
+	// never while the AI is publishing a pending review.
+	updatedSession.WorkspaceGrants = append([]pebblestore.WorkspaceGrant(nil), session.WorkspaceGrants...)
+	for _, source := range input.TaskProgramSources {
+		matched := false
+		for _, grant := range updatedSession.WorkspaceGrants {
+			matched = matched || (grant.Path == source.Path && grant.WorkspaceID == source.WorkspaceID && grant.WorkspaceGeneration == source.WorkspaceGeneration)
+		}
+		if !matched {
+			updatedSession.WorkspaceGrants = append(updatedSession.WorkspaceGrants, pebblestore.WorkspaceGrant{Kind: pebblestore.WorkspaceGrantAdditional, Path: source.Path, WorkspaceID: source.WorkspaceID, WorkspaceGeneration: source.WorkspaceGeneration})
+		}
+	}
+	if len(input.TaskProgramSources) > 0 {
+		updatedSession.WorkspaceUsage = pebblestore.WorkspaceUsageFromGrants(updatedSession.WorkspaceGrants)
+	}
 	hasExplicitPreference := strings.TrimSpace(input.ModePreference.Provider) != "" || strings.TrimSpace(input.ModePreference.Model) != ""
 	if len(input.ModeEventFields) > 0 {
 		if !hasExplicitPreference {

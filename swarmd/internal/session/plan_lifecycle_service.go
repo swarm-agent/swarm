@@ -380,9 +380,6 @@ func (s *PlanLifecycleService) SubmitProjectTaskStructuredPlan(input ProjectTask
 	if task.Archived {
 		return ProjectTaskPlanSubmissionResult{}, errors.New("archived task cannot publish a plan")
 	}
-	if err := pebblestore.ValidateTaskPlanSources(task, input.Document); err != nil {
-		return ProjectTaskPlanSubmissionResult{}, err
-	}
 	if task.AccountID != "" && task.AccountID != input.AccountScopeID {
 		return ProjectTaskPlanSubmissionResult{}, errors.New("cross-account plan submission forbidden")
 	}
@@ -394,6 +391,11 @@ func (s *PlanLifecycleService) SubmitProjectTaskStructuredPlan(input ProjectTask
 	}
 
 	now := time.Now().UnixMilli()
+
+	sources, err := s.sessions.store.ResolveTaskPlanPublicationSources(task, input.Document)
+	if err != nil {
+		return ProjectTaskPlanSubmissionResult{}, err
+	}
 
 	// Derive deterministic stable session ID if not set
 	sessionID := strings.TrimSpace(input.SessionID)
@@ -564,6 +566,7 @@ func (s *PlanLifecycleService) SubmitProjectTaskStructuredPlan(input ProjectTask
 	receipt = hex.EncodeToString(hashSum[:])
 
 	nextTask := *task
+	nextTask.ProgramSources = sources
 	nextTask.SessionID = sessionID
 	nextTask.WorkspacePath = wsPath
 	nextTask.PlanBinding = &pebblestore.ProjectTaskPlanBinding{PlanID: planID, DefinitionRevision: version, SessionID: sessionID, Receipt: receipt}

@@ -1075,6 +1075,9 @@ func (s *Server) ApproveProjectTask(ctx context.Context, p identity.Principal, p
 	if proj.AccountID != "" && proj.AccountID != p.AccountScopeID {
 		return nil, errors.New("cross-account project access forbidden")
 	}
+	// Publication stores the canonical document on the session, not the task.
+	// Revalidate its repository lanes before any acceptance or dispatch.
+	hydrateTaskPlanDocument(existingTask, db)
 	if err := s.revalidateProjectTaskSource(p, proj, existingTask); err != nil {
 		return nil, err
 	}
@@ -1267,6 +1270,7 @@ func (s *Server) ApproveProjectTask(ctx context.Context, p identity.Principal, p
 				},
 				ModePreference:            pref,
 				ModeAgentProfile:          &swarmProfile,
+				TaskProgramSources:        existingTask.ProgramSources,
 				ExpectedBindingRevision:   expectedRev,
 				ExpectedReceipt:           originalReceipt,
 				AcceptedDefinitionReceipt: originalReceipt,
