@@ -81,3 +81,22 @@ test('app discovery and task/worker links preserve exact wire contracts', async 
   await assert.rejects(client.apps.worker('editor', '../worker'));
   assert.equal(calls.length, 6);
 });
+
+// Purpose: linked configuration and deliveries must preserve CAS/retry identity
+// and never fall back to unlinked worker routes. Serialization is the narrow SDK layer.
+test('app automation configuration and trigger preserve guards', async () => {
+  const client = new SwarmClient(); const calls: Array<{ path: string; options: any }> = [];
+  client.transport.request = (async (path: string, options: any) => { calls.push({ path, options }); return { data: {} }; }) as typeof client.transport.request;
+  const automation = { name: 'Draft', activation_mode: 'manual', plan_document: { title: 'Draft' } };
+  await client.apps.configureAutomation('editor', 'worker', 7, automation, 'job');
+  assert.equal(calls[0].path, '/v3/application-agents/editor/workers/worker/automations/job');
+  assert.equal(calls[0].options.method, 'PUT');
+  assert.equal(calls[0].options.body.expected_worker_revision, 7);
+  const input = { worker_id: 'worker', automation_id: 'job', idempotency_key: 'delivery-1', payload: { message: 'Draft' } };
+  await client.apps.trigger('editor', input); await client.apps.trigger('editor', input);
+  assert.deepEqual(calls[1], calls[2]);
+  assert.equal(calls[1].options.body.idempotency_key, 'delivery-1');
+  await assert.rejects(client.apps.configureAutomation('editor', 'worker', 0, automation));
+  await assert.rejects(client.apps.trigger('editor', { ...input, automation_id: '../job' }));
+  assert.equal(calls.length, 3);
+});

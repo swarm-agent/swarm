@@ -6,6 +6,35 @@ const text = (value, max = 128) => {
 export function operations(sdk) {
   return async function run(op, b = {}) {
     switch (op) {
+      case 'projects': return sdk.projects.list({ limit: 100 });
+      case 'workers': return sdk.workers.list({ limit: 100 });
+      case 'provider-status': {
+        const status = await sdk.auth.credentials.list({ limit: 100 });
+        return { records: status.records.map(r => ({ provider: r.provider, active: r.active, connected: r.connection?.connected === true })) };
+      }
+      case 'workspaces': return sdk.workspaces.list({ limit: 100 });
+      case 'configure': {
+        const { worker } = await sdk.apps.worker(text(b.id), text(b.worker_id));
+        if (worker.revision !== b.revision) throw Object.assign(new Error('Stale revision'), { status: 409 });
+        const existing = worker.automations?.find(a => a.id === b.automation_id);
+        if (!existing) throw new Error('Select an existing automation');
+        if (!['manual', 'interval', 'cron', 'external_trigger'].includes(b.mode)) throw new Error('Invalid activation');
+        const automation = { name: existing.name, description: existing.description || '', activation_mode: b.mode,
+          enabled: existing.enabled, plan_document: existing.plan_document,
+          input_requirements: existing.input_requirements || [], deliverable_requirements: existing.deliverable_requirements || [] };
+        if (b.mode === 'interval') {
+          if (!Number.isSafeInteger(b.seconds) || b.seconds < 60) throw new Error('Interval must be at least 60 seconds');
+          automation.schedule = { kind: 'interval', interval_seconds: b.seconds };
+        }
+        if (b.mode === 'cron') automation.schedule = { kind: 'cron', cron: text(b.cron, 256), timezone: text(b.timezone, 128) };
+        if (b.mode === 'external_trigger') {
+          // Preserve the approved input/trigger contract instead of inventing a schema.
+          if (!existing.trigger) throw new Error('Configure the initial trigger contract in Orchestrator');
+          automation.trigger = existing.trigger;
+        }
+        return sdk.apps.configureAutomation(b.id, b.worker_id, b.revision, automation, existing.id);
+      }
+      case 'trigger': return sdk.apps.trigger(text(b.id), { worker_id: text(b.worker_id), automation_id: text(b.automation_id), payload: { message: text(b.content, 16000) }, idempotency_key: text(b.request_id) });
       case 'agents': return sdk.apps.list({ limit: 50, ...(b.cursor ? { cursor: text(b.cursor) } : {}) });
       case 'agent': return sdk.apps.get(text(b.id));
       case 'save': {

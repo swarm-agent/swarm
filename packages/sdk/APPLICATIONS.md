@@ -64,8 +64,36 @@ const runs = await client.apps.runs(agent.id, linkedWorkerId);
 
 Projects, tasks and workers retain their own server-side context, revision,
 trigger and result contracts. Task requests go through canonical project admission;
-worker access through this facade is read-only. Unlinked worker IDs are rejected.
+linked configuration uses `apps.configureAutomation(id, workerId, revision, input, automationId?)`;
+`apps.trigger(id, {worker_id, automation_id, payload, idempotency_key})` preserves delivery identity.
+Unlinked worker IDs are rejected. Canonical worker scopes, revisions and approval gates remain enforced;
+activation, deployment, enable/disable and token minting are deliberately not forwarded.
 The editable `examples/agent-hub` UI demonstrates these calls.
 Task execution may have internal durable sessions without requiring chat in your UX.
 Worker deployment/automation management is an Orchestrator operation. These snippets
 are API usage examples, not a claim of a live deployed or cloud-verified workflow.
+
+## Automatic results without a chat UI
+
+<copy>
+const results = client.apps.watchResults(agent.id, {
+  onChange: ({ tasks, workers }) => renderResults(tasks, workers),
+  onError: () => showReconnectButton(),
+});
+await results.ready;
+// On logout, navigation or component disposal:
+results.dispose();
+await results.done;
+
+const chat = await client.apps.watchConversation(agent.id, conversation.id, {
+  onChange: ({ messages, live }) => renderConversation(messages, live),
+});
+</copy>
+
+Watchers use the existing authenticated V3 socket, opaque snapshot resume cursors,
+authorized resource reads and bounded reconnects. No polling or new execution state
+is introduced. The resource watcher uses the daemon's account-scoped, content-free
+worker invalidation signals; project invalidations are filtered by the linked ID.
+It returns bounded task/run lists, not an unlimited event ledger. Disconnects re-read
+durable state, not transient event payloads. Browser apps should stream these selected
+results through their authenticated BFF; never send daemon credentials to the browser.

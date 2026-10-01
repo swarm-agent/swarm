@@ -47,3 +47,50 @@ test('hub authentication, CSRF, origin and error redaction fail closed', async (
   assert.equal((await invoke('/api', { op: 'agents' }, auth)).status, 401); assert.equal(effects, 1);
   assert.throws(() => appHandler({}, { origin: 'http://0.0.0.0:8787', accessToken: token }));
 });
+
+// Purpose: the authenticated streaming boundary must deny CSRF before opening an
+// SDK watch, redact upstream failures and dispose every stream on logout.
+// Request/response objects isolate this BFF lifecycle without provider execution.
+test('hub stream authorization and logout dispose SDK resources', { timeout: 2000 }, async () => {
+  const { EventEmitter } = await import('node:events');
+  const token = 'b'.repeat(64), origin = 'http://127.0.0.1:8787';
+  let opened = 0, disposed = 0, emit;
+  const handler = appHandler({ apps: { watchResults: (_id, options) => {
+    opened++; emit = options.onChange;
+    let finish; const done = new Promise(resolve => { finish = resolve; });
+    options.signal.addEventListener('abort', () => { disposed++; finish(); }, { once: true });
+    return { done, dispose() {}, ready: Promise.resolve() };
+  } } }, { origin, accessToken: token });
+  function invoke(path, body, headers = {}) {
+    const req = Readable.from([Buffer.from(JSON.stringify(body))]);
+    Object.assign(req, { url: path, method: 'POST', headers: { host: '127.0.0.1:8787', origin, 'content-type': 'application/json', ...headers } });
+    const res = new EventEmitter();
+    Object.assign(res, { headers: {}, chunks: [], setHeader(k, v) { this.headers[k] = v; }, writeHead(status, headers) { this.status = status; this.headersSent = true; Object.assign(this.headers, headers); }, write(chunk) { this.chunks.push(chunk); return true; }, end(body) { if (body) this.body = JSON.parse(body); } });
+    return { res, done: handler(req, res) };
+  }
+  const login = invoke('/login', { token }); await login.done;
+  const auth = { cookie: login.res.headers['Set-Cookie'].split(';')[0], 'x-csrf-token': login.res.body.csrf };
+  const denied = invoke('/stream', { id: 'editor' }, { ...auth, 'x-csrf-token': '' }); await denied.done;
+  assert.equal(denied.res.status, 403); assert.equal(opened, 0);
+  const stream = invoke('/stream', { id: 'editor' }, auth); await new Promise(setImmediate);
+  assert.equal(opened, 1); emit({ tasks: [] }); assert.equal(stream.res.chunks.length, 1);
+  const logout = invoke('/logout', {}, auth); await logout.done; await stream.done;
+  assert.equal(disposed, 1); emit({ tasks: ['late'] }); assert.equal(stream.res.chunks.length, 1);
+});
+
+// Purpose: configuration must preserve an existing plan/input contract and reject
+// stale revisions without writes; the BFF operation is the narrow mapping boundary.
+test('configuration preserves plan and rejects stale writes', async () => {
+  const writes = [], plan = { title: 'Approved job' };
+  const run = operations({ apps: {
+    worker: async () => ({ worker: { revision: 4, automations: [{ id: 'job', name: 'Draft', enabled: true, plan_document: plan }] } }),
+    configureAutomation: async (...args) => { writes.push(args); return {}; },
+  } });
+  const input = { id: 'editor', worker_id: 'worker', automation_id: 'job', revision: 4, mode: 'interval', seconds: 3600 };
+  await assert.rejects(run('configure', { ...input, revision: 3 }));
+  await assert.rejects(run('configure', { ...input, seconds: 0 }));
+  assert.equal(writes.length, 0);
+  await run('configure', input);
+  assert.equal(writes[0][2], 4); assert.deepEqual(writes[0][3].plan_document, plan);
+  assert.deepEqual(writes[0][3].schedule, { kind: 'interval', interval_seconds: 3600 });
+});

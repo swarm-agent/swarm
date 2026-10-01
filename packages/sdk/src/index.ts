@@ -22,3 +22,5 @@ export type { ApplicationAgent, ApplicationAgentWrite, ApplicationConversationPa
 export * from './settings.js';
 export * from './provider-auth.js';
 export * from './realtime.js';
+
+export type { ApplicationResults, ApplicationResultsOptions } from './app-results.js';

@@ -10,7 +10,7 @@ export function appHandler(sdk, { origin, accessToken }) {
   if (url.origin !== origin || url.hostname !== '127.0.0.1' || url.protocol !== 'http:') throw new Error('Use exact loopback HTTP origin; remote access requires a private tunnel');
   if (typeof accessToken !== 'string' || accessToken.length < 32) throw new Error('APP_ACCESS_TOKEN must contain at least 32 characters');
   const run = operations(sdk), sessions = new Map();
-  let attempts = 0, reset = 0, inflight = 0;
+  let attempts = 0, reset = 0, inflight = 0, streams = 0;
   const equal = (a, b) => typeof a === 'string' && Buffer.byteLength(a) === Buffer.byteLength(b) && timingSafeEqual(Buffer.from(a), Buffer.from(b));
   return async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
@@ -39,14 +39,45 @@ export function appHandler(sdk, { origin, accessToken }) {
         for (const [id, session] of sessions) if (session.expires < Date.now()) sessions.delete(id);
         if (sessions.size >= 8) return json(429, { error: 'Login limit reached' });
         const id = randomBytes(32).toString('hex'), csrf = randomBytes(32).toString('hex');
-        sessions.set(id, { csrf, expires: Date.now() + 8 * 3600000 });
+        sessions.set(id, { csrf, expires: Date.now() + 8 * 3600000, streams: new Set() });
         res.setHeader('Set-Cookie', `hub=${id}; Path=/; HttpOnly; SameSite=Strict; Max-Age=28800`);
         return json(200, { csrf });
       }
       const id = /(?:^|;\s*)hub=([a-f0-9]{64})(?:;|$)/.exec(req.headers.cookie ?? '')?.[1], session = sessions.get(id);
       if (!session || session.expires < Date.now()) return json(401, { error: 'Unlock this app' });
       if (!equal(req.headers['x-csrf-token'], session.csrf)) return json(403, { error: 'Invalid CSRF token' });
-      if (req.url === '/logout') { sessions.delete(id); res.setHeader('Set-Cookie', 'hub=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0'); return json(200, { ok: true }); }
+      if (req.url === '/logout') { for (const stop of session.streams) stop(); sessions.delete(id); res.setHeader('Set-Cookie', 'hub=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0'); return json(200, { ok: true }); }
+      if (req.url === '/stream') {
+        if (session.streams.size >= 2 || streams >= 8) return json(429, { error: 'Stream limit reached' });
+        if (typeof b.id !== 'string' || !b.id || b.id.length > 128 || (b.session_id !== undefined && (typeof b.session_id !== 'string' || !b.session_id || b.session_id.length > 128))) return json(400, { error: 'Valid agent and conversation required' });
+        const controller = new AbortController();
+        let watch;
+        const stop = () => { if (controller.signal.aborted) return; controller.abort(); watch?.dispose(); res.end(); };
+        streams++;
+        session.streams.add(stop);
+        res.on('close', stop);
+        const expiry = setTimeout(stop, Math.max(0, session.expires - Date.now()));
+        try {
+          // SDK performs ownership checks before emitting data. No raw daemon frames escape.
+          const emit = data => {
+            if (controller.signal.aborted || session.expires <= Date.now() || !sessions.has(id)) return stop();
+            const line = JSON.stringify(data) + '\n';
+            if (Buffer.byteLength(line) > 1024 * 1024) return stop();
+            if (!res.headersSent) res.writeHead(200, { 'Content-Type': 'application/x-ndjson' });
+            if (!res.write(line)) stop(); // Bound slow-client buffering; reconnect rehydrates.
+          };
+          watch = b.session_id
+            ? await sdk.apps.watchConversation(b.id, b.session_id, { signal: controller.signal, onChange: state => emit({ conversation: { messages: state.messages, live: state.live, status: state.status } }) })
+            : sdk.apps.watchResults(b.id, { signal: controller.signal, onChange: results => emit({ results }) });
+          await watch.done;
+        } catch {
+          if (!controller.signal.aborted) {
+            if (!res.headersSent) json(400, { error: 'Stream unavailable. Check permissions.' });
+            else res.end();
+          }
+        } finally { streams--; clearTimeout(expiry); session.streams.delete(stop); res.removeListener('close', stop); stop(); }
+        return;
+      }
       if (req.url !== '/api') return json(404, { error: 'Unknown route' });
       return json(200, await run(b.op, b));
     } catch (error) {

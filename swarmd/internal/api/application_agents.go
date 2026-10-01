@@ -23,7 +23,8 @@ type applicationAgentBinding struct {
 }
 
 // This API deliberately remains behind the authenticated local API, not the
-// container session-listener allowlist. It does not grant worker management.
+// container session-listener allowlist. Linked configuration retains worker scopes
+// and review gates; activation, deployment and token minting are not forwarded.
 func (s *Server) handleApplicationAgents(w http.ResponseWriter, r *http.Request) {
 	principal, ok := PrincipalFromRequest(r)
 	if !ok || !principal.Valid() {
@@ -171,7 +172,7 @@ func (s *Server) handleApplicationAgents(w http.ResponseWriter, r *http.Request)
 				linked = true
 			}
 		}
-		if !linked || len(parts) > 4 || (len(parts) == 4 && parts[3] != "runs") || r.Method != http.MethodGet {
+		if !linked || !applicationWorkerRouteAllowed(r.Method, parts[3:]) {
 			http.NotFound(w, r)
 			return
 		}
@@ -248,6 +249,33 @@ func (s *Server) handleApplicationAgents(w http.ResponseWriter, r *http.Request)
 	clone.URL = &urlCopy
 	clone.URL.Path = "/v3/sessions/" + strings.Join(parts[2:], "/")
 	s.handleSessionV3PrimaryByID(w, clone)
+}
+
+// Exact allowlist: never turn the application facade into a worker admin proxy.
+func applicationWorkerRouteAllowed(method string, tail []string) bool {
+	for _, part := range tail {
+		if part == "" || part == "." || part == ".." || strings.ContainsAny(part, "\\\\") || strings.ContainsRune(part, 0) {
+			return false
+		}
+	}
+	if len(tail) == 0 {
+		return method == http.MethodGet
+	}
+	if len(tail) == 1 {
+		switch tail[0] {
+		case "runs":
+			return method == http.MethodGet
+		case "automations", "trigger":
+			return method == http.MethodPost
+		}
+	}
+	if len(tail) == 2 && tail[0] == "automations" {
+		return method == http.MethodPut || method == http.MethodDelete
+	}
+	if len(tail) == 3 && tail[0] == "automations" && tail[2] == "trigger" {
+		return method == http.MethodPost
+	}
+	return false
 }
 
 func readApplicationAgentBinding(metadata map[string]any) (applicationAgentBinding, error) {

@@ -39,15 +39,19 @@ created by these commands.
 4. Link existing workers and view configured automations/triggers and durable runs.
 
 Task requests retain the canonical project admission/approval lifecycle. Worker
-creation, activation and trigger changes stay with Orchestrator. The UI does not
+creation and activation stay with Orchestrator; existing automation configuration is submitted through canonical revision/review gates. The UI does not
 publish social content or deploy workers. Instructions/context are pinned per
 conversation; project and worker context remain independent and are not silently
 synchronized. The UI labels this distinction.
 
 ## Limits and extending it
 
-- The app uses explicit Refresh, not polling or invented live output. Use the V3
-  realtime SDK contract when available in your selected source revision.
+- The app streams conversations and linked task/worker results through authenticated,
+  CSRF-protected POST streams. V3 durable notifications invalidate authorized reads;
+  reconnect rehydrates state. Logout, expiry and disconnect dispose streams. Refresh
+  reconnects an exhausted stream. No periodic polling is used.
+- Resource pickers show the first 100 accessible resources; use the SDK pagination
+  for larger catalogs. Initial worker plans/trigger schemas are authored in Orchestrator.
 - Application-agent discovery is paginated. Conversation discovery exposes a
   bounded recent 1,000-session scan and indicates truncation; retained IDs reopen
   directly. No browser local-storage identity list is necessary.

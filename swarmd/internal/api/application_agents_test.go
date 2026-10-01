@@ -167,3 +167,68 @@ func TestApplicationAgentDiscoveryAndResourceGuards(t *testing.T) {
 		t.Fatal("cross-account discovery")
 	}
 }
+
+// Purpose: the app facade must not proxy deployment/token/admin operations or let
+// a linked worker bypass canonical token/revision checks. Direct HTTP and a real
+// worker store prove rejection leaves the worker unchanged without execution.
+func TestApplicationAgentWorkerForwardingGuards(t *testing.T) {
+	s, db, _ := setupWorkerAPITestServer(t)
+	p := testPrincipal()
+	p.AccountScopeID = "acct-test"
+	p.UserID = "user-test"
+	ws := pebblestore.NewWorkerStore(db)
+	worker, err := ws.CreateWorker(p.AccountScopeID, p.UserID, pebblestore.CreateWorkerRequest{Name: "Linked", Instructions: "Draft", IdempotencyKey: "app-worker"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.sessions.Store().PutApplicationAgent(p.AccountScopeID, p.UserID, pebblestore.ApplicationAgent{ID: "editor", Name: "Editor", WorkerIDs: []string{worker.ID}}, 0); err != nil {
+		t.Fatal(err)
+	}
+	root := "/v3/application-agents/editor/workers/" + worker.ID
+	for _, tc := range []struct {
+		path   string
+		token  *pebblestore.ScopedTokenRecord
+		status int
+	}{
+		{root + "/activate", nil, 404},
+		{root + "/token", nil, 404},
+		{root + "/automations/a/enable", nil, 404},
+		{root + "/automations", &pebblestore.ScopedTokenRecord{Scopes: []string{"sessions:write"}}, 403},
+		{root + "/automations", &pebblestore.ScopedTokenRecord{Scopes: []string{"sessions:write", "automations:write"}, WorkerID: "foreign"}, 403},
+		{root + "/automations", nil, 400},
+	} {
+		r := requestWithTestPrincipalForAccount(httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(`{"automation":{"name":"New"}}`)), p.UserID, p.AccountScopeID)
+		if tc.token != nil {
+			r = requestWithScopedToken(r, tc.token)
+		}
+		w := httptest.NewRecorder()
+		s.handleApplicationAgents(w, r)
+		if w.Code != tc.status {
+			t.Fatalf("%s: got %d want %d: %s", tc.path, w.Code, tc.status, w.Body.String())
+		}
+	}
+	after, found, err := s.sessions.GetWorker(p.AccountScopeID, worker.ID)
+	if err != nil || !found || after.Revision != worker.Revision || len(after.Automations) != 0 || after.LifecycleState != worker.LifecycleState {
+		t.Fatalf("rejected forwarding changed worker: %+v %v", after, err)
+	}
+}
+
+// Purpose: exact route/method dispatch prevents future worker admin routes from
+// becoming app authority accidentally. This pure allowlist test complements HTTP.
+func TestApplicationWorkerRouteAllowlist(t *testing.T) {
+	for _, tc := range []struct {
+		method, path string
+		allowed      bool
+	}{
+		{"GET", "runs", true}, {"POST", "automations", true},
+		{"PUT", "automations/a", true}, {"DELETE", "automations/a", true},
+		{"POST", "automations/a/trigger", true}, {"POST", "trigger", true},
+		{"GET", "automations", false}, {"POST", "deploy", false},
+		{"POST", "automations/a/enable", false}, {"POST", "automations/../trigger", false},
+		{"POST", "automations/a/trigger/extra", false},
+	} {
+		if got := applicationWorkerRouteAllowed(tc.method, strings.Split(tc.path, "/")); got != tc.allowed {
+			t.Fatalf("%s %s: %v", tc.method, tc.path, got)
+		}
+	}
+}
