@@ -45,7 +45,7 @@ const (
 	sessionV3ReasoningDeltaFlushMaxBytes       = 4096
 	sessionV3ReasoningDeltaFlushMaxDelay       = 500 * time.Millisecond
 	sessionV3ReasoningEventType                = "v3_provider_reasoning"
-	sessionV3RunStopDefaultReason              = "run stopped by user"
+	sessionV3RunStopDefaultReason              = pebblestore.V3RunStoppedByUser
 	sessionV3TitleDefault                      = "New Session"
 	sessionV3TitleConversationLimit            = 24
 	sessionV3TitlePromptPreviewRunes           = 2000
@@ -3497,6 +3497,9 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 					return sessionV3ProviderLoopResult{}, errors.New(reason)
 				}
 			}
+		}
+		if err := ctx.Err(); err != nil {
+			return sessionV3ProviderLoopResult{}, err
 		}
 		if len(response.FunctionCalls) == 0 && !response.RestartTurn {
 			if planGuardArmed {

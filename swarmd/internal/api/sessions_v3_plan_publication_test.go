@@ -44,8 +44,10 @@ func TestV3TerminalPlanRejectsErrors(t *testing.T) {
 // publication through runProviderToolLoop and the actual run.Service invoker.
 // Durable tool messages, exact plan binding and Plan mode are postconditions;
 // provider prose and a tool-name wrapper must never substitute for publication.
+// The paused case additionally proves chat admission atomically transfers task
+// ownership, retains feedback, and rejects delayed old-run finalization.
 func TestV3PlanPublicationErrorContinues(t *testing.T) {
-	for _, invalid := range []string{`{"action":"help"}`, `{}`, `{"document":{}}`, `{"action":"help","end_without_plan":true}`} {
+	for _, invalid := range []string{`{"action":"help"}`, `{}`, `{"document":{}}`, `{"action":"help","end_without_plan":true}`, `{"action":"help","resume_paused":true}`, `{"action":"help","cancel_response":true}`} {
 		t.Run(invalid, func(t *testing.T) {
 			server, sessions, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 			configureAssistantOrderTestProvider(t, server)
@@ -77,6 +79,45 @@ func TestV3PlanPublicationErrorContinues(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			if strings.Contains(invalid, "resume_paused") {
+				oldJob := job
+				if _, _, err := exec.CancelRun(job, sessionV3RunStopDefaultReason); err != nil {
+					t.Fatal(err)
+				}
+				paused, _, err := sessions.Store().GetProjectTask(current.AccountScopeID, "project", "task")
+				if err != nil {
+					t.Fatal(err)
+				}
+				syncTaskSessionState(paused, sessions.Store())
+				if paused.Status != "planning" || paused.LastError != "" || paused.ExecutionRunID() != oldJob.RunID {
+					t.Fatalf("pause lost ownership: %+v", paused)
+				}
+				// A fresh executor must work solely from durable state, not its old run map.
+				exec = newSessionV3Executor(server)
+				server.v3SessionExecutor = exec
+				request := sessionsV3MessageRequest{ClientRequestID: "resume-planning", Role: "user", Content: "Keep all earlier requirements and add keyboard navigation."}
+				accepted, next, err := server.acceptSessionsV3Message(testPrincipal(), created.ID, request)
+				if err != nil || next == nil || accepted.Message == nil || accepted.Message.Content != request.Content {
+					t.Fatalf("resume admission: %+v %+v %v", accepted, next, err)
+				}
+				job = *next
+				resumed, _, err := sessions.Store().GetProjectTask(current.AccountScopeID, "project", "task")
+				if err != nil || resumed.ExecutionRunID() != job.RunID || resumed.ActiveAttemptID != "initial" || resumed.SessionID != created.ID || resumed.WorkspacePath != paused.WorkspacePath {
+					t.Fatalf("resume owner: %+v %v", resumed, err)
+				}
+				for _, status := range []string{sessionruntime.RunIntentCompleted, sessionruntime.RunIntentFailed, sessionruntime.RunIntentCancelled} {
+					if err := server.reconcileProjectTaskRunLifecycle(oldJob, status, "late callback"); err != nil {
+						t.Fatal(err)
+					}
+				}
+				afterLate, _, _ := sessions.Store().GetProjectTask(current.AccountScopeID, "project", "task")
+				if afterLate.Revision != resumed.Revision || afterLate.Status != "planning" || afterLate.ExecutionRunID() != job.RunID {
+					t.Fatalf("late callback changed resumed owner: %+v", afterLate)
+				}
+				if _, err := exec.recordRunStatus(job, sessionruntime.RunIntentRunning, "", "session.assistant.started"); err != nil {
+					t.Fatal(err)
+				}
+			}
 			resolved, err := exec.resolveSessionV3Runtime(job)
 			if err != nil {
 				t.Fatal(err)
@@ -87,6 +128,8 @@ func TestV3PlanPublicationErrorContinues(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
 			runner.handler = func(_ context.Context, req provideriface.Request, _ func(provideriface.StreamEvent)) (provideriface.Response, error) {
 				switch runner.callCount {
 				case 1:
@@ -112,6 +155,10 @@ func TestV3PlanPublicationErrorContinues(t *testing.T) {
 					if err != nil || before.Status != "planning" || before.PlanBinding != nil {
 						t.Fatalf("premature publication: %+v %v", before, err)
 					}
+					if strings.Contains(invalid, "cancel_response") {
+						cancel()
+						return provideriface.Response{Text: "partial planning", StopReason: "stop"}, nil
+					}
 					if strings.Contains(invalid, "end_without_plan") {
 						return provideriface.Response{Text: "Investigation done", StopReason: "stop"}, nil
 					}
@@ -120,11 +167,15 @@ func TestV3PlanPublicationErrorContinues(t *testing.T) {
 					return provideriface.Response{}, fmt.Errorf("unexpected provider step %d", runner.callCount)
 				}
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
 			sink := newSessionV3DurableProgressSink(exec, job, cancel)
 			defer sink.CloseAndFlush(ctx)
 			result, err := exec.runProviderToolLoop(ctx, job, resolved, runner, baseReq, sink, nil)
+			if strings.Contains(invalid, "cancel_response") {
+				if err == nil || strings.Contains(err.Error(), "without publishing") || result.TerminalPlanHandled {
+					t.Fatalf("cancelled response misclassified: %+v %v", result, err)
+				}
+				return
+			}
 			if strings.Contains(invalid, "end_without_plan") {
 				if err == nil || !strings.Contains(err.Error(), "without publishing") || result.TerminalPlanHandled {
 					t.Fatalf("missing plan falsely succeeded: %+v %v", result, err)

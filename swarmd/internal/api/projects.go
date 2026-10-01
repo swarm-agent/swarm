@@ -347,7 +347,10 @@ func syncTaskSessionState(task *pebblestore.ProjectTaskRecord, db *pebblestore.S
 			// Publication owns pending_approval and its exact receipt binding.
 			// Hydration must not manufacture a review from an unrelated active plan.
 			runState, runFound, _ := db.GetV3SessionRunState(task.SessionID)
-			if runFound && !runState.Active && runState.Status != pebblestore.V3RunIntentPendingExecutor && runState.Status != pebblestore.V3RunIntentRunning {
+			if runFound && runState.AccountScopeID == task.AccountID && runState.RunID == task.ExecutionRunID() && !runState.Active && runState.Status != pebblestore.V3RunIntentPendingExecutor && runState.Status != pebblestore.V3RunIntentRunning {
+				if pebblestore.IsPausedTaskPlanningRun(runState.Status, runState.BlockedReason) {
+					return
+				}
 				switch runState.Status {
 				case pebblestore.V3RunIntentCancelled, pebblestore.V3RunIntentFailed, pebblestore.V3RunIntentExpired, pebblestore.V3RunIntentInterrupted, pebblestore.V3RunIntentDispatchBlocked:
 					task.Status = "failed"

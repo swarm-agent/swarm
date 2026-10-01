@@ -58,6 +58,15 @@ func (s *Server) reconcileProjectTaskRunLifecycle(job sessionV3ExecutorJob, stat
 		return err
 	}
 	isPrimarySession := task.SessionID == job.SessionID
+	if isPrimarySession && task.Status == "planning" {
+		state, found, stateErr := db.GetV3SessionRunState(job.SessionID)
+		if stateErr != nil {
+			return stateErr
+		}
+		if !found || state.AccountScopeID != accountScopeID || state.RunID != job.RunID || state.Status != status || task.ExecutionRunID() != job.RunID || pebblestore.IsPausedTaskPlanningRun(state.Status, state.BlockedReason) {
+			return nil
+		}
+	}
 	if isPrimarySession && task.ActiveAttemptID != "" && task.ActiveAttemptID != "initial" {
 		state, found, err := db.GetV3SessionRunState(job.SessionID)
 		if err != nil {
@@ -150,7 +159,7 @@ func (s *Server) reconcileProjectTaskRunLifecycle(job sessionV3ExecutorJob, stat
 			// Canonical publication already transitions the task with its receipt.
 			// A merely active session plan is not evidence of task publication.
 			_, err = db.UpdateProjectTask(accountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
-				if t.SessionID != job.SessionID || t.Status != "planning" {
+				if t.SessionID != job.SessionID || t.Status != "planning" || t.ExecutionRunID() != job.RunID {
 					return nil
 				}
 				t.Status = "failed"
@@ -177,7 +186,7 @@ func (s *Server) reconcileProjectTaskRunLifecycle(job sessionV3ExecutorJob, stat
 		}
 		gitState := inspectTaskGitState(*task, db)
 		_, err = db.UpdateProjectTask(accountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
-			if t.SessionID != job.SessionID {
+			if t.SessionID != job.SessionID || (t.Status == "planning" && t.ExecutionRunID() != job.RunID) {
 				return nil
 			}
 			if t.IsIntegrated || t.Status == "completed" || t.Status == "rejected" {
@@ -233,7 +242,7 @@ func (s *Server) reconcileProjectTaskRunLifecycle(job sessionV3ExecutorJob, stat
 		return err
 	case sessionruntime.RunIntentCancelled:
 		_, err = db.UpdateProjectTask(accountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
-			if t.SessionID != job.SessionID {
+			if t.SessionID != job.SessionID || (t.Status == "planning" && t.ExecutionRunID() != job.RunID) {
 				return nil
 			}
 			if t.IsIntegrated || t.Status == "completed" || t.Status == "rejected" {
@@ -252,7 +261,7 @@ func (s *Server) reconcileProjectTaskRunLifecycle(job sessionV3ExecutorJob, stat
 		return err
 	case sessionruntime.RunIntentFailed, sessionruntime.RunIntentExpired, sessionruntime.RunIntentInterrupted, sessionruntime.RunIntentDispatchBlocked:
 		_, err = db.UpdateProjectTask(accountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
-			if t.SessionID != job.SessionID {
+			if t.SessionID != job.SessionID || (t.Status == "planning" && t.ExecutionRunID() != job.RunID) {
 				return nil
 			}
 			if t.IsIntegrated || t.Status == "completed" || t.Status == "rejected" {

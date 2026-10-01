@@ -679,6 +679,12 @@ func (s *SessionStore) ApplyV3SessionMutation(input V3SessionMutationInput) (V3S
 		return s.applyV3PlanAcceptanceMutation(input)
 	}
 
+	// Task chat continuation shares the project lock with reopen/archive. Take it
+	// before session locks, matching project mutation lock ordering.
+	if input.Kind == V3SessionMutationAppendMessage && input.RunIntent != nil && input.Message != nil && strings.EqualFold(input.Message.Role, "user") {
+		s.store.projectsMu.Lock()
+		defer s.store.projectsMu.Unlock()
+	}
 	lockIDs := []string{input.SessionID}
 	if input.WorktreeRecovery != nil {
 		lockIDs = append(lockIDs, input.WorktreeRecovery.OwnerSessionID)
@@ -909,6 +915,15 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 	session, sessionProvided, err := s.prepareV3SessionForMutation(input, seq, now)
 	if err != nil {
 		return V3SessionMutationResult{}, err
+	}
+	if runIntentProvided {
+		continuation, continuationErr := s.prepareTaskPlanningContinuation(input, runIntent, now)
+		if continuationErr != nil {
+			return V3SessionMutationResult{}, continuationErr
+		}
+		if continuation != nil {
+			input.projectRealtime = continuation
+		}
 	}
 	worktreeOwnership, err := s.prepareWorktreeOwnership(input, session)
 	if err != nil {
