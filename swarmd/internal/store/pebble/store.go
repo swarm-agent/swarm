@@ -30,8 +30,8 @@ type Store struct {
 	environmentPublisherMu      sync.RWMutex
 	environmentPublisher        func(V3RealtimeOutboxRecord)
 	designMu                    sync.Mutex
-	designWakeMu sync.Mutex
-	designWake chan struct{}
+	designWakeMu                sync.Mutex
+	designWake                  chan struct{}
 	projectsMu                  sync.Mutex
 	projectPublisherMu          sync.RWMutex
 	projectPublisher            func(V3RealtimeOutboxRecord)

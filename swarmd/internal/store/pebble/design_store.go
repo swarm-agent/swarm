@@ -55,12 +55,12 @@ type DesignRef struct {
 }
 
 type DesignContextSnapshot struct {
-	LineStart int `json:"line_start,omitempty"`
-	LineEnd int `json:"line_end,omitempty"`
+	LineStart    int    `json:"line_start,omitempty"`
+	LineEnd      int    `json:"line_end,omitempty"`
 	SourceSHA256 string `json:"source_sha256,omitempty"`
-	Path    string `json:"path"`
-	Content []byte `json:"content"`
-	SHA256  string `json:"sha256"`
+	Path         string `json:"path"`
+	Content      []byte `json:"content"`
+	SHA256       string `json:"sha256"`
 }
 
 type DesignCandidateSpec struct {
@@ -97,11 +97,11 @@ type DesignAttempt struct {
 }
 
 type DesignCandidate struct {
-	FailureReason string `json:"failure_reason,omitempty"`
-	RouterAlert string `json:"router_alert,omitempty"`
-	Spec     DesignCandidateSpec `json:"spec"`
-	State    string              `json:"state"`
-	Attempts []DesignAttempt     `json:"attempts,omitempty"`
+	FailureReason string              `json:"failure_reason,omitempty"`
+	RouterAlert   string              `json:"router_alert,omitempty"`
+	Spec          DesignCandidateSpec `json:"spec"`
+	State         string              `json:"state"`
+	Attempts      []DesignAttempt     `json:"attempts,omitempty"`
 }
 
 type DesignRequest struct {
@@ -592,7 +592,9 @@ func (s *Store) RecordDesignAttempt(p DesignPrincipal, requestID string, in Desi
 	b := s.db.NewBatch()
 	defer b.Close()
 	result, err := s.designCommitRequest(p, r, receipt, in, b)
-	if err == nil { s.WakeDesign() }
+	if err == nil {
+		s.WakeDesign()
+	}
 	return result, err
 }
 
@@ -633,8 +635,12 @@ func (s *Store) PublishDesignRevision(p DesignPrincipal, requestID string, in De
 		// Only a real canonical completion that won the cancellation race may
 		// publish. Cancellation alone never grants this exception.
 		intent, ok, err := NewSessionStore(s).GetV3SessionRunIntent(attempt.ChildSessionID, attempt.RunID)
-		if err != nil { return zero, err }
-		if !ok || intent.AccountScopeID != p.AccountID || intent.UserID != p.PrincipalID || intent.Status != V3RunIntentCompleted { return zero, ErrDesignConflict }
+		if err != nil {
+			return zero, err
+		}
+		if !ok || intent.AccountScopeID != p.AccountID || intent.UserID != p.PrincipalID || intent.Status != V3RunIntentCompleted {
+			return zero, ErrDesignConflict
+		}
 	}
 	if attempt.ChildSessionID != in.ChildSessionID || attempt.RunID != in.RunID {
 		return zero, ErrDesignConflict
