@@ -16,6 +16,7 @@
     "examples/headless-session.ts",
     "README.md",
     "APPLICATIONS.md",
+    "HEADLESS_UI.md",
     "LICENSE"
   ],
   "scripts": {
@@ -24,6 +25,7 @@
     "test": "tsx --test --test-concurrency=1 ./src/__tests__/*.spec.ts"
   },
   "engines": { "node": ">=22" },
+  "dependencies": { "ws": "8.18.3" },
   "devDependencies": {
     "@types/node": "22.19.15",
     "tsx": "4.21.0",

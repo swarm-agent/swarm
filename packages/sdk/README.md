@@ -461,3 +461,7 @@ Apache-2.0
 owned reopen/result reads and idempotent event messages. See [Application agents](APPLICATIONS.md)
 for examples, revision semantics and the private local-API transport requirement. Existing
 `projects` and `workers` remain the task and background-execution authorities.
+
+## Custom headless UI
+
+See [HEADLESS_UI.md](./HEADLESS_UI.md) for private in-container administrative setup, typed provider/settings discovery, API keys and Codex device/manual/browser sign-in, workspace creation, and `client.realtime.watchSession()` with canonical V3 replay and cancellation. The container's session-only listener does not expose administrative APIs.
