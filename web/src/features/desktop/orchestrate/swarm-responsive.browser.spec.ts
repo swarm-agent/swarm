@@ -20,9 +20,9 @@ import { fixtureRead, project, sessionId, snapshot, taskTitle, worker, type Fixt
 const settingsHeadings: Record<string, string> = { providers: 'Vault Credentials', permissions: 'Permissions', vault: 'Vault', appearance: 'Themes', notifications: 'Notifications', media: 'Media' }
 const widths = [360, 390, 639, 640, 641, 768, 820, 1024, 1099, 1100, 1101, 1279, 1280, 1281, 1440]
 const destinations = [
-  ['', 'Tasks and Canvas'], ['projects', 'Projects'], ['workers', 'Workers'],
+  ['', 'Tasks'], ['projects', 'Projects'], ['workers', 'Workers'],
   ['deliverables', 'Deliverables'], ['media', 'Media Studio and Library'],
-  ['charter', 'Project Charter'], ['agents', 'Agents'], ['settings', 'Settings'],
+  ['agents', 'Agents'], ['settings', 'Settings'],
 ] as const
 
 // Compilation is shared, but every scenario gets a fresh browser page/cache/store.
@@ -126,7 +126,9 @@ async function noOverflow(page: Page, label: string) {
 async function target(locator: Locator, label: string) {
   await locator.scrollIntoViewIfNeeded()
   const box = await locator.boundingBox()
-  assert.ok(box && box.width >= 43.5 && box.height >= 43.5, `${label}: primary hit target must be >=44px: ${JSON.stringify(box)}`)
+  // Compact composer controls are 32px for a fine pointer, 44px on touch/phone.
+  const minimum = await locator.evaluate(el => el.closest('.swarm-composer-inputs') && !matchMedia('(pointer: coarse), (max-width: 640px)').matches ? 32 : 44)
+  assert.ok(box && box.width >= minimum - .5 && box.height >= minimum - .5, `${label}: hit target must be >=${minimum}px: ${JSON.stringify(box)}`)
   assert.equal(await locator.isEnabled(), true, `${label}: actionable`)
   assert.equal(await locator.evaluate(el => {
     const b = el.getBoundingClientRect()
@@ -282,7 +284,7 @@ test('production phone drawer traps focus, restores trigger and route history re
         await projectChoice.focus()
         await page.keyboard.press('Enter')
         await page.keyboard.press('Escape')
-        await navigate(page, 'Tasks and Canvas')
+        await navigate(page, 'Tasks')
         assert.equal(await page.getByTestId('orchestrate-task-card').first().getAttribute('data-task-id'), 'responsive-task', 'keyboard project selection keeps its real task collection')
         await navigate(page, 'Projects')
         await page.getByRole('button', { name: '+ New Project', exact: true }).click()
@@ -460,7 +462,7 @@ test('production rail geometry, transcript local scroll, dialogs and rejected-se
     assert.equal((fixture.mutations[uploadCount + 1].body as any).media[0].asset_id, 'fixture-upload')
     assert.deepEqual(fixture.mutations.map(mutation => mutation.path), [`/v3/sessions/${sessionId}/media`, `/v3/sessions/${sessionId}/messages`, `/v3/sessions/${sessionId}/messages`], 'only one upload and two explicitly requested appends')
     assert.equal(await page.getByRole('button', { name: 'Remove attachment', exact: true }).count(), 0, 'successful append consumes attachment')
-    await navigate(page, 'Tasks and Canvas')
+    await navigate(page, 'Tasks')
     const card = page.getByTestId('orchestrate-task-card').first()
     if (await card.getAttribute('data-expanded') !== 'true') await card.getByTestId('toggle-task-details-btn').click()
     assert.equal(await card.getByTestId('toggle-task-details-btn').getAttribute('aria-expanded'), 'true')

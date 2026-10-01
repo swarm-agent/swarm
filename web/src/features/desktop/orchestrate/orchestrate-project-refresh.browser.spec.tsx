@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { build } from 'esbuild'
+import { readFile } from 'node:fs/promises'
 import { chromium } from 'playwright'
 import { fixtureRead, project, snapshot } from './swarm-responsive-browser-fixtures'
 
@@ -8,6 +9,9 @@ import { fixtureRead, project, snapshot } from './swarm-responsive-browser-fixtu
 // mounts cards only for its selection. A rendered routed page with HTTP fixtures
 // proves settings placement, PATCH payloads, reload, switching and clear failure
 // postconditions without asserting source strings or claiming live durability.
+// Also proves the minimal header keeps native keyboard selection, confines long
+// names, and routes Charter through Projects; icon-only upload must open a real
+// chooser from keyboard activation. Browser DOM is required for these regressions.
 test('project dropdown, settings-only appearance, persisted PNG and authoritative clear', { timeout: 30000 }, async () => {
   const bundle = await build({ stdin: { resolveDir: process.cwd(), loader: 'tsx', contents: `import{mountResponsiveFixture}from'./src/features/desktop/orchestrate/swarm-responsive-browser-fixtures';mountResponsiveFixture('populated');` }, bundle: true, write: false, format: 'iife', platform: 'browser', jsx: 'automatic', logLevel: 'silent' })
   const browser = await chromium.launch({ headless: true, channel: process.env.SWARM_TEST_BROWSER_CHANNEL || 'chrome' })
@@ -35,8 +39,39 @@ test('project dropdown, settings-only appearance, persisted PNG and authoritativ
       const data = fixtureRead(url, 'populated')
       return route.fulfill({ status: data === undefined ? 501 : 200, json: data ?? { error: 'Unconfigured fixture read' } })
     })
-    const mount = async () => { await page.goto('https://project.test/fixture/swarm'); await page.addScriptTag({ content: bundle.outputFiles[0].text }); await page.getByLabel('Current project').waitFor() }
+    const mount = async () => { await page.goto('https://project.test/fixture/swarm'); await page.addStyleTag({ content: await readFile('src/features/desktop/orchestrate/swarm-section.css', 'utf8') }); await page.addScriptTag({ content: bundle.outputFiles[0].text }); await page.getByLabel('Current project').waitFor() }
     await mount()
+    const nav = page.getByRole('navigation', { name: 'Swarm destinations' })
+    assert.equal(await nav.getByRole('link', { name: 'Project Charter', exact: true }).count(), 0)
+    assert.equal(await nav.getByRole('link', { name: 'Tasks', exact: true }).count(), 1)
+    assert.equal(await page.getByPlaceholder('Search tasks & projects...').count(), 0)
+    const selector = page.getByLabel('Current project')
+    await selector.focus()
+    assert.equal(await selector.evaluate(el => el === document.activeElement), true)
+    await selector.press('ArrowDown')
+    await page.waitForFunction(() => document.querySelector<HTMLSelectElement>('[aria-label="Current project"]')?.value === 'second-project')
+    await selector.selectOption(project.id)
+    const identity = page.locator('.swarm-project-identity')
+    await identity.evaluate(el => { (el as HTMLElement).style.width = '140px'; (el as HTMLElement).style.flex = 'none' })
+    assert.equal(await identity.locator('.swarm-project-name').evaluate(el => getComputedStyle(el).textOverflow), 'ellipsis')
+    assert.equal(await identity.evaluate(el => el.scrollWidth <= el.clientWidth), true)
+    await selector.selectOption('__create')
+    await page.getByText('Project Name', { exact: true }).waitFor()
+    assert.equal(writes.some(w => w.path === '/v3/projects'), false)
+    await selector.selectOption('__manage')
+    await page.getByRole('heading', { name: 'Registered Projects' }).waitFor()
+    await page.getByRole('link', { name: 'Project Charter', exact: true }).click()
+    await page.getByRole('heading', { name: `Project Charter: ${project.name}`, exact: true }).waitFor()
+    assert.equal(await nav.getByRole('link', { name: 'Projects', exact: true }).getAttribute('aria-current'), 'location')
+    await page.getByRole('link', { name: '← Projects', exact: true }).click()
+    const upload = page.getByRole('button', { name: 'Upload image, video, audio, or document', exact: true })
+    assert.equal(await upload.textContent(), '')
+    await upload.focus()
+    const chooser = page.waitForEvent('filechooser')
+    await upload.press('Enter')
+    assert.equal((await chooser).isMultiple(), true)
+    assert.equal(await page.getByRole('button', { name: 'Paste Markdown / Text Document' }).textContent(), '')
+    await nav.getByRole('link', { name: 'Tasks', exact: true }).click()
     assert.equal(await page.getByLabel('Project theme', { exact: true }).count(), 0)
     assert.equal(await page.getByRole('link', { name: 'Orchestrate tips' }).count(), 0)
     await page.getByRole('region', { name: 'Project workers', exact: true }).getByRole('button', { name: /^Inspect / }).waitFor()

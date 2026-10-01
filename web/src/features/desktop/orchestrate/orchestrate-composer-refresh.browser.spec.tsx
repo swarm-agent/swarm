@@ -8,6 +8,8 @@ import { chromium } from 'playwright'
 // grows without hiding controls, and ContextRemaining never treats lifetime usage
 // as occupancy. Browser DOM/input is the narrowest layer proving these contracts;
 // speech events and submission are deterministic boundaries, not live mic proof.
+// Fixed send geometry must survive textarea growth (32px desktop, 44px phone),
+// preventing the oversized/stretching send regression at the production CSS boundary.
 test('unified composer grows, isolates drafts, displays live speech and waits for final flush', { timeout: 30000 }, async () => {
   const bundle = await build({ stdin: { resolveDir: process.cwd(), loader: 'tsx', contents: `
     import React,{useState} from 'react';import{createRoot}from'react-dom/client';
@@ -34,7 +36,14 @@ test('unified composer grows, isolates drafts, displays live speech and waits fo
     await page.waitForFunction(() => document.querySelector('textarea')!.clientHeight > 100)
     assert.ok((await input.boundingBox())!.height > short)
     assert.ok((await input.boundingBox())!.height <= 844 * .32 + 1)
-    assert.equal(await page.getByRole('button', { name: 'Send message', exact: true }).isVisible(), true)
+    const send = page.getByRole('button', { name: 'Send message', exact: true })
+    assert.equal(await send.isVisible(), true)
+    assert.equal((await send.boundingBox())!.height, 44)
+    assert.equal((await send.boundingBox())!.width, 44)
+    await page.setViewportSize({ width: 1280, height: 844 })
+    assert.equal((await send.boundingBox())!.height, 32)
+    assert.equal((await send.boundingBox())!.width, 32)
+    await page.setViewportSize({ width: 390, height: 844 })
     await input.fill('Typed')
     await page.getByRole('button', { name: 'Start dictation' }).click()
     await page.evaluate(() => (window as any).speech.onresult({ resultIndex: 0, results: [{ isFinal: false, 0: { transcript: 'pending speech' } }] }))

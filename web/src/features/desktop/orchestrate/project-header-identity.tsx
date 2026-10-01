@@ -1,4 +1,5 @@
 import { useRef, useState } from 'react'
+import { ChevronDown } from 'lucide-react'
 import type { ProjectSummary } from './orchestrate-types'
 
 // Same checked-in Swarm mark used by workspace-home-identity.tsx.
@@ -19,7 +20,9 @@ export function ProjectHeaderIdentity({ project, projects, onSelect, onCreate, o
 }) {
   return <div className="swarm-project-identity">
     <ProjectMark image={project?.iconPNGDataURL} />
-    <select aria-label="Current project" value={project?.id || ''} onChange={event => {
+    <span className="swarm-project-name" aria-hidden="true">{project?.name || 'Select project'}</span>
+    <ChevronDown size={12} className="swarm-project-chevron" aria-hidden="true" />
+    <select title={project?.name || 'Select project'} aria-label="Current project" value={project?.id || ''} onChange={event => {
       if (event.target.value === '__create') onCreate()
       else if (event.target.value === '__manage') onManage()
       else onSelect(event.target.value)

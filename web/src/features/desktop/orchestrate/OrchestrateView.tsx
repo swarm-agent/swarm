@@ -3388,6 +3388,7 @@ export function OrchestrateView({
   const [middleVariant] = useState<MiddleCanvasVariant>('matrix')
 
   // Search & Filters
+  const shelfFileInputRef = useRef<HTMLInputElement>(null)
   const [searchQuery, setSearchQuery] = useState('')
   const [taskSourceFilter, setTaskSourceFilter] = useState<'all' | 'worker'>('all')
   const [statusFilter, setStatusFilter] = useState<'all' | 'running' | 'needs_review' | 'queued' | 'completed'>('all')
@@ -5665,8 +5666,8 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
       <aside id={responsiveLayout.navigationId} aria-label="Swarm navigation" role={responsiveLayout.navigationOpen ? 'dialog' : undefined} aria-modal={responsiveLayout.navigationOpen ? true : undefined} tabIndex={-1} className="swarm-navigation-sidebar relative order-first flex w-72 flex-shrink-0 flex-col overflow-hidden rounded-3xl border bg-[#0d121f]/95 border-slate-800/80 shadow-[inset_0_1px_1px_rgba(255,255,255,0.06),0_18px_40px_rgba(0,0,0,0.65)]">
         <button type="button" className="swarm-navigation-close" aria-label="Close Swarm navigation" onClick={() => responsiveLayout.setNavigationOpen(false)}>Close navigation</button>
         {/* App Branding & Header */}
-        <div className="p-3.5 border-b border-slate-800/80">
-          <div className="flex items-center justify-between pb-2">
+        <header className="swarm-unified-header">
+          <div className="swarm-header-row">
             <div className="flex min-w-0 flex-1 items-center gap-2.5">
               <ProjectHeaderIdentity project={selectedProject} projects={projects}
                 onSelect={id => { setSelectedProjectId(id); setIsOnboardingActive(false); setActiveTaskId(null) }}
@@ -5675,47 +5676,18 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
             </div>
 
             {accountScopeId && <OrchestratorNotifications accountScopeId={accountScopeId} workspaceSlug={workspaceSlug} />}
-            <Link
-              {...(workspaceSlug ? { to: '/$workspaceSlug' as const, params: { workspaceSlug } } : { to: '/' as const })}
-              onClick={onNavigateHome}
-              className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-800 hover:text-slate-200 transition-all border border-slate-700/60"
-              title="Back to Sessions"
-              aria-label="Back to Sessions"
-            >
-              <X size={13} />
-            </Link>
+            <nav aria-label="Chat and Swarm mode" className="swarm-header-modes">
+              <Link {...(workspaceSlug ? { to: '/$workspaceSlug' as const, params: { workspaceSlug } } : { to: '/' as const })} onClick={onNavigateHome} aria-label="Switch to Chat Mode" className="rounded-md">Chat</Link>
+              <Link {...swarmPageLink(workspaceSlug, 'home')} aria-label="Switch to Swarm Orchestrate Mode" aria-current="page" className="rounded-md">Swarm</Link>
+            </nav>
           </div>
-
-          <nav aria-label="Chat and Swarm mode" className="mb-2 grid grid-cols-2 gap-1 rounded-lg border border-slate-700 p-0.5 text-center text-[11px] font-semibold">
-            <Link {...(workspaceSlug ? { to: '/$workspaceSlug' as const, params: { workspaceSlug } } : { to: '/' as const })} onClick={onNavigateHome} aria-label="Switch to Chat Mode" className="rounded-md p-1 text-slate-300 hover:bg-slate-800">Chat</Link>
-            <Link {...swarmPageLink(workspaceSlug, 'home')} aria-label="Switch to Swarm Orchestrate Mode" aria-current="page" className="rounded-md border border-cyan-800 bg-cyan-950/80 p-1 text-cyan-300">Swarm</Link>
-          </nav>
-
-          {/* Search Bar */}
-          <div className="mt-2.5 flex items-center justify-between px-3 py-1.5 rounded-xl bg-[#090d16] border border-slate-800 text-xs text-slate-400">
-            <div className="flex items-center gap-2">
-              <Search size={13} className="text-slate-500" />
-              <input
-                type="text"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search tasks & projects..."
-                className="bg-transparent border-none text-[11px] text-slate-200 placeholder-slate-500 focus:outline-none w-full"
-              />
-            </div>
-            {searchQuery && (
-              <button onClick={() => setSearchQuery('')} className="text-slate-500 hover:text-slate-300">
-                <X size={11} />
-              </button>
-            )}
-          </div>
-        </div>
+        </header>
 
         {/* Navigation Menu Links */}
         <nav aria-label="Swarm destinations" className="swarm-route-navigation p-3 border-b border-slate-800/80 space-y-1" onClick={() => { setIsOnboardingActive(false); responsiveLayout.setPanel('main'); responsiveLayout.setNavigationOpen(false) }}>
           <Link
             {...swarmPageLink(workspaceSlug, 'home')}
-            aria-label="Tasks and Canvas"
+            aria-label="Tasks"
             activeOptions={{ exact: true, includeSearch: false }}
             aria-current={activeNavTab === 'home' ? 'page' : undefined}
             className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium transition-all ${
@@ -5725,14 +5697,14 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
             }`}
           >
             <Home size={15} />
-            <span>Tasks & Canvas</span>
+            <span>Tasks</span>
           </Link>
           <Link
             {...swarmPageLink(workspaceSlug, 'projects')}
             aria-label="Projects"
-            aria-current={activeNavTab === 'projects' ? 'page' : undefined}
+            aria-current={activeNavTab === 'projects' ? 'page' : activeNavTab === 'charter' ? 'location' : undefined}
             className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium transition-all ${
-              activeNavTab === 'projects'
+              (activeNavTab === 'projects' || activeNavTab === 'charter')
                 ? 'bg-white/[0.08] text-white shadow-sm font-semibold'
                 : 'text-slate-400 hover:text-slate-200 hover:bg-white/[0.04]'
             }`}
@@ -5789,19 +5761,6 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
               </span>
             )}
           </Link>
-          <Link
-            {...swarmPageLink(workspaceSlug, 'charter')}
-            aria-label="Project Charter"
-            aria-current={activeNavTab === 'charter' ? 'page' : undefined}
-            className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium transition-all ${
-              activeNavTab === 'charter'
-                ? 'bg-white/[0.08] text-white shadow-sm font-semibold'
-                : 'text-slate-400 hover:text-slate-200 hover:bg-white/[0.04]'
-            }`}
-          >
-            <Settings size={15} />
-            <span>Project Charter</span>
-          </Link>
           {(['agents', 'settings'] as const).map((page) => <Link key={page} {...swarmPageLink(workspaceSlug, page)} aria-label={page === 'agents' ? 'Agents' : 'Settings'} aria-current={activeNavTab === page ? 'page' : undefined} className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-xs font-medium text-slate-300 hover:bg-white/[0.08]">
             {page === 'agents' ? <Bot size={15} /> : <Settings size={15} />}<span>{page === 'agents' ? 'Agents' : 'Settings'}</span>
           </Link>)}
@@ -5839,27 +5798,22 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
               </span>
             </div>
             <div className="flex items-center gap-1">
-              <label
-                className="flex h-5 items-center gap-1 px-1.5 rounded-lg bg-blue-600/20 border border-blue-500/30 text-blue-400 hover:bg-blue-600/30 text-[10px] font-semibold cursor-pointer transition"
+              <button type="button" className="swarm-shelf-icon-button"
+                aria-label="Upload image, video, audio, or document"
                 title="Upload image, video, audio, or document"
-              >
-                <Upload size={10} />
-                <span>Upload</span>
-                <input
-                  type="file"
-                  multiple
-                  className="hidden"
-                  onChange={(e) => void handleFileUpload(e.target.files)}
-                />
-              </label>
+                onClick={() => shelfFileInputRef.current?.click()}>
+                <Upload size={14} aria-hidden="true" />
+              </button>
+              <input ref={shelfFileInputRef} type="file" multiple hidden
+                onChange={(e) => { const files = Array.from(e.target.files || []); e.target.value = ''; void handleFileUpload(files) }} />
               <button
                 type="button"
                 onClick={() => { setShelfUploadError(null); setIsPasteDocOpen(true) }}
-                className="flex h-5 items-center gap-1 px-1.5 rounded-lg bg-slate-800 border border-slate-700/60 text-slate-300 hover:text-white text-[10px] font-semibold transition"
+                className="swarm-shelf-icon-button"
+                aria-label="Paste Markdown / Text Document"
                 title="Paste Markdown / Text Document"
               >
-                <FileText size={10} />
-                <span>Paste</span>
+                <FileText size={14} aria-hidden="true" />
               </button>
             </div>
           </div>
@@ -6243,6 +6197,9 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                 <span>+ New Project</span>
               </button>
             </div>
+            {selectedProject && <Link {...swarmPageLink(workspaceSlug, 'charter')} aria-label="Project Charter" className="swarm-project-charter-link">
+              <FileText size={15} aria-hidden="true" /><span>Project Charter · {selectedProject.name}</span>
+            </Link>}
             <div className="swarm-content-grid grid grid-cols-1 md:grid-cols-2 gap-4">
               {projects.map((p) => (
                 <div
@@ -6445,8 +6402,9 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
         ) : activeNavTab === 'help' ? (
           <section className="min-h-0 overflow-y-auto p-6 space-y-4 text-[var(--app-text)]"><h1 className="text-xl font-semibold">Orchestrate tips</h1><ul className="list-disc space-y-3 pl-5">{ORCHESTRATE_TIPS.map((tip) => <li key={tip}>{tip}</li>)}</ul></section>
         ) : activeNavTab === 'charter' ? (
-          /* PROJECT CHARTER / SETTINGS TAB */
+          /* Project-scoped editor; preserve the existing charter deep link. */
           <div className="flex-1 flex flex-col min-h-0 overflow-y-auto p-6 space-y-4">
+            <Link {...swarmPageLink(workspaceSlug, 'projects')} className="swarm-project-charter-link">← Projects</Link>
             <div className="flex items-center justify-between pb-3 border-b border-slate-800">
               <div>
                 <h2 className="text-base font-bold text-white">Project Charter: {selectedProject?.name}</h2>
@@ -7894,7 +7852,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
             <button
               onClick={() => setShowFullMediaCenter(false)}
               className="p-2 rounded-xl bg-slate-800 text-slate-400 hover:text-white hover:bg-slate-700 transition"
-              title="Back to Tasks & Canvas"
+              title="Back to Tasks"
             >
               <X size={16} />
             </button>
