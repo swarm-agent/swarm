@@ -1,4 +1,6 @@
-import { useState, useReducer, useMemo, useEffect, useCallback, useRef, useSyncExternalStore, useId } from 'react'
+import { ContextRemaining } from './orchestrator-composer-surface'
+import { ProjectHeaderIdentity, ProjectImageSettings } from './project-header-identity'
+import { useLayoutEffect, useState, useReducer, useMemo, useEffect, useCallback, useRef, useSyncExternalStore, useId } from 'react'
 import { MediaTaskSelect, MediaTaskDefault, MediaTaskHelp, MediaTaskScenes, MediaTaskCost } from './media-task-controls'
 import { ImagePromptControls, imagePromptReducer, initialImagePromptState, imagePromptEnhancement } from './image-task-prompt'
 import { DurableWorkerReviews } from '../chat/components/durable-worker-reviews'
@@ -36,7 +38,6 @@ import {
   Film,
   Folder,
   FolderGit2,
-  FolderPlus,
   GitBranch,
   GitPullRequest,
   Home,
@@ -67,7 +68,6 @@ import {
   X,
   Zap,
 } from 'lucide-react'
-import { formatContextWindow } from '../chat/services/model-options'
 import { requestJson, getDesktopSessionIdentitySnapshot, updateDesktopSessionUsername } from '../../../app/api'
 import { WorkerHub, type SelectedWorker } from './worker-hub'
 import { submitWithWorkerSelection } from './worker-message-context'
@@ -2377,6 +2377,7 @@ export function MinimalTaskCard({
  * Includes attachments, running states (active run stop/busy), and pending permissions.
  */
 export function OrchestratorChatComposer({
+  contextControls,
   onCommandNavigate,
   sessionId,
   session,
@@ -2398,6 +2399,7 @@ export function OrchestratorChatComposer({
   creatingWorker?: boolean
   onWorkerCreationSent?: () => void
   onCommandNavigate?: (page: SwarmPage) => void
+  contextControls?: React.ReactNode
   /** Replace only the network submission boundary in rendered tests. */
   submitMessage?: typeof continueDesktopV3Conversation
   selectedWorker?: SelectedWorker | null
@@ -2414,9 +2416,26 @@ export function OrchestratorChatComposer({
 }) {
   const draftKey = `${project?.id || ''}:${sessionId}`
   const draftState = useSyncExternalStore(orchestratorDrafts.subscribe, () => orchestratorDrafts.get(draftKey), () => orchestratorDrafts.get(draftKey))
+  const composerScope = useRef(draftKey)
+  composerScope.current = draftKey
+  useEffect(() => { composerScope.current = draftKey; return () => { composerScope.current = '' } }, [draftKey])
   const draft = draftState.text
   const setDraft = (value: string | ((previous: string) => string)) => orchestratorDrafts.set(draftKey, typeof value === 'function' ? value(orchestratorDrafts.get(draftKey).text) : value)
   const composerRef = useRef<HTMLTextAreaElement>(null)
+  useLayoutEffect(() => {
+    const input = composerRef.current
+    if (!input) return
+    const resize = () => {
+      input.style.height = 'auto'
+      input.style.height = `${Math.min(input.scrollHeight, window.innerHeight * 0.32)}px`
+      if (input.selectionEnd === input.value.length) input.scrollTop = input.scrollHeight
+    }
+    resize()
+    const observer = new ResizeObserver(resize)
+    if (input.parentElement) observer.observe(input.parentElement)
+    window.addEventListener('resize', resize)
+    return () => { observer.disconnect(); window.removeEventListener('resize', resize) }
+  }, [draft])
   const [commandsOpen, setCommandsOpen] = useState(false)
   const [commandQuery, setCommandQuery] = useState('')
   const [commandIndex, setCommandIndex] = useState(0)
@@ -2501,6 +2520,7 @@ export function OrchestratorChatComposer({
             fileType: admission.fileType,
             contractToken: capability?.contract_token,
           })
+          if (composerScope.current !== draftKey) return
           setAttachments((prev) => {
             if (prev.some((p) => p.asset_id === uploaded.asset_id)) return prev
             return [...prev, uploaded]
@@ -2509,6 +2529,7 @@ export function OrchestratorChatComposer({
         }
         if (admission.kind === 'text') {
           const text = await file.text()
+          if (composerScope.current !== draftKey) return
           setDraft((prev) => (prev.trim() ? `${prev}\n\n[File: ${file.name}]\n${text}` : `[File: ${file.name}]\n${text}`))
           continue
         }
@@ -2532,11 +2553,16 @@ export function OrchestratorChatComposer({
 
   const handleSend = async () => {
     if (composingRef.current) return
+    if (dictation.active) {
+      dictation.toggle()
+      setSendError('Finishing dictation. Review the final text, then send.')
+      return
+    }
     const text = draft.trim()
     const parsed = parseOrchestrateCommand(text)
     if (parsed.kind === 'command') { selectCommand(parsed.command); return }
     if (parsed.kind === 'unsupported') {
-      setSendError(`Unsupported Orchestrate command ${parsed.token}. Use / Commands for navigation; chat commands and command arguments are not supported.`)
+      setSendError(`Unsupported Orchestrate command ${parsed.token}. Type / for navigation; chat commands and command arguments are not supported.`)
       setCommandsOpen(false)
       return
     }
@@ -2617,6 +2643,7 @@ export function OrchestratorChatComposer({
         media: attachments.length > 0 ? attachments : undefined,
       })
 
+      if (composerScope.current !== draftKey) return
       await submitWithWorkerSelection(!effectiveTaskId ? selectedWorker || null : null, async (workerMetadata) => {
         operation.request.metadata = { ...operation.request.metadata, ...workerMetadata }
         if (submitMessage) {
@@ -2628,7 +2655,7 @@ export function OrchestratorChatComposer({
       // Do not erase recovery context appended while an earlier message was sending.
       if (orchestratorDrafts.get(draftKey).text === draft) setDraft('')
       setAttachments([])
-      if (creatingWorker) onWorkerCreationSent?.()
+      if (creatingWorker && composerScope.current === draftKey) onWorkerCreationSent?.()
     } catch (err: any) {
       setSendError(err?.message || String(err))
     } finally {
@@ -2643,7 +2670,7 @@ export function OrchestratorChatComposer({
       className="swarm-chat-composer-lane border-t border-slate-800 bg-[#0a0f1d] text-xs space-y-2 flex-shrink-0"
       data-testid="orchestrator-chat-composer"
     >
-      <button type="button" aria-expanded={commandsOpen} aria-controls="orchestrate-command-list" onClick={() => { setCommandsOpen(!commandsOpen); setCommandQuery(''); setCommandIndex(0); composerRef.current?.focus() }} className="rounded px-2 py-1 text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)]">/ Commands</button>
+      {contextControls && <div className="swarm-composer-context">{contextControls}</div>}
       {commandsOpen && <div id="orchestrate-command-list" onKeyDown={(event) => { if (event.key === 'Escape') { event.preventDefault(); setCommandsOpen(false); composerRef.current?.focus() } }} role="listbox" aria-label="Orchestrate commands" className="max-h-64 overflow-y-auto rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-1">
         {commands.map((command, index) => <button key={command.name} id={`orchestrate-command-${command.name}`} type="button" role="option" aria-selected={index === commandIndex} onClick={() => selectCommand(command)} className={`block w-full rounded-lg p-2 text-left text-[var(--app-text)] ${index === commandIndex ? 'bg-[var(--app-surface-hover)]' : ''}`}>
           <strong>/{command.name}</strong> <span className="text-[var(--app-text-muted)]">{command.description}</span>
@@ -2746,7 +2773,7 @@ export function OrchestratorChatComposer({
           className="p-2 rounded bg-red-950/40 border border-red-500/30 text-red-200 text-[11px] flex items-center justify-between gap-2"
           data-testid="chat-send-error"
         >
-          <span className="truncate flex-1">{sendError}</span>
+          <span className="break-words flex-1">{sendError}</span>
           {attachmentFailedFiles.length > 0 && (
             <button
               type="button"
@@ -2766,15 +2793,16 @@ export function OrchestratorChatComposer({
       )}
       {dictation.active && (
         <div role="status" className="text-[11px] text-blue-300">
-          {dictation.listening ? 'Listening…' : 'Starting microphone…'}
+          {dictation.interimText || (dictation.listening ? 'Listening…' : 'Starting microphone…')}
         </div>
       )}
 
-      <div className="relative flex items-end gap-2">
+      <div className="swarm-composer-inputs">
         <input
           ref={fileInputRef}
           type="file"
           multiple
+          hidden
           className="hidden"
           onChange={handleFileSelected}
         />
@@ -2834,7 +2862,7 @@ export function OrchestratorChatComposer({
               ? `Message about "${effectiveTask.title}"...`
               : 'Message Swarm Orchestrator...'
           }
-          className="flex-1 rounded-xl bg-slate-950/80 border border-slate-800 p-2.5 text-slate-200 placeholder-slate-500 focus:outline-none focus:border-blue-500/60 resize-none text-xs font-sans leading-relaxed disabled:opacity-60"
+          className="swarm-expanding-input text-xs font-sans leading-relaxed disabled:opacity-60"
           data-testid="orchestrator-chat-input"
         />
 
@@ -2877,18 +2905,18 @@ export function OrchestratorChatComposer({
           </button>
         )}
 
-        {/* Send button */}
-        <button
+        {/* Send and stop occupy the same control slot. */}
+        {!isRunning && <button
           type="button"
           onClick={() => void handleSend()}
-          disabled={sending || isRunning || uploadingAttachment || (!draft.trim() && attachments.length === 0)}
+          disabled={sending || isRunning || uploadingAttachment || (!dictation.active && !draft.trim() && attachments.length === 0)}
           className="flex items-center justify-center p-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex-shrink-0"
           title="Send message"
           aria-label="Send message"
           data-testid="orchestrator-chat-send-btn"
         >
           <Send size={14} className={sending ? 'animate-pulse' : ''} />
-        </button>
+        </button>}
       </div>
     </div>
   )
@@ -2986,66 +3014,36 @@ function OrchestratorChatSidebar({
     )
   )
 
-  const contextStats = useMemo(() => {
-    if (!sessionUsage) {
-      return { totalTokens: 0, contextWindow: 0, percent: 0, label: '0 tokens used' }
-    }
-    const total = Number(sessionUsage.total_tokens ?? sessionUsage.totalTokens ?? 0)
-    const windowSize = Number(sessionUsage.context_window ?? sessionUsage.contextWindow ?? 0)
-    const percent = windowSize > 0 && total > 0 ? Math.min(100, Math.round((total / windowSize) * 100)) : 0
-    let label = `${total.toLocaleString()} tokens used`
-    if (windowSize > 0) {
-      label = `${total.toLocaleString()} / ${formatContextWindow(windowSize)} ctx (${percent}%)`
-    }
-    return { totalTokens: total, contextWindow: windowSize, percent, label }
-  }, [sessionUsage])
+  const [clearError, setClearError] = useState('')
+  const clearScope = useRef(`${project?.id}:${sessionId}`)
+  clearScope.current = `${project?.id}:${sessionId}`
+  useEffect(() => { clearScope.current = `${project?.id}:${sessionId}`; return () => { clearScope.current = '' } }, [project?.id, sessionId])
+  useEffect(() => { setClearError(''); setClearSuccess(false); setClearingContext(false) }, [project?.id, sessionId])
 
   const handleClearContext = async () => {
-    if (!project?.id || clearingContext) return
+    if (!project?.id || clearingContext || repairSession || activeTask) return
+    const scope = clearScope.current
+    setClearError('')
     setClearingContext(true)
     setClearSuccess(false)
     try {
-      onDeselectTask?.()
       const res = await requestJson<{ ok: boolean; session_id: string }>(
         `/v3/projects/${project.id}/orchestrator:clear-context`,
         { method: 'POST' }
       )
-      if (res?.session_id) {
+      if (clearScope.current !== scope) return
+      if (res?.ok && res.session_id) {
+        onDeselectTask?.()
         onOrchestratorSessionReset?.(res.session_id)
         setClearSuccess(true)
         setTimeout(() => setClearSuccess(false), 2500)
       } else {
-        const clientRequestId = `desktop-v3-create:${crypto.randomUUID()}`
-        const sessRes = await requestJson<{ session: { id: string } }>('/v3/sessions', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            client_request_id: clientRequestId,
-            title: `Project Orchestrator: ${project.name}`,
-            workspace_path: project.repoPath || '.',
-            agent_name: 'system-orchestrator',
-            metadata: {
-              project_id: project.id,
-              role: 'project_orchestrator',
-            },
-          }),
-        })
-        if (sessRes?.session?.id) {
-          const sid = sessRes.session.id
-          await requestJson(`/v3/projects/${project.id}`, {
-            method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ primary_session_id: sid }),
-          }).catch(() => {})
-          onOrchestratorSessionReset?.(sid)
-          setClearSuccess(true)
-          setTimeout(() => setClearSuccess(false), 2500)
-        }
+        throw new Error('Context reset returned no authoritative session. Please retry.')
       }
     } catch (e) {
-      console.warn('Failed to clear orchestrator context:', e)
+      if (clearScope.current === scope) setClearError(e instanceof Error ? e.message : 'Failed to clear orchestrator context.')
     } finally {
-      setClearingContext(false)
+      if (clearScope.current === scope) setClearingContext(false)
     }
   }
 
@@ -3101,78 +3099,10 @@ function OrchestratorChatSidebar({
           </span>
         </div>
       ) : (
-        <div className="flex flex-col border-b border-slate-800 bg-[#0a0f1d] text-xs">
-          <div className="flex items-center justify-between p-3 pb-2">
-            <div className="flex items-center gap-2">
-              <div className="h-2 w-2 rounded-full bg-emerald-400" />
-              <span className="font-bold text-white">{repairSession ? 'Integration repair session' : 'Project Orchestrator'}</span>
-              <span className="text-[10px] text-slate-400 font-mono">({project?.name})</span>
-            </div>
-            <span className="text-[9px] font-mono uppercase px-2 py-0.5 rounded bg-slate-800 text-slate-300 font-bold">
-              {repairSession ? 'Swarm' : 'Executive'}
-            </span>
-          </div>
-          {repairSession && <button type="button" className="p-2 underline" onClick={onBackToOrchestrator}>Back to Project Orchestrator</button>}
-          {/* Orchestrator Context Status & Clear Context Action */}
-          <div className="flex items-center justify-between px-3 py-1.5 bg-[#080d19]/90 border-t border-slate-800/60 text-[11px]">
-            <div className="flex items-center gap-2 min-w-0">
-              <span className="text-slate-400 text-[10px] uppercase font-semibold tracking-wider">Context:</span>
-              <span className="font-mono text-slate-200 text-[11px] truncate" data-testid="orchestrator-context-label">
-                {contextStats.label}
-              </span>
-              {contextStats.percent > 0 && (
-                <div className="w-12 h-1.5 rounded-full bg-slate-800 overflow-hidden flex-shrink-0">
-                  <div
-                    className={`h-full rounded-full transition-all duration-300 ${
-                      contextStats.percent > 80 ? 'bg-amber-400' : 'bg-blue-400'
-                    }`}
-                    style={{ width: `${contextStats.percent}%` }}
-                  />
-                </div>
-              )}
-            </div>
-            <button
-              onClick={handleClearContext}
-              disabled={clearingContext || repairSession}
-              title="Clear orchestrator conversation context and start fresh"
-              data-testid="clear-orchestrator-context-btn"
-              className="flex items-center gap-1.5 px-2 py-0.5 rounded bg-slate-800 hover:bg-red-950/70 hover:text-red-200 hover:border-red-500/50 text-slate-300 transition-colors border border-slate-700/80 font-medium text-[10px] flex-shrink-0 disabled:opacity-50"
-            >
-              <RotateCcw size={10} className={clearingContext ? 'animate-spin text-amber-400' : 'text-slate-400'} />
-              <span>{clearingContext ? 'Clearing...' : clearSuccess ? 'Cleared!' : 'Clear Context'}</span>
-            </button>
-          </div>
-          {/* Selected Task Context Banner */}
-          {(selectedTask || selectedTaskId) && !activeTask && (
-            <div
-              className="flex items-center justify-between px-3 py-1.5 bg-blue-950/40 border-t border-blue-500/30 text-[11px] text-blue-200"
-              data-testid="selected-task-context-banner"
-            >
-              <div className="flex items-center gap-1.5 min-w-0">
-                <Target size={11} className="text-blue-400 flex-shrink-0" />
-                <span className="font-semibold text-blue-300">Selected Task:</span>
-                <span className="font-medium text-white truncate max-w-[200px]" title={selectedTask ? selectedTask.title : selectedTaskId}>
-                  {selectedTask ? selectedTask.title : selectedTaskId}
-                </span>
-                <span className="font-mono text-[9px] px-1 py-0.2 rounded bg-blue-900/60 text-blue-300 border border-blue-500/30 font-bold">
-                  r{selectedTask?.revision || 1}
-                </span>
-              </div>
-              {onDeselectTask && (
-                <button
-                  type="button"
-                  onClick={onDeselectTask}
-                  className="text-slate-400 hover:text-white p-0.5 rounded hover:bg-slate-800 transition-colors"
-                  title="Clear selected task context"
-                  aria-label="Clear selected task context"
-                  data-testid="clear-selected-task-context-btn"
-                >
-                  <X size={11} />
-                </button>
-              )}
-            </div>
-          )}
-        </div>
+        repairSession ? <div className="p-2 text-xs">
+          <span>Integration repair session</span>
+          <button type="button" className="p-2 underline" onClick={onBackToOrchestrator}>Back to Project Orchestrator</button>
+        </div> : null
       )}
 
       {error && (
@@ -3197,6 +3127,12 @@ function OrchestratorChatSidebar({
         loadedMessageCount={count}
         composerOverride={
           <OrchestratorChatComposer
+            key={`${project?.id}:${sessionId}`}
+            contextControls={<>
+              <ContextRemaining usage={sessionUsage} />
+              {!activeTask && <button type="button" onClick={() => void handleClearContext()} disabled={clearingContext || repairSession} data-testid="clear-orchestrator-context-btn">{clearingContext ? 'Clearing…' : clearSuccess ? 'Cleared!' : 'Clear context'}</button>}
+              {clearError && <span role="alert">{clearError}</span>}
+            </>}
             onCommandNavigate={(page) => { void navigate(swarmPageLink(workspaceSlug, page)) }}
             sessionId={sessionId}
             session={currentSession}
@@ -3290,6 +3226,8 @@ export function OrchestrateView({
   const [selectedProjectId, setSelectedProjectId] = useState<string>('')
   const [, setIsLoadingProjects] = useState<boolean>(true)
   const selectedProject = projects.find((p) => p.id === selectedProjectId) ?? projects[0]
+  const selectedProjectRef = useRef(selectedProject?.id)
+  selectedProjectRef.current = selectedProject?.id
   const [themeRoot, setThemeRoot] = useState<HTMLDivElement | null>(null)
   const responsiveLayout = useSwarmResponsiveLayout(themeRoot)
   const [themeCatalogRevision, setThemeCatalogRevision] = useState(0)
@@ -3305,13 +3243,13 @@ export function OrchestrateView({
       // before resolving the saved project reference; in-flight invalidations coalesce.
       try {
         const [{ project }, settings] = await Promise.all([
-          requestJson<{ project: { id: string; theme_id?: string } }>(`/v3/projects/${encodeURIComponent(selectedProjectId)}`),
+          requestJson<{ project: { id: string; theme_id?: string; icon_png_data_url?: string } }>(`/v3/projects/${encodeURIComponent(selectedProjectId)}`),
           getUISettings(),
         ])
         if (!active) return
         setWorkspaceThemeCatalog(settings.theme)
         setThemeCatalogRevision((revision) => revision + 1)
-        setProjects((prev) => prev.map((item) => item.id === project.id ? { ...item, themeId: project.theme_id || '' } : item))
+        setProjects((prev) => prev.map((item) => item.id === project.id ? { ...item, themeId: project.theme_id || '', iconPNGDataURL: project.icon_png_data_url || '' } : item))
         setThemeError('')
       } catch (error) {
         if (active) setThemeError(error instanceof Error ? error.message : 'Unable to refresh project theme')
@@ -3332,8 +3270,17 @@ export function OrchestrateView({
       setProjects((prev) => prev.map((project) => project.id === selectedProject.id ? { ...project, themeId: response.project.theme_id || '' } : project))
       desktopProjects.invalidate(selectedProject.id)
     } catch (error) {
-      setThemeError(error instanceof Error ? error.message : 'Unable to save project theme')
+      if (selectedProjectRef.current === selectedProject.id) setThemeError(error instanceof Error ? error.message : 'Unable to save project theme')
     } finally { setThemeSaving(false) }
+  }
+
+  const handleProjectImageChange = async (id: string, image: string) => {
+    const { project } = await requestJson<{ project: { id: string; icon_png_data_url?: string } }>(`/v3/projects/${encodeURIComponent(id)}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ icon_png_data_url: image }),
+    })
+    if (project?.id !== id || (project.icon_png_data_url || '') !== image) throw new Error('Project image was not saved.')
+    setProjects(previous => previous.map(item => item.id === id ? { ...item, iconPNGDataURL: project.icon_png_data_url || '' } : item))
+    desktopProjects.invalidate(id)
   }
 
   // Project Onboarding & Creation State
@@ -3609,7 +3556,10 @@ export function OrchestrateView({
   }, [])
 
   const [enhanceVideoPrompt, setEnhanceVideoPrompt] = useState<boolean>(false)
-  const [newTaskPrompt, setNewTaskPrompt] = useState('')
+  const taskDraftKey = `task:${selectedProject?.id || ''}`
+  const taskDraft = useSyncExternalStore(orchestratorDrafts.subscribe, () => orchestratorDrafts.get(taskDraftKey), () => orchestratorDrafts.get(taskDraftKey))
+  const newTaskPrompt = taskDraft.text
+  const setNewTaskPrompt = (value: string | ((previous: string) => string)) => orchestratorDrafts.set(taskDraftKey, typeof value === 'function' ? value(orchestratorDrafts.get(taskDraftKey).text) : value)
   const [newTaskWorkspace, setNewTaskWorkspace] = useState('')
   const [imageAspectRatio, setImageAspectRatio] = useState<'1:1' | '16:9' | '9:16' | '4:3'>('16:9')
   const [imagePromptState, dispatchImagePrompt] = useReducer(imagePromptReducer, initialImagePromptState)
@@ -3863,6 +3813,18 @@ export function OrchestrateView({
   useEffect(() => {
     setSelectedTaskId('')
     setActiveTaskId(null)
+    setAttachedTaskIds([])
+    selectedWorkerRef.current = null
+    setSelectedWorker(null)
+    setTaggedMedia([])
+    setThemeError('')
+    setShelfUploadError(null)
+    setShelfFailedFiles([])
+    setIsUploadingMedia(false)
+    setIsPasteDocOpen(false)
+    setPastedDocTitle('')
+    setPastedDocContent('')
+    setActiveSessionId(selectedProject?.primarySessionId || '')
   }, [selectedProjectId])
 
   // 1. Fetch User Auth, Workspaces, Automations, and Projects on mount
@@ -3929,6 +3891,7 @@ export function OrchestrateView({
             runningTasksCount: 0,
             projectContext: p.project_context,
             themeId: p.theme_id || '',
+            iconPNGDataURL: p.icon_png_data_url || '',
             primarySessionId: p.primary_session_id,
           }))
           setProjects(loaded)
@@ -4289,6 +4252,7 @@ export function OrchestrateView({
           let textData = ''
           if (kind === 'doc' && isDoc) {
             textData = await file.text()
+            if (selectedProjectRef.current !== selectedProject.id) return
             if (taskIntent === 'video') {
               // Text stays in prompt for video task flow
               setNewTaskPrompt((prev) => (prev.trim() ? `${prev.trim()}\n\n${textData.trim()}` : textData.trim()))
@@ -4303,13 +4267,15 @@ export function OrchestrateView({
               }
               setVideoAttachmentError(null)
             }
-            dataUrl = await new Promise<string>((resolve) => {
+            dataUrl = await new Promise<string>((resolve, reject) => {
               const reader = new FileReader()
-              reader.onload = () => resolve(reader.result as string)
+              reader.onload = () => typeof reader.result === 'string' ? resolve(reader.result) : reject(new Error('Unable to read file.'))
+              reader.onerror = reader.onabort = () => reject(new Error(`Unable to read ${file.name}.`))
               reader.readAsDataURL(file)
             })
           }
 
+          if (selectedProjectRef.current !== selectedProject.id) return
           const newMedia: ProjectTaskMediaRef = {
             id: `med_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
             title: file.name,
@@ -4331,7 +4297,9 @@ export function OrchestrateView({
             }
           )
 
-          const savedMedia = res?.media || newMedia
+          if (!res?.media?.id || !res.media.kind || (!res.media.url && !res.media.data)) throw new Error('Upload returned no persisted media. Please retry.')
+          if (selectedProjectRef.current !== selectedProject.id) return
+          const savedMedia = res.media
           desktopProjects.setOptimisticMedia(selectedProject.id, (prev) => {
             if (prev.some((m) => m.id === savedMedia.id)) return prev
             return [...prev, savedMedia]
@@ -4347,19 +4315,19 @@ export function OrchestrateView({
           }
           desktopProjects.invalidate(selectedProject.id)
         } catch (fileErr: any) {
-          console.warn('Failed to upload media item:', fileErr)
+          if (selectedProjectRef.current !== selectedProject.id) return
           failed.push(file)
           setShelfUploadError(fileErr?.message || `Failed to upload "${file.name}"`)
         }
       }
     } catch (err: any) {
-      console.warn('Failed to upload media:', err)
+      if (selectedProjectRef.current !== selectedProject.id) return
       setShelfUploadError(err?.message || 'Failed to upload media')
     } finally {
-      if (failed.length > 0) {
-        setShelfFailedFiles(failed)
+      if (selectedProjectRef.current === selectedProject.id) {
+        if (failed.length > 0) setShelfFailedFiles(failed)
+        setIsUploadingMedia(false)
       }
-      setIsUploadingMedia(false)
     }
   }
 
@@ -4370,15 +4338,16 @@ export function OrchestrateView({
         method: 'DELETE',
       })
       desktopProjects.setOptimisticMedia(selectedProject.id, (prev) => prev.filter((m) => m.id !== mediaId))
-      setTaggedMedia((prev) => prev.filter((m) => m.id !== mediaId))
+      if (selectedProjectRef.current === selectedProject.id) setTaggedMedia((prev) => prev.filter((m) => m.id !== mediaId))
       desktopProjects.invalidate(selectedProject.id)
     } catch (err) {
-      console.warn('Failed to delete uploaded media:', err)
+      if (selectedProjectRef.current === selectedProject.id) setShelfUploadError(err instanceof Error ? err.message : 'Failed to delete uploaded media.')
     }
   }
 
   const handleAddPastedDoc = async () => {
     if (!selectedProject?.id || !pastedDocContent.trim()) return
+    setShelfUploadError(null)
     if (taskIntent === 'video') {
       const docText = pastedDocContent.trim()
       setNewTaskPrompt((prev) => (prev.trim() ? `${prev.trim()}\n\n${docText}` : docText))
@@ -4407,7 +4376,9 @@ export function OrchestrateView({
           body: JSON.stringify(newMedia),
         }
       )
-      const savedMedia = res?.media || newMedia
+      if (!res?.media?.id || res.media.kind !== 'doc' || !res.media.data) throw new Error('Save returned no persisted document. Please retry.')
+      if (selectedProjectRef.current !== selectedProject.id) return
+      const savedMedia = res.media
       desktopProjects.setOptimisticMedia(selectedProject.id, (prev) => [...prev, savedMedia])
       setTaggedMedia((prev) => [...prev, savedMedia])
       setIsPasteDocOpen(false)
@@ -4415,7 +4386,7 @@ export function OrchestrateView({
       setPastedDocContent('')
       desktopProjects.invalidate(selectedProject.id)
     } catch (err) {
-      console.warn('Failed to save pasted document:', err)
+      if (selectedProjectRef.current === selectedProject.id) setShelfUploadError(err instanceof Error ? err.message : 'Failed to save pasted document.')
     }
   }
 
@@ -5498,6 +5469,7 @@ export function OrchestrateView({
 
   const handleDeleteProject = async (projectId: string, e?: React.MouseEvent) => {
     e?.stopPropagation()
+    if (!window.confirm(`Delete project "${projects.find(item => item.id === projectId)?.name || projectId}"? This cannot be undone.`)) return
     try {
       await requestJson(`/v3/projects/${projectId}`, { method: 'DELETE' })
       desktopProjects.evict(projectId)
@@ -5695,14 +5667,11 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
         {/* App Branding & Header */}
         <div className="p-3.5 border-b border-slate-800/80">
           <div className="flex items-center justify-between pb-2">
-            <div className="flex items-center gap-2.5">
-              <div className="flex h-7 w-7 items-center justify-center rounded-xl bg-blue-600/20 text-blue-400 border border-blue-500/30 shadow-[0_2px_8px_rgba(37,99,235,0.3)]">
-                <Sparkles size={14} />
-              </div>
-              <div>
-                <div className="text-xs font-bold tracking-tight text-white">Swarm Orchestrate</div>
-                <div className="text-[10px] text-slate-400">Autonomous Project Coordination</div>
-              </div>
+            <div className="flex min-w-0 flex-1 items-center gap-2.5">
+              <ProjectHeaderIdentity project={selectedProject} projects={projects}
+                onSelect={id => { setSelectedProjectId(id); setIsOnboardingActive(false); setActiveTaskId(null) }}
+                onCreate={() => { setIsOnboardingActive(true); setActiveNavTab('home') }}
+                onManage={() => { setIsOnboardingActive(false); setActiveNavTab('projects') }} />
             </div>
 
             {accountScopeId && <OrchestratorNotifications accountScopeId={accountScopeId} workspaceSlug={workspaceSlug} />}
@@ -5721,17 +5690,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
             <Link {...(workspaceSlug ? { to: '/$workspaceSlug' as const, params: { workspaceSlug } } : { to: '/' as const })} onClick={onNavigateHome} aria-label="Switch to Chat Mode" className="rounded-md p-1 text-slate-300 hover:bg-slate-800">Chat</Link>
             <Link {...swarmPageLink(workspaceSlug, 'home')} aria-label="Switch to Swarm Orchestrate Mode" aria-current="page" className="rounded-md border border-cyan-800 bg-cyan-950/80 p-1 text-cyan-300">Swarm</Link>
           </nav>
-          <div className="swarm-theme-picker">
-            <label htmlFor="swarm-project-theme">Project theme</label>
-            <select id="swarm-project-theme" aria-label="Project theme" disabled={!selectedProject || themeSaving}
-              value={selectedProject?.themeId || ''} onChange={(event) => void handleProjectThemeChange(event.target.value)}>
-              <option value="">Inherit Swarm default</option>
-              {selectedProject?.themeId && projectTheme.state === 'missing' && <option value={selectedProject.themeId}>Missing theme: {selectedProject.themeId}</option>}
-              {themeOptions.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
-            </select>
-            {projectTheme.state === 'missing' && <p role="status">{formatWorkspaceThemeLabel(selectedProject!.themeId!)} was deleted or is unavailable. Reset or select a saved theme.</p>}
-            {themeError && <p role="alert">{themeError}</p>}
-          </div>
+
           {/* Search Bar */}
           <div className="mt-2.5 flex items-center justify-between px-3 py-1.5 rounded-xl bg-[#090d16] border border-slate-800 text-xs text-slate-400">
             <div className="flex items-center gap-2">
@@ -5843,105 +5802,15 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
             <Settings size={15} />
             <span>Project Charter</span>
           </Link>
-          {(['agents', 'settings', 'help'] as const).map((page) => <Link key={page} {...swarmPageLink(workspaceSlug, page)} aria-label={page === 'help' ? 'Orchestrate tips' : page === 'agents' ? 'Agents' : 'Settings'} aria-current={activeNavTab === page ? 'page' : undefined} className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-xs font-medium text-slate-300 hover:bg-white/[0.08]">
-            {page === 'agents' ? <Bot size={15} /> : <Settings size={15} />}<span>{page === 'help' ? 'Orchestrate tips' : page === 'agents' ? 'Agents' : 'Settings'}</span>
+          {(['agents', 'settings'] as const).map((page) => <Link key={page} {...swarmPageLink(workspaceSlug, page)} aria-label={page === 'agents' ? 'Agents' : 'Settings'} aria-current={activeNavTab === page ? 'page' : undefined} className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-xs font-medium text-slate-300 hover:bg-white/[0.08]">
+            {page === 'agents' ? <Bot size={15} /> : <Settings size={15} />}<span>{page === 'agents' ? 'Agents' : 'Settings'}</span>
           </Link>)}
         </nav>
 
-        {/* Projects Switcher Section */}
+        {/* Workers for the selected project only. Project management lives in the header. */}
         <div className="p-3 border-b border-slate-800/80 flex-1 overflow-y-auto">
-          <div className="flex items-center justify-between pb-2">
-            <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-              Projects
-            </span>
-            <button
-              onClick={() => {
-                setIsOnboardingActive(true)
-                setActiveNavTab('home')
-              }}
-              className={`flex h-5 w-5 items-center justify-center rounded-lg transition-all border ${
-                isOnboardingActive
-                  ? 'bg-blue-600 text-white border-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.5)]'
-                  : 'bg-slate-800/80 text-slate-400 hover:text-slate-200 hover:bg-slate-700 border-slate-700/60'
-              }`}
-              title="Add New Project"
-            >
-              <Plus size={12} />
-            </button>
-          </div>
+          {accountScopeId && selectedProject && <ProjectWorkerSidebar key={selectedProject.id} accountScopeId={accountScopeId} projectId={selectedProject.id} showActivity onBrowse={() => setActiveNavTab('workers')} onInspect={id => { void navigate(swarmWorkerLink(workspaceSlug, id)) }} />}
 
-          <div className="flex flex-col gap-1.5">
-            {isOnboardingActive && (
-              <div className="flex items-center justify-between p-2 text-left rounded-xl bg-blue-950/40 border border-blue-500/40 text-blue-200 shadow-sm">
-                <div className="flex items-center gap-2.5 min-w-0">
-                  <div className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-lg bg-blue-600/30 text-blue-300 border border-blue-400/40">
-                    <FolderPlus size={12} />
-                  </div>
-                  <span className="text-xs font-semibold truncate">{onboardingName || 'New Project'}</span>
-                </div>
-                <span className="text-[9px] uppercase tracking-wider font-mono px-1.5 py-0.5 rounded bg-blue-600/30 text-blue-300">
-                  Draft
-                </span>
-              </div>
-            )}
-            {projects.map((proj) => {
-              const isSelected = !isOnboardingActive && proj.id === selectedProjectId
-              return (
-                <div key={proj.id}>
-                <div
-                  onClick={() => {
-                    setSelectedProjectId(proj.id)
-                    setIsOnboardingActive(false)
-                    setActiveTaskId(null)
-                  }}
-                  role="button" tabIndex={0} onKeyDown={event => { if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); setSelectedProjectId(proj.id); setIsOnboardingActive(false); setActiveTaskId(null) } }}
-                  className={`group flex items-center justify-between p-2 text-left rounded-xl transition-all cursor-pointer ${
-                    isSelected
-                      ? 'bg-slate-800/90 border border-slate-700/80 text-white shadow-sm'
-                      : 'border border-transparent hover:bg-slate-800/40 text-slate-400 hover:text-slate-200'
-                  }`}
-                >
-                  <div className="flex items-center gap-2.5 min-w-0 flex-1">
-                    <div
-                      className={`flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-lg border transition-all ${
-                        isSelected
-                          ? 'bg-blue-600/20 text-blue-400 border-blue-500/30 shadow-[0_1px_6px_rgba(37,99,235,0.2)]'
-                          : 'bg-slate-800/60 text-slate-500 border-slate-700/50 group-hover:text-slate-300'
-                      }`}
-                    >
-                      <Folder size={12} />
-                    </div>
-                    <div className="flex flex-col min-w-0">
-                      <span className="text-xs font-semibold truncate">{proj.name}</span>
-                      <span className="text-[10px] text-slate-500 truncate font-mono">
-                        {proj.linkedWorkspaces.length} workspace{proj.linkedWorkspaces.length === 1 ? '' : 's'}
-                      </span>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-1 flex-shrink-0">
-                    {isSelected && (
-                      <span className="h-2 w-2 rounded-full bg-blue-500 shadow-[0_0_6px_rgba(59,130,246,0.6)]" />
-                    )}
-                    <button
-                      type="button"
-                      onClick={(e) => handleDeleteProject(proj.id, e)}
-                      className="opacity-0 group-hover:opacity-100 p-1 text-slate-400 hover:text-rose-400 rounded-md transition-all hover:bg-rose-500/10"
-                      title="Delete Project"
-                    >
-                      <Trash2 size={12} />
-                    </button>
-                  </div>
-                </div>
-                {accountScopeId && <ProjectWorkerSidebar accountScopeId={accountScopeId} projectId={proj.id} showActivity={isSelected} onBrowse={() => setActiveNavTab('workers')} onInspect={id => { void navigate(swarmWorkerLink(workspaceSlug, id)) }} />}
-                </div>
-              )
-            })}
-            {projects.length === 0 && !isOnboardingActive && (
-              <div className="p-3 text-center text-xs text-slate-500 border border-dashed border-slate-800 rounded-xl">
-                No projects saved.
-              </div>
-            )}
-          </div>
         </div>
 
         {/* Uploaded Media & Documents Shelf */}
@@ -5985,7 +5854,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
               </label>
               <button
                 type="button"
-                onClick={() => setIsPasteDocOpen(true)}
+                onClick={() => { setShelfUploadError(null); setIsPasteDocOpen(true) }}
                 className="flex h-5 items-center gap-1 px-1.5 rounded-lg bg-slate-800 border border-slate-700/60 text-slate-300 hover:text-white text-[10px] font-semibold transition"
                 title="Paste Markdown / Text Document"
               >
@@ -5995,9 +5864,10 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
             </div>
           </div>
 
+          <p className="text-[10px] text-slate-400">Project files for task attachments. To attach to chat, use the composer paperclip.</p>
           {shelfUploadError && (
-            <div className="mb-1.5 p-1.5 rounded bg-red-950/40 border border-red-500/30 text-red-200 text-[10px] flex items-center justify-between gap-1.5">
-              <span className="truncate flex-1">{shelfUploadError}</span>
+            <div role="alert" className="mb-1.5 p-1.5 rounded bg-red-950/40 border border-red-500/30 text-red-200 text-[10px] flex items-center justify-between gap-1.5">
+              <span className="flex-1 break-words">{shelfUploadError}</span>
               {shelfFailedFiles.length > 0 && (
                 <button
                   type="button"
@@ -6555,7 +6425,23 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
         ) : activeNavTab === 'agents' ? (
           <OrchestrateAgents />
         ) : activeNavTab === 'settings' ? (
-          <OrchestrateSettings workspaceSlug={workspaceSlug} />
+          <div className="min-h-0 overflow-y-auto">
+            <section className="p-6 space-y-3" aria-label="Project appearance">
+              <div className="swarm-theme-picker">
+                <label htmlFor="swarm-project-theme">Project theme</label>
+                <select id="swarm-project-theme" aria-label="Project theme" disabled={!selectedProject || themeSaving}
+                  value={selectedProject?.themeId || ''} onChange={event => void handleProjectThemeChange(event.target.value)}>
+                  <option value="">Inherit Swarm default</option>
+                  {selectedProject?.themeId && projectTheme.state === 'missing' && <option value={selectedProject.themeId}>Missing theme: {selectedProject.themeId}</option>}
+                  {themeOptions.map(option => <option key={option.id} value={option.id}>{option.label}</option>)}
+                </select>
+                {projectTheme.state === 'missing' && <p role="status">{formatWorkspaceThemeLabel(selectedProject!.themeId!)} was deleted or is unavailable. Reset or select a saved theme.</p>}
+                {themeError && <p role="alert">{themeError}</p>}
+              </div>
+              {selectedProject && <ProjectImageSettings key={selectedProject.id} project={selectedProject} onSave={handleProjectImageChange} />}
+            </section>
+            <OrchestrateSettings workspaceSlug={workspaceSlug} />
+          </div>
         ) : activeNavTab === 'help' ? (
           <section className="min-h-0 overflow-y-auto p-6 space-y-4 text-[var(--app-text)]"><h1 className="text-xl font-semibold">Orchestrate tips</h1><ul className="list-disc space-y-3 pl-5">{ORCHESTRATE_TIPS.map((tip) => <li key={tip}>{tip}</li>)}</ul></section>
         ) : activeNavTab === 'charter' ? (
@@ -7522,7 +7408,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                     </label>
                     <button
                       type="button"
-                      onClick={() => setIsPasteDocOpen(true)}
+                      onClick={() => { setShelfUploadError(null); setIsPasteDocOpen(true) }}
                       className={`flex items-center gap-1 px-2 rounded bg-slate-800 text-slate-300 hover:text-white border border-slate-700 font-semibold transition ${taskIntent === 'image' || taskIntent === 'video' ? 'min-h-9' : 'py-0.5'}`}
                     >
                       <FileText size={10} />
@@ -7923,6 +7809,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                 />
               </div>
             </div>
+            {shelfUploadError && <p role="alert">{shelfUploadError}</p>}
             <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-800">
               <button
                 type="button"

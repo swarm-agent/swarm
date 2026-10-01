@@ -345,3 +345,17 @@
 @container swarm-main (max-width: 450px) {
   .swarm-task-search-row > div:first-child { flex-basis: 100%; }
 }
+
+/* Unified project identity and bottom-anchored composer. */
+.swarm-project-identity { display: flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; }
+.swarm-project-identity select { min-width: 0; width: 100%; font-weight: 600; background: transparent; }
+.swarm-project-image { width: 32px; height: 32px; flex-shrink: 0; object-fit: cover; border-radius: 8px; color: var(--app-primary); }
+.swarm-project-image-settings { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.swarm-project-image-settings button { min-height: 44px; }
+.swarm-chat-composer-lane { margin: 8px; padding: 10px; border: 1px solid var(--app-border); border-radius: 20px; background: var(--app-surface); max-height: 60%; scrollbar-gutter: auto; }
+.swarm-composer-inputs { display: grid; grid-template-columns: 44px 44px minmax(0, 1fr) 44px; gap: 6px; align-items: end; }
+.swarm-composer-inputs > textarea { grid-column: 1 / -1; box-sizing: border-box; width: 100%; min-width: 0; min-height: 52px; max-height: 32dvh; overflow-y: auto; resize: none; border: 0; border-radius: 8px; padding: 8px; color: var(--app-text); background: transparent !important; outline-offset: -2px; }
+.swarm-composer-inputs > button:last-child { grid-column: 4; }
+.swarm-composer-context { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--app-text-muted); }
+.swarm-composer-context [role="alert"] { flex-basis: 100%; color: var(--app-text); }
+.swarm-composer-context button { font-size: 11px; }
