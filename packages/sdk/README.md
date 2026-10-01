@@ -454,3 +454,10 @@ try {
 ## License
 
 Apache-2.0
+
+### Application-owned agents and conversations
+
+`client.apps` provides durable named instructions/context, revision-pinned V3 conversations,
+owned reopen/result reads and idempotent event messages. See [Application agents](APPLICATIONS.md)
+for examples, revision semantics and the private local-API transport requirement. Existing
+`projects` and `workers` remain the task and background-execution authorities.

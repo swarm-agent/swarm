@@ -15,6 +15,7 @@
     "dist",
     "examples/headless-session.ts",
     "README.md",
+    "APPLICATIONS.md",
     "LICENSE"
   ],
   "scripts": {

@@ -16,3 +16,6 @@ export * from './storage/index.js';
 
 export { SwarmUsageNamespace } from './usage.js';
 export type { UsageScope, UsageScopeTotal, UsageScopeUpdatedPayload, UsageScopeRepairResult, WorkerBudgetPolicy, WorkerBudgetUpdate, WorkerBudgetStatus } from './usage.js';
+
+export { SwarmAppsNamespace } from './apps.js';
+export type { ApplicationAgent, ApplicationAgentWrite, ApplicationConversationParams, ApplicationConversationSnapshot } from './apps.js';

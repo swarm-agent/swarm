@@ -948,6 +948,9 @@ func (s *Server) handleSessionsV3PrimaryCreate(w http.ResponseWriter, r *http.Re
 		CreatedAt:       now,
 		UpdatedAt:       now,
 	}
+	if appBinding, ok := r.Context().Value(applicationAgentContextKey{}).(applicationAgentBinding); ok {
+		session.Metadata[applicationAgentBindingKey] = appBinding
+	}
 	if req.Purpose == pebblestore.SessionPurposeAutomationManagement {
 		if binding.SourceWorkspaceID == "" || resolvedAgent.Name != agentruntime.SwarmAgentID {
 			writeError(w, http.StatusBadRequest, errors.New("automation management requires Swarm and a saved workspace"))
@@ -4273,7 +4276,8 @@ func sessionsV3AuthorityInt(authority map[string]any, keys ...string) int {
 
 func isProtectedSessionsV3MetadataKey(key string) bool {
 	switch strings.ToLower(strings.TrimSpace(key)) {
-	case pebblestore.SessionPurposeMetadataKey,
+	case applicationAgentBindingKey,
+		pebblestore.SessionPurposeMetadataKey,
 		pebblestore.SessionPurposeWorkspaceMetadataKey,
 		"agent_name",
 		"agent_profile",

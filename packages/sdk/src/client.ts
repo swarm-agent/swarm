@@ -1,3 +1,4 @@
+import { SwarmAppsNamespace } from './apps.js';
 import { SwarmUsageNamespace } from './usage.js';
 import { SwarmAuthNamespace } from './auth.js';
 import { SwarmAutomationsNamespace } from './automations.js';
@@ -36,6 +37,7 @@ export class SwarmClient {
   readonly workspaces: SwarmWorkspacesNamespace;
   readonly projects: SwarmProjectsNamespace;
   readonly sessions: SwarmSessionsNamespace;
+  readonly apps: SwarmAppsNamespace;
   readonly system: SwarmSystemNamespace;
   readonly deploy: SwarmDeployNamespace;
   readonly notifications: SwarmNotificationsNamespace;
@@ -80,6 +82,7 @@ export class SwarmClient {
     this.workspaces = new SwarmWorkspacesNamespace(this.transport);
     this.projects = new SwarmProjectsNamespace(this.transport);
     this.sessions = new SwarmSessionsNamespace(this.transport);
+    this.apps = new SwarmAppsNamespace(this.transport);
     this.system = new SwarmSystemNamespace(this.transport);
     this.deploy = new SwarmDeployNamespace(this.transport);
     this.notifications = new SwarmNotificationsNamespace(this.transport);

@@ -4761,7 +4761,15 @@ func (e *sessionV3Executor) resolveSessionV3Runtime(job sessionV3ExecutorJob) (s
 	if err != nil {
 		return sessionV3ResolvedRuntime{}, err
 	}
+	applicationInstructions, err := e.server.applicationAgentInstructions(session)
+	if err != nil {
+		return sessionV3ResolvedRuntime{}, err
+	}
 	instructions := strings.TrimSpace(e.composeSessionV3Instructions(scope, session.Mode, agentProfile))
+	if instructions == "" {
+		return sessionV3ResolvedRuntime{}, errors.New("resolved v3 instructions are empty")
+	}
+	instructions += applicationInstructions
 	instructions = runruntime.AppendResolvedModelPolicyInstructions(instructions, session.Mode, pref)
 	if instructions == "" {
 		return sessionV3ResolvedRuntime{}, errors.New("resolved v3 instructions are empty")
