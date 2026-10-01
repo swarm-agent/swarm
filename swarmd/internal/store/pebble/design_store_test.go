@@ -443,7 +443,8 @@ func TestDesignStoreValidationNoPartialState(t *testing.T) {
 // Purpose: a genuine Pebble write rejection at SubmitDesignRequest and
 // PublishDesignRevision must leave no receipt or partial revision. A read-only
 // reopened database supplies deterministic storage failure without a fake
-// persistence layer, and a subsequent writable retry must still succeed.
+// persistence layer, and a subsequent writable retry must still succeed. The
+// admission counter/catalog must also remain unchanged on rejected submission.
 func TestDesignStoreWriteFailurePreservesPriorState(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "db")
 	s, err := Open(path)
@@ -473,6 +474,10 @@ func TestDesignStoreWriteFailurePreservesPriorState(t *testing.T) {
 	if _, err := s.SubmitDesignRequest(designTestOwner, other); err == nil {
 		t.Fatal("read-only submit succeeded")
 	}
+	rows, cursor, err := s.ListSessionDesignRequests(designTestOwner, "parent", "", 20)
+	if err != nil || len(rows) != 1 || rows[0].ID != r.ID || cursor != "" { t.Fatal("partial admission index", rows, cursor, err) }
+	var admission uint64
+	if err := s.designGet(designKey(designTestOwner, "session-order", "parent"), &admission); err != nil || admission != 1 { t.Fatal("failed write advanced admission counter", admission, err) }
 	for _, key := range []string{designKey(designTestOwner, "publish", r.ID+"/publish"), designRevisionKey(designTestOwner, "artifact", 1), designKey(designTestOwner, "request", "other"), designKey(designTestOwner, "artifact", "other-artifact")} {
 		if _, ok, err := s.GetBytes(key); err != nil || ok {
 			t.Fatalf("partial durable write: %s %v", key, err)

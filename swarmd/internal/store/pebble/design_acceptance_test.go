@@ -30,6 +30,8 @@ func TestDesignAcceptanceAtomicRecovery(t *testing.T) {
 	if first.RealtimeOutbox == nil {
 		t.Fatal("missing canonical outbox")
 	}
+	catalog, cursor, err := s.ListSessionDesignRequests(p, "parent", "", 20)
+	if err != nil || len(catalog) != 1 || catalog[0].ID != submit.RequestID || cursor != "" { t.Fatal("acceptance missing catalog entry", catalog, cursor, err) }
 	replay, err := ss.ApplyV3SessionMutation(input)
 	if err != nil || !replay.Replayed || replay.PrimarySeq != first.PrimarySeq {
 		t.Fatalf("replay: %+v %v", replay, err)
