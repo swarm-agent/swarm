@@ -220,7 +220,7 @@ while IFS= read -r tracked_file; do
     internal/fff/lib/linux-amd64-gnu/libfff_c.so|swarmd/internal/fff/lib/linux-amd64-gnu/libfff_c.so)
       reviewed_binary_report+="${binary_line} :: required vendored FFF runtime library"$'\n'
       ;;
-    web/public/apple-touch-icon.png|web/public/favicon.svg|web/public/pwa-icon-192.png|web/public/pwa-icon-512.png|web/public/pwa-maskable-512.png)
+    web/public/apple-touch-icon.png|web/public/favicon.svg|web/public/favicon.png|web/public/pwa-icon-192.png|web/public/pwa-icon-512.png|web/public/pwa-maskable-512.png)
       reviewed_binary_report+="${binary_line} :: required public web icon"$'\n'
       ;;
     *)
