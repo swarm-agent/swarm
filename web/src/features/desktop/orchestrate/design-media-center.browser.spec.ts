@@ -10,7 +10,8 @@ import tailwindcss from '@tailwindcss/vite'
 // Purpose: render the production Media Center, request card and viewer with hermetic HTTP
 // fixtures. This is the narrowest browser boundary proving one-click exact previews,
 // no retired gallery, sandbox/download separation, historical edits and visible CAS
-// failure without selection-on-browse. It is not provider-backed or pixel acceptance.
+// failure without selection-on-browse. Stored-preview thumbnails must be sandboxed
+// and noninteractive so ready outputs remain one-click targets. This is not provider evidence.
 test('Media Center opens independent designs directly and preserves historical edit authority', { timeout: 60_000 }, async () => {
   const result = await build({ configFile: false, logLevel: 'error', plugins: [react(), tailwindcss(), {
     name: 'design-media-fixture',
@@ -70,7 +71,12 @@ test('Media Center opens independent designs directly and preserves historical e
       return route.fulfill({ json: { artifacts: [] } })
     })
     await page.goto('http://localhost/fixture'); await page.addStyleTag({ content: css }); await page.addScriptTag({ content: js, type: 'module' })
-    await page.getByRole('button', { name: 'Preview Landing page candidate 1', exact: true }).click()
+    const readyOutput = page.getByRole('button', { name: 'Preview Landing page candidate 1', exact: true })
+    const thumbnail = readyOutput.locator('iframe')
+    await thumbnail.waitFor()
+    assert.equal(await thumbnail.getAttribute('sandbox'), '')
+    assert.equal(await thumbnail.evaluate(element => getComputedStyle(element).pointerEvents), 'none')
+    await readyOutput.click()
     const dialog = page.getByRole('dialog')
     await dialog.locator('iframe[title="Design revision 3"]').waitFor()
     assert.equal(await page.getByRole('button', { name: /Delegated designs/ }).count(), 0)

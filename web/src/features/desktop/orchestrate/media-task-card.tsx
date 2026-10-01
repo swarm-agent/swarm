@@ -2,6 +2,7 @@ import type { ReactNode } from 'react'
 import type { MediaDeliverable, RunningTask } from './orchestrate-types'
 import type { QuickRouteMode } from '../tools/media-library/media-viewer-modal'
 
+import { DesignThumbnail } from '../tools/media-library/design-thumbnail'
 import type { ProjectDesign } from '../session-v3/design-api'
 import type { MediaLibraryItem } from '../tools/media-library/types'
 import { designMediaItem, designRequestId, designStatus, readyDesignRevision } from './design-media-task'
@@ -17,7 +18,7 @@ export function MediaTaskCard(props: TaskCardProps | { source: 'independent-desi
         {row.request.candidates.map((candidate, index) => {
           const revision = readyDesignRevision(candidate)
           return <section key={index} className="min-w-0 rounded-lg border border-slate-700 p-2">
-            <button type="button" className="w-full min-h-24 bg-black text-slate-100" disabled={!revision} onClick={() => revision && onDesignPreview(designMediaItem(row, index, revision))} aria-label={`Preview ${row.title} candidate ${index + 1}`}>Candidate {index + 1} · {designStatus(candidate.state)}{revision ? ' · Open preview' : ''}</button>
+            <button type="button" className="w-full min-h-24 bg-black text-slate-100" disabled={!revision} onClick={() => revision && onDesignPreview(designMediaItem(row, index, revision))} aria-label={`Preview ${row.title} candidate ${index + 1}`}>{revision && <DesignThumbnail session={row.request.parent_session_id} revision={revision} />}Candidate {index + 1} · {designStatus(candidate.state)}{revision ? ' · Open preview' : ''}</button>
             {candidate.failure_reason && <p role="alert">{candidate.failure_reason}</p>}
             {candidate.router_alert && <p role="alert">{candidate.router_alert}</p>}
             {candidate.attempts?.map(attempt => <div key={attempt.number} className="text-xs"><p>Attempt {attempt.number}: {designStatus(attempt.state)} {attempt.reason_code}</p>{attempt.router_alert && <p role="alert">{attempt.router_alert}</p>}</div>)}

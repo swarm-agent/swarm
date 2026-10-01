@@ -1,6 +1,8 @@
 import { Eye, Film, Image as ImageIcon, Music, Sparkles } from 'lucide-react'
 import type { HistoricalDateBucket, MediaLibraryItem, MediaThumbnailSize } from './types'
 
+import { DesignThumbnail } from './design-thumbnail'
+
 interface MediaGridViewProps {
   buckets: readonly HistoricalDateBucket[]
   thumbnailSize: MediaThumbnailSize
@@ -148,7 +150,7 @@ function MediaThumbnailCard({
           </div>
         )}
 
-        {item.source === 'independent-design' && <span className="p-3 text-sm">{item.design.revision.kind === 'plan' ? 'Design plan' : 'Design'} · Open revision {item.design.revision.ref.revision}</span>}
+        {item.source === 'independent-design' && <DesignThumbnail session={item.sessionId} revision={item.design.revision} />}
         {item.source !== 'independent-design' && item.kind === 'animation' && (
           <div className="relative size-full flex items-center justify-center bg-zinc-900">
             <iframe
