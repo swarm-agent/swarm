@@ -1517,6 +1517,7 @@ func (r *Runtime) Definitions() []Definition {
 		manageWorkersV2Definition(),
 		manageAutomationV2Definition(),
 		artifactV3AuthorDefinition(),
+		manageDesignDefinition(),
 		manageArtifactDefinition(),
 		manageVideoDefinition(),
 		taskProgressDefinition(),
@@ -2109,6 +2110,8 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 		return "", errors.New("artifact_v2_author is retired; managed authoring uses the context-bound artifact_v3_author capability")
 	case "artifact-v3-author", "artifact_v3_author":
 		return r.executeArtifactV3Author(ctx, scope, call.CallID, args)
+	case "manage_design":
+		return r.executeManageDesign(ctx, scope, args)
 	case "manage-artifact", "manage_artifact":
 		return r.executeManageArtifact(ctx, scope, call.CallID, args)
 	case "manage-video", "manage_video":
@@ -10609,6 +10612,8 @@ func toolPathID(name string) string {
 		return "tool.manage-connections.v1"
 	case "manage-environments", "manage_environments":
 		return "tool.manage-environments.v1"
+	case "manage_design":
+		return "tool.manage-design.v1"
 	case "manage-artifact", "manage_artifact":
 		return "tool.manage-artifact.v1"
 	case "manage-todos", "manage_todos":

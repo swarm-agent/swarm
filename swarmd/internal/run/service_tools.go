@@ -2197,7 +2197,7 @@ func (s *Service) executeControlPlaneToolWithLifecycleRunContext(ctx context.Con
 		output, err := s.executeManageWorkspaceTool(sessionID, arguments, principal, applySessionMutation)
 		result.Output = output
 		return true, result, err
-	case "manage_actions", "manage_connections", "manage_environments":
+	case "manage_design", "manage_actions", "manage_connections", "manage_environments":
 		return false, tool.Result{}, nil
 	case "manage_todos":
 		output, err := s.executeManageTodosTool(sessionID, call, approvedArguments)
@@ -7590,6 +7590,7 @@ func taskDisabledTools(allowBash bool) map[string]bool {
 		"exit-plan-mode":      true,
 		"plan_manage":         true,
 		"plan-manage":         true,
+		"manage_design":       true,
 		"manage_actions":      true,
 		"manage-actions":      true,
 		"manage_connections":  true,
@@ -7805,6 +7806,10 @@ func permissionRequirement(mode, toolName, arguments string) (string, bool) {
 			return requirement, true
 		}
 		return toolName, false
+	case "manage_design":
+		var input struct { Action string `json:"action"` }
+		if json.Unmarshal([]byte(arguments), &input) != nil { return "design_change", true }
+		return "design_change", input.Action != "status" && input.Action != "history" && input.Action != "read"
 	case "manage_actions":
 		if isManageActionsMutation(arguments) {
 			return "action_change", true

@@ -366,6 +366,7 @@ func (s *Store) submitDesignRequestInBatch(p DesignPrincipal, in DesignSubmit, b
 		}
 		return zero, err
 	}
+	if err := s.admitDesignRequest(p); err != nil { return zero, err }
 	r := DesignRequest{Owner: p, ID: in.RequestID, ParentSessionID: in.ParentSessionID, ParentRunID: in.ParentRunID, Revision: 1, State: DesignQueued}
 	artifacts := make([]DesignArtifact, 0, len(in.Candidates))
 	seen := map[string]bool{}

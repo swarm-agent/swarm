@@ -9,6 +9,26 @@ import (
 
 const V3SessionMutationAcceptDesign = "design.accept"
 
+// DesignStore exposes the independent history repository to the session runtime.
+// Acceptance must still use ApplySessionMutation, not SubmitDesignRequest.
+func (s *SessionStore) DesignStore() *Store { return s.store }
+
+const MaxPendingDesignRequests = 50
+
+// Called under designMu, before any acceptance writes. No provider slot is held.
+func (s *Store) admitDesignRequest(p DesignPrincipal) error {
+	prefix := designKey(p, "pending", "")
+	iter, err := s.db.NewIter(&pebble.IterOptions{LowerBound: []byte(prefix), UpperBound: []byte(prefix + "\xff")})
+	if err != nil { return err }
+	defer iter.Close()
+	count := 0
+	for ok := iter.First(); ok; ok = iter.Next() {
+		count++
+		if count >= MaxPendingDesignRequests { return ErrDesignConflict }
+	}
+	return iter.Error()
+}
+
 // DesignAcceptance is an independent artifact participant in the canonical
 // session transaction. It creates no alternative session or run authority.
 type DesignAcceptance struct {
