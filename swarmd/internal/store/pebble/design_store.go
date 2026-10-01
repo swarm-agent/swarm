@@ -75,7 +75,7 @@ type DesignCandidateSpec struct {
 // DesignSubmit deliberately has no output/HTML field. Selected source examples
 // are immutable input snapshots; only PublishDesignRevision accepts output bytes.
 type DesignSubmit struct {
-	canonical bool
+	canonical       bool
 	RequestID       string                  `json:"request_id"`
 	IdempotencyKey  string                  `json:"idempotency_key"`
 	ParentSessionID string                  `json:"parent_session_id"`
@@ -113,7 +113,7 @@ type DesignCandidate struct {
 }
 
 type DesignRequest struct {
-	Canonical bool `json:"canonical,omitempty"`
+	Canonical       bool              `json:"canonical,omitempty"`
 	Owner           DesignPrincipal   `json:"owner"`
 	ID              string            `json:"id"`
 	ParentSessionID string            `json:"parent_session_id"`
@@ -134,14 +134,14 @@ type DesignArtifact struct {
 }
 
 type DesignRevision struct {
-	Ref       DesignRef     `json:"ref"`
-	Kind      string        `json:"kind"`
-	RequestID string        `json:"request_id"`
-	Candidate int           `json:"candidate"`
-	Attempt   DesignAttempt `json:"attempt"`
-	Base      *DesignRef    `json:"base,omitempty"`
-	PlanSource *DesignRef   `json:"plan_source,omitempty"`
-	Content   []byte        `json:"content"`
+	Ref        DesignRef     `json:"ref"`
+	Kind       string        `json:"kind"`
+	RequestID  string        `json:"request_id"`
+	Candidate  int           `json:"candidate"`
+	Attempt    DesignAttempt `json:"attempt"`
+	Base       *DesignRef    `json:"base,omitempty"`
+	PlanSource *DesignRef    `json:"plan_source,omitempty"`
+	Content    []byte        `json:"content"`
 }
 
 // Every mutation has a stable idempotency key and a request revision precondition.
@@ -404,7 +404,9 @@ func (s *Store) submitDesignRequestInBatch(p DesignPrincipal, in DesignSubmit, b
 			if c.Kind != DesignHTML || c.Operation != DesignGenerate {
 				return zero, ErrDesignInvalid
 			}
-			if _, err := s.RequireDesignArtifactSession(p, in.ParentSessionID, c.PlanSource.ArtifactID); err != nil { return zero, err }
+			if _, err := s.RequireDesignArtifactSession(p, in.ParentSessionID, c.PlanSource.ArtifactID); err != nil {
+				return zero, err
+			}
 			plan, err := s.ReadDesignRevision(p, *c.PlanSource)
 			if err != nil {
 				return zero, err
@@ -429,7 +431,9 @@ func (s *Store) submitDesignRequestInBatch(p DesignPrincipal, in DesignSubmit, b
 			if c.Base == nil || c.Base.ArtifactID != c.ArtifactID {
 				return zero, ErrDesignInvalid
 			}
-			if _, err := s.RequireDesignArtifactSession(p, in.ParentSessionID, c.Base.ArtifactID); err != nil { return zero, err }
+			if _, err := s.RequireDesignArtifactSession(p, in.ParentSessionID, c.Base.ArtifactID); err != nil {
+				return zero, err
+			}
 			base, err := s.ReadDesignRevision(p, *c.Base)
 			if err != nil {
 				return zero, err
@@ -450,7 +454,9 @@ func (s *Store) submitDesignRequestInBatch(p DesignPrincipal, in DesignSubmit, b
 	if err := designSet(b, designKey(p, "request", r.ID), r); err != nil {
 		return zero, err
 	}
-	if err := s.setDesignCatalogAdmission(p, r, b); err != nil { return zero, err }
+	if err := s.setDesignCatalogAdmission(p, r, b); err != nil {
+		return zero, err
+	}
 	if err := designSet(b, designKey(p, "context", r.ID), in.Context); err != nil {
 		return zero, err
 	}
@@ -747,7 +753,9 @@ func (s *Store) SelectDesignRevision(p DesignPrincipal, in DesignSelection) (Des
 		return zero, err
 	}
 	r, err := s.GetDesignRequest(p, a.RequestGroupID)
-	if err != nil { return zero, err }
+	if err != nil {
+		return zero, err
+	}
 	if err := s.commitDesignChange(p, r, receipt, map[string]any{"request_id": r.ID, "artifact_id": a.ID, "selection_version": a.SelectionVersion}, b); err != nil {
 		return zero, err
 	}
