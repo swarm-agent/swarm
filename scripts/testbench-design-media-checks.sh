@@ -14,7 +14,7 @@ run_check() {
   local status=0
   timeout --kill-after=5s 180s "$@" 2>&1 | tail -c 6000 >"$log" || status=$?
   printf '\nCHECK %s exit=%s head=%s\n' "$label" "$status" "$CANDIDATE_HEAD"
-  tail -c 6000 "$log"
+  if (( status == 0 )); then tail -c 250 "$log"; else tail -c 6000 "$log"; fi
   return "$status"
 }
 run_check runtime python3 -B -m unittest discover -s scripts -p test_local_testbench_runtime.py -q
