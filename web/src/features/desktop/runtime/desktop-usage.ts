@@ -92,6 +92,13 @@ export class DesktopUsageRuntime {
       }
       if (!Number.isSafeInteger(revision) || revision < 1 || typeof worker !== 'string' || !worker) { this.invalidate(this.deps.account(), undefined, true); return }
       if (this.advanced(JSON.stringify(['budget', worker]), revision)) this.invalidate(this.deps.account(), worker, true)
+    } else if (frame.kind === 'notification.resource.updated') {
+      const n = frame.notification
+      // A daily stop may originate from an admission/status backstop rather
+      // than a usage receipt. Repair the exact worker budget once per notice.
+      if (n?.source_event_type !== 'worker.budget.exhausted' || n.account_scope_id !== this.deps.account()) return
+      if (typeof n.worker_id !== 'string' || !n.worker_id || typeof n.id !== 'string' || !n.id || typeof n.updated_at !== 'number' || !Number.isSafeInteger(n.updated_at) || n.updated_at <= 0) return
+      if (this.advanced(JSON.stringify(['budget-hold', n.id]), n.updated_at)) this.invalidate(this.deps.account(), n.worker_id, true)
     } else if (frame.kind === 'cursor.error' || frame.kind === 'rehydrate.required') this.invalidate()
   }
   async save(input: UsageInput, policy: WorkerBudgetUpdate) {

@@ -202,3 +202,24 @@ test('structured holds validate before publishing stopped state', { timeout: 200
     release()
   }
 })
+
+// Purpose: admission/status-created holds have no usage receipt event. The
+// canonical notification frame must repair only demanded same-account budgets,
+// once per stable alert; foreign/unrelated/replayed alerts must cause no reads.
+// DesktopUsageRuntime.acceptFrame is the narrowest invalidation boundary.
+test('daily hold notification repairs worker budget once without polling', { timeout: 2000 }, async () => {
+  const h = harness(), i = { ...input, budget: true }, release = h.runtime.acquire(i)
+  await Promise.resolve()
+  h.reads[0]({ usage: usage(), recorded: true, budget: budgetStatus() }); await h.runtime.refresh(i)
+  const frame = { kind: 'notification.resource.updated', notification: { id: 'worker-day', account_scope_id: 'acct', worker_id: input.scope.id, source_event_type: 'worker.budget.exhausted', updated_at: 1 } }
+  h.runtime.acceptFrame({ ...frame, notification: { ...frame.notification, account_scope_id: 'foreign' } })
+  h.runtime.acceptFrame({ ...frame, notification: { ...frame.notification, source_event_type: 'other' } })
+  assert.equal(h.reads.length, 1)
+  h.runtime.acceptFrame(frame); h.runtime.acceptFrame(frame)
+  await Promise.resolve(); assert.equal(h.reads.length, 2)
+  const hold = { date: '2026-01-01', reason: 'daily_budget_exhausted' as const, cap_source: 'account' as const, dimension: 'tokens' as const, limit: 10, usage: 10, reset_at: Date.parse('2026-01-02T00:00:00Z') }
+  h.reads[1]({ usage: usage(), recorded: true, budget: { ...budgetStatus(), blocked: true, hold } }); await h.runtime.refresh(i)
+  assert.deepEqual(h.pages()[usageKey(i)].budget?.hold, hold)
+  h.runtime.acceptFrame(frame); await Promise.resolve(); assert.equal(h.reads.length, 2)
+  release()
+})
