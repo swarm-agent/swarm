@@ -1,4 +1,3 @@
-import React from 'react'
 import { buildStructuredToolMessage } from '../chat/services/tool-message'
 import { ensureDesktopSession } from '../../../app/api'
 import { createRoot } from 'react-dom/client'
