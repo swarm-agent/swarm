@@ -78,7 +78,7 @@ export function DesignRevisionView({ item, onSelect }: { item: DesignItem; onSel
     <label className="block">Edit this exact revision ({revision.ref.revision})<textarea className="block w-full bg-slate-900 border border-white/20 p-2" value={brief} onChange={event => setBrief(event.target.value)} /></label>
     <button disabled={busy || !brief.trim() || new TextEncoder().encode(brief).length > 65536} onClick={() => void act('edit')}>Request delegated edit</button>
     {notice && <p role="status">{acceptedNotice ? `Edit accepted · ${designStatus(acceptedNotice.request.state)}` : notice}</p>}
-    {!!edits.data?.nextBefore && <button disabled={edits.loading} onClick={() => void desktopDesigns.moreEdits(session)}>Older edit requests</button>
+    {!!edits.data?.nextBefore && <button disabled={edits.loading} onClick={() => void desktopDesigns.moreEdits(session)}>Older edit requests</button>}
     {edits.data?.edits.filter(edit => edit.base.artifact_id === revision.ref.artifact_id).map(edit => {
       const accepted = rows.find(row => row.request.source_message_id === edit.messageId && row.request.client_request_id === edit.clientRequestId && row.request.candidates.some(candidate => candidate.spec.base && designRefKey(candidate.spec.base) === designRefKey(edit.base)))
       return <section key={edit.messageId}><p role="status">Edit from revision {edit.base.revision}: {accepted ? `accepted · ${designStatus(accepted.request.state)}` : 'edit requested · awaiting parent acceptance'}</p></section>
