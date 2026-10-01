@@ -52,7 +52,7 @@ export function TaskWorkerBudgetMetadata({ task }: { task: RunningTask }) {
 }
 
 export function TaskUsageFooter({ task, projectId, children }: { task: RunningTask; projectId?: string; children: ReactNode }) {
-  return <div className="flex min-w-0 flex-nowrap items-center justify-between gap-2" data-testid="task-usage-footer">
+  return <div className="swarm-task-usage-footer flex min-w-0 flex-nowrap items-center justify-between gap-2" data-testid="task-usage-footer">
     {children}
     <TaskUsageMetadata task={task} projectId={projectId} />
   </div>

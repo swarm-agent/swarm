@@ -2,7 +2,10 @@
 // user CAS writes, never write on load, reset account settings or invent usage.
 // Threat: reselect resets policy, keyboard trap, narrow overflow, implicit budget
 // mutation. WorkerBudgetEditor must expose limits; TaskUsageFooter must keep the
-// recorded task token split on the same row at narrow/wide widths, never a session
+// recorded task token split on the same row at narrow/wide widths, using the
+// production swarm-task-details-toggle class and scoped card CSS (width:100%
+// must not squeeze the token area to zero). Assert actual split visibility, not
+// just its parent's right edge, and prevent hidden horizontal overflow. Never a session
 // total. These boundaries reject above-ceiling writes, retain tokens on dollar edits,
 // show only structured holds as stopped, and preserve drafts on failed CAS.
 // Rendered browser interactions are the narrowest proof of those UI
@@ -24,7 +27,7 @@ test('compact chooser searches, retains saved options and budget saves exact CAS
     import {WorkerModelPicker} from './src/features/desktop/orchestrate/worker-model-picker';
     import {WorkerBudget,InlineUsage} from './src/features/desktop/orchestrate/scope-usage';
     window.profiles=[];
-    function App(){const [profile,setProfile]=useState({source:'temporary',action:{provider:'fixture',model:'catalog-model',thinking:'high',service_tier:'priority',context_mode:''}});return <><WorkerModelPicker accountScopeId='acct' profile={profile} disabled={false} onChange={p=>{window.profiles.push(p);setProfile(p)}}/><WorkerBudget accountScopeId='acct' workerId='worker-fixture'/><TaskUsageFooter task={{id:'task-fixture',worker_id:'worker-fixture',sessionId:'unrelated-session'}} projectId='project-fixture'><button className='shrink-0' onClick={()=>{window.detailsClicks=(window.detailsClicks||0)+1}}>Show details</button></TaskUsageFooter><div aria-label='Detail usage'><InlineUsage input={{accountScopeId:'acct',scope:{kind:'worker',id:'worker-fixture'}}}/></div></>}
+    function App(){const [profile,setProfile]=useState({source:'temporary',action:{provider:'fixture',model:'catalog-model',thinking:'high',service_tier:'priority',context_mode:''}});return <><WorkerModelPicker accountScopeId='acct' profile={profile} disabled={false} onChange={p=>{window.profiles.push(p);setProfile(p)}}/><WorkerBudget accountScopeId='acct' workerId='worker-fixture'/><div className='swarm-section'><div className='swarm-task-card'><TaskUsageFooter task={{id:'task-fixture',worker_id:'worker-fixture',sessionId:'unrelated-session'}} projectId='project-fixture'><button className='swarm-task-details-toggle shrink-0' onClick={()=>{window.detailsClicks=(window.detailsClicks||0)+1}}>Show details</button></TaskUsageFooter></div></div><div aria-label='Detail usage'><InlineUsage input={{accountScopeId:'acct',scope:{kind:'worker',id:'worker-fixture'}}}/></div></>}
     const root=createRoot(document.getElementById('root'));let key=0;
     window.remount=()=>root.render(<App key={++key}/>);
     window.switchAccount=()=>ensureDesktopSession(true).then(window.remount);
@@ -152,12 +155,19 @@ test('compact chooser searches, retains saved options and budget saves exact CAS
       const button = await page.getByRole('button', { name: 'Show details', exact: true }).boundingBox()
       const metadata = await page.locator('[aria-label="Task usage metadata"]').boundingBox()
       const footer = await page.getByTestId('task-usage-footer').boundingBox()
-      assert.ok(button && metadata && footer)
+      const tokens = await split.boundingBox()
+      assert.ok(button && metadata && footer && tokens)
+      assert.ok(metadata.width >= tokens.width && tokens.width > 0, 'recorded token split has visible space')
+      assert.ok(tokens.x >= metadata.x && tokens.x + tokens.width <= metadata.x + metadata.width + 1, 'entire split is visible without scrolling')
+      assert.equal(await page.locator('[aria-label="Task usage metadata"]').evaluate(el => el.scrollWidth > el.clientWidth), false, 'no clipped token categories or horizontal scrollbar')
       assert.ok(metadata.x >= button.x + button.width)
       assert.ok(Math.abs((button.y + button.height / 2) - (metadata.y + metadata.height / 2)) < 1, 'tokens and Show details share a row')
       assert.ok(Math.abs(metadata.x + metadata.width - footer.x - footer.width) < 1, 'tokens align at the right edge')
     }
     await assertFooterRow()
+    await page.setViewportSize({ width: 320, height: 800 })
+    await assertFooterRow()
+    await page.setViewportSize({ width: 360, height: 800 })
     await capture('worker-usage-unknown-narrow')
     await page.setViewportSize({ width: 1100, height: 800 })
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth), false)

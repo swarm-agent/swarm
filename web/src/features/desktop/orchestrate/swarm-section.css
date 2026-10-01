@@ -89,6 +89,9 @@
 [data-testid="task-card-chat-btn"] { border-radius: 6px; transition: all 0.15s ease; }
 .swarm-task-details-toggle { display: flex; align-items: center; justify-content: space-between; width: 100%; border-top: 1px solid var(--swarm-border-muted); padding: 6px 0 0; text-align: left; font-size: 10.5px; color: var(--swarm-text-muted); transition: color 0.15s ease; }
 .swarm-task-details-toggle:hover { color: var(--swarm-text); }
+/* The collapsed card shares one footer row; the toggle must not claim its full width. */
+.swarm-task-usage-footer { border-top: 1px solid var(--swarm-border-muted); padding-top: 6px; }
+.swarm-task-usage-footer > .swarm-task-details-toggle { flex: 0 0 auto; width: auto; border-top: 0; padding: 0; }
 @container (max-width: 460px) { .swarm-task-visual { width: 32px; height: 32px; } }
 
 /* Shared Desktop controls inherit these aliases only inside Swarm, including the
