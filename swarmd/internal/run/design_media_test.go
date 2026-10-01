@@ -16,13 +16,19 @@ func TestDesignMediaSelectorStrict(t *testing.T) {
 	valid := map[string]any{"design_preview_reference": ref}
 	body, _ := json.Marshal(valid)
 	got, err := decodeMediaInspectArguments(string(body))
-	if err != nil || got.DesignPreviewReference == nil || *got.DesignPreviewReference != ref { t.Fatal(got, err) }
+	if err != nil || got.DesignPreviewReference == nil || *got.DesignPreviewReference != ref {
+		t.Fatal(got, err)
+	}
 	for _, selector := range []string{"path", "asset_id", "session_id"} {
 		input := map[string]any{"design_preview_reference": ref, selector: "untrusted"}
 		b, _ := json.Marshal(input)
-		if _, err := decodeMediaInspectArguments(string(b)); err == nil { t.Fatal("accepted mixed selector", selector) }
+		if _, err := decodeMediaInspectArguments(string(b)); err == nil {
+			t.Fatal("accepted mixed selector", selector)
+		}
 	}
-	for _, invalid := range []string{string(body)+" {}", `{"design_preview_reference":{"session_id":"parent","preview":{},"account_id":"foreign"}}`, `{"design_preview_reference":{"session_id":"parent","preview":{}}}`} {
-		if _, err := decodeMediaInspectArguments(invalid); err == nil { t.Fatal("accepted malformed reference") }
+	for _, invalid := range []string{string(body) + " {}", `{"design_preview_reference":{"session_id":"parent","preview":{},"account_id":"foreign"}}`, `{"design_preview_reference":{"session_id":"parent","preview":{}}}`} {
+		if _, err := decodeMediaInspectArguments(invalid); err == nil {
+			t.Fatal("accepted malformed reference")
+		}
 	}
 }

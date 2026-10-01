@@ -102,13 +102,21 @@ func (r *Runtime) executeManageDesign(ctx context.Context, scope WorkspaceScope,
 	}
 	if in.RequestID != "" {
 		req, e := s.GetDesignRequest(p, in.RequestID)
-		if e != nil { return "", e }
-		if req.ParentSessionID != scope.SessionID { return "", pebblestore.ErrDesignNotFound }
+		if e != nil {
+			return "", e
+		}
+		if req.ParentSessionID != scope.SessionID {
+			return "", pebblestore.ErrDesignNotFound
+		}
 	}
 	artifactID := in.ArtifactID
-	if in.Ref != nil { artifactID = in.Ref.ArtifactID }
+	if in.Ref != nil {
+		artifactID = in.Ref.ArtifactID
+	}
 	if artifactID != "" {
-		if _, e := s.RequireDesignArtifactSession(p, scope.SessionID, artifactID); e != nil { return "", e }
+		if _, e := s.RequireDesignArtifactSession(p, scope.SessionID, artifactID); e != nil {
+			return "", e
+		}
 	}
 	var result any
 	switch in.Action {

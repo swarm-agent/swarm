@@ -82,9 +82,13 @@ func TestDesignAllocationAtomicRecovery(t *testing.T) {
 		t.Fatalf("replay: %+v %v", replay, err)
 	}
 	parentEvents, err := ss.ListV3SessionEvents("parent", 0, 20)
-	if err != nil || len(parentEvents) != 5 || parentEvents[4].EventType != "design.updated" { t.Fatal("missing or duplicate parent allocation event", parentEvents, err) }
+	if err != nil || len(parentEvents) != 5 || parentEvents[4].EventType != "design.updated" {
+		t.Fatal("missing or duplicate parent allocation event", parentEvents, err)
+	}
 	parentOutbox, err := ss.ListV3RealtimeOutboxForSessionAfterEndpoint("parent", 0, 20)
-	if err != nil || len(parentOutbox) != 5 || parentOutbox[4].Event.ID != parentEvents[4].ID { t.Fatal("missing parent allocation outbox", err) }
+	if err != nil || len(parentOutbox) != 5 || parentOutbox[4].Event.ID != parentEvents[4].ID {
+		t.Fatal("missing parent allocation outbox", err)
+	}
 	r, err := s.GetDesignRequest(p, submit.RequestID)
 	if err != nil || r.Revision != 2 || len(r.Candidates[0].Attempts) != 1 {
 		t.Fatalf("binding: %+v %v", r, err)

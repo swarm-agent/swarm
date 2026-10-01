@@ -51,7 +51,7 @@ test('gallery preserves historical edit bases, sandbox, modal layout and session
       }
       await route.abort()
     })
-    await page.goto('http://fixture.invalid/fixture')
+    await page.goto('http://localhost/fixture')
     await page.addStyleTag({ content: css }); await page.addScriptTag({ content: js, type: 'module' })
     await page.getByRole('button', { name: 'Delegated designs (1)', exact: true }).click()
     const dialog = page.getByRole('dialog', { name: 'Delegated designs' })
