@@ -1,15 +1,19 @@
 # Queued Designer request execution boundary
 
-`manage_design` accepts briefs through `ApplySessionMutation(design.accept)`. It does not create a child, resolve a model, invoke a provider, or reserve an execution slot. The returned request ID is the durable job/group reference, not proof of execution. At most 50 pending requests per account/principal, each with at most eight candidates, are admitted under the same store lock and batch as acceptance. Replays do not consume additional capacity. Parent run completion/cancellation does not remove the independent pending index.
+`manage_design` accepts briefs through `ApplySessionMutation(design.accept)`. Submission returns durable request/group identity, not proof of execution. Acceptance and its bounded pending index survive parent completion; no parent-owned goroutine is the scheduling authority.
 
-## Next-checkpoint adapter requirements
+## Allocation adapter
 
-- Enumerate `ListPendingDesignRequests` in bounded account/principal pages. Never infer ownership from request arguments or scan arbitrary accounts.
-- Resolve the configured Designer model only when binding execution, using the canonical system-agent resolver and admission service. Resolve selected source files through authorized workspace/path boundaries before provider dispatch. Neither is implemented by this queued foundation.
-- Allocate a canonical V3 child session/run with durable delegation lineage through the session mutation boundary. Use a deterministic allocation idempotency key derived from request/candidate/attempt; recover that exact child after a crash rather than allocating another. Atomic allocation/binding support must be implemented before enabling dispatch; `RecordDesignAttempt` alone is not atomic child allocation.
-- Bind attempt provenance using request-revision CAS only after proving the canonical child owner, lineage and run. Do not treat caller-provided child strings as authority. Observe canonical terminal states; interrupted work requires an explicit fresh attempt, not automatic provider replay.
-- Reconciliation owns `cancel_requested` dispatch against canonical children and confirmation. The tool immediately cancels queued candidates; it only persists cancellation intent for running candidates. Pending cancellation must survive daemon restart.
-- Do not register accepted work in parent-owned goroutine cleanup or cancellation maps. The pending index remains scheduling authority until terminal observation. No independent design session lifecycle exists.
-- Publication belongs only to a validated Designer completion adapter, never the orchestrator tool. Exact historical bases remain immutable; failed/cancelled attempts cannot publish. Plan output is text history, never an implementation trigger.
+`Service.AllocateDesignChild` is a trusted scheduler API, not a tool argument surface. It loads the authenticated account/principal request, uses permission-owned `AdmitExecution`, resolves the configured Designer with `agentmodel.ResolveSystemAgent`, and calls the canonical session mutation boundary. Model-resolution failure is returned explicitly without allocating a child; this adapter does not invent a model fallback.
 
-No Artifact V3 author grants, Git, Parts, publication, or dual writes participate. Existing artifact operations remain untouched. Provider execution, canonical child allocation/binding, source hydration and browser validation are intentionally not enabled by this foundation.
+`DesignAllocation` participates in the same Pebble batch as child session, run intent, events, outbox and attempt binding. Request revision CAS and deterministic account/request/candidate/attempt identity prevent racing allocations and orphan children. Parent ownership and run existence are checked under the account/session locks; parent completion does not invalidate accepted work. The child has no inherited workspace grants or writable checkout. Its durable metadata and run intent retain parent and attempt lineage.
+
+The caller owns the returned admission lease and must release it or pass it to execution with `executioncapacity.WithLease`. Recovery of an already bound attempt returns the verified child and **no lease**: it is not permission to replay a provider call. Recovery must inspect canonical run intent and acquire execution ownership before dispatch. Interrupted work needs an explicit fresh attempt. No scheduling loop or provider execution is enabled here.
+
+`Service.ReconcileDesignCancellation` verifies persisted child ownership/lineage. Pending runs are cancelled through the V3 mutation boundary with an event-sequence precondition. Running cancellation dispatches `StopSessionRun`; later reconciliation confirms history only after the canonical intent says cancelled. An unavailable executor is an error, not a fabricated acknowledgement. Persisted `cancel_requested` remains discoverable after restart.
+
+## Deferred execution work
+
+The next checkpoint must hydrate authorized selected source files, own scheduler wake/restart processing, acquire/retain execution ownership, invoke the configured Designer, reconcile terminal states, validate standalone output, and publish through independent design history. It must not treat the allocation return value as provider success, register work in parent cleanup maps, or accept child IDs from models. `RecordDesignAttempt` remains a low-level observation API, not an allocation authority.
+
+No Artifact V3 author grants, Git, Parts, publication or dual writes participate. Browser validation, UI, and provider dispatch remain deferred.
