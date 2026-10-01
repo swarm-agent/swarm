@@ -589,7 +589,9 @@ func (s *Store) RecordDesignAttempt(p DesignPrincipal, requestID string, in Desi
 	}
 	b := s.db.NewBatch()
 	defer b.Close()
-	return s.designCommitRequest(p, r, receipt, in, b)
+	result, err := s.designCommitRequest(p, r, receipt, in, b)
+	if err == nil { s.WakeDesign() }
+	return result, err
 }
 
 // PublishDesignRevision preserves exact UTF-8 bytes and commits the immutable
