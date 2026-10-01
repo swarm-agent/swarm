@@ -2,7 +2,8 @@ import { useState, useReducer, useMemo, useEffect, useCallback, useRef, useSyncE
 import { MediaTaskSelect, MediaTaskDefault, MediaTaskHelp, MediaTaskScenes, MediaTaskCost } from './media-task-controls'
 import { ImagePromptControls, imagePromptReducer, initialImagePromptState, imagePromptEnhancement } from './image-task-prompt'
 import { DurableWorkerReviews } from '../chat/components/durable-worker-reviews'
-import { taskIntegrationOperations, taskIntegrationKey, taskIntegrationFailureIdentity, taskIntegrationPhase, type TaskIntegrationOperation, type TaskIntegrationResult } from './task-integration-operation'
+import { taskReopenOperations, taskReopenKey, type TaskReopenOutcome } from './task-reopen-operation'
+import { acquireTaskMutation, taskIntegrationOperations, taskIntegrationKey, taskIntegrationFailureIdentity, taskIntegrationPhase, type TaskIntegrationOperation, type TaskIntegrationResult } from './task-integration-operation'
 import { projectTaskFollowupPayload } from '../runtime/project-task-followup'
 import { TaskAttemptHistory } from './task-attempt-history'
 import { useOrchestratorDictation } from './use-orchestrator-dictation'
@@ -714,7 +715,7 @@ export function MinimalTaskCard({
   onDelete?: () => void
   onRefine?: (feedback?: string, errorSummary?: string) => void
   onPreviewDeliverable?: (d: MediaDeliverable, mode?: QuickRouteMode) => void
-  onReopen?: (feedback?: string) => void
+  onReopen?: (feedback?: string) => Promise<TaskReopenOutcome>
   onComplete?: () => void
   onRedeployJob?: (taskId: string, jobId: string, feedback?: string) => void
   onUpdateModel?: (taskId: string, model: string, scopeInput?: AgentModelControlTaskOverrideInput | null) => void | Promise<void>
@@ -786,6 +787,27 @@ export function MinimalTaskCard({
   const [refineFeedback, setRefineFeedback] = useState('')
   const [isReopenOpen, setIsReopenOpen] = useState(false)
   const [reopenFeedback, setReopenFeedback] = useState('')
+  const reopenFlightRef = useRef(false)
+  const [localReopenPending, setLocalReopenPending] = useState(false)
+  const [localReopenError, setLocalReopenError] = useState<string>()
+  useSyncExternalStore(taskReopenOperations.subscribe, taskReopenOperations.getSnapshot, taskReopenOperations.getSnapshot)
+  const reopenOperation = taskReopenOperations.get(taskReopenKey(projectId || '', task.id))
+  const previousReopenPending = useRef(reopenOperation.pending)
+  useEffect(() => {
+    if (previousReopenPending.current && !reopenOperation.pending && !reopenOperation.error) {
+      setReopenFeedback(''); setIsReopenOpen(false); setLocalReopenError(undefined)
+    }
+    previousReopenPending.current = reopenOperation.pending
+  }, [reopenOperation])
+  const isReopening = localReopenPending || reopenOperation.pending
+  const actionError = localReopenError || reopenOperation.error || taskError
+  const cardIdentityRef = useRef('')
+  cardIdentityRef.current = taskReopenKey(projectId || '', task.id)
+  useEffect(() => {
+    const retained = taskReopenOperations.get(taskReopenKey(projectId || '', task.id))
+    setLocalReopenPending(false); setLocalReopenError(undefined)
+    setIsReopenOpen(retained.draft !== undefined); setReopenFeedback(retained.draft ?? '')
+  }, [projectId, task.id])
   const isRunning = task.status === 'running' || task.status === 'in_progress'
   const isNeedsReview = task.status === 'needs_review'
   const isCompleted = task.status === 'completed'
@@ -1092,7 +1114,7 @@ export function MinimalTaskCard({
               {isIntegrating ? 'Integrating worktree' : integrationPhase === 'error' ? 'Integration needs attention' : isIntegratedAction ? 'Integrated:' : task.baseBranch ? 'Ready to integrate' : 'Target unavailable'}
             </span>
             {onIntegrate && <button type="button"
-              disabled={isIntegrating || isIntegratedAction || !task.baseBranch}
+              disabled={isIntegrating || isReopening || isIntegratedAction || !task.baseBranch}
               aria-busy={isIntegrating}
               aria-label={isIntegrating ? 'Integrating…' : isIntegratedAction ? 'Integrated' : task.baseBranch ? `${integrationPhase === 'error' ? 'Retry integrate' : 'Integrate'} into ${task.baseBranch}` : 'Target unavailable'}
               onClick={event => { event.stopPropagation(); onIntegrate() }}
@@ -1105,7 +1127,7 @@ export function MinimalTaskCard({
               </span>
             </button>}
           </div>}
-          {canReopen && <button ref={reopenButtonRef} type="button" disabled={isIntegrating}
+          {canReopen && <button ref={reopenButtonRef} type="button" disabled={isIntegrating || isReopening} aria-busy={isReopening}
             aria-expanded={isReopenOpen} aria-controls={reopenFormId}
             onClick={event => { event.stopPropagation(); if (isReopenOpen) closeReopen(); else setIsReopenOpen(true) }}
             className="swarm-outline-action flex items-center gap-1 rounded border border-slate-700 px-2.5 py-1 disabled:opacity-70">
@@ -1115,22 +1137,38 @@ export function MinimalTaskCard({
             className="swarm-outline-action flex items-center gap-1 rounded border border-emerald-500/50 px-3 py-1 text-emerald-400"><Check size={12} />Complete</button>}
         </div>
       )}
-      {isReopenOpen && canReopen && <form id={reopenFormId} aria-label="Reopen task instructions"
+      {isReopenOpen && (canReopen || isReopening || Boolean(actionError)) && <form id={reopenFormId} aria-label="Reopen task instructions"
         className="flex items-center flex-wrap gap-2 text-xs" onClick={event => event.stopPropagation()}
         onSubmit={event => {
           event.preventDefault(); event.stopPropagation()
-          if (isIntegrating) return
-          onReopen?.(reopenFeedback.trim() ? reopenFeedback : undefined)
-          setReopenFeedback(''); closeReopen()
+          if (isIntegrating || isReopening || reopenFlightRef.current || !onReopen) return
+          const identity = cardIdentityRef.current
+          reopenFlightRef.current = true
+          setLocalReopenPending(true); setLocalReopenError(undefined)
+          void onReopen(reopenFeedback).then(outcome => {
+            if (cardIdentityRef.current !== identity) return
+            if (outcome.ok) { setReopenFeedback(''); closeReopen() }
+            else setLocalReopenError(outcome.error)
+          }).catch(error => {
+            if (cardIdentityRef.current === identity) setLocalReopenError(error instanceof Error ? error.message : String(error))
+          }).finally(() => {
+            reopenFlightRef.current = false
+            if (cardIdentityRef.current === identity) setLocalReopenPending(false)
+          })
         }}>
-        <input autoFocus type="text" aria-label="Instructions for the agent to resume work" disabled={isIntegrating}
+        <input autoFocus type="text" aria-label="Instructions for the agent to resume work" disabled={isIntegrating || isReopening}
           value={reopenFeedback} onChange={event => setReopenFeedback(event.target.value)}
           placeholder="Instructions for the agent to resume work..."
           className="min-w-0 flex-1 rounded border border-slate-700 bg-transparent px-2.5 py-1"
-          onKeyDown={event => { event.stopPropagation(); if (event.key === 'Escape') { event.preventDefault(); closeReopen() } }} />
-        <button type="submit" disabled={isIntegrating} className="swarm-outline-action rounded border border-amber-500/50 px-3 py-1">Resume Run</button>
-        <button type="button" onClick={closeReopen} className="swarm-outline-action rounded border border-slate-700 px-3 py-1">Cancel</button>
+          onKeyDown={event => { event.stopPropagation(); if (event.key === 'Escape') { event.preventDefault(); if (!isReopening) closeReopen() } }} />
+        <button type="submit" disabled={isIntegrating || isReopening} aria-busy={isReopening} className="swarm-outline-action rounded border border-amber-500/50 px-3 py-1">{isReopening ? 'Reopening…' : 'Resume Run'}</button>
+        <button type="button" disabled={isReopening} onClick={closeReopen} className="swarm-outline-action rounded border border-slate-700 px-3 py-1">Cancel</button>
       </form>}
+      {actionError && <div role="alert" data-testid="task-error-banner" className="flex flex-wrap items-center gap-2 rounded border border-rose-500/50 bg-rose-950/40 p-2.5 text-xs text-rose-200" onClick={event => event.stopPropagation()}>
+        <AlertTriangle size={14} className="shrink-0" /><span className="min-w-0 break-words">Action Failed: {actionError}</span>
+        {onApprove && isPendingApproval && <button type="button" disabled={isApproving} data-testid="retry-approve-btn" onClick={onApprove}>Retry</button>}
+        {onClearError && !reopenOperation.error && !localReopenError && <button type="button" onClick={onClearError}>Dismiss</button>}
+      </div>}
       <button ref={detailsToggleRef} type="button" className="swarm-task-details-toggle"
         aria-expanded={expanded} aria-controls={detailsId} data-testid="toggle-task-details-btn"
         onClick={event => { event.stopPropagation(); handleToggleExpand() }}>
@@ -1740,46 +1778,6 @@ export function MinimalTaskCard({
 
           {/* Refine / Actions Bar */}
           <div className="flex flex-col gap-2 pt-1 border-t border-blue-500/20">
-            {/* Action Error Banner with Retry */}
-            {taskError && (
-              <div className="flex items-center justify-between p-2.5 rounded-lg bg-rose-950/40 border border-rose-500/50 text-rose-200 text-xs gap-2" data-testid="task-error-banner">
-                <div className="flex items-center gap-2 min-w-0">
-                  <AlertTriangle size={14} className="text-rose-400 shrink-0" />
-                  <div className="truncate">
-                    <span className="font-bold text-rose-300">Action Failed: </span>
-                    <span>{taskError}</span>
-                  </div>
-                </div>
-                <div className="flex items-center gap-1.5 shrink-0">
-                  {onApprove && isPendingApproval && (
-                    <button
-                      type="button"
-                      disabled={isApproving}
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        onApprove()
-                      }}
-                      className="px-2 py-0.5 rounded bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white font-bold text-[10px] transition-colors"
-                      data-testid="retry-approve-btn"
-                    >
-                      Retry
-                    </button>
-                  )}
-                  {onClearError && (
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        onClearError()
-                      }}
-                      className="text-slate-400 hover:text-white text-[10px] px-1"
-                    >
-                      Dismiss
-                    </button>
-                  )}
-                </div>
-              </div>
-            )}
 
             {isPlanRejected && (
               <div className="p-2.5 rounded bg-rose-950/40 border border-rose-500/50 text-rose-200 text-xs flex items-center gap-2" data-testid="task-plan-rejected-banner">
@@ -5200,6 +5198,9 @@ export function OrchestrateView({
       setSelectedWorker(null)
       return
     }
+    if (taskIntegrationPhase(task, taskIntegrationOperations.get(taskIntegrationKey(failure.projectId, task))) === 'pending') return
+    const release = acquireTaskMutation(failure.projectId, task.id)
+    if (!release) return
     repairFlights.current.add(task.id)
     setRepairStates(previous => ({ ...previous, [task.id]: { loading: true } }))
     try {
@@ -5212,8 +5213,8 @@ export function OrchestrateView({
       })
       if (!result.task?.session_id) throw new Error('Missing task-linked repair session')
       desktopProjects.invalidate(failure.projectId)
-      setRepairStates(previous => ({ ...previous, [task.id]: { sessionId: result.task.session_id } }))
       if (recoveryProjectRef.current !== failure.projectId) return
+      setRepairStates(previous => ({ ...previous, [task.id]: { sessionId: result.task.session_id } }))
       setActiveTaskId(task.id)
       setSelectedTaskId(task.id)
       setActiveSessionId(result.task.session_id)
@@ -5221,9 +5222,11 @@ export function OrchestrateView({
       selectedWorkerRef.current = null
       setSelectedWorker(null)
     } catch (error) {
+      if (recoveryProjectRef.current !== failure.projectId) return
       setRepairStates(previous => ({ ...previous, [task.id]: { error: `Repair launch failed: ${redactIntegrationDiagnostic(error instanceof Error ? error.message : String(error))}. Retry reuses the same session request.` } }))
     } finally {
       repairFlights.current.delete(task.id)
+      release()
     }
   }
 
@@ -5267,45 +5270,28 @@ export function OrchestrateView({
   }
 
   // Reopen task back to in_progress
-  const handleReopenTask = async (taskId: string, feedback?: string) => {
-    if (!selectedProject?.id) return
-    const project = selectedProject
-    const originalTask = tasks.find(task => task.id === taskId)
-    if (originalTask && integrationForTask(originalTask).phase === 'pending') return
-    handleClearTaskError(taskId)
-    try {
-      const targetTask = tasks.find(task => task.id === taskId)
-      const request = feedback || 'Continue this task and address remaining requirements.'
-      const active = targetTask?.attempts?.find(attempt => attempt.id === targetTask.activeAttemptId)
-      const revision = active && active.launch_state !== 'launched' && active.request === request
-        ? active.request_revision ?? 0 : targetTask?.revision ?? 0
-      const res = await requestJson<{ status: string; task: any }>(
-        `/v3/projects/${project.id}/tasks/${taskId}/reopen`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(await projectTaskFollowupPayload(selectedProject.id, taskId, revision, request)),
-        }
-      )
-      if (!res?.task) {
-        throw new Error('Reopen succeeded without returned task authority')
-      }
-      if (originalTask) taskIntegrationOperations.reopened(taskIntegrationKey(project.id, originalTask))
-      const mapped = mapBackendTask(res.task)
-      desktopProjects.setOptimisticTasks(selectedProject.id, (prev) =>
-        prev.map((t) => (t.id === taskId ? mapped : t))
-      )
-      desktopProjects.invalidate(selectedProject.id)
-      const linkedSessionId = res.task.session_id || res.task.sessionId
-      if (linkedSessionId) {
+  const handleReopenTask = async (taskId: string, feedback?: string): Promise<TaskReopenOutcome> => {
+    const projectId = selectedProject?.id
+    if (!projectId) return { ok: false, error: 'Select the task project before reopening.' }
+    const targetTask = tasks.find(task => task.id === taskId)
+    const outcome = await taskReopenOperations.run(projectId, taskId, targetTask, feedback,
+      body => requestJson<{ status: string; task: any }>(
+        `/v3/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(taskId)}/reopen`,
+        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) },
+      ),
+      returnedTask => {
+        const mapped = mapBackendTask(returnedTask)
+        desktopProjects.setOptimisticTasks(projectId, prev => prev.map(task => task.id === taskId ? mapped : task))
+        desktopProjects.invalidate(projectId)
+        if (recoveryProjectRef.current !== projectId) return
+        handleClearTaskError(taskId)
         setSelectedTaskId(taskId)
+        const linkedSessionId = returnedTask.session_id || returnedTask.sessionId
         void hydrateDesktopV3ChildCard(linkedSessionId, { activePlan: true, permissionSummary: true }).catch(() => undefined)
-      }
-    } catch (err: any) {
-      console.warn('Reopen task failed:', err)
-      setTaskActionErrors((prev) => ({ ...prev, [taskId]: err?.message || String(err) }))
-      desktopProjects.invalidate(selectedProject.id)
-    }
+      },
+    )
+    if (!outcome.ok) desktopProjects.invalidate(projectId)
+    return outcome
   }
 
   // Complete task explicitly

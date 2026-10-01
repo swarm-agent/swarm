@@ -23,6 +23,15 @@ export function taskIntegrationPhase(task: RunningTask, local?: TaskIntegrationO
 
 const ready: TaskIntegrationOperation = Object.freeze({ phase: 'ready' })
 
+// Shared interaction lock: task identity cannot change mid-flight with its lineage.
+const taskMutationFlights = new Set<string>()
+export function acquireTaskMutation(projectId: string, taskId: string): (() => void) | undefined {
+  const key = JSON.stringify([projectId, taskId])
+  if (taskMutationFlights.has(key)) return
+  taskMutationFlights.add(key)
+  return () => { taskMutationFlights.delete(key) }
+}
+
 // Exact captured lineage, not the currently selected card or a mutable snapshot revision.
 export function taskIntegrationKey(projectId: string, task: RunningTask): string {
   return JSON.stringify([projectId, task.id, task.sessionId, task.activeAttemptId, task.sourceWorkspaceId, task.sourceWorkspacePath, task.worktreeBranch, task.baseBranch])
@@ -77,6 +86,8 @@ export function createTaskIntegrationController() {
       const key = taskIntegrationKey(project.id, task)
       const current = get(key)
       if (current.phase === 'pending' || current.phase === 'success' || task.integration?.state === 'in_progress' || (task.isIntegrated && task.status === 'completed')) return
+      const release = acquireTaskMutation(project.id, task.id)
+      if (!release) return
       // Lock and notify synchronously, before invoking the transport or yielding.
       dismissedFailures.delete(key)
       publish(key, { phase: 'pending' })
@@ -92,8 +103,10 @@ export function createTaskIntegrationController() {
         }
       } catch (error) {
         publish(key, { phase: 'error', failure: integrationFailure(project, capturedTask, error), failureId: ++failureId })
+        release()
         return
       }
+      release()
       // A successful mutation receipt is independent of later cache repair failure.
       const receipt: TaskIntegrationOperation = { phase: 'success' }
       publish(key, receipt)
