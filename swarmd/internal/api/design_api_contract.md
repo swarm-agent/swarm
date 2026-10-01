@@ -19,3 +19,52 @@ Realtime: `design.accepted` plus `design.updated` in the canonical parent sessio
 The admission counter/index is populated atomically for new acceptances. Earlier pre-index development records are outside this unreleased catalog contract; no migration, inferred history or silent full-store scan is provided. Existing Artifact V3/legacy artifact discovery is unaffected.
 
 Validation: focused tests are authored but not run; parent validation required. Browser pixel/provider acceptance is separate and not implied by hermetic tests.
+
+## Project Media Center discovery
+
+`GET /v3/projects/{project}/designs?limit=20&after=<opaque>` returns
+`{designs: [{project_id, task_id?, attempt_id?, title, request}], next_cursor}`.
+Limit is 1–50. Authenticated user/account and projects:read or sessions:read are
+required. The request is the existing independent design request (briefs removed),
+including stable candidate array positions, request revision, states, failure and
+router alerts, attempt results/validation preview references and exact base lineage.
+The bounded title is the first 80 Unicode characters of normalized retained input.
+It is display text, not HTML. No output bytes or revision history are copied.
+Use parent_session_id and the unchanged per-session exact-reference APIs to open
+or load revision turns. Do not convert these references into Artifact V3.
+
+Pagination is membership-first, then newest admission within each session; it is
+not global timestamp sorting. Continue even on an empty page until next_cursor is
+empty. Merge by request ID/candidate index, not title/time. Each call visits at most
+limit membership/catalog positions, including foreign/deleted sessions. Cursors
+are account/principal/project scoped. They are opaque continuation positions, not
+snapshot guarantees or authority. On membership invalidation discard traversal
+cursors and rehydrate from the first page. Concurrent admission is reconciled by
+restarting from the first page on the durable invalidation.
+
+Hydration walks only the project's primary session and its task records/current
+and historical attempt sessions. It uses the already-atomic session admission
+index, so completed requests predating this endpoint are included. It idempotently
+persists membership locators per visited owned session; continuation survives
+restart. New project/task bindings persist these locators in their canonical batch.
+Locators never authorize reads: current project/task binding and session ownership
+are revalidated. Project removal/rebinding invalidates previously discovered rows.
+There is no global session scan or second progress/history store.
+
+Design acceptance/update/allocation retains its original design.accepted or
+design.updated event and atomically appends a reference-free project.updated
+invalidation (`resource: designs`) in the same V3 batch. Existing project realtime
+publication/replay delivers this while chat is unmounted. Listen to project.updated
+and rehydrate the matching project, rather than polling. Pre-index projects acquire
+locators through bounded initial hydration; legacy metadata is only a locator and
+must match the canonical project/task/attempt binding.
+
+Edit remains canonical parent user-message acceptance, not design admission.
+The message has `metadata.design_edit_request: {client_request_id, base, state:
+"requested"}`. Persist/reload the canonical message, not a frontend pending store.
+A subsequent accepted request exposes `source_message_id` from its canonical run
+and `client_request_id` from design acceptance. Reconcile using message identity
+and exact candidate base (never timestamps/titles); message metadata by itself
+cannot establish accepted/running/ready state. Legacy requests lacking message
+identity must not be heuristically matched. Selection CAS and exact-ref checks
+remain unchanged.

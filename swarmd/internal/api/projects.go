@@ -1561,6 +1561,10 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 	}
 
 	segments := strings.Split(trimmed, "/")
+	if len(segments) == 2 && segments[1] == "designs" {
+		s.handleProjectDesigns(w, r, p, segments[0])
+		return
+	}
 
 	// 2. Synthesize context: POST /v3/projects/synthesize-context
 	if len(segments) == 1 && segments[0] == "synthesize-context" {

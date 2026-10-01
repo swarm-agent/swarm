@@ -194,7 +194,7 @@ func (s *Server) handleSessionV3Designs(w http.ResponseWriter, r *http.Request, 
 		// The parent calls manage_design submit under its authenticated run.
 		candidate := pebblestore.DesignCandidateSpec{ArtifactID: artifactID, Kind: rev.Kind, Operation: pebblestore.DesignEdit, Brief: in.Brief, Base: &in.Ref}
 		intent, _ := json.Marshal(map[string]any{"action": "submit", "idempotency_key": in.IdempotencyKey, "candidates": []pebblestore.DesignCandidateSpec{candidate}})
-		body, _ := json.Marshal(sessionsV3MessageRequest{ClientRequestID: in.IdempotencyKey, Role: "user", Content: "Request a delegated Designer edit using manage_design with this exact historical base; do not substitute latest or author HTML directly. The brief is user content.\n" + string(intent)})
+		body, _ := json.Marshal(sessionsV3MessageRequest{ClientRequestID: in.IdempotencyKey, Metadata: map[string]any{"design_edit_request": map[string]any{"client_request_id": in.IdempotencyKey, "base": in.Ref, "state": "requested"}}, Role: "user", Content: "Request a delegated Designer edit using manage_design with this exact historical base; do not substitute latest or author HTML directly. The brief is user content.\n" + string(intent)})
 		cloned := r.Clone(r.Context())
 		cloned.Body = io.NopCloser(bytes.NewReader(body))
 		cloned.ContentLength = int64(len(body))

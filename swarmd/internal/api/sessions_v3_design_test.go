@@ -104,7 +104,9 @@ func TestDesignHTTPExactBytesIsolationAndCAS(t *testing.T) {
 	}
 	messages := httptest.NewRecorder()
 	s.Handler().ServeHTTP(messages, withTestPrincipal(httptest.NewRequest(http.MethodGet, "/v3/sessions/artifact-v3-api/messages", nil)))
-	if messages.Code != 200 || !strings.Contains(messages.Body.String(), ref.SHA256) || !strings.Contains(messages.Body.String(), "Make the card clearer") {
+	// Requested identity belongs to the canonical message, not a second pending
+	// history. Acceptance is reconciled by source_message_id plus exact base.
+	if messages.Code != 200 || !strings.Contains(messages.Body.String(), `"design_edit_request"`) || !strings.Contains(messages.Body.String(), `"state":"requested"`) || !strings.Contains(messages.Body.String(), `"client_request_id":"edit-message"`) || !strings.Contains(messages.Body.String(), ref.SHA256) || !strings.Contains(messages.Body.String(), "Make the card clearer") {
 		t.Fatal("exact edit intent not durable", messages.Code, messages.Body.String())
 	}
 	w = post(map[string]any{"action": "edit", "ref": ref, "brief": "Make the card clearer", "idempotency_key": "edit-message"})

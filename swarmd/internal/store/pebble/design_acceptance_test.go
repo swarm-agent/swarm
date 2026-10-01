@@ -17,25 +17,29 @@ func TestDesignAcceptanceAtomicRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = ss.ApplyV3SessionMutation(V3SessionMutationInput{SessionID: "parent", UserID: p.PrincipalID, AccountScopeID: p.AccountID, IdempotencyKey: "run", PayloadHash: "run", Kind: V3SessionMutationRecordRunIntent, RunIntent: &V3SessionRunIntent{SessionID: "parent", RunID: "parent-run", Status: V3RunIntentPendingExecutor}})
+	_, err = ss.ApplyV3SessionMutation(V3SessionMutationInput{SessionID: "parent", UserID: p.PrincipalID, AccountScopeID: p.AccountID, IdempotencyKey: "run", PayloadHash: "run", Kind: V3SessionMutationRecordRunIntent, RunIntent: &V3SessionRunIntent{SessionID: "parent", RunID: "parent-run", SourceMessageID: "edit-message", Status: V3RunIntentPendingExecutor}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	submit := designTestSubmit("accept", DesignHTML)
 	input := V3SessionMutationInput{SessionID: "parent", UserID: p.PrincipalID, AccountScopeID: p.AccountID, IdempotencyKey: submit.IdempotencyKey, PayloadHash: DesignAcceptanceHash(submit), Kind: V3SessionMutationAcceptDesign, EventType: "design.accepted", DesignAcceptance: &DesignAcceptance{Submit: submit}}
+	if err := ss.PutProject(p.AccountID, &ProjectRecord{ID: "project", Name: "Project", PrimarySessionID: "parent"}); err != nil { t.Fatal(err) }
+	var notices []V3RealtimeOutboxRecord
+	s.SetProjectPublisher(func(record V3RealtimeOutboxRecord) { notices = append(notices, record) })
 	first, err := ss.ApplyV3SessionMutation(input)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if len(notices) != 1 { t.Fatal("missing atomic project invalidation", notices) }
 	if first.RealtimeOutbox == nil {
 		t.Fatal("missing canonical outbox")
 	}
 	catalog, cursor, err := s.ListSessionDesignRequests(p, "parent", "", 20)
-	if err != nil || len(catalog) != 1 || catalog[0].ID != submit.RequestID || cursor != "" {
+	if err != nil || len(catalog) != 1 || catalog[0].ID != submit.RequestID || catalog[0].SourceMessageID != "edit-message" || catalog[0].ClientRequestID != submit.IdempotencyKey || cursor != "" {
 		t.Fatal("acceptance missing catalog entry", catalog, cursor, err)
 	}
 	replay, err := ss.ApplyV3SessionMutation(input)
-	if err != nil || !replay.Replayed || replay.PrimarySeq != first.PrimarySeq {
+	if err != nil || !replay.Replayed || replay.PrimarySeq != first.PrimarySeq || len(notices) != 1 {
 		t.Fatalf("replay: %+v %v", replay, err)
 	}
 	_, err = ss.ApplyV3SessionMutation(V3SessionMutationInput{SessionID: "parent", UserID: p.PrincipalID, AccountScopeID: p.AccountID, IdempotencyKey: "complete", PayloadHash: "complete", Kind: V3SessionMutationRecordRunIntent, RunIntent: &V3SessionRunIntent{SessionID: "parent", RunID: "parent-run", Status: V3RunIntentCompleted}})
@@ -66,7 +70,7 @@ func TestDesignAcceptanceAtomicRecovery(t *testing.T) {
 		t.Fatal("partial artifact", err)
 	}
 	after, err := ss.ListV3SessionEvents("parent", 0, 50)
-	if err != nil || len(after) != len(before) {
+	if err != nil || len(after) != len(before) || len(notices) != 1 {
 		t.Fatal("rejection emitted event", err)
 	}
 	input.AccountScopeID = "foreign"

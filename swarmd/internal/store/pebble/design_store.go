@@ -113,6 +113,8 @@ type DesignCandidate struct {
 }
 
 type DesignRequest struct {
+	SourceMessageID string            `json:"source_message_id,omitempty"`
+	ClientRequestID string            `json:"client_request_id,omitempty"`
 	Canonical       bool              `json:"canonical,omitempty"`
 	Owner           DesignPrincipal   `json:"owner"`
 	ID              string            `json:"id"`
@@ -392,7 +394,12 @@ func (s *Store) submitDesignRequestInBatch(p DesignPrincipal, in DesignSubmit, b
 	if err := s.admitDesignRequest(p); err != nil {
 		return zero, err
 	}
-	r := DesignRequest{Canonical: in.canonical, Owner: p, ID: in.RequestID, ParentSessionID: in.ParentSessionID, ParentRunID: in.ParentRunID, Revision: 1, State: DesignQueued}
+	r := DesignRequest{Canonical: in.canonical, Owner: p, ID: in.RequestID, ParentSessionID: in.ParentSessionID, ParentRunID: in.ParentRunID, Revision: 1, State: DesignQueued, ClientRequestID: in.IdempotencyKey}
+	if run, found, err := NewSessionStore(s).GetV3SessionRunIntent(in.ParentSessionID, in.ParentRunID); err != nil {
+		return zero, err
+	} else if found && run.AccountScopeID == p.AccountID && run.UserID == p.PrincipalID {
+		r.SourceMessageID = run.SourceMessageID
+	}
 	artifacts := make([]DesignArtifact, 0, len(in.Candidates))
 	seen := map[string]bool{}
 	for _, c := range in.Candidates {
