@@ -6,6 +6,7 @@ cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
 : "${CANDIDATE_HEAD:?run only via the local testbench guest}"
 [[ "$(git rev-parse HEAD)" == "$CANDIDATE_HEAD" ]]
 export GOMAXPROCS=2 GOFLAGS=-p=2 RAYON_NUM_THREADS=2
+export SWARM_TEST_BROWSER_CHANNEL=chrome
 export GOCACHE_DIR="$(go env GOCACHE)" GOMODCACHE_DIR="$(go env GOMODCACHE)" GOPATH_DIR="$(go env GOPATH)"
 run_check() {
   local label="$1"; shift
