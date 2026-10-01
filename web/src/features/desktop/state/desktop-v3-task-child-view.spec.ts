@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { createEmptyDesktopV3CacheState as createInitialDesktopV3CacheState } from './desktop-v3-cache-reducer'
-import { selectDesktopV3TaskChildViewModel, summarizeDesktopV3TaskToolActivity } from './desktop-v3-cache-selectors'
+import { selectDesktopSidebarRows, selectDesktopV3TaskChildViewModel, summarizeDesktopV3TaskToolActivity } from './desktop-v3-cache-selectors'
 import type { TaskToolRow } from '../chat/types/chat'
 
 const row: TaskToolRow = {
@@ -129,4 +129,118 @@ test('task child view prefers fresh canonical usage, clamps remaining context, a
   assert.equal(view?.modelLabel, 'fresh-model')
   assert.equal(view?.contextWindow, 1000)
   assert.equal(view?.remainingTokens, 0)
+})
+
+test('task child view extracts task todos, active todo, and checklist counts from session metadata', () => {
+  const state = createInitialDesktopV3CacheState()
+  state.sessionsById['child-1'] = {
+    kind: 'full',
+    needsHydrate: false,
+    session: {
+      id: 'child-1',
+      workspace_path: '/workspace',
+      workspace_name: 'Workspace',
+      title: 'Child with Todos',
+      mode: 'auto',
+      metadata: {
+        task_todos: [
+          { id: 'todo-1', title: 'Inspect code', status: 'completed' },
+          { id: 'todo-2', title: 'Implement feature', status: 'in_progress' },
+          { id: 'todo-3', title: 'Author tests', status: 'pending' },
+        ],
+        agent_todo_summary: {
+          task_count: 3,
+          completed_count: 1,
+          open_count: 2,
+          in_progress_count: 1,
+          active_todo: { id: 'todo-2', title: 'Implement feature' },
+        },
+        lifecycle_signal: 'in_progress',
+      },
+      created_at: 1,
+      updated_at: 2,
+      message_count: 0,
+      last_message_at: 0,
+    },
+  }
+  state.sessionViewsById['child-1'] = { agentic_settings: { mode: 'auto', agent_name: 'coder', resolved_agent_name: 'coder', context_window: 2000 } }
+
+  const view = selectDesktopV3TaskChildViewModel(state, row)
+  assert.equal(view?.activeTodo, 'Implement feature')
+  assert.equal(view?.todosCount?.completed, 1)
+  assert.equal(view?.todosCount?.total, 3)
+  assert.equal(view?.todos?.length, 3)
+  assert.equal(view?.todos?.[0].status, 'completed')
+  assert.equal(view?.todos?.[1].status, 'in_progress')
+  assert.equal(view?.todos?.[2].status, 'pending')
+  assert.equal(view?.lifecyclePhase, 'in_progress')
+})
+
+test('sidebar group categorizes sessions with lifecycle needs_review, in_progress, and blocked without plans', () => {
+  const state = createInitialDesktopV3CacheState()
+  state.desktopSidebarBootstrap = { status: 'ready', scopeId: 'scope-test' }
+  state.sessionOrderByScope['scope-test'] = ['coder-review', 'coder-progress', 'coder-blocked']
+
+  state.sessionsById['coder-review'] = {
+    kind: 'full',
+    needsHydrate: false,
+    session: {
+      id: 'coder-review',
+      workspace_path: '/workspace',
+      workspace_name: 'Workspace',
+      title: 'Review Coder',
+      mode: 'auto',
+      lifecycle: { phase: 'needs_review', active: false },
+      metadata: {},
+      created_at: 1,
+      updated_at: 10,
+      message_count: 1,
+      last_message_at: 10,
+    },
+  }
+
+  state.sessionsById['coder-progress'] = {
+    kind: 'full',
+    needsHydrate: false,
+    session: {
+      id: 'coder-progress',
+      workspace_path: '/workspace',
+      workspace_name: 'Workspace',
+      title: 'Progress Coder',
+      mode: 'auto',
+      lifecycle: { phase: 'running', active: true },
+      metadata: {},
+      created_at: 1,
+      updated_at: 20,
+      message_count: 1,
+      last_message_at: 20,
+    },
+  }
+
+  state.sessionsById['coder-blocked'] = {
+    kind: 'full',
+    needsHydrate: false,
+    session: {
+      id: 'coder-blocked',
+      workspace_path: '/workspace',
+      workspace_name: 'Workspace',
+      title: 'Blocked Coder',
+      mode: 'auto',
+      lifecycle: { phase: 'blocked', active: false },
+      metadata: {},
+      created_at: 1,
+      updated_at: 30,
+      message_count: 1,
+      last_message_at: 30,
+    },
+  }
+
+  const rows = selectDesktopSidebarRows(state, 'scope-test')
+  const reviewRow = rows.find((r) => r.sessionId === 'coder-review')
+  const progressRow = rows.find((r) => r.sessionId === 'coder-progress')
+  const blockedRow = rows.find((r) => r.sessionId === 'coder-blocked')
+
+  assert.equal(reviewRow?.sidebarGroup, 'needs_review')
+  assert.equal(progressRow?.sidebarGroup, 'in_progress')
+  assert.equal(blockedRow?.sidebarGroup, 'blocked')
 })

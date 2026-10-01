@@ -74,6 +74,7 @@ import (
 	"swarm/packages/swarmd/internal/videosource"
 	"swarm/packages/swarmd/internal/videotranscription"
 	"swarm/packages/swarmd/internal/voice"
+	"swarm/packages/swarmd/internal/webhook"
 	"swarm/packages/swarmd/internal/webpush"
 	"swarm/packages/swarmd/internal/workspace"
 	worktreeruntime "swarm/packages/swarmd/internal/worktree"
@@ -134,6 +135,8 @@ type Daemon struct {
 	automationMu              sync.Mutex
 	automationClosed          bool
 	automationV2Scheduler     *sessionruntime.AutomationV2Scheduler
+	workerExecution           *run.WorkerExecutionService
+	webhookDispatcher         *webhook.Dispatcher
 	automationLoop            *automationLoop
 	automationExecution       *automation.ExecutionService
 	automationApproval        *automation.PolicyApproval
@@ -149,6 +152,7 @@ type Daemon struct {
 	desktopServer             *http.Server
 	localTransportServer      *http.Server
 	peerTransportServer       *http.Server
+	containerSDKServer        *http.Server
 	listener                  net.Listener
 	desktopListener           net.Listener
 	localTransportListener    net.Listener
@@ -488,6 +492,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	toolRuntime.SetManageOrchestrationPolicyService(permissionSvc)
 	toolRuntime.SetManageTodoService(todoSvc)
 	toolRuntime.SetManageActionService(actionSvc)
+	toolRuntime.SetManageProjectStore(sessionSvc.Store())
 	automationApproval, err := automation.NewPolicyApproval(store, sessionSvc.Store(), automationAccess{workspaces: workspaceSvc, sessions: sessionSvc, members: pebblestore.NewIdentityStore(store)}, automation.RuntimeApprovalIdentity(), time.Now)
 	if err != nil {
 		_ = secretStore.Close()
@@ -648,14 +653,16 @@ func New(cfg config.Config) (*Daemon, error) {
 		return err
 	})
 	modelSvc.StartCatalogAutoRefresh(bgCtx)
-	memorySvc := memory.NewService(pebblestore.NewMemoryStore(store), &memory.RuntimeProvider{Runners: providers, Catalog: pebblestore.NewModelCatalogStore(store)})
+	memorySvc := memory.NewService(pebblestore.NewMemoryStore(store), &memory.RuntimeProvider{Runners: providers, Catalog: pebblestore.NewModelCatalogStore(store), Sessions: sessionSvc.Store()})
 	memoryDone := make(chan struct{})
 	runSvc.SetMemoryStore(memorySvc.Store)
 	apiServer := api.NewServer(authSvc, agentSvc, modelSvc, runSvc, sessionSvc, workspaceSvc, discoverySvc, securitySvc, providers, permissionSvc, notificationSvc, events, hub)
+	toolRuntime.SetProjectTaskLifecycleService(apiServer)
 	// Automation mutations always commit through canonical V3 authority before
 	// waking realtime. Wake failures cannot turn a committed execution into retry.
 	apiServer.ConfigureAutomationRealtime(store)
 	apiServer.ConfigureEnvironmentRealtime(store)
+	apiServer.ConfigureProjectRealtime(store)
 	// Keep the legacy catalog read-only. Do not install V1 approval, dispatch,
 	// tool execution, or run-context authorities alongside plan-native V2.
 	apiServer.ConfigureAutomations(automationSvc, nil, nil, nil)
@@ -697,6 +704,15 @@ func New(cfg config.Config) (*Daemon, error) {
 		_ = lk.Release()
 		return nil, fmt.Errorf("compose automation v2 execution: %w", err)
 	}
+	workerExecution, err := run.NewWorkerExecutionService(runSvc, sessionSvc.Store(), worktreeSvc, sessionSvc.ApplySessionMutation, apiServer.EnqueueAutomationRun)
+	if err != nil {
+		bgCancel()
+		_ = secretStore.Close()
+		_ = store.Close()
+		_ = lk.Release()
+		return nil, fmt.Errorf("compose worker execution: %w", err)
+	}
+	runSvc.SetWorkerExecutionService(workerExecution)
 	runSvc.SetAITaskBinder(todoSvc)
 	aiTaskDispatcher, err := runSvc.StartAITaskV2Dispatcher(bgCtx, aiTaskQueueAdapter{service: todoSvc}, sessionSvc.ApplySessionMutation)
 	if err != nil {
@@ -736,8 +752,10 @@ func New(cfg config.Config) (*Daemon, error) {
 		videoGenSvc.SetSVGRasterizer(htmlRenderer)
 	}
 	toolRuntime.SetManagedVideoGenerationService(videoGenSvc)
+	apiServer.SetVideoGenerationService(videoGenSvc)
 	audioGenSvc := audiogen.NewService(authStore, uiSettingsSvc, modelSvc)
 	toolRuntime.SetManagedAudioGenerationService(audioGenSvc)
+	apiServer.SetAudioGenerationService(audioGenSvc)
 	apiServer.SetTodoService(todoSvc)
 	apiServer.SetActionService(actionSvc)
 	apiServer.SetIntegrationService(integrationSvc)
@@ -787,6 +805,7 @@ func New(cfg config.Config) (*Daemon, error) {
 		toolRuntime:               toolRuntime,
 		videoRenderService:        videoRenderSvc,
 		aiTaskDispatcher:          aiTaskDispatcher,
+		workerExecution:           workerExecution,
 		deploymentMgr:             deploymentMgr,
 		localTransportRuntimeName: localTransportRuntimeName,
 	}
@@ -805,6 +824,15 @@ func New(cfg config.Config) (*Daemon, error) {
 	}
 
 	d.httpServer = httpServer
+	if cfg.ContainerSDKPort > 0 {
+		d.containerSDKServer = &http.Server{
+			Addr:              net.JoinHostPort("0.0.0.0", strconv.Itoa(cfg.ContainerSDKPort)),
+			Handler:           apiServer.ContainerSDKHandler(),
+			ReadTimeout:       10 * time.Second,
+			ReadHeaderTimeout: 5 * time.Second,
+			IdleTimeout:       60 * time.Second,
+		}
+	}
 	if shouldEnableLocalTransport(cfg.ListenAddr) {
 		localTransportSocketPath := filepath.Join(cfg.DataDir, "local-transport", "api.sock")
 		if err := os.MkdirAll(filepath.Dir(localTransportSocketPath), localTransportSocketDirPerm()); err != nil {
@@ -854,7 +882,12 @@ func New(cfg config.Config) (*Daemon, error) {
 		_ = d.cleanup()
 		return nil, fmt.Errorf("start long-session diagnostics: %w", err)
 	}
+	webhookDispatcher := webhook.NewDispatcher(nil)
+	d.webhookDispatcher = webhookDispatcher
 	d.automationV2Scheduler = sessionruntime.NewAutomationV2Scheduler(sessionSvc, automationV2Host)
+	d.automationV2Scheduler.SetWebhookDispatcher(webhookDispatcher)
+	apiServer.SetAutomationV2Scheduler(d.automationV2Scheduler)
+	apiServer.SetWebhookDispatcher(webhookDispatcher)
 	d.longSessionDiagnostics = diagnostics
 	if diagnostics != nil {
 		codexClient.SetLongSessionDiagnostics(diagnostics)
@@ -961,6 +994,10 @@ func (d *Daemon) cleanup() error {
 		if d.aiTaskDispatcher != nil {
 			d.aiTaskDispatcher.Close()
 			d.aiTaskDispatcher = nil
+		}
+		if d.webhookDispatcher != nil {
+			d.webhookDispatcher.Close()
+			d.webhookDispatcher = nil
 		}
 		if d.toolRuntime != nil {
 			if err := d.toolRuntime.Close(); err != nil {
@@ -1119,6 +1156,18 @@ func (d *Daemon) Run() error {
 			}
 		}()
 	}
+	if d.containerSDKServer != nil {
+		sdkLn, err := net.Listen("tcp4", d.containerSDKServer.Addr)
+		if err != nil {
+			return fmt.Errorf("listen on container SDK port: %w", err)
+		}
+		defer d.containerSDKServer.Close()
+		go func() {
+			if err := d.containerSDKServer.Serve(sdkLn); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				d.requestStop("container-sdk-serve-error")
+			}
+		}()
+	}
 	// Start only V2, after listeners succeed; never migrate or execute V1 records.
 	if d.automationV2Scheduler != nil {
 		if err := d.StartAutomationV2Scheduling(context.Background()); err != nil {
@@ -1166,6 +1215,7 @@ func (d *Daemon) waitForShutdown() error {
 		server *http.Server
 	}{
 		{name: "api", server: d.httpServer},
+		{name: "container SDK", server: d.containerSDKServer},
 		{name: "desktop", server: d.desktopServer},
 		{name: "peer transport", server: d.peerTransportServer},
 		{name: "local transport", server: d.localTransportServer},

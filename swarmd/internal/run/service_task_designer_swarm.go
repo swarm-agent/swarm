@@ -732,6 +732,10 @@ func (s *Service) executeDirectDesignerSwarm(ctx context.Context, sessionID, ses
 					attemptReq.BoundaryReason = "task_swarm_designer_repair"
 				}
 
+				if err := s.sessions.Store().CheckWorkerUnmeteredOperation(scope.Principal.AccountScopeID, scope.SessionID); err != nil {
+					lastErr = err
+					break
+				}
 				_, runErr := runner.CreateResponseStreaming(callCtx, attemptReq, func(event provideriface.StreamEvent) {
 					if overLimit {
 						return

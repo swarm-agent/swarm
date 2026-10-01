@@ -30,6 +30,12 @@ func TestAutomationV2RetiresLegacyPlanAdapters(t *testing.T) {
 			}
 		})
 	}
+	validActions := map[string]bool{
+		"help": true, "list": true, "inspect": true, "create": true, "update": true,
+		"attach": true, "disable_automation": true, "delete": true, "test": true,
+		"request": true, "activate": true, "pause": true, "resume": true, "archive": true,
+		"propose": true, "review": true, "context": true, "progress": true,
+	}
 	for _, d := range r.Definitions() {
 		if d.Name == "manage_automation" || d.Name == "manage_workers" {
 			p := d.Parameters["properties"].(map[string]any)
@@ -37,8 +43,8 @@ func TestAutomationV2RetiresLegacyPlanAdapters(t *testing.T) {
 				t.Fatal("legacy definition advertised")
 			}
 			for _, a := range p["action"].(map[string]any)["enum"].([]string) {
-				if a != "review" && a != "context" && a != "list" && a != "progress" && a != "help" {
-					t.Fatal("mutation advertised", a)
+				if !validActions[a] {
+					t.Fatal("unexpected action advertised", a)
 				}
 			}
 		}

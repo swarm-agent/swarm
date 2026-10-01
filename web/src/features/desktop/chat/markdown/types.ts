@@ -5,6 +5,7 @@ export type MarkdownInlineNode =
   | { type: 'em'; children: MarkdownInlineNode[] }
   | { type: 'link'; href: string; children: MarkdownInlineNode[] }
   | { type: 'br' }
+  | { type: 'math'; expression: string }
 
 export interface MarkdownInlineSegments {
   segments: MarkdownInlineNode[][]
@@ -23,3 +24,4 @@ export type MarkdownBlock =
   | { type: 'ordered-list'; items: MarkdownListItem[] }
   | { type: 'code'; language: string; code: string }
   | { type: 'hr' }
+  | { type: 'math'; expression: string }

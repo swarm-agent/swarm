@@ -103,7 +103,10 @@ func TestParseTaskProgramPreservesWorkspacePathAtStartAndJobLevels(t *testing.T)
 	}
 }
 
-func TestParseTaskProgramRejectsDesignerAndSplitCoderWorkspaceTargets(t *testing.T) {
+// Requirement: parser preserves explicit per-repository Coder targets for the
+// scheduler's catalog-bound lanes, without granting Designer paths or guessing
+// omitted Coder sources. Parsing is the narrow boundary under test, not execution.
+func TestParseTaskProgramRejectsDesignerAndAcceptsExplicitCoderWorkspaceTargets(t *testing.T) {
 	designer := taskProgramFixture(nil)
 	designerProgram := designer["program"].(map[string]any)
 	designerProgram["stages"] = []any{map[string]any{"id": "build", "dependency_evidence": "Ready."}}
@@ -117,8 +120,18 @@ func TestParseTaskProgramRejectsDesignerAndSplitCoderWorkspaceTargets(t *testing
 	splitJobs[0].(map[string]any)["workspace_path"] = "/shared/one"
 	splitJobs[1].(map[string]any)["workspace_path"] = "/shared/two"
 	splitJobs[2].(map[string]any)["workspace_path"] = "/shared/one"
-	if _, err := parseTaskCallArguments(mustJSON(t, split)); err == nil || !strings.Contains(err.Error(), "must target one workspace") {
-		t.Fatalf("split Coder workspace target error = %v", err)
+	parsed, err := parseTaskCallArguments(mustJSON(t, split))
+	if err != nil {
+		t.Fatalf("explicit split Coder targets: %v", err)
+	}
+	for i, want := range []string{"/shared/one", "/shared/two", "/shared/one"} {
+		if parsed.Program.Jobs[i].TargetWorkspacePath != want || parsed.Launches[i].TargetWorkspacePath != want {
+			t.Fatalf("job %d lost repository target", i)
+		}
+	}
+	delete(splitJobs[1].(map[string]any), "workspace_path")
+	if _, err := parseTaskCallArguments(mustJSON(t, split)); err == nil || !strings.Contains(err.Error(), "require explicit workspace_path") {
+		t.Fatalf("ambiguous Coder workspace target error = %v", err)
 	}
 }
 

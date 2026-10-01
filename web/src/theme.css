@@ -1,5 +1,6 @@
 @import "tailwindcss";
 @import "./features/desktop/memory/memory-page.css";
+@import "./features/desktop/orchestrate/swarm-section.css";
 
 :root {
   color-scheme: dark;

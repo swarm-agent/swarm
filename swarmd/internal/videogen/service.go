@@ -2,10 +2,14 @@ package videogen
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"strings"
+	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	"sync"
 	"time"
 
@@ -37,13 +41,17 @@ type ModelCatalog interface {
 }
 
 type ManagedVideoRequest struct {
-	Prompt          string
-	AspectRatio     string
-	Resolution      string
-	DurationSeconds int
-	Principal       identity.Principal
-	Source          *ManagedVideoSource
-	Image           *ManagedVideoImage
+	Operation        string // "create" | "edit" | "extend"
+	Model            string
+	Prompt           string
+	AspectRatio      string
+	Resolution       string
+	DurationSeconds  int
+	Principal        identity.Principal
+	Source           *ManagedVideoSource
+	SourceProvenance *pebblestore.VideoProvenance
+	Image            *ManagedVideoImage
+	Prober           VideoProber
 }
 
 type ManagedVideoImage struct {
@@ -61,14 +69,20 @@ type ManagedVideoSource struct {
 	MediaType     string
 	InteractionID string
 	Model         string
+	URI           string // e.g. Veo video URI
+	Provenance    *pebblestore.VideoProvenance
+	SourceLink    *pebblestore.VideoSourceLink
 }
 
 type ManagedVideoResult struct {
 	Bytes            []byte
 	MediaType        string
 	InteractionID    string
+	ProviderResource string // e.g. Veo video URI
 	Model            string
 	Provider         string
+	Transport        string
+	Operation        string
 	DurationMs       int
 	Width            int
 	Height           int
@@ -80,6 +94,10 @@ type ManagedVideoResult struct {
 	SnapshotID       string
 	SnapshotVersion  string
 	EstimatedCostUSD float64
+	Provenance       *pebblestore.VideoProvenance
+	IsCombinedOutput bool
+	ExtensionCount   int
+	AdvisoryWarnings []string
 }
 
 type Service struct {
@@ -88,6 +106,7 @@ type Service struct {
 	modelCatalog      ModelCatalog
 	httpClient        *http.Client
 	svgRasterizer     SVGRasterizer
+	videoProber       VideoProber
 	googleBaseURL     string
 	openRouterBaseURL string
 	pollInterval      time.Duration
@@ -102,6 +121,7 @@ func NewService(authStore *pebblestore.AuthStore, uiSettings *uisettings.Service
 		uiSettings:        uiSettings,
 		modelCatalog:      modelCatalog,
 		httpClient:        &http.Client{Timeout: 90 * time.Second},
+		videoProber:       FFprobeVideoProber{},
 		googleBaseURL:     defaultGoogleBaseURL,
 		openRouterBaseURL: defaultOpenRouterBaseURL,
 		pollInterval:      defaultPollInterval,
@@ -129,6 +149,32 @@ func (s *Service) SVGRasterizer() SVGRasterizer {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.svgRasterizer
+}
+
+func (s *Service) SetVideoProber(prober VideoProber) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.videoProber = prober
+}
+
+func (s *Service) VideoProber() VideoProber {
+	if s == nil {
+		return FFprobeVideoProber{}
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.videoProber != nil {
+		return s.videoProber
+	}
+	return FFprobeVideoProber{}
+}
+
+func (s *Service) probeVideoBytes(ctx context.Context, videoBytes []byte) (VideoMetadata, error) {
+	if len(videoBytes) == 0 {
+		return VideoMetadata{}, errors.New("cannot probe empty video bytes")
+	}
+	prober := s.VideoProber()
+	return prober.ProbeVideo(ctx, videoBytes)
 }
 
 func (s *Service) SetBaseURLs(googleURL, openRouterURL string) {
@@ -223,34 +269,96 @@ func (s *Service) GenerateManagedVideo(ctx context.Context, req ManagedVideoRequ
 		}
 	}
 
-	isIteration := req.Source != nil && len(req.Source.Bytes) > 0
-	modelID, providerID, err := s.resolveTargetModel(ctx, req.Principal, isIteration)
+	// Probe source video metadata if bytes are provided
+	var srcDurationSec float64
+	var srcWidth, srcHeight int
+	if req.Source != nil && len(req.Source.Bytes) > 0 {
+		srcMeta, err := s.probeVideoBytes(ctx, req.Source.Bytes)
+		if err != nil {
+			return ManagedVideoResult{}, fmt.Errorf("probe source video: %w", err)
+		}
+		if srcMeta.DurationSeconds <= 0 || math.IsNaN(srcMeta.DurationSeconds) || math.IsInf(srcMeta.DurationSeconds, 0) {
+			return ManagedVideoResult{}, errors.New("source video duration must be positive and finite")
+		}
+		if srcMeta.Width <= 0 || srcMeta.Height <= 0 {
+			return ManagedVideoResult{}, errors.New("source video dimensions must be positive")
+		}
+		srcDurationSec = srcMeta.DurationSeconds
+		srcWidth = srcMeta.Width
+		srcHeight = srcMeta.Height
+	}
+	srcProv := req.SourceProvenance
+	if srcProv == nil && req.Source != nil {
+		srcProv = req.Source.Provenance
+	}
+	if srcDurationSec <= 0 && srcProv != nil {
+		if srcProv.ObservedDurationMs > 0 {
+			srcDurationSec = float64(srcProv.ObservedDurationMs) / 1000.0
+		}
+		if srcWidth <= 0 {
+			srcWidth = srcProv.ObservedWidth
+		}
+		if srcHeight <= 0 {
+			srcHeight = srcProv.ObservedHeight
+		}
+	}
+	if req.Source != nil && req.Source.Provenance == nil && srcProv != nil {
+		req.Source.Provenance = srcProv
+	}
+
+	// Validate, resolve, and preflight operation using canonical evaluator
+	preflightReq := VideoPreflightRequest{
+		AccountScopeID:        req.Principal.AccountScopeID,
+		Operation:             req.Operation,
+		ExplicitModel:         req.Model,
+		AspectRatio:           req.AspectRatio,
+		Resolution:            req.Resolution,
+		DurationSeconds:       req.DurationSeconds,
+		Prompt:                req.Prompt,
+		Principal:             req.Principal,
+		Source:                req.Source,
+		SourceProvenance:      req.SourceProvenance,
+		Image:                 req.Image,
+		SourceDurationSeconds: srcDurationSec,
+		SourceWidth:           srcWidth,
+		SourceHeight:          srcHeight,
+	}
+
+	preflight, err := s.PreflightVideoOperation(ctx, preflightReq)
 	if err != nil {
 		return ManagedVideoResult{}, err
 	}
 
-	aspectRatio := normalizeAspectRatio(req.AspectRatio)
-	resolution := normalizeResolution(req.Resolution)
-	durationSeconds := normalizeDuration(req.DurationSeconds, modelID, resolution)
+	modelID := preflight.ResolvedModel
+	providerID := preflight.ResolvedProvider
+	aspectRatio := preflight.AspectRatio
+	resolution := preflight.Resolution
+	durationSeconds := preflight.DurationSeconds
+	operation := preflight.Operation
 
-	// Pin pricing to the selected model before the provider request begins.
-	modelRecord, found := s.resolveModelRecord(providerID, modelID)
 	var result ManagedVideoResult
 	var genErr error
+
 	switch providerID {
 	case ProviderGoogleGemini:
-		apiKey, err := s.getGoogleAPIKey(req.Principal.AccountScopeID)
+		apiKey, err := s.getGoogleAPIKey(req.Principal.AccountScopeID, preflight.CredentialID, preflight.CredentialVersion)
 		if err != nil {
 			return ManagedVideoResult{}, err
 		}
-		if isOmniModel(modelID) {
-			result, genErr = s.generateGoogleOmni(ctx, apiKey, modelID, prompt, aspectRatio, resolution, req.Source, req.Image)
+		if err := provideriface.CheckBillableDispatch(ctx); err != nil {
+			return ManagedVideoResult{}, err
+		}
+		if IsOmniModel(modelID) {
+			result, genErr = s.generateGoogleOmni(ctx, apiKey, modelID, prompt, aspectRatio, resolution, operation, req.Source, req.Image)
 		} else {
-			result, genErr = s.generateGoogleVeo(ctx, apiKey, modelID, prompt, aspectRatio, resolution, durationSeconds, req.Image)
+			result, genErr = s.generateGoogleVeo(ctx, apiKey, modelID, prompt, aspectRatio, resolution, durationSeconds, operation, req.Source, req.Image)
 		}
 	case ProviderOpenRouter:
-		apiKey, err := s.getOpenRouterAPIKey(req.Principal.AccountScopeID)
+		apiKey, err := s.getOpenRouterAPIKey(req.Principal.AccountScopeID, preflight.CredentialID, preflight.CredentialVersion)
 		if err != nil {
+			return ManagedVideoResult{}, err
+		}
+		if err := provideriface.CheckBillableDispatch(ctx); err != nil {
 			return ManagedVideoResult{}, err
 		}
 		result, genErr = s.generateOpenRouter(ctx, apiKey, modelID, prompt, aspectRatio, resolution, durationSeconds, req.Image)
@@ -262,37 +370,128 @@ func (s *Service) GenerateManagedVideo(ctx context.Context, req ManagedVideoRequ
 		return ManagedVideoResult{}, genErr
 	}
 
-	result.Resolution = resolution
-	result.DurationSeconds = durationSeconds
-	result.AspectRatio = aspectRatio
-	// Effective request settings are distinct from measured media dimensions.
-	// Do not synthesize Width/Height or overwrite provider-reported metadata.
-	var estimate pebblestore.MediaCostEstimate
-	if found {
-		estimate = pebblestore.EstimateMediaCostFromRecord(modelRecord, pebblestore.MediaCostEstimateOptions{
-			Provider:        providerID,
-			Model:           modelID,
-			Kind:            "video",
-			Count:           1,
-			DurationSeconds: durationSeconds,
-			Resolution:      resolution,
-			AspectRatio:     aspectRatio,
-			IncludesAudio:   true,
-			IsIteration:     isIteration,
-			ServiceTier:     "standard",
-		})
-	} else {
-		estimate = pebblestore.MediaCostEstimate{
-			CostUSD:        0.0,
-			PriceStatus:    "unknown",
-			PricingSummary: fmt.Sprintf("unknown pricing (model %q unpriced in snapshot)", modelID),
+	if len(result.Bytes) == 0 {
+		return ManagedVideoResult{}, errors.New("provider generated empty video output")
+	}
+
+	// Probe output video bytes to measure actual duration and dimensions
+	outMeta, probeErr := s.probeVideoBytes(ctx, result.Bytes)
+	if probeErr != nil {
+		return ManagedVideoResult{}, fmt.Errorf("probe generated video output: %w", probeErr)
+	}
+	if outMeta.DurationSeconds <= 0 || math.IsNaN(outMeta.DurationSeconds) || math.IsInf(outMeta.DurationSeconds, 0) {
+		return ManagedVideoResult{}, errors.New("probed video output has invalid duration")
+	}
+	if outMeta.Width <= 0 || outMeta.Height <= 0 {
+		return ManagedVideoResult{}, errors.New("probed video output has invalid dimensions")
+	}
+	result.Width = outMeta.Width
+	result.Height = outMeta.Height
+	result.DurationMs = int(outMeta.DurationSeconds * 1000)
+	result.DurationSeconds = int(math.Round(outMeta.DurationSeconds))
+
+	// Enforce output bounds and deltas for extensions
+	if operation == pebblestore.VideoOperationExtend {
+		if srcDurationSec <= 0 {
+			return ManagedVideoResult{}, errors.New("source video duration is required to verify extension output delta")
+		}
+		if IsVeoModel(modelID) {
+			if outMeta.DurationSeconds > 148.0 {
+				return ManagedVideoResult{}, fmt.Errorf("extended Veo video duration (%.1fs) exceeds maximum allowed ceiling (148s)", outMeta.DurationSeconds)
+			}
+			delta := outMeta.DurationSeconds - srcDurationSec
+			if delta < 5.0 || delta > 10.0 {
+				return ManagedVideoResult{}, fmt.Errorf("extended Veo video output duration unexpected (source %.1fs, output %.1fs, delta %.1fs; expected ~7s)", srcDurationSec, outMeta.DurationSeconds, delta)
+			}
+		}
+		if IsOmniModel(modelID) {
+			if outMeta.DurationSeconds > 40.0 {
+				return ManagedVideoResult{}, fmt.Errorf("extended Omni video duration (%.1fs) exceeds maximum allowed ceiling (40s)", outMeta.DurationSeconds)
+			}
+			delta := outMeta.DurationSeconds - srcDurationSec
+			if delta < 3.0 || delta > 10.0 {
+				return ManagedVideoResult{}, fmt.Errorf("extended Omni video output duration delta (%.1fs) outside allowed range 3-10s", delta)
+			}
 		}
 	}
-	result.EstimatedCostUSD = estimate.CostUSD
-	result.PriceStatus = estimate.PriceStatus
-	result.PricingSummary = estimate.PricingSummary
-	result.SnapshotID = estimate.SnapshotID
-	result.SnapshotVersion = estimate.SnapshotVersion
+
+	result.Resolution = resolution
+	result.AspectRatio = aspectRatio
+	if result.DurationSeconds == 0 {
+		result.DurationSeconds = durationSeconds
+	}
+	result.EstimatedCostUSD = preflight.EstimatedCostUSD
+	result.PriceStatus = preflight.PriceStatus
+	result.PricingSummary = preflight.PricingSummary
+	result.SnapshotID = preflight.SnapshotID
+	result.SnapshotVersion = preflight.SnapshotVersion
+	result.AdvisoryWarnings = preflight.AdvisoryWarnings
+	result.Operation = operation
+	result.Transport = preflight.ResolvedTransport
+
+	// Build typed server-authored VideoProvenance
+	var srcLink *pebblestore.VideoSourceLink
+	if req.Source != nil && req.Source.SourceLink != nil {
+		srcLink = req.Source.SourceLink.Clone()
+	} else if preflight.SourceLink != nil {
+		srcLink = preflight.SourceLink.Clone()
+	}
+
+	h := sha256.Sum256(result.Bytes)
+	outputDigest := hex.EncodeToString(h[:])
+
+	now := time.Now().UnixMilli()
+	var expiresAt int64
+	if IsVeoModel(modelID) {
+		// Veo references known validity: 2 days (48 hours)
+		expiresAt = now + 48*3600*1000
+	}
+
+	extCount := 0
+	extKnown := false
+	isCombined := false
+	switch operation {
+	case pebblestore.VideoOperationCreate:
+		extCount = 0
+		extKnown = true
+		isCombined = false
+	case pebblestore.VideoOperationEdit:
+		extCount = 0
+		extKnown = true
+		isCombined = false
+	case pebblestore.VideoOperationExtend:
+		extCount = result.ExtensionCount
+		extKnown = true
+		isCombined = true
+	}
+
+	prov := &pebblestore.VideoProvenance{
+		AccountScopeID:      req.Principal.AccountScopeID,
+		CredentialID:        preflight.CredentialID,
+		CredentialVersion:   preflight.CredentialVersion,
+		Provider:            providerID,
+		Model:               modelID,
+		Transport:           preflight.ResolvedTransport,
+		Operation:           operation,
+		SourceLink:          srcLink,
+		OutputDigestSHA256:  outputDigest,
+		InteractionID:       result.InteractionID,
+		ProviderResource:    result.ProviderResource,
+		CreatedAt:           now,
+		ExpiresAt:           expiresAt,
+		ObservedDurationMs:  int64(result.DurationMs),
+		ObservedWidth:       result.Width,
+		ObservedHeight:      result.Height,
+		ExtensionCount:      extCount,
+		ExtensionCountKnown: extKnown,
+		IsCombinedOutput:    isCombined,
+		AspectRatio:         preflight.AspectRatio,
+		Resolution:          preflight.Resolution,
+		DurationSeconds:     preflight.DurationSeconds,
+	}
+	result.Provenance = prov
+	result.ExtensionCount = extCount
+	result.IsCombinedOutput = isCombined
 	return result, nil
 }
 
@@ -324,35 +523,6 @@ func (s *Service) ensureRasterImage(ctx context.Context, img *ManagedVideoImage)
 	return nil
 }
 
-func (s *Service) resolveTargetModel(ctx context.Context, principal identity.Principal, isIteration bool) (string, string, error) {
-	accountScopeID := strings.TrimSpace(principal.AccountScopeID)
-	var defaultModel, iterationModel string
-
-	if s.uiSettings != nil && accountScopeID != "" {
-		ui, err := s.uiSettings.GetForAccount(accountScopeID)
-		if err == nil {
-			defaultModel = strings.TrimSpace(ui.Tools.Video.DefaultModel)
-			iterationModel = strings.TrimSpace(ui.Tools.Video.IterationModel)
-		}
-	}
-
-	if isIteration {
-		target := iterationModel
-		if target == "" {
-			target = DefaultVideoIterationModel
-		}
-		provider := s.inferProvider(target)
-		return target, provider, nil
-	}
-
-	target := defaultModel
-	if target == "" {
-		target = DefaultVideoGenerationModel
-	}
-	provider := s.inferProvider(target)
-	return target, provider, nil
-}
-
 func (s *Service) inferProvider(modelID string) string {
 	if strings.HasPrefix(modelID, "google/") || strings.Contains(modelID, "/") {
 		return ProviderOpenRouter
@@ -360,7 +530,7 @@ func (s *Service) inferProvider(modelID string) string {
 	return ProviderGoogleGemini
 }
 
-func (s *Service) getGoogleAPIKey(accountScopeID string) (string, error) {
+func (s *Service) getGoogleAPIKey(accountScopeID, expectedCredID, expectedCredVersion string) (string, error) {
 	if s.authStore == nil {
 		return "", errors.New("auth store is not configured")
 	}
@@ -371,10 +541,22 @@ func (s *Service) getGoogleAPIKey(accountScopeID string) (string, error) {
 	if !ok || strings.TrimSpace(record.APIKey) == "" {
 		return "", errors.New("google api key is not configured; add a Google API key in Settings -> Providers")
 	}
+	if expectedCredID != "" && record.ID != expectedCredID {
+		return "", fmt.Errorf("active credential changed since preflight (expected %q, got %q)", expectedCredID, record.ID)
+	}
+	if expectedCredVersion != "" {
+		actualVersion := ""
+		if record.UpdatedAt > 0 {
+			actualVersion = fmt.Sprintf("v%d", record.UpdatedAt)
+		}
+		if actualVersion != expectedCredVersion {
+			return "", fmt.Errorf("credential version changed since preflight (expected %q, got %q)", expectedCredVersion, actualVersion)
+		}
+	}
 	return strings.TrimSpace(record.APIKey), nil
 }
 
-func (s *Service) getOpenRouterAPIKey(accountScopeID string) (string, error) {
+func (s *Service) getOpenRouterAPIKey(accountScopeID, expectedCredID, expectedCredVersion string) (string, error) {
 	if s.authStore == nil {
 		return "", errors.New("auth store is not configured")
 	}
@@ -385,44 +567,19 @@ func (s *Service) getOpenRouterAPIKey(accountScopeID string) (string, error) {
 	if !ok || strings.TrimSpace(record.APIKey) == "" {
 		return "", errors.New("openrouter api key is not configured; add an OpenRouter API key in Settings -> Providers")
 	}
-	return strings.TrimSpace(record.APIKey), nil
-}
-
-func isOmniModel(modelID string) bool {
-	lower := strings.ToLower(modelID)
-	return strings.Contains(lower, "omni")
-}
-
-func normalizeAspectRatio(aspectRatio string) string {
-	switch strings.TrimSpace(aspectRatio) {
-	case "9:16", "portrait":
-		return "9:16"
-	default:
-		return "16:9"
+	if expectedCredID != "" && record.ID != expectedCredID {
+		return "", fmt.Errorf("active credential changed since preflight (expected %q, got %q)", expectedCredID, record.ID)
 	}
-}
-
-func normalizeResolution(resolution string) string {
-	switch strings.ToLower(strings.TrimSpace(resolution)) {
-	case "360p":
-		return "360p"
-	case "1080p":
-		return "1080p"
-	case "4k":
-		return "4k"
-	default:
-		return "720p"
-	}
-}
-
-func normalizeDuration(durationSeconds int, modelID, resolution string) int {
-	if durationSeconds == 4 || durationSeconds == 6 || durationSeconds == 8 {
-		if (resolution == "1080p" || resolution == "4k") && strings.Contains(modelID, "veo") {
-			return 8
+	if expectedCredVersion != "" {
+		actualVersion := ""
+		if record.UpdatedAt > 0 {
+			actualVersion = fmt.Sprintf("v%d", record.UpdatedAt)
 		}
-		return durationSeconds
+		if actualVersion != expectedCredVersion {
+			return "", fmt.Errorf("credential version changed since preflight (expected %q, got %q)", expectedCredVersion, actualVersion)
+		}
 	}
-	return 8
+	return strings.TrimSpace(record.APIKey), nil
 }
 
 func (s *Service) resolveModelRecord(providerID, modelID string) (pebblestore.ModelCatalogRecord, bool) {
@@ -456,9 +613,10 @@ func (s *Service) resolveModelPricing(providerID, modelID string) []byte {
 }
 
 func EstimateVideoCost(providerID, modelID string, durationSeconds int, isIteration bool, catalogPricing []byte) (float64, string) {
-	if durationSeconds <= 0 {
-		durationSeconds = 8
-	}
+	return EstimateVideoCostWithResolution(providerID, modelID, durationSeconds, "", isIteration, catalogPricing)
+}
+
+func EstimateVideoCostWithResolution(providerID, modelID string, durationSeconds int, resolution string, isIteration bool, catalogPricing []byte) (float64, string) {
 	rec := pebblestore.ModelCatalogRecord{
 		Provider: providerID,
 		Model:    modelID,
@@ -470,10 +628,15 @@ func EstimateVideoCost(providerID, modelID string, durationSeconds int, isIterat
 		Kind:            "video",
 		Count:           1,
 		DurationSeconds: durationSeconds,
-		Resolution:      "720p",
+		Resolution:      resolution,
+		AspectRatio:     aspectRatioOrDefault(resolution),
 		IncludesAudio:   true,
 		IsIteration:     isIteration,
 		ServiceTier:     "standard",
 	})
 	return estimate.CostUSD, estimate.PricingSummary
+}
+
+func aspectRatioOrDefault(res string) string {
+	return "16:9"
 }

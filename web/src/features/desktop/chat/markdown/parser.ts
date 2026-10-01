@@ -20,6 +20,10 @@ function isBlockquoteLine(line: string): boolean {
   return /^\s*>\s?/.test(line)
 }
 
+function isMathBlockLine(line: string): boolean {
+  return line.trim().startsWith('$$')
+}
+
 function isUnorderedListLine(line: string): boolean {
   return /^\s*[-*]\s+/.test(line)
 }
@@ -164,6 +168,40 @@ function parseUnderscoreEmphasisRun(source: string, start: number, autolink = tr
   return null
 }
 
+function parseInlineMathRun(
+  source: string,
+  start: number,
+): { node: MarkdownInlineNode; nextIndex: number } | null {
+  if (source[start] !== '$') return null
+  if (start > 0 && source[start - 1] === '\\') return null
+  if (source.startsWith('$$', start)) return null
+  const first = source[start + 1]
+  if (!first || /\s/.test(first) || first === '$') return null
+
+  let cursor = start + 1
+  while (cursor < source.length) {
+    if (source[cursor] === '\n') {
+      return null
+    }
+    if (source[cursor] === '$' && source[cursor - 1] !== '\\') {
+      if (/\s/.test(source[cursor - 1])) {
+        return null
+      }
+      const nextChar = source[cursor + 1]
+      if (nextChar && /\d/.test(nextChar)) {
+        return null
+      }
+      const expression = source.slice(start + 1, cursor)
+      return {
+        node: { type: 'math', expression },
+        nextIndex: cursor + 1,
+      }
+    }
+    cursor += 1
+  }
+  return null
+}
+
 function parseInlineNodes(source: string, autolink = true): MarkdownInlineNode[] {
   const nodes: MarkdownInlineNode[] = []
   let index = 0
@@ -205,6 +243,15 @@ function parseInlineNodes(source: string, autolink = true): MarkdownInlineNode[]
       }
     }
 
+    if (source[index] === '$') {
+      const math = parseInlineMathRun(source, index)
+      if (math) {
+        nodes.push(math.node)
+        index = math.nextIndex
+        continue
+      }
+    }
+
     if (autolink) {
       const link = parseAutolinkRun(source, index)
       if (link) {
@@ -234,7 +281,7 @@ function parseInlineNodes(source: string, autolink = true): MarkdownInlineNode[]
     }
 
     let nextSpecial = source.length
-    for (const token of ['**', '*', '_', '`', '[', 'http://', 'https://', 'mailto:']) {
+    for (const token of ['**', '*', '_', '`', '[', '$', 'http://', 'https://', 'mailto:']) {
       const haystack = token.includes(':') ? source.toLowerCase() : source
       const found = haystack.indexOf(token, index + 1)
       if (found !== -1 && found < nextSpecial) {
@@ -359,6 +406,21 @@ function parseCodeFence(lines: string[]): MarkdownBlock {
   }
 }
 
+function parseMathBlock(lines: string[]): MarkdownBlock {
+  const content = lines.join('\n').trim()
+  let inner = content
+  if (inner.startsWith('$$')) {
+    inner = inner.slice(2)
+  }
+  if (inner.endsWith('$$')) {
+    inner = inner.slice(0, -2)
+  }
+  return {
+    type: 'math',
+    expression: inner.trim(),
+  }
+}
+
 export function splitMarkdownBlocks(content: string): string[] {
   const normalized = normalizeNewlines(content)
   const lines = normalized.split('\n')
@@ -379,6 +441,27 @@ export function splitMarkdownBlocks(content: string): string[] {
       while (index < lines.length) {
         collected.push(lines[index])
         if (isCodeFenceLine(lines[index])) {
+          index += 1
+          break
+        }
+        index += 1
+      }
+      blocks.push(collected.join('\n'))
+      continue
+    }
+
+    if (isMathBlockLine(line)) {
+      const trimmed = line.trim()
+      if (trimmed.length > 2 && trimmed.endsWith('$$')) {
+        blocks.push(line)
+        index += 1
+        continue
+      }
+      const collected = [line]
+      index += 1
+      while (index < lines.length) {
+        collected.push(lines[index])
+        if (isMathBlockLine(lines[index])) {
           index += 1
           break
         }
@@ -448,6 +531,7 @@ export function splitMarkdownBlocks(content: string): string[] {
       }
       if (
         isCodeFenceLine(nextLine) ||
+        isMathBlockLine(nextLine) ||
         isHr(nextLine) ||
         isHeadingLine(nextLine) ||
         isBlockquoteLine(nextLine) ||
@@ -471,6 +555,10 @@ export function parseMarkdownBlock(source: string): MarkdownBlock {
 
   if (isCodeFenceLine(first)) {
     return parseCodeFence(lines)
+  }
+
+  if (isMathBlockLine(first)) {
+    return parseMathBlock(lines)
   }
 
   if (lines.length === 1 && isHr(first)) {

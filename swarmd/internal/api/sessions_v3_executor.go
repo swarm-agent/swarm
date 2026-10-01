@@ -45,7 +45,7 @@ const (
 	sessionV3ReasoningDeltaFlushMaxBytes       = 4096
 	sessionV3ReasoningDeltaFlushMaxDelay       = 500 * time.Millisecond
 	sessionV3ReasoningEventType                = "v3_provider_reasoning"
-	sessionV3RunStopDefaultReason              = "run stopped by user"
+	sessionV3RunStopDefaultReason              = pebblestore.V3RunStoppedByUser
 	sessionV3TitleDefault                      = "New Session"
 	sessionV3TitleConversationLimit            = 24
 	sessionV3TitlePromptPreviewRunes           = 2000
@@ -1323,6 +1323,9 @@ func (e *sessionV3Executor) recordRunStatusInEpoch(job sessionV3ExecutorJob, mut
 	if err == nil {
 		err = e.server.reconcileAITaskRunLifecycle(job, status, sanitizedReason, "")
 	}
+	if err == nil {
+		err = e.server.reconcileProjectTaskRunLifecycle(job, status, sanitizedReason)
+	}
 	return result, err
 }
 
@@ -1870,6 +1873,9 @@ func (e *sessionV3Executor) completeRun(job sessionV3ExecutorJob, response sessi
 	if err == nil {
 		err = e.server.reconcileAITaskRunLifecycle(job, sessionruntime.RunIntentCompleted, "", content)
 	}
+	if err == nil {
+		err = e.server.reconcileProjectTaskRunLifecycle(job, sessionruntime.RunIntentCompleted, "")
+	}
 	return result, err
 }
 
@@ -2079,6 +2085,9 @@ func (e *sessionV3Executor) generateSessionV3CompactTitle(session pebblestore.Se
 	})
 	var streamed strings.Builder
 	var reasoning strings.Builder
+	if err := e.server.sessions.Store().CheckWorkerUnmeteredOperation(principal.AccountScopeID, session.ID); err != nil {
+		return "", err
+	}
 	response, err := runner.CreateResponseStreaming(ctx, req, func(event provideriface.StreamEvent) {
 		switch event.Type {
 		case provideriface.StreamEventOutputTextDelta:
@@ -2135,6 +2144,23 @@ func (e *sessionV3Executor) assistantResponse(ctx context.Context, job sessionV3
 	if err != nil {
 		return sessionV3AssistantResponse{}, err
 	}
+
+	// Coordinator task program execution detection:
+	isCoordinatorTP := false
+	var taskProgramID string
+	if resolved.Session.Metadata != nil {
+		role, _ := resolved.Session.Metadata["role"].(string)
+		if role == "project_task_coordinator" || role == "task_program_coordinator" {
+			isCoordinatorTP = true
+		}
+		if tpid, _ := resolved.Session.Metadata["task_program_id"].(string); strings.TrimSpace(tpid) != "" {
+			taskProgramID = strings.TrimSpace(tpid)
+			isCoordinatorTP = true
+		}
+	}
+	if isCoordinatorTP {
+		return e.coordinatorTaskProgramResponse(ctx, job, resolved, taskProgramID)
+	}
 	var planContextGuard *runruntime.PlanContextGuard
 	if e.server != nil && e.server.uiSettings != nil {
 		accountScopeID := strings.TrimSpace(job.Principal.AccountScopeID)
@@ -2152,6 +2178,92 @@ func (e *sessionV3Executor) assistantResponse(ctx context.Context, job sessionV3
 		)
 	}
 	return e.providerAssistantResponse(ctx, job, resolved, "", false, planContextGuard)
+}
+
+func (e *sessionV3Executor) coordinatorTaskProgramResponse(ctx context.Context, job sessionV3ExecutorJob, resolved sessionV3ResolvedRuntime, taskProgramID string) (sessionV3AssistantResponse, error) {
+	if taskProgramID == "" {
+		return sessionV3AssistantResponse{}, errors.New("coordinator session missing task_program_id")
+	}
+	db := e.server.sessions.Store()
+	if db == nil {
+		return sessionV3AssistantResponse{}, errors.New("session store not available")
+	}
+	record, ok, err := db.GetTaskProgram(job.SessionID, taskProgramID)
+	if err != nil {
+		return sessionV3AssistantResponse{}, fmt.Errorf("load task program %q: %w", taskProgramID, err)
+	}
+	if !ok {
+		return sessionV3AssistantResponse{}, fmt.Errorf("task program %q not found", taskProgramID)
+	}
+	if e.server.runner == nil {
+		return sessionV3AssistantResponse{}, errors.New("runner service is not configured")
+	}
+
+	principal := job.Principal
+	if principal.AccountScopeID == "" {
+		principal.AccountScopeID = resolved.Session.AccountScopeID
+	}
+	if principal.UserID == "" {
+		principal.UserID = resolved.Session.UserID
+	}
+	if principal.Type == "" {
+		principal.Type = "user"
+	}
+
+	statusStr, execErr := e.server.runner.ExecuteTaskProgramForCoordinator(ctx, principal, job.SessionID, job.RunID, record)
+
+	projectID, _ := resolved.Session.Metadata["project_id"].(string)
+	taskID, _ := resolved.Session.Metadata["task_id"].(string)
+	accountScopeID := principal.AccountScopeID
+
+	if execErr != nil {
+		if projectID != "" && taskID != "" {
+			_, _ = db.UpdateProjectTask(accountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
+				t.Status = "failed"
+				t.LastError = execErr.Error()
+				t.ActionNeeded = fmt.Sprintf("Task program execution failed: %v", execErr)
+				t.WhatNotDone = append(t.WhatNotDone, execErr.Error())
+				return nil
+			})
+		}
+		return sessionV3AssistantResponse{}, execErr
+	}
+
+	freshRecord, _, _ := db.GetTaskProgram(job.SessionID, taskProgramID)
+	if projectID != "" && taskID != "" {
+		_, _ = db.UpdateProjectTask(accountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
+			if t.SessionID != job.SessionID {
+				return nil
+			}
+			t.TaskProgramStatus = &freshRecord
+			if t.IsIntegrated || t.Status == "completed" || t.Status == "rejected" {
+				return nil
+			}
+			if freshRecord.State == pebblestore.TaskProgramStateCompleted {
+				if !t.IsIntegrated {
+					t.Status = "needs_review"
+					if t.ActionNeeded == "" || strings.HasPrefix(t.ActionNeeded, "Action Needed: 0") {
+						t.ActionNeeded = "Action Needed: All task program jobs finished and integrated. Ready to integrate into dev/main."
+					}
+				} else {
+					t.Status = "completed"
+					t.ActionNeeded = ""
+				}
+				t.WhatDidDo = append(t.WhatDidDo, "Task program completed successfully")
+			} else if freshRecord.State == pebblestore.TaskProgramStateBlocked {
+				t.Status = "needs_review"
+				t.ActionNeeded = "Task program blocked; review needed"
+			} else if freshRecord.State == pebblestore.TaskProgramStateFailed || freshRecord.State == pebblestore.TaskProgramStateCancelled {
+				t.Status = "failed"
+				t.LastError = statusStr
+				t.ActionNeeded = "Task program failed"
+			}
+			return nil
+		})
+	}
+	return sessionV3AssistantResponse{
+		Content: fmt.Sprintf("Task Program %s execution %s.", taskProgramID, statusStr),
+	}, nil
 }
 
 func (e *sessionV3Executor) contextOverflowCompactedAssistantResponse(ctx context.Context, job sessionV3ExecutorJob, cause error) (sessionV3AssistantResponse, sessionV3ExecutorJob, error) {
@@ -2479,7 +2591,11 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 	}
 	content := loopResult.FinalContent
 	if strings.TrimSpace(content) == "" {
-		return sessionV3AssistantResponse{}, errors.New("provider returned empty assistant response")
+		if loopResult.DurableFlushCount > 0 {
+			content = "Task completed."
+		} else {
+			return sessionV3AssistantResponse{}, errors.New("provider returned empty assistant response")
+		}
 	}
 	providerRunnerID := strings.TrimSpace(runner.ID())
 	if providerRunnerID == "" {
@@ -3339,9 +3455,6 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 			"step_flush_count": sink.AssistantFlushCount(),
 			"progress_error":   sessionV3DiagnosticErrorString(stepErr),
 		})
-		if stepErr != nil {
-			return sessionV3ProviderLoopResult{}, stepErr
-		}
 		planGuardArmed := false
 		usageProviderID := strings.TrimSpace(runner.ID())
 		if usageProviderID == "" {
@@ -3354,6 +3467,14 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 		usageResult, recorded, usageErr := e.recordProviderUsage(job, resolved, usageProviderID, usageModel, step, response.Usage, time.Now().UnixMilli())
 		if usageErr != nil {
 			return sessionV3ProviderLoopResult{}, usageErr
+		}
+		if response.Usage.BudgetOperationID != "" {
+			if err := e.server.sessions.Store().ReleaseWorkerBudgetReservation(job.Principal.AccountScopeID, job.SessionID, response.Usage.BudgetOperationID); err != nil {
+				return sessionV3ProviderLoopResult{}, err
+			}
+		}
+		if stepErr != nil {
+			return sessionV3ProviderLoopResult{}, stepErr
 		}
 		if recorded {
 			e.recordSessionV3Diagnostic(job, "session.diagnostic.provider.usage", "backend.provider", fmt.Sprintf("step-%d-usage-recorded", step), map[string]any{
@@ -3377,6 +3498,9 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 				}
 			}
 		}
+		if err := ctx.Err(); err != nil {
+			return sessionV3ProviderLoopResult{}, err
+		}
 		if len(response.FunctionCalls) == 0 && !response.RestartTurn {
 			if planGuardArmed {
 				continue
@@ -3389,6 +3513,9 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 			}
 			if strings.TrimSpace(response.StopReason) == "" && strings.TrimSpace(stepText) != "" {
 				response.StopReason = "stop"
+			}
+			if sessionruntime.NormalizeMode(resolved.Session.Mode) == sessionruntime.ModePlan && sessionsV3MapString(resolved.Session.Metadata, "task_id") != "" {
+				return sessionV3ProviderLoopResult{}, errors.New("Planning run ended without publishing a durable task plan; retry planning")
 			}
 			return sessionV3ProviderLoopResult{Response: response, FinalContent: stepText, FinalRequest: baseReq, DurableFlushCount: sink.AssistantFlushCount(), FinalStreamID: streamState.StreamID(), FinalStep: streamState.Step(), FinalOffsetEnd: streamState.OffsetEnd(), FinalStartSeq: sink.AssistantStartSeq(streamState.StreamID())}, nil
 		}
@@ -3618,7 +3745,7 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 		if len(input) == 0 {
 			return sessionV3ProviderLoopResult{}, errors.New("v3 provider continuation input is empty after tool execution")
 		}
-		if _, ok := sessionsV3ProviderTerminalPlanToolResult(toolResults); ok {
+		if terminal, ok := sessionsV3ProviderTerminalPlanToolResult(toolResults); ok && e.sessionV3TerminalPlanPublished(job, terminal) {
 			return sessionV3ProviderLoopResult{Response: provideriface.Response{StopReason: "stop"}, FinalRequest: baseReq, DurableFlushCount: sink.AssistantFlushCount(), FinalStreamID: streamState.StreamID(), FinalStep: streamState.Step(), FinalOffsetEnd: streamState.OffsetEnd(), FinalStartSeq: sink.AssistantStartSeq(streamState.StreamID()), TerminalPlanHandled: true}, nil
 		}
 		if sessionsV3ProviderCheckpointRunToolResult(toolResults) {
@@ -3695,6 +3822,8 @@ type sessionV3ProviderTerminalPlanResult struct {
 	CheckpointID     string
 	NextCheckpointID string
 	PlanID           string
+	Revision         string
+	Receipt          string
 	PlanTitle        string
 	Summary          string
 }
@@ -3711,11 +3840,14 @@ func sessionV3ProviderCheckpointRunNextAction(nextAction string) bool {
 func sessionsV3ProviderCheckpointRunToolResult(results []provideriface.ToolExecutionResult) bool {
 	for i := len(results) - 1; i >= 0; i-- {
 		result := results[i]
+		if strings.TrimSpace(result.Error) != "" {
+			continue
+		}
 		toolName := strings.TrimSpace(result.Name)
 		if !strings.EqualFold(toolName, "plan_manage") && !strings.EqualFold(toolName, "exit_plan_mode") {
 			continue
 		}
-		payload := sessionsV3DecodeToolPayload(strings.TrimSpace(firstNonEmpty(result.Output, result.TextForModel, result.Error)))
+		payload := sessionsV3DecodeToolPayload(strings.TrimSpace(firstNonEmpty(result.Output, result.TextForModel)))
 		if sessionV3ProviderCheckpointRunNextAction(sessionsV3MapString(payload, "next_action")) {
 			return true
 		}
@@ -3723,22 +3855,82 @@ func sessionsV3ProviderCheckpointRunToolResult(results []provideriface.ToolExecu
 	return false
 }
 
+// A tool envelope is only a candidate; task review termination requires the
+// exact canonical binding created by publication, never an active-plan fallback.
+func (e *sessionV3Executor) sessionV3TerminalPlanPublished(job sessionV3ExecutorJob, terminal sessionV3ProviderTerminalPlanResult) bool {
+	if e == nil || e.server == nil || e.server.sessions == nil {
+		return false
+	}
+	current, found, err := e.server.sessions.GetSession(job.SessionID)
+	if err != nil || !found || current.AccountScopeID != job.Principal.AccountScopeID || current.UserID != job.Principal.UserID {
+		return false
+	}
+	if terminal.Action != "exit_plan_mode" && (current.Mode != sessionruntime.ModePlan || sessionsV3MapString(current.Metadata, "task_id") == "") {
+		return true
+	}
+	db := e.server.sessions.Store()
+	plan, found, err := db.GetPlan(job.SessionID, terminal.PlanID)
+	if err != nil || !found || plan.Document == nil {
+		return false
+	}
+	projectID, taskID := sessionsV3MapString(current.Metadata, "project_id"), sessionsV3MapString(current.Metadata, "task_id")
+	if projectID == "" && taskID == "" {
+		return plan.ApprovalState == "approved" && current.Mode == sessionruntime.ModeAuto // Standalone acceptance remains permission-gated.
+	}
+	task, found, err := db.GetProjectTask(current.AccountScopeID, projectID, taskID)
+	if err != nil || !found || task == nil || task.SessionID != job.SessionID || task.ExecutionRunID() != job.RunID || task.Status != "pending_approval" || task.PlanBinding == nil {
+		return false
+	}
+	task.EnsureTaskAttempts()
+	attempt := task.ActiveAttempt()
+	if attempt == nil || attempt.SessionID != job.SessionID || (sessionsV3MapString(current.Metadata, "task_attempt_id") != "" && sessionsV3MapString(current.Metadata, "task_attempt_id") != attempt.ID) {
+		return false
+	}
+	binding := task.PlanBinding
+	if current.Mode != sessionruntime.ModePlan || plan.ApprovalState != "pending" || plan.Status != "pending_approval" || binding.SessionID != job.SessionID || binding.PlanID != plan.ID || binding.DefinitionRevision != plan.Version || binding.Receipt == "" {
+		return false
+	}
+	return terminal.Action != "exit_plan_mode" || (terminal.Revision == fmt.Sprint(plan.Version) && terminal.Receipt == binding.Receipt)
+}
+
 func sessionsV3ProviderTerminalPlanToolResult(results []provideriface.ToolExecutionResult) (sessionV3ProviderTerminalPlanResult, bool) {
 	for i := len(results) - 1; i >= 0; i-- {
 		result := results[i]
-		if !strings.EqualFold(strings.TrimSpace(result.Name), "plan_manage") {
+		if strings.TrimSpace(result.Error) != "" {
 			continue
 		}
-		payload := sessionsV3DecodeToolPayload(strings.TrimSpace(firstNonEmpty(result.Output, result.TextForModel, result.Error)))
-		if terminal, ok := sessionsV3ProviderTerminalPlanPayload(payload); ok {
-			return terminal, true
+		if strings.EqualFold(strings.TrimSpace(result.Name), "plan_manage") {
+			payload := sessionsV3DecodeToolPayload(strings.TrimSpace(firstNonEmpty(result.Output, result.TextForModel)))
+			if terminal, ok := sessionsV3ProviderTerminalPlanPayload(payload); ok {
+				return terminal, true
+			}
+		}
+		if strings.EqualFold(strings.TrimSpace(result.Name), "exit_plan_mode") {
+			payload := sessionsV3DecodeToolPayload(strings.TrimSpace(firstNonEmpty(result.Output, result.TextForModel)))
+			if payload != nil && payload["truncated_for_model"] != true && payload["details_truncated"] != true {
+				status := strings.TrimSpace(sessionsV3MapString(payload, "status"))
+				// Accepted standalone plans must reach checkpoint scheduling below,
+				// not be mistaken for a project-task publication review boundary.
+				approvedTerminal := status == "approved" && !sessionV3ProviderCheckpointRunNextAction(sessionsV3MapString(payload, "next_action"))
+				if (status == "plan_submitted_for_review" || status == "plan_submitted" || approvedTerminal) && sessionsV3MapString(payload, "error") == "" && sessionsV3MapString(payload, "plan_id") != "" {
+					return sessionV3ProviderTerminalPlanResult{
+						Action:           "exit_plan_mode",
+						NextAction:       "await_user_approval",
+						PlanID:           strings.TrimSpace(sessionsV3MapString(payload, "plan_id")),
+						Revision:         fmt.Sprint(payload["revision"]),
+						Receipt:          sessionsV3MapString(payload, "receipt"),
+						NextCheckpointID: strings.TrimSpace(sessionsV3MapString(payload, "checkpoint_id")),
+						Summary:          strings.TrimSpace(sessionsV3MapString(payload, "message")),
+					}, true
+				}
+			}
 		}
 	}
 	return sessionV3ProviderTerminalPlanResult{}, false
 }
 
 func sessionsV3ProviderTerminalPlanPayload(payload map[string]any) (sessionV3ProviderTerminalPlanResult, bool) {
-	if payload == nil {
+	if payload == nil || sessionsV3MapString(payload, "error") != "" {
 		return sessionV3ProviderTerminalPlanResult{}, false
 	}
 	nextAction := strings.TrimSpace(sessionsV3MapString(payload, "next_action"))
@@ -4089,7 +4281,8 @@ func (e *sessionV3Executor) sessionV3LatestCheckpointRunToolPayload(job sessionV
 
 func (e *sessionV3Executor) sessionV3LatestTerminalPlanToolPayload(job sessionV3ExecutorJob) (sessionV3ProviderTerminalPlanResult, bool) {
 	payload := e.sessionV3LatestPlanManageToolPayload(job)
-	return sessionsV3ProviderTerminalPlanPayload(payload)
+	terminal, ok := sessionsV3ProviderTerminalPlanPayload(payload)
+	return terminal, ok && e.sessionV3TerminalPlanPublished(job, terminal)
 }
 
 func (e *sessionV3Executor) sessionV3LatestPlanManageToolPayload(job sessionV3ExecutorJob) map[string]any {
@@ -4110,6 +4303,9 @@ func (e *sessionV3Executor) sessionV3LatestPlanManageToolPayload(job sessionV3Ex
 			toolName := strings.TrimSpace(record.ToolName)
 			if !strings.EqualFold(toolName, "plan_manage") && !strings.EqualFold(toolName, "exit_plan_mode") {
 				continue
+			}
+			if strings.TrimSpace(record.Error) != "" {
+				return nil
 			}
 			payload = sessionsV3DecodeToolPayload(strings.TrimSpace(record.CompletedOutput))
 			if payload == nil {
@@ -4549,14 +4745,18 @@ func (e *sessionV3Executor) resolveSessionV3Runtime(job sessionV3ExecutorJob) (s
 	if strings.TrimSpace(scope.PrimaryPath) == "" {
 		return sessionV3ResolvedRuntime{}, errors.New("session workspace path is empty")
 	}
+	tools, err := e.resolveSessionV3ProviderTools(session.AccountScopeID, agentProfile)
+	if err != nil {
+		return sessionV3ResolvedRuntime{}, err
+	}
+	agentProfile, tools, err = e.resolveSessionV3TaskHistoryTools(scope, agentProfile, tools)
+	if err != nil {
+		return sessionV3ResolvedRuntime{}, err
+	}
 	instructions := strings.TrimSpace(e.composeSessionV3Instructions(scope, session.Mode, agentProfile))
 	instructions = runruntime.AppendResolvedModelPolicyInstructions(instructions, session.Mode, pref)
 	if instructions == "" {
 		return sessionV3ResolvedRuntime{}, errors.New("resolved v3 instructions are empty")
-	}
-	tools, err := e.resolveSessionV3ProviderTools(session.AccountScopeID, agentProfile)
-	if err != nil {
-		return sessionV3ResolvedRuntime{}, err
 	}
 	providerID := strings.ToLower(strings.TrimSpace(pref.Provider))
 	providerRunner, _ := e.server.providers.GetRunner(providerID)
@@ -4751,6 +4951,15 @@ func (e *sessionV3Executor) composeSessionV3InstructionsLegacy(scope tool.Worksp
 	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
 
+func (e *sessionV3Executor) resolveSessionV3TaskHistoryTools(scope tool.WorkspaceScope, profile pebblestore.AgentProfile, definitions []provideriface.ToolDefinition) (pebblestore.AgentProfile, []provideriface.ToolDefinition, error) {
+	if resolver, ok := e.server.runner.(interface {
+		ResolveTaskHistoryTools(tool.WorkspaceScope, pebblestore.AgentProfile, []provideriface.ToolDefinition) (pebblestore.AgentProfile, []provideriface.ToolDefinition, error)
+	}); ok {
+		return resolver.ResolveTaskHistoryTools(scope, profile, definitions)
+	}
+	return profile, definitions, nil
+}
+
 func (e *sessionV3Executor) resolveSessionV3ProviderTools(accountScopeID string, agentProfile pebblestore.AgentProfile) ([]provideriface.ToolDefinition, error) {
 	if e == nil || e.server == nil || e.server.runner == nil {
 		return nil, nil
@@ -4883,15 +5092,19 @@ func (e *sessionV3Executor) sessionsV3ProviderInputWithMedia(resolved sessionV3R
 		if text != "" {
 			content = append(content, map[string]any{"type": "input_text", "text": text})
 		}
+		var unperceived []pebblestore.SessionMediaReference
 		for _, reference := range message.Media {
 			if !runruntime.SessionMediaContractAllows(resolved.MediaContract, reference.Modality, reference.MIMEType, reference.FileType) {
-				return nil, fmt.Errorf("media asset %q is denied by the current run contract", reference.AssetID)
+				// Provider input limits apply at invocation: the conversational model cannot directly perceive this modality/media.
+				// Do not send unsupported media to the provider, but preserve session run execution and convey exact references.
+				unperceived = append(unperceived, reference)
+				continue
 			}
 			asset, bytes, err := e.server.sessions.ReadSessionMediaAsset(resolved.Session.AccountScopeID, resolved.Session.ID, reference.AssetID)
 			if err != nil {
 				return nil, err
 			}
-			if asset.ContractHash != reference.ContractHash || asset.DigestSHA256 != reference.DigestSHA256 || asset.Size != reference.Size || asset.Modality != reference.Modality || asset.DetectedMIMEType != reference.MIMEType || asset.FileType != reference.FileType {
+			if asset.DigestSHA256 != reference.DigestSHA256 || asset.Size != reference.Size || asset.Modality != reference.Modality || asset.DetectedMIMEType != reference.MIMEType {
 				return nil, fmt.Errorf("media asset %q does not match its durable reference", reference.AssetID)
 			}
 			content = append(content, map[string]any{
@@ -4899,7 +5112,26 @@ func (e *sessionV3Executor) sessionsV3ProviderInputWithMedia(resolved sessionV3R
 				"media": provideriface.SessionMediaPayload{AssetID: asset.ID, Modality: asset.Modality, MIMEType: asset.DetectedMIMEType, FileType: asset.FileType, DigestSHA256: asset.DigestSHA256, Size: asset.Size, Bytes: bytes},
 			})
 		}
-		mediaInput = append(mediaInput, map[string]any{"role": "user", "content": content})
+		if len(unperceived) > 0 {
+			var descs []string
+			for _, ref := range unperceived {
+				name := ref.FileName
+				if name == "" {
+					name = ref.AssetID
+				}
+				descs = append(descs, fmt.Sprintf("%s (asset_id: %s, modality: %s, mime: %s)", name, ref.AssetID, ref.Modality, ref.MIMEType))
+			}
+			content = append(content, map[string]any{
+				"type": "input_text",
+				"text": fmt.Sprintf("[Attached media input (retained, model perception not supported): %s]", strings.Join(descs, ", ")),
+			})
+		}
+		if len(content) == 0 && text == "" {
+			content = append(content, map[string]any{"type": "input_text", "text": fmt.Sprintf("[Attached media: %d item(s)]", len(message.Media))})
+		}
+		if len(content) > 0 {
+			mediaInput = append(mediaInput, map[string]any{"role": "user", "content": content})
+		}
 	}
 	if len(mediaInput) == 0 {
 		return input, nil
@@ -4974,11 +5206,11 @@ func sessionsV3ProviderInputWithOptions(messages []pebblestore.MessageSnapshot, 
 
 func sessionsV3ProviderUserText(message pebblestore.MessageSnapshot) string {
 	content := strings.TrimSpace(message.Content)
-	if len(message.ArtifactSelections) == 0 {
-		return content
-	}
 	if artifactContext := runruntime.AttachedArtifactSelectionsForProvider(message.ArtifactSelections); artifactContext != "" {
 		content = strings.TrimSpace(content + "\n\n" + artifactContext)
+	}
+	if workerContext := selectedWorkerProviderContext(message.Metadata["resolved_worker_context"]); workerContext != "" {
+		content = strings.TrimSpace(content + "\n\n" + workerContext)
 	}
 	return content
 }
@@ -5561,6 +5793,22 @@ func buildSessionV3TitleConversation(messages []pebblestore.MessageSnapshot) str
 }
 
 func resolveSessionV3EffectivePreference(session pebblestore.SessionSnapshot, agentProfile pebblestore.AgentProfile) (pebblestore.ModelPreference, error) {
+	if session.ModelProfile != nil && strings.EqualFold(strings.TrimSpace(agentProfile.Name), agentruntime.SwarmOrchestratorAgentID) {
+		selection := session.ModelProfile.Plan
+		if selection == nil || strings.TrimSpace(selection.Model) == "" {
+			selection = &session.ModelProfile.Action
+		}
+		if selection != nil && strings.TrimSpace(selection.Model) != "" {
+			return normalizeSessionsV3ModelPreference(pebblestore.ModelPreference{
+				Provider:    strings.ToLower(strings.TrimSpace(selection.Provider)),
+				Model:       selection.Model,
+				Thinking:    selection.Thinking,
+				ServiceTier: selection.ServiceTier,
+				ContextMode: selection.ContextMode,
+				UpdatedAt:   session.ModelProfile.AppliedAt,
+			}), nil
+		}
+	}
 	if session.ModelProfile != nil && strings.EqualFold(strings.TrimSpace(agentProfile.Name), agentruntime.SwarmAgentID) {
 		preference, err := sessionV3ModelProfilePreferenceForMode(*session.ModelProfile, session.Mode)
 		if err != nil {
@@ -5568,7 +5816,7 @@ func resolveSessionV3EffectivePreference(session pebblestore.SessionSnapshot, ag
 		}
 		return preference, nil
 	}
-	if strings.EqualFold(strings.TrimSpace(agentProfile.Name), agentruntime.SwarmAgentID) {
+	if strings.EqualFold(strings.TrimSpace(agentProfile.Name), agentruntime.SwarmAgentID) || strings.EqualFold(strings.TrimSpace(agentProfile.Name), agentruntime.SwarmOrchestratorAgentID) {
 		return normalizeSessionsV3ModelPreference(session.Preference), nil
 	}
 	return applySessionV3AgentPreferenceOverrides(session.Preference, agentProfile), nil

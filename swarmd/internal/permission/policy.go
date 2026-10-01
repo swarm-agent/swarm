@@ -1105,8 +1105,21 @@ func assessBashEffect(arguments, normalizedCommand string) BashEffectAssessment 
 	if !ok || strings.TrimSpace(command) == "" {
 		return invalid("command is required")
 	}
-	explanation, ok := payload["explanation"].([]any)
-	if !ok || len(explanation) == 0 {
+	var explanation []any
+	switch exp := payload["explanation"].(type) {
+	case []any:
+		explanation = exp
+	case []string:
+		for _, s := range exp {
+			explanation = append(explanation, s)
+		}
+	case string:
+		if trimmed := strings.TrimSpace(exp); trimmed != "" {
+			explanation = []any{trimmed}
+			payload["explanation"] = explanation
+		}
+	}
+	if len(explanation) == 0 {
 		return invalid("explanation must contain at least one item")
 	}
 	for _, item := range explanation {
@@ -1498,7 +1511,7 @@ func defaultPolicyDecision(mode, toolName, toolArguments string) PolicyDecision 
 		// into a workspace is materialize/promote, which independently requires an
 		// exact ready reference and a trusted workspace root.
 		return PolicyDecisionAllow
-	case "read", "search", "find", "websearch", "webfetch", "agentic_search", "list", "skill_use", "manage_actions", "manage_todos", "manage_theme", "git_status", "git_diff", "manage_connections", "manage_environments":
+	case "read", "search", "find", "websearch", "webfetch", "agentic_search", "list", "skill_use", "manage_actions", "manage_todos", "manage_theme", "git_status", "git_diff", "manage_connections", "manage_environments", "task_progress":
 		return PolicyDecisionAllow
 	case "obsolete_manage_deployments", "manage_deployments":
 		return PolicyDecisionDeny

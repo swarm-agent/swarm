@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -22,26 +23,29 @@ type UsageLimitRecord struct {
 
 // DailyUsageAccumulator tracks aggregated daily spending and token counts in O(1) storage.
 type DailyUsageAccumulator struct {
-	AccountScopeID      string           `json:"account_scope_id"`
-	Date                string           `json:"date"` // Format: YYYY-MM-DD (UTC)
-	TotalCostUSD        float64          `json:"total_cost_usd"`
-	CodexNominalCostUSD float64          `json:"codex_nominal_cost_usd,omitempty"`
-	TotalTokens         int64            `json:"total_tokens"`
-	InputTokens         int64            `json:"input_tokens,omitempty"`
-	OutputTokens        int64            `json:"output_tokens,omitempty"`
-	CachedTokens        int64            `json:"cached_tokens,omitempty"`
-	ThinkingTokens      int64            `json:"thinking_tokens,omitempty"`
-	TurnCount           int              `json:"turn_count"`
-	MediaCalls          int              `json:"media_calls,omitempty"`
-	MediaCostUSD        float64          `json:"media_cost_usd,omitempty"`
-	ImageCount          int              `json:"image_count,omitempty"`
-	ImageCostUSD        float64          `json:"image_cost_usd,omitempty"`
-	VideoCount          int              `json:"video_count,omitempty"`
-	VideoCostUSD        float64          `json:"video_cost_usd,omitempty"`
-	AudioCount          int              `json:"audio_count,omitempty"`
-	AudioCostUSD        float64          `json:"audio_cost_usd,omitempty"`
-	ModelsUsed          map[string]int64 `json:"models_used,omitempty"`
-	UpdatedAt           int64            `json:"updated_at"`
+	PricingCoverageVersion    int              `json:"pricing_coverage_version,omitempty"`
+	PricingCoverageIncomplete bool             `json:"pricing_coverage_incomplete,omitempty"`
+	UnknownReceipts           int64            `json:"unknown_receipts,omitempty"`
+	AccountScopeID            string           `json:"account_scope_id"`
+	Date                      string           `json:"date"` // Format: YYYY-MM-DD (UTC)
+	TotalCostUSD              float64          `json:"total_cost_usd"`
+	CodexNominalCostUSD       float64          `json:"codex_nominal_cost_usd,omitempty"`
+	TotalTokens               int64            `json:"total_tokens"`
+	InputTokens               int64            `json:"input_tokens,omitempty"`
+	OutputTokens              int64            `json:"output_tokens,omitempty"`
+	CachedTokens              int64            `json:"cached_tokens,omitempty"`
+	ThinkingTokens            int64            `json:"thinking_tokens,omitempty"`
+	TurnCount                 int              `json:"turn_count"`
+	MediaCalls                int              `json:"media_calls,omitempty"`
+	MediaCostUSD              float64          `json:"media_cost_usd,omitempty"`
+	ImageCount                int              `json:"image_count,omitempty"`
+	ImageCostUSD              float64          `json:"image_cost_usd,omitempty"`
+	VideoCount                int              `json:"video_count,omitempty"`
+	VideoCostUSD              float64          `json:"video_cost_usd,omitempty"`
+	AudioCount                int              `json:"audio_count,omitempty"`
+	AudioCostUSD              float64          `json:"audio_cost_usd,omitempty"`
+	ModelsUsed                map[string]int64 `json:"models_used,omitempty"`
+	UpdatedAt                 int64            `json:"updated_at"`
 }
 
 // ModelBaselinePricing holds standard per-million token rates for usage estimation.
@@ -220,6 +224,8 @@ type MediaCostEstimateOptions struct {
 	IsIteration     bool
 	OutputTokens    int64
 	ServiceTier     string
+	Variant         string
+	SKU             string
 }
 
 // EstimateMediaCostWithOptions resolves snapshot-backed media pricing for images, videos, and audio.
@@ -394,32 +400,123 @@ func EstimateMediaCostFromRecord(rec ModelCatalogRecord, opts MediaCostEstimateO
 	switch kind {
 	case "video":
 		// Check verified billing lines for video
+		hasVerifiedVideoLines := false
+		type candidateVideoLine struct {
+			unitPrice float64
+			summary   string
+		}
+		var matchedLines []candidateVideoLine
+
 		for _, lineMap := range verifiedLines {
 			billable, _ := lineMap["billable"].(string)
 			if billable != "video_output" && billable != "video" {
 				continue
 			}
+			hasVerifiedVideoLines = true
 			pUSD, ok := toFloat64(lineMap["price_usd"])
 			if !ok || pUSD < 0 {
 				continue
 			}
-			// Condition matching: resolution, includes_audio, service_tier
+			conds, hasConds := lineMap["conditions"].(map[string]any)
 			serviceTier := ""
-			if conds, ok := lineMap["conditions"].(map[string]any); ok {
-				if res, ok := conds["resolution"].(string); ok && res != "" {
-					if opts.Resolution == "" || !strings.EqualFold(res, opts.Resolution) {
-						continue
-					}
-				}
-				if incAudio, ok := conds["includes_audio"].(bool); ok {
-					if incAudio != opts.IncludesAudio {
-						continue
-					}
-				}
-				if st, ok := conds["service_tier"].(string); ok && st != "" {
-					serviceTier = st
+
+			// Informational equivalent cost is not a canonical billing rate
+			if kindVal, _ := lineMap["kind"].(string); kindVal == "equivalent_cost" {
+				continue
+			}
+
+			// Condition matching: resolution, variant, and sku conditions
+			resCond := ""
+			if hasConds {
+				if r, ok := conds["resolution"].(string); ok && r != "" {
+					resCond = r
 				}
 			}
+			lineVariant, _ := lineMap["variant"].(string)
+			if lineVariant == "" && hasConds {
+				lineVariant, _ = conds["variant"].(string)
+			}
+			lineSKU, _ := lineMap["sku"].(string)
+			if lineSKU == "" && hasConds {
+				lineSKU, _ = conds["sku"].(string)
+			}
+
+			// If resolution condition is specified on the line:
+			if resCond != "" {
+				if opts.Resolution == "" || !strings.EqualFold(resCond, opts.Resolution) {
+					continue
+				}
+			} else if lineVariant != "" && (strings.EqualFold(lineVariant, "360p") || strings.EqualFold(lineVariant, "720p") || strings.EqualFold(lineVariant, "1080p") || strings.EqualFold(lineVariant, "4k")) {
+				// Variant specified as resolution tag
+				if opts.Resolution == "" || !strings.EqualFold(lineVariant, opts.Resolution) {
+					continue
+				}
+			} else if lineVariant != "" {
+				// Variant specified on line but not a resolution tag
+				if opts.Variant == "" || !strings.EqualFold(lineVariant, opts.Variant) {
+					// Unknown or unmatched variant condition: fail closed
+					continue
+				}
+			}
+
+			// If line has an explicit SKU condition, caller must match it
+			if lineSKU != "" {
+				if opts.SKU == "" || !strings.EqualFold(lineSKU, opts.SKU) {
+					// Unknown or unmatched SKU: fail closed
+					continue
+				}
+			}
+
+			// Verify all conditions on the line are known and satisfied; unknown conditions must fail closed
+			unsupportedCond := false
+			if hasConds {
+				for condKey, condVal := range conds {
+					switch strings.ToLower(condKey) {
+					case "resolution", "variant", "sku":
+						// Handled above
+					case "tier":
+						if tStr, ok := condVal.(string); ok && tStr != "" && !strings.EqualFold(tStr, "paid") {
+							unsupportedCond = true
+						}
+					case "service_tier":
+						if st, ok := condVal.(string); ok && st != "" {
+							serviceTier = st
+						}
+					case "includes_audio":
+						if incAudio, ok := condVal.(bool); ok {
+							if incAudio != opts.IncludesAudio {
+								unsupportedCond = true
+							}
+						}
+					case "is_iteration":
+						if isIter, ok := condVal.(bool); ok {
+							if isIter != opts.IsIteration {
+								unsupportedCond = true
+							}
+						}
+					case "aspect_ratio":
+						if ar, ok := condVal.(string); ok && ar != "" {
+							if opts.AspectRatio == "" || !strings.EqualFold(ar, opts.AspectRatio) {
+								unsupportedCond = true
+							}
+						}
+					case "charged_only_on_success":
+						// Known standard billing contract attribute
+					case "output_tokens_per_second":
+						// Informational rate condition
+					default:
+						// Unknown condition on billing line: fail closed!
+						unsupportedCond = true
+					}
+					if unsupportedCond {
+						break
+					}
+				}
+			}
+			if unsupportedCond {
+				continue
+			}
+
 			if serviceTier == "" {
 				if st, ok := lineMap["service_tier"].(string); ok && st != "" {
 					serviceTier = st
@@ -434,34 +531,92 @@ func EstimateMediaCostFromRecord(rec ModelCatalogRecord, opts MediaCostEstimateO
 					continue
 				}
 			}
+
 			catalogTag := "(catalog)"
 			if snapID != "" {
 				catalogTag = fmt.Sprintf("(catalog %s)", snapID)
 			}
 			unit, _ := lineMap["unit"].(string)
-			switch strings.ToLower(unit) {
+			unitLower := strings.ToLower(strings.TrimSpace(unit))
+			var curUnitPrice float64
+			var curSummary string
+			switch unitLower {
 			case "second", "sec":
 				if opts.DurationSeconds > 0 {
-					unitPrice = pUSD * float64(opts.DurationSeconds)
-					foundPrice = true
-					summaryText = fmt.Sprintf("$%.3f/sec ($%.2f for %ds) %s", pUSD, unitPrice, opts.DurationSeconds, catalogTag)
+					curUnitPrice = pUSD * float64(opts.DurationSeconds)
+					curSummary = fmt.Sprintf("$%.3f/sec ($%.2f for %ds) %s", pUSD, curUnitPrice, opts.DurationSeconds, catalogTag)
+				} else {
+					// Cannot calculate per-second pricing without positive duration; fail closed
+					continue
 				}
 			case "minute", "min":
 				if opts.DurationSeconds > 0 {
-					unitPrice = (pUSD / 60.0) * float64(opts.DurationSeconds)
-					foundPrice = true
-					summaryText = fmt.Sprintf("$%.2f/min ($%.2f for %ds) %s", pUSD, unitPrice, opts.DurationSeconds, catalogTag)
+					curUnitPrice = (pUSD / 60.0) * float64(opts.DurationSeconds)
+					curSummary = fmt.Sprintf("$%.2f/min ($%.2f for %ds) %s", pUSD, curUnitPrice, opts.DurationSeconds, catalogTag)
+				} else {
+					continue
 				}
 			case "video", "generation":
-				unitPrice = pUSD
-				foundPrice = true
-				summaryText = fmt.Sprintf("$%.2f per video %s", unitPrice, catalogTag)
+				curUnitPrice = pUSD
+				curSummary = fmt.Sprintf("$%.2f per video %s", curUnitPrice, catalogTag)
+			default:
+				// Unknown billing unit (e.g. million_tokens for video without token count, etc.) must fail closed
+				continue
 			}
-			if foundPrice {
-				break
+			if curSummary != "" {
+				matchedLines = append(matchedLines, candidateVideoLine{
+					unitPrice: curUnitPrice,
+					summary:   curSummary,
+				})
 			}
 		}
+
+		if len(matchedLines) == 1 {
+			unitPrice = matchedLines[0].unitPrice
+			summaryText = matchedLines[0].summary
+			foundPrice = true
+		} else if len(matchedLines) > 1 {
+			// Check if all matched lines agree on price
+			allSame := true
+			for i := 1; i < len(matchedLines); i++ {
+				if math.Abs(matchedLines[i].unitPrice-matchedLines[0].unitPrice) > 0.0001 {
+					allSame = false
+					break
+				}
+			}
+			if allSame {
+				unitPrice = matchedLines[0].unitPrice
+				summaryText = matchedLines[0].summary
+				foundPrice = true
+			} else {
+				// Ambiguous matching lines with differing prices: must return unknown
+				return MediaCostEstimate{
+					CostUSD:         0.0,
+					PriceStatus:     "unknown",
+					PricingSummary:  fmt.Sprintf("unknown pricing (ambiguous pricing conditions for model %q in snapshot)", model),
+					SnapshotID:      snapID,
+					SnapshotVersion: snapVer,
+				}
+			}
+		}
+
 		if !foundPrice {
+			if hasVerifiedVideoLines {
+				// Verified billing lines existed for video, but conditions/resolution/variant were unresolved.
+				// Do NOT fall back to unconditioned top-level rates (no false estimate).
+				summary := fmt.Sprintf("unknown pricing (unresolved pricing conditions for model %q in snapshot)", model)
+				if snapID != "" {
+					summary = fmt.Sprintf("unknown pricing (unresolved pricing conditions for model %q in snapshot %s)", model, snapID)
+				}
+				return MediaCostEstimate{
+					CostUSD:         0.0,
+					PriceStatus:     "unknown",
+					PricingSummary:  summary,
+					SnapshotID:      snapID,
+					SnapshotVersion: snapVer,
+				}
+			}
+
 			catalogTag := "(catalog)"
 			if snapID != "" {
 				catalogTag = fmt.Sprintf("(catalog %s)", snapID)
@@ -632,6 +787,8 @@ func (s *SessionStore) PutUsageLimit(record UsageLimitRecord) error {
 		return errors.New("store is not configured")
 	}
 	record.AccountScopeID = strings.TrimSpace(record.AccountScopeID)
+	unlock := s.store.sessionMutations.lockSessions("account:" + record.AccountScopeID)
+	defer unlock()
 	if record.UpdatedAt <= 0 {
 		record.UpdatedAt = time.Now().UnixMilli()
 	}
@@ -662,7 +819,12 @@ func (s *SessionStore) GetDailyUsageAccumulator(accountScopeID, date string) (Da
 		return DailyUsageAccumulator{}, false, err
 	}
 	if !ok {
-		return DailyUsageAccumulator{}, false, nil
+		return DailyUsageAccumulator{PricingCoverageVersion: 1}, false, nil
+	}
+	// A legacy aggregate lacks pricing evidence. Incremental writes must carry
+	// this uncertainty forward, not certify old receipts from a new receipt.
+	if acc.PricingCoverageVersion == 0 {
+		acc.PricingCoverageIncomplete = true
 	}
 	return acc, true, nil
 }

@@ -1560,6 +1560,7 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 	var childAdmission *pebblestore.WorktreeAdmissionEvidence
 	if isCoderTarget {
 		childMetadata["swarm_v3_worktree_owner_session_id"] = childSessionID
+		childMetadata["lifecycle_signal"] = "in_progress"
 		childAdmission = &pebblestore.WorktreeAdmissionEvidence{Kind: "allocated", Path: childWorktreeRootPath, SourcePath: mapString(childMetadata, "swarm_v3_source_workspace_path"), OwnerSessionID: childSessionID, Branch: childWorktreeBranch, DelegatedCoder: true}
 	}
 	nowMS := time.Now().UnixMilli()
@@ -1650,7 +1651,7 @@ func (s *Service) prepareDelegatedSubagentLaunch(parentSession pebblestore.Sessi
 	return s.prepareDelegatedSubagentLaunchWithProfile(parentSession, sessionMode, launch, description, targetedSubagentName, nil, "", applySessionMutation)
 }
 
-func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, step int, sessionMode string, toolCalls []tool.Call, emit StreamHandler, overlay *permission.Policy) ([]tool.Result, []tool.Call, []int, []bool, []PermissionFeedback, error) {
+func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, step int, sessionMode string, toolCalls []tool.Call, emit StreamHandler, overlay *permission.Policy, profile ...pebblestore.AgentProfile) ([]tool.Result, []tool.Call, []int, []bool, []PermissionFeedback, error) {
 	results := make([]tool.Result, len(toolCalls))
 	approvedCalls := make([]tool.Call, 0, len(toolCalls))
 	approvedIndexes := make([]int, 0, len(toolCalls))
@@ -1702,7 +1703,22 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 			decisions[i].Result.Error = message
 			continue
 		}
-		if automationV2PlanCall(toolCalls[i]) {
+		if canonicalToolName(toolCalls[i].Name) == "manage_projects" {
+			principal, _ := identity.PrincipalFromContext(ctx)
+			var agentProfile pebblestore.AgentProfile
+			if len(profile) > 0 {
+				agentProfile = profile[0]
+			}
+			if err := s.authorizeProjectHistoryInvocation(tool.WorkspaceScope{SessionID: sessionID, Principal: principal}, agentProfile, toolCalls[i].Arguments); err != nil {
+				decisions[i].Result.Error = err.Error()
+				continue
+			}
+		}
+		if workerDocumentInPlanCall(toolCalls[i]) {
+			decisions[i].Result.Error = "Worker proposals require manage_workers action=propose; session-plan tools cannot author workers"
+			continue
+		}
+		if workerProposalCall(toolCalls[i]) {
 			current, _, scopeErr := s.automationV2ToolSession(sessionID)
 			if scopeErr != nil {
 				decisions[i].Result.Error = scopeErr.Error()
@@ -1719,7 +1735,7 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 				decisions[i].Result.Error = explain.Reason
 				continue
 			}
-			output, err := s.executeAutomationV2PlanTool(sessionID, sessionruntime.NormalizeMode(sessionMode), toolCalls[i])
+			output, err := s.executeWorkerProposalTool(sessionID, toolCalls[i], profile...)
 			decisions[i].Result.Output = output
 			if err != nil {
 				decisions[i].Err = err
@@ -2187,6 +2203,10 @@ func (s *Service) executeControlPlaneToolWithLifecycleRunContext(ctx context.Con
 		output, err := s.executeManageTodosTool(sessionID, call, approvedArguments)
 		result.Output = output
 		return true, result, err
+	case "task_progress":
+		output, err := s.executeTaskProgressTool(sessionID, call, applySessionMutation, lifecycleRun)
+		result.Output = output
+		return true, result, err
 	case "manage_sessions":
 		switch permission.ManageSessionsAction(call.Arguments) {
 		case "deploy":
@@ -2218,7 +2238,11 @@ func (s *Service) executeControlPlaneToolWithLifecycleRunContext(ctx context.Con
 		result.Output = fmt.Sprintf("Plan context compact handoff accepted (%d characters).", len([]rune(handoff)))
 		return true, result, nil
 	case "manage_automation", "manage_workers":
-		output, err := s.executeManageAutomationV2Tool(sessionID, call.Arguments)
+		if !agentruntime.IsOrchestratorAgentName(agentProfile.Name) {
+			result.Error = "Worker and automation management is exclusive to Swarm Orchestrator in Swarm mode"
+			return true, result, errors.New("Worker and automation management is exclusive to Swarm Orchestrator in Swarm mode")
+		}
+		output, err := s.executeManageWorkersTool(sessionID, call.Arguments, agentProfile)
 		result.Output = output
 		return true, result, err
 	case "exit_plan_mode":
@@ -2617,6 +2641,398 @@ func (s *Service) executeManageTodosTool(sessionID string, call tool.Call, feedb
 	return output, nil
 }
 
+func taskProgressString(v any) string {
+	if s, ok := v.(string); ok {
+		return strings.TrimSpace(s)
+	}
+	return ""
+}
+
+func (s *Service) executeTaskProgressTool(sessionID string, call tool.Call, applySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error), lifecycleRun planLifecycleRunContext) (string, error) {
+	if s == nil || s.sessions == nil {
+		return "", errors.New("sessions service not configured")
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return "", errors.New("session id is required")
+	}
+	session, ok, err := s.sessions.GetSession(sessionID)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return "", fmt.Errorf("session %q not found", sessionID)
+	}
+
+	var args map[string]any
+	if trimmed := strings.TrimSpace(call.Arguments); trimmed != "" {
+		if err := json.Unmarshal([]byte(trimmed), &args); err != nil {
+			return "", fmt.Errorf("task_progress arguments invalid: %w", err)
+		}
+	}
+	if args == nil {
+		args = map[string]any{}
+	}
+
+	action := strings.ToLower(strings.TrimSpace(taskProgressString(args["action"])))
+	if action == "" {
+		return "", errors.New("task_progress action is required")
+	}
+
+	metadata := make(map[string]any)
+	for k, v := range session.Metadata {
+		metadata[k] = v
+	}
+
+	var todos []map[string]any
+	if rawTodos, ok := metadata["task_todos"].([]any); ok {
+		for _, raw := range rawTodos {
+			if m, ok := raw.(map[string]any); ok {
+				cp := make(map[string]any, len(m))
+				for k, v := range m {
+					cp[k] = v
+				}
+				todos = append(todos, cp)
+			}
+		}
+	}
+
+	var lifecycleSignal string
+	var summaryText string
+	var blockerReason string
+
+	switch action {
+	case "set_todos", "set_tasks":
+		rawItems, ok := args["todos"].([]any)
+		if !ok {
+			rawItems, ok = args["tasks"].([]any)
+		}
+		if !ok {
+			if strSlice, ok := args["todos"].([]string); ok {
+				rawItems = make([]any, len(strSlice))
+				for i, s := range strSlice {
+					rawItems[i] = s
+				}
+			}
+		}
+		newTodos := make([]map[string]any, 0, len(rawItems))
+		for i, raw := range rawItems {
+			switch val := raw.(type) {
+			case string:
+				text := strings.TrimSpace(val)
+				if text != "" {
+					newTodos = append(newTodos, map[string]any{
+						"id":     fmt.Sprintf("task-%d", i+1),
+						"title":  text,
+						"status": "pending",
+					})
+				}
+			case map[string]any:
+				title := strings.TrimSpace(firstNonEmptyString(taskProgressString(val["title"]), taskProgressString(val["text"])))
+				if title != "" {
+					id := strings.TrimSpace(taskProgressString(val["id"]))
+					if id == "" {
+						id = fmt.Sprintf("task-%d", i+1)
+					}
+					st := strings.ToLower(strings.TrimSpace(taskProgressString(val["status"])))
+					if st != "in_progress" && st != "completed" {
+						st = "pending"
+					}
+					newTodos = append(newTodos, map[string]any{
+						"id":     id,
+						"title":  title,
+						"status": st,
+					})
+				}
+			}
+		}
+		todos = newTodos
+
+	case "add_todo", "add_task":
+		title := strings.TrimSpace(firstNonEmptyString(taskProgressString(args["title"]), taskProgressString(args["text"])))
+		if title == "" {
+			return "", errors.New("add_todo requires title")
+		}
+		id := strings.TrimSpace(taskProgressString(args["id"]))
+		if id == "" {
+			id = fmt.Sprintf("task-%d", len(todos)+1)
+		}
+		st := strings.ToLower(strings.TrimSpace(taskProgressString(args["status"])))
+		if st != "in_progress" && st != "completed" {
+			st = "pending"
+		}
+		todos = append(todos, map[string]any{
+			"id":     id,
+			"title":  title,
+			"status": st,
+		})
+
+	case "update_todo":
+		targetID := strings.TrimSpace(taskProgressString(args["id"]))
+		targetTitle := strings.ToLower(strings.TrimSpace(firstNonEmptyString(taskProgressString(args["title"]), taskProgressString(args["text"]))))
+		idx := -1
+		for i, item := range todos {
+			if targetID != "" && strings.EqualFold(strings.TrimSpace(taskProgressString(item["id"])), targetID) {
+				idx = i
+				break
+			}
+			if targetTitle != "" && strings.EqualFold(strings.ToLower(strings.TrimSpace(taskProgressString(item["title"]))), targetTitle) {
+				idx = i
+				break
+			}
+		}
+		if idx >= 0 {
+			if st := strings.ToLower(strings.TrimSpace(taskProgressString(args["status"]))); st != "" {
+				todos[idx]["status"] = st
+			}
+			if newTitle := strings.TrimSpace(firstNonEmptyString(taskProgressString(args["new_title"]), taskProgressString(args["title"]))); newTitle != "" && targetID != "" {
+				todos[idx]["title"] = newTitle
+			}
+		} else if targetTitle != "" {
+			st := strings.ToLower(strings.TrimSpace(taskProgressString(args["status"])))
+			if st == "" {
+				st = "pending"
+			}
+			todos = append(todos, map[string]any{
+				"id":     fmt.Sprintf("task-%d", len(todos)+1),
+				"title":  firstNonEmptyString(taskProgressString(args["title"]), taskProgressString(args["text"])),
+				"status": st,
+			})
+		}
+
+	case "in_progress":
+		targetID := strings.TrimSpace(taskProgressString(args["id"]))
+		targetTitle := strings.ToLower(strings.TrimSpace(firstNonEmptyString(taskProgressString(args["title"]), taskProgressString(args["text"]))))
+		idx := -1
+		for i, item := range todos {
+			if targetID != "" && strings.EqualFold(strings.TrimSpace(taskProgressString(item["id"])), targetID) {
+				idx = i
+				break
+			}
+			if targetTitle != "" && strings.EqualFold(strings.ToLower(strings.TrimSpace(taskProgressString(item["title"]))), targetTitle) {
+				idx = i
+				break
+			}
+		}
+		for i := range todos {
+			if strings.EqualFold(strings.TrimSpace(taskProgressString(todos[i]["status"])), "in_progress") {
+				todos[i]["status"] = "pending"
+			}
+		}
+		if idx >= 0 {
+			todos[idx]["status"] = "in_progress"
+		} else if targetTitle != "" {
+			todos = append(todos, map[string]any{
+				"id":     fmt.Sprintf("task-%d", len(todos)+1),
+				"title":  firstNonEmptyString(taskProgressString(args["title"]), taskProgressString(args["text"])),
+				"status": "in_progress",
+			})
+		}
+
+	case "complete_todo":
+		targetID := strings.TrimSpace(taskProgressString(args["id"]))
+		targetTitle := strings.ToLower(strings.TrimSpace(firstNonEmptyString(taskProgressString(args["title"]), taskProgressString(args["text"]))))
+		idx := -1
+		for i, item := range todos {
+			if targetID != "" && strings.EqualFold(strings.TrimSpace(taskProgressString(item["id"])), targetID) {
+				idx = i
+				break
+			}
+			if targetTitle != "" && strings.EqualFold(strings.ToLower(strings.TrimSpace(taskProgressString(item["title"]))), targetTitle) {
+				idx = i
+				break
+			}
+		}
+		if idx >= 0 {
+			todos[idx]["status"] = "completed"
+		} else if targetTitle != "" {
+			todos = append(todos, map[string]any{
+				"id":     fmt.Sprintf("task-%d", len(todos)+1),
+				"title":  firstNonEmptyString(taskProgressString(args["title"]), taskProgressString(args["text"])),
+				"status": "completed",
+			})
+		}
+
+	case "done", "complete", "completed":
+		for i := range todos {
+			if !strings.EqualFold(strings.TrimSpace(taskProgressString(todos[i]["status"])), "completed") {
+				todos[i]["status"] = "completed"
+			}
+		}
+		summaryText = strings.TrimSpace(taskProgressString(args["summary"]))
+		lifecycleSignal = lifecyclePhaseNeedsReview
+		activeRunID := strings.TrimSpace(lifecycleRun.RunID)
+		if activeRunID == "" {
+			activeRunID, _ = s.GetActiveRunID(sessionID)
+		}
+		if activeRunID != "" {
+			_ = s.SetSessionRunLifecyclePhase(sessionID, activeRunID, lifecyclePhaseNeedsReview, summaryText)
+			_, _, _ = s.transitionSessionLifecycle(sessionID, activeRunID, lifecyclePhaseNeedsReview)
+		}
+		if currentLifecycle, ok, _ := s.sessions.GetLifecycle(sessionID); ok {
+			currentLifecycle.Phase = lifecyclePhaseNeedsReview
+			currentLifecycle.UpdatedAt = time.Now().UnixMilli()
+			_ = s.sessions.UpsertLifecycle(currentLifecycle)
+			s.publishLifecycleSnapshot(currentLifecycle)
+		} else {
+			_ = s.sessions.UpsertLifecycle(pebblestore.SessionLifecycleSnapshot{
+				SessionID:      sessionID,
+				UserID:         session.UserID,
+				AccountScopeID: session.AccountScopeID,
+				RunID:          activeRunID,
+				Active:         activeRunID != "",
+				Phase:          lifecyclePhaseNeedsReview,
+				UpdatedAt:      time.Now().UnixMilli(),
+			})
+		}
+
+	case "blocked":
+		blockerReason = strings.TrimSpace(firstNonEmptyString(taskProgressString(args["reason"]), taskProgressString(args["blocker_message"])))
+		if blockerReason == "" {
+			return "", errors.New("blocked action requires reason")
+		}
+		blockerCode := strings.TrimSpace(taskProgressString(args["blocker_code"]))
+		lifecycleSignal = lifecyclePhaseBlocked
+		metadata["blocker_reason"] = blockerReason
+		if blockerCode != "" {
+			metadata["blocker_code"] = blockerCode
+		}
+		activeRunID := strings.TrimSpace(lifecycleRun.RunID)
+		if activeRunID == "" {
+			activeRunID, _ = s.GetActiveRunID(sessionID)
+		}
+		if activeRunID != "" {
+			_ = s.SetSessionRunLifecyclePhase(sessionID, activeRunID, lifecyclePhaseBlocked, blockerReason)
+			_, _, _ = s.transitionSessionLifecycle(sessionID, activeRunID, lifecyclePhaseBlocked)
+		}
+		if currentLifecycle, ok, _ := s.sessions.GetLifecycle(sessionID); ok {
+			currentLifecycle.Phase = lifecyclePhaseBlocked
+			currentLifecycle.StopReason = blockerReason
+			currentLifecycle.UpdatedAt = time.Now().UnixMilli()
+			_ = s.sessions.UpsertLifecycle(currentLifecycle)
+			s.publishLifecycleSnapshot(currentLifecycle)
+		} else {
+			_ = s.sessions.UpsertLifecycle(pebblestore.SessionLifecycleSnapshot{
+				SessionID:      sessionID,
+				UserID:         session.UserID,
+				AccountScopeID: session.AccountScopeID,
+				RunID:          activeRunID,
+				Active:         activeRunID != "",
+				Phase:          lifecyclePhaseBlocked,
+				StopReason:     blockerReason,
+				UpdatedAt:      time.Now().UnixMilli(),
+			})
+		}
+
+	case "status", "list":
+		// read-only
+	default:
+		return "", fmt.Errorf("unknown task_progress action %q", action)
+	}
+
+	completedCount := 0
+	inProgressCount := 0
+	var activeTodo map[string]any
+	for _, item := range todos {
+		st := strings.ToLower(strings.TrimSpace(taskProgressString(item["status"])))
+		if st == "completed" {
+			completedCount++
+		} else if st == "in_progress" {
+			inProgressCount++
+			if activeTodo == nil {
+				activeTodo = item
+			}
+		}
+	}
+	openCount := len(todos) - completedCount
+
+	agentTodoSummary := map[string]any{
+		"task_count":        len(todos),
+		"completed_count":   completedCount,
+		"open_count":        openCount,
+		"in_progress_count": inProgressCount,
+	}
+	if activeTodo != nil {
+		agentTodoSummary["active_todo"] = map[string]any{
+			"id":    activeTodo["id"],
+			"title": activeTodo["title"],
+			"text":  activeTodo["title"],
+		}
+	}
+
+	currentLifecycle := "in_progress"
+	if lifecycleSignal != "" {
+		currentLifecycle = lifecycleSignal
+	} else if lifecycle, ok, _ := s.GetSessionLifecycle(sessionID); ok {
+		if strings.TrimSpace(lifecycle.Phase) != "" {
+			currentLifecycle = strings.TrimSpace(lifecycle.Phase)
+		}
+	}
+
+	if action != "status" && action != "list" {
+		metadata["task_todos"] = todos
+		metadata["agent_todo_summary"] = agentTodoSummary
+		if lifecycleSignal != "" {
+			metadata["lifecycle_signal"] = lifecycleSignal
+		}
+		if summaryText != "" {
+			metadata["lifecycle_summary"] = summaryText
+			if state, found, err := s.sessions.Store().GetV3SessionRunState(sessionID); err == nil && found && state.AccountScopeID == session.AccountScopeID {
+				metadata["lifecycle_summary_run_id"] = state.RunID
+			} else {
+				delete(metadata, "lifecycle_summary_run_id")
+			}
+		}
+
+		nowMS := time.Now().UnixMilli()
+		updatedSession := session
+		updatedSession.Metadata = metadata
+		updatedSession.UpdatedAt = nowMS
+
+		apply := applySessionMutation
+		if apply == nil {
+			apply = s.sessions.ApplySessionMutation
+		}
+		mutationID := fmt.Sprintf("task-progress:%s:%d", sessionID, nowMS)
+		_, _ = apply(sessionruntime.SessionMutationInput{
+			SessionID:       sessionID,
+			UserID:          strings.TrimSpace(session.UserID),
+			AccountScopeID:  strings.TrimSpace(session.AccountScopeID),
+			ClientRequestID: mutationID,
+			IdempotencyKey:  mutationID,
+			PayloadHash:     mutationID,
+			RequestHash:     mutationID,
+			Kind:            sessionruntime.SessionMutationUpdateMetadata,
+			Session:         &updatedSession,
+			NowUnixMs:       nowMS,
+		})
+	}
+
+	resp := map[string]any{
+		"tool":            "task_progress",
+		"action":          action,
+		"status":          "ok",
+		"todos":           todos,
+		"summary":         agentTodoSummary,
+		"lifecycle_state": currentLifecycle,
+	}
+	if activeTodo != nil {
+		resp["active_todo"] = activeTodo["title"]
+	}
+	if blockerReason != "" {
+		resp["blocker_reason"] = blockerReason
+	}
+	if summaryText != "" {
+		resp["summary_text"] = summaryText
+	}
+
+	raw, err := json.Marshal(resp)
+	if err != nil {
+		return "", err
+	}
+	return string(raw), nil
+}
+
 const (
 	askUserCustomResponseLabel = "Custom response"
 	askUserCustomResponseValue = "__custom__"
@@ -2903,8 +3319,8 @@ func decodeAskUserFeedback(feedback string) (string, map[string]string) {
 }
 
 func (s *Service) executeExitPlanModeTool(sessionID, sessionMode string, agentProfile pebblestore.AgentProfile, arguments, feedback string, applySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) (string, error) {
-	if automationV2PlanCall(tool.Call{Name: "exit_plan_mode", Arguments: arguments}) {
-		return s.executeAutomationV2PlanTool(sessionID, sessionMode, tool.Call{Name: "exit_plan_mode", Arguments: arguments})
+	if workerDocumentInPlanCall(tool.Call{Name: "exit_plan_mode", Arguments: arguments}) {
+		return "", errors.New("Worker proposals require manage_workers action=propose; exit_plan_mode cannot author workers")
 	}
 	input, args, userMessage, err := s.prepareExitPlanModeLifecycleInput(sessionID, arguments, feedback)
 	if err != nil {
@@ -2938,14 +3354,53 @@ func (s *Service) executeExitPlanModeTool(sessionID, sessionMode string, agentPr
 		}
 		return &pebblestore.MessageSnapshot{Role: "system", Content: message.Content, Metadata: message.Metadata}
 	}
+	current, ok, getErr := s.sessions.GetSession(sessionID)
+	if getErr != nil {
+		return "", fmt.Errorf("exit_plan_mode failed to load current session policy: %w", getErr)
+	}
+	if !ok {
+		return "", fmt.Errorf("exit_plan_mode failed to load current session policy: session %q not found", sessionID)
+	}
+
+	var projectID, taskID string
+	if current.Metadata != nil {
+		projectID, _ = current.Metadata["project_id"].(string)
+		taskID, _ = current.Metadata["task_id"].(string)
+	}
+	isLinkedTask := strings.TrimSpace(projectID) != "" && strings.TrimSpace(taskID) != ""
+	if isLinkedTask {
+		lifecycle := sessionruntime.NewPlanLifecycleService(s.sessions)
+		lifecycle.SetApplySessionMutation(applySessionMutation)
+		subResult, subErr := lifecycle.SubmitProjectTaskStructuredPlan(sessionruntime.ProjectTaskPlanSubmissionInput{
+			AccountScopeID:  current.AccountScopeID,
+			UserID:          current.UserID,
+			ProjectID:       projectID,
+			TaskID:          taskID,
+			SessionID:       sessionID,
+			Document:        input.Document,
+			PlanText:        input.Plan,
+			Title:           input.Title,
+			WorkspacePath:   current.WorkspacePath,
+			ParentSessionID: "",
+		})
+		if subErr != nil {
+			return "", fmt.Errorf("exit_plan_mode failed to submit plan to task card: %w", subErr)
+		}
+		resp := map[string]any{
+			"tool":       "exit_plan_mode",
+			"status":     "plan_submitted_for_review",
+			"task_id":    taskID,
+			"project_id": projectID,
+			"plan_id":    subResult.Plan.ID,
+			"revision":   subResult.Plan.Version,
+			"receipt":    subResult.Receipt,
+			"message":    "Structured plan submitted to task card for user review. Implementation will begin once the user accepts the plan on the task card.",
+		}
+		raw, _ := json.Marshal(resp)
+		return string(raw), nil
+	}
+
 	if applySessionMutation != nil {
-		current, ok, getErr := s.sessions.GetSession(sessionID)
-		if getErr != nil {
-			return "", fmt.Errorf("exit_plan_mode failed to load current session policy: %w", getErr)
-		}
-		if !ok {
-			return "", fmt.Errorf("exit_plan_mode failed to load current session policy: session %q not found", sessionID)
-		}
 		transition, resolveErr := s.resolvePlanLifecycleModeTransition(current, agentProfile, sessionruntime.ModeAuto)
 		if resolveErr != nil {
 			return "", fmt.Errorf("exit_plan_mode failed to resolve auto model policy: %w", resolveErr)
@@ -3212,8 +3667,8 @@ func (s *Service) executePlanManageToolWithMutation(sessionID, arguments, feedba
 }
 
 func (s *Service) executePlanManageToolWithLifecycleRunContext(sessionID, arguments, feedback string, applySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error), lifecycleRun planLifecycleRunContext) (string, error) {
-	if automationV2PlanCall(tool.Call{Name: "plan_manage", Arguments: arguments}) {
-		return s.executeAutomationV2PlanTool(sessionID, "auto", tool.Call{Name: "plan_manage", Arguments: arguments})
+	if workerDocumentInPlanCall(tool.Call{Name: "plan_manage", Arguments: arguments}) {
+		return "", errors.New("Worker proposals require manage_workers action=propose; plan_manage cannot author workers")
 	}
 	if s.sessions == nil {
 		return "", errors.New("session service is not configured")
@@ -6042,6 +6497,15 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			outcome.Reason = blockedErr.Error()
 			outcome.Summary = fmt.Sprintf("launch %d subagent %s blocked (session %s): %s", outcome.LaunchIndex, outcome.ResolvedSubagent, outcome.ChildSessionID, blockedErr.Error())
 			emitTaskProgress("blocked", outcome.Summary, outcome)
+			if outcome.ChildSessionID != "" && s.sessions != nil {
+				if lifecycle, ok, err := s.sessions.GetLifecycle(outcome.ChildSessionID); err == nil && ok {
+					lifecycle.Phase = lifecyclePhaseBlocked
+					lifecycle.StopReason = blockedErr.Error()
+					lifecycle.UpdatedAt = time.Now().UnixMilli()
+					_ = s.sessions.UpsertLifecycle(lifecycle)
+					s.publishLifecycleSnapshot(lifecycle)
+				}
+			}
 			return outcome, blockedErr
 		}
 		if outcome.ReportChars > taskReportDefaultChars {
@@ -6053,6 +6517,16 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			outcome.Summary = fmt.Sprintf("launch %d subagent %s completed", outcome.LaunchIndex, outcome.ResolvedSubagent)
 		}
 		emitTaskProgress("completed", outcome.Summary, outcome)
+		if outcome.ChildSessionID != "" && s.sessions != nil && agentruntime.IsCoderAgentName(launch.RequestedSubagent) {
+			if lifecycle, ok, err := s.sessions.GetLifecycle(outcome.ChildSessionID); err == nil && ok {
+				if !lifecycle.Active && (lifecycle.Phase == lifecyclePhaseCompleted || lifecycle.Phase == "") {
+					lifecycle.Phase = lifecyclePhaseNeedsReview
+					lifecycle.UpdatedAt = time.Now().UnixMilli()
+					_ = s.sessions.UpsertLifecycle(lifecycle)
+					s.publishLifecycleSnapshot(lifecycle)
+				}
+			}
+		}
 		return outcome, nil
 	})
 
@@ -7223,6 +7697,8 @@ func canonicalToolName(name string) string {
 		return "manage_video"
 	case "manage-todos", "manage_todos":
 		return "manage_todos"
+	case "task-progress", "task_progress":
+		return "task_progress"
 	case "manage-workers", "manage_workers":
 		return "manage_workers"
 	case "manage-automation", "manage_automation":
@@ -7308,7 +7784,7 @@ func permissionRequirement(mode, toolName, arguments string) (string, bool) {
 			return "workspace_" + action, true
 		}
 		return toolName, false
-	case "read", "search", "websearch", "webfetch", "agentic_search", "list", "skill_use", "manage_worktree", "manage_video", "manage_todos", "manage_theme", "edit_pending_plan":
+	case "read", "search", "websearch", "webfetch", "agentic_search", "list", "skill_use", "manage_worktree", "manage_video", "manage_todos", "manage_theme", "edit_pending_plan", "task_progress":
 		return toolName, false
 	case "manage_sessions":
 		if permission.ShouldApproveManageSessionsDeploy(arguments) {

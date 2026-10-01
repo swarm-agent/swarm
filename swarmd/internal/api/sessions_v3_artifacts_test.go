@@ -1107,6 +1107,72 @@ func TestSessionsV3ArtifactOutputRequirementsProjectionClonesSnapshot(t *testing
 	}
 }
 
+// TestSessionsV3ArtifactCatalog_ResolutionSourceNotMappedToResolution proves:
+// - Requirement: OutputRequirements.ResolutionSource ("preset" or "dimensions") is NOT a resolution setting and must never be projected as the artifact Resolution.
+// - Threat/regression: The catalog previously assigned itemRes = variant.OutputRequirements.ResolutionSource, resulting in "preset" being displayed as resolution.
+// - Boundary: Server.handleSessionsV3Artifacts in sessions_v3_artifacts.go.
+// - Test layer: Direct API catalog projection asserting Resolution is not "preset" or "dimensions".
+func TestSessionsV3ArtifactCatalog_ResolutionSourceNotMappedToResolution(t *testing.T) {
+	server, sessionSvc, registry, plan, checkpoint, _, _ := newArtifactSessionFixture(t, "note.txt", "fixture")
+	principal := testPrincipal()
+	authority := artifact.NewAuthority(registry, sessionSvc)
+
+	created, err := authority.Create(context.Background(), artifact.Principal{
+		SessionID:      plan.SessionID,
+		AccountScopeID: principal.AccountScopeID,
+		UserID:         principal.UserID,
+		RunID:          checkpoint.RunID,
+		PlanID:         plan.ID,
+		CheckpointID:   checkpoint.ID,
+		AttemptID:      checkpoint.AttemptID,
+	}, artifact.CreateInput{
+		RequestID:      "req-preset-metadata",
+		CollectionID:   "preset-metadata",
+		VariantID:      "preset-metadata-output",
+		CollectionName: "Preset Test Collection",
+		Filename:       "test.txt",
+		MediaType:      "text/plain",
+		Body:           []byte("metadata fixture"),
+		OutputRequirements: &pebblestore.SessionArtifactOutputRequirements{
+			PresetID:         "x_header",
+			Width:            1500,
+			Height:           500,
+			AspectRatio:      "3:1",
+			Orientation:      "landscape",
+			ResolutionSource: "preset",
+			RegistryVersion:  "2026-08-14.v1",
+		},
+	})
+	if err != nil {
+		t.Fatalf("create artifact: %v", err)
+	}
+
+	catalogReq := httptest.NewRequest("GET", "/v3/artifacts", nil)
+	catalogRec := httptest.NewRecorder()
+	server.handleSessionsV3Artifacts(catalogRec, catalogReq.WithContext(identity.ContextWithPrincipal(catalogReq.Context(), principal)))
+	if catalogRec.Code != http.StatusOK {
+		t.Fatalf("catalog status = %d: %s", catalogRec.Code, catalogRec.Body.String())
+	}
+	var catalogResp struct {
+		Artifacts []sessionsV3ArtifactCatalogItem `json:"artifacts"`
+	}
+	if err := json.Unmarshal(catalogRec.Body.Bytes(), &catalogResp); err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range catalogResp.Artifacts {
+		if item.ArtifactID == created.ID {
+			if item.Resolution == "preset" || item.Resolution == "dimensions" {
+				t.Fatalf("ResolutionSource %q was erroneously projected as artifact Resolution", item.Resolution)
+			}
+			if item.AspectRatio != "3:1" {
+				t.Fatalf("expected AspectRatio 3:1, got %q", item.AspectRatio)
+			}
+			return
+		}
+	}
+	t.Fatalf("created artifact %s not found in catalog", created.ID)
+}
+
 func TestSessionsV3VideoArtifactRangeServingAndVisualCategory(t *testing.T) {
 	server, sessionSvc, registry, plan, checkpoint, _, _ := newArtifactSessionFixture(t, "note.txt", "fixture")
 	principal := testPrincipal()

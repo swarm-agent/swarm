@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -65,6 +66,12 @@ func (p *taskProgramScheduler) transition(parentID, programID string, input pebb
 	record, changed, err := p.service.sessions.TransitionTaskProgram(parentID, programID, input)
 	if err != nil {
 		return p.record, false, err
+	}
+	if changed {
+		// Publish allocation and individual job transitions, not only stage/final
+		// completion, so cards can subscribe to the live child cohort immediately.
+		p.record = record
+		p.syncProjectTask("", "", nil, "")
 	}
 	return record, changed, nil
 }
@@ -232,7 +239,17 @@ func (p *taskProgramScheduler) runCohort(indexes []int) error {
 		}
 		definition := p.record.Definition.Jobs[definitionIndex]
 		if agentruntime.IsCoderAgentName(launch.RequestedSubagentType) {
-			if p.record.RepositoryLane != nil {
+			if len(p.record.RepositoryLanes) > 0 {
+				source, sourceErr := p.coderSourceForJob(definition)
+				if sourceErr != nil {
+					return sourceErr
+				}
+				lane, ok := p.record.RepositoryLanes[source]
+				if !ok {
+					return fmt.Errorf("Coder job %q has no repository lane", definition.ID)
+				}
+				launch.ProgramRepositoryLane = &lane
+			} else if p.record.RepositoryLane != nil {
 				copy := *p.record.RepositoryLane
 				launch.ProgramRepositoryLane = &copy
 			} else {
@@ -284,6 +301,15 @@ func (p *taskProgramScheduler) runCohort(indexes []int) error {
 			}
 			launch.ProgramArtifactSource = source
 		}
+		if agentruntime.IsFinderAgentName(launch.RequestedSubagentType) && len(p.record.RepositoryLanes) > 0 {
+			for _, lane := range p.record.RepositoryLanes {
+				if sameTaskProgramPath(launch.TargetWorkspacePath, lane.SourcePath) || sameTaskProgramPath(launch.TargetWorkspacePath, lane.WorkspacePath) {
+					copy := lane
+					launch.ProgramRepositoryLane = &copy
+					break
+				}
+			}
+		}
 		if agentruntime.IsFinderAgentName(launch.RequestedSubagentType) && p.record.RepositoryLane != nil && (sameTaskProgramPath(firstNonEmptyString(launch.TargetWorkspacePath, p.record.RepositoryLane.SourcePath), p.record.RepositoryLane.SourcePath) || sameTaskProgramPath(launch.TargetWorkspacePath, p.record.RepositoryLane.WorkspacePath)) {
 			copy := *p.record.RepositoryLane
 			launch.ProgramRepositoryLane = &copy
@@ -318,7 +344,15 @@ func (p *taskProgramScheduler) runCohort(indexes []int) error {
 	running := make([]pebblestore.TaskProgramJobTransition, 0, len(indexes))
 	for _, index := range indexes {
 		job := p.record.Jobs[index]
-		running = append(running, pebblestore.TaskProgramJobTransition{JobID: job.JobID, ExpectedState: pebblestore.TaskProgramJobDeclared, State: pebblestore.TaskProgramJobRunning, AttemptNumber: job.AttemptNumber + 1})
+		update := pebblestore.TaskProgramJobTransition{JobID: job.JobID, ExpectedState: pebblestore.TaskProgramJobDeclared, State: pebblestore.TaskProgramJobRunning, AttemptNumber: job.AttemptNumber + 1}
+		if len(p.record.RepositoryLanes) > 0 && agentruntime.IsCoderAgentName(p.record.Definition.Jobs[index].AgentType) {
+			source, err := p.coderSourceForJob(p.record.Definition.Jobs[index])
+			if err != nil {
+				return err
+			}
+			update.SourceWorkspacePath = source
+		}
+		running = append(running, update)
 	}
 	state, next := pebblestore.TaskProgramStateRunning, "await_running_jobs"
 	p.record, _, err = p.transition(p.parentSession.ID, p.record.ProgramID, pebblestore.TaskProgramTransition{ExpectedRevision: p.record.Revision, MutationID: fmt.Sprintf("running:%d", p.record.Revision), State: &state, NextAction: &next, Jobs: running})
@@ -339,7 +373,11 @@ func (p *taskProgramScheduler) runCohort(indexes []int) error {
 	cohortReq.ParentSession = &p.parentSession
 	cohortReq.ApprovedArguments = approved
 	cohortReq.ProgramCohort = true
+	var cohortMu sync.Mutex
+	var lineageErr error
 	cohortEmit := func(event StreamEvent) {
+		cohortMu.Lock()
+		defer cohortMu.Unlock()
 		if event.Type != StreamEventToolDelta || strings.TrimSpace(event.Output) == "" {
 			if p.emit != nil {
 				p.emit(event)
@@ -357,6 +395,32 @@ func (p *taskProgramScheduler) runCohort(indexes []int) error {
 		jobID := p.taskProgramCohortJobID(indexes, launch)
 		if jobID == "" {
 			return
+		}
+		if childID := mapString(launch, "child_session_id"); childID != "" {
+			index := taskProgramJobIndex(p.record, jobID)
+			job := p.record.Jobs[index]
+			if job.ChildSessionID == "" && lineageErr == nil {
+				_, _, lineageErr = p.transition(p.parentSession.ID, p.record.ProgramID, pebblestore.TaskProgramTransition{ExpectedRevision: p.record.Revision, MutationID: "child-attached:" + jobID + ":" + childID, Jobs: []pebblestore.TaskProgramJobTransition{{JobID: jobID, ExpectedState: job.State, State: job.State, ChildSessionID: childID, CurrentSessionID: childID}}})
+			}
+		}
+		index := taskProgramJobIndex(p.record, jobID)
+		if lineageErr == nil && mapString(payload, "phase") == "completed" && agentruntime.IsCoderAgentName(p.parsed.Program.Jobs[index].RequestedSubagentType) && p.record.Jobs[index].State == pebblestore.TaskProgramJobRunning {
+			// This internal event is emitted only after the executor verifies the
+			// Coder's committed, clean descendant handoff. Preserve it while a
+			// sibling still runs instead of waiting for the entire cohort.
+			outcomes := taskProgramOutcomesFromPayload(map[string]any{"launches": []any{launch}}, 1)
+			updates := taskProgramOutcomeTransitions(&taskProgramSpec{Jobs: []taskProgramJob{p.parsed.Program.Jobs[index]}}, outcomes, nil)
+			job := p.record.Jobs[index]
+			if job.CurrentGeneration > 1 {
+				if len(updates) != 1 || updates[0].CurrentSessionID != job.CurrentSessionID || (job.CurrentRunID != "" && updates[0].CurrentRunID != job.CurrentRunID) {
+					lineageErr = errors.New("task program handoff does not match current child generation")
+				} else {
+					updates[0].CurrentGeneration = job.CurrentGeneration
+				}
+			}
+			if lineageErr == nil {
+				_, _, lineageErr = p.transition(p.parentSession.ID, p.record.ProgramID, pebblestore.TaskProgramTransition{ExpectedRevision: p.record.Revision, MutationID: "child-handoff:" + jobID, Jobs: updates})
+			}
 		}
 		presentation := taskProgramPresentationPayload(p.record)
 		program, status := taskProgramStreamMetadata(p.record)
@@ -377,6 +441,9 @@ func (p *taskProgramScheduler) runCohort(indexes []int) error {
 		emitTaskStreamPayload(p.emit, p.step, "task", cohortCall.CallID, programPayload)
 	}
 	output, runErr := p.service.executeTaskToolWithParsed(p.ctx, p.parentSession.ID, p.sessionMode, p.step, cohortCall, cohortEmit, cohortReq)
+	if lineageErr != nil {
+		return fmt.Errorf("persist live task child lineage: %w", lineageErr)
+	}
 	var payload map[string]any
 	if json.Unmarshal([]byte(output), &payload) == nil {
 		p.allOutcomes = append(p.allOutcomes, taskProgramLaunchRows(payload)...)
@@ -387,6 +454,20 @@ func (p *taskProgramScheduler) runCohort(indexes []int) error {
 		runErr = validationErr
 	}
 	updates := taskProgramOutcomeTransitions(&taskProgramSpec{Jobs: jobs}, outcomes, runErrs)
+	for i := range updates {
+		job := p.record.Jobs[taskProgramJobIndex(p.record, updates[i].JobID)]
+		if job.State == pebblestore.TaskProgramJobHandoffReady && updates[i].State == pebblestore.TaskProgramJobHandoffReady {
+			updates[i].ExpectedState = job.State
+		}
+		if job.CurrentGeneration > 1 {
+			// The ordinary executor returns exact child identity; never turn a
+			// missing or stale outcome into a successful successor callback.
+			if updates[i].CurrentSessionID != job.CurrentSessionID || (job.CurrentRunID != "" && updates[i].CurrentRunID != job.CurrentRunID) {
+				return errors.New("task program outcome does not match current child generation")
+			}
+			updates[i].CurrentGeneration = job.CurrentGeneration
+		}
+	}
 	for _, update := range updates {
 		if runErr == nil && update.Blocker != nil {
 			runErr = errors.New(update.Blocker.Message)
@@ -777,11 +858,38 @@ func (p *taskProgramScheduler) programWorkspacePath() (string, error) {
 	if !hasCoder {
 		return strings.TrimSpace(parent.WorkspacePath), nil
 	}
+	if len(p.record.RepositoryLanes) > 0 {
+		return p.multiRepositoryWorkspacePath()
+	}
+	// Multi-repository programs may be coordinated by a different parent
+	// repository. Resolve explicit source identities before testing whether the
+	// parent's own worktree is an integration destination.
+	var firstSource string
+	for _, def := range p.record.Definition.Jobs {
+		if !agentruntime.IsCoderAgentName(def.AgentType) {
+			continue
+		}
+		if def.WorkspacePath == "" && p.parsed.ProgramWorkspacePath == "" {
+			continue
+		}
+		source, err := p.coderSourceForJob(def)
+		if err != nil {
+			return "", err
+		}
+		if firstSource == "" {
+			firstSource = source
+		} else if !sameTaskProgramPath(firstSource, source) {
+			return p.multiRepositoryWorkspacePath()
+		}
+	}
 	// Once admitted, the program's lane is immutable. A refreshed parent may
 	// have adopted a successor; never reinterpret its default as this program's
 	// stage destination. The normal launch authority still authenticates source,
 	// Git ownership, captured ancestry and cleanliness before reuse.
 	if p.record.RepositoryLane != nil {
+		if err := p.validateRepositoryLaneSource(*p.record.RepositoryLane); err != nil {
+			return "", err
+		}
 		if p.record.Revision > 0 {
 			if p.record.ParentSessionID != parent.ID {
 				return "", errors.New("Task Program repository admission parent mismatch")
@@ -821,7 +929,7 @@ func (p *taskProgramScheduler) programWorkspacePath() (string, error) {
 		if requested == "" {
 			requested = candidate
 		} else if !sameTaskProgramPath(requested, candidate) {
-			return "", errors.New("Task Program Coder jobs must target one repository")
+			return p.multiRepositoryWorkspacePath()
 		}
 	}
 	if requested == "" {
@@ -854,6 +962,115 @@ func (p *taskProgramScheduler) programWorkspacePath() (string, error) {
 	return lanePath, nil
 }
 
+// coderSourceForJob resolves the explicit source against the parent's scoped
+// authorization; project membership alone does not grant execution access.
+func (p *taskProgramScheduler) coderSourceForJob(def pebblestore.TaskProgramJobSpec) (string, error) {
+	requested := strings.TrimSpace(firstNonEmptyString(def.WorkspacePath, p.parsed.ProgramWorkspacePath))
+	if requested == "" {
+		return "", fmt.Errorf("Coder job %q requires an explicit workspace_path in a multi-repository program", def.ID)
+	}
+	path, _, err := p.service.resolveTaskTargetWorkspace(p.parentSession, p.req.Principal, &taskLaunchSpec{RequestedSubagentType: "coder", TargetWorkspacePath: requested})
+	if err != nil {
+		return "", err
+	}
+	for source, lane := range p.record.RepositoryLanes {
+		if sameTaskProgramPath(path, lane.WorkspacePath) {
+			return source, nil
+		}
+	}
+	// The launch resolver authenticates the owned parent worktree and redirects
+	// its captured source there. Source identity must still name the catalog
+	// repository, not mint a second identity for that runtime worktree.
+	if p.parentSession.WorktreeEnabled && sameTaskProgramPath(path, p.parentSession.WorktreeRootPath) {
+		source := strings.TrimSpace(mapString(p.parentSession.Metadata, "swarm_v3_source_workspace_path"))
+		if source == "" {
+			return "", errors.New("Task Program parent worktree has no captured source")
+		}
+		if _, _, err := p.canonicalRepositorySource(source); err != nil {
+			return "", err
+		}
+		return source, nil
+	}
+	return path, nil
+}
+
+func (p *taskProgramScheduler) multiRepositoryWorkspacePath() (string, error) {
+	// Resolve every source before allocating anything. Missing or ambiguous
+	// targets cannot silently route through the primary checkout.
+	sources := make([]string, 0, len(p.record.Definition.Jobs))
+	for _, def := range p.record.Definition.Jobs {
+		if !agentruntime.IsCoderAgentName(def.AgentType) {
+			continue
+		}
+		source, err := p.coderSourceForJob(def)
+		if err != nil {
+			return "", err
+		}
+		seen := false
+		for _, item := range sources {
+			if sameTaskProgramPath(item, source) {
+				seen = true
+				break
+			}
+		}
+		if !seen {
+			sources = append(sources, source)
+		}
+	}
+	if len(sources) < 2 {
+		return "", errors.New("multi-repository program has fewer than two authenticated sources")
+	}
+	if p.service == nil || p.service.worktrees == nil {
+		return "", errors.New("Task Program worktree authority unavailable")
+	}
+	// Source aliases must not acquire separate lanes for the same repository.
+	// Resolve actual Git roots before allocation, not merely lexical paths.
+	for i, source := range sources {
+		base, err := p.service.worktrees.ResolveTaskBase(source)
+		if err != nil {
+			return "", err
+		}
+		for j := 0; j < i; j++ {
+			other, err := p.service.worktrees.ResolveTaskBase(sources[j])
+			if err != nil {
+				return "", err
+			}
+			if sameTaskProgramPath(base.RepoRoot, other.RepoRoot) {
+				return "", errors.New("multi-repository program targets the same canonical repository more than once")
+			}
+		}
+	}
+	for _, source := range sources {
+		if _, _, err := p.canonicalRepositorySource(source); err != nil {
+			return "", err
+		}
+		if lane, ok := p.record.RepositoryLanes[source]; ok {
+			if err := p.validateRepositoryLaneSource(lane); err != nil {
+				return "", err
+			}
+			if _, _, err := p.service.resolveTaskTargetWorkspace(p.parentSession, p.req.Principal, &taskLaunchSpec{RequestedSubagentType: "coder", ProgramRepositoryLane: &lane}); err != nil {
+				return "", err
+			}
+		} else if _, err := p.service.worktrees.ResolveTaskBase(source); err != nil {
+			return "", err
+		}
+	}
+	if p.record.Revision == 0 {
+		for _, source := range sources {
+			if _, err := p.service.worktrees.ResolveTaskBase(source); err != nil {
+				return "", err
+			}
+		}
+		return sources[0], nil
+	}
+	for _, source := range sources {
+		if _, err := p.repositoryLaneForSource(source, true); err != nil {
+			return "", err
+		}
+	}
+	return p.record.RepositoryLanes[sources[0]].WorkspacePath, nil
+}
+
 func sameTaskProgramPath(left, right string) bool {
 	left, right = strings.TrimSpace(left), strings.TrimSpace(right)
 	if left == "" || right == "" {
@@ -868,6 +1085,9 @@ func sameTaskProgramPath(left, right string) bool {
 }
 
 func (p *taskProgramScheduler) integrateStage(stageIndex int) error {
+	if len(p.record.RepositoryLanes) > 0 {
+		return p.integrateMultiRepositoryStage(stageIndex)
+	}
 	stageID := p.record.Definition.Stages[stageIndex].ID
 	programWorkspacePath, err := p.programWorkspacePath()
 	if err != nil {
@@ -905,6 +1125,10 @@ func (p *taskProgramScheduler) integrateStage(stageIndex int) error {
 			if job.State != pebblestore.TaskProgramJobHandoffReady || job.ImmutableStageBase == "" || job.ChildHead == "" {
 				p.barrierJobID = job.JobID
 				return fmt.Errorf("Coder job %q is not ready for integration", job.JobID)
+			}
+			if job.ChildHead == job.ImmutableStageBase {
+				p.barrierJobID = job.JobID
+				return fmt.Errorf("Coder job %q has no committed changes (HEAD == base %s); clean worktree with zero commits cannot be integrated", job.JobID, job.ImmutableStageBase)
 			}
 			if expectedHead == "" {
 				expectedHead = job.ImmutableStageBase
@@ -955,6 +1179,103 @@ func (p *taskProgramScheduler) integrateStage(stageIndex int) error {
 	return p.cleanupIntegratedStageWorktrees(stageID)
 }
 
+func (p *taskProgramScheduler) integrateMultiRepositoryStage(stageIndex int) error {
+	stageID := p.record.Definition.Stages[stageIndex].ID
+	integrator, ok := p.service.worktrees.(taskProgramIntegrationService)
+	if !ok {
+		return errors.New("worktree service does not support canonical task integration")
+	}
+	for _, def := range p.record.Definition.Jobs {
+		if def.StageID != stageID || agentruntime.IsCoderAgentName(def.AgentType) {
+			continue
+		}
+		job := p.record.Jobs[taskProgramJobIndex(p.record, def.ID)]
+		if job.State != pebblestore.TaskProgramJobCompleted {
+			return fmt.Errorf("job %q did not complete", def.ID)
+		}
+	}
+	// Commit one lane receipt before proceeding to the next. A reopened stage
+	// verifies the exact recorded head rather than applying the same child twice.
+	for _, def := range p.record.Definition.Jobs {
+		if def.StageID != stageID || !agentruntime.IsCoderAgentName(def.AgentType) {
+			continue
+		}
+		source, err := p.coderSourceForJob(def)
+		if err != nil {
+			return err
+		}
+		lane, ok := p.record.RepositoryLanes[source]
+		if !ok {
+			return fmt.Errorf("Coder job %q has no bound repository lane", def.ID)
+		}
+		state, err := p.service.worktrees.InspectTaskWorkspace(lane.WorkspacePath)
+		if err != nil {
+			return err
+		}
+		if err := p.validateRepositoryLaneSource(lane); err != nil {
+			return err
+		}
+		if !state.Clean || state.BranchName != lane.Branch {
+			return fmt.Errorf("repository lane %q changed before integration", source)
+		}
+		head := firstNonEmptyString(p.record.LaneHeads[source], lane.BaseCommit)
+		if state.HeadCommit != head {
+			return fmt.Errorf("repository lane %q head differs from durable receipt; Git may have advanced before receipt persistence, so refuse replay", source)
+		}
+		var children []worktreeruntime.TaskIntegrationChild
+		var updates []pebblestore.TaskProgramJobTransition
+		for _, sibling := range p.record.Definition.Jobs {
+			if sibling.StageID != stageID || !agentruntime.IsCoderAgentName(sibling.AgentType) {
+				continue
+			}
+			job := p.record.Jobs[taskProgramJobIndex(p.record, sibling.ID)]
+			if job.SourceWorkspacePath != source {
+				continue
+			}
+			if job.State == pebblestore.TaskProgramJobIntegrated {
+				continue
+			}
+			if job.State != pebblestore.TaskProgramJobHandoffReady || job.ChildHead == "" || job.ChildHead == job.ImmutableStageBase || job.ImmutableStageBase != head || job.ParentBranch != lane.Branch || len(sibling.OwnedScope) == 0 {
+				p.barrierJobID = job.JobID
+				return fmt.Errorf("Coder job %q has invalid immutable integration evidence", job.JobID)
+			}
+			children = append(children, worktreeruntime.TaskIntegrationChild{SessionID: firstNonEmptyString(job.CurrentSessionID, job.ChildSessionID), BaseCommit: job.ImmutableStageBase, HeadCommit: job.ChildHead, OwnedScopes: append([]string(nil), sibling.OwnedScope...)})
+			updates = append(updates, pebblestore.TaskProgramJobTransition{JobID: job.JobID, ExpectedState: pebblestore.TaskProgramJobHandoffReady, State: pebblestore.TaskProgramJobIntegrated, IntegrationState: "integrated"})
+		}
+		if len(children) == 0 {
+			continue
+		}
+		plan, err := integrator.PrepareTaskIntegration(lane.WorkspacePath, lane.Branch, head, children)
+		if err != nil {
+			return err
+		}
+		result, err := integrator.ApplyTaskIntegration(lane.WorkspacePath, plan)
+		if err != nil {
+			return err
+		}
+		nextHead := result.ResultingParentHead
+		if nextHead == "" {
+			return errors.New("task integration returned no parent head")
+		}
+		next := "integrate_remaining_lanes"
+		_, _, err = p.transition(p.parentSession.ID, p.record.ProgramID, pebblestore.TaskProgramTransition{ExpectedRevision: p.record.Revision, MutationID: fmt.Sprintf("integrate-lane:%d", p.record.Revision), LaneHeads: map[string]string{source: nextHead}, NextAction: &next, Jobs: updates})
+		if err != nil {
+			return err
+		}
+	}
+	for _, def := range p.record.Definition.Jobs {
+		if def.StageID == stageID && agentruntime.IsCoderAgentName(def.AgentType) && p.record.Jobs[taskProgramJobIndex(p.record, def.ID)].State != pebblestore.TaskProgramJobIntegrated {
+			return fmt.Errorf("Coder job %q remains unintegrated", def.ID)
+		}
+	}
+	next := "advance_stage"
+	_, _, err := p.transition(p.parentSession.ID, p.record.ProgramID, pebblestore.TaskProgramTransition{ExpectedRevision: p.record.Revision, MutationID: fmt.Sprintf("integrate-stage:%d", p.record.Revision), NextAction: &next})
+	if err != nil {
+		return err
+	}
+	return p.cleanupIntegratedStageWorktrees(stageID)
+}
+
 func (p *taskProgramScheduler) cleanupIntegratedStageWorktrees(stageID string) error {
 	cleaner, ok := p.service.worktrees.(taskProgramIntegrationService)
 	if !ok {
@@ -972,6 +1293,13 @@ func (p *taskProgramScheduler) cleanupIntegratedStageWorktrees(stageID string) e
 		}
 		integrationState := "integrated_worktree_removed"
 		parentPath, pathErr := p.programWorkspacePath()
+		if len(p.record.RepositoryLanes) > 0 {
+			lane, ok := p.record.RepositoryLanes[job.SourceWorkspacePath]
+			if !ok {
+				return fmt.Errorf("Coder job %q lost its repository lane", job.JobID)
+			}
+			parentPath, pathErr = lane.WorkspacePath, nil
+		}
 		if pathErr != nil {
 			return pathErr
 		}
@@ -1015,6 +1343,7 @@ func (p *taskProgramScheduler) advanceStage(stageIndex int) error {
 	p.record, _, err = p.transition(p.parentSession.ID, p.record.ProgramID, pebblestore.TaskProgramTransition{ExpectedRevision: p.record.Revision, MutationID: fmt.Sprintf("stage:%d:%s", p.record.Revision, stageID), ActiveStageID: &stageID, NextAction: &next})
 	if err == nil {
 		p.emitProgramProgress("stage.advanced", fmt.Sprintf("Advanced to stage %s", stageID))
+		p.syncProjectTask("in_progress", fmt.Sprintf("Stage advanced to %s", stageID), []string{fmt.Sprintf("Stage advanced to %s", stageID)}, "")
 	}
 	return err
 }
@@ -1027,6 +1356,7 @@ func (p *taskProgramScheduler) finishCompleted() (string, error) {
 	}
 	p.record = record
 	p.emitProgramProgress("program.completed", "Task Program completed")
+	p.syncProjectTask("needs_review", "Action Needed: All task program jobs finished and integrated. Ready to integrate into dev/main.", []string{"All Task Program stages completed and integrated"}, "")
 	if err := p.service.permissions.FinishSubagentWave(p.parentSession.ID, p.req.RunID, p.call.CallID, "completed"); err != nil {
 		return "", err
 	}
@@ -1055,6 +1385,7 @@ func (p *taskProgramScheduler) finishFailed(runErr error) (string, error) {
 		p.record = record
 	}
 	p.emitProgramProgress("program.failed", "Task Program failed")
+	p.syncProjectTask("failed", runErr.Error(), nil, runErr.Error())
 	_ = p.service.permissions.FinishSubagentWave(p.parentSession.ID, p.req.RunID, p.call.CallID, "failed")
 	status, _ := marshalTaskProgramStatus(p.record, false)
 	return status, runErr
@@ -1062,6 +1393,7 @@ func (p *taskProgramScheduler) finishFailed(runErr error) (string, error) {
 
 func (p *taskProgramScheduler) finishProgramError(runErr error) (string, error) {
 	p.emitProgramProgress("program.blocked", "Task Program blocked")
+	p.syncProjectTask("needs_review", runErr.Error(), nil, runErr.Error())
 	_ = p.service.permissions.FinishSubagentWave(p.parentSession.ID, p.req.RunID, p.call.CallID, "blocked")
 	status, _ := marshalTaskProgramStatus(p.record, false)
 	return status, runErr
@@ -1147,4 +1479,42 @@ func (p *taskProgramScheduler) structuredBlocker(code string, cause error, nextA
 		}
 	}
 	return blocker
+}
+
+func (p *taskProgramScheduler) syncProjectTask(status, actionNeeded string, whatDidDo []string, lastErr string) {
+	if p == nil || p.parentSession.Metadata == nil || p.service == nil || p.service.sessions == nil {
+		return
+	}
+	db := p.service.sessions.Store()
+	if db == nil {
+		return
+	}
+	projectID, _ := p.parentSession.Metadata["project_id"].(string)
+	taskID, _ := p.parentSession.Metadata["task_id"].(string)
+	if projectID == "" || taskID == "" {
+		return
+	}
+	_, _ = db.UpdateProjectTask(p.parentSession.AccountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
+		if t.SessionID != p.parentSession.ID {
+			return nil
+		}
+		t.TaskProgramID = p.record.ProgramID
+		t.TaskProgramStatus = &p.record
+		if t.IsIntegrated || t.Status == "completed" || t.Status == "rejected" {
+			return nil
+		}
+		if status != "" {
+			t.Status = status
+		}
+		if actionNeeded != "" {
+			t.ActionNeeded = actionNeeded
+		}
+		if lastErr != "" {
+			t.LastError = lastErr
+		}
+		if len(whatDidDo) > 0 {
+			t.WhatDidDo = append(t.WhatDidDo, whatDidDo...)
+		}
+		return nil
+	})
 }

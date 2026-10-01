@@ -15,20 +15,28 @@ import (
 )
 
 type Store struct {
-	db                     *pebble.DB
-	path                   string
-	closed                 atomic.Bool
-	sessionMutations       *sessionMutationCoordinator
-	modelProfilesMu        sync.Mutex
-	swarmProfilesMu        sync.Mutex
-	agentModelSettingsMu   sync.Mutex
-	tailscaleAllowlistMu   sync.Mutex
-	automationsMu          sync.Mutex
-	automationPublisherMu  sync.RWMutex
-	automationPublisher    func(V3RealtimeOutboxRecord)
-	environmentsMu         sync.Mutex
-	environmentPublisherMu sync.RWMutex
-	environmentPublisher   func(V3RealtimeOutboxRecord)
+	db                          *pebble.DB
+	path                        string
+	closed                      atomic.Bool
+	sessionMutations            *sessionMutationCoordinator
+	modelProfilesMu             sync.Mutex
+	swarmProfilesMu             sync.Mutex
+	agentModelSettingsMu        sync.Mutex
+	tailscaleAllowlistMu        sync.Mutex
+	automationsMu               sync.Mutex
+	automationPublisherMu       sync.RWMutex
+	automationPublisher         func(V3RealtimeOutboxRecord)
+	environmentsMu              sync.Mutex
+	environmentPublisherMu      sync.RWMutex
+	environmentPublisher        func(V3RealtimeOutboxRecord)
+	projectsMu                  sync.Mutex
+	projectPublisherMu          sync.RWMutex
+	projectPublisher            func(V3RealtimeOutboxRecord)
+	beforeProjectTaskUpdateHook func(taskID string) error
+	workersMu                   sync.Mutex
+	workerPublisherMu           sync.RWMutex
+	workerPublisher             func(V3RealtimeOutboxRecord)
+	workerBudgetPublisher       func(NotificationRecord)
 }
 
 func Open(path string) (*Store, error) {

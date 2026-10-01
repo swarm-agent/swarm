@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 
+	"swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/agentmodelsettings"
 	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -74,14 +75,20 @@ func (s *Server) handleAgentModelSettings(w http.ResponseWriter, r *http.Request
 			err      error
 		)
 		if patch.Swarm != nil {
-			if patch.Swarm.Action == nil || patch.Swarm.Plan == nil {
-				writeError(w, http.StatusBadRequest, errors.New("swarm patch requires complete action and plan assignments"))
+			switch {
+			case patch.Swarm.Action != nil && patch.Swarm.Plan != nil:
+				settings, err = s.agentModelSettings.ReplaceSwarm(ctx, agentmodelsettings.SwarmInput{
+					Action: *patch.Swarm.Action,
+					Plan:   *patch.Swarm.Plan,
+				})
+			case patch.Swarm.Action != nil:
+				settings, err = s.agentModelSettings.UpdateSwarmSlot(ctx, "action", *patch.Swarm.Action)
+			case patch.Swarm.Plan != nil:
+				settings, err = s.agentModelSettings.UpdateSwarmSlot(ctx, "plan", *patch.Swarm.Plan)
+			default:
+				writeError(w, http.StatusBadRequest, errors.New("swarm patch requires an action or plan assignment"))
 				return
 			}
-			settings, err = s.agentModelSettings.ReplaceSwarm(ctx, agentmodelsettings.SwarmInput{
-				Action: *patch.Swarm.Action,
-				Plan:   *patch.Swarm.Plan,
-			})
 		} else {
 			name, assignment, selectionErr := patch.SystemAgents.target()
 			if selectionErr != nil {
@@ -145,10 +152,43 @@ func (s *Server) agentModelSettingsContext(w http.ResponseWriter, r *http.Reques
 	return identity.ContextWithPrincipal(r.Context(), principal), true
 }
 
+// Descriptors expose only compiled roles with canonical assignment slots; they do
+// not alter runtime visibility or introduce custom-agent persistence.
+func agentModelRoleDescriptors() ([]map[string]string, error) {
+	registry, err := agent.BuiltinSystemAgentRegistry()
+	if err != nil {
+		return nil, err
+	}
+	roles := []struct{ id, group, slot string }{
+		{agent.SwarmAgentID, "swarm", "action"},
+		{agent.SwarmOrchestratorAgentID, "swarm", "plan"},
+		{agent.CoderAgentID, "system_agents", "coder"},
+		{agent.FinderAgentID, "system_agents", "finder"},
+		{agent.DesignerAgentID, "system_agents", "designer"},
+		{agent.CompactAgentID, "system_agents", "compact"},
+		{agent.RouterAgentID, "system_agents", "router"},
+	}
+	result := make([]map[string]string, 0, len(roles))
+	for _, role := range roles {
+		definition, ok := registry.DefinitionByID(role.id)
+		if !ok {
+			return nil, fmt.Errorf("model assignment role %q is missing from the compiled registry", role.id)
+		}
+		result = append(result, map[string]string{"id": definition.ID, "label": definition.DisplayName, "group": role.group, "slot": role.slot})
+	}
+	return result, nil
+}
+
 func writeAgentModelSettingsResponse(w http.ResponseWriter, settings agentmodelsettings.Settings) {
+	roles, err := agentModelRoleDescriptors()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":                   true,
 		"agent_model_settings": settings,
+		"roles":                roles,
 	})
 }
 

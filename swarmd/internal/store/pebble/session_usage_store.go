@@ -11,43 +11,49 @@ import (
 	"swarm/packages/swarmd/internal/privacy"
 
 	"github.com/cockroachdb/pebble"
+	"github.com/google/uuid"
 )
 
 type SessionTurnUsageSnapshot struct {
-	SessionID              string           `json:"session_id"`
-	UserID                 string           `json:"user_id,omitempty"`
-	AccountScopeID         string           `json:"account_scope_id,omitempty"`
-	RunID                  string           `json:"run_id"`
-	Provider               string           `json:"provider"`
-	Model                  string           `json:"model"`
-	Source                 string           `json:"source"`
-	Transport              string           `json:"transport,omitempty"`
-	ConnectedViaWS         *bool            `json:"connected_via_websocket,omitempty"`
-	ContextWindow          int              `json:"context_window"`
-	Steps                  int              `json:"steps"`
-	InputTokens            int64            `json:"input_tokens"`
-	OutputTokens           int64            `json:"output_tokens"`
-	ThinkingTokens         int64            `json:"thinking_tokens"`
-	CacheReadTokens        int64            `json:"cache_read_tokens"`
-	CacheWriteTokens       int64            `json:"cache_write_tokens"`
-	TotalTokens            int64            `json:"total_tokens"`
-	BilledTokens           int64            `json:"billed_tokens,omitempty"`
-	BilledInputTokens      int64            `json:"billed_input_tokens,omitempty"`
-	BilledOutputTokens     int64            `json:"billed_output_tokens,omitempty"`
-	BilledCacheReadTokens  int64            `json:"billed_cache_read_tokens,omitempty"`
-	BilledCacheWriteTokens int64            `json:"billed_cache_write_tokens,omitempty"`
-	BilledThinkingTokens   int64            `json:"billed_thinking_tokens,omitempty"`
-	RequestedServiceTier   string           `json:"requested_service_tier,omitempty"`
-	ServiceTier            string           `json:"service_tier,omitempty"`
-	ServiceTierStatus      string           `json:"service_tier_status,omitempty"`
-	PriceStatus            string           `json:"price_status,omitempty"`
-	EstimatedCostUSD       float64          `json:"estimated_cost_usd,omitempty"`
-	APIUsageRaw            map[string]any   `json:"api_usage_raw,omitempty"`
-	APIUsageRawPath        string           `json:"api_usage_raw_path,omitempty"`
-	APIUsageHistory        []map[string]any `json:"api_usage_history,omitempty"`
-	APIUsagePaths          []string         `json:"api_usage_paths,omitempty"`
-	CreatedAt              int64            `json:"created_at"`
-	UpdatedAt              int64            `json:"updated_at"`
+	BudgetOperationID      string            `json:"budget_operation_id,omitempty"`
+	ScopeProjectionVersion int               `json:"scope_projection_version,omitempty"`
+	ScopeTotals            []UsageScopeTotal `json:"scope_totals,omitempty"`
+	CostProvenance         string            `json:"cost_provenance,omitempty"`
+	SessionID              string            `json:"session_id"`
+	UserID                 string            `json:"user_id,omitempty"`
+	AccountScopeID         string            `json:"account_scope_id,omitempty"`
+	RunID                  string            `json:"run_id"`
+	Provider               string            `json:"provider"`
+	Model                  string            `json:"model"`
+	Source                 string            `json:"source"`
+	Transport              string            `json:"transport,omitempty"`
+	ConnectedViaWS         *bool             `json:"connected_via_websocket,omitempty"`
+	ContextWindow          int               `json:"context_window"`
+	Steps                  int               `json:"steps"`
+	InputTokens            int64             `json:"input_tokens"`
+	OutputTokens           int64             `json:"output_tokens"`
+	ThinkingTokens         int64             `json:"thinking_tokens"`
+	CacheReadTokens        int64             `json:"cache_read_tokens"`
+	CacheWriteTokens       int64             `json:"cache_write_tokens"`
+	TotalTokens            int64             `json:"total_tokens"`
+	BilledUsagePresent     bool              `json:"billed_usage_present,omitempty"`
+	BilledTokens           int64             `json:"billed_tokens,omitempty"`
+	BilledInputTokens      int64             `json:"billed_input_tokens,omitempty"`
+	BilledOutputTokens     int64             `json:"billed_output_tokens,omitempty"`
+	BilledCacheReadTokens  int64             `json:"billed_cache_read_tokens,omitempty"`
+	BilledCacheWriteTokens int64             `json:"billed_cache_write_tokens,omitempty"`
+	BilledThinkingTokens   int64             `json:"billed_thinking_tokens,omitempty"`
+	RequestedServiceTier   string            `json:"requested_service_tier,omitempty"`
+	ServiceTier            string            `json:"service_tier,omitempty"`
+	ServiceTierStatus      string            `json:"service_tier_status,omitempty"`
+	PriceStatus            string            `json:"price_status,omitempty"`
+	EstimatedCostUSD       float64           `json:"estimated_cost_usd,omitempty"`
+	APIUsageRaw            map[string]any    `json:"api_usage_raw,omitempty"`
+	APIUsageRawPath        string            `json:"api_usage_raw_path,omitempty"`
+	APIUsageHistory        []map[string]any  `json:"api_usage_history,omitempty"`
+	APIUsagePaths          []string          `json:"api_usage_paths,omitempty"`
+	CreatedAt              int64             `json:"created_at"`
+	UpdatedAt              int64             `json:"updated_at"`
 }
 
 type SessionUsageSummary struct {
@@ -75,23 +81,25 @@ type SessionUsageSummary struct {
 }
 
 type SessionMediaUsageRecord struct {
-	ID              string  `json:"id"`
-	SessionID       string  `json:"session_id"`
-	AccountScopeID  string  `json:"account_scope_id"`
-	UserID          string  `json:"user_id,omitempty"`
-	MediaType       string  `json:"media_type"`
-	Kind            string  `json:"kind"` // "image", "video", "audio"
-	Provider        string  `json:"provider,omitempty"`
-	Model           string  `json:"model,omitempty"`
-	Filename        string  `json:"filename"`
-	Label           string  `json:"label"`
-	Size            int64   `json:"size"`
-	CostUSD         float64 `json:"cost_usd"`
-	PriceStatus     string  `json:"price_status,omitempty"`     // "known", "unknown", "subscription", "free"
-	PricingSummary  string  `json:"pricing_summary,omitempty"`  // human-scannable pricing provenance
-	SnapshotID      string  `json:"snapshot_id,omitempty"`      // catalog snapshot ID
-	SnapshotVersion string  `json:"snapshot_version,omitempty"` // catalog snapshot version
-	CreatedAt       int64   `json:"created_at"`
+	BudgetOperationID string            `json:"budget_operation_id,omitempty"`
+	ScopeTotals       []UsageScopeTotal `json:"scope_totals,omitempty"`
+	ID                string            `json:"id"`
+	SessionID         string            `json:"session_id"`
+	AccountScopeID    string            `json:"account_scope_id"`
+	UserID            string            `json:"user_id,omitempty"`
+	MediaType         string            `json:"media_type"`
+	Kind              string            `json:"kind"` // "image", "video", "audio"
+	Provider          string            `json:"provider,omitempty"`
+	Model             string            `json:"model,omitempty"`
+	Filename          string            `json:"filename"`
+	Label             string            `json:"label"`
+	Size              int64             `json:"size"`
+	CostUSD           float64           `json:"cost_usd"`
+	PriceStatus       string            `json:"price_status,omitempty"`     // "known", "unknown", "subscription", "free"
+	PricingSummary    string            `json:"pricing_summary,omitempty"`  // human-scannable pricing provenance
+	SnapshotID        string            `json:"snapshot_id,omitempty"`      // catalog snapshot ID
+	SnapshotVersion   string            `json:"snapshot_version,omitempty"` // catalog snapshot version
+	CreatedAt         int64             `json:"created_at"`
 }
 
 func ApplyProviderUsageSnapshotToSummary(summary SessionUsageSummary, usage SessionTurnUsageSnapshot) SessionUsageSummary {
@@ -224,6 +232,9 @@ func formatProviderDisplayName(provider string) string {
 }
 
 func billedComponents(u SessionTurnUsageSnapshot) (total, input, output, cacheRead, cacheWrite, thinking int64) {
+	if u.BilledUsagePresent {
+		return u.BilledTokens, u.BilledInputTokens, u.BilledOutputTokens, u.BilledCacheReadTokens, u.BilledCacheWriteTokens, u.BilledThinkingTokens
+	}
 	total = u.TotalTokens
 	if u.BilledTokens > 0 {
 		total = u.BilledTokens
@@ -265,14 +276,14 @@ func (s *SessionStore) PutTurnUsage(record SessionTurnUsageSnapshot) error {
 	if record.UserID == "" {
 		record.UserID = "default"
 	}
-	if record.EstimatedCostUSD <= 0 && !strings.EqualFold(record.Provider, "codex") {
-		cost, status := s.CalculateCostWithStatus(record.Provider, record.Model, record.InputTokens, record.OutputTokens, record.CacheReadTokens, record.ThinkingTokens)
+	if record.EstimatedCostUSD == 0 && record.PriceStatus == "" && record.CostProvenance != "provider" && !strings.EqualFold(record.Provider, "codex") {
+		cost, status := s.calculateReceiptCost(record)
 		record.EstimatedCostUSD = cost
 		if record.PriceStatus == "" {
 			record.PriceStatus = status
 		}
 	} else if record.PriceStatus == "" {
-		_, status := s.CalculateCostWithStatus(record.Provider, record.Model, record.InputTokens, record.OutputTokens, record.CacheReadTokens, record.ThinkingTokens)
+		_, status := s.calculateReceiptCost(record)
 		record.PriceStatus = status
 	}
 
@@ -284,6 +295,23 @@ func (s *SessionStore) PutTurnUsage(record SessionTurnUsageSnapshot) error {
 		return fmt.Errorf("read previous turn usage: %w", err)
 	}
 
+	if hadPrevious && previous.AccountScopeID != record.AccountScopeID {
+		return errors.New("usage receipt account cannot change")
+	}
+	if hadPrevious {
+		if previous.Provider != record.Provider || previous.Model != record.Model {
+			return errors.New("usage receipt provider and model cannot change")
+		}
+		record.CreatedAt = previous.CreatedAt
+	}
+	if record.CreatedAt <= 0 {
+		record.CreatedAt = time.Now().UnixMilli()
+	}
+	record.ScopeProjectionVersion = 3
+	record.ScopeTotals, err = s.prepareUsageScopeTotals(record, previous)
+	if err != nil {
+		return err
+	}
 	currTot, currIn, currOut, currCache, _, currThink := billedComponents(record)
 	deltaCost := record.EstimatedCostUSD
 	deltaTokens := currTot
@@ -293,30 +321,12 @@ func (s *SessionStore) PutTurnUsage(record SessionTurnUsageSnapshot) error {
 	deltaThinkingTokens := currThink
 	if hadPrevious {
 		deltaCost = record.EstimatedCostUSD - previous.EstimatedCostUSD
-		if deltaCost < 0 {
-			deltaCost = 0
-		}
 		prevTot, prevIn, prevOut, prevCache, _, prevThink := billedComponents(previous)
 		deltaTokens = currTot - prevTot
-		if deltaTokens < 0 {
-			deltaTokens = 0
-		}
 		deltaInputTokens = currIn - prevIn
-		if deltaInputTokens < 0 {
-			deltaInputTokens = 0
-		}
 		deltaOutputTokens = currOut - prevOut
-		if deltaOutputTokens < 0 {
-			deltaOutputTokens = 0
-		}
 		deltaCachedTokens = currCache - prevCache
-		if deltaCachedTokens < 0 {
-			deltaCachedTokens = 0
-		}
 		deltaThinkingTokens = currThink - prevThink
-		if deltaThinkingTokens < 0 {
-			deltaThinkingTokens = 0
-		}
 	}
 
 	payload, err := json.Marshal(record)
@@ -327,6 +337,15 @@ func (s *SessionStore) PutTurnUsage(record SessionTurnUsageSnapshot) error {
 	batch := s.store.NewBatch()
 	defer batch.Close()
 
+	if err := s.setUsageDays(batch, record, previous); err != nil {
+		return err
+	}
+	if err := setUsageBinding(batch, record.AccountScopeID, record.SessionID, record.ScopeTotals); err != nil {
+		return err
+	}
+	if err := setUsageScopeTotals(batch, record.AccountScopeID, record.ScopeTotals); err != nil {
+		return err
+	}
 	if err := batch.Set([]byte(KeySessionTurnUsage(record.SessionID, record.RunID)), payload, nil); err != nil {
 		return err
 	}
@@ -342,7 +361,7 @@ func (s *SessionStore) PutTurnUsage(record SessionTurnUsageSnapshot) error {
 		ts = time.Now().UnixMilli()
 	}
 	dateStr := time.UnixMilli(ts).UTC().Format("2006-01-02")
-	if deltaCost > 0 || deltaTokens > 0 || !hadPrevious {
+	{
 		acc, _, err := s.GetDailyUsageAccumulator(record.AccountScopeID, dateStr)
 		if err != nil {
 			return fmt.Errorf("get daily usage accumulator: %w", err)
@@ -352,11 +371,18 @@ func (s *SessionStore) PutTurnUsage(record SessionTurnUsageSnapshot) error {
 			acc.Date = dateStr
 		}
 		acc.TotalCostUSD += deltaCost
+		acc.UnknownReceipts += unknownBudgetReceipt(record.PriceStatus)
+		if hadPrevious {
+			acc.UnknownReceipts -= unknownBudgetReceipt(previous.PriceStatus)
+		}
+		if acc.UnknownReceipts < 0 {
+			acc.UnknownReceipts = 0
+		}
 		codexNominalDelta := 0.0
 		if strings.EqualFold(record.Provider, "codex") {
-			codexNominalDelta = CalculateBaselineCost("openai", record.Model, record.InputTokens, record.OutputTokens, record.CacheReadTokens, record.ThinkingTokens)
+			codexNominalDelta = nominalUsageCost(record)
 			if hadPrevious {
-				prevNominal := CalculateBaselineCost("openai", previous.Model, previous.InputTokens, previous.OutputTokens, previous.CacheReadTokens, previous.ThinkingTokens)
+				prevNominal := nominalUsageCost(previous)
 				codexNominalDelta -= prevNominal
 			}
 			acc.CodexNominalCostUSD += codexNominalDelta
@@ -381,6 +407,9 @@ func (s *SessionStore) PutTurnUsage(record SessionTurnUsageSnapshot) error {
 		if err != nil {
 			return fmt.Errorf("marshal daily accumulator: %w", err)
 		}
+		if err := s.setAccountWorkerBudgetHolds(batch, acc); err != nil {
+			return err
+		}
 		if err := batch.Set([]byte(KeyDailyUsageAccumulator(acc.AccountScopeID, acc.Date)), accPayload, nil); err != nil {
 			return err
 		}
@@ -389,9 +418,9 @@ func (s *SessionStore) PutTurnUsage(record SessionTurnUsageSnapshot) error {
 		if !hadPrevious {
 			turnsDelta = 1
 		}
-		unknownDelta := 0
-		if strings.EqualFold(record.PriceStatus, "unknown") || strings.EqualFold(record.ServiceTierStatus, "unknown") {
-			unknownDelta = 1
+		unknownDelta := usageUnknownCount(record)
+		if hadPrevious {
+			unknownDelta -= usageUnknownCount(previous)
 		}
 		if err := s.updateAccountUsageRollupInBatch(batch, record.AccountScopeID, dateStr, record.SessionID, record.Provider, record.Model, deltaCost, codexNominalDelta, 0.0, deltaTokens, deltaInputTokens, deltaOutputTokens, deltaCachedTokens, deltaThinkingTokens, turnsDelta, 0, 0, 0, 0, unknownDelta, ts, time.Now().UnixMilli()); err != nil {
 			return err
@@ -552,44 +581,60 @@ func (s *SessionStore) ResetUsage(sessionID string, summary SessionUsageSummary)
 		return fmt.Errorf("session id is required")
 	}
 
-	keys := make([]string, 0, 64)
-	const iterateAll = int(^uint(0) >> 1)
-	if err := s.store.IteratePrefix(SessionTurnUsagePrefix(sessionID), iterateAll, func(key string, _ []byte) error {
-		keys = append(keys, key)
-		return nil
-	}); err != nil {
-		return err
-	}
+	request := uuid.NewString()
+	_, err := s.ApplyV3SessionMutation(V3SessionMutationInput{
+		SessionID: sessionID, AccountScopeID: summary.AccountScopeID, UserID: summary.UserID,
+		Kind: "session.usage.reset", EventType: "session.usage.reset", UsageReset: &summary,
+		ClientRequestID: request, IdempotencyKey: request, PayloadHash: request, NowUnixMs: summary.UpdatedAt,
+	})
+	return err
+}
 
-	batch := s.store.NewBatch()
-	defer batch.Close()
-	for _, key := range keys {
-		if err := batch.Delete([]byte(key), nil); err != nil {
-			return fmt.Errorf("delete turn usage key %q: %w", key, err)
+// Called under the canonical mutation lock: compaction changes occupancy only.
+func (s *SessionStore) prepareUsageReset(sessionID string, summary SessionUsageSummary) (SessionUsageSummary, error) {
+	session, found, err := s.GetSession(sessionID)
+	if err != nil {
+		return summary, err
+	}
+	if !found {
+		return summary, fmt.Errorf("session %q not found", sessionID)
+	}
+	if strings.TrimSpace(summary.AccountScopeID) != strings.TrimSpace(session.AccountScopeID) || strings.TrimSpace(summary.UserID) != strings.TrimSpace(session.UserID) {
+		return summary, errors.New("usage reset principal mismatch")
+	}
+	previous, found, err := s.GetUsageSummary(sessionID)
+	if err != nil {
+		return summary, err
+	}
+	if found {
+		if previous.AccountScopeID != session.AccountScopeID || previous.UserID != session.UserID {
+			return summary, errors.New("usage summary principal mismatch")
 		}
+		summary.TurnCount = previous.TurnCount
+		summary.EstimatedCostUSD = previous.EstimatedCostUSD
+		summary.LastRunID = previous.LastRunID
+		summary.LastTransport = previous.LastTransport
+		summary.LastConnectedViaWS = previous.LastConnectedViaWS
+		summary.ServiceTier = previous.ServiceTier
+	} else {
+		summary.TurnCount = 0
+		summary.EstimatedCostUSD = 0
 	}
+	summary.InputTokens = 0
+	summary.OutputTokens = 0
+	summary.ThinkingTokens = 0
+	summary.CacheReadTokens = 0
+	summary.CacheWriteTokens = 0
+	summary.TotalTokens = 0
+	if summary.ContextWindow < 0 {
+		summary.ContextWindow = 0
+	}
+	summary.RemainingTokens = int64(summary.ContextWindow)
 
-	summaryKey := KeySessionUsageSummary(sessionID)
 	summary.SessionID = sessionID
 	summary.UserID = strings.TrimSpace(summary.UserID)
 	summary.AccountScopeID = strings.TrimSpace(summary.AccountScopeID)
-	payload, err := json.Marshal(summary)
-	if err != nil {
-		return fmt.Errorf("marshal usage summary reset payload: %w", err)
-	}
-	if err := batch.Set([]byte(summaryKey), payload, nil); err != nil {
-		return fmt.Errorf("set usage summary reset key %q: %w", summaryKey, err)
-	}
-	if summary.AccountScopeID != "" {
-		accountKey := KeySessionUsageSummaryByAccount(summary.AccountScopeID, sessionID)
-		if err := batch.Set([]byte(accountKey), payload, nil); err != nil {
-			return fmt.Errorf("set usage summary account key %q: %w", accountKey, err)
-		}
-	}
-	if err := batch.Commit(pebble.Sync); err != nil {
-		return fmt.Errorf("commit usage reset batch: %w", err)
-	}
-	return nil
+	return summary, nil
 }
 
 func sanitizeUsageHistory(history []map[string]any) []map[string]any {
@@ -640,9 +685,6 @@ func sanitizeTurnUsageSnapshot(record SessionTurnUsageSnapshot) SessionTurnUsage
 	record.RequestedServiceTier = strings.ToLower(strings.TrimSpace(record.RequestedServiceTier))
 	record.ServiceTier = strings.ToLower(strings.TrimSpace(record.ServiceTier))
 	record.ServiceTierStatus = strings.ToLower(strings.TrimSpace(record.ServiceTierStatus))
-	if record.EstimatedCostUSD < 0 {
-		record.EstimatedCostUSD = 0
-	}
 	return record
 }
 

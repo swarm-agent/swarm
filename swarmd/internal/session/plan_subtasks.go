@@ -53,7 +53,11 @@ func addPlanCheckpointSubtask(doc *pebblestore.SessionPlanDocument, op PlanDocum
 		return err
 	}
 	if op.Subtask == nil {
-		return errors.New("add_subtask requires subtask")
+		if title := strings.TrimSpace(op.Title); title != "" {
+			op.Subtask = &pebblestore.SessionPlanSubtask{Title: title}
+		} else {
+			return errors.New("add_subtask requires subtask")
+		}
 	}
 	subtask := *op.Subtask
 	subtask.ID = strings.TrimSpace(firstNonBlank(subtask.ID, op.SubtaskID))
@@ -235,12 +239,11 @@ func completePlanCheckpointSubtask(doc *pebblestore.SessionPlanDocument, op Plan
 		}
 		indexes = append(indexes, idx)
 	}
-	for _, subtask := range checkpoint.Subtasks {
-		if subtask.Status == PlanSubtaskStatusCompleted || seen[subtask.ID] {
-			continue
-		}
-		if op.CompleteCheckpoint {
-			return fmt.Errorf("cannot complete checkpoint %q while subtask %q is %q; include every finished subtask in subtask_ids or keep checkpoint progress open", checkpoint.ID, subtask.ID, subtask.Status)
+	if op.CompleteCheckpoint {
+		for _, subtask := range checkpoint.Subtasks {
+			if subtask.Status != PlanSubtaskStatusCompleted && !seen[subtask.ID] {
+				return fmt.Errorf("cannot complete checkpoint %q while subtask %q is %q; include every finished subtask in subtask_ids or keep checkpoint progress open", checkpoint.ID, subtask.ID, subtask.Status)
+			}
 		}
 	}
 	for _, idx := range indexes {
@@ -262,12 +265,25 @@ func completePlanCheckpointSubtask(doc *pebblestore.SessionPlanDocument, op Plan
 		})
 		return err
 	}
+	var activeInProgressID string
 	for i := range checkpoint.Subtasks {
-		if checkpoint.Subtasks[i].Status == PlanSubtaskStatusPending {
-			checkpoint.Subtasks[i].Status = PlanSubtaskStatusInProgress
-			checkpoint.Subtasks[i].StartedAt = op.CompletedAt
-			checkpoint.ActiveSubtaskID = checkpoint.Subtasks[i].ID
-			break
+		if checkpoint.Subtasks[i].Status == PlanSubtaskStatusInProgress {
+			if activeInProgressID == "" {
+				activeInProgressID = checkpoint.Subtasks[i].ID
+				checkpoint.ActiveSubtaskID = activeInProgressID
+			} else {
+				checkpoint.Subtasks[i].Status = PlanSubtaskStatusPending
+			}
+		}
+	}
+	if activeInProgressID == "" {
+		for i := range checkpoint.Subtasks {
+			if checkpoint.Subtasks[i].Status == PlanSubtaskStatusPending {
+				checkpoint.Subtasks[i].Status = PlanSubtaskStatusInProgress
+				checkpoint.Subtasks[i].StartedAt = op.CompletedAt
+				checkpoint.ActiveSubtaskID = checkpoint.Subtasks[i].ID
+				break
+			}
 		}
 	}
 	return nil

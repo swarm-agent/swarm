@@ -16,7 +16,7 @@ func TestBuiltinSystemAgentRegistryIsCompleteAndUnique(t *testing.T) {
 	if err := registry.Validate(); err != nil {
 		t.Fatalf("validate builtin registry: %v", err)
 	}
-	want := []string{SwarmAgentID, AISidechatAgentID, AITaskPreparerAgentID, CoderAgentID, CompactAgentID, DesignerAgentID, FinderAgentID, IdeaAgentID, ImageAgentID, PlanSidechatAgentID, ReviewCommitAgentID, RouterAgentID, VideoAgentID, WorkspaceDefinitionAgentID, WorkspaceOnboardingAgentID}
+	want := []string{SwarmAgentID, AISidechatAgentID, AITaskPreparerAgentID, CoderAgentID, CompactAgentID, DesignerAgentID, FinderAgentID, IdeaAgentID, ImageAgentID, SwarmOrchestratorAgentID, PlanSidechatAgentID, ReviewCommitAgentID, RouterAgentID, VideoAgentID, WorkspaceDefinitionAgentID, WorkspaceOnboardingAgentID}
 	if got := registry.IDs(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("registry IDs = %v, want %v", got, want)
 	}
@@ -32,7 +32,7 @@ func TestBuiltinSystemAgentRegistryIsCompleteAndUnique(t *testing.T) {
 			t.Fatalf("sidechat-only system agent %q is not protected: %+v", id, definition)
 		}
 	}
-	for _, id := range []string{SwarmAgentID, AITaskPreparerAgentID, CompactAgentID, FinderAgentID, CoderAgentID, DesignerAgentID, ImageAgentID, VideoAgentID, IdeaAgentID, ReviewCommitAgentID, RouterAgentID, WorkspaceDefinitionAgentID, WorkspaceOnboardingAgentID} {
+	for _, id := range []string{SwarmAgentID, AITaskPreparerAgentID, CompactAgentID, FinderAgentID, CoderAgentID, DesignerAgentID, ImageAgentID, VideoAgentID, IdeaAgentID, ReviewCommitAgentID, RouterAgentID, SwarmOrchestratorAgentID, WorkspaceDefinitionAgentID, WorkspaceOnboardingAgentID} {
 		definition, _ := registry.DefinitionByID(id)
 		if definition.RequiresSidechatMetadata || IsReservedSidechatAgentName(id) {
 			t.Fatalf("ordinary/task system agent %q was classified as sidechat-only: %+v", id, definition)
@@ -372,7 +372,7 @@ func TestSystemAgentSnapshotReconciliationPreservesDynamicContextAndModels(t *te
 	if clone.Name != CoderAgentID || clone.Prompt != CoderAgentPrompt() || clone.Provider != "codex" || clone.Model != "parent-model" || clone.RuntimeMode != pebblestore.AgentRuntimeModeReadWrite || !clone.Enabled || clone.ExitPlanModeEnabled == nil || *clone.ExitPlanModeEnabled {
 		t.Fatalf("Clone immutable contract was not restored: %+v", clone)
 	}
-	for _, allowed := range []string{"read", "search", "list", "write", "edit", "websearch", "webfetch", "webdownload", "git_status", "git_diff", "git_add", "git_commit"} {
+	for _, allowed := range []string{"read", "search", "list", "write", "edit", "websearch", "webfetch", "webdownload", "git_status", "git_diff", "git_add", "git_commit", "task_progress"} {
 		if cfg := clone.ToolContract.Tools[allowed]; cfg.Enabled == nil || !*cfg.Enabled {
 			t.Fatalf("Clone locked tool %q unavailable: %+v", allowed, clone.ToolContract)
 		}
@@ -443,6 +443,63 @@ func TestDesignerManifestGuidanceUsesCanonicalVersion(t *testing.T) {
 		} {
 			if !strings.Contains(profile.Prompt, required) {
 				t.Fatalf("Designer prompt missing %q", required)
+			}
+		}
+	}
+}
+
+// Requirement: the compiled Orchestrator alone may deploy/commit sessions and
+// promote selected work through the canonical tools. Threat: a persisted old
+// profile silently removes these or native filesystem discovery capabilities,
+// or a forged snapshot widens a
+// restricted agent. The registry materialization/reconciliation layer is the
+// narrowest authority for the code-owned tool contract; runtime filtering is
+// checked separately in run.
+func TestOrchestratorSessionIntegrationToolContractReconcilesSnapshot(t *testing.T) {
+	registry, err := BuiltinSystemAgentRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	compiled := SwarmOrchestratorAgentProfileForContext(pebblestore.AgentProfile{})
+	stale := compiled
+	stale.ToolContract = &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{
+		"manage_sessions": {Enabled: pebblestore.BoolPtr(false)},
+		"manage_worktree": {Enabled: pebblestore.BoolPtr(false)},
+		"search":          {Enabled: pebblestore.BoolPtr(false)},
+		"find":            {Enabled: pebblestore.BoolPtr(false)},
+		"read":            {Enabled: pebblestore.BoolPtr(false)},
+		"list":            {Enabled: pebblestore.BoolPtr(false)},
+		"plan_manage":     {Enabled: pebblestore.BoolPtr(true)},
+	}}
+	stale.Provider, stale.Model, stale.Thinking = "test-provider", "test-model", "high"
+	reconciled, err := registry.ReconcileSnapshot(SwarmOrchestratorAgentID, stale)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, profile := range []pebblestore.AgentProfile{compiled, reconciled} {
+		if profile.Mode != ModePrimary || profile.RuntimeMode != pebblestore.AgentRuntimeModeReadWrite || profile.DefaultSessionMode != pebblestore.AgentDefaultSessionModeAuto {
+			t.Fatalf("Orchestrator mode changed: %+v", profile)
+		}
+		for _, name := range []string{"manage_sessions", "manage_worktree", "search", "find", "read", "list"} {
+			cfg, ok := profile.ToolContract.Tools[name]
+			if !ok || cfg.Enabled == nil || !*cfg.Enabled {
+				t.Fatalf("%s missing from compiled Orchestrator contract: %+v", name, profile.ToolContract)
+			}
+		}
+		for _, name := range []string{"plan_manage", "exit_plan_mode"} {
+			cfg := profile.ToolContract.Tools[name]
+			if cfg.Enabled == nil || *cfg.Enabled {
+				t.Fatalf("session planning %s enabled: %+v", name, profile.ToolContract)
+			}
+		}
+	}
+	if reconciled.Provider != stale.Provider || reconciled.Model != stale.Model || reconciled.Thinking != stale.Thinking {
+		t.Fatalf("model preference changed during reconciliation: %+v", reconciled)
+	}
+	for _, profile := range []pebblestore.AgentProfile{CoderAgentProfileForParent(pebblestore.AgentProfile{}), FinderAgentProfileForParent(pebblestore.AgentProfile{})} {
+		for _, name := range []string{"manage_sessions", "manage_worktree"} {
+			if cfg := profile.ToolContract.Tools[name]; cfg.Enabled != nil && *cfg.Enabled {
+				t.Fatalf("restricted agent %s acquired %s", profile.Name, name)
 			}
 		}
 	}

@@ -516,3 +516,22 @@ func TestBackendPathAndArgsRejectsLegacyDaemonDataEvenWithExistingTarget(t *test
 		t.Fatalf("target file changed: %q", got)
 	}
 }
+
+func TestDefaultLdflags(t *testing.T) {
+	t.Setenv("SWARM_KEEP_DWARF", "")
+	got := defaultLdflags()
+	if len(got) != 2 || got[0] != "-ldflags" || got[1] != "-w" {
+		t.Fatalf("defaultLdflags() = %v, want [-ldflags -w]", got)
+	}
+
+	gotExtra := defaultLdflags("-X", "main.version=1.0.0")
+	if len(gotExtra) != 2 || gotExtra[0] != "-ldflags" || gotExtra[1] != "-w -X main.version=1.0.0" {
+		t.Fatalf("defaultLdflags(-X...) = %v, want [-ldflags '-w -X main.version=1.0.0']", gotExtra)
+	}
+
+	t.Setenv("SWARM_KEEP_DWARF", "1")
+	gotKeep := defaultLdflags()
+	if len(gotKeep) != 0 {
+		t.Fatalf("defaultLdflags() with SWARM_KEEP_DWARF=1 = %v, want empty", gotKeep)
+	}
+}

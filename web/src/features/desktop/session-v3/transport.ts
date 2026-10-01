@@ -703,6 +703,14 @@ export class DesktopV3RealtimeTransport {
         sessionId,
         new Error('Desktop V3 session subscription acknowledgement timed out.'),
       )
+      // A registered session is not necessarily subscribed on the server. If
+      // replay.complete never arrives, controller reconciliation sees this
+      // registry entry and cannot repair the silent gap. Reconcile against the
+      // durable snapshot, then resume the socket from the committed cursor.
+      // An offline socket already has its own bounded reopen path.
+      if (this.desired && this.socket?.readyState === WebSocket.OPEN && pending.sentGeneration === this.generation) {
+        void this.requestRehydrate('V3 realtime session subscription acknowledgement timed out', null)
+      }
     }, SESSION_CONNECT_ACK_TIMEOUT_MS)
     return pending
   }

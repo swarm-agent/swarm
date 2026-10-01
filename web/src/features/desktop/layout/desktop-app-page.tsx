@@ -4,7 +4,7 @@ import { createPortal } from 'react-dom'
 import { observePageActivity, withPageRequest } from '../../../app/page-lifecycle'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate, useSearch, Link, Outlet } from '@tanstack/react-router'
-import { Archive, Bell, Bot, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Coins, Download, Film, Folder, GitBranch, GitCommitHorizontal, GitMerge, Image as ImageIcon, Keyboard, ListChecks, ListTodo, LoaderCircle, Menu, MessageSquare, Mic, MoreVertical, NotepadText, Pencil, Pin, Plus, RefreshCcw, Save, Search, Server, Settings, Trash2, X, XCircle } from 'lucide-react'
+import { Archive, Bell, Bot, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Cloud, Coins, Cpu, Download, Film, Folder, GitBranch, GitCommitHorizontal, GitMerge, Image as ImageIcon, Keyboard, ListChecks, ListTodo, LoaderCircle, Menu, MessageSquare, Mic, MoreVertical, NotepadText, Pencil, Pin, Plus, RefreshCcw, Save, Search, Server, Settings, Trash2, X, XCircle } from 'lucide-react'
 import { Button } from '../../../components/ui/button'
 import { Card } from '../../../components/ui/card'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../components/ui/dialog'
@@ -70,8 +70,10 @@ import {
 } from './sidebar-session-lineage'
 import { createBlockerTransitionTracker } from '../runtime/blocker-transitions'
 import { AutomationProgressView } from '../tools/automations/automation-progress'
-import { AutomationSidebarCompactCard, AutomationSidebarExpandedContainer, AutomationV2SidebarMetadata, AutomationV2SidebarSummaryIndicator, selectAutomationSummaryCounts } from '../tools/automations/automation-v2-sidebar-metadata'
-import { selectAutomationV2Identity } from '../state/desktop-automation-v2-state'
+import { AutomationSidebarCompactCard, AutomationSidebarExpandedContainer, AutomationV2SidebarMetadata, selectAutomationSummaryCounts } from '../tools/automations/automation-v2-sidebar-metadata'
+import { selectPendingWorkerSidebarReviews } from '../state/desktop-automation-v2-state'
+import { DurableWorkerSidebar } from './durable-worker-sidebar'
+// Delisted from sidebar; workers and automations managed exclusively in Swarm Orchestrate mode
 import { desktopAutomationV2 } from '../runtime/desktop-automation-v2'
 import { dispatchDesktopV3Cache, getDesktopV3CacheSnapshot, useDesktopV3CacheSelector } from '../state/desktop-v3-cache-store'
 import { isDesktopV3SessionTailReady, selectDesktopSidebarRows, selectDesktopVideoStudioRows, selectNotificationSummary, selectOrderedNotifications, selectRenderedSessionMessages } from '../state/desktop-v3-cache-selectors'
@@ -87,7 +89,9 @@ import { sessionWorkspaceBindingId } from '../services/session-workspace'
 import type { V3SessionRunIntent, WorkspaceUsageProjection } from '../state/desktop-v3-cache-types'
 import { normalizeDesktopV3RoutedSessionStartResponse, postDesktopV3BackgroundRouterSessionStart } from '../session-v3/write-api'
 import { isDesktopV3NavigationHiddenRecord, isDesktopV3VideoStudioMetadata, isDesktopV3VideoStudioRecord } from '../state/desktop-v3-session-visibility'
+import { isAutomationExecutionSession } from '../state/desktop-automation-purpose'
 import { clearNotifications, updateNotification } from '../notifications/api'
+import { AccountWorkerApprovalBadge } from '../notifications/components/worker-approval-attention'
 import { DesktopNotificationsModal } from '../notifications/components/desktop-notifications-modal'
 import { DESKTOP_V3_RUN_TIMER_TOOLTIP } from '../chat/components/desktop-v3-run-status'
 import { SearchChatsModal } from '../session-search/search-chats-modal'
@@ -1868,7 +1872,6 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
     const record = state.sessionsById[session.id]
     return record?.kind === 'full' ? record.session.automation : undefined
   })
-  const automationV2 = useDesktopV3CacheSelector(state => selectAutomationV2Identity(state, session.id))
   useEffect(() => {
     // Sidebar bootstrap carries permission summaries, not every review payload.
     // Hydrate once when pending identity is unknown; no timer or title inference.
@@ -1887,8 +1890,8 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
     }
     return undefined
   })
-  const isPlanRow = !automation && !automationV2 && rowType === 'plan_session'
-  const isAutomationRow = Boolean(automationV2 === 'accepted' || automation)
+  const isPlanRow = !automation && rowType === 'plan_session'
+  const isAutomationRow = Boolean(automation || (sessionFullRec?.kind === 'full' && sessionFullRec.session.automation_v2))
   const checkpointProgressLabel = sessionPlanCheckpointProgressLabel(session)
   const checkpointCounts = sessionPlanCheckpointCounts(session)
   const compactingTimer = compactingActive && compactingStartedAt !== null ? formatDurationCompact(now - compactingStartedAt) : ''
@@ -1922,7 +1925,7 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
     : activeSession
       ? sessionActivityLabel(session)
       : sessionMeta(session) || ''
-  const rightSideLabel = hasPendingPermission || isPlanRow || automationV2 ? '' : singleStatusLabel
+  const rightSideLabel = hasPendingPermission || isPlanRow || isAutomationRow ? '' : singleStatusLabel
   const statusTone = sessionStatusTone(session)
   const showStatusCircle = activeSession || statusTone === 'error'
   const checkpointTotalCount = Math.max(0, checkpointCounts.totalCount)
@@ -2243,7 +2246,7 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
                     />
                   ) : null}
                   <span className="min-w-0 truncate">
-                    {automationV2 === 'pending' ? 'Plan · ' : ''}{rowTitle}
+                    {rowTitle}
                   </span>
                 </span>
               )}
@@ -2301,10 +2304,10 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
           ) : null}
         </span>
       </div>
-      {automationV2 ? (
+      {isAutomationRow && sessionFullRec?.kind === 'full' && sessionFullRec.session.automation_v2 ? (
         <AutomationV2SidebarMetadata
           sessionId={session.id}
-          identity={automationV2}
+          identity="accepted"
           now={now}
           needsApproval={hasPendingPermission}
           workspaceSlug={rowWorkspaceSlug}
@@ -2472,7 +2475,7 @@ export function sidebarShouldShowReviewAction(group: SidebarSessionGroupID, sele
 
 export const SIDEBAR_SESSION_GROUPS = [
   { id: 'blocked', label: 'Blocked', showInactiveThreshold: false },
-  { id: 'automation', label: 'Workers', showInactiveThreshold: false },
+  { id: 'automation', label: 'Legacy worker runs', showInactiveThreshold: false },
   { id: 'needs_review', label: 'Needs Review', showInactiveThreshold: false },
   { id: 'in_progress', label: 'In Progress', showInactiveThreshold: false },
   { id: 'pinned', label: 'Pinned', showInactiveThreshold: false },
@@ -2505,7 +2508,6 @@ export function sidebarVisibleGroupNodes(
 function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX.Element[] | null {
   const automationCounts = selectAutomationSummaryCounts(getDesktopV3CacheSnapshot(), input.workspaceId)
   const hasAutomationWork = Boolean(automationCounts && automationCounts.total > 0)
-  if (input.nodes.length === 0 && !hasAutomationWork) return null
   const grouped = new Map<SidebarSessionGroupID, SidebarSessionNode[]>()
   for (const group of SIDEBAR_SESSION_GROUPS) {
     grouped.set(group.id, [])
@@ -2517,17 +2519,17 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
     }
     grouped.get(currentRootGroup)?.push(node)
   }
-  return SIDEBAR_SESSION_GROUPS.flatMap((group) => {
-    const nodes = grouped.get(group.id) ?? []
+  return [<DurableWorkerSidebar key="durable-workers" workspaceSlug={typeof input.workspaceSlug === 'string' ? input.workspaceSlug : undefined} onOpen={input.onOpenAutomations} />, ...SIDEBAR_SESSION_GROUPS.flatMap((group) => {
     const isAutomationGroup = group.id === 'automation'
+    const nodes = grouped.get(group.id) ?? []
     if (nodes.length === 0 && (!isAutomationGroup || !hasAutomationWork)) return []
     const collapsed = input.collapsedGroups[group.id]
     const overflowExpanded = input.expandedOverflowGroups[group.id] ?? false
     const rootCount = Math.max(nodes.filter((node) => node.depth === 0).length, isAutomationGroup && hasAutomationWork ? (automationCounts?.total ?? 0) : 0)
     const limit = isAutomationGroup ? SIDEBAR_AUTOMATION_VISIBLE_ROOT_LIMIT : SIDEBAR_NEEDS_REVIEW_VISIBLE_ROOT_LIMIT
-    const hasOverflow = (group.id === 'needs_review' || isAutomationGroup) && rootCount > limit
+    const hasOverflow = (group.id === 'needs_review' || isAutomationGroup) && nodes.filter(node => node.depth === 0).length > limit
     const visibleNodes = sidebarVisibleGroupNodes(nodes, group.id, overflowExpanded)
-    const hiddenRootCount = Math.max(0, rootCount - limit)
+    const hiddenRootCount = Math.max(0, nodes.filter(node => node.depth === 0).length - limit)
     const collapseControl = (
       <button
         type="button"
@@ -2698,7 +2700,7 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
                       onClick={input.onOpenAutomations}
                       className="font-medium text-[var(--app-primary)] hover:underline cursor-pointer"
                     >
-                      Open workers →
+                      Open Swarm →
                     </button>
                   ) : null}
                 </div>
@@ -2791,7 +2793,7 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
         )}
       </section>
     )]
-  })
+  })]
 }
 
 export function DesktopAppPage() {
@@ -2807,7 +2809,12 @@ export function DesktopAppPage() {
   const workspaceWorkersDetailMatch = matchRoute({ to: '/$workspaceSlug/workers/$workerId', fuzzy: false })
   const workspaceWorkerDetailMatch = matchRoute({ to: '/$workspaceSlug/worker/$workerId', fuzzy: false })
   const workspaceAutomationsMatch = matchRoute({ to: '/$workspaceSlug/automations', fuzzy: false })
-  const isWorkersRoute = Boolean(workspaceWorkersMatch || workspaceWorkersDetailMatch || workspaceWorkerDetailMatch || workspaceAutomationsMatch)
+  const globalWorkersMatch = matchRoute({ to: '/workers', fuzzy: false })
+  const globalWorkersDetailMatch = matchRoute({ to: '/workers/$workerId', fuzzy: false })
+  const workspaceOrchestrateMatch = matchRoute({ to: '/$workspaceSlug/swarm', fuzzy: true })
+  const globalOrchestrateMatch = matchRoute({ to: '/swarm', fuzzy: true })
+  const isOrchestrateRoute = Boolean(workspaceOrchestrateMatch || globalOrchestrateMatch)
+  const isWorkersRoute = Boolean(workspaceWorkersMatch || workspaceWorkersDetailMatch || workspaceWorkerDetailMatch || workspaceAutomationsMatch || globalWorkersMatch || globalWorkersDetailMatch)
   const workspaceTaskMatch = matchRoute({ to: '/$workspaceSlug/task', fuzzy: false })
   const workspaceSessionMatch = matchRoute({ to: '/$workspaceSlug/$sessionId', fuzzy: false })
   const workspaceMatch = matchRoute({ to: '/$workspaceSlug', fuzzy: false })
@@ -2826,7 +2833,7 @@ export function DesktopAppPage() {
       : workspaceMatch
         ? workspaceMatch.workspaceSlug
         : '').trim()
-  const routeWorkerId = (workspaceWorkersDetailMatch ? workspaceWorkersDetailMatch.workerId : workspaceWorkerDetailMatch ? workspaceWorkerDetailMatch.workerId : '').trim()
+  const routeWorkerId = (workspaceWorkersDetailMatch ? workspaceWorkersDetailMatch.workerId : workspaceWorkerDetailMatch ? workspaceWorkerDetailMatch.workerId : globalWorkersDetailMatch ? (globalWorkersDetailMatch as any).workerId : '').trim()
   const mobileCreationPage = workspaceTaskMatch ? 'task' : null
   const routeSessionId = mobileCreationPage || isWorkersRoute
     ? ''
@@ -3319,9 +3326,13 @@ export function DesktopAppPage() {
   }, [workspaceLayout])
 
   const desktopInitialHydrate = useDesktopV3CacheSelector((state) => state.desktopInitialHydrate)
-  const routeSessionNavigationHidden = useDesktopV3CacheSelector((state) => (
-    routeSessionId ? isDesktopV3NavigationHiddenRecord(state.sessionsById[routeSessionId]) : false
-  ))
+  const routeSessionNavigationHidden = useDesktopV3CacheSelector((state) => {
+    const record = routeSessionId ? state.sessionsById[routeSessionId] : undefined
+    if (record?.kind === 'full' && isAutomationExecutionSession(record.session)) {
+      return false
+    }
+    return routeSessionId ? isDesktopV3NavigationHiddenRecord(state.sessionsById[routeSessionId]) : false
+  })
   const routeSessionIsVideoStudio = useDesktopV3CacheSelector((state) => (
     routeSessionId ? isDesktopV3VideoStudioRecord(state.sessionsById[routeSessionId]) : false
   ))
@@ -3524,6 +3535,14 @@ export function DesktopAppPage() {
     ?? visibleSidebarWorkspaceEntries[0]
     ?? null
   const topWorkspaceId = topWorkspace?.workspaceId
+  const pendingWorkerCount = useDesktopV3CacheSelector(state => selectPendingWorkerSidebarReviews(state).length)
+  const previousPendingWorkerCount = useRef(0)
+  // A newly pending review opens the full sidebar once, without trapping the
+  // user there when they deliberately switch back to focus mode.
+  useEffect(() => {
+    if (pendingWorkerCount > previousPendingWorkerCount.current) setSidebarDisplayMode('full')
+    previousPendingWorkerCount.current = pendingWorkerCount
+  }, [pendingWorkerCount, setSidebarDisplayMode])
   const topWorkspaceLabel = topWorkspace?.workspaceName?.trim() || 'Default Workspace'
   const topWorkspacePath = topWorkspace?.path || selectedWorkspacePath || ''
   const topWorkspaceSlug = topWorkspacePath
@@ -3841,10 +3860,9 @@ export function DesktopAppPage() {
     const workspaceSlug = workspaceSlugByPath.get(workspacePath)
       ?? workspaceRouteSlugBase({ path: workspacePath, workspaceName: session.workspaceName })
 
-    const automationIdentity = selectAutomationV2Identity(getDesktopV3CacheSnapshot(), normalizedSessionId)
-    if (automationIdentity === 'accepted') {
-      const sessionRec = getDesktopV3CacheSnapshot().sessionsById[normalizedSessionId]
-      const workerId = (sessionRec?.kind === 'full' && sessionRec.session.automation_v2?.automation_id) || normalizedSessionId
+    const sessionRec = getDesktopV3CacheSnapshot().sessionsById[normalizedSessionId]
+    if (sessionRec?.kind === 'full' && sessionRec.session.automation_v2) {
+      const workerId = sessionRec.session.automation_v2.automation_id || normalizedSessionId
       void navigate({
         to: '/$workspaceSlug/workers/$workerId',
         params: {
@@ -4864,10 +4882,10 @@ export function DesktopAppPage() {
     gitBehindCount: topWorkspaceGitBehindCount,
     gitDirtyCount: topWorkspaceGitDirtyCount,
     onOpenGit: () => openMainWorktreeGitPanel(topWorkspacePath, topWorkspaceLabel),
-    onOpenAutomations: topWorkspaceSlug ? () => {
+    onOpenAutomations: () => {
       setMobileSidebarOpen(false)
-      void navigate({ to: '/$workspaceSlug/workers', params: { workspaceSlug: topWorkspaceSlug }, search: {} })
-    } : undefined,
+      void navigate({ to: '/workers', search: {} })
+    },
     onToggleReviewCleanup: () => setNeedsReviewCleanupOpen((open) => !open),
     onToggleGroupCollapsed: handleToggleSidebarGroupCollapsed,
     onToggleGroupOverflow: handleToggleSidebarGroupOverflow,
@@ -5525,6 +5543,9 @@ export function DesktopAppPage() {
           {!updateDevMode && updateAvailable ? <span aria-hidden="true" className="absolute right-2 top-2 h-2.5 w-2.5 rounded-full bg-[var(--app-primary)] shadow-[0_0_10px_var(--app-primary)]" /> : null}
         </Button>
       ) : null}
+      <Button variant="ghost" className="h-12 w-12 min-w-12 p-0" onClick={() => handleOpenSettingsTab('cloud')} aria-label="Open Cloud storage settings" title="Cloud & Storage">
+        <Cloud size={24} className="shrink-0" />
+      </Button>
       <Button variant="ghost" className="mt-auto h-12 w-12 min-w-12 p-0" onClick={() => handleOpenSettingsTab('account')} aria-label="Open settings" title="Settings">
         <Settings size={24} className="shrink-0" />
       </Button>
@@ -5610,7 +5631,7 @@ export function DesktopAppPage() {
                         aria-label="Open notifications"
                         title={notificationUnreadCount > 0 ? `${notificationUnreadCount} unread notification${notificationUnreadCount === 1 ? '' : 's'}` : 'Notifications'}
                       >
-                        <Bell size={14} strokeWidth={1.8} className="shrink-0" />
+                        <Bell size={14} strokeWidth={1.8} className="shrink-0" /><AccountWorkerApprovalBadge />
                         {notificationUnreadCount > 0 ? <span aria-hidden="true" className="absolute right-0.5 top-0.5 grid h-3 min-w-3 place-items-center rounded-full bg-[var(--app-primary)] px-0.5 text-[7px] font-semibold leading-none text-[var(--app-primary-text)]">{notificationUnreadCount > 9 ? '9+' : notificationUnreadCount}</span> : null}
                       </button>
                     ) : null}
@@ -5648,105 +5669,130 @@ export function DesktopAppPage() {
             </div>
 
             <div className="border-b border-[var(--app-border)] bg-[var(--app-surface)] px-[9px] py-2">
-              <div className="grid gap-0.5 text-[11px] text-[var(--app-text-subtle)]">
-                  <div className="grid gap-0.5 pt-1">
-                    <button
-                      type="button"
-                      className="grid min-h-[28px] w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 text-left font-inherit text-[11px] text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text-muted)] disabled:cursor-not-allowed disabled:opacity-50"
-                      onClick={() => {
-                        if (defaultNewChatWorkspacePath) {
-                          handleStartNewSessionInWorkspace(defaultNewChatWorkspacePath, defaultNewChatWorkspaceLabel)
-                        }
-                        setMobileSidebarOpen(false)
-                      }}
-                      disabled={!defaultNewChatWorkspacePath}
-                      aria-label={`New chat in ${defaultNewChatWorkspaceLabel}`}
-                      title={`New chat in ${defaultNewChatWorkspaceLabel}`}
-                    >
-                      <MessageSquare size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
-                      <span className="min-w-0 truncate">New Chat</span>
-                    </button>
-                    <Link
-                      to="/"
-                      className="grid min-h-[28px] w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 text-left font-inherit text-[11px] text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text-muted)]"
-                      onClick={() => setMobileSidebarOpen(false)}
-                      aria-label="Open workspaces"
-                      title="Workspaces"
-                    >
-                      <Folder size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
-                      <span className="min-w-0 truncate">Workspaces</span>
-                    </Link>
-                    <button
-                      type="button"
-                      className="grid min-h-[28px] w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 text-left font-inherit text-[11px] text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text-muted)] disabled:cursor-not-allowed disabled:opacity-50"
-                      onClick={() => {
-                        if (!topWorkspaceSlug) return
-                        setMobileSidebarOpen(false)
-                        void navigate({ to: '/$workspaceSlug/studio', params: { workspaceSlug: topWorkspaceSlug } })
-                      }}
-                      disabled={!topWorkspaceSlug}
-                      aria-label="Open Studio"
-                      title="Studio"
-                    >
-                      <Film size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
-                      <span className="min-w-0 truncate">Studio</span>
-                    </button>
-                    <button
-                      type="button"
-                      className="grid min-h-[28px] w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 text-left font-inherit text-[11px] text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text-muted)] disabled:cursor-not-allowed disabled:opacity-50"
-                      onClick={() => {
-                        if (!topWorkspaceSlug) return
-                        setMobileSidebarOpen(false)
-                        void navigate({
-                          to: '/$workspaceSlug/studio',
-                          params: { workspaceSlug: topWorkspaceSlug },
-                          search: { view: 'media' },
-                        })
-                      }}
-                      disabled={!topWorkspaceSlug}
-                      aria-label="Open Media"
-                      title="Media"
-                      data-testid="sidebar-media-btn"
-                    >
-                      <ImageIcon size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
-                      <span className="min-w-0 truncate">Media</span>
-                    </button>
-                    <button
-                      type="button"
-                      className="grid min-h-[28px] w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 text-left font-inherit text-[11px] text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text-muted)] disabled:cursor-not-allowed disabled:opacity-50"
-                      onClick={() => {
-                        if (!topWorkspaceSlug) return
-                        setMobileSidebarOpen(false)
-                        void navigate({ to: '/$workspaceSlug/workers', params: { workspaceSlug: topWorkspaceSlug }, search: {} })
-                      }}
-                      disabled={!topWorkspaceSlug}
-                      aria-label="Open Workers"
-                      aria-current={isWorkersRoute ? 'page' : undefined}
-                      title="Workers"
-                    >
-                      <RefreshCcw size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
-                      <span className="flex min-w-0 items-center justify-between gap-1.5">
-                        <span className="min-w-0 truncate">Workers</span>
-                        <AutomationV2SidebarSummaryIndicator workspaceId={topWorkspaceId} workspaceSlug={topWorkspaceSlug} />
+              <div className="grid gap-1 text-[11px] text-[var(--app-text-subtle)]">
+                {/* Chat vs Swarm (Orchestrate) Mode Switch */}
+                <div className="grid grid-cols-2 gap-1 p-0.5 mb-1 rounded-lg bg-[var(--app-surface-subtle)] border border-[var(--app-border)]/60">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMobileSidebarOpen(false)
+                      if (topWorkspaceSlug) {
+                        void navigate({ to: '/$workspaceSlug', params: { workspaceSlug: topWorkspaceSlug } })
+                      } else {
+                        void navigate({ to: '/' })
+                      }
+                    }}
+                    className={cn(
+                      'flex items-center justify-center gap-1.5 py-1 px-2 rounded-md text-[11px] font-semibold transition-all',
+                      !isOrchestrateRoute
+                        ? 'bg-[var(--app-surface-raised)] text-[var(--app-text)] shadow-sm border border-[var(--app-border)]'
+                        : 'text-[var(--app-text-subtle)] hover:text-[var(--app-text)]'
+                    )}
+                    aria-label="Switch to Chat Mode"
+                  >
+                    <MessageSquare size={12} strokeWidth={2} />
+                    <span>Chat</span>
+                  </button>
+                  <Link
+                    {...(topWorkspaceSlug ? { to: '/$workspaceSlug/swarm' as const, params: { workspaceSlug: topWorkspaceSlug } } : { to: '/swarm' as const })}
+                    onClick={() => setMobileSidebarOpen(false)}
+                    className={cn(
+                      'flex items-center justify-center gap-1.5 py-1 px-2 rounded-md text-[11px] font-semibold transition-all',
+                      isOrchestrateRoute
+                        ? 'bg-cyan-950/80 text-cyan-300 border border-cyan-800 shadow-sm'
+                        : 'text-[var(--app-text-subtle)] hover:text-cyan-400'
+                    )}
+                    aria-label="Switch to Swarm Orchestrate Mode"
+                  >
+                    <Cpu size={12} strokeWidth={2} className="text-cyan-400" />
+                    <span>Swarm</span>
+                    {pendingWorkerCount > 0 ? (
+                      <span className="rounded-full bg-amber-500/20 text-amber-300 px-1 text-[9px] font-bold">
+                        {pendingWorkerCount}
                       </span>
-                    </button>
-                    <button
-                      type="button"
-                      className="grid min-h-[28px] w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 text-left font-inherit text-[11px] text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text-muted)] disabled:cursor-not-allowed disabled:opacity-50"
-                      onClick={() => {
-                        if (!topWorkspaceSlug) return
-                        setMobileSidebarOpen(false)
-                        void navigate({ to: '/$workspaceSlug/environments', params: { workspaceSlug: topWorkspaceSlug }, search: {} })
-                      }}
-                      disabled={!topWorkspaceSlug}
-                      aria-label="Open Environments"
-                      title="Environments"
-                      data-testid="sidebar-environments-btn"
-                    >
-                      <Server size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
-                      <span className="min-w-0 truncate">Environments</span>
-                    </button>
-                    <button
+                    ) : null}
+                  </Link>
+                </div>
+
+                <div className="grid gap-0.5 pt-0.5">
+                  <button
+                    type="button"
+                    className="grid min-h-[28px] w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 text-left font-inherit text-[11px] text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text-muted)] disabled:cursor-not-allowed disabled:opacity-50"
+                    onClick={() => {
+                      if (defaultNewChatWorkspacePath) {
+                        handleStartNewSessionInWorkspace(defaultNewChatWorkspacePath, defaultNewChatWorkspaceLabel)
+                      }
+                      setMobileSidebarOpen(false)
+                    }}
+                    disabled={!defaultNewChatWorkspacePath}
+                    aria-label={`New chat in ${defaultNewChatWorkspaceLabel}`}
+                    title={`New chat in ${defaultNewChatWorkspaceLabel}`}
+                  >
+                    <Plus size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
+                    <span className="min-w-0 truncate">New Chat</span>
+                  </button>
+                  <Link
+                    to="/"
+                    className="grid min-h-[28px] w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 text-left font-inherit text-[11px] text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text-muted)]"
+                    onClick={() => setMobileSidebarOpen(false)}
+                    aria-label="Open workspaces"
+                    title="Workspaces"
+                  >
+                    <Folder size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
+                    <span className="min-w-0 truncate">Workspaces</span>
+                  </Link>
+                  <button
+                    type="button"
+                    className="grid min-h-[28px] w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 text-left font-inherit text-[11px] text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text-muted)] disabled:cursor-not-allowed disabled:opacity-50"
+                    onClick={() => {
+                      if (!topWorkspaceSlug) return
+                      setMobileSidebarOpen(false)
+                      void navigate({ to: '/$workspaceSlug/studio', params: { workspaceSlug: topWorkspaceSlug } })
+                    }}
+                    disabled={!topWorkspaceSlug}
+                    aria-label="Open Studio"
+                    title="Studio"
+                  >
+                    <Film size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
+                    <span className="min-w-0 truncate">Studio</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="grid min-h-[28px] w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 text-left font-inherit text-[11px] text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text-muted)] disabled:cursor-not-allowed disabled:opacity-50"
+                    onClick={() => {
+                      if (!topWorkspaceSlug) return
+                      setMobileSidebarOpen(false)
+                      void navigate({
+                        to: '/$workspaceSlug/studio',
+                        params: { workspaceSlug: topWorkspaceSlug },
+                        search: { view: 'media' },
+                      })
+                    }}
+                    disabled={!topWorkspaceSlug}
+                    aria-label="Open Media"
+                    title="Media"
+                    data-testid="sidebar-media-btn"
+                  >
+                    <ImageIcon size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
+                    <span className="min-w-0 truncate">Media</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="grid min-h-[28px] w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 text-left font-inherit text-[11px] text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text-muted)] disabled:cursor-not-allowed disabled:opacity-50"
+                    onClick={() => {
+                      if (!topWorkspaceSlug) return
+                      setMobileSidebarOpen(false)
+                      void navigate({ to: '/$workspaceSlug/environments', params: { workspaceSlug: topWorkspaceSlug }, search: {} })
+                    }}
+                    disabled={!topWorkspaceSlug}
+                    aria-label="Open Environments"
+                    title="Environments"
+                    data-testid="sidebar-environments-btn"
+                  >
+                    <Server size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
+                    <span className="min-w-0 truncate">Environments</span>
+                  </button>
+                  <button
                       type="button"
                       className="grid min-h-[28px] w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 text-left font-inherit text-[11px] text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text-muted)] disabled:cursor-not-allowed disabled:opacity-50"
                       onClick={() => {
@@ -5771,6 +5817,16 @@ export function DesktopAppPage() {
                     >
                       <Search size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
                       <span className="min-w-0 truncate">Search Chats</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="grid min-h-[28px] w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 text-left font-inherit text-[11px] text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text-muted)]"
+                      onClick={() => handleOpenSettingsTab('cloud')}
+                      aria-label="Open Cloud & Storage settings"
+                      title="Cloud & Storage"
+                    >
+                      <Cloud size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
+                      <span className="min-w-0 truncate">Cloud</span>
                     </button>
                     {routeWorkspaceSlug ? (
                       <Link
@@ -5951,7 +6007,7 @@ export function DesktopAppPage() {
                     onOpenGit: () => openMainWorktreeGitPanel(topWorkspacePath, topWorkspaceLabel),
                     onOpenAutomations: topWorkspaceSlug ? () => {
                       setMobileSidebarOpen(false)
-                      void navigate({ to: '/$workspaceSlug/workers', params: { workspaceSlug: topWorkspaceSlug }, search: {} })
+                      void navigate({ to: '/$workspaceSlug/swarm/$swarmSection', params: { workspaceSlug: topWorkspaceSlug, swarmSection: 'workers' }, search: {} })
                     } : undefined,
                     onToggleReviewCleanup: () => setNeedsReviewCleanupOpen((open) => !open),
                     onToggleGroupCollapsed: handleToggleSidebarGroupCollapsed,
@@ -6226,6 +6282,7 @@ export function DesktopAppPage() {
       {memoryOpen && <MemoryModal onClose={() => setMemoryOpen(false)} />}
 
       <DesktopNotificationsModal
+        workspaceSlug={topWorkspaceSlug || undefined}
         open={notificationsOpen}
         onOpenChange={(open) => {
           setNotificationsOpen(open)

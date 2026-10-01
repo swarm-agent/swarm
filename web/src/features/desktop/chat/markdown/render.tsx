@@ -149,6 +149,12 @@ function renderInlineNode(node: MarkdownInlineNode, key: string): ReactNode {
   switch (node.type) {
     case 'text':
       return <span key={key}>{node.text}</span>
+    case 'math':
+      return (
+        <span key={key} className="inline-flex items-baseline font-serif text-[14px] text-[var(--app-text)] px-0.5">
+          {renderMathNodes(parseMathExpression(node.expression), key)}
+        </span>
+      )
     case 'code':
       return (
         <code
@@ -185,6 +191,233 @@ function renderInlineNode(node: MarkdownInlineNode, key: string): ReactNode {
 
 function renderInlineNodes(nodes: MarkdownInlineNode[], keyPrefix: string): ReactNode[] {
   return nodes.map((node, index) => renderInlineNode(node, `${keyPrefix}-${index}`))
+}
+
+type MathASTNode =
+  | { type: 'text'; value: string; bold?: boolean }
+  | { type: 'variable'; value: string }
+  | { type: 'symbol'; value: string }
+  | { type: 'subscript'; children: MathASTNode[] }
+  | { type: 'superscript'; children: MathASTNode[] }
+  | { type: 'fraction'; num: MathASTNode[]; den: MathASTNode[] }
+  | { type: 'underbrace'; term: MathASTNode[]; label: MathASTNode[] }
+  | { type: 'char'; value: string }
+
+function parseMathExpression(raw: string): MathASTNode[] {
+  const nodes: MathASTNode[] = []
+  let i = 0
+
+  function parseArgument(start: number): { text: string; next: number } {
+    if (raw[start] !== '{') return { text: '', next: start }
+    let depth = 1
+    let idx = start + 1
+    while (idx < raw.length && depth > 0) {
+      if (raw[idx] === '{') depth++
+      else if (raw[idx] === '}') depth--
+      idx++
+    }
+    return { text: raw.slice(start + 1, idx - 1), next: idx }
+  }
+
+  const symbols: Record<string, string> = {
+    '\\times': '×',
+    '\\approx': '≈',
+    '\\ge': '≥',
+    '\\geq': '≥',
+    '\\le': '≤',
+    '\\leq': '≤',
+    '\\ne': '≠',
+    '\\neq': '≠',
+    '\\pm': '±',
+    '\\cdot': '·',
+    '\\in': '∈',
+    '\\to': '→',
+    '\\rightarrow': '→',
+    '\\leftarrow': '←',
+    '\\Rightarrow': '⇒',
+    '\\%': '%',
+    '\\$': '$',
+    '\\&': '&',
+    '\\{': '{',
+    '\\}': '}',
+    '\\dots': '…',
+    '\\cdots': '…',
+    '\\alpha': 'α',
+    '\\beta': 'β',
+    '\\gamma': 'γ',
+    '\\delta': 'δ',
+    '\\theta': 'θ',
+    '\\pi': 'π',
+    '\\sigma': 'σ',
+    '\\lambda': 'λ',
+    '\\Delta': 'Δ',
+    '\\Sigma': 'Σ',
+  }
+
+  while (i < raw.length) {
+    if (raw[i] === '\\') {
+      const match = raw.slice(i).match(/^\\([a-zA-Z]+|.)/)
+      if (match) {
+        const cmd = match[0]
+        const next = i + cmd.length
+
+        if (cmd === '\\underbrace') {
+          const body = parseArgument(next)
+          let label = { text: '', next: body.next }
+          if (raw[body.next] === '_') {
+            label = parseArgument(body.next + 1)
+          }
+          nodes.push({
+            type: 'underbrace',
+            term: parseMathExpression(body.text),
+            label: parseMathExpression(label.text),
+          })
+          i = label.next
+          continue
+        }
+
+        if (cmd === '\\frac') {
+          const num = parseArgument(next)
+          const den = parseArgument(num.next)
+          nodes.push({
+            type: 'fraction',
+            num: parseMathExpression(num.text),
+            den: parseMathExpression(den.text),
+          })
+          i = den.next
+          continue
+        }
+
+        if (cmd === '\\text' || cmd === '\\mathrm' || cmd === '\\textbf') {
+          const arg = parseArgument(next)
+          nodes.push({
+            type: 'text',
+            value: arg.text,
+            bold: cmd === '\\textbf',
+          })
+          i = arg.next
+          continue
+        }
+
+        if (symbols[cmd]) {
+          nodes.push({ type: 'symbol', value: symbols[cmd] })
+          i = next
+          continue
+        }
+
+        nodes.push({ type: 'text', value: cmd.slice(1) })
+        i = next
+        continue
+      }
+    }
+
+    if (raw[i] === '_') {
+      let sub = ''
+      let next = i + 1
+      if (raw[next] === '{') {
+        const arg = parseArgument(next)
+        sub = arg.text
+        next = arg.next
+      } else if (next < raw.length && raw[next] !== ' ') {
+        sub = raw[next]
+        next++
+      }
+      nodes.push({ type: 'subscript', children: parseMathExpression(sub) })
+      i = next
+      continue
+    }
+
+    if (raw[i] === '^') {
+      let sup = ''
+      let next = i + 1
+      if (raw[next] === '{') {
+        const arg = parseArgument(next)
+        sup = arg.text
+        next = arg.next
+      } else if (next < raw.length && raw[next] !== ' ') {
+        sup = raw[next]
+        next++
+      }
+      nodes.push({ type: 'superscript', children: parseMathExpression(sup) })
+      i = next
+      continue
+    }
+
+    if (/^[a-zA-Z]$/.test(raw[i])) {
+      nodes.push({ type: 'variable', value: raw[i] })
+      i++
+      continue
+    }
+
+    nodes.push({ type: 'char', value: raw[i] })
+    i++
+  }
+
+  return nodes
+}
+
+function renderMathNodes(nodes: MathASTNode[], keyPrefix: string): ReactNode[] {
+  return nodes.map((node, index) => {
+    const key = `${keyPrefix}-${index}`
+    switch (node.type) {
+      case 'text':
+        return (
+          <span key={key} className={cn('font-sans not-italic', node.bold && 'font-semibold')}>
+            {node.value}
+          </span>
+        )
+      case 'variable':
+        return (
+          <span key={key} className="font-serif italic px-0.5">
+            {node.value}
+          </span>
+        )
+      case 'symbol':
+      case 'char':
+        return (
+          <span key={key} className="font-serif not-italic">
+            {node.value}
+          </span>
+        )
+      case 'subscript':
+        return (
+          <sub key={key} className="text-[0.75em] bottom-[-0.2em] font-sans not-italic">
+            {renderMathNodes(node.children, `${key}-sub`)}
+          </sub>
+        )
+      case 'superscript':
+        return (
+          <sup key={key} className="text-[0.75em] top-[-0.35em] font-sans not-italic">
+            {renderMathNodes(node.children, `${key}-sup`)}
+          </sup>
+        )
+      case 'fraction':
+        return (
+          <span key={key} className="inline-flex flex-col items-center justify-center align-middle mx-1 text-xs not-italic">
+            <span className="border-b border-current px-1 text-center font-serif">
+              {renderMathNodes(node.num, `${key}-num`)}
+            </span>
+            <span className="px-1 text-center font-serif">
+              {renderMathNodes(node.den, `${key}-den`)}
+            </span>
+          </span>
+        )
+      case 'underbrace':
+        return (
+          <span key={key} className="inline-flex flex-col items-center align-top mx-1 not-italic">
+            <span className="font-serif">
+              {renderMathNodes(node.term, `${key}-term`)}
+            </span>
+            <span className="h-0.5 w-full border-b border-current opacity-60 my-0.5" />
+            <span className="text-[11px] text-[var(--app-text-muted)] font-sans">
+              {renderMathNodes(node.label, `${key}-label`)}
+            </span>
+          </span>
+        )
+      default:
+        return null
+    }
+  })
 }
 
 function renderSegments(segments: MarkdownInlineSegments, keyPrefix: string): ReactNode[] {
@@ -257,6 +490,17 @@ function CopyBlock({ label, content }: { label: string; content: string }) {
 
 function renderBlock(block: MarkdownBlock, key: string | number): ReactNode {
   switch (block.type) {
+    case 'math':
+      return (
+        <div
+          key={key}
+          className="my-3 overflow-x-auto rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-inset)]/60 px-4 py-3 text-center font-serif text-[15px] text-[var(--app-text)]"
+        >
+          <div className="inline-flex flex-wrap items-center justify-center gap-1">
+            {renderMathNodes(parseMathExpression(block.expression), `mathblock-${key}`)}
+          </div>
+        </div>
+      )
     case 'paragraph':
       return (
         <p key={key} className="my-0 min-w-0">

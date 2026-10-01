@@ -141,6 +141,21 @@ export function toMediaLibraryItem(entry: DesktopV3ArtifactCatalogEntry, referen
   }
 
   const directUrl = desktopV3ArtifactDirectContentURL(entry)
+  const videoProvenance = entry.videoProvenance ?? (entry as any).lineage?.video_provenance ?? (entry as any).lineage?.videoProvenance ?? null
+  const model = videoProvenance?.model?.trim() || entry.model?.trim() || (entry as any).artifactModel?.trim() || (entry as any).metadata?.model?.trim() || (entry as any).metadata?.modelId?.trim() || undefined
+  const aspectRatio = videoProvenance?.aspect_ratio?.trim() || entry.aspectRatio?.trim() || entry.outputRequirements?.aspectRatio?.trim() || (entry as any).aspectRatio?.trim() || (entry as any).metadata?.aspect_ratio?.trim() || (entry as any).metadata?.aspectRatio?.trim() || undefined
+  const resolution = videoProvenance?.resolution?.trim() || entry.resolution?.trim() || (entry as any).resolution?.trim() || (entry as any).metadata?.resolution?.trim() || (entry.outputRequirements?.width && entry.outputRequirements?.height ? `${entry.outputRequirements.width}x${entry.outputRequirements.height}` : undefined)
+
+  let durationSeconds: number | undefined = undefined
+  if (typeof entry.durationSeconds === 'number' && Number.isFinite(entry.durationSeconds) && entry.durationSeconds > 0) {
+    durationSeconds = entry.durationSeconds
+  } else if (typeof (entry as any).duration_seconds === 'number' && Number.isFinite((entry as any).duration_seconds) && (entry as any).duration_seconds > 0) {
+    durationSeconds = (entry as any).duration_seconds
+  } else if (typeof (entry as any).metadata?.duration_seconds === 'number' && (entry as any).metadata.duration_seconds > 0) {
+    durationSeconds = (entry as any).metadata.duration_seconds
+  } else if (typeof videoProvenance?.duration_seconds === 'number' && videoProvenance.duration_seconds > 0) {
+    durationSeconds = videoProvenance.duration_seconds
+  }
 
   return {
     artifact: entry,
@@ -163,7 +178,21 @@ export function toMediaLibraryItem(entry: DesktopV3ArtifactCatalogEntry, referen
     variantIndex,
     totalVariants,
     dimensions: extractDimensions(entry),
+    durationMs: videoProvenance?.observed_duration_ms && videoProvenance.observed_duration_ms > 0
+      ? videoProvenance.observed_duration_ms
+      : (typeof (entry as any).durationMs === 'number' && (entry as any).durationMs > 0
+      ? (entry as any).durationMs
+      : (typeof (entry as any).metadata?.duration_ms === 'number'
+      ? (entry as any).metadata.duration_ms
+      : (durationSeconds ? durationSeconds * 1000 : undefined))),
     directUrl,
+    parentId: (entry as any).parentId || (entry as any).lineage?.sourceVariantId || (entry as any).lineage?.sourceArtifactId,
+    sourceMediaRef: (entry as any).sourceMediaRef || (entry as any).lineage?.sourceArtifactId,
+    model,
+    aspectRatio,
+    resolution,
+    durationSeconds,
+    videoProvenance,
   }
 }
 

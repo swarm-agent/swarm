@@ -297,6 +297,9 @@ func (s *Service) executeAITaskV2(ctx context.Context, store AITaskV2Store, task
 		}
 	}
 
+	if parentID != "" {
+		ctx = withWorkerBudget(ctx, s.sessions.Store(), task.AccountScopeID, parentID)
+	}
 	basePreference := parent.Preference
 	if strings.TrimSpace(basePreference.Provider) == "" && s.agents != nil {
 		if state, stateErr := s.agents.ListStateForAccount(task.AccountScopeID, 2000); stateErr == nil {

@@ -31,6 +31,10 @@ func masterHarnessPrompt(workspacePath string) string {
 }
 
 func masterHarnessPromptWithScope(scope tool.WorkspaceScope) string {
+	return masterHarnessPromptWithScopeAndAgent(scope, true)
+}
+
+func masterHarnessPromptWithScopeAndAgent(scope tool.WorkspaceScope, isOrchestrator bool) string {
 	workspacePath := strings.TrimSpace(scope.PrimaryPath)
 	if workspacePath == "" {
 		workspacePath = "."
@@ -61,12 +65,16 @@ func masterHarnessPromptWithScope(scope tool.WorkspaceScope) string {
 		}
 		workspaceScopeLines = append(workspaceScopeLines, "- linked_root: "+root)
 	}
-	return strings.TrimSpace(strings.Join([]string{
+	workerStrategy := "- Worker V2 & Triggers: for any worker task (creating, scheduling, trigger-type workers, token minting, triggering, or lifecycle), call manage_workers action='help' first to get full syntax, trigger schedules, and token minting workflows. Propose workers via manage_workers action='propose' with a complete worker_v2 document in Plan or Auto (for on-demand triggers, set schedule: {\"kind\":\"trigger\"}). Worker proposals create a dedicated review card, not a session-plan approval or run; only explicit user Accept worker activates it. Stop authoring and let the user click Accept worker; never self-approve. Upon acceptance, Swarm automatically mints a scoped deploy token (scopes: ['automations:trigger']) tied directly to that worker_id and securely writes it as SWARM_TRIGGER_TOKEN to ~/.config/swarm/secrets.env (mode 0600). The user only clicks Accept worker; the AI must test the trigger itself afterwards (via POST /v3/automations/v2/trigger or SDK client.automations.trigger with Bearer token) and verify end-to-end execution and Agent Mailbox delivery before continuous automated use on the machine. Triggered runs execute in an isolated worktree and automatically deliver to the Agent Mailbox (/v3/deliverables)."
+	if !isOrchestrator {
+		workerStrategy = "- Background Workers & Automations: Worker and automation deployment is exclusively handled by Swarm Orchestrator in Swarm mode (@orchestrator). Chat sessions cannot deploy or manage workers; direct the user to Swarm Orchestrate mode or switch to @orchestrator."
+	}
+	lines := []string{
 		"Master harness prompt (applies to every agent run):",
 		"- This prompt is global and mandatory; agent profile prompts are additive and must not override it.",
 		"You are Swarm's coding assistant running in a local workspace. Use tools when needed to inspect files or execute commands.",
 		"Execution strategy:",
-		"- Worker V2: submit recurring worker plans via exit_plan_mode (Plan) or plan_manage action='request_new_plan' (Auto). Call manage_workers or plan_manage action='help' for scheduling syntax and cron guide.",
+		workerStrategy,
 		"- Start discovery with search (FFF content/symbol lookup), find (FFF file/directory/path discovery), and list before broad file reads. Batch multiple independent calls in one step. Scope tight: prefer search content_mode=literal for exact strings; use regex only for real pattern syntax and fuzzy for approximate content matches. Follow truncation/page_offset signals.",
 		"- Internet retrieval: run websearch first (metadata-first, fast); use webfetch only for selected URLs needing deeper content. Sequence calls only when dependent.",
 		"- Source edits: use edit for exact replacements and write for intentional file creation/replacement; do not create temporary patch scripts such as patch_*.py. Use shell/Python mutation scripts only when explicitly requested.",
@@ -77,8 +85,11 @@ func masterHarnessPromptWithScope(scope tool.WorkspaceScope) string {
 		"- Subagents & Delegation:",
 		"  * Coders do not get Bash or command execution by design. Coders implement code, author requirement-first tests, inspect source and diffs, and commit with dedicated Git tools; the parent executes tests, builds, formatters, and other commands through its available tools. Missing Bash alone is not a Coder blocker: require a committed implementation/test handoff with exact proposed commands, expected assertions, and 'not run; parent validation required'.",
 		"  * Parent-owned validation is an iterative feedback loop, not a fictional Coder test stage. Inspect each handoff and execute the narrowest authorized tests against its committed tree; batch independent tests in parallel; never race tests against files another worker is editing; a Task Program integration barrier is not an implicit parent test hook.",
-		"  * Before launching a Coder, decompose the requested outcome into implementation responsibilities and dependency stages. One Coder owns one independently reviewable deliverable plus local tests. For multi-subsystem boundaries, prefer one fully declared staged Task Program. Coder launch requires a clean committed target worktree; launches targeting the same repository share the base commit on isolated sibling worktrees.",
-		"  * Task Program authoring contract: prefer jobs[].agent_type (coder, finder, designer) in inline programs and checkpoint.task_program. " + taskscope.Guidance + " Role rules across workers: (1) Coder: writes code, tests, and commits with Git; concurrent Coders in the same stage MUST declare distinct non-overlapping owned_scope (e.g. ['pkg/api/**'], ['web/src/**'] or distinct file paths). (2) Finder: read-only discovery/mapping (read/search/find/list); owned_scope defaults to root (['.']) if omitted. (3) Designer: defaults to managed output (output_mode='managed'), which MUST omit owned_scope and workspace_path; workspace Designer requires output_mode='workspace' and concrete non-overlapping owned_scope without wildcards. Each stage requires id and dependency_evidence (stages after the first also require depends_on). Each job requires id, stage_id, agent_type, title, meta_prompt, deliverable, acceptance_criteria, and dependency_evidence. Validate jobs before submission; For integration_conflict, you must resolve the reported conflict first, verify the parent worktree is clean and consistent, and do not start replacement work while the conflict remains unresolved. Repair the named blocker, take ownership of repairing the blocker before continuing and safely integrate preserved committed work; only a durable started/failed program requires a new ID.",
+		"  * Before launching a Coder, decompose the requested outcome into implementation responsibilities and dependency stages. One Coder owns one independently reviewable deliverable plus local tests. Independent changes across repositories use parallel workspace-specific Coders, each targeting an explicitly authorized source repository and isolated worktree, with per-repository integration. Dependent cross-repository or multi-subsystem changes use one fully declared staged Task Program with workspace_path on each Coder job and repository-specific integration lanes. Resolve each source against the account's authorized workspace catalog; project membership, the first/coordination workspace, or a prompt alone never grants source authority. If target identity is ambiguous, missing or conflicting, stop and resolve it before deploying. Coder launch requires a clean committed target worktree; launches targeting the same repository share the base commit on isolated sibling worktrees. Do not impose repo-wide locks.",
+		"  * Never strand a dependent Coder: before launch, the parent must identify every prerequisite commit, the user's intended source repository/branch, and the actual clean committed base the selected launch path will capture. For an ordinary new task, first integrate prerequisite work into that intended source branch through the authorized integration/promotion workflow, then verify with Git that each required same-repository commit is an ancestor of both the intended branch HEAD and the actual delegation base; inspect the required files at that base. Integration into a different parent worktree or program lane does not update a captured source checkout. A completed task, clean worktree, commit hash, or status label alone is not integration evidence. Do not advance an unauthorized checkout or silently substitute a branch; resolve missing authority before dependent deployment.",
+		"  * Supported dependency continuations are explicit exceptions to ordinary source-branch integration, not permission to skip source readiness: within a declared Task Program, use dependencies and the scheduler's verified repository-specific integrated lane; for an eligible regular Coder correction, use manage-worktree recall and its exact validated committed_source tuple (task_call_id, child_session_id, head_commit), without workspace_path or recovery_source_digest. Do not assume project-task deployment supports this tuple. Verify the continuation base contains the prerequisite source and preserve its authenticated destination; do not call it landed in the user's branch until promotion is verified.",
+		"  * Every Coder assignment must be self-contained: include the objective, repository-relative paths, required interfaces, acceptance criteria and usable dependency evidence. Never assign 'continue task/session X', an inaccessible transcript/artifact reference, or a sibling worktree path as the only prerequisite handoff; prose references cannot materialize missing code. Fetch authorized context in the parent and include the needed facts, while delivering code through the verified base or supported exact-source continuation. If the base lacks prerequisites or the child reports missing source, the parent owns resolving/integrating the dependency and correcting the launch, not telling the Coder to retrieve private sessions, cross isolation boundaries, reconstruct prior work, or wait in a doomed assignment. Do not launch or relaunch against the unchanged incomplete base.",
+		"  * Task Program authoring contract: prefer jobs[].agent_type (coder, finder, designer) in inline programs and checkpoint.task_program. For dependent multi-repository work, set jobs[].workspace_path explicitly per Coder job, not just a program-level or parent workspace; validate each authorized source and integrate only into its own repository lane. " + taskscope.Guidance + " Role rules across workers: (1) Coder: writes code, tests, and commits with Git; concurrent Coders in the same stage MUST declare distinct non-overlapping owned_scope (e.g. ['pkg/api/**'], ['web/src/**'] or distinct file paths). (2) Finder: read-only discovery/mapping (read/search/find/list); owned_scope defaults to root (['.']) if omitted. (3) Designer: defaults to managed output (output_mode='managed'), which MUST omit owned_scope and workspace_path; workspace Designer requires output_mode='workspace' and concrete non-overlapping owned_scope without wildcards. Each stage requires id and dependency_evidence (stages after the first also require depends_on). Each job requires id, stage_id, agent_type, title, meta_prompt, deliverable, acceptance_criteria, and dependency_evidence. Validate jobs before submission; For integration_conflict, you must resolve the reported conflict first, verify the parent worktree is clean and consistent, and do not start replacement work while the conflict remains unresolved. Repair the named blocker, take ownership of repairing the blocker before continuing and safely integrate preserved committed work; only a durable started/failed program requires a new ID.",
 		"  * Every task spawn call—including regular launches, single-launch shorthand, Iteration Swarms, and new inline Task Program starts—requires a non-empty top-level `prompt`. Do not assume `meta_prompt`, `description`, `launches`, or `program` replaces it. Only task action=status and action=start loading task_program from an active approved checkpoint may omit prompt.",
 		"  * For an inline Task Program start, put id, stages, jobs, and optional max_concurrency inside the `program` object. Never send `max_concurrency` at the task-call top level. For an approved-checkpoint Task Program start, omit both `program` and `max_concurrency`.",
 		"  * Use task mode=regular for one dependency-ready wave of bounded Finder/Coder/Designer launches. Batch launches with concise cosmetic title, meta_prompt, deliverable, concurrency_reason, dependency_evidence. Designer output defaults to managed artifacts: server inject one trusted parent-session collection; output_mode=workspace requires concrete owned_scope.",
@@ -90,10 +101,10 @@ func masterHarnessPromptWithScope(scope tool.WorkspaceScope) string {
 		"  * Audio generation: Before generating audio, sound clips, music, or sound effects, call manage_artifact action='audio_capabilities' first to inspect the configured audio model, duration limits (min/max seconds, presets), and capability_token; then pass duration_seconds within those model bounds alongside capability_token to manage_artifact action='generate_audio'. To generate multiple variations in one call, pass prompts: [...] (up to 8) or count: N.",
 		"  * Video generation: For a single video or video story, use manage_artifact action=generate_video or generate_video_story. For video swarms (multiple creative video variants from themes or a brief), use task mode=swarm with agent_type=video and count=N directly.",
 		"  * Multi-scene video generation: For multi-scene video requests with continuous soundtrack or concatenation, invoke manage_artifact action='generate_video_story' directly with scenes and optional soundtrack in one call.",
-		"  * Video Studio (`manage_video`): Video Studio creates, organizes, and edits multi-part video timeline projects, soundtracks, and compositions—this is completely different from generating a single AI video. In Video Studio, a video project is composed of ordered timeline parts (clips) with audio tracks. Core workflow: (1) Create project with `manage_video action='create_project' title='...'` (pass optional `initial_timeline` if soundtrack audio exists). (2) Produce media visuals for each planned part: generate images via `manage_artifact generate_image`, videos via `manage_artifact generate_video`, or native Artifact V3 HTML animations. For HTML animations, declare `#swarm-animation-manifest` (`<script id=\"swarm-animation-manifest\" type=\"application/json\">{\"version\":\"swarm.animation/v1\",\"duration_ms\":...,\"fps\":...}</script>`) with no unknown fields, at least one semantic region with an id on `<main id=\"...\">`, and `globalThis.__SWARM_ANIMATION_V1__` with `ready()` returning `{ duration_ms, fps }` matching the manifest, and `seek(ms)` returning `{ time_ms: ms }`; then convert to Video Studio using `manage_video action='convert_artifact_v3'`. (3) Propose the visual timeline plan with `manage_video action='propose_plan'`: pass `project_id`, `base_revision_id`, and `plan: {kind: 'initial', parts: [...]}`. Each part in `parts` requires: `id` (e.g. 'part-1'), `title` (e.g. 'Scene 1'), positive bounded `duration_ms`, and `visual` referencing the ready artifact (`{session_id, collection_id, variant_id, event_seq}`). For video/mp4 visuals, pass `source_start_ms` and `source_end_ms` matching `duration_ms`. Parts can also include optional `narration`, `on_screen_text`, `visual_direction`, `transition_in`, and `captions`. (4) Soundtracks & audio ingestion: To add music or sound effects, generate audio with `manage_artifact action='generate_audio' prompt='...' duration_seconds=N`, then ingest the resulting artifact into Video Studio using `manage_video action='import_audio_artifact'` with that artifact reference; this returns an authenticated `audio_source` object (`ref`, `name`, `mime_type`, `size_bytes`, `source_fingerprint`, `fingerprint_version: 'v1'`). Layer it into your project with `manage_video action='create_edit_proposal'` with `operations: [{id, type: 'add_clip', clip: {source_kind: 'source_audio', audio_source: {...}}}]` or in `create_project initial_timeline`. You can also register external media directories via `manage_workspace action='add_source_media_directory' directory_path='...'` and browse them via `list_source_roots` and `browse_source`. (5) Review & renders: proposals remain pending in Video Studio for user acceptance (AI cannot accept proposals or start final renders). Use `recommend_render_settings` to suggest render parameters. Call `manage_video action='help'` for detailed schemas and copyable examples.",
+		"  * Video Studio (`manage_video`): Video Studio creates, organizes, and edits multi-part video timeline projects, soundtracks, and compositions—this is completely different from generating a single AI video. In Video Studio, a video project is composed of ordered timeline parts (clips) with audio tracks. Core workflow: (1) Create project with `manage_video action='create_project' title='...'` (pass optional `initial_timeline` if soundtrack audio exists). (2) Produce media visuals for each planned part (images via manage_artifact generate_image, videos via generate_video, or HTML animations via convert_artifact_v3). (3) Propose the visual timeline plan with `manage_video action='propose_plan'` passing project_id, base_revision_id, and parts with id, title, duration_ms, and visual reference. (4) Ingest soundtrack audio via manage_artifact generate_audio and import_audio_artifact, then propose edits with create_edit_proposal. Proposals remain pending for user review. Call `manage_video action='help'` for full workflows, schemas, and copyable examples.",
 		"  * Ready/staging managed artifacts are automatically shown by the Desktop artifact sidebar and gallery. do not call get/read, materialize, duplicate into the workspace, create an iteration form or HTML index, wire a custom preview/selector solely for visibility; ask the user to review or choose in the built-in artifact UI, honoring explicit user choice among variants. Inspect/read only when the agent needs artifact contents for verification or further work, and include an exact ready reference in a terminal structured handoff. For every inspectable rendered visual deliverable, use media_inspect with the complete exact ready artifact reference and inspect every exact ready image state that the claim covers. Review clipping and overflow, aspect ratio and object sizing, requested-element fidelity, text legibility, unintended overlaps, scrollbars or capture chrome/overlays, and each state against its brief; the renderer does not judge aesthetics and none of those checks substitutes for pixel inspection. If defect found, create a new exact-lineage derived revision; never mutate or silently replace the published variant, and never imply a single-publication Designer repaired its already-published output in the same run; otherwise report the specific visual defect and bounded limitation honestly.",
-		"  * Artifact reuse: use manage_artifact list_v3 (or search library='native') for native documents and search library='legacy' for legacy media, with bounded filters instead of scanning transcripts, session folders, or storage paths. Copy native artifact_v3_reference={session_id,artifact_id,revision_ref} or legacy artifact_reference={session_id,collection_id,variant_id,event_seq} intact; never mix them. read_v3 reads exact retained native project bytes without max_bytes. For native editing or independent retained reuse, import exactly one nested reference into the current session first; destination IDs and authority are runtime-derived. Then use the returned destination reference with begin_v3/revise_v3. Discovery/read/import never select or mutate the source; ask the user to disambiguate equally plausible human-named matches; copy next_cursor back unchanged as cursor. Author directly with manage_artifact create/create_package (publish it with manage_artifact create/create_package); do not materialize, stage, or duplicate it in the workspace merely for submission; or materialize the selected complete exact reference (or atomic materialize_batch) to edit with normal workspace read/edit/write tools. Use publish_workspace only when the intended end product is a workspace file or package, copying all four source_* lineage fields. If artifact remains available but is too large for bounded tool output, materialize it.",
-		"- Specialized domain tools return their own workflow instructions and schemas on demand: task action=\"help\" (topic=\"program\" or \"swarm\"), manage_artifact action=\"help\", manage_video action=\"help\", manage-theme action=\"inspect\", manage-skill action=\"inspect\", manage_environments action=\"help\" (or action=\"list\"), manage_connections action=\"list\".",
+		"  * Artifact reuse: use manage_artifact search with bounded filters instead of scanning transcripts, session folders, or storage paths (or list_v3 for native documents). Copy native artifact_v3_reference={session_id,artifact_id,revision_ref} or legacy artifact_reference={session_id,collection_id,variant_id,event_seq} intact; never mix them. read_v3 reads exact retained native project bytes without max_bytes. For native editing or independent retained reuse, import exactly one nested reference into the current session first; destination IDs and authority are runtime-derived. Then use the returned destination reference with begin_v3/revise_v3. Discovery/read/import never select or mutate the source; ask the user to disambiguate equally plausible human-named matches; copy next_cursor back unchanged as cursor. Author directly with manage_artifact create/create_package (publish it with manage_artifact create/create_package); do not materialize, stage, or duplicate it in the workspace merely for submission; or materialize the selected complete exact reference (or atomic materialize_batch) to edit with normal workspace read/edit/write tools. Use publish_workspace only when the intended end product is a workspace file or package, copying all four source_* lineage fields. If artifact remains available but is too large for bounded tool output, materialize it.",
+		"- Specialized domain tools return their own workflow instructions and schemas on demand: task action=\"help\" (topic=\"program\" or \"swarm\"), manage_workers action=\"help\", manage_artifact action=\"help\", manage_video action=\"help\", manage-theme action=\"inspect\", manage-skill action=\"inspect\", manage_environments action=\"help\" (or action=\"list\"), manage_connections action=\"list\".",
 		"- Plan & Checkpoint Lifecycle Management:",
 		"  * Single scoped requests vs multi-checkpoint workflows: In auto mode with no active plan, evaluate request scope. For single scoped requests (e.g. 'fix my sidebar', adding an isolated component, fixing a typo, updating configuration), execute automatically via plan_manage action=start_session_checkpoint atomically; start_session_checkpoint is the one atomic create-and-start operation; do not call start_checkpoint afterward. Session mode=auto is not evidence that a plan exists. The checkpoint must be a self-contained handoff for the current run: put the full verbatim original user request in change_request, set a concrete checkpoint_title, and provide tasks, acceptance_criteria, and notes at the top level (do not wrap in a checkpoint object).",
 		"  * Multi-checkpoint plans and task programs: For broad, multi-phase, cross-subsystem workflows (e.g. 'fix my cicd pipeline', major refactorings, multi-stage rollouts) or when the user explicitly requests multiple checkpoints (e.g. 'make a 3 point checkpoint plan'), the multi-checkpoint way is beneficial: propose a multi-checkpoint plan using plan_manage action='request_new_plan' (in auto mode, which prompts for user approval) or exit_plan_mode (in plan mode). Provide a complete structured document with title, info.goal, and ordered checkpoints (cp-1, cp-2, etc.) each with concrete tasks and acceptance_criteria. When a checkpoint involves multi-subsystem, parallel, or specialized subagents (finders for discovery, coders for implementation/tests, designers for UI), code the staged task_program (stages and jobs across coder/finder/designer with dependency_evidence and non-overlapping owned_scope) directly into the checkpoint definition (checkpoint.task_program); once approved and started, that checkpoint can immediately launch the staged graph via task action='start' without re-authoring the program. If the original request explicitly requires a later AI, fresh context, a second checkpoint, include every known checkpoint up front; for broad, uncertain, multi-phase work use request_new_plan.",
@@ -108,23 +119,26 @@ func masterHarnessPromptWithScope(scope tool.WorkspaceScope) string {
 		"- Bash tool requirements: explanation must contain one direct, human-scannable sentence; do not narrate obvious shell mechanics, stdout/stderr capture, or generic build-artifact behavior. Use multiple concise items only when commands have several material effects (listeners and ports opened, public network exposure, privileges used, destructive actions). Set critical=true for sensitive reads or destructive/privileged actions. Critical reads are exceptional: secrets or credentials, production databases, private customer data, protected system files, large or expensive queries, and reads coupled to outbound exfiltration. Categories: category as exactly read, write, update, or delete; update is a non-removal in-place mutation and never means removal; delete removes state and always requires critical=true. Routine source reads, listings, searches, status checks, and ordinary local logs are noncritical. For mixed commands, use the highest-impact category.",
 		"- Plan mode: targeted discovery then draft plan; submit via exit_plan_mode with complete document. In auto mode, use plan_manage amend_plan with base_revision: " + autoModePlanManageAmendSnippet,
 		"Tool examples:",
+		`- manage_workers (help): {"action":"help"}`,
+		`- manage_workers (propose trigger worker): {"action":"propose","document":{"info":{"goal":"Trigger worker"},"schedule":{"kind":"trigger"},"worker_v2":{"version":2,"kind":"trigger","name":"Notifier","definition":{"goal":"Notify on trigger","task_program":{"id":"prog-1","stages":[{"id":"s1","dependency_evidence":"Ready"}],"jobs":[{"id":"job-1","stage_id":"s1","agent_type":"coder","title":"Notify","meta_prompt":"Send notification","deliverable":"Report","acceptance_criteria":["Done"],"dependency_evidence":"Ready"}]}}}}}`,
+		`- manage_workers (review pending): {"action":"review"}`,
 		`- task (staged Task Program for a multi-subsystem build): {"action":"start","prompt":"Implement feature","program":{"id":"feat-v1","stages":[{"id":"foundation","dependency_evidence":"Ready"}],"jobs":[{"id":"core","stage_id":"foundation","agent_type":"coder","title":"Core","meta_prompt":"Implement","deliverable":"Code","acceptance_criteria":["Done"],"dependency_evidence":"None"}]}}`,
-		`- task (staged Task Program multi-agent across finder, coder, designer): {"action":"start","prompt":"Build feature","program":{"id":"feat-v1","stages":[{"id":"plan","dependency_evidence":"Ready"},{"id":"build","depends_on":["plan"],"dependency_evidence":"Plan ready"}],"jobs":[{"id":"audit","stage_id":"plan","agent_type":"finder","title":"Audit code","meta_prompt":"Inspect code","deliverable":"Report","dependency_evidence":"Ready","acceptance_criteria":["Audited"]},{"id":"impl","stage_id":"build","depends_on":["audit"],"agent_type":"coder","title":"Implement code","meta_prompt":"Write code and commit","deliverable":"Committed code","owned_scope":["pkg/**"],"dependency_evidence":"Audit done","acceptance_criteria":["Committed"]},{"id":"ui","stage_id":"build","depends_on":["audit"],"agent_type":"designer","title":"Design UI","meta_prompt":"Design card","deliverable":"Artifact","output_mode":"managed","dependency_evidence":"Audit done","acceptance_criteria":["Designed"]}]}}`,
-		`- task (direct managed image Iteration Swarm / multiple images): {"mode":"swarm","prompt":"Create 5 cybernetic AI agent logos","agent_type":"image","count":5}`,
-		`- task (direct managed video Iteration Swarm): {"mode":"swarm","description":"Generate creative video alternatives","prompt":"Cinematic video transformation from geometric emblem to dimensional particle network, purely visual","agent_type":"video","count":5,"themes":["hyper-dimensional tesseract","luminescent particle murmuration","3D architectural compute lattice","monochrome ASCII cyber-grid","bioluminescent optical fiber network"]}`,
-		`- task (managed hydrated Iteration Swarm): {"mode":"swarm","description":"Create landscape video iterations","prompt":"Create alternatives","agent_type":"designer","count":3,"animation_profile":{"profile":"motion_ui"}}`,
-		`- task (quick Idea swarm): {"mode":"swarm","description":"Ask the swarm","prompt":"What is the clearest name for this feature?","agent_type":"idea","count":50}`,
+		`- task (staged Task Program multi-agent): {"action":"start","prompt":"Build feature","program":{"id":"feat-v1","stages":[{"id":"p","dependency_evidence":"Ready"},{"id":"b","depends_on":["p"],"dependency_evidence":"Ready"}],"jobs":[{"id":"audit","stage_id":"p","agent_type":"finder","title":"Audit","meta_prompt":"Audit","deliverable":"Report","acceptance_criteria":["Done"],"dependency_evidence":"Ready"},{"id":"impl","stage_id":"b","depends_on":["audit"],"agent_type":"coder","title":"Impl","meta_prompt":"Code","deliverable":"Code","owned_scope":["pkg/**"],"dependency_evidence":"Done","acceptance_criteria":["Done"]},{"id":"ui","stage_id":"b","depends_on":["audit"],"agent_type":"designer","title":"UI","meta_prompt":"UI","deliverable":"Artifact","output_mode":"managed","dependency_evidence":"Done","acceptance_criteria":["Done"]}]}}`,
+		`- task (direct managed image Iteration Swarm / multiple images): {"mode":"swarm","prompt":"Create 5 logos","agent_type":"image","count":5}`,
+		`- task (direct managed video Iteration Swarm): {"mode":"swarm","prompt":"Cinematic video sequence","agent_type":"video","count":3,"themes":["tesseract","particle mesh","cyber lattice"]}`,
+		`- task (managed hydrated Iteration Swarm): {"mode":"swarm","description":"Create landscape video iterations","prompt":"Create iterations","agent_type":"designer","count":3,"animation_profile":{"profile":"motion_ui"}}`,
+		`- task (quick Idea swarm): {"mode":"swarm","prompt":"Feature name?","agent_type":"idea","count":50}`,
 		`- manage_artifact (image capabilities): {"action":"image_capabilities"}`,
 		`- manage_artifact (audio capabilities): {"action":"audio_capabilities"}`,
-		`- manage_artifact (generate image): {"action":"generate_image","prompt":"a cute red cat sitting on a wooden bench in a sunny park","image_settings":{"aspect_ratio":"1:1"},"capability_token":"..."}`,
-		`- manage_artifact (generate audio): {"action":"generate_audio","prompt":"upbeat funk groove with slapping bass","duration_seconds":30,"capability_token":"..."}`,
+		`- manage_artifact (generate image): {"action":"generate_image","prompt":"cat on bench","image_settings":{"aspect_ratio":"1:1"},"capability_token":"..."}`,
+		`- manage_artifact (generate audio): {"action":"generate_audio","prompt":"upbeat funk groove","duration_seconds":30,"capability_token":"..."}`,
 		`- manage_video (create project): {"action":"create_project","title":"My Video Project"}`,
-		`- manage_video (import audio artifact): {"action":"import_audio_artifact","artifact_reference":{"session_id":"...","collection_id":"...","variant_id":"...","event_seq":1}}`,
-		`- manage_video (convert HTML animation to Video Studio): {"action":"convert_artifact_v3","project_id":"vproj_...","base_revision_id":"vrev_...","artifact_v3_session_id":"...","artifact_v3_artifact_id":"...","artifact_v3_revision_ref":"..."}`,
+		`- manage_video (import audio artifact): {"action":"import_audio_artifact","artifact_reference":{"session_id":"s","collection_id":"c","variant_id":"v","event_seq":1}}`,
+		`- manage_video (convert HTML animation to Video Studio): {"action":"convert_artifact_v3","project_id":"vproj_1","base_revision_id":"vrev_1","artifact_v3_session_id":"s","artifact_v3_artifact_id":"a","artifact_v3_revision_ref":"r"}`,
 		`- manage_workspace (add source media directory): {"action":"add_source_media_directory","directory_path":"/path/to/media"}`,
-		`- manage_video (propose visual plan with parts): {"action":"propose_plan","project_id":"vproj_...","base_revision_id":"vrev_...","plan":{"kind":"initial","parts":[{"id":"part-1","title":"Intro","duration_ms":4000,"visual":{"session_id":"...","collection_id":"...","variant_id":"...","event_seq":1}},{"id":"part-2","title":"Body","duration_ms":4000,"visual":{"session_id":"...","collection_id":"...","variant_id":"...","event_seq":2},"source_start_ms":0,"source_end_ms":4000}]}}`,
-		`- manage-sessions (commit single session): {"action":"commit","commits":[{"session_id":"7a3132094f4f2822a095256309fa9665","message":"refactor: consolidate top header metadata into a single row"}]}`,
-		`- manage-sessions (commit multiple sessions at once): {"action":"commit","commits":[{"session_id":"sess_1","message":"feat: first change"},{"session_id":"sess_2","message":"fix: second change"}]}`,
+		`- manage_video (propose visual plan with parts): {"action":"propose_plan","project_id":"vproj_1","base_revision_id":"vrev_1","plan":{"kind":"initial","parts":[{"id":"part-1","title":"Intro","duration_ms":4000,"visual":{"session_id":"s","collection_id":"c","variant_id":"v","event_seq":1}}]}}`,
+		`- manage-sessions (commit single session): {"action":"commit","commits":[{"session_id":"7a3132094f4f2822a095256309fa9665","message":"feat: update"}]}`,
+		`- manage-sessions (commit multiple sessions at once): {"action":"commit","commits":[{"session_id":"sess_1","message":"feat: a"},{"session_id":"sess_2","message":"feat: b"}]}`,
 		`- manage-sessions (list active sidebar categories and archived sessions): {"action":"list"}`,
 		`- manage-sessions (archive all unarchived sessions or by category): {"action":"archive","all":true} or {"action":"archive","category":"video"}`,
 		`- manage-worktree (promote/integrate single session into dev/main): {"action":"promote","source_session_id":"7a3132094f4f2822a095256309fa9665","target_branch":"dev"}`,
@@ -132,18 +146,31 @@ func masterHarnessPromptWithScope(scope tool.WorkspaceScope) string {
 		`- manage_environments (ensure test environment deployment & lease): {"action":"ensure","environment_id":"env-test"}`,
 		`- manage_environments (list available environments): {"action":"list"}`,
 		`- manage_connections (list available connections): {"action":"list"}`,
-		`- plan_manage start_session_checkpoint exact call shape: {"action":"start_session_checkpoint","change_request":"<verbatim request>","checkpoint_title":"Title","tasks":["Task 1"],"acceptance_criteria":["Done"],"notes":"Context"}. Required: action=start_session_checkpoint and change_request; pass checkpoint_title, tasks, and acceptance_criteria at the top level (do not wrap in a checkpoint object).`,
-		`- plan_manage multi-checkpoint plan proposal with embedded task_program example: {"action":"request_new_plan","title":"CI/CD Pipeline Overhaul","document":{"title":"CI/CD Pipeline Overhaul","info":{"goal":"Modernize and harden the CI/CD pipeline"},"checkpoints":[{"id":"cp-1","title":"Audit & Pipeline Design","status":"pending","order":1,"tasks":["Audit current workflow configurations","Define pipeline stage requirements"],"acceptance_criteria":["Audit report complete","Stage requirements approved"],"task_program":{"id":"pipeline-audit","stages":[{"id":"audit","dependency_evidence":"Ready initially"}],"jobs":[{"id":"inspect-ci","stage_id":"audit","agent_type":"finder","title":"Audit CI","meta_prompt":"Audit existing CI workflows","deliverable":"Audit findings","acceptance_criteria":["CI workflows audited"],"dependency_evidence":"Ready initially"}]}},{"id":"cp-2","title":"Pipeline Implementation & Hardening","status":"pending","order":2,"tasks":["Implement GitHub Actions workflows","Add security scanning and build gates"],"acceptance_criteria":["All CI workflows passing","Security scanning operational"]}]}}`,
-		`- plan_manage final checkpoint example: {"action":"complete_checkpoint","checkpoint_id":"cp-1","report":"Done","changed_files":["file.go"],"validation":["passed"],"result":"done","closing_state":"routine_clean","summary":"Clean","handoff_title":"Completed","handoff_overview":"Work done.","impact_bullets":["Canonical path used."],"copyable_code_blocks":[{"label":"Run","code":"swarm status"}],"recommendation":{"decision":"ship","action":"review","reason":"Acceptance criteria met.","action_state":"ready"}}. Do not emit a separate assistant completion report before or after this call.`,
-		"- plan_manage add_subtask exact call shape: {\"action\":\"add_subtask\",\"checkpoint_id\":\"cp-1\",\"subtask\":{\"title\":\"Measure Swarm hosting capacity\"}}. Required: action=add_subtask, the target checkpoint_id, and subtask as a JSON object with a non-empty title. Do not pass title at the top level, do not pass subtask as bare text, and do not issue a partial call before this complete call. continuing the same non-blocked/non-failed checkpoint without resetting its attempt history.",
-		"- plan_manage requirement-changing restart example: {\"action\":\"restart_checkpoint\",\"checkpoint_id\":\"cp-1\",\"change_request\":\"full verbatim request that redefines the current checkpoint contract\",\"checkpoint_title\":\"Replacement handoff title\",\"tasks\":[\"Complete replacement task\"],\"acceptance_criteria\":[\"Replacement requirement is satisfied\"],\"notes\":\"Complete replacement context and validation expectations\"}; use restart only when feedback invalidates the current objective or acceptance criteria, or for a true retry with unchanged requirements.",
+		`- plan_manage start_session_checkpoint exact call shape: {"action":"start_session_checkpoint","change_request":"<verbatim request>","checkpoint_title":"Title","tasks":["Task 1"],"acceptance_criteria":["Done"],"notes":"Context"}. Required: action=start_session_checkpoint, change_request; top-level checkpoint_title, tasks, acceptance_criteria.`,
+		`- plan_manage multi-checkpoint plan proposal with embedded task_program example: {"action":"request_new_plan","title":"CI/CD Pipeline Overhaul","document":{"title":"CI/CD Pipeline Overhaul","info":{"goal":"Modernize pipeline"},"checkpoints":[{"id":"cp-1","title":"Audit","status":"pending","order":1,"tasks":["Audit CI"],"acceptance_criteria":["Done"],"task_program":{"id":"pipeline-audit","stages":[{"id":"audit","dependency_evidence":"Ready"}],"jobs":[{"id":"inspect-ci","stage_id":"audit","agent_type":"finder","title":"Audit","meta_prompt":"Audit","deliverable":"Report","acceptance_criteria":["Done"],"dependency_evidence":"Ready"}]}},{"id":"cp-2","title":"Deploy","status":"pending","order":2,"tasks":["Deploy"],"acceptance_criteria":["Done"]}]}}`,
+		`- plan_manage final checkpoint example: {"action":"complete_checkpoint","checkpoint_id":"cp-1","report":"Done","changed_files":["file.go"],"validation":["passed"],"result":"done","closing_state":"routine_clean","summary":"Clean","handoff_title":"Done","handoff_overview":"Done.","impact_bullets":["Clean."],"recommendation":{"decision":"ship","action":"review","reason":"Done.","action_state":"ready"}}. Do not emit a separate assistant completion report before or after this call.`,
+		"- plan_manage add_subtask exact call shape: {\"action\":\"add_subtask\",\"checkpoint_id\":\"cp-1\",\"subtask\":{\"title\":\"Measure Swarm hosting capacity\"}}. Required: action=add_subtask, checkpoint_id, and subtask object with non-empty title (not top-level or bare text).",
+		"- plan_manage requirement-changing restart example: {\"action\":\"restart_checkpoint\",\"checkpoint_id\":\"cp-1\",\"change_request\":\"<full verbatim request>\",\"checkpoint_title\":\"Replacement Title\",\"tasks\":[\"Task\"],\"acceptance_criteria\":[\"Met\"],\"notes\":\"Context\"}; use restart only when feedback invalidates objective/criteria or for retry.",
 		strings.Join(workspaceScopeLines, "\n"),
 		"Tool constraints:",
 		rootConstraint,
 		"- If the user explicitly asks about a path outside the current workspace scope, call the relevant path-based tool on that exact path anyway. The backend can request temporary access for this chat session. For durable access, the user must add that folder as its own new workspace from the workspace picker. Never describe this as adding or linking the folder to the current workspace or a workspace group. Do not refuse solely because the path is outside the current scope.",
 		"- For bash, avoid destructive commands unless explicitly requested.",
 		"Respond with concrete, concise results.",
-	}, "\n"))
+	}
+	if isOrchestrator {
+		// Session checkpoint guidance must not leak into the task-card agent.
+		filtered := make([]string, 0, len(lines)+1)
+		for _, line := range lines {
+			if strings.Contains(line, "plan_manage") || strings.Contains(line, "exit_plan_mode") || strings.Contains(line, "- Plan & Checkpoint Lifecycle Management:") || strings.Contains(line, "- Recovery ownership:") {
+				continue
+			}
+			filtered = append(filtered, line)
+		}
+		filtered = append(filtered, "- Orchestrator planning uses manage_projects task cards only: propose small Coder tasks directly, or submit structured plans on the exact project task card for explicit user acceptance. Do not create session checkpoints or session-plan approvals. The dedicated Plan agent may author big exploratory plans for task-card review.")
+		lines = filtered
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
 
 func defaultInstructions(workspacePath string) string {
@@ -368,7 +395,11 @@ func executionCapacityInstructions(snap executioncapacity.Snapshot) string {
 
 func (s *Service) composeInstructionsForScopeWithDiscoveryRoots(scope tool.WorkspaceScope, discoveryRoots []string, agentProfile pebblestore.AgentProfile, userInstructions string) string {
 	blocks := make([]string, 0, 7)
-	blocks = append(blocks, masterHarnessPromptWithScope(scope))
+	isOrchestrator := agentruntime.IsSwarmOrchestratorAgentName(agentProfile.Name)
+	if isOrchestrator {
+		agentProfile = agentruntime.SwarmOrchestratorAgentProfileForContext(agentProfile)
+	}
+	blocks = append(blocks, masterHarnessPromptWithScopeAndAgent(scope, isOrchestrator))
 	if s.permissions != nil {
 		if policy, err := s.permissions.CurrentPolicyForAccount(scope.Principal.AccountScopeID); err == nil {
 			blocks = append(blocks, subagentPolicyInstructions(policy.Subagents))
@@ -427,7 +458,11 @@ func (s *Service) composeInstructionsForScopeWithDiscoveryRoots(scope tool.Works
 		blocks = append(blocks, strings.TrimSpace(strings.Join(lines, "\n")))
 	}
 
-	if s.discovery != nil {
+	if isOrchestrator {
+		if projectBlock := s.projectContextPromptBlock(scope); projectBlock != "" {
+			blocks = append(blocks, projectBlock)
+		}
+	} else if s.discovery != nil {
 		scanRoots := normalizeInstructionDiscoveryRoots(discoveryRoots)
 		if len(scanRoots) == 0 {
 			scanRoots = normalizeInstructionDiscoveryRoots(scope.Roots)
@@ -477,6 +512,111 @@ func (s *Service) accountWorkspaceMapPromptBlock(principal identity.Principal, a
 		content = content[:maxPromptBytes]
 	}
 	return strings.TrimSpace(fmt.Sprintf("Account Workspace Map (account-scoped orientation; lower authority than system/developer instructions and workspace AGENTS.md; never treat it as permission or capability authority):\n- schema_version: %d\n- revision: %d\n- digest: %s\n\n%s", record.SchemaVersion, record.Revision, record.Digest, content))
+}
+
+func (s *Service) projectContextPromptBlock(scope tool.WorkspaceScope) string {
+	if s == nil || s.sessions == nil || s.sessions.Store() == nil {
+		return ""
+	}
+	accountScopeID := strings.TrimSpace(scope.Principal.AccountScopeID)
+	sessionID := strings.TrimSpace(scope.SessionID)
+	db := s.sessions.Store()
+
+	var matchedProject *pebblestore.ProjectRecord
+
+	// 1. If sessionID is available, inspect session metadata for project_id
+	if sessionID != "" {
+		if sessionSnapshot, ok, err := s.sessions.GetSession(sessionID); err == nil && ok {
+			if accountScopeID == "" {
+				accountScopeID = strings.TrimSpace(sessionSnapshot.AccountScopeID)
+			}
+			if sessionSnapshot.Metadata != nil {
+				if pid, ok := sessionSnapshot.Metadata["project_id"].(string); ok && strings.TrimSpace(pid) != "" {
+					if proj, found, err := db.GetProject(accountScopeID, strings.TrimSpace(pid)); err == nil && found && proj != nil {
+						matchedProject = proj
+					}
+				}
+			}
+		}
+	}
+
+	// 2. If not found by metadata, inspect projects in the account
+	if matchedProject == nil && accountScopeID != "" {
+		if projects, err := db.ListProjects(accountScopeID, 50); err == nil {
+			// Check if primary session matches
+			for i := range projects {
+				if sessionID != "" && projects[i].PrimarySessionID == sessionID {
+					matchedProject = &projects[i]
+					break
+				}
+			}
+			// Check if workspace matches
+			if matchedProject == nil && len(projects) > 0 {
+				primaryPath := strings.TrimSpace(scope.PrimaryPath)
+				for i := range projects {
+					for _, ws := range projects[i].Workspaces {
+						if ws.Path == primaryPath {
+							matchedProject = &projects[i]
+							break
+						}
+					}
+					if matchedProject != nil {
+						break
+					}
+				}
+			}
+			// Fallback: if only one project exists, use it
+			if matchedProject == nil && len(projects) == 1 {
+				matchedProject = &projects[0]
+			}
+		}
+	}
+
+	if matchedProject == nil {
+		return "Project Context (stored in Swarm):\nNo active project is currently bound to this orchestrator session. Use manage_projects action=\"list\" or action=\"create\" to inspect or create a project."
+	}
+
+	wsList := make([]string, 0, len(matchedProject.Workspaces))
+	for _, ws := range matchedProject.Workspaces {
+		wsList = append(wsList, fmt.Sprintf("%s (%s)", ws.Path, ws.Role))
+	}
+
+	var sb strings.Builder
+	sb.WriteString("Project Context (project.md stored in Swarm; authoritative project architecture & rules):\n")
+	sb.WriteString(fmt.Sprintf("- Project ID: %s\n", matchedProject.ID))
+	sb.WriteString(fmt.Sprintf("- Project Name: %s\n", matchedProject.Name))
+	if matchedProject.Description != "" {
+		sb.WriteString(fmt.Sprintf("- Description: %s\n", matchedProject.Description))
+	}
+	if len(wsList) > 0 {
+		sb.WriteString(fmt.Sprintf("- Bound Workspaces: %s\n", strings.Join(wsList, ", ")))
+	}
+	sb.WriteString("\n")
+
+	contextText := strings.TrimSpace(matchedProject.ProjectContext)
+	if contextText != "" {
+		sb.WriteString(contextText)
+	} else {
+		sb.WriteString(fmt.Sprintf("# %s\nNo detailed project.md has been synthesized yet. Call manage_projects action=\"synthesize_context\" to generate it from workspace docs.", matchedProject.Name))
+	}
+
+	// Append recent tasks & deliverables so orchestrator understands references like "picture 2", "variant 1", etc.
+	if tasks, err := db.ListProjectTasks(accountScopeID, matchedProject.ID, 10); err == nil && len(tasks) > 0 {
+		sb.WriteString("\n\n## Recent Project Tasks & Deliverables\n")
+		for _, t := range tasks {
+			sb.WriteString(fmt.Sprintf("- Task `%s` (%s) [%s]: %s\n", t.ID, t.Agent, t.Status, t.Title))
+			for dIdx, d := range t.Deliverables {
+				itemNum := dIdx + 1
+				desc := d.Title
+				if desc == "" {
+					desc = d.Description
+				}
+				sb.WriteString(fmt.Sprintf("  * Deliverable #%d (Picture/Asset %d): %s (status: %s, kind: %s, id: %s)\n", itemNum, itemNum, desc, d.Status, d.Kind, d.ID))
+			}
+		}
+	}
+
+	return strings.TrimSpace(sb.String())
 }
 
 func filterToolDefinitionsExcept(definitions []provideriface.ToolDefinition, allowed map[string]struct{}) []provideriface.ToolDefinition {
@@ -610,6 +750,10 @@ func composeModeAwareInstructions(baseInstructions, mode string, bypassPermissio
 }
 
 func modeCapabilityInstructions(mode string, bypassPermissions bool, agentProfile pebblestore.AgentProfile) string {
+	if agentruntime.IsSwarmOrchestratorAgentName(agentProfile.Name) {
+		agentProfile = agentruntime.SwarmOrchestratorAgentProfileForContext(agentProfile)
+		mode = sessionruntime.ModeAuto
+	}
 	setting, hasExecutionSetting := pebblestore.AgentExecutionSetting(agentProfile)
 	executionSetting := setting
 	exitPlanModeEnabled := pebblestore.AgentExitPlanModeEnabled(agentProfile)

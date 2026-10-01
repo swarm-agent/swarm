@@ -155,7 +155,10 @@ func TestV3RealtimePublishesCommittedOutboxEventAndReplaysAfterReconnect(t *test
 
 func TestV3RealtimeCheckpointPlanWorksetUpdateUsesDurableSessionTitle(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
-	created := createV3RealtimeTestSessionResult(t, server, "Durable session title", "create-realtime-checkpoint-workset")
+	// Purpose: the canonical workset publisher must keep the durable session
+	// title instead of substituting the checkpoint title. This socket fixture
+	// exercises that boundary; its identity must satisfy V3 lowercase IDs.
+	created := createV3RealtimeTestSessionResult(t, server, "durable-session-title", "create-realtime-checkpoint-workset")
 
 	httpServer := newV3RealtimeHTTPTestServer(t, server)
 	conn := dialV3RealtimeStream(t, httpServer.URL)

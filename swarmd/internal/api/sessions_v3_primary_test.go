@@ -4975,6 +4975,10 @@ func TestSessionsV3ProviderToolLoopRecordsCodexUsagePerProviderStep(t *testing.T
 	}
 }
 
+// Purpose: the in-process V3 provider loop must persist each recorded provider
+// step once, independent of captured account model defaults. Canonical session
+// profile mutations select recording fixtures; assertions inspect actual durable
+// receipts, events and context summaries. This is not live provider qualification.
 func TestSessionsV3ProviderUsageAccountingE2E(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 
@@ -5081,6 +5085,13 @@ func TestSessionsV3ProviderUsageAccountingE2E(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			created := createSessionsV3PrimaryTestSessionWithPreference(t, server, tc.createID, tc.name+" usage accounting", pebblestore.ModelPreference{Provider: tc.provider, Model: tc.model, Thinking: "high"})
+			// Seed the fixture's session-only snapshot through its canonical mutation.
+			// Creation captures account defaults, not the old preference override.
+			created.ModelProfile = &pebblestore.SessionModelProfileSnapshot{Source: pebblestore.SessionModelProfileSourceTemporary, Action: pebblestore.ModelProfileSelection{Provider: tc.provider, Model: tc.model, Thinking: "high"}}
+			key := tc.createID + "-profile"
+			if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{SessionID: created.ID, UserID: created.UserID, AccountScopeID: created.AccountScopeID, ClientRequestID: key, IdempotencyKey: key, PayloadHash: key, RequestHash: key, Kind: sessionruntime.SessionMutationUpdateModelProfile, Session: &created}); err != nil {
+				t.Fatal(err)
+			}
 			postSessionsV3PrimaryTestMessage(t, server, created.ID, tc.messageID, "check "+tc.name+" usage cadence")
 			waitForSessionsV3MessageCount(t, sessionSvc, created.ID, 2)
 			if tc.runner.callCount != len(tc.expectedTurns) {
@@ -5098,6 +5109,10 @@ func TestSessionsV3ProviderUsageAccountingE2E(t *testing.T) {
 	}
 }
 
+// Purpose: changing a fixture session's canonical model snapshot must preserve
+// earlier billing receipts while updating current context provenance. The V3
+// mutation/executor seam proves accounting across providers without changing
+// account assignments, starting listeners or invoking external providers.
 func TestSessionsV3ProviderUsageAccountingTransitionE2E(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	codexRunner := &sessionsV3RecordingProviderRunner{
@@ -5147,12 +5162,16 @@ func TestSessionsV3ProviderUsageAccountingTransitionE2E(t *testing.T) {
 	waitForSessionsV3MessageCount(t, sessionSvc, created.ID, 2)
 	sessionsV3AssertUsageAccounting(t, sessionSvc, created.ID, []sessionsV3UsageExpectation{{clientRequestID: "usage-transition-codex-message", provider: "codex", model: "gpt-5.5", step: 1, inputTokens: 500, outputTokens: 10, totalTokens: 510, summaryTotalTokens: 510, summaryInputTokens: 500, summaryOutputTokens: 10}})
 
-	prefReq := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/preference", bytes.NewBufferString(`{"provider":"fireworks","model":"accounts/fireworks/models/glm-5p2","thinking":"high"}`))
-	prefReq.Header.Set("Content-Type", "application/json")
-	prefRec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(prefRec, withTestPrincipal(prefReq))
-	if prefRec.Code != http.StatusOK {
-		t.Fatalf("preference status = %d, want %d, body=%s", prefRec.Code, http.StatusOK, prefRec.Body.String())
+	// Transition this fixture session's model snapshot through canonical mutation;
+	// captured Swarm defaults cannot be changed by the retired preference write.
+	current, found, err := sessionSvc.GetSession(created.ID)
+	if err != nil || !found {
+		t.Fatalf("transition session: %v", err)
+	}
+	current.ModelProfile = &pebblestore.SessionModelProfileSnapshot{Source: pebblestore.SessionModelProfileSourceTemporary, Action: pebblestore.ModelProfileSelection{Provider: "fireworks", Model: "accounts/fireworks/models/glm-5p2", Thinking: "high"}}
+	key := "usage-transition-profile"
+	if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{SessionID: current.ID, UserID: current.UserID, AccountScopeID: current.AccountScopeID, ClientRequestID: key, IdempotencyKey: key, PayloadHash: key, RequestHash: key, Kind: sessionruntime.SessionMutationUpdateModelProfile, Session: &current}); err != nil {
+		t.Fatal(err)
 	}
 
 	postSessionsV3PrimaryTestMessage(t, server, created.ID, "usage-transition-fireworks-message", "now use fireworks")
@@ -5207,6 +5226,10 @@ type sessionsV3UsageExpectation struct {
 	summaryTotalTokens     int64
 }
 
+// Purpose: canonical V3 provider-loop receipts must retain exact per-operation
+// identity, step counters, and projected summary postconditions. The executor's
+// temp-service usage events and stored receipts are the narrowest integration
+// evidence; duplicate step identities or missing operation lineage must fail.
 func sessionsV3AssertUsageAccounting(t *testing.T, sessionSvc *sessionruntime.Service, sessionID string, expected []sessionsV3UsageExpectation) {
 	t.Helper()
 	turns, err := sessionSvc.ListTurnUsage(sessionID, 20)
@@ -5246,7 +5269,17 @@ func sessionsV3AssertUsageAccounting(t *testing.T, sessionSvc *sessionruntime.Se
 	}
 	for index, want := range expected {
 		baseRunID := stableSessionsV3PrimaryRunID(sessionID, want.clientRequestID)
-		wantRunID := sessionV3ProviderUsageRunID(baseRunID, want.step)
+		// Receipt identity is per provider operation; step remains observable
+		// metadata. Require exactly one matching step and its exact operation ID.
+		wantRunID := ""
+		for _, turn := range turns {
+			if turn.Steps == want.step && strings.HasPrefix(turn.RunID, baseRunID+"/operation/") {
+				if wantRunID != "" || turn.BudgetOperationID == "" || turn.RunID != baseRunID+"/operation/"+turn.BudgetOperationID {
+					t.Fatalf("ambiguous or invalid operation receipt for step %d: %+v", want.step, turns)
+				}
+				wantRunID = turn.RunID
+			}
+		}
 		if !runIDs[wantRunID] {
 			t.Fatalf("missing turn usage run_id %q in %+v", wantRunID, turns)
 		}
@@ -5922,6 +5955,11 @@ func TestSessionsV3ExecutorPersistsFailureWhenToolCallRepeatsFiveConsecutiveTime
 	}
 }
 
+// Purpose: a permission-accepted standalone plan must execute its checkpoint,
+// not stop as a terminal review publication with pending work. This executor test
+// uses the real exit_plan_mode invoker and V3 mutations to prove scheduling,
+// refreshed runtime selection, durable checkpoint completion and review state;
+// classifier-only tests cannot prove those persisted execution postconditions.
 func TestSessionsV3ExecutorExitPlanModeUsesV3MutationAndRefreshesContinuationRuntime(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	workspace := t.TempDir()
@@ -5951,8 +5989,8 @@ func TestSessionsV3ExecutorExitPlanModeUsesV3MutationAndRefreshesContinuationRun
 		if !strings.Contains(req.Instructions, "Current session mode: auto.") {
 			return provideriface.Response{}, fmt.Errorf("checkpoint continuation instructions did not refresh to auto mode:\n%s", req.Instructions)
 		}
-		if req.BoundaryReason != "session_turn" || !req.NativeContinuationAllowed || req.ForceFreshProviderContext {
-			return provideriface.Response{}, fmt.Errorf("exit_plan_mode checkpoint lineage flags = boundary %q native %t fresh %t, want same-epoch continuation", req.BoundaryReason, req.NativeContinuationAllowed, req.ForceFreshProviderContext)
+		if req.BoundaryReason != "provider_model_runtime_handoff" || req.NativeContinuationAllowed || !req.ForceFreshProviderContext {
+			return provideriface.Response{}, fmt.Errorf("exit_plan_mode checkpoint lineage flags = boundary %q native %t fresh %t, want fresh context across provider/model switch", req.BoundaryReason, req.NativeContinuationAllowed, req.ForceFreshProviderContext)
 		}
 		if !sessionsV3ProviderInputContainsContentText(req.Input, "[checkpoint-run] Deterministic checkpoint execution context.") || !sessionsV3ProviderInputContainsContentText(req.Input, "Execute exactly one checkpoint: cp-1.") {
 			return provideriface.Response{}, fmt.Errorf("exit_plan_mode checkpoint input = %+v, want additive checkpoint context", req.Input)
@@ -5960,7 +5998,7 @@ func TestSessionsV3ExecutorExitPlanModeUsesV3MutationAndRefreshesContinuationRun
 		if req.ToolInvoker == nil {
 			return provideriface.Response{}, fmt.Errorf("missing refreshed provider-managed tool invoker")
 		}
-		completeArgs := mustSessionsV3TestJSON(t, map[string]any{"action": "complete_checkpoint", "checkpoint_id": "cp-1", "report": "checkpoint complete", "result": "done"})
+		completeArgs := mustSessionsV3TestJSON(t, map[string]any{"action": "complete_checkpoint", "checkpoint_id": "cp-1", "report": "checkpoint complete", "result": "done", "handoff_overview": "Checkpoint completed.", "recommendation": map[string]any{"decision": "ship", "action": "review", "reason": "Checkpoint completed.", "action_state": "ready"}})
 		completeResult, err := req.ToolInvoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-complete-checkpoint", Name: "plan_manage", Arguments: completeArgs})
 		if err != nil {
 			return provideriface.Response{}, err
@@ -6016,6 +6054,43 @@ func TestSessionsV3ExecutorExitPlanModeUsesV3MutationAndRefreshesContinuationRun
 		t.Fatalf("created session mode = %q, want plan", created.Mode)
 	}
 	postSessionsV3PrimaryTestMessage(t, server, created.ID, "provider-exit-plan-restart-message", "exit plan mode and continue")
+	// Plan acceptance remains explicitly gated even when ordinary permissions
+	// are bypassed. Resolve the real permission rather than seeding approval.
+	permissionID := ""
+	deadline := time.Now().Add(5 * time.Second)
+	for permissionID == "" && time.Now().Before(deadline) {
+		events, err := sessionSvc.ListSessionEvents(created.ID, 0, 100)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, event := range events {
+			if event.EventType != "permission.requested" {
+				continue
+			}
+			var payload struct {
+				Permission *pebblestore.PermissionRecord `json:"permission"`
+			}
+			if err := json.Unmarshal(event.Payload, &payload); err != nil {
+				t.Fatal(err)
+			}
+			if payload.Permission != nil && payload.Permission.ToolName == "exit_plan_mode" {
+				permissionID = payload.Permission.ID
+			}
+		}
+		if permissionID == "" {
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	if permissionID == "" {
+		t.Fatal("exit_plan_mode did not request explicit approval")
+	}
+	approval := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/permissions/"+permissionID+"/resolve", strings.NewReader(`{"action":"allow_once","reason":"approve regression test plan"}`))
+	approval.Header.Set("Content-Type", "application/json")
+	approvalResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(approvalResponse, withTestPrincipal(approval))
+	if approvalResponse.Code != http.StatusOK {
+		t.Fatalf("resolve plan permission: status=%d body=%s", approvalResponse.Code, approvalResponse.Body.String())
+	}
 	waitForSessionsV3RunIntentStatus(t, sessionSvc, created.ID, sessionruntime.RunIntentCompleted)
 
 	stored, ok, err := sessionSvc.GetSession(created.ID)
@@ -6032,7 +6107,9 @@ func TestSessionsV3ExecutorExitPlanModeUsesV3MutationAndRefreshesContinuationRun
 	if hydrateErr != nil || !hydratedOK {
 		t.Fatalf("hydrate after exit_plan_mode: ok=%t err=%v", hydratedOK, hydrateErr)
 	}
-	if hydrated.Session.Mode != sessionruntime.ModeAuto || hydrated.Preference != stored.Preference || hydrated.AgentModelPolicy.Preference != stored.Preference || hydrated.AgentModelPolicy.Source != "agent_auto_preset" || !hydrated.AgentModelPolicy.Locked {
+	expectedProfilePreference := stored.Preference
+	expectedProfilePreference.UpdatedAt = 0 // Immutable profile selection has no mutable preference timestamp.
+	if hydrated.Session.Mode != sessionruntime.ModeAuto || hydrated.Preference != expectedProfilePreference || hydrated.AgentModelPolicy.Preference != expectedProfilePreference || hydrated.AgentModelPolicy.Source != "saved_model_profile" || !hydrated.AgentModelPolicy.Locked {
 		t.Fatalf("hydrated auto policy disagrees with durable session: hydrated=%+v policy=%+v stored=%+v", hydrated.Preference, hydrated.AgentModelPolicy, stored.Preference)
 	}
 	waitForSessionsV3MessageCount(t, sessionSvc, created.ID, 5)
@@ -6077,7 +6154,7 @@ func TestSessionsV3ExecutorExitPlanModeUsesV3MutationAndRefreshesContinuationRun
 				seenAutoPreference = true
 			}
 			policy, _ := payload["agent_model_policy"].(map[string]any)
-			if policy["source"] == "agent_auto_preset" && payload["swarm_conf_v3_diagnostics_enabled"] == false {
+			if policy["source"] == "saved_model_profile" && payload["swarm_conf_v3_diagnostics_enabled"] == false {
 				seenAutoPolicy = true
 			}
 		}
@@ -6100,6 +6177,9 @@ func TestSessionsV3ExecutorExitPlanModeUsesV3MutationAndRefreshesContinuationRun
 	activePlan, ok, err := sessionSvc.GetActivePlan(created.ID)
 	if err != nil || !ok || activePlan.Document == nil {
 		t.Fatalf("get active plan after checkpoint run: ok=%t err=%v plan=%#v", ok, err, activePlan)
+	}
+	if activePlan.ApprovalState != "approved" || len(activePlan.Document.Checkpoints) != 1 {
+		t.Fatalf("standalone plan approval/checkpoints = %#v", activePlan)
 	}
 	if activePlan.Document.Checkpoints[0].Status != sessionruntime.PlanCheckpointStatusCompleted || activePlan.Document.ExecutionState == nil || activePlan.Document.ExecutionState.Status != sessionruntime.PlanExecutionStateWaitingReview || activePlan.Document.Checkpoints[0].Review == nil || activePlan.Document.Checkpoints[0].Review.Status != sessionruntime.PlanCheckpointReviewStatusPending {
 		t.Fatalf("active plan after checkpoint run = %#v", activePlan.Document)

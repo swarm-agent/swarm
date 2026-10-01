@@ -18,6 +18,7 @@ type Config struct {
 	ConfigPath              string
 	ListenAddr              string
 	DesktopPort             int
+	ContainerSDKPort        int
 	PeerTransportPort       int
 	BypassPermissions       bool
 	RetainToolOutputHistory bool
@@ -75,6 +76,7 @@ func Parse(args []string) (Config, error) {
 	}
 	fs.StringVar(&cfg.ListenAddr, "listen", defaultListenAddr, "HTTP listen address")
 	fs.IntVar(&cfg.DesktopPort, "desktop-port", startupCfg.DesktopPort, "desktop HTTP listen port (0 disables desktop listener)")
+	fs.IntVar(&cfg.ContainerSDKPort, "container-sdk-port", 0, "opt-in scoped-token SDK listener on container IPv4 interfaces; publish only to host loopback (0 disables)")
 	fs.BoolVar(&cfg.BypassPermissions, "bypass-permissions", startupCfg.BypassPermissions, "bypass normal tool permission prompts (exit_plan_mode still requires approval)")
 	fs.StringVar(&cfg.DataDir, "data-dir", defaultDataDir, "data directory root")
 	fs.StringVar(&cfg.DBPath, "db-path", defaultDBPath, "Pebble database path")
@@ -93,6 +95,10 @@ func Parse(args []string) (Config, error) {
 		return Config{}, fmt.Errorf("invalid desktop port %d (expected 0-65535)", cfg.DesktopPort)
 	}
 	if err := validateLoopbackListenAddr(cfg.ListenAddr); err != nil {
+		return Config{}, err
+	}
+
+	if err := validateContainerSDK(cfg); err != nil {
 		return Config{}, err
 	}
 

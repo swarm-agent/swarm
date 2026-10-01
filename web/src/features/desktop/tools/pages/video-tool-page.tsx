@@ -3210,8 +3210,17 @@ export function VideoToolPage() {
         <header className="flex min-h-[60px] shrink-0 items-center justify-between gap-3 border-b border-[var(--app-border)] bg-[var(--app-surface)] px-3 pb-2 pt-[calc(var(--app-safe-area-top)+0.5rem)] sm:h-[60px] sm:px-4 sm:py-0">
           <div className="inline-flex min-w-0 items-center gap-3">
             <div className="inline-flex min-w-0 items-center gap-2">
-              <Film size={17} className="shrink-0 text-[var(--app-primary)]" aria-hidden="true" />
-              <span className="truncate text-sm font-semibold">Video Studio</span>
+              {activeStudioTab === 'media' ? (
+                <>
+                  <Layers size={17} className="shrink-0 text-[var(--app-primary)]" aria-hidden="true" />
+                  <span className="truncate text-sm font-semibold">Media Studio</span>
+                </>
+              ) : (
+                <>
+                  <Film size={17} className="shrink-0 text-[var(--app-primary)]" aria-hidden="true" />
+                  <span className="truncate text-sm font-semibold">Video Studio</span>
+                </>
+              )}
               {activeStudioTab === 'editor' && selectedThread ? <span className="truncate text-xs text-[var(--app-text-muted)]">/ {selectedThread.title || 'Video session'}</span> : null}
             </div>
 

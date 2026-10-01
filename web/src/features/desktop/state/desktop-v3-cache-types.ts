@@ -104,6 +104,7 @@ export interface DesktopV3MediaReference {
   modality: string
   mime_type: string
   file_type?: string
+  file_name?: string
   size: number
   digest_sha256: string
   contract_hash: string
@@ -353,6 +354,7 @@ export interface DesktopNotificationWire {
   run_id?: unknown
   runId?: unknown
   category?: unknown
+  kind?: unknown
   severity?: unknown
   title?: unknown
   body?: unknown
@@ -374,8 +376,13 @@ export interface DesktopNotificationWire {
   workspaceName?: unknown
   origin_label?: unknown
   originLabel?: unknown
+  worker_id?: unknown
+  workerId?: unknown
+  verified?: unknown
   action_url?: unknown
   actionURL?: unknown
+  payload?: unknown
+  actions?: unknown
   read_at?: unknown
   readAt?: unknown
   acked_at?: unknown
@@ -570,12 +577,16 @@ export type RealtimeKind =
   | 'task.lifecycle.updated'
   | 'workspace.catalog.updated'
   | 'auth.credentials.updated'
+  | 'project.updated'
+  | 'worker.updated'
+  | 'usage.scope.updated'
 
 export interface RealtimeMessage {
   protocol?: 'v3.realtime' | string
   protocol_version?: 1 | number
   kind: RealtimeKind | string
   session_id?: string
+  project_id?: string
   workset_id?: string
   subscription_id?: string
   endpoint_cursor?: string
@@ -999,7 +1010,10 @@ export interface DesktopInitialHydrateState {
 export interface DesktopV3CacheState {
   automationPages: import('./desktop-automation-state').AutomationPages
   automationV2Pages: import('./desktop-automation-v2-state').AutomationV2Pages
+  usagePages: import('./desktop-usage-state').UsagePages
+  workerPages: import('./desktop-workers-state').WorkerPages
   environmentsByWorkspace?: Record<string, import('./desktop-environments-state').DesktopEnvironmentWorkspaceState>
+  projectsState?: import('./desktop-projects-state').DesktopProjectsState
   version: 1
   syncScopesById: Record<string, SyncScopeCache>
   realtime: RealtimeCache
@@ -1055,7 +1069,10 @@ export interface CacheEvent {
 export type DesktopV3CacheAction =
   | import('./desktop-automation-state').AutomationCacheAction
   | import('./desktop-automation-v2-state').AutomationV2CacheAction
+  | import('./desktop-usage-state').UsageAction
+  | import('./desktop-workers-state').WorkerCacheAction
   | import('./desktop-environments-state').DesktopEnvironmentsAction
+  | import('./desktop-projects-state').DesktopProjectsAction
   | { type: 'desktopV3Cache.applyHydrationPlan'; reusedSessionIds: string[]; hydrateSessionIds: string[] }
   | { type: 'desktopV3Cache.markHydrateInFlight'; sessionIds: string[]; inFlight: boolean }
   | { type: 'desktopSidebarBootstrap.update'; patch: Partial<DesktopSidebarBootstrapState> }

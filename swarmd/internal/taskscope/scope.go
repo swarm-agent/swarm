@@ -9,13 +9,16 @@ import (
 	"unicode"
 )
 
-const Guidance = "Use exact workspace-relative file paths or directory paths, optionally ending in /**. Filename globs such as src/item*.go, brace expansion, ?, and character classes are unsupported; discover and list exact files instead. Do not broaden scope to bypass a rejection."
+const Guidance = "Use exact workspace-relative file paths or directory paths, optionally ending in /**. " + DirectoryGuidance + " Filename globs such as src/item*.go, brace expansion, ?, and character classes are unsupported; discover and list exact files instead. Do not broaden scope to bypass a rejection."
+
+// DirectoryGuidance is shared by prompts, tool schemas, help and validation errors.
+const DirectoryGuidance = "Directory scopes must not end in a bare slash: use src or src/**, never src/. Keep the same intended directory when correcting a rejected scope."
 
 // InvalidError lets callers classify scope failures without inspecting filenames.
 type InvalidError struct{ Scope string }
 
 func (e *InvalidError) Error() string {
-	return fmt.Sprintf("owned scope %q must be a clean workspace-relative path or a trailing /** scope; list exact files instead of filename globs", e.Scope)
+	return fmt.Sprintf("owned scope %q must be a clean workspace-relative path or a trailing /** scope; list exact files instead of filename globs. %s", e.Scope, DirectoryGuidance)
 }
 
 // Canonical preserves the allocator's historical whole-worktree and directory

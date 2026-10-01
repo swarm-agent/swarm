@@ -5,6 +5,11 @@ import (
 	"testing"
 )
 
+// Purpose: the task schema must disclose exact source routing without implying
+// that project membership grants execution. Runtime authorization belongs to
+// resolveTaskTargetWorkspace and repository-specific Task Program admission;
+// this provider-schema check prevents misleading cross-repository proposals,
+// not an unauthorized launch by itself.
 func TestTaskDefinitionKeepsProviderSchemaSimpleAndDocumentsRuntimeRequirements(t *testing.T) {
 	rt := NewRuntime(1)
 	var taskDefinition Definition
@@ -49,7 +54,7 @@ func TestTaskDefinitionKeepsProviderSchemaSimpleAndDocumentsRuntimeRequirements(
 	if _, ok := properties["owned_scope_template"]; ok {
 		t.Fatal("task schema must not expose workspace target templates for Iteration Swarms")
 	}
-	if !definitionTextContains(taskDefinition, "authorized linked/shared workspace") || !definitionTextContains(taskDefinition, "selected target repository HEAD") {
+	if !definitionTextContains(taskDefinition, "exact authorized source repository root") || !definitionTextContains(taskDefinition, "selected target repository HEAD") || !definitionTextContains(taskDefinition, "per-repository integration") || !definitionTextContains(taskDefinition, "repository-specific lanes") {
 		t.Fatalf("task schema missing cross-workspace Coder target contract: %#v", taskDefinition)
 	}
 	if !definitionTextContains(taskDefinition, "Designer and image Iteration Swarms are always managed") || !definitionTextContains(taskDefinition, "Workspace is available only for regular Designer launches") {

@@ -1,5 +1,10 @@
 # Multi-workspace session identity matrix
 
+Bookkeeping retirement note: Atlas/checker, TSV ledger, source-digest inventory
+and P1/P2 bookkeeping mentions in dated reports below are historical evidence,
+not current maintenance gates. The Atlas, audit ledger and checker are retired;
+independent test review and actual critical execution gates remain required.
+
 ## Scope and evidence discipline
 
 **Current verdict:** the core identity mismatch is repaired and has final-source
@@ -272,8 +277,8 @@ These are bounded ownership proposals for subsequent approved checkpoints, **not
 launched Task Program**. No children were launched in this checkpoint. The parent
 must reconcile exact scopes against the actual foundation diff, declare the whole
 staged program if using dependent delegation, and commit prerequisites before any
-Coder launch. Do not give all responsibilities below to one Coder. Shared docs,
-ledger reconciliation and cross-system confirmation belong to the parent/audit.
+Coder launch. Do not give all responsibilities below to one Coder. Relevant documentation
+and cross-system confirmation belong to the parent/audit.
 New regression files listed below are intentional concrete output targets.
 
 1. **Foundation/store identity (stage F1).** Own

@@ -46,36 +46,41 @@ type SessionArtifactLineage struct {
 	// ParentSessionID is the trusted destination session that owns the
 	// collection. SourceSessionID identifies the producing child when output is
 	// routed into a parent-owned managed collection.
-	ParentSessionID         string `json:"parent_session_id,omitempty"`
-	SourceSessionID         string `json:"source_session_id,omitempty"`
-	SourceCollectionID      string `json:"source_collection_id,omitempty"`
-	SourceVariantID         string `json:"source_variant_id,omitempty"`
-	SourceEventSeq          uint64 `json:"source_event_seq,omitempty"`
-	TaskCallID              string `json:"task_call_id,omitempty"`
-	ProgramID               string `json:"program_id,omitempty"`
-	ProgramJobID            string `json:"program_job_id,omitempty"`
-	ChildSessionID          string `json:"child_session_id,omitempty"`
-	IterationGroupID        string `json:"iteration_group_id,omitempty"`
-	IterationGroup          string `json:"iteration_group,omitempty"`
-	IterationID             string `json:"iteration_id,omitempty"`
-	IterationIndex          int    `json:"iteration_index,omitempty"`
-	IterationLabel          string `json:"iteration_label,omitempty"`
-	IterationTheme          string `json:"iteration_theme,omitempty"`
-	IterationSectionID      string `json:"iteration_section_id,omitempty"`
-	IterationSectionLabel   string `json:"iteration_section_label,omitempty"`
-	IterationSectionStartMs int64  `json:"iteration_section_start_ms,omitempty"`
-	IterationSectionEndMs   int64  `json:"iteration_section_end_ms,omitempty"`
-	PartID                  string `json:"part_id,omitempty"`
-	PartLabel               string `json:"part_label,omitempty"`
-	PartKind                string `json:"part_kind,omitempty"`
-	SelectedReviewTargetIDs string `json:"selected_review_target_ids,omitempty"`
-	RunID                   string `json:"run_id,omitempty"`
-	PlanID                  string `json:"plan_id,omitempty"`
-	CheckpointID            string `json:"checkpoint_id,omitempty"`
-	AttemptID               string `json:"attempt_id,omitempty"`
-	VideoProjectID          string `json:"video_project_id,omitempty"`
-	VideoRevisionID         string `json:"video_revision_id,omitempty"`
-	VideoRevisionEventSeq   uint64 `json:"video_revision_event_seq,omitempty"`
+	ParentSessionID         string           `json:"parent_session_id,omitempty"`
+	SourceSessionID         string           `json:"source_session_id,omitempty"`
+	SourceCollectionID      string           `json:"source_collection_id,omitempty"`
+	SourceVariantID         string           `json:"source_variant_id,omitempty"`
+	SourceEventSeq          uint64           `json:"source_event_seq,omitempty"`
+	TaskCallID              string           `json:"task_call_id,omitempty"`
+	ProgramID               string           `json:"program_id,omitempty"`
+	ProgramJobID            string           `json:"program_job_id,omitempty"`
+	ChildSessionID          string           `json:"child_session_id,omitempty"`
+	IterationGroupID        string           `json:"iteration_group_id,omitempty"`
+	IterationGroup          string           `json:"iteration_group,omitempty"`
+	IterationID             string           `json:"iteration_id,omitempty"`
+	IterationIndex          int              `json:"iteration_index,omitempty"`
+	IterationLabel          string           `json:"iteration_label,omitempty"`
+	IterationTheme          string           `json:"iteration_theme,omitempty"`
+	IterationSectionID      string           `json:"iteration_section_id,omitempty"`
+	IterationSectionLabel   string           `json:"iteration_section_label,omitempty"`
+	IterationSectionStartMs int64            `json:"iteration_section_start_ms,omitempty"`
+	IterationSectionEndMs   int64            `json:"iteration_section_end_ms,omitempty"`
+	PartID                  string           `json:"part_id,omitempty"`
+	PartLabel               string           `json:"part_label,omitempty"`
+	PartKind                string           `json:"part_kind,omitempty"`
+	SelectedReviewTargetIDs string           `json:"selected_review_target_ids,omitempty"`
+	RunID                   string           `json:"run_id,omitempty"`
+	PlanID                  string           `json:"plan_id,omitempty"`
+	CheckpointID            string           `json:"checkpoint_id,omitempty"`
+	AttemptID               string           `json:"attempt_id,omitempty"`
+	VideoProjectID          string           `json:"video_project_id,omitempty"`
+	VideoRevisionID         string           `json:"video_revision_id,omitempty"`
+	VideoRevisionEventSeq   uint64           `json:"video_revision_event_seq,omitempty"`
+	VideoProvenance         *VideoProvenance `json:"video_provenance,omitempty"`
+	Model                   string           `json:"model,omitempty"`
+	AspectRatio             string           `json:"aspect_ratio,omitempty"`
+	Resolution              string           `json:"resolution,omitempty"`
+	DurationSeconds         int              `json:"duration_seconds,omitempty"`
 }
 
 // SessionArtifactPresentation contains bounded client display hints. It is
@@ -1053,6 +1058,17 @@ func (s *SessionStore) PutArtifactVariant(variant SessionArtifactVariant) error 
 	if s == nil || s.store == nil {
 		return errors.New("session store is not configured")
 	}
+	collKey := KeySessionArtifactCollection(variant.AccountScopeID, variant.SessionID, variant.CollectionID)
+	var coll SessionArtifactCollection
+	if ok, _ := s.store.GetJSON(collKey, &coll); !ok {
+		coll = SessionArtifactCollection{
+			AccountScopeID: variant.AccountScopeID,
+			SessionID:      variant.SessionID,
+			ID:             variant.CollectionID,
+			Status:         SessionArtifactStatusReady,
+		}
+		_ = s.store.PutJSON(collKey, coll)
+	}
 	key := KeySessionArtifactVariant(variant.AccountScopeID, variant.SessionID, variant.CollectionID, variant.ID)
 	return s.store.PutJSON(key, variant)
 }
@@ -1254,6 +1270,12 @@ func normalizeArtifactLineage(lineage *SessionArtifactLineage) {
 	lineage.PlanID = strings.TrimSpace(lineage.PlanID)
 	lineage.CheckpointID = strings.TrimSpace(lineage.CheckpointID)
 	lineage.AttemptID = strings.TrimSpace(lineage.AttemptID)
+	lineage.Model = strings.TrimSpace(lineage.Model)
+	lineage.AspectRatio = strings.TrimSpace(lineage.AspectRatio)
+	lineage.Resolution = strings.TrimSpace(lineage.Resolution)
+	if lineage.VideoProvenance != nil {
+		lineage.VideoProvenance.Normalize()
+	}
 }
 
 func normalizeArtifactPart(part *SessionArtifactPart) {
@@ -1545,6 +1567,23 @@ func validateArtifactLineage(lineage SessionArtifactLineage) error {
 		if len(seen) < 2 || len(seen) > SessionArtifactMaxParts {
 			return errors.New("artifact multi-target review lineage requires a bounded multi-target id set")
 		}
+	}
+	if lineage.VideoProvenance != nil {
+		if err := lineage.VideoProvenance.Validate(); err != nil {
+			return fmt.Errorf("artifact video provenance invalid: %w", err)
+		}
+	}
+	if len(lineage.Model) > 128 {
+		return errors.New("artifact model exceeds 128 characters")
+	}
+	if len(lineage.AspectRatio) > 32 {
+		return errors.New("artifact aspect_ratio exceeds 32 characters")
+	}
+	if len(lineage.Resolution) > 32 {
+		return errors.New("artifact resolution exceeds 32 characters")
+	}
+	if lineage.DurationSeconds < 0 || lineage.DurationSeconds > 3600 {
+		return errors.New("artifact duration_seconds is invalid")
 	}
 	return nil
 }
@@ -1872,7 +1911,7 @@ func (s *SessionStore) prepareV3ArtifactMutation(input V3SessionMutationInput, s
 			copy := current
 			prepared.PreviousVariant = &copy
 		}
-		if variantOK && incoming.Variant.Lineage != (SessionArtifactLineage{}) && current.Lineage != (SessionArtifactLineage{}) && incoming.Variant.Lineage != current.Lineage {
+		if variantOK && incoming.Variant.Lineage != (SessionArtifactLineage{}) && current.Lineage != (SessionArtifactLineage{}) && !equalArtifactLineage(incoming.Variant.Lineage, current.Lineage) {
 			return preparedV3ArtifactMutation{}, errors.New("artifact variant lineage is immutable")
 		}
 		if variantOK && !equalArtifactOutputRequirements(current.OutputRequirements, incoming.Variant.OutputRequirements) {
@@ -2370,6 +2409,46 @@ func (s *SessionStore) prepareV3ArtifactMutation(input V3SessionMutationInput, s
 
 func artifactCollectionLineageCompatible(existing, incoming SessionArtifactLineage) bool {
 	return existing.ParentSessionID == incoming.ParentSessionID && existing.TaskCallID == incoming.TaskCallID && existing.ProgramID == incoming.ProgramID
+}
+
+func equalArtifactLineage(a, b SessionArtifactLineage) bool {
+	if a.ParentSessionID != b.ParentSessionID ||
+		a.SourceSessionID != b.SourceSessionID ||
+		a.SourceCollectionID != b.SourceCollectionID ||
+		a.SourceVariantID != b.SourceVariantID ||
+		a.SourceEventSeq != b.SourceEventSeq ||
+		a.TaskCallID != b.TaskCallID ||
+		a.ProgramID != b.ProgramID ||
+		a.ProgramJobID != b.ProgramJobID ||
+		a.ChildSessionID != b.ChildSessionID ||
+		a.IterationGroupID != b.IterationGroupID ||
+		a.IterationGroup != b.IterationGroup ||
+		a.IterationID != b.IterationID ||
+		a.IterationIndex != b.IterationIndex ||
+		a.IterationLabel != b.IterationLabel ||
+		a.IterationTheme != b.IterationTheme ||
+		a.IterationSectionID != b.IterationSectionID ||
+		a.IterationSectionLabel != b.IterationSectionLabel ||
+		a.IterationSectionStartMs != b.IterationSectionStartMs ||
+		a.IterationSectionEndMs != b.IterationSectionEndMs ||
+		a.PartID != b.PartID ||
+		a.PartLabel != b.PartLabel ||
+		a.PartKind != b.PartKind ||
+		a.SelectedReviewTargetIDs != b.SelectedReviewTargetIDs ||
+		a.RunID != b.RunID ||
+		a.PlanID != b.PlanID ||
+		a.CheckpointID != b.CheckpointID ||
+		a.AttemptID != b.AttemptID ||
+		a.VideoProjectID != b.VideoProjectID ||
+		a.VideoRevisionID != b.VideoRevisionID ||
+		a.VideoRevisionEventSeq != b.VideoRevisionEventSeq ||
+		a.Model != b.Model ||
+		a.AspectRatio != b.AspectRatio ||
+		a.Resolution != b.Resolution ||
+		a.DurationSeconds != b.DurationSeconds {
+		return false
+	}
+	return EqualVideoProvenance(a.VideoProvenance, b.VideoProvenance)
 }
 
 func artifactCollectionProgressTotal(collection SessionArtifactCollection) int {

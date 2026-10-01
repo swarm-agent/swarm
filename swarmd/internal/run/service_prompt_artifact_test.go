@@ -330,6 +330,8 @@ func TestMasterHarnessPromptGuidesSpecializedToolHelp(t *testing.T) {
 	prompt := masterHarnessPrompt("/workspace")
 	for _, want := range []string{
 		"Specialized domain tools return their own workflow instructions and schemas on demand:",
+		"task action=\"help\"",
+		"manage_workers action=\"help\"",
 		"manage_artifact action=\"help\"",
 		"manage_video action=\"help\"",
 		"manage-theme action=\"inspect\"",

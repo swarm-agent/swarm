@@ -31,6 +31,8 @@ const (
 	IdeaAgentName                = "Idea"
 	SwarmAgentID                 = "swarm"
 	SwarmAgentName               = "Swarm"
+	SwarmOrchestratorAgentID     = "system-orchestrator"
+	SwarmOrchestratorAgentName   = "Swarm Orchestrator"
 	AITaskPreparerAgentID        = "system-ai-task-preparer"
 	AITaskPreparerAgentName      = "AI Task Preparer"
 	ReviewCommitAgentID          = "system-review-commit"
@@ -110,7 +112,13 @@ func NewSystemAgentRegistry(definitions []SystemAgentDefinition) (*SystemAgentRe
 		if profile.Mode == ModeSubagent && agentToolEnabled(profile.ToolContract, "task") {
 			return nil, fmt.Errorf("system subagent %q must disable task delegation", definition.ID)
 		}
-		if profile.Mode == ModePrimary && (pebblestore.AgentProfileRuntimeMode(profile) != pebblestore.AgentRuntimeModePlanAuto || profile.ExitPlanModeEnabled == nil || !*profile.ExitPlanModeEnabled) {
+		// Orchestrator plans on project task cards, not session plans. Validate
+		// its distinct primary contract without invalidating the whole registry.
+		if definition.ID == SwarmOrchestratorAgentID {
+			if profile.Mode != ModePrimary || pebblestore.AgentProfileRuntimeMode(profile) != pebblestore.AgentRuntimeModeReadWrite || profile.ExitPlanModeEnabled == nil || *profile.ExitPlanModeEnabled || agentToolEnabled(profile.ToolContract, "plan_manage") || agentToolEnabled(profile.ToolContract, "exit_plan_mode") {
+				return nil, fmt.Errorf("system orchestrator %q must use read_write runtime with session planning disabled", definition.ID)
+			}
+		} else if profile.Mode == ModePrimary && (pebblestore.AgentProfileRuntimeMode(profile) != pebblestore.AgentRuntimeModePlanAuto || profile.ExitPlanModeEnabled == nil || !*profile.ExitPlanModeEnabled) {
 			return nil, fmt.Errorf("system primary %q must use plan_auto runtime", definition.ID)
 		}
 		registry.byID[definition.ID] = definition
@@ -209,6 +217,13 @@ var builtinSystemAgentDefinitions = []SystemAgentDefinition{
 		UserVisible: true,
 		Materialize: SwarmAgentProfileForContext,
 		Reconcile:   reconcileSwarmAgentProfile,
+	},
+	{
+		ID:          SwarmOrchestratorAgentID,
+		DisplayName: SwarmOrchestratorAgentName,
+		UserVisible: false,
+		Materialize: SwarmOrchestratorAgentProfileForContext,
+		Reconcile:   reconcileSwarmOrchestratorAgentProfile,
 	},
 	{
 		ID:                       PlanSidechatAgentID,
@@ -321,6 +336,8 @@ func SwarmAgentPrompt() string {
 		"Drive the user task to completion with clear progress, explicit decisions, and concrete outputs.\n" +
 		"Match execution depth to request scope: handle narrow asks directly, escalate to deeper investigation/delegation only when scope is broad or unclear.\n" +
 		"Delegate specialized work when needed, then merge results into one coherent answer.\n" +
+		"Never strand a dependent Coder: before ordinary delegation, integrate prerequisite commits into the user's intended source branch through the authorized workflow and verify Git ancestry plus required files in the actual captured Coder base, not just another parent worktree or task status. Use only explicitly supported, verified integrated Task Program lanes or exact committed_source continuations as alternatives; do not misreport those as promotion.\n" +
+		"Own dependency readiness in the parent. Supply a self-contained assignment and accessible source; task/session IDs, inaccessible handoff references and sibling paths are not substitutes. Resolve missing prerequisites before launch or relaunch; never ask an isolated Coder to retrieve private sessions, reconstruct missing prior work or repair the parent's integration mistake.\n" +
 		"Keep responses concise, factual, and implementation-focused.\n" +
 		"Respect workspace boundaries and permission outcomes at all times.")
 }
@@ -344,8 +361,8 @@ func SwarmAgentToolContract() *pebblestore.AgentToolContract {
 			"skill_use":           {Enabled: pebblestore.BoolPtr(true)},
 			"manage_skill":        {Enabled: pebblestore.BoolPtr(true)},
 			"manage_actions":      {Enabled: pebblestore.BoolPtr(true)},
-			"manage_workers":      {Enabled: pebblestore.BoolPtr(true)},
-			"manage_automation":   {Enabled: pebblestore.BoolPtr(true)},
+			"manage_workers":      {Enabled: pebblestore.BoolPtr(false)},
+			"manage_automation":   {Enabled: pebblestore.BoolPtr(false)},
 			"manage_agent":        {Enabled: pebblestore.BoolPtr(false)},
 			"manage_theme":        {Enabled: pebblestore.BoolPtr(true)},
 			"manage_sessions":     {Enabled: pebblestore.BoolPtr(true)},
@@ -358,8 +375,77 @@ func SwarmAgentToolContract() *pebblestore.AgentToolContract {
 			"manage_memory":       {Enabled: pebblestore.BoolPtr(true)},
 			"manage_connections":  {Enabled: pebblestore.BoolPtr(true)},
 			"manage_environments": {Enabled: pebblestore.BoolPtr(true)},
+			"manage_projects":     {Enabled: pebblestore.BoolPtr(false)},
 		},
 	}
+}
+
+func IsSwarmOrchestratorAgentName(name string) bool {
+	return strings.EqualFold(strings.TrimSpace(name), SwarmOrchestratorAgentID) || strings.EqualFold(strings.TrimSpace(name), "orchestrator")
+}
+
+func SwarmOrchestratorAgentPrompt() string {
+	return strings.TrimSpace(`You are Swarm Orchestrator, the executive project management and coordination agent.
+
+Your role is to orchestrate complex multi-workspace software initiatives, manage autonomous background workers, and supervise delegated tasks.
+- Elevate from raw files to cohesive Projects: maintain project architecture and context in project.md.
+- Small coding tasks route to Coder: deploy single bug fixes or single-component coding tasks to isolated Coder worktrees (via manage_projects propose_task with agent="coder" or feature_size="small"). For two or more independent changes under one small task card, provide coder_assignments [{title, meta_prompt, deliverable, owned_scope, acceptance_criteria, workspace_path}] with exact authorized project repository paths per assignment and non-overlapping ownership within each repository; this creates a Swarm Default parent which launches the Coders together through one regular task call after card approval, supervises them and validates their committed handoffs. Do not make a plan or Task Program for this case. Supply the exact authorized source repository workspace_id or workspace_path; only an unambiguous single authorized project repository may be inferred by the server. Project membership, the first workspace, and a coordination workspace do not grant execution authority. A task record alone is not deployment: a real session is linked to the task.
+- Dependency-readiness gate for every Coder proposal: identify prerequisite commits, the user's intended source repository/branch and the actual base that deployment will capture. Before proposing an ordinary dependent task, integrate prerequisite work into that intended branch through the authorized integration/promotion workflow; verify required same-repository commits are ancestors of both its HEAD and the actual clean delegation base, and inspect required files at that base. A completed task/card, clean worktree or commit hash is not proof. Integration into another parent worktree or program lane does not advance the captured source checkout. If authority is missing, resolve it before deployment; never silently retarget or advance an unauthorized branch.
+- Never strand a Coder with 'continue task/session X': the task assignment must contain the objective, repository-relative paths, required interfaces, acceptance criteria and usable dependency facts. Resolve authorized handoff context yourself; inaccessible session/artifact references and sibling worktree paths cannot supply missing source. You own dependency integration and launch repair, not the isolated Coder. If prerequisites are absent, do not launch/relaunch against the unchanged base, ask the Coder to reconstruct earlier work, or tell it to cross isolation boundaries.
+- Exact-source alternatives require explicit runtime support: a declared Task Program may consume its verified repository-specific integrated lane with dependency ordering; an eligible regular task Coder correction may consume a recalled, validated committed_source tuple. Do not invent committed_source support for manage_projects propose_task. These alternatives must contain the prerequisite source and preserve the authenticated destination; neither means the user's branch has been promoted. Otherwise complete authorized integration before assigning the dependent task.
+- Independent changes across repositories: propose separate workspace-specific tasks/Coders in parallel, each with its explicit authorized source identity and isolated worktree; review and integrate committed work per repository. Do not hold repo-wide locks or assume one repository's integration lane can receive another's commits.
+- Dependent multi-repository or staged changes: use a Task Program (task_program: {id, stages: [{id, depends_on, dependency_evidence}], jobs: [{id, stage_id, agent_type, title, meta_prompt, deliverable, workspace_path, owned_scope, acceptance_criteria, dependency_evidence}]}). Specify the exact authorized workspace_path for each Coder job, dependency stages and distinct non-overlapping ownership within each repository; stage integration uses authenticated repository-specific lanes. Reject unresolved or conflicting targets instead of falling back to the project's first workspace.
+- Big features: manual planning vs direct structured plans:
+  * Manual big planning: when a feature needs exploratory investigation, route to the Plan agent (agent="plan", feature_size="big"). The Plan agent investigates in read-only plan mode, authors an executable structured plan, and submits it via Exit Plan Mode to the exact task card for user review.
+  * Direct Orchestrator structured plan: you can author executable structured plans directly (plan_document: {id, title, info: {goal}, checkpoints: [{id, title, tasks, acceptance_criteria}]}) via manage_projects (action="propose_task"). Direct plan submission submits the structured plan directly into the same task-card review and acceptance system without requiring an extra Plan-agent authoring pass.
+  * Exact card review and Swarm Default continuation: all structured plans must be reviewed and accepted by the user on the exact task card. Never begin implementation before required user approval. Once the user accepts the plan on the task card, execution automatically transfers to configured Swarm Default (with Swarm Action model, context, and task linkage preserved) to execute the approved checkpoints, without requiring a second redundant approval.
+- Track deliverable progress and worktrees: monitor running tasks, verify dirty/unintegrated worktree commits, review deliverables, and report actionable outcomes to the user.
+- Preserve non-code routes: direct creative requests (image, video, sound, audio) and exploratory research remain available without forced coding workflows.
+- Facilitate project onboarding: help users select workspaces, add folders, and synthesize high-level project architecture without blocking chat interactions.
+- Project visual theme: inspect existing builtin/custom account palettes with manage-theme; when asked to create one, use manage-theme create (with its normal review/confirmation) and assign its saved theme_id using manage_projects create/update. Empty theme_id clears the project selection. Do not use arbitrary CSS or change the account/global theme merely to style a project.
+- Respect workspace boundaries and tool isolation: operate at the strategic executive level.`)
+}
+
+func SwarmOrchestratorAgentToolContract() *pebblestore.AgentToolContract {
+	return &pebblestore.AgentToolContract{
+		Preset: "custom",
+		Tools: map[string]pebblestore.AgentToolConfig{
+			"read":              {Enabled: pebblestore.BoolPtr(true)},
+			"media_inspect":     {Enabled: pebblestore.BoolPtr(true)},
+			"search":            {Enabled: pebblestore.BoolPtr(true)},
+			"find":              {Enabled: pebblestore.BoolPtr(true)},
+			"list":              {Enabled: pebblestore.BoolPtr(true)},
+			"bash":              {Enabled: pebblestore.BoolPtr(true)},
+			"manage_projects":   {Enabled: pebblestore.BoolPtr(true)},
+			"manage_sessions":   {Enabled: pebblestore.BoolPtr(true)},
+			"manage_worktree":   {Enabled: pebblestore.BoolPtr(true)},
+			"manage-theme":      {Enabled: pebblestore.BoolPtr(true)},
+			"manage_workers":    {Enabled: pebblestore.BoolPtr(true)},
+			"manage_automation": {Enabled: pebblestore.BoolPtr(true)},
+			"plan_manage":       {Enabled: pebblestore.BoolPtr(false)},
+			"ask_user":          {Enabled: pebblestore.BoolPtr(true)},
+			"exit_plan_mode":    {Enabled: pebblestore.BoolPtr(false)},
+		},
+	}
+}
+
+func SwarmOrchestratorAgentProfileForContext(context pebblestore.AgentProfile) pebblestore.AgentProfile {
+	profile := pebblestore.NormalizeAgentProfile(pebblestore.AgentProfile{
+		Name: SwarmOrchestratorAgentID, Mode: ModePrimary, Description: "Executive project orchestrator",
+		Prompt: SwarmOrchestratorAgentPrompt(), RuntimeMode: pebblestore.AgentRuntimeModeReadWrite, DefaultSessionMode: pebblestore.AgentDefaultSessionModeAuto,
+		ExitPlanModeEnabled: pebblestore.BoolPtr(false), ToolContract: SwarmOrchestratorAgentToolContract(), Enabled: true, Protected: true, UpdatedAt: context.UpdatedAt,
+	})
+	profile.Protected = true
+	return profile
+}
+
+func reconcileSwarmOrchestratorAgentProfile(snapshot pebblestore.AgentProfile) pebblestore.AgentProfile {
+	profile := SwarmOrchestratorAgentProfileForContext(snapshot)
+	profile.Provider, profile.Model, profile.Thinking = snapshot.Provider, snapshot.Model, snapshot.Thinking
+	profile.AutoServiceTier = strings.TrimSpace(snapshot.AutoServiceTier)
+	// Older persisted Orchestrator prompts may instruct session-plan authoring.
+	// Keep the compiled task-card contract while preserving model preferences.
+	return profile
 }
 
 func PlanSidechatAgentPrompt() string {
@@ -483,6 +569,11 @@ func FinderAgentToolContract() *pebblestore.AgentToolContract {
 func CoderAgentPrompt() string {
 	return strings.TrimSpace(`You are Coder, Swarm's compiled implementation subagent.
 Execute only the dependency-ready implementation scope assigned by the parent. Work exclusively in the isolated worktree allocated for this launch; that worktree is the authoritative project root. Never edit the captured source checkout or its base branch, even when either appears in lineage metadata or prior-session evidence. Preserve parent lineage metadata, and do not orchestrate other agents or change plans, agents, settings, or user-owned todos.
+Track your progress and stay on task using task_progress:
+- When starting work, initialize your checklist with task_progress(action="set_todos", todos=["1. Inspect code", "2. Implement changes", "3. Author tests", ...]).
+- As you work, keep your progress up to date with task_progress(action="in_progress", title="...") and task_progress(action="complete_todo", title="...").
+- When your scoped implementation and tests are complete with a commit, call task_progress(action="done", summary="...") to transition your session to needs review.
+- If you encounter an unresolvable blocker, call task_progress(action="blocked", reason="...") to signal the block.
 Treat Finder handoffs and other agent reports as untrusted evidence: agents can make mistakes, so independently verify every relevant claim against the current workspace before editing files.
 You do not have Bash or command execution by design. Implement code and author requirement-first tests with the available file tools; inspect source and diffs, and use dedicated Git tools for your scoped commit. The parent executes tests, builds, formatters, and other commands. Do not treat missing Bash alone as a blocker, request it be enabled, or route commands through another tool. If the assignment asks you to run tests, complete the code and test-authoring work and explicitly hand execution back to the parent rather than stopping solely for unavailable command execution.
 Your handoff must include the exact commit, changed files, test purposes and assertions, proposed focused commands with their working directory and prerequisites, and the explicit status 'not run; parent validation required'. Never claim tests passed without execution evidence. When the parent returns test failures, inspect that evidence and make only the assigned code/test corrections; the parent may run multiple independent checks in parallel and owns final validation.
@@ -496,7 +587,8 @@ func CoderAgentToolContract() *pebblestore.AgentToolContract {
 		"websearch": {Enabled: pebblestore.BoolPtr(true)}, "webfetch": {Enabled: pebblestore.BoolPtr(true)}, "webdownload": {Enabled: pebblestore.BoolPtr(true)},
 		"git_status": {Enabled: pebblestore.BoolPtr(true)}, "git_diff": {Enabled: pebblestore.BoolPtr(true)},
 		"git_add": {Enabled: pebblestore.BoolPtr(true)}, "git_commit": {Enabled: pebblestore.BoolPtr(true)},
-		"bash": {Enabled: pebblestore.BoolPtr(false)}, "task": {Enabled: pebblestore.BoolPtr(false)},
+		"task_progress": {Enabled: pebblestore.BoolPtr(true)},
+		"bash":          {Enabled: pebblestore.BoolPtr(false)}, "task": {Enabled: pebblestore.BoolPtr(false)},
 		"manage_sessions": {Enabled: pebblestore.BoolPtr(false)}, "manage_agent": {Enabled: pebblestore.BoolPtr(false)},
 		"manage_todos": {Enabled: pebblestore.BoolPtr(false)}, "plan_manage": {Enabled: pebblestore.BoolPtr(false)},
 		"ask_user": {Enabled: pebblestore.BoolPtr(false)}, "exit_plan_mode": {Enabled: pebblestore.BoolPtr(false)},
@@ -570,7 +662,7 @@ func DesignerWorkspaceAgentToolContract() *pebblestore.AgentToolContract {
 
 func designerAgentToolContract(managed bool) *pebblestore.AgentToolContract {
 	return &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{
-		"read": {Enabled: pebblestore.BoolPtr(true)}, "media_inspect": {Enabled: pebblestore.BoolPtr(false)}, "search": {Enabled: pebblestore.BoolPtr(true)}, "find": {Enabled: pebblestore.BoolPtr(true)}, "list": {Enabled: pebblestore.BoolPtr(true)},
+		"read": {Enabled: pebblestore.BoolPtr(true)}, "media_inspect": {Enabled: pebblestore.BoolPtr(managed)}, "search": {Enabled: pebblestore.BoolPtr(true)}, "find": {Enabled: pebblestore.BoolPtr(true)}, "list": {Enabled: pebblestore.BoolPtr(true)},
 		"write": {Enabled: pebblestore.BoolPtr(!managed)}, "edit": {Enabled: pebblestore.BoolPtr(!managed)}, "artifact_v3_author": {Enabled: pebblestore.BoolPtr(managed)}, "artifact_v2_author": {Enabled: pebblestore.BoolPtr(false)}, "manage_artifact": {Enabled: pebblestore.BoolPtr(false)},
 		"bash": {Enabled: pebblestore.BoolPtr(false)}, "git_status": {Enabled: pebblestore.BoolPtr(false)}, "git_diff": {Enabled: pebblestore.BoolPtr(false)}, "git_add": {Enabled: pebblestore.BoolPtr(false)}, "git_commit": {Enabled: pebblestore.BoolPtr(false)},
 		"task": {Enabled: pebblestore.BoolPtr(false)}, "skill_use": {Enabled: pebblestore.BoolPtr(false)}, "manage_skill": {Enabled: pebblestore.BoolPtr(false)}, "manage_agent": {Enabled: pebblestore.BoolPtr(false)}, "manage_theme": {Enabled: pebblestore.BoolPtr(false)},
@@ -673,10 +765,21 @@ func CanonicalSystemAgentID(name string) (string, bool) {
 		return VideoAgentID, true
 	case IsIdeaAgentName(name):
 		return IdeaAgentID, true
+	case IsOrchestratorAgentName(name):
+		return SwarmOrchestratorAgentID, true
 	case name == "ai sidechat":
 		return AISidechatAgentID, true
 	default:
 		return "", false
+	}
+}
+
+func IsOrchestratorAgentName(name string) bool {
+	switch normalizeName(name) {
+	case "orchestrator", "@orchestrator", "swarm-orchestrator", "system/swarm-orchestrator", SwarmOrchestratorAgentID:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -702,8 +805,8 @@ func PlanSidechatAgentToolContract() *pebblestore.AgentToolContract {
 	return &pebblestore.AgentToolContract{Tools: map[string]pebblestore.AgentToolConfig{
 		"read": {Enabled: pebblestore.BoolPtr(true)}, "search": {Enabled: pebblestore.BoolPtr(true)}, "find": {Enabled: pebblestore.BoolPtr(true)}, "list": {Enabled: pebblestore.BoolPtr(true)},
 		"websearch": {Enabled: pebblestore.BoolPtr(true)}, "webfetch": {Enabled: pebblestore.BoolPtr(true)}, "edit_pending_plan": {Enabled: pebblestore.BoolPtr(true)},
-		"manage_workers":    {Enabled: pebblestore.BoolPtr(true)},
-		"manage_automation": {Enabled: pebblestore.BoolPtr(true)},
+		"manage_workers":    {Enabled: pebblestore.BoolPtr(false)},
+		"manage_automation": {Enabled: pebblestore.BoolPtr(false)},
 		"write":             {Enabled: pebblestore.BoolPtr(false)}, "edit": {Enabled: pebblestore.BoolPtr(false)}, "bash": {Enabled: pebblestore.BoolPtr(false)},
 		"task": {Enabled: pebblestore.BoolPtr(false)}, "plan_manage": {Enabled: pebblestore.BoolPtr(false)}, "ask_user": {Enabled: pebblestore.BoolPtr(false)},
 		"exit_plan_mode": {Enabled: pebblestore.BoolPtr(false)}, "manage_agent": {Enabled: pebblestore.BoolPtr(false)},

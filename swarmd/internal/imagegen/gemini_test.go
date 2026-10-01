@@ -10,6 +10,9 @@ import (
 	"testing"
 )
 
+// Purpose: the Gemini REST boundary must preserve the original image prompt,
+// including whitespace, while sending model settings separately. A local HTTP
+// receiver checks the actual serialized request rather than a service-side copy.
 func TestGoogleGeminiImageClientGenerateImageUsesRESTGenerateContent(t *testing.T) {
 	png := testPNGBytes()
 	var gotPath string
@@ -44,7 +47,7 @@ func TestGoogleGeminiImageClientGenerateImageUsesRESTGenerateContent(t *testing.
 	result, err := client.GenerateImage(context.Background(), GeminiImageGenerationRequest{
 		APIKey:      "test-key",
 		Model:       "test-model",
-		Prompt:      "make image",
+		Prompt:      "  café\nmake image  ",
 		AspectRatio: "16:9",
 		ImageSize:   "1K",
 		OutputIndex: 2,
@@ -61,7 +64,7 @@ func TestGoogleGeminiImageClientGenerateImageUsesRESTGenerateContent(t *testing.
 	if gotKey != "test-key" {
 		t.Fatalf("api key query = %q, want test-key", gotKey)
 	}
-	if len(gotBody.Contents) != 1 || len(gotBody.Contents[0].Parts) != 1 || gotBody.Contents[0].Parts[0].Text != "make image" {
+	if len(gotBody.Contents) != 1 || len(gotBody.Contents[0].Parts) != 1 || gotBody.Contents[0].Parts[0].Text != "  café\nmake image  " {
 		t.Fatalf("contents = %#v, want single prompt part", gotBody.Contents)
 	}
 	if got := gotBody.GenerationConfig.ResponseModalities; len(got) != 1 || got[0] != "IMAGE" {

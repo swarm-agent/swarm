@@ -1,15 +1,21 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"swarm/packages/swarmd/internal/automation"
+	"swarm/packages/swarmd/internal/security"
 	store "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/webhook"
 )
 
 const AutomationsV2Path = "/v3/automations/v2"
@@ -23,10 +29,48 @@ type automationV2Request struct {
 	Document    *store.SessionPlanDocument `json:"document,omitempty"`
 }
 
+type automationV2TriggerRequest struct {
+	WorkspaceID  string         `json:"workspace_id"`
+	SessionID    string         `json:"session_id,omitempty"`
+	AutomationID string         `json:"automation_id,omitempty"`
+	WorkerID     string         `json:"worker_id,omitempty"`
+	Prompt       string         `json:"prompt,omitempty"`
+	Context      map[string]any `json:"context,omitempty"`
+}
+
+type automationV2TokenRequest struct {
+	WorkspaceID   string `json:"workspace_id,omitempty"`
+	WorkerID      string `json:"worker_id,omitempty"`
+	AutomationID  string `json:"automation_id,omitempty"`
+	SaveToSecrets *bool  `json:"save_to_secrets,omitempty"`
+}
+
+func isTriggerWorker(doc store.SessionPlanDocument) bool {
+	if doc.WorkerV2 != nil && doc.WorkerV2.Schedule.Kind == "trigger" {
+		return true
+	}
+	if doc.AutomationV2 != nil && doc.AutomationV2.Schedule.Kind == "trigger" {
+		return true
+	}
+	return false
+}
+
 func automationV2Error(w http.ResponseWriter, err error) {
 	if errors.Is(err, store.ErrAutomationV2Conflict) {
 		writeError(w, http.StatusConflict, errors.New("automation ownership or review conflict"))
 		return
+	}
+	if err != nil {
+		msg := err.Error()
+		if strings.Contains(msg, "paused") || strings.Contains(msg, "cancelled") || strings.Contains(msg, "archived") ||
+			strings.Contains(msg, "expired") || strings.Contains(msg, "serialize") || strings.Contains(msg, "pre-configured jobs") ||
+			strings.Contains(msg, "daily run cap") || strings.Contains(msg, "workspace required") || strings.Contains(msg, "target worker") ||
+			strings.Contains(msg, "executable plan document is invalid") || strings.Contains(msg, "invalid automation v2 policy") ||
+			strings.Contains(msg, "automation checkpoints must be unexecuted") || strings.Contains(msg, "automation subtasks must be unexecuted") ||
+			strings.Contains(msg, "exclusive automation_v2 required") || strings.Contains(msg, "worker_id required") || strings.Contains(msg, "scope required") {
+			writeError(w, http.StatusBadRequest, errors.New(msg))
+			return
+		}
 	}
 	writeError(w, http.StatusBadRequest, errors.New("automation v2 operation rejected"))
 }
@@ -56,16 +100,41 @@ func (s *Server) handleAutomationsV2(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method == http.MethodGet && (r.URL.Path == AutomationsV2Path || r.URL.Path == AutomationsV2Path+"/review" || r.URL.Path == AutomationsV2Path+"/progress") {
+		if !s.requireScope(w, r, "automations:read") {
+			return
+		}
 		q := r.URL.Query()
 		for key, values := range q {
-			if len(values) != 1 || (key != "workspace_id" && key != "session_id" && key != "automation_id" && key != "worker_id" && key != "limit" && key != "cursor" && key != "timezone" && key != "archived_mode") {
+			if len(values) != 1 || (key != "workspace_id" && key != "session_id" && key != "automation_id" && key != "worker_id" && key != "limit" && key != "cursor" && key != "timezone" && key != "archived_mode" && key != "action") {
 				automationV2Error(w, errors.New("invalid query"))
 				return
 			}
 		}
-		if q.Get("workspace_id") == "" {
-			automationV2Error(w, errors.New("workspace required"))
-			return
+		if q.Has("action") {
+			act := q.Get("action")
+			if r.URL.Path == AutomationsV2Path {
+				if act != "list" && act != "" {
+					automationV2Error(w, errors.New("invalid action for automations list"))
+					return
+				}
+			} else if r.URL.Path == AutomationsV2Path+"/progress" {
+				if act != "progress" && act != "" {
+					automationV2Error(w, errors.New("invalid action for automations progress"))
+					return
+				}
+			} else if r.URL.Path == AutomationsV2Path+"/review" {
+				if act != "review" && act != "" {
+					automationV2Error(w, errors.New("invalid action for automations review"))
+					return
+				}
+			} else {
+				automationV2Error(w, errors.New("invalid query action"))
+				return
+			}
+		}
+		workspaceID := q.Get("workspace_id")
+		if workspaceID == "all" {
+			workspaceID = ""
 		}
 		if r.URL.Path == AutomationsV2Path+"/progress" {
 			targetID := q.Get("session_id")
@@ -79,7 +148,7 @@ func (s *Server) handleAutomationsV2(w http.ResponseWriter, r *http.Request) {
 				automationV2Error(w, errors.New("invalid progress query"))
 				return
 			}
-			progress, err := s.sessions.AutomationV2Progress(p.AccountScopeID, p.UserID, q.Get("workspace_id"), targetID, q.Get("timezone"), q.Get("cursor"), time.Now().UnixMilli())
+			progress, err := s.sessions.AutomationV2Progress(p.AccountScopeID, p.UserID, workspaceID, targetID, q.Get("timezone"), q.Get("cursor"), time.Now().UnixMilli())
 			if err != nil {
 				automationV2Error(w, err)
 				return
@@ -107,7 +176,7 @@ func (s *Server) handleAutomationsV2(w http.ResponseWriter, r *http.Request) {
 				automationV2Error(w, errors.New("invalid review query"))
 				return
 			}
-			proposal, found, err := s.sessions.GetAutomationV2Proposal(p.AccountScopeID, p.UserID, q.Get("workspace_id"), targetID)
+			proposal, found, err := s.sessions.GetAutomationV2Proposal(p.AccountScopeID, p.UserID, workspaceID, targetID)
 			if err != nil {
 				automationV2Error(w, err)
 				return
@@ -136,7 +205,7 @@ func (s *Server) handleAutomationsV2(w http.ResponseWriter, r *http.Request) {
 			automationV2Error(w, errors.New("invalid discovery query"))
 			return
 		}
-		records, next, err := s.sessions.ListAutomationV2Records(p.AccountScopeID, p.UserID, q.Get("workspace_id"), q.Get("cursor"), limit, archivedMode)
+		records, next, err := s.sessions.ListAutomationV2Records(p.AccountScopeID, p.UserID, workspaceID, q.Get("cursor"), limit, archivedMode)
 		if err != nil {
 			automationV2Error(w, err)
 			return
@@ -148,8 +217,157 @@ func (s *Server) handleAutomationsV2(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w)
 		return
 	}
-	if r.URL.Path != AutomationsV2Path+"/proposal" && r.URL.Path != AutomationsV2Path+"/accept" && r.URL.Path != AutomationsV2Path+"/decline" && r.URL.Path != AutomationsV2Path+"/control" {
+	if r.URL.Path != AutomationsV2Path+"/proposal" && r.URL.Path != AutomationsV2Path+"/accept" && r.URL.Path != AutomationsV2Path+"/decline" && r.URL.Path != AutomationsV2Path+"/control" && r.URL.Path != AutomationsV2Path+"/trigger" && r.URL.Path != AutomationsV2Path+"/token" {
 		http.NotFound(w, r)
+		return
+	}
+	if r.URL.Path != AutomationsV2Path+"/trigger" && r.URL.Path != AutomationsV2Path+"/token" {
+		if !s.requireScope(w, r, "automations:write") {
+			return
+		}
+	}
+	if r.URL.Path == AutomationsV2Path+"/trigger" {
+		if !s.requireScope(w, r, "automations:trigger") {
+			return
+		}
+		var req automationV2TriggerRequest
+		d := json.NewDecoder(http.MaxBytesReader(w, r.Body, 300*1024))
+		d.DisallowUnknownFields()
+		if err := d.Decode(&req); err != nil {
+			automationV2Error(w, err)
+			return
+		}
+		if err := d.Decode(new(any)); err != io.EOF {
+			automationV2Error(w, errors.New("trailing payload"))
+			return
+		}
+		if req.WorkspaceID == "" || len(req.WorkspaceID) > 256 {
+			automationV2Error(w, errors.New("workspace required"))
+			return
+		}
+		targetID := req.SessionID
+		if targetID == "" {
+			targetID = req.WorkerID
+		}
+		if targetID == "" {
+			targetID = req.AutomationID
+		}
+		if targetID == "" || len(targetID) > 256 {
+			automationV2Error(w, errors.New("target worker or session required"))
+			return
+		}
+		if scopedRec, ok := ScopedTokenFromRequest(r); ok && scopedRec != nil {
+			if scopedRec.WorkerID != "" && scopedRec.WorkerID != targetID {
+				writeError(w, http.StatusForbidden, fmt.Errorf("scoped deploy token is restricted to worker %q", scopedRec.WorkerID))
+				return
+			}
+		}
+		if strings.TrimSpace(req.Prompt) != "" {
+			if req.Context == nil {
+				req.Context = make(map[string]any)
+			}
+			req.Context["prompt"] = strings.TrimSpace(req.Prompt)
+		}
+		var targetRecord store.AutomationV2Record
+		record, ok, err := s.sessions.GetAutomationV2Record(p.AccountScopeID, p.UserID, req.WorkspaceID, targetID)
+		if !ok || err != nil {
+			if acctRec, acctOk, acctErr := s.sessions.GetAutomationV2Record(p.AccountScopeID, p.UserID, "", targetID); acctErr == nil && acctOk {
+				record = acctRec
+				ok = true
+				req.WorkspaceID = acctRec.WorkspaceID
+			}
+		}
+		if ok {
+			targetRecord = record
+			hasCheckpoints := len(targetRecord.Document.Checkpoints) > 0
+			hasPrompt := req.Context != nil && strings.TrimSpace(fmt.Sprint(req.Context["prompt"])) != "" && req.Context["prompt"] != nil
+			if !hasCheckpoints && !hasPrompt {
+				automationV2Error(w, errors.New("worker has no pre-configured jobs; dynamic prompt is required to trigger execution"))
+				return
+			}
+		}
+		occurrence, err := s.sessions.TriggerAutomationV2(p.AccountScopeID, p.UserID, req.WorkspaceID, targetID, req.Context)
+		if err != nil {
+			automationV2Error(w, err)
+			return
+		}
+		if s.automationV2Scheduler != nil {
+			go func() {
+				_ = s.automationV2Scheduler.Tick(context.Background(), occurrence.Record, time.Now().UnixMilli())
+			}()
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "occurrence": occurrence})
+		return
+	}
+	if r.URL.Path == AutomationsV2Path+"/token" {
+		if !s.requireScope(w, r, "automations:write") {
+			return
+		}
+		var req automationV2TokenRequest
+		d := json.NewDecoder(http.MaxBytesReader(w, r.Body, 300*1024))
+		d.DisallowUnknownFields()
+		if err := d.Decode(&req); err != nil {
+			automationV2Error(w, err)
+			return
+		}
+		if err := d.Decode(new(any)); err != io.EOF {
+			automationV2Error(w, errors.New("trailing payload"))
+			return
+		}
+		workerID := strings.TrimSpace(req.WorkerID)
+		if workerID == "" {
+			workerID = strings.TrimSpace(req.AutomationID)
+		}
+		if workerID == "" || len(workerID) > 256 {
+			automationV2Error(w, errors.New("worker_id required"))
+			return
+		}
+		workspaceID := strings.TrimSpace(req.WorkspaceID)
+		var title string
+		if record, ok, err := s.sessions.GetAutomationV2Record(p.AccountScopeID, p.UserID, workspaceID, workerID); err == nil && ok {
+			title = record.Document.Title
+		} else if workspaceID != "" {
+			if record, ok, err := s.sessions.GetAutomationV2Record(p.AccountScopeID, p.UserID, "", workerID); err == nil && ok {
+				title = record.Document.Title
+			}
+		}
+		if title == "" {
+			title = workerID
+		}
+		if s.security == nil {
+			automationV2Error(w, errors.New("security service not configured"))
+			return
+		}
+		rawToken, tokenRecord, err := s.security.CreateScopedToken(
+			"Worker: "+title,
+			[]string{"automations:trigger"},
+			p.AccountScopeID,
+			p.UserID,
+			0,
+			workerID,
+			title,
+		)
+		if err != nil {
+			automationV2Error(w, err)
+			return
+		}
+		msg := "Deploy token minted for this worker."
+		saved := false
+		if req.SaveToSecrets == nil || *req.SaveToSecrets {
+			_ = security.SetLocalSecret("SWARM_TRIGGER_TOKEN", rawToken)
+			_ = os.Setenv("SWARM_TRIGGER_TOKEN", rawToken)
+			msg = "Deploy token minted and saved to ~/.config/swarm/secrets.env for this worker."
+			saved = true
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":          true,
+			"token":       rawToken,
+			"record":      tokenRecord,
+			"worker_id":   workerID,
+			"token_path":  security.SecretsFilePath(),
+			"token_saved": saved,
+			"message":     msg,
+		})
 		return
 	}
 	var req automationV2Request
@@ -190,6 +408,9 @@ func (s *Server) handleAutomationsV2(w http.ResponseWriter, r *http.Request) {
 		}
 		response = map[string]any{"ok": true, "declined": true}
 	} else if r.URL.Path == AutomationsV2Path+"/proposal" {
+		if req.Action == "" {
+			req.Action = "propose_automation"
+		}
 		if req.Action != "propose_automation" || req.Document == nil {
 			automationV2Error(w, errors.New("proposal required"))
 			return
@@ -199,8 +420,11 @@ func (s *Server) handleAutomationsV2(w http.ResponseWriter, r *http.Request) {
 			automationV2Error(w, err)
 			return
 		}
-		response = map[string]any{"proposal": proposal}
+		response = map[string]any{"ok": true, "proposal": proposal}
 	} else {
+		if req.Action == "" {
+			req.Action = "accept_automation"
+		}
 		if req.Action != "accept_automation" || req.Document != nil || req.Review.ProposalID == "" || req.Review.Revision == 0 || req.Review.Digest == "" {
 			automationV2Error(w, errors.New("exact acceptance required"))
 			return
@@ -210,7 +434,43 @@ func (s *Server) handleAutomationsV2(w http.ResponseWriter, r *http.Request) {
 			automationV2Error(w, err)
 			return
 		}
-		response = map[string]any{"record": record}
+		if isTriggerWorker(record.Document) {
+			var rawToken string
+			if s.security != nil {
+				tokenName := "Trigger Worker: " + record.Document.Title
+				if strings.TrimSpace(record.Document.Title) == "" {
+					tokenName = "Trigger Worker: " + record.AutomationID
+				}
+				var err error
+				rawToken, _, err = s.security.CreateScopedToken(
+					tokenName,
+					[]string{"automations:trigger"},
+					p.AccountScopeID,
+					p.UserID,
+					0,
+					record.AutomationID,
+					record.Document.Title,
+				)
+				if err == nil {
+					_ = security.SetLocalSecret("SWARM_TRIGGER_TOKEN", rawToken)
+					_ = os.Setenv("SWARM_TRIGGER_TOKEN", rawToken)
+				}
+			}
+			response = map[string]any{
+				"ok":           true,
+				"record":       record,
+				"token_minted": true,
+				"token":        rawToken,
+				"token_path":   security.SecretsFilePath(),
+				"message":      "Deploy token minted and saved to ~/.config/swarm/secrets.env for this worker.",
+			}
+		} else {
+			response = map[string]any{
+				"ok":           true,
+				"record":       record,
+				"token_minted": false,
+			}
+		}
 	}
 	// The foundation committed its durable outbox before returning. Wake the
 	// canonical scoped stream; a delivery error never rolls back acceptance.
@@ -228,4 +488,168 @@ func (s *Server) handleAutomationsV2(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, response)
+}
+
+type automationV2WebhookTestRequest struct {
+	ID          string   `json:"id,omitempty"`
+	URL         string   `json:"url,omitempty"`
+	Secret      string   `json:"secret,omitempty"`
+	Format      string   `json:"format,omitempty"`
+	Events      []string `json:"events,omitempty"`
+	WorkerID    string   `json:"worker_id,omitempty"`
+	WorkerTitle string   `json:"worker_title,omitempty"`
+}
+
+func (s *Server) handleAutomationsV2Webhooks(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	p, ok := PrincipalFromRequest(r)
+	if !ok || !p.Valid() {
+		writeError(w, http.StatusUnauthorized, errors.New("trusted user required"))
+		return
+	}
+	if p.Type != "user" {
+		writeError(w, http.StatusForbidden, errors.New("explicit user required"))
+		return
+	}
+	if s.sessions == nil || s.sessions.Store() == nil {
+		writeError(w, http.StatusServiceUnavailable, errors.New("session service unavailable"))
+		return
+	}
+
+	db := s.sessions.Store()
+	path := strings.TrimPrefix(r.URL.Path, AutomationsV2Path+"/webhooks")
+	path = strings.TrimPrefix(path, "/")
+
+	// GET /v3/automations/v2/webhooks
+	if r.Method == http.MethodGet && path == "" {
+		if !s.requireScope(w, r, "automations:read") {
+			return
+		}
+		webhooks, err := db.ListAutomationV2Webhooks(p.AccountScopeID)
+		if err != nil {
+			automationV2Error(w, err)
+			return
+		}
+		if webhooks == nil {
+			webhooks = []store.AutomationV2GlobalWebhook{}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "webhooks": webhooks})
+		return
+	}
+
+	// POST /v3/automations/v2/webhooks/test or POST /v3/automations/v2/webhooks/{id}/test
+	if r.Method == http.MethodPost && (path == "test" || strings.HasSuffix(path, "/test")) {
+		if !s.requireScope(w, r, "automations:write") {
+			return
+		}
+		if s.webhookDispatcher == nil {
+			writeError(w, http.StatusServiceUnavailable, errors.New("webhook dispatcher unavailable"))
+			return
+		}
+		var req automationV2WebhookTestRequest
+		_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 100*1024)).Decode(&req)
+
+		targetID := strings.TrimSuffix(path, "/test")
+		if targetID != "" && targetID != "test" && req.ID == "" {
+			req.ID = targetID
+		}
+
+		dest := webhook.Destination{
+			ID:      req.ID,
+			URL:     req.URL,
+			Secret:  req.Secret,
+			Format:  req.Format,
+			Events:  req.Events,
+			Enabled: true,
+		}
+		if req.ID != "" && dest.URL == "" {
+			wh, found, err := db.GetAutomationV2Webhook(p.AccountScopeID, req.ID)
+			if err != nil || !found {
+				writeError(w, http.StatusNotFound, errors.New("webhook destination not found"))
+				return
+			}
+			dest = webhook.Destination{
+				ID:      wh.ID,
+				URL:     wh.URL,
+				Secret:  wh.Secret,
+				Format:  wh.Format,
+				Events:  wh.Events,
+				Enabled: wh.Enabled,
+			}
+		}
+		if dest.URL == "" {
+			writeError(w, http.StatusBadRequest, errors.New("webhook url or valid webhook id required"))
+			return
+		}
+
+		workerTitle := req.WorkerTitle
+		if workerTitle == "" {
+			workerTitle = "Test Ping Worker"
+		}
+		workerID := req.WorkerID
+		if workerID == "" {
+			workerID = "test-worker"
+		}
+
+		event := webhook.WebhookEvent{
+			Type:        webhook.EventTestPing,
+			EventID:     "whk_test_" + strconv.FormatInt(time.Now().UnixNano(), 36),
+			Timestamp:   time.Now().UnixMilli(),
+			AccountID:   p.AccountScopeID,
+			WorkerID:    workerID,
+			WorkerTitle: workerTitle,
+			State:       "succeeded",
+			Detail:      "This is a test notification from Swarm daemon.",
+		}
+
+		result, err := s.webhookDispatcher.DeliverSync(r.Context(), event, dest)
+		if err != nil {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"ok":     false,
+				"error":  err.Error(),
+				"result": result,
+			})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":     true,
+			"result": result,
+		})
+		return
+	}
+
+	// POST /v3/automations/v2/webhooks (Create or Update)
+	if r.Method == http.MethodPost && path == "" {
+		if !s.requireScope(w, r, "automations:write") {
+			return
+		}
+		var whk store.AutomationV2GlobalWebhook
+		d := json.NewDecoder(http.MaxBytesReader(w, r.Body, 100*1024))
+		d.DisallowUnknownFields()
+		if err := d.Decode(&whk); err != nil {
+			automationV2Error(w, err)
+			return
+		}
+		if err := db.PutAutomationV2Webhook(p.AccountScopeID, &whk); err != nil {
+			automationV2Error(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "webhook": whk})
+		return
+	}
+
+	// DELETE /v3/automations/v2/webhooks/{id}
+	if r.Method == http.MethodDelete && path != "" {
+		if !s.requireScope(w, r, "automations:write") {
+			return
+		}
+		if err := db.DeleteAutomationV2Webhook(p.AccountScopeID, path); err != nil {
+			automationV2Error(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+		return
+	}
+
+	writeError(w, http.StatusNotFound, errors.New("not found"))
 }

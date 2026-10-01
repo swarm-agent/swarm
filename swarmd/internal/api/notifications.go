@@ -29,6 +29,9 @@ func (s *Server) handleNotifications(w http.ResponseWriter, r *http.Request) {
 	case "/v1/alerts/clear", "/v1/notifications/clear":
 		s.handleNotificationClear(w, r)
 		return
+	case "/v1/alerts/inbox", "/v1/notifications/inbox":
+		s.handleNotificationInbox(w, r)
+		return
 	default:
 		if strings.HasPrefix(path, "/v1/alerts/") || strings.HasPrefix(path, "/v1/notifications/") {
 			s.handleNotificationUpdate(w, r)
@@ -44,6 +47,7 @@ type accountScopedNotificationService interface {
 	ClearNotificationsForAccount(accountScopeID, swarmID string) (notification.ClearResult, error)
 	UpdateNotificationForAccount(accountScopeID string, input notification.UpdateInput) (pebblestore.NotificationRecord, bool, error)
 	UpsertSystemNotificationForAccount(accountScopeID string, record pebblestore.NotificationRecord) (pebblestore.NotificationRecord, bool, error)
+	SubmitInboxNotificationForAccount(accountScopeID string, input notification.InboxNotificationInput) (pebblestore.NotificationRecord, error)
 }
 
 func notificationServiceForAccount(base notificationService, accountScopeID string) notificationService {
@@ -82,6 +86,14 @@ func (s scopedNotificationService) UpdateNotification(input notification.UpdateI
 
 func (s scopedNotificationService) UpsertSystemNotification(record pebblestore.NotificationRecord) (pebblestore.NotificationRecord, bool, error) {
 	return s.scoped.UpsertSystemNotificationForAccount(s.accountScopeID, record)
+}
+
+func (s scopedNotificationService) SubmitInboxNotification(input notification.InboxNotificationInput) (pebblestore.NotificationRecord, error) {
+	return s.scoped.SubmitInboxNotificationForAccount(s.accountScopeID, input)
+}
+
+func (s scopedNotificationService) SubmitInboxNotificationForAccount(accountScopeID string, input notification.InboxNotificationInput) (pebblestore.NotificationRecord, error) {
+	return s.scoped.SubmitInboxNotificationForAccount(accountScopeID, input)
 }
 
 func (s *Server) notificationAccountScopeID(w http.ResponseWriter, r *http.Request) (string, bool) {
@@ -148,6 +160,58 @@ func (s *Server) handleNotificationClear(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "result": result})
 }
 
+func (s *Server) handleNotificationInbox(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	accountScopeID, ok := s.notificationAccountScopeID(w, r)
+	if !ok {
+		return
+	}
+	if !s.requireScopeAny(w, r, "notifications:write", "notifications:*", "automations:write", "deliverables:write") {
+		return
+	}
+	var input notification.InboxNotificationInput
+	if err := decodeJSONLimited(w, r, &input, 512*1024); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if strings.TrimSpace(input.Title) == "" {
+		writeError(w, http.StatusBadRequest, errors.New("notification title is required"))
+		return
+	}
+
+	// Token-bound origin stamping to prevent spoofing
+	if scopedRec, ok := ScopedTokenFromRequest(r); ok && scopedRec != nil {
+		input.Verified = true
+		if scopedRec.WorkerID != "" {
+			input.WorkerID = scopedRec.WorkerID
+			if scopedRec.WorkerName != "" {
+				input.OriginLabel = scopedRec.WorkerName
+			} else {
+				input.OriginLabel = "Worker: " + scopedRec.WorkerID
+			}
+		} else if scopedRec.Name != "" {
+			input.OriginLabel = scopedRec.Name
+		}
+	} else if principal, ok := PrincipalFromRequest(r); ok && principal.Valid() {
+		input.Verified = true
+	}
+
+	record, err := notificationServiceForAccount(s.notifications, accountScopeID).SubmitInboxNotification(input)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	summary, _ := notificationServiceForAccount(s.notifications, accountScopeID).Summary(record.SwarmID)
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"ok":           true,
+		"notification": s.enrichNotificationRecord(record),
+		"summary":      summary,
+	})
+}
+
 func (s *Server) handleNotificationUpdate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)
@@ -208,6 +272,14 @@ func (s *Server) enrichNotificationRecords(records []pebblestore.NotificationRec
 }
 
 func (s *Server) enrichNotificationRecord(record pebblestore.NotificationRecord) pebblestore.NotificationRecord {
+	if record.OriginLabel == "" && record.WorkerID != "" {
+		record.OriginLabel = "Worker: " + record.WorkerID
+	}
+	if record.ActionURL == "" && record.Payload != nil {
+		if targetTab, ok := record.Payload["target_tab"].(string); ok && strings.TrimSpace(targetTab) == "cloud" {
+			record.ActionURL = "/settings?tab=cloud"
+		}
+	}
 	sessionID := strings.TrimSpace(record.SessionID)
 	if sessionID == "" || s.sessions == nil {
 		if record.SessionLabel == "" && sessionID != "" {
@@ -238,7 +310,11 @@ func (s *Server) enrichNotificationRecord(record pebblestore.NotificationRecord)
 		record.SessionLabel = notificationSessionLabel(record.SessionTitle, record.WorkspaceName, sessionID)
 	}
 	if record.OriginLabel == "" {
-		record.OriginLabel = notificationOriginLabel(record, session.Metadata)
+		if record.WorkerID != "" {
+			record.OriginLabel = "Worker: " + record.WorkerID
+		} else {
+			record.OriginLabel = notificationOriginLabel(record, session.Metadata)
+		}
 	}
 	if record.ActionURL == "" && record.WorkspacePath != "" && sessionID != "" {
 		record.ActionURL = notification.NotificationActionURL(record.WorkspaceName, record.WorkspacePath, sessionID)

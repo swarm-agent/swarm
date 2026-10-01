@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ChangeEvent, type ReactNode } from 'react'
+import { createContext, useContext, useEffect, useMemo, useState, type ChangeEvent, type ReactNode } from 'react'
 import { Copy, Check, AlertCircle, Archive, CalendarClock, ChevronDown, FilePenLine, Folder, GitCommit, Rocket, LockKeyhole, Server, type LucideIcon } from 'lucide-react'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../../components/ui/dialog'
 import { Button } from '../../../../components/ui/button'
@@ -50,7 +50,10 @@ import {
 import { AutomationV2PlanReview, automationV2PermissionProposal } from '../../tools/automations/automation-v2-plan-review'
 import { DesktopPlanAgentSidecar } from '../../chat/components/desktop-plan-agent-sidecar'
 
+const DismissWithoutDecisionContext = createContext(false)
+
 interface DesktopPermissionModalProps {
+  dismissWithoutDecision?: boolean
   open: boolean
   permission: DesktopPermissionRecord | null
   pendingCount: number
@@ -165,11 +168,12 @@ function ModalShell({
   shortcutsDisabled?: boolean
   showSessionMeta?: boolean
 }) {
+  const dismissWithoutDecision = useContext(DismissWithoutDecisionContext)
   const handleRequestClose = () => {
     if (shortcutsDisabled) {
       return
     }
-    if (onRequestClose) {
+    if (onRequestClose && !dismissWithoutDecision) {
       onRequestClose()
       return
     }
@@ -180,7 +184,7 @@ function ModalShell({
     open,
     disabled: shortcutsDisabled,
     onPrimary: onPrimaryShortcut,
-    onDeny: onDenyShortcut ?? handleRequestClose,
+    onDeny: dismissWithoutDecision ? handleRequestClose : onDenyShortcut ?? handleRequestClose,
   })
 
   if (!open) {
@@ -3486,6 +3490,12 @@ function AutomationV2Modal(props: DesktopPermissionModalProps) {
 }
 
 export function DesktopPermissionModal(props: DesktopPermissionModalProps) {
+  return <DismissWithoutDecisionContext.Provider value={props.dismissWithoutDecision === true}>
+    <DesktopPermissionModalContent {...props} />
+  </DismissWithoutDecisionContext.Provider>
+}
+
+function DesktopPermissionModalContent(props: DesktopPermissionModalProps) {
   const kind = props.permission ? permissionKind(props.permission) : 'generic'
 
   if (props.permission?.requirement === 'automation_v2_acceptance' || kind === 'automation-v2-acceptance') {

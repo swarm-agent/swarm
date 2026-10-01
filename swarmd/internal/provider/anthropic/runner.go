@@ -501,19 +501,21 @@ func applyAnthropicPromptCaching(params *anthropicapi.MessageNewParams, tools []
 
 func appendAnthropicDynamicContext(messages []anthropicapi.MessageParam, dynamicContext string) []anthropicapi.MessageParam {
 	dynamicContext = strings.TrimSpace(dynamicContext)
-	if dynamicContext == "" {
+	if dynamicContext == "" || len(messages) == 0 {
 		return messages
-	}
-	block := anthropicapi.NewTextBlock(dynamicContext)
-	if len(messages) == 0 {
-		return []anthropicapi.MessageParam{anthropicapi.NewUserMessage(block)}
 	}
 	lastIdx := len(messages) - 1
-	if messages[lastIdx].Role == anthropicapi.MessageParamRoleUser {
-		messages[lastIdx].Content = append(messages[lastIdx].Content, block)
+	if messages[lastIdx].Role != anthropicapi.MessageParamRoleUser {
 		return messages
 	}
-	return append(messages, anthropicapi.NewUserMessage(block))
+	for _, block := range messages[lastIdx].Content {
+		if block.OfToolResult != nil {
+			return messages
+		}
+	}
+	block := anthropicapi.NewTextBlock(dynamicContext)
+	messages[lastIdx].Content = append(messages[lastIdx].Content, block)
+	return messages
 }
 
 func buildAnthropicSystem(instructions string) []anthropicapi.TextBlockParam {

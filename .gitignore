@@ -35,10 +35,13 @@ coverage.out
 # Web build/runtime outputs
 /web/node_modules/
 /web/dist/
+/web/.cache/
 /web/*.tsbuildinfo
 /web/test-results/
 /web/playwright-report/
 /web/blob-report/
+/packages/*/dist/
+/packages/*/node_modules/
 
 # Editor/OS noise
 .DS_Store
@@ -52,10 +55,17 @@ __pycache__/
 *.py[cod]
 *$py.class
 
-# Local env files
+# Local env and secret files
 .env
 .env.*
 !.env.example
+*.env
+*.env.*
+!*.env.example
+secrets.env
+.secrets.env
+*.secret
+*.secrets
 
 # Local investigation/tooling artifacts
 /.agents/
@@ -66,12 +76,10 @@ __pycache__/
 /.tmp-tools/
 /audit/
 /docs/*
-!/docs/swarm-atlas.md
 !/docs/checkpoints/
 !/docs/checkpoints/*.md
 !/docs/testing/
 /docs/testing/*
-!/docs/testing/test-audit-ledger.tsv
 !/docs/testing/committed-child-correction.md
 !/docs/testing/testbench-container.md
 !/docs/testing/multi-workspace-session-matrix.md

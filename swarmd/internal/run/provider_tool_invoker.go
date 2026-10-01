@@ -668,9 +668,24 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 	// media_inspect has no permission prompt: its provider-visible schema exists
 	// only after the current model/media intersection admits it, and the handler
 	// below revalidates that contract plus ownership, scope, type, and size.
-	if automationV2PlanCall(call) {
-		if permissionSessionID != config.sessionID || !strings.EqualFold(config.agentProfile.Name, "swarm") || (canonicalToolName(call.Name) == "exit_plan_mode" && !pebblestore.AgentExitPlanModeEnabled(config.agentProfile)) {
-			return tool.Result{CallID: call.CallID, Name: call.Name, Error: "Automation plan authoring requires the primary session's own enabled plan capability"}, 0, nil
+	if agentruntime.IsSwarmOrchestratorAgentName(config.agentProfile.Name) &&
+		(canonicalToolName(call.Name) == "plan_manage" || canonicalToolName(call.Name) == "exit_plan_mode") {
+		return tool.Result{CallID: call.CallID, Name: call.Name, Error: "Orchestrator session planning is disabled; submit plans through manage_projects task cards"}, 0, nil
+	}
+	if workerDocumentInPlanCall(call) {
+		return tool.Result{CallID: call.CallID, Name: call.Name, Error: "Worker proposals require manage_workers action=propose; session-plan tools cannot author workers"}, 0, nil
+	}
+	toolName := canonicalToolName(call.Name)
+	if toolName == "manage_projects" {
+		scope := tool.WorkspaceScope{SessionID: config.sessionID, Principal: providerManagedExecutionPrincipal(ctx, config)}
+		if err := s.authorizeProjectHistoryInvocation(scope, config.agentProfile, call.Arguments); err != nil {
+			return tool.Result{CallID: call.CallID, Name: call.Name, Error: err.Error()}, 0, nil
+		}
+	}
+	if toolName == "manage_workers" || toolName == "manage_automation" {
+		isOrchestrator := agentruntime.IsOrchestratorAgentName(config.agentProfile.Name)
+		if permissionSessionID != config.sessionID || !isOrchestrator {
+			return tool.Result{CallID: call.CallID, Name: call.Name, Error: "Worker and automation management is exclusive to Swarm Orchestrator in Swarm mode"}, 0, nil
 		}
 		current, _, err := s.automationV2ToolSession(config.sessionID)
 		if err != nil {
@@ -678,10 +693,25 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 		}
 		principal := providerManagedExecutionPrincipal(ctx, config)
 		if !principal.Valid() || principal.AccountScopeID != current.AccountScopeID || principal.UserID != current.UserID {
-			return tool.Result{CallID: call.CallID, Name: call.Name, Error: "Automation proposal principal mismatch"}, 0, nil
+			return tool.Result{CallID: call.CallID, Name: call.Name, Error: "Worker and automation management principal mismatch"}, 0, nil
 		}
 	}
-	if canonicalToolName(call.Name) != mediaInspectToolName {
+	publication, publicationErr := s.authorizeTaskPlanPublication(ctx, config, call)
+	if errors.Is(publicationErr, errTaskPlanPublicationPrincipal) {
+		// A foreign caller cannot persist even a rejected tool outcome in the
+		// victim session. Legitimate authoring errors remain recoverable below.
+		return tool.Result{}, 0, publicationErr
+	}
+	if publicationErr != nil {
+		// Rejected publication is a recoverable tool outcome, not an invocation
+		// escape hatch. Use the same completion/event/message path as execution.
+		gatedResults[0].Error = publicationErr.Error()
+		approvedCalls = nil
+	}
+	if publicationErr == nil && canonicalToolName(call.Name) != mediaInspectToolName && !publication {
+		if toolName == "manage_projects" {
+			ctx = identity.ContextWithPrincipal(ctx, providerManagedExecutionPrincipal(ctx, config))
+		}
 		var err error
 		gatedResults, approvedCalls, _, _, permissionFeedback, err = s.gateToolCalls(
 			ctx,
@@ -692,6 +722,7 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 			[]tool.Call{call},
 			config.emit,
 			config.policy,
+			config.agentProfile,
 		)
 		if err != nil {
 			return tool.Result{}, 0, err
@@ -829,6 +860,7 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 						})
 					}
 					runtimeScope := workspaceCtx.Scope
+					runtimeScope.TaskHistoryOnly = canonicalToolName(call.Name) == "manage_projects" && !agentruntime.IsSwarmOrchestratorAgentName(config.agentProfile.Name)
 					runtimeScope.PrimaryPath = workspaceCtx.WorkspacePath
 					runtimeScope.Roots = append([]string(nil), workspaceCtx.WorkspaceRoots...)
 					runtimeScope.Principal = principal
@@ -964,12 +996,20 @@ func (s *Service) executeProviderManagedMediaInspect(ctx context.Context, config
 	var asset pebblestore.SessionMediaAsset
 	var payload []byte
 	if args.AssetID != "" {
-		asset, payload, err = s.sessions.ReadSessionMediaAsset(principal.AccountScopeID, config.sessionID, args.AssetID)
+		targetSessionID := strings.TrimSpace(args.SessionID)
+		if targetSessionID == "" {
+			targetSessionID = config.sessionID
+		}
+		asset, payload, err = s.sessions.ReadSessionMediaAsset(principal.AccountScopeID, targetSessionID, args.AssetID)
 		if err != nil {
 			return result, err
 		}
-		if asset.ContractHash != currentContract.Hash || asset.ProviderID != providerID || asset.Model != modelID {
-			return result, errors.New("media asset admission contract does not match the current run")
+		capability, err := validateMediaInspectInvocation(currentContract, asset.Modality, asset.DetectedMIMEType, asset.FileType)
+		if err != nil {
+			return result, err
+		}
+		if capability.MaxBytes > 0 && asset.Size > capability.MaxBytes {
+			return result, fmt.Errorf("media_inspect asset exceeds current run byte limit (%d > %d)", asset.Size, capability.MaxBytes)
 		}
 	} else if args.ArtifactV3Reference != nil {
 		if s.tools == nil || s.tools.ArtifactV3AuthorService() == nil {

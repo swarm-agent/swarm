@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/agentmodelsettings"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/modelprofile"
@@ -149,18 +150,26 @@ func mergeSessionsV3ModelProfileChoice(current pebblestore.SessionSnapshot, reso
 		return nil, nil
 	}
 	mode := sessionruntime.NormalizeMode(current.Mode)
+	agentName := sessionsV3MetadataString(current.Metadata, "agent_name")
+	isOrchestrator := strings.EqualFold(strings.TrimSpace(agentName), agentruntime.SwarmOrchestratorAgentID)
 	if current.ModelProfile == nil {
 		if mode == sessionruntime.ModePlan && resolved.Plan == nil {
 			return nil, errors.New("cannot set the Plan model slot before the session has an Action model slot")
 		}
-		return pebblestore.CloneSessionModelProfileSnapshot(resolved), nil
+		snapshot := pebblestore.CloneSessionModelProfileSnapshot(resolved)
+		if isOrchestrator && snapshot != nil && snapshot.Plan == nil {
+			snapshot.Plan = pebblestore.CloneModelProfileSelection(&snapshot.Action)
+			snapshot.PlanFavoriteID = snapshot.ActionFavoriteID
+			snapshot.PlanFavoriteName = snapshot.ActionFavoriteName
+		}
+		return snapshot, nil
 	}
 
 	next := pebblestore.CloneSessionModelProfileSnapshot(current.ModelProfile)
 	next.Source = resolved.Source
 	next.UseAccountDefault = resolved.UseAccountDefault
 	next.AppliedAt = resolved.AppliedAt
-	if mode == sessionruntime.ModePlan {
+	if mode == sessionruntime.ModePlan || isOrchestrator {
 		selection := &resolved.Action
 		favoriteID, favoriteName := resolved.ActionFavoriteID, resolved.ActionFavoriteName
 		if resolved.Plan != nil {
@@ -170,6 +179,11 @@ func mergeSessionsV3ModelProfileChoice(current pebblestore.SessionSnapshot, reso
 		next.Plan = pebblestore.CloneModelProfileSelection(selection)
 		next.PlanFavoriteID = favoriteID
 		next.PlanFavoriteName = favoriteName
+		if isOrchestrator {
+			next.Action = resolved.Action
+			next.ActionFavoriteID = resolved.ActionFavoriteID
+			next.ActionFavoriteName = resolved.ActionFavoriteName
+		}
 	} else {
 		next.Action = resolved.Action
 		next.ActionFavoriteID = resolved.ActionFavoriteID
@@ -184,8 +198,11 @@ func sessionsV3ProfilePreference(session pebblestore.SessionSnapshot) (pebblesto
 		return pebblestore.ModelPreference{}, false
 	}
 	selection := &profile.Action
-	if strings.EqualFold(strings.TrimSpace(session.Mode), sessionruntime.ModePlan) {
-		selection = profile.Plan
+	agentName := sessionsV3MetadataString(session.Metadata, "agent_name")
+	if strings.EqualFold(strings.TrimSpace(session.Mode), sessionruntime.ModePlan) || strings.EqualFold(strings.TrimSpace(agentName), agentruntime.SwarmOrchestratorAgentID) {
+		if profile.Plan != nil && strings.TrimSpace(profile.Plan.Model) != "" {
+			selection = profile.Plan
+		}
 	}
 	if selection == nil || strings.TrimSpace(selection.Provider) == "" || strings.TrimSpace(selection.Model) == "" {
 		return pebblestore.ModelPreference{}, false

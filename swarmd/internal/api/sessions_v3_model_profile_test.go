@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/agentmodelsettings"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/modelprofile"
@@ -371,5 +372,51 @@ func TestSessionsV3ProfilePreferenceUsesCurrentMode(t *testing.T) {
 	action, ok := sessionsV3ProfilePreference(session)
 	if !ok || action.Model != "action" || action.ServiceTier != "fast" {
 		t.Fatalf("action preference = %+v ok=%t", action, ok)
+	}
+}
+
+func TestSessionsV3ModelProfileChoiceUpdatesPlanSlotForOrchestratorSession(t *testing.T) {
+	original := &pebblestore.SessionModelProfileSnapshot{
+		Source:             pebblestore.SessionModelProfileSourceSaved,
+		ActionFavoriteID:   "action-old",
+		ActionFavoriteName: "Action Old",
+		Action:             pebblestore.ModelProfileSelection{Provider: "test-provider", Model: "action-old"},
+		PlanFavoriteID:     "plan-old",
+		PlanFavoriteName:   "Plan Old",
+		Plan:               &pebblestore.ModelProfileSelection{Provider: "test-provider", Model: "plan-old"},
+		AppliedAt:          1,
+	}
+	choice := &pebblestore.SessionModelProfileSnapshot{
+		Source:             pebblestore.SessionModelProfileSourceSaved,
+		ActionFavoriteID:   "favorite-new",
+		ActionFavoriteName: "Favorite New",
+		Action:             pebblestore.ModelProfileSelection{Provider: "test-provider", Model: "new-model", Thinking: "high"},
+		AppliedAt:          2,
+	}
+
+	session := pebblestore.SessionSnapshot{
+		Mode:         sessionruntime.ModeAuto,
+		ModelProfile: original,
+		Metadata:     map[string]any{"agent_name": agentruntime.SwarmOrchestratorAgentID},
+	}
+	merged, err := mergeSessionsV3ModelProfileChoice(session, choice)
+	if err != nil {
+		t.Fatalf("merge orchestrator choice: %v", err)
+	}
+	if merged.Source != pebblestore.SessionModelProfileSourceSaved || merged.AppliedAt != 2 {
+		t.Fatalf("merged metadata = %+v", merged)
+	}
+	if merged.Plan == nil || merged.Plan.Model != "new-model" || merged.PlanFavoriteID != "favorite-new" || merged.PlanFavoriteName != "Favorite New" {
+		t.Fatalf("merged plan slot = %+v, want new-model", merged.Plan)
+	}
+	if merged.Action.Model != "new-model" || merged.ActionFavoriteID != "favorite-new" || merged.ActionFavoriteName != "Favorite New" {
+		t.Fatalf("merged action slot = %+v, want new-model", merged.Action)
+	}
+
+	// Verify that sessionsV3ProfilePreference returns the updated plan model for the orchestrator session
+	session.ModelProfile = merged
+	pref, ok := sessionsV3ProfilePreference(session)
+	if !ok || pref.Model != "new-model" {
+		t.Fatalf("sessionsV3ProfilePreference = %+v ok=%t, want new-model", pref, ok)
 	}
 }

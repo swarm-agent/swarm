@@ -696,7 +696,15 @@ const TASK_CARD_HOVER_DEBOUNCE_MS = 180;
 function taskChildModelsEqual(left: DesktopV3TaskChildViewModel | null, right: DesktopV3TaskChildViewModel | null): boolean {
   if (left === right) return true;
   if (!left || !right) return false;
-  return Object.keys(left).every((key) => left[key as keyof DesktopV3TaskChildViewModel] === right[key as keyof DesktopV3TaskChildViewModel]);
+  return Object.keys(left).every((key) => {
+    const lVal = left[key as keyof DesktopV3TaskChildViewModel];
+    const rVal = right[key as keyof DesktopV3TaskChildViewModel];
+    if (lVal === rVal) return true;
+    if (key === 'todos' || key === 'todosCount') {
+      return JSON.stringify(lVal) === JSON.stringify(rVal);
+    }
+    return false;
+  });
 }
 
 function taskRowWithChildState(row: TaskToolRow, child: DesktopV3TaskChildViewModel | null): TaskToolRow {
@@ -720,6 +728,7 @@ function taskRowWithChildState(row: TaskToolRow, child: DesktopV3TaskChildViewMo
 export function taskActivityLabel(row: TaskToolRow): string {
   const kind = taskStatusKind(row);
   if (kind === 'running' && row.toolActivitySummary?.trim()) return row.toolActivitySummary.trim();
+  if (kind === 'running' && (row as any).activeTodo?.trim()) return `Focus: ${(row as any).activeTodo.trim()}`;
   if (row.tool && row.tool !== '-') return row.tool;
   return taskStatusText(kind);
 }
@@ -856,6 +865,51 @@ function TaskChildInteractiveRow({
       data-child-session-id={row.childSessionId || undefined}
     >
       {children(effectiveRow, child)}
+      {child?.todos && child.todos.length > 0 ? (
+        <div className="task-card-todos px-3 pb-2 pt-0.5 space-y-1 font-mono text-[11px]" data-testid="task-card-todos">
+          <div className="flex items-center justify-between text-[10px] text-[var(--app-text-muted)] font-semibold uppercase tracking-wider mb-1">
+            <span className="flex items-center gap-1">
+              <span>Checklist</span>
+              {child.todosCount ? (
+                <span className="text-[var(--app-text-subtle)] font-normal">
+                  ({child.todosCount.completed}/{child.todosCount.total})
+                </span>
+              ) : null}
+            </span>
+          </div>
+          <div className="space-y-1 max-h-36 overflow-y-auto pr-1">
+            {child.todos.map((todo) => {
+              const isDone = todo.status === 'completed';
+              const isInProgress = todo.status === 'in_progress';
+              return (
+                <div
+                  key={todo.id || todo.title}
+                  className={cn(
+                    "flex items-start gap-1.5 rounded px-1.5 py-0.5 text-[11px] leading-tight transition-colors",
+                    isInProgress
+                      ? "bg-[color-mix(in_srgb,var(--app-primary)_12%,transparent)] text-[var(--app-primary)] font-medium"
+                      : isDone
+                      ? "text-[var(--app-text-subtle)] line-through"
+                      : "text-[var(--app-text-muted)]"
+                  )}
+                >
+                  <span className={cn(
+                    "shrink-0 font-bold select-none",
+                    isDone
+                      ? "text-[var(--app-success,theme(colors.emerald.400))]"
+                      : isInProgress
+                      ? "text-[var(--app-primary,theme(colors.blue-400))] motion-safe:animate-pulse"
+                      : "text-[var(--app-text-subtle)]"
+                  )}>
+                    {isDone ? '✓' : isInProgress ? '●' : '○'}
+                  </span>
+                  <span className="min-w-0 break-words [overflow-wrap:anywhere]">{todo.title}</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
       {row.childSessionId && showContext ? (
         <div className="task-card-child-context flex min-w-0 items-center gap-2 px-3 pb-2 text-[10px] text-[var(--app-text-subtle)]">
           <span className="min-w-0 truncate" title={taskContextLabel(child)}>{child?.loading ? 'Loading live state…' : child?.unavailable ? 'Session unavailable' : child?.stale ? 'Live state stale' : taskContextLabel(child)}</span>
@@ -2123,7 +2177,7 @@ export function ManageArtifactCard({
                 </span>
               </div>
               <div className="text-sm font-semibold tracking-wide text-white">
-                {isVideoIteration ? "Iterating video with Gemini Omni…" : "Generating cinematic video with Veo…"}
+                {isVideoIteration ? "Iterating video with the configured model…" : "Generating video with the configured model…"}
               </div>
               <p className="mt-1 text-xs text-white/70 max-w-md">
                 Synthesizing high-frame-rate motion and diffusion keyframes. This usually takes 30–60 seconds.
@@ -2591,6 +2645,14 @@ function shouldRenderPreviewAsPlain(toolName: string): boolean {
     default:
       return false;
   }
+}
+
+export function isPendingWorkerProposalResult(payload: unknown): boolean {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return false;
+  const result = payload as Record<string, unknown>;
+  return result.status === 'pending_review'
+    && result.next_action === 'await_worker_acceptance'
+    && result.review_kind === 'worker_v2';
 }
 
 function parseToolJSON(value: string): Record<string, unknown> | null {
@@ -3138,7 +3200,7 @@ export function SearchReadToolGroupView({ toolMessages }: { toolMessages: Struct
   const StateIcon = errorCount > 0 ? XCircle : runningCount > 0 ? null : CheckCircle2;
 
   return (
-    <div className="flex justify-start" data-search-read-group>
+    <div className="flex w-full min-w-0 justify-start" data-search-read-group>
       <section className="w-full min-w-0 overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] shadow-[0_1px_2px_color-mix(in_srgb,var(--app-text)_5%,transparent)]">
         <header className="flex min-w-0 items-start gap-2 px-3 py-2.5">
           <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[color-mix(in_srgb,var(--app-primary)_12%,transparent)] text-[var(--app-primary)]"><Search size={13} /></span>
@@ -3322,6 +3384,9 @@ export function ToolMessageView({
     && !toolMessage.completedOutput.trim();
   if (['manage_workers', 'manage-workers', 'manage_automation', 'manage-automation'].includes(normalizedToolName) && toolMessage.state === 'done') {
     const payload = toolMessage.outputJson ?? parseToolJSON(toolMessage.output) ?? parseToolJSON(toolMessage.completedOutput);
+    // Worker V2 approval is a durable permission rendered in the Workers sidebar,
+    // not an actionable card (or a second tool result) in the chat transcript.
+    if (isPendingWorkerProposalResult(payload) || isPendingWorkerProposalResult(parseToolJSON(toolMessage.completedOutput))) return null;
     if (parseAutomationProposal(payload)) return <AutomationProposalCard payload={payload} />;
   }
   if (normalizedToolName === "bash") {
@@ -3430,8 +3495,8 @@ export function ToolMessageView({
           )}>
             <span
               className={cn(
-                "inline-flex shrink-0 items-center justify-center font-semibold",
-                isFileAction || isTask ? "h-7 w-7 rounded-lg" : "h-5 gap-1 rounded-md px-1.5",
+                "inline-flex min-w-0 items-center justify-center break-words [overflow-wrap:anywhere] font-semibold",
+                isFileAction || isTask ? "h-7 w-7 shrink-0 rounded-lg" : "min-h-5 gap-1 rounded-md px-1.5",
               )}
               style={{ color: toolTheme.color, backgroundColor: accentWash }}
             >
@@ -3591,7 +3656,7 @@ function ChatMarkdownInner({
   return (
     <div
       className={cn(
-        "chat-markdown min-w-0 max-w-full break-words text-sm leading-6",
+        "chat-markdown min-w-0 max-w-full break-words [overflow-wrap:anywhere] text-sm leading-6",
         !className?.includes("text-") && "text-[var(--app-text)]",
         className,
       )}

@@ -1,10 +1,13 @@
 package session
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math/big"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -107,6 +110,29 @@ type PlanLifecycleProposalInput struct {
 	ExecutionGranularity  string
 	ContinuationPolicy    string
 	ContinueAutomatically *bool
+}
+
+// ProjectTaskPlanSubmissionInput encapsulates direct submission of a structured plan document to a project task card.
+type ProjectTaskPlanSubmissionInput struct {
+	AccountScopeID       string
+	UserID               string
+	ProjectID            string
+	TaskID               string
+	SessionID            string
+	Document             *pebblestore.SessionPlanDocument
+	PlanText             string
+	Title                string
+	WorkspacePath        string
+	ParentSessionID      string
+	ApplySessionMutation func(SessionMutationInput) (SessionMutationResult, error)
+}
+
+// ProjectTaskPlanSubmissionResult holds the committed task and plan state after submission.
+type ProjectTaskPlanSubmissionResult struct {
+	Task    pebblestore.ProjectTaskRecord
+	Plan    pebblestore.SessionPlanSnapshot
+	Session pebblestore.SessionSnapshot
+	Receipt string
 }
 
 type PlanLifecycleAmendmentInput struct {
@@ -305,6 +331,349 @@ func (s *PlanLifecycleService) SubmitPlanForApproval(input PlanLifecyclePlanInpu
 	return PlanLifecycleResult{}, errors.New("submit plan for approval requires the canonical V3 mutation boundary")
 }
 
+// SubmitProjectTaskStructuredPlan submits a structured plan directly to a project task card without starting an implementation run.
+func (s *PlanLifecycleService) SubmitProjectTaskStructuredPlan(input ProjectTaskPlanSubmissionInput) (ProjectTaskPlanSubmissionResult, error) {
+	if s == nil || s.sessions == nil || s.sessions.store == nil {
+		return ProjectTaskPlanSubmissionResult{}, errors.New("plan lifecycle session service unavailable")
+	}
+	input.AccountScopeID = strings.TrimSpace(input.AccountScopeID)
+	input.UserID = strings.TrimSpace(input.UserID)
+	input.ProjectID = strings.TrimSpace(input.ProjectID)
+	input.TaskID = strings.TrimSpace(input.TaskID)
+	if input.AccountScopeID == "" {
+		return ProjectTaskPlanSubmissionResult{}, errors.New("account scope id is required")
+	}
+	if input.UserID == "" {
+		return ProjectTaskPlanSubmissionResult{}, errors.New("user id is required")
+	}
+	if input.ProjectID == "" {
+		return ProjectTaskPlanSubmissionResult{}, errors.New("project id is required")
+	}
+	if input.TaskID == "" {
+		return ProjectTaskPlanSubmissionResult{}, errors.New("task id is required")
+	}
+	if input.Document == nil {
+		return ProjectTaskPlanSubmissionResult{}, errors.New("structured plan document is required")
+	}
+	if err := ValidateExecutablePlanDocument(input.Document); err != nil {
+		return ProjectTaskPlanSubmissionResult{}, fmt.Errorf("invalid plan document: %w", err)
+	}
+
+	applySessionMutation := input.ApplySessionMutation
+	if applySessionMutation == nil {
+		applySessionMutation = s.applySessionMutation
+	}
+	if applySessionMutation == nil && s.sessions != nil {
+		applySessionMutation = s.sessions.ApplySessionMutation
+	}
+	if applySessionMutation == nil {
+		return ProjectTaskPlanSubmissionResult{}, errors.New("submit project task plan requires the canonical V3 mutation boundary")
+	}
+
+	task, found, err := s.sessions.store.GetProjectTask(input.AccountScopeID, input.ProjectID, input.TaskID)
+	if err != nil {
+		return ProjectTaskPlanSubmissionResult{}, err
+	}
+	if !found || task == nil {
+		return ProjectTaskPlanSubmissionResult{}, fmt.Errorf("task %q not found", input.TaskID)
+	}
+	if task.Archived {
+		return ProjectTaskPlanSubmissionResult{}, errors.New("archived task cannot publish a plan")
+	}
+	if task.AccountID != "" && task.AccountID != input.AccountScopeID {
+		return ProjectTaskPlanSubmissionResult{}, errors.New("cross-account plan submission forbidden")
+	}
+	if task.ProjectID != "" && task.ProjectID != input.ProjectID {
+		return ProjectTaskPlanSubmissionResult{}, errors.New("cross-project plan submission forbidden")
+	}
+	if task.SessionID != "" && input.SessionID != "" && task.SessionID != input.SessionID {
+		return ProjectTaskPlanSubmissionResult{}, errors.New("cross-session plan submission forbidden")
+	}
+
+	now := time.Now().UnixMilli()
+
+	sources, err := s.sessions.store.ResolveTaskPlanPublicationSources(task, input.Document)
+	if err != nil {
+		return ProjectTaskPlanSubmissionResult{}, err
+	}
+
+	// Derive deterministic stable session ID if not set
+	sessionID := strings.TrimSpace(input.SessionID)
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(task.SessionID)
+	}
+	if sessionID == "" && task.PlanBinding != nil {
+		sessionID = strings.TrimSpace(task.PlanBinding.SessionID)
+	}
+	if sessionID == "" {
+		sum := sha256.Sum256([]byte(fmt.Sprintf("task-session:%s:%s:%s", input.AccountScopeID, input.ProjectID, input.TaskID)))
+		sessionID = hex.EncodeToString(sum[:16])
+	}
+
+	unlockSession := s.sessions.lockPlanLifecycleSession(sessionID)
+	defer unlockSession()
+
+	// Resolve workspace path (fail closed instead of defaulting to '.')
+	wsPath := strings.TrimSpace(input.WorkspacePath)
+	if wsPath == "" || wsPath == "." {
+		wsPath = strings.TrimSpace(task.WorkspacePath)
+	}
+	if wsPath == "" || wsPath == "." {
+		if proj, pFound, _ := s.sessions.store.GetProject(input.AccountScopeID, input.ProjectID); pFound && proj != nil {
+			for _, w := range proj.Workspaces {
+				if p := strings.TrimSpace(w.Path); p != "" && p != "." {
+					if w.Role == "primary_code" {
+						wsPath = p
+						break
+					}
+					if wsPath == "" || wsPath == "." {
+						wsPath = p
+					}
+				}
+			}
+		}
+	}
+	if wsPath == "" || wsPath == "." {
+		return ProjectTaskPlanSubmissionResult{}, errors.New("workspace path is required and cannot be empty or '.'")
+	}
+
+	session, sessFound, err := s.sessions.store.GetSession(sessionID)
+	if err != nil {
+		return ProjectTaskPlanSubmissionResult{}, err
+	}
+	if sessFound {
+		if session.AccountScopeID != "" && session.AccountScopeID != input.AccountScopeID {
+			return ProjectTaskPlanSubmissionResult{}, errors.New("cross-account session plan submission forbidden")
+		}
+		if session.UserID != "" && session.UserID != input.UserID {
+			return ProjectTaskPlanSubmissionResult{}, errors.New("cross-user session plan submission forbidden")
+		}
+		if session.Metadata == nil {
+			return ProjectTaskPlanSubmissionResult{}, errors.New("unauthorized existing session for project task")
+		}
+		pID, _ := session.Metadata["project_id"].(string)
+		tID, _ := session.Metadata["task_id"].(string)
+		if strings.TrimSpace(pID) != input.ProjectID || strings.TrimSpace(tID) != input.TaskID {
+			return ProjectTaskPlanSubmissionResult{}, errors.New("unauthorized existing session for project task")
+		}
+	} else {
+		session = pebblestore.SessionSnapshot{
+			ID:             sessionID,
+			UserID:         input.UserID,
+			AccountScopeID: input.AccountScopeID,
+			WorkspacePath:  wsPath,
+			WorkspaceName:  filepath.Base(wsPath),
+			Title:          fmt.Sprintf("[%s] %s", input.ProjectID, task.Title),
+			Mode:           ModePlan,
+			Metadata: map[string]any{
+				"project_id": input.ProjectID,
+				"task_id":    task.ID,
+				"task_title": task.Title,
+				"role":       "project_task",
+			},
+			CreatedAt: now,
+			UpdatedAt: now,
+		}
+		createKey := fmt.Sprintf("project-task:create:%s:%s", task.ProjectID, task.ID)
+		createRes, createErr := applySessionMutation(SessionMutationInput{
+			SessionID:       sessionID,
+			UserID:          input.UserID,
+			AccountScopeID:  input.AccountScopeID,
+			ClientRequestID: createKey,
+			IdempotencyKey:  createKey,
+			PayloadHash:     createKey,
+			RequestHash:     createKey,
+			Kind:            SessionMutationCreateSession,
+			Session:         &session,
+			NowUnixMs:       now,
+		})
+		if createErr != nil {
+			return ProjectTaskPlanSubmissionResult{}, fmt.Errorf("create bound plan session: %w", createErr)
+		}
+		if createRes.Session != nil {
+			session = *createRes.Session
+		}
+	}
+
+	// Derive deterministic stable plan ID
+	planID := strings.TrimSpace(input.Document.ID)
+	if planID == "" && task.PlanBinding != nil {
+		planID = strings.TrimSpace(task.PlanBinding.PlanID)
+	}
+	if planID == "" {
+		planID = fmt.Sprintf("plan_task_%s", task.ID)
+	}
+	input.Document.ID = planID
+
+	title := strings.TrimSpace(input.Title)
+	if title == "" {
+		title = strings.TrimSpace(input.Document.Title)
+	}
+	if title == "" {
+		title = task.Title
+	}
+	planText := strings.TrimSpace(input.PlanText)
+	if planText == "" {
+		planText = fmt.Sprintf("# %s\n\n%s", title, input.Document.Info.Goal)
+	}
+
+	existingPlan, planFound, err := s.sessions.store.GetPlan(sessionID, planID)
+	if err != nil {
+		return ProjectTaskPlanSubmissionResult{}, err
+	}
+
+	version := 1
+	var archived *pebblestore.SessionPlanSnapshot
+	isDuplicate := false
+
+	docCopy := clonePlanLifecycleDocument(input.Document)
+	docCopy.ID = planID
+	docCopy.Title = title
+	docCopy.Status = "pending_approval"
+
+	rawDoc, _ := json.Marshal(docCopy)
+	hashSum := sha256.Sum256(rawDoc)
+	receipt := hex.EncodeToString(hashSum[:])
+
+	if planFound {
+		if existingPlan.Document != nil {
+			existingDoc := clonePlanLifecycleDocument(existingPlan.Document)
+			existingDoc.RevisionID = ""
+			checkDoc := clonePlanLifecycleDocument(docCopy)
+			checkDoc.RevisionID = ""
+			existingRaw, _ := json.Marshal(existingDoc)
+			checkRaw, _ := json.Marshal(checkDoc)
+			existingHash := sha256.Sum256(existingRaw)
+			checkHash := sha256.Sum256(checkRaw)
+			if existingHash == checkHash && existingPlan.Status == "pending_approval" {
+				isDuplicate = true
+				version = existingPlan.Version
+			}
+		}
+		if !isDuplicate {
+			version = existingPlan.Version + 1
+			if existingPlan.Version <= 0 {
+				version = 2
+			}
+			copyArchived := existingPlan
+			copyArchived.Active = false
+			archived = &copyArchived
+		}
+	}
+	docCopy.RevisionID = fmt.Sprintf("%s:v%d", planID, version)
+	rawDoc, _ = json.Marshal(docCopy)
+	hashSum = sha256.Sum256(rawDoc)
+	receipt = hex.EncodeToString(hashSum[:])
+
+	nextTask := *task
+	nextTask.ProgramSources = sources
+	nextTask.SessionID = sessionID
+	nextTask.WorkspacePath = wsPath
+	nextTask.PlanBinding = &pebblestore.ProjectTaskPlanBinding{PlanID: planID, DefinitionRevision: version, SessionID: sessionID, Receipt: receipt}
+	nextTask.PlanDocument = nil
+	nextTask.Status = "pending_approval"
+	nextTask.PlanSummary = firstNonBlank(docCopy.Info.Goal, title)
+	nextTask.FullPlanMarkdown = planText
+	nextTask.ActionNeeded = "Review plan in task card and click Approve"
+	nextTask.UpdatedAt = now
+	if !isDuplicate {
+		nextTask.WhatDidDo = append(nextTask.WhatDidDo, fmt.Sprintf("Structured plan submitted for review (Rev %d)", version))
+	}
+
+	var planSnapshot pebblestore.SessionPlanSnapshot
+	if isDuplicate {
+		planSnapshot = existingPlan
+	} else {
+		planSnapshot = pebblestore.SessionPlanSnapshot{
+			ID:             planID,
+			SessionID:      sessionID,
+			UserID:         input.UserID,
+			AccountScopeID: input.AccountScopeID,
+			Title:          title,
+			Plan:           planText,
+			Status:         "pending_approval",
+			ApprovalState:  "pending",
+			Active:         true,
+			Version:        version,
+			CreatedAt:      now,
+			UpdatedAt:      now,
+			Document:       docCopy,
+			UpdateSummary:  "structured plan submitted to task card",
+			UpdateScope:    "plan",
+			UpdateKind:     "task_card_submission",
+		}
+		if planFound {
+			planSnapshot.CreatedAt = existingPlan.CreatedAt
+			planSnapshot.ParentRevision = existingPlan.Version
+			planSnapshot.PriorTitle = existingPlan.Title
+			planSnapshot.PriorPlan = existingPlan.Plan
+			planSnapshot.DiffLines = BuildPlanDiffLines(existingPlan.Plan, planText)
+			if existingPlan.Status == "rejected" || existingPlan.ApprovalState == "rejected" {
+				planSnapshot.UpdateSummary = "structured plan revised after rejection"
+			}
+		}
+
+		planSavePayload, err := json.Marshal(map[string]any{
+			"session_id":          sessionID,
+			"plan_id":             planID,
+			"plan_title":          title,
+			"plan_status":         "pending_approval",
+			"plan_approval_state": "pending",
+			"activate":            true,
+			"version":             version,
+			"receipt":             receipt,
+		})
+		if err != nil {
+			return ProjectTaskPlanSubmissionResult{}, err
+		}
+
+		clientReqID := fmt.Sprintf("project-task:plan:%s:%s:v%d", sessionID, planID, version)
+		planSaveRes, saveErr := applySessionMutation(SessionMutationInput{
+			SessionID:       sessionID,
+			UserID:          input.UserID,
+			AccountScopeID:  input.AccountScopeID,
+			ClientRequestID: clientReqID,
+			IdempotencyKey:  clientReqID,
+			PayloadHash:     receipt,
+			RequestHash:     receipt,
+			Kind:            SessionMutationSavePlan,
+			EventType:       "session.plan.saved",
+			EventPayload:    planSavePayload,
+			PlanSave: &pebblestore.V3PlanSaveMutation{
+				TaskPublication:       &nextTask,
+				Plan:                  planSnapshot,
+				ArchivedRevision:      archived,
+				Activate:              true,
+				ExpectedParentVersion: planSnapshot.ParentRevision,
+			},
+			NowUnixMs: now,
+		})
+		if saveErr != nil {
+			return ProjectTaskPlanSubmissionResult{}, fmt.Errorf("failed to save plan via canonical mutation: %w", saveErr)
+		}
+		if planSaveRes.Plan != nil {
+			planSnapshot = *planSaveRes.Plan
+		}
+	}
+
+	updatedTask, found, err := s.sessions.store.GetProjectTask(input.AccountScopeID, input.ProjectID, input.TaskID)
+	if err != nil || !found {
+		return ProjectTaskPlanSubmissionResult{}, fmt.Errorf("read published task: %v", err)
+	}
+	if updatedTask.Archived || updatedTask.PlanBinding == nil || *updatedTask.PlanBinding != *nextTask.PlanBinding {
+		return ProjectTaskPlanSubmissionResult{}, errors.New("task review binding changed; reload and explicitly resubmit the structured plan for review")
+	}
+
+	resultTask := *updatedTask
+	resultTask.PlanDocument = docCopy
+	return ProjectTaskPlanSubmissionResult{
+		Task:    resultTask,
+		Plan:    planSnapshot,
+		Session: session,
+		Receipt: receipt,
+	}, nil
+}
+
 func (s *PlanLifecycleService) RequestFollowupCheckpoint(input PlanLifecycleFollowupCheckpointInput) (PlanLifecycleResult, error) {
 	if err := s.requireConfigured(); err != nil {
 		return PlanLifecycleResult{}, err
@@ -447,7 +816,21 @@ func (s *PlanLifecycleService) startSessionCheckpoint(input PlanLifecycleSession
 	if active, ok, err := s.sessions.GetActivePlan(session.ID); err != nil {
 		return PlanLifecycleResult{}, err
 	} else if ok {
-		return PlanLifecycleResult{}, fmt.Errorf("start_session_checkpoint requires no active plan; active plan %q already exists, use request_followup_checkpoint for one ordered checkpoint, amend_plan for future changes, or request_new_plan with plan_id for whole-plan replacement", active.ID)
+		request := strings.TrimSpace(input.ChangeRequest)
+		if active.Document != nil && request != "" {
+			goal := strings.TrimSpace(active.Document.Info.Goal)
+			if request == goal || strings.EqualFold(request, goal) {
+				return PlanLifecycleResult{
+					Session:      session,
+					Plan:         active,
+					Summary:      SummarizePlanExecution(active.Document),
+					CheckpointID: active.Document.ActiveCheckpointID,
+					Action:       "start_session_checkpoint",
+					Message:      "Reconnected to active session checkpoint",
+				}, nil
+			}
+		}
+		return PlanLifecycleResult{}, fmt.Errorf("start_session_checkpoint requires no active plan; active plan %q already exists, use transition_checkpoint_boundary for one ordered checkpoint, amend_plan for future changes, or request_new_plan with plan_id for whole-plan replacement", active.ID)
 	}
 	request := strings.TrimSpace(input.ChangeRequest)
 	if request == "" {

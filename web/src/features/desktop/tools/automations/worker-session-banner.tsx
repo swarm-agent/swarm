@@ -11,7 +11,6 @@ import {
 import { useRouter } from '@tanstack/react-router'
 import { cn } from '../../../../lib/cn'
 import { useDesktopV3CacheSelector } from '../../state/desktop-v3-cache-store'
-import { selectAutomationV2Identity } from '../../state/desktop-automation-v2-state'
 import type { AutomationV2Occurrence, AutomationV2Record } from '../../state/desktop-automation-v2-api'
 import { scheduleLabel, type AutomationSchedule } from './automation-v2-schedule'
 import {
@@ -70,9 +69,9 @@ export function WorkerSessionBanner({
     const authoringSessionId = metadataString(metadata, 'automation_v2_authoring_session_id')
     const isOccurrence = Boolean(occurrenceId)
 
-    const isAuthoring =
-      Boolean(sessionRecord.session.automation_v2) ||
-      selectAutomationV2Identity(state, sessionId) === 'accepted'
+    // Only legacy worker-bound sessions carry a worker banner. Independent
+    // workers leave the authoring chat as an ordinary conversation.
+    const isAuthoring = Boolean(sessionRecord.session.automation_v2)
 
     if (!isOccurrence && !isAuthoring) return null
 

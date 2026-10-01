@@ -13,16 +13,20 @@ import (
 )
 
 type PlanAcceptanceCommitInput struct {
-	Session               pebblestore.SessionSnapshot
-	PlanID                string
-	Title                 string
-	Plan                  string
-	Document              *pebblestore.SessionPlanDocument
-	ApplySessionMutation  func(SessionMutationInput) (SessionMutationResult, error)
-	ModeEventFields       map[string]any
-	ModePreference        pebblestore.ModelPreference
-	ModeAgentProfile      *pebblestore.AgentProfile
-	BuildLifecycleMessage func(pebblestore.SessionPlanSnapshot, PlanExecutionSummary) *pebblestore.MessageSnapshot
+	Session                   pebblestore.SessionSnapshot
+	PlanID                    string
+	Title                     string
+	Plan                      string
+	Document                  *pebblestore.SessionPlanDocument
+	ApplySessionMutation      func(SessionMutationInput) (SessionMutationResult, error)
+	ModeEventFields           map[string]any
+	ModePreference            pebblestore.ModelPreference
+	ModeAgentProfile          *pebblestore.AgentProfile
+	TaskProgramSources        []pebblestore.ProjectTaskSource
+	BuildLifecycleMessage     func(pebblestore.SessionPlanSnapshot, PlanExecutionSummary) *pebblestore.MessageSnapshot
+	ExpectedBindingRevision   int
+	ExpectedReceipt           string
+	AcceptedDefinitionReceipt string
 }
 
 type PlanAcceptanceCommitResult struct {
@@ -49,9 +53,6 @@ func (s *Service) CommitV3PlanAcceptance(input PlanAcceptanceCommitInput) (PlanA
 	} else {
 		session = current
 	}
-	if NormalizeMode(session.Mode) != ModePlan {
-		return PlanAcceptanceCommitResult{}, fmt.Errorf("v3 plan acceptance requires session mode %q, got %q", ModePlan, NormalizeMode(session.Mode))
-	}
 	now := time.Now().UnixMilli()
 	planID := strings.TrimSpace(input.PlanID)
 	if planID == "" && input.Document != nil {
@@ -75,6 +76,47 @@ func (s *Service) CommitV3PlanAcceptance(input PlanAcceptanceCommitInput) (PlanA
 	if err != nil {
 		return PlanAcceptanceCommitResult{}, err
 	}
+
+	acceptedReceipt := strings.TrimSpace(input.AcceptedDefinitionReceipt)
+	if acceptedReceipt == "" && input.ExpectedReceipt != "" {
+		acceptedReceipt = strings.TrimSpace(input.ExpectedReceipt)
+	}
+	if acceptedReceipt == "" && input.Document != nil {
+		rawDoc, _ := json.Marshal(input.Document)
+		sum := sha256.Sum256(rawDoc)
+		acceptedReceipt = hex.EncodeToString(sum[:])
+	}
+
+	isAcceptedRetry := false
+	if found && (existing.Status == "approved" || existing.ApprovalState == "approved") {
+		if acceptedReceipt != "" && existing.AcceptedDefinitionReceipt != "" && existing.AcceptedDefinitionReceipt == acceptedReceipt {
+			isAcceptedRetry = true
+		} else if input.ExpectedBindingRevision > 0 && (existing.Version >= input.ExpectedBindingRevision || existing.ParentRevision >= input.ExpectedBindingRevision) {
+			isAcceptedRetry = true
+		}
+	}
+
+	if !isAcceptedRetry && NormalizeMode(session.Mode) != ModePlan {
+		return PlanAcceptanceCommitResult{}, fmt.Errorf("v3 plan acceptance requires session mode %q, got %q", ModePlan, NormalizeMode(session.Mode))
+	}
+
+	if input.ExpectedBindingRevision > 0 && !isAcceptedRetry {
+		if !found {
+			return PlanAcceptanceCommitResult{}, fmt.Errorf("bound plan %q not found", planID)
+		}
+		if existing.Version != input.ExpectedBindingRevision {
+			return PlanAcceptanceCommitResult{}, fmt.Errorf("plan definition is stale (expected revision %d, current %d)", input.ExpectedBindingRevision, existing.Version)
+		}
+	}
+
+	if input.ExpectedReceipt != "" && !isAcceptedRetry && found && existing.Document != nil {
+		rawDoc, _ := json.Marshal(existing.Document)
+		sum := sha256.Sum256(rawDoc)
+		existingReceipt := hex.EncodeToString(sum[:])
+		if existingReceipt != input.ExpectedReceipt {
+			return PlanAcceptanceCommitResult{}, fmt.Errorf("plan definition receipt mismatch: expected %q, got %q", input.ExpectedReceipt, existingReceipt)
+		}
+	}
 	document, err := NormalizePlanDocumentForSave(planID, title, input.Document, func() *pebblestore.SessionPlanDocument {
 		if found {
 			return existing.Document
@@ -91,14 +133,19 @@ func (s *Service) CommitV3PlanAcceptance(input PlanAcceptanceCommitInput) (PlanA
 	createdAt := now
 	var archived *pebblestore.SessionPlanSnapshot
 	if found {
-		version = existing.Version + 1
-		if existing.Version <= 0 {
-			version = 2
+		if isAcceptedRetry {
+			version = existing.Version
+			createdAt = existing.CreatedAt
+		} else {
+			version = existing.Version + 1
+			if existing.Version <= 0 {
+				version = 2
+			}
+			createdAt = existing.CreatedAt
+			copy := existing
+			copy.Active = false
+			archived = &copy
 		}
-		createdAt = existing.CreatedAt
-		copy := existing
-		copy.Active = false
-		archived = &copy
 	}
 	document.ID = planID
 	document.Title = title
@@ -109,7 +156,7 @@ func (s *Service) CommitV3PlanAcceptance(input PlanAcceptanceCommitInput) (PlanA
 			return PlanAcceptanceCommitResult{}, err
 		}
 	}
-	plan := pebblestore.SessionPlanSnapshot{ID: planID, SessionID: session.ID, UserID: session.UserID, AccountScopeID: session.AccountScopeID, Title: title, Plan: planText, Status: "approved", ApprovalState: "approved", Active: true, CreatedAt: createdAt, UpdatedAt: now, UpdateSummary: "exit plan mode submission", UpdateScope: "plan", UpdateKind: "exit_plan_mode", RevisionKind: PlanRevisionKindDefinition, Version: version, Document: document}
+	plan := pebblestore.SessionPlanSnapshot{ID: planID, SessionID: session.ID, UserID: session.UserID, AccountScopeID: session.AccountScopeID, Title: title, Plan: planText, Status: "approved", ApprovalState: "approved", Active: true, CreatedAt: createdAt, UpdatedAt: now, UpdateSummary: "exit plan mode submission", UpdateScope: "plan", UpdateKind: "exit_plan_mode", RevisionKind: PlanRevisionKindDefinition, Version: version, Document: document, AcceptedDefinitionReceipt: acceptedReceipt}
 	if found {
 		plan.ParentRevision = existing.Version
 		plan.PriorTitle = existing.Title
@@ -118,10 +165,28 @@ func (s *Service) CommitV3PlanAcceptance(input PlanAcceptanceCommitInput) (PlanA
 	}
 	updatedSession := session
 	updatedSession.Mode = ModeAuto
+	// Install API-revalidated task repository grants only with plan acceptance,
+	// never while the AI is publishing a pending review.
+	updatedSession.WorkspaceGrants = append([]pebblestore.WorkspaceGrant(nil), session.WorkspaceGrants...)
+	for _, source := range input.TaskProgramSources {
+		matched := false
+		for _, grant := range updatedSession.WorkspaceGrants {
+			matched = matched || (grant.Path == source.Path && grant.WorkspaceID == source.WorkspaceID && grant.WorkspaceGeneration == source.WorkspaceGeneration)
+		}
+		if !matched {
+			updatedSession.WorkspaceGrants = append(updatedSession.WorkspaceGrants, pebblestore.WorkspaceGrant{Kind: pebblestore.WorkspaceGrantAdditional, Path: source.Path, WorkspaceID: source.WorkspaceID, WorkspaceGeneration: source.WorkspaceGeneration})
+		}
+	}
+	if len(input.TaskProgramSources) > 0 {
+		updatedSession.WorkspaceUsage = pebblestore.WorkspaceUsageFromGrants(updatedSession.WorkspaceGrants)
+	}
+	hasExplicitPreference := strings.TrimSpace(input.ModePreference.Provider) != "" || strings.TrimSpace(input.ModePreference.Model) != ""
 	if len(input.ModeEventFields) > 0 {
-		if strings.TrimSpace(input.ModePreference.Provider) == "" || strings.TrimSpace(input.ModePreference.Model) == "" {
+		if !hasExplicitPreference {
 			return PlanAcceptanceCommitResult{}, errors.New("v3 plan acceptance mode policy requires a resolved auto preference")
 		}
+		updatedSession.Preference = input.ModePreference
+	} else if hasExplicitPreference {
 		updatedSession.Preference = input.ModePreference
 	}
 	if input.ModeAgentProfile != nil {
@@ -144,6 +209,9 @@ func (s *Service) CommitV3PlanAcceptance(input PlanAcceptanceCommitInput) (PlanA
 	for key, value := range input.ModeEventFields {
 		modeFields[key] = value
 	}
+	if hasExplicitPreference && modeFields["preference"] == nil {
+		modeFields["preference"] = updatedSession.Preference
+	}
 	modePayload, err := json.Marshal(modeFields)
 	if err != nil {
 		return PlanAcceptanceCommitResult{}, err
@@ -152,7 +220,7 @@ func (s *Service) CommitV3PlanAcceptance(input PlanAcceptanceCommitInput) (PlanA
 	if input.BuildLifecycleMessage != nil {
 		lifecycleMessage = input.BuildLifecycleMessage(plan, SummarizePlanExecution(plan.Document))
 	}
-	acceptance := &pebblestore.V3PlanAcceptanceMutation{Plan: plan, ArchivedRevision: archived, Session: updatedSession, PlanEventPayload: planPayload, ModeEventPayload: modePayload, ModeMessage: lifecycleMessage}
+	acceptance := &pebblestore.V3PlanAcceptanceMutation{Plan: plan, ArchivedRevision: archived, Session: updatedSession, PlanEventPayload: planPayload, ModeEventPayload: modePayload, ModeMessage: lifecycleMessage, ExpectedBindingRevision: input.ExpectedBindingRevision, ExpectedReceipt: input.ExpectedReceipt, AcceptedDefinitionReceipt: acceptedReceipt}
 	hashInput, _ := json.Marshal(acceptance)
 	sum := sha256.Sum256(hashInput)
 	payloadHash := hex.EncodeToString(sum[:])

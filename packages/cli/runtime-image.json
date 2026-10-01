@@ -1,0 +1,8 @@
+{
+  "version": "0.1.0-headless.1",
+  "reference": "localhost/swarm-headless:0.1.0-headless.1",
+  "imageId": "sha256:9bf7ed98bc7865185baaedc5db55b1a990599f996b54edc0be879dfacf1f4fa6",
+  "sourceCommit": "f549b560b757f640bb30cc35b38609f223617181",
+  "platform": "linux/amd64",
+  "distribution": "local-candidate"
+}

@@ -1,6 +1,7 @@
 package pebblestore
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
@@ -16,32 +17,34 @@ import (
 // AutomationV2Occurrence is an immutable accepted instruction snapshot plus a
 // durable execution receipt. Authoring sessions are never execution sessions.
 type AutomationV2Occurrence struct {
-	ID           string                         `json:"id"`
-	Record       AutomationV2Record             `json:"accepted"`
-	DueAt        int64                          `json:"due_at"`
-	AdmittedAt   int64                          `json:"admitted_at"`
-	SessionID    string                         `json:"session_id"`
-	RunID        string                         `json:"run_id"`
-	State        string                         `json:"state"`
-	Version      uint64                         `json:"version"`
-	ObservedAt   int64                          `json:"observed_at"`
-	Detail       string                         `json:"detail,omitempty"`
-	Preparation  *SessionSnapshot               `json:"preparation,omitempty"`
-	ClosingState string                         `json:"closing_state,omitempty"`
-	Summary      string                         `json:"summary,omitempty"`
-	Deliverables []SessionPlanArtifactReference `json:"deliverables,omitempty"`
-	Artifacts    []SessionPlanArtifactReference `json:"artifacts,omitempty"`
-	Result       string                         `json:"result,omitempty"`
-	Report       string                         `json:"report,omitempty"`
-	AttemptCount int                            `json:"attempt_count,omitempty"`
-	NextRetryAt  int64                          `json:"next_retry_at,omitempty"`
+	ID             string                         `json:"id"`
+	Record         AutomationV2Record             `json:"accepted"`
+	DueAt          int64                          `json:"due_at"`
+	AdmittedAt     int64                          `json:"admitted_at"`
+	SessionID      string                         `json:"session_id"`
+	RunID          string                         `json:"run_id"`
+	State          string                         `json:"state"`
+	Version        uint64                         `json:"version"`
+	ObservedAt     int64                          `json:"observed_at"`
+	Detail         string                         `json:"detail,omitempty"`
+	Preparation    *SessionSnapshot               `json:"preparation,omitempty"`
+	ClosingState   string                         `json:"closing_state,omitempty"`
+	Summary        string                         `json:"summary,omitempty"`
+	Deliverables   []SessionPlanArtifactReference `json:"deliverables,omitempty"`
+	Artifacts      []SessionPlanArtifactReference `json:"artifacts,omitempty"`
+	Result         string                         `json:"result,omitempty"`
+	Report         string                         `json:"report,omitempty"`
+	AttemptCount   int                            `json:"attempt_count,omitempty"`
+	NextRetryAt    int64                          `json:"next_retry_at,omitempty"`
+	TriggerContext map[string]any                 `json:"trigger_context,omitempty"`
 }
 
 type automationV2ExecutionMutation struct {
-	action     string
-	expected   AutomationV2Record
-	occurrence AutomationV2Occurrence
-	now        int64
+	action         string
+	expected       AutomationV2Record
+	occurrence     AutomationV2Occurrence
+	now            int64
+	triggerContext map[string]any
 }
 
 // AutomationV2NextDue is strictly after `after`; interval anchors are acceptance
@@ -51,6 +54,9 @@ type automationV2ExecutionMutation struct {
 func AutomationV2NextDue(policy AutomationV2Settings, anchor, after int64) (int64, error) {
 	if err := ValidateAutomationV2Settings(&policy, 0); err != nil {
 		return 0, err
+	}
+	if policy.Schedule.Kind == "trigger" {
+		return 0, nil
 	}
 	if after < anchor {
 		after = anchor
@@ -150,6 +156,7 @@ func (s *SessionStore) ScanAutomationV2Accepted(after string) ([]AutomationV2Rec
 	rows := []AutomationV2Record{}
 	next := ""
 	size := 0
+	seen := make(map[string]bool)
 	for valid := it.First(); valid; valid = it.Next() {
 		if len(rows) >= 10 || size >= 1024*1024 {
 			return rows, next, nil
@@ -158,6 +165,10 @@ func (s *SessionStore) ScanAutomationV2Accepted(after string) ([]AutomationV2Rec
 		if err := json.Unmarshal(it.Value(), &r); err != nil {
 			return nil, "", err
 		}
+		if seen[r.AutomationID] {
+			continue
+		}
+		seen[r.AutomationID] = true
 		rows = append(rows, r)
 		next = string(it.Key())
 		size += len(it.Value())
@@ -221,7 +232,10 @@ func (s *SessionStore) ListAutomationV2Occurrences(account, user, workspace, ses
 		if err := json.Unmarshal(it.Value(), &o); err != nil {
 			return nil, "", err
 		}
-		if err := validateAutomationV2Integrity(o.Record.AutomationV2Proposal, account, user, workspace, session); err != nil {
+		if workspace != "" && o.Record.WorkspaceID != workspace {
+			continue
+		}
+		if err := validateAutomationV2Integrity(o.Record.AutomationV2Proposal, account, user, o.Record.WorkspaceID, session); err != nil {
 			return nil, "", err
 		}
 		rows = append(rows, o)
@@ -246,6 +260,27 @@ func (s *SessionStore) AdmitAutomationV2(r AutomationV2Record, now int64) (Autom
 	defer s.store.sessionMutations.automationV2Mu.Unlock()
 	m := &automationV2ExecutionMutation{action: "admitted", expected: r, now: now}
 	err := s.automationV2ExecutionApply(m)
+	return m.occurrence, err
+}
+
+func (s *SessionStore) TriggerAutomationV2(account, user, workspace, targetID string, triggerContext map[string]any, now int64) (AutomationV2Occurrence, error) {
+	s.store.sessionMutations.automationV2Mu.Lock()
+	defer s.store.sessionMutations.automationV2Mu.Unlock()
+	r, ok, err := s.GetAutomationV2Record(account, user, workspace, targetID)
+	if err != nil {
+		return AutomationV2Occurrence{}, err
+	}
+	if !ok {
+		r, ok, err = s.GetAutomationV2Record(account, user, "", targetID)
+		if err != nil {
+			return AutomationV2Occurrence{}, err
+		}
+		if !ok {
+			return AutomationV2Occurrence{}, ErrAutomationV2Conflict
+		}
+	}
+	m := &automationV2ExecutionMutation{action: "triggered", expected: r, now: now, triggerContext: triggerContext}
+	err = s.automationV2ExecutionApply(m)
 	return m.occurrence, err
 }
 
@@ -337,12 +372,14 @@ func (s *SessionStore) prepareAutomationV2Execution(in *V3SessionMutationInput) 
 			return ErrAutomationV2Conflict
 		}
 		if r.Document.AutomationV2.Overlap == "serialize" {
-			rows, _, err := s.ListAutomationV2Occurrences(r.AccountID, r.UserID, r.WorkspaceID, r.SessionID, "", true, 1)
+			rows, _, err := s.ListAutomationV2Occurrences(r.AccountID, r.UserID, r.WorkspaceID, r.SessionID, "", true, 10)
 			if err != nil {
 				return err
 			}
-			if len(rows) > 0 {
-				return ErrAutomationV2Conflict
+			for _, row := range rows {
+				if row.State == "admitted" || row.State == "running" || (row.State == "unavailable" && row.NextRetryAt > now) {
+					return ErrAutomationV2Conflict
+				}
 			}
 		}
 		if r.Document.AutomationV2.DailyRunCap > 0 {
@@ -415,6 +452,95 @@ func (s *SessionStore) prepareAutomationV2Execution(in *V3SessionMutationInput) 
 				return ErrAutomationV2Conflict
 			}
 			m.occurrence = AutomationV2Occurrence{ID: id, Record: admittedSnapshot, DueAt: due, AdmittedAt: now, SessionID: "av2-execution-" + id, RunID: "av2-run:" + id, State: "admitted", Version: 1, ObservedAt: now}
+		}
+	case "triggered":
+		if !r.Enabled {
+			return fmt.Errorf("worker %q is currently paused; resume the worker before sending requests", r.AutomationID)
+		}
+		if r.Cancelled {
+			return fmt.Errorf("worker %q has been cancelled", r.AutomationID)
+		}
+		if r.Archived {
+			return fmt.Errorf("worker %q is archived; unarchive before sending requests", r.AutomationID)
+		}
+		if r.Authorization.Kind == "at" && now >= r.Authorization.ExpiresAt {
+			return fmt.Errorf("worker %q authorization has expired", r.AutomationID)
+		}
+		if r.Document.AutomationV2 == nil && r.Document.WorkerV2 != nil {
+			r.Document.AutomationV2 = r.Document.WorkerV2
+		}
+		if r.Document.AutomationV2 == nil {
+			return ErrAutomationV2Conflict
+		}
+		if r.Document.AutomationV2.Overlap == "serialize" {
+			rows, _, err := s.ListAutomationV2Occurrences(r.AccountID, r.UserID, r.WorkspaceID, r.SessionID, "", true, 10)
+			if err != nil {
+				return err
+			}
+			for _, row := range rows {
+				if row.State == "admitted" || row.State == "running" || (row.State == "unavailable" && row.NextRetryAt > now) {
+					return fmt.Errorf("worker %q is currently executing a task; serialize policy is active", r.AutomationID)
+				}
+			}
+		}
+		if r.Document.AutomationV2.DailyRunCap > 0 {
+			loc := time.UTC
+			if r.Document.AutomationV2.Schedule.Timezone != "" {
+				if l, err := time.LoadLocation(r.Document.AutomationV2.Schedule.Timezone); err == nil {
+					loc = l
+				}
+			}
+			nowTime := time.UnixMilli(now).In(loc)
+			startOfDay := time.Date(nowTime.Year(), nowTime.Month(), nowTime.Day(), 0, 0, 0, 0, loc)
+			startOfDayMs := startOfDay.UnixMilli()
+			startOfNextDay := startOfDay.AddDate(0, 0, 1)
+			startOfNextDayMs := startOfNextDay.UnixMilli()
+
+			prefix := automationV2OccurrencePrefix(r.AccountID, r.SessionID)
+			it, err := s.store.db.NewIter(&pebble.IterOptions{LowerBound: []byte(prefix), UpperBound: []byte(prefix + "\xff")})
+			if err != nil {
+				return err
+			}
+			admittedCount := 0
+			for valid := it.First(); valid; valid = it.Next() {
+				var o AutomationV2Occurrence
+				if err := json.Unmarshal(it.Value(), &o); err == nil {
+					if o.Record.AutomationID == r.AutomationID && o.AdmittedAt >= startOfDayMs && o.AdmittedAt < startOfNextDayMs {
+						admittedCount++
+					}
+				}
+			}
+			if err := it.Error(); err != nil {
+				_ = it.Close()
+				return err
+			}
+			_ = it.Close()
+
+			if admittedCount >= r.Document.AutomationV2.DailyRunCap {
+				return errors.New("daily run cap reached for automation")
+			}
+		}
+		admittedSnapshot := r
+		id := fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%s:%d:%d:trigger", r.AutomationID, r.Revision, now))))
+		var prior AutomationV2Occurrence
+		if found, err := s.store.GetJSON(automationV2OccurrencePrefix(r.AccountID, r.SessionID)+id, &prior); err != nil {
+			return err
+		} else if found {
+			var b [4]byte
+			_, _ = rand.Read(b[:])
+			id = fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%s:%d:%d:%x:trigger", r.AutomationID, r.Revision, now, b))))
+		}
+		m.occurrence = AutomationV2Occurrence{
+			ID:             id,
+			Record:         admittedSnapshot,
+			DueAt:          now,
+			AdmittedAt:     now,
+			SessionID:      "av2-execution-" + id,
+			RunID:          "av2-run:" + id,
+			State:          "admitted",
+			Version:        1,
+			ObservedAt:     now,
+			TriggerContext: m.triggerContext,
 		}
 	case "pause", "resume", "cancel_future", "cancel_all", "delete_automation":
 		if r.Cancelled && m.action != "cancel_all" && m.action != "delete_automation" {
@@ -556,12 +682,14 @@ func (s *SessionStore) setAutomationV2ExecutionInBatch(batch *pebble.Batch, in V
 	r := in.automationV2.record
 	if m.action != "observed" && m.action != "prepared" && m.action != "closing" {
 		if m.action == "delete_automation" {
-			if err := batch.Delete([]byte(automationV2Key("accepted", r.AccountID, r.SessionID)), nil); err != nil {
-				return err
-			}
+			_ = batch.Delete([]byte(automationV2Key("accepted", r.AccountID, r.AutomationID)), nil)
+			_ = batch.Delete([]byte(automationV2Key("accepted", r.AccountID, r.SessionID)), nil)
 		} else {
 			b, err := json.Marshal(r)
 			if err != nil {
+				return err
+			}
+			if err = batch.Set([]byte(automationV2Key("accepted", r.AccountID, r.AutomationID)), b, nil); err != nil {
 				return err
 			}
 			if err = batch.Set([]byte(automationV2Key("accepted", r.AccountID, r.SessionID)), b, nil); err != nil {
@@ -578,7 +706,7 @@ func (s *SessionStore) setAutomationV2ExecutionInBatch(batch *pebble.Batch, in V
 		if err = batch.Set([]byte(automationV2OccurrenceKey(o)), b, nil); err != nil {
 			return err
 		}
-		if AutomationV2Terminal(o.State) {
+		if AutomationV2Terminal(o.State) || (o.State == "unavailable" && o.NextRetryAt <= 0) {
 			err = batch.Delete([]byte(automationV2PendingKey(o)), nil)
 		} else {
 			err = batch.Set([]byte(automationV2PendingKey(o)), b, nil)
@@ -615,5 +743,48 @@ func (s *SessionStore) PersistAutomationV2ClosingState(o AutomationV2Occurrence,
 		}
 		o.Detail = detail
 	}
+
+	isTrigger := (o.Record.Document.WorkerV2 != nil && o.Record.Document.WorkerV2.Schedule.Kind == "trigger") || (o.Record.Document.AutomationV2 != nil && o.Record.Document.AutomationV2.Schedule.Kind == "trigger") || len(o.TriggerContext) > 0
+	shouldDeliver := closingState == "deliverable_ready" || closingState == "attention_alert" || len(deliverables) > 0 || (isTrigger && (report != "" || result != "" || summary != ""))
+	if shouldDeliver && o.Record.AccountID != "" {
+		kind := "report"
+		title := o.Record.Document.Title
+		if title == "" {
+			if isTrigger {
+				title = "Worker Trigger Deliverable"
+			} else {
+				title = "Worker Deliverable"
+			}
+		}
+		if closingState == "attention_alert" {
+			kind = "alert"
+			title = "Alert: " + title
+		} else if len(deliverables) > 0 {
+			kind = "deliverable_ready"
+		}
+		delivID := "deliv_occ_" + o.ID
+		deliv := &DeliverableRecord{
+			ID:           delivID,
+			AccountID:    o.Record.AccountID,
+			WorkspaceID:  o.Record.WorkspaceID,
+			WorkerID:     o.Record.AutomationID,
+			OccurrenceID: o.ID,
+			SessionID:    o.SessionID,
+			Title:        title,
+			Kind:         kind,
+			Status:       "pending_review",
+			Summary:      summary,
+			MediaRefs:    deliverables,
+			Payload: map[string]any{
+				"closing_state": closingState,
+				"report":        report,
+				"result":        result,
+				"detail":        detail,
+			},
+			CreatedAt: now,
+		}
+		_ = s.PutDeliverable(o.Record.AccountID, deliv)
+	}
+
 	return s.automationV2ExecutionApply(&automationV2ExecutionMutation{action: "closing", expected: o.Record, occurrence: o, now: now})
 }

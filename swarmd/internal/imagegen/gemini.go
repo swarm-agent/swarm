@@ -114,8 +114,8 @@ func (c googleGeminiImageClient) GenerateImage(ctx context.Context, req GeminiIm
 	if modelID == "" {
 		return GeminiImageGenerationResult{}, errors.New("Google image model is required")
 	}
-	prompt := strings.TrimSpace(req.Prompt)
-	if prompt == "" {
+	prompt := req.Prompt
+	if strings.TrimSpace(prompt) == "" {
 		return GeminiImageGenerationResult{}, errors.New("prompt is required")
 	}
 

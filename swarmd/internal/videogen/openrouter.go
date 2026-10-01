@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -177,11 +178,21 @@ func (s *Service) pollOpenRouterJob(ctx context.Context, apiKey, modelID, jobID,
 	return ManagedVideoResult{}, errors.New("openrouter video generation timed out")
 }
 
-func (s *Service) downloadURL(ctx context.Context, url string) ([]byte, error) {
-	if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
-		url = fmt.Sprintf("%s/%s", s.openRouterURL(), strings.TrimPrefix(url, "/"))
+func (s *Service) downloadURL(ctx context.Context, rawURL string) ([]byte, error) {
+	if !strings.HasPrefix(rawURL, "http://") && !strings.HasPrefix(rawURL, "https://") {
+		rawURL = fmt.Sprintf("%s/%s", s.openRouterURL(), strings.TrimPrefix(rawURL, "/"))
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid download url: %w", err)
+	}
+	if parsed.User != nil {
+		return nil, errors.New("userinfo is not permitted in download url")
+	}
+	if parsed.Scheme != "https" && parsed.Hostname() != "127.0.0.1" && parsed.Hostname() != "localhost" {
+		return nil, fmt.Errorf("insecure scheme %q is not permitted for video download", parsed.Scheme)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, err
 	}

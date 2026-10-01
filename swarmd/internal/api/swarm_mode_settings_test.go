@@ -32,18 +32,23 @@ func TestAgentModelSettingsHTTPPatchAndGetUnifiedRecord(t *testing.T) {
 	assertAgentModelSettingsHTTPResponse(t, got, "action-next", "plan-next", "compact")
 }
 
+// Purpose: handleAgentModelSettings must reject malformed/mixed targets before
+// account mutation. This handler layer proves rejection plus unchanged GET state.
 func TestAgentModelSettingsHTTPRejectsInvalidTargetedPatches(t *testing.T) {
 	server, principal := openAgentModelSettingsHTTPTest(t)
 	for _, body := range []string{
 		`{}`,
 		`{"unknown":true}`,
-		`{"swarm":{"action":{"provider":"codex","model":"action","thinking":"high"}}}`,
+		`{"swarm":{"action":{"provider":"codex","model":"action"}}}`,
+		`{"swarm":{}}`,
 		`{"swarm":{"action":{"provider":"codex","model":"action","thinking":"high"},"plan":{"provider":"codex","model":"plan","thinking":"high"}},"system_agents":{"coder":{"provider":"codex","model":"coder","thinking":"high"}}}`,
 		`{"system_agents":{}}`,
 		`{"system_agents":{"coder":{"provider":"codex","model":"coder","thinking":"high"},"finder":{"provider":"codex","model":"finder","thinking":"medium"}}}`,
 		`{"system_agents":{"unknown":{"provider":"codex","model":"model","thinking":"high"}}}`,
 	} {
 		agentModelSettingsHTTP(t, server, principal, http.MethodPatch, body, http.StatusBadRequest)
+		got := agentModelSettingsHTTP(t, server, principal, http.MethodGet, "", http.StatusOK)
+		assertAgentModelSettingsHTTPResponse(t, got, "action", "plan", "compact")
 	}
 }
 
@@ -128,4 +133,37 @@ func testAgentModelSettingsRecord(accountScopeID string) pebblestore.AgentModelS
 		},
 		UpdatedAt: 1,
 	}
+}
+
+// Purpose: single-role saves through the canonical authenticated handler must
+// preserve sibling assignments and reload. Reject cross-account access without
+// mutation; descriptors must bind compiled identities, not custom-agent rows.
+// The HTTP handler is the narrowest layer proving wire compatibility and scope.
+func TestAgentModelSettingsHTTPSingleSwarmSlotsAndRoles(t *testing.T) {
+	server, principal := openAgentModelSettingsHTTPTest(t)
+	action := `{"swarm":{"action":{"provider":"codex","model":"new-action","thinking":"high"}}}`
+	plan := `{"swarm":{"plan":{"provider":"codex","model":"new-plan","thinking":"medium"}}}`
+	agentModelSettingsHTTP(t, server, principal, http.MethodPatch, action, http.StatusOK)
+	agentModelSettingsHTTP(t, server, principal, http.MethodPatch, plan, http.StatusOK)
+	got := agentModelSettingsHTTP(t, server, principal, http.MethodGet, "", http.StatusOK)
+	assertAgentModelSettingsHTTPResponse(t, got, "new-action", "new-plan", "compact")
+	roles := got["roles"].([]any)
+	if len(roles) != 7 {
+		t.Fatalf("role count = %d", len(roles))
+	}
+	found := false
+	for _, raw := range roles {
+		role := raw.(map[string]any)
+		if role["id"] == "system-orchestrator" {
+			found = role["group"] == "swarm" && role["slot"] == "plan"
+		}
+	}
+	if !found {
+		t.Fatal("compiled Orchestrator must expose the shared Plan slot")
+	}
+	other := principal
+	other.AccountScopeID = "account-two"
+	agentModelSettingsHTTP(t, server, other, http.MethodPatch, action, http.StatusNotFound)
+	got = agentModelSettingsHTTP(t, server, principal, http.MethodGet, "", http.StatusOK)
+	assertAgentModelSettingsHTTPResponse(t, got, "new-action", "new-plan", "compact")
 }

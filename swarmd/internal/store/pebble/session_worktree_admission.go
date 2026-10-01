@@ -2,6 +2,7 @@ package pebblestore
 
 import (
 	"encoding/json"
+	"fmt"
 
 	"github.com/cockroachdb/pebble"
 )
@@ -21,18 +22,36 @@ type WorktreeAdmissionEvidence struct {
 	// WorkspacePath is the runtime root, not the original source. Never set
 	// for shared Finder lanes or based solely on decoded session metadata.
 	DelegatedCoder bool
+	// AllocatedRuntimeRoot attests a primary session lane allocated by the server,
+	// with the same exact source/runtime/owner checks as an isolated Coder.
+	AllocatedRuntimeRoot bool
 }
 
 func (s *SessionStore) validateWorktreeAdmission(input V3SessionMutationInput, next SessionSnapshot) error {
 	e := input.WorktreeAdmission
 	if agent := v3LibraryMetadataString(next.Metadata, "subagent"); agent == "finder" || agent == "system-finder" {
-		return ErrWorktreeRecoveryConflict
+		return fmt.Errorf("%w: finder agent rejected", ErrWorktreeRecoveryConflict)
 	}
-	if e == nil || (e.Kind != "allocated" && e.Kind != "legacy") ||
-		e.Path != next.WorktreeRootPath || e.OwnerSessionID != input.SessionID ||
-		!validWorktreePath(e.SourcePath) || !worktreeAdmissionSourceMatches(e, next) ||
-		e.Branch == "" || e.Branch != next.WorktreeBranch {
-		return ErrWorktreeRecoveryConflict
+	if e == nil {
+		return fmt.Errorf("%w: e is nil", ErrWorktreeRecoveryConflict)
+	}
+	if e.Kind != "allocated" && e.Kind != "legacy" {
+		return fmt.Errorf("%w: e.Kind invalid %q", ErrWorktreeRecoveryConflict, e.Kind)
+	}
+	if e.Path != next.WorktreeRootPath {
+		return fmt.Errorf("%w: e.Path %q != next.WorktreeRootPath %q", ErrWorktreeRecoveryConflict, e.Path, next.WorktreeRootPath)
+	}
+	if e.OwnerSessionID != input.SessionID {
+		return fmt.Errorf("%w: e.OwnerSessionID %q != input.SessionID %q", ErrWorktreeRecoveryConflict, e.OwnerSessionID, input.SessionID)
+	}
+	if !validWorktreePath(e.SourcePath) {
+		return fmt.Errorf("%w: e.SourcePath not valid %q", ErrWorktreeRecoveryConflict, e.SourcePath)
+	}
+	if !worktreeAdmissionSourceMatches(e, next) {
+		return fmt.Errorf("%w: worktreeAdmissionSourceMatches failed", ErrWorktreeRecoveryConflict)
+	}
+	if e.Branch == "" || e.Branch != next.WorktreeBranch {
+		return fmt.Errorf("%w: e.Branch %q != next.WorktreeBranch %q", ErrWorktreeRecoveryConflict, e.Branch, next.WorktreeBranch)
 	}
 	for key, expected := range map[string]string{
 		"swarm_v3_worktree_owner_session_id": e.OwnerSessionID,
@@ -40,7 +59,7 @@ func (s *SessionStore) validateWorktreeAdmission(input V3SessionMutationInput, n
 		"swarm_v3_runtime_workspace_path":    e.Path,
 	} {
 		if value := v3LibraryMetadataString(next.Metadata, key); value != "" && value != expected {
-			return ErrWorktreeRecoveryConflict
+			return fmt.Errorf("%w: metadata key %q value %q != expected %q", ErrWorktreeRecoveryConflict, key, value, expected)
 		}
 	}
 	current, exists, err := s.GetSession(input.SessionID)
@@ -48,7 +67,7 @@ func (s *SessionStore) validateWorktreeAdmission(input V3SessionMutationInput, n
 		return err
 	}
 	if exists && (current.AccountScopeID != input.AccountScopeID || current.UserID != input.UserID) {
-		return ErrWorktreeRecoveryConflict
+		return fmt.Errorf("%w: session account/user mismatch", ErrWorktreeRecoveryConflict)
 	}
 	if e.Kind == "allocated" {
 		// Allocation is positive caller evidence, not inferred from an absent
@@ -80,8 +99,8 @@ func (s *SessionStore) validateWorktreeHistoryClaims(input V3SessionMutationInpu
 	count := 0
 	for iter.First(); iter.Valid(); iter.Next() {
 		count++
-		if count > 10000 {
-			return ErrWorktreeRecoveryConflict
+		if count > 200000 {
+			return fmt.Errorf("%w: repository history row count exceeded 200000", ErrWorktreeRecoveryConflict)
 		}
 		var row SessionRepositoryHistory
 		if err := json.Unmarshal(iter.Value(), &row); err != nil {
@@ -93,7 +112,7 @@ func (s *SessionStore) validateWorktreeHistoryClaims(input V3SessionMutationInpu
 		}
 		if owner.ID != input.SessionID || owner.AccountScopeID != input.AccountScopeID || owner.UserID != input.UserID ||
 			!worktreeAdmissionHistorySourceMatches(input.WorktreeAdmission, row) || owner.WorktreeBranch != input.WorktreeAdmission.Branch || !owner.WorktreeEnabled || row.Deleted {
-			return ErrWorktreeRecoveryConflict
+			return fmt.Errorf("%w: history claim conflict for owner %q vs input %q", ErrWorktreeRecoveryConflict, owner.ID, input.SessionID)
 		}
 		matched = true
 	}
@@ -101,7 +120,7 @@ func (s *SessionStore) validateWorktreeHistoryClaims(input V3SessionMutationInpu
 		return err
 	}
 	if requireOwner && !matched {
-		return ErrWorktreeRecoveryConflict
+		return fmt.Errorf("%w: requireOwner and not matched", ErrWorktreeRecoveryConflict)
 	}
 	return nil
 }
@@ -128,7 +147,20 @@ func (s *SessionStore) validateRetainedWorktreeProgramClaims(path, owner string)
 			return ErrWorktreeRecoveryConflict
 		}
 		for _, job := range program.Jobs {
-			if job.WorkspacePath == path && job.ChildSessionID != owner && job.CurrentSessionID != owner {
+			if job.WorkspacePath != path || job.ChildSessionID == owner || job.CurrentSessionID == owner {
+				continue
+			}
+			// Finder jobs borrow a workspace for read-only discovery; their
+			// recorded runtime path is not an exclusive worktree claim. Use
+			// the retained definition, not mutable child metadata or status.
+			readOnly := false
+			for _, definition := range program.Definition.Jobs {
+				if definition.ID == job.JobID && definition.AgentType == "finder" {
+					readOnly = true
+					break
+				}
+			}
+			if !readOnly {
 				return ErrWorktreeRecoveryConflict
 			}
 		}
@@ -158,7 +190,7 @@ func worktreeAdmissionHistorySourceMatches(e *WorktreeAdmissionEvidence, row Ses
 }
 
 func worktreeAdmissionSourceMatches(e *WorktreeAdmissionEvidence, snapshot SessionSnapshot) bool {
-	if !e.DelegatedCoder {
+	if !e.DelegatedCoder && !e.AllocatedRuntimeRoot {
 		return snapshot.WorkspacePath == e.SourcePath
 	}
 	return snapshot.WorkspacePath == e.Path &&
@@ -199,7 +231,7 @@ func (s *SessionStore) InspectRecoveryOwnership(account, user, source, path stri
 	count := 0
 	for iter.First(); iter.Valid(); iter.Next() {
 		count++
-		if count > 10000 {
+		if count > 200000 {
 			return nil, ErrWorktreeRecoveryConflict
 		}
 		var row SessionRepositoryHistory

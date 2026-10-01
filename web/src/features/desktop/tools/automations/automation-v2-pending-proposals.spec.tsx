@@ -144,13 +144,12 @@ test('AutomationV2Workspace surfaces pending automation proposals created by sid
   // Simulate sidebar agent creating the pending automation permission in cache
   const permissionPayload = {
     path_id: 'permission.automation-v2-plan.v2',
-    review_kind: 'automation_v2',
-    action: 'request_new_plan',
+    review_kind: 'worker_v2',
+    action: 'propose',
     title: sampleProposal.document.title,
     document: sampleProposal.document,
-    plan_id: sampleProposal.proposal_id,
     proposal_revision: sampleProposal.revision,
-    automation_review: {
+    worker_review: {
       proposal_id: sampleProposal.proposal_id,
       revision: sampleProposal.revision,
       digest: sampleProposal.digest,
@@ -166,7 +165,7 @@ test('AutomationV2Workspace surfaces pending automation proposals created by sid
     {
       id: 'permission_' + sampleProposal.proposal_id,
       sessionId: sampleProposal.session_id,
-      toolName: 'plan_manage',
+      toolName: 'manage_workers',
       toolArguments: JSON.stringify(permissionPayload),
       proposalRevision: sampleProposal.revision,
       requirement: 'automation_v2_acceptance',

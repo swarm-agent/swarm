@@ -15,6 +15,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
 type veoPredictRequest struct {
@@ -27,9 +29,14 @@ type veoImageInput struct {
 	MIMEType           string `json:"mimeType,omitempty"`
 }
 
+type veoVideoInput struct {
+	URI string `json:"uri"`
+}
+
 type veoInstance struct {
 	Prompt string         `json:"prompt"`
 	Image  *veoImageInput `json:"image,omitempty"`
+	Video  *veoVideoInput `json:"video,omitempty"`
 }
 
 type veoParameters struct {
@@ -69,16 +76,34 @@ func (s *Service) generateGoogleVeo(
 	aspectRatio string,
 	resolution string,
 	durationSeconds int,
+	operation string,
+	source *ManagedVideoSource,
 	img *ManagedVideoImage,
 ) (ManagedVideoResult, error) {
+	if operation == pebblestore.VideoOperationEdit {
+		return ManagedVideoResult{}, errors.New("Veo models do not support video editing; select an iteration model such as Gemini Omni")
+	}
+
 	instance := veoInstance{Prompt: prompt}
-	if img != nil && len(img.Bytes) > 0 {
+
+	if operation == pebblestore.VideoOperationExtend {
+		if source == nil || source.Provenance == nil || strings.TrimSpace(source.Provenance.ProviderResource) == "" {
+			return ManagedVideoResult{}, errors.New("Veo video extension requires the retained provider video resource")
+		}
+		// predictLongRunning extensions use the resource from the exact prior
+		// generation, not generateContent-style inlineData or an uploaded copy.
+		instance.Video = &veoVideoInput{URI: strings.TrimSpace(source.Provenance.ProviderResource)}
+		// For Veo extension, resolution must be 720p and durationSeconds parameter must be 8
+		resolution = "720p"
+		durationSeconds = 8
+	} else if img != nil && len(img.Bytes) > 0 {
 		veoImg, err := prepareVeoImage(img)
 		if err != nil {
 			return ManagedVideoResult{}, err
 		}
 		instance.Image = veoImg
 	}
+
 	reqBody := veoPredictRequest{
 		Instances: []veoInstance{instance},
 		Parameters: &veoParameters{
@@ -133,10 +158,10 @@ func (s *Service) generateGoogleVeo(
 		return ManagedVideoResult{}, errors.New("google veo did not return an operation name")
 	}
 
-	return s.pollGoogleVeoOperation(ctx, apiKey, modelID, opResp.Name, resolution)
+	return s.pollGoogleVeoOperation(ctx, apiKey, modelID, opResp.Name, resolution, operation, source)
 }
 
-func (s *Service) pollGoogleVeoOperation(ctx context.Context, apiKey string, modelID, operationName, resolution string) (ManagedVideoResult, error) {
+func (s *Service) pollGoogleVeoOperation(ctx context.Context, apiKey string, modelID, operationName, resolution, operation string, source *ManagedVideoSource) (ManagedVideoResult, error) {
 	deadline := time.Now().Add(s.pollingTimeout(resolution))
 	pollURL := fmt.Sprintf("%s/v1beta/%s?key=%s", s.googleURL(), strings.TrimPrefix(operationName, "/"), apiKey)
 
@@ -176,12 +201,25 @@ func (s *Service) pollGoogleVeoOperation(ctx context.Context, apiKey string, mod
 			if err != nil {
 				return ManagedVideoResult{}, fmt.Errorf("download veo video: %w", err)
 			}
-			return ManagedVideoResult{
-				Bytes:     videoBytes,
-				MediaType: "video/mp4",
-				Model:     modelID,
-				Provider:  ProviderGoogleGemini,
-			}, nil
+
+			res := ManagedVideoResult{
+				Bytes:            videoBytes,
+				MediaType:        "video/mp4",
+				Model:            modelID,
+				Provider:         ProviderGoogleGemini,
+				ProviderResource: videoURI,
+				Transport:        pebblestore.VideoTransportGooglePredictLongRunning,
+				Operation:        operation,
+			}
+			if operation == pebblestore.VideoOperationExtend {
+				res.IsCombinedOutput = true
+				if source != nil && source.Provenance != nil {
+					res.ExtensionCount = source.Provenance.ExtensionCount + 1
+				} else {
+					res.ExtensionCount = 1
+				}
+			}
+			return res, nil
 		}
 	}
 	return ManagedVideoResult{}, errors.New("google veo video generation timed out")

@@ -65,7 +65,79 @@ func TestRunWorkspaceScopeInjectsAccountScopedLinkedAgentsInstructions(t *testin
 	}
 }
 
-// Purpose: scope/prompt identity must describe a real isolated Git lane, not fabricated paths.
+func TestOrchestratorPromptInjectsProjectContextAndSuppressesAgentsMD(t *testing.T) {
+	primary := t.TempDir()
+	writeTestFile(t, filepath.Join(primary, "AGENTS.md"), "confidential_agents_md_rule: should_never_inject_to_orchestrator")
+
+	principal := testRunPrincipal()
+	rawStore, err := pebblestore.Open(filepath.Join(t.TempDir(), "swarm.pebble"))
+	if err != nil {
+		t.Fatalf("open pebble: %v", err)
+	}
+	defer rawStore.Close()
+	eventLog, err := pebblestore.NewEventLog(rawStore)
+	if err != nil {
+		t.Fatalf("new event log: %v", err)
+	}
+	sessionStore := pebblestore.NewSessionStore(rawStore)
+	sessionSvc := sessionruntime.NewService(sessionStore, eventLog)
+
+	proj := &pebblestore.ProjectRecord{
+		ID:             "proj-test-1",
+		AccountID:      principal.AccountScopeID,
+		Name:           "Swarm Project Alpha",
+		Description:    "Autonomous Orchestrator Test",
+		ProjectContext: "# Swarm Project Alpha Architecture\n- Autonomous Fleet active\n- No micro-management",
+		Workspaces: []pebblestore.ProjectWorkspaceRef{
+			{Path: primary, Role: "primary_code"},
+		},
+	}
+	if err := sessionStore.PutProject(principal.AccountScopeID, proj); err != nil {
+		t.Fatalf("put project: %v", err)
+	}
+
+	session, _, err := sessionSvc.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
+		SessionID:      "sess-orch-1",
+		AccountScopeID: principal.AccountScopeID,
+		UserID:         principal.UserID,
+		Title:          "Orchestrator Session",
+		WorkspacePath:  primary,
+		Mode:           sessionruntime.ModeAuto,
+		Preference:     &pebblestore.ModelPreference{Provider: "test", Model: "test-model", Thinking: "off"},
+		Metadata: map[string]any{
+			"project_id": "proj-test-1",
+		},
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	runSvc := NewService(sessionSvc, nil, nil, nil, nil, nil, discovery.NewService(), nil)
+
+	scope, err := runSvc.resolveRunWorkspaceScope(session, principal)
+	if err != nil {
+		t.Fatalf("resolve run workspace scope: %v", err)
+	}
+
+	// 1. When agent is system-orchestrator
+	orchInstructions := runSvc.composeInstructionsForScope(scope, pebblestore.AgentProfile{Name: "system-orchestrator", Mode: "primary"}, "")
+
+	// Invariant: AGENTS.md rule is suppressed
+	if strings.Contains(orchInstructions, "confidential_agents_md_rule") {
+		t.Fatalf("system-orchestrator unexpectedly contains AGENTS.md rule")
+	}
+
+	// Invariant: project.md context is injected
+	if !strings.Contains(orchInstructions, "Swarm Project Alpha") || !strings.Contains(orchInstructions, "Autonomous Fleet active") {
+		t.Fatalf("system-orchestrator missing project context:\n%s", orchInstructions)
+	}
+
+	// 2. When agent is a regular coder or swarm, AGENTS.md is injected normally
+	coderInstructions := runSvc.composeInstructionsForScope(scope, pebblestore.AgentProfile{Name: "coder", Mode: "subagent"}, "")
+	if !strings.Contains(coderInstructions, "confidential_agents_md_rule") {
+		t.Fatalf("coder agent missing AGENTS.md rule")
+	}
+}
 func TestRunWorkspaceScopeUsesManagedWorktreeAsPrimaryAndPromptsToolRoot(t *testing.T) {
 	source := programFixtureRepo(t)
 	worktree := filepath.Join(t.TempDir(), "lane")

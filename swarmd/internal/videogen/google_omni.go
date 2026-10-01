@@ -9,15 +9,27 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
+
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
 type omniInteractionRequest struct {
-	Model                 string              `json:"model"`
-	Input                 any                 `json:"input"`
-	PreviousInteractionID string              `json:"previous_interaction_id,omitempty"`
-	ResponseFormat        *omniResponseFormat `json:"response_format,omitempty"`
+	Model                 string                `json:"model"`
+	Input                 any                   `json:"input"`
+	PreviousInteractionID string                `json:"previous_interaction_id,omitempty"`
+	ResponseFormat        *omniResponseFormat   `json:"response_format,omitempty"`
+	GenerationConfig      *omniGenerationConfig `json:"generation_config,omitempty"`
+}
+
+type omniGenerationConfig struct {
+	VideoConfig *omniVideoConfig `json:"video_config,omitempty"`
+}
+
+type omniVideoConfig struct {
+	Task string `json:"task,omitempty"` // "edit" | "extend"
 }
 
 type omniResponseFormat struct {
@@ -60,6 +72,7 @@ func (s *Service) generateGoogleOmni(
 	prompt string,
 	aspectRatio string,
 	resolution string,
+	operation string,
 	source *ManagedVideoSource,
 	img *ManagedVideoImage,
 ) (ManagedVideoResult, error) {
@@ -70,6 +83,19 @@ func (s *Service) generateGoogleOmni(
 			AspectRatio: aspectRatio,
 			Resolution:  resolution,
 		},
+	}
+
+	if operation == pebblestore.VideoOperationEdit || operation == pebblestore.VideoOperationExtend {
+		// Iterations retain the source geometry. Google rejects aspect_ratio
+		// for edits, including when a catalog default supplied it upstream.
+		reqBody.ResponseFormat.AspectRatio = ""
+		// Stateful conversations infer the task from the follow-up prompt;
+		// Google forbids a task alongside previous_interaction_id.
+		if source == nil || strings.TrimSpace(source.InteractionID) == "" {
+			reqBody.GenerationConfig = &omniGenerationConfig{
+				VideoConfig: &omniVideoConfig{Task: operation},
+			}
+		}
 	}
 
 	var imageContent map[string]any
@@ -89,7 +115,7 @@ func (s *Service) generateGoogleOmni(
 	}
 
 	if source != nil && strings.TrimSpace(source.InteractionID) != "" {
-		// Multi-turn conversational edit using previous_interaction_id
+		// Multi-turn conversational edit/extend using previous_interaction_id
 		reqBody.PreviousInteractionID = strings.TrimSpace(source.InteractionID)
 		if imageContent != nil {
 			reqBody.Input = []map[string]any{
@@ -156,9 +182,6 @@ func (s *Service) generateGoogleOmni(
 		if err := json.Unmarshal(bodyBytes, &errResp); err == nil && errResp.Error.Message != "" {
 			errMsg = errResp.Error.Message
 		}
-		if resp.StatusCode == 400 && (strings.Contains(errMsg, "content_blocked") || strings.Contains(errMsg, "content_policy")) && source != nil && strings.TrimSpace(source.InteractionID) == "" {
-			return ManagedVideoResult{}, fmt.Errorf("google omni api error (400): %s (editing uploaded external videos is restricted in the EU/EEA, UK, and Switzerland; generate the initial video with Gemini Omni Flash to enable multi-turn conversational editing in this region)", errMsg)
-		}
 		return ManagedVideoResult{}, fmt.Errorf("google omni api error (%d): %s", resp.StatusCode, errMsg)
 	}
 
@@ -175,13 +198,24 @@ func (s *Service) generateGoogleOmni(
 		return ManagedVideoResult{}, err
 	}
 
-	return ManagedVideoResult{
+	res := ManagedVideoResult{
 		Bytes:         videoBytes,
 		MediaType:     "video/mp4",
 		InteractionID: omniResp.ID,
 		Model:         modelID,
 		Provider:      ProviderGoogleGemini,
-	}, nil
+		Operation:     operation,
+		Transport:     pebblestore.VideoTransportGoogleInteractions,
+	}
+	if operation == pebblestore.VideoOperationExtend {
+		res.IsCombinedOutput = true
+		if source != nil && source.Provenance != nil {
+			res.ExtensionCount = source.Provenance.ExtensionCount + 1
+		} else {
+			res.ExtensionCount = 1
+		}
+	}
+	return res, nil
 }
 
 func (s *Service) extractOmniVideoBytes(ctx context.Context, apiKey string, resp omniInteractionResponse) ([]byte, error) {
@@ -306,6 +340,9 @@ func (s *Service) pollGoogleFileActive(ctx context.Context, apiKey string, fileN
 		if statusResp.Error != nil && statusResp.Error.Message != "" {
 			return "", fmt.Errorf("google file processing failed: %s", statusResp.Error.Message)
 		}
+		if strings.EqualFold(statusResp.State, "FAILED") {
+			return "", errors.New("google file processing failed on server")
+		}
 		if strings.EqualFold(statusResp.State, "ACTIVE") {
 			if statusResp.URI != "" {
 				return statusResp.URI, nil
@@ -313,20 +350,75 @@ func (s *Service) pollGoogleFileActive(ctx context.Context, apiKey string, fileN
 			return fallbackURI, nil
 		}
 	}
-	return fallbackURI, nil
+	return "", errors.New("google file processing timed out before reaching ACTIVE state")
 }
 
 func (s *Service) downloadGoogleFile(ctx context.Context, apiKey string, fileURI string) ([]byte, error) {
-	if !strings.HasPrefix(fileURI, "http://") && !strings.HasPrefix(fileURI, "https://") {
-		fileURI = fmt.Sprintf("%s/%s", s.googleURL(), strings.TrimPrefix(fileURI, "/"))
+	parsedURL, err := url.Parse(fileURI)
+	if err != nil {
+		return nil, fmt.Errorf("invalid google file URI: %w", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fileURI, nil)
+	if parsedURL.User != nil {
+		return nil, errors.New("userinfo is not permitted in file URI for authenticated download")
+	}
+
+	googleURL, _ := url.Parse(s.googleURL())
+	var targetURL string
+	if !parsedURL.IsAbs() {
+		targetURL = fmt.Sprintf("%s/%s", s.googleURL(), strings.TrimPrefix(fileURI, "/"))
+	} else {
+		if parsedURL.Scheme != "https" && parsedURL.Hostname() != "127.0.0.1" && parsedURL.Hostname() != "localhost" {
+			return nil, fmt.Errorf("insecure scheme %q is not permitted for authenticated download", parsedURL.Scheme)
+		}
+		h := strings.ToLower(parsedURL.Hostname())
+		expectedHost := ""
+		if googleURL != nil {
+			expectedHost = strings.ToLower(googleURL.Hostname())
+		}
+		if h != expectedHost && !strings.HasSuffix(h, ".googleapis.com") && !strings.HasSuffix(h, ".google.com") && h != "127.0.0.1" && h != "localhost" {
+			return nil, fmt.Errorf("untrusted file URI host %q for authenticated Google download", h)
+		}
+		targetURL = fileURI
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("x-goog-api-key", apiKey)
 
-	resp, err := s.client().Do(req)
+	client := s.client()
+	origHost := ""
+	if targetParsed, err := url.Parse(targetURL); err == nil {
+		origHost = targetParsed.Host
+	}
+
+	downloadClient := &http.Client{
+		Timeout: client.Timeout,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return errors.New("stopped after 10 redirects")
+			}
+			if req.URL.User != nil {
+				return errors.New("redirect target contains userinfo")
+			}
+			if req.URL.Scheme != "https" && req.URL.Hostname() != "127.0.0.1" && req.URL.Hostname() != "localhost" {
+				return fmt.Errorf("redirect target has insecure scheme: %s", req.URL.Scheme)
+			}
+			if origHost != "" && (!strings.EqualFold(req.URL.Host, origHost) || req.URL.Scheme != "https") {
+				req.Header.Del("x-goog-api-key")
+			}
+			if client.CheckRedirect != nil {
+				return client.CheckRedirect(req, via)
+			}
+			return nil
+		},
+	}
+	if client.Transport != nil {
+		downloadClient.Transport = client.Transport
+	}
+
+	resp, err := downloadClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("download google video: %w", err)
 	}

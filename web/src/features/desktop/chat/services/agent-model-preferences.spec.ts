@@ -49,6 +49,13 @@ test('Swarm never claims model authority from agent profile state', () => {
   assert.equal(resolveDesktopV3AgentModelLock([{ ...metadata.agent_profile, name: 'swarm' } as never], 'swarm').locked, false)
 })
 
+test('system-orchestrator never claims model authority from agent profile state and allows model selection', () => {
+  const orchMetadata = { agent_profile: { ...metadata.agent_profile, name: 'system-orchestrator' } }
+  assert.equal(resolveDesktopV3SessionAgentModelLock(orchMetadata), null)
+  assert.equal(resolveDesktopV3AgentModelLock([{ ...metadata.agent_profile, name: 'system-orchestrator' } as never], 'system-orchestrator').locked, false)
+  assert.equal(resolveDesktopV3AgentModelLock([{ ...metadata.agent_profile, name: 'swarm-orchestrator' } as never], 'swarm-orchestrator').locked, false)
+})
+
 test('missing stored agent profile does not claim session authority', () => {
   assert.equal(resolveDesktopV3SessionAgentModelLock({}), null)
 })

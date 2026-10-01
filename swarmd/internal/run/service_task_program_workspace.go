@@ -11,6 +11,10 @@ import (
 // repositoryLane authenticates the requested source before allocating or reusing
 // a parent-owned destination. The immutable binding is persisted before launch.
 func (p *taskProgramScheduler) repositoryLane(requested string) (string, error) {
+	return p.repositoryLaneForSource(requested, false)
+}
+
+func (p *taskProgramScheduler) repositoryLaneForSource(requested string, multi bool) (string, error) {
 	if p.service == nil || p.service.sessions == nil || p.service.worktrees == nil {
 		return "", errors.New("Task Program repository lane authorities unavailable")
 	}
@@ -25,7 +29,18 @@ func (p *taskProgramScheduler) repositoryLane(requested string) (string, error) 
 			return "", err
 		}
 	}
-	if lane := p.record.RepositoryLane; lane != nil {
+	var bound *pebblestore.TaskProgramRepositoryLane
+	if multi {
+		if saved, ok := p.record.RepositoryLanes[requested]; ok {
+			bound = &saved
+		}
+	} else {
+		bound = p.record.RepositoryLane
+	}
+	if lane := bound; lane != nil {
+		if err := p.validateRepositoryLaneSource(*lane); err != nil {
+			return "", err
+		}
 		// Explicit alternate requests must not repurpose an admitted program.
 		if requested != "" && !sameTaskProgramPath(requested, lane.SourcePath) && !sameTaskProgramPath(requested, lane.WorkspacePath) {
 			return "", errors.New("Task Program repository lane source mismatch")
@@ -33,7 +48,13 @@ func (p *taskProgramScheduler) repositoryLane(requested string) (string, error) 
 		path, _, err := p.service.resolveTaskTargetWorkspace(p.parentSession, p.req.Principal, &taskLaunchSpec{RequestedSubagentType: "coder", ProgramRepositoryLane: lane})
 		return path, err
 	}
-	target, _, err := p.service.resolveTaskTargetWorkspace(p.parentSession, p.req.Principal, &taskLaunchSpec{RequestedSubagentType: "coder", TargetWorkspacePath: requested})
+	target, err := p.coderSourceForJob(pebblestore.TaskProgramJobSpec{ID: "repository-lane", WorkspacePath: requested})
+	if err != nil {
+		return "", err
+	}
+	// Pin the canonical workspace generation before Git allocation. A path grant
+	// alone cannot serve as durable identity when a workspace is re-bound.
+	workspaceID, generation, err := p.canonicalRepositorySource(target)
 	if err != nil {
 		return "", err
 	}
@@ -46,7 +67,7 @@ func (p *taskProgramScheduler) repositoryLane(requested string) (string, error) 
 	}
 	digest := sha256.Sum256([]byte(p.parentSession.ID + "\x00" + target))
 	seed := "program-lane-" + hex.EncodeToString(digest[:12])
-	lane := p.record.RepositoryLane
+	lane := bound
 	if lane != nil && !sameTaskProgramPath(lane.SourcePath, target) {
 		return "", errors.New("Task Program repository lane source mismatch")
 	}
@@ -70,19 +91,22 @@ func (p *taskProgramScheduler) repositoryLane(requested string) (string, error) 
 		if err != nil {
 			return "", err
 		}
-		lane = &pebblestore.TaskProgramRepositoryLane{SourcePath: target, WorkspacePath: allocation.WorkspacePath, Branch: allocation.BranchName, BaseCommit: base.BaseCommit}
-		for _, grant := range p.parentSession.WorkspaceGrants {
-			if grant.Path == target && grant.WorkspaceID != "" {
-				lane.WorkspaceID, lane.WorkspaceGeneration = grant.WorkspaceID, grant.WorkspaceGeneration
-				break
-			}
+		lane = &pebblestore.TaskProgramRepositoryLane{WorkspaceID: workspaceID, WorkspaceGeneration: generation, SourcePath: target, WorkspacePath: allocation.WorkspacePath, Branch: allocation.BranchName, BaseCommit: base.BaseCommit}
+		binding := pebblestore.TaskProgramTransition{ExpectedRevision: p.record.Revision, MutationID: fmt.Sprintf("lane:%d", p.record.Revision)}
+		if multi {
+			binding.RepositoryLanes = map[string]pebblestore.TaskProgramRepositoryLane{target: *lane}
+		} else {
+			binding.RepositoryLane = lane
 		}
-		record, _, persistErr := p.service.sessions.TransitionTaskProgram(p.parentSession.ID, p.record.ProgramID, pebblestore.TaskProgramTransition{ExpectedRevision: p.record.Revision, MutationID: fmt.Sprintf("lane:%d", p.record.Revision), RepositoryLane: lane})
+		record, _, persistErr := p.service.sessions.TransitionTaskProgram(p.parentSession.ID, p.record.ProgramID, binding)
 		if persistErr != nil {
 			return "", errors.Join(persistErr, p.service.worktrees.RollbackAllocation(allocation))
 		}
 		p.record = record
 		p.emitProgramProgress("repository.allocated", "Task Program repository inventory changed")
+	}
+	if lane.WorkspaceID != workspaceID || lane.WorkspaceGeneration != generation {
+		return "", errors.New("Task Program repository lane canonical workspace identity changed")
 	}
 	validator, ok := p.service.worktrees.(interface {
 		ValidateTaskRepositoryLane(string, string, string, string) error
@@ -109,8 +133,14 @@ func (p *taskProgramScheduler) repositoryLane(requested string) (string, error) 
 	}
 	// A recovered lane must pass all ownership, cleanliness and ancestry checks
 	// before this program acquires its durable binding.
-	if p.record.RepositoryLane == nil {
-		record, _, err := p.service.sessions.TransitionTaskProgram(p.parentSession.ID, p.record.ProgramID, pebblestore.TaskProgramTransition{ExpectedRevision: p.record.Revision, MutationID: fmt.Sprintf("lane:%d", p.record.Revision), RepositoryLane: lane})
+	if bound == nil {
+		binding := pebblestore.TaskProgramTransition{ExpectedRevision: p.record.Revision, MutationID: fmt.Sprintf("lane:%d", p.record.Revision)}
+		if multi {
+			binding.RepositoryLanes = map[string]pebblestore.TaskProgramRepositoryLane{target: *lane}
+		} else {
+			binding.RepositoryLane = lane
+		}
+		record, _, err := p.service.sessions.TransitionTaskProgram(p.parentSession.ID, p.record.ProgramID, binding)
 		if err != nil {
 			return "", err
 		}

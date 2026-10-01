@@ -101,7 +101,7 @@ func SelectPendingPermissions(state State) []client.PermissionRecord {
 	items := SelectPermissions(state)
 	out := make([]client.PermissionRecord, 0, len(items))
 	for _, item := range items {
-		if strings.EqualFold(strings.TrimSpace(item.Record.Status), "pending") {
+		if strings.EqualFold(strings.TrimSpace(item.Record.Status), "pending") && !isWorkerReviewPermission(item.Record) {
 			out = append(out, item.Record)
 		}
 	}

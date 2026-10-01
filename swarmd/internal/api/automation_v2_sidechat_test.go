@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -63,6 +64,17 @@ func TestAutomationV2OptimizationSidechat(t *testing.T) {
 	}
 	accepted, err := sessions.AcceptAutomationV2(parent.AccountScopeID, parent.UserID, workspace, parent.ID, p.AutomationV2Review)
 	if err != nil {
+		t.Fatal(err)
+	}
+	// This test exercises the legacy bound-worker optimization path. New workers
+	// remain independent and require no sidechat to edit the authoring chat.
+	legacy := accepted
+	legacy.Independent = false
+	if err := db.PutJSON("automation/v2/accepted/"+fmt.Sprintf("%x/%x", parent.AccountScopeID, parent.ID), legacy); err != nil {
+		t.Fatal(err)
+	}
+	parent.AutomationV2 = &store.SessionAutomationV2Binding{AutomationID: accepted.AutomationID, WorkspaceID: workspace, Digest: accepted.Digest}
+	if err := sessions.Store().UpdateSession(parent); err != nil {
 		t.Fatal(err)
 	}
 	open := func(revision uint64) *httptest.ResponseRecorder {

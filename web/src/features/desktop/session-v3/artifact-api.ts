@@ -288,6 +288,11 @@ export interface DesktopV3ArtifactCatalogEntry {
   acceptedPartHeads?: DesktopV3ArtifactCompositionPart[]
   localRevealAvailable?: boolean
   content?: string
+  model?: string
+  aspectRatio?: string
+  resolution?: string
+  durationSeconds?: number
+  videoProvenance?: VideoProvenance | null
 }
 
 type DesktopV3ArtifactCatalogResponse = {
@@ -643,6 +648,99 @@ function normalizeArtifactComposition(value: unknown): DesktopV3ArtifactComposit
   }
 }
 
+export interface VideoSourceLink {
+  session_id?: string
+  collection_id?: string
+  variant_id?: string
+  event_seq?: number
+  project_id?: string
+  task_id?: string
+  deliverable_id?: string
+  media_ref_id?: string
+  digest_sha256?: string
+  uri?: string
+}
+
+export interface VideoProvenance {
+  account_scope_id: string
+  credential_id?: string
+  credential_version?: string
+  provider: string
+  model: string
+  transport: string
+  operation: 'create' | 'edit' | 'extend' | string
+  source_link?: VideoSourceLink
+  output_digest_sha256?: string
+  interaction_id?: string
+  provider_resource?: string
+  created_at: number
+  expires_at?: number
+  observed_duration_ms?: number
+  observed_width?: number
+  observed_height?: number
+  extension_count?: number
+  extension_count_known?: boolean
+  is_combined_output?: boolean
+  aspect_ratio?: string
+  resolution?: string
+  duration_seconds?: number
+  has_interaction?: boolean
+  has_provider_resource?: boolean
+}
+
+function normalizeVideoProvenance(value: unknown): VideoProvenance | null {
+  const record = artifactCatalogRecord(value)
+  if (!record) return null
+  const account_scope_id = artifactCatalogString(record.account_scope_id)
+  const provider = artifactCatalogString(record.provider)
+  const model = artifactCatalogString(record.model)
+  const transport = artifactCatalogString(record.transport)
+  const operation = artifactCatalogString(record.operation)
+  const created_at = typeof record.created_at === 'number' && Number.isFinite(record.created_at) ? record.created_at : 0
+  if (!account_scope_id || !provider || !model) return null
+
+  const linkRecord = artifactCatalogRecord(record.source_link)
+  const source_link: VideoSourceLink | undefined = linkRecord ? {
+    session_id: artifactCatalogString(linkRecord.session_id) || undefined,
+    collection_id: artifactCatalogString(linkRecord.collection_id) || undefined,
+    variant_id: artifactCatalogString(linkRecord.variant_id) || undefined,
+    event_seq: artifactCatalogEventSeq(linkRecord.event_seq) || undefined,
+    project_id: artifactCatalogString(linkRecord.project_id) || undefined,
+    task_id: artifactCatalogString(linkRecord.task_id) || undefined,
+    deliverable_id: artifactCatalogString(linkRecord.deliverable_id) || undefined,
+    media_ref_id: artifactCatalogString(linkRecord.media_ref_id) || undefined,
+    digest_sha256: artifactCatalogString(linkRecord.digest_sha256) || undefined,
+    uri: artifactCatalogString(linkRecord.uri) || undefined,
+  } : undefined
+
+  return {
+    account_scope_id,
+    credential_id: artifactCatalogString(record.credential_id) || undefined,
+    credential_version: artifactCatalogString(record.credential_version) || undefined,
+    provider,
+    model,
+    transport: transport || 'unknown',
+    operation: operation || 'create',
+    source_link,
+    output_digest_sha256: artifactCatalogString(record.output_digest_sha256) || undefined,
+    interaction_id: artifactCatalogString(record.interaction_id) || undefined,
+    provider_resource: artifactCatalogString(record.provider_resource) || undefined,
+    created_at,
+    expires_at: typeof record.expires_at === 'number' && Number.isFinite(record.expires_at) ? record.expires_at : undefined,
+    observed_duration_ms: typeof record.observed_duration_ms === 'number' && Number.isFinite(record.observed_duration_ms) ? record.observed_duration_ms : undefined,
+    observed_width: typeof record.observed_width === 'number' && Number.isFinite(record.observed_width) ? record.observed_width : undefined,
+    observed_height: typeof record.observed_height === 'number' && Number.isFinite(record.observed_height) ? record.observed_height : undefined,
+    extension_count: typeof record.extension_count === 'number' && Number.isFinite(record.extension_count) ? record.extension_count : undefined,
+    extension_count_known: record.extension_count_known === true,
+    is_combined_output: record.is_combined_output === true,
+    aspect_ratio: artifactCatalogString(record.aspect_ratio) || undefined,
+    resolution: artifactCatalogString(record.resolution) || undefined,
+    duration_seconds: typeof record.duration_seconds === 'number' && Number.isFinite(record.duration_seconds) && record.duration_seconds > 0 ? record.duration_seconds : undefined,
+    has_interaction: record.has_interaction === true,
+    has_provider_resource: record.has_provider_resource === true,
+  }
+}
+
 function normalizeArtifactLineage(value: unknown): DesktopV3ArtifactLineage | null {
   const record = artifactCatalogRecord(value)
   if (!record) return null
@@ -787,6 +885,15 @@ export function normalizeDesktopV3ArtifactCatalogEntry(value: unknown): DesktopV
     ...(outputRequirements ? { outputRequirements } : {}),
     ...(animationProfile ? { animationProfile } : {}),
     ...(typeof record.content === 'string' ? { content: record.content } : {}),
+    ...(artifactCatalogString(record.model) ? { model: artifactCatalogString(record.model) } : {}),
+    ...(artifactCatalogString(record.aspect_ratio) || artifactCatalogString(record.aspectRatio) ? { aspectRatio: artifactCatalogString(record.aspect_ratio) || artifactCatalogString(record.aspectRatio) } : {}),
+    ...(artifactCatalogString(record.resolution) ? { resolution: artifactCatalogString(record.resolution) } : {}),
+    ...((typeof record.duration_seconds === 'number' && Number.isFinite(record.duration_seconds) && record.duration_seconds > 0)
+      ? { durationSeconds: record.duration_seconds }
+      : (typeof record.durationSeconds === 'number' && Number.isFinite(record.durationSeconds) && record.durationSeconds > 0)
+      ? { durationSeconds: record.durationSeconds }
+      : {}),
+    ...(normalizeVideoProvenance(record.video_provenance ?? record.videoProvenance) ? { videoProvenance: normalizeVideoProvenance(record.video_provenance ?? record.videoProvenance) } : {}),
   }
 }
 
@@ -1346,13 +1453,17 @@ export interface DesktopV3ArtifactPreviewAccess {
 }
 
 export function desktopV3ArtifactDirectContentURL(
-  artifact: Pick<DesktopV3ArtifactCatalogEntry, 'artifactId' | 'sessionId' | 'sourceRef'>,
+  artifact: Pick<DesktopV3ArtifactCatalogEntry, 'artifactId' | 'sessionId'> & Partial<Pick<DesktopV3ArtifactCatalogEntry, 'sourceRef' | 'eventSeq'>>,
 ): string {
   if (artifact.sourceRef?.trim()) {
     const search = new URLSearchParams({ source_ref: artifact.sourceRef.trim() })
     return `/v3/sessions/${encodeURIComponent(artifact.sessionId.trim())}/video/sources/media?${search.toString()}`
   }
-  return desktopV3ArtifactEndpoint(artifact.sessionId, artifact.artifactId)
+  const base = desktopV3ArtifactEndpoint(artifact.sessionId, artifact.artifactId)
+  if (artifact.eventSeq !== undefined && artifact.eventSeq > 0) {
+    return `${base}?revision=${artifact.eventSeq}`
+  }
+  return base
 }
 
 /** Refreshes Desktop auth before a browser-owned media element receives a protected URL. */

@@ -99,6 +99,12 @@ test('Desktop V3 ordinary route redirects after a hydrated system sidechat is cl
   assert.match(source, /const routeSessionUnavailable = routeSessionNavigationHidden/)
 })
 
+test('Desktop V3 route allows automation execution sessions without navigation_hidden lockout', async () => {
+  const source = await readDesktopAppPage()
+
+  assert.match(source, /isAutomationExecutionSession\(record\.session\)/)
+})
+
 test('Desktop V3 route selection stays isolated from runtime ownership', async () => {
   const source = await readDesktopAppPage()
 

@@ -1,6 +1,9 @@
 package run
 
-import "swarm/packages/swarmd/internal/tool"
+import (
+	"swarm/packages/swarmd/internal/taskscope"
+	"swarm/packages/swarmd/internal/tool"
+)
 
 func planManageHelpText() string {
 	return `Plan Manage Lifecycle & Document Specification:
@@ -29,6 +32,12 @@ func planManageHelpText() string {
      - notes: Context, constraints, relevant files, validation expectations (string)
      - task_program: Optional staged Task Program (see task action="help")
      - artifacts: Optional workspace-relative artifacts
+
+   Submission preflight:
+   - Schema help is plan_manage action="help"; exit_plan_mode has no help action and requires a complete document.
+   - For every checkpoint.task_program job: ` + taskscope.Guidance + `
+   - Workspace Designers require concrete paths without wildcards; managed Designers omit owned_scope.
+   - If validation rejects a submission, correct all named fields in the complete document and resubmit; do not broaden ownership or treat the rejected plan as saved or approved.
 
 2. Feedback Intent Routing Table:
    | Feedback Intent | Action | Description |

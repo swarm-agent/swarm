@@ -42,8 +42,9 @@ func MaterializeSessionMediaTool(definitions []provideriface.ToolDefinition, con
 
 func mediaInspectToolParameters(describe bool) map[string]any {
 	properties := map[string]any{
-		"asset_id": map[string]any{"type": "string"},
-		"path":     map[string]any{"type": "string"},
+		"asset_id":   map[string]any{"type": "string"},
+		"session_id": map[string]any{"type": "string"},
+		"path":       map[string]any{"type": "string"},
 		"artifact_reference": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -67,7 +68,8 @@ func mediaInspectToolParameters(describe bool) map[string]any {
 		},
 	}
 	if describe {
-		properties["asset_id"].(map[string]any)["description"] = "Immutable asset ID already attached to this session"
+		properties["asset_id"].(map[string]any)["description"] = "Immutable asset ID already attached to this session or project"
+		properties["session_id"].(map[string]any)["description"] = "Optional session ID containing the asset (defaults to current session)"
 		properties["path"].(map[string]any)["description"] = "Workspace-relative or workspace-contained absolute image path"
 		properties["artifact_reference"].(map[string]any)["description"] = "Complete exact ready legacy managed artifact reference; all four fields must come from one authenticated reference"
 		properties["artifact_v3_reference"].(map[string]any)["description"] = "Complete exact ready native Artifact V3 preview reference"
@@ -168,6 +170,7 @@ type mediaInspectArtifactV3Reference struct {
 
 type mediaInspectArguments struct {
 	AssetID             string                           `json:"asset_id,omitempty"`
+	SessionID           string                           `json:"session_id,omitempty"`
 	Path                string                           `json:"path,omitempty"`
 	ArtifactReference   *mediaInspectArtifactReference   `json:"artifact_reference,omitempty"`
 	ArtifactV3Reference *mediaInspectArtifactV3Reference `json:"artifact_v3_reference,omitempty"`
@@ -181,6 +184,7 @@ func decodeMediaInspectArguments(raw string) (mediaInspectArguments, error) {
 		return mediaInspectArguments{}, fmt.Errorf("decode media_inspect arguments: %w", err)
 	}
 	args.AssetID = strings.TrimSpace(args.AssetID)
+	args.SessionID = strings.TrimSpace(args.SessionID)
 	args.Path = strings.TrimSpace(args.Path)
 	selectorCount := 0
 	if args.AssetID != "" {

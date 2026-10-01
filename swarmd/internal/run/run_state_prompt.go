@@ -154,7 +154,9 @@ func renderCompactRunState(state compactRunState) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("marshal durable run state: %w", err)
 	}
-	return "Durable run state (authoritative; do not infer or override it from transcript or UI):\n" + string(raw) + "\n" + compactRunStateLifecycleInstructions(state), nil
+	return compactRunStateLifecycleInstructions(state) + "\n\n<system_runtime_telemetry>\n" +
+		"Durable run state (authoritative; do not infer or override it from transcript or UI):\n" +
+		string(raw) + "\n</system_runtime_telemetry>", nil
 }
 
 func compactRunStateLifecycleInstructions(state compactRunState) string {

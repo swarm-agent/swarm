@@ -11,14 +11,14 @@ usage() {
   cat <<'USAGE'
 Usage: bash scripts/run-critical-tests.sh [fast|deep|agents|all]
 
-Runs the curated, atlas-driven critical test manifest.
+Runs the curated critical test manifest.
   fast    Build-blocking security and authority tests; hermetic and bounded.
   deep    Durability, recovery, Git, artifact, media, and video boundary tests.
   agents  Agent identity, tool authority, delegation, scheduling, lineage, and Desktop child-state tests.
   all     Run fast followed by deep and agents.
 
-The manifest uses explicit test functions and files. Update this script and the
-Swarm atlas together when a covered critical invariant or its evidence changes.
+The manifest uses explicit test functions and files. Review affected assertions
+and focused execution evidence before changing a covered critical invariant.
 USAGE
 }
 

@@ -112,6 +112,7 @@ func (s *Server) runSessionsV3ReviewCommit(ctx context.Context, principal identi
 		s.finishSessionsV3ReviewCommit(session, job, "", snapshotErr)
 		return
 	}
+	principal.SessionID = session.ID
 	if err := s.commitSessionsV3ReviewChanges(ctx, principal, path); err != nil {
 		s.finishSessionsV3ReviewCommit(session, job, "", err)
 		return

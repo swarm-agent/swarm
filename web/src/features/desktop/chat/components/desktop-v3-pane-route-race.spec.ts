@@ -27,6 +27,7 @@ import {
   loadDesktopV3ExistingMessageOperation,
 } from '../../session-v3/existing-session-flow'
 import type { DesktopChatRoute } from '../services/chat-routing'
+import type { SessionSnapshot } from '../../state/desktop-v3-cache-types'
 import type { AgentProfileRecord } from '../types/chat'
 
 const conversationPaneSource = readFileSync(new URL('./desktop-v3-existing-conversation-pane.tsx', import.meta.url), 'utf8')
@@ -129,6 +130,40 @@ test('Desktop V3 stop resolves required target_swarm_id from the selected primar
   assert.deepEqual(resolveDesktopV3StopRunRequest({ route, runId: ' run-1 ' }), {
     runId: 'run-1',
     targetSwarmId: 'swarm-self',
+  })
+})
+
+test('Desktop V3 stop resolves target_swarm_id from session metadata when route is absent', () => {
+  const session = {
+    id: 'session-orch',
+    metadata: {
+      swarm_v3_runtime_swarm_id: 'primary-swarm-id',
+    },
+  } as any
+  assert.deepEqual(resolveDesktopV3StopRunRequest({ route: null, runId: ' run-1 ', session }), {
+    runId: 'run-1',
+    targetSwarmId: 'primary-swarm-id',
+  })
+})
+
+test('Desktop V3 stop resolves target_swarm_id from SessionSnapshot metadata when route is absent', () => {
+  const snapshot: SessionSnapshot = {
+    id: 'session-orch-snapshot',
+    title: 'Orchestrator',
+    workspace_path: '/workspaces/test',
+    workspace_name: 'test',
+    mode: 'auto',
+    created_at: 100,
+    updated_at: 100,
+    message_count: 0,
+    last_message_at: 100,
+    metadata: {
+      swarm_v3_runtime_swarm_id: 'snapshot-swarm-id',
+    },
+  }
+  assert.deepEqual(resolveDesktopV3StopRunRequest({ route: null, runId: ' run-1 ', session: snapshot }), {
+    runId: 'run-1',
+    targetSwarmId: 'snapshot-swarm-id',
   })
 })
 

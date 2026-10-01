@@ -104,23 +104,33 @@ func testAutomationV2AtomicAcceptance(t *testing.T, expiration AutomationV2Expir
 	if !reflect.DeepEqual(accepted.Document, doc) || accepted.Authorization != expiration || !accepted.Enabled {
 		t.Fatal("review changed", accepted)
 	}
-	// Requirement: accepted authoring chats reject free-form turns atomically.
-	// Threat: a late user message starts an ordinary run and contaminates the
-	// accepted conversation. The real mutation boundary must publish nothing.
+	// Requirement: acceptance grants a separate worker and keeps authoring chat
+	// writable. Threat: accepting the worker silently commandeers the authoring
+	// session or converts the next ordinary message into scheduled execution.
+	current, _, err = s.GetSession(original.ID)
+	if err != nil || current.AutomationV2 != nil || !accepted.Independent {
+		t.Fatal("authoring chat was bound to worker", err)
+	}
 	beforeSeq, err := s.readV3SessionSequence(original.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, err = s.ApplyV3SessionMutation(V3SessionMutationInput{SessionID: original.ID, AccountScopeID: "account", UserID: "owner", Kind: V3SessionMutationAppendMessage, ClientRequestID: "late-user", PayloadHash: "late-user", Message: &MessageSnapshot{ID: "late-user", Role: "user", Content: "Change the task now"}})
-	if err == nil {
-		t.Fatal("accepted automation accepted free-form conversation")
+	if err != nil {
+		t.Fatal("accepted worker blocked ordinary conversation", err)
 	}
 	afterSeq, err := s.readV3SessionSequence(original.ID)
-	if err != nil || afterSeq != beforeSeq {
-		t.Fatal("rejected message published state", err)
+	if err != nil || afterSeq <= beforeSeq {
+		t.Fatal("ordinary message was not published", err)
 	}
 	if _, exists, err := s.GetV3SessionActiveRunIntent(original.ID); err != nil || exists {
-		t.Fatal("rejected message admitted a run", err)
+		t.Fatal("ordinary message admitted a worker run", err)
+	}
+	if _, err := s.ApplyV3SessionMutation(V3SessionMutationInput{SessionID: original.ID, AccountScopeID: "account", UserID: "owner", Kind: V3SessionMutationRecordRunIntent, ClientRequestID: "ordinary-run", PayloadHash: "ordinary-run", RunIntent: &V3SessionRunIntent{RunID: "ordinary-run", Status: V3RunIntentPendingExecutor}}); err != nil {
+		t.Fatal("accepted worker blocked ordinary chat execution", err)
+	}
+	if run, exists, err := s.GetV3SessionActiveRunIntent(original.ID); err != nil || !exists || run.RunID != "ordinary-run" || run.PlanID != "" {
+		t.Fatal("chat run became worker execution", err)
 	}
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
@@ -134,6 +144,78 @@ func testAutomationV2AtomicAcceptance(t *testing.T, expiration AutomationV2Expir
 	replayed, err := s.AcceptAutomationV2("account", "owner", workspaceID, original.ID, p.AutomationV2Review, fixtureAutomationV2Validator)
 	if err != nil || !reflect.DeepEqual(accepted, replayed) {
 		t.Fatal("restart replay changed", err)
+	}
+}
+
+// Requirement: accepting a pending worker must not depend on the authoring run
+// having finished. Threat: a valid review gets a spurious 409 while its proposal
+// tool call is still active. The real session mutation/store boundary proves the
+// exact review succeeds during a running intent, while stale and foreign reviews
+// cannot create a binding, receipt, or additional event.
+func TestAutomationV2AcceptDuringAuthoringRun(t *testing.T) {
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	s := NewSessionStore(db)
+	identity := NewIdentityStore(db)
+	if _, err := identity.PutUser(UserRecord{ID: "owner", Username: "owner"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := identity.PutAccountScope(AccountScopeRecord{ID: "account", Type: AccountScopeTypePersonal, CreatedByUserID: "owner"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := identity.PutAccountUser(AccountUserRecord{ID: "membership", AccountScopeID: "account", UserID: "owner", Status: "active"}); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := NewWorkspaceStore(db).AddForAccount("account", t.TempDir(), "Workspace")
+	if err != nil {
+		t.Fatal(err)
+	}
+	available := true
+	if err := s.CreateSession(SessionSnapshot{ID: "author", AccountScopeID: "account", UserID: "owner", WorkspacePath: workspace.Path, WorkspaceGrants: []WorkspaceGrant{{Kind: WorkspaceGrantPrimary, WorkspaceID: workspace.WorkspaceID, Path: workspace.Path, Available: &available}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ApplyV3SessionMutation(V3SessionMutationInput{SessionID: "author", AccountScopeID: "account", UserID: "owner", Kind: V3SessionMutationRecordRunIntent, ClientRequestID: "author-pending", PayloadHash: "author-pending", RunIntent: &V3SessionRunIntent{RunID: "run-author", Status: V3RunIntentPendingExecutor}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ApplyV3SessionMutation(V3SessionMutationInput{SessionID: "author", AccountScopeID: "account", UserID: "owner", Kind: V3SessionMutationRecordRunIntent, ClientRequestID: "author-running", PayloadHash: "author-running", RunIntent: &V3SessionRunIntent{RunID: "run-author", Status: V3RunIntentRunning}}); err != nil {
+		t.Fatal(err)
+	}
+	doc := SessionPlanDocument{Title: "Triggered worker", Info: SessionPlanInfo{Goal: "Run on demand"}, Checkpoints: []SessionPlanCheckpoint{{ID: "cp-1", Title: "Work", Objective: "Implement", Status: "pending", Order: 1, AcceptanceCriteria: []string{"Works"}}}, AutomationV2: &AutomationV2Settings{SchemaVersion: 2, Schedule: AutomationV2Schedule{Kind: "trigger"}, Missed: "skip", Overlap: "serialize", ActivateOnAccept: true, Expiration: AutomationV2Expiration{Kind: "indefinite"}}}
+	proposal, err := s.ProposeAutomationV2("account", "owner", workspace.WorkspaceID, "author", doc, AutomationV2Review{}, fixtureAutomationV2Validator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := s.readV3SessionSequence("author")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		user   string
+		review AutomationV2Review
+	}{{"owner", AutomationV2Review{ProposalID: proposal.ProposalID, Revision: proposal.Revision, Digest: "stale"}}, {"foreign", proposal.AutomationV2Review}} {
+		if _, err := s.AcceptAutomationV2("account", tc.user, workspace.WorkspaceID, "author", tc.review, fixtureAutomationV2Validator); !errors.Is(err, ErrAutomationV2Conflict) {
+			t.Fatalf("stale/foreign review: %v", err)
+		}
+		seq, err := s.readV3SessionSequence("author")
+		if err != nil || seq != before {
+			t.Fatalf("rejected acceptance changed events: %d != %d: %v", seq, before, err)
+		}
+		if session, _, err := s.GetSession("author"); err != nil || session.AutomationV2 != nil {
+			t.Fatalf("rejected acceptance bound worker: %v", err)
+		}
+		if _, found, err := s.GetAutomationV2Record("account", "owner", workspace.WorkspaceID, "author"); err != nil || found {
+			t.Fatalf("rejected acceptance created record: %v", err)
+		}
+	}
+	accepted, err := s.AcceptAutomationV2("account", "owner", workspace.WorkspaceID, "author", proposal.AutomationV2Review, fixtureAutomationV2Validator)
+	if err != nil || !accepted.Enabled || accepted.Digest != proposal.Digest {
+		t.Fatalf("valid pending review rejected during authoring: %+v %v", accepted, err)
+	}
+	if run, found, err := s.GetV3SessionActiveRunIntent("author"); err != nil || !found || run.RunID != "run-author" {
+		t.Fatalf("authoring run was changed by acceptance: %+v %v", run, err)
 	}
 }
 
@@ -283,6 +365,29 @@ func TestAutomationV2AuthorityIntegrityReplay(t *testing.T) {
 	if err := accept(); err != nil {
 		t.Fatal(err)
 	}
+	// A revised accepted worker retains its identity and the original chat
+	// remains writable. Old review bytes cannot activate a newer revision.
+	initial, found, err := s.GetAutomationV2Record("account", "owner", workspace.WorkspaceID, "conversation")
+	if err != nil || !found || !initial.Independent {
+		t.Fatal("independent acceptance missing", err)
+	}
+	fourthDoc := third.Document
+	fourthDoc.Title = "Revised worker instructions"
+	fourth, err := s.ProposeAutomationV2("account", "owner", workspace.WorkspaceID, "conversation", fourthDoc, third.AutomationV2Review, fixtureAutomationV2Validator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AcceptAutomationV2("account", "owner", workspace.WorkspaceID, "conversation", third.AutomationV2Review, fixtureAutomationV2Validator); !errors.Is(err, ErrAutomationV2Conflict) {
+		t.Fatal("stale worker acceptance changed accepted policy", err)
+	}
+	revised, err := s.AcceptAutomationV2("account", "owner", workspace.WorkspaceID, "conversation", fourth.AutomationV2Review, fixtureAutomationV2Validator)
+	if err != nil || revised.AutomationID != initial.AutomationID || !revised.Independent || revised.Generation <= initial.Generation {
+		t.Fatal("independent revision lost worker identity", err)
+	}
+	chat, found, err := s.GetSession("conversation")
+	if err != nil || !found || chat.AutomationV2 != nil {
+		t.Fatal("revision commandeered authoring chat", err)
+	}
 	member.Status = "revoked"
 	if _, err := identity.PutAccountUser(member); err != nil {
 		t.Fatal(err)
@@ -363,28 +468,28 @@ func TestAutomationV2ArchivedAndDeletedSessionLifecycle(t *testing.T) {
 		t.Fatalf("archive session failed: %v", err)
 	}
 
-	// Active listing (exclude) should return 0 records without conflict error
+	// Author-chat archive suspends its worker under the existing lifecycle.
 	excludeRows, _, err := s.ListAutomationV2Records("account", "owner", workspace.WorkspaceID, "", 10, "exclude")
 	if err != nil || len(excludeRows) != 0 {
-		t.Fatalf("expected 0 exclude records: rows=%+v, err=%v", excludeRows, err)
+		t.Fatalf("archived worker remained active: rows=%+v, err=%v", excludeRows, err)
 	}
 
-	// Archived only listing should return 1 archived record
+	// Archived-only discovery retains the worker and its ownership.
 	onlyRows, _, err := s.ListAutomationV2Records("account", "owner", workspace.WorkspaceID, "", 10, "only")
 	if err != nil || len(onlyRows) != 1 || !onlyRows[0].Archived {
-		t.Fatalf("expected 1 archived record: rows=%+v, err=%v", onlyRows, err)
+		t.Fatalf("archived worker not discoverable: rows=%+v, err=%v", onlyRows, err)
 	}
 
-	// Include listing should return 1 archived record
+	// Include listing retains the archived worker receipt.
 	includeRows, _, err := s.ListAutomationV2Records("account", "owner", workspace.WorkspaceID, "", 10, "include")
 	if err != nil || len(includeRows) != 1 || !includeRows[0].Archived {
-		t.Fatalf("expected 1 include record: rows=%+v, err=%v", includeRows, err)
+		t.Fatalf("expected archived record: rows=%+v, err=%v", includeRows, err)
 	}
 
-	// GetAutomationV2Record should return the record with Archived=true
+	// Direct lookup reports archived state without losing worker identity.
 	rec, found, err := s.GetAutomationV2Record("account", "owner", workspace.WorkspaceID, "auto-session")
 	if err != nil || !found || !rec.Archived || rec.ArchivedAt <= 0 {
-		t.Fatalf("expected found archived record with timestamp: found=%v, rec=%+v, err=%v", found, rec, err)
+		t.Fatalf("worker archive receipt missing: found=%v, rec=%+v, err=%v", found, rec, err)
 	}
 
 	// Unarchive the session
@@ -584,5 +689,419 @@ func TestAutomationV2LegacyDocumentDigestCompatibility(t *testing.T) {
 	}
 	if records[0].SessionID != "legacy-session" {
 		t.Fatalf("unexpected record session_id: %s", records[0].SessionID)
+	}
+	// A pre-existing bound record without the independent marker retains its
+	// read-only chat and archive behavior until an exact reviewed revision.
+	legacy := accepted
+	legacy.Independent = false
+	if err := db.PutJSON(automationV2Key("accepted", "account", "legacy-session"), legacy); err != nil {
+		t.Fatal(err)
+	}
+	chat, _, err := s.GetSession("legacy-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	chat.AutomationV2 = &SessionAutomationV2Binding{AutomationID: legacy.AutomationID, WorkspaceID: w.WorkspaceID, Digest: legacy.Digest}
+	if err := s.UpdateSession(chat); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ApplyV3SessionMutation(V3SessionMutationInput{SessionID: chat.ID, AccountScopeID: "account", UserID: "owner", Kind: V3SessionMutationAppendMessage, ClientRequestID: "legacy-user", PayloadHash: "legacy-user", Message: &MessageSnapshot{ID: "legacy-user", Role: "user", Content: "Still read-only"}}); err == nil {
+		t.Fatal("legacy bound chat unexpectedly became writable")
+	}
+	revisionDoc := legacyDoc
+	revisionDoc.Title = "Reviewed independent revision"
+	updated, err := s.ProposeAutomationV2("account", "owner", w.WorkspaceID, chat.ID, revisionDoc, p.AutomationV2Review, fixtureAutomationV2Validator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AcceptAutomationV2("account", "owner", w.WorkspaceID, chat.ID, p.AutomationV2Review, fixtureAutomationV2Validator); !errors.Is(err, ErrAutomationV2Conflict) {
+		t.Fatal("stale legacy review accepted", err)
+	}
+	migrated, err := s.AcceptAutomationV2("account", "owner", w.WorkspaceID, chat.ID, updated.AutomationV2Review, fixtureAutomationV2Validator)
+	if err != nil || migrated.AutomationID != legacy.AutomationID || !migrated.Independent {
+		t.Fatal("reviewed legacy revision did not detach", err)
+	}
+	chat, _, err = s.GetSession(chat.ID)
+	if err != nil || chat.AutomationV2 != nil {
+		t.Fatal("legacy binding not removed atomically", err)
+	}
+	if _, err := s.ApplyV3SessionMutation(V3SessionMutationInput{SessionID: chat.ID, AccountScopeID: "account", UserID: "owner", Kind: V3SessionMutationAppendMessage, ClientRequestID: "migrated-user", PayloadHash: "migrated-user", Message: &MessageSnapshot{ID: "migrated-user", Role: "user", Content: "Ordinary chat"}}); err != nil {
+		t.Fatal("migrated chat is not writable", err)
+	}
+}
+
+// Purpose: Sessions must be able to propose and manage workers for any authorized workspace
+// without primary-only workspace restrictions, and a single session must be able to host
+// multiple distinct workers without key collisions or accidental overwriting.
+func TestAutomationV2MultiWorkerAndCrossWorkspace(t *testing.T) {
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	s := NewSessionStore(db)
+	identity := NewIdentityStore(db)
+	if _, err := identity.PutUser(UserRecord{ID: "owner", Username: "owner"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := identity.PutAccountScope(AccountScopeRecord{ID: "account", Type: AccountScopeTypePersonal, CreatedByUserID: "owner"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := identity.PutAccountUser(AccountUserRecord{ID: "membership", AccountScopeID: "account", UserID: "owner", Status: "active"}); err != nil {
+		t.Fatal(err)
+	}
+
+	w1, err := NewWorkspaceStore(db).AddForAccount("account", t.TempDir(), "Workspace 1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	w2, err := NewWorkspaceStore(db).AddForAccount("account", t.TempDir(), "Workspace 2")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	yes := true
+	sessionID := "orchestrator-session"
+	if err = s.CreateSession(SessionSnapshot{
+		ID:             sessionID,
+		AccountScopeID: "account",
+		UserID:         "owner",
+		Mode:           "auto",
+		WorkspacePath:  w1.Path,
+		WorkspaceGrants: []WorkspaceGrant{{
+			Kind:        WorkspaceGrantPrimary,
+			WorkspaceID: w1.WorkspaceID,
+			Path:        w1.Path,
+			Available:   &yes,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Cross-workspace worker: session is on w1, but proposes worker for w2!
+	worker1Doc := SessionPlanDocument{
+		Title: "Worker 1 on Workspace 2",
+		Info:  SessionPlanInfo{Goal: "Cross-workspace worker"},
+		WorkerV2: &AutomationV2Settings{
+			SchemaVersion:    2,
+			WorkspaceID:      w2.WorkspaceID,
+			Schedule:         AutomationV2Schedule{Kind: "trigger"},
+			Missed:           "skip",
+			Overlap:          "serialize",
+			ActivateOnAccept: true,
+			Expiration:       AutomationV2Expiration{Kind: "indefinite"},
+		},
+		Checkpoints: []SessionPlanCheckpoint{{
+			ID:                 "cp-1",
+			Title:              "Task 1",
+			Objective:          "Do task 1 in w2",
+			Status:             "pending",
+			Order:              1,
+			AcceptanceCriteria: []string{"Done"},
+		}},
+	}
+	p1, err := s.ProposeAutomationV2("account", "owner", w2.WorkspaceID, sessionID, worker1Doc, AutomationV2Review{}, fixtureAutomationV2Validator)
+	if err != nil {
+		t.Fatalf("cross-workspace proposal failed: %v", err)
+	}
+	acc1, err := s.AcceptAutomationV2("account", "owner", w2.WorkspaceID, sessionID, p1.AutomationV2Review, fixtureAutomationV2Validator)
+	if err != nil {
+		t.Fatalf("cross-workspace acceptance failed: %v", err)
+	}
+	if acc1.WorkspaceID != w2.WorkspaceID {
+		t.Fatalf("expected worker 1 workspace %s, got %s", w2.WorkspaceID, acc1.WorkspaceID)
+	}
+	if acc1.AutomationID == "" {
+		t.Fatal("empty automation ID for worker 1")
+	}
+
+	// 2. Multi-worker in same session: propose worker 2 for w1 in the same orchestrator-session!
+	worker2Doc := SessionPlanDocument{
+		Title: "Worker 2 on Workspace 1",
+		Info:  SessionPlanInfo{Goal: "Second worker in same session"},
+		WorkerV2: &AutomationV2Settings{
+			SchemaVersion:    2,
+			WorkspaceID:      w1.WorkspaceID,
+			Schedule:         AutomationV2Schedule{Kind: "trigger"},
+			Missed:           "skip",
+			Overlap:          "serialize",
+			ActivateOnAccept: true,
+			Expiration:       AutomationV2Expiration{Kind: "indefinite"},
+		},
+		Checkpoints: []SessionPlanCheckpoint{{
+			ID:                 "cp-2",
+			Title:              "Task 2",
+			Objective:          "Do task 2 in w1",
+			Status:             "pending",
+			Order:              1,
+			AcceptanceCriteria: []string{"Done"},
+		}},
+	}
+	p2, err := s.ProposeAutomationV2("account", "owner", w1.WorkspaceID, sessionID, worker2Doc, AutomationV2Review{}, fixtureAutomationV2Validator)
+	if err != nil {
+		t.Fatalf("second worker proposal failed: %v", err)
+	}
+	if p2.ProposalID == p1.ProposalID {
+		t.Fatalf("worker 2 re-used worker 1 proposal ID: %s", p2.ProposalID)
+	}
+	acc2, err := s.AcceptAutomationV2("account", "owner", w1.WorkspaceID, sessionID, p2.AutomationV2Review, fixtureAutomationV2Validator)
+	if err != nil {
+		t.Fatalf("second worker acceptance failed: %v", err)
+	}
+	if acc2.WorkspaceID != w1.WorkspaceID {
+		t.Fatalf("expected worker 2 workspace %s, got %s", w1.WorkspaceID, acc2.WorkspaceID)
+	}
+	if acc2.AutomationID == "" || acc2.AutomationID == acc1.AutomationID {
+		t.Fatalf("worker 2 automation ID collision with worker 1: %s == %s", acc2.AutomationID, acc1.AutomationID)
+	}
+
+	// 3. Verify discovery and retrieval of both workers
+	rec1, ok1, err := s.GetAutomationV2Record("account", "owner", w2.WorkspaceID, acc1.AutomationID)
+	if err != nil || !ok1 {
+		t.Fatalf("failed to retrieve worker 1: %v (found=%v)", err, ok1)
+	}
+	if rec1.Document.Title != "Worker 1 on Workspace 2" {
+		t.Fatalf("worker 1 corrupted: %s", rec1.Document.Title)
+	}
+
+	rec2, ok2, err := s.GetAutomationV2Record("account", "owner", w1.WorkspaceID, acc2.AutomationID)
+	if err != nil || !ok2 {
+		t.Fatalf("failed to retrieve worker 2: %v (found=%v)", err, ok2)
+	}
+	if rec2.Document.Title != "Worker 2 on Workspace 1" {
+		t.Fatalf("worker 2 corrupted: %s", rec2.Document.Title)
+	}
+
+	w2Records, _, err := s.ListAutomationV2Records("account", "owner", w2.WorkspaceID, "", 10)
+	if err != nil {
+		t.Fatalf("failed to list w2 records: %v", err)
+	}
+	if len(w2Records) != 1 || w2Records[0].AutomationID != acc1.AutomationID {
+		t.Fatalf("unexpected w2 records: %v", w2Records)
+	}
+
+	w1Records, _, err := s.ListAutomationV2Records("account", "owner", w1.WorkspaceID, "", 10)
+	if err != nil {
+		t.Fatalf("failed to list w1 records: %v", err)
+	}
+	if len(w1Records) != 1 || w1Records[0].AutomationID != acc2.AutomationID {
+		t.Fatalf("unexpected w1 records: %v", w1Records)
+	}
+
+	// Verify account-wide listing across all workspaces when workspace is empty or "all"
+	allRecordsEmpty, _, err := s.ListAutomationV2Records("account", "owner", "", "", 10)
+	if err != nil {
+		t.Fatalf("failed to list all records with empty workspace: %v", err)
+	}
+	if len(allRecordsEmpty) != 2 {
+		t.Fatalf("expected 2 records across workspaces with empty workspace, got %d", len(allRecordsEmpty))
+	}
+
+	allRecordsAll, _, err := s.ListAutomationV2Records("account", "owner", "all", "", 10)
+	if err != nil {
+		t.Fatalf("failed to list all records with 'all' workspace: %v", err)
+	}
+	if len(allRecordsAll) != 2 {
+		t.Fatalf("expected 2 records across workspaces with 'all', got %d", len(allRecordsAll))
+	}
+
+	// 4. Edit worker 1 without affecting worker 2
+	revisedDoc1 := worker1Doc
+	revisedDoc1.Title = "Worker 1 Revised"
+	p1Rev, err := s.ProposeAutomationV2("account", "owner", w2.WorkspaceID, sessionID, revisedDoc1, acc1.AutomationV2Review, fixtureAutomationV2Validator)
+	if err != nil {
+		t.Fatalf("worker 1 revision proposal failed: %v", err)
+	}
+	acc1Rev, err := s.AcceptAutomationV2("account", "owner", w2.WorkspaceID, sessionID, p1Rev.AutomationV2Review, fixtureAutomationV2Validator)
+	if err != nil {
+		t.Fatalf("worker 1 revision acceptance failed: %v", err)
+	}
+	if acc1Rev.AutomationID != acc1.AutomationID || acc1Rev.Generation != acc1.Generation+1 {
+		t.Fatalf("worker 1 revision mismatch: ID %s vs %s, Gen %d vs %d", acc1Rev.AutomationID, acc1.AutomationID, acc1Rev.Generation, acc1.Generation+1)
+	}
+
+	// Verify worker 2 is completely unchanged
+	rec2After, ok2After, err := s.GetAutomationV2Record("account", "owner", w1.WorkspaceID, acc2.AutomationID)
+	if err != nil || !ok2After || rec2After.Generation != 1 || rec2After.Document.Title != "Worker 2 on Workspace 1" {
+		t.Fatalf("worker 2 was affected by worker 1 edit: %v", rec2After)
+	}
+
+	// 5. Multi-workspace worker visible in both workspaces
+	multiWSDoc := SessionPlanDocument{
+		Title: "Multi-Workspace Worker",
+		Info:  SessionPlanInfo{Goal: "Visible in w1 and w2"},
+		WorkerV2: &AutomationV2Settings{
+			SchemaVersion:    2,
+			WorkspaceID:      w1.WorkspaceID,
+			WorkspaceIDs:     []string{w1.WorkspaceID, w2.WorkspaceID},
+			Schedule:         AutomationV2Schedule{Kind: "trigger"},
+			Missed:           "skip",
+			Overlap:          "serialize",
+			ActivateOnAccept: true,
+			Expiration:       AutomationV2Expiration{Kind: "indefinite"},
+		},
+		Checkpoints: []SessionPlanCheckpoint{{
+			ID:                 "cp-1",
+			Title:              "Multi Task",
+			Objective:          "Multi workspace task",
+			Status:             "pending",
+			Order:              1,
+			AcceptanceCriteria: []string{"Done"},
+		}},
+	}
+	pMulti, err := s.ProposeAutomationV2("account", "owner", w1.WorkspaceID, sessionID, multiWSDoc, AutomationV2Review{}, fixtureAutomationV2Validator)
+	if err != nil {
+		t.Fatalf("multi-workspace proposal failed: %v", err)
+	}
+	accMulti, err := s.AcceptAutomationV2("account", "owner", w1.WorkspaceID, sessionID, pMulti.AutomationV2Review, fixtureAutomationV2Validator)
+	if err != nil {
+		t.Fatalf("multi-workspace acceptance failed: %v", err)
+	}
+	// Must appear when listing w1
+	w1List, _, err := s.ListAutomationV2Records("account", "owner", w1.WorkspaceID, "", 10)
+	if err != nil {
+		t.Fatalf("listing w1 failed: %v", err)
+	}
+	foundInW1 := false
+	for _, r := range w1List {
+		if r.AutomationID == accMulti.AutomationID {
+			foundInW1 = true
+			break
+		}
+	}
+	if !foundInW1 {
+		t.Fatalf("multi-workspace worker %s not found when listing w1", accMulti.AutomationID)
+	}
+	// Must ALSO appear when listing w2!
+	w2List, _, err := s.ListAutomationV2Records("account", "owner", w2.WorkspaceID, "", 10)
+	if err != nil {
+		t.Fatalf("listing w2 failed: %v", err)
+	}
+	foundInW2 := false
+	for _, r := range w2List {
+		if r.AutomationID == accMulti.AutomationID {
+			foundInW2 = true
+			break
+		}
+	}
+	if !foundInW2 {
+		t.Fatalf("multi-workspace worker %s not found when listing w2", accMulti.AutomationID)
+	}
+	// Must be retrievable in w2 via GetAutomationV2Record
+	recInW2, foundInW2Get, err := s.GetAutomationV2Record("account", "owner", w2.WorkspaceID, accMulti.AutomationID)
+	if err != nil || !foundInW2Get || recInW2.AutomationID != accMulti.AutomationID {
+		t.Fatalf("multi-workspace worker %s not retrievable in w2: found=%v err=%v", accMulti.AutomationID, foundInW2Get, err)
+	}
+}
+
+func TestAutomationV2DeduplicateWorkersByStableIdentity(t *testing.T) {
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	s := NewSessionStore(db)
+	identity := NewIdentityStore(db)
+	if _, err := identity.PutUser(UserRecord{ID: "owner", Username: "owner"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := identity.PutAccountScope(AccountScopeRecord{ID: "account", Type: AccountScopeTypePersonal, CreatedByUserID: "owner"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := identity.PutAccountUser(AccountUserRecord{ID: "membership", AccountScopeID: "account", UserID: "owner", Status: "active"}); err != nil {
+		t.Fatal(err)
+	}
+
+	w, err := NewWorkspaceStore(db).AddForAccount("account", t.TempDir(), "Deduplication Workspace")
+	if err != nil {
+		t.Fatal(err)
+	}
+	yes := true
+	sessionID := "worker-session-dedup"
+	if err = s.CreateSession(SessionSnapshot{
+		ID:             sessionID,
+		AccountScopeID: "account",
+		UserID:         "owner",
+		Mode:           "auto",
+		WorkspacePath:  w.Path,
+		WorkspaceGrants: []WorkspaceGrant{{
+			Kind:        WorkspaceGrantPrimary,
+			WorkspaceID: w.WorkspaceID,
+			Path:        w.Path,
+			Available:   &yes,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	doc1 := SessionPlanDocument{
+		Title: "Specialist Worker",
+		Info:  SessionPlanInfo{Goal: "First proposal version"},
+		WorkerV2: &AutomationV2Settings{
+			SchemaVersion:    2,
+			WorkspaceID:      w.WorkspaceID,
+			Schedule:         AutomationV2Schedule{Kind: "trigger"},
+			Missed:           "skip",
+			Overlap:          "serialize",
+			ActivateOnAccept: true,
+			Expiration:       AutomationV2Expiration{Kind: "indefinite"},
+		},
+		Checkpoints: []SessionPlanCheckpoint{{
+			ID:                 "cp-1",
+			Title:              "Task 1",
+			Objective:          "Do task 1",
+			Status:             "pending",
+			Order:              1,
+			AcceptanceCriteria: []string{"Done"},
+		}},
+	}
+
+	p1, err := s.ProposeAutomationV2("account", "owner", w.WorkspaceID, sessionID, doc1, AutomationV2Review{}, fixtureAutomationV2Validator)
+	if err != nil {
+		t.Fatalf("first proposal failed: %v", err)
+	}
+	acc1, err := s.AcceptAutomationV2("account", "owner", w.WorkspaceID, sessionID, p1.AutomationV2Review, fixtureAutomationV2Validator)
+	if err != nil {
+		t.Fatalf("first acceptance failed: %v", err)
+	}
+
+	// Verify initial listing shows exactly 1 worker
+	list1, _, err := s.ListAutomationV2Records("account", "owner", w.WorkspaceID, "", 10)
+	if err != nil {
+		t.Fatalf("list 1 failed: %v", err)
+	}
+	if len(list1) != 1 {
+		t.Fatalf("expected 1 record, got %d", len(list1))
+	}
+
+	// Simulate an unlinked re-proposal in the same session with new proposal/generation
+	doc2 := doc1
+	doc2.Info.Goal = "Second updated version of the worker"
+	p2, err := s.ProposeAutomationV2("account", "owner", w.WorkspaceID, sessionID, doc2, AutomationV2Review{}, fixtureAutomationV2Validator)
+	if err != nil {
+		t.Fatalf("second proposal failed: %v", err)
+	}
+	acc2, err := s.AcceptAutomationV2("account", "owner", w.WorkspaceID, sessionID, p2.AutomationV2Review, fixtureAutomationV2Validator)
+	if err != nil {
+		t.Fatalf("second acceptance failed: %v", err)
+	}
+
+	// ListAutomationV2Records must return exactly 1 record, which must be the newer worker (acc2)
+	list2, _, err := s.ListAutomationV2Records("account", "owner", w.WorkspaceID, "", 10)
+	if err != nil {
+		t.Fatalf("list 2 failed: %v", err)
+	}
+	if len(list2) != 1 {
+		t.Fatalf("expected duplicate to be collapsed to 1 record, got %d", len(list2))
+	}
+	if list2[0].AutomationID != acc2.AutomationID {
+		t.Fatalf("expected active record %s, got %s", acc2.AutomationID, list2[0].AutomationID)
+	}
+
+	// Verify that the obsolete acc1 AutomationID key was removed from the store
+	var oldRec AutomationV2Record
+	foundOld, _ := s.store.GetJSON(automationV2Key("accepted", "account", acc1.AutomationID), &oldRec)
+	if foundOld {
+		t.Fatalf("expected obsolete worker record %s to be cleaned up from Pebble store", acc1.AutomationID)
 	}
 }

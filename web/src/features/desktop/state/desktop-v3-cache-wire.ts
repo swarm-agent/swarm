@@ -34,7 +34,10 @@ const SUPPORTED_REALTIME_KINDS = new Set([
   'task.lifecycle.updated',
   'workspace.catalog.updated',
   'automation.updated',
+  'worker.updated',
+  'usage.scope.updated',
   'auth.credentials.updated',
+  'project.updated',
 ])
 
 export function assertDesktopV3RealtimeFrame(frame: RealtimeMessage): void {
@@ -49,7 +52,16 @@ export function assertDesktopV3RealtimeFrame(frame: RealtimeMessage): void {
   if (type && type !== kind) {
     throw new Error(`protocol invalid: realtime kind/type mismatch ${kind}/${type}`)
   }
-  if (kind === 'automation.updated' || kind === 'workspace.catalog.updated' || kind === 'notification.resource.updated' || kind === 'task.lifecycle.updated' || kind === 'auth.credentials.updated') return
+  if (kind === 'usage.scope.updated') {
+    const payload = frame.event ? eventPayloadRecord(frame.event) : undefined
+    if (!stringValue(frame.endpoint_cursor) || frame.session || frame.session_id || frame.event?.session_id || frame.event?.event_type !== 'usage.scope.updated' || !Array.isArray(payload?.scope_totals) || payload.scope_totals.length > 320) throw new Error('protocol invalid: usage update requires bounded scope snapshots and endpoint cursor')
+    return
+  }
+  if (kind === 'worker.updated') {
+    if (!stringValue(frame.endpoint_cursor) || frame.event || frame.session) throw new Error('protocol invalid: worker update must carry only an endpoint cursor')
+    return
+  }
+  if (kind === 'automation.updated' || kind === 'workspace.catalog.updated' || kind === 'notification.resource.updated' || kind === 'task.lifecycle.updated' || kind === 'auth.credentials.updated' || kind === 'project.updated') return
 
   const event = frame.event
   const payload = event ? eventPayloadRecord(event) : undefined
@@ -222,8 +234,13 @@ export function reconnectResponseToActions(raw: SessionsReconnectResponse): Desk
 export function realtimeFrameToActions(frame: RealtimeMessage): DesktopV3CacheAction[] {
   assertDesktopV3RealtimeFrame(frame)
   switch (frame.kind) {
-    case 'event':
+    case 'event': {
+      const sid = frame.session_id || frame.event?.session_id
+      if (sid && sid.startsWith('__')) {
+        return []
+      }
       return [{ type: 'realtime.applyEvent', event: normalizeRealtimeEventFrame(frame), endpointCursor: frame.endpoint_cursor }]
+    }
 
     case 'notification.resource.updated':
       return [{ type: 'realtime.applyNotificationResource', frame }]
@@ -231,9 +248,12 @@ export function realtimeFrameToActions(frame: RealtimeMessage): DesktopV3CacheAc
     case 'task.lifecycle.updated':
       return [{ type: 'realtime.applyAITaskResource', frame }]
 
+    case 'usage.scope.updated':
     case 'automation.updated':
+    case 'worker.updated':
     case 'workspace.catalog.updated':
     case 'auth.credentials.updated':
+    case 'project.updated':
       return [{ type: 'realtime.control', frame }]
 
     case 'workset.session.discovered':

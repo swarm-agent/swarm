@@ -2665,6 +2665,10 @@ export function buildStructuredToolMessage(
     "manage_artifact",
     "manage-video",
     "manage_video",
+    "manage-workers",
+    "manage_workers",
+    "manage-automation",
+    "manage_automation",
   ].includes(normalizedToolName);
   const outputWasStructured = outputJson !== null;
 

@@ -25,6 +25,25 @@ function liveRun(status = 'running'): LiveRunOverlay {
   }
 }
 
+// Requirement: a completed worker proposal is reviewed from its durable sidebar
+// permission, not duplicated as a chat result; unrelated tool activity stays visible.
+// Threat: committed or live tool results recreate an actionable proposal in chat.
+// This render-item boundary covers both realtime and replay without a browser.
+test('pending worker proposal result is omitted from live and committed chat items', () => {
+  const payload = JSON.stringify({ status: 'pending_review', next_action: 'await_worker_acceptance', review_kind: 'worker_v2', worker_review: { proposal_id: 'p', revision: 1, digest: 'a'.repeat(64) } })
+  const workerTool = buildStructuredToolMessage({ tool: 'manage_workers', callId: 'call-worker', outputText: payload, state: 'done' })
+  assert.ok(workerTool)
+  const committed: MessageSnapshot = { id: 'worker-result', session_id: 'session-1', global_seq: 5, role: 'tool', content: payload, created_at: 1, metadata: { call_id: 'call-worker' }, toolMessage: workerTool }
+  const run = liveRun('completed')
+  run.toolCallsByCallId['call-worker'] = { callId: 'call-worker', toolName: 'manage_workers', status: 'completed', outputText: payload, updatedAt: 2, timelineSeq: 6 }
+  const rendered: RenderedSessionMessages = { committed: [committed], pendingUser: [], liveRuns: [run], runIntents: [] }
+  assert.equal(buildDesktopV3ConversationRenderItems(rendered).some(item => item.type === 'message' && item.message.id === committed.id), false)
+  assert.equal(buildDesktopV3ConversationRenderItems(rendered).some(item => item.type === 'live-tool' && item.tool.callId === 'call-worker'), false)
+  assert.equal(buildDesktopV3ConversationRenderItems(rendered).some(item => item.type === 'live-tool' && item.tool.callId === 'call-edit'), true)
+  const failed = { ...committed, id: 'failed-worker', toolMessage: { ...workerTool!, state: 'error' as const } }
+  assert.equal(buildDesktopV3ConversationRenderItems({ ...rendered, committed: [failed], liveRuns: [] }).length, 1)
+})
+
 test('live activity keeps one stable call key through provider-ready and runtime states', () => {
   const provider = buildDesktopV3LiveRunRenderItems(liveRun('ready')).find((item) => item.type === 'live-tool')
   const runtime = buildDesktopV3LiveRunRenderItems(liveRun('running')).find((item) => item.type === 'live-tool')

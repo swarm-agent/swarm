@@ -62,7 +62,7 @@ function modelKey(provider: string, model: string): string {
   return `${encodeURIComponent(provider)}:${encodeURIComponent(model)}`
 }
 
-function DirectModelEditor({
+export function DirectModelEditor({
   label,
   value,
   modelOptions,
@@ -162,12 +162,12 @@ export function SwarmModelAssignmentSettings({ modelOptions, action, plan, savin
     <section aria-labelledby="swarm-model-assignments-title" className="space-y-6">
       <div>
         <h2 id="swarm-model-assignments-title" className="text-lg font-semibold text-[var(--app-text)]">Swarm models</h2>
-        <p className="mt-1 text-sm text-[var(--app-text-muted)]">Configure the canonical Action and Plan models directly. These settings do not create or assign model favorites.</p>
+        <p className="mt-1 text-sm text-[var(--app-text-muted)]">Configure the canonical Action and Plan / Orchestrator models directly. These settings do not create or assign model favorites.</p>
       </div>
       {validationError || error ? <div role="alert" className="rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-4 py-3 text-sm text-[var(--app-danger)]">{validationError || error}</div> : null}
       <form className="space-y-5" onSubmit={submit}>
         <DirectModelEditor label="Action model" value={draftAction} modelOptions={normalizedOptions} disabled={disabled} onChange={(value) => { setDraftAction(value); setValidationError(null) }} />
-        <DirectModelEditor label="Plan model" value={draftPlan} modelOptions={normalizedOptions} disabled={disabled} onChange={(value) => { setDraftPlan(value); setValidationError(null) }} />
+        <DirectModelEditor label="Plan / Orchestrator model" value={draftPlan} modelOptions={normalizedOptions} disabled={disabled} onChange={(value) => { setDraftPlan(value); setValidationError(null) }} />
         <div className="flex justify-end"><Button type="submit" variant="primary" disabled={disabled}>{saving ? 'Saving…' : 'Save Swarm models'}</Button></div>
       </form>
       {children}

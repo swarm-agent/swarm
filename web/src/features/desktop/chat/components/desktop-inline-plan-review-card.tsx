@@ -119,7 +119,7 @@ export function DesktopInlinePlanReviewCard({
 
   if (permission.requirement === 'automation_v2_acceptance') {
     const proposal = automationV2PermissionProposal(permission);
-    if (!proposal || proposal.session_id !== parentSessionId) return <p role="alert">Worker review unavailable. Refresh before accepting.</p>;
+    if (!proposal || (proposal.session_id && parentSessionId && proposal.session_id !== parentSessionId)) return <p role="alert">Worker review unavailable. Refresh before accepting.</p>;
     return <section><AutomationV2PlanReview key={proposal.proposal_id} proposal={proposal} disabled={resolutionPending} onReject={() => onResolve(permission, 'deny', '')} onAskForChanges={onAskForChanges} askForChangesLabel="Ask the worker agent for any changes" /></section>;
   }
 

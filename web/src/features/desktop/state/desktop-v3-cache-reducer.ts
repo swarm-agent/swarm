@@ -1,6 +1,9 @@
 import { reduceDesktopEnvironmentsState } from './desktop-environments-state'
 import { reduceAutomationV2Pages } from './desktop-automation-v2-state'
+import { reduceUsagePages } from './desktop-usage-state'
+import { reduceWorkerPages } from './desktop-workers-state'
 import { reduceAutomationPages } from './desktop-automation-state'
+import { reduceDesktopProjectsState } from './desktop-projects-state'
 import type {
   CacheEvent,
   DesktopNotificationSummaryWire,
@@ -34,7 +37,7 @@ import type {
   SessionSnapshot,
   MessageMutationConflictResponse,
 } from './desktop-v3-cache-types'
-import type { DesktopNotificationCenterRecord, DesktopNotificationSummary, DesktopPermissionRecord } from '../types/realtime'
+import type { DesktopNotificationAction, DesktopNotificationCenterRecord, DesktopNotificationSummary, DesktopPermissionRecord } from '../types/realtime'
 import type { SessionV3RealtimeLivePatchWire } from '../session-v3/types'
 import { desktopPermissionIdentity, normalizeDesktopPermission, normalizeDesktopPendingPermissions, normalizeDesktopPermissionSummary, normalizeDesktopPermissionSummaries, safeString } from '../permissions/services/desktop-permission-normalization'
 import { normalizeDesktopSessionPlan } from '../chat/services/session-plan-record'
@@ -65,7 +68,10 @@ export function createEmptyDesktopV3CacheState(surface = 'desktop'): DesktopV3Ca
     version: 1,
     automationPages: {},
     automationV2Pages: {},
+    usagePages: {},
+    workerPages: {},
     environmentsByWorkspace: {},
+    projectsState: {},
     syncScopesById: {},
     realtime: {
       status: 'closed',
@@ -128,6 +134,18 @@ export function desktopV3CacheReducer(state: DesktopV3CacheState, action: Deskto
     case 'environments.operationUpdated':
     case 'environments.evict':
       return { ...state, environmentsByWorkspace: reduceDesktopEnvironmentsState(state.environmentsByWorkspace, action) }
+    case 'usage.begin':
+    case 'usage.finish':
+    case 'usage.invalidate':
+    case 'usage.snapshot':
+    case 'usage.evict':
+      return { ...state, usagePages: reduceUsagePages(state.usagePages, action) }
+    case 'workers.begin':
+    case 'workers.finish':
+    case 'workers.invalidate':
+    case 'workers.mutationError':
+    case 'workers.evict':
+      return { ...state, workerPages: reduceWorkerPages(state.workerPages, action) }
     case 'automationV2.begin':
     case 'automationV2.finish':
     case 'automationV2.invalidate':
@@ -138,6 +156,18 @@ export function desktopV3CacheReducer(state: DesktopV3CacheState, action: Deskto
     case 'automation.invalidate':
     case 'automation.evict':
       return { ...state, automationPages: reduceAutomationPages(state.automationPages, action) }
+    case 'projects.beginLoad':
+    case 'projects.loadSuccess':
+    case 'projects.loadError':
+    case 'projects.invalidateGit':
+    case 'projects.updateTasks':
+    case 'projects.updateMedia':
+    case 'projects.invalidate':
+    case 'projects.evict': {
+      const nextProjects = reduceDesktopProjectsState(state.projectsState ?? {}, action)
+      if (nextProjects === state.projectsState) return state
+      return { ...state, projectsState: nextProjects }
+    }
     case 'desktopSidebarBootstrap.update':
       state.desktopSidebarBootstrap = {
         ...state.desktopSidebarBootstrap,
@@ -791,6 +821,11 @@ export function applyRealtimeFrame(
   const frame = action.frame
   assertDesktopV3RealtimeFrame(frame)
   switch (frame.kind) {
+    case 'usage.scope.updated':
+    case 'worker.updated':
+      state.realtime.endpointCursor = frame.endpoint_cursor
+      return state
+
     case 'hello':
       state.realtime.status = 'open'
       state.realtime.endpointCursor = frame.endpoint_cursor
@@ -1179,6 +1214,9 @@ export function applyCacheEvent(
   event: CacheEvent,
 ): DesktopV3CacheState {
   const { sessionId, projection, payload, eventType } = event
+  if (sessionId && sessionId.startsWith('__')) {
+    return state
+  }
   const existingProjection = state.projectionsBySession[sessionId]
   const incomingProjectionIsFresh = projectionSeq(projection) >= projectionSeq(existingProjection)
   if (incomingProjectionIsFresh) {
@@ -1533,6 +1571,7 @@ function normalizeDesktopNotification(raw: DesktopNotificationWire | undefined):
     sessionId: nullableString(raw.sessionId ?? raw.session_id),
     runId: nullableString(raw.runId ?? raw.run_id),
     category: stringField(raw.category) || 'system',
+    kind: nullableString(raw.kind),
     severity: stringField(raw.severity) || 'info',
     title: stringField(raw.title) || 'Notification',
     body: stringField(raw.body) || '',
@@ -1546,7 +1585,27 @@ function normalizeDesktopNotification(raw: DesktopNotificationWire | undefined):
     workspacePath: nullableString(raw.workspacePath ?? raw.workspace_path),
     workspaceName: nullableString(raw.workspaceName ?? raw.workspace_name),
     originLabel: nullableString(raw.originLabel ?? raw.origin_label),
+    workerId: nullableString(raw.workerId ?? raw.worker_id),
+    verified: typeof raw.verified === 'boolean' ? raw.verified : Boolean(raw.verified),
     actionURL: nullableString(raw.actionURL ?? raw.action_url),
+    payload: raw.payload && typeof raw.payload === 'object' && !Array.isArray(raw.payload) ? (raw.payload as Record<string, unknown>) : null,
+    actions: Array.isArray(raw.actions)
+      ? (raw.actions as unknown[]).reduce<DesktopNotificationAction[]>((acc, a) => {
+          if (!a || typeof a !== 'object') return acc
+          const obj = a as Record<string, unknown>
+          const id = stringField(obj.id)
+          const label = stringField(obj.label)
+          if (!id || !label) return acc
+          acc.push({
+            id,
+            label,
+            actionType: nullableString(obj.actionType ?? obj.action_type),
+            endpoint: nullableString(obj.endpoint),
+            variant: nullableString(obj.variant),
+          })
+          return acc
+        }, [])
+      : null,
     readAt: nullableNumber(raw.readAt ?? raw.read_at),
     ackedAt: nullableNumber(raw.ackedAt ?? raw.acked_at),
     mutedAt: nullableNumber(raw.mutedAt ?? raw.muted_at),
@@ -1741,6 +1800,8 @@ export function upsertCommittedMessage(
   finalizeLiveRunForCommittedMessage(state, sessionId, message, sourceRunId, sourceRunStatus)
 }
 
+import { preferRunEvidence } from './task-progress'
+
 export function upsertRunIntent(
   state: DesktopV3CacheState,
   sessionId: string,
@@ -1748,7 +1809,7 @@ export function upsertRunIntent(
 ): void {
   const byRunId = state.runIntentsBySession[sessionId] ?? {}
   const existing = byRunId[runIntent.run_id]
-  if (existing && runIntent.event_seq < existing.event_seq) {
+  if (existing && preferRunEvidence(existing, runIntent) === existing) {
     return
   }
 
@@ -1770,7 +1831,19 @@ export function upsertRunIntent(
   byRunId[runIntent.run_id] = enrichedRunIntent
   state.runIntentsBySession[sessionId] = byRunId
 
-  if (ACTIVE_RUN_INTENT_STATUSES.has(enrichedRunIntent.status)) {
+  const view = state.sessionViewsById[sessionId]
+  const current = view?.current_run_state
+  const selected = preferRunEvidence(current ?? undefined, enrichedRunIntent)
+  const isLatest = selected === enrichedRunIntent
+    && preferRunEvidence(state.currentRunIntentBySession[sessionId], enrichedRunIntent) === enrichedRunIntent
+  if (isLatest) {
+    state.sessionViewsById[sessionId] = {
+      ...view,
+      current_run_state: { ...enrichedRunIntent, active: ACTIVE_RUN_INTENT_STATUSES.has(enrichedRunIntent.status) },
+    }
+  }
+
+  if (isLatest && ACTIVE_RUN_INTENT_STATUSES.has(enrichedRunIntent.status)) {
     state.currentRunIntentBySession[sessionId] = enrichedRunIntent
     const record = state.sessionsById[sessionId]
     if (record?.kind === 'full' && isAutomationExecutionSession(record.session)) {
@@ -2414,25 +2487,7 @@ function applyCurrentRunStateFrame(
       updated_at: runState.updated_at,
       event_seq: runState.event_seq ?? 0,
     }
-    const byRunId = state.runIntentsBySession[sessionId] ?? {}
-    byRunId[runIntent.run_id] = {
-      ...byRunId[runIntent.run_id],
-      ...runIntent,
-    }
-    state.runIntentsBySession[sessionId] = byRunId
-    if (runState.active) {
-      state.currentRunIntentBySession[sessionId] = runIntent
-      const record = state.sessionsById[sessionId]
-      if (record?.kind === 'full' && isAutomationExecutionSession(record.session)) {
-        restoreSessionToSidebar(state, sessionId)
-      }
-    } else {
-      delete state.currentRunIntentBySession[sessionId]
-      const record = state.sessionsById[sessionId]
-      if (record?.kind === 'full' && isAutomationExecutionSession(record.session)) {
-        removeSessionFromNavigationMembership(state, sessionId)
-      }
-    }
+    upsertRunIntent(state, sessionId, runIntent)
   } else {
     delete state.currentRunIntentBySession[sessionId]
     const record = state.sessionsById[sessionId]
@@ -2516,13 +2571,25 @@ function applySessionViews(
       continue
     }
 
-    state.sessionViewsById[sessionId] = { ...state.sessionViewsById[sessionId], ...view }
+    const retainedRun = state.sessionViewsById[sessionId]?.current_run_state
+    state.sessionViewsById[sessionId] = {
+      ...state.sessionViewsById[sessionId], ...view,
+      current_run_state: preferRunEvidence(retainedRun ?? undefined, view.current_run_state ?? undefined),
+    }
+    if (view.current_run_state) applyCurrentRunStateFrame(state, sessionId, view.current_run_state)
     if (view.current_execution_epoch) {
       mergeCurrentExecutionEpoch(state, sessionId, view.current_execution_epoch)
     }
     // A null recovery view may race a newer retained boundary. Boundaries are the
     // authoritative way to advance or complete the cached epoch, so do not erase it.
-    if (view.pending_permissions !== undefined) state.permissionsBySession[sessionId] = normalizeDesktopPendingPermissions(view.pending_permissions, sessionId)
+    if (view.pending_permissions !== undefined) {
+      // Retain terminal evidence across detail hydration: a response begun before
+      // a decision must not resurrect its older pending record.
+      const retained = state.permissionsBySession[sessionId] ?? []
+      const incoming = normalizeDesktopPendingPermissions(view.pending_permissions, sessionId)
+      state.permissionsBySession[sessionId] = retained.filter(permission => terminalPermissionRank(permission) > 0)
+      for (const permission of incoming) upsertPermissionRecord(state, permission)
+    }
     if (view.usage_summary !== undefined) state.usageBySession[sessionId] = view.usage_summary
     applyPlanSnapshotFromSessionView(state, sessionId, view)
 

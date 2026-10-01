@@ -2,11 +2,15 @@ package videogen
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -101,9 +105,12 @@ func TestGenerateGoogleVeoVideo(t *testing.T) {
 	defer server.Close()
 
 	authStore, accountScopeID := setupTestAuthStore(t, "test-google-key", "")
-	svc := NewService(authStore, nil, nil)
+	uiSvc := setupTestUISettingsForAccount(t, accountScopeID, DefaultVideoGenerationModel, DefaultVideoIterationModel)
+	catalog := setupTestCatalog()
+	svc := NewService(authStore, uiSvc, catalog)
 	svc.SetBaseURLs(server.URL, "")
 	svc.SetPollTiming(10*time.Millisecond, 2*time.Second)
+	svc.SetVideoProber(fakeProber{duration: 8.0, width: 1280, height: 720})
 
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "u1", AccountScopeID: accountScopeID}
 	res, err := svc.GenerateManagedVideo(context.Background(), ManagedVideoRequest{
@@ -186,13 +193,15 @@ func TestGenerateGoogleOmniInitialAndConversationalEdit(t *testing.T) {
 	defer server.Close()
 
 	authStore, accountScopeID := setupTestAuthStore(t, "test-google-key", "")
-	svc := NewService(authStore, nil, nil)
+	catalog := setupTestCatalog()
+	svc := NewService(authStore, nil, catalog)
 	svc.SetBaseURLs(server.URL, "")
+	svc.SetVideoProber(fakeProber{duration: 8.0, width: 1280, height: 720})
 
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "u1", AccountScopeID: accountScopeID}
 
 	// Turn 1: Initial generation with Omni explicitly requested
-	res1, err := svc.generateGoogleOmni(context.Background(), "test-google-key", "gemini-omni-1.1-flash", "A violinist in the park", "16:9", "720p", nil, nil)
+	res1, err := svc.generateGoogleOmni(context.Background(), "test-google-key", "gemini-omni-1.1-flash", "A violinist in the park", "16:9", "720p", pebblestore.VideoOperationCreate, nil, nil)
 	if err != nil {
 		t.Fatalf("Turn 1 failed: %v", err)
 	}
@@ -204,7 +213,30 @@ func TestGenerateGoogleOmniInitialAndConversationalEdit(t *testing.T) {
 	}
 
 	// Turn 2: Conversational edit passing previous interaction ID
+	h1 := sha256.Sum256(res1.Bytes)
+	res1Prov := &pebblestore.VideoProvenance{
+		AccountScopeID:      accountScopeID,
+		CredentialID:        "cred-google",
+		Provider:            ProviderGoogleGemini,
+		Model:               "gemini-omni-1.1-flash",
+		Transport:           pebblestore.VideoTransportGoogleInteractions,
+		InteractionID:       res1.InteractionID,
+		OutputDigestSHA256:  hex.EncodeToString(h1[:]),
+		CreatedAt:           time.Now().UnixMilli(),
+		ExpiresAt:           time.Now().Add(48 * time.Hour).UnixMilli(),
+		ObservedDurationMs:  8000,
+		ObservedWidth:       1280,
+		ObservedHeight:      720,
+		ExtensionCountKnown: true,
+	}
+	credential, _, err := authStore.GetActiveCredentialForAccount(accountScopeID, "google")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res1Prov.CredentialVersion = fmt.Sprintf("v%d", credential.UpdatedAt)
 	res2, err := svc.GenerateManagedVideo(context.Background(), ManagedVideoRequest{
+		Model:     "gemini-omni-1.1-flash",
+		Operation: pebblestore.VideoOperationEdit,
 		Prompt:    "Make the violin invisible",
 		Principal: principal,
 		Source: &ManagedVideoSource{
@@ -212,6 +244,7 @@ func TestGenerateGoogleOmniInitialAndConversationalEdit(t *testing.T) {
 			MediaType:     "video/mp4",
 			InteractionID: res1.InteractionID,
 			Model:         "gemini-omni-1.1-flash",
+			Provenance:    res1Prov,
 		},
 	})
 	if err != nil {
@@ -225,6 +258,9 @@ func TestGenerateGoogleOmniInitialAndConversationalEdit(t *testing.T) {
 	}
 }
 
+// Requirement: external-video editing uploads the source and sends task=edit
+// without aspect_ratio or invented history. The HTTP adapter is the narrowest
+// boundary proving the payload that previously failed provider validation.
 func TestGenerateGoogleOmniBridgeEditFromExternalVideo(t *testing.T) {
 	fakeSourceBytes := []byte("source-external-video-bytes")
 	fakeOmniEdited := []byte("omni-edited-bridge-video-bytes")
@@ -251,6 +287,18 @@ func TestGenerateGoogleOmniBridgeEditFromExternalVideo(t *testing.T) {
 			interactionCalled = true
 			var req map[string]any
 			_ = json.NewDecoder(r.Body).Decode(&req)
+			format, _ := req["response_format"].(map[string]any)
+			if _, exists := format["aspect_ratio"]; exists {
+				t.Error("external edit must not send aspect ratio")
+			}
+			if _, exists := req["previous_interaction_id"]; exists {
+				t.Error("external edit must not invent interaction history")
+			}
+			config, _ := req["generation_config"].(map[string]any)
+			videoConfig, _ := config["video_config"].(map[string]any)
+			if videoConfig["task"] != "edit" {
+				t.Error("external edit must preserve explicit task")
+			}
 			inputs, ok := req["input"].([]any)
 			if !ok || len(inputs) < 2 {
 				http.Error(w, "expected multimodal array input", http.StatusBadRequest)
@@ -278,11 +326,15 @@ func TestGenerateGoogleOmniBridgeEditFromExternalVideo(t *testing.T) {
 	uploadServerURL = server.URL
 
 	authStore, accountScopeID := setupTestAuthStore(t, "test-google-key", "")
-	svc := NewService(authStore, nil, nil)
+	uiSvc := setupTestUISettingsForAccount(t, accountScopeID, DefaultVideoGenerationModel, DefaultVideoIterationModel)
+	catalog := setupTestCatalog()
+	svc := NewService(authStore, uiSvc, catalog)
 	svc.SetBaseURLs(server.URL, "")
+	svc.SetVideoProber(fakeProber{duration: 8.0, width: 1280, height: 720})
 
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "u1", AccountScopeID: accountScopeID}
 	res, err := svc.GenerateManagedVideo(context.Background(), ManagedVideoRequest{
+		Operation: pebblestore.VideoOperationEdit,
 		Prompt:    "Change lighting to sunset",
 		Principal: principal,
 		Source: &ManagedVideoSource{
@@ -341,11 +393,15 @@ func TestGenerateGoogleOmniContentBlockedDiagnostic(t *testing.T) {
 	defer server.Close()
 
 	authStore, accountScopeID := setupTestAuthStore(t, "test-google-key", "")
-	svc := NewService(authStore, nil, nil)
+	uiSvc := setupTestUISettingsForAccount(t, accountScopeID, DefaultVideoGenerationModel, DefaultVideoIterationModel)
+	catalog := setupTestCatalog()
+	svc := NewService(authStore, uiSvc, catalog)
 	svc.SetBaseURLs(server.URL, "")
+	svc.SetVideoProber(fakeProber{duration: 8.0, width: 1280, height: 720})
 
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "u1", AccountScopeID: accountScopeID}
 	_, err := svc.GenerateManagedVideo(context.Background(), ManagedVideoRequest{
+		Operation: pebblestore.VideoOperationEdit,
 		Prompt:    "Change lighting to sunset",
 		Principal: principal,
 		Source: &ManagedVideoSource{
@@ -357,8 +413,8 @@ func TestGenerateGoogleOmniContentBlockedDiagnostic(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	if !stringsContains(err.Error(), "EU/EEA, UK, and Switzerland") {
-		t.Fatalf("expected regional diagnostic in error message, got: %v", err)
+	if !stringsContains(err.Error(), "content_blocked") {
+		t.Fatalf("expected content_blocked error from provider, got: %v", err)
 	}
 }
 
@@ -399,7 +455,8 @@ func TestGenerateOpenRouterVideo(t *testing.T) {
 	defer server.Close()
 
 	authStore, _ := setupTestAuthStore(t, "", "test-or-key")
-	svc := NewService(authStore, nil, nil)
+	catalog := setupTestCatalog()
+	svc := NewService(authStore, nil, catalog)
 	svc.SetBaseURLs("", server.URL)
 	svc.SetPollTiming(10*time.Millisecond, 2*time.Second)
 
@@ -462,9 +519,12 @@ func TestGenerateGoogleVeoVideoWithImageInput(t *testing.T) {
 	defer server.Close()
 
 	authStore, accountScopeID := setupTestAuthStore(t, "test-google-key", "")
-	svc := NewService(authStore, nil, nil)
+	uiSvc := setupTestUISettingsForAccount(t, accountScopeID, DefaultVideoGenerationModel, DefaultVideoIterationModel)
+	catalog := setupTestCatalog()
+	svc := NewService(authStore, uiSvc, catalog)
 	svc.SetBaseURLs(server.URL, "")
 	svc.SetPollTiming(10*time.Millisecond, 2*time.Second)
+	svc.SetVideoProber(fakeProber{duration: 8.0, width: 1280, height: 720})
 
 	rawPNG := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\rIDATx\x9cc`\x00\x00\x00\x02\x00\x01H\xaf\xa4q\x00\x00\x00\x00IEND\xaeB`\x82")
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "u1", AccountScopeID: accountScopeID}
@@ -574,11 +634,13 @@ func TestGenerateGoogleOmniWithImageInput(t *testing.T) {
 	defer server.Close()
 
 	authStore, accountScopeID := setupTestAuthStore(t, "test-google-key", "")
-	svc := NewService(authStore, nil, nil)
+	catalog := setupTestCatalog()
+	svc := NewService(authStore, nil, catalog)
 	svc.SetBaseURLs(server.URL, "")
+	svc.SetVideoProber(fakeProber{duration: 8.0, width: 1280, height: 720})
 
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "u1", AccountScopeID: accountScopeID}
-	res, err := svc.generateGoogleOmni(context.Background(), "test-google-key", "gemini-omni-1.1-flash", "Bring this image to life", "16:9", "720p", nil, &ManagedVideoImage{
+	res, err := svc.generateGoogleOmni(context.Background(), "test-google-key", "gemini-omni-1.1-flash", "Bring this image to life", "16:9", "720p", pebblestore.VideoOperationCreate, nil, &ManagedVideoImage{
 		Bytes:     rawPNG,
 		MediaType: "image/png",
 	})
@@ -640,7 +702,8 @@ func TestGenerateOpenRouterWithImageInput(t *testing.T) {
 	defer server.Close()
 
 	authStore, _ := setupTestAuthStore(t, "", "test-or-key")
-	svc := NewService(authStore, nil, nil)
+	catalog := setupTestCatalog()
+	svc := NewService(authStore, nil, catalog)
 	svc.SetBaseURLs("", server.URL)
 	svc.SetPollTiming(10*time.Millisecond, 2*time.Second)
 
@@ -695,7 +758,16 @@ type fakeModelCatalog struct {
 }
 
 func (f *fakeModelCatalog) ListCatalog(providerID string, limit int) ([]pebblestore.ModelCatalogRecord, error) {
-	return f.records, nil
+	if providerID == "" {
+		return f.records, nil
+	}
+	var matched []pebblestore.ModelCatalogRecord
+	for _, r := range f.records {
+		if strings.EqualFold(r.Provider, providerID) || r.Provider == "" {
+			matched = append(matched, r)
+		}
+	}
+	return matched, nil
 }
 
 // Requirement: GenerateManagedVideo must price effective request dimensions from the
@@ -777,9 +849,11 @@ func TestGenerateGoogleVeoVideoWithSnapshotCatalogPricing(t *testing.T) {
 		},
 	}
 
-	svc := NewService(authStore, nil, catalog)
+	uiSvc := setupTestUISettingsForAccount(t, accountScopeID, DefaultVideoGenerationModel, DefaultVideoIterationModel)
+	svc := NewService(authStore, uiSvc, catalog)
 	svc.SetBaseURLs(server.URL, "")
 	svc.SetPollTiming(10*time.Millisecond, 2*time.Second)
+	svc.SetVideoProber(fakeProber{duration: 8.0, width: 1280, height: 720})
 
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "u1", AccountScopeID: accountScopeID}
 
@@ -856,11 +930,481 @@ func TestEstimateVideoCostNoInventedFallback(t *testing.T) {
 			]
 		}
 	}`)
-	cost720, summary720 := EstimateVideoCost("google", "veo-3.1-generate-preview", 8, false, catalogPricing)
+	cost720, summary720 := EstimateVideoCostWithResolution("google", "veo-3.1-generate-preview", 8, "720p", false, catalogPricing)
 	if math.Abs(cost720-0.40) > 0.0001 {
 		t.Fatalf("expected 0.40 for 8s 720p, got %f", cost720)
 	}
 	if !strings.Contains(summary720, "$0.050/sec") || !strings.Contains(summary720, "$0.40 for 8s") {
 		t.Fatalf("unexpected summary: %q", summary720)
+	}
+}
+
+// Requirement: Media's selected model and settings must reach the provider unchanged.
+// Threat: an explicit choice silently bills a different default model or drops the source.
+// Authority: GenerateManagedVideo, at the narrow service boundary before any provider I/O.
+func TestManagedVideoExplicitSelectionRejectsInvalidWithoutProviderCall(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		http.Error(w, "unexpected provider call", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	catalog := &fakeModelCatalog{records: []pebblestore.ModelCatalogRecord{{Provider: "google", Model: "selected-video", CatalogModalities: pebblestore.ModelCatalogModalities{Outputs: []string{"video"}}}}}
+	svc := NewService(nil, nil, catalog)
+	svc.SetBaseURLs(server.URL, server.URL)
+	for _, req := range []ManagedVideoRequest{
+		{Prompt: "revision", Model: "missing-model"},
+		{Prompt: "revision", Model: "selected-video", AspectRatio: "32:9"},
+		{Prompt: "revision", Model: "selected-video", Resolution: "8k"},
+		{Prompt: "revision", Model: "selected-video", Source: &ManagedVideoSource{Bytes: []byte("source"), MediaType: "video/mp4"}},
+	} {
+		result, err := svc.GenerateManagedVideo(context.Background(), req)
+		if err == nil || len(result.Bytes) != 0 {
+			t.Fatalf("expected rejection without output: request=%+v err=%v", req, err)
+		}
+	}
+	if calls != 0 {
+		t.Fatalf("rejected settings reached provider %d times", calls)
+	}
+}
+
+func TestGenerateManagedVideo_OmniOmitsDuration(t *testing.T) {
+	// Requirement: Gemini Omni does not accept duration selection and its result must preserve duration omission (0s, not defaulted to 8s).
+	// Threat/regression: Omni requests defaulting to 8s and reporting 8s duration.
+	// Boundary/authority: Service.GenerateManagedVideo in videogen/service.go.
+	// Test layer: Unit test with mock Omni HTTP server.
+
+	authStore, accountScopeID := setupTestAuthStore(t, "test-google-key", "")
+	fakeMP4 := []byte("fake-omni-mp4")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":     "omni-op-1",
+			"status": "completed",
+			"model":  "gemini-omni-1.1-flash",
+			"steps": []map[string]any{
+				{
+					"type": "video",
+					"content": []map[string]any{
+						{
+							"type":      "video",
+							"mime_type": "video/mp4",
+							"data":      base64.StdEncoding.EncodeToString(fakeMP4),
+						},
+					},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	catalog := &fakeModelCatalog{records: []pebblestore.ModelCatalogRecord{
+		{
+			Provider: "google", Model: "gemini-omni-1.1-flash",
+			CatalogModalities: pebblestore.ModelCatalogModalities{Outputs: []string{"video"}},
+		},
+	}}
+
+	svc := NewService(authStore, nil, catalog)
+	svc.SetBaseURLs(server.URL, "")
+	svc.SetVideoProber(fakeProber{duration: 8.0, width: 1280, height: 720})
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "u1", AccountScopeID: accountScopeID}
+
+	res, err := svc.GenerateManagedVideo(context.Background(), ManagedVideoRequest{
+		Prompt:    "Animate the ocean waves",
+		Model:     "gemini-omni-1.1-flash",
+		Principal: principal,
+	})
+	if err != nil {
+		t.Fatalf("GenerateManagedVideo for Omni failed: %v", err)
+	}
+	if res.DurationSeconds != 0 {
+		t.Fatalf("expected Omni duration_seconds=0 (omitted), got %d", res.DurationSeconds)
+	}
+}
+
+func TestGenerateManagedVideo_OmniRejectsDurationSelection(t *testing.T) {
+	// Requirement: Gemini Omni does not support duration selection; explicit duration selection must be rejected before provider calls.
+	// Threat/regression: Sending duration parameter to Omni which causes provider errors.
+	// Boundary/authority: Service.GenerateManagedVideo in videogen/service.go.
+	// Test layer: Unit test verifying rejection without provider calls.
+
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		http.Error(w, "should not be called", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	catalog := &fakeModelCatalog{records: []pebblestore.ModelCatalogRecord{
+		{
+			Provider: "google", Model: "gemini-omni-1.1-flash",
+			CatalogModalities: pebblestore.ModelCatalogModalities{Outputs: []string{"video"}},
+		},
+	}}
+
+	svc := NewService(nil, nil, catalog)
+	svc.SetBaseURLs(server.URL, "")
+
+	_, err := svc.GenerateManagedVideo(context.Background(), ManagedVideoRequest{
+		Prompt:          "Animate with duration",
+		Model:           "gemini-omni-1.1-flash",
+		DurationSeconds: 8,
+	})
+	if err == nil {
+		t.Fatalf("expected rejection when selecting duration for Omni model")
+	}
+	if !strings.Contains(err.Error(), "does not accept duration") {
+		t.Fatalf("expected error mentioning duration, got: %v", err)
+	}
+	if calls != 0 {
+		t.Fatalf("provider called %d times on invalid duration selection", calls)
+	}
+}
+
+func TestGenerateManagedVideo_ProviderQualifiedIDs(t *testing.T) {
+	// Requirement: Provider-qualified model IDs (e.g. google:veo-3.1-generate-preview or openrouter:google/veo-3.1)
+	// must be parsed and routed to their exact respective providers.
+	// Threat/regression: Provider prefix confusion causing model catalog lookup failure.
+	// Boundary/authority: Service.GenerateManagedVideo in videogen/service.go.
+	// Test layer: Unit test checking catalog lookup and resolution.
+
+	authStore, accountScopeID := setupTestAuthStore(t, "google-k", "openrouter-k")
+	catalog := &fakeModelCatalog{records: []pebblestore.ModelCatalogRecord{
+		{
+			Provider: "google", Model: "veo-3.1-generate-preview",
+			CatalogModalities: pebblestore.ModelCatalogModalities{Outputs: []string{"video"}},
+		},
+		{
+			Provider: "openrouter", Model: "google/veo-3.1",
+			CatalogModalities: pebblestore.ModelCatalogModalities{Outputs: []string{"video"}},
+		},
+	}}
+
+	svc := NewService(authStore, nil, catalog)
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "u1", AccountScopeID: accountScopeID}
+
+	// 1. google: prefix
+	rec, found := svc.resolveModelRecord("google", "veo-3.1-generate-preview")
+	if !found || rec.Model != "veo-3.1-generate-preview" {
+		t.Fatalf("expected google:veo-3.1-generate-preview to resolve in catalog")
+	}
+
+	// 2. openrouter: prefix
+	recOR, foundOR := svc.resolveModelRecord("openrouter", "google/veo-3.1")
+	if !foundOR || recOR.Model != "google/veo-3.1" {
+		t.Fatalf("expected openrouter:google/veo-3.1 to resolve in catalog")
+	}
+	_ = principal
+}
+
+func TestGenerateManagedVideo_1080pDurationRequires8s(t *testing.T) {
+	// Requirement: Veo 1080p resolution requires 8s duration. Durations of 4s or 6s must be rejected before provider call.
+	// Threat/regression: Invalid duration reaching provider or being silently converted.
+	// Boundary/authority: Service.GenerateManagedVideo in videogen/service.go.
+	// Test layer: Unit test verifying rejection without provider calls.
+
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		http.Error(w, "should not be called", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	veoProviderSpecific := json.RawMessage(`{
+		"google": {
+			"video_generation": {
+				"settings": {
+					"resolution": {
+						"status": "verified",
+						"default_value": "720p",
+						"supported_values": ["720p", "1080p", "4k"],
+						"variants": [
+							{"mode": "all", "supported_values": ["1080p"], "conditions": {"duration_seconds": 8}}
+						]
+					},
+					"duration_seconds": {
+						"status": "verified",
+						"default_value": 8,
+						"supported_values": [4, 6, 8],
+						"variants": [
+							{"mode": "hi_res", "supported_values": [8], "conditions": {"resolution": "1080p_or_4k"}}
+						]
+					}
+				}
+			}
+		}
+	}`)
+	catalog := &fakeModelCatalog{records: []pebblestore.ModelCatalogRecord{
+		{
+			Provider: "google", Model: "veo-3.1-generate-preview",
+			CatalogModalities: pebblestore.ModelCatalogModalities{Outputs: []string{"video"}},
+			ProviderSpecific:  veoProviderSpecific,
+		},
+	}}
+
+	svc := NewService(nil, nil, catalog)
+	svc.SetBaseURLs(server.URL, "")
+
+	_, err := svc.GenerateManagedVideo(context.Background(), ManagedVideoRequest{
+		Prompt:          "A high resolution shot",
+		Model:           "veo-3.1-generate-preview",
+		Resolution:      "1080p",
+		DurationSeconds: 4,
+	})
+	if err == nil {
+		t.Fatalf("expected error for 1080p with 4s duration")
+	}
+	if !strings.Contains(err.Error(), "requires 8s duration") {
+		t.Fatalf("expected error mentioning 'requires 8s duration', got: %v", err)
+	}
+	if calls != 0 {
+		t.Fatalf("provider called %d times on invalid resolution/duration mismatch", calls)
+	}
+}
+
+// Requirement: ModelCatalog must be authoritative; nil or missing catalog must fail closed without invented fallbacks.
+// Threat/regression: Hardcoded fallback catalogs inventing model capabilities when catalog is nil.
+// Boundary/authority: Service.resolveModelRecord in videogen/service.go.
+func TestNilModelCatalogFailsClosed(t *testing.T) {
+	authStore, accountScopeID := setupTestAuthStore(t, "test-google-key", "")
+	svc := NewService(authStore, nil, nil)
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "u1", AccountScopeID: accountScopeID}
+	_, err := svc.PreflightVideoOperation(context.Background(), VideoPreflightRequest{
+		Operation:     "create",
+		ExplicitModel: "veo-3.1-generate-preview",
+		Principal:     principal,
+	})
+	if err == nil || !strings.Contains(err.Error(), "not in the model catalog") {
+		t.Fatalf("expected nil catalog to fail closed with 'not in the model catalog', got: %v", err)
+	}
+}
+
+func loadActualSnapshotRecord(t *testing.T, provider, modelID string) pebblestore.ModelCatalogRecord {
+	t.Helper()
+	snapshotPath := filepath.Join("..", "model", "snapshotdata", "snapshot.json")
+	data, err := os.ReadFile(snapshotPath)
+	if err != nil {
+		t.Fatalf("read snapshot.json: %v", err)
+	}
+	var snap struct {
+		SnapshotID      string `json:"snapshot_id"`
+		SnapshotVersion string `json:"snapshot_version"`
+		Models          []struct {
+			ProviderID   string `json:"provider_id"`
+			ModelID      string `json:"model_id"`
+			DisplayName  string `json:"display_name"`
+			Capabilities struct {
+				SupportsVideoInput  *bool `json:"supports_video_input"`
+				SupportsVideoOutput *bool `json:"supports_video_output"`
+				SupportsImageInput  *bool `json:"supports_image_input"`
+			} `json:"capabilities"`
+			Modalities struct {
+				Input  []string `json:"input"`
+				Output []string `json:"output"`
+			} `json:"modalities"`
+			Pricing          json.RawMessage `json:"pricing"`
+			ProviderSpecific json.RawMessage `json:"provider_specific"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(data, &snap); err != nil {
+		t.Fatalf("unmarshal snapshot.json: %v", err)
+	}
+	for _, m := range snap.Models {
+		if strings.EqualFold(m.ProviderID, provider) && strings.EqualFold(m.ModelID, modelID) {
+			return pebblestore.ModelCatalogRecord{
+				Provider:              m.ProviderID,
+				Model:                 m.ModelID,
+				DisplayName:           m.DisplayName,
+				SourceSnapshotID:      snap.SnapshotID,
+				SourceSnapshotVersion: snap.SnapshotVersion,
+				CatalogModalities: pebblestore.ModelCatalogModalities{
+					Inputs:  m.Modalities.Input,
+					Outputs: m.Modalities.Output,
+				},
+				Pricing:          m.Pricing,
+				ProviderSpecific: m.ProviderSpecific,
+			}
+		}
+	}
+	t.Fatalf("model %s/%s not found in snapshot.json", provider, modelID)
+	return pebblestore.ModelCatalogRecord{}
+}
+
+func TestExtractVideoOptions_ActualSnapshotModels(t *testing.T) {
+	// Requirement: Capabilities and settings must be extracted from actual snapshot records, not fake schemas.
+	// Threat/regression: Hardcoded fallbacks or incorrect capability flags diverging from authoritative model snapshot.
+	// Boundary/authority: ExtractVideoOptions in videogen/options.go against model/snapshotdata/snapshot.json.
+
+	// 1. Veo 3.1 Generate Preview
+	veoRec := loadActualSnapshotRecord(t, "google", "veo-3.1-generate-preview")
+	veoOpts := ExtractVideoOptions(veoRec)
+	if veoOpts == nil {
+		t.Fatalf("expected non-nil options for veo-3.1-generate-preview")
+	}
+	if !veoOpts.HasVideoOutput {
+		t.Errorf("expected HasVideoOutput=true")
+	}
+	if veoOpts.DefaultRes != "720p" {
+		t.Errorf("veo DefaultRes = %q, want 720p", veoOpts.DefaultRes)
+	}
+	if veoOpts.DefaultRatio != "16:9" {
+		t.Errorf("veo DefaultRatio = %q, want 16:9", veoOpts.DefaultRatio)
+	}
+	if !ContainsStringFold(veoOpts.Resolutions, "720p") || !ContainsStringFold(veoOpts.Resolutions, "1080p") || !ContainsStringFold(veoOpts.Resolutions, "4k") {
+		t.Errorf("veo Resolutions = %v, want 720p, 1080p, 4k", veoOpts.Resolutions)
+	}
+	if !ContainsStringFold(veoOpts.AspectRatios, "16:9") || !ContainsStringFold(veoOpts.AspectRatios, "9:16") {
+		t.Errorf("veo AspectRatios = %v, want 16:9, 9:16", veoOpts.AspectRatios)
+	}
+	// Verify resolution-specific durations
+	durs1080p := veoOpts.ResolutionDurations["1080p"]
+	if len(durs1080p) != 1 || durs1080p[0] != 8 {
+		t.Errorf("veo 1080p durations = %v, want [8]", durs1080p)
+	}
+	durs4k := veoOpts.ResolutionDurations["4k"]
+	if len(durs4k) != 1 || durs4k[0] != 8 {
+		t.Errorf("veo 4k durations = %v, want [8]", durs4k)
+	}
+	durs720p := veoOpts.ResolutionDurations["720p"]
+	if len(durs720p) != 3 {
+		t.Errorf("veo 720p durations = %v, want [4, 6, 8]", durs720p)
+	}
+	if !veoOpts.InitialImageSupported || veoOpts.InitialImageMaxInputs != 1 {
+		t.Errorf("veo InitialImageSupported=%v MaxInputs=%d, want true/1", veoOpts.InitialImageSupported, veoOpts.InitialImageMaxInputs)
+	}
+	if veoOpts.ConversationalEditingSupported {
+		t.Errorf("veo should not support conversational editing")
+	}
+
+	// 2. Gemini Omni 1.1 Flash
+	omniRec := loadActualSnapshotRecord(t, "google", "gemini-omni-1.1-flash")
+	omniOpts := ExtractVideoOptions(omniRec)
+	if omniOpts == nil {
+		t.Fatalf("expected non-nil options for gemini-omni-1.1-flash")
+	}
+	if omniOpts.DefaultRes != "720p" {
+		t.Errorf("omni DefaultRes = %q, want 720p", omniOpts.DefaultRes)
+	}
+	if omniOpts.DefaultRatio != "16:9" {
+		t.Errorf("omni DefaultRatio = %q, want 16:9", omniOpts.DefaultRatio)
+	}
+	if len(omniOpts.Resolutions) != 4 || !ContainsStringFold(omniOpts.Resolutions, "360p") || !ContainsStringFold(omniOpts.Resolutions, "720p") || !ContainsStringFold(omniOpts.Resolutions, "1080p") || !ContainsStringFold(omniOpts.Resolutions, "4k") {
+		t.Errorf("omni Resolutions = %v, want 360p, 720p, 1080p, 4k", omniOpts.Resolutions)
+	}
+	if len(omniOpts.Durations) != 0 {
+		t.Errorf("omni Durations = %v, want empty (duration is unknown)", omniOpts.Durations)
+	}
+	if !omniOpts.InitialImageSupported {
+		t.Errorf("omni InitialImageSupported = false, want true")
+	}
+	if !omniOpts.ConversationalEditingSupported {
+		t.Errorf("omni ConversationalEditingSupported = false, want true")
+	}
+
+	// 3. Veo 3.1 Lite (extension unsupported)
+	liteRec := loadActualSnapshotRecord(t, "google", "veo-3.1-lite-generate-preview")
+	liteOpts := ExtractVideoOptions(liteRec)
+	if liteOpts == nil {
+		t.Fatalf("expected non-nil options for veo-3.1-lite")
+	}
+	if liteOpts.VideoExtensionSupported {
+		t.Errorf("veo 3.1 lite should have VideoExtensionSupported=false")
+	}
+}
+
+func TestEstimateMediaCost_ActualSnapshotVeoAndOmni(t *testing.T) {
+	// Requirement: Pricing for video models from snapshot must compute exact dollar amounts when conditions match,
+	// and fail closed (returning 0.0 with unknown price status) when conditions, resolution, or duration are unresolved.
+	// Threat/regression: Silent rate fallback or unconditioned rate matching on specialized models.
+	// Boundary/authority: EstimateMediaCostFromRecord in store/pebble/usage_limit_store.go.
+
+	veoRec := loadActualSnapshotRecord(t, "google", "veo-3.1-generate-preview")
+
+	// 1. Standard 720p 8s -> $3.20 ($0.40/sec * 8s)
+	est720_8s := pebblestore.EstimateMediaCostFromRecord(veoRec, pebblestore.MediaCostEstimateOptions{
+		Kind:            "video",
+		Resolution:      "720p",
+		DurationSeconds: 8,
+		IncludesAudio:   true,
+		ServiceTier:     "standard",
+	})
+	if math.Abs(est720_8s.CostUSD-3.20) > 0.0001 {
+		t.Fatalf("veo 720p 8s cost = %f, want 3.20", est720_8s.CostUSD)
+	}
+	if est720_8s.PriceStatus != "known" {
+		t.Errorf("veo 720p 8s price_status = %q, want known", est720_8s.PriceStatus)
+	}
+
+	// 2. Standard 1080p 8s -> $3.20 ($0.40/sec * 8s)
+	est1080_8s := pebblestore.EstimateMediaCostFromRecord(veoRec, pebblestore.MediaCostEstimateOptions{
+		Kind:            "video",
+		Resolution:      "1080p",
+		DurationSeconds: 8,
+		IncludesAudio:   true,
+		ServiceTier:     "standard",
+	})
+	if math.Abs(est1080_8s.CostUSD-3.20) > 0.0001 {
+		t.Fatalf("veo 1080p 8s cost = %f, want 3.20", est1080_8s.CostUSD)
+	}
+
+	// 3. Standard 720p 4s -> $1.60 ($0.40/sec * 4s)
+	est720_4s := pebblestore.EstimateMediaCostFromRecord(veoRec, pebblestore.MediaCostEstimateOptions{
+		Kind:            "video",
+		Resolution:      "720p",
+		DurationSeconds: 4,
+		IncludesAudio:   true,
+		ServiceTier:     "standard",
+	})
+	if math.Abs(est720_4s.CostUSD-1.60) > 0.0001 {
+		t.Fatalf("veo 720p 4s cost = %f, want 1.60", est720_4s.CostUSD)
+	}
+
+	// 4. Missing resolution -> fails closed, unknown
+	estNoRes := pebblestore.EstimateMediaCostFromRecord(veoRec, pebblestore.MediaCostEstimateOptions{
+		Kind:            "video",
+		DurationSeconds: 8,
+		IncludesAudio:   true,
+		ServiceTier:     "standard",
+	})
+	if estNoRes.CostUSD != 0.0 || estNoRes.PriceStatus != "unknown" {
+		t.Fatalf("veo without resolution must fail closed: got cost=%f, status=%q", estNoRes.CostUSD, estNoRes.PriceStatus)
+	}
+
+	// 5. Unknown resolution "8k" -> fails closed, unknown
+	est8k := pebblestore.EstimateMediaCostFromRecord(veoRec, pebblestore.MediaCostEstimateOptions{
+		Kind:            "video",
+		Resolution:      "8k",
+		DurationSeconds: 8,
+		IncludesAudio:   true,
+		ServiceTier:     "standard",
+	})
+	if est8k.CostUSD != 0.0 || est8k.PriceStatus != "unknown" {
+		t.Fatalf("veo with unknown resolution 8k must fail closed: got cost=%f, status=%q", est8k.CostUSD, est8k.PriceStatus)
+	}
+
+	// 6. Unknown duration 0s -> fails closed, unknown
+	est0s := pebblestore.EstimateMediaCostFromRecord(veoRec, pebblestore.MediaCostEstimateOptions{
+		Kind:            "video",
+		Resolution:      "720p",
+		DurationSeconds: 0,
+		IncludesAudio:   true,
+		ServiceTier:     "standard",
+	})
+	if est0s.CostUSD != 0.0 || est0s.PriceStatus != "unknown" {
+		t.Fatalf("veo with 0s duration must fail closed: got cost=%f, status=%q", est0s.CostUSD, est0s.PriceStatus)
+	}
+
+	// 7. Omni with duration 0s (unknown duration) -> fails closed, unknown
+	omniRec := loadActualSnapshotRecord(t, "google", "gemini-omni-1.1-flash")
+	estOmni := pebblestore.EstimateMediaCostFromRecord(omniRec, pebblestore.MediaCostEstimateOptions{
+		Kind:            "video",
+		Resolution:      "720p",
+		DurationSeconds: 0,
+		IncludesAudio:   true,
+		ServiceTier:     "standard",
+	})
+	if estOmni.CostUSD != 0.0 || estOmni.PriceStatus != "unknown" {
+		t.Fatalf("omni without duration must fail closed: got cost=%f, status=%q", estOmni.CostUSD, estOmni.PriceStatus)
 	}
 }

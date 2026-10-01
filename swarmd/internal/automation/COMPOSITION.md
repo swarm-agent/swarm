@@ -31,7 +31,6 @@ is installed by this package.
   failure integration test. Concurrent Ensure calls likewise require review.
 - Explicit failed-run retries, durable notification outbox, immutable checkpoint
   policy/task-program rebinding, and blocked-run resume remain unfinished.
-- Parent must update the atlas/test audit ledger outside this child's ownership.
 
 ## Authored evidence
 

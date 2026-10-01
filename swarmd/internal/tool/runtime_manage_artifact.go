@@ -22,6 +22,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -1255,7 +1256,7 @@ func parseArtifactBatchReferences(raw any) ([]artifact.MaterializeBatchItem, []p
 func (r *Runtime) publishWorkspaceArtifact(ctx context.Context, principal artifact.Principal, scope WorkspaceScope, callID, requestID string, args map[string]any) (pebblestore.SessionArtifactVariant, map[string]any, error) {
 	for key := range args {
 		switch key {
-		case "action", "source", "collection_id", "collection_name", "collection_description", "filename", "media_type", "presentation", "output_requirements", "animation_profile", "source_session_id", "source_collection_id", "source_variant_id", "source_event_seq":
+		case "action", "source", "title", "collection_id", "collection_name", "collection_description", "filename", "media_type", "presentation", "output_requirements", "animation_profile", "source_session_id", "source_collection_id", "source_variant_id", "source_event_seq":
 		default:
 			return pebblestore.SessionArtifactVariant{}, nil, fmt.Errorf("manage_artifact publish_workspace contains unsupported field %q", key)
 		}
@@ -1392,8 +1393,16 @@ func (r *Runtime) publishWorkspaceArtifact(ctx context.Context, principal artifa
 			}
 		}
 	}
+	title := strings.TrimSpace(asString(args["title"]))
+	collectionName := strings.TrimSpace(asString(args["collection_name"]))
+	if collectionName == "" && title != "" {
+		collectionName = title
+	}
+	if presentation.Label == "" && title != "" {
+		presentation.Label = title
+	}
 	create := artifact.CreateInput{
-		RequestID: requestID, CollectionID: collectionID, CollectionName: strings.TrimSpace(asString(args["collection_name"])), CollectionDescription: strings.TrimSpace(asString(args["collection_description"])),
+		RequestID: requestID, CollectionID: collectionID, CollectionName: collectionName, CollectionDescription: strings.TrimSpace(asString(args["collection_description"])),
 		VariantID: variantID, Filename: filename, MediaType: mediaType, Presentation: presentation, OutputRequirements: requirements, AnimationProfile: inheritedAnimationProfile, Parts: parts, AutoAccept: true,
 		SourceSessionID: sourceSessionID, SourceCollectionID: sourceCollectionID, SourceVariantID: sourceVariantID, SourceEventSeq: sourceEventSeq,
 	}
@@ -1818,7 +1827,11 @@ func (r *Runtime) generateManagedImageArtifact(ctx context.Context, scope Worksp
 			capabilityToken = capabilities.CapabilityToken
 		}
 	}
-	generated, err := r.imageGeneration.GenerateManagedImage(identity.ContextWithPrincipal(ctx, scope.Principal), imagegen.ManagedGenerateRequest{
+	budgetOperation := newMediaBudgetOperation()
+	budgetCtx := provideriface.WithBillableDispatchGuard(identity.ContextWithPrincipal(ctx, scope.Principal), func() error {
+		return r.checkMediaWorkerBudget(scope.Principal.AccountScopeID, scope.SessionID, budgetOperation)
+	})
+	generated, err := r.imageGeneration.GenerateManagedImage(budgetCtx, imagegen.ManagedGenerateRequest{
 		SelectionID: selectionID, Prompt: prompt, Size: size, Settings: settings,
 		CapabilityToken: capabilityToken, Principal: scope.Principal, Source: source,
 	})
@@ -1913,27 +1926,31 @@ func (r *Runtime) generateManagedImageArtifact(ctx context.Context, scope Worksp
 		mediaID = fmt.Sprintf("media_%s_%s", callID, requestID)
 	}
 	mediaRec := pebblestore.SessionMediaUsageRecord{
-		ID:              mediaID,
-		SessionID:       principal.SessionID,
-		AccountScopeID:  principal.AccountScopeID,
-		UserID:          principal.UserID,
-		MediaType:       canonicalArtifactMediaType(generated.MediaType),
-		Kind:            "image",
-		Provider:        imageProvider,
-		Model:           imageModel,
-		Filename:        filename,
-		Label:           presentation.Label,
-		Size:            int64(len(generated.Bytes)),
-		CostUSD:         estimate.CostUSD,
-		PriceStatus:     estimate.PriceStatus,
-		PricingSummary:  estimate.PricingSummary,
-		SnapshotID:      estimate.SnapshotID,
-		SnapshotVersion: estimate.SnapshotVersion,
-		CreatedAt:       time.Now().UnixMilli(),
+		BudgetOperationID: budgetOperation,
+		ID:                mediaID,
+		SessionID:         principal.SessionID,
+		AccountScopeID:    principal.AccountScopeID,
+		UserID:            principal.UserID,
+		MediaType:         canonicalArtifactMediaType(generated.MediaType),
+		Kind:              "image",
+		Provider:          imageProvider,
+		Model:             imageModel,
+		Filename:          filename,
+		Label:             presentation.Label,
+		Size:              int64(len(generated.Bytes)),
+		CostUSD:           estimate.CostUSD,
+		PriceStatus:       estimate.PriceStatus,
+		PricingSummary:    estimate.PricingSummary,
+		SnapshotID:        estimate.SnapshotID,
+		SnapshotVersion:   estimate.SnapshotVersion,
+		CreatedAt:         time.Now().UnixMilli(),
 	}
 	if r.sessions != nil {
 		if recErr := r.sessions.RecordMediaUsage(mediaRec); recErr != nil {
 			return pebblestore.SessionArtifactVariant{}, fmt.Errorf("record image media usage: %w", recErr)
+		}
+		if err := r.releaseMediaWorkerBudget(scope.Principal.AccountScopeID, scope.SessionID, budgetOperation); err != nil {
+			return pebblestore.SessionArtifactVariant{}, err
 		}
 	}
 
@@ -2375,7 +2392,7 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 		case "action", "prompt", "title", "aspect_ratio", "resolution", "duration_seconds", "count",
 			"collection_id", "collection_name", "collection_description", "variant_id", "filename", "presentation",
 			"source_session_id", "source_collection_id", "source_variant_id", "source_event_seq",
-			"image", "image_path", "chain_from", "chain", "includes_audio":
+			"image", "image_path", "chain_from", "chain", "includes_audio", "operation":
 		default:
 			return managedVideoArtifactResult{}, fmt.Errorf("manage_artifact generate_video contains unsupported field %q", key)
 		}
@@ -2494,11 +2511,28 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 					MediaType: "image/png",
 				}
 			} else {
-				interactionID := strings.TrimSpace(variant.Lineage.IterationID)
+				var srcProv *pebblestore.VideoProvenance
+				if variant.Lineage.VideoProvenance != nil {
+					srcProv = variant.Lineage.VideoProvenance.Clone()
+				}
 				source = &videogen.ManagedVideoSource{
-					Bytes:         append([]byte(nil), body...),
-					MediaType:     "video/mp4",
-					InteractionID: interactionID,
+					Bytes:      append([]byte(nil), body...),
+					MediaType:  "video/mp4",
+					Provenance: srcProv,
+					SourceLink: &pebblestore.VideoSourceLink{
+						SessionID:    variant.SessionID,
+						CollectionID: variant.CollectionID,
+						VariantID:    variant.ID,
+						EventSeq:     variant.EventSeq,
+						DigestSHA256: variant.DigestSHA256,
+					},
+				}
+				if srcProv != nil {
+					source.InteractionID = srcProv.InteractionID
+					source.URI = srcProv.ProviderResource
+					source.Model = srcProv.Model
+				} else if variant.Lineage.IterationID != "" {
+					source.InteractionID = variant.Lineage.IterationID
 				}
 			}
 		} else {
@@ -2562,14 +2596,31 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 		if i > 0 && !managedDestination {
 			currentVariantID = fmt.Sprintf("%s-%d", variantID, i+1)
 		}
-		generated, err := r.videoGeneration.GenerateManagedVideo(identity.ContextWithPrincipal(ctx, scope.Principal), videogen.ManagedVideoRequest{
+		op := pebblestore.VideoOperationCreate
+		if opArg := strings.ToLower(strings.TrimSpace(asString(args["operation"]))); opArg != "" {
+			op = opArg
+		} else if source != nil {
+			op = pebblestore.VideoOperationEdit
+		}
+		budgetOperation := newMediaBudgetOperation()
+		budgetCtx := provideriface.WithBillableDispatchGuard(identity.ContextWithPrincipal(ctx, scope.Principal), func() error {
+			return r.checkMediaWorkerBudget(scope.Principal.AccountScopeID, scope.SessionID, budgetOperation)
+		})
+		generated, err := r.videoGeneration.GenerateManagedVideo(budgetCtx, videogen.ManagedVideoRequest{
+			Operation:       op,
 			Prompt:          prompt,
 			AspectRatio:     aspectRatio,
 			Resolution:      resolution,
 			DurationSeconds: durationSeconds,
 			Principal:       scope.Principal,
 			Source:          source,
-			Image:           videoImage,
+			SourceProvenance: func() *pebblestore.VideoProvenance {
+				if source != nil {
+					return source.Provenance
+				}
+				return nil
+			}(),
+			Image: videoImage,
 		})
 		if err != nil {
 			return managedVideoArtifactResult{}, fmt.Errorf("generate managed video: %w", err)
@@ -2614,6 +2665,13 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 			}
 		}
 
+		iterationID := ""
+		if run, ok := ctx.Value(artifactRunContextKey{}).(ArtifactRunContext); ok {
+			iterationID = strings.TrimSpace(run.IterationID)
+		}
+		if iterationID == "" && strings.TrimSpace(generated.InteractionID) != "" {
+			iterationID = strings.TrimSpace(generated.InteractionID)
+		}
 		create := artifact.CreateInput{
 			RequestID:             fmt.Sprintf("%s-%d", requestID, i),
 			CollectionID:          collectionID,
@@ -2623,7 +2681,7 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 			Filename:              filename,
 			MediaType:             "video/mp4",
 			Presentation:          presentation,
-			IterationID:           generated.InteractionID,
+			IterationID:           iterationID,
 			IterationIndex:        iterationIndex,
 			IterationLabel:        iterationLabel,
 			Body:                  append([]byte(nil), generated.Bytes...),
@@ -2634,6 +2692,9 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 			create.SourceCollectionID = sourceRef.CollectionID
 			create.SourceVariantID = sourceRef.VariantID
 			create.SourceEventSeq = sourceRef.EventSeq
+		}
+		if generated.Provenance != nil {
+			create.VideoProvenance = generated.Provenance.Clone()
 		}
 
 		effectiveVideoDurationSeconds := generated.DurationSeconds
@@ -2686,27 +2747,31 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 			}
 		}
 		mediaRec := pebblestore.SessionMediaUsageRecord{
-			ID:              currentVariantID,
-			SessionID:       principal.SessionID,
-			AccountScopeID:  principal.AccountScopeID,
-			UserID:          principal.UserID,
-			MediaType:       "video/mp4",
-			Kind:            "video",
-			Provider:        generated.Provider,
-			Model:           generated.Model,
-			Filename:        filename,
-			Label:           presentation.Label,
-			Size:            int64(len(generated.Bytes)),
-			CostUSD:         estimate.CostUSD,
-			PriceStatus:     estimate.PriceStatus,
-			PricingSummary:  estimate.PricingSummary,
-			SnapshotID:      estimate.SnapshotID,
-			SnapshotVersion: estimate.SnapshotVersion,
-			CreatedAt:       time.Now().UnixMilli(),
+			BudgetOperationID: budgetOperation,
+			ID:                currentVariantID,
+			SessionID:         principal.SessionID,
+			AccountScopeID:    principal.AccountScopeID,
+			UserID:            principal.UserID,
+			MediaType:         "video/mp4",
+			Kind:              "video",
+			Provider:          generated.Provider,
+			Model:             generated.Model,
+			Filename:          filename,
+			Label:             presentation.Label,
+			Size:              int64(len(generated.Bytes)),
+			CostUSD:           estimate.CostUSD,
+			PriceStatus:       estimate.PriceStatus,
+			PricingSummary:    estimate.PricingSummary,
+			SnapshotID:        estimate.SnapshotID,
+			SnapshotVersion:   estimate.SnapshotVersion,
+			CreatedAt:         time.Now().UnixMilli(),
 		}
 		if r.sessions != nil {
 			if recErr := r.sessions.RecordMediaUsage(mediaRec); recErr != nil {
 				return managedVideoArtifactResult{}, fmt.Errorf("record video media usage: %w", recErr)
+			}
+			if err := r.releaseMediaWorkerBudget(scope.Principal.AccountScopeID, scope.SessionID, budgetOperation); err != nil {
+				return managedVideoArtifactResult{}, err
 			}
 		}
 
@@ -3004,7 +3069,11 @@ func (r *Runtime) generateManagedAudioArtifact(
 			currentPrompt = prompts[i]
 		}
 
-		generated, err := r.audioGeneration.GenerateManagedAudio(identity.ContextWithPrincipal(ctx, scope.Principal), audiogen.ManagedAudioRequest{
+		budgetOperation := newMediaBudgetOperation()
+		budgetCtx := provideriface.WithBillableDispatchGuard(identity.ContextWithPrincipal(ctx, scope.Principal), func() error {
+			return r.checkMediaWorkerBudget(scope.Principal.AccountScopeID, scope.SessionID, budgetOperation)
+		})
+		generated, err := r.audioGeneration.GenerateManagedAudio(budgetCtx, audiogen.ManagedAudioRequest{
 			Prompt:          currentPrompt,
 			DurationSeconds: durationSeconds,
 			Principal:       scope.Principal,
@@ -3109,27 +3178,31 @@ func (r *Runtime) generateManagedAudioArtifact(
 			})
 		}
 		mediaRec := pebblestore.SessionMediaUsageRecord{
-			ID:              currentVariantID,
-			SessionID:       principal.SessionID,
-			AccountScopeID:  principal.AccountScopeID,
-			UserID:          principal.UserID,
-			MediaType:       mediaType,
-			Kind:            "audio",
-			Provider:        lastProvider,
-			Model:           requestedModel,
-			Filename:        filename,
-			Label:           presentation.Label,
-			Size:            int64(len(generated.Bytes)),
-			CostUSD:         estimate.CostUSD,
-			PriceStatus:     estimate.PriceStatus,
-			PricingSummary:  estimate.PricingSummary,
-			SnapshotID:      estimate.SnapshotID,
-			SnapshotVersion: estimate.SnapshotVersion,
-			CreatedAt:       time.Now().UnixMilli(),
+			BudgetOperationID: budgetOperation,
+			ID:                currentVariantID,
+			SessionID:         principal.SessionID,
+			AccountScopeID:    principal.AccountScopeID,
+			UserID:            principal.UserID,
+			MediaType:         mediaType,
+			Kind:              "audio",
+			Provider:          lastProvider,
+			Model:             requestedModel,
+			Filename:          filename,
+			Label:             presentation.Label,
+			Size:              int64(len(generated.Bytes)),
+			CostUSD:           estimate.CostUSD,
+			PriceStatus:       estimate.PriceStatus,
+			PricingSummary:    estimate.PricingSummary,
+			SnapshotID:        estimate.SnapshotID,
+			SnapshotVersion:   estimate.SnapshotVersion,
+			CreatedAt:         time.Now().UnixMilli(),
 		}
 		if r.sessions != nil {
 			if recErr := r.sessions.RecordMediaUsage(mediaRec); recErr != nil {
 				return managedAudioArtifactResult{}, fmt.Errorf("record audio media usage: %w", recErr)
+			}
+			if err := r.releaseMediaWorkerBudget(scope.Principal.AccountScopeID, scope.SessionID, budgetOperation); err != nil {
+				return managedAudioArtifactResult{}, err
 			}
 		}
 

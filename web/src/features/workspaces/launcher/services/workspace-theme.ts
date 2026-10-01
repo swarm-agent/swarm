@@ -385,6 +385,14 @@ function resolveThemePalette(themeId: string | null | undefined): WorkspaceTheme
   return base ? completePalette(base) : null
 }
 
+export function workspaceThemeExists(themeId: string | null | undefined): boolean {
+  return Boolean(resolveThemePalette(themeId))
+}
+
+export function workspaceThemeColorScheme(themeId: string | null | undefined): 'light' | 'dark' | null {
+  return resolveThemeColorScheme(themeId)
+}
+
 function resolveThemeColorScheme(themeId: string | null | undefined): 'light' | 'dark' | null {
   const palette = resolveThemePalette(themeId)
   if (!palette) {

@@ -4,16 +4,22 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"swarm/packages/swarmd/internal/automation"
 	"swarm/packages/swarmd/internal/identity"
+	"swarm/packages/swarmd/internal/security"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	store "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/webhook"
 )
 
 // Purpose: registered V2 routes must bind human review to the exact durable
@@ -192,8 +198,8 @@ func TestAutomationV2RegisteredReviewAcceptance(t *testing.T) {
 				t.Fatal("accepted executable snapshot mismatch", err)
 			}
 			snapshot, found, err := ss.GetSession("conversation")
-			if err != nil || !found || snapshot.AutomationV2 == nil || snapshot.AutomationV2.AutomationID != first.AutomationID || snapshot.AutomationV2.Digest != first.Digest {
-				t.Fatal("accepted binding mismatch", err)
+			if err != nil || !found || snapshot.AutomationV2 != nil || !first.Independent {
+				t.Fatal("acceptance converted the authoring chat", err)
 			}
 			if _, found, err := ss.GetV3SessionActiveRunIntent("conversation"); err != nil || found {
 				t.Fatal("acceptance started one-shot", err)
@@ -201,6 +207,24 @@ func TestAutomationV2RegisteredReviewAcceptance(t *testing.T) {
 			w = call(http.MethodGet, "?workspace_id="+workspaceID+"&limit=1", "", "owner", false)
 			if w.Code != 200 || !strings.Contains(w.Body.String(), first.AutomationID) {
 				t.Fatal("discovery missing accepted record", w.Body.String())
+			}
+			// Verify workspace_id omitted and "all" return records across workspaces
+			wEmptyWS := call(http.MethodGet, "?limit=1", "", "owner", false)
+			if wEmptyWS.Code != 200 || !strings.Contains(wEmptyWS.Body.String(), first.AutomationID) {
+				t.Fatal("discovery with omitted workspace_id failed", wEmptyWS.Code, wEmptyWS.Body.String())
+			}
+			wAllWS := call(http.MethodGet, "?workspace_id=all&limit=1", "", "owner", false)
+			if wAllWS.Code != 200 || !strings.Contains(wAllWS.Body.String(), first.AutomationID) {
+				t.Fatal("discovery with workspace_id=all failed", wAllWS.Code, wAllWS.Body.String())
+			}
+			// Verify action=list query param is accepted on GET /v3/automations/v2
+			wActionList := call(http.MethodGet, "?action=list&workspace_id="+workspaceID+"&limit=1", "", "owner", false)
+			if wActionList.Code != 200 || !strings.Contains(wActionList.Body.String(), first.AutomationID) {
+				t.Fatal("discovery with action=list failed", wActionList.Code, wActionList.Body.String())
+			}
+			wActionInvalid := call(http.MethodGet, "?action=invalid&workspace_id="+workspaceID, "", "owner", false)
+			if wActionInvalid.Code != 400 {
+				t.Fatal("expected 400 for invalid action query, got", wActionInvalid.Code)
 			}
 			// Requirement: registered management routes are user-only CAS changes;
 			// rejected principals/generations must leave the active policy intact.
@@ -257,17 +281,17 @@ func TestAutomationV2RegisteredReviewAcceptance(t *testing.T) {
 				t.Fatal("revision not applied")
 			}
 
-			// Test archived_mode discovery
+			// Archive remains a safety fence for the worker's authoring-session key.
 			if err := ss.ArchiveSession("conversation"); err != nil {
 				t.Fatal(err)
 			}
 			w = call(http.MethodGet, "?workspace_id="+workspaceID+"&archived_mode=exclude", "", "owner", false)
 			if w.Code != 200 || strings.Contains(w.Body.String(), first.AutomationID) {
-				t.Fatal("expected archived automation excluded", w.Body.String())
+				t.Fatal("archived worker remained in active list", w.Body.String())
 			}
 			w = call(http.MethodGet, "?workspace_id="+workspaceID+"&archived_mode=only", "", "owner", false)
 			if w.Code != 200 || !strings.Contains(w.Body.String(), first.AutomationID) {
-				t.Fatal("expected archived automation returned with archived_mode=only", w.Body.String())
+				t.Fatal("archived worker missing from history", w.Body.String())
 			}
 			w = call(http.MethodGet, "?workspace_id="+workspaceID+"&archived_mode=invalid", "", "owner", false)
 			if w.Code != 400 {
@@ -459,6 +483,15 @@ func TestAutomationV2RegisteredReviewDecline(t *testing.T) {
 	if _, found, err := ss.GetAutomationV2Proposal("account", "owner", workspaceID, "conversation"); err != nil || !found {
 		t.Fatal("proposal missing", found, err)
 	}
+	// Verify action=review query parameter is accepted on GET /review
+	wReview := call(http.MethodGet, "/review?action=review&workspace_id="+workspaceID+"&session_id=conversation", "", "owner", false)
+	if wReview.Code != 200 {
+		t.Fatalf("expected 200 for /review?action=review, got %d", wReview.Code)
+	}
+	wReviewInvalid := call(http.MethodGet, "/review?action=invalid&workspace_id="+workspaceID+"&session_id=conversation", "", "owner", false)
+	if wReviewInvalid.Code != 400 {
+		t.Fatalf("expected 400 for /review?action=invalid, got %d", wReviewInvalid.Code)
+	}
 	ps := store.NewPermissionStore(db)
 	perm, found, err := ps.GetPermission("conversation", store.AutomationV2PermissionID(proposal.Proposal.ProposalID))
 	if err != nil || !found || perm.Status != store.PermissionStatusPending {
@@ -521,4 +554,815 @@ func TestAutomationV2RegisteredReviewDecline(t *testing.T) {
 	if w.Code < 400 {
 		t.Fatal("accept succeeded on declined proposal")
 	}
+}
+
+func TestAutomationV2TriggerEndpoint(t *testing.T) {
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ss := store.NewSessionStore(db)
+	identityStore := store.NewIdentityStore(db)
+	if _, err := identityStore.PutUser(store.UserRecord{ID: "owner", Username: "owner"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := identityStore.PutAccountScope(store.AccountScopeRecord{ID: "account", Type: store.AccountScopeTypePersonal, CreatedByUserID: "owner"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := identityStore.PutAccountUser(store.AccountUserRecord{ID: "membership", AccountScopeID: "account", UserID: "owner", Status: "active"}); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := store.NewWorkspaceStore(db).AddForAccount("account", t.TempDir(), "Workspace")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspaceID := workspace.WorkspaceID
+	available := true
+	if err := ss.CreateSession(store.SessionSnapshot{ID: "conversation", AccountScopeID: "account", UserID: "owner", WorkspacePath: t.TempDir(), WorkspaceGrants: []store.WorkspaceGrant{{Kind: store.WorkspaceGrantPrimary, WorkspaceID: workspaceID, Path: workspace.Path, Available: &available}}}); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{sessions: sessionruntime.NewService(ss, nil)}
+	h := s.apiMux()
+	call := func(method, path, body, user string, isAgent bool) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, AutomationsV2Path+path, strings.NewReader(body))
+		pType := "user"
+		if isAgent {
+			pType = "agent"
+		}
+		p := identity.Principal{Type: pType, UserID: user, AccountScopeID: "account"}
+		r = r.WithContext(context.WithValue(r.Context(), productPrincipalRequestContextKey, p))
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w
+	}
+	encode := func(v any) string {
+		b, _ := json.Marshal(v)
+		return string(b)
+	}
+
+	doc := store.SessionPlanDocument{
+		Title: "Trigger Test Plan",
+		Info:  store.SessionPlanInfo{Goal: "Trigger Test Plan"},
+		AutomationV2: &store.AutomationV2Settings{
+			SchemaVersion:    2,
+			Schedule:         store.AutomationV2Schedule{Kind: "trigger"},
+			Missed:           "skip",
+			Overlap:          "independent",
+			ActivateOnAccept: true,
+			Expiration:       store.AutomationV2Expiration{Kind: "indefinite"},
+		},
+		Checkpoints: []store.SessionPlanCheckpoint{
+			{ID: "cp-1", Title: "Job", Status: "pending", Order: 1, Tasks: []string{"Task 1"}, AcceptanceCriteria: []string{"Done"}},
+		},
+	}
+	propReq := automationV2Request{Action: "propose_automation", WorkspaceID: workspaceID, SessionID: "conversation", Document: &doc}
+	w := call(http.MethodPost, "/proposal", encode(propReq), "owner", false)
+	if w.Code != 200 {
+		t.Fatalf("proposal failed: %d %s", w.Code, w.Body.String())
+	}
+	var propResp struct{ Proposal store.AutomationV2Proposal }
+	if err := json.Unmarshal(w.Body.Bytes(), &propResp); err != nil {
+		t.Fatal(err)
+	}
+	acceptReq := automationV2Request{Action: "accept_automation", WorkspaceID: workspaceID, SessionID: "conversation", Review: propResp.Proposal.AutomationV2Review}
+	w = call(http.MethodPost, "/accept", encode(acceptReq), "owner", false)
+	if w.Code != 200 {
+		t.Fatalf("accept failed: %d %s", w.Code, w.Body.String())
+	}
+	var acceptResp struct{ Record store.AutomationV2Record }
+	if err := json.Unmarshal(w.Body.Bytes(), &acceptResp); err != nil {
+		t.Fatal(err)
+	}
+	acceptedRecord := acceptResp.Record
+
+	// Trigger endpoint call
+	triggerReq := automationV2TriggerRequest{
+		WorkspaceID:  workspaceID,
+		AutomationID: acceptedRecord.AutomationID,
+		Context: map[string]any{
+			"trigger_reason": "ci_failure",
+			"error_log":      "exit status 1",
+		},
+	}
+
+	// 1. Unauthorized caller fails
+	w = call(http.MethodPost, "/trigger", encode(triggerReq), "intruder", false)
+	if w.Code < 400 {
+		t.Fatalf("expected error for unauthorized caller, got %d", w.Code)
+	}
+
+	// 2. Authorized caller succeeds
+	w = call(http.MethodPost, "/trigger", encode(triggerReq), "owner", false)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for trigger, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp struct {
+		OK         bool                         `json:"ok"`
+		Occurrence store.AutomationV2Occurrence `json:"occurrence"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response failed: %v", err)
+	}
+	if !resp.OK {
+		t.Fatal("expected ok=true in trigger response")
+	}
+	if resp.Occurrence.State != "admitted" {
+		t.Fatalf("expected occurrence state 'admitted', got %q", resp.Occurrence.State)
+	}
+	if resp.Occurrence.TriggerContext == nil || resp.Occurrence.TriggerContext["trigger_reason"] != "ci_failure" {
+		t.Fatalf("expected trigger context preserved, got %+v", resp.Occurrence.TriggerContext)
+	}
+
+	// Verify occurrence can be read in progress API
+	w = call(http.MethodGet, "/progress?workspace_id="+workspaceID+"&automation_id="+acceptedRecord.AutomationID+"&timezone=UTC", "", "owner", false)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for progress, got %d: %s", w.Code, w.Body.String())
+	}
+	var prog sessionruntime.AutomationV2Progress
+	if err := json.Unmarshal(w.Body.Bytes(), &prog); err != nil {
+		t.Fatalf("unmarshal progress failed: %v", err)
+	}
+	if len(prog.Occurrences) != 1 {
+		t.Fatalf("expected 1 occurrence in progress, got %d", len(prog.Occurrences))
+	}
+	if prog.Occurrences[0].ID != resp.Occurrence.ID {
+		t.Fatalf("expected occurrence ID match, got %s vs %s", prog.Occurrences[0].ID, resp.Occurrence.ID)
+	}
+}
+
+func TestAutomationV2WebhooksAPI(t *testing.T) {
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	ids := store.NewIdentityStore(db)
+	if _, err = ids.PutUser(store.UserRecord{ID: "owner", Username: "owner"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = ids.PutAccountScope(store.AccountScopeRecord{ID: "account", Type: store.AccountScopeTypePersonal, CreatedByUserID: "owner"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = ids.PutAccountUser(store.AccountUserRecord{ID: "member", AccountScopeID: "account", UserID: "owner", Status: "active"}); err != nil {
+		t.Fatal(err)
+	}
+
+	dispatcher := webhook.NewDispatcher(nil)
+	defer dispatcher.Close()
+
+	ss := store.NewSessionStore(db)
+	s := &Server{
+		sessions:          sessionruntime.NewService(ss, nil),
+		webhookDispatcher: dispatcher,
+	}
+	h := s.apiMux()
+
+	call := func(method, path, body string, scopes []string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, AutomationsV2Path+path, strings.NewReader(body))
+		p := identity.Principal{Type: "user", UserID: "owner", AccountScopeID: "account"}
+		ctx := context.WithValue(r.Context(), productPrincipalRequestContextKey, p)
+		if scopes != nil {
+			ctx = context.WithValue(ctx, productScopedTokenRequestContextKey, &store.ScopedTokenRecord{Scopes: scopes})
+		}
+		r = r.WithContext(ctx)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w
+	}
+
+	// 1. GET /webhooks without automations:read scope -> 403
+	w := call(http.MethodGet, "/webhooks", "", []string{"sessions:read"})
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for missing automations:read scope, got %d", w.Code)
+	}
+
+	// 2. GET /webhooks with automations:read -> 200 empty
+	w = call(http.MethodGet, "/webhooks", "", []string{"automations:read"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", w.Code, w.Body.String())
+	}
+	var listResp struct {
+		OK       bool                              `json:"ok"`
+		Webhooks []store.AutomationV2GlobalWebhook `json:"webhooks"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &listResp); err != nil || !listResp.OK || len(listResp.Webhooks) != 0 {
+		t.Fatalf("unexpected list response: %s", w.Body.String())
+	}
+
+	// 3. Mock HTTP webhook receiver
+	var receivedHeaders http.Header
+	var receivedBody []byte
+	testServer := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+		receivedHeaders = req.Header.Clone()
+		receivedBody, _ = io.ReadAll(req.Body)
+		rw.WriteHeader(http.StatusOK)
+		_, _ = rw.Write([]byte(`{"received": true}`))
+	}))
+	defer testServer.Close()
+
+	// 4. POST /webhooks without automations:write -> 403
+	createBody := fmt.Sprintf(`{"url":%q,"secret":"my-secret-key","format":"generic","events":["started","succeeded"],"enabled":true}`, testServer.URL)
+	w = call(http.MethodPost, "/webhooks", createBody, []string{"automations:read"})
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for missing automations:write scope, got %d", w.Code)
+	}
+
+	// 5. POST /webhooks with automations:write -> 200
+	w = call(http.MethodPost, "/webhooks", createBody, []string{"automations:write"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", w.Code, w.Body.String())
+	}
+	var createResp struct {
+		OK      bool                            `json:"ok"`
+		Webhook store.AutomationV2GlobalWebhook `json:"webhook"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &createResp); err != nil || !createResp.OK || createResp.Webhook.ID == "" {
+		t.Fatalf("unexpected create response: %s", w.Body.String())
+	}
+	webhookID := createResp.Webhook.ID
+
+	// 6. POST /webhooks/test to trigger test ping
+	testBody := fmt.Sprintf(`{"id":%q}`, webhookID)
+	w = call(http.MethodPost, "/webhooks/test", testBody, []string{"automations:write"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for test ping, got %d: %s", w.Code, w.Body.String())
+	}
+	var testResp struct {
+		OK     bool                   `json:"ok"`
+		Result webhook.DeliveryResult `json:"result"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &testResp); err != nil || !testResp.OK {
+		t.Fatalf("unexpected test response: %s", w.Body.String())
+	}
+	if testResp.Result.StatusCode != http.StatusOK {
+		t.Fatalf("expected test delivery 200, got %d", testResp.Result.StatusCode)
+	}
+
+	// Verify headers and signature on receiver
+	if len(receivedBody) == 0 {
+		t.Fatal("expected non-empty received body on webhook receiver")
+	}
+	if receivedHeaders.Get("X-Swarm-Event") != webhook.EventTestPing {
+		t.Fatalf("expected X-Swarm-Event %s, got %s", webhook.EventTestPing, receivedHeaders.Get("X-Swarm-Event"))
+	}
+	if receivedHeaders.Get("X-Swarm-Signature") == "" {
+		t.Fatal("expected non-empty X-Swarm-Signature header")
+	}
+
+	// 7. DELETE /webhooks/{id}
+	w = call(http.MethodDelete, "/webhooks/"+webhookID, "", []string{"automations:write"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for delete, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// 8. Verify GET /webhooks is empty again
+	w = call(http.MethodGet, "/webhooks", "", []string{"automations:read"})
+	if err := json.Unmarshal(w.Body.Bytes(), &listResp); err != nil || len(listResp.Webhooks) != 0 {
+		t.Fatalf("expected 0 webhooks after delete, got %d", len(listResp.Webhooks))
+	}
+}
+
+// Purpose: accepting an on-demand trigger worker proposal must automatically mint a scoped deploy token
+// (automations:trigger) tied to the worker ID and write it as SWARM_TRIGGER_TOKEN to ~/.config/swarm/secrets.env (0600).
+func TestAutomationV2TriggerWorkerAcceptanceMintsToken(t *testing.T) {
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	events, err := store.NewEventLog(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authStore := store.NewClientAuthStore(db)
+	secSvc := security.NewService(authStore, events)
+
+	ss := store.NewSessionStore(db)
+	identityStore := store.NewIdentityStore(db)
+	if _, err := identityStore.PutUser(store.UserRecord{ID: "owner", Username: "owner"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := identityStore.PutAccountScope(store.AccountScopeRecord{ID: "account", Type: store.AccountScopeTypePersonal, CreatedByUserID: "owner"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := identityStore.PutAccountUser(store.AccountUserRecord{ID: "membership", AccountScopeID: "account", UserID: "owner", Status: "active"}); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := store.NewWorkspaceStore(db).AddForAccount("account", t.TempDir(), "Workspace")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspaceID := workspace.WorkspaceID
+	available := true
+	if err := ss.CreateSession(store.SessionSnapshot{ID: "conversation", AccountScopeID: "account", UserID: "owner", WorkspacePath: t.TempDir(), WorkspaceGrants: []store.WorkspaceGrant{{Kind: store.WorkspaceGrantPrimary, WorkspaceID: workspaceID, Path: workspace.Path, Available: &available}}}); err != nil {
+		t.Fatal(err)
+	}
+
+	secretsDir := t.TempDir()
+	secretsFile := filepath.Join(secretsDir, "secrets.env")
+	t.Setenv("SWARM_SECRETS_FILE", secretsFile)
+
+	s := &Server{sessions: sessionruntime.NewService(ss, nil), security: secSvc}
+	h := s.apiMux()
+
+	call := func(method, path, body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, AutomationsV2Path+path, strings.NewReader(body))
+		p := identity.Principal{Type: "user", UserID: "owner", AccountScopeID: "account"}
+		ctx := context.WithValue(r.Context(), productPrincipalRequestContextKey, p)
+		r = r.WithContext(ctx)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w
+	}
+	encode := func(v any) string {
+		b, err := json.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+
+	// 1. Propose trigger worker
+	doc := &store.SessionPlanDocument{
+		Title: "Trigger Test Worker",
+		Info:  store.SessionPlanInfo{Goal: "Automated trigger execution"},
+		WorkerV2: &store.AutomationV2Settings{
+			SchemaVersion:    2,
+			Schedule:         store.AutomationV2Schedule{Kind: "trigger"},
+			Missed:           "skip",
+			Overlap:          "serialize",
+			ActivateOnAccept: true,
+			Expiration:       store.AutomationV2Expiration{Kind: "indefinite"},
+		},
+		Checkpoints: []store.SessionPlanCheckpoint{{
+			ID:                 "task",
+			Title:              "Run task",
+			Objective:          "Perform task",
+			Status:             "pending",
+			Order:              1,
+			AcceptanceCriteria: []string{"Delivered"},
+		}},
+	}
+	propReq := automationV2Request{Action: "propose_automation", WorkspaceID: workspaceID, SessionID: "conversation", Document: doc}
+	w := call(http.MethodPost, "/proposal", encode(propReq))
+	if w.Code != 200 {
+		t.Fatalf("proposal failed: %d %s", w.Code, w.Body.String())
+	}
+	var propResp struct {
+		Proposal store.AutomationV2Proposal `json:"proposal"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &propResp); err != nil {
+		t.Fatal(err)
+	}
+
+	// 2. Accept trigger worker
+	accReq := automationV2Request{
+		Action:      "accept_automation",
+		WorkspaceID: workspaceID,
+		SessionID:   "conversation",
+		Review:      propResp.Proposal.AutomationV2Review,
+	}
+	w = call(http.MethodPost, "/accept", encode(accReq))
+	if w.Code != 200 {
+		t.Fatalf("accept failed: %d %s", w.Code, w.Body.String())
+	}
+
+	var accResp struct {
+		Record      store.AutomationV2Record `json:"record"`
+		TokenMinted bool                     `json:"token_minted"`
+		TokenPath   string                   `json:"token_path"`
+		Message     string                   `json:"message"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &accResp); err != nil {
+		t.Fatal(err)
+	}
+
+	if !accResp.TokenMinted {
+		t.Fatal("expected token_minted true")
+	}
+	wantMsg := "Deploy token minted and saved to ~/.config/swarm/secrets.env for this worker."
+	if accResp.Message != wantMsg {
+		t.Fatalf("expected message %q, got %q", wantMsg, accResp.Message)
+	}
+
+	// 3. Verify token was written to secrets file
+	savedToken, err := security.GetLocalSecret("SWARM_TRIGGER_TOKEN")
+	if err != nil {
+		t.Fatalf("GetLocalSecret failed: %v", err)
+	}
+	if !strings.HasPrefix(savedToken, "swk_") {
+		t.Fatalf("expected saved token to start with swk_, got %q", savedToken)
+	}
+
+	// 4. Verify token is valid scoped token with automations:trigger
+	tokRec, err := secSvc.ValidateScopedToken(savedToken)
+	if err != nil || tokRec == nil {
+		t.Fatalf("ValidateScopedToken failed: %v", err)
+	}
+	if tokRec.WorkerID != accResp.Record.AutomationID {
+		t.Fatalf("expected WorkerID %s, got %s", accResp.Record.AutomationID, tokRec.WorkerID)
+	}
+	hasScope := false
+	for _, sc := range tokRec.Scopes {
+		if sc == "automations:trigger" {
+			hasScope = true
+			break
+		}
+	}
+	if !hasScope {
+		t.Fatalf("expected token scopes to contain automations:trigger, got %v", tokRec.Scopes)
+	}
+}
+
+// Purpose: accepting a stable/harness worker (e.g. cron or interval) must NOT automatically mint a deploy token,
+// but users can later mint a deploy secret/token attached to that worker via POST /v3/automations/v2/token.
+func TestAutomationV2StableWorkerDoesNotMintTokenAndAllowsPostAcceptanceMint(t *testing.T) {
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	events, err := store.NewEventLog(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authStore := store.NewClientAuthStore(db)
+	secSvc := security.NewService(authStore, events)
+
+	ss := store.NewSessionStore(db)
+	identityStore := store.NewIdentityStore(db)
+	if _, err := identityStore.PutUser(store.UserRecord{ID: "owner", Username: "owner"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := identityStore.PutAccountScope(store.AccountScopeRecord{ID: "account", Type: store.AccountScopeTypePersonal, CreatedByUserID: "owner"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := identityStore.PutAccountUser(store.AccountUserRecord{ID: "membership", AccountScopeID: "account", UserID: "owner", Status: "active"}); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := store.NewWorkspaceStore(db).AddForAccount("account", t.TempDir(), "Workspace")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspaceID := workspace.WorkspaceID
+	available := true
+	if err := ss.CreateSession(store.SessionSnapshot{ID: "conversation", AccountScopeID: "account", UserID: "owner", WorkspacePath: t.TempDir(), WorkspaceGrants: []store.WorkspaceGrant{{Kind: store.WorkspaceGrantPrimary, WorkspaceID: workspaceID, Path: workspace.Path, Available: &available}}}); err != nil {
+		t.Fatal(err)
+	}
+
+	secretsDir := t.TempDir()
+	secretsFile := filepath.Join(secretsDir, "secrets.env")
+	t.Setenv("SWARM_SECRETS_FILE", secretsFile)
+	t.Setenv("SWARM_TRIGGER_TOKEN", "")
+
+	s := &Server{sessions: sessionruntime.NewService(ss, nil), security: secSvc}
+	h := s.apiMux()
+
+	call := func(method, path, body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, AutomationsV2Path+path, strings.NewReader(body))
+		p := identity.Principal{Type: "user", UserID: "owner", AccountScopeID: "account"}
+		ctx := context.WithValue(r.Context(), productPrincipalRequestContextKey, p)
+		r = r.WithContext(ctx)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w
+	}
+	encode := func(v any) string {
+		b, err := json.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+
+	// 1. Propose stable/harness worker (e.g. interval)
+	doc := &store.SessionPlanDocument{
+		Title: "Stable Harness Worker",
+		Info:  store.SessionPlanInfo{Goal: "Periodic execution on Swarm harness"},
+		WorkerV2: &store.AutomationV2Settings{
+			SchemaVersion:    2,
+			Schedule:         store.AutomationV2Schedule{Kind: "interval", IntervalSeconds: 3600},
+			Missed:           "skip",
+			Overlap:          "serialize",
+			ActivateOnAccept: true,
+			Expiration:       store.AutomationV2Expiration{Kind: "indefinite"},
+		},
+		Checkpoints: []store.SessionPlanCheckpoint{{
+			ID:                 "task",
+			Title:              "Run task",
+			Objective:          "Perform periodic check",
+			Status:             "pending",
+			Order:              1,
+			AcceptanceCriteria: []string{"Delivered"},
+		}},
+	}
+	propReq := automationV2Request{Action: "propose_automation", WorkspaceID: workspaceID, SessionID: "conversation", Document: doc}
+	w := call(http.MethodPost, "/proposal", encode(propReq))
+	if w.Code != 200 {
+		t.Fatalf("proposal failed: %d %s", w.Code, w.Body.String())
+	}
+	var propResp struct {
+		Proposal store.AutomationV2Proposal `json:"proposal"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &propResp); err != nil {
+		t.Fatal(err)
+	}
+
+	// 2. Accept specialist worker
+	accReq := automationV2Request{
+		Action:      "accept_automation",
+		WorkspaceID: workspaceID,
+		SessionID:   "conversation",
+		Review:      propResp.Proposal.AutomationV2Review,
+	}
+	w = call(http.MethodPost, "/accept", encode(accReq))
+	if w.Code != 200 {
+		t.Fatalf("accept failed: %d %s", w.Code, w.Body.String())
+	}
+
+	var accResp struct {
+		Record      store.AutomationV2Record `json:"record"`
+		TokenMinted bool                     `json:"token_minted"`
+		TokenPath   string                   `json:"token_path"`
+		Message     string                   `json:"message"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &accResp); err != nil {
+		t.Fatal(err)
+	}
+
+	if accResp.TokenMinted {
+		t.Fatal("expected token_minted false for stable harness worker")
+	}
+	if accResp.Message != "" {
+		t.Fatalf("expected empty message, got %q", accResp.Message)
+	}
+
+	// 3. Verify no token was created in secrets file
+	savedToken, err := security.GetLocalSecret("SWARM_TRIGGER_TOKEN")
+	if err == nil && savedToken != "" {
+		t.Fatalf("expected no token saved, got %q", savedToken)
+	}
+
+	// 4. Test minting token post-acceptance via POST /v3/automations/v2/token
+	tokReq := automationV2TokenRequest{
+		WorkspaceID: workspaceID,
+		WorkerID:    accResp.Record.AutomationID,
+	}
+	w = call(http.MethodPost, "/token", encode(tokReq))
+	if w.Code != 200 {
+		t.Fatalf("token endpoint failed: %d %s", w.Code, w.Body.String())
+	}
+	var tokResp struct {
+		OK        bool   `json:"ok"`
+		Token     string `json:"token"`
+		WorkerID  string `json:"worker_id"`
+		TokenPath string `json:"token_path"`
+		Message   string `json:"message"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &tokResp); err != nil {
+		t.Fatal(err)
+	}
+	if !tokResp.OK || !strings.HasPrefix(tokResp.Token, "swk_") {
+		t.Fatalf("expected valid token starting with swk_, got %+v", tokResp)
+	}
+	if tokResp.WorkerID != accResp.Record.AutomationID {
+		t.Fatalf("expected worker_id %s, got %s", accResp.Record.AutomationID, tokResp.WorkerID)
+	}
+
+	savedToken, err = security.GetLocalSecret("SWARM_TRIGGER_TOKEN")
+	if err != nil || savedToken != tokResp.Token {
+		t.Fatalf("expected saved token %q, got %q (err: %v)", tokResp.Token, savedToken, err)
+	}
+}
+
+func TestAutomationV2ProjectWorkerDeploymentAndWorkspaceScoping(t *testing.T) {
+	start := time.Now()
+	dir := t.TempDir()
+	db, err := store.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ss := store.NewSessionStore(db)
+	events, err := store.NewEventLog(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionsService := sessionruntime.NewService(ss, events)
+	authStore := store.NewClientAuthStore(db)
+	sec := security.NewService(authStore, events)
+
+	s := &Server{
+		sessions: sessionsService,
+		security: sec,
+	}
+	h := s.apiMux()
+
+	call := func(method, path string, body string, token string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, AutomationsV2Path+path, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		p := identity.Principal{
+			Type:           "user",
+			UserID:         "owner",
+			AccountScopeID: "account",
+		}
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		ctx := context.WithValue(req.Context(), productPrincipalRequestContextKey, p)
+		req = req.WithContext(ctx)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+		return w
+	}
+
+	// Setup user & workspaces
+	ids := store.NewIdentityStore(db)
+	_, _ = ids.PutUser(store.UserRecord{ID: "owner", Username: "owner"})
+	_, _ = ids.PutAccountScope(store.AccountScopeRecord{ID: "account", Type: store.AccountScopeTypePersonal, CreatedByUserID: "owner"})
+	_, _ = ids.PutAccountUser(store.AccountUserRecord{ID: "member", AccountScopeID: "account", UserID: "owner", Status: "active"})
+
+	wsStore := store.NewWorkspaceStore(db)
+	wMain, _ := wsStore.AddForAccount("account", t.TempDir(), "Main")
+	wSec, _ := wsStore.AddForAccount("account", t.TempDir(), "Secondary")
+	wDocs, _ := wsStore.AddForAccount("account", t.TempDir(), "Docs")
+
+	// Create project with all 3 workspaces
+	projID := "proj_worker_test"
+	if err := ss.PutProject("account", &store.ProjectRecord{
+		ID:        projID,
+		AccountID: "account",
+		Name:      "Alpha Project",
+		Workspaces: []store.ProjectWorkspaceRef{
+			{WorkspaceID: wMain.WorkspaceID, Path: wMain.Path, Role: "primary_code"},
+			{WorkspaceID: wSec.WorkspaceID, Path: wSec.Path, Role: "auxiliary"},
+			{WorkspaceID: wDocs.WorkspaceID, Path: wDocs.Path, Role: "docs"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	avail := true
+	sessionID := "orch-sess-1"
+	if err := ss.CreateSession(store.SessionSnapshot{
+		ID:             sessionID,
+		AccountScopeID: "account",
+		UserID:         "owner",
+		Mode:           "auto",
+		WorkspacePath:  wMain.Path,
+		WorkspaceGrants: []store.WorkspaceGrant{
+			{Kind: store.WorkspaceGrantPrimary, Path: wMain.Path, WorkspaceID: wMain.WorkspaceID, Available: &avail},
+		},
+		Metadata: map[string]any{
+			"project_id": projID,
+			"role":       "project_orchestrator",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Initial proposal: Orchestrator suggests worker
+	doc := store.SessionPlanDocument{
+		Title: "Project Code & Doc Auditor",
+		Info:  store.SessionPlanInfo{Goal: "Continuously audit primary and auxiliary code"},
+		WorkerV2: &store.AutomationV2Settings{
+			SchemaVersion: 2,
+			Schedule:      store.AutomationV2Schedule{Kind: "trigger"},
+		},
+	}
+	propReq := automationV2Request{
+		WorkspaceID: wMain.WorkspaceID,
+		SessionID:   sessionID,
+		Document:    &doc,
+	}
+	rawProp, _ := json.Marshal(propReq)
+	w := call(http.MethodPost, "/proposal", string(rawProp), "")
+	if w.Code != 200 {
+		t.Fatalf("proposal failed: code=%d body=%s", w.Code, w.Body.String())
+	}
+	var propResp struct {
+		OK       bool                       `json:"ok"`
+		Proposal store.AutomationV2Proposal `json:"proposal"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &propResp); err != nil {
+		t.Fatal(err)
+	}
+	if propResp.Proposal.ProjectID != projID {
+		t.Fatalf("expected proposal project_id %q, got %q", projID, propResp.Proposal.ProjectID)
+	}
+	if propResp.Proposal.Revision != 1 {
+		t.Fatalf("expected revision 1, got %d", propResp.Proposal.Revision)
+	}
+	t.Logf("Trial Step 1: Initial Proposal created in %v (rev %d, project %s)", time.Since(start), propResp.Proposal.Revision, propResp.Proposal.ProjectID)
+
+	// 2. User reviews and suggests changes: scope to only wMain and wSec (excluding wDocs)
+	scopedDoc := doc
+	scopedDoc.WorkerV2.WorkspaceID = wMain.WorkspaceID
+	scopedDoc.WorkerV2.WorkspaceIDs = []string{wMain.WorkspaceID, wSec.WorkspaceID}
+	reviseReq := automationV2Request{
+		WorkspaceID: wMain.WorkspaceID,
+		SessionID:   sessionID,
+		Review:      propResp.Proposal.AutomationV2Review,
+		Document:    &scopedDoc,
+	}
+	rawRevise, _ := json.Marshal(reviseReq)
+	w = call(http.MethodPost, "/proposal", string(rawRevise), "")
+	if w.Code != 200 {
+		t.Fatalf("revise proposal failed: code=%d body=%s", w.Code, w.Body.String())
+	}
+	var reviseResp struct {
+		OK       bool                       `json:"ok"`
+		Proposal store.AutomationV2Proposal `json:"proposal"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &reviseResp); err != nil {
+		t.Fatal(err)
+	}
+	if reviseResp.Proposal.Revision != 2 {
+		t.Fatalf("expected revision 2 after suggesting changes, got %d", reviseResp.Proposal.Revision)
+	}
+	if len(reviseResp.Proposal.WorkspaceIDs) != 2 {
+		t.Fatalf("expected 2 scoped workspaces, got %v", reviseResp.Proposal.WorkspaceIDs)
+	}
+	t.Logf("Trial Step 2: Revised Proposal (Suggested Workspace Changes) created in %v (rev %d, workspaces: %v)", time.Since(start), reviseResp.Proposal.Revision, reviseResp.Proposal.WorkspaceIDs)
+
+	// 3. User accepts the revised worker proposal
+	acceptReq := automationV2Request{
+		Action:      "accept_automation",
+		WorkspaceID: wMain.WorkspaceID,
+		SessionID:   sessionID,
+		Review:      reviseResp.Proposal.AutomationV2Review,
+	}
+	rawAccept, _ := json.Marshal(acceptReq)
+	w = call(http.MethodPost, "/accept", string(rawAccept), "")
+	if w.Code != 200 {
+		t.Fatalf("accept failed: code=%d body=%s", w.Code, w.Body.String())
+	}
+	var acceptResp struct {
+		OK     bool                     `json:"ok"`
+		Record store.AutomationV2Record `json:"record"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &acceptResp); err != nil {
+		t.Fatal(err)
+	}
+	if !acceptResp.Record.Enabled || acceptResp.Record.AutomationID == "" {
+		t.Fatalf("worker record not properly enabled: %+v", acceptResp.Record)
+	}
+	if acceptResp.Record.ProjectID != projID {
+		t.Fatalf("expected record project_id %q, got %q", projID, acceptResp.Record.ProjectID)
+	}
+	t.Logf("Trial Step 3: Worker %s Accepted & Registered in %v", acceptResp.Record.AutomationID, time.Since(start))
+
+	// 4. Verify ProjectRecord.AutomationIDs was automatically updated
+	projAfter, found, err := ss.GetProject("account", projID)
+	if err != nil || !found || projAfter == nil {
+		t.Fatalf("project lookup failed: %v", err)
+	}
+	registeredInProject := false
+	for _, aid := range projAfter.AutomationIDs {
+		if aid == acceptResp.Record.AutomationID {
+			registeredInProject = true
+			break
+		}
+	}
+	if !registeredInProject {
+		t.Fatalf("worker %s not registered in project automations list: %v", acceptResp.Record.AutomationID, projAfter.AutomationIDs)
+	}
+	t.Logf("Trial Step 4: ProjectRecord.AutomationIDs verified with registered worker %s", acceptResp.Record.AutomationID)
+
+	// 5. Verify Minted SWARM_TRIGGER_TOKEN and trigger execution
+	mintedToken, err := security.GetLocalSecret("SWARM_TRIGGER_TOKEN")
+	if err != nil || !strings.HasPrefix(mintedToken, "swk_") {
+		t.Fatalf("expected valid minted token starting with swk_, got %q (err: %v)", mintedToken, err)
+	}
+	t.Logf("Trial Step 5: Verified Minted SWARM_TRIGGER_TOKEN (prefix: swk_...)")
+
+	// 6. Test Trigger invocation via POST /v3/automations/v2/trigger
+	triggerReq := map[string]any{
+		"workspace_id": wMain.WorkspaceID,
+		"worker_id":    acceptResp.Record.AutomationID,
+		"prompt":       "Execute live audit on scoped repositories",
+	}
+	rawTrigger, _ := json.Marshal(triggerReq)
+	triggerStart := time.Now()
+	w = call(http.MethodPost, "/trigger", string(rawTrigger), mintedToken)
+	if w.Code != 200 {
+		t.Fatalf("trigger failed: code=%d body=%s", w.Code, w.Body.String())
+	}
+	var trigResp struct {
+		OK         bool                         `json:"ok"`
+		Occurrence store.AutomationV2Occurrence `json:"occurrence"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &trigResp); err != nil {
+		t.Fatal(err)
+	}
+	if !trigResp.OK || trigResp.Occurrence.Record.AutomationID != acceptResp.Record.AutomationID {
+		t.Fatalf("trigger occurrence mismatch: %+v", trigResp)
+	}
+	t.Logf("Trial Step 6: Live Trigger Invoked Successfully in %v (occurrence_id: %s)", time.Since(triggerStart), trigResp.Occurrence.ID)
+	t.Logf("TOTAL TIME TRIAL DURATION: %v (budget: 120s) - TRIAL RESULT: PASS", time.Since(start))
 }

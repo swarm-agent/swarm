@@ -168,6 +168,11 @@ type sessionsV3ArtifactCatalogItem struct {
 	TargetedPartIDs       []string                                       `json:"targeted_part_ids,omitempty"`
 	AcceptedPartHeads     []pebblestore.SessionArtifactCompositionPart   `json:"accepted_part_heads,omitempty"`
 	Content               string                                         `json:"content,omitempty"`
+	Model                 string                                         `json:"model,omitempty"`
+	AspectRatio           string                                         `json:"aspect_ratio,omitempty"`
+	Resolution            string                                         `json:"resolution,omitempty"`
+	DurationSeconds       int                                            `json:"duration_seconds,omitempty"`
+	VideoProvenance       *pebblestore.VideoProvenance                   `json:"video_provenance,omitempty"`
 }
 
 func cloneSessionsV3ArtifactOutputRequirements(input *pebblestore.SessionArtifactOutputRequirements) *pebblestore.SessionArtifactOutputRequirements {
@@ -437,6 +442,34 @@ func (s *Server) handleSessionsV3Artifacts(w http.ResponseWriter, r *http.Reques
 						return
 					}
 					lineage := variant.Lineage
+					if lineage.VideoProvenance != nil {
+						lineage.VideoProvenance = lineage.VideoProvenance.ClientSafeCopy()
+					}
+					itemModel := lineage.Model
+					itemAR := lineage.AspectRatio
+					itemRes := lineage.Resolution
+					itemDur := lineage.DurationSeconds
+					if lineage.VideoProvenance != nil {
+						if lineage.VideoProvenance.Model != "" {
+							if lineage.VideoProvenance.Provider != "" {
+								itemModel = videoExecutionIdentity(lineage.VideoProvenance.Provider, lineage.VideoProvenance.Model)
+							} else {
+								itemModel = lineage.VideoProvenance.Model
+							}
+						}
+						if lineage.VideoProvenance.AspectRatio != "" {
+							itemAR = lineage.VideoProvenance.AspectRatio
+						}
+						if lineage.VideoProvenance.Resolution != "" {
+							itemRes = lineage.VideoProvenance.Resolution
+						}
+						if lineage.VideoProvenance.DurationSeconds > 0 {
+							itemDur = lineage.VideoProvenance.DurationSeconds
+						}
+					}
+					if itemAR == "" && variant.OutputRequirements != nil && variant.OutputRequirements.AspectRatio != "" {
+						itemAR = variant.OutputRequirements.AspectRatio
+					}
 					kind, previewable := sessionsV3ArtifactPresentation(variant)
 					if variant.Status == pebblestore.SessionArtifactStatusReady {
 						handoffKind, handoffMediaType := kind, variant.MediaType
@@ -484,6 +517,7 @@ func (s *Server) handleSessionsV3Artifacts(w http.ResponseWriter, r *http.Reques
 						Category: sessionsV3ManagedArtifactCategory(variant), UpdatedAt: variant.UpdatedAt, EventSeq: variant.EventSeq, Progress: &progress, RenderProgress: variant.Progress, Lineage: &lineage, OutputRequirements: cloneSessionsV3ArtifactOutputRequirements(variant.OutputRequirements), AnimationProfile: cloneSessionsV3ArtifactAnimationProfile(variant.AnimationProfile),
 						Chain: &chain, Step: step, GraphState: variant.GraphState, ParentArtifact: variant.ParentArtifact, ArtifactChainID: variant.ArtifactChainID, ArtifactStepID: variant.ArtifactStepID, RevisionNumber: variant.RevisionNumber, RevisionRoundID: variant.RevisionRoundID, CandidateIndex: variant.CandidateIndex, Parts: append([]pebblestore.SessionArtifactPart(nil), variant.Parts...),
 						PartGraphState: sessionsV3ArtifactCatalogPartGraphState(variant), PartDefinitions: partDefinitions, PartRevisions: partRevisions, Composition: composition, TargetedPartID: targetedPartID, TargetedPartIDs: sessionsV3ArtifactTargetedPartIDs(variant, composition), AcceptedPartHeads: acceptedPartHeads,
+						Model: itemModel, AspectRatio: itemAR, Resolution: itemRes, DurationSeconds: itemDur, VideoProvenance: lineage.VideoProvenance,
 					})
 				}
 			}

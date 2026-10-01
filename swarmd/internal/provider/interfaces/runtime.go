@@ -264,6 +264,7 @@ func SplitStaticInstructionsAndDynamicContext(instructions string) (string, stri
 	}
 
 	markers := []string{
+		"<system_runtime_telemetry>",
 		"Durable run state (authoritative;",
 		"[request-runtime-context]",
 	}
@@ -350,6 +351,8 @@ const (
 )
 
 type TokenUsage struct {
+	// Local durable budget identity; never supplied by a provider or sent to one.
+	BudgetOperationID    string           `json:"-"`
 	InputTokens          int64            `json:"input_tokens,omitempty"`
 	OutputTokens         int64            `json:"output_tokens,omitempty"`
 	ThinkingTokens       int64            `json:"thinking_tokens,omitempty"`
@@ -482,4 +485,23 @@ type ExecutionEpochLifecycleRunner interface {
 // provider/credential surface selected for this request.
 type MediaCapabilityRunner interface {
 	MediaCapabilityDeclaration(context.Context) (MediaAdapterDeclaration, error)
+}
+
+// BillableDispatchGuard is local policy, invoked after preflight and immediately
+// before a provider transport. It is never serialized or supplied by a provider.
+type BillableDispatchGuard func() error
+type billableDispatchGuardKey struct{}
+
+func WithBillableDispatchGuard(ctx context.Context, guard BillableDispatchGuard) context.Context {
+	return context.WithValue(ctx, billableDispatchGuardKey{}, guard)
+}
+
+func CheckBillableDispatch(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if guard, ok := ctx.Value(billableDispatchGuardKey{}).(BillableDispatchGuard); ok {
+		return guard()
+	}
+	return nil
 }

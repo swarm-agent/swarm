@@ -14,3 +14,9 @@ test('compiled Designer uses its product label', () => {
 test('compiled Router uses its product label', () => {
   assert.equal(displayAgentName('system-router'), 'Router')
 })
+
+test('compiled Orchestrator uses its Plan / Orchestrator label', () => {
+  assert.equal(displayAgentName('system-orchestrator'), 'Plan / Orchestrator')
+  assert.equal(displayAgentName('swarm-orchestrator'), 'Plan / Orchestrator')
+  assert.equal(displayAgentName('orchestrator'), 'Plan / Orchestrator')
+})

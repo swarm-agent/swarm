@@ -17,6 +17,8 @@ import (
 // Threat: an advertised alias is dropped or a later-stage filename glob reaches
 // sparse allocation after earlier work has run. Exercise the real JSON decoder,
 // executable-plan validator and task parser, the narrowest preflight boundaries.
+// Bare trailing slashes must also reject without mutation or partial launches;
+// correcting the same directory to a clean path must preserve scope authority.
 func TestTaskProgramAuthoringContractPreflightParity(t *testing.T) {
 	for _, tc := range []struct {
 		name, scope string
@@ -24,6 +26,9 @@ func TestTaskProgramAuthoringContractPreflightParity(t *testing.T) {
 	}{
 		{"exact", "src/item.go", true},
 		{"directory", "src", true},
+		{"trailing_slash", "src/", false},
+		{"nested_trailing_slash", "src/feature/", false},
+		{"nested_directory", "src/feature", true},
 		{"subtree", "src/**", true},
 		{"directory_alias", "./src/*", true},
 		{"filename_glob", "src/item*.go", false},
@@ -57,8 +62,11 @@ func TestTaskProgramAuthoringContractPreflightParity(t *testing.T) {
 					if err := json.Unmarshal(raw, &definition); err != nil {
 						t.Fatal(err)
 					}
+					// Supply the active checkpoint explicitly so this scope-contract
+					// test does not exercise the validator's default selection.
 					doc := &pebblestore.SessionPlanDocument{
-						Title: "Scope contract", Info: pebblestore.SessionPlanInfo{Goal: "Preflight every job"},
+						ActiveCheckpointID: "cp-1",
+						Title:              "Scope contract", Info: pebblestore.SessionPlanInfo{Goal: "Preflight every job"},
 						Checkpoints: []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Title: "Implement", Order: 1, Status: "pending", Tasks: []string{"Implement"}, AcceptanceCriteria: []string{"Preflight agrees"}, TaskProgram: &definition}},
 					}
 					before, _ := json.Marshal(doc)
@@ -77,6 +85,9 @@ func TestTaskProgramAuthoringContractPreflightParity(t *testing.T) {
 						}
 						if !strings.Contains(planErr.Error(), "owned_scope") || !strings.Contains(parseErr.Error(), "owned_scope") {
 							t.Fatalf("missing field diagnostic: %v / %v", planErr, parseErr)
+						}
+						if strings.HasSuffix(tc.scope, "/") && (!strings.Contains(planErr.Error(), taskscope.DirectoryGuidance) || !strings.Contains(parseErr.Error(), taskscope.DirectoryGuidance)) {
+							t.Fatalf("missing actionable scope guidance: %v / %v", planErr, parseErr)
 						}
 						return
 					}
@@ -126,7 +137,7 @@ func TestTaskProgramAuthoringContractAliasConflict(t *testing.T) {
 // above; this is a discoverability guard, not standalone security evidence.
 func TestTaskProgramAuthoringContractGuidance(t *testing.T) {
 	prompt := masterHarnessPrompt("/workspace")
-	for _, required := range []string{taskscope.Guidance, "prefer jobs[].agent_type", "only a durable started/failed program requires a new ID"} {
+	for _, required := range []string{taskscope.Guidance, "prefer jobs[].agent_type", "only a durable started/failed program requires a new ID", "parallel workspace-specific Coders", "workspace_path on each Coder job", "repository-specific integration lanes", "project membership, the first/coordination workspace", "Do not impose repo-wide locks"} {
 		if !strings.Contains(prompt, required) {
 			t.Fatalf("missing guidance %q", required)
 		}
@@ -139,6 +150,11 @@ func TestTaskProgramAuthoringContractGuidance(t *testing.T) {
 		program := properties["program"].(map[string]any)
 		if desc, _ := program["description"].(string); !strings.Contains(desc, "Task Program object") || !strings.Contains(desc, "topic='program'") {
 			t.Fatalf("task program description = %q", desc)
+		}
+		jobs := program["properties"].(map[string]any)["jobs"].(map[string]any)["items"].(map[string]any)["properties"].(map[string]any)
+		desc, _ := jobs["owned_scope"].(map[string]any)["description"].(string)
+		if !strings.Contains(desc, taskscope.DirectoryGuidance) {
+			t.Fatalf("task schema missing directory scope guidance: %q", desc)
 		}
 		return
 	}

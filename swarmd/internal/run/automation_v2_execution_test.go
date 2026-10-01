@@ -67,11 +67,18 @@ func TestAutomationV2ScheduledCheckpointExecution(t *testing.T) {
 		t.Fatal(err)
 	}
 	ss := store.NewSessionStore(db)
+	projID := "proj_test_exec"
+	_ = ss.PutProject("account", &store.ProjectRecord{
+		ID:         projID,
+		AccountID:  "account",
+		Name:       "Test Project",
+		Workspaces: []store.ProjectWorkspaceRef{{WorkspaceID: w.WorkspaceID, Path: repo, Role: "primary_code"}},
+	})
 	if err = ss.CompleteRepositoryHistoryMaintenance(ctx); err != nil {
 		t.Fatal(err)
 	}
 	yes := true
-	if err = ss.CreateSession(store.SessionSnapshot{ID: "author", AccountScopeID: "account", UserID: "owner", Mode: "auto", WorkspacePath: repo, WorkspaceGrants: []store.WorkspaceGrant{{Kind: store.WorkspaceGrantPrimary, WorkspaceID: w.WorkspaceID, Path: repo, Available: &yes}}}); err != nil {
+	if err = ss.CreateSession(store.SessionSnapshot{ID: "author", AccountScopeID: "account", UserID: "owner", Mode: "auto", WorkspacePath: repo, Metadata: map[string]any{"project_id": projID, "role": "project_orchestrator"}, WorkspaceGrants: []store.WorkspaceGrant{{Kind: store.WorkspaceGrantPrimary, WorkspaceID: w.WorkspaceID, Path: repo, Available: &yes}}}); err != nil {
 		t.Fatal(err)
 	}
 	events, err := store.NewEventLog(db)
@@ -79,16 +86,16 @@ func TestAutomationV2ScheduledCheckpointExecution(t *testing.T) {
 		t.Fatal(err)
 	}
 	service := sessions.NewService(ss, events)
-	doc := store.SessionPlanDocument{Title: "Harmless report", Info: store.SessionPlanInfo{Goal: "Return the exact accepted instruction"}, AutomationV2: &store.AutomationV2Settings{SchemaVersion: 2, Schedule: store.AutomationV2Schedule{Kind: "interval", IntervalSeconds: 60}, Missed: "coalesce", Overlap: "serialize", ActivateOnAccept: true}, Checkpoints: []store.SessionPlanCheckpoint{{ID: "report", Title: "Report", Status: "pending", Order: 1, Tasks: []string{"Return ONLY: fixture acknowledged"}, AcceptanceCriteria: []string{"Exact fixture phrase returned"}}}}
+	doc := store.SessionPlanDocument{Title: "Harmless report", Info: store.SessionPlanInfo{Goal: "Return the exact accepted instruction"}, WorkerV2: &store.AutomationV2Settings{SchemaVersion: 2, Schedule: store.AutomationV2Schedule{Kind: "interval", IntervalSeconds: 60}, Missed: "coalesce", Overlap: "independent", ActivateOnAccept: true}, Checkpoints: []store.SessionPlanCheckpoint{{ID: "report", Title: "Report", Status: "pending", Order: 1, Tasks: []string{"Return ONLY: fixture acknowledged"}, AcceptanceCriteria: []string{"Exact fixture phrase returned"}}}}
 	permissions := permission.NewService(store.NewPermissionStore(db), events, nil)
 	permissions.SetBypassPermissions(true)
 	authoring := NewService(service, nil, nil, tool.NewRuntime(1), permissions, nil, nil, events)
-	profile := agent.SwarmAgentProfileForContext(store.AgentProfile{})
+	profile := agent.SwarmOrchestratorAgentProfileForContext(store.AgentProfile{})
 	_, policy, disabled, err := authoring.compileResolvedAgentToolContract("account", profile)
 	if err != nil {
 		t.Fatal(err)
 	}
-	args, err := json.Marshal(map[string]any{"action": "request_new_plan", "document": doc})
+	args, err := json.Marshal(map[string]any{"action": "propose", "document": doc})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,14 +105,14 @@ func TestAutomationV2ScheduledCheckpointExecution(t *testing.T) {
 	}
 	// Provider JSON omits unspecified expiration rather than serializing a Go
 	// zero-value struct; the advertised optional field must normalize indefinite.
-	delete(instance.(map[string]any)["document"].(map[string]any)["automation_v2"].(map[string]any), "expiration")
+	delete(instance.(map[string]any)["document"].(map[string]any)["worker_v2"].(map[string]any), "expiration")
 	args, err = json.Marshal(instance)
 	if err != nil {
 		t.Fatal(err)
 	}
 	validated := false
 	for _, definition := range filterToolDefinitions(convertToolDefinitions(authoring.ListAgentToolDefinitionsForAccount("account")), disabled) {
-		if definition.Name != "plan_manage" {
+		if definition.Name != "manage_workers" {
 			continue
 		}
 		raw, _ := json.Marshal(definition.Parameters)
@@ -132,7 +139,7 @@ func TestAutomationV2ScheduledCheckpointExecution(t *testing.T) {
 		t.Fatal("fixture must start without automation", err)
 	}
 	invoker := authoring.newProviderToolInvoker(providerToolInvokerConfig{sessionID: "author", principal: p, sessionMode: "auto", runID: "authoring", providerManagedV3: true, applySessionMutation: service.ApplySessionMutation, agentProfile: profile, policy: policy, terminalPlanState: &terminalPlanToolState{}})
-	result, err := invoker.ExecuteTool(ctx, provideriface.ToolInvocation{Name: "plan_manage", CallID: "fresh-proposal", Arguments: string(args)})
+	result, err := invoker.ExecuteTool(ctx, provideriface.ToolInvocation{Name: "manage_workers", CallID: "fresh-proposal", Arguments: string(args)})
 	if err != nil || result.Error != "" || !result.RestartTurn {
 		t.Fatalf("fresh dispatch: %+v %v", result, err)
 	}
@@ -154,7 +161,7 @@ func TestAutomationV2ScheduledCheckpointExecution(t *testing.T) {
 	// browser gesture: the browser-to-server proof remains a separate live gate.
 	oldReview := proposal.AutomationV2Review
 	doc.Checkpoints[0].Tasks = []string{"Return ONLY: user-edited fixture acknowledged"}
-	doc.AutomationV2.Schedule.IntervalSeconds = 120
+	doc.WorkerV2.Schedule.IntervalSeconds = 120
 	proposal, err = service.ProposeAutomationV2("account", "owner", w.WorkspaceID, "author", &doc, oldReview)
 	if err != nil {
 		t.Fatal(err)
@@ -169,7 +176,7 @@ func TestAutomationV2ScheduledCheckpointExecution(t *testing.T) {
 	if !reflect.DeepEqual(accepted.Document, proposal.Document) || accepted.Authorization.Kind != "indefinite" || accepted.NextDueAt != accepted.AcceptedAt+120000 {
 		t.Fatal("edited settings or anchor drift")
 	}
-	step := doc.AutomationV2.Schedule.IntervalSeconds * 1000
+	step := doc.WorkerV2.Schedule.IntervalSeconds * 1000
 	agents := agent.NewService(store.NewAgentStore(db), events)
 	if err = agents.EnsureDefaults(); err != nil {
 		t.Fatal(err)
@@ -213,7 +220,7 @@ func TestAutomationV2ScheduledCheckpointExecution(t *testing.T) {
 		if err != nil || !ok {
 			t.Fatal(err)
 		}
-		if !reflect.DeepEqual(plan.Document.Checkpoints[0].Tasks, doc.Checkpoints[0].Tasks) || plan.Document.AutomationV2 != nil {
+		if !reflect.DeepEqual(plan.Document.Checkpoints[0].Tasks, doc.Checkpoints[0].Tasks) || plan.Document.AutomationV2 != nil || plan.Document.WorkerV2 != nil {
 			t.Fatal("instruction drift")
 		}
 		intent.Status = sessions.RunIntentRunning
@@ -268,12 +275,12 @@ func TestAutomationV2ScheduledCheckpointExecution(t *testing.T) {
 	}
 	failPublish = false
 	scheduler = sessions.NewAutomationV2Scheduler(service, host)
-	if err = scheduler.Tick(ctx, accepted, accepted.NextDueAt); err == nil {
+	if err = scheduler.Tick(ctx, accepted, first.NextRetryAt); err == nil {
 		t.Fatal("wake failure hidden after preparation replay")
 	}
 	intent, ok, err := service.GetSessionRunIntent(first.SessionID, first.RunID)
 	if err != nil || !ok || intent.Status != sessions.RunIntentPendingExecutor {
-		t.Fatal("durable wake recovery missing", err)
+		t.Fatalf("durable wake recovery missing: found=%v status=%q err=%v", ok, intent.Status, err)
 	}
 	execSession, found, err := service.GetSession(first.SessionID)
 	if err != nil || !found {
@@ -310,7 +317,11 @@ func TestAutomationV2ScheduledCheckpointExecution(t *testing.T) {
 	if err = scheduler.Tick(ctx, accepted, accepted.NextDueAt+2); err != nil {
 		t.Fatal(err)
 	}
-	if err = scheduler.Tick(ctx, accepted, accepted.NextDueAt+step); err != nil {
+	secondRecord, _, err := service.GetAutomationV2Record("account", "owner", w.WorkspaceID, "author")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = scheduler.Tick(ctx, accepted, secondRecord.NextDueAt); err != nil {
 		t.Fatal(err)
 	}
 	if len(executed) != 2 {
@@ -863,5 +874,218 @@ func TestAutomationV2ClosingStateContractAndFallbacks(t *testing.T) {
 	}
 	if occ6.ClosingState != "routine_clean" {
 		t.Errorf("expected graceful fallback to routine_clean, got %q", occ6.ClosingState)
+	}
+}
+
+func TestAutomationV2MultiWorkspaceScoping(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// 1. Primary workspace repo
+	primaryRepo := t.TempDir()
+	for _, args := range [][]string{{"init", "-b", "dev"}, {"-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "fixture-primary"}} {
+		cmd := exec.CommandContext(ctx, "git", append([]string{"-C", primaryRepo}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git primary: %v %s", err, out)
+		}
+	}
+
+	// 2. Secondary workspace repo
+	secondaryRepo := t.TempDir()
+	for _, args := range [][]string{{"init", "-b", "dev"}, {"-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "fixture-secondary"}} {
+		cmd := exec.CommandContext(ctx, "git", append([]string{"-C", secondaryRepo}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git secondary: %v %s", err, out)
+		}
+	}
+
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	ids := store.NewIdentityStore(db)
+	if _, err = ids.PutUser(store.UserRecord{ID: "owner", Username: "owner"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = ids.PutAccountScope(store.AccountScopeRecord{ID: "account", Type: store.AccountScopeTypePersonal, CreatedByUserID: "owner"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = ids.PutAccountUser(store.AccountUserRecord{ID: "member", AccountScopeID: "account", UserID: "owner", Status: "active"}); err != nil {
+		t.Fatal(err)
+	}
+
+	ws := workspace.NewService(store.NewWorkspaceStore(db))
+	p := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "account", UserID: "owner"}
+	wPrimary, err := ws.AddForPrincipal(p, primaryRepo, "primary", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wSecondary, err := ws.AddForPrincipal(p, secondaryRepo, "secondary", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ss := store.NewSessionStore(db)
+	if err = ss.CompleteRepositoryHistoryMaintenance(ctx); err != nil {
+		t.Fatal(err)
+	}
+	yes := true
+	projID := "proj_multi_ws"
+	_ = ss.PutProject("account", &store.ProjectRecord{
+		ID:        projID,
+		AccountID: "account",
+		Name:      "Multi WS Project",
+		Workspaces: []store.ProjectWorkspaceRef{
+			{WorkspaceID: wPrimary.WorkspaceID, Path: primaryRepo, Role: "primary_code"},
+			{WorkspaceID: wSecondary.WorkspaceID, Path: secondaryRepo, Role: "auxiliary"},
+		},
+	})
+
+	if err = ss.CreateSession(store.SessionSnapshot{
+		ID:             "author",
+		AccountScopeID: "account",
+		UserID:         "owner",
+		Mode:           "auto",
+		WorkspacePath:  primaryRepo,
+		Metadata:       map[string]any{"project_id": projID, "role": "project_orchestrator"},
+		WorkspaceGrants: []store.WorkspaceGrant{{
+			Kind:        store.WorkspaceGrantPrimary,
+			WorkspaceID: wPrimary.WorkspaceID,
+			Path:        primaryRepo,
+			Available:   &yes,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	events, err := store.NewEventLog(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := sessions.NewService(ss, events)
+
+	// Document specifies secondary workspace
+	doc := store.SessionPlanDocument{
+		Title: "Multi-workspace worker",
+		Info:  store.SessionPlanInfo{Goal: "Verify multi-workspace scoping"},
+		WorkerV2: &store.AutomationV2Settings{
+			SchemaVersion:    2,
+			WorkspaceID:      wPrimary.WorkspaceID,
+			WorkspaceIDs:     []string{wSecondary.WorkspaceID},
+			Schedule:         store.AutomationV2Schedule{Kind: "interval", IntervalSeconds: 60},
+			Missed:           "coalesce",
+			Overlap:          "independent",
+			ActivateOnAccept: true,
+		},
+		Checkpoints: []store.SessionPlanCheckpoint{{
+			ID:                 "step1",
+			Title:              "Step 1",
+			Status:             "pending",
+			Order:              1,
+			Tasks:              []string{"Check both workspaces"},
+			AcceptanceCriteria: []string{"Done"},
+		}},
+	}
+
+	permissions := permission.NewService(store.NewPermissionStore(db), events, nil)
+	permissions.SetBypassPermissions(true)
+	authoring := NewService(service, nil, nil, tool.NewRuntime(1), permissions, nil, nil, events)
+	profile := agent.SwarmAgentProfileForContext(store.AgentProfile{})
+	if _, _, _, err = authoring.compileResolvedAgentToolContract("account", profile); err != nil {
+		t.Fatal(err)
+	}
+
+	prop, err := service.ProposeAutomationV2("account", "owner", wPrimary.WorkspaceID, "author", &doc, store.AutomationV2Review{})
+	if err != nil {
+		t.Fatalf("proposal failed: %v", err)
+	}
+	accepted, err := service.AcceptAutomationV2("account", "owner", wPrimary.WorkspaceID, "author", prop.AutomationV2Review)
+	if err != nil {
+		t.Fatalf("accept failed: %v", err)
+	}
+
+	// Verify proposal and accepted record carry WorkspaceIDs
+	var foundSecondaryInRecord bool
+	for _, wid := range accepted.WorkspaceIDs {
+		if wid == wSecondary.WorkspaceID {
+			foundSecondaryInRecord = true
+			break
+		}
+	}
+	if !foundSecondaryInRecord {
+		t.Fatalf("expected accepted record to contain secondary workspace_id %s, got %v", wSecondary.WorkspaceID, accepted.WorkspaceIDs)
+	}
+
+	// Trigger execution and prepare occurrence
+	agents := agent.NewService(store.NewAgentStore(db), events)
+	if err = agents.EnsureDefaults(); err != nil {
+		t.Fatal(err)
+	}
+	models := model.NewService(store.NewModelStore(db), events, model.NewCatalogService(store.NewModelCatalogStore(db)))
+	if err = models.EnsureBootDefaults(); err != nil {
+		t.Fatal(err)
+	}
+	_, _, utility, ok, err := models.RecommendedCatalogDefaults("codex")
+	if err != nil || !ok {
+		t.Fatal("model defaults", err)
+	}
+	assignment := store.AgentModelAssignment{Provider: "codex", Model: utility.Model, Thinking: utility.DefaultThinking}
+	settings := store.NewAgentModelSettingsStore(db)
+	if _, err = settings.PutForAccount(store.AgentModelSettingsRecord{
+		AccountScopeID: "account",
+		Swarm:          store.SwarmAgentModelAssignments{Action: assignment, Plan: assignment},
+		SystemAgents:   store.SystemAgentModelAssignments{Compact: assignment, Finder: assignment, Coder: assignment, Designer: assignment, Router: assignment},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	runs := &Service{tools: tool.NewRuntime(1), sessions: service, workspace: ws, agents: agents, agentModelSettings: agentmodelsettings.NewService(settings)}
+	runs.sessionDeployCanonicalize = func(in SessionDeployCanonicalizeInput) (SessionDeployCanonicalization, error) {
+		return SessionDeployCanonicalization{SourceWorkspaceID: wPrimary.WorkspaceID, SourceWorkspaceGeneration: 1, SourceWorkspacePath: primaryRepo, SourceWorkspaceName: "primary", Metadata: map[string]any{}}, nil
+	}
+	trees := worktree.NewService(store.NewWorktreeStore(db), ws, nil)
+	enqueue := func(principal identity.Principal, intent store.V3SessionRunIntent) bool {
+		return true
+	}
+	host, err := NewAutomationV2ExecutionHost(runs, ss, trees, service.ApplySessionMutation, enqueue)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	occ, err := ss.TriggerAutomationV2("account", "owner", wPrimary.WorkspaceID, accepted.SessionID, nil, time.Now().UnixMilli())
+	if err != nil {
+		t.Fatalf("trigger failed: %v", err)
+	}
+
+	snapshot, err := host.prepare(ctx, occ)
+	if err != nil {
+		t.Fatalf("prepare failed: %v", err)
+	}
+
+	// Verify snapshot has primary, worktree, AND secondary workspace grants
+	var hasPrimary, hasWorktree, hasSecondary bool
+	for _, g := range snapshot.WorkspaceGrants {
+		if g.Kind == store.WorkspaceGrantPrimary && g.WorkspaceID == wPrimary.WorkspaceID {
+			hasPrimary = true
+		}
+		if g.Kind == store.WorkspaceGrantWorktree {
+			hasWorktree = true
+		}
+		if g.Kind == store.WorkspaceGrantAdditional && g.WorkspaceID == wSecondary.WorkspaceID {
+			hasSecondary = true
+		}
+	}
+	if !hasPrimary {
+		t.Errorf("missing primary workspace grant")
+	}
+	if !hasWorktree {
+		t.Errorf("missing worktree workspace grant")
+	}
+	if !hasSecondary {
+		t.Errorf("missing secondary workspace grant (WorkspaceGrantAdditional)")
 	}
 }

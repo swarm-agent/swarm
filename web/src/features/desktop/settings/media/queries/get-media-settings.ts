@@ -1,5 +1,91 @@
 import { requestJson } from '../../../../../app/api'
 
+export interface VideoCreateConstraint {
+  supported: boolean
+  reason?: string
+  aspect_ratios?: string[]
+  resolutions?: string[]
+  durations?: number[]
+  default_ratio?: string
+  default_resolution?: string
+  default_duration?: number
+  resolution_durations?: Record<string, number[]>
+  initial_image_supported?: boolean
+  initial_image_max_inputs?: number
+  supports_duration?: boolean
+}
+
+export interface VideoEditConstraint {
+  supported: boolean
+  reason?: string
+  supports_duration?: boolean
+  max_external_duration_sec?: number
+  max_source_duration_sec?: number
+  requires_handle_match?: boolean
+  requires_handle_for_long_video?: boolean
+  requires_interaction_handle?: boolean
+  supported_providers?: string[]
+  required_source_provider?: string
+  required_source_transport?: string
+  source_model_match?: string
+}
+
+export interface VideoExtendConstraint {
+  supported: boolean
+  reason?: string
+  locked_duration_seconds?: number
+  locked_resolution?: string
+  locked_aspect_ratio_matches_source?: boolean
+  supported_aspect_ratios?: string[]
+  supports_duration?: boolean
+  max_source_duration_sec?: number
+  max_total_duration_sec?: number
+  max_extension_count?: number
+  requires_veo_source?: boolean
+  requires_omni_source?: boolean
+  disallows_veo_lite_source?: boolean
+  source_observed_resolutions?: string[]
+  requires_source_provenance?: boolean
+  required_source_provider?: string
+  required_source_transport?: string
+  requires_provider_resource?: boolean
+  requires_interaction_handle?: boolean
+  requires_output_digest?: boolean
+  requires_known_extension_count?: boolean
+  max_reference_age_ms?: number
+  allowed_source_models?: string[]
+  disallowed_source_models?: string[]
+  observed_dimension_pairs?: Array<[number, number]>
+}
+
+export interface VideoOperationConstraints {
+  model: string
+  provider: string
+  create: VideoCreateConstraint
+  edit: VideoEditConstraint
+  extend: VideoExtendConstraint
+}
+
+export interface MediaInitialImageOption {
+  supported: boolean
+  max_inputs?: number
+  supported_mime_types?: string[]
+  notes?: string
+}
+
+export interface MediaModelGenerationOptions {
+  aspect_ratios?: string[]
+  resolutions?: string[]
+  durations?: number[]
+  default_ratio?: string
+  default_resolution?: string
+  default_duration?: number
+  max_outputs?: number
+  resolution_durations?: Record<string, number[]>
+  initial_image?: MediaInitialImageOption
+  constraints?: VideoOperationConstraints
+}
+
 export interface MediaCatalogModelOption {
   id: string
   provider: string
@@ -9,6 +95,8 @@ export interface MediaCatalogModelOption {
   ready: boolean
   reason?: string
   pricing?: unknown
+  generation_options?: MediaModelGenerationOptions
+  constraints?: VideoOperationConstraints
 }
 
 export interface MediaSettingsCatalog {
@@ -18,6 +106,9 @@ export interface MediaSettingsCatalog {
   video_iteration_models: MediaCatalogModelOption[]
   video_models: MediaCatalogModelOption[]
   audio_models?: MediaCatalogModelOption[]
+  default_image_model?: string
+  default_video_model?: string
+  default_audio_model?: string
   video_ready: boolean
   video_status: string
   audio_ready?: boolean

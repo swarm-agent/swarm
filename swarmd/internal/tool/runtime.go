@@ -43,6 +43,7 @@ import (
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/imagegen"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/taskscope"
 	todoruntime "swarm/packages/swarmd/internal/todo"
 	"swarm/packages/swarmd/internal/tool/searchipc"
 	uisettings "swarm/packages/swarmd/internal/uisettings"
@@ -206,6 +207,9 @@ type Runtime struct {
 	deploymentManager     manageDeploymentLifecycleService
 	workspaceSettings     manageWorkspaceSettingsStore
 	providerRegistry      *provider.Registry
+	projects              manageProjectStore
+	projectTaskDeployer   ProjectTaskDeployer
+	projectTaskLifecycle  ProjectTaskLifecycleService
 }
 
 type manageSessionController interface {
@@ -240,6 +244,7 @@ type WorkspaceScope struct {
 	// are immutable for the run. Calls outside those roots fail before the
 	// workspace permission subsystem can create a user-facing request.
 	RejectScopeExpansion bool
+	TaskHistoryOnly      bool
 	SessionID            string
 	Principal            identity.Principal
 	WorktreeEnabled      bool
@@ -452,6 +457,7 @@ func WithWorkspaceScope(parent context.Context, scope WorkspaceScope) context.Co
 	normalized := normalizeWorkspaceScope(scope.PrimaryPath, scope.Roots)
 	normalized.ReadOnlyRoots = append([]string(nil), scope.ReadOnlyRoots...)
 	normalized.MutationScopes = append([]string(nil), scope.MutationScopes...)
+	normalized.TaskHistoryOnly = scope.TaskHistoryOnly
 	normalized.SessionID = strings.TrimSpace(scope.SessionID)
 	normalized.Principal = scope.Principal
 	normalized.WorktreeEnabled = scope.WorktreeEnabled
@@ -504,6 +510,7 @@ func workspaceScopeFromContext(ctx context.Context, workspacePath string) Worksp
 		// Some control-plane tools deliberately omit path roots and authorize from
 		// the durable principal/session identity instead. Preserve that identity
 		// while retaining the caller's normalized path scope.
+		scope.TaskHistoryOnly = override.TaskHistoryOnly
 		scope.SessionID = strings.TrimSpace(override.SessionID)
 		scope.Principal = override.Principal
 		return scope
@@ -511,6 +518,7 @@ func workspaceScopeFromContext(ctx context.Context, workspacePath string) Worksp
 	normalized := normalizeWorkspaceScope(override.PrimaryPath, override.Roots)
 	normalized.ReadOnlyRoots = append([]string(nil), override.ReadOnlyRoots...)
 	normalized.MutationScopes = append([]string(nil), override.MutationScopes...)
+	normalized.TaskHistoryOnly = override.TaskHistoryOnly
 	normalized.SessionID = strings.TrimSpace(override.SessionID)
 	normalized.Principal = override.Principal
 	normalized.WorktreeEnabled = override.WorktreeEnabled
@@ -1503,6 +1511,7 @@ func (r *Runtime) Definitions() []Definition {
 			},
 		},
 		manageActionsDefinition(),
+		manageProjectsDefinition(),
 		manageConnectionsDefinition(),
 		manageEnvironmentsDefinition(),
 		manageWorkersV2Definition(),
@@ -1510,6 +1519,7 @@ func (r *Runtime) Definitions() []Definition {
 		artifactV3AuthorDefinition(),
 		manageArtifactDefinition(),
 		manageVideoDefinition(),
+		taskProgressDefinition(),
 		{
 			Type:        "function",
 			Name:        "manage_todos",
@@ -1552,7 +1562,7 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "exit_plan_mode",
-			Description: "Submit final structured executable SessionPlanDocument document for approval to leave plan mode. Call action='help' for schema.",
+			Description: "Submit final structured executable SessionPlanDocument document for approval to leave plan mode. For schema help, call plan_manage action='help'; exit_plan_mode has no help action. Submit only with a complete document.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -1694,7 +1704,7 @@ func (r *Runtime) Definitions() []Definition {
 					},
 					"deliverable":        map[string]any{"type": "string", "description": "Specific child output the parent will verify."},
 					"concurrency_reason": map[string]any{"type": "string", "description": "Omit in mode=swarm; swarm concurrency is defined by count."},
-					"workspace_path":     map[string]any{"type": "string", "description": "Regular Coder/Finder single-launch target. Coder worktrees are based on the selected target repository HEAD."},
+					"workspace_path":     map[string]any{"type": "string", "description": "Regular Coder/Finder single-launch target: exact authorized source repository root, not a project coordination workspace or first linked workspace. Coder worktrees are isolated from the selected target repository HEAD."},
 					"committed_source": map[string]any{
 						"type":        "object",
 						"description": "Optional prior committed Coder source for isolated correction/iteration. Requires task_call_id, child_session_id, and exact full head_commit.",
@@ -1721,7 +1731,7 @@ func (r *Runtime) Definitions() []Definition {
 								"role":              map[string]any{"type": "string", "description": "Alias for meta_prompt."},
 								"animation_profile": map[string]any{"type": "object", "description": "Optional animation profile: motion_ui, spatial_3d, vector_playback, or final_render."},
 								"output_mode":       map[string]any{"type": "string", "enum": []string{"managed", "workspace"}, "description": "Designer output contract only; defaults to managed."},
-								"workspace_path":    map[string]any{"type": "string", "description": "Optional authorized linked/shared workspace target for this Coder or Finder."},
+								"workspace_path":    map[string]any{"type": "string", "description": "Explicit exact authorized source repository root for this Coder or Finder. Independent cross-repository changes use parallel workspace-specific Coder launches and per-repository integration; project membership alone is not authorization."},
 								"committed_source": map[string]any{
 									"type":        "object",
 									"description": "Optional prior committed Coder source for isolated correction/iteration. Requires task_call_id, child_session_id, and exact full head_commit.",
@@ -1817,12 +1827,12 @@ func taskProgramToolSchema() map[string]any {
 						},
 						"workspace_path": map[string]any{
 							"type":        "string",
-							"description": "Optional target workspace root (supported for Coder or Finder only).",
+							"description": "Exact authorized source repository root for this Coder or Finder job. Set on each Coder job in a dependent multi-repository program; stage integration uses repository-specific lanes, never the project's first/coordination workspace by default.",
 						},
 						"owned_scope": map[string]any{
 							"type":        "array",
 							"items":       map[string]any{"type": "string"},
-							"description": "Workspace-relative file or directory paths. For Coders: concurrent Coders in the same stage must have non-overlapping scopes (e.g. distinct files/dirs); defaults to isolated worktree if omitted. For Finders: search paths (defaults to ['.']). For Designers: must be omitted for managed output; required concrete paths for workspace output.",
+							"description": taskscope.DirectoryGuidance + " Workspace-relative file or directory paths. For Coders: concurrent Coders in the same stage must have non-overlapping scopes (e.g. distinct files/dirs); defaults to isolated worktree if omitted. For Finders: search paths (defaults to ['.']). For Designers: must be omitted for managed output; required concrete paths for workspace output.",
 						},
 						"output_mode": map[string]any{
 							"type":        "string",
@@ -1861,14 +1871,14 @@ func taskProgramDefinitionToolSchema(description string) map[string]any {
 func sessionPlanDocumentToolSchema() map[string]any {
 	return map[string]any{
 		"type":        "object",
-		"description": "Authoritative SessionPlanDocument. Call action='help' for full JSON contract or pass canonical object.",
+		"description": "Authoritative SessionPlanDocument. Call plan_manage action='help' for full JSON contract or pass canonical object.",
 	}
 }
 
 func sessionExecutablePlanDocumentToolSchema() map[string]any {
 	return map[string]any{
 		"type":        "object",
-		"description": "Authoritative SessionPlanDocument. Call action='help' for full JSON contract or pass canonical object.",
+		"description": "Authoritative SessionPlanDocument. Call plan_manage action='help' for full JSON contract or pass canonical object.",
 	}
 }
 
@@ -2087,6 +2097,8 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 		return "", errors.New("manage_workers V2 requires canonical session run dispatch; legacy execution is retired")
 	case "manage-actions", "manage_actions":
 		return r.executeManageActions(scope, args)
+	case "manage-projects", "manage_projects":
+		return r.executeManageProjects(ctx, scope, args)
 	case "manage-connections", "manage_connections":
 		return r.executeManageConnections(ctx, scope, args)
 	case "manage-environments", "manage_environments":
@@ -2103,7 +2115,7 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 		return r.executeManageVideo(ctx, scope, args)
 	case "manage-todos", "manage_todos":
 		return r.executeManageTodos(scope, args)
-	case "ask-user", "ask_user", "exit_plan_mode", "exit-plan-mode", "plan_manage", "plan-manage":
+	case "ask-user", "ask_user", "exit_plan_mode", "exit-plan-mode", "plan_manage", "plan-manage", "task_progress", "task-progress":
 		return executeStubTool(name, args)
 	case "task":
 		return "", errors.New("task must be handled by run-service control-plane")
@@ -2365,8 +2377,21 @@ func validateBashArguments(args map[string]any) (string, error) {
 		return "", errors.New("bash requires command")
 	}
 
-	rawExplanation, ok := args["explanation"].([]any)
-	if !ok || len(rawExplanation) == 0 {
+	var rawExplanation []any
+	switch exp := args["explanation"].(type) {
+	case []any:
+		rawExplanation = exp
+	case []string:
+		for _, s := range exp {
+			rawExplanation = append(rawExplanation, s)
+		}
+	case string:
+		if trimmed := strings.TrimSpace(exp); trimmed != "" {
+			rawExplanation = []any{trimmed}
+			args["explanation"] = rawExplanation
+		}
+	}
+	if len(rawExplanation) == 0 {
 		return "", errors.New("bash requires explanation as a non-empty list of precise command effects")
 	}
 	for index, entry := range rawExplanation {
@@ -2831,6 +2856,12 @@ func selectResidentSearchScope(scope WorkspaceScope, target searchTarget) (strin
 			continue
 		}
 		authorized = filepath.Clean(authorized)
+		// Coordination workspaces may authorize HOME without registering each
+		// nested project. Never use that broad authority as an index root;
+		// fall back to the already-authorized requested directory instead.
+		if isBroadSearchRoot(authorized) {
+			continue
+		}
 		rel, err := filepath.Rel(authorized, targetPath)
 		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 			continue
@@ -3192,7 +3223,7 @@ func parseFindQueries(args map[string]any) ([]string, error) {
 	}
 	queries = append(queries, asStringSlice(args["queries"])...)
 	if len(queries) == 0 {
-		return nil, errors.New("find requires query or queries")
+		return []string{"*"}, nil
 	}
 	seen := make(map[string]struct{}, len(queries))
 	deduped := make([]string, 0, len(queries))
@@ -3209,7 +3240,7 @@ func parseFindQueries(args map[string]any) ([]string, error) {
 		deduped = append(deduped, query)
 	}
 	if len(deduped) == 0 {
-		return nil, errors.New("find requires at least one non-empty query")
+		return []string{"*"}, nil
 	}
 	if len(deduped) > maxSearchQueries {
 		return nil, fmt.Errorf("find supports at most %d queries per call; split the batch and retry", maxSearchQueries)
@@ -6289,6 +6320,9 @@ func executeStubTool(rawName string, args map[string]any) (string, error) {
 	case "plan_manage":
 		reason = "plan_manage is handled by run-service control-plane, not standalone runtime"
 		nextAction = "Use plan_manage through the shared run pipeline or session plan APIs."
+	case "task_progress":
+		reason = "task_progress is handled by run-service control-plane, not standalone runtime"
+		nextAction = "Use task_progress through the active subagent run pipeline."
 	}
 	summary := fmt.Sprintf("%s is not active in this session", strings.ReplaceAll(name, "_", "-"))
 	response := map[string]any{
@@ -6788,6 +6822,7 @@ func (r *Runtime) manageWorktreePromote(scope WorkspaceScope, args map[string]an
 	var primaryTargetBranch string
 	var children []worktreeruntime.TaskIntegrationChild
 	resolvedBranches := make([]string, 0, len(candidates))
+	var taskReceipts []*promotionTaskReceipt
 
 	for _, c := range candidates {
 		source, found, err := r.sessions.GetSession(c.sessionID)
@@ -6895,28 +6930,64 @@ func (r *Runtime) manageWorktreePromote(scope WorkspaceScope, args map[string]an
 			HeadCommit: sourceState.HeadCommit,
 		})
 		resolvedBranches = append(resolvedBranches, branch)
+		entry, err := r.promotionTask(scope, source, branch, sourceState.HeadCommit, resolvedTarget, expectedTargetBranch, "")
+		if err != nil {
+			return "", err
+		}
+		if entry != nil {
+			taskReceipts = append(taskReceipts, entry)
+		}
 	}
 
 	targetState, err := r.worktrees.InspectTaskWorkspace(primaryResolvedTarget)
 	if err != nil {
 		return "", fmt.Errorf("inspect promotion target checkout: %w", err)
 	}
+	var started []*promotionTaskReceipt
+	for _, entry := range taskReceipts {
+		entry.receipt.PreviousTargetHead = targetState.HeadCommit
+		if err := pebblestore.BeginProjectTaskIntegration(r.projects, scope.Principal.AccountScopeID, entry.task, entry.receipt); err != nil {
+			return "", errors.Join(err, r.finishPromotionTasks(scope, started, "failed", "", err))
+		}
+		started = append(started, entry)
+	}
 	if !targetState.Clean {
-		return "", fmt.Errorf("promotion target checkout is dirty at branch %q full HEAD %q; preserve or finish those changes before promotion, then refresh target_branch and target_head", targetState.BranchName, targetState.HeadCommit)
+		err := fmt.Errorf("promotion target checkout is dirty at branch %q full HEAD %q; preserve or finish those changes before promotion, then refresh target_branch and target_head", targetState.BranchName, targetState.HeadCommit)
+		return "", errors.Join(err, r.finishPromotionTasks(scope, started, "failed", "", err))
 	}
 	if (primaryTargetBranch != "" && targetState.BranchName != primaryTargetBranch) || (targetHead != "" && targetState.HeadCommit != targetHead) {
-		return "", fmt.Errorf("promotion target branch or HEAD changed; expected branch %q at full HEAD %q, found branch %q at full HEAD %q; refresh both values from the captured checkout before retrying", primaryTargetBranch, targetHead, targetState.BranchName, targetState.HeadCommit)
+		err := fmt.Errorf("promotion target branch or HEAD changed; expected branch %q at full HEAD %q, found branch %q at full HEAD %q; refresh both values from the captured checkout before retrying", primaryTargetBranch, targetHead, targetState.BranchName, targetState.HeadCommit)
+		return "", errors.Join(err, r.finishPromotionTasks(scope, started, "failed", "", err))
 	}
 	targetBranchName := targetState.BranchName
 	resolvedTargetHead := targetState.HeadCommit
 
 	plan, err := r.worktrees.PrepareTaskIntegration(primaryResolvedTarget, targetBranchName, resolvedTargetHead, children)
 	if err != nil {
-		return "", err
+		return "", errors.Join(err, r.finishPromotionTasks(scope, started, "conflict", "", err))
 	}
 	result, err := r.worktrees.ApplyTaskIntegration(primaryResolvedTarget, plan)
 	if err != nil {
-		return "", err
+		return "", errors.Join(err, r.finishPromotionTasks(scope, started, "failed", "", err))
+	}
+	// Reconcile against the canonical Git service, never the tool JSON alone.
+	verified, verifyErr := r.worktrees.InspectTaskWorkspace(primaryResolvedTarget)
+	if verifyErr != nil || !verified.Clean || verified.BranchName != targetBranchName || verified.HeadCommit != result.ResultingParentHead {
+		err = errors.New("promotion applied but captured target changed; inspect Git before retrying")
+		return "", errors.Join(err, r.finishPromotionTasks(scope, started, "failed", result.ResultingParentHead, err))
+	}
+	for _, child := range children {
+		integrated, verifyErr := r.worktrees.TaskCommitDescendsFrom(primaryResolvedTarget, child.HeadCommit, verified.HeadCommit)
+		if child.HeadCommit == child.BaseCommit {
+			integrated = false
+		}
+		if verifyErr != nil || !integrated {
+			err = fmt.Errorf("promotion applied but source ancestry could not be verified: %v; inspect Git before retrying", verifyErr)
+			return "", errors.Join(err, r.finishPromotionTasks(scope, started, "failed", result.ResultingParentHead, err))
+		}
+	}
+	if err := r.finishPromotionTasks(scope, started, "integrated", result.ResultingParentHead, nil); err != nil {
+		return "", fmt.Errorf("Git promotion succeeded at %s but task receipt persistence failed; reconcile task state without rerunning Git: %w", result.ResultingParentHead, err)
 	}
 	sourceSessionIDs := make([]string, len(children))
 	for i, ch := range children {
@@ -9397,6 +9468,8 @@ func manageAgentCanonicalToolName(name string) string {
 		return "manage_automation"
 	case "manage-actions", "manage_actions":
 		return "manage_actions"
+	case "manage-projects", "manage_projects":
+		return "manage_projects"
 	case "manage-connections", "manage_connections":
 		return "manage_connections"
 	case "manage-environments", "manage_environments":
@@ -9990,6 +10063,8 @@ func canonicalStubToolName(raw string) string {
 		return "manage_automation"
 	case "manage-actions", "manage_actions":
 		return "manage_actions"
+	case "manage-projects", "manage_projects":
+		return "manage_projects"
 	case "manage-connections", "manage_connections":
 		return "manage_connections"
 	case "manage-environments", "manage_environments":
@@ -10004,6 +10079,8 @@ func canonicalStubToolName(raw string) string {
 		return "exit_plan_mode"
 	case "plan-manage", "plan_manage":
 		return "plan_manage"
+	case "task-progress", "task_progress":
+		return "task_progress"
 	default:
 		return strings.ReplaceAll(name, "-", "_")
 	}
@@ -10027,6 +10104,8 @@ func stubToolPathID(name string) string {
 		return "tool.stub.exit-plan-mode.v3"
 	case "plan_manage":
 		return "tool.stub.plan-manage.v3"
+	case "task_progress":
+		return "tool.task-progress.v1"
 	default:
 		return "tool.stub.unknown.v3"
 	}
@@ -10524,6 +10603,8 @@ func toolPathID(name string) string {
 		return "tool.manage-automation.v1"
 	case "manage-actions", "manage_actions":
 		return "tool.manage-actions.v1"
+	case "manage-projects", "manage_projects":
+		return "tool.manage-projects.v1"
 	case "manage-connections", "manage_connections":
 		return "tool.manage-connections.v1"
 	case "manage-environments", "manage_environments":
@@ -10534,6 +10615,8 @@ func toolPathID(name string) string {
 		return "tool.manage-todos.v1"
 	case "skill-use", "skill_use":
 		return "tool.skill-use.v3"
+	case "task-progress", "task_progress":
+		return "tool.task-progress.v1"
 	default:
 		return "tool.unknown.v3"
 	}

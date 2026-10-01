@@ -597,7 +597,7 @@ func (s *Server) v3RealtimeProcessOutboxRecord(conn *transportws.Conn, principal
 		advanced.LastSentEndpointSeq = record.EndpointSeq
 		return advanced, true, true
 	}
-	if record.Event.EventType == pebblestore.WorkspaceCatalogEventType || record.Event.EventType == pebblestore.AutomationChangedEventType || record.Event.EventType == pebblestore.EnvironmentChangedEventType {
+	if record.Event.EventType == pebblestore.WorkspaceCatalogEventType || record.Event.EventType == pebblestore.AutomationChangedEventType || record.Event.EventType == pebblestore.WorkerUpdatedEventType || record.Event.EventType == pebblestore.EnvironmentChangedEventType || record.Event.EventType == pebblestore.ProjectUpdatedEventType {
 		// Catalog membership and workspace environments are account-wide or workspace-scoped, independent of the selected session.
 		if len(worksets) == 0 {
 			return advanced, true, false
@@ -612,9 +612,14 @@ func (s *Server) v3RealtimeProcessOutboxRecord(conn *transportws.Conn, principal
 			Kind:            record.Event.EventType,
 			EndpointCursor:  cursor,
 		}
-		if record.Event.EventType == pebblestore.EnvironmentChangedEventType {
+		if record.Event.EventType == pebblestore.EnvironmentChangedEventType || record.Event.EventType == pebblestore.ProjectUpdatedEventType {
 			msg.SessionID = record.SessionID
 			msg.Event = &record.Event
+		}
+		if record.Event.EventType == pebblestore.ProjectUpdatedEventType {
+			if projID := v3RealtimeProjectIDFromRecord(record); projID != "" {
+				msg.ProjectID = projID
+			}
 		}
 		if err := s.sendV3RealtimeMessage(conn, msg); err != nil {
 			return advanced, false, false
@@ -630,6 +635,29 @@ func (s *Server) v3RealtimeProcessOutboxRecord(conn *transportws.Conn, principal
 		return advanced, true, true
 	}
 
+	usageScopeDelivered := false
+	// Usage scope invalidations are independent of selected child sessions.
+	// Reuse the durable receipt outbox/cursor and send only its bounded scope
+	// projections, not the private child event/transcript.
+	if totals := s.usageScopesForRealtimeSubscriptions(principal, record, subs, worksets); len(totals) > 0 {
+		cursor, err := s.signV3SyncEndpointCursor(scope, record.EndpointSeq)
+		if err != nil {
+			return advanced, false, false
+		}
+		payload, err := json.Marshal(map[string]any{"scope_totals": totals})
+		if err != nil {
+			return advanced, false, false
+		}
+		event := pebblestore.V3SessionEvent{Seq: record.Event.Seq, TsUnixMs: record.Event.TsUnixMs}
+		event.EventType = "usage.scope.updated"
+		event.Payload = payload
+		msg := V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: "usage.scope.updated", EndpointCursor: cursor, Event: &event}
+		if err := s.sendV3RealtimeMessage(conn, msg); err != nil {
+			return advanced, false, false
+		}
+		advanced.LastSentEndpointSeq = record.EndpointSeq
+		usageScopeDelivered = true
+	}
 	subscription, subscribed := advanced.Subscriptions[record.SessionID]
 	removeAutoSubscriptionAfterDelivery := false
 	if !subscribed {
@@ -653,7 +681,7 @@ func (s *Server) v3RealtimeProcessOutboxRecord(conn *transportws.Conn, principal
 		}
 		match, ok := s.v3RealtimeMatchRecordWorkset(principal, record, worksets)
 		if !ok {
-			return advanced, true, false
+			return advanced, true, usageScopeDelivered
 		}
 		if !match.AutoSubscribeSessions {
 			if !s.sendV3RealtimeWorksetSessionFrame(conn, V3RealtimeKindWorksetSessionUpdated, match, v3RealtimeSubscription{}, record, scope) {
@@ -749,7 +777,7 @@ func v3RealtimeMatchedWorksetIDsForSnapshot(principal identity.Principal, sessio
 	matched := map[string]struct{}{}
 	auto := false
 	for _, workset := range orderedV3RealtimeWorksets(worksets) {
-		if !v3RealtimeSessionMatchesWorksetSelector(principal, session, workset.Selector) {
+		if !v3RealtimeWorksetIncludesSessionResources(workset) || !v3RealtimeSessionMatchesWorksetSelector(principal, session, workset.Selector) {
 			continue
 		}
 		matched[workset.WorksetID] = struct{}{}
@@ -902,7 +930,7 @@ func canonicalV3RealtimeWorksetSelector(selector V3RealtimeWorksetSelector) (V3R
 
 func v3RealtimeWorksetResourceAllowed(resource string) bool {
 	switch strings.TrimSpace(resource) {
-	case "sessions", "projections", "events", "messages", "run_intents", "current_run_state", "permission_summaries", "notifications", "notification_summary", "tasks", "auth", "active_plan", "plan_revisions", "membership", "tombstones":
+	case "sessions", "projections", "events", "messages", "run_intents", "current_run_state", "permission_summaries", "notifications", "notification_summary", "tasks", "auth", "active_plan", "plan_revisions", "membership", "tombstones", "projects":
 		return true
 	default:
 		return false
@@ -1036,8 +1064,23 @@ func v3RealtimeWorksetIncludesRecordResource(workset v3RealtimeWorksetSubscripti
 	case v3AuthResourceEventType:
 		return v3RealtimeWorksetIncludesResource(workset, "auth")
 	default:
+		return v3RealtimeWorksetIncludesSessionResources(workset)
+	}
+}
+
+// Omitted resources retain legacy session/sidebar subscriptions. An explicit
+// resource-only workset must never discover, prime or receive unrelated chat.
+func v3RealtimeWorksetIncludesSessionResources(workset v3RealtimeWorksetSubscription) bool {
+	if len(workset.Resources) == 0 {
 		return true
 	}
+	for _, resource := range workset.Resources {
+		switch strings.TrimSpace(resource) {
+		case "sessions", "projections", "events", "messages", "run_intents", "current_run_state", "active_plan", "plan_revisions", "membership", "tombstones":
+			return true
+		}
+	}
+	return false
 }
 
 func v3RealtimeWorksetIncludesResource(workset v3RealtimeWorksetSubscription, resource string) bool {
@@ -1062,6 +1105,22 @@ func v3RealtimeAutoSubscriptionID(workset v3RealtimeWorksetSubscription, session
 		base = "workset"
 	}
 	return base + ":session:" + strings.TrimSpace(sessionID)
+}
+
+func v3RealtimeProjectIDFromRecord(record sessionruntime.RealtimeOutboxRecord) string {
+	if len(record.Event.Payload) > 0 {
+		var payload struct {
+			ProjectID string `json:"project_id"`
+		}
+		if err := json.Unmarshal(record.Event.Payload, &payload); err == nil && payload.ProjectID != "" {
+			return payload.ProjectID
+		}
+	}
+	parts := strings.Split(record.SessionID, ":")
+	if len(parts) >= 3 && parts[0] == "__project__" {
+		return parts[2]
+	}
+	return ""
 }
 
 func v3RealtimeRecordRemovesFromWorkset(record sessionruntime.RealtimeOutboxRecord) bool {
@@ -1285,7 +1344,7 @@ func v3RealtimeRecordVisibleToPrincipal(principal identity.Principal, record ses
 		payload, ok := sessionsV3AITaskLifecyclePayloadFromRecord(record)
 		return ok && payload.UserID == strings.TrimSpace(principal.UserID)
 	}
-	if strings.TrimSpace(record.Event.EventType) == v3AuthResourceEventType || (record.Event.EventType == pebblestore.WorkspaceCatalogEventType || record.Event.EventType == pebblestore.AutomationChangedEventType || record.Event.EventType == pebblestore.EnvironmentChangedEventType) {
+	if strings.TrimSpace(record.Event.EventType) == v3AuthResourceEventType || (record.Event.EventType == pebblestore.WorkspaceCatalogEventType || record.Event.EventType == pebblestore.AutomationChangedEventType || record.Event.EventType == pebblestore.WorkerUpdatedEventType || record.Event.EventType == pebblestore.EnvironmentChangedEventType || record.Event.EventType == pebblestore.ProjectUpdatedEventType) {
 		return true
 	}
 	if strings.TrimSpace(record.UserID) == "" || strings.TrimSpace(record.UserID) != strings.TrimSpace(principal.UserID) {

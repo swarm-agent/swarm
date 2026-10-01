@@ -66,6 +66,13 @@ test('task swarms remove internal scrolling and measure adaptive density', async
   assert.doesNotMatch(source, /className=\{cn\(TOOL_RESULT_BODY_CLASS, "task-card-swarm-grid/)
 })
 
+test('task cards render subagent checklist and todos progress when present', async () => {
+  const source = await readFile(sourceURL, 'utf8')
+  assert.match(source, /data-testid="task-card-todos"/)
+  assert.match(source, /child\.todos\.map/)
+  assert.match(source, /child\.todosCount/)
+})
+
 test('plan and subagent sidebars expose compact and ultra-thin critical actions', async () => {
   const [plan, subagents] = await Promise.all([readFile(planURL, 'utf8'), readFile(sidecarURL, 'utf8')])
   assert.match(plan, /data-display-mode=\{displayMode\}/)

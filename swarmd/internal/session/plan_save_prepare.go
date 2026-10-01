@@ -122,6 +122,9 @@ func (s *Service) PreparePlanSaveWithMetadata(sessionID, planID, title, plan, st
 		if record.AccountScopeID == "" {
 			record.AccountScopeID = existing.AccountScopeID
 		}
+		if record.AcceptedDefinitionReceipt == "" {
+			record.AcceptedDefinitionReceipt = existing.AcceptedDefinitionReceipt
+		}
 		record.PriorTitle = existing.Title
 		record.PriorPlan = existing.Plan
 		record.DiffLines = BuildPlanDiffLines(existing.Plan, plan)

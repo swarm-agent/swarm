@@ -10,9 +10,13 @@ import (
 	"swarm/packages/swarmd/internal/identity"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	sessionruntime "swarm/packages/swarmd/internal/session"
+	"swarm/packages/swarmd/internal/taskscope"
 	"swarm/packages/swarmd/internal/tool"
 )
 
+// Purpose: executePlanManageTool must serve usable submission/schema guidance
+// through read-only help, without creating an active plan. This service-level
+// check prevents redirecting models to unsupported help or mutating on discovery.
 func TestPlanManageHelpAction(t *testing.T) {
 	runSvc, sessionSvc, cleanup := newPlanManageRunTestService(t)
 	defer cleanup()
@@ -33,6 +37,10 @@ func TestPlanManageHelpAction(t *testing.T) {
 	instructions, _ := payload["instructions"].(string)
 	for _, want := range []string{
 		"Canonical SessionPlanDocument Schema",
+		taskscope.Guidance,
+		`plan_manage action="help"`,
+		"exit_plan_mode has no help action",
+		"correct all named fields in the complete document and resubmit",
 		"Feedback Intent Routing Table",
 		"Worker V2 Schedule Specification",
 		"start_session_checkpoint",
@@ -41,6 +49,9 @@ func TestPlanManageHelpAction(t *testing.T) {
 		if !strings.Contains(instructions, want) {
 			t.Fatalf("help instructions missing %q: %s", want, instructions)
 		}
+	}
+	if _, exists, err := sessionSvc.GetActivePlan(sessionID); err != nil || exists {
+		t.Fatalf("help created a plan or failed to inspect state: exists=%v err=%v", exists, err)
 	}
 }
 

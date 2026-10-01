@@ -27,6 +27,7 @@ import (
 	"swarm/packages/swarmd/internal/agentmodelsettings"
 	"swarm/packages/swarmd/internal/artifact"
 	"swarm/packages/swarmd/internal/artifactv2"
+	"swarm/packages/swarmd/internal/audiogen"
 	"swarm/packages/swarmd/internal/auth"
 	"swarm/packages/swarmd/internal/discovery"
 	"swarm/packages/swarmd/internal/executioncapacity"
@@ -46,6 +47,7 @@ import (
 	runruntime "swarm/packages/swarmd/internal/run"
 	"swarm/packages/swarmd/internal/security"
 	sessionruntime "swarm/packages/swarmd/internal/session"
+	"swarm/packages/swarmd/internal/storagehub"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/stream"
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
@@ -58,6 +60,7 @@ import (
 	"swarm/packages/swarmd/internal/videorender"
 	"swarm/packages/swarmd/internal/videotranscription"
 	"swarm/packages/swarmd/internal/voice"
+	"swarm/packages/swarmd/internal/webhook"
 	"swarm/packages/swarmd/internal/webpush"
 	"swarm/packages/swarmd/internal/workspace"
 	worktreeruntime "swarm/packages/swarmd/internal/worktree"
@@ -119,6 +122,7 @@ type Server struct {
 	codexAccount                codexAccountClient
 	perm                        permissionService
 	notifications               notificationService
+	storageHub                  *storagehub.Service
 	webPush                     *webpush.Service
 	hub                         *stream.Hub
 	events                      *pebblestore.EventLog
@@ -138,8 +142,12 @@ type Server struct {
 	videoRender                 *videorender.Service
 	imageThreads                *pebblestore.ImageThreadStore
 	imageGen                    *imagegen.Service
+	videoGen                    managedVideoService
+	audioGen                    *audiogen.Service
 	videoTranscription          *videotranscription.Service
 	integrations                *integrationruntime.Service
+	automationV2Scheduler       *sessionruntime.AutomationV2Scheduler
+	webhookDispatcher           *webhook.Dispatcher
 	dataDir                     string
 	startupConfigPath           string
 	startedAt                   time.Time
@@ -173,6 +181,12 @@ type Server struct {
 	reviewCommitMu         sync.Mutex
 	reviewCommitActive     map[string]string
 	reviewAutoArchiveOnce  sync.Once
+	projectTaskCreateMu    sync.Mutex
+	projectTaskAdmissionMu sync.Mutex
+	projectTaskAdmissions  map[string]*projectTaskAdmissionLock
+	// Test seam before canonical follow-up mutations; production leaves it nil.
+	beforeProjectTaskFollowupMutation func(sessionruntime.SessionMutationInput) error
+	projectTaskApproveMu              sync.Mutex
 
 	connections          manageConnectionStore
 	environments         manageEnvironmentStore
@@ -200,6 +214,7 @@ type runService interface {
 	ListAgentToolDefinitionsForAccount(accountScopeID string) []tool.Definition
 	ResolveAgentToolContract(profile pebblestore.AgentProfile) (runruntime.ResolvedAgentToolContract, *permission.Policy, map[string]bool, error)
 	ResolveAgentToolContractForAccount(accountScopeID string, profile pebblestore.AgentProfile) (runruntime.ResolvedAgentToolContract, *permission.Policy, map[string]bool, error)
+	ExecuteTaskProgramForCoordinator(ctx context.Context, p identity.Principal, parentSessionID, runID string, record pebblestore.TaskProgramRecord) (string, error)
 }
 
 type swarmService interface {
@@ -257,6 +272,8 @@ type notificationService interface {
 	ClearNotifications(swarmID string) (notification.ClearResult, error)
 	UpdateNotification(input notification.UpdateInput) (pebblestore.NotificationRecord, bool, error)
 	UpsertSystemNotification(record pebblestore.NotificationRecord) (pebblestore.NotificationRecord, bool, error)
+	SubmitInboxNotification(input notification.InboxNotificationInput) (pebblestore.NotificationRecord, error)
+	SubmitInboxNotificationForAccount(accountScopeID string, input notification.InboxNotificationInput) (pebblestore.NotificationRecord, error)
 }
 
 type worktreeService interface {
@@ -339,6 +356,17 @@ func NewServer(authSvc *auth.Service, agentSvc *agentruntime.Service, modelSvc *
 	}
 	if notificationSvc, ok := notificationSvc.(*notification.Service); ok {
 		notificationSvc.SetRealtimePublisher(server.publishNotificationV3Realtime)
+		if sessionSvc != nil && sessionSvc.Store() != nil && sessionSvc.Store().Underlying() != nil {
+			sessionSvc.Store().Underlying().SetWorkerBudgetPublisher(func(record pebblestore.NotificationRecord) {
+				server.publishNotificationV3Realtime(notification.RealtimeEvent{EventType: notification.EventNotificationCreated, AccountScopeID: record.AccountScopeID, SwarmID: record.SwarmID, Notification: &record, RecordedAt: record.UpdatedAt})
+			})
+		}
+	}
+	if sessionSvc != nil && sessionSvc.Store() != nil && sessionSvc.Store().Underlying() != nil {
+		if notificationSvc != nil {
+			server.storageHub = storagehub.NewService(sessionSvc.Store().Underlying(), notificationSvc)
+		}
+		server.ConfigureProjectRealtime(sessionSvc.Store().Underlying())
 	}
 	if server.workspace != nil {
 		server.workspace.SetCatalogPublisher(func(record pebblestore.V3RealtimeOutboxRecord) {
@@ -362,6 +390,18 @@ func NewServer(authSvc *auth.Service, agentSvc *agentruntime.Service, modelSvc *
 func (s *Server) SetLongSessionDiagnostics(recorder *longsessiondiag.Recorder) {
 	if s != nil {
 		s.longSessionDiagnostics = recorder
+	}
+}
+
+func (s *Server) SetAutomationV2Scheduler(scheduler *sessionruntime.AutomationV2Scheduler) {
+	if s != nil {
+		s.automationV2Scheduler = scheduler
+	}
+}
+
+func (s *Server) SetWebhookDispatcher(dispatcher *webhook.Dispatcher) {
+	if s != nil {
+		s.webhookDispatcher = dispatcher
 	}
 }
 
@@ -2794,7 +2834,14 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 			}
 			requestedMode := sessionruntime.NormalizeMode(req.Mode)
 			modeWarning := ""
-			if !pebblestore.AgentExitPlanModeEnabled(profile) {
+			if agentruntime.IsSwarmOrchestratorAgentName(profile.Name) {
+				if requestedMode != sessionruntime.ModeAuto {
+					modeWarning = "Orchestrator session plan mode is disabled; using auto mode for project task cards"
+				}
+				req.Mode = sessionruntime.ModeAuto
+				requestedMode = sessionruntime.ModeAuto
+			}
+			if !agentruntime.IsSwarmOrchestratorAgentName(profile.Name) && !pebblestore.AgentExitPlanModeEnabled(profile) {
 				setting := pebblestore.AgentProfileRuntimeMode(profile)
 				if setting == "" || setting == pebblestore.AgentRuntimeModePlanAuto {
 					agentName := strings.TrimSpace(profile.Name)
@@ -4123,8 +4170,31 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 		}
 
 		if isLocalTransportRequest(r) {
-			if s.identitySessions != nil {
-				if actor, err := s.identitySessions.Validate(productSessionTokenFromRequest(r)); err == nil {
+			token := extractAttachToken(r)
+			if token != "" && token != "local" && token != "zero-conf" {
+				if s.identitySessions != nil {
+					if actor, err := s.identitySessions.Validate(token); err == nil {
+						next.ServeHTTP(w, requestWithActorContext(r, actor))
+						return
+					}
+				}
+				if scopedRec, scopedErr := s.security.ValidateScopedToken(token); scopedErr != nil {
+					writeError(w, http.StatusUnauthorized, scopedErr)
+					return
+				} else if scopedRec != nil {
+					actor, err := s.resolveActorForScopedToken(scopedRec)
+					if err != nil {
+						writeError(w, http.StatusUnauthorized, err)
+						return
+					}
+					reqWithAuth := requestWithActorContext(r, actor)
+					reqWithAuth = requestWithScopedToken(reqWithAuth, scopedRec)
+					next.ServeHTTP(w, reqWithAuth)
+					return
+				}
+			}
+			if r.URL.Path != "/v1/update/apply" && s.identitySessions != nil {
+				if actor, err := s.identitySessions.ActorForCurrentSelection(); err == nil && isCompleteProductActor(actor) {
 					next.ServeHTTP(w, requestWithActorContext(r, actor))
 					return
 				}
@@ -4139,7 +4209,27 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 			return
 		}
 		if ok {
+			if s.identitySessions != nil {
+				if actor, err := s.identitySessions.ActorForCurrentSelection(); err == nil && isCompleteProductActor(actor) {
+					r = requestWithActorContext(r, actor)
+				}
+			}
 			next.ServeHTTP(w, r)
+			return
+		}
+
+		if scopedRec, scopedErr := s.security.ValidateScopedToken(token); scopedErr != nil {
+			writeError(w, http.StatusUnauthorized, scopedErr)
+			return
+		} else if scopedRec != nil {
+			actor, err := s.resolveActorForScopedToken(scopedRec)
+			if err != nil {
+				writeError(w, http.StatusUnauthorized, err)
+				return
+			}
+			reqWithAuth := requestWithActorContext(r, actor)
+			reqWithAuth = requestWithScopedToken(reqWithAuth, scopedRec)
+			next.ServeHTTP(w, reqWithAuth)
 			return
 		}
 

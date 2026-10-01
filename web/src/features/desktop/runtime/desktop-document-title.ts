@@ -21,11 +21,13 @@ export function desktopAreaLabel(pathname: string): string {
   if (parts.length === 0) return 'Workspace Launcher'
 
   const first = parts[0]?.toLowerCase() || ''
+  if (first === 'swarm') return swarmAreaLabel(parts[1])
   if (first === 'settings') return 'Settings'
   if (first === 'integrations') return 'Integrations'
   if (first === 'tools') return toolAreaLabel(parts[1])
 
   const second = parts[1]?.toLowerCase() || ''
+  if (second === 'swarm') return swarmAreaLabel(parts[2])
   if (second === 'settings') return 'Settings'
   if (second === 'tools') return toolAreaLabel(parts[2])
 
@@ -39,8 +41,8 @@ function activeRouteSessionId(pathname: string): string {
   const first = firstSegment.toLowerCase()
   const second = secondSegment.toLowerCase()
   if (first === 'integrations') return secondSegment
-  const rootReserved = new Set(['settings', 'tools'])
-  const workspaceReserved = new Set(['settings', 'tools'])
+  const rootReserved = new Set(['settings', 'tools', 'swarm', 'orchestrate'])
+  const workspaceReserved = new Set(['settings', 'tools', 'swarm', 'orchestrate'])
   if (rootReserved.has(first) || workspaceReserved.has(second)) return ''
   return secondSegment
 }
@@ -48,6 +50,17 @@ function activeRouteSessionId(pathname: string): string {
 function activeSessionTitle(record: SessionCacheRecord | undefined): string {
   if (!record || record.kind !== 'full') return ''
   return record.session.title?.trim() || record.session.id.trim()
+}
+
+function swarmAreaLabel(section: string | undefined): string {
+  switch (section) {
+    case 'projects': return 'Swarm · Projects'
+    case 'workers': return 'Swarm · Workers'
+    case 'deliverables': return 'Swarm · Deliverables'
+    case 'media': return 'Swarm · Media'
+    case 'settings': return 'Swarm · Project Charter'
+    default: return 'Swarm'
+  }
 }
 
 function toolAreaLabel(tool: string | undefined): string {

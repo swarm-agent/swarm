@@ -3,7 +3,10 @@ import type { DesktopPermissionRecord } from '../types/realtime'
 
 export interface AutomationV2Settings {
   schema_version: 2
-  schedule: { kind: 'interval' | 'cron'; interval_seconds?: number; cron?: string; timezone?: string }
+  project_id?: string
+  workspace_id?: string
+  workspace_ids?: string[]
+  schedule: { kind: 'interval' | 'cron' | 'trigger'; interval_seconds?: number; cron?: string; timezone?: string }
   expiration: { kind: 'indefinite' | 'at'; expires_at?: number }
   missed: 'skip' | 'coalesce'
   overlap: 'serialize' | 'independent'
@@ -26,7 +29,7 @@ export interface AutomationV2Document extends Record<string, unknown> {
 }
 export interface AutomationV2Review { proposal_id: string; revision: number; digest: string }
 export interface AutomationV2Proposal extends AutomationV2Review {
-  account_id: string; workspace_id: string; session_id: string; document: AutomationV2Document; base_generation?: number
+  account_id: string; workspace_id: string; workspace_ids?: string[]; project_id?: string; session_id: string; document: AutomationV2Document; base_generation?: number
 }
 export interface AutomationV2Record extends AutomationV2Proposal {
   automation_id: string; generation: number; enabled: boolean; cancelled: boolean; accepted_at: number
@@ -59,6 +62,7 @@ export interface AutomationV2Occurrence {
   admitted_at?: number
   observed_at?: number
   closing_state?: string
+  trigger_context?: Record<string, unknown>
   deliverables?: AutomationV2OccurrenceDeliverable[]
   artifacts?: AutomationV2OccurrenceDeliverable[]
   summary?: string
@@ -71,8 +75,17 @@ export interface AutomationV2Progress {
   no_next_reason?: string; complete: boolean; next_cursor?: string
   occurrences: AutomationV2Occurrence[]
 }
-export interface AutomationV2Read { workspace_id: string; action: 'list' | 'review' | 'progress'; session_id?: string; timezone?: string; cursor?: string; archived_mode?: 'exclude' | 'include' | 'only' }
-export interface AutomationV2Response { records?: AutomationV2Record[]; next_cursor?: string; proposal?: AutomationV2Proposal; record?: AutomationV2Record; progress?: AutomationV2Progress }
+export interface AutomationV2Read { workspace_id?: string; action: 'list' | 'review' | 'progress'; session_id?: string; timezone?: string; cursor?: string; archived_mode?: 'exclude' | 'include' | 'only' }
+export interface AutomationV2Response {
+  records?: AutomationV2Record[];
+  next_cursor?: string;
+  proposal?: AutomationV2Proposal;
+  record?: AutomationV2Record;
+  progress?: AutomationV2Progress;
+  token_minted?: boolean;
+  token_path?: string;
+  message?: string;
+}
 export type AutomationV2Mutation = { workspace_id: string; session_id: string } & (
   | { action: 'propose_automation'; document: AutomationV2Document; review: AutomationV2Review }
   | { action: 'accept_automation'; review: AutomationV2Review }
@@ -97,10 +110,13 @@ export function automationV2PermissionProposal(permission: DesktopPermissionReco
     const doc = payload.document
     const settings = doc?.worker_v2 || doc?.automation_v2
     const isAutomationV2 = payload.review_kind === 'worker_v2' || payload.review_kind === 'automation_v2' || Boolean(settings)
-    if (!isAutomationV2 || !workspaceId || !settings || !doc?.checkpoints?.length) return null
+    if (!isAutomationV2 || !workspaceId || !settings) return null
+    if (!Array.isArray(doc.checkpoints)) doc.checkpoints = []
     if (!doc.automation_v2) doc.automation_v2 = settings
     if (!doc.worker_v2) doc.worker_v2 = settings
-    return { ...review, workspace_id: workspaceId, account_id: accountId, session_id: sessionId, document: doc }
+    const projectId = payload.project_id || payload.document?.worker_v2?.project_id || payload.document?.automation_v2?.project_id || (permission as any).projectId || (permission as any).project_id
+    const workspaceIds = payload.workspace_ids || payload.document?.worker_v2?.workspace_ids || payload.document?.automation_v2?.workspace_ids || (workspaceId ? [workspaceId] : [])
+    return { ...review, workspace_id: workspaceId, workspace_ids: workspaceIds, project_id: projectId, account_id: accountId, session_id: sessionId, document: doc }
   } catch { return null }
 }
 export function validateAutomationV2(settings: AutomationV2Settings, now = Date.now()): void {
@@ -121,10 +137,13 @@ export function validateAutomationV2(settings: AutomationV2Settings, now = Date.
     }) || (fields[2] !== '*' && fields[4] !== '*') || schedule.interval_seconds) throw new Error('Use five cron fields: numbers, * or */n only; do not restrict both day fields.')
     if (!schedule.timezone || schedule.timezone === 'Local') throw new Error('An explicit IANA timezone is required.')
     try { new Intl.DateTimeFormat('en', { timeZone: schedule.timezone }).format(now) } catch { throw new Error('Enter a valid IANA timezone.') }
-  } else throw new Error('Choose an elapsed timer or wall-clock schedule.')
+  } else if (schedule.kind === 'trigger') {
+    if (schedule.cron || schedule.interval_seconds) throw new Error('Trigger schedule must not declare cron or interval.')
+  } else throw new Error('Choose an elapsed timer, wall-clock schedule, or on-demand trigger.')
 }
 export async function readAutomationV2(input: AutomationV2Read): Promise<AutomationV2Response> {
-  const query = new URLSearchParams({ workspace_id: input.workspace_id })
+  const query = new URLSearchParams()
+  if (input.workspace_id && input.workspace_id !== 'all') query.set('workspace_id', input.workspace_id)
   if (input.session_id) query.set('session_id', input.session_id)
   if (input.timezone) query.set('timezone', input.timezone)
   if (input.cursor) query.set('cursor', input.cursor)
@@ -139,3 +158,55 @@ export function mutateAutomationV2(input: AutomationV2Mutation): Promise<Automat
   const path = input.action === 'propose_automation' ? 'proposal' : input.action === 'accept_automation' ? 'accept' : input.action === 'decline_automation' ? 'decline' : 'control'
   return requestJson(`/v3/automations/v2/${path}`, { method: 'POST', body: JSON.stringify(input) })
 }
+
+export interface AutomationV2TokenRequest {
+  workspace_id?: string
+  worker_id?: string
+  automation_id?: string
+  save_to_secrets?: boolean
+}
+
+export interface AutomationV2TokenResponse {
+  ok: boolean
+  token: string
+  record?: {
+    id: string
+    name: string
+    scopes: string[]
+    created_at: number
+    worker_id?: string
+  }
+  worker_id: string
+  token_path?: string
+  message: string
+}
+
+export function mintAutomationV2Token(input: AutomationV2TokenRequest): Promise<AutomationV2TokenResponse> {
+  return requestJson<AutomationV2TokenResponse>('/v3/automations/v2/token', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
+}
+
+export interface AutomationV2TriggerRequest {
+  workspace_id: string
+  worker_id?: string
+  session_id?: string
+  automation_id?: string
+  prompt?: string
+  context?: Record<string, unknown>
+}
+
+export interface AutomationV2TriggerResponse {
+  ok: boolean
+  occurrence: AutomationV2Occurrence
+  error?: string
+}
+
+export function triggerAutomationV2(input: AutomationV2TriggerRequest): Promise<AutomationV2TriggerResponse> {
+  return requestJson<AutomationV2TriggerResponse>('/v3/automations/v2/trigger', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
+}
+

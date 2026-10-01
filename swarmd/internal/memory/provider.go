@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"swarm/packages/swarmd/internal/identity"
 	iface "swarm/packages/swarmd/internal/provider/interfaces"
 	store "swarm/packages/swarmd/internal/store/pebble"
 )
@@ -17,8 +18,9 @@ type Runners interface {
 // RuntimeProvider uses account-authenticated runners, with no tools or continuation.
 // Pricing and catalog output ceilings are not admission requirements.
 type RuntimeProvider struct {
-	Runners Runners
-	Catalog *store.ModelCatalogStore
+	Runners  Runners
+	Catalog  *store.ModelCatalogStore
+	Sessions *store.SessionStore
 }
 
 func (p *RuntimeProvider) Generate(ctx context.Context, r Request) (Result, error) {
@@ -39,6 +41,19 @@ func (p *RuntimeProvider) Generate(ctx context.Context, r Request) (Result, erro
 		if err != nil {
 			return Result{}, err
 		}
+	}
+	principal, found := identity.PrincipalFromContext(ctx)
+	if !found || !principal.Valid() {
+		return Result{}, identity.ErrPrincipalRequired
+	}
+	if p.Sessions == nil {
+		return Result{}, errors.New("memory worker budget authority unavailable")
+	}
+	// Background extraction is account-owned; do not invent a worker/session
+	// owner from extracted sources. Only corroborated capped-worker lineage
+	// restricts this unmetered boundary.
+	if err := p.Sessions.CheckWorkerUnmeteredOperation(principal.AccountScopeID, principal.SessionID); err != nil {
+		return Result{}, err
 	}
 	response, err := runner.CreateResponse(ctx, iface.Request{Model: r.Model.Model, Thinking: r.Model.Thinking, ServiceTier: r.Model.ServiceTier, ContextMode: r.Model.ContextMode, ModelCatalog: catalog, Instructions: r.Instructions, Input: []map[string]any{{"role": "user", "content": string(r.Input)}}, ToolChoice: "none", StartNewChain: true, ForceFreshProviderContext: true})
 	if err != nil {

@@ -91,7 +91,10 @@ type CreateInput struct {
 	IterationLabel        string
 	AutoAccept            bool
 	Body                  []byte
+	VideoProvenance       *pebblestore.VideoProvenance
 }
+
+type CreateRequest = CreateInput
 
 type InitialPartInput struct {
 	Definition pebblestore.SessionArtifactPartDefinition
@@ -240,6 +243,7 @@ func (a *Authority) Reserve(principal Principal, input CreateInput) (pebblestore
 	collectionLineage.PartID, collectionLineage.PartLabel, collectionLineage.PartKind = "", "", ""
 	collectionLineage.SelectedReviewTargetIDs = ""
 	collectionLineage.VideoProjectID, collectionLineage.VideoRevisionID, collectionLineage.VideoRevisionEventSeq = "", "", 0
+	collectionLineage.VideoProvenance = nil
 	collection := pebblestore.SessionArtifactCollection{ID: input.CollectionID, Name: strings.TrimSpace(input.CollectionName), Description: strings.TrimSpace(input.CollectionDescription), Lineage: collectionLineage, Presentation: input.Presentation}
 	variant := pebblestore.SessionArtifactVariant{ID: input.VariantID, CollectionID: input.CollectionID, Filename: strings.TrimSpace(input.Filename), MediaType: strings.TrimSpace(input.MediaType), Role: strings.TrimSpace(input.Role), Presentation: input.Presentation, OutputRequirements: cloneOutputRequirements(input.OutputRequirements), AnimationProfile: cloneAnimationProfile(input.AnimationProfile), Parts: append([]pebblestore.SessionArtifactPart(nil), input.Parts...), Lineage: lineage, ArtifactStepID: strings.TrimSpace(input.ArtifactStepID), RevisionRoundID: strings.TrimSpace(input.ArtifactStepID), CandidateIndex: input.CandidateIndex, AutoAccept: input.AutoAccept}
 	if existing, ok, getErr := a.metadata.GetSessionArtifactVariant(principal.AccountScopeID, principal.SessionID, collection.ID, variant.ID); getErr != nil {
@@ -341,6 +345,7 @@ func (a *Authority) create(ctx context.Context, principal Principal, input Creat
 	collectionLineage.PartID, collectionLineage.PartLabel, collectionLineage.PartKind = "", "", ""
 	collectionLineage.SelectedReviewTargetIDs = ""
 	collectionLineage.VideoProjectID, collectionLineage.VideoRevisionID, collectionLineage.VideoRevisionEventSeq = "", "", 0
+	collectionLineage.VideoProvenance = nil
 	if err := applyArtifactOutputRequirementsToPresentation(&input.Presentation, input.OutputRequirements); err != nil {
 		return pebblestore.SessionArtifactVariant{}, err
 	}
@@ -408,6 +413,9 @@ func (a *Authority) create(ctx context.Context, principal Principal, input Creat
 			// preserve its stable trusted destination lineage instead of trying to
 			// mutate it with run/plan/attempt metadata discovered during execution.
 			variant.Lineage = existing.Lineage
+			if variant.Lineage.VideoProvenance == nil && lineage.VideoProvenance != nil {
+				variant.Lineage.VideoProvenance = lineage.VideoProvenance.Clone()
+			}
 		}
 		if collection.Lineage == (pebblestore.SessionArtifactLineage{}) {
 			collection.Lineage = collectionLineage
@@ -981,6 +989,10 @@ func artifactDestinationLineageCompatible(existing, incoming pebblestore.Session
 	// program/child/iteration/source field remains immutable and must match.
 	existing.RunID, existing.PlanID, existing.CheckpointID, existing.AttemptID = "", "", "", ""
 	incoming.RunID, incoming.PlanID, incoming.CheckpointID, incoming.AttemptID = "", "", "", ""
+	if existing.VideoProvenance != nil && incoming.VideoProvenance != nil && !pebblestore.EqualVideoProvenance(existing.VideoProvenance, incoming.VideoProvenance) {
+		return false
+	}
+	existing.VideoProvenance, incoming.VideoProvenance = nil, nil
 	return existing == incoming
 }
 
@@ -1005,6 +1017,31 @@ func (a *Authority) lineage(principal Principal, input CreateInput) pebblestore.
 	if iterationLabel == "" {
 		iterationLabel = strings.TrimSpace(input.IterationLabel)
 	}
+	var videoProv *pebblestore.VideoProvenance
+	if input.VideoProvenance != nil {
+		videoProv = input.VideoProvenance.Clone()
+		if videoProv.SourceLink == nil && (input.SourceSessionID != "" || input.SourceCollectionID != "" || input.SourceVariantID != "" || input.SourceEventSeq != 0) {
+			videoProv.SourceLink = &pebblestore.VideoSourceLink{
+				SessionID:    strings.TrimSpace(input.SourceSessionID),
+				CollectionID: strings.TrimSpace(input.SourceCollectionID),
+				VariantID:    strings.TrimSpace(input.SourceVariantID),
+				EventSeq:     input.SourceEventSeq,
+			}
+		} else if videoProv.SourceLink != nil {
+			if videoProv.SourceLink.SessionID == "" && input.SourceSessionID != "" {
+				videoProv.SourceLink.SessionID = strings.TrimSpace(input.SourceSessionID)
+			}
+			if videoProv.SourceLink.CollectionID == "" && input.SourceCollectionID != "" {
+				videoProv.SourceLink.CollectionID = strings.TrimSpace(input.SourceCollectionID)
+			}
+			if videoProv.SourceLink.VariantID == "" && input.SourceVariantID != "" {
+				videoProv.SourceLink.VariantID = strings.TrimSpace(input.SourceVariantID)
+			}
+			if videoProv.SourceLink.EventSeq == 0 && input.SourceEventSeq != 0 {
+				videoProv.SourceLink.EventSeq = input.SourceEventSeq
+			}
+		}
+	}
 	return pebblestore.SessionArtifactLineage{
 		ParentSessionID: principal.SessionID, SourceSessionID: sourceSessionID,
 		SourceCollectionID: strings.TrimSpace(input.SourceCollectionID), SourceVariantID: strings.TrimSpace(input.SourceVariantID), SourceEventSeq: input.SourceEventSeq,
@@ -1016,6 +1053,7 @@ func (a *Authority) lineage(principal Principal, input CreateInput) pebblestore.
 		SelectedReviewTargetIDs: strings.TrimSpace(principal.SelectedReviewTargetIDs),
 		RunID:                   strings.TrimSpace(principal.RunID), PlanID: strings.TrimSpace(principal.PlanID), CheckpointID: strings.TrimSpace(principal.CheckpointID), AttemptID: strings.TrimSpace(principal.AttemptID),
 		VideoProjectID: strings.TrimSpace(input.VideoProjectID), VideoRevisionID: strings.TrimSpace(input.VideoRevisionID), VideoRevisionEventSeq: input.VideoRevisionEventSeq,
+		VideoProvenance: videoProv,
 	}
 }
 

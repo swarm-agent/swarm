@@ -153,6 +153,7 @@ export function ModelSelect({
   value,
   disabled,
   placeholder = 'Choose a model',
+  defaultModelId,
   onChange,
   ariaLabel,
 }: {
@@ -160,6 +161,7 @@ export function ModelSelect({
   value: string
   disabled: boolean
   placeholder?: string
+  defaultModelId?: string
   onChange: (value: string) => void
   ariaLabel?: string
 }) {
@@ -347,6 +349,11 @@ export function ModelSelect({
                               <span className="truncate text-sm font-medium text-[var(--app-text)]">
                                 {option.display_name}
                               </span>
+                              {defaultModelId && option.id === defaultModelId ? (
+                                <span className="shrink-0 rounded bg-[var(--app-surface)] px-1.5 py-0.5 text-[10px] text-[var(--app-primary)] font-mono font-medium">
+                                  Default
+                                </span>
+                              ) : null}
                               {!option.ready ? (
                                 <span className="shrink-0 rounded bg-[var(--app-surface)] px-1.5 py-0.5 text-[10px] text-[var(--app-warning)]">
                                   Auth needed
@@ -534,11 +541,24 @@ export function MediaSettingsPage({ workspaceSlug = '', workspacePath: requested
   const configuredVideoDefault = normalizeVideoDefaultModel(settingsQuery.data)
   const configuredVideoIteration = normalizeVideoIterationModel(settingsQuery.data)
   const configuredAudioDefault = normalizeAudioDefaultModel(settingsQuery.data)
-  const selectedImage = imageModels.some((model) => model.id === configuredImageID) ? configuredImageID : ''
+
+  const catalogDefaultImage = catalogQuery.data?.default_image_model || ''
+  const effectiveDefaultImage = configuredImageID || catalogDefaultImage || (imageModels.find((m) => m.ready)?.id ?? '')
+  const selectedImage = imageModels.some((model) => model.id === configuredImageID)
+    ? configuredImageID
+    : imageModels.some((model) => model.id === effectiveDefaultImage)
+      ? effectiveDefaultImage
+      : (imageModels.find((m) => m.ready)?.id ?? imageModels[0]?.id ?? '')
+
   const selectedTranscription = transcriptionModels.some((model) => model.id === configuredTranscription) ? configuredTranscription : ''
+
+  const catalogDefaultVideo = catalogQuery.data?.default_video_model || 'veo-3.1-generate-preview'
+  const effectiveDefaultVideo = configuredVideoDefault || catalogDefaultVideo
   const selectedVideoDefault = videoGenerationModels.some((model) => model.id === configuredVideoDefault)
     ? configuredVideoDefault
-    : videoGenerationModels.find((model) => model.id === 'veo-3.1-generate-preview' || model.id === 'gemini-omni-1.1-flash')?.id ?? videoGenerationModels[0]?.id ?? ''
+    : videoGenerationModels.some((model) => model.id === effectiveDefaultVideo)
+      ? effectiveDefaultVideo
+      : videoGenerationModels.find((model) => model.id === 'veo-3.1-generate-preview' || model.id === 'gemini-omni-1.1-flash')?.id ?? videoGenerationModels.find((m) => m.ready)?.id ?? videoGenerationModels[0]?.id ?? ''
   const selectedVideoIteration = videoIterationModels.some((model) => model.id === configuredVideoIteration)
     ? configuredVideoIteration
     : videoIterationModels.find((model) => model.id === 'gemini-omni-1.1-flash')?.id ?? videoIterationModels[0]?.id ?? ''
@@ -742,7 +762,7 @@ export function MediaSettingsPage({ workspaceSlug = '', workspacePath: requested
                 ) : (
                   <div className="space-y-1.5">
                     <span className="text-xs font-medium text-[var(--app-text)]">Default image model</span>
-                    <ModelSelect ariaLabel="Default image model" models={imageModels} value={selectedImage} disabled={imageSave.isPending} onChange={(value) => imageSave.mutate(value)} />
+                    <ModelSelect ariaLabel="Default image model" models={imageModels} value={selectedImage} defaultModelId={effectiveDefaultImage} disabled={imageSave.isPending} onChange={(value) => imageSave.mutate(value)} />
                   </div>
                 )}
                 {selectedImageOption && !selectedImageOption.ready ? (
@@ -769,7 +789,7 @@ export function MediaSettingsPage({ workspaceSlug = '', workspacePath: requested
                 </p>
                 <div className="space-y-1.5">
                   <span className="text-xs font-medium text-[var(--app-text)]">Base video generation model</span>
-                  <ModelSelect ariaLabel="Base video generation model" models={videoGenerationModels} value={selectedVideoDefault} disabled={videoDefaultSave.isPending} onChange={(value) => videoDefaultSave.mutate(value)} />
+                  <ModelSelect ariaLabel="Base video generation model" models={videoGenerationModels} value={selectedVideoDefault} defaultModelId={effectiveDefaultVideo} disabled={videoDefaultSave.isPending} onChange={(value) => videoDefaultSave.mutate(value)} />
                 </div>
                 {selectedVideoDefaultOption && !selectedVideoDefaultOption.ready ? (
                   <p className="text-xs text-[var(--app-warning)]">

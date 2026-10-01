@@ -17,7 +17,6 @@ import { useNavigate, useRouterState, useSearch } from "@tanstack/react-router";
 import {
   ArrowDown,
   ArrowRight,
-  CalendarClock,
   CheckCircle2,
   Check,
   ChevronDown,
@@ -34,11 +33,10 @@ import {
   XCircle,
 } from "lucide-react";
 import { cn } from "../../../../lib/cn";
-import { Button } from "../../../../components/ui/button";
 import { AutomationV2Detail, AutomationV2ScheduleHandoff } from '../../tools/automations/automation-v2-workspace';
 import { AutomationSessionPanel } from '../../tools/automations/automation-session';
 import { WorkerSessionBanner } from '../../tools/automations/worker-session-banner';
-import { ChatMarkdown, SearchReadToolGroupView } from "./chat-markdown";
+import { ChatMarkdown, SearchReadToolGroupView, isPendingWorkerProposalResult } from "./chat-markdown";
 import {
   buildStructuredToolMessage,
 } from "../services/tool-message";
@@ -55,6 +53,7 @@ import type {
   LiveRunOverlay,
   MessageSnapshot,
   PendingUserMessage,
+  SessionSnapshot,
 } from "../../state/desktop-v3-cache-types";
 import {
   dispatchDesktopV3Cache,
@@ -79,6 +78,7 @@ import type {
 import {
   getDesktopSessionStopTarget,
   resolveDesktopChatRouteFromSession,
+  sessionMetadataString,
   type DesktopChatRoute,
 } from "../services/chat-routing";
 import {
@@ -164,6 +164,7 @@ import {
   permissionRequiresApproval,
 } from "../../permissions/services/permission-payload";
 import { DesktopInlineBashPermissionCard } from "./desktop-inline-bash-permission-card";
+
 import {
   DesktopInlinePlanReviewCard,
   structuredPlanDocumentFromPermission,
@@ -450,7 +451,7 @@ type DesktopV3InputSettingsSnapshot = {
 function buildDesktopV3ExistingSettingsSnapshot(input: {
   sessionId: string;
   metadata?: Record<string, unknown>;
-  session?: DesktopSessionRecord | null;
+  session?: DesktopSessionRecord | SessionSnapshot | null;
   cacheSession?: { mode?: string; metadata?: Record<string, unknown> } | null;
   cachedPreference: SessionPreferenceRecord;
   agentModelPolicy?: unknown;
@@ -1419,6 +1420,24 @@ function buildDesktopV3PlanHandoffItem(
   } as Extract<DesktopV3RenderItem, { type: DesktopV3PlanHandoffType }>;
 }
 
+function isWorkerProposalToolResult(toolName: string | undefined, state: string, output: unknown): boolean {
+  if (!['manage_workers', 'manage-workers', 'manage_automation', 'manage-automation'].includes(toolName?.trim().toLowerCase() ?? '') || state !== 'done') return false;
+  if (isPendingWorkerProposalResult(output)) return true;
+  if (typeof output !== 'string') return false;
+  try {
+    return isPendingWorkerProposalResult(JSON.parse(output));
+  } catch {
+    return false;
+  }
+}
+
+function isWorkerProposalMessage(message: MessageSnapshot): boolean {
+  const tool = message.toolMessage;
+  return !!tool && (isWorkerProposalToolResult(tool.tool, tool.state, tool.outputJson)
+    || isWorkerProposalToolResult(tool.tool, tool.state, tool.output)
+    || isWorkerProposalToolResult(tool.tool, tool.state, tool.completedOutput));
+}
+
 export function buildDesktopV3LiveRunRenderItems(
   run: LiveRunOverlay,
   options: {
@@ -1468,6 +1487,7 @@ export function buildDesktopV3LiveRunRenderItems(
     });
   }
   for (const tool of Object.values(run.toolCallsByCallId)) {
+    if (isWorkerProposalToolResult(tool.toolName, ['completed', 'done'].includes(tool.status ?? '') ? 'done' : tool.status ?? '', tool.outputText)) continue;
     const id = `live-tool:${tool.callId || tool.toolInstanceId}`;
     if (options.committedToolKeys?.has(id)) continue;
     items.push({
@@ -1511,6 +1531,7 @@ export function buildDesktopV3ConversationRenderItems(
     (message) =>
       !isDesktopV3ManualCompactionAckMessage(message) &&
       !isDesktopV3CompactionContinuationMessage(message) &&
+      !isWorkerProposalMessage(message) &&
       !pendingMessageIds.has(message.id),
   );
   const finalHandoffKeys = new Set(
@@ -1567,12 +1588,24 @@ export function buildDesktopV3ConversationRenderItems(
 export function resolveDesktopV3StopRunRequest(input: {
   route: DesktopChatRoute | null | undefined;
   runId: string | null | undefined;
+  session?: DesktopSessionRecord | SessionSnapshot | null;
+  targetSwarmId?: string | null;
 }): { runId: string; targetSwarmId: string } {
   const runId = input.runId?.trim() ?? "";
   if (!runId) {
     throw new Error("Desktop V3 stop requires run_id");
   }
   const target = getDesktopSessionStopTarget(input.route);
+  if (target.sessionApi === "v3" && target.targetSwarmId) {
+    return { runId, targetSwarmId: target.targetSwarmId };
+  }
+  const fallbackSwarmId =
+    input.targetSwarmId?.trim() ||
+    sessionMetadataString(input.session?.metadata, "swarm_v3_runtime_swarm_id") ||
+    sessionMetadataString(input.session?.metadata, "swarm_v3_authority_host_swarm_id");
+  if (fallbackSwarmId) {
+    return { runId, targetSwarmId: fallbackSwarmId };
+  }
   if (target.sessionApi !== "v3") {
     throw new Error(target.unsupportedReason);
   }
@@ -1595,7 +1628,7 @@ export interface DesktopV3ExistingConversationPaneProps {
   renderedMessages: RenderedSessionMessages;
   messagesLoaded: boolean;
   metadata?: Record<string, unknown>;
-  session?: DesktopSessionRecord | null;
+  session?: DesktopSessionRecord | SessionSnapshot | null;
   loadedMessageCount?: number;
   routeOptions?: DesktopChatRoute[];
   onOpenChats?: () => void;
@@ -1827,10 +1860,12 @@ export function DesktopV3ExistingConversationPane({
   const pendingModalPermissions = pendingPermissions.filter(
     (permission) =>
       !isPlanProposalPermission(permission) &&
+      !isAutomationPermission(permission) &&
       permissionDisplayToolName(permission.toolName) !== "bash",
   );
   const selectedPermission = pendingModalPermissions[0] ?? null;
   const pendingPlanPermission = pendingPlanPermissions[0] ?? null;
+
   const pendingPlanDocument = useMemo(
     () => pendingPlanPermission
       ? structuredPlanDocumentFromPermission(pendingPlanPermission)
@@ -1839,16 +1874,8 @@ export function DesktopV3ExistingConversationPane({
   );
   const [planAgentMobileOpen, setPlanAgentMobileOpen] = useState(false);
   const [resolvingPlanPermissionId, setResolvingPlanPermissionId] = useState("");
-  const [automationModalDismissedId, setAutomationModalDismissedId] = useState<string | null>(null);
   const heldPlanPermissionRef = useRef<DesktopPermissionRecord | null>(null);
   const planSidebarViewport = usePlanSidebarViewport() && presentation !== "sidebar";
-  const pendingAutomationPermission = pendingPermissions.find(isAutomationPermission) ?? null;
-  useEffect(() => {
-    if (!pendingAutomationPermission) {
-      setAutomationModalDismissedId(null);
-    }
-  }, [pendingAutomationPermission?.id]);
-  const isAutomationModalOpen = Boolean(selectedPermission) && (!isAutomationPermission(selectedPermission) || automationModalDismissedId !== selectedPermission.id);
   useEffect(() => {
     setPlanAgentMobileOpen(false);
   }, [pendingPlanPermission?.id]);
@@ -1863,10 +1890,36 @@ export function DesktopV3ExistingConversationPane({
   });
   const sessionMetadata =
     cacheSession?.metadata ?? session?.metadata ?? metadata;
+  const sessionWorkspaceName =
+    session && "workspaceName" in session
+      ? session.workspaceName
+      : session && "workspace_name" in session
+        ? session.workspace_name
+        : undefined;
+  const sessionWorkspacePath =
+    session && "workspacePath" in session
+      ? session.workspacePath
+      : session && "workspace_path" in session
+        ? session.workspace_path
+        : undefined;
+  const sessionWorktreeBranch =
+    session && "worktreeBranch" in session
+      ? session.worktreeBranch
+      : session && "worktree_branch" in session
+        ? session.worktree_branch
+        : undefined;
+  const sessionGitBranch =
+    session && "gitBranch" in session ? session.gitBranch : undefined;
+  const sessionMessageCount =
+    session && "messageCount" in session
+      ? session.messageCount
+      : session && "message_count" in session
+        ? session.message_count
+        : undefined;
   const headerBranchLabel =
-    session?.worktreeBranch?.trim() ||
+    sessionWorktreeBranch?.trim() ||
     cacheSession?.worktree_branch?.trim() ||
-    session?.gitBranch?.trim() ||
+    sessionGitBranch?.trim() ||
     metadataString(sessionMetadata, "swarm_v3_branch_label") ||
     metadataString(sessionMetadata, "git_branch") ||
     metadataString(sessionMetadata, "branch");
@@ -1950,8 +2003,11 @@ export function DesktopV3ExistingConversationPane({
   );
   const cachedPolicyMatchesSelectedMode = mode === settingsBaseline.mode;
   const sessionActiveModelProfile = useMemo(() => activeModelProfileFromMetadata(sessionMetadata), [sessionMetadata]);
+  const isOrchestratorAgent = selectedAgent.trim().toLowerCase() === 'system-orchestrator' || selectedAgent.trim().toLowerCase() === 'swarm-orchestrator' || selectedAgent.trim().toLowerCase() === 'orchestrator';
   const composerActiveModelProfile = selectedAgent.trim().toLowerCase() === 'swarm'
     ? { source: 'agent-default' as const, profileId: '', name: 'Swarm model' }
+    : isOrchestratorAgent && !sessionActiveModelProfile.source
+    ? { source: 'agent-default' as const, profileId: '', name: 'Plan / Orchestrator model' }
     : sessionActiveModelProfile;
   const sessionProfilePreference = useMemo(
     () => preferenceFromModelProfileMetadata(sessionMetadata, mode),
@@ -2193,11 +2249,11 @@ export function DesktopV3ExistingConversationPane({
   const route = useMemo(
     () =>
       resolveDesktopChatRouteFromSession(
-        session ?? null,
+        session ?? cacheSession ?? null,
         routeOptions,
         routeOptions[0] ?? null,
       ),
-    [routeOptions, session],
+    [routeOptions, session, cacheSession],
   );
   const compacting = compactStartedAt !== null;
   const canSubmitWithoutDraft = Boolean(
@@ -2288,7 +2344,7 @@ export function DesktopV3ExistingConversationPane({
   const loadedCommittedCount =
     loadedMessageCount ?? renderedMessages.committed.length;
   const totalMessageCount = Math.max(
-    session?.messageCount ??
+    sessionMessageCount ??
       cacheSession?.message_count ??
       loadedCommittedCount,
     loadedCommittedCount,
@@ -3060,9 +3116,11 @@ export function DesktopV3ExistingConversationPane({
   async function handleStop() {
     if (!normalizedSessionId || !currentRun?.runId) return;
     try {
+      const activeSession = session ?? cacheSession ?? null;
       const stopRequest = resolveDesktopV3StopRunRequest({
         route,
         runId: currentRun.runId,
+        session: activeSession,
       });
       await stopSessionV3Run(normalizedSessionId, stopRequest);
     } catch (error) {
@@ -3171,7 +3229,7 @@ export function DesktopV3ExistingConversationPane({
       const title = session?.title || cacheSession?.title || 'Conversation';
       const markdown = formatConversationMarkdown({
         title,
-        workspaceName: session?.workspaceName || cacheSession?.workspace_name,
+        workspaceName: sessionWorkspaceName || cacheSession?.workspace_name,
         sessionId: normalizedSessionId,
         exportedAt: new Date(),
       }, complete);
@@ -3190,7 +3248,7 @@ export function DesktopV3ExistingConversationPane({
     } finally {
       if (mountedRef.current) setTranscriptAction(null);
     }
-  }, [cacheSession?.title, cacheSession?.workspace_name, hasPartialHistory, normalizedSessionId, renderedMessages.committed, session?.title, session?.workspaceName, transcriptAction]);
+  }, [cacheSession?.title, cacheSession?.workspace_name, hasPartialHistory, normalizedSessionId, renderedMessages.committed, session?.title, sessionWorkspaceName, transcriptAction]);
   const headerSessionActions = useMemo(() => sessionActions ? {
     ...sessionActions,
     pendingAction: transcriptAction ?? sessionActions.pendingAction,
@@ -3280,7 +3338,7 @@ export function DesktopV3ExistingConversationPane({
         sessionId={normalizedSessionId}
         title={session?.title || cacheSession?.title || (startPresentation ? "New chat" : "Conversation")}
         workspaceName={
-          session?.workspaceName || cacheSession?.workspace_name || startPresentation?.workspaceName || "Workspace"
+          sessionWorkspaceName || cacheSession?.workspace_name || startPresentation?.workspaceName || "Workspace"
         }
         branchName={headerBranchLabel}
         modelLabel={canonicalHeaderModelLabel}
@@ -3387,16 +3445,10 @@ export function DesktopV3ExistingConversationPane({
               data-testid="desktop-chat-scroller"
               tabIndex={0}
             >
-              {/* Match the composer's 70rem frame, then double its 16/24px frame padding so both message edges sit exactly 16/24px inside the outlined composer. */}
-              <div
-                ref={contentRef}
-                className={cn(
-                  "mx-auto flex min-h-full w-full min-w-0 max-w-[70rem] flex-col gap-5 [&>*:not(:last-child)]:[overflow-anchor:none]",
-                  presentation === "sidebar" ? "px-4" : "px-8 sm:px-12",
-                  // The mobile workspace list owns its padding and scroll area;
-                  // message gutters otherwise squeeze its workspace/Task row.
-                  Boolean(emptyPresentation) && "max-sm:h-full max-sm:min-h-0 max-sm:max-w-none max-sm:gap-0 max-sm:px-0",
-                )}
+              <DesktopV3ChatContentLane
+                contentRef={contentRef}
+                presentation={presentation}
+                emptyPresentation={Boolean(emptyPresentation)}
               >
                 {emptyPresentation}
                 {showConversationLoading && !startPresentation ? (
@@ -3465,39 +3517,6 @@ export function DesktopV3ExistingConversationPane({
                     onOpenPermissions={openPermissionsSettings}
                   />
                 ))}
-                {pendingAutomationPermission && automationModalDismissedId === pendingAutomationPermission.id ? (
-                  <div
-                    className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[var(--app-primary-border)] bg-[var(--app-surface)] p-4 shadow-sm"
-                    data-testid="automation-modal-reopen-banner"
-                  >
-                    <div className="flex items-center gap-3 min-w-0">
-                      <div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-[var(--app-primary-soft)] text-[var(--app-primary)]">
-                        <CalendarClock size={18} aria-hidden="true" />
-                      </div>
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--app-primary)]">
-                            Pending Worker
-                          </span>
-                          <span className="rounded-full bg-[var(--app-primary-soft)] px-2 py-0.5 text-[10px] font-semibold text-[var(--app-primary)]">
-                            Modal review
-                          </span>
-                        </div>
-                        <p className="mt-0.5 truncate text-sm font-semibold text-[var(--app-text)]">
-                          {structuredPlanDocumentFromPermission(pendingAutomationPermission)?.title || "Worker plan review"}
-                        </p>
-                      </div>
-                    </div>
-                    <Button
-                      type="button"
-                      variant="primary"
-                      size="sm"
-                      onClick={() => setAutomationModalDismissedId(null)}
-                    >
-                      Open worker modal
-                    </Button>
-                  </div>
-                ) : null}
                 {visiblePlanPermissions.map((permission, index) => (
                   <DesktopInlinePlanReviewCard
                     key={permission.id}
@@ -3514,7 +3533,7 @@ export function DesktopV3ExistingConversationPane({
                   data-testid="desktop-chat-tail-anchor"
                   className="h-px shrink-0 [overflow-anchor:auto]"
                 />
-              </div>
+              </DesktopV3ChatContentLane>
             </div>
             {!isAtBottom ? (
               <button
@@ -3604,9 +3623,15 @@ export function DesktopV3ExistingConversationPane({
           ) : null}
 
           {cacheSession?.automation_v2 ? <AutomationV2ScheduleHandoff workspaceId={cacheSession.automation_v2.workspace_id} sessionId={normalizedSessionId} /> : null}
-          {cacheSession?.automation_v2 || metadataString(sessionMetadata, 'automation_v2_occurrence_id') ? <section aria-label="Worker conversation protected" className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4 text-sm"><strong>Worker conversation</strong><p className="mt-1 text-[var(--app-text-muted)]">This conversation is reserved for scheduled work. Use “Talk to Swarm to help optimize this worker” in Worker details to discuss changes without changing accepted instructions.</p></section> : composerOverride ?? <DesktopV3ExistingConversationComposer
+          {metadataString(sessionMetadata, 'automation_v2_occurrence_id') ? (
+            <section aria-label="Worker execution run" className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4 text-sm">
+              <strong>Automated Worker Execution</strong>
+              <p className="mt-1 text-[var(--app-text-muted)]">This session was generated by an automated background worker run. You can inspect its logs, deliverables, and artifacts.</p>
+            </section>
+          ) : (
+            composerOverride ?? <DesktopV3ExistingConversationComposer
             key={normalizedSessionId}
-            workspacePath={session?.workspacePath?.trim() || cacheSession?.workspace_path?.trim() || metadataString(sessionMetadata, "workspace_path")}
+            workspacePath={sessionWorkspacePath?.trim() || cacheSession?.workspace_path?.trim() || metadataString(sessionMetadata, "workspace_path")}
             sessionId={normalizedSessionId}
             initialDraft={storedOperation?.request.content ?? ""}
             initialArtifactSelections={storedOperation?.request.artifact_selections ?? []}
@@ -3628,15 +3653,14 @@ export function DesktopV3ExistingConversationPane({
             onArtifactSelectionRequestHandled={handleGalleryArtifactSelectionRequest}
             mediaCapability={mediaCapability}
             onUploadAttachment={async (file, signal) => {
-              const capability = await getDesktopV3MediaCapability(normalizedSessionId);
+              const capability = await getDesktopV3MediaCapability(normalizedSessionId).catch(() => null);
               const admission = admitComposerFile(file, capability);
-              if (admission.kind !== 'media' || !capability.contract_token) throw new Error('This file type is not supported as media by the current model and credential.');
+              if (admission.kind !== 'media') throw new Error(admission.kind === 'rejected' ? admission.reason : 'This file type is not supported as media.');
               const admitted = admission.capability;
               const fileType = admission.fileType;
               const mimeType = admission.mimeType;
-              const declaredMIME = mimeType || (fileType ? (admitted.mime_types ?? []).find((value) => value.toLowerCase().endsWith(`/${fileType === 'jpg' ? 'jpeg' : fileType}`)) : undefined);
-              if (!declaredMIME) throw new Error('The browser could not determine a supported media type for this attachment.');
-              return uploadDesktopV3MediaAsset({ sessionId: normalizedSessionId, file, mimeType: declaredMIME, modality: admitted.modality, fileType, contractToken: capability.contract_token, signal });
+              const declaredMIME = mimeType || (fileType ? (admitted.mime_types ?? []).find((value) => value.toLowerCase().endsWith(`/${fileType === 'jpg' ? 'jpeg' : fileType}`)) : undefined) || 'application/octet-stream';
+              return uploadDesktopV3MediaAsset({ sessionId: normalizedSessionId, file, mimeType: declaredMIME, modality: admitted.modality, fileType, contractToken: capability?.contract_token, signal });
             }}
             onSubmit={stableSubmit}
             onStop={handleStop}
@@ -3699,8 +3723,9 @@ export function DesktopV3ExistingConversationPane({
             onSlashCommand={onSlashCommand}
             developerMode={developerMode}
             onOpenActionSettings={onOpenActionSettings}
-          />}
-        </div>
+          />
+        )}
+      </div>
 
         {showConversationSidebarColumn ? (
           <div
@@ -3821,15 +3846,11 @@ export function DesktopV3ExistingConversationPane({
 
       <DesktopPermissionModal
         key={`permission:${normalizedSessionId}`}
-        open={isAutomationModalOpen}
+        open={Boolean(selectedPermission)}
         permission={selectedPermission}
         pendingCount={pendingModalPermissions.length}
         sessionMode={sessionMode}
-        onOpenChange={(open) => {
-          if (!open && selectedPermission && isAutomationPermission(selectedPermission)) {
-            setAutomationModalDismissedId(selectedPermission.id);
-          }
-        }}
+        onOpenChange={() => {}}
         onOpenPermissions={openPermissionsSettings}
         onResolve={handleResolvePermission}
       />
@@ -4811,10 +4832,44 @@ function DesktopV3UserMessage({
   artifactSelections?: DesktopV3ArtifactSelectionReference[];
   pendingLabel?: string;
 }) {
+  const envelope = useMemo(() => {
+    if (!content.startsWith('[Task Context:')) return null;
+    const sepIdx = content.indexOf('\n---\n');
+    if (sepIdx === -1) return null;
+    const header = content.slice(0, sepIdx);
+    const userPrompt = content.slice(sepIdx + 5).trim();
+    const taskTitleMatch = header.match(/task_title:\s*([^\n]+)/);
+    const taskIdMatch = header.match(/task_id:\s*([^\n]+)/);
+    const taskTitle = taskTitleMatch?.[1]?.trim() || taskIdMatch?.[1]?.trim() || 'Task';
+    const taskRevMatch = header.match(/task_revision:\s*([^\n]+)/);
+    const taskRev = taskRevMatch?.[1]?.trim();
+    return { taskTitle, taskRev, userPrompt };
+  }, [content]);
+
   return (
     <div className="flex justify-end">
       <div className="max-w-[70%] rounded-xl bg-[var(--app-primary)] px-4 py-3 text-sm leading-6 text-[var(--app-primary-text)] shadow-sm">
-        {content ? <div className="whitespace-pre-wrap break-words">{content}</div> : null}
+        {envelope ? (
+          <div className="space-y-1.5">
+            <div
+              className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-black/20 text-xs border border-white/20 font-medium"
+              data-testid="user-message-task-context-badge"
+            >
+              <span className="opacity-75">Task Context:</span>
+              <span className="font-semibold">{envelope.taskTitle}</span>
+              {envelope.taskRev && (
+                <span className="font-mono text-[10px] px-1 py-0.2 rounded bg-black/30 opacity-90">
+                  r{envelope.taskRev}
+                </span>
+              )}
+            </div>
+            {envelope.userPrompt ? (
+              <div className="whitespace-pre-wrap break-words">{envelope.userPrompt}</div>
+            ) : null}
+          </div>
+        ) : content ? (
+          <div className="whitespace-pre-wrap break-words">{content}</div>
+        ) : null}
         {media?.length ? <div className="mt-2 flex flex-wrap gap-1.5">{media.map((item, index) => <span key={`${item.asset_id}:${index}`} className="rounded-md border border-white/25 px-2 py-1 text-xs">{item.file_type?.toUpperCase() || item.mime_type} · {Math.ceil(item.size / 1024)} KB</span>)}</div> : null}
         {artifactSelections?.length ? <div className="mt-2 flex flex-wrap gap-1.5" data-testid="desktop-user-message-artifact-selections">{artifactSelections.map((selection) => <span key={`${selection.session_id}:${selection.collection_id}:${selection.variant_id}`} className="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-md border border-white/30 bg-white/10 px-2 py-1 text-xs"><GalleryHorizontal size={12} className="shrink-0" aria-hidden="true" /><span className="max-w-52 truncate" title={selection.description || selection.label}>{selection.label || 'Designer iteration'}</span>{selection.action === 'use' ? <span className="text-[9px] font-semibold uppercase tracking-wide opacity-75">Use design</span> : null}</span>)}</div> : null}
         {pendingLabel ? (
@@ -4871,6 +4926,38 @@ function DesktopV3CompactPendingState() {
   );
 }
 
+export function DesktopV3ChatContentLane({
+  children,
+  contentRef,
+  presentation = "page",
+  emptyPresentation = false,
+}: {
+  children: ReactNode;
+  contentRef?: MutableRefObject<HTMLDivElement | null>;
+  presentation?: "page" | "sidebar";
+  emptyPresentation?: boolean;
+}) {
+  return (
+    <div
+      ref={contentRef}
+      data-testid="desktop-chat-content-lane"
+      data-chat-presentation={presentation}
+      className={cn(
+        "mx-auto flex min-h-full w-full min-w-0 max-w-[70rem] flex-col gap-5 [&>*:not(:last-child)]:[overflow-anchor:none]",
+        // Padding is relative to the actual scrollport (including its symmetric
+        // scrollbar gutter), never the viewport. The shell composer can use the
+        // same variable and frame contract without compensating individual tools.
+        presentation === "sidebar"
+          ? "px-[var(--swarm-chat-gutter,16px)] [overflow-wrap:anywhere] [&_[data-chat-tool-message]]:translate-x-0 [&_[data-chat-assistant-body]]:w-full [&_[data-chat-assistant-body]]:max-w-full [&_.chat-markdown_pre]:overflow-x-auto [&_.chat-markdown_pre]:whitespace-pre [&_.chat-markdown_pre_code]:whitespace-pre"
+          : "px-8 sm:px-12",
+        emptyPresentation && "max-sm:h-full max-sm:min-h-0 max-sm:max-w-none max-sm:gap-0 max-sm:px-0",
+      )}
+    >
+      {children}
+    </div>
+  );
+}
+
 function DesktopV3AssistantMessage({
   content,
   role,
@@ -4880,7 +4967,7 @@ function DesktopV3AssistantMessage({
 }) {
   return (
     <div className="flex justify-start">
-      <div className="min-w-0 max-w-[calc(100%-2rem)] text-sm leading-6 text-[var(--app-text)]">
+      <div data-chat-assistant-body className="min-w-0 max-w-[calc(100%-2rem)] text-sm leading-6 text-[var(--app-text)]">
         {role === "reasoning" ? (
           <div className="mb-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--app-text-subtle)]">
             reasoning
@@ -4914,6 +5001,7 @@ function DesktopV3ToolMessage({
   const toolName = toolMessage?.tool.trim().toLowerCase();
   return (
     <div
+      data-chat-tool-message
       className={cn(
         "flex w-full min-w-0 justify-start",
         toolName === "bash" && "translate-x-[5px]",

@@ -1,0 +1,355 @@
+package pebblestore
+
+import (
+	"sync"
+	"testing"
+)
+
+func TestProjectStoreCRUD(t *testing.T) {
+	// Purpose:
+	// - Invariant: Project records must persist durably in Pebble store under account-scoped keys,
+	//   supporting Put, Get, List, Update, and Delete operations.
+	// - Boundary/authority: SessionStore.PutProject/GetProject/ListProjects/UpdateProject/DeleteProject in project_store.go.
+	// - Threat/regression: Stale records, missing account scoping, or cross-account leakage could corrupt project metadata.
+
+	path := t.TempDir()
+	db, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer db.Close()
+
+	sessionStore := NewSessionStore(db)
+	accountID := "acct_test_orchestrate"
+
+	// 1. Put project
+	proj1 := &ProjectRecord{
+		Name:        "Swarm Platform",
+		Description: "Core daemon, desktop client, and video production pipeline",
+		Workspaces: []ProjectWorkspaceRef{
+			{WorkspaceID: "ws_1", Path: "/path/to/swarm-go", Role: "primary_code", Label: "Core Engine"},
+			{WorkspaceID: "ws_2", Path: "/path/to/swarm-social", Role: "auxiliary", Label: "Social Studio"},
+		},
+		ProjectContext: "# Swarm Platform\n\nCore platform architecture.",
+	}
+
+	if err := sessionStore.PutProject(accountID, proj1); err != nil {
+		t.Fatalf("failed to put project: %v", err)
+	}
+	if proj1.ID == "" {
+		t.Fatalf("expected project ID to be generated")
+	}
+
+	// 2. Put second project
+	proj2 := &ProjectRecord{
+		Name:        "Secondary App",
+		Description: "Auxiliary application",
+	}
+	if err := sessionStore.PutProject(accountID, proj2); err != nil {
+		t.Fatalf("failed to put second project: %v", err)
+	}
+
+	// 3. Get project
+	fetched, found, err := sessionStore.GetProject(accountID, proj1.ID)
+	if err != nil || !found {
+		t.Fatalf("failed to get project: %v, found: %v", err, found)
+	}
+	if fetched.Name != proj1.Name {
+		t.Fatalf("expected name %q, got %q", proj1.Name, fetched.Name)
+	}
+	if len(fetched.Workspaces) != 2 {
+		t.Fatalf("expected 2 workspaces, got %d", len(fetched.Workspaces))
+	}
+
+	// Cross-account isolation check
+	otherAccount := "acct_other"
+	_, foundOther, err := sessionStore.GetProject(otherAccount, proj1.ID)
+	if err != nil {
+		t.Fatalf("unexpected error checking other account: %v", err)
+	}
+	if foundOther {
+		t.Fatalf("expected project not to be found under different account")
+	}
+
+	// 4. List projects
+	list, err := sessionStore.ListProjects(accountID, 10)
+	if err != nil {
+		t.Fatalf("failed to list projects: %v", err)
+	}
+	if len(list) != 2 {
+		t.Fatalf("expected 2 projects, got %d", len(list))
+	}
+
+	// 5. Update project
+	updated, err := sessionStore.UpdateProject(accountID, proj1.ID, func(p *ProjectRecord) error {
+		p.Name = "Swarm Platform Unified"
+		p.ActiveTaskIDs = []string{"task_1", "task_2"}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("failed to update project: %v", err)
+	}
+	if updated.Name != "Swarm Platform Unified" {
+		t.Fatalf("expected updated name, got %q", updated.Name)
+	}
+	if len(updated.ActiveTaskIDs) != 2 {
+		t.Fatalf("expected 2 active tasks, got %d", len(updated.ActiveTaskIDs))
+	}
+
+	// 6. Delete project
+	if err := sessionStore.DeleteProject(accountID, proj2.ID); err != nil {
+		t.Fatalf("failed to delete project: %v", err)
+	}
+	listAfterDelete, err := sessionStore.ListProjects(accountID, 10)
+	if err != nil {
+		t.Fatalf("failed to list projects after delete: %v", err)
+	}
+	if len(listAfterDelete) != 1 {
+		t.Fatalf("expected 1 project after delete, got %d", len(listAfterDelete))
+	}
+}
+
+func TestProjectTaskStoreCRUD(t *testing.T) {
+	// Purpose:
+	// - Invariant: ProjectTask records persist durably in Pebble store under account & project scoped keys,
+	//   supporting Put, Get, List, Update, and Delete operations.
+	// - Boundary/authority: SessionStore.PutProjectTask/GetProjectTask/ListProjectTasks/UpdateProjectTask/DeleteProjectTask in project_store.go.
+	// - Threat/regression: Cross-project task collision, status corruption, or lost deliverables.
+
+	path := t.TempDir()
+	db, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer db.Close()
+
+	sessionStore := NewSessionStore(db)
+	accountID := "acct_test_tasks"
+	projectID := "proj_alpha"
+
+	task1 := &ProjectTaskRecord{
+		ProjectID:          projectID,
+		Title:              "Make 3 Video Variants",
+		Description:        "Produce promotional clips for launch",
+		Status:             "in_progress",
+		Agent:              "video",
+		WorkerName:         "@Video Swarm Dispatcher",
+		PipelineStages:     []string{"Design", "Generate", "Polish", "Deliver"},
+		CurrentStageIndex:  1,
+		WorkspacesInvolved: []string{"web", "swarm-go"},
+		PlanSummary:        "1. Video generation\n2. Audio soundtrack\n3. Review",
+		FullPlanMarkdown:   "### Full Plan\n- Step 1: Script\n- Step 2: Render",
+		Tier:               "complex",
+		Revision:           2,
+		LastError:          "GPU allocation timeout (recovered)",
+		FeedbackHistory:    []string{"make it 15s instead of 30s"},
+		Deliverables: []ProjectTaskDeliverable{
+			{
+				ID:        "deliv_1",
+				Title:     "Neon Cyber Lattice",
+				Kind:      "video",
+				Status:    "ready",
+				Duration:  "0:15",
+				Thumbnail: "cyber_lattice",
+			},
+		},
+	}
+
+	if err := sessionStore.PutProjectTask(accountID, task1); err != nil {
+		t.Fatalf("failed to put project task: %v", err)
+	}
+	if task1.ID == "" {
+		t.Fatalf("expected task ID to be auto-generated")
+	}
+
+	// 2. Put second task
+	task2 := &ProjectTaskRecord{
+		ProjectID: projectID,
+		Title:     "Fix composer popup trigger",
+		Status:    "queued",
+		Agent:     "coder",
+	}
+	if err := sessionStore.PutProjectTask(accountID, task2); err != nil {
+		t.Fatalf("failed to put second task: %v", err)
+	}
+
+	// 3. Get task
+	fetched, found, err := sessionStore.GetProjectTask(accountID, projectID, task1.ID)
+	if err != nil || !found {
+		t.Fatalf("failed to get task: %v, found: %v", err, found)
+	}
+	if fetched.Title != task1.Title {
+		t.Fatalf("expected title %q, got %q", task1.Title, fetched.Title)
+	}
+	if len(fetched.Deliverables) != 1 || fetched.Deliverables[0].ID != "deliv_1" {
+		t.Fatalf("expected 1 deliverable with ID deliv_1, got %#v", fetched.Deliverables)
+	}
+	if len(fetched.WorkspacesInvolved) != 2 || fetched.WorkspacesInvolved[0] != "web" {
+		t.Fatalf("expected WorkspacesInvolved [web, swarm-go], got %#v", fetched.WorkspacesInvolved)
+	}
+	if fetched.Revision != 2 || fetched.Tier != "complex" || fetched.LastError == "" {
+		t.Fatalf("expected revision 2, tier complex, got revision=%d, tier=%s, err=%s", fetched.Revision, fetched.Tier, fetched.LastError)
+	}
+
+	// 4. List tasks for project
+	tasks, err := sessionStore.ListProjectTasks(accountID, projectID, 50)
+	if err != nil {
+		t.Fatalf("failed to list project tasks: %v", err)
+	}
+	if len(tasks) != 2 {
+		t.Fatalf("expected 2 tasks, got %d", len(tasks))
+	}
+
+	// 5. Update task (e.g. status transition in_progress -> needs_review)
+	updated, err := sessionStore.UpdateProjectTask(accountID, projectID, task1.ID, func(t *ProjectTaskRecord) error {
+		t.Status = "needs_review"
+		t.CurrentStageIndex = 3
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("failed to update task: %v", err)
+	}
+	if updated.Status != "needs_review" || updated.CurrentStageIndex != 3 {
+		t.Fatalf("unexpected updated task status: %v", updated)
+	}
+
+	// 6. Delete task
+	if err := sessionStore.DeleteProjectTask(accountID, projectID, task2.ID); err != nil {
+		t.Fatalf("failed to delete task: %v", err)
+	}
+	tasksAfterDelete, err := sessionStore.ListProjectTasks(accountID, projectID, 50)
+	if err != nil {
+		t.Fatalf("failed to list tasks after delete: %v", err)
+	}
+	if len(tasksAfterDelete) != 1 {
+		t.Fatalf("expected 1 task after delete, got %d", len(tasksAfterDelete))
+	}
+}
+
+func TestProjectStore_UploadedMedia_CRUD(t *testing.T) {
+	// Purpose:
+	// - Invariant: Uploaded media on ProjectRecord and AttachedMedia on ProjectTaskRecord
+	//   must persist durably across Pebble reads/updates.
+	// - Boundary/authority: PutProject, GetProject, UpdateProject, PutProjectTask in project_store.go.
+	path := t.TempDir()
+	db, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer db.Close()
+
+	store := NewSessionStore(db)
+	accountID := "acct_media_test"
+
+	proj := &ProjectRecord{
+		Name: "Media Studio Project",
+		UploadedMedia: []ProjectTaskMediaRef{
+			{
+				ID:        "med_1",
+				Title:     "concept_art.png",
+				Kind:      "image",
+				MediaType: "image/png",
+				URL:       "data:image/png;base64,abc",
+				SizeBytes: 1024,
+			},
+		},
+	}
+	if err := store.PutProject(accountID, proj); err != nil {
+		t.Fatalf("failed to put project: %v", err)
+	}
+
+	fetched, found, err := store.GetProject(accountID, proj.ID)
+	if err != nil || !found {
+		t.Fatalf("failed to get project: %v", err)
+	}
+	if len(fetched.UploadedMedia) != 1 || fetched.UploadedMedia[0].Title != "concept_art.png" {
+		t.Fatalf("expected 1 uploaded media item, got %v", fetched.UploadedMedia)
+	}
+
+	// Update project: add second uploaded item
+	updated, err := store.UpdateProject(accountID, proj.ID, func(p *ProjectRecord) error {
+		p.UploadedMedia = append(p.UploadedMedia, ProjectTaskMediaRef{
+			ID:        "med_2",
+			Title:     "spec.md",
+			Kind:      "doc",
+			MediaType: "text/markdown",
+			Data:      "# Requirements",
+		})
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("failed to update project: %v", err)
+	}
+	if len(updated.UploadedMedia) != 2 {
+		t.Fatalf("expected 2 uploaded media items, got %d", len(updated.UploadedMedia))
+	}
+
+	// Verify task with AttachedMedia
+	task := &ProjectTaskRecord{
+		ProjectID: proj.ID,
+		Title:     "Swarm Iteration Task",
+		Status:    "in_progress",
+		Agent:     "designer",
+		AttachedMedia: []ProjectTaskMediaRef{
+			updated.UploadedMedia[0],
+		},
+	}
+	if err := store.PutProjectTask(accountID, task); err != nil {
+		t.Fatalf("failed to put task: %v", err)
+	}
+	fetchedTask, foundTask, err := store.GetProjectTask(accountID, proj.ID, task.ID)
+	if err != nil || !foundTask {
+		t.Fatalf("failed to get task: %v", err)
+	}
+	if len(fetchedTask.AttachedMedia) != 1 || fetchedTask.AttachedMedia[0].ID != "med_1" {
+		t.Fatalf("expected 1 attached media on task, got %v", fetchedTask.AttachedMedia)
+	}
+}
+
+// Purpose: a task ID reserves one immutable execution target despite concurrent
+// submissions. Threat: last-writer-wins replacement dispatches the same ID to a
+// second repository. ReserveProjectTaskIfAbsent is the narrow durable authority.
+func TestReserveProjectTaskIfAbsentConcurrentDoesNotOverwrite(t *testing.T) {
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	store := NewSessionStore(db)
+	first := &ProjectTaskRecord{ID: "task-one", ProjectID: "project", Title: "Implement", Agent: "coder", Status: "pending_approval", WorkspacePath: "/repo/one", SessionID: "session-one", SourceWorkspace: ProjectTaskSource{WorkspaceID: "one", Path: "/repo/one", WorkspaceGeneration: 1, Provenance: "explicit"}}
+	second := &ProjectTaskRecord{ID: "task-one", ProjectID: "project", Title: "Implement", Agent: "coder", Status: "pending_approval", WorkspacePath: "/repo/two", SessionID: "session-two", SourceWorkspace: ProjectTaskSource{WorkspaceID: "two", Path: "/repo/two", WorkspaceGeneration: 1, Provenance: "explicit"}}
+	var wg sync.WaitGroup
+	results := make(chan bool, 2)
+	for _, task := range []*ProjectTaskRecord{first, second} {
+		wg.Add(1)
+		go func(task *ProjectTaskRecord) {
+			defer wg.Done()
+			claimed, err := store.ReserveProjectTaskIfAbsent("account", task)
+			if err != nil {
+				t.Errorf("reserve: %v", err)
+			}
+			results <- claimed
+		}(task)
+	}
+	wg.Wait()
+	close(results)
+	claims := 0
+	for claimed := range results {
+		if claimed {
+			claims++
+		}
+	}
+	if claims != 1 {
+		t.Fatalf("expected exactly one owner, got %d", claims)
+	}
+	saved, found, err := store.GetProjectTask("account", "project", "task-one")
+	if err != nil || !found {
+		t.Fatalf("missing owner: %v", err)
+	}
+	if saved.SourceWorkspace.WorkspaceID != "one" && saved.SourceWorkspace.WorkspaceID != "two" {
+		t.Fatalf("unexpected owner: %+v", saved.SourceWorkspace)
+	}
+	if _, found, err := store.GetProjectTask("other", "project", "task-one"); err != nil || found {
+		t.Fatalf("cross-account reservation visible: %v", err)
+	}
+}

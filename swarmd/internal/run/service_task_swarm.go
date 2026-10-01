@@ -199,6 +199,12 @@ func (r *configuredTaskSwarmRouter) Hydrate(ctx context.Context, request taskSwa
 func (r *configuredTaskSwarmRouter) taskSwarmRouterOutput(ctx context.Context, req provideriface.Request, attempt int) (string, error) {
 	callCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	if r.sessions != nil {
+		callCtx = withWorkerBudget(callCtx, r.sessions.Store(), r.principal.AccountScopeID, r.parentID)
+		if err := checkProviderWorkerBudget(callCtx, r.runner, req); err != nil {
+			return "", err
+		}
+	}
 	var output strings.Builder
 	outputRunes := 0
 	overLimit := false
@@ -232,6 +238,7 @@ func (r *configuredTaskSwarmRouter) taskSwarmRouterOutput(ctx context.Context, r
 		}
 		uniqueRouterRunID := fmt.Sprintf("router:%s:%d:%d", r.callID, attempt, time.Now().UnixNano())
 		routerUsage := pebblestore.SessionTurnUsageSnapshot{
+			BudgetOperationID:      providerBudgetOperation(callCtx),
 			SessionID:              r.parentID,
 			AccountScopeID:         r.principal.AccountScopeID,
 			UserID:                 r.principal.UserID,
@@ -260,6 +267,11 @@ func (r *configuredTaskSwarmRouter) taskSwarmRouterOutput(ctx context.Context, r
 		}
 	}
 
+	if hasConcreteUsageSnapshot(response.Usage) {
+		if err := releaseProviderWorkerBudget(callCtx); err != nil {
+			return "", err
+		}
+	}
 	if overLimit || utf8.RuneCountInString(response.Text) > taskSwarmRouterMaxOutputRunes {
 		return "", fmt.Errorf("task swarm Router output exceeded %d characters", taskSwarmRouterMaxOutputRunes)
 	}

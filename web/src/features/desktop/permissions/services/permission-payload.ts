@@ -550,7 +550,8 @@ export function permissionRequiresApproval(
   permission: Pick<DesktopPermissionRecord, 'toolName' | 'mode' | 'requirement'>,
   fallbackMode = 'plan',
 ): boolean {
-  if (safeString(permission.requirement).toLowerCase() === 'workspace_scope') {
+  const requirement = safeString(permission.requirement).toLowerCase()
+  if (requirement === 'workspace_scope' || requirement === 'automation_v2_acceptance') {
     return true
   }
   const toolName = normalizePermissionToolName(permission.toolName)
@@ -600,6 +601,9 @@ export function permissionKind(permission: DesktopPermissionRecord): DesktopPerm
     return 'workspace-scope'
   }
   switch (normalizePermissionToolName(permission.toolName)) {
+    case 'manage_workers':
+    case 'manage_automation':
+      return requirement === 'automation_v2_acceptance' ? 'automation-v2-acceptance' : 'generic'
     case 'exit_plan_mode':
       return 'exit-plan'
     case 'plan_manage':

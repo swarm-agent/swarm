@@ -51,6 +51,10 @@ func TestTaskProgramRepositoryLanePreflightReuseAndIsolation(t *testing.T) {
 	target := programFixtureRepo(t)
 	sourceHead := programFixtureGit(t, target, "rev-parse", "HEAD")
 	parent.TemporaryWorkspaceRoots = []string{target}
+	parent.WorkspaceGrants = append(parent.WorkspaceGrants, pebblestore.WorkspaceGrant{WorkspaceID: "target-repo", WorkspaceGeneration: 1, Path: target})
+	svc.SetSessionWorkspaceCanonicalizer(func(input SessionWorkspaceCanonicalizeInput) (SessionWorkspaceCanonicalization, error) {
+		return SessionWorkspaceCanonicalization{WorkspaceID: input.WorkspaceID, WorkspaceGeneration: 1, WorkspaceState: "active", WorkspaceName: "target", SourceWorkspacePath: target, RuntimeWorkspacePath: target, WorkspaceBindingID: "binding", RuntimeSwarmID: "swarm", PlacementGeneration: 1, BindingGeneration: 1}, nil
+	})
 	svc.worktrees = &worktree.Service{}
 	spec := &taskProgramSpec{ID: "lane-one", Stages: []taskProgramStage{{ID: "build", DependencyEvidence: "ready"}}, Jobs: []taskProgramJob{{ID: "build", StageID: "build", RequestedSubagentType: "coder", OwnedScope: []string{"source.txt"}}}}
 	initial, err := taskProgramInitialRecord(parentID, "run", "call", spec)

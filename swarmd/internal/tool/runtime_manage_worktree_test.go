@@ -85,8 +85,8 @@ func (s *coderLineageWorktreeService) ValidateSessionRepositoryLane(source, lane
 	return nil
 }
 
-func (s *coderLineageWorktreeService) TaskCommitDescendsFrom(_, _, _ string) (bool, error) {
-	return false, nil
+func (s *coderLineageWorktreeService) TaskCommitDescendsFrom(_, base, _ string) (bool, error) {
+	return s.integrated[base], nil
 }
 
 func (s *coderLineageWorktreeService) TaskCommitRangeIntegratedInto(_, _, headCommit, _ string) (bool, error) {
@@ -115,7 +115,7 @@ func (s *coderLineageWorktreeService) PrepareTaskIntegration(_ string, expectedP
 	return worktreeruntime.TaskIntegrationPlan{ParentBranch: expectedParentBranch, ParentHead: expectedParentHead, Entries: entries, Commits: commits}, nil
 }
 
-func (s *coderLineageWorktreeService) ApplyTaskIntegration(_ string, plan worktreeruntime.TaskIntegrationPlan) (worktreeruntime.TaskIntegrationResult, error) {
+func (s *coderLineageWorktreeService) ApplyTaskIntegration(path string, plan worktreeruntime.TaskIntegrationPlan) (worktreeruntime.TaskIntegrationResult, error) {
 	s.applyCalls++
 	if s.applyResult.ResultingParentHead == "" {
 		s.applyResult = worktreeruntime.TaskIntegrationResult{TaskIntegrationPlan: plan, ResultingParentHead: "integrated-parent-head"}
@@ -126,9 +126,9 @@ func (s *coderLineageWorktreeService) ApplyTaskIntegration(_ string, plan worktr
 	for _, entry := range s.applyResult.Entries {
 		s.integrated[entry.HeadCommit] = true
 	}
-	parent := s.states["/repo"]
+	parent := s.states[path]
 	parent.HeadCommit = s.applyResult.ResultingParentHead
-	s.states["/repo"] = parent
+	s.states[path] = parent
 	return s.applyResult, nil
 }
 
@@ -177,7 +177,7 @@ func TestManageWorktreePromoteReportsDirtyTargetBeforeApply(t *testing.T) {
 	source.Metadata["swarm_v3_source_workspace_path"] = "/captured"
 	source.Metadata["base_commit"] = "captured-head"
 	sessions.parent = source
-	worktrees.states["/captured"] = worktreeruntime.TaskWorkspaceState{WorkspacePath: "/captured", BranchName: "dev", HeadCommit: "captured-head", Status: " M docs/swarm-atlas.md", Clean: false}
+	worktrees.states["/captured"] = worktreeruntime.TaskWorkspaceState{WorkspacePath: "/captured", BranchName: "dev", HeadCommit: "captured-head", Status: " M README.md", Clean: false}
 
 	_, err := runtime.manageWorktreePromote(scope, map[string]any{
 		"source_session_id": source.ID, "source_branch": source.WorktreeBranch, "source_head": "parent-head",

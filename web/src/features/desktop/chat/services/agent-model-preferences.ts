@@ -28,7 +28,7 @@ function record(value: unknown): Record<string, unknown> {
 export function resolveDesktopV3SessionAgentModelLock(metadata: unknown): AgentModelLockState | null {
   const profile = record(record(metadata).agent_profile)
   const agentName = String(profile.name ?? '').trim()
-  if (!agentName || agentName.toLowerCase() === 'swarm') return null
+  if (!agentName || agentName.toLowerCase() === 'swarm' || agentName.toLowerCase() === 'system-orchestrator' || agentName.toLowerCase() === 'swarm-orchestrator' || agentName.toLowerCase() === 'orchestrator') return null
   const provider = String(profile.provider ?? '').trim()
   const model = String(profile.model ?? '').trim()
   if (!provider || !model) return null
@@ -53,7 +53,7 @@ export function resolveDesktopV3AgentModelLock(
 ): AgentModelLockState {
   const profile = findAgentProfile(agents, selectedAgentName)
   const agentName = profile?.name.trim() || selectedAgentName.trim()
-  if (agentName.toLowerCase() === 'swarm') {
+  if (agentName.toLowerCase() === 'swarm' || agentName.toLowerCase() === 'system-orchestrator' || agentName.toLowerCase() === 'swarm-orchestrator' || agentName.toLowerCase() === 'orchestrator') {
     return { profile, locked: false, customized: false, agentName, provider: '', model: '', thinking: '', serviceTier: '', disabledReason: '' }
   }
   const preference = {

@@ -63,6 +63,10 @@ func (r *sessionsV3ProviderToolsRunner) ResolveAgentToolContractForAccount(strin
 	return r.contract, nil, r.disabled, nil
 }
 
+func (r *sessionsV3ProviderToolsRunner) ExecuteTaskProgramForCoordinator(context.Context, identity.Principal, string, string, pebblestore.TaskProgramRecord) (string, error) {
+	return "completed", nil
+}
+
 func (r *sessionsV3ProviderToolsRunner) CompileStoredV3AgentToolContract(_ string, profile pebblestore.AgentProfile) (runruntime.ResolvedAgentToolContract, map[string]bool, error) {
 	r.compiledProfiles = append(r.compiledProfiles, cloneSessionsV3AgentProfile(profile))
 	return r.contract, r.disabled, nil

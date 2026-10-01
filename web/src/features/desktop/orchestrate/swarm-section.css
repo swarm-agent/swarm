@@ -1,0 +1,328 @@
+/* Orchestrate owns this boundary, including its in-tree dialogs and imported panels.
+   These selectors enumerate known palette utilities, not arbitrary class substrings;
+   media pixels, charts, transparent overlays and status controls keep their meaning. */
+.swarm-section { background: var(--swarm-background); color: var(--swarm-text); user-select: text; }
+.swarm-section ::selection { background: var(--swarm-accent); color: var(--swarm-accent-text); }
+.swarm-section .swarm-ai-sidebar { background: var(--swarm-surface); color: var(--swarm-text); border-color: var(--swarm-border-muted); }
+.swarm-section :focus-visible { outline: 2px solid var(--swarm-accent); outline-offset: 2px; }
+.swarm-section :is(aside, main) { border-color: var(--swarm-border-muted); }
+.swarm-section :is(aside, main):where([class*="rounded-3xl"]) { background-color: var(--swarm-surface); }
+.swarm-section :is(.bg-slate-950, .bg-slate-950\/40, .bg-slate-900\/30, .bg-slate-900\/50, .bg-slate-900\/60, .bg-slate-900\/80, .bg-slate-900\/90, .bg-slate-900, .bg-slate-800, .bg-slate-800\/60, .bg-slate-800\/80, .bg-white\/\[0\.04\], .bg-white\/\[0\.08\]) { background-color: var(--swarm-surface-subtle); }
+.swarm-section :is(.bg-\[\#0d121f\], .bg-\[\#0d121f\]\/95, .bg-\[\#0a0f1d\], .bg-\[\#0a0f1d\]\/60, .bg-\[\#090d16\], .bg-\[\#070b14\], .bg-\[\#070b14\]\/70, .bg-\[\#070b14\]\/90, .bg-\[\#050811\], .bg-\[\#070d1e\]\/90) { background-color: var(--swarm-surface-subtle); }
+.swarm-section :is(.text-white, .text-slate-100, .text-slate-200) { color: var(--swarm-text); }
+.swarm-section :is(.text-slate-300, .text-slate-400) { color: var(--swarm-text-muted); }
+.swarm-section :is(.text-slate-500, .text-slate-600, .placeholder-slate-500)::placeholder { color: var(--swarm-text-subtle); }
+.swarm-section :is(.text-slate-500, .text-slate-600) { color: var(--swarm-text-subtle); }
+.swarm-section :is(.border-slate-700, .border-slate-700\/50, .border-slate-700\/60, .border-slate-800, .border-slate-800\/60, .border-slate-800\/70, .border-slate-800\/80) { border-color: var(--swarm-border-muted); }
+.swarm-section :is(.text-blue-400, .text-blue-300, .text-indigo-400, .text-indigo-300, .text-cyan-400, .text-sky-400) { color: var(--swarm-text-accent); }
+.swarm-section :is(.bg-blue-600, .bg-indigo-600, .bg-cyan-600, .bg-sky-600) { background-color: var(--swarm-accent); color: var(--swarm-accent-text); }
+.swarm-section :is(.bg-blue-600, .bg-indigo-600, .bg-cyan-600, .bg-sky-600):hover { background-color: var(--swarm-accent-hover); }
+.swarm-section :is(.bg-blue-600, .bg-indigo-600, .bg-cyan-600, .bg-sky-600).text-white { color: var(--swarm-accent-text); }
+.swarm-section :is(.bg-blue-950\/20, .bg-blue-950\/40, .bg-blue-950\/60, .bg-indigo-950\/30, .bg-indigo-950\/40, .bg-indigo-950\/70, .bg-\[\#070d1e\]\/90) { background-color: var(--swarm-info-bg); }
+.swarm-section :is(.bg-amber-950\/20, .bg-amber-950\/30, .bg-amber-950\/40, .bg-amber-950\/50, .bg-amber-950\/60, .bg-amber-950\/80, .bg-amber-900\/40, .bg-amber-900\/60) { background-color: var(--swarm-warning-bg); }
+.swarm-section :is(.bg-rose-950\/20, .bg-rose-950\/30, .bg-rose-950\/40, .bg-rose-950\/80, .bg-rose-900\/40) { background-color: var(--swarm-danger-bg); }
+.swarm-section :is(.bg-emerald-950\/20, .bg-emerald-950\/30, .bg-emerald-950\/40, .bg-emerald-950\/60, .bg-emerald-950\/80) { background-color: var(--swarm-success-bg); }
+.swarm-section :is(.text-amber-200, .text-amber-300, .text-amber-400) { color: var(--swarm-warning); }
+.swarm-section :is(.text-rose-200, .text-rose-300, .text-rose-400) { color: var(--swarm-danger); }
+.swarm-section :is(.text-emerald-200, .text-emerald-300, .text-emerald-400) { color: var(--swarm-success); }
+.swarm-section :is(.text-indigo-200, .text-blue-200) { color: var(--swarm-text-accent); }
+.swarm-section :is(.border-blue-500\/30, .border-blue-500\/40, .border-indigo-500\/30, .border-indigo-500\/40) { border-color: var(--swarm-border-accent); }
+.swarm-section :is(.border-amber-500\/30, .border-amber-500\/40, .border-amber-500\/60) { border-color: var(--swarm-warning-border); }
+.swarm-section :is(.border-rose-500\/40, .border-rose-500\/50) { border-color: var(--swarm-danger-border); }
+.swarm-section :is(.border-emerald-500\/30, .border-emerald-500\/40) { border-color: var(--swarm-success-border); }
+.swarm-section :is(input, textarea, select) { color: var(--swarm-text); }
+.swarm-section :is(input, textarea)::placeholder { color: var(--swarm-text-subtle); }
+.swarm-section :is(select, textarea):not(.bg-transparent) { background-color: var(--swarm-background-inset); }
+.swarm-section :is(.swarm-task-card, .swarm-task-expanded, .swarm-theme-picker select) { background: var(--swarm-surface); color: var(--swarm-text); border-color: var(--swarm-border-muted); }
+.swarm-section .swarm-task-card:hover { border-color: var(--swarm-border); background: var(--swarm-surface-hover); }
+.swarm-section .swarm-task-card-selected { border-color: var(--swarm-border-accent); }
+.swarm-theme-picker { display: grid; gap: 5px; padding: 7px 2px; font-size: 11px; color: var(--swarm-text-muted); }
+.swarm-theme-picker label { font-weight: 650; }
+.swarm-theme-picker select { width: 100%; border: 1px solid var(--swarm-border); border-radius: 9px; padding: 6px 8px; }
+.swarm-theme-picker p { line-height: 1.4; color: var(--swarm-warning); }
+.swarm-task-card {
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--swarm-border-muted);
+  border-radius: 12px;
+  background: var(--swarm-surface);
+  color: var(--swarm-text);
+  container-type: inline-size;
+  box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.2);
+  transition: border-color 0.15s ease, background-color 0.15s ease, box-shadow 0.15s ease;
+}
+.swarm-task-card:hover {
+  border-color: var(--swarm-border);
+  background: var(--swarm-surface-hover);
+  box-shadow: 0 4px 14px -2px rgba(0, 0, 0, 0.35);
+}
+.swarm-task-card-selected {
+  border-color: var(--swarm-border-accent);
+  box-shadow: 0 0 0 1px var(--swarm-border-accent), 0 4px 16px -2px rgba(59, 130, 246, 0.25);
+}
+.swarm-task-context { min-width: 0; }
+.swarm-task-expanded { display: grid; gap: 8px; }
+.swarm-task-summary { display: flex; align-items: flex-start; gap: 10px; min-width: 0; }
+.swarm-task-visual { position: relative; flex: none; display: flex; align-items: center; justify-content: center; width: 38px; height: 38px; overflow: hidden; border: 1px solid var(--swarm-border-muted); border-radius: 9px; background: var(--swarm-background-inset); color: var(--swarm-accent); padding: 0; }
+.swarm-task-visual img, .swarm-task-visual video { width: 100%; height: 100%; object-fit: cover; }
+.swarm-task-visual-icon { background: var(--swarm-surface-subtle); }
+.swarm-task-visual-icon > svg:not(.swarm-task-dependencies) { position: relative; z-index: 1; }
+.swarm-task-dependencies { position: absolute; inset: 0; width: 100%; height: 100%; opacity: .3; fill: var(--swarm-accent); stroke: var(--swarm-accent); stroke-width: 1.5; }
+.swarm-task-summary-content { min-width: 0; flex: 1; }
+.swarm-task-header-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; }
+.swarm-task-summary h3 { font-size: 13px; font-weight: 650; letter-spacing: -.015em; line-height: 1.3; overflow-wrap: anywhere; color: var(--swarm-text); margin: 0; }
+.swarm-task-byline { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 3px; font-size: 10.5px; text-transform: capitalize; color: var(--swarm-text-muted); }
+.swarm-task-metadata-strip { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 4px; font-size: 10px; }
+.swarm-task-model, .swarm-task-activity { font-size: 10px; line-height: 1.35; color: var(--swarm-text-muted); overflow-wrap: anywhere; }
+.swarm-task-activity { color: var(--swarm-text-accent); }
+.swarm-task-facts { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 6px 13px; margin-top: 8px; }
+.swarm-task-fact { min-width: 0; font-size: 10px; line-height: 1.35; }
+.swarm-task-fact dt { font-size: 9.5px; color: var(--swarm-text-subtle); }
+.swarm-task-fact dd { display: flex; align-items: center; gap: 3px; margin: 2px 0 0; overflow-wrap: anywhere; word-break: break-word; color: var(--swarm-text); }
+.swarm-task-fact:last-child { grid-column: 1/-1; }
+.swarm-task-break { overflow-wrap: anywhere; }
+.swarm-task-evidence { display: flex; flex-wrap: wrap; gap: 5px 12px; margin-top: 6px; border-top: 1px solid var(--swarm-border-muted); padding-top: 6px; font-size: 10.5px; color: var(--swarm-text-muted); }
+.swarm-task-evidence span:not(:first-child)::before { content: '·'; margin-right: 12px; color: var(--swarm-text-subtle); }
+.swarm-task-action-row { display: flex; align-items: center; justify-content: space-between; width: 100%; }
+.swarm-task-action-buttons { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 6px; }
+.swarm-task-action-buttons > button { border-radius: 6px; padding: 4px 8px; font-size: 10.5px; }
+[data-testid="task-card-chat-btn"] { border-radius: 6px; transition: all 0.15s ease; }
+.swarm-task-details-toggle { display: flex; align-items: center; justify-content: space-between; width: 100%; border-top: 1px solid var(--swarm-border-muted); padding: 6px 0 0; text-align: left; font-size: 10.5px; color: var(--swarm-text-muted); transition: color 0.15s ease; }
+.swarm-task-details-toggle:hover { color: var(--swarm-text); }
+/* The collapsed card shares one footer row; the toggle must not claim its full width. */
+.swarm-task-usage-footer { border-top: 1px solid var(--swarm-border-muted); padding-top: 6px; }
+.swarm-task-usage-footer > .swarm-task-details-toggle { flex: 0 0 auto; width: auto; border-top: 0; padding: 0; }
+@container (max-width: 460px) { .swarm-task-visual { width: 32px; height: 32px; } }
+
+/* Shared Desktop controls inherit these aliases only inside Swarm, including the
+   section-owned model-settings portal. No document/root theme is mutated. */
+.swarm-section {
+  --app-bg: var(--swarm-background); --app-bg-alt: var(--swarm-surface-subtle);
+  --app-bg-panel: var(--swarm-surface); --app-bg-inset: var(--swarm-background-inset);
+  --app-bg-overlay: var(--swarm-surface); --app-surface: var(--swarm-surface);
+  --app-surface-subtle: var(--swarm-surface-subtle); --app-surface-elevated: var(--swarm-surface);
+  --app-surface-hover: var(--swarm-surface-hover); --app-surface-active: var(--swarm-surface-hover);
+  --app-border: var(--swarm-border); --app-border-muted: var(--swarm-border-muted);
+  --app-border-strong: var(--swarm-border-accent); --app-border-accent: var(--swarm-border-accent);
+  --app-text: var(--swarm-text); --app-text-muted: var(--swarm-text-muted);
+  --app-text-subtle: var(--swarm-text-subtle); --app-text-accent: var(--swarm-text-accent);
+  --app-primary: var(--swarm-accent); --app-primary-hover: var(--swarm-accent-hover);
+  --app-primary-active: var(--swarm-accent); --app-primary-text: var(--swarm-accent-text);
+  --app-focus-ring: var(--swarm-accent); --app-selection: var(--swarm-surface-hover);
+  --app-warning: var(--swarm-warning); --app-warning-bg: var(--swarm-warning-bg);
+  --app-warning-border: var(--swarm-warning-border); --app-success: var(--swarm-success);
+  --app-success-bg: var(--swarm-success-bg); --app-success-border: var(--swarm-success-border);
+  --app-danger: var(--swarm-danger); --app-danger-bg: var(--swarm-danger-bg);
+  --app-danger-border: var(--swarm-danger-border); --app-info: var(--swarm-info);
+  --app-info-bg: var(--swarm-info-bg); --app-info-border: var(--swarm-border-accent);
+}
+.swarm-section :is(.bg-\[\#080c16\], .bg-\[\#080c16\]\/50, .bg-\[\#080d19\]\/80, .bg-\[\#080d19\]\/90, .bg-\[\#090d16\]\/70, .bg-\[\#090e1a\]\/80, .bg-\[\#0a0f1d\]\/50) { background-color: var(--swarm-surface-subtle); }
+.swarm-section .bg-\[\#091512\] { background-color: var(--swarm-success-bg); }
+.swarm-section :is(.from-\[\#0a1226\], .from-\[\#0c162d\]) { --tw-gradient-from: var(--swarm-surface); }
+.swarm-section :is(.via-\[\#070d1e\], .via-\[\#091024\]) { --tw-gradient-via: var(--swarm-surface-subtle); }
+.swarm-section :is(.to-\[\#040711\], .to-\[\#040814\]) { --tw-gradient-to: var(--swarm-background); }
+.swarm-section :is(.bg-emerald-600, .bg-amber-500, .bg-rose-600) { background-color: var(--swarm-accent); color: var(--swarm-accent-text); }
+.swarm-section :is(.bg-emerald-600, .bg-amber-500, .bg-rose-600):hover { background-color: var(--swarm-accent-hover); }
+.swarm-section :is(.hover\:bg-slate-700, .hover\:bg-slate-800, .hover\:bg-slate-900):hover { background-color: var(--swarm-surface-hover); }
+.swarm-section :is(.hover\:text-white, .hover\:text-slate-200, .hover\:text-slate-300):hover { color: var(--swarm-text); }
+.swarm-section .bg-black\/92 { background-color: var(--swarm-background); }
+.swarm-task-fact dd { flex-wrap: wrap; }
+
+/* Quiet actions share New Task's project/inherited palette in either color scheme. */
+.swarm-section .swarm-outline-action,
+.swarm-section .swarm-new-task-cta {
+  border: 1px solid currentColor;
+  color: var(--swarm-text-accent);
+  background-color: transparent;
+  box-shadow: none;
+  transition: background-color 150ms ease;
+}
+.swarm-section .swarm-outline-action:not(:disabled):hover,
+.swarm-section .swarm-new-task-cta:hover { background-color: var(--swarm-surface-hover); }
+.swarm-section .swarm-outline-action:not(:disabled):active,
+.swarm-section .swarm-new-task-cta:active { background-color: var(--swarm-surface-subtle); }
+.swarm-section .swarm-outline-action:focus-visible,
+.swarm-section .swarm-new-task-cta:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
+
+/* Task hierarchy uses the section's existing palette, including rose themes. */
+.swarm-task-icon { flex: none; margin-top: 2px; color: var(--swarm-text-muted); }
+.swarm-task-header-row { align-items: flex-start; }
+.swarm-task-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 3px 10px; min-width: 0; margin-top: 5px; font: 11px/1.5 var(--font-mono, monospace); color: var(--swarm-text-muted); }
+.swarm-task-meta > span { min-width: 0; max-width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.swarm-task-meta-agent { color: var(--swarm-text); }
+.swarm-task-header-row h3 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.swarm-task-agent-count { flex: none; font-variant-numeric: tabular-nums; }
+.swarm-task-status-row > span { min-width: 0; max-width: 100%; }
+.swarm-task-elapsed { flex: 0 0 7ch; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.swarm-task-status-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-top: 7px; font-size: 11px; color: var(--swarm-text-muted); }
+.swarm-section .swarm-task-state { display: inline-flex; align-items: center; gap: 6px; background: none; border: 0; color: var(--swarm-text-muted); }
+.swarm-task-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--swarm-info); flex: none; }
+.swarm-task-dot.is-warning { background: var(--swarm-warning); }
+.swarm-task-dot.is-success { background: var(--swarm-success); }
+.swarm-section .swarm-task-approval-pill { padding: 2px 6px; border-radius: 5px; background: var(--swarm-warning-bg); color: var(--swarm-warning); }
+.swarm-task-progress { margin-left: auto; font-family: var(--font-mono, monospace); }
+.swarm-task-extra { display: flex; gap: 8px; color: var(--swarm-text-muted); }
+.swarm-section .swarm-task-extra :is(span, a) { background: none; border: 0; padding: 0; color: inherit; }
+.swarm-task-focus { display: flex; align-items: center; gap: 10px; min-width: 0; height: 34px; border-top: .5px solid var(--swarm-border-muted); font-size: 11px; color: var(--swarm-text-muted); }
+.swarm-task-focus-event { display: flex; align-items: center; gap: 6px; min-width: 0; flex: 1; animation: none; }
+.swarm-task-focus-tool, .swarm-task-focus-target, .swarm-task-focus-count { font-family: var(--font-mono, monospace); }
+.swarm-task-focus-tool { color: var(--swarm-text); max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.swarm-task-focus-target { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.swarm-task-focus-count { flex: none; margin-left: auto; }
+/* Collapsed task cards are intentionally quiet, including transient action loaders.
+   Expanded evidence retains its own motion contract; no global motion override. */
+.swarm-task-card[data-expanded="false"] *, .swarm-task-card[data-expanded="false"] { animation: none !important; transition: none !important; }
+.swarm-task-card .swarm-task-action-row { justify-content: flex-start; flex-wrap: wrap; gap: 8px; padding: 4px 0; border: 0; background: none; box-shadow: none; }
+.swarm-task-card .swarm-task-action-row > div { flex-wrap: wrap; min-width: 0; max-width: 100%; }
+.swarm-task-focus-count { min-width: 6ch; text-align: right; font-variant-numeric: tabular-nums; }
+.swarm-section .swarm-task-details-toggle, .swarm-section .swarm-task-details-toggle * { color: var(--swarm-text-muted); background: none; border: 0; font-weight: normal; }
+.swarm-section .swarm-task-proposal { font-size: 13px; line-height: 1.55; }
+.swarm-section .swarm-task-proposal :is(div, span, p, ul, li, strong, svg, summary) { color: var(--swarm-text-muted); }
+.swarm-section .swarm-task-proposal div { background: none; border: 0; border-radius: 0; }
+.swarm-section .swarm-task-proposal [data-testid="task-plan-spec"] { background: var(--swarm-surface-subtle); border-radius: 6px; }
+.swarm-section .swarm-task-proposal [data-testid="task-plan-reader"] { max-height: none; overflow: visible; font-family: inherit; }
+.swarm-section .swarm-task-proposal [data-testid="task-plan-reader"] :is(div, span, p, ul, li) { font-family: inherit; font-size: 13px; line-height: 1.55; white-space: normal; overflow-wrap: anywhere; }
+.swarm-plan-step { border-top: .5px solid var(--swarm-border-muted); padding: 10px 0; }
+.swarm-section .swarm-task-proposal [data-testid="task-plan-reader"] .swarm-plan-step-title-collapsed { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.swarm-section .swarm-task-proposal span { background: none; border: 0; }
+.swarm-section .swarm-task-proposal button:not(.bg-blue-600) { color: var(--swarm-text-muted); background: none; border-color: var(--swarm-border-muted); }
+.swarm-section .swarm-task-proposal button.bg-blue-600 :is(span, svg) { color: var(--swarm-accent-text); }
+.swarm-section .swarm-task-card:is([data-task-state="running"], [data-task-state="in_progress"]) .swarm-task-status-row .swarm-task-state > span:first-child:not(:last-child) { background: var(--swarm-info); }
+.swarm-section .swarm-task-status-row .swarm-task-approval-pill > span:first-child { background: var(--swarm-warning); }
+.swarm-section .swarm-task-running div.border { border: 0; border-radius: 0; background: none; }
+.swarm-section .swarm-task-running .swarm-task-focus { border-top: .5px solid var(--swarm-border-muted); }
+
+.swarm-section .integration-recovery { padding: 12px; border: 1px solid var(--swarm-danger-border); border-radius: 10px; color: var(--swarm-text); background: var(--swarm-surface); font-size: 12px; min-width: 0; }
+.swarm-section .integration-recovery pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; margin: 8px 0; }
+.swarm-section .integration-recovery p { overflow-wrap: anywhere; margin-top: 8px; }
+.swarm-section .integration-recovery button { border: 1px solid var(--swarm-border); border-radius: 8px; padding: 6px 10px; color: var(--swarm-text); background: transparent; }
+.swarm-section .integration-recovery button:hover:not(:disabled) { background: var(--swarm-surface-hover); border-color: var(--swarm-border-accent); }
+.swarm-section .integration-recovery button:disabled { opacity: .6; cursor: not-allowed; }
+.swarm-section .swarm-outline-action:disabled { opacity: 0.4; cursor: not-allowed; }
+/* Reserve the same border width in both states: selection never moves the labels. */
+.swarm-section .swarm-task-source-filter[aria-pressed="false"] {
+  border-color: transparent;
+  color: var(--swarm-text-muted);
+}
+
+/* The task-list header is the sole filled primary action in this view. */
+.swarm-section .swarm-task-list-new-task { background: var(--swarm-accent); color: var(--swarm-accent-text); border: 1px solid var(--swarm-accent); }
+.swarm-section .swarm-task-list-new-task:hover { background: var(--swarm-accent-hover); }
+
+/* Shell widths belong to the available Swarm container, not the viewport. */
+.swarm-responsive-shell { --swarm-chat-gutter: 16px; display: grid; grid-template-columns: 288px minmax(0, 1fr) minmax(360px, 440px); grid-template-rows: minmax(0, 1fr); gap: 12px; padding: 12px; width: 100%; height: 100%; max-height: 100dvh; min-height: 0; min-width: 0; box-sizing: border-box; container: swarm-shell / inline-size; }
+.swarm-responsive-shell > .swarm-navigation-sidebar { grid-column: 1; grid-row: 1; width: auto; min-height: 0; overflow-y: auto; }
+.swarm-responsive-shell > .swarm-main-panel { grid-column: 2; grid-row: 1; min-height: 0; container: swarm-main / inline-size; }
+.swarm-responsive-shell > .swarm-conversation-panel { grid-column: 3; grid-row: 1; width: auto; max-width: none; min-width: 0; min-height: 0; }
+.swarm-responsive-shell .swarm-ai-sidebar { width: 100%; min-width: 0; }
+.swarm-layout-controls, .swarm-navigation-close { display: none; }
+.swarm-responsive-shell[data-layout="rail"] { grid-template-columns: 68px minmax(0, 1fr) minmax(360px, 440px); }
+.swarm-responsive-shell[data-layout="rail"]:not([data-navigation-open="true"]) > .swarm-navigation-sidebar > div { display: none; }
+.swarm-responsive-shell[data-layout="rail"] .swarm-route-navigation { padding: 6px; border: 0; }
+.swarm-responsive-shell[data-layout="rail"]:not([data-navigation-open="true"]) .swarm-route-navigation a { position: relative; justify-content: center; padding: 0; min-height: 44px; }
+.swarm-responsive-shell[data-layout="rail"]:not([data-navigation-open="true"]) .swarm-route-navigation a span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+.swarm-responsive-shell[data-layout="rail"]:not([data-navigation-open="true"]) .swarm-route-navigation a > div { display: contents; }
+.swarm-responsive-shell[data-layout="rail"]:not([data-navigation-open="true"]) .swarm-route-navigation a::after { content: attr(aria-label); display: none; position: fixed; left: 78px; padding: 8px; border-radius: 8px; background: var(--swarm-surface); color: var(--swarm-text); border: 1px solid var(--swarm-border); z-index: 30; }
+.swarm-responsive-shell[data-layout="rail"] .swarm-route-navigation a:is(:hover, :focus-visible)::after { display: block; }
+.swarm-responsive-shell[data-layout="rail"] .swarm-layout-controls { display: flex; grid-column: 1 / -1; grid-row: 1; }
+.swarm-responsive-shell:not([data-layout="expanded"]) { grid-template-rows: auto minmax(0, 1fr); }
+.swarm-responsive-shell:not([data-layout="expanded"]) > :is(.swarm-navigation-sidebar, .swarm-main-panel, .swarm-conversation-panel) { grid-row: 2; }
+.swarm-responsive-shell[data-layout="phone"] { grid-template-columns: minmax(0, 1fr); padding: 6px; padding-bottom: max(6px, env(safe-area-inset-bottom)); padding-left: max(6px, env(safe-area-inset-left)); padding-right: max(6px, env(safe-area-inset-right)); }
+.swarm-responsive-shell[data-layout="phone"] > .swarm-navigation-sidebar { display: none; }
+.swarm-responsive-shell[data-layout="phone"] .swarm-layout-controls { display: flex; grid-column: 1; }
+.swarm-responsive-shell[data-split="false"][data-layout="rail"] { grid-template-columns: 68px minmax(0, 1fr); }
+.swarm-responsive-shell[data-split="false"] > .swarm-conversation-panel { grid-column: 2; }
+.swarm-responsive-shell[data-layout="phone"] > :is(.swarm-main-panel, .swarm-conversation-panel) { grid-column: 1; }
+.swarm-responsive-shell[data-split="false"][data-panel="main"] > .swarm-conversation-panel,
+.swarm-responsive-shell[data-split="false"][data-panel="chat"] > .swarm-main-panel { visibility: hidden; pointer-events: none; }
+.swarm-layout-controls { align-items: center; justify-content: space-between; gap: 8px; }
+.swarm-panel-switch { display: flex; gap: 6px; }
+.swarm-responsive-shell[data-split="true"] .swarm-panel-switch { display: none; }
+.swarm-layout-controls button, .swarm-navigation-close { min-height: 44px; min-width: 44px; border: 1px solid var(--swarm-border); border-radius: 10px; padding: 8px 12px; background: var(--swarm-surface); color: var(--swarm-text); }
+.swarm-navigation-backdrop { position: absolute; inset: 0; z-index: 40; background: #0009; }
+.swarm-responsive-shell[data-navigation-open="true"] > .swarm-navigation-sidebar { display: flex; position: absolute; inset: 6px auto 6px 6px; width: min(320px, calc(100% - 12px)); z-index: 41; overflow-y: auto; }
+.swarm-responsive-shell[data-navigation-open="true"] .swarm-navigation-close { display: block; flex-shrink: 0; }
+.swarm-route-navigation { flex-shrink: 0; }
+.swarm-route-navigation a, .swarm-navigation-sidebar :is(button, select, input, [role="button"]), .swarm-settings-section, .swarm-agent-role { min-height: 44px; }
+.swarm-section [aria-current="page"], .swarm-section [aria-pressed="true"] { border-color: var(--swarm-border-accent); background-color: var(--swarm-surface-hover); }
+.swarm-route-navigation [aria-current="page"] { box-shadow: inset 3px 0 0 var(--swarm-accent); }
+.swarm-chat-composer-lane { padding: 12px var(--swarm-chat-gutter); min-width: 0; max-height: 55%; overflow-y: auto; scrollbar-gutter: stable; }
+.swarm-chat-composer-lane :is(button, textarea) { min-height: 44px; }
+.swarm-chat-composer-lane > div { min-width: 0; flex-wrap: wrap; overflow-wrap: anywhere; }
+.swarm-local-dialog { max-height: calc(100dvh - 24px); overflow-y: auto; overscroll-behavior: contain; }
+.swarm-local-dialog button { min-height: 44px; }
+@container swarm-main (max-width: 700px) {
+  .swarm-agents-layout { grid-template-columns: minmax(0, 1fr); }
+  .swarm-main-panel .swarm-content-grid { grid-template-columns: minmax(0, 1fr); }
+  .swarm-main-panel > nav { flex-wrap: wrap; }
+}
+@container swarm-shell (max-width: 640px) {
+  .swarm-local-dialog .swarm-dialog-intents { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .swarm-local-dialog { padding: 12px; }
+}
+
+/* Settings and role selection are local presentation of router/query authority. */
+.swarm-section :is(.swarm-settings-section, .swarm-agent-role) { border: 1px solid var(--swarm-border-muted); border-radius: 8px; background: var(--swarm-surface); color: var(--swarm-text-muted); padding: 8px 12px; text-decoration: none; }
+.swarm-section :is(.swarm-settings-section, .swarm-agent-role):hover { background: var(--swarm-surface-hover); color: var(--swarm-text); }
+.swarm-section :is(.swarm-settings-section[aria-current="page"], .swarm-agent-role[aria-pressed="true"]) { background: var(--swarm-surface-hover); border-color: var(--swarm-border-accent); color: var(--swarm-text); box-shadow: inset 3px 0 0 var(--swarm-accent); }
+.swarm-section :is(.swarm-settings-section, .swarm-agent-role):focus-visible { outline: 2px solid var(--swarm-accent); outline-offset: 3px; }
+.swarm-agents-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; min-width: 0; }
+.swarm-agent-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; align-content: start; min-width: 0; }
+.swarm-agent-role { min-width: 0; text-align: left; cursor: pointer; }
+.swarm-agent-name { display: block; font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+.swarm-agent-model { display: block; margin-top: 3px; font-size: 11px; line-height: 1.4; color: var(--swarm-text-muted); overflow-wrap: anywhere; }
+.swarm-agent-editor { padding: 16px; border: 1px solid var(--swarm-border-muted); border-radius: 12px; background: var(--swarm-surface-subtle); overflow-wrap: anywhere; }
+@container swarm-main (min-width: 760px) { .swarm-agents-layout { grid-template-columns: minmax(180px, 240px) minmax(0, 1fr); } .swarm-agent-list { grid-template-columns: minmax(0, 1fr); } }
+.swarm-settings-nav { display: flex; flex-wrap: wrap; gap: 8px; }
+.swarm-agent-editor fieldset { min-width: 0; }
+.swarm-agent-editor select { max-width: 100%; min-width: 0; }
+
+/* Task disclosure is one downward-growing surface, never a second card stack. */
+.swarm-task-details { min-width: 0; font-size: 0.8125rem; overflow-wrap: anywhere; }
+.swarm-task-details h4 { margin: 1rem 0 .5rem; padding-top: .75rem; border-top: 1px solid var(--swarm-border-muted); font-weight: 600; color: var(--swarm-text); }
+.swarm-task-details > h4:first-child { margin-top: .5rem; }
+.swarm-task-details :is(div, section, pre) { min-width: 0; max-width: 100%; }
+.swarm-task-details :is(div, section)[class*="rounded"] { border-radius: 0; box-shadow: none; background: transparent; border-left: 0; border-right: 0; }
+.swarm-task-details :is(.animate-pulse, .animate-ping) { animation: none; }
+.swarm-task-details .truncate { white-space: normal; overflow: visible; text-overflow: clip; }
+.swarm-task-details pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+.swarm-task-details [class*="max-h-"] { max-height: none; overflow-y: visible; }
+.swarm-task-agent-row, .swarm-task-output-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: .5rem; width: 100%; padding: .4rem 0; text-align: left; border-bottom: 1px solid var(--swarm-border-muted); }
+.swarm-task-agent-row span:last-child, .swarm-task-output-row span { color: var(--swarm-text-secondary); }
+.swarm-task-handoff { margin: .5rem 0; font: inherit; }
+.swarm-task-details button:focus-visible, .swarm-task-details-toggle:focus-visible { outline: 2px solid var(--swarm-accent); outline-offset: 2px; }
+.swarm-task-details[hidden] { display: none; }
+.swarm-task-details .swarm-task-action-row { flex-wrap: wrap; }
+.swarm-task-details .swarm-task-action-row > div { min-width: 0; flex-wrap: wrap; }
+
+.swarm-workers-layout { display: grid; grid-template-columns: minmax(0, 1fr); min-height: 0; flex: 1; overflow-y: auto; }
+.swarm-workers-detail { overflow-wrap: anywhere; }
+@container swarm-main (min-width: 760px) {
+  .swarm-workers-layout { grid-template-columns: minmax(210px, 28%) minmax(0, 1fr); overflow: hidden; }
+  .swarm-workers-list, .swarm-workers-detail { overflow-y: auto; }
+}
+/* Match the transcript's stable both-edge scrollport reservations. */
+.swarm-chat-composer-lane { scrollbar-gutter: stable both-edges; }
+
+/* Long project/route labels and management actions must fit their own lane. */
+.swarm-task-list-header h1 { overflow-wrap: anywhere; }
+.swarm-task-list-header > div > div { flex: 1 1 180px; }
+.swarm-task-list-header .swarm-task-list-new-task { min-height: 44px; }
+.swarm-task-list-toolbar :is(button, input) { min-height: 44px; }
+.swarm-task-search-row > div:first-child { flex: 1 1 180px; }
+.swarm-task-management > div { max-width: 100%; }
+.swarm-route-navigation a { min-width: 0; overflow-wrap: anywhere; }
+.swarm-local-dialog { min-width: 0; max-width: min(36rem, 100%); }
+.swarm-local-dialog :is(input, textarea, select) { max-width: 100%; min-width: 0; min-height: 44px; }
+.swarm-local-dialog :is(h3, strong, span) { overflow-wrap: anywhere; }
+.swarm-local-dialog > div { flex-shrink: 0; min-width: 0; }
+.swarm-local-dialog > div:first-child { gap: 8px; }
+.swarm-local-dialog button { min-width: 44px; white-space: normal; }
+.swarm-local-dialog .swarm-dialog-intents { grid-template-columns: repeat(auto-fit, minmax(min(100%, 100px), 1fr)); }
+.swarm-local-dialog [data-testid="deploy-modal-impending-preview"] div { flex-wrap: wrap; min-width: 0; }
+.swarm-section .agent-model-dialog-surface { max-width: min(72rem, 100%, 100cqw); overflow-wrap: anywhere; }
+.swarm-section .agent-model-dialog-surface :is(button, input, select) { min-height: 44px; }
+.swarm-section .agent-model-dialog-surface :is(fieldset, section, select, input) { min-width: 0; max-width: 100%; }
+@container swarm-main (max-width: 450px) {
+  .swarm-task-search-row > div:first-child { flex-basis: 100%; }
+}

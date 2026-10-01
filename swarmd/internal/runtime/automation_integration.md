@@ -70,6 +70,5 @@ From `swarmd/`, with the repository's Go/FFF build prerequisites:
 Assertions cover live revocation before catalog effects, cross-account rejection,
 agent occurrence confinement, origin/trigger substitution rejection, opaque cursor
 forwarding, recovery failure bounds and cancel/join ordering. These are not live
-provider, worktree crash-recovery or end-to-end API proofs. Parent owns atlas and
-test-audit-ledger updates outside this child's scope, source formatting, and any
-requested test execution. Do not claim launch readiness from this handoff.
+provider, worktree crash-recovery or end-to-end API proofs. Parent owns source
+formatting and any requested test execution. Do not claim launch readiness from this handoff.

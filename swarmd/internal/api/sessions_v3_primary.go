@@ -235,14 +235,23 @@ func (s *Server) handleSessionsV3Primary(w http.ResponseWriter, r *http.Request)
 	}
 
 	if r.URL.Path == "/v3/sessions:archive" {
+		if !s.requireScope(w, r, "sessions:write") {
+			return
+		}
 		s.handleSessionsV3PrimaryArchiveBatch(w, r, principal)
 		return
 	}
 
 	switch r.Method {
 	case http.MethodGet:
+		if !s.requireScope(w, r, "sessions:read") {
+			return
+		}
 		s.handleSessionsV3PrimaryList(w, r, principal)
 	case http.MethodPost:
+		if !s.requireScope(w, r, "sessions:write") {
+			return
+		}
 		s.handleSessionsV3PrimaryCreate(w, r, principal)
 	default:
 		methodNotAllowed(w)
@@ -263,6 +272,15 @@ func (s *Server) handleSessionV3PrimaryByID(w http.ResponseWriter, r *http.Reque
 	if !ok {
 		writeError(w, http.StatusBadRequest, errors.New("invalid sessions v3 path"))
 		return
+	}
+	if r.Method == http.MethodGet {
+		if !s.requireScope(w, r, "sessions:read") {
+			return
+		}
+	} else {
+		if !s.requireScope(w, r, "sessions:write") {
+			return
+		}
 	}
 	switch subpath {
 	case "":
@@ -343,6 +361,10 @@ func (s *Server) handleSessionV3PrimaryByID(w http.ResponseWriter, r *http.Reque
 	case "video/projects":
 		s.handleSessionV3VideoProjects(w, r, principal, sessionID)
 	default:
+		if strings.HasPrefix(subpath, "media/") {
+			s.handleSessionV3MediaAsset(w, r, principal, sessionID, strings.TrimPrefix(subpath, "media/"))
+			return
+		}
 		if strings.HasPrefix(subpath, "video/") {
 			s.handleSessionV3VideoSubpath(w, r, principal, sessionID, strings.TrimPrefix(subpath, "video/"))
 			return
@@ -663,7 +685,7 @@ func (s *Server) handleSessionV3SystemSidechat(w http.ResponseWriter, r *http.Re
 	for _, record := range permissions {
 		toolName := strings.TrimSpace(record.ToolName)
 		status := strings.TrimSpace(record.Status)
-		if strings.TrimSpace(record.ID) == req.PermissionID && (status == pebblestore.PermissionStatusPending || status == pebblestore.PermissionStatusApproved) && (toolName == "exit_plan_mode" || toolName == "plan_manage") {
+		if strings.TrimSpace(record.ID) == req.PermissionID && (status == pebblestore.PermissionStatusPending || status == pebblestore.PermissionStatusApproved) && (toolName == "exit_plan_mode" || toolName == "plan_manage" || (req.AutomationV2 && toolName == "manage_workers" && record.Requirement == "automation_v2_acceptance")) {
 			bound = true
 			planPermission = record
 			break
@@ -685,6 +707,9 @@ func (s *Server) handleSessionV3SystemSidechat(w http.ResponseWriter, r *http.Re
 			return
 		}
 		backendPlanID := strings.TrimSpace(firstNonEmpty(sessionsV3MapString(planContext, "plan_id"), sessionsV3MapString(planContext, "id")))
+		if req.AutomationV2 && backendPlanID == "" {
+			backendPlanID = req.PlanID // resolved from the exact current worker review above
+		}
 		backendRevision := sessionsV3SidechatInt64(planContext["proposal_revision"])
 		if backendPlanID == "" || backendRevision <= 0 || planContext["document"] == nil {
 			writeError(w, http.StatusConflict, errors.New("pending plan proposal is missing plan_id, proposal_revision, or document"))
@@ -884,8 +909,15 @@ func (s *Server) handleSessionsV3PrimaryCreate(w http.ResponseWriter, r *http.Re
 	}
 	now := time.Now().UnixMilli()
 	modelProfileSnapshot, err := s.resolveSessionsV3ModelProfileChoice(identity.ContextWithPrincipal(r.Context(), principal), req.ModelProfile, now)
-	if err == nil && req.ModelProfile == nil && strings.EqualFold(strings.TrimSpace(resolvedAgent.Profile.Name), agentruntime.SwarmAgentID) {
+	if err == nil && req.ModelProfile == nil && (strings.EqualFold(strings.TrimSpace(resolvedAgent.Profile.Name), agentruntime.SwarmAgentID) || strings.EqualFold(strings.TrimSpace(resolvedAgent.Profile.Name), agentruntime.SwarmOrchestratorAgentID)) {
 		modelProfileSnapshot, err = s.sessionModelProfileSnapshotFromAccountDefault(identity.ContextWithPrincipal(r.Context(), principal), now)
+	}
+	if err == nil && req.ModelProfile != nil && strings.EqualFold(strings.TrimSpace(resolvedAgent.Profile.Name), agentruntime.SwarmOrchestratorAgentID) {
+		if modelProfileSnapshot != nil && modelProfileSnapshot.Plan == nil {
+			modelProfileSnapshot.Plan = pebblestore.CloneModelProfileSelection(&modelProfileSnapshot.Action)
+			modelProfileSnapshot.PlanFavoriteID = modelProfileSnapshot.ActionFavoriteID
+			modelProfileSnapshot.PlanFavoriteName = modelProfileSnapshot.ActionFavoriteName
+		}
 	}
 	if err != nil {
 		writeModelProfileError(w, err)
@@ -1566,6 +1598,9 @@ func (s *Server) acceptSessionsV3Message(principal identity.Principal, sessionID
 	if err := validateSessionsV3CreateMetadata(req.Metadata); err != nil {
 		return sessionruntime.SessionMutationResult{}, nil, err
 	}
+	if err := validateSelectedWorkerMessageMetadata(req.Metadata); err != nil {
+		return sessionruntime.SessionMutationResult{}, nil, err
+	}
 	message := pebblestore.MessageSnapshot{
 		ID: strings.TrimSpace(req.MessageID), Role: strings.TrimSpace(req.Role), Content: req.Content,
 		Metadata: cloneSessionsV3Metadata(req.Metadata), Media: append([]pebblestore.SessionMediaReference(nil), req.Media...),
@@ -1605,6 +1640,24 @@ func (s *Server) acceptSessionsV3Message(principal identity.Principal, sessionID
 	payloadHash, err := sessionsV3MessagePayloadHash(sessionID, req, message, runIntent.Status, runIntent.BlockedReason)
 	if err != nil {
 		return sessionruntime.SessionMutationResult{}, nil, err
+	}
+	// Hash the client request before enriching the message. A retry must retain
+	// its original payload hash even if the worker has since been revised.
+	if _, selected := req.Metadata["selected_worker"]; selected {
+		existing, replay, err := s.sessions.Store().GetV3SessionOperationIdempotencyRecord(principal.AccountScopeID, sessionID, sessionruntime.SessionMutationAppendMessage, clientRequestID)
+		if err != nil {
+			return sessionruntime.SessionMutationResult{}, nil, err
+		}
+		if replay && existing.PayloadHash != payloadHash {
+			return sessionruntime.SessionMutationResult{}, nil, sessionruntime.ErrSessionIdempotencyConflict
+		}
+		if !replay {
+			context, err := s.resolveSelectedWorkerMessage(principal, session, message.Role, req.Metadata["selected_worker"])
+			if err != nil {
+				return sessionruntime.SessionMutationResult{}, nil, err
+			}
+			message.Metadata["resolved_worker_context"] = context
+		}
 	}
 	var reactivatedPlanSave *sessionruntime.PreparedPlanSave
 	if plan, ok, planErr := s.sessions.GetActivePlan(sessionID); planErr != nil {
@@ -4220,6 +4273,7 @@ func isProtectedSessionsV3MetadataKey(key string) bool {
 		pebblestore.SessionPurposeWorkspaceMetadataKey,
 		"agent_name",
 		"agent_profile",
+		"resolved_worker_context",
 		"model_profile",
 		"resolved_agent_name",
 		"agent_mode",

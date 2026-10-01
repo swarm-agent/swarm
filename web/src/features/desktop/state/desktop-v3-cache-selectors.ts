@@ -1,6 +1,5 @@
 import type { DesktopSessionPlanCheckpoint, DesktopSessionPlanDocument, DesktopSessionPlanRecord, TaskToolRow } from '../chat/types/chat'
 import type { DesktopNotificationCenterRecord, DesktopNotificationSummary, DesktopPermissionRecord } from '../types/realtime'
-import { selectAutomationV2Identity } from './desktop-automation-v2-state'
 import { safeString } from '../permissions/services/desktop-permission-normalization'
 import type { DesktopPermissionSummary, DesktopToolActivity, DesktopV3CacheState, LiveRunOverlay, MessageListCache, MessageSnapshot, PendingUserMessage, SessionCacheRecord, SessionSnapshot, V3SessionProjection, V3SessionRunIntent, V3SessionTombstone } from './desktop-v3-cache-types'
 import type { WorkspaceTodoItem } from '../../workspaces/todos/types'
@@ -115,6 +114,10 @@ export interface DesktopV3TaskChildViewModel {
   workspaceName: string
   targetSwarmId: string
   error: string
+  todos?: Array<{ id: string; title: string; status: 'pending' | 'in_progress' | 'completed' }>
+  activeTodo?: string
+  todosCount?: { completed: number; total: number }
+  lifecyclePhase?: string
 }
 
 const DESKTOP_V3_ACTIVE_TASK_STATUSES = new Set(['pending_executor', 'running', 'dispatch_blocked'])
@@ -198,6 +201,14 @@ export function selectDesktopV3TaskChildViewModel(
   const error = intent?.blocked_reason?.trim() || (status === 'failed' ? row.previewText.trim() : '')
   const startedAt = intent?.started_at || view?.current_run_state?.started_at || row.launchStartedAtMs || row.currentToolStartedAtMs || 0
   const elapsedMs = intent?.duration_ms || intent?.cumulative_duration_ms || view?.current_run_state?.duration_ms || row.elapsedMs || row.currentToolMs || 0
+  const todos = sessionTaskTodos(metadata)
+  const activeTodoItem = todos?.find((item) => item.status === 'in_progress')
+  const agentSummary = objectRecord(metadata?.agent_todo_summary)
+  const activeTodo = activeTodoItem?.title || stringValue(objectRecord(agentSummary?.active_todo)?.title || objectRecord(agentSummary?.active_todo)?.text) || ''
+  const completedTodosCount = todos?.filter((item) => item.status === 'completed').length ?? 0
+  const totalTodosCount = todos?.length ?? 0
+  const lifecycleObj = objectRecord(session?.lifecycle)
+  const lifecyclePhase = stringValue(lifecycleObj?.phase) || metadataString(metadata, 'lifecycle_signal')
   return {
     sessionId,
     hydrated: Boolean(session && view),
@@ -221,8 +232,14 @@ export function selectDesktopV3TaskChildViewModel(
     workspaceName: session?.workspace_name?.trim() || '',
     targetSwarmId,
     error,
+    ...(todos && todos.length > 0 ? { todos } : {}),
+    ...(activeTodo ? { activeTodo } : {}),
+    ...(totalTodosCount > 0 ? { todosCount: { completed: completedTodosCount, total: totalTodosCount } } : {}),
+    ...(lifecyclePhase ? { lifecyclePhase } : {}),
   }
 }
+
+import { sessionTaskTodos } from './task-progress'
 
 function objectRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null
@@ -292,9 +309,13 @@ function buildDesktopV3SidebarRows(
     if (state.tombstonesBySession[sessionId]) continue
     const record = state.sessionsById[sessionId]
     const hasActiveRun = hasActiveRunIntent(state.currentRunIntentBySession[sessionId])
-    if (!record || isDesktopV3NavigationHiddenRecord(record, { active: hasActiveRun }) || !includeRecord(record)) continue
     const planState = buildDesktopSidebarPlanState(state, sessionId)
-    const isRunningExecution = record.kind === 'full' && isAutomationExecutionSession(record.session) && hasActiveRun
+    const pendingPermissionCount = state.permissionSummaryBySessionId[sessionId]?.pendingApprovalCount ?? 0
+    const needsReview = Boolean(planState.hasActivePlan && planState.planExecution?.reviewRequired)
+    const isExecutionSession = record?.kind === 'full' && isAutomationExecutionSession(record.session)
+    const executionSessionVisible = isExecutionSession && (hasActiveRun || needsReview || pendingPermissionCount > 0)
+    if (!record || isDesktopV3NavigationHiddenRecord(record, { active: hasActiveRun || executionSessionVisible }) || !includeRecord(record)) continue
+    const isRunningExecution = isExecutionSession && hasActiveRun
     rows.push({
       sessionId,
       record: cloneSessionCacheRecord(record),
@@ -308,12 +329,16 @@ function buildDesktopV3SidebarRows(
       rowType: planState.planExecution ? 'plan_session' : 'single_chat',
       sidebarGroup: isRunningExecution
         ? 'in_progress'
-        : (selectAutomationV2Identity(state, sessionId) ? 'automation' : desktopSidebarGroupForRow({
+        : (record.kind === 'full' && (record.session.automation_v2 || record.session.automation) ? 'automation' : desktopSidebarGroupForRow({
             hasActivePlan: planState.hasActivePlan,
             planExecution: planState.planExecution,
             hasActiveRun,
             pendingPermissionCount: state.permissionSummaryBySessionId[sessionId]?.pendingApprovalCount ?? 0,
             tombstoned: Boolean(state.tombstonesBySession[sessionId]),
+            lifecyclePhase: record.kind === 'full' && record.session.lifecycle && typeof record.session.lifecycle === 'object' ? stringValue((record.session.lifecycle as Record<string, unknown>).phase) : undefined,
+            lifecycleActive: record.kind === 'full' && record.session.lifecycle && typeof record.session.lifecycle === 'object' ? Boolean((record.session.lifecycle as Record<string, unknown>).active) : undefined,
+            attentionState: record.kind === 'full' && (record.session as unknown as Record<string, unknown>).attention && typeof (record.session as unknown as Record<string, unknown>).attention === 'object' ? stringValue(((record.session as unknown as Record<string, unknown>).attention as Record<string, unknown>).state) : undefined,
+            metadataSignal: record.kind === 'full' ? metadataString(record.session.metadata, 'lifecycle_signal') : undefined,
           })),
       branchLabel: desktopSidebarBranchLabel(record),
     })
@@ -466,12 +491,26 @@ function desktopPlanStatusLabel(input: { normalizedStatus: string; checkpointSta
   return 'RUNNING'
 }
 
-function desktopSidebarGroupForRow(input: { hasActivePlan: boolean; planExecution?: DesktopV3SidebarPlanExecution; hasActiveRun: boolean; pendingPermissionCount: number; tombstoned: boolean }): DesktopV3SidebarGroupId {
+function desktopSidebarGroupForRow(input: {
+  hasActivePlan: boolean
+  planExecution?: DesktopV3SidebarPlanExecution
+  hasActiveRun: boolean
+  pendingPermissionCount: number
+  tombstoned: boolean
+  lifecyclePhase?: string
+  lifecycleActive?: boolean
+  attentionState?: string
+  metadataSignal?: string
+}): DesktopV3SidebarGroupId {
   if (input.tombstoned) return 'archived'
-  if (input.planExecution?.blocked) return 'blocked'
-  if (input.planExecution?.reviewRequired) return 'needs_review'
-  if (input.planExecution && !input.planExecution.completed) return 'in_progress'
-  if (input.pendingPermissionCount > 0 || input.hasActiveRun || input.hasActivePlan) return 'active_chats'
+  const phase = (input.lifecyclePhase || '').trim().toLowerCase()
+  const attention = (input.attentionState || '').trim().toLowerCase()
+  const signal = (input.metadataSignal || '').trim().toLowerCase()
+
+  if (input.planExecution?.blocked || phase === 'blocked' || attention === 'blocked' || signal === 'blocked') return 'blocked'
+  if (input.planExecution?.reviewRequired || phase === 'needs_review' || phase === 'review' || phase === 'final_review' || attention === 'needs_review' || signal === 'needs_review') return 'needs_review'
+  if ((input.planExecution && !input.planExecution.completed) || input.hasActiveRun || input.lifecycleActive || phase === 'in_progress' || phase === 'running' || attention === 'in_progress' || signal === 'in_progress') return 'in_progress'
+  if (input.pendingPermissionCount > 0 || input.hasActivePlan) return 'active_chats'
   return 'active_chats'
 }
 

@@ -76,7 +76,9 @@ func onboardingProviderRecommendationRecords(providerID string, includePlan bool
 
 func seedOnboardingProviderRecommendationRecords(t *testing.T, catalogStore *pebblestore.ModelCatalogStore, records []pebblestore.ModelCatalogRecord) {
 	t.Helper()
-	if err := catalogStore.ReplaceSnapshot(records, pebblestore.ModelCatalogMeta{LiveSnapshotVersion: "test-snapshot", ExpiresAt: 4102444800000, RecordCount: len(records), SourceURL: "test://catalog"}); err != nil {
+	// Match live and selected snapshot provenance so onboarding consumes this
+	// fixture rather than refreshing the public catalog during a unit test.
+	if err := catalogStore.ReplaceSnapshot(records, pebblestore.ModelCatalogMeta{MaterializationVersion: 2, SnapshotVersion: "test-snapshot", LiveSnapshotVersion: "test-snapshot", SnapshotID: "test-catalog", LiveSnapshotID: "test-catalog", ExpiresAt: 4102444800000, RecordCount: len(records), SourceURL: "test://catalog"}); err != nil {
 		t.Fatalf("seed catalog recommendations: %v", err)
 	}
 }
@@ -98,7 +100,11 @@ func TestOnboardingIdentityBootstrapDoesNotCreateAgents(t *testing.T) {
 	}
 }
 
-func TestOnboardingProviderCredentialVerifiesActivatesHydratesBeforeReturning(t *testing.T) {
+// Purpose: acceptFirstOnboardingProviderCredential deliberately saves OpenAI keys
+// active but unverified, and hydrates all canonical model settings before return.
+// A temporary store and fixture adapter prove persisted assignments without a live
+// provider; expecting a verified connection here would contradict the OpenAI path.
+func TestOnboardingProviderCredentialActivatesHydratesBeforeReturning(t *testing.T) {
 	server, principal := newOnboardingProviderCredentialTestServer(t, onboardingProviderTestAdapter{id: "openai", ready: true, connected: true, message: "ok"})
 
 	status, err := server.acceptFirstOnboardingProviderCredential(context.Background(), principal, onboardingProviderCredentialRequest{
@@ -112,8 +118,8 @@ func TestOnboardingProviderCredentialVerifiesActivatesHydratesBeforeReturning(t 
 	if !status.Active {
 		t.Fatalf("credential was not active: %+v", status)
 	}
-	if status.Connection == nil || !status.Connection.Connected {
-		t.Fatalf("credential connection = %+v", status.Connection)
+	if status.Connection != nil {
+		t.Fatal("OpenAI onboarding must not claim a verified connection")
 	}
 	if status.AutoDefaults == nil || !status.AutoDefaults.Applied || !status.AutoDefaults.GlobalModel {
 		t.Fatalf("auto defaults not applied before response: %+v", status.AutoDefaults)

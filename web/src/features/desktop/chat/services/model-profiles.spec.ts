@@ -70,3 +70,21 @@ test('active profile state maps hydrated policy identity without bundle mode fie
     source: 'saved', profileId: 'mp_1', name: 'Recommended',
   })
 })
+
+test('system-orchestrator selects Plan model from model_profile snapshot even in auto mode', () => {
+  const metadata = {
+    agent_name: 'system-orchestrator',
+    model_profile: {
+      source: 'saved',
+      action: { provider: 'google', model: 'gemini-3.8-flash', thinking: 'low' },
+      plan: { provider: 'anthropic', model: 'claude-3-7-sonnet', thinking: 'high' },
+      applied_at: 456,
+    },
+  }
+  const result = modelProfileFromMetadata(metadata, 'auto')
+  assert.equal(result?.provider, 'anthropic')
+  assert.equal(result?.model, 'claude-3-7-sonnet')
+  assert.equal(result?.thinking, 'high')
+  const pref = preferenceFromModelProfileMetadata(metadata, 'auto')
+  assert.equal(pref?.model, 'claude-3-7-sonnet')
+})

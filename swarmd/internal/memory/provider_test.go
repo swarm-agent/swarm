@@ -3,7 +3,9 @@ package memory
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"path/filepath"
+	"swarm/packages/swarmd/internal/identity"
 	iface "swarm/packages/swarmd/internal/provider/interfaces"
 	store "swarm/packages/swarmd/internal/store/pebble"
 	"testing"
@@ -13,6 +15,8 @@ import (
 // Purpose: verify RuntimeProvider's actual request has no execution authority,
 // rejects tool output but accepts missing pricing/output ceilings. Fake transport
 // is the narrowest layer that observes the complete provider-neutral request.
+// RuntimeProvider.Generate must reject missing authority, while account caps
+// alone must not classify ordinary memory extraction as worker work.
 type testRunner struct {
 	request  iface.Request
 	response iface.Response
@@ -44,10 +48,24 @@ func TestMemoryProviderAuthorityAndPricing(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := &testRunner{response: iface.Response{Text: "null", Usage: iface.TokenUsage{OutputTokens: 1}}}
-	p := RuntimeProvider{Catalog: catalog, Runners: testRunners{r}}
+	p := RuntimeProvider{Catalog: catalog, Runners: testRunners{r}, Sessions: store.NewSessionStore(db)}
+	ctx := identity.ContextWithPrincipal(context.Background(), identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "account", UserID: "user"})
 	m := store.AgentModelAssignment{Provider: "codex", Model: "model", Thinking: "medium"}
-	_, err = p.Generate(context.Background(), Request{Model: m, Input: []byte("[]"), Instructions: "bounded", OutputTokens: 100})
+	_, err = p.Generate(ctx, Request{Model: m, Input: []byte("[]"), Instructions: "bounded", OutputTokens: 100})
 	if err != nil {
+		t.Fatal(err)
+	}
+	before := r.calls
+	if _, err := p.Generate(context.Background(), Request{Model: m}); !errors.Is(err, identity.ErrPrincipalRequired) || r.calls != before {
+		t.Fatalf("missing principal dispatched: %v", err)
+	}
+	if err := p.Sessions.PutUsageLimit(store.UsageLimitRecord{AccountScopeID: "account", Enabled: true, DailyTokensLimit: 100}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Generate(ctx, Request{Model: m}); err != nil || r.calls != before+1 {
+		t.Fatalf("ordinary memory extraction blocked: %v", err)
+	}
+	if err := p.Sessions.PutUsageLimit(store.UsageLimitRecord{AccountScopeID: "account"}); err != nil {
 		t.Fatal(err)
 	}
 	got := r.request
@@ -55,7 +73,7 @@ func TestMemoryProviderAuthorityAndPricing(t *testing.T) {
 		t.Fatal("provider authority leaked")
 	}
 	r.response.FunctionCalls = []iface.FunctionCall{{Name: "bash"}}
-	if _, err = p.Generate(context.Background(), Request{Model: m, Input: []byte("[]"), OutputTokens: 100}); err == nil {
+	if _, err = p.Generate(ctx, Request{Model: m, Input: []byte("[]"), OutputTokens: 100}); err == nil {
 		t.Fatal("tool response accepted")
 	}
 	r.response.FunctionCalls = nil
@@ -69,11 +87,11 @@ func TestMemoryProviderAuthorityAndPricing(t *testing.T) {
 	if err = catalog.SetRecord(c); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = p.Generate(context.Background(), Request{Model: m, Input: []byte("[]")}); err != nil {
+	if _, err = p.Generate(ctx, Request{Model: m, Input: []byte("[]")}); err != nil {
 		t.Fatal("pricing or output ceiling blocked generation", err)
 	}
 	p.Catalog = nil
-	if _, err = p.Generate(context.Background(), Request{Model: m, Input: []byte("[]")}); err != nil {
+	if _, err = p.Generate(ctx, Request{Model: m, Input: []byte("[]")}); err != nil {
 		t.Fatal("missing catalog blocked generation", err)
 	}
 }

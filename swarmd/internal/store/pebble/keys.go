@@ -12,6 +12,23 @@ var workspaceMapMutationMu sync.Mutex
 const (
 	KeyAuthCodexDefault                            = "auth/codex/default" // legacy single-record key; retained for migration.
 	KeyAuthAttachDefault                           = "auth/attach/default"
+	KeyAuthScopedTokenPrefix                       = "auth/scoped_token/"
+	KeyAuthScopedTokenHashPrefix                   = "auth/scoped_token_by_hash/"
+	KeyAutomationV2WebhookAccountPrefix            = "automation_v2/webhook_by_account/"
+	KeyDeliverableAccountPrefix                    = "deliverable/by_account/"
+	KeyDeliverableStatusPrefix                     = "deliverable/index_status/"
+	KeyDeliverableWorkerPrefix                     = "deliverable/index_worker/"
+	KeyProjectAccountPrefix                        = "project/by_account/"
+	KeyProjectTaskAccountPrefix                    = "project_task/by_account/"
+	KeyStorageBucketAccountPrefix                  = "storage_hub/bucket_by_account/"
+	KeyStorageWorkerAccountPrefix                  = "storage_hub/worker_by_account/"
+	KeyStorageDeliverableAccountPrefix             = "storage_hub/deliverable_by_account/"
+	KeyWorkerAccountPrefix                         = "worker/account/"
+	KeyWorkerHistoryAccountPrefix                  = "worker/history/"
+	KeyWorkerAutomationAccountPrefix               = "worker/automation/"
+	KeyWorkerRunAccountPrefix                      = "worker/run/"
+	KeyWorkerRunOccAccountPrefix                   = "worker/run_occ/"
+	KeyWorkerIdempotencyAccountPrefix              = "worker/idempotency/"
 	KeyAuthVaultMeta                               = "auth/vault/meta" // legacy singleton key; retained for explicit migration only.
 	KeyAuthVaultMetaAccountPrefix                  = "auth/vault/meta_by_account/"
 	KeyAuthCredentialPrefix                        = "auth/credential/"
@@ -759,6 +776,96 @@ func KeyAuthVaultMetaForAccount(accountScopeID string) string {
 
 func KeyAuthCredentialForAccount(accountScopeID, providerID, credentialID string) string {
 	return fmt.Sprintf("%s%s/%s/%s", KeyAuthCredentialPrefix, keyPart(accountScopeID), keyPart(providerID), keyPart(credentialID))
+}
+
+func KeyAuthScopedToken(accountScopeID, tokenID string) string {
+	return fmt.Sprintf("%s%s/%s", KeyAuthScopedTokenPrefix, keyPart(accountScopeID), keyPart(tokenID))
+}
+
+func KeyAuthScopedTokenPrefixForAccount(accountScopeID string) string {
+	return fmt.Sprintf("%s%s/", KeyAuthScopedTokenPrefix, keyPart(accountScopeID))
+}
+
+func KeyAuthScopedTokenByHash(tokenHash string) string {
+	return fmt.Sprintf("%s%s", KeyAuthScopedTokenHashPrefix, keyPart(tokenHash))
+}
+
+func KeyAutomationV2Webhook(accountScopeID, webhookID string) string {
+	return fmt.Sprintf("%s%s/%s", KeyAutomationV2WebhookAccountPrefix, keyPart(accountScopeID), keyPart(webhookID))
+}
+
+func AutomationV2WebhookPrefix(accountScopeID string) string {
+	accountPart := keyPart(accountScopeID)
+	if accountPart == "" {
+		return KeyAutomationV2WebhookAccountPrefix
+	}
+	return fmt.Sprintf("%s%s/", KeyAutomationV2WebhookAccountPrefix, accountPart)
+}
+
+func KeyDeliverable(accountScopeID, deliverableID string) string {
+	return fmt.Sprintf("%s%s/%s", KeyDeliverableAccountPrefix, keyPart(accountScopeID), keyPart(deliverableID))
+}
+
+func DeliverablePrefix(accountScopeID string) string {
+	accountPart := keyPart(accountScopeID)
+	if accountPart == "" {
+		return KeyDeliverableAccountPrefix
+	}
+	return fmt.Sprintf("%s%s/", KeyDeliverableAccountPrefix, accountPart)
+}
+
+func KeyDeliverableStatusIndex(accountScopeID, status, deliverableID string) string {
+	return fmt.Sprintf("%s%s/%s/%s", KeyDeliverableStatusPrefix, keyPart(accountScopeID), keyPart(status), keyPart(deliverableID))
+}
+
+func DeliverableStatusIndexPrefix(accountScopeID, status string) string {
+	accountPart := keyPart(accountScopeID)
+	statusPart := keyPart(status)
+	if statusPart == "" {
+		return fmt.Sprintf("%s%s/", KeyDeliverableStatusPrefix, accountPart)
+	}
+	return fmt.Sprintf("%s%s/%s/", KeyDeliverableStatusPrefix, accountPart, statusPart)
+}
+
+func KeyDeliverableWorkerIndex(accountScopeID, workerID, deliverableID string) string {
+	return fmt.Sprintf("%s%s/%s/%s", KeyDeliverableWorkerPrefix, keyPart(accountScopeID), keyPart(workerID), keyPart(deliverableID))
+}
+
+func DeliverableWorkerIndexPrefix(accountScopeID, workerID string) string {
+	accountPart := keyPart(accountScopeID)
+	workerPart := keyPart(workerID)
+	if workerPart == "" {
+		return fmt.Sprintf("%s%s/", KeyDeliverableWorkerPrefix, accountPart)
+	}
+	return fmt.Sprintf("%s%s/%s/", KeyDeliverableWorkerPrefix, accountPart, workerPart)
+}
+
+func KeyProject(accountScopeID, projectID string) string {
+	return fmt.Sprintf("%s%s/%s", KeyProjectAccountPrefix, keyPart(accountScopeID), keyPart(projectID))
+}
+
+func ProjectPrefix(accountScopeID string) string {
+	accountPart := keyPart(accountScopeID)
+	if accountPart == "" {
+		return KeyProjectAccountPrefix
+	}
+	return fmt.Sprintf("%s%s/", KeyProjectAccountPrefix, accountPart)
+}
+
+func KeyProjectTask(accountScopeID, projectID, taskID string) string {
+	return fmt.Sprintf("%s%s/%s/%s", KeyProjectTaskAccountPrefix, keyPart(accountScopeID), keyPart(projectID), keyPart(taskID))
+}
+
+func ProjectTaskPrefix(accountScopeID, projectID string) string {
+	accountPart := keyPart(accountScopeID)
+	projectPart := keyPart(projectID)
+	if accountPart == "" {
+		return KeyProjectTaskAccountPrefix
+	}
+	if projectPart == "" {
+		return fmt.Sprintf("%s%s/", KeyProjectTaskAccountPrefix, accountPart)
+	}
+	return fmt.Sprintf("%s%s/%s/", KeyProjectTaskAccountPrefix, accountPart, projectPart)
 }
 
 func AuthCredentialPrefix() string {
@@ -1763,4 +1870,92 @@ func reverseMillis(value int64) int64 {
 func keyPart(value string) string {
 	clean := strings.ToLower(strings.TrimSpace(value))
 	return url.PathEscape(clean)
+}
+
+func KeyStorageBucket(accountScopeID, bucketID string) string {
+	return fmt.Sprintf("%s%s/%s", KeyStorageBucketAccountPrefix, keyPart(accountScopeID), keyPart(bucketID))
+}
+
+func KeyStorageBucketPrefix(accountScopeID string) string {
+	return fmt.Sprintf("%s%s/", KeyStorageBucketAccountPrefix, keyPart(accountScopeID))
+}
+
+func KeyStorageWorker(accountScopeID, workerID string) string {
+	return fmt.Sprintf("%s%s/%s", KeyStorageWorkerAccountPrefix, keyPart(accountScopeID), keyPart(workerID))
+}
+
+func KeyStorageWorkerPrefix(accountScopeID string) string {
+	return fmt.Sprintf("%s%s/", KeyStorageWorkerAccountPrefix, keyPart(accountScopeID))
+}
+
+func KeyStorageDeliverable(accountScopeID, deliverableID string) string {
+	return fmt.Sprintf("%s%s/%s", KeyStorageDeliverableAccountPrefix, keyPart(accountScopeID), keyPart(deliverableID))
+}
+
+func KeyStorageDeliverablePrefix(accountScopeID string) string {
+	return fmt.Sprintf("%s%s/", KeyStorageDeliverableAccountPrefix, keyPart(accountScopeID))
+}
+
+func KeyWorker(accountScopeID, workerID string) string {
+	return fmt.Sprintf("%s%s/%s", KeyWorkerAccountPrefix, keyPart(accountScopeID), keyPart(workerID))
+}
+
+func WorkerAccountPrefix(accountScopeID string) string {
+	accountPart := keyPart(accountScopeID)
+	if accountPart == "" {
+		return KeyWorkerAccountPrefix
+	}
+	return fmt.Sprintf("%s%s/", KeyWorkerAccountPrefix, accountPart)
+}
+
+func KeyWorkerHistory(accountScopeID, workerID string, revision uint64) string {
+	return fmt.Sprintf("%s%s/%s/%020d", KeyWorkerHistoryAccountPrefix, keyPart(accountScopeID), keyPart(workerID), revision)
+}
+
+func WorkerHistoryPrefix(accountScopeID, workerID string) string {
+	accountPart := keyPart(accountScopeID)
+	workerPart := keyPart(workerID)
+	if workerPart == "" {
+		return fmt.Sprintf("%s%s/", KeyWorkerHistoryAccountPrefix, accountPart)
+	}
+	return fmt.Sprintf("%s%s/%s/", KeyWorkerHistoryAccountPrefix, accountPart, workerPart)
+}
+
+func KeyWorkerByAutomation(accountScopeID, automationID string) string {
+	return fmt.Sprintf("%s%s/%s", KeyWorkerAutomationAccountPrefix, keyPart(accountScopeID), keyPart(automationID))
+}
+
+func WorkerAutomationPrefix(accountScopeID string) string {
+	accountPart := keyPart(accountScopeID)
+	if accountPart == "" {
+		return KeyWorkerAutomationAccountPrefix
+	}
+	return fmt.Sprintf("%s%s/", KeyWorkerAutomationAccountPrefix, accountPart)
+}
+
+func KeyWorkerRun(accountScopeID, workerID, runID string) string {
+	return fmt.Sprintf("%s%s/%s/%s", KeyWorkerRunAccountPrefix, keyPart(accountScopeID), keyPart(workerID), keyPart(runID))
+}
+
+func WorkerRunPrefix(accountScopeID, workerID string) string {
+	accountPart := keyPart(accountScopeID)
+	workerPart := keyPart(workerID)
+	if workerPart == "" {
+		return fmt.Sprintf("%s%s/", KeyWorkerRunAccountPrefix, accountPart)
+	}
+	return fmt.Sprintf("%s%s/%s/", KeyWorkerRunAccountPrefix, accountPart, workerPart)
+}
+
+func KeyWorkerRunByOccurrence(accountScopeID, occurrenceID string) string {
+	return fmt.Sprintf("%s%s/%s", KeyWorkerRunOccAccountPrefix, keyPart(accountScopeID), keyPart(occurrenceID))
+}
+
+func KeyWorkerIdempotency(accountScopeID, idempotencyKey string) string {
+	return fmt.Sprintf("%s%s/%s", KeyWorkerIdempotencyAccountPrefix, keyPart(accountScopeID), keyPart(idempotencyKey))
+}
+
+const KeyWorkerRunIdempotencyAccountPrefix = "worker/run_idempotency/"
+
+func KeyWorkerRunIdempotency(accountScopeID, idempotencyKey string) string {
+	return fmt.Sprintf("%s%s/%s", KeyWorkerRunIdempotencyAccountPrefix, keyPart(accountScopeID), keyPart(idempotencyKey))
 }

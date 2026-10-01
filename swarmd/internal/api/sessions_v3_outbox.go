@@ -18,6 +18,11 @@ func (s *Server) applySessionV3PrimaryMutation(input sessionruntime.SessionMutat
 	if s == nil || s.sessions == nil {
 		return sessionruntime.SessionMutationResult{}, errors.New("sessions v3 service is not configured")
 	}
+	if strings.HasPrefix(input.SessionID, "task-followup-") && s.beforeProjectTaskFollowupMutation != nil {
+		if err := s.beforeProjectTaskFollowupMutation(input); err != nil {
+			return sessionruntime.SessionMutationResult{}, err
+		}
+	}
 	if strings.TrimSpace(input.EpochID) == "" && input.RunIntent != nil {
 		input.EpochID = strings.TrimSpace(input.RunIntent.EpochID)
 	}

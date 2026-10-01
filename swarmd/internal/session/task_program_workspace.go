@@ -2,6 +2,7 @@ package session
 
 import (
 	"errors"
+	"reflect"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -84,7 +85,7 @@ func taskProgramRepositoryLanes(records []pebblestore.TaskProgramRecord, parentI
 			if !active || record.Revision != admission.Revision || record.ReservationRunID != admission.ReservationRunID || record.DefinitionHash != admission.DefinitionHash {
 				return nil, errors.New("task program repository admission is stale")
 			}
-			if (record.RepositoryLane == nil) != (admission.RepositoryLane == nil) || (record.RepositoryLane != nil && *record.RepositoryLane != *admission.RepositoryLane) {
+			if (record.RepositoryLane == nil) != (admission.RepositoryLane == nil) || (record.RepositoryLane != nil && *record.RepositoryLane != *admission.RepositoryLane) || !reflect.DeepEqual(record.RepositoryLanes, admission.RepositoryLanes) || !reflect.DeepEqual(record.LaneHeads, admission.LaneHeads) {
 				return nil, errors.New("task program repository admission lane mismatch")
 			}
 			found = true
@@ -93,6 +94,9 @@ func taskProgramRepositoryLanes(records []pebblestore.TaskProgramRecord, parentI
 		}
 		if record.RepositoryLane != nil {
 			lanes = append(lanes, *record.RepositoryLane)
+		}
+		for _, lane := range record.RepositoryLanes {
+			lanes = append(lanes, lane)
 		}
 	}
 	if !found {

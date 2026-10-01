@@ -7,6 +7,8 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
+// Purpose: canonical RecordTurnUsage preserves pricing/tier receipts and latest
+// context; explicit fixture principals exercise the account-isolated V3 boundary.
 func TestRecordTurnUsageFireworksPreservesTierAndCost(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "session-usage-fireworks-cost.pebble"))
 	if err != nil {
@@ -18,7 +20,7 @@ func TestRecordTurnUsageFireworksPreservesTierAndCost(t *testing.T) {
 		t.Fatalf("new event log: %v", err)
 	}
 	svc := NewService(pebblestore.NewSessionStore(store), events)
-	session, _, err := svc.CreateSessionWithOptions(CreateSessionOptions{Title: "Fireworks usage", WorkspacePath: t.TempDir(), WorkspaceName: "workspace", Mode: "auto", Preference: &pebblestore.ModelPreference{Provider: "fireworks", Model: "glm-5p1", Thinking: "high", ServiceTier: "priority"}})
+	session, _, err := svc.CreateSessionWithOptions(CreateSessionOptions{UserID: "usage-user", AccountScopeID: "usage-account", Title: "Fireworks usage", WorkspacePath: t.TempDir(), WorkspaceName: "workspace", Mode: "auto", Preference: &pebblestore.ModelPreference{Provider: "fireworks", Model: "glm-5p1", Thinking: "high", ServiceTier: "priority"}})
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
@@ -38,6 +40,8 @@ func TestRecordTurnUsageFireworksPreservesTierAndCost(t *testing.T) {
 	}
 }
 
+// Purpose: distinct turns and receipt corrections replace context occupancy,
+// not cumulative billing; RecordTurnUsage and ApplyV3SessionMutation own state.
 func TestRecordTurnUsageFireworksUsesLatestContextSnapshot(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "session-usage-fireworks-accumulate.pebble"))
 	if err != nil {
@@ -49,7 +53,7 @@ func TestRecordTurnUsageFireworksUsesLatestContextSnapshot(t *testing.T) {
 		t.Fatalf("new event log: %v", err)
 	}
 	svc := NewService(pebblestore.NewSessionStore(store), events)
-	session, _, err := svc.CreateSessionWithOptions(CreateSessionOptions{Title: "Fireworks Usage", WorkspacePath: t.TempDir(), WorkspaceName: "workspace", Mode: "auto", Preference: &pebblestore.ModelPreference{Provider: "fireworks", Model: "glm-5p1", Thinking: "high"}})
+	session, _, err := svc.CreateSessionWithOptions(CreateSessionOptions{UserID: "usage-user", AccountScopeID: "usage-account", Title: "Fireworks Usage", WorkspacePath: t.TempDir(), WorkspaceName: "workspace", Mode: "auto", Preference: &pebblestore.ModelPreference{Provider: "fireworks", Model: "glm-5p1", Thinking: "high"}})
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
@@ -82,6 +86,8 @@ func TestRecordTurnUsageFireworksUsesLatestContextSnapshot(t *testing.T) {
 	}
 }
 
+// Purpose: provider snapshots cannot inflate current context; the canonical
+// V3 mutation owns cumulative receipt accounting separately from remaining tokens.
 func TestRecordTurnUsageCodexRemainingUsesLatestProviderSnapshot(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "session-usage-codex-remaining.pebble"))
 	if err != nil {
@@ -95,6 +101,7 @@ func TestRecordTurnUsageCodexRemainingUsesLatestProviderSnapshot(t *testing.T) {
 
 	svc := NewService(pebblestore.NewSessionStore(store), events)
 	session, _, err := svc.CreateSessionWithOptions(CreateSessionOptions{
+		UserID: "usage-user", AccountScopeID: "usage-account",
 		Title:         "Codex usage repro",
 		WorkspacePath: t.TempDir(),
 		WorkspaceName: "workspace",
@@ -105,7 +112,7 @@ func TestRecordTurnUsageCodexRemainingUsesLatestProviderSnapshot(t *testing.T) {
 		t.Fatalf("create session: %v", err)
 	}
 
-	// Exact run.usage.updated sequence from session 915479a20d8e41f71570440d461a4e17.
+	// Deterministic representative provider snapshot sequence.
 	// Codex response.usage is a current provider snapshot; summing these across turns
 	// double-counts retained context and incorrectly drives remaining context to zero.
 	turns := []pebblestore.SessionTurnUsageSnapshot{

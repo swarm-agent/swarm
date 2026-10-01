@@ -1,0 +1,138 @@
+import assert from 'node:assert/strict'
+import test from 'node:test'
+import { mutateWorker, readWorkers, type WorkerRecord } from './desktop-workers-api'
+import { realtimeFrameToActions } from './desktop-v3-cache-wire'
+
+// Requirement: Desktop uses the canonical /v3/workers contracts and revision guards.
+// Threat: a malformed response or failed stop is mistaken for success, or a worker
+// notification is rejected by the V3 frame codec. API and codec are the narrowest
+// deterministic layers; a live authenticated daemon still needs testbench validation.
+test('worker realtime invalidation is a valid content-free control frame', () => {
+  const actions = realtimeFrameToActions({ protocol: 'v3.realtime', protocol_version: 1, kind: 'worker.updated', endpoint_cursor: 'opaque' })
+  assert.equal(actions.length, 1)
+  assert.equal(actions[0].type, 'realtime.control')
+  assert.throws(() => realtimeFrameToActions({ protocol: 'v3.realtime', protocol_version: 1, kind: 'worker.updated', endpoint_cursor: '' }), /endpoint cursor/)
+  assert.throws(() => realtimeFrameToActions({ protocol: 'v3.realtime', protocol_version: 1, kind: 'worker.updated', endpoint_cursor: 'opaque', session: { id: 'leak' } as never }), /only an endpoint cursor/)
+})
+test('revision and malformed acknowledgement prevent worker mutations from appearing successful', async () => {
+  await assert.rejects(mutateWorker({ action: 'pause', workerId: 'worker', expected_revision: 0 }), /revision/)
+  const previous = globalThis.fetch
+  const calls: Array<{ url: string; init: RequestInit }> = []
+  globalThis.fetch = (async (url: RequestInfo | URL, init?: RequestInit) => {
+    calls.push({ url: String(url), init: init ?? {} })
+    if (String(url).includes('/v1/auth/desktop/session')) return new Response(JSON.stringify({ user_id: 'user', account_scope_id: 'account' }), { status: 200 })
+    return new Response(JSON.stringify({ ok: true }), { status: 200 })
+  }) as typeof fetch
+  try {
+    await assert.rejects(mutateWorker({ action: 'pause', workerId: 'worker', expected_revision: 2 }), /not confirmed/)
+    assert.equal(calls.at(-1)?.url, '/v3/workers/worker/pause')
+    assert.deepEqual(JSON.parse(String(calls.at(-1)?.init.body)), { expected_revision: 2 })
+  } finally { globalThis.fetch = previous }
+})
+// Requirement: the summary endpoint is read with explicit date and zone, and an
+// invalid scope envelope fails closed. Boundary: readWorkers -> /v3/workers/:id/summary.
+test('worker summary requires exact worker, day and timezone', async () => {
+  const previous = globalThis.fetch
+  const seen: string[] = []
+  globalThis.fetch = (async (url: RequestInfo | URL) => {
+    seen.push(String(url))
+    if (String(url).includes('/v1/auth/desktop/session')) return new Response(JSON.stringify({ user_id: 'user', account_scope_id: 'account' }), { status: 200 })
+    return new Response(JSON.stringify({ worker_id: 'foreign', runs: { date: '2025-03-09', timezone: 'UTC', daily_runs: 3 }, next_scheduled_at: 0 }), { status: 200 })
+  }) as typeof fetch
+  try {
+    await assert.rejects(readWorkers({ kind: 'summary', accountScopeId: 'account', workerId: 'worker', timezone: 'UTC', date: '2025-03-09' }), /Invalid worker summary/)
+    assert.ok(seen.some(url => url.includes('/v3/workers/worker/summary?timezone=UTC&date=2025-03-09')))
+  } finally { globalThis.fetch = previous }
+})
+
+test('bounded paginated worker read rejects malformed envelope', async () => {
+  const previous = globalThis.fetch
+  globalThis.fetch = (async (url: RequestInfo | URL) => {
+    if (String(url).includes('/v1/auth/desktop/session')) return new Response(JSON.stringify({ user_id: 'user', account_scope_id: 'account' }), { status: 200 })
+    assert.match(String(url), /\/v3\/workers\?cursor=opaque&limit=20/)
+    return new Response(JSON.stringify({ workers: null }), { status: 200 })
+  }) as typeof fetch
+  try { await assert.rejects(readWorkers({ kind: 'list', accountScopeId: 'account', cursor: 'opaque', limit: 20 }), /Invalid worker page/) }
+  finally { globalThis.fetch = previous }
+})
+
+// Requirement: human acceptance POST /v3/workers/:id/accept with exact expected_revision.
+// Threat: forged approval, missing revision guard, or unconfirmed transition compromises worker authority.
+test('worker accept mutation requires positive revision and POSTs expected_revision', async () => {
+  await assert.rejects(mutateWorker({ action: 'accept', workerId: 'worker-accept', expected_revision: 0 }), /revision/)
+  const previous = globalThis.fetch
+  const calls: Array<{ url: string; init: RequestInit }> = []
+  globalThis.fetch = (async (url: RequestInfo | URL, init?: RequestInit) => {
+    calls.push({ url: String(url), init: init ?? {} })
+    if (String(url).includes('/v1/auth/desktop/session')) return new Response(JSON.stringify({ user_id: 'user', account_scope_id: 'account' }), { status: 200 })
+    return new Response(JSON.stringify({
+      worker: {
+        id: 'worker-accept',
+        account_scope_id: 'account',
+        name: 'Accepted Worker',
+        instructions: 'Run safely',
+        lifecycle_state: 'active',
+        revision: 2,
+        created_at: 1,
+        updated_at: 2,
+        proposed_bindings: { primary: 'ws-main' },
+        local_bindings: { primary: 'ws-main' },
+      } satisfies WorkerRecord,
+    }), { status: 200 })
+  }) as typeof fetch
+  try {
+    const result = await mutateWorker({ action: 'accept', workerId: 'worker-accept', expected_revision: 1 })
+    assert.ok('worker' in result)
+    assert.equal(result.worker.id, 'worker-accept')
+    assert.equal(result.worker.lifecycle_state, 'active')
+    assert.equal(calls.at(-1)?.url, '/v3/workers/worker-accept/accept')
+    assert.equal(calls.at(-1)?.init.method, 'POST')
+    assert.deepEqual(JSON.parse(String(calls.at(-1)?.init.body)), { expected_revision: 1 })
+  } finally { globalThis.fetch = previous }
+})
+
+test('worker record accepts pending lifecycle state and proposed bindings', () => {
+  const pendingWorker: WorkerRecord = {
+    id: 'worker-pending',
+    account_scope_id: 'account-1',
+    name: 'Pending Worker',
+    instructions: 'Stand by',
+    lifecycle_state: 'pending',
+    revision: 1,
+    created_at: 100,
+    updated_at: 100,
+    proposed_bindings: { primary: 'ws-proposed' },
+  }
+  assert.equal(pendingWorker.lifecycle_state, 'pending')
+  assert.equal(pendingWorker.proposed_bindings?.primary, 'ws-proposed')
+})
+
+// Requirement: authorized workspace metadata survives canonical detail/list
+// hydration and model edits are PUT proposals, never direct dispatch. Threat:
+// dropping paths or saving a model via an execution endpoint. API transport is
+// the narrowest layer proving the exact request/response contract.
+test('worker workspace hydration and settings proposal use canonical records', async () => {
+  const previous = globalThis.fetch
+  const worker: WorkerRecord = { id: 'stable', account_scope_id: 'account', name: 'Stable', instructions: '', lifecycle_state: 'active', revision: 3, created_at: 1, updated_at: 3 }
+  const views = { primary: { workspace_id: 'workspace', available: true, name: 'Project', path: '/projects/example' } }
+  const calls: Array<{ url: string; init?: RequestInit }> = []
+  globalThis.fetch = (async (url: RequestInfo | URL, init?: RequestInit) => {
+    calls.push({ url: String(url), init })
+    if (String(url).includes('/v1/auth/desktop/session')) return new Response(JSON.stringify({ user_id: 'user', account_scope_id: 'account' }))
+    return new Response(JSON.stringify(String(url) === '/v3/workers?limit=25' ? { workers: [worker], workspaces: { stable: views } } : { worker, workspaces: views }))
+  }) as typeof fetch
+  try {
+    const detail = await readWorkers({ kind: 'detail', accountScopeId: 'account', workerId: worker.id })
+    assert.ok('worker' in detail)
+    assert.deepEqual(detail.worker.authorized_workspaces, views)
+    const list = await readWorkers({ kind: 'list', accountScopeId: 'account', limit: 25 })
+    assert.ok('workers' in list)
+    assert.deepEqual(list.workers[0].authorized_workspaces, views)
+    const profile = { source: 'temporary', action: { provider: 'fixture', model: 'action' }, plan: { provider: 'fixture', model: 'plan' } }
+    await mutateWorker({ action: 'update', workerId: worker.id, expected_revision: 3, changes: { model_profile: profile, execution_mode: 'plan' } })
+    assert.equal(calls.at(-1)?.url, '/v3/workers/stable')
+    assert.equal(calls.at(-1)?.init?.method, 'PUT')
+    assert.deepEqual(JSON.parse(String(calls.at(-1)?.init?.body)), { model_profile: profile, execution_mode: 'plan', expected_revision: 3 })
+    assert.ok(calls.every(call => !/\/(direct|test|activate)$/.test(call.url)))
+  } finally { globalThis.fetch = previous }
+})

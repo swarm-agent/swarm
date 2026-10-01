@@ -1,4 +1,4 @@
-import type { DesktopV3ArtifactCatalogEntry } from '../../session-v3/artifact-api'
+import type { DesktopV3ArtifactCatalogEntry, VideoProvenance } from '../../session-v3/artifact-api'
 
 export type MediaKind = 'all' | 'image' | 'video' | 'audio' | 'animation'
 
@@ -34,6 +34,14 @@ export interface MediaLibraryItem {
   durationMs?: number
   sizeBytes?: number
   directUrl: string
+  parentId?: string
+  sourceMediaRef?: string
+  legacyRequestedSettings?: { model?: string; aspectRatio?: string; resolution?: string; durationSeconds?: number }
+  model?: string
+  aspectRatio?: string
+  resolution?: string
+  durationSeconds?: number
+  videoProvenance?: VideoProvenance | null
 }
 
 export interface HistoricalDateBucket {

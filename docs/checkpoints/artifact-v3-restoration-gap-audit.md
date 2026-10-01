@@ -1,5 +1,8 @@
 # Artifact V3 restoration gap audit
 
+Bookkeeping retirement note: Atlas/ledger mentions below describe historical
+work and results only. Those files are retired and are not current requirements.
+
 Status: **HISTORICAL AUDIT — current evidence and remaining gates are maintained in `artifact-v3-launch-closure.md`. Native conversion/decoded inspection has run; the fresh L2 animated revision journey and responsive pixel review are complete. Later launch gates remain incomplete.**
 
 Audit date: 2026-09-04
@@ -343,8 +346,8 @@ Acceptance evidence for Gate 5:
 
 At audit capture, tracked uncommitted changes were present in:
 
-- `docs/swarm-atlas.md`
-- `docs/testing/test-audit-ledger.tsv`
+- `docs/swarm-atlas.md` (historical inventory; now retired)
+- `docs/testing/test-audit-ledger.tsv` (historical inventory; now retired)
 - `swarmd/internal/run/artifact_v3_designer_test.go`
 - `swarmd/internal/run/service_task_launch.go`
 - `swarmd/internal/runtime/artifact_v3_runtime.go`
@@ -376,5 +379,5 @@ This audit document is an additional tracked file. The existing implementation d
 - `swarmd/internal/tool/runtime_manage_video_storyboard.go`
 - `swarmd/internal/tool/runtime_manage_video.go`
 - `swarmd/internal/tool/runtime_manage_artifact_animation.go`
-- `docs/testing/test-audit-ledger.tsv`
-- `docs/swarm-atlas.md`
+- `docs/testing/test-audit-ledger.tsv` (historical inventory; now retired)
+- `docs/swarm-atlas.md` (historical inventory; now retired)

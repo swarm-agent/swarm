@@ -108,6 +108,7 @@ var (
 )
 
 type Service struct {
+	workerExecution              *WorkerExecutionService
 	automationContext            func(string) (string, error)
 	sessions                     *sessionruntime.Service
 	model                        *model.Service
@@ -346,6 +347,12 @@ type RunResult struct {
 
 func (s *Service) resolveExecutionMode(requestMode string, agentProfile pebblestore.AgentProfile) (string, string, error) {
 	requestMode = sessionruntime.NormalizeMode(requestMode)
+	if agentruntime.IsSwarmOrchestratorAgentName(agentProfile.Name) {
+		if requestMode != sessionruntime.ModeAuto {
+			return sessionruntime.ModeAuto, "Orchestrator session plan mode is disabled; using auto mode for project task cards", nil
+		}
+		return sessionruntime.ModeAuto, "", nil
+	}
 	if pebblestore.AgentExitPlanModeEnabled(agentProfile) {
 		return requestMode, "", nil
 	}
@@ -770,6 +777,69 @@ func (s *Service) ExecuteToolForSessionScope(ctx context.Context, workspacePath 
 		}
 	}
 	return s.tools.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, call)
+}
+
+// ExecuteTaskProgramForCoordinator launches an approved Task Program through the canonical
+// scheduler using an owning coordinator run and durable reservations.
+func (s *Service) ExecuteTaskProgramForCoordinator(ctx context.Context, p identity.Principal, parentSessionID, runID string, record pebblestore.TaskProgramRecord) (string, error) {
+	if !p.Valid() || p.Type != "user" || p.UserID == "" || p.AccountScopeID == "" {
+		return "", errors.New("user id is required")
+	}
+	if s == nil || s.sessions == nil {
+		return "", errors.New("session service unavailable")
+	}
+	parentSession, found, err := s.sessions.GetSession(parentSessionID)
+	if err != nil {
+		return "", err
+	}
+	if !found {
+		return "", fmt.Errorf("parent session %q not found", parentSessionID)
+	}
+	if parentSession.AccountScopeID != p.AccountScopeID {
+		return "", errors.New("cross-account execution forbidden")
+	}
+
+	arguments, err := json.Marshal(map[string]any{
+		"action":  taskProgramActionStart,
+		"mode":    taskModeRegular,
+		"prompt":  "Task Program execution",
+		"program": record.Definition,
+	})
+	if err != nil {
+		return "", fmt.Errorf("encode coordinator task program: %w", err)
+	}
+	parsed, err := parseTaskCallArguments(string(arguments))
+	if err != nil {
+		return "", fmt.Errorf("validate coordinator task program: %w", err)
+	}
+
+	callID := fmt.Sprintf("call_tp_%s", record.ProgramID)
+	if s.permissions == nil {
+		return "", errors.New("task program permission service is not configured")
+	}
+	{
+		readyIdxs := taskProgramReadyJobIndexes(record, taskProgramStageIndex(record))
+		reservation, reserveErr := s.permissions.ReserveSubagentWave(permission.SubagentReservationRequest{
+			SessionID:      parentSessionID,
+			RunID:          runID,
+			CallID:         callID,
+			ManifestHash:   record.DefinitionHash,
+			LaunchCount:    len(record.Definition.Jobs),
+			Program:        true,
+			ReadyCount:     len(readyIdxs),
+			MaxConcurrency: record.Definition.MaxConcurrency,
+			AccountScopeID: p.AccountScopeID,
+		})
+		if reserveErr != nil {
+			return "", fmt.Errorf("task program subagent reservation failed: %w", reserveErr)
+		}
+		if reservation.Decision != permission.SubagentReservationApprove || reservation.Reservation.ActiveCount < 1 {
+			return "", errors.New("task program scheduler reservation denied or missing capacity")
+		}
+	}
+
+	call := tool.Call{CallID: callID, Name: "task"}
+	return s.executeTaskProgram(ctx, parentSession.Mode, 1, call, nil, taskExecutionRequest{RunID: runID, Principal: p}, parentSession, parsed, record, record.Definition.ID, "Task Program execution")
 }
 
 func (s *Service) SetWorkspaceService(workspaceSvc *workspaceruntime.Service) {
@@ -1371,7 +1441,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 	if s.providers == nil {
 		return RunResult{}, errors.New("provider registry is not configured")
 	}
-	runnerCtx := ctx
+	runnerCtx := withWorkerBudget(ctx, s.sessions.Store(), acctScope, sessionID)
 	if options.Principal.Valid() {
 		runnerCtx = identity.ContextWithPrincipal(runnerCtx, options.Principal)
 		ctx = runnerCtx
@@ -1405,7 +1475,11 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		agentDisabled map[string]bool
 		scopeErr      error
 	)
-	if options.TrustedAgentProfile != nil {
+	historyProfile, taskHistoryOnly := s.taskHistoryProfile(tool.WorkspaceScope{SessionID: sessionID, Principal: options.Principal}, agentProfile)
+	if taskHistoryOnly {
+		agentProfile = historyProfile
+	}
+	if options.TrustedAgentProfile != nil || taskHistoryOnly {
 		// Delegated compiled agents carry an immutable, launch-specific snapshot.
 		// Compile that exact contract so workspace Designer write/edit authority is
 		// not replaced by the same named agent's fail-closed managed default.
@@ -1682,6 +1756,9 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 	rawToolDefinitions := convertToolDefinitions(s.ListAgentToolDefinitionsForAccount(options.Principal.AccountScopeID))
 	rawCustomToolDefinitions := convertToolDefinitions(s.customAgentToolDefinitionsForAccount(options.Principal.AccountScopeID))
 	toolDefinitions := filterToolDefinitions(rawToolDefinitions, effectiveDisabledTools)
+	if taskHistoryOnly {
+		toolDefinitions = taskHistoryToolDefinitions(toolDefinitions)
+	}
 	runRequestDebugEvent("tool_inventory", map[string]any{
 		"session_id":            sessionID,
 		"run_id":                runID,
@@ -2343,7 +2420,36 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 				apply:     options.ApplySessionMutation,
 			})
 		}
-		response, err := runProviderAttempt(runnerCtx, providerRunner, stepRequest, providerAttemptActivityTimeout, func(event provideriface.StreamEvent) {
+		// Capture immutable pre-attempt counters: an abandoned transport may return
+		// after the run has stopped. Its genuine receipt still belongs to this attempt.
+		priorTokens, priorInput, priorOutput := cumulativeBilledTokens, cumulativeBilledInputTokens, cumulativeBilledOutputTokens
+		priorRead, priorWrite, priorThinking := cumulativeBilledCacheReadTokens, cumulativeBilledCacheWriteTokens, cumulativeBilledThinkingTokens
+		priorCost, receiptRunID, receiptStep := cumulativeTurnCost, runID, step
+		receiptProvider, receiptModel, receiptWindow := providerID, resolvedPreference.Preference.Model, resolvedPreference.ContextWindow
+		receiptPrincipal, receiptApply := options.Principal, options.ApplySessionMutation
+		attemptCtx := withLateProviderReceipt(runnerCtx, func(late provideriface.Response) error {
+			usage := late.Usage
+			if !hasConcreteUsageSnapshot(usage) {
+				return s.sessions.Store().ReleaseWorkerBudgetReservation(acctScope, sessionID, usage.BudgetOperationID)
+			}
+			cost := usage.EstimatedCostUSD
+			if cost == 0 && s.sessions.Store() != nil {
+				cost = s.sessions.Store().CalculateCost(receiptProvider, receiptModel, usage.InputTokens, usage.OutputTokens, usage.CacheReadTokens, usage.ThinkingTokens)
+			}
+			usage.EstimatedCostUSD = priorCost + cost
+			baseTokens, baseInput, baseOutput := priorTokens, priorInput, priorOutput
+			baseRead, baseWrite, baseThinking := priorRead, priorWrite, priorThinking
+			if strings.EqualFold(usage.Source, "copilot_session_usage") {
+				baseTokens, baseInput, baseOutput = 0, 0, 0
+				baseRead, baseWrite, baseThinking = 0, 0, 0
+			}
+			_, _, _, receiptErr := s.recordProviderUsageSnapshot(sessionID, receiptRunID, receiptProvider, receiptModel, receiptWindow, receiptStep, usage, receiptPrincipal, receiptApply, baseTokens+usage.TotalTokens, baseInput+usage.InputTokens, baseOutput+usage.OutputTokens, baseRead+usage.CacheReadTokens, baseWrite+usage.CacheWriteTokens, baseThinking+usage.ThinkingTokens)
+			if receiptErr != nil {
+				return receiptErr
+			}
+			return s.sessions.Store().ReleaseWorkerBudgetReservation(acctScope, sessionID, usage.BudgetOperationID)
+		})
+		response, err := runProviderAttempt(attemptCtx, providerRunner, stepRequest, providerAttemptActivityTimeout, func(event provideriface.StreamEvent) {
 			if ctx.Err() != nil {
 				return
 			}
@@ -2391,6 +2497,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 				cumulativeBilledThinkingTokens += response.Usage.ThinkingTokens
 			}
 			accumulatedUsage = mergeTokenUsage(accumulatedUsage, response.Usage)
+			accumulatedUsage.BudgetOperationID = response.Usage.BudgetOperationID
 			accumulatedUsage.EstimatedCostUSD = cumulativeTurnCost
 			if shouldPersistProviderUsage(providerID, accumulatedUsage) {
 				turnUsage, usageSummary, usageEvent, usageErr := s.recordProviderUsageSnapshot(sessionID, runID, providerID, resolvedPreference.Preference.Model, resolvedPreference.ContextWindow, stepsCompleted, accumulatedUsage, options.Principal, options.ApplySessionMutation, cumulativeBilledTokens, cumulativeBilledInputTokens, cumulativeBilledOutputTokens, cumulativeBilledCacheReadTokens, cumulativeBilledCacheWriteTokens, cumulativeBilledThinkingTokens)
@@ -2413,6 +2520,11 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			}
 		}
 
+		if !errors.Is(err, pebblestore.ErrWorkerBudget) && s.sessions != nil && s.sessions.Store() != nil {
+			if releaseErr := s.sessions.Store().ReleaseWorkerBudgetReservation(acctScope, sessionID, response.Usage.BudgetOperationID); releaseErr != nil {
+				return RunResult{}, releaseErr
+			}
+		}
 		if stopErr := ctx.Err(); stopErr != nil {
 			if runErr != nil {
 				return RunResult{}, runErr
@@ -2674,7 +2786,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			permissionIndexes = append(permissionIndexes, i)
 		}
 		if len(permissionCalls) > 0 {
-			permissionResults, _, _, permissionApprovedMask, feedback, gateErr := s.gateToolCalls(ctx, permissionSessionID, runID, step, executionMode, permissionCalls, emit, compiledPolicy)
+			permissionResults, _, _, permissionApprovedMask, feedback, gateErr := s.gateToolCalls(ctx, permissionSessionID, runID, step, executionMode, permissionCalls, emit, compiledPolicy, agentProfile)
 			if gateErr != nil {
 				return RunResult{}, gateErr
 			}
@@ -3007,8 +3119,14 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			}
 		}
 		for i, call := range toolCalls {
-			if next := mapString(decodeToolPayload(gatedResults[i].Output), "next_action"); automationV2PlanCall(call) && gatedResults[i].Error == "" && (next == "await_automation_acceptance" || next == "await_worker_acceptance") {
+			if next := mapString(decodeToolPayload(gatedResults[i].Output), "next_action"); workerProposalCall(call) && gatedResults[i].Error == "" && (next == "await_automation_acceptance" || next == "await_worker_acceptance") {
 				terminalPlanState.MarkTerminal()
+			}
+			if canonicalToolName(call.Name) == "exit_plan_mode" && strings.TrimSpace(gatedResults[i].Error) == "" {
+				payload := decodeToolPayload(gatedResults[i].Output)
+				if mapString(payload, "status") == "plan_submitted_for_review" {
+					terminalPlanState.MarkTerminal()
+				}
 			}
 		}
 		if terminalPlanState.IsTerminal() {
@@ -4189,7 +4307,7 @@ func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, ru
 			accountScopeID = strings.TrimSpace(sessionSnapshot.AccountScopeID)
 		}
 	}
-	_ = accountScopeID
+	ctx = withWorkerBudget(ctx, s.sessions.Store(), accountScopeID, sessionID)
 	resolvedCompact, compactProfile, err := s.resolveCompactPreference(accountScopeID, basePreference)
 	if err != nil {
 		finishFailure(err)
@@ -4295,37 +4413,25 @@ func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, ru
 	{
 		oneShotStatus := fmt.Sprintf("compacting bounded chat with Compact (one shot, attempt %d)", attempt)
 		emitProgress(oneShotStatus)
-		oneShotResult, reqErr := executeMemoryCompactionRequest(ctx, runner, compactModel, instructions, oneShotPrompt, contextWindow, summaryMaxRunes, func(message string) {
+		persistReceipt := func(response provideriface.Response) error {
+			if hasConcreteUsageSnapshot(response.Usage) {
+				principal, _ := identity.PrincipalFromContext(ctx)
+				_, _, _, err := s.recordProviderUsageSnapshot(sessionID, "compact/operation/"+response.Usage.BudgetOperationID, compactModel.ProviderID, compactModel.Preference.Model, contextWindow, step, response.Usage, principal, nil)
+				if err != nil {
+					return err
+				}
+			}
+			return s.sessions.Store().ReleaseWorkerBudgetReservation(accountScopeID, sessionID, response.Usage.BudgetOperationID)
+		}
+		compactCtx := withLateProviderReceipt(ctx, persistReceipt)
+		oneShotResult, reqErr := executeMemoryCompactionRequest(compactCtx, runner, compactModel, instructions, oneShotPrompt, contextWindow, summaryMaxRunes, func(message string) {
 			emitProgress(oneShotStatus + "; " + strings.TrimSpace(message))
 		})
 		// Account compaction response usage before downstream validation or error handling
-		if s.sessions != nil && hasConcreteUsageSnapshot(oneShotResult.Usage) {
-			compactCost := 0.0
-			if s.sessions.Store() != nil {
-				compactCost = s.sessions.Store().CalculateCost(compactModel.ProviderID, compactModel.Preference.Model, oneShotResult.Usage.InputTokens, oneShotResult.Usage.OutputTokens, oneShotResult.Usage.CacheReadTokens, oneShotResult.Usage.ThinkingTokens)
-			}
-			uniqueCompactRunID := fmt.Sprintf("compact:%s:%s:%d:%d:%d", sessionID, strings.TrimSpace(runID), compactIndex, attempt, time.Now().UnixNano())
-			compactTurn := pebblestore.SessionTurnUsageSnapshot{
-				SessionID:        sessionID,
-				AccountScopeID:   accountScopeID,
-				RunID:            uniqueCompactRunID,
-				Provider:         compactModel.ProviderID,
-				Model:            compactModel.Preference.Model,
-				Source:           "compaction",
-				InputTokens:      oneShotResult.Usage.InputTokens,
-				OutputTokens:     oneShotResult.Usage.OutputTokens,
-				ThinkingTokens:   oneShotResult.Usage.ThinkingTokens,
-				CacheReadTokens:  oneShotResult.Usage.CacheReadTokens,
-				CacheWriteTokens: oneShotResult.Usage.CacheWriteTokens,
-				TotalTokens:      oneShotResult.Usage.TotalTokens,
-				BilledTokens:     oneShotResult.Usage.TotalTokens,
-				EstimatedCostUSD: compactCost,
-				CreatedAt:        time.Now().UnixMilli(),
-				UpdatedAt:        time.Now().UnixMilli(),
-			}
-			if _, _, _, recErr := s.sessions.RecordTurnUsage(sessionID, compactTurn); recErr != nil {
-				finishFailure(recErr)
-				return "", fmt.Errorf("record compact turn usage: %w", recErr)
+		if oneShotResult.Usage.BudgetOperationID != "" {
+			if err := persistReceipt(provideriface.Response{Usage: oneShotResult.Usage}); err != nil {
+				finishFailure(err)
+				return "", fmt.Errorf("record compact turn usage: %w", err)
 			}
 		}
 		if reqErr == nil {
@@ -5292,7 +5398,7 @@ func executeMemoryCompactionRequest(ctx context.Context, runner provideriface.Ru
 	req = compactModel.apply(req)
 	response, reqErr := runMemoryCompactionProviderCall(ctx, runner, req, emitHeartbeat)
 	if reqErr != nil {
-		return memoryCompactionResult{}, reqErr
+		return memoryCompactionResult{Usage: response.Usage}, reqErr
 	}
 	summary := strings.TrimSpace(firstNonEmptyString(response.Text, response.ReasoningSummary))
 	if summaryMaxRunes > 0 {
@@ -5322,10 +5428,19 @@ func runMemoryCompactionProviderCall(ctx context.Context, runner provideriface.R
 // Compact cases. Case-specific callers own instructions and response validation;
 // this boundary owns streaming assembly, cancellation, and optional heartbeats.
 func runCompactProviderCall(ctx context.Context, runner provideriface.Runner, req provideriface.Request, emitHeartbeat func(string)) (provideriface.Response, error) {
-	resultCh := make(chan struct {
-		response provideriface.Response
-		err      error
-	}, 1)
+	return runCompactProviderCallWithTerminationTimeout(ctx, runner, req, emitHeartbeat, providerAttemptTerminationTimeout)
+}
+
+func runCompactProviderCallWithTerminationTimeout(ctx context.Context, runner provideriface.Runner, req provideriface.Request, emitHeartbeat func(string), terminationTimeout time.Duration) (provideriface.Response, error) {
+	// Each Compact call owns an immutable operation slot, even with a shared parent.
+	if budget, ok := ctx.Value(workerBudgetContextKey{}).(*workerBudgetContext); ok {
+		ctx = withWorkerBudget(ctx, budget.repository, budget.account, budget.session)
+	}
+	if err := checkProviderWorkerBudget(ctx, runner, req); err != nil {
+		return provideriface.Response{}, err
+	}
+	operation := providerBudgetOperation(ctx)
+	resultCh := make(chan providerAttemptResult, 1)
 	go func() {
 		var output, reasoning strings.Builder
 		response, err := runner.CreateResponseStreaming(ctx, req, func(event provideriface.StreamEvent) {
@@ -5333,7 +5448,7 @@ func runCompactProviderCall(ctx context.Context, runner provideriface.Runner, re
 			switch event.Type {
 			case provideriface.StreamEventOutputTextDelta:
 				output.WriteString(event.Delta)
-				if emitHeartbeat != nil && delta != "" {
+				if ctx.Err() == nil && emitHeartbeat != nil && delta != "" {
 					emitHeartbeat("receiving compact summary: " + truncateRunes(delta, 160))
 				}
 			case provideriface.StreamEventReasoningSummaryDelta:
@@ -5341,35 +5456,46 @@ func runCompactProviderCall(ctx context.Context, runner provideriface.Runner, re
 					reasoning.Reset()
 				}
 				reasoning.WriteString(event.Delta)
-				if emitHeartbeat != nil && delta != "" {
+				if ctx.Err() == nil && emitHeartbeat != nil && delta != "" {
 					emitHeartbeat("compact reasoning: " + truncateRunes(delta, 160))
 				}
 			}
 		})
+		response.Usage.BudgetOperationID = operation
 		if strings.TrimSpace(response.Text) == "" {
 			response.Text = strings.TrimSpace(output.String())
 		}
 		if strings.TrimSpace(response.ReasoningSummary) == "" {
 			response.ReasoningSummary = strings.TrimSpace(reasoning.String())
 		}
-		select {
-		case resultCh <- struct {
-			response provideriface.Response
-			err      error
-		}{response: response, err: err}:
-		case <-ctx.Done():
-		}
+		resultCh <- providerAttemptResult{response: response, err: err}
 	}()
 	if emitHeartbeat == nil || memoryCompactionHeartbeatInterval <= 0 {
-		out := <-resultCh
-		return out.response, out.err
+		select {
+		case out := <-resultCh:
+			return out.response, out.err
+		case <-ctx.Done():
+			select {
+			case out := <-resultCh:
+				return out.response, ctx.Err()
+			case <-time.After(terminationTimeout):
+				retainLateProviderReceipt(ctx, resultCh)
+				return provideriface.Response{}, ctx.Err()
+			}
+		}
 	}
 	ticker := time.NewTicker(memoryCompactionHeartbeatInterval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
-			return provideriface.Response{}, ctx.Err()
+			select {
+			case out := <-resultCh:
+				return out.response, ctx.Err()
+			case <-time.After(terminationTimeout):
+				retainLateProviderReceipt(ctx, resultCh)
+				return provideriface.Response{}, ctx.Err()
+			}
 		case out := <-resultCh:
 			return out.response, out.err
 		case <-ticker.C:
@@ -5564,6 +5690,11 @@ func (s *Service) generateAndApplySessionTitle(sessionID, promptContext, stage s
 			s.emitSessionTitleWarning(sessionID, stage, errors.New("session title apply panic"), emit)
 		}
 	}()
+	if err := s.sessions.Store().CheckWorkerUnmeteredOperation(principal.AccountScopeID, sessionID); err != nil {
+		s.emitSessionTitleWarning(sessionID, stage, err, emit)
+		return
+	}
+	principal.SessionID = sessionID
 	title, err := s.generateMemorySessionTitle(promptContext, stage, minWords, maxWords, basePreference, memoryProfile, principal)
 	if err != nil {
 		s.emitSessionTitleWarning(sessionID, stage, err, emit)
@@ -5575,6 +5706,11 @@ func (s *Service) generateAndApplySessionTitle(sessionID, promptContext, stage s
 func (s *Service) generateMemorySessionTitle(promptContext, stage string, minWords, maxWords int, basePreference pebblestore.ModelPreference, compactProfile pebblestore.AgentProfile, principal identity.Principal) (string, error) {
 	if s == nil || s.providers == nil {
 		return "", errors.New("provider registry is not configured")
+	}
+	if s.sessions != nil {
+		if err := s.sessions.Store().CheckWorkerUnmeteredOperation(principal.AccountScopeID, principal.SessionID); err != nil {
+			return "", err
+		}
 	}
 	stage = strings.ToLower(strings.TrimSpace(stage))
 	if minWords <= 0 {
@@ -5652,6 +5788,9 @@ func (s *Service) generateMemorySessionTitle(promptContext, stage string, minWor
 	bgCtx := context.Background()
 	if principal.Valid() {
 		bgCtx = identity.ContextWithPrincipal(bgCtx, principal)
+	}
+	if principal.SessionID != "" && s.sessions != nil {
+		bgCtx = withWorkerBudget(bgCtx, s.sessions.Store(), principal.AccountScopeID, principal.SessionID)
 	}
 	ctx, cancel := context.WithTimeout(bgCtx, sessionTitleGenerationTimeout)
 	defer cancel()

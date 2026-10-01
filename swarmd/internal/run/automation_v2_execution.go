@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"time"
@@ -45,7 +46,13 @@ func (h *AutomationV2ExecutionHost) prepare(ctx context.Context, o store.Automat
 		return empty, errors.New("automation v2 preparation authorities unavailable")
 	}
 	p := identity.Principal{Type: identity.PrincipalTypeUser, UserID: r.UserID, AccountScopeID: r.AccountID, AccountScopeSource: identity.AccountScopeSourceServerState}
-	entry, found, err := s.workspace.GetByWorkspaceIDForPrincipal(p, r.WorkspaceID)
+	targetWorkspaceID := r.WorkspaceID
+	if r.Document.WorkerV2 != nil && strings.TrimSpace(r.Document.WorkerV2.WorkspaceID) != "" {
+		targetWorkspaceID = strings.TrimSpace(r.Document.WorkerV2.WorkspaceID)
+	} else if r.Document.AutomationV2 != nil && strings.TrimSpace(r.Document.AutomationV2.WorkspaceID) != "" {
+		targetWorkspaceID = strings.TrimSpace(r.Document.AutomationV2.WorkspaceID)
+	}
+	entry, found, err := s.workspace.GetByWorkspaceIDForPrincipal(p, targetWorkspaceID)
 	if err != nil {
 		return empty, err
 	}
@@ -72,7 +79,7 @@ func (h *AutomationV2ExecutionHost) prepare(ctx context.Context, o store.Automat
 	if err != nil {
 		return empty, err
 	}
-	if canonical.SourceWorkspaceID != r.WorkspaceID || canonical.Metadata == nil {
+	if canonical.SourceWorkspaceID != targetWorkspaceID || canonical.Metadata == nil {
 		return empty, store.ErrAutomationV2Conflict
 	}
 	allocation, err := h.trees.AllocateDetachedWorkspaceRequestedForPrincipal(p, canonical.SourceWorkspacePath, o.SessionID, "HEAD", "agent/automation-v2-"+o.ID[:16])
@@ -81,6 +88,45 @@ func (h *AutomationV2ExecutionHost) prepare(ctx context.Context, o store.Automat
 	}
 	available := true
 	grants := []store.WorkspaceGrant{{Kind: store.WorkspaceGrantPrimary, WorkspaceID: canonical.SourceWorkspaceID, WorkspaceGeneration: canonical.SourceWorkspaceGeneration, Path: canonical.SourceWorkspacePath, Name: canonical.SourceWorkspaceName, Available: &available}, {Kind: store.WorkspaceGrantWorktree, Path: allocation.WorkspacePath, Available: &available}}
+	var additionalWorkspaceIDs []string
+	if len(r.WorkspaceIDs) > 0 {
+		additionalWorkspaceIDs = append(additionalWorkspaceIDs, r.WorkspaceIDs...)
+	}
+	if r.Document.WorkerV2 != nil && len(r.Document.WorkerV2.WorkspaceIDs) > 0 {
+		additionalWorkspaceIDs = append(additionalWorkspaceIDs, r.Document.WorkerV2.WorkspaceIDs...)
+	}
+	if r.Document.AutomationV2 != nil && len(r.Document.AutomationV2.WorkspaceIDs) > 0 {
+		additionalWorkspaceIDs = append(additionalWorkspaceIDs, r.Document.AutomationV2.WorkspaceIDs...)
+	}
+	seenWorkspaces := map[string]struct{}{
+		canonical.SourceWorkspaceID: {},
+	}
+	for _, secID := range additionalWorkspaceIDs {
+		secID = strings.TrimSpace(secID)
+		if secID == "" {
+			continue
+		}
+		if _, seen := seenWorkspaces[secID]; seen {
+			continue
+		}
+		seenWorkspaces[secID] = struct{}{}
+		secEntry, secFound, secErr := s.workspace.GetByWorkspaceIDForPrincipal(p, secID)
+		if secErr != nil || !secFound {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(secEntry.State), "active") {
+			continue
+		}
+		secAvail := true
+		grants = append(grants, store.WorkspaceGrant{
+			Kind:                store.WorkspaceGrantAdditional,
+			WorkspaceID:         secEntry.WorkspaceID,
+			WorkspaceGeneration: secEntry.WorkspaceGeneration,
+			Path:                secEntry.Path,
+			Name:                secEntry.Name,
+			Available:           &secAvail,
+		})
+	}
 	pref, err := manageSessionsDeployModelProfilePreference(model, sessions.ModeAuto)
 	if err != nil {
 		return empty, err
@@ -99,7 +145,11 @@ func (h *AutomationV2ExecutionHost) prepare(ctx context.Context, o store.Automat
 	metadata["swarm_v3_mandatory_worktree"] = true
 	metadata["swarm_v3_worktree_owner_session_id"] = o.SessionID
 	metadata["swarm_v3_worktree_base_commit"] = allocation.BaseCommit
+	metadata["swarm_v3_source_workspace_path"] = canonical.SourceWorkspacePath
 	metadata["swarm_v3_runtime_workspace_path"] = allocation.WorkspacePath
+	if len(o.TriggerContext) > 0 {
+		metadata["trigger_context"] = o.TriggerContext
+	}
 	snapshot := store.SessionSnapshot{ID: o.SessionID, UserID: r.UserID, AccountScopeID: r.AccountID, WorkspacePath: canonical.SourceWorkspacePath, WorkspaceName: canonical.SourceWorkspaceName, Title: r.Document.Title, Mode: sessions.ModePlan, Preference: pref, ModelProfile: model, Metadata: metadata, WorkspaceGrants: grants, WorkspaceUsage: store.WorkspaceUsageFromGrants(grants), WorktreeEnabled: true, WorktreeRootPath: allocation.WorkspacePath, WorktreeBaseBranch: allocation.BaseBranch, WorktreeBranch: allocation.BranchName, CreatedAt: o.AdmittedAt, UpdatedAt: o.AdmittedAt}
 	if err = h.repository.JournalAutomationV2Preparation(o, snapshot); err != nil {
 		return snapshot, err
@@ -160,6 +210,51 @@ func (h *AutomationV2ExecutionHost) Start(ctx context.Context, o store.Automatio
 			// The recurring option remains in the immutable occurrence receipt; this is
 			// a single authorized execution copy, not another recurring definition.
 			doc.AutomationV2 = nil
+			doc.WorkerV2 = nil
+			var dynamicPrompt string
+			if promptVal, ok := o.TriggerContext["prompt"].(string); ok {
+				dynamicPrompt = strings.TrimSpace(promptVal)
+			}
+			if dynamicPrompt != "" || len(doc.Checkpoints) == 0 {
+				taskGoal := dynamicPrompt
+				if taskGoal == "" {
+					taskGoal = strings.TrimSpace(doc.Info.Goal)
+					if taskGoal == "" {
+						taskGoal = "Execute specialist task according to worker instructions and workspace context"
+					}
+				}
+				cpTitle := taskGoal
+				if len(cpTitle) > 80 {
+					cpTitle = cpTitle[:77] + "..."
+				}
+				cpID := "cp-1"
+				if strings.TrimSpace(doc.Title) == "" {
+					doc.Title = cpTitle
+				}
+				if strings.TrimSpace(doc.Info.Goal) == "" {
+					doc.Info.Goal = taskGoal
+				}
+				doc.Checkpoints = []store.SessionPlanCheckpoint{
+					{
+						ID:                 cpID,
+						Order:              1,
+						Title:              cpTitle,
+						Objective:          taskGoal,
+						Tasks:              []string{taskGoal},
+						AcceptanceCriteria: []string{"Task completed according to worker instructions and workspace context"},
+						Status:             sessions.PlanCheckpointStatusPending,
+					},
+				}
+				doc.ActiveCheckpointID = cpID
+			}
+			if len(o.TriggerContext) > 0 {
+				ctxBytes, _ := json.MarshalIndent(o.TriggerContext, "", "  ")
+				triggerContextBlock := fmt.Sprintf("\n\n[Trigger Event Context]\n%s\n", string(ctxBytes))
+				doc.Info.Goal += triggerContextBlock
+				for i := range doc.Checkpoints {
+					doc.Checkpoints[i].Notes += triggerContextBlock
+				}
+			}
 			result, err := h.runs.sessions.CommitV3PlanAcceptance(sessions.PlanAcceptanceCommitInput{Session: snapshot, PlanID: o.ID, Title: doc.Title, Document: &doc, ApplySessionMutation: h.apply})
 			if err != nil {
 				return err
@@ -196,7 +291,7 @@ func (h *AutomationV2ExecutionHost) startCheckpoint(snapshot store.SessionSnapsh
 			attempt = cp.AttemptID
 		}
 		request := "av2-start:" + o.ID
-		_, err = h.apply(sessions.SessionMutationInput{SessionID: o.SessionID, UserID: snapshot.UserID, AccountScopeID: snapshot.AccountScopeID, Kind: sessions.SessionMutationRecordRunIntent, ClientRequestID: request, IdempotencyKey: request, PayloadHash: request, RequestHash: request, EventType: "session.run_intent.recorded", RunIntent: &store.V3SessionRunIntent{RunID: o.RunID, Status: sessions.RunIntentPendingExecutor, PlanID: o.ID, CheckpointID: cp.ID, AttemptID: attempt, RunSessionID: o.SessionID, ParentSessionID: o.SessionID}, NowUnixMs: time.Now().UnixMilli()})
+		_, err = h.apply(sessions.SessionMutationInput{SessionID: o.SessionID, UserID: snapshot.UserID, AccountScopeID: snapshot.AccountScopeID, Kind: sessions.SessionMutationRecordRunIntent, ClientRequestID: request, IdempotencyKey: request, PayloadHash: request, RequestHash: request, EventType: "session.run_intent.recorded", RunIntent: &store.V3SessionRunIntent{SessionID: o.SessionID, UserID: snapshot.UserID, AccountScopeID: snapshot.AccountScopeID, RunID: o.RunID, Status: sessions.RunIntentPendingExecutor, PlanID: o.ID, CheckpointID: cp.ID, AttemptID: attempt, RunSessionID: o.SessionID, ParentSessionID: o.SessionID}, NowUnixMs: time.Now().UnixMilli()})
 		if err != nil {
 			return err
 		}

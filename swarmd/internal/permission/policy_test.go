@@ -207,6 +207,14 @@ func TestBashMisdeclaredOutputRedirectUsesEffectiveWritePolicy(t *testing.T) {
 	}
 }
 
+func TestBashEffectAssessmentAcceptsStringExplanation(t *testing.T) {
+	raw := `{"command":"git status","explanation":"Check working-tree status.","category":"read","critical":false}`
+	assessment := assessBashEffect(raw, "git status")
+	if !assessment.Valid || assessment.Category != BashEffectRead {
+		t.Fatalf("assessment = %+v, want valid read", assessment)
+	}
+}
+
 func TestBashOutputRedirectDetectionIgnoresNonFileRedirection(t *testing.T) {
 	for _, command := range []string{`printf "a > b"`, `check 2>/dev/null`, `check 2>&1`} {
 		t.Run(command, func(t *testing.T) {

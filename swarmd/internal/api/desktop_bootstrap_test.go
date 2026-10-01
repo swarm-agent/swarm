@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"swarm-refactor/swarmtui/pkg/startupconfig"
+	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/permission"
 	runruntime "swarm/packages/swarmd/internal/run"
 	"swarm/packages/swarmd/internal/session"
@@ -737,6 +738,10 @@ func (workspaceOverviewNoopRunService) ResolveAgentToolContract(pebblestore.Agen
 
 func (workspaceOverviewNoopRunService) ResolveAgentToolContractForAccount(string, pebblestore.AgentProfile) (runruntime.ResolvedAgentToolContract, *permission.Policy, map[string]bool, error) {
 	return runruntime.ResolvedAgentToolContract{}, nil, nil, nil
+}
+
+func (workspaceOverviewNoopRunService) ExecuteTaskProgramForCoordinator(context.Context, identity.Principal, string, string, pebblestore.TaskProgramRecord) (string, error) {
+	return "completed", nil
 }
 
 // Requirement: handleWorkspaceOverview's explicit catalog mode must not depend

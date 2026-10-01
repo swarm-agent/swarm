@@ -11,7 +11,7 @@ parallelism. Every selected suite is allowed to finish so the aggregate reports
 all failures instead of hiding later results behind the first failure.
 
 Default suites:
-  critical      local deterministic atlas-driven critical test gate
+  critical      local deterministic critical test gate
   onboarding    isolated local onboarding/bootstrap persistence gate
   installed-new-user      installed root-created human account and resumable TUI
   installed-existing-user installed root-selected human account and preservation

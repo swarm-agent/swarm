@@ -26,15 +26,19 @@ const (
 // Explicit favorite identity is copied when applicable. Swarm defaults instead
 // carry direct Action/Plan selections with source "swarm_settings".
 type SessionModelProfileSnapshot struct {
-	Source             string                 `json:"source"`
-	UseAccountDefault  bool                   `json:"use_account_default,omitempty"`
-	ActionFavoriteID   string                 `json:"action_favorite_id,omitempty"`
-	ActionFavoriteName string                 `json:"action_favorite_name,omitempty"`
-	Action             ModelProfileSelection  `json:"action"`
-	PlanFavoriteID     string                 `json:"plan_favorite_id,omitempty"`
-	PlanFavoriteName   string                 `json:"plan_favorite_name,omitempty"`
-	Plan               *ModelProfileSelection `json:"plan,omitempty"`
-	AppliedAt          int64                  `json:"applied_at"`
+	ResolutionWarning string `json:"resolution_warning,omitempty"`
+	Source            string `json:"source"`
+	UseAccountDefault bool   `json:"use_account_default,omitempty"`
+	// Worker policy only; cleared before binding an admitted run/session snapshot.
+	ActionUseAccountDefault bool                   `json:"action_use_account_default,omitempty"`
+	PlanUseAccountDefault   bool                   `json:"plan_use_account_default,omitempty"`
+	ActionFavoriteID        string                 `json:"action_favorite_id,omitempty"`
+	ActionFavoriteName      string                 `json:"action_favorite_name,omitempty"`
+	Action                  ModelProfileSelection  `json:"action"`
+	PlanFavoriteID          string                 `json:"plan_favorite_id,omitempty"`
+	PlanFavoriteName        string                 `json:"plan_favorite_name,omitempty"`
+	Plan                    *ModelProfileSelection `json:"plan,omitempty"`
+	AppliedAt               int64                  `json:"applied_at"`
 }
 
 // CloneSessionModelProfileSnapshot returns a deep copy suitable for crossing a
@@ -160,29 +164,30 @@ type SessionCodexConfig struct {
 }
 
 type SessionPlanSnapshot struct {
-	ID                  string               `json:"id"`
-	SessionID           string               `json:"session_id"`
-	UserID              string               `json:"user_id,omitempty"`
-	AccountScopeID      string               `json:"account_scope_id,omitempty"`
-	Title               string               `json:"title"`
-	Plan                string               `json:"plan"`
-	Document            *SessionPlanDocument `json:"document,omitempty"`
-	Status              string               `json:"status"`
-	ApprovalState       string               `json:"approval_state"`
-	Active              bool                 `json:"active"`
-	CreatedAt           int64                `json:"created_at"`
-	UpdatedAt           int64                `json:"updated_at"`
-	PriorTitle          string               `json:"prior_title,omitempty"`
-	PriorPlan           string               `json:"prior_plan,omitempty"`
-	DiffLines           []string             `json:"diff_lines,omitempty"`
-	UpdateSummary       string               `json:"update_summary,omitempty"`
-	UpdateScope         string               `json:"update_scope,omitempty"`
-	UpdateKind          string               `json:"update_kind,omitempty"`
-	RevisionKind        string               `json:"revision_kind,omitempty"`
-	RestoredFromVersion int                  `json:"restored_from_version,omitempty"`
-	Version             int                  `json:"version,omitempty"`
-	ParentRevision      int                  `json:"parent_revision,omitempty"`
-	Checkpoint          bool                 `json:"checkpoint,omitempty"`
+	ID                        string               `json:"id"`
+	SessionID                 string               `json:"session_id"`
+	UserID                    string               `json:"user_id,omitempty"`
+	AccountScopeID            string               `json:"account_scope_id,omitempty"`
+	Title                     string               `json:"title"`
+	Plan                      string               `json:"plan"`
+	Document                  *SessionPlanDocument `json:"document,omitempty"`
+	Status                    string               `json:"status"`
+	ApprovalState             string               `json:"approval_state"`
+	Active                    bool                 `json:"active"`
+	CreatedAt                 int64                `json:"created_at"`
+	UpdatedAt                 int64                `json:"updated_at"`
+	PriorTitle                string               `json:"prior_title,omitempty"`
+	PriorPlan                 string               `json:"prior_plan,omitempty"`
+	DiffLines                 []string             `json:"diff_lines,omitempty"`
+	UpdateSummary             string               `json:"update_summary,omitempty"`
+	UpdateScope               string               `json:"update_scope,omitempty"`
+	UpdateKind                string               `json:"update_kind,omitempty"`
+	RevisionKind              string               `json:"revision_kind,omitempty"`
+	RestoredFromVersion       int                  `json:"restored_from_version,omitempty"`
+	Version                   int                  `json:"version,omitempty"`
+	ParentRevision            int                  `json:"parent_revision,omitempty"`
+	Checkpoint                bool                 `json:"checkpoint,omitempty"`
+	AcceptedDefinitionReceipt string               `json:"accepted_definition_receipt,omitempty"`
 }
 
 // SessionPlanAutomationIntent identifies the exact paused definition reviewed by
@@ -442,6 +447,20 @@ type SessionStore struct {
 
 func NewSessionStore(store *Store) *SessionStore {
 	return &SessionStore{store: store}
+}
+
+func (s *SessionStore) Underlying() *Store {
+	if s == nil {
+		return nil
+	}
+	return s.store
+}
+
+func (s *SessionStore) WorkerStore() *WorkerStore {
+	if s == nil {
+		return nil
+	}
+	return NewWorkerStore(s.store)
 }
 
 func (s *SessionStore) CreateSession(session SessionSnapshot) error {

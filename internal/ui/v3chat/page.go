@@ -117,6 +117,10 @@ type Page struct {
 	pendingCommand               string
 	matchKey                     func(*tcell.EventKey, string) bool
 	runTimer                     *time.Timer
+	workerReviewOpen             bool
+	workerReviewIndex            int
+	workerReviewBusy             bool
+	workerReviewError            string
 	permissionIndex              int
 	permissionInput              []rune
 	permissionBusy               bool
@@ -731,6 +735,14 @@ func (p *Page) HandleKey(ev *tcell.EventKey) PageAction {
 	}
 	if p.bashOutputModal {
 		return p.handleBashOutputModalKeyLocked(ev)
+	}
+	if p.workerReviewVisibleLocked() {
+		return p.handleWorkerReviewKeyLocked(ev)
+	}
+	if ev.Key() == tcell.KeyF6 && !p.permissionVisibleLocked() && !p.pasteActive && p.runtime != nil && p.runtime.Store() != nil && len(SelectPendingWorkerReviews(p.runtime.Store().Snapshot())) > 0 {
+		p.workerReviewOpen = true
+		p.workerReviewError = ""
+		return PageActionNone
 	}
 	if p.permissionVisibleLocked() {
 		p.ensurePermissionPrefixLocked()
@@ -1488,6 +1500,9 @@ func (p *Page) HandleMouse(ev *tcell.EventMouse) {
 		}
 		return
 	}
+	if p.workerReviewVisibleLocked() {
+		return
+	}
 	if p.permissionVisibleLocked() {
 		permissions := SelectPendingPermissions(p.runtime.Store().Snapshot())
 		if len(permissions) == 0 || p.permissionBusy {
@@ -1711,10 +1726,19 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 		transcriptHeight = 1
 	}
 	rows := p.renderRowsForHeight(state, maxInt(1, width-4), transcriptHeight, styles)
+	workerOpen := false
+	if len(SelectPendingWorkerReviews(state)) > 0 {
+		p.mu.Lock()
+		workerOpen = p.workerReviewOpen
+		p.mu.Unlock()
+		if workerOpen {
+			scroll = 0
+		}
+	}
 	p.mu.Lock()
 	handoffFocused, handoffMessageID, handoffControl := p.handoffFocus, p.handoffMessageID, p.handoffControl
 	p.mu.Unlock()
-	if handoffFocused {
+	if handoffFocused && !workerOpen {
 		if action := finalHandoffSelectedAction(state.Messages, handoffMessageID, handoffControl); action != "" {
 			scroll = scrollToRenderAction(rows, action, transcriptHeight, scroll)
 			p.mu.Lock()
@@ -2554,7 +2578,7 @@ func (p *Page) renderRowsForHeight(state State, width, availableHeight int, styl
 		items = append(items, timelineRenderItem{kind: "reasoning", seq: segment.GlobalSeq, createdAt: segment.StartedAt, order: len(items), reasoning: segment})
 	}
 	for _, permission := range permissions {
-		if taskPermissionReplacedByTool(permission.Record, items) {
+		if isWorkerReviewPermission(permission.Record) || taskPermissionReplacedByTool(permission.Record, items) {
 			continue
 		}
 		createdAt := firstPositiveInt64(permission.Record.PermissionRequestedAt, permission.Record.CreatedAt)
@@ -2673,6 +2697,7 @@ func (p *Page) renderRowsForHeight(state State, width, availableHeight int, styl
 	for _, message := range pending {
 		rows = append(rows, p.renderUserRows("pending:"+message.ID, message.Content, width, styles)...)
 	}
+	rows = append(rows, p.workerReviewRows(state, width, styles)...)
 	p.mu.Lock()
 	if boundedPermissionID != "" && (p.permissionContentID == "" || p.permissionContentID == boundedPermissionID) {
 		p.permissionContentID = boundedPermissionID

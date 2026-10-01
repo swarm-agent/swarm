@@ -183,7 +183,9 @@ func (f *fakeArtifactAuthority) MarkFailed(principal artifact.Principal, _ strin
 }
 
 func (f *fakeArtifactAuthority) Create(_ context.Context, principal artifact.Principal, input artifact.CreateInput) (pebblestore.SessionArtifactVariant, error) {
-	f.createCalls++
+	if input.Role != pebblestore.SessionArtifactRoleRenderOnly {
+		f.createCalls++
+	}
 	f.principal = principal
 	digest := sha256.Sum256(input.Body)
 	var lineage pebblestore.SessionArtifactLineage
@@ -1277,6 +1279,7 @@ func TestManageArtifactPublishWorkspaceRejectsUnsafePrivateSourcesAndPreservesLi
 	}
 	output, err := runtime.executeManageArtifact(ctx, scope, "publish", map[string]any{
 		"action": "publish_workspace", "source": "revision.txt", "collection_id": "collection-new", "filename": "revision.txt",
+		"title":             "Custom Title",
 		"source_session_id": "source-session", "source_collection_id": "source-collection", "source_variant_id": "source-variant", "source_event_seq": 42,
 	})
 	if err != nil {
@@ -1284,6 +1287,9 @@ func TestManageArtifactPublishWorkspaceRejectsUnsafePrivateSourcesAndPreservesLi
 	}
 	if authority.createdFromFile.SourcePath != filepath.Join(scope.PrimaryPath, "revision.txt") || authority.createdFromFile.Package || authority.createdFromFile.SourceEventSeq != 42 || authority.createdFromFile.CollectionID != "collection-new" {
 		t.Fatalf("workspace publication = %#v", authority.createdFromFile)
+	}
+	if authority.createdFromFile.Presentation.Label != "Custom Title" {
+		t.Fatalf("workspace publication title not propagated to presentation label: %#v", authority.createdFromFile)
 	}
 	if !authority.createdFromFile.AutoAccept {
 		t.Fatalf("workspace publication did not request auto-accept: %+v", authority.createdFromFile)

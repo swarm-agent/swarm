@@ -55,11 +55,19 @@ filter_allowed() {
   # Permit only the complete reviewed rejection predicate, never a home default.
   # The installation identity message describes retained product state, not a
   # filesystem path. Keep both exceptions byte-exact after line normalization.
+  # Worker provenance predicates reject legacy worker execution; they neither
+  # migrate storage nor choose storage paths. Exempt only these complete lines.
+  # Search broad-root rejection reads the home path only to refuse indexing it;
+  # exempt the exact lookup, not other home defaults or appended operations.
   # Setup recovery atomically publishes a synced record in the same trusted
   # directory; this exact call is not a storage migration.
   grep -vFx -f <(printf '%s\n' \
+    'swarmd/internal/tool/search_coordinator.go:	home, err := os.UserHomeDir()' \
+    'swarmd/internal/run/worker_execution.go:	if w.Provenance != nil && (w.Provenance.MigratedAt != 0 || w.Provenance.SourceProposalID != "") {' \
+    'swarmd/internal/run/worker_execution.go:	if current.Provenance != nil && (current.Provenance.MigratedAt != 0 || current.Provenance.SourceProposalID != "") {' \
+    'swarmd/internal/run/worker_execution.go:	if !found || !workerRunAdmissionOpen(w, r) || len(w.RequestedCapabilities) != 0 || r.SessionID != "worker-execution-"+r.ID || (w.Provenance != nil && (w.Provenance.MigratedAt != 0 || w.Provenance.SourceProposalID != "")) {' \
     'internal/launcher/system_paths.go:	return filepath.IsAbs(home) && filepath.Clean(home) != "/" && filepath.Clean(home) != "/root" && !strings.ContainsAny(home, "\n\r\"%")' \
-    'cmd/swarmsetup/main.go:	fmt.Fprintln(os.Stderr, "OS installation identity is not Swarm authentication. Open Swarm and complete its authenticated account setup or sign in; existing Swarm account/provider/workspace state is retained on retry.")') < <(sed -E 's/^(internal\/launcher\/system_paths\.go|cmd\/swarmsetup\/main\.go):[0-9]+:/\1:/') | grep -Ev \
+    'cmd/swarmsetup/main.go:	fmt.Fprintln(os.Stderr, "OS installation identity is not Swarm authentication. Open Swarm and complete its authenticated account setup or sign in; existing Swarm account/provider/workspace state is retained on retry.")') < <(sed -E 's/^(internal\/launcher\/system_paths\.go|cmd\/swarmsetup\/main\.go|swarmd\/internal\/run\/worker_execution\.go|swarmd\/internal\/tool\/search_coordinator\.go):[0-9]+:/\1:/') | grep -Ev \
     -e '^internal/launcher/onboarding_recovery\.go:[0-9]+:[[:blank:]]*if err := os\.Rename\(f\.Name\(\), filepath\.Join\(dir, "onboarding\.json"\)\); err != nil \{$' \
     -e '^pkg/storagecontract/storagecontract\.go:.*(HOME|XDG_|\.local|\.config|Library|Desktop|Documents|Downloads|forbidden|reject|~|home-relative|WorkspaceRoots)' \
     -e '^internal/launcher/launcher\.go:.*(legacy|Legacy|XDG_STATE_HOME|XDG_DATA_HOME|UserHomeDir|UserConfigDir|\.local|\.config|resolve legacy|stat legacy|startupCWD|Getwd)' \
@@ -72,6 +80,8 @@ filter_allowed() {
     -e '^swarmd/internal/tool/runtime_bash_execution\.go:.*os\.MkdirTemp\("", "swarm-command-"\)' \
     -e '^swarmd/internal/tool/runtime_manage_artifact_video_chain\.go:.*os\.MkdirTemp\("", "swarm-video-(extract|chain)-"\)' \
     -e '^swarmd/internal/run/service(_workspace_manage)?\.go:.*workspaceruntime' \
+    -e '^swarmd/internal/run/service_prompt\.go:.*secrets\.env' \
+    -e '^swarmd/internal/tool/automation_v2_schema\.go:.*secrets\.env' \
     -e '^internal/launcher/managed_dev_update\.go:.*(/v1/swarm/topology/workspace-bindings|source_workspace_path)' \
     -e '^swarmd/internal/store/pebble/(keys|auth_store|auth_vault|worktree_store)\.go:.*(legacy|migrat|Migrate)' \
     -e '^pkg/startupconfig/config\.go:.*migrate startup config' \
@@ -146,6 +156,30 @@ if [[ "${self_test}" == "1" ]]; then
     echo "[storage-path-check] FAIL: exact-message or changed-predicate exception" >&2
     exit 1
   fi
+  # Requirement: Dispatch, startLocked, and validateWorkerExecution provenance rejection is
+  # not filesystem migration. The lexical gate must still reject changed
+  # predicates, appended storage operations, and the same text in other files.
+  # This filter-level test is the narrowest proof of the exact exceptions.
+  worker_guards=(
+    $'\tif w.Provenance != nil && (w.Provenance.MigratedAt != 0 || w.Provenance.SourceProposalID != "") {'
+    $'\tif current.Provenance != nil && (current.Provenance.MigratedAt != 0 || current.Provenance.SourceProposalID != "") {'
+    $'\tif !found || !workerRunAdmissionOpen(w, r) || len(w.RequestedCapabilities) != 0 || r.SessionID != "worker-execution-"+r.ID || (w.Provenance != nil && (w.Provenance.MigratedAt != 0 || w.Provenance.SourceProposalID != "")) {'
+  )
+  for worker_guard in "${worker_guards[@]}"; do
+    worker_hit="swarmd/internal/run/worker_execution.go:172:${worker_guard}"
+    [[ -z "$(printf '%s\n' "${worker_hit}" | filter_allowed)" ]] || exit 1
+    for rejected_hit in "${worker_hit/MigratedAt !=/MigratedAt ==}" "${worker_hit} os.Rename(a, b)" "${worker_hit/worker_execution.go/other.go}"; do
+      [[ -n "$(printf '%s\n' "${rejected_hit}" | filter_allowed)" ]] || exit 1
+    done
+  done
+  # Requirement: the reviewed search lookup rejects a broad index root, not
+  # daemon storage. Different bindings, extra operations and other files must
+  # remain visible to the lexical gate; only the exact lookup is exempt.
+  search_home_hit=$'swarmd/internal/tool/search_coordinator.go:486:\thome, err := os.UserHomeDir()'
+  [[ -z "$(printf '%s\n' "${search_home_hit}" | filter_allowed)" ]] || exit 1
+  for rejected_hit in "${search_home_hit/home, err/storageRoot, err}" "${search_home_hit} os.MkdirAll(home, 0700)" "${search_home_hit/search_coordinator.go/other.go}"; do
+    [[ -n "$(printf '%s\n' "${rejected_hit}" | filter_allowed)" ]] || exit 1
+  done
   tmp_dir="$(mktemp -d -t swarm-storage-gate.XXXXXX)"
   trap 'rm -rf "${tmp_dir}"' EXIT
   fixture="${tmp_dir}/bad-storage.sh"

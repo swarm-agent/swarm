@@ -33,6 +33,8 @@ import type {
   MediaThumbnailSize,
   MediaViewMode,
 } from './types'
+import type { MediaGenerationJob, MediaGenerationRequest } from './media-generation'
+import type { QuickRouteMode } from './media-viewer-modal'
 
 interface HistoricalMediaLibraryProps {
   initialKind?: MediaKind
@@ -40,6 +42,13 @@ interface HistoricalMediaLibraryProps {
   workspaceSlug?: string
   onOpenSession?: (sessionId: string) => void
   onClose?: () => void
+  onTagMedia?: (item: MediaLibraryItem) => void
+  taggedMediaIds?: Set<string>
+  onGenerate?: (request: MediaGenerationRequest) => Promise<void>
+  generationJobs?: readonly MediaGenerationJob[]
+  isGenerating?: boolean
+  initialQuickRouteMode?: QuickRouteMode | null
+  extraItems?: readonly MediaLibraryItem[]
 }
 
 export function HistoricalMediaLibrary({
@@ -47,8 +56,16 @@ export function HistoricalMediaLibrary({
   initialQuery = '',
   workspaceSlug: _workspaceSlug,
   onOpenSession,
+  onClose: _onClose,
+  onTagMedia,
+  taggedMediaIds,
+  onGenerate,
+  generationJobs,
+  isGenerating,
+  initialQuickRouteMode,
+  extraItems,
 }: HistoricalMediaLibraryProps) {
-  const [items, setItems] = useState<MediaLibraryItem[]>([])
+  const [catalogItems, setCatalogItems] = useState<MediaLibraryItem[]>([])
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -65,7 +82,7 @@ export function HistoricalMediaLibrary({
   // Active viewer modal item
   const [activeItem, setActiveItem] = useState<MediaLibraryItem | null>(null)
 
-  // Fetch all artifacts
+  // Fetch all catalog artifacts
   const loadArtifacts = useCallback(async (isRefresh = false) => {
     if (isRefresh) setRefreshing(true)
     else setLoading(true)
@@ -74,7 +91,7 @@ export function HistoricalMediaLibrary({
     try {
       const result = await fetchDesktopV3ArtifactCatalogResult()
       const normalized = normalizeMediaCatalogEntries(result.artifacts)
-      setItems(normalized)
+      setCatalogItems(normalized)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load media artifacts')
     } finally {
@@ -86,6 +103,35 @@ export function HistoricalMediaLibrary({
   useEffect(() => {
     void loadArtifacts()
   }, [loadArtifacts])
+
+  // Dynamically merge catalog items with extraItems (e.g. project tasks deliverables & uploads)
+  // so that new generations, tasks, and deliverables appear live without manual page refresh.
+  const items = useMemo(() => {
+    if (!extraItems || extraItems.length === 0) return catalogItems
+    const seen = new Set<string>()
+    const merged: MediaLibraryItem[] = []
+    // Add extra items first (newest project deliverables/tasks)
+    for (const item of extraItems) {
+      if (!seen.has(item.id)) {
+        seen.add(item.id)
+        merged.push(item)
+      }
+    }
+    // Then add catalog items that haven't been shadowed
+    for (const item of catalogItems) {
+      if (!seen.has(item.id)) {
+        seen.add(item.id)
+        merged.push(item)
+      }
+    }
+    return merged
+  }, [catalogItems, extraItems])
+
+  // Keep activeItem up to date if the corresponding item in items updates
+  const currentActiveItem = useMemo(() => {
+    if (!activeItem) return null
+    return items.find((i) => i.id === activeItem.id) ?? activeItem
+  }, [items, activeItem])
 
   // Count items by kind
   const counts = useMemo(() => {
@@ -123,9 +169,29 @@ export function HistoricalMediaLibrary({
   }
 
   return (
-    <div className="flex h-full w-full flex-col overflow-hidden bg-[var(--app-bg)] text-[var(--app-text)]">
+    <div className="media-library flex h-full min-h-0 min-w-0 w-full flex-col overflow-hidden bg-[var(--app-bg)] text-[var(--app-text)]" style={{ containerType: 'inline-size' }}>
+      <style>{`
+        .media-library button, .media-library select, .media-library input { min-height: 44px; }
+        .media-library button { min-width: 44px; }
+        .media-library :is(button, select):focus-visible { outline: 2px solid var(--app-primary); outline-offset: -2px; }
+        .media-library-toolbar { max-height: 50%; overflow-y: auto; }
+        .media-library-toolbar > div > div { min-width: 0; max-width: 100%; flex-wrap: wrap; }
+        .media-library-toolbar .inline-flex { max-width: 100%; flex-wrap: wrap; }
+        .media-library-toolbar [role="tablist"] button { flex-shrink: 0; }
+        .media-library-toolbar input { padding-right: 44px; }
+        .media-library-content { overflow-wrap: anywhere; }
+        .media-library-content .grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)); }
+        .media-library-content[data-thumbnail-size="sm"] .grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 120px), 1fr)); }
+        .media-library-content[data-thumbnail-size="lg"] .grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); }
+        @container (max-width: 600px) {
+          .media-library-toolbar { padding: 12px; }
+          .media-library-content { padding: 16px; }
+          .media-library-content section > div:first-child { flex-wrap: wrap; gap: 8px; }
+          .media-library-content table { min-width: 640px; }
+        }
+      `}</style>
       {/* Explorer Toolbar */}
-      <div className="flex shrink-0 flex-col gap-2.5 border-b border-[var(--app-border)] bg-[var(--app-surface)] p-3 sm:px-5 sm:py-3 shadow-xs">
+      <div className="media-library-toolbar flex shrink-0 flex-col gap-2.5 border-b border-[var(--app-border)] bg-[var(--app-surface)] p-3 sm:px-5 sm:py-3 shadow-xs">
         {/* Top Row: Type Pills & Search Box */}
         <div className="flex flex-wrap items-center justify-between gap-3">
           {/* Type Filter Pills */}
@@ -237,7 +303,7 @@ export function HistoricalMediaLibrary({
           </div>
 
           {/* Search Box */}
-          <div className="relative flex-1 sm:max-w-xs min-w-[200px]">
+          <div className="relative min-w-0 basis-64 flex-1 max-w-full">
             <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--app-text-subtle)] pointer-events-none" />
             <input
               type="text"
@@ -252,7 +318,7 @@ export function HistoricalMediaLibrary({
                 type="button"
                 onClick={() => setSearchQuery('')}
                 aria-label="Clear search"
-                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[var(--app-text-subtle)] hover:text-[var(--app-text)]"
+                className="absolute right-0 top-1/2 -translate-y-1/2 flex items-center justify-center text-[var(--app-text-subtle)] hover:text-[var(--app-text)]"
               >
                 <X size={13} />
               </button>
@@ -410,8 +476,19 @@ export function HistoricalMediaLibrary({
         </div>
       </div>
 
+      {generationJobs && generationJobs.length > 0 && (
+        <div role="status" aria-live="polite" className="flex shrink-0 gap-3 overflow-x-auto border-b border-[var(--app-border)] p-3">
+          {generationJobs.map((job) => (
+            <div key={job.id} className="min-w-48 max-w-80 shrink-0 break-words rounded-lg border border-[var(--app-border)] p-3 text-xs">
+              <p className="font-semibold truncate">{job.title}</p>
+              <p className="mt-1">{job.count} outputs · {job.status.split('_').join(' ')}</p>
+              {job.error && <p className="mt-1 text-red-400">{job.error}</p>}
+            </div>
+          ))}
+        </div>
+      )}
       {/* Main Content Area */}
-      <div className="flex-1 min-h-0 overflow-y-auto px-4 py-6 sm:px-8">
+      <div className="media-library-content flex-1 min-h-0 min-w-0 overflow-y-auto px-4 py-6 sm:px-8" data-thumbnail-size={thumbnailSize}>
         {loading ? (
           <div className="flex h-64 flex-col items-center justify-center gap-3 text-[var(--app-text-muted)]">
             <Loader2 className="size-6 animate-spin text-[var(--app-primary)]" />
@@ -481,13 +558,23 @@ export function HistoricalMediaLibrary({
       </div>
 
       {/* Modal Media Viewer */}
-      <MediaViewerModal
-        item={activeItem}
-        items={filteredItems}
-        onClose={() => setActiveItem(null)}
-        onSelect={(item) => setActiveItem(item)}
-        onOpenSession={onOpenSession}
-      />
+      {currentActiveItem && (
+        <MediaViewerModal
+          key={currentActiveItem.id}
+          item={currentActiveItem}
+          items={filteredItems}
+          threadItems={items}
+          onClose={() => setActiveItem(null)}
+          onSelect={(item) => setActiveItem(item)}
+          onOpenSession={onOpenSession}
+          isTagged={currentActiveItem ? taggedMediaIds?.has(currentActiveItem.id) : false}
+          onToggleTag={onTagMedia}
+          onGenerate={onGenerate}
+          generationJobs={generationJobs}
+          isGenerating={isGenerating}
+          initialQuickRouteMode={initialQuickRouteMode}
+        />
+      )}
     </div>
   )
 }

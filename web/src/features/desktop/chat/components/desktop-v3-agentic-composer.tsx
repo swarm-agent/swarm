@@ -38,7 +38,6 @@ import type { WorkspaceAction } from '../../../workspaces/actions/types'
 import type { WorkspaceSkill } from '../services/workspace-skills'
 import { addSourceMediaDirectory, getSourceMediaDirectories } from '../../settings/media/queries/get-media-settings'
 import { browseDesktopVideoSource, DESKTOP_VIDEO_ATTACHMENT_MAX_COUNT, type DesktopVideoSourceAttachment, type DesktopVideoSourceBrowseResult } from '../services/video-source-attachments'
-import { DesktopComposerPlanToggle } from './desktop-composer-plan-toggle'
 import { DesktopV3ArtifactCatalogGallery } from './desktop-v3-artifact-gallery'
 import {
   appendDesktopV3ArtifactMessageSelections,
@@ -271,7 +270,7 @@ export function DesktopV3AgenticComposer({
   onStop,
   mode = 'auto',
   onModeSelect,
-  showModePicker = true,
+  showModePicker: _showModePicker = true,
   resolvedSessionControls = false,
   executionLabel,
   currentAgent = '',
@@ -1496,16 +1495,6 @@ export function DesktopV3AgenticComposer({
               onSkillSelect={setSelectedWorkspaceSkill}
             />
             {uploadingAttachment ? <button type="button" className="text-xs text-[var(--app-warning)]" onClick={() => uploadAbortRef.current?.abort()}>Cancel upload</button> : null}
-            {routedNewSession && showModePicker ? (
-              <DesktopComposerPlanToggle
-                active={mode === 'plan'}
-                onActiveChange={(active) => onModeSelect?.(active ? 'plan' : 'auto')}
-                disabled={composerDisabled || agentModelControlBusy || !onModeSelect}
-                allowDisable
-              />
-            ) : resolvedSessionControls && showModePicker && mode === 'plan' ? (
-              <DesktopComposerPlanToggle active readOnly />
-            ) : null}
             <div className="hidden min-w-0 flex-1 items-center justify-between gap-2 min-[1000px]:flex">
               <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
                 {primedTaskMode ? taskModeIndicator() : (resolvedSessionControls || routedNewSession) ? (

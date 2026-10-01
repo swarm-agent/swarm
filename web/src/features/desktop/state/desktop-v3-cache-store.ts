@@ -15,16 +15,25 @@ type DesktopV3CacheListener = (mutation?: DesktopV3CacheMutation) => void
 
 const store = createStore<DesktopV3CacheState>(() => createEmptyDesktopV3CacheState())
 store.getInitialState = () => store.getState()
-const mutationListeners = new Set<DesktopV3CacheListener>()
+
+let mutationListeners: Set<DesktopV3CacheListener> | undefined
+
+function getMutationListeners(): Set<DesktopV3CacheListener> {
+  if (!mutationListeners) {
+    mutationListeners = new Set<DesktopV3CacheListener>()
+  }
+  return mutationListeners
+}
 
 export function getDesktopV3CacheSnapshot(): DesktopV3CacheState {
   return store.getState()
 }
 
 export function subscribeDesktopV3Cache(listener: DesktopV3CacheListener): () => void {
-  mutationListeners.add(listener)
+  const listeners = getMutationListeners()
+  listeners.add(listener)
   return () => {
-    mutationListeners.delete(listener)
+    listeners.delete(listener)
   }
 }
 
@@ -65,8 +74,10 @@ export function commitDesktopV3CacheSnapshot(
   store.setState(nextState, true)
   for (const action of actions) {
     const mutation: DesktopV3CacheMutation = { action, previousState, nextState, durationMS }
-    for (const listener of mutationListeners) {
-      listener(mutation)
+    if (mutationListeners) {
+      for (const listener of mutationListeners) {
+        listener(mutation)
+      }
     }
   }
 }
@@ -81,7 +92,9 @@ export function useDesktopV3CacheSelector<T>(
 export function resetDesktopV3CacheForTests(state: DesktopV3CacheState = createEmptyDesktopV3CacheState()): void {
   store.setState(state, true)
   store.getInitialState = () => store.getState()
-  for (const listener of mutationListeners) {
-    listener()
+  if (mutationListeners) {
+    for (const listener of mutationListeners) {
+      listener()
+    }
   }
 }

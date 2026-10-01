@@ -25,11 +25,29 @@ func (s *Service) ProposeAutomationV2(account, user, workspace, sessionID string
 	if err := json.Unmarshal(b, &doc); err != nil {
 		return pebblestore.AutomationV2Proposal{}, err
 	}
+	if doc.AutomationV2 == nil && doc.WorkerV2 != nil {
+		doc.AutomationV2 = doc.WorkerV2
+	}
 	if doc.AutomationV2 == nil || doc.Automation != nil {
 		return pebblestore.AutomationV2Proposal{}, errors.New("exclusive automation_v2 required")
 	}
 	if doc.AutomationV2.Expiration == (pebblestore.AutomationV2Expiration{}) {
 		doc.AutomationV2.Expiration.Kind = "indefinite"
+	}
+	if doc.AutomationV2.Schedule.Kind == "" {
+		doc.AutomationV2.Schedule.Kind = "trigger"
+	}
+	if doc.AutomationV2.SchemaVersion == 0 {
+		doc.AutomationV2.SchemaVersion = 2
+	}
+	if !doc.AutomationV2.ActivateOnAccept {
+		doc.AutomationV2.ActivateOnAccept = true
+	}
+	if doc.AutomationV2.Missed == "" {
+		doc.AutomationV2.Missed = "skip"
+	}
+	if doc.AutomationV2.Overlap == "" {
+		doc.AutomationV2.Overlap = "serialize"
 	}
 	if err := validateAutomationV2Proposal(&doc); err != nil {
 		return pebblestore.AutomationV2Proposal{}, err
@@ -40,6 +58,12 @@ func (s *Service) ProposeAutomationV2(account, user, workspace, sessionID string
 	return s.store.ProposeAutomationV2(account, user, workspace, sessionID, doc, expected, validateAutomationV2Proposal)
 }
 func validateAutomationV2Proposal(doc *pebblestore.SessionPlanDocument) error {
+	if doc.AutomationV2 == nil && doc.WorkerV2 != nil {
+		doc.AutomationV2 = doc.WorkerV2
+	}
+	if doc.WorkerV2 == nil && doc.AutomationV2 != nil {
+		doc.WorkerV2 = doc.AutomationV2
+	}
 	if err := ValidateExecutablePlanDocument(doc); err != nil {
 		return err
 	}
