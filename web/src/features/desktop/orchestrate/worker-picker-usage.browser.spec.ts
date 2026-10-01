@@ -1,8 +1,9 @@
 // Purpose: WorkerModelPicker and WorkerBudget must stage worker-only options and
 // user CAS writes, never write on load, reset account settings or invent usage.
 // Threat: reselect resets policy, keyboard trap, narrow overflow, implicit budget
-// mutation. WorkerBudgetEditor/TaskUsageMetadata must expose limits and live usage
-// without disclosure, reject above-ceiling writes, retain tokens on dollar edits,
+// mutation. WorkerBudgetEditor must expose limits; TaskUsageFooter must keep the
+// recorded task token split on the same row at narrow/wide widths, never a session
+// total. These boundaries reject above-ceiling writes, retain tokens on dollar edits,
 // show only structured holds as stopped, and preserve drafts on failed CAS.
 // Rendered browser interactions are the narrowest proof of those UI
 // boundaries; fixture transport is not a benchmark or live qualification.
@@ -19,11 +20,11 @@ test('compact chooser searches, retains saved options and budget saves exact CAS
     import React,{useState} from 'react';import {createRoot} from 'react-dom/client';
     import {ensureDesktopSession} from './src/app/api';
     import {desktopUsage} from './src/features/desktop/runtime/desktop-usage';
-    import {TaskUsageMetadata} from './src/features/desktop/orchestrate/task-usage-metadata';
+    import {TaskUsageFooter} from './src/features/desktop/orchestrate/task-usage-metadata';
     import {WorkerModelPicker} from './src/features/desktop/orchestrate/worker-model-picker';
     import {WorkerBudget,InlineUsage} from './src/features/desktop/orchestrate/scope-usage';
     window.profiles=[];
-    function App(){const [profile,setProfile]=useState({source:'temporary',action:{provider:'fixture',model:'catalog-model',thinking:'high',service_tier:'priority',context_mode:''}});return <><WorkerModelPicker accountScopeId='acct' profile={profile} disabled={false} onChange={p=>{window.profiles.push(p);setProfile(p)}}/><WorkerBudget accountScopeId='acct' workerId='worker-fixture'/><div className='flex min-w-0 flex-wrap items-center justify-between gap-2'><button onClick={()=>{window.detailsClicks=(window.detailsClicks||0)+1}}>Show details</button><TaskUsageMetadata task={{id:'task-fixture',worker_id:'worker-fixture'}} projectId='project-fixture'/></div><div aria-label='Detail usage'><InlineUsage input={{accountScopeId:'acct',scope:{kind:'worker',id:'worker-fixture'}}}/></div></>}
+    function App(){const [profile,setProfile]=useState({source:'temporary',action:{provider:'fixture',model:'catalog-model',thinking:'high',service_tier:'priority',context_mode:''}});return <><WorkerModelPicker accountScopeId='acct' profile={profile} disabled={false} onChange={p=>{window.profiles.push(p);setProfile(p)}}/><WorkerBudget accountScopeId='acct' workerId='worker-fixture'/><TaskUsageFooter task={{id:'task-fixture',worker_id:'worker-fixture',sessionId:'unrelated-session'}} projectId='project-fixture'><button className='shrink-0' onClick={()=>{window.detailsClicks=(window.detailsClicks||0)+1}}>Show details</button></TaskUsageFooter><div aria-label='Detail usage'><InlineUsage input={{accountScopeId:'acct',scope:{kind:'worker',id:'worker-fixture'}}}/></div></>}
     const root=createRoot(document.getElementById('root'));let key=0;
     window.remount=()=>root.render(<App key={++key}/>);
     window.switchAccount=()=>ensureDesktopSession(true).then(window.remount);
@@ -131,23 +132,39 @@ test('compact chooser searches, retains saved options and budget saves exact CAS
     assert.equal(await page.getByRole('textbox', { name: 'Daily worker tokens' }).inputValue(), '900')
     await page.evaluate(value => (window as any).replaceUsage(value), { ...usage, revision: 8, total_tokens: 77, input_tokens: 77, catalog_cost_usd: 0, unknown_receipts: 1 })
     await page.evaluate(value => (window as any).replaceUsage(value), { ...usage, kind: 'task', id: 'task-fixture', project_id: 'project-fixture', revision: 8, total_tokens: 77, input_tokens: 77, catalog_cost_usd: 0, unknown_receipts: 1 })
-    for (const view of ['Task usage metadata', 'Detail usage']) {
-      await page.locator(`[aria-label="${view}"] [aria-label="Lifetime observed usage"]`).filter({ hasText: /77 tokens.*Cost unknown.*history incomplete/ }).waitFor()
-    }
+    await page.locator('[aria-label="Detail usage"] [aria-label="Lifetime observed usage"]').filter({ hasText: /77 tokens.*Cost unknown.*history incomplete/ }).waitFor()
+    await page.getByTestId('task-token-split').filter({ hasText: 'I 77' }).waitFor()
+    await page.evaluate(value => (window as any).replaceUsage(value), { ...usage, kind: 'task', id: 'task-fixture', project_id: 'project-fixture', revision: 9, total_tokens: 999999, input_tokens: 12345, output_tokens: 678, cache_read_tokens: 9012, cache_write_tokens: 345, thinking_tokens: 67 })
+    const split = page.getByTestId('task-token-split')
+    await split.filter({ hasText: 'CR 9K' }).waitFor()
+    assert.deepEqual(await split.locator(':scope > span').allTextContents(), ['I 12.3K', 'O 678', 'CR 9K', 'CW 345', 'T 67'])
+    assert.match(await split.getAttribute('title') || '', /Input: 12,345; Output: 678; Cache read: 9,012; Cache write: 345; Thinking: 67 tokens/)
+    assert.doesNotMatch(await split.innerText(), /999|Observed|cost|history/)
     assert.equal(await page.locator('[aria-label="Task usage metadata"] details, [aria-label="Task usage metadata"] button').count(), 0)
     await page.locator('[aria-label="Task usage metadata"]').click()
     assert.equal(await page.evaluate(() => (window as any).detailsClicks || 0), 0)
     await page.getByRole('button', { name: 'Show details', exact: true }).click()
     assert.equal(await page.evaluate(() => (window as any).detailsClicks), 1)
-    await page.locator('[aria-label="Task usage metadata"]').filter({ hasText: /Worker · worker-fixture · \$2.5\/day worker limit/ }).waitFor()
+    assert.doesNotMatch(await page.locator('[aria-label="Task usage metadata"]').innerText(), /Worker|limit/)
     assert.equal(writes.length, 1); assert.ok(writes[0].url.includes('/v3/usage/worker-budget'))
     assert.deepEqual(writes[0].body, { expected_revision: 5, daily_cost_limit_usd: 2.5, daily_tokens_limit: 900 })
+    const assertFooterRow = async () => {
+      const button = await page.getByRole('button', { name: 'Show details', exact: true }).boundingBox()
+      const metadata = await page.locator('[aria-label="Task usage metadata"]').boundingBox()
+      const footer = await page.getByTestId('task-usage-footer').boundingBox()
+      assert.ok(button && metadata && footer)
+      assert.ok(metadata.x >= button.x + button.width)
+      assert.ok(Math.abs((button.y + button.height / 2) - (metadata.y + metadata.height / 2)) < 1, 'tokens and Show details share a row')
+      assert.ok(Math.abs(metadata.x + metadata.width - footer.x - footer.width) < 1, 'tokens align at the right edge')
+    }
+    await assertFooterRow()
     await capture('worker-usage-unknown-narrow')
     await page.setViewportSize({ width: 1100, height: 800 })
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth), false)
     const actionBounds = await page.getByRole('button', { name: 'Show details', exact: true }).boundingBox()
     const metaBounds = await page.locator('[aria-label="Task usage metadata"]').boundingBox()
     assert.ok(actionBounds && metaBounds && metaBounds.x > actionBounds.x)
+    await assertFooterRow()
     await capture('worker-budget-inline-wide')
     await page.setViewportSize({ width: 360, height: 800 })
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth), false)

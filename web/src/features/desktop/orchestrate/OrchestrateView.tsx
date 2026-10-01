@@ -6,7 +6,7 @@ import { taskReopenOperations, taskReopenKey, type TaskReopenOutcome } from './t
 import { acquireTaskMutation, taskIntegrationOperations, taskIntegrationKey, taskIntegrationFailureIdentity, taskIntegrationPhase, type TaskIntegrationOperation, type TaskIntegrationResult } from './task-integration-operation'
 import { projectTaskFollowupPayload } from '../runtime/project-task-followup'
 import { TaskAttemptHistory } from './task-attempt-history'
-import { TaskUsageMetadata } from './task-usage-metadata'
+import { TaskUsageFooter, TaskWorkerBudgetMetadata } from './task-usage-metadata'
 import { useOrchestratorDictation } from './use-orchestrator-dictation'
 import { TaskSessionErrors } from './task-session-error'
 import { resolveDesktopChatRouteFromSession } from '../chat/services/chat-routing'
@@ -1171,16 +1171,16 @@ export function MinimalTaskCard({
         {onApprove && isPendingApproval && <button type="button" disabled={isApproving} data-testid="retry-approve-btn" onClick={onApprove}>Retry</button>}
         {onClearError && !reopenOperation.error && !localReopenError && <button type="button" onClick={onClearError}>Dismiss</button>}
       </div>}
-      <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-2">
+      <TaskUsageFooter task={task} projectId={projectId}>
       <button ref={detailsToggleRef} type="button" className="swarm-task-details-toggle shrink-0"
         aria-expanded={expanded} aria-controls={`${detailsId} ${detailsId}-continued`} data-testid="toggle-task-details-btn"
         onClick={event => { event.stopPropagation(); handleToggleExpand() }}>
         {expanded ? 'Hide details' : 'Show details'}
       </button>
-      <TaskUsageMetadata task={task} projectId={projectId} />
-      </div>
+      </TaskUsageFooter>
       <div id={detailsId} hidden={!expanded} className="swarm-task-details" onClick={event => event.stopPropagation()}>
       {expanded && <>
+      <TaskWorkerBudgetMetadata task={task} />
       <h4>Result / current work</h4>
       {showIntegration && <div className="text-xs font-mono" data-testid="task-integration-lineage">
         {task.worktreeBranch || 'Source unavailable'} → {task.baseBranch || 'Target unavailable'}
