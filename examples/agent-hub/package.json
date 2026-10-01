@@ -1,0 +1,8 @@
+{
+  "name": "swarm-agent-hub-example",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": { "start": "node server.mjs", "test": "node --test --test-concurrency=1 test/*.test.mjs" },
+  "dependencies": { "@swarm/sdk": "file:../../packages/sdk" }
+}

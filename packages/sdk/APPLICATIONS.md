@@ -33,7 +33,10 @@ they never silently rewrite an existing conversation's instructions. Use the sam
 request ID and revision when retrying creation or delivering the same event.
 Instructions reach the V3 provider instruction boundary, not synthetic chat messages.
 Conversation/message/event routes verify both principal and server-stored binding.
-There is no list/delete API in this initial bounded contract; applications retain IDs.
+`apps.list({limit, cursor})` discovers persisted agents (limit 1–100). Use the returned
+`next_cursor` unchanged. `apps.conversations(id)` returns a bounded recent view,
+explicitly reporting when its 1,000-session scan limit is reached; retained IDs
+always reopen directly. There is no delete API in this initial contract.
 
 ## Task-oriented applications remain independent
 
@@ -48,9 +51,21 @@ const result = await client.projects.getTask(projectId, taskId);
 const worker = await client.workers.get(workerId);
 ```
 
-Projects, tasks and workers retain their own server-side ownership, context,
-revision, trigger and result contracts. This change does not attach arbitrary
-project/worker IDs to an application agent or claim their context is synchronized.
+Optionally include `project_id` and `worker_ids` in `apps.put`. The server validates
+account ownership and resource-read scopes before persisting these links. These
+links are navigation/execution targets, not context synchronization:
+
+```ts
+await client.apps.createTask(agent.id, { id: durableJobId, title: 'Draft', description: brief });
+const tasks = await client.apps.tasks(agent.id);
+const worker = await client.apps.worker(agent.id, linkedWorkerId);
+const runs = await client.apps.runs(agent.id, linkedWorkerId);
+```
+
+Projects, tasks and workers retain their own server-side context, revision,
+trigger and result contracts. Task requests go through canonical project admission;
+worker access through this facade is read-only. Unlinked worker IDs are rejected.
+The editable `examples/agent-hub` UI demonstrates these calls.
 Task execution may have internal durable sessions without requiring chat in your UX.
 Worker deployment/automation management is an Orchestrator operation. These snippets
 are API usage examples, not a claim of a live deployed or cloud-verified workflow.

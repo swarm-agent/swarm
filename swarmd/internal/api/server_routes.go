@@ -245,6 +245,7 @@ func (s *Server) registerRuntimeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc(V3SyncLegacyTUIWorksetPath, s.handleSessionsV3TUIWorkset)
 	mux.HandleFunc("/v3/tui/sessions", s.handleSessionsV3TUI)
 	mux.HandleFunc("/v3/tui/sessions/", s.handleSessionV3TUIByID)
+	mux.HandleFunc("/v3/application-agents", s.handleApplicationAgents)
 	mux.HandleFunc("/v3/application-agents/", s.handleApplicationAgents)
 	mux.HandleFunc("/v3/sessions", s.handleSessionsV3Primary)
 	mux.HandleFunc("/v3/sessions/", s.handleSessionV3PrimaryByID)

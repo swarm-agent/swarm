@@ -52,3 +52,32 @@ test('apps preserve pinned context and never fall back on rejection', { timeout:
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 });
+
+// Purpose: the app facade must address only server-owned app routes and preserve
+// task identity/resource IDs. A transport receipt is sufficient for wire shape;
+// Go handler tests own authorization, not this stub.
+test('app discovery and task/worker links preserve exact wire contracts', async () => {
+  const client = new SwarmClient();
+  const calls: Array<{ path: string; options: any }> = [];
+  client.transport.request = (async (path: string, options: any) => {
+    calls.push({ path, options }); return { data: {}, status: 200 };
+  }) as typeof client.transport.request;
+  await client.apps.list({ limit: 20, cursor: 'opaque value' });
+  await client.apps.conversations('editor');
+  await client.apps.tasks('editor');
+  await client.apps.createTask('editor', { id: 'delivery-1', title: 'Draft', description: 'Brief' });
+  await client.apps.worker('editor', 'worker');
+  await client.apps.runs('editor', 'worker');
+  assert.deepEqual(calls.map(c => c.path), [
+    '/v3/application-agents?limit=20&cursor=opaque+value',
+    '/v3/application-agents/editor/conversations',
+    '/v3/application-agents/editor/tasks',
+    '/v3/application-agents/editor/tasks',
+    '/v3/application-agents/editor/workers/worker',
+    '/v3/application-agents/editor/workers/worker/runs',
+  ]);
+  assert.equal(calls[3].options.body.id, 'delivery-1');
+  assert.equal(calls[3].options.method, 'POST');
+  await assert.rejects(client.apps.worker('editor', '../worker'));
+  assert.equal(calls.length, 6);
+});
