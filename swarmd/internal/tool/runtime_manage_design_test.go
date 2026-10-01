@@ -2,9 +2,9 @@ package tool
 
 import (
 	"context"
-	"os"
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -78,7 +78,9 @@ func TestManageDesignDurableQueue(t *testing.T) {
 	scope.PrimaryPath = t.TempDir()
 	scope.Roots = []string{scope.PrimaryPath}
 	sourcePath := filepath.Join(scope.PrimaryPath, "card.css")
-	if err := os.WriteFile(sourcePath, []byte(".card {}\n"), 0600); err != nil { t.Fatal(err) }
+	if err := os.WriteFile(sourcePath, []byte(".card {}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	ctx = WithDesignSourceReadAuthorizer(ctx, func(context.Context, WorkspaceScope, string) error { return nil })
 	args := map[string]any{"files": []map[string]any{{"path": "card.css"}}, "action": "submit", "idempotency_key": "batch", "candidates": []map[string]any{{"kind": "html", "operation": "generate", "brief": "card"}, {"kind": "plan", "operation": "generate", "brief": "plan"}}}
 	out, err := r.executeManageDesign(ctx, scope, args)
@@ -110,18 +112,30 @@ func TestManageDesignDurableQueue(t *testing.T) {
 	if err != nil || replay != out {
 		t.Fatalf("replay %s %v", replay, err)
 	}
-	if err := os.WriteFile(sourcePath, []byte("changed"), 0600); err != nil { t.Fatal(err) }
-	if _, err := r.executeManageDesign(ctx, scope, args); err == nil { t.Fatal("changed snapshot replay accepted") }
+	if err := os.WriteFile(sourcePath, []byte("changed"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.executeManageDesign(ctx, scope, args); err == nil {
+		t.Fatal("changed snapshot replay accepted")
+	}
 	snapshots, err := db.ReadDesignContext(p, request.ID)
-	if err != nil || len(snapshots) != 1 || string(snapshots[0].Content) != ".card {}\n" { t.Fatal("original shared context changed", err) }
+	if err != nil || len(snapshots) != 1 || string(snapshots[0].Content) != ".card {}\n" {
+		t.Fatal("original shared context changed", err)
+	}
 	args["idempotency_key"] = "missing-source"
 	args["files"] = []map[string]any{{"path": "missing"}}
-	if _, err := r.executeManageDesign(ctx, scope, args); err == nil { t.Fatal("missing source accepted") }
+	if _, err := r.executeManageDesign(ctx, scope, args); err == nil {
+		t.Fatal("missing source accepted")
+	}
 	missingID := designStableID(p.AccountID, p.PrincipalID, scope.SessionID, "missing-source")
-	if _, err := db.GetDesignRequest(p, missingID); !errors.Is(err, pebblestore.ErrDesignNotFound) { t.Fatal("partial acceptance", err) }
+	if _, err := db.GetDesignRequest(p, missingID); !errors.Is(err, pebblestore.ErrDesignNotFound) {
+		t.Fatal("partial acceptance", err)
+	}
 	args["idempotency_key"] = "batch"
 	args["files"] = []map[string]any{{"path": "card.css"}}
-	if err := os.WriteFile(sourcePath, []byte(".card {}\n"), 0600); err != nil { t.Fatal(err) }
+	if err := os.WriteFile(sourcePath, []byte(".card {}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	args["candidates"] = []map[string]any{{"kind": "html", "operation": "generate", "brief": "changed"}}
 	if _, err := r.executeManageDesign(ctx, scope, args); err == nil {
 		t.Fatal("changed replay accepted")

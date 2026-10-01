@@ -15,7 +15,7 @@ import (
 // There is intentionally no output, source-content, account or child identity input.
 // Source hydration and execution are separate trusted adapters, not model tools.
 type designToolArgs struct {
-	Files            []DesignFileReference `json:"files,omitempty"`
+	Files            []DesignFileReference             `json:"files,omitempty"`
 	Action           string                            `json:"action"`
 	IdempotencyKey   string                            `json:"idempotency_key,omitempty"`
 	Candidates       []pebblestore.DesignCandidateSpec `json:"candidates,omitempty"`
