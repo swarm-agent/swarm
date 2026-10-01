@@ -106,6 +106,14 @@ func (s *Server) revalidateProjectTaskSource(p identity.Principal, proj *pebbles
 	if bound.Path != task.SourceWorkspace.Path || bound.WorkspaceID != task.SourceWorkspace.WorkspaceID {
 		return errors.New("task source workspace changed")
 	}
+	for _, source := range task.ContextSources {
+		if source.WorkspaceID == "" || source.WorkspaceGeneration <= 0 || source.Path == "" {
+			return errors.New("context has no durable catalog binding")
+		}
+		if _, err := s.resolveProjectTaskSource(p, proj, source.Path, source.WorkspaceID, source.WorkspaceGeneration, false); err != nil {
+			return fmt.Errorf("context source: %w", err)
+		}
+	}
 	for _, source := range task.ProgramSources {
 		if source.WorkspaceID == "" || source.WorkspaceGeneration <= 0 || source.Path == "" {
 			return errors.New("program has no durable source binding")

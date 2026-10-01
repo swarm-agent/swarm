@@ -691,7 +691,7 @@ test('Task acceptance payload and revision guard contract', () => {
   assert.equal(payloadNull.definition_revision, undefined)
 })
 
-test('Desktop target selection omits Auto-detect and preserves explicit project identity', () => {
+test('Desktop Let Router Decide omits source and preserves manual project identity', () => {
   // Requirement: project coordination ordering must never become execution authority.
   // Threat: a multi-repository project silently deploys a Coder into its first repository.
   // Boundary: resolveTaskWorkspace/taskWorkspaceSelection used by preview and submit; backend resolves omitted targets.
@@ -703,7 +703,7 @@ test('Desktop target selection omits Auto-detect and preserves explicit project 
     ],
   }
   assert.equal(resolveTaskWorkspace(''), undefined)
-  assert.deepEqual(taskWorkspaceSelection('', project), {}, 'Auto-detect sends no default path or ID')
+  assert.deepEqual(taskWorkspaceSelection('', project), {}, 'Let Router Decide sends no default path or ID')
   assert.deepEqual(taskWorkspaceSelection(' /product ', project), {
     workspace_path: '/product', workspace_id: 'ws-product',
   }, 'explicit selection carries product path and catalog ID')
@@ -713,7 +713,7 @@ test('Desktop target selection omits Auto-detect and preserves explicit project 
   assert.deepEqual(taskWorkspaceSelection('/product', generationProject), {
     workspace_path: '/product', workspace_id: 'ws-product', workspace_generation: 7,
   }, 'catalog generation guards preview and submit against a stale repository binding')
-  assert.deepEqual(taskWorkspaceSelection('', generationProject), {}, 'Auto-detect must not claim catalog identity')
+  assert.deepEqual(taskWorkspaceSelection('', generationProject), {}, 'Let Router Decide must not claim catalog identity')
   assert.deepEqual(taskWorkspaceSelection('/product', project), taskWorkspaceSelection(' /product ', project),
     'preview and submit use the same normalized target')
   assert.throws(() => taskWorkspaceSelection('.', project), /dot '\.' is not allowed/)

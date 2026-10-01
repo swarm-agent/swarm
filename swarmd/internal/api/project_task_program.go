@@ -165,6 +165,26 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 			input.OutcomeType = "code_pr"
 		}
 	}
+	taskID := strings.TrimSpace(input.ID)
+	if taskID == "" {
+		taskID = "task_" + sessionruntime.NewSessionID()
+	}
+	unlockAdmission := s.lockProjectTaskAdmission(p.AccountScopeID, projectID, taskID)
+	defer unlockAdmission()
+	// A durable admission wins over fresh AI output on every retry.
+	s.projectTaskCreateMu.Lock()
+	existing, found, getErr := db.GetProjectTask(p.AccountScopeID, projectID, taskID)
+	if getErr != nil {
+		s.projectTaskCreateMu.Unlock()
+		return nil, getErr
+	}
+	if found && existing != nil {
+		result, replayErr := s.replayProjectTaskSubmission(ctx, p, proj, existing, submittedInput)
+		s.projectTaskCreateMu.Unlock()
+		return result, replayErr
+	}
+	s.projectTaskCreateMu.Unlock()
+	var contextSources []pebblestore.ProjectTaskSource
 	// Source identity is resolved before any reservation. Only direct media can use a non-repository catalog root.
 	reqOp := strings.ToLower(strings.TrimSpace(input.Operation))
 	isDirectVideo := input.Agent == "video" || reqOp == pebblestore.VideoOperationEdit || reqOp == pebblestore.VideoOperationExtend || (reqOp == pebblestore.VideoOperationCreate && input.Agent == "video")
@@ -179,7 +199,11 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 			return nil, err
 		}
 	} else {
-		source, err = s.resolveProjectTaskSource(p, proj, input.WorkspacePath, input.WorkspaceID, input.WorkspaceGeneration, requiresRepo)
+		if strings.TrimSpace(input.WorkspacePath) == "" && strings.TrimSpace(input.WorkspaceID) == "" && input.WorkspaceGeneration == 0 {
+			source, contextSources, err = s.routeProjectTaskSource(ctx, p, proj, prompt, requiresRepo)
+		} else {
+			source, err = s.resolveProjectTaskSource(p, proj, input.WorkspacePath, input.WorkspaceID, input.WorkspaceGeneration, requiresRepo)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -279,6 +303,30 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 	if rErr != nil {
 		return nil, fmt.Errorf("task configuration invalid: %w", rErr)
 	}
+	if source.Path != "" {
+		routed.WorkspacesInvolved = []string{source.Path}
+		routed.ContextPoolSummary = "Execution source: " + source.Path
+		involved := map[string]bool{source.Path: true}
+		for _, executionSource := range programSources {
+			if !involved[executionSource.Path] {
+				involved[executionSource.Path] = true
+				routed.WorkspacesInvolved = append(routed.WorkspacesInvolved, executionSource.Path)
+			}
+		}
+		for _, assignment := range input.CoderAssignments {
+			if !involved[assignment.SourceWorkspace.Path] {
+				involved[assignment.SourceWorkspace.Path] = true
+				routed.WorkspacesInvolved = append(routed.WorkspacesInvolved, assignment.SourceWorkspace.Path)
+			}
+		}
+		for _, contextSource := range contextSources {
+			if !involved[contextSource.Path] {
+				involved[contextSource.Path] = true
+				routed.WorkspacesInvolved = append(routed.WorkspacesInvolved, contextSource.Path)
+			}
+			routed.ContextPoolSummary += "; read-only context: " + contextSource.Path
+		}
+	}
 	if agentName == "" {
 		agentName = routed.Agent
 	}
@@ -346,44 +394,17 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 		taskProgID = taskProg.ID
 	}
 
-	taskID := strings.TrimSpace(input.ID)
-	if taskID == "" {
-		taskID = "task_" + sessionruntime.NewSessionID()
-	}
-
 	// User-selected branch names retain conflict checks. Generated names must be
 	// task-owned: identical prompts are valid independent tasks, not a collision.
 	if strings.TrimSpace(input.WorktreeBranch) == "" && worktreeBranch != "" {
 		suffix := sha256.Sum256([]byte(projectID + ":" + taskID))
 		worktreeBranch += "-" + hex.EncodeToString(suffix[:4])
 	}
-	s.projectTaskCreateMu.Lock()
-	defer s.projectTaskCreateMu.Unlock()
-
 	// Reservation identity and submission bytes are independent of generated plan prose.
 	submissionHash, err := projectTaskSubmissionHash(projectID, submittedInput, source)
 	if err != nil {
 		return nil, err
 	}
-	if existing, found, getErr := db.GetProjectTask(p.AccountScopeID, projectID, taskID); getErr != nil {
-		return nil, getErr
-	} else if found && existing != nil {
-		if existing.SubmissionHash == "" || existing.SubmissionHash != submissionHash || existing.ClientRequestID != strings.TrimSpace(input.ClientRequestID) || existing.AccountID != p.AccountScopeID || existing.ProjectID != projectID {
-			return nil, errors.New("task submission identity conflicts with reserved payload or target")
-		}
-		if err := s.revalidateProjectTaskSource(p, proj, existing); err != nil {
-			return nil, err
-		}
-		if !isDirectMediaTask(existing) {
-			if err := s.recoverProjectTaskReservation(ctx, p, proj, existing, input); err != nil {
-				return nil, err
-			}
-		}
-		hydrateTaskPlanDocument(existing, db)
-		hydrateTaskProgramStatus(existing, db)
-		return existing, nil
-	}
-
 	// Name only after idempotent replay and source checks. The deterministic
 	// execution contract and full original prompt must not be elaborated here.
 	if isImage {
@@ -445,6 +466,7 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 		WorkspacePath:      wsPath,
 		SourceWorkspace:    source,
 		ProgramSources:     programSources,
+		ContextSources:     contextSources,
 		ClientRequestID:    strings.TrimSpace(input.ClientRequestID),
 		SubmissionHash:     submissionHash,
 		WorktreeBranch:     worktreeBranch,
@@ -554,6 +576,25 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 		return nil, fmt.Errorf("invalid task definition: %w", err)
 	}
 
+	// Serialize only admission/execution bookkeeping, never provider calls.
+	s.projectTaskCreateMu.Lock()
+	defer s.projectTaskCreateMu.Unlock()
+	if existing, found, err := db.GetProjectTask(p.AccountScopeID, projectID, taskID); err != nil {
+		return nil, err
+	} else if found && existing != nil {
+		return s.replayProjectTaskSubmission(ctx, p, proj, existing, submittedInput)
+	}
+	currentProject, found, err := db.GetProject(p.AccountScopeID, projectID)
+	if err != nil {
+		return nil, err
+	}
+	if !found || currentProject == nil || (currentProject.AccountID != "" && currentProject.AccountID != p.AccountScopeID) {
+		return nil, errors.New("project no longer authorized for task admission")
+	}
+	proj = currentProject
+	if err := s.revalidateProjectTaskSource(p, proj, &task); err != nil {
+		return nil, err
+	}
 	// Persist task reservation FIRST
 	claimed, err := db.ReserveProjectTaskIfAbsent(p.AccountScopeID, &task)
 	if err != nil {

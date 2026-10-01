@@ -73,7 +73,7 @@ func TestVerifyProjectTaskSessionRejectsMismatchedLineage(t *testing.T) {
 	}
 }
 
-// Purpose: task preview and submission must bind the same account-scoped catalog
+// Purpose: execution must bind the account-scoped catalog
 // root and generation, never infer the first of multiple repositories. Threat:
 // stale identity, an ambiguous omission, or a symlink escapes source authority.
 // resolveProjectTaskSource is the narrowest pre-allocation boundary.
@@ -140,12 +140,20 @@ func TestResolveProjectTaskSourceRejectsAmbiguousAndStaleCatalog(t *testing.T) {
 	if _, err := f.server.resolveProjectTaskSource(p, proj, link, "", 0, true); err == nil {
 		t.Fatal("symlink alias accepted")
 	}
-	// Preview must reject the same stale generation before a plan is shown.
+	// Model availability survives stale workspace diagnostics; execution still rejects them.
 	if err := f.server.sessions.Store().PutProject(f.accountID, proj); err != nil {
 		t.Fatal(err)
 	}
 	w := f.callAPI("POST", "/project/tasks:preview", map[string]any{"prompt": "Implement", "agent": "coder", "workspace_path": two, "workspace_id": second.WorkspaceID, "workspace_generation": source.WorkspaceGeneration + 1}, p)
-	if w.Code != 400 {
-		t.Fatalf("stale preview accepted: %d %s", w.Code, w.Body.String())
+	if w.Code != 200 || !strings.Contains(w.Body.String(), "source workspace generation is stale") || !strings.Contains(w.Body.String(), "model_preview") {
+		t.Fatalf("workspace diagnostic suppressed model preview: %d %s", w.Code, w.Body.String())
+	}
+	w = f.callAPI("POST", "/project/tasks:preview", map[string]any{"prompt": "Implement", "agent": "coder"}, p)
+	if w.Code != 200 || !strings.Contains(w.Body.String(), "model_preview") {
+		t.Fatalf("ambiguous project suppressed model preview: %d %s", w.Code, w.Body.String())
+	}
+	w = f.callAPI("POST", "/project/tasks:preview", map[string]any{"prompt": "Implement", "agent": "coder", "workspace_path": filepath.Join(root, "unknown")}, p)
+	if w.Code != 200 || !strings.Contains(w.Body.String(), "workspace_diagnostic") || !strings.Contains(w.Body.String(), "model_preview") {
+		t.Fatalf("invalid workspace suppressed model preview: %d %s", w.Code, w.Body.String())
 	}
 }

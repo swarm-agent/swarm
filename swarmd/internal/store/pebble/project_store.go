@@ -356,6 +356,7 @@ type ProjectTaskRecord struct {
 	OutcomeType         string                       `json:"outcome_type,omitempty"` // "code_pr" | "media_bundle" | "bug_patch" | "audit_report" | "video_story"
 	WorkspacePath       string                       `json:"workspace_path,omitempty"`
 	SourceWorkspace     ProjectTaskSource            `json:"source_workspace,omitempty"`
+	ContextSources      []ProjectTaskSource          `json:"context_sources,omitempty"` // read-only; never execution bindings
 	ClientRequestID     string                       `json:"client_request_id,omitempty"`
 	SubmissionHash      string                       `json:"submission_hash,omitempty"`
 	WorktreeBranch      string                       `json:"worktree_branch,omitempty"`
