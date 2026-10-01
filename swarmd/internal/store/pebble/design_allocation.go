@@ -96,7 +96,7 @@ func (s *SessionStore) setDesignAllocationInBatch(b *pebble.Batch, in V3SessionM
 	}
 	c := &r.Candidates[a.Candidate]
 	c.State = DesignRunning
-	c.Attempts = append(c.Attempts, DesignAttempt{Number: a.Attempt, ChildSessionID: in.SessionID, RunID: in.SessionID, State: DesignRunning, RouterAlert: a.RouterAlert})
+	c.Attempts = append(c.Attempts, DesignAttempt{Number: a.Attempt, ChildSessionID: in.SessionID, RunID: in.SessionID, State: DesignRunning, RouterAlert: a.RouterAlert, EvidenceRequired: true, Provider: a.Preference.Provider, Model: a.Preference.Model, Thinking: a.Preference.Thinking})
 	if r.Revision == ^uint64(0) {
 		return ErrDesignConflict
 	}
