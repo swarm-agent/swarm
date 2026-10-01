@@ -1,0 +1,12 @@
+{
+  "name": "@swarm/cli",
+  "version": "0.1.0-headless.1",
+  "description": "Explicit headless Swarm container launcher",
+  "type": "module",
+  "bin": { "swarm-headless": "bin/swarm-headless.js" },
+  "files": ["bin", "src", "runtime-image.json", "README.md", "LICENSE"],
+  "engines": { "node": ">=22" },
+  "os": ["linux"],
+  "scripts": { "test": "node --test --test-concurrency=1 test/*.test.js" },
+  "license": "Apache-2.0"
+}

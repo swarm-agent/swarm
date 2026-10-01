@@ -14,7 +14,9 @@ ARG VERSION=dev
 ARG COMMIT=unknown
 ARG BUILT_AT=unknown
 # Same daemon build targets and buildinfo fields as scripts/build-main-dist.sh.
-RUN mkdir -p /out/bin /out/lib && cd swarmd && \
+# Keep the compiler cache out of image layers (and their temporary exports).
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    mkdir -p /out/bin /out/lib && cd swarmd && \
     flags="-X swarm-refactor/swarmtui/pkg/buildinfo.Version=${VERSION} -X swarm-refactor/swarmtui/pkg/buildinfo.Commit=${COMMIT} -X swarm-refactor/swarmtui/pkg/buildinfo.BuiltAt=${BUILT_AT}" && \
     for command in swarmd swarmctl swarm-fff-search; do \
       go build -mod=readonly -p 2 -trimpath -ldflags "$flags" -o "/out/bin/$command" "./cmd/$command" || exit 1; \

@@ -2,9 +2,9 @@ import { open } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { createInterface } from 'node:readline/promises';
 import { pathToFileURL } from 'node:url';
-import { SwarmClient } from '../src/index.js';
+import { SwarmClient } from '@swarm/sdk';
 
-// This source-tree example uses the existing SDK; npm packaging is separate.
+// Uses the installed package (or package self-reference after npm run build).
 // No Desktop bootstrap, privileged socket, automatic approval, or status polling.
 export async function runHeadlessSession(
   client: SwarmClient,

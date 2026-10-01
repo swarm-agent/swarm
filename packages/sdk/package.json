@@ -1,25 +1,32 @@
 {
   "name": "@swarm/sdk",
-  "version": "0.1.0",
+  "version": "0.1.0-headless.1",
   "description": "Official TypeScript SDK for Swarm local AI coding workspace",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "import": "./dist/index.js",
-      "types": "./dist/index.d.ts"
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
     }
   },
   "files": [
     "dist",
-    "src",
+    "examples/headless-session.ts",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsc || ../../web/node_modules/.bin/tsc",
-    "test": "tsx --test ./src/__tests__/**/*.spec.ts || ../../web/node_modules/.bin/tsx --test ./src/__tests__/**/*.spec.ts"
+    "build": "node scripts/build.mjs",
+    "prepack": "npm run build",
+    "test": "tsx --test --test-concurrency=1 ./src/__tests__/*.spec.ts"
+  },
+  "engines": { "node": ">=22" },
+  "devDependencies": {
+    "@types/node": "22.19.15",
+    "tsx": "4.21.0",
+    "typescript": "5.9.3"
   },
   "keywords": [
     "swarm",

@@ -187,7 +187,7 @@ GOMAXPROCS=2 go test -p 2 ./internal/api -run '^TestHeadlessSetupLocalIdentityBo
 These exercise real CLI parsing/Unix transport against isolated HTTP fixtures and
 real backend identity handlers against temporary storage. They are not live daemon,
 provider or SDK runs. **Still not live-qualified:** provider setup in the image,
-SDK connectivity, live agents, restart durability, npm delivery and publication.
+SDK connectivity, live agents, restart durability and registry delivery.
 
 ## Authenticated host SDK connection
 
@@ -245,9 +245,9 @@ permissions are never changed by the connection example.
 
 `packages/sdk/examples/headless-session.ts` connects to `http://127.0.0.1:7783`,
 creates a session against `/project`, submits your prompt and displays durable
-snapshots (messages, active run, pending permissions and plan). It uses the existing
-SDK source imports; installable npm candidates are a separate task. From the source
-root, with Node and an available `tsx` runner:
+snapshots (messages, active run, pending permissions and plan). It imports the
+installed `@swarm/sdk` package; from source, build `packages/sdk` first so its
+package self-reference resolves. From the source root, with an available `tsx` runner:
 
 <copy>
 export SWARM_SDK_TOKEN_FILE
@@ -255,8 +255,8 @@ export SWARM_SDK_URL=http://127.0.0.1:7783
 tsx packages/sdk/examples/headless-session.ts
 </copy>
 
-For a packaged consumer, use `import { SwarmClient } from '@swarm/sdk'` after the
-package is available. No Desktop bootstrap call or Unix socket is used. API
+For a packaged consumer, install the unpublished tarball and use
+`import { SwarmClient } from '@swarm/sdk'`. No Desktop bootstrap call or Unix socket is used. API
 redirects are rejected rather than replaying tokens or prompts. The example checks
 token-file permissions and refuses non-loopback URLs. It withholds raw API errors.
 Session output is private; do not capture/share it indiscriminately.
@@ -281,3 +281,21 @@ Focused checks: `TestContainerSDKConfig`, `TestContainerSDKAuthenticationAndScop
 exercise startup, actual backend auth/permission handlers and SDK request behavior
 with isolated fixtures. **Container networking and a real SDK-driven agent remain
 unverified until the live qualification step.** No image/npm publication is implied.
+
+## Unpublished npm candidates
+
+`packages/cli` supplies explicit `swarm-headless start/stop/status/setup` commands;
+`packages/sdk` builds with its own locked dependencies. See their READMEs for the
+clean-consumer install/setup sequence. Installation never starts containers.
+The CLI pins the exact matching local image ID in `runtime-image.json`, uses
+`--pull=never`, loopback publishing and four persistent named state volumes.
+It does not invent a registry or claim a candidate tag is a public release.
+
+<copy>
+node tests/scripts/headless_npm_test.mjs "$PACKAGE_OUTPUT_DIR"
+</copy>
+
+This bounded package check builds outside the checkout, packs both tarballs into
+the selected output directory and installs them into a clean temporary consumer.
+It runs no daemon or agents. The separate live qualification and GitHub dev-to-main
+review/merge must precede approved image/npm publication.
