@@ -5955,6 +5955,11 @@ func TestSessionsV3ExecutorPersistsFailureWhenToolCallRepeatsFiveConsecutiveTime
 	}
 }
 
+// Purpose: a permission-accepted standalone plan must execute its checkpoint,
+// not stop as a terminal review publication with pending work. This executor test
+// uses the real exit_plan_mode invoker and V3 mutations to prove scheduling,
+// refreshed runtime selection, durable checkpoint completion and review state;
+// classifier-only tests cannot prove those persisted execution postconditions.
 func TestSessionsV3ExecutorExitPlanModeUsesV3MutationAndRefreshesContinuationRuntime(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	workspace := t.TempDir()
@@ -6133,6 +6138,9 @@ func TestSessionsV3ExecutorExitPlanModeUsesV3MutationAndRefreshesContinuationRun
 	activePlan, ok, err := sessionSvc.GetActivePlan(created.ID)
 	if err != nil || !ok || activePlan.Document == nil {
 		t.Fatalf("get active plan after checkpoint run: ok=%t err=%v plan=%#v", ok, err, activePlan)
+	}
+	if activePlan.ApprovalState != "approved" || len(activePlan.Document.Checkpoints) != 1 {
+		t.Fatalf("standalone plan approval/checkpoints = %#v", activePlan)
 	}
 	if activePlan.Document.Checkpoints[0].Status != sessionruntime.PlanCheckpointStatusCompleted || activePlan.Document.ExecutionState == nil || activePlan.Document.ExecutionState.Status != sessionruntime.PlanExecutionStateWaitingReview || activePlan.Document.Checkpoints[0].Review == nil || activePlan.Document.Checkpoints[0].Review.Status != sessionruntime.PlanCheckpointReviewStatusPending {
 		t.Fatalf("active plan after checkpoint run = %#v", activePlan.Document)

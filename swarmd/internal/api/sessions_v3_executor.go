@@ -3909,7 +3909,10 @@ func sessionsV3ProviderTerminalPlanToolResult(results []provideriface.ToolExecut
 			payload := sessionsV3DecodeToolPayload(strings.TrimSpace(firstNonEmpty(result.Output, result.TextForModel)))
 			if payload != nil && payload["truncated_for_model"] != true && payload["details_truncated"] != true {
 				status := strings.TrimSpace(sessionsV3MapString(payload, "status"))
-				if (status == "plan_submitted_for_review" || status == "plan_submitted" || status == "approved") && sessionsV3MapString(payload, "error") == "" && sessionsV3MapString(payload, "plan_id") != "" {
+				// Accepted standalone plans must reach checkpoint scheduling below,
+				// not be mistaken for a project-task publication review boundary.
+				approvedTerminal := status == "approved" && !sessionV3ProviderCheckpointRunNextAction(sessionsV3MapString(payload, "next_action"))
+				if (status == "plan_submitted_for_review" || status == "plan_submitted" || approvedTerminal) && sessionsV3MapString(payload, "error") == "" && sessionsV3MapString(payload, "plan_id") != "" {
 					return sessionV3ProviderTerminalPlanResult{
 						Action:           "exit_plan_mode",
 						NextAction:       "await_user_approval",
