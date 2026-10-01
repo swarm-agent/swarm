@@ -29,6 +29,7 @@ type Store struct {
 	environmentsMu              sync.Mutex
 	environmentPublisherMu      sync.RWMutex
 	environmentPublisher        func(V3RealtimeOutboxRecord)
+	designMu                    sync.Mutex
 	projectsMu                  sync.Mutex
 	projectPublisherMu          sync.RWMutex
 	projectPublisher            func(V3RealtimeOutboxRecord)
