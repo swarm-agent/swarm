@@ -15,6 +15,8 @@ filter_guest_image_paths() {
   while IFS= read -r hit; do
     normalized="$(printf '%s\n' "${hit#./}" | sed -E 's/^([^:]+):[0-9]+:/\1:/')"
     case "${normalized}" in
+      'containers/headless/inspect.sh:for directory in /etc/swarmd /var/lib/swarmd /var/cache/swarmd /run/swarmd /var/log/swarmd /project; do'|\
+      'containers/headless/inspect.sh:test -s /etc/ssl/certs/ca-certificates.crt'|\
       'scripts/testbench-local-cache.sh:    export GOROOT=/opt/go GOTOOLCHAIN=local GOMAXPROCS=2 HOME=/root'|\
       "scripts/testbench-local-image.sh:printf 'local-testbench-base/v1\\n' > \"\$mountpoint/etc/swarm-local-base\""|\
       'scripts/testbench-local-tools.sh:[[ -f $point/etc/swarm-local-base ]] || exit 1'|\
@@ -69,7 +71,7 @@ if [[ "${1:-}" == "--self-test" ]]; then
       [[ "$rejected_hit" == "$guest_hit" ]] && continue
       [[ -n "$(printf '%s\n' "$rejected_hit" | filter_guest_image_paths)" ]] || exit 1
     done
-  done < <(rg -n "$DISALLOWED_ABS_PATH_PATTERN" scripts/testbench-local-cache.sh scripts/testbench-local-image.sh scripts/testbench-local-tools.sh)
+  done < <(rg -n "$DISALLOWED_ABS_PATH_PATTERN" scripts/testbench-local-cache.sh scripts/testbench-local-image.sh scripts/testbench-local-tools.sh containers/headless/inspect.sh)
   echo '[path-check] self-test PASS'
 fi
 
