@@ -51,7 +51,7 @@ export function operations(sdk) {
         title: text(b.title, 120), client_request_id: text(b.request_id), mode: 'auto' });
       case 'message': return sdk.apps.send(text(b.id), text(b.session_id), { content: text(b.content, 16000), client_request_id: text(b.request_id) });
       case 'tasks': return sdk.apps.tasks(text(b.id));
-      case 'task': return sdk.apps.createTask(text(b.id), { id: text(b.request_id), title: text(b.title, 200), description: text(b.content, 16000) });
+      case 'task': return sdk.apps.createTask(text(b.id), { id: text(b.request_id), title: text(b.title, 200), description: text(b.content, 16000), agent: 'swarm' });
       case 'worker': return sdk.apps.worker(text(b.id), text(b.worker_id));
       case 'runs': return sdk.apps.runs(text(b.id), text(b.worker_id));
       default: throw new Error('Unknown operation');

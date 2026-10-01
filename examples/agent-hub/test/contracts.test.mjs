@@ -125,3 +125,35 @@ test('provider BFF binds OAuth to the unlocking session', { timeout: 2000 }, asy
   await invoke('/logout', {}, first);
   assert.equal((await invoke('/provider', { op: 'status' }, first)).status, 401); assert.equal(statuses, 1);
 });
+
+// Purpose: operations must satisfy CreateProjectTask/RouteAndPlanProjectTaskWithOptions
+// with an explicit generic agent while preserving retry identity and backend admission.
+// Exact SDK-call receipts are the narrowest proof of BFF serialization: untrusted
+// browser fields must not introduce approval, deployment or model overrides.
+test('task requests select Swarm, preserve retries and leave admission to the backend', { timeout: 2000 }, async () => {
+  const calls = [];
+  const pending = { id: 'same-task', status: 'pending_approval' };
+  const denied = new Error('Task admission denied');
+  let reject = false;
+  const apps = new Proxy({}, { get: (_, method) => async (...args) => {
+    calls.push([method, ...args]);
+    assert.equal(method, 'createTask', 'must not approve or deploy');
+    if (reject) throw denied;
+    return pending;
+  } });
+  const run = operations({ apps });
+  const input = { id: 'editor', request_id: 'same-task', title: 'Draft', content: 'Brief',
+    agent: 'coder', auto_approve: true, deploy_session: true, status: 'running',
+    model: 'untrusted-model', provider: 'untrusted-provider' };
+  const expected = ['createTask', 'editor', {
+    id: 'same-task', title: 'Draft', description: 'Brief', agent: 'swarm',
+  }];
+  assert.equal(await run('task', input), pending);
+  assert.equal(await run('task', input), pending);
+  assert.deepEqual(calls, [expected, expected]);
+  reject = true;
+  await assert.rejects(run('task', input), error => error === denied);
+  assert.deepEqual(calls, [expected, expected, expected]);
+  await assert.rejects(run('task', { ...input, request_id: '' }), /Invalid input/);
+  assert.equal(calls.length, 3, 'invalid retry identity must not reach the SDK');
+});

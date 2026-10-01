@@ -63,7 +63,7 @@ No conversation UX is required for the existing project task or worker APIs:
 
 ```ts
 const queued = await client.projects.createTask(projectId, {
-  title: 'Prepare release notes', description: 'Summarize approved changes.',
+  agent: 'swarm', title: 'Prepare release notes', description: 'Summarize approved changes.',
 });
 // Use the returned task ID with the existing approval/reopen lifecycle.
 const result = await client.projects.getTask(projectId, taskId);
@@ -75,11 +75,17 @@ account ownership and resource-read scopes before persisting these links. These
 links are navigation/execution targets, not context synchronization:
 
 ```ts
-await client.apps.createTask(agent.id, { id: durableJobId, title: 'Draft', description: brief });
+await client.apps.createTask(agent.id, { id: durableJobId, agent: 'swarm', title: 'Draft', description: brief });
 const tasks = await client.apps.tasks(agent.id);
 const worker = await client.apps.worker(agent.id, linkedWorkerId);
 const runs = await client.apps.runs(agent.id, linkedWorkerId);
 ```
+
+Task creation requires an explicit `agent` or `intent`; `agent: 'swarm'` selects
+ordinary general work, not a model/provider override. The linked project must have
+an authorized repository workspace resolvable by canonical source admission.
+Reuse the same durable task ID and payload on retry. Creation does not request
+auto-approval; retain the existing approval lifecycle.
 
 Projects, tasks and workers retain their own server-side context, revision,
 trigger and result contracts. Task requests go through canonical project admission;
