@@ -267,12 +267,31 @@
 .swarm-section :is(.swarm-settings-section[aria-current="page"], .swarm-agent-role[aria-pressed="true"]) { background: var(--swarm-surface-hover); border-color: var(--swarm-border-accent); color: var(--swarm-text); box-shadow: inset 3px 0 0 var(--swarm-accent); }
 .swarm-section :is(.swarm-settings-section, .swarm-agent-role):focus-visible { outline: 2px solid var(--swarm-accent); outline-offset: 3px; }
 .swarm-agents-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; min-width: 0; }
-.swarm-agent-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; align-content: start; min-width: 0; }
+.swarm-agents-header { padding: 8px 0 6px; max-width: 680px; }
+.swarm-agent-eyebrow { display: block; color: var(--swarm-accent); font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.swarm-agents-header h1 { margin: 8px 0; font-size: 28px; font-weight: 650; letter-spacing: -.03em; }
+.swarm-agents-header p { margin: 0; color: var(--swarm-text-muted); font-size: 14px; line-height: 1.6; }
+.swarm-agents-scope { display: inline-block; margin-top: 14px; padding: 5px 9px; border: 1px solid var(--swarm-border-muted); border-radius: 6px; color: var(--swarm-text-muted); font-size: 11px; }
+.swarm-agent-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; align-content: start; min-width: 0; }
+.swarm-section .swarm-agent-role { padding: 16px; border-radius: 12px; }
+.swarm-agent-card-heading { display: flex; align-items: start; justify-content: space-between; gap: 12px; }
+.swarm-agent-indicator { color: var(--swarm-accent); font-size: 12px; }
+.swarm-agent-specialty { display: block; margin-top: 5px; color: var(--swarm-accent); font-size: 11px; font-weight: 600; }
+.swarm-agent-description { display: block; margin: 9px 0 12px; color: var(--swarm-text-muted); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.swarm-agent-overview { padding-bottom: 20px; border-bottom: 1px solid var(--swarm-border-muted); }
+.swarm-agent-overview h2 { margin: 8px 0; font-size: 24px; font-weight: 650; letter-spacing: -.02em; }
+.swarm-agent-overview p { margin: 0; color: var(--swarm-text-muted); font-size: 14px; line-height: 1.7; }
+.swarm-agent-use-case { margin-top: 20px; padding: 14px; border-left: 2px solid var(--swarm-accent); border-radius: 0 8px 8px 0; background: var(--swarm-surface); }
+.swarm-agent-use-case h3, .swarm-agent-model-heading h3 { margin: 0 0 6px; font-size: 12px; font-weight: 650; }
+.swarm-agent-use-case p, .swarm-agent-model-heading p { font-size: 12px; }
+.swarm-agent-model-heading { margin-top: 20px; }
+.swarm-agent-model-heading p { margin: 0; color: var(--swarm-text-muted); line-height: 1.6; }
+.swarm-agent-plan-note { padding: 10px 12px; border: 1px solid var(--swarm-border-muted); border-radius: 8px; color: var(--swarm-text-muted); font-size: 12px; line-height: 1.6; }
 .swarm-agent-role { min-width: 0; text-align: left; cursor: pointer; }
 .swarm-agent-name { display: block; font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
 .swarm-agent-model { display: block; margin-top: 3px; font-size: 11px; line-height: 1.4; color: var(--swarm-text-muted); overflow-wrap: anywhere; }
-.swarm-agent-editor { padding: 16px; border: 1px solid var(--swarm-border-muted); border-radius: 12px; background: var(--swarm-surface-subtle); overflow-wrap: anywhere; }
-@container swarm-main (min-width: 760px) { .swarm-agents-layout { grid-template-columns: minmax(180px, 240px) minmax(0, 1fr); } .swarm-agent-list { grid-template-columns: minmax(0, 1fr); } }
+.swarm-agent-editor { align-self: start; padding: 24px; border: 1px solid var(--swarm-border-muted); border-radius: 12px; background: var(--swarm-surface-subtle); overflow-wrap: anywhere; }
+@container swarm-main (min-width: 760px) { .swarm-agents-layout { grid-template-columns: minmax(260px, 320px) minmax(0, 1fr); } .swarm-agent-list { grid-template-columns: minmax(0, 1fr); } }
 .swarm-settings-nav { display: flex; flex-wrap: wrap; gap: 8px; }
 .swarm-agent-editor fieldset { min-width: 0; }
 .swarm-agent-editor select { max-width: 100%; min-width: 0; }
