@@ -10,7 +10,8 @@ import (
 // Purpose: the canonical create transaction must bind exactly one owned Designer
 // child and run to the request, even on racing/replayed allocation and reopen.
 // Store-level assertions prove no orphan session or partial attempt on stale or
-// foreign input; this is narrower than invoking an executor/provider.
+// foreign input; this is narrower than invoking an executor/provider. Parent
+// scoped invalidation must commit with allocation and survive replay/reopen.
 func TestDesignAllocationAtomicRecovery(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "store")
 	s, err := Open(path)
@@ -80,6 +81,10 @@ func TestDesignAllocationAtomicRecovery(t *testing.T) {
 	if err != nil || !replay.Replayed {
 		t.Fatalf("replay: %+v %v", replay, err)
 	}
+	parentEvents, err := ss.ListV3SessionEvents("parent", 0, 20)
+	if err != nil || len(parentEvents) != 5 || parentEvents[4].EventType != "design.updated" { t.Fatal("missing or duplicate parent allocation event", parentEvents, err) }
+	parentOutbox, err := ss.ListV3RealtimeOutboxForSessionAfterEndpoint("parent", 0, 20)
+	if err != nil || len(parentOutbox) != 5 || parentOutbox[4].Event.ID != parentEvents[4].ID { t.Fatal("missing parent allocation outbox", err) }
 	r, err := s.GetDesignRequest(p, submit.RequestID)
 	if err != nil || r.Revision != 2 || len(r.Candidates[0].Attempts) != 1 {
 		t.Fatalf("binding: %+v %v", r, err)

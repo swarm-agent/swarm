@@ -1,0 +1,21 @@
+# Independent delegated design HTTP contract
+
+This API does not adapt designs to Artifact V3. Existing artifact routes remain unchanged. All routes require the existing authenticated V3 session access check plus exact account/principal ownership. Errors: 400 invalid, 404 absent/foreign, 409 stale exact ref/CAS. Responses are no-store. No client account, run, child or output bytes are accepted.
+
+- `GET /v3/sessions/{session}/designs?after={request_id}&limit=20`: `{requests, next_cursor}`. Limit 1–50. Immutable input briefs/context are excluded. Each candidate retains state, errors, attempts, exact result and validation/preview refs. Follow cursor unchanged until empty. This is a durable per-session index, not a global scan.
+- `GET /v3/sessions/{session}/designs/artifacts/{artifact}?after=0`: `{artifact,revisions}` with at most 50 metadata-only revisions strictly after the numeric revision. Continue from the last revision while a full page is returned. Artifact contains `selected`, `selection_version`, `revision_count`; revisions contain `ref`, `base`, `plan_source`, attempt/validation provenance. Selection is never inferred from latest.
+- `POST` to that artifact URL with `{action,ref,...}`. `ref` is the complete `{artifact_id,revision,sha256}` from history. Actions:
+  - `read`: exact UTF-8 text/plain bytes (HTML or plan).
+  - `download`: exact bytes, attachment disposition. This does not integrate source code.
+  - `preview_png`: additionally `preview` equal to revision `attempt.validation.preview`; returns verified stored PNG.
+  - `preview_html`: a trusted PNG-only HTML wrapper, **not executable authored HTML**. Opaque-origin `sandbox` CSP, scripts/network/forms/frames denied. For Desktop fetch this response and use a sandbox-empty iframe; alternatively display the PNG. Do not put downloaded authored bytes in srcdoc. Interactive execution remains confined to the isolated renderer, not the credential-bearing Desktop browser.
+  - `select`: additionally `idempotency_key`, `expected_version`, `expected_current` (null for first selection). Returns `{artifact}`. Exact current ref plus monotonic version rejects ABA; never rewrite old bytes.
+  - `edit`: additionally nonempty `brief` (at most 65536 UTF-8 bytes), `idempotency_key`. Queues a canonical parent **user message**, returning the existing V3 messages endpoint receipt, not a design acceptance receipt. Message contains `manage_design submit` arguments with one edit candidate and the exact selected historical base. Parent execution must call that tool; only its trusted run may accept/allocate. UI says “edit requested”, then hydrates design progress after acceptance. This is not guaranteed direct admission or immediate provider execution. Reuse the idempotency key for retries; use a new key for another edit.
+
+Realtime: `design.accepted` plus `design.updated` in the canonical parent session event/outbox scope. Updated payload has `request_id` and either `revision` or `artifact_id,selection_version`. Allocation emits its parent invalidation in the same batch as child creation, run and request state. Other progress/selection commits participate in ApplyV3SessionMutation. Rehydrate the catalog/history on these events, initial open and durable reconnect repair; coalesce in-flight requests, no recurring polling. Do not compare or parse endpoint cursors.
+
+`media_inspect` accepts `design_preview_reference:{session_id,preview}` as a mutually exclusive selector; preview is the complete `DesignPreviewRef` from ready history (including output request/candidate/attempt/child/run/hash and PNG hash). Backend authenticates parent ownership and validates publication plus PNG bytes. No conversion/import to Artifact V3.
+
+Compatibility limitation: the new session index is populated atomically for new acceptances. Pre-index terminal design requests remain readable by known exact artifact/request identity but require an explicit bounded index backfill before catalog discovery; no silent full-store scan is performed. Existing Artifact V3/legacy artifact discovery is unaffected.
+
+Validation: focused tests are authored but not run; parent validation required. Browser pixel/provider acceptance is separate and not implied by hermetic tests.

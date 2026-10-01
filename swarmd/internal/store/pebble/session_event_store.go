@@ -80,6 +80,7 @@ type V3CheckpointBoundaryMutation struct {
 }
 
 type V3SessionMutationInput struct {
+	designChange                 *pebble.Batch // Private independent design participant; caller holds designMu.
 	DesignAllocation             *DesignAllocation `json:"-"`
 	DesignAcceptance             *DesignAcceptance `json:"design_acceptance,omitempty"`
 	usageScopeRepair             *pebble.Batch     // Private canonical projection repair participant.
@@ -693,6 +694,11 @@ func (s *SessionStore) ApplyV3SessionMutation(input V3SessionMutationInput) (V3S
 		defer s.store.designMu.Unlock()
 	}
 	lockIDs := []string{input.SessionID}
+	if input.DesignAllocation != nil {
+		r, err := s.store.GetDesignRequest(DesignPrincipal{AccountID: input.AccountScopeID, PrincipalID: input.UserID}, input.DesignAllocation.RequestID)
+		if err != nil { return V3SessionMutationResult{}, err }
+		lockIDs = append(lockIDs, r.ParentSessionID)
+	}
 	if input.WorktreeRecovery != nil {
 		lockIDs = append(lockIDs, input.WorktreeRecovery.OwnerSessionID)
 	}
@@ -847,7 +853,9 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 			Actual:    currentSeq,
 		}
 	}
-	reservedOutbox, err := s.store.sessionMutations.reserveOutbox(s.store, 1)
+	outboxCount := 1
+	if input.DesignAllocation != nil { outboxCount++ }
+	reservedOutbox, err := s.store.sessionMutations.reserveOutbox(s.store, outboxCount)
 	if err != nil {
 		return V3SessionMutationResult{}, err
 	}
@@ -1192,6 +1200,10 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 			return V3SessionMutationResult{}, err
 		}
 	}
+	if input.designChange != nil {
+		if input.EventType != "design.updated" || input.Kind != "design.updated" { return V3SessionMutationResult{}, ErrDesignInvalid }
+		if err := batch.Apply(input.designChange, nil); err != nil { return V3SessionMutationResult{}, err }
+	}
 	if input.usageScopeRepair != nil {
 		if input.EventType != "usage.scope.updated" {
 			return V3SessionMutationResult{}, errors.New("invalid usage repair event")
@@ -1214,6 +1226,9 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 		if err := setV3PlanSaveInBatch(batch, input.SessionID, *input.PlanSave); err != nil {
 			return V3SessionMutationResult{}, err
 		}
+	}
+	if input.DesignAllocation != nil {
+		if err := s.setDesignAllocationInvalidation(batch, input, reservedOutbox[1], now); err != nil { return V3SessionMutationResult{}, err }
 	}
 	if err := s.setDesignAllocationInBatch(batch, input); err != nil {
 		return V3SessionMutationResult{}, err
