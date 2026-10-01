@@ -188,3 +188,96 @@ These exercise real CLI parsing/Unix transport against isolated HTTP fixtures an
 real backend identity handlers against temporary storage. They are not live daemon,
 provider or SDK runs. **Still not live-qualified:** provider setup in the image,
 SDK connectivity, live agents, restart durability, npm delivery and publication.
+
+## Authenticated host SDK connection
+
+Rebuild the current source first. Opt in to the separate listener with
+`--container-sdk-port=7783` **and** publish it with
+`--publish 127.0.0.1:7783:7783` on the `docker run` command above. Place `--publish`
+before the image name and `--container-sdk-port=7783` after `swarm-headless:local`.
+Alternatively add both options on the first run, before performing setup: the SDK
+listener fails closed until an owner and scoped token exist. For an existing
+container, stop it and recreate it with the same named volumes and project mount;
+do not run both daemons against the same volumes. Never delete volumes to enable
+SDK access.
+
+The normal API, peer listener and private setup socket are unchanged. Only the
+separate SDK listener binds container IPv4 interfaces; Desktop and permission
+bypass must be disabled. **Never use host networking, `-P`, a bare `-p 7783:7783`,
+or a public/LAN host binding.** Swarm cannot inspect the engine's host-side port
+mapping: loopback publishing is a deployment requirement, not a daemon guarantee.
+Use a dedicated container network without untrusted peers and a current container
+engine. HTTP is intended only for this same-host connection; remote access requires
+an independently secured private tunnel, not public publishing.
+
+Issue a one-hour session-scoped token through container exec, after setup. Set
+`SWARM_SDK_TOKEN_FILE` to a new absolute file path in a private directory **outside
+the project**, then run without shell tracing:
+
+<copy>
+(
+set -eu
+umask 077
+set -C
+docker exec swarm-headless swarmctl setup sdk-token --expires-in-seconds 3600 \
+  > "${SWARM_SDK_TOKEN_FILE:?choose a new private file outside the project}"
+)
+</copy>
+
+Do not use `-t`, print the file, put its contents in argv, or mount the data/socket
+volume into the SDK process. The command returns only JSON `token` and `id` to the
+explicit pipe/file; direct terminal output is refused. `umask` is necessary because
+`docker exec` uses a pipe internally and cannot inspect the host destination mode.
+The token file itself is plaintext and must remain private (0600). Maximum CLI
+lifetime is 24 hours; issue a replacement explicitly on expiry. A failed or ambiguous
+export may have minted a token: inspect/revoke it rather than retrying blindly.
+
+The listener accepts only `Authorization: Bearer` scoped tokens and checks the
+stored user/account against the resolved identity on every request. Revoked,
+expired, missing and mismatched credentials fail closed. It does not accept attach
+tokens, cookies, implicit local identity or anonymous onboarding. Allowed routes
+are session create/list/detail, prompt submission, exact permission resolution and
+run stop; existing `sessions:read`/`sessions:write`, account checks, vault gate and
+tool permissions still apply. It is not the whole administrative API. A session
+write token can approve tools and access sessions in its account: treat it as a
+powerful credential, not a sandbox or a single-session capability. Models and
+permissions are never changed by the connection example.
+
+`packages/sdk/examples/headless-session.ts` connects to `http://127.0.0.1:7783`,
+creates a session against `/project`, submits your prompt and displays durable
+snapshots (messages, active run, pending permissions and plan). It uses the existing
+SDK source imports; installable npm candidates are a separate task. From the source
+root, with Node and an available `tsx` runner:
+
+<copy>
+export SWARM_SDK_TOKEN_FILE
+export SWARM_SDK_URL=http://127.0.0.1:7783
+tsx packages/sdk/examples/headless-session.ts
+</copy>
+
+For a packaged consumer, use `import { SwarmClient } from '@swarm/sdk'` after the
+package is available. No Desktop bootstrap call or Unix socket is used. API
+redirects are rejected rather than replaying tokens or prompts. The example checks
+token-file permissions and refuses non-loopback URLs. It withholds raw API errors.
+Session output is private; do not capture/share it indiscriminately.
+
+Use `refresh` to receive current results (explicit refresh, no timer polling).
+Review each pending call and use `allow <id>` followed by `yes` to approve that
+exact call once, or `deny <id>`. Unknown IDs cannot be approved by the example.
+`stop` targets the current run; `quit` only disconnects and **does not cancel** a
+running session. A prompt receipt is not a successful result; inspect the displayed
+run/plan state and assistant messages. Planning/review gates outside ordinary tool
+permissions are not automatically accepted by this minimal example.
+
+Revoke through private exec using the non-secret `id` from the export (never the
+token itself):
+
+<copy>
+docker exec swarm-headless swarmctl setup revoke-sdk-token --id "$TOKEN_ID"
+</copy>
+
+Focused checks: `TestContainerSDKConfig`, `TestContainerSDKAuthenticationAndScopes`,
+`TestSetupSDKToken`, and SDK `headless-session.spec.ts`/`transport.spec.ts`. These
+exercise startup, actual backend auth/permission handlers and SDK request behavior
+with isolated fixtures. **Container networking and a real SDK-driven agent remain
+unverified until the live qualification step.** No image/npm publication is implied.

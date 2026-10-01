@@ -97,6 +97,8 @@ export class SwarmTransport {
         headers,
         body: bodyStr,
         signal: controller.signal,
+        // Never forward SDK credentials or mutation bodies through redirects.
+        redirect: 'error',
       });
 
       const rawText = await res.text();

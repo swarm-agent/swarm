@@ -152,6 +152,7 @@ type Daemon struct {
 	desktopServer             *http.Server
 	localTransportServer      *http.Server
 	peerTransportServer       *http.Server
+	containerSDKServer        *http.Server
 	listener                  net.Listener
 	desktopListener           net.Listener
 	localTransportListener    net.Listener
@@ -823,6 +824,15 @@ func New(cfg config.Config) (*Daemon, error) {
 	}
 
 	d.httpServer = httpServer
+	if cfg.ContainerSDKPort > 0 {
+		d.containerSDKServer = &http.Server{
+			Addr:              net.JoinHostPort("0.0.0.0", strconv.Itoa(cfg.ContainerSDKPort)),
+			Handler:           apiServer.ContainerSDKHandler(),
+			ReadTimeout:       10 * time.Second,
+			ReadHeaderTimeout: 5 * time.Second,
+			IdleTimeout:       60 * time.Second,
+		}
+	}
 	if shouldEnableLocalTransport(cfg.ListenAddr) {
 		localTransportSocketPath := filepath.Join(cfg.DataDir, "local-transport", "api.sock")
 		if err := os.MkdirAll(filepath.Dir(localTransportSocketPath), localTransportSocketDirPerm()); err != nil {
@@ -1146,6 +1156,18 @@ func (d *Daemon) Run() error {
 			}
 		}()
 	}
+	if d.containerSDKServer != nil {
+		sdkLn, err := net.Listen("tcp4", d.containerSDKServer.Addr)
+		if err != nil {
+			return fmt.Errorf("listen on container SDK port: %w", err)
+		}
+		defer d.containerSDKServer.Close()
+		go func() {
+			if err := d.containerSDKServer.Serve(sdkLn); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				d.requestStop("container-sdk-serve-error")
+			}
+		}()
+	}
 	// Start only V2, after listeners succeed; never migrate or execute V1 records.
 	if d.automationV2Scheduler != nil {
 		if err := d.StartAutomationV2Scheduling(context.Background()); err != nil {
@@ -1193,6 +1215,7 @@ func (d *Daemon) waitForShutdown() error {
 		server *http.Server
 	}{
 		{name: "api", server: d.httpServer},
+		{name: "container SDK", server: d.containerSDKServer},
 		{name: "desktop", server: d.desktopServer},
 		{name: "peer transport", server: d.peerTransportServer},
 		{name: "local transport", server: d.localTransportServer},
