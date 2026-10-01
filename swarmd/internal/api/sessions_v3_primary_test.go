@@ -5989,8 +5989,8 @@ func TestSessionsV3ExecutorExitPlanModeUsesV3MutationAndRefreshesContinuationRun
 		if !strings.Contains(req.Instructions, "Current session mode: auto.") {
 			return provideriface.Response{}, fmt.Errorf("checkpoint continuation instructions did not refresh to auto mode:\n%s", req.Instructions)
 		}
-		if req.BoundaryReason != "session_turn" || !req.NativeContinuationAllowed || req.ForceFreshProviderContext {
-			return provideriface.Response{}, fmt.Errorf("exit_plan_mode checkpoint lineage flags = boundary %q native %t fresh %t, want same-epoch continuation", req.BoundaryReason, req.NativeContinuationAllowed, req.ForceFreshProviderContext)
+		if req.BoundaryReason != "provider_model_runtime_handoff" || req.NativeContinuationAllowed || !req.ForceFreshProviderContext {
+			return provideriface.Response{}, fmt.Errorf("exit_plan_mode checkpoint lineage flags = boundary %q native %t fresh %t, want fresh context across provider/model switch", req.BoundaryReason, req.NativeContinuationAllowed, req.ForceFreshProviderContext)
 		}
 		if !sessionsV3ProviderInputContainsContentText(req.Input, "[checkpoint-run] Deterministic checkpoint execution context.") || !sessionsV3ProviderInputContainsContentText(req.Input, "Execute exactly one checkpoint: cp-1.") {
 			return provideriface.Response{}, fmt.Errorf("exit_plan_mode checkpoint input = %+v, want additive checkpoint context", req.Input)
@@ -5998,7 +5998,7 @@ func TestSessionsV3ExecutorExitPlanModeUsesV3MutationAndRefreshesContinuationRun
 		if req.ToolInvoker == nil {
 			return provideriface.Response{}, fmt.Errorf("missing refreshed provider-managed tool invoker")
 		}
-		completeArgs := mustSessionsV3TestJSON(t, map[string]any{"action": "complete_checkpoint", "checkpoint_id": "cp-1", "report": "checkpoint complete", "result": "done"})
+		completeArgs := mustSessionsV3TestJSON(t, map[string]any{"action": "complete_checkpoint", "checkpoint_id": "cp-1", "report": "checkpoint complete", "result": "done", "handoff_overview": "Checkpoint completed.", "recommendation": map[string]any{"decision": "ship", "action": "review", "reason": "Checkpoint completed.", "action_state": "ready"}})
 		completeResult, err := req.ToolInvoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-complete-checkpoint", Name: "plan_manage", Arguments: completeArgs})
 		if err != nil {
 			return provideriface.Response{}, err
@@ -6054,6 +6054,43 @@ func TestSessionsV3ExecutorExitPlanModeUsesV3MutationAndRefreshesContinuationRun
 		t.Fatalf("created session mode = %q, want plan", created.Mode)
 	}
 	postSessionsV3PrimaryTestMessage(t, server, created.ID, "provider-exit-plan-restart-message", "exit plan mode and continue")
+	// Plan acceptance remains explicitly gated even when ordinary permissions
+	// are bypassed. Resolve the real permission rather than seeding approval.
+	permissionID := ""
+	deadline := time.Now().Add(5 * time.Second)
+	for permissionID == "" && time.Now().Before(deadline) {
+		events, err := sessionSvc.ListSessionEvents(created.ID, 0, 100)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, event := range events {
+			if event.EventType != "permission.requested" {
+				continue
+			}
+			var payload struct {
+				Permission *pebblestore.PermissionRecord `json:"permission"`
+			}
+			if err := json.Unmarshal(event.Payload, &payload); err != nil {
+				t.Fatal(err)
+			}
+			if payload.Permission != nil && payload.Permission.ToolName == "exit_plan_mode" {
+				permissionID = payload.Permission.ID
+			}
+		}
+		if permissionID == "" {
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	if permissionID == "" {
+		t.Fatal("exit_plan_mode did not request explicit approval")
+	}
+	approval := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/permissions/"+permissionID+"/resolve", strings.NewReader(`{"action":"allow_once","reason":"approve regression test plan"}`))
+	approval.Header.Set("Content-Type", "application/json")
+	approvalResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(approvalResponse, withTestPrincipal(approval))
+	if approvalResponse.Code != http.StatusOK {
+		t.Fatalf("resolve plan permission: status=%d body=%s", approvalResponse.Code, approvalResponse.Body.String())
+	}
 	waitForSessionsV3RunIntentStatus(t, sessionSvc, created.ID, sessionruntime.RunIntentCompleted)
 
 	stored, ok, err := sessionSvc.GetSession(created.ID)
@@ -6070,7 +6107,9 @@ func TestSessionsV3ExecutorExitPlanModeUsesV3MutationAndRefreshesContinuationRun
 	if hydrateErr != nil || !hydratedOK {
 		t.Fatalf("hydrate after exit_plan_mode: ok=%t err=%v", hydratedOK, hydrateErr)
 	}
-	if hydrated.Session.Mode != sessionruntime.ModeAuto || hydrated.Preference != stored.Preference || hydrated.AgentModelPolicy.Preference != stored.Preference || hydrated.AgentModelPolicy.Source != "agent_auto_preset" || !hydrated.AgentModelPolicy.Locked {
+	expectedProfilePreference := stored.Preference
+	expectedProfilePreference.UpdatedAt = 0 // Immutable profile selection has no mutable preference timestamp.
+	if hydrated.Session.Mode != sessionruntime.ModeAuto || hydrated.Preference != expectedProfilePreference || hydrated.AgentModelPolicy.Preference != expectedProfilePreference || hydrated.AgentModelPolicy.Source != "saved_model_profile" || !hydrated.AgentModelPolicy.Locked {
 		t.Fatalf("hydrated auto policy disagrees with durable session: hydrated=%+v policy=%+v stored=%+v", hydrated.Preference, hydrated.AgentModelPolicy, stored.Preference)
 	}
 	waitForSessionsV3MessageCount(t, sessionSvc, created.ID, 5)
@@ -6115,7 +6154,7 @@ func TestSessionsV3ExecutorExitPlanModeUsesV3MutationAndRefreshesContinuationRun
 				seenAutoPreference = true
 			}
 			policy, _ := payload["agent_model_policy"].(map[string]any)
-			if policy["source"] == "agent_auto_preset" && payload["swarm_conf_v3_diagnostics_enabled"] == false {
+			if policy["source"] == "saved_model_profile" && payload["swarm_conf_v3_diagnostics_enabled"] == false {
 				seenAutoPolicy = true
 			}
 		}
