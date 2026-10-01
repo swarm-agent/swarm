@@ -5,8 +5,9 @@ import { MediaTaskSelect, MediaTaskDefault, MediaTaskHelp, MediaTaskScenes, Medi
 import { ImagePromptControls, imagePromptReducer, initialImagePromptState, imagePromptEnhancement } from './image-task-prompt'
 import { DurableWorkerReviews } from '../chat/components/durable-worker-reviews'
 import { taskReopenOperations, taskReopenKey, type TaskReopenOutcome } from './task-reopen-operation'
-import { acquireTaskMutation, taskIntegrationOperations, taskIntegrationKey, taskIntegrationFailureIdentity, taskIntegrationPhase, type TaskIntegrationOperation, type TaskIntegrationResult } from './task-integration-operation'
-import { projectTaskFollowupPayload } from '../runtime/project-task-followup'
+import { taskIntegrationOperations, taskIntegrationKey, taskIntegrationFailureIdentity, taskIntegrationPhase, type TaskIntegrationOperation, type TaskIntegrationResult } from './task-integration-operation'
+import { taskOutcome } from './task-outcome'
+import { TaskOutcomeDetails, ProjectTaskAttention } from './task-outcome-view'
 import { TaskAttemptHistory } from './task-attempt-history'
 import { TaskUsageFooter, TaskWorkerBudgetMetadata } from './task-usage-metadata'
 import { useOrchestratorDictation } from './use-orchestrator-dictation'
@@ -2326,6 +2327,7 @@ export function MinimalTaskCard({
         </div>
       )}
 
+      <TaskOutcomeDetails task={task} />
       <TaskCardOutputs task={task} onPreview={onPreviewDeliverable} />
 
       {/* 7. Pipeline Stepper & Footer */}
@@ -4971,8 +4973,7 @@ export function OrchestrateView({
   const integrationForTask = (task: RunningTask) => taskIntegrationOperations.get(taskIntegrationKey(selectedProject?.id || '', task))
   const recoveryProjectRef = useRef(selectedProject?.id)
   recoveryProjectRef.current = selectedProject?.id
-  const repairFlights = useRef(new Set<string>())
-  const [repairStates, setRepairStates] = useState<Record<string, { loading?: boolean; error?: string; sessionId?: string }>>({})
+  useSyncExternalStore(taskReopenOperations.subscribe, taskReopenOperations.getSnapshot, taskReopenOperations.getSnapshot)
 
   const handleClearTaskError = useCallback((taskId: string) => {
     setTaskActionErrors((prev) => {
@@ -5194,74 +5195,58 @@ export function OrchestrateView({
 
   const renderIntegrationRecovery = (task: RunningTask) => {
     const operation = integrationForTask(task)
+    const outcome = taskOutcome(task)
+    const reopen = taskReopenOperations.get(taskReopenKey(selectedProject?.id || '', task.id))
+    if (outcome.repairSessionId && !outcome.integrationFailed && selectedProject) return <div className="integration-recovery">
+      <p>Repair attempt retained · {outcome.delivery}. {outcome.verification}.</p>
+      <button type="button" onClick={event => { event.stopPropagation(); setActiveTaskId(task.id); setSelectedTaskId(task.id); setActiveSessionId(outcome.repairSessionId!); setWorkerChatOpen(true) }}>Open repair session</button>
+    </div>
     const retryAttempt = task.attempts?.find(attempt => attempt.id === task.activeAttemptId && attempt.launch_state === 'launch_failed')
     const failure = (retryAttempt?.recovery && selectedProject
-      ? integrationFailure(selectedProject, task, new Error(retryAttempt.last_error || 'Repair launch incomplete; retry retained request')) : undefined) || (operation.phase === 'error' ? { ...operation.failure, task } : undefined) || (operation.phase === 'ready' && selectedProject && task.integration && ['failed', 'conflict'].includes(task.integration.state)
+      ? integrationFailure(selectedProject, task, new Error(retryAttempt.last_error || 'Repair launch incomplete; retry retained request')) : undefined) || (operation.phase === 'error' ? { ...operation.failure, task } : undefined) || (selectedProject && outcome.integrationFailed && task.integration
       ? integrationFailure(selectedProject, task, new Error(task.integration.error || 'Integration failed; retained backend receipt')) : undefined)
     if (!selectedProject) return null
     if (operation.phase === 'success' && operation.refreshError) return <><p role="status">{operation.refreshError}</p></>
     const failureKey = taskIntegrationKey(selectedProject.id, task)
     const failureIdentity = taskIntegrationFailureIdentity(task, operation)
-    if (!failure || failure.projectId !== selectedProject.id || taskIntegrationOperations.isDismissed(failureKey, failureIdentity)) return <>{retryAttempt?.request && <button type="button" onClick={event => { event.stopPropagation(); void handleReopenTask(task.id, retryAttempt.request) }}>Retry incomplete follow-up</button>}</>
-    const state = repairStates[task.id]
+    if (!failure || failure.projectId !== selectedProject.id) return <>{retryAttempt?.request && <button type="button" onClick={event => { event.stopPropagation(); void handleReopenTask(task.id, retryAttempt.request) }}>Retry incomplete follow-up</button>}</>
     const unavailable = repairUnavailable(failure.task)
     return <div className="integration-recovery" role="alert" onClick={event => event.stopPropagation()}>
       <strong>Integration failed</strong>
-      <pre>{failure.error}</pre>
+      <p>{outcome.delivery || 'Delivery not verified'}. {outcome.verification}.</p>
+      {!taskIntegrationOperations.isDismissed(failureKey, failureIdentity) && <pre>{failure.error}</pre>}
       <div className="flex flex-wrap gap-2">
-        <button type="button" disabled={Boolean(unavailable) || state?.loading} onClick={() => void launchIntegrationRepair(failure)}>
-          {state?.loading ? 'Launching…' : state?.sessionId ? 'Open repair session' : 'Launch repair session'}
+        <button type="button" disabled={Boolean(unavailable) || reopen.pending} onClick={() => void launchIntegrationRepair(failure)}>
+          {reopen.pending ? 'Launching…' : 'Launch repair session'}
         </button>
-        <button type="button" disabled={state?.loading} onClick={() => void handleIntegrateTask(task.id)}>Retry integration to refresh verified receipt</button>
+        <button type="button" disabled={reopen.pending || taskIntegrationPhase(task, operation) === 'pending'} onClick={() => void handleIntegrateTask(task.id)}>Retry integration to refresh verified receipt</button>
         <button type="button" aria-label="Dismiss integration error" onClick={event => { event.stopPropagation(); taskIntegrationOperations.dismiss(failureKey, failureIdentity) }}>Dismiss</button>
       </div>
       {unavailable && <p>{unavailable}</p>}
-      {state?.error && <p>{state.error}</p>}
+      {reopen.error && <p>{redactIntegrationDiagnostic(reopen.error)}</p>}
     </div>
   }
 
   const launchIntegrationRepair = async (failure: IntegrationFailure) => {
     const task = failure.task
-    if (repairFlights.current.has(task.id) || repairUnavailable(task)) return
-    if (repairStates[task.id]?.sessionId) {
-      setActiveTaskId(task.id)
-      setActiveSessionId(repairStates[task.id].sessionId!)
-      setSelectedTaskId(task.id)
-      setWorkerChatOpen(true)
-      selectedWorkerRef.current = null
-      setSelectedWorker(null)
-      return
-    }
-    if (taskIntegrationPhase(task, taskIntegrationOperations.get(taskIntegrationKey(failure.projectId, task))) === 'pending') return
-    const release = acquireTaskMutation(failure.projectId, task.id)
-    if (!release) return
-    repairFlights.current.add(task.id)
-    setRepairStates(previous => ({ ...previous, [task.id]: { loading: true } }))
-    try {
-      const active = task.attempts?.find(attempt => attempt.id === task.activeAttemptId && attempt.launch_state !== 'launched')
-      const body = active?.recovery && active.client_request_id
-        ? { client_request_id: active.client_request_id, revision: active.request_revision, feedback: active.request, repair: true }
-        : await projectTaskFollowupPayload(failure.projectId, task.id, task.revision ?? 0, 'Repair the failed integration for this task. Preserve the captured target, inspect the retained integration receipt, and coordinate the repair without automatic promotion.', true)
-      const result = await requestJson<{ task: any }>(`/v3/projects/${encodeURIComponent(failure.projectId)}/tasks/${encodeURIComponent(task.id)}/reopen`, {
+    if (repairUnavailable(task)) return
+    const active = task.attempts?.find(attempt => attempt.id === task.activeAttemptId && attempt.launch_state && attempt.launch_state !== 'launched')
+    const feedback = active?.request || 'Repair the failed integration for this task. Preserve the captured target, inspect the retained integration receipt, and coordinate the repair without automatic promotion.'
+    const outcome = await taskReopenOperations.run(failure.projectId, task.id, task, feedback,
+      body => requestJson<{ status: string; task: any }>(`/v3/projects/${encodeURIComponent(failure.projectId)}/tasks/${encodeURIComponent(task.id)}/reopen`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-      })
-      if (!result.task?.session_id) throw new Error('Missing task-linked repair session')
-      desktopProjects.invalidate(failure.projectId)
-      if (recoveryProjectRef.current !== failure.projectId) return
-      setRepairStates(previous => ({ ...previous, [task.id]: { sessionId: result.task.session_id } }))
-      setActiveTaskId(task.id)
-      setSelectedTaskId(task.id)
-      setActiveSessionId(result.task.session_id)
-      setWorkerChatOpen(true)
-      selectedWorkerRef.current = null
-      setSelectedWorker(null)
-    } catch (error) {
-      if (recoveryProjectRef.current !== failure.projectId) return
-      setRepairStates(previous => ({ ...previous, [task.id]: { error: `Repair launch failed: ${redactIntegrationDiagnostic(error instanceof Error ? error.message : String(error))}. Retry reuses the same session request.` } }))
-    } finally {
-      repairFlights.current.delete(task.id)
-      release()
-    }
+      }),
+      returnedTask => {
+        const mapped = mapBackendTask(returnedTask)
+        desktopProjects.setOptimisticTasks(failure.projectId, previous => previous.map(row => row.id === task.id ? mapped : row))
+        desktopProjects.invalidate(failure.projectId)
+        if (recoveryProjectRef.current !== failure.projectId) return
+        const sessionId = returnedTask.session_id || returnedTask.sessionId
+        setActiveTaskId(task.id); setSelectedTaskId(task.id); setActiveSessionId(sessionId); setWorkerChatOpen(true)
+        selectedWorkerRef.current = null
+        setSelectedWorker(null)
+      }, true)
+    if (!outcome.ok) desktopProjects.invalidate(failure.projectId)
   }
 
   // Integrate / Promote task commits into target branch
@@ -5710,6 +5695,11 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
             </nav>
           </div>
         </header>
+        <ProjectTaskAttention tasks={liveTasks} onOpen={task => {
+          setSelectedTaskId(task.id); setExpandedTaskId(task.id); setStatusFilter('all'); setActiveNavTab('home')
+          responsiveLayout.setPanel('main'); responsiveLayout.setNavigationOpen(false)
+          if (task.sessionId) { setActiveTaskId(task.id); setActiveSessionId(task.sessionId); setWorkerChatOpen(true) }
+        }} />
 
         {/* Navigation Menu Links */}
         <nav aria-label="Swarm destinations" className="swarm-route-navigation p-3 border-b border-slate-800/80 space-y-1" onClick={() => { setIsOnboardingActive(false); responsiveLayout.setPanel('main'); responsiveLayout.setNavigationOpen(false) }}>
@@ -7062,7 +7052,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
         <OrchestratorChatSidebar
           workspaceSlug={workspaceSlug}
           key={activeSessionId}
-          repairSession={Object.values(repairStates).some(state => state.sessionId === activeSessionId)}
+          repairSession={tasks.some(task => taskOutcome(task).repairSessionId === activeSessionId)}
           sessionId={activeSessionId}
           project={selectedProject}
           activeTask={activeTask}

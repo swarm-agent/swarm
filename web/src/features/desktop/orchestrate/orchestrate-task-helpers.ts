@@ -1063,6 +1063,8 @@ export function aggregateTaskLiveState(
 
   if (isLifecycleActive && !['rejected', 'pending_approval', 'planning'].includes(task.status)) {
     status = 'running'
+  } else if (isPrimaryFailed) {
+    status = 'failed'
   } else if (task.status === 'completed' || task.isIntegrated) {
     status = 'completed'
   } else if (task.status === 'rejected') {
@@ -1262,6 +1264,8 @@ export function aggregateTaskLiveState(
   return {
     ...task,
     status,
+    currentRunId: ownerRunId,
+    currentRunStatus: primaryRunStatus,
     taskTodos,
     activeTodo: status === 'running' ? activeSubtaskTitle || undefined : undefined,
     subtasks: taskTodos ? taskTodos.map((todo) => ({ ...todo, completed: todo.status === 'completed' })) : task.subtasks,
