@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
-# Bounded deterministic contract checks in the exact committed nspawn candidate.
+# Local deterministic checks only; never invoke through a testbench deployment.
 # No provider requests, credentials, host services, or benchmark claims.
 set -Eeuo pipefail
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
-: "${CANDIDATE_HEAD:?run only via the local testbench guest}"
-[[ "$(git rev-parse HEAD)" == "$CANDIDATE_HEAD" ]]
+if [[ -n "${CANDIDATE_HEAD:-}" || -n "${CANDIDATE_PREBUILD_SCRIPT:-}" ]]; then
+  echo 'Go and deterministic design checks must run locally, never in the testbench.' >&2
+  exit 2
+fi
+CANDIDATE_HEAD="$(git rev-parse HEAD)"
 export GOMAXPROCS=2 GOFLAGS=-p=2 RAYON_NUM_THREADS=2
 export SWARM_TEST_BROWSER_CHANNEL=chrome
 export GOCACHE_DIR="$(go env GOCACHE)" GOMODCACHE_DIR="$(go env GOMODCACHE)" GOPATH_DIR="$(go env GOPATH)"

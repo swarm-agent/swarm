@@ -45,8 +45,10 @@ The build/start wait emits a heartbeat and renews allocation every ten seconds w
 
 ## Candidate pre-build checks
 
-`deploy --prebuild-script scripts/testbench-design-media-checks.sh` runs that regular
-shell script from the exact committed candidate inside the claimed guest, after
+Go unit tests and deterministic regression checks run locally, never in a deployed
+guest. `scripts/testbench-design-media-checks.sh` is local-only and rejects guest
+execution. The optional `deploy --prebuild-script <relative-script>` hook runs a
+regular shell script from the exact committed candidate inside the claimed guest, after
 offline frontend dependencies are materialized and before either build. Absolute,
 traversing, missing and symlink paths are rejected before allocation. The hook has
 a 480-second deadline within the existing deployment deadline; failure prevents
