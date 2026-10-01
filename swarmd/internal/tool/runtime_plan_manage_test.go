@@ -195,6 +195,9 @@ func TestManageTodosRejectsAgentOwnerKindForSelfTracking(t *testing.T) {
 	}
 }
 
+// Purpose: Definitions must route schema discovery to the supported plan_manage
+// help action, not an undeclared exit_plan_mode action that submission rejects.
+// This checks model-facing discoverability, not approval or execution safety.
 func TestExitPlanModeDefinitionAcceptsStructuredDocument(t *testing.T) {
 	definition := mustFindDefinition(t, "exit_plan_mode")
 	if !containsAll(definition.Description, "structured", "SessionPlanDocument", "document") {
@@ -203,6 +206,15 @@ func TestExitPlanModeDefinitionAcceptsStructuredDocument(t *testing.T) {
 	params, ok := definition.Parameters["properties"].(map[string]any)
 	if !ok {
 		t.Fatalf("properties type = %T", definition.Parameters["properties"])
+	}
+	if !containsAll(definition.Description, "plan_manage action='help'", "exit_plan_mode has no help action", "complete document") {
+		t.Fatalf("exit_plan_mode advertises unsupported help: %q", definition.Description)
+	}
+	if _, exists := params["action"]; exists {
+		t.Fatal("exit_plan_mode must remain a submission-only tool")
+	}
+	if desc, _ := params["document"].(map[string]any)["description"].(string); !strings.Contains(desc, "plan_manage action='help'") {
+		t.Fatalf("document help points at wrong tool: %q", desc)
 	}
 	for _, name := range []string{"title", "plan", "document", "plan_id", "id", "execution_granularity", "continuation_policy", "continue_automatically"} {
 		if _, ok := params[name].(map[string]any); !ok {

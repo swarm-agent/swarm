@@ -43,6 +43,7 @@ import (
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/imagegen"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/taskscope"
 	todoruntime "swarm/packages/swarmd/internal/todo"
 	"swarm/packages/swarmd/internal/tool/searchipc"
 	uisettings "swarm/packages/swarmd/internal/uisettings"
@@ -1561,7 +1562,7 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "exit_plan_mode",
-			Description: "Submit final structured executable SessionPlanDocument document for approval to leave plan mode. Call action='help' for schema.",
+			Description: "Submit final structured executable SessionPlanDocument document for approval to leave plan mode. For schema help, call plan_manage action='help'; exit_plan_mode has no help action. Submit only with a complete document.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -1831,7 +1832,7 @@ func taskProgramToolSchema() map[string]any {
 						"owned_scope": map[string]any{
 							"type":        "array",
 							"items":       map[string]any{"type": "string"},
-							"description": "Workspace-relative file or directory paths. For Coders: concurrent Coders in the same stage must have non-overlapping scopes (e.g. distinct files/dirs); defaults to isolated worktree if omitted. For Finders: search paths (defaults to ['.']). For Designers: must be omitted for managed output; required concrete paths for workspace output.",
+							"description": taskscope.DirectoryGuidance + " Workspace-relative file or directory paths. For Coders: concurrent Coders in the same stage must have non-overlapping scopes (e.g. distinct files/dirs); defaults to isolated worktree if omitted. For Finders: search paths (defaults to ['.']). For Designers: must be omitted for managed output; required concrete paths for workspace output.",
 						},
 						"output_mode": map[string]any{
 							"type":        "string",
@@ -1870,14 +1871,14 @@ func taskProgramDefinitionToolSchema(description string) map[string]any {
 func sessionPlanDocumentToolSchema() map[string]any {
 	return map[string]any{
 		"type":        "object",
-		"description": "Authoritative SessionPlanDocument. Call action='help' for full JSON contract or pass canonical object.",
+		"description": "Authoritative SessionPlanDocument. Call plan_manage action='help' for full JSON contract or pass canonical object.",
 	}
 }
 
 func sessionExecutablePlanDocumentToolSchema() map[string]any {
 	return map[string]any{
 		"type":        "object",
-		"description": "Authoritative SessionPlanDocument. Call action='help' for full JSON contract or pass canonical object.",
+		"description": "Authoritative SessionPlanDocument. Call plan_manage action='help' for full JSON contract or pass canonical object.",
 	}
 }
 
