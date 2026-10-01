@@ -28,6 +28,7 @@ import {
 import type { MediaLibraryItem } from './types'
 import { subscribeDesktopSessionReset } from '../../../../app/api'
 import { DesignRevisionView } from './design-revision-view'
+import { ArtifactDeliverableView } from './artifact-deliverable-view'
 import { useDesignResource, useProjectDesigns } from './design-media'
 import { desktopDesigns } from '../../runtime/desktop-design-runtime'
 import { designMediaItem, designNodeId, designReadyItems, designRequestId } from '../../orchestrate/design-media-task'
@@ -1153,17 +1154,7 @@ function MediaViewer({
             )}
 
             {!showingRequest && item.source === 'independent-design' && <DesignRevisionView key={item.id} item={item} onSelect={onSelect} />}
-            {!showingRequest && item.source !== 'independent-design' && item.kind === 'animation' && (
-              <div className="flex h-full w-full max-w-5xl flex-col items-center justify-center">
-                <iframe
-                  title={item.title}
-                  src={item.directUrl}
-                  sandbox="allow-scripts"
-                  referrerPolicy="no-referrer"
-                  className="h-[54vh] w-full rounded-xl border border-white/10 bg-white shadow-2xl"
-                />
-              </div>
-            )}
+            {!showingRequest && item.source !== 'independent-design' && (item.kind === 'animation' || item.kind === 'document') && <ArtifactDeliverableView key={item.id} item={item} />}
           </main>
 
           {relevantJobs.length > 0 && (

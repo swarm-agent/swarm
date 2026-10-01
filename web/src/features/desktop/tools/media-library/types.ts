@@ -1,6 +1,6 @@
 import type { DesktopV3ArtifactCatalogEntry, VideoProvenance } from '../../session-v3/artifact-api'
 
-export type MediaKind = 'all' | 'image' | 'video' | 'audio' | 'animation'
+export type MediaKind = 'all' | 'image' | 'video' | 'audio' | 'animation' | 'document'
 
 export type MediaViewMode = 'grid' | 'list'
 

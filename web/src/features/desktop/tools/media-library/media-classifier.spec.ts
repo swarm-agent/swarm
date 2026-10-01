@@ -263,3 +263,14 @@ test('toMediaLibraryItem extracts immutable videoProvenance and per-result setti
   assert.ok(itemNoModel)
   assert.equal(itemNoModel.model, undefined, 'Unknown model must stay undefined')
 })
+
+// Purpose: classifyMediaKind is the catalog boundary for the existing viewer.
+// Prevent Markdown disappearing and SVG being flattened into an image; unsupported
+// source files must not become executable catch-all frames. Pure classification
+// is the narrowest layer; browser tests separately prove rendering/isolation.
+test('deliverable types reach the existing viewer without admitting arbitrary code', () => {
+  for (const [filename, mediaType, expected] of [['plan.md', 'text/plain', 'document'], ['plan', 'text/markdown', 'document'], ['motion.svg', 'image/svg+xml', 'animation'], ['page.html', 'text/html', 'animation']] as const) {
+    assert.equal(classifyMediaKind(mockArtifact({ kind: 'other', filename, mediaType })), expected)
+  }
+  assert.equal(classifyMediaKind(mockArtifact({ kind: 'code', filename: 'script.js', mediaType: 'text/javascript' })), null)
+})

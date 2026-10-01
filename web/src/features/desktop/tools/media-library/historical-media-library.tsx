@@ -150,7 +150,7 @@ export function HistoricalMediaLibrary({
 
   // Count items by kind
   const counts = useMemo(() => {
-    const summary = { all: items.length, image: 0, video: 0, audio: 0, animation: 0 }
+    const summary = { all: items.length, image: 0, video: 0, audio: 0, animation: 0, document: 0 }
     for (const item of items) {
       summary[item.kind] = (summary[item.kind] || 0) + 1
     }

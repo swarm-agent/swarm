@@ -81,3 +81,9 @@ export async function fetchDesignView(session: string, revision: DesignRevision,
   const action = revision.kind === 'plan' ? 'read' : 'preview_html'
   return (await postDesign(session, revision.ref, { action, ref: revision.ref }, signal)).text()
 }
+
+/** Open viewer only. Thumbnails deliberately continue using fetchDesignView. */
+export async function fetchDesignLiveSource(session: string, revision: DesignRevision, signal?: AbortSignal) {
+  const action = revision.kind === 'plan' ? 'read' : 'live_source'
+  return (await postDesign(session, revision.ref, { action, ref: revision.ref }, signal)).text()
+}
