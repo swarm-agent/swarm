@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"swarm/packages/swarmd/internal/identity"
+	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
 )
@@ -16,7 +17,7 @@ import (
 // Authority: CreateProjectTask, resolveProjectPlanSources, revalidateProjectTaskSource
 // and ApproveProjectTask. This hermetic API/store layer proves admission only.
 func TestProjectPlanCrossRepositorySources(t *testing.T) {
-	for _, scenario := range []string{"approved", "foreign", "removed", "stale", "missing_binding"} {
+	for _, scenario := range []string{"approved", "provenance", "foreign", "removed", "stale", "missing_binding"} {
 		t.Run(scenario, func(t *testing.T) {
 			f := setupMatrixTestFixture(t)
 			defer f.db.Close()
@@ -92,6 +93,11 @@ func TestProjectPlanCrossRepositorySources(t *testing.T) {
 				t.Fatalf("premature execution: %+v %v", intents, err)
 			}
 			switch scenario {
+			case "provenance":
+				stored.ProgramSources[1].Provenance = "unique_project_workspace"
+				if err := db.PutProjectTask(f.accountID, stored); err != nil {
+					t.Fatal(err)
+				}
 			case "removed":
 				proj.Workspaces = proj.Workspaces[:1]
 				if err := db.PutProject(f.accountID, proj); err != nil {
@@ -108,9 +114,23 @@ func TestProjectPlanCrossRepositorySources(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			if scenario == "approved" || scenario == "provenance" {
+				// Exercise the same lifecycle used by exit_plan_mode, not only
+				// the direct-plan constructor: a fresh authored revision retains
+				// admitted sources and requires its own exact approval binding.
+				doc.Info.Goal = "Review the authored revision before execution"
+				submitted, err := f.server.planLifecycle.SubmitProjectTaskStructuredPlan(sessionruntime.ProjectTaskPlanSubmissionInput{AccountScopeID: f.accountID, UserID: f.userID, ProjectID: projectID, TaskID: created.ID, SessionID: created.SessionID, Document: doc})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if submitted.Task.PlanBinding.DefinitionRevision != stored.PlanBinding.DefinitionRevision+1 || len(submitted.Task.ProgramSources) != 2 {
+					t.Fatalf("authored revision lost admission: %+v", submitted.Task)
+				}
+				stored = &submitted.Task
+			}
 			guards := tool.ProjectTaskApprovalGuards{SessionID: created.SessionID, PlanID: stored.PlanBinding.PlanID, DefinitionRevision: stored.PlanBinding.DefinitionRevision}
 			_, err = f.server.ApproveProjectTask(context.Background(), p, projectID, created.ID, guards)
-			if scenario != "approved" {
+			if scenario != "approved" && scenario != "provenance" {
 				if err == nil {
 					t.Fatal("invalid source admitted")
 				}

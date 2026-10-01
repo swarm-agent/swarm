@@ -377,6 +377,12 @@ func (s *PlanLifecycleService) SubmitProjectTaskStructuredPlan(input ProjectTask
 	if !found || task == nil {
 		return ProjectTaskPlanSubmissionResult{}, fmt.Errorf("task %q not found", input.TaskID)
 	}
+	if task.Archived {
+		return ProjectTaskPlanSubmissionResult{}, errors.New("archived task cannot publish a plan")
+	}
+	if err := pebblestore.ValidateTaskPlanSources(task, input.Document); err != nil {
+		return ProjectTaskPlanSubmissionResult{}, err
+	}
 	if task.AccountID != "" && task.AccountID != input.AccountScopeID {
 		return ProjectTaskPlanSubmissionResult{}, errors.New("cross-account plan submission forbidden")
 	}
@@ -557,6 +563,20 @@ func (s *PlanLifecycleService) SubmitProjectTaskStructuredPlan(input ProjectTask
 	hashSum = sha256.Sum256(rawDoc)
 	receipt = hex.EncodeToString(hashSum[:])
 
+	nextTask := *task
+	nextTask.SessionID = sessionID
+	nextTask.WorkspacePath = wsPath
+	nextTask.PlanBinding = &pebblestore.ProjectTaskPlanBinding{PlanID: planID, DefinitionRevision: version, SessionID: sessionID, Receipt: receipt}
+	nextTask.PlanDocument = nil
+	nextTask.Status = "pending_approval"
+	nextTask.PlanSummary = firstNonBlank(docCopy.Info.Goal, title)
+	nextTask.FullPlanMarkdown = planText
+	nextTask.ActionNeeded = "Review plan in task card and click Approve"
+	nextTask.UpdatedAt = now
+	if !isDuplicate {
+		nextTask.WhatDidDo = append(nextTask.WhatDidDo, fmt.Sprintf("Structured plan submitted for review (Rev %d)", version))
+	}
+
 	var planSnapshot pebblestore.SessionPlanSnapshot
 	if isDuplicate {
 		planSnapshot = existingPlan
@@ -617,6 +637,7 @@ func (s *PlanLifecycleService) SubmitProjectTaskStructuredPlan(input ProjectTask
 			EventType:       "session.plan.saved",
 			EventPayload:    planSavePayload,
 			PlanSave: &pebblestore.V3PlanSaveMutation{
+				TaskPublication:       &nextTask,
 				Plan:                  planSnapshot,
 				ArchivedRevision:      archived,
 				Activate:              true,
@@ -632,38 +653,12 @@ func (s *PlanLifecycleService) SubmitProjectTaskStructuredPlan(input ProjectTask
 		}
 	}
 
-	updatedTask, err := s.sessions.store.UpdateProjectTask(input.AccountScopeID, input.ProjectID, input.TaskID, func(t *pebblestore.ProjectTaskRecord) error {
-		if t.ActiveAttemptID != "" && t.ActiveAttemptID != "initial" && t.SessionID != sessionID {
-			return errors.New("historical session cannot replace active task plan")
-		}
-		t.SessionID = sessionID
-		t.WorkspacePath = wsPath
-		t.PlanBinding = &pebblestore.ProjectTaskPlanBinding{
-			PlanID:             planID,
-			DefinitionRevision: version,
-			SessionID:          sessionID,
-			Receipt:            receipt,
-		}
-		t.PlanDocument = nil
-		t.Status = "pending_approval"
-		t.PlanSummary = docCopy.Info.Goal
-		if t.PlanSummary == "" {
-			t.PlanSummary = title
-		}
-		t.FullPlanMarkdown = planText
-		t.ActionNeeded = "Review plan in task card and click Approve"
-		if !isDuplicate {
-			if planFound {
-				t.WhatDidDo = append(t.WhatDidDo, fmt.Sprintf("Structured plan revised for review (Rev %d)", version))
-			} else {
-				t.WhatDidDo = append(t.WhatDidDo, fmt.Sprintf("Structured plan submitted for review (Rev %d)", version))
-			}
-		}
-		t.UpdatedAt = now
-		return nil
-	})
-	if err != nil {
-		return ProjectTaskPlanSubmissionResult{}, fmt.Errorf("failed to update project task: %w", err)
+	updatedTask, found, err := s.sessions.store.GetProjectTask(input.AccountScopeID, input.ProjectID, input.TaskID)
+	if err != nil || !found {
+		return ProjectTaskPlanSubmissionResult{}, fmt.Errorf("read published task: %v", err)
+	}
+	if updatedTask.Archived || updatedTask.PlanBinding == nil || *updatedTask.PlanBinding != *nextTask.PlanBinding {
+		return ProjectTaskPlanSubmissionResult{}, errors.New("task review binding changed; reload and explicitly resubmit the structured plan for review")
 	}
 
 	resultTask := *updatedTask
