@@ -1171,7 +1171,7 @@ export function MinimalTaskCard({
         {onClearError && !reopenOperation.error && !localReopenError && <button type="button" onClick={onClearError}>Dismiss</button>}
       </div>}
       <button ref={detailsToggleRef} type="button" className="swarm-task-details-toggle"
-        aria-expanded={expanded} aria-controls={detailsId} data-testid="toggle-task-details-btn"
+        aria-expanded={expanded} aria-controls={`${detailsId} ${detailsId}-continued`} data-testid="toggle-task-details-btn"
         onClick={event => { event.stopPropagation(); handleToggleExpand() }}>
         {expanded ? 'Hide details' : 'Show details'}
       </button>
@@ -1279,8 +1279,11 @@ export function MinimalTaskCard({
 
       {/* Actionable recovery is independent of previous-run history. */}
       {integrationRecovery}
+      </>}
+      </div>
+      {/* Pending review stays on the card, independently of task details. */}
       {isPendingApproval && (
-        <div className="swarm-task-proposal flex flex-col space-y-2.5">
+        <div className="swarm-task-proposal flex flex-col space-y-2.5" onClick={event => event.stopPropagation()}>
           <div className="flex items-center justify-between gap-2 flex-wrap">
             <div className="flex items-center gap-2">
               <span className="text-[13px] text-slate-400">
@@ -1303,6 +1306,7 @@ export function MinimalTaskCard({
 
           </div>
 
+          {expanded && <>
           {/* Impending Execution Agents & Resolved Models */}
           {expanded && <div className="flex flex-col gap-2 p-2.5 rounded bg-slate-900/90 border border-slate-800 text-[11px] font-mono" data-testid="task-impending-agents">
             <div className="flex items-center justify-between gap-2 flex-wrap">
@@ -1603,6 +1607,7 @@ export function MinimalTaskCard({
 
           {isMediaTask && <p>Planned: {variantSlots.length} {task.agentType} output(s) · {task.aspectRatio || 'aspect ratio unspecified'}</p>}
 
+          </>}
           {/* Expandable Structured Plan or Task Program or Fallback Markdown */}
           {(hasStructuredPlan || task.fullPlanMarkdown) && (
             <div className="min-w-0 max-w-full whitespace-normal [overflow-wrap:anywhere] border border-slate-800/80 rounded bg-[#070b14]/90" data-testid="task-plan-spec">
@@ -1614,6 +1619,7 @@ export function MinimalTaskCard({
                 }}
                 className="w-full flex items-center justify-between px-2.5 py-1.5 text-[10px] font-mono text-slate-400 hover:text-slate-200 transition-colors"
                 aria-expanded={isFullPlanOpen}
+                aria-controls={`${detailsId}-plan`}
                 data-testid="toggle-plan-spec-btn"
               >
                 <span className="flex items-center gap-1.5 font-semibold">
@@ -1626,6 +1632,18 @@ export function MinimalTaskCard({
                 </span>
                 {isFullPlanOpen ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
               </button>
+              {!isFullPlanOpen && planCheckpointsToRender.length === 0 && (
+                <div className="min-w-0 px-3 pb-3 text-[11px] text-slate-300 [overflow-wrap:anywhere]" data-testid="task-plan-summary">
+                  {hasTaskProgramSpec ? <>
+                    <p>{taskProgramDef.jobs?.length || 0} jobs across {taskProgramDef.stages?.length || 1} stages</p>
+                    <ul className="space-y-1">
+                      {(taskProgramDef.jobs || []).slice(0, 3).map((job: any, index: number) => <li key={job.id || index}>{job.title || job.id}</li>)}
+                    </ul>
+                    {taskProgramDef.jobs?.length > 3 && <p>+{taskProgramDef.jobs.length - 3} more jobs · expand to review</p>}
+                  </> : <p className="line-clamp-3 whitespace-pre-wrap">{task.fullPlanMarkdown}</p>}
+                </div>
+              )}
+              <div id={`${detailsId}-plan`}>
               {(isFullPlanOpen || planCheckpointsToRender.length > 0) && (
                 <div data-testid="task-plan-reader" className="min-w-0 p-3 border-t border-slate-800 text-[11px] text-slate-300 font-mono leading-relaxed whitespace-normal [overflow-wrap:anywhere] space-y-3">
                   {/* Render Structured Plan Document Checkpoints */}
@@ -1774,6 +1792,7 @@ export function MinimalTaskCard({
                   )}
                 </div>
               )}
+              </div>
             </div>
           )}
 
@@ -1920,6 +1939,8 @@ export function MinimalTaskCard({
         </div>
       )}
 
+      <div id={`${detailsId}-continued`} hidden={!expanded} className="swarm-task-details" onClick={event => event.stopPropagation()}>
+      {expanded && <>
       <h4>Agents &amp; plan</h4>
       <TaskCardAgents task={task} onOpen={onInvestigateSession} />
       <TaskExpectedOutputs task={task} />
@@ -2336,7 +2357,7 @@ export function MinimalTaskCard({
       )}
       {expanded && previousRuns}
       <button type="button" className="swarm-task-details-toggle" data-testid="collapse-task-details-btn"
-        aria-expanded={expanded} aria-controls={detailsId}
+        aria-expanded={expanded} aria-controls={`${detailsId} ${detailsId}-continued`}
         onClick={event => { event.stopPropagation(); handleToggleExpand() }}>Hide details · return to summary</button>
       </>}
       </div>
