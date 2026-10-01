@@ -277,6 +277,7 @@ func (r *ChromedpRenderer) capture(parent context.Context, req Request, standalo
 		chromedp.ListenTarget(browserCtx, standaloneAudit.observe)
 	}
 	initialDocument := false
+	requestGate := make(captureRequestGate, 16)
 	faviconURL := origin[:strings.LastIndex(origin, "/")] + "/favicon.ico"
 	chromedp.ListenTarget(browserCtx, func(ev any) {
 		paused, ok := ev.(*fetch.EventRequestPaused)
@@ -294,14 +295,19 @@ func (r *ChromedpRenderer) capture(parent context.Context, req Request, standalo
 				markBlocked(paused.Request.URL)
 			}
 		}
-		go func() {
+		if !requestGate.dispatch(func() {
 			execCtx := cdp.WithExecutor(browserCtx, chromedp.FromContext(browserCtx).Target)
 			if allowed {
 				_ = fetch.ContinueRequest(paused.RequestID).Do(execCtx)
 			} else {
 				_ = fetch.FailRequest(paused.RequestID, network.ErrorReasonBlockedByClient).Do(execCtx)
 			}
-		}()
+		}) {
+			// Never block the CDP event reader or create an unbounded backlog.
+			// Cancelling the allocator aborts all paused requests fail-closed.
+			markBlocked("request_capacity")
+			cancel()
+		}
 	})
 
 	if err := chromedp.Run(browserCtx); err != nil {
