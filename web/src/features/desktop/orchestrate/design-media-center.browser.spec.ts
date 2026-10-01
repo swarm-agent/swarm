@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { mkdir } from 'node:fs/promises'
+import { resolve } from 'node:path'
 import { build } from 'vite'
 import { chromium } from 'playwright'
 import react from '@vitejs/plugin-react'
@@ -29,8 +31,10 @@ test('Media Center opens independent designs directly and preserves historical e
   const js = result.output.filter(item => item.type === 'chunk').map(item => item.code).join('\n')
   const css = result.output.filter(item => item.type === 'asset' && item.fileName.endsWith('.css')).map(item => String(item.source)).join('\n')
   const browser = await chromium.launch({ headless: true, channel: process.env.SWARM_TEST_BROWSER_CHANNEL || undefined })
+  const page = await browser.newPage(); page.setDefaultTimeout(7000)
+  const evidenceDir = process.env.SWARM_TEST_SCREENSHOT_DIR
+  if (evidenceDir) await mkdir(evidenceDir, { recursive: true })
   try {
-    const page = await browser.newPage(); page.setDefaultTimeout(7000)
     const ref = (revision: number) => ({ artifact_id: 'design', revision, sha256: `hash-${revision}` })
     const revisions = [1, 2, 3].map(n => ({ ref: ref(n), kind: 'html', request_id: 'request', candidate: 0, attempt: { number: 1, state: 'succeeded', result: ref(n) }, ...(n > 1 ? { base: ref(1) } : {}) }))
     const actions: Record<string, unknown>[] = []; const messages: unknown[] = []
@@ -60,7 +64,8 @@ test('Media Center opens independent designs directly and preserves historical e
           return route.fulfill({ json: { ok: true, message_id: 'edit-message' } })
         }
       }
-      if (url.pathname.includes('catalog')) return route.fulfill({ json: { artifacts: [], image_models: [], video_models: [] } })
+      if (url.pathname === '/v3/artifacts') return route.fulfill({ json: { ok: true, artifacts: [] } })
+      if (url.pathname.includes('catalog')) return route.fulfill({ json: { ok: true, artifacts: [], image_models: [], video_models: [] } })
       if (url.pathname.includes('settings')) return route.fulfill({ json: {} })
       return route.fulfill({ json: { artifacts: [] } })
     })
@@ -99,15 +104,26 @@ test('Media Center opens independent designs directly and preserves historical e
       assert.ok(bounds.left >= 0 && bounds.right <= width && bounds.bottom <= 800)
       assert.equal(bounds.overflow, false)
       await dialog.getByRole('button', { name: 'Close viewer' }).scrollIntoViewIfNeeded()
+      await dialog.getByRole('heading', { name: 'Viewing revision 1', exact: true }).scrollIntoViewIfNeeded()
+      if (evidenceDir) await page.screenshot({ path: resolve(evidenceDir, `design-viewer-${width}.png`) })
     }
     await dialog.getByRole('button', { name: 'Close viewer' }).click()
     await page.getByRole('button', { name: 'View Landing page · Candidate 1 · Revision 3', exact: true }).click()
     await page.getByRole('dialog').locator('iframe[title="Design revision 3"]').waitFor()
     await page.getByRole('dialog').getByText('Edit from revision 1: accepted · running', { exact: true }).waitFor()
     await page.getByRole('button', { name: 'Close viewer' }).click()
+    for (const width of [375, 1440]) {
+      await page.setViewportSize({ width, height: 800 })
+      await page.getByRole('button', { name: 'Preview Landing page candidate 1', exact: true }).scrollIntoViewIfNeeded()
+      if (evidenceDir) await page.screenshot({ path: resolve(evidenceDir, `design-library-${width}.png`) })
+    }
     await page.evaluate(() => (window as unknown as { showProject(id: string): void }).showProject('second'))
     assert.equal(await page.locator('iframe').count(), 0)
     await page.getByText('No media artifacts found').waitFor()
     assert.equal(await page.getByText('Landing page', { exact: true }).count(), 0)
+  } catch (error) {
+    console.error((await page.locator('body').innerText()).slice(0, 6000))
+    if (evidenceDir) await page.screenshot({ path: resolve(evidenceDir, 'design-failure.png') })
+    throw error
   } finally { await browser.close() }
 })
