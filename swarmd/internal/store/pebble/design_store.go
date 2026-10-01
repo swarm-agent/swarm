@@ -87,6 +87,13 @@ type DesignSubmit struct {
 // canonical child state and records outcomes here. Reopen never fabricates success
 // or silently retries; interrupted attempts require an explicit fresh child attempt.
 type DesignAttempt struct {
+	EvidenceRequired bool                  `json:"evidence_required,omitempty"`
+	Provider         string                `json:"provider,omitempty"`
+	Model            string                `json:"model,omitempty"`
+	Thinking         string                `json:"thinking,omitempty"`
+	Output           *DesignOutputRef      `json:"output,omitempty"`
+	Usage            *DesignResponseUsage  `json:"usage,omitempty"`
+	Validation       *DesignValidation     `json:"validation,omitempty"`
 	RouterAlert    string     `json:"router_alert,omitempty"`
 	Number         int        `json:"number"`
 	ChildSessionID string     `json:"child_session_id"`
@@ -644,6 +651,9 @@ func (s *Store) PublishDesignRevision(p DesignPrincipal, requestID string, in De
 	}
 	if attempt.ChildSessionID != in.ChildSessionID || attempt.RunID != in.RunID {
 		return zero, ErrDesignConflict
+	}
+	if err := s.designPublicationEvidence(p, *attempt, in.Content); err != nil {
+		return zero, err
 	}
 	a, err := s.GetDesignArtifact(p, c.Spec.ArtifactID)
 	if err != nil {
