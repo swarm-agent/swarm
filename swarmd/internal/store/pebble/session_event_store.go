@@ -80,7 +80,8 @@ type V3CheckpointBoundaryMutation struct {
 }
 
 type V3SessionMutationInput struct {
-	usageScopeRepair             *pebble.Batch // Private canonical projection repair participant.
+	DesignAcceptance             *DesignAcceptance `json:"design_acceptance,omitempty"`
+	usageScopeRepair             *pebble.Batch     // Private canonical projection repair participant.
 	automationV2                 *automationV2Mutation
 	AutomationBinding            *SessionAutomationBinding  `json:"automation_binding,omitempty"`
 	AutomationDefinitionRevision uint64                     `json:"automation_definition_revision,omitempty"`
@@ -686,6 +687,10 @@ func (s *SessionStore) ApplyV3SessionMutation(input V3SessionMutationInput) (V3S
 		s.store.projectsMu.Lock()
 		defer s.store.projectsMu.Unlock()
 	}
+	if input.DesignAcceptance != nil {
+		s.store.designMu.Lock()
+		defer s.store.designMu.Unlock()
+	}
 	lockIDs := []string{input.SessionID}
 	if input.WorktreeRecovery != nil {
 		lockIDs = append(lockIDs, input.WorktreeRecovery.OwnerSessionID)
@@ -1205,6 +1210,9 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 		if err := setV3PlanSaveInBatch(batch, input.SessionID, *input.PlanSave); err != nil {
 			return V3SessionMutationResult{}, err
 		}
+	}
+	if err := s.setDesignAcceptanceInBatch(batch, input); err != nil {
+		return V3SessionMutationResult{}, err
 	}
 	if err := setV3ArtifactMutationInBatch(batch, artifact); err != nil {
 		return V3SessionMutationResult{}, err
@@ -3480,6 +3488,9 @@ func validateV3SessionMutationInput(input V3SessionMutationInput) error {
 	}
 	if input.CheckpointBoundary != nil && input.Kind != V3SessionMutationCommitCheckpointBoundary {
 		return errors.New("checkpoint boundary payload requires checkpoint boundary mutation kind")
+	}
+	if err := validateDesignAcceptance(input); err != nil {
+		return err
 	}
 	if err := validateV3ArtifactMutation(input); err != nil {
 		return err
