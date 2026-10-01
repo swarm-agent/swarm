@@ -1,11 +1,14 @@
 package pebblestore
 
 import (
+	"bytes"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image/png"
 	"sort"
 	"strings"
 	"time"
@@ -42,6 +45,7 @@ type ProjectRecord struct {
 	AccountID        string                `json:"account_id"`
 	Name             string                `json:"name"`
 	Description      string                `json:"description,omitempty"`
+	IconPNGDataURL   string                `json:"icon_png_data_url,omitempty"`
 	ThemeID          string                `json:"theme_id,omitempty"` // account catalog reference; empty uses the Swarm default
 	Workspaces       []ProjectWorkspaceRef `json:"workspaces,omitempty"`
 	ProjectContext   string                `json:"project_context,omitempty"` // synthesized project.md
@@ -58,6 +62,31 @@ func (p *ProjectRecord) Validate() error {
 	p.Name = strings.TrimSpace(p.Name)
 	if p.Name == "" {
 		return errors.New("project name is required")
+	}
+	return ValidateProjectIconPNGDataURL(p.IconPNGDataURL)
+}
+
+// ValidateProjectIconPNGDataURL bounds both stored bytes and decoded image memory.
+// Empty means the default project icon; remote URLs and other formats are rejected.
+func ValidateProjectIconPNGDataURL(value string) error {
+	if value == "" {
+		return nil
+	}
+	const prefix = "data:image/png;base64,"
+	const maxBytes = 1 << 20
+	if !strings.HasPrefix(value, prefix) || len(value)-len(prefix) > base64.StdEncoding.EncodedLen(maxBytes) {
+		return errors.New("icon_png_data_url must be a PNG data URL of at most 1 MiB")
+	}
+	payload, err := base64.StdEncoding.Strict().DecodeString(strings.TrimPrefix(value, prefix))
+	if err != nil || len(payload) > maxBytes {
+		return errors.New("invalid or oversized project PNG")
+	}
+	config, err := png.DecodeConfig(bytes.NewReader(payload))
+	if err != nil || config.Width < 1 || config.Height < 1 || config.Width > 1024 || config.Height > 1024 {
+		return errors.New("project PNG dimensions must be between 1 and 1024 pixels")
+	}
+	if _, err := png.Decode(bytes.NewReader(payload)); err != nil {
+		return errors.New("invalid project PNG content")
 	}
 	return nil
 }
