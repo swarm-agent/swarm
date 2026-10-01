@@ -129,13 +129,7 @@ func (s *SessionStore) ListProjectDesignRequests(p DesignPrincipal, projectID, a
 		if sessionID != "" && owned && parent.AccountScopeID == p.AccountID && parent.UserID == p.PrincipalID {
 			// Idempotent locator hydration for pre-index projects. No progress or
 			// artifact authority is copied, and readers revalidate membership.
-			batch := s.store.db.NewBatch()
-			err := setDesignMembership(batch, p.AccountID, sessionID, projectID, taskID)
-			if err == nil {
-				err = batch.Commit(pebble.Sync)
-			}
-			_ = batch.Close()
-			if err != nil {
+			if err := s.hydrateDesignMembership(p.AccountID, sessionID, projectID, taskID); err != nil {
 				return nil, "", err
 			}
 			requests, next, err := s.store.ListSessionDesignRequests(p, sessionID, c.After, 1)
@@ -151,6 +145,8 @@ func (s *SessionStore) ListProjectDesignRequests(p DesignPrincipal, projectID, a
 				title := designCatalogTitle(full)
 				for i := range full.Candidates {
 					full.Candidates[i].Spec.Brief = ""
+					full.Candidates[i].Archived = r.Candidates[i].Archived
+					full.Candidates[i].ArchiveVersion = r.Candidates[i].ArchiveVersion
 				}
 				rows = append(rows, ProjectDesignEntry{ProjectID: projectID, TaskID: taskID, AttemptID: attemptID, Title: title, Request: full})
 			}
@@ -291,4 +287,30 @@ func setDesignMembership(b *pebble.Batch, account, session, project, task string
 		return nil
 	}
 	return designSet(b, designMembershipKey(account, session, project, task), designMembership{Project: project, Task: task})
+}
+
+// Caller holds projectsMu. Existing locators need no write or fsync on catalog
+// refresh; mismatched/corrupt records fail closed rather than being overwritten.
+func (s *SessionStore) hydrateDesignMembership(account, session, project, task string) error {
+	key := designMembershipKey(account, session, project, task)
+	data, found, err := s.store.GetBytes(key)
+	if err != nil {
+		return err
+	}
+	if found {
+		var binding designMembership
+		if err := json.Unmarshal(data, &binding); err != nil {
+			return err
+		}
+		if binding.Project != project || binding.Task != task {
+			return ErrDesignConflict
+		}
+		return nil
+	}
+	batch := s.store.db.NewBatch()
+	defer batch.Close()
+	if err := setDesignMembership(batch, account, session, project, task); err != nil {
+		return err
+	}
+	return batch.Commit(pebble.Sync)
 }

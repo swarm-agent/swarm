@@ -72,6 +72,12 @@ func (s *Server) handleSessionV3Designs(w http.ResponseWriter, r *http.Request, 
 			designAPIError(w, err)
 			return
 		}
+		archived, err := designArchiveView(r)
+		if err != nil {
+			designAPIError(w, err)
+			return
+		}
+		rows = pebblestore.FilterDesignCatalogView(rows, archived)
 		writeJSON(w, http.StatusOK, map[string]any{"requests": rows, "next_cursor": cursor})
 		return
 	}
@@ -130,6 +136,20 @@ func (s *Server) handleSessionV3Designs(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	switch in.Action {
+	case "archive", "restore":
+		if !s.requireScopeAny(w, r, "sessions:write") {
+			return
+		}
+		if in.ExpectedVersion == nil {
+			designAPIError(w, pebblestore.ErrDesignInvalid)
+			return
+		}
+		updated, err := db.SetDesignArchived(p, sessionID, pebblestore.DesignArchive{IdempotencyKey: in.IdempotencyKey, ExpectedVersion: *in.ExpectedVersion, Ref: in.Ref, Archived: in.Action == "archive"})
+		if err != nil {
+			designAPIError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"artifact": updated})
 	case "select":
 		if in.ExpectedVersion == nil || len(in.ExpectedCurrent) == 0 {
 			designAPIError(w, pebblestore.ErrDesignInvalid)

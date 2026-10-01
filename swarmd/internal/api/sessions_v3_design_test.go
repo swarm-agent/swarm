@@ -122,6 +122,56 @@ func TestDesignHTTPExactBytesIsolationAndCAS(t *testing.T) {
 	if w.Code != 200 || strings.Contains(w.Body.String(), "private brief") || !strings.Contains(w.Body.String(), "request") {
 		t.Fatal(w.Code, w.Body.String())
 	}
+	// Purpose: the registered archive action must reject wrong owners and stale
+	// refs without mutation, replay exactly, and expose retained history only in
+	// the archived catalog. HTTP plus the real store proves transport and durable
+	// invalidation boundaries without a browser or provider dependency.
+	archive := map[string]any{"action": "archive", "ref": ref, "idempotency_key": "archive", "expected_version": 0}
+	body, _ := json.Marshal(archive)
+	for _, owner := range [][2]string{{"foreign", "user-1"}, {"account-1", "foreign"}} {
+		w = httptest.NewRecorder()
+		s.Handler().ServeHTTP(w, withAccountPrincipal(httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body)), owner[0], owner[1]))
+		if w.Code != 404 {
+			t.Fatal("foreign archive", w.Code, w.Body.String())
+		}
+	}
+	w = post(map[string]any{"action": "archive", "ref": bad, "idempotency_key": "bad-archive", "expected_version": 0})
+	if w.Code != 409 {
+		t.Fatal("bad archive ref", w.Code, w.Body.String())
+	}
+	a, err = db.GetDesignArtifact(p, "design")
+	if err != nil || a.Archived || a.ArchiveVersion != 0 {
+		t.Fatal("rejected request mutated archive", a, err)
+	}
+	for i := 0; i < 2; i++ {
+		w = post(archive)
+		if w.Code != 200 || !strings.Contains(w.Body.String(), `"archived":true`) || !strings.Contains(w.Body.String(), `"archive_version":1`) {
+			t.Fatal("archive/replay", w.Code, w.Body.String())
+		}
+	}
+	w = post(map[string]any{"action": "restore", "ref": ref, "idempotency_key": "stale-restore", "expected_version": 0})
+	if w.Code != 409 {
+		t.Fatal("stale restore", w.Code, w.Body.String())
+	}
+	for _, view := range []string{"active", "archived"} {
+		w = httptest.NewRecorder()
+		s.Handler().ServeHTTP(w, withTestPrincipal(httptest.NewRequest(http.MethodGet, "/v3/sessions/artifact-v3-api/designs?view="+view, nil)))
+		if w.Code != 200 || strings.Contains(w.Body.String(), `"artifact_id":"design"`) != (view == "archived") {
+			t.Fatal("archive view", view, w.Code, w.Body.String())
+		}
+	}
+	w = post(map[string]any{"action": "read", "ref": ref})
+	if w.Code != 200 || w.Body.String() != content {
+		t.Fatal("archive deleted content", w.Code, w.Body.String())
+	}
+	w = post(map[string]any{"action": "restore", "ref": ref, "idempotency_key": "restore", "expected_version": 1})
+	if w.Code != 200 {
+		t.Fatal("restore", w.Code, w.Body.String())
+	}
+	a, err = db.GetDesignArtifact(p, "design")
+	if err != nil || a.Archived || a.ArchiveVersion != 2 || a.Selected == nil || *a.Selected != ref || a.SelectionVersion != 1 {
+		t.Fatal("archive changed selection", a, err)
+	}
 }
 
 // Purpose: registered catalog/download routes must expose newest admissions and

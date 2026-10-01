@@ -105,11 +105,13 @@ type DesignAttempt struct {
 }
 
 type DesignCandidate struct {
-	FailureReason string              `json:"failure_reason,omitempty"`
-	RouterAlert   string              `json:"router_alert,omitempty"`
-	Spec          DesignCandidateSpec `json:"spec"`
-	State         string              `json:"state"`
-	Attempts      []DesignAttempt     `json:"attempts,omitempty"`
+	Archived       bool                `json:"archived,omitempty"`
+	ArchiveVersion uint64              `json:"archive_version"`
+	FailureReason  string              `json:"failure_reason,omitempty"`
+	RouterAlert    string              `json:"router_alert,omitempty"`
+	Spec           DesignCandidateSpec `json:"spec"`
+	State          string              `json:"state"`
+	Attempts       []DesignAttempt     `json:"attempts,omitempty"`
 }
 
 type DesignRequest struct {
@@ -126,6 +128,8 @@ type DesignRequest struct {
 }
 
 type DesignArtifact struct {
+	Archived         bool            `json:"archived,omitempty"`
+	ArchiveVersion   uint64          `json:"archive_version"`
 	Owner            DesignPrincipal `json:"owner"`
 	ID               string          `json:"id"`
 	RequestGroupID   string          `json:"request_group_id"`

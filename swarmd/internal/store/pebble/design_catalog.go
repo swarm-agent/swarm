@@ -72,6 +72,9 @@ func (s *Store) ListSessionDesignRequests(p DesignPrincipal, sessionID, after st
 		if r.ParentSessionID != sessionID {
 			return nil, "", ErrDesignConflict
 		}
+		if err := s.designCatalogArchive(p, &r); err != nil {
+			return nil, "", err
+		}
 		// Briefs and context are inputs, not catalog metadata.
 		for i := range r.Candidates {
 			r.Candidates[i].Spec.Brief = ""

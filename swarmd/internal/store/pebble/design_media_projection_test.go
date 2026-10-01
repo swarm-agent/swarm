@@ -141,6 +141,32 @@ func TestProjectDesignInvalidationAtomicUpdate(t *testing.T) {
 	if err == nil || len(notices) != 1 {
 		t.Fatal("failed CAS published", notices, err)
 	}
+	// Archive shares this same atomic invalidation boundary: one durable wakeup
+	// on success, none on replay or rejected CAS; membership remains scoped.
+	_, ref := designTestPublish(t, s, r, 0, []byte("<html>retained</html>"))
+	before := len(notices)
+	in := DesignArchive{IdempotencyKey: "archive", Ref: ref, Archived: true}
+	if _, err := s.SetDesignArchived(p, "parent", in); err != nil {
+		t.Fatal(err)
+	}
+	if len(notices) != before+1 {
+		t.Fatal("archive wakeup missing", notices)
+	}
+	stored, found, err = ss.GetV3RealtimeOutbox(notices[len(notices)-1].EndpointSeq)
+	if err != nil || !found || string(stored.Event.Payload) != `{"project_id":"project","resource":"designs"}` {
+		t.Fatal("archive invalidation not durable", stored, err)
+	}
+	if _, err := s.SetDesignArchived(p, "parent", in); err != nil || len(notices) != before+1 {
+		t.Fatal("archive replay emitted wakeup", err)
+	}
+	in.IdempotencyKey = "stale-archive"
+	if _, err := s.SetDesignArchived(p, "parent", in); !errors.Is(err, ErrDesignConflict) || len(notices) != before+1 {
+		t.Fatal("archive conflict emitted wakeup", err)
+	}
+	rows, _, err := ss.ListProjectDesignRequests(p, "project", "", 20)
+	if err != nil || len(rows) != 1 || !rows[0].Request.Candidates[0].Archived || rows[0].Request.Candidates[0].ArchiveVersion != 1 {
+		t.Fatal("project archive projection", rows, err)
+	}
 }
 
 // Purpose: project discovery must retain partial success and exact historical

@@ -30,5 +30,29 @@ func (s *Server) handleProjectDesigns(w http.ResponseWriter, r *http.Request, p 
 		designAPIError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"designs": rows, "next_cursor": cursor})
+	archived, err := designArchiveView(r)
+	if err != nil {
+		designAPIError(w, err)
+		return
+	}
+	filtered := make([]pebblestore.ProjectDesignEntry, 0, len(rows))
+	for _, row := range rows {
+		if len(pebblestore.FilterDesignCatalogView([]pebblestore.DesignRequest{row.Request}, archived)) != 0 {
+			filtered = append(filtered, row)
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"designs": filtered, "next_cursor": cursor})
+}
+
+// Filtering never expands a bounded page; clients must follow next_cursor even
+// when a page is empty. Omitted view is the active library.
+func designArchiveView(r *http.Request) (bool, error) {
+	switch r.URL.Query().Get("view") {
+	case "", "active":
+		return false, nil
+	case "archived":
+		return true, nil
+	default:
+		return false, pebblestore.ErrDesignInvalid
+	}
 }
