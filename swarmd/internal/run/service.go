@@ -114,6 +114,7 @@ type Service struct {
 	model                        *model.Service
 	modelProfiles                *modelprofile.Service
 	providers                    *registry.Registry
+	designRenderer               DesignRenderer
 	tools                        *tool.Runtime
 	permissions                  *permission.Service
 	agents                       *agentruntime.Service

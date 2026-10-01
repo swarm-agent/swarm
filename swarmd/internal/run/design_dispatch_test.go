@@ -51,6 +51,7 @@ func designExecutionFixture(t *testing.T) (*Service, store.DesignPrincipal, stor
 	}}
 	s.providers = registry.New()
 	s.providers.RegisterRunner(runner)
+	s.SetDesignRenderer(designTestRenderer{})
 	return s, p, r, runner
 }
 func acceptDesignFixture(t *testing.T, s *Service, p store.DesignPrincipal, parent store.DesignRequest, id string, specs []store.DesignCandidateSpec, snapshots []store.DesignContextSnapshot) store.DesignRequest {
@@ -134,6 +135,9 @@ func TestDesignExecutionExactInputsAndPlan(t *testing.T) {
 	ref := result.Candidates[0].Attempts[0].Result
 	if ref == nil {
 		t.Fatal("plan not retained")
+	}
+	runner.call = func(context.Context, provideriface.Request) (provideriface.Response, error) {
+		return provideriface.Response{Text: "<!doctype html><html><body>implemented plan</body></html>"}, nil
 	}
 	html := acceptDesignFixture(t, s, p, parent, "from-plan", []store.DesignCandidateSpec{{ArtifactID: "from-plan-artifact", Kind: store.DesignHTML, Operation: store.DesignGenerate, Brief: "implement plan", PlanSource: ref}}, nil)
 	s.executeDesign(ctx, p, html.ID, 0)
@@ -269,6 +273,10 @@ func TestDesignExecutionSiblingCASAndDuplicateClaim(t *testing.T) {
 	done := make(chan error, 2)
 	for i := 0; i < 2; i++ {
 		go func(i int) {
+			if _, err := s.retainAndValidateDesign(ctx, p, r.ID, i, provideriface.Response{Text: "<!doctype html><html><body>retained</body></html>"}, nil, false); err != nil {
+				done <- err
+				return
+			}
 			done <- s.finishDesign(p, r.ID, i, []byte("<!doctype html><html><body>retained</body></html>"), store.DesignSucceeded)
 		}(i)
 	}
