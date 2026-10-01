@@ -97,6 +97,8 @@ type DesignAttempt struct {
 }
 
 type DesignCandidate struct {
+	FailureReason string `json:"failure_reason,omitempty"`
+	RouterAlert string `json:"router_alert,omitempty"`
 	Spec     DesignCandidateSpec `json:"spec"`
 	State    string              `json:"state"`
 	Attempts []DesignAttempt     `json:"attempts,omitempty"`
@@ -623,10 +625,17 @@ func (s *Store) PublishDesignRevision(p DesignPrincipal, requestID string, in De
 		return zero, ErrDesignInvalid
 	}
 	c := &r.Candidates[in.Candidate]
-	if c.State != DesignRunning || c.Spec.Kind != in.Kind {
+	if (c.State != DesignRunning && c.State != DesignCancelRequested) || c.Spec.Kind != in.Kind {
 		return zero, ErrDesignConflict
 	}
 	attempt := &c.Attempts[len(c.Attempts)-1]
+	if c.State == DesignCancelRequested {
+		// Only a real canonical completion that won the cancellation race may
+		// publish. Cancellation alone never grants this exception.
+		intent, ok, err := NewSessionStore(s).GetV3SessionRunIntent(attempt.ChildSessionID, attempt.RunID)
+		if err != nil { return zero, err }
+		if !ok || intent.AccountScopeID != p.AccountID || intent.UserID != p.PrincipalID || intent.Status != V3RunIntentCompleted { return zero, ErrDesignConflict }
+	}
 	if attempt.ChildSessionID != in.ChildSessionID || attempt.RunID != in.RunID {
 		return zero, ErrDesignConflict
 	}

@@ -11,13 +11,16 @@ import (
 	store "swarm/packages/swarmd/internal/store/pebble"
 )
 
+var errDesignModelUnavailable = errors.New("Designer assignment and account default model are unavailable")
+var errDesignAllocationUnavailable = errors.New("design allocation services unavailable")
+
 // AllocateDesignChild is scheduler-only: no provider call, file hydration or
 // parent-run cancellation registration occurs here. The caller owns the returned
 // lease and must release it, or attach it to execution via WithLease. Recovery
 // returns the exact persisted child without authorizing automatic provider replay.
 func (s *Service) AllocateDesignChild(ctx context.Context, p store.DesignPrincipal, requestID string, revision uint64, candidate, attempt int) (store.DesignAttempt, executioncapacity.Lease, error) {
 	if s == nil || s.sessions == nil || s.permissions == nil {
-		return store.DesignAttempt{}, nil, errors.New("design allocation services unavailable")
+		return store.DesignAttempt{}, nil, errDesignAllocationUnavailable
 	}
 	r, err := s.sessions.DesignStore().GetDesignRequest(p, requestID)
 	if err != nil {
@@ -44,12 +47,12 @@ func (s *Service) AllocateDesignChild(ctx context.Context, p store.DesignPrincip
 	if err != nil || !resolved.CatalogPresent {
 		if s.model == nil {
 			lease.Release()
-			return store.DesignAttempt{}, nil, errors.New("Designer assignment and account default model are unavailable")
+			return store.DesignAttempt{}, nil, errDesignModelUnavailable
 		}
 		resolved, err = s.model.GetResolvedPreferenceForAccount(p.AccountID)
 		if err != nil || !resolved.CatalogPresent {
 			lease.Release()
-			return store.DesignAttempt{}, nil, errors.New("Designer assignment and account default model are unavailable")
+			return store.DesignAttempt{}, nil, errDesignModelUnavailable
 		}
 		alert = fmt.Sprintf("Designer assignment unavailable; using account default %s/%s.", resolved.Preference.Provider, resolved.Preference.Model)
 	}
@@ -94,6 +97,11 @@ func (s *Service) ReconcileDesignCancellation(p store.DesignPrincipal, requestID
 	}
 	if !ok || intent.AccountScopeID != p.AccountID || intent.UserID != p.PrincipalID {
 		return r, store.ErrDesignNotFound
+	}
+	if intent.Status == store.V3RunIntentCompleted || intent.Status == store.V3RunIntentFailed || intent.Status == store.V3RunIntentInterrupted {
+		// Cancellation cannot rewrite an already terminal canonical outcome.
+		// Completion publication remains owned by the executor holding its bytes.
+		return r, store.ErrDesignConflict
 	}
 	if intent.Status != store.V3RunIntentCancelled {
 		if intent.Status != store.V3RunIntentPendingExecutor {
