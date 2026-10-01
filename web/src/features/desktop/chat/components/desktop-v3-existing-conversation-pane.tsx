@@ -1,3 +1,4 @@
+import { DesktopDesignGallery } from './desktop-design-gallery';
 import {
   memo,
   useCallback,
@@ -3387,6 +3388,7 @@ export function DesktopV3ExistingConversationPane({
         data-session-sidebar-view={activeSidebarView}
       >
         <div className="flex min-h-0 min-w-0 flex-col overflow-hidden">
+          <DesktopDesignGallery key={normalizedSessionId} sessionId={normalizedSessionId} />
           <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
             {artifactReviewPresentation === "embedded" ? (
               <DesktopV3ArtifactGallery
