@@ -44,7 +44,7 @@ func (s *Service) AllocateDesignChild(ctx context.Context, p store.DesignPrincip
 	if err != nil || !resolved.CatalogPresent {
 		if s.model == nil {
 			lease.Release()
-			return store.DesignAttempt{}, nil, err
+			return store.DesignAttempt{}, nil, errors.New("Designer assignment and account default model are unavailable")
 		}
 		resolved, err = s.model.GetResolvedPreferenceForAccount(p.AccountID)
 		if err != nil || !resolved.CatalogPresent {
