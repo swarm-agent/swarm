@@ -73,8 +73,8 @@ func (s *Server) routeProjectTaskSource(ctx context.Context, p identity.Principa
 		return bound, nil, err
 	}
 	payload, err := json.Marshal(struct {
-		Prompt         string                         `json:"prompt"`
-		ProjectContext string                         `json:"project_context"`
+		Prompt         string                          `json:"prompt"`
+		ProjectContext string                          `json:"project_context"`
 		Candidates     []pebblestore.ProjectTaskSource `json:"candidates"`
 	}{prompt, proj.ProjectContext, candidates})
 	if err != nil {
@@ -89,7 +89,7 @@ func (s *Server) routeProjectTaskSource(ctx context.Context, p identity.Principa
 	var selection struct {
 		Source     pebblestore.ProjectTaskSource   `json:"source"`
 		Context    []pebblestore.ProjectTaskSource `json:"context"`
-		Diagnostic string                         `json:"diagnostic"`
+		Diagnostic string                          `json:"diagnostic"`
 	}
 	if err := json.Unmarshal([]byte(response.Text), &selection); err != nil {
 		return pebblestore.ProjectTaskSource{}, nil, fmt.Errorf("workspace routing returned invalid JSON; select a workspace or retry: %w", err)

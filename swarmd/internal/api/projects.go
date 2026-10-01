@@ -2271,12 +2271,12 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			RequestedWorkspace: source.Path,
 			ProjectContext:     projectContext,
 			// Preview has no authority to infer an execution workspace.
-			Workspaces:         nil,
-			Intent:             previewReq.Intent,
-			FeatureSize:        previewReq.FeatureSize,
-			Agent:              previewReq.Agent,
-			OutcomeType:        previewReq.OutcomeType,
-			Tier:               previewReq.Tier,
+			Workspaces:  nil,
+			Intent:      previewReq.Intent,
+			FeatureSize: previewReq.FeatureSize,
+			Agent:       previewReq.Agent,
+			OutcomeType: previewReq.OutcomeType,
+			Tier:        previewReq.Tier,
 		})
 		if rErr != nil {
 			writeError(w, http.StatusBadRequest, fmt.Errorf("invalid task preview configuration: %w", rErr))

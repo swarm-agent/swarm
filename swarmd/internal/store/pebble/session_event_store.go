@@ -64,7 +64,7 @@ var ErrV3IdempotencyConflict = errors.New("v3 session idempotency conflict")
 // canonical V3 mutation batch. Plan, revision, active-pointer, event,
 // projection, idempotency, and realtime outbox records commit atomically.
 type V3PlanSaveMutation struct {
-	TaskPublication       *ProjectTaskRecord    `json:"task_publication,omitempty"`
+	TaskPublication       *ProjectTaskRecord   `json:"task_publication,omitempty"`
 	Plan                  SessionPlanSnapshot  `json:"plan"`
 	ArchivedRevision      *SessionPlanSnapshot `json:"archived_revision,omitempty"`
 	Activate              bool                 `json:"activate,omitempty"`
