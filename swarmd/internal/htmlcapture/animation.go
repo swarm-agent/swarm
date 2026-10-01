@@ -223,6 +223,7 @@ rendererCapacityAcquired:
 
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
 		chromedp.ExecPath(r.BinaryPath),
+		chromedp.ModifyCmdFunc(isolateBrowserCommand),
 		chromedp.UserDataDir(filepath.Join(jobDir, "profile")),
 		chromedp.Flag("headless", true),
 		// Seek acknowledgements run on the main thread. Keep CSS animation
