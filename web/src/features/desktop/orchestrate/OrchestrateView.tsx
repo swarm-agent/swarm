@@ -4375,7 +4375,7 @@ export function OrchestrateView({
           body: JSON.stringify(newMedia),
         }
       )
-      if (!res?.media?.id || res.media.kind !== 'doc' || !res.media.data) throw new Error('Save returned no persisted document. Please retry.')
+      if (!res?.media?.id || res.media.kind !== 'doc' || (!res.media.url && !res.media.data)) throw new Error('Save returned no persisted document. Please retry.')
       if (selectedProjectRef.current !== selectedProject.id) return
       const savedMedia = res.media
       desktopProjects.setOptimisticMedia(selectedProject.id, (prev) => [...prev, savedMedia])
