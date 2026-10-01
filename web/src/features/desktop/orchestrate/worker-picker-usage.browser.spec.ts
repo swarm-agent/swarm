@@ -33,6 +33,15 @@ test('compact chooser searches, retains saved options and budget saves exact CAS
   const browser = await chromium.launch({ headless: true, channel: process.env.SWARM_TEST_BROWSER_CHANNEL || 'chrome' })
   try {
     const page = await browser.newPage({ viewport: { width: 360, height: 800 } })
+    page.setDefaultTimeout(4000)
+    page.on('pageerror', error => console.error('UI page error:', error.message))
+    const capture = async (name: string) => {
+      if (!process.env.SWARM_TEST_SCREENSHOT_DIR) return
+      const directory = path.resolve(process.env.SWARM_TEST_SCREENSHOT_DIR)
+      assert.ok(directory !== path.resolve('..') && !directory.startsWith(path.resolve('..') + path.sep), 'screenshots must be outside the repository')
+      await mkdir(directory, { recursive: true })
+      await page.screenshot({ path: path.join(directory, name + '.png'), fullPage: true })
+    }
     const writes: Array<{ url: string; body: any }> = []
     const assignment = { provider: 'fixture', model: 'catalog-model', thinking: 'low' }
     const usage = { kind: 'worker', id: 'worker-fixture', revision: 1, cache_read_tokens: 0, cache_write_tokens: 0, thinking_tokens: 0, media_receipts: 0, history_complete: false, receipt_count: 1, total_tokens: 9, coverage: 'observed_receipts_only', unknown_receipts: 0, input_tokens: 9, output_tokens: 0, catalog_cost_usd: 1, provider_cost_usd: 0, provider_estimate_cost_usd: 0, nominal_subscription_cost_usd: 0, media_cost_usd: 0, free_receipts: 0, subscription_receipts: 0 }
@@ -48,10 +57,10 @@ test('compact chooser searches, retains saved options and budget saves exact CAS
       if (url.endsWith('/v1/agent-model-settings')) return respond({ agent_model_settings: { swarm: { action: assignment, plan: assignment }, system_agents: Object.fromEntries(['compact', 'finder', 'coder', 'designer', 'router'].map(name => [name, assignment])), updated_at: 1 } })
       if (url.endsWith('/v1/providers')) return respond({ providers: [{ id: 'fixture', ready: true, runnable: true }] })
       if (url.includes('/v1/models/favorites')) return respond({ records: [] })
-      if (url.includes('/v1/models') && holdCatalog) await new Promise<void>(resolve => { releaseCatalog = resolve; markCatalogRequested?.() })
-      if (url.includes('/v1/models') && catalog === 'error') return route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'Fixture catalog unavailable' }) })
-      if (url.includes('/v1/models') && catalog === 'empty') return respond({ records: [] })
-      if (url.includes('/v1/models')) return respond({ records: [{ model: 'catalog-model', thinking_options: ['low', 'high'], service_tiers: ['standard', 'priority'], pricing: { input_price_per_million_tokens: 1, output_price_per_million_tokens: 2 } }] })
+      if (url.includes('/v1/model/catalog') && holdCatalog) await new Promise<void>(resolve => { releaseCatalog = resolve; markCatalogRequested?.() })
+      if (url.includes('/v1/model/catalog') && catalog === 'error') return route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'Fixture catalog unavailable' }) })
+      if (url.includes('/v1/model/catalog') && catalog === 'empty') return respond({ records: [] })
+      if (url.includes('/v1/model/catalog')) return respond({ records: [{ model: 'catalog-model', thinking_options: ['low', 'high'], service_tiers: ['standard', 'priority'], pricing: { input_price_per_million_tokens: 1, output_price_per_million_tokens: 2 } }] })
       if (url.includes('/v3/usage/scope')) return respond({ usage, recorded: true })
       if (url.includes('/v3/usage/worker-budget')) {
         if (request.method() === 'PUT') { revision++; return respond({ account_scope_id: 'acct', worker_id: 'worker-fixture', revision }) }
@@ -60,16 +69,23 @@ test('compact chooser searches, retains saved options and budget saves exact CAS
       return route.fulfill({ contentType: 'text/html', body: '<meta name="viewport" content="width=device-width,initial-scale=1"><div id="root" class="min-w-0 p-3"></div>' })
     })
     await page.goto('https://worker.test/'); await page.addStyleTag({ content: css }); await page.addScriptTag({ content: bundle.outputFiles[0].text })
+    console.log('UI step: budget hydration')
     await page.getByRole('region', { name: 'Worker daily budget' }).locator('summary').waitFor()
     await page.getByText(/details and caps/).click()
     await page.getByRole('button', { name: 'Edit worker caps' }).waitFor()
     assert.deepEqual(writes, [])
     await page.getByRole('button', { name: 'Retry', exact: true }).waitFor()
+    await capture('worker-catalog-error-narrow')
+    console.log('UI step: catalog retry')
     catalog = 'ready'; await page.getByRole('button', { name: 'Retry', exact: true }).click()
     await page.getByRole('button', { name: 'Change Execution model' }).click()
     const search = page.getByRole('textbox', { name: 'Search Execution models' })
     await search.fill('absent'); await page.getByText('No matching models.').waitFor()
     await search.fill('fixture'); await page.getByText(/Catalog estimate:/).waitFor()
+    await capture('worker-chooser-narrow')
+    await page.setViewportSize({ width: 1100, height: 800 })
+    await capture('worker-chooser-wide')
+    await page.setViewportSize({ width: 360, height: 800 })
     await page.getByRole('button', { name: /fixture\/catalog-model/ }).click()
     assert.equal(await page.getByRole('button', { name: 'Change Execution model' }).evaluate(el => el === document.activeElement), true)
     const profiles = await page.evaluate(() => (window as any).profiles)
@@ -84,6 +100,7 @@ test('compact chooser searches, retains saved options and budget saves exact CAS
     await page.getByRole('button', { name: 'Edit worker caps' }).click()
     await page.getByRole('button', { name: 'Cancel', exact: true }).click()
     assert.deepEqual(writes, [])
+    console.log('UI step: stale budget')
     await page.getByRole('button', { name: 'Edit worker caps' }).click()
     revision = 5
     await page.getByRole('button', { name: 'Reload budget' }).click()
@@ -101,6 +118,7 @@ test('compact chooser searches, retains saved options and budget saves exact CAS
     }
     assert.equal(writes.length, 1); assert.ok(writes[0].url.includes('/v3/usage/worker-budget'))
     assert.deepEqual(writes[0].body, { expected_revision: 5, daily_cost_limit_usd: 2.5, daily_tokens_limit: 0 })
+    await capture('worker-usage-unknown-narrow')
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth), false)
     assert.equal(await page.getByRole('region', { name: 'Worker daily budget' }).evaluate(el => getComputedStyle(el).borderTopStyle), 'solid')
     blocked = true; await page.getByRole('button', { name: 'Reload budget' }).click()
@@ -119,9 +137,11 @@ test('compact chooser searches, retains saved options and budget saves exact CAS
       await mkdir(directory, { recursive: true })
       await page.screenshot({ path: path.join(directory, 'worker-picker-budget-narrow.png'), fullPage: true })
     }
+    console.log('UI step: account switch')
     holdCatalog = true; catalog = 'ready'
     await page.evaluate(() => (window as any).remount())
     await page.getByText('Loading account models…').waitFor()
+    await capture('worker-loading-narrow')
     await catalogRequested
     account = 'foreign'; await page.evaluate(() => (window as any).switchAccount())
     releaseCatalog?.()
@@ -130,5 +150,8 @@ test('compact chooser searches, retains saved options and budget saves exact CAS
     assert.equal(await page.getByRole('button', { name: 'Edit worker caps' }).count(), 0)
     assert.equal(writes.length, 1)
     assert.equal(await page.getByRole('textbox', { name: 'Search Execution models' }).count(), 0)
+    assert.equal(await page.getByText(/Thinking · high|Tier · priority/).count(), 0)
+    assert.equal(await page.getByText(/catalog-model/).count(), 0)
+    await capture('worker-account-switched-narrow')
   } finally { await browser.close() }
 })

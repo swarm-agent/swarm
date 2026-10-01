@@ -42,6 +42,8 @@ test('operational worker detail categorizes runs, forwards context and preserves
     assert.equal(await page.locator('form, input, textarea').count(), 0)
     await page.getByRole('group', { name: 'Execution mode', exact: true }).waitFor()
     assert.equal(await page.getByRole('region', { name: 'Execution model', exact: true }).count(), 1)
+    // Planning is intentionally progressive in Auto mode, not an always-visible card.
+    await page.locator('summary').filter({ hasText: 'Planning model ·' }).click()
     assert.equal(await page.getByRole('region', { name: 'Planning model', exact: true }).count(), 1)
     await page.getByRole('button', { name: 'Failed', exact: true }).click()
     assert.equal(await page.getByTestId('durable-worker-run').count(), 0)

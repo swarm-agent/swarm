@@ -6,6 +6,14 @@ import { TaskCardSummary } from './task-card-summary'
 import { PendingWorkerCard } from './pending-worker-card'
 import type { RunningTask } from './orchestrate-types'
 import type { WorkerRecord } from '../state/desktop-workers-api'
+import { ensureDesktopSession } from '../../../app/api'
+
+// SSR model disclosure requires the same authenticated account as the mounted worker.
+test.before(async () => {
+  const original = globalThis.fetch
+  globalThis.fetch = async () => new Response(JSON.stringify({ user_id: 'owner', account_scope_id: 'account' }), { headers: { 'Content-Type': 'application/json' } })
+  try { await ensureDesktopSession(true) } finally { globalThis.fetch = original }
+})
 
 // Requirement: only durable worker-linked tasks have Worker presentation, and
 // review discloses the saved action/planning selection. Threat: changing runtime

@@ -47,13 +47,14 @@ export function WorkerModelPicker({ accountScopeId, profile, disabled, onChange,
   const triggers = useRef<Partial<Record<'action' | 'plan', HTMLButtonElement>>>({})
   const profileOwner = useRef({ account: accountScopeId, profile })
   if (profileOwner.current.profile !== profile) profileOwner.current = { account: accountScopeId, profile }
-  const safeProfile = profileOwner.current.account === accountScopeId ? profile : undefined
+  const authorized = getDesktopSessionIdentitySnapshot()?.accountScopeId === accountScopeId
+  // A stale mounted worker belongs to the old identity even when its prop is unchanged.
+  const safeProfile = authorized && profileOwner.current.account === accountScopeId ? profile : undefined
   const [loaded, setLoaded] = useState<{ account: string; options: ModelOptionRecord[]; defaults: WorkerModelProfile }>()
   const [error, setError] = useState('')
   const [retry, setRetry] = useState(0)
   const [editing, setEditing] = useState<'action' | 'plan' | null>(null)
   const [search, setSearch] = useState('')
-  const authorized = getDesktopSessionIdentitySnapshot()?.accountScopeId === accountScopeId
   useEffect(() => {
     let alive = true
     const controller = new AbortController()
