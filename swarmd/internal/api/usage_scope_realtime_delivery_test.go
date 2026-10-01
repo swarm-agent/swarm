@@ -228,8 +228,8 @@ func TestUsageScopeExplicitSessionReplayRetained(t *testing.T) {
 	writeV3RealtimeMessage(t, conn, V3RealtimeMessage{
 		Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindResume,
 		EndpointCursor: signedV3RealtimeCursorForTest(t, server, created.RealtimeOutbox.EndpointSeq),
-		Subscriptions: []V3RealtimeSubscriptionRequest{{SessionID: created.SessionID, SubscriptionID: "explicit"}},
-		Worksets: []V3RealtimeWorksetSubscriptionRequest{workset},
+		Subscriptions:  []V3RealtimeSubscriptionRequest{{SessionID: created.SessionID, SubscriptionID: "explicit"}},
+		Worksets:       []V3RealtimeWorksetSubscriptionRequest{workset},
 	})
 	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindReplayStart, created.SessionID, 0)
 	frame := readV3RealtimeFrame(t, conn)
