@@ -13,13 +13,39 @@ Official TypeScript SDK for [Swarm](https://github.com/swarm-agent/swarm), the l
 - **Session & Workspace Lifecycle**: Create durable V3 sessions, manage runs, send messages, poll for completion, and inspect workspaces.
 - **Typed Error Hierarchy**: `SwarmAuthError` (401), `SwarmForbiddenError` (403), `SwarmNotFoundError` (404), `SwarmConflictError` (409), `SwarmTimeoutError`.
 
-## Installation
+## Unpublished npm candidate
 
-```bash
-npm install @swarm/sdk
-# or
-pnpm add @swarm/sdk
-```
+Node 22+ and ESM imports are the validated packaging target. The prerelease name
+is not a claim of registry ownership or publication. Install the local candidate
+from a clean consumer directory (no Swarm checkout or Desktop required):
+
+<copy>
+npm install "$SDK_TARBALL"
+node --input-type=module -e "import { SwarmClient } from '@swarm/sdk'; console.log(typeof SwarmClient)"
+</copy>
+
+For maintainers, the SDK builds independently with its own locked dev dependencies:
+
+<copy>
+cd packages/sdk
+npm ci --ignore-scripts
+npm run build
+npm pack --pack-destination "$PACKAGE_OUTPUT_DIR"
+</copy>
+
+The pack contains compiled ESM, declarations, license, README and the headless
+example, not source tests or node_modules. `prepack` builds locally; there are no
+install/prepare hooks. TypeScript/tsx are build/test tools, not runtime dependencies.
+CommonJS `require` and non-Node runtimes are not validated by this packaging step.
+
+For the headless container, use the matching `@swarm/cli` candidate and explicitly
+export a scoped token through `swarm-headless setup -- sdk-token`. Connect to
+`http://127.0.0.1:7783`; **do not** use Desktop bootstrap or a privileged socket.
+The headless listener allows session operations only, not the complete API below.
+The packaged `examples/headless-session.ts` imports `@swarm/sdk` and can be copied
+into your consumer and run with an explicitly installed `tsx` runner. Protect its
+`SWARM_SDK_TOKEN_FILE` (0600); the example asks before each tool approval and uses
+explicit refresh, not timer polling. Live agent verification is a separate step.
 
 ## Quick Start
 
