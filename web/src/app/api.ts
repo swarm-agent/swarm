@@ -21,6 +21,13 @@ interface DesktopSessionBootstrapResponse {
 let desktopSessionReady = false
 let desktopSessionIdentity: DesktopSessionIdentity | null = null
 let desktopSessionPromise: Promise<DesktopSessionIdentity> | null = null
+const desktopSessionResetListeners = new Set<() => void>()
+
+/** Private read models must discard data before authentication is re-established. */
+export function subscribeDesktopSessionReset(listener: () => void): () => void {
+  desktopSessionResetListeners.add(listener)
+  return () => { desktopSessionResetListeners.delete(listener) }
+}
 
 async function readErrorMessage(response: Response): Promise<string> {
   const text = (await response.text()).trim()
@@ -78,6 +85,7 @@ async function readDesktopSession(signal: AbortSignal): Promise<DesktopSessionId
 function clearDesktopSession() {
   desktopSessionReady = false
   desktopSessionIdentity = null
+  desktopSessionResetListeners.forEach(listener => listener())
 }
 
 export function getDesktopSessionIdentitySnapshot(): DesktopSessionIdentity | null {

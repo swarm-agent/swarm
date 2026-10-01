@@ -42,7 +42,7 @@ test('in-flight invalidations coalesce and errors stay visible until explicit re
   finish(1)
   await first
   assert.equal(calls, 2)
-  assert.equal(resource.getSnapshot().data, 1)
+  assert.equal(resource.getSnapshot().data, undefined)
   assert.equal(resource.getSnapshot().error, 'unavailable')
   await resource.refresh()
   assert.deepEqual(resource.getSnapshot(), { data: 3, loading: false })
@@ -83,13 +83,110 @@ test('history and catalog pagination preserve earlier records', async () => {
 })
 
 // Purpose: DesktopDesignState must fail visibly on malformed pagination rather than
-// repeatedly appending duplicates; retained successful data remains available.
-test('non-advancing cursor is rejected without replacing retained catalog', async () => {
+// repeatedly appending duplicates or exposing stale private data after failure.
+test('non-advancing cursor is rejected and clears stale catalog', async () => {
   const state = new DesktopDesignState({ catalog: async () => ({ requests: [], next_cursor: 'same' }), history: async () => history([]) })
   const resource = state.catalog('s')
   await resource.refresh()
-  const retained = resource.getSnapshot().data
   await state.moreRequests('s')
-  assert.equal(resource.getSnapshot().data, retained)
+  assert.equal(resource.getSnapshot().data, undefined)
   assert.match(resource.getSnapshot().error!, /did not advance/)
+})
+
+// Purpose: DesignResource reset is the privacy boundary on teardown/auth change.
+// Deferred success/failure and their finalizers must not resurrect data or disturb a new flight.
+test('reset fences old responses and finalizers while allowing fresh hydration', async () => {
+  const finishes: Array<(value: string) => void> = []
+  const resource = new DesignResource(() => new Promise<string>(resolve => finishes.push(resolve)))
+  const old = resource.refresh(); await Promise.resolve()
+  resource.reset()
+  const fresh = resource.refresh(); await Promise.resolve()
+  finishes[0]('private old data'); await old
+  assert.deepEqual(resource.getSnapshot(), { loading: true, error: undefined })
+  assert.equal(resource.refresh(), fresh)
+  finishes[1]('fresh data')
+  // The explicit refresh coalesces one further read after completion.
+  for (let i = 0; i < 10 && finishes.length < 3; i++) await Promise.resolve()
+  assert.equal(finishes.length, 3)
+  finishes[2]('current data'); await fresh
+  assert.equal(resource.getSnapshot().data, 'current data')
+  resource.dispose(); await resource.refresh()
+  assert.deepEqual(resource.getSnapshot(), { loading: false })
+  assert.equal(finishes.length, 3)
+})
+
+// Purpose: useSyncExternalStore unsubscribe is the real gallery teardown boundary.
+// Last-consumer release clears bytes, but one view cannot clear another active view/session.
+test('last unsubscribe clears only that resource and session switching starts empty', async () => {
+  const state = new DesktopDesignState({
+    catalog: async session => ({ requests: [{ id: session, state: 'queued', candidates: [] }], next_cursor: '' }),
+    history: async () => history([]),
+  })
+  const a = state.catalog('a'); const b = state.catalog('b')
+  const releaseA = a.subscribe(() => {}); const releaseSecondA = a.subscribe(() => {})
+  const releaseB = b.subscribe(() => {})
+  await a.refresh(); await b.refresh()
+  releaseA()
+  assert.equal(a.getSnapshot().data!.requests[0].id, 'a')
+  releaseSecondA()
+  assert.equal(a.getSnapshot().data, undefined)
+  assert.equal(b.getSnapshot().data!.requests[0].id, 'b')
+  assert.equal(state.catalog('c').getSnapshot().data, undefined)
+  assert.equal(state.catalog('a').getSnapshot().data, undefined)
+  releaseB()
+})
+
+// Purpose: cache eviction bounds inactive sessions/history without evicting active views.
+// A deferred response owned by an evicted entry cannot restore its private metadata.
+test('bounded inactive eviction disposes old catalog and history resources', async () => {
+  let finish!: (value: DesignCatalog) => void
+  const state = new DesktopDesignState({ catalog: () => new Promise(resolve => { finish = resolve }), history: async () => history([]) })
+  const active = state.catalog('active'); const release = active.subscribe(() => {})
+  const old = state.catalog('old'); const flight = old.refresh(); await Promise.resolve()
+  const oldHistory = state.history('old', 'design'); await oldHistory.refresh()
+  for (let i = 0; i < 40; i++) { state.catalog(`s-${i}`); state.history(`s-${i}`, 'design') }
+  finish({ requests: [{ id: 'private', state: 'queued', candidates: [] }], next_cursor: '' }); await flight
+  assert.equal(old.getSnapshot().data, undefined)
+  assert.equal(oldHistory.getSnapshot().data, undefined)
+  assert.notEqual(state.catalog('old'), old)
+  assert.equal(state.catalog('active'), active)
+  release()
+})
+
+// Purpose: catalog refresh always starts at the first page, echoing opaque cursors.
+// More than twenty records and a newly inserted request must remain visible after refresh.
+test('refresh after pagination includes newest rows and echoes opaque cursors', async () => {
+  const rows = Array.from({ length: 25 }, (_, i) => ({ id: `request-${i}`, state: 'queued', candidates: [] }))
+  const cursors: string[] = []
+  const state = new DesktopDesignState({
+    catalog: async (_session, cursor) => {
+      cursors.push(cursor)
+      return cursor ? { requests: rows.slice(20), next_cursor: '' } : { requests: rows.slice(0, 20), next_cursor: 'opaque:page/two==' }
+    }, history: async () => history([]),
+  })
+  const resource = state.catalog('s')
+  await resource.refresh(); await state.moreRequests('s')
+  assert.equal(resource.getSnapshot().data!.requests.length, 25)
+  rows.unshift({ id: 'newest', state: 'queued', candidates: [] })
+  await resource.refresh()
+  assert.deepEqual(cursors, ['', '', 'opaque:page/two==', '', 'opaque:page/two=='])
+  assert.equal(resource.getSnapshot().data!.requests[0].id, 'newest')
+  assert.equal(resource.getSnapshot().data!.requests.length, 26)
+})
+
+// Purpose: the teardown fence must reject late failures as well as successes.
+// A rejected old read cannot replace freshly authenticated data with its error.
+test('last subscriber teardown fences deferred failure and remount can reload', async () => {
+  let reject!: (error: Error) => void
+  let calls = 0
+  const resource = new DesignResource(async () => ++calls === 1 ? new Promise<string>((_resolve, fail) => { reject = fail }) : 'fresh')
+  const release = resource.subscribe(() => {})
+  const old = resource.refresh(); await Promise.resolve()
+  release()
+  assert.deepEqual(resource.getSnapshot(), { loading: false })
+  const releaseNew = resource.subscribe(() => {})
+  await resource.refresh()
+  reject(new Error('old private error')); await old
+  assert.deepEqual(resource.getSnapshot(), { loading: false, data: 'fresh' })
+  releaseNew()
 })
