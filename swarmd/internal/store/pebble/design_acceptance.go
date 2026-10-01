@@ -19,12 +19,16 @@ const MaxPendingDesignRequests = 50
 func (s *Store) admitDesignRequest(p DesignPrincipal) error {
 	prefix := designKey(p, "pending", "")
 	iter, err := s.db.NewIter(&pebble.IterOptions{LowerBound: []byte(prefix), UpperBound: []byte(prefix + "\xff")})
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	defer iter.Close()
 	count := 0
 	for ok := iter.First(); ok; ok = iter.Next() {
 		count++
-		if count >= MaxPendingDesignRequests { return ErrDesignConflict }
+		if count >= MaxPendingDesignRequests {
+			return ErrDesignConflict
+		}
 	}
 	return iter.Error()
 }

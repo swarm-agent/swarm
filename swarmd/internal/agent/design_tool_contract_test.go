@@ -7,7 +7,11 @@ import "testing"
 // authority for exposure; a missing entry must not silently deny the new route.
 func TestDesignToolParentContracts(t *testing.T) {
 	for name, contract := range map[string]bool{
-		"swarm": SwarmAgentToolContract().Tools["manage_design"].Enabled != nil && *SwarmAgentToolContract().Tools["manage_design"].Enabled,
+		"swarm":        SwarmAgentToolContract().Tools["manage_design"].Enabled != nil && *SwarmAgentToolContract().Tools["manage_design"].Enabled,
 		"orchestrator": SwarmOrchestratorAgentToolContract().Tools["manage_design"].Enabled != nil && *SwarmOrchestratorAgentToolContract().Tools["manage_design"].Enabled,
-	} { if !contract { t.Fatalf("%s cannot delegate designs",name) } }
+	} {
+		if !contract {
+			t.Fatalf("%s cannot delegate designs", name)
+		}
+	}
 }

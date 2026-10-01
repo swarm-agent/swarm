@@ -4,7 +4,7 @@
 
 ## Allocation adapter
 
-`Service.AllocateDesignChild` is a trusted scheduler API, not a tool argument surface. It loads the authenticated account/principal request, uses permission-owned `AdmitExecution`, resolves the configured Designer with `agentmodel.ResolveSystemAgent`, and calls the canonical session mutation boundary. Model-resolution failure is returned explicitly without allocating a child; this adapter does not invent a model fallback.
+`Service.AllocateDesignChild` is a trusted scheduler API, not a tool argument surface. It loads the authenticated account/principal request, uses permission-owned `AdmitExecution`, resolves the configured Designer with `agentmodel.ResolveSystemAgent`, and calls the canonical session mutation boundary. If Designer resolution fails or is unavailable in the catalog, only the resolved account default may be used, with a durable `RouterAlert` in attempt/status and child metadata. If that default is unavailable, allocation fails without creating a child; no model/provider is hardcoded.
 
 `DesignAllocation` participates in the same Pebble batch as child session, run intent, events, outbox and attempt binding. Request revision CAS and deterministic account/request/candidate/attempt identity prevent racing allocations and orphan children. Parent ownership and run existence are checked under the account/session locks; parent completion does not invalidate accepted work. The child has no inherited workspace grants or writable checkout. Its durable metadata and run intent retain parent and attempt lineage.
 

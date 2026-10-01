@@ -80,7 +80,7 @@ type V3CheckpointBoundaryMutation struct {
 }
 
 type V3SessionMutationInput struct {
-	DesignAllocation *DesignAllocation `json:"-"`
+	DesignAllocation             *DesignAllocation `json:"-"`
 	DesignAcceptance             *DesignAcceptance `json:"design_acceptance,omitempty"`
 	usageScopeRepair             *pebble.Batch     // Private canonical projection repair participant.
 	automationV2                 *automationV2Mutation
@@ -773,7 +773,9 @@ func (s *SessionStore) ApplyV3SessionMutation(input V3SessionMutationInput) (V3S
 }
 
 func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput, idempotencyStoreKey string) (V3SessionMutationResult, error) {
-	if err := s.prepareDesignAllocation(&input); err != nil { return V3SessionMutationResult{}, err }
+	if err := s.prepareDesignAllocation(&input); err != nil {
+		return V3SessionMutationResult{}, err
+	}
 	if err := s.prepareAutomationV2(&input); err != nil {
 		return V3SessionMutationResult{}, err
 	}
@@ -1213,7 +1215,9 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 			return V3SessionMutationResult{}, err
 		}
 	}
-	if err := s.setDesignAllocationInBatch(batch, input); err != nil { return V3SessionMutationResult{}, err }
+	if err := s.setDesignAllocationInBatch(batch, input); err != nil {
+		return V3SessionMutationResult{}, err
+	}
 	if err := s.setDesignAcceptanceInBatch(batch, input); err != nil {
 		return V3SessionMutationResult{}, err
 	}
@@ -3409,8 +3413,10 @@ func normalizeV3SessionMutationInput(input V3SessionMutationInput) V3SessionMuta
 
 func validateV3SessionMutationInput(input V3SessionMutationInput) error {
 	if input.DesignAllocation != nil {
-		expected := NewDesignAllocationMutation(DesignPrincipal{AccountID:input.AccountScopeID,PrincipalID:input.UserID}, *input.DesignAllocation)
-		if input.Kind != expected.Kind || input.SessionID != expected.SessionID || input.ClientRequestID != expected.IdempotencyKey || input.PayloadHash != expected.PayloadHash { return ErrDesignInvalid }
+		expected := NewDesignAllocationMutation(DesignPrincipal{AccountID: input.AccountScopeID, PrincipalID: input.UserID}, *input.DesignAllocation)
+		if input.Kind != expected.Kind || input.SessionID != expected.SessionID || input.ClientRequestID != expected.IdempotencyKey || input.PayloadHash != expected.PayloadHash {
+			return ErrDesignInvalid
+		}
 	}
 	if input.Kind == V3SessionMutationCreateSession && input.Session != nil && input.Session.AutomationV2 != nil {
 		return ErrAutomationV2Conflict
