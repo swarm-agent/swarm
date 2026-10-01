@@ -5,22 +5,14 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sync"
 	"time"
 
 	"swarm/packages/swarmd/internal/appstorage"
+	"swarm/packages/swarmd/internal/privacy"
 )
 
-var (
-	appendMu sync.Mutex
-
-	secretValuePatterns = []*regexp.Regexp{
-		regexp.MustCompile(`(?i)([?&](?:key|api[_-]?key|apikey|google[_-]?api[_-]?key|x-goog-api-key|access[_-]?token|refresh[_-]?token|id[_-]?token|token)=)([^&\s"'\\]+)`),
-		regexp.MustCompile(`(?i)\b(authorization\s*[:=]\s*bearer\s+)([A-Za-z0-9._~+/=-]+)`),
-		regexp.MustCompile(`(?i)\b((?:api[_-]?key|apikey|google[_-]?api[_-]?key|x-goog-api-key|access[_-]?token|refresh[_-]?token|id[_-]?token|token)\s*[:=]\s*["']?)([^"',\s}\\]+)`),
-	}
-)
+var appendMu sync.Mutex
 
 // Printf writes an image generation diagnostic line to both the daemon log and
 // the durable image generation diagnostic file. Keep payload bytes out of the
@@ -71,10 +63,7 @@ func Append(message string) {
 }
 
 func sanitizeMessage(message string) string {
-	for _, pattern := range secretValuePatterns {
-		message = pattern.ReplaceAllString(message, `${1}[REDACTED]`)
-	}
-	return message
+	return privacy.SanitizeDiagnostic(message)
 }
 
 // Path returns the durable image generation diagnostics log path.

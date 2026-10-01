@@ -13,6 +13,7 @@ import (
 // Purpose: the Gemini REST boundary must preserve the original image prompt,
 // including whitespace, while sending model settings separately. A local HTTP
 // receiver checks the actual serialized request rather than a service-side copy.
+// Authentication must remain in headers, never credential-bearing request URLs.
 func TestGoogleGeminiImageClientGenerateImageUsesRESTGenerateContent(t *testing.T) {
 	png := testPNGBytes()
 	var gotPath string
@@ -20,7 +21,10 @@ func TestGoogleGeminiImageClientGenerateImageUsesRESTGenerateContent(t *testing.
 	var gotBody geminiGenerateContentRequest
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
-		gotKey = r.URL.Query().Get("key")
+		gotKey = r.Header.Get("x-goog-api-key")
+		if r.URL.RawQuery != "" {
+			t.Error("credential query must be absent")
+		}
 		if r.Method != http.MethodPost {
 			t.Fatalf("method = %s, want POST", r.Method)
 		}
@@ -62,7 +66,7 @@ func TestGoogleGeminiImageClientGenerateImageUsesRESTGenerateContent(t *testing.
 		t.Fatalf("path = %q, want generateContent model path", gotPath)
 	}
 	if gotKey != "test-key" {
-		t.Fatalf("api key query = %q, want test-key", gotKey)
+		t.Fatalf("api key header = %q, want test-key", gotKey)
 	}
 	if len(gotBody.Contents) != 1 || len(gotBody.Contents[0].Parts) != 1 || gotBody.Contents[0].Parts[0].Text != "  café\nmake image  " {
 		t.Fatalf("contents = %#v, want single prompt part", gotBody.Contents)
