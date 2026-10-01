@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { desktopDesigns } from '../../runtime/desktop-design-runtime'
-import { designDownloadName, designEditBody, designRefKey, designSandbox, designSelectionBody, fetchDesignView, postDesign } from '../../session-v3/design-api'
+import { designDownloadName, designEditBody, designRefKey, designSandbox, designSelectionBody, fetchDesignView, fetchDesignLiveSource, postDesign } from '../../session-v3/design-api'
 import { designMediaItem, designNodeId, designStatus } from '../../orchestrate/design-media-task'
 import { MediaTaskCard } from '../../orchestrate/media-task-card'
 import { useDesignResource, useProjectDesigns } from './design-media'
 import type { MediaLibraryItem } from './types'
+import { DeliverablePreview } from './deliverable-preview'
 
 type DesignItem = Extract<MediaLibraryItem, { source: 'independent-design' }>
 /** Source-specific controls inside MediaViewerModal. Authored HTML never enters the Desktop DOM. */
@@ -24,15 +25,17 @@ export function DesignRevisionView({ item, onSelect }: { item: DesignItem; onSel
   const [requestedKey, setRequestedKey] = useState('')
   const [download, setDownload] = useState('')
   const [retry, setRetry] = useState(0)
+  const [staticPreview, setStaticPreview] = useState(false)
   const intent = useRef<{ brief: string; key: string } | undefined>(undefined)
   const mutation = useRef<AbortController | undefined>(undefined)
   useEffect(() => () => mutation.current?.abort(), [])
   useEffect(() => {
     const controller = new AbortController()
     setContent(undefined)
-    void fetchDesignView(session, revision, controller.signal).then(value => { if (!controller.signal.aborted) setContent(value) }, cause => { if (!controller.signal.aborted) setError(String(cause)) })
+    setError('')
+    void (staticPreview ? fetchDesignView : fetchDesignLiveSource)(session, revision, controller.signal).then(value => { if (!controller.signal.aborted) setContent(value) }, cause => { if (!controller.signal.aborted) setError(String(cause)) })
     return () => controller.abort()
-  }, [session, revision, retry])
+  }, [session, revision, retry, staticPreview])
   useEffect(() => () => { if (download) URL.revokeObjectURL(download) }, [download])
   const rows = project.data?.designs.filter(row => row.request.parent_session_id === session) ?? []
   const row = rows.find(row => row.request.id === item.design.requestId)
@@ -61,8 +64,7 @@ export function DesignRevisionView({ item, onSelect }: { item: DesignItem; onSel
   }
   return <section className="w-full min-w-0 self-start space-y-3 text-white" aria-label="Design revision turns">
     <h3>Viewing revision {revision.ref.revision}</h3>
-    <p className="break-all text-xs">SHA256: {revision.ref.sha256}</p>
-    <p className="break-all text-xs">{revision.base ? `Base: ${revision.base.artifact_id} revision ${revision.base.revision} SHA256 ${revision.base.sha256}` : 'Original request'}</p>
+    <p className="text-xs">{revision.base ? `Based on revision ${revision.base.revision}` : 'Original request'}</p>
     <nav aria-label="Revision history" className="flex flex-wrap gap-2">
       {history.data?.revisions.map(next => <button key={designNodeId(session, next.ref)} aria-pressed={designRefKey(next.ref) === designRefKey(revision.ref)} onClick={() => {
         const owner = rows.find(candidate => candidate.request.id === next.request_id) ?? row
@@ -72,7 +74,8 @@ export function DesignRevisionView({ item, onSelect }: { item: DesignItem; onSel
       {history.data && history.data.revisions.length < history.data.artifact.revision_count && <button disabled={history.loading} onClick={() => void desktopDesigns.moreHistory(session, revision.ref.artifact_id)}>More history</button>}
     </nav>
     {[error, history.error, edits.error, project.error].filter(Boolean).map((value, index) => <p role="alert" key={index}>{value}</p>)}
-    {content === undefined ? <button onClick={() => setRetry(value => value + 1)}>Load / retry preview</button> : revision.kind === 'plan' ? <pre className="whitespace-pre-wrap break-words">{content}</pre> : <iframe title={`Design revision ${revision.ref.revision}`} sandbox={designSandbox} referrerPolicy="no-referrer" srcDoc={content} className="h-[50vh] w-full bg-white border-0" />}
+    {content === undefined ? <div><p role="status">{error ? 'Preview unavailable' : 'Loading preview…'}</p><button onClick={() => setRetry(value => value + 1)}>Load / retry preview</button></div> : !staticPreview || revision.kind === 'plan' ? <DeliverablePreview content={content} markdown={revision.kind === 'plan'} title={`Design revision ${revision.ref.revision}`} /> : <iframe title={`Design revision ${revision.ref.revision}`} sandbox={designSandbox} referrerPolicy="no-referrer" srcDoc={content} className="h-[50vh] w-full bg-white border-0" />}
+    {revision.kind !== 'plan' && <button onClick={() => setStaticPreview(value => !value)}>{staticPreview ? 'Show live preview' : 'Show static screenshot'}</button>}
     <p>Selected: {history.data?.artifact.selected?.revision ?? 'none'}. Browsing does not select.</p>
     <div className="flex flex-wrap gap-3"><button disabled={busy || !history.data} onClick={() => void act('select')}>Select this revision</button><button disabled={busy} onClick={() => void act('download')}>Prepare {revision.kind === 'plan' ? 'plan' : 'HTML'} download</button>{download && <a href={download} download={designDownloadName(revision)}>Download exact revision</a>}</div>
     <label className="block">Edit this exact revision ({revision.ref.revision})<textarea className="block w-full bg-slate-900 border border-white/20 p-2" value={brief} onChange={event => setBrief(event.target.value)} /></label>

@@ -64,6 +64,16 @@ func TestDesignHTTPExactBytesIsolationAndCAS(t *testing.T) {
 	if !strings.Contains(w.Body.String(), `http-equiv="Content-Security-Policy"`) || !strings.Contains(w.Body.String(), "default-src 'none'") || !strings.Contains(w.Body.String(), "script-src 'none'") {
 		t.Fatal("srcdoc lost CSP", w.Body.String())
 	}
+	// live_source is a non-executable transport of immutable bytes, not a
+	// screenshot or a mutation. Browser tests own execution/isolation proof.
+	w = post(map[string]any{"action": "live_source", "ref": ref})
+	if w.Code != 200 || w.Body.String() != content || w.Header().Get("Content-Type") != "text/plain; charset=utf-8" || !strings.Contains(w.Header().Get("Content-Disposition"), "attachment") || w.Header().Get("Content-Security-Policy") != designPreviewCSP {
+		t.Fatal("unsafe or inexact live source", w.Code, w.Header(), w.Body.String())
+	}
+	before, err := db.GetDesignArtifact(p, "design")
+	if err != nil || before.Selected != nil || before.SelectionVersion != 0 {
+		t.Fatal("preview selected revision", before, err)
+	}
 	w = post(map[string]any{"action": "download", "ref": ref})
 	if w.Code != 200 || w.Body.String() != content || !strings.Contains(w.Header().Get("Content-Disposition"), "attachment") {
 		t.Fatal(w.Code, w.Body.String())
@@ -78,7 +88,7 @@ func TestDesignHTTPExactBytesIsolationAndCAS(t *testing.T) {
 	}
 	bad := ref
 	bad.SHA256 = strings.Repeat("0", 64)
-	w = post(map[string]any{"action": "read", "ref": bad})
+	w = post(map[string]any{"action": "live_source", "ref": bad})
 	if w.Code != 409 || strings.Contains(w.Body.String(), content) {
 		t.Fatal(w.Code, w.Body.String())
 	}
@@ -92,6 +102,16 @@ func TestDesignHTTPExactBytesIsolationAndCAS(t *testing.T) {
 		if w.Code != 404 {
 			t.Fatal(w.Code, w.Body.String())
 		}
+		body, _ := json.Marshal(map[string]any{"action": "live_source", "ref": ref})
+		w = httptest.NewRecorder()
+		s.Handler().ServeHTTP(w, withAccountPrincipal(httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body)), owner[0], owner[1]))
+		if w.Code != 404 || strings.Contains(w.Body.String(), content) {
+			t.Fatal("foreign live source access", w.Code, w.Body.String())
+		}
+	}
+	retained, err := db.ReadDesignRevision(p, ref)
+	if err != nil || string(retained.Content) != content {
+		t.Fatal("preview mutated bytes", err)
 	}
 	w = post(map[string]any{"action": "edit", "ref": ref, "brief": "Make the card clearer", "idempotency_key": "edit-message"})
 	if w.Code != 200 {

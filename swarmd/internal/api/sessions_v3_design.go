@@ -174,6 +174,18 @@ func (s *Server) handleSessionV3Designs(w http.ResponseWriter, r *http.Request, 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		// Never execute authored HTML in the credential-bearing Desktop browser.
 		_, _ = io.WriteString(w, `<!doctype html><html><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'none'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"><title>Design preview</title><style>body{margin:0}img{display:block;max-width:100%;height:auto}</style><img alt="Design preview" src="data:image/png;base64,`+base64.StdEncoding.EncodeToString(data)+`"></html>`)
+	case "live_source":
+		// Exact immutable bytes, never an executable response on the authenticated
+		// daemon origin. Desktop wraps these in its nested opaque-origin preview;
+		// preview_html/preview_png remain static screenshot APIs.
+		if rev.Kind == pebblestore.DesignPlan {
+			designAPIError(w, pebblestore.ErrDesignInvalid)
+			return
+		}
+		w.Header().Set("Content-Security-Policy", designPreviewCSP)
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("Content-Disposition", `attachment; filename="design.html"`)
+		_, _ = w.Write(rev.Content)
 	case "read", "download":
 		w.Header().Set("Content-Security-Policy", designPreviewCSP)
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")

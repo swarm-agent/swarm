@@ -22,6 +22,9 @@ export function classifyMediaKind(entry: DesktopV3ArtifactCatalogEntry): Exclude
   const mediaType = (entry.mediaType || '').toLowerCase()
   const kind = (entry.kind || '').toLowerCase()
 
+  if (kind === 'markdown' || mediaType === 'text/markdown' || ext === 'md' || ext === 'markdown') return 'document'
+  if (mediaType === 'image/svg+xml' || ext === 'svg' || ext === 'html' || ext === 'htm') return 'animation'
+
   // 1. Check Audio
   if (kind === 'audio' || mediaType.startsWith('audio/') || AUDIO_EXTENSIONS.has(ext)) {
     return 'audio'

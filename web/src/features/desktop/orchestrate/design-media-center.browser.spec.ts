@@ -56,6 +56,7 @@ test('Media Center opens independent designs directly and preserves historical e
       if (url.pathname === '/v3/sessions/session/designs/artifacts/design') {
         if (route.request().method() === 'GET') return route.fulfill({ json: { artifact: { id: 'design', kind: 'html', revision_count: 3, selection_version: 4, selected: ref(2) }, revisions } })
         const body = route.request().postDataJSON(); actions.push(body)
+        if (body.action === 'live_source') return route.fulfill({ contentType: 'text/plain', body: `<button onclick="this.textContent='Clicked'">Revision ${body.ref.revision}</button>` })
         if (body.action === 'preview_html') return route.fulfill({ contentType: 'text/html', body: wrapper })
         if (body.action === 'select') return route.fulfill({ status: 409, body: 'stale selection' })
         if (body.action === 'download') return route.fulfill({ contentType: 'text/html', body: '<script>unsafe authored bytes</script>' })
@@ -84,7 +85,11 @@ test('Media Center opens independent designs directly and preserves historical e
     assert.equal(await dialog.getByRole('button', { name: 'Tag media for task' }).count(), 0)
     await dialog.getByRole('button', { name: 'Revision 1 · original', exact: true }).click()
     const preview = dialog.locator('iframe[title="Design revision 1"]'); await preview.waitFor()
-    assert.equal(await preview.getAttribute('sandbox'), '')
+    assert.equal(await preview.getAttribute('sandbox'), 'allow-scripts')
+    const live = page.frameLocator('iframe[title="Design revision 1"]').frameLocator('iframe[title="Live deliverable"]')
+    await live.getByRole('button', { name: 'Revision 1', exact: true }).click()
+    await live.getByRole('button', { name: 'Clicked', exact: true }).waitFor()
+    assert.deepEqual(actions.filter(action => action.action === 'live_source').map(action => action.ref), [ref(3), ref(1)])
     assert.equal(await page.evaluate(() => '__unsafeDesign' in window), false)
     await dialog.getByLabel('Edit this exact revision (1)').fill('Branch')
     await dialog.getByRole('button', { name: 'Request delegated edit', exact: true }).click()
@@ -100,7 +105,8 @@ test('Media Center opens independent designs directly and preserves historical e
     assert.equal(actions.filter(action => action.action === 'select').length, 1)
     await dialog.getByRole('button', { name: 'Prepare HTML download' }).click()
     await dialog.getByRole('link', { name: 'Download exact revision' }).waitFor()
-    assert.equal(await preview.getAttribute('srcdoc'), wrapper)
+    assert.notEqual(await preview.getAttribute('srcdoc'), wrapper)
+    assert.equal(await thumbnail.getAttribute('sandbox'), '')
     for (const width of [375, 1440]) {
       await page.setViewportSize({ width, height: 800 })
       const bounds = await dialog.evaluate(element => {
