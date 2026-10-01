@@ -7,7 +7,10 @@ import { mapBackendTask } from '../state/desktop-projects-state'
 import type { ProjectSummary, RunningTask } from './orchestrate-types'
 
 const project = { id: 'project-a', name: 'Project A', repoPath: '/wrong/repo' } as ProjectSummary
-const task = { id: 'task-a', title: 'Change parser', sessionId: 'origin', sourceWorkspacePath: '/repo', sourceWorkspaceId: 'workspace-a', worktreeBranch: 'agent/parser', baseBranch: 'release' } as RunningTask
+// Hydrate through production authority so controller tests receive the same required
+// status/default fields as real recovery actions, rather than an incomplete cast.
+const task = mapBackendTask({ id: 'task-a', title: 'Change parser', status: 'needs_review', session_id: 'origin',
+  source_workspace: { path: '/repo', workspace_id: 'workspace-a' }, worktree_branch: 'agent/parser', base_branch: 'release' })
 
 // Requirement: integrationFailure/repairUnavailable carry captured lineage, never
 // a project's first workspace. Pure projection is the narrowest evidence boundary.
