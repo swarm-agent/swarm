@@ -218,7 +218,7 @@ test('daily hold notification repairs worker budget once without polling', { tim
   h.runtime.acceptFrame(frame); h.runtime.acceptFrame(frame)
   await Promise.resolve(); assert.equal(h.reads.length, 2)
   const hold = { date: '2026-01-01', reason: 'daily_budget_exhausted' as const, cap_source: 'account' as const, dimension: 'tokens' as const, limit: 10, usage: 10, reset_at: Date.parse('2026-01-02T00:00:00Z') }
-  h.reads[1]({ usage: usage(), recorded: true, budget: { ...budgetStatus(), blocked: true, hold } }); await h.runtime.refresh(i)
+  h.reads[1]({ usage: usage(), recorded: true, budget: { ...budgetStatus(), blocked: true, blocked_reason: 'daily hold', hold } }); await h.runtime.refresh(i)
   assert.deepEqual(h.pages()[usageKey(i)].budget?.hold, hold)
   h.runtime.acceptFrame(frame); await Promise.resolve(); assert.equal(h.reads.length, 2)
   release()
