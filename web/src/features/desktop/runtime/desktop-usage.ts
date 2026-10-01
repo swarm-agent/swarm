@@ -99,6 +99,8 @@ export class DesktopUsageRuntime {
     const page = this.deps.pages()[usageKey(input)]
     if (!page?.budget || page.stale || page.loading || page.budget.revision !== policy.expected_revision) throw new Error('Worker budget revision is stale; reload before saving')
     if (!input.budget || input.scope.kind !== 'worker' || !Number.isSafeInteger(policy.expected_revision) || policy.expected_revision < 0 || !Number.isFinite(policy.daily_cost_limit_usd) || policy.daily_cost_limit_usd < 0 || !Number.isSafeInteger(policy.daily_tokens_limit) || policy.daily_tokens_limit < 0) throw new Error('Invalid worker budget')
+    const overall = page.budget.account_policy
+    if (overall.enabled && ((overall.daily_cost_limit_usd > 0 && policy.daily_cost_limit_usd > overall.daily_cost_limit_usd) || (overall.daily_tokens_limit && policy.daily_tokens_limit > overall.daily_tokens_limit))) throw new Error('Worker limit cannot exceed the enabled overall daily limit; change it in Usage')
     try { await this.deps.save(input.scope.id, policy); this.assertAccount(input) }
     finally { if (this.deps.account() === input.accountScopeId) this.invalidate(input.accountScopeId, input.scope.id) }
   }

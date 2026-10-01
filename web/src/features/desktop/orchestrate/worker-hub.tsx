@@ -85,9 +85,9 @@ export function WorkerDetail({ accountScopeId, workerId, workspaceSlug, onSelect
         {!readOnly && <WorkerSettingsReview key={worker.id} worker={worker} accountScopeId={accountScopeId} disabled={!!detail?.stale || !!detail?.error} onAcceptanceBlockedChange={setAcceptanceBlocked} />}
         {(worker.lifecycle_state === 'pending' || worker.pending_review) && <PendingWorkerCard acceptanceBlocked={acceptanceBlocked} showModelControls={false} key={`${worker.id}:${worker.revision}`} worker={worker} accountScopeId={accountScopeId} workspaceSlug={workspaceSlug} stale={!!detail?.stale || !!detail?.error} mutationError={detail?.mutationError} />}
       </header>
+      <WorkerBudget key={`${accountScopeId}:${workerId}`} accountScopeId={accountScopeId} workerId={workerId} disabled={readOnly || !!detail?.stale || !!detail?.error} />
       {worker.lifecycle_state !== 'pending' && <>
       <ScopeUsage input={{ accountScopeId, scope: { kind: 'worker', id: workerId } }} />
-      <WorkerBudget key={`${accountScopeId}:${workerId}`} accountScopeId={accountScopeId} workerId={workerId} disabled={readOnly || !!detail?.stale || !!detail?.error} />
       <section className={box}><h4 className="font-semibold text-white">Now</h4>
         {summaryPage?.error && <p role="alert">Activity unavailable: {summaryPage.error}</p>}
         {summaryPage?.stale && summary && <p className="text-amber-300">Activity is refreshing; these are last-known results.</p>}

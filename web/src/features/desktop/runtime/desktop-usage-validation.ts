@@ -24,6 +24,10 @@ export function validWorkerBudget(b: WorkerBudgetStatus, input: UsageInput): boo
     || typeof b.limitations !== 'string' || !['no_records', 'observed_receipts_only', 'legacy_pricing_incomplete'].includes(b.account_coverage)) return false
   if ((b.daily_cost_limit_usd === 0) !== (b.remaining_cost_usd === null) || (b.daily_tokens_limit === 0) !== (b.remaining_tokens === null)) return false
   if (![b.remaining_cost_usd, b.account_remaining_cost_usd].every(v => v === null || amount(v)) || ![b.remaining_tokens, b.account_remaining_tokens].every(v => v === null || integer(v))) return false
+  if (b.reset_at !== undefined && !integer(b.reset_at)) return false
+  if ([b.effective_cost_limit_usd, b.effective_tokens_limit].some(v => v !== undefined && v !== null && !amount(v))) return false
+  const h = b.hold
+  if (h && (h.date !== b.date || h.reason !== 'daily_budget_exhausted' || !['worker', 'account'].includes(h.cap_source) || !['usd', 'tokens'].includes(h.dimension) || !amount(h.limit) || h.limit <= 0 || !amount(h.usage) || h.usage < h.limit || !integer(h.reset_at) || !b.blocked)) return false
   const p = b.account_policy, u = b.account_usage
   if (!p || (b.account_remaining_cost_usd === null) !== (!p.enabled || p.daily_cost_limit_usd === 0) || (b.account_remaining_tokens === null) !== (!p.enabled || !p.daily_tokens_limit)) return false
   return !!p && p.account_scope_id === input.accountScopeId && typeof p.enabled === 'boolean' && amount(p.daily_cost_limit_usd) && (p.daily_tokens_limit === undefined || integer(p.daily_tokens_limit)) && integer(p.updated_at)

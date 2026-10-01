@@ -155,3 +155,50 @@ test('no records accepts only an empty snapshot and keeps recorded false', { tim
   assert.equal(h.pages()[usageKey(input)].stale, true)
   release()
 })
+
+// Purpose: DesktopUsageRuntime.save must reject worker limits above the enabled
+// overall ceiling without issuing a PUT. The runtime layer proves zero writes,
+// including token ceilings and account-policy disabled/unset cases; backend CAS
+// remains the final authority if the account limit changes after hydration.
+test('overall ceiling rejects excessive dollar and token writes without mutation', { timeout: 2000 }, async () => {
+  for (const patch of [{ daily_cost_limit_usd: 4, daily_tokens_limit: 0 }, { daily_cost_limit_usd: 2, daily_tokens_limit: 101 }]) {
+    const h = harness(), i = { ...input, budget: true }, release = h.runtime.acquire(i)
+    await Promise.resolve()
+    const budget = { ...budgetStatus(), account_policy: { ...budgetStatus().account_policy, enabled: true, daily_cost_limit_usd: 3, daily_tokens_limit: 100 }, account_remaining_cost_usd: 2, account_remaining_tokens: 90 }
+    h.reads[0]({ usage: usage(), recorded: true, budget }); await h.runtime.refresh(i)
+    await assert.rejects(h.runtime.save(i, { expected_revision: 2, ...patch }), /cannot exceed/)
+    assert.equal(h.saves(), 0)
+    assert.equal(h.pages()[usageKey(i)].budget?.revision, 2)
+    release()
+  }
+  for (const enabled of [false, true]) {
+    const h = harness(), i = { ...input, budget: true }, release = h.runtime.acquire(i)
+    await Promise.resolve()
+    h.reads[0]({ usage: usage(), recorded: true, budget: { ...budgetStatus(), account_policy: { ...budgetStatus().account_policy, enabled } } }); await h.runtime.refresh(i)
+    await h.runtime.save(i, { expected_revision: 2, daily_cost_limit_usd: 5, daily_tokens_limit: 900 })
+    assert.equal(h.saves(), 1)
+    release()
+  }
+})
+
+// Purpose: validWorkerBudget owns structured safety-status validation. A foreign
+// day, malformed source or non-exhausted hold must not publish a stopped state
+// or authorize saves. Refresh is the narrowest real cache boundary for this.
+test('structured holds validate before publishing stopped state', { timeout: 2000 }, async () => {
+  const hold = { date: '2026-01-01', reason: 'daily_budget_exhausted' as const, cap_source: 'worker' as const, dimension: 'usd' as const, limit: 2, usage: 2, reset_at: Date.parse('2026-01-02T00:00:00Z') }
+  for (const invalid of [undefined, { ...hold, date: '2025-12-31' }, { ...hold, usage: 1 }, { ...hold, cap_source: 'foreign' }, { ...hold, reset_at: -1 }]) {
+    const h = harness(), i = { ...input, budget: true }, release = h.runtime.acquire(i)
+    await Promise.resolve()
+    const budget = { ...budgetStatus(), blocked: true, blocked_reason: 'daily hold', hold: invalid || hold }
+    h.reads[0]({ usage: usage(), recorded: true, budget: budget as WorkerBudgetStatus }); await h.runtime.refresh(i)
+    if (invalid) {
+      assert.ok(h.pages()[usageKey(i)].error)
+      assert.equal(h.pages()[usageKey(i)].budget, undefined)
+      await assert.rejects(h.runtime.save(i, { expected_revision: 2, daily_cost_limit_usd: 0, daily_tokens_limit: 0 }), /stale/)
+      assert.equal(h.saves(), 0)
+    } else {
+      assert.deepEqual(h.pages()[usageKey(i)].budget?.hold, hold)
+    }
+    release()
+  }
+})

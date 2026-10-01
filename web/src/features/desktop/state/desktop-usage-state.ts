@@ -1,5 +1,12 @@
-import type { UsageScope, UsageScopeTotal, WorkerBudgetStatus } from '../../../../../packages/sdk/src/usage'
-export type { UsageScope, UsageScopeTotal, WorkerBudgetStatus, WorkerBudgetUpdate } from '../../../../../packages/sdk/src/usage'
+import type { UsageScope, UsageScopeTotal, WorkerBudgetStatus as SDKWorkerBudgetStatus } from '../../../../../packages/sdk/src/usage'
+export type { UsageScope, UsageScopeTotal, WorkerBudgetUpdate } from '../../../../../packages/sdk/src/usage'
+// Backend worker_budget_status.go owns these additive UTC-day safety fields.
+export interface WorkerBudgetStatus extends SDKWorkerBudgetStatus {
+  reset_at?: number
+  effective_cost_limit_usd?: number | null
+  effective_tokens_limit?: number | null
+  hold?: { date: string; reason: 'daily_budget_exhausted'; cap_source: 'worker' | 'account'; dimension: 'usd' | 'tokens'; limit: number; usage: number; reset_at: number }
+}
 export interface UsageInput { accountScopeId: string; scope: UsageScope; budget?: boolean }
 export interface UsagePage { input: UsageInput; loading: boolean; stale: boolean; generation: number; requestId?: string; usage?: UsageScopeTotal; recorded?: boolean; budget?: WorkerBudgetStatus; error?: string }
 export type UsagePages = Record<string, UsagePage>
