@@ -22,7 +22,7 @@ const widths = [360, 390, 639, 640, 641, 768, 820, 1024, 1099, 1100, 1101, 1279,
 const destinations = [
   ['', 'Tasks and Canvas'], ['projects', 'Projects'], ['workers', 'Workers'],
   ['deliverables', 'Deliverables'], ['media', 'Media Studio and Library'],
-  ['charter', 'Project Charter'], ['agents', 'Agents'], ['settings', 'Settings'], ['help', 'Orchestrate tips'],
+  ['charter', 'Project Charter'], ['agents', 'Agents'], ['settings', 'Settings'],
 ] as const
 
 // Compilation is shared, but every scenario gets a fresh browser page/cache/store.
