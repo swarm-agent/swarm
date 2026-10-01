@@ -47,6 +47,7 @@ func TestDesignHTTPExactBytesIsolationAndCAS(t *testing.T) {
 	}
 	w := post(map[string]any{"action": "preview_html", "ref": ref})
 	if w.Code != 200 || !strings.Contains(w.Body.String(), "data:image/png;base64,") || strings.Contains(w.Body.String(), content) || !strings.Contains(w.Header().Get("Content-Security-Policy"), "sandbox;") || strings.Contains(w.Header().Get("Content-Security-Policy"), "allow-same-origin") || w.Header().Get("Cache-Control") != "no-store" { t.Fatal(w.Code, w.Header(), w.Body.String()) }
+	if !strings.Contains(w.Body.String(), `http-equiv="Content-Security-Policy"`) || !strings.Contains(w.Body.String(), "default-src 'none'") || !strings.Contains(w.Body.String(), "script-src 'none'") { t.Fatal("srcdoc lost CSP", w.Body.String()) }
 	w = post(map[string]any{"action": "download", "ref": ref})
 	if w.Code != 200 || w.Body.String() != content || !strings.Contains(w.Header().Get("Content-Disposition"), "attachment") { t.Fatal(w.Code, w.Body.String()) }
 	w = post(map[string]any{"action": "select", "ref": ref, "idempotency_key": "first", "expected_version": 0, "expected_current": nil})
@@ -66,7 +67,7 @@ func TestDesignHTTPExactBytesIsolationAndCAS(t *testing.T) {
 	w = post(map[string]any{"action": "edit", "ref": ref, "brief": "Make the card clearer", "idempotency_key": "edit-message"})
 	if w.Code != 200 { t.Fatal("canonical edit message", w.Code, w.Body.String()) }
 	// Accepted user intent is not falsely reported as an admitted design request.
-	requests, err := db.ListSessionDesignRequests(p, "artifact-v3-api", "", 20)
+	requests, _, err := db.ListSessionDesignRequests(p, "artifact-v3-api", "", 20)
 	if err != nil || len(requests) != 1 { t.Fatal("edit bypassed parent admission", requests, err) }
 	messages := httptest.NewRecorder()
 	s.Handler().ServeHTTP(messages, withTestPrincipal(httptest.NewRequest(http.MethodGet, "/v3/sessions/artifact-v3-api/messages", nil)))
@@ -78,4 +79,55 @@ func TestDesignHTTPExactBytesIsolationAndCAS(t *testing.T) {
 	w = httptest.NewRecorder()
 	s.Handler().ServeHTTP(w, withTestPrincipal(httptest.NewRequest(http.MethodGet, "/v3/sessions/artifact-v3-api/designs", nil)))
 	if w.Code != 200 || strings.Contains(w.Body.String(), "private brief") || !strings.Contains(w.Body.String(), "request") { t.Fatal(w.Code, w.Body.String()) }
+}
+
+// Purpose: registered catalog/download routes must expose newest admissions and
+// true continuation, never briefs, and deleted sessions must lose access despite
+// retained independent design bytes. Real handler/store tests prove transport and
+// canonical tombstone authorization without relying on nonexistent snapshot flags.
+func TestDesignHTTPCatalogPlanDownloadAndDeletedSession(t *testing.T) {
+	s, _ := newArtifactV3APITestServer(t)
+	db := s.sessions.DesignStore()
+	p := pebblestore.DesignPrincipal{AccountID: "account-1", PrincipalID: "user-1"}
+	var newest pebblestore.DesignRequest
+	for i := 0; i < 21; i++ {
+		id := fmt.Sprintf("request-%02d", 21-i)
+		r, err := db.SubmitDesignRequest(p, pebblestore.DesignSubmit{RequestID: id, IdempotencyKey: id, ParentSessionID: "artifact-v3-api", ParentRunID: "parent-run", Candidates: []pebblestore.DesignCandidateSpec{{ArtifactID: id, Kind: pebblestore.DesignPlan, Operation: pebblestore.DesignGenerate, Brief: "secret source brief"}}})
+		if err != nil { t.Fatal(err) }
+		newest = r
+	}
+	get := func(path string) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		s.Handler().ServeHTTP(w, withTestPrincipal(httptest.NewRequest(http.MethodGet, path, nil)))
+		return w
+	}
+	path := "/v3/sessions/artifact-v3-api/designs"
+	w := get(path)
+	var page struct { Requests []pebblestore.DesignRequest `json:"requests"`; Next string `json:"next_cursor"` }
+	if err := json.Unmarshal(w.Body.Bytes(), &page); err != nil { t.Fatal(err) }
+	if w.Code != 200 || len(page.Requests) != 20 || page.Requests[0].ID != newest.ID || page.Next == "" || page.Next == page.Requests[19].ID || strings.Contains(w.Body.String(), "secret source brief") { t.Fatal(w.Code, w.Body.String()) }
+	w = get(path+"?after="+page.Next)
+	if err := json.Unmarshal(w.Body.Bytes(), &page); err != nil { t.Fatal(err) }
+	if w.Code != 200 || len(page.Requests) != 1 || page.Next != "" || page.Requests[0].ID != "request-21" { t.Fatal(w.Code, w.Body.String()) }
+	r, err := db.RecordDesignAttempt(p, newest.ID, pebblestore.DesignAttemptMutation{IdempotencyKey: "start", ExpectedRevision: newest.Revision, State: pebblestore.DesignRunning, ChildSessionID: "child", RunID: "child-run"})
+	if err != nil { t.Fatal(err) }
+	r, err = db.PublishDesignRevision(p, r.ID, pebblestore.DesignPublication{IdempotencyKey: "publish", ExpectedRevision: r.Revision, ChildSessionID: "child", RunID: "child-run", Kind: pebblestore.DesignPlan, Content: []byte("A plain design plan")})
+	if err != nil { t.Fatal(err) }
+	ref := *r.Candidates[0].Attempts[0].Result
+	artifactPath := path+"/artifacts/"+ref.ArtifactID
+	post := func(action string) *httptest.ResponseRecorder {
+		body, _ := json.Marshal(map[string]any{"action": action, "ref": ref})
+		w := httptest.NewRecorder()
+		s.Handler().ServeHTTP(w, withTestPrincipal(httptest.NewRequest(http.MethodPost, artifactPath, bytes.NewReader(body))))
+		return w
+	}
+	w = post("download")
+	if w.Code != 200 || w.Header().Get("Content-Disposition") != `attachment; filename="design.txt"` || w.Body.String() != "A plain design plan" { t.Fatal(w.Code, w.Header(), w.Body.String()) }
+	if err := s.sessions.Store().DeleteSession("artifact-v3-api"); err != nil { t.Fatal(err) }
+	tombstone, found, err := s.sessions.Store().GetV3SessionTombstone("artifact-v3-api")
+	if err != nil || !found || !tombstone.Deleted { t.Fatal("deletion not durable", tombstone, err) }
+	for _, w := range []*httptest.ResponseRecorder{get(path), get(artifactPath), post("read"), post("download")} {
+		if w.Code != 404 || strings.Contains(w.Body.String(), "A plain design plan") { t.Fatal("deleted session accessible", w.Code, w.Body.String()) }
+	}
+	if _, err := db.ReadDesignRevision(p, ref); err != nil { t.Fatal("test must exercise retained independent bytes", err) }
 }

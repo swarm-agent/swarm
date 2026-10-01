@@ -48,10 +48,8 @@ func (s *Server) handleSessionV3Designs(w http.ResponseWriter, r *http.Request, 
 		limit := 20
 		if v := r.URL.Query().Get("limit"); v != "" { limit, err = strconv.Atoi(v) }
 		if err != nil { designAPIError(w, pebblestore.ErrDesignInvalid); return }
-		rows, err := db.ListSessionDesignRequests(p, sessionID, r.URL.Query().Get("after"), limit)
+		rows, cursor, err := db.ListSessionDesignRequests(p, sessionID, r.URL.Query().Get("after"), limit)
 		if err != nil { designAPIError(w, err); return }
-		cursor := ""
-		if len(rows) == limit { cursor = rows[len(rows)-1].ID }
 		writeJSON(w, http.StatusOK, map[string]any{"requests": rows, "next_cursor": cursor}); return
 	}
 	parts := strings.Split(tail, "/")
@@ -102,11 +100,15 @@ func (s *Server) handleSessionV3Designs(w http.ResponseWriter, r *http.Request, 
 		w.Header().Set("Content-Security-Policy", designPreviewCSP)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		// Never execute authored HTML in the credential-bearing Desktop browser.
-		_, _ = io.WriteString(w, `<!doctype html><html><meta charset="utf-8"><title>Design preview</title><style>body{margin:0}img{display:block;max-width:100%;height:auto}</style><img alt="Design preview" src="data:image/png;base64,`+base64.StdEncoding.EncodeToString(data)+`"></html>`)
+		_, _ = io.WriteString(w, `<!doctype html><html><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'none'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"><title>Design preview</title><style>body{margin:0}img{display:block;max-width:100%;height:auto}</style><img alt="Design preview" src="data:image/png;base64,`+base64.StdEncoding.EncodeToString(data)+`"></html>`)
 	case "read", "download":
 		w.Header().Set("Content-Security-Policy", designPreviewCSP)
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		if in.Action == "download" { w.Header().Set("Content-Disposition", `attachment; filename="design.html"`) }
+		if in.Action == "download" {
+			filename := "design.html"
+			if rev.Kind == pebblestore.DesignPlan { filename = "design.txt" }
+			w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
+		}
 		_, _ = w.Write(rev.Content)
 	case "edit":
 		if strings.TrimSpace(in.Brief) == "" || len(in.Brief) > 65536 || !utf8.ValidString(in.Brief) || in.IdempotencyKey == "" { designAPIError(w, pebblestore.ErrDesignInvalid); return }

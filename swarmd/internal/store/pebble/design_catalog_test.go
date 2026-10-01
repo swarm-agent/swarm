@@ -41,7 +41,7 @@ func TestDesignCatalogDurableSelectionAndIsolation(t *testing.T) {
 	after, err := ss.ListV3SessionEvents("parent", 0, 50)
 	if err != nil || len(before) != len(after) { t.Fatal("failed CAS emitted event", err) }
 	for _, owner := range []DesignPrincipal{{AccountID: "foreign", PrincipalID: p.PrincipalID}, {AccountID: p.AccountID, PrincipalID: "foreign"}} {
-		rows, err := s.ListSessionDesignRequests(owner, "parent", "", 5)
+		rows, _, err := s.ListSessionDesignRequests(owner, "parent", "", 5)
 		if err != nil || len(rows) != 0 { t.Fatal("foreign catalog", rows, err) }
 		if _, err := s.ReadDesignRevision(owner, first); !errors.Is(err, ErrDesignNotFound) { t.Fatal(err) }
 	}
@@ -54,10 +54,10 @@ func TestDesignCatalogDurableSelectionAndIsolation(t *testing.T) {
 	if err := s.Close(); err != nil { t.Fatal(err) }
 	s, err = Open(path)
 	if err != nil { t.Fatal(err) }
-	rows, err := s.ListSessionDesignRequests(p, "parent", "", 2)
+	rows, cursor, err := s.ListSessionDesignRequests(p, "parent", "", 2)
 	if err != nil || len(rows) != 2 || rows[0].Candidates[0].Spec.Brief != "" { t.Fatal(rows, err) }
-	last, err := s.ListSessionDesignRequests(p, "parent", rows[1].ID, 2)
-	if err != nil || len(last) != 1 { t.Fatal(last, err) }
+	last, next, err := s.ListSessionDesignRequests(p, "parent", cursor, 2)
+	if err != nil || len(last) != 1 || next != "" { t.Fatal(last, err) }
 	history, err := s.DesignHistory(p, first.ArtifactID, 0, 5)
 	if err != nil || len(history) != 3 || history[1].Base == nil || *history[1].Base != first || history[0].Content != nil { t.Fatal(history, err) }
 	old, err := s.ReadDesignRevision(p, first)

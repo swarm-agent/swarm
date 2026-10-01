@@ -450,7 +450,7 @@ func (s *Store) submitDesignRequestInBatch(p DesignPrincipal, in DesignSubmit, b
 	if err := designSet(b, designKey(p, "request", r.ID), r); err != nil {
 		return zero, err
 	}
-	if err := designSet(b, designKey(p, "session", r.ParentSessionID+"/"+r.ID), r.ID); err != nil { return zero, err }
+	if err := s.setDesignCatalogAdmission(p, r, b); err != nil { return zero, err }
 	if err := designSet(b, designKey(p, "context", r.ID), in.Context); err != nil {
 		return zero, err
 	}

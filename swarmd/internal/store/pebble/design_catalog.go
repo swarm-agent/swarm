@@ -1,34 +1,64 @@
 package pebblestore
 
 import (
+	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/cockroachdb/pebble"
 )
 
-// ListSessionDesignRequests uses the durable session index, including terminal
-// requests. The caller must authorize the canonical session before discovery.
-func (s *Store) ListSessionDesignRequests(p DesignPrincipal, sessionID, after string, limit int) ([]DesignRequest, error) {
-	if designOwner(p) != nil || !designID(sessionID) || (after != "" && !designID(after)) || limit < 1 || limit > MaxDesignHistoryPage {
-		return nil, ErrDesignInvalid
+// setDesignCatalogAdmission runs under designMu, including the enclosing commit.
+// A durable counter orders admissions even when clocks tie or move backwards.
+func (s *Store) setDesignCatalogAdmission(p DesignPrincipal, r DesignRequest, b *pebble.Batch) error {
+	counter := designKey(p, "session-order", r.ParentSessionID)
+	var seq uint64
+	if err := s.designGet(counter, &seq); err != nil && !errors.Is(err, ErrDesignNotFound) { return err }
+	if seq == ^uint64(0) { return ErrDesignConflict }
+	seq++
+	if err := designSet(b, counter, seq); err != nil { return err }
+	return designSet(b, designKey(p, "session-catalog", fmt.Sprintf("%s/%020d", r.ParentSessionID, seq)), r.ID)
+}
+
+// ListSessionDesignRequests returns newest admissions first, including terminal
+// requests. The caller authorizes the session and echoes the opaque cursor only.
+// At most limit+1 index entries are visited; no historical store scan is used.
+func (s *Store) ListSessionDesignRequests(p DesignPrincipal, sessionID, after string, limit int) ([]DesignRequest, string, error) {
+	if designOwner(p) != nil || !designID(sessionID) || limit < 1 || limit > MaxDesignHistoryPage {
+		return nil, "", ErrDesignInvalid
 	}
-	prefix := designKey(p, "session", sessionID+"/")
+	prefix := designKey(p, "session-catalog", sessionID+"/")
+	seek := prefix + "\xff"
+	if after != "" {
+		if len(after) > 4096 { return nil, "", ErrDesignInvalid }
+		decoded, err := base64.RawURLEncoding.DecodeString(after)
+		if err != nil || !strings.HasPrefix(string(decoded), prefix) || len(decoded) != len(prefix)+20 { return nil, "", ErrDesignInvalid }
+		seek = string(decoded)
+		for _, c := range seek[len(prefix):] { if c < '0' || c > '9' { return nil, "", ErrDesignInvalid } }
+	}
 	iter, err := s.db.NewIter(&pebble.IterOptions{LowerBound: []byte(prefix), UpperBound: []byte(prefix + "\xff")})
-	if err != nil { return nil, err }
+	if err != nil { return nil, "", err }
 	defer iter.Close()
 	rows := make([]DesignRequest, 0, limit)
-	for ok := iter.SeekGE([]byte(prefix+after)); ok && len(rows) < limit; ok = iter.Next() {
-		id := strings.TrimPrefix(string(iter.Key()), prefix)
-		if id == after { continue }
+	last := ""
+	ok := iter.SeekLT([]byte(seek))
+	for ; ok && len(rows) < limit; ok = iter.Prev() {
+		var id string
+		if err := json.Unmarshal(iter.Value(), &id); err != nil { return nil, "", err }
 		r, err := s.GetDesignRequest(p, id)
-		if err != nil { return nil, err }
-		if r.ParentSessionID != sessionID { return nil, ErrDesignConflict }
+		if err != nil { return nil, "", err }
+		if r.ParentSessionID != sessionID { return nil, "", ErrDesignConflict }
 		// Briefs and context are inputs, not catalog metadata.
 		for i := range r.Candidates { r.Candidates[i].Spec.Brief = "" }
 		rows = append(rows, r)
+		last = string(iter.Key())
 	}
-	return rows, iter.Error()
+	if err := iter.Error(); err != nil { return nil, "", err }
+	cursor := ""
+	if ok { cursor = base64.RawURLEncoding.EncodeToString([]byte(last)) }
+	return rows, cursor, nil
 }
 
 // RequireDesignArtifactSession binds even historical refs to their originating
