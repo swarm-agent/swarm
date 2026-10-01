@@ -6,12 +6,14 @@ mkdir -p "$config"
 if [[ ! -e "$config/login-secret" ]]; then
   openssl rand -hex 32 > "$config/login-secret"
 fi
-if [[ ! -e "$config/tls.key" && ! -e "$config/tls.crt" ]]; then
-  openssl req -x509 -newkey rsa:3072 -nodes -days 365 \
-    -subj '/CN=Swarm Local Workshop' -addext 'subjectAltName=IP:127.0.0.1' \
-    -keyout "$config/tls.key" -out "$config/tls.crt" >/dev/null 2>&1
+# Loopback HTTP needs no certificate or trust-store setup. Explicit HTTPS uses
+# operator-provided certificates; never silently generate an untrusted one.
+if [[ "${APP_ORIGIN:-http://127.0.0.1:8443}" == https:* ]]; then
+  [[ -s "$config/tls.key" && -s "$config/tls.crt" ]] || {
+    echo 'Explicit HTTPS requires a trusted certificate and key in the config volume.' >&2; exit 1;
+  }
 fi
-[[ -s "$config/tls.key" && -s "$config/tls.crt" && -s "$config/login-secret" ]] || {
+[[ -s "$config/login-secret" ]] || {
   echo 'Installation files incomplete; restore the config volume.' >&2; exit 1;
 }
 # Separate process groups let shutdown stop each child and its descendants.

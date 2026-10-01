@@ -27,15 +27,16 @@ docker run -d --name swarm-workshop --restart=no --stop-timeout=15 \
   -v workshop-project:/project swarm-workshop:local
 </copy>
 
-Open **https://127.0.0.1:8443** (not localhost). A per-install self-signed TLS
-certificate is generated for loopback so the app can use a **Secure**, HttpOnly,
-SameSite=Strict cookie. Inspect its SHA-256 fingerprint before accepting the local
-certificate warning. No public certificate authority or external listener is needed.
+Open **http://127.0.0.1:8443** (not HTTPS or localhost). The default is loopback-only
+HTTP: no certificate warning, browser bypass, or trust-store installation. Traffic
+stays on this machine; this is not a transport for LAN or remote access. Browsers
+may label HTTP as “Not secure”; no certificate interstitial is involved.
+The host-only login cookie remains HttpOnly and SameSite=Strict, with exact
+Host/Origin checks and a separate CSRF token for privileged requests.
 The following explicit secret read is for the operator's terminal only: do not
 paste it into chat, screenshots, issues or logs.
 
-<copy label="Inspect certificate and retrieve local login secret">
-docker exec swarm-workshop openssl x509 -in /etc/swarmd/headless-app/tls.crt -noout -fingerprint -sha256
+<copy label="Retrieve local login secret">
 docker exec swarm-workshop cat /etc/swarmd/headless-app/login-secret
 </copy>
 
@@ -75,7 +76,7 @@ docker rm swarm-workshop
 </copy>
 
 Repeat the same `docker run` command with the **same five named volumes**. Owner,
-provider credentials, settings, workspaces, sessions, TLS certificate and login
+provider credentials, settings, workspaces, sessions and login
 secret persist. Browser sessions are memory-only and require unlocking after a
 restart/reload. Never remove these volumes unless intentionally destroying the
 installation. Back up them together while stopped. The data volume contains the
@@ -88,8 +89,14 @@ container or export/mount that socket. It is not an SDK access volume.
   publishing, host networking, Docker socket mounts, or workstation source mounts.
   The BFF must listen on the container interface for Docker NAT; the daemon's
   existing session-only container listener is unchanged and not enabled here.
+- HTTP is permitted only with an exact IPv4 loopback origin. Never publish it to
+  a LAN/public interface. Optional explicit `APP_ORIGIN=https://127.0.0.1:8443`
+  requires a trusted `tls.key`/`tls.crt` in the config volume; certificates are
+  never generated automatically. HTTPS keeps the Secure `__Host-` cookie.
 - Exact Host/Origin and CSRF checks apply to every POST, including streaming.
   All browser WebSocket upgrades are rejected. Static GETs do not expose state.
+  External links may open only the public `/` login shell as a top-level document;
+  cross-site embedded pages, subresources and API requests remain rejected.
   Credentials never go to browser storage; user-provided API keys are cleared
   immediately after submission. SDK exception bodies are not reflected or logged.
 - 64 KiB request bodies, 8 app logins, 2 streams per login, 16 concurrent requests,

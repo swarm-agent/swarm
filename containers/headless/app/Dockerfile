@@ -22,7 +22,7 @@ COPY --from=sdk /usr/local/bin/node /usr/local/bin/node
 COPY --from=sdk /src/packages/sdk /opt/workshop/packages/sdk
 COPY --from=sdk /src/examples/headless-app /opt/workshop/examples/headless-app
 COPY containers/headless/app/entrypoint.sh /usr/local/share/swarm/app-entrypoint.sh
-ENV APP_ORIGIN=https://127.0.0.1:8443 SWARM_DISABLE_MINT_REPORT=1
+ENV APP_ORIGIN=http://127.0.0.1:8443 SWARM_DISABLE_MINT_REPORT=1
 USER 10001:10001
 WORKDIR /project
 EXPOSE 8443

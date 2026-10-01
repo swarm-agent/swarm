@@ -1,4 +1,5 @@
-import { createServer } from 'node:https';
+import { createServer as createHTTPS } from 'node:https';
+import { createServer as createHTTP } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { SwarmClient } from '@swarm/sdk';
@@ -31,13 +32,13 @@ export function appHandler(sdk, { origin, secret, project = '/project' }) {
       const b = await body(req);
       if (url.pathname === '/login') {
         const { id, session } = boundary.login(b.secret);
-        res.setHeader('Set-Cookie', `__Host-swapp=${id}; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=28800`);
+        res.setHeader('Set-Cookie', boundary.cookie(id));
         json(res, 200, { csrf: session.csrf }); return;
       }
       const auth = boundary.authenticate(req);
       if (url.pathname === '/logout') {
         boundary.logout(auth);
-        res.setHeader('Set-Cookie', '__Host-swapp=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0');
+        res.setHeader('Set-Cookie', boundary.cookie('', 0));
         json(res, 200, { ok: true }); return;
       }
       if (url.pathname === '/watch') {
@@ -81,8 +82,11 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     const sdk = new SwarmClient({ socketPath: '/var/lib/swarmd/local-transport/api.sock', timeoutMs: 30_000 });
     // Only private local-transport identity; never inherit an injected SDK token.
     sdk.setToken('');
-    const server = createServer({ key: await readFile(`${config}/tls.key`), cert: await readFile(`${config}/tls.crt`), maxHeaderSize: 8192 },
-      appHandler(sdk, { origin: process.env.APP_ORIGIN || 'https://127.0.0.1:8443', secret }));
+    const origin = process.env.APP_ORIGIN || 'http://127.0.0.1:8443';
+    const handler = appHandler(sdk, { origin, secret }); // Validate before listening.
+    const server = origin.startsWith('https:')
+      ? createHTTPS({ key: await readFile(`${config}/tls.key`), cert: await readFile(`${config}/tls.crt`), maxHeaderSize: 8192 }, handler)
+      : createHTTP({ maxHeaderSize: 8192 }, handler);
     server.requestTimeout = 35_000; server.headersTimeout = 10_000; server.maxConnections = 32;
     // No browser WebSocket proxy: only CSRF-protected POST streaming is supported.
     server.on('upgrade', (_req, socket) => socket.destroy());
