@@ -15,6 +15,7 @@ import (
 // There is intentionally no output, source-content, account or child identity input.
 // Source hydration and execution are separate trusted adapters, not model tools.
 type designToolArgs struct {
+	Files            []DesignFileReference `json:"files,omitempty"`
 	Action           string                            `json:"action"`
 	IdempotencyKey   string                            `json:"idempotency_key,omitempty"`
 	Candidates       []pebblestore.DesignCandidateSpec `json:"candidates,omitempty"`
@@ -33,7 +34,7 @@ type designToolArgs struct {
 func parseDesignToolArgs(args map[string]any) (designToolArgs, error) {
 	var in designToolArgs
 	allowed := map[string]string{
-		"submit":  " action idempotency_key candidates ",
+		"submit":  " action idempotency_key candidates files ",
 		"status":  " action request_id ",
 		"history": " action artifact_id after limit ",
 		"read":    " action ref max_bytes ",
@@ -116,7 +117,11 @@ func (r *Runtime) executeManageDesign(ctx context.Context, scope WorkspaceScope,
 				c.ArtifactID = designStableID(id, fmt.Sprint(i))
 			}
 		}
-		submit := pebblestore.DesignSubmit{RequestID: id, IdempotencyKey: id, ParentSessionID: scope.SessionID, ParentRunID: run.RunID, Candidates: in.Candidates}
+		snapshots, sourceErr := hydrateDesignSources(ctx, scope, in.Files)
+		if sourceErr != nil {
+			return "", sourceErr
+		}
+		submit := pebblestore.DesignSubmit{RequestID: id, IdempotencyKey: id, ParentSessionID: scope.SessionID, ParentRunID: run.RunID, Candidates: in.Candidates, Context: snapshots}
 		_, err = r.sessions.ApplySessionMutation(pebblestore.V3SessionMutationInput{SessionID: scope.SessionID, UserID: p.PrincipalID, AccountScopeID: p.AccountID, Kind: pebblestore.V3SessionMutationAcceptDesign, EventType: "design.accepted", IdempotencyKey: id, ClientRequestID: id, PayloadHash: pebblestore.DesignAcceptanceHash(submit), DesignAcceptance: &pebblestore.DesignAcceptance{Submit: submit}})
 		if err == nil {
 			result, err = s.GetDesignRequest(p, id)
@@ -187,6 +192,7 @@ func manageDesignDefinition() Definition {
 	str := func() map[string]any { return map[string]any{"type": "string"} }
 	integer := func() map[string]any { return map[string]any{"type": "integer", "minimum": 0} }
 	ref := map[string]any{"type": "object", "additionalProperties": false, "required": []string{"artifact_id", "revision", "sha256"}, "properties": map[string]any{"artifact_id": str(), "revision": integer(), "sha256": str()}}
-	candidate := map[string]any{"type": "object", "additionalProperties": false, "required": []string{"kind", "operation", "brief"}, "properties": map[string]any{"artifact_id": str(), "kind": map[string]any{"type": "string", "enum": []string{"html", "plan"}}, "operation": map[string]any{"type": "string", "enum": []string{"generate", "edit"}}, "brief": str(), "base": ref}}
-	return Definition{Type: "function", Name: "manage_design", Description: "Queue a delegated Designer request: one design or an explicit batch of 1–8 HTML/plan candidates. Generation omits artifact_id; edits require artifact_id and exact base. Requests currently remain queued awaiting the execution adapter. No authored output input. Plans never execute automatically. status/history omit bytes; read is bounded to 64 KiB. cancel targets one candidate with request revision CAS. select uses exact expected_current and expected_version. Existing Artifact V3 operations remain separate.", Parameters: map[string]any{"type": "object", "additionalProperties": false, "required": []string{"action"}, "properties": map[string]any{"action": map[string]any{"type": "string", "enum": []string{"submit", "status", "history", "read", "select", "cancel"}}, "idempotency_key": str(), "candidates": map[string]any{"type": "array", "minItems": 1, "maxItems": 8, "items": candidate}, "request_id": str(), "artifact_id": str(), "ref": ref, "expected_current": map[string]any{"anyOf": []any{ref, map[string]any{"type": "null"}}}, "expected_version": integer(), "expected_revision": integer(), "candidate": integer(), "after": integer(), "limit": integer(), "max_bytes": integer()}}}
+	candidate := map[string]any{"type": "object", "additionalProperties": false, "required": []string{"kind", "operation", "brief"}, "properties": map[string]any{"artifact_id": str(), "kind": map[string]any{"type": "string", "enum": []string{"html", "plan"}}, "operation": map[string]any{"type": "string", "enum": []string{"generate", "edit"}}, "brief": str(), "base": ref, "plan_source": ref}}
+	file := map[string]any{"type": "object", "additionalProperties": false, "required": []string{"path"}, "properties": map[string]any{"path": str(), "line_start": integer(), "line_end": integer()}}
+	return Definition{Type: "function", Name: "manage_design", Description: "Queue a delegated Designer request: one design or an explicit batch of 1–8 HTML/plan candidates. Generation omits artifact_id; edits require artifact_id and exact base. Optional files are shared immutable untrusted source snapshots, at most 32 files and 256 KiB total; inclusive line_start/line_end must both be supplied, at most 2000 lines. Source reads require separate sensitive-read permission. Changed snapshots on retry conflict. HTML generation may supply plan_source as an exact retained plan ref. Requests currently remain queued awaiting the execution adapter. No authored output input. Plans never execute automatically. status/history omit bytes; read is bounded to 64 KiB. cancel targets one candidate with request revision CAS. select uses exact expected_current and expected_version. Existing Artifact V3 operations remain separate.", Parameters: map[string]any{"type": "object", "additionalProperties": false, "required": []string{"action"}, "properties": map[string]any{"action": map[string]any{"type": "string", "enum": []string{"submit", "status", "history", "read", "select", "cancel"}}, "idempotency_key": str(), "files": map[string]any{"type": "array", "maxItems": 32, "items": file}, "candidates": map[string]any{"type": "array", "minItems": 1, "maxItems": 8, "items": candidate}, "request_id": str(), "artifact_id": str(), "ref": ref, "expected_current": map[string]any{"anyOf": []any{ref, map[string]any{"type": "null"}}}, "expected_version": integer(), "expected_revision": integer(), "candidate": integer(), "after": integer(), "limit": integer(), "max_bytes": integer()}}}
 }

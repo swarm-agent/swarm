@@ -55,6 +55,9 @@ type DesignRef struct {
 }
 
 type DesignContextSnapshot struct {
+	LineStart int `json:"line_start,omitempty"`
+	LineEnd int `json:"line_end,omitempty"`
+	SourceSHA256 string `json:"source_sha256,omitempty"`
 	Path    string `json:"path"`
 	Content []byte `json:"content"`
 	SHA256  string `json:"sha256"`
@@ -66,6 +69,7 @@ type DesignCandidateSpec struct {
 	Operation  string     `json:"operation"`
 	Brief      string     `json:"brief"`
 	Base       *DesignRef `json:"base,omitempty"`
+	PlanSource *DesignRef `json:"plan_source,omitempty"`
 }
 
 // DesignSubmit deliberately has no output/HTML field. Selected source examples
@@ -350,7 +354,13 @@ func (s *Store) submitDesignRequestInBatch(p DesignPrincipal, in DesignSubmit, b
 	total := 0
 	for _, c := range in.Context {
 		total += len(c.Content)
-		if c.Path == "" || len(c.Path) > 4096 || !utf8.ValidString(c.Path) || !utf8.Valid(c.Content) || c.SHA256 != designDigest(c.Content) {
+		if c.SourceSHA256 != "" {
+			decoded, err := hex.DecodeString(c.SourceSHA256)
+			if err != nil || len(decoded) != sha256.Size || (c.LineStart == 0 && c.SourceSHA256 != c.SHA256) {
+				return zero, ErrDesignInvalid
+			}
+		}
+		if c.Path == "" || len(c.Path) > 4096 || !utf8.ValidString(c.Path) || !utf8.Valid(c.Content) || strings.ContainsRune(string(c.Content), 0) || c.SHA256 != designDigest(c.Content) || c.LineStart < 0 || c.LineEnd < c.LineStart || (c.LineStart == 0 && c.LineEnd != 0) || (c.LineStart > 0 && len(c.SourceSHA256) != 64) {
 			return zero, ErrDesignInvalid
 		}
 	}
@@ -378,6 +388,18 @@ func (s *Store) submitDesignRequestInBatch(p DesignPrincipal, in DesignSubmit, b
 			return zero, ErrDesignInvalid
 		}
 		seen[c.ArtifactID] = true
+		if c.PlanSource != nil {
+			if c.Kind != DesignHTML || c.Operation != DesignGenerate {
+				return zero, ErrDesignInvalid
+			}
+			plan, err := s.ReadDesignRevision(p, *c.PlanSource)
+			if err != nil {
+				return zero, err
+			}
+			if plan.Kind != DesignPlan {
+				return zero, ErrDesignInvalid
+			}
+		}
 		switch c.Operation {
 		case DesignGenerate:
 			if c.Base != nil {

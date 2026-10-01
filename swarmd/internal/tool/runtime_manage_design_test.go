@@ -1,6 +1,8 @@
 package tool
 
 import (
+	"context"
+	"os"
 	"encoding/json"
 	"errors"
 	"path/filepath"
@@ -19,6 +21,7 @@ func TestManageDesignStrictGrammar(t *testing.T) {
 		`{"action":"submit","idempotency_key":"k","candidates":[],"account_id":"foreign"}`,
 		`{"action":"status","request_id":"r","content":"html"}`,
 		`{"action":"publish","content":"html"}`,
+		`{"action":"submit","idempotency_key":"k","candidates":[],"files":[{"path":"a","content":"injected"}]}`,
 		`{"action":"cancel","request_id":"r","idempotency_key":"k","expected_revision":1}`,
 		`{"action":"select","idempotency_key":"k","ref":{},"expected_version":0}`,
 	} {
@@ -45,6 +48,8 @@ func TestManageDesignStrictGrammar(t *testing.T) {
 // through parent termination and process-store reopen, reject changed replay and
 // foreign reads, and cancel only explicitly targeted work. This integration layer
 // exercises executeManageDesign -> ApplySessionMutation without a provider.
+// Shared source snapshots must survive disk changes; changed retries must not
+// overwrite the original, and failed hydration must leave no accepted request.
 func TestManageDesignDurableQueue(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "db")
 	db, err := pebblestore.Open(path)
@@ -70,7 +75,12 @@ func TestManageDesignDurableQueue(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	args := map[string]any{"action": "submit", "idempotency_key": "batch", "candidates": []map[string]any{{"kind": "html", "operation": "generate", "brief": "card"}, {"kind": "plan", "operation": "generate", "brief": "plan"}}}
+	scope.PrimaryPath = t.TempDir()
+	scope.Roots = []string{scope.PrimaryPath}
+	sourcePath := filepath.Join(scope.PrimaryPath, "card.css")
+	if err := os.WriteFile(sourcePath, []byte(".card {}\n"), 0600); err != nil { t.Fatal(err) }
+	ctx = WithDesignSourceReadAuthorizer(ctx, func(context.Context, WorkspaceScope, string) error { return nil })
+	args := map[string]any{"files": []map[string]any{{"path": "card.css"}}, "action": "submit", "idempotency_key": "batch", "candidates": []map[string]any{{"kind": "html", "operation": "generate", "brief": "card"}, {"kind": "plan", "operation": "generate", "brief": "plan"}}}
 	out, err := r.executeManageDesign(ctx, scope, args)
 	if err != nil {
 		t.Fatal(err)
@@ -100,6 +110,18 @@ func TestManageDesignDurableQueue(t *testing.T) {
 	if err != nil || replay != out {
 		t.Fatalf("replay %s %v", replay, err)
 	}
+	if err := os.WriteFile(sourcePath, []byte("changed"), 0600); err != nil { t.Fatal(err) }
+	if _, err := r.executeManageDesign(ctx, scope, args); err == nil { t.Fatal("changed snapshot replay accepted") }
+	snapshots, err := db.ReadDesignContext(p, request.ID)
+	if err != nil || len(snapshots) != 1 || string(snapshots[0].Content) != ".card {}\n" { t.Fatal("original shared context changed", err) }
+	args["idempotency_key"] = "missing-source"
+	args["files"] = []map[string]any{{"path": "missing"}}
+	if _, err := r.executeManageDesign(ctx, scope, args); err == nil { t.Fatal("missing source accepted") }
+	missingID := designStableID(p.AccountID, p.PrincipalID, scope.SessionID, "missing-source")
+	if _, err := db.GetDesignRequest(p, missingID); !errors.Is(err, pebblestore.ErrDesignNotFound) { t.Fatal("partial acceptance", err) }
+	args["idempotency_key"] = "batch"
+	args["files"] = []map[string]any{{"path": "card.css"}}
+	if err := os.WriteFile(sourcePath, []byte(".card {}\n"), 0600); err != nil { t.Fatal(err) }
 	args["candidates"] = []map[string]any{{"kind": "html", "operation": "generate", "brief": "changed"}}
 	if _, err := r.executeManageDesign(ctx, scope, args); err == nil {
 		t.Fatal("changed replay accepted")
