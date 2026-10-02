@@ -486,6 +486,7 @@ function GenericPermissionModal({
 }: DesktopPermissionModalProps) {
   const [note, setNote] = useState('')
   const [loading, setLoading] = useState(false)
+  const [decisionError, setDecisionError] = useState('')
   const [alwaysPreview, setAlwaysPreview] = useState('')
   const [alwaysPreviewError, setAlwaysPreviewError] = useState('')
 
@@ -495,6 +496,7 @@ function GenericPermissionModal({
       setLoading(false)
       setAlwaysPreview('')
       setAlwaysPreviewError('')
+      setDecisionError('')
     }
   }, [open, permission?.id])
 
@@ -542,7 +544,10 @@ function GenericPermissionModal({
   ) => {
     setLoading(true)
     try {
+      setDecisionError('')
       await onResolve(action, note.trim(), approvedArguments)
+    } catch (error) {
+      setDecisionError(error instanceof Error ? error.message : 'Decision failed. Please retry.')
     } finally {
       setLoading(false)
     }
@@ -561,8 +566,8 @@ function GenericPermissionModal({
   return (
     <ModalShell
       open={open}
-      title={`${toolName} permission`}
-      subtitle="Review the requested tool call before it runs"
+      title={permission.requirement === 'design_source_sensitive_read' ? 'Share source with Designer' : `${toolName} permission`}
+      subtitle={permission.requirement === 'design_source_sensitive_read' ? 'Approve sharing these source bytes with the delegated Designer provider for this request only' : 'Review the requested tool call before it runs'}
       pendingCount={pendingCount}
       sessionMode={sessionMode}
       widthClassName="w-[min(100%,calc(100vw-12px))] sm:w-[min(980px,calc(100vw-48px))] xl:w-[min(1040px,calc(100vw-64px))]"
@@ -613,6 +618,7 @@ function GenericPermissionModal({
             </div>
           </div>
           <div className="max-h-[min(54dvh,34rem)] min-w-0 overflow-y-auto overscroll-contain px-3 py-3 sm:max-h-[min(58dvh,38rem)] sm:px-4 sm:py-4">
+            {decisionError && <p role="alert">{decisionError}</p>}
             <ChatMarkdown
               content={body}
               className="text-sm leading-6 [&_pre]:border-[color-mix(in_oklab,var(--app-border)_70%,transparent)] [&_pre]:bg-[color-mix(in_oklab,var(--app-bg-inset)_88%,black)] [&_pre]:shadow-inner [&_pre_code]:text-[13px]"
@@ -3333,6 +3339,7 @@ function WorkspaceMutationModal(props: DesktopPermissionModalProps) {
 }
 
 function genericPermissionSupportsPersistentActions(permission: DesktopPermissionRecord): boolean {
+  if (safeString(permission.requirement).toLowerCase() === 'design_source_sensitive_read') return false
   const toolName = permissionDisplayToolName(permission.toolName)
   return toolName !== 'ask-user' && toolName !== 'exit_plan_mode' && toolName !== 'manage_sessions'
 }

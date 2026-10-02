@@ -551,7 +551,7 @@ export function permissionRequiresApproval(
   fallbackMode = 'plan',
 ): boolean {
   const requirement = safeString(permission.requirement).toLowerCase()
-  if (requirement === 'workspace_scope' || requirement === 'automation_v2_acceptance') {
+  if (requirement === 'workspace_scope' || requirement === 'automation_v2_acceptance' || requirement === 'design_source_sensitive_read') {
     return true
   }
   const toolName = normalizePermissionToolName(permission.toolName)
