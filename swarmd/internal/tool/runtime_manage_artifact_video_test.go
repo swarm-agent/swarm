@@ -981,3 +981,41 @@ func TestManageArtifactGenerateVideoResponseAndPersistedUsagePricingAgreement(t 
 		t.Fatalf("persisted unknown mismatch: status=%s cost=%f", recService.recorded[0].PriceStatus, recService.recorded[0].CostUSD)
 	}
 }
+
+// Purpose: the shared author_v3 operation object must never silently become a
+// fresh video create request. The registered Runtime dispatch is the narrowest
+// boundary proving malformed/unsupported operations cause zero submissions.
+func TestManageArtifactVideoOperationRejectsWrongTypeBeforeDispatch(t *testing.T) {
+	for _, operation := range []string{`{}`, `"refine"`, `""`, `null`} {
+		runtime := NewRuntime(1)
+		generator := &fakeVideoGenerationService{}
+		runtime.SetArtifactAuthority(&fakeArtifactAuthority{})
+		runtime.SetManagedVideoGenerationService(generator)
+		ctx, scope := artifactToolContext()
+		_, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{
+			CallID: "invalid-operation", Name: "manage_artifact",
+			Arguments: `{"action":"generate_video","prompt":"A landscape","operation":` + operation + `}`,
+		})
+		if err == nil || !strings.Contains(err.Error(), "operation must be") || generator.calls != 0 {
+			t.Fatalf("operation %s: err=%v submissions=%d", operation, err, generator.calls)
+		}
+	}
+}
+
+// Purpose: provider schema must admit the same explicit video operations that
+// Runtime dispatch supports while retaining native author_v3 object operations.
+// Definition inspection is the narrow contract layer for this schema collision;
+// the execution tests above separately prove source and operation forwarding.
+func TestManageArtifactVideoOperationSchema(t *testing.T) {
+	properties := manageArtifactDefinition().Parameters["properties"].(map[string]any)
+	operation := properties["operation"].(map[string]any)
+	alternatives := operation["anyOf"].([]any)
+	if len(alternatives) != 2 || alternatives[0].(map[string]any)["type"] != "object" {
+		t.Fatalf("native authoring operation lost: %+v", operation)
+	}
+	video := alternatives[1].(map[string]any)
+	values := video["enum"].([]string)
+	if video["type"] != "string" || strings.Join(values, ",") != "create,extend,edit" {
+		t.Fatalf("video operations not exposed: %+v", video)
+	}
+}

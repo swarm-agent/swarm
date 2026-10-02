@@ -380,8 +380,7 @@ func RouteAndPlanProjectTaskWithOptions(opts TaskPlanOptions) (TaskRouteResult, 
 					Title:       fmt.Sprintf("%s (Single Video, %s)", title, aspectRatio),
 					Kind:        "video",
 					Status:      "pending",
-					Duration:    "8s",
-					Description: fmt.Sprintf("Single video clip (%s, 8s): %s", aspectRatio, prompt),
+					Description: fmt.Sprintf("Single video clip (%s): %s", aspectRatio, prompt),
 				},
 			}
 		} else {
@@ -394,7 +393,9 @@ func RouteAndPlanProjectTaskWithOptions(opts TaskPlanOptions) (TaskRouteResult, 
 				scenes = append(scenes, ProjectTaskScene{
 					SceneNumber: s,
 					Title:       fmt.Sprintf("Scene %d", s),
-					DurationSec: 4,
+					// Omission must reach capability validation unchanged. The router
+					// has no model authority to select a duration.
+					DurationSec: 0,
 					Prompt:      fmt.Sprintf("%s - Scene %d", prompt, s),
 					VisualNotes: "Cinematic lighting, smooth camera movement",
 				})

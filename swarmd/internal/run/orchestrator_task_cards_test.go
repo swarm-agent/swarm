@@ -134,3 +134,36 @@ func TestOrchestratorSessionIntegrationProviderTools(t *testing.T) {
 		}
 	}
 }
+
+// Purpose: generation and post-hoc soundtrack composition must be available in
+// Orchestrator's actual provider inventory, not only implemented in Runtime.
+// ResolveAgentToolContract/filterToolDefinitions own exposure; this is the
+// narrowest layer that catches a compiled allowlist silently hiding the APIs.
+func TestOrchestratorMediaProviderTools(t *testing.T) {
+	svc := NewService(nil, nil, nil, tool.NewRuntime(1), nil, nil, nil, nil)
+	profile := agent.SwarmOrchestratorAgentProfileForContext(pebblestore.AgentProfile{})
+	resolved, _, disabled, err := svc.ResolveAgentToolContract(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	definitions := filterToolDefinitions(convertToolDefinitions(svc.ListAgentToolDefinitions()), disabled)
+	for _, name := range []string{"manage_artifact", "manage_video"} {
+		if !resolved.Tools[name].Enabled || disabled[name] || !slices.Contains(resolved.AvailableTools, name) {
+			t.Fatalf("media tool %s unavailable", name)
+		}
+		found := false
+		for _, definition := range definitions {
+			if definition.Name == name {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("media provider definition %s filtered out", name)
+		}
+	}
+	for _, name := range []string{"plan_manage", "exit_plan_mode"} {
+		if resolved.Tools[name].Enabled || !disabled[name] {
+			t.Fatalf("media exposure widened planning authority: %s", name)
+		}
+	}
+}

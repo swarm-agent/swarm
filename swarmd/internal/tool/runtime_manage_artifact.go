@@ -211,7 +211,7 @@ func manageArtifactDefinition() Definition {
 				"media_type":             map[string]any{"type": "string", "maxLength": 255, "description": "Artifact media type."},
 				"content":                map[string]any{"type": "string", "description": "Bounded UTF-8 artifact content."},
 				"draft_handle":           map[string]any{"type": "object", "description": "Draft handle from begin_v3/create/revise_v3. Call action='help' topic='workflow'."},
-				"operation":              map[string]any{"type": "object", "description": "Artifact V3 authoring operation. Call action='help' topic='workflow'."},
+				"operation":              map[string]any{"anyOf": []any{map[string]any{"type": "object"}, map[string]any{"type": "string", "enum": []string{"create", "extend", "edit"}}}, "description": "For generate_video: create, extend, or edit (distinct capability-checked operations); use the exact selected source reference for continuation. For author_v3: an authoring operation object; call help topic=workflow."},
 				"content_base64":         map[string]any{"type": "string", "description": "Bounded base64 replacement bytes."},
 				"initial_parts":          map[string]any{"type": "array", "minItems": 2, "maxItems": pebblestore.SessionArtifactMaxParts, "items": map[string]any{"type": "object"}, "description": "Two or more real independently byte-bearing initial parts for create (server owns all chain, composition, part identities). Mutually exclusive with monolithic content. Call action='help' for schema."},
 				"parts":                  map[string]any{"type": "array", "maxItems": pebblestore.SessionArtifactMaxParts, "items": part, "description": "Optional source-bound review/edit targets on one complete monolithic artifact (never create or prove independently replaceable bytes). For text/html, omit parts to let the server derive useful targets without splitting or rewriting the file; explicitly supplied parts remain authoritative. Use initial_parts only when independently stored bytes are required. Call action='help' for schema."},
@@ -2395,6 +2395,12 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 			"image", "image_path", "chain_from", "chain", "includes_audio", "operation":
 		default:
 			return managedVideoArtifactResult{}, fmt.Errorf("manage_artifact generate_video contains unsupported field %q", key)
+		}
+	}
+	if raw, supplied := args["operation"]; supplied {
+		op, ok := raw.(string)
+		if !ok || (op != pebblestore.VideoOperationCreate && op != pebblestore.VideoOperationExtend && op != pebblestore.VideoOperationEdit) {
+			return managedVideoArtifactResult{}, errors.New("generate_video operation must be create, extend, or edit")
 		}
 	}
 	if r.videoGeneration == nil {
