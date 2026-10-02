@@ -6,6 +6,9 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Connect qualified, digest-preserving GHCR publication to version-pinned CLI/SDK release packs; reject conflicting tags and require anonymous image access before GitHub/npm publication. No live publication readiness is claimed. Docs impact: first-publish permissions and visibility prerequisites in `docs/main-deploy-checklist.md`.
+- Replace optimistic deliverable publication with durable approval claims, validated X receipts and explicit failed/uncertain outcomes; partial publication requires reconciliation rather than automatic retry. Docs impact: publication outcome guidance in `docs/main-deploy-checklist.md`.
+
 - Add an unpublished Linux amd64 headless distribution: non-root daemon image, Desktop-free setup, scoped-token SDK session access, standalone SDK packaging and an explicit npm container launcher with persistent state. Ordinary host listeners remain loopback-only; npm installation does not start containers. Docs impact: setup, authentication, persistence, candidate image pinning and bounded qualification are documented in `containers/headless/README.md`, `packages/cli/README.md` and `packages/sdk/README.md`. Registry publication remains separate.
 
 - Retire the shared Swarm Atlas, two-pass TSV audit ledger, and atlas synchronization gate; preserve critical tests and independent review. Docs impact: remove mandatory bookkeeping instructions and obsolete links. Earlier Atlas/ledger mentions below describe historical work, not current requirements.

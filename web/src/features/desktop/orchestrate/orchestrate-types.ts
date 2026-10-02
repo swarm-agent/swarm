@@ -94,6 +94,7 @@ export interface ProjectSummary {
   pendingDeliverablesCount: number
   runningTasksCount: number
   projectContext?: string
+  iconPNGDataURL?: string
   themeId?: string // canonical project theme_id; empty inherits Swarm default
   primarySessionId?: string
   uploadedMedia?: ProjectTaskMediaRef[]
@@ -239,6 +240,7 @@ export interface TaskProgramJobRecord {
 }
 
 export interface TaskProgramRecord {
+  reservation_run_id?: string
   parent_session_id: string
   program_id: string
   state: string
@@ -282,6 +284,10 @@ export interface RunningTaskPlanCheckpoint {
 }
 
 export interface TaskIntegrationReceipt {
+  session_id?: string
+  target_branch?: string
+  target_workspace_path?: string
+  resulting_target_head?: string
   state: string
   error?: string
   operation_id?: string
@@ -308,6 +314,8 @@ export interface TaskAttempt {
 }
 
 export interface RunningTask {
+  currentRunId?: string
+  currentRunStatus?: string
   activeAttemptId?: string
   attempts?: TaskAttempt[]
   integration?: TaskIntegrationReceipt

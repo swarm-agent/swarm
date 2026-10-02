@@ -114,6 +114,10 @@ test('Swarm shell preserves panes and focus across container widths', { timeout:
 // TaskListHeader/Toolbar, AgentModelControl and useSwarmModalFocus. Browser
 // composition with finite HTTP/cache fixtures is the narrowest proof of rendered
 // controls; it does not prove live provider behavior or session durability.
+// Deploy intent requirement: Coding and Media are separate named groups, feature
+// buttons are text-only, and switching groups preserves exclusive selection and
+// agent preview routing. Real rendered controls are needed to catch icon/group
+// regressions that source strings alone cannot prove.
 test('real task and model dialogs contain focus and fit narrow lanes', { timeout: 90000 }, async () => {
   const { fixtureRead, snapshot } = await import('./swarm-responsive-browser-fixtures')
   const bundle = await build({ stdin: { resolveDir: process.cwd(), loader: 'tsx', contents: `import {mountResponsiveFixture} from './src/features/desktop/orchestrate/swarm-responsive-browser-fixtures'; mountResponsiveFixture('populated');` }, bundle: true, write: false, format: 'iife', platform: 'browser', jsx: 'automatic', logLevel: 'silent' })
@@ -147,6 +151,34 @@ test('real task and model dialogs contain focus and fit narrow lanes', { timeout
     const deploy = page.getByRole('dialog', { name: 'Deploy Autonomous Task' })
     await deploy.waitFor()
     assert.equal(await deploy.evaluate(node => node.contains(document.activeElement)), true)
+    const coding = deploy.getByRole('group', { name: 'Coding', exact: true })
+    const media = deploy.getByRole('group', { name: 'Media', exact: true })
+    assert.deepEqual(await coding.getByRole('button').allTextContents(), ['Small Feature/Fix', 'Big Feature', 'Audit'])
+    assert.deepEqual(await media.getByRole('button').allTextContents(), ['Image', 'Video', 'Sounds'])
+    for (const id of ['small-feature', 'big-feature']) {
+      assert.equal(await coding.getByTestId(`deploy-tab-${id}`).locator('svg').count(), 0, 'feature choices are text-only')
+    }
+    for (const [id, preview] of [
+      ['big-feature', '@plan (Orchestrator Plan Mode)'],
+      ['image', null], ['video', null], ['sound', null],
+      ['audit', '@finder (Finder)'], ['small-feature', '@coder (Coder)'],
+    ] as const) {
+      const choice = deploy.getByTestId(`deploy-tab-${id}`)
+      await choice.click()
+      assert.equal(await choice.getAttribute('aria-pressed'), 'true')
+      assert.equal(await deploy.locator('button[aria-pressed="true"]').count(), 1, 'selection is exclusive across groups')
+      const agentPreview = deploy.getByTestId('deploy-modal-impending-preview')
+      if (preview) assert.ok((await agentPreview.innerText()).includes(preview))
+      else assert.equal(await agentPreview.count(), 0, 'media does not show a coding agent preview')
+    }
+    for (const width of [390, 1024]) {
+      await page.setViewportSize({ width, height: 740 })
+      for (const group of [coding, media]) {
+        assert.ok(await group.evaluate(node => node.scrollWidth <= node.clientWidth + 1), 'intent group fits available width')
+      }
+      assert.ok((await coding.boundingBox())!.y + (await coding.boundingBox())!.height <= (await media.boundingBox())!.y, 'coding and media remain visually separate')
+    }
+    await page.setViewportSize({ width: 390, height: 740 })
     const footer = deploy.locator('button').last()
     await footer.scrollIntoViewIfNeeded()
     const footerBox = (await footer.boundingBox())!, dialogBox = (await deploy.boundingBox())!

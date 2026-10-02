@@ -829,15 +829,12 @@ export function aggregateTaskLiveState(
   const primaryPlanDoc = selectTaskPlanDocument(task, primaryPlanRecord)
   const primaryLifecycle = primarySess?.lifecycle as any
 
-  const primaryIntentStatus = primaryIntent?.status?.trim().toLowerCase()
-  const primaryRunId = primaryView?.current_run_state?.run_id
   const primaryRunStatus = preferRunEvidence(primaryView?.current_run_state, primaryIntent)?.status?.trim().toLowerCase()
-  const primaryIntentIsCurrent = !primaryRunId || !primaryIntent?.run_id || primaryIntent.run_id === primaryRunId
   const primaryPhase = primaryLifecycle?.phase?.trim().toLowerCase()
 
   const primaryTerminal = ['completed', 'failed', 'cancelled', 'interrupted', 'expired', 'dispatch_blocked'].includes(primaryRunStatus || '')
   const isPrimaryActive = Boolean(
-    !primaryTerminal && (primaryLifecycle?.active === true || (primaryIntentIsCurrent && primaryIntentStatus === 'running') || primaryRunStatus === 'running')
+    !primaryTerminal && (primaryRunStatus === 'running' || (!primaryRunStatus && primaryLifecycle?.active === true && primaryPhase === 'running'))
   )
   const isPrimaryReview = Boolean(
     primaryPlanRecord?.status === 'waiting_review' ||
@@ -850,6 +847,9 @@ export function aggregateTaskLiveState(
     (!primaryRunStatus && (primaryPhase === 'failed' || primaryPhase === 'cancelled'))
   )
 
+  const programRecord = task.taskProgramStatus || (task as any).task_program_status
+  const ownerRunId = preferRunEvidence(primaryView?.current_run_state, primaryIntent)?.run_id
+  const programIsCurrent = !programRecord?.reservation_run_id || !ownerRunId || programRecord.reservation_run_id === ownerRunId
   const programJobs =
     task.taskProgramStatus?.jobs ||
     (task as any).task_program_status?.jobs ||
@@ -864,8 +864,11 @@ export function aggregateTaskLiveState(
     programJobs.length > 0
   )
 
-  // Map state for each associated session
-  const sessionStates: TaskSessionStateItem[] = associatedSids.map((sid) => {
+  // Historical child generations must not supply current execution evidence.
+  const currentSids = associatedSids.filter((sid) => sid === primarySessionId || !hasTaskProgram ||
+    (programIsCurrent && programJobs.some((j: any) => (j.current_session_id || j.child_session_id) === sid)))
+  if (primarySessionId && !currentSids.includes(primarySessionId)) currentSids.unshift(primarySessionId)
+  const sessionStates: TaskSessionStateItem[] = currentSids.map((sid) => {
     const sData = liveTaskSessionsData[sid]
     const sRecord = sData?.sessionRecord
     const sSess = sRecord?.kind === 'full' ? sRecord.session : undefined
@@ -895,9 +898,11 @@ export function aggregateTaskLiveState(
     const effectiveRunStatus = currentRunStatus || (intentIsCurrent ? intentStatus : undefined)
     const isTerminalRun = ['completed', 'failed', 'cancelled', 'interrupted', 'expired', 'dispatch_blocked'].includes(effectiveRunStatus || '')
 
+    const matchingJob = programJobs.find((j: any) => (j.current_session_id || j.child_session_id) === sid)
+    const effectiveRunId = preferRunEvidence(sView?.current_run_state, sIntent)?.run_id
+    const isCurrentJobRun = !matchingJob?.current_run_id || !effectiveRunId || matchingJob.current_run_id === effectiveRunId
     const isAct = Boolean(
-      (!isTerminalRun && intentIsCurrent && (intentStatus === 'running' || intentStatus === 'pending_executor')) ||
-      (!isTerminalRun && (currentRunStatus === 'running' || currentRunStatus === 'pending_executor' || isLifecycleActiveFlag))
+      isCurrentJobRun && !isTerminalRun && (effectiveRunStatus === 'running' || (!effectiveRunStatus && isLifecycleActiveFlag && lifecyclePhase === 'running'))
     )
     const isRev = Boolean(
       sPlan?.status === 'waiting_review' ||
@@ -923,18 +928,18 @@ export function aggregateTaskLiveState(
     )
     const isComp = hasCompletedIntent && !isPlanUnfinished
 
-    const matchingJob = programJobs.find(
-      (j: any) => j.child_session_id === sid || j.current_session_id === sid
-    )
-
     const isHydrated = Boolean(sData && (sRecord || sIntent || sView))
 
     let itemStatus: TaskSessionStateItem['status'] = 'unknown'
-    if (isHydrated) {
+    if (!isCurrentJobRun) {
+      itemStatus = 'unknown'
+    } else if (isHydrated) {
       // Runtime session terminal/active evidence is authoritative over stale job state
-      if (effectiveRunStatus === 'dispatch_blocked' || lifecyclePhase === 'blocked') {
+      if (isAct) {
+        itemStatus = 'running'
+      } else if (effectiveRunStatus === 'dispatch_blocked' || (!effectiveRunStatus && lifecyclePhase === 'blocked')) {
         itemStatus = 'blocked'
-      } else if (lifecyclePhase === 'paused') {
+      } else if (!effectiveRunStatus && lifecyclePhase === 'paused') {
         itemStatus = 'paused'
       } else if (effectiveRunStatus === 'pending_executor') {
         itemStatus = 'queued'
@@ -950,8 +955,8 @@ export function aggregateTaskLiveState(
         itemStatus = 'needs_review'
       } else if (matchingJob?.state === 'failed' || matchingJob?.state === 'conflict') {
         itemStatus = 'failed'
-      } else if (isAct) {
-        itemStatus = 'running'
+      } else if (effectiveRunStatus === 'completed') {
+        itemStatus = 'unknown' // An unfinished plan is not an executing run.
       } else if (matchingJob) {
         // A scheduler job may lag the session. A hydrated, inactive attempt is
         // not running merely because its job still says running.
@@ -964,7 +969,7 @@ export function aggregateTaskLiveState(
     } else {
       // Unhydrated != queued: use matchingJob state if present
       if (matchingJob) {
-        if (matchingJob.state === 'running') itemStatus = 'running'
+        if (matchingJob.state === 'running') itemStatus = 'unknown'
         else if (matchingJob.state === 'conflict' || matchingJob.state === 'failed') itemStatus = 'failed'
         else if (matchingJob.state === 'handoff_ready') itemStatus = 'needs_review'
         else if (matchingJob.state === 'integrated' || matchingJob.state === 'completed') itemStatus = 'completed'
@@ -1042,21 +1047,25 @@ export function aggregateTaskLiveState(
     : Math.max(relevantSessionStates.filter((s) => s.status === 'completed').length, jobCompletedCount)
 
   const sessionSummary: TaskSessionSummary = {
-    totalSessions: relevantSessionStates.length,
-    runningSessions,
-    reviewSessions,
-    failedSessions,
-    completedSessions,
-    sessionStates: relevantSessionStates,
+    totalSessions: sessionStates.length,
+    runningSessions: sessionStates.filter((s) => s.status === 'running').length,
+    reviewSessions: sessionStates.filter((s) => s.status === 'needs_review').length,
+    failedSessions: sessionStates.filter((s) => s.status === 'failed').length,
+    completedSessions: sessionStates.filter((s) => s.status === 'completed').length,
+    sessionStates,
   }
 
   // Aggregate Status computation
   let status = task.status
-  const isLifecycleActive = isPrimaryActive || runningSessions > 0 || unallocatedJobsCount > 0
+  const isLifecycleActive = isPrimaryActive || runningSessions > 0
   const hasReviewRequired = isPrimaryReview || reviewSessions > 0
   const isAnyFailed = isPrimaryFailed || failedSessions > 0
 
-  if (task.status === 'completed' || task.isIntegrated) {
+  if (isLifecycleActive && !['rejected', 'pending_approval', 'planning'].includes(task.status)) {
+    status = 'running'
+  } else if (isPrimaryFailed) {
+    status = 'failed'
+  } else if (task.status === 'completed' || task.isIntegrated) {
     status = 'completed'
   } else if (task.status === 'rejected') {
     status = 'rejected'
@@ -1083,7 +1092,7 @@ export function aggregateTaskLiveState(
     }
   } else {
     // In execution (in_progress, running, needs_review, failed)
-    const tpRecordState = (task.taskProgramStatus?.state || (task as any).task_program_status?.state)?.trim().toLowerCase()
+    const tpRecordState = programIsCurrent ? programRecord?.state?.trim().toLowerCase() : undefined
     if (tpRecordState) {
       // The program owns scheduling/integration, but a lagging running program
       // must not keep an inactive, fully finished cohort's timer alive.
@@ -1091,14 +1100,19 @@ export function aggregateTaskLiveState(
         completedSessions + reviewSessions === programJobs.length &&
         relevantSessionStates.every((s) => s.status === 'completed' || s.status === 'needs_review')
       // Backend TaskProgram record is authoritative
-      if (tpRecordState === 'completed') {
-        status = task.isIntegrated ? 'completed' : 'needs_review'
+      if (isPrimaryFailed) {
+        status = 'failed'
+      } else if (primaryRunStatus === 'pending_executor' && runningSessions === 0) {
+        status = 'queued'
+      } else if (tpRecordState === 'completed') {
+        const unfinishedPlan = primaryPlanDoc?.checkpoints?.some((cp: any) => cp.status !== 'completed')
+        status = unfinishedPlan ? 'blocked' : task.isIntegrated ? 'completed' : 'needs_review'
       } else if (tpRecordState === 'failed' || tpRecordState === 'cancelled') {
         status = 'failed'
       } else if (tpRecordState === 'blocked') {
         status = 'needs_review'
       } else if (tpRecordState === 'running') {
-        status = allJobsFinished && !isPrimaryActive ? 'needs_review' : 'running'
+        status = allJobsFinished ? 'needs_review' : primaryRunStatus === 'pending_executor' ? 'queued' : 'blocked'
       }
     } else {
       // Live session aggregation
@@ -1127,6 +1141,8 @@ export function aggregateTaskLiveState(
         } else {
           status = 'needs_review'
         }
+      } else if (primaryTerminal && (status === 'in_progress' || status === 'running')) {
+        status = 'blocked'
       } else if (!primarySessionId && !hasTaskProgram && (status === 'in_progress' || status === 'running')) {
         status = 'failed'
       }
@@ -1243,11 +1259,13 @@ export function aggregateTaskLiveState(
     primaryLifecycle?.started_at ||
     task.createdAt ||
     (primarySess ? primarySess.created_at : undefined)
-  const elapsedMs = primaryIntent?.duration_ms || (startedAt ? Date.now() - startedAt : 0)
+  const elapsedMs = isLifecycleActive ? (startedAt ? Date.now() - startedAt : 0) : primaryIntent?.duration_ms || (startedAt ? Date.now() - startedAt : 0)
 
   return {
     ...task,
     status,
+    currentRunId: ownerRunId,
+    currentRunStatus: primaryRunStatus,
     taskTodos,
     activeTodo: status === 'running' ? activeSubtaskTitle || undefined : undefined,
     subtasks: taskTodos ? taskTodos.map((todo) => ({ ...todo, completed: todo.status === 'completed' })) : task.subtasks,
@@ -1289,4 +1307,7 @@ export function aggregateTaskLiveState(
   }
 }
 
-
+// Shared by the Running filter and card controls after live aggregation.
+export function isTaskRunning(task: Pick<RunningTask, 'status'>): boolean {
+  return task.status === 'running' || task.status === 'in_progress'
+}

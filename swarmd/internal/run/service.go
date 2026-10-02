@@ -114,6 +114,7 @@ type Service struct {
 	model                        *model.Service
 	modelProfiles                *modelprofile.Service
 	providers                    *registry.Registry
+	designRenderer               DesignRenderer
 	tools                        *tool.Runtime
 	permissions                  *permission.Service
 	agents                       *agentruntime.Service
@@ -2963,6 +2964,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		runtimeScope.Principal = options.Principal
 		runtimeScope.SessionID = strings.TrimSpace(sessionSnapshot.ID)
 		runtimeCtx := tool.WithWorkspaceScope(ctx, runtimeScope)
+		runtimeCtx = s.withDesignSourcePermission(runtimeCtx, runtimeScope, runID, emit)
 		runtimeCtx = tool.WithArtifactRunContext(runtimeCtx, s.providerManagedArtifactRunContext(providerToolInvokerConfig{
 			sessionID:          sessionID,
 			runID:              runID,

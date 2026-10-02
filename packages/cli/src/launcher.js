@@ -6,13 +6,14 @@ import { createHash } from 'node:crypto';
 
 const LABEL = 'dev.swarm.headless';
 const VOLUMES = { config: '/etc/swarmd', data: '/var/lib/swarmd', cache: '/var/cache/swarmd', logs: '/var/log/swarmd' };
-export const HELP = `swarm-headless <start|stop|status|setup> [options]
+export const HELP = `swarm-headless <install|start|stop|status|setup> [options]
   --engine docker|podman   Local engine (default docker)
   --name NAME              Instance name (default swarm-headless)
   start --project PATH [--port 7783] [--recreate]
   setup [options] -- <status|identity|credential|model|workspace|complete|sdk-token|revoke-sdk-token> [flags]
   --version | --help       No engine access
-No install-time actions, automatic pulls, model defaults or volume deletion.
+install explicitly pulls/verifies the packaged GHCR digest (or verifies a loaded candidate).
+No npm install-time actions, automatic pulls, model defaults or volume deletion.
 Stop preserves the container and all named state volumes. Recreate requires a
 stopped, launcher-owned container and the same project. See README for setup.`;
 
@@ -20,7 +21,7 @@ export function parseArgs(argv) {
   const [command, ...rest] = argv;
   if (!command || ['--help', 'help'].includes(command)) return { command: 'help' };
   if (command === '--version') return { command: 'version' };
-  if (!['start', 'stop', 'status', 'setup'].includes(command)) throw Error('Unknown command; use --help');
+  if (!['install', 'start', 'stop', 'status', 'setup'].includes(command)) throw Error('Unknown command; use --help');
   const opts = { command, engine: 'docker', name: 'swarm-headless', port: 7783, recreate: false, setup: [] };
   const seen = new Set();
   for (let i = 0; i < rest.length; i++) {
@@ -29,7 +30,7 @@ export function parseArgs(argv) {
     if (seen.has(key)) throw Error('Duplicate option');
     seen.add(key);
     if (key === '--recreate' && command === 'start') { opts.recreate = true; continue; }
-    if (!['--engine', '--name', ...(command === 'start' ? ['--project', '--port'] : [])].includes(key)) throw Error('Invalid option; secrets must use stdin, never flags');
+    if (!['--engine', ...(command === 'install' ? [] : ['--name']), ...(command === 'start' ? ['--project', '--port'] : [])].includes(key)) throw Error('Invalid option; secrets must use stdin, never flags');
     const value = rest[++i];
     if (!value || value.startsWith('--')) throw Error('Option needs a value');
     opts[key.slice(2)] = value;
@@ -98,11 +99,39 @@ function decode(text) {
 const imageID = value => `sha256:${String(value).replace(/^sha256:/, '')}`;
 const lines = text => text.trim().split('\n').filter(Boolean);
 
+function validatePin(pin) {
+  const fields = ['version', 'imageId', 'platform', 'sourceCommit', 'distribution'];
+  if (pin.distribution === 'ghcr') fields.push('reference', 'manifestDigest');
+  if (fields.some(key => typeof pin[key] !== 'string' || pin[key] !== pin[key].trim())) throw Error('Invalid packaged image pin');
+  const digest = /^sha256:[a-f0-9]{64}$/;
+  const semver = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+[0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*)?$/;
+  if (!digest.test(pin.imageId) || pin.platform !== 'linux/amd64' ||
+      !semver.test(pin.version) || !/^[a-f0-9]{40}$/.test(pin.sourceCommit)) throw Error('Invalid packaged image pin');
+  if (pin.distribution === 'local-candidate') return;
+  if (pin.distribution !== 'ghcr' || !digest.test(pin.manifestDigest) ||
+      pin.reference !== `ghcr.io/swarm-agent/swarm-headless@${pin.manifestDigest}`) throw Error('Invalid packaged registry pin');
+}
+
+function verifyImage(pin, run) {
+  // Inspect the manifest reference too: a matching config alone is not registry provenance.
+  const image = decode(run(['image', 'inspect', pin.distribution === 'ghcr' ? pin.reference : pin.imageId]));
+  if (imageID(image.Id) !== pin.imageId || image.Os !== 'linux' || image.Architecture !== 'amd64' ||
+      (pin.distribution === 'ghcr' && (!Array.isArray(image.RepoDigests) || !image.RepoDigests.includes(pin.reference)))) {
+    throw Error('Image does not match the packaged digest, config or platform; run install with the matching package');
+  }
+}
+
 export function runLauncher(opts, pin, run, io = {}) {
   const show = io.show || console.log;
   if (opts.command === 'help') { show(HELP); return; }
   if (opts.command === 'version') { show(pin.version); return; }
-  if (!/^sha256:[a-f0-9]{64}$/.test(pin.imageId) || pin.platform !== 'linux/amd64') throw Error('Invalid packaged image pin');
+  validatePin(pin);
+  if (opts.command === 'install') {
+    if (pin.distribution === 'ghcr') run(['pull', '--platform', pin.platform, pin.reference]);
+    verifyImage(pin, run);
+    show('Verified packaged image; no container started or state volumes changed.');
+    return;
+  }
   const names = lines(run(['container', 'ls', '--all', '--format', '{{.Names}}']));
   const current = names.includes(opts.name) ? decode(run(['container', 'inspect', opts.name])) : null;
   if (current && current.Config?.Labels?.[LABEL] !== opts.name) throw Error('Instance name belongs to an unmanaged container; refusing access');
@@ -120,6 +149,7 @@ export function runLauncher(opts, pin, run, io = {}) {
     if (imageID(current.Image) !== pin.imageId) throw Error('Instance does not match the packaged image pin');
     if (opts.setup[0] === 'credential' && io.stdinTTY) throw Error('Redirect a private key file or secret-manager pipe to stdin');
     if (opts.setup[0] === 'sdk-token' && io.stdoutTTY) throw Error('Redirect token output to a new private file or pipe');
+    verifyImage(pin, run);
     run(['exec', ...(opts.setup[0] === 'credential' ? ['-i'] : []), current.Id, 'swarmctl', 'setup', ...opts.setup], { stream: true });
     return;
   }
@@ -129,13 +159,13 @@ export function runLauncher(opts, pin, run, io = {}) {
     if (current.Config.Labels[`${LABEL}.project`] !== project) throw Error('Recreation must keep the same project');
     if (current.State.Running) {
       if (opts.recreate || current.Config.Labels[`${LABEL}.spec`] !== spec || imageID(current.Image) !== pin.imageId) throw Error('Stop the existing instance before changing or recreating it');
+      verifyImage(pin, run);
       show('Already running.'); return;
     }
     if (!opts.recreate) throw Error('Instance is stopped; use start --recreate with the same project to preserve its volumes');
   }
-  // Inspect by immutable local image ID. No pull, mutable tag resolution or fallback.
-  const image = decode(run(['image', 'inspect', pin.imageId]));
-  if (imageID(image.Id) !== pin.imageId || image.Os !== 'linux' || image.Architecture !== 'amd64') throw Error('Load the exact matching Linux amd64 candidate image first');
+  // Verification precedes any container removal or resource creation. Never auto-pull.
+  verifyImage(pin, run);
   const network = `${opts.name}-network`;
   const networks = lines(run(['network', 'ls', '--format', '{{.Name}}']));
   if (networks.includes(network)) {

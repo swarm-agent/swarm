@@ -98,13 +98,16 @@ export function desktopPermissionIdentity(
 export function normalizeDesktopPermission(
   value: unknown,
   expectedSessionId: string,
+  options: { includeResolved?: boolean } = {},
 ): DesktopPermissionRecord | null {
   const source = recordValue(value)
   const identity = desktopPermissionIdentity(value, expectedSessionId)
   if (!source || !identity) return null
 
   const status = pickString(source, 'status', 'status')
-  if (status.toLowerCase() !== 'pending') return null
+  // Snapshot lists remain pending-only; exact resolution responses may carry a
+  // known terminal state so callers can verify identity before clearing review.
+  if (status.toLowerCase() !== 'pending' && !(options.includeResolved && ['approved', 'denied', 'cancelled', 'expired'].includes(status))) return null
 
   const toolArguments = pickRawString(source, 'tool_arguments', 'toolArguments')
   const savedRule = normalizeSavedRule(source.saved_rule ?? source.savedRule)

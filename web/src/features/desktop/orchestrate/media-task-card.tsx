@@ -1,8 +1,42 @@
+import { DesignArchiveButton } from '../tools/media-library/design-archive-button'
 import type { ReactNode } from 'react'
 import type { MediaDeliverable, RunningTask } from './orchestrate-types'
 import type { QuickRouteMode } from '../tools/media-library/media-viewer-modal'
 
-export function MediaTaskCard({ task, onPreview, onApprove, onArchive, onDelete, isApproving, error, attention }: {
+import { DesignThumbnail } from '../tools/media-library/design-thumbnail'
+import type { ProjectDesign } from '../session-v3/design-api'
+import type { MediaLibraryItem } from '../tools/media-library/types'
+import { designMediaItem, designRequestId, designStatus, readyDesignRevision } from './design-media-task'
+
+type TaskCardProps = Parameters<typeof ArtifactMediaTaskCard>[0]
+export function MediaTaskCard(props: TaskCardProps | { source: 'independent-design'; archived?: boolean; design: ProjectDesign; onDesignPreview: (item: MediaLibraryItem) => void }) {
+  if ('source' in props && props.source === 'independent-design') {
+    const { design: row, onDesignPreview } = props
+    const visible = row.request.candidates.filter(candidate => Boolean(candidate.archived) === Boolean(props.archived))
+    if (!visible.length) return null
+    const ready = visible.filter(candidate => readyDesignRevision(candidate)).length
+    return <article className="rounded-xl border border-indigo-500/30 bg-slate-950/70 p-3 space-y-3" data-testid="media-task-card" data-task-id={designRequestId(row)}>
+      <header className="flex flex-wrap justify-between gap-2"><h3 className="font-semibold text-slate-100 break-words">{row.title}</h3><span role="status">{designStatus(row.request.state)} · {ready}/{visible.length} ready</span></header>
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+        {row.request.candidates.map((candidate, index) => {
+          if (Boolean(candidate.archived) !== Boolean(props.archived)) return null
+          const revision = readyDesignRevision(candidate)
+          return <section key={index} className="min-w-0 rounded-lg border border-slate-700 p-2">
+            <button type="button" className="w-full min-h-24 bg-black text-slate-100" disabled={!revision} onClick={() => revision && onDesignPreview(designMediaItem(row, index, revision))} aria-label={`Preview ${row.title} candidate ${index + 1}`}>{revision && <DesignThumbnail session={row.request.parent_session_id} revision={revision} />}Candidate {index + 1} · {designStatus(candidate.state)}{revision ? ' · Open preview' : ''}</button>
+            {revision && <DesignArchiveButton key={`${row.project_id}:${row.request.parent_session_id}:${revision.ref.artifact_id}`} session={row.request.parent_session_id} reference={revision.ref} version={candidate.archive_version ?? 0} archived={candidate.archived} />}
+            {candidate.failure_reason && <p role="alert">{candidate.failure_reason}</p>}
+            {candidate.router_alert && <p role="alert">{candidate.router_alert}</p>}
+            {candidate.attempts?.map(attempt => <div key={attempt.number} className="text-xs"><p>Attempt {attempt.number}: {designStatus(attempt.state)} {attempt.reason_code}</p>{attempt.router_alert && <p role="alert">{attempt.router_alert}</p>}</div>)}
+          </section>
+        })}
+      </div>
+    </article>
+  }
+  if ('task' in props) return <ArtifactMediaTaskCard {...props} />
+  return null
+}
+
+function ArtifactMediaTaskCard({ task, onPreview, onApprove, onArchive, onDelete, isApproving, error, attention }: {
   task: RunningTask
   attention?: ReactNode
   onPreview?: (output: MediaDeliverable, mode?: QuickRouteMode) => void

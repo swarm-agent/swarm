@@ -3,6 +3,7 @@ import type { RunningTask, ProjectTaskMediaRef, ProjectTaskPlanBinding } from '.
 export interface DesktopProjectState {
   projectId: string
   tasks: RunningTask[]
+  archivedRevisions?: Record<string, number>
   // Detail-read provenance, owned by the canonical cache (never the collection).
   gitObservations?: Record<string, string>
   media: ProjectTaskMediaRef[]
@@ -37,6 +38,7 @@ export type DesktopProjectsAction =
       type: 'projects.updateTasks'
       projectId: string
       tasks: RunningTask[] | ((prev: RunningTask[]) => RunningTask[])
+      archivedReceipt?: { id: string; revision: number }
       inspectedTaskId?: string
     }
   | {
@@ -265,7 +267,9 @@ export function reduceDesktopProjectsState(
   if (action.type === 'projects.updateTasks') {
     if (!previous) return state
     const newTasks = typeof action.tasks === 'function' ? action.tasks(previous.tasks) : action.tasks
-    const tasks = retainNewerTasks(newTasks, previous.tasks)
+    const archivedRevisions = { ...previous.archivedRevisions }
+    if (action.archivedReceipt) archivedRevisions[action.archivedReceipt.id] = Math.max(archivedRevisions[action.archivedReceipt.id] ?? 0, action.archivedReceipt.revision)
+    const tasks = retainNewerTasks(newTasks, previous.tasks).filter(task => (task.revision ?? 0) > (archivedRevisions[task.id] ?? -1))
     const identities = new Map(tasks.map(task => [task.id, taskGitIdentity(task)]))
     const gitObservations = Object.fromEntries(Object.entries(previous.gitObservations ?? {}).filter(([id, identity]) => identities.get(id) === identity))
     const inspected = action.inspectedTaskId && tasks.find(task => task.id === action.inspectedTaskId)
@@ -275,6 +279,7 @@ export function reduceDesktopProjectsState(
       [action.projectId]: {
         ...previous,
         tasks,
+        archivedRevisions,
         gitObservations,
       },
     }
@@ -303,7 +308,7 @@ export function reduceDesktopProjectsState(
     }
   }
   if (action.type === 'projects.loadSuccess') {
-    const incoming = retainNewerTasks(action.tasks, previous.tasks)
+    const incoming = retainNewerTasks(action.tasks, previous.tasks).filter(task => (task.revision ?? 0) > (previous.archivedRevisions?.[task.id] ?? -1))
     const priorById = new Map(previous.tasks.map(task => [task.id, task]))
     const identities = new Map(incoming.map(task => [task.id, taskGitIdentity(task)]))
     return {

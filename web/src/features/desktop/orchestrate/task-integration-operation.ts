@@ -1,4 +1,5 @@
 import { integrationFailure, type IntegrationFailure } from './integration-recovery'
+import { taskOutcome } from './task-outcome'
 import type { ProjectSummary, RunningTask } from './orchestrate-types'
 
 export interface TaskIntegrationResult {
@@ -17,7 +18,7 @@ export function taskIntegrationPhase(task: RunningTask, local?: TaskIntegrationO
   if (task.isIntegrated && task.status === 'completed') return 'success'
   if (task.integration?.state === 'in_progress') return 'pending'
   if (local?.phase === 'pending') return 'pending'
-  if (task.integration?.state === 'failed' || task.integration?.state === 'conflict') return 'error'
+  if (taskOutcome(task).integrationFailed) return 'error'
   return local?.phase || 'ready'
 }
 

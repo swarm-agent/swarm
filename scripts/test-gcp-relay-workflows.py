@@ -30,6 +30,9 @@ spec.loader.exec_module(relay)
 
 class WorkflowTests(unittest.TestCase):
     def test_preserved_events_contexts_and_only_trusted_relay(self):
+        # Purpose: the maintained workflow authority removed redundant dev push
+        # triggers; assert exact PR/dispatch/schedule wiring without weakening
+        # trusted checkout, permission or authentication assertions below.
         for name, ids in JOBS.items():
             with self.subTest(workflow=name):
                 # BaseLoader avoids YAML 1.1 interpreting the Actions key `on` as True.
@@ -43,7 +46,7 @@ class WorkflowTests(unittest.TestCase):
                     events = {'pull_request': {'branches': ['main'], 'types': types}}
                 else:
                     events = {'pull_request': {'branches': ['dev', 'main']},
-                              'push': {'branches': ['dev']}, 'workflow_dispatch': ''}
+                              'workflow_dispatch': ''}
                     if name == 'dependency-vulnerability-scan':
                         events['schedule'] = [{'cron': '23 5 * * 1'}]
                 self.assertEqual(doc['on'], events)

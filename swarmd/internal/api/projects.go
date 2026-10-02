@@ -327,6 +327,16 @@ func syncTaskSessionState(task *pebblestore.ProjectTaskRecord, db *pebblestore.S
 		return
 	}
 
+	// Live execution outranks workflow and Git labels, including nested programs.
+	// Keep blocker/review detail available while the owning session repairs it.
+	if prog, ok := db.CurrentTaskProgram(task); ok {
+		task.TaskProgramStatus = &prog
+	}
+	if db.ProjectTaskExecuting(task) {
+		task.Status = "in_progress"
+		return
+	}
+
 	// 1. If task is already integrated, it is completed
 	if task.IsIntegrated {
 		task.Status = "completed"
@@ -370,6 +380,18 @@ func syncTaskSessionState(task *pebblestore.ProjectTaskRecord, db *pebblestore.S
 		return
 	}
 
+	// A terminal owning-run failure outranks a successful or blocked subprogram.
+	if state, found, err := db.GetV3SessionRunState(task.SessionID); err == nil && found && state.AccountScopeID == task.AccountID && (task.TaskProgramID != "" || task.TaskProgram != nil) {
+		switch state.Status {
+		case pebblestore.V3RunIntentFailed, pebblestore.V3RunIntentCancelled, pebblestore.V3RunIntentExpired, pebblestore.V3RunIntentInterrupted, pebblestore.V3RunIntentDispatchBlocked:
+			task.Status = "failed"
+			if state.BlockedReason != "" {
+				task.LastError = state.BlockedReason
+			}
+			return
+		}
+	}
+
 	// 2b. If task has a Task Program, sync status from TaskProgramRecord
 	if task.TaskProgramID != "" || task.TaskProgram != nil {
 		progID := task.TaskProgramID
@@ -377,16 +399,18 @@ func syncTaskSessionState(task *pebblestore.ProjectTaskRecord, db *pebblestore.S
 			progID = task.TaskProgram.ID
 		}
 		if progID != "" && task.SessionID != "" {
-			if prog, ok, _ := db.GetTaskProgram(task.SessionID, progID); ok {
+			if prog, ok := db.CurrentTaskProgram(task); ok {
 				task.TaskProgramStatus = &prog
 				if task.IsIntegrated || task.Status == "completed" || task.Status == "rejected" {
 					return
 				}
 				switch prog.State {
 				case pebblestore.TaskProgramStateRunning:
-					task.Status = "in_progress"
-					return
+					// Scheduling state alone cannot prove a session is executing.
 				case pebblestore.TaskProgramStateCompleted:
+					if db.ProjectTaskPlanUnfinished(task) {
+						break
+					}
 					if !task.IsIntegrated {
 						task.Status = "needs_review"
 						if task.ActionNeeded == "" || strings.HasPrefix(task.ActionNeeded, "Action Needed: 0") {
@@ -486,10 +510,11 @@ func syncTaskSessionState(task *pebblestore.ProjectTaskRecord, db *pebblestore.S
 	}
 
 	if runFound && strings.TrimSpace(runState.RunID) != "" {
-		if runState.Status == pebblestore.V3RunIntentRunning || (runState.Active && runState.Status != pebblestore.V3RunIntentPendingExecutor && task.Status != "queued") {
+		if runState.Status == pebblestore.V3RunIntentRunning {
 			task.Status = "in_progress"
 		} else if runState.Status == pebblestore.V3RunIntentPendingExecutor {
-			// In queued preparation; keep task queued without prematurely setting in_progress.
+			// Preparation is not active execution, even if the previous card was running.
+			task.Status = "queued"
 		} else {
 			// Run concluded:
 			switch runState.Status {
@@ -497,10 +522,16 @@ func syncTaskSessionState(task *pebblestore.ProjectTaskRecord, db *pebblestore.S
 				if task.PlanBinding != nil && task.PlanBinding.PlanID != "" {
 					plan, found, err := db.GetPlan(task.SessionID, task.PlanBinding.PlanID)
 					if err != nil || !found || plan.Document == nil || len(plan.Document.Checkpoints) == 0 {
+						if task.Status == "in_progress" {
+							task.Status = "blocked"
+						}
 						return
 					}
 					for _, checkpoint := range plan.Document.Checkpoints {
 						if checkpoint.Status != "completed" {
+							if task.Status == "in_progress" {
+								task.Status = "blocked"
+							}
 							return
 						}
 					}
@@ -1519,7 +1550,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			var rec pebblestore.ProjectRecord
-			body, err := io.ReadAll(io.LimitReader(r.Body, 1024*1024))
+			body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 2*1024*1024))
 			if err != nil {
 				writeError(w, http.StatusBadRequest, errors.New("cannot read request body"))
 				return
@@ -1532,6 +1563,10 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			var themeInput map[string]json.RawMessage
 			if err := json.Unmarshal(body, &themeInput); err != nil {
 				writeError(w, http.StatusBadRequest, errors.New("invalid project payload"))
+				return
+			}
+			if raw, present := themeInput["icon_png_data_url"]; present && string(raw) == "null" {
+				writeError(w, http.StatusBadRequest, errors.New("icon_png_data_url must be a string (empty clears the icon)"))
 				return
 			}
 			if raw, present := themeInput["theme_id"]; present {
@@ -1561,6 +1596,10 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 	}
 
 	segments := strings.Split(trimmed, "/")
+	if len(segments) == 2 && segments[1] == "designs" {
+		s.handleProjectDesigns(w, r, p, segments[0])
+		return
+	}
 
 	// 2. Synthesize context: POST /v3/projects/synthesize-context
 	if len(segments) == 1 && segments[0] == "synthesize-context" {
@@ -1617,7 +1656,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			if !s.requireScopeAny(w, r, "projects:write", "sessions:write") {
 				return
 			}
-			body, err := io.ReadAll(io.LimitReader(r.Body, 1024*1024))
+			body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 2*1024*1024))
 			if err != nil {
 				writeError(w, http.StatusBadRequest, errors.New("cannot read request body"))
 				return
@@ -1628,6 +1667,12 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
+			if raw, present := patch["icon_png_data_url"]; present {
+				if _, ok := raw.(string); !ok {
+					writeError(w, http.StatusBadRequest, errors.New("icon_png_data_url must be a string (empty clears the icon)"))
+					return
+				}
+			}
 			var themeID string
 			if raw, present := patch["theme_id"]; present {
 				value, ok := raw.(string)
@@ -1642,6 +1687,9 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			updated, err := db.UpdateProject(p.AccountScopeID, projectID, func(p *pebblestore.ProjectRecord) error {
+				if icon, present := patch["icon_png_data_url"].(string); present {
+					p.IconPNGDataURL = icon
+				}
 				if _, present := patch["theme_id"]; present {
 					p.ThemeID = themeID
 				}
@@ -2003,8 +2051,16 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 							stagingID = sub
 						}
 					}
-					if stagingID != "" && s.mediaStaging != nil {
+					if stagingID != "" {
+						if s.mediaStaging == nil {
+							writeError(w, http.StatusServiceUnavailable, errors.New("media staging is unavailable"))
+							return
+						}
 						stgRecord, stgBytes, readErr := s.mediaStaging.Read(p.AccountScopeID, stagingID, time.Now().UnixMilli())
+						if readErr != nil || len(stgBytes) == 0 {
+							writeError(w, http.StatusBadRequest, errors.New("cannot resolve staged media"))
+							return
+						}
 						if readErr == nil && len(stgBytes) > 0 {
 							asset, _, putErr := s.sessions.PutSessionMediaAsset(pebblestore.PutSessionMediaAssetInput{
 								AccountScopeID:   p.AccountScopeID,
@@ -2015,8 +2071,12 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 								FileName:         stgRecord.FileName,
 								Reader:           bytes.NewReader(stgBytes),
 							})
+							if putErr != nil {
+								writeError(w, http.StatusBadRequest, fmt.Errorf("retain project media: %w", putErr))
+								return
+							}
 							if putErr == nil {
-								_, _, _ = s.mediaStaging.Bind(pebblestore.BindMediaStagingInput{
+								_, _, bindErr := s.mediaStaging.Bind(pebblestore.BindMediaStagingInput{
 									AccountScopeID: p.AccountScopeID,
 									SessionID:      targetSessionID,
 									Bindings: []pebblestore.MediaStagingBinding{{
@@ -2025,6 +2085,10 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 										DigestSHA256:     asset.DigestSHA256,
 									}},
 								})
+								if bindErr != nil {
+									writeError(w, http.StatusBadRequest, fmt.Errorf("bind project media: %w", bindErr))
+									return
+								}
 								item.URL = fmt.Sprintf("/v3/sessions/%s/media/%s", targetSessionID, asset.ID)
 								item.ID = asset.ID
 								item.DigestSHA256 = asset.DigestSHA256
@@ -2036,7 +2100,11 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 							}
 						}
 					} else if strings.HasPrefix(trimmedURL, "data:") || strings.HasPrefix(item.Data, "data:") || len(item.Data) > 0 {
-						dataPayload, dataMIME, decodeErr := s.resolveSourceMediaBytes(r.Context(), p, item, "")
+						dataPayload, dataMIME, decodeErr := s.resolveProjectUploadBytes(r.Context(), p, item)
+						if decodeErr != nil || len(dataPayload) == 0 {
+							writeError(w, http.StatusBadRequest, errors.New("cannot decode project media source"))
+							return
+						}
 						if decodeErr == nil && len(dataPayload) > 0 && s.sessions != nil {
 							asset, _, putErr := s.sessions.PutSessionMediaAsset(pebblestore.PutSessionMediaAssetInput{
 								AccountScopeID:   p.AccountScopeID,
@@ -2045,6 +2113,10 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 								FileName:         item.Filename,
 								Reader:           bytes.NewReader(dataPayload),
 							})
+							if putErr != nil {
+								writeError(w, http.StatusBadRequest, fmt.Errorf("retain project media: %w", putErr))
+								return
+							}
 							if putErr == nil {
 								item.URL = fmt.Sprintf("/v3/sessions/%s/media/%s", targetSessionID, asset.ID)
 								item.ID = asset.ID

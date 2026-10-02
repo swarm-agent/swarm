@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Calendar,
   Film,
@@ -14,7 +14,9 @@ import {
   Sparkles,
   X,
 } from 'lucide-react'
+import { subscribeDesktopSessionReset } from '../../../../app/api'
 import { fetchDesktopV3ArtifactCatalogResult } from '../../session-v3/artifact-api'
+import { DesignMediaTasks, useProjectDesigns } from './design-media'
 import { MediaGridView } from './media-grid-view'
 import { MediaIterationGroupsView } from './media-iteration-groups-view'
 import { MediaListView } from './media-list-view'
@@ -37,6 +39,7 @@ import type { MediaGenerationJob, MediaGenerationRequest } from './media-generat
 import type { QuickRouteMode } from './media-viewer-modal'
 
 interface HistoricalMediaLibraryProps {
+  projectId?: string
   initialKind?: MediaKind
   initialQuery?: string
   workspaceSlug?: string
@@ -52,6 +55,7 @@ interface HistoricalMediaLibraryProps {
 }
 
 export function HistoricalMediaLibrary({
+  projectId = '',
   initialKind = 'all',
   initialQuery = '',
   workspaceSlug: _workspaceSlug,
@@ -65,6 +69,8 @@ export function HistoricalMediaLibrary({
   initialQuickRouteMode,
   extraItems,
 }: HistoricalMediaLibraryProps) {
+  const designs = useProjectDesigns(projectId)
+  const catalogGeneration = useRef(0)
   const [catalogItems, setCatalogItems] = useState<MediaLibraryItem[]>([])
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
@@ -82,8 +88,16 @@ export function HistoricalMediaLibrary({
   // Active viewer modal item
   const [activeItem, setActiveItem] = useState<MediaLibraryItem | null>(null)
 
+  useEffect(() => { setActiveItem(null) }, [projectId])
+  useEffect(() => subscribeDesktopSessionReset(() => {
+    catalogGeneration.current++
+    setCatalogItems([]); setActiveItem(null)
+    setLoading(false); setRefreshing(false)
+  }), [])
+
   // Fetch all catalog artifacts
   const loadArtifacts = useCallback(async (isRefresh = false) => {
+    const generation = ++catalogGeneration.current
     if (isRefresh) setRefreshing(true)
     else setLoading(true)
     setError(null)
@@ -91,27 +105,28 @@ export function HistoricalMediaLibrary({
     try {
       const result = await fetchDesktopV3ArtifactCatalogResult()
       const normalized = normalizeMediaCatalogEntries(result.artifacts)
-      setCatalogItems(normalized)
+      if (generation === catalogGeneration.current) setCatalogItems(normalized)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load media artifacts')
+      if (generation === catalogGeneration.current) setError(err instanceof Error ? err.message : 'Failed to load media artifacts')
     } finally {
-      setLoading(false)
-      setRefreshing(false)
+      if (generation === catalogGeneration.current) { setLoading(false); setRefreshing(false) }
     }
   }, [])
 
   useEffect(() => {
     void loadArtifacts()
+    return () => { catalogGeneration.current++ }
   }, [loadArtifacts])
 
   // Dynamically merge catalog items with extraItems (e.g. project tasks deliverables & uploads)
   // so that new generations, tasks, and deliverables appear live without manual page refresh.
   const items = useMemo(() => {
-    if (!extraItems || extraItems.length === 0) return catalogItems
+    const additions = [...designs.items, ...(extraItems ?? [])]
+    if (additions.length === 0) return catalogItems
     const seen = new Set<string>()
     const merged: MediaLibraryItem[] = []
     // Add extra items first (newest project deliverables/tasks)
-    for (const item of extraItems) {
+    for (const item of additions) {
       if (!seen.has(item.id)) {
         seen.add(item.id)
         merged.push(item)
@@ -125,7 +140,7 @@ export function HistoricalMediaLibrary({
       }
     }
     return merged
-  }, [catalogItems, extraItems])
+  }, [catalogItems, extraItems, designs.items])
 
   // Keep activeItem up to date if the corresponding item in items updates
   const currentActiveItem = useMemo(() => {
@@ -135,7 +150,7 @@ export function HistoricalMediaLibrary({
 
   // Count items by kind
   const counts = useMemo(() => {
-    const summary = { all: items.length, image: 0, video: 0, audio: 0, animation: 0 }
+    const summary = { all: items.length, image: 0, video: 0, audio: 0, animation: 0, document: 0 }
     for (const item of items) {
       summary[item.kind] = (summary[item.kind] || 0) + 1
     }
@@ -464,7 +479,7 @@ export function HistoricalMediaLibrary({
             {/* Refresh Button */}
             <button
               type="button"
-              onClick={() => void loadArtifacts(true)}
+              onClick={() => { void loadArtifacts(true); if (projectId) void designs.refresh() }}
               disabled={refreshing}
               title="Refresh media catalog"
               aria-label="Refresh media catalog"
@@ -489,6 +504,7 @@ export function HistoricalMediaLibrary({
       )}
       {/* Main Content Area */}
       <div className="media-library-content flex-1 min-h-0 min-w-0 overflow-y-auto px-4 py-6 sm:px-8" data-thumbnail-size={thumbnailSize}>
+        {projectId && <div className="space-y-3 mb-4"><DesignMediaTasks projectId={projectId} onPreview={setActiveItem} /><details><summary>Archived designs</summary><DesignMediaTasks projectId={projectId} archived onPreview={setActiveItem} /></details></div>}
         {loading ? (
           <div className="flex h-64 flex-col items-center justify-center gap-3 text-[var(--app-text-muted)]">
             <Loader2 className="size-6 animate-spin text-[var(--app-primary)]" />

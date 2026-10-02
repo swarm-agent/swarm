@@ -240,7 +240,21 @@ const result = await client.deliverables.approve(deliverable.id);
 console.log('Published:', result.action_result);
 ```
 
-### 9. Cloud Deployment SDK (GCP Cloud Run & Compute Engine)
+### 9. Withdrawn cloud recipes — migration required
+
+**The historical recipes below are unsupported and all built-in generation/execution calls now reject them.** They are retained here only as migration context, not runnable instructions or verified measurements. The old latency, capacity, cost and image-size claims were not qualified for the canonical daemon and must not be relied upon.
+
+Use `generateOptimizedDockerfile({ runtimeImage })` with the exact
+`ghcr.io/swarm-agent/swarm-headless@sha256:<digest>` from the qualified release manifest.
+No digest is invented or selected automatically. See
+[the supported application recipe](../../containers/headless/app/README.md).
+Cloud Run, Cloud Run worker actors, and the old Compute Engine source installer
+are withdrawn: they do not preserve canonical runtime, private listener, and
+single-writer durable state contracts. Legacy manifest parsing remains available
+for migration, not as a supported deployment preset.
+
+<details>
+<summary>Historical unsupported API examples (do not execute)</summary>
 
 Deploy Swarm as a self-contained, serverless or dedicated cloud service on Google Cloud Platform with sub-1.5s cold starts and true scale-to-zero ($0 idle cost).
 
@@ -354,18 +368,8 @@ The generated deployment commands execute:
 2. **Cloud Run Deploy**: Deploys the service with `--cpu-boost` (Startup CPU Boost) and `--execution-environment gen2`.
 3. **Health Verification**: Queries the service URL and verifies `/v1/system/health`.
 
-#### Optimal GCP Deployment Settings Benchmark Reference
-
-| Setting | Recommended Value | Impact on Latency / Cost |
-| :--- | :--- | :--- |
-| **Container Runtime** | `distroless` (`static-debian12`) | Image size <35MB; pulls in <800ms vs 3.5s for alpine/full OS. |
-| **Compiler Flags** | `CGO_ENABLED=0 -ldflags="-s -w"` | Strips debug tables and symbols; reduces binary from 45MB to ~25MB. |
-| **UPX Compression** | **Omitted / Disabled** | UPX decompression increases startup CPU overhead, adding ~1s to cold starts. |
-| **Startup CPU Boost** | `--cpu-boost` | Temporarily doubles CPU during container launch; cuts cold start to **<1.5s**. |
-| **Execution Environment** | `--execution-environment gen2` | Modern Linux kernel and lower gVisor overhead. |
-| **Min Instances** | `--min-instances 0` | **$0.00/month idle cost**; only pay for active processing. |
-| **Memory Allocation** | `--memory 512Mi` | Optimal balance for Go GC and memory footprint. |
-| **Concurrency** | `--concurrency 80` | Allows multiple concurrent agent interactions per container instance. |
+The former benchmark table has been withdrawn: there is no revision-bound live
+qualification evidence for those image-size, latency, capacity or cost claims.
 
 #### Free Tier Compute Engine (GCE) & Dynamic Context Management
 
@@ -431,6 +435,8 @@ class CustomCloudProvider implements CloudDeployProvider {
 client.deploy.registerProvider(new CustomCloudProvider());
 ```
 
+</details>
+
 ## Error Handling
 
 All failed API responses throw typed `SwarmApiError` instances:
@@ -454,3 +460,14 @@ try {
 ## License
 
 Apache-2.0
+
+### Application-owned agents and conversations
+
+`client.apps` provides durable named instructions/context, revision-pinned V3 conversations,
+owned reopen/result reads and idempotent event messages. See [Application agents](APPLICATIONS.md)
+for examples, revision semantics and the private local-API transport requirement. Existing
+`projects` and `workers` remain the task and background-execution authorities.
+
+## Custom headless UI
+
+See [HEADLESS_UI.md](./HEADLESS_UI.md) for private in-container administrative setup, typed provider/settings discovery, API keys and Codex device/manual/browser sign-in, workspace creation, and `client.realtime.watchSession()` with canonical V3 replay and cancellation. The container's session-only listener does not expose administrative APIs.

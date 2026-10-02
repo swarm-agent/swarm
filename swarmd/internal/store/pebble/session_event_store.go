@@ -80,7 +80,10 @@ type V3CheckpointBoundaryMutation struct {
 }
 
 type V3SessionMutationInput struct {
-	usageScopeRepair             *pebble.Batch // Private canonical projection repair participant.
+	designChange                 *pebble.Batch     // Private independent design participant; caller holds designMu.
+	DesignAllocation             *DesignAllocation `json:"-"`
+	DesignAcceptance             *DesignAcceptance `json:"design_acceptance,omitempty"`
+	usageScopeRepair             *pebble.Batch     // Private canonical projection repair participant.
 	automationV2                 *automationV2Mutation
 	AutomationBinding            *SessionAutomationBinding  `json:"automation_binding,omitempty"`
 	AutomationDefinitionRevision uint64                     `json:"automation_definition_revision,omitempty"`
@@ -90,6 +93,7 @@ type V3SessionMutationInput struct {
 	AutomationPermission         *AutomationPermissionResolution `json:"-"`
 	automationRealtime           *automationRealtimeMutation
 	environmentRealtime          *environmentRealtimeMutation
+	designProjectOutbox          *[]*V3RealtimeOutboxRecord
 	projectRealtime              *projectRealtimeMutation
 	automationAcceptance         *AutomationApproval
 	AutomationProposal           *AutomationPlanReference      `json:"automation_proposal,omitempty"`
@@ -671,6 +675,12 @@ func (s *SessionStore) ApplyV3SessionMutation(input V3SessionMutationInput) (V3S
 	if s == nil || s.store == nil {
 		return V3SessionMutationResult{}, errors.New("session store is not configured")
 	}
+	var designProjectOutbox []*V3RealtimeOutboxRecord
+	defer func() {
+		for _, outbox := range designProjectOutbox {
+			s.store.publishProjectRealtime(&projectRealtimeMutation{outbox: outbox})
+		}
+	}()
 	input = normalizeV3SessionMutationInput(input)
 	if err := validateV3SessionMutationInput(input); err != nil {
 		return V3SessionMutationResult{}, err
@@ -686,7 +696,18 @@ func (s *SessionStore) ApplyV3SessionMutation(input V3SessionMutationInput) (V3S
 		s.store.projectsMu.Lock()
 		defer s.store.projectsMu.Unlock()
 	}
+	if input.DesignAcceptance != nil || input.DesignAllocation != nil {
+		s.store.designMu.Lock()
+		defer s.store.designMu.Unlock()
+	}
 	lockIDs := []string{input.SessionID}
+	if input.DesignAllocation != nil {
+		r, err := s.store.GetDesignRequest(DesignPrincipal{AccountID: input.AccountScopeID, PrincipalID: input.UserID}, input.DesignAllocation.RequestID)
+		if err != nil {
+			return V3SessionMutationResult{}, err
+		}
+		lockIDs = append(lockIDs, r.ParentSessionID)
+	}
 	if input.WorktreeRecovery != nil {
 		lockIDs = append(lockIDs, input.WorktreeRecovery.OwnerSessionID)
 	}
@@ -761,12 +782,16 @@ func (s *SessionStore) ApplyV3SessionMutation(input V3SessionMutationInput) (V3S
 	// lock excludes only the versioned full backfill, not unrelated commits.
 	s.store.sessionMutations.libraryRepairMu.RLock()
 	defer s.store.sessionMutations.libraryRepairMu.RUnlock()
+	input.designProjectOutbox = &designProjectOutbox
 	result, err := s.applyFreshV3SessionMutation(input, idempotencyKey)
 	budgetReceiptCommitted = err == nil && (input.TurnUsage != nil || input.MediaUsage != nil)
 	return result, err
 }
 
 func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput, idempotencyStoreKey string) (V3SessionMutationResult, error) {
+	if err := s.prepareDesignAllocation(&input); err != nil {
+		return V3SessionMutationResult{}, err
+	}
 	if err := s.prepareAutomationV2(&input); err != nil {
 		return V3SessionMutationResult{}, err
 	}
@@ -838,7 +863,30 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 			Actual:    currentSeq,
 		}
 	}
-	reservedOutbox, err := s.store.sessionMutations.reserveOutbox(s.store, 1)
+	designProjectSession := ""
+	if input.DesignAcceptance != nil || input.designChange != nil {
+		designProjectSession = input.SessionID
+	} else if input.DesignAllocation != nil {
+		r, err := s.store.GetDesignRequest(DesignPrincipal{AccountID: input.AccountScopeID, PrincipalID: input.UserID}, input.DesignAllocation.RequestID)
+		if err != nil {
+			return V3SessionMutationResult{}, err
+		}
+		designProjectSession = r.ParentSessionID
+	}
+	var designProjectIDs []string
+	if designProjectSession != "" {
+		var err error
+		designProjectIDs, err = s.designProjectLocators(DesignPrincipal{AccountID: input.AccountScopeID, PrincipalID: input.UserID}, designProjectSession)
+		if err != nil {
+			return V3SessionMutationResult{}, err
+		}
+	}
+	outboxCount := 1
+	outboxCount += len(designProjectIDs)
+	if input.DesignAllocation != nil {
+		outboxCount++
+	}
+	reservedOutbox, err := s.store.sessionMutations.reserveOutbox(s.store, outboxCount)
 	if err != nil {
 		return V3SessionMutationResult{}, err
 	}
@@ -1183,6 +1231,14 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 			return V3SessionMutationResult{}, err
 		}
 	}
+	if input.designChange != nil {
+		if input.EventType != "design.updated" || input.Kind != "design.updated" {
+			return V3SessionMutationResult{}, ErrDesignInvalid
+		}
+		if err := batch.Apply(input.designChange, nil); err != nil {
+			return V3SessionMutationResult{}, err
+		}
+	}
 	if input.usageScopeRepair != nil {
 		if input.EventType != "usage.scope.updated" {
 			return V3SessionMutationResult{}, errors.New("invalid usage repair event")
@@ -1205,6 +1261,25 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 		if err := setV3PlanSaveInBatch(batch, input.SessionID, *input.PlanSave); err != nil {
 			return V3SessionMutationResult{}, err
 		}
+	}
+	if input.DesignAllocation != nil {
+		if err := s.setDesignAllocationInvalidation(batch, input, reservedOutbox[1], now); err != nil {
+			return V3SessionMutationResult{}, err
+		}
+	}
+	if err := s.setDesignAllocationInBatch(batch, input); err != nil {
+		return V3SessionMutationResult{}, err
+	}
+	if err := s.setDesignAcceptanceInBatch(batch, input); err != nil {
+		return V3SessionMutationResult{}, err
+	}
+	var pendingDesignProjectOutbox []*V3RealtimeOutboxRecord
+	for index, projectID := range designProjectIDs {
+		outbox, err := s.setDesignProjectInvalidation(batch, DesignPrincipal{AccountID: input.AccountScopeID, PrincipalID: input.UserID}, projectID, reservedOutbox[len(reservedOutbox)-len(designProjectIDs)+index], now)
+		if err != nil {
+			return V3SessionMutationResult{}, err
+		}
+		pendingDesignProjectOutbox = append(pendingDesignProjectOutbox, outbox)
 	}
 	if err := setV3ArtifactMutationInBatch(batch, artifact); err != nil {
 		return V3SessionMutationResult{}, err
@@ -1658,6 +1733,9 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 	reservationCommitted = true
 	if err := s.store.sessionMutations.commitOutbox(s.store, reservedOutbox); err != nil {
 		return V3SessionMutationResult{}, err
+	}
+	if input.designProjectOutbox != nil {
+		*input.designProjectOutbox = pendingDesignProjectOutbox
 	}
 	v3SuccessfulFreshMutations.Add(1)
 	v3EstimatedLogicalBytes.Add(estimatedSetBytes(KeyV3RealtimeOutbox(endpointSeq), realtimeOutboxPayload) + estimatedSetBytes(KeyV3RealtimeOutboxBySessionEndpoint(input.SessionID, endpointSeq), realtimeOutboxReferencePayload) + estimatedSetBytes(KeyV3RealtimeOutboxBySessionSeq(input.SessionID, seq), realtimeOutboxReferencePayload) + estimatedSetBytes(KeyV3RealtimeOutboxByAuthScope(input.AccountScopeID, input.UserID, endpointSeq), realtimeOutboxReferencePayload))
@@ -3397,6 +3475,12 @@ func normalizeV3SessionMutationInput(input V3SessionMutationInput) V3SessionMuta
 }
 
 func validateV3SessionMutationInput(input V3SessionMutationInput) error {
+	if input.DesignAllocation != nil {
+		expected := NewDesignAllocationMutation(DesignPrincipal{AccountID: input.AccountScopeID, PrincipalID: input.UserID}, *input.DesignAllocation)
+		if input.Kind != expected.Kind || input.SessionID != expected.SessionID || input.ClientRequestID != expected.IdempotencyKey || input.PayloadHash != expected.PayloadHash {
+			return ErrDesignInvalid
+		}
+	}
 	if input.Kind == V3SessionMutationCreateSession && input.Session != nil && input.Session.AutomationV2 != nil {
 		return ErrAutomationV2Conflict
 	}
@@ -3480,6 +3564,9 @@ func validateV3SessionMutationInput(input V3SessionMutationInput) error {
 	}
 	if input.CheckpointBoundary != nil && input.Kind != V3SessionMutationCommitCheckpointBoundary {
 		return errors.New("checkpoint boundary payload requires checkpoint boundary mutation kind")
+	}
+	if err := validateDesignAcceptance(input); err != nil {
+		return err
 	}
 	if err := validateV3ArtifactMutation(input); err != nil {
 		return err

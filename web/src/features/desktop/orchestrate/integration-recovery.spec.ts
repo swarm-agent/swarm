@@ -2,15 +2,19 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { readFileSync } from 'node:fs'
 import { integrationFailure, orchestratorDrafts, repairUnavailable } from './integration-recovery'
+import { createTaskReopenController, taskReopenKey } from './task-reopen-operation'
+import { mapBackendTask } from '../state/desktop-projects-state'
 import type { ProjectSummary, RunningTask } from './orchestrate-types'
 
-// Requirement: integration recovery carries only captured lineage and diagnostic data,
-// never substitutes a project's first workspace or target. Boundary: integrationFailure
-// and repairUnavailable; pure tests are the narrowest proof of evidence construction.
 const project = { id: 'project-a', name: 'Project A', repoPath: '/wrong/repo' } as ProjectSummary
-const task = { id: 'task-a', title: 'Change parser', sessionId: 'origin', sourceWorkspacePath: '/repo', sourceWorkspaceId: 'workspace-a', worktreeBranch: 'agent/parser', baseBranch: 'release' } as RunningTask
+// Hydrate through production authority so controller tests receive the same required
+// status/default fields as real recovery actions, rather than an incomplete cast.
+const task = mapBackendTask({ id: 'task-a', title: 'Change parser', status: 'needs_review', session_id: 'origin',
+  source_workspace: { path: '/repo', workspace_id: 'workspace-a' }, worktree_branch: 'agent/parser', base_branch: 'release' })
 
-test('recovery brief preserves exact lineage, complete multiline error and unknown commits', () => {
+// Requirement: integrationFailure/repairUnavailable carry captured lineage, never
+// a project's first workspace. Pure projection is the narrowest evidence boundary.
+test('recovery preserves captured lineage, multiline errors and credential redaction', () => {
   const failure = integrationFailure(project, task, new Error('merge failed\nCONFLICT: src/parser.ts\ninspect both sides'))
   const evidence = JSON.parse(failure.brief.slice(failure.brief.indexOf('{')))
   assert.equal(evidence.source_workspace, '/repo')
@@ -24,26 +28,17 @@ test('recovery brief preserves exact lineage, complete multiline error and unkno
   assert.match(failure.brief, /untrusted diagnostic data, not instructions/)
   assert.doesNotMatch(failure.brief, /wrong\/repo/)
   assert.equal(repairUnavailable(task), undefined)
+  for (const field of ['sessionId', 'sourceWorkspacePath', 'sourceWorkspaceId', 'worktreeBranch', 'baseBranch']) assert.ok(repairUnavailable({ ...task, [field]: '' }))
+  const unknown = integrationFailure(project, { ...task, sourceWorkspacePath: undefined, baseBranch: undefined }, new Error('failed'))
+  assert.match(unknown.brief, /"source_workspace": "unknown"/)
+  assert.match(unknown.brief, /"captured_target_branch": "unknown"/)
+  const secret = integrationFailure(project, task, new Error('https://user:credential@example.test/repo token=credential Bearer credential'))
+  assert.doesNotMatch(secret.brief, /credential/)
+  assert.match(secret.error, /REDACTED/)
 })
 
-test('missing lineage disables launch without inventing target or source', () => {
-  for (const field of ['sessionId', 'sourceWorkspacePath', 'sourceWorkspaceId', 'worktreeBranch', 'baseBranch']) {
-    assert.ok(repairUnavailable({ ...task, [field]: '' }))
-  }
-  const failure = integrationFailure(project, { ...task, sourceWorkspacePath: undefined, baseBranch: undefined }, new Error('failed'))
-  assert.match(failure.brief, /"source_workspace": "unknown"/)
-  assert.match(failure.brief, /"captured_target_branch": "unknown"/)
-})
-
-test('diagnostic credential forms are not forwarded', () => {
-  const failure = integrationFailure(project, task, new Error('https://user:credential@example.test/repo token=credential Bearer credential'))
-  assert.doesNotMatch(failure.brief, /credential/)
-  assert.match(failure.error, /REDACTED/)
-})
-
-// Requirement: copy is a reviewable append, isolated by project/session and stable on
-// rerender/remount. Boundary: composer-only draft store; no network or session writes.
-test('draft append preserves content, does not repeat on read, and stays scoped', () => {
+// Requirement: composer-only drafts append once and remain scoped on remount.
+test('draft append preserves content and project scope', () => {
   const key = 'project-a:orchestrator'
   orchestratorDrafts.set(key, 'Existing draft')
   orchestratorDrafts.set('project-b:orchestrator', 'Other project')
@@ -55,164 +50,108 @@ test('draft append preserves content, does not repeat on read, and stays scoped'
   assert.equal(orchestratorDrafts.get('project-b:orchestrator').text, 'Other project')
 })
 
-// Wiring checks supplement behavior tests; they do not prove Git execution or launch.
-test('all task cards receive recovery, only integration catches create it, launch is guarded', () => {
+// Supplementary wiring check only; behavioral tests below execute the closure.
+test('every task layout receives recovery and repair uses canonical reopen', () => {
   const source = readFileSync(new URL('./OrchestrateView.tsx', import.meta.url), 'utf8')
   assert.equal((source.match(/integrationRecovery=\{renderIntegrationRecovery\(/g) || []).length, 5)
-  const controller = readFileSync(new URL('./task-integration-operation.ts', import.meta.url), 'utf8')
-  assert.equal((controller.match(/integrationFailure\(project, capturedTask, error\)/g) || []).length, 1)
-  assert.doesNotMatch(source, /setIntegrationFailures/)
-  // Legacy receipt recovery is an explicit integration retry, not a second
-  // reopen that invents missing provenance; joined API/Git tests prove admission.
-  assert.match(source, /onClick=\{\(\) => void handleIntegrateTask\(task\.id\)\}>Retry integration to refresh verified receipt/)
   const launch = source.slice(source.indexOf('const launchIntegrationRepair'), source.indexOf('// Integrate / Promote'))
-  assert.match(launch, /repairFlights.current.has/)
-  assert.match(launch, /repairFlights.current.add/)
-  assert.match(launch, /finally[\s\S]*repairFlights.current.delete/)
-  // Task-linked follow-up owns request identity/history, not generic session launch.
-  assert.match(launch, /task\.attempts\?\.find[\s\S]*task\.activeAttemptId[\s\S]*launch_state !== 'launched'/)
-  assert.match(launch, /client_request_id: active\.client_request_id, revision: active\.request_revision, feedback: active\.request, repair: true/)
-  assert.match(launch, /projectTaskFollowupPayload\(failure\.projectId, task\.id, task\.revision \?\? 0/)
+  assert.match(launch, /taskReopenOperations.run\(failure.projectId, task.id, task, feedback/)
+  assert.match(launch, /\}, true\)/)
   assert.match(launch, /\/tasks\/\$\{encodeURIComponent\(task\.id\)\}\/reopen/)
-  assert.match(launch, /method: 'POST'[\s\S]*JSON\.stringify\(body\)/)
-  assert.match(launch, /Missing task-linked repair session/)
-  assert.match(launch, /desktopProjects\.invalidate\(failure\.projectId\)/)
-  assert.match(launch, /Repair launch failed[\s\S]*Retry reuses the same session request/)
-  assert.match(launch, /sessionId: result\.task\.session_id/)
-  assert.match(launch, /setActiveSessionId\(result\.task\.session_id\)/)
-  assert.match(launch, /recoveryProjectRef\.current !== failure\.projectId/)
-  assert.doesNotMatch(launch, /startNewDesktopV3Session|repairOperations|agentName:|mode:/)
+  assert.match(launch, /mapBackendTask\(returnedTask\)/)
+  assert.doesNotMatch(launch, /startNewDesktopV3Session|handleIntegrateTask|agentName:|mode:/)
 })
 
-// Requirement: launchIntegrationRepair must use retained task history/request identity,
-// reject duplicate flights, surface failure, and navigate only to the returned linked
-// session. Execute the actual closure with injected transport/state: the narrowest
-// layer proving UI ordering, not durable backend reservation or Git execution.
-test('task-linked repair retries retained identity and isolates duplicate flights and navigation', { timeout: 5000 }, async () => {
+async function repairHarness(row: RunningTask) {
   const source = readFileSync(new URL('./OrchestrateView.tsx', import.meta.url), 'utf8')
   const closure = source.slice(source.indexOf('const launchIntegrationRepair'), source.indexOf('// Integrate / Promote'))
   const ts = await import('typescript')
-  const compiled = ts.default.transpileModule(`${closure}; return launchIntegrationRepair`, {
-    compilerOptions: { target: ts.default.ScriptTarget.ES2020 },
-  }).outputText
-  const repairTask = { ...task, revision: 8, activeAttemptId: 'repair-attempt', attempts: [{
-    id: 'repair-attempt', session_id: 'retained-repair-session', role: 'repair', status: 'failed',
-    launch_state: 'launch_failed', recovery: { session_id: 'retained-repair-session' },
-    client_request_id: 'retained-request', request_revision: 7, request: 'Retained repair feedback',
-  }] } as RunningTask
-  const failure = integrationFailure(project, repairTask, new Error('Git conflict'))
-  let state: Record<string, any> = {}
-  const flights = { current: new Set<string>() }
+  const compiled = ts.default.transpileModule(`${closure}; return launchIntegrationRepair`, { compilerOptions: { target: ts.default.ScriptTarget.ES2020 } }).outputText
+  const controller = createTaskReopenController()
   const requests: Array<{ url: string; body: any }> = []
   const navigation: string[] = []
-  let reject = true
-  let finish: (() => void) | undefined
+  let applied: RunningTask[] = []
+  let transport = async () => ({ status: 'reopened', task: { id: row.id, revision: 13, title: 'Repair', session_id: 'owned-repair' } })
   const scope = {
-    repairFlights: flights, repairUnavailable, repairStates: state,
-    setRepairStates: (update: (previous: typeof state) => typeof state) => { state = update(state) },
-    projectTaskFollowupPayload: () => { assert.fail('retained recovery must not allocate a new request') },
-    requestJson: async (url: string, options: { body: string }) => {
-      requests.push({ url, body: JSON.parse(options.body) })
-      await new Promise<void>(resolve => { finish = resolve })
-      if (reject) throw new Error('Scheduling unavailable')
-      return { task: { session_id: 'returned-repair-session' } }
-    },
-    desktopProjects: { invalidate: (id: string) => navigation.push(`invalidate:${id}`) },
+    taskReopenOperations: controller, repairUnavailable, mapBackendTask,
+    requestJson: async (url: string, options: { body: string }) => { requests.push({ url, body: JSON.parse(options.body) }); return transport() },
+    desktopProjects: { invalidate: () => {}, setOptimisticTasks: (_id: string, update: (rows: RunningTask[]) => RunningTask[]) => { applied = update([row]) } },
     recoveryProjectRef: { current: project.id }, selectedWorkerRef: { current: null },
-    setActiveTaskId: (id: string) => navigation.push(`active:${id}`),
-    setSelectedTaskId: (id: string) => navigation.push(`selected:${id}`),
-    setActiveSessionId: (id: string) => navigation.push(`session:${id}`),
-    setWorkerChatOpen: () => {}, setSelectedWorker: () => {},
-    redactIntegrationDiagnostic: (message: string) => message,
+    setActiveTaskId: (id: string) => navigation.push(`active:${id}`), setSelectedTaskId: () => {},
+    setActiveSessionId: (id: string) => navigation.push(`session:${id}`), setWorkerChatOpen: () => {}, setSelectedWorker: () => {},
   }
   const launch = new Function(...Object.keys(scope), compiled)(...Object.values(scope)) as (failure: ReturnType<typeof integrationFailure>) => Promise<void>
-  const first = launch(failure)
-  assert.equal(state[task.id].loading, true)
-  await launch(failure)
-  assert.equal(requests.length, 1, 'duplicate flight issues no request')
-  finish!()
+  return { controller, requests, navigation, applied: () => applied, scope,
+    transport: (fn: typeof transport) => { transport = fn }, launch: () => launch(integrationFailure(project, row, new Error('Git conflict'))) }
+}
+
+// Requirement: launchIntegrationRepair shares the canonical controller's single-flight,
+// CAS and exact retry identity. Execute production closure/controller with deferred
+// transport; failure must not apply authority or navigate. No backend Git claim.
+test('repair retries exact retained request, excludes repeat clicks and fences navigation', { timeout: 5000 }, async () => {
+  const retained: RunningTask = { ...task, revision: 8, activeAttemptId: 'repair-attempt', attempts: [{
+    id: 'repair-attempt', session_id: 'retained-repair', role: 'repair', status: 'failed', launch_state: 'launch_failed',
+    recovery: { session_id: 'origin' }, client_request_id: 'retained-request', request_revision: 7, request: 'Retained repair feedback',
+  }] }
+  const h = await repairHarness(retained)
+  let finish!: () => void
+  h.transport(async () => { await new Promise<void>(resolve => { finish = resolve }); throw new Error('Scheduling unavailable') })
+  const first = h.launch()
+  const key = taskReopenKey(project.id, task.id)
+  assert.equal(h.controller.get(key).pending, true)
+  await h.launch()
+  assert.equal(h.requests.length, 1)
+  finish()
   await first
-  assert.match(state[task.id].error, /Repair launch failed: Scheduling unavailable.*Retry reuses the same session request/)
-  assert.equal(flights.current.size, 0)
-  assert.deepEqual(navigation, [], 'failed launch never navigates')
-  reject = false
-  const retry = launch(failure)
-  finish!()
-  await retry
-  assert.deepEqual(requests[1], requests[0], 'retry preserves exact request and revision')
-  assert.deepEqual(requests[0], { url: '/v3/projects/project-a/tasks/task-a/reopen', body: {
+  assert.match(h.controller.get(key).error || '', /Scheduling unavailable.*Reopen was not confirmed/)
+  assert.equal(h.controller.get(key).pending, false)
+  assert.deepEqual(h.applied(), [])
+  assert.deepEqual(h.navigation, [])
+  h.transport(async () => ({ status: 'reopened', task: { id: task.id, revision: 9, title: 'Repair', session_id: 'returned-repair' } }))
+  await h.launch()
+  assert.deepEqual(h.requests[1], h.requests[0])
+  assert.deepEqual(h.requests[0], { url: '/v3/projects/project-a/tasks/task-a/reopen', body: {
     client_request_id: 'retained-request', revision: 7, feedback: 'Retained repair feedback', repair: true,
   } })
-  assert.equal(state[task.id].sessionId, 'returned-repair-session')
-  assert.ok(navigation.includes('session:returned-repair-session'))
-  assert.ok(navigation.includes('active:task-a'))
-  assert.equal(flights.current.size, 0)
+  assert.equal(h.applied()[0].sessionId, 'returned-repair')
+  assert.ok(h.navigation.includes('session:returned-repair'))
+  h.scope.recoveryProjectRef.current = 'other-project'
+  h.navigation.length = 0
+  await h.launch()
+  assert.deepEqual(h.navigation, [], 'late response must not navigate another project')
 })
 
-// Requirement: patch-equivalent but unmerged integration failures launch through
-// the actual UI closure and canonical payload function, never integration retry or
-// generic session creation. This runtime test proves transport ordering/identity;
-// the joined real-Git API test proves receipt admission and exact-source allocation.
-test('unmerged equivalent-patch failure launches repair with canonical fresh payload', { timeout: 5000 }, async () => {
-  const source = readFileSync(new URL('./OrchestrateView.tsx', import.meta.url), 'utf8')
-  const closure = source.slice(source.indexOf('const launchIntegrationRepair'), source.indexOf('// Integrate / Promote'))
-  const payloadSource = readFileSync(new URL('../runtime/project-task-followup.ts', import.meta.url), 'utf8')
-  const payloadFunction = payloadSource.slice(payloadSource.indexOf('export async function projectTaskFollowupPayload'), payloadSource.indexOf('export async function reopenProjectTask')).replace('export ', '')
-  const ts = await import('typescript')
-  const compiled = ts.default.transpileModule(`${payloadFunction}\n${closure}; return launchIntegrationRepair`, {
-    compilerOptions: { target: ts.default.ScriptTarget.ES2020 },
-  }).outputText
-  const freshTask = { ...task, revision: 12, isIntegrated: false, unintegratedCommits: 1, integration: {
-    state: 'conflict', source_head: 'original-head', previous_target_head: 'captured-head',
-  } } as RunningTask
-  const failure = integrationFailure(project, freshTask, new Error('Integration requires original commit ancestry: equivalent patches exist on the captured target, but the source history is unmerged. Launch repair.'))
-  const requests: Array<{ url: string; body: any }> = []
-  const navigation: string[] = []
-  let state: Record<string, any> = {}
-  const scope = {
-    repairFlights: { current: new Set<string>() }, repairUnavailable, repairStates: state,
-    setRepairStates: (update: (previous: typeof state) => typeof state) => { state = update(state) },
-    requestJson: async (url: string, options: { body: string }) => {
-      requests.push({ url, body: JSON.parse(options.body) })
-      return { task: { session_id: 'owned-repair' } }
-    },
-    desktopProjects: { invalidate: (id: string) => navigation.push(`invalidate:${id}`) },
-    recoveryProjectRef: { current: project.id }, selectedWorkerRef: { current: null },
-    setActiveTaskId: () => {}, setSelectedTaskId: () => {},
-    setActiveSessionId: (id: string) => navigation.push(id),
-    setWorkerChatOpen: () => {}, setSelectedWorker: () => {},
-    redactIntegrationDiagnostic: (message: string) => message,
-  }
-  const launch = new Function(...Object.keys(scope), compiled)(...Object.values(scope)) as (failure: ReturnType<typeof integrationFailure>) => Promise<void>
-  await launch(failure)
-  assert.equal(requests.length, 1)
-  assert.equal(requests[0].url, '/v3/projects/project-a/tasks/task-a/reopen')
-  assert.equal(requests[0].body.repair, true)
-  assert.equal(requests[0].body.revision, 12)
-  assert.match(requests[0].body.client_request_id, /^task-followup-[a-f0-9]{64}$/)
-  assert.equal(state[task.id].sessionId, 'owned-repair')
-  assert.ok(navigation.includes('owned-repair'))
-  await launch(failure)
-  assert.deepEqual(requests[1], requests[0], 'same selected revision retains deterministic request identity')
+// Requirement: fresh repairs hash only task/revision/feedback/repair, never a mutable
+// selected workspace or branch. A new controller (reload) reproduces the same key.
+test('fresh repair and reload preserve canonical payload and reject false success', { timeout: 5000 }, async () => {
+  const row = { ...task, revision: 12, integration: { state: 'conflict', source_head: 'source', previous_target_head: 'captured' } }
+  const first = await repairHarness(row)
+  first.transport(async () => ({ status: 'reopened', task: { id: 'wrong-task', revision: 13, title: 'Wrong', session_id: 'wrong-session' } }))
+  await first.launch()
+  assert.deepEqual(first.applied(), [])
+  assert.deepEqual(first.navigation, [])
+  const reload = await repairHarness(JSON.parse(JSON.stringify(row)))
+  await reload.launch()
+  assert.deepEqual(reload.requests[0], first.requests[0])
+  assert.equal(reload.requests[0].body.repair, true)
+  assert.equal(reload.requests[0].body.revision, 12)
+  assert.match(reload.requests[0].body.client_request_id, /^task-followup-[a-f0-9]{64}$/)
+  assert.equal(reload.applied()[0].sessionId, 'owned-repair')
+  assert.equal(row.baseBranch, 'release')
+  assert.equal(row.sourceWorkspacePath, '/repo')
 })
 
-// Requirement: a failed integration increments the durable task revision; repair
-// must select the freshly hydrated row rather than the pre-mutation diagnostic
-// snapshot. Execute the actual render-time selection expression without JSX.
-test('integration diagnostics retain error but repair uses current task revision', async () => {
+// Requirement: stale local diagnostics cannot carry an old task revision to reopen.
+test('diagnostics retain error but repair uses freshly hydrated revision', async () => {
   const source = readFileSync(new URL('./OrchestrateView.tsx', import.meta.url), 'utf8')
   const selection = source.slice(source.indexOf('const failure = (retryAttempt?.recovery'), source.indexOf('if (!selectedProject) return null', source.indexOf('const failure = (retryAttempt?.recovery')))
   const ts = await import('typescript')
-  const compiled = ts.default.transpileModule(`${selection}; return failure`, {
-    compilerOptions: { target: ts.default.ScriptTarget.ES2020 },
-  }).outputText
-  const staleTask = { ...task, revision: 3 } as RunningTask
-  const currentTask = { ...task, revision: 6, integration: { state: 'conflict', source_head: 'original-head', previous_target_head: 'captured-head' } } as RunningTask
-  const diagnostic = integrationFailure(project, staleTask, new Error('Integration requires original commit ancestry'))
-  const select = new Function('retryAttempt', 'selectedProject', 'task', 'operation', 'integrationFailure', compiled)
-  const selected = select(undefined, project, currentTask, { phase: 'error', failure: diagnostic }, integrationFailure)
-  assert.equal(selected.task, currentTask)
-  assert.equal(selected.task.revision, 6)
-  assert.equal(selected.error, diagnostic.error)
-  assert.equal(selected.projectId, diagnostic.projectId)
+  const compiled = ts.default.transpileModule(`${selection}; return failure`, { compilerOptions: { target: ts.default.ScriptTarget.ES2020 } }).outputText
+  const current = { ...task, revision: 6 }
+  const diagnostic = integrationFailure(project, { ...task, revision: 3 }, new Error('Conflict'))
+  const select = new Function('retryAttempt', 'selectedProject', 'task', 'operation', 'integrationFailure', 'outcome', compiled)
+  const result = select(undefined, project, current, { phase: 'error', failure: diagnostic }, integrationFailure, {})
+  assert.equal(result.task, current)
+  assert.equal(result.task.revision, 6)
+  assert.equal(result.error, diagnostic.error)
 })

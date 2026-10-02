@@ -19,6 +19,7 @@ type Store struct {
 	path                        string
 	closed                      atomic.Bool
 	sessionMutations            *sessionMutationCoordinator
+	deliverablesMu              sync.Mutex
 	modelProfilesMu             sync.Mutex
 	swarmProfilesMu             sync.Mutex
 	agentModelSettingsMu        sync.Mutex
@@ -29,6 +30,9 @@ type Store struct {
 	environmentsMu              sync.Mutex
 	environmentPublisherMu      sync.RWMutex
 	environmentPublisher        func(V3RealtimeOutboxRecord)
+	designMu                    sync.Mutex
+	designWakeMu                sync.Mutex
+	designWake                  chan struct{}
 	projectsMu                  sync.Mutex
 	projectPublisherMu          sync.RWMutex
 	projectPublisher            func(V3RealtimeOutboxRecord)

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 
@@ -42,9 +43,10 @@ func MaterializeSessionMediaTool(definitions []provideriface.ToolDefinition, con
 
 func mediaInspectToolParameters(describe bool) map[string]any {
 	properties := map[string]any{
-		"asset_id":   map[string]any{"type": "string"},
-		"session_id": map[string]any{"type": "string"},
-		"path":       map[string]any{"type": "string"},
+		"design_preview_reference": designPreviewReferenceSchema(),
+		"asset_id":                 map[string]any{"type": "string"},
+		"session_id":               map[string]any{"type": "string"},
+		"path":                     map[string]any{"type": "string"},
 		"artifact_reference": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -82,6 +84,7 @@ func mediaInspectToolParameters(describe bool) map[string]any {
 			{"required": []string{"path"}},
 			{"required": []string{"artifact_reference"}},
 			{"required": []string{"artifact_v3_reference"}},
+			{"required": []string{"design_preview_reference"}},
 		},
 		"additionalProperties": false,
 	}
@@ -168,12 +171,18 @@ type mediaInspectArtifactV3Reference struct {
 	RevisionRef string `json:"revision_ref"`
 }
 
+type mediaInspectDesignReference struct {
+	SessionID string                       `json:"session_id"`
+	Preview   pebblestore.DesignPreviewRef `json:"preview"`
+}
+
 type mediaInspectArguments struct {
-	AssetID             string                           `json:"asset_id,omitempty"`
-	SessionID           string                           `json:"session_id,omitempty"`
-	Path                string                           `json:"path,omitempty"`
-	ArtifactReference   *mediaInspectArtifactReference   `json:"artifact_reference,omitempty"`
-	ArtifactV3Reference *mediaInspectArtifactV3Reference `json:"artifact_v3_reference,omitempty"`
+	DesignPreviewReference *mediaInspectDesignReference     `json:"design_preview_reference,omitempty"`
+	AssetID                string                           `json:"asset_id,omitempty"`
+	SessionID              string                           `json:"session_id,omitempty"`
+	Path                   string                           `json:"path,omitempty"`
+	ArtifactReference      *mediaInspectArtifactReference   `json:"artifact_reference,omitempty"`
+	ArtifactV3Reference    *mediaInspectArtifactV3Reference `json:"artifact_v3_reference,omitempty"`
 }
 
 func decodeMediaInspectArguments(raw string) (mediaInspectArguments, error) {
@@ -182,6 +191,9 @@ func decodeMediaInspectArguments(raw string) (mediaInspectArguments, error) {
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&args); err != nil {
 		return mediaInspectArguments{}, fmt.Errorf("decode media_inspect arguments: %w", err)
+	}
+	if err := decoder.Decode(new(any)); err != io.EOF {
+		return mediaInspectArguments{}, errors.New("media_inspect requires one JSON object")
 	}
 	args.AssetID = strings.TrimSpace(args.AssetID)
 	args.SessionID = strings.TrimSpace(args.SessionID)
@@ -211,8 +223,32 @@ func decodeMediaInspectArguments(raw string) (mediaInspectArguments, error) {
 			return mediaInspectArguments{}, errors.New("media_inspect artifact_v3_reference requires session_id, artifact_id, and revision_ref")
 		}
 	}
+	if args.DesignPreviewReference != nil {
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(raw), &fields); err != nil {
+			return mediaInspectArguments{}, err
+		}
+		if len(fields) != 1 {
+			return mediaInspectArguments{}, errors.New("design preview selector cannot be combined with other fields")
+		}
+		var reference, preview, output map[string]json.RawMessage
+		if json.Unmarshal(fields["design_preview_reference"], &reference) != nil || json.Unmarshal(reference["preview"], &preview) != nil || json.Unmarshal(preview["output"], &output) != nil {
+			return mediaInspectArguments{}, errors.New("invalid design preview reference")
+		}
+		for _, key := range []string{"request_id", "candidate", "attempt", "child_session_id", "run_id", "sha256"} {
+			if value, ok := output[key]; !ok || string(value) == "null" {
+				return mediaInspectArguments{}, errors.New("incomplete design preview output reference")
+			}
+		}
+		selectorCount++
+		x := args.DesignPreviewReference
+		o := x.Preview.Output
+		if x.SessionID == "" || args.SessionID != "" || o.RequestID == "" || o.ChildSessionID == "" || o.RunID == "" || o.Attempt < 1 || o.Candidate < 0 || len(o.SHA256) != 64 || len(x.Preview.SHA256) != 64 {
+			return mediaInspectArguments{}, errors.New("invalid exact design preview reference")
+		}
+	}
 	if selectorCount != 1 {
-		return mediaInspectArguments{}, errors.New("media_inspect requires exactly one of asset_id, path, or artifact_reference")
+		return mediaInspectArguments{}, errors.New("media_inspect requires exactly one asset, path, legacy artifact, Artifact V3, or design preview selector")
 	}
 	return args, nil
 }

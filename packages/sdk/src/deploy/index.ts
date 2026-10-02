@@ -143,6 +143,8 @@ export class SwarmDeployNamespace {
       typeof input === 'object' && input !== null && 'artifacts' in input
         ? (input as DeployPlan)
         : this.plan(input as any);
+    const validation = this.validate(plan.manifest);
+    if (!validation.valid) throw new SwarmValidationError(validation.errors.join('; '));
     const modFs = 'node:fs';
     const modPath = 'node:path';
     const fs: any = await import(modFs);
@@ -175,6 +177,8 @@ export class SwarmDeployNamespace {
         ? (input as DeployPlan)
         : this.plan(input as any);
 
+    const validation = this.validate(plan.manifest);
+    if (!validation.valid) throw new SwarmValidationError(validation.errors.join('; '));
     const modFs = 'node:fs';
     const modPath = 'node:path';
     const modOs = 'node:os';

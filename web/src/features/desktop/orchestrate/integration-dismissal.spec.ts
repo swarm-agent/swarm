@@ -7,9 +7,11 @@ import ts from 'typescript'
 import { integrationFailure, repairUnavailable } from './integration-recovery'
 import { createTaskIntegrationController, taskIntegrationFailureIdentity, taskIntegrationKey, taskIntegrationPhase } from './task-integration-operation'
 import type { ProjectSummary, RunningTask } from './orchestrate-types'
+import { taskOutcome } from './task-outcome'
+import { createTaskReopenController, taskReopenKey } from './task-reopen-operation'
 
 // Purpose: acknowledging an integration/repair alert is presentation-only. The
-// regression is a retained failure recreating the panel after dismissal, or an
+// regression is dismissal hiding unresolved recovery controls, or an
 // acknowledgment hiding another lane/new failure. Controller tests plus the actual
 // renderIntegrationRecovery closure are the narrowest layer proving visibility,
 // retained history/diagnostics, and button propagation without a daemon or E2E.
@@ -29,11 +31,12 @@ function renderer(controller: ReturnType<typeof createTaskIntegrationController>
     compilerOptions: { target: ts.ScriptTarget.ES2020, jsx: ts.JsxEmit.React },
   }).outputText
   const scope = {
-    React, selectedProject, integrationFailure, repairUnavailable,
+    React, selectedProject, integrationFailure, repairUnavailable, taskOutcome, taskIntegrationPhase,
+    taskReopenOperations: createTaskReopenController(), taskReopenKey,
     taskIntegrationKey, taskIntegrationFailureIdentity, taskIntegrationOperations: controller,
     integrationForTask: (row: RunningTask) => controller.get(taskIntegrationKey(selectedProject.id, row)),
     TaskAttemptHistory: () => React.createElement('section', { 'aria-label': 'Task session history' }, React.createElement('button', { type: 'button' }, 'View task history')),
-    repairStates: {}, handleReopenTask: () => {}, launchIntegrationRepair: () => {}, handleIntegrateTask: () => {},
+    handleReopenTask: () => {}, launchIntegrationRepair: () => {}, handleIntegrateTask: () => {},
     setSelectedTaskId: () => {}, setActiveTaskId: () => {}, setActiveSessionId: () => {}, setWorkerChatOpen: () => {},
   }
   return new Function(...Object.keys(scope), compiled)(...Object.values(scope)) as (row: RunningTask) => React.ReactElement
@@ -58,19 +61,22 @@ function acknowledge(render: ReturnType<typeof renderer>, row: RunningTask) {
 
 function assertHidden(render: ReturnType<typeof renderer>, row: RunningTask) {
   const html = renderToStaticMarkup(render(row))
-  assert.doesNotMatch(html, /class="integration-recovery"|Integration failed|Dismiss integration error/)
-  assert.match(html, /View task history/, 'history remains outside the dismissed alert')
+  assert.doesNotMatch(html, /<pre>/, 'only diagnostic detail is dismissed')
+  assert.match(html, /Integration failed/)
+  assert.match(html, /Launch repair session/)
+  assert.match(html, /Retry integration to refresh verified receipt/)
 }
 
 function assertVisible(render: ReturnType<typeof renderer>, row: RunningTask) {
   const html = renderToStaticMarkup(render(row))
   assert.match(html, /class="integration-recovery" role="alert"/)
   assert.match(html, /Dismiss integration error/)
+  assert.match(html, /<pre>/)
   assert.match(html, /Retry integration to refresh verified receipt/)
   assert.match(html, /Launch repair session/)
 }
 
-test('retained receipt dismissal removes the whole panel across rerenders, refresh and view recreation', () => {
+test('retained receipt dismissal keeps recovery controls across rerenders, refresh and view recreation', () => {
   const controller = createTaskIntegrationController()
   const render = renderer(controller)
   const before = JSON.stringify(task)
@@ -95,7 +101,7 @@ test('new integration operation, changed diagnostic, task, project and attempt r
   assertVisible(render, { ...task, integration: { ...task.integration!, error: 'New conflict' } })
   assertVisible(render, { ...task, id: 'task-b' })
   assertVisible(renderer(controller, { ...project, id: 'project-b' }), task)
-  assertVisible(render, { ...task, activeAttemptId: 'attempt-b' })
+  assertVisible(render, { ...task, activeAttemptId: 'attempt-b', integration: { ...task.integration!, attempt_id: 'attempt-b' } })
   assertHidden(render, task)
 })
 
@@ -109,7 +115,7 @@ test('retained repair launch failure dismisses without losing history or the inc
   }] } as RunningTask
   acknowledge(render, repairTask)
   assertHidden(render, { ...repairTask, revision: 20, attempts: repairTask.attempts!.map(attempt => ({ ...attempt })) })
-  assert.match(renderToStaticMarkup(render(repairTask)), /Retry incomplete follow-up/)
+  assert.match(renderToStaticMarkup(render(repairTask)), /Launch repair session/, 'repair retry stays reachable with original request identity')
   const nextAttempt = { ...repairTask.attempts![0], id: 'repair-b', client_request_id: 'repair-request-b' }
   assertVisible(render, { ...repairTask, activeAttemptId: nextAttempt.id, attempts: [nextAttempt] })
   assertHidden(render, repairTask)

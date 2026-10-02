@@ -1,3 +1,4 @@
+import { SwarmCredentialsNamespace, SwarmCodexAuthNamespace } from './provider-auth.js';
 import type { SwarmTransport } from './transport.js';
 import type {
   CreateScopedTokenParams,
@@ -7,11 +8,15 @@ import type {
 } from './types.js';
 
 export class SwarmAuthNamespace {
+  readonly credentials: SwarmCredentialsNamespace;
+  readonly codex: SwarmCodexAuthNamespace;
   private transport: SwarmTransport;
   private onTokenUpdate?: (token: string) => void;
 
   constructor(transport: SwarmTransport, onTokenUpdate?: (token: string) => void) {
     this.transport = transport;
+    this.credentials = new SwarmCredentialsNamespace(transport);
+    this.codex = new SwarmCodexAuthNamespace(transport);
     this.onTokenUpdate = onTokenUpdate;
   }
 

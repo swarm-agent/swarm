@@ -33,6 +33,7 @@ export class SwarmTransport {
   }
 
   async request<T = unknown>(path: string, options: RequestOptions = {}): Promise<TransportResponse<T>> {
+    if (options.signal?.aborted) throw new SwarmApiError('Request aborted by caller', { status: 0 });
     const timeoutMs = options.timeoutMs ?? this.config.timeoutMs;
     const method = (options.method ?? 'GET').toUpperCase();
 
@@ -60,7 +61,7 @@ export class SwarmTransport {
 
     // If socketPath is configured, route via Node.js Unix domain socket
     if (this.config.socketPath) {
-      return this.requestSocket<T>(path, method, headers, bodyStr, timeoutMs);
+      return this.requestSocket<T>(path, method, headers, bodyStr, timeoutMs, options.signal);
     }
 
     // Standard HTTP/HTTPS via fetch
@@ -89,6 +90,7 @@ export class SwarmTransport {
     const abortHandler = () => controller.abort(externalSignal?.reason);
     if (externalSignal) {
       externalSignal.addEventListener('abort', abortHandler, { once: true });
+      if (externalSignal.aborted) abortHandler();
     }
 
     try {
@@ -152,7 +154,8 @@ export class SwarmTransport {
     method: string,
     headers: Record<string, string>,
     bodyStr: string | undefined,
-    timeoutMs: number
+    timeoutMs: number,
+    externalSignal?: AbortSignal
   ): Promise<TransportResponse<T>> {
     let httpModule: any;
     try {
@@ -237,6 +240,10 @@ export class SwarmTransport {
         reject(new SwarmApiError(`Socket error: ${err?.message || String(err)}`, { status: 0, details: err }));
       });
 
+      const abort = () => req.destroy(new SwarmApiError('Request aborted by caller', { status: 0 }));
+      externalSignal?.addEventListener('abort', abort, { once: true });
+      req.on('close', () => externalSignal?.removeEventListener('abort', abort));
+      if (externalSignal?.aborted) { abort(); return; }
       if (bodyStr !== undefined) {
         req.write(bodyStr);
       }

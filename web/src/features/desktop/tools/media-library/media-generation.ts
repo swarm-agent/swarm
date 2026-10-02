@@ -1147,6 +1147,7 @@ export function validateMediaGenerationRequest(options: {
   nowMs?: number
 }): MediaGenerationValidationResult {
   const { action, item, model, modelOption, prompt, settings, variantCount, nowMs } = options
+  if (item.source === 'independent-design') return { valid: false, error: 'Independent designs require an exact design edit request.' }
 
   if (!prompt || !prompt.trim()) {
     return { valid: false, error: 'Please enter prompt instructions to proceed.' }

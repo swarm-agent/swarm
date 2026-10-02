@@ -21,7 +21,7 @@ Launch is centered on reliable local operation. Preserve loopback-only defaults,
 
 - **Dedicated local-container execution is retired.** Do not restore container profiles, stores, routes, images, harnesses, or container-specific workspace behavior. Containers or other non-local execution may return only as future runner targets through a separately designed contract.
 - **The general-purpose Flow product is retired.** Do not add Flow definitions, Flow APIs, or a parallel Flow executor. Workspace Actions are the current reusable executable customization. Some UI code uses “flow” as a local label for pinned Action/AI-commit combinations; that is not a standalone Flow runtime or persistence authority.
-- **User-authored custom agents are not a launch product surface.** Launch agents are code-owned system agents with configurable model assignments. Remaining mutable agent-profile APIs or storage must be treated as compatibility/migration debt, not as authority for new product behavior. Do not restore custom-agent creation UX or build new features on it unless the user explicitly scopes a replacement/removal migration.
+- **System agents remain code-owned.** Legacy mutable agent-profile APIs remain compatibility/migration debt. The explicit application-agent contract (`/v3/application-agents`, SDK `client.apps`) adds principal-owned, revisioned application instructions/context and canonical V3 conversation ownership; it does not change system-agent models, tools, permissions or orchestration authority. Project/worker links retain their existing execution and context contracts.
 - Hosted control planes, managed synchronization, remote deployment, and retired runner route-mirroring are not current product contracts.
 
 ## 1. Non-Negotiable Public Repo Rules

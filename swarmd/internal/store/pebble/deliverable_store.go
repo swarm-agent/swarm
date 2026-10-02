@@ -41,6 +41,7 @@ type DeliverableRecord struct {
 	Payload          map[string]any                 `json:"payload,omitempty"` // posts, tweets, report text, diffs, etc.
 	MediaRefs        []SessionPlanArtifactReference `json:"media_refs,omitempty"`
 	ActionContract   *DeliverableActionContract     `json:"action_contract,omitempty"`
+	PublicationClaim string                         `json:"publication_claim,omitempty"`
 	ActionResult     map[string]any                 `json:"action_result,omitempty"`
 	RevisionFeedback *DeliverableRevisionFeedback   `json:"revision_feedback,omitempty"`
 	RevisionHistory  []DeliverableRevisionFeedback  `json:"revision_history,omitempty"`
@@ -74,7 +75,7 @@ func (d *DeliverableRecord) Validate() error {
 		d.Status = "pending_review"
 	}
 	switch d.Status {
-	case "pending_review", "approved", "rejected", "published", "dismissed", "needs_revision":
+	case "pending_review", "approved", "rejected", "published", "dismissed", "needs_revision", "publishing", "publication_failed", "reconciliation_required":
 		// valid
 	default:
 		return errors.New("invalid deliverable status; must be pending_review, approved, rejected, published, dismissed, or needs_revision")
@@ -83,6 +84,29 @@ func (d *DeliverableRecord) Validate() error {
 }
 
 func (s *SessionStore) PutDeliverable(accountScopeID string, deliv *DeliverableRecord) error {
+	if s == nil || s.store == nil {
+		return errors.New("database not available")
+	}
+	s.store.deliverablesMu.Lock()
+	defer s.store.deliverablesMu.Unlock()
+	if deliv == nil {
+		return errors.New("deliverable definition required")
+	}
+	deliv.ID = strings.TrimSpace(deliv.ID)
+	if deliv.PublicationClaim != "" || deliv.Status == "publishing" || deliv.Status == "published" || deliv.Status == "publication_failed" || deliv.Status == "reconciliation_required" {
+		return errors.New("publication state is server owned")
+	}
+	old, _, err := s.GetDeliverable(accountScopeID, deliv.ID)
+	if deliv.ID != "" && err != nil {
+		return err
+	}
+	if old.PublicationClaim != "" || old.Status == "published" {
+		return errors.New("publication requires reconciliation; record is immutable")
+	}
+	return s.putDeliverableLocked(accountScopeID, deliv)
+}
+
+func (s *SessionStore) putDeliverableLocked(accountScopeID string, deliv *DeliverableRecord) error {
 	if s == nil || s.store == nil || s.store.db == nil {
 		return errors.New("database not available")
 	}
@@ -116,10 +140,14 @@ func (s *SessionStore) PutDeliverable(accountScopeID string, deliv *DeliverableR
 	mainKey := KeyDeliverable(accountScopeID, deliv.ID)
 	if val, closer, err := s.store.db.Get([]byte(mainKey)); err == nil {
 		var old DeliverableRecord
-		if json.Unmarshal(val, &old) == nil {
-			oldRecord = &old
-		}
+		decodeErr := json.Unmarshal(val, &old)
 		closer.Close()
+		if decodeErr != nil {
+			return decodeErr
+		}
+		oldRecord = &old
+	} else if !errors.Is(err, pebble.ErrNotFound) {
+		return err
 	}
 
 	val, err := json.Marshal(deliv)
@@ -335,6 +363,11 @@ func (s *SessionStore) RequestChangesDeliverable(accountScopeID, id, notes strin
 }
 
 func (s *SessionStore) DeleteDeliverable(accountScopeID, id string) error {
+	if s == nil || s.store == nil {
+		return errors.New("database not available")
+	}
+	s.store.deliverablesMu.Lock()
+	defer s.store.deliverablesMu.Unlock()
 	if s == nil || s.store == nil || s.store.db == nil {
 		return errors.New("database not available")
 	}
@@ -352,6 +385,9 @@ func (s *SessionStore) DeleteDeliverable(accountScopeID, id string) error {
 		return nil
 	}
 
+	if rec.PublicationClaim != "" || rec.Status == "published" {
+		return errors.New("publication requires reconciliation; record is immutable")
+	}
 	batch := s.store.db.NewBatch()
 	defer batch.Close()
 

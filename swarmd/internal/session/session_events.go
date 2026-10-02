@@ -93,7 +93,11 @@ func (s *Service) ApplySessionMutation(input SessionMutationInput) (SessionMutat
 	if s == nil || s.store == nil {
 		return SessionMutationResult{}, errors.New("session store is not configured")
 	}
-	return s.store.ApplyV3SessionMutation(input)
+	result, err := s.store.ApplyV3SessionMutation(input)
+	if err == nil && input.DesignAcceptance != nil {
+		s.store.DesignStore().WakeDesign()
+	}
+	return result, err
 }
 
 func (s *Service) GetSessionArtifactCollection(accountScopeID, sessionID, collectionID string) (ArtifactCollection, bool, error) {

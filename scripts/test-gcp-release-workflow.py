@@ -75,12 +75,22 @@ class PromotionTests(unittest.TestCase):
                 self.assertEqual(before, {p.name: p.read_bytes() for p in d.iterdir()})
 
     def test_workflow_contract(self):
+        """Wiring guard: native builds stay outside GitHub; protected publication
+        installs OCI transport, not a compiler. This is not runtime trust proof.
+        Authority: build-main.yml job boundaries and publish-headless-release.sh.
+        """
         workflow = (ROOT / '.github/workflows/build-main.yml').read_text()
-        for forbidden in ('setup-go@', 'setup-node@', 'apt-get', 'pnpm install', 'build-main-dist.sh', 'smoke-release-archive.sh', 'run-critical-tests.sh', 'smoke-evidence.txt'):
+        for forbidden in ('setup-go@', 'pnpm install', 'build-main-dist.sh', 'smoke-release-archive.sh', 'run-critical-tests.sh', 'smoke-evidence.txt'):
             self.assertNotIn(forbidden, workflow)
         for required in ('build-stable-release:', 'publish-stable-release:', 'environment: stable-release', 'predicate-type: https://swarm.dev/attestations/release-promotion/v1', 'scripts/gcp-release-input.py'):
             self.assertIn(required, workflow)
         self.assertEqual(workflow.count('--gcp-promotion-dir '), 2)
+        publish = workflow.split('  publish-stable-release:', 1)[1]
+        self.assertIn("github.event_name == 'push' && github.ref == 'refs/heads/main'", publish)
+        self.assertIn('environment: stable-release', publish)
+        self.assertLess(publish.index('scripts/publish-headless-release.sh'), publish.index('gh release create'))
+        self.assertLess(publish.index('gh release create'), publish.index('npm publish'))
+        self.assertNotIn('packages: write', workflow.split('  publish-stable-release:', 1)[0])
 
     def test_no_implicit_legacy_mode(self):
         result = subprocess.run(['bash', 'scripts/verify-release-evidence.sh', 'absent', 'absent', 'absent', 'absent'], cwd=ROOT, capture_output=True, text=True, timeout=5)

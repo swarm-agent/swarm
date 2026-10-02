@@ -33,7 +33,11 @@ export class DesktopWorkersRuntime {
     if (!old && this.demand.size >= 48) throw new Error('Too many worker pages open')
     this.demand.set(key, { input, count: (old?.count ?? 0) + 1 })
     let released = false
-    return { ready: this.refresh(input), release: () => {
+    // Additional consumers share the live page, not just an in-flight request.
+    // Events, reconnect repair and explicit refresh own subsequent reads.
+    const page = this.deps.pages()[key]
+    const ready = this.flights.get(key) ?? (page?.data && !page.stale ? Promise.resolve() : this.refresh(input))
+    return { ready, release: () => {
       if (released) return
       released = true
       const entry = this.demand.get(key)

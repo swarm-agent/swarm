@@ -51,10 +51,6 @@ git -c core.hooksPath=/dev/null clone /input/source.bundle /candidate/source
 cd /candidate/source
 git -c core.hooksPath=/dev/null checkout --detach "$CANDIDATE_HEAD"
 test "$(git rev-parse HEAD)" = "$CANDIDATE_HEAD"
-cd /candidate/source/swarmd
-phase go-build
-CGO_ENABLED=1 build_step go build -p 2 -trimpath -o /out/swarmd ./cmd/swarmd
-cp internal/fff/lib/linux-amd64-gnu/libfff_c.so /out/
 cd /candidate/source/web
 phase web-install
 build_step cmp pnpm-lock.yaml /cache-manifests/web/pnpm-lock.yaml
@@ -63,8 +59,18 @@ build_step cmp package.json /cache-manifests/web/package.json
 # Dependency overrides, allowBuilds and all security settings must still match.
 build_step node -e 'const fs = require("node:fs"); const normalize = p => fs.readFileSync(p,"utf8").split("\n").filter(l => l !== "confirmModulesPurge: false").join("\n"); if (normalize("pnpm-workspace.yaml") !== normalize("/cache-manifests/web/pnpm-workspace.yaml")) { console.error("offline pnpm workspace settings mismatch"); process.exit(1); }'
 build_step cp -a /cache-manifests/web/node_modules ./node_modules
-phase web-build
 export RAYON_NUM_THREADS=2 NODE_OPTIONS=--max-old-space-size=3072
+if [[ -n "${CANDIDATE_PREBUILD_SCRIPT:-}" ]]; then
+    phase prebuild
+    cd /candidate/source
+    build_step timeout --kill-after=10s 480s bash "$CANDIDATE_PREBUILD_SCRIPT"
+fi
+cd /candidate/source/swarmd
+phase go-build
+CGO_ENABLED=1 build_step go build -p 2 -trimpath -o /out/swarmd ./cmd/swarmd
+cp internal/fff/lib/linux-amd64-gnu/libfff_c.so /out/
+cd /candidate/source/web
+phase web-build
 build_step pnpm run build
 export LD_LIBRARY_PATH=/out SWARM_WEB_DIST_DIR=/candidate/source/web/dist
 phase daemon-start
@@ -529,7 +535,7 @@ class NspawnRuntime:
                     with os.fdopen(fd, 'rb') as stream:
                         if stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
                             value = stream.read(64).decode('ascii', errors='ignore').strip()
-                            if value.removeprefix('failed-') in {'source', 'go-build', 'web-install', 'web-build', 'daemon-start', 'failed'}:
+                            if value.removeprefix('failed-') in {'source', 'prebuild', 'go-build', 'web-install', 'web-build', 'daemon-start', 'failed'}:
                                 phase = value
                 except OSError:
                     pass
@@ -543,11 +549,11 @@ class NspawnRuntime:
                 try:
                     with open(Path(self.pool.config.root) / (self.name(record) + '.exchange') / 'phase', 'rb') as stream:
                         last = stream.read(64).decode('ascii', errors='ignore').strip()
-                    if re.fullmatch(r'(failed-)?(source|go-build|web-install|web-build|daemon-start)', last):
+                    if re.fullmatch(r'(failed-)?(source|prebuild|go-build|web-install|web-build|daemon-start)', last):
                         phase = last
                 except OSError:
                     pass
-                if phase.startswith('failed-') or phase in {'go-build', 'web-build', 'daemon-start'}:
+                if phase.startswith('failed-') or phase in {'prebuild', 'go-build', 'web-build', 'daemon-start'}:
                     self.print_failure_diagnostic(record)
                 raise PoolError('candidate unit stopped at ' + phase + ': load=' + values.get('LoadState', 'missing') + ' active=' + values.get('ActiveState', 'missing'))
             ready = True
@@ -568,7 +574,17 @@ class NspawnRuntime:
             time.sleep(0.5)
         raise PoolError('candidate build/start deadline exceeded')
 
-    def deploy(self, lane, head):
+    def deploy(self, lane, head, prebuild_script=None, browser_directory=None):
+        if prebuild_script is not None:
+            validate_prebuild_script(prebuild_script, lane, head, self.commands)
+        browser_bind = []
+        if browser_directory is not None:
+            browser = Path(browser_directory).resolve(strict=True)
+            if not browser.is_dir() or not (browser / 'chrome').is_file():
+                raise PoolError('browser directory must contain an installed Chrome executable')
+            if ':' in str(browser) or any(c in str(browser) for c in '\n\r'):
+                raise PoolError('invalid browser directory')
+            browser_bind = ['--bind-ro=' + str(browser) + ':/opt/google/chrome']
         self.doctor(lane)
         with self.exclusive():
             r = self.pool.claim(lane)
@@ -584,12 +600,9 @@ class NspawnRuntime:
                                    self.name(r), str(Path(self.pool.config.root) / (self.name(r) + '.exchange'))])
                 name = self.name(r)
                 root = self.pool.config.root
-                docker_binds = []
-                if os.path.exists('/usr/bin/docker') and os.path.exists('/var/run/docker.sock'):
-                    docker_binds = [
-                        '--bind-ro=/usr/bin/docker:/usr/local/bin/docker',
-                        '--bind=/var/run/docker.sock:/var/run/docker.sock',
-                    ]
+                # Candidate code must never receive a host container-manager socket.
+                prebuild_env = ([] if prebuild_script is None else
+                                ['--setenv=CANDIDATE_PREBUILD_SCRIPT=' + prebuild_script])
                 argv = self.start_args(r, self.units(r)[0]) + [
                     'systemd-nspawn', '--quiet', '--settings=no', '--register=no', '--keep-unit',
                     '--machine=' + name, '--image=' + root + '/' + name + '.raw',
@@ -597,7 +610,7 @@ class NspawnRuntime:
                     '--link-journal=no', '--as-pid2', '--console=pipe',
                     '--bind-ro=' + root + '/' + name + '.bundle:/input/source.bundle:idmap',
                     '--setenv=CANDIDATE_HEAD=' + head,
-                    '--bind=' + root + '/' + name + '.exchange:/exchange:idmap'] + docker_binds + [
+                    '--bind=' + root + '/' + name + '.exchange:/exchange:idmap'] + prebuild_env + browser_bind + [
                     '/bin/bash', '-c', GUEST]
                 self.commands.run(argv)
                 self.wait_ready(r, lane)
@@ -624,14 +637,30 @@ class NspawnRuntime:
                 raise
 
 
+def validate_prebuild_script(path, lane, head, commands):
+    """Only a regular script in the exact committed candidate may run in its guest."""
+    if not re.fullmatch(r'[A-Za-z0-9_-]+(?:/[A-Za-z0-9_.-]+)*\.sh', path) or any(
+            part in {'.', '..'} for part in path.split('/')):
+        raise PoolError('prebuild script must be a repository-relative shell script')
+    entry = commands.run(['git', '-c', 'safe.directory=' + lane.worktree,
+                          '-C', lane.worktree, 'ls-tree', head, '--', path], output=True)
+    fields = entry.strip().split('\t')
+    if len(fields) != 2 or fields[1] != path or not fields[0].startswith(('100644 blob ', '100755 blob ')):
+        raise PoolError('prebuild script must be a committed regular file')
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=['doctor', 'deploy', 'status', 'pool-status', 'touch', 'stop', 'reap', 'supervise'])
     parser.add_argument('--env-file', required=True)
     parser.add_argument('--worktree', default=os.getcwd())
     parser.add_argument('--generation')
+    parser.add_argument('--prebuild-script', help='Committed relative shell script; runs only inside the guest before builds')
+    parser.add_argument('--browser-directory', help='Optional installed Chrome program directory, bound read-only into the guest (no profiles)')
     args = parser.parse_args(argv)
     try:
+        if (args.prebuild_script or args.browser_directory) and args.action != 'deploy':
+            raise PoolError('--prebuild-script requires deploy')
         settings = load_settings(args.env_file)
         commands = Commands()
         lane, head = git_identity(args.worktree, commands, clean=args.action == 'deploy')
@@ -641,7 +670,7 @@ def main(argv=None):
             if args.action == 'doctor':
                 result = runtime.doctor(lane)
             elif args.action == 'deploy':
-                result = runtime.deploy(lane, head)
+                result = runtime.deploy(lane, head, args.prebuild_script, args.browser_directory)
             elif args.action == 'supervise':
                 import signal
                 import threading

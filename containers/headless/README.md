@@ -316,3 +316,16 @@ This bounded package check builds outside the checkout, packs both tarballs into
 the selected output directory and installs them into a clean temporary consumer.
 It runs no daemon or agents. The separate live qualification and GitHub dev-to-main
 review/merge must precede approved image/npm publication.
+
+## Custom local SDK UI
+
+[Workshop](../../examples/headless-app/README.md) is a separate, single-owner
+custom browser UI and Node BFF packaged by `containers/headless/app/Dockerfile`.
+It extends the root runtime image and uses the checked-in SDK over the private
+in-container Unix socket. Its documented launch publishes only HTTPS 8443 on
+host loopback, uses five dedicated named volumes, and imports no host credentials.
+The UI supports explicit owner setup, API keys, Codex device sign-in, catalog/role
+settings, repository preparation, sessions and SDK V3 streaming. The session-only
+`ContainerSDKHandler` is not widened. Follow that guide for build, generated-secret
+login, persistence and focused validation; source availability is not evidence
+of a tested image or live provider run.

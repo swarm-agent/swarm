@@ -206,7 +206,13 @@ class ReleaseTests(unittest.TestCase):
         inputs['source_sha'] = B
         with self.assertRaises(s.relay.Invalid): s.archive_info(archive(), 'v1.2.3', inputs)
 
-    def test_consume_v2_intake_stages_files_and_attestation_input(self):
+    def test_consume_rejects_unbound_v2_intake_without_writes(self):
+        """Requirement: consume must not manufacture evidence from a check summary.
+
+        Threat: native success becomes fabricated qualification. Exercise the
+        consumer boundary with the formerly accepted weak input and assert no
+        staged files or GitHub outputs, without network or publication.
+        """
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             out_dir = tmp_path / 'dist'
@@ -270,16 +276,10 @@ class ReleaseTests(unittest.TestCase):
             google.transport = gcs_transport
             google.token = 'fake'
 
-            s.consume(env, event, google=google, transport=github_transport)
-
-            self.assertTrue((out_dir / f'swarm-{version}-linux-amd64.tar.gz').is_file())
-            self.assertTrue((out_dir / f'swarm-{version}-linux-amd64.tar.gz.sha256').is_file())
-            self.assertTrue((out_dir / 'build-info.txt').is_file())
-            self.assertTrue((out_dir / 'gcp-qualification-evidence.json').is_file())
-            self.assertTrue((out_dir / 'gcp-release-manifest.json').is_file())
-            self.assertTrue((out_dir / 'gcp-build-provenance.json').is_file())
-            self.assertTrue((out_dir / 'promotion-predicate.json').is_file())
-            self.assertIn(f'version={version}', gh_output.read_text())
+            with self.assertRaises(s.relay.Invalid):
+                s.consume(env, event, google=google, transport=github_transport)
+            self.assertFalse(out_dir.exists())
+            self.assertEqual(gh_output.read_text(), '')
 
 
 if __name__ == '__main__':

@@ -1,5 +1,7 @@
 # syntax=docker/dockerfile:1
-FROM docker.io/library/golang:1.26.7-trixie AS build
+ARG BUILD_IMAGE=docker.io/library/golang:1.26.7-trixie
+ARG RUNTIME_IMAGE=docker.io/library/debian:trixie-slim
+FROM ${BUILD_IMAGE} AS build
 ARG TARGETOS
 ARG TARGETARCH
 RUN test "${TARGETOS}/${TARGETARCH}" = linux/amd64 || \
@@ -23,7 +25,12 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
     done && \
     cp internal/fff/lib/linux-amd64-gnu/libfff_c.so /out/lib/
 
-FROM docker.io/library/debian:trixie-slim AS runtime
+FROM ${RUNTIME_IMAGE} AS runtime
+ARG VERSION=dev
+ARG COMMIT=unknown
+LABEL org.opencontainers.image.source="https://github.com/swarm-agent/swarm" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${COMMIT}"
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates git bash libc-bin libgcc-s1 libstdc++6 && \
     rm -rf /var/lib/apt/lists/* && \

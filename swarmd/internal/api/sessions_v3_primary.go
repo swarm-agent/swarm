@@ -369,6 +369,10 @@ func (s *Server) handleSessionV3PrimaryByID(w http.ResponseWriter, r *http.Reque
 			s.handleSessionV3VideoSubpath(w, r, principal, sessionID, strings.TrimPrefix(subpath, "video/"))
 			return
 		}
+		if subpath == "designs" || strings.HasPrefix(subpath, "designs/") {
+			s.handleSessionV3Designs(w, r, principal, sessionID, strings.TrimPrefix(subpath, "designs"))
+			return
+		}
 		if subpath == "artifacts-v3" || strings.HasPrefix(subpath, "artifacts-v3/") {
 			s.handleSessionV3ArtifactsV3(w, r, principal, sessionID, strings.TrimPrefix(subpath, "artifacts-v3"))
 			return
@@ -943,6 +947,9 @@ func (s *Server) handleSessionsV3PrimaryCreate(w http.ResponseWriter, r *http.Re
 		Metadata:        sessionsV3ModelProfileMetadata(sessionsV3CreateServerMetadata(req.Metadata, resolvedAgent, binding), modelProfileSnapshot),
 		CreatedAt:       now,
 		UpdatedAt:       now,
+	}
+	if appBinding, ok := r.Context().Value(applicationAgentContextKey{}).(applicationAgentBinding); ok {
+		session.Metadata[applicationAgentBindingKey] = appBinding
 	}
 	if req.Purpose == pebblestore.SessionPurposeAutomationManagement {
 		if binding.SourceWorkspaceID == "" || resolvedAgent.Name != agentruntime.SwarmAgentID {
@@ -4269,7 +4276,8 @@ func sessionsV3AuthorityInt(authority map[string]any, keys ...string) int {
 
 func isProtectedSessionsV3MetadataKey(key string) bool {
 	switch strings.ToLower(strings.TrimSpace(key)) {
-	case pebblestore.SessionPurposeMetadataKey,
+	case applicationAgentBindingKey,
+		pebblestore.SessionPurposeMetadataKey,
 		pebblestore.SessionPurposeWorkspaceMetadataKey,
 		"agent_name",
 		"agent_profile",

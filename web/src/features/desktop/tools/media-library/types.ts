@@ -1,6 +1,6 @@
 import type { DesktopV3ArtifactCatalogEntry, VideoProvenance } from '../../session-v3/artifact-api'
 
-export type MediaKind = 'all' | 'image' | 'video' | 'audio' | 'animation'
+export type MediaKind = 'all' | 'image' | 'video' | 'audio' | 'animation' | 'document'
 
 export type MediaViewMode = 'grid' | 'list'
 
@@ -10,8 +10,12 @@ export type MediaGroupingMode = 'date' | 'iteration'
 
 export type MediaSortOrder = 'newest' | 'oldest' | 'title' | 'type'
 
-export interface MediaLibraryItem {
-  artifact: DesktopV3ArtifactCatalogEntry
+export type MediaLibraryItem = MediaLibraryFields & (
+  | { source?: 'artifact'; artifact: DesktopV3ArtifactCatalogEntry; design?: never }
+  | { source: 'independent-design'; artifact?: never; design: { projectId: string; requestId: string; candidate: number; revision: import('../../session-v3/design-api').DesignRevision } }
+)
+
+export interface MediaLibraryFields {
   id: string
   title: string
   filename: string

@@ -753,3 +753,13 @@ function main(): void {
 }
 
 main()
+
+// Purpose: permissionRequiresApproval must preserve the server's per-source consent
+// boundary despite ordinary read defaults and bypass modes. This pure classifier
+// test is the narrowest layer proving visibility without sharing any source bytes.
+for (const mode of ['plan', 'auto', 'yolo']) {
+  for (const toolName of ['read', 'functions.read']) {
+    assert(permissionRequiresApproval(makePermission({ toolName, mode, requirement: 'design_source_sensitive_read' }), mode), 'Designer source consent must remain visible')
+    assert(!permissionRequiresApproval(makePermission({ toolName, mode, requirement: '' }), mode), 'ordinary reads must remain non-interactive')
+  }
+}

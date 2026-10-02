@@ -10,6 +10,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	"swarm/packages/swarmd/internal/privacy"
 )
 
 type lyriaInteractionRequest struct {
@@ -57,7 +59,8 @@ func (s *Service) generateGoogleLyria(
 	shapedPrompt string,
 	durationSeconds int,
 	req ManagedAudioRequest,
-) (ManagedAudioResult, error) {
+) (result ManagedAudioResult, retErr error) {
+	defer func() { retErr = privacy.SafeError(retErr, apiKey) }()
 	reqBody := lyriaInteractionRequest{
 		Model: modelID,
 		ResponseFormat: &lyriaResponseFormat{
@@ -98,7 +101,7 @@ func (s *Service) generateGoogleLyria(
 		return ManagedAudioResult{}, fmt.Errorf("marshal lyria request: %w", err)
 	}
 
-	endpoint := fmt.Sprintf("%s/v1beta/interactions?key=%s", s.googleURL(), apiKey)
+	endpoint := fmt.Sprintf("%s/v1beta/interactions", s.googleURL())
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
 	if err != nil {
 		return ManagedAudioResult{}, err
@@ -106,7 +109,7 @@ func (s *Service) generateGoogleLyria(
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("x-goog-api-key", apiKey)
 
-	resp, err := s.client().Do(httpReq)
+	resp, err := privacy.GoogleMediaClient(s.client()).Do(httpReq)
 	if err != nil {
 		return ManagedAudioResult{}, fmt.Errorf("call google interactions api: %w", err)
 	}
@@ -234,9 +237,11 @@ func (s *Service) extractLyriaOutput(ctx context.Context, apiKey string, resp ly
 	return audioBytes, lyrics, nil
 }
 
-func (s *Service) downloadGoogleFile(ctx context.Context, apiKey string, fileURI string) ([]byte, error) {
-	if !strings.HasPrefix(fileURI, "http://") && !strings.HasPrefix(fileURI, "https://") {
-		fileURI = fmt.Sprintf("%s/%s", s.googleURL(), strings.TrimPrefix(fileURI, "/"))
+func (s *Service) downloadGoogleFile(ctx context.Context, apiKey string, fileURI string) (data []byte, retErr error) {
+	defer func() { retErr = privacy.SafeError(retErr, apiKey) }()
+	fileURI, err := privacy.GoogleMediaURL(s.googleURL(), fileURI)
+	if err != nil {
+		return nil, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fileURI, nil)
 	if err != nil {
@@ -244,7 +249,7 @@ func (s *Service) downloadGoogleFile(ctx context.Context, apiKey string, fileURI
 	}
 	req.Header.Set("x-goog-api-key", apiKey)
 
-	resp, err := s.client().Do(req)
+	resp, err := privacy.GoogleMediaClient(s.client()).Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("download google audio: %w", err)
 	}
@@ -254,7 +259,7 @@ func (s *Service) downloadGoogleFile(ctx context.Context, apiKey string, fileURI
 		return nil, fmt.Errorf("download google audio failed (%d)", resp.StatusCode)
 	}
 
-	data, err := io.ReadAll(io.LimitReader(resp.Body, managedAudioMaxBytes))
+	data, err = io.ReadAll(io.LimitReader(resp.Body, managedAudioMaxBytes))
 	if err != nil {
 		return nil, fmt.Errorf("read google audio bytes: %w", err)
 	}

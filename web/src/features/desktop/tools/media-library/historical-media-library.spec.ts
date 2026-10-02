@@ -189,12 +189,15 @@ test('HistoricalMediaLibrary forwards onGenerate, generationJobs, and isGenerati
   assert.match(source, /initialQuickRouteMode=\{initialQuickRouteMode\}/)
 })
 
+// Purpose: guard HistoricalMediaLibrary's memo dependency wiring so both task and
+// independent-design updates invalidate the merged list. This source-wiring check
+// supplements the rendered one-click browser test; it is not security evidence.
 test('HistoricalMediaLibrary dynamically merges catalog items with extraItems so task deliverables appear live', () => {
   const source = readFileSync(librarySourceUrl, 'utf8')
 
   // Separate catalog items state from dynamic extraItems
   assert.match(source, /const \[catalogItems, setCatalogItems\] = useState<MediaLibraryItem\[\]>\(\[\]\)/)
-  assert.match(source, /const items = useMemo\(\(\) => \{[\s\S]*?extraItems[\s\S]*?catalogItems[\s\S]*?\}, \[catalogItems, extraItems\]\)/)
+  assert.match(source, /const items = useMemo\(\(\) => \{[\s\S]*?extraItems[\s\S]*?catalogItems[\s\S]*?\}, \[catalogItems, extraItems, designs\.items\]\)/)
 
   // Current active item tracks live updates from items
   assert.match(source, /const currentActiveItem = useMemo\(\(\) => \{[\s\S]*?items\.find\(\(i\) => i\.id === activeItem\.id\) \?\? activeItem[\s\S]*?\}, \[items, activeItem\]\)/)

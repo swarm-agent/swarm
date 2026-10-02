@@ -296,6 +296,7 @@ export class DesktopProjectsRuntime {
         this.queueTask(projectId, task, true, true)
         return
       }
+      if (change?.resource === 'designs') return
       this.invalidate(projectId)
       for (const listener of this.projectUpdateListeners) listener(projectId)
     } else if (
@@ -309,6 +310,11 @@ export class DesktopProjectsRuntime {
       this.invalidate()
       for (const listener of this.projectUpdateListeners) listener()
     }
+  }
+
+  archiveReceipt(projectId: string, receipt: { id: string; revision: number; archived: boolean }): void {
+    if (!receipt.archived || !receipt.id || !Number.isInteger(receipt.revision)) throw new Error('Invalid task archive receipt')
+    this.deps.dispatch({ type: 'projects.updateTasks', projectId, tasks: tasks => tasks, archivedReceipt: receipt })
   }
 
   setOptimisticTasks(

@@ -43,6 +43,23 @@ The build/start wait emits a heartbeat and renews allocation every ten seconds w
 - Two proxies reserve 20% CPU, 64 MiB memory and 16 tasks from each slot's configured totals. Applied systemd CPU, memory and task limits were inspected on the first live guest; stress enforcement was not tested.
 - Lifecycle evidence includes bounded competing-process tests, one real expired-lane cleanup, two simultaneous live candidates and an owned peer stop that left the primary ready. This is not sustained capacity or resource-exhaustion stress.
 
+## Candidate pre-build checks
+
+Go unit tests and deterministic regression checks run locally, never in a deployed
+guest. `scripts/testbench-design-media-checks.sh` is local-only and rejects guest
+execution. The optional `deploy --prebuild-script <relative-script>` hook runs a
+regular shell script from the exact committed candidate inside the claimed guest, after
+offline frontend dependencies are materialized and before either build. Absolute,
+traversing, missing and symlink paths are rejected before allocation. The hook has
+a 480-second deadline within the existing deployment deadline; failure prevents
+ready status and uses generation-owned cleanup. No host Docker executable/socket
+is bound into a candidate. This hook does not provide provider credentials or
+claim live-provider validation. It does not change either pool configuration or
+other lane generations. When the base lacks a browser, `--browser-directory`
+may explicitly name an installed Chrome **program** directory (never a profile);
+it is mounted read-only at Chrome's standard guest location. No browser download
+or base-image mutation occurs.
+
 ## Focused validation
 
 ```sh

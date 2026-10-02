@@ -12,14 +12,23 @@ publication approval precede registry delivery.
 
 ## Image pin
 
-`runtime-image.json` records the matching version, source commit and exact local
-image configuration ID. The CLI inspects and runs that immutable ID with
-`--pull=never`, never a mutable tag. This candidate intentionally needs the exact
-image already built or loaded on the runtime host. `sourceCommit` identifies the
-application source; the packaging Dockerfile adds a compiler-cache mount without
-changing application bytes. This is **not a published registry digest**. Before
-publication, replace candidate metadata with reviewed registry provenance, repack,
-and repeat package/live checks. A version tag alone is not sufficient.
+`runtime-image.json` is the packaged authority. Release packaging supplies `version`
+(semver), `distribution: "ghcr"`, `reference` (exactly
+`ghcr.io/swarm-agent/swarm-headless@sha256:<manifest>`), `manifestDigest`, `imageId`
+(the config digest), `platform: "linux/amd64"` and `sourceCommit` (40 hex characters).
+`swarm-headless install` explicitly pulls that reference for Linux amd64 and verifies
+RepoDigests, config ID and platform. It creates no containers, networks or state
+volumes. Failed pulls/verification stop without tag or local-image fallback; an
+engine may retain downloaded image layers. Retry explicitly after resolving errors.
+
+Start and setup reverify the local immutable image before running anything. Start
+uses the verified config ID with `--pull=never`; neither operation downloads images.
+Help/version never access the engine. No install marker or second pin authority exists.
+
+The checked-in metadata remains explicitly `local-candidate`, **not a published
+registry digest**. In that mode install only verifies an already built/loaded image;
+it never pulls the candidate tag. Release packaging must replace metadata using real
+qualified registry provenance and repeat package/live checks before publication.
 
 To transfer the unpublished image, on the build host (outside source directories):
 
@@ -40,6 +49,7 @@ needed by the installed launcher. Set `CLI_TARBALL` to its absolute path.
 <copy>
 npm install "$CLI_TARBALL"
 npx --no-install swarm-headless --help
+npx --no-install swarm-headless install
 npx --no-install swarm-headless start --project "$PROJECT_DIR"
 npx --no-install swarm-headless status
 npx --no-install swarm-headless stop
@@ -53,7 +63,8 @@ to the selected canonical directory. It never recursively changes ownership.
 Rootless engines remap IDs: prepare the selected project for that mapping first.
 
 Use `--engine podman` on **every** operation for rootless Podman. Use the same
-`--name example` on every operation for a separate instance. `--port` is start-only
+`--name example` on lifecycle/setup operations for a separate instance (`install`
+is image-only and accepts only `--engine`). `--port` is start-only
 (default 7783, host binding always `127.0.0.1`). The four state volumes are
 `NAME-config`, `NAME-data`, `NAME-cache`, `NAME-logs`; the dedicated network is
 `NAME-network`. No home, engine socket, privileged mode or host network is mounted.
@@ -65,7 +76,10 @@ without `--force` or `--volumes`, then attaches the original named state. Missin
 state volumes, foreign name collisions and failed inspections fail closed. A failed
 replacement may leave a stopped container removed, but state volumes remain; inspect
 the engine before retrying. Never attach the same data volume to concurrent daemons.
-The launcher does not delete data or perform automatic recovery/polling.
+The launcher does not delete data or perform automatic recovery/polling. To upgrade,
+stop with the old package, install the new version's pinned image, then use
+`start --recreate` with the same name/project. Back up durable state beforehand;
+image verification does not establish database downgrade compatibility.
 
 ## Setup (explicit choices only)
 

@@ -28,7 +28,14 @@ function errorMessage(code?: string, message?: string) {
   }
 }
 
-/** Browser-only dictation; the draft store remains the sole text authority. */
+/**
+ * Browser-only dictation; the draft store remains the sole committed text authority.
+ * interimText is replaceable display-only speech, never a draft replacement.
+ * toggle() stops capture but active stays true until the browser's final flush ends.
+ * Consumers must prevent submission while active (including the stop/flush window),
+ * then submit the updated draft. cancel() deliberately discards pending speech and
+ * invalidates late events; it is cleanup, not a finalize-before-send operation.
+ */
 export function useOrchestratorDictation(key: string, disabled: boolean, append: (update: (text: string) => string) => void) {
   const current = useRef({ key, disabled, append })
   current.current = { key, disabled, append }
@@ -36,6 +43,7 @@ export function useOrchestratorDictation(key: string, disabled: boolean, append:
   const [active, setActive] = useState(false)
   const [listening, setListening] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [interimText, setInterimText] = useState('')
 
   const cancel = useCallback(() => {
     const recognition = recognitionRef.current
@@ -46,6 +54,7 @@ export function useOrchestratorDictation(key: string, disabled: boolean, append:
     }
     setActive(false)
     setListening(false)
+    setInterimText('')
   }, [])
 
   useEffect(() => {
@@ -77,7 +86,7 @@ export function useOrchestratorDictation(key: string, disabled: boolean, append:
       const valid = () => recognitionRef.current === recognition && current.current.key === scope && !current.current.disabled
       const finalized = new Set<number>()
       recognition.continuous = true
-      recognition.interimResults = false
+      recognition.interimResults = true
       recognition.lang = navigator.language || 'en-US'
       recognition.onstart = () => { if (valid()) setListening(true) }
       recognition.onresult = event => {
@@ -90,6 +99,16 @@ export function useOrchestratorDictation(key: string, disabled: boolean, append:
           if (!addition) continue
           current.current.append(text => `${text}${text && !/\s$/.test(text) && !/^[,.;:!?]/.test(addition) ? ' ' : ''}${addition}`)
         }
+        // The results list is the browser's current snapshot; interim entries can
+        // be revised or removed, including entries before resultIndex.
+        const pending: string[] = []
+        for (let index = 0; index < event.results.length; index += 1) {
+          const result = event.results[index]
+          if (!result || result.isFinal || finalized.has(index)) continue
+          const text = (result[0]?.transcript || '').replace(/\s+/g, ' ').trim()
+          if (text) pending.push(text)
+        }
+        setInterimText(pending.join(' '))
       }
       recognition.onerror = event => {
         if (!valid()) return
@@ -105,5 +124,5 @@ export function useOrchestratorDictation(key: string, disabled: boolean, append:
     }
   }
 
-  return { active, listening, error, toggle, cancel }
+  return { active, listening, error, toggle, cancel, interimText }
 }

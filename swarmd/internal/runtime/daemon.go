@@ -173,6 +173,7 @@ type Daemon struct {
 	toolRuntime               *tool.Runtime
 	videoRenderService        *videorender.Service
 	aiTaskDispatcher          *run.AITaskV2Dispatcher
+	designDispatcher          *run.DesignDispatcher
 	deploymentMgr             *lifecycle.DeploymentManager
 	localTransportRuntimeName string
 	localTransportBaseURL     string
@@ -786,6 +787,10 @@ func New(cfg config.Config) (*Daemon, error) {
 		apiServer.SetTailscaleServePolicy(pebblestore.NewTailscaleServeAllowlistStore(store), detector)
 	}
 
+	if htmlRenderer != nil {
+		runSvc.SetDesignRenderer(htmlRenderer)
+	}
+	designDispatcher := runSvc.StartDesignDispatcher(bgCtx)
 	localTransportRuntimeName := ""
 
 	d := &Daemon{
@@ -805,6 +810,7 @@ func New(cfg config.Config) (*Daemon, error) {
 		toolRuntime:               toolRuntime,
 		videoRenderService:        videoRenderSvc,
 		aiTaskDispatcher:          aiTaskDispatcher,
+		designDispatcher:          designDispatcher,
 		workerExecution:           workerExecution,
 		deploymentMgr:             deploymentMgr,
 		localTransportRuntimeName: localTransportRuntimeName,
@@ -990,6 +996,10 @@ func (d *Daemon) cleanup() error {
 				errs = append(errs, fmt.Errorf("close deployment manager: %w", err))
 			}
 			d.deploymentMgr = nil
+		}
+		if d.designDispatcher != nil {
+			d.designDispatcher.Close()
+			d.designDispatcher = nil
 		}
 		if d.aiTaskDispatcher != nil {
 			d.aiTaskDispatcher.Close()

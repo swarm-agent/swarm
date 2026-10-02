@@ -26,6 +26,13 @@ import {
   ZoomOut,
 } from 'lucide-react'
 import type { MediaLibraryItem } from './types'
+import { subscribeDesktopSessionReset } from '../../../../app/api'
+import { DesignRevisionView } from './design-revision-view'
+import { ArtifactDeliverableView } from './artifact-deliverable-view'
+import { useDesignResource, useProjectDesigns } from './design-media'
+import { desktopDesigns } from '../../runtime/desktop-design-runtime'
+import { designMediaItem, designNodeId, designReadyItems, designRequestId } from '../../orchestrate/design-media-task'
+import { designRefKey } from '../../session-v3/design-api'
 import {
   getMediaSettingsCatalog,
   type MediaCatalogModelOption,
@@ -74,7 +81,38 @@ function modalTabStops(dialog: HTMLElement): HTMLElement[] {
     .sort((a, b) => (a.tabIndex || Number.MAX_SAFE_INTEGER) - (b.tabIndex || Number.MAX_SAFE_INTEGER))
 }
 
-export function MediaViewerModal({
+export function MediaViewerModal(props: MediaViewerModalProps) {
+  if (props.item?.source === 'independent-design') return <DesignMediaViewer key={props.item.id} {...props} item={props.item} />
+  return <MediaViewer {...props} />
+}
+function DesignMediaViewer(props: MediaViewerModalProps & { item: Extract<MediaLibraryItem, { source: 'independent-design' }> }) {
+  const { item } = props
+  const project = useProjectDesigns(item.design.projectId)
+  const historyResource = useMemo(() => desktopDesigns.history(item.sessionId, item.design.revision.ref.artifact_id), [item.sessionId, item.design.revision.ref.artifact_id])
+  const history = useDesignResource(historyResource)
+  const editsResource = useMemo(() => desktopDesigns.editRequests(item.sessionId), [item.sessionId])
+  const edits = useDesignResource(editsResource)
+  const rows = project.data?.designs.filter(row => row.request.parent_session_id === item.sessionId) ?? []
+  const ready = designReadyItems(rows)
+  const revisions = (history.data?.revisions ?? []).map(revision => {
+    const row = rows.find(row => row.request.id === revision.request_id)
+    if (row) return designMediaItem(row, revision.candidate ?? item.design.candidate, revision)
+    return { ...item, id: designNodeId(item.sessionId, revision.ref), design: { ...item.design, revision }, parentId: revision.base ? designNodeId(item.sessionId, revision.base) : undefined }
+  })
+  const threadItems = [...new Map([...(props.threadItems ?? props.items), ...ready, ...revisions].map(row => [row.id, row])).values()]
+  const jobs: MediaGenerationJob[] = rows.map(row => {
+    const outputs = [...new Map([...designReadyItems([row]), ...revisions.filter(output => output.design?.revision.request_id === row.request.id)].map(output => [output.id, output])).values()]
+    const base = row.request.candidates.find(candidate => candidate.spec.base)?.spec.base
+    return { id: designRequestId(row), sourceId: base ? designNodeId(item.sessionId, base) : outputs[0]?.id ?? '', outputIds: outputs.map(output => output.id), title: row.title, count: row.request.candidates.length, status: row.request.state, sessionId: item.sessionId, error: row.request.candidates.flatMap(candidate => [candidate.failure_reason, candidate.router_alert].filter(Boolean)).join('; ') }
+  })
+  for (const edit of edits.data?.edits ?? []) {
+    if (rows.some(row => row.request.source_message_id === edit.messageId && row.request.client_request_id === edit.clientRequestId && row.request.candidates.some(candidate => candidate.spec.base && designRefKey(candidate.spec.base) === designRefKey(edit.base)))) continue
+    jobs.push({ id: `design-edit:${item.sessionId}:${edit.messageId}`, sourceId: designNodeId(item.sessionId, edit.base), title: 'Edit requested · awaiting parent acceptance', status: 'requested', count: 1 })
+  }
+  return <MediaViewer {...props} threadItems={threadItems} generationJobs={jobs} onGenerate={undefined} onToggleTag={undefined} />
+}
+
+function MediaViewer({
   item,
   items,
   threadItems = items,
@@ -88,6 +126,7 @@ export function MediaViewerModal({
   initialQuickRouteMode,
   isGenerating = false,
 }: MediaViewerModalProps) {
+  useEffect(() => subscribeDesktopSessionReset(onClose), [onClose])
   const dialogRef = useRef<HTMLDivElement>(null)
   const isOpen = Boolean(item)
   useEffect(() => {
@@ -152,7 +191,7 @@ export function MediaViewerModal({
   // Follow only the selected request. Older jobs completing must not steal focus.
   useEffect(() => {
     if (showingTurn && turnOutputs.length > 0 && item?.id === activeJob?.sourceId) {
-      onSelect(turnOutputs[0])
+      if (turnOutputs[0].id !== item?.id) onSelect(turnOutputs[0])
     }
   }, [showingTurn, turnOutputs, item?.id, activeJob?.sourceId, onSelect])
 
@@ -917,7 +956,7 @@ export function MediaViewerModal({
           )}
 
           {/* Copy Link */}
-          <button
+          {item.source !== 'independent-design' && <button
             type="button"
             onClick={handleCopyLink}
             title={copied ? 'URL Copied!' : 'Copy direct URL'}
@@ -928,8 +967,9 @@ export function MediaViewerModal({
             <span className="hidden sm:inline">{copied ? 'Copied' : 'Copy link'}</span>
           </button>
 
+          }
           {/* Tag for Task */}
-          {onToggleTag && (
+          {item.source !== 'independent-design' && onToggleTag && (
             <button
               type="button"
               onClick={() => onToggleTag(item)}
@@ -973,7 +1013,7 @@ export function MediaViewerModal({
           )}
 
           {/* Download */}
-          <button
+          {item.source !== 'independent-design' && <button
             type="button"
             onClick={handleDownload}
             title="Download media file"
@@ -984,6 +1024,7 @@ export function MediaViewerModal({
             <span className="hidden sm:inline">Download</span>
           </button>
 
+          }
           {/* Open session */}
           {onOpenSession && item.sessionId && (
             <button
@@ -1112,17 +1153,8 @@ export function MediaViewerModal({
               </div>
             )}
 
-            {!showingRequest && item.kind === 'animation' && (
-              <div className="flex h-full w-full max-w-5xl flex-col items-center justify-center">
-                <iframe
-                  title={item.title}
-                  src={item.directUrl}
-                  sandbox="allow-scripts"
-                  referrerPolicy="no-referrer"
-                  className="h-[54vh] w-full rounded-xl border border-white/10 bg-white shadow-2xl"
-                />
-              </div>
-            )}
+            {!showingRequest && item.source === 'independent-design' && <DesignRevisionView key={item.id} item={item} onSelect={onSelect} />}
+            {!showingRequest && item.source !== 'independent-design' && (item.kind === 'animation' || item.kind === 'document') && <ArtifactDeliverableView key={item.id} item={item} />}
           </main>
 
           {relevantJobs.length > 0 && (
@@ -1148,7 +1180,7 @@ export function MediaViewerModal({
                         className="w-full text-left"
                       >
                         <span className="flex items-center gap-2 text-xs font-semibold text-white">
-                          {isMediaGenerationPending(job.status) ? <Loader2 size={13} className="animate-spin text-blue-400" /> : job.error || job.status === 'failed' ? <AlertCircle size={13} className="text-rose-400" /> : <Check size={13} className="text-emerald-400" />}
+                          {isMediaGenerationPending(job.status) ? <Loader2 size={13} className="animate-spin text-blue-400" /> : job.error || job.status === 'failed' || job.status === 'cancelled' ? <AlertCircle size={13} className="text-rose-400" /> : <Check size={13} className="text-emerald-400" />}
                           Turn {index + 1} · {job.status.replace(/_/g, ' ')}
                         </span>
                         <span className="mt-2 block line-clamp-2 break-words text-xs text-white/80" title={job.prompt || job.title}>{job.prompt || job.title}</span>
@@ -1810,10 +1842,10 @@ export function MediaViewerModal({
                 </div>
               )}
 
-              {item.artifact.description && (
+              {item.artifact?.description && (
                 <div>
                   <span className="text-[10px] uppercase font-bold tracking-wider text-white/40">Description / Prompt</span>
-                  <p className="mt-0.5 text-white/80 italic break-words leading-relaxed">{item.artifact.description}</p>
+                  <p className="mt-0.5 text-white/80 italic break-words leading-relaxed">{item.artifact?.description}</p>
                 </div>
               )}
 

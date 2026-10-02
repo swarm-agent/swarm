@@ -210,3 +210,42 @@ test('foreign pending review is rejected without replacing approved data', { tim
   assert.equal(page.stale, true)
   lease.release()
 })
+
+// Requirement: sidebar/count/hub consumers share a loaded realtime page without
+// refetching on mount. Regression: mounting a second consumer makes every worker
+// row enter loading again. Runtime + reducer is the narrowest observable boundary;
+// scoped events and reconnect must still repair data, including failed reads.
+test('shared worker consumers stay stable until an event and retry stale failures', { timeout: 1000 }, async () => {
+  const h = harness()
+  const first = h.runtime.acquire(list)
+  await Promise.resolve()
+  h.reads[0].resolve({ workers: [worker(1)] })
+  await first.ready
+  const loaded = h.pages()[workerPageKey(list)]
+  const second = h.runtime.acquire(list)
+  await second.ready
+  assert.equal(h.reads.length, 1)
+  assert.equal(h.pages()[workerPageKey(list)], loaded)
+  first.release()
+  assert.equal(h.pages()[workerPageKey(list)], loaded)
+
+  h.runtime.acceptFrame({ kind: 'worker.updated', account_scope_id: 'foreign', worker_id: 'worker-1' })
+  await Promise.resolve()
+  assert.equal(h.reads.length, 1)
+  h.runtime.acceptFrame({ kind: 'worker.updated', account_scope_id: 'account-1', worker_id: 'worker-1' })
+  await Promise.resolve()
+  assert.equal(h.reads.length, 2)
+  assert.equal(h.pages()[workerPageKey(list)].data, loaded.data, 'keep rows during event repair')
+  h.reads[1].reject(new Error('offline'))
+  await h.runtime.refresh(list)
+  const retry = h.runtime.acquire(list)
+  await Promise.resolve()
+  assert.equal(h.reads.length, 3, 'stale failure must not be mistaken for a fresh page')
+  h.reads[2].resolve({ workers: [worker(2)] })
+  await retry.ready
+  assert.equal(h.pages()[workerPageKey(list)].stale, false)
+  assert.equal((h.pages()[workerPageKey(list)].data as { workers: WorkerRecord[] }).workers[0].revision, 2)
+  second.release()
+  retry.release()
+  assert.equal(h.pages()[workerPageKey(list)], undefined)
+})

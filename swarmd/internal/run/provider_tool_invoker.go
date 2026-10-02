@@ -866,6 +866,7 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 					runtimeScope.Principal = principal
 					runtimeScope.SessionID = strings.TrimSpace(config.sessionID)
 					runtimeCtx := tool.WithWorkspaceScope(ctx, runtimeScope)
+					runtimeCtx = s.withDesignSourcePermission(runtimeCtx, runtimeScope, config.runID, config.emit)
 					runtimeCtx = tool.WithArtifactRunContext(runtimeCtx, s.providerManagedArtifactRunContext(config))
 					if authorContext := tool.BindArtifactV3AuthorRunContext(config.artifactV3AuthorContext, config.runID); authorContext != nil {
 						runtimeCtx = tool.WithArtifactV3AuthorRunContext(runtimeCtx, *authorContext)
@@ -1011,6 +1012,24 @@ func (s *Service) executeProviderManagedMediaInspect(ctx context.Context, config
 		if capability.MaxBytes > 0 && asset.Size > capability.MaxBytes {
 			return result, fmt.Errorf("media_inspect asset exceeds current run byte limit (%d > %d)", asset.Size, capability.MaxBytes)
 		}
+	} else if args.DesignPreviewReference != nil {
+		x := args.DesignPreviewReference
+		target, found, readErr := s.sessions.GetSession(x.SessionID)
+		if readErr != nil {
+			return result, readErr
+		}
+		if !found || target.AccountScopeID != principal.AccountScopeID || target.UserID != principal.UserID {
+			return result, pebblestore.ErrDesignNotFound
+		}
+		db := s.sessions.DesignStore()
+		if db == nil {
+			return result, errors.New("design store unavailable")
+		}
+		payload, err = db.ReadSessionDesignPreview(pebblestore.DesignPrincipal{AccountID: principal.AccountScopeID, PrincipalID: principal.UserID}, x.SessionID, x.Preview)
+		if err != nil {
+			return result, err
+		}
+		asset = pebblestore.SessionMediaAsset{ID: "design_preview_" + x.Preview.SHA256, Modality: "image", DetectedMIMEType: "image/png", FileType: "png", Size: int64(len(payload)), DigestSHA256: x.Preview.SHA256, ContractHash: currentContract.Hash, ProviderID: providerID, Model: modelID}
 	} else if args.ArtifactV3Reference != nil {
 		if s.tools == nil || s.tools.ArtifactV3AuthorService() == nil {
 			return result, errors.New("media_inspect Artifact V3 reference requires the native Artifact V3 authority")

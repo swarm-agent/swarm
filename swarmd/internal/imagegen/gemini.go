@@ -14,6 +14,7 @@ import (
 	"sync"
 
 	"swarm/packages/swarmd/internal/identity"
+	"swarm/packages/swarmd/internal/privacy"
 	"swarm/packages/swarmd/internal/provider/codex"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
@@ -105,7 +106,8 @@ type geminiRESTErrorResponse struct {
 	} `json:"error,omitempty"`
 }
 
-func (c googleGeminiImageClient) GenerateImage(ctx context.Context, req GeminiImageGenerationRequest) (GeminiImageGenerationResult, error) {
+func (c googleGeminiImageClient) GenerateImage(ctx context.Context, req GeminiImageGenerationRequest) (output GeminiImageGenerationResult, retErr error) {
+	defer func() { retErr = privacy.SafeError(retErr, req.APIKey) }()
 	apiKey := strings.TrimSpace(req.APIKey)
 	if apiKey == "" {
 		return GeminiImageGenerationResult{}, errors.New("Google API key is required for Gemini image generation")
@@ -167,6 +169,7 @@ func (c googleGeminiImageClient) GenerateImage(ctx context.Context, req GeminiIm
 	if err != nil {
 		return GeminiImageGenerationResult{}, fmt.Errorf("create Gemini REST request: %w", err)
 	}
+	httpReq.Header.Set("x-goog-api-key", apiKey)
 	httpReq.Header.Set("Accept", "application/json")
 	httpReq.Header.Set("Content-Type", "application/json")
 
@@ -174,7 +177,7 @@ func (c googleGeminiImageClient) GenerateImage(ctx context.Context, req GeminiIm
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}
-	response, err := httpClient.Do(httpReq)
+	response, err := privacy.GoogleMediaClient(httpClient).Do(httpReq)
 	if err != nil {
 		return GeminiImageGenerationResult{}, fmt.Errorf("Gemini REST generateContent request failed: %w", err)
 	}
@@ -185,7 +188,7 @@ func (c googleGeminiImageClient) GenerateImage(ctx context.Context, req GeminiIm
 		return GeminiImageGenerationResult{}, fmt.Errorf("read Gemini REST generateContent response: %w", err)
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return GeminiImageGenerationResult{}, geminiRESTHTTPError(response.StatusCode, responseBody)
+		return GeminiImageGenerationResult{}, geminiRESTHTTPError(response.StatusCode, []byte(privacy.SanitizeDiagnostic(string(responseBody), apiKey)))
 	}
 
 	var decoded geminiGenerateContentResponse
@@ -214,7 +217,7 @@ func geminiGenerateContentURL(baseURL, modelID, apiKey string) string {
 	for index, part := range parts {
 		parts[index] = url.PathEscape(part)
 	}
-	return base + "/" + strings.Join(parts, "/") + ":generateContent?key=" + url.QueryEscape(apiKey)
+	return base + "/" + strings.Join(parts, "/") + ":generateContent"
 }
 
 func geminiRESTHTTPError(statusCode int, responseBody []byte) error {

@@ -3387,6 +3387,7 @@ export function DesktopV3ExistingConversationPane({
         data-session-sidebar-view={activeSidebarView}
       >
         <div className="flex min-h-0 min-w-0 flex-col overflow-hidden">
+
           <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
             {artifactReviewPresentation === "embedded" ? (
               <DesktopV3ArtifactGallery

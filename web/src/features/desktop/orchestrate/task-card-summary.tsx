@@ -2,6 +2,7 @@ import type { ReactNode } from 'react'
 import { Code2, Film, Image as ImageIcon, Layers, Music } from 'lucide-react'
 import type { RunningTask, MediaDeliverable } from './orchestrate-types'
 import { taskCardSessions } from './task-card-sessions'
+import { taskOutcome } from './task-outcome'
 
 export function formatElapsedString(elapsed?: string): string {
   if (!elapsed) return ''
@@ -58,6 +59,7 @@ export function TaskCardSummary({ task, onPreview, statusBadge, timer, actions, 
   extraBadges?: ReactNode
 }) {
   const facts = taskCardFacts(task)
+  const outcome = taskOutcome(task)
   const sessions = taskCardSessions(task)
   const working = sessions.filter(session => session.status === 'running').length
   const unknown = sessions.filter(session => session.status === 'unknown').length
@@ -104,6 +106,11 @@ export function TaskCardSummary({ task, onPreview, statusBadge, timer, actions, 
           {task.status === 'blocked' && <span className="swarm-task-state">Action required · open details</span>}
           {facts.progress && <span className="swarm-task-progress">{facts.progress}</span>}
         </div>
+        {!pending && <div className="swarm-task-status-row" aria-label="Task outcome">
+          {outcome.blocker && <span role="alert" title={outcome.blocker.message}>{outcome.blocker.title} · open details</span>}
+          {outcome.delivery && <span>{outcome.delivery}</span>}
+          {(task.taskProgramStatus?.state === 'completed' || task.status === 'completed' || outcome.blocker) && <span>{outcome.verification}</span>}
+        </div>}
         {extraBadges && <div className="swarm-task-extra">{extraBadges}</div>}
       </div>
     </div>

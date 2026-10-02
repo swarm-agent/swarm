@@ -232,6 +232,16 @@ evidence_raw = (directory / 'gcp-qualification-evidence.json').read_bytes()
 evidence = release.decode(evidence_raw)
 manifest = load('gcp-release-manifest.json')
 provenance = load('gcp-build-provenance.json')
+if manifest.get('schema') == release.runner.SCHEMA:
+    rows = release.decode(pathlib.Path(verified).read_bytes())
+    release.require(isinstance(rows, list) and len(rows) == 1, 'ambiguous verified attestation')
+    statement = rows[0]['verificationResult']['statement']
+    release.require(statement['predicateType'] == 'https://swarm.dev/attestations/release-promotion/v1'
+                    and statement['predicate'] == predicate, 'wrong signed runner predicate')
+    release.require(release.runner.reverify(release, directory, source, statement['predicate']) == pathlib.Path(archive).name,
+                    'runner archive name mismatch')
+    release.require(pathlib.Path(archive).read_bytes() == (directory / pathlib.Path(archive).name).read_bytes(), 'runner archive mismatch')
+    sys.exit(0)
 binding = evidence['receipt']['binding']
 inputs = binding['build_inputs']
 raw = pathlib.Path(archive).read_bytes()

@@ -8,6 +8,25 @@ export class SwarmWorkspacesNamespace {
     this.transport = transport;
   }
 
+  async createFolder(parent_path: string, name: string): Promise<WorkspaceFolder> {
+    return (await this.transport.request<{ ok: boolean; folder: WorkspaceFolder }>('/v1/workspace/folders/create', { method: 'POST', body: { parent_path, name } })).data.folder;
+  }
+  async add(body: { path: string; name?: string; theme_id?: string; make_current?: boolean; confirm_committed_only?: boolean }): Promise<WorkspaceResolution> {
+    return (await this.transport.request<{ ok: boolean; workspace: WorkspaceResolution }>('/v1/workspace/add', { method: 'POST', body })).data.workspace;
+  }
+  async inspectRepository(path: string): Promise<WorkspaceRepository> {
+    return (await this.transport.request<{ ok: boolean; repository: WorkspaceRepository }>(`/v1/workspace/repository?${new URLSearchParams({ path })}`)).data.repository;
+  }
+  async setupRepository(path: string, expected_resolved_path: string): Promise<WorkspaceRepository> {
+    return (await this.transport.request<{ ok: boolean; repository: WorkspaceRepository }>('/v1/workspace/repository/setup', { method: 'POST', body: { path, expected_resolved_path } })).data.repository;
+  }
+  async reviewRepository(path: string): Promise<WorkspaceRepositoryReview> {
+    return (await this.transport.request<{ ok: boolean; review: WorkspaceRepositoryReview }>(`/v1/workspace/repository/review?${new URLSearchParams({ path })}`)).data.review;
+  }
+  async baselineRepository(body: { path: string; expected_resolved_path: string; review_digest: string; selected_paths: string[]; confirm_baseline: boolean; confirm_omissions: boolean }): Promise<WorkspaceRepository> {
+    return (await this.transport.request<{ ok: boolean; repository: WorkspaceRepository }>('/v1/workspace/repository/baseline', { method: 'POST', body })).data.repository;
+  }
+
   /**
    * Lists all workspaces registered with the daemon for the active principal.
    */
@@ -54,4 +73,19 @@ export class SwarmWorkspacesNamespace {
     );
     return res.data.workspace;
   }
+}
+
+export interface WorkspaceFolder { path: string; name: string; parent_path: string; requires_sudo: boolean; permission_error_message?: string }
+export interface WorkspaceResolution {
+  requested_path: string; resolved_path: string; workspace_path: string; workspace_name: string;
+  workspace_id?: string; local_workspace_binding_id?: string; workspace_generation?: number; workspace_state?: string;
+  [key: string]: unknown;
+}
+export interface WorkspaceRepository {
+  state: string; path: string; repository_root?: string; head_commit?: string; can_setup: boolean;
+  needs_review?: boolean; message: string; content_ready: boolean; runtime_accessible: boolean; actions?: string[];
+}
+export interface WorkspaceRepositoryReview {
+  repository: WorkspaceRepository; digest: string; warning: string;
+  files: { path: string; size: number; mode: number; digest: string; selectable: boolean }[];
 }

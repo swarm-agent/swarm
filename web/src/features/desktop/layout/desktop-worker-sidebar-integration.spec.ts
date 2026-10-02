@@ -19,3 +19,16 @@ test('Workers navigation owns pending control while authoring chat owns its revi
   assert.match(pane, /<DesktopAcceptedWorkerCard/)
   assert.match(pane, /!isAutomationPermission\(permission\)/)
 })
+
+// Requirement: DesktopAppPage must not drive the worker sidebar with a recurring
+// clock. Regression: the one-second parent timer rebuilds every sidebar subtree.
+// This source-level wiring guard complements the runtime's behavioral event tests;
+// it does not claim browser-level rendering or transport verification.
+test('worker sidebar has no recurring parent clock and retains V3 event repair', async () => {
+  const source = await readFile(new URL('./desktop-app-page.tsx', import.meta.url), 'utf8')
+  assert.doesNotMatch(source, /setInterval\s*\(/)
+  assert.doesNotMatch(source, /setSidebarNow/)
+  const realtime = await readFile(new URL('../realtime/v3-realtime-controller.ts', import.meta.url), 'utf8')
+  assert.match(realtime, /desktopWorkers\.acceptFrame\(frame\)/)
+  assert.match(realtime, /desktopWorkers\.invalidate\(\)/)
+})

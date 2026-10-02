@@ -22,6 +22,13 @@
 !THIRD_PARTY_NOTICES.md
 !containers/headless/inspect.sh
 !containers/headless/FFF-LICENSE
+!packages/sdk/package.json
+!packages/sdk/package-lock.json
+!packages/sdk/tsconfig.json
+!packages/sdk/src/**
+!packages/sdk/scripts/build.mjs
+!examples/headless-app/**
+!containers/headless/app/**
 # Rejections must remain last, even below otherwise allowed source directories.
 **/*_test.go
 **/.git

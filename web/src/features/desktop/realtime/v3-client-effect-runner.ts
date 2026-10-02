@@ -1,3 +1,4 @@
+import { acceptDesktopDesignEvent, desktopDesigns } from '../runtime/desktop-design-runtime'
 import { refreshWorkspaceCatalog } from '../../workspaces/launcher/services/workspace-catalog-refresh'
 import type { QueryClient } from '@tanstack/react-query'
 
@@ -135,6 +136,7 @@ export class DesktopV3ClientEffectRunner {
   }
 
   accept(frame: RealtimeMessage): void {
+    acceptDesktopDesignEvent(frame)
     const durableEffects = durableClientEffectsFromRealtimeFrame(frame)
     if (!durableEffects || this.seenEventIdentities.has(durableEffects.eventIdentity)) return
 
@@ -149,6 +151,7 @@ export class DesktopV3ClientEffectRunner {
   }
 
   refreshArtifactCatalogs(): void {
+    desktopDesigns.invalidate()
     this.pendingEffects.add('refresh_artifacts')
     this.scheduleDrain()
   }

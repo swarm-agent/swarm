@@ -1,3 +1,7 @@
+import { SwarmAppsNamespace } from './apps.js';
+import { SwarmSettingsNamespace } from './settings.js';
+import { SwarmOnboardingNamespace } from './provider-auth.js';
+import { SwarmRealtimeNamespace } from './realtime.js';
 import { SwarmUsageNamespace } from './usage.js';
 import { SwarmAuthNamespace } from './auth.js';
 import { SwarmAutomationsNamespace } from './automations.js';
@@ -19,6 +23,9 @@ export class SwarmClient {
   readonly config: ResolvedSwarmClientConfig;
   readonly transport: SwarmTransport;
   readonly auth: SwarmAuthNamespace;
+  readonly settings: SwarmSettingsNamespace;
+  readonly onboarding: SwarmOnboardingNamespace;
+  readonly realtime: SwarmRealtimeNamespace;
   /**
    * Legacy automations namespace targeting /v3/automations/v2.
    * Note: This is legacy automation API, not the canonical durable worker identity authority.
@@ -36,6 +43,7 @@ export class SwarmClient {
   readonly workspaces: SwarmWorkspacesNamespace;
   readonly projects: SwarmProjectsNamespace;
   readonly sessions: SwarmSessionsNamespace;
+  readonly apps: SwarmAppsNamespace;
   readonly system: SwarmSystemNamespace;
   readonly deploy: SwarmDeployNamespace;
   readonly notifications: SwarmNotificationsNamespace;
@@ -72,6 +80,9 @@ export class SwarmClient {
     this.auth = new SwarmAuthNamespace(this.transport, (token: string) => {
       this.config.token = token;
     });
+    this.settings = new SwarmSettingsNamespace(this.transport);
+    this.onboarding = new SwarmOnboardingNamespace(this.transport);
+    this.realtime = new SwarmRealtimeNamespace(this.transport);
     this.automations = new SwarmAutomationsNamespace(this.transport);
     this.workers = new SwarmWorkersNamespace(this.transport);
     this.usage = new SwarmUsageNamespace(this.transport);
@@ -80,6 +91,7 @@ export class SwarmClient {
     this.workspaces = new SwarmWorkspacesNamespace(this.transport);
     this.projects = new SwarmProjectsNamespace(this.transport);
     this.sessions = new SwarmSessionsNamespace(this.transport);
+    this.apps = new SwarmAppsNamespace(this.transport);
     this.system = new SwarmSystemNamespace(this.transport);
     this.deploy = new SwarmDeployNamespace(this.transport);
     this.notifications = new SwarmNotificationsNamespace(this.transport);

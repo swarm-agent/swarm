@@ -124,6 +124,10 @@ func NewChromedpRendererWithConcurrency(binaryPath, cacheRoot string, concurrenc
 }
 
 func (r *ChromedpRenderer) Capture(parent context.Context, req Request) ([]Result, error) {
+	return r.capture(parent, req, false)
+}
+
+func (r *ChromedpRenderer) capture(parent context.Context, req Request, standalone bool) ([]Result, error) {
 	if r == nil || r.BinaryPath == "." || r.CacheRoot == "." {
 		return nil, NewError("capture_renderer_unavailable", "trusted HTML capture renderer is not configured")
 	}
@@ -201,7 +205,7 @@ func (r *ChromedpRenderer) Capture(parent context.Context, req Request) ([]Resul
 	_ = os.Chmod(jobDir, 0o700)
 	defer os.RemoveAll(jobDir)
 
-	origin, shutdown, err := serveFiles(ctx, req.Files)
+	origin, shutdown, err := serveCaptureFiles(ctx, req.Files, standalone)
 	if err != nil {
 		return nil, NewError("capture_renderer_failed", "capture source server could not start")
 	}
@@ -209,6 +213,7 @@ func (r *ChromedpRenderer) Capture(parent context.Context, req Request) ([]Resul
 
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
 		chromedp.ExecPath(r.BinaryPath),
+		chromedp.ModifyCmdFunc(isolateBrowserCommand),
 		chromedp.UserDataDir(filepath.Join(jobDir, "profile")),
 		chromedp.Flag("headless", true),
 		// chromedp otherwise injects --no-sandbox when the daemon runs as root.
@@ -233,7 +238,10 @@ func (r *ChromedpRenderer) Capture(parent context.Context, req Request) ([]Resul
 		chromedp.Flag("host-resolver-rules", "MAP * ~NOTFOUND, EXCLUDE 127.0.0.1"),
 		chromedp.Flag("renderer-process-limit", "2"),
 	)
-	if r.browserOutput != nil {
+	if standalone {
+		opts = append(opts, chromedp.Flag("hide-scrollbars", false))
+	}
+	if r.browserOutput != nil && !standalone {
 		opts = append(opts, chromedp.CombinedOutput(r.browserOutput))
 	}
 	allocCtx, allocCancel := chromedp.NewExecAllocator(ctx, opts...)
@@ -264,6 +272,12 @@ func (r *ChromedpRenderer) Capture(parent context.Context, req Request) ([]Resul
 			}
 		}
 	})
+	var standaloneAudit standaloneDiagnostics
+	if standalone {
+		chromedp.ListenTarget(browserCtx, standaloneAudit.observe)
+	}
+	initialDocument := false
+	requestGate := make(captureRequestGate, 16)
 	faviconURL := origin[:strings.LastIndex(origin, "/")] + "/favicon.ico"
 	chromedp.ListenTarget(browserCtx, func(ev any) {
 		paused, ok := ev.(*fetch.EventRequestPaused)
@@ -271,21 +285,38 @@ func (r *ChromedpRenderer) Capture(parent context.Context, req Request) ([]Resul
 			return
 		}
 		allowed := paused.Request.URL == "about:blank" || paused.Request.URL == faviconURL || paused.Request.URL == origin || strings.HasPrefix(paused.Request.URL, origin+"/")
-		if !allowed {
-			markBlocked(paused.Request.URL)
+		if standalone {
+			allowed = standaloneRequestAllowed(paused, origin, req.Entry, faviconURL, &initialDocument)
 		}
-		go func() {
+		if !allowed {
+			if standalone {
+				markBlocked("prohibited_request")
+			} else {
+				markBlocked(paused.Request.URL)
+			}
+		}
+		if !requestGate.dispatch(func() {
 			execCtx := cdp.WithExecutor(browserCtx, chromedp.FromContext(browserCtx).Target)
 			if allowed {
 				_ = fetch.ContinueRequest(paused.RequestID).Do(execCtx)
 			} else {
 				_ = fetch.FailRequest(paused.RequestID, network.ErrorReasonBlockedByClient).Do(execCtx)
 			}
-		}()
+		}) {
+			// Never block the CDP event reader or create an unbounded backlog.
+			// Cancelling the allocator aborts all paused requests fail-closed.
+			markBlocked("request_capacity")
+			cancel()
+		}
 	})
 
 	if err := chromedp.Run(browserCtx); err != nil {
 		return nil, newErrorWithCause("capture_renderer_failed", "sandboxed browser could not start", err)
+	}
+	if standalone {
+		if err := enableStandaloneDiagnostics(browserCtx); err != nil {
+			return nil, NewError("capture_renderer_failed", "browser diagnostics could not start")
+		}
 	}
 	docCtx, docCancel := context.WithTimeout(browserCtx, documentTimeout)
 	err = chromedp.Run(docCtx,
@@ -296,6 +327,17 @@ func (r *ChromedpRenderer) Capture(parent context.Context, req Request) ([]Resul
 		chromedp.WaitReady("body", chromedp.ByQuery),
 	)
 	docCancel()
+	if standalone {
+		if diagnostic := standaloneAudit.failure(); diagnostic != nil {
+			return nil, diagnostic
+		}
+		blockedMu.Lock()
+		prohibited := blocked
+		blockedMu.Unlock()
+		if prohibited {
+			return nil, NewError("capture_network_blocked", "prohibited request")
+		}
+	}
 	if err != nil {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(docCtx.Err(), context.DeadlineExceeded) {
 			return nil, NewError("capture_timeout", "capture document did not become ready before the fixed deadline")
@@ -318,10 +360,17 @@ func (r *ChromedpRenderer) Capture(parent context.Context, req Request) ([]Resul
 		var result []byte
 		var digests []string
 		var err error
-		if req.DocumentSections {
+		if standalone {
+			result, err = captureStandaloneViewport(browserCtx, viewportWidth, viewportHeight)
+		} else if req.DocumentSections {
 			result, digests, err = captureDocumentSection(browserCtx, stateID, viewportWidth, viewportHeight, selectors, &tileBudget)
 		} else {
 			result, err = captureState(browserCtx, stateID, viewportWidth, viewportHeight, selectors, req.TemporalStates)
+		}
+		if standalone {
+			if diagnostic := standaloneAudit.failure(); diagnostic != nil {
+				return nil, diagnostic
+			}
 		}
 		if err != nil {
 			return nil, err
@@ -336,6 +385,11 @@ func (r *ChromedpRenderer) Capture(parent context.Context, req Request) ([]Resul
 		var location string
 		if navErr := chromedp.Run(browserCtx, chromedp.Location(&location)); navErr != nil || location != origin+"/"+req.Entry {
 			return nil, NewError("capture_state_select_failed", "capture state attempted to navigate away from its canonical document")
+		}
+		if standalone {
+			if diagnostic := standaloneAudit.failure(); diagnostic != nil {
+				return nil, diagnostic
+			}
 		}
 		retainedBytes += len(result)
 		if retainedBytes > 64<<20 {
@@ -488,6 +542,10 @@ func equalPixels(left, right []byte, viewportWidth, viewportHeight int) (bool, e
 }
 
 func serveFiles(ctx context.Context, files map[string][]byte) (string, func(), error) {
+	return serveCaptureFiles(ctx, files, false)
+}
+
+func serveCaptureFiles(ctx context.Context, files map[string][]byte, standalone bool) (string, func(), error) {
 	var tokenBytes [16]byte
 	if _, err := rand.Read(tokenBytes[:]); err != nil {
 		return "", nil, err
@@ -522,6 +580,9 @@ func serveFiles(ctx context.Context, files map[string][]byte) (string, func(), e
 			return
 		}
 		w.Header().Set("Content-Security-Policy", "sandbox allow-scripts; default-src 'self'; script-src 'self' 'unsafe-inline' "+scriptSource+"; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; media-src 'none'; connect-src 'none'; worker-src 'none'; object-src 'none'; base-uri 'self'; form-action 'none'")
+		if standalone {
+			w.Header().Set("Content-Security-Policy", "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: http://"+listener.Addr().String()+"/favicon.ico; font-src data:; connect-src 'none'; worker-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'")
+		}
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("Cache-Control", "no-store")
 		switch strings.ToLower(filepath.Ext(name)) {

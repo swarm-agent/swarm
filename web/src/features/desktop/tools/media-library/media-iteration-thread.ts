@@ -2,7 +2,7 @@ import type { MediaGenerationJob } from './media-generation'
 import type { MediaLibraryItem } from './types'
 
 export function isMediaGenerationPending(status: string): boolean {
-  return ['submitting', 'pending', 'queued', 'in_progress', 'running'].includes(status)
+  return ['requested', 'accepted', 'submitting', 'pending', 'queued', 'in_progress', 'running'].includes(status)
 }
 
 // Keep requests in the source's connected thread, including descendants and
@@ -43,6 +43,6 @@ export function getMediaIterationOutputs(
   const byId = new Map(items.map((item) => [item.id, item]))
   return (job?.outputIds || []).flatMap((id) => {
     const item = byId.get(id)
-    return item?.directUrl ? [item] : []
+    return item && (item.source === 'independent-design' || item.directUrl) ? [item] : []
   })
 }

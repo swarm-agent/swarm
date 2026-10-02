@@ -1,8 +1,6 @@
 package api
 
 import (
-	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +14,13 @@ import (
 )
 
 const DeliverablesPath = "/v3/deliverables"
+
+// publicDeliverable keeps the durable fencing token inside the store/service.
+// Return a copy: redacting an API response must not erase persistence authority.
+func publicDeliverable(rec pebblestore.DeliverableRecord) pebblestore.DeliverableRecord {
+	rec.PublicationClaim = ""
+	return rec
+}
 
 func (s *Server) handleDeliverables(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
@@ -65,6 +70,9 @@ func (s *Server) handleDeliverables(w http.ResponseWriter, r *http.Request) {
 			if records == nil {
 				records = []pebblestore.DeliverableRecord{}
 			}
+			for i := range records {
+				records[i] = publicDeliverable(records[i])
+			}
 			writeJSON(w, http.StatusOK, map[string]any{
 				"deliverables": records,
 				"count":        len(records),
@@ -91,7 +99,7 @@ func (s *Server) handleDeliverables(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			writeJSON(w, http.StatusCreated, map[string]any{
-				"deliverable": rec,
+				"deliverable": publicDeliverable(rec),
 			})
 			return
 		}
@@ -123,7 +131,7 @@ func (s *Server) handleDeliverables(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]any{
-				"deliverable": rec,
+				"deliverable": publicDeliverable(rec),
 			})
 			return
 		}
@@ -171,46 +179,21 @@ func (s *Server) handleDeliverables(w http.ResponseWriter, r *http.Request) {
 			"approved_by": p.UserID,
 		}
 
-		// If action contract exists, execute publication action
-		if rec.ActionContract != nil && rec.ActionContract.Action != "" {
-			switch rec.ActionContract.Action {
-			case "execute_webhook":
-				if rec.ActionContract.TargetURL != "" {
-					payloadBytes, _ := json.Marshal(map[string]any{
-						"event":       "deliverable.approved",
-						"deliverable": rec,
-					})
-					ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
-					defer cancel()
-					req, reqErr := http.NewRequestWithContext(ctx, http.MethodPost, rec.ActionContract.TargetURL, bytes.NewReader(payloadBytes))
-					if reqErr == nil {
-						req.Header.Set("Content-Type", "application/json")
-						resp, postErr := http.DefaultClient.Do(req)
-						if postErr == nil {
-							actionResult["webhook_status"] = resp.StatusCode
-							resp.Body.Close()
-						} else {
-							actionResult["webhook_error"] = postErr.Error()
-						}
-					}
-				}
-			case "publish_x_post":
-				// X / Twitter publication execution
-				// Formats post receipt and records publication
-				xResult := ExecuteTwitterPublish(r.Context(), &rec)
-				for k, v := range xResult {
-					actionResult[k] = v
-				}
-			default:
-				actionResult["action"] = rec.ActionContract.Action
-				actionResult["status"] = "completed"
+		if rec.ActionContract != nil && (rec.ActionContract.Action == "publish_x_post" || rec.ActionContract.Action == "execute_webhook") {
+			updated, err := approveDeliverablePublication(r.Context(), db, p.AccountScopeID, id, p.UserID)
+			if err != nil {
+				writeError(w, http.StatusConflict, err)
+				return
 			}
+			code := http.StatusOK
+			if updated.Status != "published" {
+				code = http.StatusBadGateway
+			}
+			writeJSON(w, code, map[string]any{"deliverable": publicDeliverable(updated), "action_result": updated.ActionResult})
+			return
 		}
 
 		targetStatus := "approved"
-		if rec.ActionContract != nil && (rec.ActionContract.Action == "publish_x_post" || rec.ActionContract.Action == "execute_webhook") {
-			targetStatus = "published"
-		}
 
 		updated, err := db.UpdateDeliverableStatus(p.AccountScopeID, id, targetStatus, p.UserID, actionResult)
 		if err != nil {
@@ -219,7 +202,7 @@ func (s *Server) handleDeliverables(w http.ResponseWriter, r *http.Request) {
 		}
 
 		writeJSON(w, http.StatusOK, map[string]any{
-			"deliverable":   updated,
+			"deliverable":   publicDeliverable(updated),
 			"action_result": actionResult,
 		})
 		return
@@ -240,7 +223,7 @@ func (s *Server) handleDeliverables(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"deliverable": updated,
+			"deliverable": publicDeliverable(updated),
 		})
 		return
 	}
@@ -273,7 +256,7 @@ func (s *Server) handleDeliverables(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"deliverable": updated,
+			"deliverable": publicDeliverable(updated),
 		})
 		return
 	}

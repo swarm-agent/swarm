@@ -37,6 +37,7 @@ func (s *Server) registerOnboardingRoutes(mux *http.ServeMux) {
 	mux.HandleFunc(TailscaleOnboardingApprovalPath, s.handleTailscaleOnboardingApproval)
 	mux.HandleFunc("/v1/onboarding/provider/credential", s.handleOnboardingProviderCredential)
 	mux.HandleFunc("/v1/account/username", s.handleAccountUsername)
+	mux.HandleFunc("/v1/account/avatar", s.handleAccountAvatar)
 	mux.HandleFunc("/v1/account/team/upgrade", s.handleAccountTeamUpgrade)
 }
 
@@ -244,6 +245,8 @@ func (s *Server) registerRuntimeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc(V3SyncLegacyTUIWorksetPath, s.handleSessionsV3TUIWorkset)
 	mux.HandleFunc("/v3/tui/sessions", s.handleSessionsV3TUI)
 	mux.HandleFunc("/v3/tui/sessions/", s.handleSessionV3TUIByID)
+	mux.HandleFunc("/v3/application-agents", s.handleApplicationAgents)
+	mux.HandleFunc("/v3/application-agents/", s.handleApplicationAgents)
 	mux.HandleFunc("/v3/sessions", s.handleSessionsV3Primary)
 	mux.HandleFunc("/v3/sessions/", s.handleSessionV3PrimaryByID)
 	mux.HandleFunc("/v1/sessions", s.handleSessions)

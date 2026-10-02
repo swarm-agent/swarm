@@ -9,6 +9,8 @@ import (
 	"testing"
 )
 
+// Purpose: Printf must redact signed request URLs in both daemon and durable
+// diagnostics while preserving failure causes; local log sinks prove both writes.
 func TestPrintfRedactsGoogleAPIKeyFromDaemonAndDurableLogs(t *testing.T) {
 	dataHome := filepath.Join(t.TempDir(), "data")
 	t.Setenv("STATE_DIRECTORY", dataHome)
@@ -29,7 +31,7 @@ func TestPrintfRedactsGoogleAPIKeyFromDaemonAndDurableLogs(t *testing.T) {
 	if strings.Contains(daemonLog.String(), secret) {
 		t.Fatalf("daemon imagegen log leaked google API key:\n%s", daemonLog.String())
 	}
-	if !strings.Contains(daemonLog.String(), "key=[REDACTED]") || !strings.Contains(daemonLog.String(), "dial tcp failed") {
+	if !strings.Contains(daemonLog.String(), "[REDACTED URL]") || !strings.Contains(daemonLog.String(), "dial tcp failed") {
 		t.Fatalf("daemon imagegen log = %q, want redacted key and failure context", daemonLog.String())
 	}
 
@@ -44,11 +46,13 @@ func TestPrintfRedactsGoogleAPIKeyFromDaemonAndDurableLogs(t *testing.T) {
 	if strings.Contains(string(content), secret) {
 		t.Fatalf("durable imagegen log leaked google API key:\n%s", string(content))
 	}
-	if !strings.Contains(string(content), "key=[REDACTED]") || !strings.Contains(string(content), "dial tcp failed") {
+	if !strings.Contains(string(content), "[REDACTED URL]") || !strings.Contains(string(content), "dial tcp failed") {
 		t.Fatalf("durable imagegen log = %q, want redacted key and failure context", string(content))
 	}
 }
 
+// Purpose: Append must share the privacy sanitizer for header and token echoes;
+// reading its isolated durable log proves no credential reaches the sink.
 func TestAppendRedactsSecretLikeFields(t *testing.T) {
 	dataHome := filepath.Join(t.TempDir(), "data")
 	t.Setenv("STATE_DIRECTORY", dataHome)
@@ -69,7 +73,7 @@ func TestAppendRedactsSecretLikeFields(t *testing.T) {
 		t.Fatalf("imagegen log leaked secret-like field:\n%s", logContent)
 	}
 	for _, want := range []string{"api_key=\"[REDACTED]", "x-goog-api-key:[REDACTED]", "access_token=[REDACTED]"} {
-		if !strings.Contains(logContent, want) {
+		if !strings.Contains(strings.ToLower(logContent), strings.ToLower(want)) {
 			t.Fatalf("imagegen log missing %q after redaction:\n%s", want, logContent)
 		}
 	}

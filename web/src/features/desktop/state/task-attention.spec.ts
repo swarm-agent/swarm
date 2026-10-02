@@ -56,7 +56,9 @@ test('resolved/denied/cancelled/expired requests stay cleared after stale decisi
       snapshot: {
         sessions_by_id: { root: (state.sessionsById.root as { session: SessionSnapshot }).session },
         session_views_by_id: { root: { pending_permissions: [{ id: 'root', session_id: 'root', tool_name: 'ask_user', status: 'pending', created_at: 1, updated_at: 1 }] } },
-        sync_scope: { scope_id: 'attention', resource_set: 'session_view' },
+        selector: { kind: 'session_ids', session_ids: ['root'] },
+        scope_id: 'attention', snapshot_endpoint_cursor: 'attention-cursor',
+        sync_scope: { surface: 'desktop', stream_kind: 'v3.sync.snapshot', selector_filter_hash: 'attention', resource_set: 'session_view' },
       } as never,
     })
     assert.equal(taskAttentionPermissions(state, ['root']).length, 0, 'delayed hydration cannot resurrect terminal permission')
