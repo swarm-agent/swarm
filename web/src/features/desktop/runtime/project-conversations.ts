@@ -7,6 +7,7 @@ import { hydrateResponseToAction } from '../state/desktop-v3-cache-wire'
 import { dispatchDesktopV3Cache } from '../state/desktop-v3-cache-store'
 import { requireProjectConversation, conversationProjectId } from '../orchestrate/project-conversations'
 import { desktopProjects } from './desktop-projects'
+import { projectConversationBatches } from '../orchestrate/project-entry-policy'
 
 // The list endpoint discovers IDs only. Titles, permissions and conversations remain
 // owned by the canonical cache, hydrated through the existing session boundary.
@@ -25,12 +26,15 @@ export function useProjectConversations(projectId: string) {
         do {
           dirty = false
           const response = await requestJson<{ sessions: Array<{ session: SessionSnapshot }> }>(`/v3/projects/${encodeURIComponent(projectId)}/sessions?limit=200`)
-          for (const { session } of response.sessions || []) {
-            if (!active) return
-            if (conversationProjectId(session) !== projectId) continue
+          const ids = (response.sessions || []).flatMap(({ session }) => {
+            if (conversationProjectId(session) !== projectId) return []
             requireProjectConversation(projectId, session)
-            const hydrated = await postDesktopV3SyncHydrate(buildDesktopV3ChildCardHydrateInput([session.id], { permissionSummary: true }))
-            if (active) dispatchDesktopV3Cache(hydrateResponseToAction(hydrated, [session.id]))
+            return [session.id]
+          })
+          for (const batch of projectConversationBatches(ids)) {
+            if (!active) return
+            const hydrated = await postDesktopV3SyncHydrate(buildDesktopV3ChildCardHydrateInput(batch, { permissionSummary: true }))
+            if (active) dispatchDesktopV3Cache(hydrateResponseToAction(hydrated, batch))
           }
           if (active) setError('')
         } while (dirty && active)

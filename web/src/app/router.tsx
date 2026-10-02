@@ -18,8 +18,8 @@ const AutomationToolPage = withStartupScreen(lazy(() => import('../features/desk
 const EnvironmentsPage = withStartupScreen(lazy(() => import('../features/desktop/environments/pages/environments-page').then((module) => ({ default: module.EnvironmentsPage }))))
 const UsagePage = withStartupScreen(lazy(() => import('../features/desktop/usage/pages/usage-page').then((module) => ({ default: module.UsagePage }))))
 const OrchestratePage = withStartupScreen(lazy(() => import('../features/desktop/orchestrate/orchestrate-page').then((module) => ({ default: module.OrchestratePage }))))
-const ROOT_RESERVED_ROUTE_SEGMENTS = new Set(['memory', 'settings', 'integrations', 'tools', 'agents', 'studio', 'environments', 'usage', 'media', 'swarm', 'orchestrate', 'projects'])
-const WORKSPACE_RESERVED_ROUTE_SEGMENTS = new Set(['settings', 'tools', 'task', 'worktree', 'video', 'studio', 'automations', 'environments', 'usage', 'media', 'swarm', 'orchestrate', 'projects'])
+const ROOT_RESERVED_ROUTE_SEGMENTS = new Set(['memory', 'settings', 'integrations', 'tools', 'agents', 'studio', 'environments', 'usage', 'media', 'swarm', 'orchestrate', 'projects', 'history'])
+const WORKSPACE_RESERVED_ROUTE_SEGMENTS = new Set(['settings', 'tools', 'task', 'worktree', 'video', 'studio', 'automations', 'environments', 'usage', 'media', 'swarm', 'orchestrate', 'projects', 'history'])
 const MemoryPage = withStartupScreen(lazy(() => import('../features/desktop/settings/components/desktop-settings-page').then(module => ({ default: () => <module.DesktopSettingsPage initialMemoryOpen /> }))))
 
 function currentWorkspaceRoute(pathname: string): { sessionId?: string } | null {
@@ -477,7 +477,8 @@ const workspaceImageToolSessionRoute = createRoute({
 const swarmLayoutRoute = createRoute({
   getParentRoute: () => rootRoute,
   id: 'swarm-layout',
-  validateSearch: (search: Record<string, unknown>): { workerId?: string; section?: string } => ({
+  validateSearch: (search: Record<string, unknown>): { workerId?: string; section?: string; createProject?: boolean } => ({
+    ...(search.createProject === true || search.createProject === 'true' ? { createProject: true } : {}),
     ...(isSwarmSection(search.section) || search.section === 'home' ? { section: search.section as string } : {}),
     ...(typeof search.workerId === 'string' && /^(worker_|worker-)[A-Za-z0-9_-]+$/.test(search.workerId) ? { workerId: search.workerId } : {}),
   }),

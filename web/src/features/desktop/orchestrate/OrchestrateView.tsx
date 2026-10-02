@@ -14,6 +14,7 @@ import { TaskAttemptHistory } from './task-attempt-history'
 import { TaskUsageFooter, TaskWorkerBudgetMetadata } from './task-usage-metadata'
 import { useOrchestratorDictation } from './use-orchestrator-dictation'
 import { TaskSessionErrors } from './task-session-error'
+import { admittedConversationId } from './project-entry-policy'
 import { createProjectConversation, projectConversationLink, requireProjectConversation } from './project-conversations'
 import { useProjectConversations } from '../runtime/project-conversations'
 import { resolveDesktopChatRouteFromSession } from '../chat/services/chat-routing'
@@ -2966,7 +2967,7 @@ function OrchestratorChatSidebar({
   const [error, setError] = useState(false)
   const [attempt, setAttempt] = useState(0)
   const navigate = useNavigate()
-  const projectPageLink = (page: SwarmPage) => project?.id ? { ...projectConversationLink(project.id, sessionId), search: { section: page } } : swarmPageLink(workspaceSlug, page)
+  const projectPageLink = (page: SwarmPage) => project?.id ? { ...projectConversationLink(project.id, project.primarySessionId), search: { section: page } } : swarmPageLink(workspaceSlug, page)
   const [clearingContext, setClearingContext] = useState(false)
   const [clearSuccess, setClearSuccess] = useState(false)
 
@@ -3014,10 +3015,11 @@ function OrchestratorChatSidebar({
   )
 
   const [clearError, setClearError] = useState('')
+  const clearRequest = useRef('')
   const clearScope = useRef(`${project?.id}:${sessionId}`)
   clearScope.current = `${project?.id}:${sessionId}`
   useEffect(() => { clearScope.current = `${project?.id}:${sessionId}`; return () => { clearScope.current = '' } }, [project?.id, sessionId])
-  useEffect(() => { setClearError(''); setClearSuccess(false); setClearingContext(false) }, [project?.id, sessionId])
+  useEffect(() => { clearRequest.current = ''; setClearError(''); setClearSuccess(false); setClearingContext(false) }, [project?.id, sessionId])
 
   const handleClearContext = async () => {
     if (!project?.id || clearingContext || repairSession || activeTask) return
@@ -3026,10 +3028,12 @@ function OrchestratorChatSidebar({
     setClearingContext(true)
     setClearSuccess(false)
     try {
-      const session_id = await createProjectConversation(project.id, `desktop-v3-create:${crypto.randomUUID()}`)
+      clearRequest.current ||= `desktop-v3-create:${crypto.randomUUID()}`
+      const session_id = await createProjectConversation(project.id, clearRequest.current)
       const res = { ok: true, session_id }
       if (clearScope.current !== scope) return
       if (res?.ok && res.session_id) {
+        clearRequest.current = ''
         onDeselectTask?.()
         onOrchestratorSessionReset?.(res.session_id)
         setClearSuccess(true)
@@ -3221,6 +3225,9 @@ export function OrchestrateView({
 
   const projectRouteParams = useRouterState({ select: state => state.matches[state.matches.length - 1]?.params as { projectId?: string; sessionId?: string } }) ?? {}
   const routeConversationId = projectRouteParams.sessionId || ''
+  const [conversationAdmission, setConversationAdmission] = useState<{ projectId: string; sessionId: string } | null>(null)
+  const admittedParentId = admittedConversationId(conversationAdmission, projectRouteParams.projectId || '', routeConversationId)
+  const createProjectIntent = useRouterState({ select: state => (state.location.search as { createProject?: boolean }).createProject === true })
   // Projects State
   const [projects, setProjects] = useState<ProjectSummary[]>([])
   const selectedProjectId = projectRouteParams.projectId || ''
@@ -3232,8 +3239,8 @@ export function OrchestrateView({
   const [, setIsLoadingProjects] = useState<boolean>(true)
   const selectedProject = useMemo(() => {
     const project = projects.find(p => p.id === selectedProjectId)
-    return project ? { ...project, primarySessionId: routeConversationId || undefined } : undefined
-  }, [projects, selectedProjectId, routeConversationId])
+    return project ? { ...project, primarySessionId: admittedParentId || undefined } : undefined
+  }, [projects, selectedProjectId, admittedParentId])
   const selectedProjectRef = useRef(selectedProject?.id)
   selectedProjectRef.current = selectedProject?.id
   const [themeRoot, setThemeRoot] = useState<HTMLDivElement | null>(null)
@@ -3292,7 +3299,8 @@ export function OrchestrateView({
   }
 
   // Project Onboarding & Creation State
-  const [isOnboardingActive, setIsOnboardingActive] = useState<boolean>(false)
+  const [isOnboardingActive, setIsOnboardingActive] = useState<boolean>(createProjectIntent)
+  useEffect(() => { if (createProjectIntent) setIsOnboardingActive(true) }, [createProjectIntent])
   const [onboardingName, setOnboardingName] = useState('Swarm Platform')
   const [onboardingDescription, setOnboardingDescription] = useState('Core daemon, desktop client, and multi-workspace initiative')
   const [onboardingWorkspaces, setOnboardingWorkspaces] = useState<Array<{ id?: string; path: string; label: string; role: 'primary_code' | 'auxiliary'; selected: boolean }>>([])
@@ -4165,6 +4173,7 @@ export function OrchestrateView({
   // Verify provenance before mounting a transcript, composer or permission prompt.
   useEffect(() => {
     let active = true
+    setConversationAdmission(null)
     setActiveSessionId(''); setActiveTaskId(null); setSelectedTaskId(''); setAttachedTaskIds([])
     setConversationError(''); conversationRequest.current = ''
     if (selectedProject) {
@@ -4174,7 +4183,10 @@ export function OrchestrateView({
       void requestJson<{ session: SessionSnapshot }>(`/v3/sessions/${encodeURIComponent(routeConversationId)}`).then(({ session }) => {
         requireProjectConversation(selectedProject.id, session)
         if (session.id !== routeConversationId) throw new Error('Session identity mismatch')
-        if (active) setActiveSessionId(session.id)
+        if (active) {
+          setConversationAdmission({ projectId: selectedProject.id, sessionId: session.id })
+          setActiveSessionId(session.id)
+        }
       }).catch(cause => { if (active) setConversationError(cause instanceof Error ? cause.message : 'Unable to open conversation') })
     }
     return () => { active = false }
@@ -4199,7 +4211,7 @@ export function OrchestrateView({
     setActiveTaskId(null)
     setSelectedTaskId('')
     setWorkerCreationRequested(false)
-    setActiveSessionId(routeConversationId)
+    setActiveSessionId(admittedParentId)
   }
 
   const handleOrchestratorSessionReset = useCallback((newSessionId: string) => {
@@ -5701,7 +5713,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
           {conversations.sessions.map(session => <Link className="block truncate" key={session.id} {...projectConversationLink(selectedProjectId, session.id)} aria-current={routeConversationId === session.id ? 'page' : undefined}>{session.title || 'New conversation'}</Link>)}
         </section>
         {/* Navigation Menu Links */}
-        <nav aria-label="Swarm destinations" className="swarm-route-navigation p-3 border-b border-slate-800/80 space-y-1" onClick={() => { setIsOnboardingActive(false); responsiveLayout.setPanel('main'); responsiveLayout.setNavigationOpen(false) }}>
+        <nav aria-label="Swarm destinations" className="swarm-route-navigation p-3 border-b border-slate-800/80 space-y-1" onClick={() => { setIsOnboardingActive(projects.length === 0); responsiveLayout.setPanel('main'); responsiveLayout.setNavigationOpen(false) }}>
           <Link
             {...projectPageLink('home')}
             aria-label="Tasks"
@@ -7058,7 +7070,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
           PANEL 3: RIGHT PANEL (CANONICAL DESKTOP V3 AI CHAT SIDEBAR)
          ───────────────────────────────────────────────────────────── */}
       {workerChatOpen && workerChatError && <div role="alert" className="max-w-sm p-4 text-sm text-red-300">{workerChatError}<button className="ml-2 underline" onClick={() => setWorkerChatError('')}>Dismiss</button></div>}
-      {activeSessionId && selectedProject && (activeTaskId || activeSessionId === routeConversationId) ? (
+      {activeSessionId && selectedProject && ((activeTaskId && tasks.some(task => task.id === activeTaskId && (task.sessionId || task.planBinding?.sessionId || task.planBinding?.session_id) === activeSessionId)) || (admittedParentId && activeSessionId === admittedParentId)) ? (
         // Keep the chat bounded to the page, below the optional worker header.
         <div className="swarm-conversation-panel flex min-h-0 shrink-0 flex-col">
         {activeNavTab === 'workers' && workerChatOpen && <div className="flex max-w-[440px] shrink-0 items-center justify-between gap-3 p-3 text-xs text-slate-300"><span>{workerCreationRequested ? 'Add worker: describe its job to Orchestrator below. Nothing runs until you approve.' : 'Discuss this worker with Orchestrator'}</span><button onClick={() => { setWorkerChatOpen(false); setWorkerCreationRequested(false) }}>Close</button></div>}
@@ -7095,10 +7107,12 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
           <div className="h-12 w-12 rounded-2xl bg-blue-600/20 border border-blue-500/30 flex items-center justify-center text-blue-400 mb-3 shadow-lg shadow-blue-600/10">
             <Bot size={22} />
           </div>
-          <h3 className="font-bold text-sm text-white mb-1">Swarm Project Orchestrator</h3>
+          <h3 className="font-bold text-sm text-white mb-1">{selectedProject?.name || 'Welcome to Swarm'}</h3>
           <p className="text-slate-400 text-xs max-w-xs leading-relaxed">
-            {workerChatOpen ? 'Opening Worker Orchestrator… If the connection fails, retry Add worker or Ask Orchestrator.' : selectedProject ? 'Connecting executive orchestrator session...' : 'Select or create a project to activate the executive AI orchestrator.'}
+            {workerChatOpen ? 'Opening Worker Orchestrator… If the connection fails, retry Add worker or Ask Orchestrator.' : selectedProject ? 'Choose a conversation or start a new session.' : 'Create your first project. Workspaces can be added later.'}
           </p>
+          {selectedProject && !routeConversationId && <ul aria-label="Project conversations">{conversations.sessions.map(session => <li key={session.id}><Link {...projectConversationLink(selectedProject.id, session.id)}>{session.title || 'New conversation'}</Link></li>)}</ul>}
+          {selectedProject ? <button type="button" disabled={creatingConversation} onClick={() => { void newConversation() }}>New session</button> : <button type="button" onClick={() => { setIsOnboardingActive(true); setActiveNavTab('projects') }}>Create a project</button>}
         </aside>
       )}
 

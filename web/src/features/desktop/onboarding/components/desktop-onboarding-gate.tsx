@@ -33,6 +33,8 @@ import { inspectRepository } from '../../../workspaces/launcher/services/reposit
 import { RepositoryReviewPanel } from './repository-review-panel'
 import { WorkspaceOnboardingAssistant } from './workspace-onboarding-assistant'
 
+import { completeAccountOnboarding } from '../../orchestrate/project-entry-policy'
+
 type OnboardingStep = 'identity' | 'provider' | 'workspace'
 type CodexOAuthMode = StartCodexOAuthInput['method']
 type ProviderSetupMode = 'api' | 'oauth-device' | 'oauth-browser' | 'oauth-manual' | null
@@ -70,14 +72,14 @@ function saveWorkspaceOnboardingAssistantResume(value: WorkspaceOnboardingAssist
 
 const ONBOARDING_STEPS: Record<OnboardingStep, { stepLabel: string; title: string; subtitle: string }> = {
   identity: {
-    stepLabel: 'Step 1 of 3 · Identity',
+    stepLabel: 'Step 1 of 2 · Identity',
     title: 'Hi, I’m Swarm — your AI command center.',
     subtitle: 'Start with the basics: your username and this device name.',
   },
   provider: {
-    stepLabel: 'Step 2 of 3 · Provider',
+    stepLabel: 'Step 2 of 2 · Provider',
     title: 'Connect your AI provider.',
-    subtitle: 'Connect a provider now or skip ahead. You’ll choose your first workspace next.'
+    subtitle: 'Connect a provider now or skip ahead to your projects. No workspace is required.'
   },
   workspace: {
     stepLabel: 'Step 3 of 3 · Workspace',
@@ -166,7 +168,8 @@ function waitForOnboardingReadyHold(): Promise<void> {
 
 function OnboardingBrandHeader({ restart, step, visible }: { restart: boolean; step: OnboardingStep; visible: boolean }) {
   const stepCopy = ONBOARDING_STEPS[step]
-  const stepIndex = (['identity', 'provider', 'workspace'] as OnboardingStep[]).indexOf(step) + 1
+  const visibleSteps: OnboardingStep[] = step === 'workspace' ? ['identity', 'provider', 'workspace'] : ['identity', 'provider']
+  const stepIndex = visibleSteps.indexOf(step) + 1
 
   return (
     <div
@@ -184,9 +187,9 @@ function OnboardingBrandHeader({ restart, step, visible }: { restart: boolean; s
           </div>
         </div>
         <div className="grid min-w-32 gap-2 text-right" aria-label={stepCopy.stepLabel}>
-          <span className="text-[11px] font-medium uppercase tracking-[0.18em] text-[var(--app-text-subtle)]">{stepIndex} / 3</span>
-          <div className="grid grid-cols-3 gap-1">
-            {(['identity', 'provider', 'workspace'] as OnboardingStep[]).map((item) => (
+          <span className="text-[11px] font-medium uppercase tracking-[0.18em] text-[var(--app-text-subtle)]">{stepIndex} / {visibleSteps.length}</span>
+          <div className="grid grid-flow-col auto-cols-fr gap-1">
+            {visibleSteps.map((item) => (
               <span
                 key={item}
                 className={item === step ? 'h-0.5 bg-[var(--app-primary)]' : 'h-0.5 bg-[color-mix(in_oklab,var(--app-border)_62%,transparent)]'}
@@ -383,7 +386,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
   const finishButtonLabel = pendingAction === 'finalize'
     ? 'Finishing…'
     : providerAlreadyConnected
-      ? 'Continue'
+      ? 'Continue to projects'
       : providerOptions.length === 0
         ? 'Continue without provider'
         : 'Skip for now'
@@ -485,8 +488,8 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
             await refreshAuthDependentQueries()
             if (cancelled) return
             setOAuthSession(next)
-            setNotice('Provider connected. Choose your workspace when you’re ready.')
-            transitionToStep('workspace')
+            setNotice('Provider connected. Continue to your projects when you’re ready.')
+            transitionToStep('provider')
           }
         })
         .catch((err) => {
@@ -659,7 +662,15 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
     setCredentialValue('')
     setCallbackInput('')
     setOAuthSession(null)
-    transitionToStep('workspace')
+    void completeAccountOnboarding({
+      finalize: () => finalizeOnboarding(),
+      refreshAuth: refreshAuthDependentQueries,
+      openProjects: () => navigate({ to: '/projects' }),
+      complete: next => { setClosing(true); onComplete(next) },
+    }).catch(err => {
+      setError(err instanceof Error ? err.message : 'Unable to finish onboarding')
+      transitionToStep('provider')
+    }).finally(() => setPendingAction(null))
   }
 
   const handleOpenWorkspace = (path: string) => {
@@ -910,9 +921,9 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
       setCredentialValue('')
       const next = await reloadStatus()
       await refreshAuthDependentQueries()
-      setNotice('Provider connected. Choose your workspace when you’re ready.')
+      setNotice('Provider connected. Continue to your projects when you’re ready.')
       setStatus(next)
-      transitionToStep('workspace')
+      transitionToStep('provider')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save provider credential')
     } finally {
@@ -1001,8 +1012,8 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
       setCallbackInput('')
       await reloadStatus()
       await refreshAuthDependentQueries()
-      setNotice('Provider connected. Choose your workspace when you’re ready.')
-      transitionToStep('workspace')
+      setNotice('Provider connected. Continue to your projects when you’re ready.')
+      transitionToStep('provider')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to complete remote sign-in')
     } finally {
@@ -1136,7 +1147,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                                 onClick={() => {
                                   if (pendingActionRef.current !== null) return
                                   setProviderID(provider.id)
-                                  if (connected) transitionToStep('workspace')
+                                  if (connected) transitionToStep('provider')
                                   setError(null)
                                   setNotice(null)
                                 }}
@@ -1366,7 +1377,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                     </>
                   ) : !providerLoading ? (
                     <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-4 py-4 text-sm leading-6 text-[var(--app-text-muted)]">
-                      No providers are available yet. Continue to workspace setup and connect one later from Settings.
+                      No providers are available yet. Continue to projects and connect one later from Settings.
                     </div>
                   ) : null}
 

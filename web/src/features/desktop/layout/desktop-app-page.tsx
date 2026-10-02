@@ -3804,7 +3804,7 @@ export function DesktopAppPage() {
       return
     }
     void navigate({
-      to: '/$workspaceSlug/$sessionId',
+      to: '/history/$workspaceSlug/$sessionId',
       params: { workspaceSlug: canonicalWorkspaceSlug, sessionId: session.id },
       replace: true,
     })
