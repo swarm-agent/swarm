@@ -366,8 +366,33 @@ type ProjectTaskCoderAssignment struct {
 	AcceptanceCriteria  []string          `json:"acceptance_criteria"`
 }
 
+// TaskDeliveryAssessment is an ephemeral observation, not an integration receipt
+// or execution outcome. Only state=integrated proves original source ancestry.
+type TaskDeliveryAssessment struct {
+	AccountID string `json:"account_id"`
+	TaskID string `json:"task_id"`
+	TaskRevision int `json:"task_revision"`
+	AttemptID string `json:"attempt_id"`
+	SessionID string `json:"session_id"`
+	WorkspaceID string `json:"workspace_id"`
+	WorkspaceGeneration int64 `json:"workspace_generation"`
+	BaseOID string `json:"base_oid"`
+	SourceOID string `json:"source_oid"`
+	TargetOID string `json:"target_oid"`
+	SourceBranch string `json:"source_branch"`
+	TargetBranch string `json:"target_branch"`
+	State string `json:"state"`
+	Reason string `json:"reason"`
+	Freshness string `json:"freshness"`
+	ObservedAt int64 `json:"observed_at,omitempty"`
+	CandidateCommits int `json:"candidate_commits"`
+	Files []string `json:"files,omitempty"`
+	AllowedActions []string `json:"allowed_actions"`
+}
+
 // ProjectTaskRecord represents an autonomous task unit in a project.
 type ProjectTaskRecord struct {
+	DeliveryAssessment *TaskDeliveryAssessment `json:"delivery_assessment,omitempty"`
 	ID                  string                       `json:"id"`
 	ProjectID           string                       `json:"project_id"`
 	AccountID           string                       `json:"account_id"`
@@ -738,6 +763,8 @@ func (s *SessionStore) persistProjectTaskLocked(accountScopeID string, task *Pro
 	if task == nil {
 		return nil, errors.New("project task definition required")
 	}
+	// Git observations must be recomputed, never persisted as delivery authority.
+	task.DeliveryAssessment = nil
 	accountScopeID = strings.TrimSpace(accountScopeID)
 	if accountScopeID == "" {
 		return nil, errors.New("account scope id is required")

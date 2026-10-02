@@ -46,6 +46,7 @@ func (s *Server) resolveProjectThemeID(accountScopeID, themeID string) (string, 
 }
 
 type taskGitState struct {
+	deliveryAssessment *pebblestore.TaskDeliveryAssessment
 	worktreeBranch      string
 	worktreeName        string
 	baseBranch          string
@@ -3327,10 +3328,19 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusNotFound, errors.New("project task not found"))
 				return
 			}
-			if err := reconcileTaskGitState(db, task); err != nil {
+			catalogTask := *task
+			project, exists, catalogErr := db.GetProject(p.AccountScopeID, projectID)
+			if catalogErr != nil || !exists || project == nil {
+				catalogTask.SourceWorkspace.WorkspaceGeneration = 0
+			} else if _, sourceErr := s.resolveProjectTaskSource(p, project, task.SourceWorkspace.Path, task.SourceWorkspace.WorkspaceID, task.SourceWorkspace.WorkspaceGeneration, true); sourceErr != nil {
+				catalogTask.SourceWorkspace.WorkspaceGeneration = 0
+			}
+			if err := reconcileTaskGitStateContext(r.Context(), db, &catalogTask); err != nil {
 				writeError(w, http.StatusInternalServerError, err)
 				return
 			}
+			catalogTask.SourceWorkspace = task.SourceWorkspace
+			*task = catalogTask
 			syncTaskSessionState(task, db)
 			hydrateTaskProgramStatus(task, db)
 			hydrateTaskPlanDocument(task, db)
@@ -3704,6 +3714,20 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, errors.New("captured source repository or fork commit is missing or differs from the task; refresh its lineage"))
 			return
 		}
+		proj, projectFound, projectErr := db.GetProject(p.AccountScopeID, projectID)
+		if projectErr != nil || !projectFound || proj == nil {
+			writeError(w, http.StatusConflict, errors.New("project source catalog is unavailable"))
+			return
+		}
+		if _, err := s.resolveProjectTaskSource(p, proj, task.SourceWorkspace.Path, task.SourceWorkspace.WorkspaceID, task.SourceWorkspace.WorkspaceGeneration, true); err != nil {
+			writeError(w, http.StatusConflict, err)
+			return
+		}
+		gitState := inspectTaskGitStateContext(r.Context(), *task, db)
+		if gitState.deliveryAssessment == nil || (gitState.deliveryAssessment.State != "candidate_work" && gitState.deliveryAssessment.State != "integrated") {
+			writeError(w, http.StatusConflict, errors.New("delivery is not actionable for direct integration; refresh and review recovery"))
+			return
+		}
 		receipt := &pebblestore.ProjectTaskIntegration{State: "in_progress", SessionID: selection.SessionID, SourceBranch: selection.SourceBranch, TargetBranch: selection.TargetBranch, TargetWorkspacePath: capturedPath}
 		if err := pebblestore.BeginProjectTaskIntegration(db, p.AccountScopeID, task, receipt); err != nil {
 			writeError(w, http.StatusInternalServerError, err)
@@ -3721,7 +3745,6 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			}
 		}()
 		// Inspect git state first
-		gitState := inspectTaskGitState(*task, db)
 		if gitState.isDirty {
 			writeError(w, http.StatusConflict, fmt.Errorf("cannot integrate: worktree has %d uncommitted modification(s); commit or discard them before integrating", gitState.dirtyCount))
 			return
@@ -3809,6 +3832,10 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		childState, err := inspector.InspectTaskWorkspace(targetPath)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, fmt.Errorf("inspect worktree %q: %w", targetPath, err))
+			return
+		}
+		if childState.HeadCommit != gitState.deliveryAssessment.SourceOID || parentState.HeadCommit != gitState.deliveryAssessment.TargetOID {
+			writeError(w, http.StatusConflict, errors.New("delivery heads moved; refresh before integration"))
 			return
 		}
 		if !childState.Clean {
