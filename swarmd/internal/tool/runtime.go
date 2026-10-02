@@ -458,6 +458,7 @@ func WithWorkspaceScope(parent context.Context, scope WorkspaceScope) context.Co
 	normalized.ReadOnlyRoots = append([]string(nil), scope.ReadOnlyRoots...)
 	normalized.MutationScopes = append([]string(nil), scope.MutationScopes...)
 	normalized.TaskHistoryOnly = scope.TaskHistoryOnly
+	normalized.RejectScopeExpansion = scope.RejectScopeExpansion
 	normalized.SessionID = strings.TrimSpace(scope.SessionID)
 	normalized.Principal = scope.Principal
 	normalized.WorktreeEnabled = scope.WorktreeEnabled
@@ -506,6 +507,9 @@ func workspaceScopeFromContext(ctx context.Context, workspacePath string) Worksp
 	if !ok {
 		return scope
 	}
+	if override.RejectScopeExpansion && strings.TrimSpace(override.PrimaryPath) == "" && len(override.Roots) == 0 {
+		return override
+	}
 	if strings.TrimSpace(override.PrimaryPath) == "" && len(override.Roots) == 0 {
 		// Some control-plane tools deliberately omit path roots and authorize from
 		// the durable principal/session identity instead. Preserve that identity
@@ -519,6 +523,7 @@ func workspaceScopeFromContext(ctx context.Context, workspacePath string) Worksp
 	normalized.ReadOnlyRoots = append([]string(nil), override.ReadOnlyRoots...)
 	normalized.MutationScopes = append([]string(nil), override.MutationScopes...)
 	normalized.TaskHistoryOnly = override.TaskHistoryOnly
+	normalized.RejectScopeExpansion = override.RejectScopeExpansion
 	normalized.SessionID = strings.TrimSpace(override.SessionID)
 	normalized.Principal = override.Principal
 	normalized.WorktreeEnabled = override.WorktreeEnabled

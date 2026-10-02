@@ -1629,6 +1629,10 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 	}
 
 	projectID := segments[0]
+	if len(segments) >= 2 && segments[1] == "sessions" {
+		s.handleProjectConversations(w, r, p, projectID, segments[2:])
+		return
+	}
 
 	// 3. Single project resource: /v3/projects/{id}
 	if len(segments) == 1 {

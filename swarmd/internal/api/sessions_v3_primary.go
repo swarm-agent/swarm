@@ -36,6 +36,7 @@ const (
 // V3 primary write handlers delegate through the ApplySessionMutation boundary.
 
 type sessionsV3CreateRequest struct {
+	ProjectID                      string                        `json:"project_id,omitempty"`
 	Purpose                        string                        `json:"purpose,omitempty"`
 	SessionID                      string                        `json:"session_id,omitempty"`
 	ClientRequestID                string                        `json:"client_request_id,omitempty"`
@@ -862,6 +863,10 @@ func (s *Server) handleSessionsV3PrimaryCreate(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	s.createSessionsV3Primary(w, r, principal, req)
+}
+
+func (s *Server) createSessionsV3Primary(w http.ResponseWriter, r *http.Request, principal identity.Principal, req sessionsV3CreateRequest) {
 	if req.Purpose != "" && req.Purpose != pebblestore.SessionPurposeAutomationManagement {
 		writeError(w, http.StatusBadRequest, errors.New("unsupported session purpose"))
 		return
@@ -881,12 +886,21 @@ func (s *Server) handleSessionsV3PrimaryCreate(w http.ResponseWriter, r *http.Re
 	}
 	// managed_worktree_requested is a tolerated rolling-client field only. The
 	// canonical request uses worktree_mode and never echoes the retired toggle.
-	requestedWorktreeMode, err := validateSessionsV3CreateWorktreeRequest(req.WorktreeMode, req.WorktreeUseCurrentBranch, req.WorktreeBaseBranch, req.WorktreeBranchName, req.WorktreeExistingPath)
+	var requestedWorktreeMode string
+	var err error
+	if strings.TrimSpace(req.ProjectID) == "" {
+		requestedWorktreeMode, err = validateSessionsV3CreateWorktreeRequest(req.WorktreeMode, req.WorktreeUseCurrentBranch, req.WorktreeBaseBranch, req.WorktreeBranchName, req.WorktreeExistingPath)
+	}
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	binding, err := s.resolveSessionsV3PrimaryBinding(principal, req)
+	var binding sessionsV3PrimaryBinding
+	if strings.TrimSpace(req.ProjectID) != "" {
+		binding, err = s.resolveProjectConversationBinding(principal, &req)
+	} else {
+		binding, err = s.resolveSessionsV3PrimaryBinding(principal, req)
+	}
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -901,7 +915,7 @@ func (s *Server) handleSessionsV3PrimaryCreate(w http.ResponseWriter, r *http.Re
 	}
 	workspacePath := binding.SourceWorkspacePath
 	workspaceName := binding.SourceWorkspaceName
-	if workspaceName == "" {
+	if workspaceName == "" && req.ProjectID == "" {
 		workspaceName = filepath.Base(workspacePath)
 		if workspaceName == "." || workspaceName == string(filepath.Separator) {
 			workspaceName = "workspace"
@@ -927,7 +941,10 @@ func (s *Server) handleSessionsV3PrimaryCreate(w http.ResponseWriter, r *http.Re
 		writeModelProfileError(w, err)
 		return
 	}
-	initialWorkspaceGrants, err := s.sessionsV3InitialWorkspaceGrants(principal, binding)
+	var initialWorkspaceGrants []pebblestore.WorkspaceGrant
+	if req.ProjectID == "" {
+		initialWorkspaceGrants, err = s.sessionsV3InitialWorkspaceGrants(principal, binding)
+	}
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -951,6 +968,11 @@ func (s *Server) handleSessionsV3PrimaryCreate(w http.ResponseWriter, r *http.Re
 	if appBinding, ok := r.Context().Value(applicationAgentContextKey{}).(applicationAgentBinding); ok {
 		session.Metadata[applicationAgentBindingKey] = appBinding
 	}
+	if req.ProjectID != "" {
+		session.Metadata["swarm_v3_project_id"] = req.ProjectID
+		session.Metadata["project_id"] = req.ProjectID
+		session.Metadata["role"] = "project_orchestrator"
+	}
 	if req.Purpose == pebblestore.SessionPurposeAutomationManagement {
 		if binding.SourceWorkspaceID == "" || resolvedAgent.Name != agentruntime.SwarmAgentID {
 			writeError(w, http.StatusBadRequest, errors.New("automation management requires Swarm and a saved workspace"))
@@ -971,7 +993,7 @@ func (s *Server) handleSessionsV3PrimaryCreate(w http.ResponseWriter, r *http.Re
 	if s.handleSessionsV3CreateReplay(w, principal, sessionID, clientRequestID, payloadHash, session) {
 		return
 	}
-	if requestedWorktreeMode == runruntime.RunWorktreeModeOn {
+	if requestedWorktreeMode == runruntime.RunWorktreeModeOn && req.ProjectID == "" {
 		allocation, err := s.resolveSessionsV3CreateWorktree(principal, workspacePath, sessionID, req.WorktreeUseCurrentBranch, req.WorktreeBaseBranch, req.WorktreeBranchName, req.WorktreeExistingPath)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
@@ -992,7 +1014,7 @@ func (s *Server) handleSessionsV3PrimaryCreate(w http.ResponseWriter, r *http.Re
 			Kind: pebblestore.WorkspaceGrantWorktree, Path: strings.TrimSpace(allocation.WorkspacePath), Available: &available,
 		})
 		session.WorkspaceUsage = pebblestore.WorkspaceUsageFromGrants(session.WorkspaceGrants)
-	} else {
+	} else if req.ProjectID == "" {
 		session.WorktreeBranch = sessionruntime.DetectCurrentBranch(session.WorkspacePath)
 	}
 	admission, err := sessionsV3AllocatedLaneAdmission(session)
@@ -1034,13 +1056,30 @@ func (s *Server) handleSessionsV3PrimaryList(w http.ResponseWriter, r *http.Requ
 	if !ok {
 		return
 	}
-	sessions, err := s.sessions.ListSessionsForAccountUser(principal.AccountScopeID, principal.UserID, limit)
+	projectID := strings.TrimSpace(r.URL.Query().Get("project_id"))
+	if projectID != "" {
+		project, found, err := s.sessions.Store().GetProject(principal.AccountScopeID, projectID)
+		if err != nil || !found || project == nil {
+			writeError(w, http.StatusNotFound, errors.New("project not found"))
+			return
+		}
+	}
+	var sessions []pebblestore.SessionSnapshot
+	var err error
+	if projectID != "" {
+		sessions, err = s.sessions.Store().ListProjectConversations(principal.AccountScopeID, principal.UserID, projectID, limit)
+	} else {
+		sessions, err = s.sessions.ListSessionsForAccountUser(principal.AccountScopeID, principal.UserID, limit)
+	}
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
 	items := make([]map[string]any, 0, len(sessions))
 	for _, item := range sessions {
+		if projectID != "" && (sessionsV3MetadataString(item.Metadata, "project_id") != projectID || sessionsV3MetadataString(item.Metadata, "agent_name") != agentruntime.SwarmOrchestratorAgentID) {
+			continue
+		}
 		if sessionsV3SystemSidechat(item) {
 			continue
 		}
@@ -2724,6 +2763,10 @@ func (s *Server) handleSessionV3PrimaryPermissionResolve(w http.ResponseWriter, 
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	if err := s.validateProjectPermissionReply(principal, sessionID, permissionID); err != nil {
+		writeError(w, http.StatusConflict, err)
+		return
+	}
 	record, savedRule, err := s.perm.ResolveWithPolicyAndArguments(sessionID, permissionID, req.Action, req.Reason, string(req.ApprovedArguments))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -2738,6 +2781,10 @@ func (s *Server) handleSessionV3PrimaryPermissionResolve(w http.ResponseWriter, 
 }
 
 func (s *Server) handleSessionV3PrimaryPermissionResolveAll(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID string) {
+	if session, ok, _ := s.requireSessionV3Access(principal, sessionID); ok && pebblestore.ProjectConversationID(session) != "" {
+		writeError(w, http.StatusConflict, errors.New("project conversation permissions require individual request resolution"))
+		return
+	}
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)
 		return
@@ -2892,6 +2939,11 @@ func (s *Server) requireSessionV3Access(principal identity.Principal, sessionID 
 	}
 	if strings.TrimSpace(session.UserID) == "" || strings.TrimSpace(session.UserID) != strings.TrimSpace(principal.UserID) {
 		return pebblestore.SessionSnapshot{}, false, nil
+	}
+	if pebblestore.ProjectConversationID(session) != "" {
+		if err := s.sessions.Store().ValidateProjectConversation(session, principal.AccountScopeID, principal.UserID); err != nil {
+			return pebblestore.SessionSnapshot{}, false, err
+		}
 	}
 	return session, true, nil
 }
@@ -3977,6 +4029,10 @@ func mergeSessionsV3MetadataUpdate(current map[string]any, requested map[string]
 		}
 		metadata[key] = cloneSessionsV3MetadataValue(value)
 	}
+	if projectID := sessionsV3MetadataString(current, "swarm_v3_project_id"); projectID != "" {
+		metadata["project_id"] = projectID
+		metadata["role"] = "project_orchestrator"
+	}
 	return metadata
 }
 
@@ -4279,6 +4335,7 @@ func isProtectedSessionsV3MetadataKey(key string) bool {
 	case applicationAgentBindingKey,
 		pebblestore.SessionPurposeMetadataKey,
 		pebblestore.SessionPurposeWorkspaceMetadataKey,
+		"swarm_v3_project_id",
 		"agent_name",
 		"agent_profile",
 		"resolved_worker_context",

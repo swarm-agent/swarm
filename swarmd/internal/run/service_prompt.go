@@ -36,7 +36,7 @@ func masterHarnessPromptWithScope(scope tool.WorkspaceScope) string {
 
 func masterHarnessPromptWithScopeAndAgent(scope tool.WorkspaceScope, isOrchestrator bool) string {
 	workspacePath := strings.TrimSpace(scope.PrimaryPath)
-	if workspacePath == "" {
+	if workspacePath == "" && !scope.RejectScopeExpansion {
 		workspacePath = "."
 	}
 	roots := make([]string, 0, len(scope.Roots))

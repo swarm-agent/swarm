@@ -466,6 +466,16 @@ func (s *Service) resolveRunExecutionContext(session pebblestore.SessionSnapshot
 	if requested.WorktreeMode == "" {
 		return resolvedRunExecutionContext{}, fmt.Errorf("unsupported worktree_mode %q", strings.TrimSpace(requested.WorktreeMode))
 	}
+	if pebblestore.ProjectConversationID(session) != "" {
+		if requested.WorkspacePath != "" || requested.CWD != "" || requested.WorktreeRootPath != "" || requested.WorktreeBranch != "" || requested.WorktreeBaseBranch != "" || requested.WorktreeMode == RunWorktreeModeOn {
+			return resolvedRunExecutionContext{}, errors.New("project conversation cannot override execution workspace")
+		}
+		scope, err := s.resolveRunWorkspaceScope(session, principal)
+		if err != nil {
+			return resolvedRunExecutionContext{}, err
+		}
+		return resolvedRunExecutionContext{Scope: scope, WorktreeMode: RunWorktreeModeOff}, nil
+	}
 	if err := s.validateMandatorySessionWorktree(session, requested); err != nil {
 		return resolvedRunExecutionContext{}, err
 	}

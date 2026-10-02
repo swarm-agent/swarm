@@ -1963,7 +1963,16 @@ func (e *sessionV3Executor) generateAndApplySessionV3Title(job sessionV3Executor
 	if conversation == "" {
 		return
 	}
-	title, err := e.generateSessionV3CompactTitle(session, conversation, job.Principal)
+	var title string
+	titleSource := "compact"
+	if pebblestore.ProjectConversationID(session) != "" {
+		decision, routeErr := e.server.routeSessionOnce(context.Background(), job.Principal, conversation)
+		err = routeErr
+		title = decision.Result.Title
+		titleSource = routedSessionTitleSourceRouter
+	} else {
+		title, err = e.generateSessionV3CompactTitle(session, conversation, job.Principal)
+	}
 	if err != nil {
 		log.Printf("warning: v3 session title generation failed for session %q: %v", job.SessionID, err)
 		return
@@ -1982,7 +1991,7 @@ func (e *sessionV3Executor) generateAndApplySessionV3Title(job sessionV3Executor
 	now := time.Now().UnixMilli()
 	current.Title = title
 	current.UpdatedAt = now
-	current.Metadata = authoritativeSessionTitleMetadata(current.Metadata, "compact")
+	current.Metadata = authoritativeSessionTitleMetadata(current.Metadata, titleSource)
 	payload, err := json.Marshal(map[string]any{
 		"session_id": job.SessionID,
 		"title":      title,

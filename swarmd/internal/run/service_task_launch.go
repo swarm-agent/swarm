@@ -3794,6 +3794,25 @@ func (s *Service) resolveTaskTargetWorkspace(parentSession pebblestore.SessionSn
 	if err != nil {
 		return "", "", fmt.Errorf("resolve parent shared workspace roots: %w", err)
 	}
+	if projectID := pebblestore.ProjectConversationID(parentSession); projectID != "" {
+		if requested == "" || !filepath.IsAbs(requested) || filepath.Clean(requested) != requested || s.workspace == nil {
+			return "", "", errors.New("project delegation requires an explicit canonical workspace_path")
+		}
+		project, found, err := s.sessions.Store().GetProject(principal.AccountScopeID, projectID)
+		if err != nil || !found || project == nil {
+			return "", "", errors.New("project delegation authority unavailable")
+		}
+		resolved, err := s.workspace.ScopeForPathForPrincipal(principal, requested)
+		if err != nil || !resolved.Matched || resolved.WorkspacePath != requested || resolved.ResolvedPath != requested || resolved.WorkspaceID == "" || resolved.WorkspaceGeneration <= 0 {
+			return "", "", errors.New("project delegation target is not an authorized catalog root")
+		}
+		for _, ref := range project.Workspaces {
+			if ref.Path == requested && ref.WorkspaceID == resolved.WorkspaceID {
+				return requested, resolved.WorkspaceName, nil
+			}
+		}
+		return "", "", errors.New("project delegation target is not a member of this project")
+	}
 	if requested == "" {
 		return scope.PrimaryPath, strings.TrimSpace(parentSession.WorkspaceName), nil
 	}
