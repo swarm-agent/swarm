@@ -68,3 +68,45 @@ func TestDesignSourceHydration(t *testing.T) {
 		}
 	}
 }
+
+// Purpose: hydrateDesignSource must not capture a replaced/modified source or a
+// cancelled attempt after consent. The rooted filesystem boundary is the
+// narrowest layer proving zero returned bytes without provider execution.
+func TestDesignSourceAuthorizationChanges(t *testing.T) {
+	for _, change := range []string{"replace", "modify", "cancel", "symlink"} {
+		t.Run(change, func(t *testing.T) {
+			root := t.TempDir()
+			path := filepath.Join(root, "source.svg")
+			if err := os.WriteFile(path, []byte("original"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			scope := WorkspaceScope{PrimaryPath: root, Roots: []string{root}}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			ctx = WithDesignSourceReadAuthorizer(ctx, func(context.Context, WorkspaceScope, string) error {
+				switch change {
+				case "cancel":
+					cancel()
+				case "modify":
+					return os.WriteFile(path, []byte("changed source content"), 0600)
+				case "replace":
+					other := filepath.Join(root, "replacement")
+					if err := os.WriteFile(other, []byte("original"), 0600); err != nil {
+						return err
+					}
+					return os.Rename(other, path)
+				case "symlink":
+					if err := os.Remove(path); err != nil {
+						return err
+					}
+					return os.Symlink(filepath.Join(t.TempDir(), "outside"), path)
+				}
+				return nil
+			})
+			got, err := hydrateDesignSources(ctx, scope, []DesignFileReference{{Path: "source.svg"}})
+			if err == nil || got != nil {
+				t.Fatalf("captured changed/cancelled source: %+v %v", got, err)
+			}
+		})
+	}
+}

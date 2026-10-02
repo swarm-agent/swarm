@@ -18,17 +18,34 @@ import (
 	"swarm/packages/swarmd/internal/tool"
 )
 
-// Purpose: production permission binding must reject denied or mismatched reads
-// before acceptance, including innocent filenames. Real Runtime hydration,
-// permission records and executeDesign prove source bytes reach the adapter only
-// after approval; this hermetic service boundary is not a live provider test.
+// Purpose: withDesignSourcePermission must enforce account policy and exact
+// source/principal binding before acceptance. Runtime hydration, permission
+// records and executeDesign are the narrowest hermetic boundary proving bypass
+// creates no permission, consent/deny remain effective, and interrupted or
+// retargeted reads cannot accept bytes or invoke even the fake provider.
 func TestDesignSourceProductionPermission(t *testing.T) {
-	for _, decision := range []string{"approve", "deny", "foreign", "missing", "scope"} {
+	for _, decision := range []string{"approve", "deny", "foreign", "missing", "scope", "bypass", "policy-deny", "sensitive-deny", "sensitive-ask", "account", "session", "run", "cancel", "expiry", "retarget", "changed", "outside", "symlink"} {
 		t.Run(decision, func(t *testing.T) {
 			s, p, parent, runner := designExecutionFixture(t)
 			root := t.TempDir()
 			for path, text := range map[string]string{"TaskCard.tsx": "export const TaskCard = () => 'task';", "card.css": "article { color: rebeccapurple; }"} {
 				if err := os.WriteFile(filepath.Join(root, path), []byte(text), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			bypass := decision == "bypass" || decision == "policy-deny" || decision == "sensitive-deny" || decision == "account" || decision == "session" || decision == "run" || decision == "outside" || decision == "symlink"
+			s.permissions.SetBypassPermissions(bypass || decision == "sensitive-ask")
+			if decision == "policy-deny" || decision == "sensitive-deny" || decision == "sensitive-ask" {
+				rule := permission.PolicyRule{Kind: permission.PolicyRuleKindTool, Tool: "read", Decision: permission.PolicyDecisionDeny}
+				if decision == "sensitive-ask" {
+					rule.Decision = permission.PolicyDecisionAsk
+				}
+				if decision == "sensitive-deny" {
+					// Account-designated sensitive sources remain denied in bypass,
+					// even when the filename looks like ordinary UI source.
+					rule.Kind, rule.Pattern = permission.PolicyRuleKindPhrase, "TaskCard.tsx"
+				}
+				if _, err := s.permissions.UpsertRuleForAccount(p.AccountID, rule); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -39,24 +56,54 @@ func TestDesignSourceProductionPermission(t *testing.T) {
 			if decision == "foreign" {
 				principal.UserID = "foreign"
 			}
+			if decision == "account" {
+				principal.AccountScopeID = "foreign-account"
+			}
+			if decision == "session" {
+				principal.SessionID = "foreign-session"
+			}
 			if decision != "missing" {
 				ctx = identity.ContextWithPrincipal(ctx, principal)
 			}
+			requests, updates := 0, 0
 			emit := func(e StreamEvent) {
+				if e.Type == StreamEventPermissionUpdate {
+					updates++
+				}
 				if e.Type == StreamEventPermissionReq {
+					requests++
+					if decision == "cancel" || decision == "expiry" {
+						if decision == "cancel" {
+							cancel()
+						}
+						return
+					}
+					if decision == "changed" {
+						if err := os.WriteFile(filepath.Join(root, "TaskCard.tsx"), []byte("replacement source with different bytes and size"), 0600); err != nil {
+							t.Fatal(err)
+						}
+					}
 					if e.Permission.Requirement != "design_source_sensitive_read" || !strings.Contains(e.Permission.ToolArguments, `"critical":true`) {
 						t.Error("not a separate sensitive permission")
 					}
 					action := permission.ActionAllowOnce
-					if decision == "deny" {
+					if decision == "deny" || decision == "sensitive-ask" {
 						action = permission.ActionDenyOnce
 					}
-					if _, err := s.permissions.Resolve(parent.ParentSessionID, e.Permission.ID, action, ""); err != nil {
+					arguments := ""
+					if decision == "retarget" {
+						arguments = `{"path":"different-source"}`
+					}
+					if _, err := s.permissions.ResolveWithArguments(parent.ParentSessionID, e.Permission.ID, action, "", arguments); err != nil {
 						t.Error(err)
 					}
 				}
 			}
-			ctx = s.withDesignSourcePermission(ctx, scope, parent.ParentRunID, emit)
+			runID := parent.ParentRunID
+			if decision == "run" {
+				runID = "wrong-run"
+			}
+			ctx = s.withDesignSourcePermission(ctx, scope, runID, emit)
 			if decision == "scope" {
 				scope.Roots = append(scope.Roots, t.TempDir())
 			}
@@ -67,7 +114,24 @@ func TestDesignSourceProductionPermission(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			results := s.tools.ExecuteBatchStreamingWithProgress(ctx, root, []tool.Call{{Name: "manage_design", CallID: "source", Arguments: `{"action":"submit","idempotency_key":"source","files":[{"path":"TaskCard.tsx"},{"path":"card.css"}],"candidates":[{"kind":"html","operation":"generate","brief":"style task"}]}`}}, nil, nil)
+			arguments := `{"action":"submit","idempotency_key":"source","files":[{"path":"TaskCard.tsx"},{"path":"card.css"}],"candidates":[{"kind":"html","operation":"generate","brief":"style task"}]}`
+			if decision == "outside" || decision == "symlink" {
+				outside := filepath.Join(t.TempDir(), "external.tsx")
+				if err := os.WriteFile(outside, []byte("outside source"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				if decision == "symlink" {
+					if err := os.Remove(filepath.Join(root, "TaskCard.tsx")); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.Symlink(outside, filepath.Join(root, "TaskCard.tsx")); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					arguments = strings.Replace(arguments, "TaskCard.tsx", filepath.ToSlash(outside), 1)
+				}
+			}
+			results := s.tools.ExecuteBatchStreamingWithProgress(ctx, root, []tool.Call{{Name: "manage_design", CallID: "source", Arguments: arguments}}, nil, nil)
 			if len(results) != 1 {
 				t.Fatal("missing result")
 			}
@@ -75,7 +139,36 @@ func TestDesignSourceProductionPermission(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if decision != "approve" {
+			pending, err := s.permissions.ListPending(parent.ParentSessionID, 20)
+			if err != nil || len(pending) != 0 {
+				t.Fatalf("orphaned pending permissions: %+v %v", pending, err)
+			}
+			if decision == "cancel" || decision == "expiry" {
+				records, err := s.permissions.ListPermissions(parent.ParentSessionID, 20)
+				if err != nil || len(records) != 1 || records[0].Status != store.PermissionStatusCancelled || requests != 1 {
+					t.Fatalf("interrupted capture not durably cancelled: %+v %v", records, err)
+				}
+				late, err := s.permissions.Resolve(parent.ParentSessionID, records[0].ID, permission.ActionAllowOnce, "late approval")
+				if err != nil || late.Status != store.PermissionStatusCancelled {
+					t.Fatalf("late approval revived capture: %+v %v", late, err)
+				}
+			}
+			if decision == "approve" && requests != 2 {
+				t.Fatalf("default auto skipped sharing consent: %d requests", requests)
+			}
+			if bypass && requests != 0 {
+				t.Fatalf("bypass or hard rejection emitted %d approval requests", requests)
+			}
+			if decision == "bypass" {
+				if updates != 0 {
+					t.Fatalf("bypass emitted %d permission updates", updates)
+				}
+				records, err := s.permissions.ListPermissions(parent.ParentSessionID, 20)
+				if err != nil || len(records) != 0 {
+					t.Fatalf("bypass created permission records: %+v %v", records, err)
+				}
+			}
+			if decision != "approve" && decision != "bypass" {
 				if results[0].Error == "" || len(after) != len(before) || len(runner.requests) != 0 {
 					t.Fatalf("unauthorized acceptance: %+v", results)
 				}

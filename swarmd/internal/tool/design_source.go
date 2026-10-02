@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"unicode/utf8"
@@ -25,9 +26,9 @@ type DesignFileReference struct {
 type designSourceAuthorizerKey struct{}
 
 // WithDesignSourceReadAuthorizer binds the run's canonical permission adapter.
-// The adapter MUST authorize a separate secret-sensitive read of the indicated
-// file for this principal/session (not reuse manage_design submit approval).
-// All source reads are treated as sensitive, including innocently named files.
+// The adapter MUST evaluate sharing of the indicated file for this
+// principal/session (not reuse manage_design submit approval). Account policy,
+// not a filename or default read allowance, determines whether consent is needed.
 // Missing adapters fail closed. Install only from trusted run code, never args.
 func WithDesignSourceReadAuthorizer(ctx context.Context, authorize func(context.Context, WorkspaceScope, string) error) context.Context {
 	return context.WithValue(ctx, designSourceAuthorizerKey{}, authorize)
@@ -80,6 +81,10 @@ func hydrateDesignSource(ctx context.Context, scope WorkspaceScope, ref DesignFi
 	if !ok || authorize == nil {
 		return zero, errors.New("design source read permission adapter unavailable")
 	}
+	before, err := target.stat()
+	if err != nil {
+		return zero, err
+	}
 	if err := authorize(ctx, scope, target.absolutePath); err != nil {
 		return zero, err
 	}
@@ -104,8 +109,24 @@ func hydrateDesignSource(ctx context.Context, scope WorkspaceScope, ref DesignFi
 	if !info.Mode().IsRegular() {
 		return zero, errors.New("design source must be regular")
 	}
+	if !os.SameFile(before, info) || before.Size() != info.Size() || !before.ModTime().Equal(info.ModTime()) {
+		return zero, errors.New("design source changed during authorization")
+	}
+	if err := ctx.Err(); err != nil {
+		return zero, err
+	}
 	content, err := io.ReadAll(io.LimitReader(file, pebblestore.MaxDesignContextBytes+1))
 	if err != nil {
+		return zero, err
+	}
+	after, err := file.Stat()
+	if err != nil {
+		return zero, err
+	}
+	if info.Size() != after.Size() || !info.ModTime().Equal(after.ModTime()) {
+		return zero, errors.New("design source changed during capture")
+	}
+	if err := ctx.Err(); err != nil {
 		return zero, err
 	}
 	if len(content) > pebblestore.MaxDesignContextBytes || !utf8.Valid(content) || isLikelyBinary(content) {

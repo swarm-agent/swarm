@@ -14,11 +14,14 @@ import (
 	"swarm/packages/swarmd/internal/tool"
 )
 
-// Every captured source requires its own sensitive-read decision. Submission
-// approval, filename heuristics and generic read allows are not this authority.
+// Every captured source requires an account-scoped sharing decision. Submission
+// approval and default read allowance are not sharing authority.
 func (s *Service) withDesignSourcePermission(ctx context.Context, bound tool.WorkspaceScope, runID string, emit StreamHandler) context.Context {
 	return tool.WithDesignSourceReadAuthorizer(ctx, func(ctx context.Context, scope tool.WorkspaceScope, path string) error {
 		denied := errors.New("design source sensitive read denied")
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		principal, ok := identity.PrincipalFromContext(ctx)
 		if !ok || principal.AccountScopeID == "" || principal.UserID == "" || runID == "" || bound.SessionID == "" || scope.SessionID != bound.SessionID || scope.PrimaryPath != bound.PrimaryPath || !reflect.DeepEqual(scope.Roots, bound.Roots) || !reflect.DeepEqual(scope.Principal, bound.Principal) || principal.AccountScopeID != bound.Principal.AccountScopeID || principal.UserID != bound.Principal.UserID || (principal.SessionID != "" && principal.SessionID != bound.SessionID) || s.permissions == nil || s.sessions == nil {
 			return denied
@@ -55,6 +58,16 @@ func (s *Service) withDesignSourcePermission(ctx context.Context, bound tool.Wor
 		if err != nil {
 			return err
 		}
+		decision, err := s.permissions.ExplainDesignSourceRead(principal.AccountScopeID, string(args))
+		if err != nil {
+			return err
+		}
+		switch decision.Decision {
+		case permission.PolicyDecisionAllow:
+			return ctx.Err()
+		case permission.PolicyDecisionDeny:
+			return denied
+		}
 		record, err := s.permissions.CreatePending(permission.CreateInput{SessionID: bound.SessionID, RunID: runID, ToolName: "read", ToolArguments: string(args), ToolCallArguments: string(args), Requirement: "design_source_sensitive_read", Mode: "ask"})
 		if err != nil {
 			return err
@@ -64,6 +77,14 @@ func (s *Service) withDesignSourcePermission(ctx context.Context, bound tool.Wor
 		}
 		resolved, err := s.permissions.WaitForResolution(ctx, bound.SessionID, record.ID)
 		if err != nil {
+			// Resolve only this capture's request, not unrelated waits in the run.
+			cancelled, cancelErr := s.permissions.Resolve(bound.SessionID, record.ID, permission.ActionCancel, "source capture interrupted before permission resolution")
+			if cancelErr == nil && emit != nil {
+				emit(StreamEvent{Type: StreamEventPermissionUpdate, SessionID: bound.SessionID, Permission: &cancelled})
+			}
+			return errors.Join(err, cancelErr)
+		}
+		if err := ctx.Err(); err != nil {
 			return err
 		}
 		if emit != nil {
