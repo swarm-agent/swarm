@@ -14,7 +14,8 @@ import { TaskAttemptHistory } from './task-attempt-history'
 import { TaskUsageFooter, TaskWorkerBudgetMetadata } from './task-usage-metadata'
 import { useOrchestratorDictation } from './use-orchestrator-dictation'
 import { TaskSessionErrors } from './task-session-error'
-import { SidebarModeSelector } from './sidebar-mode-selector'
+import { createProjectConversation, projectConversationLink, requireProjectConversation } from './project-conversations'
+import { useProjectConversations } from '../runtime/project-conversations'
 import { resolveDesktopChatRouteFromSession } from '../chat/services/chat-routing'
 import { integrationFailure, repairUnavailable, redactIntegrationDiagnostic, orchestratorDrafts, type IntegrationFailure } from './integration-recovery'
 import { useVideoTaskDefault } from './use-video-task-default'
@@ -77,7 +78,7 @@ import { submitWithWorkerSelection } from './worker-message-context'
 import { DurableWorkerCount } from '../layout/durable-worker-sidebar'
 import { ProjectWorkerSidebar } from '../layout/project-worker-sidebar'
 import { OrchestratorNotifications } from '../notifications/components/orchestrator-notifications'
-import { swarmWorkerLink, swarmWorkerHref, swarmActivePage } from './swarm-navigation'
+import { swarmWorkerHref, swarmActivePage } from './swarm-navigation'
 import { useDesktopV3CacheSelector, getDesktopV3CacheSnapshot } from '../state/desktop-v3-cache-store'
 import { selectPendingWorkerSidebarReviews } from '../state/desktop-automation-v2-state'
 import { desktopAutomationV2 } from '../runtime/desktop-automation-v2'
@@ -2965,6 +2966,7 @@ function OrchestratorChatSidebar({
   const [error, setError] = useState(false)
   const [attempt, setAttempt] = useState(0)
   const navigate = useNavigate()
+  const projectPageLink = (page: SwarmPage) => project?.id ? { ...projectConversationLink(project.id, sessionId), search: { section: page } } : swarmPageLink(workspaceSlug, page)
   const [clearingContext, setClearingContext] = useState(false)
   const [clearSuccess, setClearSuccess] = useState(false)
 
@@ -3024,10 +3026,8 @@ function OrchestratorChatSidebar({
     setClearingContext(true)
     setClearSuccess(false)
     try {
-      const res = await requestJson<{ ok: boolean; session_id: string }>(
-        `/v3/projects/${project.id}/orchestrator:clear-context`,
-        { method: 'POST' }
-      )
+      const session_id = await createProjectConversation(project.id, `desktop-v3-create:${crypto.randomUUID()}`)
+      const res = { ok: true, session_id }
       if (clearScope.current !== scope) return
       if (res?.ok && res.session_id) {
         onDeselectTask?.()
@@ -3061,6 +3061,7 @@ function OrchestratorChatSidebar({
       data-swarm-transcript-lane="sidebar"
       className="swarm-ai-sidebar relative flex min-h-0 w-[440px] flex-1 flex-col overflow-hidden rounded-3xl border border-slate-800/80 shadow-[var(--shadow-panel)]"
     >
+      <header className="p-3 border-b border-slate-800"><h2>{currentSession?.title || 'New conversation'}</h2><p className="text-xs text-slate-400">{project?.name}</p></header>
       {/* Top Header: Task Navigation vs Orchestrator Header */}
       {activeTask ? (
         <div className="flex items-center justify-between p-3 border-b border-slate-800 bg-[#0a0f1d] text-xs">
@@ -3128,10 +3129,10 @@ function OrchestratorChatSidebar({
             key={`${project?.id}:${sessionId}`}
             contextControls={<>
               <ContextRemaining usage={sessionUsage} />
-              {!activeTask && <button type="button" onClick={() => void handleClearContext()} disabled={clearingContext || repairSession} data-testid="clear-orchestrator-context-btn">{clearingContext ? 'Clearing…' : clearSuccess ? 'Cleared!' : 'Clear context'}</button>}
+              {!activeTask && <button type="button" onClick={() => void handleClearContext()} disabled={clearingContext || repairSession} data-testid="clear-orchestrator-context-btn">{clearingContext ? 'Creating…' : clearSuccess ? 'Created!' : 'New session'}</button>}
               {clearError && <span role="alert">{clearError}</span>}
             </>}
-            onCommandNavigate={(page) => { void navigate(swarmPageLink(workspaceSlug, page)) }}
+            onCommandNavigate={(page) => { void navigate(projectPageLink(page)) }}
             sessionId={sessionId}
             session={currentSession}
             project={project}
@@ -3204,7 +3205,6 @@ function OrchestratorChatSidebar({
 export function OrchestrateView({
   workerDetailId,
   workspaceSlug: workspaceSlugProp,
-  onNavigateHome,
   initialThemeId = 'modern_navy',
 }: OrchestrateViewProps) {
   const theme = ORCHESTRATE_THEMES[initialThemeId] || ORCHESTRATE_THEMES.modern_navy
@@ -3219,11 +3219,21 @@ export function OrchestrateView({
   const [isUpdatingAccountName, setIsUpdatingAccountName] = useState(false)
   const [accountNameError, setAccountNameError] = useState<string | null>(null)
 
+  const projectRouteParams = useRouterState({ select: state => state.matches[state.matches.length - 1]?.params as { projectId?: string; sessionId?: string } }) ?? {}
+  const routeConversationId = projectRouteParams.sessionId || ''
   // Projects State
   const [projects, setProjects] = useState<ProjectSummary[]>([])
-  const [selectedProjectId, setSelectedProjectId] = useState<string>('')
+  const selectedProjectId = projectRouteParams.projectId || ''
+  const setSelectedProjectId = (projectId: string) => { void navigate(projectId ? projectConversationLink(projectId) : { to: '/projects' }) }
+  const conversations = useProjectConversations(selectedProjectId)
+  const [conversationError, setConversationError] = useState('')
+  const [creatingConversation, setCreatingConversation] = useState(false)
+  const conversationRequest = useRef('')
   const [, setIsLoadingProjects] = useState<boolean>(true)
-  const selectedProject = projects.find((p) => p.id === selectedProjectId) ?? projects[0]
+  const selectedProject = useMemo(() => {
+    const project = projects.find(p => p.id === selectedProjectId)
+    return project ? { ...project, primarySessionId: routeConversationId || undefined } : undefined
+  }, [projects, selectedProjectId, routeConversationId])
   const selectedProjectRef = useRef(selectedProject?.id)
   selectedProjectRef.current = selectedProject?.id
   const [themeRoot, setThemeRoot] = useState<HTMLDivElement | null>(null)
@@ -3306,7 +3316,7 @@ export function OrchestrateView({
     refetchInterval: false,
   })
   const orchestratorState = useDesktopV3CacheSelector(state => {
-    const id = selectedProject?.primarySessionId
+    const id = routeConversationId
     if (!id) return 'inactive' as const
     const run = state.sessionViewsById[id]?.current_run_state
     const intent = state.currentRunIntentBySession[id]
@@ -3461,10 +3471,12 @@ export function OrchestrateView({
       setSelectedWorker(null)
     }
   }, [workerContextScope])
-  const inspectedWorkerId = routeParams.workerId || workerDetailId || (routeParams.swarmSection === 'workers' ? routeWorkerId : undefined)
-  const activeNavTab: SwarmPage = swarmActivePage(routeParams.swarmSection, inspectedWorkerId)
+  const inspectedWorkerId = routeParams.workerId || workerDetailId || routeWorkerId
+  const routeSection = useRouterState({ select: state => (state.location.search as { section?: string }).section })
+  const activeNavTab: SwarmPage = swarmActivePage(routeSection || routeParams.swarmSection || (!selectedProjectId ? 'projects' : undefined), inspectedWorkerId)
+  const projectPageLink = (page: SwarmPage) => selectedProjectId ? { ...projectConversationLink(selectedProjectId, routeConversationId || undefined), search: { section: page } } : swarmPageLink(workspaceSlug, page)
   const showFullMediaCenter = activeNavTab === 'media'
-  const setActiveNavTab = (page: SwarmPage) => { void navigate(swarmPageLink(workspaceSlug, page)) }
+  const setActiveNavTab = (page: SwarmPage) => { void navigate(projectPageLink(page)) }
   const setShowFullMediaCenter = (open: boolean) => {
     if (open) setActiveNavTab('media')
     else if (showFullMediaCenter) setActiveNavTab('home')
@@ -3827,7 +3839,7 @@ export function OrchestrateView({
     setIsPasteDocOpen(false)
     setPastedDocTitle('')
     setPastedDocContent('')
-    setActiveSessionId(selectedProject?.primarySessionId || '')
+    setActiveSessionId('')
   }, [selectedProjectId])
 
   // 1. Fetch User Auth, Workspaces, Automations, and Projects on mount
@@ -3866,7 +3878,7 @@ export function OrchestrateView({
             path: w.path,
             label: w.name || w.path.split('/').filter(Boolean).pop() || 'Workspace',
             role: (idx === 0 ? ('primary_code' as const) : ('auxiliary' as const)),
-            selected: true,
+            selected: false,
           }))
           setOnboardingWorkspaces(detected)
         }
@@ -3895,23 +3907,19 @@ export function OrchestrateView({
             projectContext: p.project_context,
             themeId: p.theme_id || '',
             iconPNGDataURL: p.icon_png_data_url || '',
-            primarySessionId: p.primary_session_id,
+            primarySessionId: undefined,
           }))
           setProjects(loaded)
-          setSelectedProjectId(loaded[0].id)
-          if (loaded[0].primarySessionId) {
-            setActiveSessionId(loaded[0].primarySessionId)
-          }
+          // Route identity selects the project, never implicit workspace membership.
         } else {
           if (!cancelled) {
             setProjects([])
-            setSelectedProjectId('')
             setActiveSessionId('')
             setIsOnboardingActive(true)
           }
         }
       } catch (err) {
-        console.warn('Failed to load projects from Pebble:', err)
+        if (!cancelled) setConversationError(err instanceof Error ? err.message : 'Unable to load projects')
       }
 
       // 5. Image, Video & Audio Models Catalog and UI Defaults
@@ -4107,47 +4115,22 @@ export function OrchestrateView({
   }, [])
 
   // Helper to ensure an active orchestrator session exists for a project
-  const ensureOrchestratorSession = useCallback(async (project: ProjectSummary): Promise<string | null> => {
-    const scope = workerConversationScopeRef.current
-    if (project.primarySessionId) {
-      setActiveSessionId(project.primarySessionId)
-      return project.primarySessionId
-    }
-    const clientRequestId = `desktop-v3-create:${crypto.randomUUID()}`
+  const newConversation = async (): Promise<string | null> => {
+    if (!selectedProject || creatingConversation) return null
+    setCreatingConversation(true); setConversationError('')
+    const projectId = selectedProject.id
+    conversationRequest.current ||= `desktop-v3-create:${crypto.randomUUID()}`
     try {
-      const sessRes = await requestJson<{ session: { id: string } }>('/v3/sessions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          client_request_id: clientRequestId,
-          title: `Project Orchestrator: ${project.name}`,
-          workspace_id: project.primaryWorkspaceId || project.workspaces?.[0]?.workspace_id || undefined,
-          workspace_path: project.repoPath || '.',
-          agent_name: 'system-orchestrator',
-          metadata: {
-            project_id: project.id,
-            role: 'project_orchestrator',
-          },
-        }),
-      })
-      if (sessRes?.session?.id) {
-        const sid = sessRes.session.id
-        if (workerConversationScopeRef.current === scope) setActiveSessionId(sid)
-        await requestJson(`/v3/projects/${project.id}`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ primary_session_id: sid }),
-        }).catch(() => {})
-        setProjects((prev) =>
-          prev.map((p) => (p.id === project.id ? { ...p, primarySessionId: sid } : p))
-        )
-        return sid
-      }
-    } catch (e) {
-      console.warn('Failed to ensure orchestrator session:', e)
-    }
-    return null
-  }, [])
+      const sid = await createProjectConversation(projectId, conversationRequest.current)
+      conversationRequest.current = ''
+      if (selectedProjectRef.current === projectId) void navigate(projectConversationLink(projectId, sid))
+      return sid
+    } catch (cause) {
+      if (selectedProjectRef.current === projectId) setConversationError(cause instanceof Error ? cause.message : 'Unable to create conversation')
+      return null
+    } finally { setCreatingConversation(false) }
+  }
+  const ensureOrchestratorSession = async (_project: ProjectSummary) => activeSessionId && !activeTaskId ? activeSessionId : newConversation()
 
   const openWorkerConversation = async (worker: SelectedWorker | null) => {
     if (workerChatStarting.current) return
@@ -4162,17 +4145,11 @@ export function OrchestrateView({
     setActiveTaskId(null)
     setSelectedTaskId('')
     try {
-      let sessionId: string | null = activeSessionId || null
+      let sessionId: string | null = !activeTaskId ? activeSessionId || null : null
       if (!sessionId && selectedProject) {
         sessionId = await ensureOrchestratorSession(selectedProject)
       } else if (!sessionId) {
-        // The server resolves the account's default workspace; never guess a local path.
-        workerChatRequestId.current ||= `desktop-v3-create:${crypto.randomUUID()}`
-        const response = await requestJson<{ session: { id: string } }>('/v3/sessions', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ client_request_id: workerChatRequestId.current, title: 'Worker Orchestrator', agent_name: 'system-orchestrator' }),
-        })
-        sessionId = response?.session?.id || null
+        throw new Error('Choose a project before opening a worker conversation.')
       }
       if (workerConversationScopeRef.current !== scope) return
       if (!sessionId) throw new Error('Could not open Orchestrator. Check your workspace connection and try again.')
@@ -4185,11 +4162,23 @@ export function OrchestrateView({
     } finally { workerChatStarting.current = false }
   }
 
-  // Synchronize active orchestrator session with selected project
+  // Verify provenance before mounting a transcript, composer or permission prompt.
   useEffect(() => {
-    if (!selectedProject || isOnboardingActive) return
-    void ensureOrchestratorSession(selectedProject)
-  }, [selectedProject?.id, isOnboardingActive, ensureOrchestratorSession])
+    let active = true
+    setActiveSessionId(''); setActiveTaskId(null); setSelectedTaskId(''); setAttachedTaskIds([])
+    setConversationError(''); conversationRequest.current = ''
+    if (selectedProject) {
+      try { localStorage.setItem(`swarm:last-project:${accountScopeId || ''}`, selectedProject.id) } catch { /* Optional navigation preference; route remains authoritative. */ }
+    }
+    if (selectedProject && routeConversationId) {
+      void requestJson<{ session: SessionSnapshot }>(`/v3/sessions/${encodeURIComponent(routeConversationId)}`).then(({ session }) => {
+        requireProjectConversation(selectedProject.id, session)
+        if (session.id !== routeConversationId) throw new Error('Session identity mismatch')
+        if (active) setActiveSessionId(session.id)
+      }).catch(cause => { if (active) setConversationError(cause instanceof Error ? cause.message : 'Unable to open conversation') })
+    }
+    return () => { active = false }
+  }, [selectedProject?.id, routeConversationId, accountScopeId])
 
   // Selecting task details is not consent to leave the current conversation.
   const handleSelectTask = (task: RunningTask) => {
@@ -4210,19 +4199,13 @@ export function OrchestrateView({
     setActiveTaskId(null)
     setSelectedTaskId('')
     setWorkerCreationRequested(false)
-    if (selectedProject?.primarySessionId) {
-      setActiveSessionId(selectedProject.primarySessionId)
-    }
+    setActiveSessionId(routeConversationId)
   }
 
   const handleOrchestratorSessionReset = useCallback((newSessionId: string) => {
     setActiveSessionId(newSessionId)
     setSelectedTaskId('')
-    if (selectedProject) {
-      setProjects((prev) =>
-        prev.map((p) => (p.id === selectedProject.id ? { ...p, primarySessionId: newSessionId } : p))
-      )
-    }
+    if (selectedProject) void navigate(projectConversationLink(selectedProject.id, newSessionId))
     void selectAndHydrateDesktopV3Session(newSessionId)
   }, [selectedProject?.id])
 
@@ -5528,7 +5511,6 @@ export function OrchestrateView({
               setActiveSessionId(next[0].primarySessionId)
             }
           } else {
-            setSelectedProjectId('')
             setActiveSessionId('')
             setIsOnboardingActive(true)
           }
@@ -5618,7 +5600,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
       project_context: onboardingContext,
     }
 
-    let newId = `proj_${Date.now()}`
+    let newId = ''
     try {
       const res = await requestJson<{ project: { id: string } }>('/v3/projects', {
         method: 'POST',
@@ -5629,38 +5611,19 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
         newId = res.project.id
       }
     } catch (err) {
-      console.warn('Backend /v3/projects save failed:', err)
+      setConversationError(err instanceof Error ? err.message : 'Unable to create project')
+      setIsActivating(false)
+      return
     }
+    if (!newId) { setConversationError('Project creation returned no identity'); setIsActivating(false); return }
 
     // Spawn primary orchestrator session with valid client_request_id and model preference
     let orchSessionId = ''
     const clientRequestId = `desktop-v3-create:${crypto.randomUUID()}`
     try {
-      const sessRes = await requestJson<{ session: { id: string } }>('/v3/sessions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          client_request_id: clientRequestId,
-          title: `Project Orchestrator: ${payload.name}`,
-          workspace_id: selectedWs[0]?.workspace_id || undefined,
-          workspace_path: selectedWs[0]?.path || '.',
-          agent_name: 'system-orchestrator',
-          metadata: {
-            project_id: newId,
-            role: 'project_orchestrator',
-          },
-        }),
-      })
-      if (sessRes?.session?.id) {
-        orchSessionId = sessRes.session.id
-        await requestJson(`/v3/projects/${newId}`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ primary_session_id: orchSessionId }),
-        }).catch(() => {})
-      }
+      orchSessionId = await createProjectConversation(newId, clientRequestId)
     } catch (e) {
-      console.warn('Failed to spawn initial orchestrator session:', e)
+      setConversationError(e instanceof Error ? e.message : 'Project saved, but conversation creation failed. Use New session to retry.')
     }
 
     const newProject: ProjectSummary = {
@@ -5676,11 +5639,11 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
       pendingDeliverablesCount: 0,
       runningTasksCount: 0,
       projectContext: payload.project_context,
-      primarySessionId: orchSessionId,
+      primarySessionId: undefined,
     }
 
     setProjects((prev) => [newProject, ...prev])
-    setSelectedProjectId(newProject.id)
+    void navigate(projectConversationLink(newProject.id, orchSessionId || undefined))
     if (orchSessionId) {
       setActiveSessionId(orchSessionId)
       setActiveTaskId(null)
@@ -5729,12 +5692,18 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
           if (task.sessionId) { setActiveTaskId(task.id); setActiveSessionId(task.sessionId); setWorkerChatOpen(true) }
         }} />
 
-        <SidebarModeSelector mode="swarm" workspaceSlug={workspaceSlug} pendingReviews={pendingReviews.length}
-          onNavigateChat={onNavigateHome} onNavigate={() => responsiveLayout.setNavigationOpen(false)} />
+        <section aria-label="Project conversations" className="p-3 space-y-2 overflow-auto">
+          <h2>Swarm conversations</h2>
+          <button type="button" disabled={!selectedProject || creatingConversation} onClick={() => void newConversation()}>New session</button>
+          <button type="button" onClick={conversations.refresh}>Refresh sessions</button>
+          {(conversationError || conversations.error) && <p role="alert">{conversationError || conversations.error}</p>}
+          {!selectedProject && <Link to="/projects">{selectedProjectId ? 'Project unavailable — choose a project' : 'Choose a project'}</Link>}
+          {conversations.sessions.map(session => <Link className="block truncate" key={session.id} {...projectConversationLink(selectedProjectId, session.id)} aria-current={routeConversationId === session.id ? 'page' : undefined}>{session.title || 'New conversation'}</Link>)}
+        </section>
         {/* Navigation Menu Links */}
         <nav aria-label="Swarm destinations" className="swarm-route-navigation p-3 border-b border-slate-800/80 space-y-1" onClick={() => { setIsOnboardingActive(false); responsiveLayout.setPanel('main'); responsiveLayout.setNavigationOpen(false) }}>
           <Link
-            {...swarmPageLink(workspaceSlug, 'home')}
+            {...projectPageLink('home')}
             aria-label="Tasks"
             activeOptions={{ exact: true, includeSearch: false }}
             aria-current={activeNavTab === 'home' ? 'page' : undefined}
@@ -5748,7 +5717,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
             <span>Tasks</span>
           </Link>
           <Link
-            {...swarmPageLink(workspaceSlug, 'projects')}
+            {...projectPageLink('projects')}
             aria-label="Projects"
             aria-current={activeNavTab === 'projects' ? 'page' : activeNavTab === 'charter' ? 'location' : undefined}
             className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium transition-all ${
@@ -5761,7 +5730,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
             <span>Projects ({projects.length})</span>
           </Link>
           <Link
-            {...swarmPageLink(workspaceSlug, 'workers')}
+            {...projectPageLink('workers')}
             aria-label="Workers"
             activeOptions={{ exact: true, includeSearch: false }}
             aria-current={activeNavTab === 'workers' ? 'page' : undefined}
@@ -5781,7 +5750,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
             </div>
           </Link>
           <Link
-            {...swarmPageLink(workspaceSlug, 'deliverables')}
+            {...projectPageLink('deliverables')}
             aria-label="Deliverables"
             aria-current={activeNavTab === 'deliverables' ? 'page' : undefined}
             className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium transition-all ${
@@ -5794,7 +5763,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
             <span>Deliverables ({liveTasks.flatMap((t) => t.deliverables || []).length})</span>
           </Link>
           <Link
-            {...swarmPageLink(workspaceSlug, 'media')}
+            {...projectPageLink('media')}
             aria-label="Media Studio and Library"
             aria-current={activeNavTab === 'media' ? 'page' : undefined}
             className={`w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs font-medium transition-all ${activeNavTab === 'media' ? 'bg-white/[0.08] text-white shadow-sm font-semibold' : 'text-slate-400 hover:text-slate-200 hover:bg-white/[0.04]'}`}
@@ -5809,14 +5778,14 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
               </span>
             )}
           </Link>
-          {(['agents', 'settings'] as const).map((page) => <Link key={page} {...swarmPageLink(workspaceSlug, page)} aria-label={page === 'agents' ? 'Agents' : 'Settings'} aria-current={activeNavTab === page ? 'page' : undefined} className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-xs font-medium text-slate-300 hover:bg-white/[0.08]">
+          {(['agents', 'settings'] as const).map((page) => <Link key={page} {...projectPageLink(page)} aria-label={page === 'agents' ? 'Agents' : 'Settings'} aria-current={activeNavTab === page ? 'page' : undefined} className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-xs font-medium text-slate-300 hover:bg-white/[0.08]">
             {page === 'agents' ? <Bot size={15} /> : <Settings size={15} />}<span>{page === 'agents' ? 'Agents' : 'Settings'}</span>
           </Link>)}
         </nav>
 
         {/* Workers for the selected project only. Project management lives in the header. */}
         <div className="p-3 border-b border-slate-800/80 flex-1 overflow-y-auto">
-          {accountScopeId && selectedProject && <ProjectWorkerSidebar key={selectedProject.id} accountScopeId={accountScopeId} projectId={selectedProject.id} showActivity onBrowse={() => setActiveNavTab('workers')} onInspect={id => { void navigate(swarmWorkerLink(workspaceSlug, id)) }} />}
+          {accountScopeId && selectedProject && <ProjectWorkerSidebar key={selectedProject.id} accountScopeId={accountScopeId} projectId={selectedProject.id} showActivity onBrowse={() => setActiveNavTab('workers')} onInspect={id => { void navigate({ ...projectPageLink('workers'), search: { section: 'workers', workerId: id } }) }} />}
 
         </div>
 
@@ -6048,8 +6017,8 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
          ───────────────────────────────────────────────────────────── */}
       {!showFullMediaCenter && <main className="swarm-main-panel relative min-w-0 flex flex-1 flex-col overflow-hidden rounded-3xl border bg-[#0d121f]/95 border-slate-800/80 shadow-[inset_0_1px_1px_rgba(255,255,255,0.06),0_18px_40px_rgba(0,0,0,0.65)]">
         <nav aria-label="Tasks and Workers views" className="flex shrink-0 gap-2 border-b border-slate-800 p-3 text-xs">
-          <Link {...swarmPageLink(workspaceSlug, 'home')} activeOptions={{ exact: true, includeSearch: false }} aria-current={activeNavTab === 'home' ? 'page' : undefined} className="rounded-lg border border-slate-700 px-3 py-2">Tasks</Link>
-          <Link {...swarmPageLink(workspaceSlug, 'workers')} activeOptions={{ exact: true, includeSearch: false }} aria-current={activeNavTab === 'workers' ? 'page' : undefined} className="rounded-lg border border-slate-700 px-3 py-2">Workers</Link>
+          <Link {...projectPageLink('home')} activeOptions={{ exact: true, includeSearch: false }} aria-current={activeNavTab === 'home' ? 'page' : undefined} className="rounded-lg border border-slate-700 px-3 py-2">Tasks</Link>
+          <Link {...projectPageLink('workers')} activeOptions={{ exact: true, includeSearch: false }} aria-current={activeNavTab === 'workers' ? 'page' : undefined} className="rounded-lg border border-slate-700 px-3 py-2">Workers</Link>
         </nav>
         {isOnboardingActive && (activeNavTab === 'home' || activeNavTab === 'projects') ? (
           <div className="flex-1 flex flex-col min-h-0 overflow-y-auto p-6 space-y-6">
@@ -6219,7 +6188,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
               <button
                 type="button"
                 onClick={handleCreateAndActivateProject}
-                disabled={isActivating || onboardingWorkspaces.filter((w) => w.selected).length === 0}
+                disabled={isActivating || !onboardingName.trim()}
                 className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-semibold text-xs shadow-lg shadow-blue-600/20 transition-all flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <span>{isActivating ? 'Activating...' : 'Create & Activate Project'}</span>
@@ -6243,7 +6212,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                 <span>+ New Project</span>
               </button>
             </div>
-            {selectedProject && <Link {...swarmPageLink(workspaceSlug, 'charter')} aria-label="Project Charter" className="swarm-project-charter-link">
+            {selectedProject && <Link {...projectPageLink('charter')} aria-label="Project Charter" className="swarm-project-charter-link">
               <FileText size={15} aria-hidden="true" /><span>Project Charter · {selectedProject.name}</span>
             </Link>}
             <div className="swarm-content-grid grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -6252,7 +6221,6 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                   key={p.id}
                   onClick={() => {
                     setSelectedProjectId(p.id)
-                    setActiveNavTab('home')
                     setActiveTaskId(null)
                   }}
                   className={`p-4 rounded-2xl border transition-all cursor-pointer ${
@@ -6297,7 +6265,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
             </div>
           </div>
         ) : activeNavTab === 'workers' ? (
-          <WorkerHub workspaceSlug={workspaceSlug} initialWorkerId={inspectedWorkerId} onInspectWorker={id => { if (id) void navigate(swarmWorkerLink(workspaceSlug, id)); else setActiveNavTab('workers') }} onSelectWorker={worker => { void openWorkerConversation(worker) }} onAddWorker={() => { void openWorkerConversation(null) }} />
+          <WorkerHub workspaceSlug={workspaceSlug} initialWorkerId={inspectedWorkerId} onInspectWorker={id => { if (id) void navigate({ ...projectPageLink('workers'), search: { section: 'workers', workerId: id } }); else setActiveNavTab('workers') }} onSelectWorker={worker => { void openWorkerConversation(worker) }} onAddWorker={() => { void openWorkerConversation(null) }} />
         ) : activeNavTab === 'deliverables' ? (
           /* DELIVERABLES TAB */
           <div className="flex-1 flex flex-col min-h-0 overflow-y-auto p-6 space-y-4">
@@ -6450,7 +6418,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
         ) : activeNavTab === 'charter' ? (
           /* Project-scoped editor; preserve the existing charter deep link. */
           <div className="flex-1 flex flex-col min-h-0 overflow-y-auto p-6 space-y-4">
-            <Link {...swarmPageLink(workspaceSlug, 'projects')} className="swarm-project-charter-link">← Projects</Link>
+            <Link {...projectPageLink('projects')} className="swarm-project-charter-link">← Projects</Link>
             <div className="flex items-center justify-between pb-3 border-b border-slate-800">
               <div>
                 <h2 className="text-base font-bold text-white">Project Charter: {selectedProject?.name}</h2>
@@ -6648,7 +6616,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                           isExpanded={expandedTaskId === t.id}
                           workspaceSlug={workspaceSlug}
                           onOpenWorkerDetail={(workerId) => {
-                            void navigate(swarmWorkerLink(workspaceSlug, workerId))
+                            void navigate({ ...projectPageLink('workers'), search: { section: 'workers', workerId } })
                           }}
                           onToggleExpand={() => setExpandedTaskId(expandedTaskId === t.id ? null : t.id)}
                           onSelect={() => handleSelectTask(t)}
@@ -6761,7 +6729,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                           {...selectionProps(t)}
                               workspaceSlug={workspaceSlug}
                               onOpenWorkerDetail={(workerId) => {
-                                void navigate(swarmWorkerLink(workspaceSlug, workerId))
+                                void navigate({ ...projectPageLink('workers'), search: { section: 'workers', workerId } })
                               }}
                               onSelect={() => handleSelectTask(t)}
                               onOpenChat={() => handleOpenTaskSession(t)}
@@ -6881,7 +6849,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                           {...selectionProps(task)}
                           workspaceSlug={workspaceSlug}
                           onOpenWorkerDetail={(workerId) => {
-                            void navigate(swarmWorkerLink(workspaceSlug, workerId))
+                            void navigate({ ...projectPageLink('workers'), search: { section: 'workers', workerId } })
                           }}
                           onSelect={() => handleSelectTask(task)}
                           onOpenChat={() => handleOpenTaskSession(task)}
@@ -6959,7 +6927,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                                 href={swarmWorkerHref(workspaceSlug, (t.workerId?.trim() || t.worker_id?.trim())!)}
                                 onClick={(e) => {
                                   e.stopPropagation()
-                                  void navigate(swarmWorkerLink(workspaceSlug, (t.workerId?.trim() || t.worker_id?.trim())!))
+                                  void navigate({ ...projectPageLink('workers'), search: { section: 'workers', workerId: (t.workerId?.trim() || t.worker_id?.trim())! } })
                                 }}
                                 className="text-indigo-400 hover:text-indigo-300 underline flex items-center gap-1 cursor-pointer"
                                 data-testid="worker-link"
@@ -6991,7 +6959,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                         {...selectionProps(selectedTaskForSplit)}
                         workspaceSlug={workspaceSlug}
                         onOpenWorkerDetail={(workerId) => {
-                          void navigate(swarmWorkerLink(workspaceSlug, workerId))
+                          void navigate({ ...projectPageLink('workers'), search: { section: 'workers', workerId } })
                         }}
                         onSelect={() => handleSelectTask(selectedTaskForSplit)}
                         onOpenChat={() => handleOpenTaskSession(selectedTaskForSplit)}
@@ -7044,7 +7012,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                       isSelected={selectedTaskId === t.id}
                       workspaceSlug={workspaceSlug}
                       onOpenWorkerDetail={(workerId) => {
-                        void navigate(swarmWorkerLink(workspaceSlug, workerId))
+                        void navigate({ ...projectPageLink('workers'), search: { section: 'workers', workerId } })
                       }}
                       onSelect={() => handleSelectTask(t)}
                       onOpenChat={() => handleOpenTaskSession(t)}
@@ -7090,7 +7058,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
           PANEL 3: RIGHT PANEL (CANONICAL DESKTOP V3 AI CHAT SIDEBAR)
          ───────────────────────────────────────────────────────────── */}
       {workerChatOpen && workerChatError && <div role="alert" className="max-w-sm p-4 text-sm text-red-300">{workerChatError}<button className="ml-2 underline" onClick={() => setWorkerChatError('')}>Dismiss</button></div>}
-      {activeSessionId ? (
+      {activeSessionId && selectedProject && (activeTaskId || activeSessionId === routeConversationId) ? (
         // Keep the chat bounded to the page, below the optional worker header.
         <div className="swarm-conversation-panel flex min-h-0 shrink-0 flex-col">
         {activeNavTab === 'workers' && workerChatOpen && <div className="flex max-w-[440px] shrink-0 items-center justify-between gap-3 p-3 text-xs text-slate-300"><span>{workerCreationRequested ? 'Add worker: describe its job to Orchestrator below. Nothing runs until you approve.' : 'Discuss this worker with Orchestrator'}</span><button onClick={() => { setWorkerChatOpen(false); setWorkerCreationRequested(false) }}>Close</button></div>}

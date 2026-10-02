@@ -7,7 +7,7 @@ import { DesktopVaultShell } from '../features/desktop/vault/components/desktop-
 import { useWorkspaceLauncher } from '../features/workspaces/launcher/state/use-workspace-launcher'
 import { workspaceRouteSlugBase } from '../features/workspaces/launcher/services/workspace-route'
 
-const WorkspaceHomePage = withStartupScreen(lazy(() => import('../features/workspaces/pages/workspace-home-page').then((module) => ({ default: module.WorkspaceHomePage }))))
+const ProjectEntryPage = withStartupScreen(lazy(() => import('../features/desktop/orchestrate/project-entry-page').then(module => ({ default: module.ProjectEntryPage }))))
 const importDesktopAppPage = () => import('../features/desktop/layout/desktop-app-page')
 const DesktopAppPage = withStartupScreen(lazy(() => importDesktopAppPage().then((module) => ({ default: module.DesktopAppPage }))))
 const DesktopSettingsPage = withStartupScreen(lazy(() => import('../features/desktop/settings/components/desktop-settings-page').then((module) => ({ default: module.DesktopSettingsPage }))))
@@ -18,8 +18,8 @@ const AutomationToolPage = withStartupScreen(lazy(() => import('../features/desk
 const EnvironmentsPage = withStartupScreen(lazy(() => import('../features/desktop/environments/pages/environments-page').then((module) => ({ default: module.EnvironmentsPage }))))
 const UsagePage = withStartupScreen(lazy(() => import('../features/desktop/usage/pages/usage-page').then((module) => ({ default: module.UsagePage }))))
 const OrchestratePage = withStartupScreen(lazy(() => import('../features/desktop/orchestrate/orchestrate-page').then((module) => ({ default: module.OrchestratePage }))))
-const ROOT_RESERVED_ROUTE_SEGMENTS = new Set(['memory', 'settings', 'integrations', 'tools', 'agents', 'studio', 'environments', 'usage', 'media', 'swarm', 'orchestrate'])
-const WORKSPACE_RESERVED_ROUTE_SEGMENTS = new Set(['settings', 'tools', 'task', 'worktree', 'video', 'studio', 'automations', 'environments', 'usage', 'media', 'swarm', 'orchestrate'])
+const ROOT_RESERVED_ROUTE_SEGMENTS = new Set(['memory', 'settings', 'integrations', 'tools', 'agents', 'studio', 'environments', 'usage', 'media', 'swarm', 'orchestrate', 'projects'])
+const WORKSPACE_RESERVED_ROUTE_SEGMENTS = new Set(['settings', 'tools', 'task', 'worktree', 'video', 'studio', 'automations', 'environments', 'usage', 'media', 'swarm', 'orchestrate', 'projects'])
 const MemoryPage = withStartupScreen(lazy(() => import('../features/desktop/settings/components/desktop-settings-page').then(module => ({ default: () => <module.DesktopSettingsPage initialMemoryOpen /> }))))
 
 function currentWorkspaceRoute(pathname: string): { sessionId?: string } | null {
@@ -169,7 +169,7 @@ function initialDesktopV3PreferredSessionId(): string | null | undefined {
 const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/',
-  component: WorkspaceHomePage,
+  component: ProjectEntryPage,
 })
 
 const agentsRoute = createRoute({
@@ -249,7 +249,7 @@ const conversationRoute = createRoute({
   getParentRoute: () => rootRoute,
   id: 'conversation',
   validateSearch: validateWorkspaceSessionSearch,
-  component: DesktopAppPage,
+  component: ProjectEntryPage,
 })
 
 const workspaceRoute = createRoute({
@@ -353,6 +353,8 @@ const globalWorkersDetailRoute = createRoute({
   beforeLoad: ({ params }) => { throw redirect({ to: '/swarm/$swarmSection', params: { swarmSection: 'workers' }, search: { workerId: params.workerId }, replace: true }) },
   component: AutomationToolPage,
 })
+
+const historyRoute = createRoute({ getParentRoute: () => rootRoute, path: '/history/$workspaceSlug/$sessionId', component: DesktopAppPage })
 
 const workspaceTaskRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -475,12 +477,18 @@ const workspaceImageToolSessionRoute = createRoute({
 const swarmLayoutRoute = createRoute({
   getParentRoute: () => rootRoute,
   id: 'swarm-layout',
-  validateSearch: (search: Record<string, unknown>): { workerId?: string } => ({
+  validateSearch: (search: Record<string, unknown>): { workerId?: string; section?: string } => ({
+    ...(isSwarmSection(search.section) || search.section === 'home' ? { section: search.section as string } : {}),
     ...(typeof search.workerId === 'string' && /^(worker_|worker-)[A-Za-z0-9_-]+$/.test(search.workerId) ? { workerId: search.workerId } : {}),
   }),
   component: OrchestratePage,
   notFoundComponent: StartupRouteError,
 })
+
+const projectsRoute = createRoute({ getParentRoute: () => rootRoute, path: '/projects', component: ProjectEntryPage })
+const projectRoute = createRoute({ getParentRoute: () => swarmLayoutRoute, path: '/projects/$projectId' })
+const projectSessionRoute = createRoute({ getParentRoute: () => swarmLayoutRoute, path: '/projects/$projectId/sessions/$sessionId' })
+const projectSectionRoute = createRoute({ getParentRoute: () => swarmLayoutRoute, path: '/projects/$projectId/sections/$swarmSection', beforeLoad: ({ params }) => validateSwarmSection(params) })
 
 const swarmRoute = createRoute({
   getParentRoute: () => swarmLayoutRoute,
@@ -526,6 +534,8 @@ const workspaceOrchestrateRoute = createRoute({
 
 const routeTree = rootRoute.addChildren([
   indexRoute,
+  projectsRoute,
+  historyRoute,
   settingsRoute,
   memoryRoute,
   agentsRoute,
@@ -553,7 +563,7 @@ const routeTree = rootRoute.addChildren([
   workspaceVideoToolRoute,
   workspaceImageToolRoute,
   workspaceImageToolSessionRoute,
-  swarmLayoutRoute.addChildren([swarmRoute, workspaceSwarmRoute, swarmSectionRoute, workspaceSwarmSectionRoute]),
+  swarmLayoutRoute.addChildren([projectRoute, projectSessionRoute, projectSectionRoute, swarmRoute, workspaceSwarmRoute, swarmSectionRoute, workspaceSwarmSectionRoute]),
   orchestrateRoute,
   workspaceOrchestrateRoute,
 ])
