@@ -31,12 +31,13 @@ export function TaskListHeader({ title, branch, workspaceCount, orchestratorStat
   </header>
 }
 
-export function TaskListToolbar({ search, onSearch, source, onSource, status, onStatus, counts, total, selected, busy, onSelectAll, onClear, onArchive, onDelete, onArchived, archivedRef }: {
+export function TaskListToolbar({ search, onSearch, source, onSource, status, onStatus, counts, total, selected, busy, integrationEligible = 0, integrationDisabled = false, onIntegrate, onSelectAll, onClear, onArchive, onDelete, onArchived, archivedRef }: {
   search: string; onSearch: (value: string) => void
   source: TaskSourceFilter; onSource: (value: TaskSourceFilter) => void
   status: TaskStatusFilter; onStatus: (value: TaskStatusFilter) => void
   counts: Record<TaskStatusFilter, number>
   total: number; selected: number; busy: boolean
+  integrationEligible?: number; integrationDisabled?: boolean; onIntegrate?: () => void
   onSelectAll: () => void; onClear: () => void; onArchive: () => void; onDelete: () => void; onArchived: () => void
   archivedRef?: React.Ref<HTMLButtonElement>
 }) {
@@ -71,6 +72,7 @@ export function TaskListToolbar({ search, onSearch, source, onSource, status, on
       </div>
       {selected > 0 && <div className="flex flex-wrap items-center gap-2 min-w-0">
         <button type="button" disabled={busy} onClick={onClear} className="px-2 py-1 text-xs text-slate-400 hover:text-white disabled:opacity-40">Clear</button>
+        <button type="button" disabled={busy || integrationDisabled || integrationEligible === 0} onClick={onIntegrate} className={outline}>Integrate selected ({integrationEligible})</button>
         <button type="button" disabled={busy} onClick={onArchive} className={outline}>Archive</button>
         <button type="button" disabled={busy} onClick={onDelete} className="flex items-center gap-1.5 rounded border border-rose-500/50 px-2.5 py-1 text-xs text-rose-400 hover:border-rose-400 disabled:opacity-40"><Trash2 size={13} aria-hidden="true" />Delete</button>
       </div>}

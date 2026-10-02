@@ -6,8 +6,14 @@ import { MediaTaskSelect, MediaTaskDefault, MediaTaskHelp, MediaTaskScenes, Medi
 import { ImagePromptControls, imagePromptReducer, initialImagePromptState, imagePromptEnhancement } from './image-task-prompt'
 import { DurableWorkerReviews } from '../chat/components/durable-worker-reviews'
 import { taskReopenOperations, taskReopenKey, type TaskReopenOutcome } from './task-reopen-operation'
+<<<<<<< 8d23a56d39c43aceacde66e7f758ddf3fa07eff3
 import { taskIntegrationRequest, taskIntegrationOperations, taskIntegrationKey, taskIntegrationFailureIdentity, taskIntegrationPhase, type TaskIntegrationOperation, type TaskIntegrationResult } from './task-integration-operation'
 import { taskDelivery, taskOutcome } from './task-outcome'
+=======
+import { taskIntegrationBatches, integrationSkipReason, MAX_INTEGRATION_BATCH } from './task-integration-batch'
+import { integrationLanePending, taskIntegrationOperations, taskIntegrationKey, taskIntegrationFailureIdentity, taskIntegrationPhase, type TaskIntegrationOperation, type TaskIntegrationResult } from './task-integration-operation'
+import { taskOutcome } from './task-outcome'
+>>>>>>> f647ba3f00a64c4256510918533e49a420624d2b
 import { TaskOutcomeDetails, ProjectTaskAttention } from './task-outcome-view'
 import { TaskAttemptHistory } from './task-attempt-history'
 import { TaskUsageFooter, TaskWorkerBudgetMetadata } from './task-usage-metadata'
@@ -4960,6 +4966,13 @@ export function OrchestrateView({
   const integrationForTask = (task: RunningTask) => taskIntegrationOperations.get(taskIntegrationKey(selectedProject?.id || '', task))
   const recoveryProjectRef = useRef(selectedProject?.id)
   recoveryProjectRef.current = selectedProject?.id
+  const batchSourceRef = useRef<{ projectId?: string; tasks: RunningTask[] }>({ tasks: [] })
+  const batchNavigation = useRef({ projectId: selectedProject?.id, generation: 0 })
+  if (batchNavigation.current.projectId !== selectedProject?.id) batchNavigation.current = { projectId: selectedProject?.id, generation: batchNavigation.current.generation + 1 }
+  batchSourceRef.current = { projectId: selectedProject?.id, tasks }
+  useEffect(() => () => { batchNavigation.current.generation++ }, [])
+  const integrationBatches = useSyncExternalStore(taskIntegrationBatches.subscribe, taskIntegrationBatches.getSnapshot, taskIntegrationBatches.getSnapshot)
+  const integrationBatch = integrationBatches.get(selectedProject?.id || '')
   useSyncExternalStore(taskReopenOperations.subscribe, taskReopenOperations.getSnapshot, taskReopenOperations.getSnapshot)
 
   const handleClearTaskError = useCallback((taskId: string) => {
@@ -5106,6 +5119,7 @@ export function OrchestrateView({
   managementNavigation.current = { activeTaskId, selectedTaskId }
   // Every management mutation is guarded by the stored revision. Never remove a task optimistically.
   const manageTasks = async (rows: RunningTask[], action: 'archive' | 'delete') => {
+    if (taskIntegrationBatches.getSnapshot().get(selectedProject?.id || '')?.pending) return
     const projectId = selectedProject?.id
     if (!projectId || rows.length === 0) return
     const epoch = managementEpoch.current
@@ -5234,6 +5248,20 @@ export function OrchestrateView({
         setSelectedWorker(null)
       }, true)
     if (!outcome.ok) desktopProjects.invalidate(failure.projectId)
+  }
+
+  const handleIntegrateSelected = async (rows: RunningTask[]) => {
+    const project = selectedProject
+    if (!project || managementBusy) return
+    const generation = batchNavigation.current.generation
+    await taskIntegrationBatches.run(project, rows,
+      id => batchNavigation.current.generation === generation && batchSourceRef.current.projectId === project.id ? batchSourceRef.current.tasks.find(task => task.id === id) : undefined,
+      (task, token) => taskIntegrationOperations.run(project, task, () =>
+        requestJson<TaskIntegrationResult>(`/v3/projects/${encodeURIComponent(project.id)}/tasks/${encodeURIComponent(task.id)}/integrate`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ session_id: task.sessionId, source_branch: task.worktreeBranch, target_branch: task.baseBranch }),
+        }), () => {}, token),
+      () => desktopProjects.invalidate(project.id))
   }
 
   // Integrate / Promote task commits into target branch
@@ -6558,12 +6586,21 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                 search={searchQuery} onSearch={setSearchQuery} source={taskSourceFilter} onSource={setTaskSourceFilter}
                 status={statusFilter} onStatus={setStatusFilter}
                 counts={{ all: filteredBySourceTasks.length, running: filteredBySourceRunningCount, needs_review: filteredBySourceReviewCount, queued: filteredBySourceQueuedCount, completed: filteredBySourceCompletedCount }}
-                total={filteredTasks.length} selected={markedRows.length} busy={markedRows.length > 0 && markedRows.every(row => managementPending.current.has(row.id))}
+                total={filteredTasks.length} selected={markedRows.length} busy={Boolean(integrationBatch?.pending) || (markedRows.length > 0 && markedRows.every(row => managementPending.current.has(row.id)))}
+                integrationEligible={markedRows.filter(row => !integrationSkipReason(selectedProjectId, row)).length}
+                integrationDisabled={managementBusy || integrationLanePending() || markedRows.length > MAX_INTEGRATION_BATCH}
+                onIntegrate={() => void handleIntegrateSelected(markedRows)}
                 onSelectAll={() => setMarkedTaskIds(new Set(filteredTasks.map(row => row.id)))}
                 onClear={() => setMarkedTaskIds(new Set())}
                 onArchive={() => void manageTasks(markedRows, 'archive')} onDelete={() => void manageTasks(markedRows, 'delete')}
                 onArchived={() => setArchivedOpen(true)} archivedRef={archivedTriggerRef}
               />
+              {markedRows.length > 0 && <details className="px-4 text-xs text-slate-400"><summary>Integration eligibility</summary><ul>{markedRows.map(row => <li key={row.id}>{row.title}: {integrationSkipReason(selectedProjectId, row) || 'Ready to integrate'}</li>)}</ul>{markedRows.length > MAX_INTEGRATION_BATCH && <p>Select at most {MAX_INTEGRATION_BATCH} tasks.</p>}</details>}
+              {integrationBatch && <section aria-label="Selected integration results" className="px-4 text-xs text-slate-400">
+                <p role="status">{integrationBatch.pending ? 'Integrating selected tasks… ' : 'Integration batch finished. '}{(['integrated', 'already_integrated', 'skipped', 'failed', 'not_attempted', 'pending', 'queued'] as const).map(status => `${integrationBatch.entries.filter(entry => entry.status === status).length} ${status.replace('_', ' ')}`).join(' · ')}</p>
+                {integrationBatch.refreshError && <p role="alert">{integrationBatch.refreshError}</p>}
+                <details><summary>Per-task results (successful integrations are not rolled back)</summary><ul>{integrationBatch.entries.map(entry => <li key={entry.id}>{entry.title}: {entry.status.replace('_', ' ')}{entry.reason ? ` — ${entry.reason}` : ''}</li>)}</ul></details>
+              </section>}
               {managementBusy && <span role="status" className="px-4 text-slate-400 text-[11px]">Updating tasks…</span>}
               {managementMessage && <span role="status" className="px-4 text-amber-300 text-[11px]">{managementMessage}</span>}
               {archivedOpen && <div className="fixed inset-0 z-[100] bg-black/70 flex items-center justify-center p-4" onMouseDown={e => { if (e.target === e.currentTarget) { setArchivedOpen(false); archivedTriggerRef.current?.focus() } }}>

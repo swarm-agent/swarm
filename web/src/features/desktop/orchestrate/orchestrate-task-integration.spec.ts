@@ -68,7 +68,10 @@ test('failure persists with captured redacted recovery; explicit retry waits for
   assert.equal(controller.get(key).phase, 'success')
 })
 
-test('out-of-order outcomes remain scoped across project, task, session and target switches', async () => {
+// Purpose: the shared mutation/integration lock must reject a replacement lane
+// while the original request is outstanding; exact-key receipts must remain
+// isolated after release. Controller promises prove this without live Git.
+test('pending outcomes stay scoped and prevent overlapping target switches', async () => {
   const controller = createTaskIntegrationController()
   const other = { ...task, sessionId: 'session-b', baseBranch: 'release' }
   const a = deferred<TaskIntegrationResult>()
@@ -77,10 +80,13 @@ test('out-of-order outcomes remain scoped across project, task, session and targ
   assert.equal(controller.get(taskIntegrationKey('project-b', task)).phase, 'ready')
   assert.equal(controller.get(taskIntegrationKey(project.id, { ...task, id: 'task-b' })).phase, 'ready')
   const second = controller.run(project, other, () => b.promise, () => {})
-  b.resolve(success(other))
-  await second
+  assert.equal((await second).status, 'skipped')
+  assert.equal(controller.get(taskIntegrationKey(project.id, other)).phase, 'ready')
   a.reject(new Error('Old lane conflict'))
   await first
+  const retry = controller.run(project, other, () => b.promise, () => {})
+  b.resolve(success(other))
+  await retry
   assert.equal(controller.get(taskIntegrationKey(project.id, other)).phase, 'success')
   assert.equal(controller.get(taskIntegrationKey(project.id, task)).phase, 'error')
 })

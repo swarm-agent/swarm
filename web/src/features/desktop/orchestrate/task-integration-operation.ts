@@ -44,6 +44,22 @@ const ready: TaskIntegrationOperation = Object.freeze({ phase: 'ready' })
 
 // Shared interaction lock: task identity cannot change mid-flight with its lineage.
 const taskMutationFlights = new Set<string>()
+export const taskMutationPending = (projectId: string, taskId: string) => taskMutationFlights.has(JSON.stringify([projectId, taskId]))
+// One conservative integration lane across cards and batches. Repository aliases
+// cannot accidentally allow two writes to the same captured checkout.
+let batchOwner: symbol | undefined
+let integrationFlights = 0
+export const integrationLanePending = () => Boolean(batchOwner || integrationFlights)
+export function acquireIntegrationBatch() {
+  if (batchOwner || integrationFlights) return
+  const token = Symbol('integration batch')
+  batchOwner = token
+  return { token, release: () => { if (batchOwner === token) batchOwner = undefined } }
+}
+export type TaskIntegrationOutcome =
+  | { status: 'integrated' | 'already_integrated' }
+  | { status: 'skipped'; reason: string }
+  | { status: 'failed'; reason: string }
 export function acquireTaskMutation(projectId: string, taskId: string): (() => void) | undefined {
   const key = JSON.stringify([projectId, taskId])
   if (taskMutationFlights.has(key)) return
@@ -53,7 +69,7 @@ export function acquireTaskMutation(projectId: string, taskId: string): (() => v
 
 // Exact captured lineage, not the currently selected card or a mutable snapshot revision.
 export function taskIntegrationKey(projectId: string, task: RunningTask): string {
-  return JSON.stringify([projectId, task.id, task.sessionId, task.activeAttemptId, task.sourceWorkspaceId, task.sourceWorkspacePath, task.worktreeBranch, task.baseBranch])
+  return JSON.stringify([projectId, task.id, task.sessionId, task.activeAttemptId, task.sourceWorkspaceId, task.sourceWorkspacePath, task.sourceWorkspaceGeneration, task.baseCommit, task.worktreeBranch, task.baseBranch])
 }
 
 // Identify retained receipts, not unrelated task revisions or render-time object identity.
@@ -101,15 +117,25 @@ export function createTaskIntegrationController() {
       // Presentation-only: retain diagnostics and the retry phase, and notify React.
       publish(key, get(key))
     },
-    async run(project: ProjectSummary, task: RunningTask, mutate: () => Promise<TaskIntegrationResult>, refresh: () => unknown) {
+    async run(project: ProjectSummary, task: RunningTask, mutate: () => Promise<TaskIntegrationResult>, refresh: () => unknown, batchToken?: symbol): Promise<TaskIntegrationOutcome> {
       const key = taskIntegrationKey(project.id, task)
       const current = get(key)
+<<<<<<< 8d23a56d39c43aceacde66e7f758ddf3fa07eff3
       const delivery = taskDelivery(task)
       if (delivery && !delivery.actionable && !delivery.recoverable) return
       const phase = taskIntegrationPhase(task, current)
       if (phase === 'pending' || phase === 'success') return
       const release = acquireTaskMutation(project.id, task.id)
       if (!release) return
+=======
+      if (current.phase === 'success' || (task.isIntegrated && task.status === 'completed')) return { status: 'already_integrated' }
+      if ((batchOwner && batchOwner !== batchToken) || integrationFlights || current.phase === 'pending' || task.integration?.state === 'in_progress') return { status: 'skipped', reason: 'Another integration is pending' }
+      const releaseMutation = acquireTaskMutation(project.id, task.id)
+      if (!releaseMutation) return { status: 'skipped', reason: 'Another task mutation is pending' }
+      integrationFlights++
+      const release = () => { integrationFlights--; releaseMutation() }
+      let status: 'integrated' | 'already_integrated' = 'integrated'
+>>>>>>> f647ba3f00a64c4256510918533e49a420624d2b
       // Lock and notify synchronously, before invoking the transport or yielding.
       dismissedFailures.delete(key)
       publish(key, { phase: 'pending' })
@@ -130,13 +156,19 @@ export function createTaskIntegrationController() {
         if (!confirmed || result.task?.id !== capturedTask.id || result.task.session_id !== capturedTask.sessionId) {
           throw new Error('Integration returned no confirmed result for this task. Refresh Git details before retrying.')
         }
+        status = result.status as typeof status
       } catch (error) {
-        publish(key, { phase: 'error', failure: integrationFailure(project, capturedTask, error), failureId: ++failureId })
+        const failure = integrationFailure(project, capturedTask, error)
+        publish(key, { phase: 'error', failure, failureId: ++failureId })
         release()
+<<<<<<< 8d23a56d39c43aceacde66e7f758ddf3fa07eff3
         // Conflict receipts and prepared repair evidence arrive on canonical task
         // events; also invalidate after a transport failure/lost response.
         try { await refresh() } catch { /* retain the original diagnostic */ }
         return
+=======
+        return { status: 'failed', reason: failure.error }
+>>>>>>> f647ba3f00a64c4256510918533e49a420624d2b
       }
       release()
       // A successful mutation receipt is independent of later cache repair failure.
@@ -145,9 +177,10 @@ export function createTaskIntegrationController() {
       try {
         await refresh()
       } catch {
-        if (get(key) !== receipt) return
+        if (get(key) !== receipt) return { status }
         publish(key, { phase: 'success', refreshError: 'Integration completed, but refreshing the project failed. Refresh the project to update Git details.' })
       }
+      return { status }
     },
   }
 }
