@@ -15,7 +15,7 @@ test('parent source review routes one-time decisions and survives recovery safel
     import {dispatchDesktopV3Cache,getDesktopV3CacheSnapshot,useDesktopV3CacheSelector} from './src/features/desktop/state/desktop-v3-cache-store';
     import {hydrateResponseToAction} from './src/features/desktop/state/desktop-v3-cache-wire';
     const wire=(id,session='parent',revision=1)=>({id,session_id:session,run_id:'run',call_id:'call',tool_name:'read',tool_arguments:JSON.stringify({path:'/workspace/'+id+'.svg',critical:true,purpose:'Capture source bytes for delegated Designer provider context'}),requirement:'design_source_sensitive_read',mode:'ask',status:'pending',created_at:1,updated_at:revision});
-    window.hydrate=(items=[wire('first'),wire('second')])=>dispatchDesktopV3Cache(hydrateResponseToAction({sessions_by_id:{parent:{id:'parent',account_scope_id:'account',user_id:'user'},other:{id:'other',account_scope_id:'account',user_id:'user'}},session_views_by_id:{parent:{pending_permissions:items},other:{pending_permissions:[wire('foreign','other')]}},sync_scope:{scope_id:'review',resource_set:'session_view'}},['parent','other']));
+    window.hydrate=(items=[wire('first'),wire('second')])=>dispatchDesktopV3Cache(hydrateResponseToAction({sessions_by_id:{parent:{id:'parent',account_scope_id:'account',user_id:'user'},other:{id:'other',account_scope_id:'account',user_id:'user'}},session_views_by_id:{parent:{pending_permissions:items},other:{pending_permissions:[wire('foreign','other')]}},selector:{kind:'session_ids',session_ids:['parent','other']},scope_id:'review',snapshot_endpoint_cursor:'review-cursor',sync_scope:{surface:'desktop',stream_kind:'v3.sync.snapshot',selector_filter_hash:'review',resource_set:'session_view'}},['parent','other']));
     window.hydrate();window.requests=[];window.fail=true;window.finish=null;
     window.fetch=async(input,init)=>{const url=String(input);if(!url.includes('/permissions/')||!url.endsWith('/resolve'))throw Error('Unexpected network '+url);
       const body=JSON.parse(init.body);window.requests.push({url,body});await new Promise(resolve=>window.finish=resolve);
@@ -56,7 +56,9 @@ test('parent source review routes one-time decisions and survives recovery safel
     await approve.click()
     await page.waitForFunction(() => (window as any).requests.length === 2)
     await page.evaluate(() => (window as any).finish())
-    await dialog.waitFor({ state: 'hidden' })
+    await dialog.waitFor({ state: 'hidden' }).catch(async error => {
+      throw new Error(`${error.message}\nRendered review: ${await dialog.innerText()}\nBrowser errors: ${errors.join('; ')}`)
+    })
     assert.equal(await reviews.count(), 1)
     const requests = await page.evaluate(() => (window as any).requests)
     assert(requests.every((r: any) => r.url.endsWith('/v3/sessions/parent/permissions/first/resolve')))

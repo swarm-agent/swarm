@@ -1218,6 +1218,7 @@ function mapResolvedPermission(
   return normalizeDesktopPermission(
     savedRule ? { ...(permission ?? {}), saved_rule: savedRule } : permission,
     expectedSessionId,
+    { includeResolved: true },
   );
 }
 
