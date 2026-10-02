@@ -19,7 +19,7 @@ export function ProjectConversationSidebar({ projectId, projectName, selectedId,
     {projectName && !loading && !error && !sessions.length && <p className="text-xs text-slate-400">No conversations yet. Start a new session.</p>}
     <nav aria-label="Conversation sessions" className="min-h-0 overflow-y-auto" style={{ overflowY: 'auto', minHeight: 0 }}>
       {sessions.map(session => <Link key={session.id} {...projectConversationLink(projectId, session.id)}
-        onClick={onSelect} aria-current={selectedId === session.id ? 'page' : undefined}
+        onClick={onSelect} aria-label={`${session.title || 'New conversation'} ${projectName || ''}`.trim()} aria-current={selectedId === session.id ? 'page' : undefined}
         activeOptions={{ exact: true }}
         className={`mb-1 block rounded-xl border px-3 py-2 ${selectedId === session.id ? 'border-blue-400/40 bg-blue-500/15 text-white' : 'border-transparent text-slate-300 hover:bg-white/5'}`}>
         <span className="block truncate text-xs font-medium" title={session.title || 'New conversation'}>{session.title || 'New conversation'}</span>

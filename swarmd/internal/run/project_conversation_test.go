@@ -1,6 +1,7 @@
 package run
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -90,6 +91,11 @@ func TestProjectConversationDelegatedCoderRetainsIsolatedWorktree(t *testing.T) 
 	svc, _, cleanup := newTaskLaunchPermissionTestService(t)
 	defer cleanup()
 	store := svc.sessions.Store()
+	// Match daemon startup: delegated session registration requires completed
+	// repository-history maintenance, including fixtures with legacy parents.
+	if err := store.CompleteRepositoryHistoryMaintenance(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	if err := store.PutProject("test-account", &pebblestore.ProjectRecord{ID: "project", Name: "Project"}); err != nil {
 		t.Fatal(err)
 	}

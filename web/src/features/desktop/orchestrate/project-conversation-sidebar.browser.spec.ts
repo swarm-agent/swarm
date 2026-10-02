@@ -2,6 +2,8 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { build } from 'esbuild'
 import { chromium } from 'playwright'
+import { readFile, readdir } from 'node:fs/promises'
+import path from 'node:path'
 
 // Purpose: ProjectConversationSidebar is the visible project/session navigation
 // boundary. Render the real TanStack links to prove canonical URLs, one selected
@@ -38,6 +40,15 @@ test('project sidebar selects canonical session routes and exposes recoverable l
     await page.waitForFunction(() => (window as any).router.state.location.pathname.endsWith('/two'))
     assert.equal(await nav.locator('[aria-current="page"]').count(), 1)
     assert.match(await nav.locator('[aria-current="page"]').innerText(), /Router second title/)
+    // Optional component-only visual evidence, styled by the exact local build.
+    // This is not evidence of a served daemon or a live provider exchange.
+    if (process.env.SWARM_PROJECT_SIDEBAR_SCREENSHOT) {
+      for (const file of await readdir('dist/assets')) {
+        if (file.endsWith('.css')) await page.addStyleTag({ content: await readFile(path.join('dist/assets', file), 'utf8') })
+      }
+      await page.locator('#root').evaluate(element => { element.style.width = '288px'; element.style.background = '#0d121f' })
+      await page.locator('#root').screenshot({ path: process.env.SWARM_PROJECT_SIDEBAR_SCREENSHOT })
+    }
     await page.getByRole('button', { name: 'New session', exact: true }).click()
     assert.equal(await page.getByRole('button', { name: 'Creating…' }).isDisabled(), true)
     assert.equal(await page.evaluate(() => (window as any).created), 1)

@@ -14,7 +14,9 @@ test('rapid return to a session replaces aborted hydration without deleting its 
   globalThis.fetch = async (url, init) => {
     if (String(url).includes('/auth/desktop/session')) return new Response(JSON.stringify({ user_id: 'test-user', account_scope_id: 'test-account' }))
     return new Promise<Response>((_resolve, reject) => {
-      requests.push({ signal: init!.signal as AbortSignal, reject })
+      const signal = init!.signal as AbortSignal
+      if (signal.aborted) { reject(new DOMException('Aborted', 'AbortError')); return }
+      requests.push({ signal, reject })
     })
   }
   const flush = async () => { for (let i = 0; i < 20; i++) await Promise.resolve() }
@@ -27,18 +29,23 @@ test('rapid return to a session replaces aborted hydration without deleting its 
     const replacement = selectAndHydrateDesktopV3Session('rapid-a')
     const replacementFailure = assert.rejects(replacement, /replacement failure/)
     await flush()
-    assert.equal(requests.length, 2, 'B is cancelled before its authenticated fetch starts')
+    assert.equal(requests.length, 3, 'A, B and replacement A each own a distinct request')
     assert.notEqual(first, replacement)
     assert.equal(requests[0].signal.aborted, true)
-    assert.equal(requests[1].signal.aborted, false)
+    assert.equal(requests[1].signal.aborted, true)
+    assert.equal(requests[2].signal.aborted, false)
     requests[0].reject(new DOMException('Aborted', 'AbortError'))
+    requests[1].reject(new DOMException('Aborted', 'AbortError'))
     await Promise.all([first, second])
     assert.equal(selectAndHydrateDesktopV3Session('rapid-a'), replacement, 'old finally must not remove replacement')
     assert.equal(getDesktopV3CacheSnapshot().selectedSessionId, 'rapid-a')
     assert.ok(getDesktopV3CacheSnapshot().hydrateInFlightBySession['rapid-a'] > 0, 'aborted cleanup must preserve replacement loading')
-    requests[1].reject(new Error('replacement failure'))
+    requests[2].reject(new Error('replacement failure'))
     await replacementFailure
     assert.equal(getDesktopV3CacheSnapshot().hydrateInFlightBySession['rapid-a'] ?? 0, 0)
     assert.equal(getDesktopV3CacheSnapshot().messagesBySession['rapid-a'], undefined, 'failed reads must not invent history')
-  } finally { globalThis.fetch = originalFetch }
+  } finally {
+    for (const request of requests) request.reject(new DOMException('Aborted', 'AbortError'))
+    globalThis.fetch = originalFetch
+  }
 })

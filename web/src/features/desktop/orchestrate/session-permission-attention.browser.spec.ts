@@ -80,7 +80,7 @@ test('parent source review routes one-time decisions and survives recovery safel
     assert.equal(await page.evaluate(() => (window as any).requests.length), 2)
     // A fresh pending revision arriving through canonical hydration is recoverable
     // after navigation/remount; an old resolved request is not resurrected.
-    await page.evaluate(() => { (window as any).unmount(); (window as any).hydrate([{id:'third',session_id:'parent',tool_name:'read',tool_arguments:JSON.stringify({path:'/workspace/third.svg',purpose:'Designer provider context'}),requirement:'design_source_sensitive_read',mode:'ask',status:'pending',created_at:6,updated_at:6}]); (window as any).mount() })
+    await page.evaluate(() => { (window as any).unmount(); (window as any).hydrate([{id:'third',session_id:'parent',run_id:'run',call_id:'call',tool_name:'read',tool_arguments:JSON.stringify({path:'/workspace/third.svg',purpose:'Designer provider context'}),requirement:'design_source_sensitive_read',mode:'ask',status:'pending',created_at:6,updated_at:6}]); (window as any).mount() })
     await reviews.first().click()
     await dialog.getByRole('button', { name: /^Deny/ }).click()
     await page.waitForFunction(() => (window as any).requests.length === 3)
