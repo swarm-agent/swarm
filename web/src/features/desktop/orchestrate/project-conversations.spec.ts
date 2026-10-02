@@ -1,12 +1,19 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { conversationProjectId, requireProjectConversation, projectConversationLink } from './project-conversations'
+import { conversationProjectId, requireProjectConversation, projectConversationLink, projectConversationMessageMetadata } from './project-conversations'
 import { orchestratorDrafts } from './integration-recovery'
 import { createEmptyDesktopV3CacheState, desktopV3CacheReducer } from '../state/desktop-v3-cache-reducer'
 import { taskAttentionPermissions, submitTaskAttentionDecision } from '../state/task-attention'
 import { buildAskUserResolutionReason, parseAskUserPermission } from '../permissions/services/permission-payload'
 import type { SessionSnapshot } from '../state/desktop-v3-cache-types'
 import type { DesktopPermissionRecord } from '../types/realtime'
+
+// Purpose: OrchestrateView uses this payload for sends and chat retries. The V3
+// API reserves project_id for session authority; echoing it prevents messaging.
+// This pure payload assertion complements the real HTTP/store rejection test.
+test('project composer metadata never re-submits session project authority', () => {
+  assert.deepEqual(projectConversationMessageMetadata(), { orchestrate_view: true })
+})
 
 function session(id: string, project = 'project-a'): SessionSnapshot {
   return { id, title: '', workspace_path: '', workspace_name: '', mode: 'auto', created_at: 1, updated_at: 1, message_count: 0, last_message_at: 0,

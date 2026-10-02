@@ -15,7 +15,7 @@ import { TaskUsageFooter, TaskWorkerBudgetMetadata } from './task-usage-metadata
 import { useOrchestratorDictation } from './use-orchestrator-dictation'
 import { TaskSessionErrors } from './task-session-error'
 import { admittedConversationId } from './project-entry-policy'
-import { createProjectConversation, projectConversationLink, requireProjectConversation } from './project-conversations'
+import { createProjectConversation, projectConversationLink, projectConversationMessageMetadata, requireProjectConversation } from './project-conversations'
 import { useProjectConversations } from '../runtime/project-conversations'
 import { ProjectConversationSidebar } from './project-conversation-sidebar'
 import { resolveDesktopChatRouteFromSession } from '../chat/services/chat-routing'
@@ -2582,10 +2582,7 @@ export function OrchestratorChatComposer({
 
     try {
       let finalContent = creatingWorker ? `Please propose a new worker for human approval. Here is the job I want it to do:\n\n${text}` : text
-      let finalMetadata: Record<string, unknown> = {
-        orchestrate_view: true,
-        ...(project ? { project_id: project.id } : {}),
-      }
+      let finalMetadata = projectConversationMessageMetadata()
 
       // Check if task context was intended (either targetTask or selectedTaskId is present)
       const contextTasks = targetTask ? [targetTask] : attachedTasks
@@ -3195,12 +3192,9 @@ function OrchestratorChatSidebar({
                   planDefinitionRevision: targetTask.planBinding?.definitionRevision ?? (targetTask as any).plan_binding?.definition_revision,
                   snapshotTimestamp: Date.now(),
                 },
-                { orchestrate_view: true, project_id: project?.id }
+                projectConversationMessageMetadata()
               )
-            : {
-                orchestrate_view: true,
-                ...(project ? { project_id: project.id } : {}),
-              }
+            : projectConversationMessageMetadata()
         }
       />
     </aside>

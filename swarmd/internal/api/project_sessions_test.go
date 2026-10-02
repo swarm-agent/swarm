@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 
 	"swarm/packages/swarmd/internal/identity"
@@ -279,5 +280,121 @@ func TestProjectConversationRouterTitlePersistsWithoutWorktree(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("title events=%d", count)
+	}
+}
+
+// Purpose: the real project route, createSessionsV3Primary and
+// acceptSessionsV3Message must preserve server-owned project membership while
+// admitting the composer's messages. The old composer sent metadata.project_id,
+// which reproduces the release-blocking reserved-key error even after successful
+// creation. HTTP handlers backed by Pebble are the narrowest deterministic layer
+// proving creation/listing, exact rejection with no partial message/run, and
+// admission without that redundant authority field. This is not live UI/provider
+// verification.
+func TestProjectConversationComposerReservedProjectMetadata(t *testing.T) {
+	s, sessions, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	p := testPrincipal()
+	if err := sessions.Store().PutProject(p.AccountScopeID, &pebblestore.ProjectRecord{ID: "project", Name: "Project"}); err != nil {
+		t.Fatal(err)
+	}
+	projectPath := ProjectsPath + "/project/sessions"
+	var ids []string
+	for _, key := range []string{"composer-one", "composer-two"} {
+		w := projectConversationRequest(t, s, p, http.MethodPost, projectPath, map[string]any{"client_request_id": key})
+		var created struct {
+			SessionID string `json:"session_id"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil || w.Code != http.StatusOK || created.SessionID == "" {
+			t.Fatalf("create: %d %s (%v)", w.Code, w.Body.String(), err)
+		}
+		ids = append(ids, created.SessionID)
+	}
+	if ids[0] == ids[1] {
+		t.Fatal("distinct creation requests reused one conversation")
+	}
+	post := func(id, key string, metadata map[string]any) *httptest.ResponseRecorder {
+		t.Helper()
+		body, err := json.Marshal(map[string]any{"client_request_id": key, "role": "user", "content": key, "metadata": metadata})
+		if err != nil {
+			t.Fatal(err)
+		}
+		r := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+id+"/messages", bytes.NewReader(body))
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		s.Handler().ServeHTTP(w, withTestPrincipal(r))
+		return w
+	}
+	for _, id := range ids {
+		before, found, err := sessions.GetSession(id)
+		if err != nil || !found {
+			t.Fatalf("created session missing: %v", err)
+		}
+		for _, projectID := range []string{"project", "foreign-project"} {
+			w := post(id, "rejected-"+projectID, map[string]any{"orchestrate_view": true, "project_id": projectID})
+			var failure struct {
+				Error string `json:"error"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &failure); err != nil || w.Code != http.StatusBadRequest || failure.Error != `metadata key "project_id" is reserved for primary authority state` {
+				t.Fatalf("exact release-blocker rejection: %d %s (%v)", w.Code, w.Body.String(), err)
+			}
+			messages, err := sessions.ListSessionMessages(id, 0, 10)
+			if err != nil || len(messages) != 0 {
+				t.Fatalf("rejected metadata appended messages: %+v %v", messages, err)
+			}
+			if _, found, err := sessions.GetSessionActiveRunIntent(id); err != nil || found {
+				t.Fatalf("rejected metadata admitted a run: found=%v err=%v", found, err)
+			}
+			after, found, err := sessions.GetSession(id)
+			if err != nil || !found || !reflect.DeepEqual(before, after) {
+				t.Fatalf("rejected metadata mutated session: %+v %v", after, err)
+			}
+		}
+		// Match the corrected composer: project membership is read from the
+		// canonical session, not supplied as generic message metadata.
+		metadata := map[string]any{"orchestrate_view": true}
+		if id == ids[1] {
+			metadata["selected_project_id"] = "project"
+			metadata["selected_task_id"] = "discussion-context"
+		}
+		for retry := 0; retry < 2; retry++ {
+			if w := post(id, "accepted-"+id, metadata); w.Code != http.StatusOK {
+				t.Fatalf("composer admission: %d %s", w.Code, w.Body.String())
+			}
+		}
+		messages, err := sessions.ListSessionMessages(id, 0, 10)
+		if err != nil || len(messages) != 1 || messages[0].SessionID != id || messages[0].Content != "accepted-"+id || messages[0].Metadata["project_id"] != nil {
+			t.Fatalf("persisted message ownership/idempotency: %+v %v", messages, err)
+		}
+		active, found, err := sessions.GetSessionActiveRunIntent(id)
+		if err != nil || !found || active.SessionID != id {
+			t.Fatalf("run admission: %+v %v", active, err)
+		}
+	}
+	w := projectConversationRequest(t, s, p, http.MethodGet, projectPath, nil)
+	var listed struct {
+		Sessions []struct {
+			Session pebblestore.SessionSnapshot `json:"session"`
+		} `json:"sessions"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &listed); err != nil || w.Code != http.StatusOK || len(listed.Sessions) != 2 {
+		t.Fatalf("durable API listing: %d %s (%v)", w.Code, w.Body.String(), err)
+	}
+	seen := map[string]bool{}
+	for _, row := range listed.Sessions {
+		item := row.Session
+		seen[item.ID] = true
+		if item.Metadata["project_id"] != "project" || item.Metadata["agent_name"] != "system-orchestrator" || item.WorkspacePath != "" || item.WorktreeEnabled {
+			t.Fatalf("listed project/runtime identity changed: %+v", item)
+		}
+		stored, found, err := sessions.GetSession(item.ID)
+		if err != nil || !found {
+			t.Fatalf("listed session is not durable: %v", err)
+		}
+		if err := sessions.Store().ValidateProjectConversation(stored, p.AccountScopeID, p.UserID); err != nil {
+			t.Fatalf("project/runtime/filesystem authority changed: %v", err)
+		}
+	}
+	if !seen[ids[0]] || !seen[ids[1]] {
+		t.Fatalf("listing lost conversations: %+v", seen)
 	}
 }

@@ -716,7 +716,8 @@ export function buildSelectedTaskMessageMetadata(
   return {
     ...baseMetadata,
     orchestrate_view: true,
-    project_id: snapshot.projectId,
+    // A selected task is context, not authority to reparent the conversation.
+    selected_project_id: snapshot.projectId,
     task_id: snapshot.taskId,
     selected_task_id: snapshot.taskId,
     task_revision: snapshot.taskRevision,

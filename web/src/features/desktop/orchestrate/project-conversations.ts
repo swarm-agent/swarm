@@ -22,6 +22,12 @@ export function projectConversationLink(projectId: string, sessionId?: string) {
     : { to: '/projects/$projectId' as const, params: { projectId } }
 }
 
+// Project ownership belongs to the canonical session. Message metadata carries
+// display/context hints only; project_id is reserved by the V3 write boundary.
+export function projectConversationMessageMetadata(): Record<string, unknown> {
+  return { orchestrate_view: true }
+}
+
 export async function createProjectConversation(projectId: string, clientRequestId: string): Promise<string> {
   const response = await requestJson<SessionCreateMutationResponse>(`/v3/projects/${encodeURIComponent(projectId)}/sessions`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },

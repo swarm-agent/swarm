@@ -279,7 +279,8 @@ test('buildSelectedTaskMessageMetadata generates exact tracking metadata without
 
   const meta = buildSelectedTaskMessageMetadata(snapshot, { orchestrate_view: true })
   assert.equal(meta.orchestrate_view, true)
-  assert.equal(meta.project_id, 'proj-1')
+  assert.equal(meta.selected_project_id, 'proj-1')
+  assert.equal(meta.project_id, undefined, 'canonical project authority must not enter generic message metadata')
   assert.equal(meta.task_id, 'task-1')
   assert.equal(meta.selected_task_id, 'task-1')
   assert.equal(meta.task_revision, 1)
@@ -386,15 +387,10 @@ test('OrchestrateView forwards explicit task attachments independently of detail
     'Composer must allow clearing selected task context'
   )
 
-  // Selected Task Context Banner in sidebar header
-  assert.ok(
-    source.includes('data-testid="selected-task-context-banner"'),
-    'Sidebar header must render selected task context banner'
-  )
-  assert.ok(
-    source.includes('data-testid="clear-selected-task-context-btn"'),
-    'Sidebar header must render clear context button'
-  )
+  // Project-first conversations expose explicit attachments in the composer;
+  // selecting a task in the inspector no longer creates sidebar context.
+  assert.ok(source.includes('data-testid="composer-attached-task"'), 'Composer must show explicit attachments')
+  assert.ok(source.includes('onRemoveAttachedTask?.(task.id)'), 'Each attachment must have an independent removal action')
 
   // Execution chat requires a linked session; task context is a separate action.
   assert.ok(
@@ -909,11 +905,9 @@ test('OrchestrateView enforces explicit-only task selection lifecycle and clears
     'handleOrchestratorSessionReset must clear selectedTaskId'
   )
 
-  // Invariant 6: Sidebar clear-context action triggers onDeselectTask
-  assert.ok(
-    source.includes("const handleClearContext = async () => {\n    if (!project?.id || clearingContext) return\n    setClearingContext(true)\n    setClearSuccess(false)\n    try {\n      onDeselectTask?.()"),
-    'handleClearContext must call onDeselectTask to clear composer state immediately'
-  )
+  // New session replaces destructive clear-context; its asynchronous handler
+  // must preserve context on rejection or a route change (executed below).
+  assert.ok(source.includes('const handleClearContext = async () => {'))
 
   // Invariant 7: Project boundary - project switch clears selectedTaskId and activeTaskId
   assert.ok(
@@ -928,6 +922,53 @@ test('OrchestrateView enforces explicit-only task selection lifecycle and clears
   assert.ok(source.includes('handleCompleteTask'), 'handleCompleteTask must be preserved')
   assert.ok(source.includes('handleIntegrateTask'), 'handleIntegrateTask must be preserved')
   assert.ok(source.includes('handleRedeployJob'), 'handleRedeployJob must be preserved')
+})
+
+// Requirement: New session preserves existing context on failure or navigation,
+// and changes selection only after canonical creation succeeds. Regression:
+// clearing before a failed request loses the user's context; a late result can
+// switch the wrong conversation. Execute OrchestratorChatSidebar's actual
+// handler with controlled transport completion; this is not live E2E evidence.
+test('New session changes selection only after creation in the originating scope', async () => {
+  const source = fs.readFileSync(path.join(__dirname, 'OrchestrateView.tsx'), 'utf8')
+  const ast = ts.createSourceFile('OrchestrateView.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
+  const sidebar = ast.statements.find((node): node is ts.FunctionDeclaration =>
+    ts.isFunctionDeclaration(node) && node.name?.text === 'OrchestratorChatSidebar')
+  assert.ok(sidebar?.body)
+  const declaration = sidebar.body.statements.flatMap(node => ts.isVariableStatement(node) ? [...node.declarationList.declarations] : [])
+    .find(node => node.name.getText(ast) === 'handleClearContext')
+  assert.ok(declaration?.initializer)
+  const compiled = ts.transpileModule(`const create = ${declaration.initializer.getText(ast)};`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.None },
+  }).outputText
+  for (const outcome of ['success', 'failure', 'switched']) {
+    const scope = { current: 'project:one' }
+    const request = { current: 'stable-request' }
+    const events: string[] = []
+    let finish!: (id: string) => void
+    let fail!: (error: Error) => void
+    const pending = new Promise<string>((resolve, reject) => { finish = resolve; fail = reject })
+    const handler = new Function('project', 'clearingContext', 'repairSession', 'activeTask', 'clearScope', 'clearRequest',
+      'setClearError', 'setClearingContext', 'setClearSuccess', 'createProjectConversation', 'onDeselectTask',
+      'onOrchestratorSessionReset', 'setTimeout', `${compiled}; return create;`)(
+      { id: 'project' }, false, false, null, scope, request,
+      (error: string) => { if (error) events.push(`error:${error}`) }, () => {}, () => {},
+      (projectId: string, requestId: string) => {
+        assert.deepEqual([projectId, requestId], ['project', 'stable-request'])
+        return pending
+      }, () => events.push('deselect'), (id: string) => events.push(`select:${id}`), () => {},
+    )
+    const running = handler()
+    assert.deepEqual(events, [], 'pending creation must not clear the current selection')
+    if (outcome === 'failure') fail(new Error('creation rejected'))
+    else {
+      if (outcome === 'switched') scope.current = 'project:other'
+      finish('new-session')
+    }
+    await running
+    assert.deepEqual(events, outcome === 'success' ? ['deselect', 'select:new-session'] : outcome === 'failure' ? ['error:creation rejected'] : [])
+    assert.equal(request.current, outcome === 'success' ? '' : 'stable-request')
+  }
 })
 
 // Requirement: Orchestrator stop uses the same session-derived target as chat, never the UI alias "host".
