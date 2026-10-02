@@ -90,7 +90,7 @@ export function DesignRevisionView({ item, onSelect }: { item: DesignItem; onSel
       return <section key={edit.messageId}><p role="status">Edit from revision {edit.base.revision}: {accepted ? `accepted · ${designStatus(accepted.request.state)}` : 'edit requested · awaiting parent acceptance'}</p></section>
     })}
     {rows.filter(row => row.request.candidates.some(candidate => candidate.spec.artifact_id === revision.ref.artifact_id || candidate.spec.base?.artifact_id === revision.ref.artifact_id)).map(row => <MediaTaskCard key={row.request.id} source="independent-design" archived={history.data?.artifact.archived} design={row} onDesignPreview={onSelect} />)}
-    {archivedProject.data?.next_cursor && <button disabled={archivedProject.loading} onClick={() => void desktopDesigns.moreProject(projectId, 'archived')}>More archived design requests</button>}
-    {project.data?.next_cursor && <button disabled={project.loading} onClick={() => void desktopDesigns.moreProject(projectId)}>More design requests</button>}
+    {archivedProject.data?.next_cursor && <button disabled={archivedProject.loading} onClick={() => void desktopDesigns.moreProject(projectId, 'archived')}>Load more archived items</button>}
+    {project.data?.next_cursor && <button disabled={project.loading} onClick={() => void desktopDesigns.moreProject(projectId)}>Load more</button>}
   </section>
 }

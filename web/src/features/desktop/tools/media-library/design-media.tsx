@@ -23,6 +23,6 @@ export function DesignMediaTasks({ projectId, onPreview, column, archived = fals
     {loading && !data && <p role="status">Loading design tasks…</p>}
     {error && <p role="alert">{error} <button onClick={() => void refresh()}>Retry designs</button></p>}
     {data?.designs.filter(row => !column || (['succeeded', 'partial_success'].includes(row.request.state) ? 'completed' : ['failed', 'cancelled', 'interrupted'].includes(row.request.state) ? 'failed' : ['queued', 'accepted'].includes(row.request.state) ? 'queued' : 'running') === column).map(row => <MediaTaskCard key={designRequestId(row)} source="independent-design" archived={archived} design={row} onDesignPreview={onPreview} />)}
-    {(!column || column === 'queued') && data?.next_cursor && <button disabled={loading} onClick={() => void desktopDesigns.moreProject(projectId, archived ? 'archived' : 'active')}>More design requests</button>}
+    {(!column || column === 'queued') && data?.next_cursor && <button disabled={loading} onClick={() => void desktopDesigns.moreProject(projectId, archived ? 'archived' : 'active')}>{archived ? 'Load more archived items' : 'Load more'}</button>}
   </>
 }
