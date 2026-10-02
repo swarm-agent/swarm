@@ -7,7 +7,7 @@ import { taskReopenOperations } from './task-reopen-operation'
 import type { TaskSessionCandidate } from '../runtime/desktop-projects-membership'
 import { TaskSessionLeaseManager } from '../runtime/desktop-projects-membership'
 import { requireDesktopV3RealtimeControllerReady } from '../realtime/v3-realtime-controller'
-import { dispatchDesktopV3Cache, getDesktopV3CacheSnapshot, useDesktopV3CacheSelector } from '../state/desktop-v3-cache-store'
+import { dispatchDesktopV3Cache, getDesktopV3CacheSnapshot, subscribeDesktopV3Cache, useDesktopV3CacheSelector } from '../state/desktop-v3-cache-store'
 import { buildDesktopV3ChildCardHydrateInput, postDesktopV3SyncHydrate } from '../state/desktop-v3-sync-api'
 import { hydrateResponseToAction } from '../state/desktop-v3-cache-wire'
 import { hydrateDesktopV3ChildCard } from '../state/desktop-v3-session-hydrator'
@@ -46,6 +46,12 @@ function useSessionAttention(ids: string[], ownerKeyPrefix: string) {
   })))
   const [error, setError] = useState('')
   const [retry, setRetry] = useState(0)
+  const [reconnect, setReconnect] = useState(0)
+  useEffect(() => subscribeDesktopV3Cache(mutation => {
+    // Reconnect may preserve the same summary count while replacing the pending
+    // request. Reload details, not merely the count, before accepting an answer.
+    if (mutation?.action.type === 'reconnect.applySnapshot') setReconnect(value => value + 1)
+  }), [])
   const leases = useMemo(() => new TaskSessionLeaseManager({
     getControllerReady: requireDesktopV3RealtimeControllerReady,
     ownerKeyPrefix,
@@ -65,7 +71,7 @@ function useSessionAttention(ids: string[], ownerKeyPrefix: string) {
         if (!active) return
         const state = getDesktopV3CacheSnapshot()
         const summary = state.permissionSummaryBySessionId[id]
-        if (summary?.pendingApprovalCount || taskAttentionPermissions(state, [id]).length) {
+        if (reconnect || retry || summary?.pendingApprovalCount || taskAttentionPermissions(state, [id]).length) {
           const response = await postDesktopV3SyncHydrate(buildDesktopV3ChildCardHydrateInput([id], { permissionSummary: true, activePlan: true }))
           if (active) dispatchDesktopV3Cache(hydrateResponseToAction(response, [id]))
         } else {
@@ -74,7 +80,7 @@ function useSessionAttention(ids: string[], ownerKeyPrefix: string) {
       }
     })().catch(error => { if (active) setError(error instanceof Error ? error.message : 'Could not load pending requests') })
     return () => { active = false }
-  }, [ids, summaryKey, retry])
+  }, [ids, summaryKey, retry, reconnect])
   const unresolvedCount = useDesktopV3CacheSelector(state => ids.reduce((count, id) => count + Math.max(
     state.permissionSummaryBySessionId[id]?.pendingApprovalCount || 0,
     taskAttentionPermissions(state, [id]).length,

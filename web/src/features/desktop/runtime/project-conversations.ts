@@ -1,4 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import { TaskSessionLeaseManager } from './desktop-projects-membership'
+import { requireDesktopV3RealtimeControllerReady } from '../realtime/v3-realtime-controller'
 import { requestJson } from '../../../app/api'
 import type { SessionSnapshot } from '../state/desktop-v3-cache-types'
 import { useDesktopV3CacheSelector, subscribeDesktopV3Cache } from '../state/desktop-v3-cache-store'
@@ -13,15 +15,19 @@ import { projectConversationBatches } from '../orchestrate/project-entry-policy'
 // owned by the canonical cache, hydrated through the existing session boundary.
 export function useProjectConversations(projectId: string) {
   const [error, setError] = useState('')
+  const [loadingProject, setLoadingProject] = useState('')
   const [revision, refresh] = useState(0)
   useEffect(() => {
-    if (!projectId) return
+    setError('')
+    if (!projectId) { setLoadingProject(''); return }
     let active = true
     let running = false
     let dirty = false
     const load = async () => {
+      if (!active) return
       if (running) { dirty = true; return }
       running = true
+      setLoadingProject(projectId)
       try {
         do {
           dirty = false
@@ -39,7 +45,7 @@ export function useProjectConversations(projectId: string) {
           if (active) setError('')
         } while (dirty && active)
       } catch (cause) { if (active) setError(cause instanceof Error ? cause.message : 'Unable to load conversations') }
-      finally { running = false }
+      finally { running = false; if (active) setLoadingProject('') }
     }
     void load()
     const unsubscribe = desktopProjects.onProjectUpdate(id => { if (!id || id === projectId) void load() })
@@ -50,7 +56,20 @@ export function useProjectConversations(projectId: string) {
     return () => { active = false; unsubscribe(); unsubscribeCache() }
   }, [projectId, revision])
   const sessions = useDesktopV3CacheSelector(state => Object.values(state.sessionsById).flatMap(record =>
-    projectId && record.kind === 'full' && conversationProjectId(record.session) === projectId ? [record.session] : []),
+    projectId && record.kind === 'full' && !record.session.navigation_hidden && conversationProjectId(record.session) === projectId ? [record.session] : [])
+    .sort((a, b) => b.created_at - a.created_at || a.id.localeCompare(b.id)),
   (a, b) => a.length === b.length && a.every((item, index) => item === b[index]))
-  return { sessions, error, refresh: () => refresh(value => value + 1) }
+  // Session metadata (including Router titles) needs scoped durable delivery even
+  // when that conversation is not selected. Do not poll or fetch transcripts here.
+  const leases = useMemo(() => new TaskSessionLeaseManager({
+    getControllerReady: requireDesktopV3RealtimeControllerReady,
+    ownerKeyPrefix: `project-conversations:${projectId}`,
+  }), [projectId])
+  const idsKey = JSON.stringify(sessions.slice(0, 200).map(session => session.id))
+  useEffect(() => () => leases.cleanup(), [leases])
+  useEffect(() => {
+    const acquisition = leases.reconcile(JSON.parse(idsKey) as string[])
+    return acquisition.cancel
+  }, [leases, idsKey])
+  return { sessions, error, loading: loadingProject === projectId && Boolean(projectId), refresh: () => refresh(value => value + 1) }
 }

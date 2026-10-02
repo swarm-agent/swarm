@@ -3,7 +3,7 @@ import { buildDesktopV3ChildCardHydrateInput, buildDesktopV3SelectedSessionHydra
 import { hydrateResponseToAction, selectSession } from './desktop-v3-cache-wire'
 import { isDesktopV3SessionTailReady, isDesktopV3SessionViewReady } from './desktop-v3-cache-selectors'
 
-const inFlight = new Map<string, Promise<void>>()
+const inFlight = new Map<string, { promise: Promise<void>; abort: AbortController }>()
 const childCardInFlight = new Map<string, Promise<void>>()
 let selectedAbort: AbortController | null = null
 
@@ -57,7 +57,7 @@ export function selectAndHydrateDesktopV3Session(rawSessionId: string): Promise<
   }
 
   const existing = inFlight.get(sessionId)
-  if (existing) return existing
+  if (existing && !existing.abort.signal.aborted) return existing.promise
 
   selectedAbort?.abort()
   const abort = new AbortController()
@@ -74,23 +74,26 @@ export function selectAndHydrateDesktopV3Session(rawSessionId: string): Promise<
     abort.signal,
   )
     .then((response) => {
-      dispatchDesktopV3Cache(hydrateResponseToAction(response, [sessionId]))
+      if (!abort.signal.aborted) dispatchDesktopV3Cache(hydrateResponseToAction(response, [sessionId]))
     })
     .catch((error) => {
       if (isAbortError(error)) return
       throw error
     })
     .finally(() => {
-      dispatchDesktopV3Cache({
-        type: 'desktopV3Cache.markHydrateInFlight',
-        sessionIds: [sessionId],
-        inFlight: false,
-      })
-      inFlight.delete(sessionId)
+      // A rapid A → B → A switch may have replaced this aborted request.
+      if (inFlight.get(sessionId)?.abort === abort) {
+        dispatchDesktopV3Cache({
+          type: 'desktopV3Cache.markHydrateInFlight',
+          sessionIds: [sessionId],
+          inFlight: false,
+        })
+        inFlight.delete(sessionId)
+      }
       if (selectedAbort === abort) selectedAbort = null
     })
 
-  inFlight.set(sessionId, promise)
+  inFlight.set(sessionId, { promise, abort })
   return promise
 }
 

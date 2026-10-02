@@ -17,6 +17,7 @@ import { TaskSessionErrors } from './task-session-error'
 import { admittedConversationId } from './project-entry-policy'
 import { createProjectConversation, projectConversationLink, requireProjectConversation } from './project-conversations'
 import { useProjectConversations } from '../runtime/project-conversations'
+import { ProjectConversationSidebar } from './project-conversation-sidebar'
 import { resolveDesktopChatRouteFromSession } from '../chat/services/chat-routing'
 import { integrationFailure, repairUnavailable, redactIntegrationDiagnostic, orchestratorDrafts, type IntegrationFailure } from './integration-recovery'
 import { useVideoTaskDefault } from './use-video-task-default'
@@ -3236,6 +3237,8 @@ export function OrchestrateView({
   const [conversationError, setConversationError] = useState('')
   const [creatingConversation, setCreatingConversation] = useState(false)
   const conversationRequest = useRef('')
+  const conversationCreating = useRef(false)
+  const [admissionAttempt, setAdmissionAttempt] = useState(0)
   const [, setIsLoadingProjects] = useState<boolean>(true)
   const selectedProject = useMemo(() => {
     const project = projects.find(p => p.id === selectedProjectId)
@@ -4124,19 +4127,23 @@ export function OrchestrateView({
 
   // Helper to ensure an active orchestrator session exists for a project
   const newConversation = async (): Promise<string | null> => {
-    if (!selectedProject || creatingConversation) return null
+    if (!selectedProject || conversationCreating.current) return null
+    conversationCreating.current = true
     setCreatingConversation(true); setConversationError('')
     const projectId = selectedProject.id
     conversationRequest.current ||= `desktop-v3-create:${crypto.randomUUID()}`
     try {
       const sid = await createProjectConversation(projectId, conversationRequest.current)
       conversationRequest.current = ''
-      if (selectedProjectRef.current === projectId) void navigate(projectConversationLink(projectId, sid))
+      if (selectedProjectRef.current === projectId) {
+        responsiveLayout.setPanel('chat'); responsiveLayout.setNavigationOpen(false)
+        void navigate(projectConversationLink(projectId, sid))
+      }
       return sid
     } catch (cause) {
       if (selectedProjectRef.current === projectId) setConversationError(cause instanceof Error ? cause.message : 'Unable to create conversation')
       return null
-    } finally { setCreatingConversation(false) }
+    } finally { conversationCreating.current = false; setCreatingConversation(false) }
   }
   const ensureOrchestratorSession = async (_project: ProjectSummary) => activeSessionId && !activeTaskId ? activeSessionId : newConversation()
 
@@ -4190,7 +4197,7 @@ export function OrchestrateView({
       }).catch(cause => { if (active) setConversationError(cause instanceof Error ? cause.message : 'Unable to open conversation') })
     }
     return () => { active = false }
-  }, [selectedProject?.id, routeConversationId, accountScopeId])
+  }, [selectedProject?.id, routeConversationId, accountScopeId, admissionAttempt])
 
   // Selecting task details is not consent to leave the current conversation.
   const handleSelectTask = (task: RunningTask) => {
@@ -5704,14 +5711,12 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
           if (task.sessionId) { setActiveTaskId(task.id); setActiveSessionId(task.sessionId); setWorkerChatOpen(true) }
         }} />
 
-        <section aria-label="Project conversations" className="p-3 space-y-2 overflow-auto">
-          <h2>Swarm conversations</h2>
-          <button type="button" disabled={!selectedProject || creatingConversation} onClick={() => void newConversation()}>New session</button>
-          <button type="button" onClick={conversations.refresh}>Refresh sessions</button>
-          {(conversationError || conversations.error) && <p role="alert">{conversationError || conversations.error}</p>}
-          {!selectedProject && <Link to="/projects">{selectedProjectId ? 'Project unavailable — choose a project' : 'Choose a project'}</Link>}
-          {conversations.sessions.map(session => <Link className="block truncate" key={session.id} {...projectConversationLink(selectedProjectId, session.id)} aria-current={routeConversationId === session.id ? 'page' : undefined}>{session.title || 'New conversation'}</Link>)}
-        </section>
+        <ProjectConversationSidebar projectId={selectedProjectId} projectName={selectedProject?.name}
+          selectedId={routeConversationId} sessions={conversations.sessions} loading={conversations.loading}
+          creating={creatingConversation} error={conversationError || conversations.error}
+          onCreate={() => void newConversation()}
+          onRetry={() => { conversations.refresh(); if (routeConversationId && !admittedParentId) setAdmissionAttempt(value => value + 1) }}
+          onSelect={() => { setActiveTaskId(null); setActiveSessionId(admittedParentId); responsiveLayout.setPanel('chat'); responsiveLayout.setNavigationOpen(false) }} />
         {/* Navigation Menu Links */}
         <nav aria-label="Swarm destinations" className="swarm-route-navigation p-3 border-b border-slate-800/80 space-y-1" onClick={() => { setIsOnboardingActive(projects.length === 0); responsiveLayout.setPanel('main'); responsiveLayout.setNavigationOpen(false) }}>
           <Link
@@ -7109,7 +7114,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
           </div>
           <h3 className="font-bold text-sm text-white mb-1">{selectedProject?.name || 'Welcome to Swarm'}</h3>
           <p className="text-slate-400 text-xs max-w-xs leading-relaxed">
-            {workerChatOpen ? 'Opening Worker Orchestrator… If the connection fails, retry Add worker or Ask Orchestrator.' : selectedProject ? 'Choose a conversation or start a new session.' : 'Create your first project. Workspaces can be added later.'}
+            {conversationError ? 'Unable to open this conversation. Retry sessions in the sidebar.' : routeConversationId && selectedProject ? 'Opening conversation…' : workerChatOpen ? 'Opening Worker Orchestrator… If the connection fails, retry Add worker or Ask Orchestrator.' : selectedProject ? 'Choose a conversation or start a new session.' : 'Create your first project. Workspaces can be added later.'}
           </p>
           {selectedProject && !routeConversationId && <ul aria-label="Project conversations">{conversations.sessions.map(session => <li key={session.id}><Link {...projectConversationLink(selectedProject.id, session.id)}>{session.title || 'New conversation'}</Link></li>)}</ul>}
           {selectedProject ? <button type="button" disabled={creatingConversation} onClick={() => { void newConversation() }}>New session</button> : <button type="button" onClick={() => { setIsOnboardingActive(true); setActiveNavTab('projects') }}>Create a project</button>}
