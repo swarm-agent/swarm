@@ -93,12 +93,12 @@ export async function submitTaskAttentionDecision(
 ): Promise<void> {
   const key = JSON.stringify([permission.sessionId, permission.id])
   const current = taskAttentionPermissions(deps.getState(), [permission.sessionId]).find(item => item.id === permission.id)
-  if (!current || current.updatedAt !== permission.updatedAt || current.toolArguments !== permission.toolArguments) throw new Error('This request changed or was resolved. Review the current request.')
+  if (!current || current.runId !== permission.runId || current.callId !== permission.callId || current.updatedAt !== permission.updatedAt || current.toolArguments !== permission.toolArguments) throw new Error('This request changed or was resolved. Review the current request.')
   if (decisions.has(key)) throw new Error('A decision is already being submitted for this request.')
   decisions.add(key)
   try {
     const resolved = await deps.resolve(permission.sessionId, permission.id, action, reason, approvedArguments)
-    if (!resolved || resolved.sessionId !== permission.sessionId || resolved.id !== permission.id || resolved.status === 'pending') {
+    if (!resolved || resolved.sessionId !== permission.sessionId || resolved.id !== permission.id || resolved.runId !== permission.runId || resolved.callId !== permission.callId || resolved.status === 'pending') {
       throw new Error('The decision did not return a resolved request. Refresh and retry.')
     }
     deps.commit(resolved)

@@ -110,6 +110,7 @@ export function TaskAttention({ attention }: { attention: Omit<ReturnType<typeof
   const selectedKey = reviewed ? key(reviewed) : ''
   // Do not silently replace the source the user opened with changed arguments.
   const selected = attention.permissions.find(permission => key(permission) === selectedKey
+    && permission.runId === reviewed?.runId && permission.callId === reviewed?.callId
     && permission.updatedAt === reviewed?.updatedAt && permission.toolArguments === reviewed?.toolArguments) || null
   async function resolve(action: TaskAttentionDecision, reason: string, args?: Record<string, unknown>) {
     if (!selected) throw new Error('This request is no longer pending')

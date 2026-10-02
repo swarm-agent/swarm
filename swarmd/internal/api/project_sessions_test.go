@@ -113,7 +113,8 @@ func TestProjectConversationsCreateListAndRejectSpoofing(t *testing.T) {
 
 // Purpose: pending project permissions survive reconnect and stale/cross-session
 // replies cannot change them. The API plus real permission store is the narrowest
-// layer proving both response handling and durable postconditions, including retry.
+// layer proving both response handling and durable postconditions, including retry,
+// denial and conflicting replies that must not overwrite a terminal decision.
 func TestProjectConversationPermissionReplayAndStaleRejection(t *testing.T) {
 	s, sessions, permissions, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	p := testPrincipal()
@@ -173,6 +174,33 @@ func TestProjectConversationPermissionReplayAndStaleRejection(t *testing.T) {
 	if w := resolve(pending.ID, "allow_always", "persistent"); w.Code < 400 {
 		t.Fatal("accepted persistent project policy")
 	}
+	denied, err := permissions.CreatePending(permission.CreateInput{SessionID: session.ID, RunID: active.RunID, CallID: "approval", ToolName: "task", ToolArguments: `{}`, Requirement: "tool", Mode: "auto"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w := resolve(denied.ID, "deny", "Do not delegate"); w.Code != http.StatusOK {
+		t.Fatalf("deny: %d %s", w.Code, w.Body.String())
+	}
+	// Retried or conflicting responses must never change the durable denial.
+	for _, action := range []string{"deny", "allow"} {
+		resolve(denied.ID, action, "late response")
+		records, err := permissions.ListPermissions(session.ID, 100)
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, record := range records {
+			if record.ID == denied.ID {
+				found = true
+				if record.Status != pebblestore.PermissionStatusDenied || record.Reason != "Do not delegate" {
+					t.Fatalf("terminal denial overwritten: %+v", record)
+				}
+			}
+		}
+		if !found {
+			t.Fatal("denial disappeared")
+		}
+	}
 	for i := 0; i < 2; i++ {
 		if w := resolve(pending.ID, "allow", "A custom response outside the options"); w.Code != http.StatusOK {
 			t.Fatalf("reply/retry %d: %d %s", i, w.Code, w.Body.String())
@@ -186,10 +214,17 @@ func TestProjectConversationPermissionReplayAndStaleRejection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	foundAnswer := false
 	for _, record := range all {
-		if record.ID == pending.ID && (record.Status != pebblestore.PermissionStatusApproved || record.Reason != "A custom response outside the options") {
-			t.Fatalf("custom response lost: %+v", record)
+		if record.ID == pending.ID {
+			foundAnswer = true
+			if record.Status != pebblestore.PermissionStatusApproved || record.Reason != "A custom response outside the options" {
+				t.Fatalf("custom response lost: %+v", record)
+			}
 		}
+	}
+	if !foundAnswer {
+		t.Fatal("accepted custom response disappeared")
 	}
 }
 
