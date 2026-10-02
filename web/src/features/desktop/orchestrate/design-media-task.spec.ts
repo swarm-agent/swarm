@@ -3,7 +3,7 @@ import test from 'node:test'
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { MediaTaskCard } from './media-task-card'
-import { designMediaItem, designNodeId, designReadyItems, readyDesignRevision } from './design-media-task'
+import { designMediaItem, designNodeId, designReadyItems, designThreads, designRequestId, readyDesignRevision } from './design-media-task'
 import type { ProjectDesign } from '../session-v3/design-api'
 import { getMediaIterationOutputs } from '../tools/media-library/media-iteration-thread'
 import { validateMediaGenerationRequest } from '../tools/media-library/media-generation'
@@ -43,9 +43,51 @@ test('design cards render queued running failed cancelled and partial outcomes t
   for (const state of ['queued', 'running', 'failed', 'cancelled', 'partial_success']) {
     const html = renderToStaticMarkup(createElement(MediaTaskCard, { source: 'independent-design', design: { ...row, request: { ...row.request, state } }, onDesignPreview: () => {} }))
     assert.ok(html.includes(state.split('_').join(' ')))
-    assert.match(html, /1\/2 ready/)
+    assert.match(html, /1 turn · 1 ready/)
+    assert.equal((html.match(/class="creative-candidate-chip"/g) || []).length, 2)
     assert.match(html, /validation_failed/)
     assert.doesNotMatch(html, /Turn into video|Generate media|Delegated designs/)
-    assert.match(html, /aria-label="Preview Landing page candidate 1"/)
+    assert.match(html, /Open selected output/)
+    assert.equal((html.match(/role="tab"/g) || []).length, 1)
   }
+})
+
+// Purpose: designThreads must resolve complete session-qualified immutable bases,
+// preserve request/candidate identity and avoid merging same-title independent work.
+// This adapter test catches authority loss before any thumbnail or viewer mounts.
+test('design lineage uses exact session, revision and digest and keeps candidate siblings in one request', () => {
+  const edit: ProjectDesign = { ...row, request: { ...row.request, id: 'edit', state: 'running', candidates: [
+    { spec: { artifact_id: 'design', kind: 'html', base: ref }, state: 'running' },
+    { spec: { artifact_id: 'alternate', kind: 'html', base: ref }, state: 'queued' },
+  ] } }
+  const foreign = { ...edit, request: { ...edit.request, parent_session_id: 'foreign' } }
+  const wrongDigest = { ...edit, request: { ...edit.request, id: 'wrong-digest', candidates: [{ ...edit.request.candidates[0], spec: { ...edit.request.candidates[0].spec, base: { ...ref, sha256: 'different' } } }] } }
+  const wrongRevision = { ...edit, request: { ...edit.request, id: 'wrong-revision', candidates: [{ ...edit.request.candidates[0], spec: { ...edit.request.candidates[0].spec, base: { ...ref, revision: 99 } } }] } }
+  const independent = { ...row, request: { ...row.request, id: 'independent', candidates: [] } }
+  const threads = designThreads([edit, foreign, wrongDigest, wrongRevision, independent, row, row])
+  assert.deepEqual(threads.map(thread => ({ id: thread.id, turns: thread.turns.map(designRequestId) })), [
+    { id: designRequestId(row), turns: [designRequestId(row), designRequestId(edit)] },
+    ...[foreign, wrongDigest, wrongRevision, independent].map(value => ({ id: designRequestId(value), turns: [designRequestId(value)] })),
+  ])
+  const item = designMediaItem(row, 0, readyDesignRevision(row.request.candidates[0])!)
+  assert.equal(item.design?.revision.request_id, 'request')
+  assert.equal(item.design?.revision.candidate, 0)
+  assert.deepEqual(item.design?.revision.ref, ref)
+})
+
+// Purpose: archive filtering in MediaTaskCard must not renumber a surviving
+// candidate or change its exact source. SSR plus the adapter closure is sufficient
+// here; archive CAS is owned by the unchanged DesignArchiveButton/API boundary.
+test('archived siblings do not renumber the remaining exact candidate', () => {
+  const design: ProjectDesign = { ...row, request: { ...row.request, candidates: [
+    { ...row.request.candidates[0], archived: true },
+    { ...row.request.candidates[0], spec: { artifact_id: 'second', kind: 'html' }, attempts: [{ number: 1, state: 'succeeded', result: { ...ref, artifact_id: 'second' } }] },
+  ] } }
+  const opened: unknown[] = []
+  const tree = MediaTaskCard({ source: 'independent-design', design, onDesignPreview: item => opened.push(item.design) })!
+  const html = renderToStaticMarkup(tree)
+  assert.match(html, /Candidate 2 · ready/)
+  assert.doesNotMatch(html, /Candidate 1 · ready/)
+  tree.props.turns[0].outputs[0].open()
+  assert.deepEqual(opened, [designMediaItem(design, 1, readyDesignRevision(design.request.candidates[1])!).design])
 })
