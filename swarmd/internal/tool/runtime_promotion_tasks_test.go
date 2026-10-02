@@ -15,6 +15,11 @@ type observingPromotionWorktrees struct {
 }
 
 func (s *observingPromotionWorktrees) PrepareTaskIntegration(path, branch, head string, children []worktreeruntime.TaskIntegrationChild) (worktreeruntime.TaskIntegrationPlan, error) {
+	for _, child := range children {
+		if !child.PreserveAncestry {
+			return worktreeruntime.TaskIntegrationPlan{}, errors.New("promotion must preserve original source ancestry")
+		}
+	}
 	s.beforePrepare()
 	return s.coderLineageWorktreeService.PrepareTaskIntegration(path, branch, head, children)
 }
@@ -27,7 +32,8 @@ func (s *observingPromotionWorktrees) ApplyTaskIntegration(path string, plan wor
 }
 
 // Purpose: manageWorktreePromote must persist progress before Git preparation,
-// and verified terminal receipts for every single/batch source. Real temp-store
+// and verified terminal receipts for a single source, rejecting unsupported
+// batches before Git or task mutations. Real temp-store
 // publication proves the tool uses durable task/outbox authority. Git doubles
 // isolate orchestration failure paths; existing real-Git tests own Git validity.
 func TestManageWorktreePromoteTaskLifecycle(t *testing.T) {
@@ -90,7 +96,7 @@ func TestManageWorktreePromoteTaskLifecycle(t *testing.T) {
 			}
 			runtime.worktrees = observed
 			_, err = runtime.manageWorktreePromote(scope, map[string]any{"source_session_ids": ids, "target_branch": "dev"})
-			success := mode == "single" || mode == "batch"
+			success := mode == "single"
 			if success && err != nil {
 				t.Fatal(err)
 			}
@@ -115,7 +121,7 @@ func TestManageWorktreePromoteTaskLifecycle(t *testing.T) {
 			if success && wakeups != 2*len(taskIDs) {
 				t.Fatalf("wakeups = %d", wakeups)
 			}
-			if mode == "stale-source" && (wakeups != 0 || worktrees.applyCalls != 0) {
+			if (mode == "stale-source" || mode == "batch") && (wakeups != 0 || worktrees.applyCalls != 0) {
 				t.Fatal("stale source mutated state")
 			}
 		})

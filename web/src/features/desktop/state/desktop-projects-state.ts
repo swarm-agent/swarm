@@ -113,7 +113,8 @@ export function mapBackendTask(t: any): RunningTask {
     worktreeName: t.worktree_name || (t.worktree_branch ? t.worktree_branch.replace(/^agent\//, '').replace(/^worktree\//, '') : undefined),
     baseBranch: t.base_branch || 'main',
     baseCommit: t.base_commit,
-    unintegratedCommits: t.unintegrated_commits ?? 0,
+    deliveryAssessment: t.delivery_assessment,
+    unintegratedCommits: t.delivery_assessment?.candidate_commits ?? t.unintegrated_commits ?? 0,
     behindCommits: t.behind_commits ?? 0,
     gitStatus: t.git_status,
     isIntegrated: !!t.is_integrated,
@@ -321,10 +322,10 @@ export function reduceDesktopProjectsState(
           // Collection GET deliberately does not inspect Git. Preserve only the
           // inspected projection, while accepting all other live task fields.
           return { ...task, gitStatus: prior.gitStatus, isIntegrated: prior.isIntegrated,
+            deliveryAssessment: prior.deliveryAssessment,
             unintegratedCommits: prior.unintegratedCommits, behindCommits: prior.behindCommits,
             isDirty: prior.isDirty, dirtyCount: prior.dirtyCount, diffSummary: prior.diffSummary,
-            syncWarning: prior.syncWarning, actionNeeded: prior.actionNeeded,
-            status: task.status === 'needs_review' && prior.isIntegrated ? prior.status : task.status }
+            syncWarning: prior.syncWarning, actionNeeded: prior.actionNeeded }
         }),
         gitObservations: Object.fromEntries(Object.entries(previous.gitObservations ?? {}).filter(([id, identity]) =>
           identities.get(id) === identity)),

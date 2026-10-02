@@ -1,6 +1,29 @@
 import type { RunningTask } from './orchestrate-types'
 import { redactIntegrationDiagnostic } from './integration-recovery'
 
+// Assessment authority is bound to the current attempt and captured lane. A stale
+// observation must not fall back to legacy counts or integrated flags.
+export function taskDelivery(task: RunningTask) {
+  const a = task.deliveryAssessment
+  if (!a) return undefined
+  const current = a.task_id === task.id && a.session_id === (task.sessionId || '') &&
+    a.attempt_id === (task.activeAttemptId || '') && a.task_revision === task.revision &&
+    a.base_oid === task.baseCommit && a.source_branch === task.worktreeBranch &&
+    a.target_branch === task.baseBranch && a.workspace_id === task.sourceWorkspaceId &&
+    a.workspace_generation === task.sourceWorkspaceGeneration
+  const observed = current && a.freshness === 'observed' && task.gitStatus !== 'stale' && task.gitStatus !== 'unknown' && !task.isDirty && !task.syncWarning
+  const integrated = observed && a.state === 'integrated'
+  const actionable = observed && a.state === 'candidate_work' && a.candidate_commits > 0 && a.allowed_actions?.includes('integrate')
+  const summary = !current ? 'Git assessment stale — refresh task'
+    : a.state === 'history_rewritten' ? 'History rewritten — review task'
+    : a.state === 'history_equivalent' ? 'Matching tree; integration not verified — review task'
+    : !observed ? task.syncWarning || (task.isDirty ? 'Changes pending commit' : 'Git assessment unavailable — review task')
+    : integrated ? 'Integrated'
+    : actionable ? `${a.candidate_commits} task ${a.candidate_commits === 1 ? 'commit' : 'commits'} to integrate`
+    : a.reason || 'Integration needs review'
+  return { integrated, actionable, summary }
+}
+
 // Projection only: durable task/attempt/program receipts own these facts. Neither
 // job assembly, a checklist nor prose mentioning tests proves validation/delivery.
 export function taskOutcome(task: RunningTask) {
@@ -29,7 +52,7 @@ export function taskOutcome(task: RunningTask) {
     : undefined
   const code = Boolean(task.worktreeBranch || task.agentType === 'coder' || currentProgram?.definition?.jobs?.some(job => job.agent_type === 'coder'))
   const assembled = currentProgram?.state === 'completed'
-  const delivered = task.isIntegrated === true && !integrationFailed && task.gitStatus === 'clean' && !task.isDirty && !(task.unintegratedCommits && task.unintegratedCommits > 0)
+  const delivered = (taskDelivery(task)?.integrated ?? task.isIntegrated === true) && !integrationFailed && task.gitStatus === 'clean' && !task.isDirty && !(task.unintegratedCommits && task.unintegratedCommits > 0)
   return {
     blocker: blocker ? { ...blocker, message: redactIntegrationDiagnostic(blocker.message) } : undefined,
     integrationFailed, launchIncomplete, repairSessionId,

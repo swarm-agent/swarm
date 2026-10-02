@@ -385,6 +385,14 @@ export interface RunningTask {
   worktreeBranch?: string
   worktreeName?: string
   baseBranch?: string
+  deliveryAssessment?: {
+    task_id: string; task_revision: number; session_id: string; attempt_id: string
+    workspace_id: string; workspace_generation: number
+    base_oid: string; source_oid: string; target_oid: string
+    source_branch: string; target_branch: string
+    state: string; reason_code: string; reason: string; freshness: string
+    candidate_commits: number; allowed_actions: string[]
+  }
   unintegratedCommits?: number
   behindCommits?: number
   gitStatus?: string

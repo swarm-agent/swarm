@@ -281,9 +281,9 @@ func (d *deliveryInspector) assess(in TaskDeliveryInput, a pebblestore.TaskDeliv
 	if !baseOnTarget {
 		return set("history_rewritten", "base_not_on_target", "Target no longer contains recorded base; reviewed recovery required")
 	}
-	if a.TargetOID != a.BaseOID {
-		return set("ambiguous", "target_advanced", "Target advanced; review overlap before integration")
-	}
+	// An advanced target is normal for parallel tasks. This read only admits a
+	// candidate; PrepareTaskIntegration owns conflict preflight and Apply retains
+	// the expected-head/clean-target guards before changing the checkout.
 	a.AllowedActions = []string{"integrate"}
 	return set("candidate_work", "candidate_delta", "Bounded changes since captured base")
 }

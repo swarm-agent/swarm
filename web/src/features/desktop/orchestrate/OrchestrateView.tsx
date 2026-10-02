@@ -7,7 +7,7 @@ import { ImagePromptControls, imagePromptReducer, initialImagePromptState, image
 import { DurableWorkerReviews } from '../chat/components/durable-worker-reviews'
 import { taskReopenOperations, taskReopenKey, type TaskReopenOutcome } from './task-reopen-operation'
 import { taskIntegrationOperations, taskIntegrationKey, taskIntegrationFailureIdentity, taskIntegrationPhase, type TaskIntegrationOperation, type TaskIntegrationResult } from './task-integration-operation'
-import { taskOutcome } from './task-outcome'
+import { taskDelivery, taskOutcome } from './task-outcome'
 import { TaskOutcomeDetails, ProjectTaskAttention } from './task-outcome-view'
 import { TaskAttemptHistory } from './task-attempt-history'
 import { TaskUsageFooter, TaskWorkerBudgetMetadata } from './task-usage-metadata'
@@ -824,11 +824,13 @@ export function MinimalTaskCard({
   const integrationPhase = taskIntegrationPhase(task, integrationOperation)
   const isIntegrating = integrationPhase === 'pending'
   const hasIntegrationReceipt = integrationPhase !== 'ready'
-  const hasUnintegrated = task.gitStatus === 'diverged' && !task.isIntegrated && (task.unintegratedCommits ?? 0) > 0
+  const delivery = taskDelivery(task)
+  const hasUnintegrated = delivery ? delivery.actionable : task.gitStatus === 'diverged' && !task.isIntegrated && (task.unintegratedCommits ?? 0) > 0
+  const deliveryNeedsReview = Boolean(delivery && !delivery.actionable && !delivery.integrated)
   const canReopen = !isPendingApproval && !isRejected && !isRunning && Boolean(onReopen) &&
     (isNeedsReview || isCompleted || isFailed || task.isIntegrated || integrationPhase === 'success')
-  const showComplete = isNeedsReview && !hasUnintegrated && !hasIntegrationReceipt && !task.isIntegrated && Boolean(onComplete)
-  const isIntegratedAction = integrationPhase === 'success' || Boolean(task.isIntegrated && !hasIntegrationReceipt)
+  const showComplete = !deliveryNeedsReview && isNeedsReview && !hasUnintegrated && !hasIntegrationReceipt && !task.isIntegrated && Boolean(onComplete)
+  const isIntegratedAction = integrationPhase === 'success' || Boolean((delivery?.integrated ?? task.isIntegrated) && !hasIntegrationReceipt)
   const reopenButtonRef = useRef<HTMLButtonElement>(null)
   const reopenFormId = useId()
   const closeReopen = () => {
@@ -947,7 +949,7 @@ export function MinimalTaskCard({
     task.outcomeType === 'media_bundle' ||
     task.outcomeType === 'video_story' ||
     task.outcomeType === 'video_clip'
-  const showIntegration = !isPendingApproval && !isMediaTask && (hasUnintegrated || hasIntegrationReceipt || task.isIntegrated)
+  const showIntegration = !isPendingApproval && !isMediaTask && (deliveryNeedsReview || hasUnintegrated || hasIntegrationReceipt || task.isIntegrated)
 
   const isSingleVideo =
     task.agentType === 'video' &&
@@ -1119,9 +1121,10 @@ export function MinimalTaskCard({
         <div className="swarm-task-action-row flex items-center flex-wrap gap-2 text-xs" data-testid="task-primary-actions">
           {showIntegration && <div className="flex items-center flex-wrap gap-2" data-testid="task-pending-worktree-bar">
             <span role="status" aria-live="polite">
-              {isIntegrating ? 'Integrating worktree' : integrationPhase === 'error' ? 'Integration needs attention' : isIntegratedAction ? 'Integrated:' : task.baseBranch ? 'Ready to integrate' : 'Target unavailable'}
+              {isIntegrating ? 'Integrating worktree' : integrationPhase === 'error' ? 'Integration needs attention' : isIntegratedAction ? 'Integrated:' : deliveryNeedsReview ? delivery?.summary : task.baseBranch ? 'Ready to integrate' : 'Target unavailable'}
             </span>
-            {onIntegrate && <button type="button"
+            {deliveryNeedsReview && <button type="button" onClick={event => { event.stopPropagation(); handleToggleExpand() }}>Review task</button>}
+            {onIntegrate && !deliveryNeedsReview && <button type="button"
               disabled={isIntegrating || isReopening || isIntegratedAction || !task.baseBranch}
               aria-busy={isIntegrating}
               aria-label={isIntegrating ? 'Integrating…' : isIntegratedAction ? 'Integrated' : task.baseBranch ? `${integrationPhase === 'error' ? 'Retry integrate' : 'Integrate'} into ${task.baseBranch}` : 'Target unavailable'}

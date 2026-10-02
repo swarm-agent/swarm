@@ -2,7 +2,7 @@ import type { ReactNode } from 'react'
 import { Code2, Film, Image as ImageIcon, Layers, Music } from 'lucide-react'
 import type { RunningTask, MediaDeliverable } from './orchestrate-types'
 import { taskCardSessions } from './task-card-sessions'
-import { taskOutcome } from './task-outcome'
+import { taskDelivery, taskOutcome } from './task-outcome'
 
 export function formatElapsedString(elapsed?: string): string {
   if (!elapsed) return ''
@@ -28,12 +28,12 @@ export function taskCardFacts(task: RunningTask) {
   const progress = total > 0 ? `${completed}/${total} steps` : task.taskProgramStatus?.jobs?.length
     ? `${task.taskProgramStatus.jobs.filter(job => ['integrated', 'completed', 'handoff_ready'].includes(job.state)).length}/${task.taskProgramStatus.jobs.length} jobs`
     : task.planProgressPercent !== undefined ? `${task.planProgressPercent}% progress` : null
-  const git = task.gitStatus === 'unknown' || task.gitStatus === 'stale' || !task.gitStatus
+  const git = taskDelivery(task)?.summary ?? (task.gitStatus === 'unknown' || task.gitStatus === 'stale' || !task.gitStatus
     ? task.gitStatus === 'stale' ? 'Git: last known state' : 'Git: not inspected'
     : task.syncWarning || (task.behindCommits ?? 0) > 0 ? 'Out of sync'
     : task.isDirty ? 'Changes pending commit'
     : (task.unintegratedCommits ?? 0) > 0 ? `${task.unintegratedCommits} unintegrated ${task.unintegratedCommits === 1 ? 'commit' : 'commits'}`
-    : task.isIntegrated === true ? 'Integrated' : 'Integration not verified'
+    : task.isIntegrated === true ? 'Integrated' : 'Integration not verified')
   const deliverable = task.deliverables?.find(item =>
     (item.status === 'ready' || item.status === 'accepted') &&
     (item.type === 'image' || item.type === 'video') && Boolean(item.previewUrl || item.mediaUrl))

@@ -6928,9 +6928,10 @@ func (r *Runtime) manageWorktreePromote(scope WorkspaceScope, args map[string]an
 		}
 
 		children = append(children, worktreeruntime.TaskIntegrationChild{
-			SessionID:  c.sessionID,
-			BaseCommit: deliveryBase,
-			HeadCommit: sourceState.HeadCommit,
+			SessionID:        c.sessionID,
+			BaseCommit:       deliveryBase,
+			HeadCommit:       sourceState.HeadCommit,
+			PreserveAncestry: true,
 		})
 		resolvedBranches = append(resolvedBranches, branch)
 		entry, err := r.promotionTask(scope, source, branch, sourceState.HeadCommit, resolvedTarget, expectedTargetBranch, "")
@@ -6942,6 +6943,14 @@ func (r *Runtime) manageWorktreePromote(scope WorkspaceScope, args map[string]an
 		}
 	}
 
+	// The existing ancestry-preserving service accepts one whole source only.
+	// Reject unsupported batches and empty deliveries before any target effects.
+	if len(children) != 1 {
+		return "", errors.New("ancestry-preserving promotion requires one source session at a time")
+	}
+	if children[0].HeadCommit == children[0].BaseCommit {
+		return "", errors.New("promotion source has no commits since its captured base")
+	}
 	targetState, err := r.worktrees.InspectTaskWorkspace(primaryResolvedTarget)
 	if err != nil {
 		return "", fmt.Errorf("inspect promotion target checkout: %w", err)
@@ -6965,6 +6974,11 @@ func (r *Runtime) manageWorktreePromote(scope WorkspaceScope, args map[string]an
 	targetBranchName := targetState.BranchName
 	resolvedTargetHead := targetState.HeadCommit
 
+	baseOnTarget, baseErr := r.worktrees.TaskCommitDescendsFrom(primaryResolvedTarget, children[0].BaseCommit, resolvedTargetHead)
+	if baseErr != nil || !baseOnTarget {
+		err := errors.New("promotion target no longer contains the recorded source base; review rewritten history before integration")
+		return "", errors.Join(err, baseErr, r.finishPromotionTasks(scope, started, "failed", "", err))
+	}
 	plan, err := r.worktrees.PrepareTaskIntegration(primaryResolvedTarget, targetBranchName, resolvedTargetHead, children)
 	if err != nil {
 		return "", errors.Join(err, r.finishPromotionTasks(scope, started, "conflict", "", err))

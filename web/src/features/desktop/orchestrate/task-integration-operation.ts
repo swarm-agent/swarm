@@ -1,5 +1,5 @@
 import { integrationFailure, type IntegrationFailure } from './integration-recovery'
-import { taskOutcome } from './task-outcome'
+import { taskDelivery, taskOutcome } from './task-outcome'
 import type { ProjectSummary, RunningTask } from './orchestrate-types'
 
 export interface TaskIntegrationResult {
@@ -15,10 +15,15 @@ export type TaskIntegrationOperation =
 
 // Canonical receipts also describe promotions initiated outside this card.
 export function taskIntegrationPhase(task: RunningTask, local?: TaskIntegrationOperation): TaskIntegrationOperation['phase'] {
-  if (task.isIntegrated && task.status === 'completed') return 'success'
-  if (task.integration?.state === 'in_progress') return 'pending'
+  const receipt = task.integration
+  const currentReceipt = receipt && (!receipt.session_id || receipt.session_id === task.sessionId) &&
+    (!receipt.attempt_id || !task.activeAttemptId || receipt.attempt_id === task.activeAttemptId)
+  if (currentReceipt && receipt.state === 'in_progress') return 'pending'
   if (local?.phase === 'pending') return 'pending'
   if (taskOutcome(task).integrationFailed) return 'error'
+  const delivery = taskDelivery(task)
+  if ((delivery?.integrated ?? task.isIntegrated) && task.status === 'completed') return 'success'
+  if (delivery && !delivery.integrated && local?.phase === 'success') return 'ready'
   return local?.phase || 'ready'
 }
 
@@ -86,7 +91,10 @@ export function createTaskIntegrationController() {
     async run(project: ProjectSummary, task: RunningTask, mutate: () => Promise<TaskIntegrationResult>, refresh: () => unknown) {
       const key = taskIntegrationKey(project.id, task)
       const current = get(key)
-      if (current.phase === 'pending' || current.phase === 'success' || task.integration?.state === 'in_progress' || (task.isIntegrated && task.status === 'completed')) return
+      const delivery = taskDelivery(task)
+      if (delivery && !delivery.actionable) return
+      const phase = taskIntegrationPhase(task, current)
+      if (phase === 'pending' || phase === 'success') return
       const release = acquireTaskMutation(project.id, task.id)
       if (!release) return
       // Lock and notify synchronously, before invoking the transport or yielding.

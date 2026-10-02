@@ -73,7 +73,7 @@ func TestTaskDeliveryAssessment(t *testing.T) {
 		t.Fatal("equivalence offered integration")
 	}
 	run(root, "revert", "--no-edit", "HEAD")
-	check("ambiguous")
+	check("candidate_work") // Reverted history is not integrated; preflight owns conflicts.
 	if _, err := os.Stat(filepath.Join(root, "change")); !os.IsNotExist(err) {
 		t.Fatal("assessment restored reverted content")
 	}
@@ -226,8 +226,8 @@ func deliveryFixture(t *testing.T) (TaskDeliveryInput, func(string, ...string) s
 	return TaskDeliveryInput{SourcePath: child, TargetPath: root, Identity: pebblestore.TaskDeliveryAssessment{BaseOID: parent, SourceBranch: "agent/task", TargetBranch: "dev"}}, git
 }
 
-// Purpose: base-scoped evidence must reject merge/import ambiguity and partial
-// overlaps and never confuse rewritten pre-task ancestry with candidate work.
+// Purpose: base-scoped evidence rejects merge/import ambiguity and rewritten
+// history, but admits advanced targets to the integration service's preflight.
 // Actual trees and refs, not status-only mocks, establish the postconditions.
 func TestTaskDeliveryTopology(t *testing.T) {
 	for _, scenario := range []string{"rewritten", "partial", "squash", "merge", "missing-target", "wrong-repository", "dirty-target", "no-net-change"} {
@@ -246,6 +246,7 @@ func TestTaskDeliveryTopology(t *testing.T) {
 				}
 				git(in.TargetPath, "add", ".")
 				git(in.TargetPath, "commit", "-m", "partial")
+				want = "candidate_work"
 			case "no-net-change":
 				git(in.SourcePath, "revert", "--no-edit", "HEAD")
 				want = "empty"
@@ -282,7 +283,7 @@ func TestTaskDeliveryTopology(t *testing.T) {
 			}
 			refs := git(in.SourcePath, "show-ref")
 			got := AssessTaskDelivery(context.Background(), in)
-			if got.State != want || len(got.AllowedActions) != 0 || refs != git(in.SourcePath, "show-ref") {
+			if got.State != want || (len(got.AllowedActions) > 0) != (want == "candidate_work") || refs != git(in.SourcePath, "show-ref") {
 				t.Fatalf("unsafe topology result: %+v", got)
 			}
 			if scenario == "rewritten" && (got.CandidateCommits != 1 || len(got.Files) != 1 || got.Files[0] != "feature") {
