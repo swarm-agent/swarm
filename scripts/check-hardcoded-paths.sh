@@ -17,6 +17,8 @@ filter_guest_image_paths() {
     case "${normalized}" in
       'containers/headless/inspect.sh:for directory in /etc/swarmd /var/lib/swarmd /var/cache/swarmd /run/swarmd /var/log/swarmd /project; do'|\
       'containers/headless/inspect.sh:test -s /etc/ssl/certs/ca-certificates.crt'|\
+      'containers/headless/app/entrypoint.sh:config=/etc/swarmd/headless-app'|\
+      'containers/headless/app/entrypoint.sh:if (( $# == 0 )); then set -- node /opt/workshop/examples/headless-app/server.mjs; fi'|\
       'scripts/testbench-local-cache.sh:    export GOROOT=/opt/go GOTOOLCHAIN=local GOMAXPROCS=2 HOME=/root'|\
       "scripts/testbench-local-image.sh:printf 'local-testbench-base/v1\\n' > \"\$mountpoint/etc/swarm-local-base\""|\
       'scripts/testbench-local-tools.sh:[[ -f $point/etc/swarm-local-base ]] || exit 1'|\
@@ -71,7 +73,7 @@ if [[ "${1:-}" == "--self-test" ]]; then
       [[ "$rejected_hit" == "$guest_hit" ]] && continue
       [[ -n "$(printf '%s\n' "$rejected_hit" | filter_guest_image_paths)" ]] || exit 1
     done
-  done < <(rg -n "$DISALLOWED_ABS_PATH_PATTERN" scripts/testbench-local-cache.sh scripts/testbench-local-image.sh scripts/testbench-local-tools.sh containers/headless/inspect.sh)
+  done < <(rg -n "$DISALLOWED_ABS_PATH_PATTERN" scripts/testbench-local-cache.sh scripts/testbench-local-image.sh scripts/testbench-local-tools.sh containers/headless/inspect.sh containers/headless/app/entrypoint.sh)
   echo '[path-check] self-test PASS'
 fi
 

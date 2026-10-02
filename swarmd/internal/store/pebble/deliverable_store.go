@@ -84,17 +84,25 @@ func (d *DeliverableRecord) Validate() error {
 }
 
 func (s *SessionStore) PutDeliverable(accountScopeID string, deliv *DeliverableRecord) error {
-	if s == nil || s.store == nil { return errors.New("database not available") }
+	if s == nil || s.store == nil {
+		return errors.New("database not available")
+	}
 	s.store.deliverablesMu.Lock()
 	defer s.store.deliverablesMu.Unlock()
-	if deliv == nil { return errors.New("deliverable definition required") }
+	if deliv == nil {
+		return errors.New("deliverable definition required")
+	}
 	deliv.ID = strings.TrimSpace(deliv.ID)
 	if deliv.PublicationClaim != "" || deliv.Status == "publishing" || deliv.Status == "published" || deliv.Status == "publication_failed" || deliv.Status == "reconciliation_required" {
 		return errors.New("publication state is server owned")
 	}
 	old, _, err := s.GetDeliverable(accountScopeID, deliv.ID)
-	if deliv.ID != "" && err != nil { return err }
-	if old.PublicationClaim != "" || old.Status == "published" { return errors.New("publication requires reconciliation; record is immutable") }
+	if deliv.ID != "" && err != nil {
+		return err
+	}
+	if old.PublicationClaim != "" || old.Status == "published" {
+		return errors.New("publication requires reconciliation; record is immutable")
+	}
 	return s.putDeliverableLocked(accountScopeID, deliv)
 }
 
@@ -134,7 +142,9 @@ func (s *SessionStore) putDeliverableLocked(accountScopeID string, deliv *Delive
 		var old DeliverableRecord
 		decodeErr := json.Unmarshal(val, &old)
 		closer.Close()
-		if decodeErr != nil { return decodeErr }
+		if decodeErr != nil {
+			return decodeErr
+		}
 		oldRecord = &old
 	} else if !errors.Is(err, pebble.ErrNotFound) {
 		return err
@@ -353,7 +363,9 @@ func (s *SessionStore) RequestChangesDeliverable(accountScopeID, id, notes strin
 }
 
 func (s *SessionStore) DeleteDeliverable(accountScopeID, id string) error {
-	if s == nil || s.store == nil { return errors.New("database not available") }
+	if s == nil || s.store == nil {
+		return errors.New("database not available")
+	}
 	s.store.deliverablesMu.Lock()
 	defer s.store.deliverablesMu.Unlock()
 	if s == nil || s.store == nil || s.store.db == nil {
@@ -373,7 +385,9 @@ func (s *SessionStore) DeleteDeliverable(accountScopeID, id string) error {
 		return nil
 	}
 
-	if rec.PublicationClaim != "" || rec.Status == "published" { return errors.New("publication requires reconciliation; record is immutable") }
+	if rec.PublicationClaim != "" || rec.Status == "published" {
+		return errors.New("publication requires reconciliation; record is immutable")
+	}
 	batch := s.store.db.NewBatch()
 	defer batch.Close()
 
