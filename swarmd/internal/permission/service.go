@@ -50,6 +50,9 @@ type Service struct {
 	retainToolOutputHistory          bool
 	capacity                         *executioncapacity.Manager
 
+	designAdmissionMu    sync.Mutex
+	designSlots          map[string]map[string]struct{}
+	swarmIndexReady      bool
 	mu                   sync.Mutex
 	waiters              map[string][]chan pebblestore.PermissionRecord
 	permissionStateCache map[string]permissionStateCacheEntry

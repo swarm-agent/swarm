@@ -14,12 +14,13 @@ import (
 	"unicode/utf8"
 
 	"swarm/packages/swarmd/internal/identity"
+	"swarm/packages/swarmd/internal/permission"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	store "swarm/packages/swarmd/internal/store/pebble"
 )
 
 // DesignDispatcher belongs to daemon lifetime, not the accepting parent's run.
-// Two local workers bound memory/fan-out; permission admission remains authoritative.
+// Account Swarm admission bounds workers; excess stays in the durable queue.
 type DesignDispatcher struct {
 	cancel context.CancelFunc
 	done   chan struct{}
@@ -37,7 +38,7 @@ func (s *Service) designDispatchLoop(ctx context.Context) {
 	active := map[string]context.CancelFunc{}
 	// Retain continuation across wakes; one bounded page per turn, never a history sweep.
 	cursor := ""
-	finished := make(chan string, 2)
+	finished := make(chan string)
 	var workers sync.WaitGroup
 	defer func() {
 		for _, cancel := range active {
@@ -69,14 +70,25 @@ func (s *Service) designDispatchLoop(ctx context.Context) {
 						if err := s.finishDesign(r.Owner, r.ID, i, nil, store.DesignInterrupted); err != nil {
 							log.Printf("design dispatcher: recovery reconciliation failed")
 						}
-					} else if c.State == store.DesignQueued && len(active) < 2 {
+					} else if c.State == store.DesignQueued {
+						release, err := s.permissions.TryAdmitDesign(r.Owner.AccountID, r.ParentSessionID, r.ParentRunID, id)
+						if errors.Is(err, permission.ErrDesignAdmissionDenied) {
+							_, err = db.FailQueuedDesign(r.Owner, r.ID, r.Revision, i, "admission_denied")
+						}
+						if err != nil || release == nil {
+							continue
+						}
 						workCtx, cancel := context.WithCancel(ctx)
 						active[id] = cancel
 						workers.Add(1)
 						go func(p store.DesignPrincipal, request string, candidate int, id string) {
 							defer workers.Done()
 							s.executeDesign(workCtx, p, request, candidate)
-							finished <- id
+							release()
+							select {
+							case finished <- id:
+							case <-ctx.Done():
+							}
 						}(r.Owner, r.ID, i, id)
 					}
 				}
