@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Called only after independent native promotion signature verification.
+set +x # Credentials below must never be emitted by inherited shell tracing.
 set -euo pipefail
 [[ $# == 2 ]] || { echo 'usage: bash scripts/publish-headless-release.sh EVIDENCE_DIR VERSION' >&2; exit 2; }
 evidence=$1 version=$2
@@ -38,14 +39,10 @@ printf '{}\n' > "$auth"
 printf '%s' "$GH_TOKEN" | skopeo login --authfile "$auth" --username "$GITHUB_ACTOR" --password-stdin ghcr.io
 image=ghcr.io/swarm-agent/swarm-headless
 expected=$(jq -er .manifestDigest "$evidence/headless-image.json")
-# Listing failure is fatal, not evidence that a tag is absent. Protected workflow
-# concurrency serializes our publisher; registry administrators remain trusted.
-tags=$(skopeo list-tags --authfile "$auth" "docker://$image")
-jq -e '.Tags | type == "array"' <<< "$tags" >/dev/null
-if jq -e --arg version "$version" '.Tags | index($version) != null' <<< "$tags" >/dev/null; then
-  existing="sha256:$(skopeo inspect --authfile "$auth" --raw "docker://$image:$version" | sha256sum | cut -d' ' -f1)"
-  [[ "$existing" == "$expected" ]] || { echo 'refusing conflicting immutable image tag' >&2; exit 1; }
-else
+# Only an authenticated, explicit registry absence permits first publication.
+# Protected workflow concurrency serializes our publisher; registry admins remain trusted.
+state=$(python3 -B scripts/probe-headless-registry.py "$version" "$expected")
+if [[ "$state" == absent ]]; then
   skopeo copy --authfile "$auth" --preserve-digests "oci-archive:$evidence/swarm-headless.oci.tar" "docker://$image:$version"
 fi
 actual="sha256:$(skopeo inspect --authfile "$auth" --raw "docker://$image:$version" | sha256sum | cut -d' ' -f1)"
@@ -54,4 +51,7 @@ actual="sha256:$(skopeo inspect --authfile "$auth" --raw "docker://$image:$versi
 pull_dir=$(mktemp -d "$TMPDIR/swarm-image-pull.XXXXXX")
 trap 'rm -f -- "$auth"; rm -rf -- "$pull_dir"' EXIT
 printf '{}\n' > "$pull_dir/anonymous.json"
-skopeo copy --authfile "$pull_dir/anonymous.json" --src-no-creds --preserve-digests "docker://$image@$expected" "oci:$pull_dir/image:verified"
+if ! skopeo copy --authfile "$pull_dir/anonymous.json" --src-no-creds --preserve-digests "docker://$image@$expected" "oci:$pull_dir/image:verified"; then
+  echo 'GHCR anonymous pull failed. Review package visibility and user/org creation policy; publication stopped. This workflow does not change visibility.' >&2
+  exit 1
+fi

@@ -261,9 +261,28 @@ self-asserted JSON identities are not authority. This contract rejects substitut
 but cannot prove an authorized producer told the truth about executing tests. It
 makes no controller-v2, provider-onboarding, cost, timing or live release claim.
 Protected publisher concurrency serializes this workflow, not external registry
-administrators. GHCR tag listing must succeed (bootstrap the package through approved
-registry setup if absent); conflicting version tags are rejected. Public anonymous
-image blob pull must succeed before GitHub/npm publication. Packing is preflighted
+administrators. Before first publish, the release owner must review GitHub user/org
+package-creation policy and authorize the writer for this namespace. The authenticated
+manifest probe allows creation only for an explicit registry `NAME_UNKNOWN` or
+`MANIFEST_UNKNOWN` 404; denied, network and malformed responses fail closed, and
+existing version tags must match the qualified digest. First creation can default to
+**private**: this workflow never widens visibility. An authorized owner must configure
+public visibility under their policy, then retry the same immutable candidate if the
+anonymous gate failed. Public anonymous image blob pull must succeed before GitHub/npm publication. Packing is preflighted
 before image writes, both package locks are stamped, and only the exact validated
 SDK/CLI tarballs are published. Registry/publication failures can leave an image
 without a GitHub/npm release; they never manufacture a successful release.
+
+### Deliverable publication outcomes
+
+X publication requires explicit `env:TWITTER` credentials and matching
+`TWITTER_ACCOUNT_SCOPE_ID`; missing configuration is failure, never a synthetic
+receipt. Approval durably claims the record before external I/O and persists each
+X receipt before the next post. A crash, ambiguous response or partial publication
+requires operator reconciliation; do not recreate the deliverable to retry blindly.
+Public responses omit the internal claim while retaining receipts and outcome.
+Webhook approval remains explicit-user/account authorized, HTTPS-only and
+redirect-disabled. It is not a network-isolation boundary: approved URLs can reach
+private addresses through the daemon's network. Review targets and enforce operator
+egress policy before approving untrusted webhook content. No live provider or
+webhook delivery is asserted by deterministic tests.

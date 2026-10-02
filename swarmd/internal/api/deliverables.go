@@ -15,6 +15,13 @@ import (
 
 const DeliverablesPath = "/v3/deliverables"
 
+// publicDeliverable keeps the durable fencing token inside the store/service.
+// Return a copy: redacting an API response must not erase persistence authority.
+func publicDeliverable(rec pebblestore.DeliverableRecord) pebblestore.DeliverableRecord {
+	rec.PublicationClaim = ""
+	return rec
+}
+
 func (s *Server) handleDeliverables(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	p, ok := PrincipalFromRequest(r)
@@ -63,6 +70,9 @@ func (s *Server) handleDeliverables(w http.ResponseWriter, r *http.Request) {
 			if records == nil {
 				records = []pebblestore.DeliverableRecord{}
 			}
+			for i := range records {
+				records[i] = publicDeliverable(records[i])
+			}
 			writeJSON(w, http.StatusOK, map[string]any{
 				"deliverables": records,
 				"count":        len(records),
@@ -89,7 +99,7 @@ func (s *Server) handleDeliverables(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			writeJSON(w, http.StatusCreated, map[string]any{
-				"deliverable": rec,
+				"deliverable": publicDeliverable(rec),
 			})
 			return
 		}
@@ -121,7 +131,7 @@ func (s *Server) handleDeliverables(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]any{
-				"deliverable": rec,
+				"deliverable": publicDeliverable(rec),
 			})
 			return
 		}
@@ -171,10 +181,15 @@ func (s *Server) handleDeliverables(w http.ResponseWriter, r *http.Request) {
 
 		if rec.ActionContract != nil && (rec.ActionContract.Action == "publish_x_post" || rec.ActionContract.Action == "execute_webhook") {
 			updated, err := approveDeliverablePublication(r.Context(), db, p.AccountScopeID, id, p.UserID)
-			if err != nil { writeError(w, http.StatusConflict, err); return }
+			if err != nil {
+				writeError(w, http.StatusConflict, err)
+				return
+			}
 			code := http.StatusOK
-			if updated.Status != "published" { code = http.StatusBadGateway }
-			writeJSON(w, code, map[string]any{"deliverable": updated, "action_result": updated.ActionResult})
+			if updated.Status != "published" {
+				code = http.StatusBadGateway
+			}
+			writeJSON(w, code, map[string]any{"deliverable": publicDeliverable(updated), "action_result": updated.ActionResult})
 			return
 		}
 
@@ -187,7 +202,7 @@ func (s *Server) handleDeliverables(w http.ResponseWriter, r *http.Request) {
 		}
 
 		writeJSON(w, http.StatusOK, map[string]any{
-			"deliverable":   updated,
+			"deliverable":   publicDeliverable(updated),
 			"action_result": actionResult,
 		})
 		return
@@ -208,7 +223,7 @@ func (s *Server) handleDeliverables(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"deliverable": updated,
+			"deliverable": publicDeliverable(updated),
 		})
 		return
 	}
@@ -241,7 +256,7 @@ func (s *Server) handleDeliverables(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"deliverable": updated,
+			"deliverable": publicDeliverable(updated),
 		})
 		return
 	}
