@@ -4,7 +4,7 @@ import { createPortal } from 'react-dom'
 import { observePageActivity, withPageRequest } from '../../../app/page-lifecycle'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate, useSearch, Link, Outlet } from '@tanstack/react-router'
-import { Archive, Bell, Bot, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Cloud, Coins, Cpu, Download, Film, Folder, GitBranch, GitCommitHorizontal, GitMerge, Image as ImageIcon, Keyboard, ListChecks, ListTodo, LoaderCircle, Menu, MessageSquare, Mic, MoreVertical, NotepadText, Pencil, Pin, Plus, RefreshCcw, Save, Search, Server, Settings, Trash2, X, XCircle } from 'lucide-react'
+import { Archive, Bell, Bot, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Cloud, Coins, Download, Film, Folder, GitBranch, GitCommitHorizontal, GitMerge, Image as ImageIcon, Keyboard, ListChecks, ListTodo, LoaderCircle, Menu, MessageSquare, Mic, MoreVertical, NotepadText, Pencil, Pin, Plus, RefreshCcw, Save, Search, Server, Settings, Trash2, X, XCircle } from 'lucide-react'
 import { Button } from '../../../components/ui/button'
 import { Card } from '../../../components/ui/card'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../components/ui/dialog'
@@ -40,6 +40,7 @@ import { saveSidebarHideInactiveHours } from '../settings/swarm/mutations/save-s
 import { saveShowTipsSetting } from '../settings/swarm/mutations/save-show-tips-setting'
 import { fetchSwarmTargets } from '../swarm/api/swarm-targets'
 import { DesktopV3ConversationPane as ConversationPane } from '../chat/components/desktop-v3-new-session-pane'
+import { SidebarModeSelector } from '../orchestrate/sidebar-mode-selector'
 import { DesktopV3ChatHeader } from '../chat/components/desktop-v3-chat-header'
 import { DesktopV3AgenticComposer } from '../chat/components/desktop-v3-agentic-composer'
 import { applyDesktopV3RoutedStartResponse, clearDesktopV3RoutedStartOperation, createDesktopV3NewSessionOperation, desktopV3RoutedWorkspaceAuthority, startNewDesktopV3Session, type DesktopV3RoutedStartResult, type DesktopV3RoutedWorkspaceAuthority } from '../session-v3/new-session-flow'
@@ -5662,48 +5663,8 @@ export function DesktopAppPage() {
             <div className="border-b border-[var(--app-border)] bg-[var(--app-surface)] px-[9px] py-2">
               <div className="grid gap-1 text-[11px] text-[var(--app-text-subtle)]">
                 {/* Chat vs Swarm (Orchestrate) Mode Switch */}
-                <div className="grid grid-cols-2 gap-1 p-0.5 mb-1 rounded-lg bg-[var(--app-surface-subtle)] border border-[var(--app-border)]/60">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setMobileSidebarOpen(false)
-                      if (topWorkspaceSlug) {
-                        void navigate({ to: '/$workspaceSlug', params: { workspaceSlug: topWorkspaceSlug } })
-                      } else {
-                        void navigate({ to: '/' })
-                      }
-                    }}
-                    className={cn(
-                      'flex items-center justify-center gap-1.5 py-1 px-2 rounded-md text-[11px] font-semibold transition-all',
-                      !isOrchestrateRoute
-                        ? 'bg-[var(--app-surface-raised)] text-[var(--app-text)] shadow-sm border border-[var(--app-border)]'
-                        : 'text-[var(--app-text-subtle)] hover:text-[var(--app-text)]'
-                    )}
-                    aria-label="Switch to Chat Mode"
-                  >
-                    <MessageSquare size={12} strokeWidth={2} />
-                    <span>Chat</span>
-                  </button>
-                  <Link
-                    {...(topWorkspaceSlug ? { to: '/$workspaceSlug/swarm' as const, params: { workspaceSlug: topWorkspaceSlug } } : { to: '/swarm' as const })}
-                    onClick={() => setMobileSidebarOpen(false)}
-                    className={cn(
-                      'flex items-center justify-center gap-1.5 py-1 px-2 rounded-md text-[11px] font-semibold transition-all',
-                      isOrchestrateRoute
-                        ? 'bg-cyan-950/80 text-cyan-300 border border-cyan-800 shadow-sm'
-                        : 'text-[var(--app-text-subtle)] hover:text-cyan-400'
-                    )}
-                    aria-label="Switch to Swarm Orchestrate Mode"
-                  >
-                    <Cpu size={12} strokeWidth={2} className="text-cyan-400" />
-                    <span>Swarm</span>
-                    {pendingWorkerCount > 0 ? (
-                      <span className="rounded-full bg-amber-500/20 text-amber-300 px-1 text-[9px] font-bold">
-                        {pendingWorkerCount}
-                      </span>
-                    ) : null}
-                  </Link>
-                </div>
+                <SidebarModeSelector mode={isOrchestrateRoute ? 'swarm' : 'chat'} workspaceSlug={topWorkspaceSlug || undefined}
+                  pendingReviews={pendingWorkerCount} onNavigate={() => setMobileSidebarOpen(false)} />
 
                 <div className="grid gap-0.5 pt-0.5">
                   <button

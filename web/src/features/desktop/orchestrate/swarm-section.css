@@ -349,10 +349,14 @@
 /* Unified project identity and bottom-anchored composer. */
 .swarm-unified-header { padding: 10px; border-bottom: 1px solid var(--swarm-border-muted); }
 .swarm-header-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
-.swarm-sidebar-modes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); flex-shrink: 0; gap: 4px; margin: 8px 12px 0; padding: 2px; border: 1px solid var(--swarm-border-muted); border-radius: 8px; background: var(--swarm-surface-subtle); }
-.swarm-section .swarm-sidebar-modes a { display: flex; align-items: center; justify-content: center; gap: 6px; min-width: 0; min-height: 28px; padding: 4px 8px; border: 1px solid transparent; border-radius: 6px; font-size: 11px; font-weight: 600; color: var(--swarm-text-muted); }
-.swarm-section .swarm-sidebar-modes a[aria-current="page"] { background: var(--app-surface-raised); border-color: var(--swarm-border-muted); color: var(--swarm-text); box-shadow: 0 1px 2px #0001; }
-.swarm-sidebar-modes a:focus-visible, .swarm-personal-avatar button:focus-visible { outline: 2px solid var(--swarm-accent); outline-offset: 2px; }
+.swarm-sidebar-modes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); flex-shrink: 0; gap: 4px; margin: 0 0 4px; padding: 2px; border: 1px solid var(--app-border); border-radius: 8px; background: var(--app-surface-subtle); }
+.swarm-section .swarm-sidebar-modes { margin: 8px 12px 0; }
+.swarm-sidebar-modes a, .swarm-section .swarm-sidebar-modes a { display: flex; align-items: center; justify-content: center; gap: 6px; min-width: 0; min-height: 28px; padding: 4px 8px; border: 1px solid transparent; border-radius: 6px; font-size: 11px; font-weight: 600; text-decoration: none; background: transparent; color: var(--app-text-subtle); }
+.swarm-sidebar-modes a[data-selected="false"]:hover, .swarm-section .swarm-sidebar-modes a[data-selected="false"]:hover { background: var(--app-surface-hover); color: var(--app-text-muted); }
+.swarm-sidebar-modes a[data-selected="true"], .swarm-section .swarm-sidebar-modes a[data-selected="true"] { background: var(--app-surface-elevated); border-color: var(--app-primary); color: var(--app-text); box-shadow: 0 1px 2px #0001; }
+.swarm-sidebar-modes a:focus-visible { outline: 2px solid var(--app-primary); outline-offset: 2px; }
+.swarm-mode-review-count { border-radius: 999px; padding: 0 4px; font-size: 9px; background: var(--app-surface-hover); color: var(--app-text-muted); }
+.swarm-personal-avatar button:focus-visible { outline: 2px solid var(--swarm-accent); outline-offset: 2px; }
 .swarm-personal-avatar { flex-shrink: 0; }
 .swarm-section .swarm-personal-avatar button { display: grid; place-items: center; width: 28px; height: 28px; min-height: 28px; padding: 0; overflow: hidden; border-radius: 50%; border: 1px solid var(--swarm-border-muted); background: var(--swarm-surface-subtle); color: var(--swarm-text); font-size: 10px; font-weight: 700; }
 .swarm-personal-avatar img { width: 100%; height: 100%; object-fit: cover; }
@@ -381,7 +385,7 @@
   .swarm-composer-inputs { --swarm-composer-control-size: 44px; }
   .swarm-section .swarm-shelf-icon-button { width: 44px; height: 44px; min-height: 44px; }
   .swarm-project-identity { height: 44px; }
-  .swarm-section .swarm-sidebar-modes a { min-height: 36px; }
+  .swarm-sidebar-modes a, .swarm-section .swarm-sidebar-modes a { min-height: 36px; }
 }
 .swarm-composer-inputs > textarea { grid-column: 1 / -1; box-sizing: border-box; width: 100%; min-width: 0; min-height: 52px; max-height: 32dvh; overflow-y: auto; resize: none; border: 0; border-radius: 8px; padding: 8px; color: var(--app-text); background: transparent !important; outline-offset: -2px; }
 .swarm-composer-inputs > button:last-child { grid-column: 4; }
