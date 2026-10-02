@@ -148,14 +148,17 @@ jobs:
           gh api "repos/${GITHUB_REPOSITORY}/git/matching-refs/tags/${VERSION}" > "${RUNNER_TEMP}/release-tags.json"
           jq -e --arg ref "refs/tags/${VERSION}" 'all(.[]; .ref != $ref)' "${RUNNER_TEMP}/release-tags.json"
           bash scripts/publish-headless-release.sh release-evidence "${VERSION}"
+          python3 -B scripts/verify-npm-release-packs.py release-evidence "${VERSION}" > "${RUNNER_TEMP}/npm-files.txt"
+          mapfile -t packs < "${RUNNER_TEMP}/npm-files.txt"
           gh release create "${VERSION}" "${archive}" "${archive}.sha256" "${archive}.sigstore.json" "${archive}.provenance.sigstore.json" \
             release-evidence/build-info.txt release-evidence/gcp-qualification-evidence.json release-evidence/gcp-release-manifest.json \
             release-evidence/gcp-build-provenance.json release-evidence/promotion-predicate.json \
-            release-evidence/headless-image.json release-evidence/npm-packages.json release-evidence/*.tgz \
+            release-evidence/headless-image.json release-evidence/npm-packages.json "${packs[@]}" \
             --repo "${GITHUB_REPOSITORY}" --target "${GITHUB_SHA}" --title "Swarm ${VERSION}" \
             --notes "GCP-built and qualified exact merged source; GitHub verified, keyless-signed and promoted these unchanged bytes after protected environment approval. Headless image: ghcr.io/swarm-agent/swarm-headless@$(jq -r .manifestDigest release-evidence/headless-image.json). Matching npm packs attached."
       - name: Publish exact npm packs after image and GitHub release
         env:
+          VERSION: ${{ needs.build-stable-release.outputs.version }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           TMPDIR: ${{ runner.temp }}
           RELEASE_ENVIRONMENT: stable-release
@@ -166,6 +169,8 @@ jobs:
           export NPM_CONFIG_USERCONFIG="$(mktemp "${TMPDIR}/swarm-npm.XXXXXX")"
           trap 'rm -f -- "${NPM_CONFIG_USERCONFIG}"' EXIT
           printf '%s\n' '//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}' > "${NPM_CONFIG_USERCONFIG}"
-          for pack in release-evidence/*.tgz; do
+          python3 -B scripts/verify-npm-release-packs.py release-evidence "${VERSION}" > "${RUNNER_TEMP}/npm-files.txt"
+          mapfile -t packs < "${RUNNER_TEMP}/npm-files.txt"
+          for pack in "${packs[@]}"; do
             npm publish "$pack" --ignore-scripts --access public --registry=https://registry.npmjs.org/
           done

@@ -30,6 +30,9 @@ require, decode = relay.require, relay.decode
 image_spec = importlib.util.spec_from_file_location('headless_release', Path(__file__).with_name('headless-release.py'))
 image = importlib.util.module_from_spec(image_spec)
 image_spec.loader.exec_module(image)
+runner_spec = importlib.util.spec_from_file_location('runner_release', Path(__file__).with_name('gcp-runner-release.py'))
+runner = importlib.util.module_from_spec(runner_spec)
+runner_spec.loader.exec_module(runner)
 
 
 def digest(raw):
@@ -289,7 +292,7 @@ def consume(env, event, policy=None, google=None, transport=relay.request):
     require((env['GITHUB_REF'] in ('refs/heads/main', 'refs/heads/dev') if candidate else
              env['GITHUB_REF'] == 'refs/heads/main' and env['GITHUB_EVENT_NAME'] == 'push')
             and env['GCP_CHECK_CONTEXT'] == 'build-main', 'release source event required')
-    require(isinstance(policy, dict) and policy.get('schema') == 'swarm.gcp.release-policy/v1',
+    require(isinstance(policy, dict) and policy.get('schema') in ('swarm.gcp.release-policy/v1', runner.POLICY),
             'protected release policy required')
     api = relay.GitHub(env, transport=transport)
     version = env['GCP_RELEASE_VERSION']
@@ -297,6 +300,11 @@ def consume(env, event, policy=None, google=None, transport=relay.request):
     checksum_name = name + '.sha256'
     head_sha = relay.sha(env['GITHUB_SHA'])
     google = google or Google(env)
+
+    if policy['schema'] == runner.POLICY:
+        # Pass this module explicitly; no circular import or alternate transport authority.
+        from types import SimpleNamespace
+        return runner.consume(SimpleNamespace(**globals()), env, event, policy, google, transport)
 
     # Only authenticated immutable evidence is accepted; no inferred receipts.
     if policy and policy.get('schema') == 'swarm.gcp.release-policy/v1' and 'qualified_bucket' in policy:

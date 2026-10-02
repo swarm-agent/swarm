@@ -202,3 +202,68 @@ For the first stable release, there is no older public stable version from which
 GCP configuration reads Repository Secrets first and Repository Variables second; a nonempty secret takes precedence. Existing secrets need not be moved. These configuration values are nonsecret identifiers/policy, not provider keys. Fork PRs do not receive repository secrets: supply the reviewed nonsecret variables for fork coverage, never switch to `pull_request_target` or expose credentials to candidate code. Before rollout, separately approve repository configuration `GCP_CHECK_APP_ID`, `GCP_WORKLOAD_IDENTITY_PROVIDER`, `GCP_READ_SERVICE_ACCOUNT`, `GCP_ALLOWED_BUCKETS` (JSON array), and `GCP_RELEASE_POLICY_JSON`. The static `swarm.gcp.release-policy/v1` policy contains `authority` (controller, builder, result_writer, provenance_verifier) and distinct receipt_bucket, qualified_bucket, package_bucket trust roles. Mandatory stage/onboarding coverage is fixed in the verifier; current source/attempts are bound to authenticated immutable evidence, not manually rewritten repository variables. Never derive trusted policy from downloaded evidence. Configure WIF for the exact reviewed workflow and read-only approved buckets; no build/deploy/write access. Pre-merge bootstrap may use separately approved `GCP_VERIFIER_SHA`, a full immutable commit containing the reviewed verifier: relay jobs verify checkout HEAD before execution. Missing configuration fails closed. Manual candidates are unsigned; only qualified main pushes reach protected signing/publication.
 
 Retain `stable-release` environment reviewers and protected publication. Validate the producer/consumer schema and custom `https://swarm.dev/attestations/release-promotion/v1` verification with actual GitHub/Sigstore evidence before enabling publication. The checked-in installer/launcher do not invoke `gh attestation verify`; consumers of the old release verifier must explicitly choose `--legacy-slsa` for historical GitHub-built releases. New releases require `--gcp-promotion-dir` with the complete evidence set, never automatic legacy fallback.
+
+### Maintained single-VM release handoff (separate from controller v2)
+
+The protected `GCP_RELEASE_POLICY_JSON` may explicitly select
+`{"schema":"swarm.gcp.runner-release-policy/v1","qualified_bucket":"APPROVED_BUCKET"}`.
+`GCP_ALLOWED_BUCKETS` and the read-only WIF IAM binding must independently allow
+that bucket. No receipt/package/controller buckets or identities are invented.
+The legacy `swarm.gcp.release-policy/v1` path remains strict and separate; unknown
+schemas, missing envelopes, dispatch and PR reuse fail closed on the runner path.
+
+The producer must build **the merged main SHA**, detached, with the resolved stable
+version. It must publish `build-main` using the configured GitHub App and the existing
+`swarm.gcp.check-result/v1` identity fields (including push before/head SHA, exact
+source/execution tree, repository ID, run ID, input digest, execution phase, passed
+state and verified cleanup). Its `stages` are exactly the native keys below, each
+`{"id":"KEY","status":"passed"}`. `release` names immutable manifest and receipt:
+
+```json
+{"release":{"manifest":{"bucket":"APPROVED_BUCKET","object":"candidate-BUILD/manifest.json","generation":"POSITIVE_GENERATION","sha256":"RAW_MANIFEST_SHA256"},"verification":{"bucket":"APPROVED_BUCKET","object":"candidate-BUILD/qualification.json","generation":"POSITIVE_GENERATION","sha256":"RAW_RECEIPT_SHA256"}}}
+```
+
+Every `REF` below has exactly `bucket`, `object`, positive `generation`, and raw-byte
+`sha256` as above. Upload artifacts first, then receipt, then manifest; emit the App
+check only after recording actual completed qualification. Manifest field contract:
+
+```json
+{"schema":"swarm.gcp.runner-release/v1","version":"v1.2.3","source_sha":"FULL_MAIN_SHA","source_tree":"FULL_TREE_SHA","repository_id":123,"run_id":"RUN","build_id":"BUILD","archive":"REF","checksum":"REF","oci_archive":"REF","oci_metadata":"REF","evidence":"RECEIPT_REF","native":{"source_sha":"FULL_MAIN_SHA","version":"v1.2.3","ref":"detached","actor":"ACTUAL_ACTOR","built_at":"ACTUAL_BUILD_TIME"}}
+```
+
+Replace symbolic REF strings with reference objects. Receipt has exactly:
+- `schema: swarm.gcp.runner-qualification/v1`;
+- identical `version`, `source_sha`, `source_tree`, `repository_id`, `run_id`,
+  `build_id`, and `native` fields from the manifest;
+- `artifacts`: the identical four `archive`, `checksum`, `oci_archive`,
+  `oci_metadata` reference objects;
+- `cleanup_verified: true` from observed cleanup;
+- `native_exit_codes`: actual integer zero exit codes for **all and only**
+  `source`, `setup`, `repository-policy`, `main-source-policy`, `changelog`,
+  `dependency-vulnerabilities`, `critical-fast`, `critical-deep`, `critical-agents`,
+  `version`, `build`, `package-smoke`, `ubuntu-sudo`, `arch-sudo`, `ubuntu-root`, `cleanup`;
+- `headless: {"image": IMAGE_METADATA, "exit_codes": {"startup":0,"scoped-auth":0,"sdk-session":0,"restart":0}}`.
+  IMAGE_METADATA is the exact `swarm.headless-image/v1` output of
+  `scripts/headless-release.py inspect` over the **actually tested OCI archive**.
+  Native test results must never stand in for these container gates.
+
+`build-info.txt` inside the native archive must match `native` (its `commit` equals
+`source_sha`). The checksum names `swarm-VERSION-linux-amd64.tar.gz`. OCI bytes,
+labels, platform, manifest/config digests and receipt image metadata are independently
+verified. `gcp-build-provenance.json` on this route retains the authenticated App
+result, not a fictional runtime-build-proof/v1. The signed predicate uses
+`swarm.runner-release-promotion/v1` under the existing release-promotion attestation
+predicate type and binds the raw manifest/receipt, App result, immutable references
+and selected policy. The publisher rechecks those bindings and all artifact bytes.
+
+Trust/limits: the pinned App and approved bucket writer are qualification authorities;
+self-asserted JSON identities are not authority. This contract rejects substitutions
+but cannot prove an authorized producer told the truth about executing tests. It
+makes no controller-v2, provider-onboarding, cost, timing or live release claim.
+Protected publisher concurrency serializes this workflow, not external registry
+administrators. GHCR tag listing must succeed (bootstrap the package through approved
+registry setup if absent); conflicting version tags are rejected. Public anonymous
+image blob pull must succeed before GitHub/npm publication. Packing is preflighted
+before image writes, both package locks are stamped, and only the exact validated
+SDK/CLI tarballs are published. Registry/publication failures can leave an image
+without a GitHub/npm release; they never manufacture a successful release.

@@ -47,14 +47,14 @@ def main():
             manifest = json.loads(path.read_text())
             manifest['version'] = metadata['version']
             path.write_text(json.dumps(manifest, indent=2) + '\n')
+            lock_path = work / 'package-lock.json'
+            lock = json.loads(lock_path.read_text())
+            lock['version'] = metadata['version']
+            lock['packages']['']['version'] = metadata['version']
+            lock_path.write_text(json.dumps(lock, indent=2) + '\n')
             if package == 'cli':
                 (work / 'runtime-image.json').write_text(json.dumps(image.pin(metadata), indent=2) + '\n')
             else:
-                lock_path = work / 'package-lock.json'
-                lock = json.loads(lock_path.read_text())
-                lock['version'] = metadata['version']
-                lock['packages']['']['version'] = metadata['version']
-                lock_path.write_text(json.dumps(lock, indent=2) + '\n')
                 subprocess.run(['npm', 'ci', '--ignore-scripts', '--no-audit', '--no-fund'], cwd=work, check=True)
                 subprocess.run(['npm', 'run', 'build'], cwd=work, check=True)
             packed = json.loads(subprocess.check_output(['npm', 'pack', '--ignore-scripts', '--json', '--pack-destination', str(out)], cwd=work))

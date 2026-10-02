@@ -7,12 +7,18 @@ python3 -B scripts/headless-release.py publication-gate
 python3 -B scripts/headless-release.py verify --archive "$evidence/swarm-headless.oci.tar" \
   --metadata "$evidence/headless-image.json" --version "$version" --source "$GITHUB_SHA"
 python3 -B - "$evidence" <<'PY'
-import hashlib, json, pathlib, sys
+import hashlib, importlib.util, json, os, pathlib, sys
 def require(ok):
     if not ok:
         raise ValueError('qualified OCI publication binding mismatch')
 p = pathlib.Path(sys.argv[1])
 e = json.loads((p / 'gcp-qualification-evidence.json').read_bytes())
+if e.get('schema') == 'swarm.gcp.runner-qualification/v1':
+    spec = importlib.util.spec_from_file_location('release', 'scripts/gcp-release-input.py')
+    r = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(r)
+    r.runner.reverify(r, p, os.environ['GITHUB_SHA'], r.decode((p / 'promotion-predicate.json').read_bytes()))
+    sys.exit(0)
 b = e['receipt']['binding']
 proof = json.loads((p / 'gcp-build-provenance.json').read_bytes())
 m = json.loads((p / 'headless-image.json').read_bytes())
@@ -21,6 +27,9 @@ for kind, name in [('oci_archive', 'swarm-headless.oci.tar'), ('oci_metadata', '
     require(proof['result']['outputs'][kind] == b['artifacts'][kind])
 require(e['receipt']['headless'] == dict(schema='swarm.headless-qualification/v1', source_sha=b['source_sha'], run_id=b['run_id'], image=m, gates={k: 'passed' for k in ('startup','scoped-auth','sdk-session','restart')}))
 PY
+# Complete packaging before any external publication.
+python3 -B scripts/pack-headless-release.py --evidence "$evidence" --version "$version" --source "$GITHUB_SHA"
+python3 -B scripts/verify-npm-release-packs.py "$evidence" "$version"
 : "${GH_TOKEN:?GHCR token required}"
 : "${TMPDIR:?scratch directory required}"
 auth=$(mktemp "$TMPDIR/swarm-registry.XXXXXX")
@@ -28,10 +37,21 @@ trap 'rm -f -- "$auth"' EXIT
 printf '{}\n' > "$auth"
 printf '%s' "$GH_TOKEN" | skopeo login --authfile "$auth" --username "$GITHUB_ACTOR" --password-stdin ghcr.io
 image=ghcr.io/swarm-agent/swarm-headless
-# --preserve-digests fails if the registry requires conversion; never rebuild or normalize.
-skopeo copy --authfile "$auth" --preserve-digests "oci-archive:$evidence/swarm-headless.oci.tar" "docker://$image:$version"
 expected=$(jq -er .manifestDigest "$evidence/headless-image.json")
+# Listing failure is fatal, not evidence that a tag is absent. Protected workflow
+# concurrency serializes our publisher; registry administrators remain trusted.
+tags=$(skopeo list-tags --authfile "$auth" "docker://$image")
+jq -e '.Tags | type == "array"' <<< "$tags" >/dev/null
+if jq -e --arg version "$version" '.Tags | index($version) != null' <<< "$tags" >/dev/null; then
+  existing="sha256:$(skopeo inspect --authfile "$auth" --raw "docker://$image:$version" | sha256sum | cut -d' ' -f1)"
+  [[ "$existing" == "$expected" ]] || { echo 'refusing conflicting immutable image tag' >&2; exit 1; }
+else
+  skopeo copy --authfile "$auth" --preserve-digests "oci-archive:$evidence/swarm-headless.oci.tar" "docker://$image:$version"
+fi
 actual="sha256:$(skopeo inspect --authfile "$auth" --raw "docker://$image:$version" | sha256sum | cut -d' ' -f1)"
 [[ "$actual" == "$expected" ]]
-# Package only after image promotion succeeds. No source package files are mutated.
-python3 -B scripts/pack-headless-release.py --evidence "$evidence" --version "$version" --source "$GITHUB_SHA"
+# Anonymous inspection and blob pull prove fresh-machine access, not merely writer access.
+pull_dir=$(mktemp -d "$TMPDIR/swarm-image-pull.XXXXXX")
+trap 'rm -f -- "$auth"; rm -rf -- "$pull_dir"' EXIT
+printf '{}\n' > "$pull_dir/anonymous.json"
+skopeo copy --authfile "$pull_dir/anonymous.json" --src-no-creds --preserve-digests "docker://$image@$expected" "oci:$pull_dir/image:verified"

@@ -174,11 +174,11 @@ def verify_check(check, expected, context, app_id, stages):
     return result, False
 
 
-def poll(env, event, transport=request, sleep=time.sleep, clock=time.monotonic):
+def poll(env, event, transport=request, sleep=time.sleep, clock=time.monotonic, *, required_stages=None):
     api = GitHub(env, transport)
     context = env['GCP_CHECK_CONTEXT']
     app = positive(env['GCP_CHECK_APP_ID'])
-    stages = stage_policy(context, env)
+    stages = stage_policy(context, env) if required_stages is None else required_stages
     expected = api.identity(event)
     deadline, pinned, check_id = clock() + 2400, None, None
     while clock() < deadline:
