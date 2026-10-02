@@ -58,7 +58,7 @@ func TestProjectTask_ExecutionOutranksProgramReview(t *testing.T) {
 		prog := pebblestore.TaskProgramRecord{
 			ParentSessionID: "parent", ProgramID: programState, ReservationRunID: "owner", DefinitionHash: "definition", State: programState,
 			Definition: pebblestore.TaskProgramDefinition{Stages: []pebblestore.TaskProgramStageSpec{{ID: "stage"}}, Jobs: []pebblestore.TaskProgramJobSpec{{ID: "job", StageID: "stage"}}},
-			Jobs: []pebblestore.TaskProgramJobRecord{{JobID: "job", StageID: "stage", State: pebblestore.TaskProgramJobCompleted, CurrentSessionID: "child", CurrentRunID: "child-run"}},
+			Jobs:       []pebblestore.TaskProgramJobRecord{{JobID: "job", StageID: "stage", State: pebblestore.TaskProgramJobCompleted, CurrentSessionID: "child", CurrentRunID: "child-run"}},
 		}
 		if _, _, err := db.CreateTaskProgram(prog); err != nil {
 			t.Fatal(err)

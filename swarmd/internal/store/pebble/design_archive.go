@@ -3,7 +3,7 @@ package pebblestore
 // DesignArchive changes library visibility, never execution or selection. The
 // identity is the artifact across all requests and immutable revisions.
 type DesignArchive struct {
-	IdempotencyKey   string    `json:"idempotency_key"`
+	IdempotencyKey  string    `json:"idempotency_key"`
 	ExpectedVersion uint64    `json:"expected_version"`
 	Ref             DesignRef `json:"ref"`
 	Archived        bool      `json:"archived"`

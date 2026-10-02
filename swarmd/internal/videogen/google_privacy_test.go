@@ -40,21 +40,36 @@ func TestGoogleMediaCredentialBoundary(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 			defer cancel()
 			calls := []func() error{
-				func() error { _, err := s.generateGoogleOmni(ctx, key, "test-model", "test", "", "", "create", nil, nil); return err },
-				func() error { _, err := s.generateGoogleVeo(ctx, key, "test-model", "test", "", "", 8, "create", nil, nil); return err },
+				func() error {
+					_, err := s.generateGoogleOmni(ctx, key, "test-model", "test", "", "", "create", nil, nil)
+					return err
+				},
+				func() error {
+					_, err := s.generateGoogleVeo(ctx, key, "test-model", "test", "", "", 8, "create", nil, nil)
+					return err
+				},
 				func() error { _, err := s.uploadGoogleFile(ctx, key, []byte("video"), "video/mp4"); return err },
 				func() error { _, err := s.downloadGoogleFile(ctx, key, "/file"); return err },
 			}
 			if mode == "json" {
 				calls = append(calls, func() error { _, err := s.pollGoogleFileActive(ctx, key, "files/test", ""); return err })
-				calls = append(calls, func() error { _, err := s.pollGoogleVeoOperation(ctx, key, "test-model", "operations/test", "", "create", nil); return err })
+				calls = append(calls, func() error {
+					_, err := s.pollGoogleVeoOperation(ctx, key, "test-model", "operations/test", "", "create", nil)
+					return err
+				})
 			}
 			for _, call := range calls {
 				err := call()
-				if err == nil { t.Fatal("failure became success") }
+				if err == nil {
+					t.Fatal("failure became success")
+				}
 				encoded, _ := json.Marshal(map[string]string{"error": err.Error()})
-				if strings.Contains(string(encoded), key) || strings.Contains(fmt.Sprintf("%#v", err), key) { t.Fatal("credential escaped provider boundary") }
-				if mode == "transport" && !errors.Is(err, context.Canceled) { t.Fatal("lost cancellation") }
+				if strings.Contains(string(encoded), key) || strings.Contains(fmt.Sprintf("%#v", err), key) {
+					t.Fatal("credential escaped provider boundary")
+				}
+				if mode == "transport" && !errors.Is(err, context.Canceled) {
+					t.Fatal("lost cancellation")
+				}
 			}
 		})
 	}
@@ -78,10 +93,16 @@ func TestGoogleMediaSignedFailureBoundary(t *testing.T) {
 		return nil, errors.New("request failed " + r.URL.String())
 	})}
 	_, err := s.uploadGoogleFile(ctx, key, []byte("video"), "video/mp4")
-	if err == nil || strings.Contains(err.Error(), signed) || calls != 2 { t.Fatal("signed upload failure leaked or wrong request count") }
+	if err == nil || strings.Contains(err.Error(), signed) || calls != 2 {
+		t.Fatal("signed upload failure leaked or wrong request count")
+	}
 	_, err = s.downloadGoogleFile(ctx, key, "/download?signature="+signed)
-	if err == nil || strings.Contains(err.Error(), signed) { t.Fatal("signed download failure leaked") }
+	if err == nil || strings.Contains(err.Error(), signed) {
+		t.Fatal("signed download failure leaked")
+	}
 	s.googleBaseURL = "https://example.invalid/\n" + key
 	_, err = s.generateGoogleOmni(ctx, key, "test-model", "test", "", "", "extend", &ManagedVideoSource{InteractionID: "prior-interaction"}, nil)
-	if err == nil || strings.Contains(err.Error(), key) { t.Fatal("request construction failure leaked") }
+	if err == nil || strings.Contains(err.Error(), key) {
+		t.Fatal("request construction failure leaked")
+	}
 }

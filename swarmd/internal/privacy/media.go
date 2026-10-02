@@ -56,7 +56,7 @@ func SafeError(err error, secrets ...string) error {
 }
 
 type diagnosticError struct {
-	message                               string
+	message                                string
 	canceled, deadline, timeout, temporary bool
 }
 
@@ -64,7 +64,7 @@ func (e *diagnosticError) Error() string { return e.message }
 func (e *diagnosticError) Is(target error) bool {
 	return (target == context.Canceled && e.canceled) || (target == context.DeadlineExceeded && e.deadline)
 }
-func (e *diagnosticError) Timeout() bool { return e.timeout || e.deadline }
+func (e *diagnosticError) Timeout() bool   { return e.timeout || e.deadline }
 func (e *diagnosticError) Temporary() bool { return e.temporary }
 
 // GoogleMediaClient refuses redirects rather than allowing net/http to forward
