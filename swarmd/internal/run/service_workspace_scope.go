@@ -314,6 +314,13 @@ func (s *Service) syncWorkspaceScopeFromSession(
 	if err != nil {
 		return false, err
 	}
+	// Project conversations have already passed durable project/principal
+	// validation in resolveRunWorkspaceScope. Preserve their empty, non-expandable
+	// scope instead of requiring a repository merely to invoke conversation tools.
+	if pebblestore.ProjectConversationID(sessionSnapshot) != "" {
+		*workspaceCtx = runWorkspaceContext{Scope: scope}
+		return beforePrimary != "" || len(beforeRoots) != 0, nil
+	}
 	hostPrimary := strings.TrimSpace(scope.PrimaryPath)
 	if hostPrimary == "" {
 		return false, errors.New("workspace scope primary path is required")

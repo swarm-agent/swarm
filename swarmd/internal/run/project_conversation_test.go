@@ -190,3 +190,87 @@ func TestProjectConversationDelegatedCoderRetainsIsolatedWorktree(t *testing.T) 
 		t.Fatalf("parent gained filesystem authority: %v", err)
 	}
 }
+
+// Purpose: providerManagedWorkspaceContext refreshes authority for V3 runtime
+// tools before scope gating and execution. A project
+// conversation must pass that refresh without a repository, while stale captured
+// paths and foreign principals must fail closed. This service/store test exercises
+// the actual provider-tool refresh boundary without a provider or permission bypass.
+func TestProjectConversationProviderToolWorkspaceRefresh(t *testing.T) {
+	db, err := pebblestore.Open(filepath.Join(t.TempDir(), "project.pebble"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	store := pebblestore.NewSessionStore(db)
+	if err := store.PutProject("account", &pebblestore.ProjectRecord{ID: "project", Name: "Project"}); err != nil {
+		t.Fatal(err)
+	}
+	s := &Service{sessions: sessionruntime.NewService(store, nil)}
+	p := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "account", UserID: "user", SessionID: "conversation"}
+	session := pebblestore.SessionSnapshot{ID: p.SessionID, AccountScopeID: p.AccountScopeID, UserID: p.UserID, Metadata: map[string]any{
+		"swarm_v3_project_id": "project", "project_id": "project", "agent_name": "system-orchestrator", "resolved_agent_name": "system-orchestrator",
+	}}
+	created, err := s.sessions.ApplySessionMutation(sessionruntime.SessionMutationInput{
+		SessionID: session.ID, AccountScopeID: session.AccountScopeID, UserID: session.UserID,
+		Kind: sessionruntime.SessionMutationCreateSession, Session: &session,
+		ClientRequestID: "create", IdempotencyKey: "create", PayloadHash: "create", RequestHash: "create",
+	})
+	if err != nil || created.Session == nil || created.Error != nil || created.Conflict != nil {
+		t.Fatalf("create: %+v %v", created, err)
+	}
+	assertEmpty := func(ctx runWorkspaceContext) {
+		t.Helper()
+		if ctx.WorkspacePath != "" || ctx.OriginWorkspacePath != "" || len(ctx.WorkspaceRoots) != 0 || len(ctx.OriginWorkspaceRoots) != 0 || ctx.Scope.PrimaryPath != "" || len(ctx.Scope.Roots) != 0 || !ctx.Scope.RejectScopeExpansion || ctx.Scope.SessionID != session.ID || ctx.Scope.Principal.SessionID != p.SessionID || ctx.Scope.Principal.AccountScopeID != p.AccountScopeID || ctx.Scope.Principal.UserID != p.UserID {
+			t.Fatalf("project tool authority widened or identity lost: %+v", ctx)
+		}
+	}
+	ordinary := session
+	ordinary.Metadata = nil
+	unchanged := runWorkspaceContext{WorkspacePath: "captured"}
+	if _, err := s.syncWorkspaceScopeFromSession(ordinary, p, &unchanged); err == nil {
+		t.Fatal("ordinary session accepted without repository authority")
+	}
+	if unchanged.WorkspacePath != "captured" {
+		t.Fatal("rejected refresh partially changed the context")
+	}
+	config := providerToolInvokerConfig{sessionID: session.ID}
+	for i := 0; i < 2; i++ {
+		ctx, err := s.providerManagedWorkspaceContext(config, p)
+		if err != nil {
+			t.Fatalf("tool refresh/reconnect %d: %v", i, err)
+		}
+		assertEmpty(ctx)
+	}
+	// Stale roots must never become authority when the durable session is
+	// workspace-free, even when the caller omits its captured primary path.
+	root := t.TempDir()
+	config.workspaceRoots = []string{root}
+	config.workspaceOriginPath = root
+	config.workspaceOriginRoots = []string{root}
+	ctx, err := s.providerManagedWorkspaceContext(config, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertEmpty(ctx)
+	config.workspacePath = root
+	if _, err := s.providerManagedWorkspaceContext(config, p); err == nil {
+		t.Fatal("accepted stale captured repository authority")
+	}
+	config = providerToolInvokerConfig{sessionID: session.ID}
+	for _, foreign := range []identity.Principal{
+		{Type: identity.PrincipalTypeUser, AccountScopeID: "other-account", UserID: p.UserID},
+		{Type: identity.PrincipalTypeUser, AccountScopeID: p.AccountScopeID, UserID: "other-user"},
+	} {
+		if _, err := s.providerManagedWorkspaceContext(config, foreign); err == nil {
+			t.Fatal("accepted foreign tool principal")
+		}
+	}
+	persisted, found, err := s.sessions.GetSession(session.ID)
+	if err != nil || !found {
+		t.Fatalf("persisted conversation: %+v %v", persisted, err)
+	}
+	if err := store.ValidateProjectConversation(persisted, p.AccountScopeID, p.UserID); err != nil {
+		t.Fatalf("refresh changed durable authority: %v", err)
+	}
+}
