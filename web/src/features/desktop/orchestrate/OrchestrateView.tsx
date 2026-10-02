@@ -92,7 +92,7 @@ import { requireDesktopV3RealtimeControllerReady } from '../realtime/v3-realtime
 import { HistoricalMediaLibrary, MediaViewerModal, type MediaLibraryItem } from '../tools/media-library'
 import type { MediaGenerationJob, MediaGenerationRequest, MediaGenerationSettings } from '../tools/media-library/media-generation'
 import type { QuickRouteMode } from '../tools/media-library/media-viewer-modal'
-import { MediaTaskCard } from './media-task-card'
+import { MediaTaskCard, MediaTaskThreads, isCreativeMediaTask } from './media-task-card'
 import { archiveQueue } from '../runtime/archive-queue'
 import { subscribeDesktopSessionReset } from '../../../app/api'
 import { DesignMediaTasks, useProjectDesigns } from '../tools/media-library/design-media'
@@ -387,8 +387,8 @@ function deliverableToMediaItem(
     return {
     id: d.id,
     title: d.title,
-    filename: `${d.title.replace(/[^a-zA-Z0-9_-]/g, '_')}.${kind === 'image' ? 'png' : 'mp4'}`,
-    mediaType: kind === 'image' ? 'image/png' : 'video/mp4',
+    filename: `${d.title.replace(/[^a-zA-Z0-9_-]/g, '_')}.${kind === 'image' ? 'png' : kind === 'audio' ? 'wav' : 'mp4'}`,
+    mediaType: kind === 'image' ? 'image/png' : kind === 'audio' ? 'audio/wav' : 'video/mp4',
     kind,
     createdAt: createdDate.getTime(),
     formattedDate,
@@ -423,7 +423,7 @@ function deliverableToMediaItem(
       label: d.title,
       filename: d.title,
       kind,
-      mediaType: kind === 'image' ? 'image/png' : 'video/mp4',
+      mediaType: kind === 'image' ? 'image/png' : kind === 'audio' ? 'audio/wav' : 'video/mp4',
       description: d.prompt || d.title,
       model,
       aspectRatio,
@@ -4488,7 +4488,8 @@ export function OrchestrateView({
   }, [tasks, uploadedMedia, selectedProject, projectDesigns.items])
 
   const handleOpenDeliverableInMediaCenter = (d: MediaDeliverable, parentTask?: RunningTask, mode?: QuickRouteMode) => {
-    const item = deliverableToMediaItem(d, parentTask, selectedProject)
+    const owner = tasks.find(task => task.deliverables?.some(output => output.id === d.id)) ?? parentTask
+    const item = deliverableToMediaItem(d, owner, selectedProject)
     setActiveMediaViewerItem(item)
     setMediaViewerInitialMode(mode ?? null)
   }
@@ -4682,19 +4683,20 @@ export function OrchestrateView({
     const seenTaskIds = new Set<string>()
 
     for (const t of tasks) {
-      if (!t.attachedMedia || t.attachedMedia.length === 0) continue
+      if (!isCreativeMediaTask(t)) continue
       seenTaskIds.add(t.id)
 
-      for (const am of t.attachedMedia) {
+      // One durable task is one turn, regardless of candidate or attachment count.
+      const parentIds = [...new Set((t.deliverables ?? []).flatMap(output => [output.parentDeliverableId, output.sourceMediaRef].filter((id): id is string => Boolean(id))))]
+      const sourceId = parentIds.length === 1 ? parentIds[0]! : t.attachedMedia?.length === 1 ? t.attachedMedia[0].id : t.deliverables?.[0]?.id ?? ''
+      for (const am of [{ id: sourceId }]) {
         const localJob = localGenerationJobs.find((job) => job.taskId === t.id && job.sourceId === am.id)
         let status: string = t.status
         if (t.status === 'failed') {
           status = 'failed'
         } else if (t.status === 'in_progress' || t.status === 'running') {
-          const hasDelivs = t.deliverables && t.deliverables.length > 0
-          const allReady = hasDelivs && t.deliverables?.every((d) => d.status === 'ready' || d.status === 'accepted')
-          if (allReady) status = 'completed'
-          else status = 'in_progress'
+          // Successful prior outputs do not complete a newly running request.
+          status = 'in_progress'
         } else if (t.status === 'completed' || t.status === 'needs_review') {
           status = t.lastError ? 'partial_failure' : 'completed'
         } else if (t.status === 'queued' || t.status === 'pending') {
@@ -4702,7 +4704,7 @@ export function OrchestrateView({
         }
 
         jobs.push({
-          id: localJob?.id || `${t.id}_${am.id}`,
+          id: t.id,
           taskId: t.id,
           prompt: localJob?.prompt || t.description || t.title,
           createdAt: localJob?.createdAt || t.createdAt,
@@ -5431,6 +5433,17 @@ export function OrchestrateView({
     })
   }, [filteredBySourceTasks, searchQuery, statusFilter, selectedTag])
 
+  const visibleCreativeTaskIds = new Set(filteredTasks.filter(isCreativeMediaTask).map(task => task.id))
+  const renderCreativeThreads = (column?: string) => <MediaTaskThreads
+    tasks={liveTasks} visibleTaskIds={visibleCreativeTaskIds} column={column}
+    actions={task => ({
+      onPreview: (output, mode) => handleOpenDeliverableInMediaCenter(output, task, mode),
+      onApprove: () => handleApproveTask(task.id),
+      onArchive: selectionProps(task).onArchiveTask,
+      onDelete: () => handleDeleteTask(task.id),
+      isApproving: approvingTaskIds.has(task.id), error: taskActionErrors[task.id],
+    })}
+  />
   const markedRows = filteredTasks.filter(row => markedTaskIds.has(row.id))
   useEffect(() => { setMarkedTaskIds(new Set()); setManagementMessage(''); setArchivedOpen(false) }, [selectedProjectId, searchQuery, taskSourceFilter, statusFilter])
   useEffect(() => {
@@ -6619,8 +6632,9 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                   {/* Task rows */}
                   <div className="flex-1 overflow-y-auto space-y-3 pr-1" data-testid="orchestrate-task-list">
                     {selectedProject && <DesignMediaTasks projectId={selectedProject.id} onPreview={setActiveMediaViewerItem} />}
+                    {renderCreativeThreads()}
                     {filteredTasks.length > 0 ? (
-                      filteredTasks.map((t) => (
+                      filteredTasks.filter(task => !isCreativeMediaTask(task)).map((t) => (
                         <MinimalTaskCard
                           key={t.id}
                           task={t}
@@ -6685,6 +6699,10 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                  ───────────────────────────────────────────────────────────── */}
               {middleVariant === 'kanban' && (
                 <div className="flex-1 flex overflow-x-auto p-4 gap-3">
+                  <section aria-label="Creative threads" className="w-80 shrink-0 min-w-0 overflow-y-auto space-y-3">
+                    {selectedProject && <DesignMediaTasks projectId={selectedProject.id} onPreview={setActiveMediaViewerItem} />}
+                    {renderCreativeThreads()}
+                  </section>
                   {(
                     [
                       { key: 'queued', label: 'Pending Approval', color: 'amber' },
@@ -6696,6 +6714,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                     ] as const
                   ).map((col) => {
                     const colTasks = filteredTasks.filter((t) => {
+                      if (isCreativeMediaTask(t)) return false
                       if (col.key === 'queued') return t.status === 'queued' || t.status === 'pending_approval' || t.status === 'planning'
                       if (col.key === 'running') return t.status === 'running' || t.status === 'in_progress'
                       if (col.key === 'failed') return t.status === 'failed' || t.status === 'rejected'
@@ -6729,7 +6748,6 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                         </div>
 
                         <div className="flex-1 overflow-y-auto space-y-2.5 pr-0.5">
-                          {selectedProject && <DesignMediaTasks projectId={selectedProject.id} column={col.key} onPreview={setActiveMediaViewerItem} />}
                           {colTasks.map((t) => (
                             <MinimalTaskCard
                               key={t.id}
@@ -6848,8 +6866,9 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                   <div className="pt-2 space-y-3">
                     <h4 className="text-xs font-bold text-white">Project Tasks ({filteredTasks.length})</h4>
                     {selectedProject && <DesignMediaTasks projectId={selectedProject.id} onPreview={setActiveMediaViewerItem} />}
+                    {renderCreativeThreads()}
                     <div className="space-y-2.5">
-                      {filteredTasks.map((task) => (
+                      {filteredTasks.filter(task => !isCreativeMediaTask(task)).map((task) => (
                         <MinimalTaskCard
                           key={task.id}
                           task={task}
@@ -6906,7 +6925,8 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                   <div className="w-1/2 border-r border-slate-800/80 flex flex-col p-3 overflow-y-auto space-y-2">
                     <div className="text-xs font-bold text-white pb-1">Tasks ({filteredTasks.length})</div>
                     {selectedProject && <DesignMediaTasks projectId={selectedProject.id} onPreview={setActiveMediaViewerItem} />}
-                    {filteredTasks.map((t) => {
+                    {renderCreativeThreads()}
+                    {filteredTasks.filter(task => !isCreativeMediaTask(task)).map((t) => {
                       const isSel = selectedTaskId === t.id
                       const isWorker = Boolean(t.workerId?.trim() || t.worker_id?.trim())
                       return (
@@ -7011,7 +7031,8 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                 <div className="flex-1 overflow-y-auto p-4 space-y-3">
                   <div className="text-xs font-bold text-white pb-1">Activity Stream ({filteredTasks.length})</div>
                   {selectedProject && <DesignMediaTasks projectId={selectedProject.id} onPreview={setActiveMediaViewerItem} />}
-                  {filteredTasks.map((t) => (
+                  {renderCreativeThreads()}
+                  {filteredTasks.filter(task => !isCreativeMediaTask(task)).map((t) => (
                     <MinimalTaskCard
                       key={t.id}
                       task={t}
@@ -7832,7 +7853,6 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
          ───────────────────────────────────────────────────────────── */}
       {activeMediaViewerItem && (
         <MediaViewerModal
-          key={activeMediaViewerItem.id}
           item={activeMediaViewerItem}
           items={allMediaLibraryItems}
           isGenerating={isDeployingTask}

@@ -82,7 +82,7 @@ function modalTabStops(dialog: HTMLElement): HTMLElement[] {
 }
 
 export function MediaViewerModal(props: MediaViewerModalProps) {
-  if (props.item?.source === 'independent-design') return <DesignMediaViewer key={props.item.id} {...props} item={props.item} />
+  if (props.item?.source === 'independent-design') return <DesignMediaViewer {...props} item={props.item} />
   return <MediaViewer {...props} />
 }
 function DesignMediaViewer(props: MediaViewerModalProps & { item: Extract<MediaLibraryItem, { source: 'independent-design' }> }) {
@@ -97,14 +97,23 @@ function DesignMediaViewer(props: MediaViewerModalProps & { item: Extract<MediaL
   const revisions = (history.data?.revisions ?? []).map(revision => {
     const row = rows.find(row => row.request.id === revision.request_id)
     if (row) return designMediaItem(row, revision.candidate ?? item.design.candidate, revision)
-    return { ...item, id: designNodeId(item.sessionId, revision.ref), design: { ...item.design, revision }, parentId: revision.base ? designNodeId(item.sessionId, revision.base) : undefined }
+    return { ...item, id: designNodeId(item.sessionId, revision.ref), design: { ...item.design, requestId: revision.request_id ?? item.design.requestId, candidate: revision.candidate ?? item.design.candidate, revision }, parentId: revision.base ? designNodeId(item.sessionId, revision.base) : undefined }
   })
-  const threadItems = [...new Map([...(props.threadItems ?? props.items), ...ready, ...revisions].map(row => [row.id, row])).values()]
+  const threadItems = [...new Map([...(props.threadItems ?? props.items), ...ready, ...revisions, item].map(row => [row.id, row])).values()]
   const jobs: MediaGenerationJob[] = rows.map(row => {
     const outputs = [...new Map([...designReadyItems([row]), ...revisions.filter(output => output.design?.revision.request_id === row.request.id)].map(output => [output.id, output])).values()]
-    const base = row.request.candidates.find(candidate => candidate.spec.base)?.spec.base
+    const bases = [...new Map(row.request.candidates.flatMap(candidate => candidate.spec.base ? [[designRefKey(candidate.spec.base), candidate.spec.base] as const] : [])).values()]
+    const base = bases.length === 1 ? bases[0] : undefined
     return { id: designRequestId(row), sourceId: base ? designNodeId(item.sessionId, base) : outputs[0]?.id ?? '', outputIds: outputs.map(output => output.id), title: row.title, count: row.request.candidates.length, status: row.request.state, sessionId: item.sessionId, error: row.request.candidates.flatMap(candidate => [candidate.failure_reason, candidate.router_alert].filter(Boolean)).join('; ') }
   })
+  // Retained revisions can outlive the currently loaded request catalog page.
+  const historicalRequests = new Set(revisions.map(output => output.design?.requestId).filter((id): id is string => Boolean(id)))
+  for (const requestId of historicalRequests) {
+    if (rows.some(row => row.request.id === requestId)) continue
+    const outputs = revisions.filter(output => output.design?.requestId === requestId)
+    const base = outputs.find(output => output.parentId)?.parentId
+    jobs.push({ id: JSON.stringify(['design-request', item.sessionId, requestId]), sourceId: base ?? outputs[0]?.id ?? '', outputIds: outputs.map(output => output.id), title: outputs[0]?.title ?? 'Retained design', count: outputs.length, status: 'succeeded', sessionId: item.sessionId })
+  }
   for (const edit of edits.data?.edits ?? []) {
     if (rows.some(row => row.request.source_message_id === edit.messageId && row.request.client_request_id === edit.clientRequestId && row.request.candidates.some(candidate => candidate.spec.base && designRefKey(candidate.spec.base) === designRefKey(edit.base)))) continue
     jobs.push({ id: `design-edit:${item.sessionId}:${edit.messageId}`, sourceId: designNodeId(item.sessionId, edit.base), title: 'Edit requested · awaiting parent acceptance', status: 'requested', count: 1 })
@@ -174,7 +183,7 @@ function MediaViewer({
   const [defaultSaved, setDefaultSaved] = useState(false)
   const [selectedTurn, setSelectedTurn] = useState<MediaGenerationJob | null>(null)
   const selectedTurnRef = useRef<HTMLButtonElement>(null)
-  const activeJob = selectedTurn && (generationJobs.find((job) => job.id === selectedTurn.id) || selectedTurn)
+  const activeJob = selectedTurn && (generationJobs.find((job) => job.id === selectedTurn.id || (selectedTurn.taskId && job.taskId === selectedTurn.taskId)) || selectedTurn)
   const turnOutputs = useMemo(() => getMediaIterationOutputs(activeJob || undefined, threadItems), [activeJob, threadItems])
   const showingTurn = Boolean(activeJob && item && (activeJob.sourceId === item.id || activeJob.outputIds?.includes(item.id)))
   const showingRequest = showingTurn && !turnOutputs.some((output) => output.id === item?.id)
@@ -196,7 +205,7 @@ function MediaViewer({
   }, [showingTurn, turnOutputs, item?.id, activeJob?.sourceId, onSelect])
 
   useEffect(() => {
-    selectedTurnRef.current?.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'smooth' })
+    selectedTurnRef.current?.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth' })
   }, [selectedTurn?.id])
 
   // Stable locks and identity tracking
@@ -749,10 +758,19 @@ function MediaViewer({
   }, [handleNext, handlePrev, item, onClose])
 
   const relevantJobs = useMemo(() => {
-    const jobs = selectedTurn && !generationJobs.some((job) => job.id === selectedTurn.id)
+    const jobs = selectedTurn && !generationJobs.some((job) => job.id === selectedTurn.id || (selectedTurn.taskId && job.taskId === selectedTurn.taskId))
       ? [...generationJobs, selectedTurn] : generationJobs
     return getMediaIterationJobs(item?.id, threadItems, jobs)
   }, [generationJobs, item?.id, threadItems, selectedTurn])
+
+  const turnIndex = relevantJobs.findIndex(job => showingTurn ? job.id === activeJob?.id : job.outputIds?.includes(item?.id ?? ''))
+  const openTurn = (job: MediaGenerationJob) => {
+    const outputs = getMediaIterationOutputs(job, threadItems)
+    const target = outputs[0] ?? threadItems.find(source => source.id === job.sourceId)
+    if (!target) return
+    setSelectedTurn(job)
+    onSelect(target)
+  }
 
   // Build Lineage & History Chain
   const lineageChain = useMemo(() => {
@@ -1092,6 +1110,11 @@ function MediaViewer({
 
         {/* Center Display & Bottom Dock */}
         <div className="media-viewer-center flex flex-1 flex-col min-w-0 min-h-0 overflow-hidden">
+          {relevantJobs.length > 0 && <nav aria-label="Viewer turn navigation" className="flex shrink-0 flex-wrap items-center justify-center gap-3 border-b border-white/10 px-4 py-2 text-xs text-white/70">
+            <button type="button" disabled={turnIndex <= 0} onClick={() => openTurn(relevantJobs[turnIndex - 1])}>← Prev Turn</button>
+            <span>{turnIndex >= 0 ? `Turn ${turnIndex + 1} of ${relevantJobs.length}` : 'Source output'}</span>
+            <button type="button" disabled={turnIndex >= relevantJobs.length - 1} onClick={() => openTurn(relevantJobs[turnIndex + 1])}>Next Turn →</button>
+          </nav>}
           {/* Media Canvas */}
           <main onClick={(event) => { if (event.target === event.currentTarget) onClose() }} className="flex flex-1 items-center justify-center overflow-auto p-4 sm:p-6 min-h-0">
             {showingRequest && activeJob && (
@@ -1162,7 +1185,7 @@ function MediaViewer({
               <div className="mb-2 flex items-center gap-2 text-xs font-semibold text-white/70"><Clock size={13} /> Iteration thread</div>
               <div className="flex gap-3 overflow-x-auto pb-1">
                 {relevantJobs.map((job, index) => {
-                  const selected = showingTurn && activeJob?.id === job.id
+                  const selected = index === turnIndex
                   const outputs = getMediaIterationOutputs(job, threadItems)
                   return (
                     <div key={job.id} className={`w-64 shrink-0 rounded-xl border p-3 ${selected ? 'border-blue-400 bg-blue-500/15' : 'border-white/15 bg-white/5'}`}>
@@ -1170,13 +1193,7 @@ function MediaViewer({
                         type="button"
                         ref={selected ? selectedTurnRef : undefined}
                         aria-current={selected ? 'step' : undefined}
-                        onClick={() => {
-                          const target = outputs[0] || threadItems.find((source) => source.id === job.sourceId)
-                          if (target) {
-                            setSelectedTurn(job)
-                            onSelect(target)
-                          }
-                        }}
+                        onClick={() => openTurn(job)}
                         className="w-full text-left"
                       >
                         <span className="flex items-center gap-2 text-xs font-semibold text-white">

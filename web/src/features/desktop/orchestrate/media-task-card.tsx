@@ -1,92 +1,101 @@
-import { DesignArchiveButton } from '../tools/media-library/design-archive-button'
 import type { ReactNode } from 'react'
-import type { MediaDeliverable, RunningTask } from './orchestrate-types'
-import type { QuickRouteMode } from '../tools/media-library/media-viewer-modal'
-
+import { DesignArchiveButton } from '../tools/media-library/design-archive-button'
 import { DesignThumbnail } from '../tools/media-library/design-thumbnail'
+import { creativeThreads } from '../tools/media-library/creative-thread'
 import type { ProjectDesign } from '../session-v3/design-api'
 import type { MediaLibraryItem } from '../tools/media-library/types'
+import type { MediaDeliverable, RunningTask } from './orchestrate-types'
+import type { QuickRouteMode } from '../tools/media-library/media-viewer-modal'
 import { designMediaItem, designRequestId, designStatus, readyDesignRevision } from './design-media-task'
+import { CreativeThreadCard, type CreativeCardTurn } from './creative-thread-card'
+import { TaskAttention, useTaskAttention } from './task-attention'
 
-type TaskCardProps = Parameters<typeof ArtifactMediaTaskCard>[0]
-export function MediaTaskCard(props: TaskCardProps | { source: 'independent-design'; archived?: boolean; design: ProjectDesign; onDesignPreview: (item: MediaLibraryItem) => void }) {
-  if ('source' in props && props.source === 'independent-design') {
-    const { design: row, onDesignPreview } = props
-    const visible = row.request.candidates.filter(candidate => Boolean(candidate.archived) === Boolean(props.archived))
-    if (!visible.length) return null
-    const ready = visible.filter(candidate => readyDesignRevision(candidate)).length
-    return <article className="rounded-xl border border-indigo-500/30 bg-slate-950/70 p-3 space-y-3" data-testid="media-task-card" data-task-id={designRequestId(row)}>
-      <header className="flex flex-wrap justify-between gap-2"><h3 className="font-semibold text-slate-100 break-words">{row.title}</h3><span role="status">{designStatus(row.request.state)} · {ready}/{visible.length} ready</span></header>
-      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-        {row.request.candidates.map((candidate, index) => {
-          if (Boolean(candidate.archived) !== Boolean(props.archived)) return null
-          const revision = readyDesignRevision(candidate)
-          return <section key={index} className="min-w-0 rounded-lg border border-slate-700 p-2">
-            <button type="button" className="w-full min-h-24 bg-black text-slate-100" disabled={!revision} onClick={() => revision && onDesignPreview(designMediaItem(row, index, revision))} aria-label={`Preview ${row.title} candidate ${index + 1}`}>{revision && <DesignThumbnail session={row.request.parent_session_id} revision={revision} />}Candidate {index + 1} · {designStatus(candidate.state)}{revision ? ' · Open preview' : ''}</button>
-            {revision && <DesignArchiveButton key={`${row.project_id}:${row.request.parent_session_id}:${revision.ref.artifact_id}`} session={row.request.parent_session_id} reference={revision.ref} version={candidate.archive_version ?? 0} archived={candidate.archived} />}
-            {candidate.failure_reason && <p role="alert">{candidate.failure_reason}</p>}
-            {candidate.router_alert && <p role="alert">{candidate.router_alert}</p>}
-            {candidate.attempts?.map(attempt => <div key={attempt.number} className="text-xs"><p>Attempt {attempt.number}: {designStatus(attempt.state)} {attempt.reason_code}</p>{attempt.router_alert && <p role="alert">{attempt.router_alert}</p>}</div>)}
-          </section>
-        })}
-      </div>
-    </article>
-  }
-  if ('task' in props) return <ArtifactMediaTaskCard {...props} />
-  return null
+export const isCreativeMediaTask = (task: RunningTask) => ['image', 'video', 'audio', 'sound'].includes(task.agentType)
+export function mediaTaskThreads(tasks: readonly RunningTask[]) {
+  return creativeThreads(tasks.filter(isCreativeMediaTask).map(task => ({
+    id: task.id, value: task, outputs: (task.deliverables ?? []).map(output => output.id),
+    parents: [...(task.deliverables ?? []).flatMap(output => [output.parentDeliverableId, output.sourceMediaRef].filter((id): id is string => Boolean(id))), ...(task.attachedMedia ?? []).map(media => media.id)],
+  })))
 }
-
-function ArtifactMediaTaskCard({ task, onPreview, onApprove, onArchive, onDelete, isApproving, error, attention }: {
-  task: RunningTask
-  attention?: ReactNode
+function MediaTaskAttention({ task }: { task: RunningTask }) {
+  const attention = useTaskAttention(task)
+  return <TaskAttention attention={attention} />
+}
+export interface MediaTaskActions {
   onPreview?: (output: MediaDeliverable, mode?: QuickRouteMode) => void
   onApprove?: () => void
   onArchive?: () => void
   onDelete?: () => void
   isApproving?: boolean
   error?: string
+}
+type TaskCardProps = MediaTaskActions & { task: RunningTask; attention?: ReactNode }
+type DesignCardProps = { source: 'independent-design'; archived?: boolean; design: ProjectDesign; designs?: readonly ProjectDesign[]; threadId?: string; onDesignPreview: (item: MediaLibraryItem) => void }
+
+export function MediaTaskCard(props: TaskCardProps | DesignCardProps) {
+  if ('source' in props) {
+    const rows = props.designs ?? [props.design]
+    const turns: CreativeCardTurn[] = rows.flatMap(row => {
+      const visible = row.request.candidates.map((candidate, index) => ({ candidate, index })).filter(({ candidate }) => Boolean(candidate.archived) === Boolean(props.archived))
+      if (!visible.length) return []
+      return [{
+        id: designRequestId(row), title: row.title, status: designStatus(row.request.state),
+        outputs: visible.map(({ candidate, index }) => {
+          const revision = readyDesignRevision(candidate)
+          return {
+            id: JSON.stringify([designRequestId(row), index]), candidateNumber: index + 1, title: `${row.title} candidate ${index + 1}`, status: designStatus(candidate.state), ready: Boolean(revision),
+            preview: revision ? <DesignThumbnail session={row.request.parent_session_id} revision={revision} /> : null,
+            open: () => { if (revision) props.onDesignPreview(designMediaItem(row, index, revision)) },
+            actions: revision ? <DesignArchiveButton key={`${row.project_id}:${row.request.parent_session_id}:${revision.ref.artifact_id}`} session={row.request.parent_session_id} reference={revision.ref} version={candidate.archive_version ?? 0} archived={candidate.archived} /> : undefined,
+          }
+        }),
+        alerts: visible.map(({ candidate, index }) => <div key={index}>
+          {candidate.failure_reason && <p role="alert">{candidate.failure_reason}</p>}
+          {candidate.router_alert && <p role="alert">{candidate.router_alert}</p>}
+          {candidate.attempts?.map(attempt => <div key={attempt.number} className="text-xs">{attempt.reason_code && <p>Attempt {attempt.number}: {designStatus(attempt.state)} {attempt.reason_code}</p>}{attempt.router_alert && <p role="alert">{attempt.router_alert}</p>}</div>)}
+        </div>),
+      }]
+    })
+    if (!turns.length) return null
+    return <CreativeThreadCard id={props.threadId ?? designRequestId(props.design)} title={props.design.title} studio="Design" turns={turns} />
+  }
+  return <CreativeThreadCard id={props.task.id} title={props.task.title} studio={props.task.agentType} turns={[artifactTurn(props.task, props)]} attention={props.attention} />
+}
+function artifactTurn(task: RunningTask, actions: MediaTaskActions): CreativeCardTurn {
+  return {
+    id: task.id, title: task.description || task.title, status: task.status,
+    alerts: (actions.error || task.lastError) && <p role="alert">{actions.error || task.lastError}</p>,
+    controls: <footer className="flex flex-wrap gap-3 text-xs">
+      {task.status === 'pending_approval' && actions.onApprove && <button type="button" onClick={actions.onApprove} disabled={actions.isApproving}>{actions.isApproving ? 'Starting…' : 'Generate media'}</button>}
+      {actions.onArchive && <button type="button" onClick={actions.onArchive}>Archive</button>}
+      {actions.onDelete && <button type="button" onClick={actions.onDelete}>Delete</button>}
+    </footer>,
+    outputs: (task.deliverables ?? []).map(output => {
+      const url = output.mediaUrl || output.previewUrl
+      const available = ['ready', 'accepted'].includes(output.status) && Boolean(url)
+      return {
+        id: output.id, title: output.title, status: output.status, ready: available,
+        preview: available ? output.type === 'video' ? <video src={url} muted playsInline preload="metadata" /> : output.type === 'audio' ? <span>Audio ready</span> : <img src={url} alt={output.title} /> : null,
+        open: () => actions.onPreview?.(output),
+        actions: <>
+          <button type="button" disabled={!available} onClick={() => actions.onPreview?.(output)}>Preview / save</button>
+          {output.type === 'image' && <><button type="button" disabled={!available} onClick={() => actions.onPreview?.(output, 'fine_tune')}>Edit</button><button type="button" disabled={!available} onClick={() => actions.onPreview?.(output, 'to_video')}>Turn into video</button></>}
+          {output.type === 'video' && <button type="button" disabled={!available} onClick={() => actions.onPreview?.(output, 'next_scene')}>Continue video</button>}
+          {available && <a href={url} download={`${output.id}.${output.type === 'image' ? 'png' : output.type === 'video' ? 'mp4' : 'wav'}`}>Download</a>}
+          {output.status === 'failed' && output.description && <p role="alert">{output.description}</p>}
+        </>,
+      }
+    }),
+  }
+}
+export function MediaTaskThreads({ tasks, visibleTaskIds, column, actions }: {
+  tasks: readonly RunningTask[]; visibleTaskIds: ReadonlySet<string>; column?: string; actions: (task: RunningTask) => MediaTaskActions
 }) {
-  const outputs = task.deliverables || []
-  const ready = outputs.filter(d => d.status === 'ready' || d.status === 'accepted').length
-  const failed = outputs.filter(d => d.status === 'failed').length
-  const generating = outputs.filter(d => d.status === 'generating').length
-  const queued = outputs.length - ready - failed - generating
-  return (
-    <article className="rounded-xl border border-indigo-500/30 bg-slate-950/70 p-3 space-y-3" data-testid="media-task-card" data-task-id={task.id}>
-      <header className="flex flex-wrap justify-between gap-2">
-        <div className="min-w-0"><span className="text-xs uppercase text-indigo-300">{task.agentType} studio</span><h3 className="font-semibold text-slate-100 break-words">{task.title}</h3></div>
-        <span className="text-xs text-slate-300" role="status">{ready}/{outputs.length} ready · {generating} generating · {queued} queued{failed > 0 ? ` · ${failed} failed` : ''}</span>
-      </header>
-      {attention}
-      {(error || task.lastError) && <p role="alert" className="text-xs text-rose-300">{error || task.lastError}</p>}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3" data-testid="task-media-thumbnails-strip">
-        {outputs.map((output, index) => {
-          const isReady = output.status === 'ready' || output.status === 'accepted'
-          const url = output.mediaUrl || output.previewUrl
-          const available = isReady && Boolean(url)
-          return (
-            <section key={output.id} className="min-w-0 rounded-lg border border-slate-700 overflow-hidden">
-              <button type="button" disabled={!available} onClick={() => onPreview?.(output)} className="w-full aspect-square bg-black flex items-center justify-center" aria-label={`Preview ${output.title}`}>
-                {available ? output.type === 'video' ? <video src={url} muted playsInline preload="metadata" className="w-full h-full object-contain" /> : output.type === 'audio' ? <span className="text-slate-300">Audio ready</span> : <img src={url} alt={output.title} className="w-full h-full object-contain" /> : <span className="text-xs text-slate-400">{isReady ? 'Preview loading' : output.status === 'pending' ? 'Queued' : output.status}</span>}
-              </button>
-              <div className="p-2 space-y-2">
-                <p className="text-xs text-slate-300">{index + 1}. {output.status}</p>
-                {output.status === 'failed' && output.description && <p className="text-xs text-rose-300">{output.description}</p>}
-                <div className="flex flex-wrap gap-2 text-xs text-indigo-300">
-                  <button type="button" disabled={!available} onClick={() => onPreview?.(output)}>Preview / save</button>
-                  {output.type === 'image' && <><button type="button" disabled={!available} onClick={() => onPreview?.(output, 'fine_tune')}>Edit</button><button type="button" disabled={!available} onClick={() => onPreview?.(output, 'to_video')}>Turn into video</button></>}
-                  {available && <a href={url} download={`${output.id}.${output.type === 'image' ? 'png' : output.type === 'video' ? 'mp4' : 'wav'}`}>Download</a>}
-                </div>
-              </div>
-            </section>
-          )
-        })}
-      </div>
-      <footer className="flex gap-3 text-xs text-slate-400">
-        {task.status === 'pending_approval' && onApprove && <button type="button" onClick={onApprove} disabled={isApproving}>{isApproving ? 'Starting…' : 'Generate media'}</button>}
-        {onArchive && <button type="button" onClick={onArchive}>Archive</button>}
-        {onDelete && <button type="button" onClick={onDelete}>Delete</button>}
-      </footer>
-    </article>
-  )
+  return <>{mediaTaskThreads(tasks).map(thread => {
+    if (!thread.turns.some(task => visibleTaskIds.has(task.id))) return null
+    const active = thread.turns.find(task => ['running', 'in_progress', 'queued', 'pending', 'pending_approval'].includes(task.status)) ?? thread.turns[thread.turns.length - 1]!
+    const status = ['running', 'in_progress'].includes(active.status) ? 'running' : ['queued', 'pending', 'pending_approval', 'planning'].includes(active.status) ? 'queued' : active.status
+    if (column && status !== column) return null
+    return <CreativeThreadCard key={thread.id} id={thread.id} title={thread.turns[0].title} studio={thread.turns[0].agentType} turns={thread.turns.map(task => artifactTurn(task, actions(task)))} attention={thread.turns.map(task => <MediaTaskAttention key={task.id} task={task} />)} />
+  })}</>
 }
