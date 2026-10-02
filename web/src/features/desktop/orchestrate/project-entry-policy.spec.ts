@@ -79,4 +79,6 @@ test('onboarding, history normalization and task return wire the project-first b
   assert.doesNotMatch(back, /setActiveSessionId\(routeConversationId\)/)
   assert.match(view, /projectConversationLink\(project.id, project.primarySessionId\)/)
   assert.match(view, /createProjectConversation\(project.id, clearRequest.current\)/)
+  // Task details must retain program-child and repair-session access, not just the primary task session.
+  assert.match(view, /extractTaskSessionIds\(task\)\.includes\(activeSessionId\) \|\| taskOutcome\(task\)\.repairSessionId === activeSessionId/)
 })

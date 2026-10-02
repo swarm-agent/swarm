@@ -7070,7 +7070,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
           PANEL 3: RIGHT PANEL (CANONICAL DESKTOP V3 AI CHAT SIDEBAR)
          ───────────────────────────────────────────────────────────── */}
       {workerChatOpen && workerChatError && <div role="alert" className="max-w-sm p-4 text-sm text-red-300">{workerChatError}<button className="ml-2 underline" onClick={() => setWorkerChatError('')}>Dismiss</button></div>}
-      {activeSessionId && selectedProject && ((activeTaskId && tasks.some(task => task.id === activeTaskId && (task.sessionId || task.planBinding?.sessionId || task.planBinding?.session_id) === activeSessionId)) || (admittedParentId && activeSessionId === admittedParentId)) ? (
+      {activeSessionId && selectedProject && ((activeTaskId && tasks.some(task => task.id === activeTaskId && (extractTaskSessionIds(task).includes(activeSessionId) || taskOutcome(task).repairSessionId === activeSessionId))) || (admittedParentId && activeSessionId === admittedParentId)) ? (
         // Keep the chat bounded to the page, below the optional worker header.
         <div className="swarm-conversation-panel flex min-h-0 shrink-0 flex-col">
         {activeNavTab === 'workers' && workerChatOpen && <div className="flex max-w-[440px] shrink-0 items-center justify-between gap-3 p-3 text-xs text-slate-300"><span>{workerCreationRequested ? 'Add worker: describe its job to Orchestrator below. Nothing runs until you approve.' : 'Discuss this worker with Orchestrator'}</span><button onClick={() => { setWorkerChatOpen(false); setWorkerCreationRequested(false) }}>Close</button></div>}
