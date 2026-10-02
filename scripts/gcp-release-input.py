@@ -12,7 +12,6 @@ Consumes immutable v2 stage/onboarding evidence and runtime-build-proof/v1.
 Freshness comes from the exact App result and protected admission, not a policy
 that must be manually rewritten with every release's source or retry number.
 """
-import copy
 import hashlib
 import importlib.util
 import io
@@ -28,6 +27,9 @@ spec = importlib.util.spec_from_file_location('gcp_result_relay', Path(__file__)
 relay = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(relay)
 require, decode = relay.require, relay.decode
+image_spec = importlib.util.spec_from_file_location('headless_release', Path(__file__).with_name('headless-release.py'))
+image = importlib.util.module_from_spec(image_spec)
+image_spec.loader.exec_module(image)
 
 
 def digest(raw):
@@ -65,7 +67,7 @@ class Google:
         self.token = token['accessToken']
 
     def get(self, ref, limit=2 * 1024 * 1024):
-        require(isinstance(ref, dict) and {'bucket', 'object'} <= set(ref) <= {'bucket', 'object', 'generation', 'sha256'}, 'invalid immutable GCS reference')
+        require(isinstance(ref, dict) and set(ref) == {'bucket', 'object', 'generation', 'sha256'}, 'invalid immutable GCS reference')
         require(ref['bucket'] in self.buckets and isinstance(ref['object'], str) and 0 < len(ref['object']) <= 1024, 'unapproved GCS object')
         url = 'https://storage.googleapis.com/storage/v1/b/' + urllib.parse.quote(ref['bucket'], safe='') + '/o/' + urllib.parse.quote(ref['object'], safe='') + '?alt=media'
         if 'generation' in ref:
@@ -257,11 +259,38 @@ def archive_info(raw, version, inputs):
     return info
 
 
+def consume_image(google, manifest, evidence, proof, policy, version, source):
+    binding = evidence['receipt']['binding']
+    for kind in ('oci_archive', 'oci_metadata'):
+        original, copied = binding['artifacts'][kind], manifest[kind]
+        require(set(original) == set(copied) == {'bucket', 'object', 'generation', 'sha256'}, 'immutable OCI references required')
+        require(original['bucket'] == policy['package_bucket'] and copied['bucket'] == policy['qualified_bucket']
+                and original['sha256'] == copied['sha256'] and proof['result']['outputs'][kind] == original,
+                'OCI provenance mismatch')
+        relay.positive(original['generation'])
+        relay.positive(copied['generation'])
+    raw = google.get(manifest['oci_archive'], limit=1024 * 1024 * 1024)
+    metadata_raw = google.get(manifest['oci_metadata'])
+    require(digest(raw) == manifest['oci_archive']['sha256'] and
+            digest(metadata_raw) == manifest['oci_metadata']['sha256'], 'OCI artifact digest mismatch')
+    metadata = image.verify(raw, decode(metadata_raw), version, source)
+    # These receipts must be emitted by the protected qualifier after real container tests,
+    # not inferred from native daemon qualification or by this consumer.
+    qualification = evidence['receipt']['headless']
+    require(qualification == dict(schema='swarm.headless-qualification/v1',
+            source_sha=source, run_id=binding['run_id'], image=metadata,
+            gates={k: 'passed' for k in ('startup', 'scoped-auth', 'sdk-session', 'restart')}),
+            'separate headless qualification required')
+    return {'swarm-headless.oci.tar': raw, 'headless-image.json': metadata_raw}
+
+
 def consume(env, event, policy=None, google=None, transport=relay.request):
     candidate = env['GITHUB_EVENT_NAME'] == 'workflow_dispatch'
     require((env['GITHUB_REF'] in ('refs/heads/main', 'refs/heads/dev') if candidate else
              env['GITHUB_REF'] == 'refs/heads/main' and env['GITHUB_EVENT_NAME'] == 'push')
             and env['GCP_CHECK_CONTEXT'] == 'build-main', 'release source event required')
+    require(isinstance(policy, dict) and policy.get('schema') == 'swarm.gcp.release-policy/v1',
+            'protected release policy required')
     api = relay.GitHub(env, transport=transport)
     version = env['GCP_RELEASE_VERSION']
     name = 'swarm-' + version + '-linux-amd64.tar.gz'
@@ -269,7 +298,7 @@ def consume(env, event, policy=None, google=None, transport=relay.request):
     head_sha = relay.sha(env['GITHUB_SHA'])
     google = google or Google(env)
 
-    # Legacy Astra test path if policy has schema and result has 'release'
+    # Only authenticated immutable evidence is accepted; no inferred receipts.
     if policy and policy.get('schema') == 'swarm.gcp.release-policy/v1' and 'qualified_bucket' in policy:
         try:
             result = relay.poll(env, event)
@@ -290,6 +319,9 @@ def consume(env, event, policy=None, google=None, transport=relay.request):
                 prov = decode(provenance)
                 verify_provenance(result, manifest, evidence, prov)
                 info = archive_info(archive, version, inputs)
+                image_files = {}
+                if not candidate:
+                    image_files = consume_image(google, manifest, evidence, prov, policy, version, head_sha)
                 current = api.identity(event)
                 require(all(result.get(k) == v for k, v in current.items()), 'main moved during download')
                 predicate = {'schema': 'swarm.release-promotion/v1', 'builder': 'gcp', 'promoter': 'github-actions', 'source_sha': inputs['source_sha'], 'archive_sha256': digest(archive), 'gcp_build_id': manifest['build_id'], 'gcp_run_id': manifest['run_id'], 'github_run_id': str(relay.positive(env['GITHUB_RUN_ID'])), 'qualification_evidence_sha256': digest(evidence_raw)}
@@ -297,6 +329,7 @@ def consume(env, event, policy=None, google=None, transport=relay.request):
                          'gcp-qualification-evidence.json': evidence_raw, 'gcp-release-manifest.json': manifest_raw,
                          'gcp-build-provenance.json': provenance, 'promotion-predicate.json': canonical(predicate),
                          'version.txt': (version + '\n').encode()}
+                files.update(image_files)
                 if candidate:
                     files.pop('promotion-predicate.json')
                 destination = Path(env['GCP_OUTPUT_DIR'])
@@ -309,162 +342,9 @@ def consume(env, event, policy=None, google=None, transport=relay.request):
                         stream.write('version=' + version + '\n')
                 return
         except Exception:
-            pass
+            raise
 
-    # Swarm V2 GCP Qualification pipeline intake
-    commit = api.get(api.root + '/git/commits/' + head_sha)
-    parents = commit.get('parents', [])
-    tree_sha = commit['tree']['sha']
-
-    if len(parents) > 1:
-        candidate_sha = relay.sha(parents[1]['sha'])
-        base_sha = relay.sha(parents[0]['sha'])
-    else:
-        candidate_sha = head_sha
-        base_sha = relay.sha(parents[0]['sha']) if parents else head_sha
-
-    app_id = relay.positive(env['GCP_CHECK_APP_ID'])
-    path = api.root + '/commits/' + candidate_sha + '/check-runs?per_page=100&filter=all'
-    resp = api.get(path)
-    runs = [cr for cr in resp.get('check_runs', []) if cr.get('app', {}).get('id') == app_id]
-
-    qual_check = None
-    for cr in runs:
-        if cr.get('conclusion') == 'success' and cr.get('status') == 'completed':
-            text = cr.get('output', {}).get('text', '')
-            try:
-                doc = decode(text)
-                if doc.get('schema') == 'swarm.gcp.check-result/v1' and doc.get('state') == 'passed':
-                    qual_check = (cr, doc)
-                    break
-            except Exception:
-                pass
-
-    require(qual_check is not None, 'no successful GCP qualification check found')
-    check_run, check_doc = qual_check
-    run_id = check_doc['run_id']
-    require(bool(re.fullmatch(r'[A-Za-z0-9_.:-]{1,160}', run_id)), 'invalid run_id')
-
-    bucket = google.buckets[0]
-    archive_ref = {'bucket': bucket, 'object': f'candidate-{run_id}/{name}'}
-    checksum_ref = {'bucket': bucket, 'object': f'candidate-{run_id}/{checksum_name}'}
-    archive = google.get(archive_ref, limit=512 * 1024 * 1024)
-    checksum = google.get(checksum_ref, limit=1024)
-
-    archive_digest = digest(archive)
-    checksum_text = checksum.decode('utf-8', errors='replace').strip()
-    checksum_parts = checksum_text.split()
-    require(len(checksum_parts) >= 2 and checksum_parts[0] == archive_digest and checksum_parts[1] == name,
-            'checksum basename/digest mismatch')
-
-    inputs = dict(source_sha=head_sha, candidate_sha=candidate_sha, tree_sha=tree_sha,
-                  build_spec_sha256='1' * 64, locks_sha256='2' * 64, toolchains_sha256='3' * 64,
-                  version=version, ref='detached', actor='local', built_at='',
-                  trust_realm='authenticated-main-push', harness_sha=base_sha)
-    info = archive_info(archive, version, inputs)
-
-    authority = {k: k for k in ('controller', 'builder', 'result_writer', 'provenance_verifier')}
-    jobs = {s_name: {'job_id': 'build-group' if s_name in BUILD_STAGES else s_name, 'attempt_id': '0', 'fence': 1}
-            for s_name in FULL_STAGES}
-
-    artifacts = {
-        'archive': {'bucket': bucket, 'object': f'candidate-{run_id}/{name}', 'generation': 1, 'sha256': archive_digest},
-        'checksum': {'bucket': bucket, 'object': f'candidate-{run_id}/{checksum_name}', 'generation': 1, 'sha256': digest(checksum)},
-        'provenance': {'bucket': bucket, 'object': f'candidate-{run_id}/provenance.json', 'generation': 1, 'sha256': '0' * 64}
-    }
-
-    binding = {
-        'repository_id': check_doc.get('repository_id', 1262903051),
-        'pull_number': 0,
-        'source_sha': head_sha,
-        'comparison_base_sha': base_sha,
-        'execution_sha': head_sha,
-        'execution_tree': tree_sha,
-        'source_tree': tree_sha,
-        'trust_profile': 'authenticated-main-push',
-        'build_inputs': inputs,
-        'build_input_digest': hashed({'schema': 'swarm.gcp.workload/v2', **inputs}),
-        'artifacts': artifacts,
-        'controller_id': 'gcp-qualification-v2',
-        'build_id': run_id,
-        'run_id': run_id
-    }
-
-    event_payload = {'kind': 'push', 'base_ref': 'main', 'head_ref': 'main', 'head_sha': head_sha, 'base_sha': base_sha,
-                     'merge_sha': '', 'action': '', 'draft': False, 'same_repository': True, 'authenticated': True, 'workflow': ''}
-
-    original = {k: copy.deepcopy(binding[k]) for k in ('repository_id', 'pull_number', 'controller_id', 'run_id', 'source_tree', 'execution_tree', 'build_inputs')}
-    original['event'] = event_payload
-
-    token = dict(jobs['build'], run_id=run_id, binding_digest=hashed(original))
-    build = dict(token=token, status='passed', build_id=run_id,
-                 outputs={'archive': copy.deepcopy(artifacts['archive']), 'checksum': copy.deepcopy(artifacts['checksum'])},
-                 members=[dict(stage=s_name, status='passed', timing={'startTime': '2026-01-01T00:00:00Z', 'endTime': '2026-01-01T00:00:01Z'}) for s_name in BUILD_STAGES])
-    provenance = dict(schema='swarm.runtime-build-proof/v1', run_id=run_id, binding=original,
-                      result=build, authority=authority)
-    prov_raw = canonical(provenance)
-    prov_digest = hashed(provenance)
-    artifacts['provenance']['sha256'] = prov_digest
-
-    rows = [dict(schema='swarm.gcp.evidence/v2', stage=s_name, **jobs[s_name], source_sha=head_sha, source_tree=tree_sha,
-                 binding_digest=hashed(binding), status='passed', duration_ms=1, cost_microusd=1,
-                 diagnostic={'code': 'OK'}, queued_ms=0, started_ms=1, ended_ms=2, retry_count=0)
-            for s_name in sorted(FULL_STAGES)]
-    cells = [dict(schema='swarm.gcp.onboarding/v1', cell=cell, source_sha=head_sha,
-                  archive_sha256=archive_digest, build_id=run_id, run_id=run_id,
-                  exit_code=0, cleanup_verified=True,
-                  gates={'identity': True, 'credential': True, 'workspace': True, 'canonical-models': True, 'explicit-model': True, 'basic-plan-auto': True} if prov == 'fireworks' else {'identity': True, 'credential': True, 'workspace': True, 'canonical-models': True},
-                  model='accounts/fireworks/models/deepseek-v4p1-flash' if prov == 'fireworks' else '')
-             for cell, prov in CELLS.items()]
-
-    receipt = dict(schema='swarm.gcp.evidence/v2', binding=binding, stages=rows,
-                   onboarding_receipts=cells, cleanup_verified=True)
-    admission = dict(schema='swarm.gcp.admission/v2', binding=copy.deepcopy(binding), event=event_payload,
-                     jobs=jobs, authority=authority, max_cost_microusd=500000)
-    observed = dict(schema='swarm.gcp.observed-authority/v1', identities=authority,
-                    receipt_sha256=hashed(receipt), admission_sha256=hashed(admission),
-                    provenance_sha256=prov_digest)
-    evidence = dict(schema='swarm.gcp.release-evidence/v1', run_id=run_id, receipt=receipt,
-                    admission=admission, observed_authority=observed)
-    evidence_raw = canonical(evidence)
-
-    manifest = dict(schema='swarm.release-handoff/v1', qualification='passed', cleanup_verified=True,
-                    source_sha=head_sha, build_id=run_id, run_id=run_id, evidence_binding=copy.deepcopy(binding),
-                    archive_sha256=archive_digest,
-                    evidence=dict(bucket=bucket, object='evidence', generation='1', sha256=hashed(evidence)),
-                    archive=dict(artifacts['archive'], bucket=bucket),
-                    checksum=dict(artifacts['checksum'], bucket=bucket),
-                    provenance=dict(artifacts['provenance'], bucket=bucket))
-    manifest.update({k: copy.deepcopy(evidence[k]) for k in ('receipt', 'admission', 'observed_authority')})
-    manifest_raw = canonical(manifest)
-
-    github_run_id = env.get('GITHUB_RUN_ID', '1')
-    predicate = dict(schema='swarm.release-promotion/v1', builder='gcp', promoter='github-actions',
-                     source_sha=head_sha, archive_sha256=archive_digest, gcp_build_id=run_id, gcp_run_id=run_id,
-                     github_run_id=str(github_run_id), qualification_evidence_sha256=digest(evidence_raw))
-
-    files = {
-        name: archive,
-        checksum_name: checksum,
-        'build-info.txt': info,
-        'gcp-qualification-evidence.json': evidence_raw,
-        'gcp-release-manifest.json': manifest_raw,
-        'gcp-build-provenance.json': prov_raw,
-        'promotion-predicate.json': canonical(predicate),
-        'version.txt': (version + '\n').encode(),
-    }
-    if candidate:
-        files.pop('promotion-predicate.json')
-
-    destination = Path(env['GCP_OUTPUT_DIR'])
-    destination.mkdir(mode=0o700, parents=True, exist_ok=True)
-    for filename, raw in files.items():
-        with (destination / filename).open('wb') as stream:
-            stream.write(raw)
-
-    if env.get('GITHUB_OUTPUT'):
-        with open(env['GITHUB_OUTPUT'], 'a', encoding='utf-8') as stream:
-            stream.write('version=' + version + '\n')
+    require(False, 'authenticated immutable release handoff and protected policy required')
 
 
 def main():

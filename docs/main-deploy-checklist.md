@@ -37,6 +37,53 @@ This file is the canonical operator checklist for promoting `dev` to `main`, tes
 - That install path provides the real installed runtime and the user-facing `swarm` launcher. Git is not bundled as a private binary in the archive: the installer must provision the supported distribution's Git package when absent, verify it before Swarm mutation, and fail closed if no supported package manager can satisfy the prerequisite.
 - Fresh shells that do not yet include `${XDG_BIN_HOME:-$HOME/.local/bin}` on `PATH` must use `${XDG_BIN_HOME:-$HOME/.local/bin}/swarm` until the shell startup files are updated and a new shell is opened.
 
+## Headless OCI and npm promotion
+
+The same protected `stable-release` job publishes the independently qualified
+`linux/amd64` OCI image to `ghcr.io/swarm-agent/swarm-headless`, preserving its
+manifest digest with `skopeo copy --preserve-digests`. It then packs the SDK/CLI,
+attaches those exact packs and `headless-image.json`/`npm-packages.json` to the
+GitHub release, and publishes those packs to npm. Package names come from their
+manifests; their versions come from `resolve-release-version.sh` (without `v`).
+Only the temporary packaging copy receives the generated CLI `runtime-image.json`.
+PRs and dispatches cannot publish. Native qualification is never OCI qualification.
+
+Protected producer interface (run from the exact clean checkout; output outside
+it, using approved digest pins, Docker buildx and Python 3):
+
+```sh
+bash scripts/build-headless-release.sh "$VERSION" "$SOURCE_SHA" "$BUILT_AT" "$BUILD_IMAGE" "$RUNTIME_IMAGE" "$OUTPUT_DIR"
+python3 -B scripts/headless-release.py verify --archive "$OUTPUT_DIR/swarm-headless.oci.tar" --metadata "$OUTPUT_DIR/headless-image.json" --version "$VERSION" --source "$SOURCE_SHA"
+```
+
+The builder requires `golang:1.26.7-trixie@sha256:…` and
+`debian:trixie-slim@sha256:…` under `docker.io/library`; it supplies no invented
+pins and emits no qualification receipt. The protected producer must run actual
+container startup, scoped-auth, SDK-session and restart qualification. Extend the
+existing authenticated handoff as follows:
+
+- Add `oci_archive` and `oci_metadata` immutable GCS references (`bucket`, `object`,
+  `generation`, `sha256`) to `receipt.binding.artifacts`, build proof
+  `result.outputs`, and the release manifest's copied qualified references.
+  Originals belong to `package_bucket`; copies belong to `qualified_bucket`.
+- Add `receipt.headless = {schema: "swarm.headless-qualification/v1", source_sha,
+  run_id, image: <headless-image.json>, gates: {startup: "passed", scoped-auth:
+  "passed", sdk-session: "passed", restart: "passed"}}` only after those tests
+  succeed. Recompute the existing binding/admission/observed-authority digests
+  normally. Do not retrofit fabricated receipts to old native qualification.
+- Retain protected bucket/App/WIF policy and all existing native stages. The
+  consumer rejects absent evidence, mismatched bytes/source/version/platform,
+  and the former weak check-summary fallback. GitHub never rebuilds the image.
+
+Remote setup remains an operator prerequisite, not an observed result: configure
+reviewers and main-only branch restrictions on `stable-release`, GHCR package
+write permission and public visibility, and a package-scoped `NPM_TOKEN` environment
+secret authorized for both manifest package names. Credentials are not build
+arguments or package content. npm publication is not transactional: if a package
+fails after another succeeds, inspect registry state before recovery; never
+republish changed bytes under the same version. No live registry or producer
+qualification is implied by these scripts or hermetic tests.
+
 ## Canonical version reference
 
 - The preferred public release version is a stable semver tag such as `v0.x.y` on the promoted `main` commit.

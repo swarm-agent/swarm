@@ -106,10 +106,11 @@ jobs:
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     needs: build-stable-release
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     environment: stable-release
     permissions:
       contents: write
+      packages: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -122,11 +123,17 @@ jobs:
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
         with:
           cosign-release: v3.1.2
+      - name: Install OCI transport and check packaging runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends skopeo
+          node -e 'if (Number(process.versions.node.split(".")[0]) < 22) process.exit(1)'
       - name: Reverify and publish protected exact bytes
         env:
           TMPDIR: ${{ runner.temp }}
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.build-stable-release.outputs.version }}
+          RELEASE_ENVIRONMENT: stable-release
           WORKFLOW_REF: ${{ github.workflow_ref }}
           WORKFLOW_SHA: ${{ github.workflow_sha }}
         run: |
@@ -140,8 +147,25 @@ jobs:
           # API failures must not be interpreted as an absent tag/release.
           gh api "repos/${GITHUB_REPOSITORY}/git/matching-refs/tags/${VERSION}" > "${RUNNER_TEMP}/release-tags.json"
           jq -e --arg ref "refs/tags/${VERSION}" 'all(.[]; .ref != $ref)' "${RUNNER_TEMP}/release-tags.json"
+          bash scripts/publish-headless-release.sh release-evidence "${VERSION}"
           gh release create "${VERSION}" "${archive}" "${archive}.sha256" "${archive}.sigstore.json" "${archive}.provenance.sigstore.json" \
             release-evidence/build-info.txt release-evidence/gcp-qualification-evidence.json release-evidence/gcp-release-manifest.json \
             release-evidence/gcp-build-provenance.json release-evidence/promotion-predicate.json \
+            release-evidence/headless-image.json release-evidence/npm-packages.json release-evidence/*.tgz \
             --repo "${GITHUB_REPOSITORY}" --target "${GITHUB_SHA}" --title "Swarm ${VERSION}" \
-            --notes "GCP-built and qualified exact merged source; GitHub verified, keyless-signed and promoted these unchanged bytes after protected environment approval."
+            --notes "GCP-built and qualified exact merged source; GitHub verified, keyless-signed and promoted these unchanged bytes after protected environment approval. Headless image: ghcr.io/swarm-agent/swarm-headless@$(jq -r .manifestDigest release-evidence/headless-image.json). Matching npm packs attached."
+      - name: Publish exact npm packs after image and GitHub release
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          TMPDIR: ${{ runner.temp }}
+          RELEASE_ENVIRONMENT: stable-release
+        run: |
+          set -euo pipefail
+          python3 -B scripts/headless-release.py publication-gate
+          : "${NODE_AUTH_TOKEN:?protected stable-release npm token required}"
+          export NPM_CONFIG_USERCONFIG="$(mktemp "${TMPDIR}/swarm-npm.XXXXXX")"
+          trap 'rm -f -- "${NPM_CONFIG_USERCONFIG}"' EXIT
+          printf '%s\n' '//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}' > "${NPM_CONFIG_USERCONFIG}"
+          for pack in release-evidence/*.tgz; do
+            npm publish "$pack" --ignore-scripts --access public --registry=https://registry.npmjs.org/
+          done
