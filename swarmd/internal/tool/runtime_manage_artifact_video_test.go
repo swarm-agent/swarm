@@ -1065,3 +1065,52 @@ func TestManageArtifactGenerateVideoExplicitContinuationModel(t *testing.T) {
 		})
 	}
 }
+
+// Purpose: generateManagedVideoArtifact must not publish a ready artifact when
+// GenerateManagedVideo rejects measured extension output. This adapter-boundary
+// test complements videogen.TestOmniExtensionMeasuredDuration: the service owns
+// timing validation, while the tool owns publication. Injected service errors are
+// deterministic failure-path evidence, not evidence of a live provider result.
+func TestManageArtifactVideoRejectedDurationNotPublished(t *testing.T) {
+	for _, rejection := range []string{
+		"extended Omni video output duration delta outside allowed range 3-10s (tolerance 0.050000s): source=10.005000000s output=20.205000000s delta=10.200000000s",
+		"extended Omni video duration exceeds maximum allowed ceiling (40s; tolerance 0.050000s): source=35.000000000s output=41.000000000s delta=6.000000000s",
+		"probed video output has invalid duration",
+	} {
+		t.Run(rejection, func(t *testing.T) {
+			runtime := NewRuntime(1)
+			authority := &fakeArtifactAuthority{
+				readBody: []byte("source-video"),
+				variant: pebblestore.SessionArtifactVariant{
+					ID: "source", SessionID: "source-session", CollectionID: "source-collection", EventSeq: 42,
+					Status: pebblestore.SessionArtifactStatusReady, MediaType: "video/mp4",
+					Lineage: pebblestore.SessionArtifactLineage{VideoProvenance: &pebblestore.VideoProvenance{
+						Model: "gemini-omni-1.1-flash", InteractionID: "retained-interaction",
+					}},
+				},
+			}
+			runtime.SetArtifactAuthority(authority)
+			generator := &fakeVideoGenerationService{err: fmt.Errorf("%s", rejection)}
+			runtime.SetManagedVideoGenerationService(generator)
+			ctx, scope := artifactToolContext()
+			ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			defer cancel()
+			_, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{
+				CallID: "rejected-extension", Name: "manage_artifact",
+				Arguments: `{"action":"generate_video","operation":"extend","model":"gemini-omni-1.1-flash","prompt":"Continue the scene","source_session_id":"source-session","source_collection_id":"source-collection","source_variant_id":"source","source_event_seq":42}`,
+			})
+			if err == nil || !strings.Contains(err.Error(), rejection) {
+				t.Fatalf("expected unmodified duration rejection, got %v", err)
+			}
+			if generator.calls != 1 || generator.lastReq.Operation != "extend" || generator.lastReq.Source == nil || generator.lastReq.Source.InteractionID != "retained-interaction" {
+				t.Fatalf("source-bound extension not dispatched: %+v", generator.lastReq)
+			}
+			if authority.createCalls != 0 || authority.publishCalls != 0 || authority.reserveCalls != 0 || len(authority.inspectionCreates) != 0 {
+				t.Fatalf("invalid output reached artifact publication: create=%d publish=%d reserve=%d inspection=%d", authority.createCalls, authority.publishCalls, authority.reserveCalls, len(authority.inspectionCreates))
+			}
+			if authority.variant.ID != "source" || authority.variant.EventSeq != 42 || authority.variant.Status != pebblestore.SessionArtifactStatusReady {
+				t.Fatalf("retained source was changed: %+v", authority.variant)
+			}
+		})
+	}
+}

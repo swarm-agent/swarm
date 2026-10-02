@@ -405,12 +405,21 @@ func (s *Service) GenerateManagedVideo(ctx context.Context, req ManagedVideoRequ
 			}
 		}
 		if IsOmniModel(modelID) {
-			if outMeta.DurationSeconds > 40.0 {
-				return ManagedVideoResult{}, fmt.Errorf("extended Omni video duration (%.1fs) exceeds maximum allowed ceiling (40s)", outMeta.DurationSeconds)
-			}
+			// Compare measured container timelines, not rounded display seconds or
+			// requested duration. Allow a fixed 50ms for frame/container end-time
+			// quantization (one 24fps frame is ~41.7ms) and sub-ms provenance
+			// truncation when only a retained handle is available. This is a total
+			// allowance, not per-input or proportional to the number of extensions.
+			// Keep the raw measurement in the result; never clamp it to the limit.
+			const timingToleranceSec = 0.050
 			delta := outMeta.DurationSeconds - srcDurationSec
-			if delta < 3.0 || delta > 10.0 {
-				return ManagedVideoResult{}, fmt.Errorf("extended Omni video output duration delta (%.1fs) outside allowed range 3-10s", delta)
+			if outMeta.DurationSeconds > 40.0+timingToleranceSec {
+				return ManagedVideoResult{}, fmt.Errorf("extended Omni video duration exceeds maximum allowed ceiling (40s; tolerance %.6fs): source=%.9fs output=%.9fs delta=%.9fs", timingToleranceSec, srcDurationSec, outMeta.DurationSeconds, delta)
+			}
+			// Compare endpoints so subtractive cancellation at an exact boundary
+			// does not reject a valid fractional source plus its allowed extension.
+			if outMeta.DurationSeconds < srcDurationSec+(3.0-timingToleranceSec) || outMeta.DurationSeconds > srcDurationSec+(10.0+timingToleranceSec) {
+				return ManagedVideoResult{}, fmt.Errorf("extended Omni video output duration delta outside allowed range 3-10s (tolerance %.6fs): source=%.9fs output=%.9fs delta=%.9fs", timingToleranceSec, srcDurationSec, outMeta.DurationSeconds, delta)
 			}
 		}
 	}
