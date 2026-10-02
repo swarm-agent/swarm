@@ -1,4 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
+import { requestJson } from '../../../app/api'
+import { desktopProjects } from '../runtime/desktop-projects'
+import { mapBackendTask } from '../state/desktop-projects-state'
+import type { RunningTask } from './orchestrate-types'
+import { taskReopenOperations } from './task-reopen-operation'
 import type { TaskSessionCandidate } from '../runtime/desktop-projects-membership'
 import { TaskSessionLeaseManager } from '../runtime/desktop-projects-membership'
 import { requireDesktopV3RealtimeControllerReady } from '../realtime/v3-realtime-controller'
@@ -15,7 +20,14 @@ import type { DesktopPermissionRecord } from '../types/realtime'
 export function useTaskAttention(task: TaskSessionCandidate) {
   const idsKey = useDesktopV3CacheSelector(state => JSON.stringify(taskAttentionSessionIds(state, task)))
   const ids = useMemo<string[]>(() => JSON.parse(idsKey), [idsKey])
-  return useSessionAttention(ids, `task-attention:${task.id}`)
+  const attention = useSessionAttention(ids, `task-attention:${task.id}`)
+  const projectId = useDesktopV3CacheSelector(state => {
+    const owner = state.sessionsById[task.sessionId || '']
+    return owner?.kind === 'full' && typeof owner.session.metadata?.project_id === 'string' ? owner.session.metadata.project_id : ''
+  })
+  const candidate = task as RunningTask
+  return { ...attention, blocker: candidate.status === 'blocked' && candidate.lastError
+    ? { task: candidate, projectId, reason: candidate.lastError } : undefined }
 }
 
 // Parent composer requests belong to exactly this session, not its task descendants.
@@ -67,12 +79,33 @@ function useSessionAttention(ids: string[], ownerKeyPrefix: string) {
     state.permissionSummaryBySessionId[id]?.pendingApprovalCount || 0,
     taskAttentionPermissions(state, [id]).length,
   ), 0))
-  return { permissions, unresolvedCount, error, retry: () => setRetry(value => value + 1) }
+  return { permissions, unresolvedCount, error, retry: () => setRetry(value => value + 1), blocker: undefined as { task: RunningTask; projectId: string; reason: string } | undefined }
 }
 
-export function TaskAttention({ attention }: { attention: ReturnType<typeof useTaskAttention> }) {
+export function TaskAttention({ attention }: { attention: Omit<ReturnType<typeof useTaskAttention>, 'blocker'> & { blocker?: ReturnType<typeof useTaskAttention>['blocker'] } }) {
   const [reviewed, setReviewed] = useState<DesktopPermissionRecord | null>(null)
   const [failure, setFailure] = useState('')
+  const [input, setInput] = useState('')
+  const [supplying, setSupplying] = useState(false)
+  const [resuming, setResuming] = useState(false)
+  async function resume() {
+    const blocker = attention.blocker
+    if (!blocker || !blocker.projectId || !input.trim() || resuming) return
+    setResuming(true)
+    setFailure('')
+    const { task, projectId } = blocker
+    try {
+      const result = await taskReopenOperations.run(projectId, task.id, task, input,
+        body => requestJson<{ status: string; task: any }>(`/v3/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(task.id)}/reopen`,
+          { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
+        returned => {
+          desktopProjects.setOptimisticTasks(projectId, tasks => tasks.map(item => item.id === task.id ? mapBackendTask(returned) : item))
+          desktopProjects.invalidate(projectId)
+        })
+      if (!result.ok) { setFailure(result.error); desktopProjects.invalidate(projectId) }
+      else { setInput(''); setSupplying(false) }
+    } finally { setResuming(false) }
+  }
   const key = (permission: DesktopPermissionRecord) => JSON.stringify([permission.sessionId, permission.id])
   const selectedKey = reviewed ? key(reviewed) : ''
   // Do not silently replace the source the user opened with changed arguments.
@@ -93,9 +126,18 @@ export function TaskAttention({ attention }: { attention: ReturnType<typeof useT
       throw error
     }
   }
-  if (!attention.unresolvedCount && !attention.permissions.length && !attention.error) return null
+  if (!attention.blocker && !attention.unresolvedCount && !attention.permissions.length && !attention.error) return null
   return <section aria-label="Task needs your attention" className="m-2 rounded-lg border border-amber-400/60 bg-amber-500/10 p-3 text-sm text-amber-100" onClick={event => event.stopPropagation()} onKeyDown={event => event.stopPropagation()}>
-    <p role="status" className="font-semibold">Waiting for you · {attention.unresolvedCount} pending</p>
+    {attention.blocker && <div role="status">
+      <strong>Required input missing</strong>
+      <p className="break-words">{attention.blocker.reason}</p>
+      <button type="button" onClick={() => setSupplying(true)}>Supply input and resume</button>
+      {supplying && <div>
+        <label>Required input or resolution<textarea value={input} onChange={event => setInput(event.target.value)} disabled={resuming} /></label>
+        <button type="button" disabled={resuming || !input.trim() || !attention.blocker.projectId} onClick={() => void resume()}>{resuming ? 'Resuming…' : 'Resume task'}</button>
+      </div>}
+    </div>}
+    {attention.unresolvedCount > 0 && <p role="status" className="font-semibold">Waiting for you · {attention.unresolvedCount} pending</p>}
     <ul className="mt-2 space-y-2">
       {attention.permissions.map(permission => <li key={key(permission)} className="min-w-0">
         <p className="font-semibold">{taskAttentionLabel(permission)}</p>

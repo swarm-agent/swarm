@@ -515,6 +515,9 @@ func syncTaskSessionState(task *pebblestore.ProjectTaskRecord, db *pebblestore.S
 			// Run concluded:
 			switch runState.Status {
 			case pebblestore.V3RunIntentCompleted:
+				if projectTaskDeclaredBlocker(task, sess, runState) {
+					return
+				}
 				if task.PlanBinding != nil && task.PlanBinding.PlanID != "" {
 					plan, found, err := db.GetPlan(task.SessionID, task.PlanBinding.PlanID)
 					if err != nil || !found || plan.Document == nil || len(plan.Document.Checkpoints) == 0 {

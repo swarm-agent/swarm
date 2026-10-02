@@ -33,3 +33,17 @@ test('canonical ask-user review preserves multiple questions and custom response
   const html = renderToStaticMarkup(<DesktopPermissionModal dismissWithoutDecision open permission={permission} pendingCount={1} sessionMode="auto" onOpenChange={() => {}} onResolve={async () => { throw new Error('Rendering is not consent') }} />)
   for (const text of ['First question?', 'Second question?', 'Alpha', 'Beta', 'Gamma', 'Delta', 'Custom response']) assert.ok(html.includes(text), text)
 })
+
+// Purpose: tool-declared blockers are not permissions. The collapsed-card attention
+// surface must retain their reason and offer explicit supply/resume, without
+// inventing a pending permission or resuming merely because it rendered.
+test('collapsed attention shows a durable blocker with a supply input action', () => {
+  const html = renderToStaticMarkup(<TaskAttention attention={{
+    permissions: [], unresolvedCount: 0, error: '', retry: () => {},
+    blocker: { task: { id: 'task', status: 'blocked', revision: 3 } as import('./orchestrate-types').RunningTask,
+      projectId: 'project', reason: 'required prototype missing' },
+  }} />)
+  assert.match(html, /required prototype missing/)
+  assert.match(html, />Supply input and resume</)
+  assert.doesNotMatch(html, /0 pending|Review permission|role="dialog"/)
+})

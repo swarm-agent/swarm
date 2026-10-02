@@ -145,8 +145,17 @@ func (s *SessionStore) ReserveTaskFollowupWithRecovery(account, project, taskID,
 				}
 			}
 		}
-		if t.Archived || (t.Status != "needs_review" && t.Status != "completed" && t.Status != "failed") {
+		if t.Archived || (t.Status != "needs_review" && t.Status != "completed" && t.Status != "failed" && t.Status != "blocked") {
 			return errors.New("task is running or requires structured review; follow-up rejected without mutation")
+		}
+		if t.Status == "blocked" {
+			sess, found, err := s.GetSession(t.SessionID)
+			if err != nil {
+				return err
+			}
+			if !found || sess.AccountScopeID != account || sess.Metadata["lifecycle_signal"] != "blocked" || sess.Metadata["lifecycle_signal_run_id"] != t.ExecutionRunID() {
+				return errors.New("blocked task requires structured lifecycle resolution")
+			}
 		}
 		if revision <= 0 || revision != t.Revision {
 			return errors.New("stale or missing task revision")

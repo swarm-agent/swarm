@@ -2679,6 +2679,15 @@ func (s *Service) executeTaskProgressTool(sessionID string, call tool.Call, appl
 		return "", errors.New("task_progress action is required")
 	}
 
+	if action != "status" && action != "list" {
+		state, found, stateErr := s.sessions.Store().GetV3SessionRunState(sessionID)
+		if stateErr != nil {
+			return "", stateErr
+		}
+		if found && (state.AccountScopeID != session.AccountScopeID || state.RunID != strings.TrimSpace(lifecycleRun.RunID)) {
+			return "", errors.New("task progress belongs to a superseded run")
+		}
+	}
 	metadata := make(map[string]any)
 	for k, v := range session.Metadata {
 		metadata[k] = v
@@ -2894,9 +2903,7 @@ func (s *Service) executeTaskProgressTool(sessionID string, call tool.Call, appl
 		blockerCode := strings.TrimSpace(taskProgressString(args["blocker_code"]))
 		lifecycleSignal = lifecyclePhaseBlocked
 		metadata["blocker_reason"] = blockerReason
-		if blockerCode != "" {
-			metadata["blocker_code"] = blockerCode
-		}
+		metadata["blocker_code"] = blockerCode
 		activeRunID := strings.TrimSpace(lifecycleRun.RunID)
 		if activeRunID == "" {
 			activeRunID, _ = s.GetActiveRunID(sessionID)
@@ -2974,6 +2981,9 @@ func (s *Service) executeTaskProgressTool(sessionID string, call tool.Call, appl
 		metadata["agent_todo_summary"] = agentTodoSummary
 		if lifecycleSignal != "" {
 			metadata["lifecycle_signal"] = lifecycleSignal
+			// Bind the explicit outcome to the invoking run, never to whichever
+			// attempt happens to be current when a delayed tool result arrives.
+			metadata["lifecycle_signal_run_id"] = strings.TrimSpace(lifecycleRun.RunID)
 		}
 		if summaryText != "" {
 			metadata["lifecycle_summary"] = summaryText
@@ -2993,8 +3003,8 @@ func (s *Service) executeTaskProgressTool(sessionID string, call tool.Call, appl
 		if apply == nil {
 			apply = s.sessions.ApplySessionMutation
 		}
-		mutationID := fmt.Sprintf("task-progress:%s:%d", sessionID, nowMS)
-		_, _ = apply(sessionruntime.SessionMutationInput{
+		mutationID := fmt.Sprintf("task-progress:%s:%s:%s:%d", sessionID, lifecycleRun.RunID, call.CallID, nowMS)
+		_, err := apply(sessionruntime.SessionMutationInput{
 			SessionID:       sessionID,
 			UserID:          strings.TrimSpace(session.UserID),
 			AccountScopeID:  strings.TrimSpace(session.AccountScopeID),
@@ -3006,6 +3016,9 @@ func (s *Service) executeTaskProgressTool(sessionID string, call tool.Call, appl
 			Session:         &updatedSession,
 			NowUnixMs:       nowMS,
 		})
+		if err != nil {
+			return "", fmt.Errorf("persist task progress: %w", err)
+		}
 	}
 
 	resp := map[string]any{

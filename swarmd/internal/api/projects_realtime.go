@@ -153,6 +153,19 @@ func (s *Server) reconcileProjectTaskRunLifecycle(job sessionV3ExecutorJob, stat
 			})
 			return err
 		}
+		state, found, stateErr := db.GetV3SessionRunState(job.SessionID)
+		if stateErr != nil {
+			return stateErr
+		}
+		if found && projectTaskDeclaredBlocker(task, session, state) {
+			_, err = db.UpdateProjectTask(accountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
+				if t.SessionID == job.SessionID && t.ActiveAttemptID == task.ActiveAttemptID && projectTaskCurrentRunEvent(db, accountScopeID, job, status) && !t.IsIntegrated && t.Status != "completed" && t.Status != "rejected" {
+					projectTaskDeclaredBlocker(t, session, state)
+				}
+				return nil
+			})
+			return err
+		}
 		// A provider turn ending does not complete an approved checkpoint plan.
 		if task.PlanBinding != nil && task.PlanBinding.PlanID != "" {
 			plan, found, planErr := db.GetPlan(task.SessionID, task.PlanBinding.PlanID)
