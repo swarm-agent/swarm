@@ -57,7 +57,7 @@ export function acquireIntegrationBatch() {
   return { token, release: () => { if (batchOwner === token) batchOwner = undefined } }
 }
 export type TaskIntegrationOutcome =
-  | { status: 'integrated' | 'already_integrated' }
+  | { status: 'integrated' | 'already_integrated' | 'recovered' | 'equivalent' }
   | { status: 'skipped'; reason: string }
   | { status: 'failed'; reason: string }
 export function acquireTaskMutation(projectId: string, taskId: string): (() => void) | undefined {
@@ -120,22 +120,20 @@ export function createTaskIntegrationController() {
     async run(project: ProjectSummary, task: RunningTask, mutate: () => Promise<TaskIntegrationResult>, refresh: () => unknown, batchToken?: symbol): Promise<TaskIntegrationOutcome> {
       const key = taskIntegrationKey(project.id, task)
       const current = get(key)
-<<<<<<< 8d23a56d39c43aceacde66e7f758ddf3fa07eff3
       const delivery = taskDelivery(task)
-      if (delivery && !delivery.actionable && !delivery.recoverable) return
       const phase = taskIntegrationPhase(task, current)
-      if (phase === 'pending' || phase === 'success') return
-      const release = acquireTaskMutation(project.id, task.id)
-      if (!release) return
-=======
-      if (current.phase === 'success' || (task.isIntegrated && task.status === 'completed')) return { status: 'already_integrated' }
-      if ((batchOwner && batchOwner !== batchToken) || integrationFlights || current.phase === 'pending' || task.integration?.state === 'in_progress') return { status: 'skipped', reason: 'Another integration is pending' }
+      if ((batchOwner && batchOwner !== batchToken) || integrationFlights || phase === 'pending') return { status: 'skipped', reason: 'Another integration is pending' }
+      // Canonical assessment supersedes stale legacy flags and local success.
+      if (delivery?.integrated) return { status: 'already_integrated' }
+      if (delivery?.recovered) return { status: task.deliveryAssessment?.state === 'equivalent' ? 'equivalent' : 'recovered' }
+      if (delivery && !delivery.actionable && !delivery.recoverable) return { status: 'skipped', reason: delivery.summary }
+      if (batchToken && delivery?.recoverable) return { status: 'skipped', reason: 'Recovery requires the individual Recover & integrate action' }
+      if (phase === 'success') return { status: 'already_integrated' }
       const releaseMutation = acquireTaskMutation(project.id, task.id)
       if (!releaseMutation) return { status: 'skipped', reason: 'Another task mutation is pending' }
       integrationFlights++
       const release = () => { integrationFlights--; releaseMutation() }
-      let status: 'integrated' | 'already_integrated' = 'integrated'
->>>>>>> f647ba3f00a64c4256510918533e49a420624d2b
+      let status: 'integrated' | 'already_integrated' | 'recovered' | 'equivalent' = 'integrated'
       // Lock and notify synchronously, before invoking the transport or yielding.
       dismissedFailures.delete(key)
       publish(key, { phase: 'pending' })
@@ -161,14 +159,11 @@ export function createTaskIntegrationController() {
         const failure = integrationFailure(project, capturedTask, error)
         publish(key, { phase: 'error', failure, failureId: ++failureId })
         release()
-<<<<<<< 8d23a56d39c43aceacde66e7f758ddf3fa07eff3
         // Conflict receipts and prepared repair evidence arrive on canonical task
-        // events; also invalidate after a transport failure/lost response.
+        // events; also invalidate after a transport failure/lost response. Batches
+        // supply a no-op here and perform one final refresh for the captured project.
         try { await refresh() } catch { /* retain the original diagnostic */ }
-        return
-=======
         return { status: 'failed', reason: failure.error }
->>>>>>> f647ba3f00a64c4256510918533e49a420624d2b
       }
       release()
       // A successful mutation receipt is independent of later cache repair failure.

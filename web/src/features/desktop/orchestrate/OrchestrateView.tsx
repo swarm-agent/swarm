@@ -6,14 +6,9 @@ import { MediaTaskSelect, MediaTaskDefault, MediaTaskHelp, MediaTaskScenes, Medi
 import { ImagePromptControls, imagePromptReducer, initialImagePromptState, imagePromptEnhancement } from './image-task-prompt'
 import { DurableWorkerReviews } from '../chat/components/durable-worker-reviews'
 import { taskReopenOperations, taskReopenKey, type TaskReopenOutcome } from './task-reopen-operation'
-<<<<<<< 8d23a56d39c43aceacde66e7f758ddf3fa07eff3
-import { taskIntegrationRequest, taskIntegrationOperations, taskIntegrationKey, taskIntegrationFailureIdentity, taskIntegrationPhase, type TaskIntegrationOperation, type TaskIntegrationResult } from './task-integration-operation'
-import { taskDelivery, taskOutcome } from './task-outcome'
-=======
 import { taskIntegrationBatches, integrationSkipReason, MAX_INTEGRATION_BATCH } from './task-integration-batch'
-import { integrationLanePending, taskIntegrationOperations, taskIntegrationKey, taskIntegrationFailureIdentity, taskIntegrationPhase, type TaskIntegrationOperation, type TaskIntegrationResult } from './task-integration-operation'
-import { taskOutcome } from './task-outcome'
->>>>>>> f647ba3f00a64c4256510918533e49a420624d2b
+import { integrationLanePending, taskIntegrationRequest, taskIntegrationOperations, taskIntegrationKey, taskIntegrationFailureIdentity, taskIntegrationPhase, type TaskIntegrationOperation, type TaskIntegrationResult } from './task-integration-operation'
+import { taskDelivery, taskOutcome } from './task-outcome'
 import { TaskOutcomeDetails, ProjectTaskAttention } from './task-outcome-view'
 import { TaskAttemptHistory } from './task-attempt-history'
 import { TaskUsageFooter, TaskWorkerBudgetMetadata } from './task-usage-metadata'
@@ -5256,11 +5251,14 @@ export function OrchestrateView({
     const generation = batchNavigation.current.generation
     await taskIntegrationBatches.run(project, rows,
       id => batchNavigation.current.generation === generation && batchSourceRef.current.projectId === project.id ? batchSourceRef.current.tasks.find(task => task.id === id) : undefined,
-      (task, token) => taskIntegrationOperations.run(project, task, () =>
-        requestJson<TaskIntegrationResult>(`/v3/projects/${encodeURIComponent(project.id)}/tasks/${encodeURIComponent(task.id)}/integrate`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ session_id: task.sessionId, source_branch: task.worktreeBranch, target_branch: task.baseBranch }),
-        }), () => {}, token),
+      (task, token) => {
+        const request = taskIntegrationRequest(project.id, task)
+        return taskIntegrationOperations.run(project, task, () =>
+          requestJson<TaskIntegrationResult>(request.url, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(request.body),
+          }), () => {}, token)
+      },
       () => desktopProjects.invalidate(project.id))
   }
 
@@ -6597,7 +6595,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
               />
               {markedRows.length > 0 && <details className="px-4 text-xs text-slate-400"><summary>Integration eligibility</summary><ul>{markedRows.map(row => <li key={row.id}>{row.title}: {integrationSkipReason(selectedProjectId, row) || 'Ready to integrate'}</li>)}</ul>{markedRows.length > MAX_INTEGRATION_BATCH && <p>Select at most {MAX_INTEGRATION_BATCH} tasks.</p>}</details>}
               {integrationBatch && <section aria-label="Selected integration results" className="px-4 text-xs text-slate-400">
-                <p role="status">{integrationBatch.pending ? 'Integrating selected tasks… ' : 'Integration batch finished. '}{(['integrated', 'already_integrated', 'skipped', 'failed', 'not_attempted', 'pending', 'queued'] as const).map(status => `${integrationBatch.entries.filter(entry => entry.status === status).length} ${status.replace('_', ' ')}`).join(' · ')}</p>
+                <p role="status">{integrationBatch.pending ? 'Integrating selected tasks… ' : 'Integration batch finished. '}{(['integrated', 'already_integrated', 'recovered', 'equivalent', 'skipped', 'failed', 'not_attempted', 'pending', 'queued'] as const).map(status => `${integrationBatch.entries.filter(entry => entry.status === status).length} ${status.replace('_', ' ')}`).join(' · ')}</p>
                 {integrationBatch.refreshError && <p role="alert">{integrationBatch.refreshError}</p>}
                 <details><summary>Per-task results (successful integrations are not rolled back)</summary><ul>{integrationBatch.entries.map(entry => <li key={entry.id}>{entry.title}: {entry.status.replace('_', ' ')}{entry.reason ? ` — ${entry.reason}` : ''}</li>)}</ul></details>
               </section>}

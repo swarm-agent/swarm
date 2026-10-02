@@ -11,7 +11,7 @@ import type { ProjectSummary, RunningTask } from './orchestrate-types'
 // the narrowest layer proving lifecycle ordering; wiring checks are supplementary,
 // not evidence of backend Git execution or rendered pixel/layout correctness.
 const project = { id: 'project-a', name: 'Project A' } as ProjectSummary
-const task = { id: 'task-a', title: 'Task A', sessionId: 'session-a', worktreeBranch: 'agent/a', baseBranch: 'dev', isIntegrated: false } as RunningTask
+const task = { id: 'task-a', title: 'Task A', status: 'needs_review', sessionId: 'session-a', worktreeBranch: 'agent/a', baseBranch: 'dev', isIntegrated: false } as RunningTask
 const success = (row = task): TaskIntegrationResult => ({ status: 'integrated', task: { id: row.id, session_id: row.sessionId!, is_integrated: true } })
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -50,9 +50,11 @@ test('failure persists with captured redacted recovery; explicit retry waits for
   const controller = createTaskIntegrationController()
   const key = taskIntegrationKey(project.id, task)
   const first = deferred<TaskIntegrationResult>()
-  const operation = controller.run(project, task, () => first.promise, () => { throw new Error('must not refresh after failure') })
+  let refreshes = 0
+  const operation = controller.run(project, task, () => first.promise, () => { refreshes++; throw new Error('refresh unavailable') })
   first.reject(new Error('Conflict token=secret-value'))
-  await operation
+  assert.equal((await operation).status, 'failed')
+  assert.equal(refreshes, 1, 'failure refreshes canonical repair evidence without replacing diagnostics')
   const error = controller.get(key)
   assert.equal(error.phase, 'error')
   if (error.phase !== 'error') throw new Error('Expected error')
@@ -97,7 +99,7 @@ test('missing lineage or unconfirmed/mismatched mutation result cannot report su
     let refreshed = false
     await controller.run(project, task, async () => result, () => { refreshed = true })
     assert.equal(controller.get(taskIntegrationKey(project.id, task)).phase, 'error')
-    assert.equal(refreshed, false)
+    assert.equal(refreshed, true, 'unconfirmed transport results refresh canonical task evidence')
   }
   const controller = createTaskIntegrationController()
   const missing = { ...task, baseBranch: undefined }
@@ -135,7 +137,8 @@ test('all task card consumers use the controller and send exact lineage without 
   const source = readFileSync(new URL('./OrchestrateView.tsx', import.meta.url), 'utf8')
   const handler = source.slice(source.indexOf('const handleIntegrateTask ='), source.indexOf('// Refine task with router'))
   assert.match(handler, /tasks\.find\(row => row\.id === taskId\)/)
-  assert.match(handler, /session_id: task\.sessionId, source_branch: task\.worktreeBranch, target_branch: task\.baseBranch/)
+  assert.match(handler, /taskIntegrationRequest\(projectId, task\)/)
+  assert.match(handler, /JSON\.stringify\(request\.body\)/)
   assert.match(handler, /taskIntegrationOperations\.run/)
   assert.equal((source.match(/integrationOperation=\{integrationForTask\(/g) || []).length, 5)
   assert.doesNotMatch(source, /integratingTaskFlights|integratingTaskIds|setIntegrationFailures/)

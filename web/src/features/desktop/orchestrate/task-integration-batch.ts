@@ -1,16 +1,22 @@
 import type { ProjectSummary, RunningTask } from './orchestrate-types'
-import { acquireIntegrationBatch, taskIntegrationKey, taskIntegrationOperations, taskMutationPending, type TaskIntegrationOutcome } from './task-integration-operation'
-import { taskOutcome } from './task-outcome'
+import { acquireIntegrationBatch, taskIntegrationKey, taskIntegrationOperations, taskIntegrationPhase, taskMutationPending, type TaskIntegrationOutcome } from './task-integration-operation'
+import { taskDelivery, taskOutcome } from './task-outcome'
 import { redactIntegrationDiagnostic } from './integration-recovery'
 
 export const MAX_INTEGRATION_BATCH = 100
 export function integrationSkipReason(projectId: string, task: RunningTask): string | undefined {
-  if (task.isIntegrated || taskIntegrationOperations.get(taskIntegrationKey(projectId, task)).phase === 'success') return 'Already integrated'
+  const delivery = taskDelivery(task)
+  if (delivery?.integrated) return 'Already integrated'
+  if (delivery?.recovered) return delivery.summary
+  if (delivery?.recoverable) return 'Recovery requires the individual Recover & integrate action'
+  if (delivery && !delivery.actionable) return delivery.summary
+  const phase = taskIntegrationPhase(task, taskIntegrationOperations.get(taskIntegrationKey(projectId, task)))
+  if (phase === 'success' || (!delivery && task.isIntegrated)) return 'Already integrated'
   if (['image', 'video', 'sound', 'audio', 'plan'].includes(task.agentType) || !task.worktreeBranch) return 'No code Git lineage'
   if (['running', 'in_progress', 'pending', 'queued', 'planning', 'pending_approval'].includes(task.status) || ['running', 'in_progress', 'pending', 'queued'].includes(task.currentRunStatus || '')) return 'Execution or approval pending'
   if (taskOutcome(task).launchIncomplete) return 'Current attempt launch incomplete'
   if (!task.sessionId || !task.sourceWorkspacePath || !task.baseBranch) return 'Captured ownership or target unavailable'
-  if (taskMutationPending(projectId, task.id) || task.integration?.state === 'in_progress') return 'Another task mutation is pending'
+  if (taskMutationPending(projectId, task.id) || phase === 'pending') return 'Another task mutation is pending'
 }
 export type BatchEntry = { id: string; title: string; status: TaskIntegrationOutcome['status'] | 'queued' | 'pending' | 'not_attempted'; reason?: string }
 export type IntegrationBatch = { pending: boolean; entries: BatchEntry[]; refreshError?: string }
@@ -58,7 +64,7 @@ export function createTaskIntegrationBatchController() {
           const latest = current(task.id)
           if (stopped) {
             entry.status = 'not_attempted'; entry.reason = 'Batch stopped; inspect the failed integration before retrying'
-          } else if (!latest || taskIntegrationKey(project.id, latest) !== taskIntegrationKey(project.id, task)) {
+          } else if (!latest || taskIntegrationKey(project.id, latest) !== taskIntegrationKey(project.id, task) || latest.deliveryAssessment?.source_oid !== task.deliveryAssessment?.source_oid) {
             entry.status = 'not_attempted'; entry.reason = 'Project, task or captured attempt changed; refresh and select again'
           } else {
             const reason = integrationSkipReason(project.id, latest)
@@ -67,7 +73,7 @@ export function createTaskIntegrationBatchController() {
               entry.status = 'pending'; publish(project.id, batch)
               attempted = true
               try {
-                const result = await integrate(task, lease.token)
+                const result = await integrate(latest, lease.token)
                 entry.status = result.status
                 entry.reason = 'reason' in result ? result.reason : undefined
                 stopped = result.status === 'failed'
