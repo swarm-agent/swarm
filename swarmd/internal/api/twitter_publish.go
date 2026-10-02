@@ -12,293 +12,138 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
-	"swarm/packages/swarmd/internal/security"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
 const twitterPostTweetsURL = "https://api.twitter.com/2/tweets"
 
+var twitterAccountPattern = regexp.MustCompile(`^[A-Za-z0-9_]{1,15}$`)
+var twitterIDPattern = regexp.MustCompile(`^[1-9][0-9]{0,19}$`)
+
 type TwitterCredentials struct {
-	APIKey            string
-	APISecret         string
-	AccessToken       string
+	APIKey string
+	APISecret string
+	AccessToken string
 	AccessTokenSecret string
-	Account           string
+	Account string
 }
 
-// ResolveTwitterCredentials attempts to load credentials from:
-// 1. security.GetLocalSecret (checks env vars, then ~/.config/swarm/secrets.env)
-// 2. target secret references
+// ResolveTwitterCredentials accepts only explicit env:TWITTER configuration.
+// Operators inject TWITTER_API_KEY, TWITTER_API_SECRET, TWITTER_ACCESS_TOKEN,
+// TWITTER_ACCESS_TOKEN_SECRET and TWITTER_ACCOUNT into the daemon environment.
+// TWITTER_ACCOUNT_SCOPE_ID binds those credentials to one authenticated Swarm
+// account. No home-file lookup, cloud lookup or implicit account is performed.
 func ResolveTwitterCredentials(secretRef string) (*TwitterCredentials, error) {
-	creds := &TwitterCredentials{
-		Account: "@__swarmagent",
-	}
-
-	// 1. Try common environment / secrets.env variable names
-	apiKey, _ := security.GetLocalSecret("TWITTER_API_KEY")
-	if apiKey == "" {
-		apiKey, _ = security.GetLocalSecret("TWITTER_CONSUMER_KEY")
-	}
-	if apiKey == "" {
-		apiKey, _ = security.GetLocalSecret("X_API_KEY")
-	}
-
-	apiSecret, _ := security.GetLocalSecret("TWITTER_API_SECRET")
-	if apiSecret == "" {
-		apiSecret, _ = security.GetLocalSecret("TWITTER_CONSUMER_SECRET")
-	}
-	if apiSecret == "" {
-		apiSecret, _ = security.GetLocalSecret("X_API_SECRET")
-	}
-
-	accessToken, _ := security.GetLocalSecret("TWITTER_ACCESS_TOKEN")
-	if accessToken == "" {
-		accessToken, _ = security.GetLocalSecret("X_ACCESS_TOKEN")
-	}
-
-	tokenSecret, _ := security.GetLocalSecret("TWITTER_ACCESS_TOKEN_SECRET")
-	if tokenSecret == "" {
-		tokenSecret, _ = security.GetLocalSecret("X_ACCESS_TOKEN_SECRET")
-	}
-
-	// 2. If missing and secretRef specifies GCP project, attempt GCP Secret Manager if available
-	if apiKey == "" || apiSecret == "" || accessToken == "" || tokenSecret == "" {
-		if strings.Contains(secretRef, "swarm-social") || os.Getenv("CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE") != "" {
-			gcpCreds, err := fetchTwitterCredsFromGCP(secretRef)
-			if err == nil && gcpCreds != nil {
-				if apiKey == "" {
-					apiKey = gcpCreds.APIKey
-				}
-				if apiSecret == "" {
-					apiSecret = gcpCreds.APISecret
-				}
-				if accessToken == "" {
-					accessToken = gcpCreds.AccessToken
-				}
-				if tokenSecret == "" {
-					tokenSecret = gcpCreds.AccessTokenSecret
-				}
-			}
-		}
-	}
-
-	if apiKey == "" || apiSecret == "" || accessToken == "" || tokenSecret == "" {
-		return nil, fmt.Errorf("incomplete twitter credentials: key=%t, secret=%t, token=%t, token_secret=%t",
-			apiKey != "", apiSecret != "", accessToken != "", tokenSecret != "")
-	}
-
-	creds.APIKey = apiKey
-	creds.APISecret = apiSecret
-	creds.AccessToken = accessToken
-	creds.AccessTokenSecret = tokenSecret
-	return creds, nil
+	if secretRef != "env:TWITTER" { return nil, fmt.Errorf("explicit env:TWITTER credentials required") }
+	c := &TwitterCredentials{APIKey: os.Getenv("TWITTER_API_KEY"), APISecret: os.Getenv("TWITTER_API_SECRET"), AccessToken: os.Getenv("TWITTER_ACCESS_TOKEN"), AccessTokenSecret: os.Getenv("TWITTER_ACCESS_TOKEN_SECRET"), Account: strings.TrimPrefix(os.Getenv("TWITTER_ACCOUNT"), "@")}
+	if strings.TrimSpace(c.APIKey) == "" || strings.TrimSpace(c.APISecret) == "" || strings.TrimSpace(c.AccessToken) == "" || strings.TrimSpace(c.AccessTokenSecret) == "" || !twitterAccountPattern.MatchString(c.Account) { return nil, fmt.Errorf("incomplete Twitter credentials or account") }
+	return c, nil
 }
 
-func percentEncode(s string) string {
-	var b strings.Builder
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '.' || c == '_' || c == '~' {
-			b.WriteByte(c)
-		} else {
-			fmt.Fprintf(&b, "%%%02X", c)
-		}
-	}
-	return b.String()
-}
+func percentEncode(s string) string { return strings.ReplaceAll(url.QueryEscape(s), "+", "%20") }
 
-// BuildOAuth1Header builds RFC 5849 OAuth 1.0a authorization header for Twitter API v2.
-func BuildOAuth1Header(method, rawURL string, creds *TwitterCredentials, timestamp string, nonce string) string {
-	if timestamp == "" {
-		timestamp = strconv.FormatInt(time.Now().Unix(), 10)
-	}
+// BuildOAuth1Header builds RFC 5849 OAuth 1.0a authorization for Twitter API v2.
+func BuildOAuth1Header(method, rawURL string, creds *TwitterCredentials, timestamp, nonce string) string {
+	if timestamp == "" { timestamp = strconv.FormatInt(time.Now().Unix(), 10) }
 	if nonce == "" {
 		b := make([]byte, 16)
-		_, _ = rand.Read(b)
+		if _, err := rand.Read(b); err != nil { return "" }
 		nonce = hex.EncodeToString(b)
 	}
-
-	params := map[string]string{
-		"oauth_consumer_key":     creds.APIKey,
-		"oauth_nonce":            nonce,
-		"oauth_signature_method": "HMAC-SHA1",
-		"oauth_timestamp":        timestamp,
-		"oauth_token":            creds.AccessToken,
-		"oauth_version":          "1.0",
-	}
-
+	params := map[string]string{"oauth_consumer_key": creds.APIKey, "oauth_nonce": nonce, "oauth_signature_method": "HMAC-SHA1", "oauth_timestamp": timestamp, "oauth_token": creds.AccessToken, "oauth_version": "1.0"}
 	keys := make([]string, 0, len(params))
-	for k := range params {
-		keys = append(keys, k)
-	}
+	for k := range params { keys = append(keys, k) }
 	sort.Strings(keys)
-
-	var paramPairs []string
-	for _, k := range keys {
-		paramPairs = append(paramPairs, percentEncode(k)+"="+percentEncode(params[k]))
-	}
-	paramString := strings.Join(paramPairs, "&")
-
-	baseString := strings.ToUpper(method) + "&" + percentEncode(rawURL) + "&" + percentEncode(paramString)
-	signingKey := percentEncode(creds.APISecret) + "&" + percentEncode(creds.AccessTokenSecret)
-
-	mac := hmac.New(sha1.New, []byte(signingKey))
-	mac.Write([]byte(baseString))
-	signature := base64.StdEncoding.EncodeToString(mac.Sum(nil))
-
-	return fmt.Sprintf(
-		`OAuth oauth_consumer_key="%s", oauth_nonce="%s", oauth_signature="%s", oauth_signature_method="HMAC-SHA1", oauth_timestamp="%s", oauth_token="%s", oauth_version="1.0"`,
-		percentEncode(creds.APIKey),
-		percentEncode(nonce),
-		percentEncode(signature),
-		percentEncode(timestamp),
-		percentEncode(creds.AccessToken),
-	)
+	pairs := make([]string, 0, len(keys))
+	for _, k := range keys { pairs = append(pairs, percentEncode(k)+"="+percentEncode(params[k])) }
+	base := strings.ToUpper(method)+"&"+percentEncode(rawURL)+"&"+percentEncode(strings.Join(pairs, "&"))
+	mac := hmac.New(sha1.New, []byte(percentEncode(creds.APISecret)+"&"+percentEncode(creds.AccessTokenSecret)))
+	mac.Write([]byte(base))
+	params["oauth_signature"] = base64.StdEncoding.EncodeToString(mac.Sum(nil))
+	keys = append(keys, "oauth_signature")
+	sort.Strings(keys)
+	pairs = pairs[:0]
+	for _, k := range keys { pairs = append(pairs, percentEncode(k)+`="`+percentEncode(params[k])+`"`) }
+	return "OAuth "+strings.Join(pairs, ", ")
 }
 
-// ExtractTweetTexts extracts tweet copy from deliverable payload.
+// ExtractTweetTexts rejects an entire batch if any entry is empty or malformed.
 func ExtractTweetTexts(payload map[string]any) []string {
-	if payload == nil {
-		return nil
-	}
-	if text, ok := payload["tweet_text"].(string); ok && strings.TrimSpace(text) != "" {
-		return []string{strings.TrimSpace(text)}
-	}
-	if text, ok := payload["text"].(string); ok && strings.TrimSpace(text) != "" {
-		return []string{strings.TrimSpace(text)}
-	}
-	if text, ok := payload["content"].(string); ok && strings.TrimSpace(text) != "" {
-		return []string{strings.TrimSpace(text)}
-	}
-	if posts, ok := payload["posts"].([]any); ok && len(posts) > 0 {
-		var texts []string
-		for _, p := range posts {
-			if postMap, ok := p.(map[string]any); ok {
-				if t, ok := postMap["text"].(string); ok && strings.TrimSpace(t) != "" {
-					texts = append(texts, strings.TrimSpace(t))
-				}
-			} else if s, ok := p.(string); ok && strings.TrimSpace(s) != "" {
-				texts = append(texts, strings.TrimSpace(s))
-			}
-		}
-		if len(texts) > 0 {
-			return texts
+	for _, key := range []string{"tweet_text", "text", "content"} {
+		if v, exists := payload[key]; exists {
+			text, ok := v.(string)
+			if !ok || strings.TrimSpace(text) == "" { return nil }
+			return []string{strings.TrimSpace(text)}
 		}
 	}
-	return nil
+	posts, ok := payload["posts"].([]any)
+	if !ok { return nil }
+	var texts []string
+	for _, post := range posts {
+		text, ok := post.(string)
+		if m, isMap := post.(map[string]any); isMap { text, ok = m["text"].(string) }
+		if !ok || strings.TrimSpace(text) == "" { return nil }
+		texts = append(texts, strings.TrimSpace(text))
+	}
+	return texts
 }
 
-// ExecuteTwitterPublish posts the approved deliverable to Twitter API v2.
+// ExecuteTwitterPublish deliberately refuses unclaimed external publication.
+// Approval uses executeTwitterPublish with a synchronous durable receipt sink.
 func ExecuteTwitterPublish(ctx context.Context, rec *pebblestore.DeliverableRecord) map[string]any {
-	result := map[string]any{
-		"published_to": "x",
-		"account":      "@__swarmagent",
-		"status":       "published",
-	}
+	return map[string]any{"published_to": "x", "status": "publication_failed", "error": "durable approval claim required"}
+}
 
-	secretRef := ""
-	if rec.ActionContract != nil {
-		secretRef = rec.ActionContract.TargetSecretRef
-		if secretRef != "" {
-			result["secret_ref"] = secretRef
-		}
+func executeTwitterPublish(ctx context.Context, rec *pebblestore.DeliverableRecord, client *http.Client, save func(map[string]any) error) map[string]any {
+	result := map[string]any{"published_to": "x", "status": "publication_failed"}
+	fail := func(status, message string) map[string]any {
+		if count, _ := result["post_count"].(int); count > 0 { status = "reconciliation_required" }
+		result["status"] = status
+		result["error"] = message
+		return result
 	}
-
+	if rec == nil || rec.PublicationClaim == "" || rec.ActionContract == nil || save == nil { return fail("publication_failed", "durable approval claim required") }
 	texts := ExtractTweetTexts(rec.Payload)
-	if len(texts) == 0 {
-		result["warning"] = "no tweet text found in deliverable payload"
-		return result
-	}
-
-	creds, err := ResolveTwitterCredentials(secretRef)
-	if err != nil {
-		// Log warning and preserve simulated receipt if credentials are not present locally
-		result["warning"] = fmt.Sprintf("Credentials unavailable: %v", err)
-		result["simulated"] = true
-		result["post_count"] = len(texts)
-		return result
-	}
-
-	client := &http.Client{Timeout: 15 * time.Second}
-	publishedTweets := []map[string]any{}
-
-	for idx, tweetText := range texts {
-		reqBody, _ := json.Marshal(map[string]string{"text": tweetText})
-		req, reqErr := http.NewRequestWithContext(ctx, http.MethodPost, twitterPostTweetsURL, bytes.NewReader(reqBody))
-		if reqErr != nil {
-			result["error"] = fmt.Sprintf("create request failed: %v", reqErr)
-			result["status"] = "failed"
-			return result
-		}
-
+	if len(texts) == 0 { return fail("publication_failed", "nonempty post text required") }
+	if rec.AccountID == "" || os.Getenv("TWITTER_ACCOUNT_SCOPE_ID") != rec.AccountID { return fail("publication_failed", "Twitter credentials not configured for this account") }
+	creds, err := ResolveTwitterCredentials(rec.ActionContract.TargetSecretRef)
+	if err != nil { return fail("publication_failed", "Twitter credentials unavailable") }
+	result["account"] = creds.Account
+	posts := []map[string]any{}
+	for i, text := range texts {
+		body, _ := json.Marshal(map[string]string{"text": text})
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, twitterPostTweetsURL, bytes.NewReader(body))
+		if err != nil { return fail("publication_failed", "invalid publication request") }
 		req.Header.Set("Content-Type", "application/json")
-		authHeader := BuildOAuth1Header(http.MethodPost, twitterPostTweetsURL, creds, "", "")
-		req.Header.Set("Authorization", authHeader)
-
-		resp, respErr := client.Do(req)
-		if respErr != nil {
-			result["error"] = fmt.Sprintf("twitter post error on tweet %d: %v", idx+1, respErr)
-			result["status"] = "failed"
-			return result
-		}
-
-		respBytes, _ := io.ReadAll(resp.Body)
+		auth := BuildOAuth1Header(http.MethodPost, twitterPostTweetsURL, creds, "", "")
+		if auth == "" { return fail("publication_failed", "unable to sign publication") }
+		req.Header.Set("Authorization", auth)
+		resp, err := client.Do(req)
+		if err != nil { return fail("reconciliation_required", "publication outcome unknown; reconcile before retry") }
+		data, readErr := io.ReadAll(io.LimitReader(resp.Body, 65537))
 		resp.Body.Close()
-
 		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-			result["error"] = fmt.Sprintf("twitter api error %d on tweet %d: %s", resp.StatusCode, idx+1, string(respBytes))
-			result["status"] = "failed"
-			return result
+			status := "publication_failed"
+			if len(posts) > 0 || resp.StatusCode >= 500 { status = "reconciliation_required" }
+			return fail(status, "Twitter rejected publication")
 		}
-
-		var parsedResp struct {
-			Data struct {
-				ID   string `json:"id"`
-				Text string `json:"text"`
-			} `json:"data"`
-		}
-		_ = json.Unmarshal(respBytes, &parsedResp)
-
-		tweetID := parsedResp.Data.ID
-		tweetURL := ""
-		if tweetID != "" {
-			tweetURL = fmt.Sprintf("https://x.com/__swarmagent/status/%s", tweetID)
-		}
-
-		publishedTweets = append(publishedTweets, map[string]any{
-			"index":     idx + 1,
-			"tweet_id":  tweetID,
-			"tweet_url": tweetURL,
-			"text":      tweetText,
-		})
-	}
-
-	result["posts"] = publishedTweets
-	result["post_count"] = len(publishedTweets)
-	if len(publishedTweets) > 0 {
-		result["tweet_id"] = publishedTweets[0]["tweet_id"]
-		result["tweet_url"] = publishedTweets[0]["tweet_url"]
+		var receipt struct { Data struct { ID string `json:"id"` } `json:"data"` }
+		if readErr != nil || len(data) > 65536 || json.Unmarshal(data, &receipt) != nil || !twitterIDPattern.MatchString(receipt.Data.ID) { return fail("reconciliation_required", "invalid Twitter receipt; reconcile before retry") }
+		if _, err := strconv.ParseUint(receipt.Data.ID, 10, 64); err != nil { return fail("reconciliation_required", "invalid Twitter post ID") }
+		posts = append(posts, map[string]any{"index": i+1, "tweet_id": receipt.Data.ID, "tweet_url": "https://x.com/"+creds.Account+"/status/"+receipt.Data.ID})
+		result["posts"], result["post_count"] = posts, len(posts)
+		result["tweet_id"], result["tweet_url"] = posts[0]["tweet_id"], posts[0]["tweet_url"]
+		result["status"] = "reconciliation_required"
+		if err := save(result); err != nil { return fail("reconciliation_required", "receipt persistence failed; reconcile before retry") }
 	}
 	result["status"] = "published"
 	return result
-}
-
-// fetchTwitterCredsFromGCP retrieves secrets from GCP Secret Manager if project is specified.
-func fetchTwitterCredsFromGCP(secretRef string) (*TwitterCredentials, error) {
-	// Optional fallback if running inside GCP VM / Cloud Run with Secret Manager access
-	projectID := "swarm-social-20260926"
-	if strings.Contains(secretRef, "projects/") {
-		parts := strings.Split(secretRef, "/")
-		if len(parts) >= 2 {
-			projectID = parts[1]
-		}
-	}
-	_ = projectID
-	return nil, fmt.Errorf("gcp secret manager direct lookup not configured in host mode")
 }

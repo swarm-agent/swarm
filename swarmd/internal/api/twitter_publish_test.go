@@ -78,7 +78,9 @@ func TestBuildOAuth1Header(t *testing.T) {
 	}
 }
 
-func TestExecuteTwitterPublish_FallbackWarning(t *testing.T) {
+// Purpose: ExecuteTwitterPublish must refuse unclaimed calls, preventing direct
+// callers bypassing durable approval. This unit boundary proves no external I/O.
+func TestExecuteTwitterPublish_RequiresClaim(t *testing.T) {
 	rec := &pebblestore.DeliverableRecord{
 		ID:    "deliv_test",
 		Title: "Test Tweet",
@@ -95,8 +97,8 @@ func TestExecuteTwitterPublish_FallbackWarning(t *testing.T) {
 	if res["published_to"] != "x" {
 		t.Fatalf("expected published_to x, got %v", res)
 	}
-	if res["status"] != "published" {
-		t.Fatalf("expected status published, got %v", res)
+	if res["status"] != "publication_failed" {
+		t.Fatalf("expected fail-closed status, got %v", res)
 	}
 }
 

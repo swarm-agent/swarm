@@ -19,6 +19,7 @@ type Store struct {
 	path                        string
 	closed                      atomic.Bool
 	sessionMutations            *sessionMutationCoordinator
+	deliverablesMu              sync.Mutex
 	modelProfilesMu             sync.Mutex
 	swarmProfilesMu             sync.Mutex
 	agentModelSettingsMu        sync.Mutex
