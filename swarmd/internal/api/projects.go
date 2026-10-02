@@ -46,7 +46,7 @@ func (s *Server) resolveProjectThemeID(accountScopeID, themeID string) (string, 
 }
 
 type taskGitState struct {
-	deliveryAssessment *pebblestore.TaskDeliveryAssessment
+	deliveryAssessment  *pebblestore.TaskDeliveryAssessment
 	worktreeBranch      string
 	worktreeName        string
 	baseBranch          string
@@ -338,12 +338,7 @@ func syncTaskSessionState(task *pebblestore.ProjectTaskRecord, db *pebblestore.S
 		return
 	}
 
-	// 1. If task is already integrated, it is completed
-	if task.IsIntegrated {
-		task.Status = "completed"
-		return
-	}
-
+	// Git delivery is an independent observation, never an execution result.
 	// 2. If task was explicitly marked completed and not reopened, preserve completed
 	if task.Status == "completed" {
 		return
@@ -402,7 +397,7 @@ func syncTaskSessionState(task *pebblestore.ProjectTaskRecord, db *pebblestore.S
 		if progID != "" && task.SessionID != "" {
 			if prog, ok := db.CurrentTaskProgram(task); ok {
 				task.TaskProgramStatus = &prog
-				if task.IsIntegrated || task.Status == "completed" || task.Status == "rejected" {
+				if task.Status == "completed" || task.Status == "rejected" {
 					return
 				}
 				switch prog.State {
@@ -2411,6 +2406,15 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 					tasks[i].WorktreeName = strings.TrimPrefix(tasks[i].WorktreeBranch, "agent/")
 					tasks[i].WorktreeName = strings.TrimPrefix(tasks[i].WorktreeName, "worktree/")
 				}
+				// A collection response cannot advertise old delivery facts as current.
+				tasks[i].IsIntegrated, tasks[i].UnintegratedCommits = false, 0
+				tasks[i].DeliveryAssessment = &pebblestore.TaskDeliveryAssessment{
+					AccountID: tasks[i].AccountID, TaskID: tasks[i].ID, TaskRevision: tasks[i].Revision,
+					SessionID: tasks[i].SessionID, AttemptID: tasks[i].ActiveAttemptID,
+					WorkspaceID: tasks[i].SourceWorkspace.WorkspaceID, WorkspaceGeneration: tasks[i].SourceWorkspace.WorkspaceGeneration,
+					BaseOID: tasks[i].BaseCommit, SourceBranch: tasks[i].WorktreeBranch, TargetBranch: tasks[i].BaseBranch,
+					State: "unavailable", ReasonCode: "not_assessed", Reason: "Fetch task detail for a current delivery assessment", Freshness: "stale", AllowedActions: []string{},
+				}
 				// Collection GET does not run expensive git subprocesses to avoid CPU churn.
 				// Mark Git status as explicit "unknown" (or "stale" if previously recorded)
 				// so callers know git state has not been freshly verified, without disabling operations.
@@ -3724,7 +3728,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		gitState := inspectTaskGitStateContext(r.Context(), *task, db)
-		if gitState.deliveryAssessment == nil || (gitState.deliveryAssessment.State != "candidate_work" && gitState.deliveryAssessment.State != "integrated") {
+		if gitState.deliveryAssessment == nil || gitState.deliveryAssessment.Freshness != "observed" || (gitState.deliveryAssessment.State != "candidate_work" && gitState.deliveryAssessment.State != "integrated") {
 			writeError(w, http.StatusConflict, errors.New("delivery is not actionable for direct integration; refresh and review recovery"))
 			return
 		}
@@ -3755,7 +3759,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				// claiming this task was integrated into the requested target.
 				checkout, checkoutErr := s.worktrees.InspectTaskWorkspace(capturedPath)
 				sourceState, sourceErr := s.worktrees.InspectTaskWorkspace(selectedSession.WorktreeRootPath)
-				if checkoutErr != nil || sourceErr != nil || checkout.BranchName != selection.TargetBranch || sourceState.BranchName != selection.SourceBranch || checkout.HeadCommit == "" || sourceState.HeadCommit == "" || !checkout.Clean || !sourceState.Clean || sourceState.HeadCommit == capturedBase {
+				if checkoutErr != nil || sourceErr != nil || checkout.BranchName != selection.TargetBranch || sourceState.BranchName != selection.SourceBranch || checkout.HeadCommit != gitState.deliveryAssessment.TargetOID || sourceState.HeadCommit != gitState.deliveryAssessment.SourceOID || !checkout.Clean || !sourceState.Clean || sourceState.HeadCommit == capturedBase {
 					writeError(w, http.StatusConflict, errors.New("captured target or committed source is unavailable; inspect Git before retrying"))
 					return
 				}

@@ -732,6 +732,8 @@ func TestProjectTask_ReconcileProjectTaskRunLifecycle_RealtimeInvalidation(t *te
 		<-outboxChan
 	}
 
+	// Canonical run authority, not the callback string, proves completion.
+	recordWorkspaceOverviewRunIntentForTest(t, server, sessID, "run-reconcile-1", sessionruntime.RunIntentCompleted, now+1)
 	// 1. Terminal completed run reconciliation
 	job := sessionV3ExecutorJob{
 		Principal: testPrincipal(),
