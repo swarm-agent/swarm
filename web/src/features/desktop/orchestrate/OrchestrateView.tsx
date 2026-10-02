@@ -6,7 +6,7 @@ import { MediaTaskSelect, MediaTaskDefault, MediaTaskHelp, MediaTaskScenes, Medi
 import { ImagePromptControls, imagePromptReducer, initialImagePromptState, imagePromptEnhancement } from './image-task-prompt'
 import { DurableWorkerReviews } from '../chat/components/durable-worker-reviews'
 import { taskReopenOperations, taskReopenKey, type TaskReopenOutcome } from './task-reopen-operation'
-import { taskIntegrationOperations, taskIntegrationKey, taskIntegrationFailureIdentity, taskIntegrationPhase, type TaskIntegrationOperation, type TaskIntegrationResult } from './task-integration-operation'
+import { taskIntegrationRequest, taskIntegrationOperations, taskIntegrationKey, taskIntegrationFailureIdentity, taskIntegrationPhase, type TaskIntegrationOperation, type TaskIntegrationResult } from './task-integration-operation'
 import { taskDelivery, taskOutcome } from './task-outcome'
 import { TaskOutcomeDetails, ProjectTaskAttention } from './task-outcome-view'
 import { TaskAttemptHistory } from './task-attempt-history'
@@ -825,8 +825,8 @@ export function MinimalTaskCard({
   const isIntegrating = integrationPhase === 'pending'
   const hasIntegrationReceipt = integrationPhase !== 'ready'
   const delivery = taskDelivery(task)
-  const hasUnintegrated = delivery ? delivery.actionable : task.gitStatus === 'diverged' && !task.isIntegrated && (task.unintegratedCommits ?? 0) > 0
-  const deliveryNeedsReview = Boolean(delivery && !delivery.actionable && !delivery.integrated)
+  const hasUnintegrated = delivery ? (delivery.actionable || delivery.recoverable) : task.gitStatus === 'diverged' && !task.isIntegrated && (task.unintegratedCommits ?? 0) > 0
+  const deliveryNeedsReview = Boolean(delivery && !delivery.actionable && !delivery.recoverable && !delivery.integrated && !delivery.recovered)
   const canReopen = !isPendingApproval && !isRejected && !isRunning && Boolean(onReopen) &&
     (isNeedsReview || isCompleted || isFailed || task.isIntegrated || integrationPhase === 'success')
   const showComplete = !deliveryNeedsReview && isNeedsReview && !hasUnintegrated && !hasIntegrationReceipt && !task.isIntegrated && Boolean(onComplete)
@@ -1121,20 +1121,20 @@ export function MinimalTaskCard({
         <div className="swarm-task-action-row flex items-center flex-wrap gap-2 text-xs" data-testid="task-primary-actions">
           {showIntegration && <div className="flex items-center flex-wrap gap-2" data-testid="task-pending-worktree-bar">
             <span role="status" aria-live="polite">
-              {isIntegrating ? 'Integrating worktree' : integrationPhase === 'error' ? 'Integration needs attention' : isIntegratedAction ? 'Integrated:' : deliveryNeedsReview ? delivery?.summary : task.baseBranch ? 'Ready to integrate' : 'Target unavailable'}
+              {isIntegrating ? 'Integrating worktree' : integrationPhase === 'error' ? 'Integration needs attention' : isIntegratedAction ? (delivery?.recovered ? 'Task delta delivered:' : 'Integrated:') : deliveryNeedsReview ? delivery?.summary : task.baseBranch ? 'Ready to integrate' : 'Target unavailable'}
             </span>
             {deliveryNeedsReview && <button type="button" onClick={event => { event.stopPropagation(); handleToggleExpand() }}>Review task</button>}
             {onIntegrate && !deliveryNeedsReview && <button type="button"
               disabled={isIntegrating || isReopening || isIntegratedAction || !task.baseBranch}
               aria-busy={isIntegrating}
-              aria-label={isIntegrating ? 'Integrating…' : isIntegratedAction ? 'Integrated' : task.baseBranch ? `${integrationPhase === 'error' ? 'Retry integrate' : 'Integrate'} into ${task.baseBranch}` : 'Target unavailable'}
+              aria-label={isIntegrating ? 'Integrating…' : isIntegratedAction ? (delivery?.recovered ? 'Task delta delivered' : 'Integrated') : delivery?.recoverable ? 'Recover & integrate' : task.baseBranch ? `${integrationPhase === 'error' ? 'Retry integrate' : 'Integrate'} into ${task.baseBranch}` : 'Target unavailable'}
               onClick={event => { event.stopPropagation(); onIntegrate() }}
               className="swarm-outline-action inline-grid min-h-7 items-center rounded-lg border border-amber-500/50 px-3 py-1 font-medium disabled:opacity-70 disabled:cursor-not-allowed"
               title={task.baseBranch ? `Integrate changes into ${task.baseBranch}` : 'Target branch unavailable; refresh task lineage'}>
               <span aria-hidden="true" className="invisible col-start-1 row-start-1 flex items-center gap-1.5"><GitPullRequest size={12} />{task.baseBranch ? `Retry integrate into ${task.baseBranch}` : 'Target unavailable'}</span>
               <span className="col-start-1 row-start-1 flex items-center justify-center gap-1.5">
                 {isIntegrating ? <Loader2 size={12} className="animate-spin motion-reduce:animate-none" /> : isIntegratedAction ? <Check size={12} /> : <GitPullRequest size={12} />}
-                {isIntegrating ? 'Integrating…' : isIntegratedAction ? 'Integrated' : task.baseBranch ? `${integrationPhase === 'error' ? 'Retry integrate' : 'Integrate'} into ${task.baseBranch}` : 'Target unavailable'}
+                {isIntegrating ? 'Integrating…' : isIntegratedAction ? (delivery?.recovered ? 'Task delta delivered' : 'Integrated') : delivery?.recoverable ? 'Recover & integrate' : task.baseBranch ? `${integrationPhase === 'error' ? 'Retry integrate' : 'Integrate'} into ${task.baseBranch}` : 'Target unavailable'}
               </span>
             </button>}
           </div>}
@@ -1193,7 +1193,7 @@ export function MinimalTaskCard({
       <h4>Result / current work</h4>
       {showIntegration && <div className="text-xs font-mono" data-testid="task-integration-lineage">
         {task.worktreeBranch || 'Source unavailable'} → {task.baseBranch || 'Target unavailable'}
-        {task.unintegratedCommits ? ` (${task.unintegratedCommits} ${task.unintegratedCommits === 1 ? 'commit' : 'commits'})` : ''}
+        {delivery ? ` · ${delivery.summary}` : task.unintegratedCommits ? ` (${task.unintegratedCommits} ${task.unintegratedCommits === 1 ? 'commit' : 'commits'})` : ''}
       </div>}
       <TaskCardHandoff task={task} />
       {expanded && onInvestigateSession && <TaskSessionErrors task={task} onInvestigate={onInvestigateSession} />}
@@ -2290,7 +2290,7 @@ export function MinimalTaskCard({
               <>
                 <span>•</span>
                 <span className="text-amber-400 font-semibold">
-                  Not integrated ({task.unintegratedCommits} commit(s))
+                  {delivery?.summary || `Not integrated (${task.unintegratedCommits} commit(s))`}
                 </span>
               </>
             )}
@@ -5242,11 +5242,12 @@ export function OrchestrateView({
     const task = tasks.find(row => row.id === taskId)
     if (!project || !task) return
     const projectId = project.id
+    const request = taskIntegrationRequest(projectId, task)
     await taskIntegrationOperations.run(project, task, () =>
-      requestJson<TaskIntegrationResult>(`/v3/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(taskId)}/integrate`, {
+      requestJson<TaskIntegrationResult>(request.url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: task.sessionId, source_branch: task.worktreeBranch, target_branch: task.baseBranch }),
+        body: JSON.stringify(request.body),
       }),
       () => desktopProjects.invalidate(projectId),
     )

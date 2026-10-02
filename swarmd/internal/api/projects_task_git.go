@@ -41,6 +41,11 @@ func inspectTaskGitStateContext(ctx context.Context, task pebblestore.ProjectTas
 	res.worktreeName = strings.TrimPrefix(strings.TrimPrefix(res.worktreeBranch, "agent/"), "worktree/")
 	a.BaseOID, a.SourceBranch, a.TargetBranch = base, res.worktreeBranch, res.baseBranch
 	assessment := worktree.AssessTaskDelivery(ctx, worktree.TaskDeliveryInput{Identity: *a, SourcePath: session.WorktreeRootPath, TargetPath: source})
+	assessment = worktree.ObserveTaskDeltaReceipt(ctx, worktree.TaskDeliveryInput{Identity: assessment, SourcePath: session.WorktreeRootPath, TargetPath: source}, task.Integration)
+	if attempt := task.ActiveAttempt(); attempt != nil && attempt.Recovery != nil && attempt.Recovery.PreparedHead != "" && assessment.SourceOID == attempt.Recovery.PreparedHead {
+		assessment.State, assessment.ReasonCode, assessment.Reason = "ambiguous", "unresolved_recovery", "Resolve and commit the retained task-delta conflicts in the repair session before integration"
+		assessment.AllowedActions = []string{}
+	}
 	res.deliveryAssessment = &assessment
 	if assessment.State != "integrated" && assessment.State != "empty" {
 		res.actionNeeded = assessment.Reason
@@ -48,7 +53,7 @@ func inspectTaskGitStateContext(ctx context.Context, task pebblestore.ProjectTas
 	switch assessment.State {
 	case "integrated":
 		res.gitStatus, res.isIntegrated = "clean", true
-	case "empty":
+	case "empty", "recovered", "equivalent":
 		res.gitStatus = "clean"
 	case "dirty":
 		res.gitStatus, res.isDirty = "dirty", true

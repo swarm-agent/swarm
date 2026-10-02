@@ -69,8 +69,8 @@ func TestTaskDeliveryAssessment(t *testing.T) {
 	run(root, "commit", "--allow-empty", "-m", "advance")
 	run(root, "cherry-pick", head)
 	got = check("history_equivalent")
-	if len(got.AllowedActions) != 0 {
-		t.Fatal("equivalence offered integration")
+	if len(got.AllowedActions) != 1 || got.AllowedActions[0] != "recover_integrate" {
+		t.Fatal("equivalence must offer explicit delta verification, never original integration")
 	}
 	run(root, "revert", "--no-edit", "HEAD")
 	check("candidate_work") // Reverted history is not integrated; preflight owns conflicts.
@@ -226,8 +226,9 @@ func deliveryFixture(t *testing.T) (TaskDeliveryInput, func(string, ...string) s
 	return TaskDeliveryInput{SourcePath: child, TargetPath: root, Identity: pebblestore.TaskDeliveryAssessment{BaseOID: parent, SourceBranch: "agent/task", TargetBranch: "dev"}}, git
 }
 
-// Purpose: base-scoped evidence rejects merge/import ambiguity and rewritten
-// history, but admits advanced targets to the integration service's preflight.
+// Purpose: base-scoped evidence routes merge/rewritten history only to explicit
+// delta recovery, and admits advanced targets to normal integration preflight.
+// Recovery validates the first-parent boundary; neither action is read-side delivery.
 // Actual trees and refs, not status-only mocks, establish the postconditions.
 func TestTaskDeliveryTopology(t *testing.T) {
 	for _, scenario := range []string{"rewritten", "partial", "squash", "merge", "missing-target", "wrong-repository", "dirty-target", "no-net-change"} {
@@ -262,6 +263,7 @@ func TestTaskDeliveryTopology(t *testing.T) {
 				git(in.TargetPath, "update-ref", "refs/heads/dev", squash)
 				want = "history_equivalent" // Current tree only; never ancestry delivery.
 			case "merge":
+				want = "history_rewritten"
 				tree := git(in.SourcePath, "rev-parse", "HEAD^{tree}")
 				side := git(in.SourcePath, "commit-tree", tree, "-p", in.Identity.BaseOID, "-m", "imported")
 				tip := git(in.SourcePath, "rev-parse", "HEAD")
@@ -283,7 +285,7 @@ func TestTaskDeliveryTopology(t *testing.T) {
 			}
 			refs := git(in.SourcePath, "show-ref")
 			got := AssessTaskDelivery(context.Background(), in)
-			if got.State != want || (len(got.AllowedActions) > 0) != (want == "candidate_work") || refs != git(in.SourcePath, "show-ref") {
+			if got.State != want || (len(got.AllowedActions) > 0) != (want == "candidate_work" || want == "history_rewritten" || want == "history_equivalent") || refs != git(in.SourcePath, "show-ref") {
 				t.Fatalf("unsafe topology result: %+v", got)
 			}
 			if scenario == "rewritten" && (got.CandidateCommits != 1 || len(got.Files) != 1 || got.Files[0] != "feature") {

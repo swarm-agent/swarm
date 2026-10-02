@@ -208,7 +208,12 @@ func (s *Server) ReopenProjectTask(ctx context.Context, p identity.Principal, pr
 		if inspectErr != nil || !origin.Clean {
 			return nil, &projectTaskFollowupError{409, errors.New("retained task worktree unavailable or dirty; preserve and commit its work before reopening")}
 		}
-		if origin.HeadCommit != task.BaseCommit && (task.Integration == nil || (task.Integration.State != "integrated" && task.Integration.State != "already_integrated") || task.Integration.SessionID != task.SessionID || task.Integration.SourceHead != origin.HeadCommit) {
+		deltaDelivered := false
+		if task.Integration != nil && (task.Integration.State == "recovered" || task.Integration.State == "equivalent") {
+			assessment := inspectTaskGitStateContext(ctx, *task, db).deliveryAssessment
+			deltaDelivered = assessment != nil && (assessment.State == "recovered" || assessment.State == "equivalent")
+		}
+		if !deltaDelivered && origin.HeadCommit != task.BaseCommit && (task.Integration == nil || (task.Integration.State != "integrated" && task.Integration.State != "already_integrated") || task.Integration.SessionID != task.SessionID || task.Integration.SourceHead != origin.HeadCommit) {
 			return nil, &projectTaskFollowupError{409, errors.New("retained task has unintegrated commits; integrate its current owned attempt first, or use repair=true for an originating failed integration receipt")}
 		}
 	}
@@ -231,6 +236,12 @@ func (s *Server) ReopenProjectTask(ctx context.Context, p identity.Principal, pr
 				return nil, &projectTaskFollowupError{409, errors.New("repair source is unavailable or dirty")}
 			}
 			recovery.HeadCommit = originState.HeadCommit
+			if task.Integration.RecoveryBase != "" {
+				if task.Integration.RecoveryBase != task.BaseCommit || task.Integration.RecoveredHead == "" || task.Integration.RecoveryRef == "" {
+					return nil, &projectTaskFollowupError{409, errors.New("no prepared delta available; retry recovery before launching repair")}
+				}
+				recovery.PreparedHead, recovery.PreparedRef = task.Integration.RecoveredHead, task.Integration.RecoveryRef
+			}
 			if task.Integration.SourceHead != recovery.HeadCommit || task.Integration.SourceBranch != recovery.Branch || task.Integration.TargetBranch != recovery.TargetBranch || state.HeadCommit != recovery.TargetHead || state.BranchName != recovery.TargetBranch {
 				return nil, &projectTaskFollowupError{409, errors.New("integration receipt does not match current committed source/captured target")}
 			}
@@ -256,7 +267,7 @@ func (s *Server) ReopenProjectTask(ctx context.Context, p identity.Principal, pr
 		return nil, &projectTaskFollowupError{409, errors.New("captured follow-up target branch changed; restore the captured checkout before retry")}
 	}
 	if a.Recovery != nil && a.BaseCommit != "" {
-		task.BaseCommit = a.Recovery.BaseCommit
+		task.BaseCommit = projectTaskRepairBase(a.Recovery)
 	}
 	if a.LaunchState == "launched" {
 		return task, nil
@@ -267,6 +278,9 @@ func (s *Server) ReopenProjectTask(ctx context.Context, p identity.Principal, pr
 		base, target := state.HeadCommit, state.BranchName
 		if a.Recovery != nil {
 			base, target = a.Recovery.HeadCommit, a.Recovery.TargetBranch
+			if a.Recovery.PreparedHead != "" {
+				base = a.Recovery.PreparedHead
+			}
 		}
 		task, err = db.UpdateProjectTask(p.AccountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
 			if t.ActiveAttemptID != a.ID {
@@ -274,7 +288,7 @@ func (s *Server) ReopenProjectTask(ctx context.Context, p identity.Principal, pr
 			}
 			t.BaseCommit, t.BaseBranch = base, target
 			if t.ActiveAttempt().Recovery != nil {
-				t.BaseCommit = t.ActiveAttempt().Recovery.BaseCommit
+				t.BaseCommit = projectTaskRepairBase(t.ActiveAttempt().Recovery)
 			}
 			t.ActiveAttempt().AllocationHead = base
 			return nil
@@ -297,7 +311,7 @@ func (s *Server) ReopenProjectTask(ctx context.Context, p identity.Principal, pr
 			current.WorkspacePath, current.WorktreeBranch, current.BaseBranch, current.BaseCommit = task.WorkspacePath, task.WorktreeBranch, task.BaseBranch, task.BaseCommit
 			current.WorktreeName = task.WorktreeName
 			if attempt.Recovery != nil {
-				current.BaseCommit = attempt.Recovery.BaseCommit
+				current.BaseCommit = projectTaskRepairBase(attempt.Recovery)
 			}
 			attempt.LaunchState, attempt.LastError = "launched", ""
 			current.LastError = ""

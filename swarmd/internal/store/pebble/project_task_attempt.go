@@ -48,6 +48,8 @@ type ProjectTaskRecoverySource struct {
 	BaseCommit    string `json:"base_commit"`
 	TargetBranch  string `json:"target_branch"`
 	TargetHead    string `json:"target_head"`
+	PreparedHead  string `json:"prepared_head,omitempty"`
+	PreparedRef   string `json:"prepared_ref,omitempty"`
 }
 
 // EnsureTaskAttempts is an idempotent, evidence-only upgrade of single-session tasks.

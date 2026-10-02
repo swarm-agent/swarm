@@ -350,6 +350,11 @@ type ProjectTaskIntegration struct {
 	PreviousTargetHead  string `json:"previous_target_head,omitempty"`
 	ResultingTargetHead string `json:"resulting_target_head,omitempty"`
 	Error               string `json:"error,omitempty"`
+	// Delta recovery never asserts original source ancestry. SourceHead remains
+	// the original tip; these fields authenticate the separately prepared delta.
+	RecoveryBase  string `json:"recovery_base,omitempty"`
+	RecoveredHead string `json:"recovered_head,omitempty"`
+	RecoveryRef   string `json:"recovery_ref,omitempty"`
 }
 
 // ProjectTaskCoderAssignment is one independent, source-bound Coder launch in a

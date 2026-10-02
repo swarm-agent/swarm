@@ -1,8 +1,12 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"os/exec"
+	"strings"
+	"time"
 
 	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -65,5 +69,38 @@ func (s *Server) validateProjectTaskRecovery(p identity.Principal, task *pebbles
 	if err != nil || !target.Clean || target.BranchName != source.TargetBranch || target.HeadCommit != source.TargetHead {
 		return errors.New("repair captured target changed or dirty")
 	}
+	if source.PreparedHead != "" {
+		pinned := task.Integration != nil && task.Integration.SessionID == source.SessionID && task.Integration.SourceHead == source.HeadCommit && task.Integration.RecoveryBase == source.BaseCommit && task.Integration.RecoveredHead == source.PreparedHead && task.Integration.RecoveryRef == source.PreparedRef && task.Integration.PreviousTargetHead == source.TargetHead
+		for _, attempt := range task.Attempts {
+			if attempt.Recovery != nil && *attempt.Recovery == *source {
+				pinned = true
+			}
+		}
+		if !pinned {
+			return errors.New("prepared recovery source is not pinned to the task receipt or attempt")
+		}
+		// Prepared sources come only from the authenticated durable receipt (or
+		// its reserved repair attempt), and must still resolve to the pinned ref.
+		if !strings.HasPrefix(source.PreparedRef, "refs/swarm/task-recovery/") {
+			return errors.New("invalid prepared recovery reference")
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		ref, err := exec.CommandContext(ctx, "git", "-C", binding.Path, "rev-parse", "--verify", source.PreparedRef+"^{commit}").Output()
+		if err != nil || strings.TrimSpace(string(ref)) != source.PreparedHead {
+			return errors.New("prepared recovery source changed or missing")
+		}
+		parent, err := exec.CommandContext(ctx, "git", "-C", binding.Path, "rev-parse", source.PreparedHead+"^").Output()
+		if err != nil || strings.TrimSpace(string(parent)) != source.TargetHead {
+			return errors.New("prepared recovery does not descend directly from captured target")
+		}
+	}
 	return nil
+}
+
+func projectTaskRepairBase(source *pebblestore.ProjectTaskRecoverySource) string {
+	if source.PreparedHead != "" {
+		return source.TargetHead
+	}
+	return source.BaseCommit
 }

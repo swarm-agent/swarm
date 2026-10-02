@@ -287,6 +287,9 @@ export interface TaskIntegrationReceipt {
   session_id?: string
   target_branch?: string
   target_workspace_path?: string
+  recovery_base?: string
+  recovered_head?: string
+  recovery_ref?: string
   resulting_target_head?: string
   state: string
   error?: string

@@ -529,6 +529,15 @@ func (s *Service) PrepareTaskIntegration(parentPath, expectedParentBranch, expec
 			}
 			return TaskIntegrationPlan{}, fmt.Errorf("child %q HEAD does not descend from its recorded base", child.SessionID)
 		}
+		// A retained recovery conflict is a repair input, never a deliverable.
+		// The repair must resolve it and create a new commit first.
+		message, err := runGit(parentPath, "show", "-s", "--format=%B", child.HeadCommit)
+		if err != nil {
+			return TaskIntegrationPlan{}, err
+		}
+		if strings.Contains(message, "Swarm-Recovery-Conflict: unresolved") {
+			return TaskIntegrationPlan{}, errors.New("resolve and commit retained task-delta conflicts before integration")
+		}
 		commitText, err := runGit(parentPath, "rev-list", "--reverse", child.BaseCommit+".."+child.HeadCommit)
 		if err != nil {
 			return TaskIntegrationPlan{}, fmt.Errorf("list child %q commits: %w", child.SessionID, err)

@@ -56,6 +56,8 @@ func (b *deliveryBuffer) Write(p []byte) (int, error) {
 type deliveryInspector struct {
 	ctx    context.Context
 	budget deliveryBudget
+	// Recovery-only process overrides; normal read observations leave this nil.
+	env []string
 	// Instance-local seam for deterministic concurrent-mutation tests, never a
 	// substitute Git implementation and never used by production callers.
 	beforeFinish func()
@@ -65,6 +67,7 @@ func (d *deliveryInspector) run(path string, args ...string) (string, error) {
 	out := &deliveryBuffer{budget: &d.budget}
 	cmd := exec.CommandContext(d.ctx, "git", append([]string{"--no-optional-locks", "-c", "core.fsmonitor=false", "-C", path}, args...)...)
 	cmd.Env = append(os.Environ(), "GIT_NO_REPLACE_OBJECTS=1")
+	cmd.Env = append(cmd.Env, d.env...)
 	cmd.Stdout, cmd.Stderr = out, out
 	err := cmd.Run()
 	return strings.TrimRight(out.String(), "\n"), err
@@ -244,10 +247,9 @@ func (d *deliveryInspector) assess(in TaskDeliveryInput, a pebblestore.TaskDeliv
 	if len(lines) > 256 {
 		return set("ambiguous", "commit_limit", "Candidate commit limit exceeded")
 	}
+	hasMerges := false
 	for _, line := range lines {
-		if len(strings.Fields(line)) != 2 {
-			return set("ambiguous", "merge_topology", "Merge topology requires reviewed recovery")
-		}
+		hasMerges = hasMerges || len(strings.Fields(line)) > 2
 	}
 	a.CandidateCommits = len(lines)
 	paths, err := d.run(in.SourcePath, "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--name-only", "-z", a.BaseOID, a.SourceOID, "--")
@@ -272,14 +274,21 @@ func (d *deliveryInspector) assess(in TaskDeliveryInput, a pebblestore.TaskDeliv
 		return fail()
 	}
 	if sourceTree == targetTree {
+		a.AllowedActions = []string{"recover_integrate"}
 		return set("history_equivalent", "current_tree_equal", "Current trees match; original source history is not integrated")
 	}
 	baseOnTarget, err := ancestor(a.BaseOID, a.TargetOID)
 	if err != nil {
 		return fail()
 	}
-	if !baseOnTarget {
-		return set("history_rewritten", "base_not_on_target", "Target no longer contains recorded base; reviewed recovery required")
+	if !baseOnTarget || hasMerges {
+		// Recovery preflight additionally verifies a bounded first-parent base
+		// before deriving the net delta. This observation grants no Git writes.
+		a.AllowedActions = []string{"recover_integrate"}
+		if hasMerges && baseOnTarget {
+			return set("history_rewritten", "task_merge_delta", "Task contains merges; recover the recorded net delta")
+		}
+		return set("history_rewritten", "base_not_on_target", "Target no longer contains recorded base; recover the recorded task delta")
 	}
 	// An advanced target is normal for parallel tasks. This read only admits a
 	// candidate; PrepareTaskIntegration owns conflict preflight and Apply retains

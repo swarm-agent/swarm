@@ -4,7 +4,7 @@ import type { ProjectSummary, RunningTask } from './orchestrate-types'
 
 export interface TaskIntegrationResult {
   status: string
-  task?: { id: string; session_id: string; is_integrated: boolean }
+  task?: { id: string; session_id: string; is_integrated: boolean; active_attempt_id?: string; integration?: { state: string; source_head?: string; recovery_base?: string; recovered_head?: string; resulting_target_head?: string } }
 }
 
 export type TaskIntegrationOperation =
@@ -18,13 +18,26 @@ export function taskIntegrationPhase(task: RunningTask, local?: TaskIntegrationO
   const receipt = task.integration
   const currentReceipt = receipt && (!receipt.session_id || receipt.session_id === task.sessionId) &&
     (!receipt.attempt_id || !task.activeAttemptId || receipt.attempt_id === task.activeAttemptId)
-  if (currentReceipt && receipt.state === 'in_progress') return 'pending'
+  // Recovery retries are backend-serialized and may reconcile a retained
+  // operation after restart. Only the live local request holds its UI lock.
+  if (currentReceipt && receipt.state === 'in_progress' && !receipt.recovery_base) return 'pending'
   if (local?.phase === 'pending') return 'pending'
   if (taskOutcome(task).integrationFailed) return 'error'
   const delivery = taskDelivery(task)
-  if ((delivery?.integrated ?? task.isIntegrated) && task.status === 'completed') return 'success'
-  if (delivery && !delivery.integrated && local?.phase === 'success') return 'ready'
+  if (((delivery?.integrated || delivery?.recovered) ?? task.isIntegrated) && task.status === 'completed') return 'success'
+  if (delivery && !delivery.integrated && !delivery.recovered && local?.phase === 'success') return 'ready'
   return local?.phase || 'ready'
+}
+
+// One request contract for the existing card action; recovery is never a bulk
+// integration fallback and never accepts a UI-selected repository/base.
+export function taskIntegrationRequest(projectId: string, task: RunningTask) {
+  const recovery = taskDelivery(task)?.recoverable
+  return {
+    url: `/v3/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(task.id)}/${recovery ? 'recover-integrate' : 'integrate'}`,
+    body: { session_id: task.sessionId, source_branch: task.worktreeBranch, target_branch: task.baseBranch,
+      revision: task.revision, attempt_id: task.activeAttemptId, source_head: task.deliveryAssessment?.source_oid, target_head: task.deliveryAssessment?.target_oid },
+  }
 }
 
 const ready: TaskIntegrationOperation = Object.freeze({ phase: 'ready' })
@@ -92,7 +105,7 @@ export function createTaskIntegrationController() {
       const key = taskIntegrationKey(project.id, task)
       const current = get(key)
       const delivery = taskDelivery(task)
-      if (delivery && !delivery.actionable) return
+      if (delivery && !delivery.actionable && !delivery.recoverable) return
       const phase = taskIntegrationPhase(task, current)
       if (phase === 'pending' || phase === 'success') return
       const release = acquireTaskMutation(project.id, task.id)
@@ -106,13 +119,23 @@ export function createTaskIntegrationController() {
           throw new Error('Captured Git lineage is unavailable. Refresh the project and retry.')
         }
         const result = await mutate()
-        if ((result.status !== 'integrated' && result.status !== 'already_integrated') ||
-            result.task?.id !== capturedTask.id || result.task.session_id !== capturedTask.sessionId || !result.task.is_integrated) {
+        const recovery = delivery?.recoverable
+        const confirmed = recovery
+          ? ['recovered', 'equivalent'].includes(result.status) && result.task?.integration?.state === result.status &&
+            result.task.active_attempt_id === capturedTask.activeAttemptId &&
+            result.task.integration.source_head === capturedTask.deliveryAssessment?.source_oid &&
+            result.task.integration.recovery_base === capturedTask.baseCommit && Boolean(result.task.integration.resulting_target_head) &&
+            (result.status === 'equivalent' || Boolean(result.task.integration.recovered_head))
+          : ['integrated', 'already_integrated'].includes(result.status) && result.task?.is_integrated
+        if (!confirmed || result.task?.id !== capturedTask.id || result.task.session_id !== capturedTask.sessionId) {
           throw new Error('Integration returned no confirmed result for this task. Refresh Git details before retrying.')
         }
       } catch (error) {
         publish(key, { phase: 'error', failure: integrationFailure(project, capturedTask, error), failureId: ++failureId })
         release()
+        // Conflict receipts and prepared repair evidence arrive on canonical task
+        // events; also invalidate after a transport failure/lost response.
+        try { await refresh() } catch { /* retain the original diagnostic */ }
         return
       }
       release()

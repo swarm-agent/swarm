@@ -11,6 +11,7 @@ export function TaskOutcomeDetails({ task }: { task: RunningTask }) {
     {task.integration && <details><summary>Retained integration receipt</summary>
       <dl>{Object.entries({ State: task.integration.state, 'Source commit': task.integration.source_head,
         'Captured target': task.integration.target_branch || task.baseBranch, 'Target before': task.integration.previous_target_head,
+        'Recorded recovery base': task.integration.recovery_base, 'Recovered delta commit': task.integration.recovered_head,
         'Target after': task.integration.resulting_target_head }).map(([key, value]) => <div key={key}><dt>{key}</dt><dd className="break-all">{value || 'Not recorded'}</dd></div>)}</dl>
     </details>}
   </section>

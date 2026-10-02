@@ -1348,7 +1348,7 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 			}
 			alloc, err = allocator.AllocateProjectTaskFollowup(p, wsPath, sessionID, worktreeBranch, head, task.BaseBranch)
 			if err == nil && task.ActiveAttempt().Recovery != nil {
-				alloc.BaseCommit = task.ActiveAttempt().Recovery.BaseCommit
+				alloc.BaseCommit = projectTaskRepairBase(task.ActiveAttempt().Recovery)
 			}
 		} else {
 			alloc, err = s.worktrees.AllocateDetachedWorkspaceRequestedForPrincipal(p, wsPath, sessionID, "", worktreeBranch)
@@ -3674,7 +3674,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 6. Integrate task commits: POST /v3/projects/{id}/tasks/{taskId}/integrate
-	if len(segments) == 4 && segments[1] == "tasks" && segments[3] == "integrate" {
+	if len(segments) == 4 && segments[1] == "tasks" && (segments[3] == "integrate" || segments[3] == "recover-integrate") {
 		taskID := segments[2]
 		if r.Method != http.MethodPost {
 			writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
@@ -3698,6 +3698,10 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			SessionID    string `json:"session_id"`
 			SourceBranch string `json:"source_branch"`
 			TargetBranch string `json:"target_branch"`
+			Revision     int    `json:"revision"`
+			AttemptID    string `json:"attempt_id"`
+			SourceHead   string `json:"source_head"`
+			TargetHead   string `json:"target_head"`
 		}
 		if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&selection); err != nil {
 			writeError(w, http.StatusBadRequest, fmt.Errorf("select the task session and target branch before integrating: %w", err))
@@ -3728,6 +3732,10 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		gitState := inspectTaskGitStateContext(r.Context(), *task, db)
+		if segments[3] == "recover-integrate" {
+			s.recoverTaskDelta(w, r, p, task, selectedSession, gitState.deliveryAssessment, selection.Revision, selection.AttemptID, selection.SourceHead, selection.TargetHead)
+			return
+		}
 		if gitState.deliveryAssessment == nil || gitState.deliveryAssessment.Freshness != "observed" || (gitState.deliveryAssessment.State != "candidate_work" && gitState.deliveryAssessment.State != "integrated") {
 			writeError(w, http.StatusConflict, errors.New("delivery is not actionable for direct integration; refresh and review recovery"))
 			return

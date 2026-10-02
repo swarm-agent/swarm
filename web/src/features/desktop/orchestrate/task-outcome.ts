@@ -13,15 +13,21 @@ export function taskDelivery(task: RunningTask) {
     a.workspace_generation === task.sourceWorkspaceGeneration
   const observed = current && a.freshness === 'observed' && task.gitStatus !== 'stale' && task.gitStatus !== 'unknown' && !task.isDirty && !task.syncWarning
   const integrated = observed && a.state === 'integrated'
+  const recoveryPending = task.integration?.state === 'in_progress' && Boolean(task.integration.recovery_base)
+  const recovered = observed && !recoveryPending && ['recovered', 'equivalent'].includes(a.state)
+  const recoverable = observed && ((['history_rewritten', 'history_equivalent'].includes(a.state) && a.allowed_actions?.includes('recover_integrate')) || (a.state === 'recovered' && recoveryPending))
+    && ['completed', 'needs_review', 'failed', 'blocked'].includes(task.status)
   const actionable = observed && a.state === 'candidate_work' && a.candidate_commits > 0 && a.allowed_actions?.includes('integrate')
   const summary = !current ? 'Git assessment stale — refresh task'
+    : recovered ? a.state === 'equivalent' ? 'Task edits already present — no merge needed' : 'Task delta recovered & integrated'
+    : recoverable ? `Recover recorded task delta (${a.candidate_commits} task ${a.candidate_commits === 1 ? 'commit' : 'commits'})`
     : a.state === 'history_rewritten' ? 'History rewritten — review task'
     : a.state === 'history_equivalent' ? 'Matching tree; integration not verified — review task'
     : !observed ? task.syncWarning || (task.isDirty ? 'Changes pending commit' : 'Git assessment unavailable — review task')
     : integrated ? 'Integrated'
     : actionable ? `${a.candidate_commits} task ${a.candidate_commits === 1 ? 'commit' : 'commits'} to integrate`
     : a.reason || 'Integration needs review'
-  return { integrated, actionable, summary }
+  return { integrated, actionable, recovered, recoverable, summary }
 }
 
 // Projection only: durable task/attempt/program receipts own these facts. Neither
@@ -52,14 +58,14 @@ export function taskOutcome(task: RunningTask) {
     : undefined
   const code = Boolean(task.worktreeBranch || task.agentType === 'coder' || currentProgram?.definition?.jobs?.some(job => job.agent_type === 'coder'))
   const assembled = currentProgram?.state === 'completed'
-  const delivered = (taskDelivery(task)?.integrated ?? task.isIntegrated === true) && !integrationFailed && task.gitStatus === 'clean' && !task.isDirty && !(task.unintegratedCommits && task.unintegratedCommits > 0)
+  const delivered = ((taskDelivery(task)?.integrated || taskDelivery(task)?.recovered) ?? task.isIntegrated === true) && !integrationFailed && task.gitStatus === 'clean' && !task.isDirty && !(task.unintegratedCommits && task.unintegratedCommits > 0)
   return {
     blocker: blocker ? { ...blocker, message: redactIntegrationDiagnostic(blocker.message) } : undefined,
     integrationFailed, launchIncomplete, repairSessionId,
     execution: running ? 'Execution running' : interrupted ? 'Execution interrupted' : failed ? 'Execution failed' : blocked ? 'Execution blocked'
       : assembled ? 'Program assembled' : task.status === 'completed' ? 'Execution complete' : task.status.replace(/_/g, ' '),
     verification: failed || blocked ? 'Verification incomplete — review retained results' : 'Verification not established by task status',
-    delivery: code ? delivered ? `Integrated into ${task.baseBranch || 'captured target'}`
+    delivery: code ? delivered ? `${taskDelivery(task)?.recovered ? 'Task delta delivered to' : 'Integrated into'} ${task.baseBranch || 'captured target'}`
       : `Delivery to ${task.baseBranch || 'captured target'} not verified` : undefined,
     needsAttention: Boolean(blocker) || (code && (assembled || task.status === 'completed') && !delivered),
   }
