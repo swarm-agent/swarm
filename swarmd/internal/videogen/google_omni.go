@@ -9,10 +9,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
+	"swarm/packages/swarmd/internal/privacy"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -75,7 +75,8 @@ func (s *Service) generateGoogleOmni(
 	operation string,
 	source *ManagedVideoSource,
 	img *ManagedVideoImage,
-) (ManagedVideoResult, error) {
+) (result ManagedVideoResult, retErr error) {
+	defer func() { retErr = privacy.SafeError(retErr, apiKey) }()
 	reqBody := omniInteractionRequest{
 		Model: modelID,
 		ResponseFormat: &omniResponseFormat{
@@ -155,7 +156,7 @@ func (s *Service) generateGoogleOmni(
 		return ManagedVideoResult{}, fmt.Errorf("marshal omni request: %w", err)
 	}
 
-	endpoint := fmt.Sprintf("%s/v1beta/interactions?key=%s", s.googleURL(), apiKey)
+	endpoint := fmt.Sprintf("%s/v1beta/interactions", s.googleURL())
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
 	if err != nil {
 		return ManagedVideoResult{}, err
@@ -163,7 +164,7 @@ func (s *Service) generateGoogleOmni(
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("x-goog-api-key", apiKey)
 
-	resp, err := s.client().Do(httpReq)
+	resp, err := privacy.GoogleMediaClient(s.client()).Do(httpReq)
 	if err != nil {
 		return ManagedVideoResult{}, fmt.Errorf("call google interactions api: %w", err)
 	}
@@ -241,9 +242,10 @@ func (s *Service) extractOmniVideoBytes(ctx context.Context, apiKey string, resp
 	return nil, errors.New("google omni response contained no video output")
 }
 
-func (s *Service) uploadGoogleFile(ctx context.Context, apiKey string, videoData []byte, mimeType string) (string, error) {
+func (s *Service) uploadGoogleFile(ctx context.Context, apiKey string, videoData []byte, mimeType string) (uri string, retErr error) {
+	defer func() { retErr = privacy.SafeError(retErr, apiKey) }()
 	metadata, _ := json.Marshal(map[string]any{"file": map[string]string{"display_name": "swarm-video-edit-source"}})
-	startURL := fmt.Sprintf("%s/upload/v1beta/files?key=%s", s.googleURL(), apiKey)
+	startURL := fmt.Sprintf("%s/upload/v1beta/files", s.googleURL())
 	startReq, err := http.NewRequestWithContext(ctx, http.MethodPost, startURL, bytes.NewReader(metadata))
 	if err != nil {
 		return "", err
@@ -255,7 +257,7 @@ func (s *Service) uploadGoogleFile(ctx context.Context, apiKey string, videoData
 	startReq.Header.Set("X-Goog-Upload-Header-Content-Length", fmt.Sprint(len(videoData)))
 	startReq.Header.Set("X-Goog-Upload-Header-Content-Type", mimeType)
 
-	startResp, err := s.client().Do(startReq)
+	startResp, err := privacy.GoogleMediaClient(s.client()).Do(startReq)
 	if err != nil {
 		return "", fmt.Errorf("start google files upload: %w", err)
 	}
@@ -270,6 +272,10 @@ func (s *Service) uploadGoogleFile(ctx context.Context, apiKey string, videoData
 		return "", errors.New("google files upload did not return upload URL")
 	}
 
+	uploadURL, err = privacy.GoogleMediaURL(s.googleURL(), uploadURL)
+	if err != nil {
+		return "", err
+	}
 	uploadReq, err := http.NewRequestWithContext(ctx, http.MethodPost, uploadURL, bytes.NewReader(videoData))
 	if err != nil {
 		return "", err
@@ -279,7 +285,7 @@ func (s *Service) uploadGoogleFile(ctx context.Context, apiKey string, videoData
 	uploadReq.Header.Set("X-Goog-Upload-Offset", "0")
 	uploadReq.Header.Set("X-Goog-Upload-Command", "upload, finalize")
 
-	uploadResp, err := s.client().Do(uploadReq)
+	uploadResp, err := privacy.GoogleMediaClient(s.client()).Do(uploadReq)
 	if err != nil {
 		return "", fmt.Errorf("finalize google files upload: %w", err)
 	}
@@ -308,9 +314,10 @@ func (s *Service) uploadGoogleFile(ctx context.Context, apiKey string, videoData
 	return fileResp.File.URI, nil
 }
 
-func (s *Service) pollGoogleFileActive(ctx context.Context, apiKey string, fileName, fallbackURI string) (string, error) {
+func (s *Service) pollGoogleFileActive(ctx context.Context, apiKey string, fileName, fallbackURI string) (uri string, retErr error) {
+	defer func() { retErr = privacy.SafeError(retErr, apiKey) }()
 	deadline := time.Now().Add(2 * time.Minute)
-	pollURL := fmt.Sprintf("%s/v1beta/%s?key=%s", s.googleURL(), strings.TrimPrefix(fileName, "/"), apiKey)
+	pollURL := fmt.Sprintf("%s/v1beta/%s", s.googleURL(), strings.TrimPrefix(fileName, "/"))
 
 	for time.Now().Before(deadline) {
 		select {
@@ -325,7 +332,7 @@ func (s *Service) pollGoogleFileActive(ctx context.Context, apiKey string, fileN
 		}
 		req.Header.Set("x-goog-api-key", apiKey)
 
-		resp, err := s.client().Do(req)
+		resp, err := privacy.GoogleMediaClient(s.client()).Do(req)
 		if err != nil {
 			continue
 		}
@@ -353,32 +360,11 @@ func (s *Service) pollGoogleFileActive(ctx context.Context, apiKey string, fileN
 	return "", errors.New("google file processing timed out before reaching ACTIVE state")
 }
 
-func (s *Service) downloadGoogleFile(ctx context.Context, apiKey string, fileURI string) ([]byte, error) {
-	parsedURL, err := url.Parse(fileURI)
+func (s *Service) downloadGoogleFile(ctx context.Context, apiKey string, fileURI string) (data []byte, retErr error) {
+	defer func() { retErr = privacy.SafeError(retErr, apiKey) }()
+	targetURL, err := privacy.GoogleMediaURL(s.googleURL(), fileURI)
 	if err != nil {
-		return nil, fmt.Errorf("invalid google file URI: %w", err)
-	}
-	if parsedURL.User != nil {
-		return nil, errors.New("userinfo is not permitted in file URI for authenticated download")
-	}
-
-	googleURL, _ := url.Parse(s.googleURL())
-	var targetURL string
-	if !parsedURL.IsAbs() {
-		targetURL = fmt.Sprintf("%s/%s", s.googleURL(), strings.TrimPrefix(fileURI, "/"))
-	} else {
-		if parsedURL.Scheme != "https" && parsedURL.Hostname() != "127.0.0.1" && parsedURL.Hostname() != "localhost" {
-			return nil, fmt.Errorf("insecure scheme %q is not permitted for authenticated download", parsedURL.Scheme)
-		}
-		h := strings.ToLower(parsedURL.Hostname())
-		expectedHost := ""
-		if googleURL != nil {
-			expectedHost = strings.ToLower(googleURL.Hostname())
-		}
-		if h != expectedHost && !strings.HasSuffix(h, ".googleapis.com") && !strings.HasSuffix(h, ".google.com") && h != "127.0.0.1" && h != "localhost" {
-			return nil, fmt.Errorf("untrusted file URI host %q for authenticated Google download", h)
-		}
-		targetURL = fileURI
+		return nil, err
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
@@ -387,36 +373,7 @@ func (s *Service) downloadGoogleFile(ctx context.Context, apiKey string, fileURI
 	}
 	req.Header.Set("x-goog-api-key", apiKey)
 
-	client := s.client()
-	origHost := ""
-	if targetParsed, err := url.Parse(targetURL); err == nil {
-		origHost = targetParsed.Host
-	}
-
-	downloadClient := &http.Client{
-		Timeout: client.Timeout,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= 10 {
-				return errors.New("stopped after 10 redirects")
-			}
-			if req.URL.User != nil {
-				return errors.New("redirect target contains userinfo")
-			}
-			if req.URL.Scheme != "https" && req.URL.Hostname() != "127.0.0.1" && req.URL.Hostname() != "localhost" {
-				return fmt.Errorf("redirect target has insecure scheme: %s", req.URL.Scheme)
-			}
-			if origHost != "" && (!strings.EqualFold(req.URL.Host, origHost) || req.URL.Scheme != "https") {
-				req.Header.Del("x-goog-api-key")
-			}
-			if client.CheckRedirect != nil {
-				return client.CheckRedirect(req, via)
-			}
-			return nil
-		},
-	}
-	if client.Transport != nil {
-		downloadClient.Transport = client.Transport
-	}
+	downloadClient := privacy.GoogleMediaClient(s.client())
 
 	resp, err := downloadClient.Do(req)
 	if err != nil {
@@ -428,7 +385,7 @@ func (s *Service) downloadGoogleFile(ctx context.Context, apiKey string, fileURI
 		return nil, fmt.Errorf("download google video failed (%d)", resp.StatusCode)
 	}
 
-	data, err := io.ReadAll(io.LimitReader(resp.Body, managedVideoMaxBytes))
+	data, err = io.ReadAll(io.LimitReader(resp.Body, managedVideoMaxBytes))
 	if err != nil {
 		return nil, fmt.Errorf("read google video bytes: %w", err)
 	}

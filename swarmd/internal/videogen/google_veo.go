@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"swarm/packages/swarmd/internal/privacy"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -79,7 +80,8 @@ func (s *Service) generateGoogleVeo(
 	operation string,
 	source *ManagedVideoSource,
 	img *ManagedVideoImage,
-) (ManagedVideoResult, error) {
+) (result ManagedVideoResult, retErr error) {
+	defer func() { retErr = privacy.SafeError(retErr, apiKey) }()
 	if operation == pebblestore.VideoOperationEdit {
 		return ManagedVideoResult{}, errors.New("Veo models do not support video editing; select an iteration model such as Gemini Omni")
 	}
@@ -118,7 +120,7 @@ func (s *Service) generateGoogleVeo(
 		return ManagedVideoResult{}, fmt.Errorf("marshal veo request: %w", err)
 	}
 
-	endpoint := fmt.Sprintf("%s/v1beta/models/%s:predictLongRunning?key=%s", s.googleURL(), modelID, apiKey)
+	endpoint := fmt.Sprintf("%s/v1beta/models/%s:predictLongRunning", s.googleURL(), modelID)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
 	if err != nil {
 		return ManagedVideoResult{}, err
@@ -126,7 +128,7 @@ func (s *Service) generateGoogleVeo(
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("x-goog-api-key", apiKey)
 
-	resp, err := s.client().Do(httpReq)
+	resp, err := privacy.GoogleMediaClient(s.client()).Do(httpReq)
 	if err != nil {
 		return ManagedVideoResult{}, fmt.Errorf("call google veo api: %w", err)
 	}
@@ -161,9 +163,10 @@ func (s *Service) generateGoogleVeo(
 	return s.pollGoogleVeoOperation(ctx, apiKey, modelID, opResp.Name, resolution, operation, source)
 }
 
-func (s *Service) pollGoogleVeoOperation(ctx context.Context, apiKey string, modelID, operationName, resolution, operation string, source *ManagedVideoSource) (ManagedVideoResult, error) {
+func (s *Service) pollGoogleVeoOperation(ctx context.Context, apiKey string, modelID, operationName, resolution, operation string, source *ManagedVideoSource) (result ManagedVideoResult, retErr error) {
+	defer func() { retErr = privacy.SafeError(retErr, apiKey) }()
 	deadline := time.Now().Add(s.pollingTimeout(resolution))
-	pollURL := fmt.Sprintf("%s/v1beta/%s?key=%s", s.googleURL(), strings.TrimPrefix(operationName, "/"), apiKey)
+	pollURL := fmt.Sprintf("%s/v1beta/%s", s.googleURL(), strings.TrimPrefix(operationName, "/"))
 
 	for time.Now().Before(deadline) {
 		select {
@@ -178,7 +181,7 @@ func (s *Service) pollGoogleVeoOperation(ctx context.Context, apiKey string, mod
 		}
 		req.Header.Set("x-goog-api-key", apiKey)
 
-		resp, err := s.client().Do(req)
+		resp, err := privacy.GoogleMediaClient(s.client()).Do(req)
 		if err != nil {
 			continue
 		}

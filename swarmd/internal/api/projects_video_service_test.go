@@ -19,6 +19,8 @@ func (f videoCredentialTransport) RoundTrip(req *http.Request) (*http.Response, 
 	return f(req)
 }
 
+// Authentication must use the canonical account header, never a URL query that
+// net/http can include in persisted failure text.
 func TestProjectVideoServiceCanonicalCredentials(t *testing.T) {
 	// Requirement: Orchestrate uses the injected videogen.Service and its separate
 	// canonical secret store, with the requesting account's credentials only.
@@ -48,7 +50,7 @@ func TestProjectVideoServiceCanonicalCredentials(t *testing.T) {
 	service := videogen.NewService(auth, nil, server.model)
 	service.SetHTTPClient(&http.Client{Transport: videoCredentialTransport(func(req *http.Request) (*http.Response, error) {
 		calls++
-		if req.Header.Get("x-goog-api-key") != canonicalKey || req.URL.Query().Get("key") != canonicalKey {
+		if req.Header.Get("x-goog-api-key") != canonicalKey || req.URL.RawQuery != "" {
 			t.Error("video request did not use the canonical secret")
 		}
 		if req.Method != http.MethodPost || req.URL.Path != "/v1beta/models/veo-3.1-generate-preview:predictLongRunning" {
