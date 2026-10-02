@@ -16,7 +16,7 @@ jobs:
   build-stable-release:
     if: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 50
+    timeout-minutes: 120
     permissions:
       contents: read
       checks: read

@@ -180,7 +180,10 @@ def poll(env, event, transport=request, sleep=time.sleep, clock=time.monotonic, 
     app = positive(env['GCP_CHECK_APP_ID'])
     stages = stage_policy(context, env) if required_stages is None else required_stages
     expected = api.identity(event)
-    deadline, pinned, check_id = clock() + 2400, None, None
+    # Exact-main qualification includes native plus OCI build and live gates.
+    # Keep PR relays at their existing 40-minute bound.
+    wait_seconds = 6600 if env.get('GCP_CHECK_CONTEXT') == 'build-main' else 2400
+    deadline, pinned, check_id = clock() + wait_seconds, None, None
     while clock() < deadline:
         require(api.identity(event) == expected, 'input changed while polling')
         path = api.root + '/commits/' + expected['head_sha'] + '/check-runs?per_page=100&filter=all&check_name=' + urllib.parse.quote(context, safe='')
