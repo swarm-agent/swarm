@@ -1,0 +1,27 @@
+# syntax=docker/dockerfile:1
+# Standalone app build context: package*.json, server.mjs, supervisor.mjs,
+# entrypoint.sh and the app's own files. No daemon source checkout/build.
+ARG SWARM_RUNTIME
+FROM docker.io/library/node:22.22.0-trixie-slim AS app
+ARG SWARM_RUNTIME
+RUN node -e 'if (!/^ghcr\.io\/swarm-agent\/swarm-headless@sha256:[a-f0-9]{64}$/.test(process.argv[1])) process.exit(1)' "$SWARM_RUNTIME"
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund
+COPY . .
+FROM ${SWARM_RUNTIME}
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends openssl tini && \
+    rm -rf /var/lib/apt/lists/* && \
+    install -d -o 10001 -g 10001 -m 0700 /etc/swarmd/headless-app
+COPY --from=app /usr/local/bin/node /usr/local/bin/node
+COPY --from=app /app /opt/app
+COPY entrypoint.sh /usr/local/share/swarm/app-entrypoint.sh
+COPY supervisor.mjs /usr/local/share/swarm/supervisor.mjs
+ENV SWARM_DISABLE_MINT_REPORT=1 APP_ORIGIN=http://127.0.0.1:8443
+USER 10001:10001
+WORKDIR /project
+VOLUME ["/project"]
+EXPOSE 8443
+ENTRYPOINT ["/usr/bin/tini", "-g", "--", "/bin/bash", "/usr/local/share/swarm/app-entrypoint.sh"]
+CMD ["node", "/opt/app/server.mjs"]

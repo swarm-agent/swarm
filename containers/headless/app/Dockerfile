@@ -1,7 +1,9 @@
 # syntax=docker/dockerfile:1
-# Build the root Dockerfile first; this stage extends that exact local runtime.
-ARG SWARM_RUNTIME=swarm-headless-runtime:local
+# Required qualified release digest; no mutable/local fallback.
+ARG SWARM_RUNTIME
 FROM docker.io/library/node:22.22.0-trixie-slim AS sdk
+ARG SWARM_RUNTIME
+RUN node -e 'if (!/^ghcr\.io\/swarm-agent\/swarm-headless@sha256:[a-f0-9]{64}$/.test(process.argv[1])) process.exit(1)' "$SWARM_RUNTIME"
 WORKDIR /src/packages/sdk
 COPY packages/sdk/package.json packages/sdk/package-lock.json packages/sdk/tsconfig.json ./
 RUN npm ci --ignore-scripts --no-audit --no-fund
@@ -22,6 +24,7 @@ COPY --from=sdk /usr/local/bin/node /usr/local/bin/node
 COPY --from=sdk /src/packages/sdk /opt/workshop/packages/sdk
 COPY --from=sdk /src/examples/headless-app /opt/workshop/examples/headless-app
 COPY containers/headless/app/entrypoint.sh /usr/local/share/swarm/app-entrypoint.sh
+COPY containers/headless/app/supervisor.mjs /usr/local/share/swarm/supervisor.mjs
 ENV APP_ORIGIN=http://127.0.0.1:8443 SWARM_DISABLE_MINT_REPORT=1
 USER 10001:10001
 WORKDIR /project

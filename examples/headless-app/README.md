@@ -8,16 +8,15 @@ a mock assistant, a generic daemon proxy, or a worker-deployment surface.
 
 Prerequisites: Linux amd64 Docker/BuildKit, network for build dependencies and
 providers, and five dedicated named volumes. Run from repository root. These
-commands build the current checked-in daemon and SDK, not an npm placeholder.
-Go compilation is bounded to two workers by the root Dockerfile; builds are sequential.
-Rootless Podman is also supported: replace `docker` with `podman`, add `--jobs=1
---build-arg TARGETOS=linux --build-arg TARGETARCH=amd64` to the runtime build,
-and use `--build-arg SWARM_RUNTIME=localhost/swarm-headless-runtime:local` for
-the app build. Use `localhost/swarm-workshop:local` when running with Podman.
+commands build the checked-in SDK/BFF on a qualified release daemon image.
+Set SWARM_RUNTIME to ghcr.io/swarm-agent/swarm-headless@sha256:<digest> from
+that release manifest. Publication must precede using this recipe.
+For Podman replace `docker` with `podman` and use the same qualified digest.
+Use `localhost/swarm-workshop:local` when running with Podman.
+See [standalone application recipe](../../containers/headless/app/README.md).
 
 <copy label="Build and launch">
-docker build --platform linux/amd64 -t swarm-headless-runtime:local .
-docker build --platform linux/amd64 -f containers/headless/app/Dockerfile -t swarm-workshop:local .
+docker build --platform linux/amd64 --build-arg SWARM_RUNTIME="$SWARM_RUNTIME" -f containers/headless/app/Dockerfile -t swarm-workshop:local .
 docker run -d --name swarm-workshop --restart=no --stop-timeout=15 \
   --cap-drop=ALL --security-opt=no-new-privileges --pids-limit=256 \
   --memory=4g --cpus=2 \
