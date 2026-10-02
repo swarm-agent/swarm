@@ -1019,3 +1019,49 @@ func TestManageArtifactVideoOperationSchema(t *testing.T) {
 		t.Fatalf("video operations not exposed: %+v", video)
 	}
 }
+
+// Purpose: generateManagedVideoArtifact must forward a user-selected model without
+// changing operation, source provenance, or omitted duration. This adapter-level
+// test catches rejected/ignored model arguments; service capability enforcement is
+// tested separately in videogen.TestVideoContinuationSelection.
+func TestManageArtifactGenerateVideoExplicitContinuationModel(t *testing.T) {
+	for _, model := range []string{"", "gemini-omni-1.1-flash"} {
+		t.Run("model="+model, func(t *testing.T) {
+			runtime := NewRuntime(1)
+			authority := &fakeArtifactAuthority{
+				readBody: []byte("source-video"),
+				variant: pebblestore.SessionArtifactVariant{
+					ID: "source", SessionID: "source-session", CollectionID: "source-collection", EventSeq: 42,
+					Status: pebblestore.SessionArtifactStatusReady, MediaType: "video/mp4",
+					Lineage: pebblestore.SessionArtifactLineage{VideoProvenance: &pebblestore.VideoProvenance{
+						Model: "gemini-omni-1.1-flash", InteractionID: "retained-interaction",
+					}},
+				},
+			}
+			runtime.SetArtifactAuthority(authority)
+			generator := &fakeVideoGenerationService{}
+			runtime.SetManagedVideoGenerationService(generator)
+			ctx, scope := artifactToolContext()
+			args := map[string]any{
+				"action": "generate_video", "operation": "extend", "prompt": "Continue the scene",
+				"source_session_id": "source-session", "source_collection_id": "source-collection",
+				"source_variant_id": "source", "source_event_seq": 42,
+			}
+			if model != "" {
+				args["model"] = model
+			}
+			body, err := json.Marshal(args)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "explicit-continuation", Name: "manage_artifact", Arguments: string(body)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := generator.lastReq
+			if generator.calls != 1 || req.Model != model || req.Operation != "extend" || req.DurationSeconds != 0 || req.Source == nil || req.Source.InteractionID != "retained-interaction" {
+				t.Fatalf("continuation request changed: %+v (calls=%d)", req, generator.calls)
+			}
+		})
+	}
+}

@@ -176,40 +176,12 @@ func (s *Service) PreflightVideoOperation(ctx context.Context, req VideoPrefligh
 			}
 		}
 
-		switch op {
-		case pebblestore.VideoOperationEdit:
-			if iterationModel == "" {
-				return nil, errors.New("no default video iteration model configured for account; select a model or configure one in Settings")
-			}
-			targetModel, providerID = s.parseModelAndProvider(iterationModel)
-
-		case pebblestore.VideoOperationExtend:
-			isOmniSource := (req.Source != nil && strings.TrimSpace(req.Source.InteractionID) != "") || (srcProv != nil && IsOmniModel(srcProv.Model)) || (req.Source != nil && IsOmniModel(req.Source.Model))
-			isVeoSource := (srcProv != nil && IsVeoModel(srcProv.Model)) || (req.Source != nil && IsVeoModel(req.Source.Model))
-
-			if isOmniSource {
-				if iterationModel == "" {
-					return nil, errors.New("no default video iteration model configured for account; select a model or configure one in Settings")
-				}
-				targetModel, providerID = s.parseModelAndProvider(iterationModel)
-			} else if isVeoSource {
-				if defaultModel == "" {
-					return nil, errors.New("no default video model configured for account; select a model or configure one in Settings")
-				}
-				targetModel, providerID = s.parseModelAndProvider(defaultModel)
-			} else {
-				if defaultModel == "" {
-					return nil, errors.New("no default video model configured for account; select a model or configure one in Settings")
-				}
-				targetModel, providerID = s.parseModelAndProvider(defaultModel)
-			}
-
-		case pebblestore.VideoOperationCreate:
-			if defaultModel == "" {
-				return nil, errors.New("no default video model configured for account; select a model or configure one in Settings")
-			}
-			targetModel, providerID = s.parseModelAndProvider(defaultModel)
+		isOmniSource := (req.Source != nil && strings.TrimSpace(req.Source.InteractionID) != "") || (srcProv != nil && IsOmniModel(srcProv.Model)) || (req.Source != nil && IsOmniModel(req.Source.Model))
+		selection, err := ResolveOperationModel(op, "", defaultModel, iterationModel, isOmniSource)
+		if err != nil {
+			return nil, err
 		}
+		targetModel, providerID = s.parseModelAndProvider(selection)
 	}
 
 	// 6. Validate Model in Catalog

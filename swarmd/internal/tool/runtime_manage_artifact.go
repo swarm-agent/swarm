@@ -231,7 +231,7 @@ func manageArtifactDefinition() Definition {
 				"limit":                  map[string]any{"type": "integer", "minimum": 1, "maximum": manageArtifactMaxListLimit, "description": "Maximum list items; use next_cursor/cursor to continue."},
 				"max_bytes":              map[string]any{"type": "integer", "minimum": 1, "maximum": manageArtifactMaxImageReadBytes, "description": "Maximum bytes returned by read. A response-quota error does not mean the artifact is unavailable; use materialize instead."},
 				"destination":            map[string]any{"type": "string", "maxLength": 4096, "description": "Canonical workspace path required for materialize/promote and materialize_batch; overwrite defaults to false."},
-				"model":                  map[string]any{"type": "string", "description": "Model identifier for audio generation/capability discovery only; not accepted for artifact import."},
+				"model":                  map[string]any{"type": "string", "description": "Model identifier for audio generation/capability discovery or generate_video. For video, pass only a user-authorized explicit selection; omission uses account settings, not the source model. Before spending on a video chain, confirm Tools.Video.IterationModel is configured or obtain an explicit supported model choice: editing and Omni extension require it, and creation support does not imply extension support. Source, operation capability, and same-credential checks still apply. Not accepted for artifact import."},
 				"message":                map[string]any{"type": "string", "description": "Optional native import commit message."},
 				"collection_name":        map[string]any{"type": "string", "description": "Optional destination collection label for legacy import."},
 				"collection_description": map[string]any{"type": "string", "description": "Optional destination collection description for legacy import."},
@@ -2392,7 +2392,7 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 		case "action", "prompt", "title", "aspect_ratio", "resolution", "duration_seconds", "count",
 			"collection_id", "collection_name", "collection_description", "variant_id", "filename", "presentation",
 			"source_session_id", "source_collection_id", "source_variant_id", "source_event_seq",
-			"image", "image_path", "chain_from", "chain", "includes_audio", "operation":
+			"image", "image_path", "chain_from", "chain", "includes_audio", "operation", "model":
 		default:
 			return managedVideoArtifactResult{}, fmt.Errorf("manage_artifact generate_video contains unsupported field %q", key)
 		}
@@ -2614,6 +2614,7 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 		})
 		generated, err := r.videoGeneration.GenerateManagedVideo(budgetCtx, videogen.ManagedVideoRequest{
 			Operation:       op,
+			Model:           strings.TrimSpace(asString(args["model"])),
 			Prompt:          prompt,
 			AspectRatio:     aspectRatio,
 			Resolution:      resolution,

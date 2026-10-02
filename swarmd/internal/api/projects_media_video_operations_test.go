@@ -1110,3 +1110,68 @@ func TestVideoOperations_OrchestratorCreateThenExtendEndToEnd(t *testing.T) {
 		t.Fatalf("reloaded task 2 parent deliverable link lost: %q vs %q", reloadedTask2.Deliverables[0].ParentDeliverableID, deliv1.ID)
 	}
 }
+
+// Purpose: validateProjectMediaTaskSettings must use the iteration settings slot
+// for a server-resolved Omni source, matching videogen preflight rather than the
+// creation default. The API validator plus real artifact authority is the narrowest
+// layer that proves selection uses stored provenance, not client model claims.
+func TestVideoOperations_OmniContinuationSelection(t *testing.T) {
+	server, ss, p := setupDirectMediaTestServer(t)
+	catalog := pebblestore.NewModelCatalogStore(ss.Underlying())
+	if err := catalog.SetRecord(pebblestore.ModelCatalogRecord{
+		Provider: "google", Model: "gemini-omni-1.1-flash",
+		CatalogModalities: pebblestore.ModelCatalogModalities{Outputs: []string{"video"}},
+		ProviderSpecific: json.RawMessage(`{"google":{"video_generation":{"settings":{"resolution":{"status":"verified","supported_values":["720p"]}},"features":{"video_extension":{"status":"verified","supported":true}}}}}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	server.artifacts = artifact.NewRegistry(server.sessions, artifact.Limits{})
+	auth := artifact.NewAuthority(server.artifacts, server.sessions)
+	const sessionID = "continuation-selection-session"
+	if err := ss.CreateSession(pebblestore.SessionSnapshot{ID: sessionID, AccountScopeID: p.AccountScopeID, UserID: p.UserID, Mode: "auto"}); err != nil {
+		t.Fatal(err)
+	}
+	v, err := auth.Create(context.Background(), artifact.Principal{SessionID: sessionID, AccountScopeID: p.AccountScopeID, UserID: p.UserID}, artifact.CreateInput{
+		RequestID: "continuation-selection", CollectionID: "videos", CollectionName: "Videos", VariantID: "source",
+		Filename: "source.mp4", MediaType: "video/mp4", Body: []byte("test-video"), AutoAccept: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	v.Lineage.VideoProvenance = &pebblestore.VideoProvenance{AccountScopeID: p.AccountScopeID, Model: "gemini-omni-1.1-flash", InteractionID: "retained-interaction"}
+	if err := ss.PutArtifactVariant(v); err != nil {
+		t.Fatal(err)
+	}
+	ui := uisettings.NewService(pebblestore.NewUISettingsStore(ss.Underlying()))
+	server.uiSettings = ui
+	for _, tc := range []struct {
+		name, iteration, explicit string
+		wantErr                   bool
+	}{
+		{name: "default alone cannot select continuation", wantErr: true},
+		{name: "configured iteration", iteration: "gemini-omni-1.1-flash"},
+		{name: "explicit selection", explicit: "gemini-omni-1.1-flash"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := ui.SetForAccount(p.AccountScopeID, uisettings.UISettings{Tools: uisettings.ToolSettings{Video: uisettings.ToolVideoSettings{
+				DefaultModel: "veo-3.1-generate-preview", IterationModel: tc.iteration,
+			}}}); err != nil {
+				t.Fatal(err)
+			}
+			task := &pebblestore.ProjectTaskRecord{Agent: "video", Operation: "extend", Model: tc.explicit,
+				AttachedMedia: []pebblestore.ProjectTaskMediaRef{{ID: "source", Kind: "video", Filename: "source.mp4", URL: fmt.Sprintf("/v3/sessions/%s/artifacts/%s?revision=%d", sessionID, v.ID, v.EventSeq)}},
+			}
+			err := validateProjectMediaTaskSettings(server, task, p)
+			if tc.wantErr {
+				if err == nil || !strings.Contains(err.Error(), "no default video iteration model configured") {
+					t.Fatalf("expected iteration configuration rejection, got %v", err)
+				}
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			if task.Model != tc.explicit || task.Operation != "extend" {
+				t.Fatalf("validator mutated selection: %+v", task)
+			}
+		})
+	}
+}

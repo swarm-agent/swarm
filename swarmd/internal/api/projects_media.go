@@ -374,6 +374,7 @@ func validateProjectMediaTaskSettings(s *Server, task *pebblestore.ProjectTaskRe
 			return fmt.Errorf("task operation %q is invalid; must be create, edit, or extend", task.Operation)
 		}
 
+		omniSource := false
 		if op == pebblestore.VideoOperationCreate {
 			if len(task.AttachedMedia) > 1 {
 				return errors.New("at most one initial image attachment is supported for video generation")
@@ -426,27 +427,25 @@ func validateProjectMediaTaskSettings(s *Server, task *pebblestore.ProjectTaskRe
 				if err != nil {
 					return fmt.Errorf("invalid video attachment: %w", err)
 				}
+				if srcRec.Provenance != nil {
+					omniSource = videogen.IsOmniModel(srcRec.Provenance.Model) || strings.TrimSpace(srcRec.Provenance.InteractionID) != ""
+				}
 				if len(srcRec.Bytes) == 0 && srcRec.Provenance == nil {
 					return errors.New("video attachment payload is empty")
 				}
 			}
 		}
 
-		model := strings.TrimSpace(task.Model)
-		if model == "" && s != nil && s.uiSettings != nil && principal.AccountScopeID != "" {
+		var defaultModel, iterationModel string
+		if strings.TrimSpace(task.Model) == "" && s != nil && s.uiSettings != nil && principal.AccountScopeID != "" {
 			if uiSet, err := s.uiSettings.GetForAccount(principal.AccountScopeID); err == nil {
-				if op == pebblestore.VideoOperationEdit {
-					model = strings.TrimSpace(uiSet.Tools.Video.IterationModel)
-				} else {
-					model = strings.TrimSpace(uiSet.Tools.Video.DefaultModel)
-				}
+				defaultModel = uiSet.Tools.Video.DefaultModel
+				iterationModel = uiSet.Tools.Video.IterationModel
 			}
 		}
-		if model == "" {
-			if op == pebblestore.VideoOperationEdit {
-				return errors.New("no default video iteration model configured for account; select a model or configure one in Settings")
-			}
-			return errors.New("no default video model configured for account; select a model or configure one in Settings")
+		model, err := videogen.ResolveOperationModel(op, task.Model, defaultModel, iterationModel, omniSource)
+		if err != nil {
+			return err
 		}
 		if !isSupportedVideoModel(s, model) {
 			return fmt.Errorf("unsupported video model %q", model)
