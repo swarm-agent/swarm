@@ -15,6 +15,17 @@ import type { DesktopPermissionRecord } from '../types/realtime'
 export function useTaskAttention(task: TaskSessionCandidate) {
   const idsKey = useDesktopV3CacheSelector(state => JSON.stringify(taskAttentionSessionIds(state, task)))
   const ids = useMemo<string[]>(() => JSON.parse(idsKey), [idsKey])
+  return useSessionAttention(ids, `task-attention:${task.id}`)
+}
+
+// Parent composer requests belong to exactly this session, not its task descendants.
+export function SessionPermissionAttention({ sessionId }: { sessionId: string }) {
+  const ids = useMemo(() => sessionId ? [sessionId] : [], [sessionId])
+  const attention = useSessionAttention(ids, `composer-attention:${sessionId}`)
+  return <TaskAttention key={sessionId} attention={attention} />
+}
+
+function useSessionAttention(ids: string[], ownerKeyPrefix: string) {
   const permissions = useDesktopV3CacheSelector(state => taskAttentionPermissions(state, ids),
     (a, b) => a.length === b.length && a.every((item, index) => item === b[index]))
   const summaryKey = useDesktopV3CacheSelector(state => JSON.stringify(ids.map(id => {
@@ -25,8 +36,8 @@ export function useTaskAttention(task: TaskSessionCandidate) {
   const [retry, setRetry] = useState(0)
   const leases = useMemo(() => new TaskSessionLeaseManager({
     getControllerReady: requireDesktopV3RealtimeControllerReady,
-    ownerKeyPrefix: `task-attention:${task.id}`,
-  }), [task.id])
+    ownerKeyPrefix,
+  }), [ownerKeyPrefix])
   useEffect(() => () => leases.cleanup(), [leases])
   useEffect(() => {
     const acquisition = leases.reconcile(ids)
@@ -46,7 +57,7 @@ export function useTaskAttention(task: TaskSessionCandidate) {
           const response = await postDesktopV3SyncHydrate(buildDesktopV3ChildCardHydrateInput([id], { permissionSummary: true, activePlan: true }))
           if (active) dispatchDesktopV3Cache(hydrateResponseToAction(response, [id]))
         } else {
-          await hydrateDesktopV3ChildCard(id, { activePlan: true })
+          await hydrateDesktopV3ChildCard(id, { activePlan: true, permissionSummary: true })
         }
       }
     })().catch(error => { if (active) setError(error instanceof Error ? error.message : 'Could not load pending requests') })
@@ -60,10 +71,13 @@ export function useTaskAttention(task: TaskSessionCandidate) {
 }
 
 export function TaskAttention({ attention }: { attention: ReturnType<typeof useTaskAttention> }) {
-  const [selectedKey, setSelectedKey] = useState('')
+  const [reviewed, setReviewed] = useState<DesktopPermissionRecord | null>(null)
   const [failure, setFailure] = useState('')
   const key = (permission: DesktopPermissionRecord) => JSON.stringify([permission.sessionId, permission.id])
-  const selected = attention.permissions.find(permission => key(permission) === selectedKey) || null
+  const selectedKey = reviewed ? key(reviewed) : ''
+  // Do not silently replace the source the user opened with changed arguments.
+  const selected = attention.permissions.find(permission => key(permission) === selectedKey
+    && permission.updatedAt === reviewed?.updatedAt && permission.toolArguments === reviewed?.toolArguments) || null
   async function resolve(action: TaskAttentionDecision, reason: string, args?: Record<string, unknown>) {
     if (!selected) throw new Error('This request is no longer pending')
     setFailure('')
@@ -73,7 +87,7 @@ export function TaskAttention({ attention }: { attention: ReturnType<typeof useT
         resolve: (sessionId, id, action, reason, args) => resolveSessionPermission(sessionId, id, action, reason, args, { sessionApi: 'v3' }),
         commit: permission => dispatchDesktopV3Cache({ type: 'permission.resolveResult', sessionId: selected.sessionId, permissionId: selected.id, permission }),
       })
-      setSelectedKey('')
+      setReviewed(current => current && key(current) === key(selected) ? null : current)
     } catch (error) {
       setFailure(error instanceof Error ? error.message : 'Decision failed. Please retry.')
       throw error
@@ -86,15 +100,15 @@ export function TaskAttention({ attention }: { attention: ReturnType<typeof useT
       {attention.permissions.map(permission => <li key={key(permission)} className="min-w-0">
         <p className="font-semibold">{taskAttentionLabel(permission)}</p>
         <p className="line-clamp-2 break-words text-xs" title={taskAttentionContext(permission)}>{taskAttentionContext(permission)}</p>
-        <button type="button" className="mt-1 rounded border border-amber-300/50 px-3 py-1 font-semibold hover:bg-amber-500/20" onClick={() => { setFailure(''); setSelectedKey(key(permission)) }}>{taskAttentionLabel(permission) === 'Needs your input' ? 'Answer' : 'Review permission'}</button>
+        <button type="button" className="mt-1 rounded border border-amber-300/50 px-3 py-1 font-semibold hover:bg-amber-500/20" onClick={() => { setFailure(''); setReviewed(permission) }}>{taskAttentionLabel(permission) === 'Needs your input' ? 'Answer' : 'Review permission'}</button>
       </li>)}
     </ul>
     {attention.unresolvedCount > attention.permissions.length && <p>Loading pending requests…</p>}
     {attention.error && <p role="alert">{attention.error} <button type="button" onClick={attention.retry}>Retry loading requests</button></p>}
     {failure && <p role="alert">{failure}</p>}
     {selected?.toolName === 'bash' ? <div className="mt-3">
-      <button type="button" onClick={() => setSelectedKey('')}>Close review</button>
+      <button type="button" onClick={() => setReviewed(null)}>Close review</button>
       <DesktopInlineBashPermissionCard key={selectedKey} permission={selected} pendingCount={attention.unresolvedCount} sessionMode={selected.mode} onResolve={(_permission, action, reason) => resolve(action, reason)} onOpenPermissions={() => window.location.assign('/settings?tab=permissions')} />
-    </div> : <DesktopPermissionModal key={selectedKey} dismissWithoutDecision open={Boolean(selected)} permission={selected} pendingCount={attention.unresolvedCount} sessionMode={selected?.mode || 'auto'} onOpenChange={open => { if (!open) setSelectedKey('') }} onResolve={resolve} />}
+    </div> : <DesktopPermissionModal key={selectedKey} dismissWithoutDecision open={Boolean(selected)} permission={selected} pendingCount={attention.unresolvedCount} sessionMode={selected?.mode || 'auto'} onOpenChange={open => { if (!open) setReviewed(null) }} onResolve={resolve} />}
   </section>
 }

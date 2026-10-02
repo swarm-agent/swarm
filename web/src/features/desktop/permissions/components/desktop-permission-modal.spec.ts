@@ -454,3 +454,19 @@ test('new plan lifecycle approval merges automatic checkpointed execution contro
     },
   )
 })
+
+// Purpose: GenericPermissionModal must disclose provider sharing and exact source,
+// never offer a persistent rule for per-capture consent. Rendered modal assertions
+// are the narrowest presentation check; browser tests exercise actual decisions.
+test('Designer source review explains sharing and offers only one-time decisions', () => {
+  const markup = renderPermission(planLifecyclePermission('design_source_sensitive_read', {
+    path: '/workspace/brand/swarm.svg', critical: true,
+    purpose: 'Capture source bytes for delegated Designer provider context',
+  }, 'read'), 'yolo')
+  assert.match(markup, /Share source with Designer/)
+  assert.match(markup, /delegated Designer provider/)
+  assert.match(markup, /swarm.svg/)
+  assert.match(markup, /Approve/)
+  assert.match(markup, /Deny/)
+  assert.doesNotMatch(markup, /Always allow|Always deny|Future matching/)
+})

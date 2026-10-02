@@ -99,7 +99,7 @@ import { TaskCardSummary, formatElapsedString, formatElapsedSeconds } from './ta
 import { taskWithCurrentSessions } from './task-card-sessions'
 import { TaskCardActionButtons } from './task-card-action-buttons'
 import { TaskCardActivity } from './task-card-activity'
-import { TaskAttention, useTaskAttention } from './task-attention'
+import { SessionPermissionAttention, TaskAttention, useTaskAttention } from './task-attention'
 import { TaskListHeader, TaskListToolbar } from './task-list-toolbar'
 import { useQuery } from '@tanstack/react-query'
 import { fetchGitStatus, gitStatusQueryKey } from '../git/api'
@@ -2475,16 +2475,6 @@ export function OrchestratorChatComposer({
     }, [sessionId])
   )
 
-  const pendingPermissions = useDesktopV3CacheSelector(
-    useCallback(
-      (state) =>
-        (state.permissionsBySession[sessionId] ?? []).filter(
-          (p) => p.status === 'pending' || (p as any).state === 'pending'
-        ),
-      [sessionId]
-    )
-  )
-
   const handleStopRun = async () => {
     if (!activeRun?.runId) return
     try {
@@ -2681,17 +2671,9 @@ export function OrchestratorChatComposer({
         </button>)}
         {!commands.length && <p className="p-2 text-[var(--app-text-muted)]">No matching commands. Escape returns to your draft.</p>}
       </div>}
-      {/* Pending permissions indicator if any requests are awaiting approval */}
-      {pendingPermissions.length > 0 && (
-        <div
-          className="flex items-center justify-between px-2.5 py-1 rounded-lg bg-amber-950/40 border border-amber-500/30 text-[11px] text-amber-200"
-          data-testid="composer-pending-permissions-notice"
-        >
-          <span className="font-medium">
-            ⚠️ {pendingPermissions.length} permission request(s) awaiting approval
-          </span>
-        </div>
-      )}
+      <div data-testid="composer-pending-permissions-notice">
+        <SessionPermissionAttention key={sessionId} sessionId={sessionId} />
+      </div>
 
       {attachedTasks.map(task => <div key={task.id} data-testid="composer-attached-task" className="flex items-center justify-between text-blue-200"><span>{task.title} · r{task.revision || 1}</span><button type="button" aria-label={`Remove task context ${task.title}`} onClick={() => onRemoveAttachedTask?.(task.id)}><X size={12} /></button></div>)}
       {/* Task Context Badge */}
