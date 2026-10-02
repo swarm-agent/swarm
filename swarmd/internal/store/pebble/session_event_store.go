@@ -965,6 +965,11 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 	if err != nil {
 		return V3SessionMutationResult{}, err
 	}
+	if ProjectConversationID(session) != "" {
+		if err := s.ValidateProjectConversation(session, input.AccountScopeID, input.UserID); err != nil {
+			return V3SessionMutationResult{}, err
+		}
+	}
 	if runIntentProvided {
 		continuation, continuationErr := s.prepareTaskPlanningContinuation(input, runIntent, now)
 		if continuationErr != nil {
@@ -3198,6 +3203,9 @@ func (s *SessionStore) prepareV3SessionForMutation(input V3SessionMutationInput,
 			}
 			if !ok {
 				return SessionSnapshot{}, false, fmt.Errorf("session %q not found", input.SessionID)
+			}
+			if projectID := ProjectConversationID(current); projectID != "" && ProjectConversationID(session) != projectID {
+				return SessionSnapshot{}, false, errors.New("project conversation identity is immutable")
 			}
 			if input.automationV2 == nil {
 				session.AutomationV2 = current.AutomationV2

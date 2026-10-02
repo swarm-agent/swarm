@@ -1966,7 +1966,9 @@ func (e *sessionV3Executor) generateAndApplySessionV3Title(job sessionV3Executor
 	var title string
 	titleSource := "compact"
 	if pebblestore.ProjectConversationID(session) != "" {
-		decision, routeErr := e.server.routeSessionOnce(context.Background(), job.Principal, conversation)
+		ctx, cancel := context.WithTimeout(e.server.runCtx, 60*time.Second)
+		defer cancel()
+		decision, routeErr := e.server.routeSessionOnce(ctx, job.Principal, conversation)
 		err = routeErr
 		title = decision.Result.Title
 		titleSource = routedSessionTitleSourceRouter
@@ -4759,7 +4761,7 @@ func (e *sessionV3Executor) resolveSessionV3Runtime(job sessionV3ExecutorJob) (s
 	if err != nil {
 		return sessionV3ResolvedRuntime{}, err
 	}
-	if strings.TrimSpace(scope.PrimaryPath) == "" {
+	if strings.TrimSpace(scope.PrimaryPath) == "" && pebblestore.ProjectConversationID(session) == "" {
 		return sessionV3ResolvedRuntime{}, errors.New("session workspace path is empty")
 	}
 	tools, err := e.resolveSessionV3ProviderTools(session.AccountScopeID, agentProfile)
@@ -5744,14 +5746,14 @@ func shouldGenerateSessionV3TitleWithMessages(session pebblestore.SessionSnapsho
 			continue
 		case "user":
 			userCount++
-			if userCount > 1 {
+			if userCount > 1 && pebblestore.ProjectConversationID(session) == "" {
 				return false
 			}
 		default:
 			return false
 		}
 	}
-	return userCount == 1
+	return userCount == 1 || (userCount > 1 && pebblestore.ProjectConversationID(session) != "")
 }
 
 func sessionV3TitleGenerationLocked(metadata map[string]any) bool {

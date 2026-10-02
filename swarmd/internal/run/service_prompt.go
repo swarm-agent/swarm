@@ -527,6 +527,11 @@ func (s *Service) projectContextPromptBlock(scope tool.WorkspaceScope) string {
 	// 1. If sessionID is available, inspect session metadata for project_id
 	if sessionID != "" {
 		if sessionSnapshot, ok, err := s.sessions.GetSession(sessionID); err == nil && ok {
+			if pebblestore.ProjectConversationID(sessionSnapshot) != "" {
+				if err := db.ValidateProjectConversation(sessionSnapshot, accountScopeID, scope.Principal.UserID); err != nil {
+					return ""
+				}
+			}
 			if accountScopeID == "" {
 				accountScopeID = strings.TrimSpace(sessionSnapshot.AccountScopeID)
 			}

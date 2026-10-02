@@ -880,6 +880,13 @@ func (s *Server) createSessionsV3Primary(w http.ResponseWriter, r *http.Request,
 	if sessionID == "" {
 		sessionID = stableSessionsV3PrimarySessionID(principal, clientRequestID)
 	}
+	if current, found, err := s.sessions.GetSession(sessionID); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	} else if found && (current.AccountScopeID != principal.AccountScopeID || current.UserID != principal.UserID || (strings.TrimSpace(req.ProjectID) != "" && pebblestore.ProjectConversationID(current) != strings.TrimSpace(req.ProjectID))) {
+		writeError(w, http.StatusConflict, errors.New("session identity mismatch"))
+		return
+	}
 	if err := validateSessionsV3CreateMetadata(req.Metadata); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -2763,7 +2770,7 @@ func (s *Server) handleSessionV3PrimaryPermissionResolve(w http.ResponseWriter, 
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	if err := s.validateProjectPermissionReply(principal, sessionID, permissionID); err != nil {
+	if err := s.validateProjectPermissionReply(principal, sessionID, req.Action); err != nil {
 		writeError(w, http.StatusConflict, err)
 		return
 	}
@@ -4006,7 +4013,7 @@ func normalizeSessionsV3ModelPreference(pref pebblestore.ModelPreference) pebble
 
 func validateSessionsV3CreateMetadata(metadata map[string]any) error {
 	for key := range metadata {
-		if isProtectedSessionsV3MetadataKey(key) {
+		if isProtectedSessionsV3MetadataKey(key) || key == "project_id" || key == "role" {
 			return fmt.Errorf("metadata key %q is reserved for primary authority state", key)
 		}
 	}
