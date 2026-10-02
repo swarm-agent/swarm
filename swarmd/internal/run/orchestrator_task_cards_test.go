@@ -75,8 +75,9 @@ func TestOrchestratorMasterHarnessExcludesSessionPlanning(t *testing.T) {
 }
 
 // Requirement: Orchestrator's compiled session deploy/commit and worktree
-// promotion tools reach provider definitions without bypassing canonical
-// permission routing. Threat: runtime filtering can hide enabled aliases or
+// promotion tools and websearch/webfetch reach provider definitions without
+// bypassing canonical permission routing. ResolveAgentToolContract and
+// filterToolDefinitions own exposure. Threat: runtime filtering can hide enabled aliases or
 // accidentally expose privileged tools to restricted agents. This is the
 // narrowest resolved-contract/provider-inventory layer; actual Git authority
 // and session mutations remain covered by their dedicated tool tests.
@@ -91,6 +92,8 @@ func TestOrchestratorSessionIntegrationProviderTools(t *testing.T) {
 	for _, tc := range []struct{ canonical, provider string }{
 		{canonical: "manage_sessions", provider: "manage-sessions"},
 		{canonical: "manage_worktree", provider: "manage-worktree"},
+		{canonical: "websearch", provider: "websearch"},
+		{canonical: "webfetch", provider: "webfetch"},
 	} {
 		if !resolved.Tools[tc.canonical].Enabled || disabled[tc.canonical] || !slices.Contains(resolved.AvailableTools, tc.canonical) {
 			t.Fatalf("%s absent from resolved contract: %+v", tc.canonical, resolved)

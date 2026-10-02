@@ -450,8 +450,8 @@ func TestDesignerManifestGuidanceUsesCanonicalVersion(t *testing.T) {
 
 // Requirement: the compiled Orchestrator alone may deploy/commit sessions and
 // promote selected work through the canonical tools. Threat: a persisted old
-// profile silently removes these or native filesystem discovery capabilities,
-// or a forged snapshot widens a
+// profile silently removes these, native filesystem discovery, or websearch/webfetch
+// capabilities, or a forged snapshot widens a
 // restricted agent. The registry materialization/reconciliation layer is the
 // narrowest authority for the code-owned tool contract; runtime filtering is
 // checked separately in run.
@@ -466,21 +466,30 @@ func TestOrchestratorSessionIntegrationToolContractReconcilesSnapshot(t *testing
 		"manage_sessions": {Enabled: pebblestore.BoolPtr(false)},
 		"manage_worktree": {Enabled: pebblestore.BoolPtr(false)},
 		"search":          {Enabled: pebblestore.BoolPtr(false)},
+		"websearch":       {Enabled: pebblestore.BoolPtr(false)},
+		"webfetch":        {Enabled: pebblestore.BoolPtr(false)},
 		"find":            {Enabled: pebblestore.BoolPtr(false)},
 		"read":            {Enabled: pebblestore.BoolPtr(false)},
 		"list":            {Enabled: pebblestore.BoolPtr(false)},
 		"plan_manage":     {Enabled: pebblestore.BoolPtr(true)},
 	}}
 	stale.Provider, stale.Model, stale.Thinking = "test-provider", "test-model", "high"
+	stale.AutoServiceTier = "fast"
 	reconciled, err := registry.ReconcileSnapshot(SwarmOrchestratorAgentID, stale)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, profile := range []pebblestore.AgentProfile{compiled, reconciled} {
+	delete(stale.ToolContract.Tools, "websearch")
+	delete(stale.ToolContract.Tools, "webfetch")
+	reconciledMissing, err := registry.ReconcileSnapshot(SwarmOrchestratorAgentID, stale)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, profile := range []pebblestore.AgentProfile{compiled, reconciled, reconciledMissing} {
 		if profile.Mode != ModePrimary || profile.RuntimeMode != pebblestore.AgentRuntimeModeReadWrite || profile.DefaultSessionMode != pebblestore.AgentDefaultSessionModeAuto {
 			t.Fatalf("Orchestrator mode changed: %+v", profile)
 		}
-		for _, name := range []string{"manage_sessions", "manage_worktree", "search", "find", "read", "list"} {
+		for _, name := range []string{"manage_sessions", "manage_worktree", "search", "websearch", "webfetch", "find", "read", "list"} {
 			cfg, ok := profile.ToolContract.Tools[name]
 			if !ok || cfg.Enabled == nil || !*cfg.Enabled {
 				t.Fatalf("%s missing from compiled Orchestrator contract: %+v", name, profile.ToolContract)
@@ -493,8 +502,10 @@ func TestOrchestratorSessionIntegrationToolContractReconcilesSnapshot(t *testing
 			}
 		}
 	}
-	if reconciled.Provider != stale.Provider || reconciled.Model != stale.Model || reconciled.Thinking != stale.Thinking {
-		t.Fatalf("model preference changed during reconciliation: %+v", reconciled)
+	for _, profile := range []pebblestore.AgentProfile{reconciled, reconciledMissing} {
+		if profile.Provider != stale.Provider || profile.Model != stale.Model || profile.Thinking != stale.Thinking || profile.AutoServiceTier != stale.AutoServiceTier {
+			t.Fatalf("model preference changed during reconciliation: %+v", profile)
+		}
 	}
 	for _, profile := range []pebblestore.AgentProfile{CoderAgentProfileForParent(pebblestore.AgentProfile{}), FinderAgentProfileForParent(pebblestore.AgentProfile{})} {
 		for _, name := range []string{"manage_sessions", "manage_worktree"} {
