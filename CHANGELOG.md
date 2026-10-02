@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Refresh the headless container runtime to Ubuntu 26.04, upgrade inherited packages during image builds, and include the PCRE2 runtime dependency. Release builds continue to require digest-pinned base images and image vulnerability checks. Docs impact: none.
+
 - Connect qualified, digest-preserving GHCR publication to version-pinned CLI/SDK release packs; reject conflicting tags and require anonymous image access before GitHub/npm publication. No live publication readiness is claimed. Docs impact: first-publish permissions and visibility prerequisites in `docs/main-deploy-checklist.md`.
 - Replace optimistic deliverable publication with durable approval claims, validated X receipts and explicit failed/uncertain outcomes; partial publication requires reconciliation rather than automatic retry. Docs impact: publication outcome guidance in `docs/main-deploy-checklist.md`.
 
