@@ -32,6 +32,11 @@ test('project dropdown, settings-only appearance, persisted PNG and authoritativ
       const req = route.request(), url = new URL(req.url())
       if (req.isNavigationRequest()) return route.fulfill({ contentType: 'text/html', body: '<div id="root" style="height:100vh"></div>' })
       if (url.pathname === '/v3/sync/hydrate') return route.fulfill({ json: snapshot() })
+      if (url.pathname === '/v1/account/avatar') return route.fulfill({ json: { image: '', user_id: url.searchParams.get('user_id'), account_scope_id: url.searchParams.get('account_scope_id') } })
+      if (url.pathname === '/v1/account/username' && req.method() === 'PUT') {
+        const body = req.postDataJSON(); writes.push({ path: url.pathname, body })
+        return route.fulfill({ json: { username: body.username } })
+      }
       if (req.method() === 'PATCH' && url.pathname === `/v3/projects/${project.id}`) {
         const body = req.postDataJSON(); writes.push({ path: url.pathname, body }); Object.assign(saved, body)
         return route.fulfill({ json: { project: saved } })
@@ -49,6 +54,35 @@ test('project dropdown, settings-only appearance, persisted PNG and authoritativ
     })
     const mount = async () => { await page.goto('https://project.test/fixture/swarm'); await page.addStyleTag({ content: css }); await page.addScriptTag({ content: bundle.outputFiles[0].text }); await page.getByLabel('Current project').waitFor() }
     await mount()
+    // Requirement: OrchestrateView keeps a compact identity/bell header and a
+    // distinct icon-segmented mode switch immediately before Tasks. Rendered
+    // geometry catches the header/text regression that source checks cannot.
+    // Personal photo selection must not steal the independent username edit.
+    await page.getByTestId('account-name-button').click()
+    await page.getByLabel('Account username').fill('Renamed operator')
+    await page.getByTestId('account-name-save-btn').click()
+    await page.getByRole('button', { name: 'Change account name (current: Renamed operator)' }).waitFor()
+    assert.ok(writes.some(write => write.path === '/v1/account/username' && write.body.username === 'Renamed operator'))
+    const modes = page.getByRole('navigation', { name: 'Chat and Swarm mode' })
+    const header = page.locator('.swarm-unified-header')
+    assert.equal(await header.getByRole('link', { name: 'Switch to Chat Mode' }).count(), 0)
+    assert.equal(await modes.getByRole('link', { name: 'Switch to Chat Mode' }).getAttribute('href'), '/fixture')
+    assert.equal(await modes.getByRole('link', { name: 'Switch to Swarm Orchestrate Mode' }).getAttribute('href'), '/fixture/swarm')
+    assert.equal(await modes.getByRole('link', { name: 'Switch to Swarm Orchestrate Mode' }).getAttribute('aria-current'), 'page')
+    assert.equal(await modes.locator('svg').count(), 2)
+    assert.equal(await modes.evaluate(el => el.nextElementSibling?.getAttribute('aria-label')), 'Swarm destinations')
+    assert.equal(await header.evaluate(el => el.scrollWidth <= el.clientWidth && el.getBoundingClientRect().height < 80), true)
+    assert.equal(await modes.evaluate(el => getComputedStyle(el).gridTemplateColumns.split(' ').length), 2)
+    const bell = header.getByRole('button', { name: /^Open notifications/ })
+    await bell.waitFor()
+    assert.equal(await bell.evaluate(el => el.getBoundingClientRect().left > el.parentElement!.firstElementChild!.getBoundingClientRect().left), true)
+    await bell.click()
+    await page.getByRole('button', { name: 'Close notifications', exact: true }).click()
+    await page.setViewportSize({ width: 390, height: 844 })
+    // Measure the sidebar at narrow width even while its responsive drawer is closed.
+    assert.equal(await modes.evaluate(el => el.scrollWidth <= el.clientWidth), true)
+    assert.equal(await header.evaluate(el => el.scrollWidth <= el.clientWidth), true)
+    await page.setViewportSize({ width: 1440, height: 1000 })
     const nav = page.getByRole('navigation', { name: 'Swarm destinations' })
     assert.equal(await nav.getByRole('link', { name: 'Project Charter', exact: true }).count(), 0)
     assert.equal(await nav.getByRole('link', { name: 'Tasks', exact: true }).count(), 1)

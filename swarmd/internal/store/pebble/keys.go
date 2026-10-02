@@ -252,6 +252,10 @@ func IdentityPrefix() string {
 	return KeyIdentityPrefix
 }
 
+func KeyIdentityUserAvatar(accountID, userID string) string {
+	return KeyIdentityPrefix + "user_avatar/" + keyPart(accountID) + "/" + keyPart(userID)
+}
+
 func KeyIdentityUser(userID string) string {
 	return KeyIdentityUserPrefix + keyPart(userID)
 }

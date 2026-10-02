@@ -1,3 +1,4 @@
+import { PersonalAvatar } from './personal-avatar'
 import { ContextRemaining } from './orchestrator-composer-surface'
 import { ProjectHeaderIdentity, ProjectImageSettings } from './project-header-identity'
 import { useLayoutEffect, useState, useReducer, useMemo, useEffect, useCallback, useRef, useSyncExternalStore, useId } from 'react'
@@ -33,6 +34,7 @@ import {
   ChevronUp,
   Code,
   Code2,
+  Cpu,
   Edit3,
   ExternalLink,
   FileText,
@@ -5671,10 +5673,6 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
             </div>
 
             {accountScopeId && <OrchestratorNotifications accountScopeId={accountScopeId} workspaceSlug={workspaceSlug} />}
-            <nav aria-label="Chat and Swarm mode" className="swarm-header-modes">
-              <Link {...(workspaceSlug ? { to: '/$workspaceSlug' as const, params: { workspaceSlug } } : { to: '/' as const })} onClick={onNavigateHome} aria-label="Switch to Chat Mode" className="rounded-md">Chat</Link>
-              <Link {...swarmPageLink(workspaceSlug, 'home')} aria-label="Switch to Swarm Orchestrate Mode" aria-current="page" className="rounded-md">Swarm</Link>
-            </nav>
           </div>
         </header>
         <ProjectTaskAttention tasks={liveTasks} onOpen={task => {
@@ -5683,6 +5681,10 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
           if (task.sessionId) { setActiveTaskId(task.id); setActiveSessionId(task.sessionId); setWorkerChatOpen(true) }
         }} />
 
+        <nav aria-label="Chat and Swarm mode" className="swarm-sidebar-modes" onClick={() => responsiveLayout.setNavigationOpen(false)}>
+          <Link {...(workspaceSlug ? { to: '/$workspaceSlug' as const, params: { workspaceSlug } } : { to: '/' as const })} onClick={onNavigateHome} aria-label="Switch to Chat Mode"><MessageSquare size={12} aria-hidden="true" />Chat</Link>
+          <Link {...swarmPageLink(workspaceSlug, 'home')} aria-label="Switch to Swarm Orchestrate Mode" aria-current="page"><Cpu size={12} aria-hidden="true" />Swarm{pendingReviews.length > 0 && <span aria-label={`${pendingReviews.length} worker reviews pending`} className="rounded-full px-1 text-[9px] bg-[var(--swarm-surface-hover)]">{pendingReviews.length}</span>}</Link>
+        </nav>
         {/* Navigation Menu Links */}
         <nav aria-label="Swarm destinations" className="swarm-route-navigation p-3 border-b border-slate-800/80 space-y-1" onClick={() => { setIsOnboardingActive(false); responsiveLayout.setPanel('main'); responsiveLayout.setNavigationOpen(false) }}>
           <Link
@@ -5914,9 +5916,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
         {/* Real User HUD */}
         <div className="p-3 border-t border-slate-800/80 flex items-center bg-[#0a0f1d]/50">
           <div className="flex items-center gap-2.5 min-w-0 w-full">
-            <div className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full bg-blue-600/20 text-blue-400 font-bold text-[10px] border border-blue-500/30">
-              {userProfile.name.slice(0, 2).toUpperCase()}
-            </div>
+            <PersonalAvatar key={`${accountScopeId}:${userProfile.id}`} userId={userProfile.id} accountScopeId={accountScopeId || ''} name={userProfile.name} />
             {isEditingAccountName ? (
               <form
                 onSubmit={(e) => {

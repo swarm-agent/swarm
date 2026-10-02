@@ -37,6 +37,7 @@ func (s *Server) registerOnboardingRoutes(mux *http.ServeMux) {
 	mux.HandleFunc(TailscaleOnboardingApprovalPath, s.handleTailscaleOnboardingApproval)
 	mux.HandleFunc("/v1/onboarding/provider/credential", s.handleOnboardingProviderCredential)
 	mux.HandleFunc("/v1/account/username", s.handleAccountUsername)
+	mux.HandleFunc("/v1/account/avatar", s.handleAccountAvatar)
 	mux.HandleFunc("/v1/account/team/upgrade", s.handleAccountTeamUpgrade)
 }
 
