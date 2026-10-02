@@ -1194,7 +1194,7 @@ function MediaViewer({
 
           {item.kind === 'video' && <section aria-label="Video sections" className="shrink-0 border-t border-white/10 px-4 py-3 text-xs text-white/80">
             <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-              <span>Full video · {sections.at(-1)?.end.toFixed(2) ?? 'Unknown duration'}{sections.length ? 's' : ''}</span>
+              <span>Full video · {sections[sections.length - 1]?.end.toFixed(2) ?? 'Unknown duration'}{sections.length ? 's' : ''}</span>
               {sections[sectionIndex] && sections[sectionIndex].source.id !== item.id && <button type="button" className="rounded bg-white/10 px-3" onClick={() => selectAsset(sections[sectionIndex].source)}>Use this retained version as source</button>}
             </div>
             <div className="flex gap-2 overflow-x-auto">

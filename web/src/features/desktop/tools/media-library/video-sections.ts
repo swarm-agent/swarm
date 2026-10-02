@@ -30,7 +30,7 @@ export function videoSections(item: MediaLibraryItem, items: readonly MediaLibra
     })
     if (!parent) return []
     const previous = visit(parent)
-    const start = previous.at(-1)?.end
+    const start = previous[previous.length - 1]?.end
     if (start === undefined || end <= start) return []
     return [...previous, { source: current, start, end }]
   }
