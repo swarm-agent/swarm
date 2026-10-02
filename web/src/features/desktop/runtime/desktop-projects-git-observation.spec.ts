@@ -247,3 +247,26 @@ test('identity replacement during inspection rejects old ancestry and bounded qu
   assert.equal(h.state.project.tasks[0].gitStatus, 'unknown')
   lease.release()
 })
+
+// Requirement: card remount hydration is cache enrichment, not a repository change.
+// DesktopProjectsRuntime owns initial Git reads and durable invalidations; exercising
+// its mutation boundary proves filter-driven card mounts cannot fan out detail GETs.
+test('card hydration does not invalidate inspected project Git', { timeout: 5000 }, async () => {
+  const h = harness()
+  const lease = await hydrate(h)
+  const before = h.state.project.tasks
+  const cache = createEmptyDesktopV3CacheState()
+  for (const ids of [['integrated'], ['pending'], ['foreign'], ['integrated', 'pending']]) {
+    h.runtime.acceptSessionMutation({ action: { type: 'hydrate.apply', requestedSessionIds: ids },
+      previousState: cache, nextState: cache, durationMS: 0 } as DesktopV3CacheMutation)
+  }
+  await flush()
+  assert.equal(h.reads.length, 2)
+  assert.equal(h.collections, 1)
+  assert.equal(h.state.project.tasks, before)
+  h.emit('integrated', 'session.worktree.updated')
+  assert.equal(h.reads.length, 3, 'real repository events must still inspect')
+  h.reads[2].resolve({ task: { ...h.tasks[0], status: 'completed', git_status: 'clean', is_integrated: true } })
+  await flush()
+  lease.release()
+})

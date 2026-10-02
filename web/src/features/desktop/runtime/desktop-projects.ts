@@ -65,6 +65,10 @@ export class DesktopProjectsRuntime {
   }
 
   acceptSessionMutation(mutation?: DesktopV3CacheMutation): void {
+    // Card mounts hydrate permissions/plans, not Git. Initial project acquisition
+    // already inspects every task; durable events and reconnect repair own later
+    // invalidations. Re-reading Git for cache enrichment creates a feedback loop.
+    if (mutation?.action.type === 'hydrate.apply') return
     for (const { projectId } of this.demand.values()) {
       for (const task of this.deps.getState()[projectId]?.tasks ?? []) {
         if (!task.sessionId) continue

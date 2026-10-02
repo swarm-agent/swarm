@@ -59,7 +59,18 @@ export function taskOutcome(task: RunningTask) {
   const code = Boolean(task.worktreeBranch || task.agentType === 'coder' || currentProgram?.definition?.jobs?.some(job => job.agent_type === 'coder'))
   const assembled = currentProgram?.state === 'completed'
   const delivered = ((taskDelivery(task)?.integrated || taskDelivery(task)?.recovered) ?? task.isIntegrated === true) && !integrationFailed && task.gitStatus === 'clean' && !task.isDirty && !(task.unintegratedCommits && task.unintegratedCommits > 0)
+  // Unknown freshness is not evidence of undelivered work. Preserve explicit
+  // last-known dirty/commit facts during refresh, without claiming fresh delivery.
+  const deliveryAction = code && !running && (assembled || ['completed', 'needs_review'].includes(task.status))
+    ? task.syncWarning ? 'Git inspection failed'
+      : task.isDirty ? 'Changes pending commit'
+      : (task.unintegratedCommits || 0) > 0 ? 'Unintegrated commits'
+      : undefined
+    : undefined
+  const attentionReason = blocker?.title || deliveryAction
+    || (task.status === 'needs_review' ? 'Review requested' : task.status === 'pending_approval' ? 'Approval requested' : undefined)
   return {
+    attentionReason,
     blocker: blocker ? { ...blocker, message: redactIntegrationDiagnostic(blocker.message) } : undefined,
     integrationFailed, launchIncomplete, repairSessionId,
     execution: running ? 'Execution running' : interrupted ? 'Execution interrupted' : failed ? 'Execution failed' : blocked ? 'Execution blocked'
@@ -67,6 +78,6 @@ export function taskOutcome(task: RunningTask) {
     verification: failed || blocked ? 'Verification incomplete — review retained results' : 'Verification not established by task status',
     delivery: code ? delivered ? `${taskDelivery(task)?.recovered ? 'Task delta delivered to' : 'Integrated into'} ${task.baseBranch || 'captured target'}`
       : `Delivery to ${task.baseBranch || 'captured target'} not verified` : undefined,
-    needsAttention: Boolean(blocker) || (code && (assembled || task.status === 'completed') && !delivered),
+    needsAttention: Boolean(attentionReason),
   }
 }
