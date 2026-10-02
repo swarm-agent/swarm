@@ -38,15 +38,16 @@ test('MediaViewerModal rendered component behavior with onGenerate spy', { timeo
 
     const root = createRoot(document.getElementById('root'));
 
-    window.renderViewer = (item, initialMode) => {
+    window.renderViewer = (item, initialMode, items = item ? [item] : [], jobs = []) => {
       root.render(
         <QueryClientProvider client={queryClient}>
           <MediaViewerModal
             key={item ? item.id : 'none'}
             item={item}
-            items={item ? [item] : []}
+            items={items}
+            generationJobs={jobs}
             onClose={() => {}}
-            onSelect={() => {}}
+            onSelect={(selected) => { window.selected = selected; window.renderViewer(selected, initialMode, items, jobs); }}
             onGenerate={window.onGenerateSpy}
             initialQuickRouteMode={initialMode}
           />
@@ -291,7 +292,7 @@ test('MediaViewerModal rendered component behavior with onGenerate spy', { timeo
     await promptInput.fill('Extend next sequence');
 
     // Submit button should be disabled because Veo Lite extension is unsupported
-    const submitBtn = page.getByRole('button', { name: /Generate revision/i });
+    const submitBtn = page.getByRole('button', { name: /Continue from here/i });
     const isDisabled = await submitBtn.isDisabled();
     assert.equal(isDisabled, true, 'Submit button must be disabled for Veo Lite extension');
 
@@ -333,7 +334,7 @@ test('MediaViewerModal rendered component behavior with onGenerate spy', { timeo
     // Fill in prompt and submit
     const promptInputStd = page.locator('textarea');
     await promptInputStd.fill('Veo standard extension');
-    const submitBtnStd = page.getByRole('button', { name: /Generate revision/i });
+    const submitBtnStd = page.getByRole('button', { name: /Continue from here/i });
     await submitBtnStd.waitFor();
     assert.equal(await submitBtnStd.isDisabled(), false, 'Submit button must be enabled for valid Veo Standard extension');
     await submitBtnStd.click();
@@ -345,6 +346,37 @@ test('MediaViewerModal rendered component behavior with onGenerate spy', { timeo
     assert.equal(calls[0].settings.durationSeconds, 8);
     assert.equal(calls[0].settings.resolution, '720p');
     assert.equal(calls[0].settings.aspectRatio, '16:9');
+
+    // Purpose: the viewer must keep the full source playable and resolve the exact
+    // selected request when durable completion precedes playable output hydration.
+    // The rendered MediaViewer boundary proves selection, not live provider success.
+    assert.equal(await page.locator('video').count(), 1, 'pending continuation keeps source playback');
+    const job = { id: calls[0].requestId, taskId: 'durable-task', sourceId: veoStdItem.id, count: 1, status: 'completed', title: 'Continuation', outputIds: ['ready-output'] };
+    await page.evaluate(({ item, job }) => (window as any).renderViewer(item, 'next_scene', [item], [job]), { item: veoStdItem, job });
+    await page.getByText('Loading ready output…').waitFor();
+    const ready = { ...veoStdItem, id: 'ready-output', title: 'Ready continuation', directUrl: '/ready.mp4', parentId: veoStdItem.id,
+      videoProvenance: { ...veoStdItem.videoProvenance, operation: 'extend', is_combined_output: true, observed_duration_ms: 20010, source_link: { deliverable_id: veoStdItem.id } } };
+    await page.evaluate(({ item, ready, job }) => (window as any).renderViewer(item, 'next_scene', [item, ready], [job]), { item: veoStdItem, ready, job });
+    await page.getByRole('dialog', { name: 'Media viewer: Ready continuation' }).waitFor();
+    assert.equal(await page.locator('video').getAttribute('src'), '/ready.mp4');
+    assert.equal(await page.locator('video').count(), 1, 'combined output is not concatenated with source');
+    assert.equal(await page.getByLabel('Generation source').textContent().then(text => text?.includes('ready-output')), true);
+
+    // Output-before-job: a ready item alone cannot hijack selection; the exact
+    // job output ID subsequently resolves it. Unrelated selection stays put.
+    await page.evaluate((item) => (window as any).renderViewer(item, 'next_scene'), veoStdItem);
+    await page.locator('textarea').fill('Second extension');
+    await page.getByRole('button', { name: /Continue from here/i }).click();
+    calls = await page.evaluate(() => (window as any).calls);
+    const secondJob = { ...job, id: calls[1].requestId, taskId: 'second-task' };
+    await page.evaluate(({ item, ready }) => (window as any).renderViewer(item, 'next_scene', [item, ready]), { item: veoStdItem, ready });
+    assert.equal(await page.locator('video').getAttribute('src'), veoStdItem.directUrl);
+    await page.evaluate(({ item, ready, job }) => (window as any).renderViewer(item, 'next_scene', [item, ready], [job]), { item: veoStdItem, ready, job: secondJob });
+    await page.getByRole('dialog', { name: 'Media viewer: Ready continuation' }).waitFor();
+    const unrelated = { ...veoStdItem, id: 'unrelated', title: 'Unrelated version' };
+    await page.evaluate(({ item, ready, job }) => (window as any).renderViewer(item, 'next_scene', [item, ready], [job]), { item: unrelated, ready, job: secondJob });
+    await page.getByRole('dialog', { name: 'Media viewer: Unrelated version' }).waitFor();
+    assert.equal(await page.locator('video').getAttribute('src'), unrelated.directUrl);
 
     // 3. Omni video: automatic duration (supportsDuration=false)
     const omniItem = {

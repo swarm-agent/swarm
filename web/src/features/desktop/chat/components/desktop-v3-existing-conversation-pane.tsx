@@ -1659,6 +1659,7 @@ export interface DesktopV3ExistingConversationPaneProps {
   onArtifactSelectionRequestHandled?: () => void;
   /** Keep artifact review inside an embedded Studio-owned surface. */
   artifactReviewPresentation?: "fullscreen" | "embedded";
+  onOpenMediaArtifact?: (artifact: DesktopV3ArtifactCatalogEntry) => boolean;
   artifactReviewPortalTarget?: HTMLElement | null;
   /** Reuse the canonical conversation as a constrained embedded surface. */
   presentation?: "page" | "sidebar";
@@ -1776,6 +1777,7 @@ export function DesktopV3ExistingConversationPane({
   onContextChipRemove,
   onArtifactSelectionRequestHandled,
   artifactReviewPresentation = "fullscreen",
+  onOpenMediaArtifact,
   artifactReviewPortalTarget = null,
   presentation = "page",
   onMessageSent,
@@ -2445,6 +2447,7 @@ export function DesktopV3ExistingConversationPane({
     });
   }, [routeWorkspaceSlug]);
   const openArtifactFullView = useCallback((artifact: DesktopV3ArtifactCatalogEntry, partId = "", presentationGroupKey = "") => {
+    if (onOpenMediaArtifact?.(artifact)) return;
     const artifactKey = desktopV3ArtifactCatalogEntryKey(artifact);
     const groupKey = presentationGroupKey.trim();
     const openAsIterationGroup = groupKey.startsWith("turn:") || groupKey.startsWith("collection:");
@@ -2468,8 +2471,9 @@ export function DesktopV3ExistingConversationPane({
           : desktopV3ArtifactViewerSearch(artifact)),
       }),
     });
-  }, [artifactReviewPresentation, navigate, routeWorkspaceSlug]);
+  }, [artifactReviewPresentation, navigate, routeWorkspaceSlug, onOpenMediaArtifact]);
   const navigateArtifactViewer = useCallback((artifact: DesktopV3ArtifactCatalogEntry) => {
+    if (onOpenMediaArtifact?.(artifact)) return;
     setArtifactGalleryInitialCollectionId("");
     setArtifactGalleryInitialGroupKey("");
     setArtifactGalleryInitialPartId("");
@@ -2481,7 +2485,7 @@ export function DesktopV3ExistingConversationPane({
       search: (previous) => ({ ...previous, artifact: undefined, collection: undefined, ...desktopV3ArtifactViewerSearch(artifact) }),
       replace: true,
     });
-  }, [artifactReviewPresentation, navigate, routeWorkspaceSlug]);
+  }, [artifactReviewPresentation, navigate, routeWorkspaceSlug, onOpenMediaArtifact]);
   const navigateArtifactCollectionViewer = useCallback((artifact: DesktopV3ArtifactCatalogEntry) => {
     const collectionId = artifact.collectionId?.trim() ?? "";
     const sessionId = artifact.lineage?.parentSessionId || artifact.sessionId;

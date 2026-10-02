@@ -90,6 +90,9 @@ import {
 import { selectAndHydrateDesktopV3Session, hydrateDesktopV3ChildCard } from '../state/desktop-v3-session-hydrator'
 import { requireDesktopV3RealtimeControllerReady } from '../realtime/v3-realtime-controller'
 import { HistoricalMediaLibrary, MediaViewerModal, type MediaLibraryItem } from '../tools/media-library'
+import { mediaJobIdentity } from '../tools/media-library/media-job-identity'
+import { toMediaLibraryItem } from '../tools/media-library/media-classifier'
+import type { DesktopV3ArtifactCatalogEntry } from '../session-v3/artifact-api'
 import type { MediaGenerationJob, MediaGenerationRequest, MediaGenerationSettings } from '../tools/media-library/media-generation'
 import type { QuickRouteMode } from '../tools/media-library/media-viewer-modal'
 import { MediaTaskCard, MediaTaskThreads, isCreativeMediaTask } from './media-task-card'
@@ -2919,6 +2922,7 @@ export function OrchestratorChatComposer({
  * and individual Task Worker sessions with a back-button navigation bar.
  */
 function OrchestratorChatSidebar({
+  onOpenMediaArtifact,
   workspaceSlug,
   repairSession = false,
   creatingWorker,
@@ -2941,6 +2945,7 @@ function OrchestratorChatSidebar({
   sessionId: string
   workspaceSlug?: string
   repairSession?: boolean
+  onOpenMediaArtifact?: (artifact: DesktopV3ArtifactCatalogEntry) => boolean
   creatingWorker?: boolean
   onWorkerCreationSent?: () => void
   selectedWorker?: SelectedWorker | null
@@ -3110,6 +3115,7 @@ function OrchestratorChatSidebar({
       )}
 
       <DesktopV3ExistingConversationPane
+        onOpenMediaArtifact={onOpenMediaArtifact}
         presentation="sidebar"
         sessionId={sessionId}
         session={currentSession}
@@ -4690,7 +4696,7 @@ export function OrchestrateView({
       const parentIds = [...new Set((t.deliverables ?? []).flatMap(output => [output.parentDeliverableId, output.sourceMediaRef].filter((id): id is string => Boolean(id))))]
       const sourceId = parentIds.length === 1 ? parentIds[0]! : t.attachedMedia?.length === 1 ? t.attachedMedia[0].id : t.deliverables?.[0]?.id ?? ''
       for (const am of [{ id: sourceId }]) {
-        const localJob = localGenerationJobs.find((job) => job.taskId === t.id && job.sourceId === am.id)
+        const localJob = localGenerationJobs.find((job) => job.taskId === t.id)
         let status: string = t.status
         if (t.status === 'failed') {
           status = 'failed'
@@ -4704,12 +4710,11 @@ export function OrchestrateView({
         }
 
         jobs.push({
-          id: t.id,
+          ...mediaJobIdentity(t.id, am.id, localGenerationJobs),
           taskId: t.id,
           prompt: localJob?.prompt || t.description || t.title,
           createdAt: localJob?.createdAt || t.createdAt,
-          outputIds: t.deliverables?.filter((d) => (d.status === 'ready' || d.status === 'accepted') && (d.mediaUrl || d.previewUrl)).map((d) => d.id) || [],
-          sourceId: am.id,
+          outputIds: t.deliverables?.filter((d) => d.status === 'ready' || d.status === 'accepted').map((d) => d.id) || [],
           title: t.title,
           count: t.variantCount || t.deliverables?.length || 1,
           status,
@@ -7090,6 +7095,13 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
         <div className="swarm-conversation-panel flex min-h-0 shrink-0 flex-col">
         {activeNavTab === 'workers' && workerChatOpen && <div className="flex max-w-[440px] shrink-0 items-center justify-between gap-3 p-3 text-xs text-slate-300"><span>{workerCreationRequested ? 'Add worker: describe its job to Orchestrator below. Nothing runs until you approve.' : 'Discuss this worker with Orchestrator'}</span><button onClick={() => { setWorkerChatOpen(false); setWorkerCreationRequested(false) }}>Close</button></div>}
         <OrchestratorChatSidebar
+        onOpenMediaArtifact={(artifact) => {
+          const selected = toMediaLibraryItem(artifact)
+          if (!selected) return false
+          setActiveMediaViewerItem(selected)
+          setMediaViewerInitialMode(null)
+          return true
+        }}
           workspaceSlug={workspaceSlug}
           key={activeSessionId}
           repairSession={tasks.some(task => taskOutcome(task).repairSessionId === activeSessionId)}
@@ -7853,7 +7865,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
          ───────────────────────────────────────────────────────────── */}
       {activeMediaViewerItem && (
         <MediaViewerModal
-          item={activeMediaViewerItem}
+          item={allMediaLibraryItems.find(item => item.id === activeMediaViewerItem.id) ?? activeMediaViewerItem}
           items={allMediaLibraryItems}
           isGenerating={isDeployingTask}
           onClose={() => {
