@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 ARG BUILD_IMAGE=docker.io/library/golang:1.26.7-trixie
-ARG RUNTIME_IMAGE=docker.io/library/debian:trixie-slim
+ARG RUNTIME_IMAGE=docker.io/library/ubuntu:26.04
 FROM ${BUILD_IMAGE} AS build
 ARG TARGETOS
 ARG TARGETARCH
@@ -31,8 +31,11 @@ ARG COMMIT=unknown
 LABEL org.opencontainers.image.source="https://github.com/swarm-agent/swarm" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${COMMIT}"
-RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates git bash libc-bin libgcc-s1 libstdc++6 && \
+# Refresh inherited packages as well as newly installed dependencies.
+# Ubuntu LTS supplies maintained security backports for the glibc runtime.
+RUN apt-get update && apt-get upgrade -y --no-install-recommends && \
+    apt-get install -y --no-install-recommends \
+      ca-certificates git bash libc-bin libgcc-s1 libstdc++6 libpcre2-8-0 && \
     rm -rf /var/lib/apt/lists/* && \
     groupadd --gid 10001 swarm && \
     useradd --uid 10001 --gid 10001 --create-home --shell /bin/bash swarm && \
