@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Parallelize distribution binary builds in `scripts/build-main-dist.sh` and remove Cloud Build CPU throttling for faster release compilation. Docs impact: none.
+
 - Fail closed when the protected release policy is missing: stop the GitHub release consumer before artifact intake and identify the required configuration instead of requesting another build. Docs impact: none.
 - Bind release intake to the maintained qualification runner's exact-commit App checks and immutable artifact references; reject missing or mismatched qualification evidence. Docs impact: none.
 - Allow bounded time for native and headless OCI qualification and release promotion without weakening protected publication gates. Docs impact: none.
