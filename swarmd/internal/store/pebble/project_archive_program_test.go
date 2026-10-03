@@ -11,6 +11,8 @@ import (
 // retained execution records. Active parent programs and foreign ownership must
 // still reject archival without partial writes. This real temporary Pebble store
 // is the narrowest layer proving the archive guard and durable postconditions.
+// A foreign parent is materialized after the task: new cross-account task
+// binding is correctly rejected by PutProjectTask's usage scope boundary.
 func TestArchiveProjectTaskStaleProgramSession(t *testing.T) {
 	parents := []struct {
 		name      string
@@ -33,7 +35,7 @@ func TestArchiveProjectTaskStaleProgramSession(t *testing.T) {
 				s := NewSessionStore(db)
 				const account = "account-a"
 				const sessionID = "parent"
-				if parent.exists {
+				if parent.exists && parent.account == "" {
 					sessionAccount := parent.account
 					if sessionAccount == "" {
 						sessionAccount = account
@@ -54,6 +56,11 @@ func TestArchiveProjectTaskStaleProgramSession(t *testing.T) {
 				task := &ProjectTaskRecord{ID: "task", ProjectID: "project", Title: "Retained task", Agent: "coder", Status: "in_progress", SessionID: sessionID, TaskProgramID: program.ProgramID, WorktreeBranch: "agent/retained", FullPlanMarkdown: "retained plan", Revision: 1}
 				if err := s.PutProjectTask(account, task); err != nil {
 					t.Fatal(err)
+				}
+				if parent.exists && parent.account != "" {
+					if err := s.CreateSession(SessionSnapshot{ID: sessionID, AccountScopeID: parent.account, Lifecycle: parent.lifecycle}); err != nil {
+						t.Fatal(err)
+					}
 				}
 				before, found, err := s.GetProjectTask(account, task.ProjectID, task.ID)
 				if err != nil || !found {

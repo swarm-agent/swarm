@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { build } from 'esbuild'
 import { chromium, type Route } from 'playwright'
+import { projectTestStyles } from './project-test-styles'
 import { fixtureRead, project, snapshot } from './swarm-responsive-browser-fixtures'
 
 // Purpose: real OrchestrateView management wiring must retain failed selection,
@@ -10,13 +11,27 @@ import { fixtureRead, project, snapshot } from './swarm-responsive-browser-fixtu
 // measured daemon latency, provider execution or backend liveness protection.
 test('project task archive retains partial failures and isolates late archived-list responses', { timeout: 45000 }, async () => {
   const bundle = await build({ stdin: { resolveDir: process.cwd(), loader: 'tsx', contents: `
-    import {mountResponsiveFixture} from './src/features/desktop/orchestrate/swarm-responsive-browser-fixtures';
-    mountResponsiveFixture('populated');
+    import React from 'react'; import {createRoot} from 'react-dom/client';
+    import {createRootRoute,createRoute,createRouter,RouterProvider} from '@tanstack/react-router';
+    import {QueryClient,QueryClientProvider} from '@tanstack/react-query';
+    import {ensureDesktopSession} from './src/app/api';
+    import {OrchestratePage} from './src/features/desktop/orchestrate/orchestrate-page';
+    async function mount() {
+      await ensureDesktopSession();
+      const root=createRootRoute({component:()=> <OrchestratePage workspaceSlug='fixture'/>});
+      const routes=['/projects','/projects/$projectId','/projects/$projectId/sessions/$sessionId'].map(path=>createRoute({getParentRoute:()=>root,path,validateSearch:s=>s}));
+      const router=createRouter({routeTree:root.addChildren(routes)});
+      const client=new QueryClient({defaultOptions:{queries:{retry:false,staleTime:Infinity}}});
+      createRoot(document.getElementById('root')).render(<QueryClientProvider client={client}><RouterProvider router={router}/></QueryClientProvider>);
+    }
+    mount();
   ` }, bundle: true, write: false, format: 'iife', platform: 'browser', jsx: 'automatic', logLevel: 'silent' })
+  const css = await projectTestStyles()
   const browser = await chromium.launch({ headless: true, channel: process.env.SWARM_TEST_BROWSER_CHANNEL || 'chrome' })
   try {
     const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } })
     page.setDefaultTimeout(7000)
+    page.on('pageerror', error => console.error(error.message))
     const second = { ...project, id: 'second-project', name: 'Second project' }
     const rows = Array.from({ length: 6 }, (_, index) => ({ id: `task-${index}`, title: `Archive candidate ${index}`, agent: 'coder', revision: 1, status: 'queued' }))
     const archived = new Set<string>()
@@ -28,9 +43,11 @@ test('project task archive retains partial failures and isolates late archived-l
     let active = 0, peak = 0
     await page.route('**/*', route => {
       const req = route.request(), url = new URL(req.url())
-      if (req.isNavigationRequest()) return route.fulfill({ contentType: 'text/html', body: '<div id="root"></div>' })
+      if (req.isNavigationRequest()) return route.fulfill({ contentType: 'text/html', body: '<div id="root" style="height:100vh"></div>' })
       if (url.pathname === '/v3/sync/hydrate') return route.fulfill({ json: snapshot() })
       if (url.pathname === '/v3/projects') return route.fulfill({ json: { projects: [project, second] } })
+      if (url.pathname === '/v1/account/avatar') return route.fulfill({ json: { image: '', user_id: url.searchParams.get('user_id'), account_scope_id: url.searchParams.get('account_scope_id') } })
+      if (req.method() === 'GET' && url.pathname.endsWith('/sessions')) return route.fulfill({ json: { sessions: [] } })
       if (url.pathname === `/v3/projects/${second.id}`) return route.fulfill({ json: { project: second } })
       if (url.pathname === `/v3/projects/${project.id}/tasks` && url.searchParams.get('view') === 'archived') { oldArchived = route; return }
       if (url.pathname === `/v3/projects/${project.id}/tasks`) return route.fulfill({ json: { tasks: rows.filter(row => !archived.has(row.id)) } })
@@ -46,7 +63,8 @@ test('project task archive retains partial failures and isolates late archived-l
       const data = fixtureRead(url, 'populated')
       return route.fulfill({ status: data === undefined ? 501 : 200, json: data ?? { error: 'Unconfigured fixture read' } })
     })
-    await page.goto('https://task-management.test/fixture/swarm')
+    await page.goto(`https://task-management.test/projects/${project.id}`)
+    await page.addStyleTag({ content: css })
     await page.addScriptTag({ content: bundle.outputFiles[0].text })
     await page.getByRole('button', { name: 'Select all', exact: true }).click()
     const archive = page.getByRole('button', { name: 'Archive', exact: true })
@@ -72,6 +90,7 @@ test('project task archive retains partial failures and isolates late archived-l
     assert.equal(writes.length, 6)
     assert.ok(writes.every(path => path.endsWith('/archive')))
     assert.equal(await archive.isEnabled(), true, 'failed selection remains retryable')
+    if (process.env.SWARM_TASK_ARCHIVE_SCREENSHOT) await page.screenshot({ path: process.env.SWARM_TASK_ARCHIVE_SCREENSHOT })
     await page.getByRole('button', { name: 'Archived', exact: true }).click()
     await page.getByText('Loading archived tasks…').waitFor()
     await page.getByRole('button', { name: 'Close archived tasks', exact: true }).click()
