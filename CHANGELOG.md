@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Document a five-step headless application SDK roadmap covering incremental non-production testing, sessions and orchestration, safe tools/media, durable state and parallel-workload qualification. Docs impact: add `packages/sdk/HEADLESS_PLAN.md` and link it from the headless UI guide; no new runtime capabilities are claimed.
+
 - Bump release version candidate to v0.1.47 for npm package publication with bypass-2fa authentication. Docs impact: none.
 
 - Fix desktop permission resolution tracking and filtering for pending permissions in Desktop V3 cache and remove unused permission selector import. Docs impact: none.
