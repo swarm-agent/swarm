@@ -6,7 +6,10 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { MediaTaskCard, mediaTaskThreads } from './media-task-card'
+import { MediaTaskCard, MediaTaskThreads, mediaTaskThreads } from './media-task-card'
+import { DesktopProjectsRuntime } from '../runtime/desktop-projects'
+import { createEmptyDesktopV3CacheState } from '../state/desktop-v3-cache-reducer'
+import { taskWithCurrentSessions } from './task-card-sessions'
 import { mapBackendTask, reduceDesktopProjectsState, type DesktopProjectsState } from '../state/desktop-projects-state'
 import { aggregateTaskLiveState } from './orchestrate-task-helpers'
 import type { CreativeCardTurn } from './creative-thread-card'
@@ -87,11 +90,11 @@ test('card preserves attention and invokes only the explicitly selected task act
 test('direct video turn preserves durable generation lifecycle through reload and stale updates', () => {
   const pending = mapBackendTask({ id: 'video-task', agent: 'video', title: 'Video', revision: 1, status: 'in_progress' })
   const turn = (task: typeof pending) => (MediaTaskCard({ task: aggregateTaskLiveState(task, {}) })!.props.turns as CreativeCardTurn[])[0]
-  assert.equal(turn(pending).status, 'in_progress')
+  assert.equal(turn(pending).status, 'running')
   assert.equal(turn(pending).outputs.length, 0)
   for (const status of ['pending', 'queued', 'in_progress', 'running']) {
     const task = mapBackendTask({ id: pending.id, agent: 'video', status, deliverables: [{ id: 'clip', kind: 'video', status: 'generating' }] })
-    assert.equal(turn(task).status, status)
+    assert.equal(turn(task).status, status === 'in_progress' ? 'running' : status)
     assert.equal(turn(task).outputs[0].ready, false)
   }
   const ready = mapBackendTask({ id: pending.id, agent: 'video', revision: 2, status: 'needs_review', deliverables: [{ id: 'clip', kind: 'video', status: 'ready', media_url: 'data:video/mp4;base64,fixture' }] })
@@ -109,4 +112,105 @@ test('direct video turn preserves durable generation lifecycle through reload an
   assert.equal(turn(rejected).status, 'rejected')
   // Session-backed tasks must still use explicit run failure evidence.
   assert.equal(aggregateTaskLiveState({ ...pending, sessionId: 'execution' }, { execution: { intent: { status: 'failed' } } }).status, 'failed')
+})
+
+// Purpose: the board's actual Turn 1 markup must stay nonterminal while a direct
+// video task has no session or playable artifact. The previous test inspected
+// adapter props only and expected the wrong post-map in_progress spelling.
+// Authority: DesktopProjectsRuntime -> taskWithCurrentSessions ->
+// aggregateTaskLiveState -> MediaTaskThreads -> CreativeThreadCard. This hermetic
+// runtime/SSR boundary checks emitted labels, not browser pixels or live providers.
+// Before the original guard, the initial in_progress payload maps to running and
+// falls through aggregateTaskLiveState's missing-session branch to failed.
+test('direct video Turn 1 markup follows API reloads and durable task events without false failure', { timeout: 10_000 }, async () => {
+  const initial = { id: 'pending-video', project_id: 'video-project', title: 'Video', agent: 'video',
+    status: 'in_progress', revision: 1, session_id: '', router_alert: 'Routing warning', deliverables: [] }
+  let payload: any = initial
+  let state: DesktopProjectsState = {}
+  let detailError: Error | undefined
+  const runtime = new DesktopProjectsRuntime({
+    getState: () => state,
+    dispatch: action => { state = reduceDesktopProjectsState(state, action) },
+    fetchTasks: async () => ({ tasks: [JSON.parse(JSON.stringify(payload))] }),
+    fetchMedia: async () => ({ media: [] }),
+    fetchTask: async () => {
+      if (detailError) throw detailError
+      return { task: JSON.parse(JSON.stringify(payload)) }
+    },
+    subscribe: () => () => {},
+  })
+  const flush = async () => { for (let i = 0; i < 30; i++) await Promise.resolve() }
+  const render = () => {
+    const tasks = state['video-project'].tasks.map(task => aggregateTaskLiveState(
+      taskWithCurrentSessions(task, createEmptyDesktopV3CacheState()), {}))
+    return renderToStaticMarkup(<MediaTaskThreads tasks={tasks} visibleTaskIds={new Set([initial.id])} actions={() => ({})} />)
+  }
+  const assertTurn = (status: string) => {
+    const html = render()
+    assert.equal((html.match(/role="tab"/g) || []).length, 1)
+    assert.match(html, /data-task-id="pending-video"/)
+    assert.ok(html.includes(`<strong>Turn 1</strong><span>${status.replace(/_/g, ' ')}</span>`), html)
+    if (status !== 'failed') assert.doesNotMatch(html, />failed</i)
+    return html
+  }
+  const emit = async () => {
+    runtime.acceptFrame({ kind: 'project.updated', project_id: initial.project_id, event: { payload: {
+      project_id: initial.project_id, task_id: initial.id, action: 'task_updated', revision: payload.revision,
+    } } })
+    await flush()
+  }
+  let lease = runtime.acquire(initial.project_id)
+  try {
+    await lease.ready
+    assert.doesNotMatch(assertTurn('running'), /<video/)
+    for (const status of ['pending', 'queued', 'in_progress', 'running']) {
+      payload = { ...payload, revision: payload.revision + 1, status,
+        deliverables: [{ id: 'clip', kind: 'video', title: 'Clip', status: 'generating', thumbnail: 'video' }] }
+      await emit()
+      assert.doesNotMatch(assertTurn(status === 'in_progress' ? 'running' : status), /<video/)
+    }
+    // A failed read is transport evidence, not a terminal generation result.
+    detailError = new Error('Status transport unavailable')
+    await emit()
+    assertTurn('running')
+    assert.equal(state[initial.project_id].tasks[0].syncWarning, detailError.message)
+    detailError = undefined
+    // Fresh acquisition represents a persisted API reload, not a JSON copy of UI state.
+    lease.release()
+    lease = runtime.acquire(initial.project_id)
+    await lease.ready
+    assertTurn('running')
+    const pending = payload
+    payload = { ...payload, revision: payload.revision + 1, status: 'needs_review',
+      deliverables: [{ id: 'clip', kind: 'video', title: 'Clip', status: 'ready', media_url: '/media/clip.mp4' }] }
+    await emit()
+    assert.match(assertTurn('needs_review'), /<video src="\/media\/clip.mp4"/)
+    const ready = payload
+    for (const stale of [pending, { ...pending, status: 'failed', last_error: 'Stale failure' }]) {
+      payload = stale
+      await emit() // late event/read cannot replace a newer completed revision
+      assert.match(assertTurn('needs_review'), /<video src="\/media\/clip.mp4"/)
+      assert.doesNotMatch(render(), /Stale failure/)
+    }
+    payload = ready
+    lease.release()
+    lease = runtime.acquire(initial.project_id)
+    await lease.ready
+    assert.match(assertTurn('needs_review'), /<video src="\/media\/clip.mp4"/)
+    // Independent failure branch starts with accepted work, not successful work.
+    lease.release()
+    payload = initial
+    lease = runtime.acquire(initial.project_id)
+    await lease.ready
+    assertTurn('running')
+    payload = { ...initial, revision: initial.revision + 1, status: 'failed', last_error: 'Provider rejected generation',
+      deliverables: [{ id: 'clip', kind: 'video', status: 'failed', description: 'Provider rejected generation' }] }
+    await emit()
+    assert.match(assertTurn('failed'), /role="alert">Provider rejected generation/)
+    for (const status of ['cancelled', 'rejected']) {
+      payload = { ...initial, revision: payload.revision + 1, status }
+      await emit()
+      assertTurn(status)
+    }
+  } finally { lease.release() }
 })
