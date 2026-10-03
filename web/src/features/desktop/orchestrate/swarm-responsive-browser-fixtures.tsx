@@ -96,6 +96,7 @@ export function fixtureRead(url: URL, state: FixtureState): unknown | undefined 
 export async function mountResponsiveFixture(state: FixtureState, projectRoutes = false) {
   await ensureDesktopSession()
   const { OrchestratePage } = await import('./orchestrate-page')
+  const { ProjectEntryPage } = await import('./project-entry-page')
   const { dispatchDesktopV3Cache } = await import('../state/desktop-v3-cache-store')
   const { hydrateResponseToAction } = await import('../state/desktop-v3-cache-wire')
   const { retainDesktopV3RealtimeController, setDesktopV3RealtimeControllerFactoryForTests } = await import('../realtime/v3-realtime-controller')
@@ -119,11 +120,13 @@ export async function mountResponsiveFixture(state: FixtureState, projectRoutes 
   const assignment = { provider: '', model: '', thinking: '', serviceTier: '', contextMode: '' }
   client.setQueryData(agentModelSettingsQueryKey, { roles: [{ id: 'system-orchestrator', label: 'Swarm Orchestrator', group: 'swarm', slot: 'plan' }, { id: 'system-coder', label: 'Coder', group: 'system_agents', slot: 'coder' }], swarm: { action: assignment, plan: assignment }, systemAgents: Object.fromEntries(['compact', 'finder', 'coder', 'designer', 'router'].map(key => [key, assignment])), updatedAt: 1 })
   const rootRoute = createRootRoute({ component: Outlet })
-  const layout = createRoute({ getParentRoute: () => rootRoute, id: 'swarm-layout', component: () => <OrchestratePage workspaceSlug="fixture" />, validateSearch: (s: Record<string, unknown>) => ({ workerId: typeof s.workerId === 'string' ? s.workerId : undefined, ...(projectRoutes ? { section: typeof s.section === 'string' ? s.section : undefined } : {}) }) })
+  const layout = createRoute({ getParentRoute: () => rootRoute, id: 'swarm-layout', component: () => <OrchestratePage workspaceSlug="fixture" />, validateSearch: (s: Record<string, unknown>) => ({ workerId: typeof s.workerId === 'string' ? s.workerId : undefined, ...(projectRoutes ? { section: typeof s.section === 'string' ? s.section : undefined, createProject: s.createProject === true || s.createProject === 'true' } : {}) }) })
   const home = createRoute({ getParentRoute: () => layout, path: '/$workspaceSlug/swarm' })
   const section = createRoute({ getParentRoute: () => layout, path: '/$workspaceSlug/swarm/$swarmSection' })
   const projectPages = projectRoutes ? ['/projects/$projectId', '/projects/$projectId/sessions/$sessionId', '/projects/$projectId/sections/$swarmSection'].map(path => createRoute({ getParentRoute: () => layout, path })) : []
-  const router = createRouter({ routeTree: rootRoute.addChildren([layout.addChildren([home, section, ...projectPages])]) })
+  const projectEntry = createRoute({ getParentRoute: () => rootRoute, path: '/projects', component: ProjectEntryPage })
+  const createProject = createRoute({ getParentRoute: () => layout, path: '/swarm' })
+  const router = createRouter({ routeTree: rootRoute.addChildren([projectEntry, layout.addChildren([home, section, createProject, ...projectPages])]) })
   win.responsive.running = (active: boolean) => {
     const data = snapshot()
     const run = { session_id: sessionId, run_id: 'responsive-run', status: active ? 'running' : 'completed', created_at: 1, updated_at: 5, event_seq: 5 }

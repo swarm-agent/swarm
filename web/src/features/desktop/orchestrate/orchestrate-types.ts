@@ -80,6 +80,7 @@ export interface ProjectTaskMediaRef {
 }
 
 export interface ProjectSummary {
+  contextGeneration?: import('../state/project-creation').ProjectContextGeneration
   id: string
   name: string
   slug: string
