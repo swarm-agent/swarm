@@ -407,7 +407,7 @@ function isArchivedTombstone(tombstone: V3SessionTombstone | undefined): boolean
   return Boolean(tombstone && tombstone.kind === 'archived' && tombstone.archived === true && tombstone.deleted !== true)
 }
 
-function buildDesktopSidebarPlanState(state: DesktopV3CacheState, sessionId: string): Pick<DesktopV3SidebarRow, 'hasActivePlan' | 'activePlan' | 'planExecution'> {
+export function buildDesktopSidebarPlanState(state: DesktopV3CacheState, sessionId: string): Pick<DesktopV3SidebarRow, 'hasActivePlan' | 'activePlan' | 'planExecution'> {
   if (state.hasActivePlanBySession[sessionId] !== true) {
     return { hasActivePlan: false }
   }

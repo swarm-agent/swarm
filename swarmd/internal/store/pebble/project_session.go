@@ -1,7 +1,9 @@
 package pebblestore
 
 import (
+	"encoding/json"
 	"errors"
+	"sort"
 	"strings"
 )
 
@@ -90,4 +92,37 @@ func (s *PermissionStore) validateProjectPermissionTransitionLocked(record Permi
 		return errors.New("project permission run is no longer active")
 	}
 	return nil
+}
+
+// ListArchivedProjectConversations filters before limiting; unrelated tombstones
+// must not hide a project's restorable history. Scan only the account index.
+func (s *SessionStore) ListArchivedProjectConversations(accountID, userID, projectID string, limit int) ([]V3SessionTombstone, error) {
+	if accountID == "" || userID == "" || projectID == "" {
+		return nil, errors.New("project archive listing requires account, user, and project")
+	}
+	if limit <= 0 || limit > 200 {
+		limit = 200
+	}
+	out := make([]V3SessionTombstone, 0)
+	err := scanRangeFromReader(s.store.db, scanRangeOptions{Prefix: V3SessionTombstoneByAccountPrefix(accountID)}, func(_ string, value []byte) (bool, error) {
+		var item V3SessionTombstone
+		if err := json.Unmarshal(value, &item); err != nil {
+			return false, err
+		}
+		session := item.Session
+		if item.Archived && !item.Deleted && item.AccountScopeID == accountID && item.UserID == userID && session.AccountScopeID == accountID && session.UserID == userID && session.Metadata["project_id"] == projectID && session.Metadata["agent_name"] == "system-orchestrator" && session.Metadata["task_id"] == nil && session.Metadata["parent_session_id"] == nil {
+			out = append(out, item)
+			sort.Slice(out, func(i, j int) bool {
+				if out[i].UpdatedAt != out[j].UpdatedAt {
+					return out[i].UpdatedAt > out[j].UpdatedAt
+				}
+				return out[i].SessionID < out[j].SessionID
+			})
+			if len(out) > limit {
+				out = out[:limit]
+			}
+		}
+		return true, nil
+	})
+	return out, err
 }

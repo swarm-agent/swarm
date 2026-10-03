@@ -453,3 +453,46 @@ func TestProjectConversationSyncPreservesOwnership(t *testing.T) {
 		t.Fatal("sync reads changed durable authority")
 	}
 }
+
+// Purpose: the project archive list adapter must return durable tombstone versions
+// only for the authorized project/user; cross-account requests must not disclose
+// history. HTTP plus real store proves the registered project routing boundary.
+func TestProjectConversationsArchivedListing(t *testing.T) {
+	s, sessions, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	p := testPrincipal()
+	if err := sessions.Store().PutProject(p.AccountScopeID, &pebblestore.ProjectRecord{ID: "project", Name: "Project"}); err != nil {
+		t.Fatal(err)
+	}
+	path := ProjectsPath + "/project/sessions"
+	if w := projectConversationRequest(t, s, p, http.MethodPost, path, map[string]any{"client_request_id": "archive-list"}); w.Code != http.StatusOK {
+		t.Fatal(w.Body.String())
+	}
+	items, err := sessions.Store().ListProjectConversations(p.AccountScopeID, p.UserID, "project", 10)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("create: %+v %v", items, err)
+	}
+	if _, err := sessions.ArchiveSessionWithEvent(items[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	w := projectConversationRequest(t, s, p, http.MethodGet, path+"?archived_mode=only&limit=200", nil)
+	var response struct {
+		Tombstones []pebblestore.V3SessionTombstone `json:"tombstones"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil || w.Code != http.StatusOK || len(response.Tombstones) != 1 || response.Tombstones[0].Session.ID != items[0].ID || response.Tombstones[0].UpdatedAt == 0 {
+		t.Fatalf("archive list: %d %s %v", w.Code, w.Body.String(), err)
+	}
+	other := p
+	other.UserID = "other"
+	w = projectConversationRequest(t, s, other, http.MethodGet, path+"?archived_mode=only", nil)
+	response.Tombstones = nil
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil || w.Code != http.StatusOK || len(response.Tombstones) != 0 {
+		t.Fatalf("cross-user list: %d %s", w.Code, w.Body.String())
+	}
+	other.AccountScopeID = "other-account"
+	if w := projectConversationRequest(t, s, other, http.MethodGet, path+"?archived_mode=only", nil); w.Code != http.StatusNotFound {
+		t.Fatalf("cross-account list: %d %s", w.Code, w.Body.String())
+	}
+	if _, ok, err := sessions.Store().GetV3SessionTombstone(items[0].ID); err != nil || !ok {
+		t.Fatalf("listing changed tombstone: %v", err)
+	}
+}
