@@ -398,3 +398,58 @@ func TestProjectConversationComposerReservedProjectMetadata(t *testing.T) {
 		t.Fatalf("listing lost conversations: %+v", seen)
 	}
 }
+
+// Purpose: canonical project ownership must survive the bounded V3 sync shell
+// used by sidebar hydration and reconnect. The real project creation and sync
+// HTTP handlers backed by Pebble are the narrowest layer reproducing the live
+// disappearance; reads must neither expose agent prompts nor mutate authority.
+func TestProjectConversationSyncPreservesOwnership(t *testing.T) {
+	s, sessions, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	p := testPrincipal()
+	if err := sessions.Store().PutProject(p.AccountScopeID, &pebblestore.ProjectRecord{ID: "project", Name: "Project"}); err != nil {
+		t.Fatal(err)
+	}
+	created := projectConversationRequest(t, s, p, http.MethodPost, ProjectsPath+"/project/sessions", map[string]any{"client_request_id": "sync-conversation"})
+	var result struct {
+		SessionID string `json:"session_id"`
+	}
+	if err := json.Unmarshal(created.Body.Bytes(), &result); err != nil || created.Code != http.StatusOK || result.SessionID == "" {
+		t.Fatalf("create failed: %d %s", created.Code, created.Body.String())
+	}
+	before, _, err := sessions.GetSession(result.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{V3SyncHydratePath, V3SyncBootstrapPath} {
+		body := map[string]any{"surface": "desktop", "history": map[string]any{"mode": "none"}}
+		if path == V3SyncHydratePath {
+			body["session_ids"] = []string{result.SessionID}
+		} else {
+			body["selector"] = map[string]any{"kind": "session_ids", "session_ids": []string{result.SessionID}}
+		}
+		encoded, _ := json.Marshal(body)
+		req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(encoded))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		s.Handler().ServeHTTP(w, withTestPrincipal(req))
+		var payload struct {
+			Sessions map[string]pebblestore.SessionSnapshot `json:"sessions_by_id"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &payload); err != nil || w.Code != http.StatusOK {
+			t.Fatalf("sync failed: %d %s", w.Code, w.Body.String())
+		}
+		got := payload.Sessions[result.SessionID]
+		for _, key := range []string{"project_id", "swarm_v3_project_id", "role", "agent_name"} {
+			if got.Metadata[key] != before.Metadata[key] || got.Metadata[key] == nil {
+				t.Fatalf("%s lost canonical %s: got %v want %v", path, key, got.Metadata[key], before.Metadata[key])
+			}
+		}
+		if got.WorkspacePath != "" || got.WorktreeEnabled || got.Metadata["agent_profile"] != nil {
+			t.Fatal("sync leaked filesystem authority or private agent profile")
+		}
+	}
+	after, _, err := sessions.GetSession(result.SessionID)
+	if err != nil || !reflect.DeepEqual(before, after) {
+		t.Fatal("sync reads changed durable authority")
+	}
+}

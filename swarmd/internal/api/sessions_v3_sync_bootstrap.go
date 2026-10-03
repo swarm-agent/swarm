@@ -1087,6 +1087,12 @@ func sessionsV3SyncShellMetadataKeyAllowed(key string) bool {
 	switch strings.ToLower(strings.TrimSpace(key)) {
 	case "agent_name",
 		"model_profile",
+		// Preserve server-owned project provenance across hydration/reconnect.
+		// Generic metadata writes still reject these reserved authority keys.
+		"project_id",
+		"swarm_v3_project_id",
+		"role",
+		"task_id",
 		// Bounded canonical occurrence attribution is required for protected
 		// automation composers, handoffs and links after hydration/reconnect.
 		"automation_v2_occurrence_id",
