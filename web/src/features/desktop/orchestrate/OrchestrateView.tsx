@@ -1192,7 +1192,9 @@ export function MinimalTaskCard({
         {onApprove && isPendingApproval && <button type="button" disabled={isApproving} data-testid="retry-approve-btn" onClick={onApprove}>Retry</button>}
         {onClearError && !reopenOperation.error && !localReopenError && <button type="button" onClick={onClearError}>Dismiss</button>}
       </div>}
-      {isPlanCard && <TaskPlanChecklist document={planDoc} />}
+      {/* Retained plan data is not approval authority. The accepted task response
+          updates status immediately; only a fresh pending revision restores this preview. */}
+      {isPendingApproval && isPlanCard && <TaskPlanChecklist document={planDoc} />}
       <TaskUsageFooter task={task} projectId={projectId}>
       <button ref={detailsToggleRef} type="button" className="swarm-task-details-toggle shrink-0"
         aria-expanded={expanded} aria-controls={`${detailsId} ${detailsId}-continued`} data-testid="toggle-task-details-btn"
