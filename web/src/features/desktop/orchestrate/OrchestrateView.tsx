@@ -676,7 +676,7 @@ function TaskElapsedTimer({
  * Free of highlight gradients and pill badges. Displays "Action Needed",
  * worktree/unmerged git status, and "What did it do?" vs "What's not done yet?".
  */
-import { TaskRequirements, TaskPlanChecklist, isTaskPlanReviewable } from './task-requirements'
+import { TaskRequirements, TaskPlanChecklist, TaskProposalChecklist, isTaskPlanReviewable } from './task-requirements'
 
 export function MinimalTaskCard({
   task,
@@ -1194,7 +1194,9 @@ export function MinimalTaskCard({
       </div>}
       {/* Retained plan data is not approval authority. The accepted task response
           updates status immediately; only a fresh pending revision restores this preview. */}
-      {isPendingApproval && isPlanCard && <TaskPlanChecklist document={planDoc} />}
+      {isPendingApproval && (isPlanCard
+        ? <TaskPlanChecklist document={planDoc} />
+        : task.agentType === 'coder' && <TaskProposalChecklist description={task.description} />)}
       <TaskUsageFooter task={task} projectId={projectId}>
       <button ref={detailsToggleRef} type="button" className="swarm-task-details-toggle shrink-0"
         aria-expanded={expanded} aria-controls={`${detailsId} ${detailsId}-continued`} data-testid="toggle-task-details-btn"
@@ -1204,6 +1206,10 @@ export function MinimalTaskCard({
       </TaskUsageFooter>
       <div id={detailsId} hidden={!expanded} className="swarm-task-details" onClick={event => event.stopPropagation()}>
       {expanded && <>
+      {!isPlanCard && task.agentType === 'coder' && task.fullPlanMarkdown && <section aria-label="Full proposed task" className="min-w-0 space-y-2 p-3 text-sm [overflow-wrap:anywhere]">
+        <h4 className="font-semibold">Proposed task details</h4>
+        <p className="whitespace-pre-wrap">{task.fullPlanMarkdown}</p>
+      </section>}
       {isPlanCard && <section aria-label="Full current plan" className="min-w-0 space-y-3">
         <TaskRequirements document={planDoc} />
         {planDoc && <section aria-label="Complete plan definition">
