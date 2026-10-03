@@ -16,6 +16,9 @@ import { fixtureRead, project, sessionId, snapshot } from './swarm-responsive-br
 // the narrowest proof of this remount regression in OrchestratePage. Usage must
 // mount the real dashboard via its real API adapter, with loading/error/retry/empty
 // states, without obscuring the persistent sidebar or main Tasks/Workers controls.
+// A delayed successful New session receipt must update membership without stealing
+// a newer route/draft; an on-route success must navigate without clearing context.
+// This guards newConversation's route-scope boundary with actual browser history.
 // This is deterministic browser integration, not live daemon/provider evidence.
 test('project name URLs preserve API identity, reload and compact navigation', { timeout: 60000 }, async () => {
   const js = await build({ stdin: { resolveDir: process.cwd(), loader: 'tsx', contents: `import {mountResponsiveFixture} from './src/features/desktop/orchestrate/swarm-responsive-browser-fixtures'; mountResponsiveFixture('populated', true);` }, bundle: true, write: false, format: 'iife', platform: 'browser', jsx: 'automatic', logLevel: 'silent' })
@@ -31,6 +34,9 @@ test('project name URLs preserve API identity, reload and compact navigation', {
     let usageState: 'error' | 'empty' | 'populated' = 'error'
     let releaseUsage: (() => void) | undefined
     const usageGate = new Promise<void>(resolve => { releaseUsage = resolve })
+    let creationState: 'error' | 'delayed' | 'success' = 'error'
+    let releaseCreation: (() => void) | undefined
+    const creationGate = new Promise<void>(resolve => { releaseCreation = resolve })
     const clearBodies: any[] = []
     page.on('pageerror', error => errors.push(error.message))
     const conversation = (id: string) => ({ ...snapshot().sessions_by_id[sessionId], id, title: `Session ${id}`, metadata: { agent_name: 'system-orchestrator', project_id: project.id } })
@@ -46,10 +52,15 @@ test('project name URLs preserve API identity, reload and compact navigation', {
         if (clearRejected) return route.fulfill({ status: 409, json: { error: 'Session is active; finish work first.' } })
         return route.fulfill({ json: { ok: true, session_id: sessionId, mutation: { realtime_outbox: { endpoint_seq: 4, endpoint_cursor: 'opaque-clear', session_id: sessionId, event: { id: 'clear-event', session_id: sessionId, seq: 4, event_type: 'execution_epoch.began', payload: { reason: 'context_cleared' }, ts_unix_ms: 4 }, projection: { session_id: sessionId, last_event_seq: 4, projection_high_watermark_seq: 4, updated_at: 4 }, created_at: 4 } } } })
       }
-      if (req.method() === 'POST' && url.pathname === `/v3/projects/${project.id}/sessions`) return route.fulfill({ status: 503, json: { error: 'Creation unavailable in this fixture' } })
+      if (req.method() === 'POST' && url.pathname === `/v3/projects/${project.id}/sessions`) {
+        if (creationState === 'error') return route.fulfill({ status: 503, json: { error: 'Creation unavailable in this fixture' } })
+        const id = creationState === 'delayed' ? 'created-late' : 'created-now'
+        const complete = () => route.fulfill({ json: { ok: true, session_id: id, session: conversation(id) } })
+        return creationState === 'delayed' ? creationGate.then(complete) : complete()
+      }
       if (url.pathname === '/v3/projects') return route.fulfill({ json: { projects: [{ ...project, name: 'Swarm Go' }] } })
       if (url.pathname === `/v3/projects/${project.id}/sessions`) return route.fulfill({ json: { sessions: Array.from({ length: 30 }, (_, i) => ({ session: conversation(i ? `session-${i}` : sessionId) })) } })
-      if (url.pathname === `/v3/sessions/${sessionId}` || url.pathname === '/v3/sessions/session-1') return route.fulfill({ json: { session: conversation(url.pathname.split('/').at(-1)!) } })
+      if ([`/v3/sessions/${sessionId}`, '/v3/sessions/session-1', '/v3/sessions/created-now'].includes(url.pathname)) return route.fulfill({ json: { session: conversation(url.pathname.split('/').at(-1)!) } })
       if (url.pathname === '/v3/sync/hydrate') {
         const ids = req.postDataJSON().session_ids || [sessionId]
         const data = snapshot()
@@ -110,6 +121,24 @@ test('project name URLs preserve API identity, reload and compact navigation', {
     await page.goForward()
     await page.waitForURL('**/sessions/session-1')
     await page.getByRole('heading', { name: 'Session session-1', exact: true, level: 2 }).waitFor()
+    assert.equal(await page.evaluate(() => (window as any).retainedSidebar === document.querySelector('.swarm-navigation-sidebar')), true)
+    creationState = 'delayed'
+    await page.getByRole('button', { name: 'New session', exact: true }).click()
+    await page.getByRole('button', { name: 'Creating…', exact: true }).waitFor()
+    await page.getByRole('navigation', { name: 'Conversation sessions' }).getByRole('link', { name: `Session ${sessionId} Swarm Go`, exact: true }).click()
+    await page.waitForURL(`**/sessions/${sessionId}`)
+    await page.getByTestId('orchestrator-chat-input').fill('Keep this newer draft')
+    releaseCreation!()
+    await page.getByRole('navigation', { name: 'Conversation sessions' }).getByRole('link', { name: 'Session created-late Swarm Go', exact: true }).waitFor()
+    assert.ok(page.url().endsWith(`/sessions/${sessionId}`))
+    assert.equal(await page.getByTestId('orchestrator-chat-input').inputValue(), 'Keep this newer draft')
+    assert.equal(await page.evaluate(() => (window as any).retainedSidebar === document.querySelector('.swarm-navigation-sidebar')), true)
+    creationState = 'success'
+    await page.getByRole('button', { name: 'New session', exact: true }).click()
+    await page.waitForURL('**/sessions/created-now')
+    await page.getByRole('heading', { name: 'Session created-now', exact: true, level: 2 }).waitFor()
+    assert.equal(await page.getByTestId('orchestrator-chat-input').inputValue(), '')
+    assert.equal(clearBodies.length, 2, 'creation must never clear the old context')
     assert.equal(await page.evaluate(() => (window as any).retainedSidebar === document.querySelector('.swarm-navigation-sidebar')), true)
     await mount(page.url())
     assert.equal(await page.getByLabel('Current project').inputValue(), project.id)
