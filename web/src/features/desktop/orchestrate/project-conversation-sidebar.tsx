@@ -31,8 +31,13 @@ export function ProjectConversationSidebar(props: {
 function ProjectSessionList({ projectId, projectName, selectedId, sessions, rows, loading, creating, error, onCreate, onRetry, onSelect }: Parameters<typeof ProjectConversationSidebar>[0]) {
   const navigate = useNavigate()
   const [archived, setArchived] = useState(false)
+  const [selecting, setSelecting] = useState(false)
   const [selection, setSelection] = useState<Set<string>>(new Set())
   const [busy, setBusy] = useState(false)
+  useEffect(() => {
+    // Preserve failed bulk selections when an archive receipt redirects the open row.
+    if (!busy) { setSelecting(false); setSelection(new Set()) }
+  }, [selectedId])
   const [feedback, setFeedback] = useState('')
   const [failures, setFailures] = useState<string[]>([])
   const inFlight = useRef(false)
@@ -46,7 +51,7 @@ function ProjectSessionList({ projectId, projectName, selectedId, sessions, rows
   const visibleKey = visible.map(row => row.session.id).join('\n')
   useEffect(() => { setSelection(previous => new Set([...previous].filter(id => visible.some(row => row.session.id === id)))) }, [visibleKey])
   const selectAll = useRef<HTMLInputElement>(null)
-  useEffect(() => { if (selectAll.current) selectAll.current.indeterminate = selected.length > 0 && selected.length < visible.length }, [selected.length, visible.length])
+  useEffect(() => { if (selectAll.current) selectAll.current.indeterminate = selected.length > 0 && selected.length < visible.length }, [selecting, selected.length, visible.length])
   // A remote archive also removes the open conversation from navigation. Do not
   // redirect merely because a still-loading list does not contain the route ID.
   useEffect(() => {
@@ -88,7 +93,7 @@ function ProjectSessionList({ projectId, projectName, selectedId, sessions, rows
     }
   }
 
-  return <section aria-label="Project sessions" className="swarm-project-sessions">
+  return <section aria-label="Project sessions" className="swarm-project-sessions" data-selecting={selecting || undefined}>
     <div className="swarm-session-heading">
       <h2>Sessions</h2>
       <button type="button" disabled={!projectName || creating} onClick={onCreate}
@@ -98,11 +103,12 @@ function ProjectSessionList({ projectId, projectName, selectedId, sessions, rows
     </div>
     {!projectName && <Link to="/projects">Choose a project</Link>}
     {projectName && <div className="swarm-session-selection">
-      <label title={`Select all loaded ${archived ? 'archived' : 'unarchived'} sessions in this project`}><input ref={selectAll} type="checkbox" disabled={busy || !visible.length}
+      <button type="button" disabled={busy} aria-pressed={selecting} onClick={() => { setSelecting(!selecting); setSelection(new Set()) }}>{selecting ? 'Done selecting' : 'Select sessions'}</button>
+      {selecting && <label title={`Select all loaded ${archived ? 'archived' : 'unarchived'} sessions in this project`}><input ref={selectAll} type="checkbox" disabled={busy || !visible.length}
         aria-label={`Select all loaded ${archived ? 'archived' : 'unarchived'} project sessions`} checked={visible.length > 0 && selected.length === visible.length}
-        onChange={event => setSelection(new Set(event.target.checked ? visible.map(row => row.session.id) : []))} />Select all</label>
+        onChange={event => setSelection(new Set(event.target.checked ? visible.map(row => row.session.id) : []))} />Select all</label>}
       <button type="button" disabled={busy} aria-pressed={archived} onClick={() => { setArchived(!archived); setSelection(new Set()); setFailures([]); setFeedback('') }}>{archived ? 'Back to sessions' : 'Archived'}</button>
-      <span>{selected.length} selected · {visible.length} loaded</span>
+      {selecting && <span>{selected.length} selected · {visible.length} loaded</span>}
       {selected.length > 0 && <button type="button" disabled={busy} onClick={() => void mutate(selected)}>{busy ? 'Saving…' : `${archived ? 'Restore' : 'Archive'} selected`}</button>}
     </div>}
     {loading && <p role="status" className="text-xs text-slate-400">Loading sessions…</p>}
@@ -114,13 +120,13 @@ function ProjectSessionList({ projectId, projectName, selectedId, sessions, rows
     {projectName && !loading && !error && !visible.length && <p className="text-xs text-slate-400">{archived ? 'No archived sessions.' : 'No conversations yet. Start a new session.'}</p>}
     <nav aria-label="Conversation sessions" className="swarm-session-list">
       {visible.map(row => { const { session } = row; const title = session.title || 'New conversation'; return <div key={session.id} className="swarm-session-item" data-attention={row.attention || undefined}>
-        <input type="checkbox" aria-label={`Select ${title}`} checked={selection.has(session.id)} disabled={busy}
-          onChange={event => setSelection(previous => { const next = new Set(previous); if (event.target.checked) next.add(session.id); else next.delete(session.id); return next })} />
-        {archived ? <span className="swarm-session-row" title={`${title} — restore to open conversation`}><span>{title}</span></span> : <Link {...projectConversationLink(projectId, session.id)}
-          onClick={onSelect} aria-label={`${title} ${projectName || ''}`.trim()} aria-current={selectedId === session.id ? 'page' : undefined}
+        {selecting && <input type="checkbox" aria-label={`Select ${title}`} checked={selection.has(session.id)} disabled={busy}
+          onChange={event => setSelection(previous => { const next = new Set(previous); if (event.target.checked) next.add(session.id); else next.delete(session.id); return next })} />}
+        {archived ? <span className="swarm-session-row" title={`${title} — restore to open conversation`}><span>{title}</span><span className="swarm-session-metadata"><span>{projectName}</span><span>Archived</span></span></span> : <Link {...projectConversationLink(projectId, session.id)}
+          onClick={() => { setSelecting(false); setSelection(new Set()); onSelect() }} aria-label={`${title} ${projectName || ''}`.trim()} aria-current={selectedId === session.id ? 'page' : undefined}
           activeOptions={{ exact: true, includeSearch: false }} className="swarm-session-row">
           <span title={title}>{title}</span>
-          {(row.active || row.attention) && <span className="swarm-session-activity" title={row.label}><span>{row.label}</span>{row.timer?.active && <SessionTimer model={row.timer} />}</span>}
+          <span className="swarm-session-metadata"><span title={projectName}>{projectName}</span><span className="swarm-session-activity" title={row.label}>{row.label}</span>{row.timer && <SessionTimer model={row.timer} />}</span>
         </Link>}
         <button type="button" disabled={busy} aria-label={`${archived ? 'Restore' : 'Archive'} ${title}`} title={row.active ? 'Active work must be stopped explicitly before archiving' : archived ? 'Restore session' : 'Archive session'}
           onClick={() => void mutate([row])}>{archived ? <ArchiveRestore size={14} aria-hidden="true" /> : <Archive size={14} aria-hidden="true" />}</button>

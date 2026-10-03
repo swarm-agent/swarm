@@ -5,7 +5,8 @@ import { chromium } from 'playwright'
 import { readFile } from 'node:fs/promises'
 
 // Purpose: useProjectConversations and ProjectConversationSidebar must consume
-// canonical cache updates, release demands/timers, scope selection, and preserve
+// canonical cache updates and completed durations, release demands/timers, keep
+// selection hidden until explicitly requested, scope selection, and preserve
 // failures without silently stopping runs. Real React/router/cache plus controlled
 // HTTP receipts is the narrowest observable browser proof; not live provider E2E.
 test('project live rows, timers, scoped selection and durable archive receipts', { timeout: 40000 }, async () => {
@@ -14,6 +15,7 @@ test('project live rows, timers, scoped selection and durable archive receipts',
     import {createRootRoute,createRoute,createRouter,createMemoryHistory,RouterProvider,useRouterState} from '@tanstack/react-router';
     import {ProjectConversationSidebar} from './src/features/desktop/orchestrate/project-conversation-sidebar';
     import {useProjectConversations} from './src/features/desktop/runtime/project-conversations';
+    import {desktopProjects} from './src/features/desktop/runtime/desktop-projects';
     import {dispatchDesktopV3Cache} from './src/features/desktop/state/desktop-v3-cache-store';
     import {hydrateResponseToAction} from './src/features/desktop/state/desktop-v3-cache-wire';
     window.demands=new Set();window.calls=[];window.fail='fail';window.intervals=new Set();
@@ -21,7 +23,10 @@ test('project live rows, timers, scoped selection and durable archive receipts',
     const session=(id,title,at)=>({id,title,created_at:1,updated_at:at,last_message_at:at,account_scope_id:'account',user_id:'user',metadata:{agent_name:'system-orchestrator',project_id:'project'}});
     const records={idle:session('idle','Recent idle',300),run:session('run','Running session',100),fail:session('fail','Retry session',200)};
     const tombstones={};let sequence=1;let status='running';let approval=1;let runId='work';
-    const snapshot=(ids=Object.keys(records))=>({sessions_by_id:Object.fromEntries(ids.filter(id=>records[id]).map(id=>[id,records[id]])),tombstones_by_session:Object.fromEntries(ids.filter(id=>tombstones[id]).map(id=>[id,tombstones[id]])),current_run_state_by_session:ids.includes('run')?{run:{session_id:'run',run_id:runId,status,created_at:Date.now()-9000,started_at:Date.now()-9000,completed_at:status==='completed'?400:0}}:{},permission_summaries_by_session:ids.includes('run')?{run:{pending_approval_count:approval}}:{},projections_by_session:Object.fromEntries(ids.map(id=>[id,{session_id:id,last_event_seq:sequence,projection_high_watermark_seq:sequence,updated_at:sequence}])),scope_id:'project-fixture',selector:{kind:'session_ids',session_ids:ids},snapshot_endpoint_cursor:'opaque'+sequence,sync_scope:{surface:'desktop',stream_kind:'v3.sync.snapshot',selector_filter_hash:'project',resource_set:'current_run_state,permission_summaries'}});
+    const snapshot=(ids=Object.keys(records))=>({sessions_by_id:Object.fromEntries(ids.filter(id=>records[id]).map(id=>[id,records[id]])),tombstones_by_session:Object.fromEntries(ids.filter(id=>tombstones[id]).map(id=>[id,tombstones[id]])),current_run_state_by_session:ids.includes('run')?{run:{session_id:'run',run_id:runId,status,created_at:Date.now()-9000,started_at:Date.now()-9000,completed_at:status==='completed'?Date.now():0,duration_ms:status==='completed'?12000:undefined}}:{},permission_summaries_by_session:ids.includes('run')?{run:{pending_approval_count:approval}}:{},projections_by_session:Object.fromEntries(ids.map(id=>[id,{session_id:id,last_event_seq:sequence,projection_high_watermark_seq:sequence,updated_at:sequence}])),scope_id:'project-fixture',selector:{kind:'session_ids',session_ids:ids},snapshot_endpoint_cursor:'opaque'+sequence,sync_scope:{surface:'desktop',stream_kind:'v3.sync.snapshot',selector_filter_hash:'project',resource_set:'current_run_state,permission_summaries'}});
+    window.add=()=>{records.remote=session('remote','Remote conversation',500);sequence++;desktopProjects.acceptFrame({kind:'project.updated',project_id:'project'})};
+    window.rename=()=>{records.remote={...records.remote,title:'Renamed remotely',updated_at:600};sequence++;dispatchDesktopV3Cache(hydrateResponseToAction(snapshot(),Object.keys(records)))};
+    window.remove=()=>{delete records.remote;tombstones.remote={session_id:'remote',kind:'deleted',deleted:true,updated_at:++sequence};dispatchDesktopV3Cache(hydrateResponseToAction(snapshot(['remote']),['remote']))};
     window.change=(next,pending)=>{if(status==='completed'&&next==='running')runId='next-work';status=next;approval=pending;sequence++;dispatchDesktopV3Cache(hydrateResponseToAction(snapshot(),Object.keys(records)))};
     window.fetch=async(input,init)=>{const url=String(input);const body=init?.body?JSON.parse(init.body):{};
       if(url.includes('/auth/desktop/session'))return new Response(JSON.stringify({user_id:'user',account_scope_id:'account'}));
@@ -56,6 +61,8 @@ test('project live rows, timers, scoped selection and durable archive receipts',
     const before = await page.locator('.swarm-session-timer').innerText()
     await page.waitForFunction(value => document.querySelector('.swarm-session-timer')?.textContent !== value, before)
     assert.match(await nav.getByRole('link').first().innerText(), /Running session/)
+    assert.equal(await page.getByRole('checkbox').count(), 0)
+    await page.getByRole('button', { name: 'Select sessions', exact: true }).click()
     const all = page.getByRole('checkbox', { name: 'Select all loaded unarchived project sessions' })
     await page.getByRole('checkbox', { name: 'Select Recent idle', exact: true }).check()
     assert.equal(await all.evaluate((el: HTMLInputElement) => el.indeterminate), true)
@@ -73,6 +80,8 @@ test('project live rows, timers, scoped selection and durable archive receipts',
     await page.evaluate(() => (window as any).change('completed', 0))
     await page.waitForFunction(() => (window as any).intervals.size === 0)
     assert.equal(await nav.getByText('Needs approval').count(), 0)
+    await nav.getByText('Completed', { exact: true }).waitFor()
+    assert.equal(await page.locator('.swarm-session-timer').innerText(), '0:12')
     await page.getByRole('button', { name: 'Archived', exact: true }).click()
     await page.getByRole('button', { name: 'Restore Recent idle', exact: true }).waitFor()
     assert.equal(await page.getByText('0 selected · 1 loaded').count(), 1)
@@ -93,6 +102,15 @@ test('project live rows, timers, scoped selection and durable archive receipts',
     await page.waitForFunction(() => !(window as any).demands.has('fail'))
     await page.evaluate(() => (window as any).change('running', 0))
     await page.waitForFunction(() => (window as any).intervals.size === 1)
+    await page.evaluate(() => (window as any).add())
+    await nav.getByRole('link', { name: 'Remote conversation Example' }).waitFor()
+    await page.waitForFunction(() => (window as any).demands.has('remote'))
+    await page.evaluate(() => (window as any).rename())
+    await nav.getByRole('link', { name: 'Renamed remotely Example' }).waitFor()
+    assert.equal(await nav.getByRole('link', { name: 'Remote conversation Example' }).count(), 0)
+    await page.evaluate(() => (window as any).remove())
+    await page.waitForFunction(() => !(window as any).demands.has('remote'))
+    assert.equal(await nav.getByRole('link', { name: 'Renamed remotely Example' }).count(), 0)
     await page.evaluate(() => (window as any).hide())
     await page.waitForFunction(() => (window as any).intervals.size === 0 && (window as any).demands.size === 0)
   } finally { await browser.close() }
