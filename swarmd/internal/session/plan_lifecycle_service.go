@@ -356,6 +356,11 @@ func (s *PlanLifecycleService) SubmitProjectTaskStructuredPlan(input ProjectTask
 	if input.TaskID == "" {
 		return ProjectTaskPlanSubmissionResult{}, errors.New("task id is required")
 	}
+	if input.ExpectedPlanID != "" || input.ExpectedDefinitionRevision != 0 || input.Feedback != "" {
+		if input.ExpectedPlanID == "" || input.ExpectedDefinitionRevision <= 0 || input.SessionID == "" || strings.TrimSpace(input.Feedback) == "" {
+			return ProjectTaskPlanSubmissionResult{}, errors.New("structured refinement requires feedback and exact session, plan and definition revision")
+		}
+	}
 	if input.Document == nil {
 		return ProjectTaskPlanSubmissionResult{}, errors.New("structured plan document is required")
 	}

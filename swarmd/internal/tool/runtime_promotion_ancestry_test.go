@@ -21,7 +21,7 @@ func TestManageWorktreePromoteRealAncestry(t *testing.T) {
 				t.Fatal(err)
 			}
 			source.Metadata["base_commit"] = f.base
-			if err := f.sessions.UpdateMetadata(source.ID, source.Metadata); err != nil {
+			if _, _, err := f.sessions.UpdateMetadata(source.ID, source.Metadata); err != nil {
 				t.Fatal(err)
 			}
 			commit := func(path, name, text string) {

@@ -31,9 +31,10 @@ func TestProjectFeatureRoutingUsesSwarmAuto(t *testing.T) {
 			if err := f.server.sessions.Store().CompleteRepositoryHistoryMaintenance(context.Background()); err != nil {
 				t.Fatal(err)
 			}
-			task, err := f.server.CreateProjectTask(context.Background(), p, project, tool.ProjectTaskCreateInput{Title: "Feature", Prompt: "Implement feature", Agent: tc.agent, Intent: tc.intent, FeatureSize: tc.size})
-			if err != nil {
-				t.Fatal(err)
+			created := requireMatrixTaskResponse(t, f.callAPI(http.MethodPost, "/"+project+"/tasks", map[string]any{"title": "Feature", "prompt": "Implement feature", "agent": tc.agent, "intent": tc.intent, "feature_size": tc.size}, p), http.StatusCreated)
+			task, found, err := f.server.sessions.Store().GetProjectTask(f.accountID, project, created["id"].(string))
+			if err != nil || !found {
+				t.Fatalf("created task missing: %v", err)
 			}
 			if task.Agent != tc.wantAgent || task.Status != tc.wantStatus {
 				t.Fatalf("route: %+v", task)
@@ -41,6 +42,15 @@ func TestProjectFeatureRoutingUsesSwarmAuto(t *testing.T) {
 			sess, found, err := f.server.sessions.Store().GetSession(task.SessionID)
 			if err != nil || !found || sess.Mode != tc.wantMode || !sess.WorktreeEnabled {
 				t.Fatalf("session: %+v %v", sess, err)
+			}
+			if tc.wantAgent == "swarm" {
+				if sess.Preference.Model != "gemini-2.5-action" {
+					t.Fatalf("Swarm did not use configured action model: %+v", sess.Preference)
+				}
+				preview, _, err := f.server.resolveTaskModelPreference(p, task)
+				if err != nil || preview.Model != sess.Preference.Model {
+					t.Fatalf("preview/launch mismatch: %+v %v", preview, err)
+				}
 			}
 			if tc.wantMode == "auto" {
 				if task.PlanBinding != nil || task.OutcomeType != "code_pr" {
@@ -55,10 +65,10 @@ func TestProjectFeatureRoutingUsesSwarmAuto(t *testing.T) {
 	}
 }
 
-// Purpose: the Orchestrator's refine_task tool must publish its own replacement
+// Purpose: the Orchestrator's structured refinement must publish its own replacement
 // through SubmitProjectTaskStructuredPlan and the atomic V3 plan/task publication.
 // Stale, cross-account, changed-plan-ID and missing guards must leave the plan,
-// card and run intents unchanged. This API+tool fixture is narrower than live AI.
+// card and run intents unchanged. This API/store fixture is narrower than live AI.
 func TestOrchestratorStructuredRefinementKeepsCardPending(t *testing.T) {
 	f := setupMatrixTestFixture(t)
 	defer f.db.Close()
@@ -76,11 +86,13 @@ func TestOrchestratorStructuredRefinementKeepsCardPending(t *testing.T) {
 	binding := *task.PlanBinding
 	doc.Checkpoints[0].Tasks = []string{"Implement revised behavior"}
 	input := sessionruntime.ProjectTaskPlanSubmissionInput{AccountScopeID: f.accountID, UserID: f.userID, ProjectID: project, TaskID: task.ID, SessionID: task.SessionID, ExpectedPlanID: binding.PlanID, ExpectedDefinitionRevision: binding.DefinitionRevision, Document: doc, Feedback: "Revise behavior"}
-	for _, kind := range []string{"stale", "foreign", "wrong-id"} {
+	for _, kind := range []string{"stale", "missing", "foreign", "wrong-id"} {
 		bad := input
 		switch kind {
 		case "stale":
 			bad.ExpectedDefinitionRevision++
+		case "missing":
+			bad.ExpectedDefinitionRevision = 0
 		case "foreign":
 			bad.AccountScopeID = "foreign-account"
 		case "wrong-id":
@@ -126,5 +138,15 @@ func TestOrchestratorStructuredRefinementKeepsCardPending(t *testing.T) {
 	sess, _, err := f.server.sessions.Store().GetSession(task.SessionID)
 	if err != nil || sess.Mode != sessionruntime.ModeAuto {
 		t.Fatalf("approved session: %+v %v", sess, err)
+	}
+	approvedTask, _, _ := f.server.sessions.Store().GetProjectTask(f.accountID, project, task.ID)
+	approvedBinding := *approvedTask.PlanBinding
+	input.ExpectedDefinitionRevision = approvedBinding.DefinitionRevision
+	if _, err := f.server.SubmitProjectTaskPlan(context.Background(), input); err == nil {
+		t.Fatal("structured refinement reopened approved execution")
+	}
+	unchanged, _, _ := f.server.sessions.Store().GetProjectTask(f.accountID, project, task.ID)
+	if unchanged.Status != approvedTask.Status || *unchanged.PlanBinding != approvedBinding {
+		t.Fatal("rejected refinement mutated approved card")
 	}
 }

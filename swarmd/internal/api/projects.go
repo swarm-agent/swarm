@@ -1393,7 +1393,7 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 			OwnerSessionID:       sessionID,
 			Branch:               alloc.BranchName,
 			DelegatedCoder:       targetAgent == "coder",
-			AllocatedRuntimeRoot: mode == sessionruntime.ModePlan || len(task.CoderAssignments) > 0 || task.ActiveAttemptID != "" && task.ActiveAttemptID != "initial",
+			AllocatedRuntimeRoot: true, // Every allocation above uses its owned runtime path, including Swarm coding tasks.
 		}
 	}
 

@@ -876,6 +876,16 @@ func modeCapabilityInstructions(mode string, bypassPermissions bool, agentProfil
 		}
 	}
 	lines = append(lines, "When approval is required, invoke the tool directly and let the permission system resolve it; never use ask-user for tool approvals.")
+	if agentruntime.IsSwarmOrchestratorAgentName(agentProfile.Name) {
+		filtered := lines[:0]
+		for _, line := range lines {
+			if strings.Contains(line, "plan_manage") || strings.Contains(line, "exit_plan_mode") || strings.HasPrefix(line, "Execution expectation:") {
+				continue
+			}
+			filtered = append(filtered, line)
+		}
+		lines = append(filtered, "Orchestrator expectation: author and revise structured plans yourself through manage_projects task cards; wait for exact-card user acceptance before implementation.")
+	}
 	return strings.Join(lines, "\n")
 }
 
