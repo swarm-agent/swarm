@@ -51,3 +51,27 @@ test('task receipt fences stale reads without invalidating the project', () => {
   state = reduceDesktopProjectsState(state, { type: 'projects.updateTasks', projectId: 'p', tasks: [{ ...task, revision: 3 }, other] })
   assert.deepEqual(state.p.tasks.map(row => row.id), ['a', 'b'])
 })
+
+// Purpose: beginLoad must retain acknowledged archive fences, including when
+// archive precedes refresh. The reducer is the narrowest owner of stale detail
+// rejection, newer revision acceptance, project isolation and eviction reset.
+test('archive fences survive later refresh and stale detail but not eviction', () => {
+  const task = mapBackendTask({ id: 'a', revision: 1 })
+  let state = reduceDesktopProjectsState({}, { type: 'projects.beginLoad', projectId: 'p', requestId: 'one' })
+  state = reduceDesktopProjectsState(state, { type: 'projects.loadSuccess', projectId: 'p', requestId: 'one', generation: 0, tasks: [task] })
+  state = reduceDesktopProjectsState(state, { type: 'projects.updateTasks', projectId: 'p', tasks: tasks => tasks, archivedReceipt: { id: 'a', revision: 2 } })
+  state = reduceDesktopProjectsState(state, { type: 'projects.beginLoad', projectId: 'p', requestId: 'two' })
+  state = reduceDesktopProjectsState(state, { type: 'projects.loadSuccess', projectId: 'p', requestId: 'two', generation: 0, tasks: [task] })
+  state = reduceDesktopProjectsState(state, { type: 'projects.updateTasks', projectId: 'p', tasks: [task], inspectedTaskId: 'a' })
+  assert.deepEqual(state.p.tasks, [])
+  state = reduceDesktopProjectsState(state, { type: 'projects.beginLoad', projectId: 'q', requestId: 'other' })
+  state = reduceDesktopProjectsState(state, { type: 'projects.loadSuccess', projectId: 'q', requestId: 'other', generation: 0, tasks: [task] })
+  assert.equal(state.q.tasks.length, 1)
+  state = reduceDesktopProjectsState(state, { type: 'projects.updateTasks', projectId: 'p', tasks: [{ ...task, revision: 3 }] })
+  state = reduceDesktopProjectsState(state, { type: 'projects.updateTasks', projectId: 'p', tasks: [task] })
+  assert.equal(state.p.tasks[0].revision, 3)
+  state = reduceDesktopProjectsState(state, { type: 'projects.evict', projectId: 'p' })
+  state = reduceDesktopProjectsState(state, { type: 'projects.beginLoad', projectId: 'p', requestId: 'new-account' })
+  state = reduceDesktopProjectsState(state, { type: 'projects.loadSuccess', projectId: 'p', requestId: 'new-account', generation: 0, tasks: [task] })
+  assert.equal(state.p.tasks[0].revision, 1)
+})

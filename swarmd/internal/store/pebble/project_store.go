@@ -870,6 +870,8 @@ func (s *SessionStore) persistProjectTaskLocked(accountScopeID string, task *Pro
 		"account_id": accountScopeID,
 		"task_id":    task.ID,
 		"action":     action,
+		"revision":   task.Revision,
+		"archived":   task.Archived,
 	})
 	mutation := &projectRealtimeMutation{
 		accountScopeID: accountScopeID,

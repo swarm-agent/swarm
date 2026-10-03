@@ -159,6 +159,7 @@ export function desktopV3CacheReducer(state: DesktopV3CacheState, action: Deskto
     case 'projects.beginLoad':
     case 'projects.loadSuccess':
     case 'projects.loadError':
+    case 'projects.mediaResult':
     case 'projects.invalidateGit':
     case 'projects.updateTasks':
     case 'projects.updateMedia':

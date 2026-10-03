@@ -210,32 +210,28 @@ export class DesktopProjectsRuntime {
 
   refresh(projectId: string, inspectGit = true): Promise<void> {
     if (!projectId) return Promise.resolve()
+    const pending = this.inFlight.get(projectId)
+    if (pending) return pending
     if (inspectGit) {
       for (const task of this.deps.getState()[projectId]?.tasks ?? []) this.queueTask(projectId, task, false, true)
     }
-    const pending = this.inFlight.get(projectId)
-    if (pending) return pending
 
     const requestId = crypto.randomUUID()
     this.deps.dispatch({ type: 'projects.beginLoad', projectId, requestId })
     const state = this.deps.getState()[projectId]
     const generation = state?.generation ?? 0
 
-    const promise: Promise<void> = Promise.all([
-      this.deps.fetchTasks(projectId),
-      this.deps.fetchMedia(projectId),
-    ])
-      .then(([tasksRes, mediaRes]) => {
+    // Publish tasks independently: media latency/failure must not hide the board.
+    const tasksPromise = this.deps.fetchTasks(projectId)
+      .then((tasksRes) => {
         if (this.inFlight.get(projectId) !== promise) return
         const backendTasks = mapBackendTasks(tasksRes?.tasks || [])
-        const media = mediaRes?.media || []
         this.deps.dispatch({
           type: 'projects.loadSuccess',
           projectId,
           requestId,
           generation,
           tasks: backendTasks,
-          media,
         })
         if (this.deps.getState()[projectId]?.generation === generation) {
           const project = this.deps.getState()[projectId]
@@ -260,9 +256,18 @@ export class DesktopProjectsRuntime {
           projectId,
           requestId,
           generation,
-          error: error instanceof Error ? error.message : 'Failed to load project tasks and media',
+          error: error instanceof Error ? error.message : 'Failed to load project tasks',
         })
       })
+    const mediaPromise = this.deps.fetchMedia(projectId).then(response => {
+      if (this.inFlight.get(projectId) !== promise) return
+      this.deps.dispatch({ type: 'projects.mediaResult', projectId, requestId, generation, media: response.media ?? [] })
+    }).catch(error => {
+      if (this.inFlight.get(projectId) !== promise) return
+      this.deps.dispatch({ type: 'projects.mediaResult', projectId, requestId, generation,
+        error: error instanceof Error ? error.message : 'Failed to load project media' })
+    })
+    const promise: Promise<void> = Promise.all([tasksPromise, mediaPromise]).then(() => undefined)
       .finally(() => {
         if (this.inFlight.get(projectId) !== promise) return
         this.inFlight.delete(projectId)
@@ -296,6 +301,13 @@ export class DesktopProjectsRuntime {
       // Durable task updates already identify their card. Do not reload the board,
       // media or unrelated Git inspections. Collection/membership changes and
       // older/unknown frames still use the canonical snapshot repair below.
+      // Exact durable archive receipts fence stale snapshots without a detail or
+      // full-board read, regardless of HTTP/event delivery ordering.
+      if (projectId && taskId && change?.project_id === projectId && change.action === 'task_updated' &&
+        change.archived === true && typeof change.revision === 'number' && Number.isSafeInteger(change.revision) && change.revision > 0) {
+        this.archiveReceipt(projectId, { id: taskId, revision: change.revision, archived: true })
+        return
+      }
       if (projectId && task && change?.action === 'task_updated') {
         this.queueTask(projectId, task, true, true)
         return
@@ -317,7 +329,9 @@ export class DesktopProjectsRuntime {
   }
 
   archiveReceipt(projectId: string, receipt: { id: string; revision: number; archived: boolean }): void {
-    if (!receipt.archived || !receipt.id || !Number.isInteger(receipt.revision)) throw new Error('Invalid task archive receipt')
+    if (!receipt.archived || !receipt.id || !Number.isSafeInteger(receipt.revision) || receipt.revision <= 0) throw new Error('Invalid task archive receipt')
+    const current = this.deps.getState()[projectId]?.tasks.find(task => task.id === receipt.id)
+    if (!current || (current.revision ?? 0) <= receipt.revision) this.taskQueue.delete(JSON.stringify([projectId, receipt.id]))
     this.deps.dispatch({ type: 'projects.updateTasks', projectId, tasks: tasks => tasks, archivedReceipt: receipt })
   }
 
