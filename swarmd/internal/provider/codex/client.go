@@ -187,7 +187,7 @@ type retryAwareStreamEmitter struct {
 	attemptOutputText       string
 	attemptReasoningSummary map[string]string
 	attemptTools            []StreamEvent
-	attemptToolBytes        int
+	attemptToolBytes        int64
 	replayErr               error
 }
 
@@ -227,7 +227,7 @@ func (e *retryAwareStreamEmitter) emit(event StreamEvent) {
 	case StreamEventToolCallStarted, StreamEventToolCallArgumentsDelta, StreamEventToolCallArgumentsSnapshot, StreamEventToolCallCompleted:
 		// Construction is not execution. Publish only the successful attempt's
 		// construction so replay cannot leave duplicate or abandoned tool calls.
-		e.attemptToolBytes += len(event.Arguments) + len(event.ArgumentsDelta) + len(event.ArgumentsSnapshot) + len(event.Delta)
+		e.attemptToolBytes += int64(len(event.Arguments)) + int64(len(event.ArgumentsDelta)) + int64(len(event.ArgumentsSnapshot)) + int64(len(event.Delta))
 		if len(e.attemptTools) >= 8192 || e.attemptToolBytes > maxCodexResponseBodyBytes {
 			e.replayErr = errors.New("codex tool construction event limit exceeded")
 			return
