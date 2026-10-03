@@ -7,6 +7,9 @@ export interface DesktopProjectState {
   // Detail-read provenance, owned by the canonical cache (never the collection).
   gitObservations?: Record<string, string>
   media: ProjectTaskMediaRef[]
+  mediaLoading?: boolean
+  mediaError?: string
+  mediaRequestId?: string
   loading: boolean
   stale: boolean
   error?: string
@@ -25,8 +28,9 @@ export type DesktopProjectsAction =
       requestId: string
       generation: number
       tasks: RunningTask[]
-      media: ProjectTaskMediaRef[]
+      media?: ProjectTaskMediaRef[]
     }
+  | { type: 'projects.mediaResult'; projectId: string; requestId: string; generation: number; media?: ProjectTaskMediaRef[]; error?: string }
   | {
       type: 'projects.loadError'
       projectId: string
@@ -247,6 +251,10 @@ export function reduceDesktopProjectsState(
         tasks: previous?.tasks ?? [],
         media: previous?.media ?? [],
         gitObservations: previous?.gitObservations,
+        archivedRevisions: previous?.archivedRevisions,
+        mediaLoading: true,
+        mediaError: undefined,
+        mediaRequestId: action.requestId,
         generation: previous?.generation ?? 0,
         requestId: action.requestId,
         loading: true,
@@ -293,8 +301,20 @@ export function reduceDesktopProjectsState(
       [action.projectId]: {
         ...previous,
         media: newMedia,
+        mediaRequestId: undefined,
+        mediaLoading: false,
+        mediaError: undefined,
       },
     }
+  }
+  if (action.type === 'projects.mediaResult') {
+    if (!previous || previous.mediaRequestId !== action.requestId) return state
+    const current = previous.generation === action.generation
+    return { ...state, [action.projectId]: { ...previous,
+      media: current && action.media ? action.media : previous.media,
+      mediaError: current ? action.error : previous.mediaError,
+      mediaLoading: false, mediaRequestId: undefined,
+    } }
   }
   if (!previous || previous.requestId !== action.requestId) return state
   if (previous.generation !== action.generation) {
@@ -329,7 +349,7 @@ export function reduceDesktopProjectsState(
         }),
         gitObservations: Object.fromEntries(Object.entries(previous.gitObservations ?? {}).filter(([id, identity]) =>
           identities.get(id) === identity)),
-        media: action.media,
+        media: action.media ?? previous.media,
         loading: false,
         stale: false,
         error: undefined,

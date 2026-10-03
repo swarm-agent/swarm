@@ -99,7 +99,8 @@ import type { DesktopV3ArtifactCatalogEntry } from '../session-v3/artifact-api'
 import type { MediaGenerationJob, MediaGenerationRequest, MediaGenerationSettings } from '../tools/media-library/media-generation'
 import type { QuickRouteMode } from '../tools/media-library/media-viewer-modal'
 import { MediaTaskCard, MediaTaskThreads, isCreativeMediaTask } from './media-task-card'
-import { archiveQueue } from '../runtime/archive-queue'
+import { archiveProjectTask, projectTaskArchiveQueue } from '../runtime/project-task-archive'
+import { DesktopCodexUsageModal } from '../codex/desktop-codex-usage-modal'
 import { subscribeDesktopSessionReset } from '../../../app/api'
 import { DesignMediaTasks, useProjectDesigns } from '../tools/media-library/design-media'
 import { ORCHESTRATE_THEMES } from './orchestrate-themes'
@@ -2446,6 +2447,7 @@ export function OrchestratorChatComposer({
     return () => { observer.disconnect(); window.removeEventListener('resize', resize) }
   }, [draft])
   const [commandsOpen, setCommandsOpen] = useState(false)
+  const [codexUsageOpen, setCodexUsageOpen] = useState(false)
   const [commandQuery, setCommandQuery] = useState('')
   const [commandIndex, setCommandIndex] = useState(0)
   const composingRef = useRef(false)
@@ -2453,7 +2455,8 @@ export function OrchestratorChatComposer({
   const selectCommand = (command: OrchestrateCommand) => {
     setCommandsOpen(false)
     setSendError(null)
-    if (onCommandNavigate) onCommandNavigate(command.page)
+    if ('action' in command) setCodexUsageOpen(true)
+    else if (onCommandNavigate) onCommandNavigate(command.page)
     else setSendError('Navigation is unavailable. Return to the Orchestrate workspace to use commands.')
     composerRef.current?.focus()
   }
@@ -2561,7 +2564,7 @@ export function OrchestratorChatComposer({
     const parsed = parseOrchestrateCommand(text)
     if (parsed.kind === 'command') { selectCommand(parsed.command); return }
     if (parsed.kind === 'unsupported') {
-      setSendError(`Unsupported Orchestrate command ${parsed.token}. Type / for navigation; chat commands and command arguments are not supported.`)
+      setSendError(`Unsupported Orchestrate command ${parsed.token}. Type / for available commands; command arguments are not supported.`)
       setCommandsOpen(false)
       return
     }
@@ -2666,6 +2669,10 @@ export function OrchestratorChatComposer({
       className="swarm-chat-composer-lane border-t border-slate-800 bg-[#0a0f1d] text-xs space-y-2 flex-shrink-0"
       data-testid="orchestrator-chat-composer"
     >
+      <DesktopCodexUsageModal open={codexUsageOpen} onOpenChange={open => {
+        setCodexUsageOpen(open)
+        if (!open) composerRef.current?.focus()
+      }} onOpenAuthSettings={() => onCommandNavigate?.('settings')} />
       {contextControls && <div className="swarm-composer-context">{contextControls}</div>}
       {commandsOpen && <div id="orchestrate-command-list" onKeyDown={(event) => { if (event.key === 'Escape') { event.preventDefault(); setCommandsOpen(false); composerRef.current?.focus() } }} role="listbox" aria-label="Orchestrate commands" className="max-h-64 overflow-y-auto rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-1">
         {commands.map((command, index) => <button key={command.name} id={`orchestrate-command-${command.name}`} type="button" role="option" aria-selected={index === commandIndex} onClick={() => selectCommand(command)} className={`block w-full rounded-lg p-2 text-left text-[var(--app-text)] ${index === commandIndex ? 'bg-[var(--app-surface-hover)]' : ''}`}>
@@ -3403,9 +3410,10 @@ export function OrchestrateView({
   const [managementBusy, setManagementBusy] = useState(false)
   const managementPending = useRef(new Set<string>())
   const managementEpoch = useRef(0)
+  const [managementOwner] = useState(() => crypto.randomUUID())
   useEffect(() => () => { managementEpoch.current++ }, [])
-  useEffect(() => { managementEpoch.current++; managementPending.current.clear(); setManagementBusy(false); setManagementMessage(''); setTaskActionErrors({}) }, [selectedProject?.id])
-  useEffect(() => subscribeDesktopSessionReset(() => { managementEpoch.current++; managementPending.current.clear(); setManagementBusy(false); setManagementMessage(''); setTaskActionErrors({}) }), [])
+  useEffect(() => { managementEpoch.current++; managementPending.current.clear(); setManagementBusy(false); setManagementMessage(''); setTaskActionErrors({}); setArchivedTasks([]); setArchivedError(''); setArchivedLoading(false); setArchivedOpen(false) }, [selectedProject?.id])
+  useEffect(() => subscribeDesktopSessionReset(() => { managementEpoch.current++; managementPending.current.clear(); setManagementBusy(false); setManagementMessage(''); setTaskActionErrors({}); setArchivedTasks([]); setArchivedError(''); setArchivedLoading(false); setArchivedOpen(false) }), [])
   const [managementMessage, setManagementMessage] = useState('')
   const [archivedOpen, setArchivedOpen] = useState(false)
   const [archivedTasks, setArchivedTasks] = useState<RunningTask[]>([])
@@ -3994,7 +4002,7 @@ export function OrchestrateView({
     }
   }, [tasks, selectedTaskId])
 
-  const mediaSyncError = projectTasksError
+  const mediaSyncError = projectState?.mediaError
   const handleUpdateTaskModel = useCallback(
     async (taskId: string, newModel: string, scopeInput?: AgentModelControlTaskOverrideInput | null) => {
       if (!selectedProject?.id) return
@@ -5126,29 +5134,23 @@ export function OrchestrateView({
     const succeeded: string[] = []
     await Promise.all(rows.map(async row => {
       try {
-        await archiveQueue.run(JSON.stringify(['task', epoch, projectId, row.id]), async () => {
+        await projectTaskArchiveQueue.run(JSON.stringify(['task', managementOwner, epoch, projectId, row.id]), async () => {
         if (!current()) throw new Error('Project or account changed')
         let revision = row.revision
-        if (typeof revision !== 'number' || revision <= 0) throw new Error('Missing task revision; refresh and retry')
+        if (!Number.isSafeInteger(revision) || (revision ?? 0) <= 0) throw new Error('Missing task revision; refresh and retry')
         if (action === 'delete') {
           if (row.sessionId || row.taskProgramId || row.planBinding) {
             throw new Error('Launched task has retained execution; archive instead of deleting')
           }
-          const archived = await requestJson<{ task: { id: string; revision: number; archived: boolean } }>(`/v3/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(row.id)}/archive`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ revision }),
-          })
-          if (!current()) return
-          if (archived.task.id !== row.id) throw new Error('Task archive identity mismatch')
-          desktopProjects.archiveReceipt(projectId, archived.task)
-          revision = archived.task.revision
+          const receipt = await archiveProjectTask(projectId, row, current)
+          if (!receipt) return
+          desktopProjects.archiveReceipt(projectId, receipt)
+          revision = receipt.revision
           await requestJson(`/v3/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(row.id)}?revision=${revision}`, { method: 'DELETE' })
         } else {
-          const archived = await requestJson<{ task: { id: string; revision: number; archived: boolean } }>(`/v3/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(row.id)}/archive`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ revision }),
-          })
-          if (!current()) return
-          if (archived.task.id !== row.id) throw new Error('Task archive identity mismatch')
-          desktopProjects.archiveReceipt(projectId, archived.task)
+          const receipt = await archiveProjectTask(projectId, row, current)
+          if (!receipt) return
+          desktopProjects.archiveReceipt(projectId, receipt)
         }
         })
         if (!current()) return
@@ -5169,7 +5171,7 @@ export function OrchestrateView({
     if (!current()) return
     setManagementMessage(`${succeeded.length} ${action === 'archive' ? 'archived' : 'deleted'}, ${failures.length} failed.${failures.length ? ` Retry after refresh: ${failures.join('; ')}` : ''}`)
     setMarkedTaskIds(prev => new Set([...prev].filter(id => !succeeded.includes(id))))
-    if (archivedOpen) void loadArchivedTasks(projectId)
+    if (archivedOpen) void loadArchivedTasks(projectId, true)
 
   }
 
@@ -5454,15 +5456,21 @@ export function OrchestrateView({
       return [...prev].every(id => valid.has(id)) ? prev : new Set([...prev].filter(id => valid.has(id)))
     })
   }, [filteredTasks])
-  const loadArchivedTasks = async (projectId: string) => {
+  const archivedRequest = useRef<{ projectId: string; epoch: number; promise: Promise<void> } | null>(null)
+  const loadArchivedTasks = (projectId: string, force = false): Promise<void> => {
+    const epoch = managementEpoch.current
+    const pending = archivedRequest.current
+    if (!force && pending?.projectId === projectId && pending.epoch === epoch) return pending.promise
     setArchivedLoading(true)
     setArchivedError('')
-    try {
-      const result = await requestJson<{ tasks: any[] }>(`/v3/projects/${encodeURIComponent(projectId)}/tasks?view=archived`)
-      setArchivedTasks(mapBackendTasks(result.tasks || []))
-    } catch (err) {
-      setArchivedError(err instanceof Error ? err.message : 'Failed to load archived tasks')
-    } finally { setArchivedLoading(false) }
+    const current = () => managementEpoch.current === epoch && selectedProjectRef.current === projectId && archivedRequest.current === entry
+    const entry = { projectId, epoch, promise: Promise.resolve() }
+    entry.promise = requestJson<{ tasks: any[] }>(`/v3/projects/${encodeURIComponent(projectId)}/tasks?view=archived`)
+      .then(result => { if (current()) setArchivedTasks(mapBackendTasks(result.tasks || [])) })
+      .catch(err => { if (current()) setArchivedError(err instanceof Error ? err.message : 'Failed to load archived tasks') })
+      .finally(() => { if (current()) setArchivedLoading(false); if (archivedRequest.current === entry) archivedRequest.current = null })
+    archivedRequest.current = entry
+    return entry.promise
   }
   useEffect(() => {
     if (!archivedOpen || !selectedProjectId) return
@@ -6563,6 +6571,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
 
             {/* MAIN BODY: 5 DISTINCT VARIANTS */}
             <div className="flex-1 overflow-hidden flex flex-col">
+              {projectState?.mediaError && <div role="alert">Failed to load project media: {projectState.mediaError} <button type="button" onClick={() => void desktopProjects.refresh(selectedProjectId, false)}>Retry media</button></div>}
               {projectTasksError && (
                 <div className="mx-3.5 mt-2 p-3 bg-red-950/60 border border-red-500/40 rounded-xl text-xs text-red-300 flex items-center justify-between">
                   <span>Failed to load project tasks: {projectTasksError}</span>
