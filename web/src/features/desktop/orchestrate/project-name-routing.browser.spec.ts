@@ -13,7 +13,9 @@ import { fixtureRead, project, sessionId, snapshot } from './swarm-responsive-br
 // to prove ID bookmark migration, reload, session switching and compact geometry.
 // Session changes must retain the exact sidebar DOM owner while replacing chat;
 // Back/Forward and direct links must not restore stale drafts. DOM identity is
-// the narrowest proof of this remount regression in OrchestratePage.
+// the narrowest proof of this remount regression in OrchestratePage. Usage must
+// mount the real dashboard via its real API adapter, with loading/error/retry/empty
+// states, without obscuring the persistent sidebar or main Tasks/Workers controls.
 // This is deterministic browser integration, not live daemon/provider evidence.
 test('project name URLs preserve API identity, reload and compact navigation', { timeout: 60000 }, async () => {
   const js = await build({ stdin: { resolveDir: process.cwd(), loader: 'tsx', contents: `import {mountResponsiveFixture} from './src/features/desktop/orchestrate/swarm-responsive-browser-fixtures'; mountResponsiveFixture('populated', true);` }, bundle: true, write: false, format: 'iife', platform: 'browser', jsx: 'automatic', logLevel: 'silent' })
@@ -22,10 +24,13 @@ test('project name URLs preserve API identity, reload and compact navigation', {
   const css = outputs.filter(asset => asset.type === 'asset' && asset.fileName.endsWith('.css')).map(asset => asset.type === 'asset' ? String(asset.source) : '').join('\n') + await readFile('src/features/desktop/orchestrate/swarm-section.css', 'utf8')
   const browser = await chromium.launch({ headless: true, channel: process.env.SWARM_TEST_BROWSER_CHANNEL || 'chrome' })
   try {
-    const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } })
+    const page = await browser.newPage({ viewport: { width: 1440, height: 1000 }, locale: 'en-US' })
     page.setDefaultTimeout(7000)
     const requests: string[] = [], errors: string[] = []
     let clearRejected = true
+    let usageState: 'error' | 'empty' | 'populated' = 'error'
+    let releaseUsage: (() => void) | undefined
+    const usageGate = new Promise<void>(resolve => { releaseUsage = resolve })
     const clearBodies: any[] = []
     page.on('pageerror', error => errors.push(error.message))
     const conversation = (id: string) => ({ ...snapshot().sessions_by_id[sessionId], id, title: `Session ${id}`, metadata: { agent_name: 'system-orchestrator', project_id: project.id } })
@@ -33,6 +38,9 @@ test('project name URLs preserve API identity, reload and compact navigation', {
       const req = route.request(), url = new URL(req.url())
       if (req.isNavigationRequest()) return route.fulfill({ contentType: 'text/html', body: '<div id="root" style="height:100vh"></div>' })
       requests.push(`${req.method()} ${url.pathname}`)
+      if (url.pathname === '/v3/usage') return usageGate.then(() => route.fulfill(usageState === 'error'
+        ? { status: 503, json: { error: 'Usage temporarily unavailable' } }
+        : { json: { ok: true, summary: { total_tokens: usageState === 'empty' ? 0 : 12345, input_tokens: usageState === 'empty' ? 0 : 12000, output_tokens: usageState === 'empty' ? 0 : 345, cached_tokens: 0, thinking_tokens: 0, total_cost_usd: usageState === 'empty' ? 0 : 1.25, codex_nominal_cost_usd: 0, total_turns: usageState === 'empty' ? 0 : 2, total_sessions: usageState === 'empty' ? 0 : 1, total_media_calls: 0, media_cost_usd: 0 }, daily: [], by_provider: [], by_model: [], recent_sessions: [], media: { total_count: 0, total_cost_usd: 0, image_count: 0, video_count: 0, audio_count: 0, recent_items: [] }, meta: { generated_at: 1, time_range: '30d', total_records_analyzed: 1 } } }))
       if (url.pathname.endsWith('/context/clear')) {
         clearBodies.push(req.postDataJSON())
         if (clearRejected) return route.fulfill({ status: 409, json: { error: 'Session is active; finish work first.' } })
@@ -61,8 +69,8 @@ test('project name URLs preserve API identity, reload and compact navigation', {
     await mount(`https://project.test/projects/${project.id}/sessions/${sessionId}?section=workers#retained`)
     await page.waitForURL(`**/projects/swarm-go/sessions/${sessionId}?section=workers#retained`)
     const nav = page.getByRole('navigation', { name: 'Swarm destinations' })
-    assert.equal(await nav.locator('[aria-current="page"]').count(), 1)
-    assert.equal(await nav.getByRole('link', { name: 'Workers', exact: true }).getAttribute('aria-current'), 'page')
+    assert.equal(await nav.locator('[aria-current="page"]').count(), 0)
+    assert.equal(await page.getByRole('link', { name: 'Workers', exact: true }).getAttribute('aria-current'), 'page')
     assert.equal(await nav.evaluate(el => el.previousElementSibling?.tagName), 'HEADER')
     await page.getByTestId('orchestrator-chat-input').waitFor()
     // Clear requires confirmation and stays on this conversation; New session
@@ -108,15 +116,31 @@ test('project name URLs preserve API identity, reload and compact navigation', {
     assert.ok(requests.includes(`GET /v3/projects/${project.id}/sessions`))
     assert.ok(requests.includes('GET /v3/sessions/session-1'))
     assert.equal(requests.some(url => url.includes('/v3/projects/swarm-go')), false)
-    for (const label of ['Workers', 'Tasks', 'Agents']) {
+    for (const label of ['Deliverables', 'Settings', 'Agents']) {
       await nav.getByRole('link', { name: label, exact: true }).click()
       await page.waitForFunction(label => document.querySelector('.swarm-route-navigation [aria-current="page"]')?.getAttribute('aria-label') === label, label)
       assert.equal(await nav.locator('[aria-current="page"]').count(), 1)
     }
     await page.goBack()
-    await page.waitForFunction(() => document.querySelector('.swarm-route-navigation [aria-current="page"]')?.getAttribute('aria-label') === 'Tasks')
+    await page.waitForFunction(() => document.querySelector('.swarm-route-navigation [aria-current="page"]')?.getAttribute('aria-label') === 'Settings')
     await page.goForward()
     await page.waitForFunction(() => document.querySelector('.swarm-route-navigation [aria-current="page"]')?.getAttribute('aria-label') === 'Agents')
+    await nav.getByRole('link', { name: 'Usage', exact: true }).click()
+    await page.waitForURL('**?section=usage')
+    await page.getByRole('status').filter({ hasText: 'Analyzing session usage' }).waitFor()
+    releaseUsage!()
+    await page.getByRole('alert').filter({ hasText: 'Usage temporarily unavailable' }).waitFor()
+    usageState = 'empty'
+    await page.getByRole('button', { name: 'Retry usage', exact: true }).click()
+    await page.getByRole('status').filter({ hasText: 'No usage recorded for this period.' }).waitFor()
+    usageState = 'populated'
+    await page.getByRole('button', { name: 'Refresh', exact: true }).click()
+    await page.getByText('12,345', { exact: true }).waitFor()
+    assert.ok(requests.includes('GET /v3/usage'))
+    if (process.env.SWARM_PROJECT_PAGE_SCREENSHOT) await page.screenshot({ path: process.env.SWARM_PROJECT_PAGE_SCREENSHOT.replace('.png', '-usage.png') })
+    assert.equal(await page.getByRole('status').filter({ hasText: 'No usage recorded' }).count(), 0)
+    assert.equal(await page.getByRole('link', { name: 'Tasks', exact: true }).count(), 1)
+    assert.equal(await page.getByRole('link', { name: 'Workers', exact: true }).count(), 1)
     for (const width of [1440, 390]) {
       await page.setViewportSize({ width, height: 900 })
       if (width === 390) await page.getByRole('button', { name: 'Open Swarm navigation', exact: true }).click()
@@ -134,7 +158,7 @@ test('project name URLs preserve API identity, reload and compact navigation', {
     await page.setViewportSize({ width: 1440, height: 900 })
     await mount(`https://project.test/projects/${project.id}/sections/workers`)
     await page.waitForURL('**/projects/swarm-go/sections/workers')
-    assert.equal(await nav.getByRole('link', { name: 'Workers', exact: true }).getAttribute('aria-current'), 'page')
+    assert.equal(await page.getByRole('link', { name: 'Workers', exact: true }).getAttribute('aria-current'), 'page')
     const beforeUnknown = requests.length
     await page.goto('https://project.test/projects/missing-project/sessions/session-1')
     await page.addStyleTag({ content: css }); await page.addScriptTag({ content: js.outputFiles[0].text })

@@ -18,6 +18,7 @@ import { admittedConversationId } from './project-entry-policy'
 import { createProjectConversation, projectConversationLink, projectConversationMessageMetadata, requireProjectConversation } from './project-conversations'
 import { useProjectConversations } from '../runtime/project-conversations'
 import { ProjectNavigation } from './project-navigation'
+import { UsagePage } from '../usage/pages/usage-page'
 import { ProjectConversationSidebar } from './project-conversation-sidebar'
 import { clearSessionContext, ContextClearRejected } from '../session-v3/context-clear-api'
 import { projectRouteSegment, resolveProjectRoute } from './project-route'
@@ -78,7 +79,6 @@ import {
 import { requestJson, getDesktopSessionIdentitySnapshot, updateDesktopSessionUsername } from '../../../app/api'
 import { WorkerHub, type SelectedWorker } from './worker-hub'
 import { submitWithWorkerSelection } from './worker-message-context'
-import { DurableWorkerCount } from '../layout/durable-worker-sidebar'
 import { ProjectWorkerSidebar } from '../layout/project-worker-sidebar'
 import { OrchestratorNotifications } from '../notifications/components/orchestrator-notifications'
 import { swarmWorkerHref, swarmActivePage } from './swarm-navigation'
@@ -5731,8 +5731,8 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
           </div>
         </header>
         <ProjectNavigation activePage={activeNavTab} projectSegment={selectedProjectSegment} sessionId={routeConversationId || undefined}
-          workspaceSlug={workspaceSlug} projectCount={projects.length} deliverableCount={liveTasks.flatMap(task => task.deliverables || []).length}
-          mediaCount={allMediaLibraryItems.length} workerCount={accountScopeId ? <DurableWorkerCount accountScopeId={accountScopeId} /> : '…'} pendingReviews={pendingReviews.length}
+          workspaceSlug={workspaceSlug} deliverableCount={liveTasks.flatMap(task => task.deliverables || []).length}
+          mediaCount={allMediaLibraryItems.length}
           onSelect={() => { setIsOnboardingActive(projects.length === 0); responsiveLayout.setPanel('main'); responsiveLayout.setNavigationOpen(false) }} />
         <ProjectTaskAttention tasks={liveTasks} onOpen={task => {
           setSelectedTaskId(task.id); setExpandedTaskId(task.id); setStatusFilter('all'); setActiveNavTab('home')
@@ -6357,6 +6357,8 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
               </div>
             )}
           </div>
+        ) : activeNavTab === 'usage' ? (
+          <UsagePage embedded />
         ) : activeNavTab === 'agents' ? (
           <OrchestrateAgents />
         ) : activeNavTab === 'settings' ? (
