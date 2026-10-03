@@ -1659,6 +1659,9 @@ test('execution epoch hydration covers active sealed delayed stale completed and
   assert.equal(Object.keys(state.sessionsById).filter((id) => id === sessionA.id).length, 1)
 })
 
+// Purpose: applyCacheEvent retains terminal permission evidence without changing
+// summary-owned sidebar counts. Reducer/selector assertions prove resolved details
+// are non-actionable while durable summary updates retain their own authority.
 test('permission realtime events update detail records while summary events own sidebar counts', () => {
   const state = bootstrappedState()
   applyCacheEvent(state, {
@@ -1777,7 +1780,8 @@ test('permission realtime events update detail records while summary events own 
 
   row = selectDesktopSidebarRows(state).find((entry) => entry.sessionId === sessionA.id)
   assert.equal(row?.pendingPermissionCount, 1)
-  assert.equal(state.permissionsBySession[sessionA.id], undefined)
+  assert.equal(state.permissionsBySession[sessionA.id]?.[0].status, 'approved')
+  assert.deepEqual(row?.pendingPermissions, [])
 
   applyCacheEvent(state, {
     source: 'realtime',

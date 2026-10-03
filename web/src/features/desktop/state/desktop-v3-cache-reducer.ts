@@ -1398,7 +1398,9 @@ function applyPermissionSummaryEvent(state: DesktopV3CacheState, event: CacheEve
 
 function applyPermissionEvent(state: DesktopV3CacheState, event: CacheEvent): void {
   if (event.eventType !== 'permission.requested' && event.eventType !== 'permission.updated' && !event.payload.permission) return
-  const permission = normalizeDesktopPermission(event.payload.permission, event.sessionId)
+  // Keep terminal evidence from realtime just like an HTTP decision result, so
+  // delayed pending snapshots cannot resurrect a request resolved on any surface.
+  const permission = normalizeDesktopPermission(event.payload.permission, event.sessionId, { includeResolved: true })
   if (permission) {
     upsertPermissionRecord(state, permission)
     return

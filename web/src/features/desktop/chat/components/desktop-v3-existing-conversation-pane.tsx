@@ -42,6 +42,7 @@ import {
 } from "../services/tool-message";
 import {
   selectDesktopPlanExecutionView,
+  selectDesktopPendingPermissions,
   selectDesktopV3TaskChildViewModel,
   type DesktopPlanExecutionView,
   type RenderedSessionMessages,
@@ -1840,7 +1841,7 @@ export function DesktopV3ExistingConversationPane({
   const sessionMode = session?.mode || cacheSession?.mode || "auto";
   const selectPendingPermissionsForSession = useCallback(
     (state: DesktopV3CacheState) =>
-      [...(state.permissionsBySession[normalizedSessionId] ?? [])]
+      selectDesktopPendingPermissions(state, normalizedSessionId)
         .filter((permission) =>
           permissionRequiresApproval(permission, sessionMode),
         )

@@ -4,6 +4,7 @@ import { parseAskUserPermission, permissionKind } from '../permissions/services/
 import type { DesktopPermissionRecord } from '../types/realtime'
 import type { DesktopSessionPlanRecord } from '../chat/types/chat'
 import type { DesktopV3CacheState } from './desktop-v3-cache-types'
+import { selectDesktopPendingPermissions } from './desktop-v3-cache-selectors'
 
 // Membership is durable lineage, never titles or currently selected conversations.
 export function taskAttentionSessionIds(state: DesktopV3CacheState, task: TaskSessionCandidate): string[] {
@@ -59,8 +60,8 @@ export function taskAttentionSessionIds(state: DesktopV3CacheState, task: TaskSe
 }
 
 export function taskAttentionPermissions(state: DesktopV3CacheState, ids: readonly string[]): DesktopPermissionRecord[] {
-  return ids.filter(id => state.sessionsById[id]?.kind === 'full' && !state.tombstonesBySession[id]).flatMap(id => (state.permissionsBySession[id] || []).filter(permission =>
-    permission.sessionId === id && permission.status === 'pending' && !permission.resolvedAt && !permission.decision))
+  return ids.filter(id => state.sessionsById[id]?.kind === 'full' && !state.tombstonesBySession[id]).flatMap(id => selectDesktopPendingPermissions(state, id).filter(permission =>
+    permission.sessionId === id))
     .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id))
 }
 

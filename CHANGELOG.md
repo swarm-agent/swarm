@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Fix desktop permission resolution tracking and filtering for pending permissions in Desktop V3 cache and remove unused permission selector import. Docs impact: none.
+
 - Expand `NODE_AUTH_TOKEN` correctly in `.npmrc` configuration during GitHub Actions npm release step. Docs impact: none.
 
 - Scope standalone SDK and CLI npm release packages under `@swarm-agent` (`@swarm-agent/sdk`, `@swarm-agent/cli`) and publish directly to public npm registry using `NPM_TOKEN` in `.github/workflows/build-main.yml`. Docs impact: none.
