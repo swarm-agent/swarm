@@ -20,155 +20,168 @@ import (
 // Purpose: prove the real provider/tool dispatch -> canonical wait -> task
 // publication -> executor continuation path. A deterministic provider fixture is
 // used, not a live model benchmark. Extra provider steps (including timer-only
-// refill/recovery) fail the test. This is the narrowest end-to-end runtime layer.
+// refill/recovery) fail the test. Lifecycle publication and report attention/wake
+// requests share this path. This is the narrowest end-to-end runtime layer.
 func TestProjectTaskWaitExecutorEndToEnd(t *testing.T) {
 	for _, managed := range []bool{false, true} {
-		t.Run(fmt.Sprint(managed), func(t *testing.T) {
-			server, sessions, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
-			p := testPrincipal()
-			settings := testAgentModelSettingsRecord(p.AccountScopeID)
-			settings.Swarm.Action = pebblestore.AgentModelAssignment{Provider: "test-provider", Model: "test-model", Thinking: "medium"}
-			if _, err := pebblestore.NewAgentModelSettingsStore(sessions.Store().Underlying()).PutForAccount(settings); err != nil {
-				t.Fatal(err)
-			}
-			if err := sessions.Store().PutProject(p.AccountScopeID, &pebblestore.ProjectRecord{ID: "wait-project", Name: "Wait project"}); err != nil {
-				t.Fatal(err)
-			}
-			w := projectConversationRequest(t, server, p, http.MethodPost, ProjectsPath+"/wait-project/sessions", map[string]any{"client_request_id": "wait-conversation", "mode": "auto"})
-			if w.Code != http.StatusOK {
-				t.Fatalf("conversation: %d %s", w.Code, w.Body.String())
-			}
-			parents, err := sessions.Store().ListProjectConversations(p.AccountScopeID, p.UserID, "wait-project", 10)
-			if err != nil || len(parents) != 1 {
-				t.Fatalf("parents=%+v err=%v", parents, err)
-			}
-			parent := parents[0]
-			createTestSession(t, sessions, "wait-child", p.AccountScopeID, map[string]any{"project_id": "wait-project", "task_id": "wait-task"})
-			if err := sessions.Store().PutProjectTask(p.AccountScopeID, &pebblestore.ProjectTaskRecord{ID: "wait-task", ProjectID: "wait-project", Title: "Delegated audit", Agent: "finder", SessionID: "wait-child", Status: "in_progress"}); err != nil {
-				t.Fatal(err)
-			}
-			var calls atomic.Int32
-			runner := &sessionsV3RecordingProviderRunner{id: "codex"}
-			runner.handler = func(ctx context.Context, req provideriface.Request, _ func(provideriface.StreamEvent)) (provideriface.Response, error) {
-				switch calls.Add(1) {
-				case 1:
-					call := provideriface.FunctionCall{CallID: "wait-call", Name: "manage_projects", Arguments: `{"action":"wait_tasks","project_id":"wait-project","task_ids":["wait-task"]}`}
-					if managed {
-						result, err := req.ToolInvoker.ExecuteTool(ctx, provideriface.ToolInvocation{CallID: call.CallID, Name: call.Name, Arguments: call.Arguments})
-						if err != nil {
-							return provideriface.Response{}, err
-						}
-						if result.Error != "" || !result.RestartTurn {
-							return provideriface.Response{}, fmt.Errorf("wait result=%+v", result)
-						}
-						return provideriface.Response{RestartTurn: true}, nil
-					}
-					return provideriface.Response{FunctionCalls: []provideriface.FunctionCall{call}}, nil
-				case 2:
-					if !sessionsV3TraceInputContains(req.Input, "Delegated project task outcomes") || !sessionsV3TraceInputContains(req.Input, "needs_review") || !sessionsV3TraceInputContains(req.Input, "wait-task") {
-						return provideriface.Response{}, fmt.Errorf("missing outcome in resume: %+v", req.Input)
-					}
-					return provideriface.Response{Text: "Audit is ready for user review, not accepted.", StopReason: "stop"}, nil
-				default:
-					return provideriface.Response{}, fmt.Errorf("unexpected provider execution while waiting")
+		for _, wakeKind := range []string{"lifecycle", "attention", "wake_request"} {
+			t.Run(fmt.Sprintf("%v/%s", managed, wakeKind), func(t *testing.T) {
+				server, sessions, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+				p := testPrincipal()
+				settings := testAgentModelSettingsRecord(p.AccountScopeID)
+				settings.Swarm.Action = pebblestore.AgentModelAssignment{Provider: "test-provider", Model: "test-model", Thinking: "medium"}
+				if _, err := pebblestore.NewAgentModelSettingsStore(sessions.Store().Underlying()).PutForAccount(settings); err != nil {
+					t.Fatal(err)
 				}
-			}
-			providers := registry.New()
-			providers.RegisterRunner(runner)
-			server.providers = providers
-			runtime := tool.NewRuntime(1)
-			runtime.SetManageProjectStore(sessions.Store())
-			runtime.SetManageSessionService(sessions)
-			runSvc := runruntime.NewService(sessions, server.model, providers, runtime, server.perm.(*permission.Service), server.agents, nil, nil)
-			runSvc.SetAgentModelSettingsService(server.agentModelSettings)
-			server.runner = runSvc
-			server.SetBypassPermissions(true)
-			server.ConfigureProjectRealtime(sessions.Store().Underlying())
-			exec := newSessionV3Executor(server)
-			exec.startDelay = 0
-			server.v3SessionExecutor = exec
-			postSessionsV3PrimaryTestMessage(t, server, parent.ID, "wait-goal", "Review the delegated audit when it is ready.")
-			deadline := time.Now().Add(5 * time.Second)
-			var owner pebblestore.V3SessionRunIntent
-			for time.Now().Before(deadline) {
-				state, ok, err := sessions.GetSessionRunState(parent.ID)
+				if err := sessions.Store().PutProject(p.AccountScopeID, &pebblestore.ProjectRecord{ID: "wait-project", Name: "Wait project"}); err != nil {
+					t.Fatal(err)
+				}
+				w := projectConversationRequest(t, server, p, http.MethodPost, ProjectsPath+"/wait-project/sessions", map[string]any{"client_request_id": "wait-conversation", "mode": "auto"})
+				if w.Code != http.StatusOK {
+					t.Fatalf("conversation: %d %s", w.Code, w.Body.String())
+				}
+				parents, err := sessions.Store().ListProjectConversations(p.AccountScopeID, p.UserID, "wait-project", 10)
+				if err != nil || len(parents) != 1 {
+					t.Fatalf("parents=%+v err=%v", parents, err)
+				}
+				parent := parents[0]
+				createTestSession(t, sessions, "wait-child", p.AccountScopeID, map[string]any{"project_id": "wait-project", "task_id": "wait-task"})
+				if err := sessions.Store().PutProjectTask(p.AccountScopeID, &pebblestore.ProjectTaskRecord{ID: "wait-task", ProjectID: "wait-project", Title: "Delegated audit", Agent: "finder", SessionID: "wait-child", Status: "in_progress"}); err != nil {
+					t.Fatal(err)
+				}
+				var calls atomic.Int32
+				runner := &sessionsV3RecordingProviderRunner{id: "codex"}
+				runner.handler = func(ctx context.Context, req provideriface.Request, _ func(provideriface.StreamEvent)) (provideriface.Response, error) {
+					switch calls.Add(1) {
+					case 1:
+						call := provideriface.FunctionCall{CallID: "wait-call", Name: "manage_projects", Arguments: `{"action":"wait_tasks","project_id":"wait-project","task_ids":["wait-task"]}`}
+						if managed {
+							result, err := req.ToolInvoker.ExecuteTool(ctx, provideriface.ToolInvocation{CallID: call.CallID, Name: call.Name, Arguments: call.Arguments})
+							if err != nil {
+								return provideriface.Response{}, err
+							}
+							if result.Error != "" || !result.RestartTurn {
+								return provideriface.Response{}, fmt.Errorf("wait result=%+v", result)
+							}
+							return provideriface.Response{RestartTurn: true}, nil
+						}
+						return provideriface.Response{FunctionCalls: []provideriface.FunctionCall{call}}, nil
+					case 2:
+						if !sessionsV3TraceInputContains(req.Input, "Delegated project task outcomes") || !sessionsV3TraceInputContains(req.Input, map[bool]string{true: "needs_review", false: "Report requests attention"}[wakeKind == "lifecycle"]) || !sessionsV3TraceInputContains(req.Input, "wait-task") {
+							return provideriface.Response{}, fmt.Errorf("missing outcome in resume: %+v", req.Input)
+						}
+						return provideriface.Response{Text: "Audit is ready for user review, not accepted.", StopReason: "stop"}, nil
+					default:
+						return provideriface.Response{}, fmt.Errorf("unexpected provider execution while waiting")
+					}
+				}
+				providers := registry.New()
+				providers.RegisterRunner(runner)
+				server.providers = providers
+				runtime := tool.NewRuntime(1)
+				runtime.SetManageProjectStore(sessions.Store())
+				runtime.SetManageSessionService(sessions)
+				runSvc := runruntime.NewService(sessions, server.model, providers, runtime, server.perm.(*permission.Service), server.agents, nil, nil)
+				runSvc.SetAgentModelSettingsService(server.agentModelSettings)
+				server.runner = runSvc
+				server.SetBypassPermissions(true)
+				server.ConfigureProjectRealtime(sessions.Store().Underlying())
+				exec := newSessionV3Executor(server)
+				exec.startDelay = 0
+				server.v3SessionExecutor = exec
+				postSessionsV3PrimaryTestMessage(t, server, parent.ID, "wait-goal", "Review the delegated audit when it is ready.")
+				deadline := time.Now().Add(5 * time.Second)
+				var owner pebblestore.V3SessionRunIntent
+				for time.Now().Before(deadline) {
+					state, ok, err := sessions.GetSessionRunState(parent.ID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if ok && state.Status == pebblestore.V3RunIntentWaitingTasks {
+						owner, _, _ = sessions.GetSessionRunIntent(parent.ID, state.RunID)
+						break
+					}
+					if ok && (state.Status == "failed" || state.Status == "completed") {
+						t.Fatalf("did not yield: %+v", state)
+					}
+					time.Sleep(time.Millisecond)
+				}
+				if owner.RunID == "" {
+					t.Fatal("never registered durable wait")
+				}
+				for time.Now().Before(deadline) {
+					exec.mu.Lock()
+					n := len(exec.inFlightRuns)
+					exec.mu.Unlock()
+					if n == 0 {
+						break
+					}
+					time.Sleep(time.Millisecond)
+				}
+				exec.mu.Lock()
+				remaining := len(exec.inFlightRuns)
+				exec.mu.Unlock()
+				if remaining != 0 {
+					t.Fatal("wait retained executor capacity")
+				}
+				// Drive the existing time-based executor maintenance entry points explicitly.
+				// They may inspect state, but must never admit waiting provider work.
+				for i := 0; i < 3; i++ {
+					exec.recoverDurableRuns(context.Background())
+					exec.refillPendingBacklog()
+				}
+				time.Sleep(30 * time.Millisecond)
+				if calls.Load() != 1 {
+					t.Fatalf("time-only calls=%d", calls.Load())
+				}
+				if wakeKind == "lifecycle" {
+					_, err = sessions.Store().UpdateProjectTask(p.AccountScopeID, "wait-project", "wait-task", func(task *pebblestore.ProjectTaskRecord) error {
+						task.Status = "needs_review"
+						task.ActionNeeded = "Review the completed audit"
+						return nil
+					})
+				} else {
+					for _, status := range []string{pebblestore.V3RunIntentPendingExecutor, pebblestore.V3RunIntentRunning} {
+						_, err = sessions.Store().ApplyV3SessionMutation(pebblestore.V3SessionMutationInput{SessionID: "wait-child", UserID: p.UserID, AccountScopeID: p.AccountScopeID, Kind: pebblestore.V3SessionMutationRecordRunIntent, ClientRequestID: status, PayloadHash: status, RunIntent: &pebblestore.V3SessionRunIntent{RunID: "child-run", ParentSessionID: parent.ID, Status: status}})
+						if err != nil {
+							t.Fatal(err)
+						}
+					}
+					_, err = sessions.Store().ApplyV3SessionMutation(pebblestore.V3SessionMutationInput{SessionID: "wait-child", UserID: p.UserID, AccountScopeID: p.AccountScopeID, Kind: pebblestore.V3SessionMutationReportTask, ClientRequestID: "report", PayloadHash: "derived", TaskReport: &pebblestore.V3ProjectTaskReportMutation{RunID: "child-run", ProjectID: "wait-project", TaskID: "wait-task", Kind: pebblestore.ProjectTaskUpdateKind(wakeKind), Summary: "Report requests attention"}})
+				}
 				if err != nil {
 					t.Fatal(err)
 				}
-				if ok && state.Status == pebblestore.V3RunIntentWaitingTasks {
-					owner, _, _ = sessions.GetSessionRunIntent(parent.ID, state.RunID)
-					break
+				deadline = time.Now().Add(5 * time.Second)
+				for time.Now().Before(deadline) {
+					state, ok, _ := sessions.GetSessionRunState(parent.ID)
+					if ok && state.RunID == pebblestore.ProjectTaskWaitResumeID(owner.RunID) && state.Status == "completed" {
+						break
+					}
+					if ok && state.Status == "failed" {
+						t.Fatalf("resume failed: %+v", state)
+					}
+					time.Sleep(time.Millisecond)
 				}
-				if ok && (state.Status == "failed" || state.Status == "completed") {
-					t.Fatalf("did not yield: %+v", state)
+				state, _, _ := sessions.GetSessionRunState(parent.ID)
+				if calls.Load() != 2 || state.Status != "completed" || state.RunID != pebblestore.ProjectTaskWaitResumeID(owner.RunID) {
+					t.Fatalf("resume calls=%d state=%+v", calls.Load(), state)
 				}
-				time.Sleep(time.Millisecond)
-			}
-			if owner.RunID == "" {
-				t.Fatal("never registered durable wait")
-			}
-			for time.Now().Before(deadline) {
-				exec.mu.Lock()
-				n := len(exec.inFlightRuns)
-				exec.mu.Unlock()
-				if n == 0 {
-					break
+				messages, err := sessions.ListSessionMessages(parent.ID, 0, 30)
+				if err != nil {
+					t.Fatal(err)
 				}
-				time.Sleep(time.Millisecond)
-			}
-			exec.mu.Lock()
-			remaining := len(exec.inFlightRuns)
-			exec.mu.Unlock()
-			if remaining != 0 {
-				t.Fatal("wait retained executor capacity")
-			}
-			// Drive the existing time-based executor maintenance entry points explicitly.
-			// They may inspect state, but must never admit waiting provider work.
-			for i := 0; i < 3; i++ {
-				exec.recoverDurableRuns(context.Background())
-				exec.refillPendingBacklog()
-			}
-			time.Sleep(30 * time.Millisecond)
-			if calls.Load() != 1 {
-				t.Fatalf("time-only calls=%d", calls.Load())
-			}
-			_, err = sessions.Store().UpdateProjectTask(p.AccountScopeID, "wait-project", "wait-task", func(task *pebblestore.ProjectTaskRecord) error {
-				task.Status = "needs_review"
-				task.ActionNeeded = "Review the completed audit"
-				return nil
+				outcomes := 0
+				for _, message := range messages {
+					if strings.HasPrefix(message.Content, "Delegated project task outcomes:") {
+						outcomes++
+					}
+				}
+				if outcomes != 1 {
+					t.Fatalf("outcome delivery count=%d", outcomes)
+				}
 			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			deadline = time.Now().Add(5 * time.Second)
-			for time.Now().Before(deadline) {
-				state, ok, _ := sessions.GetSessionRunState(parent.ID)
-				if ok && state.RunID == pebblestore.ProjectTaskWaitResumeID(owner.RunID) && state.Status == "completed" {
-					break
-				}
-				if ok && state.Status == "failed" {
-					t.Fatalf("resume failed: %+v", state)
-				}
-				time.Sleep(time.Millisecond)
-			}
-			state, _, _ := sessions.GetSessionRunState(parent.ID)
-			if calls.Load() != 2 || state.Status != "completed" || state.RunID != pebblestore.ProjectTaskWaitResumeID(owner.RunID) {
-				t.Fatalf("resume calls=%d state=%+v", calls.Load(), state)
-			}
-			messages, err := sessions.ListSessionMessages(parent.ID, 0, 30)
-			if err != nil {
-				t.Fatal(err)
-			}
-			outcomes := 0
-			for _, message := range messages {
-				if strings.HasPrefix(message.Content, "Delegated project task outcomes:") {
-					outcomes++
-				}
-			}
-			if outcomes != 1 {
-				t.Fatalf("outcome delivery count=%d", outcomes)
-			}
-		})
+		}
 	}
 }
 

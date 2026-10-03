@@ -3449,6 +3449,7 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 	}
 	planGuardFreshContext := false
 	runtimeContextAt := time.Now()
+	taskUpdateCursor := ""
 	for step := 1; ; step++ {
 		if e.taskWaitYielded(job) {
 			return sessionV3ProviderLoopResult{}, errSessionV3TaskWaitYield
@@ -3486,6 +3487,16 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 		}
 		for _, note := range notes {
 			input = append(input, map[string]any{"role": "user", "content": []map[string]any{{"type": "input_text", "text": note.Content}}})
+		}
+		var taskUpdates []pebblestore.ProjectTaskUpdate
+		if pebblestore.ProjectConversationID(resolved.Session) != "" {
+			var next string
+			taskUpdates, next, err = e.server.sessions.Store().PendingProjectTaskUpdates(job.Principal.AccountScopeID, job.Principal.UserID, job.SessionID, job.RunID, taskUpdateCursor)
+			if err != nil {
+				return sessionV3ProviderLoopResult{}, err
+			}
+			taskUpdateCursor = next
+			input = append(input, runruntime.ProjectTaskUpdateInput(taskUpdates)...)
 		}
 		req := baseReq
 		req.Input = append([]map[string]any(nil), input...)
@@ -3603,6 +3614,9 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 		// it was in flight wait for another eligible step; a final response does
 		// not reopen work merely to drain feedback.
 		if err := runruntime.RecordFeedbackDelivery(e.server.applySessionV3PrimaryMutation, job.SessionID, job.RunID, notes); err != nil {
+			return sessionV3ProviderLoopResult{}, err
+		}
+		if err := runruntime.RecordProjectTaskDelivery(e.server.applySessionV3PrimaryMutation, job.SessionID, job.RunID, taskUpdates); err != nil {
 			return sessionV3ProviderLoopResult{}, err
 		}
 		*feedbackCursor = nextFeedbackCursor
