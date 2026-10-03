@@ -1758,7 +1758,8 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 	rawCustomToolDefinitions := convertToolDefinitions(s.customAgentToolDefinitionsForAccount(options.Principal.AccountScopeID))
 	toolDefinitions := filterToolDefinitions(rawToolDefinitions, effectiveDisabledTools)
 	if taskHistoryOnly {
-		toolDefinitions = taskHistoryToolDefinitions(toolDefinitions)
+		_, _, historyErr := s.tools.TaskHistoryBinding(tool.WorkspaceScope{SessionID: sessionID, Principal: options.Principal})
+		toolDefinitions = taskHistoryToolDefinitions(toolDefinitions, historyErr != nil)
 	}
 	runRequestDebugEvent("tool_inventory", map[string]any{
 		"session_id":            sessionID,

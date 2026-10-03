@@ -40,6 +40,29 @@ Callbacks accelerate durable delivery; the status index and task records recover
 missed callbacks at restart. Store errors retain the wait/pending intent and are
 reported; this does not claim recovery without storage becoming available.
 
+## Authenticated task reports
+
+`manage_projects action=report_task` accepts the linked `project_id`, `task_id`,
+`update_kind` (`progress`, `attention`, `wake_request`), a 1–4000 UTF-8 byte
+`summary`, and a stable `client_request_id`. Swarm, Coder and Finder task sessions
+receive a session-bound reporting capability, not general project management.
+Existing follow-up history access remains separately guarded.
+
+The canonical V3 mutation rechecks the active task attempt and running provider
+identity under project/account/session locks. It derives the parent from captured
+session deployment lineage (or the retained run parent), never a supplied parent
+ID or the mutable project primary pointer. Reports persist as `session.task.reported`
+events with account, user, project, parent, task, attempt, source session/run and
+exact event ID/sequence. Actual typed content determines retry conflicts.
+
+Reports record intent only: progress is informational, attention marks actionable
+input, and wake_request explicitly requests attention. `recorded`/`pending` is not
+a delivery or wake receipt and does not approve scope, change task status or spawn
+a run. Safe parent delivery and consumption acknowledgement are separate work.
+The V3 message boundary rejects task-originated messages to Orchestrator sessions,
+including non-triggering notes; ordinary user chat and parent-to-task feedback
+remain available. Timer tools and session messaging are not alternate wake paths.
+
 ## Validation
 
 Deterministic local tests cover canonical storage, ownership, concurrent wake

@@ -5,6 +5,7 @@ import "testing"
 // Purpose: the shared Begin/Finish boundary must atomically publish durable task
 // progress and completion, reject foreign/stale attempts, and retain conflicts.
 // This temp-store layer proves persisted postconditions rather than UI optimism.
+// Fixtures identify the required task agent to reach the integration boundary.
 func TestProjectTaskIntegrationLifecycle(t *testing.T) {
 	db, err := Open(t.TempDir())
 	if err != nil {
@@ -19,7 +20,7 @@ func TestProjectTaskIntegrationLifecycle(t *testing.T) {
 			states = append(states, task.Integration.State)
 		}
 	})
-	task := &ProjectTaskRecord{ID: "task", ProjectID: "project", Title: "Task", SessionID: "source", Status: "needs_review", Revision: 1, ActionNeeded: "Integrate"}
+	task := &ProjectTaskRecord{ID: "task", ProjectID: "project", Title: "Task", Agent: "coder", SessionID: "source", Status: "needs_review", Revision: 1, ActionNeeded: "Integrate"}
 	if err := s.PutProjectTask("account", task); err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +93,7 @@ func TestProjectTaskRecoveryRevisionGuard(t *testing.T) {
 	}
 	defer db.Close()
 	s := NewSessionStore(db)
-	task := &ProjectTaskRecord{ID: "task", ProjectID: "project", Title: "Task", SessionID: "source", Status: "needs_review", Revision: 1}
+	task := &ProjectTaskRecord{ID: "task", ProjectID: "project", Title: "Task", Agent: "coder", SessionID: "source", Status: "needs_review", Revision: 1}
 	if err := s.PutProjectTask("account", task); err != nil {
 		t.Fatal(err)
 	}

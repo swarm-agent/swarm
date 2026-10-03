@@ -81,6 +81,8 @@ type V3CheckpointBoundaryMutation struct {
 }
 
 type V3SessionMutationInput struct {
+	TaskReport                   *V3ProjectTaskReportMutation `json:"-"`
+	taskUpdate                   *ProjectTaskUpdate
 	TaskWait                     *V3ProjectTaskWaitMutation `json:"-"`
 	taskWaitPrevious             *V3SessionRunIntent
 	designChange                 *pebble.Batch     // Private independent design participant; caller holds designMu.
@@ -700,7 +702,7 @@ func (s *SessionStore) ApplyV3SessionMutation(input V3SessionMutationInput) (V3S
 
 	// Task chat continuation shares the project lock with reopen/archive. Take it
 	// before session locks, matching project mutation lock ordering.
-	if input.TaskWait != nil || (input.PlanSave != nil && input.PlanSave.TaskPublication != nil) || (input.Kind == V3SessionMutationAppendMessage && input.RunIntent != nil && input.Message != nil && strings.EqualFold(input.Message.Role, "user")) {
+	if input.TaskReport != nil || input.TaskWait != nil || (input.PlanSave != nil && input.PlanSave.TaskPublication != nil) || (input.Kind == V3SessionMutationAppendMessage && input.RunIntent != nil && input.Message != nil && strings.EqualFold(input.Message.Role, "user")) {
 		s.store.projectsMu.Lock()
 		defer s.store.projectsMu.Unlock()
 	}
@@ -741,6 +743,12 @@ func (s *SessionStore) ApplyV3SessionMutation(input V3SessionMutationInput) (V3S
 		defer mediaStaging.mu.Unlock()
 	}
 
+	if err := s.guardProjectTaskReportBypass(input); err != nil {
+		return V3SessionMutationResult{}, err
+	}
+	if err := s.prepareProjectTaskReport(&input); err != nil {
+		return V3SessionMutationResult{}, err
+	}
 	idempotencyKey := KeyV3SessionOperationIdempotency(input.AccountScopeID, input.SessionID, input.Kind, input.ClientRequestID)
 
 	if existing, ok, err := s.getV3SessionIdempotencyRecordByKey(idempotencyKey); err != nil {
@@ -3510,6 +3518,9 @@ func normalizeV3SessionMutationInput(input V3SessionMutationInput) V3SessionMuta
 }
 
 func validateV3SessionMutationInput(input V3SessionMutationInput) error {
+	if input.Kind == V3SessionMutationReportTask && input.TaskReport == nil {
+		return errors.New("task reports require authenticated task report context")
+	}
 	if input.RunIntent != nil && (input.RunIntent.Status == V3RunIntentWaitingTasks || input.RunIntent.TaskWait != nil || input.RunIntent.TaskWaitOwnerRunID != "") && input.TaskWait == nil {
 		return errors.New("task wait state requires the canonical task-wait mutation")
 	}
@@ -3824,6 +3835,11 @@ func normalizeV3SessionEventType(input V3SessionMutationInput) string {
 }
 
 func (input V3SessionMutationInput) v3EventPayload(seq uint64, session SessionSnapshot, message MessageSnapshot, lifecycle SessionLifecycleSnapshot, runIntent V3SessionRunIntent, turnUsage SessionTurnUsageSnapshot, usageSummary SessionUsageSummary, artifact V3ArtifactProjection, artifactV2 ArtifactV2Projection, artifactV3 ArtifactV3Projection, transcription V3TranscriptionProjection, videoProject V3VideoProjectProjection) (json.RawMessage, error) {
+	if input.taskUpdate != nil {
+		update := *input.taskUpdate
+		update.EventSeq = seq
+		return json.Marshal(update)
+	}
 	if len(input.EventPayload) > 0 {
 		return append(json.RawMessage(nil), input.EventPayload...), nil
 	}

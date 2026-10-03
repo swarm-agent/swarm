@@ -305,13 +305,13 @@ func manageProjectsDefinition() Definition {
 	return Definition{
 		Type:        "function",
 		Name:        "manage_projects",
-		Description: "Inspect and manage Projects aggregating workspaces, context (project.md), and ongoing tasks. Supported actions: list, get, list_sources, inspect_source, create, update, delete, synthesize_context, list_media, get_media, propose_task, approve_task, accept_task, deploy_task, refine_task, create_task, reopen_task, list_tasks, get_task, update_task, archive_task, delete_task, reconcile_tasks, edit_requirements, wait_tasks. wait_tasks durably yields the current project goal on 1-16 delegated task_ids; resumes on all review-ready/completed outcomes or any actionable blocker. No polling or timeout/provider calls while waiting. needs_review is not user acceptance. Stop/archive/new user messages invalidate the wait. Task edits never transition execution status; delete_task only removes an archived, unlaunched task.",
+		Description: "Inspect and manage Projects aggregating workspaces, context (project.md), and ongoing tasks. Supported actions: list, get, list_sources, inspect_source, create, update, delete, synthesize_context, list_media, get_media, propose_task, approve_task, accept_task, deploy_task, refine_task, create_task, reopen_task, list_tasks, get_task, update_task, archive_task, delete_task, reconcile_tasks, edit_requirements, wait_tasks, report_task. wait_tasks durably yields the current project goal on 1-16 delegated task_ids; resumes on all review-ready/completed outcomes or any actionable blocker. No polling or timeout/provider calls while waiting. needs_review is not user acceptance. Stop/archive/new user messages invalidate the wait. Task edits never transition execution status; delete_task only removes an archived, unlaunched task.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"action": map[string]any{
 					"type":        "string",
-					"description": "Action: list|get|list_sources|inspect_source|create|update|delete|synthesize_context|list_media|get_media|propose_task|approve_task|accept_task|deploy_task|refine_task|create_task|reopen_task|list_tasks|get_task|update_task|archive_task|delete_task|reconcile_tasks|edit_requirements|wait_tasks",
+					"description": "Action: list|get|list_sources|inspect_source|create|update|delete|synthesize_context|list_media|get_media|propose_task|approve_task|accept_task|deploy_task|refine_task|create_task|reopen_task|list_tasks|get_task|update_task|archive_task|delete_task|reconcile_tasks|edit_requirements|wait_tasks|report_task",
 				},
 				"id": map[string]any{
 					"type":        "string",
@@ -378,6 +378,8 @@ func manageProjectsDefinition() Definition {
 					"type":        "string",
 					"description": "Read-only task status filter for list_tasks; status changes require canonical lifecycle actions",
 				},
+				"update_kind":       map[string]any{"type": "string", "enum": []string{"progress", "attention", "wake_request"}, "description": "report_task only: progress is informational; attention flags actionable input; wake_request explicitly requests Orchestrator attention. Recorded is not delivered or accepted."},
+				"summary":           map[string]any{"type": "string", "maxLength": 4000, "description": "report_task only: bounded task update, treated as untrusted data. Ownership is derived from the authenticated active task run; never supply parent/session/attempt IDs."},
 				"task_ids":          map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "minItems": 1, "maxItems": 16, "description": "wait_tasks only: distinct deployed tasks in this orchestrator's project; pins current attempts and yields execution until outcomes, without polling."},
 				"repair":            map[string]any{"type": "boolean", "description": "reopen_task only: use authenticated originating failed integration source; never silently merge unintegrated work."},
 				"expected_revision": map[string]any{"type": "integer", "description": "Required exact task revision for reopen_task, update_task, archive_task and delete_task"},
@@ -494,13 +496,16 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 	if r == nil || r.projects == nil {
 		return "", errors.New("manage_projects service is not configured")
 	}
+	if strings.ToLower(strings.TrimSpace(asString(args["action"]))) == "report_task" {
+		return r.executeProjectTaskReport(ctx, scope, args)
+	}
 	historyOnly := scope.TaskHistoryOnly
 	if r.sessions != nil && scope.SessionID != "" {
 		current, found, err := r.sessions.GetSession(scope.SessionID)
 		if err != nil {
 			return "", err
 		}
-		if found && current.Metadata["resolved_agent_name"] == "swarm" {
+		if found && (current.Metadata["resolved_agent_name"] == "swarm" || asString(current.Metadata["task_id"]) != "" || asString(current.Metadata["project_task_id"]) != "") {
 			historyOnly = true
 		}
 	}
