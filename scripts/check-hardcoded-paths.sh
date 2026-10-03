@@ -17,6 +17,7 @@ filter_guest_image_paths() {
     case "${normalized}" in
       'containers/headless/inspect.sh:for directory in /etc/swarmd /var/lib/swarmd /var/cache/swarmd /run/swarmd /var/log/swarmd /project; do'|\
       'containers/headless/inspect.sh:test -s /etc/ssl/certs/ca-certificates.crt'|\
+      'scripts/test-install-mint-guard.sh:    prepare) mint_guard_prepare /etc/systemd/system/swarm.service.d ;;'|\
       'containers/headless/app/entrypoint.sh:config=/etc/swarmd/headless-app'|\
       'containers/headless/app/entrypoint.sh:if (( $# == 0 )); then set -- node /opt/workshop/examples/headless-app/server.mjs; fi'|\
       'scripts/testbench-local-cache.sh:    export GOROOT=/opt/go GOTOOLCHAIN=local GOMAXPROCS=2 HOME=/root'|\
@@ -64,6 +65,14 @@ if [[ "${1:-}" == "--self-test" ]]; then
   [[ -z "$(printf '%s\n' "${presence_hit}" | filter_allowed_runtime_paths)" ]] || exit 1
   for rejected_hit in "${presence_hit/swarm.service/other.service}" "${presence_hit}; echo unsafe" "${presence_hit/rebuild.sh/other.sh}"; do
     [[ -n "$(printf '%s\n' "${rejected_hit}" | filter_allowed_runtime_paths)" ]] || exit 1
+  done
+  # Requirement: allow only the fixed disposable qualification service drop-in.
+  # Threat: a broad exemption hides another unit, file, or appended command.
+  # Owner: filter_guest_image_paths; exact input/output checks prove this boundary.
+  mint_guard_hit='scripts/test-install-mint-guard.sh:89:    prepare) mint_guard_prepare /etc/systemd/system/swarm.service.d ;;'
+  [[ -z "$(printf '%s\n' "$mint_guard_hit" | filter_guest_image_paths)" ]] || exit 1
+  for rejected_hit in "${mint_guard_hit/swarm.service.d/other.service.d}" "${mint_guard_hit}; echo unsafe" "${mint_guard_hit/test-install-mint-guard.sh/other.sh}"; do
+    [[ -n "$(printf '%s\n' "$rejected_hit" | filter_guest_image_paths)" ]] || exit 1
   done
   # Every currently reviewed guest statement must be allowed, but moving it,
   # appending a command, or changing its fixed destination must be rejected.
