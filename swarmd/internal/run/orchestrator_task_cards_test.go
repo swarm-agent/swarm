@@ -55,6 +55,8 @@ func TestOrchestratorResolvedToolsDenyForgedSessionPlanning(t *testing.T) {
 
 // Purpose: masterHarnessPromptWithScopeAndAgent plus the compiled profile must
 // instruct self-authored, guarded card revisions, not automatic Plan delegation.
+// Integration must preserve targeted requirement edits separately from whole-plan
+// replacements so the merged guidance does not regenerate unchanged scope.
 // Prompt assembly is the narrowest layer for wording; lifecycle tests separately
 // prove approval/revision effects and rejection of stale inputs.
 func TestOrchestratorMasterHarnessExcludesSessionPlanning(t *testing.T) {
@@ -71,7 +73,7 @@ func TestOrchestratorMasterHarnessExcludesSessionPlanning(t *testing.T) {
 			t.Errorf("automatic Plan delegation remains: %s", forbidden)
 		}
 	}
-	for _, required := range []string{"refine_task", "definition_revision", "plan_document", "Never begin implementation before required user approval"} {
+	for _, required := range []string{"refine_task", "definition_revision", "plan_document", "Never begin implementation before required user approval", "Big features route to Swarm", "For whole-plan changes", "What will change", "edit_requirements", "base_revision_id", "Never regenerate the full plan for a localized edit"} {
 		if !strings.Contains(combined, required) {
 			t.Errorf("missing self-authored review contract: %s", required)
 		}
