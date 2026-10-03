@@ -1721,7 +1721,7 @@ func (s *Service) ListMediaUsageBySession(sessionID string, limit int) ([]pebble
 }
 
 type PlanSaveMetadata struct {
-	ExpectedRevisionID string
+	ExpectedRevisionID  string
 	UpdateSummary       string
 	UpdateScope         string
 	UpdateKind          string

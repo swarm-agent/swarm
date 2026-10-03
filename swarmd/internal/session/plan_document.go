@@ -288,10 +288,10 @@ func ValidatePlanDocument(doc *pebblestore.SessionPlanDocument) error {
 // documents. The service applies the whole patch atomically and stores exactly
 // one normal plan revision for the accepted update.
 type PlanDocumentPatch struct {
-	BaseRevisionID string `json:"base_revision_id,omitempty"`
-	Requirement *pebblestore.SessionPlanRequirement `json:"requirement,omitempty"`
-	RequirementID string `json:"requirement_id,omitempty"`
-	RequirementOrder []string `json:"requirement_order,omitempty"`
+	BaseRevisionID     string                                           `json:"base_revision_id,omitempty"`
+	Requirement        *pebblestore.SessionPlanRequirement              `json:"requirement,omitempty"`
+	RequirementID      string                                           `json:"requirement_id,omitempty"`
+	RequirementOrder   []string                                         `json:"requirement_order,omitempty"`
 	Operation          string                                           `json:"operation,omitempty"`
 	Title              string                                           `json:"title,omitempty"`
 	Info               *pebblestore.SessionPlanInfo                     `json:"info,omitempty"`

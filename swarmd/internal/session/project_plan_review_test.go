@@ -15,7 +15,7 @@ func TestProjectPlanReviewRequiresBoundReadableContent(t *testing.T) {
 			doc := &pebblestore.SessionPlanDocument{
 				Title: "Repair settings", Info: pebblestore.SessionPlanInfo{Goal: "Persist preferences"},
 				Requirements: []pebblestore.SessionPlanRequirement{{ID: "r1", Text: "Settings survive restart", CheckpointID: "cp-1"}},
-				Checkpoints: []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Order: 1, Title: "Persist", Status: "pending", Tasks: []string{"Write settings atomically"}, AcceptanceCriteria: []string{"Settings survive restart"}}},
+				Checkpoints:  []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Order: 1, Title: "Persist", Status: "pending", Tasks: []string{"Write settings atomically"}, AcceptanceCriteria: []string{"Settings survive restart"}}},
 			}
 			switch kind {
 			case "nil":

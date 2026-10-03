@@ -82,7 +82,7 @@ type Client struct {
 	httpClient           *http.Client
 	earlyExpiry          time.Duration
 	sendWSFn             func(context.Context, pebblestore.CodexAuthRecord, []byte, func(StreamEvent)) (map[string]any, int, error)
-	reconnectWaitFn       func(context.Context, time.Duration) error
+	reconnectWaitFn      func(context.Context, time.Duration) error
 	responsesAPIURL      string
 	responsesWSURL       string
 	websocketIdleTimeout time.Duration

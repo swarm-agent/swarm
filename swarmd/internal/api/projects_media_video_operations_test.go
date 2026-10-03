@@ -1121,7 +1121,7 @@ func TestVideoOperations_OmniContinuationSelection(t *testing.T) {
 	if err := catalog.SetRecord(pebblestore.ModelCatalogRecord{
 		Provider: "google", Model: "gemini-omni-1.1-flash",
 		CatalogModalities: pebblestore.ModelCatalogModalities{Outputs: []string{"video"}},
-		ProviderSpecific: json.RawMessage(`{"google":{"video_generation":{"settings":{"resolution":{"status":"verified","supported_values":["720p"]}},"features":{"video_extension":{"status":"verified","supported":true}}}}}`),
+		ProviderSpecific:  json.RawMessage(`{"google":{"video_generation":{"settings":{"resolution":{"status":"verified","supported_values":["720p"]}},"features":{"video_extension":{"status":"verified","supported":true}}}}}`),
 	}); err != nil {
 		t.Fatal(err)
 	}

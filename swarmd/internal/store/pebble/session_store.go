@@ -204,24 +204,24 @@ type SessionPlanAutomationIntent struct {
 
 // SessionPlanRequirement is a stable, user-facing executable acceptance criterion.
 type SessionPlanRequirement struct {
-	ID string `json:"id"`
-	Text string `json:"text"`
+	ID           string `json:"id"`
+	Text         string `json:"text"`
 	CheckpointID string `json:"checkpoint_id"`
 }
 
 type SessionPlanDocument struct {
-	Requirements []SessionPlanRequirement `json:"requirements,omitempty"`
-	RequirementChanges []string `json:"requirement_changes,omitempty"`
-	WorkerV2        *AutomationV2Settings        `json:"worker_v2,omitempty"`
-	AutomationV2    *AutomationV2Settings        `json:"automation_v2,omitempty"`
-	Automation      *SessionPlanAutomationIntent `json:"automation,omitempty"`
-	ID              string                       `json:"id"`
-	Title           string                       `json:"title"`
-	Status          string                       `json:"status,omitempty"`
-	SchemaVersion   string                       `json:"schema_version,omitempty"`
-	RevisionID      string                       `json:"revision_id,omitempty"`
-	Info            SessionPlanInfo              `json:"info,omitempty"`
-	ExecutionPolicy SessionPlanExecutionPolicy   `json:"execution_policy,omitempty"`
+	Requirements       []SessionPlanRequirement     `json:"requirements,omitempty"`
+	RequirementChanges []string                     `json:"requirement_changes,omitempty"`
+	WorkerV2           *AutomationV2Settings        `json:"worker_v2,omitempty"`
+	AutomationV2       *AutomationV2Settings        `json:"automation_v2,omitempty"`
+	Automation         *SessionPlanAutomationIntent `json:"automation,omitempty"`
+	ID                 string                       `json:"id"`
+	Title              string                       `json:"title"`
+	Status             string                       `json:"status,omitempty"`
+	SchemaVersion      string                       `json:"schema_version,omitempty"`
+	RevisionID         string                       `json:"revision_id,omitempty"`
+	Info               SessionPlanInfo              `json:"info,omitempty"`
+	ExecutionPolicy    SessionPlanExecutionPolicy   `json:"execution_policy,omitempty"`
 	// ExecutionOrigin distinguishes lightweight auto-session work from approved
 	// full-plan execution without relying on conversation history.
 	ExecutionOrigin     string                         `json:"execution_origin,omitempty"`

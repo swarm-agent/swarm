@@ -73,33 +73,52 @@ func (r *Runtime) executeManageProjectTasksContext(ctx context.Context, scope Wo
 		result["task_ids"] = ids
 	case "edit_requirements":
 		task, found, err := r.projects.GetProjectTask(account, projectID, taskID)
-		if err != nil { return "", err }
+		if err != nil {
+			return "", err
+		}
 		if !found || task == nil || task.Archived || task.Status != "pending_approval" || task.PlanBinding == nil {
 			return "", errors.New("requirement edits require a pending task with a bound plan")
 		}
 		owner, found, err := r.sessions.GetSession(task.PlanBinding.SessionID)
-		if err != nil { return "", err }
-		if !found || owner.AccountScopeID != account || owner.UserID != scope.Principal.UserID { return "", errors.New("plan session ownership mismatch") }
+		if err != nil {
+			return "", err
+		}
+		if !found || owner.AccountScopeID != account || owner.UserID != scope.Principal.UserID {
+			return "", errors.New("plan session ownership mismatch")
+		}
 		object, err := parseJSONEncodedObject(args["document_patch"], "document_patch")
-		if err != nil { return "", err }
+		if err != nil {
+			return "", err
+		}
 		var patch sessionruntime.PlanDocumentPatch
 		raw, err := json.Marshal(object)
-		if err != nil { return "", fmt.Errorf("invalid document_patch: %w", err) }
-		if err = json.Unmarshal(raw, &patch); err != nil { return "", fmt.Errorf("invalid document_patch: %w", err) }
+		if err != nil {
+			return "", fmt.Errorf("invalid document_patch: %w", err)
+		}
+		if err = json.Unmarshal(raw, &patch); err != nil {
+			return "", fmt.Errorf("invalid document_patch: %w", err)
+		}
 		ops := patch.Operations
-		if len(ops) == 0 { ops = []sessionruntime.PlanDocumentPatch{patch} }
+		if len(ops) == 0 {
+			ops = []sessionruntime.PlanDocumentPatch{patch}
+		}
 		for _, op := range ops {
 			switch op.Operation {
 			case "add_requirement", "edit_requirement", "remove_requirement", "reorder_requirements":
-			default: return "", errors.New("edit_requirements accepts only targeted requirement operations")
+			default:
+				return "", errors.New("edit_requirements accepts only targeted requirement operations")
 			}
 		}
 		service, ok := r.projectTaskLifecycle.(interface {
 			EditProjectTaskRequirements(string, string, string, string, sessionruntime.PlanDocumentPatch) (sessionruntime.ProjectTaskPlanSubmissionResult, error)
 		})
-		if !ok { return "", errors.New("canonical plan editing unavailable") }
+		if !ok {
+			return "", errors.New("canonical plan editing unavailable")
+		}
 		submitted, err := service.EditProjectTaskRequirements(account, scope.Principal.UserID, projectID, taskID, patch)
-		if err != nil { return "", err }
+		if err != nil {
+			return "", err
+		}
 		result["review"] = submitted
 	case "reopen_task":
 		if taskID == "" {
@@ -163,11 +182,19 @@ func (r *Runtime) executeManageProjectTasksContext(ctx context.Context, scope Wo
 		copyTask.Attempts = rows
 		result["task"], result["next_cursor"] = &copyTask, next
 		if task.PlanBinding != nil {
-			reader, ok := r.sessions.(interface { GetPlan(string, string) (pebblestore.SessionPlanSnapshot, bool, error) })
-			if !ok { return "", errors.New("bound plan reader unavailable") }
+			reader, ok := r.sessions.(interface {
+				GetPlan(string, string) (pebblestore.SessionPlanSnapshot, bool, error)
+			})
+			if !ok {
+				return "", errors.New("bound plan reader unavailable")
+			}
 			plan, found, err := reader.GetPlan(task.PlanBinding.SessionID, task.PlanBinding.PlanID)
-			if err != nil { return "", err }
-			if !found || plan.AccountScopeID != account || plan.UserID != scope.Principal.UserID { return "", errors.New("bound plan unavailable for principal") }
+			if err != nil {
+				return "", err
+			}
+			if !found || plan.AccountScopeID != account || plan.UserID != scope.Principal.UserID {
+				return "", errors.New("bound plan unavailable for principal")
+			}
 			result["plan"] = plan
 		}
 	case "update_task", "archive_task", "delete_task":

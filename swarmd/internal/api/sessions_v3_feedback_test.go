@@ -38,7 +38,7 @@ func TestSessionsV3LiveFeedbackBoundary(t *testing.T) {
 				Name: "swarm", Mode: agentruntime.ModePrimary,
 				Provider: "test-provider", Model: "test-model",
 				RuntimeMode: pebblestore.AgentRuntimeModePlanAuto,
-				Enabled: pebblestore.BoolPtr(true), Prompt: "Inspect only.",
+				Enabled:     pebblestore.BoolPtr(true), Prompt: "Inspect only.",
 				ToolContract: &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{"list": {Enabled: pebblestore.BoolPtr(true)}}},
 			}); err != nil {
 				t.Fatal(err)

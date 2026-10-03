@@ -378,7 +378,7 @@ func manageProjectsDefinition() Definition {
 					"type":        "string",
 					"description": "Read-only task status filter for list_tasks; status changes require canonical lifecycle actions",
 				},
-				"task_ids": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "minItems": 1, "maxItems": 16, "description": "wait_tasks only: distinct deployed tasks in this orchestrator's project; pins current attempts and yields execution until outcomes, without polling."},
+				"task_ids":          map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "minItems": 1, "maxItems": 16, "description": "wait_tasks only: distinct deployed tasks in this orchestrator's project; pins current attempts and yields execution until outcomes, without polling."},
 				"repair":            map[string]any{"type": "boolean", "description": "reopen_task only: use authenticated originating failed integration source; never silently merge unintegrated work."},
 				"expected_revision": map[string]any{"type": "integer", "description": "Required exact task revision for reopen_task, update_task, archive_task and delete_task"},
 				"priority":          map[string]any{"type": "string", "description": "Task organization: low|medium|high|urgent"},
@@ -393,7 +393,7 @@ func manageProjectsDefinition() Definition {
 					"description": "Set true to automatically deploy the task immediately upon creation for small tasks or Task Programs; structured plans require explicit user review in the task card",
 				},
 				"document_patch": map[string]any{
-					"type": "object",
+					"type":        "object",
 					"description": "For edit_requirements: base_revision_id and operations containing add_requirement, edit_requirement, remove_requirement or reorder_requirements. Stable requirement id/text/checkpoint_id bind directly to executable acceptance criteria.",
 				},
 				"plan_document": map[string]any{
