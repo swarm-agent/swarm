@@ -47,6 +47,11 @@ function runTiming(intent: V3SessionRunIntent | null | undefined, options: { act
   }
 }
 
+function taskResumeLabel(intent: V3SessionRunIntent | null | undefined): string {
+  if (!intent?.task_wait_owner_run_id?.trim()) return 'Running'
+  return intent.status === 'pending_executor' ? 'Resuming after tasks' : 'Resumed after tasks'
+}
+
 function terminalKind(status: string): DesktopV3RunStatusKind {
   switch (status) {
     case 'failed':
@@ -99,7 +104,7 @@ export function buildDesktopV3RunStatusModel(input: {
     if (!timingPresent(timing)) return null
     return {
       kind: 'active',
-      label: 'Running',
+      label: taskResumeLabel(input.currentRunIntent),
       ...timing,
       active: true,
     }
@@ -119,7 +124,7 @@ export function buildDesktopV3RunStatusModel(input: {
     if (!timingPresent(timing)) return null
     return {
       kind: 'active',
-      label: 'Running',
+      label: taskResumeLabel(input.latestRunIntent),
       ...timing,
       active: true,
     }

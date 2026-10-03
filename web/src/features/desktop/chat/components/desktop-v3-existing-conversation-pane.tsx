@@ -33,6 +33,8 @@ import {
   XCircle,
 } from "lucide-react";
 import { cn } from "../../../../lib/cn";
+import { isTaskOutcomeMessage, taskOutcomeActivity, type DesktopTaskActivity } from '../../state/desktop-v3-task-updates';
+import { DesktopV3TaskActivity } from './desktop-v3-task-activity';
 import { AutomationV2Detail, AutomationV2ScheduleHandoff } from '../../tools/automations/automation-v2-workspace';
 import { AutomationSessionPanel } from '../../tools/automations/automation-session';
 import { WorkerSessionBanner } from '../../tools/automations/worker-session-banner';
@@ -663,6 +665,7 @@ type DesktopV3PlanHandoffRenderFields = {
 };
 
 export type DesktopV3RenderItem =
+  | { type: "task-activity"; id: string; timelineSeq: number; activity: DesktopTaskActivity }
   | {
       type: "plan-break";
       message: MessageSnapshot;
@@ -1551,8 +1554,11 @@ export function buildDesktopV3ConversationRenderItems(
     visibleCommittedMessages.map(committedToolRenderKey).filter((key): key is string => Boolean(key)),
   );
   const items: DesktopV3RenderItem[] = [
+    ...(renderedMessages.taskActivities ?? []).map((activity) => ({ type: "task-activity" as const, id: activity.id, timelineSeq: activity.timelineSeq, activity })),
     ...visibleCommittedMessages.map((message) =>
-      isDesktopV3PlanExecutionBreakMessage(message)
+      isTaskOutcomeMessage(message)
+        ? { type: "task-activity" as const, id: `task-outcome:${message.id}`, timelineSeq: message.global_seq, activity: taskOutcomeActivity(message) }
+        : isDesktopV3PlanExecutionBreakMessage(message)
         ? buildDesktopV3PlanExecutionBreakItem(message)
         : isDesktopV3PlanCheckpointHandoffMessage(message)
           ? buildDesktopV3PlanHandoffItem(message, "plan-checkpoint-handoff")
@@ -3898,6 +3904,8 @@ export const DesktopV3RenderItemView = memo(function DesktopV3RenderItemView({
   }
 
   switch (item.type) {
+    case "task-activity":
+      return <DesktopV3TaskActivity activity={item.activity} />;
     case "plan-break":
       return <DesktopV3PlanExecutionBreak item={item} />;
     case "plan-checkpoint-handoff":

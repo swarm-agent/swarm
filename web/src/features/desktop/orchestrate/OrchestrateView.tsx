@@ -2834,6 +2834,7 @@ function OrchestratorChatSidebar({
   const messages = useDesktopV3CacheSelector(
     useCallback((state) => selectRenderedSessionMessages(state, sessionId), [sessionId]),
     (left, right) =>
+      left.taskActivities === right.taskActivities &&
       left.committed === right.committed &&
       left.pendingUser === right.pendingUser &&
       left.liveRuns === right.liveRuns &&

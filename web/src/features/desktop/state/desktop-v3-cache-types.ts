@@ -234,6 +234,7 @@ export interface V3SessionRunIntent {
   account_scope_id?: string
   run_id: string
   epoch_id?: string
+  task_wait_owner_run_id?: string
   status: string
   blocked_reason?: string
   created_at: number

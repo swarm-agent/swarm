@@ -343,7 +343,8 @@ function runIntentArrayEqual(left: V3SessionRunIntent[], right: V3SessionRunInte
 }
 
 function desktopV3RenderedMessagesEqual(left: RenderedSessionMessages, right: RenderedSessionMessages): boolean {
-  return left.committed === right.committed
+  return left.taskActivities === right.taskActivities
+    && left.committed === right.committed
     && pendingUserMessagesEqual(left.pendingUser, right.pendingUser)
     && liveRunsEqual(left.liveRuns, right.liveRuns)
     && runIntentArrayEqual(left.runIntents, right.runIntents)
