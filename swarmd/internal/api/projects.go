@@ -1104,19 +1104,7 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 	if task.WorkspacePath != wsPath {
 		return errors.New("reserved source differs from execution path without an owned session")
 	}
-	mode := sessionruntime.ModeAuto
-	targetAgent := strings.TrimSpace(task.Agent)
-	if targetAgent == "plan" || task.Status == "planning" || task.TaskProgram != nil || task.OutcomeType == "plan_spec" {
-		mode = sessionruntime.ModePlan
-		targetAgent = "swarm"
-	}
-	if targetAgent == "" {
-		targetAgent = "swarm"
-	}
-
-	if task.ActiveAttemptID != "" && task.ActiveAttemptID != "initial" {
-		mode, targetAgent = sessionruntime.ModeAuto, "swarm"
-	}
+	targetAgent, mode := projectTaskExecutionAgent(task)
 
 	// Resolve canonical default Swarm preference for fallback or primary Swarm task
 	var defaultSwarmPref pebblestore.ModelPreference
@@ -1331,6 +1319,12 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 		sessionSnapshot.Metadata = metadata
 	}
 
+	// Validate the complete batch before allocating a worktree or creating a session.
+	attachmentPlan, attachmentBytes, err := s.prepareProjectTaskAttachments(context.Background(), p, sessionSnapshot, task.AttachedMedia)
+	if err != nil {
+		return err
+	}
+
 	var admission *pebblestore.WorktreeAdmissionEvidence
 	if targetAgent == "coder" || mode == sessionruntime.ModePlan || task.OutcomeType == "code_pr" || task.OutcomeType == "bug_patch" || task.ActiveAttemptID != "" && task.ActiveAttemptID != "initial" {
 		if s.worktrees == nil {
@@ -1416,6 +1410,10 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 	}
 	task.SessionID = sessionID
 
+	attachmentRefs, err := s.retainProjectTaskAttachments(attachmentPlan, attachmentBytes)
+	if err != nil {
+		return err
+	}
 	var tr taskrouter.Service
 	seedMsg := tr.BuildAgentSeedPrompt(task, proj)
 	if mode == sessionruntime.ModePlan {
@@ -1430,6 +1428,7 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 		AccountScopeID: p.AccountScopeID,
 		Role:           "user",
 		Content:        seedMsg,
+		Media:          attachmentRefs,
 		Metadata: map[string]any{
 			"role":                 "project_context_seed",
 			"task_id":              task.ID,
