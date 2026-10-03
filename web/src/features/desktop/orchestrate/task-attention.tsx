@@ -13,6 +13,8 @@ import { hydrateResponseToAction } from '../state/desktop-v3-cache-wire'
 import { hydrateDesktopV3ChildCard } from '../state/desktop-v3-session-hydrator'
 import { taskAttentionContext, taskAttentionLabel, taskAttentionPermissions, taskAttentionSessionIds, submitTaskAttentionDecision, type TaskAttentionDecision } from '../state/task-attention'
 import { DesktopPermissionModal } from '../permissions/components/desktop-permission-modal'
+import { DesktopInlinePlanReviewCard } from '../chat/components/desktop-inline-plan-review-card'
+import { isPlanProposalPermission } from '../permissions/services/permission-payload'
 import { DesktopInlineBashPermissionCard } from '../chat/components/desktop-inline-bash-permission-card'
 import { resolveSessionPermission } from '../chat/queries/chat-queries'
 import type { DesktopPermissionRecord } from '../types/realtime'
@@ -118,21 +120,25 @@ export function TaskAttention({ attention }: { attention: Omit<ReturnType<typeof
   const selected = attention.permissions.find(permission => key(permission) === selectedKey
     && permission.runId === reviewed?.runId && permission.callId === reviewed?.callId
     && permission.updatedAt === reviewed?.updatedAt && permission.toolArguments === reviewed?.toolArguments) || null
-  async function resolve(action: TaskAttentionDecision, reason: string, args?: Record<string, unknown>) {
-    if (!selected) throw new Error('This request is no longer pending')
+  async function resolveRequest(permission: DesktopPermissionRecord, action: TaskAttentionDecision, reason: string, args?: Record<string, unknown>) {
     setFailure('')
     try {
-      await submitTaskAttentionDecision(selected, action, reason, args, {
+      await submitTaskAttentionDecision(permission, action, reason, args, {
         getState: getDesktopV3CacheSnapshot,
         resolve: (sessionId, id, action, reason, args) => resolveSessionPermission(sessionId, id, action, reason, args, { sessionApi: 'v3' }),
-        commit: permission => dispatchDesktopV3Cache({ type: 'permission.resolveResult', sessionId: selected.sessionId, permissionId: selected.id, permission }),
+        commit: resolved => dispatchDesktopV3Cache({ type: 'permission.resolveResult', sessionId: permission.sessionId, permissionId: permission.id, permission: resolved }),
       })
-      setReviewed(current => current && key(current) === key(selected) ? null : current)
+      setReviewed(current => current && key(current) === key(permission) ? null : current)
     } catch (error) {
       setFailure(error instanceof Error ? error.message : 'Decision failed. Please retry.')
       throw error
     }
   }
+  async function resolve(action: TaskAttentionDecision, reason: string, args?: Record<string, unknown>) {
+    if (!selected) throw new Error('This request is no longer pending')
+    await resolveRequest(selected, action, reason, args)
+  }
+  const planPermissions = attention.permissions.filter(isPlanProposalPermission)
   if (!attention.blocker && !attention.unresolvedCount && !attention.permissions.length && !attention.error) return null
   return <section aria-label="Task needs your attention" className="m-2 rounded-lg border border-amber-400/60 bg-amber-500/10 p-3 text-sm text-amber-100" onClick={event => event.stopPropagation()} onKeyDown={event => event.stopPropagation()}>
     {attention.blocker && <div role="status">
@@ -147,9 +153,21 @@ export function TaskAttention({ attention }: { attention: Omit<ReturnType<typeof
     {attention.unresolvedCount > 0 && <p role="status" className="font-semibold">Waiting for you · {attention.unresolvedCount} pending</p>}
     <ul className="mt-2 space-y-2">
       {attention.permissions.map(permission => <li key={key(permission)} className="min-w-0">
+        {isPlanProposalPermission(permission) ? <DesktopInlinePlanReviewCard
+          permission={permission}
+          parentSessionId={permission.sessionId}
+          pendingPosition={planPermissions.indexOf(permission) + 1}
+          pendingCount={planPermissions.length}
+          onResolve={async (...args) => {
+            // Inline reviews have no modal error boundary; failure remains visible
+            // above and the canonical pending record stays available for retry.
+            try { await resolveRequest(...args) } catch { /* failure is rendered below */ }
+          }}
+        /> : <>
         <p className="font-semibold">{taskAttentionLabel(permission)}</p>
         <p className="line-clamp-2 break-words text-xs" title={taskAttentionContext(permission)}>{taskAttentionContext(permission)}</p>
         <button type="button" className="mt-1 rounded border border-amber-300/50 px-3 py-1 font-semibold hover:bg-amber-500/20" onClick={() => { setFailure(''); setReviewed(permission) }}>{taskAttentionLabel(permission) === 'Needs your input' ? 'Answer' : 'Review permission'}</button>
+        </>}
       </li>)}
     </ul>
     {attention.unresolvedCount > attention.permissions.length && <p>Loading pending requests…</p>}

@@ -47,3 +47,19 @@ test('collapsed attention shows a durable blocker with a supply input action', (
   assert.match(html, />Supply input and resume</)
   assert.doesNotMatch(html, /0 pending|Review permission|role="dialog"/)
 })
+
+// Purpose: TaskAttention must use permission payload classification, not the tool
+// name or a cached accepted plan. SSR proves malformed proposals retain controls
+// and non-plan operations stay ordinary requests without fabricating a plan.
+test('partial plan proposals remain actionable and non-plan operations stay generic', () => {
+  const base = { id: 'partial', sessionId: 'child', runId: 'run', callId: 'call', toolName: 'plan_manage', status: 'pending', decision: '', reason: '', mode: 'auto', createdAt: 1, updatedAt: 1, resolvedAt: 0, permissionRequestedAt: 1 } as DesktopPermissionRecord
+  const html = renderToStaticMarkup(<TaskAttention attention={{ permissions: [
+    { ...base, requirement: 'plan_new_request', toolArguments: '{broken' },
+    { ...base, id: 'ordinary', requirement: 'tool_approval', toolArguments: '{"action":"get-active"}' },
+  ], unresolvedCount: 2, error: '', retry: () => {} }} />)
+  assert.equal((html.match(/data-testid="desktop-inline-plan-review"/g) || []).length, 1)
+  assert.match(html, /Review this plan proposal/)
+  assert.match(html, />Reject</)
+  assert.match(html, />Accept once</)
+  assert.equal((html.match(/>Review permission</g) || []).length, 1)
+})
