@@ -34,10 +34,23 @@ func TestProjectTaskDeliveryWakeLifecycleRace(t *testing.T) {
 					results <- err
 				}()
 				close(start)
+				var raceErr error
 				for i := 0; i < 2; i++ {
 					if err := <-results; err != nil {
-						t.Fatal(err)
+						raceErr = err
 					}
+				}
+				if raceErr != nil {
+					if action != "archive" || !strings.Contains(raceErr.Error(), "project session has active work") {
+						t.Fatal(raceErr)
+					}
+					// Wake won: archive must fail closed, not partially archive an active continuation.
+					assertTaskWaitWake(t, s, true)
+					tomb, found, err := s.GetV3SessionTombstone("parent")
+					if err != nil || (found && tomb.Archived) {
+						t.Fatal("rejected archive changed tombstone", err)
+					}
+					return
 				}
 				if err := s.ReconcileProjectTaskWaits("", "", nil); err != nil {
 					t.Fatal(err)
@@ -175,5 +188,83 @@ func TestProjectTaskDeliveryMultiTaskPolicy(t *testing.T) {
 				t.Fatal("wake changed sibling/accepted review", first.Status)
 			}
 		})
+	}
+}
+
+// Purpose: ReserveTaskFollowup is the real attempt-replacement authority. Racing
+// its revision-guarded reservation with wake reconciliation must retain the old
+// wait target and never bind the new follow-up attempt to an old parent goal.
+func TestProjectTaskDeliveryReopenVersusWake(t *testing.T) {
+	for iteration := 0; iteration < 6; iteration++ {
+		s := taskReportFixture(t)
+		if _, err := s.ApplyV3SessionMutation(taskReportInput(ProjectTaskUpdateProgress)); err != nil {
+			t.Fatal(err)
+		}
+		updates := pendingTaskUpdates(t, s, "goal")
+		if err := registerTaskWait(s, "account", "user", "project", "task"); err != nil {
+			t.Fatal(err)
+		}
+		taskWaitStatus(t, s, "completed")
+		if _, err := s.ApplyV3SessionMutation(V3SessionMutationInput{SessionID: "child", UserID: "user", AccountScopeID: "account", Kind: V3SessionMutationRecordRunIntent, ClientRequestID: "child-completed", PayloadHash: "child-completed", RunIntent: &V3SessionRunIntent{RunID: "child-run", Status: V3RunIntentCompleted}}); err != nil {
+			t.Fatal(err)
+		}
+		previous, _, err := s.GetProjectTask("account", "project", "task")
+		if err != nil {
+			t.Fatal(err)
+		}
+		start, results := make(chan struct{}), make(chan error, 2)
+		go func() { <-start; results <- s.ReconcileProjectTaskWaits("account", "project", nil) }()
+		go func() {
+			<-start
+			_, err := s.ReserveTaskFollowup("account", "project", "task", "user", "reopen", "New follow-up", previous.Revision, 100)
+			results <- err
+		}()
+		close(start)
+		var raceErr error
+		for i := 0; i < 2; i++ {
+			if err := <-results; err != nil {
+				raceErr = err
+			}
+		}
+		if raceErr != nil {
+			t.Fatal(raceErr)
+		}
+		if err := s.ReconcileProjectTaskWaits("account", "project", nil); err != nil {
+			t.Fatal(err)
+		}
+		assertTaskWaitWake(t, s, true)
+		next, _, err := s.GetProjectTask("account", "project", "task")
+		if err != nil || next.ActiveAttemptID == previous.ActiveAttemptID || len(next.Attempts) != 2 {
+			t.Fatal("follow-up missing", err)
+		}
+		messages, err := s.ListV3SessionMessages("parent", 0, 20)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var payload struct {
+			Tasks []map[string]string `json:"tasks"`
+		}
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(messages[0].Content, "Delegated project task outcomes:\n")), &payload); err != nil {
+			t.Fatal(err)
+		}
+		if len(payload.Tasks) != 1 || payload.Tasks[0]["attempt_id"] != previous.ActiveAttemptID || payload.Tasks[0]["session_id"] != "child" {
+			t.Fatal("wait retargeted follow-up", payload)
+		}
+		run := ProjectTaskWaitResumeID("goal")
+		taskDeliveryClaim(t, s, run)
+		if len(pendingTaskUpdates(t, s, run)) != 0 {
+			t.Fatal("superseded report delivered to new attempt")
+		}
+		before, _ := s.readV3SessionSequence("parent")
+		if _, err := s.ApplyV3SessionMutation(taskDeliveryInput(run, updates)); err == nil {
+			t.Fatal("superseded receipt accepted")
+		}
+		after, _ := s.readV3SessionSequence("parent")
+		if before != after {
+			t.Fatal("rejected receipt changed parent")
+		}
+		if _, err := s.taskUpdateRaw(taskUpdateKey(updates[0])); err != nil {
+			t.Fatal("unconsumed old data deleted", err)
+		}
 	}
 }

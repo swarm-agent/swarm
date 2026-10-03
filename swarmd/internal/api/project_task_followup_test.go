@@ -302,6 +302,33 @@ func TestProjectTaskFollowupCreatesNewAutoSwarm(t *testing.T) {
 	seedTaskSessionBinding(t, f, original.SourceWorkspace)
 	body := map[string]any{"client_request_id": "followup", "revision": 1, "feedback": "Additional request"}
 	path := "/" + project.ID + "/tasks/task/reopen"
+	// Exact task revision failures must reject before reservation/allocation; the
+	// previous review-guard fixture incorrectly used retired definition_revision.
+	before, _, _ := db.GetProjectTask(f.accountID, project.ID, "task")
+	stale := f.callAPI("POST", path, map[string]any{"client_request_id": "stale", "revision": 99, "feedback": "Additional request"}, p)
+	if stale.Code != http.StatusConflict || !strings.Contains(stale.Body.String(), "revision") {
+		t.Fatalf("stale revision: %d %s", stale.Code, stale.Body)
+	}
+	after, _, _ := db.GetProjectTask(f.accountID, project.ID, "task")
+	if !reflect.DeepEqual(before, after) {
+		t.Fatal("stale reopen changed attempts")
+	}
+	if _, err := db.UpdateProjectTask(f.accountID, project.ID, "task", func(task *pebblestore.ProjectTaskRecord) error { task.Status = "pending_approval"; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	approvalBefore, _, _ := db.GetProjectTask(f.accountID, project.ID, "task")
+	blocked := f.callAPI("POST", path, map[string]any{"client_request_id": "approval-bypass", "revision": approvalBefore.Revision, "feedback": "Skip approval"}, p)
+	if blocked.Code != http.StatusConflict {
+		t.Fatalf("approval bypass: %d %s", blocked.Code, blocked.Body)
+	}
+	approvalAfter, _, _ := db.GetProjectTask(f.accountID, project.ID, "task")
+	if !reflect.DeepEqual(approvalBefore, approvalAfter) {
+		t.Fatal("rejected approval bypass mutated attempts")
+	}
+	if err := db.PutProjectTask(f.accountID, before); err != nil {
+		t.Fatal(err)
+	}
+	body["revision"] = before.Revision
 	response := f.callAPI("POST", path, body, p)
 	if response.Code != 503 {
 		t.Fatalf("injected allocation failure: %d %s", response.Code, response.Body)
@@ -429,7 +456,7 @@ func TestProjectTaskFollowupCreatesNewAutoSwarm(t *testing.T) {
 	if response := f.callAPI("POST", path, body, p); response.Code != 409 {
 		t.Fatal("changed retry accepted")
 	}
-	after, _, _ := db.GetProjectTask(f.accountID, project.ID, "task")
+	after, _, _ = db.GetProjectTask(f.accountID, project.ID, "task")
 	if after.SessionID != task.SessionID || len(after.Attempts) != 2 {
 		t.Fatal("changed retry mutated lineage")
 	}

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -974,13 +975,14 @@ func TestProjectTaskReject_MalformedJSONAndRevisionGuards(t *testing.T) {
 	}
 }
 
-// Requirement: Task reopen rejects malformed JSON and stale revision guards. Completed direct
-// tasks can be reopened into in_progress with feedback; structured plan tasks require plan review.
+// Requirement: Task reopen rejects malformed JSON and obsolete/missing guards without
+// changing attempts. Exact revision, pending-approval and new-session success assertions
+// use the real Git fixture in TestProjectTaskFollowupCreatesNewAutoSwarm.
 func TestProjectTaskReopen_MalformedJSONAndRevisionGuards(t *testing.T) {
 	// Written Purpose:
 	// - Product Requirement: POST /v3/projects/{id}/tasks/{taskId}/reopen must reject malformed JSON
-	//   and stale revision guards. Direct execution tasks in completed status reopen cleanly;
-	//   tasks requiring plan review cannot bypass approval via reopen.
+	//   and obsolete/missing guards before any mutation. Reopen creates a new attempt,
+	//   never resumes an old session. HTTP decoding is the narrowest rejection layer.
 	// - Authority: handleProjects in swarmd/internal/api/projects.go.
 	// - Threat/regression: Corrupted reopen payloads, stale send-backs, or bypassing plan approval.
 	f := setupMatrixTestFixture(t)
@@ -1033,6 +1035,7 @@ func TestProjectTaskReopen_MalformedJSONAndRevisionGuards(t *testing.T) {
 		UpdatedAt:      time.Now().UnixMilli(),
 	}
 	f.seedProjectTask(task)
+	before, _, _ := f.server.sessions.Store().GetProjectTask(f.accountID, projID, taskID)
 
 	// 1. Malformed JSON on reopen returns 400
 	wBadJSON := f.callAPI(http.MethodPost, "/"+projID+"/tasks/"+taskID+"/reopen", "{invalid-json", p)
@@ -1064,56 +1067,34 @@ func TestProjectTaskReopen_MalformedJSONAndRevisionGuards(t *testing.T) {
 		t.Fatalf("expected 400 on oversized reopen body, got %d: %s", wOversized.Code, wOversized.Body.String())
 	}
 
-	// 2. Stale revision guard on reopen returns 400 (guarded 99 vs current revision 1)
-	wStale := f.callAPI(http.MethodPost, "/"+projID+"/tasks/"+taskID+"/reopen", map[string]any{
-		"feedback":            "Fix test assertions",
-		"definition_revision": 99,
-	}, p)
-	if wStale.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400 on stale revision reopen, got %d: %s", wStale.Code, wStale.Body.String())
+	// Legacy guards must be rejected explicitly, not mistaken for exact task revisions.
+	for _, revision := range []int{1, 99} {
+		response := f.callAPI(http.MethodPost, "/"+projID+"/tasks/"+taskID+"/reopen", map[string]any{"feedback": "Fix assertions", "definition_revision": revision}, p)
+		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "legacy reopen guards unsupported") {
+			t.Fatalf("legacy guard accepted: %d %s", response.Code, response.Body.String())
+		}
 	}
-	if !strings.Contains(wStale.Body.String(), "stale") {
-		t.Fatalf("expected stale error on reopen, got: %s", wStale.Body.String())
+	for _, body := range []map[string]any{
+		{"feedback": "Fix assertions"},
+		{"feedback": "Fix assertions", "revision": 1},
+		{"feedback": "Fix assertions", "client_request_id": "key"},
+	} {
+		response := f.callAPI(http.MethodPost, "/"+projID+"/tasks/"+taskID+"/reopen", body, p)
+		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "required") {
+			t.Fatalf("missing guard accepted: %d %s", response.Code, response.Body.String())
+		}
 	}
-
-	// 3. Matching revision reopen succeeds
-	wGood := f.callAPI(http.MethodPost, "/"+projID+"/tasks/"+taskID+"/reopen", map[string]any{
-		"feedback":            "Fix test assertions",
-		"definition_revision": 1,
-	}, p)
-	if wGood.Code != http.StatusOK {
-		t.Fatalf("expected 200 on valid reopen, got %d: %s", wGood.Code, wGood.Body.String())
+	after, _, _ := f.server.sessions.Store().GetProjectTask(f.accountID, projID, taskID)
+	if !reflect.DeepEqual(before, after) {
+		t.Fatal("rejected reopen mutated task or attempts")
 	}
-	taskAfterReopen, _, _ := f.server.sessions.Store().GetProjectTask(f.accountID, projID, taskID)
-	if taskAfterReopen.Status != "in_progress" {
-		t.Fatalf("expected task status 'in_progress' after reopen, got %q", taskAfterReopen.Status)
+	messages, err := f.server.sessions.Store().ListV3SessionMessages(sessID, 0, 10)
+	if err != nil || len(messages) != 0 {
+		t.Fatal("rejected reopen wrote feedback", err)
 	}
-
-	// 4. Plan tasks in pending_approval or with PlanBinding cannot bypass approval via reopen
-	pTaskID := "task-plan-reopen-block"
-	pTask := &pebblestore.ProjectTaskRecord{
-		ID:            pTaskID,
-		ProjectID:     projID,
-		AccountID:     f.accountID,
-		Title:         "Plan task cannot reopen directly",
-		Description:   "Plan task",
-		Agent:         "swarm",
-		Status:        "pending_approval",
-		WorkspacePath: "/repo/root",
-		PlanBinding: &pebblestore.ProjectTaskPlanBinding{
-			PlanID:             "plan-reopen-block",
-			DefinitionRevision: 1,
-		},
-		CreatedAt: time.Now().UnixMilli(),
-		UpdatedAt: time.Now().UnixMilli(),
-	}
-	f.seedProjectTask(pTask)
-
-	wPlanReopen := f.callAPI(http.MethodPost, "/"+projID+"/tasks/"+pTaskID+"/reopen", map[string]any{
-		"feedback": "Skip approval and run",
-	}, p)
-	if wPlanReopen.Code != http.StatusConflict {
-		t.Fatalf("expected 409 Conflict when reopening plan task without approval, got %d: %s", wPlanReopen.Code, wPlanReopen.Body.String())
+	intents, err := f.server.sessions.Store().ListRunIntents(sessID, 10)
+	if err != nil || len(intents) != 0 {
+		t.Fatal("rejected reopen scheduled execution", err)
 	}
 }
 
