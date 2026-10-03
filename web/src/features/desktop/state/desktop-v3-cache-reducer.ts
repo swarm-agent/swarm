@@ -1008,6 +1008,10 @@ export function applySessionArchiveMutationResult(
     if (result?.archived !== true) continue
     const sessionId = stringField(result.session_id) || stringField(recordValue(result.tombstone)?.session_id)
     if (!sessionId) continue
+    if (result.projection) {
+      if (projectionSeq(result.projection) < projectionSeq(state.projectionsBySession[sessionId])) continue
+      state.projectionsBySession[sessionId] = result.projection
+    }
     tombstonesBySession[sessionId] = archiveTombstoneFromMutationResult(state, sessionId, result.tombstone)
   }
   applyTombstonesBySession(state, tombstonesBySession)
@@ -1255,7 +1259,7 @@ export function applyCacheEvent(
 
   applyExecutionEpochFromEvent(state, event)
 
-  if (payload.session && eventType === 'session.reactivated') {
+  if (payload.session && incomingProjectionIsFresh && eventType === 'session.reactivated') {
     delete state.tombstonesBySession[sessionId]
     restoreSessionToSidebar(state, sessionId)
   }

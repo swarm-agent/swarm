@@ -725,7 +725,7 @@ export interface SessionSettingsMutationResponse {
 export interface SessionArchiveMutationResponse {
   ok?: boolean
   archived?: boolean
-  results?: Array<{ session_id?: string; archived?: boolean; tombstone?: unknown }>
+  results?: Array<{ session_id?: string; archived?: boolean; tombstone?: unknown; projection?: V3SessionProjection }>
   [key: string]: unknown
 }
 

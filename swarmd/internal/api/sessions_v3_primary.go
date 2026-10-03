@@ -1429,7 +1429,12 @@ func (s *Server) handleSessionsV3PrimaryArchiveBatch(w http.ResponseWriter, r *h
 	s.publishSessionsV3ArchiveRealtime(sessions, events)
 	results := make([]map[string]any, 0, len(sessions))
 	for _, session := range sessions {
-		results = append(results, sessionV3ArchiveResponse(session))
+		result, err := s.sessionV3ArchiveReceipt(session)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		results = append(results, result)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "archived": true, "results": results})
 }
@@ -1489,7 +1494,12 @@ func (s *Server) handleSessionV3PrimaryTombstone(w http.ResponseWriter, r *http.
 	}
 	if kind == "archived" {
 		s.publishSessionsV3ArchiveRealtime([]pebblestore.SessionSnapshot{session}, []*pebblestore.EventEnvelope{event})
-		writeJSON(w, http.StatusOK, sessionV3ArchiveResponse(session))
+		result, err := s.sessionV3ArchiveReceipt(session)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
 		return
 	}
 	if head, headErr := s.sessions.CurrentRealtimeOutboxRevision(); headErr == nil && head > 0 {
@@ -1523,6 +1533,32 @@ func sessionIDsFromSnapshots(sessions []pebblestore.SessionSnapshot) []string {
 		ids = append(ids, session.ID)
 	}
 	return ids
+}
+
+// Return the durable tombstone version and projection so clients can reconcile
+// immediately and restore without reloading every project session.
+func (s *Server) sessionV3ArchiveReceipt(session pebblestore.SessionSnapshot) (map[string]any, error) {
+	tombstone, found, err := s.sessions.Store().GetV3SessionTombstone(session.ID)
+	if err != nil {
+		return nil, err
+	}
+	if !found || !tombstone.Archived || tombstone.Deleted {
+		return nil, errors.New("archive committed but current tombstone is unavailable; refresh before retrying")
+	}
+	projection, found, err := s.sessions.GetSessionProjection(session.ID)
+	if err != nil {
+		return nil, err
+	}
+	if !found || projection.LastEventSeq != tombstone.EventSeq {
+		return nil, errors.New("archive committed but projection changed; refresh before retrying")
+	}
+	result := sessionV3ArchiveResponse(session)
+	result["tombstone"] = map[string]any{
+		"session_id": tombstone.SessionID, "kind": tombstone.Kind, "archived": true,
+		"updated_at": tombstone.UpdatedAt, "event_seq": tombstone.EventSeq,
+	}
+	result["projection"] = projection
+	return result, nil
 }
 
 func sessionV3ArchiveResponse(session pebblestore.SessionSnapshot) map[string]any {

@@ -424,16 +424,17 @@
 .swarm-navigation-sidebar > :is(header, div, footer) { flex-shrink: 0; }
 .swarm-navigation-sidebar > .overflow-y-auto { flex: 0 0 auto; max-height: 180px; }
 
-.swarm-session-selection { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 8px; font-size: 11px; color: var(--swarm-text-muted); }
-.swarm-session-selection label { display: flex; align-items: center; gap: 4px; }
-.swarm-session-selection button { min-height: 28px; padding: 2px 4px; border-radius: 4px; }
-.swarm-session-selection button[aria-pressed="true"] { color: var(--swarm-accent); }
-.swarm-session-selection > span { flex: 1 0 100%; }
+.swarm-session-actions { display: flex; align-items: center; gap: 2px; }
+.swarm-session-icon, .swarm-session-bulk { display: flex; align-items: center; justify-content: center; gap: 4px; min-height: 30px; padding: 4px; border-radius: 4px; color: var(--swarm-text-muted); }
+.swarm-session-icon { width: 30px; }
+.swarm-session-bulk { font-size: 11px; }
+.swarm-session-icon[aria-pressed="true"] { color: var(--swarm-accent); }
+.swarm-session-actions button:disabled { opacity: .5; }
 .swarm-session-item { display: grid; grid-template-columns: minmax(0, 1fr) 24px; align-items: center; gap: 3px; padding-block: 2px; }
-.swarm-project-sessions[data-selecting] .swarm-session-item { grid-template-columns: 16px minmax(0, 1fr) 24px; }
-.swarm-session-item > input, .swarm-session-selection input { width: 14px; height: 14px; margin: 0; accent-color: var(--swarm-accent); }
+.swarm-project-sessions[data-selecting] .swarm-session-item { grid-template-columns: 16px minmax(0, 1fr); }
+.swarm-session-item > input { width: 14px; height: 14px; margin: 0; accent-color: var(--swarm-accent); }
 .swarm-session-item > button { display: grid; place-items: center; min-height: 30px; border-radius: 4px; color: var(--swarm-text-muted); }
-.swarm-session-item > button:hover, .swarm-session-selection button:hover { background: var(--swarm-surface-hover); color: var(--swarm-text); }
+.swarm-session-item > button:hover, .swarm-session-actions button:hover { background: var(--swarm-surface-hover); color: var(--swarm-text); }
 .swarm-session-item .swarm-session-row { flex-direction: column; align-items: stretch; padding-inline: 5px; }
 .swarm-session-metadata { display: flex; align-items: center; gap: 6px; font-size: 10px; line-height: 16px; color: var(--swarm-text-muted); }
 .swarm-session-metadata > span:first-child { flex: 1; min-width: 0; }
@@ -441,5 +442,5 @@
 .swarm-session-item[data-attention] .swarm-session-activity { color: var(--app-warning, #fbbf24); font-weight: 600; }
 .swarm-session-timer { flex-shrink: 0; font-variant-numeric: tabular-nums; }
 .swarm-session-feedback { font-size: 11px; }
-.swarm-session-selection :focus-visible, .swarm-session-item :focus-visible { outline: 2px solid var(--swarm-accent); outline-offset: -2px; }
+.swarm-session-actions :focus-visible, .swarm-session-item :focus-visible { outline: 2px solid var(--swarm-accent); outline-offset: -2px; }
 .swarm-session-error { max-height: 140px; overflow-y: auto; }
