@@ -2681,6 +2681,12 @@ func processResponseStreamEvent(eventName string, payload string, state *streamD
 			state.completedResponse = decoded
 			codexThinkingDebugf("tag=response.completed has_response=false")
 		}
+		// The terminal event itself is completion evidence when the response
+		// omits status. Never infer completion from output items or stream EOF,
+		// and preserve any explicit non-completion status/error for the caller.
+		if state.completedResponse != nil && strings.TrimSpace(asString(state.completedResponse["status"])) == "" {
+			state.completedResponse["status"] = "completed"
+		}
 	}
 }
 
@@ -4457,7 +4463,9 @@ func extractStopReason(responseObj map[string]any, decoded map[string]any) strin
 	if stopReason != "" {
 		return sanitizeDiagnosticText(stopReason)
 	}
-	if status != "" && !strings.EqualFold(status, "completed") {
+	// Responses uses status rather than stop_reason for normal completion.
+	// Preserve that terminal evidence through FromResponse to V3 finalization.
+	if status != "" {
 		return sanitizeDiagnosticText(status)
 	}
 	return ""

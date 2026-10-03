@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"swarm/packages/swarmd/internal/provider/codex"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 )
 
@@ -79,5 +80,23 @@ func TestSessionV3RunIntentStatusHelpers(t *testing.T) {
 		if !sessionV3RunIntentStatusActive(status) || sessionV3RunIntentStatusTerminal(status) {
 			t.Fatalf("status %q active/terminal helpers disagree", status)
 		}
+	}
+}
+
+// Purpose: V3 must accept the Codex adapter's completed status, but still
+// continue a completed provider response containing a tool call. This unit seam
+// exercises FromResponse and TerminalClassifier, the finalization authority,
+// without running tools or relying on provider/network state.
+func TestTerminalClassifierCodexCompletedResponse(t *testing.T) {
+	response := codex.FromResponse(codex.Response{Text: "Final answer", StopReason: "completed"})
+	input := TerminalClassifierInput{ProviderID: "codex", StopReason: response.StopReason, HasFinalContent: response.Text != ""}
+	got := sessionV3TerminalClassifier.Classify(input)
+	if got.Status != sessionruntime.RunIntentCompleted || !got.Terminal || got.EventType != "session.assistant.completed" || got.Reason != "" {
+		t.Fatalf("completed response = %+v", got)
+	}
+	response = codex.FromResponse(codex.Response{StopReason: "completed", FunctionCalls: []codex.FunctionCall{{CallID: "call-test", Name: "read", Arguments: "{}"}}})
+	got = sessionV3TerminalClassifier.Classify(TerminalClassifierInput{ProviderID: "codex", StopReason: response.StopReason, HasFunctionCalls: len(response.FunctionCalls) > 0})
+	if got.Status != sessionruntime.RunIntentRunning || got.Terminal || got.EventType != "" {
+		t.Fatalf("tool continuation = %+v", got)
 	}
 }
