@@ -8,6 +8,7 @@ import { dispatchDesktopV3Cache, useDesktopV3CacheSelector } from '../state/desk
 import { bootstrapResponseToAction } from '../state/desktop-v3-cache-wire'
 import { workspaceRouteSlugBase } from '../../workspaces/launcher/services/workspace-route'
 import { legacyHistorySessions } from './project-entry-policy'
+import { projectRouteSegment } from './project-route'
 import { OrchestrateView } from './OrchestrateView'
 
 export function lastProjectKey() {
@@ -46,13 +47,15 @@ export function ProjectEntryPage() {
         const { session } = await requestJson<{ session: SessionSnapshot }>(`/v3/sessions/${encodeURIComponent(route.params.sessionId)}`)
         if (!active) return
         const owner = conversationProjectId(session)
-        if (response.projects.some(project => project.id === owner)) {
-          void navigate({ ...projectConversationLink(owner, session.id), replace: true })
+        const project = response.projects.find(project => project.id === owner)
+        if (project) {
+          void navigate({ ...projectConversationLink(projectRouteSegment(project, response.projects), session.id), replace: true })
         }
       } else if (route.pathname === '/') {
         let last: string | null = null
         try { last = localStorage.getItem(lastProjectKey()) } catch { /* Selection remains available without browser storage. */ }
-        if (response.projects.some(project => project.id === last)) void navigate({ ...projectConversationLink(last!), replace: true })
+        const project = response.projects.find(project => project.id === last)
+        if (project) void navigate({ ...projectConversationLink(projectRouteSegment(project, response.projects)), replace: true })
       }
     })().catch(cause => { if (active) setError(cause instanceof Error ? cause.message : 'Unable to load projects') }).finally(() => { if (active) setHistoryLoading(false) })
     return () => { active = false }
@@ -62,7 +65,7 @@ export function ProjectEntryPage() {
     {error && <p role="alert">{error}</p>}
     {!projects && !error && <p role="status">Loading projects…</p>}
     {route.params?.sessionId && <p>This history link has no verified project conversation owner. Choose a project or open the original history; nothing will be moved.</p>}
-    <ul>{projects?.map(project => <li key={project.id}><Link {...projectConversationLink(project.id)}>{project.name}</Link></li>)}</ul>
+    <ul>{projects?.map(project => <li key={project.id}><Link {...projectConversationLink(projectRouteSegment(project, projects))}>{project.name}</Link></li>)}</ul>
     {route.params?.sessionId && route.params.workspaceSlug && <Link to="/history/$workspaceSlug/$sessionId" params={{ workspaceSlug: route.params.workspaceSlug, sessionId: route.params.sessionId }}>Open original session history</Link>}
     {route.params?.workspaceSlug && !route.params.sessionId && <section aria-label="Existing session history">
       <h2>Recent session history</h2>

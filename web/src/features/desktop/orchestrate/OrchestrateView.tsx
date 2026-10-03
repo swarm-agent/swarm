@@ -17,7 +17,9 @@ import { TaskSessionErrors } from './task-session-error'
 import { admittedConversationId } from './project-entry-policy'
 import { createProjectConversation, projectConversationLink, projectConversationMessageMetadata, requireProjectConversation } from './project-conversations'
 import { useProjectConversations } from '../runtime/project-conversations'
+import { ProjectNavigation } from './project-navigation'
 import { ProjectConversationSidebar } from './project-conversation-sidebar'
+import { projectRouteSegment, resolveProjectRoute } from './project-route'
 import { resolveDesktopChatRouteFromSession } from '../chat/services/chat-routing'
 import { integrationFailure, repairUnavailable, redactIntegrationDiagnostic, orchestratorDrafts, type IntegrationFailure } from './integration-recovery'
 import { useVideoTaskDefault } from './use-video-task-default'
@@ -47,7 +49,6 @@ import {
   FolderGit2,
   GitBranch,
   GitPullRequest,
-  Home,
   Image as ImageIcon,
   Layers,
   ListChecks,
@@ -62,7 +63,6 @@ import {
   RefreshCw,
   RotateCcw,
   Search,
-  Settings,
   Settings2,
   Sparkles,
   Tag,
@@ -2922,6 +2922,7 @@ function OrchestratorChatSidebar({
   onWorkerCreationSent,
   sessionId,
   project,
+  projectSegment,
   activeTask,
   selectedTask,
   selectedTaskId,
@@ -2945,6 +2946,7 @@ function OrchestratorChatSidebar({
   currentSelectedWorker?: () => SelectedWorker | null
   onDeselectWorker?: (consumed: SelectedWorker | null) => void
   project?: ProjectSummary
+  projectSegment?: string
   activeTask?: RunningTask
   selectedTask?: RunningTask | null
   selectedTaskId?: string
@@ -2958,7 +2960,7 @@ function OrchestratorChatSidebar({
   const [error, setError] = useState(false)
   const [attempt, setAttempt] = useState(0)
   const navigate = useNavigate()
-  const projectPageLink = (page: SwarmPage) => project?.id ? { ...projectConversationLink(project.id, project.primarySessionId), search: { section: page } } : swarmPageLink(workspaceSlug, page)
+  const projectPageLink = (page: SwarmPage) => project?.id ? { ...projectConversationLink(projectSegment || project.id, project.primarySessionId), search: { section: page } } : swarmPageLink(workspaceSlug, page)
   const [clearingContext, setClearingContext] = useState(false)
   const [clearSuccess, setClearSuccess] = useState(false)
 
@@ -3214,12 +3216,21 @@ export function OrchestrateView({
   const projectRouteParams = useRouterState({ select: state => state.matches[state.matches.length - 1]?.params as { projectId?: string; sessionId?: string } }) ?? {}
   const routeConversationId = projectRouteParams.sessionId || ''
   const [conversationAdmission, setConversationAdmission] = useState<{ projectId: string; sessionId: string } | null>(null)
-  const admittedParentId = admittedConversationId(conversationAdmission, projectRouteParams.projectId || '', routeConversationId)
   const createProjectIntent = useRouterState({ select: state => (state.location.search as { createProject?: boolean }).createProject === true })
   // Projects State
   const [projects, setProjects] = useState<ProjectSummary[]>([])
-  const selectedProjectId = projectRouteParams.projectId || ''
-  const setSelectedProjectId = (projectId: string) => { void navigate(projectId ? projectConversationLink(projectId) : { to: '/projects' }) }
+  const [projectsLoaded, setProjectsLoaded] = useState(false)
+  const routeProjectSegment = projectRouteParams.projectId || ''
+  const resolvedProject = resolveProjectRoute(routeProjectSegment, projects)
+  const selectedProjectId = resolvedProject?.id || ''
+  const selectedProjectSegment = resolvedProject ? projectRouteSegment(resolvedProject, projects) : ''
+  const projectRouteError = projectsLoaded && routeProjectSegment && !resolvedProject ? 'Project not found or name is ambiguous. Choose a project.' : ''
+  const admittedParentId = admittedConversationId(conversationAdmission, selectedProjectId, routeConversationId)
+  const projectLink = (projectId: string, sessionId?: string) => {
+    const project = projects.find(item => item.id === projectId)
+    return projectConversationLink(project ? projectRouteSegment(project, projects) : projectId, sessionId)
+  }
+  const setSelectedProjectId = (projectId: string) => { void navigate(projectId ? projectLink(projectId) : { to: '/projects' }) }
   const conversations = useProjectConversations(selectedProjectId)
   const [conversationError, setConversationError] = useState('')
   const [creatingConversation, setCreatingConversation] = useState(false)
@@ -3448,6 +3459,14 @@ export function OrchestrateView({
     select: (state) => state.matches[state.matches.length - 1]?.params as { workspaceSlug?: string; swarmSection?: string; workerId?: string } | undefined,
   }) ?? {}
   const navigate = useNavigate()
+  const projectLocation = useRouterState({ select: state => state.location })
+  useEffect(() => {
+    if (!selectedProjectSegment || selectedProjectSegment === routeProjectSegment) return
+    const parts = projectLocation.pathname.split('/')
+    if (parts[1] !== 'projects') return
+    parts[2] = encodeURIComponent(selectedProjectSegment)
+    void navigate({ to: parts.join('/'), search: true, hash: true, replace: true })
+  }, [selectedProjectSegment, routeProjectSegment, projectLocation.pathname, navigate])
   const routeWorkerId = useRouterState({ select: state => {
     const search = state.location.search as { workerId?: unknown }
     return typeof search?.workerId === 'string' && (search.workerId.startsWith('worker_') || search.workerId.startsWith('worker-')) ? search.workerId : undefined
@@ -3472,7 +3491,7 @@ export function OrchestrateView({
   const inspectedWorkerId = routeParams.workerId || workerDetailId || routeWorkerId
   const routeSection = useRouterState({ select: state => (state.location.search as { section?: string }).section })
   const activeNavTab: SwarmPage = swarmActivePage(routeSection || routeParams.swarmSection || (!selectedProjectId ? 'projects' : undefined), inspectedWorkerId)
-  const projectPageLink = (page: SwarmPage) => selectedProjectId ? { ...projectConversationLink(selectedProjectId, routeConversationId || undefined), search: { section: page } } : swarmPageLink(workspaceSlug, page)
+  const projectPageLink = (page: SwarmPage) => selectedProjectId ? { ...projectLink(selectedProjectId, routeConversationId || undefined), search: { section: page } } : swarmPageLink(workspaceSlug, page)
   const showFullMediaCenter = activeNavTab === 'media'
   const setActiveNavTab = (page: SwarmPage) => { void navigate(projectPageLink(page)) }
   const setShowFullMediaCenter = (open: boolean) => {
@@ -3918,6 +3937,8 @@ export function OrchestrateView({
         }
       } catch (err) {
         if (!cancelled) setConversationError(err instanceof Error ? err.message : 'Unable to load projects')
+      } finally {
+        if (!cancelled) setProjectsLoaded(true)
       }
 
       // 5. Image, Video & Audio Models Catalog and UI Defaults
@@ -4124,7 +4145,7 @@ export function OrchestrateView({
       conversationRequest.current = ''
       if (selectedProjectRef.current === projectId) {
         responsiveLayout.setPanel('chat'); responsiveLayout.setNavigationOpen(false)
-        void navigate(projectConversationLink(projectId, sid))
+        void navigate(projectLink(projectId, sid))
       }
       return sid
     } catch (cause) {
@@ -4211,9 +4232,9 @@ export function OrchestrateView({
   const handleOrchestratorSessionReset = useCallback((newSessionId: string) => {
     setActiveSessionId(newSessionId)
     setSelectedTaskId('')
-    if (selectedProject) void navigate(projectConversationLink(selectedProject.id, newSessionId))
+    if (selectedProjectSegment) void navigate(projectConversationLink(selectedProjectSegment, newSessionId))
     void selectAndHydrateDesktopV3Session(newSessionId)
-  }, [selectedProject?.id])
+  }, [selectedProjectSegment, navigate])
 
   // Media handling: file uploads, pasted docs, tagging, and studio library integration
   const [shelfFailedFiles, setShelfFailedFiles] = useState<File[]>([])
@@ -5657,7 +5678,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
     }
 
     setProjects((prev) => [newProject, ...prev])
-    void navigate(projectConversationLink(newProject.id, orchSessionId || undefined))
+    void navigate(projectConversationLink(projectRouteSegment(newProject, [newProject, ...projects]), orchSessionId || undefined))
     if (orchSessionId) {
       setActiveSessionId(orchSessionId)
       setActiveTaskId(null)
@@ -5700,100 +5721,22 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
             {accountScopeId && <OrchestratorNotifications accountScopeId={accountScopeId} workspaceSlug={workspaceSlug} />}
           </div>
         </header>
+        <ProjectNavigation activePage={activeNavTab} projectSegment={selectedProjectSegment} sessionId={routeConversationId || undefined}
+          workspaceSlug={workspaceSlug} projectCount={projects.length} deliverableCount={liveTasks.flatMap(task => task.deliverables || []).length}
+          mediaCount={allMediaLibraryItems.length} workerCount={accountScopeId ? <DurableWorkerCount accountScopeId={accountScopeId} /> : '…'} pendingReviews={pendingReviews.length}
+          onSelect={() => { setIsOnboardingActive(projects.length === 0); responsiveLayout.setPanel('main'); responsiveLayout.setNavigationOpen(false) }} />
         <ProjectTaskAttention tasks={liveTasks} onOpen={task => {
           setSelectedTaskId(task.id); setExpandedTaskId(task.id); setStatusFilter('all'); setActiveNavTab('home')
           responsiveLayout.setPanel('main'); responsiveLayout.setNavigationOpen(false)
           if (task.sessionId) { setActiveTaskId(task.id); setActiveSessionId(task.sessionId); setWorkerChatOpen(true) }
         }} />
 
-        <ProjectConversationSidebar projectId={selectedProjectId} projectName={selectedProject?.name}
+        <ProjectConversationSidebar projectId={selectedProjectSegment} projectName={selectedProject?.name}
           selectedId={routeConversationId} sessions={conversations.sessions} loading={conversations.loading}
-          creating={creatingConversation} error={conversationError || conversations.error}
+          creating={creatingConversation} error={projectRouteError || conversationError || conversations.error}
           onCreate={() => void newConversation()}
           onRetry={() => { conversations.refresh(); if (routeConversationId && !admittedParentId) setAdmissionAttempt(value => value + 1) }}
           onSelect={() => { setActiveTaskId(null); setActiveSessionId(admittedParentId); responsiveLayout.setPanel('chat'); responsiveLayout.setNavigationOpen(false) }} />
-        {/* Navigation Menu Links */}
-        <nav aria-label="Swarm destinations" className="swarm-route-navigation p-3 border-b border-slate-800/80 space-y-1" onClick={() => { setIsOnboardingActive(projects.length === 0); responsiveLayout.setPanel('main'); responsiveLayout.setNavigationOpen(false) }}>
-          <Link
-            {...projectPageLink('home')}
-            aria-label="Tasks"
-            activeOptions={{ exact: true, includeSearch: false }}
-            aria-current={activeNavTab === 'home' ? 'page' : undefined}
-            className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium transition-all ${
-              activeNavTab === 'home'
-                ? 'bg-white/[0.08] text-white shadow-sm font-semibold'
-                : 'text-slate-400 hover:text-slate-200 hover:bg-white/[0.04]'
-            }`}
-          >
-            <Home size={15} />
-            <span>Tasks</span>
-          </Link>
-          <Link
-            {...projectPageLink('projects')}
-            aria-label="Projects"
-            aria-current={activeNavTab === 'projects' ? 'page' : activeNavTab === 'charter' ? 'location' : undefined}
-            className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium transition-all ${
-              (activeNavTab === 'projects' || activeNavTab === 'charter')
-                ? 'bg-white/[0.08] text-white shadow-sm font-semibold'
-                : 'text-slate-400 hover:text-slate-200 hover:bg-white/[0.04]'
-            }`}
-          >
-            <Folder size={15} />
-            <span>Projects ({projects.length})</span>
-          </Link>
-          <Link
-            {...projectPageLink('workers')}
-            aria-label="Workers"
-            activeOptions={{ exact: true, includeSearch: false }}
-            aria-current={activeNavTab === 'workers' ? 'page' : undefined}
-            className={`w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs font-medium transition-all ${
-              activeNavTab === 'workers'
-                ? 'bg-blue-600/15 text-blue-400 border border-blue-500/30 font-semibold'
-                : 'text-slate-400 hover:text-slate-200 hover:bg-white/[0.04]'
-            }`}
-          >
-            <div className="flex items-center gap-2.5">
-              <Bot size={15} />
-              <span>Workers</span>
-            </div>
-            <div className="flex items-center gap-1.5">
-              <span className="text-[10px] font-mono text-slate-500">{accountScopeId ? <DurableWorkerCount accountScopeId={accountScopeId} /> : '…'}</span>
-              {pendingReviews.length > 0 && <span className="text-[10px] text-amber-400">{pendingReviews.length} pending reviews</span>}
-            </div>
-          </Link>
-          <Link
-            {...projectPageLink('deliverables')}
-            aria-label="Deliverables"
-            aria-current={activeNavTab === 'deliverables' ? 'page' : undefined}
-            className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium transition-all ${
-              activeNavTab === 'deliverables'
-                ? 'bg-white/[0.08] text-white shadow-sm font-semibold'
-                : 'text-slate-400 hover:text-slate-200 hover:bg-white/[0.04]'
-            }`}
-          >
-            <Layers size={15} />
-            <span>Deliverables ({liveTasks.flatMap((t) => t.deliverables || []).length})</span>
-          </Link>
-          <Link
-            {...projectPageLink('media')}
-            aria-label="Media Studio and Library"
-            aria-current={activeNavTab === 'media' ? 'page' : undefined}
-            className={`w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs font-medium transition-all ${activeNavTab === 'media' ? 'bg-white/[0.08] text-white shadow-sm font-semibold' : 'text-slate-400 hover:text-slate-200 hover:bg-white/[0.04]'}`}
-          >
-            <div className="flex items-center gap-2.5">
-              <Film size={15} className="text-blue-400" />
-              <span>Media Studio & Library</span>
-            </div>
-            {allMediaLibraryItems.length > 0 && (
-              <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-blue-950/60 border border-blue-500/30 text-blue-300">
-                {allMediaLibraryItems.length}
-              </span>
-            )}
-          </Link>
-          {(['agents', 'settings'] as const).map((page) => <Link key={page} {...projectPageLink(page)} aria-label={page === 'agents' ? 'Agents' : 'Settings'} aria-current={activeNavTab === page ? 'page' : undefined} className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-xs font-medium text-slate-300 hover:bg-white/[0.08]">
-            {page === 'agents' ? <Bot size={15} /> : <Settings size={15} />}<span>{page === 'agents' ? 'Agents' : 'Settings'}</span>
-          </Link>)}
-        </nav>
 
         {/* Workers for the selected project only. Project management lives in the header. */}
         <div className="p-3 border-b border-slate-800/80 flex-1 overflow-y-auto">
@@ -6029,8 +5972,8 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
          ───────────────────────────────────────────────────────────── */}
       {!showFullMediaCenter && <main className="swarm-main-panel relative min-w-0 flex flex-1 flex-col overflow-hidden rounded-3xl border bg-[#0d121f]/95 border-slate-800/80 shadow-[inset_0_1px_1px_rgba(255,255,255,0.06),0_18px_40px_rgba(0,0,0,0.65)]">
         <nav aria-label="Tasks and Workers views" className="flex shrink-0 gap-2 border-b border-slate-800 p-3 text-xs">
-          <Link {...projectPageLink('home')} activeOptions={{ exact: true, includeSearch: false }} aria-current={activeNavTab === 'home' ? 'page' : undefined} className="rounded-lg border border-slate-700 px-3 py-2">Tasks</Link>
-          <Link {...projectPageLink('workers')} activeOptions={{ exact: true, includeSearch: false }} aria-current={activeNavTab === 'workers' ? 'page' : undefined} className="rounded-lg border border-slate-700 px-3 py-2">Workers</Link>
+          <Link {...projectPageLink('home')} activeOptions={{ exact: true, includeSearch: true }} aria-current={activeNavTab === 'home' ? 'page' : undefined} className="rounded-lg border border-slate-700 px-3 py-2">Tasks</Link>
+          <Link {...projectPageLink('workers')} activeOptions={{ exact: true, includeSearch: true }} aria-current={activeNavTab === 'workers' ? 'page' : undefined} className="rounded-lg border border-slate-700 px-3 py-2">Workers</Link>
         </nav>
         {isOnboardingActive && (activeNavTab === 'home' || activeNavTab === 'projects') ? (
           <div className="flex-1 flex flex-col min-h-0 overflow-y-auto p-6 space-y-6">
@@ -7087,6 +7030,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
           repairSession={tasks.some(task => taskOutcome(task).repairSessionId === activeSessionId)}
           sessionId={activeSessionId}
           project={selectedProject}
+          projectSegment={selectedProjectSegment}
           activeTask={activeTask}
           selectedTask={null}
           attachedTasks={tasks.filter(task => attachedTaskIds.includes(task.id))}
@@ -7111,7 +7055,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
           <p className="text-slate-400 text-xs max-w-xs leading-relaxed">
             {conversationError ? 'Unable to open this conversation. Retry sessions in the sidebar.' : routeConversationId && selectedProject ? 'Opening conversation…' : workerChatOpen ? 'Opening Worker Orchestrator… If the connection fails, retry Add worker or Ask Orchestrator.' : selectedProject ? 'Choose a conversation or start a new session.' : 'Create your first project. Workspaces can be added later.'}
           </p>
-          {selectedProject && !routeConversationId && <ul aria-label="Project conversations">{conversations.sessions.map(session => <li key={session.id}><Link {...projectConversationLink(selectedProject.id, session.id)}>{session.title || 'New conversation'}</Link></li>)}</ul>}
+          {selectedProject && !routeConversationId && <ul aria-label="Project conversations">{conversations.sessions.map(session => <li key={session.id}><Link {...projectLink(selectedProject.id, session.id)}>{session.title || 'New conversation'}</Link></li>)}</ul>}
           {selectedProject ? <button type="button" disabled={creatingConversation} onClick={() => { void newConversation() }}>New session</button> : <button type="button" onClick={() => { setIsOnboardingActive(true); setActiveNavTab('projects') }}>Create a project</button>}
         </aside>
       )}

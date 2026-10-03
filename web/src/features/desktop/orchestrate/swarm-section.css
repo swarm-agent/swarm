@@ -392,3 +392,34 @@
 .swarm-composer-context { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--app-text-muted); }
 .swarm-composer-context [role="alert"] { flex-basis: 100%; color: var(--app-text); }
 .swarm-composer-context button { font-size: 11px; }
+
+/* Compact project navigation leaves the session list room to grow. */
+.swarm-compact-navigation { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 2px; padding: 6px 8px; border-bottom: 1px solid var(--swarm-border); }
+.swarm-compact-navigation a { display: flex; align-items: center; gap: 6px; min-width: 0; min-height: 32px; padding: 5px 6px; border-radius: 7px; color: var(--swarm-text-muted); font-size: 12px; }
+.swarm-compact-navigation a > svg { flex-shrink: 0; }
+.swarm-destination-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.swarm-destination-count { margin-left: auto; font-size: 10px; flex-shrink: 0; }
+.swarm-review-dot { width: 5px; height: 5px; flex-shrink: 0; border-radius: 50%; background: #fbbf24; }
+.swarm-compact-navigation a:hover, .swarm-session-row:hover { background: var(--swarm-surface-hover); }
+.swarm-compact-navigation a[aria-current="page"], .swarm-session-row[aria-current="page"] { color: var(--swarm-text); background: var(--swarm-surface-hover); box-shadow: inset 3px 0 0 var(--swarm-accent); }
+.swarm-compact-navigation a:focus-visible, .swarm-project-sessions :is(a, button):focus-visible { outline: 2px solid var(--swarm-accent); outline-offset: -2px; }
+.swarm-project-sessions { display: flex; flex: 1 0 160px; min-width: 0; flex-direction: column; gap: 4px; padding: 6px 8px; border-bottom: 1px solid var(--swarm-border); }
+.swarm-session-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-shrink: 0; }
+.swarm-session-heading h2 { font-size: 12px; font-weight: 600; color: var(--swarm-text-muted); }
+.swarm-navigation-sidebar .swarm-new-session { display: flex; align-items: center; justify-content: center; width: 30px; min-height: 30px; padding: 0; border-radius: 7px; color: var(--swarm-text); }
+.swarm-new-session:disabled { opacity: .5; }
+.swarm-session-list { min-height: 0; max-height: 45vh; overflow-y: auto; overflow-x: hidden; }
+.swarm-session-row { display: flex; align-items: center; min-width: 0; min-height: 30px; padding: 5px 8px; border-radius: 6px; color: var(--swarm-text); font-size: 12px; line-height: 20px; }
+.swarm-session-row span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.swarm-session-error { font-size: 12px; overflow-wrap: anywhere; color: var(--swarm-text); }
+.swarm-session-error button { text-decoration: underline; }
+.swarm-responsive-shell[data-layout="rail"]:not([data-navigation-open="true"]) .swarm-project-sessions { display: none; }
+.swarm-responsive-shell[data-layout="rail"]:not([data-navigation-open="true"]) .swarm-compact-navigation { grid-template-columns: minmax(0, 1fr); }
+@media (pointer: coarse) {
+  .swarm-compact-navigation a, .swarm-session-row, .swarm-navigation-sidebar .swarm-new-session { min-height: 44px; }
+  .swarm-navigation-sidebar .swarm-new-session { width: 44px; }
+}
+/* Short viewports scroll the sidebar instead of compressing shelves/footer into
+   overlapping content. Session rows retain their own bounded scroll region. */
+.swarm-navigation-sidebar > :is(header, div, footer) { flex-shrink: 0; }
+.swarm-navigation-sidebar > .overflow-y-auto { flex: 0 0 auto; max-height: 180px; }
