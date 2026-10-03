@@ -776,6 +776,15 @@ func (s *SessionStore) tombstoneSessions(sessionIDs []string, kind string) error
 		if loaded, ok, err := s.GetSession(sessionID); err != nil {
 			return err
 		} else if ok {
+			if kind == "archived" && loaded.Metadata["agent_name"] == "system-orchestrator" && loaded.Metadata["project_id"] != nil {
+				// Recheck under the same session lock as run creation: a stale UI
+				// cannot archive work that started after its last live update.
+				if _, active, err := s.GetV3SessionActiveRunIntent(sessionID); err != nil {
+					return err
+				} else if active {
+					return errors.New("project session has active work; stop it explicitly or wait before archiving")
+				}
+			}
 			existingByID[sessionID] = loaded
 		} else if tombstone, tombstoneOK, tombstoneErr := s.GetV3SessionTombstone(sessionID); tombstoneErr != nil {
 			return tombstoneErr

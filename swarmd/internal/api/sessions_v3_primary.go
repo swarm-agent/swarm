@@ -1071,6 +1071,15 @@ func (s *Server) handleSessionsV3PrimaryList(w http.ResponseWriter, r *http.Requ
 			return
 		}
 	}
+	if projectID != "" && r.URL.Query().Get("archived_mode") == "only" {
+		archived, err := s.sessions.Store().ListArchivedProjectConversations(principal.AccountScopeID, principal.UserID, projectID, limit)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "tombstones": archived})
+		return
+	}
 	var sessions []pebblestore.SessionSnapshot
 	var err error
 	if projectID != "" {
@@ -1400,6 +1409,9 @@ func (s *Server) handleSessionsV3PrimaryArchiveBatch(w http.ResponseWriter, r *h
 	}
 	if s.v3SessionExecutor != nil && s.sessions != nil && s.sessions.Store() != nil {
 		for _, session := range sessions {
+			if session.Metadata["agent_name"] == "system-orchestrator" && session.Metadata["project_id"] != nil {
+				continue
+			}
 			if childIDs, err := s.sessions.Store().ListAutomationV2ChildSessionIDs(session.AccountScopeID, session.ID); err == nil {
 				for _, cid := range childIDs {
 					s.v3SessionExecutor.CancelRunsForSession(cid, "parent session archived")
@@ -1452,7 +1464,7 @@ func (s *Server) handleSessionV3PrimaryTombstone(w http.ResponseWriter, r *http.
 			}
 		}
 	}
-	if s.v3SessionExecutor != nil && s.sessions != nil && s.sessions.Store() != nil {
+	if s.v3SessionExecutor != nil && s.sessions != nil && s.sessions.Store() != nil && !(kind == "archived" && session.Metadata["agent_name"] == "system-orchestrator" && session.Metadata["project_id"] != nil) {
 		if childIDs, err := s.sessions.Store().ListAutomationV2ChildSessionIDs(session.AccountScopeID, session.ID); err == nil {
 			for _, cid := range childIDs {
 				s.v3SessionExecutor.CancelRunsForSession(cid, "parent session "+kind)
