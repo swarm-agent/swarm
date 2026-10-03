@@ -600,7 +600,13 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 	if err := s.revalidateProjectTaskSource(p, proj, &task); err != nil {
 		return nil, err
 	}
-	// Persist task reservation FIRST
+	if structDoc == nil && task.TaskProgram != nil && len(task.AttachedMedia) > 0 {
+		return nil, errors.New("task attachments require a session seed; submit an executable plan instead of a bare task program")
+	}
+	if err := s.preflightProjectTaskAttachments(ctx, p, &task); err != nil {
+		return nil, err
+	}
+	// Persist task reservation only after attachment admission.
 	claimed, err := db.ReserveProjectTaskIfAbsent(p.AccountScopeID, &task)
 	if err != nil {
 		return nil, err

@@ -64,6 +64,15 @@ func (s *Server) reconcileProjectTaskSession(p identity.Principal, proj *pebbles
 			if msg.Metadata["task_id"] != task.ID || msg.Metadata["project_id"] != task.ProjectID {
 				return errors.New("task seed belongs to another reservation")
 			}
+			if len(msg.Media) != len(task.AttachedMedia) {
+				return errors.New("task seed attachment delivery is incomplete; refusing to launch without attachments")
+			}
+			for i, attachment := range task.AttachedMedia {
+				ref := msg.Media[i]
+				if attachment.DigestSHA256 != "" && ref.DigestSHA256 != attachment.DigestSHA256 || attachment.SizeBytes != 0 && ref.Size != attachment.SizeBytes || attachment.MediaType != "" && ref.MIMEType != attachment.MediaType {
+					return errors.New("task seed attachment does not match the admitted reference")
+				}
+			}
 			seedFound = true
 		}
 	}
@@ -71,13 +80,21 @@ func (s *Server) reconcileProjectTaskSession(p identity.Principal, proj *pebbles
 		if len(messages) != 0 {
 			return errors.New("task session has messages without an owned seed; manual reconciliation required")
 		}
+		attachmentPlan, payloads, err := s.prepareProjectTaskAttachments(context.Background(), p, owned, task.AttachedMedia)
+		if err != nil {
+			return err
+		}
+		refs, err := s.retainProjectTaskAttachments(attachmentPlan, payloads)
+		if err != nil {
+			return err
+		}
 		var router taskrouter.Service
 		seed := router.BuildAgentSeedPrompt(task, proj) + projectTaskFollowupContext(task)
 		if owned.Mode == sessionruntime.ModePlan {
 			seed += "\n\n## Planning phase\nInvestigate only as needed, then submit a complete executable structured plan using exit_plan_mode. Include ordered checkpoints, concrete tasks and acceptance criteria. This project task must show the submitted plan for user approval before any implementation. Do not write implementation files or execute the task in this phase. For coding deliverables, include a checkpoint task_program with a Coder job, explicit workspace-relative owned_scope, implementation instructions, deliverable, acceptance_criteria and dependency_evidence. The approved checkpoint must launch that program rather than implementing directly in the planner workspace. Preserve every user requirement, including committing changes. Complete the checkpoint through the plan lifecycle only after verifying the returned deliverable; completing subtasks alone is not checkpoint completion."
 		}
 		now := time.Now().UnixMilli()
-		msg := pebblestore.MessageSnapshot{ID: fmt.Sprintf("msg_%s_recovery", owned.ID), SessionID: owned.ID, UserID: p.UserID, AccountScopeID: p.AccountScopeID, Role: "user", Content: seed, Metadata: map[string]any{"role": "project_context_seed", "task_id": task.ID, "project_id": task.ProjectID, "context_pool_summary": task.ContextPoolSummary}, CreatedAt: now}
+		msg := pebblestore.MessageSnapshot{ID: fmt.Sprintf("msg_%s_recovery", owned.ID), SessionID: owned.ID, UserID: p.UserID, AccountScopeID: p.AccountScopeID, Role: "user", Content: seed, Media: refs, Metadata: map[string]any{"role": "project_context_seed", "task_id": task.ID, "project_id": task.ProjectID, "context_pool_summary": task.ContextPoolSummary}, CreatedAt: now}
 		key := fmt.Sprintf("project-task:seed:%s:%s:%s", task.ProjectID, task.ID, task.SessionID)
 		_, err = s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{SessionID: owned.ID, UserID: p.UserID, AccountScopeID: p.AccountScopeID, ClientRequestID: key, IdempotencyKey: key, PayloadHash: key, RequestHash: key, Kind: pebblestore.V3SessionMutationAppendMessage, Message: &msg, NowUnixMs: now})
 		if err != nil {
