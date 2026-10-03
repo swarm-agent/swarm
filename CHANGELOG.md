@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Expand `NODE_AUTH_TOKEN` correctly in `.npmrc` configuration during GitHub Actions npm release step. Docs impact: none.
+
 - Scope standalone SDK and CLI npm release packages under `@swarm-agent` (`@swarm-agent/sdk`, `@swarm-agent/cli`) and publish directly to public npm registry using `NPM_TOKEN` in `.github/workflows/build-main.yml`. Docs impact: none.
 
 - Prepend `./` to local tarball package paths for npm publish in GitHub Actions release workflow so npm treats paths as local files rather than git shorthand URLs. Docs impact: none.

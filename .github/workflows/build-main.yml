@@ -167,7 +167,7 @@ jobs:
           : "${NODE_AUTH_TOKEN:?protected stable-release npm token required}"
           export NPM_CONFIG_USERCONFIG="$(mktemp "${TMPDIR}/swarm-npm.XXXXXX")"
           trap 'rm -f -- "${NPM_CONFIG_USERCONFIG}"' EXIT
-          printf '%s\n' '//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}' > "${NPM_CONFIG_USERCONFIG}"
+          printf '//registry.npmjs.org/:_authToken=%s\n' "${NODE_AUTH_TOKEN}" > "${NPM_CONFIG_USERCONFIG}"
           python3 -B scripts/verify-npm-release-packs.py release-evidence "${VERSION}" > "${RUNNER_TEMP}/npm-files.txt"
           mapfile -t packs < "${RUNNER_TEMP}/npm-files.txt"
           for pack in "${packs[@]}"; do
