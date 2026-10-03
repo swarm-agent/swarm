@@ -26,5 +26,5 @@ func (r *Runtime) rejectTaskSessionContinuation(scope WorkspaceScope, session pe
 	if !found || task == nil || (task.AccountID != "" && task.AccountID != scope.Principal.AccountScopeID) {
 		return errors.New("owned task not found; task session cannot be started")
 	}
-	return fmt.Errorf("task-linked session cannot be started via send_message: use manage_projects reopen_task with project_id=%s task_id=%s expected_revision=%d feedback and a stable client_request_id; current_session_id=%s active_attempt_id=%s task_status=%s archived=%t (retained work is unchanged)", projectID, taskID, task.Revision, task.SessionID, task.ActiveAttemptID, task.Status, task.Archived)
+	return fmt.Errorf("task-linked session cannot be started via send_message: for non-triggering feedback use send_message trigger:false and client_request_id (saved/queued is not delivered or incorporated); to start a new attempt use manage_projects reopen_task with project_id=%s task_id=%s expected_revision=%d feedback and a stable client_request_id; current_session_id=%s active_attempt_id=%s task_status=%s archived=%t (retained work is unchanged)", projectID, taskID, task.Revision, task.SessionID, task.ActiveAttemptID, task.Status, task.Archived)
 }
