@@ -206,3 +206,64 @@ test('acceptance hides pending review across stale refresh, completion hydration
     assert.deepEqual(errors, [])
   } finally { await browser.close() }
 })
+
+// Requirement: direct Coder proposals expose authored changes while collapsed,
+// not mapBackendTask's synthetic pipeline or verification text. MinimalTaskCard
+// owns visibility; mapper/reducer receipts own acceptance. Browser interactions
+// prove disclosure and lifecycle updates without claiming live backend execution.
+test('direct coding proposals show changes until accepted and retain details', { timeout: 60000 }, async () => {
+  const bundle = await build({ stdin: { resolveDir: process.cwd(), loader: 'tsx', contents: `
+    import React from 'react'; import {createRoot} from 'react-dom/client';
+    import {QueryClient,QueryClientProvider} from '@tanstack/react-query';
+    import {MinimalTaskCard} from './src/features/desktop/orchestrate/OrchestrateView';
+    import {mapBackendTask} from './src/features/desktop/state/desktop-projects-state';
+    const client=new QueryClient({defaultOptions:{queries:{retry:false}}});
+    const root=createRoot(document.getElementById('root'));
+    const original={id:'direct',title:'Improve search',agent:'coder',tier:'direct',outcome_type:'code_pr',
+      description:'- [ ] Search every project file.\\n- Show matching filenames.',
+      plan_summary:'Code PR & Verified Tests ready',full_plan_markdown:'## Technical details\\nKeep the existing index format.',
+      pipeline_stages:['Code Implementation','Verification & Pull Request']};
+    window.calls=[];
+    window.renderTask=(status='pending_approval',description=original.description)=>root.render(
+      <QueryClientProvider client={client}><MinimalTaskCard task={mapBackendTask({...original,status,description})}
+        onApprove={()=>window.calls.push('approve')} onSelect={()=>window.calls.push('select')}/></QueryClientProvider>);
+    window.renderTask();
+  ` }, bundle: true, write: false, format: 'iife', platform: 'browser', jsx: 'automatic', logLevel: 'silent' })
+  const browser = await chromium.launch({ headless: true, channel: process.env.SWARM_TEST_BROWSER_CHANNEL || 'chrome' })
+  try {
+    const page = await browser.newPage()
+    const errors: string[] = []
+    page.on('pageerror', error => errors.push(error.message))
+    await page.route('**/*', route => route.fulfill({ contentType: new URL(route.request().url()).pathname === '/' ? 'text/html' : 'application/json', body: new URL(route.request().url()).pathname === '/' ? '<div id="root"></div>' : '{}' }))
+    await page.goto('https://direct-card.test/')
+    await page.addScriptTag({ content: bundle.outputFiles[0].text })
+    const checklist = page.getByRole('region', { name: 'Task checklist', exact: true })
+    const details = page.getByTestId('toggle-task-details-btn')
+    const card = page.getByTestId('orchestrate-task-card')
+    await checklist.waitFor()
+    assert.deepEqual(await checklist.locator('li').allTextContents(), ['□Search every project file.', '□Show matching filenames.'])
+    assert.equal(await checklist.getByRole('checkbox').count(), 0)
+    assert.equal(await details.getAttribute('aria-expanded'), 'false')
+    assert.doesNotMatch(await card.innerText(), /Code Implementation|Verification & Pull Request|Code PR & Verified Tests/)
+    await checklist.getByText('Show matching filenames.', { exact: true }).click()
+    await page.getByRole('region', { name: 'Full proposed task', exact: true }).getByText(/Keep the existing index format\./).waitFor()
+    assert.deepEqual(await page.evaluate(() => (window as any).calls), ['select'])
+    await details.click()
+    await page.getByTestId('approve-task-btn').click()
+    assert.equal(await checklist.isVisible(), true, 'click alone is not acceptance')
+    for (const status of ['queued', 'running', 'completed']) {
+      await page.evaluate(status => (window as any).renderTask(status), status)
+      await checklist.waitFor({ state: 'detached' })
+      await page.waitForFunction(status => document.querySelector('[data-testid="orchestrate-task-card"]')?.getAttribute('data-task-state') === status, status)
+      assert.equal(await page.getByTestId('approve-task-btn').count(), 0)
+      await details.click()
+      await page.getByRole('region', { name: 'Full proposed task', exact: true }).getByText(/Keep the existing index format\./).waitFor()
+      await details.click()
+    }
+    await page.evaluate(() => (window as any).renderTask('pending_approval', ''))
+    await checklist.waitFor()
+    assert.equal(await checklist.locator('li').count(), 0, 'missing scope must not invent changes from stages or verification')
+    assert.match(await checklist.innerText(), /No proposed changes/)
+    assert.deepEqual(errors, [])
+  } finally { await browser.close() }
+})

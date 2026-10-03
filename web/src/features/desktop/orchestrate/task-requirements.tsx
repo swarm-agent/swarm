@@ -52,6 +52,22 @@ export function TaskPlanChecklist({ document }: { document: ReviewDocument | nul
   </section>
 }
 
+/** Direct proposals have no bound plan yet: show authored scope, never generated
+ * pipeline stages, delivery gates, or the execution session's mutable todos. */
+export function TaskProposalChecklist({ description }: { description?: string }) {
+  const entries = (description ?? '').split(/\r?\n/)
+    .map(line => line.trim().replace(/^(?:[-*+]\s+(?:\[[ xX]\]\s*)?|\d+[.)]\s+)/, ''))
+    .filter(nonblank)
+  return <section aria-label="Task checklist" className="p-3 text-sm font-sans space-y-2 min-w-0 [overflow-wrap:anywhere]">
+    <h4 className="font-semibold">What will change</h4>
+    {entries.length > 0 ? <ul className="space-y-2">
+      {entries.map((text, index) => <li key={index} className="flex items-start gap-2">
+        <span aria-hidden="true" className="shrink-0">□</span><span className="min-w-0 whitespace-pre-wrap">{text}</span>
+      </li>)}
+    </ul> : <p>No proposed changes are available yet. Open details or request a clearer proposal before approval.</p>}
+  </section>
+}
+
 /** The checklist and actual structured plan share the exact persisted document. */
 export function TaskRequirements({ document }: { document: ReviewDocument | null }) {
   if (!isTaskPlanReviewable(document)) return <p role="alert" className="p-3 text-sm">Plan review unavailable or invalid. A complete plan and bound What will change checklist are required before approval. Reload or request a corrected plan.</p>
