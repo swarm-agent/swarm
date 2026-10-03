@@ -27,7 +27,7 @@ sign-in are separate. Use the hub's BFF as a redaction/correlation example.
 With a saved workspace and configured account model:
 
 ```ts
-import { SwarmClient } from '@swarm/sdk';
+import { SwarmClient } from '@swarm-agent/sdk';
 const client = new SwarmClient();
 const agent = await client.apps.put('editor', {
   name: 'Editor', instructions: 'Prepare drafts; do not publish.',

@@ -1,6 +1,6 @@
 # Workshop: a real SDK-powered headless app
 
-Custom browser UI → allowlisted Node BFF → `@swarm/sdk` → private swarmd Unix
+Custom browser UI → allowlisted Node BFF → `@swarm-agent/sdk` → private swarmd Unix
 socket. Both processes run as UID 10001 in one container. This is not Desktop,
 a mock assistant, a generic daemon proxy, or a worker-deployment surface.
 

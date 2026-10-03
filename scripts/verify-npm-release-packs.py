@@ -12,11 +12,11 @@ def verify(directory, version):
     if not re.fullmatch(r'v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)', version):
         raise ValueError('stable package version required')
     rows = json.loads((directory / 'npm-packages.json').read_bytes())
-    if not isinstance(rows, list) or len(rows) != 2 or {r['name'] for r in rows} != {'@swarm/sdk', '@swarm/cli'}:
+    if not isinstance(rows, list) or len(rows) != 2 or {r['name'] for r in rows} != {'@swarm-agent/sdk', '@swarm-agent/cli'}:
         raise ValueError('exact SDK/CLI packs required')
     files = []
     for row in rows:
-        expected = 'swarm-' + row['name'].split('/')[1] + '-' + version[1:] + '.tgz'
+        expected = row['name'].lstrip('@').replace('/', '-') + '-' + version[1:] + '.tgz'
         if set(row) != {'name', 'version', 'file', 'sha256'} or row['file'] != expected or row['version'] != version[1:]:
             raise ValueError('package identity mismatch')
         path = directory / expected

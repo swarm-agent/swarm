@@ -9,7 +9,7 @@ Node 22+ is required. `ws` supplies Unix-socket WebSocket upgrades; HTTP and Web
 ## Discover, authenticate, configure
 
 <copy>
-import { SwarmClient } from '@swarm/sdk';
+import { SwarmClient } from '@swarm-agent/sdk';
 const swarm = new SwarmClient({ socketPath: process.env.SWARM_SOCKET_PATH });
 const onboarding = await swarm.onboarding.get();
 const providers = await swarm.settings.providers(); // readiness and supported auth_methods
