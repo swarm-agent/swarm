@@ -435,12 +435,20 @@ test('Desktop V3 immediate send waits for retained realtime bootstrap and first 
   resetDesktopV3RealtimeControllerForTests()
 })
 
-test('Desktop V3 workspace and session route switching keeps exactly one retained socket', async () => {
+// Purpose: route switches must reuse the retained controller and await replay.complete,
+// without opening sockets or fetching transcripts. Explicit acknowledgements and
+// cleanup exercise the narrowest transport boundary; browser tests prove page hydration.
+test('Desktop V3 workspace and session route switching keeps exactly one retained socket', { timeout: 5000 }, async t => {
   resetDesktopV3RealtimeControllerForTests()
+  t.after(() => resetDesktopV3RealtimeControllerForTests())
   let state = readyControllerState()
   const sockets: FakeWebSocket[] = []
   const hydrateRequests: unknown[] = []
   setDesktopV3RealtimeControllerFactoryForTests(() => new DesktopV3RealtimeControllerRuntime({
+    clientEffectRunnerDeps: {
+      refreshAgents: async () => {}, refreshThemes: async () => {}, refreshProviders: async () => {},
+      refreshArtifacts: async () => {}, refreshWorkspaces: async () => {}, reportError: assert.fail,
+    },
     getSnapshot: () => state,
     dispatch: (action: DesktopV3CacheAction) => {
       state = desktopV3CacheReducer(state, action)
@@ -498,16 +506,22 @@ test('Desktop V3 workspace and session route switching keeps exactly one retaine
   assert.equal(sockets.length, 1)
 
   const controller = await requireDesktopV3RealtimeControllerReady()
-  await controller.ensureSessionConnected(sessionA.id)
-  assert.equal(sockets.length, 1)
-
-  await requireDesktopV3RealtimeControllerReady()
-  await controller.ensureSessionConnected(sessionB.id)
-  assert.equal(sockets.length, 1)
-  assert.deepEqual(
-    hydrateRequests.map((request) => (request as { session_ids: string[] }).session_ids),
-    [[sessionA.id], [sessionB.id]],
-  )
+  for (const sessionId of [sessionA.id, sessionB.id]) {
+    state.selectedSessionId = sessionId
+    const connection = controller.ensureSessionConnected(sessionId)
+    let acknowledged = false
+    void connection.then(() => { acknowledged = true }).catch(() => {})
+    await flushAsyncWork()
+    assert.equal(acknowledged, false, 'connection must wait for replay acknowledgement')
+    const subscription = sockets[0].sent.find(frame => (frame as RealtimeMessage).kind === 'subscribe.session' && (frame as RealtimeMessage).session_id === sessionId) as RealtimeMessage
+    assert.ok(subscription)
+    sockets[0].emit({ protocol: 'v3.realtime', protocol_version: 1, kind: 'replay.complete', session_id: sessionId, subscription_id: subscription.subscription_id, endpoint_cursor: 'cursor-bootstrap' })
+    await connection
+    assert.equal(sockets.length, 1)
+    assert.equal(await requireDesktopV3RealtimeControllerReady(), controller)
+  }
+  assert.equal(sockets[0].sent.filter(frame => (frame as RealtimeMessage).kind === 'resume').length, 1)
+  assert.deepEqual(hydrateRequests, [], 'transport does not own route transcript hydration')
 
   lease.release()
   await flushAsyncWork()
@@ -515,11 +529,19 @@ test('Desktop V3 workspace and session route switching keeps exactly one retaine
   resetDesktopV3RealtimeControllerForTests()
 })
 
-test('Desktop V3 direct route session missing from reconnect is explicitly subscribed and hydrated after resume', async () => {
+// Purpose: cold direct routes subscribe selected plus active bootstrap sessions,
+// not stale reconnect membership or eager transcripts. startUncached and the
+// initial resume builder own this boundary; the browser owns route hydration.
+test('Desktop V3 direct route session uses bootstrap subscriptions without reconnect hydration', { timeout: 5000 }, async t => {
   let state = readyControllerState()
+  state.currentRunIntentBySession[sessionA.id] = runIntentA
   const sockets: FakeWebSocket[] = []
   const hydrateRequests: unknown[] = []
   const controller = new DesktopV3RealtimeControllerRuntime({
+    clientEffectRunnerDeps: {
+      refreshAgents: async () => {}, refreshThemes: async () => {}, refreshProviders: async () => {},
+      refreshArtifacts: async () => {}, refreshWorkspaces: async () => {}, reportError: assert.fail,
+    },
     getSnapshot: () => state,
     dispatch: (action: DesktopV3CacheAction) => {
       state = desktopV3CacheReducer(state, action)
@@ -570,6 +592,7 @@ test('Desktop V3 direct route session missing from reconnect is explicitly subsc
     },
   })
 
+  t.after(() => controller.stop())
   const ready = controller.start(sessionB.id)
   await waitFor(() => sockets.length === 1)
   sockets[0].open()
@@ -577,19 +600,16 @@ test('Desktop V3 direct route session missing from reconnect is explicitly subsc
 
   const resume = sockets[0].sent[0] as SessionV3RealtimeResumeWire
   assert.deepEqual(
-    resume.subscriptions?.map((subscription) => subscription.session_id),
+    resume.subscriptions?.map((subscription) => subscription.session_id).sort(),
     [sessionA.id, sessionB.id],
     'startup resume must contain active sessionA plus selected sessionB only',
   )
   assert.equal(
     resume.subscriptions?.find((subscription) => subscription.session_id === sessionB.id)?.endpoint_cursor,
-    'cursor-reconnect',
+    state.realtime.endpointCursor,
   )
-  await waitFor(() => hydrateRequests.length === 1)
-  assert.deepEqual(
-    (hydrateRequests[0] as { session_ids: string[] }).session_ids,
-    [sessionB.id],
-  )
+  assert.equal(resume.endpoint_cursor, 'cursor-bootstrap')
+  assert.deepEqual(hydrateRequests, [], 'page owns direct-route hydration; startup only resumes transport')
   controller.stop()
 })
 
