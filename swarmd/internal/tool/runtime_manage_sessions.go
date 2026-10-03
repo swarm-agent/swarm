@@ -2,6 +2,7 @@ package tool
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -34,12 +35,15 @@ const (
 )
 
 func manageSessionsDefinition() Definition {
-	return Definition{Type: "function", Name: "manage-sessions", Description: "Durable V3 session manager (deploy, list, commit, archive, unarchive, search). Card results render automatically. To continue a task, use manage_projects get_task then reopen_task with its exact revision and a stable retry key; triggering send_message to any task-linked session is rejected before writes. Non-triggering notes do not reopen tasks.", Parameters: map[string]any{
+	return Definition{Type: "function", Name: "manage-sessions", Description: "Durable V3 session manager (deploy, list, commit, archive, unarchive, search). Card results render automatically. To continue a task, use manage_projects get_task then reopen_task with its exact revision and a stable retry key; triggering send_message to any task-linked session is rejected before writes. For running-task feedback use send_message with trigger:false and a stable client_request_id. Notes never reopen tasks or approve scope changes. saved/queued is not delivered or incorporated: read_messages for a feedback_delivery receipt matching message_id; delivered means a provider step returned successfully, not that scope was incorporated.", Parameters: map[string]any{
 		"type": "object", "required": []string{"action"}, "additionalProperties": true,
 		"properties": map[string]any{
 			"action":                    map[string]any{"type": "string", "description": "inspect|list|list_by_state|review_worktrees|search|get|read_messages|git_status|commit|archive|unarchive|deploy|create|stop|pause|send_message|compact"},
 			"commits":                   map[string]any{"type": "array", "minItems": 1, "maxItems": manageSessionsMaxBatch, "description": "Batch commit up to 10 sessions ({session_id, message}).", "items": map[string]any{"type": "object", "required": []string{"session_id", "message"}, "additionalProperties": false, "properties": map[string]any{"session_id": map[string]any{"type": "string"}, "message": map[string]any{"type": "string"}}}},
 			"proposals":                 map[string]any{"type": "array", "minItems": 1, "maxItems": manageSessionsMaxDeployBatch, "description": "Deploy proposals (first selected by default).", "items": map[string]any{"type": "object", "required": []string{"prompt"}, "additionalProperties": false, "properties": map[string]any{"title": map[string]any{"type": "string"}, "prompt": map[string]any{"type": "string"}, "mode": map[string]any{"type": "string", "enum": []string{"auto"}}, "agent": map[string]any{"type": "string"}, "workspace_path": map[string]any{"type": "string"}, "worktree_name": map[string]any{"type": "string"}}}},
+			"trigger":                   map[string]any{"type": "boolean", "description": "send_message: false saves feedback without starting execution; alias of trigger_run. Conflicting aliases are rejected."},
+			"trigger_run":               map[string]any{"type": "boolean"},
+			"client_request_id":         map[string]any{"type": "string", "description": "Stable retry key for non-triggering feedback."},
 			"prompt":                    map[string]any{"type": "string"},
 			"title":                     map[string]any{"type": "string"},
 			"session_id":                map[string]any{"type": "string"},
@@ -932,7 +936,11 @@ func (r *Runtime) manageSessionsRead(scope WorkspaceScope, args map[string]any) 
 			text = truncateUTF8Bytes(text, remain)
 		}
 		used += len(text)
-		out = append(out, map[string]any{"id": m.ID, "seq": m.GlobalSeq, "role": m.Role, "content": text, "created_at": m.CreatedAt})
+		item := map[string]any{"id": m.ID, "seq": m.GlobalSeq, "role": m.Role, "content": text, "created_at": m.CreatedAt}
+		if m.Metadata["source"] == "feedback_delivery" {
+			item["feedback_delivery"] = map[string]any{"message_id": m.Metadata["message_id"], "run_id": m.Metadata["run_id"], "delivery_status": m.Metadata["delivery_status"], "incorporation_status": m.Metadata["incorporation_status"]}
+		}
+		out = append(out, item)
 	}
 	return marshalManageSessions(map[string]any{"action": "read_messages", "session_id": id, "title": session.Title, "mode": mode, "messages": out, "characters": used, "content_trust": "untrusted", "next_before_seq": firstMessageSeq(msgs), "next_after_seq": lastMessageSeq(msgs)})
 }
@@ -2222,19 +2230,22 @@ func (r *Runtime) manageSessionsSendMessage(ctx context.Context, scope Workspace
 	if role == "" {
 		role = "user"
 	}
-	triggerRun := true
-	if v, ok := args["trigger_run"]; ok {
-		triggerRun = boolValue(v)
+	triggerRun, err := sessionMessageTrigger(args)
+	if err != nil {
+		return "", err
+	}
+	if !triggerRun && role != "user" {
+		return "", errors.New("non-triggering feedback requires role=user; rejected without mutation")
 	}
 	waitSeconds := boundedInt(args["wait_seconds"], 0, 120)
-	res, err := r.sendSessionMessageInternal(ctx, scope, sessionID, prompt, role, triggerRun, waitSeconds)
+	res, err := r.sendSessionMessageInternal(ctx, scope, sessionID, prompt, role, triggerRun, waitSeconds, strings.TrimSpace(stringValue(args["client_request_id"])))
 	if err != nil {
 		return "", err
 	}
 	return marshalManageSessions(res)
 }
 
-func (r *Runtime) sendSessionMessageInternal(ctx context.Context, scope WorkspaceScope, sessionID, prompt, role string, triggerRun bool, waitSeconds int) (map[string]any, error) {
+func (r *Runtime) sendSessionMessageInternal(ctx context.Context, scope WorkspaceScope, sessionID, prompt, role string, triggerRun bool, waitSeconds int, requestIDs ...string) (map[string]any, error) {
 	if triggerRun {
 		// Task continuations must reserve ownership through the task lifecycle before
 		// any message or run intent is written. Retained sessions are evidence only.
@@ -2250,7 +2261,14 @@ func (r *Runtime) sendSessionMessageInternal(ctx context.Context, scope Workspac
 		}
 	}
 	now := time.Now().UnixMilli()
-	msgID := fmt.Sprintf("msg_%s_%d", sessionID, now)
+	msgID := "msg_" + sessionruntime.NewSessionID()
+	requestID := ""
+	if !triggerRun && len(requestIDs) > 0 {
+		requestID = requestIDs[0]
+	}
+	if requestID != "" {
+		msgID = fmt.Sprintf("feedback_%x", sha256.Sum256([]byte(scope.Principal.AccountScopeID+"\x00"+sessionID+"\x00"+scope.SessionID+"\x00"+requestID)))
+	}
 	msg := pebblestore.MessageSnapshot{
 		ID:             msgID,
 		SessionID:      sessionID,
@@ -2263,6 +2281,9 @@ func (r *Runtime) sendSessionMessageInternal(ctx context.Context, scope Workspac
 			"sender_session_id": scope.SessionID,
 		},
 		CreatedAt: now,
+	}
+	if !triggerRun {
+		msg.Metadata["feedback_note"] = true
 	}
 	runID := ""
 	var runIntent *pebblestore.V3SessionRunIntent
@@ -2281,22 +2302,26 @@ func (r *Runtime) sendSessionMessageInternal(ctx context.Context, scope Workspac
 			UpdatedAt:       now,
 		}
 	}
-	mutationKey := fmt.Sprintf("manage-sessions:msg:%s:%d", msgID, now)
+	mutationKey := "manage-sessions:msg:" + msgID
+	payloadHash := fmt.Sprintf("%x", sha256.Sum256([]byte(role+"\x00"+prompt)))
 	res, err := r.sessions.ApplySessionMutation(pebblestore.V3SessionMutationInput{
 		SessionID:       sessionID,
 		UserID:          scope.Principal.UserID,
 		AccountScopeID:  scope.Principal.AccountScopeID,
 		ClientRequestID: mutationKey,
 		IdempotencyKey:  mutationKey,
-		PayloadHash:     mutationKey,
-		RequestHash:     mutationKey,
+		PayloadHash:     payloadHash,
+		RequestHash:     payloadHash,
 		Kind:            pebblestore.V3SessionMutationAppendMessage,
 		Message:         &msg,
 		RunIntent:       runIntent,
 		NowUnixMs:       now,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("append message: %w", err)
+		return nil, fmt.Errorf("append message rejected: %w", err)
+	}
+	if res.Conflict != nil || res.Error != nil {
+		return nil, fmt.Errorf("append message rejected without mutation: conflict=%v error=%v", res.Conflict, res.Error)
 	}
 	if r.publishSessionOutbox != nil && res.RealtimeOutbox != nil {
 		_ = r.publishSessionOutbox(*res.RealtimeOutbox)
@@ -2317,7 +2342,11 @@ func (r *Runtime) sendSessionMessageInternal(ctx context.Context, scope Workspac
 		"trigger_run": triggerRun,
 	}
 	if !triggerRun {
-		out["status"] = "appended"
+		out["status"] = "saved/queued"
+		out["delivery_status"] = "unconfirmed"
+		out["incorporation_status"] = "unconfirmed"
+		out["replayed"] = res.Replayed
+		out["note"] = "Saved durably without starting execution. Delivery requires a subsequent provider step; verify feedback_delivery in read_messages by message_id. No scope change or approval is implied."
 		return out, nil
 	}
 	out["run_id"] = runID
