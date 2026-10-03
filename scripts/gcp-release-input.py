@@ -46,6 +46,7 @@ def canonical(value):
 class Google:
     def __init__(self, env, transport=relay.request):
         self.transport = transport
+        self.env = env
         provider = env['GCP_WORKLOAD_IDENTITY_PROVIDER']
         require(re.fullmatch(r'projects/[1-9][0-9]*/locations/global/workloadIdentityPools/[a-z0-9-]+/providers/[a-z0-9-]+', provider), 'invalid federation provider')
         account = env['GCP_READ_SERVICE_ACCOUNT']
@@ -57,16 +58,23 @@ class Google:
         require(url.scheme == 'https' and url.hostname is not None and (url.hostname == 'actions.githubusercontent.com' or url.hostname.endswith('.actions.githubusercontent.com')) and not url.username and not url.password and url.port in (None, 443) and not url.fragment, 'untrusted OIDC endpoint')
         query = urllib.parse.parse_qsl(url.query, keep_blank_values=True)
         require(not any(k == 'audience' for k, _ in query), 'ambiguous OIDC audience')
-        oidc_url = urllib.parse.urlunsplit(url._replace(query=urllib.parse.urlencode(query + [('audience', audience)])))
-        oidc = decode(transport(oidc_url, {'Authorization': 'Bearer ' + env['ACTIONS_ID_TOKEN_REQUEST_TOKEN']}))['value']
-        sts = decode(transport('https://sts.googleapis.com/v1/token', {'Content-Type': 'application/x-www-form-urlencoded'}, urllib.parse.urlencode({
-            'audience': audience, 'grant_type': 'urn:ietf:params:oauth:grant-type:token-exchange',
+        self.provider = provider
+        self.account = account
+        self.audience = audience
+        self.oidc_url = urllib.parse.urlunsplit(url._replace(query=urllib.parse.urlencode(query + [('audience', audience)])))
+        self.token = None
+        self._refresh()
+
+    def _refresh(self):
+        oidc = decode(self.transport(self.oidc_url, {'Authorization': 'Bearer ' + self.env['ACTIONS_ID_TOKEN_REQUEST_TOKEN']}))['value']
+        sts = decode(self.transport('https://sts.googleapis.com/v1/token', {'Content-Type': 'application/x-www-form-urlencoded'}, urllib.parse.urlencode({
+            'audience': self.audience, 'grant_type': 'urn:ietf:params:oauth:grant-type:token-exchange',
             'requested_token_type': 'urn:ietf:params:oauth:token-type:access_token',
             'subject_token_type': 'urn:ietf:params:oauth:token-type:jwt', 'subject_token': oidc,
             'scope': 'https://www.googleapis.com/auth/cloud-platform'}).encode()))
-        token = decode(transport('https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/' + account + ':generateAccessToken', {
+        token = decode(self.transport('https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/' + self.account + ':generateAccessToken', {
             'Authorization': 'Bearer ' + sts['access_token'], 'Content-Type': 'application/json'},
-            canonical({'scope': ['https://www.googleapis.com/auth/devstorage.read_only'], 'lifetime': '600s'})))
+            canonical({'scope': ['https://www.googleapis.com/auth/devstorage.read_only'], 'lifetime': '3600s'})))
         self.token = token['accessToken']
 
     def get(self, ref, limit=2 * 1024 * 1024):
@@ -76,7 +84,14 @@ class Google:
         if 'generation' in ref:
             relay.positive(ref['generation'])
             url += '&generation=' + str(ref['generation'])
-        raw = self.transport(url, {'Authorization': 'Bearer ' + self.token}, limit=limit)
+        try:
+            raw = self.transport(url, {'Authorization': 'Bearer ' + self.token}, limit=limit)
+        except Exception:
+            if hasattr(self, 'oidc_url'):
+                self._refresh()
+                raw = self.transport(url, {'Authorization': 'Bearer ' + self.token}, limit=limit)
+            else:
+                raise
         if 'sha256' in ref:
             require(isinstance(ref['sha256'], str) and re.fullmatch('[0-9a-f]{64}', ref['sha256']), 'invalid object digest')
             require(digest(raw) == ref['sha256'], 'GCS digest mismatch')
@@ -306,6 +321,19 @@ def consume(env, event, policy=None, google=None, transport=relay.request):
         from types import SimpleNamespace
         return runner.consume(SimpleNamespace(**globals()), env, event, policy, google, transport)
 
+    # When using the maintained runner, adapt legacy release-policy qualified_bucket if matching.
+    if policy and policy.get('schema') == 'swarm.gcp.release-policy/v1' and 'qualified_bucket' in policy:
+        try:
+            result = relay.poll(env, event, transport=transport, required_stages=runner.NATIVE)
+            if 'release' in result and result['release'].get('manifest', {}).get('bucket') == policy['qualified_bucket']:
+                manifest_raw = google.get(result['release']['manifest'])
+                if decode(manifest_raw).get('schema') == runner.SCHEMA:
+                    from types import SimpleNamespace
+                    runner_policy = dict(schema=runner.POLICY, qualified_bucket=policy['qualified_bucket'])
+                    return runner.consume(SimpleNamespace(**globals()), env, event, runner_policy, google, transport)
+        except Exception:
+            pass
+
     # Only authenticated immutable evidence is accepted; no inferred receipts.
     if policy and policy.get('schema') == 'swarm.gcp.release-policy/v1' and 'qualified_bucket' in policy:
         try:
@@ -370,6 +398,7 @@ def main():
 if __name__ == '__main__':
     try:
         main()
-    except Exception:
-        print('GCP release input verification failed (credential details withheld)', file=sys.stderr)
+    except Exception as exc:
+        msg = re.sub(r'Bearer\s+[A-Za-z0-9._-]+', 'Bearer [REDACTED]', str(exc))
+        print(f'GCP release input verification failed: {type(exc).__name__}: {msg}', file=sys.stderr)
         sys.exit(1)
