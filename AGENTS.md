@@ -147,6 +147,7 @@ Do not diagnose from or silently reuse old home/XDG config locations. `/workspac
 - If a critical test fails, fix the current production contract or the test/fixture when evidence proves it stale. Never skip, weaken, broaden regexes to hide it, silently remove it from the manifest, or restore a retired contract. Quarantine is allowed only with an owner, exact evidence, an explicitly reported gap, and a bounded remediation condition.
 - Routine local commits do not require `./scripts/check-precommit.sh`.
 - Before opening/updating a PR, run `./scripts/check-precommit.sh` and `bash scripts/run-critical-tests.sh all` on the reviewed head. CI runs all three deterministic tiers for `dev`/`main` integration.
+- Every PR into `main` must include an updated entry in `CHANGELOG.md` under `## Unreleased` documenting the changes and an explicit `Docs impact: ...` tag (e.g. `Docs impact: none`). The automated GCP qualification gate strictly enforces `require-changelog` and will immediately fail candidate qualification if `CHANGELOG.md` is omitted from the PR diff.
 - Pushes to protected branches must use the checked-in pre-push hook; never bypass it.
 - Release readiness additionally uses `bash scripts/check-launch-readiness.sh --require-clean` and the exact archive/evidence workflows documented in `docs/main-deploy-checklist.md`.
 - Before publishing, run the checked-in publish/release gates and retain evidence for the exact candidate SHA. Never reuse evidence from another commit.

@@ -34,7 +34,7 @@ steps:
     args:
       - -ceu
       - |
-        export PATH=/workspace/toolchain/go/bin:$$PATH GOMAXPROCS=2 GOFLAGS=-p=2
+        export PATH=/workspace/toolchain/go/bin:$$PATH SWARM_DISABLE_MINT_REPORT=1
         export TMPDIR=/workspace/scratch-fast GO_CACHE_ROOT=/workspace/scratch-fast/go
         mkdir -p "$$TMPDIR"
         cd /workspace/critical-tiers/fast
@@ -47,7 +47,7 @@ steps:
     args:
       - -ceu
       - |
-        export PATH=/workspace/toolchain/go/bin:$$PATH GOMAXPROCS=2 GOFLAGS=-p=2
+        export PATH=/workspace/toolchain/go/bin:$$PATH SWARM_DISABLE_MINT_REPORT=1
         export TMPDIR=/workspace/scratch-deep GO_CACHE_ROOT=/workspace/scratch-deep/go
         mkdir -p "$$TMPDIR"
         cd /workspace/critical-tiers/deep
@@ -60,7 +60,7 @@ steps:
     args:
       - -ceu
       - |
-        export PATH=/workspace/toolchain/go/bin:$$PATH GOMAXPROCS=2 GOFLAGS=-p=2
+        export PATH=/workspace/toolchain/go/bin:$$PATH SWARM_DISABLE_MINT_REPORT=1
         export TMPDIR=/workspace/scratch-agents GO_CACHE_ROOT=/workspace/scratch-agents/go
         mkdir -p "$$TMPDIR"
         cd /workspace/critical-tiers/agents

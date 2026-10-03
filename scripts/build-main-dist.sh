@@ -124,19 +124,29 @@ ldflags=(
 echo "building launcher and TUI binaries into ${ROOT_ARTIFACT_DIR}"
 (
   cd "${ROOT_DIR}"
-  "${GO_BIN}" build -trimpath -ldflags "${ldflags[*]}" -o "${ROOT_ARTIFACT_DIR}/swarmtui" ./cmd/swarmtui
-  "${GO_BIN}" build -trimpath -ldflags "${ldflags[*]}" -o "${ROOT_ARTIFACT_DIR}/swarm" ./cmd/swarm
-  "${GO_BIN}" build -trimpath -ldflags "${ldflags[*]} -X main.defaultInvokedName=swarmdev" -o "${ROOT_ARTIFACT_DIR}/swarmdev" ./cmd/swarm
-  "${GO_BIN}" build -trimpath -ldflags "${ldflags[*]}" -o "${ROOT_ARTIFACT_DIR}/rebuild" ./cmd/rebuild
-  "${GO_BIN}" build -trimpath -ldflags "${ldflags[*]}" -o "${ROOT_ARTIFACT_DIR}/swarmsetup" ./cmd/swarmsetup
+  "${GO_BIN}" build -trimpath -ldflags "${ldflags[*]}" -o "${ROOT_ARTIFACT_DIR}/swarmtui" ./cmd/swarmtui &
+  pid1=$!
+  "${GO_BIN}" build -trimpath -ldflags "${ldflags[*]}" -o "${ROOT_ARTIFACT_DIR}/swarm" ./cmd/swarm &
+  pid2=$!
+  "${GO_BIN}" build -trimpath -ldflags "${ldflags[*]} -X main.defaultInvokedName=swarmdev" -o "${ROOT_ARTIFACT_DIR}/swarmdev" ./cmd/swarm &
+  pid3=$!
+  "${GO_BIN}" build -trimpath -ldflags "${ldflags[*]}" -o "${ROOT_ARTIFACT_DIR}/rebuild" ./cmd/rebuild &
+  pid4=$!
+  "${GO_BIN}" build -trimpath -ldflags "${ldflags[*]}" -o "${ROOT_ARTIFACT_DIR}/swarmsetup" ./cmd/swarmsetup &
+  pid5=$!
+  wait "${pid1}" "${pid2}" "${pid3}" "${pid4}" "${pid5}"
 )
 
 echo "building swarmd binaries into ${SWARMD_ARTIFACT_DIR}"
 (
   cd "${ROOT_DIR}/swarmd"
-  CGO_ENABLED=1 "${GO_BIN}" build -trimpath -ldflags "${ldflags[*]}" -o "${SWARMD_ARTIFACT_DIR}/swarmd" ./cmd/swarmd
-  CGO_ENABLED=1 "${GO_BIN}" build -trimpath -ldflags "${ldflags[*]}" -o "${SWARMD_ARTIFACT_DIR}/swarmctl" ./cmd/swarmctl
-  CGO_ENABLED=1 "${GO_BIN}" build -trimpath -ldflags "${ldflags[*]}" -o "${SWARMD_ARTIFACT_DIR}/swarm-fff-search" ./cmd/swarm-fff-search
+  CGO_ENABLED=1 "${GO_BIN}" build -trimpath -ldflags "${ldflags[*]}" -o "${SWARMD_ARTIFACT_DIR}/swarmd" ./cmd/swarmd &
+  pid6=$!
+  CGO_ENABLED=1 "${GO_BIN}" build -trimpath -ldflags "${ldflags[*]}" -o "${SWARMD_ARTIFACT_DIR}/swarmctl" ./cmd/swarmctl &
+  pid7=$!
+  CGO_ENABLED=1 "${GO_BIN}" build -trimpath -ldflags "${ldflags[*]}" -o "${SWARMD_ARTIFACT_DIR}/swarm-fff-search" ./cmd/swarm-fff-search &
+  pid8=$!
+  wait "${pid6}" "${pid7}" "${pid8}"
 )
 cp "${ROOT_DIR}/swarmd/internal/fff/lib/linux-amd64-gnu/libfff_c.so" "${SWARMD_ARTIFACT_DIR}/libfff_c.so"
 
