@@ -1,5 +1,5 @@
 {
-  "name": "@swarmagent/sdk",
+  "name": "@swarm-agent/sdk",
   "version": "0.1.0-headless.1",
   "description": "Official TypeScript SDK for Swarm local AI coding workspace",
   "type": "module",

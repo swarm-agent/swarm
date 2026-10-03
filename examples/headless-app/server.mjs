@@ -2,7 +2,7 @@ import { createServer as createHTTPS } from 'node:https';
 import { createServer as createHTTP } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
-import { SwarmClient } from '@swarmagent/sdk';
+import { SwarmClient } from '@swarm-agent/sdk';
 import { body, createBoundary, reject, safeError, text } from './boundary.mjs';
 import { operations } from './operations.mjs';
 
