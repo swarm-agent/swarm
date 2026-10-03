@@ -674,6 +674,8 @@ function TaskElapsedTimer({
  * Free of highlight gradients and pill badges. Displays "Action Needed",
  * worktree/unmerged git status, and "What did it do?" vs "What's not done yet?".
  */
+import { TaskRequirements } from './task-requirements'
+
 export function MinimalTaskCard({
   task,
   isSelected,
@@ -1628,7 +1630,8 @@ export function MinimalTaskCard({
           {isMediaTask && <p>Planned: {variantSlots.length} {task.agentType} output(s) · {task.aspectRatio || 'aspect ratio unspecified'}</p>}
 
           </>}
-          {/* Expandable Structured Plan or Task Program or Fallback Markdown */}
+          {(hasStructuredPlan || task.fullPlanMarkdown) && <TaskRequirements document={planDoc} />}
+          {/* Technical execution details remain available on demand. */}
           {(hasStructuredPlan || task.fullPlanMarkdown) && (
             <div className="min-w-0 max-w-full whitespace-normal [overflow-wrap:anywhere] border border-slate-800/80 rounded bg-[#070b14]/90" data-testid="task-plan-spec">
               <button
@@ -1646,25 +1649,14 @@ export function MinimalTaskCard({
                   <FileText size={11} className="text-blue-400" />
                   <span>
                     {hasStructuredPlan
-                      ? (isFullPlanOpen ? 'Hide tasks and acceptance criteria' : 'Review structured plan and acceptance criteria')
+                      ? (isFullPlanOpen ? 'Hide execution details' : 'Show execution details')
                       : (isFullPlanOpen ? 'Hide Full Plan Spec' : 'Read Full Plan Spec & Criteria')}
                   </span>
                 </span>
                 {isFullPlanOpen ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
               </button>
-              {!isFullPlanOpen && planCheckpointsToRender.length === 0 && (
-                <div className="min-w-0 px-3 pb-3 text-[11px] text-slate-300 [overflow-wrap:anywhere]" data-testid="task-plan-summary">
-                  {hasTaskProgramSpec ? <>
-                    <p>{taskProgramDef.jobs?.length || 0} jobs across {taskProgramDef.stages?.length || 1} stages</p>
-                    <ul className="space-y-1">
-                      {(taskProgramDef.jobs || []).slice(0, 3).map((job: any, index: number) => <li key={job.id || index}>{job.title || job.id}</li>)}
-                    </ul>
-                    {taskProgramDef.jobs?.length > 3 && <p>+{taskProgramDef.jobs.length - 3} more jobs · expand to review</p>}
-                  </> : <p className="line-clamp-3 whitespace-pre-wrap">{task.fullPlanMarkdown}</p>}
-                </div>
-              )}
               <div id={`${detailsId}-plan`}>
-              {(isFullPlanOpen || planCheckpointsToRender.length > 0) && (
+              {isFullPlanOpen && (
                 <div data-testid="task-plan-reader" className="min-w-0 p-3 border-t border-slate-800 text-[11px] text-slate-300 font-mono leading-relaxed whitespace-normal [overflow-wrap:anywhere] space-y-3">
                   {/* Render Structured Plan Document Checkpoints */}
                   {planCheckpointsToRender.length > 0 && (
@@ -1856,10 +1848,10 @@ export function MinimalTaskCard({
                       setIsRefineOpen(!isRefineOpen)
                     }}
                     className="flex items-center gap-1 px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-[10px] font-medium transition-colors border border-slate-700/60"
-                    title="Send instructions back to the Router / Plan Agent to adjust workspaces or plan"
+                    title="Ask Orchestrator to change only the affected requirements"
                   >
                     <Sparkles size={10} className="text-indigo-400" />
-                    <span>{isRefineOpen ? 'Cancel' : 'Refine Plan'}</span>
+                    <span>{isRefineOpen ? 'Cancel' : 'Request changes'}</span>
                   </button>
                 )}
               </div>
@@ -1927,7 +1919,8 @@ export function MinimalTaskCard({
                   value={refineFeedback}
                   onClick={(e) => e.stopPropagation()}
                   onChange={(e) => setRefineFeedback(e.target.value)}
-                  placeholder="e.g. Keep in web workspace only, don't touch daemon API..."
+                  aria-label="Requested requirement changes"
+                  placeholder="What should change? e.g. Remove email notifications"
                   className="flex-1 bg-slate-950 border border-slate-800 rounded px-2.5 py-1 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 font-mono"
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' && refineFeedback.trim()) {
@@ -1951,7 +1944,7 @@ export function MinimalTaskCard({
                   }}
                   className="px-3 py-1 rounded bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white font-bold text-[10px] transition-colors flex-shrink-0"
                 >
-                  Send to Router
+                  Request changes
                 </button>
               </div>
             )}
@@ -5290,6 +5283,14 @@ export function OrchestrateView({
     const guards = buildTaskAcceptancePayload(targetTask)
     handleClearTaskError(taskId)
     try {
+      if (targetTask.status === 'pending_approval' && targetTask.planBinding) {
+        if (!activeSessionId) throw new Error('Open an Orchestrator conversation before requesting changes.')
+        await continueDesktopV3Conversation(createDesktopV3ExistingMessageOperation({
+          sessionId: activeSessionId,
+          prompt: `Request changes to the requirements on task ${taskId} in project ${selectedProject.id}. Reviewed binding: ${JSON.stringify(guards)}. User request: ${feedback?.trim() || errorSummary?.trim() || ''}\nRead the current bound plan; apply only targeted requirement edits with edit_requirements. Preserve unrelated requirements and execution details. Do not delegate to Plan or regenerate the plan. Summarize the changed requirements on the same card for fresh approval.`,
+        }))
+        return
+      }
       await requestJson(`/v3/projects/${selectedProject.id}/tasks/${taskId}/refine`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
