@@ -82,6 +82,7 @@ type Client struct {
 	httpClient           *http.Client
 	earlyExpiry          time.Duration
 	sendWSFn             func(context.Context, pebblestore.CodexAuthRecord, []byte, func(StreamEvent)) (map[string]any, int, error)
+	reconnectWaitFn       func(context.Context, time.Duration) error
 	responsesAPIURL      string
 	responsesWSURL       string
 	websocketIdleTimeout time.Duration
@@ -185,12 +186,17 @@ type retryAwareStreamEmitter struct {
 	emittedReasoningSummary map[string]string
 	attemptOutputText       string
 	attemptReasoningSummary map[string]string
+	attemptTools            []StreamEvent
+	attemptToolBytes        int
+	replayErr               error
 }
 
 func (e *retryAwareStreamEmitter) beginAttempt() {
 	if e == nil {
 		return
 	}
+	e.attemptTools = nil
+	e.attemptToolBytes = 0
 	e.attemptOutputText = ""
 	e.attemptReasoningSummary = make(map[string]string, 4)
 }
@@ -209,11 +215,24 @@ func (e *retryAwareStreamEmitter) emit(event StreamEvent) {
 			return
 		}
 		e.attemptOutputText += event.Delta
+		if !strings.HasPrefix(e.emittedOutputText, e.attemptOutputText) && !strings.HasPrefix(e.attemptOutputText, e.emittedOutputText) {
+			e.replayErr = errors.New("codex reconnect output diverged from preserved partial output")
+			return
+		}
 		next, appended := mergeRetriedStreamText(e.emittedOutputText, e.attemptOutputText)
 		e.emittedOutputText = next
 		if appended != "" {
 			e.onEvent(StreamEvent{Type: StreamEventOutputTextDelta, Delta: appended, Phase: event.Phase})
 		}
+	case StreamEventToolCallStarted, StreamEventToolCallArgumentsDelta, StreamEventToolCallArgumentsSnapshot, StreamEventToolCallCompleted:
+		// Construction is not execution. Publish only the successful attempt's
+		// construction so replay cannot leave duplicate or abandoned tool calls.
+		e.attemptToolBytes += len(event.Arguments) + len(event.ArgumentsDelta) + len(event.ArgumentsSnapshot) + len(event.Delta)
+		if len(e.attemptTools) >= 8192 || e.attemptToolBytes > maxCodexResponseBodyBytes {
+			e.replayErr = errors.New("codex tool construction event limit exceeded")
+			return
+		}
+		e.attemptTools = append(e.attemptTools, event)
 	case StreamEventReasoningSummaryDelta:
 		key := reasoningStreamStateKey(event.ReasoningKey)
 		if e.attemptReasoningSummary == nil {
@@ -1322,6 +1341,18 @@ func (c *Client) sendRequest(ctx context.Context, record pebblestore.CodexAuthRe
 	}
 
 	streamEmitter := &retryAwareStreamEmitter{onEvent: onEvent}
+	defer func() {
+		if err == nil && status < http.StatusBadRequest {
+			if streamEmitter.attemptOutputText != streamEmitter.emittedOutputText {
+				streamEmitter.replayErr = errors.New("codex reconnect ended before preserved partial output was replayed")
+			}
+			if streamEmitter.replayErr != nil {
+				decoded, status, err = nil, 0, streamEmitter.replayErr
+				return
+			}
+			streamEmitter.completeAttempt()
+		}
+	}()
 	for attempt := 1; attempt <= transportRetryAttempts; attempt++ {
 		var wsDecoded map[string]any
 		var wsStatus int
@@ -1330,6 +1361,12 @@ func (c *Client) sendRequest(ctx context.Context, record pebblestore.CodexAuthRe
 		for startedRetry := 0; ; startedRetry++ {
 			streamEmitter.beginAttempt()
 			wsDecoded, wsStatus, wsErr = c.sendWebsocketRequest(ctx, record, req, streamEmitter.emit)
+			if ctxErr := contextErr(ctx); ctxErr != nil {
+				return nil, 0, ctxErr
+			}
+			if streamEmitter.replayErr != nil {
+				return nil, 0, streamEmitter.replayErr
+			}
 			if wsErr == nil {
 				break
 			}
@@ -1344,13 +1381,13 @@ func (c *Client) sendRequest(ctx context.Context, record pebblestore.CodexAuthRe
 				startedRetry--
 				continue
 			}
-			if !errors.Is(wsErr, errWebsocketStreamStarted) {
+			if !errors.Is(wsErr, errWebsocketStreamStarted) && !isWebsocketServiceRestart(wsErr) {
 				break
 			}
-			if !shouldRetryStartedWebsocketStream(wsErr) || startedRetry >= startedWebsocketStreamRetryLimit {
+			if (!shouldRetryStartedWebsocketStream(wsErr) && !isWebsocketServiceRestart(wsErr)) || startedRetry >= startedWebsocketStreamRetryLimit {
 				return nil, 0, wsErr
 			}
-			if err := sleepWithContext(ctx, transportRetryBaseDelay*time.Duration(startedRetry+1)); err != nil {
+			if err := c.waitForReconnect(ctx, streamEmitter, startedRetry); err != nil {
 				return nil, 0, err
 			}
 		}
@@ -1399,7 +1436,7 @@ func (c *Client) sendRequest(ctx context.Context, record pebblestore.CodexAuthRe
 	}, http.StatusServiceUnavailable, nil
 }
 
-func (c *Client) send(ctx context.Context, record pebblestore.CodexAuthRecord, payload []byte, onEvent func(StreamEvent)) (map[string]any, int, error) {
+func (c *Client) send(ctx context.Context, record pebblestore.CodexAuthRecord, payload []byte, onEvent func(StreamEvent)) (decoded map[string]any, status int, err error) {
 	if record.Type != pebblestore.CodexAuthTypeOAuth {
 		return c.sendOpenAIResponses(ctx, record, payload, onEvent)
 	}
@@ -1410,6 +1447,18 @@ func (c *Client) send(ctx context.Context, record pebblestore.CodexAuthRecord, p
 	}
 
 	streamEmitter := &retryAwareStreamEmitter{onEvent: onEvent}
+	defer func() {
+		if err == nil && status < http.StatusBadRequest {
+			if streamEmitter.attemptOutputText != streamEmitter.emittedOutputText {
+				streamEmitter.replayErr = errors.New("codex reconnect ended before preserved partial output was replayed")
+			}
+			if streamEmitter.replayErr != nil {
+				decoded, status, err = nil, 0, streamEmitter.replayErr
+				return
+			}
+			streamEmitter.completeAttempt()
+		}
+	}()
 
 	for attempt := 1; attempt <= transportRetryAttempts; attempt++ {
 		var wsDecoded map[string]any
@@ -1419,6 +1468,12 @@ func (c *Client) send(ctx context.Context, record pebblestore.CodexAuthRecord, p
 		for startedRetry := 0; ; startedRetry++ {
 			streamEmitter.beginAttempt()
 			wsDecoded, wsStatus, wsErr = sendWS(ctx, record, payload, streamEmitter.emit)
+			if ctxErr := contextErr(ctx); ctxErr != nil {
+				return nil, 0, ctxErr
+			}
+			if streamEmitter.replayErr != nil {
+				return nil, 0, streamEmitter.replayErr
+			}
 			if wsErr == nil {
 				break
 			}
@@ -1433,13 +1488,13 @@ func (c *Client) send(ctx context.Context, record pebblestore.CodexAuthRecord, p
 				startedRetry--
 				continue
 			}
-			if !errors.Is(wsErr, errWebsocketStreamStarted) {
+			if !errors.Is(wsErr, errWebsocketStreamStarted) && !isWebsocketServiceRestart(wsErr) {
 				break
 			}
-			if !shouldRetryStartedWebsocketStream(wsErr) || startedRetry >= startedWebsocketStreamRetryLimit {
+			if (!shouldRetryStartedWebsocketStream(wsErr) && !isWebsocketServiceRestart(wsErr)) || startedRetry >= startedWebsocketStreamRetryLimit {
 				return nil, 0, wsErr
 			}
-			if err := sleepWithContext(ctx, transportRetryBaseDelay*time.Duration(startedRetry+1)); err != nil {
+			if err := c.waitForReconnect(ctx, streamEmitter, startedRetry); err != nil {
 				return nil, 0, err
 			}
 		}
@@ -1662,6 +1717,40 @@ func sleepWithContext(ctx context.Context, delay time.Duration) error {
 	}
 }
 
+func isWebsocketServiceRestart(err error) bool {
+	var closeErr *websocket.CloseError
+	return errors.As(err, &closeErr) && closeErr.Code == websocket.CloseServiceRestart
+}
+
+func (e *retryAwareStreamEmitter) completeAttempt() {
+	if e.onEvent != nil {
+		for _, event := range e.attemptTools {
+			e.onEvent(event)
+		}
+	}
+	e.attemptTools = nil
+}
+
+func (c *Client) waitForReconnect(ctx context.Context, emitter *retryAwareStreamEmitter, retry int) error {
+	if err := contextErr(ctx); err != nil {
+		return err
+	}
+	// Three retries, with 300ms, 600ms and 1200ms waits. The transport
+	// invalidates failed sockets and rebuilds full input before each replay.
+	delay := transportRetryBaseDelay * time.Duration(1<<min(retry, startedWebsocketStreamRetryLimit-1))
+	if emitter.onEvent != nil {
+		emitter.onEvent(StreamEvent{Type: StreamEventAssistantCommentary, Delta: fmt.Sprintf("\nReconnecting to Codex (%d/%d)…\n", retry+1, startedWebsocketStreamRetryLimit)})
+	}
+	wait := c.reconnectWaitFn
+	if wait == nil {
+		wait = sleepWithContext
+	}
+	if err := wait(ctx, delay); err != nil {
+		return err
+	}
+	return contextErr(ctx)
+}
+
 func shouldRetryStartedWebsocketStream(err error) bool {
 	if !errors.Is(err, errWebsocketStreamStarted) {
 		return false
@@ -1673,6 +1762,7 @@ func shouldRetryStartedWebsocketStream(err error) bool {
 	if errors.As(err, &closeErr) {
 		return closeErr.Code == websocket.CloseNormalClosure ||
 			closeErr.Code == websocket.CloseAbnormalClosure ||
+			closeErr.Code == websocket.CloseServiceRestart ||
 			(closeErr.Code == websocket.CloseInternalServerErr && strings.Contains(strings.ToLower(closeErr.Text), "keepalive ping timeout"))
 	}
 	message := strings.ToLower(err.Error())
