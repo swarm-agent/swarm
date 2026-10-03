@@ -819,6 +819,12 @@ export function aggregateTaskLiveState(
     (task as any).plan_binding?.session_id ||
     (associatedSids.length > 0 ? associatedSids[0] : undefined)
 
+  // Direct video jobs deliberately have no chat session or Task Program. Their
+  // persisted task/output lifecycle, not missing session evidence, owns status.
+  if (task.agentType === 'video' && !primarySessionId && !task.taskProgram && !task.taskProgramStatus) {
+    return task
+  }
+
   const primaryData = primarySessionId ? liveTaskSessionsData[primarySessionId] : undefined
   const primaryRecord = primaryData?.sessionRecord
   const primarySess = primaryRecord?.kind === 'full' ? primaryRecord.session : undefined

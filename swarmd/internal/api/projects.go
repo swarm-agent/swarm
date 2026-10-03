@@ -322,6 +322,11 @@ func syncTaskSessionState(task *pebblestore.ProjectTaskRecord, db *pebblestore.S
 	if task == nil || db == nil || task.Archived {
 		return
 	}
+	// Direct video generation intentionally has no chat session. Its persisted
+	// generation lifecycle is authoritative; router warnings are not failures.
+	if task.Agent == "video" && task.SessionID == "" && task.TaskProgramID == "" && task.TaskProgram == nil {
+		return
+	}
 	// Preserve manual task approval and queue ownership. Generated tasks
 	// alone may reconcile their queue state from the worker execution session.
 	if task.Status == "pending_approval" || (task.Status == "queued" && task.WorkerID == "") {

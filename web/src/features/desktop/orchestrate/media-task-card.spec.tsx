@@ -7,7 +7,8 @@ import assert from 'node:assert/strict'
 import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { MediaTaskCard, mediaTaskThreads } from './media-task-card'
-import { mapBackendTask } from '../state/desktop-projects-state'
+import { mapBackendTask, reduceDesktopProjectsState, type DesktopProjectsState } from '../state/desktop-projects-state'
+import { aggregateTaskLiveState } from './orchestrate-task-helpers'
 import type { CreativeCardTurn } from './creative-thread-card'
 
 function buttons(node: React.ReactNode): React.ReactElement<any>[] {
@@ -77,4 +78,35 @@ test('card preserves attention and invokes only the explicitly selected task act
   const failed = MediaTaskCard({ task: { ...task, status: 'failed' }, onApprove: () => calls.push('unauthorized-retry') })!
   assert.equal(buttons((failed.props.turns as CreativeCardTurn[])[0].controls).length, 0)
   assert.deepEqual(calls, ['approve:pending', 'archive:pending', 'delete:pending'])
+})
+
+// Purpose: accepted direct video work has no chat session; missing output must not
+// become Failed in Turn 1. Exercise the production mapper, session aggregator,
+// revision-aware cache and card adapter together: the narrowest layer proving
+// queued/running, completion, explicit failure and stale-response presentation.
+test('direct video turn preserves durable generation lifecycle through reload and stale updates', () => {
+  const pending = mapBackendTask({ id: 'video-task', agent: 'video', title: 'Video', revision: 1, status: 'in_progress' })
+  const turn = (task: typeof pending) => (MediaTaskCard({ task: aggregateTaskLiveState(task, {}) })!.props.turns as CreativeCardTurn[])[0]
+  assert.equal(turn(pending).status, 'in_progress')
+  assert.equal(turn(pending).outputs.length, 0)
+  for (const status of ['pending', 'queued', 'in_progress', 'running']) {
+    const task = mapBackendTask({ id: pending.id, agent: 'video', status, deliverables: [{ id: 'clip', kind: 'video', status: 'generating' }] })
+    assert.equal(turn(task).status, status)
+    assert.equal(turn(task).outputs[0].ready, false)
+  }
+  const ready = mapBackendTask({ id: pending.id, agent: 'video', revision: 2, status: 'needs_review', deliverables: [{ id: 'clip', kind: 'video', status: 'ready', media_url: 'data:video/mp4;base64,fixture' }] })
+  let state: DesktopProjectsState = { project: { projectId: 'project', tasks: [pending], media: [], loading: false, stale: false, generation: 1 } }
+  state = reduceDesktopProjectsState(state, { type: 'projects.updateTasks', projectId: 'project', tasks: [ready] })
+  state = reduceDesktopProjectsState(state, { type: 'projects.updateTasks', projectId: 'project', tasks: [pending] })
+  const reloaded = JSON.parse(JSON.stringify(state.project.tasks[0])) as typeof pending
+  assert.equal(turn(reloaded).id, pending.id)
+  assert.equal(turn(reloaded).status, 'needs_review')
+  assert.equal(turn(reloaded).outputs[0].ready, true)
+  const failed = mapBackendTask({ id: pending.id, agent: 'video', status: 'failed', last_error: 'Provider rejected generation' })
+  assert.equal(turn(failed).status, 'failed')
+  assert.match(renderToStaticMarkup(MediaTaskCard({ task: aggregateTaskLiveState(failed, {}) })!), /Provider rejected generation/)
+  const rejected = { ...pending, status: 'rejected' as const }
+  assert.equal(turn(rejected).status, 'rejected')
+  // Session-backed tasks must still use explicit run failure evidence.
+  assert.equal(aggregateTaskLiveState({ ...pending, sessionId: 'execution' }, { execution: { intent: { status: 'failed' } } }).status, 'failed')
 })
