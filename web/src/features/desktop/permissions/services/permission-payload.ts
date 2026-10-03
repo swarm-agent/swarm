@@ -547,9 +547,12 @@ export function normalizePermissionSessionMode(raw: unknown): 'plan' | 'auto' | 
 }
 
 export function permissionRequiresApproval(
-  permission: Pick<DesktopPermissionRecord, 'toolName' | 'mode' | 'requirement'>,
+  permission: Pick<DesktopPermissionRecord, 'toolName' | 'mode' | 'requirement'> & Partial<Pick<DesktopPermissionRecord, 'status'>>,
   fallbackMode = 'plan',
 ): boolean {
+  // The canonical cache retains terminal decisions to reject stale replay.
+  // Tool policy alone must not turn an approved/denied record back into a prompt.
+  if (permission.status && permission.status !== 'pending') return false
   const requirement = safeString(permission.requirement).toLowerCase()
   if (requirement === 'workspace_scope' || requirement === 'automation_v2_acceptance' || requirement === 'design_source_sensitive_read') {
     return true
@@ -586,7 +589,7 @@ export function permissionRequiresApproval(
 }
 
 export function countApprovalRequiredPermissions(
-  permissions: Array<Pick<DesktopPermissionRecord, 'toolName' | 'mode' | 'requirement'>>,
+  permissions: Array<Pick<DesktopPermissionRecord, 'toolName' | 'mode' | 'requirement'> & Partial<Pick<DesktopPermissionRecord, 'status'>>>,
   fallbackMode = 'plan',
 ): number {
   return permissions.reduce(

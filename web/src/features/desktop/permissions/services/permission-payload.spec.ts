@@ -763,3 +763,17 @@ for (const mode of ['plan', 'auto', 'yolo']) {
     assert(!permissionRequiresApproval(makePermission({ toolName, mode, requirement: '' }), mode), 'ordinary reads must remain non-interactive')
   }
 }
+
+// Requirement: resolved V3 permissions retained for replay protection must not
+// remain actionable in the conversation modal/inline Bash card. The production
+// boundary is permissionRequiresApproval, consumed by the conversation selector.
+// This narrow policy test covers both tool families and negative terminal cases;
+// live browser verification separately proves dismissal after real resolution.
+for (const toolName of ['ask-user', 'bash']) {
+  const pending = makePermission({ toolName, mode: 'auto', requirement: '', status: 'pending' })
+  assert(permissionRequiresApproval(pending), `${toolName} pending decision must remain visible`)
+  for (const status of ['approved', 'denied', 'cancelled', 'expired', 'failed']) {
+    assert(!permissionRequiresApproval({ ...pending, status }), `${toolName} ${status} must not reopen approval`)
+  }
+  assert(pending.status === 'pending', 'selection must not mutate canonical permission state')
+}
