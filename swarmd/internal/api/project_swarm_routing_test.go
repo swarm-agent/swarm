@@ -67,8 +67,10 @@ func TestProjectFeatureRoutingUsesSwarmAuto(t *testing.T) {
 
 // Purpose: the Orchestrator's structured refinement must publish its own replacement
 // through SubmitProjectTaskStructuredPlan and the atomic V3 plan/task publication.
-// Stale, cross-account, changed-plan-ID and missing guards must leave the plan,
-// card and run intents unchanged. This API/store fixture is narrower than live AI.
+// Combined document/definition guards must coexist after integration: stale
+// document or definition revisions, cross-account, changed-plan-ID and missing guards must leave the plan,
+// card and run intents unchanged. Authored requirement changes persist with their
+// exact acceptance criteria and require fresh approval. This API/store fixture is narrower than live AI.
 func TestOrchestratorStructuredRefinementKeepsCardPending(t *testing.T) {
 	f := setupMatrixTestFixture(t)
 	defer f.db.Close()
@@ -84,13 +86,21 @@ func TestOrchestratorStructuredRefinementKeepsCardPending(t *testing.T) {
 		t.Fatal(err)
 	}
 	binding := *task.PlanBinding
+	initialPlan, found, err := f.server.sessions.Store().GetPlan(task.SessionID, binding.PlanID)
+	if err != nil || !found || initialPlan.Document == nil {
+		t.Fatalf("initial bound plan missing: %v", err)
+	}
 	doc.Checkpoints[0].Tasks = []string{"Implement revised behavior"}
-	input := sessionruntime.ProjectTaskPlanSubmissionInput{AccountScopeID: f.accountID, UserID: f.userID, ProjectID: project, TaskID: task.ID, SessionID: task.SessionID, ExpectedPlanID: binding.PlanID, ExpectedDefinitionRevision: binding.DefinitionRevision, Document: doc, Feedback: "Revise behavior"}
-	for _, kind := range []string{"stale", "missing", "foreign", "wrong-id"} {
+	doc.Checkpoints[0].AcceptanceCriteria = []string{"Revised behavior works"}
+	doc.Requirements = []pebblestore.SessionPlanRequirement{{ID: "behavior", Text: "Revised behavior works", CheckpointID: "cp-1"}}
+	input := sessionruntime.ProjectTaskPlanSubmissionInput{AccountScopeID: f.accountID, UserID: f.userID, ProjectID: project, TaskID: task.ID, SessionID: task.SessionID, ExpectedPlanID: binding.PlanID, ExpectedDefinitionRevision: binding.DefinitionRevision, ExpectedRevisionID: initialPlan.Document.RevisionID, Document: doc, Feedback: "Revise behavior"}
+	for _, kind := range []string{"stale", "stale-document", "missing", "foreign", "wrong-id"} {
 		bad := input
 		switch kind {
 		case "stale":
 			bad.ExpectedDefinitionRevision++
+		case "stale-document":
+			bad.ExpectedRevisionID = "stale-document-revision"
 		case "missing":
 			bad.ExpectedDefinitionRevision = 0
 		case "foreign":
@@ -107,6 +117,10 @@ func TestOrchestratorStructuredRefinementKeepsCardPending(t *testing.T) {
 		if err != nil || *unchanged.PlanBinding != binding || unchanged.Status != "pending_approval" {
 			t.Fatalf("rejection changed card: %+v %v", unchanged, err)
 		}
+		storedPlan, found, err := f.server.sessions.Store().GetPlan(task.SessionID, binding.PlanID)
+		if err != nil || !found || storedPlan.Version != initialPlan.Version || storedPlan.Document.RevisionID != initialPlan.Document.RevisionID || storedPlan.Document.Checkpoints[0].Tasks[0] != "Implement old behavior" {
+			t.Fatalf("rejection changed plan for %s: %+v %v", kind, storedPlan, err)
+		}
 	}
 	revised, err := f.server.SubmitProjectTaskPlan(context.Background(), input)
 	if err != nil {
@@ -114,6 +128,10 @@ func TestOrchestratorStructuredRefinementKeepsCardPending(t *testing.T) {
 	}
 	if revised.Task.ID != task.ID || revised.Task.SessionID != task.SessionID || revised.Task.Status != "pending_approval" || revised.Plan.Version != binding.DefinitionRevision+1 || revised.Plan.ApprovalState != "pending" || revised.Plan.AcceptedDefinitionReceipt != "" || revised.Plan.Document.Checkpoints[0].Tasks[0] != "Implement revised behavior" {
 		t.Fatalf("revision contract: %+v", revised)
+	}
+	persisted, found, err := f.server.sessions.Store().GetPlan(task.SessionID, binding.PlanID)
+	if err != nil || !found || persisted.Document == nil || len(persisted.Document.Requirements) != 1 || persisted.Document.Requirements[0] != doc.Requirements[0] || persisted.Document.Checkpoints[0].AcceptanceCriteria[0] != doc.Requirements[0].Text {
+		t.Fatalf("requirement edit not persisted with criterion: %+v %v", persisted, err)
 	}
 	if len(revised.Task.FeedbackHistory) != 1 || revised.Task.FeedbackHistory[0] != input.Feedback {
 		t.Fatal("feedback not retained")
@@ -142,6 +160,7 @@ func TestOrchestratorStructuredRefinementKeepsCardPending(t *testing.T) {
 	approvedTask, _, _ := f.server.sessions.Store().GetProjectTask(f.accountID, project, task.ID)
 	approvedBinding := *approvedTask.PlanBinding
 	input.ExpectedDefinitionRevision = approvedBinding.DefinitionRevision
+	input.ExpectedRevisionID = revised.Plan.Document.RevisionID
 	if _, err := f.server.SubmitProjectTaskPlan(context.Background(), input); err == nil {
 		t.Fatal("structured refinement reopened approved execution")
 	}

@@ -115,6 +115,8 @@ type PlanLifecycleProposalInput struct {
 // ProjectTaskPlanSubmissionInput encapsulates direct submission of a structured plan document to a project task card.
 type ProjectTaskPlanSubmissionInput struct {
 	ExpectedRevisionID string
+	// First-plan repair compares the task revision and requires no existing binding.
+	ExpectedTaskRevision int
 	// Nonzero guards revise an existing unapproved task card without a planning run.
 	ExpectedPlanID             string
 	ExpectedDefinitionRevision int
@@ -357,10 +359,13 @@ func (s *PlanLifecycleService) SubmitProjectTaskStructuredPlan(input ProjectTask
 	if input.TaskID == "" {
 		return ProjectTaskPlanSubmissionResult{}, errors.New("task id is required")
 	}
-	if input.ExpectedPlanID != "" || input.ExpectedDefinitionRevision != 0 || input.Feedback != "" {
+	if input.ExpectedPlanID != "" || input.ExpectedDefinitionRevision != 0 || (input.Feedback != "" && input.ExpectedTaskRevision == 0) {
 		if input.ExpectedPlanID == "" || input.ExpectedDefinitionRevision <= 0 || input.SessionID == "" || strings.TrimSpace(input.Feedback) == "" {
 			return ProjectTaskPlanSubmissionResult{}, errors.New("structured refinement requires feedback and exact session, plan and definition revision")
 		}
+	}
+	if input.ExpectedTaskRevision < 0 {
+		return ProjectTaskPlanSubmissionResult{}, errors.New("expected task revision must be positive")
 	}
 	if input.Document == nil {
 		return ProjectTaskPlanSubmissionResult{}, errors.New("structured plan document is required")
@@ -422,6 +427,20 @@ func (s *PlanLifecycleService) SubmitProjectTaskStructuredPlan(input ProjectTask
 
 	unlockSession := s.sessions.lockPlanLifecycleSession(sessionID)
 	defer unlockSession()
+
+	if input.ExpectedTaskRevision > 0 {
+		if len(input.Document.Requirements) == 0 {
+			return ProjectTaskPlanSubmissionResult{}, errors.New("first plan repair requires authored requirements bound to acceptance criteria")
+		}
+		current, found, err := s.sessions.store.GetProjectTask(input.AccountScopeID, input.ProjectID, input.TaskID)
+		if err != nil {
+			return ProjectTaskPlanSubmissionResult{}, err
+		}
+		if !found || current == nil || current.Archived || current.Status != "pending_approval" || current.PlanBinding != nil || current.Revision != input.ExpectedTaskRevision || input.ExpectedDefinitionRevision != 0 || input.ExpectedPlanID != "" {
+			return ProjectTaskPlanSubmissionResult{}, errors.New("first plan requires the exact pending unbound task revision")
+		}
+		task = current
+	}
 
 	if input.ExpectedDefinitionRevision > 0 {
 		// Re-read under the lifecycle lock; stale review input must not replace a

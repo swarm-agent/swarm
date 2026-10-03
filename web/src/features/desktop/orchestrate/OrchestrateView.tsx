@@ -1630,7 +1630,7 @@ export function MinimalTaskCard({
           {isMediaTask && <p>Planned: {variantSlots.length} {task.agentType} output(s) · {task.aspectRatio || 'aspect ratio unspecified'}</p>}
 
           </>}
-          {(hasStructuredPlan || task.fullPlanMarkdown) && <TaskRequirements document={planDoc} />}
+          <TaskRequirements document={planDoc} />
           {/* Technical execution details remain available on demand. */}
           {(hasStructuredPlan || task.fullPlanMarkdown) && (
             <div className="min-w-0 max-w-full whitespace-normal [overflow-wrap:anywhere] border border-slate-800/80 rounded bg-[#070b14]/90" data-testid="task-plan-spec">
@@ -1796,11 +1796,9 @@ export function MinimalTaskCard({
                     </div>
                   )}
 
-                  {/* Fallback Markdown if no structured items */}
+                  {/* Legacy prose is not an executable structured plan. */}
                   {planCheckpointsToRender.length === 0 && (!taskProgramDef || (!taskProgramDef.stages?.length && !taskProgramDef.jobs?.length)) && task.fullPlanMarkdown && (
-                    <div className="whitespace-pre-wrap">
-                      {task.fullPlanMarkdown}
-                    </div>
+                    <p role="status">Structured execution details have not been authored yet. Request changes to author a plan on this card.</p>
                   )}
                 </div>
               )}
@@ -5304,11 +5302,13 @@ export function OrchestrateView({
     const guards = buildTaskAcceptancePayload(targetTask)
     handleClearTaskError(taskId)
     try {
-      if (targetTask.status === 'pending_approval' && targetTask.planBinding) {
+      if (targetTask.status === 'pending_approval') {
         if (!activeSessionId) throw new Error('Open an Orchestrator conversation before requesting changes.')
         await continueDesktopV3Conversation(createDesktopV3ExistingMessageOperation({
           sessionId: activeSessionId,
-          prompt: `Request changes to the requirements on task ${taskId} in project ${selectedProject.id}. Reviewed binding: ${JSON.stringify(guards)}. User request: ${feedback?.trim() || errorSummary?.trim() || ''}\nRead the current bound plan; apply only targeted requirement edits with edit_requirements. Preserve unrelated requirements and execution details. Do not delegate to Plan or regenerate the plan. Summarize the changed requirements on the same card for fresh approval.`,
+          prompt: !targetTask.planBinding
+            ? `Author the first structured plan for pending task ${taskId} in project ${selectedProject.id} on the same card. Read get_task first; submit refine_task with plan_document and expected_revision ${targetTask.revision}. Include authored requirements with stable IDs, each bound to an exact checkpoint acceptance criterion. Do not create a replacement task or approve it. User request: ${feedback?.trim() || errorSummary?.trim() || ''}`
+            : `Request changes to the requirements on task ${taskId} in project ${selectedProject.id}. Reviewed binding: ${JSON.stringify(guards)}. User request: ${feedback?.trim() || errorSummary?.trim() || ''}\nRead the current bound plan; apply only targeted requirement edits with edit_requirements. Preserve unrelated requirements and execution details. Do not delegate to Plan or regenerate the plan. Summarize the changed requirements on the same card for fresh approval.`,
         }))
         return
       }

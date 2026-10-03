@@ -1253,8 +1253,18 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 		}
 		if rawDocument != nil {
 			guards := ProjectTaskApprovalGuards{SessionID: strings.TrimSpace(asString(args["session_id"])), PlanID: strings.TrimSpace(asString(args["plan_id"])), DefinitionRevision: asInt(args["definition_revision"], 0)}
-			if existing.PlanBinding == nil || guards.SessionID == "" || guards.PlanID == "" || guards.DefinitionRevision <= 0 || feedback == "" {
-				return "", errors.New("structured refinement requires a bound task, feedback and exact session_id, plan_id and definition_revision")
+			expectedTaskRevision := 0
+			if existing.PlanBinding == nil {
+				var err error
+				expectedTaskRevision, err = projectTaskInteger(args, "expected_revision", 1, 1<<30)
+				if err != nil {
+					return "", err
+				}
+				if existing.Archived || existing.Status != "pending_approval" || expectedTaskRevision != existing.Revision || guards.PlanID != "" || guards.DefinitionRevision != 0 {
+					return "", errors.New("first plan requires the exact pending unbound task revision")
+				}
+			} else if guards.SessionID == "" || guards.PlanID == "" || guards.DefinitionRevision <= 0 || feedback == "" {
+				return "", errors.New("structured refinement requires feedback and exact session_id, plan_id and definition_revision")
 			}
 			doc, err := parseSessionPlanDocument(rawDocument)
 			if err != nil {
@@ -1263,7 +1273,7 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 			result, err := r.getProjectTaskLifecycleService().SubmitProjectTaskPlan(ctx, sessionruntime.ProjectTaskPlanSubmissionInput{
 				AccountScopeID: accountScopeID, UserID: p.UserID, ProjectID: projectID, TaskID: taskID,
 				SessionID: guards.SessionID, ExpectedPlanID: guards.PlanID, ExpectedDefinitionRevision: guards.DefinitionRevision,
-				Document: doc, Feedback: feedback,
+				Document: doc, Feedback: feedback, ExpectedTaskRevision: expectedTaskRevision,
 			})
 			if err != nil {
 				return "", err

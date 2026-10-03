@@ -180,7 +180,10 @@ test('mission proposal wraps full structured and fallback plans without changing
     assert.ok((await page.getByTestId('task-plan-summary').textContent())?.includes(fields.markdown), 'fallback plan has a preview before expansion')
     assert.equal(await page.getByTestId('toggle-task-details-btn').getAttribute('aria-expanded'), 'false')
     await page.getByRole('button', { name: 'Read Full Plan Spec & Criteria' }).click()
-    await reader.getByText(fields.markdown, { exact: true }).waitFor()
+    // Missing structured data must be explicit, never rendered as a Markdown plan.
+    await reader.getByRole('status').waitFor()
+    assert.match(await reader.textContent() || '', /not been authored yet/)
+    assert.doesNotMatch(await reader.textContent() || '', new RegExp(fields.markdown.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
     await page.locator('#root').evaluate(root => { root.style.width = '320px' })
     await assertReadable(reader)
     await page.evaluate(() => (window as any).renderProposal(false, false, false, '', 2, 'program-only', 'pending_approval', true))
