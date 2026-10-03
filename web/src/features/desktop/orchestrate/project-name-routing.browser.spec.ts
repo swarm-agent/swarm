@@ -19,6 +19,9 @@ import { fixtureRead, project, sessionId, snapshot } from './swarm-responsive-br
 // A delayed successful New session receipt must update membership without stealing
 // a newer route/draft; an on-route success must navigate without clearing context.
 // This guards newConversation's route-scope boundary with actual browser history.
+// Cached session switching must not refetch admission, membership or shell data;
+// project-only entry must replace its URL with the first visible sidebar session
+// after discovery, without overriding deep links or creating a session.
 // This is deterministic browser integration, not live daemon/provider evidence.
 test('project name URLs preserve API identity, reload and compact navigation', { timeout: 60000 }, async () => {
   const js = await build({ stdin: { resolveDir: process.cwd(), loader: 'tsx', contents: `import {mountResponsiveFixture} from './src/features/desktop/orchestrate/swarm-responsive-browser-fixtures'; mountResponsiveFixture('populated', true);` }, bundle: true, write: false, format: 'iife', platform: 'browser', jsx: 'automatic', logLevel: 'silent' })
@@ -108,12 +111,18 @@ test('project name URLs preserve API identity, reload and compact navigation', {
     assert.equal(requests.filter(request => request === `POST /v3/projects/${project.id}/sessions`).length, 1)
     assert.equal(clearBodies.length, 2)
     await page.getByTestId('orchestrator-chat-input').fill('Only the first session draft')
+    await page.getByRole('status').filter({ hasText: 'Loading sessions…' }).waitFor({ state: 'hidden' })
+    const beforeSwitch = requests.length
     await page.evaluate(() => { (window as any).retainedSidebar = document.querySelector('.swarm-navigation-sidebar') })
     await page.getByRole('navigation', { name: 'Conversation sessions' }).getByRole('link', { name: 'Session session-1 Swarm Go', exact: true }).click()
     await page.waitForURL('**/projects/swarm-go/sessions/session-1')
     await page.getByRole('heading', { name: 'Session session-1', exact: true, level: 2 }).waitFor()
     assert.equal(await page.evaluate(() => (window as any).retainedSidebar === document.querySelector('.swarm-navigation-sidebar')), true)
     assert.equal(await page.getByTestId('orchestrator-chat-input').inputValue(), '')
+    assert.equal(requests.slice(beforeSwitch).some(request => [
+      'GET /v3/sessions/session-1', 'GET /v3/projects',
+      `GET /v3/projects/${project.id}/sessions`, 'GET /v1/workspace/list',
+    ].includes(request)), false, 'switching an already hydrated row must not reload sidebar or admission')
     await page.goBack()
     await page.waitForURL(`**/sessions/${sessionId}?section=workers#retained`)
     await page.getByRole('heading', { name: `Session ${sessionId}`, exact: true, level: 2 }).waitFor()
@@ -143,7 +152,7 @@ test('project name URLs preserve API identity, reload and compact navigation', {
     await mount(page.url())
     assert.equal(await page.getByLabel('Current project').inputValue(), project.id)
     assert.ok(requests.includes(`GET /v3/projects/${project.id}/sessions`))
-    assert.ok(requests.includes('GET /v3/sessions/session-1'))
+    assert.equal(requests.includes('GET /v3/sessions/session-1'), false)
     assert.equal(requests.some(url => url.includes('/v3/projects/swarm-go')), false)
     for (const label of ['Deliverables', 'Settings', 'Agents']) {
       await nav.getByRole('link', { name: label, exact: true }).click()
@@ -188,6 +197,17 @@ test('project name URLs preserve API identity, reload and compact navigation', {
     await mount(`https://project.test/projects/${project.id}/sections/workers`)
     await page.waitForURL('**/projects/swarm-go/sections/workers')
     assert.equal(await page.getByRole('link', { name: 'Workers', exact: true }).getAttribute('aria-current'), 'page')
+    const beforeEntry = requests.length
+    await mount('https://project.test/projects/swarm-go?section=workers#retained')
+    await page.getByRole('status').filter({ hasText: 'Loading sessions…' }).waitFor({ state: 'hidden' })
+    const firstLink = page.getByRole('navigation', { name: 'Conversation sessions' }).getByRole('link').first()
+    const firstHref = await firstLink.getAttribute('href')
+    assert.ok(firstHref)
+    await page.waitForURL(url => url.pathname === firstHref!.split('?')[0])
+    assert.equal(new URL(page.url()).searchParams.get('section'), 'workers')
+    assert.equal(new URL(page.url()).hash, '#retained')
+    await page.getByTestId('orchestrator-chat-input').waitFor()
+    assert.equal(requests.slice(beforeEntry).some(request => request === `POST /v3/projects/${project.id}/sessions`), false)
     const beforeUnknown = requests.length
     await page.goto('https://project.test/projects/missing-project/sessions/session-1')
     await page.addStyleTag({ content: css }); await page.addScriptTag({ content: js.outputFiles[0].text })

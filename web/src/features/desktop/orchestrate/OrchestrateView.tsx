@@ -14,7 +14,7 @@ import { TaskAttemptHistory } from './task-attempt-history'
 import { TaskUsageFooter, TaskWorkerBudgetMetadata } from './task-usage-metadata'
 import { useOrchestratorDictation } from './use-orchestrator-dictation'
 import { TaskSessionErrors } from './task-session-error'
-import { admittedConversationId } from './project-entry-policy'
+import { admittedConversationId, cachedProjectConversation, firstProjectConversation } from './project-entry-policy'
 import { createProjectConversation, projectConversationLink, projectConversationMessageMetadata, requireProjectConversation } from './project-conversations'
 import { useProjectConversations } from '../runtime/project-conversations'
 import { ProjectNavigation } from './project-navigation'
@@ -3234,7 +3234,7 @@ export function OrchestrateView({
   const [isUpdatingAccountName, setIsUpdatingAccountName] = useState(false)
   const [accountNameError, setAccountNameError] = useState<string | null>(null)
 
-  const projectRouteParams = useRouterState({ select: state => state.matches[state.matches.length - 1]?.params as { projectId?: string; sessionId?: string } }) ?? {}
+  const projectRouteParams = useRouterState({ select: state => state.matches[state.matches.length - 1]?.params as { projectId?: string; sessionId?: string; swarmSection?: string } }) ?? {}
   const routeConversationId = projectRouteParams.sessionId || ''
   const [conversationAdmission, setConversationAdmission] = useState<{ projectId: string; sessionId: string } | null>(null)
   const createProjectIntent = useRouterState({ select: state => (state.location.search as { createProject?: boolean }).createProject === true })
@@ -4212,6 +4212,15 @@ export function OrchestrateView({
     } finally { workerChatStarting.current = false }
   }
 
+  const firstConversationId = firstProjectConversation(conversations.rows, conversations.ready, conversations.loading, conversations.error)
+  useEffect(() => {
+    // Named section routes remain section routes; explicit session links always win.
+    if (!selectedProjectId || routeConversationId || projectRouteParams.swarmSection || !firstConversationId) return
+    // Let ID-to-name canonicalization finish before selecting the initial chat.
+    if (routeProjectSegment !== selectedProjectSegment) return
+    void navigate({ ...projectConversationLink(selectedProjectSegment, firstConversationId), search: true, hash: true, replace: true })
+  }, [selectedProjectId, selectedProjectSegment, routeProjectSegment, routeConversationId, projectRouteParams.swarmSection, firstConversationId, navigate])
+
   // Verify provenance before mounting a transcript, composer or permission prompt.
   useEffect(() => {
     let active = true
@@ -4223,6 +4232,12 @@ export function OrchestrateView({
       try { localStorage.setItem(`swarm:last-project:${accountScopeId || ''}`, selectedProject.id) } catch { /* Optional navigation preference; route remains authoritative. */ }
     }
     if (selectedProject && routeConversationId) {
+      const cached = cachedProjectConversation(getDesktopV3CacheSnapshot(), selectedProject.id, routeConversationId)
+      if (cached) {
+        setConversationAdmission({ projectId: selectedProject.id, sessionId: cached.id })
+        setActiveSessionId(cached.id)
+        return () => { active = false }
+      }
       void requestJson<{ session: SessionSnapshot }>(`/v3/sessions/${encodeURIComponent(routeConversationId)}`).then(({ session }) => {
         requireProjectConversation(selectedProject.id, session)
         if (session.id !== routeConversationId) throw new Error('Session identity mismatch')
