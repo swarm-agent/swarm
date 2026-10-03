@@ -47,9 +47,10 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         raise Invalid('HTTP redirects forbidden')
 
 
-def request(url, headers, data=None, limit=2 * 1024 * 1024):
+def request(url, headers, data=None, limit=2 * 1024 * 1024, timeout=None):
     opener = urllib.request.build_opener(NoRedirect())
-    with opener.open(urllib.request.Request(url, data=data, headers=headers), timeout=20) as response:
+    effective_timeout = timeout if timeout is not None else (300 if limit > 10 * 1024 * 1024 else 20)
+    with opener.open(urllib.request.Request(url, data=data, headers=headers), timeout=effective_timeout) as response:
         require(response.status == 200 and response.geturl() == url, 'unexpected response')
         raw = response.read(limit + 1)
         require(len(raw) <= limit, 'response too large')

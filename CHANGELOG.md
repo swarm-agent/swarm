@@ -6,6 +6,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Refresh Google Cloud access token before downloading release artifacts, extend token lifetime to 3600s, scale download timeouts, and adapt release policy schemas in `scripts/gcp-release-input.py`. Docs impact: none.
 - Parallelize distribution binary builds in `scripts/build-main-dist.sh` and remove Cloud Build CPU throttling for faster release compilation. Docs impact: none.
 
 - Fail closed when the protected release policy is missing: stop the GitHub release consumer before artifact intake and identify the required configuration instead of requesting another build. Docs impact: none.
