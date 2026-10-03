@@ -246,7 +246,7 @@ permissions are never changed by the connection example.
 `packages/sdk/examples/headless-session.ts` connects to `http://127.0.0.1:7783`,
 creates a session against `/project`, submits your prompt and displays durable
 snapshots (messages, active run, pending permissions and plan). It imports the
-installed `@swarm-agent/sdk` package; from source, build `packages/sdk` first so its
+installed `@swarmagent/sdk` package; from source, build `packages/sdk` first so its
 package self-reference resolves. From the source root, with an available `tsx` runner:
 
 <copy>
@@ -256,7 +256,7 @@ tsx packages/sdk/examples/headless-session.ts
 </copy>
 
 For a packaged consumer, install the unpublished tarball and use
-`import { SwarmClient } from '@swarm-agent/sdk'`. No Desktop bootstrap call or Unix socket is used. API
+`import { SwarmClient } from '@swarmagent/sdk'`. No Desktop bootstrap call or Unix socket is used. API
 redirects are rejected rather than replaying tokens or prompts. The example checks
 token-file permissions and refuses non-loopback URLs. It withholds raw API errors.
 Session output is private; do not capture/share it indiscriminately.

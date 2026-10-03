@@ -23,13 +23,13 @@ class PackTests(unittest.TestCase):
             root = Path(tmp)
             rows = []
             for name in ('sdk', 'cli'):
-                raw = json.dumps(dict(name='@swarm-agent/'+name, version='1.2.3')).encode()
-                path = root / ('swarm-agent-'+name+'-1.2.3.tgz')
+                raw = json.dumps(dict(name='@swarmagent/'+name, version='1.2.3')).encode()
+                path = root / ('swarmagent-'+name+'-1.2.3.tgz')
                 with tarfile.open(path, 'w:gz') as archive:
                     member = tarfile.TarInfo('package/package.json')
                     member.size = len(raw)
                     archive.addfile(member, io.BytesIO(raw))
-                rows.append(dict(name='@swarm-agent/'+name, version='1.2.3', file=path.name,
+                rows.append(dict(name='@swarmagent/'+name, version='1.2.3', file=path.name,
                                  sha256=hashlib.sha256(path.read_bytes()).hexdigest()))
             (root/'npm-packages.json').write_text(json.dumps(rows))
             self.assertEqual(packs.verify(root, 'v1.2.3'), [str(root/r['file']) for r in rows])
@@ -43,7 +43,7 @@ class PackTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 packs.verify(root, 'v1.2.3')
             (root/rows[0]['file']).write_bytes(original)
-            rows[0]['name'] = '@swarm-agent/cli'
+            rows[0]['name'] = '@swarmagent/cli'
             (root/'npm-packages.json').write_text(json.dumps(rows))
             with self.assertRaises(ValueError):
                 packs.verify(root, 'v1.2.3')

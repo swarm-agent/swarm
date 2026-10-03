@@ -2,7 +2,7 @@ import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { SwarmClient } from '@swarm-agent/sdk';
+import { SwarmClient } from '@swarmagent/sdk';
 import { operations } from './operations.mjs';
 import { onboarding } from './onboarding.mjs';
 

@@ -2,7 +2,7 @@ import { open } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { createInterface } from 'node:readline/promises';
 import { pathToFileURL } from 'node:url';
-import { SwarmClient } from '@swarm-agent/sdk';
+import { SwarmClient } from '@swarmagent/sdk';
 
 // Uses the installed package (or package self-reference after npm run build).
 // No Desktop bootstrap, privileged socket, automatic approval, or status polling.
