@@ -22,6 +22,7 @@ func manageEnvironmentsDefinition() Definition {
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
+				"project_result": projectResultDefinition(),
 				"action": map[string]any{
 					"type": "string",
 					"enum": []string{
@@ -98,9 +99,39 @@ func (r *Runtime) executeManageEnvironments(ctx context.Context, scope Workspace
 		actionName = "list"
 	}
 
-	accountScopeID, workspaceID, workspacePath, err := r.resolveWorkspaceScopeForEnvironments(scope, args, "manage_environments")
-	if err != nil {
-		return "", err
+	var accountScopeID, workspaceID, workspacePath string
+	var err error
+	var projectTarget *ProjectInspectionTarget
+	if reference, ok := args["project_result"].(map[string]any); ok {
+		switch actionName {
+		case "help", "list", "get", "ensure", "deploy", "exec", "release", "get_operation", "get_deployment":
+		default:
+			return "", errors.New("project_result supports inspection and leased validation only")
+		}
+		if asString(reference["task_id"]) == "" || asString(reference["head_commit"]) == "" {
+			return "", errors.New("project_result requires the exact committed task reference returned by inspect_files")
+		}
+		resolutionReference := reference
+		if actionName == "release" {
+			// Cleanup must remain possible after validation generates files or the
+			// task advances. Release still uses canonical account/workspace and
+			// parent-owned lease admission; it cannot execute against a tree.
+			resolutionReference = map[string]any{"project_id": reference["project_id"], "workspace_id": reference["workspace_id"], "workspace_path": reference["workspace_path"], "workspace_generation": reference["workspace_generation"]}
+		}
+		target, resolveErr := r.resolveProjectInspection(ctx, scope, resolutionReference)
+		if resolveErr != nil {
+			return "", resolveErr
+		}
+		if asString(args["workspace_path"]) != "" || asString(args["workspace_id"]) != "" {
+			return "", errors.New("project_result cannot be combined with workspace overrides")
+		}
+		projectTarget = &target
+		accountScopeID, workspaceID, workspacePath = scope.Principal.AccountScopeID, target.Reference.WorkspaceID, target.Root
+	} else {
+		accountScopeID, workspaceID, workspacePath, err = r.resolveWorkspaceScopeForEnvironments(scope, args, "manage_environments")
+		if err != nil {
+			return "", err
+		}
 	}
 
 	response := map[string]any{
@@ -501,6 +532,22 @@ func (r *Runtime) executeManageEnvironments(ctx context.Context, scope Workspace
 			if envID == "" {
 				return "", errors.New("environment_id is required for ensure (no workspace default test environment configured)")
 			}
+			if projectTarget != nil {
+				env, found, err := r.environmentsStore.Get(accountScopeID, workspaceID, envID)
+				if err != nil || !found || env.Provisioning.Strategy.Kind != environments.SourceStrategyKindLocalMount || env.Provisioning.Strategy.LocalMount == nil || (env.Provisioning.Strategy.LocalMount.HostPath != "" && env.Provisioning.Strategy.LocalMount.HostPath != projectTarget.Root) {
+					return "", errors.New("project result validation requires a local_mount environment with a dynamic host path or this exact result root; configured source provisioning cannot prove the selected commit")
+				}
+				resolver, ok := r.deploymentManager.(interface {
+					ResolveConnection(context.Context, string, string, string, *environments.Environment) (*environments.Connection, error)
+				})
+				if !ok {
+					return "", errors.New("validation connection resolver unavailable")
+				}
+				conn, err := resolver.ResolveConnection(ctx, accountScopeID, workspaceID, asString(args["connection_id"]), &env)
+				if err != nil || conn == nil || string(conn.Kind) != "local_docker" {
+					return "", errors.New("project result validation requires a local Docker connection; remote source identity is not proven")
+				}
+			}
 			subReq.EnvironmentID = envID
 			subReq.ConnectionID = strings.TrimSpace(asString(args["connection_id"]))
 			subReq.DeploymentName = strings.TrimSpace(asString(args["deployment_name"]))
@@ -515,6 +562,22 @@ func (r *Runtime) executeManageEnvironments(ctx context.Context, scope Workspace
 			if envID == "" {
 				return "", errors.New("environment_id is required for deploy action")
 			}
+			if projectTarget != nil {
+				env, found, err := r.environmentsStore.Get(accountScopeID, workspaceID, envID)
+				if err != nil || !found || env.Provisioning.Strategy.Kind != environments.SourceStrategyKindLocalMount || env.Provisioning.Strategy.LocalMount == nil || (env.Provisioning.Strategy.LocalMount.HostPath != "" && env.Provisioning.Strategy.LocalMount.HostPath != projectTarget.Root) {
+					return "", errors.New("project result validation requires a local_mount environment with a dynamic host path or this exact result root; configured source provisioning cannot prove the selected commit")
+				}
+				resolver, ok := r.deploymentManager.(interface {
+					ResolveConnection(context.Context, string, string, string, *environments.Environment) (*environments.Connection, error)
+				})
+				if !ok {
+					return "", errors.New("validation connection resolver unavailable")
+				}
+				conn, err := resolver.ResolveConnection(ctx, accountScopeID, workspaceID, asString(args["connection_id"]), &env)
+				if err != nil || conn == nil || string(conn.Kind) != "local_docker" {
+					return "", errors.New("project result validation requires a local Docker connection; remote source identity is not proven")
+				}
+			}
 			subReq.EnvironmentID = envID
 			subReq.ConnectionID = strings.TrimSpace(asString(args["connection_id"]))
 			subReq.DeploymentName = strings.TrimSpace(asString(args["deployment_name"]))
@@ -528,6 +591,12 @@ func (r *Runtime) executeManageEnvironments(ctx context.Context, scope Workspace
 			depID := strings.TrimSpace(asString(args["deployment_id"]))
 			if depID == "" {
 				return "", errors.New("deployment_id is required for exec action")
+			}
+			if projectTarget != nil {
+				dep, found, err := r.deploymentManager.GetDeployment(accountScopeID, workspaceID, depID)
+				if err != nil || !found || dep.WorkspacePath != projectTarget.Root {
+					return "", errors.New("validation deployment does not mount the selected isolated result; ensure a deployment with the exact project_result first")
+				}
 			}
 			cmd, err := parseCommandList(args["command"])
 			if err != nil {

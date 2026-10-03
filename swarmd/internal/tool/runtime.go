@@ -6565,6 +6565,9 @@ func (r *Runtime) executeManageWorktree(scope WorkspaceScope, args map[string]an
 	case "inspect", "list":
 		return r.manageWorktreeInspect(scope, args)
 	case "inspect_source", "retain_source":
+		if scope.PrimaryPath == "" && scope.RejectScopeExpansion {
+			return "", errors.New("manage-worktree inspect_source/retain_source require regular-task recovery lineage; for a linked project task use manage_projects inspect_files with project_id, task_id, attempt_id and source_session_id")
+		}
 		return r.manageWorktreeRecoverySource(scope, args)
 	case "recall":
 		return r.manageWorktreeRecall(scope, args)

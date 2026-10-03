@@ -415,6 +415,9 @@ func (m *DeploymentManager) EnsureDeployment(ctx context.Context, req EnsureDepl
 	// 5. Attempt reuse if enabled by policy
 	if env.DeploymentPolicy.Reuse {
 		for _, dep := range existingDeps {
+			if dep.WorkspacePath != deploymentWorkspacePath(env, req.WorkspacePath, string(conn.Kind)) {
+				continue
+			}
 			if dep.ConnectionID != conn.ID {
 				continue
 			}
@@ -548,6 +551,7 @@ func (m *DeploymentManager) EnsureDeployment(ctx context.Context, req EnsureDepl
 	}
 
 	newDep := environments.Deployment{
+		WorkspacePath:  deploymentWorkspacePath(env, req.WorkspacePath, string(conn.Kind)),
 		ID:             depID,
 		AccountScopeID: req.AccountScopeID,
 		WorkspaceID:    req.WorkspaceID,
@@ -725,6 +729,7 @@ func (m *DeploymentManager) DeployDeployment(ctx context.Context, req DeployDepl
 	}
 
 	newDep := environments.Deployment{
+		WorkspacePath:  deploymentWorkspacePath(env, req.WorkspacePath, string(conn.Kind)),
 		ID:             depID,
 		AccountScopeID: req.AccountScopeID,
 		WorkspaceID:    req.WorkspaceID,

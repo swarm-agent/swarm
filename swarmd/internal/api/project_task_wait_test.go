@@ -72,6 +72,9 @@ func TestProjectTaskWaitExecutorEndToEnd(t *testing.T) {
 						}
 						return provideriface.Response{FunctionCalls: []provideriface.FunctionCall{call}}, nil
 					case 2:
+						if !sessionsV3TraceInputContains(req.Input, "attempt_id") || !sessionsV3TraceInputContains(req.Input, "inspect_files") || !sessionsV3TraceInputContains(req.Input, "project_result") {
+							return provideriface.Response{}, fmt.Errorf("missing inspection guidance in resume: %+v", req.Input)
+						}
 						if !sessionsV3TraceInputContains(req.Input, "Delegated project task outcomes") || !sessionsV3TraceInputContains(req.Input, map[bool]string{true: "needs_review", false: "Report requests attention"}[wakeKind == "lifecycle"]) || !sessionsV3TraceInputContains(req.Input, "wait-task") {
 							return provideriface.Response{}, fmt.Errorf("missing outcome in resume: %+v", req.Input)
 						}

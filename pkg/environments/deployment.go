@@ -69,6 +69,7 @@ type Deployment struct {
 	AccountScopeID string              `json:"account_scope_id"`
 	WorkspaceID    string              `json:"workspace_id"`
 	EnvironmentID  string              `json:"environment_id"`
+	WorkspacePath  string              `json:"workspace_path,omitempty"` // Exact host tree selected at deployment; empty legacy values cannot prove result identity.
 	ConnectionID   string              `json:"connection_id"`
 	Name           string              `json:"name"`
 	Status         DeploymentStatus    `json:"status"`
