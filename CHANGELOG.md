@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Bump release version candidate to v0.1.47 for npm package publication with bypass-2fa authentication. Docs impact: none.
+
 - Fix desktop permission resolution tracking and filtering for pending permissions in Desktop V3 cache and remove unused permission selector import. Docs impact: none.
 
 - Expand `NODE_AUTH_TOKEN` correctly in `.npmrc` configuration during GitHub Actions npm release step. Docs impact: none.
