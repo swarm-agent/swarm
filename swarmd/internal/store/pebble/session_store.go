@@ -202,7 +202,16 @@ type SessionPlanAutomationIntent struct {
 	Definition         AutomationDefinition `json:"definition"`
 }
 
+// SessionPlanRequirement is a stable, user-facing executable acceptance criterion.
+type SessionPlanRequirement struct {
+	ID string `json:"id"`
+	Text string `json:"text"`
+	CheckpointID string `json:"checkpoint_id"`
+}
+
 type SessionPlanDocument struct {
+	Requirements []SessionPlanRequirement `json:"requirements,omitempty"`
+	RequirementChanges []string `json:"requirement_changes,omitempty"`
 	WorkerV2        *AutomationV2Settings        `json:"worker_v2,omitempty"`
 	AutomationV2    *AutomationV2Settings        `json:"automation_v2,omitempty"`
 	Automation      *SessionPlanAutomationIntent `json:"automation,omitempty"`
