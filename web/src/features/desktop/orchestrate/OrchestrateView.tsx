@@ -5732,7 +5732,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
         }} />
 
         <ProjectConversationSidebar projectId={selectedProjectSegment} projectName={selectedProject?.name}
-          selectedId={routeConversationId} sessions={conversations.sessions} loading={conversations.loading}
+          selectedId={routeConversationId} sessions={conversations.sessions} rows={conversations.rows} loading={conversations.loading}
           creating={creatingConversation} error={projectRouteError || conversationError || conversations.error}
           onCreate={() => void newConversation()}
           onRetry={() => { conversations.refresh(); if (routeConversationId && !admittedParentId) setAdmissionAttempt(value => value + 1) }}
