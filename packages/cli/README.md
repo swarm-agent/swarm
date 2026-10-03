@@ -1,4 +1,4 @@
-# @swarm-agent/cli — unpublished Linux headless candidate
+# @swarmagent/cli — unpublished Linux headless candidate
 
 A thin Node 22+ launcher for a **local** Docker or rootless Podman engine. Installs
 are inert: no lifecycle scripts, daemon downloads, image pulls or container starts.

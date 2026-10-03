@@ -1,8 +1,8 @@
 import { realpath } from 'node:fs/promises';
-import { SwarmNotFoundError } from '@swarm-agent/sdk';
+import { SwarmNotFoundError } from '@swarmagent/sdk';
 import { reject, text } from './boundary.mjs';
 
-/** @param {import('@swarm-agent/sdk').SwarmClient} sdk */
+/** @param {import('@swarmagent/sdk').SwarmClient} sdk */
 export function operations(sdk, project = '/project') {
   async function workspace(path) {
     text(path, 512);

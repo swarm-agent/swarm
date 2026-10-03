@@ -1,6 +1,6 @@
 # Custom agent hub
 
-A small, editable UI over `@swarm-agent/sdk`, not a new orchestration backend. Swap its
+A small, editable UI over `@swarmagent/sdk`, not a new orchestration backend. Swap its
 HTML/CSS for any experience. Application agents, context, conversations, project
 links and worker links persist in Swarm. The browser keeps no authoritative state.
 
