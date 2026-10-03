@@ -1,8 +1,8 @@
-# @swarm/sdk
+# @swarm-agent/sdk
 
 Official TypeScript SDK for [Swarm](https://github.com/swarm-agent/swarm), the local-first AI coding workspace.
 
-`@swarm/sdk` provides a typed, zero-dependency client to interact programmatically with the Swarm daemon (`swarmd`) over HTTP and local Unix domain sockets.
+`@swarm-agent/sdk` provides a typed, zero-dependency client to interact programmatically with the Swarm daemon (`swarmd`) over HTTP and local Unix domain sockets.
 
 ## Features
 
@@ -21,7 +21,7 @@ from a clean consumer directory (no Swarm checkout or Desktop required):
 
 <copy>
 npm install "$SDK_TARBALL"
-node --input-type=module -e "import { SwarmClient } from '@swarm/sdk'; console.log(typeof SwarmClient)"
+node --input-type=module -e "import { SwarmClient } from '@swarm-agent/sdk'; console.log(typeof SwarmClient)"
 </copy>
 
 For maintainers, the SDK builds independently with its own locked dev dependencies:
@@ -38,11 +38,11 @@ example, not source tests or node_modules. `prepack` builds locally; there are n
 install/prepare hooks. TypeScript/tsx are build/test tools, not runtime dependencies.
 CommonJS `require` and non-Node runtimes are not validated by this packaging step.
 
-For the headless container, use the matching `@swarm/cli` candidate and explicitly
+For the headless container, use the matching `@swarm-agent/cli` candidate and explicitly
 export a scoped token through `swarm-headless setup -- sdk-token`. Connect to
 `http://127.0.0.1:7783`; **do not** use Desktop bootstrap or a privileged socket.
 The headless listener allows session operations only, not the complete API below.
-The packaged `examples/headless-session.ts` imports `@swarm/sdk` and can be copied
+The packaged `examples/headless-session.ts` imports `@swarm-agent/sdk` and can be copied
 into your consumer and run with an explicitly installed `tsx` runner. Protect its
 `SWARM_SDK_TOKEN_FILE` (0600); the example asks before each tool approval and uses
 explicit refresh, not timer polling. Live agent verification is a separate step.
@@ -52,7 +52,7 @@ explicit refresh, not timer polling. Live agent verification is a separate step.
 ### 1. Initialize Client
 
 ```typescript
-import { createSwarmClient } from '@swarm/sdk';
+import { createSwarmClient } from '@swarm-agent/sdk';
 
 // Connect to local Swarm daemon (defaults to http://127.0.0.1:18080 or SWARM_API_URL)
 const client = createSwarmClient({
@@ -222,7 +222,7 @@ const deliverable = await client.deliverables.submit({
     posts: [
       { text: '1/3 Announcing our new distributed agent architecture...' },
       { text: '2/3 Run workers in the cloud, review in your local mailbox.' },
-      { text: '3/3 Try it today with @swarm/sdk.' }
+      { text: '3/3 Try it today with @swarm-agent/sdk.' }
     ]
   },
   action_contract: {
@@ -267,7 +267,7 @@ The deployment module supports both programmatic definitions and file-driven wor
 Use pre-tuned presets (`latency-optimized`, `zero-idle-cost`, `free-tier-vm`, `always-on`) or define a custom `swarm.deploy.json`:
 
 ```typescript
-import { createSwarmClient } from '@swarm/sdk';
+import { createSwarmClient } from '@swarm-agent/sdk';
 
 const client = createSwarmClient();
 
@@ -419,10 +419,10 @@ gcloud compute instances add-metadata swarm-free-vm \
 
 #### Multi-Cloud Extensibility
 
-The `@swarm/sdk` deployment architecture is designed for multi-cloud extensibility. Custom providers (for AWS ECS, Azure Container Apps, Fly.io, or Kubernetes) can be registered at runtime:
+The `@swarm-agent/sdk` deployment architecture is designed for multi-cloud extensibility. Custom providers (for AWS ECS, Azure Container Apps, Fly.io, or Kubernetes) can be registered at runtime:
 
 ```typescript
-import type { CloudDeployProvider } from '@swarm/sdk';
+import type { CloudDeployProvider } from '@swarm-agent/sdk';
 
 class CustomCloudProvider implements CloudDeployProvider {
   readonly target = 'my-cloud';
@@ -442,7 +442,7 @@ client.deploy.registerProvider(new CustomCloudProvider());
 All failed API responses throw typed `SwarmApiError` instances:
 
 ```typescript
-import { SwarmForbiddenError, SwarmNotFoundError, SwarmTimeoutError } from '@swarm/sdk';
+import { SwarmForbiddenError, SwarmNotFoundError, SwarmTimeoutError } from '@swarm-agent/sdk';
 
 try {
   await client.sessions.get('non_existent_session');

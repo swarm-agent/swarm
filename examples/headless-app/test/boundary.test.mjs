@@ -144,7 +144,7 @@ test('authenticated stream forwards watcher state and disposes on disconnect', {
 // Purpose: the real daemon returns 404 before first model setup. The onboarding
 // screen must remain usable while preserving all other settings failures.
 test('fresh model settings absence does not hide provider onboarding', async () => {
-  const { SwarmNotFoundError } = await import('@swarm/sdk');
+  const { SwarmNotFoundError } = await import('@swarm-agent/sdk');
   const sdk = { onboarding: { get: async () => ({ identity: { bootstrapped: true } }) },
     settings: { providers: async () => [{ id: 'codex', ready: false }], agentModels: async () => { throw new SwarmNotFoundError('not configured'); } },
     auth: { credentials: { list: async () => ({ records: [] }) } } };

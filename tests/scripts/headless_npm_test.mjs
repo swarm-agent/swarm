@@ -37,7 +37,7 @@ try {
   for (const [dir, kind] of [[sdk, 'sdk'], [cli, 'cli']]) {
     const manifest = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'));
     for (const hook of ['preinstall', 'install', 'postinstall', 'prepare']) assert.equal(manifest.scripts?.[hook], undefined);
-    assert.equal(Object.keys(manifest.dependencies || {}).length, 0);
+    assert.deepEqual(Object.keys(manifest.dependencies || {}), kind === 'sdk' ? ['ws'] : []);
     const stdout = run('npm', ['pack', '--json', '--pack-destination', output], dir);
     const start = stdout.indexOf('[\n');
     const receipt = JSON.parse(stdout.slice(start))[0];
@@ -46,7 +46,7 @@ try {
     assert.ok(!paths.some(p => /node_modules|__tests__|\.env|stale\.js|\.map$/.test(p)));
     for (const p of paths) {
       const allowed = kind === 'sdk'
-        ? /^(package\.json|README\.md|LICENSE|examples\/headless-session\.ts|dist\/.+\.(js|d\.ts))$/
+        ? /^(package\.json|README\.md|APPLICATIONS\.md|HEADLESS_UI\.md|LICENSE|examples\/headless-session\.ts|dist\/.+\.(js|d\.ts))$/
         : /^(package\.json|README\.md|LICENSE|runtime-image\.json|bin\/swarm-headless\.js|src\/launcher\.js)$/;
       assert.match(p, allowed);
     }
@@ -60,14 +60,14 @@ try {
   run('npm', ['install', '--offline', '--no-audit', '--no-fund', ...packed.map(p => p.tarball)], consumer);
   assert.ok(!existsSync(sentinel), 'installation invoked a container engine');
   writeFileSync(join(consumer, 'check.mjs'), `import assert from 'node:assert/strict';
-import { SwarmClient, createSwarmClient } from '@swarm/sdk';
+import { SwarmClient, createSwarmClient } from '@swarm-agent/sdk';
 const client = new SwarmClient({ baseUrl: 'http://127.0.0.1:7783' });
 assert.equal(typeof client.sessions.create, 'function');
 assert.equal(typeof createSwarmClient, 'function');
 `);
   run(process.execPath, ['check.mjs'], consumer);
-  cpSync(join(consumer, 'node_modules/@swarm/sdk/examples/headless-session.ts'), join(consumer, 'headless-session.ts'));
-  writeFileSync(join(consumer, 'check.ts'), `import { SwarmClient } from '@swarm/sdk';\nconst client: SwarmClient = new SwarmClient({ baseUrl: 'http://127.0.0.1:7783' });\nvoid client.sessions;\n`);
+  cpSync(join(consumer, 'node_modules/@swarm-agent/sdk/examples/headless-session.ts'), join(consumer, 'headless-session.ts'));
+  writeFileSync(join(consumer, 'check.ts'), `import { SwarmClient } from '@swarm-agent/sdk';\nconst client: SwarmClient = new SwarmClient({ baseUrl: 'http://127.0.0.1:7783' });\nvoid client.sessions;\n`);
   run(process.execPath, [join(sdk, 'node_modules/typescript/bin/tsc'), '--noEmit', '--strict', '--target', 'ES2022', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', '--typeRoots', join(sdk, 'node_modules/@types'), 'check.ts', 'headless-session.ts'], consumer);
   const launcher = join(consumer, 'node_modules/.bin/swarm-headless');
   assert.match(run(launcher, ['--help'], consumer), /start\|stop\|status\|setup/);

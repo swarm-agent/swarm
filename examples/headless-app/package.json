@@ -4,6 +4,6 @@
   "private": true,
   "type": "module",
   "engines": { "node": ">=22" },
-  "dependencies": { "@swarm/sdk": "file:../../packages/sdk" },
+  "dependencies": { "@swarm-agent/sdk": "file:../../packages/sdk" },
   "scripts": { "start": "node server.mjs", "test": "node --test --test-concurrency=1 test/*.test.mjs" }
 }
