@@ -675,6 +675,9 @@ func (s *SessionStore) ApplyV3SessionMutation(input V3SessionMutationInput) (V3S
 	if s == nil || s.store == nil {
 		return V3SessionMutationResult{}, errors.New("session store is not configured")
 	}
+	if input.Kind == V3SessionMutationClearContext {
+		return s.applyV3ClearContext(input)
+	}
 	var designProjectOutbox []*V3RealtimeOutboxRecord
 	defer func() {
 		for _, outbox := range designProjectOutbox {

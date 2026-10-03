@@ -899,14 +899,10 @@ test('OrchestrateView enforces explicit-only task selection lifecycle and clears
     'handleBackToOrchestrator must clear selectedTaskId when returning to orchestrator'
   )
 
-  // Invariant 5: Session boundary - orchestrator session reset clears selectedTaskId
-  assert.ok(
-    source.includes("const handleOrchestratorSessionReset = useCallback((newSessionId: string) => {\n    setActiveSessionId(newSessionId)\n    setSelectedTaskId('')"),
-    'handleOrchestratorSessionReset must clear selectedTaskId'
-  )
+  // Session admission clears task attachments; context clear must not navigate.
+  assert.ok(source.includes("setActiveSessionId(''); setActiveTaskId(null); setSelectedTaskId(''); setAttachedTaskIds([])"))
 
-  // New session replaces destructive clear-context; its asynchronous handler
-  // must preserve context on rejection or a route change (executed below).
+  // Clear context preserves selection on rejection or a late completion.
   assert.ok(source.includes('const handleClearContext = async () => {'))
 
   // Invariant 7: Project boundary - project switch clears selectedTaskId and activeTaskId
@@ -924,12 +920,11 @@ test('OrchestrateView enforces explicit-only task selection lifecycle and clears
   assert.ok(source.includes('handleRedeployJob'), 'handleRedeployJob must be preserved')
 })
 
-// Requirement: New session preserves existing context on failure or navigation,
-// and changes selection only after canonical creation succeeds. Regression:
-// clearing before a failed request loses the user's context; a late result can
-// switch the wrong conversation. Execute OrchestratorChatSidebar's actual
-// handler with controlled transport completion; this is not live E2E evidence.
-test('New session changes selection only after creation in the originating scope', async () => {
+// Requirement: Clear context preserves selected task attachments on failure or
+// navigation, never creates a session, and suppresses duplicate submissions.
+// Execute OrchestratorChatSidebar's handler to control late transport completion;
+// this is the narrowest async race test, not live E2E evidence.
+test('Clear context changes attachments only after success in the originating scope', async () => {
   const source = fs.readFileSync(path.join(__dirname, 'OrchestrateView.tsx'), 'utf8')
   const ast = ts.createSourceFile('OrchestrateView.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
   const sidebar = ast.statements.find((node): node is ts.FunctionDeclaration =>
@@ -943,31 +938,35 @@ test('New session changes selection only after creation in the originating scope
   }).outputText
   for (const outcome of ['success', 'failure', 'switched']) {
     const scope = { current: 'project:one' }
-    const request = { current: 'stable-request' }
+    const request = { current: { id: 'stable-request', seq: 3 } }
+    const inFlight = { current: false }
     const events: string[] = []
     let finish!: (id: string) => void
     let fail!: (error: Error) => void
     const pending = new Promise<string>((resolve, reject) => { finish = resolve; fail = reject })
-    const handler = new Function('project', 'clearingContext', 'repairSession', 'activeTask', 'clearScope', 'clearRequest',
-      'setClearError', 'setClearingContext', 'setClearSuccess', 'createProjectConversation', 'onDeselectTask',
-      'onOrchestratorSessionReset', 'setTimeout', `${compiled}; return create;`)(
-      { id: 'project' }, false, false, null, scope, request,
+    const handler = new Function('project', 'clearInFlight', 'repairSession', 'activeTask', 'clearScope', 'clearRequest',
+      'setClearError', 'setClearingContext', 'setClearSuccess', 'clearSessionContext', 'onDeselectTask',
+      'sessionId', 'contextSequence', 'window', 'ContextClearRejected', 'setAttempt', `${compiled}; return create;`)(
+      { id: 'project' }, inFlight, false, null, scope, request,
       (error: string) => { if (error) events.push(`error:${error}`) }, () => {}, () => {},
-      (projectId: string, requestId: string) => {
-        assert.deepEqual([projectId, requestId], ['project', 'stable-request'])
+      (sessionId: string, requestId: string, seq: number) => {
+        assert.deepEqual([sessionId, requestId, seq], ['one', 'stable-request', 3])
         return pending
-      }, () => events.push('deselect'), (id: string) => events.push(`select:${id}`), () => {},
+      }, () => events.push('deselect'), 'one', 3, { confirm: () => true }, class extends Error {}, () => {},
     )
     const running = handler()
-    assert.deepEqual(events, [], 'pending creation must not clear the current selection')
-    if (outcome === 'failure') fail(new Error('creation rejected'))
+    assert.deepEqual(events, [], 'pending clear must not clear the current selection')
+    assert.equal(inFlight.current, true)
+    await handler() // Duplicate click is a no-op while the first request waits.
+    if (outcome === 'failure') fail(new Error('clear failed'))
     else {
       if (outcome === 'switched') scope.current = 'project:other'
       finish('new-session')
     }
     await running
-    assert.deepEqual(events, outcome === 'success' ? ['deselect', 'select:new-session'] : outcome === 'failure' ? ['error:creation rejected'] : [])
-    assert.equal(request.current, outcome === 'success' ? '' : 'stable-request')
+    assert.deepEqual(events, outcome === 'success' ? ['deselect'] : outcome === 'failure' ? ['error:clear failed'] : [])
+    assert.deepEqual(request.current, outcome === 'success' ? null : { id: 'stable-request', seq: 3 })
+    assert.equal(inFlight.current, false)
   }
 })
 

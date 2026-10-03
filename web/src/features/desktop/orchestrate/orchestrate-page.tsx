@@ -9,8 +9,9 @@ export function OrchestratePage({
   onNavigateHome?: () => void
 }) {
   const identity = useRouterState({ select: state => {
-    const params = state.matches[state.matches.length - 1]?.params as { projectId?: string; sessionId?: string }
-    return `${params?.projectId || ''}:${params?.sessionId || ''}`
+    const params = state.matches[state.matches.length - 1]?.params as { projectId?: string }
+    // Session navigation replaces the conversation, not the project shell.
+    return params?.projectId || ''
   } })
   return (
     <OrchestrateView

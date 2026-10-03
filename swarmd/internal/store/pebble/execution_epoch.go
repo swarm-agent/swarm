@@ -101,26 +101,27 @@ type ExecutionProviderLifecycleState struct {
 }
 
 type BeginExecutionEpochInput struct {
-	SessionID           string                  `json:"session_id"`
-	UserID              string                  `json:"user_id,omitempty"`
-	AccountScopeID      string                  `json:"account_scope_id,omitempty"`
-	ClientRequestID     string                  `json:"client_request_id"`
-	PayloadHash         string                  `json:"payload_hash"`
-	EpochID             string                  `json:"epoch_id,omitempty"`
-	Reason              string                  `json:"reason,omitempty"`
-	PlanID              string                  `json:"plan_id,omitempty"`
-	CheckpointID        string                  `json:"checkpoint_id,omitempty"`
-	AttemptID           string                  `json:"attempt_id,omitempty"`
-	RunSessionID        string                  `json:"run_session_id,omitempty"`
-	ParentSessionID     string                  `json:"parent_session_id,omitempty"`
-	ResumeContext       bool                    `json:"resume_context,omitempty"`
-	SourceMessageID     string                  `json:"source_message_id,omitempty"`
-	FinalHandoffMessage *MessageSnapshot        `json:"final_handoff_message,omitempty"`
-	TriggerMessage      *MessageSnapshot        `json:"trigger_message,omitempty"`
-	SkipRunIntent       bool                    `json:"skip_run_intent,omitempty"`
-	ProviderPolicy      ExecutionProviderPolicy `json:"provider_policy,omitempty"`
-	RunID               string                  `json:"run_id,omitempty"`
-	NowUnixMs           int64                   `json:"now_unix_ms,omitempty"`
+	ExpectedLastEventSeq *uint64                 `json:"expected_last_event_seq,omitempty"`
+	SessionID            string                  `json:"session_id"`
+	UserID               string                  `json:"user_id,omitempty"`
+	AccountScopeID       string                  `json:"account_scope_id,omitempty"`
+	ClientRequestID      string                  `json:"client_request_id"`
+	PayloadHash          string                  `json:"payload_hash"`
+	EpochID              string                  `json:"epoch_id,omitempty"`
+	Reason               string                  `json:"reason,omitempty"`
+	PlanID               string                  `json:"plan_id,omitempty"`
+	CheckpointID         string                  `json:"checkpoint_id,omitempty"`
+	AttemptID            string                  `json:"attempt_id,omitempty"`
+	RunSessionID         string                  `json:"run_session_id,omitempty"`
+	ParentSessionID      string                  `json:"parent_session_id,omitempty"`
+	ResumeContext        bool                    `json:"resume_context,omitempty"`
+	SourceMessageID      string                  `json:"source_message_id,omitempty"`
+	FinalHandoffMessage  *MessageSnapshot        `json:"final_handoff_message,omitempty"`
+	TriggerMessage       *MessageSnapshot        `json:"trigger_message,omitempty"`
+	SkipRunIntent        bool                    `json:"skip_run_intent,omitempty"`
+	ProviderPolicy       ExecutionProviderPolicy `json:"provider_policy,omitempty"`
+	RunID                string                  `json:"run_id,omitempty"`
+	NowUnixMs            int64                   `json:"now_unix_ms,omitempty"`
 }
 
 type BeginExecutionEpochResult struct {
@@ -495,6 +496,11 @@ func (s *SessionStore) BeginExecutionEpoch(input BeginExecutionEpochInput) (Begi
 		if record.PayloadHash != input.PayloadHash {
 			return BeginExecutionEpochResult{}, ErrV3IdempotencyConflict
 		}
+		if input.Reason == ExecutionEpochReasonContextCleared {
+			if err := s.validateContextClear(input, true); err != nil {
+				return BeginExecutionEpochResult{}, err
+			}
+		}
 		epoch, exists, err := s.GetExecutionEpoch(input.SessionID, record.Result.RunID)
 		if err != nil || !exists {
 			return BeginExecutionEpochResult{}, fmt.Errorf("replayed execution epoch is unavailable: %w", err)
@@ -594,6 +600,11 @@ func (s *SessionStore) BeginExecutionEpoch(input BeginExecutionEpochInput) (Begi
 			runIntent = &intent
 		}
 		return BeginExecutionEpochResult{Epoch: epoch, Predecessor: predecessor, Event: event, Projection: projection, Outbox: outbox, FinalHandoffMessage: finalHandoffMessage, FinalHandoffEvent: finalHandoffEvent, FinalHandoffOutbox: finalHandoffOutbox, TriggerMessage: triggerMessage, TriggerEvent: triggerEvent, TriggerOutbox: triggerOutbox, RunIntent: runIntent, Replayed: true}, nil
+	}
+	if input.Reason == ExecutionEpochReasonContextCleared {
+		if err := s.validateContextClear(input, false); err != nil {
+			return BeginExecutionEpochResult{}, err
+		}
 	}
 	return s.beginFreshExecutionEpoch(input, idemKey)
 }
@@ -697,7 +708,21 @@ func (s *SessionStore) beginFreshExecutionEpoch(input BeginExecutionEpochInput, 
 			}
 		}
 	}
-	payload, _ := json.Marshal(map[string]any{"epoch_id": epoch.EpochID, "parent_epoch_id": epoch.ParentEpochID, "ordinal": epoch.Ordinal, "reason": epoch.Boundary.Reason, "plan_id": epoch.Boundary.PlanID, "checkpoint_id": epoch.Boundary.CheckpointID, "attempt_id": epoch.Boundary.AttemptID, "run_id": epoch.Boundary.RunID, "run_session_id": epoch.Boundary.RunSessionID, "parent_session_id": epoch.Boundary.ParentSessionID})
+	var clearedUsage *SessionUsageSummary
+	if input.Reason == ExecutionEpochReasonContextCleared {
+		usage, found, err := s.GetUsageSummary(input.SessionID)
+		if err != nil {
+			return BeginExecutionEpochResult{}, err
+		}
+		if found {
+			usage, err = s.prepareUsageReset(input.SessionID, usage)
+			if err != nil {
+				return BeginExecutionEpochResult{}, err
+			}
+			clearedUsage = &usage
+		}
+	}
+	payload, _ := json.Marshal(map[string]any{"usage_summary": clearedUsage, "epoch_id": epoch.EpochID, "parent_epoch_id": epoch.ParentEpochID, "ordinal": epoch.Ordinal, "reason": epoch.Boundary.Reason, "plan_id": epoch.Boundary.PlanID, "checkpoint_id": epoch.Boundary.CheckpointID, "attempt_id": epoch.Boundary.AttemptID, "run_id": epoch.Boundary.RunID, "run_session_id": epoch.Boundary.RunSessionID, "parent_session_id": epoch.Boundary.ParentSessionID})
 	event := V3SessionEvent{ID: fmt.Sprintf("v3evt_%s_%020d", input.SessionID, boundarySeq), SessionID: input.SessionID, Seq: boundarySeq, EventType: ExecutionEpochBoundaryEventType, Payload: payload, TsUnixMs: now, EpochID: epoch.EpochID}
 	projection := V3SessionProjection{SessionID: input.SessionID, LastEventSeq: epochLastSeq, ProjectionHighWatermarkSeq: epochLastSeq, UpdatedAt: now}
 	outboxCount := 1
@@ -802,6 +827,17 @@ func (s *SessionStore) beginFreshExecutionEpoch(input BeginExecutionEpochInput, 
 	idem := V3SessionIdempotencyRecord{SessionID: input.SessionID, UserID: strings.TrimSpace(input.UserID), AccountScopeID: input.AccountScopeID, Operation: V3SessionMutationBeginExecutionEpoch, ClientRequestID: input.ClientRequestID, Key: input.ClientRequestID, PayloadHash: input.PayloadHash, Kind: V3SessionMutationBeginExecutionEpoch, Status: V3SessionMutationStatusCompleted, Result: stored, CreatedAt: now, CompletedAt: now}
 	batch := s.store.NewBatch()
 	defer batch.Close()
+	if clearedUsage != nil {
+		raw, err := json.Marshal(clearedUsage)
+		if err != nil {
+			return BeginExecutionEpochResult{}, err
+		}
+		for _, key := range []string{KeySessionUsageSummary(input.SessionID), KeySessionUsageSummaryByAccount(input.AccountScopeID, input.SessionID)} {
+			if err := batch.Set([]byte(key), raw, nil); err != nil {
+				return BeginExecutionEpochResult{}, err
+			}
+		}
+	}
 	if err := setExecutionEpochInBatch(batch, predecessor, false); err != nil {
 		return BeginExecutionEpochResult{}, err
 	}

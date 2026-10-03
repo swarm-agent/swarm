@@ -19,6 +19,7 @@ import { createProjectConversation, projectConversationLink, projectConversation
 import { useProjectConversations } from '../runtime/project-conversations'
 import { ProjectNavigation } from './project-navigation'
 import { ProjectConversationSidebar } from './project-conversation-sidebar'
+import { clearSessionContext, ContextClearRejected } from '../session-v3/context-clear-api'
 import { projectRouteSegment, resolveProjectRoute } from './project-route'
 import { resolveDesktopChatRouteFromSession } from '../chat/services/chat-routing'
 import { integrationFailure, repairUnavailable, redactIntegrationDiagnostic, orchestratorDrafts, type IntegrationFailure } from './integration-recovery'
@@ -2935,7 +2936,6 @@ function OrchestratorChatSidebar({
   onRemoveAttachedTask,
   allTasks,
   onBackToOrchestrator,
-  onOrchestratorSessionReset,
   onDeselectTask,
   selectedWorker,
   currentSelectedWorker,
@@ -2959,7 +2959,6 @@ function OrchestratorChatSidebar({
   onRemoveAttachedTask?: (id: string) => void
   allTasks?: RunningTask[]
   onBackToOrchestrator?: () => void
-  onOrchestratorSessionReset?: (newSessionId: string) => void
   onDeselectTask?: () => void
 }) {
   const [error, setError] = useState(false)
@@ -3013,35 +3012,37 @@ function OrchestratorChatSidebar({
   )
 
   const [clearError, setClearError] = useState('')
-  const clearRequest = useRef('')
+  const clearRequest = useRef<{ id: string; seq: number } | null>(null)
+  const clearInFlight = useRef(false)
+  const contextSequence = useDesktopV3CacheSelector(useCallback(state => state.projectionsBySession[sessionId]?.last_event_seq, [sessionId]))
   const clearScope = useRef(`${project?.id}:${sessionId}`)
   clearScope.current = `${project?.id}:${sessionId}`
   useEffect(() => { clearScope.current = `${project?.id}:${sessionId}`; return () => { clearScope.current = '' } }, [project?.id, sessionId])
-  useEffect(() => { clearRequest.current = ''; setClearError(''); setClearSuccess(false); setClearingContext(false) }, [project?.id, sessionId])
+  useEffect(() => { clearRequest.current = null; setClearError(''); setClearSuccess(false); setClearingContext(false) }, [project?.id, sessionId])
 
   const handleClearContext = async () => {
-    if (!project?.id || clearingContext || repairSession || activeTask) return
+    if (!project?.id || clearInFlight.current || repairSession || activeTask || contextSequence === undefined) return
+    if (!window.confirm('Clear AI context for this session? Saved messages remain in history. No new session will be created. Active work or plans must be finished first.')) return
+    clearInFlight.current = true
     const scope = clearScope.current
     setClearError('')
     setClearingContext(true)
     setClearSuccess(false)
     try {
-      clearRequest.current ||= `desktop-v3-create:${crypto.randomUUID()}`
-      const session_id = await createProjectConversation(project.id, clearRequest.current)
-      const res = { ok: true, session_id }
+      clearRequest.current ||= { id: `desktop-v3-clear:${crypto.randomUUID()}`, seq: contextSequence }
+      await clearSessionContext(sessionId, clearRequest.current.id, clearRequest.current.seq)
       if (clearScope.current !== scope) return
-      if (res?.ok && res.session_id) {
-        clearRequest.current = ''
-        onDeselectTask?.()
-        onOrchestratorSessionReset?.(res.session_id)
-        setClearSuccess(true)
-        setTimeout(() => setClearSuccess(false), 2500)
-      } else {
-        throw new Error('Context reset returned no authoritative session. Please retry.')
-      }
+      clearRequest.current = null
+      onDeselectTask?.()
+      setClearSuccess(true)
     } catch (e) {
-      if (clearScope.current === scope) setClearError(e instanceof Error ? e.message : 'Failed to clear orchestrator context.')
+      if (clearScope.current === scope) {
+        // Keep request identity on uncertain failures so retry cannot clear twice.
+        if (e instanceof ContextClearRejected) { clearRequest.current = null; setAttempt(value => value + 1) }
+        setClearError(e instanceof Error ? e.message : 'Failed to clear orchestrator context.')
+      }
     } finally {
+      clearInFlight.current = false
       if (clearScope.current === scope) setClearingContext(false)
     }
   }
@@ -3131,7 +3132,8 @@ function OrchestratorChatSidebar({
             key={`${project?.id}:${sessionId}`}
             contextControls={<>
               <ContextRemaining usage={sessionUsage} />
-              {!activeTask && <button type="button" onClick={() => void handleClearContext()} disabled={clearingContext || repairSession} data-testid="clear-orchestrator-context-btn">{clearingContext ? 'Creating…' : clearSuccess ? 'Created!' : 'New session'}</button>}
+              {!activeTask && <button type="button" onClick={() => void handleClearContext()} disabled={clearingContext || repairSession || !ready || contextSequence === undefined} data-testid="clear-orchestrator-context-btn">{clearingContext ? 'Clearing…' : 'Clear context'}</button>}
+              {clearSuccess && <span role="status">Context cleared; history preserved.</span>}
               {clearError && <span role="alert">{clearError}</span>}
             </>}
             onCommandNavigate={(page) => { void navigate(projectPageLink(page)) }}
@@ -3231,6 +3233,10 @@ export function OrchestrateView({
   const selectedProjectSegment = resolvedProject ? projectRouteSegment(resolvedProject, projects) : ''
   const projectRouteError = projectsLoaded && routeProjectSegment && !resolvedProject ? 'Project not found or name is ambiguous. Choose a project.' : ''
   const admittedParentId = admittedConversationId(conversationAdmission, selectedProjectId, routeConversationId)
+  const conversationRouteScope = `${selectedProjectId}:${routeConversationId}`
+  const appliedConversationRouteScope = useRef(conversationRouteScope)
+  const currentConversationRouteScope = useRef(conversationRouteScope)
+  currentConversationRouteScope.current = conversationRouteScope
   const projectLink = (projectId: string, sessionId?: string) => {
     const project = projects.find(item => item.id === projectId)
     return projectConversationLink(project ? projectRouteSegment(project, projects) : projectId, sessionId)
@@ -4145,17 +4151,18 @@ export function OrchestrateView({
     conversationCreating.current = true
     setCreatingConversation(true); setConversationError('')
     const projectId = selectedProject.id
+    const routeScope = currentConversationRouteScope.current
     conversationRequest.current ||= `desktop-v3-create:${crypto.randomUUID()}`
     try {
       const sid = await createProjectConversation(projectId, conversationRequest.current)
       conversationRequest.current = ''
-      if (selectedProjectRef.current === projectId) {
+      if (selectedProjectRef.current === projectId && currentConversationRouteScope.current === routeScope) {
         responsiveLayout.setPanel('chat'); responsiveLayout.setNavigationOpen(false)
         void navigate(projectLink(projectId, sid))
       }
       return sid
     } catch (cause) {
-      if (selectedProjectRef.current === projectId) setConversationError(cause instanceof Error ? cause.message : 'Unable to create conversation')
+      if (selectedProjectRef.current === projectId && currentConversationRouteScope.current === routeScope) setConversationError(cause instanceof Error ? cause.message : 'Unable to create conversation')
       return null
     } finally { conversationCreating.current = false; setCreatingConversation(false) }
   }
@@ -4194,6 +4201,7 @@ export function OrchestrateView({
   // Verify provenance before mounting a transcript, composer or permission prompt.
   useEffect(() => {
     let active = true
+    appliedConversationRouteScope.current = conversationRouteScope
     setConversationAdmission(null)
     setActiveSessionId(''); setActiveTaskId(null); setSelectedTaskId(''); setAttachedTaskIds([])
     setConversationError(''); conversationRequest.current = ''
@@ -4234,13 +4242,6 @@ export function OrchestrateView({
     setWorkerCreationRequested(false)
     setActiveSessionId(admittedParentId)
   }
-
-  const handleOrchestratorSessionReset = useCallback((newSessionId: string) => {
-    setActiveSessionId(newSessionId)
-    setSelectedTaskId('')
-    if (selectedProjectSegment) void navigate(projectConversationLink(selectedProjectSegment, newSessionId))
-    void selectAndHydrateDesktopV3Session(newSessionId)
-  }, [selectedProjectSegment, navigate])
 
   // Media handling: file uploads, pasted docs, tagging, and studio library integration
   const [shelfFailedFiles, setShelfFailedFiles] = useState<File[]>([])
@@ -7022,7 +7023,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
           PANEL 3: RIGHT PANEL (CANONICAL DESKTOP V3 AI CHAT SIDEBAR)
          ───────────────────────────────────────────────────────────── */}
       {workerChatOpen && workerChatError && <div role="alert" className="max-w-sm p-4 text-sm text-red-300">{workerChatError}<button className="ml-2 underline" onClick={() => setWorkerChatError('')}>Dismiss</button></div>}
-      {activeSessionId && selectedProject && ((activeTaskId && tasks.some(task => task.id === activeTaskId && (extractTaskSessionIds(task).includes(activeSessionId) || taskOutcome(task).repairSessionId === activeSessionId))) || (admittedParentId && activeSessionId === admittedParentId)) ? (
+      {appliedConversationRouteScope.current === conversationRouteScope && activeSessionId && selectedProject && ((activeTaskId && tasks.some(task => task.id === activeTaskId && (extractTaskSessionIds(task).includes(activeSessionId) || taskOutcome(task).repairSessionId === activeSessionId))) || (admittedParentId && activeSessionId === admittedParentId)) ? (
         // Keep the chat bounded to the page, below the optional worker header.
         <div className="swarm-conversation-panel flex min-h-0 shrink-0 flex-col">
         {activeNavTab === 'workers' && workerChatOpen && <div className="flex max-w-[440px] shrink-0 items-center justify-between gap-3 p-3 text-xs text-slate-300"><span>{workerCreationRequested ? 'Add worker: describe its job to Orchestrator below. Nothing runs until you approve.' : 'Discuss this worker with Orchestrator'}</span><button onClick={() => { setWorkerChatOpen(false); setWorkerCreationRequested(false) }}>Close</button></div>}
@@ -7046,7 +7047,6 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
           onRemoveAttachedTask={id => setAttachedTaskIds(ids => ids.filter(value => value !== id))}
           allTasks={tasks}
           onBackToOrchestrator={handleBackToOrchestrator}
-          onOrchestratorSessionReset={handleOrchestratorSessionReset}
           onDeselectTask={handleDeselectTask}
           selectedWorker={selectedWorker}
           currentSelectedWorker={() => selectedWorkerRef.current}

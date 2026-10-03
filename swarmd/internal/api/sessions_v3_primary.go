@@ -327,6 +327,8 @@ func (s *Server) handleSessionV3PrimaryByID(w http.ResponseWriter, r *http.Reque
 		s.handleSessionV3PrimaryRunStop(w, r, principal, sessionID)
 	case "run/stream":
 		s.handleSessionV3PrimaryRunStreamControl(w, r, sessionID, principal)
+	case "context/clear":
+		s.handleSessionV3ClearContext(w, r, principal, sessionID)
 	case "compact":
 		s.handleSessionV3PrimaryCompact(w, r, principal, sessionID)
 	case "settings":

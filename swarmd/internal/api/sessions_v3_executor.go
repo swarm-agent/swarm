@@ -4548,6 +4548,9 @@ func (e *sessionV3Executor) sessionV3ProviderContextMessages(job sessionV3Execut
 }
 
 func (e *sessionV3Executor) sessionV3ProviderFinalHandoffContextMessages(sessionID string, epoch pebblestore.ExecutionEpoch, messages []pebblestore.MessageSnapshot) ([]pebblestore.MessageSnapshot, error) {
+	if epoch.Boundary.Reason == pebblestore.ExecutionEpochReasonContextCleared {
+		return messages, nil
+	}
 	parentEpochID := strings.TrimSpace(epoch.ParentEpochID)
 	if parentEpochID == "" {
 		return messages, nil
@@ -4581,7 +4584,7 @@ func (e *sessionV3Executor) sessionV3ProviderResumeContextMessages(sessionID str
 	if parentEpochID == "" {
 		return messages, nil
 	}
-	if strings.EqualFold(strings.TrimSpace(epoch.Boundary.Reason), "final_plan_handoff") ||
+	if epoch.Boundary.Reason == pebblestore.ExecutionEpochReasonContextCleared || strings.EqualFold(strings.TrimSpace(epoch.Boundary.Reason), "final_plan_handoff") ||
 		strings.HasPrefix(strings.TrimSpace(epoch.Boundary.Reason), "context_compaction_") {
 		// Compaction checkpoints and final handoffs deliberately start fresh
 		// provider-context epochs. Replaying this epoch's parent would cross
