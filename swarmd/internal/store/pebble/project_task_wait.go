@@ -133,6 +133,10 @@ func (s *SessionStore) prepareProjectTaskWait(input *V3SessionMutationInput) err
 			return err
 		}
 		status, summary := "cancelled", "Selected task was removed or archived."
+		title := "Task"
+		if ok {
+			title = string([]rune(task.Title)[:min(len([]rune(task.Title)), 200)])
+		}
 		if ok && !task.Archived {
 			task.EnsureTaskAttempts()
 			a := task.ActiveAttempt()
@@ -162,7 +166,7 @@ func (s *SessionStore) prepareProjectTaskWait(input *V3SessionMutationInput) err
 		if len(summary) > 2000 {
 			summary = string([]rune(summary)[:min(len([]rune(summary)), 500)])
 		}
-		rows = append(rows, map[string]string{"task_id": target.TaskID, "attempt_id": target.AttemptID, "session_id": target.SessionID, "status": status, "summary": summary})
+		rows = append(rows, map[string]string{"task_id": target.TaskID, "attempt_id": target.AttemptID, "session_id": target.SessionID, "title": title, "status": status, "summary": summary})
 	}
 	reportReady, err := s.projectTaskUpdateWakeEligible(owner)
 	if err != nil {

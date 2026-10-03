@@ -49,9 +49,14 @@ func TestProjectTaskWaitExecutorEndToEnd(t *testing.T) {
 				if err := sessions.Store().PutProjectTask(p.AccountScopeID, &pebblestore.ProjectTaskRecord{ID: "wait-task", ProjectID: "wait-project", Title: "Delegated audit", Agent: "finder", SessionID: "wait-child", Status: "in_progress"}); err != nil {
 					t.Fatal(err)
 				}
-				var calls atomic.Int32
+				var calls, activeProviders atomic.Int32
+				var concurrentProvider atomic.Bool
 				runner := &sessionsV3RecordingProviderRunner{id: "codex"}
 				runner.handler = func(ctx context.Context, req provideriface.Request, _ func(provideriface.StreamEvent)) (provideriface.Response, error) {
+					if activeProviders.Add(1) != 1 {
+						concurrentProvider.Store(true)
+					}
+					defer activeProviders.Add(-1)
 					switch calls.Add(1) {
 					case 1:
 						call := provideriface.FunctionCall{CallID: "wait-call", Name: "manage_projects", Arguments: `{"action":"wait_tasks","project_id":"wait-project","task_ids":["wait-task"]}`}
@@ -164,6 +169,9 @@ func TestProjectTaskWaitExecutorEndToEnd(t *testing.T) {
 					time.Sleep(time.Millisecond)
 				}
 				state, _, _ := sessions.GetSessionRunState(parent.ID)
+				if concurrentProvider.Load() || activeProviders.Load() != 0 {
+					t.Fatal("parent provider executions overlapped or remained active")
+				}
 				if calls.Load() != 2 || state.Status != "completed" || state.RunID != pebblestore.ProjectTaskWaitResumeID(owner.RunID) {
 					t.Fatalf("resume calls=%d state=%+v", calls.Load(), state)
 				}

@@ -87,6 +87,29 @@ claim of exactly-once remote execution. Pre-existing runs without the new captur
 fence fail closed; a new explicit user run is required rather than inferred
 ownership or replay of an old goal.
 
+## Desktop presentation and future goal consumers
+
+Desktop derives report cards from canonical session events: task sessions show
+recorded reports without claiming delivery; parent conversations show consumed
+reports from `session.task.delivered`. Stable source event identities suppress
+replay duplicates. These cards use escaped plain text, not executable Markdown
+or tool definitions. Outcome system messages remain intact for provider context
+but render as bounded title/status/summary cards, never raw JSON bubbles. Unknown
+or malformed outcome data produces a neutral notice rather than a payload dump.
+
+The run intent owns the lifecycle label: waiting is inactive; a queued task
+continuation says resuming, and a running continuation says resumed. A historical
+outcome card never claims the current run is active. Event-only receipts invalidate
+the chat selection through the existing canonical cache; there is no new polling.
+Only loaded canonical event history is displayed; no synthetic delivery receipt
+is inferred from a report, a wake or an assistant response.
+
+Future goals must reuse captured parent generation/epoch/message fences, exact
+attempt selection, the existing wait reconciler and provider-boundary receipts.
+A report is data, not objective approval; delivery is successful consumption,
+not incorporation. Preserve pending data on failure and the remote-ack ambiguity
+above. Do not add a goal-specific messaging, timer or concurrent wake executor.
+
 ## Validation
 
 Deterministic local tests cover canonical storage, ownership, concurrent wake
