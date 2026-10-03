@@ -56,4 +56,25 @@ func TestSessionFeedbackAdmission(t *testing.T) {
 	if task.Revision != 7 || task.Status != "in_progress" { t.Fatalf("note changed task: %+v", task) }
 	state, found, err := sessions.GetSessionRunState(snapshot.ID)
 	if err != nil || (found && state.Active) { t.Fatalf("note started run: %+v %v", state, err) }
+
+	// A retained terminal task can store evidence, but a note must not reopen it
+	// or invent delivery when no subsequent provider step exists.
+	task.Status = "completed"
+	if err := projects.PutProjectTask(p.AccountScopeID, task); err != nil { t.Fatal(err) }
+	args["prompt"] = "Terminal evidence only"
+	args["client_request_id"] = "terminal-note"
+	raw, err := rt.manageSessionsSendMessage(context.Background(), scope, args)
+	if err != nil { t.Fatal(err) }
+	var terminal map[string]any
+	if err := json.Unmarshal([]byte(raw), &terminal); err != nil { t.Fatal(err) }
+	if terminal["status"] != "saved/queued" || terminal["delivery_status"] != "unconfirmed" || terminal["incorporation_status"] != "unconfirmed" { t.Fatalf("terminal note overclaimed: %s", raw) }
+	task, _, _ = projects.GetProjectTask(p.AccountScopeID, "project", "task")
+	if task.Status != "completed" || task.Revision != 7 { t.Fatalf("terminal task reopened: %+v", task) }
+	messages, err = sessions.ListSessionMessages(snapshot.ID, 0, 100)
+	if err != nil || len(messages) != 2 { t.Fatalf("terminal messages: %+v %v", messages, err) }
+	for _, message := range messages {
+		if message.Metadata["source"] == "feedback_delivery" { t.Fatal("terminal note falsely delivered") }
+	}
+	state, found, err = sessions.GetSessionRunState(snapshot.ID)
+	if err != nil || (found && state.Active) { t.Fatalf("terminal note started run: %+v %v", state, err) }
 }

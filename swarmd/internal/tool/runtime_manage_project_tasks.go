@@ -53,10 +53,12 @@ func (r *Runtime) executeManageProjectTasksContext(ctx context.Context, scope Wo
 		owner, found, err := r.sessions.GetSession(task.PlanBinding.SessionID)
 		if err != nil { return "", err }
 		if !found || owner.AccountScopeID != account || owner.UserID != scope.Principal.UserID { return "", errors.New("plan session ownership mismatch") }
-		var patch sessionruntime.PlanDocumentPatch
-		raw, err := json.Marshal(args["document_patch"])
+		object, err := parseJSONEncodedObject(args["document_patch"], "document_patch")
 		if err != nil { return "", err }
-		if err = json.Unmarshal(raw, &patch); err != nil { return "", err }
+		var patch sessionruntime.PlanDocumentPatch
+		raw, err := json.Marshal(object)
+		if err != nil { return "", fmt.Errorf("invalid document_patch: %w", err) }
+		if err = json.Unmarshal(raw, &patch); err != nil { return "", fmt.Errorf("invalid document_patch: %w", err) }
 		ops := patch.Operations
 		if len(ops) == 0 { ops = []sessionruntime.PlanDocumentPatch{patch} }
 		for _, op := range ops {
