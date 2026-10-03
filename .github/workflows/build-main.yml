@@ -50,9 +50,8 @@ jobs:
           : "${GCP_WORKLOAD_IDENTITY_PROVIDER:?read-only WIF required}"
           : "${GCP_READ_SERVICE_ACCOUNT:?read-only service account required}"
           : "${GCP_ALLOWED_BUCKETS:?approved buckets required}"
-          if [[ -n "${GCP_RELEASE_POLICY_JSON:-}" ]]; then
-            printf '%s' "${GCP_RELEASE_POLICY_JSON}" > "${GCP_RELEASE_POLICY_PATH}"
-          fi
+          : "${GCP_RELEASE_POLICY_JSON:?protected release policy required; configure the repository-level GCP_RELEASE_POLICY_JSON variable or secret before retrying this consumer; do not rebuild GCP artifacts}"
+          printf '%s' "${GCP_RELEASE_POLICY_JSON}" > "${GCP_RELEASE_POLICY_PATH}"
           if [[ "${GITHUB_EVENT_NAME}" == workflow_dispatch ]]; then
             GCP_RELEASE_VERSION="dispatch-${GITHUB_SHA::12}"
           else

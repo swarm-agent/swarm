@@ -92,6 +92,45 @@ class PromotionTests(unittest.TestCase):
         self.assertLess(publish.index('gh release create'), publish.index('npm publish'))
         self.assertNotIn('packages: write', workflow.split('  publish-stable-release:', 1)[0])
 
+    def test_missing_release_policy_fails_before_consumer(self):
+        """Requirement: absent protected policy reports the configuration key, not
+        a generic credential failure or a request to rebuild. Authority: the
+        actual build-main input shell. Execute it with isolated fake tools to
+        prove missing/empty policy cannot invoke the consumer or write output;
+        explicit policy is passed unchanged. No cloud or credentials are used.
+        """
+        workflow = (ROOT / '.github/workflows/build-main.yml').read_text()
+        block = workflow.split('      - name: Consume exact merged GCP release input', 1)[1]
+        block = block.split('        run: |\n', 1)[1].split('      - name:', 1)[0]
+        program = '\n'.join(line[10:] for line in block.splitlines())
+        for value in (None, '', '{"schema":"explicit-test-policy"}'):
+            with self.subTest(value=value), tempfile.TemporaryDirectory() as tmp:
+                d = Path(tmp)
+                fake = d / 'python3'
+                fake.write_text('#!/bin/sh\nprintf invoked > "$CONSUMER_MARKER"\n')
+                fake.chmod(0o700)
+                env = dict(PATH=str(d), GCP_CHECK_APP_ID='1',
+                           GCP_WORKLOAD_IDENTITY_PROVIDER='explicit-provider',
+                           GCP_READ_SERVICE_ACCOUNT='explicit-reader',
+                           GCP_ALLOWED_BUCKETS='["explicit-bucket"]',
+                           GCP_RELEASE_POLICY_PATH=str(d / 'policy.json'),
+                           GITHUB_EVENT_NAME='workflow_dispatch', GITHUB_SHA='a' * 40,
+                           CONSUMER_MARKER=str(d / 'consumer'))
+                if value is not None:
+                    env['GCP_RELEASE_POLICY_JSON'] = value
+                result = subprocess.run(['/bin/bash', '-c', program], cwd=d,
+                                        env=env, text=True, capture_output=True, timeout=5)
+                if value:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual((d / 'policy.json').read_text(), value)
+                    self.assertEqual((d / 'consumer').read_text(), 'invoked')
+                else:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn('GCP_RELEASE_POLICY_JSON', result.stderr)
+                    self.assertIn('do not rebuild GCP artifacts', result.stderr)
+                    self.assertFalse((d / 'policy.json').exists())
+                    self.assertFalse((d / 'consumer').exists())
+
     def test_no_implicit_legacy_mode(self):
         result = subprocess.run(['bash', 'scripts/verify-release-evidence.sh', 'absent', 'absent', 'absent', 'absent'], cwd=ROOT, capture_output=True, text=True, timeout=5)
         self.assertNotEqual(result.returncode, 0)
