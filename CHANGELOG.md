@@ -6,6 +6,10 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Fail closed when the protected release policy is missing: stop the GitHub release consumer before artifact intake and identify the required configuration instead of requesting another build. Docs impact: none.
+- Bind release intake to the maintained qualification runner's exact-commit App checks and immutable artifact references; reject missing or mismatched qualification evidence. Docs impact: none.
+- Allow bounded time for native and headless OCI qualification and release promotion without weakening protected publication gates. Docs impact: none.
+
 - Refresh the headless container runtime to Ubuntu 26.04, upgrade inherited packages during image builds, and include the PCRE2 runtime dependency. Release builds continue to require digest-pinned base images and image vulnerability checks. Docs impact: none.
 
 - Connect qualified, digest-preserving GHCR publication to version-pinned CLI/SDK release packs; reject conflicting tags and require anonymous image access before GitHub/npm publication. No live publication readiness is claimed. Docs impact: first-publish permissions and visibility prerequisites in `docs/main-deploy-checklist.md`.
