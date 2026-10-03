@@ -18,8 +18,10 @@ export function useProjectConversations(projectId: string) {
   const [error, setError] = useState('')
   const [loadingProject, setLoadingProject] = useState('')
   const [revision, refresh] = useState(0)
+  const [loadedProject, setLoadedProject] = useState('')
   useEffect(() => {
     setError('')
+    setLoadedProject('')
     if (!projectId) { setLoadingProject(''); return }
     let active = true
     let running = false
@@ -45,7 +47,7 @@ export function useProjectConversations(projectId: string) {
             const hydrated = await postDesktopV3SyncHydrate(buildDesktopV3ChildCardHydrateInput(batch, { permissionSummary: true, activePlan: true }))
             if (active) dispatchDesktopV3Cache(hydrateResponseToAction(hydrated, batch))
           }
-          if (active) setError('')
+          if (active) { setError(''); setLoadedProject(projectId) }
         } while (dirty && active)
       } catch (cause) { if (active) setError(cause instanceof Error ? cause.message : 'Unable to load conversations') }
       finally { running = false; if (active) setLoadingProject('') }
@@ -79,5 +81,5 @@ export function useProjectConversations(projectId: string) {
     const acquisition = leases.reconcile(JSON.parse(idsKey) as string[])
     return acquisition.cancel
   }, [leases, idsKey])
-  return { sessions, rows, error, loading: loadingProject === projectId && Boolean(projectId), refresh: () => refresh(value => value + 1) }
+  return { sessions, rows, error, ready: Boolean(projectId) && loadedProject === projectId, loading: loadingProject === projectId && Boolean(projectId), refresh: () => refresh(value => value + 1) }
 }

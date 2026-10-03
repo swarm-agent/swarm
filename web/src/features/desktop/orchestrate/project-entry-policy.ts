@@ -1,4 +1,21 @@
-import type { SessionSnapshot } from '../state/desktop-v3-cache-types'
+import type { DesktopV3CacheState, SessionSnapshot } from '../state/desktop-v3-cache-types'
+import type { ProjectSessionRow } from '../state/project-session-rows'
+import { conversationProjectId } from './project-conversations'
+
+// Reuse only canonical, visible project ownership; unknown/deep links still need
+// server admission. Tombstones must never be bypassed by a retained full record.
+export function cachedProjectConversation(state: DesktopV3CacheState, projectId: string, sessionId: string): SessionSnapshot | undefined {
+  const record = state.sessionsById[sessionId]
+  return projectId && record?.kind === 'full' && record.session.id === sessionId
+    && !state.tombstonesBySession[sessionId] && !record.session.navigation_hidden
+    && conversationProjectId(record.session) === projectId ? record.session : undefined
+}
+
+// Match the default (unarchived) sidebar order, not creation order or a legacy
+// primary-session pointer. A partial/failed list must not choose the wrong row.
+export function firstProjectConversation(rows: ProjectSessionRow[], ready: boolean, loading: boolean, error: string): string {
+  return ready && !loading && !error ? rows.find(row => !row.archivedVersion)?.session.id || '' : ''
+}
 
 // sessionsV3SyncHydrateOptions caps resources.session_view at eight IDs.
 export function projectConversationBatches(ids: string[]): string[][] {
