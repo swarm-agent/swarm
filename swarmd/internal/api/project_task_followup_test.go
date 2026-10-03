@@ -393,8 +393,11 @@ func TestProjectTaskFollowupCreatesNewAutoSwarm(t *testing.T) {
 	}
 	// Hermetic executor receipt fixture: an already accepted wake is deduplicated.
 	// No executor goroutine or provider run is started by this deterministic test.
-	f.server.v3SessionExecutor = newSessionV3Executor(f.server)
-	f.server.v3SessionExecutor.inFlightRuns[sessionV3ExecutorRunKey(pending.SessionID, pending.ExecutionRunID())] = true
+	f.server.v3SessionExecutor = &sessionV3Executor{
+		server:       f.server,
+		ctx:          context.Background(),
+		inFlightRuns: map[string]bool{sessionV3ExecutorRunKey(pending.SessionID, pending.ExecutionRunID()): true},
+	}
 	response = f.callAPI("POST", path, body, p)
 	if response.Code != 200 {
 		t.Fatalf("launch: %d %s", response.Code, response.Body)
