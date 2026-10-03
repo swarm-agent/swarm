@@ -54,6 +54,13 @@ test('project dropdown, settings-only appearance, persisted PNG and authoritativ
     })
     const mount = async () => { await page.goto('https://project.test/fixture/swarm'); await page.addStyleTag({ content: css }); await page.addScriptTag({ content: bundle.outputFiles[0].text }); await page.getByLabel('Current project').waitFor() }
     await mount()
+    // Requirement: OrchestratorChatSidebar must not repeat the conversation/project
+    // title above the chat. The mounted DOM is the narrowest behavioral check for
+    // this extra header, while retaining the labeled sidebar and composer controls.
+    const chatSidebar = page.getByRole('complementary', { name: 'Swarm Orchestrator AI Chat', exact: true })
+    await chatSidebar.getByTestId('clear-orchestrator-context-btn').waitFor()
+    assert.equal(await chatSidebar.locator(':scope > header').count(), 0)
+    assert.equal(await page.getByLabel('Current project').inputValue(), project.id)
     // Requirement: OrchestrateView keeps a compact identity/bell header and a
     // distinct icon-segmented mode switch immediately before Tasks. Rendered
     // geometry catches the header/text regression that source checks cannot.

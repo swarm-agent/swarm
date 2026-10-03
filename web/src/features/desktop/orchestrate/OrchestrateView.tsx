@@ -2925,8 +2925,7 @@ function OrchestratorChatSidebar({
       data-swarm-transcript-lane="sidebar"
       className="swarm-ai-sidebar relative flex min-h-0 w-[440px] flex-1 flex-col overflow-hidden rounded-3xl border border-slate-800/80 shadow-[var(--shadow-panel)]"
     >
-      <header className="p-3 border-b border-slate-800"><h2>{currentSession?.title || 'New conversation'}</h2><p className="text-xs text-slate-400">{project?.name}</p></header>
-      {/* Top Header: Task Navigation vs Orchestrator Header */}
+      {/* Task and integration-repair navigation */}
       {activeTask ? (
         <div className="flex items-center justify-between p-3 border-b border-slate-800 bg-[#0a0f1d] text-xs">
           <div className="flex items-center gap-2.5 min-w-0">
