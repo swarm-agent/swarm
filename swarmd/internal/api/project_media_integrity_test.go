@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -12,7 +13,8 @@ import (
 // Purpose: handleProjects must never append the original media reference when
 // source conversion or PutSessionMediaAsset retention fails. Handler/store tests
 // are the narrowest layer proving error responses and unchanged durable shelves,
-// while successful image/document retention remains readable and account-scoped.
+// while successful image/video/document retention remains readable and account-scoped.
+// Reusing an immutable reference must return it without duplicating the shelf.
 func TestProjectMediaUploadIntegrity(t *testing.T) {
 	s, _, _ := newWorkspaceOverviewTopologyTestServer(t)
 	p := testPrincipal()
@@ -39,6 +41,8 @@ func TestProjectMediaUploadIntegrity(t *testing.T) {
 	}
 	for _, item := range []pebblestore.ProjectTaskMediaRef{
 		{URL: projectIdentityPNG(t), Filename: "icon.png"},
+		// MIME fixture only: retained video transport, not playback or model support.
+		{URL: "data:video/mp4;base64," + base64.StdEncoding.EncodeToString(append([]byte{0, 0, 0, 24}, []byte("ftypmp42\x00\x00\x00\x00mp42isom")...)), Kind: "video", MediaType: "video/mp4", Filename: "clip.mp4"},
 		{Data: "Plain text document", Kind: "doc", MediaType: "text/plain", Filename: "notes.txt"},
 		{URL: "data:text/plain;base64,ZW5jb2RlZCBkb2N1bWVudA==", Filename: "encoded.txt"},
 	} {
@@ -62,12 +66,15 @@ func TestProjectMediaUploadIntegrity(t *testing.T) {
 		}
 		// Existing durable references are reusable without reconversion.
 		w = projectIdentityRequest(t, s, p, http.MethodPost, path, media)
-		if w.Code != http.StatusCreated {
+		if w.Code != http.StatusCreated || json.Unmarshal(w.Body.Bytes(), &response) != nil {
 			t.Fatalf("reuse: %d %s", w.Code, w.Body.String())
+		}
+		if response.Media.ID != media.ID || response.Media.URL != media.URL || response.Media.DigestSHA256 != media.DigestSHA256 || response.Media.CreatedAt != media.CreatedAt {
+			t.Fatalf("reuse changed immutable reference: %+v", response.Media)
 		}
 	}
 	got, found, err := s.sessions.Store().GetProject(p.AccountScopeID, project.ID)
-	if err != nil || !found || len(got.UploadedMedia) != 6 {
+	if err != nil || !found || len(got.UploadedMedia) != 4 {
 		t.Fatalf("durable shelf: %+v %v", got, err)
 	}
 }

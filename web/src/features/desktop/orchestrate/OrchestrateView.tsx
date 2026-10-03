@@ -3317,6 +3317,9 @@ export function OrchestrateView({
   // Uploaded & Tagged Media State
   const [taggedMedia, setTaggedMedia] = useState<ProjectTaskMediaRef[]>([])
   const [isUploadingMedia, setIsUploadingMedia] = useState<boolean>(false)
+  // Synchronous admission guard: React state alone misses same-tick submission
+  // and overlapping uploads. Replacing this scope cancels late UI writes.
+  const mediaUploadScopeRef = useRef({ pending: 0, failedFiles: [] as File[], inFlight: new Set<File>() })
   const [isUploadedMediaExpanded, setIsUploadedMediaExpanded] = useState<boolean>(true)
   const [isPasteDocOpen, setIsPasteDocOpen] = useState<boolean>(false)
   const [pastedDocTitle, setPastedDocTitle] = useState<string>('')
@@ -3721,6 +3724,7 @@ export function OrchestrateView({
     setThemeError('')
     setShelfUploadError(null)
     setShelfFailedFiles([])
+    mediaUploadScopeRef.current = { pending: 0, failedFiles: [], inFlight: new Set<File>() }
     setIsUploadingMedia(false)
     setIsPasteDocOpen(false)
     setPastedDocTitle('')
@@ -4120,12 +4124,17 @@ export function OrchestrateView({
   const [shelfUploadError, setShelfUploadError] = useState<string | null>(null)
 
   const handleFileUpload = async (files: FileList | File[] | null) => {
-    if (!files || files.length === 0 || !selectedProject?.id) return
+    if (!files || files.length === 0 || !selectedProject?.id || isDeployingTaskRef.current) return
+    const scope = mediaUploadScopeRef.current
+    const fileArray = [...new Set(Array.from(files))].filter(file => !scope.inFlight.has(file))
+    if (fileArray.length === 0) return
+    fileArray.forEach(file => scope.inFlight.add(file))
+    const isCurrentUpload = () => mediaUploadScopeRef.current === scope && selectedProjectRef.current === selectedProject.id
+    scope.pending += 1
+    scope.failedFiles = scope.failedFiles.filter(file => !fileArray.includes(file))
+    setShelfFailedFiles(scope.failedFiles)
+    if (scope.failedFiles.length === 0) setShelfUploadError(null)
     setIsUploadingMedia(true)
-    setShelfUploadError(null)
-    setShelfFailedFiles([])
-    const fileArray = Array.from(files)
-    const failed: File[] = []
 
     try {
       for (const file of fileArray) {
@@ -4144,7 +4153,7 @@ export function OrchestrateView({
           let textData = ''
           if (kind === 'doc' && isDoc) {
             textData = await file.text()
-            if (selectedProjectRef.current !== selectedProject.id) return
+            if (!isCurrentUpload()) return
             if (taskIntent === 'video') {
               // Text stays in prompt for video task flow
               setNewTaskPrompt((prev) => (prev.trim() ? `${prev.trim()}\n\n${textData.trim()}` : textData.trim()))
@@ -4154,8 +4163,7 @@ export function OrchestrateView({
             if (taskIntent === 'video') {
               const validation = validateVideoAttachment(file, selectedVideoOption?.generationOptions)
               if (!validation.valid) {
-                setVideoAttachmentError(validation.error || 'Invalid video reference image')
-                continue
+                throw new Error(validation.error || 'Invalid video reference image')
               }
               setVideoAttachmentError(null)
             }
@@ -4167,7 +4175,7 @@ export function OrchestrateView({
             })
           }
 
-          if (selectedProjectRef.current !== selectedProject.id) return
+          if (!isCurrentUpload()) return
           const newMedia: ProjectTaskMediaRef = {
             id: `med_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
             title: file.name,
@@ -4190,7 +4198,7 @@ export function OrchestrateView({
           )
 
           if (!res?.media?.id || !res.media.kind || (!res.media.url && !res.media.data)) throw new Error('Upload returned no persisted media. Please retry.')
-          if (selectedProjectRef.current !== selectedProject.id) return
+          if (!isCurrentUpload()) return
           const savedMedia = res.media
           desktopProjects.setOptimisticMedia(selectedProject.id, (prev) => {
             if (prev.some((m) => m.id === savedMedia.id)) return prev
@@ -4207,19 +4215,19 @@ export function OrchestrateView({
           }
           desktopProjects.invalidate(selectedProject.id)
         } catch (fileErr: any) {
-          if (selectedProjectRef.current !== selectedProject.id) return
-          failed.push(file)
+          if (!isCurrentUpload()) return
+          if (!scope.failedFiles.includes(file)) scope.failedFiles = [...scope.failedFiles, file]
+          setShelfFailedFiles(scope.failedFiles)
           setShelfUploadError(fileErr?.message || `Failed to upload "${file.name}"`)
         }
       }
     } catch (err: any) {
-      if (selectedProjectRef.current !== selectedProject.id) return
+      if (!isCurrentUpload()) return
       setShelfUploadError(err?.message || 'Failed to upload media')
     } finally {
-      if (selectedProjectRef.current === selectedProject.id) {
-        if (failed.length > 0) setShelfFailedFiles(failed)
-        setIsUploadingMedia(false)
-      }
+      fileArray.forEach(file => scope.inFlight.delete(file))
+      scope.pending -= 1
+      if (isCurrentUpload()) setIsUploadingMedia(scope.pending > 0)
     }
   }
 
@@ -4712,6 +4720,14 @@ export function OrchestrateView({
   // Submit Task Proposal with Intent, Visual Controls & Auto-Approve Policy
   const handleDeployModalSubmit = async () => {
     if (isDeployingTaskRef.current) return
+    if (mediaUploadScopeRef.current.pending > 0 || isUploadingMedia) {
+      setDeployError('Wait for attachment uploads to finish before creating the task.')
+      return
+    }
+    if (mediaUploadScopeRef.current.failedFiles.length > 0) {
+      setDeployError('Retry failed attachments or explicitly discard them before creating the task.')
+      return
+    }
     const prompt = taskIntent === 'image' ? newTaskPrompt : newTaskPrompt.trim()
     if (!prompt.trim() || !selectedProject?.id) return
     const scenePrompts = taskIntent === 'video' ? videoScenePrompts.split('\n').map(value => value.trim()).filter(Boolean) : []
@@ -6962,7 +6978,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
 
             {/* Keep coding work distinct from media generation. */}
             <div className="space-y-3">
-              <fieldset className="min-w-0 rounded-xl border border-slate-800 bg-slate-950 p-2">
+              <fieldset disabled={isUploadingMedia || isDeployingTask} className="min-w-0 rounded-xl border border-slate-800 bg-slate-950 p-2">
                 <legend className="px-2 text-[11px] font-semibold text-slate-300">Coding</legend>
                 <div className="swarm-dialog-intents grid grid-cols-3 gap-1 text-[11px]">
                   <button
@@ -7013,7 +7029,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                   </button>
                 </div>
               </fieldset>
-              <fieldset className="min-w-0 rounded-xl border border-slate-800 bg-slate-950 p-2">
+              <fieldset disabled={isUploadingMedia || isDeployingTask} className="min-w-0 rounded-xl border border-slate-800 bg-slate-950 p-2">
                 <legend className="px-2 text-[11px] font-semibold text-slate-300">Media</legend>
                 <div className="swarm-dialog-intents grid grid-cols-3 gap-1 text-[11px]">
                   <button
@@ -7182,6 +7198,29 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
               </div>
             )}
 
+            {isUploadingMedia && (
+              <p role="status" className="text-xs text-blue-300">Uploading attachments… Task creation is paused until all uploads finish.</p>
+            )}
+            {(shelfUploadError || shelfFailedFiles.length > 0) && (
+              <div role="alert" className="space-y-2 rounded-lg border border-red-500/30 bg-red-950/30 p-3 text-xs text-red-300">
+                <p>{shelfUploadError}</p>
+                {shelfFailedFiles.length > 0 && (
+                  <>
+                    <p>Not attached: {shelfFailedFiles.map(file => file.name).join(', ')}</p>
+                    <div className="flex gap-3">
+                      <button type="button" disabled={isUploadingMedia || isDeployingTask} onClick={() => void handleFileUpload(shelfFailedFiles)} className="underline disabled:opacity-40">Retry failed attachments</button>
+                      <button type="button" disabled={isUploadingMedia || isDeployingTask} onClick={() => {
+                        mediaUploadScopeRef.current.failedFiles = []
+                        setShelfFailedFiles([])
+                        setShelfUploadError(null)
+                        setDeployError(null)
+                      }} className="underline disabled:opacity-40">Discard failed attachments</button>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+
             {/* Form inputs */}
             <div className="space-y-3 text-xs">
               <div>
@@ -7218,8 +7257,19 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                     }
                   }}
                   onPaste={(e) => {
-                    if (e.clipboardData.files && e.clipboardData.files.length > 0) {
-                      void handleFileUpload(e.clipboardData.files)
+                    // Some browsers expose pasted images only through items.
+                    // Use one representation, never both (which duplicates images).
+                    const files = Array.from(e.clipboardData.files || [])
+                    if (files.length === 0) {
+                      for (const item of Array.from(e.clipboardData.items || [])) {
+                        if (item.kind !== 'file') continue
+                        const file = item.getAsFile()
+                        if (file) files.push(file)
+                      }
+                    }
+                    if (files.length > 0) {
+                      if (!e.clipboardData.getData('text/plain')) e.preventDefault()
+                      void handleFileUpload(files)
                     }
                   }}
                 />
@@ -7238,7 +7288,12 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                         accept={taskIntent === 'video' ? 'image/png,image/jpeg,.png,.jpg,.jpeg' : undefined}
                         aria-label="Upload attachment"
                         className={taskIntent === 'image' || taskIntent === 'video' ? 'sr-only' : 'hidden'}
-                        onChange={(e) => void handleFileUpload(e.target.files)}
+                        disabled={isDeployingTask}
+                        onChange={(e) => {
+                          const files = Array.from(e.target.files || [])
+                          e.target.value = ''
+                          void handleFileUpload(files)
+                        }}
                       />
                     </label>
                     <button
@@ -7586,7 +7641,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
               </button>
               <button
                 type="button"
-                disabled={!newTaskPrompt.trim() || isDeployingTask}
+                disabled={!newTaskPrompt.trim() || isDeployingTask || isUploadingMedia || shelfFailedFiles.length > 0}
                 onClick={handleDeployModalSubmit}
                 className="flex items-center gap-1.5 px-5 py-2 rounded-lg text-xs font-bold text-white bg-blue-600 hover:bg-blue-500 shadow-md transition-all disabled:opacity-40 disabled:cursor-not-allowed"
               >

@@ -1984,6 +1984,19 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				}
 				updatedList := []pebblestore.ProjectTaskMediaRef{}
 				_, err = db.UpdateProject(p.AccountScopeID, projectID, func(p *pebblestore.ProjectRecord) error {
+					// Retention is content-addressed. A retry after a lost response
+					// must return the existing shelf entry, not append it again.
+					for _, existing := range p.UploadedMedia {
+						if existing.ID != item.ID {
+							continue
+						}
+						if existing.URL != item.URL || existing.Data != item.Data || existing.DigestSHA256 != item.DigestSHA256 || existing.SizeBytes != item.SizeBytes || existing.MediaType != item.MediaType || existing.Kind != item.Kind {
+							return errors.New("project media identity conflicts with an existing attachment")
+						}
+						item = existing
+						updatedList = p.UploadedMedia
+						return nil
+					}
 					p.UploadedMedia = append(p.UploadedMedia, item)
 					updatedList = p.UploadedMedia
 					return nil

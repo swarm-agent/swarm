@@ -144,7 +144,7 @@ func (s *Server) prepareProjectTaskAttachments(ctx context.Context, p identity.P
 	}
 	plan, err := runruntime.PreparePreSessionMediaBindings(runruntime.PreSessionMediaBindingInput{AccountScopeID: p.AccountScopeID, SessionID: candidate.ID, WorkspaceScope: candidate.WorkspacePath, Contract: contract, Staged: staged})
 	if err != nil {
-		return empty, nil, fmt.Errorf("task attachments unsupported by selected model %s/%s: %w", contract.ProviderID, contract.Model, err)
+		return empty, nil, fmt.Errorf("task attachments unsupported by selected model %s/%s: %w. Remove or convert the unsupported attachment, or explicitly select a model with compatible attachment support. For video, attach supported image frames and a text description if no configured adapter accepts video; model settings have not been changed", contract.ProviderID, contract.Model, err)
 	}
 	return plan, payloads, nil
 }

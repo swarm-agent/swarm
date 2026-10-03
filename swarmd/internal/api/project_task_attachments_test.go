@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -77,11 +78,11 @@ func TestProjectTaskAttachmentCoderDelivery(t *testing.T) {
 
 // Purpose: admission must intersect selected catalog and adapter capabilities
 // before any reservation, session, worktree, or run is created. Mixed batches,
-// unsupported documents, forged metadata and cross-account references must
+// unsupported documents/video, forged metadata and cross-account references must
 // reject without changing model settings or retaining a partial attachment batch.
 // The API/store layer observes all admission side effects without a live model.
 func TestProjectTaskAttachmentRejectionBeforeLaunch(t *testing.T) {
-	for _, name := range []string{"pdf", "text", "audio", "catalog-denied", "adapter-denied", "count", "bytes", "spoof", "digest", "foreign", "conflicting-source"} {
+	for _, name := range []string{"pdf", "text", "audio", "video", "catalog-denied", "adapter-denied", "count", "bytes", "spoof", "digest", "foreign", "conflicting-source"} {
 		t.Run(name, func(t *testing.T) {
 			f, project, input := projectAttachmentFixture(t)
 			switch name {
@@ -91,6 +92,13 @@ func TestProjectTaskAttachmentRejectionBeforeLaunch(t *testing.T) {
 				input.AttachedMedia = append(input.AttachedMedia, pebblestore.ProjectTaskMediaRef{Data: "requirements", Kind: "doc", MediaType: "text/plain", Filename: "spec.txt"})
 			case "audio":
 				input.AttachedMedia = append(input.AttachedMedia, pebblestore.ProjectTaskMediaRef{URL: "data:audio/wav;base64," + base64.StdEncoding.EncodeToString([]byte("RIFF0000WAVEfmt ")), Kind: "audio", MediaType: "audio/wav"})
+			case "video":
+				// Minimal MP4 MIME fixture: this tests admission, not decoding/playback.
+				video := append([]byte{0, 0, 0, 24}, []byte("ftypmp42\x00\x00\x00\x00mp42isom")...)
+				if got := pebblestore.DetectSessionMediaMIME(video); got != "video/mp4" {
+					t.Fatalf("video fixture MIME = %q", got)
+				}
+				input.AttachedMedia = []pebblestore.ProjectTaskMediaRef{{URL: "data:video/mp4;base64," + base64.StdEncoding.EncodeToString(video), Kind: "video", MediaType: "video/mp4", Filename: "clip.mp4"}}
 			case "catalog-denied":
 				catalog := pebblestore.NewModelCatalogStore(f.store)
 				if err := catalog.SetRecord(pebblestore.ModelCatalogRecord{Provider: "openai", Model: "gpt-media", Source: "test", SourceSnapshotID: "media-snapshot", SourceSnapshotVersion: "v1"}); err != nil {
@@ -122,6 +130,13 @@ func TestProjectTaskAttachmentRejectionBeforeLaunch(t *testing.T) {
 			_, err = f.server.CreateProjectTask(context.Background(), f.principal, project.ID, input)
 			if err == nil || !strings.Contains(err.Error(), "attachment") {
 				t.Fatalf("expected clear attachment rejection, got %v", err)
+			}
+			if name == "video" {
+				for _, guidance := range []string{"unsupported by selected model", "attach supported image frames", "model settings have not been changed"} {
+					if !strings.Contains(err.Error(), guidance) {
+						t.Fatalf("video rejection lacks actionable guidance %q: %v", guidance, err)
+					}
+				}
 			}
 			if task, found, err := f.sessions.Store().GetProjectTask(f.principal.AccountScopeID, project.ID, input.ID); err != nil || found {
 				t.Fatalf("rejected task reserved: %+v %v", task, err)
@@ -269,5 +284,104 @@ func TestProjectTaskAttachmentUsesConfiguredCoderModel(t *testing.T) {
 	session, found, err := f.sessions.GetSession(task.SessionID)
 	if err != nil || !found || session.Preference.Model != "gpt-media" || session.Preference.Provider != "openai" || task.Model != session.Preference.Model {
 		t.Fatalf("configured Coder model not preserved: %+v %v", session.Preference, err)
+	}
+}
+
+// Purpose: New Task first uploads to the project shelf and then passes the
+// returned reference to CreateProjectTask. Exercise that exact retained-source
+// boundary to distinguish UI intake loss from backend forwarding loss. The real
+// handler/store/provider-input builder proves byte delivery without a live model.
+// Replaying creation must preserve the prompt, multiple media and single owned seed.
+func TestProjectTaskAttachmentShelfImageDelivery(t *testing.T) {
+	f, project, input := projectAttachmentFixture(t)
+	w := projectIdentityRequest(t, f.server, f.principal, http.MethodPost, "/"+project.ID+"/media", input.AttachedMedia[0])
+	if w.Code != http.StatusCreated {
+		t.Fatalf("shelf upload: %d %s", w.Code, w.Body.String())
+	}
+	stored, found, err := f.sessions.Store().GetProject(f.principal.AccountScopeID, project.ID)
+	if err != nil || !found || len(stored.UploadedMedia) != 1 {
+		t.Fatalf("shelf reference absent: %+v %v", stored, err)
+	}
+	// Simulate a lost upload response followed by the same byte upload.
+	w = projectIdentityRequest(t, f.server, f.principal, http.MethodPost, "/"+project.ID+"/media", input.AttachedMedia[0])
+	if w.Code != http.StatusCreated {
+		t.Fatalf("shelf retry: %d %s", w.Code, w.Body.String())
+	}
+	retried, found, err := f.sessions.Store().GetProject(f.principal.AccountScopeID, project.ID)
+	if err != nil || !found || !bytes.Equal(mustJSON(t, stored.UploadedMedia), mustJSON(t, retried.UploadedMedia)) {
+		t.Fatalf("shelf retry duplicated or changed retained media: %+v %v", retried, err)
+	}
+	// A caller cannot reuse a shelf identity with a different immutable claim.
+	conflict := stored.UploadedMedia[0]
+	conflict.DigestSHA256 = strings.Repeat("0", 64)
+	w = projectIdentityRequest(t, f.server, f.principal, http.MethodPost, "/"+project.ID+"/media", conflict)
+	if w.Code < 400 {
+		t.Fatalf("conflicting shelf identity accepted: %d", w.Code)
+	}
+	afterConflict, found, err := f.sessions.Store().GetProject(f.principal.AccountScopeID, project.ID)
+	if err != nil || !found || !bytes.Equal(mustJSON(t, stored.UploadedMedia), mustJSON(t, afterConflict.UploadedMedia)) {
+		t.Fatalf("conflicting shelf identity mutated media: %+v %v", afterConflict, err)
+	}
+	// Distinct image bytes must both survive the shelf/seed/provider boundary.
+	secondImage := append(append([]byte(nil), mediaStagingAPIPNG...), byte(1))
+	secondRef := pebblestore.ProjectTaskMediaRef{URL: "data:image/png;base64," + base64.StdEncoding.EncodeToString(secondImage), Kind: "image", MediaType: "image/png", Filename: "second.png"}
+	w = projectIdentityRequest(t, f.server, f.principal, http.MethodPost, "/"+project.ID+"/media", secondRef)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("second shelf upload: %d %s", w.Code, w.Body.String())
+	}
+	stored, found, err = f.sessions.Store().GetProject(f.principal.AccountScopeID, project.ID)
+	if err != nil || !found || len(stored.UploadedMedia) != 2 {
+		t.Fatalf("second shelf reference absent: %+v %v", stored, err)
+	}
+	input.AttachedMedia = stored.UploadedMedia
+	if strings.HasPrefix(input.AttachedMedia[0].URL, "data:") || input.AttachedMedia[0].DigestSHA256 == "" {
+		t.Fatal("shelf did not produce an immutable retained reference")
+	}
+	task, err := f.server.CreateProjectTask(context.Background(), f.principal, project.ID, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, found, err := f.sessions.GetSession(task.SessionID)
+	if err != nil || !found {
+		t.Fatalf("session absent: %v", err)
+	}
+	messages, err := f.sessions.ListSessionMessages(session.ID, 0, 10)
+	if err != nil || len(messages) != 1 || len(messages[0].Media) != 2 {
+		t.Fatalf("shelf images missing from seed: %+v %v", messages, err)
+	}
+	if !strings.Contains(messages[0].Content, input.Prompt) {
+		t.Fatal("shelf attachment seed lost the associated prompt")
+	}
+	// Retry the identical request after retention; no additional seed or media.
+	replayed, err := f.server.CreateProjectTask(context.Background(), f.principal, project.ID, input)
+	if err != nil || replayed == nil || replayed.SessionID != task.SessionID {
+		t.Fatalf("attachment retry changed session: %+v %v", replayed, err)
+	}
+	after, err := f.sessions.ListSessionMessages(session.ID, 0, 10)
+	if err != nil || !bytes.Equal(mustJSON(t, messages), mustJSON(t, after)) {
+		t.Fatalf("attachment retry changed seed: %+v %v", after, err)
+	}
+	contract, err := f.server.routedSessionMediaContract(context.Background(), f.principal, session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	providerInput, err := f.server.v3SessionExecutor.sessionsV3ProviderInputWithMedia(sessionV3ResolvedRuntime{Session: session, MediaContract: contract}, messages, sessionsV3ProviderInputOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var delivered [][]byte
+	for _, message := range providerInput {
+		content, _ := message["content"].([]map[string]any)
+		for _, part := range content {
+			if payload, ok := part["media"].(provideriface.SessionMediaPayload); ok {
+				delivered = append(delivered, payload.Bytes)
+			}
+		}
+	}
+	if len(delivered) != 2 || !bytes.Equal(delivered[0], mediaStagingAPIPNG) || !bytes.Equal(delivered[1], secondImage) {
+		t.Fatal("retained shelf image bytes missing, reordered or duplicated in typed provider input")
+	}
+	if session.Preference.Provider != input.Provider || session.Preference.Model != input.Model {
+		t.Fatal("shelf attachment switched selected model")
 	}
 }
