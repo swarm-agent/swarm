@@ -1,6 +1,6 @@
 import type { DesktopSessionPlanCheckpoint, DesktopSessionPlanDocument, DesktopSessionPlanRecord, TaskToolRow } from '../chat/types/chat'
 import type { DesktopNotificationCenterRecord, DesktopNotificationSummary, DesktopPermissionRecord } from '../types/realtime'
-import { isDesktopPermissionPending, safeString } from '../permissions/services/desktop-permission-normalization'
+import { isDesktopPermissionPending } from '../permissions/services/desktop-permission-normalization'
 import type { DesktopPermissionSummary, DesktopToolActivity, DesktopV3CacheState, LiveRunOverlay, MessageListCache, MessageSnapshot, PendingUserMessage, SessionCacheRecord, SessionSnapshot, V3SessionProjection, V3SessionRunIntent, V3SessionTombstone } from './desktop-v3-cache-types'
 import type { WorkspaceTodoItem } from '../../workspaces/todos/types'
 import { isAutomationExecutionSession } from './desktop-automation-purpose'
