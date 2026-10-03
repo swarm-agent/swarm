@@ -43,6 +43,7 @@ async function assertReadable(region: Locator) {
 test('mission proposal wraps full structured and fallback plans without changing review controls', { timeout: 60000 }, async () => {
   const long = (label: string) => `${label}: Read every requirement before approving. ${'Detailed implementation and verification instructions. '.repeat(4)}https://example.invalid/${'unbroken'.repeat(35)}`
   const fields = Object.fromEntries(['title', 'goal', 'checkpoint', 'objective', 'task', 'criterion', 'notes', 'stage', 'dependency', 'evidence', 'job', 'scope', 'deliverable', 'first', 'second', 'third', 'overview', 'markdown'].map(key => [key, long(key)]))
+  fields.notes += '\n\nPreserve this second paragraph in full.\nKeep this final line visible.'
   const task = {
     id: 'proposal', title: 'Tier 3 proposal', tier: 'complex', status: 'pending_approval', agentType: 'plan', outcomeType: 'plan_spec',
     planSummary: fields.overview, agents: [], worktreeBranch: 'agent/proposal',
@@ -104,7 +105,7 @@ test('mission proposal wraps full structured and fallback plans without changing
     assert.equal(await toggle.textContent(), 'Show execution details')
     await toggle.click()
     await reader.getByText('Run focused checks', { exact: true }).waitFor()
-    await reader.getByText('No regressions', { exact: true }).waitFor()
+    await reader.getByText('No regressions', { exact: true }).first().waitFor()
     assert.equal(await page.getByTestId('toggle-task-details-btn').getAttribute('aria-expanded'), 'true')
     const controlledPlan = await toggle.getAttribute('aria-controls')
     assert.ok(controlledPlan && await reader.evaluate((node, id) => node.parentElement?.id === id, controlledPlan))
@@ -113,16 +114,24 @@ test('mission proposal wraps full structured and fallback plans without changing
       await page.locator('#root').evaluate((root, width) => { root.style.width = `${width}px` }, width)
       await assertReadable(checklist)
       await assertReadable(reader)
+      const full = page.getByRole('region', { name: 'Full current plan', exact: true })
+      await assertReadable(full)
+      for (const key of ['goal', 'task', 'criterion', 'job', 'deliverable', 'third']) assert.ok((await full.innerText()).includes(fields[key]))
+      assert.doesNotMatch(await full.innerText(), /"checkpoints"|"acceptance_criteria"|"stage_id"/)
+      assert.match(await full.innerText(), /Preserve this second paragraph in full/)
+      assert.match(await full.innerText(), /Keep this final line visible/)
       const paneBox = await reader.boundingBox()
       const cardBox = await page.locator('#root').boundingBox()
       assert.ok(paneBox && cardBox && paneBox.x >= cardBox.x && paneBox.x + paneBox.width <= cardBox.x + cardBox.width + 1, 'reader fits the constrained card')
       await assertReadable(page.getByTestId('task-execution-overview'))
       for (const key of ['title', 'goal', 'checkpoint', 'objective', 'task', 'criterion', 'notes', 'stage', 'dependency', 'evidence', 'job', 'scope', 'deliverable', 'first', 'second', 'third']) {
-        assert.ok((await reader.textContent())?.includes(fields[key]), `missing ${key}`)
+        for (const paragraph of fields[key].split(/\n+/)) assert.ok((await reader.textContent())?.includes(paragraph), `missing ${key}`)
       }
       await reader.evaluate(node => { node.scrollTop = node.scrollHeight })
       const tailVisible = await reader.getByText(fields.third, { exact: true }).evaluate(node => {
-        const text = node.firstChild!
+        const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT)
+        let text: Node = node
+        while (walker.nextNode()) text = walker.currentNode
         const range = document.createRange()
         range.setStart(text, text.textContent!.length - 1)
         range.setEnd(text, text.textContent!.length)
@@ -168,6 +177,7 @@ test('mission proposal wraps full structured and fallback plans without changing
     await page.getByTestId('approve-task-btn').click()
     assert.deepEqual(await page.evaluate(() => (window as any).calls), ['Keep every criterion', 'approve'])
     await page.evaluate(() => (window as any).renderProposal(false, false, true))
+    await page.waitForFunction(() => (document.querySelector('[data-testid="approve-task-btn"]') as HTMLButtonElement)?.disabled)
     assert.equal(await page.getByTestId('approve-task-btn').isDisabled(), true)
     assert.match(await page.getByTestId('approve-task-btn').textContent() || '', /Approving & Starting/)
     await page.evaluate(() => (window as any).renderProposal(false, false, false, 'Scheduling unavailable'))
@@ -185,10 +195,10 @@ test('mission proposal wraps full structured and fallback plans without changing
     assert.equal(await page.getByTestId('toggle-task-details-btn').getAttribute('aria-expanded'), 'false')
     await page.getByTestId('toggle-task-details-btn').click()
     await page.getByRole('button', { name: 'Read Full Plan Spec & Criteria' }).click()
-    // Missing structured data must be explicit, never rendered as a Markdown plan.
-    await reader.getByRole('status').waitFor()
-    assert.match(await reader.textContent() || '', /not been authored yet/)
-    assert.doesNotMatch(await reader.textContent() || '', new RegExp(fields.markdown.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+    // Legacy Markdown is readable content, never executable approval authority.
+    await reader.getByText(fields.markdown, { exact: true }).waitFor()
+    assert.ok((await reader.innerText()).includes(fields.markdown))
+    assert.equal(await page.getByTestId('approve-task-btn').isDisabled(), true)
     await page.locator('#root').evaluate(root => { root.style.width = '320px' })
     await assertReadable(reader)
     await page.evaluate(() => (window as any).renderProposal(false, false, false, '', 2, 'program-only', 'pending_approval', true))
@@ -198,7 +208,7 @@ test('mission proposal wraps full structured and fallback plans without changing
     assert.equal(await toggle.count(), 0, 'program-only proposal does not dump execution jobs while collapsed')
     await page.getByTestId('toggle-task-details-btn').click()
     await toggle.click()
-    await page.getByTestId('task-program-spec').waitFor()
+    await reader.getByText(fields.third, { exact: true }).waitFor()
     assert.ok((await reader.textContent())?.includes(fields.third))
     assert.equal(await page.getByTestId('toggle-task-details-btn').getAttribute('aria-expanded'), 'true')
     assert.deepEqual(errors, [])

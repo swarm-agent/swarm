@@ -9,7 +9,7 @@ import { chromium } from 'playwright'
 // the narrowest layer proving real clicks, keyboard disclosure, and same-card
 // revision updates; fixtures do not claim daemon/provider execution.
 test('plan cards show current checklists before disclosure without approving or selecting', { timeout: 60000 }, async () => {
-  const document = {
+  const planDocument = {
     title: 'Improve search', info: { goal: 'Make results useful', notes: 'Retain all technical notes' },
     requirements: [
       { id: 'r2', text: 'Search results include the matching filename.', checkpoint_id: 'cp2' },
@@ -20,7 +20,7 @@ test('plan cards show current checklists before disclosure without approving or 
       { id: 'cp2', title: 'Render results', tasks: ['Technical renderer rewrite'], acceptance_criteria: ['Search results include the matching filename.'] },
     ],
   }
-  const task = { id: 'proposal', title: 'Search improvements', tier: 'complex', status: 'pending_approval', agentType: 'plan', outcomeType: 'plan_spec', agents: [], planSummary: 'Generic deliverable ready narrative', revision: 1, planDocument: document, planBinding: { planId: 'plan', sessionId: 'session', definitionRevision: 1 } }
+  const task = { id: 'proposal', title: 'Search improvements', tier: 'complex', status: 'pending_approval', agentType: 'plan', outcomeType: 'plan_spec', agents: [], planSummary: 'Generic deliverable ready narrative', revision: 1, planDocument, planBinding: { planId: 'plan', sessionId: 'session', definitionRevision: 1 } }
   const bundle = await build({ stdin: { resolveDir: process.cwd(), loader: 'tsx', contents: `
     import React from 'react'; import {createRoot} from 'react-dom/client';
     import {QueryClient,QueryClientProvider} from '@tanstack/react-query';
@@ -51,7 +51,7 @@ test('plan cards show current checklists before disclosure without approving or 
     const details = page.getByTestId('toggle-task-details-btn')
     const full = page.getByRole('region', { name: 'Full current plan', exact: true })
     await checklist.waitFor()
-    assert.deepEqual(await checklist.locator('li').allTextContents(), document.requirements.map(r => `□${r.text}`))
+    assert.deepEqual(await checklist.locator('li').allTextContents(), planDocument.requirements.map(r => `□${r.text}`))
     assert.equal(await details.getAttribute('aria-expanded'), 'false')
     assert.equal(await full.count(), 0)
     assert.equal(await checklist.getByRole('checkbox').count(), 0)
@@ -60,6 +60,9 @@ test('plan cards show current checklists before disclosure without approving or 
     await full.waitFor()
     assert.match(await full.innerText(), /Technical index migration/)
     assert.match(await full.innerText(), /Retain all technical notes/)
+    assert.match(await full.innerText(), /Make results useful/)
+    assert.doesNotMatch(await full.innerText(), /"checkpoints"|"acceptance_criteria"|"info"|Generic deliverable ready/)
+    assert.equal(await full.locator('pre').count(), 0)
     assert.deepEqual(await page.evaluate(() => (window as any).calls), [])
     await details.click()
     assert.equal(await full.count(), 0)
@@ -78,8 +81,13 @@ test('plan cards show current checklists before disclosure without approving or 
     await details.click()
     await page.evaluate(() => (window as any).renderTask('legacy'))
     await checklist.getByText('Users can search all their project files.', { exact: true }).waitFor()
-    assert.deepEqual(await checklist.locator('li').allTextContents(), document.checkpoints.flatMap(cp => cp.acceptance_criteria.filter(text => text !== 'Branch clean').map(text => `□${text}`)))
+    assert.deepEqual(await checklist.locator('li').allTextContents(), planDocument.checkpoints.flatMap(cp => cp.acceptance_criteria.filter(text => text !== 'Branch clean').map(text => `□${text}`)))
     assert.equal(await page.getByTestId('approve-task-btn').isDisabled(), true, 'legacy presentation must not loosen approval validation')
+    await details.click(); await full.waitFor()
+    assert.match(await full.innerText(), /Make results useful/)
+    assert.match(await full.innerText(), /Technical index migration/)
+    assert.doesNotMatch(await full.innerText(), /"checkpoints"|"acceptance_criteria"/)
+    await details.click()
     await page.evaluate(() => (window as any).renderTask('invalid'))
     await checklist.getByRole('alert').waitFor()
     assert.equal(await checklist.locator('li').count(), 0, 'invalid authored requirements must not fall back to unrelated criteria')
@@ -186,6 +194,8 @@ test('acceptance hides pending review across stale refresh, completion hydration
       await details.click(); await full.waitFor()
       assert.match(await full.innerText(), /Results show the filename\./)
       assert.match(await full.innerText(), /Technical renderer rewrite/)
+      assert.match(await full.innerText(), /Make results useful/)
+      assert.doesNotMatch(await full.innerText(), /"checkpoints"|"acceptance_criteria"|"info"/)
       await details.click()
       assert.equal(await full.count(), 0)
     }
@@ -247,6 +257,10 @@ test('direct coding proposals show changes until accepted and retain details', {
     assert.doesNotMatch(await card.innerText(), /Code Implementation|Verification & Pull Request|Code PR & Verified Tests/)
     await checklist.getByText('Show matching filenames.', { exact: true }).click()
     await page.getByRole('region', { name: 'Full proposed task', exact: true }).getByText(/Keep the existing index format\./).waitFor()
+    const full = page.getByRole('region', { name: 'Full proposed task', exact: true })
+    assert.equal(await full.getByRole('heading', { name: 'Technical details', exact: true }).isVisible(), true)
+    assert.match(await full.innerText(), /Search every project file/)
+    assert.doesNotMatch(await full.innerText(), /##|Code Implementation|Verification & Pull Request/)
     assert.deepEqual(await page.evaluate(() => (window as any).calls), ['select'])
     await details.click()
     await page.getByTestId('approve-task-btn').click()
@@ -258,12 +272,83 @@ test('direct coding proposals show changes until accepted and retain details', {
       assert.equal(await page.getByTestId('approve-task-btn').count(), 0)
       await details.click()
       await page.getByRole('region', { name: 'Full proposed task', exact: true }).getByText(/Keep the existing index format\./).waitFor()
+      assert.equal(await full.getByRole('heading', { name: 'Technical details', exact: true }).isVisible(), true)
+      assert.match(await full.innerText(), /Search every project file/)
+      assert.doesNotMatch(await full.innerText(), /##|Code Implementation|Verification & Pull Request/)
       await details.click()
     }
     await page.evaluate(() => (window as any).renderTask('pending_approval', ''))
     await checklist.waitFor()
     assert.equal(await checklist.locator('li').count(), 0, 'missing scope must not invent changes from stages or verification')
     assert.match(await checklist.innerText(), /No proposed changes/)
+    assert.deepEqual(errors, [])
+  } finally { await browser.close() }
+})
+
+// Requirement: the ordinary expanded MinimalTaskCard DOM must read persisted,
+// direct serialized, and legacy plans without exposing API objects or prompts.
+// Controlled hydration checks pending/accepted/completed presentation independently
+// of authority; browser DOM (not hidden payloads) proves actual disclosure output.
+test('expanded persisted and legacy plans remain readable throughout acceptance lifecycle', { timeout: 60000 }, async () => {
+  const plan = { title: 'Recover preferences', info: { goal: 'Retain preferences after interruption', notes: 'Keep the backup file' }, requirements: [{ id: 'r', checkpoint_id: 'cp', text: 'Old preferences survive an interrupted write' }], checkpoints: [{ id: 'cp', title: 'Write safely', tasks: ['Flush then rename'], acceptance_criteria: ['Old preferences survive an interrupted write'], task_program: { stages: [{ id: 's', title: 'Storage changes' }], jobs: [{ id: 'j', stage_id: 's', title: 'Atomic persistence', deliverable: 'Recoverable preferences', acceptance_criteria: ['Recovery preserves every value'], meta_prompt: 'PRIVATE_AGENT_PROMPT' }] } }], execution_state: { current_run_id: 'PRIVATE_ROUTING' } }
+  const legacy = { title: plan.title, goal: plan.info.goal, checkpoints: [{ id: 'cp', title: 'Write safely', subtasks: [{ title: 'Flush then rename', notes: 'Keep the backup file' }], acceptanceCriteria: [{ criterion: 'Old preferences survive an interrupted write' }] }] }
+  const markdown = '## Recover preferences\n\nRetain preferences after interruption\n\n### Tasks\n- Flush then rename\n\n### Acceptance criteria\n- [ ] Old preferences survive an interrupted write\n\nKeep the backup file'
+  const bundle = await build({ stdin: { resolveDir: process.cwd(), loader: 'tsx', contents: `
+    import React from 'react'; import {createRoot} from 'react-dom/client';
+    import {QueryClient,QueryClientProvider} from '@tanstack/react-query';
+    import {MinimalTaskCard} from './src/features/desktop/orchestrate/OrchestrateView';
+    import {mapBackendTask} from './src/features/desktop/state/desktop-projects-state';
+    const root=createRoot(document.getElementById('root')); const client=new QueryClient({defaultOptions:{queries:{retry:false}}});
+    const plan=${JSON.stringify(plan)}, legacy=${JSON.stringify(legacy)}, markdown=${JSON.stringify(markdown)};
+    window.renderVariant=(variant,status='pending_approval')=>{
+      const base={id:'proposal',title:'Recover preferences',status,agent:'plan',outcome_type:'plan_spec',description:'Preserve saved preferences',revision:1};
+      const sources={persisted:{plan_document:JSON.stringify({document:plan})},legacy:{plan_document:legacy},prose:{plan_document:markdown},
+        direct:{agent:'coder',outcome_type:'code_pr',full_plan_markdown:JSON.stringify(plan)},
+        directMarkdown:{agent:'coder',outcome_type:'code_pr',full_plan_markdown:markdown},
+        unknown:{plan_document:{schema:{type:'PRIVATE_SCHEMA'},meta_prompt:'PRIVATE_PROMPT'}},
+        malformed:{plan_document:'{"checkpoints":'}};
+      root.render(<QueryClientProvider client={client}><MinimalTaskCard key={variant+status} task={mapBackendTask({...base,...sources[variant]})} onApprove={()=>{}} /></QueryClientProvider>);
+    };window.renderVariant('persisted');
+  ` }, bundle: true, write: false, format: 'iife', platform: 'browser', jsx: 'automatic', logLevel: 'silent' })
+  const browser = await chromium.launch({ headless: true, channel: process.env.SWARM_TEST_BROWSER_CHANNEL || 'chrome' })
+  try {
+    const page = await browser.newPage()
+    const errors: string[] = []
+    page.on('pageerror', error => errors.push(error.message))
+    await page.route('**/*', route => route.fulfill({ contentType: new URL(route.request().url()).pathname === '/' ? 'text/html' : 'application/json', body: new URL(route.request().url()).pathname === '/' ? '<div id="root"></div>' : '{}' }))
+    await page.goto('https://persisted-plan.test/')
+    await page.addScriptTag({ content: bundle.outputFiles[0].text })
+    for (const variant of ['persisted', 'legacy', 'prose', 'direct', 'directMarkdown']) {
+      for (const status of ['pending_approval', 'running', 'completed']) {
+        await page.evaluate(([variant, status]) => (window as any).renderVariant(variant, status), [variant, status])
+        const card = page.getByTestId('orchestrate-task-card')
+        await page.waitForFunction(status => document.querySelector('[data-testid="orchestrate-task-card"]')?.getAttribute('data-task-state') === status, status)
+        assert.equal(await card.locator('[aria-label="Plan checklist"], [aria-label="Task checklist"]').count(), status === 'pending_approval' ? 1 : 0)
+        await page.getByTestId('toggle-task-details-btn').click()
+        const full = page.getByRole('region', { name: variant.startsWith('direct') ? 'Full proposed task' : 'Full current plan', exact: true })
+        await full.waitFor()
+        for (const content of ['Retain preferences after interruption', 'Flush then rename', 'Old preferences survive an interrupted write', 'Keep the backup file']) assert.ok((await full.innerText()).includes(content), `${variant}/${status}: ${content}`)
+        assert.doesNotMatch(await full.innerText(), /PRIVATE_|"checkpoints"|"document"|acceptance_criteria|meta_prompt|##|Code Implementation/)
+        assert.equal(await full.locator('pre').count(), 0)
+        assert.ok(await full.getByRole('heading').count() >= 3)
+        if (variant === 'persisted' || variant === 'direct') {
+          assert.match(await full.innerText(), /Atomic persistence/)
+          assert.match(await full.innerText(), /Recovery preserves every value/)
+        }
+        if (variant === 'prose' || variant === 'directMarkdown') assert.equal(await full.getByRole('heading', { name: 'Tasks', exact: true }).isVisible(), true)
+        if (status !== 'pending_approval') assert.equal(await page.getByTestId('approve-task-btn').count(), 0)
+      }
+    }
+    for (const variant of ['unknown', 'malformed']) {
+      await page.evaluate(variant => (window as any).renderVariant(variant), variant)
+      await page.waitForFunction(() => document.querySelector('[data-testid="toggle-task-details-btn"]')?.getAttribute('aria-expanded') === 'false')
+      await page.getByTestId('toggle-task-details-btn').click()
+      const full = page.getByRole('region', { name: 'Full current plan', exact: true })
+      await full.getByRole('status').waitFor()
+      assert.match(await full.innerText(), /Readable plan details are unavailable/)
+      assert.doesNotMatch(await full.innerText(), /PRIVATE_|"checkpoints"|Flush then rename/)
+      assert.equal(await page.getByTestId('approve-task-btn').isDisabled(), true)
+    }
     assert.deepEqual(errors, [])
   } finally { await browser.close() }
 })
