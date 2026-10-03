@@ -890,6 +890,7 @@ export interface LiveRunOverlay {
   sessionId: string
   runId: string
   status:
+    | 'waiting_tasks'
     | 'pending_executor'
     | 'running'
     | 'dispatch_blocked'

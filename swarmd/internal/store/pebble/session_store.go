@@ -871,6 +871,11 @@ func (s *SessionStore) tombstoneSessions(sessionIDs []string, kind string) error
 				mutationKind = V3SessionMutationArchiveSession
 				eventType = "session.archived"
 			}
+			if kind == "archived" {
+				if err := s.setProjectTaskWaitTransition(batch, V3SessionMutationInput{SessionID: sessionID, Kind: mutationKind}, seq, now); err != nil {
+					return err
+				}
+			}
 			var replaySession *SessionSnapshot
 			if kind == "archived" {
 				replaySession = &existing

@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { createEmptyDesktopV3CacheState } from './desktop-v3-cache-reducer'
+import { createEmptyDesktopV3CacheState, upsertRunIntent } from './desktop-v3-cache-reducer'
 import { projectSessionRow, compareProjectSessionRows } from './project-session-rows'
 import type { SessionSnapshot } from './desktop-v3-cache-types'
 
@@ -37,4 +37,18 @@ test('project rows use meaningful activity and canonical attention without clock
   assert.equal(projectSessionRow(state, run).label, 'Failed')
   assert.equal(projectSessionRow(state, run).timer?.durationMs, 2000)
   assert.equal(projectSessionRow(state, run).active, false)
+})
+
+// Purpose: durable upsertRunIntent must replace Running with Waiting, preserving
+// task-wait identity without retaining active execution or a stale live overlay.
+test('project task wait transitions remain inactive and visibly waiting', () => {
+  const state = createEmptyDesktopV3CacheState()
+  const session = { id: 'parent', title: 'Parent' } as SessionSnapshot
+  upsertRunIntent(state, session.id, { session_id: session.id, run_id: 'goal', status: 'running', event_seq: 1, started_at: 1 })
+  upsertRunIntent(state, session.id, { session_id: session.id, run_id: 'goal', status: 'waiting_tasks', event_seq: 2 })
+  assert.equal(state.currentRunIntentBySession.parent.status, 'waiting_tasks')
+  assert.equal(state.sessionViewsById.parent.current_run_state?.active, false)
+  assert.equal(state.liveRunsBySession.parent.goal.status, 'waiting_tasks')
+  assert.equal(projectSessionRow(state, session).label, 'Waiting for tasks')
+  assert.equal(projectSessionRow(state, session).active, false)
 })

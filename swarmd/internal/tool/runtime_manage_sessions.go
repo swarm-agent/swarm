@@ -2140,7 +2140,7 @@ func (r *Runtime) manageSessionsStop(scope WorkspaceScope, args map[string]any) 
 	}
 	runID := strings.TrimSpace(stringValue(args["run_id"]))
 	if runID == "" {
-		if runState, ok, _ := r.getSessionRunState(sessionID); ok && runState.Active && runState.RunID != "" {
+		if runState, ok, _ := r.getSessionRunState(sessionID); ok && (runState.Active || runState.Status == pebblestore.V3RunIntentWaitingTasks) && runState.RunID != "" {
 			runID = runState.RunID
 		}
 	}

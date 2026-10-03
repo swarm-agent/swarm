@@ -169,3 +169,17 @@ test('live run overlay uses backend timing when current run intent is temporaril
 
   assert.equal(formatDesktopV3RunTimer(model!, 125_000), '1:35')
 })
+
+// Purpose: the canonical wait projection must override stale live overlays, not
+// present released executor capacity as Running/Completed or tick an active timer.
+// The pure status model is the narrowest layer proving this display contract.
+test('durable task waiting overrides stale running overlays without an active timer', () => {
+  const waiting = { session_id: 'parent', run_id: 'goal', status: 'waiting_tasks', started_at: 1000 }
+  for (const current of [waiting, undefined]) {
+    const model = buildDesktopV3RunStatusModel({ currentRunIntent: current, latestRunIntent: waiting, liveRuns: [{ status: 'running' } as any] })
+    assert.equal(model?.kind, 'waiting')
+    assert.equal(model?.label, 'Waiting for tasks')
+    assert.equal(model?.active, false)
+    assert.equal(formatDesktopV3RunTimer(model!, 999999), '')
+  }
+})

@@ -549,6 +549,9 @@ func providerManagedToolRequiresTurnRestart(call tool.Call, result tool.Result) 
 	if next := mapString(payload, "next_action"); next == "await_automation_acceptance" || next == "await_worker_acceptance" {
 		return true
 	}
+	if canonicalToolName(call.Name) == "manage_projects" && mapString(payload, "action") == "wait_tasks" && mapString(payload, "next_action") == "yield_until_task_outcome" {
+		return true
+	}
 	if mapBool(payload, "restart_turn") {
 		return true
 	}

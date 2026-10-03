@@ -59,6 +59,8 @@ type sessionMutationCoordinator struct {
 
 	// beforeDurableCommit is a test observation seam at the store commit boundary.
 	beforeDurableCommit func(sessionID string)
+	// Inject failure before a task wait/continuation batch becomes durable.
+	beforeTaskWaitCommit func(sessionID string) error
 	// beforeArtifactV2Commit injects a failure after V2 preflight and before the
 	// one batch containing records, event, projection, idempotency, and outbox.
 	beforeArtifactV2Commit func(sessionID string) error

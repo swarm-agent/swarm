@@ -174,6 +174,8 @@ func newSessionV3Executor(server *Server) *sessionV3Executor {
 	}
 	exec.startRefillPump(ctx)
 	exec.recoverDurableRuns(ctx)
+	server.reconcileProjectTaskWaits("", "")
+	exec.refillPendingBacklog()
 	exec.startStaleRecoveryBackstop(ctx)
 	exec.startDailyUsageLimitWatcher(ctx)
 	return exec
@@ -596,6 +598,18 @@ func (e *sessionV3Executor) CancelRun(job sessionV3ExecutorJob, reason string) (
 		return sessionruntime.SessionMutationResult{}, tracked, err
 	}
 	if ok {
+		// Stop may race the atomic wake claim. Follow only its exact continuation,
+		// never a newer unrelated user goal.
+		if intent.Status == pebblestore.V3RunIntentCompleted && intent.TaskWait != nil {
+			state, found, readErr := e.server.sessions.GetSessionRunState(job.SessionID)
+			if readErr != nil {
+				return sessionruntime.SessionMutationResult{}, tracked, readErr
+			}
+			if found && state.RunID == pebblestore.ProjectTaskWaitResumeID(intent.RunID) && state.Active {
+				job.RunID = state.RunID
+				return e.CancelRun(job, reason)
+			}
+		}
 		job = hydrateSessionV3ExecutorJobFromIntent(job, intent)
 		if job.PlanID == "" || job.CheckpointID == "" || job.AttemptID == "" {
 			checkpointJob, checkpointOwned, ownershipErr := e.server.sessionsV3ActiveCheckpointMessageRunJob(job.Principal, job.SessionID, job.RunID, intent.EpochID)
@@ -607,8 +621,17 @@ func (e *sessionV3Executor) CancelRun(job sessionV3ExecutorJob, reason string) (
 			}
 		}
 		switch intent.Status {
-		case sessionruntime.RunIntentPendingExecutor, sessionruntime.RunIntentRunning:
+		case sessionruntime.RunIntentPendingExecutor, sessionruntime.RunIntentRunning, pebblestore.V3RunIntentWaitingTasks:
 			result, err := e.recordCancelledRunAndReconcilePlan(job, reason)
+			if err != nil && intent.Status == pebblestore.V3RunIntentWaitingTasks {
+				// Outcome publication can win after the read above. Retry only the
+				// exact claimed continuation; never cancel a superseding user run.
+				state, found, readErr := e.server.sessions.GetSessionRunState(job.SessionID)
+				if readErr == nil && found && state.Active && state.RunID == pebblestore.ProjectTaskWaitResumeID(job.RunID) {
+					job.RunID = state.RunID
+					return e.CancelRun(job, reason)
+				}
+			}
 			return result, true, err
 		case sessionruntime.RunIntentCancelled:
 			if strings.TrimSpace(intent.BlockedReason) == reason {
@@ -1042,6 +1065,13 @@ func (e *sessionV3Executor) run(ctx context.Context, job sessionV3ExecutorJob) {
 		}
 	}
 	response, err := e.assistantResponse(runCtx, job)
+	if errors.Is(err, errSessionV3TaskWaitYield) || e.taskWaitYielded(job) {
+		// Return through the ordinary lease/worker cleanup. A ready-before-wait
+		// outcome is reconciled here without another provider step.
+		e.publishTaskWaitState(job)
+		e.server.reconcileProjectTaskWaits(job.Principal.AccountScopeID, "")
+		return
+	}
 	if errors.Is(err, errSessionV3StaleProviderAttempt) {
 		response, job, err = e.staleCompactedAssistantResponse(runCtx, job, err)
 	}
@@ -3420,6 +3450,10 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 	planGuardFreshContext := false
 	runtimeContextAt := time.Now()
 	for step := 1; ; step++ {
+		if e.taskWaitYielded(job) {
+			return sessionV3ProviderLoopResult{}, errSessionV3TaskWaitYield
+		}
+
 		stepInstructions := baseReq.Instructions
 		stepTools := baseReq.Tools
 		if strings.EqualFold(strings.TrimSpace(resolved.Session.Mode), sessionruntime.ModePlan) && pebblestore.AgentExitPlanModeEnabled(resolved.AgentProfile) && planContextGuard.BeginDecision() {
@@ -3559,7 +3593,7 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 		}
 		feedbackOutcome := sessionV3TerminalClassifier.Classify(TerminalClassifierInput{
 			ProviderID: runner.ID(), StopReason: response.StopReason,
-			HasFinalContent: strings.TrimSpace(stepText) != "",
+			HasFinalContent:  strings.TrimSpace(stepText) != "",
 			HasFunctionCalls: len(response.FunctionCalls) > 0, RestartTurn: response.RestartTurn,
 		})
 		if feedbackOutcome.Status == sessionruntime.RunIntentFailed || feedbackOutcome.Status == sessionruntime.RunIntentCancelled {
@@ -3607,6 +3641,9 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 			return sessionV3ProviderLoopResult{}, errors.New(classification.Reason)
 		}
 		if len(response.FunctionCalls) == 0 {
+			if e.taskWaitYielded(job) {
+				return sessionV3ProviderLoopResult{}, errSessionV3TaskWaitYield
+			}
 			if response.RestartTurn {
 				refreshed, err := e.resolveSessionV3Runtime(job)
 				if err != nil {
@@ -3716,6 +3753,9 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 		})
 		if batchErr != nil {
 			return sessionV3ProviderLoopResult{}, batchErr
+		}
+		if e.taskWaitYielded(job) {
+			return sessionV3ProviderLoopResult{}, errSessionV3TaskWaitYield
 		}
 		response.FunctionCalls = response.FunctionCalls[:len(toolResults)]
 		input = append(input, sessionsV3ProviderToolResultInputItems(response.FunctionCalls, toolResults)...)

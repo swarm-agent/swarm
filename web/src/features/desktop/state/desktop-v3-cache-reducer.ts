@@ -1850,7 +1850,7 @@ export function upsertRunIntent(
     }
   }
 
-  if (isLatest && ACTIVE_RUN_INTENT_STATUSES.has(enrichedRunIntent.status)) {
+  if (isLatest && (ACTIVE_RUN_INTENT_STATUSES.has(enrichedRunIntent.status) || enrichedRunIntent.status === 'waiting_tasks')) {
     state.currentRunIntentBySession[sessionId] = enrichedRunIntent
     const record = state.sessionsById[sessionId]
     if (record?.kind === 'full' && isAutomationExecutionSession(record.session)) {
@@ -4216,6 +4216,7 @@ function flushLiveAssistantDraftToSegment(liveRun: LiveRunOverlay): void {
 
 function normalizeLiveRunStatus(status: string): LiveRunOverlay['status'] {
   switch (status) {
+    case 'waiting_tasks':
     case 'pending_executor':
     case 'running':
     case 'dispatch_blocked':

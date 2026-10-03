@@ -44,6 +44,33 @@ func (r *Runtime) executeManageProjectTasksContext(ctx context.Context, scope Wo
 	result := map[string]any{"tool": "manage_projects", "action": action, "project_id": projectID, "status": "ok"}
 	taskID := strings.TrimSpace(asString(args["task_id"]))
 	switch action {
+	case "wait_tasks":
+		run, ok := VideoRunContextFromContext(ctx)
+		if !ok || run.SessionID != scope.SessionID || r.sessions == nil {
+			return "", errors.New("wait_tasks requires trusted current provider run context")
+		}
+		var ids []string
+		raw, err := json.Marshal(args["task_ids"])
+		if err != nil {
+			return "", err
+		}
+		if err := json.Unmarshal(raw, &ids); err != nil || len(ids) == 0 || len(ids) > 16 {
+			return "", errors.New("task_ids must contain 1-16 task IDs")
+		}
+		key := "task-wait:" + run.RunID
+		payload, _ := json.Marshal(ids)
+		mutation, err := r.sessions.ApplySessionMutation(pebblestore.V3SessionMutationInput{
+			SessionID: scope.SessionID, UserID: scope.Principal.UserID, AccountScopeID: account,
+			Kind: pebblestore.V3SessionMutationRecordRunIntent, EventType: "session.run.waiting_tasks",
+			ClientRequestID: key, PayloadHash: projectID + string(payload),
+			TaskWait: &pebblestore.V3ProjectTaskWaitMutation{RunID: run.RunID, ProjectID: projectID, TaskIDs: ids},
+		})
+		if err != nil {
+			return "", err
+		}
+		result["status"], result["run_id"], result["next_action"] = "waiting_tasks", run.RunID, "yield_until_task_outcome"
+		result["event_seq"] = mutation.PrimarySeq
+		result["task_ids"] = ids
 	case "edit_requirements":
 		task, found, err := r.projects.GetProjectTask(account, projectID, taskID)
 		if err != nil { return "", err }

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"strings"
@@ -16,6 +17,12 @@ func (s *Server) ConfigureProjectRealtime(store *pebblestore.Store) {
 		return
 	}
 	store.SetProjectPublisher(func(record pebblestore.V3RealtimeOutboxRecord) {
+		var payload struct {
+			ProjectID string `json:"project_id"`
+		}
+		if json.Unmarshal(record.Event.Payload, &payload) == nil && payload.ProjectID != "" {
+			s.reconcileProjectTaskWaits(record.AccountScopeID, payload.ProjectID)
+		}
 		if err := s.publishCommittedV3RealtimeOutbox(record); err != nil {
 			log.Print("project realtime wake failed; durable replay required")
 		}

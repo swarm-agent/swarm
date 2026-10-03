@@ -1,7 +1,7 @@
 import { cn } from '../../../../lib/cn'
 import type { LiveRunOverlay, V3SessionRunIntent } from '../../state/desktop-v3-cache-types'
 
-export type DesktopV3RunStatusKind = 'starting' | 'active' | 'paused' | 'completed' | 'failed' | 'stopped' | 'interrupted' | 'expired'
+export type DesktopV3RunStatusKind = 'starting' | 'active' | 'waiting' | 'paused' | 'completed' | 'failed' | 'stopped' | 'interrupted' | 'expired'
 
 export interface DesktopV3RunStatusModel {
   kind: DesktopV3RunStatusKind
@@ -83,6 +83,9 @@ export function buildDesktopV3RunStatusModel(input: {
   liveRuns?: LiveRunOverlay[]
 }): DesktopV3RunStatusModel | null {
   const currentStatus = runIntentStatus(input.currentRunIntent)
+  if (currentStatus === 'waiting_tasks' || (!currentStatus && runIntentStatus(input.latestRunIntent) === 'waiting_tasks')) {
+    return { kind: 'waiting', label: 'Waiting for tasks', active: false }
+  }
   if (currentStatus === 'dispatch_blocked') {
     return {
       kind: 'paused',
