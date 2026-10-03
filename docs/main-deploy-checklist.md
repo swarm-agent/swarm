@@ -2,6 +2,35 @@
 
 This file is the canonical operator checklist for promoting `dev` to `main`, testing the reviewed candidate on supported Linux, and only then publishing a versioned GitHub Swarm release.
 
+## Mandatory qualification no-mint boundary
+
+Every PR/main qualification installation must suppress production mint reporting
+before its first daemon start, including native root/sudo installations and
+headless SDK starts/restarts. A parent-shell export alone is not sufficient.
+
+- Native tests must use the guarded `scripts/test-install-distro.sh` and
+  `scripts/test-install-root-scenario.sh` with `scripts/test-install-mint-guard.sh`
+  available. Reject missing/older unguarded harnesses before executing a candidate.
+- The disposable container explicitly receives `SWARM_DISABLE_MINT_REPORT=1`.
+  Before either installer identity runs, the helper writes the test-only
+  `/etc/systemd/system/swarm.service.d/90-no-mint.conf`: the service environment
+  disables reporting and `ExecStartPre` refuses an unset or conflicting value.
+  Preparation failure must abort installation; do not bypass the guard to retry.
+- Require `mint_suppression=verified` after first installation, reinstallation,
+  and explicit service restart for both identities. Verification reads only the
+  suppression key from the active `swarm.service` MainPID's `/proc` environment;
+  never publish environment dumps. Headless qualification must retain its own
+  suppression across container recreation/restart; native evidence is not OCI evidence.
+- Before deployment, run the bounded hermetic guard tests
+  (`python3 -B scripts/test-install-mint-guard.test.py`) and reporter suppression
+  test (`cd swarmd && go test ./internal/swarm -run '^TestMintReporterSuppressedWhenDisabled$' -count=1 -timeout=60s`).
+  These establish local guard/reporter behavior, not live systemd or network evidence.
+- Retain candidate-bound live qualification logs for each identity and lifecycle
+  transition. Source inspection, unit tests, or service health alone do not prove
+  the deployed pipeline sent zero requests historically. Never probe the production
+  mint endpoint to test suppression. Do not change real-user installation defaults
+  or publish these disposable test overrides in release artifacts.
+
 ## Current git layout
 
 - `dev` is the day-to-day integration branch.

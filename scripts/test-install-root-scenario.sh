@@ -6,6 +6,8 @@
 # It is not agent/provider execution evidence; that requires an authenticated run.
 set -euo pipefail
 [[ $# == 3 && $(id -u) == 0 && -d /candidate-source && -d /run/systemd/system ]]
+# Standalone invocations must also establish the guard before any installer call.
+bash /run/test-install-mint-guard.sh prepare
 archive_name=$1 checksum_name=$2 expected_digest=$3
 [[ "$archive_name" != */* && "$checksum_name" == "$archive_name.sha256" ]]
 [[ "$expected_digest" =~ ^[0-9a-fA-F]{64}$ ]]
@@ -24,11 +26,12 @@ artifact="$candidate_root/extract/${archive_name%.tar.gz}"
 [[ -x "$artifact/install.sh" ]]
 install_candidate() {
   timeout --signal=TERM --kill-after=10s 300s env -u SUDO_USER -u SUDO_UID -u SUDO_GID \
-    -u SWARM_SKIP_SYSTEMD_UNIT -u TMPDIR HOME=/root \
+    -u SWARM_SKIP_SYSTEMD_UNIT -u TMPDIR SWARM_DISABLE_MINT_REPORT=1 HOME=/root \
     "$artifact/install.sh" --artifact-root "$artifact" --service --yes
 }
 verify_service() {
   systemctl is-active --quiet swarm.service
+  bash /run/test-install-mint-guard.sh verify
   uid=$(id -u swarm) gid=$(id -g swarm)
   [[ "$uid" != 0 && "$gid" != 0 ]]
   [[ $(systemctl show -p User --value swarm.service) == "$uid" ]]
@@ -96,6 +99,8 @@ identity_before=$(getent passwd swarm)
 group_before=$(getent group swarm)
 workspace_before=$(sha256sum "$home/root-install-workspace/probe")
 install_candidate
+verify_service
+systemctl restart swarm.service
 verify_service
 [[ $(getent passwd swarm) == "$identity_before" ]]
 [[ $(getent group swarm) == "$group_before" ]]
