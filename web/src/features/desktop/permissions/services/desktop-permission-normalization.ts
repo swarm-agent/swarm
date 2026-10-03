@@ -95,6 +95,12 @@ export function desktopPermissionIdentity(
   return { id, sessionId: scopedSessionId }
 }
 
+// Resolved records remain cached as freshness evidence, not actionable requests.
+export function isDesktopPermissionPending(permission: DesktopPermissionRecord): boolean {
+  return safeString(permission.status).toLowerCase() === 'pending'
+    && !permission.resolvedAt && !permission.decision
+}
+
 export function normalizeDesktopPermission(
   value: unknown,
   expectedSessionId: string,

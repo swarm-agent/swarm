@@ -1,6 +1,6 @@
 import type { DesktopSessionPlanCheckpoint, DesktopSessionPlanDocument, DesktopSessionPlanRecord, TaskToolRow } from '../chat/types/chat'
 import type { DesktopNotificationCenterRecord, DesktopNotificationSummary, DesktopPermissionRecord } from '../types/realtime'
-import { safeString } from '../permissions/services/desktop-permission-normalization'
+import { isDesktopPermissionPending, safeString } from '../permissions/services/desktop-permission-normalization'
 import type { DesktopPermissionSummary, DesktopToolActivity, DesktopV3CacheState, LiveRunOverlay, MessageListCache, MessageSnapshot, PendingUserMessage, SessionCacheRecord, SessionSnapshot, V3SessionProjection, V3SessionRunIntent, V3SessionTombstone } from './desktop-v3-cache-types'
 import type { WorkspaceTodoItem } from '../../workspaces/todos/types'
 import { isAutomationExecutionSession } from './desktop-automation-purpose'
@@ -736,9 +736,13 @@ function cloneRunIntentRecord(runIntents: Record<string, V3SessionRunIntent> | u
   return output
 }
 
+export function selectDesktopPendingPermissions(state: DesktopV3CacheState, sessionId: string): DesktopPermissionRecord[] {
+  return (state.permissionsBySession[sessionId] ?? []).filter(isDesktopPermissionPending)
+}
+
 function clonePendingPermissions(permissions: DesktopPermissionRecord[] | undefined): DesktopPermissionRecord[] {
   return (permissions ?? [])
-    .filter((permission) => safeString(permission.status).toLowerCase() === 'pending')
+    .filter(isDesktopPermissionPending)
     .map((permission) => ({ ...permission, savedRule: permission.savedRule ? { ...permission.savedRule } : undefined }))
 }
 
