@@ -23,7 +23,7 @@ type rootedWorkspacePath struct {
 func openRootedWorkspacePath(scope WorkspaceScope, requested string) (*rootedWorkspacePath, error) {
 	workspacePath := strings.TrimSpace(scope.PrimaryPath)
 	if workspacePath == "" {
-		return nil, errors.New("workspace path is empty")
+		return nil, errors.New("no ambient workspace checkout; project chats must use manage_projects list_sources/inspect_source and explicitly delegate to an authorized source, not initialize or switch repositories")
 	}
 	requested = strings.TrimSpace(requested)
 	if requested == "" {

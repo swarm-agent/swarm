@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -76,7 +77,8 @@ func TestVerifyProjectTaskSessionRejectsMismatchedLineage(t *testing.T) {
 // Purpose: execution must bind the account-scoped catalog
 // root and generation, never infer the first of multiple repositories. Threat:
 // stale identity, an ambiguous omission, or a symlink escapes source authority.
-// resolveProjectTaskSource is the narrowest pre-allocation boundary.
+// resolveProjectTaskSource and InspectProjectSources are the narrowest read-only
+// pre-allocation boundaries; inspection must work without any ambient checkout.
 func TestResolveProjectTaskSourceRejectsAmbiguousAndStaleCatalog(t *testing.T) {
 	f := setupMatrixTestFixture(t)
 	defer f.db.Close()
@@ -106,6 +108,32 @@ func TestResolveProjectTaskSourceRejectsAmbiguousAndStaleCatalog(t *testing.T) {
 	f.server.workspace = workspace.NewService(catalog)
 	proj := &pebblestore.ProjectRecord{ID: "project", Name: "Project", Workspaces: []pebblestore.ProjectWorkspaceRef{{WorkspaceID: first.WorkspaceID, Path: one}, {WorkspaceID: second.WorkspaceID, Path: two}}}
 	p := identity.Principal{Type: identity.PrincipalTypeUser, UserID: f.userID, AccountScopeID: f.accountID}
+	if err := f.server.sessions.Store().PutProject(f.accountID, proj); err != nil {
+		t.Fatal(err)
+	}
+	listed, err := f.server.InspectProjectSources(context.Background(), p, proj.ID, "", "", 0, true)
+	if err != nil || len(listed["sources"].([]pebblestore.ProjectTaskSource)) != 2 {
+		t.Fatalf("list sources: %v %v", listed, err)
+	}
+	if _, err := f.server.InspectProjectSources(context.Background(), p, proj.ID, "", "", 0, false); err == nil {
+		t.Fatal("inspection selected first workspace")
+	}
+	for _, source := range listed["sources"].([]pebblestore.ProjectTaskSource) {
+		result, err := f.server.InspectProjectSources(context.Background(), p, proj.ID, source.Path, source.WorkspaceID, source.WorkspaceGeneration, false)
+		if err != nil || result["ready"] != true || result["source"].(pebblestore.ProjectTaskSource).Path != source.Path {
+			t.Fatalf("source-specific inspection: %v %v", result, err)
+		}
+		if _, err := f.server.InspectProjectSources(context.Background(), p, proj.ID, source.Path, source.WorkspaceID, source.WorkspaceGeneration+1, false); err == nil {
+			t.Fatal("inspection accepted stale generation")
+		}
+	}
+	if err := os.WriteFile(filepath.Join(two, "untracked"), []byte("dirty"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	dirty, err := f.server.InspectProjectSources(context.Background(), p, proj.ID, two, "", 0, false)
+	if err != nil || dirty["ready"] != false || dirty["clean"] != false {
+		t.Fatalf("dirty source reported ready: %v %v", dirty, err)
+	}
 	if _, err := f.server.resolveProjectTaskSource(p, proj, "", "", 0, true); err == nil {
 		t.Fatal("ambiguous omission selected a workspace")
 	}
@@ -130,6 +158,16 @@ func TestResolveProjectTaskSourceRejectsAmbiguousAndStaleCatalog(t *testing.T) {
 	}
 	other := p
 	other.AccountScopeID = "other-account"
+	if _, err := f.server.InspectProjectSources(context.Background(), other, proj.ID, two, second.WorkspaceID, 0, false); err == nil {
+		t.Fatal("cross-account source inspection accepted")
+	}
+	if _, err := f.server.InspectProjectSources(context.Background(), p, proj.ID, filepath.Join(root, "other"), "", 0, false); err == nil {
+		t.Fatal("unbound source inspection accepted")
+	}
+	stored, found, err := f.server.sessions.Store().GetProject(f.accountID, proj.ID)
+	if err != nil || !found || len(stored.Workspaces) != 2 || stored.Workspaces[1].Path != two {
+		t.Fatalf("inspection changed project bindings: %v %v", stored, err)
+	}
 	if _, err := f.server.resolveProjectTaskSource(other, proj, two, second.WorkspaceID, 0, true); err == nil {
 		t.Fatal("cross-account target accepted")
 	}

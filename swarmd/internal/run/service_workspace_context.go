@@ -405,7 +405,7 @@ func appendHostRuntimeContext(base string, workspacePath string, workspaceRoots 
 	base = strings.TrimSpace(base)
 	workspacePath = strings.TrimSpace(workspacePath)
 	if workspacePath == "" {
-		workspacePath = "."
+		return base + "\n\nProject orchestration runtime policy:\n- No ambient repository checkout is selected; this is not a repository setup failure.\n- Use manage_projects list_sources and inspect_source with the project_id and explicit workspace_id or workspace_path to resolve authorized sources and inspect readiness. Delegate from this project chat; do not ask the user to open a workspace or run git init.\n- Project membership is not filesystem authority. Generic cwd-dependent tools are unavailable here; their failure does not mean the project or target repository is absent. No first-workspace fallback is permitted.\n"
 	}
 	workspaceRoots = append([]string(nil), workspaceRoots...)
 	if len(workspaceRoots) == 0 {

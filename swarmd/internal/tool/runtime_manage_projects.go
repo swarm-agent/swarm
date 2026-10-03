@@ -305,13 +305,13 @@ func manageProjectsDefinition() Definition {
 	return Definition{
 		Type:        "function",
 		Name:        "manage_projects",
-		Description: "Inspect and manage Projects aggregating workspaces, context (project.md), and ongoing tasks. Supported actions: list, get, create, update, delete, synthesize_context, list_media, get_media, propose_task, approve_task, accept_task, deploy_task, refine_task, create_task, reopen_task, list_tasks, get_task, update_task, archive_task, delete_task, reconcile_tasks. Task edits never transition execution status; delete_task only removes an archived, unlaunched task.",
+		Description: "Inspect and manage Projects aggregating workspaces, context (project.md), and ongoing tasks. Supported actions: list, get, list_sources, inspect_source, create, update, delete, synthesize_context, list_media, get_media, propose_task, approve_task, accept_task, deploy_task, refine_task, create_task, reopen_task, list_tasks, get_task, update_task, archive_task, delete_task, reconcile_tasks, edit_requirements. Task edits never transition execution status; delete_task only removes an archived, unlaunched task.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"action": map[string]any{
 					"type":        "string",
-					"description": "Action: list|get|create|update|delete|synthesize_context|list_media|get_media|propose_task|approve_task|accept_task|deploy_task|refine_task|create_task|reopen_task|list_tasks|get_task|update_task|archive_task|delete_task|reconcile_tasks|edit_requirements",
+					"description": "Action: list|get|list_sources|inspect_source|create|update|delete|synthesize_context|list_media|get_media|propose_task|approve_task|accept_task|deploy_task|refine_task|create_task|reopen_task|list_tasks|get_task|update_task|archive_task|delete_task|reconcile_tasks|edit_requirements",
 				},
 				"id": map[string]any{
 					"type":        "string",
@@ -553,6 +553,25 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 			return "", fmt.Errorf("project %q not found", id)
 		}
 		response["project"] = proj
+
+	case "list_sources", "inspect_source":
+		projectID := strings.TrimSpace(asString(args["project_id"]))
+		if projectID == "" {
+			return "", errors.New("project_id is required for source inspection")
+		}
+		inspector, ok := r.projectTaskLifecycle.(interface {
+			InspectProjectSources(context.Context, identity.Principal, string, string, string, int64, bool) (map[string]any, error)
+		})
+		if !ok {
+			return "", errors.New("project source inspection service is unavailable")
+		}
+		result, err := inspector.InspectProjectSources(ctx, p, projectID, asString(args["workspace_path"]), asString(args["workspace_id"]), int64(asInt(args["workspace_generation"], 0)), actionName == "list_sources")
+		if err != nil {
+			return "", err
+		}
+		for key, value := range result {
+			response[key] = value
+		}
 
 	case "list_media":
 		projectID := strings.TrimSpace(asString(args["project_id"]))
