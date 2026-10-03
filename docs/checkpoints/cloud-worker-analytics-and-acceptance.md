@@ -153,7 +153,7 @@ The operator has two concrete trigger choices:
 ## 4. Phased Implementation Roadmap
 
 - **Phase A (Current)**:
-  - Update `@swarmagent/sdk` types: add `telemetry` fields to `DeliverableManifest` and `PublishDeliverableOptions`.
+  - Update `@swarm-agent/sdk` types: add `telemetry` fields to `DeliverableManifest` and `PublishDeliverableOptions`.
   - Update Go backend: extend `StorageDiscoveredDeliverableRecord` with `telemetry` in `storage_hub_types.go` and `pebble_storage_hub.go`.
   - Implement `POST /v1/storage/deliverables/{id}/accept` in `storagehub.go` and `service.go` to update GCS `manifest.json` with operator signature, timestamp, and target (`cloud` or `local`).
   - Unit tests covering telemetry serialization and manifest write-back.

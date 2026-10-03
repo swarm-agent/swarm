@@ -17,7 +17,7 @@ is not proof of qualification. Match the SDK version to that release.
 `Dockerfile` builds the checked-in Workshop BFF (see `examples/headless-app`).
 `Dockerfile.consumer` is reusable without daemon source: copy it, `entrypoint.sh`
 and `supervisor.mjs` into your application project. Supply your own `server.mjs`,
-locked package.json/package-lock.json with the matching published `@swarmagent/sdk`,
+locked package.json/package-lock.json with the matching published `@swarm-agent/sdk`,
 and a .dockerignore excluding credentials, logs, node_modules and .git.
 Do not copy secrets into the image or pass them as build arguments.
 

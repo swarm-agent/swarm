@@ -12,7 +12,7 @@ def verify(directory, version):
     if not re.fullmatch(r'v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)', version):
         raise ValueError('stable package version required')
     rows = json.loads((directory / 'npm-packages.json').read_bytes())
-    if not isinstance(rows, list) or len(rows) != 2 or {r['name'] for r in rows} != {'@swarmagent/sdk', '@swarmagent/cli'}:
+    if not isinstance(rows, list) or len(rows) != 2 or {r['name'] for r in rows} != {'@swarm-agent/sdk', '@swarm-agent/cli'}:
         raise ValueError('exact SDK/CLI packs required')
     files = []
     for row in rows:

@@ -1,5 +1,5 @@
 {
-  "name": "@swarmagent/cli",
+  "name": "@swarm-agent/cli",
   "version": "0.1.0-headless.1",
   "description": "Explicit headless Swarm container launcher",
   "type": "module",
