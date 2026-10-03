@@ -341,7 +341,7 @@ export function reduceDesktopProjectsState(
           if (!prior || previous.gitObservations?.[task.id] !== taskGitIdentity(task)) return task
           // Collection GET deliberately does not inspect Git. Preserve only the
           // inspected projection, while accepting all other live task fields.
-          return { ...task, gitStatus: prior.gitStatus, isIntegrated: prior.isIntegrated,
+          return { ...task, status: prior.status, gitStatus: prior.gitStatus, isIntegrated: prior.isIntegrated,
             deliveryAssessment: prior.deliveryAssessment,
             unintegratedCommits: prior.unintegratedCommits, behindCommits: prior.behindCommits,
             isDirty: prior.isDirty, dirtyCount: prior.dirtyCount, diffSummary: prior.diffSummary,
