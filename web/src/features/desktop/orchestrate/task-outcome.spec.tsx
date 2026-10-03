@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs'
 import { mapBackendTask } from '../state/desktop-projects-state'
 import { taskOutcome } from './task-outcome'
 import { TaskCardSummary } from './task-card-summary'
-import { TaskOutcomeDetails, ProjectTaskAttention } from './task-outcome-view'
+import { TaskOutcomeDetails } from './task-outcome-view'
 import { aggregateTaskLiveState } from './orchestrate-task-helpers'
 import { integrationFailure, repairUnavailable } from './integration-recovery'
 import { createTaskIntegrationController, taskIntegrationFailureIdentity, taskIntegrationKey, taskIntegrationPhase } from './task-integration-operation'
@@ -20,18 +20,17 @@ const raw = { id: 'task', title: 'Retained work', agent: 'coder', status: 'needs
     source_head: 'source-sha', previous_target_head: 'target-sha', error: 'Preflight conflict in viewer.tsx; token=hidden' } }
 
 // Requirement: task hydration must restore preflight failure after reload. Authority:
-// mapBackendTask -> taskOutcome -> summary/details/project attention. Server rendering
+// mapBackendTask -> taskOutcome -> central summary/details. Server rendering
 // is the narrowest proof of visible text without a provider; it does not prove layout.
-test('hydrated preflight conflict survives reload across all attention surfaces', () => {
+test('hydrated preflight conflict survives reload across central attention surfaces', () => {
   for (const record of [raw, JSON.parse(JSON.stringify(raw))]) {
     const task = mapBackendTask(record)
     const outcome = taskOutcome(task)
     assert.equal(outcome.blocker?.title, 'Integration conflict')
     assert.equal(outcome.needsAttention, true)
     assert.match(outcome.delivery || '', /Delivery to release not verified/)
-    const html = renderToStaticMarkup(<><TaskCardSummary task={task} /><TaskOutcomeDetails task={task} /><ProjectTaskAttention tasks={[task]} onOpen={() => {}} /></>)
+    const html = renderToStaticMarkup(<><TaskCardSummary task={task} /><TaskOutcomeDetails task={task} /></>)
     assert.match(html, /Integration conflict/)
-    assert.match(html, /Project task attention/)
     assert.match(html, /source-sha/)
     assert.match(html, /target-sha/)
     assert.match(html, /Preflight conflict in viewer.tsx/)

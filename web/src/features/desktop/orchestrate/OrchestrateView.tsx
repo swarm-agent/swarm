@@ -9,7 +9,7 @@ import { taskReopenOperations, taskReopenKey, type TaskReopenOutcome } from './t
 import { taskIntegrationBatches, integrationSkipReason, MAX_INTEGRATION_BATCH } from './task-integration-batch'
 import { integrationLanePending, taskIntegrationRequest, taskIntegrationOperations, taskIntegrationKey, taskIntegrationFailureIdentity, taskIntegrationPhase, type TaskIntegrationOperation, type TaskIntegrationResult } from './task-integration-operation'
 import { taskDelivery, taskOutcome } from './task-outcome'
-import { TaskOutcomeDetails, ProjectTaskAttention } from './task-outcome-view'
+import { TaskOutcomeDetails } from './task-outcome-view'
 import { TaskAttemptHistory } from './task-attempt-history'
 import { TaskUsageFooter, TaskWorkerBudgetMetadata } from './task-usage-metadata'
 import { useOrchestratorDictation } from './use-orchestrator-dictation'
@@ -5748,11 +5748,6 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
           workspaceSlug={workspaceSlug} deliverableCount={liveTasks.flatMap(task => task.deliverables || []).length}
           mediaCount={allMediaLibraryItems.length}
           onSelect={() => { setIsOnboardingActive(projects.length === 0); responsiveLayout.setPanel('main'); responsiveLayout.setNavigationOpen(false) }} />
-        <ProjectTaskAttention tasks={liveTasks} onOpen={task => {
-          setSelectedTaskId(task.id); setExpandedTaskId(task.id); setStatusFilter('all'); setActiveNavTab('home')
-          responsiveLayout.setPanel('main'); responsiveLayout.setNavigationOpen(false)
-          if (task.sessionId) { setActiveTaskId(task.id); setActiveSessionId(task.sessionId); setWorkerChatOpen(true) }
-        }} />
 
         <ProjectConversationSidebar projectId={selectedProjectSegment} projectName={selectedProject?.name}
           selectedId={routeConversationId} sessions={conversations.sessions} rows={conversations.rows} loading={conversations.loading}
