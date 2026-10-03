@@ -676,7 +676,8 @@ function TaskElapsedTimer({
  * Free of highlight gradients and pill badges. Displays "Action Needed",
  * worktree/unmerged git status, and "What did it do?" vs "What's not done yet?".
  */
-import { TaskRequirements, TaskPlanChecklist, TaskProposalChecklist, isTaskPlanReviewable } from './task-requirements'
+import { TaskPlanChecklist, TaskProposalChecklist, isTaskPlanReviewable } from './task-requirements'
+import { TaskPlanDetails, taskPlanDocument } from './task-plan-details'
 
 export function MinimalTaskCard({
   task,
@@ -868,19 +869,7 @@ export function MinimalTaskCard({
   )
 
   const rawPlanDoc = task.planDocument || (task as any).plan_document || (task as any).document
-  const planDoc = useMemo(() => {
-    if (!rawPlanDoc) return null
-    if (typeof rawPlanDoc === 'string') {
-      try {
-        return JSON.parse(rawPlanDoc)
-      } catch {
-        return null
-      }
-    }
-    return rawPlanDoc?.document || rawPlanDoc
-  }, [rawPlanDoc])
-  const planDocTitle = planDoc?.title || task.planSummary || ''
-  const planDocGoal = planDoc?.info?.goal || planDoc?.goal || planDoc?.objective || ''
+  const planDoc: any = useMemo(() => taskPlanDocument(rawPlanDoc), [rawPlanDoc])
   const planCheckpointsToRender = useMemo(() => {
     if (planDoc?.checkpoints && Array.isArray(planDoc.checkpoints) && planDoc.checkpoints.length > 0) {
       return planDoc.checkpoints
@@ -1206,20 +1195,9 @@ export function MinimalTaskCard({
       </TaskUsageFooter>
       <div id={detailsId} hidden={!expanded} className="swarm-task-details" onClick={event => event.stopPropagation()}>
       {expanded && <>
-      {!isPlanCard && task.agentType === 'coder' && task.fullPlanMarkdown && <section aria-label="Full proposed task" className="min-w-0 space-y-2 p-3 text-sm [overflow-wrap:anywhere]">
-        <h4 className="font-semibold">Proposed task details</h4>
-        <p className="whitespace-pre-wrap">{task.fullPlanMarkdown}</p>
-      </section>}
-      {isPlanCard && <section aria-label="Full current plan" className="min-w-0 space-y-3">
-        <TaskRequirements document={planDoc} />
-        {planDoc && <section aria-label="Complete plan definition">
-          <h4>Complete plan definition · technical details</h4>
-          <pre className="whitespace-pre-wrap text-xs [overflow-wrap:anywhere]">{JSON.stringify(planDoc, null, 2)}</pre>
-        </section>}
-        {taskProgramDef && <section aria-label="Plan execution program">
-          <h4>Execution program</h4>
-          <pre className="whitespace-pre-wrap text-xs [overflow-wrap:anywhere]">{JSON.stringify(taskProgramDef, null, 2)}</pre>
-        </section>}
+      {(isPlanCard || task.agentType === 'coder') && <section aria-label={isPlanCard ? 'Full current plan' : 'Full proposed task'} className="min-w-0 space-y-3">
+        <TaskPlanDetails document={rawPlanDoc} program={taskProgramDef} checkpoints={task.activePlanCheckpoints}
+          markdown={task.fullPlanMarkdown} description={!isPlanCard ? task.description : undefined} />
       </section>}
       <TaskWorkerBudgetMetadata task={task} />
       <h4>Result / current work</h4>
@@ -1680,148 +1658,7 @@ export function MinimalTaskCard({
               <div id={`${detailsId}-plan`}>
               {isFullPlanOpen && (
                 <div data-testid="task-plan-reader" className="min-w-0 p-3 border-t border-slate-800 text-[11px] text-slate-300 font-mono leading-relaxed whitespace-normal [overflow-wrap:anywhere] space-y-3">
-                  {/* Render Structured Plan Document Checkpoints */}
-                  {planCheckpointsToRender.length > 0 && (
-                    <div className="space-y-2">
-                      {isFullPlanOpen && (planDocTitle || planDocGoal) && (
-                        <div className="min-w-0 text-xs font-bold text-white space-y-1 border-b border-slate-800/80 pb-1">
-                          {planDocTitle && <div>{planDocTitle}</div>}
-                          {planDocGoal && (
-                            <div className="text-[10px] text-slate-400 font-normal">{planDocGoal}</div>
-                          )}
-                        </div>
-                      )}
-                      <div className="space-y-2">
-                        {planCheckpointsToRender.map((cp: any, idx: number) => {
-                          const tasksList = (cp.tasks && Array.isArray(cp.tasks) && cp.tasks.length > 0)
-                            ? cp.tasks
-                            : (cp.subtasks && Array.isArray(cp.subtasks) ? cp.subtasks : [])
-                          const criteriaList = (cp.acceptanceCriteria && Array.isArray(cp.acceptanceCriteria) && cp.acceptanceCriteria.length > 0)
-                            ? cp.acceptanceCriteria
-                            : (cp.acceptance_criteria && Array.isArray(cp.acceptance_criteria) && cp.acceptance_criteria.length > 0)
-                            ? cp.acceptance_criteria
-                            : (cp.criteria && Array.isArray(cp.criteria) ? cp.criteria : [])
-                          return (
-                            <section key={cp.id || idx} className="swarm-plan-step space-y-1.5" data-testid={`plan-checkpoint-${cp.id || idx}`}>
-                              <div className="swarm-plan-step-title min-w-0 flex items-start gap-1.5 font-semibold">
-                                <span className="text-blue-400 font-mono shrink-0">{idx + 1}.</span>
-                                <span className={isFullPlanOpen ? 'min-w-0' : 'swarm-plan-step-title-collapsed min-w-0'} title={cp.title}>{cp.title}</span>
-                              </div>
-                              {isFullPlanOpen && <>
-                              {cp.objective && (
-                                <p className="text-[10px] text-slate-400 leading-snug">{cp.objective}</p>
-                              )}
-                              {tasksList.length > 0 && (
-                                <div className="space-y-0.5 pt-0.5">
-                                  <span className="text-[9px] font-semibold text-slate-400 uppercase tracking-wider">Tasks:</span>
-                                  <ul className="list-disc list-inside space-y-0.5 text-[10px] text-slate-300 pl-1">
-                                    {tasksList.map((tText: any, tIdx: number) => {
-                                      const label = typeof tText === 'string' ? tText : (tText?.title || tText?.text || JSON.stringify(tText))
-                                      return (
-                                        <li key={tIdx}>{label}</li>
-                                      )
-                                    })}
-                                  </ul>
-                                </div>
-                              )}
-                              {criteriaList.length > 0 && (
-                                <div className="space-y-0.5 pt-0.5">
-                                  <span className="text-[9px] font-semibold text-emerald-400/90 uppercase tracking-wider">Acceptance Criteria:</span>
-                                  <ul className="space-y-0.5 text-[10px] text-slate-300 pl-1">
-                                    {criteriaList.map((cText: any, cIdx: number) => {
-                                      const label = typeof cText === 'string' ? cText : (cText?.title || cText?.text || cText?.criterion || JSON.stringify(cText))
-                                      return (
-                                        <li key={cIdx} className="flex items-start gap-1">
-                                          <span className="text-emerald-400 font-bold">✓</span>
-                                          <span className="min-w-0">{label}</span>
-                                        </li>
-                                      )
-                                    })}
-                                  </ul>
-                                </div>
-                              )}
-                              {cp.notes && (
-                                <div className="text-[9px] text-slate-500 italic pt-0.5">Note: {cp.notes}</div>
-                              )}
-                              </>}
-                            </section>
-                          )
-                        })}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Render Structured Task Program Spec */}
-                  {isFullPlanOpen && taskProgramDef && (taskProgramDef.stages?.length > 0 || taskProgramDef.jobs?.length > 0) && (
-                    <div className="space-y-2 border-t border-slate-800/80 pt-2" data-testid="task-program-spec">
-                      <div className="text-xs font-bold text-indigo-300 flex flex-wrap items-start gap-1.5 justify-between">
-                        <span className="flex items-center gap-1.5">
-                          <Layers size={12} className="text-indigo-400" />
-                          <span>Task Program Specification ({taskProgramDef.jobs?.length || 0} Jobs across {taskProgramDef.stages?.length || 1} Stages)</span>
-                        </span>
-                        {taskProgramDef.id && (
-                          <span className="font-mono text-[9px] text-slate-400">{taskProgramDef.id}</span>
-                        )}
-                      </div>
-                      <div className="space-y-2">
-                        {(taskProgramDef.stages || []).map((stage: any, sIdx: number) => {
-                          const stageJobs = (taskProgramDef.jobs || []).filter((j: any) => j.stage_id === stage.id || (!j.stage_id && sIdx === 0))
-                          return (
-                            <div key={stage.id || sIdx} className="p-2 rounded bg-slate-900/60 border border-slate-800/80 space-y-1.5" data-testid={`program-stage-${stage.id || sIdx}`}>
-                              <div className="flex flex-wrap items-start gap-1.5 justify-between font-mono text-[10px]">
-                                <span className="font-bold text-slate-200">
-                                  Stage {sIdx + 1}: {stage.id}
-                                </span>
-                                {stage.depends_on && stage.depends_on.length > 0 && (
-                                  <span className="text-slate-400 text-[9px]">depends on: {stage.depends_on.join(', ')}</span>
-                                )}
-                              </div>
-                              {stage.dependency_evidence && (
-                                <p className="text-[10px] text-slate-400 italic">{stage.dependency_evidence}</p>
-                              )}
-                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1 font-mono text-[10px]">
-                                {stageJobs.map((job: any) => (
-                                  <div key={job.id} className="min-w-0 p-1.5 rounded bg-slate-950/80 border border-slate-800 space-y-1">
-                                    <div className="flex flex-wrap items-start gap-1.5 justify-between">
-                                      <span className="text-[9px] uppercase font-bold px-1 py-0.2 rounded bg-indigo-900/60 text-indigo-300 border border-indigo-500/30">
-                                        @{job.agent_type || 'coder'}
-                                      </span>
-                                      <span className="min-w-0 font-bold text-white text-[10px]">{job.title || job.id}</span>
-                                    </div>
-                                    {job.owned_scope && job.owned_scope.length > 0 && (
-                                      <div className="text-[9px] text-slate-400">
-                                        <span className="text-slate-500">scope:</span> {job.owned_scope.join(', ')}
-                                      </div>
-                                    )}
-                                    {job.deliverable && (
-                                      <div className="text-[9px] text-slate-400">
-                                        <span className="text-slate-500">deliverable:</span> {job.deliverable}
-                                      </div>
-                                    )}
-                                    {job.acceptance_criteria && job.acceptance_criteria.length > 0 && (
-                                      <div className="text-[9px] text-emerald-400/90 pt-0.5">
-                                        <span>Acceptance Criteria:</span>
-                                        <ul className="list-disc list-inside space-y-0.5">
-                                          {job.acceptance_criteria.map((criterion: string, criterionIdx: number) => (
-                                            <li key={criterionIdx}>{criterion}</li>
-                                          ))}
-                                        </ul>
-                                      </div>
-                                    )}
-                                  </div>
-                                ))}
-                              </div>
-                            </div>
-                          )
-                        })}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Legacy prose is not an executable structured plan. */}
-                  {planCheckpointsToRender.length === 0 && (!taskProgramDef || (!taskProgramDef.stages?.length && !taskProgramDef.jobs?.length)) && task.fullPlanMarkdown && (
-                    <p role="status">Structured execution details have not been authored yet. Request changes to author a plan on this card.</p>
-                  )}
+                  <TaskPlanDetails document={rawPlanDoc} program={taskProgramDef} checkpoints={task.activePlanCheckpoints} markdown={task.fullPlanMarkdown} />
                 </div>
               )}
               </div>

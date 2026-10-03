@@ -1,3 +1,5 @@
+import { TaskPlanDetails } from './task-plan-details'
+
 type Requirement = { id: string; text: string; checkpoint_id: string }
 type ReviewDocument = {
   title?: string
@@ -78,16 +80,7 @@ export function TaskRequirements({ document }: { document: ReviewDocument | null
         <span aria-hidden="true">□</span><span>{requirement.text}</span>
       </li>)}
     </ul>
-    <section aria-label="Proposed plan">
-      <h4 className="font-semibold">{document!.title}</h4>
-      <p>{document!.info!.goal}</p>
-      {document!.checkpoints!.map(cp => <section key={cp.id}>
-        <h5 className="font-semibold">{cp.title}</h5>
-        <ul>{cp.tasks!.map((text, i) => <li key={i}>{text}</li>)}</ul>
-        <h6>Acceptance criteria</h6>
-        <ul>{cp.acceptance_criteria!.map((text, i) => <li key={i}>{text}</li>)}</ul>
-      </section>)}
-    </section>
+    <TaskPlanDetails document={document} />
     {!!document?.requirement_changes?.length && <section aria-label="Changed requirements">
       <h5 className="font-semibold">Changed requirements</h5>
       <ul>{document.requirement_changes.map((change, index) => <li key={index}>{change}</li>)}</ul>
