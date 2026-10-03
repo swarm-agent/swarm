@@ -48,7 +48,7 @@ func TestFeedbackDeliveryReceipt(t *testing.T) {
 	}
 	notes := []pebblestore.MessageSnapshot{{ID: "note", UserID: "owner", AccountScopeID: "account"}}
 	for i := 0; i < 2; i++ {
-		if err := recordFeedbackDelivery(sessions.ApplySessionMutation, snapshot.ID, "existing-run", notes); err != nil {
+		if err := RecordFeedbackDelivery(sessions.ApplySessionMutation, snapshot.ID, "existing-run", notes); err != nil {
 			t.Fatal(err)
 		}
 	}

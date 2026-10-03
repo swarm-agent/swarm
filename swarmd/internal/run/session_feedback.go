@@ -23,9 +23,10 @@ func feedbackMessages(messages []pebblestore.MessageSnapshot, cursor *uint64) []
 	return notes
 }
 
+// RecordFeedbackDelivery persists receipts after a successful provider step.
 // A receipt proves a successful provider response to input containing the note,
 // not semantic acceptance, scope incorporation, or approval of revised work.
-func recordFeedbackDelivery(apply func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error), sessionID, runID string, notes []pebblestore.MessageSnapshot) error {
+func RecordFeedbackDelivery(apply func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error), sessionID, runID string, notes []pebblestore.MessageSnapshot) error {
 	for _, note := range notes {
 		key := "feedback-delivery:" + note.ID + ":" + runID
 		now := time.Now().UnixMilli()

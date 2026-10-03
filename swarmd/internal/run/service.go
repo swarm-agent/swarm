@@ -2579,7 +2579,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			"restart_turn":            response.RestartTurn,
 		})
 		if err == nil && len(pendingFeedback) > 0 {
-			if receiptErr := recordFeedbackDelivery(options.ApplySessionMutation, sessionID, runID, pendingFeedback); receiptErr != nil {
+			if receiptErr := RecordFeedbackDelivery(options.ApplySessionMutation, sessionID, runID, pendingFeedback); receiptErr != nil {
 				return RunResult{}, receiptErr
 			}
 			pendingFeedback = nil

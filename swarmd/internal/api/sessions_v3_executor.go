@@ -85,6 +85,7 @@ type sessionV3ExecutorJob struct {
 	ResumeContext   bool
 	enqueuedAt      time.Time
 	activity        *sessionV3RunActivity
+	feedbackCursor  *uint64
 }
 
 type sessionV3ExecutorRunState struct {
@@ -2491,10 +2492,27 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 	if err != nil {
 		return sessionV3AssistantResponse{}, err
 	}
+	// Capture before context assembly so notes arriving during assembly are not
+	// skipped by the live provider loop.
+	feedbackCursor, err := e.sessionV3FeedbackCursor(job.SessionID)
+	if err != nil {
+		return sessionV3AssistantResponse{}, err
+	}
+	job.feedbackCursor = &feedbackCursor
 	messages, err := e.sessionV3ProviderContextMessages(job)
 	if err != nil {
 		return sessionV3AssistantResponse{}, err
 	}
+	// Live notes after the captured boundary are appended by the tool loop,
+	// not by this potentially later context read.
+	filtered := messages[:0]
+	for _, message := range messages {
+		if message.GlobalSeq > feedbackCursor && message.Role == "user" && message.Metadata["feedback_note"] == true {
+			continue
+		}
+		filtered = append(filtered, message)
+	}
+	messages = filtered
 	// Canonical checkpoint startup is an authoritative context-selection
 	// boundary, not an ordinary conversational handoff. Build it before generic
 	// transcript/lineage selection so neither a same-model continuation nor a
@@ -3384,6 +3402,14 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 	if sink == nil {
 		return sessionV3ProviderLoopResult{}, errors.New("v3 durable progress sink is not configured")
 	}
+	feedbackCursor := job.feedbackCursor
+	if feedbackCursor == nil {
+		cursor, err := e.sessionV3FeedbackCursor(job.SessionID)
+		if err != nil {
+			return sessionV3ProviderLoopResult{}, err
+		}
+		feedbackCursor = &cursor
+	}
 	input := append([]map[string]any(nil), baseReq.Input...)
 	identicalCalls := sessionV3ProviderIdenticalToolCallTracker{}
 	toolProgression := &runruntime.ToolProgressionState{}
@@ -3415,6 +3441,17 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 			if invokerErr != nil {
 				return sessionV3ProviderLoopResult{}, invokerErr
 			}
+		}
+		if err := ctx.Err(); err != nil {
+			return sessionV3ProviderLoopResult{}, err
+		}
+		nextFeedbackCursor := *feedbackCursor
+		notes, err := e.sessionV3FeedbackSince(job.SessionID, &nextFeedbackCursor)
+		if err != nil {
+			return sessionV3ProviderLoopResult{}, err
+		}
+		for _, note := range notes {
+			input = append(input, map[string]any{"role": "user", "content": []map[string]any{{"type": "input_text", "text": note.Content}}})
 		}
 		req := baseReq
 		req.Input = append([]map[string]any(nil), input...)
@@ -3520,6 +3557,21 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 		if err := ctx.Err(); err != nil {
 			return sessionV3ProviderLoopResult{}, err
 		}
+		feedbackOutcome := sessionV3TerminalClassifier.Classify(TerminalClassifierInput{
+			ProviderID: runner.ID(), StopReason: response.StopReason,
+			HasFinalContent: strings.TrimSpace(stepText) != "",
+			HasFunctionCalls: len(response.FunctionCalls) > 0, RestartTurn: response.RestartTurn,
+		})
+		if feedbackOutcome.Status == sessionruntime.RunIntentFailed || feedbackOutcome.Status == sessionruntime.RunIntentCancelled {
+			return sessionV3ProviderLoopResult{}, errors.New(feedbackOutcome.Reason)
+		}
+		// Only this successful step's input is acknowledged. Notes queued while
+		// it was in flight wait for another eligible step; a final response does
+		// not reopen work merely to drain feedback.
+		if err := runruntime.RecordFeedbackDelivery(e.server.applySessionV3PrimaryMutation, job.SessionID, job.RunID, notes); err != nil {
+			return sessionV3ProviderLoopResult{}, err
+		}
+		*feedbackCursor = nextFeedbackCursor
 		if len(response.FunctionCalls) == 0 && !response.RestartTurn {
 			if planGuardArmed {
 				continue
