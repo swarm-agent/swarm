@@ -2084,6 +2084,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		}
 	}
 	var pendingFeedback []pebblestore.MessageSnapshot
+	taskUpdateCursor := ""
 	runtimeContextAt := time.Now()
 	for step := 1; ; step++ {
 		if err := ctx.Err(); err != nil {
@@ -2364,6 +2365,16 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			}
 			pendingFeedback = append(pendingFeedback, notes...)
 		}
+		var taskUpdates []pebblestore.ProjectTaskUpdate
+		if options.ApplySessionMutation != nil && pebblestore.ProjectConversationID(sessionSnapshot) != "" {
+			var next string
+			taskUpdates, next, err = s.sessions.Store().PendingProjectTaskUpdates(options.Principal.AccountScopeID, options.Principal.UserID, sessionID, runID, taskUpdateCursor)
+			if err != nil {
+				return RunResult{}, err
+			}
+			taskUpdateCursor = next
+			input = append(input, ProjectTaskUpdateInput(taskUpdates)...)
+		}
 		stepRequest := provideriface.Request{
 			SessionID:                 sessionID,
 			ProviderLineageID:         providerLineageID,
@@ -2584,6 +2595,9 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 				return RunResult{}, receiptErr
 			}
 			pendingFeedback = nil
+		}
+		if err := RecordProjectTaskDelivery(options.ApplySessionMutation, sessionID, runID, taskUpdates); err != nil {
+			return RunResult{}, err
 		}
 		if stepReasoningErr != nil {
 			return RunResult{}, stepReasoningErr

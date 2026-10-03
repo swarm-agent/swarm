@@ -37,6 +37,10 @@ type ProjectTaskUpdate struct {
 	UserID          string                `json:"user_id"`
 	ProjectID       string                `json:"project_id"`
 	ParentSessionID string                `json:"parent_session_id"`
+	ParentRunID     string                `json:"parent_run_id,omitempty"`
+	ParentEpochID   string                `json:"parent_epoch_id,omitempty"`
+	ParentFence     string                `json:"parent_fence,omitempty"`
+	QueueSeq        uint64                `json:"queue_seq,omitempty"`
 	TaskID          string                `json:"task_id"`
 	AttemptID       string                `json:"attempt_id"`
 	SessionID       string                `json:"session_id"`
@@ -148,5 +152,5 @@ func (s *SessionStore) prepareProjectTaskReport(input *V3SessionMutationInput) e
 	input.EventType = "session.task.reported"
 	input.taskUpdate = &ProjectTaskUpdate{AccountScopeID: input.AccountScopeID, UserID: input.UserID, ProjectID: op.ProjectID, ParentSessionID: parent.ID, TaskID: op.TaskID, AttemptID: attempt.ID, SessionID: child.ID, RunID: op.RunID, EventID: input.EventID, Kind: op.Kind, Summary: op.Summary}
 	input.EventPayload = nil
-	return nil
+	return s.bindProjectTaskUpdate(input.taskUpdate)
 }

@@ -58,10 +58,34 @@ exact event ID/sequence. Actual typed content determines retry conflicts.
 Reports record intent only: progress is informational, attention marks actionable
 input, and wake_request explicitly requests attention. `recorded`/`pending` is not
 a delivery or wake receipt and does not approve scope, change task status or spawn
-a run. Safe parent delivery and consumption acknowledgement are separate work.
+a run by itself. Eligible reports participate in the same wait reconciler as
+completion/blocker outcomes; progress never wakes an inactive parent.
 The V3 message boundary rejects task-originated messages to Orchestrator sessions,
 including non-triggering notes; ordinary user chat and parent-to-task feedback
 remain available. Timer tools and session messaging are not alternate wake paths.
+
+## Safe delivery
+
+The report event and parent pending index commit atomically. Deployment captures
+its parent run generation, epoch and user-message fence; delayed arrival never
+retargets an old task to a new goal. An explicit wait may select a retained task
+attempt for that goal. Wake continuations inherit the generation, not a new goal.
+
+Running parents read at most 16 reports (each at most 4000 summary bytes) at a
+provider boundary. Reports enter context as explicitly untrusted result data,
+not accepted scope or system instructions. A successful provider response commits
+`session.task.delivered` and removes precisely those pending identities in one
+mutation. Reading, queueing and wake allocation never acknowledge consumption.
+Failed/cancelled steps retain reports. Final-step arrivals remain durable without
+starting a second run. Receipts recheck principal, run, epoch, message fence,
+archive state and active task attempt; changed/forged event bytes are rejected.
+
+A crash after remote provider success but before the local receipt is inherently
+ambiguous: pending data is retained and may be presented again on an authorized
+retry with the same event identity. This is replay-safe durable delivery, not a
+claim of exactly-once remote execution. Pre-existing runs without the new capture
+fence fail closed; a new explicit user run is required rather than inferred
+ownership or replay of an old goal.
 
 ## Validation
 

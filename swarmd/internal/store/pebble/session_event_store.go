@@ -1,6 +1,8 @@
 package pebblestore
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -83,7 +85,8 @@ type V3CheckpointBoundaryMutation struct {
 type V3SessionMutationInput struct {
 	TaskReport                   *V3ProjectTaskReportMutation `json:"-"`
 	taskUpdate                   *ProjectTaskUpdate
-	TaskWait                     *V3ProjectTaskWaitMutation `json:"-"`
+	TaskDelivery                 *V3ProjectTaskDeliveryMutation `json:"-"`
+	TaskWait                     *V3ProjectTaskWaitMutation     `json:"-"`
 	taskWaitPrevious             *V3SessionRunIntent
 	designChange                 *pebble.Batch     // Private independent design participant; caller holds designMu.
 	DesignAllocation             *DesignAllocation `json:"-"`
@@ -421,6 +424,7 @@ func newV3RealtimeOutboxMembershipFromTombstone(tombstone V3SessionTombstone, no
 type V3SessionRunIntent struct {
 	TaskWait             *V3ProjectTaskWait `json:"task_wait,omitempty"`
 	TaskWaitOwnerRunID   string             `json:"task_wait_owner_run_id,omitempty"`
+	TaskUpdateRootRunID  string             `json:"task_update_root_run_id,omitempty"`
 	SessionID            string             `json:"session_id"`
 	UserID               string             `json:"user_id,omitempty"`
 	AccountScopeID       string             `json:"account_scope_id,omitempty"`
@@ -702,7 +706,7 @@ func (s *SessionStore) ApplyV3SessionMutation(input V3SessionMutationInput) (V3S
 
 	// Task chat continuation shares the project lock with reopen/archive. Take it
 	// before session locks, matching project mutation lock ordering.
-	if input.TaskReport != nil || input.TaskWait != nil || (input.PlanSave != nil && input.PlanSave.TaskPublication != nil) || (input.Kind == V3SessionMutationAppendMessage && input.RunIntent != nil && input.Message != nil && strings.EqualFold(input.Message.Role, "user")) {
+	if input.TaskDelivery != nil || input.TaskReport != nil || input.TaskWait != nil || (input.PlanSave != nil && input.PlanSave.TaskPublication != nil) || (input.Kind == V3SessionMutationAppendMessage && input.RunIntent != nil && input.Message != nil && strings.EqualFold(input.Message.Role, "user")) {
 		s.store.projectsMu.Lock()
 		defer s.store.projectsMu.Unlock()
 	}
@@ -748,6 +752,14 @@ func (s *SessionStore) ApplyV3SessionMutation(input V3SessionMutationInput) (V3S
 	}
 	if err := s.prepareProjectTaskReport(&input); err != nil {
 		return V3SessionMutationResult{}, err
+	}
+	if input.TaskDelivery != nil {
+		if _, err := s.projectTaskReceiptOwner(input.AccountScopeID, input.UserID, input.SessionID, input.TaskDelivery.RunID); err != nil {
+			return V3SessionMutationResult{}, err
+		}
+		raw, _ := json.Marshal(input.TaskDelivery)
+		sum := sha256.Sum256(raw)
+		input.PayloadHash, input.RequestHash = hex.EncodeToString(sum[:]), hex.EncodeToString(sum[:])
 	}
 	idempotencyKey := KeyV3SessionOperationIdempotency(input.AccountScopeID, input.SessionID, input.Kind, input.ClientRequestID)
 
@@ -800,11 +812,17 @@ func (s *SessionStore) ApplyV3SessionMutation(input V3SessionMutationInput) (V3S
 	defer s.store.sessionMutations.libraryRepairMu.RUnlock()
 	input.designProjectOutbox = &designProjectOutbox
 	result, err := s.applyFreshV3SessionMutation(input, idempotencyKey)
+	if err == nil && input.TaskReport != nil && result.RealtimeOutbox != nil && !result.Replayed {
+		designProjectOutbox = append(designProjectOutbox, result.RealtimeOutbox)
+	}
 	budgetReceiptCommitted = err == nil && (input.TurnUsage != nil || input.MediaUsage != nil)
 	return result, err
 }
 
 func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput, idempotencyStoreKey string) (V3SessionMutationResult, error) {
+	if err := s.prepareProjectTaskDelivery(&input); err != nil {
+		return V3SessionMutationResult{}, err
+	}
 	if err := s.prepareProjectTaskWaitSupersession(&input); err != nil {
 		return V3SessionMutationResult{}, err
 	}
@@ -944,6 +962,9 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 		activeEpoch = &epoch
 	}
 	endpointSeq := reservedOutbox[0]
+	if input.taskUpdate != nil {
+		input.taskUpdate.QueueSeq = endpointSeq
+	}
 	now := input.NowUnixMs
 	if now == 0 {
 		now = time.Now().UnixMilli()
@@ -1239,6 +1260,13 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 
 	batch := s.store.NewBatch()
 	defer batch.Close()
+	taskDeliveryInput := input
+	if runIntentProvided {
+		taskDeliveryInput.RunIntent = &runIntent
+	}
+	if err := s.setProjectTaskDeliveryInBatch(batch, taskDeliveryInput, seq, endpointSeq); err != nil {
+		return V3SessionMutationResult{}, err
+	}
 	if err := s.setProjectTaskWaitTransition(batch, input, seq, now); err != nil {
 		return V3SessionMutationResult{}, err
 	}
@@ -3055,6 +3083,7 @@ func (s *SessionStore) validateV3RunIntentTransition(sessionID string, incoming 
 	}
 	if ok {
 		incoming.TaskWaitOwnerRunID = existing.TaskWaitOwnerRunID
+		incoming.TaskUpdateRootRunID = existing.TaskUpdateRootRunID
 		if existing.CreatedAt != 0 {
 			incoming.CreatedAt = existing.CreatedAt
 		} else if incoming.CreatedAt == 0 {
@@ -3070,6 +3099,32 @@ func (s *SessionStore) validateV3RunIntentTransition(sessionID string, incoming 
 				return V3SessionRunIntent{}, errors.New("task wait requires a running owner")
 			}
 		case V3RunIntentRunning:
+			if existing.TaskWaitOwnerRunID != "" {
+				if err := s.validateTaskUpdateOwnerFence(existing); err != nil {
+					return V3SessionRunIntent{}, err
+				}
+				state, found, err := s.GetV3SessionRunState(sessionID)
+				if err != nil {
+					return V3SessionRunIntent{}, err
+				}
+				if !found || state.RunID != existing.RunID {
+					return V3SessionRunIntent{}, ErrProjectTaskWaitStale
+				}
+				tomb, found, err := s.GetV3SessionTombstone(sessionID)
+				if err != nil {
+					return V3SessionRunIntent{}, err
+				}
+				if found && (tomb.Archived || tomb.Deleted) {
+					return V3SessionRunIntent{}, ErrProjectTaskWaitStale
+				}
+				epoch, found, err := s.GetActiveExecutionEpoch(sessionID)
+				if err != nil {
+					return V3SessionRunIntent{}, err
+				}
+				if existing.EpochID != "" && (!found || epoch.EpochID != existing.EpochID) {
+					return V3SessionRunIntent{}, ErrProjectTaskWaitStale
+				}
+			}
 			if existing.Status != V3RunIntentPendingExecutor && existing.Status != V3RunIntentRunning {
 				return V3SessionRunIntent{}, fmt.Errorf("v3 run %q is %s, cannot claim or update", incoming.RunID, existing.Status)
 			}
@@ -3518,10 +3573,13 @@ func normalizeV3SessionMutationInput(input V3SessionMutationInput) V3SessionMuta
 }
 
 func validateV3SessionMutationInput(input V3SessionMutationInput) error {
+	if input.Kind == V3SessionMutationDeliverTasks && input.TaskDelivery == nil {
+		return errors.New("task delivery requires trusted provider receipt")
+	}
 	if input.Kind == V3SessionMutationReportTask && input.TaskReport == nil {
 		return errors.New("task reports require authenticated task report context")
 	}
-	if input.RunIntent != nil && (input.RunIntent.Status == V3RunIntentWaitingTasks || input.RunIntent.TaskWait != nil || input.RunIntent.TaskWaitOwnerRunID != "") && input.TaskWait == nil {
+	if input.RunIntent != nil && (input.RunIntent.Status == V3RunIntentWaitingTasks || input.RunIntent.TaskWait != nil || input.RunIntent.TaskWaitOwnerRunID != "" || input.RunIntent.TaskUpdateRootRunID != "") && input.TaskWait == nil {
 		return errors.New("task wait state requires the canonical task-wait mutation")
 	}
 	if input.DesignAllocation != nil {
