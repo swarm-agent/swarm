@@ -69,12 +69,14 @@ class MintGuardTest(unittest.TestCase):
         """MainPID must identify a readable, suppressed process on every check."""
         proc = self.root / "proc"
         for pid, value in [(123, "1"), (124, "0")]:
-            (proc / str(pid)).mkdir(parents=True)
+            (proc / str(pid) / 'task' / str(pid)).mkdir(parents=True)
+            (proc / str(pid) / 'task' / str(pid) / 'children').write_text('')
+            (proc / str(pid) / 'comm').write_text('swarmd\n')
             (proc / str(pid) / "environ").write_bytes(
                 f"SWARM_DISABLE_MINT_REPORT={value}\0".encode())
         for pid, ok in [("123", True), ("124", False), ("0", False),
                         ("../123", False), ("123\n124", False), ("999", False)]:
-            result = self.shell('pid=$2; systemctl() { if [[ "$1" == show ]]; then printf "%s\\n" "$pid"; fi; }; mint_guard_verify "$1"', proc, pid)
+            result = self.shell('fixture_pid=$2; systemctl() { if [[ "$1" == show ]]; then printf "%s\\n" "$fixture_pid"; fi; }; mint_guard_verify "$1"', proc, pid)
             self.assertEqual(result.returncode == 0, ok, result.stderr)
         result = self.shell('systemctl() { return 1; }; mint_guard_verify "$1"', proc)
         self.assertNotEqual(result.returncode, 0)
@@ -82,6 +84,24 @@ class MintGuardTest(unittest.TestCase):
         result = self.shell('systemctl() { if [[ "$1" == show ]]; then if [[ -e "$counter" ]]; then echo 124; else touch "$counter"; echo 123; fi; fi; }; counter=$2; mint_guard_verify "$1"', proc, counter)
         self.assertNotEqual(result.returncode, 0)
         self.assertNotIn("mint_suppression=verified", result.stdout)
+
+    def test_launcher_flag_cannot_mask_unsuppressed_daemon(self):
+        """MainPID is a launcher: inspect the actual child even on another thread."""
+        proc = self.root / 'proc'
+        for pid, name in [(123, 'swarm'), (125, 'swarmd')]:
+            (proc / str(pid) / 'task' / str(pid)).mkdir(parents=True)
+            (proc / str(pid) / 'comm').write_text(name + '\n')
+            (proc / str(pid) / 'task' / str(pid) / 'children').write_text('')
+            (proc / str(pid) / 'environ').write_bytes(b'SWARM_DISABLE_MINT_REPORT=1\0')
+        thread = proc / '123' / 'task' / '124'
+        thread.mkdir()
+        (thread / 'children').write_text('125 ')
+        for value, ok in [('1', True), ('0', False), ('', False)]:
+            (proc / '125' / 'environ').write_bytes(f'SWARM_DISABLE_MINT_REPORT={value}\0'.encode())
+            result = self.shell('mint_guard_daemons "$1" 123', proc)
+            self.assertEqual(result.returncode == 0, ok, result.stderr)
+        (thread / 'children').write_text('')
+        self.assertNotEqual(self.shell('mint_guard_daemons "$1" 123', proc).returncode, 0)
 
     def test_prepare_failure_prevents_following_install(self):
         """Write or reload failure must stop the shell before installer mutation."""

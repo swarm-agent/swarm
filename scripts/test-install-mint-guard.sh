@@ -39,12 +39,42 @@ mint_guard_environment() {
   [[ $count == 1 ]] || { mint_guard_fail 'missing or duplicate mint suppression'; return 1; }
 }
 
+mint_guard_daemons() {
+  local proc_root=$1 pid=$2 child name children children_file visited=0 found=0 threads
+  local -a queue=("$pid")
+  # swarm.service MainPID is the launcher; verify its real daemon descendants.
+  while (( ${#queue[@]} )); do
+    pid=${queue[0]}; queue=("${queue[@]:1}")
+    visited=$((visited + 1))
+    (( visited <= 128 )) || { mint_guard_fail 'service process tree exceeds bound'; return 1; }
+    [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
+    [[ -r "$proc_root/$pid/comm" && -r "$proc_root/$pid/task/$pid/children" ]] || return 1
+    IFS= read -r name < "$proc_root/$pid/comm" || return 1
+    if [[ "$name" == swarmd ]]; then
+      mint_guard_environment "$proc_root/$pid/environ" || return 1
+      found=$((found + 1))
+    fi
+    threads=0
+    # Go may spawn the daemon on a non-leader OS thread.
+    for children_file in "$proc_root/$pid"/task/*/children; do
+      threads=$((threads + 1)); (( threads <= 128 )) || return 1
+      children=$(cat "$children_file") || return 1
+      for child in $children; do
+        [[ "$child" =~ ^[1-9][0-9]*$ ]] || return 1
+        queue+=("$child")
+      done
+    done
+  done
+  (( found > 0 )) || { mint_guard_fail 'no daemon found below service MainPID'; return 1; }
+}
+
 mint_guard_verify() {
   local proc_root=$1 pid current
   systemctl is-active --quiet swarm.service || return 1
   pid=$(systemctl show -p MainPID --value swarm.service) || return 1
   [[ "$pid" =~ ^[1-9][0-9]*$ ]] || { mint_guard_fail 'invalid service MainPID'; return 1; }
   mint_guard_environment "$proc_root/$pid/environ" || return 1
+  mint_guard_daemons "$proc_root" "$pid" || return 1
   current=$(systemctl show -p MainPID --value swarm.service) || return 1
   [[ "$current" == "$pid" ]] || { mint_guard_fail 'service changed during verification'; return 1; }
   systemctl is-active --quiet swarm.service || return 1
