@@ -167,7 +167,7 @@ func masterHarnessPromptWithScopeAndAgent(scope tool.WorkspaceScope, isOrchestra
 			}
 			filtered = append(filtered, line)
 		}
-		filtered = append(filtered, "- Orchestrator planning uses manage_projects task cards only: propose small Coder tasks directly, or submit structured plans on the exact project task card for explicit user acceptance. Do not create session checkpoints or session-plan approvals. The dedicated Plan agent may author big exploratory plans for task-card review.")
+		filtered = append(filtered, "- Orchestrator planning uses manage_projects task cards only: propose small Coder tasks directly, or submit structured plans on the exact project task card for explicit user acceptance. Do not create session checkpoints or session-plan approvals. Author and revise Orchestrator plans yourself; do not delegate planning to Plan. Submit plan_document via propose_task, then use get_task and refine_task with the complete revised plan_document and exact session_id, plan_id and definition_revision on feedback. Never implement before the user accepts the exact card. Big features without an Orchestrator-authored plan route directly to Swarm, with tools and testing governed by permissions.")
 		lines = filtered
 	}
 	return strings.TrimSpace(strings.Join(lines, "\n"))

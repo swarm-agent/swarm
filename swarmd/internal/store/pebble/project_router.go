@@ -130,7 +130,7 @@ func RouteAndPlanProjectTaskWithOptions(opts TaskPlanOptions) (TaskRouteResult, 
 		switch explicitAgent {
 		case "coder":
 			if featureSize == "big" {
-				return TaskRouteResult{}, errors.New("conflicting task configuration: feature_size 'big' cannot use coder agent (use plan agent)")
+				return TaskRouteResult{}, errors.New("conflicting task configuration: feature_size 'big' cannot use coder agent (use swarm agent)")
 			}
 			if intent != "" && intent != "code" {
 				return TaskRouteResult{}, fmt.Errorf("conflicting task configuration: intent %q cannot use coder agent", opts.Intent)
@@ -194,6 +194,10 @@ func RouteAndPlanProjectTaskWithOptions(opts TaskPlanOptions) (TaskRouteResult, 
 			agent = "swarm"
 			tier = "direct"
 			outcomeType = "general"
+			if featureSize == "big" {
+				tier = "complex"
+				outcomeType = "code_pr"
+			}
 		default:
 			return TaskRouteResult{}, fmt.Errorf("unknown task agent: %q", opts.Agent)
 		}
@@ -202,9 +206,9 @@ func RouteAndPlanProjectTaskWithOptions(opts TaskPlanOptions) (TaskRouteResult, 
 		switch intent {
 		case "code":
 			if featureSize == "big" {
-				agent = "plan"
+				agent = "swarm"
 				tier = "complex"
-				outcomeType = "plan_spec"
+				outcomeType = "code_pr"
 			} else {
 				agent = "coder"
 				tier = "direct"

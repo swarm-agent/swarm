@@ -533,13 +533,13 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 	if structDoc != nil {
 		task.Status = "pending_approval"
 		task.ActionNeeded = "Review plan in task card and click Approve"
-	} else if task.Agent == "plan" || (task.Agent == "swarm" && task.FeatureSize == "big") {
+	} else if task.Agent == "plan" {
 		task.Status = "planning"
 		task.ActionNeeded = "Plan agent investigating and authoring structured plan..."
 		task.WhatDidDo = []string{"Started planning investigation"}
 	} else if task.TaskProgram == nil && (task.Agent == "coder" || (len(task.CoderAssignments) == 0 && (task.OutcomeType == "code_pr" || task.OutcomeType == "bug_patch"))) {
 		task.Status = "pending_approval"
-		task.ActionNeeded = "Review task and click Approve to start Coder execution"
+		task.ActionNeeded = "Review task and click Approve to start execution"
 		if input.AutoApprove {
 			task.Status = "in_progress"
 			task.ActionNeeded = ""

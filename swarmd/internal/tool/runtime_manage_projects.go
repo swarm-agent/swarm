@@ -127,9 +127,9 @@ func (a *legacyDeployerLifecycleAdapter) CreateProjectTask(ctx context.Context, 
 	if input.FeatureSize == "small" && (agentName == "" || agentName == "coder") {
 		agentName = "coder"
 		outcomeType = "code_pr"
-	} else if input.FeatureSize == "big" && (agentName == "" || agentName == "swarm" || agentName == "plan") {
-		agentName = "plan"
-		outcomeType = "plan_spec"
+	} else if input.FeatureSize == "big" && (agentName == "" || agentName == "swarm") {
+		agentName = "swarm"
+		outcomeType = "code_pr"
 		if tier == "" {
 			tier = "complex"
 		}
@@ -360,7 +360,7 @@ func manageProjectsDefinition() Definition {
 				},
 				"agent": map[string]any{
 					"type":        "string",
-					"description": "Optional agent assignment override (coder, finder, designer, image, video, sound, plan, swarm). Small code tasks route to Coder; exploratory big features route to Plan agent.",
+					"description": "Optional agent assignment override (coder, finder, designer, image, video, sound, plan, swarm). Small code tasks route to Coder; big features route directly to Swarm. Plan is only for explicitly requested Plan workflows.",
 				},
 				"intent": map[string]any{
 					"type":        "string",
@@ -368,7 +368,7 @@ func manageProjectsDefinition() Definition {
 				},
 				"feature_size": map[string]any{
 					"type":        "string",
-					"description": "Optional feature size for code tasks: 'small' (direct coder bug fix / single component) or 'big' (complex multi-stage architecture requiring plan agent or direct structured plan)",
+					"description": "Optional feature size for code tasks: 'small' (direct coder bug fix / single component) or 'big' (complex work routed to Swarm; Orchestrator may supply its own structured plan for card review)",
 				},
 				"worker_name": map[string]any{
 					"type":        "string",
@@ -393,7 +393,7 @@ func manageProjectsDefinition() Definition {
 				},
 				"plan_document": map[string]any{
 					"type":        "object",
-					"description": "Optional structured plan document {id, title, info: {goal}, checkpoints: [{id, title, tasks, acceptance_criteria}]} for big-feature tasks. When provided, submits the plan directly to the task card for user review without running a separate Plan agent investigation pass.",
+					"description": "Optional structured plan document {id, title, info: {goal}, checkpoints: [{id, title, tasks, acceptance_criteria}]} for big-feature tasks. With propose_task, submits the Orchestrator-authored plan for card review. With refine_task, replaces the same card's unapproved plan using exact session_id, plan_id and definition_revision guards, without launching a Plan agent.",
 				},
 				"document": map[string]any{
 					"type":        "object",
@@ -1224,6 +1224,30 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 		if !exists || existing == nil {
 			return "", errors.New("task not found")
 		}
+		rawDocument := args["plan_document"]
+		if rawDocument == nil {
+			rawDocument = args["document"]
+		}
+		if rawDocument != nil {
+			guards := ProjectTaskApprovalGuards{SessionID: strings.TrimSpace(asString(args["session_id"])), PlanID: strings.TrimSpace(asString(args["plan_id"])), DefinitionRevision: asInt(args["definition_revision"], 0)}
+			if existing.PlanBinding == nil || guards.SessionID == "" || guards.PlanID == "" || guards.DefinitionRevision <= 0 || feedback == "" {
+				return "", errors.New("structured refinement requires a bound task, feedback and exact session_id, plan_id and definition_revision")
+			}
+			doc, err := parseSessionPlanDocument(rawDocument)
+			if err != nil {
+				return "", fmt.Errorf("invalid plan_document: %w", err)
+			}
+			result, err := r.getProjectTaskLifecycleService().SubmitProjectTaskPlan(ctx, sessionruntime.ProjectTaskPlanSubmissionInput{
+				AccountScopeID: accountScopeID, UserID: p.UserID, ProjectID: projectID, TaskID: taskID,
+				SessionID: guards.SessionID, ExpectedPlanID: guards.PlanID, ExpectedDefinitionRevision: guards.DefinitionRevision,
+				Document: doc, Feedback: feedback,
+			})
+			if err != nil {
+				return "", err
+			}
+			response["task"], response["status"], response["task_id"] = result.Task, result.Task.Status, taskID
+			break
+		}
 		if existing.PlanBinding != nil {
 			refiner, ok := r.getProjectTaskLifecycleService().(interface {
 				RefineBoundProjectTask(context.Context, identity.Principal, string, string, ProjectTaskApprovalGuards, string) (*pebblestore.ProjectTaskRecord, error)
@@ -1268,9 +1292,9 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 			if v := strings.TrimSpace(asString(args["feature_size"])); v != "" {
 				t.FeatureSize = v
 				if t.FeatureSize == "big" && t.Agent == "coder" {
-					t.Agent = "plan"
+					t.Agent = "swarm"
 					t.Tier = "complex"
-					t.OutcomeType = "plan_spec"
+					t.OutcomeType = "code_pr"
 				}
 			}
 			if v := strings.TrimSpace(asString(args["outcome_type"])); v != "" {

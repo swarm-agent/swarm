@@ -30,7 +30,7 @@ export interface ImpendingAgentView {
 }
 
 export interface DeployImpendingConfig {
-  targetAgent: 'coder' | 'plan' | 'finder' | 'image' | 'video' | 'sound'
+  targetAgent: 'coder' | 'swarm' | 'finder' | 'image' | 'video' | 'sound'
   targetOutcomeType: TaskOutcomeType
   targetTier: 'direct' | 'discovery' | 'complex'
   resolvedModel: string
@@ -259,7 +259,7 @@ export function resolveDeployImpendingConfig(
   backendModelPreview?: BackendTaskModelPreview | null,
   previewError?: string | null
 ): DeployImpendingConfig {
-  let targetAgent: 'coder' | 'plan' | 'finder' | 'image' | 'video' | 'sound' = 'coder'
+  let targetAgent: 'coder' | 'swarm' | 'finder' | 'image' | 'video' | 'sound' = 'coder'
   let targetOutcomeType: TaskOutcomeType = 'code_pr'
   let targetTier: 'direct' | 'discovery' | 'complex' = 'direct'
   let accountDefaultModel = 'Account default'
@@ -270,16 +270,14 @@ export function resolveDeployImpendingConfig(
 
   if (taskIntent === 'code') {
     if (featureSize === 'big') {
-      targetAgent = 'plan'
-      targetOutcomeType = 'plan_spec'
+      targetAgent = 'swarm'
+      targetOutcomeType = 'code_pr'
       targetTier = 'complex'
-      accountDefaultModel =
-        agentModelSettings?.swarm?.plan?.model ||
-        agentModelSettings?.swarm?.action?.model ||
-        'Account default'
-      provider = agentModelSettings?.swarm?.plan?.provider || agentModelSettings?.swarm?.action?.provider
-      thinking = agentModelSettings?.swarm?.plan?.thinking || agentModelSettings?.swarm?.action?.thinking
-      serviceTier = agentModelSettings?.swarm?.plan?.serviceTier || agentModelSettings?.swarm?.action?.serviceTier
+      accountDefaultModel = agentModelSettings?.swarm?.action?.model || 'Account default'
+      provider = agentModelSettings?.swarm?.action?.provider
+      thinking = agentModelSettings?.swarm?.action?.thinking
+      serviceTier = agentModelSettings?.swarm?.action?.serviceTier
+      contextMode = agentModelSettings?.swarm?.action?.contextMode
     } else {
       targetAgent = 'coder'
       targetOutcomeType = 'code_pr'

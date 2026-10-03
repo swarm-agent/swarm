@@ -3629,12 +3629,12 @@ export function OrchestrateView({
       model: newTaskModelOverride || undefined,
       workspace: newTaskWorkspace.trim(),
       workspaceCatalog: selectedProject?.workspaces,
-      agent: taskIntent === 'code' ? (featureSize === 'big' ? 'plan' : 'coder') : (taskIntent === 'audit' ? 'finder' : taskIntent),
+      agent: taskIntent === 'code' ? (featureSize === 'big' ? 'swarm' : 'coder') : (taskIntent === 'audit' ? 'finder' : taskIntent),
       tier: taskIntent === 'code' ? (featureSize === 'big' ? 'complex' : 'direct') : (taskIntent === 'audit' ? 'discovery' : 'direct'),
     }],
     queryFn: async () => {
       const targetAgent = taskIntent === 'code'
-        ? (featureSize === 'big' ? 'plan' : 'coder')
+        ? (featureSize === 'big' ? 'swarm' : 'coder')
         : taskIntent === 'audit'
           ? 'finder'
           : taskIntent === 'image'
@@ -3643,7 +3643,7 @@ export function OrchestrateView({
               ? 'video'
               : 'sound'
       const targetOutcomeType = taskIntent === 'code'
-        ? (featureSize === 'big' ? 'plan_spec' : 'code_pr')
+        ? 'code_pr'
         : taskIntent === 'audit'
           ? 'audit_report'
           : taskIntent === 'image'
@@ -4873,7 +4873,7 @@ export function OrchestrateView({
         : (newTaskModelOverride.trim() || undefined)
 
       const targetAgent = taskIntent === 'code'
-        ? (featureSize === 'big' ? 'plan' : 'coder')
+        ? (featureSize === 'big' ? 'swarm' : 'coder')
         : taskIntent === 'audit'
           ? 'finder'
           : taskIntent === 'image'
@@ -7250,7 +7250,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                   </span>
                   <span className="font-bold text-white px-2 py-0.5 rounded bg-slate-900 border border-slate-700">
                     {taskIntent === 'code'
-                      ? (featureSize === 'big' ? '@plan (Orchestrator Plan Mode)' : '@coder (Coder)')
+                      ? (featureSize === 'big' ? '@swarm (Swarm)' : '@coder (Coder)')
                       : '@finder (Finder)'}
                   </span>
                 </div>
@@ -7315,8 +7315,11 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
               )}
 
               <p className="text-[10px] text-slate-400 leading-normal">
-                {taskIntent === 'code' && featureSize === 'small' && 'Direct autonomous code generation and tests on an isolated worktree branch via @coder.'}
-                {taskIntent === 'code' && featureSize === 'big' && 'Plan-mode orchestration: builds a structured proposed plan and criteria awaiting user approval before launching worker agents.'}
+                {taskIntent === 'code' && featureSize === 'small' && 'Code and test authoring on an isolated worktree via @coder; parent-run validation.'}
+                {taskIntent === 'code' && featureSize === 'big' && <>
+                  Swarm handles big features directly, including Bash and test execution subject to configured tools and permissions.{' '}
+                  <Link {...projectPageLink('settings')} hash="permissions" onClick={() => setIsDeployModalOpen(false)} className="underline hover:text-slate-200">/permissions</Link> (no permissions are changed automatically).
+                </>}
                 {taskIntent === 'audit' && 'Read-only architectural audit and code exploration via @finder, producing an audit report.'}
               </p>
             </div>

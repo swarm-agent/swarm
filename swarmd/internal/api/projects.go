@@ -655,7 +655,7 @@ func (s *Server) resolveTaskModelPreference(p identity.Principal, task *pebblest
 	if targetAgent == "" {
 		targetAgent = "swarm"
 	}
-	isPlan := targetAgent == "plan" || (targetAgent == "swarm" && strings.ToLower(strings.TrimSpace(task.FeatureSize)) == "big")
+	isPlan := targetAgent == "plan"
 
 	// Resolve default Swarm preference for account
 	var defaultSwarmPref pebblestore.ModelPreference
@@ -786,7 +786,7 @@ func (s *Server) buildTaskModelPreview(p identity.Principal, task *pebblestore.P
 	preview.TaskModelOverride = strings.TrimSpace(task.Model)
 
 	// Resolve default Swarm model (action or plan depending on feature size/agent)
-	isPlan := strings.ToLower(strings.TrimSpace(task.Agent)) == "plan" || (strings.ToLower(strings.TrimSpace(task.Agent)) == "swarm" && strings.ToLower(strings.TrimSpace(task.FeatureSize)) == "big")
+	isPlan := strings.ToLower(strings.TrimSpace(task.Agent)) == "plan"
 	if s.agentModelSettings != nil && p.AccountScopeID != "" {
 		if settings, err := s.agentModelSettings.GetForAccount(p.AccountScopeID); err == nil {
 			swarmAssignment := settings.Swarm.Action
@@ -1106,7 +1106,7 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 	}
 	mode := sessionruntime.ModeAuto
 	targetAgent := strings.TrimSpace(task.Agent)
-	if targetAgent == "plan" || task.Status == "planning" || task.TaskProgram != nil || task.OutcomeType == "plan_spec" || (targetAgent == "swarm" && strings.EqualFold(task.FeatureSize, "big")) {
+	if targetAgent == "plan" || task.Status == "planning" || task.TaskProgram != nil || task.OutcomeType == "plan_spec" {
 		mode = sessionruntime.ModePlan
 		targetAgent = "swarm"
 	}
@@ -3046,8 +3046,8 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				}
 				task = subResult.Task
 				hydrateTaskPlanDocument(&task, db)
-			} else if task.Agent == "plan" || (task.Agent == "swarm" && task.FeatureSize == "big") {
-				// Big feature requiring planning:
+			} else if task.Agent == "plan" {
+				// Explicit Plan request:
 				// Map to Swarm ModePlan. Start read-only planning independently of implementation approval.
 				// Auto-approve must NOT approve unseen plan!
 				task.Status = "planning"
@@ -3385,10 +3385,10 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				}
 				if v, ok := patch["feature_size"].(string); ok {
 					t.FeatureSize = strings.ToLower(strings.TrimSpace(v))
-					if t.FeatureSize == "big" && (t.Agent == "coder" || t.Agent == "plan" || t.Agent == "") {
-						t.Agent = "plan"
+					if t.FeatureSize == "big" && (t.Agent == "coder" || t.Agent == "swarm" || t.Agent == "") {
+						t.Agent = "swarm"
 						t.Tier = "complex"
-						t.OutcomeType = "plan_spec"
+						t.OutcomeType = "code_pr"
 					} else if t.FeatureSize == "small" && t.Agent == "plan" {
 						t.Agent = "coder"
 						t.Tier = "direct"
@@ -4185,10 +4185,10 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			}
 			if rReq.FeatureSize != "" {
 				t.FeatureSize = strings.ToLower(strings.TrimSpace(rReq.FeatureSize))
-				if t.FeatureSize == "big" && (t.Agent == "coder" || t.Agent == "plan" || t.Agent == "") {
-					t.Agent = "plan"
+				if t.FeatureSize == "big" && (t.Agent == "coder" || t.Agent == "swarm" || t.Agent == "") {
+					t.Agent = "swarm"
 					t.Tier = "complex"
-					t.OutcomeType = "plan_spec"
+					t.OutcomeType = "code_pr"
 				} else if t.FeatureSize == "small" && t.Agent == "plan" {
 					t.Agent = "coder"
 					t.Tier = "direct"

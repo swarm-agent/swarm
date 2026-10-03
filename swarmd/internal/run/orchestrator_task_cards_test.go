@@ -53,12 +53,27 @@ func TestOrchestratorResolvedToolsDenyForgedSessionPlanning(t *testing.T) {
 	}
 }
 
+// Purpose: masterHarnessPromptWithScopeAndAgent plus the compiled profile must
+// instruct self-authored, guarded card revisions, not automatic Plan delegation.
+// Prompt assembly is the narrowest layer for wording; lifecycle tests separately
+// prove approval/revision effects and rejection of stale inputs.
 func TestOrchestratorMasterHarnessExcludesSessionPlanning(t *testing.T) {
 	scope := tool.WorkspaceScope{PrimaryPath: ".", Roots: []string{"."}}
 	prompt := masterHarnessPromptWithScopeAndAgent(scope, true)
 	for _, forbidden := range []string{"plan_manage", "exit_plan_mode", "start_session_checkpoint", "request_new_plan", "Plan & Checkpoint Lifecycle Management:"} {
 		if strings.Contains(prompt, forbidden) {
 			t.Errorf("Orchestrator harness contains %q", forbidden)
+		}
+	}
+	combined := prompt + "\n" + agent.SwarmOrchestratorAgentPrompt()
+	for _, forbidden := range []string{"Manual big planning", "route to the Plan agent", "dedicated Plan agent may author", "Plan-mode orchestration"} {
+		if strings.Contains(combined, forbidden) {
+			t.Errorf("automatic Plan delegation remains: %s", forbidden)
+		}
+	}
+	for _, required := range []string{"refine_task", "definition_revision", "plan_document", "Never begin implementation before required user approval"} {
+		if !strings.Contains(combined, required) {
+			t.Errorf("missing self-authored review contract: %s", required)
 		}
 	}
 	if !strings.Contains(prompt, "manage_projects task cards only") {
