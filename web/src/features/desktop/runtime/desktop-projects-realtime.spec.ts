@@ -93,6 +93,7 @@ test('desktop projects runtime subscribes to cache mutations on demand and unsub
 // from project.updated, even though no event belongs to its retained old session.
 // Rehydrate must repair a missed event. The runtime/reducer layer is the narrow
 // task-card cache authority; no manual reload or alternate session cache is used.
+// mapBackendTask normalizes the wire in_progress status to the UI running status.
 test('completed card refreshes to follow-up and repairs missed reopen on reconnect', async () => {
   let state: DesktopProjectsState = {}
   let task = { id: 'task', session_id: 'old-session', title: 'Work', revision: 1, agent: 'swarm', status: 'completed' }
@@ -111,7 +112,7 @@ test('completed card refreshes to follow-up and repairs missed reopen on reconne
   task = { ...task, revision: 2, status: 'in_progress', session_id: 'follow-up' }
   runtime.acceptFrame({ kind: 'project.updated', project_id: 'project' })
   await flush()
-  assert.equal(state.project.tasks[0].status, 'in_progress')
+  assert.equal(state.project.tasks[0].status, 'running')
   assert.equal(state.project.tasks[0].sessionId, 'follow-up')
   task = { ...task, revision: 3, status: 'completed' }
   runtime.acceptFrame({ kind: 'project.updated', project_id: 'project' })
@@ -119,7 +120,7 @@ test('completed card refreshes to follow-up and repairs missed reopen on reconne
   task = { ...task, revision: 4, status: 'in_progress', session_id: 'reconnected-follow-up' }
   runtime.acceptFrame({ kind: 'rehydrate.required' })
   await flush()
-  assert.equal(state.project.tasks[0].status, 'in_progress')
+  assert.equal(state.project.tasks[0].status, 'running')
   assert.equal(state.project.tasks[0].sessionId, 'reconnected-follow-up')
   lease.release()
 })
