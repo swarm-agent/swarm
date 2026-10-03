@@ -14,12 +14,13 @@ import (
 // Purpose: CreateProjectTask/deployProjectTaskExecution must preserve big-feature
 // Swarm auto routing (including intent defaults), small Coder routing and explicit
 // Plan mode. The hermetic API/store layer proves real session mode and absence of
-// unapproved run intents without a provider or permission-setting mutation.
+// unapproved structured execution, while direct Coder requests admit exactly one
+// run without plan approval, without a provider or permission-setting mutation.
 func TestProjectFeatureRoutingUsesSwarmAuto(t *testing.T) {
 	for _, tc := range []struct{ name, agent, intent, size, wantAgent, wantMode, wantStatus string }{
 		{"big-explicit", "swarm", "code", "big", "swarm", "auto", "pending_approval"},
 		{"big-default", "", "code", "big", "swarm", "auto", "pending_approval"},
-		{"small", "coder", "code", "small", "coder", "auto", "pending_approval"},
+		{"small", "coder", "code", "small", "coder", "auto", "in_progress"},
 		{"explicit-plan", "plan", "", "big", "plan", "plan", "planning"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -57,8 +58,12 @@ func TestProjectFeatureRoutingUsesSwarmAuto(t *testing.T) {
 					t.Fatalf("unexpected planning contract: %+v", task)
 				}
 				intents, err := f.server.sessions.Store().ListRunIntents(task.SessionID, 10)
-				if err != nil || len(intents) != 0 {
-					t.Fatalf("unapproved execution: %+v %v", intents, err)
+				wantIntents := 0
+				if tc.wantAgent == "coder" {
+					wantIntents = 1
+				}
+				if err != nil || len(intents) != wantIntents {
+					t.Fatalf("execution admission: %+v %v", intents, err)
 				}
 			}
 		})
@@ -80,7 +85,7 @@ func TestOrchestratorStructuredRefinementKeepsCardPending(t *testing.T) {
 	if err := f.server.sessions.Store().CompleteRepositoryHistoryMaintenance(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	doc := &pebblestore.SessionPlanDocument{ID: "card-plan", Title: "Feature plan", Info: pebblestore.SessionPlanInfo{Goal: "Implement feature"}, Checkpoints: []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Order: 1, Title: "Feature", Tasks: []string{"Implement old behavior"}, AcceptanceCriteria: []string{"Behavior works"}}}}
+	doc := &pebblestore.SessionPlanDocument{ID: "card-plan", Title: "Feature plan", Info: pebblestore.SessionPlanInfo{Goal: "Implement feature"}, Requirements: []pebblestore.SessionPlanRequirement{{ID: "behavior", Text: "Behavior works", CheckpointID: "cp-1"}}, Checkpoints: []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Order: 1, Title: "Feature", Tasks: []string{"Implement old behavior"}, AcceptanceCriteria: []string{"Behavior works"}}}}
 	task, err := f.server.CreateProjectTask(context.Background(), p, project, tool.ProjectTaskCreateInput{Title: "Feature", Prompt: "Implement feature", Agent: "swarm", FeatureSize: "big", Document: doc})
 	if err != nil {
 		t.Fatal(err)
