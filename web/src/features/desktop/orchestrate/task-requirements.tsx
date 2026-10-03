@@ -8,6 +8,8 @@ type ReviewDocument = {
 }
 
 const nonblank = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0
+const meaningfulCriterion = (value: unknown): value is string => nonblank(value) &&
+  !/^(?:deliverable ready|branch clean|worktree clean)[.!]?$/i.test(value.trim())
 
 /** Fail closed on missing, loading, legacy, or malformed review content. */
 export function isTaskPlanReviewable(document: ReviewDocument | null): boolean {
@@ -25,6 +27,29 @@ export function isTaskPlanReviewable(document: ReviewDocument | null): boolean {
     criteria.add(key)
     return checkpoints.filter(cp => cp.id === r.checkpoint_id).flatMap(cp => cp.acceptance_criteria ?? []).filter(text => text === r.text).length === 1
   })
+}
+
+/** Presentation only: legacy criteria never grant approval or become editable state. */
+export function TaskPlanChecklist({ document }: { document: ReviewDocument | null }) {
+  const checkpoints = Array.isArray(document?.checkpoints) ? document.checkpoints : []
+  const requirements = document?.requirements
+  // Authored requirements are authoritative. Do not replace invalid bindings with
+  // unrelated delivery gates or a task-description summary.
+  const authored = Array.isArray(requirements) && requirements.length > 0
+  const entries = authored
+    ? requirements.filter(r => r && nonblank(r.text) && checkpoints.some(cp =>
+      cp?.id === r.checkpoint_id && Array.isArray(cp.acceptance_criteria) && cp.acceptance_criteria.includes(r.text)))
+      .map(r => r.text)
+    : checkpoints.flatMap(cp => Array.isArray(cp?.acceptance_criteria) ? cp.acceptance_criteria.filter(meaningfulCriterion) : [])
+  return <section aria-label="Plan checklist" className="p-3 text-sm font-sans space-y-2 min-w-0 [overflow-wrap:anywhere]">
+    <h4 className="font-semibold">What will change</h4>
+    {entries.length > 0 ? <ul className="space-y-2">
+      {entries.map((text, index) => <li key={index} className="flex items-start gap-2">
+        <span aria-hidden="true" className="shrink-0">□</span><span className="min-w-0 whitespace-pre-wrap">{text}</span>
+      </li>)}
+    </ul> : <p>No bound requirements or acceptance criteria are available yet.</p>}
+    {authored && entries.length !== requirements.length && <p role="alert">Some requirements are not bound to the current plan. Request a corrected plan before approval.</p>}
+  </section>
 }
 
 /** The checklist and actual structured plan share the exact persisted document. */

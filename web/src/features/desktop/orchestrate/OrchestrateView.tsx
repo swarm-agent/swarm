@@ -676,7 +676,7 @@ function TaskElapsedTimer({
  * Free of highlight gradients and pill badges. Displays "Action Needed",
  * worktree/unmerged git status, and "What did it do?" vs "What's not done yet?".
  */
-import { TaskRequirements, isTaskPlanReviewable } from './task-requirements'
+import { TaskRequirements, TaskPlanChecklist, isTaskPlanReviewable } from './task-requirements'
 
 export function MinimalTaskCard({
   task,
@@ -911,6 +911,7 @@ export function MinimalTaskCard({
     (task as any).plan_binding?.planId ||
     (task as any).plan_binding?.plan_id
   )
+  const isPlanCard = Boolean(hasPlanBinding || rawPlanDoc || task.agentType === 'plan' || task.outcomeType === 'plan_spec')
   const isPlanBindingMissingRevision = Boolean(
     hasPlanBinding && (typeof bindingRevision !== 'number' || bindingRevision <= 0)
   )
@@ -1191,6 +1192,7 @@ export function MinimalTaskCard({
         {onApprove && isPendingApproval && <button type="button" disabled={isApproving} data-testid="retry-approve-btn" onClick={onApprove}>Retry</button>}
         {onClearError && !reopenOperation.error && !localReopenError && <button type="button" onClick={onClearError}>Dismiss</button>}
       </div>}
+      {isPlanCard && <TaskPlanChecklist document={planDoc} />}
       <TaskUsageFooter task={task} projectId={projectId}>
       <button ref={detailsToggleRef} type="button" className="swarm-task-details-toggle shrink-0"
         aria-expanded={expanded} aria-controls={`${detailsId} ${detailsId}-continued`} data-testid="toggle-task-details-btn"
@@ -1200,6 +1202,17 @@ export function MinimalTaskCard({
       </TaskUsageFooter>
       <div id={detailsId} hidden={!expanded} className="swarm-task-details" onClick={event => event.stopPropagation()}>
       {expanded && <>
+      {isPlanCard && <section aria-label="Full current plan" className="min-w-0 space-y-3">
+        <TaskRequirements document={planDoc} />
+        {planDoc && <section aria-label="Complete plan definition">
+          <h4>Complete plan definition · technical details</h4>
+          <pre className="whitespace-pre-wrap text-xs [overflow-wrap:anywhere]">{JSON.stringify(planDoc, null, 2)}</pre>
+        </section>}
+        {taskProgramDef && <section aria-label="Plan execution program">
+          <h4>Execution program</h4>
+          <pre className="whitespace-pre-wrap text-xs [overflow-wrap:anywhere]">{JSON.stringify(taskProgramDef, null, 2)}</pre>
+        </section>}
+      </section>}
       <TaskWorkerBudgetMetadata task={task} />
       <h4>Result / current work</h4>
       {showIntegration && <div className="text-xs font-mono" data-testid="task-integration-lineage">
@@ -1632,9 +1645,8 @@ export function MinimalTaskCard({
           {isMediaTask && <p>Planned: {variantSlots.length} {task.agentType} output(s) · {task.aspectRatio || 'aspect ratio unspecified'}</p>}
 
           </>}
-          {(hasPlanBinding || rawPlanDoc || isPlanTaskWithoutStructuredPlan) && <TaskRequirements document={planDoc} />}
           {/* Technical execution details remain available on demand. */}
-          {(hasStructuredPlan || task.fullPlanMarkdown) && (
+          {(!isPlanCard || expanded) && (hasStructuredPlan || task.fullPlanMarkdown) && (
             <div className="min-w-0 max-w-full whitespace-normal [overflow-wrap:anywhere] border border-slate-800/80 rounded bg-[#070b14]/90" data-testid="task-plan-spec">
               <button
                 type="button"
