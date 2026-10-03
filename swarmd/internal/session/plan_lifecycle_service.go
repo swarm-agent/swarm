@@ -370,7 +370,7 @@ func (s *PlanLifecycleService) SubmitProjectTaskStructuredPlan(input ProjectTask
 	if input.Document == nil {
 		return ProjectTaskPlanSubmissionResult{}, errors.New("structured plan document is required")
 	}
-	if err := ValidateExecutablePlanDocument(input.Document); err != nil {
+	if err := ValidateProjectPlanReview(input.Document); err != nil {
 		return ProjectTaskPlanSubmissionResult{}, fmt.Errorf("invalid plan document: %w", err)
 	}
 

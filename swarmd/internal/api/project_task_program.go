@@ -257,7 +257,7 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 	}
 	tier := strings.TrimSpace(input.Tier)
 	if structDoc != nil {
-		if err := sessionruntime.ValidateExecutablePlanDocument(structDoc); err != nil {
+		if err := sessionruntime.ValidateProjectPlanReview(structDoc); err != nil {
 			return nil, err
 		}
 		if taskProg != nil {
@@ -537,6 +537,11 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 		task.Status = "planning"
 		task.ActionNeeded = "Plan agent investigating and authoring structured plan..."
 		task.WhatDidDo = []string{"Started planning investigation"}
+	} else if task.Agent == "coder" && task.TaskProgram == nil && len(task.CoderAssignments) == 0 && task.FeatureSize != "big" {
+		// A direct Coder request is already an execution request, not a plan
+		// proposal. Structured documents and planning requests are handled above.
+		task.Status = "in_progress"
+		task.ActionNeeded = ""
 	} else if task.TaskProgram == nil && (task.Agent == "coder" || (len(task.CoderAssignments) == 0 && (task.OutcomeType == "code_pr" || task.OutcomeType == "bug_patch"))) {
 		task.Status = "pending_approval"
 		task.ActionNeeded = "Review task and click Approve to start execution"
@@ -1142,6 +1147,9 @@ func (s *Server) ApproveProjectTask(ctx context.Context, p identity.Principal, p
 		plan, ok, pErr := db.GetPlan(existingTask.SessionID, planID)
 		if pErr != nil || !ok {
 			return nil, fmt.Errorf("bound plan %q not found", planID)
+		}
+		if err := sessionruntime.ValidateProjectPlanReview(plan.Document); err != nil {
+			return nil, fmt.Errorf("plan review unavailable: %w", err)
 		}
 		if plan.AccountScopeID != p.AccountScopeID {
 			return nil, errors.New("cross-account plan approval forbidden")

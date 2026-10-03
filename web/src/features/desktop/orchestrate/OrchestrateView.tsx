@@ -675,7 +675,7 @@ function TaskElapsedTimer({
  * Free of highlight gradients and pill badges. Displays "Action Needed",
  * worktree/unmerged git status, and "What did it do?" vs "What's not done yet?".
  */
-import { TaskRequirements } from './task-requirements'
+import { TaskRequirements, isTaskPlanReviewable } from './task-requirements'
 
 export function MinimalTaskCard({
   task,
@@ -897,7 +897,7 @@ export function MinimalTaskCard({
     planDoc?.approvalState === 'rejected'
   )
   const isPlanTaskWithoutStructuredPlan = Boolean(
-    (task.agentType === 'plan' || task.outcomeType === 'plan_spec') && !hasStructuredPlan
+    (task.agentType === 'plan' || task.outcomeType === 'plan_spec' || Boolean(task.planBinding || (task as any).plan_binding || rawPlanDoc)) && !isTaskPlanReviewable(planDoc)
   )
   const bindingRevision =
     task.planBinding?.definitionRevision ??
@@ -1631,7 +1631,7 @@ export function MinimalTaskCard({
           {isMediaTask && <p>Planned: {variantSlots.length} {task.agentType} output(s) · {task.aspectRatio || 'aspect ratio unspecified'}</p>}
 
           </>}
-          <TaskRequirements document={planDoc} />
+          {(hasPlanBinding || rawPlanDoc || isPlanTaskWithoutStructuredPlan) && <TaskRequirements document={planDoc} />}
           {/* Technical execution details remain available on demand. */}
           {(hasStructuredPlan || task.fullPlanMarkdown) && (
             <div className="min-w-0 max-w-full whitespace-normal [overflow-wrap:anywhere] border border-slate-800/80 rounded bg-[#070b14]/90" data-testid="task-plan-spec">
