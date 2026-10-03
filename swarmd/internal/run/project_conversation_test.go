@@ -82,7 +82,7 @@ func TestProjectConversationRunHasNoFilesystemAuthority(t *testing.T) {
 }
 
 // Purpose: a workspace-free project parent must still allocate a real isolated
-// Coder lane after explicit catalog/project authorization. resolveTaskTargetWorkspace,
+// Coder lane for either of two sources after explicit catalog/project authorization. resolveTaskTargetWorkspace,
 // prepareDelegatedSubagentLaunchWithProfile and resolveRunWorkspaceScope own these
 // boundaries. Temporary Git/Pebble prove persisted child isolation, source-write
 // rejection and unchanged parent authority without a provider or running daemon.
@@ -137,10 +137,28 @@ func TestProjectConversationDelegatedCoderRetainsIsolatedWorktree(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	project.Workspaces = []pebblestore.ProjectWorkspaceRef{{Path: root, WorkspaceID: entry.WorkspaceID}}
+	secondRoot := programFixtureRepo(t)
+	secondEntry, err := catalog.AddForAccount(parent.AccountScopeID, secondRoot, "Second repository")
+	if err != nil {
+		t.Fatal(err)
+	}
+	project.Workspaces = []pebblestore.ProjectWorkspaceRef{{Path: root, WorkspaceID: entry.WorkspaceID}, {Path: secondRoot, WorkspaceID: secondEntry.WorkspaceID}}
 	if err := store.PutProject(parent.AccountScopeID, project); err != nil {
 		t.Fatal(err)
 	}
+	for _, root := range []string{root, secondRoot} {
+		assertProjectSourceDelegation(t, svc, parent, principal, root)
+	}
+	if programFixtureGit(t, root, "rev-parse", "HEAD") != head {
+		t.Fatal("original source changed")
+	}
+}
+
+func assertProjectSourceDelegation(t *testing.T, svc *Service, parent pebblestore.SessionSnapshot, principal identity.Principal, root string) {
+	t.Helper()
+	store := svc.sessions.Store()
+	head := programFixtureGit(t, root, "rev-parse", "HEAD")
+	spec := &taskLaunchSpec{RequestedSubagentType: "coder", TargetWorkspacePath: root}
 	target, _, err := svc.resolveTaskTargetWorkspace(parent, principal, spec)
 	if err != nil || target != root {
 		t.Fatalf("authorized target: %q %v", target, err)
@@ -157,7 +175,7 @@ func TestProjectConversationDelegatedCoderRetainsIsolatedWorktree(t *testing.T) 
 	}
 	launch, err := svc.prepareDelegatedSubagentLaunchWithProfile(parent, "auto", taskLaunchPrepared{
 		RequestedSubagent: "coder", MetaPrompt: "Update source.txt", VirtualTarget: virtual,
-		TargetWorkspacePath: target, TaskBase: &base, OwnedScope: []string{"source.txt"}, LogicalTaskID: "project-coder",
+		TargetWorkspacePath: target, TaskBase: &base, OwnedScope: []string{"source.txt"}, LogicalTaskID: "project-coder-" + filepath.Base(root),
 	}, "Update source", "", &profile, source, nil)
 	if err != nil {
 		t.Fatal(err)
