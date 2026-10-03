@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Prepend `./` to local tarball package paths for npm publish in GitHub Actions release workflow so npm treats paths as local files rather than git shorthand URLs. Docs impact: none.
+
 - Scope standalone SDK and CLI npm release packages under @swarm-agent and publish directly to GitHub Packages using repository tokens in `.github/workflows/build-main.yml`. Docs impact: none.
 
 - Refresh Google Cloud access token before downloading release artifacts, extend token lifetime to 3600s, scale download timeouts, and adapt release policy schemas in `scripts/gcp-release-input.py`. Docs impact: none.

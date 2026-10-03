@@ -171,5 +171,9 @@ jobs:
           python3 -B scripts/verify-npm-release-packs.py release-evidence "${VERSION}" > "${RUNNER_TEMP}/npm-files.txt"
           mapfile -t packs < "${RUNNER_TEMP}/npm-files.txt"
           for pack in "${packs[@]}"; do
-            npm publish "$pack" --ignore-scripts --registry=https://npm.pkg.github.com/
+            pack_path="$pack"
+            if [[ "$pack_path" != /* && "$pack_path" != ./* ]]; then
+              pack_path="./$pack_path"
+            fi
+            npm publish "$pack_path" --ignore-scripts --registry=https://npm.pkg.github.com/
           done
