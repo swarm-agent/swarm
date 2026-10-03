@@ -37,7 +37,7 @@ func TestTaskSessionContinuationRejectsBeforeWrite(t *testing.T) {
 				t.Fatal("rejection wrote session state")
 			}
 			out, err := rt.sendSessionMessageInternal(context.Background(), WorkspaceScope{Principal: p}, id, "note only", "user", false, 0)
-			if err != nil || out["status"] != "appended" || len(service.messages[id]) != 1 {
+			if err != nil || out["status"] != "saved/queued" || len(service.messages[id]) != 1 {
 				t.Fatalf("note: %v %v", out, err)
 			}
 			after, _, _ := store.GetProjectTask(p.AccountScopeID, "project", "task")

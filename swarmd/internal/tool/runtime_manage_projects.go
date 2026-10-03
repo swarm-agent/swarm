@@ -311,7 +311,7 @@ func manageProjectsDefinition() Definition {
 			"properties": map[string]any{
 				"action": map[string]any{
 					"type":        "string",
-					"description": "Action: list|get|create|update|delete|synthesize_context|list_media|get_media|propose_task|approve_task|accept_task|deploy_task|refine_task|create_task|reopen_task|list_tasks|get_task|update_task|archive_task|delete_task|reconcile_tasks",
+					"description": "Action: list|get|create|update|delete|synthesize_context|list_media|get_media|propose_task|approve_task|accept_task|deploy_task|refine_task|create_task|reopen_task|list_tasks|get_task|update_task|archive_task|delete_task|reconcile_tasks|edit_requirements",
 				},
 				"id": map[string]any{
 					"type":        "string",
@@ -390,6 +390,10 @@ func manageProjectsDefinition() Definition {
 				"auto_approve": map[string]any{
 					"type":        "boolean",
 					"description": "Set true to automatically deploy the task immediately upon creation for small tasks or Task Programs; structured plans require explicit user review in the task card",
+				},
+				"document_patch": map[string]any{
+					"type": "object",
+					"description": "For edit_requirements: base_revision_id and operations containing add_requirement, edit_requirement, remove_requirement or reorder_requirements. Stable requirement id/text/checkpoint_id bind directly to executable acceptance criteria.",
 				},
 				"plan_document": map[string]any{
 					"type":        "object",
@@ -1070,7 +1074,7 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 		}
 		response["proposal"] = proposal
 
-	case "reopen_task", "list_tasks", "get_task", "update_task", "archive_task", "delete_task", "reconcile_tasks":
+	case "edit_requirements", "reopen_task", "list_tasks", "get_task", "update_task", "archive_task", "delete_task", "reconcile_tasks":
 		return r.executeManageProjectTasksContext(ctx, scope, actionName, args)
 
 	case "approve_task", "accept_task":

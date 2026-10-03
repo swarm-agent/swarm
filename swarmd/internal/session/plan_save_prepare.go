@@ -105,6 +105,9 @@ func (s *Service) PreparePlanSaveWithMetadata(sessionID, planID, title, plan, st
 	if err != nil {
 		return PreparedPlanSave{}, err
 	}
+	if metadata.ExpectedRevisionID != "" && (!found || existing.Document == nil || existing.Document.RevisionID != metadata.ExpectedRevisionID) {
+		return PreparedPlanSave{}, errors.New("requirement edit revision conflict: reload the reviewed plan")
+	}
 	record := pebblestore.SessionPlanSnapshot{ID: planID, SessionID: sessionID, UserID: session.UserID, AccountScopeID: session.AccountScopeID, Title: title, Plan: plan, Status: status, ApprovalState: approvalState, CreatedAt: now, UpdatedAt: now, UpdateSummary: metadata.UpdateSummary, UpdateScope: metadata.UpdateScope, UpdateKind: metadata.UpdateKind, RevisionKind: metadata.RevisionKind, RestoredFromVersion: metadata.RestoredFromVersion, Checkpoint: metadata.Checkpoint, Version: 1}
 	var archived *pebblestore.SessionPlanSnapshot
 	if found {
@@ -140,6 +143,9 @@ func (s *Service) PreparePlanSaveWithMetadata(sessionID, planID, title, plan, st
 		if err != nil {
 			return PreparedPlanSave{}, err
 		}
+	}
+	if metadata.ExpectedRevisionID != "" {
+		record.AcceptedDefinitionReceipt = ""
 	}
 	if record.Document != nil {
 		record.Document.RevisionID = fmt.Sprintf("%s:v%d", planID, record.Version)
@@ -239,9 +245,18 @@ func (s *Service) PreparePlanPatch(sessionID string, options PlanPatchOptions) (
 		if metadata.RevisionKind == "" {
 			metadata.RevisionKind = classifyPlanDocumentPatchRevisionKind(*options.DocumentPatch)
 		}
+		metadata.ExpectedRevisionID = options.DocumentPatch.BaseRevisionID
+		if metadata.ExpectedRevisionID != "" {
+			status, approval = "pending_approval", "pending"
+			metadata.RevisionKind = PlanRevisionKindDefinition
+		}
 		metadata.Document, err = ApplyPlanDocumentPatch(planID, title, existing.Document, *options.DocumentPatch)
 		if err != nil {
 			return PreparedPlanSave{}, err
+		}
+		if metadata.ExpectedRevisionID != "" {
+			metadata.Document.Status = "pending_approval"
+			metadata.UpdateSummary = strings.Join(metadata.Document.RequirementChanges, "; ")
 		}
 	} else if options.Document != nil {
 		metadata.Document = options.Document

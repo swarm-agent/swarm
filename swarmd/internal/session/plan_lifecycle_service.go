@@ -114,6 +114,7 @@ type PlanLifecycleProposalInput struct {
 
 // ProjectTaskPlanSubmissionInput encapsulates direct submission of a structured plan document to a project task card.
 type ProjectTaskPlanSubmissionInput struct {
+	ExpectedRevisionID string
 	// Nonzero guards revise an existing unapproved task card without a planning run.
 	ExpectedPlanID             string
 	ExpectedDefinitionRevision int
@@ -556,6 +557,9 @@ func (s *PlanLifecycleService) SubmitProjectTaskStructuredPlan(input ProjectTask
 		return ProjectTaskPlanSubmissionResult{}, err
 	}
 
+	if input.ExpectedRevisionID != "" && (!planFound || existingPlan.Document == nil || existingPlan.Document.RevisionID != input.ExpectedRevisionID) {
+		return ProjectTaskPlanSubmissionResult{}, errors.New("requirement edit revision conflict: reload the reviewed plan")
+	}
 	version := 1
 	var archived *pebblestore.SessionPlanSnapshot
 	isDuplicate := false

@@ -1721,6 +1721,7 @@ func (s *Service) ListMediaUsageBySession(sessionID string, limit int) ([]pebble
 }
 
 type PlanSaveMetadata struct {
+	ExpectedRevisionID string
 	UpdateSummary       string
 	UpdateScope         string
 	UpdateKind          string
@@ -1838,6 +1839,9 @@ func (s *Service) SavePlanWithMetadata(sessionID, planID, title, plan, status, a
 	existing, found, err := s.store.GetPlan(sessionID, planID)
 	if err != nil {
 		return pebblestore.SessionPlanSnapshot{}, nil, err
+	}
+	if metadata.ExpectedRevisionID != "" && (!found || existing.Document == nil || existing.Document.RevisionID != metadata.ExpectedRevisionID) {
+		return pebblestore.SessionPlanSnapshot{}, nil, errors.New("requirement edit revision conflict: reload the reviewed plan")
 	}
 	record := pebblestore.SessionPlanSnapshot{
 		ID:                  planID,
@@ -2018,6 +2022,13 @@ func (s *Service) PatchPlan(sessionID string, options PlanPatchOptions) (pebbles
 			return pebblestore.SessionPlanSnapshot{}, nil, err
 		}
 		metadata.Document = document
+		metadata.ExpectedRevisionID = options.DocumentPatch.BaseRevisionID
+		if metadata.ExpectedRevisionID != "" {
+			status, approvalState = "pending_approval", "pending"
+			metadata.Document.Status = status
+			metadata.RevisionKind = PlanRevisionKindDefinition
+			metadata.UpdateSummary = strings.Join(document.RequirementChanges, "; ")
+		}
 	} else if options.Document != nil {
 		metadata.Document = options.Document
 	}

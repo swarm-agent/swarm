@@ -2076,6 +2076,13 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		}
 	}
 
+	var feedbackCursor uint64
+	for _, message := range messages {
+		if message.GlobalSeq > feedbackCursor {
+			feedbackCursor = message.GlobalSeq
+		}
+	}
+	var pendingFeedback []pebblestore.MessageSnapshot
 	runtimeContextAt := time.Now()
 	for step := 1; ; step++ {
 		if err := ctx.Err(); err != nil {
@@ -2345,6 +2352,17 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			nativeContinuationAllowed = false
 			forceFreshProviderContext = true
 		}
+		if options.ApplySessionMutation != nil {
+			fresh, feedbackErr := s.sessions.ListSessionMessages(sessionID, feedbackCursor, 100)
+			if feedbackErr != nil {
+				return RunResult{}, feedbackErr
+			}
+			notes := feedbackMessages(fresh, &feedbackCursor)
+			for _, note := range notes {
+				input = append(input, map[string]any{"role": "user", "content": []map[string]any{{"type": "input_text", "text": note.Content}}})
+			}
+			pendingFeedback = append(pendingFeedback, notes...)
+		}
 		stepRequest := provideriface.Request{
 			SessionID:                 sessionID,
 			ProviderLineageID:         providerLineageID,
@@ -2560,6 +2578,12 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			"usage":                   response.Usage,
 			"restart_turn":            response.RestartTurn,
 		})
+		if err == nil && len(pendingFeedback) > 0 {
+			if receiptErr := recordFeedbackDelivery(options.ApplySessionMutation, sessionID, runID, pendingFeedback); receiptErr != nil {
+				return RunResult{}, receiptErr
+			}
+			pendingFeedback = nil
+		}
 		if stepReasoningErr != nil {
 			return RunResult{}, stepReasoningErr
 		}
