@@ -20,6 +20,7 @@ import { useProjectConversations } from '../runtime/project-conversations'
 import { ProjectNavigation } from './project-navigation'
 import { UsagePage } from '../usage/pages/usage-page'
 import { ProjectConversationSidebar } from './project-conversation-sidebar'
+import { confirmMediaBatch } from './media-admission'
 import { clearSessionContext, ContextClearRejected } from '../session-v3/context-clear-api'
 import { projectRouteSegment, resolveProjectRoute } from './project-route'
 import { resolveDesktopChatRouteFromSession } from '../chat/services/chat-routing'
@@ -99,11 +100,12 @@ import { toMediaLibraryItem } from '../tools/media-library/media-classifier'
 import type { DesktopV3ArtifactCatalogEntry } from '../session-v3/artifact-api'
 import type { MediaGenerationJob, MediaGenerationRequest, MediaGenerationSettings } from '../tools/media-library/media-generation'
 import type { QuickRouteMode } from '../tools/media-library/media-viewer-modal'
-import { MediaTaskCard, MediaTaskThreads, isCreativeMediaTask } from './media-task-card'
+import { MediaTaskCard, isCreativeMediaTask, type MediaTaskActions } from './media-task-card'
+import { ProjectMediaSidebar, ProjectRightSidebar } from './project-media-sidebar'
 import { archiveProjectTask, projectTaskArchiveQueue } from '../runtime/project-task-archive'
 import { DesktopCodexUsageModal } from '../codex/desktop-codex-usage-modal'
 import { subscribeDesktopSessionReset } from '../../../app/api'
-import { DesignMediaTasks, useProjectDesigns } from '../tools/media-library/design-media'
+import { useProjectDesigns } from '../tools/media-library/design-media'
 import { ORCHESTRATE_THEMES } from './orchestrate-themes'
 import { TaskCardHandoff, TaskCardAgents, TaskCardOutputs, TaskExpectedOutputs } from './task-card-details'
 import { TaskCardSummary, formatElapsedString, formatElapsedSeconds } from './task-card-summary'
@@ -4509,6 +4511,7 @@ export function OrchestrateView({
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
+            id: tempJobId,
             prompt: composedPrompt,
             intent: targetIntent,
             operation: targetIntent === 'video' ? (isVideo ? (action === 'next_scene' ? 'extend' : 'edit') : 'create') : undefined,
@@ -4852,6 +4855,10 @@ export function OrchestrateView({
       ])
       desktopProjects.invalidate(selectedProject.id)
       setIsDeployModalOpen(false)
+      if (isCreativeMediaTask(mapBackendTask(res.task))) {
+        setRightSidebarTab('media')
+        responsiveLayout.setPanel('chat')
+      }
       setNewTaskPrompt('')
       dispatchImagePrompt({ type: 'reset' })
       setNewTaskModelOverride('')
@@ -4898,6 +4905,7 @@ export function OrchestrateView({
 
     const targetTask = tasks.find((t) => t.id === taskId) || liveTasks.find((t) => t.id === taskId)
     if (!targetTask) return
+    if (!confirmMediaBatch(targetTask, message => window.confirm(message))) return
 
     // Pre-flight validation against illegal or premature approval
     if (
@@ -5293,11 +5301,14 @@ export function OrchestrateView({
     return tasksWithSessions.map((task) => aggregateTaskLiveState(task, liveTaskSessionsData))
   }, [tasksWithSessions, liveTaskSessionsData])
 
-  // Task counts by source and status
+  const [rightSidebarTab, setRightSidebarTab] = useState<'chat' | 'media'>('chat')
+  const codeTasks = useMemo(() => liveTasks.filter(task => !isCreativeMediaTask(task)), [liveTasks])
+
+  // Task counts and every task layout share the same non-media projection.
   const filteredBySourceTasks = useMemo(() => {
-    if (taskSourceFilter === 'all') return liveTasks
-    return liveTasks.filter((t) => Boolean(t.workerId?.trim() || t.worker_id?.trim()))
-  }, [liveTasks, taskSourceFilter])
+    if (taskSourceFilter === 'all') return codeTasks
+    return codeTasks.filter((t) => Boolean(t.workerId?.trim() || t.worker_id?.trim()))
+  }, [codeTasks, taskSourceFilter])
 
   const filteredBySourceRunningCount = useMemo(() => {
     return filteredBySourceTasks.filter((t) => t.status === 'running' || t.status === 'in_progress').length
@@ -5347,17 +5358,13 @@ export function OrchestrateView({
     })
   }, [filteredBySourceTasks, searchQuery, statusFilter, selectedTag])
 
-  const visibleCreativeTaskIds = new Set(filteredTasks.filter(isCreativeMediaTask).map(task => task.id))
-  const renderCreativeThreads = (column?: string) => <MediaTaskThreads
-    tasks={liveTasks} visibleTaskIds={visibleCreativeTaskIds} column={column}
-    actions={task => ({
-      onPreview: (output, mode) => handleOpenDeliverableInMediaCenter(output, task, mode),
-      onApprove: () => handleApproveTask(task.id),
-      onArchive: selectionProps(task).onArchiveTask,
-      onDelete: () => handleDeleteTask(task.id),
-      isApproving: approvingTaskIds.has(task.id), error: taskActionErrors[task.id],
-    })}
-  />
+  const mediaActions = (task: RunningTask): MediaTaskActions => ({
+    onPreview: (output, mode) => handleOpenDeliverableInMediaCenter(output, task, mode),
+    onApprove: () => handleApproveTask(task.id),
+    onArchive: selectionProps(task).onArchiveTask,
+    onDelete: () => handleDeleteTask(task.id),
+    isApproving: approvingTaskIds.has(task.id), error: taskActionErrors[task.id],
+  })
   const markedRows = filteredTasks.filter(row => markedTaskIds.has(row.id))
   useEffect(() => { setMarkedTaskIds(new Set()); setManagementMessage(''); setArchivedOpen(false) }, [selectedProjectId, searchQuery, taskSourceFilter, statusFilter])
   useEffect(() => {
@@ -5425,8 +5432,8 @@ export function OrchestrateView({
   })
 
   const selectedTaskForSplit = useMemo(() => {
-    return selectedTaskId ? liveTasks.find((t) => t.id === selectedTaskId) || null : null
-  }, [liveTasks, selectedTaskId])
+    return selectedTaskId ? codeTasks.find((t) => t.id === selectedTaskId) || null : null
+  }, [codeTasks, selectedTaskId])
 
   const handleDeleteProject = async (projectId: string, e?: React.MouseEvent) => {
     e?.stopPropagation()
@@ -5585,7 +5592,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
   }
 
   useEffect(() => {
-    if (activeTask || workerChatOpen) responsiveLayout.setPanel('chat')
+    if (activeTask || workerChatOpen) { responsiveLayout.setPanel('chat'); setRightSidebarTab('chat') }
   }, [activeTask?.id, workerChatOpen])
 
   return (
@@ -6440,9 +6447,8 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
               {archivedOpen && <div className="fixed inset-0 z-[100] bg-black/70 flex items-center justify-center p-4" onMouseDown={e => { if (e.target === e.currentTarget) { setArchivedOpen(false); archivedTriggerRef.current?.focus() } }}>
                 <section role="dialog" aria-modal="true" aria-labelledby="archived-tasks-title" className="swarm-local-dialog w-full max-w-xl max-h-[85vh] overflow-hidden flex flex-col rounded-xl border border-slate-700 bg-[#0a101e] p-4 text-white shadow-2xl">
                   <div className="flex items-center justify-between gap-3"><h2 id="archived-tasks-title" className="text-base font-semibold">Archived tasks</h2><button type="button" ref={archivedCloseRef} onClick={() => { setArchivedOpen(false); archivedTriggerRef.current?.focus() }} aria-label="Close archived tasks">Close</button></div>
-                  {selectedProject && <div className="overflow-y-auto min-h-0"><DesignMediaTasks projectId={selectedProject.id} archived onPreview={item => { setArchivedOpen(false); setActiveMediaViewerItem(item) }} /></div>}
                   <p className="text-xs text-slate-400 my-2">Archived tasks in this project are read-only. Their sessions, branches and code remain untouched.</p>
-                  {archivedLoading ? <p role="status">Loading archived tasks…</p> : archivedError ? <div role="alert">{archivedError} <button type="button" onClick={() => selectedProjectId && void loadArchivedTasks(selectedProjectId)}>Retry</button></div> : archivedTasks.length === 0 ? <p>No archived tasks.</p> : <ul className="overflow-y-auto min-h-0 space-y-2">{archivedTasks.map(row => <li key={row.id} className="p-3 rounded border border-slate-700"><strong className="block text-sm">{row.title}</strong><span className="text-xs text-slate-400">{row.status} · {row.workerName || 'Task'}</span></li>)}</ul>}
+                  {archivedLoading ? <p role="status">Loading archived tasks…</p> : archivedError ? <div role="alert">{archivedError} <button type="button" onClick={() => selectedProjectId && void loadArchivedTasks(selectedProjectId)}>Retry</button></div> : archivedTasks.filter(task => !isCreativeMediaTask(task)).length === 0 ? <p>No archived tasks.</p> : <ul className="overflow-y-auto min-h-0 space-y-2">{archivedTasks.filter(task => !isCreativeMediaTask(task)).map(row => <li key={row.id} className="p-3 rounded border border-slate-700"><strong className="block text-sm">{row.title}</strong><span className="text-xs text-slate-400">{row.status} · {row.workerName || 'Task'}</span></li>)}</ul>}
                 </section>
               </div>}
 
@@ -6454,8 +6460,6 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
 
                   {/* Task rows */}
                   <div className="flex-1 overflow-y-auto space-y-3 pr-1" data-testid="orchestrate-task-list">
-                    {selectedProject && <DesignMediaTasks projectId={selectedProject.id} onPreview={setActiveMediaViewerItem} />}
-                    {renderCreativeThreads()}
                     {filteredTasks.length > 0 ? (
                       filteredTasks.filter(task => !isCreativeMediaTask(task)).map((t) => (
                         <MinimalTaskCard
@@ -6522,10 +6526,6 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                  ───────────────────────────────────────────────────────────── */}
               {middleVariant === 'kanban' && (
                 <div className="flex-1 flex overflow-x-auto p-4 gap-3">
-                  <section aria-label="Creative threads" className="w-80 shrink-0 min-w-0 overflow-y-auto space-y-3">
-                    {selectedProject && <DesignMediaTasks projectId={selectedProject.id} onPreview={setActiveMediaViewerItem} />}
-                    {renderCreativeThreads()}
-                  </section>
                   {(
                     [
                       { key: 'queued', label: 'Pending Approval', color: 'amber' },
@@ -6688,8 +6688,6 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                   {/* Tasks List in Fleet */}
                   <div className="pt-2 space-y-3">
                     <h4 className="text-xs font-bold text-white">Project Tasks ({filteredTasks.length})</h4>
-                    {selectedProject && <DesignMediaTasks projectId={selectedProject.id} onPreview={setActiveMediaViewerItem} />}
-                    {renderCreativeThreads()}
                     <div className="space-y-2.5">
                       {filteredTasks.filter(task => !isCreativeMediaTask(task)).map((task) => (
                         <MinimalTaskCard
@@ -6747,8 +6745,6 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                   {/* Left Column: Tasks List */}
                   <div className="w-1/2 border-r border-slate-800/80 flex flex-col p-3 overflow-y-auto space-y-2">
                     <div className="text-xs font-bold text-white pb-1">Tasks ({filteredTasks.length})</div>
-                    {selectedProject && <DesignMediaTasks projectId={selectedProject.id} onPreview={setActiveMediaViewerItem} />}
-                    {renderCreativeThreads()}
                     {filteredTasks.filter(task => !isCreativeMediaTask(task)).map((t) => {
                       const isSel = selectedTaskId === t.id
                       const isWorker = Boolean(t.workerId?.trim() || t.worker_id?.trim())
@@ -6853,8 +6849,6 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
               {middleVariant === 'timeline' && (
                 <div className="flex-1 overflow-y-auto p-4 space-y-3">
                   <div className="text-xs font-bold text-white pb-1">Activity Stream ({filteredTasks.length})</div>
-                  {selectedProject && <DesignMediaTasks projectId={selectedProject.id} onPreview={setActiveMediaViewerItem} />}
-                  {renderCreativeThreads()}
                   {filteredTasks.filter(task => !isCreativeMediaTask(task)).map((t) => (
                     <MinimalTaskCard
                       key={t.id}
@@ -6908,6 +6902,14 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
           PANEL 3: RIGHT PANEL (CANONICAL DESKTOP V3 AI CHAT SIDEBAR)
          ───────────────────────────────────────────────────────────── */}
       {workerChatOpen && workerChatError && <div role="alert" className="max-w-sm p-4 text-sm text-red-300">{workerChatError}<button className="ml-2 underline" onClick={() => setWorkerChatError('')}>Dismiss</button></div>}
+      <ProjectRightSidebar tab={rightSidebarTab} onTab={setRightSidebarTab} media={selectedProject ? <ProjectMediaSidebar
+        key={selectedProject.id} projectId={selectedProject.id} tasks={liveTasks} actions={mediaActions}
+        onPreviewDesign={setActiveMediaViewerItem} onLibrary={() => { setShowFullMediaCenter(true); setRightSidebarTab('chat'); responsiveLayout.setPanel('main') }}
+        loading={projectState?.loading} error={projectTasksError || mediaSyncError || undefined}
+        onRetry={() => void desktopProjects.refresh(selectedProject.id, false)}
+        archivedTasks={archivedTasks} archivedLoading={archivedLoading} archivedError={archivedError}
+        onLoadArchived={() => void loadArchivedTasks(selectedProject.id, true)}
+      /> : <p>Select a project to browse media.</p>}>
       {appliedConversationRouteScope.current === conversationRouteScope && activeSessionId && selectedProject && ((activeTaskId && tasks.some(task => task.id === activeTaskId && (extractTaskSessionIds(task).includes(activeSessionId) || taskOutcome(task).repairSessionId === activeSessionId))) || (admittedParentId && activeSessionId === admittedParentId)) ? (
         // Keep the chat bounded to the page, below the optional worker header.
         <div className="swarm-conversation-panel flex min-h-0 shrink-0 flex-col">
@@ -6953,6 +6955,8 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
           {selectedProject ? <button type="button" disabled={creatingConversation} onClick={() => { void newConversation() }}>New session</button> : <button type="button" onClick={() => { setIsOnboardingActive(true); setActiveNavTab('projects') }}>Create a project</button>}
         </aside>
       )}
+
+      </ProjectRightSidebar>
 
       {/* ─────────────────────────────────────────────────────────────
           MODAL: NEW TASK (VISUAL INTENT, MEDIA & AUTO-APPROVE)
@@ -7607,8 +7611,8 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                 </div>
               )}
 
-              {/* Auto-Approve Permission Policy Toggle */}
-              <div className="flex items-start gap-2.5 p-2.5 rounded-lg bg-slate-950/80 border border-slate-800/80">
+              {/* Media admission is server-owned; this toggle only controls non-media tasks. */}
+              {(taskIntent === 'code' || taskIntent === 'audit') && <div className="flex items-start gap-2.5 p-2.5 rounded-lg bg-slate-950/80 border border-slate-800/80">
                 <input
                   type="checkbox"
                   id="auto-approve-toggle"
@@ -7627,7 +7631,12 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                       : '🔒 Pending Review (Default): The router stages the blueprint for your inspection and approval before launching.'}
                   </span>
                 </label>
-              </div>
+              </div>}
+              {(taskIntent === 'image' || taskIntent === 'video' || taskIntent === 'sound') && (
+                <p className="text-[11px] text-slate-400">
+                  Media starts immediately within supported limits. Batches of 25 or more require confirmation of the full batch in the Media tab before generation.
+                </p>
+              )}
             </div>
 
             {/* Actions */}
@@ -7649,7 +7658,9 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                 <span>
                   {isDeployingTask
                     ? 'Routing & Compiling...'
-                    : autoApproveTask
+                    : taskIntent === 'image' && imageVariants >= 25
+                    ? `Review ${imageVariants} iterations`
+                    : taskIntent === 'image' || taskIntent === 'video' || taskIntent === 'sound' || autoApproveTask
                     ? 'Deploy & Start'
                     : 'Create Pending Task'}
                 </span>

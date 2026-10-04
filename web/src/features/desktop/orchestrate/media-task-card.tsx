@@ -66,7 +66,7 @@ function artifactTurn(task: RunningTask, actions: MediaTaskActions): CreativeCar
     id: task.id, title: task.description || task.title, status: task.status,
     alerts: (actions.error || task.lastError) && <p role="alert">{actions.error || task.lastError}</p>,
     controls: <footer className="flex flex-wrap gap-3 text-xs">
-      {task.status === 'pending_approval' && actions.onApprove && <button type="button" onClick={actions.onApprove} disabled={actions.isApproving}>{actions.isApproving ? 'Starting…' : 'Generate media'}</button>}
+      {task.status === 'pending_approval' && actions.onApprove && <button type="button" onClick={actions.onApprove} disabled={actions.isApproving}>{actions.isApproving ? 'Starting…' : Math.max(task.variantCount || 0, task.deliverables?.length || 0) >= 25 ? `Confirm ${Math.max(task.variantCount || 0, task.deliverables?.length || 0)} iterations` : 'Generate media'}</button>}
       {actions.onArchive && <button type="button" onClick={actions.onArchive}>Archive</button>}
       {actions.onDelete && <button type="button" onClick={actions.onDelete}>Delete</button>}
     </footer>,

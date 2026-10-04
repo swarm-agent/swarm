@@ -350,6 +350,17 @@ func validateProjectMediaTaskSettings(s *Server, task *pebblestore.ProjectTaskRe
 		principal.AccountScopeID = task.AccountID
 	}
 	agent := strings.TrimSpace(task.Agent)
+	if isOrdinaryMediaAgent(agent) {
+		count, err := projectMediaBatchCount(task.VariantCount, 0, len(task.Deliverables))
+		if err != nil {
+			return err
+		}
+		// Project audio execution currently produces one clip. Never silently
+		// accept a larger batch and generate fewer outputs than requested.
+		if (agent == "sound" || agent == "audio") && count != 1 {
+			return errors.New("project audio generation supports exactly one clip per task")
+		}
+	}
 	if agent == "video" || task.OutcomeType == "video_clip" || task.OutcomeType == "video_story" {
 		if task.OutcomeType == "video_story" || len(task.Scenes) > 1 {
 			if err := validateVideoScenes(task.Scenes, task.Operation, task.VariantCount, task.Soundtrack); err != nil {

@@ -18,6 +18,8 @@ import (
 // prompts and no session/worktree, while identical replay reuses persisted slots.
 // Threat: repository ambiguity, incidental Router naming or changed opt-in replay.
 // The canonical API with a temporary store and no Router is the narrowest layer.
+// Ordinary creation now dispatches immediately; await completion before replay
+// assertions and store cleanup so no second execution or teardown race is hidden.
 func TestProjectImageCreationWorkspaceFreeReplay(t *testing.T) {
 	s, db, p := setupDirectMediaTestServer(t)
 	project := &pebblestore.ProjectRecord{ID: "images", AccountID: p.AccountScopeID, Name: "Images", Workspaces: []pebblestore.ProjectWorkspaceRef{{Path: "/repo/one"}, {Path: "/repo/two"}}}
@@ -32,6 +34,7 @@ func TestProjectImageCreationWorkspaceFreeReplay(t *testing.T) {
 	if first.SessionID != "" || first.WorkspacePath != "" || first.SourceWorkspace.Path != "" || first.WorktreeBranch != "" || first.TaskProgram != nil || first.Description != input.Prompt || !reflect.DeepEqual(first.ImagePrompts, []string{input.Prompt, input.Prompt}) {
 		t.Fatalf("image allocated source execution or changed prompt: %+v", first)
 	}
+	first = awaitMediaAdmissionTask(t, db, p, project.ID, first.ID)
 	again, err := s.CreateProjectTask(context.Background(), p, project.ID, input)
 	if err != nil || !reflect.DeepEqual(again.ImagePrompts, first.ImagePrompts) || !reflect.DeepEqual(again.Deliverables, first.Deliverables) {
 		t.Fatalf("replay changed slots: %+v %v", again, err)
@@ -148,6 +151,8 @@ func TestProjectImagePreflightAccountDefault(t *testing.T) {
 // Purpose: canonical creation through actual image execution must preserve the
 // original prompt for single/default multi-image requests, including stale
 // single-image opt-in. No Router is configured, so any incidental call fails.
+// Wait for CreateProjectTask's automatic dispatch, rather than manually invoking
+// execution a second time, to prove actual admission forwards each prompt once.
 func TestProjectImageDirectProviderPrompt(t *testing.T) {
 	for _, count := range []int{1, 2} {
 		s, db, p := setupDirectMediaTestServer(t)
@@ -167,7 +172,7 @@ func TestProjectImageDirectProviderPrompt(t *testing.T) {
 		if task.EnhancePrompt || task.SessionID != "" {
 			t.Fatal("direct image acquired enhancement or session")
 		}
-		s.executeDirectMediaTask(p, project, task)
+		awaitMediaAdmissionTask(t, db, p, project.ID, task.ID)
 		if len(recorder.prompts) != count {
 			t.Fatalf("provider calls = %d, want %d", len(recorder.prompts), count)
 		}
@@ -181,7 +186,8 @@ func TestProjectImageDirectProviderPrompt(t *testing.T) {
 
 // Purpose: a ten-image request reserves ten stable slots before execution;
 // replay must not collapse count or replace slot identities. This canonical
-// creation/store test is narrower than a provider-backed UI run.
+// creation/store test is narrower than a provider-backed UI run. Await automatic
+// execution before comparing replay so completed slot bytes are authoritative.
 func TestProjectImageTenStableSlots(t *testing.T) {
 	s, db, p := setupDirectMediaTestServer(t)
 	project := &pebblestore.ProjectRecord{ID: "images", AccountID: p.AccountScopeID, Name: "Images"}
@@ -203,6 +209,7 @@ func TestProjectImageTenStableSlots(t *testing.T) {
 		}
 		seen[slot.ID] = true
 	}
+	first = awaitMediaAdmissionTask(t, db, p, project.ID, first.ID)
 	again, err := s.CreateProjectTask(context.Background(), p, project.ID, input)
 	if err != nil || !reflect.DeepEqual(first.Deliverables, again.Deliverables) {
 		t.Fatalf("replay replaced slots: %v", err)

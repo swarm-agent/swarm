@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -2351,6 +2352,14 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			}
 
 			isMediaRequest := req.Agent == "image" || req.Agent == "video" || req.Agent == "sound" || req.Agent == "audio" || req.Intent == "image" || req.Intent == "video" || req.Intent == "sound" || req.Intent == "audio" || req.Operation != ""
+			if isMediaRequest {
+				count, err := projectMediaBatchCount(req.VariantCount, req.DeliverableCount, len(req.Deliverables))
+				if err != nil {
+					writeError(w, http.StatusBadRequest, err)
+					return
+				}
+				req.VariantCount = count
+			}
 			if !isMediaRequest || req.Agent == "image" || req.Intent == "image" {
 				input := tool.ProjectTaskCreateInput{
 					ID:                  req.ID,
@@ -2422,6 +2431,26 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			}
 			if !found || proj == nil {
 				writeError(w, http.StatusNotFound, errors.New("project not found"))
+				return
+			}
+
+			// Bind retries to the exact full media request before routing or dispatch.
+			mediaTaskID := strings.TrimSpace(req.ID)
+			if mediaTaskID == "" {
+				mediaTaskID = "task_" + sessionruntime.NewSessionID()
+			}
+			unlockMediaAdmission := s.lockProjectTaskAdmission(p.AccountScopeID, projectID, mediaTaskID)
+			defer unlockMediaAdmission()
+			mediaSubmissionHash := fmt.Sprintf("%x", sha256.Sum256(body))
+			if existing, found, err := db.GetProjectTask(p.AccountScopeID, projectID, mediaTaskID); err != nil {
+				writeError(w, http.StatusInternalServerError, err)
+				return
+			} else if found {
+				if existing.SubmissionHash != mediaSubmissionHash {
+					writeError(w, http.StatusConflict, errors.New("media task submission conflicts with reserved payload"))
+					return
+				}
+				writeJSON(w, http.StatusOK, map[string]any{"task": sanitizeProjectTaskForClient(existing), "model_preview": s.buildTaskModelPreview(p, existing)})
 				return
 			}
 
@@ -2894,6 +2923,8 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			}
 
 			task := pebblestore.ProjectTaskRecord{
+				ID:                  mediaTaskID,
+				SubmissionHash:      mediaSubmissionHash,
 				ProjectID:           projectID,
 				Title:               title,
 				Description:         description,
@@ -3096,15 +3127,16 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 					task.ActionNeeded = "Review task program and click Approve"
 				}
 			} else if task.Agent == "image" || task.Agent == "video" || task.Agent == "sound" || task.Agent == "audio" {
-				if req.AutoApprove {
+				if err := admitProjectMediaTask(&task); err != nil {
+					writeError(w, http.StatusBadRequest, err)
+					return
+				}
+				if task.AutoApprove {
 					task.Status = "in_progress"
 					if err := s.deployProjectTaskExecution(p, proj, &task, "in_progress", prompt); err != nil {
 						writeError(w, http.StatusInternalServerError, fmt.Errorf("deploy media execution: %w", err))
 						return
 					}
-				} else {
-					task.Status = "pending_approval"
-					task.ActionNeeded = "Review media task and click Approve"
 				}
 			} else {
 				if req.AutoApprove {
@@ -3119,7 +3151,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 
-			if !isDirectMediaTask(&task) || !req.AutoApprove {
+			if !isDirectMediaTask(&task) || task.Status == "pending_approval" {
 				if err := db.PutProjectTask(p.AccountScopeID, &task); err != nil {
 					writeError(w, http.StatusBadRequest, err)
 					return

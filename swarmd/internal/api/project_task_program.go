@@ -563,11 +563,8 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 			task.ActionNeeded = "Review task program and click Approve"
 		}
 	} else if isDirectMedia {
-		if input.AutoApprove {
-			task.Status = "in_progress"
-		} else {
-			task.Status = "pending_approval"
-			task.ActionNeeded = "Review media task and click Approve"
+		if err := admitProjectMediaTask(&task); err != nil {
+			return nil, err
 		}
 	} else {
 		if input.AutoApprove {
@@ -1417,6 +1414,14 @@ func (s *Server) ApproveProjectTask(ctx context.Context, p identity.Principal, p
 	}
 
 	if existingTask.Agent == "image" || existingTask.Agent == "video" || existingTask.Agent == "sound" || existingTask.Agent == "audio" {
+		// Confirmation is a one-way transition. Retries must not recreate slots
+		// or dispatch the same generation again, including after completion/failure.
+		if existingTask.Status != "pending_approval" {
+			return existingTask, nil
+		}
+		if err := validateProjectMediaTaskSettings(s, existingTask, p); err != nil {
+			return nil, err
+		}
 		if err := s.deployProjectTaskExecution(p, proj, existingTask, "in_progress", ""); err != nil {
 			return nil, fmt.Errorf("deploy media execution: %w", err)
 		}
@@ -1576,6 +1581,12 @@ func (s *Server) deployProjectTaskLocked(ctx context.Context, p identity.Princip
 	}
 	if task.Status == "planning" || task.Agent == "plan" {
 		return errors.New("planning tasks must submit a structured plan before implementation")
+	}
+
+	// Direct media has no session run intent. Its persisted execution status is
+	// authoritative; generic deploy retries cannot regenerate an admitted batch.
+	if isOrdinaryMediaAgent(task.Agent) && task.Status != "queued" {
+		return nil
 	}
 
 	// Idempotent retry: if active run intent exists, avoid duplicate runs
