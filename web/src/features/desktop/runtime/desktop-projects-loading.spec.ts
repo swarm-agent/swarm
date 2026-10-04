@@ -1,5 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { projectStartupState } from '../orchestrate/project-startup'
 import { DesktopProjectsRuntime } from './desktop-projects'
 import { reduceDesktopProjectsState, type DesktopProjectsState } from '../state/desktop-projects-state'
 
@@ -14,7 +15,7 @@ const flush = () => new Promise<void>(resolve => setImmediate(resolve))
 // Purpose: DesktopProjectsRuntime.refresh + the canonical reducer must publish
 // task rows without waiting for media. Controlled promises prove ordering and
 // failure isolation, not latency or live-provider performance.
-test('tasks publish before media, media failure stays independent, refresh callers share detail work', async () => {
+test('tasks publish before media, acquisition does not inspect Git, explicit refresh shares detail work', async () => {
   let state: DesktopProjectsState = {}
   const tasks = [deferred<{ tasks: any[] }>(), deferred<{ tasks: any[] }>()]
   const media = [deferred<{ media: any[] }>(), deferred<{ media: any[] }>()]
@@ -34,10 +35,11 @@ test('tasks publish before media, media failure stays independent, refresh calle
   assert.equal(state.p.tasks.length, 1)
   assert.equal(state.p.loading, false)
   assert.equal(state.p.mediaLoading, true)
-  assert.equal(detailReads, 1)
-  details[0].resolve({ task: row })
-  media[0].reject(new Error('media unavailable'))
+  assert.equal(detailReads, 0, 'acquisition must not inspect individual tasks')
   await lease.ready
+  assert.equal(state.p.mediaLoading, true, 'readiness resolves while optional media remains pending')
+  media[0].reject(new Error('media unavailable'))
+  await flush()
   assert.equal(state.p.error, undefined)
   assert.equal(state.p.mediaError, 'media unavailable')
   assert.equal(state.p.tasks.length, 1)
@@ -47,12 +49,12 @@ test('tasks publish before media, media failure stays independent, refresh calle
   assert.equal(state.p.tasks.length, 1, 'existing rows stay visible')
   tasks[1].resolve({ tasks: [row] })
   await flush()
-  assert.equal(detailReads, 2, 'collection cannot queue a duplicate of the refresh detail')
-  details[1].resolve({ task: row })
+  assert.equal(detailReads, 1, 'collection cannot queue a duplicate of the explicit refresh detail')
+  details[0].resolve({ task: row })
   media[1].resolve({ media: [] })
   await first
   await flush()
-  assert.deepEqual([lists, mediaReads, detailReads], [2, 2, 2])
+  assert.deepEqual([lists, mediaReads, detailReads], [2, 2, 1])
   assert.equal(state.p.mediaError, undefined)
   lease.release()
 })
@@ -114,4 +116,70 @@ test('archive event and HTTP response commute without retrieval amplification', 
     assert.equal(lists, 4, 'unknown frame must not be discarded')
     p.release(); q.release()
   }
+})
+
+// Purpose: collection acquisition and projectStartupState own initial reveal, not
+// row count or enrichment. This reducer/runtime test proves zero per-task Git
+// requests, retry recovery, and monotonic readiness without browser timing.
+test('empty and large collections settle retry and retain readiness through failed background refresh', async () => {
+  for (const count of [0, 1, 250]) {
+    let state: DesktopProjectsState = {}
+    let lists = 0, details = 0
+    const responses = Array.from({ length: 3 }, () => deferred<{ tasks: any[] }>())
+    const signals: AbortSignal[] = []
+    const runtime = new DesktopProjectsRuntime({
+      getState: () => state, dispatch: action => { state = reduceDesktopProjectsState(state, action) }, subscribe: () => () => {},
+      fetchTasks: (_id, signal) => { signals.push(signal!); return responses[lists++].promise },
+      fetchMedia: () => new Promise(() => {}),
+      fetchTask: async () => { details++; return {} },
+    })
+    const phase = () => projectStartupState({ catalogLoaded: true, catalogError: '', routeError: '', projectId: 'p', tasksObserved: state.p?.lastObservedAt !== undefined, tasksError: state.p?.error })
+    const lease = runtime.acquire('p')
+    assert.equal(phase().phase, 'loading')
+    responses[0].reject(new Error('essential unavailable'))
+    await lease.ready
+    assert.deepEqual(phase(), { phase: 'error', message: 'essential unavailable', retry: 'tasks' })
+    const retry = runtime.refresh('p', false)
+    assert.equal(phase().phase, 'loading')
+    responses[1].resolve({ tasks: Array.from({ length: count }, (_, n) => ({ id: `t-${n}`, status: 'completed', revision: 1, session_id: `s-${n}` })) })
+    await retry
+    assert.equal(phase().phase, 'ready')
+    assert.equal(state.p.tasks.length, count)
+    assert.equal(details, 0)
+    const refresh = runtime.refresh('p', false)
+    assert.equal(phase().phase, 'ready', 'background fetch cannot re-own initial reveal')
+    responses[2].reject(new Error('background failure'))
+    await refresh
+    assert.equal(phase().phase, 'ready')
+    assert.equal(state.p.tasks.length, count)
+    lease.release()
+    assert.ok(signals.every(signal => signal.aborted))
+  }
+})
+
+// Purpose: release/reset in DesktopProjectsRuntime must cancel transport and
+// reject stale collection writes. Controlled promises deliberately ignore abort
+// to prove identity guards protect both route and authentication boundaries.
+test('route release and authentication reset reject late responses without cross-project population', async () => {
+  let state: DesktopProjectsState = {}
+  const responses = new Map(['p', 'q'].map(id => [id, deferred<{ tasks: any[] }>()]))
+  const signals: AbortSignal[] = []
+  const runtime = new DesktopProjectsRuntime({
+    getState: () => state, dispatch: action => { state = reduceDesktopProjectsState(state, action) }, subscribe: () => () => {},
+    fetchTasks: (id, signal) => { signals.push(signal!); return responses.get(id)!.promise },
+    fetchMedia: async () => ({ media: [] }), fetchTask: async () => ({}),
+  })
+  const old = runtime.acquire('p')
+  old.release()
+  const current = runtime.acquire('q')
+  responses.get('p')!.resolve({ tasks: [{ id: 'wrong-project', revision: 1 }] })
+  await old.ready
+  assert.equal(state.p, undefined)
+  assert.deepEqual(state.q.tasks, [])
+  runtime.reset()
+  responses.get('q')!.resolve({ tasks: [{ id: 'old-account', revision: 1 }] })
+  await current.ready
+  assert.ok(signals.every(signal => signal.aborted))
+  assert.equal(state.q.tasks.length, 0, 'reset cannot commit late account data')
+  current.release()
 })

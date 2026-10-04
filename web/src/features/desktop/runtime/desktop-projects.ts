@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { requestJson } from '../../../app/api'
+import { requestStartupJson } from '../../../app/api'
 import type { RunningTask, ProjectTaskMediaRef } from '../orchestrate/orchestrate-types'
 import {
   mapBackendTask,
@@ -23,9 +23,9 @@ import { extractTaskSessionIds } from './desktop-projects-membership'
 export * from './desktop-projects-membership'
 
 export interface DesktopProjectsRuntimeDeps {
-  fetchTasks: (projectId: string) => Promise<{ tasks?: any[] }>
+  fetchTasks: (projectId: string, signal?: AbortSignal) => Promise<{ tasks?: any[] }>
   fetchTask: (projectId: string, taskId: string) => Promise<{ task?: any }>
-  fetchMedia: (projectId: string) => Promise<{ media?: ProjectTaskMediaRef[] }>
+  fetchMedia: (projectId: string, signal?: AbortSignal) => Promise<{ media?: ProjectTaskMediaRef[] }>
   getState: () => DesktopProjectsState
   dispatch: (action: DesktopProjectsAction) => void
   subscribe?: (listener: (mutation?: DesktopV3CacheMutation) => void) => () => void
@@ -51,6 +51,7 @@ export class DesktopProjectsRuntime {
   }
   private readonly demand = new Map<string, { projectId: string; count: number }>()
   private readonly inFlight = new Map<string, Promise<void>>()
+  private readonly collectionControllers = new Map<string, AbortController>()
   private readonly deps: DesktopProjectsRuntimeDeps
   private readonly taskQueue = new Map<string, { projectId: string; task: RunningTask; epoch: number; authoritative: boolean }>()
   private readonly taskReads = new Map<string, { identity: string; demand: unknown; epoch: number }>()
@@ -66,7 +67,7 @@ export class DesktopProjectsRuntime {
 
   acceptSessionMutation(mutation?: DesktopV3CacheMutation): void {
     // Card mounts hydrate permissions/plans, not Git. Initial project acquisition
-    // already inspects every task; durable events and reconnect repair own later
+    // reads the collection only; durable events and reconnect repair own later
     // invalidations. Re-reading Git for cache enrichment creates a feedback loop.
     if (mutation?.action.type === 'hydrate.apply') return
     for (const { projectId } of this.demand.values()) {
@@ -143,14 +144,14 @@ export class DesktopProjectsRuntime {
     this.deps = {
       fetchTasks:
         deps?.fetchTasks ??
-        ((projectId: string) =>
-          requestJson<{ tasks?: any[] }>(`/v3/projects/${encodeURIComponent(projectId)}/tasks`)),
+        ((projectId: string, signal?: AbortSignal) =>
+          requestStartupJson<{ tasks?: any[] }>(`/v3/projects/${encodeURIComponent(projectId)}/tasks`, { signal })),
       fetchTask: deps?.fetchTask ?? ((projectId, taskId) =>
-        requestJson<{ task?: any }>(`/v3/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(taskId)}`)),
+        requestStartupJson<{ task?: any }>(`/v3/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(taskId)}`)),
       fetchMedia:
         deps?.fetchMedia ??
-        ((projectId: string) =>
-          requestJson<{ media?: ProjectTaskMediaRef[] }>(`/v3/projects/${encodeURIComponent(projectId)}/media`)),
+        ((projectId: string, signal?: AbortSignal) =>
+          requestStartupJson<{ media?: ProjectTaskMediaRef[] }>(`/v3/projects/${encodeURIComponent(projectId)}/media`, { signal })),
       getState: deps?.getState ?? (() => getDesktopV3CacheSnapshot().projectsState ?? {}),
       dispatch: deps?.dispatch ?? ((action: DesktopProjectsAction) => dispatchDesktopV3Cache(action as any)),
       subscribe: deps?.subscribe ?? subscribeDesktopV3Cache,
@@ -175,6 +176,8 @@ export class DesktopProjectsRuntime {
           for (const [key, entry] of this.taskQueue) if (entry.projectId === projectId) this.taskQueue.delete(key)
           for (const key of this.taskVersions.keys()) if (JSON.parse(key)[0] === projectId) this.taskVersions.delete(key)
           this.inFlight.delete(projectId)
+          this.collectionControllers.get(projectId)?.abort()
+          this.collectionControllers.delete(projectId)
           this.deps.dispatch({ type: 'projects.evict', projectId })
           if (this.demand.size === 0) {
             this.unsubscribeCache?.()
@@ -191,6 +194,8 @@ export class DesktopProjectsRuntime {
     for (const [key, entry] of this.taskQueue) if (entry.projectId === projectId) this.taskQueue.delete(key)
     for (const key of this.taskVersions.keys()) if (JSON.parse(key)[0] === projectId) this.taskVersions.delete(key)
     this.inFlight.delete(projectId)
+    this.collectionControllers.get(projectId)?.abort()
+    this.collectionControllers.delete(projectId)
     this.deps.dispatch({ type: 'projects.evict', projectId })
     if (this.demand.size === 0) {
       this.unsubscribeCache?.()
@@ -204,6 +209,8 @@ export class DesktopProjectsRuntime {
     this.taskVersions.clear()
     this.demand.clear()
     this.inFlight.clear()
+    for (const controller of this.collectionControllers.values()) controller.abort()
+    this.collectionControllers.clear()
     this.unsubscribeCache?.()
     this.unsubscribeCache = null
   }
@@ -216,13 +223,16 @@ export class DesktopProjectsRuntime {
       for (const task of this.deps.getState()[projectId]?.tasks ?? []) this.queueTask(projectId, task, false, true)
     }
 
+    this.collectionControllers.get(projectId)?.abort()
+    const controller = new AbortController()
+    this.collectionControllers.set(projectId, controller)
     const requestId = crypto.randomUUID()
     this.deps.dispatch({ type: 'projects.beginLoad', projectId, requestId })
     const state = this.deps.getState()[projectId]
     const generation = state?.generation ?? 0
 
     // Publish tasks independently: media latency/failure must not hide the board.
-    const tasksPromise = this.deps.fetchTasks(projectId)
+    const tasksPromise = this.deps.fetchTasks(projectId, controller.signal)
       .then((tasksRes) => {
         if (this.inFlight.get(projectId) !== promise) return
         const backendTasks = mapBackendTasks(tasksRes?.tasks || [])
@@ -241,6 +251,9 @@ export class DesktopProjectsRuntime {
               // An unchanged card already being inspected needs no second read.
               const read = this.taskReads.get(key)
               const queued = this.taskQueue.get(key)
+              // Collection entry never starts Git inspection. Preserve an already
+              // requested inspection when its owner changes during the read.
+              if (!inspectGit && !read && !queued) continue
               if (queued ? taskGitIdentity(queued.task) !== taskGitIdentity(task) :
                 (!read || read.identity !== taskGitIdentity(task) || read.demand !== this.demand.get(projectId) || read.epoch !== this.taskEpoch)) {
                 this.queueTask(projectId, task)
@@ -259,15 +272,16 @@ export class DesktopProjectsRuntime {
           error: error instanceof Error ? error.message : 'Failed to load project tasks',
         })
       })
-    const mediaPromise = this.deps.fetchMedia(projectId).then(response => {
-      if (this.inFlight.get(projectId) !== promise) return
+    const demand = this.demand.get(projectId)
+    void this.deps.fetchMedia(projectId, controller.signal).then(response => {
+      if (this.demand.get(projectId) !== demand) return
       this.deps.dispatch({ type: 'projects.mediaResult', projectId, requestId, generation, media: response.media ?? [] })
     }).catch(error => {
-      if (this.inFlight.get(projectId) !== promise) return
+      if (this.demand.get(projectId) !== demand) return
       this.deps.dispatch({ type: 'projects.mediaResult', projectId, requestId, generation,
         error: error instanceof Error ? error.message : 'Failed to load project media' })
     })
-    const promise: Promise<void> = Promise.all([tasksPromise, mediaPromise]).then(() => undefined)
+    const promise: Promise<void> = tasksPromise.then(() => undefined)
       .finally(() => {
         if (this.inFlight.get(projectId) !== promise) return
         this.inFlight.delete(projectId)
@@ -280,6 +294,11 @@ export class DesktopProjectsRuntime {
 
     this.inFlight.set(projectId, promise)
     return promise
+  }
+
+  inspectTask(projectId: string, taskId: string): void {
+    const task = this.deps.getState()[projectId]?.tasks.find(item => item.id === taskId)
+    if (task) this.queueTask(projectId, task, false, true)
   }
 
   invalidate(projectId?: string): void {

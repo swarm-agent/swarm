@@ -153,8 +153,9 @@ export function buildDesktopV3BootstrapInput(
 
 export async function postDesktopV3SyncBootstrap(
   input: Partial<DesktopV3BootstrapInput> = {},
+  callerSignal?: AbortSignal,
 ): Promise<SyncSnapshotResponse> {
-  return withRequestDeadline((signal) => readDesktopV3SyncBootstrap(input, signal), STARTUP_REQUEST_TIMEOUT_MS)
+  return withRequestDeadline((signal) => readDesktopV3SyncBootstrap(input, signal), STARTUP_REQUEST_TIMEOUT_MS, callerSignal)
 }
 
 async function readDesktopV3SyncBootstrap(input: Partial<DesktopV3BootstrapInput>, signal: AbortSignal): Promise<SyncSnapshotResponse> {

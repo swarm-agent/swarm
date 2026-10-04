@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { backgroundRead } from '../../../app/background-read'
 import { requestJson } from '../../../app/api'
 import { desktopProjects } from '../runtime/desktop-projects'
 import { mapBackendTask } from '../state/desktop-projects-state'
@@ -65,6 +66,7 @@ function useSessionAttention(ids: string[], ownerKeyPrefix: string) {
   }, [ids, leases])
   useEffect(() => {
     let active = true
+    const controller = new AbortController()
     setError('')
     // Bounded sequential metadata reads; summaries changing trigger detail repair,
     // not a polling loop or a second permission cache. No transcript is requested.
@@ -74,14 +76,14 @@ function useSessionAttention(ids: string[], ownerKeyPrefix: string) {
         const state = getDesktopV3CacheSnapshot()
         const summary = state.permissionSummaryBySessionId[id]
         if (reconnect || retry || summary?.pendingApprovalCount || taskAttentionPermissions(state, [id]).length) {
-          const response = await postDesktopV3SyncHydrate(buildDesktopV3ChildCardHydrateInput([id], { permissionSummary: true, activePlan: true }))
+          const response = await backgroundRead(() => postDesktopV3SyncHydrate(buildDesktopV3ChildCardHydrateInput([id], { permissionSummary: true, activePlan: true }), controller.signal), controller.signal)
           if (active) dispatchDesktopV3Cache(hydrateResponseToAction(response, [id]))
         } else {
           await hydrateDesktopV3ChildCard(id, { activePlan: true, permissionSummary: true })
         }
       }
     })().catch(error => { if (active) setError(error instanceof Error ? error.message : 'Could not load pending requests') })
-    return () => { active = false }
+    return () => { active = false; controller.abort() }
   }, [ids, summaryKey, retry, reconnect])
   const unresolvedCount = useDesktopV3CacheSelector(state => ids.reduce((count, id) => count + Math.max(
     state.permissionSummaryBySessionId[id]?.pendingApprovalCount || 0,

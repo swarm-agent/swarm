@@ -1,4 +1,7 @@
 import { useEffect, useState } from 'react'
+import { VisiblePreview } from '../../../../components/ui/visible-preview'
+import { backgroundRead } from '../../../../app/background-read'
+import { withRequestDeadline, STARTUP_REQUEST_TIMEOUT_MS } from '../../../../app/request-lifecycle'
 import { designRefKey, designSandbox, fetchDesignView, type DesignRevision } from '../../session-v3/design-api'
 
 /** Preview wrappers contain stored PNG only; never render authored design HTML. */
@@ -6,7 +9,7 @@ export function DesignThumbnail({ session, revision }: { session: string; revisi
   // fetchDesignView uses only session, ref and kind, not attempt/progress metadata.
   const identity = JSON.stringify([session, designRefKey(revision.ref), revision.kind])
   // A different identity starts empty immediately, never displaying the old preview.
-  return <DesignThumbnailPreview key={identity} session={session} revision={revision} />
+  return <VisiblePreview key={identity} label="Ready design"><DesignThumbnailPreview session={session} revision={revision} /></VisiblePreview>
 }
 
 function DesignThumbnailPreview({ session, revision }: { session: string; revision: DesignRevision }) {
@@ -14,7 +17,7 @@ function DesignThumbnailPreview({ session, revision }: { session: string; revisi
   useEffect(() => {
     const controller = new AbortController()
     if (revision.kind !== 'plan') {
-      void fetchDesignView(session, revision, controller.signal).then(
+      void backgroundRead(() => withRequestDeadline(signal => fetchDesignView(session, revision, signal), STARTUP_REQUEST_TIMEOUT_MS, controller.signal), controller.signal).then(
         value => { if (!controller.signal.aborted) setContent(value) },
         () => { /* A missing thumbnail must not disable the exact ready output. */ },
       )
