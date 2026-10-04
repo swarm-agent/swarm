@@ -1,7 +1,7 @@
 import React from 'react'
 import { Archive, GitBranch, Folder, ListChecks, Plus, Search, Trash2 } from 'lucide-react'
 
-export type TaskStatusFilter = 'all' | 'running' | 'needs_review' | 'queued' | 'completed'
+export type TaskStatusFilter = 'all' | 'running' | 'needs_review' | 'queued' | 'completed' | 'media'
 export type TaskSourceFilter = 'all' | 'worker'
 
 export function TaskListHeader({ title, branch, workspaceCount, orchestratorState, onNewTask }: {
@@ -35,7 +35,7 @@ export function TaskListToolbar({ search, onSearch, source, onSource, status, on
   search: string; onSearch: (value: string) => void
   source: TaskSourceFilter; onSource: (value: TaskSourceFilter) => void
   status: TaskStatusFilter; onStatus: (value: TaskStatusFilter) => void
-  counts: Record<TaskStatusFilter, number>
+  counts: Record<Exclude<TaskStatusFilter, 'media'>, number>
   total: number; selected: number; busy: boolean
   integrationEligible?: number; integrationDisabled?: boolean; onIntegrate?: () => void
   onSelectAll: () => void; onClear: () => void; onArchive: () => void; onDelete: () => void; onArchived: () => void
@@ -50,7 +50,7 @@ export function TaskListToolbar({ search, onSearch, source, onSource, status, on
   ] as const
   const outline = 'swarm-outline-action flex items-center gap-1.5 rounded px-2.5 py-1 text-xs'
   return <div className="swarm-task-list-toolbar shrink-0 min-w-0 px-4">
-    <div className="swarm-task-search-row flex flex-wrap items-center gap-3 py-2">
+    {status !== 'media' && <div className="swarm-task-search-row flex flex-wrap items-center gap-3 py-2">
       <div className="relative flex-1 min-w-0">
         <Search size={13} aria-hidden="true" className="absolute left-3 top-2 text-slate-500" />
         <input type="search" value={search} onChange={event => onSearch(event.target.value)} placeholder="Search tasks" aria-label="Search tasks" className="w-full bg-transparent border border-slate-800 rounded pl-8 pr-3 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-[var(--swarm-accent)]" />
@@ -58,14 +58,15 @@ export function TaskListToolbar({ search, onSearch, source, onSource, status, on
       <div role="group" aria-label="Task scope" className="flex shrink-0 rounded border border-slate-800 p-0.5">
         {([{ value: 'all', label: 'All' }, { value: 'worker', label: 'Workers' }] as const).map(item => <button key={item.value} type="button" data-testid={item.value === 'all' ? 'filter-all-tasks' : 'filter-worker-tasks'} aria-pressed={source === item.value} onClick={() => onSource(item.value)} className="swarm-outline-action swarm-task-source-filter rounded px-2.5 py-1 text-[11px]">{item.label}</button>)}
       </div>
-    </div>
+    </div>}
     <div className="flex flex-wrap items-center gap-1.5 py-2 border-b-[0.5px] border-slate-800" role="group" aria-label="Task status filter">
       {chips.map(chip => <button key={chip.value} type="button" aria-pressed={status === chip.value} onClick={() => onStatus(chip.value)} className={`flex items-center gap-1.5 rounded border px-2 py-1 text-[11px] ${status === chip.value ? 'border-slate-600 text-white' : 'border-transparent text-slate-400 hover:text-white'}`}>
         {chip.dot && <span aria-hidden="true" className={`h-1.5 w-1.5 rounded-full ${chip.dot}`} />}{chip.label}<span className={`font-mono ${counts[chip.value] === 0 ? 'text-slate-600' : 'text-slate-400'}`}>{counts[chip.value]}</span>
       </button>)}
+      <button type="button" aria-pressed={status === 'media'} onClick={() => onStatus('media')} className={`flex items-center gap-1.5 rounded border px-2 py-1 text-[11px] ${status === 'media' ? 'border-slate-600 text-white' : 'border-transparent text-slate-400 hover:text-white'}`}>Media</button>
       <button type="button" ref={archivedRef} onClick={onArchived} className="ml-auto flex items-center gap-1.5 px-2 py-1 text-xs text-slate-400 hover:text-white"><Archive size={13} aria-hidden="true" />Archived</button>
     </div>
-    <div aria-label="Task management" className="swarm-task-management min-h-11 flex flex-wrap items-center justify-between gap-2 py-2">
+    {status !== 'media' && <div aria-label="Task management" className="swarm-task-management min-h-11 flex flex-wrap items-center justify-between gap-2 py-2">
       <div className="flex flex-wrap items-center gap-3 min-w-0">
         <button type="button" disabled={busy || total === 0} onClick={onSelectAll} className={outline}><ListChecks size={13} aria-hidden="true" />Select all</button>
         <span className="text-[11px] text-slate-400" role="status">{selected > 0 ? `${selected} of ${total} selected` : `${total} tasks`}</span>
@@ -76,6 +77,6 @@ export function TaskListToolbar({ search, onSearch, source, onSource, status, on
         <button type="button" disabled={busy} onClick={onArchive} className={outline}>Archive</button>
         <button type="button" disabled={busy} onClick={onDelete} className="flex items-center gap-1.5 rounded border border-rose-500/50 px-2.5 py-1 text-xs text-rose-400 hover:border-rose-400 disabled:opacity-40"><Trash2 size={13} aria-hidden="true" />Delete</button>
       </div>}
-    </div>
+    </div>}
   </div>
 }

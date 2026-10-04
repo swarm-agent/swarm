@@ -101,7 +101,7 @@ import type { DesktopV3ArtifactCatalogEntry } from '../session-v3/artifact-api'
 import type { MediaGenerationJob, MediaGenerationRequest, MediaGenerationSettings } from '../tools/media-library/media-generation'
 import type { QuickRouteMode } from '../tools/media-library/media-viewer-modal'
 import { MediaTaskCard, isCreativeMediaTask, type MediaTaskActions } from './media-task-card'
-import { ProjectMediaSidebar, ProjectRightSidebar } from './project-media-sidebar'
+import { ProjectMediaTasks } from './project-media-tasks'
 import { archiveProjectTask, projectTaskArchiveQueue } from '../runtime/project-task-archive'
 import { DesktopCodexUsageModal } from '../codex/desktop-codex-usage-modal'
 import { subscribeDesktopSessionReset } from '../../../app/api'
@@ -113,7 +113,7 @@ import { taskWithCurrentSessions } from './task-card-sessions'
 import { TaskCardActionButtons } from './task-card-action-buttons'
 import { TaskCardActivity } from './task-card-activity'
 import { SessionPermissionAttention, TaskAttention, useTaskAttention } from './task-attention'
-import { TaskListHeader, TaskListToolbar } from './task-list-toolbar'
+import { TaskListHeader, TaskListToolbar, type TaskStatusFilter } from './task-list-toolbar'
 import { useQuery } from '@tanstack/react-query'
 import { fetchGitStatus, gitStatusQueryKey } from '../git/api'
 import { inheritedSwarmThemeStyle, projectThemePatch, resolveSwarmProjectTheme } from './swarm-section-theme'
@@ -3278,7 +3278,7 @@ export function OrchestrateView({
   const shelfFileInputRef = useRef<HTMLInputElement>(null)
   const [searchQuery, setSearchQuery] = useState('')
   const [taskSourceFilter, setTaskSourceFilter] = useState<'all' | 'worker'>('all')
-  const [statusFilter, setStatusFilter] = useState<'all' | 'running' | 'needs_review' | 'queued' | 'completed'>('all')
+  const [statusFilter, setStatusFilter] = useState<TaskStatusFilter>('all')
   const [selectedTag] = useState<string>('all')
   const [markedTaskIds, setMarkedTaskIds] = useState<Set<string>>(() => new Set())
   const [managementBusy, setManagementBusy] = useState(false)
@@ -4856,8 +4856,9 @@ export function OrchestrateView({
       desktopProjects.invalidate(selectedProject.id)
       setIsDeployModalOpen(false)
       if (isCreativeMediaTask(mapBackendTask(res.task))) {
-        setRightSidebarTab('media')
-        responsiveLayout.setPanel('chat')
+        setStatusFilter('media')
+        setActiveNavTab('home')
+        responsiveLayout.setPanel('main')
       }
       setNewTaskPrompt('')
       dispatchImagePrompt({ type: 'reset' })
@@ -5301,7 +5302,6 @@ export function OrchestrateView({
     return tasksWithSessions.map((task) => aggregateTaskLiveState(task, liveTaskSessionsData))
   }, [tasksWithSessions, liveTaskSessionsData])
 
-  const [rightSidebarTab, setRightSidebarTab] = useState<'chat' | 'media'>('chat')
   const codeTasks = useMemo(() => liveTasks.filter(task => !isCreativeMediaTask(task)), [liveTasks])
 
   // Task counts and every task layout share the same non-media projection.
@@ -5592,7 +5592,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
   }
 
   useEffect(() => {
-    if (activeTask || workerChatOpen) { responsiveLayout.setPanel('chat'); setRightSidebarTab('chat') }
+    if (activeTask || workerChatOpen) responsiveLayout.setPanel('chat')
   }, [activeTask?.id, workerChatOpen])
 
   return (
@@ -6452,10 +6452,22 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                 </section>
               </div>}
 
+              {/* Keep media mounted across filter changes to retain selected turns and previews. */}
+              <section aria-label="Project media" hidden={statusFilter !== 'media'} className="swarm-task-media">
+                {selectedProject && <ProjectMediaTasks
+                  key={selectedProject.id} projectId={selectedProject.id} tasks={liveTasks} actions={mediaActions}
+                  onPreviewDesign={setActiveMediaViewerItem} onLibrary={() => setShowFullMediaCenter(true)}
+                  loading={projectState?.loading} error={projectTasksError || mediaSyncError || undefined}
+                  onRetry={() => void desktopProjects.refresh(selectedProject.id, false)}
+                  archivedTasks={archivedTasks} archivedLoading={archivedLoading} archivedError={archivedError}
+                  onLoadArchived={() => void loadArchivedTasks(selectedProject.id, true)}
+                />}
+              </section>
+
               {/* ─────────────────────────────────────────────────────────────
                   VARIANT 1: COMPACT MATRIX & EXPANDABLE DRAWER
                  ───────────────────────────────────────────────────────────── */}
-              {middleVariant === 'matrix' && (
+              {statusFilter !== 'media' && middleVariant === 'matrix' && (
                 <div className="flex-1 flex flex-col overflow-hidden p-3.5 space-y-3">
 
                   {/* Task rows */}
@@ -6524,7 +6536,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
               {/* ─────────────────────────────────────────────────────────────
                   VARIANT 2: MISSION PIPELINE KANBAN
                  ───────────────────────────────────────────────────────────── */}
-              {middleVariant === 'kanban' && (
+              {statusFilter !== 'media' && middleVariant === 'kanban' && (
                 <div className="flex-1 flex overflow-x-auto p-4 gap-3">
                   {(
                     [
@@ -6624,7 +6636,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
               {/* ─────────────────────────────────────────────────────────────
                   VARIANT 3: AUTONOMOUS WORKER FLEET
                  ───────────────────────────────────────────────────────────── */}
-              {middleVariant === 'fleet' && (
+              {statusFilter !== 'media' && middleVariant === 'fleet' && (
                 <div className="flex-1 overflow-y-auto p-4 space-y-4">
                   <div className="flex items-center justify-between">
                     <div>
@@ -6740,7 +6752,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
               {/* ─────────────────────────────────────────────────────────────
                   VARIANT 4: SPLIT STUDIO CONSOLE
                  ───────────────────────────────────────────────────────────── */}
-              {middleVariant === 'split' && (
+              {statusFilter !== 'media' && middleVariant === 'split' && (
                 <div className="flex-1 flex overflow-hidden">
                   {/* Left Column: Tasks List */}
                   <div className="w-1/2 border-r border-slate-800/80 flex flex-col p-3 overflow-y-auto space-y-2">
@@ -6846,7 +6858,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
               {/* ─────────────────────────────────────────────────────────────
                   VARIANT 5: TIMELINE ACTIVITY STREAM
                  ───────────────────────────────────────────────────────────── */}
-              {middleVariant === 'timeline' && (
+              {statusFilter !== 'media' && middleVariant === 'timeline' && (
                 <div className="flex-1 overflow-y-auto p-4 space-y-3">
                   <div className="text-xs font-bold text-white pb-1">Activity Stream ({filteredTasks.length})</div>
                   {filteredTasks.filter(task => !isCreativeMediaTask(task)).map((t) => (
@@ -6902,14 +6914,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
           PANEL 3: RIGHT PANEL (CANONICAL DESKTOP V3 AI CHAT SIDEBAR)
          ───────────────────────────────────────────────────────────── */}
       {workerChatOpen && workerChatError && <div role="alert" className="max-w-sm p-4 text-sm text-red-300">{workerChatError}<button className="ml-2 underline" onClick={() => setWorkerChatError('')}>Dismiss</button></div>}
-      <ProjectRightSidebar tab={rightSidebarTab} onTab={setRightSidebarTab} media={selectedProject ? <ProjectMediaSidebar
-        key={selectedProject.id} projectId={selectedProject.id} tasks={liveTasks} actions={mediaActions}
-        onPreviewDesign={setActiveMediaViewerItem} onLibrary={() => { setShowFullMediaCenter(true); setRightSidebarTab('chat'); responsiveLayout.setPanel('main') }}
-        loading={projectState?.loading} error={projectTasksError || mediaSyncError || undefined}
-        onRetry={() => void desktopProjects.refresh(selectedProject.id, false)}
-        archivedTasks={archivedTasks} archivedLoading={archivedLoading} archivedError={archivedError}
-        onLoadArchived={() => void loadArchivedTasks(selectedProject.id, true)}
-      /> : <p>Select a project to browse media.</p>}>
+
       {appliedConversationRouteScope.current === conversationRouteScope && activeSessionId && selectedProject && ((activeTaskId && tasks.some(task => task.id === activeTaskId && (extractTaskSessionIds(task).includes(activeSessionId) || taskOutcome(task).repairSessionId === activeSessionId))) || (admittedParentId && activeSessionId === admittedParentId)) ? (
         // Keep the chat bounded to the page, below the optional worker header.
         <div className="swarm-conversation-panel flex min-h-0 shrink-0 flex-col">
@@ -6955,8 +6960,6 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
           {selectedProject ? <button type="button" disabled={creatingConversation} onClick={() => { void newConversation() }}>New session</button> : <button type="button" onClick={() => { setIsOnboardingActive(true); setActiveNavTab('projects') }}>Create a project</button>}
         </aside>
       )}
-
-      </ProjectRightSidebar>
 
       {/* ─────────────────────────────────────────────────────────────
           MODAL: NEW TASK (VISUAL INTENT, MEDIA & AUTO-APPROVE)

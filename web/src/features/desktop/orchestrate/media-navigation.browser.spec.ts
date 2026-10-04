@@ -6,12 +6,13 @@ import { projectTestStyles } from './project-test-styles'
 import { fixtureRead, project, snapshot } from './swarm-responsive-browser-fixtures'
 
 // Purpose: OrchestrateView must classify navigation using durable task.agent, not
-// titles, attachments or outputs. Exercise the real project runtime and sidebar:
+// titles, attachments or outputs. Exercise the real project runtime and Tasks row:
 // all task counts exclude media, code-with-media stays visible, tab switching keeps
 // selected turns, project changes/reloads reconstruct history, events update the
 // same cards, and read retries never dispatch generation. HTTP fixtures isolate
 // this UI boundary; this is not live daemon/provider or persistence evidence.
-test('right-side media stays separate from tasks across tabs, events, projects and reload', { timeout: 90_000 }, async () => {
+// Creation uses the real modal and a retained-slot HTTP response, never paid media.
+test('Media shares the Tasks row and main content across filters, events, projects and reload', { timeout: 90_000 }, async () => {
   const bundle = await build({ stdin: { resolveDir: process.cwd(), loader: 'tsx', contents: `
     import React from 'react'; import {createRoot} from 'react-dom/client';
     import {createRootRoute,createRoute,createRouter,RouterProvider} from '@tanstack/react-router';
@@ -45,12 +46,25 @@ test('right-side media stays separate from tasks across tabs, events, projects a
       { id: 'video', title: 'Video generation', agent: 'video', tier: 'direct', revision: 1, status: 'in_progress', deliverables: [{ id: 'video-output', title: 'Video output', kind: 'video', status: 'generating' }] },
       { id: 'audio', title: 'Audio generation', agent: 'audio', revision: 1, status: 'failed', last_error: 'Audio generation failed' },
     ]
-    const writes: string[] = []; let failReads = false
+    const writes: string[] = []; let failReads = false; let allowCreation = false
     await page.route('**/*', route => {
       const req = route.request(), url = new URL(req.url())
       if (req.isNavigationRequest()) return route.fulfill({ contentType: 'text/html', body: '<div id="root" style="height:100vh"></div>' })
       if (url.pathname === '/fixture.png') return route.fulfill({ contentType: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256"><rect width="256" height="256" fill="#3b82f6"/></svg>' })
       if (url.pathname === '/v3/sync/hydrate') return route.fulfill({ json: snapshot() })
+      // The modal's existing plan preview is a read, not generation admission.
+      if (allowCreation && req.method() === 'POST' && url.pathname === `/v3/projects/${project.id}/tasks:preview`) return route.fulfill({ json: { task_plan: {}, model_preview: {}, workspace_diagnostic: 'Fixture has no workspace' } })
+      if (req.method() !== 'GET') {
+        writes.push(`${req.method()} ${url.pathname}`)
+        if (allowCreation && req.method() === 'POST' && url.pathname === `/v3/projects/${project.id}/tasks`) {
+          const body = req.postDataJSON()
+          assert.equal(body.agent, 'image')
+          const created = { id: body.id, title: 'New image generation', agent: 'image', tier: 'direct', revision: 1, status: 'in_progress', deliverables: [{ id: 'new-image-slot', title: 'New image', kind: 'image', status: 'generating' }] }
+          rows.push(created)
+          return route.fulfill({ json: { task: created } })
+        }
+        return route.fulfill({ status: 400, json: { error: 'Unexpected mutation' } })
+      }
       if (url.pathname === '/v3/projects') return route.fulfill({ json: { projects: [project, second] } })
       if (url.pathname === '/v1/account/avatar') return route.fulfill({ json: { image: '', user_id: url.searchParams.get('user_id'), account_scope_id: url.searchParams.get('account_scope_id') } })
       if (req.method() === 'GET' && url.pathname.endsWith('/sessions')) return route.fulfill({ json: { sessions: [] } })
@@ -62,7 +76,6 @@ test('right-side media stays separate from tasks across tabs, events, projects a
         return route.fulfill({ json: { tasks: url.searchParams.get('view') === 'archived' ? [{ ...rows[1], id: 'old-image', title: 'Archived image' }, { ...rows[0], id: 'old-code', title: 'Archived code' }] : rows } })
       }
       if (url.pathname.startsWith(`/v3/projects/${second.id}/`)) return route.fulfill({ json: { tasks: [], media: [], designs: [] } })
-      if (req.method() !== 'GET') { writes.push(`${req.method()} ${url.pathname}`); return route.fulfill({ status: 400, json: { error: 'Unexpected mutation' } }) }
       const data = fixtureRead(url, 'populated')
       return route.fulfill({ status: data === undefined ? 501 : 200, json: data ?? { error: 'Unconfigured fixture read' } })
     })
@@ -70,11 +83,23 @@ test('right-side media stays separate from tasks across tabs, events, projects a
     await page.goto(`https://media-navigation.test/projects/${project.id}`); await mount()
     const main = page.locator('main.swarm-main-panel')
     await main.getByText('Code with image attachment', { exact: true }).waitFor()
-    assert.equal(await main.getByTestId('media-task-card').count(), 0)
-    assert.equal(await main.getByRole('group', { name: 'Task status filter' }).innerText().then(text => text.replace(/\s/g, '')), 'All1Running0Review0Queued1Done0Archived')
-    const tabs = page.getByRole('tablist', { name: 'Project sidebar views' })
-    await tabs.getByRole('tab', { name: 'Media', exact: true }).click()
-    const media = page.getByRole('tabpanel', { name: 'Media', exact: true })
+    assert.equal(await main.locator('[data-testid="media-task-card"]:visible').count(), 0)
+    assert.equal(await main.getByRole('group', { name: 'Task status filter' }).innerText().then(text => text.replace(/\s/g, '')), 'All1Running0Review0Queued1Done0MediaArchived')
+    const tabs = main.getByRole('group', { name: 'Task status filter' })
+    assert.deepEqual(await tabs.getByRole('button').allTextContents(), ['All1', 'Running0', 'Review0', 'Queued1', 'Done0', 'Media', 'Archived'])
+    assert.equal(await page.getByRole('tablist', { name: 'Project sidebar views' }).count(), 0)
+    assert.equal(await page.locator('.swarm-project-right-sidebar, #project-sidebar-media, #project-sidebar-chat').count(), 0)
+    assert.equal(await page.locator('.swarm-conversation-panel').count(), 1, 'original Chat panel remains')
+    for (const name of ['Running0', 'Review0', 'Queued1', 'Done0', 'All1']) {
+      await tabs.getByRole('button', { name: new RegExp(`^${name.slice(0, -1)}\\s*${name.slice(-1)}$`) }).click()
+      assert.equal(await main.locator('[data-testid="media-task-card"]:visible').count(), 0)
+      assert.equal(await main.getByText('Code with image attachment', { exact: true }).count(), ['All1', 'Queued1'].includes(name) ? 1 : 0)
+    }
+    await tabs.getByRole('button', { name: 'Media', exact: true }).click()
+    const media = main.getByRole('region', { name: 'Project media', exact: true })
+    assert.equal(await tabs.getByRole('button', { name: 'Media', exact: true }).getAttribute('aria-pressed'), 'true')
+    assert.equal(await main.getByTestId('orchestrate-task-list').count(), 0)
+    assert.equal(await page.locator('.swarm-conversation-panel').getByTestId('media-task-card').count(), 0)
     await media.getByRole('heading', { name: 'Image generation', exact: true }).waitFor()
     assert.equal(await media.getByTestId('media-task-card').count(), 4, 'image edit is one retained thread, not a duplicate card')
     assert.equal(await media.getByText('Code with image attachment', { exact: true }).count(), 0)
@@ -84,14 +109,15 @@ test('right-side media stays separate from tasks across tabs, events, projects a
     await thread.getByRole('tab', { name: /Turn 1/ }).click()
     await thread.getByRole('button', { name: 'Preview / save', exact: true }).waitFor()
     await thread.evaluate(element => { (window as any).retainedThread = element })
-    await tabs.getByRole('tab', { name: 'Chat', exact: true }).click()
-    await tabs.getByRole('tab', { name: 'Chat', exact: true }).press('ArrowRight')
+    await tabs.getByRole('button', { name: /^All\s*1$/ }).click()
+    assert.equal(await media.isVisible(), false)
+    await tabs.getByRole('button', { name: 'Media', exact: true }).click()
     assert.equal(await thread.evaluate(element => element === (window as any).retainedThread), true)
     assert.equal(await thread.getByRole('tab', { name: /Turn 1/ }).getAttribute('aria-selected'), 'true')
     rows[3].status = 'failed'; Object.assign(rows[3], { revision: 2, last_error: 'Video provider failure', deliverables: [{ id: 'video-output', title: 'Video output', kind: 'video', status: 'failed' }] })
     await page.evaluate(() => (window as any).mediaEvent('video', 2))
     await media.getByRole('alert').filter({ hasText: 'Video provider failure' }).waitFor()
-    assert.equal(await main.getByTestId('media-task-card').count(), 0)
+    assert.equal(await main.locator('[data-testid="media-task-card"]:visible').count(), 4)
     assert.equal(await media.getByTestId('media-task-card').count(), 4)
     await main.getByRole('button', { name: 'Archived', exact: true }).click()
     const archived = page.getByRole('dialog', { name: 'Archived tasks', exact: true })
@@ -102,11 +128,11 @@ test('right-side media stays separate from tasks across tabs, events, projects a
     await media.getByRole('region', { name: 'Archived media' }).getByRole('heading', { name: 'Archived image', exact: true }).waitFor()
     assert.equal(await media.getByText('Archived code', { exact: true }).count(), 0)
     await page.getByLabel('Current project').selectOption(second.id)
-    await tabs.getByRole('tab', { name: 'Media', exact: true }).click()
+    await tabs.getByRole('button', { name: 'Media', exact: true }).click()
     await media.getByText('No image, video or audio generations yet.').waitFor()
     assert.equal(await media.getByTestId('media-task-card').count(), 0)
     await page.getByLabel('Current project').selectOption(project.id)
-    await tabs.getByRole('tab', { name: 'Media', exact: true }).click()
+    await tabs.getByRole('button', { name: 'Media', exact: true }).click()
     await media.getByRole('heading', { name: 'Image generation', exact: true }).waitFor()
     assert.equal(await media.getByTestId('media-task-card').count(), 4)
     failReads = true
@@ -116,18 +142,38 @@ test('right-side media stays separate from tasks across tabs, events, projects a
     await media.getByRole('button', { name: 'Retry media', exact: true }).click()
     await media.getByRole('button', { name: 'Retry media', exact: true }).waitFor({ state: 'hidden' })
     await page.reload(); await mount()
-    await tabs.getByRole('tab', { name: 'Media', exact: true }).click()
+    await tabs.getByRole('button', { name: 'Media', exact: true }).click()
     await media.getByRole('heading', { name: 'Image generation', exact: true }).waitFor()
     assert.equal(await media.getByTestId('media-task-card').count(), 4)
     assert.equal(await thread.getByRole('tab').count(), 2)
     for (const width of [1440, 375]) {
       await page.setViewportSize({ width, height: 1000 })
-      if (width === 375) await page.getByRole('button', { name: 'Chat', exact: true }).click()
       await media.getByRole('heading', { name: 'Project media' }).waitFor()
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false)
       if (process.env.SWARM_MEDIA_NAV_SCREENSHOT_DIR) await page.screenshot({ path: `${process.env.SWARM_MEDIA_NAV_SCREENSHOT_DIR}/media-navigation-${width}.png` })
     }
     assert.deepEqual(writes, [], 'browsing, retrying reads and reloading must not generate or mutate records')
+    // New creation must land in this same main-content view, including on mobile.
+    allowCreation = true
+    await tabs.getByRole('button', { name: /^All\s*1$/ }).click()
+    await main.getByRole('button', { name: 'New task', exact: true }).click()
+    const dialog = page.getByRole('dialog', { name: 'Deploy Autonomous Task' })
+    await dialog.getByTestId('deploy-tab-image').click()
+    await dialog.getByRole('textbox').fill('New image generation')
+    await dialog.getByRole('button', { name: 'Deploy & Start', exact: true }).click()
+    await dialog.waitFor({ state: 'hidden' })
+    await media.getByRole('heading', { name: 'New image generation', exact: true }).waitFor()
+    assert.equal(await tabs.getByRole('button', { name: 'Media', exact: true }).getAttribute('aria-pressed'), 'true')
+    assert.equal(await main.isVisible(), true)
+    assert.equal(await page.locator('.swarm-conversation-panel').isVisible(), false, 'mobile creation must not open Chat')
+    assert.equal(await media.getByTestId('media-task-card').count(), 5)
+    await tabs.getByRole('button', { name: /^All\s*1$/ }).click()
+    await tabs.getByRole('button', { name: 'Media', exact: true }).click()
+    await page.reload(); await mount()
+    await tabs.getByRole('button', { name: 'Media', exact: true }).click()
+    await media.getByRole('heading', { name: 'New image generation', exact: true }).waitFor()
+    assert.equal(await media.getByTestId('media-task-card').count(), 5)
+    assert.deepEqual(writes, [`POST /v3/projects/${project.id}/tasks`], 'creation dispatches once; navigation and reload never recreate media')
     assert.deepEqual(errors, [])
   } finally { await browser.close() }
 })
