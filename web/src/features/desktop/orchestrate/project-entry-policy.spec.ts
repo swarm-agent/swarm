@@ -77,7 +77,7 @@ test('project links preserve admitted sessions without promoting rejected route 
 test('onboarding, history normalization and task return wire the project-first boundaries', () => {
   const source = (path: string) => readFileSync(new URL(path, import.meta.url), 'utf8')
   const gate = source('../onboarding/components/desktop-onboarding-gate.tsx')
-  const continueHandler = gate.slice(gate.indexOf('const handleProviderContinue'), gate.indexOf('const handleOpenWorkspace'))
+  const continueHandler = gate.slice(gate.indexOf('const handleProviderContinue'), gate.indexOf('const handleIdentitySubmit'))
   assert.match(continueHandler, /completeAccountOnboarding/)
   assert.match(continueHandler, /to: '\/projects'/)
   assert.doesNotMatch(continueHandler, /openWorkspace|finishWithWorkspace|transitionToStep\('workspace'\)/)
@@ -95,6 +95,8 @@ test('onboarding, history normalization and task return wire the project-first b
   const clear = view.slice(view.indexOf('const handleClearContext'), view.indexOf('{/* Task and integration-repair navigation'))
   assert.match(clear, /await clearSessionContext\(sessionId, clearRequest.current.id, clearRequest.current.seq\)/)
   assert.doesNotMatch(clear, /createProjectConversation/)
+  assert.ok(view.includes('projectConversationLink(projectSegment || project.id, project.primarySessionId)'), 'navigation uses the resolved project segment')
+  assert.ok(view.includes('createProjectConversation(projectId, conversationRequest.current)'), 'new conversation uses a stable request identity')
   // Task details must retain program-child and repair-session access, not just the primary task session.
   assert.match(view, /extractTaskSessionIds\(task\)\.includes\(activeSessionId\) \|\| taskOutcome\(task\)\.repairSessionId === activeSessionId/)
 })

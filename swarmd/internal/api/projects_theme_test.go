@@ -65,7 +65,7 @@ func TestProjectsThemeSelectionAccountBoundary(t *testing.T) {
 	if err != nil || len(projects) != 0 {
 		t.Fatalf("rejected create persisted project: %v %v", projects, err)
 	}
-	w := call("owner", http.MethodPost, "", `{"name":"Kept","theme_id":"owner-palette","description":"metadata"}`)
+	w := call("owner", http.MethodPost, "", `{"name":"Kept","theme_id":"owner-palette","description":"metadata","client_request_id":"theme-create"}`)
 	if w.Code != http.StatusCreated {
 		t.Fatalf("create: %d %s", w.Code, w.Body.String())
 	}
@@ -76,6 +76,12 @@ func TestProjectsThemeSelectionAccountBoundary(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := response.Project.ID
+	s.runWG.Wait()
+	// Continue metadata semantics on a legacy existing record; provider lifecycle
+	// success/failure is independently asserted in TestProjectContextCreationHTTP.
+	if _, err := ss.UpdateProject("owner", id, func(p *pebblestore.ProjectRecord) error { p.ContextGeneration = nil; return nil }); err != nil {
+		t.Fatal(err)
+	}
 	if response.Project.ThemeID != "owner-palette" {
 		t.Fatalf("created theme: %+v", response.Project)
 	}

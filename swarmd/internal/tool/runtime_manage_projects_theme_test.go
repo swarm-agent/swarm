@@ -16,6 +16,7 @@ func TestManageProjectsThemeSelection(t *testing.T) {
 	rt := NewRuntime(1)
 	projects := newMockProjectStore()
 	rt.SetManageProjectStore(projects)
+	rt.SetProjectTaskLifecycleService(newMockProjectTaskLifecycleService(projects))
 	rt.SetManageThemeServices(&manageThemeSettingsStub{settings: uisettings.UISettings{Theme: uisettings.ThemeSettings{CustomThemes: []uisettings.ThemeCustomTheme{{ID: "saved", Name: "Saved"}}}}}, nil)
 	scope := WorkspaceScope{Principal: identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user", AccountScopeID: "owner"}}
 	invoke := func(args map[string]any) (string, error) {
@@ -27,7 +28,7 @@ func TestManageProjectsThemeSelection(t *testing.T) {
 	if len(projects.projects) != 0 {
 		t.Fatal("rejected create mutated project store")
 	}
-	raw, err := invoke(map[string]any{"action": "create", "name": "kept", "theme_id": "saved", "description": "metadata"})
+	raw, err := invoke(map[string]any{"action": "create", "name": "kept", "client_request_id": "theme-create", "theme_id": "saved", "description": "metadata"})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1,6 +1,7 @@
 import { ensureDesktopSession, requestStartupJson, subscribeDesktopSessionReset } from '../../../app/api'
 import { queryClient } from '../../../app/query-client'
 import { desktopProjects } from './desktop-projects'
+import type { ProjectContextGeneration } from '../state/project-creation'
 
 export interface ProjectCatalogEntry {
   id: string
@@ -9,6 +10,7 @@ export interface ProjectCatalogEntry {
   workspaces?: Array<{ workspace_id: string; path: string; role: string; label?: string }>
   project_context?: string
   theme_id?: string
+  context_generation?: ProjectContextGeneration
   icon_png_data_url?: string
 }
 

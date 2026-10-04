@@ -499,7 +499,16 @@ export interface ProjectTaskMediaRef {
   created_at?: number;
 }
 
+export interface ProjectContextGeneration {
+  status: 'pending' | 'running' | 'ready' | 'failed';
+  attempt: number;
+  lease_until?: number;
+  error?: string;
+  router_alert?: string;
+}
+
 export interface ProjectRecord {
+  context_generation?: ProjectContextGeneration;
   id: string;
   account_id?: string;
   name: string;
@@ -515,6 +524,8 @@ export interface ProjectRecord {
 }
 
 export interface CreateProjectParams {
+  /** Reuse this key with the same input after a lost creation response. */
+  client_request_id?: string;
   id?: string;
   name: string;
   description?: string;
