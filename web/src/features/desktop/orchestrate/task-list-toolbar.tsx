@@ -31,11 +31,12 @@ export function TaskListHeader({ title, branch, workspaceCount, orchestratorStat
   </header>
 }
 
-export function TaskListToolbar({ search, onSearch, source, onSource, status, onStatus, counts, total, selected, busy, integrationEligible = 0, integrationDisabled = false, onIntegrate, onSelectAll, onClear, onArchive, onDelete, onArchived, archivedRef }: {
+export function TaskListToolbar({ search, onSearch, source, onSource, status, onStatus, counts, mediaCount = 0, mediaCountIncomplete = false, total, selected, busy, integrationEligible = 0, integrationDisabled = false, onIntegrate, onSelectAll, onClear, onArchive, onDelete, onArchived, archivedRef }: {
   search: string; onSearch: (value: string) => void
   source: TaskSourceFilter; onSource: (value: TaskSourceFilter) => void
   status: TaskStatusFilter; onStatus: (value: TaskStatusFilter) => void
   counts: Record<Exclude<TaskStatusFilter, 'media'>, number>
+  mediaCount?: number; mediaCountIncomplete?: boolean
   total: number; selected: number; busy: boolean
   integrationEligible?: number; integrationDisabled?: boolean; onIntegrate?: () => void
   onSelectAll: () => void; onClear: () => void; onArchive: () => void; onDelete: () => void; onArchived: () => void
@@ -63,7 +64,7 @@ export function TaskListToolbar({ search, onSearch, source, onSource, status, on
       {chips.map(chip => <button key={chip.value} type="button" aria-pressed={status === chip.value} onClick={() => onStatus(chip.value)} className={`flex items-center gap-1.5 rounded border px-2 py-1 text-[11px] ${status === chip.value ? 'border-slate-600 text-white' : 'border-transparent text-slate-400 hover:text-white'}`}>
         {chip.dot && <span aria-hidden="true" className={`h-1.5 w-1.5 rounded-full ${chip.dot}`} />}{chip.label}<span className={`font-mono ${counts[chip.value] === 0 ? 'text-slate-600' : 'text-slate-400'}`}>{counts[chip.value]}</span>
       </button>)}
-      <button type="button" aria-pressed={status === 'media'} onClick={() => onStatus('media')} className={`flex items-center gap-1.5 rounded border px-2 py-1 text-[11px] ${status === 'media' ? 'border-slate-600 text-white' : 'border-transparent text-slate-400 hover:text-white'}`}>Media</button>
+      <button type="button" aria-pressed={status === 'media'} onClick={() => onStatus('media')} className={`flex items-center gap-1.5 rounded border px-2 py-1 text-[11px] ${status === 'media' ? 'border-slate-600 text-white' : 'border-transparent text-slate-400 hover:text-white'}`}>Media<span className={`font-mono ${mediaCount === 0 ? 'text-slate-600' : 'text-slate-400'}`} title="Loaded active media cards">{mediaCount}{mediaCountIncomplete ? '+' : ''}</span></button>
       <button type="button" ref={archivedRef} onClick={onArchived} className="ml-auto flex items-center gap-1.5 px-2 py-1 text-xs text-slate-400 hover:text-white"><Archive size={13} aria-hidden="true" />Archived</button>
     </div>
     {status !== 'media' && <div aria-label="Task management" className="swarm-task-management min-h-11 flex flex-wrap items-center justify-between gap-2 py-2">

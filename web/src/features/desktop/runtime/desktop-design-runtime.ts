@@ -23,12 +23,13 @@ function getDesignState(): DesktopDesignState {
 export const desktopDesigns = {
   moreEdits: (session: string) => getDesignState().moreEdits(session),
   editRequests: (session: string) => getDesignState().editRequests(session),
-  archive: async (session: string, ref: DesignRef, version: number, archived: boolean, key: string) => {
+  archive: async (session: string, ref: DesignRef, version: number, archived: boolean, key: string, isCurrent: () => boolean = () => true) => {
     const current = getDesignState()
     const epoch = authEpoch
     const signal = archiveController.signal
     const receipt = await archiveQueue.run(JSON.stringify([epoch, 'design', session, ref.artifact_id]), () => {
       if (signal.aborted) throw new Error('Account changed')
+      if (!isCurrent()) throw new Error('Project changed')
       return setDesignArchived(session, ref, version, archived, key, signal)
     })
     if (epoch !== authEpoch) throw new Error('Account changed')

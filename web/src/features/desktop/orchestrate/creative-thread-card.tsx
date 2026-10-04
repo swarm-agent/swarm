@@ -23,8 +23,8 @@ export interface CreativeCardTurn {
 export function creativeThreadStatus(turns: readonly CreativeCardTurn[]) {
   return turns.find(turn => isMediaGenerationPending(turn.status) || ['pending_approval', 'planning'].includes(turn.status))?.status ?? turns[turns.length - 1]?.status ?? 'queued'
 }
-export function CreativeThreadCard({ id, title, studio, turns, attention }: {
-  id: string; title: string; studio: string; turns: readonly CreativeCardTurn[]; attention?: ReactNode
+export function CreativeThreadCard({ id, title, studio, turns, attention, selectionControl }: {
+  id: string; title: string; studio: string; turns: readonly CreativeCardTurn[]; attention?: ReactNode; selectionControl?: ReactNode
 }) {
   const domId = useId()
   const [selection, setSelection] = useState<{ turn: string; output?: string }>()
@@ -39,6 +39,7 @@ export function CreativeThreadCard({ id, title, studio, turns, attention }: {
       <div className="min-w-0"><span className="creative-studio">{studio} studio</span><h3 className="creative-card-title">{title}</h3></div>
       <span className="creative-status" role="status">{status.replace(/_/g, ' ')} · {turns.length} {turns.length === 1 ? 'turn' : 'turns'} · {ready} ready</span>
     </header>
+    {selectionControl}
     {attention}
     {/* Alerts for a new turn remain visible even when an earlier output is selected. */}
     {turns.map(turn => <div key={turn.id} className="creative-turn-alerts">{turn.alerts}</div>)}

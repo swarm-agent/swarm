@@ -102,6 +102,7 @@ import type { MediaGenerationJob, MediaGenerationRequest, MediaGenerationSetting
 import type { QuickRouteMode } from '../tools/media-library/media-viewer-modal'
 import { MediaTaskCard, isCreativeMediaTask, type MediaTaskActions } from './media-task-card'
 import { ProjectMediaTasks } from './project-media-tasks'
+import { mediaSelectionCards } from './media-selection'
 import { archiveProjectTask, projectTaskArchiveQueue } from '../runtime/project-task-archive'
 import { DesktopCodexUsageModal } from '../codex/desktop-codex-usage-modal'
 import { subscribeDesktopSessionReset } from '../../../app/api'
@@ -5303,6 +5304,7 @@ export function OrchestrateView({
   }, [tasksWithSessions, liveTaskSessionsData])
 
   const codeTasks = useMemo(() => liveTasks.filter(task => !isCreativeMediaTask(task)), [liveTasks])
+  const mediaCardCount = useMemo(() => mediaSelectionCards(liveTasks, projectDesigns.data?.designs ?? []).length, [liveTasks, projectDesigns.data])
 
   // Task counts and every task layout share the same non-media projection.
   const filteredBySourceTasks = useMemo(() => {
@@ -6426,6 +6428,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
               <TaskListToolbar
                 search={searchQuery} onSearch={setSearchQuery} source={taskSourceFilter} onSource={setTaskSourceFilter}
                 status={statusFilter} onStatus={setStatusFilter}
+                mediaCount={mediaCardCount} mediaCountIncomplete={Boolean(projectDesigns.data?.next_cursor || projectDesigns.loading || projectDesigns.error || projectState?.loading || projectTasksError)}
                 counts={{ all: filteredBySourceTasks.length, running: filteredBySourceRunningCount, needs_review: filteredBySourceReviewCount, queued: filteredBySourceQueuedCount, completed: filteredBySourceCompletedCount }}
                 total={filteredTasks.length} selected={markedRows.length} busy={Boolean(integrationBatch?.pending) || (markedRows.length > 0 && markedRows.every(row => managementPending.current.has(row.id)))}
                 integrationEligible={markedRows.filter(row => !integrationSkipReason(selectedProjectId, row)).length}
@@ -6456,6 +6459,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
               <section aria-label="Project media" hidden={statusFilter !== 'media'} className="swarm-task-media">
                 {selectedProject && <ProjectMediaTasks
                   key={selectedProject.id} projectId={selectedProject.id} tasks={liveTasks} actions={mediaActions}
+                  active={statusFilter === 'media'} selectionScope={JSON.stringify([searchQuery, taskSourceFilter, selectedTag, archivedOpen])}
                   onPreviewDesign={setActiveMediaViewerItem} onLibrary={() => setShowFullMediaCenter(true)}
                   loading={projectState?.loading} error={projectTasksError || mediaSyncError || undefined}
                   onRetry={() => void desktopProjects.refresh(selectedProject.id, false)}

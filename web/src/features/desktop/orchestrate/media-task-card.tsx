@@ -30,7 +30,7 @@ export interface MediaTaskActions {
   error?: string
 }
 type TaskCardProps = MediaTaskActions & { task: RunningTask; attention?: ReactNode }
-type DesignCardProps = { source: 'independent-design'; archived?: boolean; design: ProjectDesign; designs?: readonly ProjectDesign[]; threadId?: string; onDesignPreview: (item: MediaLibraryItem) => void }
+type DesignCardProps = { source: 'independent-design'; archived?: boolean; design: ProjectDesign; designs?: readonly ProjectDesign[]; threadId?: string; onDesignPreview: (item: MediaLibraryItem) => void; selectionControl?: ReactNode; archiveDisabled?: boolean }
 
 export function MediaTaskCard(props: TaskCardProps | DesignCardProps) {
   if ('source' in props) {
@@ -46,7 +46,7 @@ export function MediaTaskCard(props: TaskCardProps | DesignCardProps) {
             id: JSON.stringify([designRequestId(row), index]), candidateNumber: index + 1, title: `${row.title} candidate ${index + 1}`, status: designStatus(candidate.state), ready: Boolean(revision),
             preview: revision ? <DesignThumbnail session={row.request.parent_session_id} revision={revision} /> : null,
             open: () => { if (revision) props.onDesignPreview(designMediaItem(row, index, revision)) },
-            actions: revision ? <DesignArchiveButton key={`${row.project_id}:${row.request.parent_session_id}:${revision.ref.artifact_id}`} session={row.request.parent_session_id} reference={revision.ref} version={candidate.archive_version ?? 0} archived={candidate.archived} /> : undefined,
+            actions: revision && !props.archiveDisabled ? <DesignArchiveButton key={`${row.project_id}:${row.request.parent_session_id}:${revision.ref.artifact_id}`} session={row.request.parent_session_id} reference={revision.ref} version={candidate.archive_version ?? 0} archived={candidate.archived} /> : undefined,
           }
         }),
         alerts: visible.map(({ candidate, index }) => <div key={index}>
@@ -57,7 +57,7 @@ export function MediaTaskCard(props: TaskCardProps | DesignCardProps) {
       }]
     })
     if (!turns.length) return null
-    return <CreativeThreadCard id={props.threadId ?? designRequestId(props.design)} title={props.design.title} studio="Design" turns={turns} />
+    return <CreativeThreadCard id={props.threadId ?? designRequestId(props.design)} title={props.design.title} studio="Design" turns={turns} selectionControl={props.selectionControl} />
   }
   return <CreativeThreadCard id={props.task.id} title={props.task.title} studio={props.task.agentType} turns={[artifactTurn(props.task, props)]} attention={props.attention} />
 }
@@ -88,14 +88,15 @@ function artifactTurn(task: RunningTask, actions: MediaTaskActions): CreativeCar
     }),
   }
 }
-export function MediaTaskThreads({ tasks, visibleTaskIds, column, actions }: {
+export function MediaTaskThreads({ tasks, visibleTaskIds, column, actions, selectionControl }: {
   tasks: readonly RunningTask[]; visibleTaskIds: ReadonlySet<string>; column?: string; actions: (task: RunningTask) => MediaTaskActions
+  selectionControl?: (tasks: readonly RunningTask[]) => ReactNode
 }) {
   return <>{mediaTaskThreads(tasks).map(thread => {
     if (!thread.turns.some(task => visibleTaskIds.has(task.id))) return null
     const active = thread.turns.find(task => ['running', 'in_progress', 'queued', 'pending', 'pending_approval'].includes(task.status)) ?? thread.turns[thread.turns.length - 1]!
     const status = ['running', 'in_progress'].includes(active.status) ? 'running' : ['queued', 'pending', 'pending_approval', 'planning'].includes(active.status) ? 'queued' : active.status
     if (column && status !== column) return null
-    return <CreativeThreadCard key={thread.id} id={thread.id} title={thread.turns[0].title} studio={thread.turns[0].agentType} turns={thread.turns.map(task => artifactTurn(task, actions(task)))} attention={thread.turns.map(task => <MediaTaskAttention key={task.id} task={task} />)} />
+    return <CreativeThreadCard key={thread.id} id={thread.id} title={thread.turns[0].title} studio={thread.turns[0].agentType} turns={thread.turns.map(task => artifactTurn(task, actions(task)))} selectionControl={selectionControl?.(thread.turns)} attention={thread.turns.map(task => <MediaTaskAttention key={task.id} task={task} />)} />
   })}</>
 }
