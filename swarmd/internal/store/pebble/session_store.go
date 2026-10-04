@@ -485,7 +485,9 @@ func (s *SessionStore) CreateSession(session SessionSnapshot) error {
 	}
 	batch := s.store.NewBatch()
 	defer batch.Close()
-	if err := setTaskRelatedInBatch(batch, KeySession(session.ID), session); err != nil { return err }
+	if err := setTaskRelatedInBatch(batch, KeySession(session.ID), session); err != nil {
+		return err
+	}
 	if err := batch.Set([]byte(KeySession(session.ID)), payload, nil); err != nil {
 		return err
 	}
@@ -551,7 +553,9 @@ func (s *SessionStore) UpdateSession(session SessionSnapshot) error {
 			}
 		}
 	}
-	if err := setTaskRelatedInBatch(batch, KeySession(session.ID), session); err != nil { return err }
+	if err := setTaskRelatedInBatch(batch, KeySession(session.ID), session); err != nil {
+		return err
+	}
 	if err := batch.Set([]byte(KeySession(session.ID)), payload, nil); err != nil {
 		return err
 	}
@@ -949,7 +953,9 @@ func (s *SessionStore) tombstoneSessions(sessionIDs []string, kind string) error
 				}
 			}
 		}
-		if err := deleteTaskRelatedSessionInBatch(batch, sessionID, kind == "deleted"); err != nil { return err }
+		if err := deleteTaskRelatedSessionInBatch(batch, sessionID, kind == "deleted"); err != nil {
+			return err
+		}
 		if err := batch.Delete([]byte(KeySession(sessionID)), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
 			return err
 		}
@@ -2069,7 +2075,9 @@ func (s *SessionStore) putPlanWithArchivedRevision(plan SessionPlanSnapshot, arc
 		return err
 	}
 	payload = planRevisionPayload
-	if err := setTaskRelatedInBatch(batch, KeySessionPlan(plan.SessionID, plan.ID), plan); err != nil { return err }
+	if err := setTaskRelatedInBatch(batch, KeySessionPlan(plan.SessionID, plan.ID), plan); err != nil {
+		return err
+	}
 	if err := batch.Set([]byte(KeySessionPlan(plan.SessionID, plan.ID)), payload, nil); err != nil {
 		return err
 	}

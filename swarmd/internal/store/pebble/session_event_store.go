@@ -3387,7 +3387,9 @@ func (s *SessionStore) setSessionInBatch(batch *pebble.Batch, session SessionSna
 			}
 		}
 	}
-	if err := setTaskRelatedInBatch(batch, KeySession(session.ID), session); err != nil { return err }
+	if err := setTaskRelatedInBatch(batch, KeySession(session.ID), session); err != nil {
+		return err
+	}
 	if err := batch.Set([]byte(KeySession(session.ID)), payload, nil); err != nil {
 		return err
 	}
