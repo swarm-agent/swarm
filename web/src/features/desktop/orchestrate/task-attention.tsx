@@ -11,8 +11,8 @@ import { dispatchDesktopV3Cache, getDesktopV3CacheSnapshot, subscribeDesktopV3Ca
 import { buildDesktopV3ChildCardHydrateInput, postDesktopV3SyncHydrate } from '../state/desktop-v3-sync-api'
 import { hydrateResponseToAction } from '../state/desktop-v3-cache-wire'
 import { hydrateDesktopV3ChildCard } from '../state/desktop-v3-session-hydrator'
-import { taskAttentionContext, taskAttentionLabel, taskAttentionPermissions, taskAttentionSessionIds, submitTaskAttentionDecision, type TaskAttentionDecision } from '../state/task-attention'
-import { DesktopPermissionModal } from '../permissions/components/desktop-permission-modal'
+import { taskAttentionPermissions, taskAttentionSessionIds, submitTaskAttentionDecision, type TaskAttentionDecision } from '../state/task-attention'
+import { DesktopInlinePermission } from '../permissions/components/desktop-permission-modal'
 import { DesktopInlinePlanReviewCard } from '../chat/components/desktop-inline-plan-review-card'
 import { isPlanProposalPermission } from '../permissions/services/permission-payload'
 import { DesktopInlineBashPermissionCard } from '../chat/components/desktop-inline-bash-permission-card'
@@ -91,7 +91,6 @@ function useSessionAttention(ids: string[], ownerKeyPrefix: string) {
 }
 
 export function TaskAttention({ attention }: { attention: Omit<ReturnType<typeof useTaskAttention>, 'blocker'> & { blocker?: ReturnType<typeof useTaskAttention>['blocker'] } }) {
-  const [reviewed, setReviewed] = useState<DesktopPermissionRecord | null>(null)
   const [failure, setFailure] = useState('')
   const [input, setInput] = useState('')
   const [supplying, setSupplying] = useState(false)
@@ -114,29 +113,19 @@ export function TaskAttention({ attention }: { attention: Omit<ReturnType<typeof
       else { setInput(''); setSupplying(false) }
     } finally { setResuming(false) }
   }
-  const key = (permission: DesktopPermissionRecord) => JSON.stringify([permission.sessionId, permission.id])
-  const selectedKey = reviewed ? key(reviewed) : ''
-  // Do not silently replace the source the user opened with changed arguments.
-  const selected = attention.permissions.find(permission => key(permission) === selectedKey
-    && permission.runId === reviewed?.runId && permission.callId === reviewed?.callId
-    && permission.updatedAt === reviewed?.updatedAt && permission.toolArguments === reviewed?.toolArguments) || null
+  // Reset local form state if the canonical request is replaced, even under the
+  // same permission ID. Submission still checks this exact revision in the cache.
+  const key = (permission: DesktopPermissionRecord) => JSON.stringify([
+    permission.sessionId, permission.id, permission.runId, permission.callId,
+    permission.updatedAt, permission.toolName, permission.requirement, permission.toolArguments,
+  ])
   async function resolveRequest(permission: DesktopPermissionRecord, action: TaskAttentionDecision, reason: string, args?: Record<string, unknown>) {
     setFailure('')
-    try {
-      await submitTaskAttentionDecision(permission, action, reason, args, {
-        getState: getDesktopV3CacheSnapshot,
-        resolve: (sessionId, id, action, reason, args) => resolveSessionPermission(sessionId, id, action, reason, args, { sessionApi: 'v3' }),
-        commit: resolved => dispatchDesktopV3Cache({ type: 'permission.resolveResult', sessionId: permission.sessionId, permissionId: permission.id, permission: resolved }),
-      })
-      setReviewed(current => current && key(current) === key(permission) ? null : current)
-    } catch (error) {
-      setFailure(error instanceof Error ? error.message : 'Decision failed. Please retry.')
-      throw error
-    }
-  }
-  async function resolve(action: TaskAttentionDecision, reason: string, args?: Record<string, unknown>) {
-    if (!selected) throw new Error('This request is no longer pending')
-    await resolveRequest(selected, action, reason, args)
+    await submitTaskAttentionDecision(permission, action, reason, args, {
+      getState: getDesktopV3CacheSnapshot,
+      resolve: (sessionId, id, action, reason, args) => resolveSessionPermission(sessionId, id, action, reason, args, { sessionApi: 'v3' }),
+      commit: resolved => dispatchDesktopV3Cache({ type: 'permission.resolveResult', sessionId: permission.sessionId, permissionId: permission.id, permission: resolved }),
+    })
   }
   const planPermissions = attention.permissions.filter(isPlanProposalPermission)
   if (!attention.blocker && !attention.unresolvedCount && !attention.permissions.length && !attention.error) return null
@@ -161,21 +150,21 @@ export function TaskAttention({ attention }: { attention: Omit<ReturnType<typeof
           onResolve={async (...args) => {
             // Inline reviews have no modal error boundary; failure remains visible
             // above and the canonical pending record stays available for retry.
-            try { await resolveRequest(...args) } catch { /* failure is rendered below */ }
+            try { await resolveRequest(...args) } catch (error) {
+              setFailure(error instanceof Error ? error.message : 'Decision failed. Please retry.')
+            }
           }}
-        /> : <>
-        <p className="font-semibold">{taskAttentionLabel(permission)}</p>
-        <p className="line-clamp-2 break-words text-xs" title={taskAttentionContext(permission)}>{taskAttentionContext(permission)}</p>
-        <button type="button" className="mt-1 rounded border border-amber-300/50 px-3 py-1 font-semibold hover:bg-amber-500/20" onClick={() => { setFailure(''); setReviewed(permission) }}>{taskAttentionLabel(permission) === 'Needs your input' ? 'Answer' : 'Review permission'}</button>
-        </>}
+        /> : permission.toolName === 'bash' ? <DesktopInlineBashPermissionCard
+          permission={permission} pendingCount={attention.unresolvedCount} sessionMode={permission.mode}
+          onResolve={resolveRequest} onOpenPermissions={() => window.location.assign('/settings?tab=permissions')}
+        /> : <DesktopInlinePermission
+          permission={permission} pendingCount={attention.unresolvedCount} sessionMode={permission.mode || 'auto'}
+          onResolve={(...args) => resolveRequest(permission, ...args)}
+        />}
       </li>)}
     </ul>
     {attention.unresolvedCount > attention.permissions.length && <p>Loading pending requests…</p>}
     {attention.error && <p role="alert">{attention.error} <button type="button" onClick={attention.retry}>Retry loading requests</button></p>}
     {failure && <p role="alert">{failure}</p>}
-    {selected?.toolName === 'bash' ? <div className="mt-3">
-      <button type="button" onClick={() => setReviewed(null)}>Close review</button>
-      <DesktopInlineBashPermissionCard key={selectedKey} permission={selected} pendingCount={attention.unresolvedCount} sessionMode={selected.mode} onResolve={(_permission, action, reason) => resolve(action, reason)} onOpenPermissions={() => window.location.assign('/settings?tab=permissions')} />
-    </div> : <DesktopPermissionModal key={selectedKey} dismissWithoutDecision open={Boolean(selected)} permission={selected} pendingCount={attention.unresolvedCount} sessionMode={selected?.mode || 'auto'} onOpenChange={open => { if (!open) setReviewed(null) }} onResolve={resolve} />}
   </section>
 }

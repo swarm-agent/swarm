@@ -31,7 +31,9 @@ test('reconnect reloads same-summary parent permission details', { timeout: 3000
     const before = await page.evaluate(() => (window as any).reads)
     await page.evaluate(() => (window as any).reconnect())
     await page.waitForFunction(count => (window as any).reads > count, before)
-    await page.getByRole('button', { name: 'Answer', exact: true }).waitFor()
+    await page.getByRole('button', { name: 'Submit response', exact: true }).waitFor()
+    for (const name of ['A', 'B', 'Custom response']) assert.equal(await page.getByRole('button', { name, exact: true }).count(), 1)
+    assert.equal(await page.getByRole('dialog').count(), 0)
     assert.match(await page.locator('#root').innerText(), /Choose direction/)
   } finally { await browser.close() }
 })

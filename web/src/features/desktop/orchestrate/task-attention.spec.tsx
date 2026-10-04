@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { TaskAttention } from './task-attention'
-import { DesktopPermissionModal } from '../permissions/components/desktop-permission-modal'
+import { DesktopInlinePermission } from '../permissions/components/desktop-permission-modal'
 import type { DesktopPermissionRecord } from '../types/realtime'
 
 // Purpose: the persistent TaskAttention panel must enumerate questions and
@@ -14,12 +14,9 @@ test('attention panel shows every question and command with explicit actions, wi
   const html = renderToStaticMarkup(<TaskAttention attention={{ permissions: [base, { ...base, id: 'command', toolName: 'bash', toolArguments: '{"command":"git status"}' }], unresolvedCount: 2, error: '', retry: () => {} }} />)
   assert.match(html, /Waiting for you/)
   assert.match(html, /2 pending/)
-  assert.match(html, /Needs your input/)
-  assert.match(html, /Approval required/)
   assert.match(html, /Which direction/)
   assert.match(html, /git status/)
-  assert.match(html, />Answer</)
-  assert.match(html, />Review permission</)
+  for (const text of ['One', 'Two', 'Custom response', 'Submit response', 'Approve', 'Deny']) assert.ok(html.includes(text), text)
   assert.doesNotMatch(html, /role="dialog"/)
 })
 
@@ -30,7 +27,7 @@ test('canonical ask-user review preserves multiple questions and custom response
     { id: 'first', question: 'First question?', options: [{ label: 'Alpha', value: 'alpha' }, { label: 'Beta', value: 'beta' }] },
     { id: 'second', question: 'Second question?', options: [{ label: 'Gamma', value: 'gamma' }, { label: 'Delta', value: 'delta' }] },
   ] }) } as DesktopPermissionRecord
-  const html = renderToStaticMarkup(<DesktopPermissionModal dismissWithoutDecision open permission={permission} pendingCount={1} sessionMode="auto" onOpenChange={() => {}} onResolve={async () => { throw new Error('Rendering is not consent') }} />)
+  const html = renderToStaticMarkup(<DesktopInlinePermission permission={permission} pendingCount={1} sessionMode="auto" onResolve={async () => { throw new Error('Rendering is not consent') }} />)
   for (const text of ['First question?', 'Second question?', 'Alpha', 'Beta', 'Gamma', 'Delta', 'Custom response']) assert.ok(html.includes(text), text)
 })
 
@@ -61,5 +58,17 @@ test('partial plan proposals remain actionable and non-plan operations stay gene
   assert.match(html, /Review this plan proposal/)
   assert.match(html, />Reject</)
   assert.match(html, />Accept once</)
-  assert.equal((html.match(/>Review permission</g) || []).length, 1)
+  assert.equal((html.match(/data-testid="desktop-inline-permission"/g) || []).length, 1)
+  assert.match(html, />Approve</)
+  assert.doesNotMatch(html, /role="dialog"/)
+})
+
+// Purpose: hydration failure must not hide already-known actionable requests.
+// TaskAttention owns the loading/retry presentation; SSR is sufficient to prove
+// coexistence, while the browser tests exercise recovery and submission.
+test('loading failure retains question controls and a visible retry action', () => {
+  const permission = { id: 'ask', sessionId: 'child', toolName: 'ask_user', mode: 'auto', toolArguments: JSON.stringify({ questions: [{ id: 'q', question: 'Continue?', options: ['Yes', 'No'] }] }) } as DesktopPermissionRecord
+  const html = renderToStaticMarkup(<TaskAttention attention={{ permissions: [permission], unresolvedCount: 2, error: 'Hydration unavailable', retry: () => {} }} />)
+  for (const text of ['Continue?', 'Yes', 'No', 'Custom response', 'Submit response', 'Loading pending requests', 'Hydration unavailable', 'Retry loading requests']) assert.ok(html.includes(text), text)
+  assert.doesNotMatch(html, /role="dialog"/)
 })
