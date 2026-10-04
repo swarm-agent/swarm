@@ -135,6 +135,9 @@ import {
   updateSessionV3ModelProfile,
   stopSessionV3Run,
 } from "../../session-v3/api";
+import { SessionMediaCapabilityReader } from '../services/session-media-capability';
+import { getDesktopSessionIdentitySnapshot, subscribeDesktopSessionReset } from '../../../../app/api';
+import type { DesktopV3MediaCapability } from '../../state/desktop-v3-cache-types';
 import { getDesktopV3MediaCapability, uploadDesktopV3MediaAsset } from "../../session-v3/write-api";
 import { admitComposerFile } from "../services/composer-attachments";
 import type { DesktopVideoSourceAttachment } from "../services/video-source-attachments";
@@ -2065,13 +2068,24 @@ export function DesktopV3ExistingConversationPane({
     displayedPreference.provider,
     authCredentialsQuery.data,
   );
-  const mediaCapabilityQuery = useQuery({
-    queryKey: ['desktop-v3-media-capability', normalizedSessionId, selectedAgent, displayedPreference.provider, displayedPreference.model, authCredentialsQuery.dataUpdatedAt],
-    queryFn: () => getDesktopV3MediaCapability(normalizedSessionId),
-    enabled: Boolean(normalizedSessionId),
-    staleTime: 0,
-  });
-  const mediaCapability = mediaCapabilityQuery.data ?? sessionMediaCapability;
+  const mediaReader = useRef(new SessionMediaCapabilityReader());
+  const [mediaState, setMediaState] = useState<{ scope: string; authority?: string; value: DesktopV3MediaCapability | null; error?: string }>({ scope: '', value: null });
+  const mediaAccount = getDesktopSessionIdentitySnapshot()?.accountScopeId;
+  const mediaScope = mediaAccount && normalizedSessionId ? JSON.stringify([mediaAccount, normalizedSessionId]) : '';
+  const mediaAuthority = JSON.stringify([selectedAgent, displayedPreference.provider, displayedPreference.model, mode, rawCachedPreference, cachedAgentModelPolicy, authCredentialsQuery.data]);
+  const mediaConnected = useDesktopV3CacheSelector(state => state.realtime.status === 'open');
+  useEffect(() => subscribeDesktopSessionReset(() => {
+    mediaReader.current.reset();
+    setMediaState({ scope: '', value: null });
+  }), []);
+  useEffect(() => {
+    void mediaReader.current.update({ scope: mediaScope, authority: mediaAuthority, hydrated: sessionMediaCapability,
+      ready: !composerOverride && authCredentialsQuery.isFetched && (initialHydrateStatus === 'ready' || initialHydrateStatus === 'cached'), connected: mediaConnected },
+      () => getDesktopV3MediaCapability(normalizedSessionId),
+      (value, error) => setMediaState({ scope: mediaScope, authority: mediaAuthority, value, error }));
+  }, [mediaScope, mediaAuthority, sessionMediaCapability, initialHydrateStatus, mediaConnected, normalizedSessionId, authCredentialsQuery.isFetched, composerOverride]);
+  useEffect(() => () => mediaReader.current.reset(), []);
+  const mediaCapability = mediaState.scope === mediaScope && mediaState.authority === mediaAuthority ? mediaState.value : null;
   const cachedUsage = useMemo(
     () => normalizeUsageSummary(rawCachedUsage),
     [rawCachedUsage],
@@ -3466,6 +3480,7 @@ export function DesktopV3ExistingConversationPane({
                 {showConversationLoading && !startPresentation ? (
                   <DesktopV3ConversationLoadingSpinner />
                 ) : null}
+                {mediaState.scope === mediaScope && mediaState.error && <p role="alert">Media unavailable: {mediaState.error}</p>}
                 {initialHydrateStatus === "error" &&
                 !messagesLoaded &&
                 !hasMessages ? (

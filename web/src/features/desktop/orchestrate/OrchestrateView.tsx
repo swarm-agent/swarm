@@ -3095,7 +3095,7 @@ export function OrchestrateView({
 
   const projectRouteParams = useRouterState({ select: state => state.matches[state.matches.length - 1]?.params as { projectId?: string; sessionId?: string; swarmSection?: string } }) ?? {}
   const routeConversationId = projectRouteParams.sessionId || ''
-  const [conversationAdmission, setConversationAdmission] = useState<{ projectId: string; sessionId: string } | null>(null)
+  const [conversationAdmission, setConversationAdmission] = useState<{ projectId: string; sessionId: string; accountScopeId?: string } | null>(null)
   const createProjectIntent = useRouterState({ select: state => (state.location.search as { createProject?: boolean }).createProject === true })
   // Projects State
   const [projects, setProjects] = useState<ProjectSummary[]>([])
@@ -3108,7 +3108,7 @@ export function OrchestrateView({
   const selectedProjectId = resolvedProject?.id || ''
   const selectedProjectSegment = resolvedProject ? projectRouteSegment(resolvedProject, projects) : ''
   const projectRouteError = projectsLoaded && routeProjectSegment && !resolvedProject ? 'Project not found or name is ambiguous. Choose a project.' : ''
-  const admittedParentId = admittedConversationId(conversationAdmission, selectedProjectId, routeConversationId)
+  const admittedParentId = admittedConversationId(conversationAdmission, selectedProjectId, routeConversationId, getDesktopSessionIdentitySnapshot()?.accountScopeId)
   const conversationRouteScope = `${selectedProjectId}:${routeConversationId}`
   const appliedConversationRouteScope = useRef(conversationRouteScope)
   const currentConversationRouteScope = useRef(conversationRouteScope)
@@ -4122,18 +4122,18 @@ export function OrchestrateView({
     if (selectedProject) {
       try { localStorage.setItem(`swarm:last-project:${accountScopeId || ''}`, selectedProject.id) } catch { /* Optional navigation preference; route remains authoritative. */ }
     }
-    if (selectedProject && routeConversationId) {
+    if (accountScopeId && selectedProject && routeConversationId) {
       const cached = cachedProjectConversation(getDesktopV3CacheSnapshot(), selectedProject.id, routeConversationId)
       if (cached) {
-        setConversationAdmission({ projectId: selectedProject.id, sessionId: cached.id })
+        setConversationAdmission({ projectId: selectedProject.id, sessionId: cached.id, accountScopeId })
         setActiveSessionId(cached.id)
         return () => { active = false }
       }
       void requestStartupJson<{ session: SessionSnapshot }>(`/v3/sessions/${encodeURIComponent(routeConversationId)}`).then(({ session }) => {
         requireProjectConversation(selectedProject.id, session)
         if (session.id !== routeConversationId) throw new Error('Session identity mismatch')
-        if (active) {
-          setConversationAdmission({ projectId: selectedProject.id, sessionId: session.id })
+        if (active && getDesktopSessionIdentitySnapshot()?.accountScopeId === accountScopeId) {
+          setConversationAdmission({ projectId: selectedProject.id, sessionId: session.id, accountScopeId })
           setActiveSessionId(session.id)
         }
       }).catch(cause => { if (active) setConversationError(cause instanceof Error ? cause.message : 'Unable to open conversation') })

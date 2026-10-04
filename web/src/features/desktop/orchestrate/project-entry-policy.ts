@@ -23,8 +23,9 @@ export function projectConversationBatches(ids: string[]): string[][] {
   return Array.from({ length: Math.ceil(unique.length / 8) }, (_, index) => unique.slice(index * 8, index * 8 + 8))
 }
 
-export function admittedConversationId(admission: { projectId: string; sessionId: string } | null, projectId: string, sessionId: string): string {
-  return admission?.projectId === projectId && admission.sessionId === sessionId ? sessionId : ''
+export function admittedConversationId(admission: { projectId: string; sessionId: string; accountScopeId?: string } | null, projectId: string, sessionId: string, accountScopeId?: string): string {
+  return admission?.projectId === projectId && admission.sessionId === sessionId
+    && admission.accountScopeId === accountScopeId ? sessionId : ''
 }
 
 export function legacyHistorySessions(sessions: SessionSnapshot[]): SessionSnapshot[] {

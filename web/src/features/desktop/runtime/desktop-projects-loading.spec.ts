@@ -118,9 +118,9 @@ test('archive event and HTTP response commute without retrieval amplification', 
   }
 })
 
-// Purpose: collection acquisition and projectStartupState own initial reveal, not
-// row count or enrichment. This reducer/runtime test proves zero per-task Git
-// requests, retry recovery, and monotonic readiness without browser timing.
+// Purpose: projectStartupState must reveal admitted chat independently of task
+// acquisition. DesktopProjectsRuntime retains inline failure/retry and zero
+// per-task Git reads. Deferred collection reads prove this without browser timing.
 test('empty and large collections settle retry and retain readiness through failed background refresh', async () => {
   for (const count of [0, 1, 250]) {
     let state: DesktopProjectsState = {}
@@ -135,12 +135,13 @@ test('empty and large collections settle retry and retain readiness through fail
     })
     const phase = () => projectStartupState({ catalogLoaded: true, catalogError: '', routeError: '', projectId: 'p', tasksObserved: state.p?.lastObservedAt !== undefined, tasksError: state.p?.error })
     const lease = runtime.acquire('p')
-    assert.equal(phase().phase, 'loading')
+    assert.equal(phase().phase, 'ready', 'pending tasks cannot block chat')
     responses[0].reject(new Error('essential unavailable'))
     await lease.ready
-    assert.deepEqual(phase(), { phase: 'error', message: 'essential unavailable', retry: 'tasks' })
+    assert.equal(phase().phase, 'ready', 'failed tasks cannot block chat')
+    assert.equal(state.p.error, 'essential unavailable', 'task failure remains visible inline')
     const retry = runtime.refresh('p', false)
-    assert.equal(phase().phase, 'loading')
+    assert.equal(phase().phase, 'ready', 'pending tasks cannot block chat')
     responses[1].resolve({ tasks: Array.from({ length: count }, (_, n) => ({ id: `t-${n}`, status: 'completed', revision: 1, session_id: `s-${n}` })) })
     await retry
     assert.equal(phase().phase, 'ready')

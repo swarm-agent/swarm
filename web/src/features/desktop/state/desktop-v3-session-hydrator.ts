@@ -52,6 +52,9 @@ export function retainCurrentChildHydration(response: SyncSnapshotResponse, requ
   return result
 }
 subscribeDesktopSessionReset(() => {
+  for (const request of inFlight.values()) request.abort.abort()
+  inFlight.clear()
+  selectedAbort = null
   childAbort.abort()
   childAbort = new AbortController()
   childCardInFlight.clear()
@@ -98,6 +101,10 @@ export function selectAndHydrateDesktopV3Session(rawSessionId: string): Promise<
   const sessionId = rawSessionId.trim()
   if (!sessionId) return Promise.resolve()
 
+  // Cancel the previous selection even when the destination is already cached.
+  for (const [id, request] of inFlight) {
+    if (id !== sessionId) request.abort.abort()
+  }
   dispatchDesktopV3Cache(selectSession(sessionId))
 
   const state = getDesktopV3CacheSnapshot()

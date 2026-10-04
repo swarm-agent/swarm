@@ -17,7 +17,6 @@ export function projectStartupState(input: {
   if (input.catalogError) return { phase: 'error', message: input.catalogError, retry: 'catalog' }
   if (!input.catalogLoaded) return { phase: 'loading' }
   if (input.routeError) return { phase: 'error', message: input.routeError, retry: 'route' }
-  if (!input.projectId || input.tasksObserved) return { phase: 'ready' }
-  if (input.tasksError) return { phase: 'error', message: input.tasksError, retry: 'tasks' }
-  return { phase: 'loading' }
+  // Task reads own their inline loading/error surface, never chat admission.
+  return { phase: 'ready' }
 }
