@@ -1058,6 +1058,7 @@ func (r *Runtime) Definitions() []Definition {
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
+					"workspace_path": map[string]any{"type": "string", "description": "Optional explicit account-authorized repository root, including project chats without an ambient checkout. Does not bypass command permissions."},
 					"command": map[string]any{"type": "string", "description": "Shell command to execute"},
 					"explanation": map[string]any{
 						"type":        "array",
@@ -1129,6 +1130,11 @@ func (r *Runtime) Definitions() []Definition {
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
+					"workspace_path": map[string]any{"type": "string", "description": "Explicit account-authorized repository root for attribution-independent recovery. Requires files, expected_branch, expected_head and request_id; preserves the original index."},
+					"files": map[string]any{"type": "array", "maxItems": 100, "items": map[string]any{"type": "string"}},
+					"expected_branch": map[string]any{"type": "string"},
+					"expected_head": map[string]any{"type": "string"},
+					"request_id": map[string]any{"type": "string", "description": "Stable exact-request retry identity"},
 					"message": map[string]any{"type": "string", "description": "Commit message"},
 					"all":     map[string]any{"type": "boolean", "description": "Stage tracked modifications before committing"},
 				},
@@ -1493,6 +1499,8 @@ func (r *Runtime) Definitions() []Definition {
 				"type": "object",
 				"properties": map[string]any{
 					"action":                map[string]any{"type": "string", "description": "Action: inspect|list|recall|inspect_source|retain_source|integrate|promote|help"},
+					"recovery": map[string]any{"type": "boolean", "description": "integrate: attribution-independent fast-forward of exact reviewed commits between account-authorized worktrees. Requires workspace_path, source_branch/head, target_workspace_path, target_branch/head and commits."},
+					"commits": map[string]any{"type": "array", "maxItems": 100, "items": map[string]any{"type": "string"}},
 					"session_ids":           map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Selected Coder child session IDs"},
 					"child_session_id":      map[string]any{"type": "string"},
 					"paths":                 map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
@@ -2042,6 +2050,13 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 	case "write":
 		return executeWrite(scope, args)
 	case "bash":
+		if path := stringValue(args["workspace_path"]); path != "" {
+			repo, err := r.recoveryRepository(scope, path)
+			if err != nil {
+				return "", err
+			}
+			scope.PrimaryPath = repo
+		}
 		return executeBash(ctx, scope, args, func(chunk string) {
 			if onProgress == nil {
 				return
@@ -2064,6 +2079,18 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 	case "git_add":
 		return executeGitAdd(ctx, scope, args)
 	case "git_commit":
+		if stringValue(args["workspace_path"]) != "" {
+			repo, err := r.recoveryRepository(scope, stringValue(args["workspace_path"]))
+			if err != nil {
+				return "", err
+			}
+			return recoveryCommit(ctx, repo, args, scope.Principal.AccountScopeID+"/"+scope.Principal.UserID)
+		}
+		for _, key := range []string{"files", "request_id", "expected_head", "expected_branch"} {
+			if _, present := args[key]; present {
+				return "", errors.New("recovery commit arguments require explicit workspace_path")
+			}
+		}
 		return executeGitCommit(ctx, scope, args)
 	case "git_commit_initial":
 		return executeGitCommitInitial(ctx, scope, args)
@@ -6535,6 +6562,9 @@ func (r *Runtime) executeManageWorktree(scope WorkspaceScope, args map[string]an
 	case "recall":
 		return r.manageWorktreeRecall(scope, args)
 	case "integrate":
+		if boolValue(args["recovery"]) {
+			return r.recoveryIntegrate(scope, args)
+		}
 		return r.manageWorktreeIntegrate(scope, args)
 	case "promote":
 		return r.manageWorktreePromote(scope, args)
