@@ -1,4 +1,7 @@
+import type { ProjectTaskBoardSummary } from '../orchestrate/orchestrate-types'
+
 export interface TaskSessionCandidate {
+  boardSummary?: ProjectTaskBoardSummary
   id?: string
   sessionId?: string
   status?: string
@@ -55,7 +58,7 @@ export function extractTaskSessionIds(task?: TaskSessionCandidate | null): strin
     set.add(bindingSid.trim())
   }
 
-  const programSources = [
+  const programSources = task.boardSummary ? [task.boardSummary.program?.jobs] : [
     task.taskProgramStatus?.jobs,
     task.task_program_status?.jobs,
     task.taskProgram?.jobs,
@@ -67,7 +70,7 @@ export function extractTaskSessionIds(task?: TaskSessionCandidate | null): strin
         // Current attempt supersedes historical sessions so old failures cannot poison state/counts.
         const currentSid =
           (j?.current_session_id && typeof j.current_session_id === 'string' && j.current_session_id.trim()) ||
-          (j?.child_session_id && typeof j.child_session_id === 'string' && j.child_session_id.trim())
+          (j && 'child_session_id' in j && j.child_session_id && typeof j.child_session_id === 'string' && j.child_session_id.trim())
         if (currentSid) {
           set.add(currentSid)
         }
@@ -86,7 +89,21 @@ export function extractTaskSessionIds(task?: TaskSessionCandidate | null): strin
     }
   }
 
+  for (const id of taskExcludedSessionIds(task)) set.delete(id)
   return Array.from(set).sort()
+}
+
+export function taskExcludedSessionIds(task: TaskSessionCandidate): Set<string> {
+  if (task.boardSummary) return new Set(task.boardSummary.program?.jobs.flatMap(job => job.excluded_session_ids || []) || [])
+  const excluded = new Set<string>()
+  for (const source of [task.taskProgramStatus, task.task_program_status, task.taskProgram, task.task_program]) {
+    for (const job of source?.jobs || []) {
+      for (const generation of job.generation_history || []) {
+        if (generation.session_id && generation.session_id !== (job.current_session_id || job.child_session_id)) excluded.add(generation.session_id)
+      }
+    }
+  }
+  return excluded
 }
 
 export interface SessionDemandLease {

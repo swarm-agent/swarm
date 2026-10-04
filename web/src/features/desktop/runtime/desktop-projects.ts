@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
 import { requestStartupJson } from '../../../app/api'
+import { fetchProjectTaskCollection } from './project-task-collection'
 import type { RunningTask, ProjectTaskMediaRef } from '../orchestrate/orchestrate-types'
 import {
   mapBackendTask,
@@ -142,10 +143,7 @@ export class DesktopProjectsRuntime {
 
   constructor(deps?: Partial<DesktopProjectsRuntimeDeps>) {
     this.deps = {
-      fetchTasks:
-        deps?.fetchTasks ??
-        ((projectId: string, signal?: AbortSignal) =>
-          requestStartupJson<{ tasks?: any[] }>(`/v3/projects/${encodeURIComponent(projectId)}/tasks`, { signal })),
+      fetchTasks: deps?.fetchTasks ?? fetchProjectTaskCollection,
       fetchTask: deps?.fetchTask ?? ((projectId, taskId) =>
         requestStartupJson<{ task?: any }>(`/v3/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(taskId)}`)),
       fetchMedia:
@@ -298,7 +296,7 @@ export class DesktopProjectsRuntime {
 
   inspectTask(projectId: string, taskId: string): void {
     const task = this.deps.getState()[projectId]?.tasks.find(item => item.id === taskId)
-    if (task) this.queueTask(projectId, task, false, true)
+    if (task) this.queueTask(projectId, task, true, true)
   }
 
   invalidate(projectId?: string): void {

@@ -771,7 +771,7 @@ export function MinimalTaskCard({
   const detailsId = useId()
   useEffect(() => {
     if (expanded && projectId) desktopProjects.inspectTask(projectId, task.id)
-  }, [expanded, projectId, task.id])
+  }, [expanded, projectId, task.id, task.revision])
   const handleToggleExpand = () => {
     if (expanded) {
       requestAnimationFrame(() => {
@@ -893,11 +893,14 @@ export function MinimalTaskCard({
   const hasTaskProgramSpec = Boolean(taskProgramDef && ((taskProgramDef.stages && taskProgramDef.stages.length > 0) || (taskProgramDef.jobs && taskProgramDef.jobs.length > 0)))
   const hasStructuredPlan = planCheckpointsToRender.length > 0 || hasTaskProgramSpec
   const isPlanRejected = Boolean(
+    task.boardSummary?.plan?.approval_state === 'rejected' ||
+    task.boardSummary?.plan?.status === 'rejected' ||
     planDoc?.status === 'rejected' ||
     planDoc?.approval_state === 'rejected' ||
     planDoc?.approvalState === 'rejected'
   )
   const isPlanTaskWithoutStructuredPlan = Boolean(
+    task.boardSummary?.plan_binding_stale ||
     (task.agentType === 'plan' || task.outcomeType === 'plan_spec' || Boolean(task.planBinding || (task as any).plan_binding || rawPlanDoc)) && !isTaskPlanReviewable(planDoc)
   )
   const bindingRevision =
@@ -1644,12 +1647,13 @@ export function MinimalTaskCard({
 
           </>}
           {/* Technical execution details remain available on demand. */}
-          {(!isPlanCard || expanded) && (hasStructuredPlan || task.fullPlanMarkdown) && (
+          {(!isPlanCard || expanded) && (hasStructuredPlan || task.fullPlanMarkdown || task.boardSummary?.plan || task.boardSummary?.program) && (
             <div className="min-w-0 max-w-full whitespace-normal [overflow-wrap:anywhere] border border-slate-800/80 rounded bg-[#070b14]/90" data-testid="task-plan-spec">
               <button
                 type="button"
                 onClick={(e) => {
                   e.stopPropagation()
+                  if (!isFullPlanOpen && projectId && !task.detailLoaded) desktopProjects.inspectTask(projectId, task.id)
                   setIsFullPlanOpen(!isFullPlanOpen)
                 }}
                 className="w-full flex items-center justify-between px-2.5 py-1.5 text-[10px] font-mono text-slate-400 hover:text-slate-200 transition-colors"
@@ -4978,6 +4982,11 @@ export function OrchestrateView({
       return
     }
 
+    if (targetTask.boardSummary?.plan_binding_stale || (targetTask.boardSummary?.plan && !isTaskPlanReviewable(planDoc))) {
+      desktopProjects.inspectTask(selectedProject.id, taskId)
+      setTaskActionErrors(prev => ({ ...prev, [taskId]: 'Open and review the full current plan before approving. Retry after detail loads.' }))
+      return
+    }
     const acceptanceBody = buildTaskAcceptancePayload(targetTask)
     const isPlanTask = Boolean(
       targetTask.agentType === 'plan' ||

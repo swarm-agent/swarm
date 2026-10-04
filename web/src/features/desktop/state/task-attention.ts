@@ -1,5 +1,5 @@
 import type { TaskSessionCandidate } from '../runtime/desktop-projects-membership'
-import { extractTaskSessionIds } from '../runtime/desktop-projects-membership'
+import { extractTaskSessionIds, taskExcludedSessionIds } from '../runtime/desktop-projects-membership'
 import { parseAskUserPermission, permissionKind } from '../permissions/services/permission-payload'
 import type { DesktopPermissionRecord } from '../types/realtime'
 import type { DesktopSessionPlanRecord } from '../chat/types/chat'
@@ -19,16 +19,7 @@ export function taskAttentionSessionIds(state: DesktopV3CacheState, task: TaskSe
       && (!task.id || !record.session.metadata?.task_id || record.session.metadata.task_id === task.id)
       && (!task.id || !record.session.metadata?.project_task_id || record.session.metadata.project_task_id === task.id)
   }
-  const excluded = new Set<string>()
-  // Superseded program generations and their descendants cannot poison a new attempt.
-  for (const source of [task.taskProgramStatus, task.task_program_status, task.taskProgram, task.task_program]) {
-    for (const job of source?.jobs || []) {
-      const current = job.current_session_id || job.child_session_id
-      for (const generation of job.generation_history || []) {
-        if (generation.session_id && generation.session_id !== current) excluded.add(generation.session_id)
-      }
-    }
-  }
+  const excluded = taskExcludedSessionIds(task)
   for (const root of [...roots]) {
     const plan = state.plansBySession[root] as DesktopSessionPlanRecord | undefined
     const current = plan?.document?.executionState?.currentSessionId

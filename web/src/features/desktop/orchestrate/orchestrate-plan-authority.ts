@@ -5,7 +5,16 @@ export function selectTaskPlanDocument(task: any, sessionPlan: any): any {
  const binding=task.planBinding || task.plan_binding
  const id=binding?.planId || binding?.plan_id
  const revision=binding?.definitionRevision ?? binding?.definition_revision
- if(!taskDoc)return sessionPlan?.document
+ if(task.boardSummary?.plan_binding_stale)return undefined
+ if(!taskDoc){
+   if(!task.boardSummary)return sessionPlan?.document
+   const plan=task.boardSummary.plan
+   const sessionId=sessionPlan?.id || sessionPlan?.plan_id
+   const version=sessionPlan?.definition_revision ?? sessionPlan?.version
+   // A compact row is not reviewable prose. Only an exact bound hydration may supply it.
+   if(!plan || sessionId!==id || sessionPlan?.session_id!==plan.session_id || version!==plan.version)return undefined
+   return sessionPlan?.document
+ }
  if(!sessionPlan?.document)return taskDoc
  // Pending review must display exactly the definition sent by the task API.
  // A session execution version is not an acceptance revision.
