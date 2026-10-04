@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"swarm/packages/swarmd/internal/identity"
+	runruntime "swarm/packages/swarmd/internal/run"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
 	"swarm/packages/swarmd/internal/workspace"
@@ -25,6 +26,9 @@ import (
 func TestProjectTaskReportDeploymentAndReopenLineage(t *testing.T) {
 	f := setupMatrixTestFixture(t)
 	defer f.db.Close()
+	runner := runruntime.NewService(f.server.sessions, f.server.model, nil, tool.NewRuntime(1), nil, f.server.agents, nil, nil)
+	runner.SetAgentModelSettingsService(f.server.agentModelSettings)
+	f.server.runner = runner
 	root := t.TempDir()
 	t.Setenv("HOME", root)
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
@@ -85,7 +89,7 @@ func TestProjectTaskReportDeploymentAndReopenLineage(t *testing.T) {
 	parentRun := "origin-run"
 	ctx := tool.WithVideoRunContext(context.Background(), tool.VideoRunContext{SessionID: parent.ID, RunID: parentRun})
 	// Suppress provider execution only; admission, allocation and persistence are real.
-	f.server.v3SessionExecutor = newSessionV3Executor(f.server)
+	f.server.v3SessionExecutor = &sessionV3Executor{server: f.server, ctx: f.server.runCtx, inFlightRuns: make(map[string]bool)}
 	f.server.v3SessionExecutor.inFlightRuns[sessionV3ExecutorRunKey("report-child", "desktop-v3-run:task-report-task")] = true
 	task, err := f.server.CreateProjectTask(ctx, p, project.ID, tool.ProjectTaskCreateInput{ID: "report-task", SessionID: "report-child", Title: "Report lineage", Prompt: "Report lineage", Agent: "coder", FeatureSize: "small", WorkspacePath: repo})
 	if err != nil {
@@ -110,6 +114,7 @@ func TestProjectTaskReportDeploymentAndReopenLineage(t *testing.T) {
 		setRun(child.ID, task.ExecutionRunID(), pebblestore.V3RunIntentRunning)
 		for _, kind := range []pebblestore.ProjectTaskUpdateKind{pebblestore.ProjectTaskUpdateProgress, pebblestore.ProjectTaskUpdateWakeRequest} {
 			in := pebblestore.V3SessionMutationInput{SessionID: child.ID, UserID: p.UserID, AccountScopeID: p.AccountScopeID, Kind: pebblestore.V3SessionMutationReportTask, ClientRequestID: string(kind), TaskReport: &pebblestore.V3ProjectTaskReportMutation{RunID: task.ExecutionRunID(), ProjectID: project.ID, TaskID: task.ID, Kind: kind, Summary: "Update"}}
+			in.PayloadHash = "derived-by-store"
 			result, err := db.ApplyV3SessionMutation(in)
 			if err != nil {
 				t.Fatal(err)
@@ -172,7 +177,7 @@ func TestProjectTaskReportDeploymentAndReopenLineage(t *testing.T) {
 				t.Fatal("absent executor reported launch")
 			}
 			reserved, _, _ := db.GetProjectTask(p.AccountScopeID, project.ID, task.ID)
-			f.server.v3SessionExecutor = newSessionV3Executor(f.server)
+			f.server.v3SessionExecutor = &sessionV3Executor{server: f.server, ctx: f.server.runCtx, inFlightRuns: make(map[string]bool)}
 			f.server.v3SessionExecutor.inFlightRuns[sessionV3ExecutorRunKey(reserved.SessionID, reserved.ExecutionRunID())] = true
 			if _, err := f.server.ReopenProjectTask(ctx, p, project.ID, task.ID, req); err != nil {
 				t.Fatal(err)

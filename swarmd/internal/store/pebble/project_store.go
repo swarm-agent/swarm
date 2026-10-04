@@ -398,7 +398,7 @@ type TaskDeliveryAssessment struct {
 
 // ProjectTaskRecord represents an autonomous task unit in a project.
 type ProjectTaskRecord struct {
-	OriginSessionID      string                       `json:"origin_session_id,omitempty"` // authenticated conversation; never the project primary pointer
+	OriginSessionID     string                       `json:"origin_session_id,omitempty"` // authenticated conversation; never the project primary pointer
 	DeliveryAssessment  *TaskDeliveryAssessment      `json:"delivery_assessment,omitempty"`
 	ID                  string                       `json:"id"`
 	ProjectID           string                       `json:"project_id"`
