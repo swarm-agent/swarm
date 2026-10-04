@@ -77,11 +77,12 @@ export class SwarmProjectsNamespace {
    * Creates a new project in the active account.
    */
   async create(params: CreateProjectParams, options?: RequestOptions): Promise<ProjectRecord> {
+    const clientRequestId = params.client_request_id ?? `sdk-project-${crypto.randomUUID()}`;
     const res = await this.transport.request<{ project?: ProjectRecord } | ProjectRecord>(
       '/v3/projects',
       {
         method: 'POST',
-        body: params,
+        body: { ...params, client_request_id: clientRequestId },
         ...options,
       }
     );
@@ -93,6 +94,18 @@ export class SwarmProjectsNamespace {
       return data as ProjectRecord;
     }
     throw new SwarmApiError('Malformed response: missing project record', { status: res.status, details: data });
+  }
+
+  /** Retry the same project's context generation using its latest attempt receipt. */
+  async retryContext(projectId: string, expectedAttempt: number, options?: RequestOptions): Promise<ProjectRecord> {
+    const res = await this.transport.request<{ project: ProjectRecord }>(
+      `/v3/projects/${encodeURIComponent(projectId.trim())}/context:retry`,
+      { ...options, method: 'POST', body: { expected_attempt: expectedAttempt } },
+    );
+    if (!res.data?.project || res.data.project.id !== projectId.trim()) {
+      throw new SwarmApiError('Malformed response: project retry identity mismatch', { status: res.status, details: res.data });
+    }
+    return res.data.project;
   }
 
   /**
