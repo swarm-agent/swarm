@@ -39,6 +39,7 @@ export interface SyncResources {
   active_plan?: boolean
   plan_revisions?: boolean
   permission_summaries?: boolean
+  permission_details?: boolean
   notifications?: boolean
   notification_summary?: boolean
   tasks?: boolean

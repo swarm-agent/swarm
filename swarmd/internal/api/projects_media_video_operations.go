@@ -209,6 +209,12 @@ func (s *Server) resolveSourceMediaRecord(ctx context.Context, p identity.Princi
 			return nil, fmt.Errorf("deliverable %q is not ready", dID)
 		}
 
+		if digest := u.Query().Get("sha256"); digest != "" {
+			sum := sha256.Sum256([]byte(targetDeliv.MediaURL))
+			if u.Query().Get("field") != "media" || digest != hex.EncodeToString(sum[:]) {
+				return nil, errors.New("deliverable content reference is stale or not source media")
+			}
+		}
 		if strings.Contains(targetDeliv.MediaURL, "/deliverables/") {
 			return nil, errors.New("nested deliverable references are not permitted")
 		}

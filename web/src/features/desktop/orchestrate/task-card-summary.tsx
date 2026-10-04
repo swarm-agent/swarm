@@ -84,7 +84,7 @@ export function TaskCardSummary({ task, onPreview, statusBadge, timer, actions, 
             disabled={!onPreview} onClick={event => { event.stopPropagation(); onPreview?.(preview) }}>
             {preview.type === 'video' && preview.mediaUrl
               ? <video src={preview.mediaUrl} poster={preview.previewUrl} muted playsInline preload="metadata" aria-label={preview.title} />
-              : <img src={preview.previewUrl || preview.mediaUrl} alt={preview.title} />}
+              : <img src={preview.previewUrl || preview.mediaUrl} alt={preview.title} loading="lazy" decoding="async" fetchPriority="low" />}
           </button> : <Icon size={18} className="swarm-task-icon" aria-label={`${task.agentType} task`} />}
           <h3 className="min-w-0 flex-1" title={title}>{title}</h3>
           <div className="shrink-0">{actions}</div>

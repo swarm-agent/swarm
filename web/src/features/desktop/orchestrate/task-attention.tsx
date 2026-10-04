@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState } from 'react'
-import { backgroundRead } from '../../../app/background-read'
 import { requestJson } from '../../../app/api'
 import { desktopProjects } from '../runtime/desktop-projects'
 import { mapBackendTask } from '../state/desktop-projects-state'
@@ -9,8 +8,6 @@ import type { TaskSessionCandidate } from '../runtime/desktop-projects-membershi
 import { TaskSessionLeaseManager } from '../runtime/desktop-projects-membership'
 import { requireDesktopV3RealtimeControllerReady } from '../realtime/v3-realtime-controller'
 import { dispatchDesktopV3Cache, getDesktopV3CacheSnapshot, subscribeDesktopV3Cache, useDesktopV3CacheSelector } from '../state/desktop-v3-cache-store'
-import { buildDesktopV3ChildCardHydrateInput, postDesktopV3SyncHydrate } from '../state/desktop-v3-sync-api'
-import { hydrateResponseToAction } from '../state/desktop-v3-cache-wire'
 import { hydrateDesktopV3ChildCard } from '../state/desktop-v3-session-hydrator'
 import { taskAttentionPermissions, taskAttentionSessionIds, submitTaskAttentionDecision, type TaskAttentionDecision } from '../state/task-attention'
 import { DesktopInlinePermission } from '../permissions/components/desktop-permission-modal'
@@ -68,21 +65,15 @@ function useSessionAttention(ids: string[], ownerKeyPrefix: string) {
     let active = true
     const controller = new AbortController()
     setError('')
-    // Bounded sequential metadata reads; summaries changing trigger detail repair,
-    // not a polling loop or a second permission cache. No transcript is requested.
-    void (async () => {
-      for (const id of ids) {
-        if (!active) return
-        const state = getDesktopV3CacheSnapshot()
-        const summary = state.permissionSummaryBySessionId[id]
-        if (reconnect || retry || summary?.pendingApprovalCount || taskAttentionPermissions(state, [id]).length) {
-          const response = await backgroundRead(() => postDesktopV3SyncHydrate(buildDesktopV3ChildCardHydrateInput([id], { permissionSummary: true, activePlan: true }), controller.signal), controller.signal)
-          if (active) dispatchDesktopV3Cache(hydrateResponseToAction(response, [id]))
-        } else {
-          await hydrateDesktopV3ChildCard(id, { activePlan: true, permissionSummary: true })
-        }
-      }
-    })().catch(error => { if (active) setError(error instanceof Error ? error.message : 'Could not load pending requests') })
+    // Enqueue every independent owner now. The canonical hydrator coalesces card
+    // mounts into bounded batches on a lane that optional enrichment cannot occupy.
+    // Each sibling publishes independently; one failure does not cancel the rest.
+    for (const id of ids) {
+      const state = getDesktopV3CacheSnapshot()
+      const force = Boolean(reconnect || retry || state.permissionSummaryBySessionId[id]?.pendingApprovalCount || taskAttentionPermissions(state, [id]).length)
+      void hydrateDesktopV3ChildCard(id, { activePlan: true, permissionSummary: true, force }, controller.signal)
+        .catch(error => { if (active) setError(error instanceof Error ? error.message : 'Could not load pending requests') })
+    }
     return () => { active = false; controller.abort() }
   }, [ids, summaryKey, retry, reconnect])
   const unresolvedCount = useDesktopV3CacheSelector(state => ids.reduce((count, id) => count + Math.max(

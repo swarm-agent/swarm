@@ -1637,6 +1637,10 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 	}
 
 	projectID := segments[0]
+	if len(segments) == 5 && segments[1] == "tasks" && segments[3] == "deliverables" {
+		s.handleProjectDeliverableContent(w, r, p, projectID, segments[2], segments[4])
+		return
+	}
 	if len(segments) >= 2 && segments[1] == "sessions" {
 		s.handleProjectConversations(w, r, p, projectID, segments[2:])
 		return
@@ -4462,7 +4466,7 @@ func sanitizeProjectTaskForClient(t *pebblestore.ProjectTaskRecord) *pebblestore
 	if len(cp.Deliverables) > 0 {
 		dels := make([]pebblestore.ProjectTaskDeliverable, len(cp.Deliverables))
 		for i, d := range cp.Deliverables {
-			dels[i] = d
+			dels[i] = projectDeliverableForClient(t, d)
 			if dels[i].VideoProvenance != nil {
 				dels[i].VideoProvenance = dels[i].VideoProvenance.ClientSafeCopy()
 				if dels[i].VideoProvenance.Model != "" {

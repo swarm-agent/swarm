@@ -63,7 +63,9 @@ func (s *Server) buildSessionsV3SessionView(principal identity.Principal, sessio
 		if err != nil {
 			return sessionsV3SessionView{}, err
 		}
-		pendingPermissions = permissions
+		if permissions != nil {
+			pendingPermissions = permissions
+		}
 	}
 	var usageSummary *pebblestore.SessionUsageSummary
 	if summary, hasSummary, err := s.sessions.Store().GetUsageSummary(session.ID); err != nil {

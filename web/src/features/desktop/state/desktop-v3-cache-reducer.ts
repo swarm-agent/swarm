@@ -2554,7 +2554,8 @@ function applySessionViewsFromSyncSnapshot(
   const resourceSet = snapshot.sync_scope.resource_set
   const hasSessionView = syncResourceSetContains(resourceSet, 'session_view')
   const hasActivePlan = syncResourceSetContains(resourceSet, 'active_plan')
-  if (!hasSessionView && !hasActivePlan) return
+  const hasPermissionDetails = syncResourceSetContains(resourceSet, 'permission_details')
+  if (!hasSessionView && !hasActivePlan && !hasPermissionDetails) return
   applySessionViews(state, snapshot.session_views_by_id, authoritativeSessionIds, { clearMissing: hasSessionView })
 }
 

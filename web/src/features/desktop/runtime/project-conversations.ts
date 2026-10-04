@@ -5,12 +5,11 @@ import { requestStartupJson } from '../../../app/api'
 import { compareProjectSessionRows, projectSessionRow } from '../state/project-session-rows'
 import type { SessionSnapshot, V3SessionTombstone } from '../state/desktop-v3-cache-types'
 import { useDesktopV3CacheSelector, subscribeDesktopV3Cache } from '../state/desktop-v3-cache-store'
-import { buildDesktopV3ChildCardHydrateInput, postDesktopV3SyncHydrate } from '../state/desktop-v3-sync-api'
+import { hydrateProjectConversationRows } from './project-conversation-hydration'
 import { hydrateResponseToAction } from '../state/desktop-v3-cache-wire'
 import { dispatchDesktopV3Cache } from '../state/desktop-v3-cache-store'
 import { requireProjectConversation, conversationProjectId } from '../orchestrate/project-conversations'
 import { desktopProjects } from './desktop-projects'
-import { projectConversationBatches } from '../orchestrate/project-entry-policy'
 
 // The list endpoint discovers IDs only. Titles, permissions and conversations remain
 // owned by the canonical cache, hydrated through the existing session boundary.
@@ -48,11 +47,9 @@ export function useProjectConversations(projectId: string) {
             return [session.id]
           })
           ids.push(...(archived.tombstones || []).flatMap(item => item.session && conversationProjectId(item.session) === projectId ? [item.session_id] : []))
-          for (const batch of projectConversationBatches(ids)) {
-            if (!active) return
-            const hydrated = await postDesktopV3SyncHydrate(buildDesktopV3ChildCardHydrateInput(batch, { permissionSummary: true, activePlan: false }), controller.signal)
+          await hydrateProjectConversationRows(ids, controller.signal, (hydrated, batch) => {
             if (active) dispatchDesktopV3Cache(hydrateResponseToAction(hydrated, batch))
-          }
+          })
           if (active) { setError(''); setLoadedProject(projectId) }
         } while (dirty && active)
       } catch (cause) { if (active) setError(cause instanceof Error ? cause.message : 'Unable to load conversations') }
