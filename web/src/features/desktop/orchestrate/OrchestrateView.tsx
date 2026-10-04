@@ -6481,7 +6481,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
             <div className="flex-1 overflow-hidden flex flex-col">
               {projectState?.mediaError && <div role="alert">Failed to load project media: {projectState.mediaError} <button type="button" onClick={() => void desktopProjects.refresh(selectedProjectId, false)}>Retry media</button></div>}
               {projectTasksError && (
-                <div className="mx-3.5 mt-2 p-3 bg-red-950/60 border border-red-500/40 rounded-xl text-xs text-red-300 flex items-center justify-between">
+                <div role="alert" className="mx-3.5 mt-2 p-3 bg-red-950/60 border border-red-500/40 rounded-xl text-xs text-red-300 flex items-center justify-between">
                   <span>Failed to load project tasks: {projectTasksError}</span>
                   <button
                     type="button"

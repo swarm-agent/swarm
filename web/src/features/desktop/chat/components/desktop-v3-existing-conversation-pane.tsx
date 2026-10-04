@@ -2072,7 +2072,8 @@ export function DesktopV3ExistingConversationPane({
   const [mediaState, setMediaState] = useState<{ scope: string; authority?: string; value: DesktopV3MediaCapability | null; error?: string }>({ scope: '', value: null });
   const mediaAccount = getDesktopSessionIdentitySnapshot()?.accountScopeId;
   const mediaScope = mediaAccount && normalizedSessionId ? JSON.stringify([mediaAccount, normalizedSessionId]) : '';
-  const mediaAuthority = JSON.stringify([selectedAgent, displayedPreference.provider, displayedPreference.model, mode, rawCachedPreference, cachedAgentModelPolicy, authCredentialsQuery.data]);
+  const mediaAuthority = JSON.stringify([selectedAgent, displayedPreference.provider, displayedPreference.model, mode, rawCachedPreference, cachedAgentModelPolicy]);
+  const mediaCredentials = JSON.stringify(authCredentialsQuery.data);
   const mediaConnected = useDesktopV3CacheSelector(state => state.realtime.status === 'open');
   useEffect(() => subscribeDesktopSessionReset(() => {
     mediaReader.current.reset();
@@ -2080,10 +2081,11 @@ export function DesktopV3ExistingConversationPane({
   }), []);
   useEffect(() => {
     void mediaReader.current.update({ scope: mediaScope, authority: mediaAuthority, hydrated: sessionMediaCapability,
-      ready: !composerOverride && authCredentialsQuery.isFetched && (initialHydrateStatus === 'ready' || initialHydrateStatus === 'cached'), connected: mediaConnected },
+      credentials: mediaCredentials,
+      ready: !composerOverride && (initialHydrateStatus === 'ready' || initialHydrateStatus === 'cached'), connected: mediaConnected },
       () => getDesktopV3MediaCapability(normalizedSessionId),
       (value, error) => setMediaState({ scope: mediaScope, authority: mediaAuthority, value, error }));
-  }, [mediaScope, mediaAuthority, sessionMediaCapability, initialHydrateStatus, mediaConnected, normalizedSessionId, authCredentialsQuery.isFetched, composerOverride]);
+  }, [mediaScope, mediaAuthority, sessionMediaCapability, initialHydrateStatus, mediaConnected, normalizedSessionId, mediaCredentials, composerOverride]);
   useEffect(() => () => mediaReader.current.reset(), []);
   const mediaCapability = mediaState.scope === mediaScope && mediaState.authority === mediaAuthority ? mediaState.value : null;
   const cachedUsage = useMemo(

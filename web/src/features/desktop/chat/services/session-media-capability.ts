@@ -7,6 +7,7 @@ export class SessionMediaCapabilityReader {
   private scope = ''
   private authority = ''
   private hydrated: DesktopV3MediaCapability | null = null
+  private credentials: string | undefined
   private initialized = false
   private disconnected = false
 
@@ -14,17 +15,22 @@ export class SessionMediaCapabilityReader {
 
   async update(input: {
     scope: string; authority: string; hydrated: DesktopV3MediaCapability | null
-    ready: boolean; connected: boolean
+    ready: boolean; connected: boolean; credentials?: string
   }, read: () => Promise<DesktopV3MediaCapability>, publish: (value: DesktopV3MediaCapability | null, error?: string) => void): Promise<void> {
     if (input.scope !== this.scope) {
       this.reset()
       this.scope = input.scope
       this.authority = input.authority
       this.hydrated = null
+      this.credentials = undefined
       this.disconnected = false
     }
     if (!input.scope || !input.ready) return
-    const authorityChanged = this.initialized && input.authority !== this.authority
+    // Initial optional credential discovery is not a change to the capability
+    // already authorized by hydration. Later credential changes must reauthorize.
+    const credentialsChanged = this.credentials !== undefined && input.credentials !== undefined && input.credentials !== this.credentials
+    if (input.credentials !== undefined) this.credentials = input.credentials
+    const authorityChanged = this.initialized && (input.authority !== this.authority || credentialsChanged)
     const reconnected = this.disconnected && input.connected
     this.disconnected = this.initialized && !input.connected
     this.authority = input.authority

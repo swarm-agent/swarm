@@ -52,3 +52,26 @@ test('late capability requests cannot publish across A-B-A or reset', async () =
   await pending
   assert.equal(values.at(-1), null)
 })
+
+// Purpose: the composer must expose canonical hydration while optional credential
+// discovery is pending. Reader-level request/publication assertions prove initial
+// discovery does not duplicate GET, while a later revocation fails closed visibly.
+test('initial credential discovery is optional but later credential changes reauthorize', async () => {
+  const reader = new SessionMediaCapabilityReader()
+  let reads = 0
+  const values: Array<DesktopV3MediaCapability | null> = []
+  const errors: Array<string | undefined> = []
+  const publish = (value: DesktopV3MediaCapability | null, error?: string) => { values.push(value); errors.push(error) }
+  const read = async () => { reads++; throw new Error('credential revoked') }
+  await reader.update(input, read, publish)
+  assert.deepEqual(values, [capability], 'optional query must not gate hydration')
+  await reader.update({ ...input, credentials: 'connected' }, read, publish)
+  assert.equal(reads, 0, 'initial credential query completion is not an invalidation')
+  await reader.update({ ...input, credentials: 'revoked' }, read, publish)
+  assert.equal(reads, 1)
+  assert.equal(values.at(-1), null)
+  assert.equal(errors.at(-1), 'credential revoked')
+  await reader.update({ ...input, credentials: 'revoked' }, read, publish)
+  assert.equal(reads, 1)
+  assert.equal(values.at(-1), null, 'unchanged hydrated data must not revive denied capability')
+})

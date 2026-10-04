@@ -5,11 +5,11 @@ import { join } from 'node:path'
 import { build } from 'esbuild'
 import { chromium, type Route } from 'playwright'
 import { projectTestStyles } from './project-test-styles'
-import { fixtureRead, project } from './swarm-responsive-browser-fixtures'
+import { fixtureRead, project, sessionId } from './swarm-responsive-browser-fixtures'
 
 // Purpose: index.html's real pre-React shell plus OrchestratePage/ProjectEntryPage,
-// canonical API/cache and React routing must reveal one complete task collection
-// without profile/workspace/media dependencies. Real Chromium deferred HTTP routes
+// canonical API/cache and React routing must start selected-session hydration
+// before task completion and reveal the board without optional dependencies. Real Chromium deferred HTTP routes
 // prove DOM transitions, navigation, theme and request counts. This component-entry
 // fixture is NOT a production-chunk, live daemon, provider or latency benchmark.
 test('project hard refresh, warm entry, retry, theme and auth preserve one initial reveal', { timeout: 90_000 }, async t => {
@@ -24,7 +24,8 @@ test('project hard refresh, warm entry, retry, theme and auth preserve one initi
     const root=createRootRoute({component:Outlet});
     const entry=createRoute({getParentRoute:()=>root,path:'/projects',component:ProjectEntryPage});
     const detail=createRoute({getParentRoute:()=>root,path:'/projects/$projectId',component:()=> <OrchestratePage workspaceSlug='fixture'/>});
-    const router=createRouter({routeTree:root.addChildren([entry,detail])});
+    const conversation=createRoute({getParentRoute:()=>root,path:'/projects/$projectId/sessions/$sessionId',component:()=> <OrchestratePage workspaceSlug='fixture'/>});
+    const router=createRouter({routeTree:root.addChildren([entry,detail,conversation])});
     window.fixtureNavigate=(id)=>id ? router.navigate({to:'/projects/$projectId',params:{projectId:id}}) : router.navigate({to:'/projects'});
     window.fixtureExpire=()=>requestStartupJson('/v1/fixture-expired').catch(()=>{});
     const client=new QueryClient({defaultOptions:{queries:{retry:false,staleTime:Infinity}}});
@@ -63,6 +64,7 @@ test('project hard refresh, warm entry, retry, theme and auth preserve one initi
         return route.fulfill({ json: { tasks: rows } })
       }
       if (path === '/v1/fixture-expired') return route.fulfill({ status: 401, json: { error: 'Session expired' } })
+      if (path === `/v3/sessions/${sessionId}`) return route.fulfill({ json: { session: { id: sessionId, metadata: { agent_name: 'system-orchestrator', project_id: project.id } } } })
       if (path === '/v3/sync/hydrate') { hold(path, route); return }
       if (path.endsWith('/sessions')) return route.fulfill({ json: { sessions: [] } })
       if (path === `/v3/projects/${second.id}/tasks`) return route.fulfill({ json: { tasks: [] } })
@@ -89,25 +91,29 @@ test('project hard refresh, warm entry, retry, theme and auth preserve one initi
     })
     const taskPath = `/v3/projects/${project.id}/tasks`
     const arrived = page.waitForRequest(req => new URL(req.url()).pathname === taskPath)
-    await page.goto(`https://startup.test/projects/${project.id}`, { waitUntil: 'domcontentloaded' })
+    const hydration = page.waitForRequest(req => new URL(req.url()).pathname === '/v3/sync/hydrate' && req.postDataJSON()?.session_ids?.includes(sessionId))
+    await page.goto(`https://startup.test/projects/${project.id}/sessions/${sessionId}`, { waitUntil: 'domcontentloaded' })
     await page.addStyleTag({ content: css })
     if (count === 0) {
       await page.getByRole('heading', { name: 'Unable to open project' }).waitFor()
       await page.getByRole('button', { name: 'Try again', exact: true }).click()
     }
     await arrived.catch(error => { throw new Error(`${String(error)}; errors=${JSON.stringify(errors)}; reads=${JSON.stringify(reads)}`) })
-    assert.equal(await page.locator('#swarm-startup').isVisible(), count !== 0)
-    assert.equal(await page.locator('.swarm-startup-mark:visible').count(), 1)
-    assert.equal(await page.locator('#swarm-startup .swarm-startup-mark').evaluate(el => getComputedStyle(el).animationName), 'none')
+    await hydration
+    await page.getByRole('complementary', { name: 'Swarm Orchestrator AI Chat' }).waitFor()
+    await page.locator('main.swarm-main-panel').waitFor()
+    assert.equal(await page.locator('#swarm-startup').isVisible(), false)
+    assert.equal(await page.locator('[data-task-id]').count(), 0, 'chat hydration starts before task response')
     assert.ok(reads.includes('/v1/me'), 'profile read began independently')
     assert.ok(reads.some(path => path.startsWith('/v1/workspace/list')), 'workspace read began independently')
     const response = pending.get(taskPath)!.shift()!
     holdTasks = false
     if (failTasks) {
       await response.fulfill({ status: 503, json: { error: 'Essential fixture unavailable' } })
-      await page.getByRole('heading', { name: 'Unable to open project' }).waitFor()
+      const alert = page.getByRole('alert').filter({ hasText: 'Essential fixture unavailable' })
+      await alert.waitFor()
       assert.equal(await page.locator('#swarm-startup').isVisible(), false)
-      await page.getByRole('button', { name: 'Try again', exact: true }).click()
+      await alert.getByRole('button', { name: 'Retry', exact: true }).click()
     } else await response.fulfill({ json: { tasks: rows } })
     await page.locator('main.swarm-main-panel').waitFor().catch(async error => { throw new Error(`${String(error)}; errors=${JSON.stringify(errors)}; body=${await page.locator('body').innerText()}; reads=${JSON.stringify(reads)}`) })
     assert.equal(await page.locator('#swarm-startup').isVisible(), false)
@@ -118,9 +124,9 @@ test('project hard refresh, warm entry, retry, theme and auth preserve one initi
     assert.ok(pending.get(`/v3/projects/${project.id}/media`)?.length, 'optional media still stalled at reveal')
     assert.equal(reads.some(path => /archived=true|view=archived/.test(path)), false)
     const timeline = await page.evaluate(() => (window as any).startupTimeline)
-    assert.deepEqual(timeline.map((step: any) => [step.hidden, step.board]), (failTasks || count === 0)
-      ? [[false, false], [true, false], [true, true]] : [[false, false], [true, true]])
-    assert.equal(timeline.at(-1).rows, count, 'all initial task rows exist on the single board reveal')
+    assert.equal(timeline.at(-1).board, true)
+    assert.equal(timeline.at(-1).hidden, true)
+    assert.equal(timeline.find((step: any) => step.board)?.rows, 0, 'initial board reveal does not wait for tasks')
     console.log(JSON.stringify({ fixture: 'project-startup', count, taskLists: reads.filter(path => path === taskPath).length, taskDetails: 0, timeline, requestOrder: reads }))
     if (count === 1) {
       // Observed project colors are stored by the production palette hook.
@@ -131,7 +137,8 @@ test('project hard refresh, warm entry, retry, theme and auth preserve one initi
       await page.reload({ waitUntil: 'domcontentloaded' })
       await page.addStyleTag({ content: css })
       await refresh
-      assert.equal(await page.locator('#swarm-startup').isVisible(), true)
+      await page.locator('main.swarm-main-panel').waitFor()
+      assert.equal(await page.locator('#swarm-startup').isVisible(), false)
       assert.equal(await page.evaluate(() => document.documentElement.style.getPropertyValue('--startup-background')), palette.background)
       if (process.env.SWARM_STARTUP_SCREENSHOTS) {
         await mkdir(process.env.SWARM_STARTUP_SCREENSHOTS, { recursive: true })

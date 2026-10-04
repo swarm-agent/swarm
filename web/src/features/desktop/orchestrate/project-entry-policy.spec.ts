@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { admittedConversationId, completeAccountOnboarding, legacyHistorySessions, projectConversationBatches } from './project-entry-policy'
+import { projectConversationLink } from './project-conversations'
 import type { SessionSnapshot } from '../state/desktop-v3-cache-types'
 
 // Purpose: DesktopOnboardingGate must finish account setup with zero workspaces.
@@ -58,6 +59,19 @@ test('legacy history is bounded and does not reparent sessions', () => {
   assert.ok(rows.every(row => Object.keys(row.metadata!).length === 0))
 })
 
+// Purpose: named project navigation must preserve only the admitted conversation.
+// The link/admission boundary tests route output rather than spelling of UI calls;
+// rejected, changed-project and changed-session identities cannot become links.
+test('project links preserve admitted sessions without promoting rejected route identities', () => {
+  const admission = { projectId: 'p', sessionId: 'parent' }
+  assert.deepEqual(projectConversationLink('project-name', admittedConversationId(admission, 'p', 'parent')),
+    { to: '/projects/$projectId/sessions/$sessionId', params: { projectId: 'project-name', sessionId: 'parent' } })
+  for (const id of [admittedConversationId(null, 'p', 'guessed'), admittedConversationId(admission, 'q', 'parent'), admittedConversationId(admission, 'p', 'child')]) {
+    assert.deepEqual(projectConversationLink('project-name', id),
+      { to: '/projects/$projectId', params: { projectId: 'project-name' } })
+  }
+})
+
 // Purpose: supplemental wiring regression checks connect the tested boundaries to their
 // UI callers. These checks are not browser or security execution evidence.
 test('onboarding, history normalization and task return wire the project-first boundaries', () => {
@@ -77,8 +91,10 @@ test('onboarding, history normalization and task return wire the project-first b
   const back = view.slice(view.indexOf('const handleBackToOrchestrator'), view.indexOf('const handleOrchestratorSessionReset'))
   assert.match(back, /setActiveSessionId\(admittedParentId\)/)
   assert.doesNotMatch(back, /setActiveSessionId\(routeConversationId\)/)
-  assert.match(view, /projectConversationLink\(project.id, project.primarySessionId\)/)
-  assert.match(view, /createProjectConversation\(project.id, clearRequest.current\)/)
+  // Clearing context now preserves the existing session; it must not create one.
+  const clear = view.slice(view.indexOf('const handleClearContext'), view.indexOf('{/* Task and integration-repair navigation'))
+  assert.match(clear, /await clearSessionContext\(sessionId, clearRequest.current.id, clearRequest.current.seq\)/)
+  assert.doesNotMatch(clear, /createProjectConversation/)
   // Task details must retain program-child and repair-session access, not just the primary task session.
   assert.match(view, /extractTaskSessionIds\(task\)\.includes\(activeSessionId\) \|\| taskOutcome\(task\)\.repairSessionId === activeSessionId/)
 })
