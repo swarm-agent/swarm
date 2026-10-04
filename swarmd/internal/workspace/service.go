@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"image/png"
-	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -273,16 +272,6 @@ func (s *Service) AddForPrincipalWithEntryWithoutSelection(principal identity.Pr
 // the user's current selection. Existing paths are rejected instead of being
 // silently updated.
 func (s *Service) CreateCatalogEntryForPrincipal(principal identity.Principal, path, name, themeID string) (Resolution, error) {
-	return s.createCatalogEntryForPrincipal(principal, path, name, themeID, true)
-}
-
-// RegisterContextFolderForPrincipal explicitly saves an accessible context folder.
-// It does not initialize Git, select a coding workspace, or relax task admission.
-func (s *Service) RegisterContextFolderForPrincipal(principal identity.Principal, path, name, themeID string) (Resolution, error) {
-	return s.createCatalogEntryForPrincipal(principal, path, name, themeID, false)
-}
-
-func (s *Service) createCatalogEntryForPrincipal(principal identity.Principal, path, name, themeID string, requireGit bool) (Resolution, error) {
 	if s == nil || s.store == nil {
 		return Resolution{}, fmt.Errorf("workspace service is not configured")
 	}
@@ -296,20 +285,8 @@ func (s *Service) createCatalogEntryForPrincipal(principal identity.Principal, p
 	if err := ensureWorkspaceDirectory(resolved); err != nil {
 		return Resolution{}, err
 	}
-	if requireGit {
-		if _, err := s.requireRepositoryForPrincipal(principal, resolved); err != nil {
-			return Resolution{}, err
-		}
-	} else {
-		dir, err := os.Open(resolved)
-		if err != nil {
-			return Resolution{}, err
-		}
-		_, err = dir.Readdirnames(1)
-		dir.Close()
-		if err != nil && !errors.Is(err, io.EOF) {
-			return Resolution{}, err
-		}
+	if _, err := s.requireRepositoryForPrincipal(principal, resolved); err != nil {
+		return Resolution{}, err
 	}
 	name = strings.TrimSpace(name)
 	if name == "" {

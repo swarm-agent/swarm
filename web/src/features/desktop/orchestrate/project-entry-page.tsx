@@ -9,9 +9,7 @@ import { bootstrapResponseToAction } from '../state/desktop-v3-cache-wire'
 import { workspaceRouteSlugBase } from '../../workspaces/launcher/services/workspace-route'
 import { legacyHistorySessions } from './project-entry-policy'
 import { projectRouteSegment } from './project-route'
-import { ProjectCreationFlow } from './project-creation-flow'
-import type { CreationProject } from '../state/project-creation'
-import { desktopProjects } from '../runtime/desktop-projects'
+import { OrchestrateView } from './OrchestrateView'
 
 export function lastProjectKey() {
   return `swarm:last-project:${getDesktopSessionIdentitySnapshot()?.accountScopeId || ''}`
@@ -20,14 +18,8 @@ export function lastProjectKey() {
 export function ProjectEntryPage() {
   const navigate = useNavigate()
   const route = useRouterState({ select: state => ({ pathname: state.location.pathname, params: state.matches[state.matches.length - 1]?.params as { sessionId?: string; workspaceSlug?: string } }) })
-  const [projects, setProjects] = useState<CreationProject[] | null>(null)
+  const [projects, setProjects] = useState<Array<{ id: string; name: string }> | null>(null)
   const [error, setError] = useState('')
-  const [reload, setReload] = useState(0)
-  const showingCreation = projects?.length === 0 && !route.params?.workspaceSlug
-  useEffect(() => {
-    if (showingCreation) return
-    return desktopProjects.onProjectUpdate(() => setReload(value => value + 1))
-  }, [showingCreation])
   const [historyIds, setHistoryIds] = useState<string[]>([])
   const [historyLoading, setHistoryLoading] = useState(false)
   const history = useDesktopV3CacheSelector(state => legacyHistorySessions(historyIds.flatMap(id => {
@@ -36,9 +28,9 @@ export function ProjectEntryPage() {
   })), (a, b) => a.length === b.length && a.every((session, index) => session === b[index]))
   useEffect(() => {
     let active = true
-    setError(''); setHistoryIds([]); setHistoryLoading(Boolean(route.params?.workspaceSlug && !route.params.sessionId))
+    setProjects(null); setError(''); setHistoryIds([]); setHistoryLoading(Boolean(route.params?.workspaceSlug && !route.params.sessionId))
     void (async () => {
-      const response = await requestJson<{ projects: CreationProject[] }>('/v3/projects')
+      const response = await requestJson<{ projects: Array<{ id: string; name: string }> }>('/v3/projects')
       if (!active) return
       setProjects(response.projects || [])
       if (route.params?.workspaceSlug && !route.params.sessionId) {
@@ -67,16 +59,13 @@ export function ProjectEntryPage() {
       }
     })().catch(cause => { if (active) setError(cause instanceof Error ? cause.message : 'Unable to load projects') }).finally(() => { if (active) setHistoryLoading(false) })
     return () => { active = false }
-  }, [route.pathname, route.params?.sessionId, navigate, reload])
-  if (projects?.length === 0 && !error && !route.params?.workspaceSlug) return <ProjectCreationFlow
-    onSaved={() => { /* Keep the active flow mounted through generation. */ }}
-    onCancel={() => setReload(value => value + 1)}
-    onOpen={(project, sessionId) => { void navigate(projectConversationLink(projectRouteSegment(project, [project]), sessionId)) }} />
+  }, [route.pathname, route.params?.sessionId, navigate])
+  if (projects?.length === 0 && !error && !route.params?.workspaceSlug) return <OrchestrateView />
   return <main className="p-6 space-y-4"><h1>Swarm projects</h1>
-    {error && <div role="alert">{error}<button onClick={() => setReload(value => value + 1)}>Retry loading projects</button></div>}
+    {error && <p role="alert">{error}</p>}
     {!projects && !error && <p role="status">Loading projects…</p>}
     {route.params?.sessionId && <p>This history link has no verified project conversation owner. Choose a project or open the original history; nothing will be moved.</p>}
-    <ul>{projects?.map(project => <li key={project.id}><Link {...projectConversationLink(projectRouteSegment(project, projects))}>{project.name}{project.context_generation && project.context_generation.status !== 'ready' ? ` — ${project.context_generation.status === 'failed' ? 'Context failed · resume' : 'Generating context · resume'}` : ''}</Link></li>)}</ul>
+    <ul>{projects?.map(project => <li key={project.id}><Link {...projectConversationLink(projectRouteSegment(project, projects))}>{project.name}</Link></li>)}</ul>
     {route.params?.sessionId && route.params.workspaceSlug && <Link to="/history/$workspaceSlug/$sessionId" params={{ workspaceSlug: route.params.workspaceSlug, sessionId: route.params.sessionId }}>Open original session history</Link>}
     {route.params?.workspaceSlug && !route.params.sessionId && <section aria-label="Existing session history">
       <h2>Recent session history</h2>

@@ -29,9 +29,8 @@ type sessionRouterDecision struct {
 // the account's configured Router model. Callers own their prompt and strict
 // output validation; this bridge owns model resolution and provider invocation.
 type configuredRouterResponse struct {
-	Text        string
-	Profile     pebblestore.AgentProfile
-	RouterAlert string
+	Text    string
+	Profile pebblestore.AgentProfile
 }
 
 // routeSessionOnce invokes the configured hidden Router exactly once to name an
@@ -97,7 +96,7 @@ func normalizeConfiguredRouterJSONResponse(raw string) string {
 	return body
 }
 
-func (s *Server) invokeConfiguredRouterOnce(ctx context.Context, principal identity.Principal, instructions, input string, maxOutputBytes int, allowSwarmFallback ...bool) (configuredRouterResponse, error) {
+func (s *Server) invokeConfiguredRouterOnce(ctx context.Context, principal identity.Principal, instructions, input string, maxOutputBytes int) (configuredRouterResponse, error) {
 	if s == nil || s.providers == nil {
 		return configuredRouterResponse{}, errors.New("provider registry is not configured")
 	}
@@ -122,25 +121,6 @@ func (s *Server) invokeConfiguredRouterOnce(ctx context.Context, principal ident
 		return configuredRouterResponse{}, errors.New("Router model and agent services are not configured")
 	}
 	resolvedModel, profile, err := agentmodel.ResolveSystemAgent(s.model, s.agents, s.agentModelSettings, principal.AccountScopeID, agentruntime.RouterAgentID, "")
-	if err == nil && !resolvedModel.CatalogPresent {
-		err = errors.New("configured Router model is missing from the catalog")
-	}
-	alert := ""
-	if err != nil && len(allowSwarmFallback) > 0 && allowSwarmFallback[0] {
-		settings, settingsErr := s.agentModelSettings.GetForAccount(principal.AccountScopeID)
-		if settingsErr != nil {
-			return configuredRouterResponse{}, settingsErr
-		}
-		a := settings.Swarm.Action
-		if strings.TrimSpace(a.Provider) == "" || strings.TrimSpace(a.Model) == "" {
-			return configuredRouterResponse{}, err
-		}
-		resolvedModel, err = s.model.ResolvePreference(pebblestore.ModelPreference{Provider: a.Provider, Model: a.Model, Thinking: a.Thinking, ServiceTier: a.ServiceTier, ContextMode: a.ContextMode})
-		if err == nil {
-			profile = agentruntime.RouterAgentProfileForParent(pebblestore.AgentProfile{Provider: resolvedModel.Preference.Provider, Model: resolvedModel.Preference.Model, Thinking: resolvedModel.Preference.Thinking, AutoServiceTier: resolvedModel.Preference.ServiceTier})
-			alert = "Router assignment unavailable; using the account-configured default Swarm model for project context."
-		}
-	}
 	if err != nil {
 		return configuredRouterResponse{}, err
 	}
@@ -197,5 +177,5 @@ func (s *Server) invokeConfiguredRouterOnce(ctx context.Context, principal ident
 	if raw == "" {
 		return configuredRouterResponse{}, errors.New("Router provider returned empty output")
 	}
-	return configuredRouterResponse{Text: raw, Profile: profile, RouterAlert: alert}, nil
+	return configuredRouterResponse{Text: raw, Profile: profile}, nil
 }

@@ -63,7 +63,7 @@ test('legacy history is bounded and does not reparent sessions', () => {
 test('onboarding, history normalization and task return wire the project-first boundaries', () => {
   const source = (path: string) => readFileSync(new URL(path, import.meta.url), 'utf8')
   const gate = source('../onboarding/components/desktop-onboarding-gate.tsx')
-  const continueHandler = gate.slice(gate.indexOf('const handleProviderContinue'), gate.indexOf('const handleIdentitySubmit'))
+  const continueHandler = gate.slice(gate.indexOf('const handleProviderContinue'), gate.indexOf('const handleOpenWorkspace'))
   assert.match(continueHandler, /completeAccountOnboarding/)
   assert.match(continueHandler, /to: '\/projects'/)
   assert.doesNotMatch(continueHandler, /openWorkspace|finishWithWorkspace|transitionToStep\('workspace'\)/)
@@ -77,8 +77,8 @@ test('onboarding, history normalization and task return wire the project-first b
   const back = view.slice(view.indexOf('const handleBackToOrchestrator'), view.indexOf('const handleOrchestratorSessionReset'))
   assert.match(back, /setActiveSessionId\(admittedParentId\)/)
   assert.doesNotMatch(back, /setActiveSessionId\(routeConversationId\)/)
-  assert.ok(view.includes('projectConversationLink(projectSegment || project.id, project.primarySessionId)'), 'navigation uses the resolved project segment')
-  assert.ok(view.includes('createProjectConversation(projectId, conversationRequest.current)'), 'new conversation uses a stable request identity')
+  assert.match(view, /projectConversationLink\(project.id, project.primarySessionId\)/)
+  assert.match(view, /createProjectConversation\(project.id, clearRequest.current\)/)
   // Task details must retain program-child and repair-session access, not just the primary task session.
   assert.match(view, /extractTaskSessionIds\(task\)\.includes\(activeSessionId\) \|\| taskOutcome\(task\)\.repairSessionId === activeSessionId/)
 })

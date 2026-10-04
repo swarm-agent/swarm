@@ -63,7 +63,7 @@ func TestProjectTask_ExecutionOutranksProgramReview(t *testing.T) {
 		if _, _, err := db.CreateTaskProgram(prog); err != nil {
 			t.Fatal(err)
 		}
-		task := &pebblestore.ProjectTaskRecord{ID: "task", Title: "Execution precedence", Agent: "swarm", ProjectID: project.ID, AccountID: p.AccountScopeID, SessionID: "parent", Status: "needs_review", TaskProgramID: programState, ActionNeeded: "Review child blocker"}
+		task := &pebblestore.ProjectTaskRecord{ID: "task", ProjectID: project.ID, AccountID: p.AccountScopeID, SessionID: "parent", Status: "needs_review", TaskProgramID: programState, ActionNeeded: "Review child blocker"}
 		syncTaskSessionState(task, db)
 		if task.Status != "in_progress" || task.ActionNeeded != "Review child blocker" || task.TaskProgramStatus == nil {
 			t.Fatalf("running parent hidden or review detail lost: %+v", task)
@@ -74,7 +74,7 @@ func TestProjectTask_ExecutionOutranksProgramReview(t *testing.T) {
 			t.Fatal("Git integration must not erase running evidence")
 		}
 	}
-	task := &pebblestore.ProjectTaskRecord{ID: "task", Title: "Execution precedence", Agent: "swarm", ProjectID: project.ID, AccountID: p.AccountScopeID, SessionID: "parent", Status: "in_progress", TaskProgramID: pebblestore.TaskProgramStateBlocked}
+	task := &pebblestore.ProjectTaskRecord{ID: "task", ProjectID: project.ID, AccountID: p.AccountScopeID, SessionID: "parent", Status: "in_progress", TaskProgramID: pebblestore.TaskProgramStateBlocked}
 	if err := db.PutProjectTask(p.AccountScopeID, task); err != nil {
 		t.Fatal(err)
 	}

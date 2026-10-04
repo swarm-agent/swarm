@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
 import { useNavigate } from '@tanstack/react-router'
+import { AlertTriangle, Bot, ChevronRight, GitBranch, Plus } from 'lucide-react'
 import { queryClient } from '../../../../app/query-client'
 import { Button } from '../../../../components/ui/button'
 import { Input } from '../../../../components/ui/input'
-import { acceptOnboardingProviderCredential, patchDesktopOnboarding } from '../api'
+import { ModalCloseButton } from '../../../../components/ui/modal-close-button'
+import { acceptOnboardingProviderCredential, patchDesktopOnboarding, startWorkspaceOnboardingSession } from '../api'
 import type { DesktopOnboardingStatus } from '../types'
 import { startCodexOAuth } from '../../settings/mutations/start-codex-oauth'
 import { getCodexOAuthStatus } from '../../settings/queries/get-codex-oauth-status'
@@ -14,22 +16,60 @@ import { listProviders } from '../../settings/queries/list-providers'
 import type { AuthMethod, CodexOAuthSession, ProviderStatus, StartCodexOAuthInput, UpsertAuthCredentialInput } from '../../settings/types/auth'
 import { CodexDeviceCode } from '../../settings/auth/components/codex-device-code'
 import { codexSetupRecommendation } from '../../settings/auth/codex-setup-recommendation'
+import { WorkspaceFolderTree } from '../../../workspaces/launcher/components/workspace-folder-tree'
 import { WorkspaceStatus } from '../../../workspaces/launcher/components/workspace-status'
 import { applyWorkspaceTheme, workspaceThemeDefaultId } from '../../../workspaces/launcher/services/workspace-theme'
+import { useWorkspaceLauncher } from '../../../workspaces/launcher/state/use-workspace-launcher'
+import { buildWorkspaceRouteSlugMap, workspaceRouteSlugBase } from '../../../workspaces/launcher/services/workspace-route'
+import { formatWorkspacePath } from '../../../workspaces/launcher/services/workspace-format'
 import { agentStateQueryOptions, draftModelQueryOptions, modelOptionsQueryOptions, modelProfilesQueryOptions } from '../../../queries/query-options'
+import type { WorkspaceDiscoverEntry, WorkspaceResolution } from '../../../workspaces/launcher/types/workspace'
+import {
+  WorkspaceRepositoryPrerequisiteError,
+  type WorkspaceRepositoryState,
+} from '../../../workspaces/launcher/services/workspace-repository'
+import { applyDesktopV3RoutedStartResponse } from '../../session-v3/new-session-flow'
+import { inspectRepository } from '../../../workspaces/launcher/services/repository-review'
+import { RepositoryReviewPanel } from './repository-review-panel'
+import { WorkspaceOnboardingAssistant } from './workspace-onboarding-assistant'
 
 import { completeAccountOnboarding } from '../../orchestrate/project-entry-policy'
 
-type OnboardingStep = 'identity' | 'provider'
+type OnboardingStep = 'identity' | 'provider' | 'workspace'
 type CodexOAuthMode = StartCodexOAuthInput['method']
 type ProviderSetupMode = 'api' | 'oauth-device' | 'oauth-browser' | 'oauth-manual' | null
-type PendingAction = 'identity' | 'provider-save' | 'oauth-device' | 'oauth-browser' | 'oauth-manual' | 'oauth-complete' | 'finalize' | null
+type PendingAction = 'identity' | 'provider-save' | 'oauth-device' | 'oauth-browser' | 'oauth-manual' | 'oauth-complete' | 'finalize' | 'workspace' | null
 
 type OnboardingView = OnboardingStep | 'setup'
 
 const SWARM_MARK_SRC = '/favicon.svg'
 const STEP_TRANSITION_MS = 220
 const ONBOARDING_READY_HOLD_MS = 1_000
+const WORKSPACE_ONBOARDING_ASSISTANT_RESUME_KEY = 'swarm.desktop.workspace-onboarding-assistant.v1'
+
+type WorkspaceOnboardingAssistantResume = { sessionId: string; path: string }
+
+function loadWorkspaceOnboardingAssistantResume(): WorkspaceOnboardingAssistantResume | null {
+  if (typeof window === 'undefined') return null
+  try {
+    const value = JSON.parse(window.sessionStorage.getItem(WORKSPACE_ONBOARDING_ASSISTANT_RESUME_KEY) ?? '') as Partial<WorkspaceOnboardingAssistantResume>
+    const sessionId = String(value.sessionId ?? '').trim()
+    const path = String(value.path ?? '').trim()
+    return sessionId && path ? { sessionId, path } : null
+  } catch {
+    return null
+  }
+}
+
+function saveWorkspaceOnboardingAssistantResume(value: WorkspaceOnboardingAssistantResume | null): void {
+  if (typeof window === 'undefined') return
+  if (value) {
+    window.sessionStorage.setItem(WORKSPACE_ONBOARDING_ASSISTANT_RESUME_KEY, JSON.stringify(value))
+  } else {
+    window.sessionStorage.removeItem(WORKSPACE_ONBOARDING_ASSISTANT_RESUME_KEY)
+  }
+}
+
 const ONBOARDING_STEPS: Record<OnboardingStep, { stepLabel: string; title: string; subtitle: string }> = {
   identity: {
     stepLabel: 'Step 1 of 2 · Identity',
@@ -40,6 +80,11 @@ const ONBOARDING_STEPS: Record<OnboardingStep, { stepLabel: string; title: strin
     stepLabel: 'Step 2 of 2 · Provider',
     title: 'Connect your AI provider.',
     subtitle: 'Connect a provider now or skip ahead to your projects. No workspace is required.'
+  },
+  workspace: {
+    stepLabel: 'Step 3 of 3 · Workspace',
+    title: 'Choose your first workspace.',
+    subtitle: 'Use your home folder or create a new project folder (recommended). A separate folder keeps project work apart from your personal files.',
   },
 }
 
@@ -52,6 +97,11 @@ interface DesktopOnboardingGateProps {
 
 function deriveInitialStep(status: DesktopOnboardingStatus): OnboardingStep {
   return status.identity.bootstrapped && status.config.swarmName ? 'provider' : 'identity'
+}
+
+function fallbackWorkspaceNameFromPath(path: string): string {
+  const parts = path.trim().replace(/[\\/]+$/, '').split(/[\\/]/).filter(Boolean)
+  return parts[parts.length - 1] || path.trim() || 'workspace'
 }
 
 function apiCompatibleMethods(provider: ProviderStatus): AuthMethod[] {
@@ -102,6 +152,8 @@ function pendingMessage(action: PendingAction): string | null {
       return 'Completing sign-in…'
     case 'finalize':
       return 'Setting up your Swarm…'
+    case 'workspace':
+      return 'Setting up your workspace…'
     default:
       return null
   }
@@ -116,7 +168,7 @@ function waitForOnboardingReadyHold(): Promise<void> {
 
 function OnboardingBrandHeader({ restart, step, visible }: { restart: boolean; step: OnboardingStep; visible: boolean }) {
   const stepCopy = ONBOARDING_STEPS[step]
-  const visibleSteps: OnboardingStep[] = ['identity', 'provider']
+  const visibleSteps: OnboardingStep[] = step === 'workspace' ? ['identity', 'provider', 'workspace'] : ['identity', 'provider']
   const stepIndex = visibleSteps.indexOf(step) + 1
 
   return (
@@ -164,7 +216,7 @@ function OnboardingSetupPane() {
         <div className="grid gap-2">
           <h2 className="text-xl font-semibold tracking-tight text-[var(--app-text)]">Setting up your Swarm…</h2>
           <p className="text-sm leading-6 text-[var(--app-text-muted)]">
-            Finishing account setup before opening your projects.
+            Holding the onboarding surface steady while the workspace is confirmed.
           </p>
         </div>
       </div>
@@ -255,6 +307,44 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
   const [codexOAuthMode, setCodexOAuthMode] = useState<CodexOAuthMode>('device')
   const [oauthSession, setOAuthSession] = useState<CodexOAuthSession | null>(null)
   const [callbackInput, setCallbackInput] = useState('')
+  const [workspaceSearch, setWorkspaceSearch] = useState('')
+  const [namingProject, setNamingProject] = useState(false)
+  const [projectName, setProjectName] = useState('')
+  const [projectParent, setProjectParent] = useState('')
+  const projectDestination = projectName.trim() ? `${projectParent.trim().replace(/\/$/, '')}/${projectName.trim()}` : ''
+  const [workspaceError, setWorkspaceError] = useState<string | null>(null)
+  const [workspaceExplorerOpen, setWorkspaceExplorerOpen] = useState(false)
+  const [reviewPath, setReviewPath] = useState<string | null>(null)
+  const [workspaceRepositoryState, setWorkspaceRepositoryState] = useState<WorkspaceRepositoryState | null>(null)
+  const [pendingFolder, setPendingFolder] = useState<Pick<WorkspaceDiscoverEntry, 'path' | 'name'> | null>(null)
+  const [repositoryHelpBusy, setRepositoryHelpBusy] = useState(false)
+  const [onboardingAssistant, setOnboardingAssistant] = useState<WorkspaceOnboardingAssistantResume | null>(() => loadWorkspaceOnboardingAssistantResume())
+  const [repositoryRecheckBusy, setRepositoryRecheckBusy] = useState(false)
+  const [repositoryRecheckError, setRepositoryRecheckError] = useState<string | null>(null)
+
+  const {
+    workspaces,
+    discovered,
+    loading: workspaceLoading,
+    refreshing: workspaceRefreshing,
+    selectingPath,
+    savingPath,
+    browser,
+    browserLoading,
+    browserError,
+    loadError: workspaceLoadError,
+    actionError: workspaceActionError,
+    openWorkspace,
+    saveWorkspace,
+    setupWorkspaceRepository,
+    createFolder,
+    refresh: refreshWorkspaces,
+    browsePath,
+  } = useWorkspaceLauncher({
+    applyDocumentTheme: false,
+    autoRefresh: step === 'workspace',
+  })
+
   const selectedProvider = useMemo(
     () => providerOptions.find((provider) => provider.id === providerID) ?? providerOptions[0] ?? null,
     [providerID, providerOptions],
@@ -272,6 +362,27 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
   const submitting = pendingAction !== null || !panelVisible
   const progress = pendingMessage(pendingAction)
   const mustUseOnboardingProviderAPI = status.heuristics.credentialCount === 0 && status.heuristics.agentCount === 0
+  const workspaceSlugByPath = useMemo(() => buildWorkspaceRouteSlugMap(workspaces), [workspaces])
+  const savedWorkspaceByPath = useMemo(() => new Map(workspaces.map((workspace) => [workspace.path, workspace])), [workspaces])
+  const visibleSavedWorkspaces = useMemo(() => {
+    const query = workspaceSearch.trim().toLowerCase()
+    if (!query) {
+      return workspaces
+    }
+    return workspaces.filter((workspace) => [workspace.workspaceName, workspace.path].join(' ').toLowerCase().includes(query))
+  }, [workspaceSearch, workspaces])
+  const filteredDiscovered = useMemo(() => {
+    const query = workspaceSearch.trim().toLowerCase()
+    const rows = discovered
+      .filter((entry) => !savedWorkspaceByPath.has(entry.path))
+      .map((entry) => ({ entry, savedWorkspace: savedWorkspaceByPath.get(entry.path) }))
+    if (!query) {
+      return rows.slice(0, 8)
+    }
+    return rows.filter(({ entry, savedWorkspace }) => [entry.name, entry.path, savedWorkspace?.workspaceName ?? ''].join(' ').toLowerCase().includes(query)).slice(0, 12)
+  }, [discovered, savedWorkspaceByPath, workspaceSearch])
+  const workspaceStatusError = workspaceError || workspaceActionError || workspaceLoadError
+  const canUseOnboardingAssistant = status.auth.credentialCount > 0 && status.auth.activeProviders.length > 0
   const finishButtonLabel = pendingAction === 'finalize'
     ? 'Finishing…'
     : providerAlreadyConnected
@@ -283,6 +394,13 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
   useEffect(() => {
     applyWorkspaceTheme(workspaceThemeDefaultId())
   }, [])
+
+  useEffect(() => {
+    if (!onboardingAssistant || canUseOnboardingAssistant) return
+    saveWorkspaceOnboardingAssistantResume(null)
+    setOnboardingAssistant(null)
+    setWorkspaceError('Onboarding Swarm needs an active provider credential. Reconnect the provider or fix the repository manually and retry.')
+  }, [canUseOnboardingAssistant, onboardingAssistant?.path, onboardingAssistant?.sessionId])
 
   useEffect(() => {
     return () => {
@@ -431,6 +549,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
     clearStepTransition()
     setPanelVisible(false)
     transitionTimerRef.current = window.setTimeout(() => {
+      setWorkspaceExplorerOpen(false)
       setView('setup')
       transitionTimerRef.current = null
       revealTransitionPanel()
@@ -446,6 +565,16 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
   const retryProviderLoad = useCallback(() => {
     setProviderReloadNonce((value) => value + 1)
   }, [])
+
+  const retryWorkspaceLoad = useCallback(() => {
+    setWorkspaceError(null)
+    void refreshWorkspaces()
+  }, [refreshWorkspaces])
+
+  const retryBrowsePath = useCallback(() => {
+    setWorkspaceError(null)
+    void browsePath(browser?.resolvedPath || browser?.homePath || '')
+  }, [browsePath, browser?.homePath, browser?.resolvedPath])
 
   const persistIdentity = async () => {
     const normalizedUsername = username.trim()
@@ -471,14 +600,57 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
     return refreshed
   }
 
-  const finalizeOnboarding = async () => {
-    setPendingAction('finalize'); transitionToSetup()
+  const finalizeOnboarding = async (preserveReview = false) => {
+    if (!preserveReview) { setPendingAction('finalize'); transitionToSetup() }
     const [, next] = await Promise.all([
       waitForOnboardingReadyHold(),
       patchDesktopOnboarding({ desktopOnboardingComplete: true }).then(() => reloadStatus()),
     ])
     setStatus(next)
     return next
+  }
+
+  const saveAndOpenReadyWorkspace = async (path: string, name: string, confirmCommittedOnly = false): Promise<WorkspaceResolution> => {
+    await saveWorkspace({
+      path,
+      name: name || fallbackWorkspaceNameFromPath(path),
+      themeId: 'inherit',
+      makeCurrent: true,
+      confirmCommittedOnly,
+    })
+    await refreshWorkspaces()
+    return openWorkspace(path)
+  }
+
+  const navigateToWorkspace = async (resolution: WorkspaceResolution, fallbackPath: string) => {
+    const resolvedPath = resolution.resolvedPath.trim() || fallbackPath.trim()
+    const workspaceSlug = workspaceSlugByPath.get(resolvedPath) ?? workspaceRouteSlugBase({
+      path: resolvedPath,
+      workspaceName: resolution.workspaceName || fallbackWorkspaceNameFromPath(resolvedPath),
+    })
+    if (workspaceSlug) {
+      await navigate({
+        to: '/$workspaceSlug',
+        params: { workspaceSlug },
+      })
+    } else {
+      await navigate({ to: '/' })
+    }
+  }
+
+  const finishWithWorkspace = async (resolution: WorkspaceResolution, fallbackPath: string, preserveReview = false) => {
+    const next = await finalizeOnboarding(preserveReview)
+    await refreshAuthDependentQueries()
+    if (next.needsOnboarding) {
+      throw new Error('Swarm is still finishing onboarding. Try opening the workspace again in a moment.')
+    }
+    await navigateToWorkspace(resolution, fallbackPath)
+    setClosing(true)
+    await new Promise<void>((resolve) => {
+      const setTimeoutFn = typeof window !== 'undefined' ? window.setTimeout.bind(window) : setTimeout
+      setTimeoutFn(resolve, 200)
+    })
+    onComplete(next)
   }
 
   const handleProviderContinue = () => {
@@ -499,6 +671,176 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
       setError(err instanceof Error ? err.message : 'Unable to finish onboarding')
       transitionToStep('provider')
     }).finally(() => setPendingAction(null))
+  }
+
+  const handleOpenWorkspace = (path: string) => {
+    if (submitting || pendingActionRef.current !== null) {
+      return
+    }
+    setPendingFolder(null)
+    void (async () => {
+      setPendingAction('workspace')
+      setError(null)
+      setWorkspaceError(null)
+      setWorkspaceExplorerOpen(false)
+      setWorkspaceRepositoryState(null)
+      transitionToSetup()
+      try {
+        const resolution = await openWorkspace(path)
+        await finishWithWorkspace(resolution, path)
+      } catch (err) {
+        transitionToStep('workspace')
+        if (err instanceof WorkspaceRepositoryPrerequisiteError) {
+          setWorkspaceRepositoryState(err.repository)
+          setWorkspaceError(null)
+        } else {
+          setWorkspaceError(err instanceof Error ? err.message : 'Failed to open workspace')
+        }
+      } finally {
+        setPendingAction(null)
+      }
+    })()
+  }
+
+  const handleSaveAndOpenFolder = (entry: Pick<WorkspaceDiscoverEntry, 'path' | 'name'>) => {
+    if (submitting || pendingActionRef.current !== null) {
+      return
+    }
+    setPendingFolder(entry)
+    void (async () => {
+      setPendingAction('workspace')
+      setError(null)
+      setWorkspaceError(null)
+      setWorkspaceExplorerOpen(false)
+      setWorkspaceRepositoryState(null)
+      try {
+        const repository = await inspectRepository(entry.path)
+        if (repository.state !== 'ready' || repository.needsReview) {
+          setWorkspaceRepositoryState(repository)
+          return
+        }
+        const selectedResolution = await saveAndOpenReadyWorkspace(
+          entry.path,
+          entry.name || fallbackWorkspaceNameFromPath(entry.path),
+        )
+        await finishWithWorkspace(selectedResolution, entry.path)
+      } catch (err) {
+        transitionToStep('workspace')
+        if (err instanceof WorkspaceRepositoryPrerequisiteError) {
+          setWorkspaceRepositoryState(err.repository)
+          setWorkspaceError(null)
+        } else {
+          setWorkspaceError(err instanceof Error ? err.message : 'Failed to save and open workspace')
+        }
+      } finally {
+        setPendingAction(null)
+      }
+    })()
+  }
+
+  const initializeOnboardingRepository = async () => {
+    const repository = workspaceRepositoryState
+    if (submitting || pendingActionRef.current !== null || repositoryHelpBusy || !repository?.path || (!repository.canSetup && repository.state !== 'directory_missing')) return
+    if (!window.confirm(`Create ${repository.path} if needed, initialize Git with only an empty starting commit, and open it? No existing files will be staged or committed; they stay outside managed worktrees.`)) return
+    setPendingAction('workspace')
+    setWorkspaceError(null)
+    try {
+      const ready = await setupWorkspaceRepository(repository.path, repository.path)
+      setWorkspaceRepositoryState(ready)
+      if (ready.state !== 'ready') throw new WorkspaceRepositoryPrerequisiteError(ready)
+      const selectedResolution = await saveAndOpenReadyWorkspace(
+        ready.path,
+        fallbackWorkspaceNameFromPath(ready.path),
+        true,
+      )
+      await finishWithWorkspace(selectedResolution, ready.path)
+    } catch (error) {
+      setClosing(false)
+      transitionToStep('workspace')
+      if (error instanceof WorkspaceRepositoryPrerequisiteError) setWorkspaceRepositoryState(error.repository)
+      setWorkspaceError(error instanceof Error ? error.message : 'Failed to initialize Git repository')
+    } finally {
+      setPendingAction(null)
+    }
+  }
+
+  const askSwarmForOnboardingRepositoryHelp = async () => {
+    if (pendingActionRef.current !== null || repositoryHelpBusy) return
+    const repository = workspaceRepositoryState
+    if (!repository || repository.state !== 'needs_assisted_setup') {
+      setWorkspaceError('Onboarding Swarm is available only for an unsaved folder containing existing files that still needs repository setup.')
+      return
+    }
+    if (!canUseOnboardingAssistant) {
+      setWorkspaceError('Connect a provider in the previous onboarding step before starting Onboarding Swarm.')
+      return
+    }
+    setPendingAction('workspace')
+    setRepositoryHelpBusy(true)
+    setWorkspaceError(null)
+    try {
+      const clientRequestId = `desktop-workspace-onboarding:${crypto.randomUUID()}`
+      const launched = await startWorkspaceOnboardingSession({
+        path: repository.path,
+        expectedResolvedPath: repository.path,
+        clientRequestId,
+      })
+      applyDesktopV3RoutedStartResponse({
+        session_id: launched.sessionId,
+        session: launched.session,
+        first_message: launched.firstMessage,
+        projection: launched.projection,
+        mutation: launched.mutation,
+      })
+      setRepositoryRecheckError(null)
+      const assistant = { sessionId: launched.sessionId, path: launched.repository.path }
+      saveWorkspaceOnboardingAssistantResume(assistant)
+      setOnboardingAssistant(assistant)
+    } catch (error) {
+      setWorkspaceError(error instanceof Error ? `${error.message} Fix the folder manually or retry.` : 'Could not start Onboarding Swarm. Fix the folder manually or retry.')
+    } finally {
+      setRepositoryHelpBusy(false)
+      setPendingAction(null)
+    }
+  }
+
+  const recheckOnboardingRepository = async () => {
+    const assistant = onboardingAssistant
+    if (!assistant || pendingActionRef.current !== null || repositoryRecheckBusy) return
+    setPendingAction('workspace')
+    setRepositoryRecheckBusy(true)
+    setRepositoryRecheckError(null)
+    try {
+      const selectedResolution = await saveAndOpenReadyWorkspace(
+        assistant.path,
+        fallbackWorkspaceNameFromPath(assistant.path),
+      )
+      await finishWithWorkspace(selectedResolution, assistant.path)
+      saveWorkspaceOnboardingAssistantResume(null)
+      setOnboardingAssistant(null)
+      setWorkspaceRepositoryState(null)
+    } catch (error) {
+      setClosing(false)
+      transitionToStep('workspace')
+      if (error instanceof WorkspaceRepositoryPrerequisiteError) {
+        setWorkspaceRepositoryState(error.repository)
+        setRepositoryRecheckError(`Repository is not ready yet. ${error.repository.message}`)
+      } else {
+        setRepositoryRecheckError(error instanceof Error ? error.message : 'Could not verify and add this repository. Retry after the first commit exists.')
+      }
+    } finally {
+      setRepositoryRecheckBusy(false)
+      setPendingAction(null)
+    }
+  }
+
+  const openWorkspaceExplorer = () => {
+    setPendingFolder(null)
+    setWorkspaceError(null)
+    setWorkspaceExplorerOpen(true)
+    if (!browser && !browserLoading) {
+      void browsePath('')
+    }
   }
 
   const handleIdentitySubmit = (event: FormEvent<HTMLFormElement>) => {
@@ -679,6 +1021,18 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
     }
   }
 
+  if (onboardingAssistant && canUseOnboardingAssistant) {
+    return (
+      <WorkspaceOnboardingAssistant
+        sessionId={onboardingAssistant.sessionId}
+        path={onboardingAssistant.path}
+        onCheckRepository={() => void recheckOnboardingRepository()}
+        checkingRepository={repositoryRecheckBusy}
+        checkError={repositoryRecheckError}
+      />
+    )
+  }
+
   return (
     <div className={`fixed inset-0 z-[9999] flex items-center justify-center overflow-y-auto bg-black px-6 py-8 text-[var(--app-text)] transition-opacity duration-200 ease-out ${closing ? 'pointer-events-none opacity-0' : 'opacity-100'}`}>
       <main className="relative w-full max-w-5xl overflow-hidden rounded-[2rem] border border-[color-mix(in_oklab,var(--app-border)_58%,transparent)] bg-[color-mix(in_oklab,var(--app-surface)_88%,black)] shadow-[0_24px_90px_rgb(0_0_0/0.55)] outline outline-1 outline-offset-2 outline-[color-mix(in_oklab,var(--app-border)_34%,transparent)] transition-[box-shadow,transform] duration-300 ease-out">
@@ -780,7 +1134,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                       <div className="grid gap-3">
                         <div>
                           <h2 className="text-xs font-medium uppercase tracking-[0.18em] text-[var(--app-text-muted)]">Choose provider</h2>
-                          <p className="mt-1 text-sm text-[var(--app-text-muted)]">Pick a provider to connect, or use a connected provider and continue to projects.</p>
+                          <p className="mt-1 text-sm text-[var(--app-text-muted)]">Pick a provider to connect, or use a connected provider and open workspace setup.</p>
                         </div>
                         <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
                           {providerOptions.map((provider) => {
@@ -1016,7 +1370,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                           </div>
                         ) : (
                           <p className="text-sm leading-6 text-[var(--app-text-muted)]">
-                            The selected provider does not expose a quick auth method here. Continue to projects and connect it later from Settings.
+                            The selected provider does not expose a quick auth method here. Continue to workspace setup and connect it later from Settings.
                           </p>
                         )}
                       </div>
@@ -1038,11 +1392,216 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                 </div>
               ) : null}
 
+              {view === 'workspace' ? (
+                <div className="grid h-full min-h-0 content-start gap-5">
+                  <div className="grid min-h-0 content-start gap-5">
+                    {status.workspaceGuidance ? <section className="grid gap-2 text-sm" aria-label="Runtime identity">
+                      <p>Work runs as Linux account {status.workspaceGuidance.runtime_username || status.workspaceGuidance.runtime_uid}. This account already exists; Swarm sign-in and project access are separate prerequisites.</p>
+                      <p>Administrative changes use the installation terminal and OS authentication, never passwords in this form. Access or trust failures do not authorize permission or Git-trust changes.</p>
+                      {status.workspaceGuidance.home_path ? <Button type="button" disabled={submitting} onClick={() => { setNamingProject(false); handleSaveAndOpenFolder({path: status.workspaceGuidance!.home_path, name: 'Home'}) }}>Use home folder</Button> : null}
+                      <Button type="button" disabled={submitting} onClick={() => { setProjectParent(current => current || status.workspaceGuidance!.home_path || ''); setNamingProject(true); setWorkspaceRepositoryState(null); setPendingFolder(null) }}>Create a new project folder (recommended)</Button>
+                      <p>Git setup creates only an empty starting commit. Existing home files are never automatically staged or committed.</p>
+                    </section> : null}
+                    {namingProject ? <section aria-label="New project folder" className="grid gap-3" onKeyDown={event => { if (event.key === 'Escape' && !submitting) { event.stopPropagation(); setNamingProject(false) } }}>
+                      <label>Project name<Input value={projectName} onChange={event => setProjectName(event.target.value)} disabled={submitting} autoFocus /></label>
+                      <label>Parent location<Input value={projectParent} onChange={event => setProjectParent(event.target.value)} disabled={submitting} /></label>
+                      <p className="break-all">Destination: {projectDestination || 'Enter a project name'}</p>
+                      <Button type="button" disabled={submitting || !projectName.trim() || ['.', '..'].includes(projectName.trim()) || projectName.includes('/') || projectName.includes('\\') || !projectParent.trim().startsWith('/')} onClick={() => { setNamingProject(false); handleSaveAndOpenFolder({path: projectDestination, name: projectName.trim()}) }}>Continue to setup confirmation</Button>
+                      <Button type="button" variant="outline" disabled={submitting} onClick={() => setNamingProject(false)}>Back (keep draft)</Button>
+                    </section> : null}
+                    {workspaceStatusError ? (
+                      <WorkspaceStatus
+                        kind="error"
+                        title="Workspace action needs attention"
+                        message={workspaceStatusError}
+                        actionLabel={workspaceLoadError ? 'Reload workspaces' : workspaceActionError ? 'Try browsing again' : 'Dismiss'}
+                        onAction={workspaceLoadError ? retryWorkspaceLoad : workspaceActionError ? retryBrowsePath : () => setWorkspaceError(null)}
+                      />
+                    ) : null}
+
+                    {workspaceError && pendingFolder && (!workspaceRepositoryState || workspaceRepositoryState.state === 'ready') ? <div className="grid gap-2">
+                      <p className="break-all text-sm">Selected folder: {pendingFolder.path}</p>
+                      <Button type="button" disabled={submitting} onClick={() => handleSaveAndOpenFolder(pendingFolder)}>Retry adding this folder</Button>
+                    </div> : null}
+                    {workspaceRepositoryState ? (
+                      <section className="grid gap-3 rounded-2xl border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-4 py-4" role="alert" aria-live="polite">
+                        <div className="flex items-start gap-3">
+                          <AlertTriangle size={18} className="mt-0.5 shrink-0 text-[var(--app-warning)]" />
+                          <div className="grid gap-1">
+                            <h2 className="text-sm font-semibold text-[var(--app-text)]">{workspaceRepositoryState.state === 'git_unavailable' ? 'Git is not installed or available' : workspaceRepositoryState.state === 'needs_initial_commit' ? 'Create the first Git commit' : 'A committed Git repository is required'}</h2>
+                            <p className="break-all font-mono text-xs text-[var(--app-text)]">{workspaceRepositoryState.path}</p>
+                            <p className="text-sm leading-6 text-[var(--app-text-muted)]">Swarm isolates agent work in managed worktrees. {workspaceRepositoryState.message}</p>
+                          </div>
+                        </div>
+                        {workspaceRepositoryState.needsReview ? <Button type="button" disabled={submitting} onClick={() => setReviewPath(workspaceRepositoryState.path)}>Review and select content — no provider required</Button> : null}
+                        {(workspaceRepositoryState.canSetup && !workspaceRepositoryState.needsReview) || workspaceRepositoryState.state === 'directory_missing' ? (
+                          <Button type="button" onClick={() => void initializeOnboardingRepository()} disabled={submitting || repositoryHelpBusy}>
+                            <GitBranch size={15} />
+                            Set up folder + empty starting commit + open
+                          </Button>
+                        ) : workspaceRepositoryState.state === 'git_unavailable' ? (
+                          <div className="grid gap-2 text-sm text-[var(--app-warning)]">
+                            <p className="font-medium">Git is unavailable to the daemon. Ask the installation administrator to repair the runtime prerequisite, then use Recheck below. Your identity and workspace setup are preserved.</p>
+                          </div>
+                        ) : (
+                          <div className="grid gap-3">
+                            <p className="text-sm leading-6 text-[var(--app-text-muted)]">
+                              {workspaceRepositoryState.state === 'needs_assisted_setup' ? 'Onboarding Swarm can inspect this exact unsaved folder and recommend ignore rules. Git initialization, staging, and the first commit still require your explicit approval.' : 'Review this folder manually before retrying. For an existing repository without a commit, review ignore rules and stage only intended files before creating the first commit. For a nested folder, choose the repository root instead.'}
+                            </p>
+                            <div className="flex flex-wrap gap-2">
+                              {workspaceRepositoryState.state === 'needs_assisted_setup' ? <Button type="button" onClick={() => void askSwarmForOnboardingRepositoryHelp()} disabled={submitting || repositoryHelpBusy || !canUseOnboardingAssistant}>
+                                <Bot size={15} />
+                                {repositoryHelpBusy ? 'Starting Onboarding Swarm…' : 'Talk to Onboarding Swarm'}
+                              </Button> : null}
+                            </div>
+                            {!canUseOnboardingAssistant && workspaceRepositoryState.state === 'needs_assisted_setup' ? (
+                              <p className="text-sm font-medium text-[var(--app-warning)]">AI assistance is optional. Use Review and select content above to prepare this folder without a provider.</p>
+                            ) : (
+                              <p className="text-xs leading-5 text-[var(--app-text-muted)]">Manual requirements: this selected folder must be the repository root and HEAD must resolve to an initial commit.</p>
+                            )}
+                          </div>
+                        )}
+                        <Button type="button" variant="outline" disabled={submitting || repositoryHelpBusy} onClick={() => handleSaveAndOpenFolder({ path: workspaceRepositoryState.path, name: fallbackWorkspaceNameFromPath(workspaceRepositoryState.path) })}>Recheck and add this folder</Button>
+                        <Button type="button" variant="outline" disabled={submitting || repositoryHelpBusy} onClick={() => { setWorkspaceRepositoryState(null); openWorkspaceExplorer() }}>Choose another folder</Button>
+                      </section>
+                    ) : null}
+
+                    {reviewPath ? <RepositoryReviewPanel key={reviewPath} path={reviewPath} onCancel={() => setReviewPath(null)} onReady={async (path, committedOnly) => {
+                      if (pendingActionRef.current !== null) throw new Error('Another onboarding action is running.')
+                      setPendingAction('workspace')
+                      try {
+                        const resolution = await saveAndOpenReadyWorkspace(path, fallbackWorkspaceNameFromPath(path), committedOnly)
+                        await finishWithWorkspace(resolution, path, true)
+                      } finally { setPendingAction(null) }
+                    }} /> : null}
+                    <section className="grid gap-3">
+                      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <h2 className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--app-text-muted)]">All workspaces</h2>
+                            <span className="text-[11px] text-[var(--app-text-subtle)]">
+                              {workspaces.length} saved · {discovered.length} discovered{workspaceLoading || workspaceRefreshing ? ' · refreshing' : ''}
+                            </span>
+                          </div>
+                          <p className="mt-1 text-sm text-[var(--app-text-muted)]">Folders with AGENTS.md or git repos</p>
+                        </div>
+                        <Input
+                          value={workspaceSearch}
+                          onChange={(event) => setWorkspaceSearch(event.target.value)}
+                          placeholder="Search workspaces…"
+                          disabled={submitting}
+                          className="sm:max-w-56"
+                        />
+                      </div>
+                      <div className="grid gap-2 lg:grid-cols-3">
+                        {visibleSavedWorkspaces.map((workspace) => (
+                          <button
+                            key={workspace.path}
+                            type="button"
+                            onClick={() => handleOpenWorkspace(workspace.path)}
+                            disabled={submitting || selectingPath === workspace.path}
+                            className="grid gap-1 rounded-lg border border-[var(--app-border)] bg-transparent px-4 py-3 text-left transition-colors hover:border-[var(--app-border-accent)] hover:bg-[var(--app-surface-hover)] disabled:cursor-wait disabled:opacity-60"
+                          >
+                            <span className="flex min-w-0 items-center justify-between gap-3">
+                              <span className="truncate text-sm font-medium text-[var(--app-text)]">{workspace.workspaceName || fallbackWorkspaceNameFromPath(workspace.path)}</span>
+                              <span className="shrink-0 text-xs text-[var(--app-text-muted)]">Open</span>
+                            </span>
+                            <span className="truncate text-xs text-[var(--app-text-muted)]">{formatWorkspacePath(workspace.path)}</span>
+                          </button>
+                        ))}
+                        {filteredDiscovered.map(({ entry, savedWorkspace }) => (
+                          <button
+                            key={entry.path}
+                            type="button"
+                            onClick={() => (savedWorkspace ? handleOpenWorkspace(savedWorkspace.path) : handleSaveAndOpenFolder(entry))}
+                            disabled={submitting || selectingPath === entry.path || savingPath === entry.path}
+                            className={`group relative grid gap-1 rounded-lg border border-[var(--app-border)] bg-transparent py-3 pl-4 text-left transition-colors hover:border-[var(--app-border-accent)] hover:bg-[var(--app-surface-hover)] disabled:cursor-wait disabled:opacity-60 ${savedWorkspace ? 'pr-4' : 'pr-12'}`}
+                          >
+                            <span className="flex min-w-0 items-center justify-between gap-3">
+                              <span className="truncate text-sm font-medium text-[var(--app-text)]">{savedWorkspace?.workspaceName || entry.name}</span>
+                              {savedWorkspace ? (
+                                <span className="shrink-0 text-xs text-[var(--app-text-muted)]">Open</span>
+                              ) : (
+                                <span
+                                  className="absolute right-4 top-1/2 grid size-8 -translate-y-1/2 place-items-center text-[var(--app-text-muted)] opacity-0 transition-[color,opacity] group-hover:text-[var(--app-text)] group-hover:opacity-100 group-focus-visible:text-[var(--app-text)] group-focus-visible:opacity-100"
+                                  title="Add workspace"
+                                >
+                                  <ChevronRight size={18} strokeWidth={2} aria-hidden="true" />
+                                  <span className="sr-only">Add workspace</span>
+                                </span>
+                              )}
+                            </span>
+                            <span className="truncate text-xs text-[var(--app-text-muted)]">{formatWorkspacePath(entry.path)}</span>
+                          </button>
+                        ))}
+                      </div>
+                      {visibleSavedWorkspaces.length === 0 && filteredDiscovered.length === 0 ? (
+                        <p className="border-l border-[var(--app-border)] py-2 pl-4 text-sm leading-6 text-[var(--app-text-muted)]">
+                          {workspaceSearch.trim() ? 'No matching workspaces. Clear the search or open Explorer.' : 'No saved workspaces yet. Open Explorer to browse, add, or create one.'}
+                        </p>
+                      ) : null}
+                    </section>
+                  </div>
+
+                  <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[var(--app-border)] pt-4">
+                    <Button type="button" variant="outline" onClick={() => transitionToStep('provider')} disabled={submitting}>
+                      Back
+                    </Button>
+                    <Button
+                      type="button"
+                      onClick={openWorkspaceExplorer}
+                      disabled={submitting}
+                      className="min-w-40 border-[var(--app-primary)] bg-[var(--app-primary)] text-[var(--app-primary-text)] shadow-[0_12px_30px_rgb(0_0_0/0.28)] hover:bg-[var(--app-primary-hover)] hover:text-[var(--app-primary-text)] active:bg-[var(--app-primary-active)]"
+                    >
+                      <Plus size={16} />
+                      Add from Explorer
+                    </Button>
+                  </div>
+                </div>
+              ) : null}
             </div>
           </div>
         </div>
       </main>
 
+      {workspaceExplorerOpen && view === 'workspace' ? (
+        <div
+          className={[
+            'fixed inset-0 z-[10000] grid place-items-center p-3 transition-opacity duration-200 ease-out sm:p-6 motion-reduce:transition-none',
+            panelVisible ? 'opacity-100' : 'pointer-events-none opacity-0',
+          ].join(' ')}
+          role="dialog"
+          aria-modal="true"
+          aria-label="Add workspace from Explorer"
+        >
+          <button type="button" className="absolute inset-0 bg-[var(--app-backdrop)]" onClick={() => setWorkspaceExplorerOpen(false)} aria-label="Close Explorer" />
+          <div className="relative z-10 flex h-[min(44rem,calc(100dvh-24px))] w-full max-w-xl flex-col overflow-hidden rounded-3xl border border-[var(--app-border)] bg-[var(--app-surface)] shadow-[var(--shadow-panel)]">
+            <div className="flex items-start justify-between gap-4 border-b border-[var(--app-border)] px-5 py-4 sm:px-6">
+              <div className="grid gap-1">
+                <h2 className="text-xl font-semibold tracking-tight text-[var(--app-text)]">Add workspace</h2>
+                <p className="text-sm leading-6 text-[var(--app-text-muted)]">Add an existing folder or create and add a new one. We’ll guide you through any Git prerequisites.</p>
+              </div>
+              <ModalCloseButton onClick={() => setWorkspaceExplorerOpen(false)} aria-label="Close Explorer" />
+            </div>
+            <div className="min-h-0 flex-1">
+              <WorkspaceFolderTree
+                browser={browser}
+                browserLoading={browserLoading}
+                browserError={browserError}
+                workspaces={workspaces}
+                selectingPath={selectingPath}
+                savingPath={savingPath}
+                openCreatedFolder
+                showPathInWorkspaceAction
+                onBrowsePath={(path) => void browsePath(path)}
+                onOpenWorkspace={handleOpenWorkspace}
+                onCreateWorkspace={handleSaveAndOpenFolder}
+                onCreateFolder={createFolder}
+              />
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   )
 }

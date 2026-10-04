@@ -10,7 +10,7 @@ import (
 )
 
 // Purpose: routeProjectTaskSource must admit exact catalog bindings from bare
-// JSON or one complete JSON/unlabelled fence for audit routing, without treating formatting as
+// JSON or one complete JSON/unlabelled fence, without treating formatting as
 // authority. Threat: backticks break deploy, while permissive extraction could
 // accept extra payloads or bypass stale/foreign binding checks. The API/store
 // fixture is the narrowest layer proving admission and no reservation/allocation
@@ -75,7 +75,7 @@ func TestAutomaticProjectTaskRoutingFencedJSON(t *testing.T) {
 			}
 			runner.response.Text = tc.prefix + raw + tc.suffix
 			w := f.callAPI(http.MethodPost, "/"+proj.ID+"/tasks", map[string]any{
-				"id": "fenced-route", "title": "Fix", "prompt": "Fix repo error", "agent": "finder", "auto_approve": false,
+				"id": "fenced-route", "title": "Fix", "prompt": "Fix repo error", "agent": "coder", "auto_approve": false,
 			}, p)
 			saved, found, err := f.server.sessions.Store().GetProjectTask(f.accountID, proj.ID, "fenced-route")
 			if err != nil || runner.createCalls != 1 {

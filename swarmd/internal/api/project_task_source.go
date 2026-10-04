@@ -72,12 +72,9 @@ func (s *Server) resolveProjectTaskSource(p identity.Principal, proj *pebblestor
 		}
 		if requireRepository {
 			state, err := s.workspace.InspectRepositoryForPrincipal(p, root)
-			if err != nil {
-				return pebblestore.ProjectTaskSource{}, fmt.Errorf("inspect coding source %q: %w; restore source access or select another workspace; project chat remains available", root, err)
-			}
-			if state.State != workspace.RepositoryStateReady || state.Repository != root {
+			if err != nil || state.State != workspace.RepositoryStateReady || state.Repository != root {
 				if path == root || id == scope.WorkspaceID {
-					return pebblestore.ProjectTaskSource{}, fmt.Errorf("project workspace %q is not coding-ready (state: %s): use workspace Git setup to initialize and commit the intended repository, or select another source; project chat remains available", root, state.State)
+					return pebblestore.ProjectTaskSource{}, fmt.Errorf("project workspace %q requires a committed repository: %v", root, err)
 				}
 				continue
 			}

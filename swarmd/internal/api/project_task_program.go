@@ -199,9 +199,6 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 			return nil, err
 		}
 	} else {
-		if requiresRepo && (input.Agent != "finder" || input.Document != nil || input.PlanDocument != nil || input.TaskProgram != nil) && strings.TrimSpace(input.WorkspacePath) == "" && strings.TrimSpace(input.WorkspaceID) == "" {
-			return nil, errors.New("coding task source required: select the intended authorized workspace_id or workspace_path; project chat remains available")
-		}
 		if strings.TrimSpace(input.WorkspacePath) == "" && strings.TrimSpace(input.WorkspaceID) == "" && input.WorkspaceGeneration == 0 {
 			source, contextSources, err = s.routeProjectTaskSource(ctx, p, proj, prompt, requiresRepo)
 		} else {

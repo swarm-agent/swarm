@@ -1137,34 +1137,3 @@ test('SwarmProjectsNamespace: ensureProject and getOrchestratorSession helpers',
     await closeTestServer(ctx);
   }
 });
-
-// Purpose: SDK project creation must carry the durable idempotency identity required
-// by Server.CreateProject, preserve explicit retry keys, and expose fenced context
-// retries without creating another project. A loopback HTTP fixture is the narrowest
-// transport contract test; malformed retry identities must not be accepted.
-test('project creation identity and context retry receipts', { timeout: 10000 }, async () => {
-  let wrongIdentity = false;
-  const ctx = await createTestServer((req, res, body) => {
-    if (req.url === '/v3/projects' && !body.client_request_id) {
-      res.writeHead(400); res.end(JSON.stringify({ error: 'client_request_id required' })); return;
-    }
-    res.writeHead(201, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ project: { id: wrongIdentity ? 'wrong' : 'project', name: 'Project', created_at: 1, updated_at: 1, context_generation: { status: 'running', attempt: 2 } } }));
-  });
-  try {
-    await ctx.projects.create({ name: 'Project' });
-    assert.match(ctx.receivedRequests[0].body.client_request_id, /^sdk-project-/);
-    const input = { name: 'Project', client_request_id: 'stable-request' };
-    await ctx.projects.create(input);
-    await ctx.projects.create(input);
-    assert.deepEqual(ctx.receivedRequests[1].body, ctx.receivedRequests[2].body);
-    assert.equal(ctx.receivedRequests[2].body.client_request_id, 'stable-request');
-    const retried = await ctx.projects.retryContext('project', 1);
-    assert.equal(retried.context_generation?.attempt, 2);
-    assert.equal(ctx.receivedRequests[3].url, '/v3/projects/project/context:retry');
-    assert.deepEqual(ctx.receivedRequests[3].body, { expected_attempt: 1 });
-    wrongIdentity = true;
-    await assert.rejects(() => ctx.projects.retryContext('project', 2), /identity mismatch/);
-    assert.equal(ctx.receivedRequests.filter(r => r.url === '/v3/projects').length, 3);
-  } finally { await closeTestServer(ctx); }
-});

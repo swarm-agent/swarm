@@ -3,8 +3,8 @@ import test from 'node:test'
 import { build } from 'esbuild'
 import { chromium } from 'playwright'
 
-// Requirement: account onboarding must no longer perform workspace setup;
-// WorkspaceHomePage and WorkspaceFolderTree retain selected folders on failures.
+// Requirement: DesktopOnboardingGate, WorkspaceHomePage and WorkspaceFolderTree
+// must retain the exact selected folder through create/add, consent and failure.
 // Threat: duplicate creation, implicit Git mutation, lost retry intent or premature
 // completion. Real React handlers in a hermetic browser with a fake launcher are
 // the narrowest layer proving interaction ordering; repository safety is separately
@@ -53,7 +53,7 @@ test('workspace onboarding interaction and recovery matrix', { timeout: 60000 },
       b.onLoad({ filter: /.*/, namespace: 'router-fixture' }, () => ({ contents: `import React from 'react';export const useNavigate=()=>async()=>{};export const Link=({children,...props})=>React.createElement('a',props,children);`, resolveDir: process.cwd() }))
     } }],
   })
-  const browser = await chromium.launch({ headless: true, ...(process.env.SWARM_TEST_CHROMIUM_PATH ? { executablePath: process.env.SWARM_TEST_CHROMIUM_PATH } : { channel: process.env.SWARM_TEST_BROWSER_CHANNEL || 'chrome' }) })
+  const browser = await chromium.launch({ headless: true, executablePath: process.env.SWARM_TEST_CHROMIUM_PATH || undefined })
   t.after(() => browser.close())
   async function mount(surface = 'onboarding', mobile = false) {
     const page = await browser.newPage({ viewport: { width: mobile ? 390 : 1280, height: 900 } })
@@ -62,7 +62,10 @@ test('workspace onboarding interaction and recovery matrix', { timeout: 60000 },
     await page.setContent('<div id="root"></div>')
     await page.evaluate(s => { (window as any).surface = s }, surface)
     await page.addScriptTag({ content: bundle.outputFiles[0].text })
-    if (surface === 'home' && mobile) await page.getByRole('button', { name: 'Add from Explorer', exact: true }).click()
+    if (surface === 'onboarding') {
+      await page.getByRole('button', { name: 'Continue without provider', exact: true }).click()
+      await page.getByRole('button', { name: 'Add from Explorer', exact: true }).click()
+    } else if (mobile) await page.getByRole('button', { name: 'Add from Explorer', exact: true }).click()
     return page
   }
   async function create(page: Awaited<ReturnType<typeof mount>>) {
@@ -71,18 +74,80 @@ test('workspace onboarding interaction and recovery matrix', { timeout: 60000 },
   }
   async function calls(page: Awaited<ReturnType<typeof mount>>) { return page.evaluate(() => (window as any).calls) }
 
-  await t.test('account completion failure is recoverable without any workspace mutation', async () => {
+  await t.test('created onboarding folder continues; cancel has no Git effect; setup and save failures retain retry', async () => {
     const page = await mount()
     try {
-      await page.evaluate(() => { (window as any).failFinish = true })
-      await page.getByRole('button', { name: 'Continue without provider', exact: true }).click()
-      await page.getByText('Finalization failed', { exact: true }).waitFor()
-      assert.deepEqual(await calls(page), [])
-      await page.evaluate(() => { (window as any).failFinish = false })
-      await page.getByRole('button', { name: 'Continue without provider', exact: true }).click()
+      await create(page)
+      const initialize = page.getByRole('button', { name: 'Initialize Git repository and add workspace', exact: true })
+      await initialize.waitFor()
+      assert.deepEqual(await calls(page), [['create','/workspace','new'],['save','/workspace/new']])
+      page.once('dialog', dialog => dialog.dismiss())
+      await initialize.click()
+      assert.equal((await calls(page)).filter((c: string[]) => c[0] === 'setup').length, 0)
+      await page.evaluate(() => { (window as any).failSetup = true })
+      page.once('dialog', dialog => dialog.accept())
+      await initialize.click()
+      await page.getByText('Setup failed', { exact: true }).waitFor()
+      await page.evaluate(() => { (window as any).failSetup = false; (window as any).failSave = true })
+      page.once('dialog', dialog => dialog.accept())
+      await initialize.click()
+      await page.getByRole('button', { name: 'Retry adding this folder' }).waitFor()
+      assert.equal((await calls(page)).some((c: string[]) => c[0] === 'complete'), false)
+      await page.evaluate(() => { (window as any).failSave = false })
+      await page.getByRole('button', { name: 'Retry adding this folder' }).click()
       await page.waitForFunction(() => (window as any).calls.some((c: string[]) => c[0] === 'complete'))
-      assert.deepEqual(await calls(page), [['complete']])
-      assert.equal(await page.getByRole('button', { name: 'Add from Explorer', exact: true }).count(), 0)
+      const log = await calls(page)
+      assert.equal(log.filter((c: string[]) => c[0] === 'create').length, 1)
+      assert.ok(log.filter((c: string[]) => ['setup','save','open'].includes(c[0])).every((c: string[]) => c[1] === '/workspace/new'))
+    } finally { await page.close() }
+  })
+  await t.test('post-setup finalization failure returns to the selected folder instead of a stuck setup pane', async () => {
+    const page = await mount()
+    try {
+      await create(page)
+      const initialize = page.getByRole('button', { name: 'Initialize Git repository and add workspace', exact: true })
+      await initialize.waitFor()
+      await page.evaluate(() => { (window as any).failFinish = true })
+      page.once('dialog', d => d.accept())
+      await initialize.click()
+      await page.getByRole('button', { name: 'Retry adding this folder' }).waitFor()
+      await page.getByText('Finalization failed', { exact: true }).waitFor()
+      assert.equal((await calls(page)).some((c: string[]) => c[0] === 'complete'), false)
+    } finally { await page.close() }
+  })
+  for (const [state, heading] of [['git_unavailable','Git is not installed or available'],['needs_initial_commit','Create the first Git commit'],['needs_assisted_setup','A committed Git repository is required']]) {
+    await t.test('existing onboarding folder preserves prerequisite: '+state, async () => {
+      const page = await mount()
+      try {
+        await page.evaluate(s => { Object.assign((window as any).repository,{state:s,canSetup:false}) }, state)
+        await page.getByRole('button', { name: /Add folder.*as a new workspace/ }).click()
+        await page.getByRole('heading', { name: heading }).waitFor()
+        assert.deepEqual(await calls(page), [['save','/workspace']])
+        assert.equal(await page.getByRole('button', { name: 'Initialize Git repository and add workspace', exact:true }).count(), 0)
+        assert.equal(await page.getByRole('button', { name: /Ask Swarm/ }).count(), 0)
+      } finally { await page.close() }
+    })
+  }
+  await t.test('failed folder creation never adds a workspace and can be retried', async () => {
+    const page = await mount()
+    try {
+      await page.evaluate(() => { (window as any).failCreate = true })
+      await create(page)
+      await page.getByText('Folder creation failed', { exact: true }).waitFor()
+      assert.deepEqual(await calls(page), [['create','/workspace','new']])
+      await page.evaluate(() => { (window as any).failCreate = false })
+      await create(page)
+      await page.getByRole('button', { name: 'Initialize Git repository and add workspace', exact: true }).waitFor()
+      assert.deepEqual(await calls(page), [['create','/workspace','new'],['create','/workspace','new'],['save','/workspace/new']])
+    } finally { await page.close() }
+  })
+  await t.test('ready existing folder adds directly without create or setup', async () => {
+    const page = await mount()
+    try {
+      await page.evaluate(() => { (window as any).repository.state = 'ready' })
+      await page.getByRole('button', { name: /Add folder.*as a new workspace/ }).click()
+      await page.waitForFunction(() => (window as any).calls.some((c: string[]) => c[0] === 'complete'))
+      assert.deepEqual(await calls(page), [['save','/workspace'],['open','/workspace'],['complete']])
     } finally { await page.close() }
   })
   await t.test('editor folder creation continues with the returned child path', async () => {

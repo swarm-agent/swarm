@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -656,13 +658,19 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 		}
 
 		var wsRefs []pebblestore.ProjectWorkspaceRef
-		if raw, present := args["workspaces"]; present {
-			data, err := json.Marshal(raw)
-			if err != nil {
-				return "", err
-			}
-			if err := json.Unmarshal(data, &wsRefs); err != nil {
-				return "", errors.New("workspaces must contain registered workspace references")
+		if wsRaw, ok := args["workspaces"].([]any); ok {
+			for _, item := range wsRaw {
+				if m, ok := item.(map[string]any); ok {
+					ref := pebblestore.ProjectWorkspaceRef{
+						WorkspaceID: asString(m["workspace_id"]),
+						Path:        asString(m["path"]),
+						Role:        asString(m["role"]),
+						Label:       asString(m["label"]),
+					}
+					if ref.Path != "" {
+						wsRefs = append(wsRefs, ref)
+					}
+				}
 			}
 		}
 
@@ -673,14 +681,7 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 			Workspaces:     wsRefs,
 			ProjectContext: pCtx,
 		}
-		creator, ok := r.getProjectTaskLifecycleService().(interface {
-			CreateProject(context.Context, identity.Principal, pebblestore.ProjectRecord, string) (*pebblestore.ProjectRecord, error)
-		})
-		if !ok {
-			return "", errors.New("project creation lifecycle unavailable")
-		}
-		proj, err = creator.CreateProject(ctx, p, *proj, strings.TrimSpace(asString(args["client_request_id"])))
-		if err != nil {
+		if err := r.projects.PutProject(accountScopeID, proj); err != nil {
 			return "", err
 		}
 		response["project"] = proj
@@ -701,34 +702,7 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 				return "", err
 			}
 		}
-		var authorizedRefs []pebblestore.ProjectWorkspaceRef
-		if raw, present := args["workspaces"]; present {
-			data, err := json.Marshal(raw)
-			if err != nil {
-				return "", err
-			}
-			if err := json.Unmarshal(data, &authorizedRefs); err != nil {
-				return "", err
-			}
-			authorizer, ok := r.getProjectTaskLifecycleService().(interface {
-				AuthorizeProjectWorkspaces(identity.Principal, []pebblestore.ProjectWorkspaceRef) ([]pebblestore.ProjectWorkspaceRef, error)
-			})
-			if !ok {
-				return "", errors.New("project workspace authorization unavailable")
-			}
-			authorizedRefs, err = authorizer.AuthorizeProjectWorkspaces(p, authorizedRefs)
-			if err != nil {
-				return "", err
-			}
-		}
 		updated, err := r.projects.UpdateProject(accountScopeID, id, func(p *pebblestore.ProjectRecord) error {
-			if p.ContextGeneration != nil && p.ContextGeneration.Status != "ready" {
-				for _, key := range []string{"workspaces", "name", "description", "project_context"} {
-					if _, ok := args[key]; ok {
-						return errors.New("finish or retry project context before editing its inputs")
-					}
-				}
-			}
 			if _, present := args["theme_id"]; present {
 				p.ThemeID = themeID
 			}
@@ -756,7 +730,7 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 						}
 					}
 				}
-				p.Workspaces = authorizedRefs
+				p.Workspaces = wsRefs
 			}
 			return nil
 		})
@@ -780,7 +754,52 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 		response["deleted"] = true
 
 	case "synthesize_context":
-		return "", errors.New("standalone context synthesis is retired; create a project for durable AI context generation")
+		var wsPaths []string
+		if wsRaw, ok := args["workspaces"].([]any); ok {
+			for _, item := range wsRaw {
+				if m, ok := item.(map[string]any); ok {
+					if p := asString(m["path"]); p != "" {
+						wsPaths = append(wsPaths, p)
+					}
+				} else if s, ok := item.(string); ok && s != "" {
+					wsPaths = append(wsPaths, s)
+				}
+			}
+		}
+
+		projectName := strings.TrimSpace(asString(args["name"]))
+		if projectName == "" {
+			projectName = "Project"
+		}
+
+		var sb strings.Builder
+		sb.WriteString(fmt.Sprintf("# %s\n\n", projectName))
+		sb.WriteString("## Workspaces & Architecture\n")
+		for _, p := range wsPaths {
+			base := filepath.Base(p)
+			sb.WriteString(fmt.Sprintf("- `%s` (`%s`)\n", base, p))
+			for _, docName := range []string{"README.md", "AGENTS.md"} {
+				docPath := filepath.Join(p, docName)
+				if fi, err := os.Stat(docPath); err == nil && !fi.IsDir() {
+					if data, err := os.ReadFile(docPath); err == nil {
+						lines := strings.Split(string(data), "\n")
+						for i, l := range lines {
+							if i > 5 {
+								break
+							}
+							trimmed := strings.TrimSpace(l)
+							if trimmed != "" && !strings.HasPrefix(trimmed, "#") {
+								sb.WriteString(fmt.Sprintf("  > %s\n", trimmed))
+								break
+							}
+						}
+					}
+				}
+			}
+		}
+		sb.WriteString("\n## Operating Rules\n- Local-first architecture; durable V3 sessions.\n- Keep changes minimal, tested, and high-craft.\n")
+
+		response["synthesized_context"] = sb.String()
 
 	case "propose_task", "create_task":
 		projectID := strings.TrimSpace(asString(args["project_id"]))

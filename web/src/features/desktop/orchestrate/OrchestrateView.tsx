@@ -1,6 +1,4 @@
 import { PersonalAvatar } from './personal-avatar'
-import { ProjectCreationFlow } from './project-creation-flow'
-import { creationProjectSummary, projectContextPending, type CreationProject } from '../state/project-creation'
 import { ContextRemaining } from './orchestrator-composer-surface'
 import { ProjectHeaderIdentity, ProjectImageSettings } from './project-header-identity'
 import { useLayoutEffect, useState, useReducer, useMemo, useEffect, useCallback, useRef, useSyncExternalStore, useId } from 'react'
@@ -65,6 +63,7 @@ import {
   Paperclip,
   Play,
   Plus,
+  RefreshCw,
   RotateCcw,
   Search,
   Settings2,
@@ -3173,16 +3172,15 @@ export function OrchestrateView({
 
   // Project Onboarding & Creation State
   const [isOnboardingActive, setIsOnboardingActive] = useState<boolean>(createProjectIntent)
-  useEffect(() => { setIsOnboardingActive(createProjectIntent) }, [createProjectIntent, routeProjectSegment, routeConversationId])
-  const [creationProject, setCreationProject] = useState<CreationProject>()
-  const saveCreationProject = (project: CreationProject) => {
-    setProjects(previous => {
-      const summary = creationProjectSummary(project)
-      return previous.some(item => item.id === project.id)
-        ? previous.map(item => item.id === project.id ? { ...item, projectContext: project.project_context, contextGeneration: project.context_generation } : item)
-        : [summary, ...previous]
-    })
-  }
+  useEffect(() => { if (createProjectIntent) setIsOnboardingActive(true) }, [createProjectIntent])
+  const [onboardingName, setOnboardingName] = useState('Swarm Platform')
+  const [onboardingDescription, setOnboardingDescription] = useState('Core daemon, desktop client, and multi-workspace initiative')
+  const [onboardingWorkspaces, setOnboardingWorkspaces] = useState<Array<{ id?: string; path: string; label: string; role: 'primary_code' | 'auxiliary'; selected: boolean }>>([])
+  const [customFolderPath, setCustomFolderPath] = useState('')
+  const [isEditingContext, setIsEditingContext] = useState(false)
+  const [isSynthesizing, setIsSynthesizing] = useState(false)
+  const [isActivating, setIsActivating] = useState(false)
+  const [onboardingContext, setOnboardingContext] = useState('')
 
   // Canonical Desktop Projects runtime state
   const projectState = useDesktopProject(selectedProjectId)
@@ -3764,6 +3762,21 @@ export function OrchestrateView({
         }
       } catch {}
 
+      // 2. Discover Registered Workspaces
+      try {
+        const wsRes = await requestJson<{ workspaces?: Array<{ path: string; name?: string; id?: string }> }>('/v1/workspace/list?limit=200')
+        if (wsRes?.workspaces && wsRes.workspaces.length > 0 && !cancelled) {
+          const detected = wsRes.workspaces.map((w, idx) => ({
+            id: w.id || '',
+            path: w.path,
+            label: w.name || w.path.split('/').filter(Boolean).pop() || 'Workspace',
+            role: (idx === 0 ? ('primary_code' as const) : ('auxiliary' as const)),
+            selected: false,
+          }))
+          setOnboardingWorkspaces(detected)
+        }
+      } catch {}
+
       // 4. Projects from Pebble
       try {
         const res = await requestJson<{ projects?: any[] }>('/v3/projects')
@@ -3785,7 +3798,6 @@ export function OrchestrateView({
             pendingDeliverablesCount: 0,
             runningTasksCount: 0,
             projectContext: p.project_context,
-            contextGeneration: p.context_generation,
             themeId: p.theme_id || '',
             iconPNGDataURL: p.icon_png_data_url || '',
             primarySessionId: undefined,
@@ -3999,7 +4011,7 @@ export function OrchestrateView({
 
   // Helper to ensure an active orchestrator session exists for a project
   const newConversation = async (): Promise<string | null> => {
-    if (!selectedProject || conversationCreating.current || projectContextPending(selectedProject)) return null
+    if (!selectedProject || conversationCreating.current) return null
     conversationCreating.current = true
     setCreatingConversation(true); setConversationError('')
     const projectId = selectedProject.id
@@ -4722,10 +4734,6 @@ export function OrchestrateView({
     }
     const prompt = taskIntent === 'image' ? newTaskPrompt : newTaskPrompt.trim()
     if (!prompt.trim() || !selectedProject?.id) return
-    if (taskIntent === 'code' && !newTaskWorkspace.trim()) {
-      setDeployError('Select the intended coding workspace. Git setup affects tasks only; project chat remains available.')
-      return
-    }
     const scenePrompts = taskIntent === 'video' ? videoScenePrompts.split('\n').map(value => value.trim()).filter(Boolean) : []
 
     if (taskIntent === 'video') {
@@ -4789,8 +4797,8 @@ export function OrchestrateView({
 
       const attachedMediaForTask = taggedMedia
 
-      // Coding requires an explicit source. Audit routing remains backend-owned;
-      // every selection must match the authorized project catalog.
+      // Omitted Auto-detect is resolved by the backend only if there is exactly one
+      // authorized project repository. Explicit choices must match the project catalog.
       const workspaceSelection = taskIntent === 'code' || taskIntent === 'audit'
         ? taskWorkspaceSelection(newTaskWorkspace, selectedProject)
         : {}
@@ -5455,6 +5463,136 @@ export function OrchestrateView({
     }
   }
 
+  // Workspaces toggling for project onboarding
+  const handleToggleWorkspace = (path: string) => {
+    setOnboardingWorkspaces((prev) =>
+      prev.map((w) => (w.path === path ? { ...w, selected: !w.selected } : w))
+    )
+  }
+
+  const handleAddCustomFolder = () => {
+    const trimmed = customFolderPath.trim()
+    if (!trimmed) return
+    if (onboardingWorkspaces.some((w) => w.path === trimmed)) {
+      setOnboardingWorkspaces((prev) =>
+        prev.map((w) => (w.path === trimmed ? { ...w, selected: true } : w))
+      )
+    } else {
+      const base = trimmed.split('/').filter(Boolean).pop() || 'Workspace'
+      setOnboardingWorkspaces((prev) => [
+        ...prev,
+        { path: trimmed, label: base, role: 'auxiliary', selected: true },
+      ])
+    }
+    setCustomFolderPath('')
+  }
+
+  const handleSynthesizeContext = async () => {
+    setIsSynthesizing(true)
+    try {
+      const selectedWs = onboardingWorkspaces.filter((w) => w.selected).map((w) => w.path)
+      const res = await requestJson<{ project_context: string }>('/v3/projects/synthesize-context', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: onboardingName.trim() || 'Project Architecture',
+          workspaces: selectedWs,
+        }),
+      })
+      if (res?.project_context) {
+        setOnboardingContext(res.project_context)
+      }
+    } catch (err) {
+      console.warn('Context synthesis failed, generating local fallback:', err)
+      const selectedWs = onboardingWorkspaces.filter((w) => w.selected)
+      const synthesized = `# ${onboardingName.trim() || 'Project Architecture'}
+
+## Overview
+${onboardingDescription.trim() || 'Multi-workspace software initiative managed by Swarm Orchestrator.'}
+
+## Subsystems & Workspaces
+${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
+
+## Operational Directives
+- Local-first architecture; session records persist to Pebble database.
+- Subagents execute inside isolated Git worktrees.
+- Autonomous project tasks deliver verified outcomes (code_pr, media_bundle, bug_patch, audit_report).
+- Verification gate: all pull requests and deliverables require review before promotion.
+`
+      setOnboardingContext(synthesized)
+    } finally {
+      setIsSynthesizing(false)
+    }
+  }
+
+  const handleCreateAndActivateProject = async () => {
+    setIsActivating(true)
+    const selectedWs = onboardingWorkspaces.filter((w) => w.selected).map((w) => ({
+      workspace_id: w.id || '',
+      path: w.path,
+      role: w.role,
+      label: w.label,
+    }))
+
+    const payload = {
+      name: onboardingName.trim() || 'My Project',
+      description: onboardingDescription.trim(),
+      workspaces: selectedWs,
+      project_context: onboardingContext,
+    }
+
+    let newId = ''
+    try {
+      const res = await requestJson<{ project: { id: string } }>('/v3/projects', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+      if (res?.project?.id) {
+        newId = res.project.id
+      }
+    } catch (err) {
+      setConversationError(err instanceof Error ? err.message : 'Unable to create project')
+      setIsActivating(false)
+      return
+    }
+    if (!newId) { setConversationError('Project creation returned no identity'); setIsActivating(false); return }
+
+    // Spawn primary orchestrator session with valid client_request_id and model preference
+    let orchSessionId = ''
+    const clientRequestId = `desktop-v3-create:${crypto.randomUUID()}`
+    try {
+      orchSessionId = await createProjectConversation(newId, clientRequestId)
+    } catch (e) {
+      setConversationError(e instanceof Error ? e.message : 'Project saved, but conversation creation failed. Use New session to retry.')
+    }
+
+    const newProject: ProjectSummary = {
+      id: newId,
+      name: payload.name,
+      slug: payload.name.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
+      description: payload.description,
+      repoPath: selectedWs[0]?.path || '.',
+      branch: 'dev',
+      gitStatus: 'clean',
+      linkedWorkspaces: selectedWs.map((w) => w.path),
+      activeWorkersCount: 0,
+      pendingDeliverablesCount: 0,
+      runningTasksCount: 0,
+      projectContext: payload.project_context,
+      primarySessionId: undefined,
+    }
+
+    setProjects((prev) => [newProject, ...prev])
+    void navigate(projectConversationLink(projectRouteSegment(newProject, [newProject, ...projects]), orchSessionId || undefined))
+    if (orchSessionId) {
+      setActiveSessionId(orchSessionId)
+      setActiveTaskId(null)
+    }
+    setIsOnboardingActive(false)
+    setIsActivating(false)
+  }
+
   useEffect(() => {
     if (activeTask || workerChatOpen) responsiveLayout.setPanel('chat')
   }, [activeTask?.id, workerChatOpen])
@@ -5482,7 +5620,7 @@ export function OrchestrateView({
             <div className="flex min-w-0 flex-1 items-center gap-2.5">
               <ProjectHeaderIdentity project={selectedProject} projects={projects}
                 onSelect={id => { setSelectedProjectId(id); setIsOnboardingActive(false); setActiveTaskId(null) }}
-                onCreate={() => { setCreationProject(undefined); void navigate({ to: '/swarm', search: { createProject: true } }) }}
+                onCreate={() => { setIsOnboardingActive(true); setActiveNavTab('home') }}
                 onManage={() => { setIsOnboardingActive(false); setActiveNavTab('projects') }} />
             </div>
 
@@ -5499,7 +5637,7 @@ export function OrchestrateView({
           creating={creatingConversation} error={projectRouteError || conversationError || conversations.error}
           onCreate={() => void newConversation()}
           onRetry={() => { conversations.refresh(); if (routeConversationId && !admittedParentId) setAdmissionAttempt(value => value + 1) }}
-          onSelect={() => { setIsOnboardingActive(false); setActiveTaskId(null); setActiveSessionId(admittedParentId); responsiveLayout.setPanel('chat'); responsiveLayout.setNavigationOpen(false) }} />
+          onSelect={() => { setActiveTaskId(null); setActiveSessionId(admittedParentId); responsiveLayout.setPanel('chat'); responsiveLayout.setNavigationOpen(false) }} />
 
         {/* Workers for the selected project only. Project management lives in the header. */}
         <div className="p-3 border-b border-slate-800/80 flex-1 overflow-y-auto">
@@ -5738,16 +5876,182 @@ export function OrchestrateView({
           <Link {...projectPageLink('home')} activeOptions={{ exact: true, includeSearch: true }} aria-current={activeNavTab === 'home' ? 'page' : undefined} className="rounded-lg border border-slate-700 px-3 py-2">Tasks</Link>
           <Link {...projectPageLink('workers')} activeOptions={{ exact: true, includeSearch: true }} aria-current={activeNavTab === 'workers' ? 'page' : undefined} className="rounded-lg border border-slate-700 px-3 py-2">Workers</Link>
         </nav>
-        {(isOnboardingActive && (activeNavTab === 'home' || activeNavTab === 'projects')) || (!routeConversationId && selectedProject?.contextGeneration && (projectContextPending(selectedProject) || conversations.rows.length === 0)) ? (
-          <ProjectCreationFlow key={isOnboardingActive ? creationProject?.id || 'new' : selectedProjectId}
-            project={isOnboardingActive ? creationProject : selectedProject ? { id: selectedProject.id, name: selectedProject.name, description: selectedProject.description, project_context: selectedProject.projectContext, context_generation: selectedProject.contextGeneration } : undefined}
-            onSaved={saveCreationProject}
-            onCancel={() => { setIsOnboardingActive(false); void navigate({ to: '/projects' }) }}
-            onOpen={(project, sessionId) => {
-              saveCreationProject(project); setIsOnboardingActive(false); setCreationProject(undefined)
-              setActiveTaskId(null); responsiveLayout.setPanel('chat')
-              void navigate(projectConversationLink(projectRouteSegment(project, projects.some(item => item.id === project.id) ? projects : [project, ...projects]), sessionId))
-            }} />
+        {isOnboardingActive && (activeNavTab === 'home' || activeNavTab === 'projects') ? (
+          <div className="flex-1 flex flex-col min-h-0 overflow-y-auto p-6 space-y-6">
+            {/* Onboarding Header */}
+            <div className="flex items-start justify-between border-b border-slate-800/80 pb-5">
+              <div>
+                <div className="flex items-center gap-2 text-blue-400 font-semibold text-xs uppercase tracking-wider mb-1">
+                  <Sparkles size={14} className="text-blue-400 animate-pulse" />
+                  <span>Project Setup & Architecture Synthesis</span>
+                </div>
+                <h1 className="text-xl font-bold text-white tracking-tight">Create Your Project</h1>
+                <p className="text-xs text-slate-400 mt-1 max-w-xl">
+                  A Project elevates your local workspaces into an executive space coordinated by the Swarm Orchestrator.
+                </p>
+              </div>
+              {projects.length > 0 && (
+                <button
+                  onClick={() => setIsOnboardingActive(false)}
+                  className="text-xs text-slate-400 hover:text-slate-200 px-3 py-1.5 rounded-xl border border-slate-800 hover:bg-slate-800 transition-colors"
+                >
+                  Cancel
+                </button>
+              )}
+            </div>
+
+            {/* Project Identity Inputs */}
+            <div className="rounded-2xl border border-slate-800/80 bg-slate-900/60 p-4 space-y-3">
+              <div className="text-xs font-semibold text-slate-300">Project Identity</div>
+              <div className="swarm-content-grid grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[11px] text-slate-400 mb-1 block">Project Name</label>
+                  <input
+                    type="text"
+                    value={onboardingName}
+                    onChange={(e) => setOnboardingName(e.target.value)}
+                    placeholder="e.g. Swarm Platform"
+                    className="w-full text-xs rounded-xl bg-slate-950/80 border border-slate-800 px-3 py-2 text-slate-200 placeholder-slate-600 focus:outline-none focus:border-blue-500/60 transition-all font-medium"
+                  />
+                </div>
+                <div>
+                  <label className="text-[11px] text-slate-400 mb-1 block">Description</label>
+                  <input
+                    type="text"
+                    value={onboardingDescription}
+                    onChange={(e) => setOnboardingDescription(e.target.value)}
+                    placeholder="e.g. Core Go daemon, desktop client, and video production pipeline"
+                    className="w-full text-xs rounded-xl bg-slate-950/80 border border-slate-800 px-3 py-2 text-slate-200 placeholder-slate-600 focus:outline-none focus:border-blue-500/60 transition-all font-medium"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Section 1: Workspace Selection */}
+            <div className="rounded-2xl border border-slate-800/80 bg-slate-900/60 p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-xs font-semibold text-slate-300">1. Select Bound Workspaces</div>
+                  <p className="text-[11px] text-slate-500">Choose existing repositories on your machine to bind into this project.</p>
+                </div>
+                <span className="text-[11px] text-blue-400 font-medium">
+                  {onboardingWorkspaces.filter((w) => w.selected).length} selected
+                </span>
+              </div>
+
+              <div className="grid grid-cols-1 gap-2 pt-1">
+                {onboardingWorkspaces.map((ws) => (
+                  <div
+                    key={ws.path}
+                    onClick={() => handleToggleWorkspace(ws.path)}
+                    className={`flex items-center justify-between p-3 rounded-xl border transition-all cursor-pointer ${
+                      ws.selected
+                        ? 'border-blue-500/40 bg-blue-950/20 text-white shadow-sm'
+                        : 'border-slate-800/80 bg-slate-950/40 text-slate-400 hover:border-slate-700/80 hover:text-slate-200'
+                    }`}
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className={`h-4 w-4 rounded flex items-center justify-center border transition-all ${
+                        ws.selected ? 'bg-blue-600 border-blue-500 text-white' : 'border-slate-700 bg-slate-900'
+                      }`}>
+                        {ws.selected && <Check size={11} strokeWidth={3} />}
+                      </div>
+                      <div>
+                        <div className="text-xs font-semibold flex items-center gap-2">
+                          <span>{ws.label}</span>
+                          <span className={`text-[10px] px-1.5 py-0.5 rounded font-mono ${
+                            ws.role === 'primary_code' ? 'bg-blue-500/10 text-blue-400 border border-blue-500/20' : 'bg-slate-800 text-slate-400'
+                          }`}>
+                            {ws.role}
+                          </span>
+                        </div>
+                        <div className="text-[11px] text-slate-500 font-mono mt-0.5">{ws.path}</div>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Add folder inline */}
+              <div className="pt-2 flex items-center gap-2">
+                <input
+                  type="text"
+                  value={customFolderPath}
+                  onChange={(e) => setCustomFolderPath(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleAddCustomFolder()}
+                  placeholder="Enter path to another workspace folder on this machine..."
+                  className="flex-1 text-xs rounded-xl bg-slate-950/80 border border-slate-800 px-3 py-2 text-slate-200 placeholder-slate-600 focus:outline-none focus:border-blue-500/60 font-mono"
+                />
+                <button
+                  type="button"
+                  onClick={handleAddCustomFolder}
+                  className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium transition-all"
+                >
+                  Add Folder
+                </button>
+              </div>
+            </div>
+
+            {/* Section 2: AI Context Synthesis */}
+            <div className="rounded-2xl border border-slate-800/80 bg-slate-900/60 p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-xs font-semibold text-slate-300">2. Authoritative Project Context (project.md)</div>
+                  <p className="text-[11px] text-slate-500">
+                    Synthesizes architectural boundaries from selected workspaces to inject into Swarm Orchestrator.
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleSynthesizeContext}
+                    disabled={isSynthesizing || onboardingWorkspaces.filter((w) => w.selected).length === 0}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-blue-600/20 hover:bg-blue-600/30 text-blue-400 border border-blue-500/30 text-xs font-medium transition-all disabled:opacity-50"
+                  >
+                    <Sparkles size={12} className={isSynthesizing ? 'animate-spin' : ''} />
+                    <span>{isSynthesizing ? 'Synthesizing...' : 'Generate with AI'}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsEditingContext(!isEditingContext)}
+                    className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs transition-all"
+                  >
+                    <Edit3 size={12} />
+                    <span>{isEditingContext ? 'Preview' : 'Edit'}</span>
+                  </button>
+                </div>
+              </div>
+
+              {isEditingContext ? (
+                <textarea
+                  value={onboardingContext}
+                  onChange={(e) => setOnboardingContext(e.target.value)}
+                  rows={10}
+                  className="w-full text-xs font-mono rounded-xl bg-slate-950/80 border border-slate-800 p-3 text-slate-200 focus:outline-none focus:border-blue-500/60 transition-all leading-relaxed"
+                />
+              ) : (
+                <div className="rounded-xl bg-slate-950/80 border border-slate-800 p-3 max-h-56 overflow-y-auto font-mono text-[11px] text-slate-300 whitespace-pre-wrap leading-relaxed">
+                  {onboardingContext || 'Click "Generate with AI" to synthesize architecture from selected workspaces.'}
+                </div>
+              )}
+            </div>
+
+            {/* Submit Action */}
+            <div className="flex items-center justify-between pt-2">
+              <div className="text-[11px] text-slate-500">
+                Local-first • Saved securely in Swarm Pebble database
+              </div>
+              <button
+                type="button"
+                onClick={handleCreateAndActivateProject}
+                disabled={isActivating || !onboardingName.trim()}
+                className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-semibold text-xs shadow-lg shadow-blue-600/20 transition-all flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <span>{isActivating ? 'Activating...' : 'Create & Activate Project'}</span>
+                <ArrowRight size={14} />
+              </button>
+            </div>
+          </div>
         ) : activeNavTab === 'projects' ? (
           /* PROJECTS OVERVIEW TAB */
           <div className="flex-1 flex flex-col min-h-0 overflow-y-auto p-6 space-y-4">
@@ -5757,7 +6061,7 @@ export function OrchestrateView({
                 <p className="text-xs text-slate-400 mt-0.5">Projects managed by Swarm Orchestrator with Pebble persistence</p>
               </div>
               <button
-                onClick={() => { setCreationProject(undefined); void navigate({ to: '/swarm', search: { createProject: true } }) }}
+                onClick={() => setIsOnboardingActive(true)}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold"
               >
                 <Plus size={13} />
@@ -5990,12 +6294,46 @@ export function OrchestrateView({
                     <span>Delete Project</span>
                   </button>
                 )}
-                {projectContextPending(selectedProject) && <button type="button" onClick={() => setActiveNavTab('home')}>Resume context generation</button>}
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (selectedProject?.linkedWorkspaces) {
+                      setIsSynthesizing(true)
+                      requestJson<{ project_context: string }>('/v3/projects/synthesize-context', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                          name: selectedProject.name,
+                          workspaces: selectedProject.linkedWorkspaces,
+                        }),
+                      })
+                        .then((res) => {
+                          if (res?.project_context) {
+                            requestJson(`/v3/projects/${selectedProject.id}`, {
+                              method: 'PATCH',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ project_context: res.project_context }),
+                            }).then(() => {
+                              setProjects((prev) =>
+                                prev.map((p) => (p.id === selectedProject.id ? { ...p, projectContext: res.project_context } : p))
+                              )
+                            })
+                          }
+                        })
+                        .finally(() => setIsSynthesizing(false))
+                    }
+                  }}
+                  disabled={isSynthesizing}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-blue-600/20 hover:bg-blue-600/30 text-blue-400 border border-blue-500/30 text-xs font-semibold transition-all disabled:opacity-50"
+                >
+                  <RefreshCw size={12} className={isSynthesizing ? 'animate-spin' : ''} />
+                  <span>{isSynthesizing ? 'Synthesizing...' : 'Re-synthesize Context'}</span>
+                </button>
               </div>
             </div>
             <div className="rounded-2xl border border-slate-800 bg-slate-950 p-4">
               <pre className="font-mono text-xs text-slate-300 whitespace-pre-wrap leading-relaxed overflow-x-auto">
-                {selectedProject?.projectContext || 'No generated project context is available for this project.'}
+                {selectedProject?.projectContext || 'No synthesized context available. Click "Re-synthesize Context" to scan bound repositories.'}
               </pre>
             </div>
           </div>
@@ -7235,7 +7573,7 @@ export function OrchestrateView({
                   <div className="flex items-center justify-between mb-1">
                     <label className="text-[11px] text-slate-400 font-medium">Target Workspace</label>
                     <span className="text-[10px] text-blue-400 font-mono">
-                      {resolveTaskWorkspace(newTaskWorkspace) || (taskIntent === 'code' ? 'Select a workspace' : 'Let Router Decide')}
+                      {resolveTaskWorkspace(newTaskWorkspace) || 'Let Router Decide'}
                     </span>
                   </div>
                   {selectedProject?.workspaces && selectedProject.workspaces.length > 0 ? (
@@ -7247,7 +7585,7 @@ export function OrchestrateView({
                       }}
                       className="w-full rounded-lg bg-slate-950 border border-slate-800 px-3 py-2 text-white focus:outline-none focus:border-blue-500/60 text-xs"
                     >
-                      <option value="">{taskIntent === 'code' ? 'Select the intended coding workspace' : '✨ Let Router Decide (automatic)'}</option>
+                      <option value="">✨ Let Router Decide (automatic)</option>
                       {selectedProject.workspaces.map((ws) => (
                         <option key={ws.workspace_id || ws.path} value={ws.path}>
                           {ws.label ? `${ws.label} — ` : ''}{ws.path}
@@ -7256,10 +7594,10 @@ export function OrchestrateView({
                     </select>
                   ) : (
                     <div className="text-[11px] font-mono text-slate-400 px-3 py-1.5 rounded-lg bg-slate-950/60 border border-slate-800/80 truncate">
-                      {resolveTaskWorkspace(newTaskWorkspace) || 'Link a project workspace to enable repository tasks'}
+                      {resolveTaskWorkspace(newTaskWorkspace) || 'Let Router Decide — link a project workspace to enable routing'}
                     </div>
                   )}
-                  <p className="mt-1 text-[10px] text-slate-400">{taskIntent === 'code' ? 'Choose the intended source. Coding requires a committed Git repository and isolated worktree; setup errors do not block project chat.' : 'Router selects an authorized source and read-only context on submission. Your approval setting still controls launch.'}</p>
+                  <p className="mt-1 text-[10px] text-slate-400">Router selects an authorized source and read-only context on submission. Your approval setting still controls launch.</p>
                   {deployPreviewQuery.data?.workspaceDiagnostic && (
                     <p className="mt-1 text-[10px] text-amber-400" role="status">Workspace: {deployPreviewQuery.data.workspaceDiagnostic}</p>
                   )}

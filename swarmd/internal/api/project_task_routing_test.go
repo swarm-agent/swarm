@@ -70,16 +70,15 @@ func routingFixture(t *testing.T) (*matrixTestFixture, identity.Principal, *pebb
 }
 
 // Purpose: CreateProjectTask must admit the configured Router's exact authorized
-// source for an audit, retain read-only context and user options, and leave confirmation pending.
-// Coding tasks instead require an explicit source, covered by TestProjectCodingSourceAdmission.
+// source, retain read-only context and user options, and leave confirmation pending.
 // Threat: preview/retry could call providers, change the source, or launch before
 // approval. This hermetic API/store fixture proves the real admission boundary.
 func TestAutomaticProjectTaskRoutingAdmissionAndReplay(t *testing.T) {
 	f, p, proj, source, runner := routingFixture(t)
-	if _, err := f.server.agentModelSettings.UpdateSystemAgent(identity.ContextWithPrincipal(context.Background(), p), "finder", pebblestore.AgentModelAssignment{Provider: "recording", Model: "router-model", Thinking: "high", ServiceTier: "priority"}); err != nil {
+	if _, err := f.server.agentModelSettings.UpdateSystemAgent(identity.ContextWithPrincipal(context.Background(), p), "coder", pebblestore.AgentModelAssignment{Provider: "recording", Model: "router-model", Thinking: "high", ServiceTier: "priority"}); err != nil {
 		t.Fatal(err)
 	}
-	preview := f.callAPI(http.MethodPost, "/"+proj.ID+"/tasks:preview", map[string]any{"agent": "finder", "prompt": "Fix repo error"}, p)
+	preview := f.callAPI(http.MethodPost, "/"+proj.ID+"/tasks:preview", map[string]any{"agent": "coder", "prompt": "Fix repo error"}, p)
 	if preview.Code != http.StatusOK || !strings.Contains(preview.Body.String(), `"model":"router-model"`) || runner.createCalls != 0 || f.wt.allocCalls != 0 {
 		t.Fatalf("preview routed or allocated: %d %s calls=%d allocations=%d", preview.Code, preview.Body.String(), runner.createCalls, f.wt.allocCalls)
 	}
@@ -87,7 +86,7 @@ func TestAutomaticProjectTaskRoutingAdmissionAndReplay(t *testing.T) {
 		{"workspace_path": filepath.Join(f.dir, "unknown")},
 		{"workspace_path": source.Path, "workspace_id": source.WorkspaceID, "workspace_generation": source.WorkspaceGeneration + 1},
 	} {
-		selection["agent"], selection["prompt"] = "finder", "Fix repo error"
+		selection["agent"], selection["prompt"] = "coder", "Fix repo error"
 		w := f.callAPI(http.MethodPost, "/"+proj.ID+"/tasks:preview", selection, p)
 		var response struct {
 			Diagnostic string           `json:"workspace_diagnostic"`
@@ -99,16 +98,16 @@ func TestAutomaticProjectTaskRoutingAdmissionAndReplay(t *testing.T) {
 	}
 	foreign := p
 	foreign.AccountScopeID = "foreign-account"
-	if w := f.callAPI(http.MethodPost, "/"+proj.ID+"/tasks:preview", map[string]any{"agent": "finder"}, foreign); w.Code == http.StatusOK {
+	if w := f.callAPI(http.MethodPost, "/"+proj.ID+"/tasks:preview", map[string]any{"agent": "coder"}, foreign); w.Code == http.StatusOK {
 		t.Fatal("cross-account project preview accepted")
 	}
-	body := map[string]any{"id": "automatic-routing", "title": "Fix error", "prompt": "Fix the repo error exactly as reported", "agent": "finder", "feature_size": "small", "auto_approve": false}
+	body := map[string]any{"id": "automatic-routing", "title": "Fix error", "prompt": "Fix the repo error exactly as reported", "agent": "coder", "feature_size": "small", "auto_approve": false}
 	created := requireMatrixTaskResponse(t, f.callAPI(http.MethodPost, "/"+proj.ID+"/tasks", body, p), http.StatusCreated)
 	if created["status"] != "pending_approval" || runner.createCalls != 1 {
 		t.Fatalf("confirmation/calls: %+v %d", created, runner.createCalls)
 	}
 	saved, found, err := f.server.sessions.Store().GetProjectTask(f.accountID, proj.ID, "automatic-routing")
-	if err != nil || !found || saved.SourceWorkspace.Path != source.Path || saved.SourceWorkspace.Provenance != "router" || len(saved.ContextSources) != 1 || len(saved.ProgramSources) != 0 || saved.Description != body["prompt"] || saved.Agent != "finder" || saved.FeatureSize != "small" {
+	if err != nil || !found || saved.SourceWorkspace.Path != source.Path || saved.SourceWorkspace.Provenance != "router" || len(saved.ContextSources) != 1 || len(saved.ProgramSources) != 0 || saved.Description != body["prompt"] || saved.Agent != "coder" || saved.FeatureSize != "small" {
 		t.Fatalf("admission: %+v found=%v err=%v", saved, found, err)
 	}
 	if len(saved.WorkspacesInvolved) != 2 || !strings.Contains(saved.ContextPoolSummary, "read-only context") {
@@ -172,7 +171,7 @@ func TestAutomaticProjectTaskRoutingRejectsInvalidWithoutReservation(t *testing.
 				t.Fatal(err)
 			}
 			runner.response.Text = string(raw)
-			w := f.callAPI(http.MethodPost, "/"+proj.ID+"/tasks", map[string]any{"id": "invalid-route", "title": "Fix", "prompt": "Fix error", "agent": "finder"}, p)
+			w := f.callAPI(http.MethodPost, "/"+proj.ID+"/tasks", map[string]any{"id": "invalid-route", "title": "Fix", "prompt": "Fix error", "agent": "coder"}, p)
 			if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "workspace routing") {
 				t.Fatalf("invalid route: %d %s", w.Code, w.Body.String())
 			}
@@ -189,7 +188,7 @@ func TestAutomaticProjectTaskRoutingRejectsInvalidWithoutReservation(t *testing.
 // are required, rather than testing a mutex in isolation.
 func TestAutomaticProjectTaskRoutingConcurrentDuplicate(t *testing.T) {
 	f, p, proj, _, runner := routingFixture(t)
-	body := map[string]any{"id": "duplicate-routing", "title": "Fix", "prompt": "Fix repo", "agent": "finder"}
+	body := map[string]any{"id": "duplicate-routing", "title": "Fix", "prompt": "Fix repo", "agent": "coder"}
 	start := make(chan struct{})
 	results := make(chan *httpResponseForRouting, 2)
 	for i := 0; i < 2; i++ {

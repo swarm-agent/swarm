@@ -367,13 +367,28 @@ func (f *matrixTestFixture) createProject(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Task tests seed an existing project; AI creation is tested separately by
-	// TestProjectContext. Do not start unrelated background generation here.
-	project := &pebblestore.ProjectRecord{ID: "matrix-project", Name: "Matrix Test Project", Workspaces: []pebblestore.ProjectWorkspaceRef{{WorkspaceID: entry.WorkspaceID, Path: repo, Role: "primary_code"}}}
-	if err := f.server.sessions.Store().PutProject(p.AccountScopeID, project); err != nil {
-		t.Fatal(err)
+	w := f.callAPI(http.MethodPost, "", map[string]any{
+		"name": "Matrix Test Project",
+		"workspaces": []map[string]string{
+			{"workspace_id": entry.WorkspaceID, "path": repo, "role": "primary_code"},
+		},
+	}, p)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create project failed %d: %s", w.Code, w.Body.String())
 	}
-	return project.ID
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode project response: %v: %s", err, w.Body.String())
+	}
+	proj, ok := resp["project"].(map[string]any)
+	if !ok {
+		t.Fatalf("project response missing project object: %s", w.Body.String())
+	}
+	id, ok := proj["id"].(string)
+	if !ok || id == "" {
+		t.Fatalf("project response missing project id: %s", w.Body.String())
+	}
+	return id
 }
 
 // -----------------------------------------------------------------------------
@@ -393,11 +408,10 @@ func TestTaskMatrix_Case1_ManualSmallTaskIdentityProfileWorktreeRun(t *testing.T
 
 	// 1. Create small task via REST API
 	w := f.callAPI(http.MethodPost, "/"+projID+"/tasks", map[string]any{
-		"workspace_path": filepath.Join(f.dir, "repo"),
-		"title":          "Fix parser edge-case",
-		"prompt":         "Fix parser edge case in lexer.go",
-		"agent":          "coder",
-		"feature_size":   "small",
+		"title":        "Fix parser edge-case",
+		"prompt":       "Fix parser edge case in lexer.go",
+		"agent":        "coder",
+		"feature_size": "small",
 	}, p)
 	if w.Code != http.StatusCreated {
 		t.Fatalf("create small task failed %d: %s", w.Code, w.Body.String())
