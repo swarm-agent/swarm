@@ -1,4 +1,5 @@
 import { useId, useState, type ReactNode } from 'react'
+import { Loader2 } from 'lucide-react'
 import { isMediaGenerationPending } from '../tools/media-library/media-iteration-thread'
 
 export interface CreativeCardOutput {
@@ -57,9 +58,15 @@ export function CreativeThreadCard({ id, title, studio, turns, attention }: {
         {turns.map((turn, index) => {
           // Unchanged turns keep their preview node and exact source while siblings update.
           const preview = (turn === selected ? output : undefined) ?? turn.outputs.find(candidate => candidate.ready)
-          return <button key={turn.id} id={`${domId}-turn-${index}`} aria-controls={`${domId}-candidates`} role="tab" aria-selected={turn === selected} tabIndex={turn === selected ? 0 : -1} type="button" className={`creative-turn ${turn === selected ? 'is-selected' : ''} ${isMediaGenerationPending(turn.status) ? 'is-running-turn' : ''}`} onClick={() => setSelection({ turn: turn.id })} onDoubleClick={() => { if (preview?.ready) preview.open() }}>
-            <span className="creative-turn-heading"><strong>Turn {index + 1}</strong><span>{turn.status.replace(/_/g, ' ')}</span></span>
-            <span className="creative-turn-preview">{turn.outputs.map(candidate => <span key={candidate.id} hidden={candidate.id !== preview?.id} className="creative-preview-output">{candidate.preview}</span>)}{!preview?.ready && <span>{preview && ['ready', 'accepted'].includes(preview.status) ? 'Preview loading' : turn.status.replace(/_/g, ' ')}</span>}</span>
+          const pending = isMediaGenerationPending(turn.status)
+          return <button key={turn.id} id={`${domId}-turn-${index}`} aria-controls={`${domId}-candidates`} role="tab" aria-selected={turn === selected} tabIndex={turn === selected ? 0 : -1} type="button" className={`creative-turn ${turn === selected ? 'is-selected' : ''} ${pending ? 'is-running-turn' : ''}`} onClick={() => setSelection({ turn: turn.id })} onDoubleClick={() => { if (preview?.ready) preview.open() }}>
+            <span className="creative-turn-heading"><strong>Turn {index + 1}</strong>{!pending && <span>{turn.status.replace(/_/g, ' ')}</span>}</span>
+            <span className="creative-turn-preview">
+              {turn.outputs.map(candidate => <span key={candidate.id} hidden={candidate.id !== preview?.id || !candidate.ready} className="creative-preview-output">{candidate.preview}</span>)}
+              {!preview?.ready && (pending && !(preview && ['ready', 'accepted'].includes(preview.status))
+                ? <span role="status" aria-label={`Turn ${index + 1}: ${turn.status.replace(/_/g, ' ')}`}><Loader2 className="size-5 motion-safe:animate-spin motion-reduce:animate-none" aria-hidden="true" /></span>
+                : <span>{preview && ['ready', 'accepted'].includes(preview.status) ? 'Preview loading' : turn.status.replace(/_/g, ' ')}</span>)}
+            </span>
             <span className="creative-turn-summary" title={turn.title}>{turn.title}</span>
             <span className="creative-turn-count">{turn.outputs.length} {turn.outputs.length === 1 ? 'output' : 'outputs'}</span>
           </button>

@@ -12,7 +12,8 @@ import { createEmptyDesktopV3CacheState } from '../state/desktop-v3-cache-reduce
 import { taskWithCurrentSessions } from './task-card-sessions'
 import { mapBackendTask, reduceDesktopProjectsState, type DesktopProjectsState } from '../state/desktop-projects-state'
 import { aggregateTaskLiveState } from './orchestrate-task-helpers'
-import type { CreativeCardTurn } from './creative-thread-card'
+import { CreativeThreadCard, type CreativeCardTurn } from './creative-thread-card'
+import { isMediaGenerationPending } from '../tools/media-library/media-iteration-thread'
 
 function buttons(node: React.ReactNode): React.ReactElement<any>[] {
   if (!React.isValidElement(node)) return []
@@ -119,7 +120,8 @@ test('direct video turn preserves durable generation lifecycle through reload an
 // adapter props only and expected the wrong post-map in_progress spelling.
 // Authority: DesktopProjectsRuntime -> taskWithCurrentSessions ->
 // aggregateTaskLiveState -> MediaTaskThreads -> CreativeThreadCard. This hermetic
-// runtime/SSR boundary checks emitted labels, not browser pixels or live providers.
+// runtime/SSR boundary checks accessible pending spinners and terminal labels,
+// not browser pixels or live providers; presentation must not invent failure.
 // Before the original guard, the initial in_progress payload maps to running and
 // falls through aggregateTaskLiveState's missing-session branch to failed.
 test('direct video Turn 1 markup follows API reloads and durable task events without false failure', { timeout: 10_000 }, async () => {
@@ -149,7 +151,14 @@ test('direct video Turn 1 markup follows API reloads and durable task events wit
     const html = render()
     assert.equal((html.match(/role="tab"/g) || []).length, 1)
     assert.match(html, /data-task-id="pending-video"/)
-    assert.ok(html.includes(`<strong>Turn 1</strong><span>${status.replace(/_/g, ' ')}</span>`), html)
+    if (isMediaGenerationPending(status)) {
+      assert.match(html, /<strong>Turn 1<\/strong><\/span>/)
+      assert.ok(html.includes(`role="status" aria-label="Turn 1: ${status}"`), html)
+      assert.match(html, /lucide-loader-circle/)
+    } else {
+      assert.ok(html.includes(`<strong>Turn 1</strong><span>${status.replace(/_/g, ' ')}</span>`), html)
+      assert.doesNotMatch(html, /aria-label="Turn 1:/)
+    }
     if (status !== 'failed') assert.doesNotMatch(html, />failed</i)
     return html
   }
@@ -213,4 +222,33 @@ test('direct video Turn 1 markup follows API reloads and durable task events wit
       assertTurn(status)
     }
   } finally { lease.release() }
+})
+
+// Purpose: CreativeThreadCard owns loading presentation, not task lifecycle.
+// SSR is the narrowest layer proving all pending states have accessible spinners
+// while approval/terminal states and already-ready sibling previews stay intact.
+// Empty/unready output wrappers must not take space beside the centered loader.
+test('turn spinners replace pending text without hiding ready media or terminal states', () => {
+  const render = (status: string, outputs: CreativeCardTurn['outputs'] = []) => renderToStaticMarkup(
+    <CreativeThreadCard id="thread" title="Media" studio="image" turns={[{ id: 'turn', title: 'Media', status, outputs }]} />)
+  const pendingOutput = { id: 'slot', title: 'Candidate', status: 'generating', ready: false, preview: null, open: () => {} }
+  for (const status of ['requested', 'accepted', 'submitting', 'pending', 'queued', 'in_progress', 'running']) {
+    for (const outputs of [[], [pendingOutput]]) {
+      const html = render(status, outputs)
+      assert.match(html, /<strong>Turn 1<\/strong><\/span>/)
+      assert.ok(html.includes(`role="status" aria-label="Turn 1: ${status.replace(/_/g, ' ')}"`))
+      assert.match(html, /motion-safe:animate-spin motion-reduce:animate-none/)
+      assert.match(html, /aria-hidden="true"/)
+      if (outputs.length) assert.match(html, /hidden="" class="creative-preview-output"/)
+    }
+  }
+  for (const status of ['pending_approval', 'planning', 'completed', 'needs_review', 'failed', 'cancelled', 'interrupted', 'partial_failure', 'rejected']) {
+    const html = render(status, [pendingOutput])
+    assert.ok(html.includes(`<strong>Turn 1</strong><span>${status.replace(/_/g, ' ')}</span>`))
+    assert.doesNotMatch(html, /aria-label="Turn 1:/)
+  }
+  const readyOutput = { ...pendingOutput, status: 'ready', ready: true, preview: <img src="/fixture.png" alt="Ready candidate" /> }
+  const partial = render('running', [readyOutput, pendingOutput])
+  assert.match(partial, /src="\/fixture.png"/)
+  assert.doesNotMatch(partial, /aria-label="Turn 1:/)
 })

@@ -1,6 +1,8 @@
 // Purpose: accepted direct video work must never render Turn 1 as failed merely
 // because its generating slot has no media/session. Preserve the DOM turn across
 // completion, stale events, reload, transport errors and explicit failures.
+// Pending turns show an accessible spinner rather than a right-hand status label;
+// terminal results remove it without changing the underlying lifecycle.
 // Authority: DesktopProjectsRuntime/reducer -> taskWithCurrentSessions ->
 // aggregateTaskLiveState -> MediaTaskThreads/CreativeThreadCard. Real Chromium
 // with controlled API/event payloads is the narrowest DOM transition boundary;
@@ -60,12 +62,23 @@ test('direct video Turn 1 stays nonterminal until authoritative completion or fa
     const card = page.getByTestId('media-task-card')
     const turn = card.getByRole('tab')
     const check = async (status: string) => {
-      await page.waitForFunction(expected => document.querySelector('.creative-turn-heading')?.textContent === `Turn 1${expected}`, status, { timeout: 3000 }).catch(async error => {
+      const pending = ['running', 'pending', 'queued'].includes(status)
+      await page.waitForFunction(({ status, pending }) => {
+        const heading = document.querySelector('.creative-turn-heading')?.textContent
+        const spinner = document.querySelector('.creative-turn-preview [role="status"]')
+        return heading === `Turn 1${pending ? '' : status}` && (pending
+          ? spinner?.getAttribute('aria-label') === `Turn 1: ${status}`
+          : !spinner)
+      }, { status, pending }, { timeout: 3000 }).catch(async error => {
         throw new Error(`Expected ${status}; rendered: ${await page.locator('body').innerText()}; errors: ${errors.join('; ')}`, { cause: error })
       })
       assert.equal(await turn.count(), 1)
       assert.equal(await card.getAttribute('data-task-id'), 'video-task')
       if (status !== 'failed') assert.doesNotMatch(await turn.innerText(), /failed/i)
+      if (pending) {
+        assert.doesNotMatch(await turn.innerText(), /running|pending|queued/i)
+        assert.equal(await turn.locator('[role="status"] svg').count(), 1)
+      }
     }
     const apply = async (payload: Record<string, unknown>, transportError = false) => {
       await page.evaluate(async ({ payload, transportError }) => { await (window as any).applyVideo(payload, transportError) }, { payload, transportError })

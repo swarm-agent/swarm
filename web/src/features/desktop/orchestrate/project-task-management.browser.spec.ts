@@ -9,6 +9,7 @@ import { fixtureRead, project, snapshot } from './swarm-responsive-browser-fixtu
 // remove only acknowledged tasks, cap requests and reject stale archive-dialog
 // responses after project switching. HTTP fixtures prove UI contracts only, not
 // measured daemon latency, provider execution or backend liveness protection.
+// Scope archive controls to the task canvas, not the separate session/media archives.
 test('project task archive retains partial failures and isolates late archived-list responses', { timeout: 45000 }, async () => {
   const bundle = await build({ stdin: { resolveDir: process.cwd(), loader: 'tsx', contents: `
     import React from 'react'; import {createRoot} from 'react-dom/client';
@@ -91,11 +92,11 @@ test('project task archive retains partial failures and isolates late archived-l
     assert.ok(writes.every(path => path.endsWith('/archive')))
     assert.equal(await archive.isEnabled(), true, 'failed selection remains retryable')
     if (process.env.SWARM_TASK_ARCHIVE_SCREENSHOT) await page.screenshot({ path: process.env.SWARM_TASK_ARCHIVE_SCREENSHOT })
-    await page.getByRole('button', { name: 'Archived', exact: true }).click()
+    await page.locator('main.swarm-main-panel').getByRole('button', { name: 'Archived', exact: true }).click()
     await page.getByText('Loading archived tasks…').waitFor()
     await page.getByRole('button', { name: 'Close archived tasks', exact: true }).click()
     await page.getByLabel('Current project').selectOption(second.id)
-    await page.getByRole('button', { name: 'Archived', exact: true }).click()
+    await page.locator('main.swarm-main-panel').getByRole('button', { name: 'Archived', exact: true }).click()
     await page.getByText('Second archived task', { exact: true }).waitFor()
     assert.ok(oldArchived)
     await oldArchived!.fulfill({ json: { tasks: [{ id: 'old-archive', title: 'Wrong project archive', revision: 2 }] } })

@@ -444,3 +444,14 @@
 .swarm-session-feedback { font-size: 11px; }
 .swarm-session-actions :focus-visible, .swarm-session-item :focus-visible { outline: 2px solid var(--swarm-accent); outline-offset: -2px; }
 .swarm-session-error { max-height: 140px; overflow-y: auto; }
+
+/* Right-side media shares project authority, not the task navigation projection. */
+.swarm-project-right-sidebar { display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--swarm-border-muted); border-radius: 24px; background: var(--swarm-surface); }
+.swarm-sidebar-tabs { display: flex; flex: none; gap: 6px; padding: 8px; border-bottom: 1px solid var(--swarm-border-muted); }
+.swarm-sidebar-tabs button { flex: 1; min-height: 36px; border-radius: 10px; color: var(--swarm-text-muted); font-size: 12px; }
+.swarm-sidebar-tabs button[aria-selected="true"] { background: var(--swarm-surface-subtle); color: var(--swarm-text-accent); }
+.swarm-sidebar-pane { display: flex; flex: 1; flex-direction: column; min-height: 0; min-width: 0; overflow: hidden; }
+.swarm-sidebar-pane[hidden] { display: none; }
+.swarm-sidebar-pane > .swarm-conversation-panel { width: 100%; min-width: 0; min-height: 0; flex: 1; }
+.swarm-sidebar-media { overflow-y: auto; padding: 12px; gap: 12px; }
+.swarm-sidebar-media > header { flex-shrink: 0; font-size: 12px; }

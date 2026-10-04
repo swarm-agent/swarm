@@ -1,7 +1,9 @@
 // Purpose: MediaTaskThreads -> CreativeThreadCard -> MediaViewerModal must keep
 // request/candidate identity through updates, retain preview DOM/resources and route
 // real media elements to exact outputs. Chromium is the narrowest layer for DOM
-// identity, roving keyboard focus, overflow and source attributes. HTTP responses
+// identity, roving keyboard focus, overflow and source attributes. It also proves
+// pending spinners are centered with real CSS, honor reduced motion, and disappear
+// on failure/completion without replacing ready sibling previews. HTTP responses
 // are hermetic fixtures, not daemon/provider or end-to-end generation evidence.
 import assert from 'node:assert/strict'
 import test from 'node:test'
@@ -31,7 +33,7 @@ test('creative cards retain previews, isolate updates and navigate exact image v
       window.opened=[];window.archived=[];window.deleted=[];
       function App(){const[phase,setPhase]=useState('initial');const[item,setItem]=useState(null);
         window.setPhase=setPhase;
-        const child=mapBackendTask({id:'child',title:'Continue image',agent:'video',status:phase==='ready'?'completed':phase==='failed'?'failed':'in_progress',last_error:phase==='failed'?'Generation failed':undefined,attached_media:[{id:'image-b',kind:'image',title:'image-b'}],deliverables:phase==='ready'?[video]:[]});
+        const child=mapBackendTask({id:'child',title:'Continue image',agent:'video',status:phase==='ready'?'completed':phase==='failed'?'failed':'in_progress',last_error:phase==='failed'?'Generation failed':undefined,attached_media:[{id:'image-b',kind:'image',title:'image-b'}],deliverables:phase==='ready'?[video]:[{id:'pending-video',kind:'video',title:'Pending video',status:phase==='failed'?'failed':'generating'}]});
         const final=mapBackendTask({id:'audio-turn',title:'Add audio',agent:'audio',status:'completed',deliverables:[audio]});
         const tasks=[root,...(phase==='initial'?[]:[child]),...(phase==='ready'?[final]:[]),{...unrelated,status:phase==='unrelated'?'in_progress':'completed'}];
         const jobs=[{id:'root',sourceId:'image-a',outputIds:['image-a','image-b'],title:'Original',status:'completed',count:2},{id:'child',sourceId:'image-b',outputIds:['video'],title:'Continue image',status:'completed',count:1},{id:'audio-turn',sourceId:'video',outputIds:['audio'],title:'Add audio',status:'completed',count:1}];
@@ -82,6 +84,31 @@ test('creative cards retain previews, isolate updates and navigate exact image v
       await card.getByRole('tab').nth(1).waitFor()
       if (phase === 'failed') await card.getByRole('alert').filter({ hasText: 'Generation failed' }).waitFor()
       else await card.getByRole('status').filter({ hasText: 'running' }).waitFor()
+      const pendingTurn = card.getByRole('tab').nth(1)
+      const spinner = pendingTurn.getByRole('status', { name: 'Turn 2: running' })
+      if (phase === 'failed') {
+        assert.equal(await spinner.count(), 0)
+      } else {
+        await spinner.waitFor()
+        assert.equal(await pendingTurn.locator('.creative-turn-heading').innerText(), 'Turn 2')
+        for (const width of [320, 375, 1440]) {
+          await page.setViewportSize({ width, height: 850 })
+          await pendingTurn.scrollIntoViewIfNeeded()
+          const previewBox = await pendingTurn.locator('.creative-turn-preview').boundingBox()
+          const spinnerBox = await spinner.locator('svg').boundingBox()
+          assert.ok(previewBox && spinnerBox)
+          assert.ok(Math.abs(previewBox.x + previewBox.width / 2 - spinnerBox.x - spinnerBox.width / 2) < 1)
+          assert.ok(Math.abs(previewBox.y + previewBox.height / 2 - spinnerBox.y - spinnerBox.height / 2) < 1)
+          assert.equal(await spinner.locator('svg').evaluate(el => getComputedStyle(el).animationName), 'none')
+          assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false)
+        }
+        await page.emulateMedia({ reducedMotion: 'no-preference' })
+        assert.equal(await spinner.locator('svg').evaluate(el => getComputedStyle(el).animationName), 'spin')
+        await page.emulateMedia({ reducedMotion: 'reduce' })
+        if (phase === 'running' && process.env.SWARM_MEDIA_REVIEW_SCREENSHOT) {
+          await card.screenshot({ path: process.env.SWARM_MEDIA_REVIEW_SCREENSHOT })
+        }
+      }
       assert.equal(await card.getByRole('tab').count(), 2)
       assert.equal(await card.getByRole('tab').first().getAttribute('aria-selected'), 'true')
       assert.equal(await card.evaluate(element => element === (window as any).retainedCard), true)
@@ -90,11 +117,12 @@ test('creative cards retain previews, isolate updates and navigate exact image v
       assert.equal(await page.getByTestId('media-task-card').count(), 2)
     }
     await card.getByRole('tab').nth(1).click()
-    assert.equal(await card.getByRole('button', { name: 'Open selected output' }).count(), 0)
+    assert.equal(await card.getByRole('button', { name: 'Open selected output' }).isDisabled(), true)
     assert.deepEqual(await page.evaluate(() => (window as any).opened), [])
     await card.getByRole('tab').first().click()
     await page.evaluate(() => (window as any).setPhase('ready'))
     await card.getByRole('tab').nth(2).waitFor()
+    assert.equal(await card.locator('.creative-turn-preview [role="status"]').count(), 0)
     assert.equal(await image.evaluate(element => element === (window as any).retainedImage), true)
     assert.equal(reads.filter(path => path === '/media/image-a').length, originalReads)
     assert.equal(await card.getByRole('tab').first().getAttribute('aria-selected'), 'true')
