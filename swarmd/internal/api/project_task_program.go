@@ -140,6 +140,10 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 		return nil, errors.New("cross-account project access forbidden")
 	}
 
+	origin, err := s.projectTaskOrigin(ctx, p, projectID)
+	if err != nil {
+		return nil, err
+	}
 	prompt := strings.TrimSpace(input.Prompt)
 	if prompt == "" {
 		prompt = strings.TrimSpace(input.Description)
@@ -454,6 +458,7 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 	}
 
 	task := pebblestore.ProjectTaskRecord{
+		OriginSessionID:    origin,
 		ID:                 taskID,
 		ProjectID:          projectID,
 		AccountID:          p.AccountScopeID,
@@ -643,7 +648,7 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 			PlanText:        fullPlanMarkdown,
 			Title:           title,
 			WorkspacePath:   task.WorkspacePath,
-			ParentSessionID: proj.PrimarySessionID,
+			ParentSessionID: task.OriginSessionID,
 		})
 		if sErr != nil {
 			return nil, fmt.Errorf("submit structured plan: %w", sErr)
@@ -890,10 +895,7 @@ func (s *Server) deployProjectTaskProgram(p identity.Principal, proj *pebblestor
 	} else if len(history) != 0 {
 		return errors.New("task program already has run history; use explicit retry lifecycle")
 	}
-	parentSessionID := ""
-	if proj != nil {
-		parentSessionID = proj.PrimarySessionID
-	}
+	parentSessionID := task.OriginSessionID
 	runIntent := &pebblestore.V3SessionRunIntent{
 		SessionID:       task.SessionID,
 		RunID:           runID,
@@ -1005,10 +1007,7 @@ func (s *Server) redeployTaskProgramJob(p identity.Principal, projectID, taskID,
 	})
 
 	runID := fmt.Sprintf("desktop-v3-run:tp-%s-retry-%d", task.ID, newAttempt)
-	parentSessionID := ""
-	if proj, pFound, _ := db.GetProject(p.AccountScopeID, projectID); pFound && proj != nil {
-		parentSessionID = proj.PrimarySessionID
-	}
+	parentSessionID := task.OriginSessionID
 	runIntent := &pebblestore.V3SessionRunIntent{
 		SessionID:       task.SessionID,
 		RunID:           runID,
@@ -1348,7 +1347,7 @@ func (s *Server) ApproveProjectTask(ctx context.Context, p identity.Principal, p
 		runID := sessionsV3PlanModeRunID(existingTask.SessionID, plan.ID, checkpointID, attemptID)
 
 		now := time.Now().UnixMilli()
-		parentSessionID := proj.PrimarySessionID
+		parentSessionID := existingTask.OriginSessionID
 		runIntent := &pebblestore.V3SessionRunIntent{
 			SessionID:       existingTask.SessionID,
 			RunID:           runID,
@@ -1468,7 +1467,7 @@ func (s *Server) ApproveProjectTask(ctx context.Context, p identity.Principal, p
 
 	now := time.Now().UnixMilli()
 	runID := fmt.Sprintf("desktop-v3-run:task-%s", existingTask.ID)
-	parentSessionID := proj.PrimarySessionID
+	parentSessionID := existingTask.OriginSessionID
 	if len(existingTask.CoderAssignments) > 0 {
 		parentSessionID = "" // This Swarm session is the delegation parent, not a delegated child.
 	}

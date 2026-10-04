@@ -102,14 +102,34 @@ func (s *SessionStore) ReserveTaskFollowup(account, project, taskID, user, key, 
 	return s.ReserveTaskFollowupWithRecovery(account, project, taskID, user, key, request, revision, now, nil)
 }
 
-func (s *SessionStore) ReserveTaskFollowupWithRecovery(account, project, taskID, user, key, request string, revision int, now int64, recovery *ProjectTaskRecoverySource) (*ProjectTaskRecord, error) {
+func (s *SessionStore) ReserveTaskFollowupWithRecovery(account, project, taskID, user, key, request string, revision int, now int64, recovery *ProjectTaskRecoverySource, origins ...string) (*ProjectTaskRecord, error) {
 	if strings.TrimSpace(user) == "" || strings.TrimSpace(key) == "" || len(key) > 128 {
 		return nil, errors.New("user and bounded client_request_id required")
 	}
 	if strings.TrimSpace(request) == "" || len(request) > 32000 {
 		return nil, errors.New("feedback must contain 1-32000 bytes; no truncation is performed")
 	}
-	payload, _ := json.Marshal([]any{user, request, revision, recovery != nil})
+	origin := ""
+	if len(origins) > 0 {
+		origin = origins[0]
+	}
+	if origin != "" {
+		parent, found, err := s.GetSession(origin)
+		if err != nil {
+			return nil, err
+		}
+		if !found || ProjectConversationID(parent) != project {
+			return nil, errors.New("follow-up origin conversation unavailable")
+		}
+		if err := s.ValidateProjectConversation(parent, account, user); err != nil {
+			return nil, err
+		}
+	}
+	values := []any{user, request, revision, recovery != nil}
+	if origin != "" {
+		values = append(values, origin)
+	}
+	payload, _ := json.Marshal(values)
 	sum := sha256.Sum256(payload)
 	hash := hex.EncodeToString(sum[:])
 	identity := sha256.Sum256([]byte(account + "\x00" + project + "\x00" + taskID + "\x00" + key))
@@ -206,6 +226,9 @@ func (s *SessionStore) ReserveTaskFollowupWithRecovery(account, project, taskID,
 			return errors.New("repair evidence does not match originating task attempt")
 		}
 		t.CaptureActiveAttempt()
+		if origin != "" {
+			t.OriginSessionID = origin
+		}
 		a := ProjectTaskAttempt{ID: id, ClientRequestID: key, PayloadHash: hash, RequestRevision: revision, UserID: user, Request: request, SessionID: "task-followup-" + id, RunID: "desktop-v3-run:task-followup-" + id, Role: "swarm", CreatedAt: now, Status: "in_progress", LaunchState: "reserved", Recovery: recovery}
 		t.Attempts = append(t.Attempts, a)
 		t.ActiveAttemptID, t.SessionID, t.Status, t.Agent = id, a.SessionID, "in_progress", "swarm"

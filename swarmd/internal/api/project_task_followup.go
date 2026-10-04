@@ -172,6 +172,10 @@ func (s *Server) ReopenProjectTask(ctx context.Context, p identity.Principal, pr
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	origin, err := s.projectTaskOrigin(ctx, p, projectID)
+	if err != nil {
+		return nil, &projectTaskFollowupError{403, err}
+	}
 	db := s.sessions.Store()
 	s.projectTaskCreateMu.Lock()
 	defer s.projectTaskCreateMu.Unlock()
@@ -255,7 +259,7 @@ func (s *Server) ReopenProjectTask(ctx context.Context, p identity.Principal, pr
 	}
 	// A repair grants exactly the originating retained committed source. Ordinary
 	// follow-ups use the current clean catalog checkout, not another session's lane.
-	task, err = db.ReserveTaskFollowupWithRecovery(p.AccountScopeID, projectID, taskID, p.UserID, req.ClientRequestID, req.Feedback, req.Revision, time.Now().UnixMilli(), recovery)
+	task, err = db.ReserveTaskFollowupWithRecovery(p.AccountScopeID, projectID, taskID, p.UserID, req.ClientRequestID, req.Feedback, req.Revision, time.Now().UnixMilli(), recovery, origin)
 	if err != nil {
 		return nil, &projectTaskFollowupError{409, err}
 	}

@@ -50,8 +50,13 @@ Existing follow-up history access remains separately guarded.
 
 The canonical V3 mutation rechecks the active task attempt and running provider
 identity under project/account/session locks. It derives the parent from captured
-session deployment lineage (or the retained run parent), never a supplied parent
-ID or the mutable project primary pointer. Reports persist as `session.task.reported`
+task admission/reopen origin, captured from authenticated current provider context
+and copied into session deployment lineage (legacy tasks retain their captured
+session/run parent). Canonical project conversations do not maintain the legacy
+primary pointer. Neither a supplied parent ID nor that mutable pointer is used.
+HTTP-created tasks without a captured conversation cannot infer a report destination;
+an authenticated Orchestrator reopen captures the new attempt's origin.
+Reports persist as `session.task.reported`
 events with account, user, project, parent, task, attempt, source session/run and
 exact event ID/sequence. Actual typed content determines retry conflicts.
 

@@ -115,6 +115,12 @@ func (s *SessionStore) prepareProjectTaskReport(input *V3SessionMutationInput) e
 	// Deployment lineage survives checkpoint runs whose run parent is self.
 	// Never retarget reports through the project's mutable primary pointer.
 	parentID, _ := child.Metadata["parent_session_id"].(string)
+	if task.OriginSessionID != "" {
+		if parentID != "" && parentID != task.OriginSessionID {
+			return errors.New("task report captured lineage mismatch")
+		}
+		parentID = task.OriginSessionID
+	}
 	if parentID == "" {
 		parentID = run.ParentSessionID
 	}

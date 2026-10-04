@@ -1251,6 +1251,9 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 		"tier":                 task.Tier,
 		"revision":             task.Revision,
 	}
+	if task.OriginSessionID != "" {
+		metadata["parent_session_id"] = task.OriginSessionID
+	}
 	if agentProfile.ExitPlanModeEnabled != nil {
 		metadata["exit_plan_mode_enabled"] = *agentProfile.ExitPlanModeEnabled
 	}
@@ -1448,9 +1451,9 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 	runID := ""
 	if taskStatus == "in_progress" {
 		runID = task.ExecutionRunID()
-		parentSessionID := ""
-		if proj != nil && len(task.CoderAssignments) == 0 {
-			parentSessionID = proj.PrimarySessionID
+		parentSessionID := task.OriginSessionID
+		if len(task.CoderAssignments) > 0 {
+			parentSessionID = "" // Swarm remains the delegation parent.
 		}
 		runIntent = &pebblestore.V3SessionRunIntent{
 			SessionID:       sessionID,
@@ -1485,9 +1488,9 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 	}
 
 	if taskStatus == "in_progress" && runIntent != nil {
-		parentSessionID := ""
-		if proj != nil && len(task.CoderAssignments) == 0 {
-			parentSessionID = proj.PrimarySessionID
+		parentSessionID := task.OriginSessionID
+		if len(task.CoderAssignments) > 0 {
+			parentSessionID = "" // Swarm remains the delegation parent.
 		}
 		if task.ActiveAttemptID != "" && task.ActiveAttemptID != "initial" {
 			if err := s.enqueueProjectTaskFollowup(p, sessionID, runID, parentSessionID); err != nil {

@@ -107,7 +107,30 @@ func TestProjectTaskReportRejectsUnauthorized(t *testing.T) {
 				t.Fatal(err)
 			}
 		},
+		"captured-origin-mismatch": func(t *testing.T, s *SessionStore, _ *V3SessionMutationInput) {
+			_, err := s.UpdateProjectTask("account", "project", "task", func(task *ProjectTaskRecord) error {
+				task.OriginSessionID = "parent"
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			child, _, _ := s.GetSession("child")
+			child.Metadata["parent_session_id"] = "forged"
+			if _, err := s.ApplyV3SessionMutation(V3SessionMutationInput{SessionID: "child", UserID: "user", AccountScopeID: "account", Kind: V3SessionMutationUpdateMetadata, ClientRequestID: "forged-lineage", PayloadHash: "forged-lineage", Session: &child}); err != nil {
+				t.Fatal(err)
+			}
+		},
 		"terminal": func(t *testing.T, s *SessionStore, _ *V3SessionMutationInput) { taskWaitStatus(t, s, "completed") },
+		"deleted-parent": func(t *testing.T, s *SessionStore, _ *V3SessionMutationInput) {
+			_, err := s.ApplyV3SessionMutation(V3SessionMutationInput{SessionID: "parent", UserID: "user", AccountScopeID: "account", Kind: V3SessionMutationRecordRunIntent, ClientRequestID: "stop", PayloadHash: "stop", RunIntent: &V3SessionRunIntent{RunID: "goal", Status: V3RunIntentCancelled}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := s.DeleteSessions([]string{"parent"}); err != nil {
+				t.Fatal(err)
+			}
+		},
 		"archived-parent": func(t *testing.T, s *SessionStore, _ *V3SessionMutationInput) {
 			_, err := s.ApplyV3SessionMutation(V3SessionMutationInput{SessionID: "parent", UserID: "user", AccountScopeID: "account", Kind: V3SessionMutationRecordRunIntent, ClientRequestID: "stop", PayloadHash: "stop", RunIntent: &V3SessionRunIntent{RunID: "goal", Status: V3RunIntentCancelled}})
 			if err != nil {
