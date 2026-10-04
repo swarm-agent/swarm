@@ -29,6 +29,7 @@ func projectDeliverableContentURL(task *pebblestore.ProjectTaskRecord, d pebbles
 
 func projectDeliverableForClient(task *pebblestore.ProjectTaskRecord, d pebblestore.ProjectTaskDeliverable) pebblestore.ProjectTaskDeliverable {
 	d.VideoProvenance = d.VideoProvenance.ClientSafeCopy()
+	d.PreviewSource = "" // internal derivative authorization metadata
 	// Equal fields share a URL so the browser can coalesce the same bytes.
 	if d.Thumbnail == d.MediaURL && strings.HasPrefix(d.MediaURL, "data:") {
 		d.MediaURL = projectDeliverableContentURL(task, d, "media", d.MediaURL)
@@ -36,6 +37,15 @@ func projectDeliverableForClient(task *pebblestore.ProjectTaskRecord, d pebblest
 	} else {
 		d.Thumbnail = projectDeliverableContentURL(task, d, "thumbnail", d.Thumbnail)
 		d.MediaURL = projectDeliverableContentURL(task, d, "media", d.MediaURL)
+	}
+	field, source := "thumbnail", d.Thumbnail
+	// Inline conversion above already supplies exact content references. Wrap
+	// only non-inline originals here so expanded cards retain bounded previews.
+	if source == "" || source == d.MediaURL {
+		field, source = "media", d.MediaURL
+	}
+	if source != "" && !strings.Contains(source, "/deliverables/") {
+		d.Thumbnail = pebblestore.ProjectTaskPreviewReference(*task, d.ID, field, source)
 	}
 	return d
 }

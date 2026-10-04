@@ -1172,6 +1172,9 @@ func setV3SessionTombstoneInBatch(batch *pebble.Batch, tombstone V3SessionTombst
 	if err != nil {
 		return fmt.Errorf("marshal v3 session tombstone %q: %w", tombstone.SessionID, err)
 	}
+	if err := setProjectArchiveInBatch(batch, tombstone); err != nil {
+		return err
+	}
 	if err := batch.Set([]byte(KeyV3SessionTombstone(tombstone.SessionID)), payload, nil); err != nil {
 		return err
 	}
@@ -1217,6 +1220,9 @@ func removeV3SessionTombstoneInBatch(batch *pebble.Batch, tombstone V3SessionTom
 			return err
 		}
 		return nil
+	}
+	if err := deleteKey(projectArchiveKey(tombstone)); err != nil {
+		return err
 	}
 	if err := deleteKey(KeyV3SessionTombstone(tombstone.SessionID)); err != nil {
 		return err

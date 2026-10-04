@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
 import { taskPreviewURL } from './task-preview-url'
+import { TaskThumbnail } from './task-thumbnail'
 import { DesignArchiveButton } from '../tools/media-library/design-archive-button'
 import { DesignThumbnail } from '../tools/media-library/design-thumbnail'
 import { creativeThreads } from '../tools/media-library/creative-thread'
@@ -77,7 +78,7 @@ function artifactTurn(task: RunningTask, actions: MediaTaskActions): CreativeCar
       const thumbnail = taskPreviewURL(output.previewUrl || (output.type !== 'audio' ? output.mediaUrl : undefined))
       return {
         id: output.id, title: output.title, status: output.status, ready: available,
-        preview: available ? thumbnail ? <img src={thumbnail} alt={output.title} loading="lazy" decoding="async" /> : <span>{output.type} ready · open preview</span> : null,
+        preview: available ? <TaskThumbnail src={thumbnail} title={output.title} /> : null,
         open: () => actions.onPreview?.(output),
         actions: <>
           <button type="button" disabled={!available} onClick={() => actions.onPreview?.(output)}>Preview / save</button>

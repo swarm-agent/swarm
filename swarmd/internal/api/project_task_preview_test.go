@@ -84,7 +84,10 @@ func TestProjectTaskPreviewAuthorizationAndCache(t *testing.T) {
 	if err := store.Underlying().PutBytes(pebblestore.KeyProjectTask(p.AccountScopeID, project.ID, task.ID), []byte("unreadable")); err != nil {
 		t.Fatal(err)
 	}
+	// Occupy decode admission: a warm card must bypass it as well as the body.
+	projectPreviewSlots <- struct{}{}
 	warm := read(p.AccountScopeID, "projects:read", reference)
+	<-projectPreviewSlots
 	if warm.Code != 200 || !bytes.Equal(first.Body.Bytes(), warm.Body.Bytes()) {
 		t.Fatal("warm cache decoded original")
 	}

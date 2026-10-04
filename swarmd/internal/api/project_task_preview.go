@@ -16,7 +16,9 @@ import (
 	"strings"
 	"time"
 
+	_ "golang.org/x/image/webp"
 	"swarm/packages/swarmd/internal/identity"
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
 // Limit decoding across concurrent boards; originals are loaded only on a cache
@@ -140,23 +142,36 @@ func (s *Server) handleProjectTaskPreview(w http.ResponseWriter, r *http.Request
 	}
 	field, digest := r.URL.Query().Get("field"), r.URL.Query().Get("sha256")
 	valid := false
+	source := ""
 	for _, d := range summary.Deliverables {
 		if d.ID == id {
-			value := d.MediaURL
-			if field == "thumbnail" {
-				value = d.Thumbnail
-			}
-			u, e := url.Parse(value)
-			valid = e == nil && u.Query().Get("sha256") == digest && digest != ""
+			u, e := url.Parse(d.Thumbnail)
+			valid = e == nil && u.Query().Get("sha256") == digest && u.Query().Get("field") == field && digest != ""
+			source = d.PreviewSource
 		}
 	}
 	if !valid {
 		http.NotFound(w, r)
 		return
 	}
+	if source != "" {
+		if _, _, _, err := s.projectPreviewSource(p, source); err != nil {
+			writeError(w, http.StatusUnprocessableEntity, errors.New("small preview unavailable; open original explicitly"))
+			return
+		}
+	}
+	if content, found, err := db.GetProjectTaskPreview(p.AccountScopeID, project, task, id, digest); err == nil && found {
+		serveProjectPreview(w, r, digest, content)
+		return
+	}
+	// Warm reads bypass decoding admission. Bound queued misses independently of
+	// browser cancellation so large boards cannot retain unlimited pending work.
+	wait, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
 	select {
 	case projectPreviewSlots <- struct{}{}:
-	case <-r.Context().Done():
+	case <-wait.Done():
+		writeError(w, http.StatusServiceUnavailable, errors.New("preview decoder busy; open original explicitly"))
 		return
 	}
 	defer func() { <-projectPreviewSlots }()
@@ -171,11 +186,17 @@ func (s *Server) handleProjectTaskPreview(w http.ResponseWriter, r *http.Request
 					if field == "thumbnail" {
 						value = d.Thumbnail
 					}
-					reference := projectDeliverableContentURL(original, d, field, value)
+					reference := pebblestore.ProjectTaskPreviewReference(*original, d.ID, field, value)
 					u, e := url.Parse(reference)
 					if e != nil || u.Query().Get("sha256") != digest {
 						err = errors.New("preview reference is stale")
 						break
+					}
+					if !strings.HasPrefix(value, "data:") {
+						value, err = s.readProjectPreviewSource(r.Context(), p, value)
+						if err != nil {
+							break
+						}
 					}
 					if strings.HasPrefix(value, "data:video/") {
 						content, err = smallTaskPoster(r.Context(), value)
@@ -194,6 +215,10 @@ func (s *Server) handleProjectTaskPreview(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusUnprocessableEntity, errors.New("small task preview unavailable"))
 		return
 	}
+	serveProjectPreview(w, r, digest, content)
+}
+
+func serveProjectPreview(w http.ResponseWriter, r *http.Request, digest string, content []byte) {
 	w.Header().Set("Content-Type", "image/jpeg")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Cache-Control", "private, no-cache")

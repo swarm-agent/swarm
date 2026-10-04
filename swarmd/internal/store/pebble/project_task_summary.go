@@ -15,7 +15,7 @@ import (
 	"github.com/cockroachdb/pebble"
 )
 
-const taskSummaryVersion = 2
+const taskSummaryVersion = 3
 const taskSummaryMaxBytes = 256 << 10
 const taskSummaryBackfillRows = 32
 const taskSummaryBackfillBytes = 16 << 20
@@ -49,7 +49,7 @@ type taskSummaryRow struct {
 }
 
 func taskSummaryPrefix(account, project string) string {
-	return "project_task_summary/v2/" + keyPart(account) + "/" + keyPart(project) + "/"
+	return "project_task_summary/v3/" + keyPart(account) + "/" + keyPart(project) + "/"
 }
 func taskSummaryPartition(archived bool) int {
 	if archived {
@@ -121,10 +121,14 @@ func compactProjectTask(task ProjectTaskRecord) ProjectTaskRecord {
 		d := &task.Deliverables[i]
 		media, thumbnail := d.MediaURL, d.Thumbnail
 		d.MediaURL = taskSummaryMedia(task, d.ID, "media", media)
-		if media != "" && thumbnail == media {
-			d.Thumbnail = d.MediaURL
-		} else {
-			d.Thumbnail = taskSummaryMedia(task, d.ID, "thumbnail", thumbnail)
+		field, source := "thumbnail", thumbnail
+		if thumbnail == "" || thumbnail == media {
+			field, source = "media", media
+		}
+		d.Thumbnail = ProjectTaskPreviewReference(task, d.ID, field, source)
+		d.PreviewSource = ""
+		if !strings.HasPrefix(source, "data:") && len(source) <= 4096 {
+			d.PreviewSource = source
 		}
 		d.CodeDiff, d.Description, d.VideoProvenance = "", taskSummaryBrief(d.Description), nil
 	}

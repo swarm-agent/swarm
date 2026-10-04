@@ -4939,3 +4939,19 @@ function livePatchFixture(overrides: Partial<SessionV3RealtimeLivePatchWire> = {
     ...overrides,
   }
 }
+
+// Purpose: repeated overlapping history pages must not inflate source counts or
+// mark partial tails complete. The canonical reducer owns merge/deduplication;
+// asserting repeated application prevents unreachable phantom older messages.
+test('overlapping partial history preserves exact deduplicated count', () => {
+  const state = createEmptyDesktopV3CacheState()
+  state.messagesBySession[sessionA.id] = buildMessageListCache([messageA2], {
+    knownTail: { newestSeq: 2 }, sourceMessageCount: 2, knownFull: false,
+  })
+  for (let i = 0; i < 3; i++) {
+    desktopV3CacheReducer(state, { type: 'messages.prependHistoryResult', sessionId: sessionA.id, messages: [messageA1, messageA2], sourceMessageCount: 2, knownFull: false })
+    assert.equal(state.messagesBySession[sessionA.id].items.length, 2)
+    assert.equal(state.messagesBySession[sessionA.id].sourceMessageCount, 2)
+    assert.equal(state.messagesBySession[sessionA.id].knownFull, false)
+  }
+})

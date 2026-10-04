@@ -5,8 +5,6 @@ import { requestStartupJson } from '../../../app/api'
 import { compareProjectSessionRows, projectSessionRow } from '../state/project-session-rows'
 import type { SessionSnapshot, V3SessionTombstone, DesktopV3SessionView } from '../state/desktop-v3-cache-types'
 import { useDesktopV3CacheSelector, subscribeDesktopV3Cache } from '../state/desktop-v3-cache-store'
-import { hydrateProjectConversationRows } from './project-conversation-hydration'
-import { hydrateResponseToAction } from '../state/desktop-v3-cache-wire'
 import { dispatchDesktopV3Cache } from '../state/desktop-v3-cache-store'
 import { requireProjectConversation, conversationProjectId } from '../orchestrate/project-conversations'
 import { desktopProjects } from './desktop-projects'
@@ -45,12 +43,13 @@ export function useProjectConversations(projectId: string) {
           dispatchDesktopV3Cache({ type: 'projectConversations.applySummaries', projectId, sessions: (response.sessions || []).map(item => item.session), attention: Object.fromEntries((response.sessions || []).flatMap(item => item.attention ? [[item.session.id, item.attention]] : [])) })
           setLoadedProject(projectId)
           setLoadingProject('')
-          const archivedIds = (archived.tombstones || []).flatMap(item => item.session && conversationProjectId(item.session) === projectId ? [item.session_id] : [])
-          // Active rows already include scoped attention; only requested archive
-          // details need the compatibility hydrate boundary.
-          await hydrateProjectConversationRows(archivedIds, controller.signal, (hydrated, batch) => {
-            if (active) dispatchDesktopV3Cache(hydrateResponseToAction(hydrated, batch))
-          })
+          if (includeArchived) {
+            for (const item of archived.tombstones || []) {
+              if (!item.session || item.session.id !== item.session_id) throw new Error('Invalid archive summary identity')
+              requireProjectConversation(projectId, item.session)
+            }
+            dispatchDesktopV3Cache({ type: 'projectConversations.applyArchiveSummaries', projectId, tombstones: archived.tombstones || [] })
+          }
           if (active) { setError(''); setLoadedProject(projectId) }
         } while (dirty && active)
       } catch (cause) { if (active) setError(cause instanceof Error ? cause.message : 'Unable to load conversations') }
@@ -79,7 +78,7 @@ export function useProjectConversations(projectId: string) {
   }), [projectId])
   const rows = useDesktopV3CacheSelector(state => [
     ...sessions.filter(session => !state.tombstonesBySession[session.id]).map(session => projectSessionRow(state, session)),
-    ...Object.values(state.tombstonesBySession).flatMap(item => item.archived && !item.deleted && item.session && !item.session.navigation_hidden && conversationProjectId(item.session) === projectId
+    ...Object.values({ ...Object.fromEntries((state.projectArchiveSummaries?.[projectId] || []).filter(item => !sessions.some(session => session.id === item.session_id)).map(item => [item.session_id, item])), ...state.tombstonesBySession }).flatMap(item => item.archived && !item.deleted && item.session && !item.session.navigation_hidden && conversationProjectId(item.session) === projectId
       ? [projectSessionRow(state, item.session, item.updated_at)] : []),
   ].sort(compareProjectSessionRows), (a, b) => JSON.stringify(a) === JSON.stringify(b))
   const idsKey = JSON.stringify(sessions.map(session => session.id).sort())

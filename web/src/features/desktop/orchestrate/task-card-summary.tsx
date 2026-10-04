@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
 import { taskPreviewURL } from './task-preview-url'
+import { TaskThumbnail } from './task-thumbnail'
 import { Code2, Film, Image as ImageIcon, Layers, Music } from 'lucide-react'
 import type { RunningTask, MediaDeliverable } from './orchestrate-types'
 import { taskCardSessions } from './task-card-sessions'
@@ -84,7 +85,7 @@ export function TaskCardSummary({ task, onPreview, statusBadge, timer, actions, 
         <div className="swarm-task-header-row flex-wrap">
           {preview ? <button type="button" className="swarm-task-visual" aria-label={`Preview ${preview.title}`}
             disabled={!onPreview} onClick={event => { event.stopPropagation(); onPreview?.(preview) }}>
-            {thumbnail ? <img src={thumbnail} alt={preview.title} loading="lazy" decoding="async" fetchPriority="low" /> : <Icon size={18} aria-label={preview.title} />}
+            <TaskThumbnail src={thumbnail} title={preview.title} />
           </button> : <Icon size={18} className="swarm-task-icon" aria-label={`${task.agentType} task`} />}
           <h3 className="min-w-0 flex-1" title={title}>{title}</h3>
           <div className="shrink-0">{actions}</div>
